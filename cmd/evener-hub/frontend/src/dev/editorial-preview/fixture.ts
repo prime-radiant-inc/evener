@@ -1,6 +1,14 @@
-import type { InputItem, MethodTypes, MutationReceipt, Turn, TurnStartParams } from "@evener/appwire-client";
+import type {
+  InputItem,
+  MethodTypes,
+  MutationReceipt,
+  SessionActivityContext,
+  SessionDelegate,
+  Turn,
+  TurnStartParams,
+} from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { wireV2 } from "@evener/appwire-client/testing/navigation";
+import { wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import { navigationInvalidatedNotification } from "@evener/appwire-client/testing/notifications";
 import { summaries as initialSummaries, initialThreads, PARENT, parentRefs, QUESTION } from "./data";
 
@@ -27,10 +35,6 @@ export function createEditorialClient(): EditorialClient {
   const applied = new Map<string, { turn: Turn; receipt: MutationReceipt }>();
   const parent = summaries.find((row) => row.ref === PARENT);
   if (!parent) throw new Error("Fixture parent is required");
-  const sessionTree = (row: (typeof summaries)[number]): object => ({
-    ...row,
-    children: summaries.filter((child) => parentRefs[child.ref] === row.ref).map(sessionTree),
-  });
   let serial = 0;
   const read = (ref?: string) => {
     const result = threads.get(ref ?? "");
@@ -55,10 +59,10 @@ export function createEditorialClient(): EditorialClient {
       directoryComplete: true,
       auth: true,
     },
-    navigation: { version: 1, readVersions: [2], generationId: "generation_test", sequence: 0 },
+    navigation: { version: 1, readVersions: [3], generationId: "generation_test", sequence: 0 },
   }));
   client.on("evener/navigation/read", (params) => {
-    const wrap = (data: unknown) => wireV2(params, data, `"editorial-${revision}"`, revision);
+    const wrap = (data: unknown) => wireSnapshot(params, data, `"editorial-${revision}"`, revision);
     switch (params.resource) {
       case "manifest":
         return wrap({
@@ -102,7 +106,8 @@ export function createEditorialClient(): EditorialClient {
         return wrap({
           key: "editorial",
           current: {
-            sessions: [sessionTree(parent), summaries.find((row) => row.ref === QUESTION)],
+            // Flat rows, like the real wire: activity hierarchy uses the typed activity API.
+            sessions: [parent, summaries.find((row) => row.ref === QUESTION)].map((row) => ({ ...row, children: [] })),
             remaining: 0,
           },
           recent: { sessions: [], remaining: 0 },
@@ -122,7 +127,7 @@ export function createEditorialClient(): EditorialClient {
           session,
         });
         // The shared test helper defaults locations to top-level. This fixture
-        // serves real nested locations, so preserve the truthful v2 metadata.
+        // serves real nested locations, so preserve the truthful location metadata.
         const data = response.data as { metadata: Record<string, unknown> };
         data.metadata.top_level = params.ref === owner;
         return response;
@@ -146,7 +151,7 @@ export function createEditorialClient(): EditorialClient {
     read(ref);
     return { data: [] };
   });
-  // The session composer's location line resolves the branch and origin from
+  // The session location line resolves the branch and origin from
   // the session's cwd; a fixture hub must answer it like every other method the
   // mounted panes request. A fixture repo URL keeps the forge link renderable.
   client.on("evener/git/head", () => ({
@@ -158,36 +163,73 @@ export function createEditorialClient(): EditorialClient {
     items: read(ref).thread.turns?.flatMap((turn) => turn.items ?? []) ?? [],
     truncated: false,
   }));
-  client.on("evener/jobs/list", ({ ref }) => {
+  const activityContext = (ref: string): SessionActivityContext => {
     const snapshot = read(ref);
-    const delegates = snapshot.thread.evener.diagnostics?.delegates ?? [];
-    const active = delegates.filter((row) => row.status === "running").length;
+    const ancestors = [];
+    let parent = parentRefs[ref];
+    while (parent) {
+      const owner = read(parent);
+      ancestors.unshift({ ref: parent, sessionId: owner.thread.sessionId, title: owner.thread.name ?? parent });
+      parent = parentRefs[parent];
+    }
     return {
-      data: {
-        revision,
-        root: {
-          sessionId: snapshot.thread.sessionId,
-          ref: snapshot.thread.evener.ref,
-          label: snapshot.thread.name,
-          aggregate: active ? "running" : "idle",
-          counts: {
-            active,
-            failed: 0,
-            completed: delegates.filter((row) => row.terminal && row.outcome === "completed").length,
-            complete: false,
-          },
-          entries: delegates.map((row) => ({
-            kind: "delegate",
-            delegate: { ...row, childRef: row.transcriptRef, turns: [], branch: {} },
-          })),
-          diagnostics: [
-            "Fixture activity includes known owner projections only; unavailable collaborator is not counted.",
-          ],
-          branch: {},
-        },
+      ref,
+      sessionId: snapshot.thread.sessionId,
+      rootRef: ancestors[0]?.ref ?? ref,
+      parentRef: parentRefs[ref],
+      ancestors,
+      ancestryKnown: true,
+      epoch: `fixture-${revision}`,
+      availability: "live",
+    };
+  };
+  const activityDelegates = (ref: string): SessionDelegate[] =>
+    (read(ref).thread.evener.diagnostics?.delegates ?? []).map((row) => ({
+      ...row,
+      ownerRef: ref,
+      rootRef: activityContext(ref).rootRef,
+      childRef: row.transcriptRef,
+      description: row.task ?? "",
+      task: row.task ?? "",
+      phase: row.phase ?? row.status,
+      lifecycle: row.lifecycle ?? row.status,
+      terminal: row.terminal ?? false,
+      resumable: row.resumable ?? false,
+    }));
+  client.on("evener/thread/activity/read", ({ ref, scope }) => {
+    const rows = activityDelegates(ref);
+    return {
+      context: activityContext(ref),
+      scope: scope ?? "session",
+      delegates: {
+        known: true,
+        total: rows.length,
+        active: rows.filter((row) => !row.terminal).length,
+        failed: rows.filter((row) => row.outcome === "failed").length,
+        completed: rows.filter((row) => row.terminal && row.outcome !== "failed").length,
       },
+      jobs: { known: true, total: 0, active: 0, failed: 0, completed: 0 },
+      watches: { known: true, total: 0, active: 0, failed: 0, completed: 0 },
     };
   });
+  client.on("evener/thread/delegates/list", ({ ref, scope }) => ({
+    context: activityContext(ref),
+    scope: scope ?? "session",
+    delegates: activityDelegates(ref),
+    page: { complete: true, issues: [] },
+  }));
+  client.on("evener/thread/jobs/list", ({ ref, scope }) => ({
+    context: activityContext(ref),
+    scope: scope ?? "session",
+    jobs: [],
+    page: { complete: true, issues: [] },
+  }));
+  client.on("evener/thread/watches/list", ({ ref, scope }) => ({
+    context: activityContext(ref),
+    scope: scope ?? "session",
+    watches: [],
+    page: { complete: true, issues: [] },
+  }));
   client.on("evener/tasks/list", () => ({
     data: [
       {

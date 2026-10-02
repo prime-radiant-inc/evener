@@ -14,6 +14,7 @@ import type {
 	NavigationOperation,
 } from "./navigationActionRepository";
 import { type SessionDeletionResult, sessionDeletionResult } from "./sessionDeletionResult";
+import { refreshLoadedArchivedLists } from "./archivedLists";
 
 const unresolved = "A previous organization change needs to be checked. Check it before making another change.";
 const storageError =
@@ -234,6 +235,9 @@ export class NavigationActions {
 			const response = await request();
 			if (response.ok !== true) throw Error("not accepted");
 			accepted = true;
+			// A page showing an archived list waits for this read, and reads
+			// again only if it failed (ArchivedPages.refreshAfter).
+			refreshLoadedArchivedLists(this.client);
 			if (checkpoint && this.storage) {
 				savingRecovery = true;
 				// Preserve a known result even when its screen has gone away. Exact

@@ -5,14 +5,14 @@ import {
 	type ResourceKey,
 } from "@evener/appwire-client/state/navigation";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
-import type { NavigationPages } from "./navigationPages";
+import type { PageSource } from "./navigationPages";
 
 export interface SessionLocation {
 	ref: string;
 	/** The page row to scroll to and highlight. The location's own ref for a
-	 * top-level session, the owning row (its nearest non-subagent ancestor) for
-	 * a subagent: the hub answers a subagent's location with ref = the subagent
-	 * and top_level_ref = that row. */
+	 * top-level session, and for any other (a subagent, a nested fork original)
+	 * the top-level row that carries it: the hub answers their locations with
+	 * top_level_ref = that row. */
 	revealRef: string;
 	title: string;
 	params: Omit<NavigationReadParams, "representationVersion">;
@@ -23,7 +23,7 @@ export async function locateSession(
 	signal?: AbortSignal,
 ): Promise<SessionLocation> {
 	const response = await client.request("evener/navigation/read", {
-		representationVersion: 2,
+		representationVersion: 3,
 		resource: "location",
 		ref,
 	});
@@ -39,11 +39,13 @@ export async function locateSession(
 	}
 	if (response.status !== "ok" || location?.ref !== ref || location.session?.ref !== ref)
 		throw new Error("This session could not be located. Try again.");
-	// A subagent has no row of its own: the hub answers its location with
-	// top_level_ref = the row that owns it (D5). Every other ref -- a root, a
-	// fork original or a cluster member -- has its own row, even when the hub
-	// marks it non-top-level, so reveal it directly.
-	const revealRef = location.session?.kind === "subagent" ? (location.top_level_ref ?? ref) : ref;
+	// Only a top-level session has a row of its own: navigation lists top-level
+	// rows alone, and the archived list keeps a fork original inside its
+	// continuation's row. The hub answers any other location (a subagent, a
+	// nested fork original) with top_level_ref = the top-level row that
+	// carries it, so reveal that row. (The web's rail does the same outside
+	// the archived tier, which it renders with fork originals inline.)
+	const revealRef = location.top_level ? ref : location.top_level_ref;
 	if (location.project_key) {
 		if (!["current", "recent", "archived"].includes(location.tier ?? ""))
 			throw new Error("The hub returned an unknown project section.");
@@ -74,48 +76,24 @@ export async function locateSession(
 	};
 }
 
-function pathTo<T>(
-	roots: readonly T[],
-	target: string,
-	key: (row: T) => string,
-	children: ((row: T) => readonly T[]) | undefined,
-): string[] | null {
-	const seen = new Set<string>();
-	function visit(rows: readonly T[], ancestors: string[]): string[] | null {
-		for (const row of rows) {
-			const ref = key(row);
-			if (seen.has(ref)) continue;
-			seen.add(ref);
-			const path = [...ancestors, ref];
-			if (ref === target) return path;
-			const found = children && visit(children(row), path);
-			if (found) return found;
-		}
-		return null;
-	}
-	return visit(roots, []);
-}
-/** Follow the server's pages without crossing revisions or retaining abandoned work. */
+/** Follow the server's pages until the row appears, without crossing
+ * revisions or retaining abandoned work. True once it's found; false once the
+ * caller has moved on. */
 export async function revealNavigationRow<T>(
-	pages: NavigationPages<T>,
+	pages: PageSource<T>,
 	ref: string,
 	key: (row: T) => string,
-	children: ((row: T) => readonly T[]) | undefined,
 	isCurrent: () => boolean,
-) {
+): Promise<boolean> {
 	await pages.refresh();
 	while (isCurrent()) {
 		const state = pages.getSnapshot();
 		if (state.loading || !state.loaded) throw new Error("The list is refreshing. Try locating the session again.");
 		if (state.error || state.stale)
 			throw new Error(state.error || "The list changed while locating the session. Locate again.");
-		const path = pathTo(state.rows, ref, key, children);
-		if (path) return path;
-		if (!state.remaining)
-			throw new Error(
-				"The session is not in the returned list. It may have moved or the hub may have omitted part of its tree.",
-			);
+		if (state.rows.some((row) => key(row) === ref)) return true;
+		if (!state.remaining) throw new Error("The session is not in the returned list. It may have moved.");
 		await pages.more();
 	}
-	return null;
+	return false;
 }

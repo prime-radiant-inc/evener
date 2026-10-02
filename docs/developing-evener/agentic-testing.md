@@ -383,7 +383,7 @@ malformed request. Send:
 
 ```json
 {"id": 1, "method": "initialize",
- "params": {"protocolVersion": "evener-appwire-v2",
+ "params": {"protocolVersion": "evener-appwire-v6",
             "clientInfo": {"name": "scenario", "version": "0"},
             "capabilities": {"experimentalApi": false}}}
 ```
@@ -391,23 +391,36 @@ malformed request. Send:
 Notifications for other threads arrive interleaved with your responses,
 so match on `id` rather than reading the next frame and hoping.
 
-Navigation reads use the same socket and method catalog. Send
-`evener/navigation/read` with one of these parameter shapes, then inspect the
-response envelope's `data` field:
+Navigation reads use the same socket and method catalog. The
+[navigation capability and request types](../../appwire/types.go) use
+representation version 3 independently of the connection protocol version.
+Send `evener/navigation/read` with one of these parameter shapes:
 
 ```json
-{"resource":"manifest"}
-{"resource":"section","section":"live","offset":0,"limit":50}
-{"resource":"pin_catalog","offset":0,"limit":100}
-{"resource":"pin_section","sectionId":"<id>","offset":0,"limit":50}
-{"resource":"catalog","catalog":"projects","offset":0,"limit":100}
-{"resource":"project","projectKey":"<key>"}
-{"resource":"project_page","projectKey":"<key>","tier":"current","offset":0,"limit":50}
-{"resource":"location","ref":"local:<session-id>"}
+{"representationVersion":3,"resource":"manifest"}
+{"representationVersion":3,"resource":"section","section":"live","offset":0,"limit":50}
+{"representationVersion":3,"resource":"pin_catalog","offset":0,"limit":100}
+{"representationVersion":3,"resource":"pin_section","sectionId":"<id>","offset":0,"limit":50}
+{"representationVersion":3,"resource":"catalog","catalog":"projects","offset":0,"limit":100}
+{"representationVersion":3,"resource":"project","projectKey":"<key>"}
+{"representationVersion":3,"resource":"project_page","projectKey":"<key>","tier":"current","offset":0,"limit":50}
+{"representationVersion":3,"resource":"location","ref":"local:<session-id>"}
 ```
 
-The response has `status`, `generationId`, `revision`, and `etag`; `status`
-`not_modified` omits `data`. There is no HTTP `/api/navigation` equivalent.
+The response has `status`, `generationId`, `revision`, and `etag`. For `ok`,
+`representation` identifies the normalized `snapshot` or `delta` in `data`.
+Supply the exact previous `{generationId,revision,etag}` as `base` to request
+conditional revalidation; a delta names the base it extends. `not_modified`
+and `gone` omit `data`. A missing retained delta base yields a fresh snapshot.
+These rules are owned by the
+[navigation service](../../cmd/evener-hub/navigation_service.go).
+
+Navigation lists root sessions and carries compact own-session job/watch counts
+and a bounded running-command description. It has no per-session `subagents`
+resource or job/watch detail arrays. Use the explicit session activity methods
+in the [AppWire catalog](../appwire-protocol.md) for those collections. A
+`location` read answers navigation placement rather than activity ancestry.
+There is no HTTP `/api/navigation` equivalent.
 
 A session to aim a gating assertion at costs nothing and needs no
 provider credential: start with an empty AppWire `input` and the daemon
@@ -606,13 +619,19 @@ mutations whose fate is unknown read `Delivery uncertain — <text>` with a
 deleted — <text>` with `Copy` (`:349-374`).
 
 **Rail** (`shell/rail/RailRow.tsx`, `Rail.tsx`): a session row is
-`[data-session-ref="local:<SID>"]` (`RailRow.tsx:509`) — note
+`[data-session-ref="local:<SID>"]` — note
 `data-session-ref`, not the legacy `data-ref`, and there is no `.sb-row`
-class anywhere. Inside it: `[data-testid="rail-row-activity"]` (the
-second, gloss line — this is where the state word lands, **lowercased**
-by `humanizeState`, unlike `hubapi.StateWord`'s sentence case),
-`[data-testid="rail-row-time"]`, `[data-testid="rail-row-not-started"]`,
-`[data-testid="favorite-star"]`, `[data-testid="rail-row-overflow"]`.
+class anywhere. The row is one line. Its status signal is either
+`[data-testid="rail-status-spinner"][aria-label="Running"]` or
+`[data-testid="rail-status-dot"]`, whose `data-status` is `needs-you` or
+`failed` and whose accessible label is `Needs you` or `Broken`. Quiet rows
+have no signal. Hover `[data-testid="rail-row-title"]` to expose the rich
+`[role="tooltip"]` context card, whose header carries the detailed status
+word (`Question waiting`, `Restart required`, and so on); on a touch-only
+device, long-press the title to expose it, since a tap opens the session. Other
+row hooks are `[data-testid="rail-row-time"]`, `[data-testid="rail-row-not-started"]`,
+and `[data-testid="rail-row-overflow"]`; `[data-testid="favorite-star"]`
+belongs to pinned project rows, not sessions.
 Rail chrome: `[data-testid="rail-search"]`, `[data-testid="rail-settings"]`,
 `[data-testid="rail-brand"]`, `[data-testid="rail-chevron"]`. There is no
 separate "needs you" section — the Rail deliberately does not build one
@@ -722,7 +741,7 @@ JSON.stringify({
   steerRendered: !!document.querySelector('[data-testid="composer-steer"]'),
   stopRendered: !!document.querySelector('[data-testid="composer-stop"]'),
   turns: document.querySelectorAll('[data-testid="turn-block"]').length,
-  activity: document.querySelector('[data-testid="rail-row-activity"]')?.textContent,
+  indicator: document.querySelector('[data-session-ref="local:<SID>"] [data-testid="rail-status-spinner"], [data-session-ref="local:<SID>"] [data-testid="rail-status-dot"]')?.getAttribute("aria-label"),
   queueHeading: document.querySelector("h3")?.textContent,   // "Queued messages (N)"
 })
 ```

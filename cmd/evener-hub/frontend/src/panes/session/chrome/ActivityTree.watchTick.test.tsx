@@ -5,7 +5,7 @@
 // pins the subscription boundary by counting calls into the row-only and
 // detail-only formatters on a tick.
 
-import type { ActivityTree as ActivityTreeData, NavigationWatchSummary } from "@evener/appwire-client";
+import type { ActivityTree as ActivityTreeData, EvenerWatchInfo, SessionWatch } from "@evener/appwire-client";
 // The row and detail components import their formatters from the package root,
 // so the spies have to name the same module: a spy hung on the protocol/ shim
 // would sit on a different module object and never see a call.
@@ -17,15 +17,22 @@ import { ActivityTree } from "./ActivityTree";
 const NOW = Date.parse("2026-08-05T15:00:12.000Z");
 const CREATED = "2026-08-05T12:48:00Z";
 
-function watch(overrides: Partial<NavigationWatchSummary> = {}): NavigationWatchSummary {
-  return {
+function watch(overrides: Partial<EvenerWatchInfo> = {}): SessionWatch {
+  const info: EvenerWatchInfo = {
     id: "watch_1",
     source: "sess_root",
     deliveries: 0,
-    created_at: CREATED,
+    createdAt: CREATED,
     active: true,
     cadence: [{ kind: "every", seconds: 60 }],
     ...overrides,
+  };
+  return {
+    ownerRef: "ref_root",
+    sourceRef: "ref_root",
+    receiverRef: "ref_root",
+    state: info.active ? "armed" : "ended",
+    watch: info,
   };
 }
 
@@ -90,7 +97,7 @@ describe("ActivityTree watch row ticks", () => {
       expect(detailRender.mock.calls.length).toBeGreaterThan(detailsAtRest);
       // ...while the collapsed row stays asleep: its formatter is never called
       // again, and only the open row's meta re-renders through the tree clock.
-      const rerendered = rowRender.mock.calls.slice(rowsAtRest).map((call) => call[0].id);
+      const rerendered = rowRender.mock.calls.slice(rowsAtRest).map((call) => call[0].watch.id);
       expect(rerendered).toEqual(["watch_open"]);
     } finally {
       vi.useRealTimers();
@@ -115,12 +122,12 @@ describe("ActivityTree watch row ticks", () => {
         watch({
           id: "watch_open",
           note: "Hourly sweep",
-          cadence: [{ kind: "every", seconds: 600, derived_next_fire_at: nextFire }],
+          cadence: [{ kind: "every", seconds: 600, derivedNextFireAt: nextFire }],
         }),
         watch({
           id: "watch_closed",
           note: "Deploy rollback check",
-          cadence: [{ kind: "every", seconds: 600, derived_next_fire_at: nextFire }],
+          cadence: [{ kind: "every", seconds: 600, derivedNextFireAt: nextFire }],
         }),
       ];
       render(<ActivityTree tree={EMPTY_TREE} watches={watches} expandedFoldIDs={[]} onToggleFold={vi.fn()} />);
@@ -149,7 +156,7 @@ describe("ActivityTree watch row ticks", () => {
       expect(detailRender.mock.calls.length).toBeGreaterThan(detailsAtRest);
       // ...and the collapsed row never re-rendered: its formatter was called
       // again only for the open row.
-      const rerendered = rowRender.mock.calls.slice(rowsAtRest).map((call) => call[0].id);
+      const rerendered = rowRender.mock.calls.slice(rowsAtRest).map((call) => call[0].watch.id);
       expect(rerendered).toEqual(["watch_open"]);
       expect(closedRow.textContent).toBe(closedText);
     } finally {

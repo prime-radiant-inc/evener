@@ -1,14 +1,41 @@
 // Pure formatting helpers for the dense activity tree rows. Kept React-free so
 // each is trivially unit-testable (same contract as protocol/displayFormat).
 
-import { type ActivityUsage, formatTokenCount, isActivityFailure } from "@evener/appwire-client";
+import {
+  type ActivityDelegate,
+  type ActivityUsage,
+  formatTokenCount,
+  isActivityFailure,
+  type SessionActivitySummary,
+} from "@evener/appwire-client";
+
+export function delegateName(delegate: ActivityDelegate): string {
+  return (
+    delegate.name?.trim() ||
+    (delegate.mandate ??
+      delegate.task ??
+      delegate.description ??
+      delegate.child?.label ??
+      delegate.childSessionId ??
+      delegate.childRef)
+  );
+}
+
+export function activityActionLabel(summary: SessionActivitySummary | null | undefined): string {
+  return summary?.delegates.known && summary.jobs.known
+    ? `Activity · ${summary.delegates.active + summary.jobs.active} active`
+    : "Activity";
+}
 
 // formatUsagePair renders a delegate row's token cluster ("↑41.2K ↓6.1K"), or null
 // when the daemon sent no usage (old daemon, shell-only work) so the row hides
 // the cluster instead of rendering ↑0 ↓0.
 export function formatUsagePair(usage: ActivityUsage | undefined): string | null {
   if (!usage) return null;
-  return `↑${formatTokenCount(usage.inputTokens)} ↓${formatTokenCount(usage.outputTokens)}`;
+  const parts = [];
+  if (usage.inputTokens !== undefined) parts.push(`↑${formatTokenCount(usage.inputTokens)}`);
+  if (usage.outputTokens !== undefined) parts.push(`↓${formatTokenCount(usage.outputTokens)}`);
+  return parts.length ? parts.join(" ") : null;
 }
 
 // formatQuietAge buckets a millisecond age into the rail's compact stamps

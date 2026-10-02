@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, expectTypeOf, test } from "vitest";
 import { HostMutationOutcomeError, WireError } from "./errors";
 import {
   committedMutationRow,
@@ -14,7 +14,7 @@ import {
   rootsFromText,
   rootsToText,
 } from "./hostMutations";
-import type { HostRow } from "./types.gen";
+import type { HostRow, MethodTypes, RemovedRow } from "./types.gen";
 
 const row = (name: string, over: Partial<HostRow> = {}): HostRow => ({
   name,
@@ -174,6 +174,16 @@ describe("guarded host mutations (registry spec 08 §12)", () => {
   });
 });
 
+test("generated mutation results narrow by outcome to their method's row type", () => {
+  type Add = MethodTypes["evener/host/add"]["result"];
+  type Update = MethodTypes["evener/host/update"]["result"];
+  type Remove = MethodTypes["evener/host/remove"]["result"];
+  expectTypeOf<Extract<Add, { outcome: "committed" }>["host"]>().toEqualTypeOf<HostRow>();
+  expectTypeOf<Extract<Update, { outcome: "committed" }>["host"]>().toEqualTypeOf<HostRow>();
+  expectTypeOf<Extract<Remove, { outcome: "committed" }>["host"]>().toEqualTypeOf<RemovedRow>();
+  expectTypeOf<Extract<Update | Remove, { outcome: "ambiguous" }>>().toEqualTypeOf<never>();
+});
+
 describe("committed mutation rows (registry spec 08 §11)", () => {
   test.each([
     [
@@ -188,6 +198,7 @@ describe("committed mutation rows (registry spec 08 §11)", () => {
       /rebind teardown failed.*remnantId r1/,
     ],
     ["an unknown arm", { outcome: "later" }, /no arm this client knows/],
+    ["a committed arm without its row", { outcome: "committed" }, /no arm this client knows/],
   ])("refuses %s as a success", (_name, result, message) => {
     expect(() => committedMutationRow(result as never, "evener/host/update")).toThrow(message);
   });

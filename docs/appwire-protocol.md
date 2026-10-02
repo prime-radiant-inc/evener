@@ -122,6 +122,10 @@ no router (reserved).
 | `evener/daemon/status` | daemon | `DaemonStatusParams` | `DaemonStatusResponse` | Reports the daemon retirement lifecycle snapshot; a detached control read that never resets eligibility. |
 | `evener/daemon/idle-timeout/set` | daemon | `DaemonIdleTimeoutSetParams` | `DaemonIdleTimeoutSetResponse` | Retargets the automatic idle-retirement deadline (0 disables it) against exact ownership identity and answers with the current lifecycle; the Hub sets this from session archive decisions. |
 | `evener/thread/transcripts/list` | hub | `ThreadTranscriptListParams` | `ThreadTranscriptListResponse` | Lists transcript targets (subagents/related threads) for a ref. |
+| `evener/thread/activity/read` | both | `SessionActivityReadParams` | `SessionActivitySummary` | Reads cheap activity counts and context for an explicit session ref and ownership scope; unknown counts are explicit. |
+| `evener/thread/delegates/list` | both | `SessionActivityListParams` | `SessionDelegatesResponse` | Pages compact stable delegates logically owned by a session or its subtree; bounded by 200 rows and 256 KiB. |
+| `evener/thread/jobs/list` | both | `SessionActivityListParams` | `SessionJobsResponse` | Pages shell jobs logically owned by a session or its subtree; job output is read separately. |
+| `evener/thread/watches/list` | both | `SessionActivityListParams` | `SessionWatchesResponse` | Pages receiver-owned watches and bounded retained history for a session or its subtree. |
 | `evener/subagentPreview` | hub | `EvenerSubagentPreviewParams` | `EvenerSubagentPreviewResponse` | Reads a bounded lazy preview of a subagent transcript's latest direct items. |
 | `evener/paths/complete` | hub | `PathsCompleteParams` | `PathsCompleteResponse` | Path autocompletion for a prefix. |
 | `evener/dirs/create` | hub | `DirsCreateParams` | `DirsCreateResponse` | Creates a missing working directory and its parents for Spawn preflight. |
@@ -129,7 +133,7 @@ no router (reserved).
 | `evener/path/validate` | hub | `PathValidateParams` | `PathValidateResponse` | Validates a launch path. |
 | `evener/git/head` | hub | `GitHeadParams` | `GitHeadResponse` | Reads a working directory's git HEAD, and its sanitized origin remote URL when requested. |
 | `evener/mobile/pairing` | hub | `MobilePairingParams` | `MobilePairingResponse` | Creates a validated mobile pairing URL for the authenticated web application. |
-| `evener/navigation/read` | hub | `NavigationReadParams` | `NavigationReadResponse` | Reads one bounded, revisioned hub navigation resource as a normalized v2 snapshot or delta, optionally conditional on its exact base. |
+| `evener/navigation/read` | hub | `NavigationReadParams` | `NavigationReadResponse` | Reads one bounded, revisioned hub navigation resource as a normalized v3 snapshot or delta, optionally conditional on its exact base. |
 | `evener/favorite/set` | hub | `FavoriteSetParams` | `FavoriteSetResponse` | Sets or clears a project favorite and returns the committed navigation invalidation targets. |
 | `evener/archive/set` | hub | `ArchiveParams` | `ArchiveResponse` | Sets or clears an explicit project or session archive decision and returns its committed navigation receipt. |
 | `evener/project/delete` | hub | `ProjectDeleteParams` | `ProjectDeleteResponse` | Deletes every removable session in one path-validated local project and returns detailed outcomes plus its committed navigation receipt. |
@@ -140,8 +144,8 @@ no router (reserved).
 | `evener/session-pin/unpin` | hub | `SessionPinUnpinParams` | `SessionPinUnpinResponse` | Removes a top-level session's named pin assignment and returns its committed navigation receipt. |
 | `evener/session/seen/set` | hub | `SessionSeenSetParams` | `SessionSeenSetResponse` | Marks sessions seen through a turn end, or unread, on the hub (S4), and returns the committed navigation receipt. Live rows then carry unseen from the hub's marker. |
 | `evener/search` | hub | `SearchParams` | `SearchResponse` | Searches the hub's sessions: live and ended ones whose ID, title or prompt match, each once, and (S14) the sessions whose messages match, with each one's newest hits and snippets. A scope narrows every group; every result says whether it is archived. |
-| `evener/archived/list` | hub | `ArchivedListParams` | `ArchivedListResponse` | Lists one project's archived sessions, newest first, a page at a time: the catalog and key name the project, and the cursor continues from the previous page. The rows are navigation session summaries; the list has no revisions or invalidation. |
-| `evener/activity/read` | hub | `ActivityReadParams` | `ActivityReadResponse` | Reads the pulse meter (seven one-minute activity counts over the whole tree), running subagents and quiet time of the hub's live top-level sessions and its attached hosts' (S5). A client polls it while a Board or session is on screen; it is never part of navigation. |
+| `evener/archived/list` | hub | `ArchivedListParams` | `ArchivedListResponse` | Lists one project's archived sessions, newest first, a page at a time: the key names the project and the catalog is a hint (a project that moved between projects and archived projects is read from the one holding it now, and the response says which catalog it read), and the cursor continues from the previous page. The rows are navigation session summaries; the list has no revisions or invalidation. |
+| `evener/activity/read` | hub | `ActivityReadParams` | `ActivityReadResponse` | Reads the pulse meter (seven one-minute activity counts over the whole tree), running subagents, quiet time and the newest tool intent of the hub's live top-level sessions and its attached hosts' (S5). A client polls it while a Board or session is on screen; it is never part of navigation. |
 | `evener/notices/list` | hub | `EmptyParams` | `NoticesListResponse` | Lists the hub's notices (S11): provider instances on this hub that need signing in again, hosts that are offline, and installed plugins that are broken, each with the live sessions it blocks when the hub can count them. evener/notices/changed announces every change. |
 | `evener/harnesses/list` | hub | `HarnessListParams` | `HarnessListResponse` | Lists available harness descriptors. |
 | `evener/upgrade` | hub | `UpgradeParams` | `UpgradeResponse` | Performs or reports a evener binary upgrade. |
@@ -200,11 +204,11 @@ no router (reserved).
 | `evener/delegate/stop` | both | `DelegateStopParams` | `DelegateStopResponse` | Ends one subagent's current run at the user's request (S6): that subagent alone, while the subagents it started keep running; the root's daemon serves it, the hub relays. Answers stopping or notRunning. |
 | `evener/host/request` | hub | `HostRequestParams` | `HostForwardedResult` | Forwards one hub-scoped admin RPC to a named remote host's hub through the allow-listed proxy (component 07a); the result is the forwarded method's own result, verbatim — an opaque JSON object, not a wrapper, so a typed client must treat the result as unknown and cast it to the forwarded method's own result type (see HostForwardedResult). |
 | `evener/host/attach` | hub | `HostAttachParams` | `HostAttachResponse` | Explicitly attaches one configured remote host by name through the Ensure-backed dialing seam (component 06's Connect action); a mutation and the only browser-reachable attach trigger, idempotent while attached, returning the host's post-attach state. |
-| `evener/host/add` | hub | `HostAddParams` | `HostMutationCommitted \| HostMutationCommittedRemoved \| HostMutationTeardownFailure \| HostMutationTeardownFailureRemoved \| HostMutationCollisionDropped \| HostMutationAmbiguous` | Registers one host entry (its full entry: name, ssh address, user, key path, and the host's paths and roots) into the machine-managed hub.toml; validates like hub.toml loading and refuses a name the live set already holds. Result is the mutation-result union: committed, committed-with-teardown-failure, collision-dropped, or the keyless-add ambiguous arm. |
+| `evener/host/add` | hub | `HostAddParams` | `HostMutationCommitted \| HostMutationTeardownFailure \| HostMutationCollisionDropped \| HostMutationAmbiguous` | Registers one host entry (its full entry: name, ssh address, user, key path, and the host's paths and roots) into the machine-managed hub.toml; validates like hub.toml loading and refuses a name the live set already holds. Result is the mutation-result union: committed, committed-with-teardown-failure, collision-dropped, or the keyless-add ambiguous arm. |
 | `evener/host/list` | hub | `EmptyParams` | `HostListResponse` | Lists every known host with truthful online state; never dials — attached rows read the live channel, offline rows render last-known state. |
 | `evener/host/status` | hub | `HostStatusParams` | `HostStatusResponse` | Returns one host's list row for a single named host; never dials. |
-| `evener/host/remove` | hub | `HostRemoveParams` | `HostMutationCommitted \| HostMutationCommittedRemoved \| HostMutationTeardownFailure \| HostMutationTeardownFailureRemoved \| HostMutationCollisionDropped \| HostMutationAmbiguous` | Deregisters one live host entry, stopping its supervisor and dropping its channel; every live host is removable here. Result is the mutation-result union, whose committed and teardown-failure arms carry the dedicated removed row. |
-| `evener/host/update` | hub | `HostUpdateParams` | `HostMutationCommitted \| HostMutationCommittedRemoved \| HostMutationTeardownFailure \| HostMutationTeardownFailureRemoved \| HostMutationCollisionDropped \| HostMutationAmbiguous` | Edits one live host entry in place (every field but the name; the name is the target) and retires the host's channel with the identity it replaced; the edit is written into the machine-managed hub.toml. Result is the mutation-result union. |
+| `evener/host/remove` | hub | `HostRemoveParams` | `HostMutationCommittedRemoved \| HostMutationTeardownFailureRemoved \| HostMutationCollisionDropped` | Deregisters one live host entry, stopping its supervisor and dropping its channel; every live host is removable here. Result is the mutation-result union, whose committed and teardown-failure arms carry the dedicated removed row. |
+| `evener/host/update` | hub | `HostUpdateParams` | `HostMutationCommitted \| HostMutationTeardownFailure \| HostMutationCollisionDropped` | Edits one live host entry in place (every field but the name; the name is the target) and retires the host's channel with the identity it replaced; the edit is written into the machine-managed hub.toml. Result is the mutation-result union. |
 | `evener/host/teardown-retry` | hub | `HostTeardownRetryParams` | `HostTeardownRetryCompleteLive \| HostTeardownRetryCompleteRemoved \| HostTeardownRetryClearedLive \| HostTeardownRetryClearedRemoved \| HostTeardownRetryFailedLive \| HostTeardownRetryFailedRemoved` | Resumes one named teardown remnant by its opaque id: gate first, claim under the mutation lock, the pinned teardown run to completion with a bounded deadline, then finalization from the observed result. Result is the six-arm outcome x hostKind union; an unknown or purged id is the typed teardown-unknown-key refusal. |
 | `evener/host/teardown-recover` | hub | `HostTeardownRecoverParams` | `HostTeardownRecoverResult` | Clears an open remnant whose pinned target is unresolvable, on an authenticated operator's audited teardown-verified-absent attestation: gate first, the safety checks immediately before the clearing write, the attestation recorded on the original receipt beside remnantResolvedAt, and a typed resolved-remnant record persisted in the same atomic write. |
 | `evener/host/plan` | hub | `HostPlanParams` | `HostPlanPlanned \| HostPlanNoToken` | Plans one deploy against a named host and mints the single-use confirmation token evener/host/deploy consumes: refreshes the host's preflight facts without a gate, probes its running state, and answers with either the plan plus token (HostPlanPlanned) or the no-token arm (HostPlanNoToken) naming why nothing was minted and whether the refusal is terminal. |
@@ -237,7 +241,7 @@ Pushed to subscribed connections; no `id`. The web client maps these in
 | `evener/job/finished` | `EvenerJobParams` | A background job finished; the job carries status/reason/exitCode/output. |
 | `evener/delegate/updated` | `EvenerDelegateParams` | A stable delegate projection changed. |
 | `evener/jobs/treeUpdated` | `JobsTreeUpdatedParams` | The current-session activity tree changed; clients refresh the jobs tree. |
-| `evener/auth/updated` | `EvenerAuthUpdatedParams` | Broadcast after a successful auth mutation or provider-instance CRUD/live-model change. Clients refresh auth state and the instance list. |
+| `evener/auth/updated` | `EvenerAuthUpdatedParams` | Broadcast after a successful auth mutation or provider-instance CRUD/live-model change, including a launch model list refresh that changed what a picker showed. Clients refresh auth state, the instance list and their model list. |
 | `evener/launch/updated` | `EvenerLaunchUpdatedParams` | Broadcast after a launch layer/trust mutation. Clients refresh launch config. |
 | `evener/attention/changed` | `AttentionChangedPayload` | Hub-derived attention transitions for live sessions plus authoritative badge summary. Hub-originated; never sent by daemons. |
 | `evener/navigation/invalidated` | `NavigationInvalidatedPayload` | Hub-derived scoped navigation-resource invalidation. Clients conditionally revalidate only the named loaded resources. |
@@ -245,6 +249,7 @@ Pushed to subscribed connections; no `id`. The web client maps these in
 | `evener/plugin/updated` | `EmptyParams` | Broadcast after a plugin mutation (install/upgrade/remove/enable/disable/setAutoUpgrade, or a marketplace edit that can re-key installs); no payload. Clients refresh the plugin list. |
 | `evener/notices/changed` | `NoticesListResponse` | Hub-derived: the hub's notices changed (a notice appeared, cleared, or its session count moved); carries the whole new list, as evener/notices/list returns it. Hub-originated; never sent by daemons. |
 | `evener/thread/resync` | `ThreadResyncParams` | Hub-originated hint asking clients to re-read one thread after relay recovery. |
+| `evener/thread/activity/changed` | `SessionActivityChangedParams` | Scoped activity invalidation; clients revalidate the named observed resources for the addressed session. |
 | `evener/task/updated` | `TaskUpdatedParams` | The session's task-list outcome counts (total/done/cancelled/remaining) changed. |
 | `evener/goal/updated` | `GoalUpdatedParams` | The session's complete structured goal state changed; null clears it. |
 | `evener/notes/updated` | `NotesUpdatedParams` | The session's shared-notes whiteboards changed. |
@@ -340,7 +345,7 @@ An embedded type contributes its own fields inline.
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
-| `catalog` | `string` |  |  |
+| `catalog` | `string` | yes |  |
 | `projectKey` | `string` |  |  |
 | `cursor` | `string` | yes |  |
 | `limit` | `int` | yes |  |
@@ -353,6 +358,7 @@ An embedded type contributes its own fields inline.
 | `sessions` | `jsontext.Value` |  |  |
 | `nextCursor` | `string` | yes |  |
 | `total` | `int` |  |  |
+| `catalog` | `string` | yes |  |
 
 
 ### `AttentionChangedPayload`
@@ -650,6 +656,7 @@ _(no fields)_
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
+| `runGeneration` | `uint64` |  |  |
 | `delegateId` | `string` |  |  |
 | `ownerSessionId` | `string` |  |  |
 | `rootSessionId` | `string` |  |  |
@@ -914,7 +921,7 @@ _(no fields)_
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
-| `outcome` | `string` |  |  |
+| `outcome` | `appwire.HostMutationOutcome` |  |  |
 | `observedRow` | `appwire.HostRow` |  |  |
 
 
@@ -922,7 +929,7 @@ _(no fields)_
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
-| `outcome` | `string` |  |  |
+| `outcome` | `appwire.HostMutationOutcome` |  |  |
 | `droppedEntry` | `appwire.HostRow` |  |  |
 | `winningFingerprint` | `string` |  |  |
 | `host` | `*appwire.HostRow` | yes |  |
@@ -933,7 +940,7 @@ _(no fields)_
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
-| `outcome` | `string` |  |  |
+| `outcome` | `appwire.HostMutationOutcome` |  |  |
 | `host` | `appwire.HostRow` |  |  |
 
 
@@ -941,7 +948,7 @@ _(no fields)_
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
-| `outcome` | `string` |  |  |
+| `outcome` | `appwire.HostMutationOutcome` |  |  |
 | `host` | `appwire.RemovedRow` |  |  |
 
 
@@ -949,7 +956,7 @@ _(no fields)_
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
-| `outcome` | `string` |  |  |
+| `outcome` | `appwire.HostMutationOutcome` |  |  |
 | `seam` | `string` |  |  |
 | `remnantId` | `string` |  |  |
 | `host` | `appwire.HostRow` |  |  |
@@ -959,7 +966,7 @@ _(no fields)_
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
-| `outcome` | `string` |  |  |
+| `outcome` | `appwire.HostMutationOutcome` |  |  |
 | `seam` | `string` |  |  |
 | `remnantId` | `string` |  |  |
 | `host` | `appwire.RemovedRow` |  |  |
@@ -1576,6 +1583,17 @@ _(no fields)_
 | `dirty` | `bool` |  |  |
 
 
+### `JobOutputTail`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `tail` | `string` |  |  |
+| `totalBytes` | `int64` |  |  |
+| `retainedStart` | `int64` |  |  |
+| `truncated` | `bool` |  |  |
+| `hasEarlier` | `bool` | yes |  |
+
+
 ### `JobsGetParams`
 
 | Field | Go type | Omitempty | Embedded |
@@ -1588,7 +1606,7 @@ _(no fields)_
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
-| `data` | `interface {}` |  |  |
+| `data` | `appwire.JobActivityJob` |  |  |
 
 
 ### `JobsListParams`
@@ -1620,7 +1638,7 @@ _(no fields)_
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
-| `data` | `interface {}` |  |  |
+| `data` | `appwire.JobOutputTail` |  |  |
 
 
 ### `JobsTreeUpdatedParams`
@@ -2213,6 +2231,144 @@ _(no fields)_
 | `match` | `bool` | yes |  |
 
 
+### `SessionActivityAncestor`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ref` | `string` |  |  |
+| `sessionId` | `string` |  |  |
+| `delegateId` | `string` | yes |  |
+| `title` | `string` |  |  |
+
+
+### `SessionActivityChangedParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `threadId` | `string` |  |  |
+| `ref` | `string` |  |  |
+| `sessionId` | `string` |  |  |
+| `resources` | `[]appwire.SessionActivityResource` |  |  |
+
+
+### `SessionActivityContext`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ref` | `string` |  |  |
+| `sessionId` | `string` |  |  |
+| `rootRef` | `string` |  |  |
+| `parentRef` | `string` | yes |  |
+| `delegateId` | `string` | yes |  |
+| `ancestors` | `[]appwire.SessionActivityAncestor` |  |  |
+| `ancestryKnown` | `bool` |  |  |
+| `epoch` | `string` |  |  |
+| `availability` | `string` |  |  |
+
+
+### `SessionActivityCounts`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `known` | `bool` |  |  |
+| `total` | `int` |  |  |
+| `active` | `int` |  |  |
+| `failed` | `int` |  |  |
+| `completed` | `int` |  |  |
+
+
+### `SessionActivityIssue`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ref` | `string` |  |  |
+| `code` | `string` |  |  |
+
+
+### `SessionActivityListParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ref` | `string` |  |  |
+| `scope` | `appwire.SessionActivityScope` | yes |  |
+| `cursor` | `string` | yes |  |
+| `limit` | `int` | yes |  |
+
+
+### `SessionActivityPage`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `nextCursor` | `string` | yes |  |
+| `complete` | `bool` |  |  |
+| `issues` | `[]appwire.SessionActivityIssue` |  |  |
+
+
+### `SessionActivityReadParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ref` | `string` |  |  |
+| `scope` | `appwire.SessionActivityScope` | yes |  |
+
+
+### `SessionActivitySummary`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `issues` | `[]appwire.SessionActivityIssue` | yes |  |
+| `refreshPending` | `bool` | yes |  |
+| `context` | `appwire.SessionActivityContext` |  |  |
+| `scope` | `appwire.SessionActivityScope` |  |  |
+| `delegates` | `appwire.SessionActivityCounts` |  |  |
+| `jobs` | `appwire.SessionActivityCounts` |  |  |
+| `watches` | `appwire.SessionActivityCounts` |  |  |
+
+
+### `SessionDelegate`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `name` | `string` | yes |  |
+| `runGeneration` | `uint64` |  |  |
+| `reportPreview` | `string` | yes |  |
+| `reportPreviewTruncated` | `bool` | yes |  |
+| `delegateId` | `string` |  |  |
+| `ownerRef` | `string` |  |  |
+| `rootRef` | `string` |  |  |
+| `childRef` | `string` |  |  |
+| `parentDelegateId` | `string` | yes |  |
+| `description` | `string` |  |  |
+| `task` | `string` |  |  |
+| `type` | `string` |  |  |
+| `lifecycle` | `string` |  |  |
+| `phase` | `string` |  |  |
+| `status` | `string` |  |  |
+| `outcome` | `string` | yes |  |
+| `reason` | `string` | yes |  |
+| `error` | `string` | yes |  |
+| `terminal` | `bool` |  |  |
+| `resumable` | `bool` |  |  |
+| `notResumableReason` | `string` | yes |  |
+| `model` | `string` | yes |  |
+| `reasoningEffort` | `string` | yes |  |
+| `runStartedAt` | `string` | yes |  |
+| `runEndedAt` | `string` | yes |  |
+| `latestActivityAt` | `string` | yes |  |
+| `usage` | `*appwire.EvenerUsage` | yes |  |
+| `worktree` | `*appwire.JobActivityWorktree` | yes |  |
+
+
+### `SessionDelegatesResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `context` | `appwire.SessionActivityContext` |  |  |
+| `scope` | `appwire.SessionActivityScope` |  |  |
+| `page` | `appwire.SessionActivityPage` |  |  |
+| `delegates` | `[]appwire.SessionDelegate` |  |  |
+
+
 ### `SessionDeleteParams`
 
 | Field | Go type | Omitempty | Embedded |
@@ -2264,6 +2420,16 @@ _(no fields)_
 | `size` | `int64` |  |  |
 | `sha` | `string` | yes |  |
 | `data` | `[]uint8` |  |  |
+
+
+### `SessionJobsResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `context` | `appwire.SessionActivityContext` |  |  |
+| `scope` | `appwire.SessionActivityScope` |  |  |
+| `page` | `appwire.SessionActivityPage` |  |  |
+| `jobs` | `[]appwire.JobActivityJob` |  |  |
 
 
 ### `SessionPinAssignParams`
@@ -2318,6 +2484,27 @@ _(no fields)_
 | `navigation` | `appwire.NavigationMutation` |  |  |
 
 
+### `SessionWatch`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ownerRef` | `string` |  |  |
+| `sourceRef` | `string` |  |  |
+| `receiverRef` | `string` |  |  |
+| `state` | `appwire.SessionWatchState` |  |  |
+| `watch` | `appwire.EvenerWatchInfo` |  |  |
+
+
+### `SessionWatchesResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `context` | `appwire.SessionActivityContext` |  |  |
+| `scope` | `appwire.SessionActivityScope` |  |  |
+| `page` | `appwire.SessionActivityPage` |  |  |
+| `watches` | `[]appwire.SessionWatch` |  |  |
+
+
 ### `SettingsOverviewResponse`
 
 | Field | Go type | Omitempty | Embedded |
@@ -2345,6 +2532,24 @@ _(no fields)_
 | `skills` | `[]appwire.EvenerSkillInfo` | yes |  |
 
 
+### `Task`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `id` | `int` |  |  |
+| `type` | `appwire.TaskType` |  |  |
+| `description` | `string` |  |  |
+| `prompt` | `string` |  |  |
+| `status` | `appwire.TaskStatus` |  |  |
+| `depends_on` | `[]int` | yes |  |
+| `notes` | `[]string` | yes |  |
+| `reasoning_effort` | `string` | yes |  |
+| `insert` | `string` | yes |  |
+| `created_at` | `*time.Time` | yes |  |
+| `updated_at` | `*time.Time` | yes |  |
+| `completed_at` | `*time.Time` | yes |  |
+
+
 ### `TaskListParams`
 
 | Field | Go type | Omitempty | Embedded |
@@ -2356,7 +2561,7 @@ _(no fields)_
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
-| `data` | `interface {}` |  |  |
+| `data` | `[]appwire.Task` |  |  |
 
 
 ### `TaskUpdatedParams`

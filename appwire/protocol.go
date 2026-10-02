@@ -3,6 +3,7 @@ package appwire
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 )
 
@@ -105,25 +106,17 @@ type MethodSpec struct {
 // pipeline 08b §10). A name absent here has an ordinary single-struct result.
 var MethodResultArms = map[string][]any{
 	MethodEvenerHostPlan: {HostPlanPlanned{}, HostPlanNoToken{}},
-	// The mutation-result union (registry spec 08 §11): the four arms, each
-	// carried by its own named Go struct, with remove's arms spelled in the
-	// dedicated RemovedRow shape. add and update never return the removed
-	// variants and remove never returns the HostRow ones, but the union is one
-	// registration because the wire discriminates by `outcome` alone.
+	// Each method advertises only the arms it can return. Ambiguous belongs
+	// to a keyless add; remove's committed arms carry RemovedRow.
 	MethodEvenerHostAdd: {
-		HostMutationCommitted{}, HostMutationCommittedRemoved{},
-		HostMutationTeardownFailure{}, HostMutationTeardownFailureRemoved{},
+		HostMutationCommitted{}, HostMutationTeardownFailure{},
 		HostMutationCollisionDropped{}, HostMutationAmbiguous{},
 	},
 	MethodEvenerHostUpdate: {
-		HostMutationCommitted{}, HostMutationCommittedRemoved{},
-		HostMutationTeardownFailure{}, HostMutationTeardownFailureRemoved{},
-		HostMutationCollisionDropped{}, HostMutationAmbiguous{},
+		HostMutationCommitted{}, HostMutationTeardownFailure{}, HostMutationCollisionDropped{},
 	},
 	MethodEvenerHostRemove: {
-		HostMutationCommitted{}, HostMutationCommittedRemoved{},
-		HostMutationTeardownFailure{}, HostMutationTeardownFailureRemoved{},
-		HostMutationCollisionDropped{}, HostMutationAmbiguous{},
+		HostMutationCommittedRemoved{}, HostMutationTeardownFailureRemoved{}, HostMutationCollisionDropped{},
 	},
 	// teardown-retry's six declared arms: three outcomes crossed with both host
 	// shapes (registry spec 08 §11).
@@ -132,6 +125,18 @@ var MethodResultArms = map[string][]any{
 		HostTeardownRetryClearedLive{}, HostTeardownRetryClearedRemoved{},
 		HostTeardownRetryFailedLive{}, HostTeardownRetryFailedRemoved{},
 	},
+}
+
+// StringDiscriminators declares fixed JSON string fields on named result arms.
+// SDK generators use these literals for narrowing, while producers use the same
+// Go constants. Keys are JSON field names, not Go field names.
+var StringDiscriminators = map[reflect.Type]map[string]string{
+	reflect.TypeFor[HostMutationCommitted]():              {"outcome": string(HostMutationOutcomeCommitted)},
+	reflect.TypeFor[HostMutationCommittedRemoved]():       {"outcome": string(HostMutationOutcomeCommitted)},
+	reflect.TypeFor[HostMutationTeardownFailure]():        {"outcome": string(HostMutationOutcomeTeardownFailure)},
+	reflect.TypeFor[HostMutationTeardownFailureRemoved](): {"outcome": string(HostMutationOutcomeTeardownFailure)},
+	reflect.TypeFor[HostMutationCollisionDropped]():       {"outcome": string(HostMutationOutcomeCollisionDropped)},
+	reflect.TypeFor[HostMutationAmbiguous]():              {"outcome": string(HostMutationOutcomeAmbiguous)},
 }
 
 // NotificationSpec is one server→client notification: the wire name, the Go
@@ -184,6 +189,10 @@ var Methods = []MethodSpec{
 	{MethodEvenerDaemonStatus, DaemonStatusParams{}, DaemonStatusResponse{}, ScopeDaemon, "Reports the daemon retirement lifecycle snapshot; a detached control read that never resets eligibility."},
 	{MethodEvenerDaemonIdleTimeoutSet, DaemonIdleTimeoutSetParams{}, DaemonIdleTimeoutSetResponse{}, ScopeDaemon, "Retargets the automatic idle-retirement deadline (0 disables it) against exact ownership identity and answers with the current lifecycle; the Hub sets this from session archive decisions."},
 	{MethodEvenerThreadTranscriptsList, ThreadTranscriptListParams{}, ThreadTranscriptListResponse{}, ScopeHub, "Lists transcript targets (subagents/related threads) for a ref."},
+	{MethodEvenerThreadActivityRead, SessionActivityReadParams{}, SessionActivitySummary{}, ScopeBoth, "Reads cheap activity counts and context for an explicit session ref and ownership scope; unknown counts are explicit."},
+	{MethodEvenerThreadDelegatesList, SessionActivityListParams{}, SessionDelegatesResponse{}, ScopeBoth, "Pages compact stable delegates logically owned by a session or its subtree; bounded by 200 rows and 256 KiB."},
+	{MethodEvenerThreadJobsList, SessionActivityListParams{}, SessionJobsResponse{}, ScopeBoth, "Pages shell jobs logically owned by a session or its subtree; job output is read separately."},
+	{MethodEvenerThreadWatchesList, SessionActivityListParams{}, SessionWatchesResponse{}, ScopeBoth, "Pages receiver-owned watches and bounded retained history for a session or its subtree."},
 	{MethodEvenerSubagentPreview, EvenerSubagentPreviewParams{}, EvenerSubagentPreviewResponse{}, ScopeHub, "Reads a bounded lazy preview of a subagent transcript's latest direct items."},
 	{MethodEvenerPathsComplete, PathsCompleteParams{}, PathsCompleteResponse{}, ScopeHub, "Path autocompletion for a prefix."},
 	{MethodEvenerDirsCreate, DirsCreateParams{}, DirsCreateResponse{}, ScopeHub, "Creates a missing working directory and its parents for Spawn preflight."},
@@ -191,7 +200,7 @@ var Methods = []MethodSpec{
 	{MethodEvenerPathValidate, PathValidateParams{}, PathValidateResponse{}, ScopeHub, "Validates a launch path."},
 	{MethodEvenerGitHead, GitHeadParams{}, GitHeadResponse{}, ScopeHub, "Reads a working directory's git HEAD, and its sanitized origin remote URL when requested."},
 	{MethodEvenerMobilePairing, MobilePairingParams{}, MobilePairingResponse{}, ScopeHub, "Creates a validated mobile pairing URL for the authenticated web application."},
-	{MethodEvenerNavigationRead, NavigationReadParams{}, NavigationReadResponse{}, ScopeHub, "Reads one bounded, revisioned hub navigation resource as a normalized v2 snapshot or delta, optionally conditional on its exact base."},
+	{MethodEvenerNavigationRead, NavigationReadParams{}, NavigationReadResponse{}, ScopeHub, "Reads one bounded, revisioned hub navigation resource as a normalized v3 snapshot or delta, optionally conditional on its exact base."},
 	{MethodEvenerFavoriteSet, FavoriteSetParams{}, FavoriteSetResponse{}, ScopeHub, "Sets or clears a project favorite and returns the committed navigation invalidation targets."},
 	{MethodEvenerArchiveSet, ArchiveParams{}, ArchiveResponse{}, ScopeHub, "Sets or clears an explicit project or session archive decision and returns its committed navigation receipt."},
 	{MethodEvenerProjectDelete, ProjectDeleteParams{}, ProjectDeleteResponse{}, ScopeHub, "Deletes every removable session in one path-validated local project and returns detailed outcomes plus its committed navigation receipt."},
@@ -202,8 +211,8 @@ var Methods = []MethodSpec{
 	{MethodEvenerSessionPinUnpin, SessionPinUnpinParams{}, SessionPinUnpinResponse{}, ScopeHub, "Removes a top-level session's named pin assignment and returns its committed navigation receipt."},
 	{MethodEvenerSessionSeenSet, SessionSeenSetParams{}, SessionSeenSetResponse{}, ScopeHub, "Marks sessions seen through a turn end, or unread, on the hub (S4), and returns the committed navigation receipt. Live rows then carry unseen from the hub's marker."},
 	{MethodEvenerSearch, SearchParams{}, SearchResponse{}, ScopeHub, "Searches the hub's sessions: live and ended ones whose ID, title or prompt match, each once, and (S14) the sessions whose messages match, with each one's newest hits and snippets. A scope narrows every group; every result says whether it is archived."},
-	{MethodEvenerArchivedList, ArchivedListParams{}, ArchivedListResponse{}, ScopeHub, "Lists one project's archived sessions, newest first, a page at a time: the catalog and key name the project, and the cursor continues from the previous page. The rows are navigation session summaries; the list has no revisions or invalidation."},
-	{MethodEvenerActivityRead, ActivityReadParams{}, ActivityReadResponse{}, ScopeHub, "Reads the pulse meter (seven one-minute activity counts over the whole tree), running subagents and quiet time of the hub's live top-level sessions and its attached hosts' (S5). A client polls it while a Board or session is on screen; it is never part of navigation."},
+	{MethodEvenerArchivedList, ArchivedListParams{}, ArchivedListResponse{}, ScopeHub, "Lists one project's archived sessions, newest first, a page at a time: the key names the project and the catalog is a hint (a project that moved between projects and archived projects is read from the one holding it now, and the response says which catalog it read), and the cursor continues from the previous page. The rows are navigation session summaries; the list has no revisions or invalidation."},
+	{MethodEvenerActivityRead, ActivityReadParams{}, ActivityReadResponse{}, ScopeHub, "Reads the pulse meter (seven one-minute activity counts over the whole tree), running subagents, quiet time and the newest tool intent of the hub's live top-level sessions and its attached hosts' (S5). A client polls it while a Board or session is on screen; it is never part of navigation."},
 	{MethodEvenerNoticesList, EmptyParams{}, NoticesListResponse{}, ScopeHub, "Lists the hub's notices (S11): provider instances on this hub that need signing in again, hosts that are offline, and installed plugins that are broken, each with the live sessions it blocks when the hub can count them. evener/notices/changed announces every change."},
 	{MethodEvenerHarnessesList, HarnessListParams{}, HarnessListResponse{}, ScopeHub, "Lists available harness descriptors."},
 	{MethodEvenerUpgrade, UpgradeParams{}, UpgradeResponse{}, ScopeHub, "Performs or reports a evener binary upgrade."},
@@ -349,7 +358,7 @@ var Notifications = []NotificationSpec{
 	{NotifyEvenerJobFinished, EvenerJobParams{}, "A background job finished; the job carries status/reason/exitCode/output."},
 	{NotifyEvenerDelegateUpdated, EvenerDelegateParams{}, "A stable delegate projection changed."},
 	{NotifyEvenerJobsTreeUpdated, JobsTreeUpdatedParams{}, "The current-session activity tree changed; clients refresh the jobs tree."},
-	{NotifyEvenerAuthUpdated, EvenerAuthUpdatedParams{}, "Broadcast after a successful auth mutation or provider-instance CRUD/live-model change. Clients refresh auth state and the instance list."},
+	{NotifyEvenerAuthUpdated, EvenerAuthUpdatedParams{}, "Broadcast after a successful auth mutation or provider-instance CRUD/live-model change, including a launch model list refresh that changed what a picker showed. Clients refresh auth state, the instance list and their model list."},
 	{NotifyEvenerLaunchUpdated, EvenerLaunchUpdatedParams{}, "Broadcast after a launch layer/trust mutation. Clients refresh launch config."},
 	{NotifyEvenerAttentionChanged, AttentionChangedPayload{}, "Hub-derived attention transitions for live sessions plus authoritative badge summary. Hub-originated; never sent by daemons."},
 	{NotifyEvenerNavigationInvalidated, NavigationInvalidatedPayload{}, "Hub-derived scoped navigation-resource invalidation. Clients conditionally revalidate only the named loaded resources."},
@@ -357,6 +366,7 @@ var Notifications = []NotificationSpec{
 	{NotifyEvenerPluginUpdated, EmptyParams{}, "Broadcast after a plugin mutation (install/upgrade/remove/enable/disable/setAutoUpgrade, or a marketplace edit that can re-key installs); no payload. Clients refresh the plugin list."},
 	{NotifyEvenerNoticesChanged, NoticesListResponse{}, "Hub-derived: the hub's notices changed (a notice appeared, cleared, or its session count moved); carries the whole new list, as evener/notices/list returns it. Hub-originated; never sent by daemons."},
 	{NotifyEvenerThreadResync, ThreadResyncParams{}, "Hub-originated hint asking clients to re-read one thread after relay recovery."},
+	{NotifyEvenerThreadActivityChanged, SessionActivityChangedParams{}, "Scoped activity invalidation; clients revalidate the named observed resources for the addressed session."},
 	{NotifyEvenerTaskUpdated, TaskUpdatedParams{}, "The session's task-list outcome counts (total/done/cancelled/remaining) changed."},
 	{NotifyEvenerGoalUpdated, GoalUpdatedParams{}, "The session's complete structured goal state changed; null clears it."},
 	{NotifyEvenerNotesUpdated, NotesUpdatedParams{}, "The session's shared-notes whiteboards changed."},

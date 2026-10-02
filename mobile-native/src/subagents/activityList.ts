@@ -1,5 +1,7 @@
+import { activityNodeID } from "@evener/appwire-client";
 import {
 	type ActivityListRow,
+	isSubagentRow,
 	matchesSearch,
 	STATE_ORDER,
 	type SubagentState,
@@ -12,15 +14,24 @@ export type ActivityListItem =
 	| { kind: "section"; state: SubagentState; count: number }
 	| { kind: "row"; row: ActivityListRow }
 	| { kind: "doneFold"; count: number; open: boolean }
-	| { kind: "missing"; title: string };
+	// A branch whose subagent isn't loaded yet has no title to give.
+	| { kind: "missing"; title?: string };
 
 /** The list's items for a filter and a search (spec 9): subagents and shell
  * jobs together, failed, then running, then done, where done is one folded
  * row under All until you open it. Section counts follow the search; the
- * chips and the strip don't (ruling 8). What couldn't be listed comes last. */
+ * chips and the strip don't (ruling 8). What couldn't be listed comes last,
+ * each branch (`missing` holds their session refs) named by whose it is: the
+ * coordinator by its title, a subagent by its row's. */
 export function activityListItems(
 	rows: readonly ActivityListRow[],
-	view: { filter: ActivityFilter; query: string; doneOpen: boolean; missing: readonly string[] },
+	view: {
+		filter: ActivityFilter;
+		query: string;
+		doneOpen: boolean;
+		missing: readonly string[];
+		coordinator: { ref: string; title: string };
+	},
 ): ActivityListItem[] {
 	const sections = subagentSections(rows.filter((row) => matchesSearch(row, view.query)));
 	const items: ActivityListItem[] = [];
@@ -36,8 +47,12 @@ export function activityListItems(
 		items.push({ kind: "section", state, count: section.length });
 		for (const row of section) items.push({ kind: "row", row });
 	}
+	const titleOf = (ref: string) =>
+		ref === view.coordinator.ref
+			? view.coordinator.title
+			: rows.find((row) => isSubagentRow(row) && row.ref === ref)?.title;
 	// Two branches can share a title; the line names the title once.
-	for (const title of new Set(view.missing)) items.push({ kind: "missing", title });
+	for (const title of new Set(view.missing.map(titleOf))) items.push({ kind: "missing", title });
 	return items;
 }
 
@@ -47,10 +62,12 @@ export function activityListKey(item: ActivityListItem): string {
 			return `section:${item.state}`;
 		case "row":
 			// A job's id is a job id; a subagent's is its delegate id.
-			return item.row.kind === "job" ? `job:${item.row.id}` : item.row.id;
+			return item.row.kind === "job"
+				? activityNodeID({ kind: "shell", ...item.row.job })
+				: activityNodeID({ kind: "delegate", ...item.row.delegate });
 		case "doneFold":
 			return "done-fold";
 		case "missing":
-			return `missing:${item.title}`;
+			return item.title === undefined ? "missing" : `missing:${item.title}`;
 	}
 }

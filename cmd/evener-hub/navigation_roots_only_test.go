@@ -136,7 +136,7 @@ func TestNavigationSubagentLocationResolvesByAlias(t *testing.T) {
 		}
 	}
 	key := navigationResourceKey{Kind: navigationResourceLocation, ID: "local:01ORPHAN"}
-	response, err := web.navigation.readV2(t.Context(), key, nil)
+	response, err := web.navigation.readV3(t.Context(), key, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

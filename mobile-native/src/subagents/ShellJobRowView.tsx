@@ -7,7 +7,7 @@ import { memo } from "react";
 import { Pressable, Text, View } from "react-native";
 import { fonts } from "../design/tokens";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
-import { type ShellJobRow, shellJobLabel, shellJobMeta } from "./subagentModel";
+import { type ShellJobRow, shellJobLabel, shellJobMeta, shellJobOwner } from "./subagentModel";
 
 export const ShellJobRowView = memo(function ShellJobRowView({
 	row,
@@ -21,7 +21,7 @@ export const ShellJobRowView = memo(function ShellJobRowView({
 	const { palette } = useColors();
 	const scale = useTextScale();
 	const meta = shellJobMeta(row, now);
-	const owner = `under ${row.owner}`;
+	const owner = shellJobOwner(row);
 	const hue = row.state === "running" ? palette.aliveInk : row.state === "failed" ? palette.dangerInk : palette.inkLow;
 	const small = { fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkLow };
 	return (

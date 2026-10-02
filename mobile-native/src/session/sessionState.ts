@@ -2,8 +2,8 @@
 // mark (spec 8.1), and the context chips under it. The mark reuses the
 // Board's states (src/board/attention.ts). A session you are looking at is
 // never unread, so a finished one is Idle, with no dot.
-import type { EvenerDelegateInfo, ThreadModel } from "@evener/appwire-client";
-import { subagentState } from "../subagents/subagentModel";
+import { subagentState, summaryTally } from "../subagents/subagentModel";
+import type { EvenerDelegateInfo, ThreadModel, SessionActivityCounts } from "@evener/appwire-client";
 import { type BoardState, hubTime } from "../board/attention";
 import { compactDuration } from "./format";
 
@@ -65,10 +65,7 @@ export interface SubagentTally {
 	done: number;
 }
 
-/** Running, failed or done, as the hub's job counts are (spec 9), over the
- * subagents this session has loaded: S3's fallback until the hub tallies the
- * whole tree. Classified by the Subagents list's own `subagentState`, so the
- * chip's "N failed" and the list's failures never disagree (issue #2684). */
+/** Classifies loaded roster evidence for dev fixtures, never whole-scope chip counts. */
 export function subagentTally(delegates: readonly EvenerDelegateInfo[] | undefined): SubagentTally {
 	const tally: SubagentTally = { total: 0, running: 0, failed: 0, done: 0 };
 	for (const delegate of delegates ?? []) {
@@ -99,22 +96,34 @@ export interface ContextChip {
  * the screen last read them; Goal (opens the local Session sheet) and Queue
  * (a local toggle) need no connection either, and all three always show when
  * they have content. `files` counts the session's documents, and `fresh`
- * says one is new or changed since you last opened it. */
+ * says one is new or changed since you last opened it. `subagents` supplies
+ * authoritative summary counts; a transcript roster is never a count source,
+ * only evidence that subagents exist while the count isn't known. A shut-down
+ * session's count can stay unknown for good, so the Subagents chip shows no
+ * count until the summary knows it. */
 export function contextChips(
 	session: Pick<ThreadModel, "delegates" | "tasks" | "goal" | "queue">,
 	connected: boolean,
 	files: { count: number; fresh: boolean } = { count: 0, fresh: false },
+	subagents: SessionActivityCounts | null = null,
 ): ContextChip[] {
 	const chips: ContextChip[] = [];
-	const subagents = subagentTally(session.delegates);
-	if (connected && subagents.total > 0) {
-		const failed = subagents.failed > 0 ? `${subagents.failed} failed` : undefined;
+	const tally = summaryTally(subagents ?? undefined);
+	if (connected && tally && tally.total > 0) {
+		const failed = tally.failed > 0 ? `${tally.failed} failed` : undefined;
 		chips.push({
 			kind: "subagents",
-			label: `Subagents ${subagents.total}`,
+			label: `Subagents ${tally.total}`,
 			failed,
 			attention: false,
-			accessibilityLabel: failed ? `Subagents, ${subagents.total}, ${failed}` : `Subagents, ${subagents.total}`,
+			accessibilityLabel: failed ? `Subagents, ${tally.total}, ${failed}` : `Subagents, ${tally.total}`,
+		});
+	} else if (connected && !tally && (session.delegates?.length ?? 0) > 0) {
+		chips.push({
+			kind: "subagents",
+			label: "Subagents",
+			attention: false,
+			accessibilityLabel: "Subagents, count unknown",
 		});
 	}
 	if (files.count > 0)

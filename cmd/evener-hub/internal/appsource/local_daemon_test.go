@@ -461,12 +461,12 @@ func fuzzScenarioLocalDaemonSourceJobsOverAppWire(t *testing.T) {
 	var outputParams appwire.JobsOutputParams
 	appserver.HandleTyped(app.Router(), appwire.MethodEvenerJobsOutput, func(_ context.Context, params appwire.JobsOutputParams) (appwire.JobsOutputResponse, error) {
 		outputParams = params
-		return appwire.JobsOutputResponse{Data: map[string]any{"jobId": params.JobID, "output": "hello"}}, nil
+		return appwire.JobsOutputResponse{Data: appwire.JobOutputTail{Tail: "hello", TotalBytes: 5}}, nil
 	})
 	var getParams appwire.JobsGetParams
 	appserver.HandleTyped(app.Router(), appwire.MethodEvenerJobsGet, func(_ context.Context, params appwire.JobsGetParams) (appwire.JobsGetResponse, error) {
 		getParams = params
-		return appwire.JobsGetResponse{Data: map[string]any{"jobId": params.JobID, "command": "make build"}}, nil
+		return appwire.JobsGetResponse{Data: appwire.JobActivityJob{JobID: params.JobID, Command: "make build"}}, nil
 	})
 	httpServer := httptest.NewServer(http.HandlerFunc(app.ServeWebSocket))
 	defer httpServer.Close()
@@ -502,8 +502,8 @@ func fuzzScenarioLocalDaemonSourceJobsOverAppWire(t *testing.T) {
 	if err != nil {
 		t.Fatalf("JobOutput: %v", err)
 	}
-	tail, ok := out.Data.(map[string]any)
-	if !ok || tail["jobId"] != "job_1" || tail["output"] != "hello" {
+	tail := out.Data
+	if tail.Tail != "hello" || tail.TotalBytes != 5 {
 		t.Fatalf("JobOutput data = %#v, want the daemon's own tail payload", out.Data)
 	}
 	if outputParams.JobID != "job_1" || outputParams.MaxBytes != 1024 {
@@ -514,8 +514,8 @@ func fuzzScenarioLocalDaemonSourceJobsOverAppWire(t *testing.T) {
 	if err != nil {
 		t.Fatalf("JobGet: %v", err)
 	}
-	job, ok := get.Data.(map[string]any)
-	if !ok || job["jobId"] != "job_1" || job["command"] != "make build" {
+	job := get.Data
+	if job.JobID != "job_1" || job.Command != "make build" {
 		t.Fatalf("JobGet data = %#v, want the daemon's own job payload", get.Data)
 	}
 	if getParams.Ref != "local:th_1" || getParams.JobID != "job_1" {

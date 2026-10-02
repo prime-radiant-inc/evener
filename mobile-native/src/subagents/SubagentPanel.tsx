@@ -65,7 +65,7 @@ export function SubagentPanel({
 	// taking the connection's subscription, which the transcript under this
 	// screen follows. Its thread id is the tree's: a coordinator that
 	// restarted since the screen opened runs under a new thread, and
-	// ActivityList refuses a tree whose root isn't the thread asked for.
+	// the shared activity context identifies the resolved session.
 	const coordinatorState = useCoordinatorState(inFront && connected ? client : null, coordinator.ref);
 	const treeThreadId =
 		coordinatorState && coordinatorState !== "unreadable" ? coordinatorState.threadId : coordinator.threadId;
@@ -86,10 +86,7 @@ export function SubagentPanel({
 	useEffect(() => {
 		if (!inFront || !client) return;
 		void tree.reload();
-		return client.onNotification((notification) => {
-			if (notification.method === "thread/status/changed" && notification.params.ref === ref) void tree.reload();
-		});
-	}, [inFront, client, tree, ref]);
+	}, [inFront, client, tree]);
 
 	// The stops you asked for, settled against each new tree, with a toast for
 	// each that just stopped. Only the screen in front settles them, so the

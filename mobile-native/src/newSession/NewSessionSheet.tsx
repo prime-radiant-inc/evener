@@ -9,7 +9,7 @@ import { randomUUID } from "expo-crypto";
 import { createNativeStackNavigator, type NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { useStore } from "zustand";
-import { LOCAL_HOST } from "../../../cmd/evener-hub/frontend/src/stores/hostRouting";
+import { LOCAL_HOST } from "@evener/appwire-client";
 import { hasHub } from "../connection";
 import { useConnection } from "../ConnectionProvider";
 import { isReady } from "../connectionDisplay";
@@ -80,6 +80,16 @@ function NewSessionSheetBody({ route }: NativeStackScreenProps<Routes, "NewSessi
 			void store.getState().loadModels(true);
 		}
 	}, [store, bindTo]);
+	// The hub announces a refreshed model list on evener/auth/updated (it
+	// serves a stale list at once and refreshes it behind the request), so the
+	// form reads its list again in place (#3539).
+	useEffect(
+		() =>
+			bindTo?.onNotification((notification) => {
+				if (notification.method === "evener/auth/updated") void store.getState().refreshModels();
+			}),
+		[store, bindTo],
+	);
 
 	const { hosts, live } = useHubFleet(renderClient, randomUUID);
 	const hostLabel = useCallback((host: string) => (host === LOCAL_HOST ? hubName : host), [hubName]);

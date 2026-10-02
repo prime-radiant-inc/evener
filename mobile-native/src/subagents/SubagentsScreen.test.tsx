@@ -1,8 +1,9 @@
-// The Subagents list (spec 9): a coordinator's subagents, read whole from
-// evener/jobs/list, in failed, running and done sections, with the strip, the
-// chips, search, and each row's why and last line.
+import { installActivityFixture } from "./sessionActivityTestUtils";
+// The Activity list (spec 9): a coordinator's subagents and shell jobs, read
+// through the typed activity reads, in failed, running and done sections, with
+// the strip, the chips, search, and each row's why and last line.
 import type { NativeStackNavigationOptions } from "@react-navigation/native-stack";
-import { ACTIVITY_REFRESH_MIN_INTERVAL_MS, WireError } from "@evener/appwire-client";
+import { WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import type { ReactElement } from "react";
 import { act, type ReactTestRenderer } from "react-test-renderer";
@@ -56,6 +57,7 @@ const session = (ref: string, label: string, entries: unknown[], branch: Record<
 const delegate = (id: string, description: string, over: Record<string, unknown> = {}) => ({
 	kind: "delegate",
 	delegate: {
+		runGeneration: 1,
 		delegateId: id,
 		childSessionId: id,
 		childRef: `local:${id}`,
@@ -88,15 +90,16 @@ const doneOne = (id: string, description: string) =>
 function specTree() {
 	const race = failedOne("race", "Fix race in tree settle", {
 		reason: "go test exited 1 (3 times)",
+		usage: { inputTokens: 1_000_000, outputTokens: 200_000, totalTokens: 1_200_000 },
 		child: session("local:race", "Fix race in tree settle", [runningOne("repro", "Reproduce the race")]),
 	});
 	const running = Array.from({ length: 31 }, (_, index) =>
 		runningOne(`run-${index}`, index === 0 ? "Port the drain to the new lock" : `Running task ${index}`, {
 			...(index === 0
 				? {
-						resolvedModel: "gpt-5",
+						model: "gpt-5",
 						worktree: { path: "/w", branch: "fix/drain", headSha: "abc", ahead: 1, dirty: false },
-						usage: { inputTokens: 1_000_000, outputTokens: 200_000, totalTokens: 1_200_000 },
+						usage: { inputTokens: 300_000, outputTokens: 10_000, totalTokens: 310_000 },
 					}
 				: {}),
 		}),
@@ -119,7 +122,7 @@ const trees: ReactTestRenderer[] = [];
 
 function hub(pages: (continuation: string | undefined) => unknown) {
 	const next = new FakeClient("ready");
-	next.on("evener/jobs/list", async (params) => ({ data: await pages(params.continuation) }));
+	installActivityFixture(next, pages);
 	next.on(
 		"thread/read",
 		() => ({ thread: { id: "coord", modelProvider: "anthropic/claude-opus", status: { type: "active" } } }) as never,
@@ -147,18 +150,19 @@ async function settle() {
 	});
 }
 
-// The list paces whole-tree reads, so the read a notification asks for runs
-// once the minimum interval has passed.
+// The activity store re-reads what a notification names at once.
 async function treeUpdatedAndRead(hubClient: FakeClient) {
-	vi.useFakeTimers();
-	hubClient.emitNotification({
-		method: "evener/jobs/treeUpdated",
-		params: { threadId: "coord", ref: "local:coord", revision: 2 },
-	} as never);
-	await act(async () => {
-		await vi.advanceTimersByTimeAsync(ACTIVITY_REFRESH_MIN_INTERVAL_MS);
-	});
-	vi.useRealTimers();
+	act(() =>
+		hubClient.emitNotification({
+			method: "evener/thread/activity/changed",
+			params: {
+				threadId: "coord",
+				sessionId: "coord",
+				ref: "local:coord",
+				resources: ["summary", "delegates", "jobs"],
+			},
+		} as never),
+	);
 	await settle();
 }
 
@@ -272,7 +276,9 @@ function treeWithJobs() {
 				endedAt: ago(MIN),
 			}),
 			runningOne("solo", "Only one", {
-				child: session("local:solo", "Only one", [shellJob("j-docs", "Serving the docs")]),
+				child: session("local:solo", "Only one", [
+					shellJob("j-docs", "Serving the docs", { ownerRef: "local:solo", ownerSessionId: "solo" }),
+				]),
 			}),
 		]),
 	};
@@ -301,6 +307,41 @@ it("lists shell jobs in their states' sections, counting them in the title and c
 	expect(text(tree)).not.toContain("Serving the docs");
 });
 
+// A job whose subagent's row is on a later page sits at the top of the tree
+// until that page loads. It says its subagent isn't listed rather than
+// naming the coordinator, then names the subagent once its row arrives.
+it("says a job's subagent isn't listed until that subagent's page loads, then names it", async () => {
+	client = hub((continuation) =>
+		continuation === "page-2"
+			? { revision: 1, root: session("local:coord", COORDINATOR.title, [runningOne("later", "Later one")]) }
+			: {
+					revision: 1,
+					root: session(
+						"local:coord",
+						COORDINATOR.title,
+						[
+							runningOne("first", "First one"),
+							shellJob("j-later", "Serving the docs", { ownerRef: "local:later", ownerSessionId: "later" }),
+						],
+						{ truncated: true, continuation: "page-2" },
+					),
+				},
+	);
+	harness.connection = screenConnection(client, "ready");
+	const screen = await mount();
+	const jobLabel = () =>
+		screen.root.find((node) => String(node.props.accessibilityLabel).startsWith("Shell job, Serving the docs")).props
+			.accessibilityLabel;
+	expect(jobLabel()).toBe("Shell job, Serving the docs, running, 3 minutes, under a subagent that isn't listed");
+	expect(text(screen)).toContain("under a subagent that isn't listed");
+	expect(text(screen)).not.toContain(`under ${COORDINATOR.title}`);
+	await act(async () => {
+		screen.root.findByType("FlatList" as never).props.onEndReached({ distanceFromEnd: 0 });
+	});
+	await settle();
+	expect(jobLabel()).toBe("Shell job, Serving the docs, running, 3 minutes, under Later one");
+});
+
 // The Session's menu offers Activity whenever it's connected, so a session
 // with nothing to list says so plainly.
 it("says there is nothing yet when the session has no subagents or shell jobs", async () => {
@@ -323,6 +364,7 @@ it("opens a shell job's detail over the list", async () => {
 	expect(navigation.push).toHaveBeenCalledWith("ShellJob", {
 		hubId: "hub-1",
 		jobId: "j-lint",
+		ownerRef: "local:coord",
 		title: "npm run lint",
 		coordinator: COORDINATOR,
 	});
@@ -349,7 +391,7 @@ it("searches past eight subagents, filtering rows and section counts while the c
 	expect(pressable(tree, "Clear filter")).toBeDefined();
 });
 
-it("reads a failure, a nested subagent, another model, a branch and tokens on their rows", async () => {
+it("reads a failure, a nested subagent, another model, a branch and a finished run's tokens on their rows", async () => {
 	const tree = await mount();
 	const shown = text(tree);
 	expect(shown).toContain("go test exited 1 (3 times)");
@@ -357,6 +399,8 @@ it("reads a failure, a nested subagent, another model, a branch and tokens on th
 	expect(shown).toContain("GPT-5");
 	expect(shown).toContain("fix/drain");
 	expect(shown).toContain("1.2M tokens");
+	// A running subagent's usage is an earlier run's, so its row shows none.
+	expect(shown).not.toContain("310K tokens");
 	expect(pressable(tree, "Fix race in tree settle, Failed, go test exited 1 (3 times), 6 minutes")).toBeDefined();
 	expect(shown).toContain("6m");
 });
@@ -378,7 +422,7 @@ it("follows the coordinator when it comes into focus", async () => {
 	expect(client.calls.find((call) => call.method === "thread/read")?.params).toMatchObject({
 		ref: "local:coord",
 		subscribe: true,
-		replaceSubscription: true,
+		replaceSubscription: false,
 	});
 });
 
@@ -430,7 +474,13 @@ it("follows the coordinator on a new client when the connection changes under it
 it("shows three quiet rows until the first read answers, and never offers Retry, Refresh or Reconnect", async () => {
 	let answer: (value: unknown) => void = () => {};
 	client = new FakeClient("ready");
-	client.on("evener/jobs/list", () => new Promise((resolve) => (answer = (tree) => resolve({ data: tree }))) as never);
+	installActivityFixture(
+		client,
+		() =>
+			new Promise((resolve) => {
+				answer = resolve;
+			}),
+	);
 	client.on("thread/read", () => ({ thread: { id: "coord", modelProvider: "", status: { type: "active" } } }) as never);
 	client.on("model/list", () => ({ data: [] }) as never);
 	harness.connection = screenConnection(client, "ready");
@@ -456,8 +506,38 @@ it("says the count is partial and whose subagents are missing when a later page 
 	});
 	harness.connection = screenConnection(client, "ready");
 	const tree = await mount();
-	expect(headerTitle()).toBe("Activity · 2+ Get PR 2138 Test Clean");
-	expect(text(tree)).toContain("Some activity under “Get PR 2138 Test Clean” isn't listed.");
+	expect(headerTitle()).toBe("Activity · … Get PR 2138 Test Clean");
+	expect(text(tree)).not.toContain("No subagents or shell jobs yet.");
+	expect(tree.root.findByType("FlatList" as never).props.onEndReached).toBeTypeOf("function");
+});
+
+// A branch whose shell jobs couldn't be read is named by whose it is: the
+// coordinator by its title, a subagent by its row's title, never by a ref.
+// A branch no loaded row names, as when its subagent's row is on a later
+// page, has no title to give, so it goes unnamed. The fixture can't leave a
+// row out of the tree, so that child's ref differs from its delegate's
+// childRef instead.
+it("names whose activity isn't listed by title", async () => {
+	client = hub(() => ({
+		revision: 1,
+		root: session(
+			"local:coord",
+			COORDINATOR.title,
+			[
+				runningOne("solo", "Only one", { child: session("local:solo", "Only one", [], { error: "unavailable" }) }),
+				runningOne("pair", "Second one", {
+					child: session("local:unlisted", "Unlisted", [], { error: "unavailable" }),
+				}),
+			],
+			{ error: "unavailable" },
+		),
+	}));
+	harness.connection = screenConnection(client, "ready");
+	const shown = text(await mount());
+	expect(shown).toContain(`Some activity under “${COORDINATOR.title}” isn't listed.`);
+	expect(shown).toContain("Some activity under “Only one” isn't listed.");
+	expect(shown).toContain("Some activity isn't listed.");
+	expect(shown).not.toContain("local:");
 });
 
 it.each([
@@ -469,11 +549,11 @@ it.each([
 	[
 		"is shut down",
 		new WireError("thread not found: coord", -32603, { evenerErrorInfo: "sessionUnavailable" }),
-		"This session is shut down, so its activity can't be listed.",
+		"This session can't list its activity.",
 	],
 ])("says so when the session %s, and offers nothing to press", async (_name, error, words) => {
 	client = new FakeClient("ready");
-	client.on("evener/jobs/list", () => Promise.reject(error));
+	installActivityFixture(client, () => Promise.reject(error));
 	client.on("thread/read", () => ({ thread: { id: "coord", modelProvider: "", status: { type: "active" } } }) as never);
 	client.on("model/list", () => ({ data: [] }) as never);
 	harness.connection = screenConnection(client, "ready");
@@ -501,7 +581,7 @@ it("keeps the search field while it has words, even once the list shrinks", asyn
 
 it("says why it can't list them when the read fails", async () => {
 	client = new FakeClient("ready");
-	client.on("evener/jobs/list", () => Promise.reject(new Error("boom")));
+	installActivityFixture(client, () => Promise.reject(new Error("boom")));
 	client.on("thread/read", () => ({ thread: { id: "coord", modelProvider: "", status: { type: "active" } } }) as never);
 	client.on("model/list", () => ({ data: [] }) as never);
 	harness.connection = screenConnection(client, "ready");
@@ -563,4 +643,72 @@ it("toasts a stop recorded after the tree already shows it", async () => {
 	expect(tree.root.findAllByType(Toast).map((toast) => toast.props.toast?.text)).toEqual([
 		"“Fix race in tree settle” stopped",
 	]);
+});
+
+it("keeps authoritative counts while visible end-of-list demand loads the next subtree page", async () => {
+	const fixture = { revision: 1, root: session("local:coord", COORDINATOR.title, [runningOne("first", "First task")]) };
+	client = hub(() => fixture);
+	const context = {
+		ref: "local:coord",
+		sessionId: "coord",
+		rootRef: "local:coord",
+		ancestors: [],
+		ancestryKnown: true,
+		epoch: "pages",
+		availability: "retained",
+	};
+	const count = { known: true, total: 501, active: 501, failed: 0, completed: 0 };
+	client.on("evener/thread/activity/read", ({ scope }) => ({
+		context,
+		scope: scope ?? "session",
+		delegates: count,
+		jobs: { ...count, total: 0, active: 0 },
+		watches: { ...count, total: 0, active: 0 },
+	}));
+	let admit = () => {};
+	const admitted = new Promise<void>((resolve) => {
+		admit = resolve;
+	});
+	client.on("evener/thread/delegates/list", (params) => {
+		if (params.cursor) admit();
+		const id = params.cursor ? "second" : "first";
+		return {
+			context,
+			scope: params.scope ?? "session",
+			delegates: [
+				{
+					runGeneration: 1,
+					delegateId: id,
+					ownerRef: "local:coord",
+					rootRef: "local:coord",
+					childRef: `local:${id}`,
+					type: "delegate",
+					task: id,
+					description: `${id} task`,
+					lifecycle: "running",
+					phase: "running",
+					status: "running",
+					terminal: false,
+					resumable: false,
+				},
+			],
+			page: { complete: false, issues: [], nextCursor: params.cursor ? "later" : "next" },
+		};
+	});
+	harness.connection = screenConnection(client, "ready");
+	const screen = await mount();
+	expect(headerTitle()).toBe("Activity · 501 Get PR 2138 Test Clean");
+	expect(client.calls.filter((call) => call.method === "evener/thread/delegates/list")).toHaveLength(1);
+	await act(async () => {
+		screen.root.findByType("FlatList" as never).props.onEndReached({ distanceFromEnd: 0 });
+		await admitted;
+	});
+	expect(
+		client.calls.filter((call) => call.method === "evener/thread/delegates/list").map((call) => call.params),
+	).toEqual([
+		{ ref: "local:coord", scope: "subtree" },
+		{ ref: "local:coord", scope: "subtree", cursor: "next" },
+	]);
+	expect(headerTitle()).toBe("Activity · 501 Get PR 2138 Test Clean");
+	expect(text(screen)).toContain("second task");
 });

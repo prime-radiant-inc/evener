@@ -1,4 +1,10 @@
-import type { AuthLogoutResponse, AuthTestResponse, InstanceEntry, InstanceListResponse } from "@evener/appwire-client";
+import type {
+  AuthLogoutResponse,
+  AuthStatusResponse,
+  AuthTestResponse,
+  InstanceEntry,
+  InstanceListResponse,
+} from "@evener/appwire-client";
 import {
   CONNECTION_REPLACED_ERROR,
   ENDPOINT_CHANGED_TEST_MESSAGE,
@@ -13,6 +19,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { captureNewTabs, NEW_TAB_POLICY, openedNewTab } from "../../../../shell/openInNewTab.testSupport";
+import { resetAuthStatusesStoreForTests } from "../../../../stores/authStatuses";
 import { connectionStore } from "../../../../stores/connection";
 import { credentialsStore, resetCredentialsStoreForTests } from "../../../../stores/credentials";
 import { setMutationClientIdentityForTests } from "../../../../stores/mutationClientIdentity";
@@ -86,6 +93,7 @@ async function openSheet(user: ReturnType<typeof userEvent.setup>, name: string)
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetCredentialsStoreForTests();
+  resetAuthStatusesStoreForTests();
   resetToastStoreForTests();
   // The auth mutations carry the page's identity on the wire now, so the
   // assertions that pin their exact params need one that cannot vary.
@@ -109,6 +117,47 @@ test("Settings Connect provider opens discovery and retains management on cancel
   await user.keyboard("{Escape}");
   expect(await screen.findByText("work")).toBeTruthy();
   expect(fake.calls.filter((call) => call.method === "evener/instance/setDefault")).toEqual([]);
+});
+
+// The hub reports a credential the provider rejected on evener/auth/list
+// (#3539): the row reads Error and the sheet says why, and both follow the
+// hub when it announces the credential fixed.
+test("shows a rejected credential as Error until the hub reports it fixed", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  const error = "The provider rejected this credential (HTTP 401). Replace the key or sign in again.";
+  fake.on("evener/instance/list", () => LIST);
+  let statuses: AuthStatusResponse[] = [
+    { provider: "work", supported: true, signedIn: true, activeSource: "store", hasStoredOAuth: false, error },
+  ];
+  fake.on("evener/auth/list", () => ({ providers: statuses }));
+  render(<CredentialsSection sectionId="credentials" />);
+  await waitFor(() => expect(screen.getByRole("button", { name: /work/ }).textContent).toContain("Error"));
+  const sheet = await openSheet(user, "work");
+  expect(within(sheet).getByRole("status", { name: "Credential error" }).textContent).toBe(error);
+
+  statuses = [{ provider: "work", supported: true, signedIn: true, activeSource: "store", hasStoredOAuth: false }];
+  act(() => fake.emitNotification({ method: "evener/auth/updated", params: {} }));
+  await waitFor(() => expect(within(sheet).queryByRole("status", { name: "Credential error" })).toBeNull());
+  // The open sheet hides the listing from the accessibility tree.
+  expect(screen.getByRole("button", { name: /work/, hidden: true }).textContent).not.toContain("Error");
+});
+
+// A listing kept from a replaced connection is another hub's until this one
+// reads its own: the errors read beside it are not shown against it.
+test("shows no credential errors against a listing from a previous connection", async () => {
+  const fake = connectFakeClient();
+  const error = "The provider rejected this credential (HTTP 401). Replace the key or sign in again.";
+  fake.on("evener/instance/list", () => LIST);
+  fake.on("evener/auth/list", () => ({
+    providers: [
+      { provider: "work", supported: true, signedIn: true, activeSource: "store", hasStoredOAuth: false, error },
+    ],
+  }));
+  render(<CredentialsSection sectionId="credentials" />);
+  await waitFor(() => expect(screen.getByRole("button", { name: /work/ }).textContent).toContain("Error"));
+  act(() => credentialsStore.setState({ listingFromPreviousConnection: true }));
+  expect(screen.getByRole("button", { name: /work/ }).textContent).not.toContain("Error");
 });
 
 describe("initial load", () => {

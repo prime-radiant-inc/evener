@@ -74,6 +74,10 @@ const (
 	MethodEvenerDaemonIdleTimeoutSet     = "evener/daemon/idle-timeout/set"
 	MethodEvenerThreadNameSet            = "evener/thread/name/set"
 	MethodEvenerThreadTranscriptsList    = "evener/thread/transcripts/list"
+	MethodEvenerThreadActivityRead       = "evener/thread/activity/read"
+	MethodEvenerThreadDelegatesList      = "evener/thread/delegates/list"
+	MethodEvenerThreadJobsList           = "evener/thread/jobs/list"
+	MethodEvenerThreadWatchesList        = "evener/thread/watches/list"
 	MethodEvenerSubagentPreview          = "evener/subagentPreview"
 	MethodEvenerPathsComplete            = "evener/paths/complete"
 	MethodEvenerDirsCreate               = "evener/dirs/create"
@@ -279,6 +283,7 @@ const (
 	NotifyEvenerContextPressure       = "evener/thread/contextPressure/updated"
 	NotifyEvenerThreadModelRetry      = "evener/thread/modelRetry"
 	NotifyEvenerThreadResync          = "evener/thread/resync"
+	NotifyEvenerThreadActivityChanged = "evener/thread/activity/changed"
 	NotifyEvenerTaskUpdated           = "evener/task/updated"
 	NotifyEvenerGoalUpdated           = "evener/goal/updated"
 	NotifyEvenerNotesUpdated          = "evener/notes/updated"
@@ -412,11 +417,11 @@ func (params *NavigationReadParams) UnmarshalJSON(data []byte) error {
 			return errors.New("invalid navigation base")
 		}
 	}
-	if decoded.RepresentationVersion != 2 {
-		return errors.New("representationVersion must be 2")
+	if decoded.RepresentationVersion != 3 {
+		return errors.New("representationVersion must be 3")
 	}
 	if _, present := fields["etag"]; present {
-		return errors.New("etag is not a v2 field")
+		return errors.New("etag is not a navigation field")
 	}
 	*params = NavigationReadParams(decoded)
 	return nil
@@ -671,12 +676,17 @@ type SessionSeenSetResponse struct {
 	Navigation NavigationMutation `json:"navigation"`
 }
 
-// ArchivedListParams names the project whose archived sessions to list: the
-// catalog its rail row came from ("projects", "archived_projects" or
-// "test_runs"; the same key can exist in two catalogs) and its key. Cursor is
-// the previous page's NextCursor; Limit defaults to 50.
+// ArchivedListParams names the project whose archived sessions to list: its
+// key, and the catalog its row came from ("projects", "archived_projects" or
+// "test_runs") as a hint. The same key can exist in more than one catalog, so
+// the hub reads the hinted catalog when it holds the key; a project that moved
+// between Projects and Archived projects is read from the one holding it now
+// (a test-runs hint has no such fallback); with no hint, the first of
+// projects, archived_projects and test_runs holding the key. Cursor is the
+// previous page's NextCursor, bound to the same hint and key; Limit defaults
+// to 50.
 type ArchivedListParams struct {
-	Catalog    string `json:"catalog"`
+	Catalog    string `json:"catalog,omitempty"`
 	ProjectKey string `json:"projectKey"`
 	Cursor     string `json:"cursor,omitempty"`
 	Limit      int    `json:"limit,omitempty"`
@@ -686,11 +696,14 @@ type ArchivedListParams struct {
 // first. Sessions is a JSON array of hubapi.NavigationSessionSummary: appwire
 // cannot import hubapi, so the rows travel as raw JSON the way a navigation
 // read's data does. NextCursor is empty on the last page. Total counts every
-// archived session of the project.
+// archived session of the project. Catalog is the catalog the hub read; it is
+// absent when none of the catalogs the hint allows holds the key, and the page
+// is empty.
 type ArchivedListResponse struct {
 	Sessions   json.RawMessage `json:"sessions"`
 	NextCursor string          `json:"nextCursor,omitempty"`
 	Total      int             `json:"total"`
+	Catalog    string          `json:"catalog,omitempty"`
 }
 
 // SearchParams selects matching live and past sessions for the hub command
@@ -807,6 +820,12 @@ type SessionActivity struct {
 	// is never quiet or stuck (Jesse's ruling for S5), and a subagent inside
 	// one long model call emits nothing for minutes.
 	QuietForMS *int64 `json:"quietForMs,omitempty"`
+	// LatestIntent is what the session's own root turn last set out to do
+	// ("Reading the board's row tests."), one line of at most MaxIntentRunes:
+	// the daemon's own tool-call intent, re-cut here. Absent when this turn has
+	// stated none, which is most of a session's life before its first tool
+	// call, and when the daemon predates the field.
+	LatestIntent string `json:"latestIntent,omitempty"`
 }
 
 // The kinds of hub notice (S11, spec 7.1).
@@ -1144,6 +1163,13 @@ type ThreadAccess struct {
 type ThreadActivity struct {
 	Minutes        []int `json:"minutes"`
 	LastActivityAt int64 `json:"lastActivityAt"`
+	// LatestIntent is the newest intent a tool call of the session's own root
+	// turn stated ("Reading the board's row tests."), one line of at most
+	// MaxIntentRunes. A Working row shows it in place of the job it is
+	// running, because it says what the job is for. Empty until this turn's
+	// first tool call that stated one, cleared when a turn begins, and absent
+	// from a daemon that predates it.
+	LatestIntent string `json:"latestIntent,omitempty"`
 }
 
 // SubagentTally counts a live root session's subagents, at every depth, by how
@@ -1626,6 +1652,8 @@ type EvenerWatchInfo struct {
 // notifications and thread diagnostics. It contains no activation job fields
 // and no call-scoped wait result.
 type EvenerDelegateInfo struct {
+	// RunGeneration identifies the current activation; zero means no run has started.
+	RunGeneration       uint64               `json:"runGeneration"`
 	DelegateID          string               `json:"delegateId"`
 	OwnerSessionID      string               `json:"ownerSessionId"`
 	RootSessionID       string               `json:"rootSessionId"`
@@ -2678,7 +2706,10 @@ type TaskListParams struct {
 }
 
 type TaskListResponse struct {
-	Data any `json:"data"`
+	// Data is nil when task data is unavailable and non-nil (possibly empty)
+	// for an authoritative list. The nullable annotation preserves that
+	// distinction in the generated SDK without a pointer to the slice.
+	Data []Task `json:"data" appwire:"nullable"`
 }
 
 type JobsListParams struct {
@@ -2868,7 +2899,7 @@ type JobsOutputParams struct {
 }
 
 type JobsOutputResponse struct {
-	Data any `json:"data"`
+	Data JobOutputTail `json:"data"`
 }
 
 // JobsGetParams reads ONE job's metadata (the activity-tree job shape),
@@ -2883,7 +2914,7 @@ type JobsGetParams struct {
 // the activity tree renders, so a client can show the job's full command beside
 // its output.
 type JobsGetResponse struct {
-	Data any `json:"data"`
+	Data JobActivityJob `json:"data"`
 }
 
 // PathsCompleteParams asks for path completions of Prefix. IncludeFiles adds
@@ -3833,9 +3864,9 @@ type InstanceEntry struct {
 	// what is missing and how to supply it.
 	Warnings []string `json:"warnings,omitempty"`
 	// Models is the instance's known models with their effective
-	// disabled state, for the sheet's per-model toggles: exact catalog
-	// rows plus cached live ids, alias rows included. Empty for an
-	// instance with no rows.
+	// disabled state, for the sheet's per-model toggles: live ids plus
+	// additive overlay/config rows when usable, otherwise static fallback
+	// rows, with aliases included. Empty for an instance with no rows.
 	Models []InstanceModelEntry `json:"models,omitempty"`
 }
 
@@ -3998,7 +4029,7 @@ type InstanceSetDefaultParams struct {
 
 // InstanceRefreshModelsParams is the params for
 // evener/instance/refreshModels: fetch the instance's live listing, then
-// answer with the updated list (exact catalog rows plus cached live ids).
+// answer with its live-authoritative or static-fallback model list.
 type InstanceRefreshModelsParams struct {
 	Name string `json:"name"`
 	// OriginClientId is the client identity the hub echoes into the
@@ -5196,12 +5227,15 @@ type HostNotificationParams struct {
 // The mutation-result union (registry spec 08 §11)
 // ---------------------------------------------------------------------------
 
+// HostMutationOutcome identifies a host mutation result arm.
+type HostMutationOutcome string
+
 // The four discriminator values the mutation-result union carries.
 const (
-	HostMutationOutcomeCommitted        = "committed"
-	HostMutationOutcomeTeardownFailure  = "committed-with-teardown-failure"
-	HostMutationOutcomeCollisionDropped = "collision-dropped"
-	HostMutationOutcomeAmbiguous        = "ambiguous"
+	HostMutationOutcomeCommitted        HostMutationOutcome = "committed"
+	HostMutationOutcomeTeardownFailure  HostMutationOutcome = "committed-with-teardown-failure"
+	HostMutationOutcomeCollisionDropped HostMutationOutcome = "collision-dropped"
+	HostMutationOutcomeAmbiguous        HostMutationOutcome = "ambiguous"
 )
 
 // RemovedRow is evener/host/remove's dedicated removed-row arm (registry spec
@@ -5246,15 +5280,15 @@ type RemovedRow struct {
 // planned teardown completed. `host` is a HostRow for add/update and a
 // RemovedRow for remove's clean path.
 type HostMutationCommitted struct {
-	Outcome string  `json:"outcome"`
-	Host    HostRow `json:"host"`
+	Outcome HostMutationOutcome `json:"outcome"`
+	Host    HostRow             `json:"host"`
 }
 
 // HostMutationCommittedRemoved is remove's clean arm: the same outcome with the
 // dedicated removed-row shape.
 type HostMutationCommittedRemoved struct {
-	Outcome string     `json:"outcome"`
-	Host    RemovedRow `json:"host"`
+	Outcome HostMutationOutcome `json:"outcome"`
+	Host    RemovedRow          `json:"host"`
 }
 
 // HostMutationTeardownFailure is the union's failure arm: the mutation is
@@ -5263,19 +5297,19 @@ type HostMutationCommittedRemoved struct {
 // `evener/host/teardown-retry` resumes. The committed row is always present so
 // the UI renders it with a teardown-retry affordance.
 type HostMutationTeardownFailure struct {
-	Outcome   string  `json:"outcome"`
-	Seam      string  `json:"seam"`
-	RemnantID string  `json:"remnantId"`
-	Host      HostRow `json:"host"`
+	Outcome   HostMutationOutcome `json:"outcome"`
+	Seam      string              `json:"seam"`
+	RemnantID string              `json:"remnantId"`
+	Host      HostRow             `json:"host"`
 }
 
 // HostMutationTeardownFailureRemoved is remove's teardown-failure arm, carrying
 // the removed-row shape for the same reason.
 type HostMutationTeardownFailureRemoved struct {
-	Outcome   string     `json:"outcome"`
-	Seam      string     `json:"seam"`
-	RemnantID string     `json:"remnantId"`
-	Host      RemovedRow `json:"host"`
+	Outcome   HostMutationOutcome `json:"outcome"`
+	Seam      string              `json:"seam"`
+	RemnantID string              `json:"remnantId"`
+	Host      RemovedRow          `json:"host"`
 }
 
 // HostMutationCollisionDropped is the union's dropped arm: the post-rename
@@ -5287,11 +5321,11 @@ type HostMutationTeardownFailureRemoved struct {
 // the re-read finds the name gone entirely (a hand-edit deletion) the arm
 // carries no `host` and sets `removed: true`.
 type HostMutationCollisionDropped struct {
-	Outcome            string   `json:"outcome"`
-	DroppedEntry       HostRow  `json:"droppedEntry"`
-	WinningFingerprint string   `json:"winningFingerprint"`
-	Host               *HostRow `json:"host,omitempty"`
-	Removed            bool     `json:"removed,omitempty"`
+	Outcome            HostMutationOutcome `json:"outcome"`
+	DroppedEntry       HostRow             `json:"droppedEntry"`
+	WinningFingerprint string              `json:"winningFingerprint"`
+	Host               *HostRow            `json:"host,omitempty"`
+	Removed            bool                `json:"removed,omitempty"`
 }
 
 // HostMutationAmbiguous is the union's keyless-ambiguous arm (registry spec 08
@@ -5300,8 +5334,8 @@ type HostMutationCollisionDropped struct {
 // or another client's remove/re-add, so the response claims no commit and
 // carries no receipt semantics".
 type HostMutationAmbiguous struct {
-	Outcome     string  `json:"outcome"`
-	ObservedRow HostRow `json:"observedRow"`
+	Outcome     HostMutationOutcome `json:"outcome"`
+	ObservedRow HostRow             `json:"observedRow"`
 }
 
 // HostMutationResult is the mutation-result union evener/host/add,
@@ -5357,8 +5391,8 @@ func isNilArm(arm any) bool {
 // zero-valued arm.
 func (u *HostMutationResult) UnmarshalJSON(raw []byte) error {
 	var probe struct {
-		Outcome string          `json:"outcome"`
-		Host    json.RawMessage `json:"host"`
+		Outcome HostMutationOutcome `json:"outcome"`
+		Host    json.RawMessage     `json:"host"`
 	}
 	if err := json.Unmarshal(raw, &probe); err != nil {
 		return err

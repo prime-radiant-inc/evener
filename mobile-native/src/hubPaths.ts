@@ -1,4 +1,4 @@
-import { hostRequest } from "../../cmd/evener-hub/frontend/src/stores/hostRouting";
+import { hostRequest } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 
 interface PathState {

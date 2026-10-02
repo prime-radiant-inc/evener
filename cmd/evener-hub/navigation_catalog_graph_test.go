@@ -64,7 +64,7 @@ func TestNavigationCatalogGraphStaysValidWithASecondSource(t *testing.T) {
 		navigationResourceArchivedProjects,
 		navigationResourceTestRuns,
 	} {
-		result, err := service.readV2(t.Context(), navigationResourceKey{Kind: kind, Limit: 100}, nil)
+		result, err := service.readV3(t.Context(), navigationResourceKey{Kind: kind, Limit: 100}, nil)
 		if err != nil {
 			t.Fatalf("%s read with an attached host: %v", kind, err)
 		}

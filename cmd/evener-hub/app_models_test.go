@@ -796,7 +796,7 @@ func TestStartLaunchModelsPrefetchWarmsTheCache(t *testing.T) {
 	}}
 	web := newLaunchModelsTestWeb(t, spawner, true)
 	ctx := t.Context()
-	go startLaunchModelsPrefetch(ctx, web, time.Hour, func(fn func()) { fn() })
+	go startLaunchModelsPrefetch(ctx, web, func(fn func()) { fn() })
 
 	deadline := time.Now().Add(5 * time.Second)
 	for spawner.callCount() == 0 {
@@ -815,6 +815,23 @@ func TestStartLaunchModelsPrefetchWarmsTheCache(t *testing.T) {
 	}
 	if got := spawner.callCount(); got != 1 {
 		t.Fatalf("after the startup warm the first picker read ran the launch check again: calls=%d, want 1", got)
+	}
+}
+
+// TestStartLaunchModelsPrefetchRunsOnce: the launch warm is one startup pass
+// and never a timer (Jesse, 2026-09-30); after it the picker refreshes the
+// list when it is opened.
+func TestStartLaunchModelsPrefetchRunsOnce(t *testing.T) {
+	t.Parallel()
+	spawner := &countLaunchContractSpawner{modelsFn: func(int, string) appwire.ModelListResponse {
+		return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5.5"}}}
+	}}
+	web := newLaunchModelsTestWeb(t, spawner, true)
+	runs := runStartupPrefetch(t, func(startBackground func(func())) {
+		startLaunchModelsPrefetch(t.Context(), web, startBackground)
+	})
+	if runs != 1 || spawner.callCount() != 1 {
+		t.Fatalf("background runs = %d, launch checks = %d; want one of each", runs, spawner.callCount())
 	}
 }
 
@@ -1145,7 +1162,7 @@ func TestStartLaunchRefreshRefusesAfterTheShutdownGate(t *testing.T) {
 	web.waitLaunchRefreshes() // nothing in flight: closes the gate and returns
 
 	web.launchModels.refreshing[""] = true
-	if web.startLaunchRefresh("", 1) {
+	if web.startLaunchRefresh("", 1, appwire.ModelListResponse{}) {
 		t.Fatal("startLaunchRefresh accepted a refresh after the shutdown gate closed")
 	}
 	if web.launchModels.refreshing[""] {

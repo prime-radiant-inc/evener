@@ -1,171 +1,300 @@
-// StatusBar: the glance surface of the zoom system. These tests pin the
-// counts and crumbs against the shared fixture tree, the chip-to-sidebar
-// escalation, re-scoping on drill (a focused subagent transcript), the hidden
-// tasks chip when no task list exists, and the armed-watch count including
-// hub-omitted rows.
-
-import type { NavigationManifest } from "@evener/appwire-client";
-import { keyID, type ResourceKey, type ResourceState } from "@evener/appwire-client/state/navigation";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { lazy } from "react";
-import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
-import { navigationStore } from "../../stores/navigation/store";
+import { deferred } from "@evener/appwire-client/testing/deferred";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, expect, test } from "vitest";
+import { MotionProvider } from "../../motion";
+import { connectionStore } from "../../stores/connection";
+import { activityClient, activityContext, activityJob, activitySummary } from "../../stores/sessionActivityTestUtils";
+import { ActivitySidebar } from "../activitybar/ActivitySidebar";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../activitybar/activitySidebarStore";
-import { resetFocusedActivityScopeForTests } from "../focusedSession";
-import { type PaneDescriptor, type PaneProps, registerPaneForTests } from "../paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { StatusBar } from "./StatusBar";
-import { sampleTree, summaryOf } from "./scopeTestUtils";
-
-function fixtureDescriptor<P>(
-  id: PaneDescriptor<P>["id"],
-  overrides: Partial<PaneDescriptor<P>> = {},
-): PaneDescriptor<P> {
-  return {
-    id,
-    title: () => `title for ${id}`,
-    component: lazy(() => new Promise<{ default: React.ComponentType<PaneProps<P>> }>(() => {})),
-    ...overrides,
-  };
-}
-
-const restorePaneFixtures: Array<() => void> = [];
-
-beforeAll(() => {
-  restorePaneFixtures.push(registerPaneForTests(fixtureDescriptor("session")));
-  restorePaneFixtures.push(registerPaneForTests(fixtureDescriptor("transcript")));
-});
-
-afterAll(() => {
-  for (const restore of restorePaneFixtures) restore();
-});
-
-function manifest(): NavigationManifest {
-  return {
-    generation_id: "g1",
-    revision: 1,
-    sources: [],
-    attentionSummary: { needsYou: 0, error: 0, working: 0 },
-    sections: { live: { count: 1 }, needs_you: { count: 0 }, pin_sections: { count: 0 } },
-    catalogs: { projects: { count: 0 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
-  } as NavigationManifest;
-}
-
-function resource<T>(key: ResourceKey, data: T): ResourceState {
-  return {
-    key,
-    data,
-    loadedRevision: 1,
-    targetRevision: null,
-    forceToken: 0,
-    etag: "e",
-    loading: false,
-    stale: false,
-    error: null,
-    generationID: "g1",
-  } as ResourceState;
-}
-
-function installTree(opts?: { omitWatches?: boolean }) {
-  const { ROOT_A, CHILD_B, ROOT_D } = sampleTree();
-  const leaf = opts?.omitWatches
-    ? summaryOf({ ...CHILD_B, watches: undefined, omitted_watches: 2, omitted_armed_watches: 1 })
-    : CHILD_B;
-  const root = summaryOf({ ...ROOT_A, children: [leaf, ...ROOT_A.children.slice(1)] });
-  const liveKey: ResourceKey = { kind: "section", section: "live", offset: 0, limit: 50 };
-  navigationStore.setState({
-    mode: "v2",
-    capability: { version: 1, generationId: "g1", sequence: 1, readVersions: [2] },
-    clientGenerationID: "g1",
-    manifest: resource({ kind: "manifest" }, manifest()) as ResourceState<NavigationManifest>,
-    resources: new Map([
-      [keyID(liveKey), resource(liveKey, { sessions: [root, ROOT_D] })],
-      [
-        keyID({ kind: "location", ref: "local:a" }),
-        resource(
-          { kind: "location", ref: "local:a" },
-          { ref: "local:a", top_level_ref: "local:a", top_level: true, session: root },
-        ),
-      ],
-      [
-        keyID({ kind: "location", ref: "local:b" }),
-        resource(
-          { kind: "location", ref: "local:b" },
-          { ref: "local:b", top_level_ref: "local:a", top_level: false, session: leaf },
-        ),
-      ],
-    ]),
-    expanded: new Map(),
-    attention: { changed: [], summary: manifest().attentionSummary },
-  });
-}
-
-function openSession(ref: string) {
-  workspaceStore.getState().openPane("session", { ref });
-}
+import { installFocusedScope, summaryOf } from "./scopeTestUtils";
 
 afterEach(() => {
   cleanup();
   resetWorkspaceStoreForTests();
-  resetFocusedActivityScopeForTests();
   resetActivitySidebarStoreForTests();
+  connectionStore.setState({ client: null, state: "idle" });
 });
 
-describe("StatusBar", () => {
-  test("renders the scope crumb and the counters for the focused session", () => {
-    installTree();
-    openSession("local:a");
-    render(<StatusBar />);
-    // The leaf crumb is current text, never a link to itself.
-    expect(screen.getByText("A")).toBeTruthy();
-    expect(screen.getByRole("button", { name: /Agents, 1 active/ }).textContent).toContain("1");
-    expect(screen.getByRole("button", { name: /Jobs/ }).textContent).toContain("0");
-    expect(screen.getByRole("button", { name: /Watches/ }).textContent).toContain("0");
-    // Root A carries no task list: the tasks chip hides (its own test pins it).
-    expect(screen.queryByRole("button", { name: /Tasks/ })).toBeNull();
+test("uses its owning pane's session and focuses that pane before opening activity", async () => {
+  const user = userEvent.setup();
+  const client = activityClient();
+  installFocusedScope("remote:focused");
+  workspaceStore.setState({
+    panes: [
+      { id: "selected", type: "transcript", params: { ref: "remote:focused" }, slot: "main" },
+      { id: "pane-secondary", type: "transcript", params: { ref: "remote:pane" }, slot: "secondary" },
+    ],
+    focusedPaneId: "selected",
   });
+  connectionStore.getState().connect(client);
 
-  test("a chip click opens the sidebar on the matching tab", () => {
-    installTree();
-    openSession("local:a");
-    render(<StatusBar />);
-    fireEvent.click(screen.getByRole("button", { name: /Watches/ }));
-    expect(activitySidebarStore.getState().open).toBe(true);
-    expect(activitySidebarStore.getState().tab).toBe("watches");
-  });
+  render(<StatusBar sessionRef="remote:pane" paneId="pane-secondary" leading={<span>/work/pane</span>} />);
 
-  test("drilling re-scopes: a focused subagent transcript shows the path and the child's counts", () => {
-    installTree();
-    openSession("local:a");
-    workspaceStore.getState().openPane("transcript", { ref: "local:b", parentRef: "local:a" }, { slot: "secondary" });
-    render(<StatusBar />);
-    expect(screen.getByRole("button", { name: "A" })).toBeTruthy();
-    expect(screen.getByText("B")).toBeTruthy();
-    expect(screen.getByRole("button", { name: /Jobs/ }).textContent).toContain("1");
-    expect(screen.getByRole("button", { name: /Watches/ }).textContent).toContain("1");
-    expect(screen.getByRole("button", { name: /Tasks/ }).textContent).toContain("2/5");
-  });
+  expect(await screen.findByText("/work/pane")).toBeTruthy();
+  await user.click(screen.getByRole("button", { name: /Jobs, 2 of 201 running/ }));
+  expect(workspaceStore.getState().focusedPaneId).toBe("pane-secondary");
+  expect(activitySidebarStore.getState()).toMatchObject({ open: true, tab: "jobs" });
+  expect(
+    client.calls
+      .filter((call) => call.method.includes("activity"))
+      .every((call) => (call.params as { ref?: string }).ref === "remote:pane"),
+  ).toBe(true);
+});
 
-  test("the tasks chip hides when the scope has no task list", () => {
-    installTree();
-    openSession("local:a");
-    render(<StatusBar />);
-    // Root A carries no task list: only three chips render.
-    expect(screen.queryByRole("button", { name: /Tasks/ })).toBeNull();
-  });
+test.each(["button", "Escape"])("closing activity with %s restores its keyboard opener", async (gesture) => {
+  const user = userEvent.setup();
+  installFocusedScope("remote:keyboard");
+  connectionStore.getState().connect(activityClient());
+  render(
+    <MotionProvider>
+      <StatusBar sessionRef="remote:keyboard" paneId="selected" leading={null} />
+      <ActivitySidebar />
+    </MotionProvider>,
+  );
+  const opener = await screen.findByRole("button", { name: /Jobs, 2 of 201 running/ });
+  opener.focus();
+  await user.keyboard("{Enter}");
+  const close = await screen.findByRole("button", { name: "Close the activity sidebar" });
+  close.focus();
+  await user.keyboard(gesture === "button" ? "{Enter}" : "{Escape}");
+  expect(activitySidebarStore.getState().open).toBe(false);
+  expect(document.activeElement).toBe(opener);
+});
 
-  test("the watches chip counts hub-omitted armed rows", () => {
-    installTree({ omitWatches: true });
-    openSession("local:a");
-    workspaceStore.getState().openPane("transcript", { ref: "local:b", parentRef: "local:a" }, { slot: "secondary" });
-    render(<StatusBar />);
-    // No retained rows, one armed row omitted by the hub: the chip still says 1.
-    expect(screen.getByRole("button", { name: /Watches/ }).textContent).toContain("1");
+test("an open activity sidebar returns focus to the latest pane's replacement chip", async ({ onTestFinished }) => {
+  const user = userEvent.setup();
+  installFocusedScope("remote:first");
+  workspaceStore.setState({
+    panes: [
+      { id: "pane-first", type: "transcript", params: { ref: "remote:first" }, slot: "main" },
+      { id: "pane-second", type: "transcript", params: { ref: "remote:second" }, slot: "secondary" },
+    ],
+    focusedPaneId: "pane-first",
   });
+  connectionStore.getState().connect(activityClient());
+  const first = render(<StatusBar sessionRef="remote:first" paneId="pane-first" leading={null} />);
+  const second = render(<StatusBar sessionRef="remote:second" paneId="pane-second" leading={null} />);
+  render(
+    <MotionProvider>
+      <ActivitySidebar />
+    </MotionProvider>,
+  );
+  let focusedPaneWhenSidebarChanged: string | null = null;
+  const stopObserving = activitySidebarStore.subscribe((state, previous) => {
+    if (state.tab !== previous.tab) focusedPaneWhenSidebarChanged = workspaceStore.getState().focusedPaneId;
+  });
+  onTestFinished(stopObserving);
 
-  test("renders nothing when no session has ever been focused", () => {
-    installTree();
-    const { container } = render(<StatusBar />);
-    expect(container.firstChild).toBeNull();
+  await user.click(await within(first.container).findByRole("button", { name: /Agents, counts unknown/ }));
+  await user.click(await within(second.container).findByRole("button", { name: /Jobs, 2 of 201 running/ }));
+
+  expect(focusedPaneWhenSidebarChanged).toBe("pane-second");
+  const close = await screen.findByRole("button", { name: "Close the activity sidebar" });
+  close.focus();
+  second.unmount();
+  const replacement = render(<StatusBar sessionRef="remote:second" paneId="pane-second" leading={null} />);
+  const replacementChip = await within(replacement.container).findByRole("button", {
+    name: /Jobs, 2 of 201 running/,
   });
+  await user.click(close);
+
+  expect(document.activeElement).toBe(replacementChip);
+});
+
+test("dismissing activity while focus is outside keeps the user's current focus", async () => {
+  const user = userEvent.setup();
+  installFocusedScope("remote:keyboard");
+  connectionStore.getState().connect(activityClient());
+  render(
+    <MotionProvider>
+      <StatusBar sessionRef="remote:keyboard" paneId="selected" leading={null} />
+      <ActivitySidebar />
+      <input aria-label="Message recipient" />
+    </MotionProvider>,
+  );
+  const opener = await screen.findByRole("button", { name: /Jobs, 2 of 201 running/ });
+  await user.click(opener);
+  const input = screen.getByRole("textbox", { name: "Message recipient" });
+  input.focus();
+  await user.keyboard("{Escape}");
+  expect(activitySidebarStore.getState().open).toBe(false);
+  expect(document.activeElement).toBe(input);
+});
+
+test("closing after a transient opener disappears returns to the selected activity chip", async () => {
+  const user = userEvent.setup();
+  installFocusedScope("remote:keyboard");
+  connectionStore.getState().connect(activityClient());
+  render(
+    <MotionProvider>
+      <StatusBar sessionRef="remote:keyboard" paneId="selected" leading={null} />
+      <ActivitySidebar />
+    </MotionProvider>,
+  );
+  const trigger = render(
+    <button type="button" onClick={() => activitySidebarStore.getState().openWith("jobs")}>
+      Inspect job activity
+    </button>,
+  );
+  await user.click(screen.getByRole("button", { name: "Inspect job activity" }));
+  trigger.unmount();
+  await user.click(await screen.findByRole("button", { name: "Close the activity sidebar" }));
+  expect(document.activeElement).toBe(screen.getByRole("button", { name: /Jobs, 2 of 201 running/ }));
+});
+
+test("selected child gets authoritative counts before its navigation location exists", async () => {
+  const ref = "remote:deep-child",
+    client = activityClient();
+  client.on("evener/thread/activity/read", () => ({
+    ...activitySummary(ref),
+    context: {
+      ...activityContext(ref),
+      sessionId: "child",
+      rootRef: "remote:root",
+      parentRef: "remote:parent",
+      ancestors: [
+        { ref: "remote:root", sessionId: "root", title: "Root" },
+        { ref: "remote:parent", sessionId: "parent", title: "Parent" },
+      ],
+    },
+    delegates: { known: true, total: 20, active: 3, failed: 0, completed: 17 },
+  }));
+  installFocusedScope(ref);
+  connectionStore.getState().connect(client);
+  render(<StatusBar sessionRef={ref} paneId="selected" leading={null} />);
+  expect(await screen.findByRole("button", { name: /Agents, 3 of 20 active/ })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Root" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Parent" })).toBeNull();
+  expect(screen.queryByText("Finding session context…")).toBeNull();
+  expect(client.calls.map((c) => c.method)).toEqual(["thread/read", "evener/thread/activity/read"]);
+  expect(client.calls.every((c) => (c.params as { ref?: string }).ref === ref)).toBe(true);
+  fireEvent.click(screen.getByRole("button", { name: /Jobs, 2 of 201 running/ }));
+  expect(activitySidebarStore.getState()).toMatchObject({ open: true, tab: "jobs" });
+});
+
+test("unknown counts remain unknown and pending ancestry is explicit", async () => {
+  const ref = "remote:pending",
+    client = activityClient();
+  client.on("evener/thread/activity/read", () => ({
+    ...activitySummary(ref),
+    context: { ...activityContext(ref), ancestryKnown: false },
+    delegates: { known: false, active: 17, total: 99, completed: 0, failed: 0 },
+  }));
+  client.on("evener/thread/delegates/list", () => ({
+    context: { ...activityContext(ref), ancestryKnown: false },
+    scope: "session",
+    delegates: [],
+    page: { complete: true, issues: [] },
+  }));
+  installFocusedScope(ref);
+  connectionStore.getState().connect(client);
+  activitySidebarStore.getState().openWith("agents");
+  render(
+    <MotionProvider>
+      <StatusBar sessionRef={ref} paneId="selected" leading={null} />
+      <ActivitySidebar />
+    </MotionProvider>,
+  );
+  await waitFor(() => expect(screen.getByRole("button", { name: /Agents, counts unknown/ })).toBeTruthy());
+  expect(screen.getByRole("radio", { name: "Agents, counts unknown" }).textContent).toContain("—");
+  expect(screen.getByRole("button", { name: /Agents, counts unknown/ }).textContent).toContain("—");
+  expect(screen.getAllByText("Finding session context…")).toHaveLength(1);
+  expect(screen.queryByRole("button", { name: /Agents, 0 of/ })).toBeNull();
+  expect(client.calls.filter((c) => c.method === "evener/thread/jobs/list")).toHaveLength(0);
+});
+
+test("embedded Tasks counts still use the exact selected navigation row", async () => {
+  const ref = "remote:tasks",
+    client = activityClient();
+  installFocusedScope(ref, summaryOf({ ref, title: "Tasks owner", tasks: { total: 5, done: 2 } }));
+  connectionStore.getState().connect(client);
+  render(<StatusBar sessionRef={ref} paneId="selected" leading={null} />);
+  expect(await screen.findByRole("button", { name: /Tasks, 2 of 5 done/ })).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: /Tasks, 2 of 5 done/ }));
+  expect(activitySidebarStore.getState().tab).toBe("tasks");
+});
+
+test("footer and tabs explain summary counts through paging and activity changes", async () => {
+  const ref = "remote:counts";
+  const client = activityClient();
+  let active = 2;
+  let total = 6;
+  const summary = () => ({
+    ...activitySummary(ref),
+    delegates: { known: true, active: 0, total: 2, completed: 2, failed: 0 },
+    jobs: { known: true, active, total, completed: total - active, failed: 0 },
+    watches: { known: true, active: 2, total: 3, completed: 1, failed: 0 },
+  });
+  const page = deferred<{
+    context: ReturnType<typeof activityContext>;
+    scope: "session";
+    jobs: ReturnType<typeof activityJob>[];
+    page: { complete: boolean; issues: [] };
+  }>();
+  client.on("evener/thread/activity/read", summary);
+  client.on("evener/thread/jobs/list", ({ cursor }) =>
+    cursor
+      ? page.promise
+      : {
+          context: activityContext(ref),
+          scope: "session",
+          jobs: [activityJob({ ownerRef: ref })],
+          page: { complete: false, issues: [], nextCursor: "next" },
+        },
+  );
+  installFocusedScope(ref, summaryOf({ ref, title: "Count owner", tasks: { done: 1, total: 4 } }));
+  connectionStore.getState().connect(client);
+  activitySidebarStore.getState().openWith("jobs");
+  render(
+    <MotionProvider>
+      <StatusBar sessionRef={ref} paneId="selected" leading={null} />
+      <ActivitySidebar />
+    </MotionProvider>,
+  );
+  const footer = within(screen.getByTestId("statusbar"));
+  await screen.findByRole("radio", { name: "Jobs, 2 of 6 running" });
+  const expectCounts = (running: number, retained: number) => {
+    expect(
+      footer.getByRole("button", { name: `Jobs, ${running} of ${retained} running - open the activity sidebar` })
+        .textContent,
+    ).toContain(`${running}/${retained}`);
+    expect(screen.getByRole("radio", { name: `Jobs, ${running} of ${retained} running` }).textContent).toContain(
+      `${running}/${retained}`,
+    );
+  };
+  expectCounts(2, 6);
+  expect(footer.getByText("Jobs")).toBeTruthy();
+  expect(footer.getByRole("button", { name: /Jobs, 2 of 6 running/ }).title).toBe("Jobs, 2 of 6 running");
+  expect(screen.getByRole("radio", { name: "Watches, 2 of 3 armed" }).textContent).toBe("Watches\n2/3");
+  expect(footer.getByRole("button", { name: /Agents, 0 of 2 active/ }).textContent).toContain("0/2");
+  expect(screen.getByRole("radio", { name: "Agents, 0 of 2 active" })).toBeTruthy();
+  expect(screen.getByRole("radio", { name: "Watches, 2 of 3 armed" })).toBeTruthy();
+  expect(screen.getByRole("radio", { name: "Tasks, 1 of 4 done" })).toBeTruthy();
+  expect(screen.queryByText("Activity kind")).toBeNull();
+  fireEvent.click(await screen.findByRole("button", { name: "Load more jobs" }));
+  expectCounts(2, 6);
+  await act(async () => {
+    page.resolve({
+      context: activityContext(ref),
+      scope: "session",
+      jobs: [activityJob({ jobId: "second", ownerRef: ref, description: "Second job", command: "Second job" })],
+      page: { complete: true, issues: [] },
+    });
+    await page.promise;
+  });
+  await screen.findByRole("button", { name: /Second job/ });
+  expectCounts(2, 6);
+  active = 1;
+  total = 7;
+  act(() =>
+    client.emitNotification({
+      method: "evener/thread/activity/changed",
+      params: { ref, threadId: "owner", sessionId: "owner", resources: ["summary"] },
+    }),
+  );
+  await screen.findByRole("radio", { name: "Jobs, 1 of 7 running" });
+  expectCounts(1, 7);
 });

@@ -74,8 +74,6 @@ export {
   selectProjectResource,
   selectProjectSummaries,
   selectSectionRemaining,
-  selectSessionOmittedArmedWatches,
-  selectSessionOmittedWatches,
   selectSessionSummary,
   selectSources,
   subagentTallyToShow,

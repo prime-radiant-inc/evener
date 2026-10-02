@@ -754,3 +754,48 @@ func TestDelegateSendReleasesAResidentReplacedAfterItsCommit(t *testing.T) {
 		t.Fatal("the replaced resident was left marked driving")
 	}
 }
+
+// A delegate_send that asks to wait, whose committed start a covering stop
+// ends before the send hands the start to a run, is answered with the stopped
+// outcome at once. Closing the start settles the generation, so the send must
+// not sit out its whole max_wait waiting for an inline delivery the covering
+// stop will never hand it (#3502).
+func TestDelegateSendStartAStopEndedIsReportedStopped(t *testing.T) {
+	fixture := newColdStableDelegateFixture(t, "")
+	fixture.adapter.steps = []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return finalResponse("warm result") },
+	}
+	root := restoreSupervisionRoot(t, fixture, nil)
+	warmStableSupervisionDelegate(t, root, fixture)
+	waitForStableSupervisionRun(t, root, fixture.childID)
+
+	// A covering stop lands in the send's committed-start window, between the
+	// commit and the start-input hand-off, so the send's own BeginStartInput
+	// finds the generation already Stopping.
+	var stopMu sync.Mutex
+	var stopErr error
+	updateSessionTestConfig(root, func(cfg *testConfig) {
+		cfg.delegateSendStartCommitted = func(*subagent) {
+			_, _, _, err := root.delegateController.StopSubtree(rootDelegateActor(root.ID()), fixture.delegateID)
+			stopMu.Lock()
+			stopErr = err
+			stopMu.Unlock()
+		}
+	})
+	start := time.Now()
+	outcome := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "send into a stop", 5_000)
+	elapsed := time.Since(start)
+
+	stopMu.Lock()
+	err := stopErr
+	stopMu.Unlock()
+	if err != nil {
+		t.Fatalf("stop the delegate in the send's committed-start window: %v", err)
+	}
+	if got := string(outcome.result.Status); got != "stopped" {
+		t.Fatalf("send whose start a stop ended reported status %q, want stopped: %+v", got, outcome.result)
+	}
+	if elapsed >= 2*time.Second {
+		t.Fatalf("send whose start a stop ended waited %s, want it answered as soon as the start closed", elapsed)
+	}
+}

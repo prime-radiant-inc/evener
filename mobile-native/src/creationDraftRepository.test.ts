@@ -1,3 +1,4 @@
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { expect, it } from "vitest";
 import { CreationDraftRepository } from "./creationDraftRepository";
 import { DraftRepository } from "./draftRepository";
@@ -82,16 +83,18 @@ it("restores form edits and validates the saved model after binding", async () =
 		repo.write("a", draft);
 		const form = createNewSessionStore("a", () => repo);
 		form.getState().bind(
-			createNewSessionService({
-				onNotification: () => () => {},
-				request: async (method: string) => {
-					if (method === "model/list")
-						return {
-							data: [{ provider: "p", model: "m", reasoningEffortLevels: ["high"] }],
-						};
-					throw new Error(method);
-				},
-			} as ConversationClientLike),
+			createNewSessionService(
+				Object.assign(new FakeClient("ready"), {
+					onNotification: () => () => {},
+					request: async (method: string) => {
+						if (method === "model/list")
+							return {
+								data: [{ provider: "p", model: "m", reasoningEffortLevels: ["high"] }],
+							};
+						throw new Error(method);
+					},
+				} as Omit<ConversationClientLike, "state" | "onReady" | "onStateChange">) as ConversationClientLike,
+			),
 		);
 		await form.getState().loadModels();
 		expect(form.getState()).toMatchObject({
@@ -122,14 +125,16 @@ it("checkpoints uncertainty before dispatch and clears only after confirmed crea
 		});
 		const form = createNewSessionStore("a", () => repo);
 		form.getState().bind(
-			createNewSessionService({
-				onNotification: () => () => {},
-				request: async (method: string) => {
-					expect(method).toBe("thread/start");
-					expect(repo.read("a")?.unconfirmed).toBe(true);
-					return started;
-				},
-			} as ConversationClientLike),
+			createNewSessionService(
+				Object.assign(new FakeClient("ready"), {
+					onNotification: () => () => {},
+					request: async (method: string) => {
+						expect(method).toBe("thread/start");
+						expect(repo.read("a")?.unconfirmed).toBe(true);
+						return started;
+					},
+				} as Omit<ConversationClientLike, "state" | "onReady" | "onStateChange">) as ConversationClientLike,
+			),
 		);
 		await form.getState().setCwd("/project", false);
 		form.getState().setPrompt("keep this");
@@ -149,13 +154,15 @@ it("blocks creation when the uncertainty checkpoint cannot be saved", async () =
 		const calls: string[] = [];
 		const form = createNewSessionStore("a", () => repo);
 		form.getState().bind(
-			createNewSessionService({
-				onNotification: () => () => {},
-				request: async (method: string) => {
-					calls.push(method);
-					return {};
-				},
-			} as ConversationClientLike),
+			createNewSessionService(
+				Object.assign(new FakeClient("ready"), {
+					onNotification: () => () => {},
+					request: async (method: string) => {
+						calls.push(method);
+						return {};
+					},
+				} as Omit<ConversationClientLike, "state" | "onReady" | "onStateChange">) as ConversationClientLike,
+			),
 		);
 		await form.getState().setCwd("/project", false);
 		db.exec(
@@ -196,12 +203,14 @@ it("retains the uncertain draft when creation reply delivery fails", async () =>
 	try {
 		const form = createNewSessionStore("a", repository);
 		form.getState().bind(
-			createNewSessionService({
-				onNotification: () => () => {},
-				request: async () => {
-					throw new Error("reply lost");
-				},
-			} as ConversationClientLike),
+			createNewSessionService(
+				Object.assign(new FakeClient("ready"), {
+					onNotification: () => () => {},
+					request: async () => {
+						throw new Error("reply lost");
+					},
+				} as Omit<ConversationClientLike, "state" | "onReady" | "onStateChange">) as ConversationClientLike,
+			),
 		);
 		await form.getState().setCwd("/project", false);
 		const image = draft.images[0];
@@ -254,12 +263,14 @@ it("changes nothing, in the form or saved, when a start's checkpoint fails", asy
 		});
 		const form = createNewSessionStore("a", () => repo);
 		form.getState().bind(
-			createNewSessionService({
-				onNotification: () => () => {},
-				request: async () => {
-					throw new Error("unexpected request");
-				},
-			} as ConversationClientLike),
+			createNewSessionService(
+				Object.assign(new FakeClient("ready"), {
+					onNotification: () => () => {},
+					request: async () => {
+						throw new Error("unexpected request");
+					},
+				} as Omit<ConversationClientLike, "state" | "onReady" | "onStateChange">) as ConversationClientLike,
+			),
 		);
 		db.exec(
 			"CREATE TRIGGER no_checkpoint BEFORE UPDATE ON creation_drafts WHEN json_extract(NEW.draft, '$.unconfirmed') = 1 BEGIN SELECT RAISE(ABORT, 'full'); END",

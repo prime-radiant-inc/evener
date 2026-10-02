@@ -108,6 +108,10 @@
 
 .parentScrollBody {
   overflow: visible;
+  /* The drawer's scroll ends at the visible viewport bottom (the Sheet follows
+   * dvh), so pad the last row - the Archived sessions disclosure - clear of
+   * the home indicator, keeping the base .body padding. */
+  padding-bottom: calc(var(--space-2) + env(safe-area-inset-bottom));
 }
 
 .section {

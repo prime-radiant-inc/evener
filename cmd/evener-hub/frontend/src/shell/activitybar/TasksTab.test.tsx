@@ -1,13 +1,18 @@
-// The Tasks tab of the activity sidebar: the navigation summary plus the Open
-// affordance into the real tasks pane, and the honest empty state.
+// The Tasks tab of the activity sidebar: the task list itself, unfolded in
+// the sidebar - the same TasksPanelBody the tasks pane renders, fed by the
+// shared useThreadModel subscription. No pane affordance anywhere.
 
 import type { NavigationManifest } from "@evener/appwire-client";
+import { hydrateThread } from "@evener/appwire-client";
 import { keyID, type ResourceKey, type ResourceState } from "@evener/appwire-client/state/navigation";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { lazy } from "react";
-import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { MotionProvider } from "../../motion";
+import { connectionStore } from "../../stores/connection";
 import { navigationStore } from "../../stores/navigation/store";
+import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
 import { resetFocusedActivityScopeForTests } from "../focusedSession";
 import { type PaneDescriptor, type PaneProps, registerPaneForTests } from "../paneRegistry";
 import { summaryOf } from "../statusbar/scopeTestUtils";
@@ -31,7 +36,6 @@ const restorePaneFixtures: Array<() => void> = [];
 
 beforeAll(() => {
   restorePaneFixtures.push(registerPaneForTests(fixtureDescriptor("session")));
-  restorePaneFixtures.push(registerPaneForTests(fixtureDescriptor("sessionTasks")));
 });
 
 afterAll(() => {
@@ -68,8 +72,8 @@ function install(ref: string, tasks?: { total: number; done: number; current?: s
   const root = summaryOf({ ref, title: "A", state: "active", tasks });
   const liveKey: ResourceKey = { kind: "section", section: "live", offset: 0, limit: 50 };
   navigationStore.setState({
-    mode: "v2",
-    capability: { version: 1, generationId: "g1", sequence: 1, readVersions: [2] },
+    mode: "v3",
+    capability: { version: 1, generationId: "g1", sequence: 1, readVersions: [3] },
     clientGenerationID: "g1",
     manifest: resource({ kind: "manifest" }, manifest()) as ResourceState<NavigationManifest>,
     resources: new Map([
@@ -86,6 +90,49 @@ function install(ref: string, tasks?: { total: number; done: number; current?: s
   activitySidebarStore.getState().openWith("tasks");
 }
 
+function modelFor(ref: string, tasks: { total: number; done: number } | null) {
+  const model = hydrateThread(
+    {
+      thread: {
+        id: `thread_${ref}`,
+        sessionId: ref,
+        preview: "",
+        ephemeral: false,
+        modelProvider: "anthropic",
+        createdAt: 1000,
+        updatedAt: 1000,
+        status: { type: "running" },
+        cwd: "/tmp/project",
+        cliVersion: "1.0.0",
+        source: "evener",
+        evener: {
+          ref,
+          capabilities: {
+            send: false,
+            steer: false,
+            interrupt: false,
+            compact: false,
+            clear: false,
+            forkFromTurn: false,
+            shutdown: false,
+            changeModel: false,
+            changeVisionModel: false,
+            queue: false,
+            goal: false,
+            sharedNotes: false,
+            rename: false,
+          },
+          queue: { revision: 0 },
+          humanNote: "",
+        },
+      },
+    },
+    ref,
+    0,
+  );
+  return { ...model, tasks };
+}
+
 function renderSidebar() {
   return render(
     <MotionProvider>
@@ -94,34 +141,58 @@ function renderSidebar() {
   );
 }
 
+beforeEach(() => {
+  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetThreadsStoreForTests();
+});
+
 afterEach(() => {
   cleanup();
   resetWorkspaceStoreForTests();
   resetFocusedActivityScopeForTests();
   resetActivitySidebarStoreForTests();
+  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
 });
 
 describe("TasksTab", () => {
-  test("renders the summary line with the current task", () => {
-    install("local:a", { total: 5, done: 2, current: "doing the thing" });
-    renderSidebar();
-    expect(screen.getByText(/2 of 5 done/)).toBeTruthy();
-    expect(screen.getByText(/now: doing the thing/)).toBeTruthy();
-  });
-
-  test("Open tasks opens the tasks pane beside the session", () => {
+  test("no hydrated model yet reads as a loading state, never an empty list", () => {
     install("local:a", { total: 5, done: 2 });
     renderSidebar();
-    fireEvent.click(screen.getByRole("button", { name: "Open tasks" }));
-    const pane = workspaceStore.getState().panes.find((p) => p.type === "sessionTasks");
-    expect(pane?.params).toEqual({ ref: "local:a" });
-    expect(pane?.slot).toBe("secondary");
+    expect(screen.getByText("Loading tasks…")).toBeTruthy();
   });
 
-  test("no task list reads as an honest empty state with no Open affordance", () => {
-    install("local:b");
+  test("mounting the tab subscribes to the session's thread (the body's data source)", async () => {
+    const fake = new FakeClient("ready");
+    connectionStore.getState().connect(fake);
+    const ensure = vi.spyOn(threadsStore.getState(), "ensureThread").mockResolvedValue(undefined as never);
+    try {
+      install("local:a", { total: 5, done: 2 });
+      await act(async () => renderSidebar());
+      expect(ensure).toHaveBeenCalledWith("local:a");
+    } finally {
+      ensure.mockRestore();
+    }
+  });
+
+  test("with the model hydrated, the task list renders in the tab and no pane opens", async () => {
+    const fake = new FakeClient("ready");
+    connectionStore.getState().connect(fake);
+    fake.on("evener/tasks/list", () => ({
+      data: [
+        { id: 1, type: "implement", description: "Wire up the status row", prompt: "", status: "done" },
+        { id: 2, type: "implement", description: "Gate green", prompt: "", status: "open" },
+      ],
+    }));
+    install("local:a", { total: 2, done: 1, current: "Gate green" });
+    threadsStore.setState({ threads: new Map([["local:a", modelFor("local:a", { total: 2, done: 1 })]]) });
     renderSidebar();
-    expect(screen.getByText("No task list for this session.")).toBeTruthy();
+    // The navigation summary line rides on top.
+    expect(screen.getByText(/1 of 2 done/)).toBeTruthy();
+    // The body's rows render inline - the list unfolds here, never in a
+    // pane: the open task visible, the done one in its collapsed group.
+    await waitFor(() => expect(screen.getByText("Gate green")).toBeTruthy());
+    expect(screen.getByTestId("task-settled-group").textContent).toContain("1 completed task");
     expect(screen.queryByRole("button", { name: "Open tasks" })).toBeNull();
+    expect(workspaceStore.getState().panes.some((pane) => pane.type === "sessionTasks")).toBe(false);
   });
 });

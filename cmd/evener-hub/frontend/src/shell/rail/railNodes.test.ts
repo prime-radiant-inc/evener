@@ -1,16 +1,8 @@
 // @vitest-environment node
 
-import type { NavigationWatchSummary, Source } from "@evener/appwire-client";
+import type { EvenerWatchInfo, Source } from "@evener/appwire-client";
 import { describe, expect, test } from "vitest";
-import type {
-  HostRailNode,
-  OverflowRailNode,
-  RailNode,
-  RailPinSection,
-  RailProject,
-  RailSession,
-  SessionRailNode,
-} from "./railNodes";
+import type { HostRailNode, RailNode, RailPinSection, RailProject, RailSession, SessionRailNode } from "./railNodes";
 import {
   activeWatchCount,
   archivedCount,
@@ -19,7 +11,6 @@ import {
   displayState,
   hostProjectNodes,
   liveNodesGroupedByHost,
-  needsYouDescendantCount,
   overrideLookup,
   pinSectionDisclosureID,
   projectNodes,
@@ -27,7 +18,6 @@ import {
   revealExpansionIds,
   sessionNodes,
   subagentIsCurrent,
-  topLevelAncestorRef,
   watchCountLabel,
 } from "./railNodes";
 
@@ -45,7 +35,7 @@ describe("subagentIsCurrent", () => {
     const grandchild = session({
       ref: "local:grandchild",
       state: "idle",
-      running_jobs: [{ job_id: "j1", job_type: "shell", status: "running" }],
+      running_job_count: 1,
     });
     const child = session({ ref: "local:child", state: "idle", children: [grandchild] });
     expect(subagentIsCurrent(child)).toBe(true);
@@ -102,12 +92,12 @@ function session(overrides: Partial<RailSession> = {}): RailSession {
 function project(overrides: Partial<RailProject> = {}): RailProject {
   return { key: "p1", name: "Proj", sessions: [], ...overrides };
 }
-function watch(overrides: Partial<NavigationWatchSummary> = {}): NavigationWatchSummary {
+function watch(overrides: Partial<EvenerWatchInfo> = {}): EvenerWatchInfo {
   return {
     id: "w1",
     source: "self",
     deliveries: 0,
-    created_at: "2026-09-12T19:00:00Z",
+    createdAt: "2026-09-12T19:00:00Z",
     active: true,
     ...overrides,
   };
@@ -118,60 +108,61 @@ const closed = () => false;
 // they pass the empty manifest shape.
 const NO_SOURCES: readonly Source[] = [];
 
-test("adapts resource-local session summaries into stable recursive rail rows", () => {
-  const child = session({ row_id: "navigation:child", ref: "child", kind: "fork", state: "active" });
-  const rows = sessionNodes([session({ row_id: "navigation:parent", ref: "parent", children: [child] })], closed);
+test("adapts resource-local session summaries into stable flat rail rows", () => {
+  const rows = sessionNodes([session({ row_id: "navigation:parent", ref: "parent" })]);
   expect(rows[0]).toMatchObject({ id: "navigation:parent", kind: "session", session: { ref: "parent" } });
-  expect(rows[0]?.children[0]).toMatchObject({ id: "navigation:child", kind: "session" });
 });
 
-test("session node memo dependencies are complete and bottom-up", () => {
+test("a summary's nested sessions, jobs, and watches build no rail rows", () => {
+  // The rail's rows are flat top-level rows with gloss and chips: a session's
+  // subagents live in the activity sidebar's Agents tab and its jobs and
+  // watches on the row's own summary figures, so nothing nests anymore.
+  const root = session({
+    ref: "root",
+    row_id: "root",
+    state: "active",
+    children: [
+      session({ ref: "done", row_id: "done", kind: "fork", state: "ended" }),
+      session({ ref: "working", row_id: "working", kind: "subagent", state: "active" }),
+    ],
+    running_job_count: 1,
+    watch_count: [watch({ id: "w1" })].length + 0,
+    armed_watch_count: [watch({ id: "w1" })].filter((w) => w.active).length + 0,
+  });
+  const [node] = sessionNodes([root]);
+  expect(node?.children).toEqual([]);
+});
+
+test("session node identity tracks the session object, per tier shape", () => {
   const unchangedSibling = session({ row_id: "sibling", ref: "sibling", title: "Sibling", state: "active" });
-  const grandchild = session({ row_id: "grandchild", ref: "grandchild", title: "Before", state: "active" });
-  const child = session({ row_id: "child", ref: "child", state: "active", children: [grandchild] });
-  const parent = session({ row_id: "parent", ref: "parent", state: "active", children: [child] });
-  const before = sessionNodes([parent, unchangedSibling], closed);
-  const repeated = sessionNodes([parent, unchangedSibling], closed);
+  const parent = session({ row_id: "parent", ref: "parent", state: "active" });
+  const before = sessionNodes([parent, unchangedSibling]);
+  const repeated = sessionNodes([parent, unchangedSibling]);
 
   expect(repeated[0]).toBe(before[0]);
   expect(repeated[0]?.children).toBe(before[0]?.children);
   expect(repeated[1]).toBe(before[1]);
 
-  const changedGrandchild = { ...grandchild, title: "After" };
-  const changedChild = { ...child, children: [changedGrandchild] };
-  const changedParent = { ...parent, children: [changedChild] };
-  const after = sessionNodes([changedParent, unchangedSibling], closed);
+  const changedParent = { ...parent, title: "After" };
+  const after = sessionNodes([changedParent, unchangedSibling]);
 
   expect(after[0]).not.toBe(before[0]);
-  expect(after[0]?.children).not.toBe(before[0]?.children);
-  expect(after[0]?.children[0]).not.toBe(before[0]?.children[0]);
-  expect(after[0]?.children[0]).toMatchObject({ children: [{ session: { title: "After" } }] });
+  expect(after[0]).toMatchObject({ session: { title: "After" } });
   expect(after[1]).toBe(before[1]);
-  expect(after[1]?.children).toBe(before[1]?.children);
-
-  const expandedChild = (_id: string, defaultExpanded: boolean) => defaultExpanded;
-  const lookupBefore = sessionNodes([changedParent], expandedChild)[0];
-  const lookupAfter = sessionNodes([changedParent], (id, defaultExpanded) =>
-    id === changedChild.row_id ? true : defaultExpanded,
-  )[0];
-  expect(lookupAfter).not.toBe(lookupBefore);
-  expect(lookupAfter?.children[0]).toMatchObject({ id: changedChild.row_id, expanded: true });
 });
 
-test("sessionNodes marks its rows as cross-project tier roots; nesting and projects do not", () => {
-  const kid = session({ ref: "kid", row_id: "kid", state: "active" });
-  const root = session({ ref: "root", row_id: "root", children: [kid] });
-  const [live] = sessionNodes([root], closed);
+test("sessionNodes marks its rows as cross-project tier roots; projects do not", () => {
+  const root = session({ ref: "root", row_id: "root" });
+  const [live] = sessionNodes([root]);
   expect(live?.crossProjectTier).toBe(true);
-  // A child under the row inherits the tier but not the mark: only the
-  // tier's own root rows carry it.
-  const inline = live?.children.find((child): child is SessionRailNode => child.kind === "session");
-  expect(inline?.crossProjectTier).toBeUndefined();
   // A Projects-tier session always nests under its own ProjectRow, which
-  // already names the project - no cross-project line there.
+  // already names the project - no cross-project line there. The mark splits
+  // the node cache too: one session renders as both shapes without either
+  // serving the other's cached node.
   const [projectRow] = projectNodes([project({ key: "p", sessions: [root] })], closed);
   const nested = projectRow?.children.find((child): child is SessionRailNode => child.kind === "session");
   expect(nested?.crossProjectTier).toBeUndefined();
+  expect(nested).not.toBe(live);
 });
 
 describe("resource projection semantics", () => {
@@ -185,235 +176,8 @@ describe("resource projection semantics", () => {
     expect(section.sessions.map((row) => row.ref)).toEqual(["a", "b"]);
     expect(pinSectionDisclosureID(section.id)).toBe("pinsection:opaque");
   });
-  test("renders nested rows inline in their incoming order, with no inactive fold", () => {
-    const root = session({
-      ref: "root",
-      row_id: "root",
-      state: "active",
-      children: [
-        session({ ref: "done", row_id: "done", kind: "fork", state: "ended" }),
-        session({ ref: "working", row_id: "working", kind: "fork", state: "active" }),
-      ],
-    });
-    const [node] = sessionNodes([root], closed);
-    expect(node?.children.map((child) => child.id)).toEqual(["done", "working"]);
-  });
 
-  test("keeps running jobs inline and puts completed jobs in a fold", () => {
-    const root = session({
-      ref: "root",
-      row_id: "root",
-      state: "idle",
-      children: [session({ ref: "original", row_id: "original", kind: "fork", state: "idle" })],
-    });
-    Object.assign(root, {
-      running_jobs: [{ job_id: "job-running", job_type: "shell", status: "running" }],
-      completed_jobs: [{ job_id: "job-completed", job_type: "shell", status: "completed" }],
-    });
-    const [node] = sessionNodes([root], closed);
-    expect(node?.children.map((child) => child.kind)).toEqual(["session", "job", "completedJobsFold"]);
-    expect(node?.children[1]).toMatchObject({ kind: "job", job: { job_id: "job-running" } });
-    expect(node?.children[2]).toMatchObject({ kind: "completedJobsFold", count: 1 });
-  });
-
-  test("keeps a session's own watch rows inline, after its running jobs", () => {
-    const root = session({ ref: "root", row_id: "root", state: "idle" });
-    Object.assign(root, {
-      running_jobs: [{ job_id: "job-1", job_type: "shell", status: "running" }],
-      watches: [watch({ id: "w1" }), watch({ id: "w2" })],
-    });
-    const [node] = sessionNodes([root], closed);
-    expect(node?.children.map((child) => child.kind)).toEqual(["job", "watch", "watch"]);
-    // The row id is namespaced off the parent, the way job rows are, so two
-    // sessions carrying a same-id watch (each its own receiver) get distinct
-    // tree ids.
-    expect(node?.children[1]).toMatchObject({ id: "watch:root:w1", kind: "watch", watch: { id: "w1" } });
-  });
-
-  test("renders no watch rows for a session whose wire list is absent or empty", () => {
-    const [node] = sessionNodes([session({ ref: "root", row_id: "root" })], closed);
-    expect(node?.children).toEqual([]);
-  });
-
-  test("caps the inline watch rows and notes the remainder in the overflow grammar", () => {
-    const root = session({
-      ref: "root",
-      row_id: "root",
-      watches: ["w1", "w2", "w3", "w4", "w5"].map((id) => watch({ id })),
-    });
-    const [node] = sessionNodes([root], closed);
-    expect(node?.children.map((child) => child.kind)).toEqual(["watch", "watch", "watch", "overflow"]);
-    expect(node?.children.at(-1)).toMatchObject({ kind: "overflow", count: 2, suffix: "more watches", pages: [] });
-  });
-
-  test("marks the watch overflow row passive: it can reveal nothing by activating", () => {
-    // The inline cap is local to the rail and the wire already carried every
-    // watch, so there is no page behind "+N more watches". The row must be an
-    // honest count, not a control that looks actionable and no-ops.
-    const root = session({
-      ref: "root",
-      row_id: "root",
-      watches: ["w1", "w2", "w3", "w4", "w5"].map((id) => watch({ id })),
-    });
-    const [node] = sessionNodes([root], closed);
-    expect(node?.children.at(-1)).toMatchObject({ kind: "overflow", suffix: "more watches", pages: [], passive: true });
-  });
-
-  test("counts watches the projector omitted in the fold-out overflow, even under the inline cap", () => {
-    // The hub caps its per-session watch list and reports the rows it dropped
-    // as omitted_watches; the summary line already says "+4 more". A fold-out
-    // that showed only the one retained row would silently contradict it, so
-    // the omitted rows are part of the fold-out's hidden count.
-    const root = session({
-      ref: "root",
-      row_id: "root",
-      watches: [watch({ id: "w1" })],
-      omitted_watches: 4,
-    });
-    const [node] = sessionNodes([root], closed);
-    expect(node?.children.map((child) => child.kind)).toEqual(["watch", "overflow"]);
-    expect(node?.children.at(-1)).toMatchObject({
-      kind: "overflow",
-      count: 4,
-      suffix: "more watches",
-      pages: [],
-      passive: true,
-    });
-  });
-
-  test("the summary line's watch count and the fold-out's hidden count agree", () => {
-    // One total per session: retained rows plus the projector's omitted count.
-    // The fold-out shows the inline head of the retained rows and counts
-    // everything else - retained beyond the cap plus the omitted rows - so the
-    // two surfaces cannot disagree about how many watches the session holds.
-    const cases = [
-      { retained: 1, omitted: 4, label: "1 watch · 1 armed total · +4 more" },
-      { retained: 3, omitted: 0, label: "3 watches" },
-      { retained: 5, omitted: 3, label: "5 watches · 5 armed total · +3 more" },
-      { retained: 2, omitted: 1, label: "2 watches · 2 armed total · +1 more" },
-    ];
-    for (const c of cases) {
-      const watches = Array.from({ length: c.retained }, (_, i) => watch({ id: `w${i}` }));
-      const root = session({ ref: "root", row_id: "root", watches, omitted_watches: c.omitted });
-      const [node] = sessionNodes([root], closed);
-      const children = node?.children ?? [];
-      const shown = children.filter((child) => child.kind === "watch").length;
-      const overflow = children.find((child) => child.kind === "overflow") as OverflowRailNode | undefined;
-      const hidden = overflow?.count ?? 0;
-      // Every retained row is armed in this matrix, so the summary line counts
-      // all of them; the fold-out plus its overflow must add up to the same
-      // number the line's total implies.
-      expect(shown + hidden).toBe(c.retained + c.omitted);
-      expect(shown).toBe(Math.min(c.retained, 3));
-      const label = watchCountLabel(activeWatchCount(root), c.retained, c.omitted);
-      // An all-armed list keeps the bare count when nothing was omitted; once
-      // rows were omitted the figure is labelled a total covering them.
-      expect(label).toBe(c.label);
-    }
-  });
-
-  test("the summary line's total includes retained-but-inactive watches", () => {
-    // A fired one-shot whose teardown is still pending projects inactive, so a
-    // session can hold retained rows that are not armed. The summary line used
-    // to count only the armed rows (`2 watches`) while the fold-out listed all
-    // five, so the two surfaces disagreed. One total now: the retained count,
-    // with the armed count beside it.
-    const inactive = (id: string) => watch({ id, active: false });
-    const cases = [
-      // 2 armed + 3 inactive, nothing omitted: 5 total, 2 armed.
-      {
-        watches: [watch({ id: "w1" }), watch({ id: "w2" }), inactive("w3"), inactive("w4"), inactive("w5")],
-        omitted: 0,
-        label: "5 watches · 2 armed",
-      },
-      // Same, plus 3 rows the projector omitted.
-      {
-        watches: [watch({ id: "w1" }), watch({ id: "w2" }), inactive("w3"), inactive("w4"), inactive("w5")],
-        omitted: 3,
-        label: "5 watches · 2 armed total · +3 more",
-      },
-      // All-inactive: 3 retained, 0 armed - still one total of 3.
-      {
-        watches: [inactive("w1"), inactive("w2"), inactive("w3")],
-        omitted: 0,
-        label: "3 watches · 0 armed",
-      },
-    ];
-    for (const c of cases) {
-      const root = session({ ref: "root", row_id: "root", watches: c.watches, omitted_watches: c.omitted });
-      const [node] = sessionNodes([root], closed);
-      const children = node?.children ?? [];
-      const shown = children.filter((child) => child.kind === "watch").length;
-      const overflow = children.find((child) => child.kind === "overflow") as OverflowRailNode | undefined;
-      const hidden = overflow?.count ?? 0;
-      const label = watchCountLabel(activeWatchCount(root), root.watches?.length ?? 0, c.omitted);
-      expect(label).toBe(c.label);
-      // The summary's total - the retained base plus the omitted "+N more" -
-      // is exactly the fold-out's shown-plus-hidden total.
-      expect((root.watches?.length ?? 0) + c.omitted).toBe(shown + hidden);
-    }
-  });
-
-  test("counts a session's own armed watches once, never a descendant's", () => {
-    const child = session({
-      ref: "child",
-      row_id: "child",
-      watches: [watch({ id: "c1" }), watch({ id: "c2" })],
-    });
-    const parent = session({
-      ref: "parent",
-      row_id: "parent",
-      children: [child],
-      watches: [watch({ id: "p1" }), watch({ id: "p2", active: false })],
-    });
-    // The parent counts only what its own summary carries - a receiver watch
-    // belongs to the session whose summary carries it - and only while armed.
-    expect(activeWatchCount(parent)).toBe(1);
-    expect(activeWatchCount(child)).toBe(2);
-    expect(activeWatchCount(session({ ref: "none", row_id: "none" }))).toBe(0);
-  });
-
-  test("adds omitted armed rows to the armed total and labels what the number covers", () => {
-    // A session with more armed watches than the hub's per-session cap: 32
-    // retained, 8 more omitted and all of them armed. The retained rows alone
-    // would report 32, understating the session's armed total of 40.
-    const retained = Array.from({ length: 32 }, (_, i) => watch({ id: `w${i}` }));
-    const root = session({
-      ref: "root",
-      row_id: "root",
-      watches: retained,
-      omitted_watches: 8,
-      omitted_armed_watches: 8,
-    });
-    expect(activeWatchCount(root)).toBe(40);
-    expect(watchCountLabel(activeWatchCount(root), retained.length, 8)).toBe("32 watches · 40 armed total · +8 more");
-    // Even when none of the omitted rows were armed, the figure is still
-    // labelled a total: the panel cannot show which of the omitted rows were
-    // armed, so the number must say what it covers.
-    const mixed = session({
-      ref: "mixed",
-      row_id: "mixed",
-      watches: [watch({ id: "a" }), watch({ id: "b", active: false })],
-      omitted_watches: 3,
-      omitted_armed_watches: 0,
-    });
-    expect(watchCountLabel(activeWatchCount(mixed), 2, 3)).toBe("2 watches · 1 armed total · +3 more");
-
-    // The byte fitter can shed every retained row: the label then drops the base
-    // count rather than leading with "0 watches" beside a nonzero armed total.
-    expect(watchCountLabel(40, 0, 8)).toBe("40 armed total · +8 more");
-    expect(watchCountLabel(0, 0, 8)).toBe("0 armed total · +8 more");
-  });
-
-  test("derives the attention count from recursive summaries", () => {
-    const root = session({
-      state: "active",
-      children: [
-        session({ ref: "ask", state: "awaiting" }),
-        session({ ref: "worker", state: "active", children: [session({ ref: "worker2", state: "active" })] }),
-      ],
-    });
-    expect(needsYouDescendantCount(root)).toBe(1);
+  test("displayState passes a plain awaiting session through as needing you", () => {
     expect(displayState(session({ state: "awaiting" }))).toBe("awaiting");
   });
   // An approval blocks its turn mid-tool, so the row's wire state stays
@@ -422,16 +186,6 @@ describe("resource projection semantics", () => {
     expect(displayState(session({ state: "active", approval_pending: true }))).toBe("awaiting");
     expect(displayState(session({ state: "idle", approval_pending: true }))).toBe("awaiting");
     expect(displayState(session({ state: "errored", approval_pending: true }))).toBe("errored");
-  });
-  test("a descendant waiting on an approval counts as needing you", () => {
-    const root = session({
-      state: "active",
-      children: [
-        session({ ref: "approval", kind: "fork", state: "active", approval_pending: true }),
-        session({ ref: "worker", kind: "fork", state: "active" }),
-      ],
-    });
-    expect(needsYouDescendantCount(root)).toBe(1);
   });
   test("a project's session waiting on an approval sorts ahead of its working sibling", () => {
     const working = session({ row_id: "working", ref: "working", state: "active" });
@@ -550,14 +304,11 @@ describe("resource projection semantics", () => {
     expect(archivedAfter[1]).toBe(archivedBefore[1]);
     expect(archivedAfter[1]?.children).toBe(archivedBefore[1]?.children);
   });
-  test("uses persisted overrides and location membership for deep-link reveal", () => {
-    const p = project({
-      key: "p1",
-      sessions: [session({ ref: "top", row_id: "top", children: [session({ ref: "child", row_id: "child" })] })],
-    });
+  test("uses persisted overrides and flat membership for deep-link reveal", () => {
+    const p = project({ key: "p1", sessions: [session({ ref: "top", row_id: "top" })] });
     expect(overrideLookup(new Map([["x", true]]))("x", false)).toBe(true);
-    expect(topLevelAncestorRef([p], "child")).toBe("top");
-    expect(topLevelAncestorRef([p], "missing")).toBeNull();
+    expect(revealExpansionIds([p], [], "top", "flat")).toEqual(["projectnode:p1"]);
+    expect(revealExpansionIds([p], [], "missing", "flat")).toEqual([]);
   });
 });
 
@@ -700,7 +451,7 @@ describe("host grouping (organize by)", () => {
   });
 
   test("liveNodesGroupedByHost groups rows under hosts only while more than one host is in play", () => {
-    const rows = sessionNodes([on("local", "l1"), on("devbox", "d1")], closed);
+    const rows = sessionNodes([on("local", "l1"), on("devbox", "d1")]);
     const grouped = liveNodesGroupedByHost(rows, sources, overrideLookup(new Map()));
     expect(grouped.map((node) => node.id)).toEqual(["livehost:local", "livehost:devbox"]);
     const local = grouped[0];
@@ -739,90 +490,43 @@ describe("host grouping (organize by)", () => {
     expect(revealExpansionIds([solo], [], "devbox:d1", "project-host")).toEqual(["projectnode:solo"]);
   });
 
-  test("revealExpansionIds routes a nested row through its top-level carrier's host", () => {
+  test("revealExpansionIds does not walk nested summaries: a subagent ref names no rail row", () => {
+    // The rail's lists carry top-level rows only, so a ref that exists only as
+    // a nested summary (a subagent, a fork original) finds nothing here. Its
+    // reveal resolves through the location lookup instead, which names the
+    // top-level carrier (top_level_ref) whose row renders.
     const nested = project({
       key: "evener",
       sources: ["local"],
       sessions: [session({ ref: "root", row_id: "root", host_id: "local", children: [on("devbox", "child")] })],
     });
-    expect(revealExpansionIds([nested], [], "devbox:child", "host-project")).toEqual([
-      "host:local",
-      "projectnode:evener@local",
-      "root",
-    ]);
+    expect(revealExpansionIds([nested], [], "devbox:child", "host-project")).toEqual([]);
+    expect(revealExpansionIds([nested], [], "devbox:child", "flat")).toEqual([]);
   });
 
-  test("revealExpansionIds opens the carrier's own row in flat and project-first chains", () => {
-    const carrier = session({ ref: "root", row_id: "root", host_id: "local", children: [on("devbox", "child")] });
-    const nested = project({ key: "evener", sources: ["local"], sessions: [carrier] });
-    // The carrier's row is a fold too: without it in the chain the target
-    // row never renders, whatever opens above it.
-    expect(revealExpansionIds([nested], [], "devbox:child", "flat")).toEqual(["projectnode:evener", "root"]);
-    expect(revealExpansionIds([nested], [], "devbox:child", "project-host")).toEqual(["projectnode:evener", "root"]);
+  test("revealExpansionIds opens the project fold for a top-level row, adding the host branch only when rows span hosts", () => {
+    const carrier = on("local", "root");
+    const solo = project({ key: "evener", sources: ["local"], sessions: [carrier] });
+    expect(revealExpansionIds([solo], [], "local:root", "flat")).toEqual(["projectnode:evener"]);
+    expect(revealExpansionIds([solo], [], "local:root", "project-host")).toEqual(["projectnode:evener"]);
     // A project whose rows span hosts adds its per-host branch first.
     const spread = project({
       key: "spread",
       sources: ["local", "devbox"],
       sessions: [on("local", "l1"), on("devbox", "d2"), carrier],
     });
-    expect(revealExpansionIds([spread], [], "devbox:child", "project-host")).toEqual([
+    expect(revealExpansionIds([spread], [], "local:root", "project-host")).toEqual([
       "projectnode:spread",
       "projectnode:spread@host:local",
-      "root",
     ]);
   });
 
-  test("revealExpansionIds opens the carrier chain for archived and live nested targets", () => {
-    const archivedCarrier = session({
-      ref: "aroot",
-      row_id: "aroot",
-      host_id: "local",
-      tier: "archived",
-      children: [on("local", "achild")],
-    });
-    const archived = project({ key: "old", sessions: [archivedCarrier] });
-    expect(revealExpansionIds([archived], [], "local:achild", "host-project")).toEqual(["archivedgroup:old", "aroot"]);
+  test("revealExpansionIds routes an archived-tier row to the archived group fold", () => {
+    const archived = project({ key: "old", sessions: [on("local", "achild", { tier: "archived" })] });
+    expect(revealExpansionIds([archived], [], "local:achild", "host-project")).toEqual(["archivedgroup:old"]);
     expect(revealExpansionIds([archived], [], "local:achild", "flat", { rowsUnderProjectNode: true })).toEqual([
       "projectnode:old",
-      "aroot",
     ]);
-    const liveCarrier = session({
-      ref: "lroot",
-      row_id: "lroot",
-      host_id: "devbox",
-      children: [on("devbox", "lchild")],
-    });
-    expect(revealExpansionIds([], [liveCarrier, on("local", "l1")], "devbox:lchild", "project-host")).toEqual([
-      "livehost:devbox",
-      "lroot",
-    ]);
-    // Flat Live renders ungrouped, so the chain is only the carrier rows.
-    expect(revealExpansionIds([], [liveCarrier], "devbox:lchild", "flat")).toEqual(["lroot"]);
-  });
-
-  test("a deeper leaf's reveal walks every session row above it", () => {
-    // A deeper leaf names every session row above it.
-    const deep = project({
-      key: "deep",
-      sources: ["local"],
-      sessions: [
-        session({
-          ref: "top",
-          row_id: "top",
-          host_id: "local",
-          children: [
-            session({
-              ref: "mid",
-              row_id: "mid",
-              host_id: "local",
-              state: "active",
-              children: [on("local", "leaf")],
-            }),
-          ],
-        }),
-      ],
-    });
-    expect(revealExpansionIds([deep], [], "local:leaf", "flat")).toEqual(["projectnode:deep", "top", "mid"]);
   });
 
   test("revealExpansionIds opens a Live host subheader only while Live renders grouped", () => {
@@ -836,7 +540,7 @@ describe("host grouping (organize by)", () => {
   test("revealExpansionIds is empty for a ref nothing loaded holds (the location path owns it)", () => {
     expect(revealExpansionIds([], [], "missing", "host-project")).toEqual([]);
     // A single host (or none) keeps today's flat list, byte for byte.
-    const single = sessionNodes([on("local", "l1"), on("local", "l2")], closed);
+    const single = sessionNodes([on("local", "l1"), on("local", "l2")]);
     expect(liveNodesGroupedByHost(single, sources, closed)).toBe(single);
     expect(liveNodesGroupedByHost([], sources, closed)).toEqual([]);
   });
@@ -1059,4 +763,13 @@ describe("host grouping (organize by)", () => {
     expect(childIds(devboxAfter)).toEqual(["navigation:devbox:d1", "projectnode:evener@devbox:overflow"]);
     expect(childIds(alphaAfter)).toEqual(["navigation:render-farm:r1"]);
   });
+});
+
+test("compact receiver counts include all watches without loading descendant detail", () => {
+  const child = session({ ref: "child", watch_count: 40, armed_watch_count: 40 });
+  const root = session({ ref: "parent", watch_count: 5, armed_watch_count: 2, children: [child] });
+  expect(activeWatchCount(root)).toBe(2);
+  expect(activeWatchCount(child)).toBe(40);
+  expect(watchCountLabel(2, 5)).toBe("5 watches · 2 armed");
+  expect(watchCountLabel(40, 40)).toBe("40 watches");
 });

@@ -260,7 +260,7 @@ test("a failed card carries the danger rail itself - there is no module chrome t
     argumentsJSON: JSON.stringify({ prompt: "will fail" }),
     output: JSON.stringify({ delegate_id: "job_f", status: "failed", transcript_ref: "ref_f", reason: "build error" }),
   });
-  seedCurrentDelegate("ref_current", "job_f", "failed", "build error");
+  seedCurrentDelegate("ref_current", "job_f", "failed", "build error", { transcriptRef: "ref_f" });
   render(<Body item={failed} live={false} sessionRef="ref_current" />);
   const row = screen.getByTestId("subagent-row");
   expect(row.dataset.kind).toBe("failed");
@@ -283,7 +283,7 @@ test.each([
     argumentsJSON: JSON.stringify({ prompt: "will fail" }),
     output: JSON.stringify({ delegate_id: "job_f", status: "failed", transcript_ref: "ref_f", reason }),
   });
-  seedCurrentDelegate("ref_current", "job_f", "failed", reason, overrides);
+  seedCurrentDelegate("ref_current", "job_f", "failed", reason, { ...overrides, transcriptRef: "ref_f" });
   render(<Body item={failed} live={false} sessionRef="ref_current" />);
   expect(within(screen.getByTestId("subagent-row")).getByTestId("subagent-quote").textContent).toBe(quote);
 });
@@ -325,7 +325,7 @@ test("3zf8: a cancelled child gets its own distinct stopped kind", () => {
     argumentsJSON: JSON.stringify({ prompt: "misbehaving, killed" }),
     output: JSON.stringify({ delegate_id: "job_stopped", status: "cancelled", transcript_ref: "ref_stopped" }),
   });
-  seedCurrentDelegate("ref_current", "job_stopped", "cancelled");
+  seedCurrentDelegate("ref_current", "job_stopped", "cancelled", undefined, { transcriptRef: "ref_stopped" });
   render(<Body item={stopped} live={false} sessionRef="ref_current" />);
   const row = screen.getByTestId("subagent-row");
   expect(row.dataset.kind).toBe("stopped");
@@ -1061,6 +1061,7 @@ test("resumed work keeps its identity and historical report but uses the current
   const now = 1_700_000_221_000;
   const stable = {
     delegateId: "dlg_resumed",
+    transcriptRef: "child_resumed",
     status: "running",
     outcome: "exhausted",
     terminal: false,
@@ -1161,6 +1162,7 @@ test("the stable lifecycle owns the card while child content status changes, and
 
   const stable = {
     delegateId: "dlg_attention",
+    transcriptRef: "ref_await_child",
     status: "running",
     outcome: "running",
     terminal: false,
@@ -1438,6 +1440,7 @@ test("a historical session read hydrates a card's kind, tokens, and clock from t
             diagnostics: {
               delegates: [
                 {
+                  runGeneration: 1,
                   delegateId: "dlg_hist",
                   ownerSessionId: "sess_parent_hist",
                   rootSessionId: "sess_parent_hist",

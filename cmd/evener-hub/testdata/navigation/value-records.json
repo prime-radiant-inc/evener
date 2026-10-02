@@ -15,8 +15,20 @@
     "approval_pending": true,
     "approval_tool": "write_file",
     "approval_target": "/home/me/sites/docs/index.md",
-    "question": { "text": "Keep or drop the implied options?", "options": ["Drop them", "Keep them"], "count": 2 },
-    "failure": { "title": "Provider error", "cause_kind": "provider", "provider": "codex-jesse-fsck.com", "status": 401 },
+    "question": {
+      "text": "Keep or drop the implied options?",
+      "options": [
+        "Drop them",
+        "Keep them"
+      ],
+      "count": 2
+    },
+    "failure": {
+      "title": "Provider error",
+      "cause_kind": "provider",
+      "provider": "codex-jesse-fsck.com",
+      "status": 401
+    },
     "last_message": "Three layouts are ready for review. I recommend B.",
     "model_name": "Gpt 5.6",
     "dormant": true,
@@ -25,62 +37,24 @@
     "turn_ended_at": "2026-09-26T11:58:00.123Z",
     "unseen": true,
     "more_subagents": 3,
-    "subagents": { "running": 2, "failed": 1, "done": 5 },
+    "subagents": {
+      "running": 2,
+      "failed": 1,
+      "done": 5
+    },
     "omitted_descendants": 4,
-    "omitted_watches": 2,
-    "omitted_armed_watches": 1,
-    "running_jobs": [
-      {
-        "job_id": "job-1",
-        "job_type": "shell",
-        "status": "running",
-        "command": "go test ./agent/...",
-        "task": "Run the agent tests",
-        "reason": "verify the fix",
-        "intent": "check the settle race",
-        "full_command": "go test ./agent/... -run Settle -count=1"
-      }
-    ],
-    "completed_jobs": [
-      {
-        "job_id": "job-2",
-        "job_type": "shell",
-        "status": "completed",
-        "command": "make lint",
-        "task": "Lint",
-        "reason": "gate",
-        "intent": "check formatting",
-        "full_command": "make lint LINT_TARGETS=lint-go"
-      }
-    ],
-    "watches": [
-      {
-        "id": "watch-1",
-        "source": "self",
-        "target": "ci",
-        "send_to": "self",
-        "note": "wake me when CI finishes",
-        "cadence": [
-          {
-            "kind": "events",
-            "seconds": 60,
-            "derived_next_fire_at": "2026-09-26T12:01:00Z",
-            "every": 2,
-            "filter": "status=error"
-          }
-        ],
-        "output_match": "FAIL",
-        "events": ["ci.finished"],
-        "wildcard_events": true,
-        "deliveries": 3,
-        "delivery_times": ["2026-09-26T11:59:00Z"],
-        "created_at": "2026-09-26T11:00:00Z",
-        "active": true,
-        "end_reason": "finished"
-      }
-    ],
-    "tasks": { "total": 7, "done": 2, "cancelled": 1, "current_id": 4, "current": "Fix the settle/drain race" },
-    "children": []
+    "tasks": {
+      "total": 7,
+      "done": 2,
+      "cancelled": 1,
+      "current_id": 4,
+      "current": "Fix the settle/drain race"
+    },
+    "children": [],
+    "running_job_count": 1,
+    "running_job_command": "command-sentinel",
+    "watch_count": 3,
+    "armed_watch_count": 2
   },
   "project": {
     "key": "evener-0123456789",
@@ -96,17 +70,55 @@
     "worktrees": 2,
     "is_archived": true,
     "favorite": true,
-    "sources": ["local", "paradise-park"],
+    "sources": [
+      "local",
+      "paradise-park"
+    ],
     "session_count": 7
   },
-  "pin_section": { "id": "release", "name": "Release", "count": 2 },
+  "pin_section": {
+    "id": "release",
+    "name": "Release",
+    "count": 2
+  },
   "manifest": {
     "generation_id": "g",
     "revision": 1,
-    "sources": [{ "id": "local", "label": "magic-kingdom", "kind": "local", "online": true }],
-    "attentionSummary": { "needsYou": 4, "error": 1, "working": 9 },
-    "sections": { "live": { "count": 20 }, "needs_you": { "count": 4 }, "pin_sections": { "count": 2 } },
-    "catalogs": { "projects": { "count": 14 }, "archived_projects": { "count": 3 }, "test_runs": { "count": 1 } }
+    "sources": [
+      {
+        "id": "local",
+        "label": "magic-kingdom",
+        "kind": "local",
+        "online": true
+      }
+    ],
+    "attentionSummary": {
+      "needsYou": 4,
+      "error": 1,
+      "working": 9
+    },
+    "sections": {
+      "live": {
+        "count": 20
+      },
+      "needs_you": {
+        "count": 4
+      },
+      "pin_sections": {
+        "count": 2
+      }
+    },
+    "catalogs": {
+      "projects": {
+        "count": 14
+      },
+      "archived_projects": {
+        "count": 3
+      },
+      "test_runs": {
+        "count": 1
+      }
+    }
   },
   "location": {
     "generation_id": "g",

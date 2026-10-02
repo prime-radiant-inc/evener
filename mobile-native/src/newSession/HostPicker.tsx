@@ -7,7 +7,7 @@
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { Pressable, Text, View } from "react-native";
 import { useStore } from "zustand";
-import { LOCAL_HOST } from "../../../cmd/evener-hub/frontend/src/stores/hostRouting";
+import { LOCAL_HOST } from "@evener/appwire-client";
 import { HostsNotListed } from "../hosts/HostsNotListed";
 import { hostStatus, systemLabel } from "../hosts/hostStatus";
 import { liveSessionsText } from "../hosts/liveCounts";

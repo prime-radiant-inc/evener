@@ -3,6 +3,7 @@ import { useEffect } from "react";
 import { settingsOverviewStore, useSettingsOverviewStore } from "../../../stores/settingsOverview";
 import { Button, EmptyState, Skeleton } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
+import { SessionCacheRow } from "./sessionCacheRow";
 import { Code, FieldDim, SettingsField } from "./settingsField";
 import styles from "./storage.module.css";
 
@@ -96,6 +97,10 @@ export function StorageSection() {
             }
           />
         )}
+        {/* The session-history cache row (spec, "The clear-cached-sessions
+            setting"): its own component because its state is its own store
+            with a per-render count, unlike the overview-fed rows above. */}
+        <SessionCacheRow />
       </dl>
     </div>
   );

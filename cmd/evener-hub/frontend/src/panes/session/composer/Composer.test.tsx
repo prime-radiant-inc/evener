@@ -9,17 +9,22 @@ import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
 import { useLayoutEffect } from "react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import {
+  activitySidebarStore,
+  resetActivitySidebarStoreForTests,
+} from "../../../shell/activitybar/activitySidebarStore";
 import { ClientProvider } from "../../../shell/clientContext";
 import { paletteStore } from "../../../shell/palette/paletteController";
 import { isPaneOpen, resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
 import { activityPanelStore, resetActivityPanelStoreForTests } from "../../../stores/activityPanel";
-import { activitySummaryStore, resetActivitySummaryStoreForTests } from "../../../stores/activitySummary";
 import { useCommandCatalog } from "../../../stores/commandCatalog";
 import { connectionStore } from "../../../stores/connection";
 import type { MutationOutboxRecord } from "../../../stores/mutationOutbox";
 import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
 import { prefsStore, resetPrefsStoreForTests } from "../../../stores/prefs";
+import { sessionActivitySnapshot } from "../../../stores/sessionActivity";
+import { activitySummary } from "../../../stores/sessionActivityTestUtils";
 import { holdNextWriteTransaction } from "../../../stores/testing/stalledIndexedDB";
 import {
   readMutationPersistence,
@@ -154,7 +159,7 @@ function readResponse(ref: string, overrides: Partial<Thread> = {}): ThreadReadR
   return { thread: testThread(ref, overrides) };
 }
 
-function emptyActivityTree(ref: string) {
+function _emptyActivityTree(ref: string) {
   return {
     revision: 1,
     root: {
@@ -750,32 +755,36 @@ test("goal replacement focus waits until an ended follow-up textarea mounts", as
   expect(textarea().textContent).toBe("/goal Keep the session focused");
 });
 
-test("clicking the current task twice keeps one Tasks pane open and focuses it", async () => {
+// Desktop Tasks everywhere is the activity sidebar, preselected to its tasks
+// tab (the same retarget the rail row and the chrome menu share) - the
+// current-task button opens no sessionTasks pane. Mobile keeps the Sheet (the
+// mobile test below pins that).
+test("clicking the current task opens the activity sidebar's tasks tab, never a pane, on desktop", async () => {
   const user = userEvent.setup();
   await mountComposer("ref_a", {
     evener: currentWorkEvener({ task: true }),
   });
 
   await user.click(screen.getByRole("button", { name: "Open tasks: Finish the focused composer test" }));
-  expect(isPaneOpen(workspaceStore.getState(), "sessionTasks", { ref: "ref_a" })).toBe(true);
-  const tasksPane = workspaceStore
-    .getState()
-    .panes.find((pane) => pane.type === "sessionTasks" && (pane.params as { ref?: string }).ref === "ref_a");
-  if (!tasksPane) throw new Error("missing Tasks pane");
+  expect(activitySidebarStore.getState().open).toBe(true);
+  expect(activitySidebarStore.getState().tab).toBe("tasks");
+  expect(isPaneOpen(workspaceStore.getState(), "sessionTasks", { ref: "ref_a" })).toBe(false);
   // act(): the chrome subscribes to focus-derived state (its Activity check
   // reads currentSessionRef), so this raw store mutation re-renders it.
   act(() => {
     workspaceStore.setState({ focusedPaneId: null });
   });
-  expect(workspaceStore.getState().focusedPaneId).not.toBe(tasksPane.id);
 
+  // Idempotent: a second click keeps the sidebar on the tasks tab and still
+  // opens no pane.
   await user.click(screen.getByRole("button", { name: "Open tasks: Finish the focused composer test" }));
+  expect(activitySidebarStore.getState().open).toBe(true);
+  expect(activitySidebarStore.getState().tab).toBe("tasks");
   expect(
     workspaceStore
       .getState()
       .panes.filter((pane) => pane.type === "sessionTasks" && (pane.params as { ref?: string }).ref === "ref_a"),
-  ).toHaveLength(1);
-  expect(workspaceStore.getState().focusedPaneId).toBe(tasksPane.id);
+  ).toHaveLength(0);
 });
 
 test("clicking the current task opens the existing mobile tasks sheet for this session", async () => {
@@ -822,7 +831,6 @@ beforeEach(() => {
   resetThreadsStoreForTests();
   resetWorkspaceStoreForTests();
   resetActivityPanelStoreForTests();
-  resetActivitySummaryStoreForTests();
   resetPendingTurnsStoreForTests();
   // askDockStore reconciles reactively off threadsStore (registered once at
   // module load - askDockStore.ts's own header comment), so its byRef map
@@ -849,8 +857,8 @@ afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
   vi.useRealTimers();
+  resetActivitySidebarStoreForTests();
   resetActivityPanelStoreForTests();
-  resetActivitySummaryStoreForTests();
   // A narrow-layout test leaves its stub installed; jsdom has no real
   // ResizeObserver, so the honest baseline for the next test is none at all.
   delete (globalThis as { ResizeObserver?: typeof ResizeObserver }).ResizeObserver;
@@ -916,6 +924,19 @@ test("renders a textarea with an accessible name", async () => {
   expect(screen.getAllByRole("textbox")).toHaveLength(1);
 });
 
+test.each([false, true])("the composer omits the recipient and Activity row on %s", async (mobile) => {
+  const restore = mobile ? installMobileViewport() : undefined;
+  try {
+    await mountComposer("ref_a", { name: "Release coordinator" });
+
+    expect(screen.queryByText("To: Release coordinator")).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Activity/ })).toBeNull();
+    expect(textarea().getAttribute("aria-describedby")).toBeNull();
+  } finally {
+    restore?.();
+  }
+});
+
 // --- mount autofocus ---------------------------------------------------------
 //
 // Loading a session into the browser UI should land keyboard focus in that
@@ -949,13 +970,13 @@ test("the real live Composer mount discovers initial activity without a test-sup
   const fake = connectFakeClient();
   const activityRefs: unknown[] = [];
   fake.on("thread/read", () => readResponse(ref));
-  fake.on("evener/jobs/list", (params) => {
+  fake.on("evener/thread/activity/read", (params) => {
     activityRefs.push(params.ref);
-    return { data: emptyActivityTree(ref) };
+    return activitySummary(params.ref);
   });
   await threadsStore.getState().ensureThread(ref);
   expect(activityPanelStore.getState().entries.has(ref)).toBe(false);
-  expect(activitySummaryStore.getState().entries.has(ref)).toBe(false);
+  expect(sessionActivitySnapshot(fake, ref, "session")?.summary).toBeUndefined();
 
   render(
     <ClientProvider client={fake}>
@@ -964,16 +985,11 @@ test("the real live Composer mount discovers initial activity without a test-sup
   );
 
   await waitFor(() => expect(activityRefs).toEqual([ref]));
-  expect(activitySummaryStore.getState().entries.get(ref)?.established).toBe(true);
-  expect(activityPanelStore.getState().entries.get(ref)?.load.kind).toBe("ready");
+  expect(sessionActivitySnapshot(fake, ref, "session")?.summary).not.toBeNull();
+  expect(sessionActivitySnapshot(fake, ref, "session")?.summaryState.loading).toBe(false);
 });
 
-// The companion to the test above for the state it cannot cover: a SAVED
-// (notLoaded) session that still advertises send arrives with a collapsed
-// follow-up card, and the card's own control row - the composer's only
-// discovery opt-in - is not mounted while the card rests. Without a
-// chrome-less owner, entity ids in that session's transcript would stay plain
-// text until the card is engaged (issue #1335).
+// Saved sessions discover activity through inline chrome while the editor rests.
 test("a saved notLoaded session with sending enabled discovers activity while its card rests", async () => {
   const ref = "ref_activity_saved";
   const fake = connectFakeClient();
@@ -984,9 +1000,9 @@ test("a saved notLoaded session with sending enabled discovers activity while it
       evener: { ref, mutationStateAuthoritative: true, capabilities: PAST_THREAD_CAPABILITIES, queue: { revision: 0 } },
     }),
   );
-  fake.on("evener/jobs/list", (params) => {
+  fake.on("evener/thread/activity/read", (params) => {
     activityRefs.push(params.ref);
-    return { data: emptyActivityTree(ref) };
+    return activitySummary(params.ref);
   });
   await threadsStore.getState().ensureThread(ref);
 
@@ -996,12 +1012,148 @@ test("a saved notLoaded session with sending enabled discovers activity while it
     </ClientProvider>,
   );
 
-  // The card rests as a bare invitation, so the composer's own chrome - the
-  // other discovery opt-in - is genuinely absent for this whole interval.
-  expect(screen.queryByTestId("session-chrome-inline")).toBeNull();
+  expect(textarea().style.minHeight).toBe("1lh");
+  expect(screen.getByTestId("session-chrome-inline")).toBeTruthy();
   await waitFor(() => expect(activityRefs).toEqual([ref]));
-  expect(activitySummaryStore.getState().entries.get(ref)?.established).toBe(true);
-  expect(activityPanelStore.getState().entries.get(ref)?.load.kind).toBe("ready");
+  expect(sessionActivitySnapshot(fake, ref, "session")?.summary).not.toBeNull();
+  expect(sessionActivitySnapshot(fake, ref, "session")?.summaryState.loading).toBe(false);
+});
+
+test.each(["notLoaded", "ended", "closed"] as const)(
+  "an empty %s follow-up offers its controls before the editor is engaged",
+  async (status) => {
+    const user = userEvent.setup();
+    await mountComposer("ref_a", {
+      status: { type: status },
+      evener: { ref: "ref_a", capabilities: PAST_THREAD_CAPABILITIES, queue: { revision: 0 } },
+    });
+    const editor = textarea();
+    expect(editor.style.minHeight).toBe("1lh");
+    expect(screen.getByTestId("model-switch-trigger")).toBeTruthy();
+    expect(submitButton().disabled).toBe(true);
+    await user.click(screen.getByRole("button", { name: "Session actions" }));
+    expect(editor.style.minHeight).toBe("3lh");
+    await user.click(screen.getByRole("menuitem", { name: "Rename" }));
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Session actions" }));
+    expect(editor.textContent).toBe("");
+  },
+);
+
+test.each(["notLoaded", "ended", "closed"] as const)(
+  "an empty %s follow-up keeps its session actions open when the editor loses focus",
+  async (status) => {
+    const user = userEvent.setup();
+    await mountComposer("ref_a", {
+      status: { type: status },
+      evener: { ref: "ref_a", capabilities: PAST_THREAD_CAPABILITIES, queue: { revision: 0 } },
+    });
+    await user.click(textarea());
+    await user.click(screen.getByRole("button", { name: "Session actions" }));
+
+    expect(screen.queryByRole("menu")).not.toBeNull();
+    await user.click(screen.getByRole("menuitem", { name: "Rename" }));
+    expect(screen.getByRole("dialog", { name: "Rename session" })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.getByRole("button", { name: "Session actions" })).toBe(document.activeElement);
+    render(<button type="button">Outside composer</button>);
+    await user.click(screen.getByRole("button", { name: "Outside composer" }));
+    await waitFor(() => expect(textarea().style.minHeight).toBe("1lh"));
+    expect(screen.getByTestId("session-chrome-inline")).toBeTruthy();
+    expect(textarea().textContent).toBe("");
+  },
+);
+
+test("an empty exited follow-up can pick its next model before entering the editor", async () => {
+  const user = userEvent.setup();
+  const fake = await mountComposer("ref_a", {
+    status: { type: "notLoaded" },
+    evener: { ref: "ref_a", capabilities: PAST_THREAD_CAPABILITIES, queue: { revision: 0 } },
+  });
+  fake.on("model/list", () => ({ data: [{ provider: "openai", model: "gpt-5.5" }] }));
+  fake.on("thread/model/set", () => ({}));
+  expect(textarea().style.minHeight).toBe("1lh");
+  await user.click(screen.getByTestId("model-switch-trigger"));
+
+  expect(screen.queryByRole("combobox")).not.toBeNull();
+  await user.clear(screen.getByRole("combobox"));
+  await user.click(await screen.findByRole("option", { name: /gpt-5.5/ }));
+  await waitFor(() =>
+    expect(fake.calls.filter((call) => call.method === "thread/model/set").map((call) => call.params)).toEqual([
+      { ref: "ref_a", modelProvider: "openai", model: "gpt-5.5" },
+    ]),
+  );
+  render(<button type="button">Outside composer</button>);
+  await user.click(screen.getByRole("button", { name: "Outside composer" }));
+  await waitFor(() => expect(textarea().style.minHeight).toBe("1lh"));
+  expect(screen.getByTestId("session-chrome-inline")).toBeTruthy();
+});
+
+test("an empty exited follow-up keeps its phone menus usable", async () => {
+  const restoreViewport = installMobileViewport();
+  try {
+    const user = userEvent.setup();
+    const fake = await mountComposer("ref_a", {
+      status: { type: "notLoaded" },
+      evener: { ref: "ref_a", capabilities: PAST_THREAD_CAPABILITIES, queue: { revision: 0 } },
+    });
+    fake.on("model/list", () => ({ data: [{ provider: "openai", model: "gpt-5.5" }] }));
+    fake.on("thread/model/set", () => ({}));
+    expect(textarea().style.minHeight).toBe("1lh");
+    await user.click(screen.getByRole("button", { name: "Session actions" }));
+    expect(screen.queryByRole("menu")).not.toBeNull();
+    await user.keyboard("{Escape}");
+    await user.click(screen.getByTestId("model-switch-trigger"));
+    expect(screen.getByRole("dialog", { name: "Choose model" })).toBeTruthy();
+    await user.click(await screen.findByRole("option", { name: /gpt-5.5/ }));
+    await waitFor(() => expect(fake.calls.filter((call) => call.method === "thread/model/set")).toHaveLength(1));
+    expect(document.activeElement).toBe(screen.getByTestId("model-switch-trigger"));
+  } finally {
+    cleanup();
+    restoreViewport();
+  }
+});
+
+test("an empty exited follow-up supports keyboard focus through its controls and picker", async () => {
+  const user = userEvent.setup();
+  const fake = await mountComposer("ref_a", {
+    status: { type: "notLoaded" },
+    evener: { ref: "ref_a", capabilities: PAST_THREAD_CAPABILITIES, queue: { revision: 0 } },
+  });
+  fake.on("model/list", () => ({ data: [{ provider: "openai", model: "gpt-5.5" }] }));
+  await user.click(textarea());
+  await user.tab();
+  expect(document.activeElement).toBe(screen.getByRole("button", { name: "Attach image" }));
+  await user.tab();
+  expect(document.activeElement).toBe(screen.getByTestId("model-switch-trigger"));
+  await user.keyboard("{Enter}");
+  expect(screen.queryByRole("combobox")).not.toBeNull();
+  await user.keyboard("{Escape}");
+  expect(document.activeElement).toBe(screen.getByTestId("model-switch-trigger"));
+  expect(screen.queryByRole("combobox")).toBeNull();
+});
+
+test("an empty exited follow-up survives the native blur checkpoint before its next control gains focus", async () => {
+  const user = userEvent.setup();
+  await mountComposer("ref_a", {
+    status: { type: "notLoaded" },
+    evener: { ref: "ref_a", capabilities: PAST_THREAD_CAPABILITIES, queue: { revision: 0 } },
+  });
+  const editor = textarea();
+  await user.click(editor);
+  const trigger = screen.getByRole("button", { name: "Session actions" });
+  // Chrome runs microtasks after native blur, before the destination focus.
+  await act(async () => {
+    editor.blur();
+    await Promise.resolve();
+  });
+  expect(trigger.isConnected).toBe(true);
+  act(() => trigger.focus());
+  await user.click(trigger);
+  await act(async () => {
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+  });
+  expect(screen.queryByRole("menu")).not.toBeNull();
 });
 
 test("restores a stored draft into the textarea on mount", async () => {
@@ -1167,7 +1319,7 @@ test("a composer-focus request for a DIFFERENT ref never focuses this composer",
 // would keep answering false afterwards.
 test("focusing the message field lights the shared prompt card's own focus affordance", async () => {
   await mountComposer("ref_a");
-  textarea().focus();
+  act(() => textarea().focus());
   expect(screen.getByTestId("composer-input-card").matches(":focus-within")).toBe(true);
 });
 
@@ -3283,15 +3435,7 @@ test("the stop button is absent once the session has ended", async () => {
   expect(screen.queryByTestId("composer-stop")).toBeNull();
 });
 
-// --- the ended state: an epitaph, not a cockpit ---------------------------
-//
-// A cold exited evener session arrives as "notLoaded" and STILL advertises Send
-// (cmd/evener-hub/app_threadread.go's pastEntryThread: the hub auto-resumes it on
-// the first message), so it keeps a card - collapsed to a one-line invitation
-// AT REST, since chrome around an empty invitation is noise. Engaging it
-// (focus, or any content) grows the real control row: a field you can type into
-// with no visible way to send is a dead end, and a keyboard chord is not an
-// affordance anyone can see.
+// --- ended sessions retain controls and a compact resting editor -----------
 
 const ENDED_STATUSES = ["ended", "closed", "notLoaded"] as const;
 
@@ -3300,7 +3444,7 @@ const ENDED_STATUSES = ["ended", "closed", "notLoaded"] as const;
 // canSend===canQueue===false for ended/closed (no turn to send to or queue
 // behind), so gating the control on it renders a permanently dead Send at
 // exactly the sessions the hub resumes on demand.
-test.each(ENDED_STATUSES)("a %s session's card rests bare, then grows a Send that really sends", async (type) => {
+test.each(ENDED_STATUSES)("a %s session's compact card keeps controls and sends a follow-up", async (type) => {
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", { status: { type } });
   fake.on("turn/start", (params) => ({
@@ -3314,17 +3458,16 @@ test.each(ENDED_STATUSES)("a %s session's card rests bare, then grows a Send tha
   }));
   const editor = textarea();
 
-  // At rest: a bare invitation with no control row.
-  const card = screen.getByTestId("composer-input-card");
+  // Controls are available before the editor is engaged.
   expect(textarea().getAttribute("data-placeholder")).toBe("Send a follow-up…");
-  expect(card.querySelectorAll("button")).toHaveLength(0);
-  expect(screen.queryByTestId("composer-attach")).toBeNull();
-  expect(screen.queryByTestId("session-chrome-inline")).toBeNull();
-  expect(screen.queryByTestId("composer-submit")).toBeNull();
+  expect(editor.style.minHeight).toBe("1lh");
+  expect(screen.getByTestId("composer-attach")).toBeTruthy();
+  expect(screen.getByTestId("session-chrome-inline")).toBeTruthy();
+  expect(submitButton().disabled).toBe(true);
 
-  // Focused: the card grows Send and attach. Steer and Stop stay absent:
-  // there is no turn in flight to act on.
+  // Focus expands the editor. There is no turn for Steer or Stop.
   await user.click(editor);
+  expect(editor.style.minHeight).toBe("3lh");
   expect(submitButton().textContent).toContain("Send");
   expect(screen.getByTestId("composer-attach")).toBeTruthy();
   expect(screen.queryByTestId("composer-steer")).toBeNull();
@@ -3341,20 +3484,13 @@ test.each(ENDED_STATUSES)("a %s session's card rests bare, then grows a Send tha
   expect(screen.queryByText(/Send is not available/)).toBeNull();
 });
 
-// Issue #1727: a SAVED local session (local: prefix, notLoaded) that still
-// advertises Send is the same resting shape as any other notLoaded snapshot.
-// It must rest as a bare one-line invitation - no submit, no attach, no inline
-// chrome - until the user focuses it or gives it content, exactly like the
-// non-local case above. Session.tsx's own menu/discovery mount requires
-// !controlsFor(model).send (among other conditions), so it never mounts for
-// this send-enabled shape: the composer's chrome-less discovery owner is the
-// one owner while the card rests, and the inline chrome takes over when the
-// card engages.
-test("a saved local notLoaded session with sending enabled rests as a bare invitation", async () => {
+// Saved local sessions share the compact editor and persistent control row.
+// The same inline chrome owns discovery before and after engagement.
+test("a saved local notLoaded session keeps controls and one discovery owner at rest", async () => {
   const user = userEvent.setup();
   const ref = "local:saved-unfenced";
   const activityRefs: unknown[] = [];
-  await mountComposerWithHandle(
+  const { fake } = await mountComposerWithHandle(
     ref,
     {
       status: { type: "notLoaded" },
@@ -3362,44 +3498,47 @@ test("a saved local notLoaded session with sending enabled rests as a bare invit
     },
     {
       prepare: (fake) => {
-        fake.on("evener/jobs/list", (params) => {
+        fake.on("evener/thread/activity/read", (params) => {
           activityRefs.push(params.ref);
-          return { data: emptyActivityTree(ref) };
+          return activitySummary(params.ref);
         });
       },
     },
   );
 
-  const card = screen.getByTestId("composer-input-card");
   expect(textarea().getAttribute("data-placeholder")).toBe("Send a follow-up…");
-  expect(card.querySelectorAll("button")).toHaveLength(0);
-  expect(screen.queryByTestId("composer-attach")).toBeNull();
-  expect(screen.queryByTestId("session-chrome-inline")).toBeNull();
-  expect(screen.queryByTestId("composer-submit")).toBeNull();
-  // The chrome-less owner still discovers for the resting card.
+  expect(textarea().style.minHeight).toBe("1lh");
+  expect(screen.getByTestId("composer-attach")).toBeTruthy();
+  const chrome = screen.getByTestId("session-chrome-inline");
+  expect(submitButton().disabled).toBe(true);
   await waitFor(() => expect(activityRefs).toEqual([ref]));
-  expect(activitySummaryStore.getState().entries.get(ref)?.established).toBe(true);
+  expect(sessionActivitySnapshot(fake, ref, "session")?.summary).not.toBeNull();
 
-  // Once focused the card grows its control row, and with it the inline chrome
-  // that is now the one discovery owner - the composer's own resting owner
-  // unmounts, so there is never a second.
+  // Focus changes the editor height without replacing the discovery owner.
   await user.click(textarea());
   expect(screen.getByTestId("composer-submit")).toBeTruthy();
   expect(screen.getByTestId("composer-attach")).toBeTruthy();
-  expect(screen.getByTestId("session-chrome-inline")).toBeTruthy();
+  expect(screen.getByTestId("session-chrome-inline")).toBe(chrome);
+  expect(textarea().style.minHeight).toBe("3lh");
+  expect(activityRefs).toEqual([ref]);
 });
 
-// Blur must not strand a typed message: the control row is gated on engagement
-// (focus OR content), so text left in the field keeps its Send.
+// Blur preserves a draft and its expanded writing space.
 test("an ended session that still holds text keeps its control row after blur", async () => {
   const user = userEvent.setup();
   await mountComposer("ref_a", { status: { type: "ended" } });
   const editor = textarea();
   await user.click(editor);
   await user.type(editor, "dw");
-  await user.tab();
+  render(<button type="button">Outside composer</button>);
+  await user.click(screen.getByRole("button", { name: "Outside composer" }));
+  await act(async () => {
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+  });
 
   expect(screen.getByTestId("composer-submit")).toBeTruthy();
+  expect(editor.textContent).toBe("dw");
+  expect(editor.style.minHeight).toBe("3lh");
 });
 
 // The writing surface opens from one line to three when a follow-up is focused.
@@ -3407,10 +3546,13 @@ test("an ended session's field rests at one line and opens to three on focus", a
   await mountComposer("ref_a", { status: { type: "notLoaded" } });
   expect(textarea().style.minHeight).toBe("1lh");
 
-  act(() => textarea().focus());
+  await act(async () => textarea().focus());
   expect(textarea().style.minHeight).toBe("3lh");
 
-  act(() => textarea().blur());
+  await act(async () => {
+    textarea().blur();
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+  });
   expect(textarea().style.minHeight).toBe("1lh");
 });
 
@@ -4599,7 +4741,7 @@ test("focus on an attachment's remove button survives its decode settling (kata 
     pastePngInto(textarea(), "shot.png");
   });
   const removeButton = screen.getByRole("button", { name: "Remove shot.png" });
-  removeButton.focus();
+  act(() => removeButton.focus());
   expect(document.activeElement).toBe(removeButton);
 
   await act(async () => {
@@ -5132,6 +5274,7 @@ test("repeated inline skills survive remount and undo while deletion reconciles 
 
   cleanup();
   render(<Composer ref={ref} focused={false} />);
+  await settleActivityDiscovery(ref);
   expect(textarea().textContent).toBe(original);
   expect(within(textarea()).getAllByTestId("composer-skill-chip")).toHaveLength(2);
 });
@@ -5162,6 +5305,7 @@ test("a token typed directly against a chip is separated so the reference stays 
   // The same holds after a re-derivation, which re-reads the persisted value.
   cleanup();
   render(<Composer ref={ref} focused={false} />);
+  await settleActivityDiscovery(ref);
   expect(textarea().textContent).toBe("Use /cleanup d");
   expect(within(textarea()).getAllByTestId("composer-skill-chip")).toHaveLength(1);
   expect(readComposerDraft(ref)).toEqual({ text: "Use /cleanup d", skillNames: ["cleanup"] });

@@ -56,27 +56,38 @@ const BOOT = {
 };
 
 // Environment variables injected by the Go fixture.
-const HUB_URL = process.env.RETIREMENT_HUB_URL ?? "";
-const RETIRE_URL = process.env.RETIREMENT_RETIRE_URL ?? "";
-const DEGRADE_URL = process.env.RETIREMENT_DEGRADE_URL ?? "";
-const REF = process.env.RETIREMENT_REF ?? "";
-const ARTIFACT_DIR = process.env.RETIREMENT_ARTIFACT_DIR ?? "";
-
-if (!HUB_URL || !RETIRE_URL || !DEGRADE_URL || !REF || !ARTIFACT_DIR) {
-  const missing = [
-    "RETIREMENT_HUB_URL",
-    "RETIREMENT_RETIRE_URL",
-    "RETIREMENT_DEGRADE_URL",
-    "RETIREMENT_REF",
-    "RETIREMENT_ARTIFACT_DIR",
-  ]
-    .filter((v) => !process.env[v])
-    .join(", ");
+const requiredEnvironment = {
+  RETIREMENT_HUB_URL: process.env.RETIREMENT_HUB_URL ?? "",
+  RETIREMENT_RETIRE_URL: process.env.RETIREMENT_RETIRE_URL ?? "",
+  RETIREMENT_DEGRADE_URL: process.env.RETIREMENT_DEGRADE_URL ?? "",
+  RETIREMENT_RESTART_URL: process.env.RETIREMENT_RESTART_URL ?? "",
+  RETIREMENT_RELEASE_URL: process.env.RETIREMENT_RELEASE_URL ?? "",
+  RETIREMENT_REF: process.env.RETIREMENT_REF ?? "",
+  RETIREMENT_RESTART_DRAFT: process.env.RETIREMENT_RESTART_DRAFT ?? "",
+  RETIREMENT_RESTART_TURN_ID: process.env.RETIREMENT_RESTART_TURN_ID ?? "",
+  RETIREMENT_ARTIFACT_DIR: process.env.RETIREMENT_ARTIFACT_DIR ?? "",
+};
+const missing = Object.entries(requiredEnvironment)
+  .filter(([, value]) => !value)
+  .map(([name]) => name)
+  .join(", ");
+if (missing) {
   console.error(`retirementguard: missing required env vars: ${missing}`);
   console.error("This guard must be invoked by TestRetirementBrowser in app_retirement_browser_test.go");
   process.exitCode = 1;
   process.exit(1);
 }
+const {
+  RETIREMENT_HUB_URL: HUB_URL,
+  RETIREMENT_RETIRE_URL: RETIRE_URL,
+  RETIREMENT_DEGRADE_URL: DEGRADE_URL,
+  RETIREMENT_RESTART_URL: RESTART_URL,
+  RETIREMENT_RELEASE_URL: RELEASE_URL,
+  RETIREMENT_REF: REF,
+  RETIREMENT_RESTART_DRAFT: RESTART_DRAFT,
+  RETIREMENT_RESTART_TURN_ID: RESTART_TURN_ID,
+  RETIREMENT_ARTIFACT_DIR: ARTIFACT_DIR,
+} = requiredEnvironment;
 
 // Ensure the artifact directory exists (it is outside the scratch dir that
 // the browser gate deletes on success, so evidence survives green runs).
@@ -92,6 +103,83 @@ async function captureScreenshot(send, name) {
   const filePath = path.join(ARTIFACT_DIR, `${name}.png`);
   writeFileSync(filePath, Buffer.from(result.result.data, "base64"));
   return filePath;
+}
+
+async function runReplacementRestartScenario(send) {
+  const beforeRestart = await evaluate(send, "window.retirementHarness.snapshot()");
+  const pendingResult = await evaluate(
+    send,
+    `(async () => {
+      try {
+        await window.retirementHarness.beginReplacementRestart();
+        const durable = await window.retirementHarness.submitDuringReplacementRestart();
+        return { ok: true, durable };
+      } catch (err) {
+        return { ok: false, error: err?.message ?? String(err), debug: window.retirementHarness.debug() };
+      }
+    })()`,
+  );
+  if (!pendingResult.ok) {
+    throw new Error(
+      `submit failed before release: ${pendingResult.error} debug=${JSON.stringify(pendingResult.debug)}`,
+    );
+  }
+
+  const { outbox, recovery } = pendingResult.durable;
+  if (
+    outbox.length !== 1 ||
+    outbox[0].state !== "submitting" ||
+    outbox[0].method !== "turn/start" ||
+    outbox[0].composerText !== RESTART_DRAFT
+  ) {
+    throw new Error(`durable outbox = ${JSON.stringify(outbox)}, want one exact submitting turn/start`);
+  }
+  if (recovery.length !== 0) {
+    throw new Error(`prompt entered recovery before readiness: ${JSON.stringify(recovery)}`);
+  }
+  const ssPending = await captureScreenshot(send, "05-restart-pending");
+  console.log(`screenshot 5 (restart pending): ${ssPending}`);
+
+  const releaseResult = await evaluate(
+    send,
+    `(async () => {
+      let timer;
+      const timeout = new Promise((resolve) => {
+        timer = setTimeout(() => resolve({ ok: false, error: 'replacement release did not deliver in 15000ms' }), 15000);
+      });
+      const released = window.retirementHarness.releaseReplacement().then(
+        (durable) => ({ ok: true, durable }),
+        (err) => ({ ok: false, error: err?.message ?? String(err) }),
+      );
+      try {
+        return await Promise.race([released, timeout]);
+      } finally {
+        clearTimeout(timer);
+      }
+    })()`,
+  );
+  if (!releaseResult.ok) throw new Error(`replacement failed: ${releaseResult.error}`);
+
+  const afterRestart = await evaluate(send, "window.retirementHarness.snapshot()");
+  const durableAfter = releaseResult.durable;
+  const restartTurnCount = afterRestart.turnIDs.filter((turnID) => turnID === RESTART_TURN_ID).length;
+  if (afterRestart.turnIDs.length !== beforeRestart.turnIDs.length + 1 || restartTurnCount !== 1) {
+    throw new Error(
+      `send did not add exactly one turn: before=${JSON.stringify(beforeRestart.turnIDs)} ` +
+        `after=${JSON.stringify(afterRestart.turnIDs)}`,
+    );
+  }
+  if (durableAfter.outbox.length !== 0 || durableAfter.recovery.length !== 0) {
+    throw new Error(`mutation did not settle cleanly: ${JSON.stringify(durableAfter)}`);
+  }
+  const ssReady = await captureScreenshot(send, "06-restart-delivered");
+  console.log(`screenshot 6 (restart delivered): ${ssReady}`);
+  return {
+    clientMutationId: outbox[0].clientMutationId,
+    pending: pendingResult.durable,
+    settled: durableAfter,
+    turnIDs: afterRestart.turnIDs,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -121,6 +209,10 @@ async function main() {
       `?hub=${encodeURIComponent(hubWS)}` +
       `&retire=${encodeURIComponent(RETIRE_URL)}` +
       `&degrade=${encodeURIComponent(DEGRADE_URL)}` +
+      `&restart=${encodeURIComponent(RESTART_URL)}` +
+      `&release=${encodeURIComponent(RELEASE_URL)}` +
+      `&restartDraft=${encodeURIComponent(RESTART_DRAFT)}` +
+      `&restartTurn=${encodeURIComponent(RESTART_TURN_ID)}` +
       `&ref=${encodeURIComponent(REF)}`;
 
     try {
@@ -509,6 +601,20 @@ async function main() {
               }
             }
 
+            // --- Send while the replacement is still starting --------------
+            // Close the live daemon feed and hold its successor behind the
+            // fixture gate. The real composer submits once during that gap. Its
+            // exact prompt must remain durably submitting, never appear in the
+            // rejected recovery tray, and produce one turn when readiness opens.
+            let restartQueued = null;
+            if (failures.length === 0) {
+              try {
+                restartQueued = await runReplacementRestartScenario(send);
+              } catch (error) {
+                failures.push(`restart-gated ${error instanceof Error ? error.message : String(error)}`);
+              }
+            }
+
             // --- Unavailable queue/steer/settings: retain input, no auto-resume
             // The replacement withdraws queue/steer/settings over the live feed.
             // Unsent input must be retained and must never be auto-submitted.
@@ -544,7 +650,7 @@ async function main() {
                 // turn/start ever carried this text.
                 await evaluate(send, `(async () => { await new Promise((r) => setTimeout(r, 800)); })()`);
                 const snap4 = JSON.parse(await evaluate(send, "JSON.stringify(window.retirementHarness.snapshot())"));
-                const beforeUnavailable = retry ? retry.turnIDs.length : postSend.turnIDs.length;
+                const beforeUnavailable = restartQueued.turnIDs.length;
                 unavailable = { draft: snap4.draft, turnIDs: snap4.turnIDs };
                 if (snap4.draft !== unavailableText) {
                   failures.push(
@@ -556,8 +662,8 @@ async function main() {
                     `queue/steer/settings unavailability auto-resumed: turns ${beforeUnavailable} -> ${snap4.turnIDs.length}`,
                   );
                 }
-                const ss5Path = await captureScreenshot(send, "05-after-unavailable-controls");
-                console.log(`screenshot 5 (after unavailable controls): ${ss5Path}`);
+                const ss5Path = await captureScreenshot(send, "07-after-unavailable-controls");
+                console.log(`screenshot 7 (after unavailable controls): ${ss5Path}`);
               }
             }
 
@@ -566,6 +672,7 @@ async function main() {
               sameSocket: socketState,
               lateFrame,
               retry,
+              restartQueued,
               unavailable,
               initial,
               postRetire,
@@ -575,7 +682,9 @@ async function main() {
                 "02-after-retirement.png",
                 "03-after-send.png",
                 "04-after-lost-reply-retry.png",
-                "05-after-unavailable-controls.png",
+                "05-restart-pending.png",
+                "06-restart-delivered.png",
+                "07-after-unavailable-controls.png",
               ],
             };
           }

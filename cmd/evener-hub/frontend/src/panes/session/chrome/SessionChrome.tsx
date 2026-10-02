@@ -8,15 +8,17 @@
 // (mirrors Session.tsx's own model lookup).
 //
 // The menu is the shared SessionMenu (2026-08-05-unified-session-context-
-// menu-design): Details/Tasks/Activity and pane-only Verbosity lead it at every
+// menu-design): Details/Activity and pane-only Verbosity lead it at every
 // width (there are no inline triggers and no narrow-collapse - the status
 // row's container-query variants own compression inside .body instead),
 // followed by Rename, the tree-gated Pin/Archive/Delete organization group,
 // and Shut down. The composer placement alone can also lead with the
-// narrow-layout turn verbs (Stop/Steer - SessionMenuProps.turnVerbs). The three
-// panels stay mounted triggerless so their imperative handles still open the
-// mobile Sheets; ActivityPanel's refreshWhenHidden is unconditional because
-// the menu's "Activity · N" label reads the summary that refresh maintains.
+// narrow-layout turn verbs (Stop/Steer - SessionMenuProps.turnVerbs). The
+// hidden ActivityPanel stays mounted for summary discovery; DetailsPanel's
+// imperative handle still opens its mobile Sheet. Activity opens the shared
+// sidebar at every viewport, and ActivityPanel's refreshWhenHidden is
+// unconditional because the menu's "Activity · N" label reads the summary that
+// refresh maintains.
 // Slash-command actions (goal/aside/compact/clear) are deliberately NOT in
 // the menu - the session's own composer owns those now (2026-08-14, "the
 // composer is where you act on this session"; the command palette only
@@ -31,38 +33,37 @@
 // carried has no surface now.
 
 import type { NavigationSessionLocation } from "@evener/appwire-client";
-import { canReadSharedNotes, sessionActionError } from "@evener/appwire-client";
+import { SHUT_DOWN_STATUSES, sessionActionError } from "@evener/appwire-client";
 import { isNavigationUnavailable } from "@evener/appwire-client/state/navigation";
 import { useRef, useState } from "react";
 import {
   activitySidebarOpenFor,
   activitySidebarStore,
-  closeSessionActivityPanes,
   useActivitySidebarOpenFor,
 } from "../../../shell/activitybar/activitySidebarStore";
 import { useClient } from "../../../shell/clientContext";
 import { closePanesForDeletedSessions } from "../../../shell/deletedSessionPanes";
 import { assignSessionPin, deleteSession, setArchived, unpinSession } from "../../../shell/rail/actions";
+import { isConfirmedCrashedSession } from "../../../shell/rail/sessionKind";
 import { navigate, paneToURL } from "../../../shell/routing";
 import { SessionMenu, type SessionMenuProps, type SessionMenuTurnVerbs } from "../../../shell/sessionMenu/SessionMenu";
 import { useIsMobile } from "../../../shell/useIsMobile";
 import { isPaneOpen, useWorkspaceStore, workspaceStore } from "../../../shell/workspace";
-import { useActivitySummaryStore } from "../../../stores/activitySummary";
 import { selectLocation } from "../../../stores/navigation/selectors";
 import { buildShutdownConvergence } from "../../../stores/navigation/shutdownConvergence";
 import { navigationStore, useNavigationStore } from "../../../stores/navigation/store";
+import { useSessionActivity } from "../../../stores/sessionActivity";
 import { threadsStore, useThreadsStore } from "../../../stores/threads";
-import { topNotesStore, useTopNotesExpanded } from "../../../stores/topNotes";
 import { Cadence, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { cadenceStateForStatus, NOW_TICK_MS, useNowTick } from "../liveness";
 import { navigationSummaryFor } from "../threadTitle";
 import { TranscriptDetailControl } from "../transcript/TranscriptDetailControl";
-import { ActivityPanel, type ActivityPanelHandle } from "./ActivityPanel";
+import { ActivityPanel } from "./ActivityPanel";
+import { activityActionLabel } from "./activityFormat";
 import { DetailsPanel, type DetailsPanelHandle } from "./DetailsPanel";
 import { StatusRow } from "./StatusRow";
 import styles from "./sessionchrome.module.css";
-import { TasksPanel, type TasksPanelHandle } from "./TasksPanel";
 import "../../sessionPanels";
 
 export type SessionChromePlacement = "footer" | "composer" | "menu";
@@ -70,7 +71,6 @@ export type SessionChromePlacement = "footer" | "composer" | "menu";
 export interface SessionChromeProps {
   ref: string;
   placement?: SessionChromePlacement;
-  onOpenTasks?: () => void;
   /** Live session mounts opt into the hidden panel's initial activity discovery. */
   discoverActivity?: boolean;
   /**
@@ -107,7 +107,6 @@ const EMPTY_FRAME_TIMES: number[] = [];
 export function SessionChrome({
   ref: sessionRef,
   placement = "footer",
-  onOpenTasks,
   discoverActivity = false,
   discoveryOnly = false,
   turnVerbs,
@@ -118,14 +117,12 @@ export function SessionChrome({
   const [verbosityOpen, setVerbosityOpen] = useState(false);
   const toasts = useToasts();
   const detailsOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionDetails", { ref: sessionRef }));
-  const tasksOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionTasks", { ref: sessionRef }));
   // The Activity menu item's checked state is the sidebar open ON THIS
-  // SESSION (the shared predicate hook); on mobile the item opens the Sheet
-  // and is never "checked".
+  // SESSION (the shared predicate hook). The mobile overlay uses the same
+  // scope, so rail and session menus agree at every viewport.
   const sidebarOpenHere = useActivitySidebarOpenFor(sessionRef);
-  const activityOpen = !isMobile && sidebarOpenHere;
-  const notesOpen = useTopNotesExpanded(sessionRef);
-  const activitySummary = useActivitySummaryStore((s) => s.entries.get(sessionRef));
+  const { snapshot: activitySnapshot } = useSessionActivity(sessionRef);
+  const activitySummary = activitySnapshot?.summary;
   const mutationStateAuthoritative = useThreadsStore((s) => s.mutationAuthorityRefs.has(sessionRef));
   // Route-demanded locations carry the authoritative owner/tier/pin metadata;
   // no project is expanded merely to decide menu eligibility.
@@ -152,6 +149,7 @@ export function SessionChrome({
           host_id: fallbackSession.host_id,
           session_id: fallbackSession.session_id,
           kind: fallbackSession.kind,
+          failure: fallbackSession.failure,
           top_level: location?.top_level ?? eligibleFallback,
           tier: location?.tier,
           pin_section_id: location?.pin_section_id,
@@ -172,8 +170,6 @@ export function SessionChrome({
   // liveness.ts's own useNowTick doc comment: "transient by design").
   const now = useNowTick(NOW_TICK_MS);
   const detailsRef = useRef<DetailsPanelHandle>(null);
-  const tasksRef = useRef<TasksPanelHandle>(null);
-  const activityRef = useRef<ActivityPanelHandle>(null);
   if (!model) return null;
 
   // The ONE hidden ActivityPanel every shape below shares. `discoverWhenHidden`
@@ -181,12 +177,8 @@ export function SessionChrome({
   // here; `discoveryOnly` is itself an opt-in (it exists for nothing else).
   const hiddenActivityPanel = (
     <ActivityPanel
-      ref={activityRef}
       sessionRef={sessionRef}
       model={model}
-      watches={fallbackSession?.watches}
-      omittedWatches={fallbackSession?.omitted_watches}
-      omittedArmedWatches={fallbackSession?.omitted_armed_watches}
       hideTrigger
       refreshWhenHidden
       discoverWhenHidden={discoverActivity || discoveryOnly}
@@ -216,30 +208,17 @@ export function SessionChrome({
     if (isMobile) detailsRef.current?.open();
     else workspaceStore.getState().togglePane("sessionDetails", { ref: sessionRef });
   };
-  const openTasks = () => {
-    if (onOpenTasks) onOpenTasks();
-    else if (isMobile) tasksRef.current?.open();
-    else workspaceStore.getState().togglePane("sessionTasks", { ref: sessionRef });
-  };
   const openActivity = () => {
-    // Desktop: the activity sidebar (the zoom system's triage surface).
-    // Mobile: the per-session Sheet, unchanged. Desktop toggles only when the
-    // sidebar already shows THIS session; open on another session, the item
-    // re-scopes it here instead of closing it under the user. The open also
-    // retires a leftover sessionActivity pane for this session - nothing on
-    // desktop can open or mark one anymore.
-    if (isMobile) activityRef.current?.open();
-    else if (activitySidebarOpenFor(sessionRef)) activitySidebarStore.getState().close();
+    // Mobile and desktop share the activity sidebar. Desktop toggles only when
+    // the sidebar already shows THIS session; opening on another session
+    // re-scopes it here instead of closing it under the user. Opening it also
+    // retires a leftover sessionActivity pane for this session.
+    if (!isMobile && activitySidebarOpenFor(sessionRef)) activitySidebarStore.getState().close();
     else {
-      closeSessionActivityPanes(sessionRef);
-      activitySidebarStore.getState().openWith();
+      activitySidebarStore.getState().openFor(sessionRef);
     }
   };
-  const openNotes = () => {
-    if (!canReadSharedNotes(threadsStore.getState().threads.get(sessionRef))) return;
-    topNotesStore.getState().toggleAndFocus(sessionRef);
-  };
-  const activityLabel = activitySummary?.counts?.complete ? `Activity · ${activitySummary.counts.active}` : "Activity";
+  const activityLabel = activityActionLabel(activitySummary);
 
   // The menu's action adapters, shared by the composer and menu-only
   // placements so the failure convention (SessionMenu.tsx's header comment:
@@ -251,7 +230,7 @@ export function SessionChrome({
           try {
             await threadsStore.getState().forceStop(sessionRef);
           } catch (err) {
-            toasts.push("error", sessionActionError("Couldn't force stop session", err));
+            toasts.push("error", sessionActionError("Couldn't force shutdown session", err));
             throw err;
           }
           try {
@@ -363,7 +342,6 @@ export function SessionChrome({
         )}
         <div className={CLASS.right}>
           <DetailsPanel ref={detailsRef} model={model} now={now} hideTrigger />
-          {!onOpenTasks && <TasksPanel ref={tasksRef} sessionRef={sessionRef} model={model} hideTrigger />}
           {hiddenActivityPanel}
           <SessionMenu
             sessionRef={sessionRef}
@@ -371,12 +349,9 @@ export function SessionChrome({
             triggerLabel="Session actions"
             canRename={model.capabilities.rename}
             canShutdown={model.capabilities.shutdown}
-            canReadNotes={canReadSharedNotes(model)}
+            stopped={SHUT_DOWN_STATUSES.has(model.status.type) || isConfirmedCrashedSession(fallbackSession)}
             session={menuSession}
-            panesOpen={{ details: detailsOpen, tasks: tasksOpen, activity: activityOpen, notes: notesOpen }}
-            // No taskLabel: the menu entry stays a plain "Tasks". Counts live
-            // inline and in the panel; even a condensed aggregate would crowd
-            // the menu's leading pane group.
+            panesOpen={{ details: detailsOpen, activity: sidebarOpenHere }}
             activityLabel={activityLabel}
             onOpenVerbosity={() => setVerbosityOpen(true)}
             // Composer placement only: the header comment on the prop says
@@ -385,8 +360,6 @@ export function SessionChrome({
             actions={{
               onOpenPane: (pane) => {
                 if (pane === "details") openDetails();
-                else if (pane === "tasks") openTasks();
-                else if (pane === "notes") openNotes();
                 else openActivity();
               },
               onRename: async (name) => {

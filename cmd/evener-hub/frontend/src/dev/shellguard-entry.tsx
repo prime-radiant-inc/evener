@@ -24,10 +24,16 @@ import {
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { navigationInvalidatedNotification } from "@evener/appwire-client/testing/notifications";
 import { createRoot } from "react-dom/client";
+import { RepoLocation } from "../panes/session/composer/RepoLocation";
+import { ACTIVITY_TABS } from "../shell/activitybar/activityTabs";
+import { ClientProvider } from "../shell/clientContext";
 import railStyles from "../shell/rail/Rail.module.css";
 import { RailRenderObserver } from "../shell/rail/railRenderObserver";
+import { StatusBar } from "../shell/statusbar/StatusBar";
+import { activitySummary, activityThread } from "../stores/sessionActivityTestUtils";
 import "../styles/tokens.css";
 import "../styles/global.css";
+import { PaneScaffold } from "../widgets/panescaffold";
 
 window.addEventListener("error", (event) => {
   const target = window as typeof window & { __shellGuardErrors?: string[] };
@@ -61,6 +67,20 @@ const NAVIGATION_MANIFEST = {
   sections: { live: { count: 0 }, needs_you: { count: 0 }, pin_sections: { count: 0 } },
   catalogs: { projects: { count: PROJECT_COUNT }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
 };
+const PANE_FOOTER_FIXTURES = [
+  {
+    key: "one",
+    ref: "local:p0-s0",
+    cwd: "/home/user/project-one/worktrees/feature-one",
+  },
+  {
+    key: "two",
+    ref: "local:p1-s0",
+    cwd: "/home/user/project-two/worktrees/feature-two",
+  },
+];
+const EXPECTED_PANE_ACTIVITY_CONTROLS = ACTIVITY_TABS.length;
+const CROWDED_ACTIVITY_COUNTS = { known: true, total: 100, active: 100, failed: 0, completed: 0 };
 
 let changedTitle = "project-0 session 0";
 let mutationRevision = 1;
@@ -79,6 +99,7 @@ function sessionValue(projectKey: string, projectName: string, index: number) {
     state: "idle",
     kind: "session",
     live: false,
+    tasks: { total: 100, done: 100 },
     children: [],
   };
 }
@@ -296,9 +317,9 @@ async function projectDelta(key: Extract<ResourceKey, { kind: "project" }>) {
   };
 }
 async function navigationRead(params: NavigationReadParams): Promise<NavigationReadResponse> {
-  if (params.representationVersion !== 2) throw new Error("shellguard expected v2 navigation reads");
+  if (params.representationVersion !== 3) throw new Error("shellguard expected v3 navigation reads");
   const key = resourceKey(params);
-  const v2 = (
+  const wireResponse = (
     data: unknown,
     representation: "snapshot" | "delta" = "snapshot",
     base?: NavigationReadBase,
@@ -313,7 +334,7 @@ async function navigationRead(params: NavigationReadParams): Promise<NavigationR
   });
   switch (key.kind) {
     case "manifest":
-      return v2(
+      return wireResponse(
         snapshot(
           { ...NAVIGATION_MANIFEST, revision: mutationRevision },
           [],
@@ -327,23 +348,23 @@ async function navigationRead(params: NavigationReadParams): Promise<NavigationR
         ),
       );
     case "section":
-      return v2(emptySnapshot(key));
+      return wireResponse(emptySnapshot(key));
     case "pin_catalog":
-      return v2(emptySnapshot(key));
+      return wireResponse(emptySnapshot(key));
     case "pin_section":
-      return v2(emptySnapshot(key));
+      return wireResponse(emptySnapshot(key));
     case "catalog":
-      return v2(await catalogSnapshot(key));
+      return wireResponse(await catalogSnapshot(key));
     case "project": {
       if (mutationRevision > 1 && params.base?.revision === 1 && key.projectKey === "p0")
-        return v2(await projectDelta(key), "delta", params.base);
+        return wireResponse(await projectDelta(key), "delta", params.base);
       const summary = projectSummaries.find((project) => project.key === key.projectKey);
-      return v2(await sessionSnapshot(key, summary?.name ?? key.projectKey));
+      return wireResponse(await sessionSnapshot(key, summary?.name ?? key.projectKey));
     }
     case "project_page":
-      return v2(emptySnapshot(key));
+      return wireResponse(emptySnapshot(key));
     case "location":
-      return v2(emptySnapshot(key));
+      return wireResponse(emptySnapshot(key));
   }
 }
 
@@ -360,6 +381,22 @@ async function boot(): Promise<void> {
   const { AppShell } = await import("../shell/AppShell");
   const fake = new FakeClient("ready");
   fake.on("evener/navigation/read", navigationRead);
+  fake.on("thread/read", ({ ref }) => {
+    const response = activityThread(ref);
+    return { ...response, thread: { ...response.thread, tasks: { total: 100, done: 100 } } };
+  });
+  fake.on("thread/unsubscribe", () => ({}));
+  fake.on("evener/thread/activity/read", ({ ref, scope }) => ({
+    ...activitySummary(ref),
+    scope: scope ?? "session",
+    delegates: { ...CROWDED_ACTIVITY_COUNTS },
+    jobs: { ...CROWDED_ACTIVITY_COUNTS },
+    watches: { ...CROWDED_ACTIVITY_COUNTS },
+  }));
+  fake.on("evener/git/head", () => ({
+    head: "this-is-a-long-feature-branch",
+    originUrl: "https://github.com/prime-radiant-inc/evener.git",
+  }));
   shellClient = fake;
   fake.scriptConnect(() => ({
     serverInfo: { name: "fake-evener-hub", version: "0.0.0" },
@@ -379,13 +416,56 @@ async function boot(): Promise<void> {
       directoryComplete: true,
       auth: true,
     },
-    navigation: { version: 1, readVersions: [2], generationId: "shellguard-generation", sequence: 0 },
+    navigation: { version: 1, readVersions: [3], generationId: "shellguard-generation", sequence: 0 },
   }));
   createRoot(root).render(
     <RailRenderObserver value={(id) => renderCounts.set(id, (renderCounts.get(id) ?? 0) + 1)}>
       <AppShell client={fake} />
     </RailRenderObserver>,
   );
+
+  // A fixed, transparent geometry fixture keeps shellguard's production
+  // AppShell scenario intact while exercising the real PaneScaffold and
+  // StatusBar components in two adjacent narrow pane allocations. Fixed
+  // positioning keeps it out of the page-height contract this guard measures.
+  if (window.matchMedia("(min-width: 900px)").matches) {
+    const fixtureRoot = document.createElement("div");
+    fixtureRoot.dataset.paneFooterFixtures = "";
+    Object.assign(fixtureRoot.style, {
+      position: "fixed",
+      left: "320px",
+      top: "120px",
+      width: "452px",
+      height: "500px",
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr",
+      gap: "12px",
+      opacity: "0",
+      pointerEvents: "none",
+    });
+    document.body.append(fixtureRoot);
+    createRoot(fixtureRoot).render(
+      <ClientProvider client={fake}>
+        {PANE_FOOTER_FIXTURES.map((fixture) => (
+          <div key={fixture.key} data-pane-footer-fixture>
+            <PaneScaffold
+              title={`Footer fixture ${fixture.key}`}
+              footer={`Composer ${fixture.key}`}
+              edgeFooter={
+                <StatusBar
+                  sessionRef={fixture.ref}
+                  paneId={`fixture-${fixture.key}`}
+                  leading={<RepoLocation cwd={fixture.cwd} local />}
+                />
+              }
+            >
+              Pane {fixture.key}
+            </PaneScaffold>
+          </div>
+        ))}
+      </ClientProvider>,
+    );
+  }
 }
 
 interface Box {
@@ -540,6 +620,25 @@ function measureShell() {
   };
 }
 
+function measurePaneFooters() {
+  const panes = [...document.querySelectorAll("[data-pane-footer-fixture]")].map((fixture) => {
+    const pane = fixture.firstElementChild;
+    const edgeFooter = pane?.querySelector('[data-testid="pane-edge-footer"]') ?? null;
+    const statusbar = pane?.querySelector('[data-testid="statusbar"]') ?? null;
+    const controls = statusbar === null ? [] : [...statusbar.querySelectorAll("button")].map(rect);
+    return {
+      box: pane === null ? null : rect(pane),
+      edgeFooter: edgeFooter === null ? null : rect(edgeFooter),
+      statusbar: statusbar === null ? null : rect(statusbar),
+      statusbarClientWidth: statusbar instanceof HTMLElement ? statusbar.clientWidth : null,
+      statusbarScrollWidth: statusbar instanceof HTMLElement ? statusbar.scrollWidth : null,
+      controls,
+      containsStatusbar: edgeFooter !== null && statusbar !== null && edgeFooter.contains(statusbar),
+    };
+  });
+  return { expectedControlsPerPane: EXPECTED_PANE_ACTIVITY_CONTROLS, panes };
+}
+
 function scrollMetrics(el: Element | null) {
   if (el === null) return null;
   const htmlEl = el as HTMLElement;
@@ -620,6 +719,7 @@ const target = window as typeof window & {
   measureShell: typeof measureShell;
   measureMobileSidebar: typeof measureMobileSidebar;
   measureTapTargets: typeof measureTapTargets;
+  measurePaneFooters: typeof measurePaneFooters;
   applyShellNavigationDelta: () => Promise<unknown>;
   measureRailRenderCounts: () => {
     counts: Record<string, number>;
@@ -631,6 +731,7 @@ const target = window as typeof window & {
 target.measureShell = measureShell;
 target.measureMobileSidebar = measureMobileSidebar;
 target.measureTapTargets = measureTapTargets;
+target.measurePaneFooters = measurePaneFooters;
 target.measureRailRenderCounts = () => ({
   counts: Object.fromEntries(renderCounts),
   changedRowID: changedObserverRowID,
@@ -675,13 +776,32 @@ target.settledShell = (async () => {
   for (;;) {
     // Every project row plus every session row is in the accessibility tree
     // only once the rail has rendered the full expanded tree.
-    if (document.querySelectorAll('[role="treeitem"]').length >= expectedRows) return true;
+    const treeRowCount = document.querySelectorAll('[role="treeitem"]').length;
+    const edgeFooterCount = document.querySelectorAll(
+      "[data-pane-footer-fixture] [data-testid='pane-edge-footer']",
+    ).length;
+    const activityControlCount = document.querySelectorAll(
+      "[data-pane-footer-fixture] [data-testid='statusbar'] button",
+    ).length;
+    const repositoryLinkCount = document.querySelectorAll(
+      "[data-pane-footer-fixture] [data-testid='composer-repo-link']",
+    ).length;
+    const expectedActivityControlCount = PANE_FOOTER_FIXTURES.length * EXPECTED_PANE_ACTIVITY_CONTROLS;
+    const paneFooterFixturesReady =
+      !window.matchMedia("(min-width: 900px)").matches ||
+      (edgeFooterCount === PANE_FOOTER_FIXTURES.length &&
+        activityControlCount === expectedActivityControlCount &&
+        repositoryLinkCount === PANE_FOOTER_FIXTURES.length);
+    if (treeRowCount >= expectedRows && paneFooterFixturesReady) return true;
     const errors = (window as typeof window & { __shellGuardErrors?: string[] }).__shellGuardErrors;
     if (errors && errors.length > 0) throw new Error(`shell harness page errors: ${errors.join("\n")}`);
     if (performance.now() > deadline) {
       throw new Error(
-        `shell harness: expected at least ${expectedRows} tree rows, found ${document.querySelectorAll('[role="treeitem"]').length} ` +
+        `shell harness: expected at least ${expectedRows} tree rows, found ${treeRowCount} ` +
           `(rail settings button: ${document.querySelector("[data-testid='rail-settings']") !== null}, ` +
+          `pane edge footers: ${edgeFooterCount}, ` +
+          `pane activity controls: ${activityControlCount}, ` +
+          `pane repository links: ${repositoryLinkCount}, ` +
           `body children: ${[...document.body.children].map((el) => el.tagName).join(",")}, ` +
           `root children: ${root.children.length}, pathname: ${window.location.pathname})`,
       );

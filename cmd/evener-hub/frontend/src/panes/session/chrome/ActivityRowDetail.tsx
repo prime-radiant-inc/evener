@@ -8,7 +8,7 @@
 // strip renders in the session CHROME - outside the transcript subtree that
 // provides the same map - and the delegate line names a real entity.
 
-import type { NavigationWatchSummary } from "@evener/appwire-client";
+import type { SessionWatch } from "@evener/appwire-client";
 import {
   type ActivityDelegateRow,
   type ActivityJobRow,
@@ -16,6 +16,7 @@ import {
   activityDelegateDiagnostics,
   activityDelegateState,
   delegateTiming,
+  findEntityView,
   formatClockTime,
   jobCommandLabel,
   splitMandate,
@@ -25,14 +26,17 @@ import {
 } from "@evener/appwire-client";
 import { Fragment, type JSX, useEffect, useMemo, useState } from "react";
 import { connectionStore } from "../../../stores/connection";
-import { threadsStore } from "../../../stores/threads";
+import { useNavigationStore } from "../../../stores/navigation/store";
+import { threadsStore, useThreadsStore } from "../../../stores/threads";
+import { useEntityViews } from "../../../transcriptDisplay/entityViews";
+import { Markdown, MarkdownBubble } from "../../../widgets";
 import { parseAnsiLines } from "../../../widgets/codeblock/ansi";
 import { AnsiLineContent } from "../../../widgets/codeblock/ansiLine";
 import { Disclosure } from "../../../widgets/disclosure";
 import { requireClass } from "../../../widgets/internal/requireClass";
-import { Markdown } from "../../../widgets/markdown";
+import { navigationSummaryFor } from "../threadTitle";
 import { EntityRef } from "../transcript/EntityRef";
-import { formatQuietAge, jobStatusDisplay, quietAnchorMillis } from "./activityFormat";
+import { delegateName, formatQuietAge, jobStatusDisplay, quietAnchorMillis } from "./activityFormat";
 import styles from "./activitypanel.module.css";
 import { useTreeNow } from "./treeNow";
 
@@ -41,6 +45,8 @@ const CLASS = {
   detailCommand: requireClass(styles.detailCommand, "activitypanel.module.css", "detailCommand"),
   detailMeta: requireClass(styles.detailMeta, "activitypanel.module.css", "detailMeta"),
   detailOutput: requireClass(styles.detailOutput, "activitypanel.module.css", "detailOutput"),
+  delegateReport: requireClass(styles.delegateReport, "activitypanel.module.css", "delegateReport"),
+  delegateReportLabel: requireClass(styles.delegateReportLabel, "activitypanel.module.css", "delegateReportLabel"),
   watchNote: requireClass(styles.watchNote, "activitypanel.module.css", "watchNote"),
   watchFacts: requireClass(styles.watchFacts, "activitypanel.module.css", "watchFacts"),
   watchNoSchedule: requireClass(styles.watchNoSchedule, "activitypanel.module.css", "watchNoSchedule"),
@@ -58,15 +64,6 @@ const CLASS = {
 // not by a clock.
 export const WATCH_NO_SCHEDULE_LINE =
   "There is no schedule to draw here — this one fires when the job or event it watches says so, not when a clock says so.";
-
-// The row header already prints a watch's note as the row's own name, in a
-// sidebar name column that fits roughly 40 characters at its narrow width.
-// Repeating the note as the detail's lead paragraph would therefore print every
-// row's title twice within a few pixels. The lead paragraph exists only to show
-// what that column truncated, so it renders only for notes longer than this
-// budget - 48, a little above the ~40-character column so a note that just fits
-// the title never duplicates.
-export const WATCH_NOTE_LEAD_BUDGET = 48;
 
 // The now marker is taller than a delivery dot, and a dot at the rail's far end
 // would land underneath it and read as the marker. Dots therefore never pass
@@ -101,7 +98,7 @@ function keyedInstants(instants: number[]): Array<{ millis: number; key: string 
 // daemon's instants, so distinct deliveries stay distinct and the now marker
 // lands where now actually is. Nothing here implies a drop or a future firing -
 // the only instants drawn are the ones the wire actually carried.
-function ActivityWatchTimeline({ watch, now }: { watch: NavigationWatchSummary; now: number }): JSX.Element | null {
+function ActivityWatchTimeline({ watch, now }: { watch: SessionWatch; now: number }): JSX.Element | null {
   // The ring is bounded (32 instants) but this strip re-renders on every tick
   // while its row is open, so parse and sort it once per watch identity instead
   // of on every render. A tick hands this component the same watch object, so
@@ -151,9 +148,9 @@ function ActivityWatchTimeline({ watch, now }: { watch: NavigationWatchSummary; 
   // named in the label when neither end holds it.
   const floatingNow = !markerAtStart && !markerAtEnd ? `, now ${clockFromMillis(now)}` : "";
   const caption =
-    watch.deliveries <= instants.length
-      ? "Delivered to this session"
-      : `Last ${instants.length} of ${watch.deliveries} deliveries`;
+    watch.watch.deliveries <= instants.length
+      ? "Delivered"
+      : `Last ${instants.length} of ${watch.watch.deliveries} deliveries`;
   return (
     <div className={CLASS.watchTimeline} data-testid="watch-timeline">
       <div
@@ -340,6 +337,21 @@ function JobOutputPreview({ ownerRef, jobId }: { ownerRef: string; jobId: string
   );
 }
 
+function DelegateReport({ row }: { row: ActivityDelegateRow }) {
+  const { delegate } = row;
+  const report = delegate.reportPreview;
+  if (typeof report !== "string" || !report.trim()) return null;
+  return (
+    <div className={CLASS.delegateReport} data-testid="delegate-report">
+      <div className={CLASS.delegateReportLabel}>
+        Message from{" "}
+        <EntityRef id={delegate.delegateId} ownerRef={row.parentRef} kind="delegate" display={delegateName(delegate)} />
+      </div>
+      <MarkdownBubble source={report} density="compact" dataTestId="delegate-report-bubble" />
+    </div>
+  );
+}
+
 export function ActivityRowDetail({
   row,
   now,
@@ -380,7 +392,7 @@ export function ActivityRowDetail({
               the trigger takes no tab stop of its own (ruling R13); triggerOnly:
               the row already carries its own open control, and this line's words
               stay exactly "Delegate <id> · send · stop · status". */}
-          <EntityRef id={delegate.delegateId} embedded triggerOnly />
+          <EntityRef id={delegate.delegateId} ownerRef={row.parentRef} kind="delegate" embedded triggerOnly />
           {" · send · stop · status"}
         </span>
       )}
@@ -396,14 +408,14 @@ export function ActivityRowDetail({
           {warning}
         </span>
       ))}
+      {row.kind === "delegate" && <DelegateReport row={row} />}
       {row.kind === "job" && row.job.hasOutput && <JobOutputPreview ownerRef={row.parentRef} jobId={row.job.jobId} />}
     </div>
   );
 }
 
-// ActivityWatchDetail is a watch row's expanded block: the note once more only
-// when the row title's name column could not show it in full, one facts
-// sentence, and - for a clock-driven watch with retained instants - the
+// ActivityWatchDetail reveals the full note independently of the compact
+// header width, one facts sentence, and - for a clock-driven watch - the
 // delivery timeline. A condition watch gets the explanatory line instead:
 // there is no period to draw, and the block must not pretend there is.
 //
@@ -416,19 +428,36 @@ export function ActivityRowDetail({
 // on every tick with identical output.
 export function ActivityWatchDetail({ row, now }: { row: ActivityWatchRow; now?: number }): JSX.Element {
   const { watch } = row;
+  const recipientName = useThreadsStore((state) => state.threads.get(watch.receiverRef)?.name);
+  const entities = useEntityViews();
+  const navigationName = useNavigationStore((state) => navigationSummaryFor(watch.receiverRef, state)?.title);
+  const notifiedDelegateName = useMemo(() => {
+    for (const entity of entities?.values() ?? []) {
+      if (entity.kind === "delegate" && entity.open.ref === watch.receiverRef) return entity.name?.trim();
+    }
+    return undefined;
+  }, [entities, watch.receiverRef]);
+  const targetLabel = useMemo(() => {
+    if (!entities || !watch.watch.outputMatch?.trim()) return undefined;
+    const target = watch.watch.target?.trim() || watch.watch.source;
+    const entity = findEntityView(entities, "job", target, watch.sourceRef);
+    return entity?.kind === "job" ? entity.row.job.description?.trim() || undefined : undefined;
+  }, [entities, watch.sourceRef, watch.watch.target, watch.watch.source, watch.watch.outputMatch]);
   const contextNow = useTreeNow();
   const effectiveNow = now ?? contextNow;
-  const note = watch.note?.trim();
-  const leadNote = note !== undefined && note.length > WATCH_NOTE_LEAD_BUDGET ? note : undefined;
+  const note = watch.watch.note?.trim();
   return (
     <div className={CLASS.detailStrip}>
-      {leadNote ? (
+      {note ? (
         <p className={CLASS.watchNote} data-testid="watch-note">
-          {leadNote}
+          {note}
         </p>
       ) : null}
       <p className={CLASS.watchFacts} data-testid="watch-facts">
-        {watchFacts(watch, effectiveNow)}
+        {watchFacts(watch, effectiveNow, targetLabel)}
+      </p>
+      <p className={CLASS.watchFacts}>
+        Notifies {recipientName?.trim() || navigationName?.trim() || notifiedDelegateName || watch.receiverRef}
       </p>
       {watchIsScheduled(watch) ? (
         <ActivityWatchTimeline watch={watch} now={effectiveNow} />

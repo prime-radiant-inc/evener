@@ -54,6 +54,11 @@ export interface ParsedNotification {
   description?: string;
   status?: string;
   reason?: string;
+  // How a packet frame's run ended, in words (delegateEndingText): the one
+  // reason-shaped value that is display prose rather than the producer's raw
+  // reason code, so a phone line can say it beneath a headline. Legacy
+  // attribute frames claim none - their `reason` is a raw code.
+  ending?: string;
   outputBytes?: number;
   exitCode?: number;
   transcriptRef?: string;
@@ -62,8 +67,22 @@ export interface ParsedNotification {
   excerpt: string;
   prose?: string; // body text before any excerpt marker (timers: sentence + note), decoded to plain text
   message?: string; // a communicate envelope's message (rendered as markdown)
+  // A reported run's validated result: the packet's structured_result field -
+  // a schema's record, whatever a top-level array or scalar schema produced, or
+  // a no-schema delegate's default-envelope data (see
+  // delegatePacketNotification) - or the envelope's data for frames recorded
+  // before the field existed. Undefined when the run reported no result or the
+  // frame is not a reported packet, and suppressed when the daemon refused to
+  // validate it.
+  structuredResult?: unknown;
+  structuredResultValid?: boolean;
+  structuredResultReason?: string;
   concerns: string[];
-  rawText: string; // the verbatim block, always kept inspectable
+  // The verbatim block. Job and watch cards keep it inspectable in a raw
+  // disclosure; a delegate packet is fully extracted into the fields above, so
+  // the hub's delegate card renders no raw disclosure for it (the daemon's own
+  // frame remains the verbatim record).
+  rawText: string;
 }
 
 const REF_PART_PATTERN = /^[A-Za-z0-9._~-]+$/;
@@ -125,6 +144,21 @@ function optionalSignedInteger(raw: string | undefined): number | undefined {
   if (!/^-?\d+$/.test(text)) return undefined;
   const value = Number(text);
   return Number.isSafeInteger(value) ? value : undefined;
+}
+
+// The one JSON-body guard every parser in this file shares: a value that
+// trims to a `{`-opening string and parses to a plain object, or null. Each
+// caller applies its own shape semantics on top (the packet's kind, the
+// envelope's message, the communicate envelope's status/concerns).
+function tryParseJsonRecord(text: string): Record<string, unknown> | null {
+  const raw = text.trim();
+  if (!raw.startsWith("{")) return null;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return isPlainObject(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
 function analyzeJobNotification(
@@ -238,9 +272,10 @@ function parseDelegateNotification(block: string): ParsedNotification | null {
   const description = decodeNotificationEntities(attrs.description ?? "").trim();
   const status = (attrs.status || attrs.event || "notification").trim();
   const reason = attrs.reason?.trim();
-  const secondary = [description || delegateId, tone === "error" || tone === "warning" ? reason : ""]
-    .filter(Boolean)
-    .join(" · ");
+  // The secondary carries identity only: a legacy frame's reason attr is a raw
+  // producer code, and a code never reaches the screen (the packet path's
+  // heads compose the humanized ending instead - see delegatePacketNotification).
+  const secondary = description || delegateId || "";
   return {
     type: "delegate",
     title: status ? `Delegate ${status}` : "Delegate notification",
@@ -279,6 +314,10 @@ const PACKET_KIND_OUTCOMES = new Map([
 ]);
 
 interface TerminalPacket {
+  // The daemon's PacketKind (reported | terminal_error): the reported kind is
+  // the only path that captures a validated structured result, so both
+  // structured-result sources and their verdict fields key on it.
+  kind: string;
   // The settled outcome: metadata's delegatestore.OutcomeStatus, or the one
   // the packet kind implies when metadata carries none (the fold's own bare
   // stop packet, agent/internal/delegatestore/fold.go, #3114).
@@ -289,30 +328,140 @@ interface TerminalPacket {
   error: string;
   name: string;
   description: string;
+  // The validated result and its verdict (agent/subagents.go's
+  // captureDelegateStructuredResult): the result rides structured_result - a
+  // schema's record, whatever a top-level array or scalar schema produced, or
+  // a no-schema delegate's whole default-envelope capture - and a capture or
+  // validation failure leaves it unset and names why in
+  // structured_result_reason.
+  structuredResult?: unknown;
+  structuredResultValid?: boolean;
+  structuredResultReason?: string;
+  // Where the result came from (#3548): a result schema's own output, or a
+  // no-schema delegate's captured default envelope (whose data the card
+  // renders). Absent on frames recorded before the marker existed, where the
+  // default-envelope shape heuristic remains the fallback.
+  structuredResultSource?: string;
 }
 
 // parseTerminalPacket reads the daemon's TerminalPacket JSON. json.Marshal
 // escapes <, > and & as \u sequences, so the body is plain JSON with no
 // notification entities to decode.
 function parseTerminalPacket(body: string): TerminalPacket | null {
-  if (!body.startsWith("{")) return null;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(body);
-  } catch {
-    return null;
-  }
-  if (!isPlainObject(parsed) || typeof parsed.kind !== "string") return null;
+  const parsed = tryParseJsonRecord(body);
+  if (parsed === null || typeof parsed.kind !== "string") return null;
   const metadata = isPlainObject(parsed.metadata) ? parsed.metadata : {};
   const text = (value: unknown) => (typeof value === "string" ? value.trim() : "");
   return {
+    kind: parsed.kind,
     outcome: text(metadata.outcome) || (PACKET_KIND_OUTCOMES.get(parsed.kind) ?? ""),
     message: text(parsed.message),
     reason: text(metadata.reason),
     error: text(metadata.error),
     name: text(metadata.name),
     description: text(metadata.description),
+    // Presence, not truthiness: a validated explicit null result is a present
+    // result (the daemon captures output: null as json.RawMessage("null"),
+    // session_tools_communicate.go), so it must not collapse into "absent".
+    structuredResult: "structured_result" in parsed ? parsed.structured_result : undefined,
+    structuredResultValid:
+      typeof parsed.structured_result_valid === "boolean" ? parsed.structured_result_valid : undefined,
+    structuredResultReason: text(parsed.structured_result_reason) || undefined,
+    structuredResultSource: text(parsed.structured_result_source) || undefined,
   };
+}
+
+// A reported packet's message is the terminal communicate's result text
+// (agent/session_tools_communicate.go): the plain message, or the canonical
+// nodeOutput envelope - {"message","data","artifacts"}, plus an optional
+// decision. The envelope's message is the subagent's report; its data is
+// the schema output - the same object the packet's structured_result field
+// carries on a current daemon, and the only copy on a frame recorded before
+// that field existed - in whatever shape the caller's fields took, not only
+// objects. Only that canonical shape unwraps: the daemon marshals message,
+// data, and artifacts without omitempty, so a wire envelope always carries
+// all three keys, and JSON beyond that shape - whatever keys it has - is the
+// subagent's own text and stays whole.
+function parsePacketEnvelope(text: string): { message: string; data?: unknown } | null {
+  const parsed = tryParseJsonRecord(text);
+  if (parsed === null || typeof parsed.message !== "string") return null;
+  // artifacts is a []string on the wire (nodeOutput.Artifacts); data always
+  // rides the envelope. JSON whose artifacts key holds anything else - a
+  // non-array, or an array holding non-strings - is the subagent's own text,
+  // not a wire envelope.
+  if (!("data" in parsed) || !Array.isArray(parsed.artifacts)) return null;
+  if (!parsed.artifacts.every((item) => typeof item === "string")) return null;
+  if (!Object.keys(parsed).every((key) => CANONICAL_ENVELOPE_KEYS.has(key))) return null;
+  return { message: parsed.message.trim(), data: parsed.data };
+}
+
+// The canonical output envelope's keys (session_tools_communicate.go's
+// nodeOutput json tags): decision is omitempty, the rest always marshal.
+const CANONICAL_ENVELOPE_KEYS = new Set(["message", "data", "artifacts", "decision"]);
+
+// The default communicate output envelope's keys
+// (session_tools_communicate.go's defaultEnvelopeKeys).
+const DEFAULT_ENVELOPE_KEYS = new Set(["message", "data", "artifacts"]);
+
+// isDefaultEnvelopeCopy recognizes a no-schema delegate's capture: without a
+// result schema the child reports through the default output envelope, and
+// the daemon captures that whole envelope as the structured result (the
+// communicate tool hands captureDelegateStructuredResult the raw `output`
+// argument, which with no schema is stored and marked valid without
+// validating, agent/subagents.go). The frame then carries the caller's fields
+// nested inside structured_result.data - one copy of the very envelope the
+// message field already parses - so the exact default shape, its message the
+// same string the message field carries (or the zero-filled empty string a
+// report whose message rode the call's top level captures), means the card
+// wants the data, not Message/Data/Artifacts wrapper rows with the message
+// duplicated and the data blob truncated.
+function isDefaultEnvelopeCopy(result: Record<string, unknown>, envelope: { message: string } | null): boolean {
+  if (envelope === null || typeof result.message !== "string") return false;
+  // The daemon captures the raw `output` argument, which repair has already
+  // zero-filled (fillCommunicateEnvelope mutates args in place), while the
+  // packet's message rides the canonical envelope of effectiveOutput - its
+  // message backfilled from the call's top-level message. A zero-filled empty
+  // capture message is that documented call shape, so it unwraps too.
+  // The comparison reads trimmed on both sides: normalizeNodeOutput keeps the
+  // model's whitespace while parsePacketEnvelope trims, so the same words can
+  // ride with different surrounding whitespace.
+  const captureMessage = result.message.trim();
+  if (captureMessage !== "" && captureMessage !== envelope.message) return false;
+  // The default schema types artifacts as an array of strings, so a real
+  // capture's artifacts are always string[] - non-string artifacts mark a
+  // schema result that merely wears the envelope's shape.
+  if (
+    !isPlainObject(result.data) ||
+    !Array.isArray(result.artifacts) ||
+    !result.artifacts.every((item) => typeof item === "string")
+  ) {
+    return false;
+  }
+  return Object.keys(result).every((key) => DEFAULT_ENVELOPE_KEYS.has(key));
+}
+
+// The stub phrases a machinery ending writes as its packet message - fold.go's
+// bare stop packet ("stopped by parent"), delegate_user_stop.go's
+// delegateUserStopMessage, and context.Canceled's own error text - restate the
+// ending the head's reason line already says in words, and only a stopped or
+// failed run writes them. A reported run's message is the subagent's own
+// report, however short: a completed delegate that really said one of them
+// keeps its words. So does a message that IS the ending itself (a failed
+// run's whole error is its ending's first line; one that runs further keeps
+// its full text, since the head shows only that first line). None of the
+// suppressed ones is a report, so none parses as the message.
+const MACHINERY_PACKET_MESSAGES = new Set(["stopped by parent", "Stopped by the user.", "context canceled"]);
+
+function packetBodyMessage(
+  text: string,
+  ending: string | undefined,
+  outcome: NotificationOutcome | undefined,
+): string | undefined {
+  const value = text.trim();
+  if (value === "") return undefined;
+  if ((outcome === "failed" || outcome === "stopped") && MACHINERY_PACKET_MESSAGES.has(value)) return undefined;
+  if (ending !== undefined && value === ending) return undefined;
+  return value;
 }
 
 function delegatePacketNotification(
@@ -326,6 +475,41 @@ function delegatePacketNotification(
   const label = name || packet.description || delegateId;
   const outcome = DELEGATE_OUTCOMES.get(packet.outcome);
   const ending = delegateEndingText(packet);
+  const envelope = parsePacketEnvelope(packet.message);
+  const message = packetBodyMessage(envelope?.message ?? packet.message, ending, outcome);
+  // Both structured-result sources and their verdict fields are gated on the
+  // reported kind: the daemon captures and validates a structured result on
+  // the reported path only (captureDelegateStructuredResult runs inside the
+  // reported branch, agent/subagents.go), so a terminal_error body carries no
+  // validation verdict behind whatever structured-result fields or
+  // envelope-shaped data it happens to hold (a provider error, a report the
+  // run managed before failing). Its message field still reads as content;
+  // nothing else becomes rows. Within the reported kind, a capture failure, an
+  // oversized result, or a missing one leaves the packet's structured_result
+  // field unset - but a result that fails SCHEMA validation still rides the
+  // field, marked valid=false (agent/subagents.go stores the marshaled result
+  // before validating it). The structuredResultValid !== false check below,
+  // not field absence, is what suppresses both the raw invalid result and its
+  // envelope copy: only a valid verdict's data renders, from whichever copy
+  // the frame carries, and a no-schema delegate's default-envelope capture
+  // unwraps to its data (isDefaultEnvelopeCopy).
+  // A result with no record shape (a top-level array or scalar schema, or an
+  // explicit null) passes through as-is for the card's value grammar.
+  const reported = packet.kind === "reported";
+  const captured = packet.structuredResult !== undefined ? packet.structuredResult : envelope?.data;
+  // #3548: the packet names its capture source, so a result schema whose output
+  // wears the default envelope's exact shape is never mistaken for a no-schema
+  // capture. A "schema" source keeps the result whole. Any other source,
+  // "default_envelope" included, still requires the exact default shape
+  // (isDefaultEnvelopeCopy): the daemon stamps that value from the absence of a
+  // result schema, but a no-schema delegate can still inherit a widened
+  // (WithAllowedDecisions) or custom communicate output schema, so the marker
+  // alone cannot prove the capture is the canonical envelope. A frame with no
+  // marker (recorded before the field existed) takes the same shape path.
+  const unwraps =
+    packet.structuredResultSource !== "schema" && isPlainObject(captured) && isDefaultEnvelopeCopy(captured, envelope);
+  const structuredResult =
+    reported && packet.structuredResultValid !== false ? (unwraps ? captured.data : captured) : undefined;
   return {
     type: "delegate",
     // In the outcome's own words; an ending this client doesn't know still reported.
@@ -339,7 +523,11 @@ function delegatePacketNotification(
     status: packet.outcome,
     reason: ending,
     excerpt: "",
-    message: packet.message || undefined,
+    message: message || undefined,
+    structuredResult,
+    ending,
+    structuredResultValid: reported ? packet.structuredResultValid : undefined,
+    structuredResultReason: reported ? packet.structuredResultReason : undefined,
     concerns: [],
     rawText: block,
   };
@@ -421,20 +609,14 @@ interface CommunicateEnvelope {
 // (commit_hashes/test_summary/artifacts) the legacy card rendered is a conscious
 // scope-out for this stream (see w8-t3-report).
 function parseCommunicateEnvelope(text: string): CommunicateEnvelope | null {
-  const raw = text.trim();
-  if (!raw.startsWith("{")) return null;
-  try {
-    const parsed = JSON.parse(raw);
-    if (typeof parsed !== "object" || parsed === null) return null;
-    const data = typeof parsed.data === "object" && parsed.data ? parsed.data : {};
-    return {
-      message: String(parsed.message ?? "").trim(),
-      status: String(data.status ?? "").trim(),
-      concerns: compactStringArray(data.concerns),
-    };
-  } catch {
-    return null;
-  }
+  const parsed = tryParseJsonRecord(text);
+  if (parsed === null) return null;
+  const data = isPlainObject(parsed.data) ? parsed.data : {};
+  return {
+    message: String(parsed.message ?? "").trim(),
+    status: String(data.status ?? "").trim(),
+    concerns: compactStringArray(data.concerns),
+  };
 }
 
 function notificationTone(attrs: Record<string, string>, communicate: CommunicateEnvelope | null): NotificationTone {

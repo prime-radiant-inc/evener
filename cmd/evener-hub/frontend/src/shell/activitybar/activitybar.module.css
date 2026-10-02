@@ -15,9 +15,23 @@
   color: var(--ink-hi);
 }
 
+.sidebarMobile {
+  width: 100%;
+  height: 100%;
+  flex: 1 1 auto;
+  border-left: none;
+  background: var(--surface-canvas);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-ui);
+  color: var(--ink-hi);
+}
+
 .head {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: var(--space-2);
   padding: var(--space-2) var(--space-3);
   border-bottom: 1px solid var(--edge);
@@ -139,4 +153,26 @@
   font-size: var(--font-size-caption);
   color: var(--ink-low);
   padding: var(--space-2) var(--space-1);
+}
+
+.scope {
+  flex: 1;
+  min-width: 0;
+}
+
+.pending {
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+}
+
+.tabs [role="radio"] {
+  block-size: auto;
+  min-block-size: var(--tap-min);
+  padding-block: var(--space-1);
+  font-size: var(--font-size-caption);
+}
+
+.tabs [role="radio"] > span {
+  white-space: pre-line;
+  font-variant-numeric: tabular-nums;
 }

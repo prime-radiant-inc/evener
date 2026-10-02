@@ -32,6 +32,8 @@ export interface MarkdownProps {
 const CLASS = {
   root: requireClass(styles.root, "markdown.module.css", "root"),
   inlineCode: requireClass(styles.inlineCode, "markdown.module.css", "inlineCode"),
+  bubble: requireClass(styles.markdownBubble, "markdown.module.css", "markdownBubble"),
+  bubbleCompact: requireClass(styles.markdownBubbleCompact, "markdown.module.css", "markdownBubbleCompact"),
 };
 
 const CODEBLOCK_CLASS = {
@@ -299,6 +301,25 @@ export function Markdown({ source, live = false, ref }: MarkdownProps) {
           />
         );
       })}
+    </div>
+  );
+}
+
+export function MarkdownBubble({
+  source,
+  density = "default",
+  dataTestId,
+}: {
+  source: string;
+  density?: "default" | "compact";
+  dataTestId?: string;
+}) {
+  return (
+    <div
+      className={`${CLASS.bubble}${density === "compact" ? ` ${CLASS.bubbleCompact}` : ""}`}
+      data-testid={dataTestId}
+    >
+      <Markdown source={source} />
     </div>
   );
 }

@@ -1,198 +1,245 @@
-// The Jobs and Watches tabs of the activity sidebar: ordering, status
-// wording, glyph tones, drill/open behavior, and the omitted-watches grammar.
+import { createNavigationStore } from "@evener/appwire-client/state/navigation";
+import { memoryNavigationPersistence } from "@evener/appwire-client/testing/navigationPersistence";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, expect, test, vi } from "vitest";
+import { connectionStore } from "../../stores/connection";
+import { activityClient, activityContext, activityJob, activityWatch } from "../../stores/sessionActivityTestUtils";
+import { resetDisclosureStoreForTests } from "../../widgets/disclosure/disclosureStore";
+import { deriveScope } from "../statusbar/statusScope";
+import { workspaceStore } from "../workspace";
+import { JobsTab } from "./JobsTab";
+import { WatchesTab } from "./WatchesTab";
 
-import type { NavigationManifest } from "@evener/appwire-client";
-import { keyID, type ResourceKey, type ResourceState } from "@evener/appwire-client/state/navigation";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { lazy } from "react";
-import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
-import { MotionProvider } from "../../motion";
-import { navigationStore } from "../../stores/navigation/store";
-import { resetFocusedActivityScopeForTests } from "../focusedSession";
-import { type PaneDescriptor, type PaneProps, registerPaneForTests } from "../paneRegistry";
-import { summaryOf, watchOf } from "../statusbar/scopeTestUtils";
-import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
-import { ActivitySidebar } from "./ActivitySidebar";
-import styles from "./activitybar.module.css";
-import { activitySidebarStore, resetActivitySidebarStoreForTests } from "./activitySidebarStore";
-
-function fixtureDescriptor<P>(
-  id: PaneDescriptor<P>["id"],
-  overrides: Partial<PaneDescriptor<P>> = {},
-): PaneDescriptor<P> {
-  return {
-    id,
-    title: () => `title for ${id}`,
-    component: lazy(() => new Promise<{ default: React.ComponentType<PaneProps<P>> }>(() => {})),
-    ...overrides,
-  };
-}
-
-const restorePaneFixtures: Array<() => void> = [];
-
-beforeAll(() => {
-  restorePaneFixtures.push(registerPaneForTests(fixtureDescriptor("session")));
-  restorePaneFixtures.push(registerPaneForTests(fixtureDescriptor("transcript")));
-});
-
-afterAll(() => {
-  for (const restore of restorePaneFixtures) restore();
-});
-
-function manifest(): NavigationManifest {
-  return {
-    generation_id: "g1",
-    revision: 1,
-    sources: [],
-    attentionSummary: { needsYou: 0, error: 0, working: 0 },
-    sections: { live: { count: 1 }, needs_you: { count: 0 }, pin_sections: { count: 0 } },
-    catalogs: { projects: { count: 0 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
-  } as NavigationManifest;
-}
-
-function resource<T>(key: ResourceKey, data: T): ResourceState {
-  return {
-    key,
-    data,
-    loadedRevision: 1,
-    targetRevision: null,
-    forceToken: 0,
-    etag: "e",
-    loading: false,
-    stale: false,
-    error: null,
-    generationID: "g1",
-  } as ResourceState;
-}
-
-// Root A with a full activity load: one running job, two completed (one
-// failed), two watches (one armed, one fired), and hub-omitted watch rows.
-const ROOT = summaryOf({
-  ref: "local:a",
-  title: "A",
-  state: "active",
-  running_jobs: [{ job_id: "j1", job_type: "shell", status: "running", command: "go test ./..." }],
-  completed_jobs: [
-    { job_id: "j0", job_type: "shell", status: "command_exited_nonzero", command: "make lint" },
-    { job_id: "j_1", job_type: "shell", status: "completed", command: "npm run build" },
-  ],
-  watches: [
-    watchOf({ id: "w1", note: "test heartbeat", cadence: [{ kind: "every", seconds: 300 }] }),
-    watchOf({
-      id: "w2",
-      note: "build landed",
-      cadence: [{ kind: "after", seconds: 600 }],
-      active: false,
-      deliveries: 1,
-    }),
-  ],
-  omitted_watches: 2,
-  omitted_armed_watches: 1,
-  tasks: { total: 5, done: 2, current: "doing the thing" },
-});
-
-function installRoot() {
-  const liveKey: ResourceKey = { kind: "section", section: "live", offset: 0, limit: 50 };
-  navigationStore.setState({
-    mode: "v2",
-    capability: { version: 1, generationId: "g1", sequence: 1, readVersions: [2] },
-    clientGenerationID: "g1",
-    manifest: resource({ kind: "manifest" }, manifest()) as ResourceState<NavigationManifest>,
-    resources: new Map([
-      [keyID(liveKey), resource(liveKey, { sessions: [ROOT] })],
-      [
-        keyID({ kind: "location", ref: "local:a" }),
-        resource(
-          { kind: "location", ref: "local:a" },
-          { ref: "local:a", top_level_ref: "local:a", top_level: true, session: ROOT },
-        ),
-      ],
-    ]),
-    expanded: new Map(),
-    attention: { changed: [], summary: manifest().attentionSummary },
-  });
-  workspaceStore.getState().openPane("session", { ref: "local:a" });
-}
-
-function renderSidebar(tab: "jobs" | "watches") {
-  activitySidebarStore.getState().openWith(tab);
-  return render(
-    <MotionProvider>
-      <ActivitySidebar />
-    </MotionProvider>,
-  );
-}
-
+const scope = () =>
+  deriveScope(createNavigationStore({ persistence: memoryNavigationPersistence() }).getState(), "remote:owner");
 afterEach(() => {
   cleanup();
-  resetWorkspaceStoreForTests();
-  resetFocusedActivityScopeForTests();
-  resetActivitySidebarStoreForTests();
+  resetDisclosureStoreForTests();
+  vi.restoreAllMocks();
+  connectionStore.setState({ client: null, state: "idle" });
+});
+test("jobs show supplied terminal status and have no invented transcript action", async () => {
+  const client = activityClient();
+  client.on("evener/thread/jobs/list", ({ ref, scope }) => ({
+    context: activityContext(ref),
+    scope: scope ?? "session",
+    jobs: [
+      activityJob({
+        description: "",
+        transcriptRef: undefined,
+        command: "real status",
+        status: "command_exited_nonzero",
+        terminal: true,
+        reason: "exit 2",
+      }),
+    ],
+    page: { complete: true, issues: [] },
+  }));
+  connectionStore.getState().connect(client);
+  render(<JobsTab scope={scope()} />);
+  expect(await screen.findByText("real status")).toBeTruthy();
+  expect(screen.getByText(/Command failed/)).toBeTruthy();
+  expect(screen.queryByRole("button", { name: /real status/ })).toBeNull();
+});
+test("watch tab reads typed receiver state and preserves cadence/delivery vocabulary", async () => {
+  const client = activityClient();
+  client.on("evener/thread/watches/list", ({ ref, scope }) => ({
+    context: activityContext(ref),
+    scope: scope ?? "session",
+    watches: [
+      activityWatch({ note: "heartbeat", cadence: [{ kind: "every", seconds: 300 }] }),
+      activityWatch({
+        id: "fired",
+        note: "one shot",
+        active: false,
+        deliveries: 1,
+        cadence: [{ kind: "after", seconds: 600 }],
+      }),
+    ],
+    page: { complete: true, issues: [] },
+  }));
+  connectionStore.getState().connect(client);
+  render(<WatchesTab scope={scope()} />);
+  expect(await screen.findByText("heartbeat")).toBeTruthy();
+  expect(screen.getByText("every 5m · armed")).toBeTruthy();
+  expect(screen.getByText("after 10m · 1 delivery · not armed")).toBeTruthy();
+  expect(client.calls.filter((c) => c.method === "evener/thread/jobs/list")).toHaveLength(0);
 });
 
-describe("JobsTab", () => {
-  test("lists running jobs before completed, with status wording", () => {
-    installRoot();
-    renderSidebar("jobs");
-    const names = screen.getAllByText(/go test|make lint|npm run build/);
-    expect(names.map((n) => n.textContent)).toEqual(["go test ./...", "make lint", "npm run build"]);
-    expect(screen.getByText("Command failed")).toBeTruthy();
-    expect(screen.getByText("running")).toBeTruthy();
-    expect(screen.getByText("completed")).toBeTruthy();
-  });
-
-  test("a failed job's glyph carries the danger tone", () => {
-    installRoot();
-    const { container } = renderSidebar("jobs");
-    expect(container.querySelector(`.${styles.glyphDanger}`)).not.toBeNull();
-  });
-
-  test("clicking a job opens its transcript pane beside the session", () => {
-    installRoot();
-    renderSidebar("jobs");
-    fireEvent.click(screen.getByText("make lint"));
-    const transcript = workspaceStore.getState().panes.find((p) => p.type === "transcript");
-    expect(transcript?.params).toEqual({ ref: "job:j0", parentRef: "local:a" });
-    expect(transcript?.slot).toBe("secondary");
-  });
+test("watch disclosure reveals its complete condition and keeps equal IDs in different receivers separate", async () => {
+  const client = activityClient();
+  const note = "Follow the release monitor until the readiness marker appears in its output";
+  client.on("evener/thread/watches/list", ({ ref, scope }) => ({
+    context: activityContext(ref),
+    scope: scope ?? "session",
+    watches: [activityWatch({ note, outputMatch: "READY_FOR_REVIEW", target: "release-monitor" }, ref)],
+    page: { complete: true, issues: [] },
+  }));
+  connectionStore.getState().connect(client);
+  const view = render(<WatchesTab scope={scope()} />);
+  const summary = await screen.findByText(note);
+  expect(screen.queryByTestId("watch-facts")).toBeNull();
+  fireEvent.click(summary);
+  expect(screen.getByTestId("watch-note").textContent).toBe(note);
+  expect(screen.getByTestId("watch-facts").textContent).toContain("READY_FOR_REVIEW");
+  expect(screen.getByTestId("watch-facts").textContent).toContain("release-monitor");
+  expect(client.calls.filter((call) => call.method === "evener/thread/watches/list")).toHaveLength(1);
+  view.rerender(
+    <WatchesTab
+      scope={deriveScope(
+        createNavigationStore({ persistence: memoryNavigationPersistence() }).getState(),
+        "other:receiver",
+      )}
+    />,
+  );
+  await screen.findByText(note);
+  expect(screen.queryByTestId("watch-facts")).toBeNull();
 });
 
-describe("WatchesTab", () => {
-  test("renders the shared cadence wording and the omitted-rows grammar", () => {
-    installRoot();
-    renderSidebar("watches");
-    expect(screen.getByText("test heartbeat")).toBeTruthy();
-    expect(screen.getByText(/every 5m/)).toBeTruthy();
-    expect(screen.getByText("build landed")).toBeTruthy();
-    // The hub omitted 2 rows (1 armed). The footer's armed total is the TRUE
-    // total - the retained armed row plus the omitted armed one - in the
-    // rail's own grammar.
-    expect(screen.getByText("2 watches · 2 armed total · +2 more")).toBeTruthy();
-  });
+test("only successful terminal jobs fold, and revealed output retains its authoritative identity", async () => {
+  const client = activityClient();
+  client.on("evener/thread/jobs/list", ({ ref, scope }) => ({
+    context: activityContext(ref),
+    scope: scope ?? "session",
+    jobs: [
+      activityJob({
+        description: "",
+        jobId: "ok",
+        command: "successful command",
+        status: "completed",
+        terminal: true,
+        outcome: "success",
+        ownerRef: "source:owner",
+        transcriptRef: "job:raw-output",
+      }),
+      activityJob({
+        description: "",
+        jobId: "ok-no-output",
+        command: "successful no output",
+        status: "completed",
+        terminal: true,
+        outcome: "success",
+        transcriptRef: undefined,
+      }),
+      ...["running", "command_exited_nonzero", "killed", "cancelled", "stopped", "unknown"].map((status) =>
+        activityJob({
+          description: "",
+          jobId: status,
+          command: `command ${status}`,
+          status,
+          terminal: status !== "running",
+          outcome: status === "running" ? "success" : ["cancelled", "stopped"].includes(status) ? "stopped" : "failed",
+        }),
+      ),
+    ],
+    page: { complete: true, issues: [] },
+  }));
+  connectionStore.getState().connect(client);
+  const open = vi.spyOn(workspaceStore.getState(), "openPane").mockImplementation(() => "test-pane");
+  render(<JobsTab scope={scope()} />);
+  await screen.findByText("command running");
+  expect(screen.queryByText("successful command")).toBeNull();
+  for (const status of ["command_exited_nonzero", "killed", "cancelled", "stopped", "unknown"])
+    expect(screen.getByText(`command ${status}`)).toBeTruthy();
+  fireEvent.click(screen.getByText("2 completed jobs"));
+  fireEvent.click(screen.getByRole("button", { name: /successful command/ }));
+  expect(open).toHaveBeenCalledWith(
+    "transcript",
+    { ref: "job:raw-output", parentRef: "source:owner" },
+    { slot: "secondary" },
+  );
+  expect(screen.getByText("successful no output")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: /successful no output/ })).toBeNull();
+  expect(client.calls.filter((call) => call.method === "evener/thread/jobs/list")).toHaveLength(1);
+});
 
-  test("the empty state reads honestly when nothing watches", () => {
-    const bare = summaryOf({ ref: "local:bare", title: "Bare", state: "active" });
-    const liveKey: ResourceKey = { kind: "section", section: "live", offset: 0, limit: 50 };
-    navigationStore.setState({
-      mode: "v2",
-      capability: { version: 1, generationId: "g1", sequence: 1, readVersions: [2] },
-      clientGenerationID: "g1",
-      manifest: resource({ kind: "manifest" }, manifest()) as ResourceState<NavigationManifest>,
-      resources: new Map([
-        [keyID(liveKey), resource(liveKey, { sessions: [bare] })],
-        [
-          keyID({ kind: "location", ref: "local:bare" }),
-          resource(
-            { kind: "location", ref: "local:bare" },
-            { ref: "local:bare", top_level_ref: "local:bare", top_level: true, session: bare },
-          ),
+test("job history disclosure survives remount only for its selected session", async () => {
+  const client = activityClient();
+  client.on("evener/thread/jobs/list", ({ ref, scope }) => ({
+    context: activityContext(ref),
+    scope: scope ?? "session",
+    jobs: [
+      activityJob({
+        description: "",
+        ownerRef: ref,
+        command: ref,
+        terminal: true,
+        outcome: "success",
+        status: "completed",
+      }),
+    ],
+    page: { complete: true, issues: [] },
+  }));
+  connectionStore.getState().connect(client);
+  const view = render(<JobsTab scope={scope()} />);
+  fireEvent.click(await screen.findByText("1 completed job"));
+  expect(screen.getByText("remote:owner")).toBeTruthy();
+  view.unmount();
+  const again = render(<JobsTab scope={scope()} />);
+  expect(await screen.findByText("remote:owner")).toBeTruthy();
+  again.rerender(
+    <JobsTab
+      scope={deriveScope(
+        createNavigationStore({ persistence: memoryNavigationPersistence() }).getState(),
+        "other:owner",
+      )}
+    />,
+  );
+  await screen.findByText("1 completed job");
+  expect(screen.queryByText("other:owner")).toBeNull();
+});
+
+test("closed successful history preserves automatic discovery of older active and failed jobs", async () => {
+  const client = activityClient();
+  let intersect: (() => void) | undefined;
+  class Observer {
+    constructor(callback: IntersectionObserverCallback) {
+      intersect = () =>
+        callback([{ isIntersecting: true } as IntersectionObserverEntry], this as unknown as IntersectionObserver);
+    }
+    observe() {}
+    disconnect() {}
+  }
+  vi.stubGlobal("IntersectionObserver", Observer);
+  client.on("evener/thread/jobs/list", ({ ref, scope, cursor }) => ({
+    context: activityContext(ref),
+    scope: scope ?? "session",
+    jobs: cursor
+      ? [
+          activityJob({ description: "", jobId: "older-active", command: "older active" }),
+          activityJob({
+            description: "",
+            jobId: "older-failed",
+            command: "older failure",
+            status: "command_exited_nonzero",
+            terminal: true,
+            outcome: "failed",
+          }),
+        ]
+      : [
+          activityJob({
+            description: "",
+            jobId: "ok",
+            command: "hidden success",
+            status: "completed",
+            terminal: true,
+            outcome: "success",
+          }),
         ],
-      ]),
-      expanded: new Map(),
-      attention: { changed: [], summary: manifest().attentionSummary },
+    page: cursor ? { complete: true, issues: [] } : { complete: false, nextCursor: "next", issues: [] },
+  }));
+  try {
+    connectionStore.getState().connect(client);
+    await act(async () => {
+      render(<JobsTab scope={scope()} />);
     });
-    workspaceStore.getState().openPane("session", { ref: "local:bare" });
-    renderSidebar("watches");
-    expect(screen.getByText("No watches at this level.")).toBeTruthy();
-  });
+    expect(screen.queryByText("hidden success")).toBeNull();
+    await act(async () => intersect?.());
+    expect(screen.getByText("older active")).toBeTruthy();
+    expect(screen.getByText("older failure")).toBeTruthy();
+    expect(screen.queryByText("hidden success")).toBeNull();
+    expect(client.calls.filter((call) => call.method === "evener/thread/jobs/list")).toHaveLength(2);
+  } finally {
+    vi.unstubAllGlobals();
+  }
 });

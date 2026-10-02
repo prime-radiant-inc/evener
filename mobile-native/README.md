@@ -1,6 +1,9 @@
 # Evener native mobile
 
-**Scope update — 8 September 2026:** Jesse paused iPad and accessibility work. The immediate milestone is full iPhone functionality; preserve paused requirements and historical evidence. The [active checklist](../docs/design/mobile/ios-v1-remaining.md) governs current work and supersedes broader device/accessibility gates below.
+The delivery scope is full iPhone functionality. iPad and dedicated accessibility
+work are paused; preserve their requirements and historical evidence. The
+[active checklist](../docs/design/mobile/ios-v1-remaining.md) governs current work
+and supersedes broader device and accessibility gates below.
 
 A shared Expo / React Native client whose current release scope is iPhone v1.
 iPad work is paused. Android sources, build instructions and historical evidence
@@ -11,7 +14,13 @@ web/server behavior defines scope.
 
 The [current status](../docs/design/mobile/status.md), [remaining work](../docs/design/mobile/ios-v1-remaining.md) and [acceptance index](../docs/design/mobile/acceptance.md) distinguish implementation from current-artifact qualification. The full development plan and dated evidence remain on branch `live-concepts-plan2-integrate` at checkpoint `04ae937af`.
 
-Run `make test-native` from the repository root after installing native dependencies. It covers the app tests, shared-session tests and native TypeScript checks. The [build guide](../docs/design/mobile/ios-build-distribution.md) covers locked iOS project generation and distribution prerequisites.
+Run `make test-native` from the repository root after installing native dependencies.
+It bundles the real iOS entry point through Metro, then runs app and shared-session
+tests, native TypeScript checks, script import checks and Biome. The
+[testing guide](../docs/developing-evener/testing.md#the-native-gate-bundles-the-app)
+explains why the bundle is required alongside tests and type checking. The
+[build guide](../docs/design/mobile/ios-build-distribution.md) covers locked iOS
+project generation and distribution prerequisites.
 
 ## Run on simulators
 
@@ -51,9 +60,13 @@ npx expo export --platform ios
 ```
 
 The type check resolves shared headless sources against this app's installed
-dependencies, matching Metro's dependency ownership. Its aliases live in
-`tsconfig.check.json` because the React alias points to declarations only;
-Expo reads the main `tsconfig.json` when resolving runtime imports.
+dependencies, matching Metro's dependency ownership. AppWire package aliases
+live in both `tsconfig.json` and `tsconfig.check.json`: `tsx` scripts read the
+main configuration, while `npm run check` selects the latter explicitly. The
+check configuration also supplies type-check-only aliases, including React's
+declarations. Metro's runtime package resolution lives in `metro.config.js`.
+`npm run check:scripts` checks the script import graph without opening a hub
+connection; the iOS bundle gate checks the runtime resolver.
 
 The Android export remains available for deferred platform work with
 `npx expo export --platform android`.
@@ -97,8 +110,11 @@ lasts for the app lifetime and adds no disk persistence.
   navigation has paged catalogs, archived views, favorites and archive actions.
   Complete organization/pinning and management acceptance remain open.
 - Conversations render native Markdown and expandable tool/activity details,
-  images and a gallery. Image selection and durable draft attachments exist.
-  Rich-content, authenticated-image and accessibility qualification remain open.
+  images and a gallery. While a turn runs, the status line above the composer
+  shows its most recent nonblank tool-call intent; until one arrives, it keeps
+  the existing progress and status fallbacks. Image selection and durable draft
+  attachments exist. Rich-content, authenticated-image and accessibility
+  qualification remain open.
 - New session opens on the selected hub with recent project directories,
   harnesses, searchable models and compatible reasoning effort. Defaults defer
   to hub configuration. Opening text is preserved exactly; uncertain creation
@@ -119,10 +135,11 @@ lasts for the app lifetime and adds no disk persistence.
   and normal deployment verification remain open; tiny fixtures do not establish
   production responsiveness. Voice/barge-in is outside v1.
 
-The current candidate gate passes 718 native tests across 76 files and 673
-shared-session tests across seven files, plus strict TypeScript checks. These
-source checks do not establish a passing installed-app journey. See the current
-acceptance index for the required artifact, recovery and distribution checks.
+Run the native gate against the exact candidate being qualified and record its
+result with that revision. Passing automated tests, type checking and the Metro
+bundle establishes source and resolver coverage; installed-app journeys require
+separate evidence. See the current acceptance index for the required artifact,
+recovery and distribution checks.
 
 Earlier simulator screenshots and reader-restoration receipts, including source
 `7944778e0`, remain historical evidence in the preserved development branch.
@@ -143,6 +160,16 @@ and independent new sessions. Sessions with an opening prompt reply with explici
 labeled demonstration text and remain active until Stop. This is a scripted WebSocket boundary, not
 an Evener daemon or a model run. Its integration tests exercise the real shared
 client, services, stores, and notification handling.
+
+Typed activity pages retain at most 128 continuation snapshots in the playground.
+An evicted continuation reports a stale cursor, so the shared activity store
+refreshes only that collection and retains useful rows while it loads. Malformed
+cursors and requests for a different session, scope or resource remain invalid.
+
+With `EVENER_DEMO_FLEET`, the same hub answers the Board's pulse read
+(`evener/activity/read`, S5): one entry per live top-level session with its
+per-minute counts, running-subagent tally, quiet time and latest tool intent, so
+the demo Board draws real meters, subagent tallies and Quiet/May-be-stuck labels.
 
 ## Standalone simulator builds
 

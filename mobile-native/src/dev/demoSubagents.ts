@@ -1,9 +1,10 @@
 // The demo fleet's subagents and documents, as the hub serves them: the
-// activity tree behind the Subagents list (evener/jobs/list) and the
-// documents the Reader opens (/doc/file). Built from the same raw swarm the
-// Board's navigation rows come from (demoFleet.ts, after the prototype's
-// data.js), so the Board, the list and the transcript agree (spec Appendix
-// B). Each subagent's own session (thread/read) is demoSessions.ts's.
+// activity tree the typed activity reads project (demoSessionActivity.ts) for
+// the Activity list, and the documents the Reader opens (/doc/file). Built
+// from the same raw swarm the Board's navigation rows come from
+// (demoFleet.ts, after the prototype's data.js), so the Board, the list and
+// the transcript agree (spec Appendix B). Each subagent's own session
+// (thread/read) is demoSessions.ts's.
 export interface DemoSubagent {
 	id: string;
 	title: string;
@@ -40,6 +41,8 @@ export interface DemoCoordinator {
 	subagents: readonly DemoSubagent[];
 	/** Its own finished shell jobs, listed beside its subagents. */
 	jobs?: readonly DemoShellJob[];
+	/** Its own running command, also summarized by navigation. */
+	runningJob?: { id: string; command: string };
 	/** How the fleet names a subagent's own session (demoFleet.ts hostSessionRef). */
 	subagentRef: (id: string) => string;
 }
@@ -65,7 +68,7 @@ export function demoTokens(label: string | undefined): number {
 
 const idOf = (ref: string) => ref.slice(ref.indexOf(":") + 1);
 const iso = (ms: number) => new Date(ms).toISOString();
-const MANDATE = (title: string) => `${title}. Report what you find; don't change unrelated code.`;
+const BRIEF = (title: string) => `${title}. Report what you find; don't change unrelated code.`;
 
 interface Counts {
 	active: number;
@@ -87,7 +90,8 @@ function session(sessionId: string, ref: string, label: string, entries: unknown
 	return { kind: "session", sessionId, ref, label, aggregate, counts, entries, branch: {} };
 }
 
-/** evener/jobs/list's answer for a coordinator: its subagents, nested as they were started. */
+/** A coordinator's activity tree: its subagents, nested as they were started,
+ * and their shell jobs. The typed activity reads project it. */
 export function demoActivityTree(coordinator: DemoCoordinator, startupMs: number): { data: unknown } {
 	const toEntry = (sub: DemoSubagent, ownerSessionId: string): { entry: unknown; counts: Counts } => {
 		const ref = coordinator.subagentRef(sub.id);
@@ -145,15 +149,15 @@ export function demoActivityTree(coordinator: DemoCoordinator, startupMs: number
 		const tokens = demoTokens(sub.tokens);
 		const reason = sub.state === "failed" ? (sub.line ?? "").replace(/^Failed:\s*/, "") : "";
 		const delegate = {
+			runGeneration: 1,
 			delegateId: sub.id,
 			ownerSessionId,
 			childSessionId: sessionId,
 			childRef: ref,
 			type: "delegate",
 			description: sub.title,
-			mandate: MANDATE(sub.title),
-			task: MANDATE(sub.title),
-			...(sub.model ? { resolvedModel: sub.model, model: sub.model } : {}),
+			task: BRIEF(sub.title),
+			...(sub.model ? { model: sub.model } : {}),
 			runStartedAt: iso(demoRunStartedAt(sub, startupMs)),
 			...(running
 				? { latestActivityAt: iso(lastEvent) }
@@ -162,7 +166,7 @@ export function demoActivityTree(coordinator: DemoCoordinator, startupMs: number
 						outcome: sub.state === "failed" ? "failed" : "completed",
 						runEndedAt: iso(lastEvent),
 						...(reason ? { reason } : {}),
-						...(sub.state === "done" && sub.line ? { message: `${sub.line}.` } : {}),
+						...(sub.state === "done" && sub.line ? { reportPreview: `${sub.line}.` } : {}),
 					}),
 			...(tokens > 0 ? { usage: { inputTokens: tokens, outputTokens: 0, totalTokens: tokens } } : {}),
 			...(sub.lane
@@ -197,6 +201,19 @@ export function demoActivityTree(coordinator: DemoCoordinator, startupMs: number
 			endedAt: iso(ended),
 		});
 	});
+	if (coordinator.runningJob) {
+		counts.active += 1;
+		entries.push(
+			shellEntry(idOf(coordinator.ref), coordinator.ref, {
+				jobId: `job-${coordinator.runningJob.id}`,
+				status: "running",
+				terminal: false,
+				description: coordinator.runningJob.command,
+				command: coordinator.runningJob.command,
+				startedAt: iso(startupMs - 42_000),
+			}),
+		);
+	}
 	for (const sub of coordinator.subagents) {
 		const built = toEntry(sub, idOf(coordinator.ref));
 		addCounts(counts, built.counts);

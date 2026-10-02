@@ -282,17 +282,17 @@ function subagentsText(count: number): string {
  * read's own subagent tally is authoritative and wins outright, never mixed
  * with the row's own tally guess (a stale local count must not survive a
  * fresh read of zero). Quiet and stuck read from quietState, which itself
- * withholds both while a subagent runs. Absent either, this is the same
- * command-or-Working text workingActivity falls back to, without its own
- * tally guess: a real read already answered the subagent question, even when
- * the answer is zero. */
+ * withholds both while a subagent runs. Absent either, the row says what the
+ * session last set out to do, else the job it is running, else "Working": this
+ * never falls back to the row's own tally, because a real read already
+ * answered the subagent question, even when the answer is zero. */
 function workingWhyLine(row: NavigationSessionSummary, activity: SessionActivity, msSinceReadMs: number): WhyLine {
 	if (activity.runningSubagents > 0) return { text: subagentsText(activity.runningSubagents) };
 	const quiet = quietState(activity, msSinceReadMs);
 	if (quiet?.state === "stuck")
 		return { text: `May be stuck · no updates for ${durationLabel(quiet.forMs)}`, stuck: true };
 	if (quiet?.state === "quiet") return { text: `Quiet ${durationLabel(quiet.forMs)}` };
-	return { text: commandOrWorking(row) };
+	return { text: commandOrWorking(row, activity.latestIntent) };
 }
 
 /** The row's why line. activity and msSinceReadMs are S5's live read (the
@@ -306,8 +306,14 @@ export function whyLine(item: ClassifiedRow, activity?: SessionActivity, msSince
 	return reason ? { word: WORDS[item.state], ...reason } : null;
 }
 
-function commandOrWorking(row: NavigationSessionSummary): string {
-	const command = row.running_jobs?.find((job) => job.command)?.command;
+/** A working row's own words, where nothing louder applies: what the session
+ * last set out to do (the read's latest tool intent), else the job it is
+ * running, else the bare state word. The intent leads the job because it says
+ * what the job is for; the daemon cuts one to a line and drops it when a turn
+ * begins (activity_meter.go). */
+function commandOrWorking(row: NavigationSessionSummary, latestIntent?: string): string {
+	if (latestIntent) return latestIntent;
+	const command = row.running_job_command;
 	return command ? `Running ${command}` : "Working";
 }
 

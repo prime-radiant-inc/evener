@@ -1,11 +1,12 @@
+import { installActivityFixture } from "./subagents/sessionActivityTestUtils";
 // Subagent rows in the transcript (spec 8.2 "Subagent", 9), driven from the
 // coordinator's tool calls as history carries them (agent/testdata/
 // subagentwire) through the same pipeline ConversationScreen runs, at every
 // detail level. A real `delegate` call settles as soon as its launch receipt
 // returns, so the row's state has to come from the subagent, never the call.
 import {
-	ACTIVITY_REFRESH_MIN_INTERVAL_MS,
 	type EvenerDelegateInfo,
+	parseActivityTree,
 	hydrateThread,
 	type JobsListResponse,
 	type Thread,
@@ -13,7 +14,12 @@ import {
 } from "@evener/appwire-client";
 import { notificationWireItem } from "@evener/appwire-client/testing/notificationWireFixtures";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { subagentCallItems, subagentOutcomesResponse } from "@evener/appwire-client/testing/subagentWireFixtures";
+import {
+	subagentCallItems,
+	subagentOutcomesResponse,
+	subagentOutcomesDelegatesResponse,
+	subagentResumedDelegatesResponse,
+} from "@evener/appwire-client/testing/subagentWireFixtures";
 import { act } from "react-test-renderer";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { projectConversation } from "./projectedRows";
@@ -66,6 +72,7 @@ function subagent(over: Partial<EvenerDelegateInfo> = {}): EvenerDelegateInfo {
 		resumable: false,
 		needsAttention: false,
 		projectionRevision: 1,
+		runGeneration: 1,
 		description: "Fix race in tree settle",
 		originToolCallId: DELEGATE_CALL_ID,
 		originItemId: "fc_provider_item_1",
@@ -372,7 +379,7 @@ describe("Chat", () => {
 // A finished subagent's row reads its outcome as the Subagents list does
 // (spec 8.2: "it reads the same as in the Subagents list"). thread/read's
 // roster carries no report (appwire.SlimDelegateForRoster), so the screen
-// holds the coordinator's tree from evener/jobs/list, recorded in
+// holds the coordinator's delegates/list projection, recorded in
 // agent/testdata/subagentwire/outcomes.json, and a row says what the roster
 // knows until the tree shows it done. The corpus's subagents have no child
 // sessions on disk, so each carries a branch.error and the tree reads as
@@ -390,11 +397,29 @@ describe("a finished subagent's outcome (audit G13)", () => {
 			...over,
 		});
 	const harness: { client: FakeClient | null } = { client: null };
-	const jobsLists = (client: FakeClient) => client.calls.filter((call) => call.method === "evener/jobs/list");
+	const jobsLists = (client: FakeClient) =>
+		client.calls.filter((call) => call.method === "evener/thread/delegates/list");
 
 	function hub(answer: () => unknown = () => subagentOutcomesResponse()) {
 		const client = new FakeClient("ready");
-		client.on("evener/jobs/list", async () => answer() as JobsListResponse);
+		installActivityFixture(client, async () => ((await answer()) as JobsListResponse).data);
+		client.on("evener/thread/delegates/list", async () => {
+			const old = (await answer()) as JobsListResponse;
+			const parsed = parseActivityTree(old.data);
+			if (!parsed) throw new Error("invalid recorded activity");
+			const actual = subagentOutcomesDelegatesResponse();
+			return {
+				...actual,
+				delegates: actual.delegates.map((row) => {
+					const entry = parsed.root.entries.find(
+						(entry) => entry.kind === "delegate" && entry.delegate.delegateId === row.delegateId,
+					);
+					const recorded = entry?.kind === "delegate" ? entry.delegate : undefined;
+					return recorded?.terminal ? row : { ...row, terminal: false, reportPreview: undefined };
+				}),
+			};
+		});
+		client.on("thread/read", () => ({ thread: { id: "root", modelProvider: "scripted" } }) as never);
 		harness.client = client;
 		return client;
 	}
@@ -438,7 +463,7 @@ describe("a finished subagent's outcome (audit G13)", () => {
 							key={entry.row.id}
 							item={entry.row}
 							hubId="hub-1"
-							sessionRef="root"
+							sessionRef="local:root"
 							delegates={entry.delegates}
 							subagentTree={tree}
 						/>
@@ -459,7 +484,6 @@ describe("a finished subagent's outcome (audit G13)", () => {
 	afterEach(() => {
 		for (const screen of screens.splice(0)) act(() => screen.unmount());
 		forgetSubagentTrees("hub-1");
-		vi.useRealTimers();
 	});
 
 	it("says Finished until the tree comes, then the report's opening line", async () => {
@@ -468,9 +492,53 @@ describe("a finished subagent's outcome (audit G13)", () => {
 		expect(renderedText(screen)).toContain("Finished");
 		await act(async () => {});
 		expect(renderedText(screen)).toContain("Fixed the race: settle now waits for the drain.");
-		expect(renderedText(screen)).not.toContain("Finished");
 		expect(renderedText(screen)).not.toContain("The new test covers both orders.");
 		expect(jobsLists(client)).toHaveLength(1);
+	});
+
+	it("does not borrow the prior generation report while a resumed completion awaits its activity read", async () => {
+		vi.useFakeTimers();
+		const client = hub();
+		const old = subagentOutcomesDelegatesResponse();
+		const next = subagentResumedDelegatesResponse();
+		const prior = old.delegates.find((row) => row.delegateId === "dlg_reported");
+		const resumed = next.delegates.find((row) => row.delegateId === "dlg_reported");
+		if (!prior || !resumed) throw new Error("producer corpus missing resumed run");
+		expect(resumed.runStartedAt).toBe(prior.runStartedAt);
+		expect(resumed.runEndedAt).toBe(prior.runEndedAt);
+		let reply = old;
+		client.on("evener/thread/delegates/list", () => reply);
+		const screen = transcript({ delegates: [finished("dlg_reported", { runGeneration: prior.runGeneration })] });
+		await act(async () => {});
+		expect(renderedText(screen)).toContain("Fixed the race: settle now waits for the drain.");
+		const running = subagent({ delegateId: "dlg_reported", runGeneration: resumed.runGeneration });
+		act(() => screen.update(<Transcript delegates={[running]} />));
+		const done = finished("dlg_reported", { runGeneration: resumed.runGeneration });
+		act(() => screen.update(<Transcript delegates={[done]} />));
+		expect(renderedText(screen)).toContain("Finished");
+		expect(renderedText(screen)).not.toContain("Fixed the race: settle now waits for the drain.");
+		reply = next;
+		await act(async () => {
+			client.emitNotification({
+				method: "evener/thread/activity/changed",
+				params: { ref: COORDINATOR.ref, threadId: "root", sessionId: "root", resources: ["delegates"] },
+			});
+			await vi.runOnlyPendingTimersAsync();
+		});
+		expect(renderedText(screen)).toContain("Second run report.");
+	});
+
+	it("does not borrow a recorded report belonging to another owner with the same delegate ID", async () => {
+		const client = hub();
+		const actual = subagentOutcomesDelegatesResponse();
+		client.on("evener/thread/delegates/list", () => ({
+			...actual,
+			delegates: actual.delegates.map((row) => ({ ...row, ownerRef: "local:unrelated" })),
+		}));
+		const screen = transcript({ delegates: [finished("dlg_reported")] });
+		await act(async () => {});
+		expect(renderedText(screen)).toContain("Finished");
+		expect(renderedText(screen)).not.toContain("Fixed the race: settle now waits for the drain.");
 	});
 
 	it("says Stopped for a subagent the user stopped, with no tree to read", async () => {
@@ -541,7 +609,6 @@ describe("a finished subagent's outcome (audit G13)", () => {
 	});
 
 	it("reads the report once the subagent finishes while the tree is held", async () => {
-		vi.useFakeTimers();
 		const recorded = subagentOutcomesResponse() as { data: { revision: number; root: { entries: unknown[] } } };
 		// The first read lands a revision earlier, while the subagent still runs:
 		// no outcome, no report.
@@ -560,14 +627,14 @@ describe("a finished subagent's outcome (audit G13)", () => {
 		answer = recorded;
 		await act(async () => {
 			client.emitNotification({
-				method: "evener/delegate/updated",
+				method: "evener/thread/activity/changed",
 				params: {
 					ref: COORDINATOR.ref,
 					threadId: COORDINATOR.threadId,
-					delegate: finished("dlg_reported", { projectionRevision: recorded.data.revision, packetKind: "reported" }),
+					sessionId: COORDINATOR.threadId,
+					resources: ["delegates"],
 				},
 			});
-			await vi.advanceTimersByTimeAsync(ACTIVITY_REFRESH_MIN_INTERVAL_MS);
 		});
 		expect(jobsLists(client)).toHaveLength(2);
 		expect(renderedText(screen)).toContain("Fixed the race: settle now waits for the drain.");
@@ -579,7 +646,6 @@ describe("a finished subagent's outcome (audit G13)", () => {
 		["reads again when a subagent's screen comes back to the front", false, 2],
 		["leaves a coordinator's own screen to its delegates' updates", true, 1],
 	] as const)("%s", async (_name, receivesUpdates, reads) => {
-		vi.useFakeTimers();
 		const client = hub();
 		const delegates = [finished("dlg_reported")];
 		const screen = transcript({ delegates, receivesUpdates });
@@ -587,7 +653,6 @@ describe("a finished subagent's outcome (audit G13)", () => {
 		act(() => screen.update(<Transcript delegates={delegates} receivesUpdates={receivesUpdates} inFront={false} />));
 		await act(async () => {
 			screen.update(<Transcript delegates={delegates} receivesUpdates={receivesUpdates} />);
-			await vi.advanceTimersByTimeAsync(ACTIVITY_REFRESH_MIN_INTERVAL_MS);
 		});
 		expect(jobsLists(client)).toHaveLength(reads);
 	});

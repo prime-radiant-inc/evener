@@ -1,51 +1,71 @@
-// The status bar: the glance surface of the zoom system. The scope breadcrumb
-// (what you're reading) on the left, the activity counters on the right,
-// always on, desktop only. A chip click escalates to the activity sidebar
-// preselected to the matching tab. Everything renders from the navigation
-// store through deriveScope - no activity state lives here.
+// The status bar: a session pane's glance surface. Its working location sits
+// on the left and its activity counters sit on the right. A chip click first
+// focuses the owning pane, then opens the shared activity sidebar on the
+// matching tab. deriveScope combines navigation placement with the shared
+// session activity summary; no activity state lives here.
 
-import { useMemo } from "react";
+import { type ReactNode, useMemo } from "react";
 import { navigationStore, useNavigationStore } from "../../stores/navigation/store";
+import { useSessionActivity } from "../../stores/sessionActivity";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { activitySidebarStore } from "../activitybar/activitySidebarStore";
 import { ACTIVITY_TABS } from "../activitybar/activityTabs";
-import { useFocusedActivityScopeRef } from "../focusedSession";
-import { ScopeCrumbs } from "./ScopeCrumbs";
+import { workspaceStore } from "../workspace";
 import styles from "./statusbar.module.css";
 import { deriveScope } from "./statusScope";
 
 const CLASS = {
   bar: requireClass(styles.bar, "statusbar.module.css", "bar"),
+  leading: requireClass(styles.leading, "statusbar.module.css", "leading"),
   chips: requireClass(styles.chips, "statusbar.module.css", "chips"),
   chip: requireClass(styles.chip, "statusbar.module.css", "chip"),
+  chipName: requireClass(styles.chipName, "statusbar.module.css", "chipName"),
+  chipCount: requireClass(styles.chipCount, "statusbar.module.css", "chipCount"),
   chipGlyph: requireClass(styles.chipGlyph, "statusbar.module.css", "chipGlyph"),
 };
 
-export function StatusBar() {
+export interface StatusBarProps {
+  sessionRef: string;
+  paneId: string;
+  leading: ReactNode;
+}
+
+export function StatusBar({ sessionRef, paneId, leading }: StatusBarProps) {
   // Narrow subscriptions: re-render on the resources map (nav data) or the
-  // scope's ref, not on every store touch (mode flips, expansion, attention).
+  // pane's ref, not on every store touch (mode flips, expansion, attention).
   const resources = useNavigationStore((state) => state.resources);
-  const ref = useFocusedActivityScopeRef();
+  // Observe the shared session summary for context and authoritative counts.
+  // The sidebar shares this owner; badges do not demand collection pages.
+  const { snapshot } = useSessionActivity(sessionRef);
   // biome-ignore lint/correctness/useExhaustiveDependencies: `resources` is the memo's invalidation key, not a value the memo reads (the store is read imperatively inside)
-  const scope = useMemo(() => (ref === null ? null : deriveScope(navigationStore.getState(), ref)), [resources, ref]);
-  if (scope === null) return null;
+  const scope = useMemo(
+    () => deriveScope(navigationStore.getState(), sessionRef, snapshot),
+    [resources, sessionRef, snapshot],
+  );
   const { counts } = scope;
   return (
     <div className={CLASS.bar} data-testid="statusbar">
-      <ScopeCrumbs path={scope.path} />
+      <div className={CLASS.leading}>{leading}</div>
       <div className={CLASS.chips}>
         {ACTIVITY_TABS.filter((tab) => tab.chipVisible(counts)).map((tab) => (
           <button
             key={tab.id}
             type="button"
+            data-activity-tab={tab.id}
+            data-pane-id={paneId}
             className={CLASS.chip}
+            title={tab.chipLabel(counts)}
             aria-label={`${tab.chipLabel(counts)} - open the activity sidebar`}
-            onClick={() => activitySidebarStore.getState().openWith(tab.id)}
+            onClick={(event) => {
+              workspaceStore.getState().focusPane(paneId);
+              activitySidebarStore.getState().openWith(tab.id, event.currentTarget);
+            }}
           >
             <span className={CLASS.chipGlyph} aria-hidden="true">
               {tab.glyph}
             </span>
-            {tab.chipCount(counts)}
+            <span className={CLASS.chipName}>{tab.label}</span>
+            <span className={CLASS.chipCount}>{tab.chipCount(counts)}</span>
           </button>
         ))}
       </div>

@@ -1,14 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type {
-  ActivityJob,
-  ActivityTree,
-  AnyNotification,
-  Thread,
-  ThreadCapabilities,
-  ThreadReadResponse,
-} from "@evener/appwire-client";
+import type { AnyNotification, Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
 import * as appwireClient from "@evener/appwire-client";
 import { AppwireClient, makeTranscriptDisplayConfig, WireError } from "@evener/appwire-client";
 import { keyID } from "@evener/appwire-client/state/navigation";
@@ -20,23 +13,19 @@ import userEvent from "@testing-library/user-event";
 import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
 import { StrictMode, useSyncExternalStore } from "react";
 import { afterEach, beforeAll, beforeEach, expect, onTestFinished, test, vi } from "vitest";
+import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../../shell/activitybar/activitySidebarStore";
 import { ClientProvider } from "../../shell/clientContext";
 import { urlToPane } from "../../shell/routing";
+import * as StatusBarModule from "../../shell/statusbar/StatusBar";
+import { resetMobileViewportForTests } from "../../shell/useIsMobile";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspace";
-import {
-  activityPanelStore,
-  EMPTY_ACTIVITY_PANEL_ENTRY,
-  resetActivityPanelStoreForTests,
-} from "../../stores/activityPanel";
-import {
-  activitySummaryStore,
-  EMPTY_ACTIVITY_SUMMARY_ENTRY,
-  resetActivitySummaryStoreForTests,
-} from "../../stores/activitySummary";
+import { activityPanelStore, resetActivityPanelStoreForTests } from "../../stores/activityPanel";
 import { connectionStore } from "../../stores/connection";
 import { MutationOutbox } from "../../stores/mutationOutbox";
 import { MutationOutboxIndexedDB } from "../../stores/mutationOutboxIndexedDB";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
+import { sessionActivitySnapshot } from "../../stores/sessionActivity";
+import { activityContext, activityDelegate, activityJob, activitySummary } from "../../stores/sessionActivityTestUtils";
 import { holdIndexedDBEvent } from "../../stores/testing/stalledIndexedDB";
 import {
   resetThreadsStoreForTests,
@@ -84,6 +73,7 @@ function stubSessionSlots(): void {
   vi.spyOn(SessionChromeModule, "SessionChrome").mockImplementation(({ ref }: { ref: string }) => (
     <div data-testid="session-chrome">{ref}</div>
   ));
+  vi.spyOn(StatusBarModule, "StatusBar").mockImplementation(() => <></>);
 }
 stubSessionSlots();
 
@@ -93,7 +83,7 @@ stubSessionSlots();
 // Composer, which mounts it) themselves.
 async function openForceStopDialog(user: ReturnType<typeof userEvent.setup>): Promise<void> {
   await user.click(screen.getByRole("button", { name: /session actions/i }));
-  await user.click(screen.getByRole("menuitem", { name: "Force stop…" }));
+  await user.click(screen.getByRole("menuitem", { name: "Force shutdown…" }));
 }
 
 const CAPABILITIES: ThreadCapabilities = {
@@ -146,54 +136,6 @@ function versionedReadResponse(ref: string, overrides: Partial<Thread> = {}): Th
     bootGeneration: "1",
     epoch: 1,
     snapshot: { incarnation: "inc-1", length: 0 },
-  };
-}
-
-function emptyActivityTree(ref: string) {
-  return {
-    revision: 1,
-    root: {
-      sessionId: `sess_${ref}`,
-      ref,
-      label: "Root session",
-      aggregate: "completed",
-      counts: { active: 0, failed: 0, completed: 0, complete: true },
-      entries: [],
-      branch: {},
-    },
-  };
-}
-
-function activityTree(ref: string, jobId: string, description: string): ActivityTree {
-  const job: ActivityJob = {
-    jobId,
-    ownerSessionId: "02wMz5TxvEMoJEDTDGOTil",
-    ownerRef: ref,
-    type: "shell",
-    status: "completed",
-    outcome: "success",
-    transcriptRef: `job:${jobId}`,
-    terminal: true,
-    background: false,
-    hasOutput: true,
-    description,
-    startedAt: "2026-09-13T20:00:00Z",
-    endedAt: "2026-09-13T20:00:01Z",
-    exitCode: 0,
-    outputBytes: 12,
-  };
-  return {
-    revision: 1,
-    root: {
-      kind: "session",
-      sessionId: `sess_${ref}`,
-      ref,
-      label: "root",
-      aggregate: "completed",
-      counts: { active: 0, failed: 0, completed: 1, complete: true },
-      entries: [{ kind: "shell", job }],
-      branch: {},
-    },
   };
 }
 
@@ -277,7 +219,8 @@ beforeEach(() => {
   resetAskDockStoreForTests();
   resetNavigationStoreForTests();
   resetActivityPanelStoreForTests();
-  resetActivitySummaryStoreForTests();
+  resetActivitySidebarStoreForTests();
+  resetMobileViewportForTests();
   mutationStorage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(mutationStorage);
   resetPendingTurnsStoreForTests();
@@ -291,7 +234,8 @@ afterEach(() => {
   resetPendingTurnsStoreForTests();
   resetAskDockStoreForTests();
   resetActivityPanelStoreForTests();
-  resetActivitySummaryStoreForTests();
+  resetActivitySidebarStoreForTests();
+  resetMobileViewportForTests();
   resetWorkspaceStoreForTests();
   window.history.pushState({}, "", "/");
   vi.useRealTimers();
@@ -300,6 +244,129 @@ afterEach(() => {
     Object.defineProperty(HTMLElement.prototype, "offsetHeight", offsetHeightDescriptor);
   }
 });
+
+test("desktop session panes own separate location and activity footers", async ({ onTestFinished }) => {
+  vi.mocked(StatusBarModule.StatusBar).mockRestore();
+  onTestFinished(stubSessionSlots);
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("thread/read", ({ ref }) => {
+    if (ref === undefined) throw new Error("thread/read requires a ref");
+    return readResponse(ref, { cwd: `/work/${ref}` });
+  });
+  fake.on("evener/git/head", ({ cwd }) => ({
+    head: cwd.endsWith("local:one") ? "branch-one" : "branch-two",
+    originUrl: "git@github.com:owner/repo.git",
+  }));
+  fake.on("evener/thread/activity/read", ({ ref }) => ({
+    ...activitySummary(ref),
+    jobs: {
+      known: true,
+      active: ref === "local:one" ? 1 : 2,
+      total: ref === "local:one" ? 3 : 4,
+      completed: 2,
+      failed: 0,
+    },
+  }));
+  workspaceStore.setState({
+    panes: [
+      { id: "pane-one", type: "session", params: { ref: "local:one" }, slot: "main" },
+      { id: "pane-two", type: "session", params: { ref: "local:two" }, slot: "secondary" },
+    ],
+    focusedPaneId: "pane-one",
+  });
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "local:one" }} paneId="pane-one" focused />
+      <Session params={{ ref: "local:two" }} paneId="pane-two" focused={false} />
+    </ClientProvider>,
+  );
+
+  const bars = await screen.findAllByTestId("statusbar");
+  expect(bars).toHaveLength(2);
+  const first = within(bars[0]!);
+  const second = within(bars[1]!);
+  expect(first.getByTestId("composer-repo-path").textContent).toBe("/work/local:one");
+  expect(second.getByTestId("composer-repo-path").textContent).toBe("/work/local:two");
+  expect(screen.getAllByTestId("composer-repo-location")).toHaveLength(2);
+  expect((await first.findByTestId("composer-repo-ref")).textContent).toBe("owner/repo#branch-one");
+  expect((await second.findByTestId("composer-repo-ref")).textContent).toBe("owner/repo#branch-two");
+  expect(await first.findByRole("button", { name: /Jobs, 1 of 3 running/ })).toBeTruthy();
+  await user.click(await second.findByRole("button", { name: /Jobs, 2 of 4 running/ }));
+  expect(workspaceStore.getState().focusedPaneId).toBe("pane-two");
+  expect(activitySidebarStore.getState()).toMatchObject({ open: true, tab: "jobs" });
+});
+
+test("mobile omits repo location and the desktop activity footer", async ({ onTestFinished }) => {
+  vi.mocked(ComposerModule.Composer).mockRestore();
+  onTestFinished(stubSessionSlots);
+  vi.stubGlobal(
+    "matchMedia",
+    vi.fn((media: string) => ({
+      media,
+      matches: media === "(max-width: 899px)",
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    })),
+  );
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("local:mobile", { cwd: "/work/mobile" }));
+  fake.on("evener/git/head", () => ({ head: "mobile-branch", originUrl: "git@github.com:owner/repo.git" }));
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "local:mobile" }} paneId="mobile-pane" focused />
+    </ClientProvider>,
+  );
+
+  await screen.findByTestId("composer-input-card");
+  expect(screen.queryByTestId("composer-repo-location")).toBeNull();
+  expect(screen.queryByTestId("composer-repo-path")).toBeNull();
+  expect(screen.queryByTestId("composer-repo-link")).toBeNull();
+  expect(screen.queryByTestId("pane-edge-footer")).toBeNull();
+  expect(screen.queryByTestId("statusbar")).toBeNull();
+});
+
+test.each(["closed", "ended", "notLoaded"] as const)(
+  "the real session keeps an empty focused composer expanded when it becomes %s",
+  async (status) => {
+    vi.mocked(ComposerModule.Composer).mockRestore();
+    vi.mocked(SessionChromeModule.SessionChrome).mockRestore();
+    const user = userEvent.setup();
+    const ref = "local:stop-focus";
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => readResponse(ref, { status: { type: "active" } }));
+    fake.on("evener/thread/activity/read", () => activitySummary(ref));
+    render(
+      <ClientProvider client={fake}>
+        <Session params={{ ref }} paneId="stop-focus-pane" focused={false} />
+      </ClientProvider>,
+    );
+    const editor = await screen.findByRole("textbox", { name: /^message$/i });
+    await waitFor(() => expect(sessionActivitySnapshot(fake, ref, "session")?.summaryState.loading).toBe(false));
+    await user.click(editor);
+    await act(async () => {
+      fake.emitNotification({
+        method: "thread/status/changed",
+        params: {
+          threadId: `thr_${ref}`,
+          ref,
+          status: { type: status },
+          capabilities: { ...CAPABILITIES, interrupt: false, steer: false, shutdown: false },
+        },
+      });
+    });
+    expect(screen.getByRole("textbox", { name: /^message$/i })).toBe(editor);
+    expect(document.activeElement).toBe(editor);
+    expect(editor.style.minHeight).toBe("3lh");
+    await user.click(screen.getByRole("button", { name: "Session actions" }));
+    await user.click(screen.getByRole("menuitem", { name: "Rename" }));
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Session actions" }));
+    expect(editor.textContent).toBe("");
+    expect((screen.getByTestId("composer-submit") as HTMLButtonElement).disabled).toBe(true);
+  },
+);
 
 test("shows a loading placeholder before the thread hydrates", async () => {
   const fake = connectFakeClient();
@@ -313,11 +380,13 @@ test("shows a loading placeholder before the thread hydrates", async () => {
   );
 
   expect(screen.getByText(/loading/i)).toBeTruthy();
+  expect(screen.getByTestId("pane-edge-footer")).toBeTruthy();
   // request()'s handler invocation (which captures the resolver) is
   // deferred a microtask behind the synchronous render() above.
   await flushUntil(() => box.resolve !== null);
   box.resolve?.(readResponse("ref_a"));
   await waitFor(() => expect(screen.queryByText(/loading/i)).toBeNull());
+  expect(screen.getByTestId("pane-edge-footer")).toBeTruthy();
 });
 
 test("mounts TopNotesPanel at the top of the session content once hydrated", async () => {
@@ -335,70 +404,6 @@ test("mounts TopNotesPanel at the top of the session content once hydrated", asy
   // transcript area below it in the pane scaffold.
   const below = screen.getByText("Send the first message");
   expect(screen.getByTestId("top-notes-panel").compareDocumentPosition(below)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
-});
-
-test("a read-only entity consumer resolves only its ref when another ref's activity stores are populated", async () => {
-  const owner = "02wMz5TxvEMoJEDTDGOTil";
-  const ref = `local:${owner}`;
-  const otherRef = "local:other-entity-session";
-  const ownJob = `job_${owner}_000000000123`;
-  const otherJob = `job_${owner}_000000000456`;
-  const ownTree = activityTree(ref, ownJob, "Owned by the requested ref");
-  const otherTree = activityTree(otherRef, otherJob, "Must not leak across refs");
-  activityPanelStore.setState({
-    entries: new Map([
-      [ref, { ...EMPTY_ACTIVITY_PANEL_ENTRY, established: true, load: { kind: "ready", tree: ownTree } }],
-      [otherRef, { ...EMPTY_ACTIVITY_PANEL_ENTRY, established: true, load: { kind: "ready", tree: otherTree } }],
-    ]),
-  });
-  activitySummaryStore.setState({
-    entries: new Map([
-      [
-        otherRef,
-        {
-          ...EMPTY_ACTIVITY_SUMMARY_ENTRY,
-          counts: otherTree.root.counts,
-          established: true,
-          requestID: 1,
-        },
-      ],
-    ]),
-  });
-  const fake = connectFakeClient();
-  fake.on("thread/read", () => readOnlyEntityThread(ref, `Own ${ownJob}. Other ${otherJob}.`));
-
-  render(
-    <ClientProvider client={fake}>
-      <ReadOnlyTranscript params={{ ref }} paneId="read-only-entities" focused={false} />
-    </ClientProvider>,
-  );
-
-  await waitFor(() => expect(screen.getAllByTestId("entity-trigger")).toHaveLength(1));
-  expect(screen.getByTestId("entity-trigger").textContent).toBe(ownJob);
-  expect(screen.getAllByRole("button", { name: "Open job log" })).toHaveLength(1);
-  expect(screen.getByText(otherJob).closest('[data-testid="entity-trigger"]')).toBeNull();
-  expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(0);
-});
-
-test("a read-only entity consumer does not initiate activity discovery", async () => {
-  const owner = "02wMz5TxvEMoJEDTDGOTil";
-  const ref = `local:${owner}`;
-  const job = `job_${owner}_000000000789`;
-  const fake = connectFakeClient();
-  fake.on("thread/read", () => readOnlyEntityThread(ref, `Passive reference ${job}.`));
-
-  render(
-    <ClientProvider client={fake}>
-      <ReadOnlyTranscript params={{ ref }} paneId="read-only-passive" focused={false} />
-    </ClientProvider>,
-  );
-
-  await waitFor(() => expect(screen.getByText(job)).toBeTruthy());
-  await flushUntil(() => false, 5);
-  expect(screen.queryByTestId("entity-trigger")).toBeNull();
-  expect(activityPanelStore.getState().entries.has(ref)).toBe(false);
-  expect(activitySummaryStore.getState().entries.has(ref)).toBe(false);
-  expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(0);
 });
 
 // A ref stays on "Loading transcript…" forever when thread/read simply never
@@ -421,6 +426,7 @@ test("a slow-but-alive ref keeps showing the loading placeholder, never the dele
   await flushUntil(() => false, 5);
   expect(screen.getByText(/loading/i)).toBeTruthy();
   expect(screen.queryByText(/deleted/i)).toBeNull();
+  expect(screen.getByTestId("pane-edge-footer")).toBeTruthy();
 });
 
 // The daemon fences every request against a target it has actually deleted
@@ -461,6 +467,7 @@ test("a deleted ref shows an honest empty state instead of loading forever, and 
   // the title uses a humane label instead (kata: the eternal-spinner papercut).
   expect(screen.queryByText("local:ref_gone")).toBeNull();
   expect(screen.getByText("Session deleted")).toBeTruthy();
+  expect(screen.getByTestId("pane-edge-footer")).toBeTruthy();
 
   const user = userEvent.setup();
   await user.click(screen.getByRole("button", { name: /close/i }));
@@ -482,6 +489,7 @@ test("a deletion fence after hydration replaces a cached transcript with the del
     </ClientProvider>,
   );
   await waitFor(() => expect(screen.getByText("Soon gone")).toBeTruthy());
+  expect(screen.getByTestId("pane-edge-footer")).toBeTruthy();
 
   fake.on("thread/read", () => {
     throw new WireError("target has been deleted: local:ref_gone", -32001, {
@@ -499,6 +507,7 @@ test("a deletion fence after hydration replaces a cached transcript with the del
 
   await waitFor(() => expect(screen.getByText(/this session was deleted/i)).toBeTruthy());
   expect(screen.queryByText("Soon gone")).toBeNull();
+  expect(screen.getByTestId("pane-edge-footer")).toBeTruthy();
   expect(threadsStore.getState().threads.has("ref_gone")).toBe(true);
 });
 
@@ -602,7 +611,7 @@ function setNavigationTitle(ref: string, title: string, topLevel = true, fields:
     },
   };
   navigationStore.setState({
-    mode: "v2",
+    mode: "v3",
     clientGenerationID: "generation_test",
     resources: new Map([
       [
@@ -1473,6 +1482,7 @@ test("Cadence's frame trace grows as live notifications arrive, sourced from the
     await flushUntil(() => threadsStore.getState().threads.has("ref_a"));
   });
   expect(document.querySelectorAll('[data-testid="pane-cadence-slot"] rect')).toHaveLength(0);
+  const footerRenderCount = vi.mocked(StatusBarModule.StatusBar).mock.calls.length;
 
   // A live frame lands after the `now` the pane last rendered. Moving the clock
   // one millisecond stamps this one that way; it fires no timer.
@@ -1496,6 +1506,7 @@ test("Cadence's frame trace grows as live notifications arrive, sourced from the
   });
   await flushPendingTurnsProjectionForTests();
   expect(document.querySelectorAll('[data-testid="pane-cadence-slot"] rect').length).toBeGreaterThan(0);
+  expect(StatusBarModule.StatusBar).toHaveBeenCalledTimes(footerRenderCount);
 });
 
 // cadenceStateForStatus's own direct unit tests now live in
@@ -2970,7 +2981,7 @@ test("explains that an incompatible daemon needs an explicit restart", async () 
   // The notice tells the operator to stop the older daemon, so the control that
   // does it must be present: the Refresh button only re-reads and can never
   // clear an incompatible daemon on its own.
-  expect(screen.getByRole("button", { name: "Force stop…" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Force shutdown…" })).toBeTruthy();
   expect(fake.calls.filter((call) => call.method === "thread/resume" || call.method === "turn/start")).toHaveLength(0);
 });
 
@@ -3171,8 +3182,8 @@ test("explicit Resume follows the returned identity through transcript and new s
   });
   const user = userEvent.setup();
   await user.click(await screen.findByRole("button", { name: /session actions/i }));
-  await user.click(screen.getByRole("menuitem", { name: "Force stop…" }));
-  await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
+  await user.click(screen.getByRole("menuitem", { name: "Force shutdown…" }));
+  await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force shutdown" }));
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   expect(resumed).toBe(false);
   // Reconnect starts discovery after hydration. Observe that original promise
@@ -3489,12 +3500,12 @@ test.each(["success", "refused"])(
     expect(threadsStore.getState().threads.has(ref)).toBe(false);
     const refresh = vi.spyOn(threadsStore.getState(), "refreshThread");
     const user = userEvent.setup();
-    await user.click(screen.getByRole("button", { name: "Force stop…" }));
+    await user.click(screen.getByRole("button", { name: "Force shutdown…" }));
     expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
     await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Cancel" }));
     expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
-    await user.click(screen.getByRole("button", { name: "Force stop…" }));
-    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
+    await user.click(screen.getByRole("button", { name: "Force shutdown…" }));
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force shutdown" }));
     if (outcome === "success") {
       expect(await screen.findByRole("button", { name: "Resume session" })).toBeTruthy();
       // Hydration publishes Resume before storage reconciliation completes.
@@ -3507,7 +3518,8 @@ test.each(["success", "refused"])(
     } else {
       expect(await screen.findByText("no direct daemon ownership claim")).toBeTruthy();
       expect(
-        (within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }) as HTMLButtonElement).disabled,
+        (within(screen.getByRole("dialog")).getByRole("button", { name: "Force shutdown" }) as HTMLButtonElement)
+          .disabled,
       ).toBe(false);
     }
     expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(1);
@@ -3541,13 +3553,13 @@ test.each(["success", "refused"])("hydrated restart recovery works without navig
   const refresh = vi.spyOn(threadsStore.getState(), "refreshThread");
   const user = userEvent.setup();
   await user.click(screen.getByRole("button", { name: /session actions/i }));
-  await user.click(screen.getByRole("menuitem", { name: "Force stop…" }));
+  await user.click(screen.getByRole("menuitem", { name: "Force shutdown…" }));
   expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
   await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Cancel" }));
   expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
   await user.click(screen.getByRole("button", { name: /session actions/i }));
-  await user.click(screen.getByRole("menuitem", { name: "Force stop…" }));
-  await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
+  await user.click(screen.getByRole("menuitem", { name: "Force shutdown…" }));
+  await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force shutdown" }));
   // forceStop writes its cancellation durably before the RPC, so the call can
   // land after the click resolves; wait for it rather than racing the write.
   await flushPendingTurnsProjectionForTests();
@@ -3556,9 +3568,10 @@ test.each(["success", "refused"])("hydrated restart recovery works without navig
   ]);
   expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
   if (outcome === "refused") {
-    expect(await screen.findByText("Couldn't force stop session: no direct daemon ownership claim")).toBeTruthy();
+    expect(await screen.findByText("Couldn't force shutdown session: no direct daemon ownership claim")).toBeTruthy();
     expect(
-      (within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }) as HTMLButtonElement).disabled,
+      (within(screen.getByRole("dialog")).getByRole("button", { name: "Force shutdown" }) as HTMLButtonElement)
+        .disabled,
     ).toBe(false);
     expect(threadsStore.getState().threads.get(ref)?.status.type).toBe("restartRequired");
   } else {
@@ -3603,8 +3616,8 @@ test("confirmed force stop refreshes the session and exposes explicit Resume", a
   );
   const user = userEvent.setup();
   await user.click(await screen.findByRole("button", { name: /session actions/i }));
-  await user.click(screen.getByRole("menuitem", { name: "Force stop…" }));
-  await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
+  await user.click(screen.getByRole("menuitem", { name: "Force shutdown…" }));
+  await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force shutdown" }));
   const resume = await screen.findByRole("button", { name: "Resume session" });
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
@@ -3758,7 +3771,7 @@ test.each(["active", "idle"])("retained %s child preserves uncertainty until its
   // pane: the owner directs recovery (the notice above links to it).
   const user = userEvent.setup();
   await user.click(screen.getByRole("button", { name: /session actions/i }));
-  expect(screen.queryByRole("menuitem", { name: /Force stop/ })).toBeNull();
+  expect(screen.queryByRole("menuitem", { name: /Force shutdown/ })).toBeNull();
   await user.keyboard("{Escape}");
   owned = false;
   fireEvent.click(refresh);
@@ -3778,11 +3791,13 @@ test.each(["idle", "active"])(
     const fake = connectFakeClient();
     const ref = "local:retained-unresponsive";
     let stopped = false;
-    let reads = 0;
+    let transcriptReads = 0;
     let finishRead: (() => void) | undefined;
-    fake.on("thread/read", () => {
-      reads++;
-      if (reads === 2)
+    fake.on("thread/read", (params) => {
+      // Activity can acquire the shared subscription while the transcript's
+      // cache lookup is pending. Its lean read is not a transcript hydration.
+      if (params.includeTurns) transcriptReads++;
+      if (params.includeTurns && transcriptReads === 2)
         return new Promise((resolve) => {
           finishRead = () => resolve(readResponse(ref, { status: { type: "notLoaded" } }));
         });
@@ -3800,15 +3815,16 @@ test.each(["idle", "active"])(
       </ClientProvider>,
     );
     await waitFor(() => expect(threadsStore.getState().threads.get(ref)?.status.type).toBe(status));
+    expect(transcriptReads).toBe(1);
     act(() => {
       void threadsStore.getState().refreshThread(ref);
     });
-    await waitFor(() => expect(reads).toBe(2));
+    await waitFor(() => expect(transcriptReads).toBe(2));
     expect(threadsStore.getState().threads.get(ref)?.status.type).toBe(status);
     const user = userEvent.setup();
     await openForceStopDialog(user);
     expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
-    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force shutdown" }));
     expect(await screen.findByRole("button", { name: "Resume session" })).toBeTruthy();
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
@@ -3881,7 +3897,7 @@ test.each(["pending", "failed"])(
       const user = userEvent.setup();
       const resume = await screen.findByRole("button", { name: "Resume session" });
       await user.click(screen.getByRole("button", { name: /session actions/i }));
-      expect(screen.getByRole("menuitem", { name: "Force stop…" })).toBeTruthy();
+      expect(screen.getByRole("menuitem", { name: "Force shutdown…" })).toBeTruthy();
       await user.keyboard("{Escape}");
       await user.click(resume);
       expect(daemonStarted).toBe(true);
@@ -3892,7 +3908,7 @@ test.each(["pending", "failed"])(
       expect(threadsStore.getState().threads.get(ref)?.status.type).toBe("notLoaded");
       await openForceStopDialog(user);
       expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
-      await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
+      await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force shutdown" }));
       await flushPendingTurnsProjectionForTests();
       expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
         { method: "evener/thread/forceStop", params: { ref } },
@@ -4051,7 +4067,7 @@ test.each(["pending", "failed"])(
       expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(false);
       const user = userEvent.setup();
       await user.click(screen.getByRole("button", { name: /session actions/i }));
-      expect(screen.getByRole("menuitem", { name: "Force stop…" })).toBeTruthy();
+      expect(screen.getByRole("menuitem", { name: "Force shutdown…" })).toBeTruthy();
       await user.keyboard("{Escape}");
       await act(async () => {
         await threadsStore.getState().send(ref, "continue the saved conversation");
@@ -4067,7 +4083,7 @@ test.each(["pending", "failed"])(
       await openForceStopDialog(user);
       expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
       refresh.mockClear();
-      await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
+      await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force shutdown" }));
       await waitFor(() => expect(stopped).toBe(true));
       expect(await screen.findByRole("button", { name: "Resume session" })).toBeTruthy();
       expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
@@ -4138,7 +4154,7 @@ test.each(["model", "compact"])(
       expect(threadsStore.getState().threads.get(ref)?.status.type).toBe("notLoaded");
       await openForceStopDialog(user);
       expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
-      await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
+      await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force shutdown" }));
       // Force stop's work runs past the click: the durable cancellation, the
       // stop RPC (whose handler rejects the pending action), the recovery
       // obligation, and the refresh after which the dialog closes. Awaiting
@@ -4150,7 +4166,7 @@ test.each(["model", "compact"])(
       await settled;
       expect(await screen.findByRole("button", { name: "Resume session" })).toBeTruthy();
       await user.click(screen.getByRole("button", { name: /session actions/i }));
-      expect(screen.getByRole("menuitem", { name: "Force stop…" })).toBeTruthy();
+      expect(screen.getByRole("menuitem", { name: "Force shutdown…" })).toBeTruthy();
       await user.keyboard("{Escape}");
       expect(fake.calls.filter((call) => call.method === method)).toHaveLength(1);
       expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
@@ -4211,7 +4227,7 @@ test.each(["idle", "active"])(
       await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Cancel" }));
       expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
       await openForceStopDialog(user);
-      await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
+      await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force shutdown" }));
       expect(await screen.findByRole("button", { name: "Resume session" })).toBeTruthy();
       await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
       expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
@@ -4248,9 +4264,9 @@ test("a fenced notLoaded session keeps force stop reachable in the pane footer",
     if (!stopped) response.thread.evener.capabilities = { ...CAPABILITIES, send: false };
     return response;
   });
-  fake.on("evener/jobs/list", (params) => {
+  fake.on("evener/thread/activity/read", (params) => {
     activityRefs.push(params.ref);
-    return { data: emptyActivityTree(ref) };
+    return activitySummary(params.ref);
   });
   fake.on("evener/thread/forceStop", () => {
     stopped = true;
@@ -4263,12 +4279,12 @@ test("a fenced notLoaded session keeps force stop reachable in the pane footer",
     </ClientProvider>,
   );
   expect(activityPanelStore.getState().entries.has(ref)).toBe(false);
-  expect(activitySummaryStore.getState().entries.has(ref)).toBe(false);
+  expect(sessionActivitySnapshot(fake, ref, "session")?.summary).toBeUndefined();
   // The fence must not hide the editor or its force-stop menu.
   const menuTrigger = await screen.findByRole("button", { name: /session actions/i });
   await waitFor(() => expect(activityRefs).toEqual([ref]));
-  expect(activitySummaryStore.getState().entries.get(ref)?.established).toBe(true);
-  expect(activityPanelStore.getState().entries.get(ref)?.load.kind).toBe("ready");
+  expect(sessionActivitySnapshot(fake, ref, "session")?.summary).not.toBeNull();
+  expect(sessionActivitySnapshot(fake, ref, "session")?.summaryState.loading).toBe(false);
   expect(screen.getByTestId("composer-input-card")).toBeTruthy();
   const editor = screen.getByRole("textbox", { name: "Message" });
   // The composer's editor is a contenteditable div, which carries neither
@@ -4278,13 +4294,13 @@ test("a fenced notLoaded session keeps force stop reachable in the pane footer",
   expect(editor.getAttribute("contenteditable")).toBe("true");
   const user = userEvent.setup();
   await user.click(menuTrigger);
-  await user.click(screen.getByRole("menuitem", { name: "Force stop…" }));
+  await user.click(screen.getByRole("menuitem", { name: "Force shutdown…" }));
   expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
   await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Cancel" }));
   expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
   await user.click(menuTrigger);
-  await user.click(screen.getByRole("menuitem", { name: "Force stop…" }));
-  await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
+  await user.click(screen.getByRole("menuitem", { name: "Force shutdown…" }));
+  await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force shutdown" }));
   await flushPendingTurnsProjectionForTests();
   expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
     { method: "evener/thread/forceStop", params: { ref } },
@@ -4320,9 +4336,9 @@ test.each([
     response.thread.evener.mutationStateAuthoritative = false;
     return response;
   });
-  fake.on("evener/jobs/list", (params) => {
+  fake.on("evener/thread/activity/read", (params) => {
     activityRefs.push(params.ref);
-    return { data: emptyActivityTree(ref) };
+    return activitySummary(params.ref);
   });
   render(
     <ClientProvider client={fake}>
@@ -4339,4 +4355,65 @@ test.each([
     screen.queryAllByTestId("session-chrome-menu").length + screen.queryAllByTestId("session-chrome-inline").length;
   expect(chromeMounts).toBe(1);
   await waitFor(() => expect(activityRefs).toEqual([ref]));
+});
+
+test("visible retained transcript resolves qualified job and stable delegate rows with authoritative open targets", async () => {
+  const owner = "02wMz5TxvEMoJEDTDGOTil",
+    ref = `local:${owner}`,
+    jobId = `job_${owner}_000000000123`,
+    delegateId = "dlg_034HQ2kSDXfKFq1mm3idL1",
+    otherJob = `job_${owner}_000000000456`;
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readOnlyEntityThread(ref, `Own ${jobId} and ${delegateId}. Other ${otherJob}.`));
+  fake.on("evener/thread/activity/read", () => activitySummary(ref));
+  fake.on("evener/thread/jobs/list", ({ scope }) => ({
+    context: activityContext(ref),
+    scope: scope ?? "session",
+    jobs: [
+      activityJob({
+        jobId,
+        ownerRef: ref,
+        ownerSessionId: owner,
+        transcriptRef: "job:provided-ref",
+        description: "retained owned job",
+      }),
+    ],
+    page: { complete: true, issues: [] },
+  }));
+  fake.on("evener/thread/delegates/list", ({ scope }) => ({
+    context: activityContext(ref),
+    scope: scope ?? "session",
+    delegates: [
+      activityDelegate({
+        delegateId,
+        ownerRef: ref,
+        childRef: "source:opaque-child",
+        rootRef: ref,
+        description: "retained owned delegate",
+      }),
+    ],
+    page: { complete: true, issues: [] },
+  }));
+  render(
+    <ClientProvider client={fake}>
+      <ReadOnlyTranscript params={{ ref }} paneId="retained" focused={false} />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(screen.getAllByTestId("entity-trigger")).toHaveLength(2));
+  expect(screen.getByText(otherJob).closest('[data-testid="entity-trigger"]')).toBeNull();
+  await import("./index");
+  act(() => {
+    workspaceStore.getState().openPane("session", { ref });
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Open job log" }));
+  expect(workspaceStore.getState().panes.filter((p) => p.type === "transcript")).toEqual(
+    expect.arrayContaining([expect.objectContaining({ params: { ref: "job:provided-ref", parentRef: ref } })]),
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Open delegate transcript" }));
+  expect(workspaceStore.getState().panes.filter((p) => p.type === "transcript")).toEqual(
+    expect.arrayContaining([expect.objectContaining({ params: { ref: "source:opaque-child", parentRef: ref } })]),
+  );
+  expect(
+    fake.calls.filter((c) => c.method === "evener/jobs/list" || c.method === "evener/thread/watches/list"),
+  ).toHaveLength(0);
 });

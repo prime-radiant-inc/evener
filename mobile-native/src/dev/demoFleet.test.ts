@@ -2,8 +2,10 @@
 // fixture can never drift from the wire (see demoFleet.ts's header comment
 // for what this fixture represents and where it comes from).
 import { describe, expect, it } from "vitest";
-import type { NavigationReadParams, NavigationSessionSummary } from "@evener/appwire-client";
+import type { ArchivedListParams, NavigationReadParams, NavigationSessionSummary } from "@evener/appwire-client";
+import { decodeActivityRead, quietState } from "@evener/appwire-client";
 import {
+	decodeArchivedListSessions,
 	decodeNavigationResponse,
 	materializeSnapshot,
 	NAVIGATION_CATALOG_LIMIT,
@@ -12,9 +14,7 @@ import {
 } from "@evener/appwire-client/state/navigation";
 import { archiveTarget } from "../board/rowActions.js";
 import { localSessionId } from "../sessionDeletionResult.js";
-import { parseActivityTree } from "@evener/appwire-client";
-import { flattenSubagents, subagentLastLine, tallyActivity } from "../subagents/subagentModel";
-import { capChildren, createDemoFleet, DEMO_FLEET_GENERATION, demoSessionId } from "./demoFleet.js";
+import { createDemoFleet, DEMO_FLEET_GENERATION, demoSessionId, fleetSessionRef } from "./demoFleet.js";
 import { DEMO_MODEL_NAMES } from "./demoSetup.js";
 
 const STARTUP = Date.parse("2026-09-26T18:00:00.000Z");
@@ -32,7 +32,7 @@ function read(fleet: ReturnType<typeof createDemoFleet>, params: NavigationReadP
 }
 
 function params(overrides: Partial<NavigationReadParams> & { resource: string }): NavigationReadParams {
-	return { representationVersion: 2, offset: 0, limit: 50, ...overrides };
+	return { representationVersion: 3, offset: 0, limit: 50, ...overrides };
 }
 
 function sessionsOf(materialized: Record<string, unknown>): NavigationSessionSummary[] {
@@ -51,6 +51,15 @@ function findRow(rows: NavigationSessionSummary[], slug: string): NavigationSess
 	if (!row) throw new Error(`missing session ${slug} in [${rows.map((r) => r.session_id).join(", ")}]`);
 	return row;
 }
+
+it("summarizes the same coordinator running job in navigation and typed activity", () => {
+	const fleet = createDemoFleet({ now: STARTUP });
+	const row = findRow(liveRows(fleet), "s-tasklist");
+	const jobs = fleet.answerSessionJobsList({ ref: row.ref });
+	expect(jobs.jobs).toHaveLength(row.running_job_count ?? 0);
+	expect(jobs.jobs[0]?.command).toBe(row.running_job_command);
+	expect(fleet.answerActivityRead({ ref: row.ref }).jobs).toMatchObject({ known: true, total: 1, active: 1 });
+});
 
 describe("the tool families session (EVENER_DEMO_FLEET_TOOLS)", () => {
 	it("adds Show Every Tool Family to Live, finished, only when asked for", () => {
@@ -186,76 +195,31 @@ describe("demo fleet live and needs-you sections", () => {
 	});
 });
 
-describe("demo fleet children capping", () => {
-	// cmd/evener-hub/navigation_projection.go's projectNode applies
-	// maxNavigationChildren at every depth of a session's descendant tree, not
-	// only its immediate children. toRow and toChildRow share this one
-	// function so a nested level can't fall out of step with the top one.
-	it("caps at the hub's own limit and reports the excess, regardless of depth", () => {
-		const many = Array.from({ length: 55 }, (_, i) => ({ id: `x-${i}` }));
-		const { capped, omitted } = capChildren(many);
-		expect(capped).toHaveLength(50);
-		expect(omitted).toBe(5);
-	});
-
-	it("reports no omission when under the limit", () => {
-		const { capped, omitted } = capChildren([{ id: "only-one" }]);
-		expect(capped).toHaveLength(1);
-		expect(omitted).toBe(0);
-	});
-});
-
-describe("demo fleet subagent trees", () => {
+describe("demo fleet shallow navigation", () => {
 	const fleet = createDemoFleet({ now: STARTUP });
 
-	it("caps a big swarm at the hub's own child limit and counts the rest as omitted", () => {
-		const rows = liveRows(fleet);
-		const pr2138 = findRow(rows, "s-pr2138");
-		// 54 real subagents (Appendix B: "subagent trees from 0 to 54"), capped at
-		// the hub's maxNavigationChildren (cmd/evener-hub/navigation_projection.go).
-		expect(pr2138.children).toHaveLength(50);
-		expect(pr2138.omitted_descendants).toBe(4);
-		expect(pr2138.children.every((child) => child.kind === "subagent")).toBe(true);
-		const settle = pr2138.children.find((child) => child.session_id === demoSessionId("g-settle"));
-		expect(settle).toMatchObject({ state: "errored", live: false });
-		expect(settle?.children).toHaveLength(1);
-		expect(settle?.children[0]).toMatchObject({
-			session_id: demoSessionId("g-settle-1"),
-			ref: `local:${demoSessionId("g-settle-1")}`,
-			state: "active",
-			live: true,
-		});
+	it("rejects a navigation representation outside version 3", () => {
+		for (const representationVersion of [1, 2, 4]) {
+			expect(() => fleet.answerNavigationRead(params({ resource: "manifest", representationVersion }))).toThrow();
+		}
 	});
 
-	it("gives a small named swarm its real titles (s-retry: r-1..r-4)", () => {
-		const rows = liveRows(fleet);
-		const retry = findRow(rows, "s-retry");
-		// A subagent is named the way the hub names any session, the same id its
-		// parent's delegates carry (demoSessions.ts).
-		expect(retry.children.map((child) => child.session_id)).toEqual(["r-1", "r-2", "r-3", "r-4"].map(demoSessionId));
-		expect(retry.children.map((child) => child.ref)).toEqual(
-			["r-1", "r-2", "r-3", "r-4"].map((slug) => `paradise-park:${demoSessionId(slug)}`),
+	it("keeps named and large descendant swarms out of navigation records", () => {
+		const live = liveRows(fleet);
+		const archived = decodeArchivedListSessions(
+			fleet.answerArchivedList({ catalog: "archived_projects", projectKey: "evener" }).sessions,
 		);
-		expect(retry.children.map((child) => child.state)).toEqual(["ended", "ended", "errored", "ended"]);
-		// Children run on the same host as their parent.
-		expect(retry.children.every((child) => child.host_id === "paradise-park")).toBe(true);
+		for (const row of [...live, ...archived]) {
+			expect(row.children).toEqual([]);
+			expect(row).not.toHaveProperty("omitted_descendants");
+		}
+		expect(findRow(live, "s-retry").kind).toBe("session");
+		expect(findRow(archived, "s-fuzz").kind).toBe("session");
 	});
 
-	it("carries the one-of-467-in-Archived case (s-fuzz) with the same cap and a large omitted count", () => {
-		const archived = sessionsOf(
-			read(fleet, params({ resource: "project_page", projectKey: "evener", tier: "archived" })),
-		);
-		const fuzz = findRow(archived, "s-fuzz");
-		expect(fuzz.children).toHaveLength(50);
-		expect(fuzz.omitted_descendants).toBe(467 - 50);
-	});
-
-	it("carries a live root's whole-tree subagent tally, past the children cap (S3)", () => {
-		const pr2138 = findRow(liveRows(fleet), "s-pr2138");
-		const tally = pr2138.subagents;
+	it("preserves a live root's compact whole-tree subagent tally", () => {
+		const tally = findRow(liveRows(fleet), "s-pr2138").subagents;
 		expect(tally).toBeDefined();
-		// The children cap keeps 50 top-level rows and omits 4 (above); the tally
-		// counts every depth, so it also counts the one nested subagent (55).
 		expect((tally?.running ?? 0) + (tally?.failed ?? 0) + (tally?.done ?? 0)).toBe(55);
 		expect(tally?.failed).toBe(2);
 		expect(tally?.running).toBeGreaterThan(0);
@@ -263,15 +227,15 @@ describe("demo fleet subagent trees", () => {
 });
 
 describe("demo fleet running jobs", () => {
-	it("surfaces a working session's shell command as a running job", () => {
+	it("surfaces a working session's compact shell count and command", () => {
 		const fleet = createDemoFleet({ now: STARTUP });
 		const rows = liveRows(fleet);
 		const tasklist = findRow(rows, "s-tasklist");
-		expect(tasklist.running_jobs).toEqual([
-			expect.objectContaining({ status: "running", command: "go test ./cmd/evener-hub/..." }),
-		]);
+		expect(tasklist).toMatchObject({ running_job_count: 1, running_job_command: "go test ./cmd/evener-hub/..." });
+		expect(tasklist).not.toHaveProperty("running_jobs");
 		// "Thinking" and similar activity lines are not commands.
-		expect(findRow(rows, "s-gateway").running_jobs).toBeUndefined();
+		expect(findRow(rows, "s-gateway").running_job_count ?? 0).toBe(0);
+		expect(findRow(rows, "s-gateway").running_job_command).toBeUndefined();
 	});
 });
 
@@ -339,10 +303,8 @@ describe("demo fleet location", () => {
 		});
 	});
 
-	it("drops the capped-children count from the shallow summary, as projectShallow does", () => {
-		// s-fuzz: 467 subagents capped to 50 in the list rows. The hub's
-		// projectShallow sets no omitted_descendants, so the location's session
-		// must not carry one beside its empty children.
+	it("keeps location summaries shallow even for large activity trees", () => {
+		// A location names its session without loading its 467-member activity tree.
 		const location = read(fleet, params({ resource: "location", ref: refOf("local", "s-fuzz") }));
 		const session = location.session as NavigationSessionSummary;
 		expect(session.children).toEqual([]);
@@ -419,19 +381,6 @@ describe("demo fleet catalogs and projects", () => {
 		expect(current.map((row) => row.session_id)).toContain(demoSessionId("s-retry")); // ago 2m: today
 		expect(recent.map((row) => row.session_id)).toContain(demoSessionId("s-roster")); // ago 1d: recent
 		expect(recent.map((row) => row.session_id)).not.toContain(demoSessionId("s-retry"));
-	});
-
-	it("reports the true archived remaining count on the archived tier page, not the zeroed project overview", () => {
-		// The default page (limit 50, the section maximum) returns a full page
-		// of the real 271-row tier, with a remaining that adds up against it --
-		// not the 5 named rows plus a "266 remaining" that never shrinks.
-		const page = read(fleet, params({ resource: "project_page", projectKey: "evener", tier: "archived" }));
-		expect(sessionsOf(page)).toHaveLength(50);
-		expect(page.remaining).toBe(271 - 50);
-		// The project overview still just previews the 5 named rows -- "See
-		// all" is what a project_page(tier=archived) read is for.
-		const overview = read(fleet, params({ resource: "project", projectKey: "evener" }));
-		expect((overview.archived as { sessions: unknown[] }).sessions).toHaveLength(5);
 	});
 
 	it("rejects an unknown project", () => {
@@ -589,28 +538,6 @@ describe("demo fleet paging", () => {
 		expect(third.remaining).toBe(0);
 	});
 
-	it("pages the evener archived tier all the way to the end without stalling", () => {
-		const seen = new Set<string>();
-		let offset = 0;
-		let remaining = Number.POSITIVE_INFINITY;
-		for (let guard = 0; remaining > 0; guard++) {
-			if (guard > 20) throw new Error("archived paging never reached the end");
-			// 50 is the real protocol's own maximum for a section-shaped page
-			// (NAVIGATION_SECTION_LIMIT); the hub rejects a request over it.
-			const page = read(
-				fleet,
-				params({ resource: "project_page", projectKey: "evener", tier: "archived", offset, limit: 50 }),
-			);
-			const rows = sessionsOf(page);
-			if (rows.length === 0)
-				throw new Error(`page at offset ${offset} returned no rows while ${page.remaining} still remain`);
-			for (const row of rows) seen.add(row.session_id);
-			remaining = page.remaining as number;
-			offset += rows.length;
-		}
-		expect(seen.size).toBe(271);
-	});
-
 	// cmd/evener-hub/app_navigation.go's navigationReadPage rejects an
 	// out-of-range page request outright rather than clamping it into range;
 	// the demo fleet's own page() must match, not silently coerce.
@@ -694,16 +621,15 @@ describe("demo fleet paging", () => {
 describe("demo fleet truncation", () => {
 	const fleet = createDemoFleet({ now: STARTUP });
 
-	it("marks a response truncated when one of its rows had children capped", () => {
-		// s-fuzz: 467 subagents capped to 50 -- cmd/evener-hub/navigation_projection.go
-		// sets Truncated whenever OmittedDescendants is set on any projected row.
-		const archived = read(fleet, params({ resource: "project_page", projectKey: "evener", tier: "archived" }));
-		expect(archived.truncated).toBe(true);
-		const live = read(fleet, params({ resource: "section", section: "live" })); // includes s-pr2138 (54 -> 50)
-		expect(live.truncated).toBe(true);
+	it("keeps large activity trees separate from navigation truncation", () => {
+		// Activity size does not truncate a flat navigation page.
+		const current = read(fleet, params({ resource: "project_page", projectKey: "evener", tier: "current" }));
+		expect(current.truncated).toBe(false);
+		const live = read(fleet, params({ resource: "section", section: "live" }));
+		expect(live.truncated).toBe(false);
 	});
 
-	it("leaves a response untruncated when nothing in it was capped", () => {
+	it("keeps the needs-you page untruncated", () => {
 		const needsYou = read(fleet, params({ resource: "section", section: "needs_you" }));
 		expect(needsYou.truncated).toBe(false);
 	});
@@ -823,7 +749,7 @@ describe("demo fleet question after a delay", () => {
 			version: 1,
 			generationId: DEMO_FLEET_GENERATION,
 			sequence: 0,
-			readVersions: [2],
+			readVersions: [3],
 		});
 		const payload = demo.step("question");
 		expect(demo.navigationCapability().sequence).toBe(payload.sequence);
@@ -894,18 +820,18 @@ describe("demo fleet steps for the alert screenshots (phase 6 Task 17)", () => {
 });
 
 describe("demo fleet offline propagation", () => {
-	it("marks an offline-host session's own children offline too, not just the parent row", () => {
+	it("marks an offline-host root offline without shipping descendants", () => {
 		const fleet = createDemoFleet({ now: STARTUP, offlineHost: true });
 		const retry = findRow(liveRows(fleet), "s-retry"); // paradise-park
-		expect(retry.children.length).toBeGreaterThan(0);
-		expect(retry.children.every((child) => child.offline === true)).toBe(true);
+		expect(retry.offline).toBe(true);
+		expect(retry.children).toEqual([]);
 	});
 
-	it("leaves a local session's children alone under the offline flag", () => {
+	it("leaves a local root online under another host's offline flag", () => {
 		const fleet = createDemoFleet({ now: STARTUP, offlineHost: true });
 		const pr2138 = findRow(liveRows(fleet), "s-pr2138"); // local/magic-kingdom
-		expect(pr2138.children.length).toBeGreaterThan(0);
-		expect(pr2138.children.every((child) => child.offline === undefined)).toBe(true);
+		expect(pr2138.offline).toBeUndefined();
+		expect(pr2138.children).toEqual([]);
 	});
 });
 
@@ -980,14 +906,18 @@ describe("demo fleet archive", () => {
 		expect(findRow(liveRows(demo), "s-gateway").ask_pending).toBe(true);
 	});
 
-	it("keeps an archived session in its own project's Archived tier, where its location sends a reveal", () => {
+	it("keeps an archived session in its own project's archived list, the tier its location names", () => {
 		const demo = fleet();
 		const deslop = findRow(liveRows(demo), "s-deslop");
 		demo.archive({ kind: "session", id: deslop.session_id, archived: true });
 		const location = read(demo, params({ resource: "location", ref: deslop.ref }));
 		expect(location).toMatchObject({ project_key: "deslop", tier: "archived" });
-		const tier = sessionsOf(read(demo, params({ resource: "project_page", projectKey: "deslop", tier: "archived" })));
-		expect(tier.map((row) => row.session_id)).toEqual([deslop.session_id]);
+		// Its only session archived, deslop moves to Archived projects, which
+		// the list reads when asked, as the location screen asks, with no
+		// catalog.
+		const list = demo.answerArchivedList({ projectKey: "deslop" });
+		expect(list.catalog).toBe("archived_projects");
+		expect(decodeArchivedListSessions(list.sessions).map((row) => row.session_id)).toEqual([deslop.session_id]);
 	});
 
 	it("moves a project whose every session is archived into Archived projects, and back on unarchive", () => {
@@ -1051,36 +981,281 @@ describe("demo fleet archive", () => {
 	});
 });
 
-// The Subagents list, a subagent's screen and the Reader read the same swarm
-// the Board's rows come from (spec Appendix B).
+// The Activity list, a subagent's screen and the Reader read the same swarm
+// the Board's rows come from (spec Appendix B), through the typed activity
+// reads.
 describe("demo fleet subagents", () => {
 	const fleet = createDemoFleet({ now: STARTUP });
 	const pr2138 = `local:${demoSessionId("s-pr2138")}`;
+	const subtree = (ref: string) => fleet.answerDelegatesList({ ref, scope: "subtree", limit: 200 }).delegates;
 
-	it("lists Get PR 2138 Test Clean's 55 subagents in its activity tree, with data.js's details", () => {
-		const tree = parseActivityTree(fleet.answerJobsList({ ref: pr2138 }).data);
-		if (!tree) throw new Error("no tree");
-		const rows = flattenSubagents(tree);
-		expect(tallyActivity(rows)).toEqual({ total: 55, running: 32, failed: 2, done: 21 });
-		const settle = rows.find((row) => row.title === "Fix race in tree settle");
-		expect(settle?.delegate).toMatchObject({ outcome: "failed" });
-		expect(subagentLastLine(settle as never, "glm-5.3-vision", (model) => model)).toMatchObject({
-			branch: "fix-settle-race",
-			tokens: "1.2M tokens",
+	it("counts Get PR 2138 Test Clean's 55 subagents and lists them with data.js's details", () => {
+		expect(fleet.answerActivityRead({ ref: pr2138, scope: "subtree" }).delegates).toEqual({
+			known: true,
+			total: 55,
+			active: 32,
+			failed: 2,
+			completed: 21,
+		});
+		const rows = subtree(pr2138);
+		expect(rows).toHaveLength(55);
+		expect(rows.find((row) => row.description === "Fix race in tree settle")).toMatchObject({
+			outcome: "failed",
+			worktree: { branch: "fix-settle-race" },
+			usage: { totalTokens: 1_200_000 },
 		});
 	});
 
-	it("gives a subagent that started subagents its own tree, as its transcript's delegates name them", () => {
-		const coordinator = parseActivityTree(fleet.answerJobsList({ ref: pr2138 }).data);
-		const settle = flattenSubagents(coordinator as never).find((row) => row.title === "Fix race in tree settle");
+	it("gives a subagent that started subagents its own, as its transcript's delegates name them", () => {
+		const settle = subtree(pr2138).find((row) => row.description === "Fix race in tree settle");
 		if (!settle) throw new Error("no Fix race in tree settle");
-		const tree = parseActivityTree(fleet.answerJobsList({ ref: settle.ref }).data);
-		expect(tree?.root.ref).toBe(settle.ref);
-		expect(flattenSubagents(tree as never).map((row) => row.title)).toEqual(["Check drain ordering in tests"]);
+		const own = fleet.answerDelegatesList({ ref: settle.childRef });
+		expect(own.context.ref).toBe(settle.childRef);
+		expect(own.delegates.map((row) => row.description)).toEqual(["Check drain ordering in tests"]);
 	});
 
-	it("gives a session with no subagents an empty tree", () => {
-		const other = parseActivityTree(fleet.answerJobsList({ ref: `local:${demoSessionId("s-gateway")}` }).data);
-		expect(other?.root.entries).toEqual([]);
+	it("gives a session with no subagents or shell jobs complete, empty lists", () => {
+		const ref = `local:${demoSessionId("s-gateway")}`;
+		const delegates = fleet.answerDelegatesList({ ref });
+		expect(delegates.delegates).toEqual([]);
+		expect(delegates.page).toEqual({ complete: true, issues: [] });
+		const jobs = fleet.answerSessionJobsList({ ref });
+		expect(jobs.jobs).toEqual([]);
+		expect(jobs.page).toEqual({ complete: true, issues: [] });
+	});
+});
+
+// The real hub serves a project's archived rows only through
+// evener/archived/list (cmd/evener-hub/navigation_archived_list.go): paged by
+// an opaque cursor bound to its catalog hint and project, with the tier's
+// total; navigation's archived project_page and the project overview's
+// archived tier come back empty.
+describe("demo fleet archived lists", () => {
+	const fleet = createDemoFleet({ now: STARTUP });
+
+	/** The session ids one archived list serves, paging by cursor with the
+	 * same params, each page checked to hold rows and the list's total. */
+	function pageArchived(list: Omit<ArchivedListParams, "cursor">, total: number): Set<string> {
+		const seen = new Set<string>();
+		let cursor: string | undefined;
+		for (let guard = 0; ; guard++) {
+			if (guard > 20) throw new Error("archived paging never reached the end");
+			const page = fleet.answerArchivedList({ ...list, cursor });
+			expect(page.total).toBe(total);
+			const rows = decodeArchivedListSessions(page.sessions);
+			expect(rows.length).toBeGreaterThan(0);
+			for (const row of rows) seen.add(row.session_id);
+			cursor = page.nextCursor;
+			if (!cursor) return seen;
+		}
+	}
+
+	it("pages a project's archived sessions by cursor to the end, with the tier's total", () => {
+		expect(pageArchived({ catalog: "archived_projects", projectKey: "evener" }, 271).size).toBe(271);
+	});
+
+	it("takes a limit up to the section maximum, where none or 0 means the maximum", () => {
+		const list = { catalog: "archived_projects", projectKey: "evener" };
+		expect(fleet.answerArchivedList(list).sessions).toHaveLength(50);
+		expect(fleet.answerArchivedList({ ...list, limit: 0 }).sessions).toHaveLength(50);
+		const ten = fleet.answerArchivedList({ ...list, limit: 10 });
+		expect(ten.sessions).toHaveLength(10);
+		const after = fleet.answerArchivedList({ ...list, limit: 10, cursor: ten.nextCursor });
+		expect(decodeArchivedListSessions(after.sessions)[0]?.ref).toBe(
+			decodeArchivedListSessions(fleet.answerArchivedList({ ...list, limit: 11 }).sessions)[10]?.ref,
+		);
+		for (const limit of [-1, 51])
+			expect(() => fleet.answerArchivedList({ ...list, limit })).toThrow("limit must be between 0 and 50");
+	});
+
+	it("serves navigation's archived project_page and overview tier empty, as the hub does", () => {
+		const page = read(fleet, params({ resource: "project_page", projectKey: "evener", tier: "archived" }));
+		expect(sessionsOf(page)).toEqual([]);
+		expect(page.remaining).toBe(0);
+		const overview = read(fleet, params({ resource: "project", projectKey: "evener" }));
+		expect((overview.archived as { sessions: unknown[] }).sessions).toEqual([]);
+	});
+
+	it("answers a project its catalog doesn't hold with an empty list", () => {
+		expect(fleet.answerArchivedList({ catalog: "test_runs", projectKey: "evener" })).toEqual({
+			sessions: [],
+			total: 0,
+		});
+	});
+
+	// The catalog is a hint, as on the hub: the hinted catalog when it holds the
+	// project, the other of projects and archived projects when the project
+	// moved there, and with no hint the first catalog holding it. The answer
+	// says which catalog it read.
+	it("reads the hinted catalog when it holds the project, and says which", () => {
+		for (const catalog of ["projects", "archived_projects"])
+			expect(fleet.answerArchivedList({ catalog, projectKey: "evener", limit: 1 })).toMatchObject({
+				catalog,
+				total: 271,
+			});
+	});
+
+	it("reads the first catalog holding the project when given no hint", () => {
+		expect(fleet.answerArchivedList({ projectKey: "evener", limit: 1 })).toMatchObject({
+			catalog: "projects",
+			total: 271,
+		});
+		expect(fleet.answerArchivedList({ projectKey: "hub-test-env" })).toEqual({
+			sessions: [],
+			total: 0,
+			catalog: "test_runs",
+		});
+	});
+
+	it("follows a project to the other member of the pair, and never into or out of test runs", () => {
+		expect(fleet.answerArchivedList({ catalog: "archived_projects", projectKey: "deslop" })).toEqual({
+			sessions: [],
+			total: 0,
+			catalog: "projects",
+		});
+		expect(fleet.answerArchivedList({ catalog: "projects", projectKey: "hub-test-env" })).toEqual({
+			sessions: [],
+			total: 0,
+		});
+	});
+
+	// A project whose every session is archived moves into Archived projects,
+	// while a row read earlier still names Projects.
+	it("follows a project that moved into Archived projects, whichever of the pair it is hinted", () => {
+		const demo = createDemoFleet({ now: STARTUP });
+		const deslop = findRow(liveRows(demo), "s-deslop");
+		demo.archive({ kind: "session", id: deslop.session_id, archived: true });
+		for (const catalog of [undefined, "", "projects", "archived_projects"])
+			expect(demo.answerArchivedList({ catalog, projectKey: "deslop" })).toMatchObject({
+				catalog: "archived_projects",
+				total: 1,
+			});
+	});
+
+	it("binds a cursor to the hint it was read with", () => {
+		expect(pageArchived({ projectKey: "evener" }, 271).size).toBe(271);
+		const unhinted = fleet.answerArchivedList({ projectKey: "evener" }).nextCursor;
+		expect(() => fleet.answerArchivedList({ catalog: "projects", projectKey: "evener", cursor: unhinted })).toThrow(
+			"cursor belongs to another archived list",
+		);
+		const hinted = fleet.answerArchivedList({ catalog: "projects", projectKey: "evener" }).nextCursor;
+		expect(() => fleet.answerArchivedList({ projectKey: "evener", cursor: hinted })).toThrow(
+			"cursor belongs to another archived list",
+		);
+	});
+
+	it("refuses an unknown catalog and a cursor from another list", () => {
+		expect(() => fleet.answerArchivedList({ catalog: "nope", projectKey: "evener" })).toThrow(
+			"Unknown demonstration catalog: nope",
+		);
+		// The catalog is checked before the limit, as on the hub.
+		expect(() => fleet.answerArchivedList({ catalog: "nope", projectKey: "evener", limit: -1 })).toThrow(
+			"Unknown demonstration catalog: nope",
+		);
+		const cursor = fleet.answerArchivedList({ catalog: "archived_projects", projectKey: "evener" }).nextCursor;
+		expect(() => fleet.answerArchivedList({ catalog: "projects", projectKey: "evener", cursor })).toThrow(
+			"cursor belongs to another archived list",
+		);
+		expect(() => fleet.answerArchivedList({ catalog: "archived_projects", projectKey: "deslop", cursor })).toThrow(
+			"cursor belongs to another archived list",
+		);
+		expect(() => fleet.answerArchivedList({ catalog: "projects", projectKey: "evener", cursor: "junk" })).toThrow(
+			"invalid cursor",
+		);
+	});
+});
+
+// S5's pulse read (evener/activity/read): the Board's working-row meters, its
+// subagent tally, the Quiet and May-be-stuck labels and the latest tool intent.
+// This is a different method from evener/thread/activity/read above.
+describe("demo fleet pulse activity (evener/activity/read)", () => {
+	const fleet = createDemoFleet({ now: STARTUP, clock: () => STARTUP });
+	const read = (params: { refs?: string[] } = {}) => decodeActivityRead(fleet.answerPulseRead(params));
+	// fleetSessionRef resolves a slug's real host-prefixed ref, so a remote slug
+	// like s-wasm (paradise-park) can't silently resolve to undefined.
+	const refOf = fleetSessionRef;
+	const byRef = (sessions: ReturnType<typeof read>) => new Map(sessions.map((session) => [session.ref, session]));
+
+	it("answers a decoder-valid entry for every live top-level session, and none for an ended or archived one", () => {
+		const sessions = read();
+		// A malformed entry is dropped by the decoder, so a full count proves
+		// every shape is one the wire accepts.
+		expect(sessions).toHaveLength(20);
+		const refs = new Set(sessions.map((session) => session.ref));
+		expect(refs.has(refOf("s-roster"))).toBe(false); // shut down
+		expect(refs.has(refOf("s-fuzz"))).toBe(false); // archived
+		for (const session of sessions) {
+			expect(session.minutes).toHaveLength(7);
+			expect(session.minutes.every((events) => Number.isSafeInteger(events) && events >= 0)).toBe(true);
+			expect(Number.isSafeInteger(session.runningSubagents) && session.runningSubagents >= 0).toBe(true);
+		}
+	});
+
+	it("honors refs: only named live sessions return, and an unknown ref is simply absent", () => {
+		const ref = refOf("s-pr2138");
+		expect(read({ refs: [ref] }).map((session) => session.ref)).toEqual([ref]);
+		expect(read({ refs: ["local:nope"] })).toEqual([]);
+	});
+
+	it("counts a session waiting on subagents and withholds its quiet time", () => {
+		const pr2138 = byRef(read()).get(refOf("s-pr2138"));
+		expect(pr2138).toMatchObject({ runningSubagents: 32 });
+		expect(pr2138).not.toHaveProperty("quietForMs");
+		// "Waiting on 31 subagents" is a wait, not a tool intent.
+		expect(pr2138).not.toHaveProperty("latestIntent");
+	});
+
+	it("carries a working session's latest tool intent, never its activity label", () => {
+		const bySession = byRef(read());
+		expect(bySession.get(refOf("s-resume"))?.latestIntent).toBe("Reading agent/session_resume.go");
+		expect(bySession.get(refOf("s-stumble"))?.latestIntent).toBe("Editing agent/tool_repair.go");
+		// "Thinking" and "Running <cmd>" name no tool call: the row falls back to
+		// its running job, or to "Working".
+		expect(bySession.get(refOf("s-gateway"))?.latestIntent).toBeUndefined();
+		expect(bySession.get(refOf("s-tasklist"))?.latestIntent).toBeUndefined();
+	});
+
+	it("shows the Board's Quiet and May-be-stuck states on silently working sessions", () => {
+		const bySession = byRef(read());
+		expect(quietState(bySession.get(refOf("s-landing"))!, 0)).toEqual({ state: "quiet", forMs: 4 * 60_000 });
+		expect(quietState(bySession.get(refOf("s-gateway"))!, 0)).toEqual({ state: "stuck", forMs: 12 * 60_000 });
+	});
+
+	it("grows a working session's quiet time with the injected clock", () => {
+		const later = createDemoFleet({ now: STARTUP, clock: () => STARTUP + 90_000 });
+		const landing = later.answerPulseRead({}).sessions.find((session) => session.ref === refOf("s-landing"));
+		expect(landing?.quietForMs).toBe(4 * 60_000 + 90_000);
+	});
+
+	it("withholds quiet time from every session that is not silently working", () => {
+		const bySession = byRef(read());
+		expect(bySession.get(refOf("s-diff"))?.quietForMs).toBeUndefined(); // idle
+		// s-wasm runs on paradise-park: assert the entry is really there, or the
+		// lookup would pass whether or not quiet time is emitted.
+		expect(bySession.has(refOf("s-wasm"))).toBe(true);
+		expect(bySession.get(refOf("s-wasm"))?.quietForMs).toBeUndefined(); // working, two subagents run
+		for (const session of bySession.values()) expect(session.quietForMs ?? 0).toBeGreaterThanOrEqual(0);
+	});
+
+	it("draws a pulse, and flattens the minutes a silent session's quiet gap covers", () => {
+		const bySession = byRef(read());
+		expect(bySession.get(refOf("s-diff"))?.minutes).toEqual([0, 0, 0, 0, 0, 0, 0]); // idle
+		expect(bySession.get(refOf("s-tasklist"))?.minutes).toEqual([4, 8, 4, 12, 8, 16, 8]); // busy
+		// s-landing has been quiet 4m: its newest four minutes drew nothing.
+		expect(bySession.get(refOf("s-landing"))?.minutes).toEqual([1, 2, 1, 0, 0, 0, 0]);
+		// s-gateway has been quiet 12m: its whole window is flat.
+		expect(bySession.get(refOf("s-gateway"))?.minutes).toEqual([0, 0, 0, 0, 0, 0, 0]);
+	});
+
+	it("keeps a session whose quiet time is recomputed after a state change", () => {
+		// A row that changes state after startup gets a fractional, generally
+		// negative `ago` (commitRowState). The quiet time built from it must stay
+		// a whole, non-negative millisecond value, or the decoder drops the whole
+		// entry and the Board loses that session's meter and labels.
+		const later = createDemoFleet({ now: STARTUP, clock: () => STARTUP + 1001 });
+		later.setSessionState(refOf("s-diff"), "working");
+		const sessions = decodeActivityRead(later.answerPulseRead({ refs: [refOf("s-diff")] }));
+		expect(sessions.map((session) => session.ref)).toEqual([refOf("s-diff")]);
+		expect(sessions[0]?.quietForMs).toBe(0);
 	});
 });

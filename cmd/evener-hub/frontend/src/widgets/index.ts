@@ -60,7 +60,7 @@ export { chordLabel, KeyHint } from "./keyhint";
 export type { LoaderProps } from "./loader";
 export { Loader } from "./loader";
 export type { MarkdownProps } from "./markdown";
-export { Markdown } from "./markdown";
+export { Markdown, MarkdownBubble } from "./markdown";
 export type { MenuEntry, MenuItem, MenuProps, MenuSeparator } from "./menu";
 export { isSeparator, Menu } from "./menu";
 export type { MeterProps, MeterTone } from "./meter";

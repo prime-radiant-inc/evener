@@ -44,7 +44,7 @@ import { FirstLoad, SheetStatus } from "../sheet/SheetStatus";
 import { Spinner } from "../sheet/Spinner";
 import type { HubRoutes } from "./hubSheetContext";
 import { CredentialPasteSheet } from "./CredentialPasteSheet";
-import { usePublishProviderDetail } from "./providersScreenSlot";
+import { usePublishProviderDetail } from "./hubScreenSlot";
 import { useAuthStatuses } from "./useAuthStatuses";
 import {
 	appliedButFailed,
@@ -758,8 +758,8 @@ function Providers({
 											label={item.name}
 											sub={sub}
 											value={
-												status?.tone === "attention" ? (
-													<RowValue tag={{ text: status.word, tone: "amber" }} />
+												status?.tone === "attention" || status?.tone === "danger" ? (
+													<RowValue tag={{ text: status.word, tone: status.tone === "danger" ? "red" : "amber" }} />
 												) : (
 													status?.word
 												)
@@ -867,6 +867,7 @@ function ProviderFacts({
 					),
 				)}
 			</Group>
+			{status?.detail ? <GroupFooter tone="danger">{status.detail}</GroupFooter> : null}
 			{instance.warnings?.map((message) => (
 				<GroupFooter key={message} tone="attention">
 					{message}

@@ -30,8 +30,6 @@ export {
   parseActivityTree,
   reconcileActivityState,
 } from "./activityData";
-export type { ActivityBranch, ActivityClient, ActivityState } from "./activityList";
-export { ACTIVITY_REFRESH_MIN_INTERVAL_MS, ActivityList } from "./activityList";
 export { fenceRootSession, graftContinuationTree } from "./activityMerge";
 export type {
   ActivityDelegateRow,
@@ -59,6 +57,14 @@ export {
   watchName,
   watchRowID,
 } from "./activityRows";
+export type {
+  ArchivedList,
+  ArchivedListCatalog,
+  ArchivedListClient,
+  ArchivedListState,
+  ArchivedListStore,
+} from "./archivedListStore";
+export { archivedListKey, createArchivedListStore } from "./archivedListStore";
 export type { AskAnswerItem, AskResolution } from "./askAnswers";
 export { composeAskAnswers } from "./askAnswers";
 export type {
@@ -112,7 +118,7 @@ export type {
   TerminalReason,
 } from "./client";
 export { APPWIRE_PROTOCOL_VERSION, AppwireClient } from "./client";
-export type { AppwireClientLike } from "./clientLike";
+export type { AppwireClientLike, RequestPort } from "./clientLike";
 export type {
   CommandCatalog,
   CommandCatalogClient,
@@ -196,7 +202,7 @@ export { diffStats, editDiffText } from "./editDiff";
 export type { EntityIdMatch, EntityKind } from "./entityIds";
 export { entityKindOf, findEntityIds, jobOwnerSessionId } from "./entityIds";
 export type { DelegateEntityView, EntityView, JobEntityView, OpenTarget, WatchEntityView } from "./entityView";
-export { buildEntityView, entityOpenTarget, watchFoldKey, watchItems } from "./entityView";
+export { buildEntityView, entityOpenTarget, findEntityView, watchFoldKey, watchItems } from "./entityView";
 export {
   ClientNotReadyError,
   ConnectionClosedError,
@@ -251,6 +257,9 @@ export {
   rootsFromText,
   rootsToText,
 } from "./hostMutations";
+export type { HostDependentDiscoveryMethod } from "./hostRouting";
+export { HOST_DEPENDENT_DISCOVERY_METHODS, hostRequest, isLocalHost, LOCAL_HOST, normalizeHost } from "./hostRouting";
+export { housekeepingAction } from "./housekeepingSteps";
 export type { HubOverviewClient, HubOverviewListener, HubOverviewState, HubOverviewStore } from "./hubOverview";
 export { createHubOverviewStore } from "./hubOverview";
 export type {
@@ -422,6 +431,8 @@ export { effortLabel, effortOptionLevels, sessionEffortLevels } from "./reasonin
 export type { AskBatch } from "./reconcileBatches";
 export { reconcileBatches } from "./reconcileBatches";
 export type {
+  CachedSessionHistory,
+  CachedSessionRecord,
   NotificationRoutingKey,
   OlderItemPageMerge,
   TurnHistoryFoldDetail,
@@ -432,6 +443,7 @@ export {
   applyNotification,
   applyReadModel,
   applyReadResponse,
+  cachedSessionRecord,
   collectAuthoritativeMutationIds,
   comparePositions,
   copyItemTextPresence,
@@ -450,17 +462,31 @@ export {
   markItemTextOmitted,
   mergeOlderItemPage,
   mergeOlderItemPageWithFolds,
+  mergeTailTurns,
   mergeTurnHistory,
   mergeTurnHistoryWithFolds,
   notificationRoutingKey,
   notificationTargetsThread,
   prependOlderTurns,
+  readDisposition,
+  readWindowBounds,
   resolvePendingEscalation,
+  threadModelFromCache,
 } from "./reducer";
 export type { SendQueueAvailability, SendQueueAvailabilityInput } from "./sendQueueAvailability";
 export { deriveSendQueueAvailability } from "./sendQueueAvailability";
 export type { QuietState } from "./sessionActivity";
 export { decodeActivityRead, QUIET_AFTER_MS, quietState, STUCK_AFTER_MS } from "./sessionActivity";
+export { projectSessionActivity, type SessionActivityPresentation } from "./sessionActivityPresentation";
+export type {
+  SessionActivityClient,
+  SessionActivityClock,
+  SessionActivityCollection,
+  SessionActivityCollectionState,
+  SessionActivityReadState,
+  SessionActivitySnapshot,
+} from "./sessionActivityStore";
+export { SessionActivityStore } from "./sessionActivityStore";
 export { isActionUnavailable, isThreadNotFound } from "./sessionErrors";
 export type { SettingsHubGeneration } from "./settingsHubGeneration";
 export { createSettingsHubGeneration } from "./settingsHubGeneration";
@@ -572,6 +598,12 @@ export {
 } from "./taskPanelState";
 export type { TextEdit, TextEditWithUnknownCursor } from "./textareaMarkers";
 export { insertMarker, markerPattern, markerText, stripMarker } from "./textareaMarkers";
+export type {
+  ThreadSubscriptionClient,
+  ThreadSubscriptionLease,
+  ThreadSubscriptionReadParams,
+} from "./threadSubscription";
+export { acquireThreadSubscription } from "./threadSubscription";
 export type { SessionTokens, TokenPair, UsageSummary } from "./threadUsage";
 export { sessionTokens, threadUsageSummary, tokenUnitLabel, turnUsageTokens } from "./threadUsage";
 export {
@@ -715,8 +747,15 @@ export {
 } from "./transcriptSteps";
 export type { WebSocketLike } from "./transport";
 export { rpcURLFromLocation } from "./transport";
+
 export type * from "./types.gen";
-export { METHOD_NAMES, NOTIFICATION_NAMES, STEERING_KINDS, THREAD_ITEM_EVENT_KINDS } from "./types.gen";
+export {
+  HOST_REQUEST_METHODS,
+  METHOD_NAMES,
+  NOTIFICATION_NAMES,
+  STEERING_KINDS,
+  THREAD_ITEM_EVENT_KINDS,
+} from "./types.gen";
 export type { WarningWords } from "./warnings";
 export {
   attentionWarningNotice,
@@ -724,6 +763,7 @@ export {
   WarningCodeContextBudget,
   WarningCodeDelegateAttentionRestore,
   WarningCodeMCPReconnected,
+  WarningCodePluginCompatibility,
   warningWords,
 } from "./warnings";
 export { hasWarningText } from "./warningText";

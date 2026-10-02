@@ -9,8 +9,41 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/llm"
 )
+
+// TestRenderQuestionsForRespondShowsFullAskFields: the simulated person sees
+// every field of an ask_user call -- multi_select, why, if_unanswered, and a
+// recommended option -- not just the question text and option labels (#3515).
+func TestRenderQuestionsForRespondShowsFullAskFields(t *testing.T) {
+	questions := []agent.AskUserQuestion{{
+		Header:       "Deploy",
+		Question:     "Which env?",
+		MultiSelect:  true,
+		Why:          "it decides the rollout",
+		IfUnanswered: "I will hold the release",
+		Options: []agent.AskUserOption{
+			{Label: "staging", Detail: "safe", Recommended: true},
+			{Label: "prod"},
+		},
+	}}
+
+	got := renderQuestionsForRespond(questions)
+
+	for _, want := range []string{
+		"1. (Deploy) Which env?",
+		"more than one",
+		"it decides the rollout",
+		"I will hold the release",
+		"staging: safe (recommended)",
+		"prod",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("render = %q, want it to contain %q", got, want)
+		}
+	}
+}
 
 // respondFakeAdapter is a minimal llm.ProviderAdapter that answers every
 // Complete call with a fixed JSON {"answers": [...]} object, matching

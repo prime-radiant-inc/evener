@@ -154,3 +154,19 @@ func fuzzScenarioRegistryRemove(t *testing.T) {
 	// Removing a missing id is a no-op.
 	r.Remove("nonexistent")
 }
+
+func (f fakeSource) ThreadActivityRead(context.Context, appwire.SessionActivityReadParams) (appwire.SessionActivitySummary, error) {
+	return appwire.SessionActivitySummary{}, appwire.Unavailable("test source does not read session activity")
+}
+
+func (f fakeSource) ThreadDelegatesList(context.Context, appwire.SessionActivityListParams) (appwire.SessionDelegatesResponse, error) {
+	return appwire.SessionDelegatesResponse{}, appwire.Unavailable("test source does not read session activity")
+}
+
+func (f fakeSource) ThreadJobsList(context.Context, appwire.SessionActivityListParams) (appwire.SessionJobsResponse, error) {
+	return appwire.SessionJobsResponse{}, appwire.Unavailable("test source does not read session activity")
+}
+
+func (f fakeSource) ThreadWatchesList(context.Context, appwire.SessionActivityListParams) (appwire.SessionWatchesResponse, error) {
+	return appwire.SessionWatchesResponse{}, appwire.Unavailable("test source does not read session activity")
+}

@@ -1504,7 +1504,10 @@ test("task-only delegate intent previews preserve an emoji at the Unicode clippi
 });
 
 test("delegate controls require stable delegate_id and reject activation-only job_id", () => {
-  seedCurrentDelegate("ref_current", "dlg_stable", "running");
+  seedCurrentDelegate("ref_current", "dlg_stable", "running", undefined, {
+    childSessionId: "sess_child",
+    transcriptRef: "local:sess_child",
+  });
   render(
     <>
       <ToolCallItem
@@ -2019,7 +2022,10 @@ test.each(["activity", "full"] as const)(
 //     the visible intent's accessible name and the status association the
 //     suppressed intent trigger used to provide.
 test("a summary-less delegate row names its sole body control from the intent and describes its status", () => {
-  seedCurrentDelegate("ref_current", "dlg_named", "running");
+  seedCurrentDelegate("ref_current", "dlg_named", "running", undefined, {
+    childSessionId: "sess_child",
+    transcriptRef: "local:sess_child",
+  });
   render(
     <ToolCallItem
       item={item({
@@ -2112,6 +2118,7 @@ function renderSummaryWithEntities(toolItem: ItemModel) {
       config={makeTranscriptDisplayConfig({ kind: "preset", level: "tools" })}
       surface="readOnly"
       disclosureScope="test:summary-entities"
+      sessionRef="local:s"
       entities={summaryEntities()}
     >
       <ToolCallItem item={toolItem} turn={turn} live={false} />

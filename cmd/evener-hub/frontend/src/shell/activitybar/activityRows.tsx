@@ -4,12 +4,14 @@
 // app's own formatters (jobStatusDisplay, watchMeta, watchName) so the
 // sidebar can never drift from the rail or the activity panel.
 
-import type { NavigationJobSummary, NavigationSessionSummary, NavigationWatchSummary } from "@evener/appwire-client";
-import { humanizeState, jobStatusDisplay, watchMeta, watchName } from "@evener/appwire-client";
+import type { ActivityWatchRow, JobActivityJob, SessionDelegate } from "@evener/appwire-client";
+import { activityDelegateState, activityNodeID, jobStatusDisplay, watchMeta, watchName } from "@evener/appwire-client";
+import { ActivityWatchDetail } from "../../panes/session/chrome/ActivityRowDetail";
 import { jobStatusDotState } from "../../panes/session/chrome/activityFormat";
+import { Disclosure } from "../../widgets/disclosure";
 import { requireClass } from "../../widgets/internal/requireClass";
-import { cadenceStateFor, WatchGlyph } from "../rail/RailRow";
-import { activeWatchCount, displayState, subagentChildrenOf } from "../rail/railNodes";
+import { WatchGlyph } from "../rail/RailRow";
+
 import styles from "./activitybar.module.css";
 
 const CLASS = {
@@ -49,108 +51,96 @@ function jobTone(status: string): Tone {
   }
 }
 
-function agentTone(sub: NavigationSessionSummary): Tone {
-  // The rail's own two-step: displayState folds approval/ask into the wire
-  // state (a subagent's bare "awaiting" is idle), cadenceStateFor maps that
-  // to the hue family. Same composition as RailRow, so the sidebar's rows
-  // can never drift from the rail's.
-  switch (cadenceStateFor(displayState(sub))) {
-    case "working":
-      return "alive";
-    case "needs-you":
-      return "attention";
-    case "failed":
-      return "danger";
-    default:
-      return "quiet";
-  }
+function agentTone(sub: SessionDelegate): Tone {
+  if (sub.terminal) return sub.outcome === "failed" || sub.error ? "danger" : "quiet";
+  if (["awaiting_approval", "awaiting_input", "needs-you"].includes(sub.phase)) return "attention";
+  return "alive";
 }
 
-function agentStateText(sub: NavigationSessionSummary): string {
-  return humanizeState(displayState(sub), sub.ask_pending === true, sub.approval_pending === true);
+function agentStateText(sub: SessionDelegate): string {
+  return activityDelegateState({ ...sub, branch: {} }).status;
 }
 
-/** The one-line rollup an agent row carries, so a parent row says what is
- * inside a child without expanding it: "2 agents · 1 job · 1 watch ·
- * tasks 1/4". */
-export function agentRollupLine(sub: NavigationSessionSummary): string {
-  const parts: string[] = [];
-  // The TRUE total, like the Agents tab's fold: loaded subagent rows (fork
-  // originals are not agents) plus the wire's omitted remainder, or the line
-  // understates the scope beside that fold.
-  const agents = subagentChildrenOf(sub).length + (sub.more_subagents ?? 0);
-  const jobs = (sub.running_jobs ?? []).length;
-  const watches = activeWatchCount(sub);
-  if (agents > 0) parts.push(`${agents} agent${agents === 1 ? "" : "s"}`);
-  if (jobs > 0) parts.push(`${jobs} job${jobs === 1 ? "" : "s"}`);
-  if (watches > 0) parts.push(`${watches} watch${watches === 1 ? "" : "es"}`);
-  if (sub.tasks !== undefined && sub.tasks.total > 0) parts.push(`tasks ${sub.tasks.done}/${sub.tasks.total}`);
-  return parts.join(" · ");
-}
-
-function AgentRowBody({ sub }: { sub: NavigationSessionSummary }) {
-  const rollup = agentRollupLine(sub);
+function AgentRowBody({ sub }: { sub: SessionDelegate }) {
   return (
     <>
       <span className={`${CLASS.rowGlyph} ${TONE_CLASS[agentTone(sub)]}`} aria-hidden="true">
         ⌘
       </span>
       <span className={CLASS.rowBody}>
-        <span className={CLASS.rowName}>{sub.title}</span>
-        <span className={CLASS.rowMeta}>
-          {agentStateText(sub)}
-          {rollup ? ` · ${rollup}` : ""}
-        </span>
+        <span className={CLASS.rowName}>{sub.name?.trim() || sub.description || sub.task || sub.delegateId}</span>
+        <span className={CLASS.rowMeta}>{agentStateText(sub)}</span>
       </span>
     </>
   );
 }
 
-export function AgentRow({ sub, onDrill }: { sub: NavigationSessionSummary; onDrill?: () => void }) {
+export function AgentRow({ sub, onDrill }: { sub: SessionDelegate; onDrill?: () => void }) {
+  const anchor = activityNodeID({ ...sub, kind: "delegate" });
   if (onDrill === undefined) {
     return (
-      <div className={CLASS.row}>
+      <div className={CLASS.row} data-activity-anchor={anchor}>
         <AgentRowBody sub={sub} />
       </div>
     );
   }
   return (
-    <button type="button" className={`${CLASS.row} ${CLASS.rowBtn}`} onClick={onDrill}>
+    <button type="button" className={`${CLASS.row} ${CLASS.rowBtn}`} onClick={onDrill} data-activity-anchor={anchor}>
       <AgentRowBody sub={sub} />
     </button>
   );
 }
 
-export function JobRow({ job, onOpen }: { job: NavigationJobSummary; onOpen?: () => void }) {
+export function JobRow({ job, onOpen }: { job: JobActivityJob; onOpen?: () => void }) {
+  const anchor = activityNodeID({ ...job, kind: "shell" });
+  const description = job.description?.trim();
+  const label = description || job.command?.trim() || job.jobId;
   const body = (
     <>
       <span className={`${CLASS.rowGlyph} ${TONE_CLASS[jobTone(job.status)]}`} aria-hidden="true">
         $
       </span>
       <span className={CLASS.rowBody}>
-        <span className={`${CLASS.rowName} ${CLASS.rowMono}`}>{job.command ?? job.job_id}</span>
+        <span className={`${CLASS.rowName}${description ? "" : ` ${CLASS.rowMono}`}`} title={job.command}>
+          {label}
+        </span>
         <span className={CLASS.rowMeta}>{jobStatusDisplay(job.status, job.reason)}</span>
       </span>
     </>
   );
-  if (onOpen === undefined) return <div className={CLASS.row}>{body}</div>;
+  if (onOpen === undefined)
+    return (
+      <div className={CLASS.row} data-activity-anchor={anchor}>
+        {body}
+      </div>
+    );
   return (
-    <button type="button" className={`${CLASS.row} ${CLASS.rowBtn}`} onClick={onOpen}>
+    <button type="button" className={`${CLASS.row} ${CLASS.rowBtn}`} onClick={onOpen} data-activity-anchor={anchor}>
       {body}
     </button>
   );
 }
 
-export function WatchRow({ watch, now }: { watch: NavigationWatchSummary; now: number }) {
+export function WatchRow({ row, now }: { row: ActivityWatchRow; now: number }) {
+  const { watch } = row;
   return (
-    <div className={CLASS.row}>
-      <span className={`${CLASS.rowGlyph} ${CLASS.glyphQuiet}`}>
-        <WatchGlyph className={CLASS.watchGlyph} testId={`sidebar-watch-${watch.id}`} />
-      </span>
-      <span className={CLASS.rowBody}>
-        <span className={CLASS.rowName}>{watchName(watch)}</span>
-        <span className={CLASS.rowMeta}>{watchMeta(watch, now)}</span>
-      </span>
+    <div data-activity-anchor={row.id}>
+      <Disclosure
+        id={`sidebar-${row.id}`}
+        summary={
+          <span className={CLASS.row}>
+            <span className={`${CLASS.rowGlyph} ${CLASS.glyphQuiet}`}>
+              <WatchGlyph className={CLASS.watchGlyph} testId={`sidebar-watch-${watch.watch.id}`} />
+            </span>
+            <span className={CLASS.rowBody}>
+              <span className={CLASS.rowName}>{watchName(watch)}</span>
+              <span className={CLASS.rowMeta}>{watchMeta(watch, now)}</span>
+            </span>
+          </span>
+        }
+      >
+        <ActivityWatchDetail row={row} now={now} />
+      </Disclosure>
     </div>
   );
 }

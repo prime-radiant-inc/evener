@@ -369,6 +369,7 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 			s.appPendingStableTurnID = ""
 			s.appDeferredTerminalNotifications = nil
 		}
+		s.appActivity.noteIntent(event)
 		s.appActivity.observe(event.Kind)
 		projected := s.appProjector.Project(event)
 		threadID, ref := s.appRootIdentityLocked()
@@ -378,6 +379,7 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 		}
 		start, _ := event.Data.(events.SessionStartData)
 		pending := make([]pendingAppNotification, 0, len(projected))
+		pending = append(pending, s.activityChangeNotificationLocked(event)...)
 		for _, item := range projected {
 			// The root's running execution is published by SetProcessingTurn
 			// and its end by finishProcessing (or the input's SESSION_END),
@@ -655,6 +657,7 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 		projected := projection.projector.Project(event)
 		start, _ := event.Data.(events.SessionStartData)
 		pending := make([]pendingAppNotification, 0, len(projected))
+		pending = append(pending, s.activityChangeNotificationLocked(event)...)
 		for _, item := range projected {
 			switch params := item.Params.(type) {
 			case appwire.ThreadStartedParams:
@@ -1138,6 +1141,7 @@ func (s *Server) acceptsSessionEventLocked(sessionID string) bool {
 
 func (s *Server) registerAppWireHandlers() {
 	router := s.appServer.Router()
+	s.registerSessionActivityHandlers()
 	appserver.HandleTyped(router, appwire.MethodThreadList, s.handleAppThreadList)
 	appserver.HandleTyped(router, appwire.MethodThreadRead, s.handleAppThreadRead)
 	appserver.HandleTyped(router, appwire.MethodThreadUnsubscribe, s.handleAppThreadUnsubscribe)
@@ -2583,7 +2587,7 @@ func appStatusDiagnosticsFromDetailedStatus(ds DetailedStatus) *appwire.EvenerDi
 	}
 	for _, delegate := range ds.Delegates {
 		out.Delegates = append(out.Delegates, appwire.EvenerDelegateInfo{
-			DelegateID: delegate.DelegateID, ChildSessionID: delegate.ChildSessionID, Lifecycle: delegate.Lifecycle,
+			RunGeneration: delegate.RunGeneration, DelegateID: delegate.DelegateID, ChildSessionID: delegate.ChildSessionID, Lifecycle: delegate.Lifecycle,
 		})
 	}
 	for _, watch := range ds.Watches {
@@ -2743,7 +2747,7 @@ func appDelegateFromDetailedStatus(delegate DelegateStatusInfo) appwire.EvenerDe
 		ChildSessionID: delegate.ChildSessionID, TranscriptRef: delegate.TranscriptRef, ParentDelegateID: delegate.ParentDelegateID,
 		Type: delegate.Type, Lifecycle: delegate.Lifecycle, Phase: delegate.Phase, Status: delegate.Status,
 		Outcome: delegate.Outcome, Reason: delegate.Reason, Error: delegate.Error, Terminal: delegate.Terminal, Resumable: delegate.Resumable, NeedsAttention: delegate.NeedsAttention,
-		NotResumableReason: delegate.NotResumableReason, ProjectionRevision: delegate.ProjectionRevision,
+		RunGeneration: delegate.RunGeneration, NotResumableReason: delegate.NotResumableReason, ProjectionRevision: delegate.ProjectionRevision,
 		Task: delegate.Task, Description: delegate.Description, AgentType: delegate.AgentType, RequestedModel: delegate.RequestedModel,
 		ResolvedProfileID: delegate.ResolvedProfileID, ResolvedModel: delegate.ResolvedModel, Model: delegate.Model,
 		ReasoningEffort: delegate.ReasoningEffort, OriginTurnID: delegate.OriginTurnID, OriginToolCallID: delegate.OriginToolCallID,

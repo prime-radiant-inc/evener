@@ -44,7 +44,6 @@ import { navigate, refParam, urlToPane } from "./routing";
 import { cycleSessionPane } from "./sessionCycle";
 import { openNestedSessionWithOwner, openTopLevelSession } from "./sessionPlacement";
 import { isSinglePaneRoute } from "./singlePane";
-import { StatusBar } from "./statusbar/StatusBar";
 import { useIsMobile } from "./useIsMobile";
 import { useKeyboardInset } from "./useKeyboardInset";
 import { type OpenPaneRecord, workspaceStore } from "./workspace";
@@ -60,7 +59,6 @@ import "../panes/spawn"; // registers the "spawn" pane type
 import "../panes/doc"; // registers the "doc" pane type
 import "../panes/transcript"; // registers the "transcript" pane type
 import "../panes/sessionPanels"; // registers the session panel pane types
-import { initActivitySummary } from "../stores/activitySummary";
 import { initPrefs } from "../stores/prefs";
 
 // Apply persisted display preferences (theme/density/font-size) during
@@ -72,7 +70,6 @@ initTranscriptDisplay();
 
 // Wires the activity summary store to the activity panel store: the panel
 // requires it before it fetches a continuation page.
-initActivitySummary();
 
 // Start the notifications engine once, at module evaluation, beside initPrefs.
 // Idempotent no-op in T1; T4 fills it (title count / favicon badge / OS
@@ -451,7 +448,7 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
         const refs = needsYouRefs(rows);
         const current = focusedSessionRef();
         if (
-          state.mode === "v2" &&
+          state.mode === "v3" &&
           (refs.length === 0 || (current !== null && refs.indexOf(current) === refs.length - 1))
         ) {
           const page = nextPageFor(state);
@@ -522,7 +519,7 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
       ? null
       : ((locationResource?.data as NavigationSessionLocation | undefined) ?? null);
   useEffect(() => {
-    if (locationRef === null || navigationMode !== "v2") return;
+    if (locationRef === null || navigationMode !== "v3") return;
     if (locationFailed || locationGone || locationResource?.loading || (locationResource && !locationResource.stale))
       return;
     void navigationStore
@@ -944,22 +941,19 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
             ) : isMobile ? (
               <StackHost railSlot={<RailHost />} routeDeferred={routeDeferred} />
             ) : (
-              // The workspace column owns everything that reports on the
-              // workspace: the dock host, then the status bar (the spec's
-              // "30px strip under the workspace" - right of the rail, never
-              // beneath it). The column carries the row's flex share by class,
-              // not by :last-child: the activity sidebar mounts as a sibling
-              // AFTER it, and a positional rule would either stretch the
-              // sidebar or drop the column's sizing the moment it opens.
+              // The workspace column carries the dock host's row flex share by
+              // class, not by :last-child: the activity sidebar mounts as a
+              // sibling AFTER it, and a positional rule would either stretch
+              // the sidebar or drop the column's sizing the moment it opens.
               <div className={styles.workspaceColumn} data-testid="workspace-column">
                 <div className={styles.workspaceHost} data-testid="workspace-host">
                   <DockRegion />
                 </div>
-                <StatusBar />
               </div>
             )}
-            {/* The activity sidebar: the zoom system's triage surface, a right
-              shell region scoped to the session being read. Desktop only. */}
+            {/* Desktop: the activity sidebar is the zoom system's triage surface,
+              a right shell region scoped to the session being read. Mobile
+              StackHost mounts the same surface as its full-screen overlay. */}
             {!isMobile && route !== null && <ActivitySidebar />}
           </div>
         </div>

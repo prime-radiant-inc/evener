@@ -102,7 +102,7 @@ export interface ActivityShellEntry {
 
 export interface ActivitySessionNode {
   kind: "session";
-  sessionId: string;
+  sessionId?: string;
   ref: string;
   label: string;
   aggregate: string;
@@ -118,10 +118,16 @@ export interface ActivitySessionNode {
 }
 
 export interface ActivityDelegate {
+  name?: string;
+  runGeneration?: number;
+  reportPreview?: string;
+  reportPreviewTruncated?: boolean;
   delegateId: string;
+  ownerRef?: string;
+  rootRef?: string;
   ownerSessionId?: string;
   rootSessionId?: string;
-  childSessionId: string;
+  childSessionId?: string;
   childRef: string;
   transcriptRef?: string;
   parentDelegateId?: string;
@@ -200,8 +206,8 @@ export interface ActivityWorktree {
 }
 
 export interface ActivityUsage {
-  inputTokens: number;
-  outputTokens: number;
+  inputTokens?: number;
+  outputTokens?: number;
   cacheReadTokens?: number;
   totalTokens?: number;
 }
@@ -235,9 +241,9 @@ type ParseResult<T> = {
 };
 
 type ActivityIdentity =
-  | { kind: "session"; sessionId: string }
-  | { kind: "delegate"; delegateId: string }
-  | { kind: "shell"; jobId: string };
+  | { kind: "session"; ref: string }
+  | { kind: "delegate"; delegateId: string; childRef: string }
+  | { kind: "shell"; jobId: string; ownerRef: string };
 
 export type ActivityNodeLike = ActivityIdentity | ActivitySessionNode | ActivityShellEntry | ActivityDelegateEntry;
 
@@ -500,6 +506,7 @@ function parseDelegate(raw: unknown, depth: number): ParseResult<ActivityDelegat
     "rootSessionId",
     "transcriptRef",
     "parentDelegateId",
+    "name",
     "type",
     "lifecycle",
     "phase",
@@ -523,16 +530,24 @@ function parseDelegate(raw: unknown, depth: number): ParseResult<ActivityDelegat
     "runEndedAt",
     "latestActivityAt",
     "packetKind",
+    "reportPreview",
     "structuredResultReason",
     "exhaustionBudget",
   ];
   for (const field of stringFields) {
     if (!copyOptionalString(raw, target, field)) return { value: null, incomplete: true };
   }
-  for (const field of ["terminal", "resumable", "structuredResultValid", "exhaustionResumable", "parentWatchGranted"]) {
+  for (const field of [
+    "reportPreviewTruncated",
+    "terminal",
+    "resumable",
+    "structuredResultValid",
+    "exhaustionResumable",
+    "parentWatchGranted",
+  ]) {
     if (!copyOptionalBoolean(raw, target, field)) return { value: null, incomplete: true };
   }
-  for (const field of ["projectionRevision", "exhaustionLimit", "delegationAllowance"]) {
+  for (const field of ["runGeneration", "projectionRevision", "exhaustionLimit", "delegationAllowance"]) {
     if (!copyOptionalInteger(raw, target, field)) return { value: null, incomplete: true };
   }
   for (const field of ["runningForMs", "quietForMs", "durationMs"]) {
@@ -678,14 +693,14 @@ export function activityDelegateDiagnostics(delegate: ActivityDelegate): string[
 }
 
 export function activityNodeID(node: ActivityNodeLike): string {
-  if (node.kind === "session" && "sessionId" in node) return `session:${node.sessionId}`;
+  if (node.kind === "session") return `session:${node.ref}`;
   if (node.kind === "delegate") {
-    if ("delegate" in node) return `delegate:${node.delegate.delegateId}`;
-    return `delegate:${node.delegateId}`;
+    const delegate = "delegate" in node ? node.delegate : node;
+    return `delegate:${JSON.stringify([delegate.childRef, delegate.delegateId])}`;
   }
   if (node.kind === "shell") {
-    if ("job" in node) return `job:${node.job.jobId}`;
-    return `job:${node.jobId}`;
+    const job = "job" in node ? node.job : node;
+    return `job:${JSON.stringify([job.ownerRef, job.jobId])}`;
   }
   throw new Error("unsupported activity node identity");
 }

@@ -9,7 +9,9 @@ import {
   boolField,
   buildEntityView,
   buildWatchRows,
+  type CachedSessionRecord,
   type ConditionSpec,
+  cachedSessionRecord,
   conditionSpec,
   type DelegateEntityView,
   delegateRowFields,
@@ -37,6 +39,7 @@ import {
   strField,
   type TranscriptDisplayAdvancedV1,
   type TurnHistoryMergeResult,
+  threadModelFromCache,
   type WatchDisplayState,
   type WatchEntityView,
   type WatchRow,
@@ -85,6 +88,10 @@ type EntityLinkPublicTypes =
 // installed consumer must be able to name it. Import it from the package root
 // in a type position so a missing re-export fails compilation here.
 describe("protocol package root public exports", () => {
+  it("re-exports the plugin compatibility warning code", () => {
+    expect(packageRoot).toHaveProperty("WarningCodePluginCompatibility", "plugin_compatibility");
+  });
+
   it("re-exports mergeTurnHistory and its result type", () => {
     const result: TurnHistoryMergeResult = mergeTurnHistory([], []);
     expect(result.turns).toEqual([]);
@@ -94,11 +101,11 @@ describe("protocol package root public exports", () => {
 
   it("re-exports the type that activityNodeID's parameter uses", () => {
     const nodes: ActivityNodeLike[] = [
-      { kind: "session", sessionId: "s1" },
-      { kind: "delegate", delegateId: "d1" },
-      { kind: "shell", jobId: "j1" },
+      { kind: "session", ref: "r1" },
+      { kind: "delegate", delegateId: "d1", childRef: "r2" },
+      { kind: "shell", jobId: "j1", ownerRef: "r1" },
     ];
-    expect(nodes.map(activityNodeID)).toEqual(["session:s1", "delegate:d1", "job:j1"]);
+    expect(nodes.map(activityNodeID)).toEqual(["session:r1", 'delegate:["r2","d1"]', 'job:["r1","j1"]']);
   });
 
   it("re-exports the transcript entity-link surface", () => {
@@ -137,21 +144,33 @@ describe("protocol package root public exports", () => {
   // time, which is exactly the regression the barrel gap let through.
   it("re-exports ActivityWatchRow and the watch-row helpers from the package root", () => {
     const rows = buildWatchRows([
-      { id: "w1", source: "self", deliveries: 0, created_at: "2026-09-12T19:00:00Z", active: true },
       {
-        id: "w2",
-        source: "timer",
-        deliveries: 2,
-        created_at: "2026-09-12T18:00:00Z",
-        active: false,
-        cadence: [{ kind: "every", seconds: 600 }],
-        delivery_times: ["2026-09-12T19:00:01Z"],
+        ownerRef: "r1",
+        sourceRef: "r1",
+        receiverRef: "r1",
+        state: "armed",
+        watch: { id: "w1", source: "self", deliveries: 0, createdAt: "2026-09-12T19:00:00Z", active: true },
+      },
+      {
+        ownerRef: "r1",
+        sourceRef: "r1",
+        receiverRef: "r1",
+        state: "ended",
+        watch: {
+          id: "w2",
+          source: "timer",
+          deliveries: 2,
+          createdAt: "2026-09-12T18:00:00Z",
+          active: false,
+          cadence: [{ kind: "every", seconds: 600 }],
+          deliveryTimes: ["2026-09-12T19:00:01Z"],
+        },
       },
     ]);
     const watched: ActivityWatchRow = rows[0]!;
-    expect(watched).toMatchObject({ kind: "watch", id: watchRowID("w1"), level: 1, defaultDetailOpen: true });
-    expect(watched.watch.id).toBe("w1");
-    expect(rows.map((row) => row.id)).toEqual([watchRowID("w1"), watchRowID("w2")]);
+    expect(watched).toMatchObject({ kind: "watch", id: watchRowID("r1", "w1"), level: 1, defaultDetailOpen: true });
+    expect(watched.watch.watch.id).toBe("w1");
+    expect(rows.map((row) => row.id)).toEqual([watchRowID("r1", "w1"), watchRowID("r1", "w2")]);
 
     const scheduled = rows[1]!.watch;
     expect(watchIsScheduled(scheduled)).toBe(true);
@@ -220,5 +239,28 @@ describe("protocol package root public exports", () => {
   it("keeps the transcript display default codec pair on the package root", () => {
     expect(typeof packageRoot.fromWireDefault).toBe("function");
     expect(typeof packageRoot.toWireDefault).toBe("function");
+  });
+
+  it("re-exports the session-cache record surface from the package root", () => {
+    const record: CachedSessionRecord = {
+      ref: "local:t",
+      threadId: "t",
+      name: "n",
+      modelProvider: "p",
+      model: "m",
+      savedAt: 1,
+      history: {
+        bootGeneration: "",
+        epoch: 0,
+        incarnation: "i",
+        length: 1,
+        appliedGeneration: 1,
+        issuedGeneration: 1,
+        turns: [],
+      },
+    };
+    expect(threadModelFromCache(record, 1).ref).toBe("local:t");
+    expect(threadModelFromCache(record, 1).capabilities.send).toBe(false);
+    expect(cachedSessionRecord(threadModelFromCache(record, 1), 2)?.history.incarnation).toBe("i");
   });
 });

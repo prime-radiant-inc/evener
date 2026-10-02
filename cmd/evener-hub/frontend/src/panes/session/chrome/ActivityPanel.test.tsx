@@ -1,1480 +1,263 @@
-import type { ThreadCapabilities, ThreadModel } from "@evener/appwire-client";
-import { WireError } from "@evener/appwire-client";
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
-import { createRef } from "react";
-import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { hydrateThread, type SessionJobsResponse, WireError } from "@evener/appwire-client";
+import { deferred } from "@evener/appwire-client/testing/deferred";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, expect, test } from "vitest";
+import { JobsTab } from "../../../shell/activitybar/JobsTab";
+import { deriveScope } from "../../../shell/statusbar/statusScope";
 import { activityPanelStore } from "../../../stores/activityPanel";
-import { activitySummaryStore, initActivitySummary } from "../../../stores/activitySummary";
 import { connectionStore } from "../../../stores/connection";
-import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
-import { Toast } from "../../../widgets";
-import { resetToastStoreForTests } from "../../../widgets/toast/store";
-import { ActivityPanel, ActivityPanelBody, type ActivityPanelHandle } from "./ActivityPanel";
-import { detailLineByText } from "./detailLine.testFixture";
+import { navigationStore } from "../../../stores/navigation/store";
+import { sessionActivitySnapshot } from "../../../stores/sessionActivity";
+import {
+  activityClient,
+  activityContext,
+  activityJob,
+  activitySummary,
+  activityThread,
+} from "../../../stores/sessionActivityTestUtils";
+import { ActivityPanel, ActivityPanelBody } from "./ActivityPanel";
 
-const CAPABILITIES: ThreadCapabilities = {
-  send: true,
-  steer: true,
-  interrupt: true,
-  compact: true,
-  clear: true,
-  forkFromTurn: true,
-  shutdown: true,
-  changeModel: true,
-  changeVisionModel: true,
-  queue: true,
-  goal: true,
-  sharedNotes: true,
-  rename: true,
-};
-
-function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
-  const { jobsTreeRevision = null, ...rest } = overrides;
-  return {
-    ref: "ref_root",
-    threadId: "thr_root",
-    name: "",
-    status: { type: "idle" },
-    modelProvider: "anthropic",
-    model: "claude",
-    visionModel: "",
-    askPending: false,
-    pendingEscalations: [],
-    turns: [],
-    queue: null,
-    tasks: null,
-    jobsUpdatedAt: null,
-    jobsTreeRevision,
-    lastFrameAt: 0,
-    capabilities: CAPABILITIES,
-    goal: null,
-    humanNote: "",
-    agentNote: "",
-    sessionUrls: [],
-    contextUsed: 0,
-    contextWindow: 0,
-    contextPressure: 0,
-    usage: null,
-    workMillis: 0,
-    reasoningEffortLevels: [],
-    supportsReasoning: false,
-    cwd: "/tmp/project",
-    ...rest,
-  };
-}
-
-function connectFakeClient(): FakeClient {
-  const fake = new FakeClient("ready");
-  connectionStore.getState().connect(fake);
-  return fake;
-}
-
-function activityTree(revision = 1) {
-  return {
-    revision,
-    root: {
-      sessionId: "sess_root",
-      ref: "ref_root",
-      label: "Root session",
-      aggregate: "running",
-      counts: { active: 3, failed: 1, completed: 4, complete: true },
-      entries: [
-        {
-          kind: "shell",
-          job: {
-            jobId: "job_root_shell",
-            ownerSessionId: "sess_root",
-            ownerRef: "ref_root",
-            type: "shell",
-            status: "running",
-            terminal: false,
-            background: false,
-            hasOutput: true,
-            description: "compile root shell",
-            command: "npm test",
-            startedAt: "2026-08-03T00:00:00Z",
-            outputBytes: 11,
-          },
-        },
-        {
-          kind: "delegate",
-          delegate: {
-            delegateId: "dlg_active",
-            ownerSessionId: "sess_root",
-            rootSessionId: "sess_root",
-            childSessionId: "sess_child",
-            childRef: "ref_child",
-            transcriptRef: "ref_child",
-            type: "delegate",
-            lifecycle: "active",
-            phase: "running",
-            status: "running",
-            projectionRevision: 2,
-            terminal: false,
-            resumable: true,
-            mandate: "Inspect the repo",
-            runStartedAt: "2026-08-03T00:01:00Z",
-            latestActivityAt: "2026-08-03T00:03:00Z",
-            child: {
-              sessionId: "sess_child",
-              ref: "ref_child",
-              label: "Child session",
-              aggregate: "running",
-              counts: { active: 1, failed: 0, completed: 1, complete: true },
-              entries: [
-                {
-                  kind: "shell",
-                  job: {
-                    jobId: "job_child_shell",
-                    ownerSessionId: "sess_child",
-                    ownerRef: "ref_child",
-                    type: "shell",
-                    status: "quarantined",
-                    terminal: false,
-                    background: false,
-                    hasOutput: false,
-                    description: "child shell",
-                    command: "make test",
-                    startedAt: "2026-08-03T00:04:00Z",
-                    outputBytes: 0,
-                  },
-                },
-              ],
-              branch: {},
-            },
-            branch: {},
-          },
-        },
-        {
-          kind: "delegate",
-          delegate: {
-            delegateId: "dlg_completed",
-            ownerSessionId: "sess_root",
-            rootSessionId: "sess_root",
-            childSessionId: "sess_done",
-            childRef: "ref_done",
-            transcriptRef: "ref_done",
-            type: "delegate",
-            lifecycle: "retained",
-            phase: "idle",
-            status: "completed",
-            projectionRevision: 1,
-            terminal: true,
-            resumable: false,
-            runStartedAt: "2026-08-03T00:05:00Z",
-            runEndedAt: "2026-08-03T00:06:00Z",
-            latestActivityAt: "2026-08-03T00:06:00Z",
-            child: {
-              sessionId: "sess_done",
-              ref: "ref_done",
-              label: "Done session",
-              aggregate: "completed",
-              counts: { active: 0, failed: 0, completed: 1, complete: true },
-              entries: [],
-              branch: {},
-            },
-            branch: {},
-          },
-        },
-        {
-          kind: "delegate",
-          delegate: {
-            delegateId: "dlg_partial",
-            ownerSessionId: "sess_root",
-            rootSessionId: "sess_root",
-            childSessionId: "sess_partial",
-            childRef: "ref_partial",
-            transcriptRef: "ref_partial",
-            type: "delegate",
-            lifecycle: "retained",
-            phase: "idle",
-            status: "completed",
-            projectionRevision: 1,
-            terminal: true,
-            resumable: true,
-            mandate: "Continue retained branch",
-            runStartedAt: "2026-08-03T00:07:00Z",
-            runEndedAt: "2026-08-03T00:08:00Z",
-            latestActivityAt: "2026-08-03T00:08:00Z",
-            child: {
-              sessionId: "sess_partial",
-              ref: "ref_partial",
-              label: "Partial session",
-              aggregate: "completed",
-              counts: { active: 0, failed: 0, completed: 2, complete: false },
-              entries: [],
-              branch: { truncated: true, continuation: "partial-page-2", error: "child unavailable" },
-            },
-            branch: { error: "child unavailable" },
-          },
-        },
-      ],
-      branch: {},
-    },
-  };
-}
-
-function continuedPartialTree() {
-  return {
-    revision: 1,
-    root: {
-      sessionId: "sess_root",
-      ref: "ref_root",
-      label: "Root session",
-      aggregate: "running",
-      counts: { active: 3, failed: 1, completed: 4, complete: true },
-      entries: [
-        {
-          kind: "delegate",
-          delegate: {
-            delegateId: "dlg_partial",
-            ownerSessionId: "sess_root",
-            rootSessionId: "sess_root",
-            childSessionId: "sess_partial",
-            childRef: "ref_partial",
-            transcriptRef: "ref_partial",
-            type: "delegate",
-            lifecycle: "retained",
-            phase: "idle",
-            status: "completed",
-            projectionRevision: 2,
-            terminal: true,
-            resumable: true,
-            runStartedAt: "2026-08-03T00:07:00Z",
-            runEndedAt: "2026-08-03T00:08:00Z",
-            latestActivityAt: "2026-08-03T00:08:00Z",
-            child: {
-              sessionId: "sess_partial",
-              ref: "ref_partial",
-              label: "Partial session",
-              aggregate: "running",
-              counts: { active: 1, failed: 0, completed: 2, complete: true },
-              entries: [
-                {
-                  kind: "shell",
-                  job: {
-                    jobId: "job_partial_shell",
-                    ownerSessionId: "sess_partial",
-                    ownerRef: "ref_partial",
-                    type: "shell",
-                    status: "running",
-                    terminal: false,
-                    background: false,
-                    hasOutput: false,
-                    description: "continued shell",
-                    startedAt: "2026-08-03T00:09:00Z",
-                    outputBytes: 0,
-                  },
-                },
-              ],
-              branch: {},
-            },
-            branch: {},
-          },
-        },
-      ],
-      branch: {},
-    },
-  };
-}
-
-function emptyTree() {
-  return {
-    revision: 1,
-    root: {
-      sessionId: "sess_root",
-      ref: "ref_root",
-      label: "Root session",
-      aggregate: "completed",
-      counts: { active: 0, failed: 0, completed: 0, complete: true },
-      entries: [],
-      branch: {},
-    },
-  };
-}
-
-// A page whose only entry was too large to render: the agent skipped it,
-// said so on the root branch, and handed back a token for what follows.
-function skippedEntryTree() {
-  return {
-    revision: 1,
-    root: {
-      sessionId: "sess_root",
-      ref: "ref_root",
-      label: "Root session",
-      aggregate: "running",
-      counts: { active: 0, failed: 0, completed: 0, complete: false },
-      entries: [],
-      branch: {
-        truncated: true,
-        error: 'job "job_huge" is too large to render in one response and was skipped',
-        continuation: "tok_after_skip",
-      },
-    },
-  };
-}
-
-// The other shape an empty page takes: the agent explains why it could render
-// nothing, and has no token to offer — the whole page is the explanation.
-function emptyExplainedTree() {
-  return {
-    revision: 1,
-    root: {
-      sessionId: "sess_root",
-      ref: "ref_root",
-      label: "Root session",
-      aggregate: "running",
-      counts: { active: 0, failed: 0, completed: 0, complete: false },
-      entries: [],
-      branch: {
-        truncated: true,
-        error: "activity response is 4210867 bytes with no entries rendered, over the 4194304-byte limit",
-      },
-    },
-  };
-}
-
-function afterSkipTree() {
-  return {
-    revision: 1,
-    root: {
-      sessionId: "sess_root",
-      ref: "ref_root",
-      label: "Root session",
-      aggregate: "running",
-      counts: { active: 1, failed: 0, completed: 0, complete: true },
-      entries: [
-        {
-          kind: "shell",
-          job: {
-            jobId: "job_tail_shell",
-            ownerSessionId: "sess_root",
-            ownerRef: "ref_root",
-            type: "shell",
-            status: "running",
-            terminal: false,
-            background: false,
-            hasOutput: false,
-            description: "tail shell",
-            command: "npm run tail",
-            startedAt: "2026-08-03T00:20:00Z",
-            outputBytes: 0,
-          },
-        },
-      ],
-      branch: {},
-    },
-  };
-}
-
-function installMatchMediaStub(initialMatches: boolean) {
-  class FakeMediaQueryList {
-    matches: boolean;
-    media: string;
-    private listeners = new Set<(event: MediaQueryListEvent) => void>();
-
-    constructor(media: string, matches: boolean) {
-      this.media = media;
-      this.matches = matches;
-    }
-
-    addEventListener(type: string, listener: (event: MediaQueryListEvent) => void): void {
-      if (type === "change") this.listeners.add(listener);
-    }
-
-    removeEventListener(type: string, listener: (event: MediaQueryListEvent) => void): void {
-      if (type === "change") this.listeners.delete(listener);
-    }
-
-    emit(matches: boolean): void {
-      this.matches = matches;
-      for (const listener of this.listeners) listener({ matches } as MediaQueryListEvent);
-    }
-  }
-
-  const lists = new Map<string, FakeMediaQueryList>();
-  window.matchMedia = vi.fn((query: string) => {
-    let list = lists.get(query);
-    if (!list) {
-      list = new FakeMediaQueryList(query, initialMatches);
-      lists.set(query, list);
-    }
-    return list as unknown as MediaQueryList;
-  }) as unknown as typeof window.matchMedia;
-  return lists;
-}
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  let reject!: (error: unknown) => void;
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
-  return { promise, resolve, reject };
-}
-
-function cloneFixture<T>(value: T): T {
-  return JSON.parse(JSON.stringify(value)) as T;
-}
-
-beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
-  resetThreadsStoreForTests();
-  resetToastStoreForTests();
-  // This suite mounts the panel without the app shell that wires the stores.
-  initActivitySummary();
-  installMatchMediaStub(false);
-});
-
+const ref = "remote:owner";
+const model = (r = ref) => hydrateThread(activityThread(r), r, 0);
 afterEach(() => {
   cleanup();
-  // @ts-expect-error restore jsdom baseline
-  delete window.matchMedia;
+  connectionStore.setState({ client: null, state: "idle" });
+  activityPanelStore.getState().resetForTests();
 });
 
-describe("ActivityPanel", () => {
-  describe("root coverage", () => {
-    // The wire's complete flag describes coverage, not why activity is missing.
-    // Keep the known rows identical so an unconditional warning or dropped row
-    // cannot satisfy the incomplete case at the expense of the complete control.
-    const coverageNotice =
-      /\b(?:partial|incomplete|limited)\b.*\b(?:activity|coverage)\b|\b(?:activity|coverage)\b.*\b(?:partial|incomplete|limited|unavailable|missing)\b/i;
+test("closed trigger shares session counts while an open recursive tree owns only visible subtree demand", async () => {
+  const client = activityClient();
+  client.on("evener/thread/activity/read", ({ ref, scope }) => ({
+    ...activitySummary(ref),
+    scope: scope ?? "session",
+    delegates: {
+      known: true,
+      total: scope === "subtree" ? 7 : 1,
+      active: scope === "subtree" ? 7 : 1,
+      failed: 0,
+      completed: 0,
+    },
+  }));
+  client.on("evener/thread/jobs/list", ({ ref, scope }) => ({
+    context: activityContext(ref),
+    scope: scope ?? "session",
+    jobs: [activityJob({ description: scope === "subtree" ? "subtree work" : "exact selected work" })],
+    page: { complete: true, issues: [] },
+  }));
+  connectionStore.getState().connect(client);
+  const mounted = render(
+    <>
+      <ActivityPanel sessionRef={ref} model={model()} />
+      <JobsTab scope={deriveScope(navigationStore.getState(), ref)} />
+    </>,
+  );
+  await screen.findByRole("button", { name: "Activity · 3 active" });
+  await screen.findByRole("button", { name: /exact selected work/ });
+  expect(client.calls.filter((c) => c.method === "evener/thread/delegates/list")).toHaveLength(0);
+  expect(client.calls.filter((c) => c.method === "evener/thread/watches/list")).toHaveLength(0);
+  fireEvent.click(screen.getByRole("button", { name: "Activity · 3 active" }));
+  await screen.findByText("subtree work");
+  expect(sessionActivitySnapshot(client, ref, "subtree")?.summary?.delegates.active).toBe(7);
+  expect(
+    client.calls.filter((c) => c.method === "thread/read" && (c.params as { subscribe?: boolean }).subscribe),
+  ).toHaveLength(1);
+  fireEvent.click(screen.getByRole("button", { name: "Close" }));
+  await waitFor(() => expect(sessionActivitySnapshot(client, ref, "subtree")).toBeNull());
+  expect(sessionActivitySnapshot(client, ref, "session")?.jobs.complete).toBe(true);
+  const before = client.calls.length;
+  act(() =>
+    client.emitNotification({
+      method: "evener/thread/activity/changed",
+      params: { ref, threadId: "owner", sessionId: "owner", resources: ["jobs", "delegates", "watches"] },
+    }),
+  );
+  await waitFor(() => expect(client.calls.length).toBeGreaterThan(before));
+  expect(
+    client.calls.filter(
+      (c) => c.method === "evener/thread/jobs/list" && (c.params as { scope?: string }).scope === "subtree",
+    ),
+  ).toHaveLength(1);
+  expect(client.calls.filter((c) => c.method === "thread/unsubscribe")).toHaveLength(0);
+  mounted.unmount();
+  await waitFor(() => expect(client.calls.filter((c) => c.method === "thread/unsubscribe")).toHaveLength(1));
+});
 
-    function expectVisible(element: HTMLElement) {
-      for (let current: HTMLElement | null = element; current; current = current.parentElement) {
-        expect(current.hidden).toBe(false);
-        expect(current.getAttribute("aria-hidden")).not.toBe("true");
-        const style = window.getComputedStyle(current);
-        expect(style.display).not.toBe("none");
-        expect(style.visibility).not.toBe("hidden");
-        expect(style.opacity).not.toBe("0");
-      }
+test("empty bounded progress remains loading and advances to useful activity without a repair click", async () => {
+  const client = activityClient();
+  client.on("evener/thread/delegates/list", ({ ref, scope }) => ({
+    context: activityContext(ref),
+    scope: scope ?? "session",
+    delegates: [],
+    page: { complete: true, issues: [] },
+  }));
+  const entered = deferred<void>(),
+    finish = deferred<SessionJobsResponse>();
+  client.on("evener/thread/jobs/list", ({ cursor, ref, scope }) => {
+    if (!cursor)
+      return {
+        context: activityContext(ref),
+        scope: scope ?? "session",
+        jobs: [],
+        page: { complete: false, nextCursor: "scan", issues: [] },
+      };
+    entered.resolve();
+    return finish.promise;
+  });
+  connectionStore.getState().connect(client);
+  render(<ActivityPanelBody sessionRef={ref} model={model()} />);
+  await act(async () => await entered.promise);
+  expect(screen.getByText("Loading activity…")).toBeTruthy();
+  expect(screen.queryByText("No retained activity yet")).toBeNull();
+  await act(async () =>
+    finish.resolve({
+      context: activityContext(),
+      scope: "subtree",
+      jobs: [activityJob({ description: "bounded recovered work" })],
+      page: { complete: true, issues: [] },
+    }),
+  );
+  expect(await screen.findByText("bounded recovered work")).toBeTruthy();
+  expect(client.calls.filter((c) => c.method === "evener/thread/jobs/list")).toHaveLength(2);
+});
+
+test("visible rows and disclosure survive same-session invalidation failures", async () => {
+  const client = activityClient();
+  client.on("evener/thread/jobs/list", ({ ref, scope }) => ({
+    context: activityContext(ref),
+    scope: scope ?? "session",
+    jobs: [activityJob({ description: "retained completed", terminal: true, status: "completed" })],
+    page: { complete: true, issues: [] },
+  }));
+  connectionStore.getState().connect(client);
+  render(<ActivityPanelBody sessionRef={ref} model={model()} />);
+  const fold = await screen.findByRole("treeitem", { name: "1 inactive" });
+  fireEvent.click(fold.querySelector("button") as HTMLButtonElement);
+  expect(screen.getByText("retained completed")).toBeTruthy();
+  client.on("evener/thread/jobs/list", () => {
+    throw new Error("temporary source");
+  });
+  act(() =>
+    client.emitNotification({
+      method: "evener/thread/activity/changed",
+      params: { ref, threadId: "owner", sessionId: "owner", resources: ["jobs"] },
+    }),
+  );
+  expect(await screen.findByText("Activity is updating…")).toBeTruthy();
+  expect(screen.getByText("retained completed")).toBeTruthy();
+  expect(activityPanelStore.getState().entries.get(ref)?.expandedFoldIDs).toEqual([`session:${ref}:inactive-fold`]);
+});
+
+test("a switched routing ref retires old visible demand and fences delayed rows", async () => {
+  const client = activityClient(),
+    old = deferred<SessionJobsResponse>(),
+    entered = deferred<void>();
+  client.on("evener/thread/jobs/list", ({ ref, scope }) => {
+    if (ref === "remote:old") {
+      entered.resolve();
+      return old.promise;
     }
-
-    describe.each(["body", "dialog"] as const)("%s", (surface) => {
-      test.each([
-        { complete: false, label: "incomplete" },
-        { complete: true, label: "complete control" },
-      ])("$label preserves known rows and communicates root coverage honestly", async ({ complete }) => {
-        const user = userEvent.setup();
-        const fake = connectFakeClient();
-        fake.on("evener/jobs/list", () => ({
-          data: {
-            revision: 1,
-            root: {
-              sessionId: "sess_root",
-              ref: "ref_root",
-              label: "Root session",
-              aggregate: "working",
-              counts: { active: 1, failed: 0, completed: 1, complete },
-              entries: [
-                {
-                  kind: "delegate",
-                  delegate: {
-                    delegateId: "dlg_running_coverage",
-                    childSessionId: "sess_running_coverage",
-                    childRef: "ref_running_coverage",
-                    type: "delegate",
-                    lifecycle: "active",
-                    phase: "running",
-                    status: "running",
-                    terminal: false,
-                    mandate: "Inspect coverage inputs",
-                    branch: {},
-                  },
-                },
-                {
-                  kind: "delegate",
-                  delegate: {
-                    delegateId: "dlg_done_coverage",
-                    childSessionId: "sess_done_coverage",
-                    childRef: "ref_done_coverage",
-                    type: "delegate",
-                    lifecycle: "retained",
-                    phase: "idle",
-                    status: "completed",
-                    terminal: true,
-                    mandate: "Review coverage inputs",
-                    branch: {},
-                  },
-                },
-              ],
-              branch: {},
-            },
-          },
-        }));
-
-        if (surface === "body") {
-          render(<ActivityPanelBody sessionRef="ref_root" model={testModel()} />);
-        } else {
-          installMatchMediaStub(true);
-          render(<ActivityPanel sessionRef="ref_root" model={testModel()} />);
-          await user.click(screen.getByRole("button", { name: "Activity" }));
-          await screen.findByRole("dialog");
-        }
-
-        await screen.findByRole("tree");
-        const running = screen.getByRole("treeitem", { name: /Inspect coverage inputs/ });
-        expectVisible(running);
-        expect(running.contains(screen.getByText("running"))).toBe(true);
-        expectVisible(screen.getByText("running"));
-        await user.click(screen.getByRole("treeitem", { name: "1 inactive" }));
-        const completed = screen.getByRole("treeitem", { name: /Review coverage inputs/ });
-        expectVisible(completed);
-        expect(completed.contains(screen.getByText("completed"))).toBe(true);
-        expectVisible(screen.getByText("completed"));
-        expectVisible(running);
-        expect(screen.getAllByRole("treeitem")).toHaveLength(3);
-
-        if (complete) {
-          expect(screen.queryByText(coverageNotice)).toBeNull();
-        } else {
-          expectVisible(screen.getByText(coverageNotice));
-        }
-      });
-    });
+    return {
+      context: activityContext(ref),
+      scope: scope ?? "session",
+      jobs: [activityJob({ ownerRef: ref, description: "current owner" })],
+      page: { complete: true, issues: [] },
+    };
   });
+  connectionStore.getState().connect(client);
+  const view = render(<ActivityPanelBody sessionRef="remote:old" model={model("remote:old")} />);
+  await act(async () => await entered.promise);
+  view.rerender(<ActivityPanelBody sessionRef="remote:new" model={model("remote:new")} />);
+  await screen.findByText("current owner");
+  await act(async () =>
+    old.resolve({
+      context: activityContext("remote:old"),
+      scope: "subtree",
+      jobs: [activityJob({ description: "stale owner" })],
+      page: { complete: true, issues: [] },
+    }),
+  );
+  expect(screen.queryByText("stale owner")).toBeNull();
+  expect(sessionActivitySnapshot(client, "remote:old", "subtree")).toBeNull();
+});
 
-  describe("root coverage retained states", () => {
-    const coverageNotice =
-      /\b(?:partial|incomplete|limited)\b.*\b(?:activity|coverage)\b|\b(?:activity|coverage)\b.*\b(?:partial|incomplete|limited|unavailable|missing)\b/i;
-
-    describe.each(["empty", "stale", "ended"] as const)("%s", (state) => {
-      test.each([
-        { complete: false, label: "incomplete" },
-        { complete: true, label: "complete control" },
-      ])("$label retains existing state content and communicates coverage honestly", async ({ complete }) => {
-        const fake = connectFakeClient();
-        const tree = state === "empty" ? emptyTree() : activityTree();
-        tree.root.counts.complete = complete;
-        let fetched = false;
-        fake.on("evener/jobs/list", () => {
-          if (!fetched) {
-            fetched = true;
-            return { data: tree };
-          }
-          if (state === "ended") {
-            throw new WireError("thread not found: thr_root", -32014, { evenerErrorInfo: "sessionUnavailable" });
-          }
-          throw new Error("refresh failed");
-        });
-
-        const { rerender } = render(
-          <ActivityPanelBody sessionRef="ref_root" model={testModel({ jobsUpdatedAt: 1 })} />,
-        );
-        if (state === "empty") {
-          await screen.findByText("No retained activity yet");
-          expect(screen.getByText("No shell or delegate activity has been retained for this session.")).toBeTruthy();
-          expect(screen.queryByRole("tree")).toBeNull();
-        } else {
-          await screen.findByRole("tree");
-          rerender(<ActivityPanelBody sessionRef="ref_root" model={testModel({ jobsUpdatedAt: 2 })} />);
-          if (state === "stale") {
-            await screen.findByText("Showing the last activity that loaded.");
-            expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
-          } else {
-            await screen.findByText("This session has ended");
-            expect(screen.getByText("Showing the last retained activity.")).toBeTruthy();
-          }
-          expect(screen.getByRole("tree")).toBeTruthy();
-          expect(screen.getByRole("treeitem", { name: /compile root shell/i })).toBeTruthy();
-          expect(screen.getByRole("treeitem", { name: /inspect the repo/i })).toBeTruthy();
-          expect(screen.getByRole("treeitem", { name: "2 inactive" })).toBeTruthy();
-        }
-
-        if (complete) {
-          expect(screen.queryByText(coverageNotice)).toBeNull();
-        } else {
-          const notice = screen.getByText(coverageNotice);
-          for (let current: HTMLElement | null = notice; current; current = current.parentElement) {
-            expect(current.hidden).toBe(false);
-            expect(current.getAttribute("aria-hidden")).not.toBe("true");
-            const style = window.getComputedStyle(current);
-            expect(style.display).not.toBe("none");
-            expect(style.visibility).not.toBe("hidden");
-            expect(style.opacity).not.toBe("0");
-          }
-        }
-      });
-    });
+test("permanent refusal keeps useful rows without claiming ongoing recovery", async () => {
+  const client = activityClient();
+  client.on("evener/thread/jobs/list", ({ ref, scope }) => ({
+    context: activityContext(ref),
+    scope: scope ?? "session",
+    jobs: [activityJob({ description: "useful retained work" })],
+    page: { complete: true, issues: [] },
+  }));
+  connectionStore.getState().connect(client);
+  render(<ActivityPanelBody sessionRef={ref} model={model()} />);
+  await screen.findByText("useful retained work");
+  client.on("evener/thread/jobs/list", () => {
+    throw new WireError("unsupported source", -32014, { evenerErrorInfo: "actionUnavailable" });
   });
+  act(() =>
+    client.emitNotification({
+      method: "evener/thread/activity/changed",
+      params: { ref, threadId: "owner", sessionId: "owner", resources: ["jobs"] },
+    }),
+  );
+  await waitFor(() => expect(sessionActivitySnapshot(client, ref, "subtree")?.jobs.permanent).toBe(true));
+  expect(screen.getByText("useful retained work")).toBeTruthy();
+  expect(screen.queryByText("Activity is updating…")).toBeNull();
+});
 
-  test("starts with Activity, fetches on open, shows loading, then badges complete active count", async () => {
-    const user = userEvent.setup();
-    const fake = connectFakeClient();
-    const gate = deferred<{ data: unknown }>();
-    fake.on("evener/jobs/list", () => gate.promise);
-
-    render(<ActivityPanel sessionRef="ref_root" model={testModel()} />);
-    expect(screen.getByRole("button", { name: "Activity" })).toBeTruthy();
-    expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(0);
-
-    await user.click(screen.getByRole("button", { name: "Activity" }));
-    expect(await screen.findByText("Loading activity…")).toBeTruthy();
-    expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(1);
-
-    act(() => gate.resolve({ data: activityTree() }));
-    const dialog = await screen.findByRole("dialog");
-    expect(dialog.className).not.toBe("");
-    await screen.findByRole("tree");
-    expect(screen.getByRole("button", { name: "Activity · 3" })).toBeTruthy();
+test("loaded subtree job output uses the supplied owner ref and raw logical job ID", async () => {
+  const client = activityClient(),
+    jobId = "job_02wMz5TxvEMoJEDTDGOTil_000000000123",
+    ownerRef = "source:opaque-owner";
+  client.on("evener/thread/jobs/list", ({ ref, scope }) => ({
+    context: activityContext(ref),
+    scope: scope ?? "session",
+    jobs: [activityJob({ ownerRef, jobId, description: "output target" })],
+    page: { complete: true, issues: [] },
+  }));
+  client.on("evener/jobs/output", () => ({
+    data: { tail: "supplied output tail", totalBytes: 20, retainedStart: 0, truncated: false },
+  }));
+  connectionStore.getState().connect(client);
+  render(<ActivityPanelBody sessionRef={ref} model={model()} />);
+  fireEvent.click(await screen.findByRole("button", { name: "Hide details for output target" }));
+  fireEvent.click(screen.getByRole("button", { name: "Show details for output target" }));
+  expect(await screen.findByText("supplied output tail")).toBeTruthy();
+  expect(client.calls.find((call) => call.method === "evener/jobs/output")?.params).toEqual({
+    ref: ownerRef,
+    jobId,
+    maxBytes: 256,
   });
-
-  test("the hidden chrome owner discovers activity once before the summary is established", async () => {
-    const fake = connectFakeClient();
-    const gate = deferred<{ data: unknown }>();
-    fake.on("evener/jobs/list", () => gate.promise);
-
-    const chromeOwners = (second: boolean) => (
-      <>
-        <ActivityPanel sessionRef="ref_root" model={testModel()} hideTrigger refreshWhenHidden />
-        {second && <ActivityPanel sessionRef="ref_root" model={testModel()} hideTrigger refreshWhenHidden />}
-      </>
-    );
-
-    expect(activitySummaryStore.getState().entries.has("ref_root")).toBe(false);
-    const { rerender } = render(chromeOwners(false));
-    await waitFor(() => expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(1));
-
-    rerender(chromeOwners(true));
-    await act(async () => Promise.resolve());
-    expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(1);
-
-    await act(async () => {
-      gate.resolve({ data: activityTree() });
-      await gate.promise;
-      await Promise.resolve();
-    });
-
-    expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(1);
-  });
-
-  test("establishes a failed first attempt and does not retry the same bump while closed", async () => {
-    const user = userEvent.setup();
-    const fake = connectFakeClient();
-    fake.on("evener/jobs/list", () => {
-      throw new Error("first activity failure");
-    });
-
-    render(
-      <>
-        <ActivityPanel sessionRef="ref_root" model={testModel({ jobsUpdatedAt: 1 })} />
-        <Toast />
-      </>,
-    );
-    await user.click(screen.getByRole("button", { name: "Activity" }));
-    expect(await screen.findByRole("button", { name: "Try again" })).toBeTruthy();
-    expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(1);
-
-    await user.click(screen.getByRole("button", { name: "Close" }));
-    expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(1);
-  });
-
-  // The root has no row, so what the daemon could not read of its journals
-  // (#1269's session-level diagnostics) is the panel's to say, beside the
-  // coverage strip; a delegate's child sentences are the row's detail strip's.
-  test("shows the root session's diagnostics beside the coverage strip", async () => {
-    const user = userEvent.setup();
-    const fake = connectFakeClient();
-    const torn = "delegate_journal_torn_tail: ignored unterminated trailing batch";
-    const degraded = activityTree() as { root: Record<string, unknown> };
-    degraded.root.diagnostics = [torn];
-    fake.on("evener/jobs/list", () => ({ data: degraded }));
-
-    render(<ActivityPanel sessionRef="ref_root" model={testModel()} />);
-    await user.click(screen.getByRole("button", { name: "Activity" }));
-    await screen.findByRole("tree");
-
-    expect(screen.getByText(torn)).toBeTruthy();
-  });
-
-  test("keeps the badge bare when the root counts are incomplete", async () => {
-    const user = userEvent.setup();
-    const fake = connectFakeClient();
-    const incomplete = activityTree();
-    incomplete.root.counts.complete = false;
-    fake.on("evener/jobs/list", () => ({ data: incomplete }));
-
-    render(<ActivityPanel sessionRef="ref_root" model={testModel()} />);
-    await user.click(screen.getByRole("button", { name: "Activity" }));
-    await screen.findByRole("tree");
-
-    expect(screen.getByRole("button", { name: "Activity" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Activity · 3" })).toBeNull();
-  });
-
-  test("an empty page that carries a continuation stays readable and loadable", async () => {
-    const user = userEvent.setup();
-    const fake = connectFakeClient();
-    fake.on("evener/jobs/list", ({ continuation }) =>
-      continuation === "tok_after_skip" ? { data: afterSkipTree() } : { data: skippedEntryTree() },
-    );
-
-    render(<ActivityPanel sessionRef="ref_root" model={testModel()} />);
-    await user.click(screen.getByRole("button", { name: /Activity/ }));
-
-    // The page rendered nothing, but it said why and handed back a token:
-    // treating it as "no activity yet" hides both, and the reader can never
-    // reach what follows the entry the agent had to skip.
-    expect(await screen.findByText(/too large to render in one response/i)).toBeTruthy();
-    await user.click(screen.getByRole("button", { name: /load more/i }));
-
-    expect(await screen.findByText("tail shell")).toBeTruthy();
-    expect(fake.calls.filter((call) => call.method === "evener/jobs/list").at(-1)?.params).toEqual({
-      ref: "ref_root",
-      continuation: "tok_after_skip",
-    });
-  });
-
-  test("an empty page with an error and no continuation shows the error and offers no page to load", async () => {
-    const user = userEvent.setup();
-    const fake = connectFakeClient();
-    fake.on("evener/jobs/list", () => ({ data: emptyExplainedTree() }));
-
-    render(<ActivityPanel sessionRef="ref_root" model={testModel()} />);
-    await user.click(screen.getByRole("button", { name: /Activity/ }));
-
-    expect(await screen.findByText(/with no entries rendered/i)).toBeTruthy();
-    expect(screen.queryByText("No retained activity yet")).toBeNull();
-    // Nothing to continue to: offering a control here would send the reader
-    // back for the same page.
-    expect(screen.queryByRole("button", { name: /load more/i })).toBeNull();
-  });
-
-  test("renders empty, unsupported, and exited states", async () => {
-    const user = userEvent.setup();
-    const fake = connectFakeClient();
-    fake.on("evener/jobs/list", () => ({ data: emptyTree() }));
-
-    render(<ActivityPanel sessionRef="ref_root" model={testModel()} />);
-    await user.click(screen.getByRole("button", { name: /Activity/ }));
-    expect(await screen.findByText("No retained activity yet")).toBeTruthy();
-
-    cleanup();
-    resetThreadsStoreForTests();
-    const unsupported = connectFakeClient();
-    unsupported.on("evener/jobs/list", () => ({ data: null }));
-    render(<ActivityPanel sessionRef="ref_root" model={testModel()} />);
-    await user.click(screen.getByRole("button", { name: /Activity/ }));
-    expect(await screen.findByText(/activity isn't available/i)).toBeTruthy();
-
-    cleanup();
-    resetThreadsStoreForTests();
-    const ended = connectFakeClient();
-    ended.on("evener/jobs/list", () => {
-      throw new WireError("thread not found: thr_root", -32014, { evenerErrorInfo: "sessionUnavailable" });
-    });
-    render(<ActivityPanel sessionRef="ref_root" model={testModel()} />);
-    await user.click(screen.getByRole("button", { name: /Activity/ }));
-    expect(await screen.findByText("This session has ended")).toBeTruthy();
-  });
-
-  test("renders live rows plus a fold row for inactive entries, and an expanded fold survives refresh", async () => {
-    const user = userEvent.setup();
-    const fake = connectFakeClient();
-    fake.on("evener/jobs/list", ({ continuation }) => ({
-      data: continuation ? continuedPartialTree() : activityTree(1),
-    }));
-
-    const panel = (bump: number | null) => (
-      <ActivityPanel sessionRef="ref_root" model={testModel({ jobsUpdatedAt: bump })} />
-    );
-    const { rerender } = render(panel(1));
-    await user.click(screen.getByRole("button", { name: "Activity" }));
-
-    expect(await screen.findByRole("tree")).toBeTruthy();
-    expect(screen.getByRole("treeitem", { name: /compile root shell/i })).toBeTruthy();
-    expect(screen.getByRole("treeitem", { name: /inspect the repo/i })).toBeTruthy();
-    expect(screen.getByRole("treeitem", { name: /child shell/i })).toBeTruthy();
-    // Inactive delegates sit behind the root session's fold row, folded by default.
-    const fold = screen.getByRole("treeitem", { name: "2 inactive" });
-    expect(fold.getAttribute("aria-expanded")).toBe("false");
-    expect(screen.queryByRole("treeitem", { name: /done session/i })).toBeNull();
-    expect(screen.queryByTestId("activity-inspector")).toBeNull();
-
-    await user.click(fold);
-    expect(activityPanelStore.getState().entries.get("ref_root")?.expandedFoldIDs).toEqual([
-      "session:sess_root:inactive-fold",
-    ]);
-    expect(screen.getByRole("treeitem", { name: /done session/i })).toBeTruthy();
-
-    rerender(panel(2));
-    await waitFor(() => expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(2));
-
-    expect(activityPanelStore.getState().entries.get("ref_root")?.expandedFoldIDs).toEqual([
-      "session:sess_root:inactive-fold",
-    ]);
-    expect(screen.getByRole("treeitem", { name: /done session/i })).toBeTruthy();
-    expect(screen.getByRole("treeitem", { name: /compile root shell/i })).toBeTruthy();
-
-    await user.click(screen.getByRole("treeitem", { name: "2 inactive" }));
-    expect(activityPanelStore.getState().entries.get("ref_root")?.expandedFoldIDs).toEqual([]);
-    expect(screen.queryByRole("treeitem", { name: /done session/i })).toBeNull();
-  });
-
-  test("a stale refresh failure keeps the last good tree and shows a stale notice", async () => {
-    const fake = connectFakeClient();
-    let calls = 0;
-    fake.on("evener/jobs/list", () => {
-      calls += 1;
-      if (calls === 1) return { data: activityTree() };
-      throw new Error("broken pipe");
-    });
-
-    const { rerender } = render(
-      <>
-        <ActivityPanel sessionRef="ref_root" model={testModel({ jobsUpdatedAt: 1 })} />
-        <Toast />
-      </>,
-    );
-    await userEvent.setup().click(screen.getByRole("button", { name: "Activity" }));
-    await screen.findByRole("tree");
-
-    rerender(
-      <>
-        <ActivityPanel sessionRef="ref_root" model={testModel({ jobsUpdatedAt: 2 })} />
-        <Toast />
-      </>,
-    );
-
-    expect(await screen.findByText(/showing the last activity that loaded/i)).toBeTruthy();
-    expect(screen.getByRole("tree")).toBeTruthy();
-    expect(screen.getByText("compile root shell")).toBeTruthy();
-  });
-
-  test("refreshes while closed once established, but suppresses hidden-trigger refresh", async () => {
-    const user = userEvent.setup();
-    const fake = connectFakeClient();
-    fake.on("evener/jobs/list", () => ({ data: activityTree() }));
-
-    const visible = (bump: number | null) => (
-      <ActivityPanel sessionRef="ref_root" model={testModel({ jobsUpdatedAt: bump })} />
-    );
-    const { rerender } = render(visible(1));
-    await user.click(screen.getByRole("button", { name: "Activity" }));
-    await screen.findByRole("tree");
-    await user.click(screen.getByRole("button", { name: "Close" }));
-    rerender(visible(2));
-    await waitFor(() => expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(2));
-
-    const handle = createRef<ActivityPanelHandle>();
-    const hidden = (bump: number | null) => (
-      <ActivityPanel ref={handle} sessionRef="ref_root" model={testModel({ jobsUpdatedAt: bump })} hideTrigger />
-    );
-    cleanup();
-    const hiddenRender = render(hidden(3));
-    expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(2);
-    act(() => handle.current?.open());
-    await screen.findByRole("tree");
-    expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(3);
-    await user.click(screen.getByRole("button", { name: "Close" }));
-    hiddenRender.rerender(hidden(4));
-    expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(3);
-  });
-
-  test("refreshes the visible badge when an open panel body is backgrounded", async () => {
-    const fake = connectFakeClient();
-    let calls = 0;
-    const refreshed = cloneFixture(activityTree(2));
-    refreshed.root.counts.active = 8;
-    fake.on("evener/jobs/list", () => ({ data: calls++ === 0 ? activityTree() : refreshed }));
-
-    const model = testModel({ jobsUpdatedAt: 1 });
-    const { rerender } = render(
-      <>
-        <ActivityPanel sessionRef="ref_root" model={model} />
-        <ActivityPanelBody sessionRef="ref_root" model={model} />
-      </>,
-    );
-    await screen.findByRole("tree");
-    expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(1);
-
-    rerender(<ActivityPanel sessionRef="ref_root" model={testModel({ jobsUpdatedAt: 2 })} />);
-    await waitFor(() => expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(2));
-    expect(screen.getByRole("button", { name: "Activity · 8" })).toBeTruthy();
-  });
-
-  // jobsUpdatedAt only ever comes from live pushes and re-hydrates to null
-  // after a thread-model eviction (protocol/reducer.ts), so a null bump can
-  // never prove retained data is current: bumps that happened while nothing
-  // held the model are simply gone. A remounting body must fetch in that case
-  // instead of trusting null === null.
-  test("remounting the body re-fetches when the model cannot prove freshness (null jobs bump)", async () => {
-    const fake = connectFakeClient();
-    fake.on("evener/jobs/list", () => ({ data: activityTree() }));
-
-    const first = render(<ActivityPanelBody sessionRef="ref_null_bump" model={testModel()} />);
-    await screen.findByRole("tree");
-    expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(1);
-    first.unmount();
-
-    render(<ActivityPanelBody sessionRef="ref_null_bump" model={testModel()} />);
-    await waitFor(() => expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(2));
-  });
-
-  // A MOUNTED body has the same blind spot across a wholesale model
-  // rehydration (reconnect/resync): jobsUpdatedAt can be null before and
-  // after, so no effect dependency changes even though activity missed in
-  // the gap may be stale. The threads store's per-ref hydration generation
-  // is the signal that the model was replaced underneath.
-  test("a mounted body re-fetches when its model rehydrates without a provable bump", async () => {
-    const fake = connectFakeClient();
-    fake.on("evener/jobs/list", () => ({ data: activityTree() }));
-
-    render(<ActivityPanelBody sessionRef="ref_rehydrated" model={testModel()} />);
-    await screen.findByRole("tree");
-    expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(1);
-
-    act(() => {
-      threadsStore.setState({ hydrations: new Map([["ref_rehydrated", 2]]) });
-    });
-    await waitFor(() => expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(2));
-  });
-
-  // The closed Sheet's trigger owns background badge refresh; it has the same
-  // null-to-null rehydration blind spot as a mounted body and watches the same
-  // hydration generation.
-  test("a closed panel's badge refresh notices rehydration when the bump stays null", async () => {
-    const fake = connectFakeClient();
-    fake.on("evener/jobs/list", () => ({ data: activityTree() }));
-    activitySummaryStore.setState({
-      entries: new Map([
-        [
-          "ref_gen",
-          {
-            counts: undefined,
-            established: true,
-            mountedBodies: 0,
-            loading: false,
-            lastFetchedBump: null,
-            requestID: 1,
-          },
-        ],
-      ]),
-    });
-
-    render(<ActivityPanel sessionRef="ref_gen" model={testModel({ ref: "ref_gen" })} />);
-    await act(async () => Promise.resolve());
-    expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(0);
-
-    act(() => {
-      threadsStore.setState({ hydrations: new Map([["ref_gen", 1]]) });
-    });
-    await waitFor(() => expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(1));
-  });
-
-  test("a closed panel queues one hydration refresh while the summary is loading", async () => {
-    const fake = connectFakeClient();
-    const bumpGate = deferred<{ data: unknown }>();
-    const generationGate = deferred<{ data: unknown }>();
-    fake.on("evener/jobs/list", () =>
-      fake.calls.filter((call) => call.method === "evener/jobs/list").length === 1
-        ? bumpGate.promise
-        : generationGate.promise,
-    );
-    activitySummaryStore.setState({
-      entries: new Map([
-        [
-          "ref_pending_gen",
-          {
-            counts: undefined,
-            established: true,
-            mountedBodies: 0,
-            loading: false,
-            lastFetchedBump: 1,
-            requestID: 1,
-          },
-        ],
-      ]),
-    });
-
-    const panel = (bump: number) => (
-      <ActivityPanel sessionRef="ref_pending_gen" model={testModel({ ref: "ref_pending_gen", jobsUpdatedAt: bump })} />
-    );
-    const { rerender } = render(panel(1));
-    rerender(panel(2));
-    await waitFor(() => expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(1));
-
-    act(() => {
-      threadsStore.setState({ hydrations: new Map([["ref_pending_gen", 1]]) });
-    });
-    await act(async () => Promise.resolve());
-    expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(1);
-
-    await act(async () => {
-      bumpGate.resolve({ data: activityTree() });
-      await bumpGate.promise;
-      await Promise.resolve();
-    });
-    await waitFor(() => expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(2));
-
-    await act(async () => {
-      generationGate.resolve({ data: activityTree(2) });
-      await generationGate.promise;
-      await Promise.resolve();
-    });
-    await waitFor(() => expect(activitySummaryStore.getState().entries.get("ref_pending_gen")?.loading).toBe(false));
-    await act(async () => Promise.resolve());
-    expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(2);
-  });
-
-  test("derives the root badge from the merged tree after continuation", async () => {
-    const user = userEvent.setup();
-    const fake = connectFakeClient();
-    fake.on("evener/jobs/list", ({ continuation }) => {
-      if (!continuation) return { data: activityTree() };
-      const patch = cloneFixture(continuedPartialTree());
-      patch.root.counts.active = 99;
-      return { data: patch };
-    });
-
-    render(<ActivityPanel sessionRef="ref_root" model={testModel()} />);
-    await user.click(screen.getByRole("button", { name: "Activity" }));
-    await screen.findByRole("tree");
-    expect(screen.getByRole("button", { name: "Activity · 3" })).toBeTruthy();
-    const panelEntry = activityPanelStore.getState().entries.get("ref_root");
-    if (panelEntry?.load.kind !== "ready") throw new Error("continuation did not leave a ready activity tree");
-    expect(activitySummaryStore.getState().entries.get("ref_root")?.counts).toEqual(panelEntry.load.tree.root.counts);
-    // The partial branch's continuation strip follows its row, which sits
-    // behind the folded-by-default inactive fold.
-    await user.click(screen.getByRole("treeitem", { name: "2 inactive" }));
-    await user.click(screen.getByRole("button", { name: /load more/i }));
-
-    await screen.findByRole("treeitem", { name: /continued shell/i });
-    const mergedEntry = activityPanelStore.getState().entries.get("ref_root");
-    if (mergedEntry?.load.kind !== "ready") throw new Error("continuation did not publish the merged tree");
-    expect(mergedEntry.load.tree.root.counts.active).toBe(4);
-    expect(activitySummaryStore.getState().entries.get("ref_root")?.counts).toEqual(mergedEntry.load.tree.root.counts);
-    expect(screen.getByRole("button", { name: "Activity · 4" })).toBeTruthy();
-  });
-
-  test("Load more waits for an in-flight root refresh instead of superseding it", async () => {
-    const user = userEvent.setup();
-    const fake = connectFakeClient();
-    const heldRoot = deferred<{ data: unknown }>();
-    let rootCalls = 0;
-    fake.on("evener/jobs/list", ({ continuation }) => {
-      if (continuation) return { data: continuedPartialTree() };
-      rootCalls += 1;
-      if (rootCalls === 1) return { data: activityTree(1) };
-      return heldRoot.promise;
-    });
-
-    const panel = (bump: number) => <ActivityPanel sessionRef="ref_root" model={testModel({ jobsUpdatedAt: bump })} />;
-    const { rerender } = render(panel(1));
-    await user.click(screen.getByRole("button", { name: "Activity" }));
-    await screen.findByRole("tree");
-    await user.click(screen.getByRole("treeitem", { name: "2 inactive" }));
-
-    rerender(panel(2));
-    await waitFor(() => expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(2));
-
-    const loadMore = screen.getByRole("button", { name: /load more/i });
-    await user.click(loadMore);
-    expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(2);
-    expect(loadMore.hasAttribute("disabled")).toBe(true);
-
-    act(() => heldRoot.resolve({ data: activityTree(2) }));
-    await waitFor(() => expect(activitySummaryStore.getState().entries.get("ref_root")?.loading).toBe(false));
-
-    // The root's own snapshot lands, so the bump it claims is one the tree
-    // actually received - no page was grafted onto the older tree instead.
-    expect(screen.queryByRole("treeitem", { name: /continued shell/i })).toBeNull();
-    expect(screen.getByRole("button", { name: "Activity · 3" })).toBeTruthy();
-    expect(activitySummaryStore.getState().entries.get("ref_root")).toMatchObject({
-      lastFetchedBump: 2,
-      hasPublishedResult: true,
-    });
-    // The refreshed tree carries its own token, so the reader can page again.
-    expect(screen.getByRole("button", { name: /load more/i }).hasAttribute("disabled")).toBe(false);
-  });
-
-  test("keeps a continuation merge when a late root refresh resolves after closing", async () => {
-    const user = userEvent.setup();
-    const fake = connectFakeClient();
-    const lateRoot = deferred<{ data: unknown }>();
-    let rootCalls = 0;
-    fake.on("evener/jobs/list", ({ continuation }) => {
-      if (continuation) return { data: continuedPartialTree() };
-      rootCalls += 1;
-      if (rootCalls === 1) return { data: activityTree(1) };
-      return lateRoot.promise;
-    });
-
-    const panel = (bump: number) => <ActivityPanel sessionRef="ref_root" model={testModel({ jobsUpdatedAt: bump })} />;
-    const { rerender } = render(panel(1));
-    await user.click(screen.getByRole("button", { name: "Activity" }));
-    await screen.findByRole("tree");
-    await user.click(screen.getByRole("treeitem", { name: "2 inactive" }));
-
-    await user.click(screen.getByRole("button", { name: /load more/i }));
-    await screen.findByRole("treeitem", { name: /continued shell/i });
-    expect(screen.getByRole("button", { name: "Activity · 4" })).toBeTruthy();
-
-    rerender(panel(2));
-    await waitFor(() => expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(3));
-
-    await user.click(screen.getByRole("button", { name: "Close" }));
-    act(() => lateRoot.resolve({ data: activityTree(2) }));
-    await waitFor(() => expect(activitySummaryStore.getState().entries.get("ref_root")?.loading).toBe(false));
-
-    // The refreshed partial branch is still bounded, so the page loaded into it
-    // stays and the badge keeps counting it.
-    expect(rootCalls).toBe(2);
-    const panelEntry = activityPanelStore.getState().entries.get("ref_root");
-    if (panelEntry?.load.kind !== "ready") throw new Error("continuation merge was not retained");
-    expect(panelEntry.load.tree.root.counts.active).toBe(4);
-    expect(panelEntry.load.tree.root.entries).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          kind: "delegate",
-          delegate: expect.objectContaining({
-            child: expect.objectContaining({
-              entries: expect.arrayContaining([
-                expect.objectContaining({
-                  kind: "shell",
-                  job: expect.objectContaining({ description: "continued shell" }),
-                }),
-              ]),
-            }),
-          }),
-        }),
-      ]),
-    );
-    expect(activitySummaryStore.getState().entries.get("ref_root")?.counts?.active).toBe(4);
-    expect(activitySummaryStore.getState().entries.get("ref_root")?.lastFetchedBump).toBe(2);
-  });
-
-  // Round 1 deferred a root refresh that arrives during a continuation, and the
-  // continuation guard below refuses the opposite order, so a root refresh is
-  // never superseded through the UI any more: it publishes its own snapshot.
-  test("a root refresh that resolves after closing still settles into the panel", async () => {
-    const user = userEvent.setup();
-    const fake = connectFakeClient();
-    const lateRoot = deferred<{ data: unknown }>();
-    let rootCalls = 0;
-    fake.on("evener/jobs/list", ({ continuation }) => {
-      if (continuation) return { data: continuedPartialTree() };
-      rootCalls += 1;
-      if (rootCalls === 1) return { data: activityTree(1) };
-      return lateRoot.promise;
-    });
-
-    const panel = (bump: number) => <ActivityPanel sessionRef="ref_root" model={testModel({ jobsUpdatedAt: bump })} />;
-    const { rerender } = render(panel(1));
-    await user.click(screen.getByRole("button", { name: "Activity" }));
-    await screen.findByRole("tree");
-
-    rerender(panel(2));
-    await waitFor(() => expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(2));
-
-    await user.click(screen.getByRole("button", { name: "Close" }));
-    act(() => lateRoot.resolve({ data: activityTree(2) }));
-    await waitFor(() => expect(activitySummaryStore.getState().entries.get("ref_root")?.loading).toBe(false));
-
-    // The closed panel still receives the answer it asked for, and no page was
-    // ever requested against the tree that refresh replaced.
-    expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(2);
-    expect(rootCalls).toBe(2);
-    const panelEntry = activityPanelStore.getState().entries.get("ref_root");
-    if (panelEntry?.load.kind !== "ready") throw new Error("the late root refresh did not publish");
-    expect(panelEntry.load.tree.revision).toBe(2);
-    expect(activitySummaryStore.getState().entries.get("ref_root")).toMatchObject({
-      lastFetchedBump: 2,
-      counts: { active: 3 },
-    });
-  });
-
-  test("continuation grafts only the targeted branch", async () => {
-    const user = userEvent.setup();
-    const fake = connectFakeClient();
-    fake.on("evener/jobs/list", ({ continuation }) => ({
-      data: continuation ? continuedPartialTree() : activityTree(),
-    }));
-
-    render(<ActivityPanel sessionRef="ref_root" model={testModel()} />);
-    await user.click(screen.getByRole("button", { name: "Activity" }));
-    await screen.findByRole("tree");
-
-    await user.click(screen.getByRole("treeitem", { name: "2 inactive" }));
-    await user.click(screen.getByRole("button", { name: /load more/i }));
-
-    expect(await screen.findByRole("treeitem", { name: /continued shell/i })).toBeTruthy();
-    expect(screen.getByRole("treeitem", { name: /compile root shell/i })).toBeTruthy();
-    expect(fake.calls.filter((call) => call.method === "evener/jobs/list").at(-1)?.params).toEqual({
-      ref: "ref_root",
-      continuation: "partial-page-2",
-    });
-  });
-
-  test("a continuation page from a different revision is discarded for a fresh root", async () => {
-    const user = userEvent.setup();
-    const fake = connectFakeClient();
-    let rootCalls = 0;
-    fake.on("evener/jobs/list", ({ continuation }) => {
-      // The page answers the token at a revision the retained tree is not on.
-      if (continuation) return { data: { ...continuedPartialTree(), revision: 2 } };
-      rootCalls += 1;
-      return { data: activityTree(1) };
-    });
-
-    render(<ActivityPanel sessionRef="ref_root" model={testModel()} />);
-    await user.click(screen.getByRole("button", { name: "Activity" }));
-    await screen.findByRole("tree");
-    await user.click(screen.getByRole("treeitem", { name: "2 inactive" }));
-    await user.click(screen.getByRole("button", { name: /load more/i }));
-
-    // The mismatched page is discarded and exactly one fresh root is fetched:
-    // the discard-triggered refresh coalesces with the pending-root drain.
-    await waitFor(() => expect(rootCalls).toBe(2));
-    await act(async () => {
-      await Promise.resolve();
-    });
-    expect(rootCalls).toBe(2);
-    expect(screen.queryByRole("treeitem", { name: /continued shell/i })).toBeNull();
-    expect(fake.calls.filter((call) => call.method === "evener/jobs/list").at(-1)?.params).toEqual({
-      ref: "ref_root",
-    });
-  });
-
-  test("a malformed continuation response stays local to the targeted branch and preserves retry affordance", async () => {
-    const user = userEvent.setup();
-    const fake = connectFakeClient();
-    fake.on("evener/jobs/list", ({ continuation }) => ({ data: continuation ? null : activityTree() }));
-
-    render(
-      <>
-        <ActivityPanel sessionRef="ref_root" model={testModel()} />
-        <Toast />
-      </>,
-    );
-    await user.click(screen.getByRole("button", { name: "Activity" }));
-    await screen.findByRole("tree");
-    await user.click(screen.getByRole("treeitem", { name: "2 inactive" }));
-    await user.click(screen.getByRole("button", { name: /load more/i }));
-
-    expect(await screen.findByText("Couldn't load more retained activity for this branch.")).toBeTruthy();
-    expect(screen.getByRole("tree")).toBeTruthy();
-    expect(screen.getByRole("treeitem", { name: /compile root shell/i })).toBeTruthy();
-    expect(screen.getByRole("button", { name: /load more/i })).toBeTruthy();
-    expect(screen.queryByText(/activity isn't available/i)).toBeNull();
-    expect(screen.queryByText(/showing the last activity that loaded/i)).toBeNull();
-    expect(screen.queryByText(/couldn't load activity/i)).toBeNull();
-  });
-
-  test("a rejected continuation request stays local to the targeted branch without root stale or toast UI", async () => {
-    const user = userEvent.setup();
-    const fake = connectFakeClient();
-    fake.on("evener/jobs/list", ({ continuation }) => {
-      if (continuation) throw new Error("branch boom");
-      return { data: activityTree() };
-    });
-
-    render(
-      <>
-        <ActivityPanel sessionRef="ref_root" model={testModel()} />
-        <Toast />
-      </>,
-    );
-    await user.click(screen.getByRole("button", { name: "Activity" }));
-    await screen.findByRole("tree");
-    await user.click(screen.getByRole("treeitem", { name: "2 inactive" }));
-    await user.click(screen.getByRole("button", { name: /load more/i }));
-
-    expect(await screen.findByText("Couldn't load more retained activity for this branch: branch boom")).toBeTruthy();
-    expect(screen.getByRole("treeitem", { name: /compile root shell/i })).toBeTruthy();
-    expect(screen.getByRole("button", { name: /load more/i })).toBeTruthy();
-    expect(screen.queryByText(/showing the last activity that loaded/i)).toBeNull();
-    expect(screen.queryByText(/couldn't load activity/i)).toBeNull();
-  });
-
-  test("a failed continuation does not automatically issue a root request", async () => {
-    const fake = connectFakeClient();
-    const discardedRoot = deferred<{ data: unknown }>();
-    let rootRequests = 0;
-    fake.on("evener/jobs/list", () => {
-      rootRequests += 1;
-      if (rootRequests === 2) return discardedRoot.promise;
-      return { data: activityTree() };
-    });
-
-    const { rerender } = render(<ActivityPanelBody sessionRef="ref_root" model={testModel({ jobsUpdatedAt: 1 })} />);
-    await screen.findByRole("tree");
-    rerender(<ActivityPanelBody sessionRef="ref_root" model={testModel({ jobsUpdatedAt: 2 })} />);
-    await waitFor(() => expect(rootRequests).toBe(2));
-
-    const nodeID = "delegate:dlg_partial";
-    let continuationRequest = 0;
-    act(() => {
-      continuationRequest = activityPanelStore.getState().beginFetch("ref_root", { nodeID });
-    });
-    await act(async () => {
-      discardedRoot.resolve({ data: activityTree(2) });
-      await discardedRoot.promise;
-      await Promise.resolve();
-    });
-    await waitFor(() => expect(activitySummaryStore.getState().entries.get("ref_root")?.loading).toBe(false));
-
-    act(() => {
-      activityPanelStore.getState().publishFetch("ref_root", continuationRequest, {
-        kind: "continuation-failed",
-        nodeID,
-        message: "continuation failed",
-      });
-    });
-    await act(async () => Promise.resolve());
-
-    expect(activityPanelStore.getState().entries.get("ref_root")?.continuationFailures[nodeID]).toBe(
-      "continuation failed",
-    );
-    expect(activitySummaryStore.getState().entries.get("ref_root")?.lastFetchedBump).toBeUndefined();
-    expect(rootRequests).toBe(2);
-    expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(2);
-  });
-
-  test("a refresh that drops a retained row keeps rendering the surviving tree", async () => {
-    const user = userEvent.setup();
-    const fake = connectFakeClient();
-    let calls = 0;
-    fake.on("evener/jobs/list", () => {
-      calls += 1;
-      if (calls === 1) return { data: activityTree() };
-      const next = activityTree(2);
-      next.root.entries = next.root.entries.filter(
-        (entry) => !(entry.kind === "shell" && entry.job && entry.job.jobId === "job_root_shell"),
-      );
-      return { data: next };
-    });
-
-    const panel = (bump: number | null) => (
-      <ActivityPanel sessionRef="ref_root" model={testModel({ jobsUpdatedAt: bump })} />
-    );
-    const { rerender } = render(panel(1));
-    await user.click(screen.getByRole("button", { name: "Activity" }));
-    await screen.findByRole("tree");
-    expect(screen.getByRole("treeitem", { name: /compile root shell/i })).toBeTruthy();
-
-    rerender(panel(2));
-    await waitFor(() => expect(screen.queryByRole("treeitem", { name: /compile root shell/i })).toBeNull());
-    expect(screen.getByRole("tree")).toBeTruthy();
-    expect(screen.getByRole("treeitem", { name: /inspect the repo/i })).toBeTruthy();
-  });
-
-  test("renders dense tree rows with no inspector element", async () => {
-    const user = userEvent.setup();
-    const fake = connectFakeClient();
-    fake.on("evener/jobs/list", () => ({ data: activityTree() }));
-
-    render(<ActivityPanel sessionRef="ref_root" model={testModel()} />);
-    await user.click(screen.getByRole("button", { name: "Activity" }));
-    await screen.findByRole("tree");
-
-    expect(screen.getByRole("treeitem", { name: /compile root shell/i })).toBeTruthy();
-    expect(screen.getByRole("treeitem", { name: /inspect the repo/i })).toBeTruthy();
-    expect(screen.queryByTestId("activity-inspector")).toBeNull();
-    expect(screen.queryByText(/select activity/i)).toBeNull();
-  });
-
-  // The panel body owns the session's entity map (the same useEntityView the
-  // transcript uses) and republishes it to the tree through the entity-views
-  // context, so a delegate row's detail strip renders its id as a card
-  // trigger. The strip lives in the session chrome, outside the transcript
-  // subtree, so nothing else supplies the map.
-  test("a delegate row's detail strip resolves its id through the session's entity map", async () => {
-    const fake = connectFakeClient();
-    fake.on("evener/jobs/list", () => ({ data: activityTree() }));
-
-    render(<ActivityPanelBody sessionRef="ref_root" model={testModel()} />);
-    await screen.findByRole("tree");
-
-    // The line reads exactly as it did, with the id now a card trigger.
-    const line = detailLineByText("Delegate dlg_active · send · stop · status");
-    expect(within(line).getByTestId("entity-trigger").textContent).toBe("dlg_active");
-  });
-
-  test("mobile renders the tree directly with no inspector swap or back button", async () => {
-    const user = userEvent.setup();
-    installMatchMediaStub(true);
-    const fake = connectFakeClient();
-    fake.on("evener/jobs/list", () => ({ data: activityTree() }));
-
-    render(<ActivityPanel sessionRef="ref_root" model={testModel()} />);
-    await user.click(screen.getByRole("button", { name: "Activity" }));
-    await screen.findByRole("tree");
-
-    expect(screen.getByRole("treeitem", { name: /compile root shell/i })).toBeTruthy();
-    expect(screen.getByRole("treeitem", { name: "2 inactive" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Back to activity" })).toBeNull();
-    expect(screen.queryByTestId("activity-inspector")).toBeNull();
-  });
-
-  test("ignores stale fetch results after the session ref changes", async () => {
-    const user = userEvent.setup();
-    const fake = connectFakeClient();
-    const first = deferred<{ data: unknown }>();
-    fake.on("evener/jobs/list", ({ ref }) => {
-      if (ref === "ref_root") return first.promise;
-      return Promise.resolve({ data: emptyTree() });
-    });
-
-    const { rerender } = render(<ActivityPanel sessionRef="ref_root" model={testModel({ ref: "ref_root" })} />);
-    await user.click(screen.getByRole("button", { name: "Activity" }));
-    rerender(<ActivityPanel sessionRef="ref_other" model={testModel({ ref: "ref_other" })} />);
-    act(() => first.resolve({ data: activityTree() }));
-
-    await user.click(screen.getByRole("button", { name: "Activity" }));
-    expect(await screen.findByText("No retained activity yet")).toBeTruthy();
-    expect(screen.queryByText("compile root shell")).toBeNull();
-  });
-
-  test("ignores a deferred root listJobs rejection after unmount without emitting a toast", async () => {
-    const user = userEvent.setup();
-    const fake = connectFakeClient();
-    const gate = deferred<{ data: unknown }>();
-    fake.on("evener/jobs/list", () => gate.promise);
-
-    const { rerender } = render(
-      <>
-        <ActivityPanel sessionRef="ref_root" model={testModel()} />
-        <Toast />
-      </>,
-    );
-    await user.click(screen.getByRole("button", { name: "Activity" }));
-    rerender(<Toast />);
-
-    await act(async () => {
-      gate.reject(new Error("late root rejection"));
-      await Promise.resolve();
-    });
-
-    expect(screen.queryByText(/late root rejection/i)).toBeNull();
-    expect(screen.queryByText(/couldn't load activity/i)).toBeNull();
-  });
-
-  test("ignores a deferred root listJobs resolution after unmount", async () => {
-    const user = userEvent.setup();
-    const fake = connectFakeClient();
-    const gate = deferred<{ data: unknown }>();
-    fake.on("evener/jobs/list", () => gate.promise);
-
-    const { rerender } = render(
-      <>
-        <ActivityPanel sessionRef="ref_root" model={testModel()} />
-        <Toast />
-      </>,
-    );
-    await user.click(screen.getByRole("button", { name: "Activity" }));
-    rerender(<Toast />);
-
-    await act(async () => {
-      gate.resolve({ data: activityTree() });
-      await Promise.resolve();
-    });
-
-    expect(screen.queryByText(/compile root shell/i)).toBeNull();
-    expect(screen.queryByText(/couldn't load activity/i)).toBeNull();
-  });
+});
+
+test("recursive activity shows the same proven parent hierarchy above its content", async () => {
+  const client = activityClient();
+  const context = {
+    ...activityContext(ref),
+    rootRef: "remote:root",
+    ancestors: [{ ref: "remote:root", sessionId: "root", title: "Parent session" }],
+  };
+  client.on("evener/thread/activity/read", () => ({ ...activitySummary(ref), scope: "subtree", context }));
+  client.on("evener/thread/delegates/list", () => ({
+    context,
+    scope: "subtree",
+    delegates: [],
+    page: { complete: true, issues: [] },
+  }));
+  client.on("evener/thread/jobs/list", () => ({
+    context,
+    scope: "subtree",
+    jobs: [],
+    page: { complete: true, issues: [] },
+  }));
+  client.on("evener/thread/watches/list", () => ({
+    context,
+    scope: "subtree",
+    watches: [],
+    page: { complete: true, issues: [] },
+  }));
+  connectionStore.getState().connect(client);
+  render(<ActivityPanelBody sessionRef={ref} model={model()} />);
+  expect(await screen.findByRole("button", { name: "Parent session" })).toBeTruthy();
+  expect(screen.getByRole("navigation", { name: "Scope" })).toBeTruthy();
 });

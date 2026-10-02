@@ -1,10 +1,14 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, expect, test, vi } from "vitest";
-import { HoverCard } from ".";
+import { HoverCard, LONG_PRESS_MS } from ".";
+import { installHoverlessMatchMedia } from "./hovercardTestUtils";
+import { POINTER_CLICK_WINDOW_MS } from "./useFloatingLabel";
 
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
+  vi.unstubAllGlobals();
 });
 
 test("the plain-node gallery child keeps the automatic description association", () => {
@@ -25,6 +29,377 @@ test("the plain-node gallery child keeps the automatic description association",
   fireEvent.blur(trigger);
   expect(screen.queryByRole("tooltip")).toBeNull();
   expect(trigger.getAttribute("aria-describedby")).toBeNull();
+});
+
+test("external focus and pointer hover independently keep the card open", () => {
+  render(
+    <div role="treeitem" tabIndex={0} data-testid="row">
+      <HoverCard label={<div>Project prime-radiant</div>} focusTarget={() => screen.queryByTestId("row")}>
+        <button type="button" tabIndex={-1}>
+          Fix flaky test
+        </button>
+      </HoverCard>
+    </div>,
+  );
+  const row = screen.getByRole("treeitem");
+
+  fireEvent.focus(row);
+
+  const card = screen.getByRole("tooltip");
+  expect(row.getAttribute("aria-describedby")).toBe(card.id);
+  const trigger = screen.getByRole("button", { name: "Fix flaky test" });
+  expect(trigger.tabIndex).toBe(-1);
+
+  fireEvent.mouseEnter(trigger);
+  fireEvent.mouseLeave(trigger);
+  expect(screen.getByRole("tooltip")).toBe(card);
+
+  fireEvent.mouseEnter(trigger);
+  fireEvent.blur(row);
+  expect(screen.getByRole("tooltip")).toBe(card);
+
+  fireEvent.mouseLeave(trigger);
+  expect(screen.queryByRole("tooltip")).toBeNull();
+  expect(row.getAttribute("aria-describedby")).toBeNull();
+});
+
+test("external focus closes after focus travels through a child and leaves the target", () => {
+  render(
+    <>
+      <div role="treeitem" tabIndex={0} data-testid="row">
+        <HoverCard label={<div>Project prime-radiant</div>} focusTarget={() => screen.queryByTestId("row")}>
+          <button type="button">Row action</button>
+        </HoverCard>
+      </div>
+      <button type="button">Outside</button>
+    </>,
+  );
+  const row = screen.getByRole("treeitem");
+  const rowAction = screen.getByRole("button", { name: "Row action" });
+  const outside = screen.getByRole("button", { name: "Outside" });
+
+  fireEvent.focus(row);
+  expect(screen.getByRole("tooltip")).toBeTruthy();
+  fireEvent.blur(row, { relatedTarget: rowAction });
+  fireEvent.focus(rowAction, { relatedTarget: row });
+  expect(screen.getByRole("tooltip")).toBeTruthy();
+
+  fireEvent.blur(rowAction, { relatedTarget: outside });
+  fireEvent.focus(outside, { relatedTarget: rowAction });
+  expect(screen.queryByRole("tooltip")).toBeNull();
+  expect(row.getAttribute("aria-describedby")).toBeNull();
+});
+
+test("mounting under an already-focused external target opens the card", () => {
+  function Fixture({ showCard }: { showCard: boolean }) {
+    return (
+      <div role="treeitem" tabIndex={0} data-testid="row">
+        {showCard && (
+          <HoverCard label={<div>Project prime-radiant</div>} focusTarget={() => screen.queryByTestId("row")}>
+            <button type="button">Row action</button>
+          </HoverCard>
+        )}
+      </div>
+    );
+  }
+
+  const view = render(<Fixture showCard={false} />);
+  const row = screen.getByRole("treeitem");
+  act(() => row.focus());
+  expect(document.activeElement).toBe(row);
+
+  view.rerender(<Fixture showCard />);
+  const card = screen.getByRole("tooltip");
+  expect(row.getAttribute("aria-describedby")).toBe(card.id);
+});
+
+test("a hoverless tap activates the row and opens no card", () => {
+  installHoverlessMatchMedia();
+  const activate = vi.fn();
+
+  render(
+    // biome-ignore lint/a11y/noStaticElementInteractions: this fixture observes whether the nested trigger bubbles
+    // biome-ignore lint/a11y/useKeyWithClickEvents: keyboard activation is exercised through the external focus test
+    <div onClick={activate}>
+      <HoverCard label={<div>Project prime-radiant</div>} longPressEnabled>
+        <button type="button" tabIndex={-1}>
+          Fix flaky test
+        </button>
+      </HoverCard>
+    </div>,
+  );
+
+  fireEvent.click(screen.getByRole("button", { name: "Fix flaky test" }));
+
+  expect(screen.queryByRole("tooltip")).toBeNull();
+  expect(activate).toHaveBeenCalledOnce();
+});
+
+test("a hoverless long press opens the card and swallows the tap that follows", () => {
+  vi.useFakeTimers();
+  installHoverlessMatchMedia();
+  const activate = vi.fn();
+
+  render(
+    // biome-ignore lint/a11y/noStaticElementInteractions: this fixture observes whether the nested trigger bubbles
+    // biome-ignore lint/a11y/useKeyWithClickEvents: keyboard activation is exercised through the external focus test
+    <div onClick={activate}>
+      <HoverCard label={<div>Project prime-radiant</div>} longPressEnabled>
+        <button type="button" tabIndex={-1}>
+          Fix flaky test
+        </button>
+      </HoverCard>
+    </div>,
+  );
+  const trigger = screen.getByRole("button", { name: "Fix flaky test" });
+
+  fireEvent.pointerDown(trigger, { button: 0, clientX: 10, clientY: 10 });
+  act(() => vi.advanceTimersByTime(LONG_PRESS_MS));
+
+  const card = screen.getByRole("tooltip");
+  expect(card.getAttribute("data-long-press-enabled")).toBe("true");
+
+  fireEvent.pointerUp(trigger, { clientX: 10, clientY: 10 });
+  fireEvent.click(trigger);
+
+  expect(activate).not.toHaveBeenCalled();
+  expect(screen.getByRole("tooltip")).toBe(card);
+});
+
+test("a hoverless press that moves or is cancelled opens no card", () => {
+  vi.useFakeTimers();
+  installHoverlessMatchMedia();
+
+  render(
+    <div>
+      <HoverCard label={<div>Project prime-radiant</div>} longPressEnabled>
+        <button type="button">Fix flaky test</button>
+      </HoverCard>
+    </div>,
+  );
+  const trigger = screen.getByRole("button", { name: "Fix flaky test" });
+
+  fireEvent.pointerDown(trigger, { button: 0, clientX: 10, clientY: 10 });
+  act(() => vi.advanceTimersByTime(100));
+  fireEvent.pointerMove(trigger, { clientX: 80, clientY: 80 });
+  act(() => vi.advanceTimersByTime(LONG_PRESS_MS));
+  expect(screen.queryByRole("tooltip")).toBeNull();
+
+  fireEvent.pointerDown(trigger, { button: 0, clientX: 10, clientY: 10 });
+  act(() => vi.advanceTimersByTime(100));
+  fireEvent.pointerCancel(trigger);
+  act(() => vi.advanceTimersByTime(LONG_PRESS_MS));
+  expect(screen.queryByRole("tooltip")).toBeNull();
+});
+
+test("long-press-enabled cards still activate when the browser has no matchMedia API", () => {
+  vi.useFakeTimers();
+  vi.stubGlobal("matchMedia", undefined);
+  const activate = vi.fn();
+  render(
+    // biome-ignore lint/a11y/noStaticElementInteractions: this fixture observes whether the nested trigger bubbles
+    // biome-ignore lint/a11y/useKeyWithClickEvents: keyboard behavior is covered by the external focus tests
+    <div onClick={activate}>
+      <HoverCard label={<div>Project prime-radiant</div>} longPressEnabled>
+        <button type="button">Fix flaky test</button>
+      </HoverCard>
+    </div>,
+  );
+
+  const trigger = screen.getByRole("button", { name: "Fix flaky test" });
+  expect(() => {
+    fireEvent.focus(trigger);
+    act(() => vi.advanceTimersByTime(300));
+  }).not.toThrow();
+  expect(screen.getByRole("tooltip")).toBeTruthy();
+
+  expect(() => fireEvent.click(trigger)).not.toThrow();
+  expect(activate).toHaveBeenCalledOnce();
+});
+
+test("the focus a hoverless tap takes opens no card, and the tap still activates the row", async () => {
+  installHoverlessMatchMedia();
+  const activate = vi.fn();
+  const user = userEvent.setup();
+
+  render(
+    // biome-ignore lint/a11y/noStaticElementInteractions: this fixture observes whether the nested trigger bubbles
+    // biome-ignore lint/a11y/useKeyWithClickEvents: the tap is the activation under test
+    <div onClick={activate}>
+      <div role="treeitem" tabIndex={0} data-testid="row">
+        <HoverCard
+          label={<div>Project prime-radiant</div>}
+          focusTarget={() => screen.queryByTestId("row")}
+          longPressEnabled
+        >
+          <button type="button">Fix flaky test</button>
+        </HoverCard>
+      </div>
+    </div>,
+  );
+  const trigger = screen.getByRole("button", { name: "Fix flaky test" });
+  const row = screen.getByTestId("row");
+
+  // Real touch order: the compatibility mousedown and the focus it takes come
+  // after the pointer lifts, so the suppression must outlive the press.
+  fireEvent.pointerDown(row, { button: 0 });
+  fireEvent.pointerUp(row, { button: 0 });
+  fireEvent.mouseDown(row, { button: 0 });
+  fireEvent.focus(row);
+  expect(screen.queryByRole("tooltip")).toBeNull();
+
+  await user.click(trigger);
+  expect(screen.queryByRole("tooltip")).toBeNull();
+  expect(activate).toHaveBeenCalledOnce();
+});
+
+test("a long-press-opened card closes when the user presses outside it", () => {
+  vi.useFakeTimers();
+  installHoverlessMatchMedia();
+
+  render(
+    <div>
+      <HoverCard label={<div>Project prime-radiant</div>} longPressEnabled>
+        <button type="button">Fix flaky test</button>
+      </HoverCard>
+      <button type="button">Elsewhere</button>
+    </div>,
+  );
+  const trigger = screen.getByRole("button", { name: "Fix flaky test" });
+
+  fireEvent.pointerDown(trigger, { button: 0, clientX: 10, clientY: 10 });
+  act(() => vi.advanceTimersByTime(LONG_PRESS_MS));
+  expect(screen.getByRole("tooltip")).toBeTruthy();
+
+  fireEvent.pointerDown(screen.getByRole("button", { name: "Elsewhere" }));
+  expect(screen.queryByRole("tooltip")).toBeNull();
+});
+
+test("a long press swallows the click even when the trigger itself owns it", () => {
+  vi.useFakeTimers();
+  installHoverlessMatchMedia();
+  const activate = vi.fn();
+  render(
+    <HoverCard label={<div>Project prime-radiant</div>} longPressEnabled>
+      <button type="button" onClick={activate}>
+        Fix flaky test
+      </button>
+    </HoverCard>,
+  );
+  const trigger = screen.getByRole("button", { name: "Fix flaky test" });
+
+  fireEvent.pointerDown(trigger, { button: 0, clientX: 10, clientY: 10 });
+  act(() => vi.advanceTimersByTime(LONG_PRESS_MS));
+  expect(screen.getByRole("tooltip")).toBeTruthy();
+
+  fireEvent.pointerUp(trigger, { clientX: 10, clientY: 10 });
+  fireEvent.click(trigger);
+
+  expect(activate).not.toHaveBeenCalled();
+});
+
+test("a plain tap on an open card dismisses it and still activates the row", () => {
+  vi.useFakeTimers();
+  installHoverlessMatchMedia();
+  const activate = vi.fn();
+  render(
+    // biome-ignore lint/a11y/noStaticElementInteractions: this fixture observes whether the nested trigger bubbles
+    // biome-ignore lint/a11y/useKeyWithClickEvents: keyboard activation is exercised through the external focus test
+    <div onClick={activate}>
+      <HoverCard label={<div>Project prime-radiant</div>} longPressEnabled>
+        <button type="button" tabIndex={-1}>
+          Fix flaky test
+        </button>
+      </HoverCard>
+    </div>,
+  );
+  const trigger = screen.getByRole("button", { name: "Fix flaky test" });
+
+  fireEvent.pointerDown(trigger, { button: 0, clientX: 10, clientY: 10 });
+  act(() => vi.advanceTimersByTime(LONG_PRESS_MS));
+  expect(screen.getByRole("tooltip")).toBeTruthy();
+  fireEvent.pointerUp(trigger, { clientX: 10, clientY: 10 });
+  fireEvent.click(trigger);
+  expect(activate).not.toHaveBeenCalled();
+
+  fireEvent.click(trigger);
+  expect(screen.queryByRole("tooltip")).toBeNull();
+  expect(activate).toHaveBeenCalledOnce();
+});
+
+test("hoverless keyboard focus still opens the card", () => {
+  installHoverlessMatchMedia();
+  render(
+    <div role="treeitem" tabIndex={0} data-testid="row">
+      <HoverCard
+        label={<div>Project prime-radiant</div>}
+        focusTarget={() => screen.queryByTestId("row")}
+        longPressEnabled
+      >
+        <button type="button">Fix flaky test</button>
+      </HoverCard>
+    </div>,
+  );
+
+  fireEvent.focus(screen.getByTestId("row"));
+  expect(screen.getByRole("tooltip")).toBeTruthy();
+});
+
+test("a cancelled long press does not leave the next click swallowed", () => {
+  vi.useFakeTimers();
+  installHoverlessMatchMedia();
+  const activate = vi.fn();
+  render(
+    // biome-ignore lint/a11y/noStaticElementInteractions: this fixture observes whether the nested trigger bubbles
+    // biome-ignore lint/a11y/useKeyWithClickEvents: keyboard activation is exercised through the external focus test
+    <div onClick={activate}>
+      <HoverCard label={<div>Project prime-radiant</div>} longPressEnabled>
+        <button type="button" tabIndex={-1}>
+          Fix flaky test
+        </button>
+      </HoverCard>
+    </div>,
+  );
+  const trigger = screen.getByRole("button", { name: "Fix flaky test" });
+
+  fireEvent.pointerDown(trigger, { button: 0, clientX: 10, clientY: 10 });
+  act(() => vi.advanceTimersByTime(LONG_PRESS_MS));
+  expect(screen.getByRole("tooltip")).toBeTruthy();
+
+  fireEvent.pointerCancel(trigger);
+  fireEvent.click(trigger);
+
+  expect(activate).toHaveBeenCalledOnce();
+});
+
+test("a press that leaves the trigger before the click does not swallow a later one", () => {
+  vi.useFakeTimers();
+  installHoverlessMatchMedia();
+  const activate = vi.fn();
+  render(
+    // biome-ignore lint/a11y/noStaticElementInteractions: this fixture observes whether the nested trigger bubbles
+    // biome-ignore lint/a11y/useKeyWithClickEvents: keyboard activation is exercised through the external focus test
+    <div onClick={activate}>
+      <HoverCard label={<div>Project prime-radiant</div>} longPressEnabled>
+        <button type="button" tabIndex={-1}>
+          Fix flaky test
+        </button>
+      </HoverCard>
+    </div>,
+  );
+  const trigger = screen.getByRole("button", { name: "Fix flaky test" });
+
+  fireEvent.pointerDown(trigger, { button: 0, clientX: 10, clientY: 10 });
+  act(() => vi.advanceTimersByTime(LONG_PRESS_MS));
+  expect(screen.getByRole("tooltip")).toBeTruthy();
+
+  // The finger drifts off and lifts outside, so no click arrives for the
+  // swallow; the bound must drop it.
+  fireEvent.pointerLeave(trigger);
+  act(() => vi.advanceTimersByTime(POINTER_CLICK_WINDOW_MS + 1));
+  fireEvent.click(trigger);
+
+  expect(activate).toHaveBeenCalledOnce();
 });
 
 // The card renders the shared scaffold's div bubble, where the tooltip renders

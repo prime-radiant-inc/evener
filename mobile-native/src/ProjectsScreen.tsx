@@ -12,14 +12,21 @@ import {
 } from "react";
 import { AccessibilityInfo, ActivityIndicator, Alert, FlatList, Platform, Pressable, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import type { ArchiveParams, NavigationProjectSummary, NavigationSessionSummary } from "@evener/appwire-client";
+import type {
+	ArchivedListCatalog,
+	ArchiveParams,
+	NavigationProjectSummary,
+	NavigationReadParams,
+	NavigationSessionSummary,
+} from "@evener/appwire-client";
+import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { useConnection } from "./ConnectionProvider";
 import { organizationJournal } from "./nativeOrganization";
 import type { NavigationActionCheckpoint } from "./navigationActionRepository";
 import { NavigationActions } from "./navigationActions";
-import { NavigationPages, updating } from "./navigationPages";
+import { ArchivedPages } from "./archivedPages";
+import { NavigationPages, type PageSource, updating } from "./navigationPages";
 import { revealNavigationRow } from "./navigationReveal";
-import { navigationTree } from "./navigationTree";
 import {
 	controllerOwnedProject,
 	type OrganizationObservation,
@@ -56,6 +63,23 @@ function FilterTab({ label, selected, onPress }: { label: string; selected: bool
 	);
 }
 
+const UNCONFIRMED = "The current navigation could not be confirmed.";
+
+/** Why the page read after an organize change can't confirm it, or null when
+ * it does: the read must have landed cleanly, and a navigation page must come
+ * from the generation the change was observed in. An archived list has no
+ * navigation version, so only its read is checked. */
+export function unconfirmedReason(
+	pages: PageSource<unknown>,
+	observation: Pick<OrganizationObservation, "generationId"> | null,
+): string | null {
+	const page = pages.getSnapshot();
+	if (!page.loaded || page.loading || page.stale || page.error) return UNCONFIRMED;
+	if (observation && pages.navigationVersioned && pages.getResourceVersion()?.generationId !== observation.generationId)
+		return "The hub restarted during the check.";
+	return null;
+}
+
 export function PageList<T>({
 	header,
 	pages,
@@ -65,8 +89,6 @@ export function PageList<T>({
 	detail,
 	open,
 	empty,
-	childRows,
-	omitted,
 	organization,
 	organizationHubId,
 	revealRef,
@@ -81,19 +103,14 @@ export function PageList<T>({
 	/** The chip's text, for the row's accessibilityLabel: a Pressable override
 	 * hides the chip's own text from VoiceOver. Undefined when there is none. */
 	chipLabel?: (row: T) => string | undefined;
-	pages: NavigationPages<T>;
+	pages: PageSource<T>;
 	ready: boolean;
 	rowKey: (row: T) => string;
 	title: (row: T) => string;
 	detail: (row: T) => string;
 	open: (row: T) => void;
 	empty: string;
-	childRows?: (row: T) => readonly T[];
-	omitted?: (row: T) => number;
-	organization: (
-		row: T,
-		depth: number,
-	) => {
+	organization: (row: T) => {
 		target: Omit<ArchiveParams, "archived">;
 		archived: boolean;
 		favorite?: boolean;
@@ -130,10 +147,9 @@ export function PageList<T>({
 			if (confirmReceipt && checkpoint?.receipt) await pages.refreshAfter(checkpoint.receipt);
 			else await pages.refresh();
 			const page = pages.getSnapshot();
-			if (!isCurrent() || !page.loaded || page.loading || page.stale || page.error)
-				throw Error("The current navigation could not be confirmed.");
-			if (observation && pages.getResourceVersion()?.generationId !== observation.generationId)
-				throw Error("The hub restarted during the check.");
+			if (!isCurrent()) throw Error(UNCONFIRMED);
+			const unconfirmed = unconfirmedReason(pages, observation);
+			if (unconfirmed) throw Error(unconfirmed);
 			const same = previous !== null && JSON.stringify(previous) === JSON.stringify({ checkpoint, observation });
 			previous = checkpoint && observation ? { checkpoint, observation } : null;
 			setReview(checkpoint && observation ? { owner: binding, checkpoint, observation } : null);
@@ -156,23 +172,10 @@ export function PageList<T>({
 	useEffect(() => () => actions?.dispose(), [actions]);
 	const actionState = useSyncExternalStore(actions?.subscribe ?? noSubscription, actions?.getSnapshot ?? noSnapshot);
 
-	const [expansion, setExpansion] = useState({
-		owner: pages,
-		keys: new Set<string>(),
-	});
-	const expanded = expansion.owner === pages ? expansion.keys : new Set<string>();
-	const rows = navigationTree(state.rows, rowKey, childRows, expanded);
-	function toggle(row: T) {
-		const keys = new Set(expanded);
-		const key = rowKey(row);
-		if (keys.has(key)) keys.delete(key);
-		else keys.add(key);
-		setExpansion({ owner: pages, keys });
-	}
 	useEffect(() => pages.watch(), [pages]);
-	const list = useRef<FlatList<{ item: T; depth: number }>>(null);
-	const access = useRef({ rowKey, childRows });
-	access.current = { rowKey, childRows };
+	const list = useRef<FlatList<T>>(null);
+	const rowKeyNow = useRef(rowKey);
+	rowKeyNow.current = rowKey;
 	const [revealError, setRevealError] = useState<string | null>(null);
 	const [revealRequest, setRevealRequest] = useState(0);
 	const [loadingMore, setLoadingMore] = useState(false);
@@ -207,7 +210,7 @@ export function PageList<T>({
 	);
 	const loadMore = useCallback(() => requestMore(), [requestMore]);
 	const retryMore = useCallback(() => requestMore(true), [requestMore]);
-	const [revealed, setRevealed] = useState<NavigationPages<T> | null>(null);
+	const [revealed, setRevealed] = useState<PageSource<T> | null>(null);
 	const scrollAttempt = useRef(0);
 	const scrollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 	useEffect(
@@ -226,13 +229,11 @@ export function PageList<T>({
 				void revealNavigationRow(
 					pages,
 					revealRef,
-					access.current.rowKey,
-					access.current.childRows,
+					rowKeyNow.current,
 					() => active && revealEpoch.current === revealRequest,
 				)
-					.then((path) => {
-						if (!active || !path) return;
-						setExpansion({ owner: pages, keys: new Set(path.slice(0, -1)) });
+					.then((found) => {
+						if (!active || !found) return;
 						scrollAttempt.current = 0;
 						setRevealed(pages);
 					})
@@ -247,7 +248,7 @@ export function PageList<T>({
 			};
 		}, [pages, ready, revealRef, revealRequest]),
 	);
-	const targetIndex = revealRef ? rows.findIndex((row) => rowKey(row.item) === revealRef) : -1;
+	const targetIndex = revealRef ? state.rows.findIndex((row) => rowKey(row) === revealRef) : -1;
 	useEffect(() => {
 		if (revealed === pages && targetIndex >= 0)
 			list.current?.scrollToIndex({
@@ -312,8 +313,8 @@ export function PageList<T>({
 						);
 					}
 				}}
-				data={rows}
-				keyExtractor={({ item }) => rowKey(item)}
+				data={state.rows}
+				keyExtractor={rowKey}
 				onEndReachedThreshold={0.5}
 				onEndReached={loadMore}
 				contentContainerStyle={styles.padded}
@@ -326,9 +327,6 @@ export function PageList<T>({
 				}
 				ListFooterComponent={
 					<View style={{ gap: 8 }}>
-						{state.truncated ? (
-							<Copy muted>The hub returned a partial session tree. Some related sessions may be missing.</Copy>
-						) : null}
 						{loadingMore ? (
 							<View accessibilityLiveRegion="polite" style={{ alignItems: "center", paddingVertical: 8 }}>
 								<ActivityIndicator accessibilityLabel="Loading more results" />
@@ -341,92 +339,80 @@ export function PageList<T>({
 						) : null}
 					</View>
 				}
-				renderItem={({ item: { item, depth } }) => (
+				renderItem={({ item }) => (
 					<View
-						style={{
-							backgroundColor: rowKey(item) === revealRef ? colors.surface : "transparent",
-							paddingLeft: Math.min(depth, 2) * 12,
-							borderBottomWidth: 0.5,
-							borderColor: colors.border,
-						}}
+						style={[
+							styles.row,
+							{
+								backgroundColor: rowKey(item) === revealRef ? colors.surface : "transparent",
+								borderBottomWidth: 0.5,
+								borderColor: colors.border,
+							},
+						]}
 					>
-						<View style={styles.row}>
-							<Pressable
-								accessibilityRole="button"
-								accessibilityLabel={[`Open ${title(item)}`, chipLabel?.(item)].filter(Boolean).join(", ")}
-								accessibilityState={{ selected: rowKey(item) === revealRef }}
-								disabled={!ready}
-								onPress={() => open(item)}
-								style={{ flex: 1, paddingVertical: 13, minHeight: 68, gap: 4 }}
-							>
-								<View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-									<View style={{ flex: 1, minWidth: 0 }}>
-										<Copy>{title(item)}</Copy>
-									</View>
-									{chip?.(item)}
+						<Pressable
+							accessibilityRole="button"
+							accessibilityLabel={[`Open ${title(item)}`, chipLabel?.(item)].filter(Boolean).join(", ")}
+							accessibilityState={{ selected: rowKey(item) === revealRef }}
+							disabled={!ready}
+							onPress={() => open(item)}
+							style={{ flex: 1, paddingVertical: 13, minHeight: 68, gap: 4 }}
+						>
+							<View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+								<View style={{ flex: 1, minWidth: 0 }}>
+									<Copy>{title(item)}</Copy>
 								</View>
-								<Copy muted>{detail(item)}</Copy>
-							</Pressable>
-							{actions && organization(item, depth) ? (
-								<Action
-									tone="quiet"
-									label={`More actions for ${title(item)}`}
-									disabled={
-										!ready ||
-										state.loading ||
-										!!actionState?.pending ||
-										!!actionState?.uncertain ||
-										!!actionState?.storageUnavailable
-									}
-									onPress={() => {
-										const value = organization(item, depth);
-										const actionState = actions.getSnapshot();
-										if (!value || actionState.pending || actionState.uncertain || actionState.storageUnavailable)
-											return;
-										const invoke = (operation: () => void) => {
-											if (current.current === binding) operation();
-										};
-										Alert.alert(
-											title(item),
-											`${activeProfile?.name ?? "Hub"} · Organize without deleting history or stopping work.`,
-											[
-												...(value.favorite === undefined
-													? []
-													: [
-															{
-																text: value.favorite ? "Remove from pinned" : "Add to pinned",
-																onPress: () =>
-																	invoke(() => {
-																		void actions.favorite(value.target.id, !value.favorite);
-																	}),
-															},
-														]),
-												{
-													text: value.archived ? "Unarchive" : "Archive",
-													onPress: () =>
-														invoke(() => {
-															void actions.archive(value.target, !value.archived);
-														}),
-												},
-												{ text: "Cancel", style: "cancel" },
-											],
-										);
-									}}
-								>
-									···
-								</Action>
-							) : null}
-						</View>
-						{childRows?.(item).length ? (
+								{chip?.(item)}
+							</View>
+							<Copy muted>{detail(item)}</Copy>
+						</Pressable>
+						{actions && organization(item) ? (
 							<Action
 								tone="quiet"
-								label={`${expanded.has(rowKey(item)) ? "Hide" : "Show"} related sessions for ${title(item)}`}
-								expanded={expanded.has(rowKey(item))}
-								onPress={() => toggle(item)}
-							>{`${expanded.has(rowKey(item)) ? "▾" : "▸"} ${childRows(item).length} related session${childRows(item).length === 1 ? "" : "s"}`}</Action>
-						) : null}
-						{(omitted?.(item) ?? 0) > 0 ? (
-							<Copy muted>{`${omitted?.(item)} related sessions were omitted by the hub.`}</Copy>
+								label={`More actions for ${title(item)}`}
+								disabled={
+									!ready ||
+									state.loading ||
+									!!actionState?.pending ||
+									!!actionState?.uncertain ||
+									!!actionState?.storageUnavailable
+								}
+								onPress={() => {
+									const value = organization(item);
+									const actionState = actions.getSnapshot();
+									if (!value || actionState.pending || actionState.uncertain || actionState.storageUnavailable) return;
+									const invoke = (operation: () => void) => {
+										if (current.current === binding) operation();
+									};
+									Alert.alert(
+										title(item),
+										`${activeProfile?.name ?? "Hub"} · Organize without deleting history or stopping work.`,
+										[
+											...(value.favorite === undefined
+												? []
+												: [
+														{
+															text: value.favorite ? "Remove from pinned" : "Add to pinned",
+															onPress: () =>
+																invoke(() => {
+																	void actions.favorite(value.target.id, !value.favorite);
+																}),
+														},
+													]),
+											{
+												text: value.archived ? "Unarchive" : "Archive",
+												onPress: () =>
+													invoke(() => {
+														void actions.archive(value.target, !value.archived);
+													}),
+											},
+											{ text: "Cancel", style: "cancel" },
+										],
+									);
+								}}
+							>
+								···
+							</Action>
 						) : null}
 					</View>
 				)}
@@ -506,6 +492,18 @@ function OrganizationStatus({
 }
 const projectKey = (row: NavigationProjectSummary) => row.key;
 const sessionRef = (row: NavigationSessionSummary) => row.ref;
+// Navigation serves a project's archived tier empty, so its sessions come from
+// the project's archived list. With no catalog (a session's location names
+// none), the hub reads the one holding the project now.
+function sessionPages(
+	client: ConversationClientLike,
+	params: Omit<NavigationReadParams, "representationVersion">,
+	catalog?: ArchivedListCatalog,
+): PageSource<NavigationSessionSummary> {
+	if (params.tier === "archived" && params.projectKey !== undefined)
+		return new ArchivedPages(client, catalog, params.projectKey);
+	return new NavigationPages<NavigationSessionSummary>(client, params, "sessions", sessionRef);
+}
 
 export function ProjectsScreen({ route, navigation }: NativeStackScreenProps<Routes, "Projects">) {
 	const { client, activeProfile, state } = useConnection();
@@ -584,21 +582,13 @@ export function ProjectScreen({ route, navigation }: NativeStackScreenProps<Rout
 	const colors = useColors();
 	const tier = route.params.tier ?? "current";
 	const belongs = activeProfile?.id === route.params.hubId;
+	const catalog = route.params.archived ? "archived_projects" : "projects";
 	const pages = useMemo(
 		() =>
 			client && belongs
-				? new NavigationPages<NavigationSessionSummary>(
-						client,
-						{
-							resource: "project_page",
-							projectKey: route.params.projectKey,
-							tier,
-						},
-						"sessions",
-						sessionRef,
-					)
+				? sessionPages(client, { resource: "project_page", projectKey: route.params.projectKey, tier }, catalog)
 				: null,
-		[client, belongs, route.params.projectKey, tier],
+		[client, belongs, catalog, route.params.projectKey, tier],
 	);
 	return (
 		<SafeAreaView edges={["bottom", "left", "right"]} style={[styles.fill, { backgroundColor: colors.background }]}>
@@ -621,8 +611,7 @@ export function ProjectScreen({ route, navigation }: NativeStackScreenProps<Rout
 					pages={pages}
 					ready={state === "ready"}
 					rowKey={sessionRef}
-					organization={(row, depth) =>
-						depth > 0 ||
+					organization={(row) =>
 						row.host_id !== "local" ||
 						row.ref !== `local:${row.session_id}` ||
 						["subagent", "fork", "cluster"].includes(row.kind)
@@ -632,8 +621,6 @@ export function ProjectScreen({ route, navigation }: NativeStackScreenProps<Rout
 									archived: tier === "archived",
 								}
 					}
-					childRows={(row) => row.children ?? []}
-					omitted={(row) => row.omitted_descendants ?? 0}
 					chip={sessionSubagentChip}
 					chipLabel={sessionSubagentChipLabel}
 					title={(row) => row.title || "Untitled session"}
@@ -656,17 +643,13 @@ export function ProjectScreen({ route, navigation }: NativeStackScreenProps<Rout
 	);
 }
 
-const sessionChildren = (row: NavigationSessionSummary) => row.children ?? [];
 export function SessionLocationScreen({ route, navigation }: NativeStackScreenProps<Routes, "SessionLocation">) {
 	const { client, activeProfile, state } = useConnection();
 	const colors = useColors();
 	const belongs = activeProfile?.id === route.params.hubId;
 	const { location } = route.params;
 	const pages = useMemo(
-		() =>
-			client && belongs
-				? new NavigationPages<NavigationSessionSummary>(client, location.params, "sessions", sessionRef)
-				: null,
+		() => (client && belongs ? sessionPages(client, location.params) : null),
 		[client, belongs, location],
 	);
 	return (
@@ -686,8 +669,6 @@ export function SessionLocationScreen({ route, navigation }: NativeStackScreenPr
 					ready={state === "ready"}
 					revealRef={location.revealRef ?? location.ref}
 					rowKey={sessionRef}
-					childRows={sessionChildren}
-					omitted={(row) => row.omitted_descendants ?? 0}
 					chip={sessionSubagentChip}
 					chipLabel={sessionSubagentChipLabel}
 					title={(row) => row.title || "Untitled session"}

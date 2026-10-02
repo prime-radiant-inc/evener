@@ -41,11 +41,12 @@ import (
 
 var exitProcess = os.Exit
 
-// configureHermeticRunEnv hides the operator's personal skills from every
+// configureHermeticRunEnv hides the operator's user-global sources from every
 // run: it sets EVENER_NO_USER_SKILLS so neither an in-process live session
-// nor a spawned evener child advertises the operator's home skills or user
-// config skills. A round that measures skill use then depends only on the
-// revision under test, not on who runs it (#3227). This is only half of
+// nor a spawned evener child advertises the operator's home skills, user
+// config skills, global MCP config, or evener-wide commands. A round that
+// measures tool or skill use then depends only on the revision under test,
+// not on who runs it (#3227, #3487). This is still only half of
 // hermeticity: the operator's installed, enabled plugins (hooks, agents,
 // commands, and plugin-sourced skills) load in full whenever plugin
 // resolution reaches its default root, which EVENER_NO_USER_SKILLS does not
@@ -588,6 +589,12 @@ func loadProbes(dir, filter string) ([]probeFile, error) {
 		if probe.ID == "" {
 			return fmt.Errorf("%s: missing id", path)
 		}
+		// A person: block with no brief cannot play anyone: respond would
+		// answer "I don't know." to everything, silently. Reject it at load
+		// time, naming the task.
+		if probe.Person != nil && strings.TrimSpace(probe.Person.Brief) == "" {
+			return fmt.Errorf("%s: task %s: person.brief must not be empty", path, probe.ID)
+		}
 		if filter == "all" || filter == probe.ID {
 			probes = append(probes, probe)
 		}
@@ -1043,8 +1050,9 @@ func cliProbeArgs(cfg runConfig, probe probeFile, res probeResult) ([]string, er
 		}
 		args = append(args, "--ask-responder", askResponder)
 	}
-	// EVENER_NO_USER_SKILLS (configureHermeticRunEnv) hides only the operator's
-	// home and user-config skills. Their installed, enabled plugins would still
+	// EVENER_NO_USER_SKILLS (configureHermeticRunEnv) hides the operator's
+	// user-global sources — home/user-config skills, global MCP config, and
+	// evener-wide commands. Their installed, enabled plugins would still
 	// load in full — hooks, agents, commands, and plugin-sourced skills —
 	// because a bare `evener run` resolves plugins against its default root
 	// (internal/plugins.ResolveForLaunch with no explicit selection). An
@@ -1436,6 +1444,14 @@ func writeFixtureFiles(workDir string, files map[string]string) error {
 // global git setup belongs to their own work and stays out: the repository
 // starts from no template, so no template hooks land in it; it never signs;
 // it uses its own empty hooks directory; and it reads no global ignore file.
+//
+// maintenance.auto=false keeps the commit from leaving a detached writer
+// behind. Since git 2.5x, `git commit` runs `git maintenance run --auto
+// --detach` (run-command.c:prepare_auto_maintenance), and that background
+// process outlives the commit and writes into .git — recreating it if
+// t.TempDir() cleanup already removed it, which makes cleanup fail with
+// "directory not empty". The same quiescent-commit rule the worktree tools
+// use keeps the fixture's commits from racing a cleanup.
 func commitFixture(workDir string) error {
 	for _, args := range [][]string{
 		{"init", "-q", "-b", "main", "--template="},
@@ -1446,6 +1462,7 @@ func commitFixture(workDir string) error {
 		{"config", "tag.forceSignAnnotated", "false"},
 		{"config", "core.hooksPath", ".git/hooks"},
 		{"config", "core.excludesFile", os.DevNull},
+		{"config", "maintenance.auto", "false"},
 		{"add", "-A"},
 		{"commit", "-q", "--allow-empty", "-m", "init"},
 	} {

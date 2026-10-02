@@ -74,7 +74,7 @@ export interface ArchiveResponse {
 }
 
 export interface ArchivedListParams {
-  catalog: string;
+  catalog?: string;
   projectKey: string;
   cursor?: string;
   limit?: number;
@@ -84,6 +84,7 @@ export interface ArchivedListResponse {
   sessions: unknown;
   nextCursor?: string;
   total: number;
+  catalog?: string;
 }
 
 export interface AttentionChanged {
@@ -501,6 +502,10 @@ export interface EvenerAuthUpdatedParams {
 }
 
 export interface EvenerDelegateInfo {
+  /**
+   * RunGeneration identifies the current activation; zero means no run has started.
+   */
+  runGeneration: number;
   delegateId: string;
   ownerSessionId: string;
   rootSessionId: string;
@@ -1177,12 +1182,12 @@ export interface HostListResponse {
 }
 
 export interface HostMutationAmbiguous {
-  outcome: string;
+  outcome: "ambiguous";
   observedRow: HostRow;
 }
 
 export interface HostMutationCollisionDropped {
-  outcome: string;
+  outcome: "collision-dropped";
   droppedEntry: HostRow;
   winningFingerprint: string;
   host?: HostRow;
@@ -1190,24 +1195,24 @@ export interface HostMutationCollisionDropped {
 }
 
 export interface HostMutationCommitted {
-  outcome: string;
+  outcome: "committed";
   host: HostRow;
 }
 
 export interface HostMutationCommittedRemoved {
-  outcome: string;
+  outcome: "committed";
   host: RemovedRow;
 }
 
 export interface HostMutationTeardownFailure {
-  outcome: string;
+  outcome: "committed-with-teardown-failure";
   seam: string;
   remnantId: string;
   host: HostRow;
 }
 
 export interface HostMutationTeardownFailureRemoved {
-  outcome: string;
+  outcome: "committed-with-teardown-failure";
   seam: string;
   remnantId: string;
   host: RemovedRow;
@@ -1668,9 +1673,9 @@ export interface InstanceEntry {
   warnings?: string[];
   /**
    * Models is the instance's known models with their effective
-   * disabled state, for the sheet's per-model toggles: exact catalog
-   * rows plus cached live ids, alias rows included. Empty for an
-   * instance with no rows.
+   * disabled state, for the sheet's per-model toggles: live ids plus
+   * additive overlay/config rows when usable, otherwise static fallback
+   * rows, with aliases included. Empty for an instance with no rows.
    */
   models?: InstanceModelEntry[];
 }
@@ -1875,13 +1880,25 @@ export interface JobActivityWorktree {
   dirty: boolean;
 }
 
+export interface JobOutputTail {
+  tail: string;
+  totalBytes: number;
+  retainedStart: number;
+  truncated: boolean;
+  /**
+   * HasEarlier is true when retained output exists before the window: a
+   * follow-up read with beforeBytes=RetainedStart returns the previous page.
+   */
+  hasEarlier?: boolean;
+}
+
 export interface JobsGetParams {
   ref?: string;
   jobId: string;
 }
 
 export interface JobsGetResponse {
-  data: unknown;
+  data: JobActivityJob;
 }
 
 export interface JobsListParams {
@@ -1901,7 +1918,7 @@ export interface JobsOutputParams {
 }
 
 export interface JobsOutputResponse {
-  data: unknown;
+  data: JobOutputTail;
 }
 
 export interface JobsTreeUpdatedParams {
@@ -2247,28 +2264,6 @@ export interface NavigationInvalidationTarget {
   revision?: number;
 }
 
-export interface NavigationJobSummary {
-  job_id: string;
-  job_type: string;
-  status: string;
-  command?: string;
-  task?: string;
-  reason?: string;
-  /**
-   * Intent is the tool call's `intent` argument: why the command is being
-   * run, in the model's own words. Surfaces in the rail row's tooltip.
-   */
-  intent?: string;
-  /**
-   * FullCommand carries the command when it exceeds the label bound
-   * (maxNavigationLabelRunes), so a tooltip can show more of what was
-   * actually executed. Still bounded by maxNavigationFullCommandRunes:
-   * a pathological command cannot dominate the response's byte budget.
-   * Absent when the command fits the label bound (no truncation).
-   */
-  full_command?: string;
-}
-
 export interface NavigationManifest {
   generation_id: string;
   revision: number;
@@ -2503,8 +2498,7 @@ export interface NavigationSessionSummary {
   /**
    * Subagents is a live root's whole-tree subagent tally, counted by its
    * daemon (S3). Present only on a live root row whose tree has a subagent;
-   * it counts subagents the row's children never show (nested, or past the
-   * children cap).
+   * it counts descendants without embedding their detail rows.
    */
   subagents?: NavigationSubagentTally;
   omitted_descendants?: number;
@@ -2522,28 +2516,13 @@ export interface NavigationSessionSummary {
    */
   unseen?: boolean;
   /**
-   * OmittedWatches counts live-watch rows this session's summary does not
-   * carry: rows beyond the projector's per-session cap, rows it could not
-   * represent, and rows the byte-budget fitter shed. It mirrors
-   * OmittedDescendants so the rail and the activity panel can say "+N more"
-   * instead of silently undercounting a session's watches.
+   * Own-session activity counts are captured before navigation fitting.
+   * RunningJobCommand is the first available command, bounded for display.
    */
-  omitted_watches?: number;
-  /**
-   * OmittedArmedWatches is the armed subset of OmittedWatches: of the rows
-   * this summary does not carry, how many were still armed. The retained rows
-   * alone cannot answer that once an armed watch falls past the per-session
-   * cap, so the rail and the activity panel read this to report the true
-   * armed total. It is never greater than OmittedWatches.
-   */
-  omitted_armed_watches?: number;
-  running_jobs?: NavigationJobSummary[];
-  completed_jobs?: NavigationJobSummary[];
-  /**
-   * Watches carries this session's own live watches. Absent on an older
-   * daemon (or a past-index entry) and therefore absent-able for consumers.
-   */
-  watches?: NavigationWatchSummary[];
+  running_job_count?: number;
+  running_job_command?: string;
+  watch_count?: number;
+  armed_watch_count?: number;
   /**
    * Tasks is the task line's facts ("Task 4 of 7 · Fix the settle/drain
    * race"). Absent for a session with no task list or an empty one, and for
@@ -2582,52 +2561,6 @@ export interface NavigationTaskProgress {
 export interface NavigationTier {
   sessions: NavigationSessionSummary[];
   remaining: number;
-}
-
-export interface NavigationWatchCadence {
-  kind: string;
-  seconds?: number;
-  /**
-   * DerivedNextFireAt is the next instant this clock-driven cadence is
-   * expected to fire, derived at the daemon (see appwire.EvenerWatchCadence).
-   * Approximate and able to slide later; consumers word it with a "~". Absent
-   * for output and event cadences, which have no schedule.
-   */
-  derived_next_fire_at?: string;
-  /**
-   * Every is the fire-every-Nth-matching-event throttle on an "events"
-   * cadence; absent (zero) means fire on every matching event. Only the
-   * events kind carries it.
-   */
-  every?: number;
-  /**
-   * Filter is the events-kind watch's event filter in the model-facing
-   * condition summary's own vocabulary (e.g. "tool_name=Bash, status=error");
-   * absent when the watch filters nothing. Only the events kind carries it.
-   */
-  filter?: string;
-}
-
-export interface NavigationWatchSummary {
-  id: string;
-  source: string;
-  target?: string;
-  send_to?: string;
-  note?: string;
-  cadence?: NavigationWatchCadence[];
-  output_match?: string;
-  events?: string[];
-  wildcard_events?: boolean;
-  deliveries: number;
-  /**
-   * DeliveryTimes is the bounded, oldest-first ring of this watch's most
-   * recent delivery instants, formatted like CreatedAt. Absent (and so
-   * absent-able, like Watches) when the watch has not delivered.
-   */
-  delivery_times?: string[];
-  created_at: string;
-  active: boolean;
-  end_reason?: string;
 }
 
 export interface NotesHumanSetParams {
@@ -3134,6 +3067,140 @@ export interface SessionActivity {
    * one long model call emits nothing for minutes.
    */
   quietForMs?: number;
+  /**
+   * LatestIntent is what the session's own root turn last set out to do
+   * ("Reading the board's row tests."), one line of at most MaxIntentRunes:
+   * the daemon's own tool-call intent, re-cut here. Absent when this turn has
+   * stated none, which is most of a session's life before its first tool
+   * call, and when the daemon predates the field.
+   */
+  latestIntent?: string;
+}
+
+export interface SessionActivityAncestor {
+  ref: string;
+  sessionId: string;
+  delegateId?: string;
+  title: string;
+}
+
+export interface SessionActivityChangedParams {
+  threadId: string;
+  ref: string;
+  sessionId: string;
+  resources: SessionActivityResource[];
+}
+
+export interface SessionActivityContext {
+  ref: string;
+  sessionId: string;
+  rootRef: string;
+  parentRef?: string;
+  delegateId?: string;
+  ancestors: SessionActivityAncestor[];
+  /**
+   * AncestryKnown distinguishes proven root/lineage from bounded retained index progress.
+   */
+  ancestryKnown: boolean;
+  epoch: string;
+  availability: string;
+}
+
+export interface SessionActivityCounts {
+  known: boolean;
+  total: number;
+  active: number;
+  failed: number;
+  completed: number;
+}
+
+export interface SessionActivityIssue {
+  ref: string;
+  code: string;
+}
+
+export interface SessionActivityListParams {
+  ref: string;
+  scope?: SessionActivityScope;
+  cursor?: string;
+  limit?: number;
+}
+
+export interface SessionActivityPage {
+  nextCursor?: string;
+  complete: boolean;
+  issues: SessionActivityIssue[];
+}
+
+export interface SessionActivityReadParams {
+  ref: string;
+  scope?: SessionActivityScope;
+}
+
+export interface SessionActivitySummary {
+  /**
+   * Issues identify unavailable physical sources; healthy counts retain authority.
+   */
+  issues?: SessionActivityIssue[];
+  /**
+   * RefreshPending means established source evidence is catching up within
+   * the bounded read budget. Cold unknown counts do not request polling.
+   */
+  refreshPending?: boolean;
+  context: SessionActivityContext;
+  scope: SessionActivityScope;
+  delegates: SessionActivityCounts;
+  jobs: SessionActivityCounts;
+  watches: SessionActivityCounts;
+}
+
+export interface SessionDelegate {
+  /**
+   * Name is the immutable caller display label, capped at 200 Unicode code points.
+   * Unnamed descriptors omit it; delegate IDs and refs remain the addressing keys.
+   */
+  name?: string;
+  /**
+   * RunGeneration identifies the current activation; zero means no run has started.
+   */
+  runGeneration: number;
+  /**
+   * ReportPreview is the settled current run's reported text, capped at 4096
+   * Unicode code points including an ellipsis when truncated.
+   */
+  reportPreview?: string;
+  reportPreviewTruncated?: boolean;
+  delegateId: string;
+  ownerRef: string;
+  rootRef: string;
+  childRef: string;
+  parentDelegateId?: string;
+  description: string;
+  task: string;
+  type: string;
+  lifecycle: string;
+  phase: string;
+  status: string;
+  outcome?: string;
+  reason?: string;
+  error?: string;
+  terminal: boolean;
+  resumable: boolean;
+  notResumableReason?: string;
+  model?: string;
+  reasoningEffort?: string;
+  runStartedAt?: string;
+  runEndedAt?: string;
+  latestActivityAt?: string;
+  usage?: EvenerUsage;
+  worktree?: JobActivityWorktree;
+}
+
+export interface SessionDelegatesResponse {
+  context: SessionActivityContext;
+  scope: SessionActivityScope;
+  page: SessionActivityPage;
+  delegates: SessionDelegate[];
 }
 
 export interface SessionDeleteParams {
@@ -3169,6 +3236,13 @@ export interface SessionImageResponse {
   size: number;
   sha?: string;
   data: string;
+}
+
+export interface SessionJobsResponse {
+  context: SessionActivityContext;
+  scope: SessionActivityScope;
+  page: SessionActivityPage;
+  jobs: JobActivityJob[];
 }
 
 export interface SessionPinAssignParams {
@@ -3226,6 +3300,24 @@ export interface SessionURL {
   label?: string;
   addedBy?: string;
   addedAt?: number;
+}
+
+export interface SessionWatch {
+  ownerRef: string;
+  /**
+   * SourceRef identifies the physical source session whose manager owns the watch and target job.
+   */
+  sourceRef: string;
+  receiverRef: string;
+  state: SessionWatchState;
+  watch: EvenerWatchInfo;
+}
+
+export interface SessionWatchesResponse {
+  context: SessionActivityContext;
+  scope: SessionActivityScope;
+  page: SessionActivityPage;
+  watches: SessionWatch[];
 }
 
 export interface SettingsAgentEntry {
@@ -3378,6 +3470,43 @@ export interface SubagentTally {
   done: number;
 }
 
+export interface Task {
+  id: number;
+  type: string;
+  description: string;
+  prompt: string;
+  status: string;
+  /**
+   * DependsOn lists IDs of tasks that must complete before this one is ready.
+   */
+  depends_on?: number[];
+  /**
+   * Notes accumulates free-form progress notes appended over the task's life.
+   */
+  notes?: string[];
+  /**
+   * ReasoningEffort overrides the reasoning effort for a subagent that runs
+   * this task (low|medium|high); empty uses the session default.
+   */
+  reasoning_effort?: string;
+  /**
+   * Insert is a template-expansion marker (e.g. "parent_tasks") carried over
+   * from the task template it was created from; empty for ordinary tasks.
+   */
+  insert?: string;
+  /**
+   * CreatedAt/UpdatedAt/CompletedAt are minted automatically by the store —
+   * never settable through the agent-facing task tool. CreatedAt is stamped once when the task is added;
+   * UpdatedAt advances on every mutation; CompletedAt is stamped when the task
+   * transitions to a terminal status (done or cancelled) and cleared if it
+   * is later reopened. Pointers so an
+   * unset stamp (and tasks persisted before timestamps existed) omit cleanly.
+   */
+  created_at?: string;
+  updated_at?: string;
+  completed_at?: string;
+}
+
 export interface TaskAggregate {
   total: number;
   done: number;
@@ -3391,7 +3520,12 @@ export interface TaskListParams {
 }
 
 export interface TaskListResponse {
-  data: unknown;
+  /**
+   * Data is nil when task data is unavailable and non-nil (possibly empty)
+   * for an authoritative list. The nullable annotation preserves that
+   * distinction in the generated SDK without a pointer to the slice.
+   */
+  data: Task[] | null;
 }
 
 export interface TaskSummary {
@@ -3450,6 +3584,15 @@ export interface ThreadAccess {
 export interface ThreadActivity {
   minutes: number[];
   lastActivityAt: number;
+  /**
+   * LatestIntent is the newest intent a tool call of the session's own root
+   * turn stated ("Reading the board's row tests."), one line of at most
+   * MaxIntentRunes. A Working row shows it in place of the job it is
+   * running, because it says what the job is for. Empty until this turn's
+   * first tool call that stated one, cleared when a turn begins, and absent
+   * from a daemon that predates it.
+   */
+  latestIntent?: string;
 }
 
 export interface ThreadCapabilities {
@@ -4383,6 +4526,10 @@ export const METHOD_NAMES = [
   "evener/daemon/status",
   "evener/daemon/idle-timeout/set",
   "evener/thread/transcripts/list",
+  "evener/thread/activity/read",
+  "evener/thread/delegates/list",
+  "evener/thread/jobs/list",
+  "evener/thread/watches/list",
   "evener/subagentPreview",
   "evener/paths/complete",
   "evener/dirs/create",
@@ -4480,6 +4627,58 @@ export const METHOD_NAMES = [
 
 export type MethodName = (typeof METHOD_NAMES)[number];
 
+export const HOST_REQUEST_METHODS = [
+  "evener/auth/apiKey/clear",
+  "evener/auth/apiKey/conditionalSet",
+  "evener/auth/apiKey/set",
+  "evener/auth/credentialJson/set",
+  "evener/auth/device/poll",
+  "evener/auth/device/start",
+  "evener/auth/list",
+  "evener/auth/login/complete",
+  "evener/auth/login/start",
+  "evener/auth/logout",
+  "evener/auth/status",
+  "evener/auth/test",
+  "evener/dirs/create",
+  "evener/git/head",
+  "evener/harnesses/list",
+  "evener/instance/create",
+  "evener/instance/edit",
+  "evener/instance/list",
+  "evener/instance/remove",
+  "evener/instance/setDefault",
+  "evener/launch/getLayer",
+  "evener/launch/resolve",
+  "evener/launch/schema",
+  "evener/launch/setLayer",
+  "evener/launch/trustRepo",
+  "evener/marketplace/add",
+  "evener/marketplace/browse",
+  "evener/marketplace/edit",
+  "evener/marketplace/list",
+  "evener/marketplace/refresh",
+  "evener/marketplace/remove",
+  "evener/path/validate",
+  "evener/paths/complete",
+  "evener/plugin/checkNow",
+  "evener/plugin/disable",
+  "evener/plugin/enable",
+  "evener/plugin/install",
+  "evener/plugin/list",
+  "evener/plugin/preview",
+  "evener/plugin/remove",
+  "evener/plugin/setAutoUpgrade",
+  "evener/plugin/upgrade",
+  "evener/projects/recent",
+  "evener/settings/agentsDoc/get",
+  "evener/settings/agentsDoc/set",
+  "evener/spawn/slashCatalog",
+  "model/list",
+] as const;
+
+export type HostRequestMethod = (typeof HOST_REQUEST_METHODS)[number];
+
 export const NOTIFICATION_NAMES = [
   "thread/started",
   "thread/closed",
@@ -4503,6 +4702,7 @@ export const NOTIFICATION_NAMES = [
   "evener/plugin/updated",
   "evener/notices/changed",
   "evener/thread/resync",
+  "evener/thread/activity/changed",
   "evener/task/updated",
   "evener/goal/updated",
   "evener/notes/updated",
@@ -4521,6 +4721,30 @@ export const NOTIFICATION_NAMES = [
 ] as const;
 
 export type NotificationName = (typeof NOTIFICATION_NAMES)[number];
+
+export const SESSION_ACTIVITY_SCOPES = [
+  "session",
+  "subtree",
+] as const;
+
+export type SessionActivityScope = (typeof SESSION_ACTIVITY_SCOPES)[number];
+
+export const SESSION_ACTIVITY_RESOURCES = [
+  "summary",
+  "delegates",
+  "jobs",
+  "watches",
+] as const;
+
+export type SessionActivityResource = (typeof SESSION_ACTIVITY_RESOURCES)[number];
+
+export const SESSION_WATCH_STATES = [
+  "armed",
+  "ended",
+  "unknown",
+] as const;
+
+export type SessionWatchState = (typeof SESSION_WATCH_STATES)[number];
 
 export const STEERING_KINDS = [
   "interrupted",
@@ -4609,6 +4833,10 @@ export interface MethodTypes {
   "evener/daemon/status": { params: DaemonStatusParams; result: DaemonStatusResponse };
   "evener/daemon/idle-timeout/set": { params: DaemonIdleTimeoutSetParams; result: DaemonIdleTimeoutSetResponse };
   "evener/thread/transcripts/list": { params: ThreadTranscriptListParams; result: ThreadTranscriptListResponse };
+  "evener/thread/activity/read": { params: SessionActivityReadParams; result: SessionActivitySummary };
+  "evener/thread/delegates/list": { params: SessionActivityListParams; result: SessionDelegatesResponse };
+  "evener/thread/jobs/list": { params: SessionActivityListParams; result: SessionJobsResponse };
+  "evener/thread/watches/list": { params: SessionActivityListParams; result: SessionWatchesResponse };
   "evener/subagentPreview": { params: EvenerSubagentPreviewParams; result: EvenerSubagentPreviewResponse };
   "evener/paths/complete": { params: PathsCompleteParams; result: PathsCompleteResponse };
   "evener/dirs/create": { params: DirsCreateParams; result: DirsCreateResponse };
@@ -4687,11 +4915,11 @@ export interface MethodTypes {
   "evener/delegate/stop": { params: DelegateStopParams; result: DelegateStopResponse };
   "evener/host/request": { params: HostRequestParams; result: HostForwardedResult };
   "evener/host/attach": { params: HostAttachParams; result: HostAttachResponse };
-  "evener/host/add": { params: HostAddParams; result: HostMutationCommitted | HostMutationCommittedRemoved | HostMutationTeardownFailure | HostMutationTeardownFailureRemoved | HostMutationCollisionDropped | HostMutationAmbiguous };
+  "evener/host/add": { params: HostAddParams; result: HostMutationCommitted | HostMutationTeardownFailure | HostMutationCollisionDropped | HostMutationAmbiguous };
   "evener/host/list": { params: EmptyParams; result: HostListResponse };
   "evener/host/status": { params: HostStatusParams; result: HostStatusResponse };
-  "evener/host/remove": { params: HostRemoveParams; result: HostMutationCommitted | HostMutationCommittedRemoved | HostMutationTeardownFailure | HostMutationTeardownFailureRemoved | HostMutationCollisionDropped | HostMutationAmbiguous };
-  "evener/host/update": { params: HostUpdateParams; result: HostMutationCommitted | HostMutationCommittedRemoved | HostMutationTeardownFailure | HostMutationTeardownFailureRemoved | HostMutationCollisionDropped | HostMutationAmbiguous };
+  "evener/host/remove": { params: HostRemoveParams; result: HostMutationCommittedRemoved | HostMutationTeardownFailureRemoved | HostMutationCollisionDropped };
+  "evener/host/update": { params: HostUpdateParams; result: HostMutationCommitted | HostMutationTeardownFailure | HostMutationCollisionDropped };
   "evener/host/teardown-retry": { params: HostTeardownRetryParams; result: HostTeardownRetryCompleteLive | HostTeardownRetryCompleteRemoved | HostTeardownRetryClearedLive | HostTeardownRetryClearedRemoved | HostTeardownRetryFailedLive | HostTeardownRetryFailedRemoved };
   "evener/host/teardown-recover": { params: HostTeardownRecoverParams; result: HostTeardownRecoverResult };
   "evener/host/plan": { params: HostPlanParams; result: HostPlanPlanned | HostPlanNoToken };
@@ -4727,6 +4955,7 @@ export interface NotificationTypes {
   "evener/plugin/updated": EmptyParams;
   "evener/notices/changed": NoticesListResponse;
   "evener/thread/resync": ThreadResyncParams;
+  "evener/thread/activity/changed": SessionActivityChangedParams;
   "evener/task/updated": TaskUpdatedParams;
   "evener/goal/updated": GoalUpdatedParams;
   "evener/notes/updated": NotesUpdatedParams;

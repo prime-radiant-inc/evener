@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { describe, expect, it, vi } from "vitest";
 import { WireError } from "@evener/appwire-client";
 import type { ModelListResponse, Thread } from "@evener/appwire-client";
 import { type ConversationClientLike, createConversationService } from "../../mobile/src/services/conversation";
@@ -49,7 +50,7 @@ async function boundary(actions: {
 			},
 		},
 	};
-	const wire: ConversationClientLike = {
+	const wire: ConversationClientLike = Object.assign(new FakeClient("ready"), {
 		request: async (method, params) => {
 			if (method === "thread/read") return { thread };
 			if (method === "model/list") return actions.models?.() ?? { data: [] };
@@ -81,7 +82,7 @@ async function boundary(actions: {
 			await actions.resume?.();
 			return { thread };
 		},
-	} as ConversationClientLike;
+	} as Omit<ConversationClientLike, "state" | "onReady" | "onStateChange">) as ConversationClientLike;
 	const service = createConversationService(wire);
 	await service.open("local:test");
 	return service;
@@ -299,6 +300,152 @@ describe("conversation-owned session controls", () => {
 		second.resolve();
 		await reload;
 		expect(controls.getSnapshot().catalog?.data[0]?.displayName).toBe("Model One 2");
+	});
+
+	// The hub announces a refreshed model list on evener/auth/updated (#3539):
+	// a loaded catalog is read again and replaced in place, and a failed read
+	// keeps it, since the list the hub last served still stands.
+	it("refreshes a loaded catalog in place and keeps it when the read fails", async () => {
+		let reads = 0;
+		let failing = false;
+		const controls = new SessionControls(
+			await boundary({
+				models: async () => {
+					reads++;
+					if (failing) throw new Error("hub unavailable");
+					return { data: [{ provider: "one", model: "m", displayName: `Model One ${reads}` }] };
+				},
+			}),
+			async () => {},
+			() => {},
+			() => true,
+			() => null,
+			() => true,
+		);
+		await controls.loadModels();
+		await controls.refreshModels();
+		expect(controls.getSnapshot()).toMatchObject({
+			loadingModels: false,
+			modelError: null,
+			catalog: { data: [{ displayName: "Model One 2" }] },
+		});
+		failing = true;
+		await controls.refreshModels();
+		expect(controls.getSnapshot()).toMatchObject({
+			loadingModels: false,
+			modelError: null,
+			catalog: { data: [{ displayName: "Model One 2" }] },
+		});
+	});
+	// Two announcements close together: the list the later read brings is the
+	// one that stays, whichever read answers last.
+	it("keeps the newest refresh's catalog when two overlap", async () => {
+		let reads = 0;
+		const first = Promise.withResolvers<void>();
+		const controls = new SessionControls(
+			await boundary({
+				models: async () => {
+					reads++;
+					const read = reads;
+					if (read === 2) await first.promise;
+					return { data: [{ provider: "one", model: "m", displayName: `Model One ${read}` }] };
+				},
+			}),
+			async () => {},
+			() => {},
+			() => true,
+			() => null,
+			() => true,
+		);
+		await controls.loadModels();
+		const older = controls.refreshModels();
+		const newer = controls.refreshModels();
+		await newer;
+		first.resolve();
+		await older;
+		expect(reads).toBe(3);
+		expect(controls.getSnapshot().catalog?.data[0]?.displayName).toBe("Model One 3");
+	});
+	// A load started after a refresh is the newer read: whatever it brings,
+	// including a failure that clears the catalog, the older refresh landing
+	// afterwards changes nothing.
+	it.each([
+		["fails", true],
+		["succeeds", false],
+	])("lets a load that %s after a refresh stand over the refresh", async (_, loadFails) => {
+		let reads = 0;
+		const held = Promise.withResolvers<void>();
+		const controls = new SessionControls(
+			await boundary({
+				models: async () => {
+					reads++;
+					const read = reads;
+					if (read === 2) await held.promise;
+					if (read === 3 && loadFails) throw new Error("hub unavailable");
+					return { data: [{ provider: "one", model: "m", displayName: `Model One ${read}` }] };
+				},
+			}),
+			async () => {},
+			() => {},
+			() => true,
+			() => null,
+			() => true,
+		);
+		await controls.loadModels();
+		const refresh = controls.refreshModels();
+		await controls.loadModels();
+		held.resolve();
+		await refresh;
+		if (loadFails) expect(controls.getSnapshot()).toMatchObject({ catalog: null, modelError: "hub unavailable" });
+		else expect(controls.getSnapshot().catalog?.data[0]?.displayName).toBe("Model One 3");
+	});
+	// An announcement that arrives while a load is out is not dropped: the load
+	// may have read the list before the hub refreshed it, so the catalog is read
+	// again once the load settles (Jesse, 2026-09-30).
+	it("reads again after a load when an announcement arrived during it", async () => {
+		let reads = 0;
+		const held = Promise.withResolvers<void>();
+		const controls = new SessionControls(
+			await boundary({
+				models: async () => {
+					reads++;
+					const read = reads;
+					if (read === 2) await held.promise;
+					return { data: [{ provider: "one", model: "m", displayName: `Model One ${read}` }] };
+				},
+			}),
+			async () => {},
+			() => {},
+			() => true,
+			() => null,
+			() => true,
+		);
+		await controls.loadModels();
+		const load = controls.loadModels();
+		await controls.refreshModels();
+		expect(reads).toBe(2);
+		held.resolve();
+		await load;
+		await vi.waitFor(() => expect(reads).toBe(3));
+		await vi.waitFor(() => expect(controls.getSnapshot().catalog?.data[0]?.displayName).toBe("Model One 3"));
+	});
+	it("refreshes nothing before a catalog is loaded", async () => {
+		let reads = 0;
+		const controls = new SessionControls(
+			await boundary({
+				models: async () => {
+					reads++;
+					return { data: [] };
+				},
+			}),
+			async () => {},
+			() => {},
+			() => true,
+			() => null,
+			() => true,
+		);
+		await controls.refreshModels();
+		expect(reads).toBe(0);
 	});
 
 	// A screen that binds a session again hands its new controls the catalog

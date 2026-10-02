@@ -50,10 +50,14 @@ export interface FloatingBubble {
   bubbleID: string;
   /** The trigger's aria-describedby value, undefined while nothing is shown. */
   describedBy: string | undefined;
+  /** Shows a bubble immediately, without the pointer-hover delay. */
+  showImmediately: () => void;
+  /** Hides a bubble before its trigger performs another action. */
+  dismiss: () => void;
 }
 
 /** The lifecycle, placement and association of one floating label. */
-export function useFloatingBubble(): FloatingBubble {
+export function useFloatingBubble(focusTarget?: () => HTMLElement | null): FloatingBubble {
   const bubbleRef = useRef<HTMLElement | null>(null);
   const [position, setPosition] = useState<TooltipPosition | null>(null);
   const bubbleID = useId();
@@ -79,7 +83,27 @@ export function useFloatingBubble(): FloatingBubble {
     );
   }, []);
 
-  const { visible, wrapperRef, triggerProps } = useFloatingLabel({ measure, observe: bubbleRef });
+  const { visible, wrapperRef, triggerProps, showImmediately, dismiss } = useFloatingLabel({
+    measure,
+    observe: bubbleRef,
+    focusTarget,
+  });
+
+  useLayoutEffect(() => {
+    if (!visible) return;
+    const target = focusTarget?.();
+    if (!target) return;
+    const tokens = new Set((target.getAttribute("aria-describedby") ?? "").split(/\s+/).filter(Boolean));
+    tokens.add(bubbleID);
+    target.setAttribute("aria-describedby", [...tokens].join(" "));
+    return () => {
+      const remaining = (target.getAttribute("aria-describedby") ?? "")
+        .split(/\s+/)
+        .filter((token) => token && token !== bubbleID);
+      if (remaining.length > 0) target.setAttribute("aria-describedby", remaining.join(" "));
+      else target.removeAttribute("aria-describedby");
+    };
+  }, [bubbleID, focusTarget, visible]);
 
   // Measure the trigger and the bubble and place the bubble. A layout effect,
   // so the measure and the re-render its setPosition causes both complete
@@ -109,6 +133,8 @@ export function useFloatingBubble(): FloatingBubble {
     bubbleStyle: position ?? { top: TRIGGER_GAP, left: TRIGGER_GAP },
     bubbleID,
     describedBy: visible ? bubbleID : undefined,
+    showImmediately,
+    dismiss,
   };
 }
 
@@ -120,14 +146,28 @@ export interface FloatingBubblePortalProps {
   className: string;
   style: CSSProperties;
   setRef: (element: HTMLElement | null) => void;
+  longPressEnabled?: boolean;
   children: ReactNode;
 }
 
 /** The portaled, role="tooltip" element carrying one floating label. */
-export function FloatingBubblePortal({ as, show, id, className, style, setRef, children }: FloatingBubblePortalProps) {
+export function FloatingBubblePortal({
+  as,
+  show,
+  id,
+  className,
+  style,
+  setRef,
+  longPressEnabled,
+  children,
+}: FloatingBubblePortalProps) {
   if (!show) return null;
   return createPortal(
-    createElement(as, { ref: setRef, role: "tooltip", id, className, style }, children),
+    createElement(
+      as,
+      { ref: setRef, role: "tooltip", id, className, style, "data-long-press-enabled": longPressEnabled },
+      children,
+    ),
     document.body,
   );
 }

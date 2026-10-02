@@ -372,7 +372,7 @@ func TestLoad_CuratedBaseChainAndInheritModelsFalse(t *testing.T) {
 		t.Fatalf("codex layers = %v", got)
 	}
 	h := codex.head
-	if h.Protocol != ProtocolOpenAIResponses || h.Transport.Auth != AuthOAuthOpenAICodex || h.Transport.BaseURL != "{BASE_URL}" || h.Transport.Vars["BASE_URL"] != "https://chatgpt.com/backend-api/codex" || h.Transport.ModelsEndpoint != "/models?client_version=0.0.0" {
+	if h.Protocol != ProtocolOpenAIResponses || h.Transport.Auth != AuthOAuthOpenAICodex || h.Transport.BaseURL != "{BASE_URL}" || h.Transport.Vars["BASE_URL"] != "https://chatgpt.com/backend-api/codex" || h.Transport.ModelsEndpoint != "/models?client_version=0.156.1" {
 		t.Fatalf("codex head: %+v", h.Transport)
 	}
 	if h.Transport.CountTokensEndpoint != EndpointUnsupported {

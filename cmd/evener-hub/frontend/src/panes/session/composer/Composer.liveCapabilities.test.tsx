@@ -471,11 +471,41 @@ test("a session that shuts down mid-turn keeps a way to reply", async () => {
     });
   });
 
+  await settleActivityDiscovery(REF);
   const model = threadsStore.getState().threads.get(REF);
   expect({ status: model?.status.type, send: model?.capabilities.send }).toEqual({ status: "closed", send: true });
   expect(screen.queryByTestId("composer-input-card")).not.toBeNull();
   expect(screen.queryByRole("textbox", { name: /^message$/i })).not.toBeNull();
 });
+
+test.each(["closed", "ended", "notLoaded"])(
+  "an empty focused editor keeps its controls when a live session becomes %s",
+  async (status) => {
+    const user = userEvent.setup();
+    const fake = await mountComposer("active", daemonCapabilities(true));
+    const editor = screen.getByRole("textbox", { name: /^message$/i });
+    await user.click(editor);
+    expect(document.activeElement).toBe(editor);
+    expect(editor.textContent).toBe("");
+
+    act(() => {
+      fake.emitNotification({
+        method: "thread/status/changed",
+        params: { threadId: `thr_${REF}`, ref: REF, status: { type: status }, capabilities: COLD_CAPABILITIES },
+      });
+    });
+    await settleActivityDiscovery(REF);
+
+    expect(screen.getByRole("textbox", { name: /^message$/i })).toBe(editor);
+    expect(document.activeElement).toBe(editor);
+    expect(editor.style.minHeight).toBe("3lh");
+    expect(screen.queryByTestId("session-chrome-inline")).not.toBeNull();
+    expect(screen.queryByTestId("model-switch-trigger")).not.toBeNull();
+    expect(screen.queryByRole("button", { name: "Session actions" })).not.toBeNull();
+    expect(submitButton().disabled).toBe(true);
+    expect(editor.textContent).toBe("");
+  },
+);
 
 // The follow-up a resumable ended session can actually be sent: the card is
 // only half the affordance if its Send stays grey. Steer and Stop stay gone —

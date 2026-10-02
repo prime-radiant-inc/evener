@@ -1,0 +1,458 @@
+import type { CachedSessionRecord } from "@evener/appwire-client";
+import { IDBConnection, requestResult, transactionCompletion, tryAbortTransaction } from "./idbConnection";
+import { trackProjectionWork } from "./projectionWork";
+
+const DATABASE_NAME = "evener-session-cache";
+// Version 1 is a compatibility fence, not a schema migration: a future record
+// shape change bumps this so an old tab fails its opens closed (a cache miss)
+// instead of sharing rows with a shape it cannot decode.
+const DATABASE_VERSION = 1;
+const RECORDS_STORE = "records";
+const META_STORE = "meta";
+// The meta row holding the durable clear epoch. Not a record's meta row: it
+// carries no savedAt, is exempt from expiry and eviction by construction, and
+// both enumerations skip it by key comparison.
+const EPOCH_ROW_KEY = "__clearEpoch";
+export const SESSION_CACHE_MAX_BYTES = 32 * 1024 * 1024;
+export const SESSION_CACHE_TTL_DAYS = 14;
+const TTL_MS = SESSION_CACHE_TTL_DAYS * 24 * 60 * 60 * 1000;
+// The lookup's own short deadline (the spec's load seam), far below the
+// outbox's 10-second storage timeout: no pane ever waits on storage longer.
+export const SESSION_CACHE_LOOKUP_DEADLINE_MS = 250;
+const STORAGE_WAIT_MS = 10_000;
+
+export type SessionCacheOpenDiagnosticPath =
+  | "open-timeout"
+  | "open-blocked"
+  | "upgrade-abandoned"
+  | "versionchange-retire"
+  | "version-fence";
+export interface SessionCacheOpenDiagnostic {
+  database: string;
+  version: number;
+  path: SessionCacheOpenDiagnosticPath;
+  versionchangeTransaction: boolean;
+}
+export interface SessionCacheIndexedDBOptions {
+  indexedDB?: IDBFactory;
+  databaseName?: string;
+  databaseVersion?: number;
+  // The cap on the sum of encoded record bytes. The spec pins the default;
+  // injection is the test discipline, the way the debounce intervals are
+  // injected, so tests exercise eviction with small records.
+  maxBytes?: number;
+  // Storage-fault seam used to prove IndexedDB rollback at commit boundaries
+  // (the outbox's beforeCommit): invoked as the last step inside each write
+  // transaction's body, where a throw still aborts that transaction before
+  // it commits.
+  beforeCommit?: (operation: "put" | "clear" | "deleteRecords") => void;
+  onOpenDiagnostic?: (diagnostic: SessionCacheOpenDiagnostic) => void;
+}
+export type SessionCacheWriteOutcome =
+  | { outcome: "written" }
+  | { outcome: "aborted"; observedEpoch: number }
+  | { outcome: "oversize" }
+  | { outcome: "failed" };
+
+interface CacheMetaRow {
+  ref: string;
+  bytes: number;
+  savedAt: number;
+}
+interface EpochRow {
+  ref: typeof EPOCH_ROW_KEY;
+  epoch: number;
+}
+
+export function warnSessionCacheOpenDiagnostic(diagnostic: SessionCacheOpenDiagnostic): void {
+  console.warn("evener session cache:", diagnostic);
+}
+export const DEFAULT_OPEN_DIAGNOSTIC: (d: SessionCacheOpenDiagnostic) => void =
+  import.meta.env.MODE === "test" ? () => {} : warnSessionCacheOpenDiagnostic;
+
+// The JSON boundary: a record is plain data. A row that fails to decode is a
+// miss, and the caller deletes it; storage never hands the store a value it
+// did not encode. Check the required nested shape before the shell constructor
+// or position scanners can see it. Optional positions must also be usable.
+function decodeRecord(row: unknown): CachedSessionRecord | undefined {
+  if (!isObject(row)) return undefined;
+  if (![row.ref, row.threadId, row.name, row.modelProvider, row.model].every((value) => typeof value === "string")) {
+    return undefined;
+  }
+  if (!Number.isFinite(row.savedAt)) return undefined;
+  if (![row.imageSessionId, row.olderCursor].every((value) => value === undefined || typeof value === "string")) {
+    return undefined;
+  }
+  const history = row.history;
+  if (!isObject(history) || typeof history.bootGeneration !== "string") return undefined;
+  if (history.incarnation !== undefined && typeof history.incarnation !== "string") return undefined;
+  if (![history.epoch, history.length, history.appliedGeneration, history.issuedGeneration].every(Number.isFinite)) {
+    return undefined;
+  }
+  if (!Array.isArray(history.turns)) return undefined;
+  for (const turn of history.turns) {
+    if (
+      !isObject(turn) ||
+      typeof turn.id !== "string" ||
+      typeof turn.status !== "string" ||
+      !Array.isArray(turn.items)
+    ) {
+      return undefined;
+    }
+    for (const item of turn.items) {
+      if (
+        !isObject(item) ||
+        ![item.id, item.turnId, item.type, item.text].every((value) => typeof value === "string") ||
+        (item.textOmitted !== undefined && item.textOmitted !== true)
+      ) {
+        return undefined;
+      }
+      if (
+        item.position !== undefined &&
+        (!isObject(item.position) || !Number.isFinite(item.position.entry) || !Number.isFinite(item.position.item))
+      ) {
+        return undefined;
+      }
+    }
+  }
+  return row as unknown as CachedSessionRecord;
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+// Exact UTF-8 byte count of `text` without materializing the whole encoding:
+// a cached record can reach the 32 MB cap, and encode() would hold a full
+// Uint8Array copy of it just to read its length. Each code-point-aligned
+// window is encoded into one reused chunk buffer; UTF-8 is a per-code-point
+// encoding, so the per-window written counts sum to exactly the number
+// encode().byteLength would report.
+function countUtf8Bytes(text: string): number {
+  const CHUNK_CODE_UNITS = 4_096;
+  // 3 bytes is the most any UTF-16 code unit contributes to UTF-8, so one
+  // window always fits the chunk in a single encodeInto pass.
+  const chunk = new Uint8Array(3 * CHUNK_CODE_UNITS);
+  const encoder = new TextEncoder();
+  let total = 0;
+  let offset = 0;
+  while (offset < text.length) {
+    let end = Math.min(offset + CHUNK_CODE_UNITS, text.length);
+    // A window must not end inside a surrogate pair: a lone half encodes as
+    // U+FFFD and would inflate the count.
+    const boundary = text.charCodeAt(end - 1);
+    if (end < text.length && boundary >= 0xd800 && boundary <= 0xdbff) end -= 1;
+    const { read, written } = encoder.encodeInto(text.slice(offset, end), chunk);
+    total += written;
+    offset += read;
+  }
+  return total;
+}
+
+export class SessionCacheIndexedDB {
+  readonly #connection: IDBConnection;
+  readonly #databaseName: string;
+  readonly #databaseVersion: number;
+  readonly #maxBytes: number;
+  #observedEpoch: number | undefined;
+  readonly #writeListeners = new Set<() => void>();
+  readonly #onOpenDiagnostic: (d: SessionCacheOpenDiagnostic) => void;
+  readonly #beforeCommit: ((operation: "put" | "clear" | "deleteRecords") => void) | undefined;
+
+  constructor(options: SessionCacheIndexedDBOptions = {}) {
+    this.#databaseName = options.databaseName ?? DATABASE_NAME;
+    this.#databaseVersion = options.databaseVersion ?? DATABASE_VERSION;
+    this.#maxBytes = options.maxBytes ?? SESSION_CACHE_MAX_BYTES;
+    this.#onOpenDiagnostic = options.onOpenDiagnostic ?? DEFAULT_OPEN_DIAGNOSTIC;
+    this.#beforeCommit = options.beforeCommit;
+    this.#connection = new IDBConnection({
+      indexedDB: options.indexedDB ?? globalThis.indexedDB,
+      databaseName: this.#databaseName,
+      databaseVersion: this.#databaseVersion,
+      waitMs: STORAGE_WAIT_MS,
+      upgrade: (database) => this.#upgrade(database),
+      prepare: (database) =>
+        this.#onDatabaseTransaction(database, [RECORDS_STORE, META_STORE], "readwrite", (tx) =>
+          this.#sweepExpired(tx, Date.now()),
+        ),
+      errors: {
+        open: "session cache open failed",
+        superseded: "session cache open was superseded",
+        timeout: () => new Error("session cache open timed out"),
+      },
+      reportDiagnostic: (path, active) => this.#reportOpenDiagnostic(path, active),
+      reportOpenError: (error) => {
+        // Only VersionError names a diagnostic path: this tab's schema is
+        // older than the stored database. Every other open error is a miss.
+        if (error.name === "VersionError") this.#reportOpenDiagnostic("version-fence", false);
+      },
+    });
+  }
+
+  isOpen(): boolean {
+    return this.#connection.isOpen();
+  }
+
+  get observedEpoch(): number | undefined {
+    return this.#observedEpoch;
+  }
+
+  subscribeWrites(listener: () => void): () => void {
+    this.#writeListeners.add(listener);
+    return () => {
+      this.#writeListeners.delete(listener);
+    };
+  }
+
+  close(): void {
+    this.#connection.close();
+  }
+
+  async get(ref: string, now: number): Promise<{ record: CachedSessionRecord; epoch: number } | undefined> {
+    // A readwrite transaction so an expired (or corrupt) row can be deleted
+    // in the same step that found it: the guarantee is that an expired record
+    // does not survive any storage access that sees it.
+    const found = await this.#readwrite(async (tx) => {
+      // The epoch row, the record body, and its meta row are independent
+      // keyed reads: issue all three in this one transaction and await them
+      // together, then decide the deletes exactly as before - the same
+      // decisions, without serial round trips.
+      const [epochRow, row, meta] = await Promise.all([
+        requestResult(tx.objectStore(META_STORE).get(EPOCH_ROW_KEY) as IDBRequest<EpochRow | undefined>),
+        requestResult(tx.objectStore(RECORDS_STORE).get(ref)),
+        requestResult(tx.objectStore(META_STORE).get(ref) as IDBRequest<CacheMetaRow | undefined>),
+      ]);
+      const epoch = epochRow?.epoch ?? 0;
+      const record = decodeRecord(row);
+      if (record === undefined) {
+        if (row !== undefined) await this.#deleteRows(tx, ref); // corrupt: a miss, never a throw, never a leftover
+        return { record: undefined, epoch };
+      }
+      if (meta !== undefined && meta.savedAt + TTL_MS <= now) {
+        await this.#deleteRows(tx, ref);
+        return { record: undefined, epoch };
+      }
+      return { record, epoch };
+    }, now);
+    if (found === undefined) return undefined;
+    this.#observedEpoch = Math.max(this.#observedEpoch ?? 0, found.epoch);
+    return found.record === undefined ? undefined : { record: found.record, epoch: found.epoch };
+  }
+
+  async put(record: CachedSessionRecord, scheduledEpoch: number, now: number): Promise<SessionCacheWriteOutcome> {
+    // UTF-8 JSON payload bytes, not JS UTF-16 code units or IndexedDB overhead.
+    const encoded = JSON.stringify(record);
+    const bytes = countUtf8Bytes(encoded);
+    const result = await this.#readwriteOutcome(
+      "put",
+      async (tx) => {
+        const metaStore = tx.objectStore(META_STORE);
+        const epochRow = await requestResult(metaStore.get(EPOCH_ROW_KEY) as IDBRequest<EpochRow | undefined>);
+        const observed = epochRow?.epoch ?? 0;
+        if (observed > scheduledEpoch)
+          return { outcome: "aborted", observedEpoch: observed } as SessionCacheWriteOutcome;
+
+        const rows = await requestResult(metaStore.getAll() as IDBRequest<CacheMetaRow[]>);
+        // A re-write replaces its own accounting, so its previous meta row is
+        // not live; the epoch row is not a record's accounting either. Keys
+        // are unique, so the exclusion below is exactly the set of rows the
+        // old find-and-splice removed, in one pass.
+        const live = rows.filter((row) => row.ref !== EPOCH_ROW_KEY && row.ref !== record.ref);
+        if (bytes > this.#maxBytes) {
+          await this.#deleteRows(tx, record.ref); // a session that outgrew its cache leaves nothing stale behind
+          return { outcome: "oversize" } as SessionCacheWriteOutcome;
+        }
+        metaStore.put({ ref: record.ref, bytes, savedAt: record.savedAt } satisfies CacheMetaRow);
+        tx.objectStore(RECORDS_STORE).put(JSON.parse(encoded) as CachedSessionRecord);
+        let total = live.reduce((sum, row) => sum + row.bytes, 0) + bytes;
+        if (total > this.#maxBytes) {
+          live.sort((a, b) => a.savedAt - b.savedAt); // whole-record LRU by last write
+          for (const victim of live) {
+            if (total <= this.#maxBytes) break;
+            await this.#deleteRows(tx, victim.ref);
+            total -= victim.bytes;
+          }
+        }
+        return { outcome: "written" } as SessionCacheWriteOutcome;
+      },
+      now,
+    );
+    if (result.outcome === "written") {
+      for (const listener of this.#writeListeners) listener();
+    }
+    return result;
+  }
+
+  // The commit-observed clear: one readwrite transaction deletes every
+  // records row - the records store cleared whole, since it holds nothing
+  // but records rows - and every meta row except the reserved epoch row, so
+  // an orphan meta row no record backs dies too, and increments the epoch
+  // row in the same commit. `committed` is read off the
+  // value the transaction runner delivers, which only arrives after the
+  // completion event - an abort (the fault
+  // seam's throw, a request error, a commit-time failure) reads as
+  // { committed: false, epoch: observed-before-the-abort }, so no caller ever
+  // broadcasts a clear that did not land.
+  async clear(): Promise<{ committed: boolean; epoch: number }> {
+    let observed = 0;
+    const landed = await this.#readwrite(async (tx) => {
+      const metaStore = tx.objectStore(META_STORE);
+      const recordsStore = tx.objectStore(RECORDS_STORE);
+      const epochRow = await requestResult(metaStore.get(EPOCH_ROW_KEY) as IDBRequest<EpochRow | undefined>);
+      observed = epochRow?.epoch ?? 0;
+      recordsStore.clear();
+      const metaKeys = await requestResult(metaStore.getAllKeys() as IDBRequest<IDBValidKey[]>);
+      for (const ref of metaKeys) {
+        if (ref === EPOCH_ROW_KEY) continue; // exempt by construction: the reserved epoch row survives every clear
+        metaStore.delete(ref);
+      }
+      metaStore.put({ ref: EPOCH_ROW_KEY, epoch: observed + 1 } satisfies EpochRow);
+      this.#beforeCommit?.("clear");
+      return observed + 1;
+    });
+    return landed === undefined ? { committed: false, epoch: observed } : { committed: true, epoch: landed };
+  }
+
+  // One transaction removes the named refs' rows, under clear's
+  // delivered-result rule: true only when the transaction's completion was
+  // observed, so an abort reads false and the caller retries idempotently.
+  async deleteRecords(refs: string[]): Promise<boolean> {
+    const landed = await this.#readwrite(async (tx) => {
+      for (const ref of refs) await this.#deleteRows(tx, ref);
+      this.#beforeCommit?.("deleteRecords");
+      return true;
+    });
+    return landed ?? false;
+  }
+
+  // The settings row's reader: the records store's row count, a miss
+  // (undefined) on every failure - a stalled or failed open, a failed
+  // transaction - never a throw.
+  async count(): Promise<number | undefined> {
+    try {
+      return await this.#transaction([RECORDS_STORE], "readonly", async (tx) =>
+        requestResult(tx.objectStore(RECORDS_STORE).count()),
+      );
+    } catch {
+      return undefined;
+    }
+  }
+
+  async #deleteRows(tx: IDBTransaction, ref: string): Promise<void> {
+    void tx.objectStore(RECORDS_STORE).delete(ref);
+    void tx.objectStore(META_STORE).delete(ref);
+  }
+
+  async #sweepExpired(tx: IDBTransaction, now: number): Promise<void> {
+    const rows = await requestResult(tx.objectStore(META_STORE).getAll() as IDBRequest<CacheMetaRow[]>);
+    for (const row of rows) {
+      if (row.ref !== EPOCH_ROW_KEY && row.savedAt + TTL_MS <= now) await this.#deleteRows(tx, row.ref);
+    }
+  }
+
+  #transaction<T>(stores: string[], mode: IDBTransactionMode, body: (tx: IDBTransaction) => Promise<T>): Promise<T> {
+    return trackProjectionWork(this.#runTransaction(stores, mode, body));
+  }
+
+  async #readwrite<T>(body: (tx: IDBTransaction) => Promise<T>, now = Date.now()): Promise<T | undefined> {
+    try {
+      return await this.#transaction([RECORDS_STORE, META_STORE], "readwrite", async (tx) => {
+        await this.#sweepExpired(tx, now);
+        return body(tx);
+      });
+    } catch {
+      return undefined; // every failure is a miss; the diagnostic seam carries the why
+    }
+  }
+
+  // The write failure discipline: #readwrite turns a failure into a miss;
+  // a write turns the same failure into the "failed" outcome instead - open,
+  // transaction, and quota errors all drop silently here, never a throw.
+  // The beforeCommit seam fires inside this wrapper, after every completed
+  // put body's requests are queued - the written, oversize, and stale-epoch
+  // paths alike - while a throw can still abort the transaction, which is
+  // what proves the rollback. The operation argument is the one thing this
+  // wrapper threads to the #beforeCommit seam.
+  async #readwriteOutcome(
+    operation: "put",
+    body: (tx: IDBTransaction) => Promise<SessionCacheWriteOutcome>,
+    now: number,
+  ): Promise<SessionCacheWriteOutcome> {
+    const outcome = await this.#readwrite(async (tx) => {
+      const result = await body(tx);
+      this.#beforeCommit?.(operation);
+      return result;
+    }, now);
+    return outcome ?? { outcome: "failed" };
+  }
+
+  async #runTransaction<T>(
+    stores: string[],
+    mode: IDBTransactionMode,
+    body: (tx: IDBTransaction) => Promise<T>,
+  ): Promise<T> {
+    const database = await this.#connection.open();
+    return this.#onDatabaseTransaction(database, stores, mode, body);
+  }
+
+  async #onDatabaseTransaction<T>(
+    database: IDBDatabase,
+    stores: string[],
+    mode: IDBTransactionMode,
+    body: (tx: IDBTransaction) => Promise<T>,
+  ): Promise<T> {
+    const tx = database.transaction(stores, mode);
+    const work = body(tx);
+    const completion = transactionCompletion(tx, "abort");
+    let timedOut = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        timedOut = true;
+        reject(new Error("session cache transaction timed out"));
+      }, STORAGE_WAIT_MS);
+    });
+    // Success requires both the body's result and the durable commit event
+    // (requests issued; auto-commit happens when the microtask queue drains).
+    // Promise.all rejects on either failure without waiting for the other, and
+    // the catch aborts the transaction: a failed body - the beforeCommit fault
+    // seam's throw - must not leave its already-issued requests committing
+    // behind it, the same rollback the outbox's runner enforces.
+    try {
+      const [result] = await Promise.race([Promise.all([work, completion]), deadline]);
+      return result;
+    } catch (error) {
+      tryAbortTransaction(tx);
+      // Only ordinary transactions run here, never schema upgrades. A late
+      // terminal event cannot settle the abandoned race or announce success.
+      if (timedOut) this.#connection.retire(database);
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  #reportOpenDiagnostic(path: SessionCacheOpenDiagnosticPath, versionchangeTransaction: boolean): void {
+    try {
+      this.#onOpenDiagnostic({
+        database: this.#databaseName,
+        version: this.#databaseVersion,
+        path,
+        versionchangeTransaction,
+      });
+    } catch {
+      // A throwing reporter cannot change the storage outcome.
+    }
+  }
+
+  #upgrade(database: IDBDatabase): void {
+    if (!database.objectStoreNames.contains(RECORDS_STORE)) {
+      database.createObjectStore(RECORDS_STORE, { keyPath: "ref" });
+    }
+    if (!database.objectStoreNames.contains(META_STORE)) {
+      // Initialize once: later version upgrades must retain committed clears.
+      const meta = database.createObjectStore(META_STORE, { keyPath: "ref" });
+      meta.put({ ref: EPOCH_ROW_KEY, epoch: 0 } satisfies EpochRow);
+    }
+  }
+}

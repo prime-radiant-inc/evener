@@ -9,7 +9,6 @@ import type {
   NavigationDelta,
   NavigationEntityRecord,
   NavigationFailure,
-  NavigationJobSummary,
   NavigationManifest,
   NavigationOrderContainer,
   NavigationPinSectionDescriptor,
@@ -23,8 +22,6 @@ import type {
   NavigationSnapshot,
   NavigationSubagentTally,
   NavigationTaskProgress,
-  NavigationWatchCadence,
-  NavigationWatchSummary,
   Source,
 } from "../../types.gen";
 import { cloneAndDeepFreezeJSON } from "./immutable";
@@ -183,42 +180,6 @@ const version = (value: unknown): value is NavigationReadBase =>
   (value.revision as number) >= 0 &&
   safeString(value.etag, 1024);
 
-const JOB_KEYS = valueRecordKeys<NavigationJobSummary>({
-  job_id: "required",
-  job_type: "required",
-  status: "required",
-  command: "optional",
-  task: "optional",
-  reason: "optional",
-  intent: "optional",
-  full_command: "optional",
-});
-const WATCH_CADENCE_KEYS = valueRecordKeys<NavigationWatchCadence>({
-  kind: "required",
-  seconds: "optional",
-  derived_next_fire_at: "optional",
-  every: "optional",
-  filter: "optional",
-});
-const WATCH_KEYS = valueRecordKeys<NavigationWatchSummary>(
-  {
-    id: "required",
-    source: "required",
-    deliveries: "required",
-    created_at: "required",
-    active: "required",
-    target: "optional",
-    send_to: "optional",
-    note: "optional",
-    cadence: "optional",
-    output_match: "optional",
-    events: "optional",
-    wildcard_events: "optional",
-    delivery_times: "optional",
-    end_reason: "optional",
-  },
-  { cadence: WATCH_CADENCE_KEYS },
-);
 const TASKS_KEYS = valueRecordKeys<NavigationTaskProgress>({
   total: "required",
   done: "required",
@@ -272,17 +233,13 @@ const SESSION_KEYS = valueRecordKeys<NavigationSessionSummary>(
     more_subagents: "optional",
     subagents: "optional",
     omitted_descendants: "optional",
-    omitted_watches: "optional",
-    omitted_armed_watches: "optional",
-    running_jobs: "optional",
-    completed_jobs: "optional",
-    watches: "optional",
+    running_job_count: "optional",
+    running_job_command: "optional",
+    watch_count: "optional",
+    armed_watch_count: "optional",
     tasks: "optional",
   },
   {
-    running_jobs: JOB_KEYS,
-    completed_jobs: JOB_KEYS,
-    watches: WATCH_KEYS,
     tasks: TASKS_KEYS,
     subagents: SUBAGENT_TALLY_KEYS,
     question: QUESTION_KEYS,
@@ -360,59 +317,6 @@ const LOCATION_KEYS = valueRecordKeys<Omit<NavigationSessionLocation, "session">
   pin_section_id: "optional",
 });
 
-function jobValue(value: unknown): boolean {
-  return (
-    knownKeys(value, JOB_KEYS) &&
-    identity(value.job_id) &&
-    identity(value.job_type) &&
-    identity(value.status) &&
-    optional(value.command, (item) => boundedString(item, 512)) &&
-    optional(value.task, (item) => boundedString(item, 512)) &&
-    optional(value.reason, (item) => boundedString(item, 512)) &&
-    optional(value.intent, (item) => boundedString(item, 512)) &&
-    optional(value.full_command, (item) => boundedString(item, 4096))
-  );
-}
-
-const watchCadenceValue = (value: unknown): boolean =>
-  knownKeys(value, WATCH_CADENCE_KEYS) &&
-  identity(value.kind) &&
-  optional(value.seconds, (item) => typeof item === "number" && Number.isFinite(item) && item >= 0) &&
-  optional(value.derived_next_fire_at, rfc3339Timestamp) &&
-  optional(value.every, count) &&
-  optional(value.filter, (item) => boundedString(item, 512));
-
-function watchValue(value: unknown): boolean {
-  return (
-    knownKeys(value, WATCH_KEYS) &&
-    identity(value.id) &&
-    identity(value.source) &&
-    count(value.deliveries) &&
-    rfc3339Timestamp(value.created_at) &&
-    bool(value.active) &&
-    optional(value.target, (item) => boundedString(item, 512)) &&
-    optional(value.send_to, (item) => boundedString(item, 512)) &&
-    optional(value.note, (item) => boundedString(item, 512)) &&
-    optional(value.cadence, (item) => Array.isArray(item) && item.every(watchCadenceValue)) &&
-    optional(value.output_match, (item) => boundedString(item, 512)) &&
-    optional(value.events, (item) => Array.isArray(item) && item.every((event) => boundedString(event, 512))) &&
-    optional(value.wildcard_events, bool) &&
-    optional(
-      value.delivery_times,
-      (item) => Array.isArray(item) && item.every((instant) => rfc3339Timestamp(instant)),
-    ) &&
-    optional(value.end_reason, (item) => boundedString(item, 512))
-  );
-}
-
-// Mirrors navigationSessionValueValid exactly: the armed subset can never exceed
-// the omitted total, and an absent total counts as zero rather than as unknown.
-// No producer can send an armed count without a total -- the projector counts
-// every omitted armed row in the total too -- so treating absence as unknown
-// would only let a malformed snapshot through.
-const omittedArmedWithinOmitted = (value: Record<string, unknown>): boolean =>
-  ((value.omitted_armed_watches as number | undefined) ?? 0) <= ((value.omitted_watches as number | undefined) ?? 0);
-
 // Mirrors navigationTaskProgressValid: safe non-negative counts, no more tasks
 // done and cancelled than exist (an absent cancelled count is zero), and a
 // current task within the label bound.
@@ -487,12 +391,11 @@ function sessionFieldsValue(value: unknown): value is Record<string, unknown> & 
     optional(value.more_subagents, count) &&
     optional(value.subagents, subagentTallyValue) &&
     optional(value.omitted_descendants, count) &&
-    optional(value.omitted_watches, count) &&
-    optional(value.omitted_armed_watches, count) &&
-    omittedArmedWithinOmitted(value) &&
-    optional(value.running_jobs, (item) => Array.isArray(item) && item.every(jobValue)) &&
-    optional(value.completed_jobs, (item) => Array.isArray(item) && item.every(jobValue)) &&
-    optional(value.watches, (item) => Array.isArray(item) && item.every(watchValue)) &&
+    optional(value.running_job_count, count) &&
+    optional(value.running_job_command, (item) => boundedString(item, 512)) &&
+    optional(value.watch_count, count) &&
+    optional(value.armed_watch_count, count) &&
+    ((value.armed_watch_count as number | undefined) ?? 0) <= ((value.watch_count as number | undefined) ?? 0) &&
     optional(value.tasks, tasksValue)
   );
 }
@@ -835,6 +738,7 @@ export function validateGraphForResource(
             ownerEntity.key === anchorKey &&
             ["current", "recent", "archived"].includes(ownerSlot);
       if (!allowed) throw schemaError("resource graph");
+      if (ownerEntity.kind === "session" && item.children.length !== 0) throw schemaError("resource graph");
       if (item.children.length > NAVIGATION_SECTION_LIMIT) throw schemaError("resource graph");
       const owned = slots.get(ownerEntity.key) ?? new Set<string>();
       owned.add(ownerSlot);
@@ -1024,7 +928,7 @@ export function decodeNavigationResponse(
     (wire.representation !== "snapshot" && wire.representation !== "delta") ||
     !("data" in wire)
   )
-    throw new Error("navigation protocol: invalid v2 response");
+    throw new Error("navigation protocol: invalid v3 response");
   if (wire.representation === "snapshot") {
     if (!exactKeys(wire, RESPONSE_SNAPSHOT_KEYS)) throw new Error("navigation protocol: invalid snapshot");
     const snapshot = wire.data as NavigationSnapshot;

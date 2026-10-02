@@ -121,6 +121,7 @@ type WatchStatusInfo struct {
 // DetailedStatus. AppWire maps these values into EvenerDelegateInfo without
 // deriving them from Jobs.
 type DelegateStatusInfo struct {
+	RunGeneration       uint64                       `json:"run_generation"`
 	DelegateID          string                       `json:"delegate_id"`
 	OwnerSessionID      string                       `json:"owner_session_id"`
 	RootSessionID       string                       `json:"root_session_id"`
@@ -472,6 +473,7 @@ func delegateStatusInfoFromSnapshot(now time.Time, rootID string, row delegateSn
 	timing := projectStableDelegateStatus(now, row)
 	out := DelegateStatusInfo{
 		DelegateID:          row.id,
+		RunGeneration:       row.generation,
 		OwnerSessionID:      descriptor.OwnerSessionID,
 		RootSessionID:       rootID,
 		ChildSessionID:      descriptor.ChildSessionID,
@@ -555,7 +557,7 @@ func delegateUpdatedDataFromStatus(info DelegateStatusInfo) events.DelegateUpdat
 		ChildSessionID: info.ChildSessionID, TranscriptRef: info.TranscriptRef, ParentDelegateID: info.ParentDelegateID,
 		Type: info.Type, Lifecycle: info.Lifecycle, Phase: info.Phase, Status: info.Status, Outcome: info.Outcome,
 		Reason: info.Reason, Error: info.Error, Terminal: info.Terminal, Resumable: info.Resumable, NeedsAttention: info.NeedsAttention, NotResumableReason: info.NotResumableReason,
-		ProjectionRevision: info.ProjectionRevision, Task: info.Task, Description: info.Description, AgentType: info.AgentType,
+		RunGeneration: info.RunGeneration, ProjectionRevision: info.ProjectionRevision, Task: info.Task, Description: info.Description, AgentType: info.AgentType,
 		RequestedModel: info.RequestedModel, ResolvedProfileID: info.ResolvedProfileID, ResolvedModel: info.ResolvedModel,
 		Model: info.Model, ReasoningEffort: info.ReasoningEffort, OriginTurnID: info.OriginTurnID,
 		OriginToolCallID: info.OriginToolCallID, OriginItemID: info.OriginItemID, RunStartedAt: info.RunStartedAt,

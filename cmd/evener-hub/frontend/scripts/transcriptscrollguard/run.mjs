@@ -133,12 +133,36 @@ async function main() {
     let landed = null;
     try {
       await applyViewport(send, VIEWPORT);
-      await navigateTo(page, `http://127.0.0.1:${vitePort}/transcriptscrollguard.html`, BOOT);
+      await navigateTo(page, `http://127.0.0.1:${vitePort}/transcriptscrollguard.html?paged=1&deferRead=1`, BOOT);
       // Fonts FIRST, then settle: a late-arriving webfont changes row
       // geometry, so the settle loop must measure post-font geometry -
       // otherwise a font-driven shift could surface the pill before the
       // scroll-away phase and the pill assertions would pass for the wrong
       // reason.
+      await waitForFonts(send);
+      // An asynchronous cold-cache/read admission can outlive page boot and
+      // fonts. Invoke the actual paged wait while hydration is held, prove it
+      // remains pending through ordinary frames, then release the read.
+      const deferredOpen = JSON.parse(await evaluate(send, `(async () => {
+        let finished = false;
+        let failure;
+        let failed = false;
+        const pending = window.waitForPagedOpenSettled().then(
+          result => { finished = true; return result; },
+          error => { finished = true; failed = true; failure = error; }
+        );
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        if (finished) throw failure ?? new Error("paged wait finished before hydration admission");
+        if (document.querySelector('[data-testid="transcript-virtual-list"] > div'))
+          throw new Error("deferred fixture mounted before its read was released");
+        window.releaseTranscriptRead();
+        const result = await pending;
+        if (failed) throw failure;
+        return JSON.stringify(result);
+      })()`));
+      assertPagedOpenContract(failures, "the deferred cold-read session", deferredOpen);
+
+      await navigateTo(page, `http://127.0.0.1:${vitePort}/transcriptscrollguard.html`, BOOT);
       await waitForFonts(send);
       initial = JSON.parse(
         await evaluate(send, "(async () => JSON.stringify(await window.waitForTranscriptSettled()))()"),
@@ -313,6 +337,43 @@ async function main() {
         await evaluate(send, "(async () => JSON.stringify(await window.waitForPagedOpenSettled()))()"),
       );
       assertPagedOpenContract(failures, "the read-only transcript pane", readOnlyOpened, { paneFooter: false });
+      await navigateTo(page, `http://127.0.0.1:${vitePort}/transcriptscrollguard.html?dock=1`, BOOT);
+      await waitForFonts(send);
+      const dock = JSON.parse(await evaluate(send, `(async () => {
+        await window.waitForTranscriptSettled();
+        const ports = () => [...document.querySelectorAll('[data-testid="transcript-virtual-list"] > div')];
+        const root = ports()[0];
+        const click = name => [...document.querySelectorAll('button')].find(button => button.textContent === name).click();
+        const geometry = port => ({ top: port.scrollTop, height: port.clientHeight, total: port.scrollHeight });
+        const visible = port => {
+          const viewport = port.getBoundingClientRect();
+          return [...port.querySelectorAll('[data-index]')].some(row => {
+            const rect = row.getBoundingClientRect();
+            return rect.bottom > viewport.top && rect.top < viewport.bottom;
+          });
+        };
+        root.scrollTop = Math.max(0, root.scrollHeight - root.clientHeight - 700);
+        await window.waitForTranscriptSettled();
+        click('Open observer'); await window.waitForTranscriptSettled();
+        click('Open grandchild'); await window.waitForTranscriptSettled();
+        const secondary = ports().find(port => port !== root);
+        secondary.scrollTop = Math.max(0, secondary.scrollHeight - secondary.clientHeight - 200);
+        await window.waitForTranscriptSettled();
+        const before = { root: geometry(root), secondary: geometry(secondary), visible: visible(root) && visible(secondary) };
+        click('Focus root'); await window.waitForTranscriptSettled();
+        const after = { root: geometry(root), secondary: geometry(secondary), visible: visible(root) && visible(secondary), connected: root.isConnected && secondary.isConnected };
+        click('Focus observer'); await window.waitForTranscriptSettled();
+        const observerSelected = [...document.querySelectorAll('.dv-tab.dv-active-tab')].some(tab => tab.textContent.includes('local:observer'));
+        return JSON.stringify({ before, after, observerSelected, switchedRoot: geometry(root), switchedRootVisible: visible(root) });
+      })()`));
+      console.log("dock focus geometry", dock);
+      if (!dock.before.visible || !dock.after.visible || !dock.after.connected) failures.push("Dock group focus stranded mounted transcript content");
+      for (const pane of ["root", "secondary"]) {
+        if (Math.abs(dock.before[pane].top - dock.after[pane].top) > 1 || dock.before[pane].height !== dock.after[pane].height) failures.push(`Dock group focus changed ${pane} viewport position`);
+      }
+      if (!dock.observerSelected) failures.push("Dock focus did not select the other retained transcript tab");
+      if (!dock.switchedRootVisible || Math.abs(dock.switchedRoot.top - dock.before.root.top) > 1) failures.push("Selecting another secondary tab changed the retained root viewport");
+
     } finally {
       await clearViewportOverride(send);
       page.close();
@@ -325,7 +386,7 @@ async function main() {
           `(bottomGap ${landed.bottomGap}px, pill gone, held ${landed.tail.length} frames); ` +
           `post-mount content growth and a scroll-port shrink both re-anchored to the true bottom; ` +
           `a session opened with older history stayed at the bottom without auto-loading a page; ` +
-          `the read-only transcript pane did the same`,
+          `the read-only transcript pane did the same; deferred hydration waited for the mounted paged viewport`,
       );
     } else {
       for (const failure of failures) console.error(`transcriptscrollguard FAIL: ${failure}`);

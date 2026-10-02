@@ -4,9 +4,11 @@
 // the store method here - the pane's own effect wiring is what these tests
 // pin.
 
-import type { ActivityJob } from "@evener/appwire-client";
+import type { ActivityJob, JobActivityJob } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { chromeStore, resetChromeStoreForTests } from "../../shell/chromeStore";
 import { connectionStore } from "../../stores/connection";
 import { threadsStore } from "../../stores/threads";
 import { JobLog } from "./JobLog";
@@ -32,13 +34,13 @@ function job(overrides: Record<string, unknown> = {}): ActivityJob {
 // pane's fetches stay in-process; each test overrides with mockResolvedValue/
 // mockRejectedValue on the returned spy.
 function setupJobGet() {
-  return vi.spyOn(threadsStore.getState(), "jobGet").mockResolvedValue(null);
+  return vi.spyOn(threadsStore.getState(), "jobGet").mockResolvedValue(job());
 }
 
 function setupJobOutput() {
   return vi
     .spyOn(threadsStore.getState(), "jobOutput")
-    .mockResolvedValue({ tail: "", totalBytes: 0, retainedStart: 0 });
+    .mockResolvedValue({ tail: "", totalBytes: 0, retainedStart: 0, truncated: false });
 }
 
 let jobGet: ReturnType<typeof setupJobGet>;
@@ -54,6 +56,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  resetChromeStoreForTests();
   connectionStore.setState({ state: "idle", client: null });
   vi.restoreAllMocks();
 });
@@ -61,7 +64,7 @@ afterEach(() => {
 describe("JobLog", () => {
   test("shows the job's full command above its output", async () => {
     jobGet.mockResolvedValue(job({ command: "go test ./... -run Foo -count=1" }));
-    jobOutput.mockResolvedValue({ tail: "ok\n", totalBytes: 3, retainedStart: 0 });
+    jobOutput.mockResolvedValue({ tail: "ok\n", totalBytes: 3, retainedStart: 0, truncated: false });
 
     render(<JobLog jobRef="job:job_x" parentRef="ref_root" />);
 
@@ -80,7 +83,7 @@ describe("JobLog", () => {
 
   test("renders the log with no command line when the job read is unavailable", async () => {
     jobGet.mockRejectedValue(new Error("job not available"));
-    jobOutput.mockResolvedValue({ tail: "hello\n", totalBytes: 6, retainedStart: 0 });
+    jobOutput.mockResolvedValue({ tail: "hello\n", totalBytes: 6, retainedStart: 0, truncated: false });
 
     render(<JobLog jobRef="job:job_x" parentRef="ref_root" />);
 
@@ -89,8 +92,9 @@ describe("JobLog", () => {
   });
 
   test("shows no command line when the job payload is malformed", async () => {
-    jobGet.mockResolvedValue({ jobId: "job_x" });
-    jobOutput.mockResolvedValue({ tail: "hello\n", totalBytes: 6, retainedStart: 0 });
+    // Deliberately violate the declared wire type to exercise runtime validation.
+    jobGet.mockResolvedValue({ jobId: "job_x" } as JobActivityJob);
+    jobOutput.mockResolvedValue({ tail: "hello\n", totalBytes: 6, retainedStart: 0, truncated: false });
 
     render(<JobLog jobRef="job:job_x" parentRef="ref_root" />);
 
@@ -100,13 +104,13 @@ describe("JobLog", () => {
 
   test("never shows another job's command while the new job's metadata is in flight", async () => {
     jobGet.mockResolvedValueOnce(job({ jobId: "job_x", command: "first command" }));
-    jobOutput.mockResolvedValue({ tail: "one\n", totalBytes: 4, retainedStart: 0 });
+    jobOutput.mockResolvedValue({ tail: "one\n", totalBytes: 4, retainedStart: 0, truncated: false });
     const { rerender } = render(<JobLog jobRef="job:job_x" parentRef="ref_root" />);
     expect((await screen.findByTestId("joblog-command")).textContent).toBe("first command");
 
     // The second job's metadata read stays in flight, the window in which the
     // previous job's command could still be on screen.
-    let resolveSecond: (value: unknown) => void = () => {};
+    let resolveSecond: (value: JobActivityJob) => void = () => {};
     jobGet.mockImplementationOnce(
       () =>
         new Promise((resolve) => {
@@ -124,3 +128,26 @@ describe("JobLog", () => {
     expect((await screen.findByTestId("joblog-command")).textContent).toBe("second command");
   });
 });
+
+test.each(["unavailable", "unnamed"])(
+  "%s metadata preserves job identity while real output reads succeed",
+  async (kind) => {
+    vi.restoreAllMocks();
+    const client = new FakeClient();
+    client.on("evener/jobs/get", () => {
+      if (kind === "unavailable") throw new Error("metadata unavailable");
+      return { data: job({ description: "", command: "" }) };
+    });
+    client.on("evener/jobs/output", () => ({
+      data: { tail: "IDENTIFIABLE_OUTPUT", totalBytes: 19, retainedStart: 0, truncated: false },
+    }));
+    connectionStore.setState({ state: "ready", client });
+    render(<JobLog jobRef="job:job_x" parentRef="ref_root" paneId="output-pane" />);
+    expect((await screen.findByTestId("joblog-content")).textContent).toContain("IDENTIFIABLE_OUTPUT");
+    expect(screen.getByRole("heading", { name: "job_x" })).toBeTruthy();
+    expect(chromeStore.getState().paneTitles.get("output-pane")).toBe("job_x");
+    expect(client.calls.filter((call) => call.method === "evener/jobs/get").map((call) => call.params)).toEqual([
+      { ref: "ref_root", jobId: "job_x" },
+    ]);
+  },
+);

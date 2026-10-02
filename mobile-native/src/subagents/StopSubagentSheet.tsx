@@ -38,7 +38,7 @@ export function StopSubagentSheet({ route }: NativeStackScreenProps<Routes, "Sto
 	const coordinatorState = coordinatorRead === "unreadable" ? null : coordinatorRead;
 	// The tree is the coordinator's as it reads now: a coordinator that
 	// restarted since the sheet opened runs under a new thread, and
-	// ActivityList refuses a tree whose root isn't the thread asked for.
+	// the shared activity context identifies the resolved session.
 	const { snapshot } = useSubagentTree(hubId, coordinator.ref, coordinatorState?.threadId ?? coordinator.threadId);
 	const row = useMemo(
 		() =>

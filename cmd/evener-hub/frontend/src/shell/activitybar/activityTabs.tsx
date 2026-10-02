@@ -1,10 +1,5 @@
-// The activity kind table: the four kinds' glyphs, counter labels, and tab
-// bodies, declared ONCE. The status bar's chips and the sidebar's segmented
-// control both read it, so a count can never mean one thing in the chip and
-// another on the tab (the review caught the Jobs count drifting exactly so:
-// chip counted running, the tab label counted running + completed - now both
-// count ACTIVE work, the same convention the Agents tab's current-only count
-// already used).
+// Activity counters share authoritative active/total labels across the footer
+// and sidebar. Tasks use done/total from the selected navigation row.
 
 import type { ComponentType, ReactNode } from "react";
 import { requireClass } from "../../widgets/internal/requireClass";
@@ -21,11 +16,12 @@ const WATCH_GLYPH_CLASS = requireClass(styles.watchGlyph, "activitybar.module.cs
 export interface ActivityTabSpec {
   id: ActivityTab;
   glyph: ReactNode;
-  /** The status bar chip's count text: active work only. */
+  label: string;
+  /** Active/total count, or done/total for Tasks. */
   chipCount(counts: ScopeCounts): string;
   /** The chip's accessible label. */
   chipLabel(counts: ScopeCounts): string;
-  /** The sidebar tab's label: the same active-work count, same convention. */
+  /** Category and shared fraction on separate lines within the tab. */
   tabLabel(counts: ScopeCounts): string;
   /** The kind shows in the bar only when there's something to say (tasks hide
    * with no list); the sidebar's control always lists all four. */
@@ -33,40 +29,49 @@ export interface ActivityTabSpec {
   Body: ComponentType<{ scope: ActivityScope }>;
 }
 
+const fraction = (active: number | null, total: number | null) =>
+  active === null || total === null ? "—" : `${active}/${total}`;
+const countLabel = (kind: string, active: number | null, total: number | null, state: string) =>
+  active === null || total === null ? `${kind}, counts unknown` : `${kind}, ${active} of ${total} ${state}`;
+
 export const ACTIVITY_TABS: readonly ActivityTabSpec[] = [
   {
     id: "agents",
+    label: "Agents",
     glyph: "⌘",
-    chipCount: (c) => `${c.activeSubagents}`,
-    chipLabel: (c) => `Agents, ${c.activeSubagents} active`,
-    tabLabel: (c) => `Agents ${c.activeSubagents}`,
+    chipCount: (c) => fraction(c.activeSubagents, c.delegatesTotal),
+    chipLabel: (c) => countLabel("Agents", c.activeSubagents, c.delegatesTotal, "active"),
+    tabLabel: (c) => `Agents\n${fraction(c.activeSubagents, c.delegatesTotal)}`,
     chipVisible: () => true,
     Body: AgentsTab,
   },
   {
     id: "jobs",
+    label: "Jobs",
     glyph: "$",
-    chipCount: (c) => `${c.runningJobs}`,
-    chipLabel: (c) => `Jobs, ${c.runningJobs} running`,
-    tabLabel: (c) => `Jobs ${c.runningJobs}`,
+    chipCount: (c) => fraction(c.runningJobs, c.jobsTotal),
+    chipLabel: (c) => countLabel("Jobs", c.runningJobs, c.jobsTotal, "running"),
+    tabLabel: (c) => `Jobs\n${fraction(c.runningJobs, c.jobsTotal)}`,
     chipVisible: () => true,
     Body: JobsTab,
   },
   {
     id: "watches",
+    label: "Watches",
     glyph: <WatchGlyph className={WATCH_GLYPH_CLASS} testId="activity-tab-watch-glyph" />,
-    chipCount: (c) => `${c.armedWatches}`,
-    chipLabel: (c) => `Watches, ${c.armedWatches} armed`,
-    tabLabel: (c) => `Watches ${c.armedWatches}`,
+    chipCount: (c) => fraction(c.armedWatches, c.watchesTotal),
+    chipLabel: (c) => countLabel("Watches", c.armedWatches, c.watchesTotal, "armed"),
+    tabLabel: (c) => `Watches\n${fraction(c.armedWatches, c.watchesTotal)}`,
     chipVisible: () => true,
     Body: WatchesTab,
   },
   {
     id: "tasks",
+    label: "Tasks",
     glyph: "☑",
     chipCount: (c) => `${c.tasksDone}/${c.tasksTotal}`,
     chipLabel: (c) => `Tasks, ${c.tasksDone} of ${c.tasksTotal} done`,
-    tabLabel: (c) => `Tasks ${c.tasksDone}/${c.tasksTotal}`,
+    tabLabel: (c) => `Tasks\n${c.tasksDone}/${c.tasksTotal}`,
     chipVisible: (c) => c.tasksTotal > 0,
     Body: TasksTab,
   },

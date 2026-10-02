@@ -109,7 +109,10 @@ func runRespond(args []string) error {
 // the model's user turn, numbered "1.", "2.", ... unambiguously — the order
 // the system prompt tells the model to follow in its answers list, one
 // answer per question, so a multi-question round can't collapse into an
-// answer for only the first one.
+// answer for only the first one. Every field of the ask_user call reaches the
+// person: whether several options may be chosen, why the answer matters, the
+// fallback the model would take if unanswered, and which option the model
+// recommends.
 func renderQuestionsForRespond(questions []agent.AskUserQuestion) string {
 	var b strings.Builder
 	for i, q := range questions {
@@ -118,12 +121,24 @@ func renderQuestionsForRespond(questions []agent.AskUserQuestion) string {
 		} else {
 			fmt.Fprintf(&b, "%d. %s\n", i+1, q.Question)
 		}
+		if q.MultiSelect {
+			b.WriteString("  (you may choose more than one option)\n")
+		}
+		if q.Why != "" {
+			fmt.Fprintf(&b, "  Why it matters: %s\n", q.Why)
+		}
+		if q.IfUnanswered != "" {
+			fmt.Fprintf(&b, "  If unanswered: %s\n", q.IfUnanswered)
+		}
 		for _, o := range q.Options {
+			line := "  - " + o.Label
 			if o.Detail != "" {
-				fmt.Fprintf(&b, "  - %s: %s\n", o.Label, o.Detail)
-			} else {
-				fmt.Fprintf(&b, "  - %s\n", o.Label)
+				line += ": " + o.Detail
 			}
+			if o.Recommended {
+				line += " (recommended)"
+			}
+			b.WriteString(line + "\n")
 		}
 		b.WriteString("\n")
 	}
@@ -152,14 +167,20 @@ func appendAskLog(path string, questions []agent.AskUserQuestion, answers []stri
 }
 
 // readAskLog reads back the question/answer pairs respond appended to a
-// --log file, for the harness to attach to a probe's result. A missing or
-// unreadable log (no person: block, or a responder that never ran) is not
-// an error — the caller gets an empty slice. malformed counts lines that did
-// not parse, so the caller can report them instead of losing them silently.
-func readAskLog(path string) (exchanges []askExchange, malformed int) {
+// --log file, for the harness to attach to a probe's result. A missing log
+// (os.IsNotExist — the responder never ran, or the task has no person:
+// block) is not an error: the caller gets an empty slice. Any other read
+// error is returned, so a log that exists but cannot be read is reported
+// rather than silently mistaken for no asks. malformed counts lines that did
+// not parse or carried an empty question and answer (a JSON null or {}), so
+// the caller can report them instead of losing them silently.
+func readAskLog(path string) (exchanges []askExchange, malformed int, err error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, 0
+		if os.IsNotExist(err) {
+			return nil, 0, nil
+		}
+		return nil, 0, err
 	}
 	for line := range strings.SplitSeq(strings.TrimSpace(string(data)), "\n") {
 		if strings.TrimSpace(line) == "" {
@@ -170,9 +191,13 @@ func readAskLog(path string) (exchanges []askExchange, malformed int) {
 			malformed++
 			continue
 		}
+		if strings.TrimSpace(exchange.Question) == "" && strings.TrimSpace(exchange.Answer) == "" {
+			malformed++
+			continue
+		}
 		exchanges = append(exchanges, exchange)
 	}
-	return exchanges, malformed
+	return exchanges, malformed, nil
 }
 
 // respondAnswerSchema is the JSON schema the model's answer must conform to

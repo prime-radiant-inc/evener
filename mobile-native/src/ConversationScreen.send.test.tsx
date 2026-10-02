@@ -1,3 +1,6 @@
+import { subagentOutcomesDelegatesResponse } from "@evener/appwire-client/testing/subagentWireFixtures";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { activityFixture } from "./subagents/sessionActivityTestUtils";
 // The Session's one Send and the tray's Stop, on the real ConversationScreen:
 // what a person presses, and which requests reach the hub through the durable
 // runtime. Only native edges are mocked, as in
@@ -6,7 +9,7 @@ import type { ComponentProps, ReactNode } from "react";
 import { createElement } from "react";
 import { act, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { type AnyNotification, type Thread, WireError } from "@evener/appwire-client";
+import { type AnyNotification, type SessionDelegatesResponse, type Thread, WireError } from "@evener/appwire-client";
 import { nativeDrafts } from "./nativeDrafts";
 import { getNativeMutationRuntime, nativeMutationTargetKey } from "./nativeMutationRuntime";
 import {
@@ -319,12 +322,17 @@ const fleet: FleetShape = { live: [], needsYou: [] };
 const mountedScreens: ReactTestRenderer[] = [];
 // A coordinator's subagent tree (evener/jobs/list) and its direct stop
 // (evener/delegate/stop), for the subagent screen's tests.
-const coordinatorHub: { tree: unknown; stop: (params: Record<string, unknown>) => unknown; readFails: string | null } =
-	{
-		tree: null,
-		stop: () => ({ outcome: "stopping" }),
-		readFails: null,
-	};
+const coordinatorHub: {
+	tree: unknown;
+	delegates: SessionDelegatesResponse | null;
+	stop: (params: Record<string, unknown>) => unknown;
+	readFails: string | null;
+} = {
+	tree: null,
+	delegates: null,
+	stop: () => ({ outcome: "stopping" }),
+	readFails: null,
+};
 // Whether thread/read answers with a history identity, as a v6 hub does:
 // only then does the store take live pushes (overlay streams among them).
 const readHistory = { live: false };
@@ -342,6 +350,7 @@ afterEach(() => {
 	keyboard.reset();
 	systemGlass.reset();
 	coordinatorHub.tree = null;
+	coordinatorHub.delegates = null;
 	coordinatorHub.stop = () => ({ outcome: "stopping" });
 	coordinatorHub.readFails = null;
 	otherThreads.clear();
@@ -364,9 +373,7 @@ function hubClient(
 	let readsToFail = failedReads;
 	const requests: { method: string; params: Record<string, unknown> }[] = [];
 	const listeners = new Set<(notification: AnyNotification) => void>();
-	const client = {
-		state: "ready",
-		onStateChange: () => () => {},
+	const client = Object.assign(new FakeClient("ready") as Pick<FakeClient, "state" | "onReady" | "onStateChange">, {
 		onNotification: (listener: (notification: AnyNotification) => void) => {
 			listeners.add(listener);
 			return () => listeners.delete(listener);
@@ -429,13 +436,28 @@ function hubClient(
 						...(params.expectedEntryId ? { queueEntryIds: [params.expectedEntryId] } : {}),
 					},
 				};
-			if (method === "evener/jobs/list" && coordinatorHub.tree) return { data: coordinatorHub.tree };
+			if (method === "evener/thread/delegates/list" && coordinatorHub.delegates) return coordinatorHub.delegates;
+			if (method.startsWith("evener/thread/") && coordinatorHub.tree) {
+				const f = activityFixture(coordinatorHub.tree, {
+					ref: String(params.ref),
+					scope: params.scope as "session" | "subtree",
+				});
+				if (method === "evener/thread/activity/read") return f.summary;
+				const page = {
+					complete: !f.continuation,
+					issues: f.issues,
+					...(f.continuation ? { nextCursor: f.continuation } : {}),
+				};
+				if (method === "evener/thread/delegates/list")
+					return { context: f.context, scope: f.scope, delegates: f.delegates, page };
+				if (method === "evener/thread/jobs/list") return { context: f.context, scope: f.scope, jobs: f.jobs, page };
+			}
 			if (method === "evener/delegate/stop") return coordinatorHub.stop(params);
 			if (method === "evener/session/seen/set")
 				return { ok: true, changed: true, navigation: { generation_id: "generation-test", targets: [] } };
 			return answerFleetRead(fleet, method, params) ?? {};
 		},
-	};
+	});
 	return {
 		client,
 		mutations: () => requests.filter((request) => request.method.startsWith("turn/")).map((request) => request.method),
@@ -4015,7 +4037,7 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 			revision,
 			root: {
 				kind: "session",
-				// ActivityList checks the root is the coordinator's thread.
+				// The activity context names the coordinator's thread.
 				sessionId: COORDINATOR.threadId,
 				ref: COORDINATOR.ref,
 				label: COORDINATOR.title,
@@ -4104,7 +4126,7 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 	}
 
 	const jobReads = (hub: ReturnType<typeof hubClient>) =>
-		hub.requests.filter((request) => request.method === "evener/jobs/list").length;
+		hub.requests.filter((request) => request.method === "evener/thread/delegates/list").length;
 
 	beforeEach(() => {
 		vi.mocked(navigation.navigate).mockClear();
@@ -4212,7 +4234,39 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 			hub.requests.filter((request) => request.method === "evener/delegate/stop").map((request) => request.params),
 		).toEqual([{ ref: COORDINATOR.ref, threadId: COORDINATOR.threadId, delegateId: "d-fix" }]);
 		expect(renderedText(tree)).toContain("Stop requested");
-		expect(stopRequests("hub-1").direct({ id: "d-fix" } as never)).toBe(true);
+		const [stoppedRow] = flattenSubagents(subagentTree() as never);
+		if (!stoppedRow) throw new Error("no row");
+		expect(stopRequests("hub-1").direct(stoppedRow)).toBe(true);
+	});
+
+	it("keeps another root's colliding stop evidence separate from the actual direct stop target", async () => {
+		const [current] = flattenSubagents(subagentTree() as never);
+		if (!current) throw new Error("no row");
+		const other = {
+			...current,
+			ref: "remote:other-child",
+			delegate: {
+				...current.delegate,
+				childRef: "remote:other-child",
+				rootRef: "remote:other-root",
+			},
+		};
+		stopRequests("hub-1").request("remote:other-root", other, 1000, { direct: true });
+		const { tree, hub } = await mountSubagent(subagent(true), { stopSubagent: true });
+		expect(pressable(tree, "Stop subagent")).toBeDefined();
+		act(() => pressable(tree, "Stop subagent")?.props.onPress());
+		await act(async () =>
+			alertRequests
+				.at(-1)
+				?.buttons?.find((button) => button.text === "Stop")
+				?.onPress?.(),
+		);
+		await settle();
+		expect(
+			hub.requests.filter((request) => request.method === "evener/delegate/stop").map((request) => request.params),
+		).toEqual([{ ref: COORDINATOR.ref, threadId: COORDINATOR.threadId, delegateId: "d-fix" }]);
+		expect(stopRequests("hub-1").view(other)).toBe("requested");
+		expect(stopRequests("hub-1").direct(current)).toBe(true);
 	});
 
 	it("stops through the coordinator's thread as it reads now, after a restart gave it a new one", async () => {
@@ -4390,8 +4444,13 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		const before = jobReads(hub);
 		act(() =>
 			hub.notify({
-				method: "thread/status/changed",
-				params: { threadId: "thread-local:fix", ref: "local:fix", status: { type: "idle" } },
+				method: "evener/thread/activity/changed",
+				params: {
+					threadId: COORDINATOR.threadId,
+					sessionId: "fix",
+					ref: COORDINATOR.ref,
+					resources: ["summary", "delegates", "jobs"],
+				},
 			} as AnyNotification),
 		);
 		await settle();
@@ -4465,7 +4524,15 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 	// render again when it does.
 	it("shows a finished subagent's report once the coordinator's tree arrives", async () => {
 		forgetSubagentTrees("hub-1");
-		const endedAt = new Date(Date.now() - 60_000).toISOString();
+		const actual = subagentOutcomesDelegatesResponse();
+		const reported = actual.delegates.find((row) => row.delegateId === "dlg_reported");
+		if (!reported) throw new Error("missing real producer report");
+		coordinatorHub.delegates = {
+			...actual,
+			context: { ...actual.context, ref: COORDINATOR.ref, rootRef: COORDINATOR.ref, sessionId: COORDINATOR.threadId },
+			delegates: [{ ...reported, ownerRef: COORDINATOR.ref, rootRef: COORDINATOR.ref, childRef: "local:fix" }],
+		};
+		const endedAt = reported.runEndedAt;
 		coordinatorHub.tree = subagentTree({
 			terminal: true,
 			outcome: "completed",
@@ -4494,7 +4561,8 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		(served as unknown as { evener: Record<string, unknown> }).evener.diagnostics = {
 			delegates: [
 				{
-					delegateId: "d-fix",
+					delegateId: reported.delegateId,
+					runGeneration: reported.runGeneration,
 					ownerSessionId: "coord",
 					rootSessionId: "coord",
 					childSessionId: "fix",
@@ -4643,8 +4711,13 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		);
 		act(() =>
 			hub.notify({
-				method: "thread/status/changed",
-				params: { threadId: "thread-local:fix", ref: "local:fix", status: { type: "idle" } },
+				method: "evener/thread/activity/changed",
+				params: {
+					threadId: COORDINATOR.threadId,
+					sessionId: "fix",
+					ref: COORDINATOR.ref,
+					resources: ["summary", "delegates", "jobs"],
+				},
 			} as AnyNotification),
 		);
 		await settle();

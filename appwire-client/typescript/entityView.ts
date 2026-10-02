@@ -1,5 +1,5 @@
-import type { ActivityTree } from "./activityData";
-import { type ActivityDelegateRow, type ActivityJobRow, indexActivityEntities } from "./activityRows";
+import { type ActivityDelegate, type ActivityTree, activityNodeID } from "./activityData";
+import { type ActivityDelegateRow, type ActivityJobRow, indexActivityEntities, watchRowID } from "./activityRows";
 import type { ItemModel, TurnModel } from "./model";
 import type { EvenerDelegateInfo } from "./types.gen";
 import { compareTranscriptPosition, foldWatchSummaries, type WatchSummary } from "./watchRows";
@@ -11,6 +11,8 @@ export interface OpenTarget {
 
 interface EntityViewState {
   id: string;
+  logicalId: string;
+  ownerRef: string;
   stale: boolean;
   ended: boolean;
 }
@@ -23,6 +25,7 @@ export interface JobEntityView extends EntityViewState {
 
 interface DelegateEntityViewBase extends EntityViewState {
   kind: "delegate";
+  name?: string;
   open: OpenTarget;
 }
 
@@ -58,7 +61,9 @@ interface EntityViewSources {
 function jobEntity(row: ActivityJobRow, stale: boolean, ended: boolean): JobEntityView {
   return {
     kind: "job",
-    id: row.job.jobId,
+    id: row.id,
+    logicalId: row.job.jobId,
+    ownerRef: row.job.ownerRef,
     row,
     open: {
       ref: row.transcriptRef ?? `job:${row.job.jobId}`,
@@ -72,7 +77,10 @@ function jobEntity(row: ActivityJobRow, stale: boolean, ended: boolean): JobEnti
 function treeDelegateEntity(row: ActivityDelegateRow, stale: boolean, ended: boolean): DelegateEntityView {
   return {
     kind: "delegate",
-    id: row.delegate.delegateId,
+    name: row.delegate.name,
+    id: row.id,
+    logicalId: row.delegate.delegateId,
+    ownerRef: row.parentRef,
     row,
     open: { ref: row.transcriptRef, parentRef: row.parentRef },
     stale,
@@ -85,15 +93,34 @@ function liveDelegateEntity(
   sessionRef: string,
   stale: boolean,
   ended: boolean,
+  name?: string,
 ): DelegateEntityView {
   return {
     kind: "delegate",
-    id: stable.delegateId,
+    name,
+    id: activityNodeID({ kind: "delegate", delegateId: stable.delegateId, childRef: stable.transcriptRef }),
+    logicalId: stable.delegateId,
+    ownerRef: sessionRef,
     stable,
     open: { ref: stable.transcriptRef, parentRef: sessionRef },
     stale,
     ended,
   };
+}
+
+function provenDelegateGeneration(generation: number | undefined): number {
+  return typeof generation === "number" && Number.isSafeInteger(generation) && generation > 0 ? generation : 0;
+}
+
+function preferActivityDelegate(row: ActivityDelegate, stable: EvenerDelegateInfo): boolean {
+  const rowGeneration = provenDelegateGeneration(row.runGeneration);
+  const stableGeneration = provenDelegateGeneration(stable.runGeneration);
+  if (rowGeneration !== stableGeneration) return rowGeneration > stableGeneration;
+  // A settled run cannot reopen without advancing its proven generation.
+  if (rowGeneration > 0 && (row.terminal === true) !== (stable.terminal === true)) return row.terminal === true;
+  // Unknown generations carry no settlement ordering; comparable revisions
+  // retain their existing authority without assigning time-based identity.
+  return row.projectionRevision !== undefined && row.projectionRevision > stable.projectionRevision;
 }
 
 export function buildEntityView(sources: EntityViewSources): Map<string, EntityView> {
@@ -110,22 +137,26 @@ export function buildEntityView(sources: EntityViewSources): Map<string, EntityV
   }
 
   for (const stable of sources.delegates ?? []) {
-    const existing = entities.get(stable.delegateId);
-    if (
+    const id = activityNodeID({ kind: "delegate", delegateId: stable.delegateId, childRef: stable.transcriptRef });
+    const existing = entities.get(id);
+    const sameIdentity =
       existing?.kind === "delegate" &&
-      existing.row !== undefined &&
-      existing.row.delegate.projectionRevision !== undefined &&
-      existing.row.delegate.projectionRevision > stable.projectionRevision
-    ) {
-      continue;
-    }
-    entities.set(stable.delegateId, liveDelegateEntity(stable, sources.sessionRef, sources.stale, sources.ended));
+      existing.ownerRef === sources.sessionRef &&
+      existing.logicalId === stable.delegateId &&
+      existing.open.ref === stable.transcriptRef;
+    if (sameIdentity && existing.row !== undefined && preferActivityDelegate(existing.row.delegate, stable)) continue;
+    // Status overlays retain an immutable name only for the same owned delegate.
+    const name = sameIdentity ? existing.name : undefined;
+    entities.set(id, liveDelegateEntity(stable, sources.sessionRef, sources.stale, sources.ended, name));
   }
 
   for (const [id, watch] of foldWatchSummaries(watchItems(sources.turns))) {
-    entities.set(id, {
+    const qualified = watchRowID(sources.sessionRef, id);
+    entities.set(qualified, {
       kind: "watch",
-      id,
+      id: qualified,
+      logicalId: id,
+      ownerRef: sources.sessionRef,
       watch,
       lastKnown: true,
       stale: true,
@@ -138,6 +169,23 @@ export function buildEntityView(sources: EntityViewSources): Map<string, EntityV
 
 export function entityOpenTarget(view: EntityView): OpenTarget | undefined {
   return view.kind === "watch" ? undefined : view.open;
+}
+
+/** Resolve a transcript's logical ID within its owning session. Ambiguous
+ * loaded evidence cannot select an arbitrary resource or cross a host boundary. */
+export function findEntityView(
+  entities: ReadonlyMap<string, EntityView>,
+  kind: EntityView["kind"],
+  logicalId: string,
+  ownerRef: string,
+): EntityView | undefined {
+  let found: EntityView | undefined;
+  for (const entity of entities.values()) {
+    if (entity.kind !== kind || entity.logicalId !== logicalId || entity.ownerRef !== ownerRef) continue;
+    if (found) return undefined;
+    found = entity;
+  }
+  return found;
 }
 
 export function watchItems(turns: TurnModel[]): ItemModel[] {

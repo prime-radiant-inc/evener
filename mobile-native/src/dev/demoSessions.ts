@@ -740,6 +740,7 @@ function delegatesOf(session: FleetSession, now: number): EvenerDelegateInfo[] {
 		const running = subagent.state === "running";
 		const lastActive = now - subagent.ago * 1000;
 		return {
+			runGeneration: 1,
 			delegateId: subagent.id,
 			ownerSessionId: demoSessionId(parent ?? session.slug),
 			rootSessionId: demoSessionId(session.slug),
@@ -748,7 +749,8 @@ function delegatesOf(session: FleetSession, now: number): EvenerDelegateInfo[] {
 			...(parent ? { parentDelegateId: parent } : {}),
 			type: "delegate",
 			lifecycle: "stable",
-			phase: running ? "running" : "idle",
+			// The hub closes a finished delegate that can't be resumed.
+			phase: running ? "running" : "closed",
 			status: SUBAGENT_STATUS[subagent.state],
 			terminal: !running,
 			// The activity tree carries the same outcome (demoSubagents.ts), so the

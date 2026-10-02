@@ -612,6 +612,7 @@ describe("a subagent", () => {
 		detail: { callId: "call-1", description: "Audit the store" },
 	});
 	const delegate = {
+		runGeneration: 1,
 		delegateId: "d1",
 		ownerSessionId: "s0",
 		rootSessionId: "s0",

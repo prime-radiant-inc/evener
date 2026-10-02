@@ -25,18 +25,19 @@ const (
 	// way HostEntry's json tags spell it). It shares CodeInvalidParams with
 	// plain validation refusals, so a client that wants to place a message on
 	// an input must match this discriminant, never the code.
-	ErrorInvalidHostField          ErrorInfo = "invalidHostField"
-	ErrorResourceNotFound          ErrorInfo = "resourceNotFound"
-	ErrorMethodNotFound            ErrorInfo = "methodNotFound"
-	ErrorProviderUnavailable       ErrorInfo = "providerUnavailable"
-	ErrorSessionUnavailable        ErrorInfo = "sessionUnavailable"
-	ErrorConflict                  ErrorInfo = "conflict"
-	ErrorActionUnavailable         ErrorInfo = "actionUnavailable"
-	ErrorHubLaunch                 ErrorInfo = "hubLaunch"
-	ErrorQueuedDrainPartial        ErrorInfo = "queuedDrainPartial"
-	ErrorMutationOutcomeUnknown    ErrorInfo = "mutationOutcomeUnknown"
-	ErrorTranscriptItemCursorStale ErrorInfo = "transcriptItemCursorStale"
-	ErrorInternal                  ErrorInfo = "internal"
+	ErrorInvalidHostField           ErrorInfo = "invalidHostField"
+	ErrorResourceNotFound           ErrorInfo = "resourceNotFound"
+	ErrorMethodNotFound             ErrorInfo = "methodNotFound"
+	ErrorProviderUnavailable        ErrorInfo = "providerUnavailable"
+	ErrorSessionUnavailable         ErrorInfo = "sessionUnavailable"
+	ErrorConflict                   ErrorInfo = "conflict"
+	ErrorActionUnavailable          ErrorInfo = "actionUnavailable"
+	ErrorHubLaunch                  ErrorInfo = "hubLaunch"
+	ErrorQueuedDrainPartial         ErrorInfo = "queuedDrainPartial"
+	ErrorMutationOutcomeUnknown     ErrorInfo = "mutationOutcomeUnknown"
+	ErrorTranscriptItemCursorStale  ErrorInfo = "transcriptItemCursorStale"
+	ErrorSessionActivityCursorStale ErrorInfo = "sessionActivityCursorStale"
+	ErrorInternal                   ErrorInfo = "internal"
 	// ErrorTranscriptHistoryFailed marks a read of a thread whose history
 	// entered its failed state: its projection or rebuild failed for a reason
 	// outside the entries (I/O, a corrupt index) three times in a row, and a
@@ -583,6 +584,19 @@ func TranscriptItemCursorStale() WireError {
 		Message: "transcript item cursor is stale; refresh the thread",
 		Data: ErrorData{
 			EvenerErrorInfo:  ErrorTranscriptItemCursorStale,
+			RetryDisposition: RetryDispositionAutomatic,
+		},
+	}
+}
+
+// SessionActivityCursorStale reports a cursor whose read source incarnation
+// changed. Clients restart only the affected collection and retain useful rows.
+func SessionActivityCursorStale() WireError {
+	return WireError{
+		Code:    CodeInvalidParams,
+		Message: "session activity cursor is stale; refresh the collection",
+		Data: ErrorData{
+			EvenerErrorInfo:  ErrorSessionActivityCursorStale,
 			RetryDisposition: RetryDispositionAutomatic,
 		},
 	}

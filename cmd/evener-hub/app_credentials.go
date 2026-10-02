@@ -3,7 +3,6 @@ package hub
 import (
 	"context"
 	"errors"
-	"strconv"
 	"strings"
 	"time"
 
@@ -186,6 +185,9 @@ func (c *hubAuthController) runCredentialTest(ctx context.Context, name, asserte
 	if required && inst.CredentialSource == "none" {
 		return credentialTestResponse(name, appwire.AuthTestStatusMissing, credentialTestMissingMessage), nil
 	}
+	// Noted before the client is built: the client reads the credential, and
+	// a write that lands after that read must void this probe's outcome.
+	probe := c.beginCredentialProbe(name)
 	childConfig, err := prepareChildProviderConfig(c.providersConfigPath, c.noUserLayer, c.reg, nil)
 	if err != nil {
 		return credentialTestResponse(name, appwire.AuthTestStatusConfigurationFailure, credentialTestConfigurationMessage), nil
@@ -210,6 +212,7 @@ func (c *hubAuthController) runCredentialTest(ctx context.Context, name, asserte
 	probeCtx, cancel := context.WithTimeout(withScopedCodexAuth(ctx, client.Registry()), credentialTestTimeout)
 	defer cancel()
 	listing, err := client.Models(probeCtx, name)
+	c.settleCredentialProbe(probe, listing, err)
 	if err != nil {
 		status, message := classifyCredentialTestError(err)
 		return credentialTestResponse(name, status, message), nil
@@ -224,20 +227,7 @@ func classifyCredentialTestError(err error) (string, string) {
 	if _, ok := errors.AsType[*llm.ConfigurationError](err); ok {
 		return appwire.AuthTestStatusConfigurationFailure, credentialTestConfigurationMessage
 	}
-
-	statusCode := 0
-	if llmErr, ok := errors.AsType[llm.Error](err); ok {
-		statusCode = llmErr.StatusCode()
-	}
-	if statusCode == 0 {
-		for _, code := range []int{401, 403} {
-			if strings.Contains(err.Error(), "HTTP "+strconv.Itoa(code)) || strings.Contains(err.Error(), "status="+strconv.Itoa(code)) {
-				statusCode = code
-				break
-			}
-		}
-	}
-	if statusCode == 401 || statusCode == 403 || llm.Kind(err) == llm.KindAuthentication || llm.Kind(err) == llm.KindAccessDenied {
+	if _, rejected := credentialRejectionStatus(err); rejected {
 		return appwire.AuthTestStatusAuthRejected, credentialTestAuthMessage
 	}
 	return appwire.AuthTestStatusEndpointFailure, credentialTestEndpointMessage

@@ -26,10 +26,9 @@
    * against the rail, bypasses the body's scroll clipping, and grows the page
    * to the full expanded tree height. */
   position: relative;
-  /* The leading padding is the signal dot's home: .signal outdents into it
-   * (negative margin, below), so the dot hangs LEFT of the text and every
-   * row's text starts at this one x - dotted or not. 14px = 4px edge
-   * breathing + 6px dot + 4px gap to the text. */
+  /* The leading padding is the status indicator's home: .signal outdents into
+   * it, so the indicator hangs left of the text and every title starts at the
+   * same x. The 8px spinner uses 2px edge breathing + 8px ring + 4px gap. */
   padding-left: 14px;
 }
 
@@ -44,6 +43,11 @@
  * never overrides its desktop sizing. */
 @media (pointer: coarse) {
   .railRow {
+    min-height: var(--tap-min);
+  }
+
+  .sessionTitle button.label {
+    min-width: var(--tap-min);
     min-height: var(--tap-min);
   }
 
@@ -201,23 +205,51 @@
   }
 }
 
-/* The signal dot renders only when the row has a dot to show - working /
- * waiting on you / failed - and hangs OUTDENTED, left of the title line's
- * text, so state never moves the text's x: the negative margin-left exactly
- * cancels the dot's own width (6px, matching cadence.module.css's .dot) plus
- * the .titleLine gap after it (var(--space-1)), so the title starts at the
- * same position whether or not a dot precedes it. The dot itself lands
- * inside .railRow's 14px leading padding (its left edge sits 4px in from the
- * row's box edge), never clipping at any nesting depth.
- *
- *   advance = margin-left (-10px) + width (6px) + .titleLine gap (4px) = 0
- */
+/* The negative margin offsets the indicator width and title gap, so quiet and
+ * signaled row titles stay aligned. */
 .signal {
   flex: none;
   display: inline-flex;
   align-items: center;
-  width: 6px;
-  margin-left: -10px;
+  justify-content: center;
+  width: 8px;
+  margin-left: -12px;
+}
+
+.statusDot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+.statusDot[data-status="needs-you"] {
+  background: var(--attention);
+}
+
+.statusDot[data-status="failed"] {
+  background: var(--danger);
+  border-radius: 1px;
+  transform: rotate(45deg);
+}
+
+.statusSpinner {
+  width: 8px;
+  height: 8px;
+  border: 1.5px solid var(--ink-mid);
+  border-top-color: transparent;
+  border-radius: 50%;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .statusSpinner {
+    animation: railStatusSpin 800ms linear infinite;
+  }
+}
+
+@keyframes railStatusSpin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 /* The title line: signal dot (outdented, when present), the label, and the
@@ -260,12 +292,8 @@
   cursor: default;
 }
 
-/* The row's text column: the title line, and on a signal row a gloss line
- * under it. A column rather than two siblings directly in `.railRow` so the
- * row's own `align-items: center` centers whatever it holds vertically
- * instead of stretching each line to the row's full height - which is what
- * keeps a one-line quiet row and a two-line signal row both vertically
- * centered. */
+/* The row's shrinkable text column. It remains a column so other row kinds can
+ * compose their own line structure without changing the outer row geometry. */
 .textCol {
   display: flex;
   flex-direction: column;
@@ -287,107 +315,97 @@
   font-size: var(--font-size-ui);
 }
 
-/* Second line, rendered only on a SIGNAL row (RailRow.tsx's SessionRow): a
- * short, honest gloss of why that row wants attention - the state worded for a
- * person, plus its branch. Never a faked liveness cue. A quiet row has no
- * second line at all, so this is also what makes signal rows taller than quiet
- * ones - deliberately, so the rows worth finding are physically bigger.
- * It ellipsizes inside the same min-width:0 column as the title, so a long
- * branch name costs the branch its tail rather than costing the title, the one
- * thing that identifies the row. */
-.activity {
+/* The HoverCard wrapper is an inline block, so this outer flex item owns
+ * shrinking and forwards the available width to it. The title keeps the same
+ * ellipsis contract it had before the rich hover surface replaced `title`. */
+.sessionTitle {
+  min-width: 0;
   overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  color: var(--ink-mid);
-  font-size: var(--font-size-caption);
 }
 
-/* kata zq7g: a signal row's gloss text is tinted to match its own Cadence
- * dot family (RailRow's local STATE_FAMILY, mirroring cadence/index.tsx's
- * private mapping - see that widget's own doc comment on why the mapping is
- * duplicated per surface rather than shared). Before this, EVERY signal
- * state (working/needs-you/failed) shared the same --ink-low grey text, so
- * the 6px dot was the only place the state's urgency actually showed - a
- * person had to already know to look there. Text carries the color instead
- * of adding new chrome (a banner, a pill) - "the design system has a
- * deliberate four-colour budget; prefer text" - so budget is never spent
- * twice for the same fact.
- *
- * RailRow.module.css is not a `widgets/<name>/<name>.module.css` path, so
- * this needs its own exact-path entry on token-contract.test.ts's
- * semantic-var allowlist (mirroring the dockview-theme.css naming exception) rather than
- * qualifying automatically under WIDGET_STYLESHEET_RE.
- */
-.activityAlive {
-  color: var(--alive);
+.sessionTitle > span,
+.sessionTitle .label {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  padding: 0;
+  border: 0;
+  background: none;
+  font-family: inherit;
+  font-weight: inherit;
+  line-height: inherit;
+  text-align: left;
 }
 
-.activityAttention {
-  color: var(--attention);
+.contextCard {
+  display: flex;
+  min-width: 220px;
+  max-width: 296px;
+  flex-direction: column;
+  gap: var(--space-2);
 }
 
-.activityDanger {
-  color: var(--danger);
-}
-
-/* The second line, when a row has one: the neutral watch count and/or the
- * tinted activity gloss, side by side. A flex row rather than putting the
- * count inside .activity, because .activity lives under the tint classes above
- * (activityAlive/activityAttention/activityDanger) and a watch must never
- * inherit a signal hue - it is pending work, not a call for a human, not a
- * failure, not a success (the design system's four-colour budget). */
-.secondLine {
+.contextHead {
   display: flex;
   align-items: baseline;
+  gap: var(--space-2);
+}
+
+.contextKind {
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-semibold);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-eyebrow);
+}
+
+.contextStatus {
+  color: var(--ink-mid);
+}
+
+.contextCard[data-state="needs-you"] .contextStatus {
+  color: var(--attention-ink);
+}
+
+.contextCard[data-state="failed"] .contextStatus {
+  color: var(--danger-ink);
+}
+
+.contextSummary {
+  color: var(--ink-hi);
+  overflow-wrap: anywhere;
+}
+
+.contextRows {
+  display: flex;
+  margin: 0;
+  flex-direction: column;
   gap: var(--space-1);
-  min-width: 0;
 }
 
-/* The gloss yields the line to the count and is the part that truncates: it
- * absorbs the row's slack while the count keeps its own width. Without this,
- * a long gloss would push the fixed-width count out of the line instead of
- * ellipsizing. */
-.secondLine > .activity {
-  flex: 1 1 auto;
-  min-width: 0;
+.contextRow {
+  display: grid;
+  grid-template-columns: minmax(64px, auto) minmax(0, 1fr);
+  gap: var(--space-2);
 }
 
-/* The watch count, in front of the gloss: neutral --ink-mid like the gloss's
- * own resting ink (never a semantic hue), and flex:none so ellipsis takes the
- * gloss's tail - the branch - rather than the count. */
-.watchCount {
-  flex: none;
-  white-space: nowrap;
+.contextKey {
   color: var(--ink-mid);
-  font-size: var(--font-size-caption);
 }
 
-/* A live root's subagent tally, beside the watch count: the same neutral,
- * non-shrinking caption, with the failed part alone in the danger hue. */
-.subagentTally {
-  flex: none;
-  white-space: nowrap;
-  color: var(--ink-mid);
-  font-size: var(--font-size-caption);
+.contextValue {
+  margin: 0;
+  color: var(--ink-hi);
+  overflow-wrap: anywhere;
 }
 
-.subagentFailed {
-  color: var(--danger);
-}
-
-/* The drawn clock a watch row leads with (RailRow's WatchGlyph): a fixed-size
- * inline mark, neutral by design. 13px keeps it inside the title line's
- * leading box without shifting the note off the title x of its sibling rows. */
-.watchGlyph {
-  flex: none;
-  width: 13px;
-  height: 13px;
-  color: var(--ink-mid);
+.contextMono {
+  font-family: var(--font-mono);
 }
 
 /* The drawn host glyph a host group row leads with (RailRow's HostGlyph):
- * the same fixed-size inline mark grammar as the watch row's clock - a host
+ * a fixed-size inline mark, neutral by design - a host
  * is infrastructure, not triage, so the glyph takes the signal dot's slot
  * without shifting the label off its sibling rows' title x. */
 .hostGlyph {

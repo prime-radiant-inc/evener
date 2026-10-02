@@ -66,7 +66,7 @@ export interface BoardController {
 /** The hub caps a section page at 50 rows. */
 const PAGE_LIMIT = 50;
 const PIN_CATALOG_LIMIT = 100;
-const MANIFEST_PARAMS = { resource: "manifest", representationVersion: 2 };
+const MANIFEST_PARAMS = { resource: "manifest", representationVersion: 3 };
 const MANIFEST_KEY = navigationParamsToResourceKey(MANIFEST_PARAMS);
 
 interface ManifestState {
@@ -229,7 +229,6 @@ const nothingRetained: Retained = {
 };
 const emptyPage = {
 	loaded: false,
-	truncated: false,
 	rows: [],
 	remaining: 0,
 	loading: false,

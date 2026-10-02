@@ -7,7 +7,9 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/envvars"
 )
 
 // writeEvenerwideCommand writes dir/<name>.md with content and returns dir.
@@ -138,6 +140,32 @@ func TestDiscoverEvenerWideCommands_IsolatedXDGConfigHome(t *testing.T) {
 	}
 }
 
+// TestDiscoverEvenerWideCommands_HidesUserGlobalWhenNoUserSkills pins #3487:
+// the tool-fluency harness sets EVENER_NO_USER_SKILLS so an eval round depends
+// only on the revision under test, and the operator's user-global commands are
+// one source that must not reach it. Project commands stay, so a probe still
+// sees the commands its own fixture declares.
+func TestDiscoverEvenerWideCommands_HidesUserGlobalWhenNoUserSkills(t *testing.T) {
+	t.Setenv(envvars.EVENERNoUserSkills.Name, "1")
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	writeEvenerwideCommand(t, filepath.Join(xdg, "evener", "commands"), "operator-cmd", "operator body")
+
+	workDir := t.TempDir()
+	writeEvenerwideCommand(t, filepath.Join(workDir, ".evener", "commands"), "project-cmd", "project body")
+
+	got, warnings := DiscoverEvenerWideCommands(execenv.NewLocalExecutionEnvironment(workDir))
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %v, want none", warnings)
+	}
+	if _, ok := got["operator-cmd"]; ok {
+		t.Errorf("operator user-global command reached a hermetic round: %v", maps.Keys(got))
+	}
+	if cmd, ok := got["project-cmd"]; !ok || cmd.Source != "project" {
+		t.Errorf("project command must remain; got %+v", cmd)
+	}
+}
+
 func TestDiscoverEvenerWideCommands_RejectsBadNames(t *testing.T) {
 	xdg := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdg)
@@ -164,6 +192,24 @@ func TestDiscoverEvenerWideCommands_MalformedFrontmatterSkipped(t *testing.T) {
 	got, warnings := DiscoverEvenerWideCommands(nil)
 	if len(got) != 0 || len(warnings) != 1 {
 		t.Errorf("got %d commands, %d warnings; want 0, 1", len(got), len(warnings))
+	}
+	if len(warnings) == 1 && warnings[0].Code != "" {
+		t.Errorf("malformed warning code = %q, want empty", warnings[0].Code)
+	}
+}
+
+func TestDiscoverEvenerWideCommands_UnenforcedFrontmatterIsCompatibilityAdvisory(t *testing.T) {
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	dir := filepath.Join(xdg, "evener", "commands")
+	writeEvenerwideCommand(t, dir, "front", "---\nmodel: gpt-5.2\nallowed-tools:\n  - shell\n---\nbody")
+
+	_, warnings := DiscoverEvenerWideCommands(nil)
+	if len(warnings) != 1 {
+		t.Fatalf("got %d warnings, want 1: %v", len(warnings), warnings)
+	}
+	if got := warnings[0].Code; got != events.WarningCodePluginCompatibility {
+		t.Errorf("warning code = %q, want %q", got, events.WarningCodePluginCompatibility)
 	}
 }
 

@@ -21,7 +21,7 @@ import type {
 	TranscriptDisplayConfig,
 	TranscriptDisplayDefaults,
 } from "@evener/appwire-client";
-import { HOST_DEPENDENT_DISCOVERY_METHODS } from "../../../cmd/evener-hub/frontend/src/stores/hostRouting";
+import { HOST_DEPENDENT_DISCOVERY_METHODS } from "@evener/appwire-client";
 import { type DemoFleet, EXPIRED_PROVIDER, PLUGINS, PROJECT_META } from "./demoFleet.js";
 
 const HUB_VERSION = "0.9.412";

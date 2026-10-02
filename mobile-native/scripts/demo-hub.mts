@@ -1,4 +1,7 @@
-// Explicitly launched network fixture for native UI checks; no Evener or LLM runs.
+// Explicitly launched network fixture for native UI checks; no Evener or LLM
+// runs. With EVENER_DEMO_FLEET it also answers the redesign's Board reads,
+// including evener/activity/read (S5): the fleet's live sessions' pulse meters,
+// running-subagent tally, quiet time and latest tool intent.
 import { once } from "node:events";
 import { createServer } from "node:http";
 import { readFileSync } from "node:fs";
@@ -823,8 +826,23 @@ export async function createDemoHub(
 					case "evener/navigation/read":
 						result = requireFleet().answerNavigationRead(params);
 						break;
-					case "evener/jobs/list":
-						result = requireFleet().answerJobsList(params);
+					case "evener/archived/list":
+						result = requireFleet().answerArchivedList(params);
+						break;
+					case "evener/thread/activity/read":
+						result = requireFleet().answerActivityRead(params);
+						break;
+					case "evener/activity/read":
+						result = requireFleet().answerPulseRead(params);
+						break;
+					case "evener/thread/delegates/list":
+						result = requireFleet().answerDelegatesList(params);
+						break;
+					case "evener/thread/jobs/list":
+						result = requireFleet().answerSessionJobsList(params);
+						break;
+					case "evener/thread/watches/list":
+						result = requireFleet().answerWatchesList(params);
 						break;
 					case "evener/jobs/output":
 						result = requireFleet().answerJobsOutput(params);

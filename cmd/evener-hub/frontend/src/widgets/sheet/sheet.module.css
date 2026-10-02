@@ -81,6 +81,17 @@
   animation: sheetInLeft var(--motion-duration-overlay) var(--motion-easing-standard);
 }
 
+/* 100vh is the large viewport while a phone's browser chrome is showing, which
+ * left the mobile sessions drawer's last row - the Archived sessions
+ * disclosure - unreachable; dvh follows the visible viewport, and 100vh stays
+ * as the fallback for engines without it. */
+@supports (height: 100dvh) {
+  .right,
+  .left {
+    height: 100dvh;
+  }
+}
+
 .standard {
   --sheet-inline-size: 420px;
 }

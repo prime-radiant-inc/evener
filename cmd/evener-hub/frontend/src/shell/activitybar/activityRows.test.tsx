@@ -1,44 +1,40 @@
-// activityRows' exported line builders, unit-tested directly (the rows
-// themselves are exercised through the tab and sidebar suites).
+import { render, screen } from "@testing-library/react";
+import { expect, test } from "vitest";
+import { activityDelegate, activityJob } from "../../stores/sessionActivityTestUtils";
+import { AgentRow, JobRow } from "./activityRows";
 
-import type { NavigationSessionSummary } from "@evener/appwire-client";
-import { describe, expect, test } from "vitest";
-import { agentRollupLine } from "./activityRows";
+test("stable delegate row uses authoritative phase and lifecycle without fabricated rollup counts", () => {
+  render(<AgentRow sub={activityDelegate({ lifecycle: "idle", phase: "waiting", status: "idle", terminal: false })} />);
+  expect(screen.getByText("inspect")).toBeTruthy();
+  expect(screen.queryByText(/agents|jobs/)).toBeNull();
+});
+test("ended delegate preserves the supplied failed outcome", () => {
+  render(
+    <AgentRow sub={activityDelegate({ terminal: true, outcome: "failed", status: "failed", error: "read error" })} />,
+  );
+  expect(screen.getByText(/failed/)).toBeTruthy();
+});
 
-function sub(partial: Partial<NavigationSessionSummary> = {}): NavigationSessionSummary {
-  return {
-    ref: "local:sub",
-    host_id: "local",
-    session_id: "sub",
-    title: "Sub",
-    project: "p",
-    state: "active",
-    kind: "subagent",
-    live: true,
-    children: [],
-    ...partial,
-  } as NavigationSessionSummary;
-}
+test("job rows identify the work by its description while retaining the exact command", () => {
+  const command = "while ! test -e release-monitor; do sleep 2; done";
+  const view = render(<JobRow job={activityJob({ description: "Release monitor", command })} />);
+  expect(screen.getByText("Release monitor").getAttribute("title")).toBe(command);
+  view.rerender(<JobRow job={activityJob({ description: "", command })} />);
+  expect(screen.getByText(command)).toBeTruthy();
+  view.rerender(<JobRow job={activityJob({ description: "", command: "", jobId: "job-no-label" })} />);
+  expect(screen.getByText("job-no-label")).toBeTruthy();
+});
 
-describe("agentRollupLine", () => {
-  test("counts the wire's omitted subagents in the agents figure", () => {
-    // The Agents tab's fold reports the TRUE total (loaded rows plus
-    // more_subagents); a rollup counting only loaded rows would understate
-    // the same scope one line away.
-    expect(agentRollupLine(sub({ children: [sub({ ref: "local:child" })], more_subagents: 2 }))).toContain("3 agents");
-  });
-
-  test("a lone loaded child still reads 1 agent", () => {
-    expect(agentRollupLine(sub({ children: [sub({ ref: "local:child" })] }))).toContain("1 agent");
-  });
-
-  test("fork originals never count as agents", () => {
-    expect(
-      agentRollupLine(
-        sub({
-          children: [sub({ ref: "local:fork", kind: "fork" }), sub({ ref: "local:child", kind: "subagent" })],
-        }),
-      ),
-    ).toContain("1 agent");
-  });
+test("delegate row prefers compact name while unnamed rows retain their prompt fallback", () => {
+  const { rerender } = render(
+    <AgentRow
+      sub={{ ...activityDelegate({ description: "Inspect the complete cache ownership" }), name: "inspect-cache" }}
+    />,
+  );
+  expect(screen.getByText("inspect-cache")).toBeTruthy();
+  expect(screen.queryByText("Inspect the complete cache ownership")).toBeNull();
+  rerender(
+    <AgentRow sub={{ ...activityDelegate({ description: "Inspect the complete cache ownership" }), name: " " }} />,
+  );
+  expect(screen.getByText("Inspect the complete cache ownership")).toBeTruthy();
 });

@@ -306,3 +306,55 @@ func TestBuildIncludesHubNotice(t *testing.T) {
 	}
 	t.Fatal("build() missing HubNotice")
 }
+
+func TestBuildIncludesSessionActivityResources(t *testing.T) {
+	want := map[string][]string{
+		"SessionActivityAncestor": {"ref", "sessionId", "title"},
+		"SessionActivityContext":  {"ref", "sessionId", "rootRef", "ancestors", "ancestryKnown", "epoch"},
+		"SessionActivityCounts":   {"known", "total", "active", "failed", "completed"},
+		"SessionActivityIssue":    {"ref", "code"},
+		"SessionActivityPage":     {"nextCursor", "complete", "issues"},
+		"SessionDelegate":         {"runGeneration", "reportPreview", "reportPreviewTruncated", "ownerRef", "childRef"},
+		"SessionWatch":            {"ownerRef", "receiverRef", "state", "watch"},
+	}
+	got := make(map[string]typeView)
+	for _, resource := range build().Types {
+		got[resource.Name] = resource
+	}
+	for name, fields := range want {
+		t.Run(name, func(t *testing.T) {
+			resource, ok := got[name]
+			if !ok {
+				t.Fatalf("build() missing nested resource %s", name)
+			}
+			present := make(map[string]bool)
+			for _, field := range resource.Fields {
+				present[field.JSON] = true
+			}
+			for _, field := range fields {
+				if !present[field] {
+					t.Errorf("%s missing wire field %s", name, field)
+				}
+			}
+		})
+	}
+}
+
+func TestBuildIncludesJobOutputTail(t *testing.T) {
+	for _, tv := range build().Types {
+		if tv.Name != "JobOutputTail" {
+			continue
+		}
+		fields := map[string]bool{}
+		for _, field := range tv.Fields {
+			fields[field.JSON] = true
+		}
+		for _, name := range []string{"tail", "totalBytes", "retainedStart", "truncated", "hasEarlier"} {
+			if !fields[name] {
+				t.Fatalf("JobOutputTail missing field %q: %+v", name, tv.Fields)
+			}
+		}
+		return
+	}
+	t.Fatal("build() missing JobOutputTail")
+}

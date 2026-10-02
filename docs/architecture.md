@@ -50,15 +50,17 @@ ordered-frame observer (`dialHubRPC`, `cmd/evener-tui/internal/hubstart`). The h
 is the AppWire **server** for the TUI and the browser, an AppWire **client** to
 each `evener serve` daemon it spawns, and — on a multi-host controller — an
 AppWire **relay** that carries frames to a remote host's hub over `ssh <dest>
-evener hub attach --stdio` (`appwire.StreamTransport`). `hubapi` is the hub's
-separate HTTP surface (health, navigation, refs, attention). The TypeScript clients
-also use AppWire through the shared client package; the TUI touches hubapi only
-for the best-effort environment health probe (`checkHubEnvironment`).
+evener hub attach --stdio` (`appwire.StreamTransport`). Navigation and session
+activity reads use AppWire. The [hub HTTP router](../cmd/evener-hub/web.go) serves
+the application, documents, assets, authentication, health and subscription
+diagnostics; it has no parallel navigation read endpoint. The TypeScript clients
+use the shared AppWire client package; the TUI's best-effort environment health
+probe (`checkHubEnvironment`) uses HTTP.
 
 ```
 browser ─┐
          ├─ AppWire /rpc (WS) ──▶ evener hub ──┬─ AppWire (WS) ──▶ evener serve daemon
-evener   │                                     └─ hubapi HTTP ────▶ health / navigation / refs
+evener   │                                     └─ HTTP /api/health ─▶ health probe
   tui ───┘
 
 remote host:  evener hub ── ssh ──▶ evener hub attach --stdio ── AppWire (stdio) ──▶ remote hub
@@ -66,10 +68,17 @@ remote host:  evener hub ── ssh ──▶ evener hub attach --stdio ── A
 
 The two shared **contracts** are ordinary top-level packages in the app module:
 `appwire/` (the JSON-RPC wire protocol over WebSocket or stdio, hop by hop between
-browser/`evener tui`, hub, and `evener serve` daemon) and `hubapi/` (the hub's HTTP
-API). Command-specific private code lives under `cmd/<command>/internal/`.
+browser/`evener tui`, hub, and `evener serve` daemon) and `hubapi/` (hub health and
+projection types, including navigation types carried by AppWire).
+Command-specific private code lives under `cmd/<command>/internal/`.
 `evener doctor` and `evener migrate` provide inspection and migration commands.
 `evener-dev` is checkout development tooling and is not installed with the product.
+
+[Session activity](product/session-activity.md) follows the same process
+boundaries: the agent projects existing delegate/job/watch authorities, daemon
+and hub handlers route the typed reads, and the shared TypeScript store owns
+observed demand and recovery. Navigation carries compact session summaries.
+Rendering adapters do not own network requests or lifecycle state.
 
 ## Placing responsibilities
 

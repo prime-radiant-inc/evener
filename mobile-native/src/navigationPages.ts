@@ -16,9 +16,8 @@ import {
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { singleFlight } from "./singleFlight";
 
-interface PageState<T> {
+export interface PageState<T> {
 	loaded: boolean;
-	truncated: boolean;
 	rows: T[];
 	remaining: number;
 	loading: boolean;
@@ -34,11 +33,28 @@ interface PageState<T> {
 export function updating(page: Pick<PageState<unknown>, "loading" | "error" | "stale" | "remaining">) {
 	return page.stale && !page.error;
 }
+/** What a page list reads and drives: NavigationPages for navigation's own
+ * resources, and ArchivedPages (archivedPages.ts) for a project's archived
+ * sessions, which navigation doesn't serve. */
+export interface PageSource<T> {
+	/** Whether navigation versions this list. A confirm step checks a change
+	 * against the version it read; an unversioned source has none to check. */
+	readonly navigationVersioned: boolean;
+	getSnapshot(): PageState<T>;
+	getResourceVersion(): NormalizedResource["version"] | null;
+	subscribe(listener: () => void): () => void;
+	watch(owner?: () => void): () => void;
+	refresh(): Promise<unknown>;
+	refreshAfter(receipt: NavigationMutation): Promise<unknown>;
+	more(): Promise<unknown>;
+	cancel(): void;
+	resume(): void;
+}
 type NativeNavigationParams = Omit<NavigationReadParams, "representationVersion">;
-export class NavigationPages<T> {
+export class NavigationPages<T> implements PageSource<T> {
+	readonly navigationVersioned = true;
 	private state: PageState<T> = {
 		loaded: false,
-		truncated: false,
 		rows: [],
 		remaining: 0,
 		loading: false,
@@ -75,7 +91,7 @@ export class NavigationPages<T> {
 	) {
 		this.resourceKey = navigationParamsToResourceKey({
 			...params,
-			representationVersion: 2,
+			representationVersion: 3,
 		});
 	}
 	/** Follow hub invalidations. Newer data is re-read here without user
@@ -190,7 +206,7 @@ export class NavigationPages<T> {
 			const offset = reset ? 0 : this.offset,
 				params = {
 					...this.params,
-					representationVersion: 2,
+					representationVersion: 3,
 					offset,
 					limit: this.limit,
 				},
@@ -251,7 +267,6 @@ export class NavigationPages<T> {
 					loaded: true,
 					rows: [],
 					remaining: 0,
-					truncated: false,
 					loading: false,
 					stale: false,
 					error: null,
@@ -309,7 +324,6 @@ export class NavigationPages<T> {
 			this.rereads.settle();
 			this.publish({
 				loaded: true,
-				truncated: data.truncated === true || (!reset && this.state.truncated),
 				rows: [...unique.values()],
 				remaining: Number(data.remaining),
 				loading: false,

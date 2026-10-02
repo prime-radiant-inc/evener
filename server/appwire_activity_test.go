@@ -68,6 +68,22 @@ func TestThreadListRootRowCarriesTheWholeTreesActivity(t *testing.T) {
 	}
 }
 
+// The row's intent is the root session's own words. The meter counts a
+// descendant's motion toward the root's bars, but a subagent's tool call must
+// never word the root's row, so only RecordAppEvent notes an intent.
+func TestThreadListRootRowIntentIsTheRootsOwn(t *testing.T) {
+	srv, _ := activityTestServer(t, "root")
+	srv.RecordAppEvent(toolCallStart("Running the suite."))
+	srv.RecordDescendantAppEvent("root", threadEvent("child-1", events.ToolCallStartData{
+		ToolName: "read_file", ArgumentsJSON: "{}", Description: "Reading the child's notes.",
+	}))
+
+	activity, _ := listedRootActivity(t, srv)
+	if activity == nil || activity.LatestIntent != "Running the suite." {
+		t.Fatalf("root row activity = %+v, want the root's own words", activity)
+	}
+}
+
 // A replaced identity is a different session: its meter starts empty, its
 // quiet clock starts when it is installed, and a late event from the replaced
 // tree counts for nothing.

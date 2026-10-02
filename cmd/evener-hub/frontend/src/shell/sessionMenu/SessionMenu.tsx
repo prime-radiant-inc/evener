@@ -19,12 +19,15 @@
 // and menu-only mounts never see them. They lead the menu in their own
 // group - a turn running away on a phone is the most time-critical thing
 // this menu can act on.
+
+import type { NavigationSessionSummary } from "@evener/appwire-client";
 import { type ChangeEvent, useState } from "react";
 import type { SessionPanelKind } from "../../panes/sessionPanels";
 import { Button, Dialog, Input } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { Menu, type MenuEntry } from "../../widgets/menu";
 import { PinSectionPicker } from "../rail/PinSectionPicker";
+import { isTopLevelSession } from "../rail/sessionKind";
 import { ForceStopDialog } from "./ForceStopDialog";
 import styles from "./sessionmenu.module.css";
 
@@ -35,6 +38,7 @@ export interface NavigationSessionModel {
   host_id: string;
   session_id: string;
   kind: string;
+  failure?: NavigationSessionSummary["failure"];
   top_level?: boolean;
   tier?: string;
   pin_section_id?: string;
@@ -42,7 +46,7 @@ export interface NavigationSessionModel {
 type PinSectionInfo = { id: string; name: string; member_count: number };
 
 export interface SessionMenuActions {
-  onOpenPane(pane: SessionPanelKind | "notes"): void;
+  onOpenPane(pane: SessionPanelKind): void;
   onRename(name: string): Promise<void>;
   onShutdown(): Promise<void>;
   onForceStop?(): Promise<void>;
@@ -73,12 +77,11 @@ export interface SessionMenuProps {
   triggerLabel: string; // sr-only trigger name: "Session actions" / `Actions for ${title}`
   canRename: boolean;
   canShutdown: boolean;
-  canReadNotes: boolean;
+  stopped: boolean;
   session?: NavigationSessionModel;
   /** Compatibility input for rail rows; the pane chrome uses `session`. */
   treeNode?: NavigationSessionModel;
-  panesOpen: { details: boolean; tasks: boolean; activity: boolean; notes: boolean };
-  taskLabel?: string; // e.g. "Tasks"; defaults to "Tasks"
+  panesOpen: { details: boolean; activity: boolean };
   activityLabel?: string; // e.g. "Activity · 2"; defaults to "Activity"
   /** Pane-only action. Rail/sidebar callers omit it. */
   onOpenVerbosity?: () => void;
@@ -105,11 +108,10 @@ export function SessionMenu({
   triggerLabel,
   canRename,
   canShutdown,
-  canReadNotes,
+  stopped,
   session,
   treeNode,
   panesOpen,
-  taskLabel,
   activityLabel,
   onOpenVerbosity,
   turnVerbs,
@@ -142,9 +144,8 @@ export function SessionMenu({
   // Organization actions are decisions about a top-level navigation row;
   // nested and remote rows retain the exact legacy restrictions.
   const sessionModel = session ?? treeNode;
-  const nestedKinds = new Set(["subagent", "fork"]);
   const organizationEligible =
-    sessionModel !== undefined && sessionModel.top_level !== false && !nestedKinds.has(sessionModel.kind);
+    sessionModel !== undefined && sessionModel.top_level !== false && isTopLevelSession(sessionModel);
   const deleteEligible = organizationEligible && sessionModel.host_id === "local";
 
   // Groups joined by separators: panes / organize / destructive. Both
@@ -152,20 +153,12 @@ export function SessionMenu({
   // the eligible-only items slot into their groups without orphaning a rule.
   const paneItems: MenuEntry[] = [
     { id: "details", label: checked("Details", panesOpen.details), onSelect: () => actions.onOpenPane("details") },
-    { id: "tasks", label: checked(taskLabel ?? "Tasks", panesOpen.tasks), onSelect: () => actions.onOpenPane("tasks") },
     {
       id: "activity",
       label: checked(activityLabel ?? "Activity", panesOpen.activity),
       onSelect: () => actions.onOpenPane("activity"),
     },
   ];
-  if (canReadNotes) {
-    paneItems.push({
-      id: "notes",
-      label: checked("Notes", panesOpen.notes),
-      onSelect: () => actions.onOpenPane("notes"),
-    });
-  }
   if (onOpenVerbosity) {
     paneItems.push({ id: "verbosity", label: "Verbosity…", onSelect: onOpenVerbosity });
   }
@@ -201,9 +194,9 @@ export function SessionMenu({
     },
   ];
   if (actions.onForceStop) {
-    destructiveItems.push({ id: "force-stop", label: "Force stop…", onSelect: () => setForceStopOpen(true) });
+    destructiveItems.push({ id: "force-stop", label: "Force shutdown…", onSelect: () => setForceStopOpen(true) });
   }
-  if (deleteEligible) {
+  if (deleteEligible && stopped) {
     destructiveItems.push({ id: "delete", label: "Delete…", onSelect: () => setDeleteOpen(true) });
   }
   // The turn verbs' own group, leading the menu (the header comment says

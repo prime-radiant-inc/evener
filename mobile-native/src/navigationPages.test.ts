@@ -1,3 +1,4 @@
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { describe, expect, it } from "vitest";
 import type {
 	AnyNotification,
@@ -5,7 +6,7 @@ import type {
 	NavigationReadParams,
 	NavigationReadResponse,
 } from "@evener/appwire-client";
-import { wireV2 } from "@evener/appwire-client/testing/navigation";
+import { wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { NavigationPages, updating } from "./navigationPages";
 
@@ -69,7 +70,7 @@ function boundary(resource: "catalog" | "section" = "catalog") {
 	}[] = [];
 	const arrivals = new Map<number, () => void>();
 	let notify: (event: AnyNotification) => void = () => {};
-	const client: ConversationClientLike = {
+	const client: ConversationClientLike = Object.assign(new FakeClient("ready"), {
 		request: (_method, params) =>
 			new Promise((resolve) => {
 				requests.push({ params: params as NavigationReadParams, resolve });
@@ -81,7 +82,7 @@ function boundary(resource: "catalog" | "section" = "catalog") {
 				notify = () => {};
 			};
 		},
-	};
+	} as Omit<ConversationClientLike, "state" | "onReady" | "onStateChange">);
 	return {
 		requests,
 		requested: (count: number) =>
@@ -118,9 +119,9 @@ function response(
 	offset = 0,
 	generation = "hub-generation",
 ): NavigationReadResponse {
-	return wireV2(
+	return wireSnapshot(
 		{
-			representationVersion: 2,
+			representationVersion: 3,
 			resource: "catalog",
 			catalog: "projects",
 			offset,
@@ -613,36 +614,6 @@ it("retries a read that predates a generation change during the request", async 
 	expect(pages.getSnapshot().stale).toBe(false);
 });
 
-it("retains session truncation across pages and clears it on refresh", async () => {
-	const { requests, pages } = boundary("section");
-	const page = (ref: string, offset: number, remaining: number, truncated: boolean) =>
-		wireV2(
-			{
-				representationVersion: 2,
-				resource: "section",
-				section: "live",
-				offset,
-				limit: 2,
-			},
-			{ sessions: [{ ref }], remaining, truncated },
-			`etag-${offset}`,
-			1,
-			"hub-generation",
-		);
-	const first = pages.refresh();
-	requests[0].resolve(page("a", 0, 1, true));
-	await first;
-	expect(pages.getSnapshot().truncated).toBe(true);
-	const next = pages.more();
-	requests[1].resolve(page("b", 1, 0, false));
-	await next;
-	expect(pages.getSnapshot().truncated).toBe(true);
-	const refresh = pages.refresh();
-	requests[2].resolve(page("c", 0, 0, false));
-	await refresh;
-	expect(pages.getSnapshot().truncated).toBe(false);
-});
-
 it("requires a post-mutation read to satisfy its receipt even without notifications", async () => {
 	const { requests, pages } = boundary();
 	const first = pages.refresh();
@@ -712,7 +683,7 @@ it("uses exact page bases for conditional refresh and preserves not-modified row
 	const { pages, requests } = boundary();
 	const first = pages.refresh();
 	expect(requests[0].params).toEqual({
-		representationVersion: 2,
+		representationVersion: 3,
 		resource: "catalog",
 		catalog: "projects",
 		offset: 0,
@@ -923,7 +894,7 @@ it("keeps every loaded page when a conditional refresh finds the list unchanged"
 it("re-reads the pin catalog when a section changes and does not spin on an older hub revision", async () => {
 	const requests: NavigationReadParams[] = [];
 	let notify: (event: AnyNotification) => void = () => {};
-	const client: ConversationClientLike = {
+	const client: ConversationClientLike = Object.assign(new FakeClient("ready"), {
 		onNotification: (listener) => {
 			notify = listener;
 			return () => {};
@@ -932,7 +903,7 @@ it("re-reads the pin catalog when a section changes and does not spin on an olde
 			const p = params as NavigationReadParams;
 			requests.push(p);
 			const offset = p.offset ?? 0;
-			return wireV2(
+			return wireSnapshot(
 				p,
 				{
 					pin_sections: [
@@ -949,7 +920,7 @@ it("re-reads the pin catalog when a section changes and does not spin on an olde
 				"hub-generation",
 			) as never;
 		},
-	};
+	} as Omit<ConversationClientLike, "state" | "onReady" | "onStateChange">);
 	const pages = new NavigationPages<{
 		id: string;
 		name: string;

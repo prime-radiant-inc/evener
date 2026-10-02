@@ -1,3 +1,4 @@
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 // The scripted hub the Board's navigation reads meet (boardData.ts), shared
 // by the suites that drive a board controller: each request waits until the
 // test answers it, by reader, in the order asked.
@@ -9,19 +10,19 @@ import type {
 	NavigationReadParams,
 	NavigationReadResponse,
 } from "@evener/appwire-client";
-import { wireV2 } from "@evener/appwire-client/testing/navigation";
+import { wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 
 export function boundary() {
 	const requests: Array<{
 		method: string;
-		params: NavigationReadParams;
+		params: NavigationReadParams & { cursor?: string };
 		resolve: (value: NavigationReadResponse) => void;
 		reject: (error: Error) => void;
 		answered: boolean;
 	}> = [];
 	const listeners = new Set<(event: AnyNotification) => void>();
-	const client: ConversationClientLike = {
+	const client: ConversationClientLike = Object.assign(new FakeClient("ready"), {
 		request: (method, params) =>
 			new Promise((resolve, reject) => {
 				requests.push({
@@ -36,15 +37,15 @@ export function boundary() {
 			listeners.add(listener);
 			return () => listeners.delete(listener);
 		},
-	};
+	} as Omit<ConversationClientLike, "state" | "onReady" | "onStateChange">);
 	return { client, requests, listeners };
 }
 export type Hub = ReturnType<typeof boundary>;
 export function response(params: NavigationReadParams, data: unknown, revision = 1) {
-	return wireV2(
+	return wireSnapshot(
 		{
 			...params,
-			representationVersion: 2,
+			representationVersion: 3,
 			offset: params.offset ?? 0,
 			limit: params.limit ?? 50,
 		},

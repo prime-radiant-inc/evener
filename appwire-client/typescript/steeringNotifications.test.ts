@@ -1,6 +1,8 @@
 // @vitest-environment node
 
 import { expect, test } from "vitest";
+import delegateUserStopGo from "../../agent/delegate_user_stop.go?raw";
+import foldGo from "../../agent/internal/delegatestore/fold.go?raw";
 import {
   type ParsedNotification,
   parseSteeringNotifications,
@@ -1241,6 +1243,525 @@ test("a subagent's report parses its name, outcome and message from the packet b
   expect(n?.rawText).toBe(notificationWireItem("delegate-reported").text);
 });
 
+// A reported packet's payload rides the wire in two pieces
+// (agent/subagents.go): the packet's message carries the terminal
+// communicate's result text - the plain message, or the canonical
+// {"message","data","artifacts"} envelope when the delegate reported through a
+// result schema (agent/session_tools_communicate.go's resultText) - and the
+// schema-validated data rides a separate structured_result field with its own
+// verdict. The card renders the message as the subagent's report and the data
+// as a table, so the parser reads all three and never hands the raw envelope
+// through as prose.
+const structuredPacketFrame = (packet: Record<string, unknown>) =>
+  `<delegate-notification delegate_id="dlg_1" name="task2-review">${JSON.stringify(packet)}</delegate-notification>`;
+
+const REPORT_ENVELOPE = JSON.stringify({
+  message: "Non-null assertions removed; no new breakage found.",
+  data: {
+    finding_verdict: "ADDRESSED",
+    fix_round: "All findings addressed, no new Critical/Important breakage",
+    new_breakage: "None",
+    tests_rerun: "false",
+    artifacts: [],
+  },
+  artifacts: [],
+});
+
+test("a reported packet with a structured result parses the envelope out of its message", () => {
+  const [n] = notificationsOf(
+    parseSteeringNotifications(
+      structuredPacketFrame({
+        kind: "reported",
+        message: REPORT_ENVELOPE,
+        structured_result: {
+          finding_verdict: "ADDRESSED",
+          fix_round: "All findings addressed, no new Critical/Important breakage",
+          new_breakage: "None",
+          tests_rerun: "false",
+          artifacts: [],
+        },
+        structured_result_valid: true,
+        metadata: { outcome: "completed", name: "task2-review" },
+      }),
+    ),
+  );
+  expect(n).toMatchObject({
+    type: "delegate",
+    title: "Delegate completed",
+    message: "Non-null assertions removed; no new breakage found.",
+    structuredResultValid: true,
+  });
+  expect(n?.structuredResult).toEqual({
+    finding_verdict: "ADDRESSED",
+    fix_round: "All findings addressed, no new Critical/Important breakage",
+    new_breakage: "None",
+    tests_rerun: "false",
+    artifacts: [],
+  });
+  expect(n?.structuredResultReason).toBeUndefined();
+});
+
+// Packets recorded before the structured_result fields existed (or from a
+// daemon older than them) still carry the schema output inside the envelope,
+// so history renders the same table as a live frame.
+test("a packet from before structured_result rode the wire reads the envelope's data", () => {
+  const [n] = notificationsOf(
+    parseSteeringNotifications(
+      structuredPacketFrame({
+        kind: "reported",
+        message: REPORT_ENVELOPE,
+        metadata: { outcome: "completed", name: "task2-review" },
+      }),
+    ),
+  );
+  expect(n?.message).toBe("Non-null assertions removed; no new breakage found.");
+  expect(n?.structuredResult).toEqual({
+    finding_verdict: "ADDRESSED",
+    fix_round: "All findings addressed, no new Critical/Important breakage",
+    new_breakage: "None",
+    tests_rerun: "false",
+    artifacts: [],
+  });
+  expect(n?.structuredResultValid).toBeUndefined();
+});
+
+test("a plain reported message claims no structured result", () => {
+  const [n] = wireNotifications("delegate-reported");
+  expect(n?.message).toBe("Done: the settle pass now waits for the drain.\n\nTests: go test ./agent/... passes.");
+  expect(n?.structuredResult).toBeUndefined();
+  expect(n?.structuredResultValid).toBeUndefined();
+  expect(n?.structuredResultReason).toBeUndefined();
+});
+
+// A structured result the daemon refused to capture or validate never rides
+// the packet (captureDelegateStructuredResult returns before setting it), so
+// an invalid verdict suppresses the envelope's data too: rows that failed
+// their schema must not render as an authoritative table.
+test("a structured result the daemon refused to validate parses its verdict and reason", () => {
+  const [n] = notificationsOf(
+    parseSteeringNotifications(
+      structuredPacketFrame({
+        kind: "reported",
+        message: REPORT_ENVELOPE,
+        structured_result_valid: false,
+        structured_result_reason: "schema_result_too_large",
+        metadata: { outcome: "completed", name: "task2-review" },
+      }),
+    ),
+  );
+  expect(n?.message).toBe("Non-null assertions removed; no new breakage found.");
+  expect(n?.structuredResult).toBeUndefined();
+  expect(n?.structuredResultValid).toBe(false);
+  expect(n?.structuredResultReason).toBe("schema_result_too_large");
+});
+
+// A packet message that is JSON but not an envelope (no string `message`) is
+// the subagent's own text, whatever it looks like: it stays whole.
+test("a packet message that is JSON but not an envelope stays whole", () => {
+  const [n] = notificationsOf(
+    parseSteeringNotifications(
+      structuredPacketFrame({
+        kind: "reported",
+        message: JSON.stringify({ verdict: "all clear" }),
+        metadata: { outcome: "completed" },
+      }),
+    ),
+  );
+  expect(n?.message).toBe('{"verdict":"all clear"}');
+  expect(n?.structuredResult).toBeUndefined();
+});
+
+// A terminal_error packet's message is the run's error text (or a report the
+// run managed before failing), and the daemon captures a structured result on
+// the reported path only (agent/subagents.go: captureDelegateStructuredResult
+// runs inside the reported branch). An error body that happens to be shaped
+// like an envelope must not become rows: its message field may still read as
+// the content, but its data has no validation verdict behind it.
+test("a terminal_error packet whose message is envelope-shaped never yields a table", () => {
+  const [n] = notificationsOf(
+    parseSteeringNotifications(
+      structuredPacketFrame({
+        kind: "terminal_error",
+        message: JSON.stringify({ message: "rate limited after four retries", data: { retry: "no" }, artifacts: [] }),
+        metadata: { outcome: "failed", reason: "run_error", error: "provider returned 429" },
+      }),
+    ),
+  );
+  expect(n?.message).toBe("rate limited after four retries");
+  expect(n?.structuredResult).toBeUndefined();
+});
+
+// The kind gates BOTH structured-result sources and their verdict fields, not
+// just the envelope fallback: a terminal_error frame never carries a validated
+// result from a current daemon (captureDelegateStructuredResult runs inside
+// the reported branch only), so whatever structured-result fields its body
+// happens to carry have no verdict behind them and must not become rows.
+test("a terminal_error packet carrying structured-result fields yields neither table nor verdict", () => {
+  const [n] = notificationsOf(
+    parseSteeringNotifications(
+      structuredPacketFrame({
+        kind: "terminal_error",
+        message: "the run reported once, then the provider 429ed",
+        structured_result: { retry: "no" },
+        structured_result_valid: true,
+        structured_result_reason: "schema_validation_failed",
+        metadata: { outcome: "failed", reason: "run_error" },
+      }),
+    ),
+  );
+  expect(n?.message).toBe("the run reported once, then the provider 429ed");
+  expect(n?.structuredResult).toBeUndefined();
+  expect(n?.structuredResultValid).toBeUndefined();
+  expect(n?.structuredResultReason).toBeUndefined();
+});
+
+// A delegate with NO result schema reports through the default output envelope
+// (session_tools_communicate.go's default {message, data, artifacts} shape), and
+// the daemon captures that whole envelope as the structured result (the
+// communicate tool hands captureDelegateStructuredResult the raw `output`
+// argument; with no schema it stores it and marks it valid without
+// validating - agent/subagents.go). The frame then carries the caller's fields
+// nested inside structured_result.data - one copy of the very envelope the
+// message field already parses - so the parser reads the data out, not
+// Message/Data/Artifacts wrappers with the message duplicated and the data
+// blob truncated.
+const DEFAULT_CAPTURE_ENVELOPE = JSON.stringify({
+  message: "Rebased the branch cleanly.",
+  data: { rebased: "main", conflicts: "none" },
+  artifacts: [],
+});
+
+test("a no-schema delegate's envelope capture reads the envelope's data", () => {
+  const [n] = notificationsOf(
+    parseSteeringNotifications(
+      structuredPacketFrame({
+        kind: "reported",
+        message: DEFAULT_CAPTURE_ENVELOPE,
+        structured_result: {
+          message: "Rebased the branch cleanly.",
+          data: { rebased: "main", conflicts: "none" },
+          artifacts: [],
+        },
+        structured_result_valid: true,
+        metadata: { outcome: "completed", name: "task3-rebase" },
+      }),
+    ),
+  );
+  expect(n?.message).toBe("Rebased the branch cleanly.");
+  expect(n?.structuredResult).toEqual({ rebased: "main", conflicts: "none" });
+});
+
+// The unwrap fires only on the exact default envelope: a schema whose fields
+// merely neighbor the envelope's (message and data, no artifacts) is the
+// caller's own shape and stays whole.
+test("a schema result that merely neighbors the envelope's keys stays whole", () => {
+  const [n] = notificationsOf(
+    parseSteeringNotifications(
+      structuredPacketFrame({
+        kind: "reported",
+        message: JSON.stringify({ message: "Read the fixture.", data: { rows: 3 } }),
+        structured_result: { message: "Read the fixture.", data: { rows: 3 } },
+        structured_result_valid: true,
+        metadata: { outcome: "completed", name: "task3-neighbor" },
+      }),
+    ),
+  );
+  expect(n?.structuredResult).toEqual({ message: "Read the fixture.", data: { rows: 3 } });
+});
+
+// The exact collision #3548 closes: a result schema whose top-level fields are
+// exactly the default envelope's - a matching message and a string-array
+// artifacts - produces a frame byte-identical to a no-schema capture. The
+// packet's structured_result_source marker settles it: a schema source stays
+// whole, so the caller's own fields render as rows instead of unwrapping to
+// the envelope's data.
+test("a schema result that is the default envelope's exact shape stays whole", () => {
+  const whole = { message: "Rebased the branch cleanly.", data: { rebased: "main" }, artifacts: [] };
+  const [n] = notificationsOf(
+    parseSteeringNotifications(
+      structuredPacketFrame({
+        kind: "reported",
+        message: JSON.stringify(whole),
+        structured_result: whole,
+        structured_result_valid: true,
+        structured_result_source: "schema",
+        metadata: { outcome: "completed", name: "task3-schema-envelope" },
+      }),
+    ),
+  );
+  expect(n?.structuredResult).toEqual(whole);
+});
+
+// The daemon stamps `default_envelope` from the absence of a result schema, but
+// a no-schema delegate can still inherit a widened communicate output schema
+// (WithAllowedDecisions adds a `decision` key), so the marker alone cannot
+// prove the capture is the canonical envelope. The unwrap keeps requiring the
+// exact default shape, so a widened capture stays whole instead of silently
+// dropping `decision` and `artifacts` (roborev Medium on #3548).
+test("a marked default-envelope capture widened with a decision stays whole", () => {
+  const widened = { decision: "keep_config", message: "Kept the config.", data: { kept: true }, artifacts: [] };
+  const [n] = notificationsOf(
+    parseSteeringNotifications(
+      structuredPacketFrame({
+        kind: "reported",
+        message: JSON.stringify(widened),
+        structured_result: widened,
+        structured_result_valid: true,
+        structured_result_source: "default_envelope",
+        metadata: { outcome: "completed", name: "task3-decisions" },
+      }),
+    ),
+  );
+  expect(n?.structuredResult).toEqual(widened);
+});
+
+// A no-schema delegate can also inherit a custom communicate output schema
+// with no `data` key. Unwrapping such a capture to `captured.data` would yield
+// undefined and hide the whole result; the exact-shape requirement keeps it
+// whole instead (roborev Medium on #3548).
+test("a marked default-envelope capture with no data key stays whole", () => {
+  const custom = { plan: "step one" };
+  const [n] = notificationsOf(
+    parseSteeringNotifications(
+      structuredPacketFrame({
+        kind: "reported",
+        message: JSON.stringify(custom),
+        structured_result: custom,
+        structured_result_valid: true,
+        structured_result_source: "default_envelope",
+        metadata: { outcome: "completed", name: "task3-plan" },
+      }),
+    ),
+  );
+  expect(n?.structuredResult).toEqual(custom);
+});
+
+// Repair zero-fills a missing output.message with "" before the daemon
+// captures the raw `output` (fillCommunicateEnvelope mutates args in place,
+// session_tools_communicate.go), while the packet's message rides the
+// canonical envelope of effectiveOutput - its message backfilled from the
+// call's top-level message. A report whose message rode the top level is a
+// documented call shape, so the zero-filled capture unwraps too.
+test("a report whose message rode the top level still unwraps", () => {
+  const [n] = notificationsOf(
+    parseSteeringNotifications(
+      structuredPacketFrame({
+        kind: "reported",
+        message: JSON.stringify({ message: "Rebased and pushed.", data: { rebased: "main" }, artifacts: [] }),
+        structured_result: { message: "", data: { rebased: "main" }, artifacts: [] },
+        structured_result_valid: true,
+        metadata: { outcome: "completed", name: "task5-topline" },
+      }),
+    ),
+  );
+  expect(n?.message).toBe("Rebased and pushed.");
+  expect(n?.structuredResult).toEqual({ rebased: "main" });
+});
+
+// A custom schema may allow an explicit null (the daemon captures output: null
+// as json.RawMessage("null") and marks it present and valid,
+// session_communicate_atomic_test.go's "custom schema explicit null"). The
+// null is a present result: it parses through so the card can say "(none)"
+// instead of rendering nothing.
+test("a validated explicit null result parses through", () => {
+  const [n] = notificationsOf(
+    parseSteeringNotifications(
+      structuredPacketFrame({
+        kind: "reported",
+        message: "The schema allowed null.",
+        structured_result: null,
+        structured_result_valid: true,
+        metadata: { outcome: "completed", name: "task6-null" },
+      }),
+    ),
+  );
+  expect(n?.structuredResult).toBeNull();
+  expect(n?.structuredResultValid).toBe(true);
+});
+
+// Frames recorded before structured_result carried the schema output inside
+// the message envelope's data - whatever shape the caller's fields took, not
+// only objects.
+test("a legacy envelope's array data parses through", () => {
+  const [n] = notificationsOf(
+    parseSteeringNotifications(
+      structuredPacketFrame({
+        kind: "reported",
+        message: JSON.stringify({ message: "Swept.", data: ["alpha", "beta"], artifacts: [] }),
+        metadata: { outcome: "completed", name: "task7-sweep" },
+      }),
+    ),
+  );
+  expect(n?.message).toBe("Swept.");
+  expect(n?.structuredResult).toEqual(["alpha", "beta"]);
+});
+
+// A result schema may top at an array or a scalar, and the daemon validates
+// and stores such a result as-is (validateStructuredResult compiles the
+// caller's schema; only the parser's isPlainObject used to reject it). The
+// value parses through so the card can render it through its value grammar
+// instead of a validated result silently vanishing.
+test("a validated non-object result parses through", () => {
+  const [n] = notificationsOf(
+    parseSteeringNotifications(
+      structuredPacketFrame({
+        kind: "reported",
+        message: "Swept the corpus.",
+        structured_result: ["alpha", "beta"],
+        structured_result_valid: true,
+        metadata: { outcome: "completed", name: "task4-sweep" },
+      }),
+    ),
+  );
+  expect(n?.structuredResult).toEqual(["alpha", "beta"]);
+  expect(n?.structuredResultValid).toBe(true);
+});
+
+// The daemon's packet.message is either the plain message or the canonical
+// nodeOutput envelope - {message, data, artifacts}, plus an optional decision
+// (session_tools_communicate.go marshals every non-decision field without
+// omitempty, so the canonical shape always carries all three keys). JSON
+// beyond that shape is the subagent's own text: a report whose body merely
+// HAS a "message" key keeps its whole text, never reduced to the string under
+// that key.
+test("a plain JSON report with extra keys stays whole", () => {
+  const [n] = notificationsOf(
+    parseSteeringNotifications(
+      structuredPacketFrame({
+        kind: "reported",
+        message: JSON.stringify({ message: "done", details: "kept in full" }),
+        metadata: { outcome: "completed", name: "task8-plain" },
+      }),
+    ),
+  );
+  expect(n?.message).toBe(JSON.stringify({ message: "done", details: "kept in full" }));
+  expect(n?.structuredResult).toBeUndefined();
+});
+
+// Only a stopped or failed run writes the machinery stub phrases (the fold's
+// bare stop, the user stop, context.Canceled's error text). A reported run's
+// message is the subagent's own report, however short: a completed delegate
+// that really said one of them keeps its words.
+test("a completed run whose report is exactly a machinery phrase keeps its message", () => {
+  const [n] = notificationsOf(
+    parseSteeringNotifications(
+      structuredPacketFrame({
+        kind: "reported",
+        message: "Stopped by the user.",
+        metadata: { outcome: "completed", name: "task9-literal" },
+      }),
+    ),
+  );
+  expect(n?.message).toBe("Stopped by the user.");
+});
+
+// normalizeNodeOutput keeps output.message as the model wrote it, whitespace
+// included (session_tools_communicate.go), while parsePacketEnvelope trims the
+// message it extracts - so the capture and the packet's envelope can carry the
+// same words with different surrounding whitespace. The comparison reads
+// trimmed on both sides; the zero-filled empty case still fires.
+test("a capture whose message carries whitespace still unwraps", () => {
+  const [n] = notificationsOf(
+    parseSteeringNotifications(
+      structuredPacketFrame({
+        kind: "reported",
+        message: JSON.stringify({
+          message: "Rebased with whitespace.\n",
+          data: { rebased: "main" },
+          artifacts: [],
+        }),
+        structured_result: { message: "Rebased with whitespace.\n", data: { rebased: "main" }, artifacts: [] },
+        structured_result_valid: true,
+        metadata: { outcome: "completed", name: "task10-whitespace" },
+      }),
+    ),
+  );
+  expect(n?.structuredResult).toEqual({ rebased: "main" });
+});
+
+// The canonical envelope's artifacts is an array (nodeOutput.Artifacts is a
+// []string); a plain JSON report whose artifacts key holds anything else is
+// the subagent's own text, not a wire envelope, and stays whole.
+test("a plain JSON report with a non-array artifacts stays whole", () => {
+  const [n] = notificationsOf(
+    parseSteeringNotifications(
+      structuredPacketFrame({
+        kind: "reported",
+        message: JSON.stringify({ message: "done", data: { rows: 1 }, artifacts: "none" }),
+        metadata: { outcome: "completed", name: "task11-artifacts" },
+      }),
+    ),
+  );
+  expect(n?.message).toBe(JSON.stringify({ message: "done", data: { rows: 1 }, artifacts: "none" }));
+  expect(n?.structuredResult).toBeUndefined();
+});
+
+// The default schema types artifacts as an array of strings
+// (definitions.go:647-651), so a real capture can never carry non-string
+// artifacts - a result that does is a schema's own shape and stays whole.
+test("a schema result whose artifacts are not strings stays whole", () => {
+  const whole = { message: "Read.", data: { rows: 1 }, artifacts: [1] };
+  const [n] = notificationsOf(
+    parseSteeringNotifications(
+      structuredPacketFrame({
+        kind: "reported",
+        message: JSON.stringify(whole),
+        structured_result: whole,
+        structured_result_valid: true,
+        metadata: { outcome: "completed", name: "task12-artifacts" },
+      }),
+    ),
+  );
+  expect(n?.structuredResult).toEqual(whole);
+});
+
+// The canonical envelope's artifacts is a string array on the wire
+// (nodeOutput.Artifacts []string): a plain JSON report whose artifacts key
+// holds other values is the subagent's own text and stays whole, the same as
+// the non-array case.
+test("a plain JSON report with non-string artifacts stays whole", () => {
+  const [n] = notificationsOf(
+    parseSteeringNotifications(
+      structuredPacketFrame({
+        kind: "reported",
+        message: JSON.stringify({ message: "done", data: { rows: 1 }, artifacts: [1] }),
+        metadata: { outcome: "completed", name: "task13-artifacts" },
+      }),
+    ),
+  );
+  expect(n?.message).toBe(JSON.stringify({ message: "done", data: { rows: 1 }, artifacts: [1] }));
+  expect(n?.structuredResult).toBeUndefined();
+});
+
+// A legacy attribute frame's raw reason code never reaches the head: the
+// secondary carries identity only, so an unlabeled frame's static head has
+// no code to render and a labeled one's head composes the ending words.
+test("a legacy failed frame's secondary carries no reason code", () => {
+  const [n] = notificationsOf(
+    parseSteeringNotifications('<delegate-notification status="failed" reason="exit_nonzero"></delegate-notification>'),
+  );
+  expect(n?.reason).toBe("exit_nonzero");
+  expect(n?.secondary).toBe("");
+});
+
+// The packet's ending is display prose - the one reason-shaped value a phone
+// line can say beneath a headline. A legacy attribute frame's `reason` is the
+// producer's raw code (exit_nonzero, stopped_by_parent) and never earns that
+// seat, so `ending` is the packet frame's alone.
+test("a packet frame's ending is the words its reason already says", () => {
+  const [n] = wireNotifications("delegate-failed-unnamed");
+  expect(n?.ending).toBe("go test exited 1 three times");
+  expect(n?.reason).toBe(n?.ending);
+});
+
+test("a legacy attribute frame claims no ending", () => {
+  const frame =
+    '<delegate-notification delegate_id="dlg_2" name="Split the retry loop" status="failed" reason="exit_nonzero"></delegate-notification>';
+  const [n] = notificationsOf(parseSteeringNotifications(frame));
+  expect(n?.reason).toBe("exit_nonzero");
+  expect(n?.ending).toBeUndefined();
+});
+
 // The packet's metadata carries the run's cause beside its reason code
 // (#3327); the card says the cause, never the bare code.
 test("an unnamed subagent's failure parses as a failure carrying its message", () => {
@@ -1251,11 +1772,13 @@ test("an unnamed subagent's failure parses as a failure carrying its message", (
     tone: "error",
     outcome: "failed",
     delegateId: "dlg_2",
-    message: "go test exited 1 three times",
     reason: "go test exited 1 three times",
     secondary: "dlg_2 · go test exited 1 three times",
   });
   expect(n?.name).toBeUndefined();
+  // The packet message IS the head's ending (the error's first line), and a
+  // body that repeats its head is the duplication this card removes.
+  expect(n?.message).toBeUndefined();
 });
 
 test("a subagent the user stopped parses as stopped", () => {
@@ -1265,8 +1788,8 @@ test("a subagent the user stopped parses as stopped", () => {
     tone: "warning",
     outcome: "stopped",
     name: "Check drain ordering",
-    message: "Stopped by the user.",
   });
+  expect(n?.message).toBeUndefined();
 });
 
 test("a parent's stop that cancelled a run carrying its own packet reads as stopped", () => {
@@ -1284,7 +1807,7 @@ test("a terminal_error packet with no metadata reads as a failure", () => {
     message: "stopped by parent",
   })}</delegate-notification>`;
   expect(notificationsOf(parseSteeringNotifications(frame))).toMatchObject([
-    { type: "delegate", title: "Delegate failed", outcome: "failed", message: "stopped by parent" },
+    { type: "delegate", title: "Delegate failed", outcome: "failed" },
   ]);
 });
 
@@ -1295,8 +1818,81 @@ test("a parent's stop reads as stopped", () => {
     title: "Delegate stopped",
     outcome: "stopped",
     name: "Tail the hub log",
-    message: "stopped by parent",
   });
+  expect(n?.message).toBeUndefined();
+});
+
+// The stub phrases a machinery ending writes as its packet message - fold.go's
+// bare stop packet ("stopped by parent"), delegate_user_stop.go's
+// delegateUserStopMessage, and context.Canceled's own error text - restate the
+// ending the head's reason already says in words. None of them is a report,
+// so none parses as the subagent's message.
+test("machinery stop stubs do not parse as the subagent's message", () => {
+  for (const stub of ["stopped by parent", "Stopped by the user.", "context canceled"]) {
+    const [n] = notificationsOf(
+      parseSteeringNotifications(
+        structuredPacketFrame({
+          kind: "terminal_error",
+          message: stub,
+          metadata: { outcome: "stopped", reason: "stopped_by_parent" },
+        }),
+      ),
+    );
+    expect(n?.message, `stub ${stub}`).toBeUndefined();
+  }
+});
+
+// The stub set above is handwritten on this side of the wire, so a producer
+// rewording its literal would silently regress the suppression - the exact
+// bug the set fixes. The daemon's own literals are pinned in Go source, so
+// read them the way delegateDetails.test.ts reads ending words: extract each
+// literal from the file that owns it and prove the parser still retires it.
+// (context.Canceled's "context canceled" is Go stdlib text with no repo
+// constant to read; the test above pins it as a literal.)
+test("the machinery stub set tracks the daemon's own pinned literals", () => {
+  const literals = [
+    /Message:\s*json\.RawMessage\(`"([^"`]+)"`\)/.exec(foldGo)?.[1],
+    /delegateUserStopMessage\s*=\s*"([^"]+)"/.exec(delegateUserStopGo)?.[1],
+  ].filter((literal): literal is string => literal !== undefined);
+  // The extraction itself is the alarm: a reworded producer no longer matches
+  // its pattern, so these contain checks fail before the behavior check runs.
+  expect(literals).toContain("stopped by parent");
+  expect(literals).toContain("Stopped by the user.");
+  for (const stub of literals) {
+    const [n] = notificationsOf(
+      parseSteeringNotifications(
+        structuredPacketFrame({
+          kind: "terminal_error",
+          message: stub,
+          metadata: { outcome: "stopped", reason: "stopped_by_parent" },
+        }),
+      ),
+    );
+    expect(n?.message, `daemon literal ${stub}`).toBeUndefined();
+  }
+});
+
+// A failed run whose whole error is one line says everything on the head (the
+// ending IS the error); one that runs past its first line keeps its full text
+// as the message, because the head shows only that first line.
+test("a failed run whose error runs past its first line keeps the full text as the message", () => {
+  const [n] = notificationsOf(
+    parseSteeringNotifications(
+      structuredPacketFrame({
+        kind: "terminal_error",
+        message: "provider returned 500\nretry-after: 30",
+        metadata: { outcome: "failed", reason: "run_error", error: "provider returned 500\nretry-after: 30" },
+      }),
+    ),
+  );
+  expect(n?.reason).toBe("provider returned 500");
+  expect(n?.message).toBe("provider returned 500\nretry-after: 30");
+});
+
+// An exhausted run's message names the limit the ending does not, so it stays.
+test("an exhausted run keeps its budget message", () => {
+  const [n] = wireNotifications("delegate-exhausted");
+  expect(n?.message).toBe("max_turns exhausted at limit 40");
 });
 
 // The settled outcome is delegatestore.OutcomeStatus

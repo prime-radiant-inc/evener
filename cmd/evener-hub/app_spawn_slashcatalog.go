@@ -33,67 +33,43 @@ func hubSpawnSlashCatalog(ctx context.Context, cfg hubcore.WebConfig, params app
 	if params.LaunchOverrides != nil {
 		overrides = launchconfig.FromWire(*params.LaunchOverrides)
 	}
-	var (
-		resolved     launchconfig.Resolved
-		canonicalCWD string
-	)
+	var preview launchPreview
+	var err error
 	if strings.TrimSpace(params.CWD) == "" {
-		userResolved, err := launchconfig.ResolveUserOnly(hubLaunchConfigRoot(cfg), overrides)
-		if err != nil {
-			return appwire.SpawnSlashCatalogResponse{}, err
-		}
-		resolved = userResolved
+		preview, err = prepareLaunchPreview(hubLaunchConfigRoot(cfg), params.CWD, overrides)
 	} else {
-		canonical, err := hubCanonicalizeDir(params.CWD)
-		if err != nil {
-			// A not-yet-created directory is a normal spawn-flow state
-			// (preflightDir's "Create & start"). Resolve it the way plugin
-			// preview does: a disposable probe directory under the nearest
-			// existing ancestor, carrying the eventual target's project
-			// identity. The probe leaf is empty like the not-yet-created
-			// target, so cwd-anchored layers (.evener/launch.toml,
-			// .evener/launch.local.toml) resolve absent exactly as
-			// thread/start will see them after creation — while the
-			// ancestor chain above still contributes its project items.
-			// Resolving against the ancestor itself would be wrong: its own
-			// cwd-anchored files would leak into the catalog although the
-			// session never loads them. Any other canonicalization error
-			// stays InvalidParams.
-			if !errors.Is(err, os.ErrNotExist) {
-				return appwire.SpawnSlashCatalogResponse{}, appwire.InvalidParams("cwd: " + err.Error())
+		canonical, canonicalErr := hubCanonicalizeDir(params.CWD)
+		if canonicalErr != nil {
+			// A not-yet-created spawn directory uses a disposable probe with
+			// the eventual target's identity, isolating ancestor-local layers.
+			if !errors.Is(canonicalErr, os.ErrNotExist) {
+				return appwire.SpawnSlashCatalogResponse{}, appwire.InvalidParams("cwd: " + canonicalErr.Error())
 			}
-			probeDir, project, cleanup, probeErr := pluginPreviewCWD(params.CWD)
-			if probeErr != nil {
-				return appwire.SpawnSlashCatalogResponse{}, probeErr
-			}
-			defer cleanup()
-			probeResolved, err := launchconfig.ResolveWithProject(hubLaunchConfigRoot(cfg), probeDir, project, overrides)
-			if err != nil {
-				return appwire.SpawnSlashCatalogResponse{}, err
-			}
-			resolved = probeResolved
-			canonicalCWD = probeDir
+			preview, err = prepareLaunchPreview(hubLaunchConfigRoot(cfg), params.CWD, overrides)
 		} else {
-			canonicalCWD = canonical
-			fullResolved, err := hubResolveLaunch(hubLaunchConfigRoot(cfg), canonical, overrides)
-			if err != nil {
-				return appwire.SpawnSlashCatalogResponse{}, err
-			}
-			resolved = fullResolved
+			// Existing directories retain slash's resolver error classification
+			// and injectable canonicalization/resolution seams.
+			preview.cwd = canonical
+			preview.resolved, err = hubResolveLaunch(hubLaunchConfigRoot(cfg), canonical, overrides)
+			preview.cleanup = func() {}
 		}
 	}
+	if err != nil {
+		return appwire.SpawnSlashCatalogResponse{}, err
+	}
+	defer preview.cleanup()
 	// thread/start launches with spawnResolved.Effective.PluginDirs carried on
 	// the Resolved value (the resolver's own SelectedDirs never reach the
 	// child), so the fallthrough below keeps the same dirs: the catalog then
 	// shows what the resulting session loads instead of going empty.
-	pluginDirs := resolved.Effective.PluginDirs
-	if resolution, err := hubResolvePlugins(ctx, cfg.PluginRoot, resolved.Effective.PluginDirs, resolved.Effective.EnabledPlugins, cfg.PluginManager); err != nil {
+	pluginDirs := preview.resolved.Effective.PluginDirs
+	if resolution, err := hubResolvePlugins(ctx, cfg.PluginRoot, preview.resolved.Effective.PluginDirs, preview.resolved.Effective.EnabledPlugins, cfg.PluginManager); err != nil {
 		// Same admission rule thread/start uses (app_threadlifecycle.go): a
 		// resolver failure is fatal when a selection must be honored, and
 		// always when the failure IS the caller leaving (canceled/deadline on
 		// the error itself, not the ambient context). Everything else falls
 		// through with the effective plugin dirs above.
-		if resolved.Effective.EnabledPlugins != nil ||
+		if preview.resolved.Effective.EnabledPlugins != nil ||
 			errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return appwire.SpawnSlashCatalogResponse{}, appwire.HubLaunchError(err.Error())
 		}
@@ -105,8 +81,8 @@ func hubSpawnSlashCatalog(ctx context.Context, cfg hubcore.WebConfig, params app
 	}
 	loaded, _ := plugin.LoadAllFailSoft(pluginDirs)
 	var env execenv.ExecutionEnvironment
-	if canonicalCWD != "" {
-		env = execenv.NewLocalExecutionEnvironment(canonicalCWD)
+	if preview.cwd != "" {
+		env = execenv.NewLocalExecutionEnvironment(preview.cwd)
 	}
 	evenerwide, _ := plugin.DiscoverEvenerWideCommands(env)
 	merged := plugin.MergeCommands(loaded, evenerwide)
@@ -129,7 +105,7 @@ func hubSpawnSlashCatalog(ctx context.Context, cfg hubcore.WebConfig, params app
 	catalog := skill.Discover(env, skill.DiscoverOptions{
 		HomeDir:       home,
 		UserSkillsDir: userdirs.Subdir(userdirs.DefaultConfigRoot(), "skills"),
-		ExtraDirs:     resolved.Effective.SkillsDirs,
+		ExtraDirs:     preview.resolved.Effective.SkillsDirs,
 		Plugins:       sources,
 	})
 	entries := catalog.UserEntries()

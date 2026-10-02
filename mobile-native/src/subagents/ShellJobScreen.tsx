@@ -14,19 +14,22 @@ import { AnsiOutputList } from "../AnsiOutputList";
 import { fonts } from "../design/tokens";
 import type { Routes } from "../screens";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
-import { flattenJobs, type ShellJobRow, shellJobMeta } from "./subagentModel";
+import { flattenJobs, type ShellJobRow, shellJobMeta, shellJobOwner } from "./subagentModel";
 import { type ShellJobOutput, useShellJobOutput } from "./useShellJobOutput";
 import { useFollowedSubagentTree } from "./useSubagentTree";
 
 export function ShellJobScreen({ route }: NativeStackScreenProps<Routes, "ShellJob">) {
-	const { hubId, jobId, coordinator } = route.params;
+	const { hubId, jobId, ownerRef, coordinator } = route.params;
 	const { palette } = useColors();
 	const scale = useTextScale();
 	const { snapshot, client } = useFollowedSubagentTree(hubId, coordinator.ref, coordinator.threadId);
 
 	const row = useMemo(
-		() => (snapshot.tree ? flattenJobs(snapshot.tree).find((job) => job.id === jobId) : undefined),
-		[snapshot.tree, jobId],
+		() =>
+			snapshot.tree
+				? flattenJobs(snapshot.tree, coordinator.title).find((job) => job.id === jobId && job.job.ownerRef === ownerRef)
+				: undefined,
+		[snapshot.tree, coordinator.title, jobId, ownerRef],
 	);
 	// Taken when the tree changes, so the screen runs no clock (ruling 7).
 	// biome-ignore lint/correctness/useExhaustiveDependencies: a new snapshot is what moves the clock
@@ -91,7 +94,7 @@ function JobFacts({ row, now }: { row: ShellJobRow; now: number }) {
 				</Text>
 			) : null}
 			<Text allowFontScaling={allowFontScaling} style={small}>
-				{`under ${row.owner}`}
+				{shellJobOwner(row)}
 			</Text>
 		</View>
 	);

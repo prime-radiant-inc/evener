@@ -1,9 +1,12 @@
 # Evener Web Hub — UI/UX
 
-Design documentation for the web hub (`cmd/evener-hub`). Started 2026-06-16.
+Design documentation for the web hub (`cmd/evener-hub`).
 
 ## Current
 
+- **[Session activity](../product/session-activity.md)** — ownership of scoped
+  delegate, shell-job and watch reads, compact navigation, pagination and shared
+  recovery. Use this contract when changing activity surfaces or subscriptions.
 - **[design-system.md](design-system.md)** — the authoritative design law, starting with
   the [editorial-instrument rationale](design-system.md#design-model-an-editorial-instrument):
   conversation for understanding, evidence for verification and controls for intervention.
@@ -49,6 +52,28 @@ keeps its demand even when its tab is inactive. Workspace pane identity and
 session ref determine which readers remain open; replacing a pane record does
 not itself abandon its demand. The thread store owns loaded content and page
 merging, and an already-started read can still merge after cancellation.
+
+The workspace Dock integration activates an already selected pane by activating
+its group, preserving the mounted transcript and its native scroll position.
+Selecting a different tab still activates that panel. Transcript scroll and
+history recovery remain owned by the existing reader and virtual viewport.
+
+## Exited-session controls
+
+An exited session's follow-up keeps its model selector, session actions and Send
+visible before typing. Its empty editor rests at one line and expands to three
+when focused. It stays expanded while focus moves through the controls or their
+pop-up menus and dialogs, including overlays outside the card's DOM. Focus is
+tracked while the session is live, so stopping preserves an already-focused
+editor. Leaving the composer shrinks only the empty editor; drafts and attachments
+keep it expanded. Send remains disabled until there is content and sending is
+available. The inline session chrome owns activity discovery at rest and while
+engaged, without a second discovery mount.
+
+The model picker remains available when the session advertises `changeModel`.
+Selecting a model uses `thread/model/set`; the hub owns resuming a cold session
+and applying the choice. Closing the desktop picker restores focus to its
+trigger, including after a selection.
 
 ## Directory fields
 

@@ -4,6 +4,7 @@ import { deferRequest, FakeClient } from "@evener/appwire-client/testing/fakeCli
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { resetAuthStatusesStoreForTests } from "../../../../stores/authStatuses";
 import { connectionStore } from "../../../../stores/connection";
 import {
   credentialsStore,
@@ -163,6 +164,7 @@ beforeEach(() => {
   resetCredentialsStoreForTests();
   resetHostInstancesForTests();
   resetToastStoreForTests();
+  resetAuthStatusesStoreForTests();
   hostsStore.getState().resetForTests();
   // The selection is route-level now (stores/settingsHost.ts): reset it, and
   // mount on the settings route it is part of.
@@ -372,7 +374,49 @@ test("a remote selection issues no controller-scoped credential write", async ()
   await user.selectOptions(select, "beta");
   await screen.findByText("on-beta");
 
-  expect(fake.calls.some((call) => call.method.startsWith("evener/auth/"))).toBe(false);
+  // The section reads this hub's credential statuses (evener/auth/list) for its
+  // own rows; a read writes nothing, so only the mutations count here.
+  expect(fake.calls.some((call) => call.method.startsWith("evener/auth/") && call.method !== "evener/auth/list")).toBe(
+    false,
+  );
+});
+
+// This hub's credential statuses (evener/auth/list) describe this hub's own
+// instances. A remote host's instance with the same name is another credential
+// on another machine, so the error this hub found never marks it (#3539).
+test("this hub's credential error never marks a remote host's same-named row", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/instance/list", () => CONTROLLER_LIST);
+  fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
+  // Beta's own instance, named like this hub's.
+  fake.on("evener/host/request", () => ({
+    instances: [{ ...HOST_ROW, name: CONTROLLER_ROW.name }],
+    availableProviders: [],
+  }));
+  fake.on("evener/auth/list", () => ({
+    providers: [
+      {
+        provider: CONTROLLER_ROW.name,
+        supported: true,
+        signedIn: true,
+        activeSource: "store",
+        hasStoredOAuth: false,
+        error: "The provider rejected this credential (HTTP 401). Replace the key or sign in again.",
+      },
+    ],
+  }));
+
+  const select = await renderSettledScope();
+  const user = setupUser();
+  // The statuses are live: this hub's own row reads Error.
+  const local = screen.getByText(CONTROLLER_ROW.name);
+  await waitFor(() => expect(local.closest("li")?.textContent).toContain("Error"));
+
+  await screen.findByRole("option", { name: "beta" });
+  await user.selectOptions(select, "beta");
+  const remoteSection = await screen.findByRole("region", { name: "Providers on beta" });
+  const remote = await within(remoteSection).findByText(CONTROLLER_ROW.name);
+  expect(remote.closest("li")?.textContent).not.toContain("Error");
 });
 
 // Medium (roborev): the read must follow the connection. useConnectedEffect's

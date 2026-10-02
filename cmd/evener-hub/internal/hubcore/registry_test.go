@@ -191,8 +191,8 @@ func TestReloadKeepsReadersUnblockedWhileItLoads(t *testing.T) {
 // TestBeginLiveFetchDoesNotMoveTheCacheGeneration pins the two clocks
 // apart. Generation is what readers record to cache derived inventory (the
 // model-list endpoint), and starting a fetch changes nothing a reader can
-// observe: the background prefetch begins a fetch per instance on every
-// pass, so counting starts there would defeat that cache's TTL outright.
+// observe: the startup prefetch begins a fetch per instance, so counting
+// starts there would defeat that cache's TTL outright.
 // Landing a listing still moves it.
 func TestBeginLiveFetchDoesNotMoveTheCacheGeneration(t *testing.T) {
 	h := NewProviderRegistry(hermeticLoader)
@@ -899,9 +899,9 @@ func TestReapplyLiveDiscardsListingForRecreatedInstance(t *testing.T) {
 	}
 }
 
-func TestReapplyLiveFailedNewerDoesNotBlockOlderSuccess(t *testing.T) {
-	// Fetch A starts first and succeeds; fetch B starts after but fails
-	// and so never applies. B's failure must not invalidate A's success:
+func TestReapplyLiveCancelledNewerDoesNotBlockOlderSuccess(t *testing.T) {
+	// Fetch A starts first and succeeds; fetch B starts after but is cancelled
+	// and so never applies. B's cancellation must not invalidate A's success:
 	// the older listing still lands.
 	h := NewProviderRegistry(hermeticLoader)
 	if err := h.Reload(); err != nil {
@@ -911,7 +911,7 @@ func TestReapplyLiveFailedNewerDoesNotBlockOlderSuccess(t *testing.T) {
 		t.Fatal("holder has no registry after Reload")
 	}
 	_, older, idOlder := h.BeginLiveFetchReg("gw")
-	_, _, _ = h.BeginLiveFetchReg("gw") // newer fetch, fails: applies nothing
+	_, _, _ = h.BeginLiveFetchReg("gw") // newer fetch, cancelled: applies nothing
 	h.ReapplyLive(older, "gw", idOlder, []registry.Model{{ID: "gpt-live-x"}})
 	got := h.Get().LiveModels("gw")
 	ids := make([]string, 0, len(got))
@@ -919,7 +919,7 @@ func TestReapplyLiveFailedNewerDoesNotBlockOlderSuccess(t *testing.T) {
 		ids = append(ids, m.ID)
 	}
 	if len(ids) == 0 {
-		t.Fatal("live ids empty, want the older success to land despite the failed newer fetch")
+		t.Fatal("live ids empty, want the older success to land despite the cancelled newer fetch")
 	}
 }
 
@@ -956,7 +956,7 @@ func TestReapplyLiveDiscardsOutOfOrderFetch(t *testing.T) {
 func TestReapplyLiveDiscardsSupersededFetch(t *testing.T) {
 	// The genuinely out-of-order pair: the older token applies first,
 	// then the newer claim overwrites it and a repeat of the older
-	// apply is discarded — coverage the failed-newer and
+	// apply is discarded — coverage the cancelled-newer and
 	// out-of-order arrivals above do not give.
 	h := NewProviderRegistry(hermeticLoader)
 	if err := h.Reload(); err != nil {

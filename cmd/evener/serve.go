@@ -129,10 +129,15 @@ type serveServer interface {
 	// SetCostLookupFunc is the one place a dollar figure enters the daemon:
 	// the live session's registry resolution of an instance/model reference.
 	SetCostLookupFunc(func(string) *registry.Cost)
-	SetTasksFunc(func() any)
+	SetTasksFunc(func() []appwire.Task)
 	SetJobsFunc(func(appwire.JobsListParams) (any, error))
-	SetJobOutputFunc(func(string, int64, int64) (any, bool, error))
-	SetJobGetFunc(func(string) (any, bool, error))
+	SetThreadActivityReadFunc(func(context.Context, appwire.SessionActivityReadParams) (appwire.SessionActivitySummary, error))
+	SetThreadDelegatesListFunc(func(context.Context, appwire.SessionActivityListParams) (appwire.SessionDelegatesResponse, error))
+	SetThreadJobsListFunc(func(context.Context, appwire.SessionActivityListParams) (appwire.SessionJobsResponse, error))
+	SetThreadWatchesListFunc(func(context.Context, appwire.SessionActivityListParams) (appwire.SessionWatchesResponse, error))
+
+	SetJobOutputFunc(func(string, int64, int64) (appwire.JobOutputTail, bool, error))
+	SetJobGetFunc(func(string) (appwire.JobActivityJob, bool, error))
 	SetClearFunc(func(context.Context, appwire.ThreadClearParams) error)
 	SetWorkingDir(string)
 	SetShutdownFunc(func())
@@ -1514,7 +1519,36 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// Resolved per call like the model hook above: the replacement session a
 	// thread/clear installs resolves on its own registry.
 	srv.SetCostLookupFunc(func(ref string) *registry.Cost { return getSession().CostFor(ref) })
-	srv.SetTasksFunc(func() any { return getSession().Tasks() })
+	srv.SetTasksFunc(func() []appwire.Task { return getSession().Tasks() })
+	srv.SetThreadActivityReadFunc(func(ctx context.Context, params appwire.SessionActivityReadParams) (appwire.SessionActivitySummary, error) {
+		sess := getSession()
+		if params.Ref == workspaceRef {
+			params.Ref = appwire.Ref{SourceID: "local", ThreadID: sess.ID()}.String()
+		}
+		return sess.ActivitySummary(ctx, params)
+	})
+	srv.SetThreadDelegatesListFunc(func(ctx context.Context, params appwire.SessionActivityListParams) (appwire.SessionDelegatesResponse, error) {
+		sess := getSession()
+		if params.Ref == workspaceRef {
+			params.Ref = appwire.Ref{SourceID: "local", ThreadID: sess.ID()}.String()
+		}
+		return sess.ListActivityDelegates(ctx, params)
+	})
+	srv.SetThreadJobsListFunc(func(ctx context.Context, params appwire.SessionActivityListParams) (appwire.SessionJobsResponse, error) {
+		sess := getSession()
+		if params.Ref == workspaceRef {
+			params.Ref = appwire.Ref{SourceID: "local", ThreadID: sess.ID()}.String()
+		}
+		return sess.ListActivityJobs(ctx, params)
+	})
+	srv.SetThreadWatchesListFunc(func(ctx context.Context, params appwire.SessionActivityListParams) (appwire.SessionWatchesResponse, error) {
+		sess := getSession()
+		if params.Ref == workspaceRef {
+			params.Ref = appwire.Ref{SourceID: "local", ThreadID: sess.ID()}.String()
+		}
+		return sess.ListActivityWatches(ctx, params)
+	})
+
 	srv.SetJobsFunc(func(params appwire.JobsListParams) (any, error) {
 		sess := getSession()
 		if strings.TrimSpace(params.Ref) != "" {
@@ -1532,10 +1566,10 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		}
 		return sess.JobActivityTree(params)
 	})
-	srv.SetJobOutputFunc(func(jobID string, beforeBytes, maxBytes int64) (any, bool, error) {
+	srv.SetJobOutputFunc(func(jobID string, beforeBytes, maxBytes int64) (appwire.JobOutputTail, bool, error) {
 		return getSession().JobOutputTail(jobID, beforeBytes, maxBytes)
 	})
-	srv.SetJobGetFunc(func(jobID string) (any, bool, error) {
+	srv.SetJobGetFunc(func(jobID string) (appwire.JobActivityJob, bool, error) {
 		return getSession().JobGet(jobID)
 	})
 	srv.SetClearFunc(func(ctx context.Context, _ appwire.ThreadClearParams) error {
@@ -2205,7 +2239,7 @@ func agentToServerDetailedStatus(ds agent.DetailedStatus) server.DetailedStatus 
 	}
 	for _, delegate := range ds.Delegates {
 		out.Delegates = append(out.Delegates, server.DelegateStatusInfo{
-			DelegateID: delegate.DelegateID, OwnerSessionID: delegate.OwnerSessionID, RootSessionID: delegate.RootSessionID,
+			DelegateID: delegate.DelegateID, RunGeneration: delegate.RunGeneration, OwnerSessionID: delegate.OwnerSessionID, RootSessionID: delegate.RootSessionID,
 			ChildSessionID: delegate.ChildSessionID, TranscriptRef: delegate.TranscriptRef, ParentDelegateID: delegate.ParentDelegateID,
 			Type: delegate.Type, Lifecycle: delegate.Lifecycle, Phase: delegate.Phase, Status: delegate.Status,
 			Outcome: delegate.Outcome, Reason: delegate.Reason, Error: delegate.Error, Terminal: delegate.Terminal, Resumable: delegate.Resumable, NeedsAttention: delegate.NeedsAttention,
