@@ -914,6 +914,7 @@ func (s *Session) clientMutationDrain(params appwire.TurnDrainAsSteerParams) (ap
 		// Draining is a user-initiated run, so the parked steer is released too
 		// (issue #174).
 		snapshot.SteeringHeld = false
+		carrySelectedCommandPreparations(snapshot, record, entries)
 		for _, entry := range entries {
 			removeQueuedMutationSource(snapshot, entry, "transformed")
 		}
@@ -1045,6 +1046,7 @@ func (s *Session) clientMutationPromote(params appwire.TurnPromoteQueuedAsSteerP
 		// (issue #174).
 		snapshot.SteeringHeld = false
 		entry := snapshot.InputQueue[index]
+		carrySelectedCommandPreparations(snapshot, record, []clientMutationQueueEntry{entry})
 		snapshot.InputQueue = append(snapshot.InputQueue[:index], snapshot.InputQueue[index+1:]...)
 		snapshot.QueueRevision++
 		removeQueuedMutationSource(snapshot, entry, "transformed")

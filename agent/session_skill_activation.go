@@ -161,7 +161,7 @@ func (s *Session) contextWithSelectedSkills(ctx context.Context, queued queuedIn
 	}
 	batch, err := s.prepareSelectedInput(ctx, queued, "user_selection")
 	var bodies []string
-	if err == nil && !s.clientMutationUserTranscriptIncorporated(queued.ClientMutationID, queued.StableTurnID) {
+	if err == nil && len(queued.CommandNames) > 0 && !s.clientMutationUserTranscriptIncorporated(queued.ClientMutationID, queued.StableTurnID) {
 		bodies, err = s.prepareSelectedCommands(ctx, queued.CommandNames)
 	}
 	if err == nil {

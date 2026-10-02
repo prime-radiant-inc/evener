@@ -397,6 +397,23 @@ selections with the same spelling still request their own distinct behavior.
 The daemon's `commandInput` capability gates the command kind independently of
 `skillInput`; refusal keeps the composed request available for correction.
 
+Accepted inputs own prepared command results in the durable mutation journal.
+All unprepared names resolve before any command runs. Each plugin expansion
+records an in-progress marker before running its shell and saves its completed
+body before environment or user-input transcript admission. A returned claim,
+transcript-write retry or disk restore reuses those completed bytes rather than
+running the shell again. Queue promotion and draining carry that evidence into
+the new input owner, and uncertainty for any repeated name takes precedence
+over a completed result.
+
+An interrupted expansion or missing completion save has an **uncertain
+outcome**. It is never automatically repeated: the original prompt and
+selections remain visible with a failure, and another healthy input can run.
+Correcting and resending creates a new intent and may run the shell again.
+External shell effects cannot commit atomically with the journal: a crash after
+an effect but before the completion save is uncertain, not an exactly-once
+guarantee. Only durably completed results are known and reusable.
+
 ### Reload selection at compaction
 
 Compaction can drop a loaded skill's instruction body, so both compaction

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -11,6 +12,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
@@ -214,5 +216,96 @@ func TestClientMutationCommandSelectionQueueRestore(t *testing.T) {
 	}
 	if !strings.Contains(turn.Message.Text(), "BODY_RESTORE_318[]") {
 		t.Fatalf("restored body data missing: %+v", turn.Message)
+	}
+}
+
+func TestClientMutationCommandPreparationAdmissionRetry(t *testing.T) {
+	t.Parallel()
+	for _, boundary := range []string{"environment", "user"} {
+		for _, retry := range []string{"queue", "restore", "promote", "drain"} {
+			t.Run(boundary+"/"+retry, func(t *testing.T) {
+				t.Parallel()
+				root := t.TempDir()
+				pluginDir := writePluginCommand(t, "pkg", "probe", "BODY_PINNED_318 !`printf x >> invoked; printf OUTPUT_PINNED_318`")
+				adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
+					return toolCallResponse(communicateCall("done-1", "ok"))
+				}}
+				s := newSession(t, withAdapter(adapter), withDir(root), withProfile(newAnthropicProfile("claude-test")), withConfig(SessionConfig{StateDir: root, PluginDirs: []string{pluginDir}}), withoutGitSnapshot())
+				_, stop := captureEvents(s)
+				defer stop()
+				const original = "ORIGINAL_RETRY_318 /pkg:probe prose"
+				if _, err := s.AcceptClientMutationQueue(appwire.TurnQueueParams{ClientMutationID: "retry-318", Input: []appwire.InputItem{{Type: "text", Text: original}, {Type: "command", Name: "pkg:probe"}, {Type: "command", Name: "pkg:probe"}}}); err != nil {
+					t.Fatal(err)
+				}
+				if boundary == "user" {
+					if err := s.maybeAppendEnvironmentContext(); err != nil {
+						t.Fatal(err)
+					}
+				}
+				fs := attachEnvironmentFailureFS(t, s)
+				failure := errors.New("zero-byte " + boundary + " admission failure")
+				fs.mu.Lock()
+				fs.writeFailure = failure
+				fs.mu.Unlock()
+				if _, _, err := s.ProcessPendingUserInput(context.Background(), nil); !errors.Is(err, failure) {
+					t.Fatalf("first attempt = %v, want %v", err, failure)
+				}
+				if invoked, err := os.ReadFile(filepath.Join(root, "invoked")); err != nil || string(invoked) != "x" || len(adapter.Requests()) != 0 {
+					t.Fatalf("failed admission: invoked=%q err=%v requests=%d", invoked, err, len(adapter.Requests()))
+				}
+				owner := "retry-318"
+				switch retry {
+				case "restore":
+					id := s.ID()
+					stop()
+					s.Close()
+					meta, err := schema.LoadSessionMeta(root, id)
+					if err != nil {
+						t.Fatal(err)
+					}
+					client := llm.NewClient()
+					client.Register(adapter)
+					s, err = RestoreSessionFromMetaWithConfig(client, newAnthropicProfile("claude-test"), execenv.NewLocalExecutionEnvironment(root), meta, RestoreSessionConfig{StateDir: root})
+					if err != nil {
+						t.Fatal(err)
+					}
+					t.Cleanup(s.Close)
+					_, stopRestored := captureEvents(s)
+					defer stopRestored()
+				case "promote":
+					owner = "promoted-318"
+					if _, err := s.AcceptClientMutationPromoteQueuedAsSteer(appwire.TurnPromoteQueuedAsSteerParams{ClientMutationID: owner, Index: 0}); err != nil {
+						t.Fatal(err)
+					}
+				case "drain":
+					owner = "drained-318"
+					queue, _ := s.ClientMutationProjection()
+					if _, err := s.AcceptClientMutationDrainAsSteer(appwire.TurnDrainAsSteerParams{ClientMutationID: owner, ExpectedQueueRevision: queue.Revision}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				// The accepted input owns the prepared bytes, not a fresh expansion
+				// of whatever the same catalog key happens to contain on retry.
+				delete(s.pluginCommands, "pkg:probe")
+				if retry == "promote" || retry == "drain" {
+					if _, err := s.ProcessInput(context.Background(), "CARRIER_RETRY_318", nil); err != nil {
+						t.Fatal(err)
+					}
+				} else if _, ran, err := s.ProcessPendingUserInput(context.Background(), nil); err != nil || !ran {
+					t.Fatalf("retry: ran=%v err=%v", ran, err)
+				}
+				if invoked, err := os.ReadFile(filepath.Join(root, "invoked")); err != nil || string(invoked) != "x" {
+					t.Fatalf("retry executed again: invoked=%q err=%v", invoked, err)
+				}
+				kind := schema.TurnUserInput
+				if retry == "promote" || retry == "drain" {
+					kind = schema.TurnSteering
+				}
+				turn := findClientMutationTurn(s, owner, kind)
+				if turn == nil || turn.CommandInput == nil || turn.CommandInput.OriginalText != original || strings.Count(turn.Message.Text(), "OUTPUT_PINNED_318") != 1 {
+					t.Fatalf("prepared bytes/original prompt lost after retry: %+v", turn)
+				}
+			})
+		}
 	}
 }

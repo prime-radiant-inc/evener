@@ -1264,7 +1264,7 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) steeringConsumptio
 		}
 		batch, prepareErr := s.prepareSelectedInput(context.Background(), queued, "user_selection")
 		if prepareErr == nil {
-			commandBodies, prepareErr = s.prepareSelectedCommands(s.sessionCtx, queued.CommandNames)
+			commandBodies, prepareErr = s.prepareSelectedCommands(withQueuedClientMutation(s.sessionCtx, queued), queued.CommandNames)
 		}
 		if prepareErr != nil {
 			if !s.recordFailedSteeringSelection(msg, prepareErr) {
