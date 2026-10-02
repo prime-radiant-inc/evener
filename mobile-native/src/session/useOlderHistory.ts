@@ -84,10 +84,15 @@ export function useOlderHistory({
 	}, [owner, reader, retired, replacement, find]);
 	const paging = owner.paging;
 	const state = useSyncExternalStore(paging.subscribe, paging.getSnapshot);
-	useEffect(
-		() => (!replacement && !retired && owner.reader === reader && active && foreground ? paging.activate() : undefined),
-		[owner, reader, retired, paging, replacement, active, foreground],
-	);
+	useEffect(() => {
+		if (replacement || retired || owner.reader !== reader || !active || !foreground) return;
+		const releaseReader = paging.activate("reader");
+		const releaseFind = paging.activate("find");
+		return () => {
+			releaseReader();
+			releaseFind();
+		};
+	}, [owner, reader, retired, paging, replacement, active, foreground]);
 	return {
 		state,
 		isCurrentReader: () => !replacement && !owner.retired && owner.reader === reader && owner.store === store,

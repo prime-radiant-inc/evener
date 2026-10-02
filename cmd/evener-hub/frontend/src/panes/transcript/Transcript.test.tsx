@@ -14,7 +14,7 @@ import { resetThreadsStoreForTests } from "../../stores/threads";
 import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
 import { resetSubagentModuleStoreForTests } from "../session/transcript/tools/subagentModuleStore";
 import { resetTranscriptPagingForTests } from "../session/transcript/useTranscript";
-import Transcript from "./Transcript";
+import Transcript from "./testing/CommittedTranscript";
 
 // A minimal, test-only "session" pane registration - mirrors
 // subagentModule.test.tsx's own precedent: real registerPane/paneFor/openPane

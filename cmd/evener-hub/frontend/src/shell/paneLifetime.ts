@@ -1,4 +1,5 @@
 import { type ComposerSourceState, createComposerSourceState } from "../panes/session/composer/sourceState";
+import type { TranscriptReadView } from "../panes/session/transcript/transcriptReadView";
 import { refParam } from "./routing";
 import { type OpenPaneRecord, workspaceStore } from "./workspace";
 
@@ -8,6 +9,7 @@ export interface PaneLifetime {
   readonly sourceRef: string;
   readonly alive: boolean;
   readonly composer: ComposerSourceState | null;
+  readonly readViews: Map<string, TranscriptReadView>;
   dispose(): void;
 }
 let nextSerial = 0;
@@ -24,6 +26,7 @@ export function conversationPaneLifetime(pane: OpenPaneRecord): PaneLifetime {
     paneId: pane.id,
     serial: ++nextSerial,
     sourceRef,
+    readViews: new Map(),
     get alive() {
       return alive;
     },
@@ -34,6 +37,8 @@ export function conversationPaneLifetime(pane: OpenPaneRecord): PaneLifetime {
     dispose() {
       if (!alive) return;
       alive = false;
+      for (const view of lifetime.readViews.values()) view.dispose();
+      lifetime.readViews.clear();
       composer?.dispose();
     },
   };

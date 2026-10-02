@@ -38,7 +38,7 @@ import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
 import { Toast } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import virtualListStyles from "../../widgets/virtuallist/virtuallist.module.css";
-import ReadOnlyTranscript from "../transcript/Transcript";
+import ReadOnlyTranscript from "../transcript/testing/CommittedTranscript";
 import * as SessionChromeModule from "./chrome/SessionChrome";
 import { resetAskDockStoreForTests } from "./composer/askDock/askDockStore";
 import { askPendingStatusChanged } from "./composer/askDock/askDockTestUtils";

@@ -77,33 +77,34 @@ export function registerTranscriptView(view: RegisteredTranscriptView): () => vo
   };
 }
 
+export function captureTranscriptView(id: string): CapturedTranscriptView | undefined {
+  try {
+    return registeredViews.get(id)?.view.capture();
+  } catch {
+    // A pane may disappear while its view is being captured.
+    return undefined;
+  }
+}
+
 export function captureTranscriptViews(): ReadonlyMap<string, CapturedTranscriptView> {
   const captured = new Map<string, CapturedTranscriptView>();
-  const currentViews = [...registeredViews.entries()];
-
-  for (const [id, registration] of currentViews) {
-    try {
-      captured.set(id, registration.view.capture());
-    } catch {
-      // A pane may disappear while a transition is capturing its view. Keep
-      // the other panes' snapshots available to the transition.
-    }
+  for (const id of [...registeredViews.keys()]) {
+    const view = captureTranscriptView(id);
+    if (view) captured.set(id, view);
   }
-
   return captured;
 }
 
-export function restoreTranscriptViews(captured: ReadonlyMap<string, CapturedTranscriptView>): void {
-  for (const [id, capturedView] of captured) {
-    const registration = registeredViews.get(id);
-    if (!registration) continue;
-
-    try {
-      registration.view.restore(capturedView);
-    } catch {
-      // A stale or unmounted pane must not prevent other panes from restoring.
-    }
+export function restoreTranscriptView(id: string, captured: CapturedTranscriptView): void {
+  try {
+    registeredViews.get(id)?.view.restore(captured);
+  } catch {
+    // A stale or unmounted pane must not prevent other panes from restoring.
   }
+}
+
+export function restoreTranscriptViews(captured: ReadonlyMap<string, CapturedTranscriptView>): void {
+  for (const [id, view] of captured) restoreTranscriptView(id, view);
 }
 
 /** Arm captured panes for an upcoming viewport host remount. */

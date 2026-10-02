@@ -12,7 +12,7 @@ export interface HistoryPagingState {
 export class HistoryPaging {
   private state: HistoryPagingState = { loading: false, pending: false, error: null, permanent: false };
   private listeners = new Set<() => void>();
-  private readers = 0;
+  private activeConsumers = new Map<string, number>();
   private consumers = new Set<string>();
   private failures = 0;
   private retry: ReturnType<typeof setTimeout> | null = null;
@@ -34,17 +34,19 @@ export class HistoryPaging {
     };
   };
 
-  /** Only an active reader runs timers. Pending demand survives the last
-   * reader leaving, including a request that finishes after they leave. */
-  activate(): () => void {
-    this.readers += 1;
+  /** Only a consumer with both demand and an active reader runs timers. */
+  activate(consumer: string): () => void {
+    this.activeConsumers.set(consumer, (this.activeConsumers.get(consumer) ?? 0) + 1);
     this.schedule();
+    let released = false;
     return () => {
-      this.readers -= 1;
-      if (this.readers === 0) {
-        this.cancelRetry();
-        this.releaseIdle();
-      }
+      if (released) return;
+      released = true;
+      const remaining = (this.activeConsumers.get(consumer) ?? 1) - 1;
+      if (remaining > 0) this.activeConsumers.set(consumer, remaining);
+      else this.activeConsumers.delete(consumer);
+      if (this.eligibleConsumer() === undefined) this.cancelRetry();
+      this.releaseIdle();
     };
   }
 
@@ -55,7 +57,7 @@ export class HistoryPaging {
       return this.inFlight;
     }
     if (this.state.permanent || this.retry !== null) return Promise.resolve();
-    if (this.readers === 0) {
+    if (this.eligibleConsumer() === undefined) {
       if (!this.state.pending) this.publish({ ...this.state, pending: true });
       return Promise.resolve();
     }
@@ -70,6 +72,7 @@ export class HistoryPaging {
    * An already-started page can still merge; its failure cannot restart demand. */
   cancel = (consumer = "reader"): void => {
     this.consumers.delete(consumer);
+    if (this.eligibleConsumer() === undefined) this.cancelRetry();
     if (this.consumers.size > 0) return;
     this.cancelRetry();
     this.failures = 0;
@@ -120,7 +123,8 @@ export class HistoryPaging {
   }
 
   private releaseIdle(): void {
-    if (this.readers === 0 && this.listeners.size === 0 && !this.state.pending && !this.state.loading) this.onIdle();
+    if (this.activeConsumers.size === 0 && this.listeners.size === 0 && !this.state.pending && !this.state.loading)
+      this.onIdle();
   }
 
   private publish(state: HistoryPagingState): void {
@@ -134,13 +138,21 @@ export class HistoryPaging {
   }
 
   private schedule(): void {
-    if (this.readers === 0 || !this.state.pending || this.inFlight !== null || this.retry !== null) return;
+    if (this.eligibleConsumer() === undefined || !this.state.pending || this.inFlight !== null || this.retry !== null)
+      return;
     // Limit request rate, never the number or duration of attempts.
     const delay = this.failures === 0 ? 0 : Math.min(1000 * 2 ** Math.min(this.failures - 1, 5), 30_000);
     this.retry = setTimeout(() => {
       this.retry = null;
-      const consumer = this.consumers.values().next().value;
+      const consumer = this.eligibleConsumer();
       if (consumer !== undefined) void this.request(consumer).catch(() => {});
     }, delay);
+  }
+
+  private eligibleConsumer(): string | undefined {
+    for (const consumer of this.consumers) {
+      if ((this.activeConsumers.get(consumer) ?? 0) > 0) return consumer;
+    }
+    return undefined;
   }
 }

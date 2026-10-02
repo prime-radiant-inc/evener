@@ -4,10 +4,12 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, render, renderHook } from "@testing-library/react";
 import { createElement, type PropsWithChildren, StrictMode, Suspense, useEffect } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
+import { conversationPaneLifetime } from "../../../shell/paneLifetime";
+import { type OpenPaneRecord, resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { connectionStore } from "../../../stores/connection";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { useTranscriptScroll } from "./flow/useTranscriptScroll";
+import { retainedTranscriptReadView } from "./transcriptReadView";
 import { resetTranscriptPagingForTests, useTranscript } from "./useTranscript";
 import "../index";
 import "../../transcript/index";
@@ -81,6 +83,110 @@ beforeEach(() => {
   resetThreadsStoreForTests();
   resetTranscriptPagingForTests();
   resetWorkspaceStoreForTests();
+});
+
+function cascadeReaders() {
+  const a: OpenPaneRecord = { id: "cascade-a", type: "transcript", params: { ref: "ref_a" }, slot: "main" };
+  const b: OpenPaneRecord = { id: "cascade-b", type: "transcript", params: { ref: "ref_a" }, slot: "secondary" };
+  workspaceStore.setState({ panes: [a, b] });
+  return {
+    a: retainedTranscriptReadView(conversationPaneLifetime(a), "ref_a", "cascade"),
+    b: retainedTranscriptReadView(conversationPaneLifetime(b), "ref_a", "cascade"),
+  };
+}
+
+test("a collapsed retained reader keeps pending demand without borrowing another reader's activation", async () => {
+  vi.useFakeTimers();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => ({ thread: testThread("ref_a"), olderCursor: "older" }));
+  let reads = 0;
+  fake.on("thread/turns/list", () => {
+    reads += 1;
+    throw new Error("offline");
+  });
+  await act(async () => {
+    await threadsStore.getState().ensureThread("ref_a");
+  });
+  const { a, b } = cascadeReaders();
+  const first = renderHook(() => useTranscript("ref_a", a));
+  const second = renderHook(() => useTranscript("ref_a", b));
+  await act(async () => {
+    await first.result.current.loadOlder().catch(() => {});
+    await second.result.current.loadOlder();
+  });
+  act(() => a.setReadable(false));
+  act(() => second.result.current.cancelOlder());
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(31_000);
+  });
+  expect(reads).toBe(1);
+  expect(first.result.current.olderError).toContain("offline");
+  act(() => a.setReadable(true));
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1000);
+  });
+  expect(reads).toBe(2);
+  act(() => a.dispose());
+  first.unmount();
+  second.unmount();
+});
+
+test("disposing one retained reader preserves independently requested same-ref history", async () => {
+  vi.useFakeTimers();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => ({ thread: testThread("ref_a"), olderCursor: "older" }));
+  let reads = 0;
+  fake.on("thread/turns/list", () => {
+    reads += 1;
+    if (reads === 1) throw new Error("offline");
+    return { data: [{ id: "older-turn", status: "completed", itemsView: "full", items: [] }], nextCursor: undefined };
+  });
+  await act(async () => {
+    await threadsStore.getState().ensureThread("ref_a");
+  });
+  const { a, b } = cascadeReaders();
+  const first = renderHook(() => useTranscript("ref_a", a));
+  const second = renderHook(() => useTranscript("ref_a", b));
+  await act(async () => {
+    await first.result.current.loadOlder().catch(() => {});
+    await second.result.current.loadOlder();
+  });
+  act(() => a.dispose());
+  first.unmount();
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1000);
+  });
+  expect(reads).toBe(2);
+  expect(second.result.current.model?.turns.map((turn) => turn.id)).toEqual(["older-turn"]);
+  second.unmount();
+});
+
+test("disposing the last retained reader prevents its failed demand from restarting on a later drill", async () => {
+  vi.useFakeTimers();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => ({ thread: testThread("ref_a"), olderCursor: "older" }));
+  let reads = 0;
+  fake.on("thread/turns/list", () => {
+    reads += 1;
+    throw new Error("offline");
+  });
+  await act(async () => {
+    await threadsStore.getState().ensureThread("ref_a");
+  });
+  const { a, b } = cascadeReaders();
+  const first = renderHook(() => useTranscript("ref_a", a));
+  await act(async () => {
+    await first.result.current.loadOlder().catch(() => {});
+  });
+  act(() => a.dispose());
+  first.unmount();
+  const second = renderHook(() => useTranscript("ref_a", b));
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(31_000);
+  });
+  expect(reads).toBe(1);
+  expect(second.result.current.loadingOlder).toBe(false);
+  second.unmount();
 });
 
 test("model is undefined before the ref is tracked", () => {
@@ -645,8 +751,15 @@ test("jumping live preserves an inactive open transcript's demand across pane re
   await act(async () => {
     await vi.advanceTimersByTimeAsync(1000);
   });
+  expect(attempts).toBe(1);
+  expect(main.result.current.transcript.model?.turns).toEqual([]);
+  const returnedOther = mountWorkspaceTranscript("ref_a", otherId);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1000);
+  });
   expect(attempts).toBe(2);
   expect(main.result.current.transcript.model?.turns.map((turn) => turn.id)).toEqual(["older"]);
+  returnedOther.unmount();
   main.unmount();
 });
 
