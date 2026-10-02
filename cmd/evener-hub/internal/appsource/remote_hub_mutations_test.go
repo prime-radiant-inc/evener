@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -786,10 +787,10 @@ func TestRemoteHubJobsListTranslatesLegacyFlatArrayRefs(t *testing.T) {
 // mutation-unknown mapping must NOT cross: a sessionUnavailable that arrives as
 // an intact error frame from the remote hub is a semantic verdict ("the target
 // session is not available"), not a lost response, so it stays SessionUnavailable
-// for the auto-resume gate. Only a transport loss — which mapCallError turns
-// into a locally synthesized typed SessionUnavailable — is in doubt and becomes
+// for the auto-resume gate. Only a transport failure, classified before the
+// read-error mapper discards its provenance, is in doubt and becomes
 // MutationOutcomeUnknown (TestRemoteHubMutationOutcomeUnknownOnResponseLoss).
-// Converting this decoded-shape verdict would re-drive a mutation against a
+// Converting this delivered verdict would re-drive a mutation against a
 // session known to be absent.
 func TestRemoteHubMutationPreservesRemoteSessionUnavailable(t *testing.T) {
 	remoteErr := appwire.SessionUnavailable("session gone")
@@ -1058,6 +1059,64 @@ func TestRemoteHubAcquisitionErrSSHStartIsSessionUnavailable(t *testing.T) {
 			if wire, ok := errors.AsType[appwire.WireError](err); ok {
 				t.Fatalf("terminal acquisition error was remapped to a wire error: %#v", wire)
 			}
+		})
+	}
+}
+
+// A delivered refusal stays a refusal even if a decoder retains typed data.
+// Its Go representation must not turn a known rejection into automatic replay.
+func TestRemoteHubMutationPreservesWireErrorRegardlessOfDataShape(t *testing.T) {
+	source := &RemoteHubSource{id: "host"}
+	for _, tc := range []struct {
+		name string
+		data any
+	}{
+		{"typed", appwire.ErrorData{
+			EvenerErrorInfo:  appwire.ErrorSessionUnavailable,
+			ClientMutationID: "original-id",
+			MutationOutcome:  appwire.MutationOutcomeNotAccepted,
+			RetryDisposition: appwire.RetryDispositionNone,
+		}},
+		{"decoded", map[string]any{
+			"evenerErrorInfo":  "sessionUnavailable",
+			"clientMutationId": "original-id",
+			"mutationOutcome":  "notAccepted",
+			"retryDisposition": "none",
+		}},
+	} {
+		for _, wrapped := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/wrapped=%t", tc.name, wrapped), func(t *testing.T) {
+				var original error = appwire.WireError{
+					Code:    appwire.CodeUnavailable,
+					Message: "session gone",
+					Data:    tc.data,
+				}
+				if wrapped {
+					original = fmt.Errorf("forward turn: %w", original)
+				}
+				got := source.remoteHubMutationCallError("forwarded-id", original)
+				if !reflect.DeepEqual(got, original) {
+					t.Fatalf("delivered refusal changed: got %#v, want %#v", got, original)
+				}
+			})
+		}
+	}
+}
+
+func TestRemoteHubMutationMapsTransportFailures(t *testing.T) {
+	source := &RemoteHubSource{id: "host"}
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{"raw", io.EOF},
+		{"wrapped raw", fmt.Errorf("write: %w", io.EOF)},
+		{"marked", appwire.TransportFailureError{WireError: appwire.InternalError("response lost")}},
+		{"wrapped marked", fmt.Errorf("read: %w", appwire.TransportFailureError{WireError: appwire.InternalError("response lost")})},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := source.remoteHubMutationCallError("lost-id", tc.err)
+			assertMutationOutcomeUnknownAutomatic(t, err, "lost-id")
 		})
 	}
 }
