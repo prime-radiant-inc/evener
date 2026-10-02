@@ -5,7 +5,7 @@
 // Pattern mirrors daemonResidents.test.ts: each test resets store +
 // connection in beforeEach.
 
-import { AppwireClient, type HostListResponse, type HostRow, WireError } from "@evener/appwire-client";
+import { AppwireClient, type HostListResponse, type HostRow, type RemovedRow, WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { FakeSocket } from "@evener/appwire-client/testing/fakeSocket";
 import { beforeEach, describe, expect, test, vi } from "vitest";
@@ -34,6 +34,11 @@ function row(name: string): HostRow {
     midAttach: false,
     removed: false,
   };
+}
+
+function removedRow(name: string): RemovedRow {
+  const { midAttach: _midAttach, ...base } = row(name);
+  return { ...base, removed: true, midEnsure: false };
 }
 
 beforeEach(() => {
@@ -511,7 +516,7 @@ describe("mutations", () => {
       outcome: "committed-with-teardown-failure",
       seam: "rebind",
       remnantId: "r1",
-      host: { ...row("alpha"), removed: true },
+      host: removedRow("alpha"),
     }));
     fake.on("evener/host/list", () => ({ hosts: [{ ...row("alpha"), removed: true, openRemnantId: "r1" }] }));
 
@@ -542,7 +547,7 @@ describe("mutations", () => {
     const fake = connectFakeClient();
     fake.on("evener/host/list", () => ({ hosts: [{ ...row("alpha"), generation: 7, incarnationId: "inc-7" }] }));
     await hostsStore.getState().fetch();
-    fake.on("evener/host/remove", () => ({ outcome: "committed", host: { ...row("alpha"), removed: true } }));
+    fake.on("evener/host/remove", () => ({ outcome: "committed", host: removedRow("alpha") }));
     fake.on("evener/host/list", () => ({ hosts: [] }));
     await hostsStore.getState().remove("alpha");
 
@@ -563,7 +568,7 @@ describe("mutations", () => {
     // The store never fetched, so no row is held; the first list read answers
     // the pair, and the remove echoes that — never a defaulted pair.
     fake.on("evener/host/list", () => ({ hosts: [{ ...row("alpha"), generation: 3, incarnationId: "inc-3" }] }));
-    fake.on("evener/host/remove", () => ({ outcome: "committed", host: { ...row("alpha"), removed: true } }));
+    fake.on("evener/host/remove", () => ({ outcome: "committed", host: removedRow("alpha") }));
     await hostsStore.getState().remove("alpha");
 
     const removeParams = fake.calls.find((c) => c.method === "evener/host/remove")?.params as {
@@ -629,7 +634,7 @@ describe("mutations", () => {
             binding: "generation",
           });
         }
-        return { outcome: "committed", host: { ...row("alpha"), removed: true } };
+        return { outcome: "committed", host: removedRow("alpha") };
       },
     );
     fake.on("evener/host/list", () => ({ hosts: [{ ...row("alpha"), generation: 2, incarnationId: "inc-1" }] }));
@@ -738,7 +743,7 @@ describe("mutations", () => {
     fake.on("evener/host/list", () => ({ hosts: [row("alpha"), row("beta")] }));
     await hostsStore.getState().fetch();
 
-    fake.on("evener/host/remove", () => ({ outcome: "committed", host: row("alpha") }));
+    fake.on("evener/host/remove", () => ({ outcome: "committed", host: removedRow("alpha") }));
     fake.on("evener/host/list", () => Promise.reject(new Error("list failed")));
     await hostsStore.getState().remove("alpha");
 
@@ -791,7 +796,7 @@ describe("mutations", () => {
     fake.on("evener/host/list", () => new Promise<HostListResponse>((resolve) => (resolvePoll = resolve)));
     const poll = hostsStore.getState().refresh();
 
-    fake.on("evener/host/remove", () => ({ outcome: "committed", host: row("beta") }));
+    fake.on("evener/host/remove", () => ({ outcome: "committed", host: removedRow("beta") }));
     fake.on("evener/host/list", () => Promise.reject(new Error("list failed")));
     await hostsStore.getState().remove("beta");
 
