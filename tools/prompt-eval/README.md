@@ -28,6 +28,11 @@ Every command below assumes `/tmp/lab/evener-fluency` is that binary and that yo
 | `prose.research-conflicting` | Notes that disagree; the answer must match the one that actually applies to this codebase. |
 | `prose.edit-audience` | Rewriting an internal incident writeup for a non-technical customer audience. |
 | `prose.ops-logs` | A cleanup request with a retention rule that is easy to miss. |
+| `prose.changelog-skill` | A changelog entry, where a project skill sets the format. |
+| `prose.release-skill` | Cutting a release, where a project skill sets the steps. |
+| `prose.staging-config` | A new environment whose values only the person knows (`person:`); copying production fails. |
+| `prose.customer-rename` | A rename whose scope only the person knows (`person:`); invoices must keep the old name. |
+| `prose.git-greeting-asked`, `prose.bugfix-tally-asked`, `prose.research-proposals-asked` | Controls with a `person:` who has nothing to add: the agent should not need to ask. |
 
 ### Adding a task
 
