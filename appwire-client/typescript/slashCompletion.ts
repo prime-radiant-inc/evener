@@ -80,11 +80,9 @@ export interface SlashMenuItem {
   // does, or its plugin provenance").
   hint: string;
   kind: "builtin" | "plugin" | "skill";
-  // The CANONICAL catalog name of a skill row - the exact EvenerSkillInfo.name
-  // the wire's {type: "skill", name} input item carries. Only skill rows set
-  // it; a builtin or plugin row leaves it absent, which is what lets
-  // Composer.tsx distinguish "insert this command's invocation text" from
-  // "add this skill's chip" even when a command and a skill share a name.
+  // The canonical name carried by a skill or plugin command input item.
+  // Built-in rows leave it absent. The kind discriminant distinguishes skill
+  // and command atoms even when their canonical names match.
   canonicalName?: string;
 }
 
