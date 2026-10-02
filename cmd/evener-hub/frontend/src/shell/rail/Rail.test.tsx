@@ -756,6 +756,15 @@ describe("resource-backed Rail", () => {
     expect(body).toBeTruthy();
     expect(railStyles.parentScrollBody).toBeTruthy();
     expect(body?.className.split(/\s+/)).toContain(railStyles.parentScrollBody);
+
+    // The drawer's scroll ends at the visible viewport bottom, so parent-scroll
+    // mode pads its last row clear of the home indicator.
+    const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "Rail.module.css"), "utf8").replace(
+      /\/\*[\s\S]*?\*\//g,
+      "",
+    );
+    const rule = css.match(/\.parentScrollBody\s*\{([^}]*)\}/)?.[1];
+    expect(rule).toContain("padding-bottom: calc(var(--space-2) + env(safe-area-inset-bottom))");
   });
   test("shows the settled empty state in v2 mode", () => {
     const empty = emptyManifest();
