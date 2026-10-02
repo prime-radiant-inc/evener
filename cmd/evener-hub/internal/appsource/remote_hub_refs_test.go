@@ -625,25 +625,38 @@ func TestRemoteHubJobsListPreservesUnrecognizedPayloads(t *testing.T) {
 	}
 }
 
-// TestRemoteHubJobsGetTranslatesOnlyRecognizedJobNodes pins evener/jobs/get's
-// translation gate, the same declared-field policy the tree walk keeps: a node
-// recognized as a JobActivityJob has its declared refs rewritten to this
-// controller's addresses, while any other object — including one that happens
-// to carry an ownerRef key — reaches the controller byte-for-byte.
-func TestRemoteHubJobsGetTranslatesOnlyRecognizedJobNodes(t *testing.T) {
+// Typed job detail results translate only declared session refs. Commands and
+// opaque shell transcript handles retain their literal values.
+func TestRemoteHubJobsGetTranslatesTypedJobRefs(t *testing.T) {
 	source := &RemoteHubSource{id: "host"}
-
-	unrelated := map[string]any{"ownerRef": "local:sess_1", "transcriptRef": "local:child", "note": "not a job"}
-	source.translateActivityJobNode(unrelated)
-	want := map[string]any{"ownerRef": "local:sess_1", "transcriptRef": "local:child", "note": "not a job"}
-	if !reflect.DeepEqual(unrelated, want) {
-		t.Fatalf("unrecognized payload = %#v, want it preserved as %#v", unrelated, want)
-	}
-
-	job := map[string]any{"jobId": "job_1", "ownerSessionId": "sess_1", "ownerRef": "local:sess_1", "transcriptRef": "local:child"}
-	source.translateActivityJobNode(job)
-	if job["ownerRef"] == "local:sess_1" || job["transcriptRef"] == "local:child" {
-		t.Fatalf("recognized job's declared refs were not translated: %#v", job)
+	for _, transcriptRef := range []string{"local:child", "job:job_1", ""} {
+		t.Run(transcriptRef, func(t *testing.T) {
+			var response appwire.JobsGetResponse
+			payload := `{"data":{"jobId":"job_1","ownerSessionId":"sess_1","ownerRef":"local:sess_1","command":"echo local:sess_1"}}`
+			if err := json.Unmarshal([]byte(payload), &response); err != nil {
+				t.Fatal(err)
+			}
+			response.Data.TranscriptRef = transcriptRef
+			if err := source.translateOut(&response); err != nil {
+				t.Fatal(err)
+			}
+			wantOwner, err := source.fromRemoteRefString("local:sess_1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantTranscript := transcriptRef
+			if transcriptRef == "local:child" {
+				wantTranscript, err = source.fromRemoteRefString(transcriptRef)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			job := response.Data
+			if job.OwnerRef != wantOwner || job.TranscriptRef != wantTranscript ||
+				job.OwnerSessionID != "sess_1" || job.Command != "echo local:sess_1" {
+				t.Fatalf("translated job = %+v", job)
+			}
+		})
 	}
 }
 
