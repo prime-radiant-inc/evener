@@ -339,3 +339,22 @@ func TestBuildIncludesSessionActivityResources(t *testing.T) {
 		})
 	}
 }
+
+func TestBuildIncludesJobOutputTail(t *testing.T) {
+	for _, tv := range build().Types {
+		if tv.Name != "JobOutputTail" {
+			continue
+		}
+		fields := map[string]bool{}
+		for _, field := range tv.Fields {
+			fields[field.JSON] = true
+		}
+		for _, name := range []string{"tail", "totalBytes", "retainedStart", "truncated", "hasEarlier"} {
+			if !fields[name] {
+				t.Fatalf("JobOutputTail missing field %q: %+v", name, tv.Fields)
+			}
+		}
+		return
+	}
+	t.Fatal("build() missing JobOutputTail")
+}

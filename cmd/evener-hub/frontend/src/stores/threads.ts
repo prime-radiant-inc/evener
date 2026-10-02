@@ -12,6 +12,8 @@ import type {
   AppwireClientLike,
   CachedSessionRecord,
   GoalSetResponse,
+  JobActivityJob,
+  JobOutputTail,
   ModelListResponse,
   SnapshotIdentity,
   TaskListResponse,
@@ -323,12 +325,10 @@ export interface ThreadsStoreState {
   // maxBytes > 0 bounds the window (appwire.JobsOutputParams.MaxBytes) - the
   // activity strip's preview uses it to fetch a couple hundred bytes instead
   // of the daemon's default tail.
-  jobOutput(ref: string, jobId: string, beforeBytes?: number, maxBytes?: number): Promise<unknown>;
+  jobOutput(ref: string, jobId: string, beforeBytes?: number, maxBytes?: number): Promise<JobOutputTail>;
   // Reads one job's metadata (evener/jobs/get): the activity-job shape,
-  // including the untruncated command. Its Data field is likewise `any` on the
-  // wire catalog and returned raw; the caller validates it with the package's
-  // parseActivityJob.
-  jobGet(ref: string, jobId: string): Promise<unknown>;
+  // including the untruncated command.
+  jobGet(ref: string, jobId: string): Promise<JobActivityJob>;
   // Answers one evener/sandbox/escalation/requested via evener/sandbox/
   // escalation/resolve. On success, removes the escalation from whichever
   // of threads/watchedThreads currently track `ref` (both, if both do -

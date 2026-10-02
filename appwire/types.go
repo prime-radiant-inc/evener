@@ -2899,7 +2899,7 @@ type JobsOutputParams struct {
 }
 
 type JobsOutputResponse struct {
-	Data any `json:"data"`
+	Data JobOutputTail `json:"data"`
 }
 
 // JobsGetParams reads ONE job's metadata (the activity-tree job shape),
@@ -2914,7 +2914,7 @@ type JobsGetParams struct {
 // the activity tree renders, so a client can show the job's full command beside
 // its output.
 type JobsGetResponse struct {
-	Data any `json:"data"`
+	Data JobActivityJob `json:"data"`
 }
 
 // PathsCompleteParams asks for path completions of Prefix. IncludeFiles adds

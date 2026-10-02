@@ -430,8 +430,8 @@ type Server struct {
 	appSessionActivity       sessionActivityHooks
 	tasksFn                  func() []appwire.Task
 	jobsFn                   func(appwire.JobsListParams) (any, error)
-	jobOutputFn              func(jobID string, beforeBytes, maxBytes int64) (data any, found bool, err error)
-	jobGetFn                 func(jobID string) (data any, found bool, err error)
+	jobOutputFn              func(jobID string, beforeBytes, maxBytes int64) (data appwire.JobOutputTail, found bool, err error)
+	jobGetFn                 func(jobID string) (data appwire.JobActivityJob, found bool, err error)
 	shutdownFunc             func()
 	daemonStatusFunc         func() appwire.DaemonLifecycle
 	daemonRetireFunc         func(context.Context, appwire.DaemonRetireParams) (appwire.DaemonRetireResponse, error)
@@ -871,7 +871,7 @@ func (s *Server) SetJobsFunc(fn func(appwire.JobsListParams) (any, error)) {
 // SetJobOutputFunc sets the function backing evener/jobs/output. found=false
 // maps to an invalid-params wire error (the caller guessed a job id).
 // beforeBytes > 0 pages backwards through the job's output log.
-func (s *Server) SetJobOutputFunc(fn func(jobID string, beforeBytes, maxBytes int64) (data any, found bool, err error)) {
+func (s *Server) SetJobOutputFunc(fn func(jobID string, beforeBytes, maxBytes int64) (data appwire.JobOutputTail, found bool, err error)) {
 	s.mu.Lock()
 	s.jobOutputFn = fn
 	s.mu.Unlock()
@@ -879,7 +879,7 @@ func (s *Server) SetJobOutputFunc(fn func(jobID string, beforeBytes, maxBytes in
 
 // SetJobGetFunc sets the function backing evener/jobs/get. found=false maps to
 // an invalid-params wire error (the caller guessed a job id).
-func (s *Server) SetJobGetFunc(fn func(jobID string) (data any, found bool, err error)) {
+func (s *Server) SetJobGetFunc(fn func(jobID string) (data appwire.JobActivityJob, found bool, err error)) {
 	s.mu.Lock()
 	s.jobGetFn = fn
 	s.mu.Unlock()

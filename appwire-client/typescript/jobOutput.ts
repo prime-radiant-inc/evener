@@ -1,15 +1,11 @@
-export interface JobLogTail {
-  tail: string;
-  totalBytes: number;
-  retainedStart: number;
-  truncated: boolean;
-  // The wire omits this field when no earlier retained page exists.
+import type { JobOutputTail } from "./types.gen";
+
+export interface JobLogTail extends JobOutputTail {
+  // Normalize the optional wire field for consumers.
   hasEarlier: boolean;
 }
 
-// evener/jobs/output's data field crosses the wire untyped (unknown on the
-// generated JobsOutputResponse); validate the appwire.JobOutputTail shape
-// before trusting it rather than casting.
+// Validate untrusted input and normalize omitted flags before presenting a log.
 export function parseJobLogTail(data: unknown): JobLogTail | null {
   if (typeof data !== "object" || data === null || Array.isArray(data)) return null;
   const raw = data as Record<string, unknown>;

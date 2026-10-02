@@ -338,9 +338,9 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			tail, ok := out.Data.(map[string]any)
-			if !ok || tail["tail"] != "tail-bytes" || tail["totalBytes"] != float64(4096) ||
-				tail["retainedStart"] != float64(3968) || tail["truncated"] != true {
+			tail := out.Data
+			if tail.Tail != "tail-bytes" || tail.TotalBytes != 4096 ||
+				tail.RetainedStart != 3968 || !tail.Truncated {
 				return fmt.Errorf("JobOutput data = %#v", out.Data)
 			}
 			return nil
@@ -361,12 +361,10 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			// Data is `any` in the catalog, so the single job payload decodes as a
-			// map keyed by JobActivityJob's camelCase json tags. The full command
-			// must cross the wire untruncated.
-			job, ok := out.Data.(map[string]any)
-			if !ok || job["jobId"] != "job_a" || job["ownerRef"] != "local:th" || job["type"] != "shell" ||
-				job["status"] != "running" || job["command"] != "go test ./... -count=1 -run TestAll" {
+			// The typed result retains the full command across the wire.
+			job := out.Data
+			if job.JobID != "job_a" || job.OwnerRef != "local:th" || job.Type != "shell" ||
+				job.Status != "running" || job.Command != "go test ./... -count=1 -run TestAll" {
 				return fmt.Errorf("JobsGet data = %#v", out.Data)
 			}
 			return nil

@@ -49,8 +49,8 @@ type residualServeServer struct {
 	effort         func(string) error
 	tasks          func() []appwire.Task
 	jobs           func(appwire.JobsListParams) (any, error)
-	jobOutput      func(string, int64, int64) (any, bool, error)
-	jobGet         func(string) (any, bool, error)
+	jobOutput      func(string, int64, int64) (appwire.JobOutputTail, bool, error)
+	jobGet         func(string) (appwire.JobActivityJob, bool, error)
 	clear          func(context.Context, appwire.ThreadClearParams) error
 	shutdown       func()
 }
@@ -98,10 +98,10 @@ func (s *residualServeServer) SetTasksFunc(f func() []appwire.Task)        { s.t
 func (s *residualServeServer) SetJobsFunc(f func(appwire.JobsListParams) (any, error)) {
 	s.jobs = f
 }
-func (s *residualServeServer) SetJobOutputFunc(f func(string, int64, int64) (any, bool, error)) {
+func (s *residualServeServer) SetJobOutputFunc(f func(string, int64, int64) (appwire.JobOutputTail, bool, error)) {
 	s.jobOutput = f
 }
-func (s *residualServeServer) SetJobGetFunc(f func(string) (any, bool, error)) {
+func (s *residualServeServer) SetJobGetFunc(f func(string) (appwire.JobActivityJob, bool, error)) {
 	s.jobGet = f
 }
 func (s *residualServeServer) SetClearFunc(f func(context.Context, appwire.ThreadClearParams) error) {

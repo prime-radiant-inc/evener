@@ -6569,9 +6569,8 @@ describe("useThreadsStore.listTasks", () => {
 });
 
 describe("useThreadsStore.listJobs / jobOutput", () => {
-  // Wire-true shape: JobsListResponse.Data / JobsOutputResponse.Data are both
-  // `any` in appwire/types.go. The replacement jobs-list payload is the
-  // recursive activity tree, while job output stays JobOutputTail. These
+  // JobsListResponse.Data is the legacy untyped recursive activity tree;
+  // JobsOutputResponse.Data is the concrete JobOutputTail. These
   // fixtures mirror the current wire JSON field names verbatim.
   const JOBS_DATA = {
     revision: 5,

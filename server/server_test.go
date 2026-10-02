@@ -275,7 +275,9 @@ func TestHandleAppJobsOutputNilFunc(t *testing.T) {
 func TestHandleAppJobsOutputNotFound(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
-	srv.SetJobOutputFunc(func(string, int64, int64) (any, bool, error) { return nil, false, nil })
+	srv.SetJobOutputFunc(func(string, int64, int64) (appwire.JobOutputTail, bool, error) {
+		return appwire.JobOutputTail{}, false, nil
+	})
 
 	conn := srv.AppServer().NewConnection("test")
 	init := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
@@ -297,7 +299,7 @@ func TestHandleAppJobsOutputNotFound(t *testing.T) {
 func TestHandleAppJobsOutput(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
-	srv.SetJobOutputFunc(func(jobID string, beforeBytes, maxBytes int64) (any, bool, error) {
+	srv.SetJobOutputFunc(func(jobID string, beforeBytes, maxBytes int64) (appwire.JobOutputTail, bool, error) {
 		if jobID != "job_1" {
 			t.Errorf("jobID = %q, want job_1", jobID)
 		}
@@ -323,10 +325,7 @@ func TestHandleAppJobsOutput(t *testing.T) {
 	if !ok {
 		t.Fatalf("evener/jobs/output result=%T (%+v)", resp.Response.Result, resp)
 	}
-	tail, ok := out.Data.(agent.JobOutputTail)
-	if !ok {
-		t.Fatalf("output data type=%T, want agent.JobOutputTail", out.Data)
-	}
+	tail := out.Data
 	if tail.Tail != "hi" {
 		t.Errorf("tail: got %q, want hi", tail.Tail)
 	}
@@ -360,7 +359,7 @@ func TestHandleAppJobsGetNilFunc(t *testing.T) {
 func TestHandleAppJobsGetNotFound(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
-	srv.SetJobGetFunc(func(string) (any, bool, error) { return nil, false, nil })
+	srv.SetJobGetFunc(func(string) (appwire.JobActivityJob, bool, error) { return appwire.JobActivityJob{}, false, nil })
 
 	conn := srv.AppServer().NewConnection("test")
 	init := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
@@ -382,7 +381,7 @@ func TestHandleAppJobsGetNotFound(t *testing.T) {
 func TestHandleAppJobsGet(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
-	srv.SetJobGetFunc(func(jobID string) (any, bool, error) {
+	srv.SetJobGetFunc(func(jobID string) (appwire.JobActivityJob, bool, error) {
 		if jobID != "job_1" {
 			t.Errorf("jobID = %q, want job_1", jobID)
 		}
@@ -402,10 +401,7 @@ func TestHandleAppJobsGet(t *testing.T) {
 	if !ok {
 		t.Fatalf("evener/jobs/get result=%T (%+v)", resp.Response.Result, resp)
 	}
-	job, ok := out.Data.(agent.JobActivityJob)
-	if !ok {
-		t.Fatalf("get data type=%T, want agent.JobActivityJob", out.Data)
-	}
+	job := out.Data
 	if job.JobID != "job_1" || job.Command != "go test ./..." {
 		t.Errorf("job = %+v", job)
 	}
