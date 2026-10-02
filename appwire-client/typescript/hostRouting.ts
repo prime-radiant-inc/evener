@@ -14,7 +14,7 @@
 // host wraps the call in `evener/host/request`; the hub's allow-list is the
 // security boundary and refuses anything it does not name.
 import type { AppwireClientLike } from "./clientLike";
-import type { HostRequestParams, MethodName, MethodTypes } from "./types.gen";
+import type { HostRequestMethod, HostRequestParams, MethodTypes } from "./types.gen";
 
 // LOCAL_HOST is the manifest's id for the controller's own hub (component 06).
 export const LOCAL_HOST = "local";
@@ -46,7 +46,7 @@ export const HOST_DEPENDENT_DISCOVERY_METHODS = [
   "evener/git/head",
   "evener/plugin/preview",
   "evener/instance/list",
-] as const satisfies readonly MethodName[];
+] as const satisfies readonly HostRequestMethod[];
 
 export type HostDependentDiscoveryMethod = (typeof HOST_DEPENDENT_DISCOVERY_METHODS)[number];
 
@@ -79,7 +79,7 @@ export function normalizeHost(raw: string | null): string {
  * local call bounds the method itself, the remote call bounds the proxy request
  * that carries it (see below) - a deadline is never dropped on the floor.
  */
-export function hostRequest<M extends MethodName>(
+export function hostRequest<M extends HostRequestMethod>(
   client: Pick<AppwireClientLike, "request">,
   host: string | null | undefined,
   method: M,
