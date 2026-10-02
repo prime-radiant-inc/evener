@@ -322,6 +322,12 @@ identity. Promotion does not submit or replay input. An explicit Open conversati
 opens or focuses an ordinary independent session pane. Unrelated panes keep
 their identity and placement.
 
+Mounted same-ref composers keep their own text and selection. Image paste and
+removal apply to the editor receiving the gesture and can persist that edit.
+Submission and failed-decode cleanup update their original mounted editor without
+overwriting another pane's newer persisted draft. Detached continuations remain
+fenced by ownership of that shared draft.
+
 Closing the source pane or resetting the workspace retires that source lifetime.
 A fresh pane with the same ID and ref owns a new lifetime. Late recovery-write
 or acceptance completion cannot change its draft, skill selections, attachments

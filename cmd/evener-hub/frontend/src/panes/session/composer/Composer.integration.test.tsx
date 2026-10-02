@@ -33,7 +33,7 @@ import { Toast } from "../../../widgets";
 import { getToasts, resetToastStoreForTests } from "../../../widgets/toast/store";
 import { settleActivityDiscovery } from "../testing/activityDiscovery";
 import { createTestComposerSource } from "../testing/composerSource";
-import { replaceEditorText, selectEditorText } from "../testing/editor";
+import { pastePngInto, replaceEditorText, selectEditorText } from "../testing/editor";
 import { installControlledImageEncoding } from "../testing/imageEncoding";
 import { askDockStore, resetAskDockStoreForTests } from "./askDock/askDockStore";
 import { ackAskUserCall } from "./askDock/askDockTestUtils";
@@ -554,6 +554,88 @@ test("an old source encode failure cannot overwrite a newer pane's same-ref draf
   await waitFor(() => expect(getToasts().map((toast) => toast.text)).toEqual(["bad.png (image decode failed)"]));
   expect(readComposerDraft("root")).toEqual({ text: "foreign [image 1] draft", skillNames: [] });
   expect(screen.getByRole("textbox", { name: "Message" }).textContent).toBe("foreign [image 1] draft");
+});
+
+test.each([
+  { action: "paste", text: "source draft [image 1]", persistedText: "source draft [image 1]" },
+  { action: "remove", text: "source draft ", persistedText: "source draft " },
+  { action: "submitted cleanup", text: "source draft ", persistedText: "foreign [image 1] draft" },
+])(
+  "mounted same-ref attachment $action uses its own editor after another pane edits",
+  async ({ action, text, persistedText }) => {
+    const encoding = installControlledImageEncoding();
+    const source = createTestComposerSource("root");
+    const fake = await mountComposer("root", idleFocusThread("root"), source);
+    await settleActivityDiscovery("root");
+    const editor = screen.getByRole("textbox", { name: "Message" });
+    replaceEditorText(editor, "source draft ");
+    if (action !== "paste") {
+      selectEditorText(editor, "source draft ".length);
+      pastePngInto(editor, "source.png");
+      await act(async () => encoding.resolve());
+      await screen.findByRole("button", { name: "View source.png" });
+    }
+    const otherSource = createTestComposerSource("root");
+    const other = render(<Composer ref="root" source={otherSource} focused={false} />);
+    await flushPendingTurnsProjectionForTests();
+    const otherEditor = within(other.container).getByRole("textbox", { name: "Message" });
+    replaceEditorText(otherEditor, "foreign [image 1] draft");
+    expect(editor.textContent).toBe(action === "paste" ? "source draft " : "source draft [image 1]");
+    expect(readComposerDraft("root")).toEqual({ text: "foreign [image 1] draft", skillNames: [] });
+
+    if (action === "paste") {
+      selectEditorText(editor, "source draft ".length);
+      pastePngInto(editor, "source.png");
+      await act(async () => encoding.resolve());
+      await screen.findByRole("button", { name: "View source.png" });
+    } else if (action === "remove") {
+      await userEvent.setup().click(screen.getByRole("button", { name: "Remove source.png" }));
+    } else {
+      act(() => source.clearSubmittedAttachments([...source.attachments.getState().items]));
+    }
+
+    expect.soft(editor.textContent).toBe(text);
+    expect.soft(source.getSnapshot().text).toBe(text);
+    expect.soft(otherEditor.textContent).toBe("foreign [image 1] draft");
+    expect.soft(readComposerDraft("root")).toEqual({ text: persistedText, skillNames: [] });
+    expect(source.attachments.getState().items).toEqual(
+      action === "paste"
+        ? [{ marker: 1, name: "source.png", mediaType: "image/png", pending: false, data: "AQID", width: 8, height: 4 }]
+        : [],
+    );
+    expect(fake.calls.filter((call) => call.method === "turn/start" || call.method === "turn/steer")).toEqual([]);
+    expect(getToasts()).toEqual([]);
+  },
+);
+
+test("mounted encode failure cleans its own marker without claiming a newer same-ref draft", async () => {
+  const encoding = installControlledImageEncoding();
+  const source = createTestComposerSource("root");
+  const fake = await mountComposer("root", idleFocusThread("root"), source);
+  await settleActivityDiscovery("root");
+  const editor = screen.getByRole("textbox", { name: "Message" });
+  replaceEditorText(editor, "source draft ");
+  selectEditorText(editor, "source draft ".length);
+  pastePngInto(editor, "bad.png");
+  expect(editor.textContent).toBe("source draft [image 1]");
+  const otherSource = createTestComposerSource("root");
+  const other = render(<Composer ref="root" source={otherSource} focused={false} />);
+  await flushPendingTurnsProjectionForTests();
+  const otherEditor = within(other.container).getByRole("textbox", { name: "Message" });
+  replaceEditorText(otherEditor, "foreign [image 1] draft");
+
+  await act(async () => encoding.reject());
+
+  expect.soft(editor.textContent).toBe("source draft ");
+  expect.soft(source.getSnapshot().text).toBe("source draft ");
+  expect.soft(otherEditor.textContent).toBe("foreign [image 1] draft");
+  expect.soft(readComposerDraft("root")).toEqual({ text: "foreign [image 1] draft", skillNames: [] });
+  expect(source.attachments.getState().items).toEqual([]);
+  expect(screen.queryByRole("button", { name: "Remove bad.png" })).toBeNull();
+  expect(fake.calls.filter((call) => call.method === "turn/start" || call.method === "turn/steer")).toEqual([]);
+  expect(getToasts().map((toast) => ({ kind: toast.kind, text: toast.text }))).toEqual([
+    { kind: "error", text: "bad.png (image decode failed)" },
+  ]);
 });
 
 test.each(["success", "failure"] as const)(

@@ -7,6 +7,7 @@ import {
   createAttachmentStore,
   type PendingAttachment,
   type TextEditor,
+  type TextEditSource,
 } from "./attachments/useAttachments";
 import {
   clearDraft,
@@ -67,7 +68,7 @@ export interface ComposerSourceState {
   setActiveRecoveryId(id: string | null): void;
   markRestore(): void;
   persistDraft(text: string): void;
-  writeDraft(text: string, mayPersist: boolean, source?: "edit" | "submission"): void;
+  writeDraft(text: string, mayPersist: boolean, source?: TextEditSource): void;
   refreshRecovery(): void;
   queueRecoveryPersistence(
     id: string,
@@ -170,27 +171,26 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
   function markRestore(): void {
     if (!disposed) state.setState((snapshot) => ({ restoreEpoch: snapshot.restoreEpoch + 1 }));
   }
-  function writeDraft(text: string, mayPersist: boolean, source?: "edit" | "submission"): void {
+  function writeDraft(text: string, mayPersist: boolean, source?: TextEditSource): void {
     updateSkillNames(restoredSkillNames({ text, skillNames: skillNamesRef.current }));
     if (source === "submission") updateText(text);
     else editText(text);
     if (mayPersist && activeRecoveryIdRef.current === null) persistDraft(text);
   }
-  function writeDetachedSourceDraft(text: string, _cursor: number, source?: "edit" | "submission"): void {
+  function writeDetachedSourceDraft(text: string, _cursor: number, source?: TextEditSource): void {
+    // A detached continuation cannot claim another pane's newer draft.
     if (disposed || !ownsDraft()) return;
     writeDraft(text, true, source);
   }
   const editor: TextEditor = {
     read: () => {
-      const text = currentDraftText();
       const mounted = boundEditor?.read();
-      return mounted
-        ? { ...mounted, text }
-        : { text, cursor: text.length, selection: { start: text.length, end: text.length } };
+      if (mounted) return mounted;
+      const text = currentDraftText();
+      return { text, cursor: text.length, selection: { start: text.length, end: text.length } };
     },
     write: (text, cursor, source) => {
-      // A continuation cannot take ownership back from another pane's edit.
-      if (disposed || !ownsDraft()) return;
+      if (disposed) return;
       if (boundEditor) boundEditor.write(text, cursor, source);
       else writeDetachedSourceDraft(text, cursor, source);
     },

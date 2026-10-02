@@ -367,9 +367,10 @@ export function Composer({ ref, focused, source }: ComposerProps) {
         return { text: textRef.current, cursor, selection };
       },
       write: (nextText, cursor, source) => {
-        // Submission cleanup retires this mount's markers without claiming a
-        // shared draft that another composer has edited in the meantime.
-        const mayPersist = source !== "submission" || ownedDraftRevisionRef.current === readDraftRevision(ref);
+        // Background cleanup changes this editor without claiming a shared
+        // draft that another composer has edited in the meantime.
+        const mayPersist =
+          source === undefined || source === "edit" || ownedDraftRevisionRef.current === readDraftRevision(ref);
         writeDraft(nextText, mayPersist, source);
         scheduleCursorRestore(cursor);
       },

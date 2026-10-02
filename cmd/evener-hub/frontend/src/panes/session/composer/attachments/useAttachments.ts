@@ -53,10 +53,12 @@ export interface PendingAttachment {
 // (see useAttachments.test.ts's makeFakeEditor), which is always-current
 // by construction and therefore can't reproduce that specific staleness
 // class - Composer.test.tsx's own regression test is what has to.
+export type TextEditSource = "edit" | "submission" | "cleanup";
+
 export interface TextEditor {
   /** Selection is the UTF-16 range replaced by an accepted attachment marker. */
   read(): { text: string; cursor: number; selection: { start: number; end: number } };
-  write(text: string, cursor: number, source?: "edit" | "submission"): void;
+  write(text: string, cursor: number, source?: TextEditSource): void;
 }
 
 export interface UseAttachmentsResult {
@@ -217,7 +219,7 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
             if (removedWhilePendingRef.current.delete(marker)) return;
             const current = editor.read();
             const stripped = stripMarker(current.text, current.cursor, marker);
-            editor.write(stripped.value, stripped.cursor ?? current.cursor);
+            editor.write(stripped.value, stripped.cursor ?? current.cursor, "cleanup");
             setItems((prev) => prev.filter((item) => item.marker !== marker));
             onRejected(`${file.name || "unknown"} (image decode failed)`);
           });

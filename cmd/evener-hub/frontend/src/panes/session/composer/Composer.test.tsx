@@ -40,7 +40,7 @@ import { getToasts, resetToastStoreForTests } from "../../../widgets/toast/store
 import { hoverForTooltip } from "../../../widgets/tooltip/tooltipTestUtils";
 import { settleActivityDiscovery } from "../testing/activityDiscovery";
 import { createTestComposerSource } from "../testing/composerSource";
-import { editorCursor, replaceEditorText, selectEditorText } from "../testing/editor";
+import { editorCursor, pastePngInto, replaceEditorText, selectEditorText } from "../testing/editor";
 import { installMobileViewport } from "../testing/mobileViewport";
 import { resetAskDockStoreForTests } from "./askDock/askDockStore";
 import { Composer as ComposerView } from "./Composer";
@@ -4264,20 +4264,6 @@ test("clicking Stop calls turn/interrupt", async () => {
 });
 
 // --- attachments (paste -> tile -> submit) ----------------------------------
-
-function pastePngInto(el: HTMLElement, name = "shot.png", text = ""): void {
-  const file = new File([new Uint8Array([1, 2, 3])], name, { type: "image/png" });
-  const event = new Event("paste", { bubbles: true, cancelable: true });
-  Object.defineProperty(event, "clipboardData", {
-    value: {
-      items: [{ kind: "file", type: "image/png", getAsFile: () => file }],
-      files: [file],
-      types: ["Files", "text/plain"],
-      getData: (type: string) => (type === "text/plain" ? text : ""),
-    },
-  });
-  fireEvent(el, event);
-}
 
 function installCanvasStubs(): void {
   HTMLCanvasElement.prototype.getContext = (() => ({
