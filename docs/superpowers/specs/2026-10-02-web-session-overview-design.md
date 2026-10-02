@@ -85,8 +85,9 @@ count and no status-footer chip. Preserve existing keyboard selection and
 visible focus through the shared category-control widget.
 
 The five categories must remain legible and reachable inside the 320px desktop
-sidebar and on narrow phone screens. Adapt the tab strip locally if needed;
-retain the existing sidebar width and design tokens.
+sidebar and on narrow phone screens, including the supported XL font preference
+and multi-digit counts. Adapt the tab strip locally if needed; retain the
+existing sidebar width, design tokens, and touch-target floors.
 
 ### About content
 
@@ -99,6 +100,11 @@ Use the same details body as the existing Details pane, preserving:
   last activity time.
 - Omission of unavailable values and empty sections, partial-token labels, and
   suppression of live context for ended or closed sessions.
+
+Full model identifiers, session IDs, branches, and paths must remain readable
+and selectable at sidebar and phone widths. Use wrapping or contained scrolling
+rather than silent clipping. Keep necessary presentation changes local to the
+details content instead of redesigning every inspector widget.
 
 Use the sidebar's explicit public session ref for model lookup and hydration,
 not the navigation row or a previously focused session. Observe the live thread
@@ -123,11 +129,20 @@ their existing independent demand.
   intent.
 - `/status` opens Overview on About for its explicit command session. Repeating
   `/status` keeps About open. It does not toggle a standalone Details pane.
+  Its completion description says “Show session details in Overview” and keeps
+  useful details/info search terms.
 - Footer counters continue selecting their own categories and focusing their
   owning pane. About introduces no counter.
-- Closing returns keyboard focus through the existing opener mechanism. If a
-  portaled menu opener has disappeared while About is selected, restore focus
-  to the intended session's surviving session-actions control.
+- On phones, opening from a menu or `/status` moves focus into the named visible
+  surface after the opener finishes closing. Sequential keyboard focus stays
+  within the full-screen surface until dismissal. Desktop remains nonmodal.
+  Reuse the existing focus primitive; a global accessibility redesign is outside
+  this change.
+- Closing returns focus to a visible, connected opener. If it has disappeared
+  or become hidden, prefer the originating pane's visible session-actions
+  control, then another visible control for the intended session. Preserve the
+  existing owning-pane footer fallback for activity categories. About has no
+  footer chip, so a session-qualified menu-trigger fallback is required.
 - Switching sessions never shows the previous session's About values, including
   when the target model has not loaded yet. A same-ref session replacement uses
   the thread store's existing identity reconciliation.
@@ -140,11 +155,10 @@ backward-compatibility layer. The hidden mobile Details Sheet mount is no longer
 needed by session chrome once its menu action is removed; remove that mount.
 Keep implementations used by retained surfaces and preserve their tests.
 
-The legacy activity pane and recursive activity Sheet are not the shared
-category sidebar. Preserve their read scope and restoration contracts. Use
-Overview for their inspection-surface title and trigger where applicable, while
-keeping their recursive body and domain activity descriptions unchanged. They
-do not gain a parallel set of About/category tabs in this change.
+Legacy Activity workspace panes and recursive Activity Sheets retain their
+titles, triggers, recursive scope, and restoration behavior. Overview names only
+the combined shared sidebar and its entry points. The legacy surfaces do not
+gain a parallel set of About/category tabs in this change.
 
 Native mobile and TUI behavior, backend APIs, activity ownership, counts,
 transcript detail levels, session lifecycle, and generic retry behavior are out
@@ -164,25 +178,38 @@ of scope.
    visible. Model updates are reflected without closing the sidebar.
 5. Start on session A, open About, then move to session B before its model read
    completes. A's values disappear immediately; B's accepted values appear.
+   Also close or switch away before hydration completes, reopen the same public
+   ref, and resolve the old response last. It cannot replace newer model values.
 6. About acquires and releases the existing thread holder. An independently
    open transcript remains subscribed. Switching to About releases the previous
    category's collection demand without adding new collection demand. Recovery
-   and late-result isolation remain the shared stores' responsibility.
+   and late-result isolation remain the shared stores' responsibility. Prove
+   rich model hydration and model-holder release separately from the summary's
+   shared subscription. Deliver a notification after About releases its holder
+   and prove an independent transcript still updates. In a sidebar-only fixture,
+   invalidate activity or reconnect after switching to About and prove the
+   previous category does not reacquire collection demand.
 7. About selection survives close/reopen, session/child/Back navigation, and
    reload through existing view persistence. Visit an activity category after
    About and verify its prior disclosure and later-page scroll state remain.
    Rerun existing multiple-page refresh/reconnect retention tests.
 8. The real web `/status` execution opens About for the command session on
    desktop and mobile, including repeated invocation and another focused pane.
-   No new Details workspace pane appears.
+   Exercise composer submission, not only the command handler. No new Details
+   workspace pane or provider turn appears.
 9. Existing Details routes and restored workspace panes still render the same
    body. The removal of menu access must not remove their registration.
-10. Escape and close behavior remain intact. Return focus works from About
-    after a menu closes, for the correct session in a multi-pane workspace.
+10. Real menu and `/status` phone flows move focus into Overview and contain
+    sequential keyboard navigation. Escape and close restore a visible control
+    for the intended session and originating pane. Include a closed phone drawer
+    and a multi-pane desktop workspace. Switching from an activity category to
+    About does not lose the opener.
 11. Browser evidence at desktop sidebar width and 320px/390px phone widths proves
-    all five categories, long location paths, and the close control stay
-    reachable without page-wide overflow. Check both themes and visible
-    keyboard focus. DOM-only tests do not prove geometry.
+    all five labels and counts remain legible with XL text and multi-digit
+    counts. Full long model/session identifiers, branches, and paths remain
+    readable and selectable. The close control stays reachable without
+    page-wide overflow. Check both themes, visible keyboard focus, and preserved
+    touch-target floors. DOM-only tests do not prove geometry.
 
 Use real components and stores. Script only external transport/model reads and
 clocks. Assert visible behavior, store demand, and subscription effects rather
@@ -198,9 +225,13 @@ the implementation change. Historical designs remain historical.
 Run targeted frontend tests first. Before final verification, format touched
 TypeScript with the frontend's pinned Biome, then run `make test-web` from the
 repository root. Run `make test-web-browser` on this Chrome-capable host and add
-focused real-browser coverage for the five-category About flow. Inspect the
-commands' implementations before relying on their reported outcomes. CI owns
-full-repository gates; this change does not require a long local full suite.
+focused real-browser coverage for the five-category About flow through an
+existing gated harness. `src/dev/shellguard-entry.tsx` currently equates category
+count with footer-chip count. Update that assumption: assert the four footer
+identities independently of the five category identities, not by counting the
+unfiltered production registry. Inspect the commands' implementations before
+relying on their reported outcomes. CI owns full-repository gates; this change
+does not require a long local full suite.
 
 ## Review and handoff
 
