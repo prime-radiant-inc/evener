@@ -527,7 +527,7 @@ test("a job log does not borrow metadata from another owner's equal job id", asy
     finishSecond = resolve;
   });
   fake.on("evener/jobs/get", ({ ref }) => (ref === "first-owner" ? metadata(ref, "First owner's job") : second));
-  fake.on("evener/jobs/output", () => ({ data: { tail: "", totalBytes: 0, retainedStart: 0 } }));
+  fake.on("evener/jobs/output", () => ({ data: { tail: "", totalBytes: 0, retainedStart: 0, truncated: false } }));
   const view = (ownerRef: string) => (
     <ClientProvider client={fake}>
       <Transcript params={{ ref: "job:shared-id", parentRef: ownerRef }} paneId="p1" focused={false} />

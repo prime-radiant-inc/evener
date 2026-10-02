@@ -69,6 +69,23 @@ input outside the workspace bounds. The integration does not clip those windows.
 The [shell guard](../../cmd/evener-hub/frontend/scripts/shellguard/run.mjs)
 checks native resize and real floating-window preservation in Chrome.
 
+## Exited-session controls
+
+An exited session's follow-up keeps its model selector, session actions and Send
+visible before typing. Its empty editor rests at one line and expands to three
+when focused. It stays expanded while focus moves through the controls or their
+pop-up menus and dialogs, including overlays outside the card's DOM. Focus is
+tracked while the session is live, so stopping preserves an already-focused
+editor. Leaving the composer shrinks only the empty editor; drafts and attachments
+keep it expanded. Send remains disabled until there is content and sending is
+available. The inline session chrome owns activity discovery at rest and while
+engaged, without a second discovery mount.
+
+The model picker remains available when the session advertises `changeModel`.
+Selecting a model uses `thread/model/set`; the hub owns resuming a cold session
+and applying the choice. Closing the desktop picker restores focus to its
+trigger, including after a selection.
+
 ## Directory fields
 
 All directory selection uses the [shared directory-picker contract](design-system.md#directory-selection-one-shared-interaction). Read it before adding or changing a path field; older plans and parity checklists describe retired interactions.

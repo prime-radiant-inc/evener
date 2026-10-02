@@ -1869,3 +1869,80 @@ test("partial summary unavailable recovery pauses offline without collection dem
   expect(callsTo(client, "evener/thread/jobs/list")).toBe(0);
   expect(callsTo(client, "evener/thread/watches/list")).toBe(0);
 });
+
+test("legacy activity events do not duplicate scoped reads or refresh unrelated collections", async () => {
+  const client = activityClient(),
+    store = owner(client);
+  client.on("evener/thread/activity/read", () => ({
+    ...summaryFixture(),
+    delegates: { known: true, total: 1, active: 0, failed: 0, completed: 1 },
+  }));
+  store.start();
+  store.observe("jobs");
+  store.observe("delegates");
+  store.observe("watches");
+  await activityState(
+    store,
+    () =>
+      store.getSnapshot().summary !== null &&
+      store.getSnapshot().jobs.complete &&
+      store.getSnapshot().delegates.complete &&
+      store.getSnapshot().watches.complete &&
+      !store.getSnapshot().summaryState.loading,
+  );
+  const job = { jobId: "shell-1", jobType: "shell", status: "running", outputBytes: 0 };
+  client.emitNotification({ method: "evener/job/started", params: { threadId: "session", ref: activityRef, job } });
+  client.emitNotification({
+    method: "evener/job/finished",
+    params: {
+      threadId: "session",
+      ref: activityRef,
+      job: { ...job, status: "completed" },
+    },
+  });
+  client.emitNotification({
+    method: "evener/jobs/treeUpdated",
+    params: { threadId: "session", ref: activityRef, revision: 2 },
+  });
+  client.emitNotification({
+    method: "evener/delegate/updated",
+    params: {
+      threadId: "session",
+      ref: activityRef,
+      delegate: {
+        runGeneration: 1,
+        delegateId: "delegate-1",
+        ownerSessionId: "session",
+        rootSessionId: "session",
+        childSessionId: "child",
+        transcriptRef: "remote:child",
+        type: "delegate",
+        lifecycle: "idle",
+        phase: "done",
+        status: "completed",
+        terminal: true,
+        resumable: true,
+        needsAttention: false,
+        projectionRevision: 2,
+      },
+    },
+  });
+  // Await a real read so any legacy-triggered collection work has dispatched.
+  await store.refresh("summary");
+  expect(callsTo(client, "evener/thread/jobs/list")).toBe(1);
+  expect(callsTo(client, "evener/thread/delegates/list")).toBe(1);
+  expect(callsTo(client, "evener/thread/watches/list")).toBe(1);
+
+  client.on("evener/thread/jobs/list", () => jobsFixture([jobFixture("shell-1", "completed")]));
+  activityChanged(client, ["summary", "jobs"]);
+  await activityState(
+    store,
+    () =>
+      store.getSnapshot().jobs.rows[0]?.status === "completed" &&
+      !store.getSnapshot().jobs.loading &&
+      !store.getSnapshot().summaryState.loading,
+  );
+  expect(callsTo(client, "evener/thread/jobs/list")).toBe(2);
+  expect(callsTo(client, "evener/thread/delegates/list")).toBe(1);
+  expect(callsTo(client, "evener/thread/watches/list")).toBe(1);
+});

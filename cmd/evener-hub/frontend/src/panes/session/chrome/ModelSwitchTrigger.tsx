@@ -221,7 +221,7 @@ export function ModelSwitchTrigger({
     // own convention (parity-m5-composer.md §H): "Selecting a model closes the
     // picker immediately... a rejection surfaces as a toast, with no rollback
     // of the (already-closed) picker."
-    setOpen(false);
+    closePicker();
     onPick(entry);
   }
 

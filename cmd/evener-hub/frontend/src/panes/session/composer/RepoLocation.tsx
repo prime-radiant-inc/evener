@@ -1,8 +1,7 @@
 // RepoLocation: the session's one-line origin strip - the working directory
 // this session runs in, and the repository and branch checked out there.
-// Session.tsx places it in the pane's desktop activity footer; Composer.tsx
-// keeps it directly under the prompt card on mobile, where that footer is
-// absent. In both layouts, "where is this agent working, and on what" is
+// Session.tsx places it in the pane's desktop activity footer, where
+// "where is this agent working, and on what" is
 // answerable without opening Session details.
 //
 // When the origin remote is a forge the web UI recognizes
@@ -125,9 +124,8 @@ interface ResolvedLocation {
   originUrl: string;
 }
 
-// Memoized: the mobile composer re-renders on every keystroke, while this
-// line's inputs change only when the session's cwd or locality does (session
-// resume, cwd switch). Desktop also keeps the line stable in the pane footer.
+// Memoized to keep the line stable in the desktop pane footer while the
+// session's cwd and locality are unchanged.
 export const RepoLocation = memo(function RepoLocation({ cwd, local }: RepoLocationProps) {
   const client = useClient();
   const [resolved, setResolved] = useState<ResolvedLocation | null>(null);

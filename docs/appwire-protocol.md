@@ -204,11 +204,11 @@ no router (reserved).
 | `evener/delegate/stop` | both | `DelegateStopParams` | `DelegateStopResponse` | Ends one subagent's current run at the user's request (S6): that subagent alone, while the subagents it started keep running; the root's daemon serves it, the hub relays. Answers stopping or notRunning. |
 | `evener/host/request` | hub | `HostRequestParams` | `HostForwardedResult` | Forwards one hub-scoped admin RPC to a named remote host's hub through the allow-listed proxy (component 07a); the result is the forwarded method's own result, verbatim — an opaque JSON object, not a wrapper, so a typed client must treat the result as unknown and cast it to the forwarded method's own result type (see HostForwardedResult). |
 | `evener/host/attach` | hub | `HostAttachParams` | `HostAttachResponse` | Explicitly attaches one configured remote host by name through the Ensure-backed dialing seam (component 06's Connect action); a mutation and the only browser-reachable attach trigger, idempotent while attached, returning the host's post-attach state. |
-| `evener/host/add` | hub | `HostAddParams` | `HostMutationCommitted \| HostMutationCommittedRemoved \| HostMutationTeardownFailure \| HostMutationTeardownFailureRemoved \| HostMutationCollisionDropped \| HostMutationAmbiguous` | Registers one host entry (its full entry: name, ssh address, user, key path, and the host's paths and roots) into the machine-managed hub.toml; validates like hub.toml loading and refuses a name the live set already holds. Result is the mutation-result union: committed, committed-with-teardown-failure, collision-dropped, or the keyless-add ambiguous arm. |
+| `evener/host/add` | hub | `HostAddParams` | `HostMutationCommitted \| HostMutationTeardownFailure \| HostMutationCollisionDropped \| HostMutationAmbiguous` | Registers one host entry (its full entry: name, ssh address, user, key path, and the host's paths and roots) into the machine-managed hub.toml; validates like hub.toml loading and refuses a name the live set already holds. Result is the mutation-result union: committed, committed-with-teardown-failure, collision-dropped, or the keyless-add ambiguous arm. |
 | `evener/host/list` | hub | `EmptyParams` | `HostListResponse` | Lists every known host with truthful online state; never dials — attached rows read the live channel, offline rows render last-known state. |
 | `evener/host/status` | hub | `HostStatusParams` | `HostStatusResponse` | Returns one host's list row for a single named host; never dials. |
-| `evener/host/remove` | hub | `HostRemoveParams` | `HostMutationCommitted \| HostMutationCommittedRemoved \| HostMutationTeardownFailure \| HostMutationTeardownFailureRemoved \| HostMutationCollisionDropped \| HostMutationAmbiguous` | Deregisters one live host entry, stopping its supervisor and dropping its channel; every live host is removable here. Result is the mutation-result union, whose committed and teardown-failure arms carry the dedicated removed row. |
-| `evener/host/update` | hub | `HostUpdateParams` | `HostMutationCommitted \| HostMutationCommittedRemoved \| HostMutationTeardownFailure \| HostMutationTeardownFailureRemoved \| HostMutationCollisionDropped \| HostMutationAmbiguous` | Edits one live host entry in place (every field but the name; the name is the target) and retires the host's channel with the identity it replaced; the edit is written into the machine-managed hub.toml. Result is the mutation-result union. |
+| `evener/host/remove` | hub | `HostRemoveParams` | `HostMutationCommittedRemoved \| HostMutationTeardownFailureRemoved \| HostMutationCollisionDropped` | Deregisters one live host entry, stopping its supervisor and dropping its channel; every live host is removable here. Result is the mutation-result union, whose committed and teardown-failure arms carry the dedicated removed row. |
+| `evener/host/update` | hub | `HostUpdateParams` | `HostMutationCommitted \| HostMutationTeardownFailure \| HostMutationCollisionDropped` | Edits one live host entry in place (every field but the name; the name is the target) and retires the host's channel with the identity it replaced; the edit is written into the machine-managed hub.toml. Result is the mutation-result union. |
 | `evener/host/teardown-retry` | hub | `HostTeardownRetryParams` | `HostTeardownRetryCompleteLive \| HostTeardownRetryCompleteRemoved \| HostTeardownRetryClearedLive \| HostTeardownRetryClearedRemoved \| HostTeardownRetryFailedLive \| HostTeardownRetryFailedRemoved` | Resumes one named teardown remnant by its opaque id: gate first, claim under the mutation lock, the pinned teardown run to completion with a bounded deadline, then finalization from the observed result. Result is the six-arm outcome x hostKind union; an unknown or purged id is the typed teardown-unknown-key refusal. |
 | `evener/host/teardown-recover` | hub | `HostTeardownRecoverParams` | `HostTeardownRecoverResult` | Clears an open remnant whose pinned target is unresolvable, on an authenticated operator's audited teardown-verified-absent attestation: gate first, the safety checks immediately before the clearing write, the attestation recorded on the original receipt beside remnantResolvedAt, and a typed resolved-remnant record persisted in the same atomic write. |
 | `evener/host/plan` | hub | `HostPlanParams` | `HostPlanPlanned \| HostPlanNoToken` | Plans one deploy against a named host and mints the single-use confirmation token evener/host/deploy consumes: refreshes the host's preflight facts without a gate, probes its running state, and answers with either the plan plus token (HostPlanPlanned) or the no-token arm (HostPlanNoToken) naming why nothing was minted and whether the refusal is terminal. |
@@ -921,7 +921,7 @@ _(no fields)_
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
-| `outcome` | `string` |  |  |
+| `outcome` | `appwire.HostMutationOutcome` |  |  |
 | `observedRow` | `appwire.HostRow` |  |  |
 
 
@@ -929,7 +929,7 @@ _(no fields)_
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
-| `outcome` | `string` |  |  |
+| `outcome` | `appwire.HostMutationOutcome` |  |  |
 | `droppedEntry` | `appwire.HostRow` |  |  |
 | `winningFingerprint` | `string` |  |  |
 | `host` | `*appwire.HostRow` | yes |  |
@@ -940,7 +940,7 @@ _(no fields)_
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
-| `outcome` | `string` |  |  |
+| `outcome` | `appwire.HostMutationOutcome` |  |  |
 | `host` | `appwire.HostRow` |  |  |
 
 
@@ -948,7 +948,7 @@ _(no fields)_
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
-| `outcome` | `string` |  |  |
+| `outcome` | `appwire.HostMutationOutcome` |  |  |
 | `host` | `appwire.RemovedRow` |  |  |
 
 
@@ -956,7 +956,7 @@ _(no fields)_
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
-| `outcome` | `string` |  |  |
+| `outcome` | `appwire.HostMutationOutcome` |  |  |
 | `seam` | `string` |  |  |
 | `remnantId` | `string` |  |  |
 | `host` | `appwire.HostRow` |  |  |
@@ -966,7 +966,7 @@ _(no fields)_
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
-| `outcome` | `string` |  |  |
+| `outcome` | `appwire.HostMutationOutcome` |  |  |
 | `seam` | `string` |  |  |
 | `remnantId` | `string` |  |  |
 | `host` | `appwire.RemovedRow` |  |  |
@@ -1583,6 +1583,17 @@ _(no fields)_
 | `dirty` | `bool` |  |  |
 
 
+### `JobOutputTail`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `tail` | `string` |  |  |
+| `totalBytes` | `int64` |  |  |
+| `retainedStart` | `int64` |  |  |
+| `truncated` | `bool` |  |  |
+| `hasEarlier` | `bool` | yes |  |
+
+
 ### `JobsGetParams`
 
 | Field | Go type | Omitempty | Embedded |
@@ -1595,7 +1606,7 @@ _(no fields)_
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
-| `data` | `interface {}` |  |  |
+| `data` | `appwire.JobActivityJob` |  |  |
 
 
 ### `JobsListParams`
@@ -1627,7 +1638,7 @@ _(no fields)_
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
-| `data` | `interface {}` |  |  |
+| `data` | `appwire.JobOutputTail` |  |  |
 
 
 ### `JobsTreeUpdatedParams`
@@ -2521,6 +2532,24 @@ _(no fields)_
 | `skills` | `[]appwire.EvenerSkillInfo` | yes |  |
 
 
+### `Task`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `id` | `int` |  |  |
+| `type` | `appwire.TaskType` |  |  |
+| `description` | `string` |  |  |
+| `prompt` | `string` |  |  |
+| `status` | `appwire.TaskStatus` |  |  |
+| `depends_on` | `[]int` | yes |  |
+| `notes` | `[]string` | yes |  |
+| `reasoning_effort` | `string` | yes |  |
+| `insert` | `string` | yes |  |
+| `created_at` | `*time.Time` | yes |  |
+| `updated_at` | `*time.Time` | yes |  |
+| `completed_at` | `*time.Time` | yes |  |
+
+
 ### `TaskListParams`
 
 | Field | Go type | Omitempty | Embedded |
@@ -2532,7 +2561,7 @@ _(no fields)_
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
-| `data` | `interface {}` |  |  |
+| `data` | `[]appwire.Task` |  |  |
 
 
 ### `TaskUpdatedParams`

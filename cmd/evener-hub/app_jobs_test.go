@@ -554,10 +554,7 @@ func TestHubJobsOutputLiveDaemon(t *testing.T) {
 	if err != nil {
 		t.Fatalf("hubJobsOutput: %v", err)
 	}
-	tail, ok := resp.Data.(agent.JobOutputTail)
-	if !ok {
-		t.Fatalf("resp.Data = %#v (%T), want agent.JobOutputTail", resp.Data, resp.Data)
-	}
+	tail := resp.Data
 	if tail != liveTail {
 		t.Fatalf("tail = %+v, want the live tail %+v (past must not be consulted)", tail, liveTail)
 	}
@@ -602,10 +599,7 @@ func TestHubJobsOutputDeadSessionFallsBackToPast(t *testing.T) {
 	if err != nil {
 		t.Fatalf("hubJobsOutput: %v", err)
 	}
-	tail, ok := resp.Data.(agent.JobOutputTail)
-	if !ok {
-		t.Fatalf("resp.Data = %#v (%T), want agent.JobOutputTail", resp.Data, resp.Data)
-	}
+	tail := resp.Data
 	if tail.Tail != "6789" || tail.TotalBytes != 10 || !tail.Truncated {
 		t.Fatalf("tail = %+v, want the last 4 of 10 bytes, truncated", tail)
 	}
@@ -706,8 +700,8 @@ func TestHubJobsGetLiveDaemon(t *testing.T) {
 	if err != nil {
 		t.Fatalf("hubJobsGet: %v", err)
 	}
-	job, ok := resp.Data.(agent.JobActivityJob)
-	if !ok || job != liveJob {
+	job := resp.Data
+	if job != liveJob {
 		t.Fatalf("resp.Data = %#v (%T), want the live job %+v (past must not be consulted)", resp.Data, resp.Data, liveJob)
 	}
 	if source.getParams.JobID != "job_x" || source.getParams.Ref != "local:"+sessionID {
@@ -728,10 +722,7 @@ func TestHubJobsGetDeadSessionFallsBackToPast(t *testing.T) {
 	if err != nil {
 		t.Fatalf("hubJobsGet: %v", err)
 	}
-	job, ok := resp.Data.(agent.JobActivityJob)
-	if !ok {
-		t.Fatalf("resp.Data = %#v (%T), want agent.JobActivityJob", resp.Data, resp.Data)
-	}
+	job := resp.Data
 	if job.JobID != "job_x" || job.Command != "make noisy --verbose" {
 		t.Fatalf("job = %+v, want job_x with its persisted command", job)
 	}
@@ -775,10 +766,7 @@ func TestEvenerJobsGetRouteDecodesJobID(t *testing.T) {
 	if !ok {
 		t.Fatalf("response = %#v (%T), want appwire.JobsGetResponse", raw, raw)
 	}
-	job, ok := resp.Data.(agent.JobActivityJob)
-	if !ok {
-		t.Fatalf("resp.Data = %#v (%T), want agent.JobActivityJob", resp.Data, resp.Data)
-	}
+	job := resp.Data
 	if job.JobID != "job_x" || job.Command != "make noisy --jobs 8" {
 		t.Fatalf("job = %+v, want the decoded job_x with its untruncated command", job)
 	}
@@ -874,10 +862,7 @@ func TestEvenerJobsOutputRouteDecodesJobIDAndMaxBytes(t *testing.T) {
 	if !ok {
 		t.Fatalf("response = %#v (%T), want appwire.JobsOutputResponse", raw, raw)
 	}
-	tail, ok := resp.Data.(agent.JobOutputTail)
-	if !ok {
-		t.Fatalf("resp.Data = %#v (%T), want agent.JobOutputTail", resp.Data, resp.Data)
-	}
+	tail := resp.Data
 	if tail.Tail != "6789" || tail.TotalBytes != 10 || !tail.Truncated {
 		t.Fatalf("tail = %+v, want the last 4 of job_x's 10 bytes, truncated", tail)
 	}

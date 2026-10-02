@@ -634,16 +634,6 @@ export class SessionActivityStore {
           return;
         changed = notification.params.resources;
         break;
-      case "evener/delegate/updated":
-        changed = ["summary", "delegates"];
-        break;
-      case "evener/job/started":
-      case "evener/job/finished":
-        changed = ["summary", "jobs"];
-        break;
-      case "evener/jobs/treeUpdated":
-        changed = resources;
-        break;
       case "evener/thread/resync":
         for (const resource of resources) {
           this.reads[resource].refresh = null;

@@ -201,6 +201,13 @@ an observed summary so its counts can become known. A summary with
 `refreshPending` uses the same existing paced summary timer until established
 sources catch up; closing the last holder or going offline cancels that demand.
 
+Scoped activity consumers refresh only resources named by
+`evener/thread/activity/changed`, honoring its logical owner and the selected
+session/subtree scope. Legacy job lifecycle, delegate-update and tree-update
+notifications remain available to other consumers but do not trigger these
+reads. The domain APIs and scoped invalidations form one contract; resync and
+reconnect still refresh observed demand.
+
 A collection refresh preserves every displayed page while a fresh cursor walk
 rereads through the last displayed row's stable identity. Only a clean walk
 through that boundary, or authoritative completion, replaces membership and

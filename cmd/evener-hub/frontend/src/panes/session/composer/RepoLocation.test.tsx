@@ -336,19 +336,3 @@ test("the head and tail spans carry the middle-truncation grammar", () => {
 test("the repository link keeps its focus ring inside clipped pane footers", () => {
   expect(locationCss()).toMatch(/\.link:focus-visible \{[^}]*outline-offset: -2px;/);
 });
-
-// On the phone the footer's bottom padding is the home-indicator band
-// (PaneScaffold publishes it as --pane-footer-pad-bottom). The line spends up
-// to one of its own line-heights of that band beyond its breathing room
-// (--space-3), so the strip under it stops reading as dead padding - and
-// exactly zero once the band is down to that breathing room, so the keyboard
-// open or a desktop window squeezed to phone width (env() is 0, band is
-// plain --space-3) drops nothing at all. Desktop is untouched.
-test("the line translates down into the footer's padding band on the phone only", () => {
-  const css = locationCss();
-  expect(css).toMatch(
-    /@media \(max-width: 899px\) \{[\s\S]*?\.line \{[^}]*transform: translateY\(\s*clamp\(\s*0px,\s*calc\(var\(--pane-footer-pad-bottom, 0px\) - var\(--space-3\)\),\s*calc\(var\(--font-size-caption\) \* var\(--line-height-body\)\)/,
-  );
-  const baseLine = css.match(/^\.line \{([^}]*)\}/m)?.[1] ?? "";
-  expect(baseLine).not.toContain("transform");
-});

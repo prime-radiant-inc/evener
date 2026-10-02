@@ -32,6 +32,7 @@
 // USAGE:
 //   npm run overflowguard              # the default width sweep
 //   node scripts/overflowguard/run.mjs 390 1400
+//   node scripts/overflowguard/run.mjs --footer-only 390 1400
 //
 // STATUS: a local pre-merge check and part of `make test-web-browser` in CI,
 // not wired into `make lint`, because it costs a Vite boot and a Chrome
@@ -40,9 +41,11 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   applyViewport,
+  assertGuardOrigin,
   clearViewportOverride,
   connectPage,
   createStartupDeadline,
+  devtoolsHttpURL,
   evaluate,
   navigateTo,
   realizedViewport,
@@ -50,6 +53,7 @@ import {
   waitForHttp,
 } from "../browserGuardCdp.mjs";
 import { describeBrowserStartupFailure, startBrowserGuard, waitForBrowserReady } from "../browserGuardProcess.mjs";
+import { diagnoseRealizedViewport } from "../layoutguard/viewport.mjs";
 
 const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -272,6 +276,101 @@ async function measureComposerSend(cdpEndpoint, url, width) {
     await clearViewportOverride(send);
     page.close();
   }
+}
+
+// Keep the oracle outside window.measure(): read production DOM boxes and the
+// browser's actual env() value, not the footer's own padding formula. Only the
+// keyboard custom property is simulated, not an iOS Safari keyboard/viewport.
+async function measureComposerFooter(cdpEndpoint, url, width, safeAreaSupported) {
+  const page = await connectPage(cdpEndpoint);
+  const { send } = page;
+  const mobile = width < 900;
+  try {
+    await applyViewport(send, { width, height: 900, mobile });
+    await navigateTo(page, url, BOOT);
+    await assertGuardOrigin(send, new URL(url).host);
+    await evaluate(send, "window.settled");
+    await waitForFonts(send);
+    const viewportDiagnostic = diagnoseRealizedViewport({ width, height: 900 }, await realizedViewport(send));
+    if (viewportDiagnostic) throw new Error(viewportDiagnostic);
+    const measurements = [];
+    for (const safeArea of mobile && safeAreaSupported ? [0, 34] : [0]) {
+      // Verified against this Chrome's /json/protocol: the required `insets`
+      // parameter references SafeAreaInsets, whose optional bottom is integer.
+      if (safeAreaSupported) await send("Emulation.setSafeAreaInsetsOverride", { insets: { bottom: safeArea } });
+      for (const keyboard of mobile ? [0, 12, 300] : [0]) {
+        measurements.push(await evaluate(send, `(async () => {
+          document.documentElement.style.setProperty('--keyboard-inset', '${keyboard}px');
+          await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+          const pane = document.getElementById('oh-pane');
+          const footer = pane?.querySelector('[data-testid="pane-footer"]');
+          const cards = [...(footer?.querySelectorAll('[data-testid="composer-input-card"]') ?? [])]
+            .filter((card) => card.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }));
+          const lastBottom = cards.length ? Math.max(...cards.map((card) => card.getBoundingClientRect().bottom)) : null;
+          const metadata = pane?.querySelector('[data-testid="composer-repo-location"]');
+          const path = metadata?.querySelector('[data-testid="composer-repo-path"]');
+          const probe = document.createElement('div');
+          probe.style.cssText = 'position:fixed;visibility:hidden;pointer-events:none;height:env(safe-area-inset-bottom, 0px)';
+          document.body.append(probe);
+          const actualSafeArea = probe.getBoundingClientRect().height;
+          probe.remove();
+          const footerBottom = footer?.getBoundingClientRect().bottom ?? null;
+          return {
+            safeArea: ${safeArea}, keyboard: ${keyboard}, actualSafeArea,
+            mobile: matchMedia('(max-width: 899px)').matches,
+            paneBottom: pane?.getBoundingClientRect().bottom ?? null,
+            cards: cards.length, footerBottom,
+            lastBottom, gap: lastBottom === null || footerBottom === null ? null : footerBottom - lastBottom,
+            paddingBottom: footer ? Number.parseFloat(getComputedStyle(footer).paddingBottom) : null,
+            metadataCount: pane?.querySelectorAll('[data-testid="composer-repo-location"]').length ?? 0,
+            metadataVisible: metadata?.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }) ?? false,
+            pathVisible: path?.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }) ?? false,
+            path: path?.getAttribute('title') ?? null,
+            metadataInEdgeFooter: Boolean(metadata?.closest('[data-testid="pane-edge-footer"]')),
+          };
+        })()`));
+      }
+    }
+    return measurements;
+  } finally {
+    if (safeAreaSupported) await send("Emulation.setSafeAreaInsetsOverride", { insets: {} });
+    await clearViewportOverride(send);
+    page.close();
+  }
+}
+
+function assertComposerFooter(measurement, width) {
+  const failures = [];
+  const mobile = width < 900;
+  const requiredClearance = Math.max(0, measurement.safeArea - measurement.keyboard);
+  if (measurement.mobile !== mobile) {
+    failures.push("realized footer viewport mismatch");
+  }
+  if (measurement.actualSafeArea !== measurement.safeArea) {
+    failures.push(`safe-area emulation=${measurement.actualSafeArea}px, expected ${measurement.safeArea}px`);
+  }
+  if (measurement.cards !== 1) failures.push(`visible composer cards=${measurement.cards}, expected 1`);
+  if (mobile) {
+    if (measurement.paneBottom === null || measurement.footerBottom === null || !nearlyEqual(measurement.footerBottom, measurement.paneBottom)) {
+      failures.push(`footer bottom=${measurement.footerBottom}px, pane bottom=${measurement.paneBottom}px`);
+    }
+    if (measurement.metadataCount !== 0) failures.push(`composer-repo-location still exists (${measurement.metadataCount})`);
+    if (measurement.gap === null || !nearlyEqual(measurement.gap, requiredClearance)) {
+      failures.push(`card-to-footer gap=${measurement.gap}px, required safe-area clearance=${requiredClearance}px`);
+    }
+  } else {
+    // overflowharness-entry.tsx supplies this fixture path, independent of the checkout.
+    if (
+      measurement.metadataCount !== 1 || !measurement.metadataVisible || !measurement.pathVisible ||
+      !measurement.metadataInEdgeFooter || measurement.path !== "/Users/jesse/prime-radiant/toil-suite/evener"
+    ) {
+      failures.push("desktop working-path metadata missing from the visible edge footer");
+    }
+    if (!nearlyEqual(measurement.paddingBottom, 12) || measurement.gap === null || !nearlyEqual(measurement.gap, 12)) {
+      failures.push(`desktop bottom padding/gap=${measurement.paddingBottom}/${measurement.gap}px, expected unchanged 12px`);
+    }
+  }
+  return failures;
 }
 
 async function verifyItemPaging(cdpEndpoint, url) {
@@ -1102,6 +1201,7 @@ function assertSettings(result, width) {
 }
 
 async function main() {
+  const footerOnly = process.argv.includes("--footer-only");
   const widths = process.argv.slice(2).map(Number).filter(Boolean);
   const sweep = widths.length > 0 ? widths : DEFAULT_WIDTHS;
 
@@ -1139,6 +1239,29 @@ async function main() {
       viteDeadline.clear();
     }
     cdpEndpoint = await waitForBrowserReady(guard);
+
+    const protocolResponse = await fetch(devtoolsHttpURL(cdpEndpoint, "/json/protocol"));
+    if (!protocolResponse.ok) throw new Error(`browser protocol HTTP ${protocolResponse.status}`);
+    const protocol = await protocolResponse.json();
+    const safeAreaSupported = protocol.domains.find((domain) => domain.domain === "Emulation")
+      ?.commands.some((command) => command.name === "setSafeAreaInsetsOverride") ?? false;
+    if (!safeAreaSupported) console.log("composer footer ... LIMITATION - Chrome has no real safe-area override, nonzero safe-area cases skipped");
+    for (const width of [...new Set([320, 390, 430, 899, 900, 1400, ...sweep])]) {
+      const measurements = await measureComposerFooter(
+        cdpEndpoint, `http://127.0.0.1:${vitePort}/overflowharness.html?w=${width}`, width, safeAreaSupported,
+      );
+      for (const measurement of measurements) {
+        const failures = assertComposerFooter(measurement, width);
+        const label = `${width}px composer footer safe-area=${measurement.safeArea} keyboard=${measurement.keyboard}`;
+        if (failures.length > 0) {
+          failed++;
+          console.log(`${label} ... FAIL - ${failures.join("; ")}; ${JSON.stringify(measurement)}`);
+        } else {
+          console.log(`${label} ... PASS - gap=${measurement.gap}px, desktop metadata=${measurement.metadataVisible}`);
+        }
+      }
+    }
+    if (footerOnly) return failed > 0 ? 1 : 0;
 
     for (const width of sweep.filter((candidate) => candidate < 900 || candidate === 900)) {
       const sendMeasurements = await measureComposerSend(

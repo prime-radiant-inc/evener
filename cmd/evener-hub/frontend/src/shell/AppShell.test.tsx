@@ -4432,7 +4432,7 @@ test.each([
       throw new Error("retained metadata unavailable");
     });
     client.on("evener/jobs/output", () => ({
-      data: { tail: "retained-history-output", totalBytes: 23, retainedStart: 0 },
+      data: { tail: "retained-history-output", totalBytes: 23, retainedStart: 0, truncated: false },
     }));
     const user = userEvent.setup();
     let historyPane: string | undefined;

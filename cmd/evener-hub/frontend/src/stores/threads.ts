@@ -12,8 +12,11 @@ import type {
   AppwireClientLike,
   CachedSessionRecord,
   GoalSetResponse,
+  JobActivityJob,
+  JobOutputTail,
   ModelListResponse,
   SnapshotIdentity,
+  TaskListResponse,
   ThreadClearResponse,
   ThreadForkResponse,
   ThreadItemPosition,
@@ -310,15 +313,9 @@ export interface ThreadsStoreState {
   // force a fresh request. A failed request never poisons the cache with a
   // rejected promise - the next call (with or without refresh) retries.
   listModels(refresh?: boolean): Promise<ModelListResponse>;
-  // Lists the session's tasks (evener/tasks/list). TaskListResponse.Data is
-  // `any` on the wire catalog (appwire/types.go:896-898) - this returns
-  // that raw field verbatim, never wrapped, so the store stays shape-
-  // agnostic; the caller owns interpreting it (the chrome stream's own
-  // parseTaskListData). A source that omits the capability rejects this call
-  // (appwire.Unavailable, "actionUnavailable") - that typed error
-  // propagates unchanged, same as every other read-only action here; the
-  // caller renders the empty/unsupported state for it.
-  listTasks(ref: string): Promise<unknown>;
+  // Lists the session's task rows. Null is unavailable; [] is an authoritative
+  // empty list. The caller adapts the wire fields with parseTaskListData.
+  listTasks(ref: string): Promise<TaskListResponse["data"]>;
   // Explicit retained tree reader for callers of evener/jobs/list. Browser
   // activity views use SessionActivityStore; this method returns the wire's
   // untyped data field unchanged and owns no background refresh or retry.
@@ -328,12 +325,10 @@ export interface ThreadsStoreState {
   // maxBytes > 0 bounds the window (appwire.JobsOutputParams.MaxBytes) - the
   // activity strip's preview uses it to fetch a couple hundred bytes instead
   // of the daemon's default tail.
-  jobOutput(ref: string, jobId: string, beforeBytes?: number, maxBytes?: number): Promise<unknown>;
+  jobOutput(ref: string, jobId: string, beforeBytes?: number, maxBytes?: number): Promise<JobOutputTail>;
   // Reads one job's metadata (evener/jobs/get): the activity-job shape,
-  // including the untruncated command. Its Data field is likewise `any` on the
-  // wire catalog and returned raw; the caller validates it with the package's
-  // parseActivityJob.
-  jobGet(ref: string, jobId: string): Promise<unknown>;
+  // including the untruncated command.
+  jobGet(ref: string, jobId: string): Promise<JobActivityJob>;
   // Answers one evener/sandbox/escalation/requested via evener/sandbox/
   // escalation/resolve. On success, removes the escalation from whichever
   // of threads/watchedThreads currently track `ref` (both, if both do -

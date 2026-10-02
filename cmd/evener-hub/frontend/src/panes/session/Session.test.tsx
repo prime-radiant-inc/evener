@@ -337,9 +337,7 @@ test("desktop session panes own separate location and activity footers", async (
   expect(activitySidebarStore.getState()).toMatchObject({ open: true, tab: "jobs" });
 });
 
-test("mobile keeps one repo location under the composer and omits the desktop activity footer", async ({
-  onTestFinished,
-}) => {
+test("mobile omits repo location and the desktop activity footer", async ({ onTestFinished }) => {
   vi.mocked(ComposerModule.Composer).mockRestore();
   onTestFinished(stubSessionSlots);
   vi.stubGlobal(
@@ -361,10 +359,53 @@ test("mobile keeps one repo location under the composer and omits the desktop ac
   );
 
   await screen.findByTestId("composer-input-card");
-  expect(await screen.findAllByTestId("composer-repo-location")).toHaveLength(1);
+  expect(screen.queryByTestId("composer-repo-location")).toBeNull();
+  expect(screen.queryByTestId("composer-repo-path")).toBeNull();
+  expect(screen.queryByTestId("composer-repo-link")).toBeNull();
   expect(screen.queryByTestId("pane-edge-footer")).toBeNull();
   expect(screen.queryByTestId("statusbar")).toBeNull();
 });
+
+test.each(["closed", "ended", "notLoaded"] as const)(
+  "the real session keeps an empty focused composer expanded when it becomes %s",
+  async (status) => {
+    vi.mocked(ComposerModule.Composer).mockRestore();
+    vi.mocked(SessionChromeModule.SessionChrome).mockRestore();
+    const user = userEvent.setup();
+    const ref = "local:stop-focus";
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => readResponse(ref, { status: { type: "active" } }));
+    fake.on("evener/thread/activity/read", () => activitySummary(ref));
+    render(
+      <ClientProvider client={fake}>
+        <Session params={{ ref }} paneId="stop-focus-pane" focused={false} />
+      </ClientProvider>,
+    );
+    const editor = await screen.findByRole("textbox", { name: /^message$/i });
+    await waitFor(() => expect(sessionActivitySnapshot(fake, ref, "session")?.summaryState.loading).toBe(false));
+    await user.click(editor);
+    await act(async () => {
+      fake.emitNotification({
+        method: "thread/status/changed",
+        params: {
+          threadId: `thr_${ref}`,
+          ref,
+          status: { type: status },
+          capabilities: { ...CAPABILITIES, interrupt: false, steer: false, shutdown: false },
+        },
+      });
+    });
+    expect(screen.getByRole("textbox", { name: /^message$/i })).toBe(editor);
+    expect(document.activeElement).toBe(editor);
+    expect(editor.style.minHeight).toBe("3lh");
+    await user.click(screen.getByRole("button", { name: "Session actions" }));
+    await user.click(screen.getByRole("menuitem", { name: "Rename" }));
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Session actions" }));
+    expect(editor.textContent).toBe("");
+    expect((screen.getByTestId("composer-submit") as HTMLButtonElement).disabled).toBe(true);
+  },
+);
 
 test("shows a loading placeholder before the thread hydrates", async () => {
   const fake = connectFakeClient();

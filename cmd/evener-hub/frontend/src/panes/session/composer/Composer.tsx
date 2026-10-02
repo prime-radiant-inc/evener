@@ -9,8 +9,8 @@
 // The control row is state-responsive, never disabled-in-place: with a turn in
 // flight it reads Stop · Send · Steer (Steer primary - interrupt and redirect
 // now; Send quiet - queue until the agent stops), idle it is Send alone, and a
-// finished session collapses the whole card to a one-line follow-up
-// invitation. Stop is pinned leftmost so it never trades places with the verbs
+// finished session keeps Send and shrinks only its empty editor to one line
+// at rest. Stop is pinned leftmost so it never trades places with the verbs
 // that come and go. Keyboard chords live in each control's Tooltip rather than
 // as boxed <kbd> runs inside the buttons.
 //
@@ -118,7 +118,6 @@ import {
   useRecoveryEntries,
 } from "./queue/pendingTurnsStore";
 import { consumeQuoteInsert, useQuoteInsertRequest } from "./quoteInsert";
-import { RepoLocation } from "./RepoLocation";
 import { mergeRecoveryComposerDraft, recoveryComposerDraft } from "./recovery/recoveryDraft";
 import { SkillEditor, type SkillEditorHandle } from "./SkillEditor";
 import { SlashCompletionMenu, optionId as slashOptionId } from "./SlashCompletionMenu";
@@ -248,10 +247,10 @@ export function Composer({ ref, focused, source }: ComposerProps) {
   const actionPending = busyAction !== null || submitting || mutationWriteStalled;
   const mountedRef = useRef(false);
   const [pendingGoalReplacement, setPendingGoalReplacement] = useState<string | null>(null);
-  // Whether a FINISHED session's collapsed follow-up field currently has focus,
-  // which is what expands it from its one-line resting state. Only read on that
-  // path (see the ended card's minLines below); harmless everywhere else.
+  // Track live focus too, so stopping does not collapse a focused editor.
+  // React focus events follow the composer's controls and portaled menus.
   const [followUpFocused, setFollowUpFocused] = useState(false);
+  const followUpFocusSequenceRef = useRef(0);
 
   // Jesse's 2026-09-28 ruling on the #1339 phone-width verb wrap: below the
   // phone-width boundary the verb cluster leaves this row for the session
@@ -739,24 +738,9 @@ export function Composer({ ref, focused, source }: ComposerProps) {
   // really advertises no send, no card is rendered at all - an unusable field
   // is worse than no field.
   const showFollowUpCard = ended && (canSendWhenEnded || fence.fencedLocal || fence.resumeOnly);
-  // A finished session's card earns its control row once the user engages with
-  // it - focused, or holding text or an attachment. Content matters as well as
-  // focus: a restored draft, or a blur with text still in the field, must not
-  // strand a typed message with no visible way to send it. The one session
-  // engaged from the start is a recovery-fenced local one: its card keeps the
-  // control row reachable while the fence stands, which is the whole point of
-  // keeping the card at all. Every OTHER local notLoaded snapshot rests exactly
-  // like a non-local one.
+  // Only the editor shrinks at rest. Controls stay available without typing.
+  // Drafts, attachments and recovery keep enough writing space after blur.
   const followUpEngaged = fence.fencedLocal || fence.resumeOnly || followUpFocused || hasContent;
-  // While the card rests, its control row - and with it the composer chrome
-  // that opts into initial activity discovery - is not mounted. A saved
-  // notLoaded session with send enabled is exactly that shape, so mount a
-  // chrome-less discovery owner for the interval instead; once the card is
-  // engaged the chrome above owns discovery. Session.tsx's own menu/discovery
-  // mount is gated on !controlsFor(model).send (alongside its notLoaded /
-  // local / no-owner / !restartPending conditions), so it does not double up
-  // with this one; the #1335 intent is exactly one discovery owner at a time.
-  const discoveryOnlyChrome = ended && !followUpEngaged && canSendWhenEnded;
 
   function handleTextChange(value: SkillEditorValue, caret: number): void {
     editSkillNames(value.skillNames);
@@ -1285,20 +1269,34 @@ export function Composer({ ref, focused, source }: ComposerProps) {
     event.target.value = ""; // re-picking the identical file must re-fire change
   }
 
-  // Blur is the slash menu's own "clicked/tabbed away entirely" close, on
-  // top of whatever the ended-session follow-up card already does with a
-  // blur (collapsing back to one line). SlashCompletionMenu's own options
-  // preventDefault() on their mousedown specifically so a MOUSE click on an
-  // option never reaches this handler in the first place - see that
-  // component's own comment - so this only ever fires for a genuine
-  // "focus left the field" (Tab away, click elsewhere, blur()).
+  function handleFollowUpFocus(): void {
+    followUpFocusSequenceRef.current += 1;
+    setFollowUpFocused(true);
+  }
+
+  function handleFollowUpBlur(): void {
+    const sequence = ++followUpFocusSequenceRef.current;
+    // Native focus transfers run microtasks between blur and destination focus.
+    // Wait until the next frame so a control or portal keeps the empty editor
+    // expanded without shrinking it during a focus transfer.
+    requestAnimationFrame(() => {
+      if (mountedRef.current && followUpFocusSequenceRef.current === sequence) setFollowUpFocused(false);
+    });
+  }
+
+  // Slash options prevent mousedown's default focus transfer, so only leaving
+  // the editor closes its completion menu. The card owns collapse separately.
   function handleEditorBlur(): void {
-    if (ended) setFollowUpFocused(false);
     setSlashToken(null);
   }
 
   return (
-    <div className={CLASS.composer} ref={composerRootRef}>
+    <div
+      className={CLASS.composer}
+      ref={composerRootRef}
+      onFocusCapture={handleFollowUpFocus}
+      onBlurCapture={handleFollowUpBlur}
+    >
       {mutationWriteStalled && (
         <div className={CLASS.storageStatus} role="status" aria-label="Message storage">
           Browser storage has stalled. A message update is still pending; keep this tab open while Evener waits for
@@ -1413,46 +1411,36 @@ export function Composer({ ref, focused, source }: ComposerProps) {
                     aria-controls={slashActiveId ? slashListboxId : undefined}
                     aria-activedescendant={slashActiveId ?? undefined}
                     minLines={ended ? (followUpEngaged ? 3 : 1) : undefined}
-                    onFocus={ended ? () => setFollowUpFocused(true) : undefined}
                     onBlur={handleEditorBlur}
                     placeholder={ended ? "Send a follow-up…" : "Message the agent…"}
                     aria-label="Message"
                   />
                 }
-                // An ended session's card is a bare invitation UNTIL it is
-                // engaged: at rest it is one line with no control row, because
-                // chrome around an empty invitation is noise. Once it has focus
-                // or content it grows a real control row, because a field you
-                // can type into and cannot visibly send is a dead end - the
-                // ⌘/Ctrl+Enter chord alone is not an affordance anyone can see.
                 leading={
-                  ended && !followUpEngaged ? undefined : (
-                    /* data-testid on every control in this row: two different
+                  /* data-testid on every control in this row: two different
                      buttons here start with "Steer" (this one and
                      QueueStrip's "Steer queue now"), so tests address
                      controls by a stable hook instead of navigating by
                      accessible name - the naming style follows StatusRow's
                      own status-row-* testids. */
-                    <div className={CLASS.leading}>
-                      <Tooltip label="Attach an image">
-                        <IconButton
-                          label="Attach image"
-                          icon={<AttachIcon />}
-                          variant="quiet"
-                          size="xs"
-                          type="button"
-                          data-testid="composer-attach"
-                          onClick={() => fileInputRef.current?.click()}
-                        />
-                      </Tooltip>
-                      <MemoizedSessionChrome ref={ref} placement="composer" discoverActivity turnVerbs={turnVerbs} />
-                    </div>
-                  )
+                  <div className={CLASS.leading}>
+                    <Tooltip label="Attach an image">
+                      <IconButton
+                        label="Attach image"
+                        icon={<AttachIcon />}
+                        variant="quiet"
+                        size="xs"
+                        type="button"
+                        data-testid="composer-attach"
+                        onClick={() => fileInputRef.current?.click()}
+                      />
+                    </Tooltip>
+                    <MemoizedSessionChrome ref={ref} placement="composer" discoverActivity turnVerbs={turnVerbs} />
+                  </div>
                 }
                 actions={
-                  ended && !followUpEngaged ? undefined : (
-                    <>
-                      {/* Stop leads the cluster, always in the same place: it is
+                  <>
+                    {/* Stop leads the cluster, always in the same place: it is
                           the one control here whose misfire cannot be undone, so
                           it must never trade positions with Send or Steer as
                           those come and go. The word, not a glyph - "Stop" is
@@ -1460,84 +1448,83 @@ export function Composer({ ref, focused, source }: ComposerProps) {
                           boundary the row cannot hold the cluster beside the
                           status row, so the narrow layout offers it through the
                           session menu instead (turnVerbs above). */}
-                      {showStop && !narrow && (
-                        <Tooltip label="Stop the current turn">
-                          <Button
-                            variant="dangerQuiet"
-                            size="xs"
-                            type="button"
-                            data-testid="composer-stop"
-                            onClick={() => void handleInterruptClick()}
-                            // busy + the interrupt capability are already what
-                            // makes this render at all, so only an in-flight
-                            // request of our own is left to gate on.
-                            disabled={actionPending}
-                          >
-                            Stop
-                          </Button>
-                        </Tooltip>
-                      )}
-                      {/* Send is quiet while a turn runs and primary when
-                        nothing does: with a turn in flight the immediate
-                        action is Steer, and Send's job is the patient one. */}
-                      <Tooltip label={submitTooltip}>
+                    {showStop && !narrow && (
+                      <Tooltip label="Stop the current turn">
                         <Button
-                          ref={submitButtonRef}
-                          type="submit"
-                          variant={showSteer ? "quiet" : "primary"}
+                          variant="dangerQuiet"
                           size="xs"
-                          data-testid="composer-submit"
-                          aria-label="Send"
-                          icon={<SendIcon />}
-                          // canCompose comes from the availability table, which
-                          // reports both-false for an idle finished session: it
-                          // answers "can this turn be sent to right now", and a
-                          // follow-up to a finished session resumes it first
-                          // (only once that resume is in flight does the table
-                          // have an answer of its own). The capability is
-                          // the authority there, the same way it is for whether
-                          // this card renders at all - otherwise a session the hub
-                          // will happily resume shows a permanently dead Send.
-                          // The capability alone does not lift the recovery fence:
-                          // availabilityFor refuses every fenced status, so a
-                          // fenced session whose snapshot still
-                          // advertises send:true (the hub stamps it on closed
-                          // frames too) renders a disabled Send, not a refusal
-                          // toast.
-                          disabled={
-                            actionPending ||
-                            !hasContent ||
-                            !(ended
-                              ? (canSendWhenEnded || fence.resumeOnly) && canCompose && !fence.stillFenced
-                              : canCompose)
-                          }
+                          type="button"
+                          data-testid="composer-stop"
+                          onClick={() => void handleInterruptClick()}
+                          // busy + the interrupt capability are already what
+                          // makes this render at all, so only an in-flight
+                          // request of our own is left to gate on.
+                          disabled={actionPending}
                         >
-                          <span className={CLASS.submitLabel}>Send</span>
+                          Stop
                         </Button>
                       </Tooltip>
-                      {/* Same narrow-layout gate as Stop above: the Steer the
+                    )}
+                    {/* Send is quiet while a turn runs and primary when
+                        nothing does: with a turn in flight the immediate
+                        action is Steer, and Send's job is the patient one. */}
+                    <Tooltip label={submitTooltip}>
+                      <Button
+                        ref={submitButtonRef}
+                        type="submit"
+                        variant={showSteer ? "quiet" : "primary"}
+                        size="xs"
+                        data-testid="composer-submit"
+                        aria-label="Send"
+                        icon={<SendIcon />}
+                        // canCompose comes from the availability table, which
+                        // reports both-false for an idle finished session: it
+                        // answers "can this turn be sent to right now", and a
+                        // follow-up to a finished session resumes it first
+                        // (only once that resume is in flight does the table
+                        // have an answer of its own). The capability is
+                        // the authority there, the same way it is for whether
+                        // this card renders at all - otherwise a session the hub
+                        // will happily resume shows a permanently dead Send.
+                        // The capability alone does not lift the recovery fence:
+                        // availabilityFor refuses every fenced status, so a
+                        // fenced session whose snapshot still
+                        // advertises send:true (the hub stamps it on closed
+                        // frames too) renders a disabled Send, not a refusal
+                        // toast.
+                        disabled={
+                          actionPending ||
+                          !hasContent ||
+                          !(ended
+                            ? (canSendWhenEnded || fence.resumeOnly) && canCompose && !fence.stillFenced
+                            : canCompose)
+                        }
+                      >
+                        <span className={CLASS.submitLabel}>Send</span>
+                      </Button>
+                    </Tooltip>
+                    {/* Same narrow-layout gate as Stop above: the Steer the
                           row cannot fit rides in the session menu (turnVerbs). */}
-                      {showSteer && !narrow && (
-                        <Tooltip label={steerTooltipLabel({ recoveryFenced: steerRecoveryFenced, enterToSend })}>
-                          <Button
-                            variant="primary"
-                            size="xs"
-                            type="button"
-                            data-testid="composer-steer"
-                            onClick={handleSteerClick}
-                            // Same as Stop above: busy + the steer capability
-                            // already gate this control's existence. The recovery
-                            // fence gates the press the same way the Send button's
-                            // does, and the tooltip says why (kata 2f41) instead of
-                            // describing an action the fence refuses.
-                            disabled={actionPending || steerRecoveryFenced}
-                          >
-                            Steer
-                          </Button>
-                        </Tooltip>
-                      )}
-                    </>
-                  )
+                    {showSteer && !narrow && (
+                      <Tooltip label={steerTooltipLabel({ recoveryFenced: steerRecoveryFenced, enterToSend })}>
+                        <Button
+                          variant="primary"
+                          size="xs"
+                          type="button"
+                          data-testid="composer-steer"
+                          onClick={handleSteerClick}
+                          // Same as Stop above: busy + the steer capability
+                          // already gate this control's existence. The recovery
+                          // fence gates the press the same way the Send button's
+                          // does, and the tooltip says why (kata 2f41) instead of
+                          // describing an action the fence refuses.
+                          disabled={actionPending || steerRecoveryFenced}
+                        >
+                          Steer
+                        </Button>
+                      </Tooltip>
+                    )}
+                  </>
                 }
               />
             </Dropzone>
@@ -1545,16 +1532,6 @@ export function Composer({ ref, focused, source }: ComposerProps) {
           </form>
         </div>
       )}
-      {/* The card's own chrome is the discovery opt-in, so while the card rests
-          something has to own initial discovery for it - otherwise the
-          transcript's entity ids stay plain text until the card is engaged.
-          Renders nothing visible (the panel's only control is hidden and its
-          sheet is closed). */}
-      {discoveryOnlyChrome && <MemoizedSessionChrome ref={ref} discoveryOnly />}
-      {/* Desktop moves this location into the pane's activity footer. Mobile
-          has no activity footer, so it remains directly under the composer
-          card and survives every card collapse. */}
-      {isMobile ? <RepoLocation cwd={model.cwd} local={ref.startsWith("local:")} /> : null}
     </div>
   );
 }
