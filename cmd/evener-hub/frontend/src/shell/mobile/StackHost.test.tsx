@@ -234,6 +234,8 @@ test("at the mobile boundary an ordinary Agents row retains the existing transcr
 
 test("a restored cascade renders only its selected reader on mobile and restores its desktop columns without changing intent", async () => {
   const original = window.matchMedia;
+  const height = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight");
+  Object.defineProperty(HTMLElement.prototype, "offsetHeight", { configurable: true, value: 500 });
   const media = Object.assign(new EventTarget(), {
     matches: true,
     media: "(max-width: 899px)",
@@ -278,7 +280,8 @@ test("a restored cascade renders only its selected reader on mobile and restores
         </ClientProvider>,
       ),
     );
-    await screen.findByRole("button", { name: "Return to previous view" });
+    const phoneReturn = await screen.findByRole("button", { name: "Return to previous view" });
+    expect(phoneReturn.closest('[data-pane-scaffold="cascade"]')).not.toBeNull();
     expect(screen.getAllByTestId("cascade-column").map((column) => column.getAttribute("data-scope-ref"))).toEqual([
       "grandchild",
     ]);
@@ -296,8 +299,25 @@ test("a restored cascade renders only its selected reader on mobile and restores
     expect(screen.getByTestId("cascade-spine").getAttribute("data-scope-ref")).toBe("root");
     expect(workspaceStore.getState().panes[0]?.params).toBe(params);
     expect(window.location.pathname).toBe("/s/root");
+    expect(
+      screen.getByTestId("pane-actions").contains(screen.getByRole("button", { name: "Return to previous view" })),
+    ).toBe(true);
+    await act(async () => {
+      media.matches = true;
+      media.dispatchEvent(Object.assign(new Event("change"), { matches: true }));
+    });
+    await userEvent.setup().click(screen.getByRole("button", { name: "Return to previous view" }));
+    expect(workspaceStore.getState().panes[0]).toMatchObject({
+      id: "restored-cascade",
+      type: "transcript",
+      params: { ref: "root" },
+    });
+    expect(await screen.findByText("root real content")).toBeTruthy();
+    expect(screen.queryByTestId("cascade-column")).toBeNull();
   } finally {
     cleanup();
+    if (height) Object.defineProperty(HTMLElement.prototype, "offsetHeight", height);
+    else Reflect.deleteProperty(HTMLElement.prototype, "offsetHeight");
     if (original) window.matchMedia = original;
     else Reflect.deleteProperty(window, "matchMedia");
     connectionStore.setState({ client: null, state: "idle" });

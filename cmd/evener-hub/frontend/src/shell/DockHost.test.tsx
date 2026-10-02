@@ -1052,77 +1052,95 @@ function savedActiveViews(): string[] {
   return out;
 }
 
-test("a real promoted transcript saves only cascade intent and restores the same Dockview geometry and selected footer", async () => {
-  const context = (ref: string) =>
-    cascadeContext(ref, ref === "grandchild" ? ["root", "child"] : ref === "child" ? ["root"] : []);
-  const client = cascadeClient(context);
-  connectionStore.getState().connect(client);
-  const id = workspaceStore.getState().openPane("transcript", { ref: "root" });
-  const mount = () =>
-    render(
-      <ClientProvider client={client}>
-        <MotionProvider>
-          <DockHost />
-        </MotionProvider>
-      </ClientProvider>,
-    );
-  try {
-    const view = await act(async () => mount());
-    await screen.findByRole("heading", { name: "root" });
-    const tab = document.querySelector(".dv-tab");
-    if (!tab) throw new Error("Missing real transcript tab");
-    const group = tab.closest(".dv-groupview");
-    act(() => workspaceStore.getState().openPane("doc", { ref: "kept-secondary" }));
-    await screen.findByText(/doc pane: kept-secondary/);
-    act(() => workspaceStore.getState().focusPane(id));
-    const before = workspaceStore.getState().layoutJSON() as { grid: unknown };
-    await act(async () =>
-      enterAgentCascade(activityDelegate({ ownerRef: "root", childRef: "child", delegateId: "edge-child" }), id),
-    );
-    await act(async () =>
-      enterAgentCascade(
-        activityDelegate({ ownerRef: "child", childRef: "grandchild", delegateId: "edge-grandchild" }),
-        id,
-      ),
-    );
-    expect(tab.isConnected).toBe(true);
-    expect(tab.closest(".dv-groupview")).toBe(group);
-    expect((workspaceStore.getState().layoutJSON() as { grid: unknown }).grid).toEqual(before.grid);
-    const intent = workspaceStore.getState().panes.find((pane) => pane.id === id)?.params as SessionZoomParams;
-    vi.useFakeTimers();
-    const current = workspaceStore.getState().panes.find((pane) => pane.id === id);
-    if (!current) throw new Error("Missing promoted record");
-    await act(async () => workspaceStore.getState().retypePane(current, "sessionZoom", { ...intent }));
-    advance(400);
-    const saved = localStorage.getItem(LAYOUT_KEY);
-    if (!saved) throw new Error("Missing real cascade save");
-    const layout = JSON.parse(saved) as {
-      grid: unknown;
-      panels: Record<string, { params: { paneType: string; paneParams: SessionZoomParams } }>;
-    };
-    expect(layout.panels[id]?.params).toEqual({ paneType: "sessionZoom", paneParams: intent });
-    expect(layout.grid).toEqual(before.grid);
-    expect(saved).not.toContain("data:image");
-    expect(saved).not.toContain("olderCursor");
-    vi.useRealTimers();
-    view.unmount();
-    resetWorkspaceStoreForTests();
-    await act(async () => mount());
-    await screen.findByRole("button", { name: "Return to previous view" });
-    expect(workspaceStore.getState().panes.find((pane) => pane.id === id)?.params).toEqual(intent);
-    expect((workspaceStore.getState().layoutJSON() as { grid: unknown }).grid).toEqual(before.grid);
-    expect(screen.getAllByTestId("cascade-column").map((column) => column.getAttribute("data-scope-ref"))).toEqual([
-      "child",
-      "grandchild",
-    ]);
-    const footer = screen.getByTestId("statusbar");
-    expect(within(footer).getByText("grandchild").getAttribute("aria-current")).toBe("page");
-    expect(screen.getByText(/doc pane: kept-secondary/)).toBeTruthy();
-  } finally {
-    cleanup();
-    connectionStore.setState({ client: null, state: "idle" });
-  }
-});
+test.each([
+  { sourceType: "transcript", routedRef: null },
+  { sourceType: "session", routedRef: "root" },
+  { sourceType: "session", routedRef: "other-root" },
+] as const)(
+  "a real promoted $sourceType restores saved intent against route $routedRef",
+  async ({ sourceType, routedRef }) => {
+    const context = (ref: string) =>
+      cascadeContext(ref, ref === "grandchild" ? ["root", "child"] : ref === "child" ? ["root"] : []);
+    const client = cascadeClient(context);
+    connectionStore.getState().connect(client);
+    const id = workspaceStore.getState().openPane(sourceType, { ref: "root" });
+    const mount = () =>
+      render(
+        <ClientProvider client={client}>
+          <MotionProvider>
+            <DockHost />
+          </MotionProvider>
+        </ClientProvider>,
+      );
+    try {
+      const view = await act(async () => mount());
+      await screen.findByRole("heading", { name: "root" });
+      const tab = document.querySelector(".dv-tab");
+      if (!tab) throw new Error("Missing real transcript tab");
+      const group = tab.closest(".dv-groupview");
+      act(() => workspaceStore.getState().openPane("doc", { ref: "kept-secondary" }));
+      await screen.findByText(/doc pane: kept-secondary/);
+      act(() => workspaceStore.getState().focusPane(id));
+      const before = workspaceStore.getState().layoutJSON() as { grid: unknown };
+      await act(async () =>
+        enterAgentCascade(activityDelegate({ ownerRef: "root", childRef: "child", delegateId: "edge-child" }), id),
+      );
+      await act(async () =>
+        enterAgentCascade(
+          activityDelegate({ ownerRef: "child", childRef: "grandchild", delegateId: "edge-grandchild" }),
+          id,
+        ),
+      );
+      expect(tab.isConnected).toBe(true);
+      expect(tab.closest(".dv-groupview")).toBe(group);
+      expect((workspaceStore.getState().layoutJSON() as { grid: unknown }).grid).toEqual(before.grid);
+      const intent = workspaceStore.getState().panes.find((pane) => pane.id === id)?.params as SessionZoomParams;
+      vi.useFakeTimers();
+      const current = workspaceStore.getState().panes.find((pane) => pane.id === id);
+      if (!current) throw new Error("Missing promoted record");
+      await act(async () => workspaceStore.getState().retypePane(current, "sessionZoom", { ...intent }));
+      advance(400);
+      const saved = localStorage.getItem(LAYOUT_KEY);
+      if (!saved) throw new Error("Missing real cascade save");
+      const layout = JSON.parse(saved) as {
+        grid: unknown;
+        panels: Record<string, { params: { paneType: string; paneParams: SessionZoomParams } }>;
+      };
+      expect(layout.panels[id]?.params).toEqual({ paneType: "sessionZoom", paneParams: intent });
+      expect(layout.grid).toEqual(before.grid);
+      expect(saved).not.toContain("data:image");
+      expect(saved).not.toContain("olderCursor");
+      vi.useRealTimers();
+      view.unmount();
+      resetWorkspaceStoreForTests();
+      if (routedRef) workspaceStore.getState().openPane("session", { ref: routedRef });
+      await act(async () => mount());
+      if (routedRef === "other-root") {
+        expect(workspaceStore.getState().panes).toHaveLength(1);
+        expect(workspaceStore.getState().mainPane()).toMatchObject({
+          type: "session",
+          params: { ref: "other-root" },
+        });
+        expect(screen.queryByRole("button", { name: "Return to previous view" })).toBeNull();
+        expect(screen.queryByText(/doc pane: kept-secondary/)).toBeNull();
+        return;
+      }
+      await screen.findByRole("button", { name: "Return to previous view" });
+      expect(workspaceStore.getState().panes.find((pane) => pane.id === id)?.params).toEqual(intent);
+      expect((workspaceStore.getState().layoutJSON() as { grid: unknown }).grid).toEqual(before.grid);
+      expect(screen.getAllByTestId("cascade-column").map((column) => column.getAttribute("data-scope-ref"))).toEqual([
+        "child",
+        "grandchild",
+      ]);
+      const footer = screen.getByTestId("statusbar");
+      expect(within(footer).getByText("grandchild").getAttribute("aria-current")).toBe("page");
+      expect(screen.getByText(/doc pane: kept-secondary/)).toBeTruthy();
+    } finally {
+      cleanup();
+      connectionStore.setState({ client: null, state: "idle" });
+    }
+  },
+);
 
 test("debounces saving the layout to localStorage after a change", async () => {
   // Real timers for the initial mount (findByText's own polling), fake

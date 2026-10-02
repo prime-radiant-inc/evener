@@ -126,17 +126,18 @@ export default function Zoom({ paneId, focused }: PaneProps<SessionZoomParams>) 
   const path = deriveCascadePath(params, snapshot?.context ?? null);
   const scopes = mobile ? path.scopes.slice(-1) : path.scopes;
   const firstReadable = Math.max(0, scopes.length - 2);
+  const returnAction = (
+    <Button variant="quiet" size="sm" onClick={() => returnFromAgentCascade(paneId)}>
+      Return to previous view
+    </Button>
+  );
   return (
     <PaneScaffold
       paneId={paneId}
       focused={focused}
       title="Agent cascade"
       scaffoldMarker="cascade"
-      actions={
-        <Button variant="quiet" size="sm" onClick={() => returnFromAgentCascade(paneId)}>
-          Return to previous view
-        </Button>
-      }
+      actions={mobile ? undefined : returnAction}
       edgeFooter={
         <StatusBar
           sessionRef={params.ref}
@@ -151,6 +152,7 @@ export default function Zoom({ paneId, focused }: PaneProps<SessionZoomParams>) 
       }
     >
       <div className={CLASS.body}>
+        {mobile && returnAction}
         <nav className={CLASS.path} aria-label="Agent path">
           {path.scopes.map((scope) => (
             <Button

@@ -12,6 +12,7 @@ import { Suspense, useEffect, useRef, useState } from "react";
 import "dockview-react/dist/styles/dockview.css";
 import "./dockview-theme.css";
 import { navigationSummaryFor, resolveThreadName } from "../panes/session/threadTitle";
+import { parseZoomParams } from "../panes/zoom/intent";
 import { useNavigationStore } from "../stores/navigation/store";
 import { threadsStore, useThreadsStore } from "../stores/threads";
 import { EmptyState } from "../widgets/emptystate";
@@ -476,7 +477,13 @@ export function DockHost() {
       // is read out of these same params.
       const ref = (routedPrimary.params as { ref?: unknown }).ref;
       if (typeof ref === "string") {
-        workspaceStore.getState().replacePrimary("session", routedPrimary.params);
+        const main = workspaceStore.getState().mainPane();
+        const source = main?.type === "sessionZoom" ? parseZoomParams(main.params)?.source : null;
+        // A cascade retains its original route role. Reapplying that same
+        // source must preserve its intent and the restored neighboring panes.
+        if (source?.type !== "session" || source.params.ref !== ref) {
+          workspaceStore.getState().replacePrimary("session", routedPrimary.params);
+        }
       }
     }
     for (const pane of routedSecondary) {

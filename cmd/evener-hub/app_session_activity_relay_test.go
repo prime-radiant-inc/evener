@@ -152,12 +152,29 @@ func awaitActivityRelayNotice(ctx context.Context, t *testing.T, client *appwire
 
 func TestSessionActivityLiveProducerRelayAndIndependentSubscribers(t *testing.T) {
 	t.Parallel()
+	testSessionActivityRelay(t, nil)
+}
+
+type activityRelayFixture struct {
+	ctx                    context.Context
+	cfg                    hubcore.WebConfig
+	stateDir               string
+	refs                   []string
+	open                   func() *appwire.Client
+	activity, child, grand *appwire.Client
+	adapter                *activityRelayAdapter
+	subscriberCount        func(string) int
+	stop                   func()
+}
+
+func testSessionActivityRelay(t *testing.T, checkpoint func(activityRelayFixture)) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 	adapter := &activityRelayAdapter{steps: map[string]int{}, rootReady: make(chan struct{}), childReady: make(chan struct{}), grandReady: make(chan struct{}), childSend: make(chan struct{}), grandSend: make(chan struct{}), clearRootWatch: make(chan struct{}), rootCleared: make(chan struct{})}
 	llmClient := llm.NewClient()
 	llmClient.Register(adapter)
-	stateDir := t.TempDir()
+	stateDir := filepath.Join(t.TempDir(), "project-relay-0000000000")
 	workDir := t.TempDir()
 	sess, err := agent.NewSession(llmClient, provider.NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(workDir), agent.SessionConfig{StateDir: stateDir, MaxSubagentDepth: 2, Sandbox: "off"})
 	if err != nil {
@@ -201,7 +218,10 @@ func TestSessionActivityLiveProducerRelayAndIndependentSubscribers(t *testing.T)
 	sources := appsource.NewRegistry()
 	sources.Add(source)
 	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""), Roster: hubcore.NewRosterWithEntries(hubcore.LiveEntry{Entry: entry, SessionID: rootID, Status: "active"})}
-	hubServer := newHubAppServer(cfg, sources)
+	cfg.Archive = hubcore.NewArchiveStore(filepath.Join(cfg.HubStateRoot, "index.db"))
+	cfg.Past = hubcore.NewPastIndex(stateDir)
+	web := NewWebServer(cfg)
+	hubServer := newHubAppServerWithNavigation(cfg, sources, web.navigation, web.resolveTopLevelSessionRef)
 	hubHTTP := httptest.NewServer(http.HandlerFunc(hubServer.ServeWebSocket))
 	t.Cleanup(hubHTTP.Close)
 	open := func() *appwire.Client {
@@ -221,14 +241,22 @@ func TestSessionActivityLiveProducerRelayAndIndependentSubscribers(t *testing.T)
 	}
 	done := make(chan error, 1)
 	go func() { _, err := sess.ProcessInput(ctx, "activity-root-task", nil); done <- err }()
-	t.Cleanup(func() {
-		cancel()
-		select {
-		case <-done:
-		case <-time.After(5 * time.Second):
-			t.Error("scripted root did not stop")
-		}
-	})
+	var stopOnce sync.Once
+	stop := func() {
+		stopOnce.Do(func() {
+			cancel()
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				t.Error("scripted root did not stop")
+			}
+			sess.Close()
+			inventoryMu.Lock()
+			inventory = nil
+			inventoryMu.Unlock()
+		})
+	}
+	t.Cleanup(stop)
 	for _, ready := range []struct {
 		signal chan struct{}
 		name   string
@@ -276,6 +304,15 @@ func TestSessionActivityLiveProducerRelayAndIndependentSubscribers(t *testing.T)
 		if _, err := subscriber.client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:" + subscriber.id, Subscribe: true}); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if checkpoint != nil {
+		checkpoint(activityRelayFixture{
+			ctx: ctx, cfg: cfg, stateDir: stateDir,
+			refs: []string{rootRef, "local:" + childID, "local:" + grandID},
+			open: open, activity: activity, child: child, grand: grand, adapter: adapter,
+			subscriberCount: hubServer.SubscriberCount, stop: stop,
+		})
+		return
 	}
 	// One connection owns a rich root view and an additive lean child view.
 	// The lease explicitly keeps existing membership on both reads.
@@ -328,7 +365,6 @@ func TestSessionActivityLiveProducerRelayAndIndependentSubscribers(t *testing.T)
 			}
 		}
 	}
-	web := NewWebServer(cfg)
 	navigation, err := (webNavigationSource{web: web}).Capture(ctx, "activity-generation", time.Unix(1700000000, 0))
 	if err != nil {
 		t.Fatal(err)
@@ -474,5 +510,123 @@ physicalConfirmed:
 	}
 	if len(ended.Watches) != 1 || ended.Watches[0].State != appwire.SessionWatchStateEnded || ended.Watches[0].Watch.Deliveries != 1 {
 		t.Fatalf("ended receiver watch=%+v", ended)
+	}
+}
+
+func TestSessionActivityNestedReconnect(t *testing.T) {
+	t.Parallel()
+	testSessionActivityRelay(t, func(f activityRelayFixture) {
+		shared := f.open()
+		admit := func(client *appwire.Client) {
+			for index, ref := range f.refs {
+				if _, err := client.ThreadRead(f.ctx, appwire.ThreadReadParams{Ref: ref, Subscribe: true, IncludeTurns: index != 1, ItemLimit: 40, ReplaceSubscription: false}); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		counts := func(root, child, grand int) bool {
+			return f.subscriberCount(f.refs[0]) == root && f.subscriberCount(f.refs[1]) == child && f.subscriberCount(f.refs[2]) == grand
+		}
+		admit(shared)
+		peek := f.open()
+		if _, err := peek.ThreadRead(f.ctx, appwire.ThreadReadParams{Ref: f.refs[1], Subscribe: true, ReplaceSubscription: false}); err != nil {
+			t.Fatal(err)
+		}
+		if !counts(3, 3, 2) {
+			t.Fatal("rich columns and lean sidebar/peek replaced another membership")
+		}
+		params := appwire.SessionActivityListParams{Ref: f.refs[0], Scope: appwire.SessionActivityScopeSubtree, Limit: 1}
+		first, err := shared.ThreadDelegatesList(f.ctx, params)
+		if err != nil || len(first.Delegates) != 1 || first.Page.NextCursor == "" {
+			t.Fatalf("first actual page: %+v, %v", first, err)
+		}
+		params.Cursor = first.Page.NextCursor
+		second, err := shared.ThreadDelegatesList(f.ctx, params)
+		if err != nil || len(second.Delegates) != 1 || !second.Page.Complete {
+			t.Fatalf("second actual page: %+v, %v", second, err)
+		}
+		retained := []appwire.SessionDelegate{first.Delegates[0], second.Delegates[0]}
+		if retained[0].DelegateID == retained[1].DelegateID {
+			t.Fatal("observed extent contains duplicate real edges")
+		}
+		if err := shared.Close(); err != nil {
+			t.Fatal(err)
+		}
+		awaitActivityRelayCondition(f.ctx, t, func() bool { return counts(2, 2, 1) }, "closed socket releases only its three memberships")
+		reconnected := f.open()
+		admit(reconnected)
+		if !counts(3, 3, 2) {
+			t.Fatal("reconnection did not restore additive membership")
+		}
+		params.Cursor = ""
+		params.Limit = len(retained)
+		recovered, err := reconnected.ThreadDelegatesList(f.ctx, params)
+		if err != nil || len(recovered.Delegates) != len(retained) || !recovered.Page.Complete {
+			t.Fatalf("observed page extent did not recover: %+v, %v", recovered, err)
+		}
+		for index, row := range recovered.Delegates {
+			if row.DelegateID != retained[index].DelegateID || row.ChildRef != retained[index].ChildRef {
+				t.Fatalf("reconnect substituted actual edge: %+v", row)
+			}
+		}
+		if _, err := peek.ThreadUnsubscribe(f.ctx, appwire.ThreadUnsubscribeParams{Ref: f.refs[1]}); err != nil {
+			t.Fatal(err)
+		}
+		if !counts(3, 2, 2) {
+			t.Fatal("closing peek released a column or sidebar membership")
+		}
+		assertRealNestedActivity(t, f.ctx, reconnected, f.refs, "live")
+		close(f.adapter.grandSend)
+		childID := strings.TrimPrefix(f.refs[1], "local:")
+		grandID := strings.TrimPrefix(f.refs[2], "local:")
+		pending := map[string]appwire.SessionActivityResource{
+			strings.TrimPrefix(f.refs[0], "local:"): appwire.SessionActivityResourceWatches,
+			childID:                                 appwire.SessionActivityResourceWatches,
+			grandID:                                 appwire.SessionActivityResourceJobs,
+		}
+		for len(pending) > 0 {
+			select {
+			case notice := <-reconnected.Notifications():
+				if notice.Method != appwire.NotifyEvenerThreadActivityChanged {
+					continue
+				}
+				var change appwire.SessionActivityChangedParams
+				if err := json.Unmarshal(notice.Params, &change); err != nil {
+					t.Fatal(err)
+				}
+				resource, wanted := pending[change.ThreadID]
+				owner := childID
+				if resource == appwire.SessionActivityResourceJobs {
+					owner = grandID
+				}
+				if wanted && change.SessionID == owner && slices.Contains(change.Resources, resource) {
+					if change.Ref != "local:"+change.ThreadID {
+						t.Fatalf("reconnected notice substituted ref: %+v", change)
+					}
+					delete(pending, change.ThreadID)
+				}
+			case <-f.ctx.Done():
+				t.Fatalf("missing actual reconnected deliveries %v: %v", pending, f.ctx.Err())
+			}
+		}
+		jobs, err := reconnected.ThreadJobsList(f.ctx, appwire.SessionActivityListParams{Ref: f.refs[2]})
+		if err != nil || len(jobs.Jobs) != 1 || jobs.Jobs[0].OwnerRef != f.refs[2] {
+			t.Fatalf("real producer delivery after reconnect: %+v, %v", jobs, err)
+		}
+	})
+}
+
+func awaitActivityRelayCondition(ctx context.Context, t *testing.T, condition func() bool, name string) {
+	t.Helper()
+	// Subscriber cleanup has no public acknowledgement after a socket closes.
+	// Poll that server condition, with the test context as the tripwire.
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for !condition() {
+		select {
+		case <-ticker.C:
+		case <-ctx.Done():
+			t.Fatalf("%s: %v", name, ctx.Err())
+		}
 	}
 }

@@ -87,10 +87,9 @@ type webGate struct {
 	// under its private root.
 	checks []string
 	spec   func(check, root string) guardSpec
-	// needsBuild is the check that needs the production frontend build,
-	// which runs first when buildFrontend is set; a failed build fails only
-	// that check. Empty for a gate with no build.
-	needsBuild string
+	// needsBuild names checks that serve the production frontend. A failed
+	// build fails these checks, while independent Vite guards still run.
+	needsBuild []string
 	// unsignalled are the checks an interrupt waits for but never signals.
 	unsignalled []string
 
@@ -125,12 +124,9 @@ func (g *webGate) run() (int, bool) {
 		g.now = time.Now
 	}
 	buildStatus := 0
-	buildLog := filepath.Join(g.scratch, g.needsBuild+"-build.log")
+	buildLog := filepath.Join(g.scratch, "frontend-build.log")
 	if g.buildFrontend {
-		// The skill guard serves the embedded dist, so a missing dist is built
-		// before any guard starts. A failed build fails only the skill guard:
-		// the other guards serve the frontend through their own Vite.
-		_, _ = fmt.Fprintf(g.stdout, "building the production frontend for web-%s…\n", g.needsBuild)
+		_, _ = fmt.Fprintf(g.stdout, "building the production frontend for web-%s…\n", strings.Join(g.needsBuild, ", web-"))
 		built := make(chan int, 1)
 		ctx, stopBuild := context.WithCancel(context.Background())
 		defer stopBuild()
@@ -175,7 +171,7 @@ func (g *webGate) run() (int, bool) {
 		for running < g.slots && next < n {
 			index := next
 			next++
-			if g.checks[index] == g.needsBuild && buildStatus != 0 {
+			if slices.Contains(g.needsBuild, g.checks[index]) && buildStatus != 0 {
 				statuses[index] = buildStatus
 				done++
 				continue
@@ -233,7 +229,7 @@ func (g *webGate) run() (int, bool) {
 		case statuses[i] == 0:
 			_, _ = fmt.Fprintf(g.stdout, "PASS  web-%s (%.1fs)\n", guard, elapsed[i].Seconds())
 			continue
-		case guard == g.needsBuild && buildStatus != 0:
+		case slices.Contains(g.needsBuild, guard) && buildStatus != 0:
 			_, _ = fmt.Fprintf(g.stderr, "FAIL  web-%s (frontend build, exit %d)\n", guard, buildStatus)
 			g.replay(buildLog)
 		default:

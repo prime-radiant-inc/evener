@@ -272,6 +272,47 @@ See the [store tests](../../appwire-client/typescript/sessionActivityStore.test.
 [presentation tests](../../appwire-client/typescript/sessionActivityPresentation.test.ts)
 for these shared ownership contracts.
 
+## Automatic agent cascade
+
+On desktop, activating a delegate row in Agents promotes the originating session
+or read-only transcript pane into an agent cascade. The same Dockview panel,
+tab and group remain in place. Each drill selects the actual returned child ref;
+drilling from an ancestor replaces only the path after that owner. Navigation
+children remain fork relationships, not delegate ancestry.
+
+The selected session and its immediate parent are readable columns. Earlier
+ancestors are live compact spines. Each readable scope has an independent
+transcript position; collapsed spines retain their reader state while pausing
+older-history demand. Pop, reopen and Jump to live use the existing transcript
+and history owners. The footer and shared sidebar stay scoped to the selected
+leaf, including while the reader selects text in a parent.
+
+Columns and spines share the existing summary and additive subscription leases
+by client and requested ref. An ancestor peek observes only that ancestor's
+chosen direct collection; Tasks stays inside the peek. Closing it releases its
+collection demand. Reconnect recovers the observed page extent without dropping
+useful rows. An empty incomplete page remains progress, not proof of no delegates.
+Unknown ancestry and runtime metadata stay explicit. Late metadata and status
+changes do not move focus or animate column geometry.
+
+Return restores the original pane type, ref and live source state: draft,
+selected skills, staged attachments, pending encodes, queued inputs and mutation
+identity. Promotion does not submit or replay input. An explicit Open conversation
+opens or focuses an ordinary independent session pane. Unrelated panes keep
+their identity and placement.
+
+Saved workspace intent contains the selected ref, validated ordered edges and
+return descriptor. Draft text and skill selections use their existing stores.
+Processed image bytes and pending encodes belong to the original pane lifetime;
+they are excluded from layout JSON and localStorage and are not restored by a
+page reload. Phones keep the ordinary Agents transcript action. A saved cascade
+at phone width shows the selected read-only transcript and Return without
+desktop columns or spines.
+
+The [real-stack cascade guard](../../cmd/evener-hub/frontend/scripts/cascadeguard/README.md)
+and [design-system geometry](../web-ui/design-system.md#agent-cascade)
+describe the executable proof and presentation contract.
+
 ## Client lifetimes
 
 The [browser binding](../../cmd/evener-hub/frontend/src/stores/sessionActivity.ts)
