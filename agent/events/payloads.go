@@ -458,6 +458,8 @@ type QueueChangedData struct {
 	// editing or returning a queued entry can restore its chips — a queued
 	// {type:"skill"} item is otherwise unrecoverable by any path.
 	SkillNames [][]string `json:"skill_names,omitempty"`
+	// CommandNames retains each queued entry's explicit command selections.
+	CommandNames [][]string `json:"command_names,omitempty"`
 	// ConsumedClientMutationIDs names the queued entries THIS push's
 	// transition just consumed (currently: a drain folding the queue into
 	// steering) so a client can settle those optimistic records by positive

@@ -680,6 +680,21 @@ func TestAppEventProjectorProjectsQueueChanged(t *testing.T) {
 	}
 }
 
+func TestAppEventProjectorQueueCommandSelections(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	data := events.QueueChangedData{Depth: 2, Preview: []string{"A_318", "B_318"},
+		SkillNames: [][]string{{"probe"}, {}}, CommandNames: [][]string{{"probe"}, {"pkg:probe"}}}
+	out := projector.Project(events.SessionEvent{Kind: events.EventQueueChanged, SessionID: "th_1", Data: data})
+	params := out[0].Params.(appwire.ThreadQueueChangedParams)
+	if len(params.Queue.CommandNames) != 2 || params.Queue.CommandNames[0][0] != "probe" || params.Queue.CommandNames[1][0] != "pkg:probe" {
+		t.Fatalf("command selections lost or reordered: %+v", params.Queue)
+	}
+	params.Queue.CommandNames[0][0] = "changed"
+	if data.CommandNames[0][0] != "probe" || params.Queue.SkillNames[0][0] != "probe" {
+		t.Fatalf("command projection aliases input or skill intent: %+v", data)
+	}
+}
+
 // TestAppEventProjectorCopiesConsumedClientMutationIDs (issue #1704) verifies
 // a drain's consumed ids ride the projected notification's params, not the
 // durable Queue facet, so a client can settle those optimistic records by

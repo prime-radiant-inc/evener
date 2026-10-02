@@ -38,6 +38,7 @@ export function buildInput(
   text: string,
   attachments?: readonly InputAttachment[],
   skillNames?: readonly string[],
+  commandNames?: readonly string[],
 ): InputItem[] {
   const input: InputItem[] = [];
   if (text.trim()) input.push({ type: "text", text });
@@ -49,6 +50,9 @@ export function buildInput(
   for (const name of canonicalSkillNames(skillNames)) {
     input.push({ type: "skill", name });
   }
+  for (const name of canonicalSkillNames(commandNames)) {
+    input.push({ type: "command", name });
+  }
   return input;
 }
 
@@ -57,8 +61,9 @@ export function buildComposerInput(
   text: string,
   attachments?: readonly InputAttachment[],
   skillNames?: readonly string[],
+  commandNames?: readonly string[],
 ): InputItem[] {
-  return buildInput(translateAttachmentMarkers(text, attachments), attachments, skillNames);
+  return buildInput(translateAttachmentMarkers(text, attachments), attachments, skillNames, commandNames);
 }
 
 // Text going back into a draft: after exactly one blank line (the draft's

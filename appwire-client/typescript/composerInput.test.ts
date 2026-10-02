@@ -23,6 +23,15 @@ test("buildInput emits no skill items when every name is empty", () => {
   expect(input.filter((item) => item.type === "skill")).toEqual([]);
 });
 
+test("buildInput keeps same-spelling skills and commands distinct and dedupes each kind", () => {
+  expect(buildInput("DATA_318", undefined, ["probe"], [" probe ", "", "probe", "pkg:probe"])).toEqual([
+    { type: "text", text: "DATA_318" },
+    { type: "skill", name: "probe" },
+    { type: "command", name: "probe" },
+    { type: "command", name: "pkg:probe" },
+  ]);
+});
+
 test("mergeDraftText appends after exactly one blank line, or replaces a blank draft", () => {
   expect(mergeDraftText("", "queued text")).toBe("queued text");
   expect(mergeDraftText("  \n", "queued text")).toBe("queued text");

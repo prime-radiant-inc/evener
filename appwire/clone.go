@@ -308,6 +308,13 @@ func cloneQueueState(q QueueState) QueueState {
 		}
 		q.SkillNames = names
 	}
+	if q.CommandNames != nil {
+		names := make([][]string, len(q.CommandNames))
+		for i := range q.CommandNames {
+			names[i] = append([]string(nil), q.CommandNames[i]...)
+		}
+		q.CommandNames = names
+	}
 	return q
 }
 

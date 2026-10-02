@@ -426,8 +426,9 @@ type Turn struct {
 	// first recorded ASSISTANT entry shares it.
 	RoundID string `json:"round_id,omitempty"`
 	// SkillState carries explicit typed operation records, not inferred history.
-	SkillState   *SkillTurnState `json:"skill_state,omitempty"`
-	StableTurnID string          `json:"stable_turn_id,omitempty"`
+	SkillState   *SkillTurnState     `json:"skill_state,omitempty"`
+	CommandInput *CommandInputRecord `json:"command_input,omitempty"`
+	StableTurnID string              `json:"stable_turn_id,omitempty"`
 	// SteeringKind records what a TurnSteering entry was (events.SteeringKind*),
 	// so a reloaded transcript labels a steer the same way the live path did.
 	SteeringKind string `json:"steering_kind,omitempty"`

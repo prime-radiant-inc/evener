@@ -1264,6 +1264,9 @@ type QueueState struct {
 	// missing SkillNames as "selections unavailable", never as "no
 	// selections".
 	SkillNames [][]string `json:"skillNames,omitempty"`
+	// CommandNames is FIFO-aligned with Preview and retains exact command
+	// identities independently from skill selections when editing or returning.
+	CommandNames [][]string `json:"commandNames,omitempty"`
 }
 
 // ThreadQueueChangedParams is the params shape for thread/queueChanged
@@ -1468,6 +1471,9 @@ type ThreadCapabilities struct {
 	// against the live daemon. ValidateSkillInputSupport keeps skill items
 	// rejected wherever this capability is false.
 	SkillInput bool `json:"skillInput,omitempty"`
+	// CommandInput advertises canonical {type:"command", name} consumption
+	// on input-bearing mutations, with empty args and exact catalog identity.
+	CommandInput bool `json:"commandInput,omitempty"`
 	// StopSubagent advertises evener/delegate/stop on a root session (S6):
 	// true while its daemon wires the stop and the session is open. Absent
 	// from an older daemon, from a session with no daemon running (it runs no

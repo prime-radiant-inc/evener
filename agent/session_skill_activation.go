@@ -36,9 +36,11 @@ type skillActivationBatch struct{ Items []preparedSkillActivation }
 // failed input instead of dispatching dependent work, and the Selection still
 // keeps the names and original prose.
 type durableSkillSelection struct {
-	Selection *schema.SkillInputRecord
-	Batch     *skillActivationBatch
-	Err       error
+	Selection     *schema.SkillInputRecord
+	Batch         *skillActivationBatch
+	Err           error
+	CommandInput  *schema.CommandInputRecord
+	CommandBodies []string
 }
 
 type durableSkillSelectionContextKey struct{}
@@ -145,21 +147,32 @@ func (s *Session) prepareSelectedInput(ctx context.Context, input queuedInput, r
 	return s.prepareSkillActivations(ctx, invocations)
 }
 
-// contextWithSelectedSkills prepares a claimed durable input's skill selection
+// contextWithSelectedSkills prepares a claimed input's skills and commands
 // and hands it to the consuming turn through the context. A preparation
 // failure rides the same value: the turn records the visible failed input and
 // dispatches no dependent work.
 func (s *Session) contextWithSelectedSkills(ctx context.Context, queued queuedInput) context.Context {
-	if len(queued.SkillNames) == 0 {
+	if len(queued.SkillNames) == 0 && len(queued.CommandNames) == 0 {
 		return ctx
 	}
-	record := skillInputRecordFromQueued(queued)
+	var record *schema.SkillInputRecord
+	if len(queued.SkillNames) > 0 {
+		record = skillInputRecordFromQueued(queued)
+	}
 	batch, err := s.prepareSelectedInput(ctx, queued, "user_selection")
-	recordPreparedSelection(record, batch)
+	var bodies []string
+	if err == nil && !s.clientMutationUserTranscriptIncorporated(queued.ClientMutationID, queued.StableTurnID) {
+		bodies, err = s.prepareSelectedCommands(ctx, queued.CommandNames)
+	}
+	if err == nil {
+		recordPreparedSelection(record, batch)
+	}
 	return withDurableSkillSelection(ctx, &durableSkillSelection{
-		Selection: record,
-		Batch:     batch,
-		Err:       err,
+		Selection:     record,
+		Batch:         batch,
+		Err:           err,
+		CommandInput:  commandInputRecordFromQueued(queued),
+		CommandBodies: bodies,
 	})
 }
 

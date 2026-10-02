@@ -2871,6 +2871,11 @@ export interface QueueState {
    * selections".
    */
   skillNames?: string[][];
+  /**
+   * CommandNames is FIFO-aligned with Preview and retains exact command
+   * identities independently from skill selections when editing or returning.
+   */
+  commandNames?: string[][];
 }
 
 export interface RemovedRow {
@@ -3648,6 +3653,11 @@ export interface ThreadCapabilities {
    * rejected wherever this capability is false.
    */
   skillInput?: boolean;
+  /**
+   * CommandInput advertises canonical {type:"command", name} consumption
+   * on input-bearing mutations, with empty args and exact catalog identity.
+   */
+  commandInput?: boolean;
   /**
    * StopSubagent advertises evener/delegate/stop on a root session (S6):
    * true while its daemon wires the stop and the session is open. Absent
