@@ -7,7 +7,9 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { conversationPaneLifetime } from "../../../shell/paneLifetime";
 import { type OpenPaneRecord, resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { connectionStore } from "../../../stores/connection";
+import { activityDelegate } from "../../../stores/sessionActivityTestUtils";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
+import { enterAgentCascade, returnFromAgentCascade } from "../../zoom/actions";
 import { useTranscriptScroll } from "./flow/useTranscriptScroll";
 import { retainedTranscriptReadView } from "./transcriptReadView";
 import { resetTranscriptPagingForTests, useTranscript } from "./useTranscript";
@@ -94,6 +96,117 @@ function cascadeReaders() {
     b: retainedTranscriptReadView(conversationPaneLifetime(b), "ref_a", "cascade"),
   };
 }
+
+test.each([
+  { sourceType: "session", secondMount: "before" },
+  { sourceType: "transcript", secondMount: "before" },
+  { sourceType: "session", secondMount: "after" },
+  { sourceType: "transcript", secondMount: "after" },
+] as const)(
+  "an ordinary reader mounted $secondMount promotion cannot adopt or cancel the $sourceType source's demand",
+  async ({ sourceType, secondMount }) => {
+    vi.useFakeTimers();
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => ({ thread: testThread("ref_a"), olderCursor: "older" }));
+    let reads = 0;
+    let healed = false;
+    fake.on("thread/turns/list", () => {
+      reads += 1;
+      if (!healed) throw new Error("offline");
+      return { data: [{ id: "older-turn", status: "completed", itemsView: "full", items: [] }], nextCursor: undefined };
+    });
+    await act(async () => {
+      await threadsStore.getState().ensureThread("ref_a");
+    });
+    const source: OpenPaneRecord = { id: "source", type: sourceType, params: { ref: "ref_a" }, slot: "main" };
+    const independent: OpenPaneRecord = {
+      id: "independent",
+      type: "transcript",
+      params: { ref: "ref_a" },
+      slot: "secondary",
+    };
+    workspaceStore.setState({ panes: [source, independent], focusedPaneId: source.id });
+    const lifetime = conversationPaneLifetime(source);
+    const a = retainedTranscriptReadView(lifetime, "ref_a", sourceType);
+    const b = retainedTranscriptReadView(conversationPaneLifetime(independent), "ref_a", "transcript");
+    const first = renderHook(() => useTranscript("ref_a", a));
+    let second = secondMount === "before" ? renderHook(() => useTranscript("ref_a", b)) : undefined;
+    await act(async () => {
+      await first.result.current.loadOlder().catch(() => {});
+    });
+    act(() => {
+      enterAgentCascade(
+        activityDelegate({ ownerRef: "ref_a", childRef: "child", delegateId: "edge-child" }),
+        source.id,
+      );
+      enterAgentCascade(
+        activityDelegate({ ownerRef: "child", childRef: "grandchild", delegateId: "edge-grandchild" }),
+        source.id,
+      );
+    });
+    first.unmount();
+    const promoted = workspaceStore.getState().panes.find((pane) => pane.id === source.id);
+    expect(promoted?.type).toBe("sessionZoom");
+    if (!promoted) throw new Error("Missing promoted source");
+    expect(conversationPaneLifetime(promoted)).toBe(lifetime);
+    expect(a.alive).toBe(true);
+    expect(a.readable).toBe(false);
+    if (!second) second = renderHook(() => useTranscript("ref_a", b));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(31_000);
+    });
+    expect(reads, "mounting B must not restart collapsed source A's demand").toBe(1);
+    act(() => second.result.current.cancelOlder());
+    healed = true;
+    act(() => returnFromAgentCascade(source.id));
+    const returned = renderHook(() => useTranscript("ref_a", a));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+    expect(reads, "B's Jump to live must preserve A's pending demand").toBe(2);
+    expect(returned.result.current.model?.turns.map((turn) => turn.id)).toEqual(["older-turn"]);
+    returned.unmount();
+    second.unmount();
+  },
+);
+
+test.each(["session", "transcript"] as const)(
+  "ordinary navigation adopts a genuinely disposed $0 reader's pending demand",
+  async (sourceType) => {
+    vi.useFakeTimers();
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => ({ thread: testThread("ref_a"), olderCursor: "older" }));
+    let reads = 0;
+    fake.on("thread/turns/list", () => {
+      reads += 1;
+      if (reads === 1) throw new Error("offline");
+      return { data: [{ id: "older-turn", status: "completed", itemsView: "full", items: [] }], nextCursor: undefined };
+    });
+    await act(async () => {
+      await threadsStore.getState().ensureThread("ref_a");
+    });
+    const source: OpenPaneRecord = { id: "source", type: sourceType, params: { ref: "ref_a" }, slot: "main" };
+    workspaceStore.setState({ panes: [source], focusedPaneId: source.id });
+    const a = retainedTranscriptReadView(conversationPaneLifetime(source), "ref_a", sourceType);
+    const first = renderHook(() => useTranscript("ref_a", a));
+    await act(async () => {
+      await first.result.current.loadOlder().catch(() => {});
+    });
+    act(() => workspaceStore.getState().closePane(source.id));
+    first.unmount();
+    expect(a.alive).toBe(false);
+    const replacement: OpenPaneRecord = { ...source, id: "replacement" };
+    workspaceStore.setState({ panes: [replacement], focusedPaneId: replacement.id });
+    const b = retainedTranscriptReadView(conversationPaneLifetime(replacement), "ref_a", sourceType);
+    const second = renderHook(() => useTranscript("ref_a", b));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+    expect(reads).toBe(2);
+    expect(second.result.current.model?.turns.map((turn) => turn.id)).toEqual(["older-turn"]);
+    second.unmount();
+  },
+);
 
 test("a collapsed retained reader keeps pending demand without borrowing another reader's activation", async () => {
   vi.useFakeTimers();

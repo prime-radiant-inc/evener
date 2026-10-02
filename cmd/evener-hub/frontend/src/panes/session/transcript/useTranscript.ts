@@ -122,7 +122,8 @@ function adoptRemovedConsumers(entry: TranscriptPaging, viewId: string, view?: T
   const current = panes.find((pane) => pane.id === paneId && (pane.params as { ref?: unknown })?.ref === entry.ref);
   if (!current || (current.type !== "session" && current.type !== "transcript")) return;
   for (const [id, membership] of entry.paneConsumers) {
-    if (id === viewId || membership.view?.role === "cascade" || membership.type === undefined) continue;
+    if (id === viewId || membership.view?.alive || membership.view?.role === "cascade" || membership.type === undefined)
+      continue;
     const stillOpen = panes.some(
       (pane) =>
         pane.id === membership.paneId &&
@@ -211,7 +212,7 @@ export function useTranscript(ref: string, reader: string | TranscriptReadView |
     // open pane keeps its demand even when its reader is currently inactive.
     const panes = workspaceStore.getState().panes;
     for (const [consumer, membership] of selected.paneConsumers) {
-      if (membership.view?.role === "cascade" && membership.view.alive) continue;
+      if (membership.view?.alive) continue;
       if (membership.type === undefined) continue;
       if (
         panes.some(

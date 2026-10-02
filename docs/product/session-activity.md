@@ -284,7 +284,10 @@ The selected session and its immediate parent are readable columns. Earlier
 ancestors are live compact spines. Each readable scope has an independent
 transcript position; collapsed spines retain their reader state while pausing
 older-history demand. Pop, reopen and Jump to live use the existing transcript
-and history owners. The footer and shared sidebar stay scoped to the selected
+and history owners. A retained source keeps its own pending demand after pane
+promotion, even while collapsed. Another same-ref reader cannot adopt or cancel
+that demand. Ordinary navigation can adopt a genuinely disposed predecessor's
+pending demand. The footer and shared sidebar stay scoped to the selected
 leaf, including while the reader selects text in a parent.
 
 Columns and spines share the existing summary and additive subscription leases
