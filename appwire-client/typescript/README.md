@@ -108,6 +108,14 @@ The slash-completion module is ported from Beautiful UI's prompt-bar
 completion affordance and ships its MIT attribution at
 `LICENSES/beautiful-ui.txt`, inside the tarball.
 
+## Forwarded method catalog
+
+`HOST_REQUEST_METHODS` and its `HostRequestMethod` type are generated from
+AppWire's explicit host-request allow-list. The hub checks that same catalog
+before forwarding; registering a new RPC never grants forwarding permission.
+Retry classification remains with the hub because session mutations and admin
+mutations have different replay guarantees.
+
 ## Older-history demand
 
 `HistoryPaging` retains a requested older page until history advances. Attach

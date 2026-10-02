@@ -10,7 +10,7 @@
 #   frontend  cmd/evener-hub/frontend/src/stores/hostRouting.ts's
 #             HOST_DEPENDENT_DISCOVERY_METHODS, with the shipped set asserted
 #             against a literal list in its own test file;
-#   Go        remoteHostAdminMethods in cmd/evener-hub/app_host_admin.go, with
+#   Go        hostRequestMethods in appwire/host_request.go, with
 #             the allow-list asserted against the policy table in its own test
 #             file.
 #

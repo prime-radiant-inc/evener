@@ -1063,3 +1063,28 @@ func TestHostMutationDiscriminatorLiterals(t *testing.T) {
 		})
 	}
 }
+
+func TestEmitHostRequestMethodCatalog(t *testing.T) {
+	out := EmitCatalog()
+	names := runtimeNameList(t, out, "HOST_REQUEST_METHODS")
+	if want := appwire.HostRequestMethodNames(); !reflect.DeepEqual(names, want) {
+		t.Fatalf("SDK forwarding methods = %v, want Go catalog %v", names, want)
+	}
+	allowed := map[string]bool{}
+	for _, name := range names {
+		allowed[name] = true
+	}
+	for _, name := range []string{appwire.MethodModelList, appwire.MethodEvenerLaunchResolve, appwire.MethodEvenerAuthApiKeyConditionalSet} {
+		if !allowed[name] {
+			t.Errorf("forwarded method %q missing from SDK catalog", name)
+		}
+	}
+	for _, name := range []string{appwire.MethodEvenerHostAdd, appwire.MethodEvenerHostAttach, appwire.MethodEvenerInstanceSetModelDisabled, "evener/instance/deleteAll"} {
+		if allowed[name] {
+			t.Errorf("controller-only or unsupported method %q included in SDK catalog", name)
+		}
+	}
+	if !strings.Contains(out, "export type HostRequestMethod = (typeof HOST_REQUEST_METHODS)[number];\n") {
+		t.Error("HostRequestMethod is not derived from the runtime catalog")
+	}
+}
