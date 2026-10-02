@@ -18,7 +18,7 @@ import (
 type responsesToolState struct {
 	id, itemID, name string
 	started          bool
-	args             strings.Builder
+	args             bytes.Buffer
 }
 
 // responsesOutputAccumulator tracks response.output_item.added/done and
@@ -34,6 +34,7 @@ type responsesOutputAccumulator struct {
 	toolStates   map[string]*responsesToolState
 	itemToCallID map[string]string
 	output       []any
+	rawOutput    []json.RawMessage
 }
 
 func newResponsesOutputAccumulator() *responsesOutputAccumulator {
@@ -46,6 +47,15 @@ func newResponsesOutputAccumulator() *responsesOutputAccumulator {
 // Output returns the accumulated output array, in the wire shape a
 // response.completed payload's "output" field carries.
 func (acc *responsesOutputAccumulator) Output() []any { return acc.output }
+
+// RawOutput returns the raw JSON item tokens aligned with Output. An entry is
+// nil when the source event did not expose a decodable item token.
+func (acc *responsesOutputAccumulator) RawOutput() []json.RawMessage { return acc.rawOutput }
+
+func (acc *responsesOutputAccumulator) appendOutput(item any, rawItem json.RawMessage) {
+	acc.output = append(acc.output, item)
+	acc.rawOutput = append(acc.rawOutput, rawItem)
+}
 
 // toolStateFor is the accumulated state for one function call: the entry
 // filed under call_id, else the one an earlier event filed under item_id,
@@ -105,10 +115,13 @@ func (acc *responsesOutputAccumulator) HandleOutputItemAdded(item map[string]any
 
 // HandleFunctionCallArgumentsDelta merges one
 // response.function_call_arguments.delta event's argument fragment into
-// tool state, resolving call_id via item_id when call_id is absent. ok is
-// false when the event can't be mapped to a tool call at all -- the caller
-// should pass the raw payload through unmodified in that case.
-func (acc *responsesOutputAccumulator) HandleFunctionCallArgumentsDelta(payload map[string]any) (state *responsesToolState, delta string, ok bool) {
+// tool state, resolving call_id via item_id when call_id is absent. eventData
+// preserves bytes the decoded payload string coerced; capture or unescape
+// failure falls back to that string. The returned delta is the effective
+// fragment written to state, for byte-identical live emission. ok is false
+// when the event can't be mapped to a tool call at all -- the caller should
+// pass the raw payload through unmodified in that case.
+func (acc *responsesOutputAccumulator) HandleFunctionCallArgumentsDelta(payload map[string]any, eventData []byte) (state *responsesToolState, delta string, ok bool) {
 	delta, _ = payload["delta"].(string)
 	if delta == "" {
 		delta, _ = payload["arguments"].(string)
@@ -133,17 +146,26 @@ func (acc *responsesOutputAccumulator) HandleFunctionCallArgumentsDelta(payload 
 		st.name = name
 	}
 	if delta != "" {
-		st.args.WriteString(delta)
+		fragment := []byte(delta)
+		if rawDelta, rawOK := captureResponsesDeltaRaw(eventData); rawOK && rawDelta != nil {
+			if content, err := protocolhttp.RawStringContent(rawDelta); err == nil && len(content) > 0 {
+				fragment = content
+			}
+		}
+		st.args.Write(fragment)
+		delta = string(fragment)
 	}
 	return st, delta, true
 }
 
 // HandleFunctionCallArgumentsDone applies a
 // response.function_call_arguments.done event's authoritative full-arguments
-// string, overriding whatever deltas were accumulated so far, resolving
-// call_id via item_id when needed. ok is false when the event carried no
-// resolvable call_id -- the caller should pass the raw payload through.
-func (acc *responsesOutputAccumulator) HandleFunctionCallArgumentsDone(payload map[string]any) (state *responsesToolState, ok bool) {
+// bytes, overriding whatever deltas were accumulated so far, resolving
+// call_id via item_id when needed. eventData preserves bytes the decoded
+// payload string coerced; capture or unescape failure falls back to that
+// string. ok is false when the event carried no resolvable call_id -- the
+// caller should pass the raw payload through.
+func (acc *responsesOutputAccumulator) HandleFunctionCallArgumentsDone(payload map[string]any, eventData []byte) (state *responsesToolState, ok bool) {
 	argsStr, _ := payload["arguments"].(string)
 	callID, _ := payload["call_id"].(string)
 	itemID, _ := payload["item_id"].(string)
@@ -163,6 +185,12 @@ func (acc *responsesOutputAccumulator) HandleFunctionCallArgumentsDone(payload m
 	}
 	if argsStr != "" {
 		st.args.Reset()
+		if rawArgs, rawOK := captureResponsesArgumentsDoneRaw(eventData); rawOK && rawArgs != nil {
+			if content, err := protocolhttp.RawStringContent(rawArgs); err == nil {
+				st.args.Write(content)
+				return st, true
+			}
+		}
 		st.args.WriteString(argsStr)
 	}
 	return st, true
@@ -182,7 +210,7 @@ func (acc *responsesOutputAccumulator) HandleFunctionCallArgumentsDone(payload m
 // (rawItem is non-nil, not appended) -- callers distinguish the two by
 // checking rawItem's own "type" field, matching the two different
 // live-stream fallbacks (best-effort end-of-text vs. raw passthrough).
-func (acc *responsesOutputAccumulator) HandleOutputItemDone(payload map[string]any) (rawItem map[string]any, state *responsesToolState, argsStr string, ok bool) {
+func (acc *responsesOutputAccumulator) HandleOutputItemDone(payload map[string]any, eventData []byte) (rawItem map[string]any, state *responsesToolState, argsStr string, ok bool) {
 	itemAny := payload["item"]
 	if itemAny == nil {
 		itemAny = payload["output_item"]
@@ -191,15 +219,21 @@ func (acc *responsesOutputAccumulator) HandleOutputItemDone(payload map[string]a
 	if !mapOK {
 		return nil, nil, "", false
 	}
+	rawItemToken := captureResponsesOutputItemRaw(eventData)
 	it, _ := item["type"].(string)
 	if it != "function_call" {
-		acc.output = append(acc.output, item)
+		acc.appendOutput(item, rawItemToken)
 		return item, nil, "", false
 	}
 	callID, _ := item["call_id"].(string)
 	itemID, _ := item["id"].(string)
 	name, _ := item["name"].(string)
 	argsStr, _ = item["arguments"].(string)
+	if rawArgs, rawOK := captureResponsesItemArgsRaw(rawItemToken); rawOK && rawArgs != nil {
+		if content, err := protocolhttp.RawStringContent(rawArgs); err == nil {
+			argsStr = string(content)
+		}
+	}
 	if callID == "" && itemID != "" {
 		callID = acc.itemToCallID[itemID]
 	}
@@ -222,13 +256,13 @@ func (acc *responsesOutputAccumulator) HandleOutputItemDone(payload map[string]a
 	if argsStr == "" {
 		argsStr = st.args.String()
 	}
-	acc.output = append(acc.output, map[string]any{
+	acc.appendOutput(map[string]any{
 		"type":      "function_call",
 		"call_id":   st.id,
 		"id":        st.itemID,
 		"name":      st.name,
 		"arguments": argsStr,
-	})
+	}, rawItemToken)
 	return item, st, argsStr, true
 }
 
@@ -433,7 +467,7 @@ func (p *Protocol) decodeStream(sctx context.Context, cancel context.CancelFunc,
 				}
 				reasoningStarted = true
 			case "response.function_call_arguments.delta":
-				st, delta, ok := acc.HandleFunctionCallArgumentsDelta(payload)
+				st, delta, ok := acc.HandleFunctionCallArgumentsDelta(payload, ev.Data)
 				if !ok {
 					// Can't map reliably; pass through.
 					s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: payload})
@@ -447,11 +481,11 @@ func (p *Protocol) decodeStream(sctx context.Context, cancel context.CancelFunc,
 				tc := llm.ToolCallData{ID: st.id, ItemID: st.itemID, Name: st.name, Arguments: []byte(delta), Type: "function"}
 				s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallDelta, ToolCall: &tc})
 			case "response.function_call_arguments.done":
-				if _, ok := acc.HandleFunctionCallArgumentsDone(payload); !ok {
+				if _, ok := acc.HandleFunctionCallArgumentsDone(payload, ev.Data); !ok {
 					s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: payload})
 				}
 			case "response.output_item.done":
-				rawItem, st, argsStr, ok := acc.HandleOutputItemDone(payload)
+				rawItem, st, argsStr, ok := acc.HandleOutputItemDone(payload, ev.Data)
 				switch {
 				case ok:
 					if !st.started {
@@ -483,8 +517,13 @@ func (p *Protocol) decodeStream(sctx context.Context, cancel context.CancelFunc,
 				if rawResp == nil {
 					rawResp = payload
 				}
-				built := fromResponses(rawResp, req.Model)
-				settleResponsesTerminalOutput(&built, rawResp, acc.Output())
+				// Extract the raw response object bytes from ev.Data for
+				// byte-faithful argument capture (the lossy map has already
+				// coerced invalid UTF-8). When the response is nested under
+				// "response", extract that sub-object's raw bytes.
+				respBody := extractResponseObjectRaw(ev.Data)
+				built := fromResponses(rawResp, req.Model, respBody)
+				settleResponsesTerminalOutput(&built, rawResp, acc.Output(), acc.RawOutput())
 				built.Provider = res.Instance
 				p.stampResponseIDHash(sctx, &built)
 				llm.StampEndpointURL(&built, r.EndpointURL, r.Material)
@@ -522,4 +561,74 @@ func (p *Protocol) decodeStream(sctx context.Context, cancel context.CancelFunc,
 		},
 	}
 	runner.Run(sctx)
+}
+
+// captureResponsesDeltaRaw decodes an SSE event's raw data with a focused
+// struct that captures the selected fragment as json.RawMessage (the string
+// token) rather than string, preserving bytes that json.Unmarshal into string
+// would coerce. It mirrors HandleFunctionCallArgumentsDelta's field order:
+// prefer a non-empty string delta, else use arguments. Returns (nil, false) if
+// the focused decode fails.
+func captureResponsesDeltaRaw(eventData []byte) (json.RawMessage, bool) {
+	var focused struct {
+		Delta     json.RawMessage `json:"delta"`
+		Arguments json.RawMessage `json:"arguments"`
+	}
+	if err := json.Unmarshal(eventData, &focused); err != nil {
+		return nil, false
+	}
+	var delta string
+	if len(focused.Delta) > 0 && json.Unmarshal(focused.Delta, &delta) == nil && delta != "" {
+		return focused.Delta, true
+	}
+	return focused.Arguments, true
+}
+
+// captureResponsesArgumentsDoneRaw captures an arguments.done event's
+// authoritative string token without decoding it through a Go string first.
+func captureResponsesArgumentsDoneRaw(eventData []byte) (json.RawMessage, bool) {
+	var focused struct {
+		Arguments json.RawMessage `json:"arguments"`
+	}
+	if err := json.Unmarshal(eventData, &focused); err != nil {
+		return nil, false
+	}
+	return focused.Arguments, true
+}
+
+// captureResponsesOutputItemRaw extracts the raw item token from an
+// output_item.done event, accepting both documented field spellings used by
+// the decoded fallback above. The token remains aligned with the accumulated
+// decoded item so terminal-empty settlement can preserve argument bytes.
+func captureResponsesOutputItemRaw(eventData []byte) json.RawMessage {
+	var focused struct {
+		Item       json.RawMessage `json:"item"`
+		OutputItem json.RawMessage `json:"output_item"`
+	}
+	if err := json.Unmarshal(eventData, &focused); err != nil {
+		return nil
+	}
+	if len(focused.Item) > 0 {
+		return focused.Item
+	}
+	return focused.OutputItem
+}
+
+// extractResponseObjectRaw extracts the raw bytes of the "response" object
+// from a response.completed SSE event. When the payload nests the response
+// under "response", that sub-object's raw JSON is returned; when the
+// payload IS the response, the full event data is returned. Returns nil
+// when extraction fails — the caller falls back to the lossy map path.
+func extractResponseObjectRaw(eventData []byte) []byte {
+	var focused struct {
+		Response json.RawMessage `json:"response"`
+	}
+	if err := json.Unmarshal(eventData, &focused); err != nil {
+		return nil
+	}
+	if len(focused.Response) > 0 {
+		return focused.Response
+	}
+	// No "response" field — the payload itself is the response object.
+	return eventData
 }

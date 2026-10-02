@@ -47,8 +47,8 @@ func (p *Protocol) Complete(ctx context.Context, req llm.Request, res registry.R
 		return llm.Response{}, err
 	}
 	call := p.completionCall("chat.completions", http.MethodPost, protocolhttp.URL(res, res.Transport.Endpoint), body, req, res)
-	return protocolhttp.Complete(ctx, call, func(raw map[string]any) (llm.Response, error) {
-		return fromChatCompletionResponse(raw, res.Caps.FinishReasonMap)
+	return protocolhttp.Complete(ctx, call, func(r *protocolhttp.Result) (llm.Response, error) {
+		return fromChatCompletionResponse(r.Raw, res.Caps.FinishReasonMap, r.Body)
 	})
 }
 

@@ -105,8 +105,8 @@ func FuzzProtocolHTTPExchange(f *testing.F) {
 		if armSel%2 == 0 {
 			var decodeCalled bool
 			var gotRaw map[string]any
-			resp, err := Complete(ctx, newCall("test.complete"), func(raw map[string]any) (llm.Response, error) {
-				decodeCalled, gotRaw = true, raw
+			resp, err := Complete(ctx, newCall("test.complete"), func(r *Result) (llm.Response, error) {
+				decodeCalled, gotRaw = true, r.Raw
 				return llm.Response{Model: "m"}, nil
 			})
 			switch {
