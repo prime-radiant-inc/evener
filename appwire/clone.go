@@ -208,6 +208,7 @@ func CloneEvenerDiagnostics(d *EvenerDiagnostics) *EvenerDiagnostics {
 		return nil
 	}
 	cp := *d
+	cp.Commands = slices.Clone(d.Commands)
 	cp.Tools = append([]EvenerToolInfo(nil), d.Tools...)
 	cp.MCP = cloneMCPServers(d.MCP)
 	cp.Skills = append([]EvenerSkillInfo(nil), d.Skills...)

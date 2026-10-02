@@ -564,6 +564,11 @@ export interface EvenerDelegateParams {
 }
 
 export interface EvenerDiagnostics {
+  /**
+   * Commands is this owning session's loaded, path-free command inventory.
+   * Nil is unreported, an explicit empty slice is an authoritative empty inventory.
+   */
+  commands?: CommandDescriptor[];
   tools?: EvenerToolInfo[];
   mcp?: EvenerMCPServerInfo[];
   skills?: EvenerSkillInfo[];

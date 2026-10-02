@@ -710,7 +710,9 @@ test("goal replacement preserves both recovery rows while a merged source discar
 test("goal replacement closes slash completion and resets selection", async () => {
   useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG });
   const user = userEvent.setup();
-  await mountComposer("ref_a", { evener: currentWorkEvener({ goal: true }) });
+  await mountComposer("ref_a", {
+    evener: { ...currentWorkEvener({ goal: true }), diagnostics: { commands: REVIEW_RELEASE_CATALOG } },
+  });
   const editor = textarea();
   await user.type(editor, "hi /re");
   await user.keyboard("{ArrowDown}");
@@ -4938,7 +4940,12 @@ test("clicking the attach button triggers the hidden file input", async () => {
 test('"/" at the start of an empty composer types a literal slash and opens the INLINE menu, not the modal palette', async () => {
   useCommandCatalog.setState({ commands: [{ name: "review", description: "review the diff" }] });
   const user = userEvent.setup();
-  await mountComposer("ref_slash");
+  await mountComposer("ref_slash", {
+    evener: {
+      ...testThread("ref_slash").evener,
+      diagnostics: { commands: [{ name: "review", description: "review the diff" }] },
+    },
+  });
 
   const editor = textarea();
   await user.type(editor, "/");
@@ -5099,7 +5106,9 @@ test("committing a skill during an IME composition leaves the menu open rather t
 test("a trailing slash token opens a completion menu merging session-scoped built-ins with the plugin command catalog", async () => {
   useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG });
   const user = userEvent.setup();
-  await mountComposer("ref_slash3");
+  await mountComposer("ref_slash3", {
+    evener: { ...testThread("ref_slash3").evener, diagnostics: { commands: REVIEW_RELEASE_CATALOG } },
+  });
 
   await user.type(textarea(), "hi /re");
 
@@ -5117,15 +5126,18 @@ test("a trailing slash token opens a completion menu merging session-scoped buil
   ]);
 });
 
-// The reported bug: a fresh browser never saw a user-global command like /par
-// in this menu, because nothing loaded the catalog until the palette had been
-// opened once on a session page. No useCommandCatalog.setState seeds the
-// catalog here - the connection-driven load must carry it from the hub.
-test("a user command from the hub catalog autocompletes without a palette open", async () => {
+// A fresh browser reads the owning session's user command through thread/read,
+// without needing to open the controller palette.
+test("a user command from the owning session autocompletes without a palette open", async () => {
   const user = userEvent.setup();
   await mountComposerWithHandle(
     "ref_slash_par",
-    {},
+    {
+      evener: {
+        ...testThread("ref_slash_par").evener,
+        diagnostics: { commands: [{ name: "par", description: "adversarial review", source: "user" }] },
+      },
+    },
     {
       prepare: (fake) =>
         fake.on("evener/command/list", () => ({
@@ -5154,7 +5166,10 @@ test("slash completion hides excluded plugin commands but keeps loaded plugin co
   await mountComposer("ref_slash_plugins", {
     evener: {
       ...testThread("ref_slash_plugins").evener,
-      diagnostics: { plugins: [{ name: "loaded", skillCount: 0, agentCount: 0, hookCount: 0, mcpCount: 0 }] },
+      diagnostics: {
+        commands: [{ name: "review", description: "review the diff", source: "plugin", pluginName: "loaded" }],
+        plugins: [{ name: "loaded", skillCount: 0, agentCount: 0, hookCount: 0, mcpCount: 0 }],
+      },
     },
   });
 
@@ -5174,7 +5189,7 @@ test("slash completion keeps built-ins while hiding plugin commands for an expli
   await mountComposer("ref_slash_empty", {
     evener: {
       ...testThread("ref_slash_empty").evener,
-      diagnostics: { plugins: [] },
+      diagnostics: { commands: [], plugins: [] },
     },
   });
 
@@ -5185,6 +5200,18 @@ test("slash completion keeps built-ins while hiding plugin commands for an expli
     expect.stringContaining("/project"),
   ]);
 });
+
+test.each([undefined, []])(
+  "live missing or empty owner inventory never falls back to controller user commands %s",
+  async (commands) => {
+    useCommandCatalog.setState({ commands: [{ name: "controller-only", source: "user" }] });
+    const ref = "ref_owner_absent";
+    await mountComposer(ref, { evener: { ...testThread(ref).evener, diagnostics: { commands } } });
+    const user = userEvent.setup();
+    await user.type(textarea(), "/controller-only");
+    expect(screen.queryByTestId("composer-slash-menu")).toBeNull();
+  },
+);
 
 test("skill completions keep indivisible chips in the sentence and submit both references", async () => {
   const user = userEvent.setup();
@@ -5264,7 +5291,12 @@ test.each([true, false])("explicit commands persist through remount and respect 
   const ref = "ref_atomic_command";
   useCommandCatalog.setState({ commands: [{ name: "audit", source: "user", description: "command intent" }] });
   const options = {
-    evener: { ref, capabilities: { ...FULL_CAPABILITIES, commandInput: supported }, queue: { revision: 0 } },
+    evener: {
+      ref,
+      capabilities: { ...FULL_CAPABILITIES, commandInput: supported },
+      queue: { revision: 0 },
+      diagnostics: { commands: [{ name: "audit", source: "user", description: "command intent" }] },
+    },
   };
   await mountComposer(ref, options);
   await user.type(textarea(), "Before /aud");
@@ -5671,7 +5703,9 @@ test("a selected skill the catalog no longer reports says so in its tooltip", as
 test("a token with no catalog match shows no menu", async () => {
   useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG });
   const user = userEvent.setup();
-  await mountComposer("ref_slash6");
+  await mountComposer("ref_slash6", {
+    evener: { ...testThread("ref_slash6").evener, diagnostics: { commands: REVIEW_RELEASE_CATALOG } },
+  });
 
   await user.type(textarea(), "hi /zzz");
 
@@ -5681,7 +5715,9 @@ test("a token with no catalog match shows no menu", async () => {
 test("ArrowDown/ArrowUp move the highlighted option and wrap at both ends", async () => {
   useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG });
   const user = userEvent.setup();
-  await mountComposer("ref_slash7");
+  await mountComposer("ref_slash7", {
+    evener: { ...testThread("ref_slash7").evener, diagnostics: { commands: REVIEW_RELEASE_CATALOG } },
+  });
   await user.type(textarea(), "hi /re");
   // Four matches: three contiguous beginnings, then one fuzzy match
   // (/drain-as-steer would be a second, but it is unavailable on an idle
@@ -5704,7 +5740,9 @@ test("ArrowDown/ArrowUp move the highlighted option and wrap at both ends", asyn
 test("Tab commits the highlighted option: splices /name<space> at the token start, caret after the space", async () => {
   useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG });
   const user = userEvent.setup();
-  await mountComposer("ref_slash8");
+  await mountComposer("ref_slash8", {
+    evener: { ...testThread("ref_slash8").evener, diagnostics: { commands: REVIEW_RELEASE_CATALOG } },
+  });
   const editor = textarea();
   await user.type(editor, "hi /re");
   // index 0 is the built-in /reasoning-effort, 1 /review, 2 /release.
@@ -5733,7 +5771,10 @@ test("committing a plugin-sourced catalog entry inserts the QUALIFIED /plugin:na
   await mountComposer("ref_slash_qualified", {
     evener: {
       ...testThread("ref_slash_qualified").evener,
-      diagnostics: { plugins: [{ name: "p", skillCount: 0, agentCount: 0, hookCount: 0, mcpCount: 0 }] },
+      diagnostics: {
+        commands: [{ name: "review", description: "review the diff", source: "plugin", pluginName: "p" }],
+        plugins: [{ name: "p", skillCount: 0, agentCount: 0, hookCount: 0, mcpCount: 0 }],
+      },
     },
   });
   const editor = textarea();
@@ -5748,7 +5789,10 @@ test("committing a plugin-sourced catalog entry inserts the QUALIFIED /plugin:na
 test("Enter commits the highlighted option and does NOT fall through to the composer's send routing", async () => {
   useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG });
   const user = userEvent.setup();
-  const fake = await mountComposer("ref_slash9", { status: { type: "idle" } });
+  const fake = await mountComposer("ref_slash9", {
+    status: { type: "idle" },
+    evener: { ...testThread("ref_slash9").evener, diagnostics: { commands: REVIEW_RELEASE_CATALOG } },
+  });
   fake.on("turn/start", (params) => ({
     receipt: {
       clientMutationId: params.clientMutationId,
@@ -5770,7 +5814,9 @@ test("Enter commits the highlighted option and does NOT fall through to the comp
 test("Escape closes the menu without clearing the draft, and typing further reopens it", async () => {
   useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG });
   const user = userEvent.setup();
-  await mountComposer("ref_slash10");
+  await mountComposer("ref_slash10", {
+    evener: { ...testThread("ref_slash10").evener, diagnostics: { commands: REVIEW_RELEASE_CATALOG } },
+  });
   const editor = textarea();
   await user.type(editor, "hi /re");
   expect(screen.queryByTestId("composer-slash-menu")).not.toBeNull();
@@ -5789,7 +5835,9 @@ test("Escape closes the menu without clearing the draft, and typing further reop
 test("blur closes the menu", async () => {
   useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG });
   const user = userEvent.setup();
-  await mountComposer("ref_slash11");
+  await mountComposer("ref_slash11", {
+    evener: { ...testThread("ref_slash11").evener, diagnostics: { commands: REVIEW_RELEASE_CATALOG } },
+  });
   const editor = textarea();
   await user.type(editor, "hi /re");
   expect(screen.queryByTestId("composer-slash-menu")).not.toBeNull();
@@ -5802,7 +5850,9 @@ test("blur closes the menu", async () => {
 test("clicking an option commits it without ever blurring the textarea", async () => {
   useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG });
   const user = userEvent.setup();
-  await mountComposer("ref_slash12");
+  await mountComposer("ref_slash12", {
+    evener: { ...testThread("ref_slash12").evener, diagnostics: { commands: REVIEW_RELEASE_CATALOG } },
+  });
   const editor = textarea();
   await user.type(editor, "hi /re");
   // index 0 is the built-in /reasoning-effort, 1 /review, 2 /release.
@@ -5817,7 +5867,9 @@ test("clicking an option commits it without ever blurring the textarea", async (
 test("the open menu wires listbox/option roles and aria-activedescendant on the textarea", async () => {
   useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG });
   const user = userEvent.setup();
-  await mountComposer("ref_slash13");
+  await mountComposer("ref_slash13", {
+    evener: { ...testThread("ref_slash13").evener, diagnostics: { commands: REVIEW_RELEASE_CATALOG } },
+  });
   const editor = textarea();
   await user.type(editor, "hi /re");
 

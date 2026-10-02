@@ -99,6 +99,14 @@ project FIFO-aligned `mentions` beside full text and canonical name lists, so a
 fresh client's edit restores the chosen kind without selecting duplicate prose.
 Attachment marker translation shifts locations at the submission boundary.
 
+Live completion reads `thread.evener.diagnostics.commands` from the owning
+session's `thread/read` response. It contains path-free descriptors for that
+session's loaded plugin, project and user commands, resolved for its cwd, host
+and harness. An absent field means unreported inventory; `[]` means an
+authoritative empty inventory. Neither permits controller catalog fallback.
+`evener/command/list` remains controller-wide discovery for the separate palette;
+`evener/spawn/slashCatalog` supplies target-scoped pre-session discovery.
+
 ## Request methods
 
 `Scope` is which binaries expose the method: **both** (hub and daemon), **hub**

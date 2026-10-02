@@ -607,6 +607,12 @@ cwd wins.
   completion stages an atomic empty-argument invocation. Leaving a leading
   `/name args` as typed text retains normal command parsing; unmatched inline
   mentions are prose. The launcher reserves its built-in invocation names.
+- Live inline completion uses the owning session's loaded command inventory,
+  including project commands for its cwd, host and harness. `thread/read` exposes
+  that path-free inventory as `thread.evener.diagnostics.commands`; absent or
+  empty inventory never borrows controller commands. Switching sessions replaces
+  the offered rows. The separate Mod+K palette retains controller-wide discovery,
+  while the launcher discovers the target before creation.
 - Standalone skills are not command-file entries in the command catalog, but an
   exact `/skill-name` token is recognized by the session when that skill is
   loaded and activates the skill body. Skill names and descriptions are shown

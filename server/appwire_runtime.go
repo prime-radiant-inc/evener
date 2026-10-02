@@ -11,6 +11,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -2520,6 +2521,7 @@ func (s *Server) appThreadWithDiagnosticsLocked(diagnostics func(DetailedStatus)
 
 func appDiagnosticsFromDetailedStatus(ds DetailedStatus) *appwire.EvenerDiagnostics {
 	out := &appwire.EvenerDiagnostics{}
+	out.Commands = slices.Clone(ds.Commands)
 	if ds.Plugins != nil {
 		out.Plugins = make([]appwire.EvenerPluginInfo, 0, len(ds.Plugins))
 	}

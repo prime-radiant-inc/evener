@@ -323,6 +323,16 @@ test("hydrateThread leaves diagnostics unavailable when the wire omits them", ()
   expect(testHydrate().diagnostics).toBeUndefined();
 });
 
+test("hydrateThread retains and copies the owning command inventory, including authoritative empty", () => {
+  const commands = [{ name: "project-only", source: "project", description: "owner" }];
+  const model = testHydrate({ evener: { diagnostics: { commands } } });
+  expect(model.diagnostics?.commands).toEqual(commands);
+  commands[0]!.description = "changed source";
+  expect(model.diagnostics?.commands?.[0]?.description).toBe("owner");
+  expect(testHydrate({ evener: { diagnostics: { commands: [] } } }).diagnostics?.commands).toEqual([]);
+  expect(testHydrate({ evener: { diagnostics: {} } }).diagnostics?.commands).toBeUndefined();
+});
+
 test("hydrateThread retains canonical skill descriptors", () => {
   const model = testHydrate({
     evener: {

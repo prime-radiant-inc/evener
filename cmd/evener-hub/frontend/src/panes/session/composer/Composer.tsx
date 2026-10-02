@@ -43,7 +43,6 @@ import {
   type SlashMenuItem,
   type SlashToken,
   sessionActionError,
-  sessionPluginNames,
   spliceSlashCommand,
   type ThreadModel,
 } from "@evener/appwire-client";
@@ -61,11 +60,10 @@ import {
 } from "react";
 import { activitySidebarStore } from "../../../shell/activitybar/activitySidebarStore";
 import type { PaletteRunContext, ScopedCommand } from "../../../shell/palette/commands";
-import { sessionBuiltinCommands, visibleCatalogCommands } from "../../../shell/palette/commands";
+import { sessionBuiltinCommands } from "../../../shell/palette/commands";
 import type { SessionMenuTurnVerbs } from "../../../shell/sessionMenu/SessionMenu";
 import { useIsMobile } from "../../../shell/useIsMobile";
 import { useMountAutofocus } from "../../../shell/useMountAutofocus";
-import { useCommandCatalog } from "../../../stores/commandCatalog";
 import {
   controlsFor,
   isLocalRecoveryFenced,
@@ -382,20 +380,16 @@ export function Composer({ ref, focused }: ComposerProps) {
   // token itself changes (new match, or the query narrowed/widened) rather
   // than persisted across it - an index into a list that just changed shape
   // is not a meaningful position to keep.
-  const slashCatalog = useCommandCatalog((s) => s.commands);
   const [slashToken, setSlashToken] = useState<SlashToken | null>(null);
   const [slashHighlighted, setSlashHighlighted] = useState(0);
   // The composer's own single command line (2026-08-14: "the composer is
   // where you act on this session"): the session-scoped BUILT-IN registry
   // (shell/palette/commands.ts's sessionBuiltinCommands, unavailableReason-
-  // resolved against THIS ref) merged with the plugin catalog
+  // resolved against THIS ref) merged with the owning session's loaded inventory
   // (slashCompletion.ts's mergeSlashCommands) - one list, one menu, whether a
-  // row's provenance is a built-in or a plugin.
-  const activePluginNames = useMemo(() => sessionPluginNames(model?.diagnostics), [model?.diagnostics]);
-  const visibleSlashCatalog = useMemo(
-    () => visibleCatalogCommands(slashCatalog, activePluginNames),
-    [activePluginNames, slashCatalog],
-  );
+  // row's provenance is a built-in, plugin, project or user command. The model
+  // is keyed by ref, so loading a different target never borrows old/global rows.
+  const visibleSlashCatalog = model?.diagnostics?.commands ?? [];
   const sessionBuiltins = sessionBuiltinCommands({ sessionRef: ref, onPage: "session" });
   const slashMenuCatalog = mergeSlashCommands(sessionBuiltins, visibleSlashCatalog, model?.skills ?? []);
   // The menu is only ever open when a token matched AND the merged catalog

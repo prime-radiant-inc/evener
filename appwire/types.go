@@ -1501,6 +1501,9 @@ type EvenerHookEventStatus struct {
 }
 
 type EvenerDiagnostics struct {
+	// Commands is this owning session's loaded, path-free command inventory.
+	// Nil is unreported, an explicit empty slice is an authoritative empty inventory.
+	Commands   []CommandDescriptor     `json:"commands,omitzero"`
 	Tools      []EvenerToolInfo        `json:"tools,omitempty"`
 	MCP        []EvenerMCPServerInfo   `json:"mcp,omitempty"`
 	Skills     []EvenerSkillInfo       `json:"skills,omitempty"`
