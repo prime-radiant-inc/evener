@@ -623,6 +623,7 @@ func EmitCatalog() string {
 		methodNames[i] = m.name
 	}
 	writeNameCatalog(&b, "METHOD_NAMES", "MethodName", methodNames)
+	writeNameCatalog(&b, "HOST_REQUEST_METHODS", "HostRequestMethod", appwire.HostRequestMethodNames())
 
 	notificationNames := make([]string, len(notifications))
 	for i, n := range notifications {

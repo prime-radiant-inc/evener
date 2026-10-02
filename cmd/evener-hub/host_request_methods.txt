@@ -9,9 +9,10 @@
 # compares it with this fixture in both directions, so changing the SDK subset
 # alone cannot silently change the product contract.
 #
-# app_host_admin_test.go checks that every fixture entry is in the proxy's
-# allow-list and is actually forwarded. The SDK's adjacent routing unit tests
-# exercise the shared helper without reading this app-owned fixture.
+# app_host_admin_test.go checks that every fixture entry is in AppWire's
+# allow-list (appwire/host_request.go) and is actually forwarded by the proxy.
+# The SDK's adjacent routing unit tests exercise the shared helper without
+# reading this app-owned fixture.
 #
 # The Go allow-list is a SUPERSET of this list: it also carries the remote
 # settings panes' provider/launch/marketplace/plugin/auth methods, which the
