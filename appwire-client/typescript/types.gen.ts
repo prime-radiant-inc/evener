@@ -1182,12 +1182,12 @@ export interface HostListResponse {
 }
 
 export interface HostMutationAmbiguous {
-  outcome: string;
+  outcome: "ambiguous";
   observedRow: HostRow;
 }
 
 export interface HostMutationCollisionDropped {
-  outcome: string;
+  outcome: "collision-dropped";
   droppedEntry: HostRow;
   winningFingerprint: string;
   host?: HostRow;
@@ -1195,24 +1195,24 @@ export interface HostMutationCollisionDropped {
 }
 
 export interface HostMutationCommitted {
-  outcome: string;
+  outcome: "committed";
   host: HostRow;
 }
 
 export interface HostMutationCommittedRemoved {
-  outcome: string;
+  outcome: "committed";
   host: RemovedRow;
 }
 
 export interface HostMutationTeardownFailure {
-  outcome: string;
+  outcome: "committed-with-teardown-failure";
   seam: string;
   remnantId: string;
   host: HostRow;
 }
 
 export interface HostMutationTeardownFailureRemoved {
-  outcome: string;
+  outcome: "committed-with-teardown-failure";
   seam: string;
   remnantId: string;
   host: RemovedRow;
@@ -4863,11 +4863,11 @@ export interface MethodTypes {
   "evener/delegate/stop": { params: DelegateStopParams; result: DelegateStopResponse };
   "evener/host/request": { params: HostRequestParams; result: HostForwardedResult };
   "evener/host/attach": { params: HostAttachParams; result: HostAttachResponse };
-  "evener/host/add": { params: HostAddParams; result: HostMutationCommitted | HostMutationCommittedRemoved | HostMutationTeardownFailure | HostMutationTeardownFailureRemoved | HostMutationCollisionDropped | HostMutationAmbiguous };
+  "evener/host/add": { params: HostAddParams; result: HostMutationCommitted | HostMutationTeardownFailure | HostMutationCollisionDropped | HostMutationAmbiguous };
   "evener/host/list": { params: EmptyParams; result: HostListResponse };
   "evener/host/status": { params: HostStatusParams; result: HostStatusResponse };
-  "evener/host/remove": { params: HostRemoveParams; result: HostMutationCommitted | HostMutationCommittedRemoved | HostMutationTeardownFailure | HostMutationTeardownFailureRemoved | HostMutationCollisionDropped | HostMutationAmbiguous };
-  "evener/host/update": { params: HostUpdateParams; result: HostMutationCommitted | HostMutationCommittedRemoved | HostMutationTeardownFailure | HostMutationTeardownFailureRemoved | HostMutationCollisionDropped | HostMutationAmbiguous };
+  "evener/host/remove": { params: HostRemoveParams; result: HostMutationCommittedRemoved | HostMutationTeardownFailureRemoved | HostMutationCollisionDropped };
+  "evener/host/update": { params: HostUpdateParams; result: HostMutationCommitted | HostMutationTeardownFailure | HostMutationCollisionDropped };
   "evener/host/teardown-retry": { params: HostTeardownRetryParams; result: HostTeardownRetryCompleteLive | HostTeardownRetryCompleteRemoved | HostTeardownRetryClearedLive | HostTeardownRetryClearedRemoved | HostTeardownRetryFailedLive | HostTeardownRetryFailedRemoved };
   "evener/host/teardown-recover": { params: HostTeardownRecoverParams; result: HostTeardownRecoverResult };
   "evener/host/plan": { params: HostPlanParams; result: HostPlanPlanned | HostPlanNoToken };
