@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -372,6 +373,9 @@ func emitInterface(name string, t reflect.Type) string {
 	for _, f := range rawFieldsOf(t) {
 		writeFieldDoc(&b, f.doc)
 		tsType := typeExpr(f.elemType)
+		if literal, ok := appwire.StringDiscriminators[t][f.json]; ok {
+			tsType = strconv.Quote(literal)
+		}
 		if f.nullable && !f.optional {
 			tsType += " | null"
 		}

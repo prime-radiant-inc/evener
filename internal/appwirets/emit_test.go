@@ -1040,3 +1040,26 @@ func TestSessionActivityEnumTypes(t *testing.T) {
 		}
 	}
 }
+
+func TestHostMutationDiscriminatorLiterals(t *testing.T) {
+	for _, tc := range []struct {
+		arm     any
+		outcome appwire.HostMutationOutcome
+	}{
+		{appwire.HostMutationCommitted{}, appwire.HostMutationOutcomeCommitted},
+		{appwire.HostMutationCommittedRemoved{}, appwire.HostMutationOutcomeCommitted},
+		{appwire.HostMutationTeardownFailure{}, appwire.HostMutationOutcomeTeardownFailure},
+		{appwire.HostMutationTeardownFailureRemoved{}, appwire.HostMutationOutcomeTeardownFailure},
+		{appwire.HostMutationCollisionDropped{}, appwire.HostMutationOutcomeCollisionDropped},
+		{appwire.HostMutationAmbiguous{}, appwire.HostMutationOutcomeAmbiguous},
+	} {
+		typ := reflect.TypeOf(tc.arm)
+		t.Run(typ.Name(), func(t *testing.T) {
+			got := emitInterface(typ.Name(), typ)
+			want := fmt.Sprintf("outcome: %q;", tc.outcome)
+			if !strings.Contains(got, want) {
+				t.Fatalf("generated arm lacks %s:\n%s", want, got)
+			}
+		})
+	}
+}
