@@ -3,6 +3,9 @@ package appsource
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
+	"reflect"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
@@ -98,29 +101,73 @@ func TestLocalDaemonMutationCallErrorNonWireError(t *testing.T) {
 }
 
 func TestLocalDaemonMutationCallErrorSessionUnavailable(t *testing.T) {
-	// A SessionUnavailable error should be mapped to InternalError with
-	// MutationOutcomeUnknown
+	// A delivered application verdict does not establish response loss.
 	err := appwire.SessionUnavailable("session gone")
 	mapped := localDaemonMutationCallError("mutation-1", err)
-	if mapped == nil {
-		t.Fatal("should not return nil")
+	if !reflect.DeepEqual(mapped, err) {
+		t.Fatalf("delivered SessionUnavailable changed: got %#v, want %#v", mapped, err)
 	}
-	var wire appwire.WireError
-	if !errors.As(mapped, &wire) {
-		t.Fatalf("mapped error should be a WireError, got %T: %v", mapped, mapped)
+}
+
+func TestLocalDaemonMutationCallErrorPreservesRefusalRegardlessOfDataShape(t *testing.T) {
+	data := appwire.ErrorData{
+		EvenerErrorInfo:  appwire.ErrorSessionUnavailable,
+		ClientMutationID: "original-id",
+		MutationOutcome:  appwire.MutationOutcomeNotAccepted,
+		RetryDisposition: appwire.RetryDispositionNone,
+		Cause:            "refused-before-acceptance",
 	}
-	if wire.Code != appwire.CodeInternalError {
-		t.Fatalf("expected CodeInternalError, got %d", wire.Code)
+	for _, tc := range []struct {
+		name string
+		data any
+	}{
+		{"typed", data},
+		{"decoded", map[string]any{
+			"evenerErrorInfo":  "sessionUnavailable",
+			"clientMutationId": "original-id",
+			"mutationOutcome":  "notAccepted",
+			"retryDisposition": "none",
+			"cause":            "refused-before-acceptance",
+			"daemonHint":       "refusal-detail",
+		}},
+		{"extended typed", struct {
+			appwire.ErrorData
+			DaemonHint string
+		}{data, "refusal-detail"}},
+	} {
+		for _, wrapped := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/wrapped=%t", tc.name, wrapped), func(t *testing.T) {
+				var original error = appwire.WireError{
+					Code:    appwire.CodeUnavailable,
+					Message: "session gone",
+					Data:    tc.data,
+				}
+				if wrapped {
+					original = fmt.Errorf("forward turn: %w", original)
+				}
+				got := localDaemonMutationCallError("forwarded-id", original)
+				if !reflect.DeepEqual(got, original) {
+					t.Fatalf("delivered refusal changed: got %#v, want %#v", got, original)
+				}
+			})
+		}
 	}
-	data, ok := wire.Data.(appwire.ErrorData)
-	if !ok {
-		t.Fatal("Data should be ErrorData")
-	}
-	if data.EvenerErrorInfo != appwire.ErrorMutationOutcomeUnknown {
-		t.Fatalf("expected ErrorMutationOutcomeUnknown, got %q", data.EvenerErrorInfo)
-	}
-	if data.ClientMutationID != "mutation-1" {
-		t.Fatalf("expected ClientMutationID 'mutation-1', got %q", data.ClientMutationID)
+}
+
+func TestLocalDaemonMutationCallErrorMapsTransportFailures(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{"raw", io.EOF},
+		{"wrapped raw", fmt.Errorf("write: %w", io.EOF)},
+		{"marked", appwire.TransportFailureError{WireError: appwire.InternalError("response lost")}},
+		{"wrapped marked", fmt.Errorf("read: %w", appwire.TransportFailureError{WireError: appwire.InternalError("response lost")})},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := localDaemonMutationCallError("lost-id", tc.err)
+			assertMutationOutcomeUnknownAutomatic(t, err, "lost-id")
+		})
 	}
 }
 
