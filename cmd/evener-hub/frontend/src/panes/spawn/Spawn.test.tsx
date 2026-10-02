@@ -8470,7 +8470,7 @@ test("a path marked invalid while local reaches the launch after switching host 
 // The discovery methods the spawn form's mount path issues for the selected
 // host. The on-demand methods (path completion/validation, dirs/create, recent
 // projects, the slash catalog, plugin preview) are covered by their own seams'
-// tests; stores/hostRouting.test.ts covers the whole spec set at the seam.
+// tests; appwire-client/typescript/hostRouting.test.ts covers the whole spec set at the seam.
 const MOUNT_DISCOVERY_METHODS = [
   "model/list",
   "evener/harnesses/list",

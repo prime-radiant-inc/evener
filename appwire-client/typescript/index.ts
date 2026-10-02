@@ -257,6 +257,8 @@ export {
   rootsFromText,
   rootsToText,
 } from "./hostMutations";
+export type { HostDependentDiscoveryMethod } from "./hostRouting";
+export { HOST_DEPENDENT_DISCOVERY_METHODS, hostRequest, isLocalHost, LOCAL_HOST, normalizeHost } from "./hostRouting";
 export { housekeepingAction } from "./housekeepingSteps";
 export type { HubOverviewClient, HubOverviewListener, HubOverviewState, HubOverviewStore } from "./hubOverview";
 export { createHubOverviewStore } from "./hubOverview";

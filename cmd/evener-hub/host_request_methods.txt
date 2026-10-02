@@ -4,27 +4,15 @@
 # non-empty line is one method name, spelled exactly as the AppWire catalog
 # spells it (appwire's Method* constants / the generated METHOD_NAMES).
 #
-# It exists because the two ends of this contract live in different languages
-# and were each pinned only against themselves:
+# appwire-client/typescript/hostRouting.ts exports the SDK discovery subset.
+# The browser integration test at frontend/src/stores/hostRouting.test.ts
+# compares it with this fixture in both directions, so changing the SDK subset
+# alone cannot silently change the product contract.
 #
-#   frontend  cmd/evener-hub/frontend/src/stores/hostRouting.ts's
-#             HOST_DEPENDENT_DISCOVERY_METHODS, with the shipped set asserted
-#             against a literal list in its own test file;
-#   Go        hostRequestMethods in appwire/host_request.go, with
-#             the allow-list asserted against the policy table in its own test
-#             file.
-#
-# A method deleted from either side therefore left the other side's tests green
-# while the browser kept forwarding — or stopped forwarding — a call the proxy
-# refuses with InvalidParams. Now each side answers to this list:
-#
-#   frontend  hostRouting.test.ts asserts the shipped set IS this list (both
-#             directions), so dropping a method from the product set fails even
-#             when its neighbouring literal is deleted with it;
-#   Go        app_host_admin_test.go asserts every method here is on the
-#             allow-list AND that hubHostAdminController.Request actually
-#             forwards it rather than refusing it, so removing one there fails
-#             even when the policy table is flipped to match.
+# app_host_admin_test.go checks that every fixture entry is in AppWire's
+# allow-list (appwire/host_request.go) and is actually forwarded by the proxy.
+# The SDK's adjacent routing unit tests exercise the shared helper without
+# reading this app-owned fixture.
 #
 # The Go allow-list is a SUPERSET of this list: it also carries the remote
 # settings panes' provider/launch/marketplace/plugin/auth methods, which the
