@@ -6495,11 +6495,7 @@ test("reset retires a ready scan before it can pin refs in the next runtime", as
 });
 
 describe("useThreadsStore.listTasks", () => {
-  // Wire-true shape: TaskListResponse.Data is `any` on the catalog
-  // (appwire/types.go:896-898) - server/server.go's SetTasksFunc doc
-  // comment says the registered function "should return a JSON-serializable
-  // slice (typically []task.Task)"; agent/task/task_store.go:54-74 is that
-  // struct. This fixture mirrors its real JSON field names verbatim.
+  // Fixtures use the task row's persisted snake_case wire fields.
   const TASKS_DATA = [
     { id: 1, type: "implement", description: "Wire up listModels/listTasks", prompt: "…", status: "done" },
     {

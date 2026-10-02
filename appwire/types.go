@@ -2706,7 +2706,10 @@ type TaskListParams struct {
 }
 
 type TaskListResponse struct {
-	Data any `json:"data"`
+	// Data is nil when task data is unavailable and non-nil (possibly empty)
+	// for an authoritative list. The nullable annotation preserves that
+	// distinction in the generated SDK without a pointer to the slice.
+	Data []Task `json:"data" appwire:"nullable"`
 }
 
 type JobsListParams struct {

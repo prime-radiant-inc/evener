@@ -1,26 +1,9 @@
-// Narrows TaskListResponse.data (types.gen.ts types it `unknown` -
-// the Go source (appwire/types.go:896-898) is `Data any`, so codegen has no
-// named struct to reflect) into a display-ready TaskRow[]. The real runtime
-// shape - confirmed by reading the daemon handler chain rather than
-// guessing, since the catalog itself says nothing - is a JSON array of
-// agent/task/task_store.go's Task struct (json tags: id/type/description/
-// prompt/status/depends_on/notes/reasoning_effort/insert/created_at/
-// updated_at/completed_at), always non-nil-but-possibly-empty for any
-// source that wires SetTasksFunc (every real evener daemon session does,
-// cmd/evener/serve.go:596) and unreachable (a rejected request, not a null
-// response) for a source that does not advertise task support. `data` is
-// `null`/`undefined` only when no tasksFn is registered
-// server-side (server/appwire_runtime.go:713-721) - an old daemon - which
-// this parser reports as `null` ("no data"), distinct from a real empty
-// list (`[]`, "zero tasks"). Shared by the web tasks panel and its store, the
-// transcript's task_list card, and native's tasks sheet and task list.
-//
-// created_at/updated_at/completed_at ARE carried (as createdAt/updatedAt/
-// completedAt): the 2026-08-09 panel redesign (docs/superpowers/specs/
-// 2026-08-09-task-list-ui-design.md) shows per-task recency and completion
-// times, which the legacy panel's field set predates; `insert` remains
-// intentionally uncarried because neither app has a consumer for it.
+// Validates untrusted task-list and task-tool payloads and adapts the shared
+// snake_case wire shape to display rows. Null is unavailable; [] is an
+// authoritative empty list. Tool mutation snapshots may add started/settled.
+// The insert template marker has no display consumer and is not projected.
 
+import type { Task } from "./types.gen";
 import { asJsonObject } from "./watchRows";
 
 export type TaskStatus = "open" | "in_progress" | "done" | "cancelled";
@@ -32,11 +15,7 @@ export interface TaskCounts {
   remaining?: number;
 }
 
-export interface TaskRow {
-  id: number;
-  type: string;
-  description: string;
-  prompt: string;
+export interface TaskRow extends Pick<Task, "id" | "type" | "description" | "prompt"> {
   status: TaskStatus;
   dependsOn?: number[];
   notes?: string[];

@@ -2,24 +2,8 @@
 import { expect, test } from "vitest";
 import { parseTaskListData, taskAggregateLabel } from "./taskListData";
 
-// parseTaskListData narrows TaskListResponse.data (typed `unknown` on the
-// wire - appwire/types.go:896-898, `TaskListResponse{Data any}`) into a
-// display-ready TaskRow[]. Ground truth for the shape, since the catalog
-// itself only says `any`:
-//   - agent/task/task_store.go:54-79 (Task struct, json tags): id/type/
-//     description/prompt/status/depends_on/notes/reasoning_effort/insert/
-//     created_at/updated_at/completed_at.
-//   - agent/task/task_store.go:28-36 (TaskStatus): open/in_progress/done/
-//     cancelled.
-//   - agent/session_tools.go:957-959 (Session.Tasks -> TaskStore.View,
-//     always a non-nil, possibly-empty []Task).
-//   - server/server.go:625-631 (SetTasksFunc) + cmd/evener/serve.go:596
-//     (wired unconditionally by every real evener daemon session).
-//   - server/appwire_runtime.go:713-721 (handleAppTasksList: Data is nil
-//     only when no tasksFn is registered at all - an old daemon or a
-//     source with no task support, which instead rejects the call outright).
-// This is the wire-true fixture the panel renders from once a store action
-// exists to fetch it (see this stream's report for the NEEDS_CONTEXT gap).
+// The parser accepts untrusted task-list input and preserves the persisted
+// snake_case wire contract while normalizing display rows.
 
 const WIRE_TRUE_TASK_LIST = [
   {
