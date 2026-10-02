@@ -1,15 +1,29 @@
-import { useLayoutEffect } from "react";
+import { useLayoutEffect, useRef } from "react";
 import { useStore } from "zustand";
+import { m, spatialTransition, useReducedMotion } from "../../motion";
 import { conversationPaneLifetime, type PaneLifetime } from "../../shell/paneLifetime";
 import type { PaneProps } from "../../shell/paneRegistry";
+import { ScopeCrumbs } from "../../shell/statusbar/ScopeCrumbs";
+import { StatusBar } from "../../shell/statusbar/StatusBar";
+import { deriveScope } from "../../shell/statusbar/statusScope";
+import { useIsMobile } from "../../shell/useIsMobile";
 import { type OpenPaneRecord, workspaceStore } from "../../shell/workspace";
+import { navigationStore, useNavigationStore } from "../../stores/navigation/store";
 import { useSessionActivity } from "../../stores/sessionActivity";
 import { useThreadsStore } from "../../stores/threads";
 import { Button, EmptyState, PaneScaffold } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { retainedTranscriptReadView } from "../session/transcript/transcriptReadView";
 import { ReadOnlyThreadContent } from "../transcript/ReadOnlyThreadContent";
-import { openCascadeConversation, popAgentCascade, reconcileCascadeBinding, returnFromAgentCascade } from "./actions";
+import {
+  clearCascadeUserTransition,
+  hasCascadeUserTransition,
+  popAgentCascade,
+  reconcileCascadeBinding,
+  returnFromAgentCascade,
+} from "./actions";
+import { CascadeColumn } from "./CascadeColumn";
+import { CascadeSpine } from "./CascadeSpine";
 import { type CascadeScope, deriveCascadePath, type SessionZoomParams } from "./intent";
 import styles from "./zoom.module.css";
 
@@ -19,9 +33,6 @@ const CLASS = {
   hint: requireClass(styles.hint, "zoom.module.css", "hint"),
   track: requireClass(styles.track, "zoom.module.css", "track"),
   column: requireClass(styles.column, "zoom.module.css", "column"),
-  header: requireClass(styles.header, "zoom.module.css", "header"),
-  title: requireClass(styles.title, "zoom.module.css", "title"),
-  content: requireClass(styles.content, "zoom.module.css", "content"),
   spine: requireClass(styles.spine, "zoom.module.css", "spine"),
 };
 
@@ -31,15 +42,20 @@ function ScopeConversation({
   scope,
   readable,
   leaf,
+  mobile,
+  userTransition,
 }: {
   pane: OpenPaneRecord;
   lifetime: PaneLifetime;
   scope: CascadeScope;
   readable: boolean;
   leaf: boolean;
+  mobile: boolean;
+  userTransition: boolean;
 }) {
   // Spines retain summary demand, not transcript or collection demand.
   const { snapshot } = useSessionActivity(scope.requestedRef);
+  useNavigationStore((state) => state.resources);
   const model = useThreadsStore((state) => state.threads.get(scope.requestedRef));
   const sessionId = snapshot?.context?.sessionId ?? scope.sessionId;
   const previous = lifetime.resolvedSessions.get(scope.requestedRef);
@@ -61,43 +77,32 @@ function ScopeConversation({
     return () => view.setReadable(false);
   }, [view, readable, admitted]);
 
-  const title = model?.name || scope.title;
-  if (!readable) {
-    return (
-      <button
-        type="button"
-        className={CLASS.spine}
-        data-testid="cascade-spine"
-        data-scope-ref={scope.requestedRef}
-        aria-label={`Show ${title}`}
-        onClick={() => popAgentCascade(pane.id, scope.requestedRef)}
-      >
-        {title}
-      </button>
-    );
-  }
+  const activity = deriveScope(navigationStore.getState(), scope.requestedRef, snapshot);
+  activity.leaf.title = (imageMatches && model?.name) || scope.title;
+  const width = mobile ? "100%" : readable ? (leaf ? 440 : 400) : 52;
   return (
-    <section
-      className={CLASS.column}
-      data-testid="cascade-column"
+    <m.section
+      className={readable ? CLASS.column : CLASS.spine}
+      data-testid={readable ? "cascade-column" : "cascade-spine"}
       data-scope-ref={scope.requestedRef}
       data-leaf={leaf || undefined}
-      aria-label={title}
+      aria-label={activity.leaf.title}
+      initial={userTransition ? { x: 48 } : false}
+      animate={{ width, x: 0 }}
+      transition={userTransition ? spatialTransition() : { duration: 0 }}
     >
-      <header className={CLASS.header}>
-        <h3 className={CLASS.title}>{title}</h3>
-        <Button variant="quiet" size="xs" onClick={() => openCascadeConversation(pane.id, scope.requestedRef)}>
-          Open conversation
-        </Button>
-      </header>
-      <div className={CLASS.content}>
-        {admitted ? (
-          <ReadOnlyThreadContent ref={scope.requestedRef} view={view} />
-        ) : (
-          <EmptyState title="Loading transcript…" />
-        )}
-      </div>
-    </section>
+      {readable ? (
+        <CascadeColumn paneId={pane.id} scope={activity}>
+          {admitted ? (
+            <ReadOnlyThreadContent ref={scope.requestedRef} view={view} />
+          ) : (
+            <EmptyState title="Loading transcript…" />
+          )}
+        </CascadeColumn>
+      ) : (
+        <CascadeSpine paneId={pane.id} scope={activity} />
+      )}
+    </m.section>
   );
 }
 
@@ -107,10 +112,20 @@ export default function Zoom({ paneId, focused }: PaneProps<SessionZoomParams>) 
   );
   const params = pane?.params as SessionZoomParams | undefined;
   const { snapshot } = useSessionActivity(params?.ref ?? null);
+  const mobile = useIsMobile();
+  const reducedMotion = useReducedMotion();
+  const track = useRef<HTMLDivElement>(null);
+  const userTransition = params !== undefined && hasCascadeUserTransition(params);
+  useLayoutEffect(() => {
+    if (!params || !userTransition) return;
+    clearCascadeUserTransition(params);
+    if (track.current) track.current.scrollLeft = track.current.scrollWidth - track.current.clientWidth;
+  }, [params, userTransition]);
   if (!pane || !params) return null;
   const lifetime = conversationPaneLifetime(pane);
   const path = deriveCascadePath(params, snapshot?.context ?? null);
-  const firstReadable = Math.max(0, path.scopes.length - 2);
+  const scopes = mobile ? path.scopes.slice(-1) : path.scopes;
+  const firstReadable = Math.max(0, scopes.length - 2);
   return (
     <PaneScaffold
       paneId={paneId}
@@ -121,6 +136,18 @@ export default function Zoom({ paneId, focused }: PaneProps<SessionZoomParams>) 
         <Button variant="quiet" size="sm" onClick={() => returnFromAgentCascade(paneId)}>
           Return to previous view
         </Button>
+      }
+      edgeFooter={
+        <StatusBar
+          sessionRef={params.ref}
+          paneId={paneId}
+          leading={
+            <ScopeCrumbs
+              path={path.scopes.map((scope) => ({ ref: scope.requestedRef, title: scope.title }))}
+              onNavigate={(ref) => popAgentCascade(paneId, ref)}
+            />
+          }
+        />
       }
     >
       <div className={CLASS.body}>
@@ -137,15 +164,17 @@ export default function Zoom({ paneId, focused }: PaneProps<SessionZoomParams>) 
           ))}
         </nav>
         {!path.ancestryKnown && <p className={CLASS.hint}>Earlier ancestry is incomplete</p>}
-        <div className={CLASS.track}>
-          {path.scopes.map((scope, index) => (
+        <div ref={track} className={CLASS.track}>
+          {scopes.map((scope, index) => (
             <ScopeConversation
               key={scope.requestedRef}
               pane={pane}
               lifetime={lifetime}
               scope={scope}
               readable={index >= firstReadable}
-              leaf={index === path.scopes.length - 1}
+              leaf={index === scopes.length - 1}
+              mobile={mobile}
+              userTransition={userTransition && reducedMotion !== true}
             />
           ))}
         </div>

@@ -3,6 +3,7 @@
 import type { DockviewApi } from "dockview-core";
 import { lazy } from "react";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
+import { conversationPaneLifetime } from "./paneLifetime";
 import { type PaneDescriptor, type PaneProps, type PaneTypeId, registerPaneForTests } from "./paneRegistry";
 import {
   cancelPaneFocus,
@@ -47,6 +48,31 @@ beforeAll(() => {
 
 beforeEach(() => {
   resetWorkspaceStoreForTests();
+});
+
+test("a reset and same-ID restored cascade replace source ownership and fence old callbacks", () => {
+  const params = {
+    ref: "child",
+    source: { type: "session", params: { ref: "root" } },
+    edges: [{ ownerRef: "root", childRef: "child", delegateId: "edge" }],
+  };
+  const old: OpenPaneRecord = { id: "restored-cascade", type: "sessionZoom", slot: "main", params };
+  workspaceStore.setState({ panes: [old], focusedPaneId: old.id });
+  const lifetime = conversationPaneLifetime(old);
+  const source = lifetime.composer;
+  if (!source) throw new Error("Missing original source composer");
+  const oldCallback = () => source.editor.write("late old source", 15);
+  resetWorkspaceStoreForTests();
+  const restored: OpenPaneRecord = { ...old, params: { ...params } };
+  workspaceStore.setState({ panes: [restored], focusedPaneId: restored.id });
+  const replacement = conversationPaneLifetime(restored);
+  replacement.composer?.editText("new original work");
+  oldCallback();
+  expect(lifetime.alive).toBe(false);
+  expect(replacement.serial).not.toBe(lifetime.serial);
+  expect(replacement.sourceRef).toBe("root");
+  expect(replacement.composer?.getSnapshot().text).toBe("new original work");
+  expect(workspaceStore.getState().panes[0]).toBe(restored);
 });
 
 describe("openPane", () => {

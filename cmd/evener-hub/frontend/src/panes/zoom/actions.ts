@@ -20,6 +20,15 @@ import "./index";
 import "../session";
 import "../transcript";
 
+const userTransitions = new WeakSet<SessionZoomParams>();
+
+export function hasCascadeUserTransition(params: SessionZoomParams): boolean {
+  return userTransitions.has(params);
+}
+export function clearCascadeUserTransition(params: SessionZoomParams): void {
+  userTransitions.delete(params);
+}
+
 function contextFor(ref: string): SessionActivityContext | null {
   const client = connectionStore.getState().client;
   return client ? (sessionActivitySnapshot(client, ref, "session")?.context ?? null) : null;
@@ -47,10 +56,11 @@ function pruneViews(lifetime: PaneLifetime, refs: ReadonlySet<string>): void {
     if (!refs.has(ref)) lifetime.resolvedSessions.delete(ref);
   }
 }
-function updateIntent(pane: OpenPaneRecord, params: SessionZoomParams): boolean {
+function updateIntent(pane: OpenPaneRecord, params: SessionZoomParams, userTransition = false): boolean {
   if (!workspaceStore.getState().panes.includes(pane)) return false;
   const refs = new Set(pathFor(params).scopes.map((scope) => scope.requestedRef));
   pruneViews(conversationPaneLifetime(pane), refs);
+  if (userTransition) userTransitions.add(params);
   return workspaceStore.getState().retypePane(pane, "sessionZoom", params);
 }
 
@@ -63,7 +73,7 @@ export function enterAgentCascade(sub: SessionDelegate, sourcePaneId?: string): 
     if (intent) {
       const owner = pathFor(intent).scopes.find((scope) => requestedOwner(scope.requestedRef, sub.ownerRef));
       if (owner) {
-        updateIntent(source, drillZoomIntent(intent, { ...edge, ownerRef: owner.requestedRef }));
+        updateIntent(source, drillZoomIntent(intent, { ...edge, ownerRef: owner.requestedRef }), true);
         return source.id;
       }
     }
@@ -88,6 +98,7 @@ export function enterAgentCascade(sub: SessionDelegate, sourcePaneId?: string): 
             : { type: "transcript", params: source.params as TranscriptParams },
         edges: [{ ...edge, ownerRef: ref }],
       };
+      userTransitions.add(params);
       workspace.retypePane(source, "sessionZoom", params);
       return source.id;
     }
@@ -97,6 +108,7 @@ export function enterAgentCascade(sub: SessionDelegate, sourcePaneId?: string): 
     source: { type: "transcript", params: { ref: sub.ownerRef } },
     edges: [edge],
   };
+  userTransitions.add(params);
   return workspace.openPane("sessionZoom", params, { slot: "secondary" });
 }
 
@@ -106,7 +118,7 @@ export function popAgentCascade(paneId: string, ref: string): void {
   const params = intentFor(pane);
   if (!params) return;
   const next = popZoomIntent(params, ref, pathFor(params));
-  if (next !== params) updateIntent(pane, next);
+  if (next !== params) updateIntent(pane, next, true);
 }
 export function returnFromAgentCascade(paneId: string): void {
   const workspace = workspaceStore.getState();

@@ -6,11 +6,16 @@ import userEvent from "@testing-library/user-event";
 import { lazy, useState } from "react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { MotionProvider } from "../../motion";
+import { installMobileViewport } from "../../panes/session/testing/mobileViewport";
 import "../../panes/transcript";
+import { cascadeClient, cascadeContext } from "../../panes/zoom/cascadeTestUtils";
+import type { SessionZoomParams } from "../../panes/zoom/intent";
+import "../../panes/zoom";
 import { connectionStore } from "../../stores/connection";
 import { activityClient, activityContext, activitySummary } from "../../stores/sessionActivityTestUtils";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../activitybar/activitySidebarStore";
 import { chromeStore, resetChromeStoreForTests } from "../chromeStore";
+import { ClientProvider } from "../clientContext";
 import { type PaneProps, registerPaneForTests } from "../paneRegistry";
 import { openTopLevelSession } from "../sessionPlacement";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
@@ -199,6 +204,104 @@ test("renders the new activity sidebar over the mobile stack with the selected t
 
   expect(await screen.findByTestId("activity-sidebar")).toBeTruthy();
   expect(screen.getByRole("radio", { name: /Jobs/ })).toBeTruthy();
+});
+
+test("at the mobile boundary an ordinary Agents row retains the existing transcript route", async () => {
+  const restoreViewport = installMobileViewport();
+  const client = activityClient();
+  connectionStore.getState().connect(client);
+  workspaceStore.getState().openPane("doc", { ref: "remote:owner" });
+  activitySidebarStore.getState().openWith("agents");
+  try {
+    render(
+      <ClientProvider client={client}>
+        <MotionProvider>
+          <StackHost />
+        </MotionProvider>
+      </ClientProvider>,
+    );
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: /inspect/ }));
+    const state = workspaceStore.getState();
+    expect(state.panes.find((pane) => pane.id === state.focusedPaneId)?.type).toBe("transcript");
+    expect(state.panes.some((pane) => pane.type === "sessionZoom")).toBe(false);
+  } finally {
+    cleanup();
+    restoreViewport();
+    connectionStore.setState({ client: null, state: "idle" });
+  }
+});
+
+test("a restored cascade renders only its selected reader on mobile and restores its desktop columns without changing intent", async () => {
+  const original = window.matchMedia;
+  const media = Object.assign(new EventTarget(), {
+    matches: true,
+    media: "(max-width: 899px)",
+    onchange: null,
+    addListener() {},
+    removeListener() {},
+  });
+  window.matchMedia = ((query: string) =>
+    query === media.media
+      ? media
+      : Object.assign(new EventTarget(), {
+          matches: false,
+          media: query,
+          onchange: null,
+          addListener() {},
+          removeListener() {},
+        })) as typeof window.matchMedia;
+  const context = (ref: string) =>
+    cascadeContext(ref, ref === "grandchild" ? ["root", "child"] : ref === "child" ? ["root"] : []);
+  const client = cascadeClient(context);
+  const params: SessionZoomParams = {
+    ref: "grandchild",
+    source: { type: "transcript", params: { ref: "root" } },
+    edges: [
+      { ownerRef: "root", childRef: "child", delegateId: "edge-child" },
+      { ownerRef: "child", childRef: "grandchild", delegateId: "edge-grandchild" },
+    ],
+  };
+  workspaceStore.setState({
+    panes: [{ id: "restored-cascade", type: "sessionZoom", slot: "main", params }],
+    focusedPaneId: "restored-cascade",
+  });
+  connectionStore.getState().connect(client);
+  window.history.replaceState({}, "", "/s/root");
+  try {
+    await act(async () =>
+      render(
+        <ClientProvider client={client}>
+          <MotionProvider>
+            <StackHost />
+          </MotionProvider>
+        </ClientProvider>,
+      ),
+    );
+    await screen.findByRole("button", { name: "Return to previous view" });
+    expect(screen.getAllByTestId("cascade-column").map((column) => column.getAttribute("data-scope-ref"))).toEqual([
+      "grandchild",
+    ]);
+    expect(screen.queryByTestId("cascade-spine")).toBeNull();
+    expect(screen.queryByRole("textbox")).toBeNull();
+    expect(workspaceStore.getState().panes[0]?.params).toBe(params);
+    await act(async () => {
+      media.matches = false;
+      media.dispatchEvent(Object.assign(new Event("change"), { matches: false }));
+    });
+    expect(screen.getAllByTestId("cascade-column").map((column) => column.getAttribute("data-scope-ref"))).toEqual([
+      "child",
+      "grandchild",
+    ]);
+    expect(screen.getByTestId("cascade-spine").getAttribute("data-scope-ref")).toBe("root");
+    expect(workspaceStore.getState().panes[0]?.params).toBe(params);
+    expect(window.location.pathname).toBe("/s/root");
+  } finally {
+    cleanup();
+    if (original) window.matchMedia = original;
+    else Reflect.deleteProperty(window, "matchMedia");
+    connectionStore.setState({ client: null, state: "idle" });
+  }
 });
 
 test("does not flash the panel during routeDeferred", async () => {

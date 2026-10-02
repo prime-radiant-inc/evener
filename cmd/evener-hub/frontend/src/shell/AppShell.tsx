@@ -13,6 +13,7 @@ import { MotionProvider } from "../motion";
 import { initNotifications } from "../notifications";
 import { requestComposerFocus } from "../panes/session/composer/composerFocus";
 import { transcriptContextIncludes } from "../panes/session/transcript/openTranscript";
+import { deriveCascadePath, parseZoomParams } from "../panes/zoom/intent";
 import { connectionStore, useConnectionStore } from "../stores/connection";
 import {
   selectLiveRows,
@@ -22,6 +23,7 @@ import {
   selectSectionRemaining,
 } from "../stores/navigation/selectors";
 import { navigationStore, useNavigationStore } from "../stores/navigation/store";
+import { sessionActivitySnapshot } from "../stores/sessionActivity";
 import { syncSettingsHostToRoute } from "../stores/settingsHost";
 import { initTranscriptDisplay } from "../stores/transcriptDisplay";
 import { ActivitySidebar } from "./activitybar/ActivitySidebar";
@@ -178,13 +180,21 @@ function routePlacementIsApplied(
   if (route === null || route.type === "welcome") return true;
 
   const workspace = workspaceStore.getState();
-  const main = workspace.mainPane();
-  if (main === null) return false;
+  const mainRecord = workspace.mainPane();
+  if (mainRecord === null) return false;
+  // Contextual drill keeps the URL's original conversation role. A new
+  // pathname must still place its ordinary session, regardless of saved intent.
+  const routeRole = (pane: OpenPaneRecord): OpenPaneRecord => {
+    const source = allowFocusedCompanion && pane.type === "sessionZoom" ? parseZoomParams(pane.params)?.source : null;
+    return source ? { ...pane, ...source } : pane;
+  };
+  const main = routeRole(mainRecord);
+  const panes = workspace.panes.map(routeRole);
 
   if (route.type === "settings" || route.type === "spawn") {
     if (workspace.focusedPaneId !== main.id) return false;
     const matchingType = route.type;
-    const matchingPanes = workspace.panes.filter((pane) => pane.type === matchingType);
+    const matchingPanes = panes.filter((pane) => pane.type === matchingType);
     return main.type === matchingType && sameRouteParams(main.params, route.params) && matchingPanes.length === 1;
   }
 
@@ -199,21 +209,35 @@ function routePlacementIsApplied(
     return locationTerminal && main.type === "session" && sessionRefOf(main) === ref;
   }
   const ancestorRef = location.top_level ? ref : location.top_level_ref;
-  const focusedPane = workspace.panes.find((pane) => pane.id === workspace.focusedPaneId);
-  const focusedTranscriptParams =
-    focusedPane?.type === "transcript" ? (focusedPane.params as { ref?: unknown; parentRef?: unknown }) : null;
-  const focusedTranscriptMatchesRoute =
-    focusedTranscriptParams !== null &&
-    ((typeof focusedTranscriptParams.parentRef === "string" &&
-      transcriptContextIncludes(focusedTranscriptParams.parentRef, ref)) ||
-      (ancestorRef !== ref &&
-        focusedTranscriptParams.ref === ref &&
-        focusedTranscriptParams.parentRef === ancestorRef));
+  const focusedPane = panes.find((pane) => pane.id === workspace.focusedPaneId);
+  const transcriptMatchesRoute = (pane: OpenPaneRecord | undefined): boolean => {
+    if (pane?.type !== "transcript") return false;
+    const params = pane.params as { ref?: unknown; parentRef?: unknown };
+    return (
+      (typeof params.parentRef === "string" && transcriptContextIncludes(params.parentRef, ref)) ||
+      (ancestorRef !== ref && params.ref === ref && params.parentRef === ancestorRef)
+    );
+  };
+  const conversationRef = focusedPane?.type === "session" ? sessionRefOf(focusedPane) : null;
+  const focusedCascadeConversation =
+    allowFocusedCompanion &&
+    conversationRef !== null &&
+    workspace.panes.some((pane) => {
+      if (pane.type !== "sessionZoom") return false;
+      const params = parseZoomParams(pane.params);
+      if (!params) return false;
+      const role = routeRole(pane);
+      if (!((role.type === "session" && sessionRefOf(role) === ref) || transcriptMatchesRoute(role))) return false;
+      const client = connectionStore.getState().client;
+      const context = client ? (sessionActivitySnapshot(client, params.ref, "session")?.context ?? null) : null;
+      return deriveCascadePath(params, context).scopes.some((scope) => scope.requestedRef === conversationRef);
+    });
   const focusedCompanion =
     focusedPane?.type === "sessionTasks" ||
     focusedPane?.type === "sessionActivity" ||
     focusedPane?.type === "sessionDetails" ||
-    focusedTranscriptMatchesRoute;
+    transcriptMatchesRoute(focusedPane) ||
+    focusedCascadeConversation;
   const focusIsApplied = (paneId: string): boolean =>
     workspace.focusedPaneId === paneId || (allowFocusedCompanion && focusedCompanion);
 
@@ -222,12 +246,12 @@ function routePlacementIsApplied(
       focusIsApplied(main.id) &&
       main.type === "session" &&
       sessionRefOf(main) === ref &&
-      workspace.panes.filter((pane) => pane.type === "session" && sessionRefOf(pane) === ref).length === 1
+      panes.filter((pane) => pane.type === "session" && sessionRefOf(pane) === ref).length === 1
     );
   }
 
-  const ownerPanes = workspace.panes.filter((pane) => pane.type === "session" && sessionRefOf(pane) === ancestorRef);
-  const childPanes = workspace.panes.filter(
+  const ownerPanes = panes.filter((pane) => pane.type === "session" && sessionRefOf(pane) === ancestorRef);
+  const childPanes = panes.filter(
     (pane) => pane.type === "session" && pane.slot === "secondary" && sessionRefOf(pane) === ref,
   );
   return (

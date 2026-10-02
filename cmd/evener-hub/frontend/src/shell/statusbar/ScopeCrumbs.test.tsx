@@ -3,15 +3,18 @@ import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Profiler } from "react";
 import { afterEach, expect, test, vi } from "vitest";
+import { popAgentCascade } from "../../panes/zoom/actions";
+import "../../panes/zoom";
 import { activityThread } from "../../stores/sessionActivityTestUtils";
 import { threadsStore } from "../../stores/threads";
-import { workspaceStore } from "../workspace";
+import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { ScopeCrumbs } from "./ScopeCrumbs";
 import { installFocusedScope, summaryOf } from "./scopeTestUtils";
 
 afterEach(() => {
   cleanup();
   threadsStore.setState({ threads: new Map() });
+  resetWorkspaceStoreForTests();
 });
 
 test("scope labels use known compact thread names and exact navigation titles without changing ancestry refs", () => {
@@ -157,4 +160,47 @@ test("navigation-only metadata publication and rename refresh mounted exact-ref 
   expect(screen.getByRole("button", { name: "Published parent" })).toBeTruthy();
   act(() => installFocusedScope("remote:child", summaryOf({ ref: "remote:parent", title: "Renamed parent" })));
   expect(screen.getByRole("button", { name: "Renamed parent" })).toBeTruthy();
+});
+
+test("a cascade crumb pops only its owning pane instead of focusing an existing ancestor transcript", async () => {
+  const user = userEvent.setup();
+  const unrelated = {
+    id: "ancestor-transcript",
+    type: "transcript" as const,
+    slot: "secondary" as const,
+    params: { ref: "local:root" },
+  };
+  workspaceStore.setState({
+    panes: [
+      {
+        id: "cascade",
+        type: "sessionZoom",
+        slot: "main",
+        params: {
+          ref: "local:child",
+          source: { type: "session", params: { ref: "local:root" } },
+          edges: [{ ownerRef: "local:root", childRef: "local:child", delegateId: "edge" }],
+        },
+      },
+      unrelated,
+    ],
+    focusedPaneId: "cascade",
+  });
+  render(
+    <ScopeCrumbs
+      path={[
+        { ref: "local:root", title: "Cascade root" },
+        { ref: "local:child", title: "Cascade child" },
+      ]}
+      onNavigate={(ref) => popAgentCascade("cascade", ref)}
+    />,
+  );
+  await user.click(screen.getByRole("button", { name: "Cascade root" }));
+  expect(workspaceStore.getState().focusedPaneId).toBe("cascade");
+  expect(workspaceStore.getState().panes.find((pane) => pane.id === "cascade")?.params).toEqual({
+    ref: "local:root",
+    source: { type: "session", params: { ref: "local:root" } },
+    edges: [],
+  });
+  expect(workspaceStore.getState().panes.find((pane) => pane.id === unrelated.id)).toBe(unrelated);
 });

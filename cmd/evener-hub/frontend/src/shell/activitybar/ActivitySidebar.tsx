@@ -9,6 +9,7 @@
 
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import { AnimatePresence, m, spatialTransition } from "../../motion";
+import { popAgentCascade } from "../../panes/zoom/actions";
 import { navigationStore, useNavigationStore } from "../../stores/navigation/store";
 import { useSessionActivity } from "../../stores/sessionActivity";
 import { IconButton, SegmentedControl } from "../../widgets";
@@ -17,6 +18,7 @@ import { requireClass } from "../../widgets/internal/requireClass";
 import { useFocusedActivityScopeRef } from "../focusedSession";
 import { ScopeCrumbs } from "../statusbar/ScopeCrumbs";
 import { type ActivityTab, deriveScope } from "../statusbar/statusScope";
+import { useWorkspaceStore } from "../workspace";
 import { ActivityViewport } from "./ActivityViewport";
 import styles from "./activitybar.module.css";
 import {
@@ -52,6 +54,7 @@ export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
   // scope's ref, not on every store touch.
   const resources = useNavigationStore((state) => state.resources);
   const ref = useFocusedActivityScopeRef();
+  const focusedPane = useWorkspaceStore((state) => state.panes.find((pane) => pane.id === state.focusedPaneId));
   useEffect(() => {
     if (open && ref !== null) activitySidebarStore.getState().retainOpenView(ref);
   }, [open, ref]);
@@ -100,7 +103,15 @@ export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
         >
           <div className={CLASS.head}>
             <div className={CLASS.scope}>
-              <ScopeCrumbs path={scope.path} hierarchy />
+              <ScopeCrumbs
+                path={scope.path}
+                hierarchy
+                onNavigate={
+                  focusedPane?.type === "sessionZoom"
+                    ? (ancestor) => popAgentCascade(focusedPane.id, ancestor)
+                    : undefined
+                }
+              />
               {!scope.ancestryKnown ? <span className={CLASS.pending}>Finding session context…</span> : null}
             </div>
             <IconButton label="Close the activity sidebar" icon="×" variant="quiet" size="sm" onClick={close} />
