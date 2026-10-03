@@ -63,7 +63,7 @@ export function ScopeActivityControls({ paneId, scope }: { paneId: string; scope
   const [tab, setTab] = useState<ActivityTab | null>(null);
   return (
     <div className={CLASS.activityControls}>
-      {ACTIVITY_TABS.map((spec) => (
+      {ACTIVITY_TABS.filter((spec) => spec.id !== "about").map((spec) => (
         <ActivityPeek
           key={spec.id}
           paneId={paneId}

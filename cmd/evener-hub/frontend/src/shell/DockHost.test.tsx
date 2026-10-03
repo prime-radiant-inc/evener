@@ -14,9 +14,16 @@ import { StubResizeObserver } from "../resizeObserverTestUtils";
 import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
 import { connectionStore } from "../stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "../stores/navigation/store";
-import { activityDelegate, activityJob } from "../stores/sessionActivityTestUtils";
+import {
+  activityClient,
+  activityDelegate,
+  activityDetailsThread,
+  activityJob,
+} from "../stores/sessionActivityTestUtils";
 import { resetThreadsStoreForTests, threadsStore } from "../stores/threads";
 import { PaneScaffold } from "../widgets/panescaffold";
+import { ActivitySidebar } from "./activitybar/ActivitySidebar";
+import { activitySidebarStore, resetActivitySidebarStoreForTests } from "./activitybar/activitySidebarStore";
 import { ClientProvider } from "./clientContext";
 import { DockHost } from "./DockHost";
 import { type PaneDescriptor, type PaneProps, paneFor, registerPane, registerPaneForTests } from "./paneRegistry";
@@ -1379,6 +1386,152 @@ test("a saved layout with a retired pane type restores the surviving panes witho
   expect(workspaceStore.getState().panes.map((p) => p.id)).toEqual(["pane_doc_2", "pane_doc_3"]);
   expect(screen.queryByText("Couldn't load the workspace")).toBeNull();
 });
+
+function retireSavedActivityPane(paneId: string): void {
+  const raw = localStorage.getItem(LAYOUT_KEY);
+  if (raw === null) throw new Error("Expected a real saved Dockview layout");
+  const layout = JSON.parse(raw) as { panels: Record<string, { params?: unknown }> };
+  const pane = layout.panels[paneId];
+  if (!pane) throw new Error(`Missing saved pane ${paneId}`);
+  pane.params = { paneType: "sessionActivity", paneParams: { ref: "remote:a" } };
+  localStorage.setItem(LAYOUT_KEY, JSON.stringify(layout));
+}
+
+function expectReadOnlyRestore(client: FakeClient): void {
+  const methods = client.calls.map((call) => call.method);
+  expect(methods).toContain("thread/read");
+  expect(methods.every((method) => /\/(read|list|subscribe|unsubscribe)$/.test(method))).toBe(true);
+  for (const mutation of [
+    "evener/session/delete",
+    "evener/project/delete",
+    "evener/archive/set",
+    "thread/shutdown",
+    "evener/thread/forceStop",
+    "thread/start",
+    "turn/start",
+  ]) {
+    expect(methods).not.toContain(mutation);
+  }
+}
+
+test.each([
+  ["secondary", false],
+  ["main", false],
+  ["focused", false],
+  ["secondary", true],
+  ["main", true],
+  ["focused", true],
+] as const)(
+  "saved Activity %s is omitted while Overview open=%s restores independently",
+  async (placement, overviewOpen) => {
+    resetActivitySidebarStoreForTests();
+    const client = activityClient();
+    client.on("thread/read", ({ ref }) => activityDetailsThread(ref, { preview: "Restored session" }));
+    connectionStore.getState().connect(client);
+    try {
+      const workspace = workspaceStore.getState();
+      let retired: string | undefined;
+      if (placement === "main") retired = workspace.openPane("doc", { ref: "retired" });
+      const session = workspace.openPane("session", { ref: "remote:a" });
+      const details = workspace.openPane("sessionDetails", { ref: "remote:a" }, { slot: "secondary" });
+      const doc = workspace.openPane("doc", { ref: "survivor" });
+      if (placement !== "main") retired = workspace.openPane("doc", { ref: "retired" });
+      if (retired === undefined) throw new Error("Retired placement was not created");
+      const retiredId = retired;
+      const saved = render(
+        <ClientProvider client={client}>
+          <DockHost />
+        </ClientProvider>,
+      );
+      await screen.findByText(/doc pane: retired/);
+      act(() => workspaceStore.getState().focusPane(placement === "focused" ? retiredId : session));
+      saved.unmount();
+      retireSavedActivityPane(retiredId);
+      resetWorkspaceStoreForTests();
+      resetThreadsStoreForTests();
+      activitySidebarStore.getState().retarget("remote:a");
+      activitySidebarStore.getState().openWith("about");
+      if (!overviewOpen) activitySidebarStore.getState().close();
+      resetActivitySidebarStoreForTests({ preserveStorage: true });
+      await act(async () => {
+        render(
+          <ClientProvider client={client}>
+            <MotionProvider>
+              <DockHost />
+              <ActivitySidebar />
+            </MotionProvider>
+          </ClientProvider>,
+        );
+      });
+      const panes = workspaceStore.getState().panes;
+      expect(panes.map((pane) => pane.id)).toEqual([session, details, doc]);
+      expect(panes.some((pane) => (pane.type as string) === "sessionActivity")).toBe(false);
+      expect(panes.find((pane) => pane.slot === "main")?.id).toBe(session);
+      expect(panes.some((pane) => pane.id === workspaceStore.getState().focusedPaneId)).toBe(true);
+      expect(document.querySelector('[data-pane-scaffold="session:remote:a"]')).toBeTruthy();
+      const user = userEvent.setup();
+      await user.click(screen.getByRole("tab", { name: "Doc survivor" }));
+      expect(await screen.findByText(/doc pane: survivor/)).toBeTruthy();
+      await user.click(screen.getByRole("tab", { name: /^Details ·/ }));
+      const detailsBody = document.querySelector(`[data-pane-id="${details}"]`);
+      if (!(detailsBody instanceof HTMLElement)) throw new Error("Restored Details body missing");
+      const body = within(detailsBody);
+      expect((await body.findByTestId("session-details-cost")).textContent).toContain("~$1.00");
+      expect(body.getByTestId("session-details-context").textContent).toContain("42K / 100K");
+      expect(body.getByText("/work/session")).toBeTruthy();
+      expect(activitySidebarStore.getState()).toMatchObject({ open: overviewOpen, tab: "about", ref: "remote:a" });
+      if (overviewOpen) {
+        const sidebar = within(await screen.findByTestId("activity-sidebar"));
+        expect(sidebar.getByRole("radio", { name: "About" }).getAttribute("aria-checked")).toBe("true");
+        expect(await sidebar.findByText("about-owner")).toBeTruthy();
+      } else expect(screen.queryByTestId("activity-sidebar")).toBeNull();
+      expect(screen.queryByText("Couldn't load the workspace")).toBeNull();
+      expect(document.querySelector('[data-pane-scaffold="session-panel:activity:remote:a"]')).toBeNull();
+      expect(visibleTabTexts()).toContain("Doc survivor");
+      expect(visibleTabTexts()).toHaveLength(placement === "main" ? 3 : 2);
+      expect(visibleCloseControlCount()).toBe(placement === "main" ? 3 : 2);
+      expectReadOnlyRestore(client);
+    } finally {
+      cleanup();
+      resetActivitySidebarStoreForTests();
+      connectionStore.setState({ client: null, state: "idle" });
+    }
+  },
+);
+
+test.each([false, true])(
+  "an Activity-only saved layout applies a valid primary route=%s before Welcome",
+  async (routed) => {
+    const retired = workspaceStore.getState().openPane("doc", { ref: "retired" });
+    const saved = render(<DockHost />);
+    await screen.findByText(/doc pane: retired/);
+    saved.unmount();
+    retireSavedActivityPane(retired);
+    resetWorkspaceStoreForTests();
+    const client = activityClient();
+    connectionStore.getState().connect(client);
+    try {
+      if (routed) workspaceStore.getState().openPane("session", { ref: "remote:routed" });
+      await act(async () => {
+        render(
+          <ClientProvider client={client}>
+            <DockHost />
+          </ClientProvider>,
+        );
+      });
+      expect(workspaceStore.getState().panes.map((pane) => pane.type)).toEqual([routed ? "session" : "welcome"]);
+      if (routed) {
+        expect(document.querySelector('[data-pane-scaffold="session:remote:routed"]')).toBeTruthy();
+        expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "remote:routed" });
+        expect(screen.queryByText("No session open")).toBeNull();
+        expectReadOnlyRestore(client);
+      } else expect(await screen.findByText("No session open")).toBeTruthy();
+    } finally {
+      cleanup();
+      connectionStore.setState({ client: null, state: "idle" });
+    }
+  },
+);
 
 test("restores a routed primary through replacement before reopening captured secondary routes", async () => {
   workspaceStore.getState().openPane("doc", { ref: "saved_main" });
