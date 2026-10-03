@@ -943,7 +943,7 @@ Run from root as separate commands/cwd choices, not a fragile single chain when 
 **Files:**
 - Create: `agent/memory_live_test.go` (build tag `liveeval`), `agent/session_memory_eval_contract_test.go`, `agent/internal/liveeval/memory.go`, `agent/internal/liveeval/memory_budget.go`, `agent/internal/liveeval/memory_verify.go`, `agent/internal/liveeval/memory_test.go`, `agent/internal/liveeval/memory_budget_test.go`, `agent/testdata/memoryeval/README.md`, `docs/developing-evener/memory-evals.md`
 - Create fixtures: `agent/testdata/memoryeval/workflow/go.mod`, `agent/testdata/memoryeval/workflow/cmd/fixturectl/main.go`, `agent/testdata/memoryeval/workflow/pkg/encode/encode.go`, `agent/testdata/memoryeval/workflow/pkg/encode/encode_test.go`, `agent/testdata/memoryeval/workflow/fixtures/input.json`, `agent/testdata/memoryeval/workflow/README.md`, `agent/testdata/memoryeval/episodes.json`
-- Modify: `docs/developing-evener/testing.md`, `docs/product/memory.md`, existing affected provider wire **tests only** if needed for the cap-survival assertion
+- Modify: `docs/developing-evener/testing.md`, `docs/product/memory.md`, existing affected provider wire **tests only** if needed for the unsupported-token-field absence assertion
 
 **Interfaces:**
 - Consumes: all implemented session/store/tool/skill paths, existing `provider.Resolve`, registry/Caps, existing credential resolution, llm.ProviderAdapter, actual fixture subprocesses.
