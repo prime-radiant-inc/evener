@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { bindFilePath } from "@evener/appwire-client/docContent";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { DockviewApi } from "dockview-core";
 import { lazy, useState } from "react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { MotionProvider } from "../../motion";
@@ -16,7 +17,7 @@ import { chromeStore, resetChromeStoreForTests } from "../chromeStore";
 import { type PaneProps, registerPaneForTests } from "../paneRegistry";
 import { usePaneVisible } from "../paneVisibility";
 import { openTopLevelSession } from "../sessionPlacement";
-import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
+import { documentPaneState, registerDockviewApi, resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { StackHost, setLastPopstateWasTrustedForTests } from "./StackHost";
 
 // Fixture pane type for the bulk of this file's tests - non-singleton, so
@@ -44,6 +45,42 @@ function DocFixture({ params, paneId, focused }: PaneProps<{ ref?: string; path?
 
 function SettingsFixture({ params }: PaneProps<{ section?: string }>) {
   return <div>settings pane: {params.section ?? "none"}</div>;
+}
+
+class RestoreDockviewApi {
+  panels: Array<{ id: string; params: unknown }> = [];
+  activePanel: { id: string } | undefined = undefined;
+  received: unknown;
+
+  constructor(
+    readonly serialized: unknown,
+    private readonly restoredPanels: Array<{ id: string; params: unknown }>,
+    private readonly restoredActivePanel: { id: string },
+  ) {}
+
+  toJSON(): unknown {
+    return this.serialized;
+  }
+
+  fromJSON(data: unknown): void {
+    this.received = data;
+    this.panels = this.restoredPanels;
+    this.activePanel = this.restoredActivePanel;
+  }
+
+  clear(): void {
+    this.panels = [];
+    this.activePanel = undefined;
+  }
+
+  removePanel(panel: { id: string }): void {
+    this.panels = this.panels.filter((candidate) => candidate.id !== panel.id);
+    if (this.activePanel?.id === panel.id) this.activePanel = undefined;
+  }
+}
+
+function asDockviewApi(fake: RestoreDockviewApi): DockviewApi {
+  return fake as unknown as DockviewApi;
 }
 
 beforeAll(async () => {
@@ -395,6 +432,40 @@ test("document Back prefers its retained exact origin over transient local histo
   expect(workspaceStore.getState().focusedPaneId).toBe(sourceId);
 });
 
+test("document Back uses the latest exact same-session origin after reopen and host remount", async () => {
+  const session = "local:02wMz5TxvEMoJEDTDGOTil";
+  const workspace = workspaceStore.getState();
+  const firstSourceId = workspace.openPane("session", { ref: session });
+  const secondSourceId = workspace.openPane("transcript", { ref: session }, { slot: "secondary" });
+  const firstSource = workspaceStore.getState().panes.find((pane) => pane.id === firstSourceId);
+  const secondSource = workspaceStore.getState().panes.find((pane) => pane.id === secondSourceId);
+  const reference = bindFilePath("docs/a.md", "/work/child");
+  if (!reference || !firstSource || !secondSource) throw new Error("fixture did not create bound sources");
+
+  openDocBeside({ session, reference, sourcePaneId: firstSource.id });
+  const document = workspaceStore.getState().panes.find((pane) => pane.type === "doc");
+  if (!document) throw new Error("document did not open");
+  const firstHost = render(<StackHost />);
+  await screen.findByText(/doc pane: docs\/a.md/);
+  firstHost.unmount();
+
+  openDocBeside({ session, reference, sourcePaneId: secondSource.id });
+  expect(workspaceStore.getState().panes.filter((pane) => pane.type === "doc")).toEqual([document]);
+  expect(documentPaneState(document)).toEqual({ reference, origin: secondSource, reopen: 1 });
+  workspace.focusPane(firstSource.id);
+
+  render(<StackHost />);
+  await screen.findByRole("heading", { name: session });
+  act(() => workspace.focusPane(document.id));
+  await screen.findByText(/doc pane: docs\/a.md/);
+  await userEvent.setup().click(screen.getByRole("button", { name: "Back" }));
+
+  const state = workspaceStore.getState();
+  expect(state.focusedPaneId).toBe(secondSource.id);
+  expect(state.focusedPaneId).not.toBe(firstSource.id);
+  expect(state.panes.find((pane) => pane.id === state.focusedPaneId)).toBe(secondSource);
+});
+
 test("document Back retains its exact origin across a StackHost remount", async () => {
   const session = "local:02wMz5TxvEMoJEDTDGOTil";
   const workspace = workspaceStore.getState();
@@ -425,6 +496,63 @@ test("document Back navigates to its bound session after the exact origin closes
 
   await userEvent.setup().click(screen.getByRole("button", { name: "Back" }));
   expect(window.location.pathname).toBe(`/s/${encodeURIComponent(session)}`);
+});
+
+test("restored document Back cannot follow a source id reused from the retired lifetime", async () => {
+  const session = "local:02wMz5TxvEMoJEDTDGOTil";
+  const workspace = workspaceStore.getState();
+  const sourceId = workspace.openPane("session", { ref: session });
+  const oldSource = workspaceStore.getState().panes.find((pane) => pane.id === sourceId);
+  const reference = bindFilePath("docs/a.md", "/work/child");
+  if (!reference || !oldSource) throw new Error("fixture did not create a bound source");
+  openDocBeside({ session, reference, sourcePaneId: sourceId });
+  const oldDocument = workspaceStore.getState().panes.find((pane) => pane.type === "doc");
+  if (!oldDocument) throw new Error("document did not open");
+  expect(documentPaneState(oldDocument)).toEqual({ reference, origin: oldSource, reopen: 0 });
+
+  const saved = {
+    grid: { root: { type: "branch", data: [] } },
+    panels: {
+      [sourceId]: {
+        id: sourceId,
+        contentComponent: "default",
+        params: { paneType: "session", paneParams: { ref: session } },
+      },
+      [oldDocument.id]: {
+        id: oldDocument.id,
+        contentComponent: "default",
+        params: { paneType: "doc", paneParams: oldDocument.params },
+      },
+    },
+    activeGroup: "group-2",
+  };
+  const fake = new RestoreDockviewApi(
+    saved,
+    [
+      { id: sourceId, params: { paneType: "session", paneParams: { ref: session } } },
+      { id: oldDocument.id, params: { paneType: "doc", paneParams: oldDocument.params } },
+    ],
+    { id: oldDocument.id },
+  );
+  registerDockviewApi(asDockviewApi(fake));
+
+  expect(workspace.restoreLayout(workspace.layoutJSON())).toBe(true);
+  expect(fake.received).toBe(saved);
+  const restoredSource = workspaceStore.getState().panes.find((pane) => pane.id === sourceId);
+  const restoredDocument = workspaceStore.getState().panes.find((pane) => pane.id === oldDocument.id);
+  if (!restoredSource || !restoredDocument) throw new Error("layout did not restore source and document");
+  expect(restoredSource).not.toBe(oldSource);
+  expect(restoredDocument).not.toBe(oldDocument);
+  expect(documentPaneState(oldDocument)).toBeUndefined();
+  expect(documentPaneState(restoredDocument)).toBeUndefined();
+
+  render(<StackHost />);
+  await screen.findByText(/doc pane: docs\/a.md/);
+  await userEvent.setup().click(screen.getByRole("button", { name: "Back" }));
+
+  const state = workspaceStore.getState();
+  expect(state.focusedPaneId).not.toBe(restoredSource.id);
+  expect(state.panes.find((pane) => pane.id === state.focusedPaneId)?.type).toBe("welcome");
 });
 
 test("back falls all the way to welcome when this component never observed an earlier pane", async () => {

@@ -288,7 +288,7 @@ describe("source-aware document placement", () => {
     expect(documentPaneState(document)).toEqual({ reference: located, origin: second, reopen: 1 });
   });
 
-  test("closing or resetting a document retires its binding even when pane ids are reused", async () => {
+  test("closing a document retires its binding", async () => {
     const { openDocBeside } = await import("../panes/doc/openDoc");
     const session = "local:02wMz5TxvEMoJEDTDGOTil";
     const workspace = workspaceStore.getState();
@@ -300,6 +300,20 @@ describe("source-aware document placement", () => {
     if (!oldDocument) throw new Error("document did not open");
     workspace.closePane(oldDocument.id);
     expect(documentPaneState(oldDocument)).toBeUndefined();
+  });
+
+  test("reset retires a still-bound document before pane ids are reused", async () => {
+    const { openDocBeside } = await import("../panes/doc/openDoc");
+    const session = "local:02wMz5TxvEMoJEDTDGOTil";
+    const workspace = workspaceStore.getState();
+    const sourceId = workspace.openPane("session", { ref: session });
+    const source = workspaceStore.getState().panes.find((pane) => pane.id === sourceId);
+    const reference = bindFilePath("docs/a.md", "/work/child");
+    if (!reference || !source) throw new Error("fixture did not bind the document and source");
+    openDocBeside({ session, reference, sourcePaneId: sourceId });
+    const oldDocument = workspaceStore.getState().panes.find((pane) => pane.type === "doc");
+    if (!oldDocument) throw new Error("document did not open");
+    expect(documentPaneState(oldDocument)).toEqual({ reference, origin: source, reopen: 0 });
 
     resetWorkspaceStoreForTests();
     workspaceStore.getState().openPane("session", { ref: session });
@@ -307,6 +321,8 @@ describe("source-aware document placement", () => {
     const replacement = workspaceStore.getState().panes.find((pane) => pane.id === reusedId);
     if (!replacement) throw new Error("replacement document did not open");
     expect(replacement.id).toBe(oldDocument.id);
+    expect(replacement).not.toBe(oldDocument);
+    expect(documentPaneState(oldDocument)).toBeUndefined();
     expect(documentPaneState(replacement)).toBeUndefined();
   });
 });
