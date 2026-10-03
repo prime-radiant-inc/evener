@@ -274,7 +274,7 @@ func TestFilteredGitEnvironmentCaseInsensitive(t *testing.T) {
 		"git_ceiling_directories=/hostile/ceiling",
 		"GIT_DISCOVERY_ACROSS_FILESYSTEM=1", "EVENER_UNRELATED=value",
 	}
-	got := filteredGitEnvironment(input)
+	got := FilteredGitEnvironment(input)
 	joined := strings.Join(got, "\n")
 	for _, key := range []string{
 		"GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE",
