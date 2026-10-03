@@ -11,6 +11,7 @@ import (
 	"bytes"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -118,6 +119,51 @@ func TestDocFile_ArchivedRootBypassesWarmPastMetadata(t *testing.T) {
 	response := docRawRequest(t, web, sessionID, "plan.md")
 	if response.Code != http.StatusOK || response.Body.String() != "current B" {
 		t.Fatalf("document = %d %q, want current B", response.Code, response.Body.String())
+	}
+}
+
+func TestDocFile_Raw_TrustedCWDAliasServesIdenticalBytes(t *testing.T) {
+	web, root, sessionID := docServeTestServer(t)
+	real, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(t.TempDir(), "current")
+	if err := os.Symlink(real, alias); err != nil {
+		t.Skipf("symlink unsupported on this platform: %v", err)
+	}
+	authored := []byte("# Aliased plan\n\nidentical authored bytes\n")
+	if err := os.WriteFile(filepath.Join(real, "plan.md"), authored, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	entry, ok := web.cfg.Past.Find(sessionID)
+	if !ok {
+		t.Fatal("fixture session is missing from the past index")
+	}
+	meta, err := schema.LoadSessionMeta(entry.StateDir, entry.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta.EnvInfo.WorkingDir = alias
+	if err := schema.SaveSessionMeta(entry.StateDir, meta); err != nil {
+		t.Fatal(err)
+	}
+
+	for name, path := range map[string]string{
+		"relative":           "plan.md",
+		"alias absolute":     filepath.Join(alias, "plan.md"),
+		"canonical absolute": filepath.Join(real, "plan.md"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			response := docRawRequest(t, web, sessionID, url.QueryEscape(path))
+			if response.Code != http.StatusOK {
+				t.Fatalf("GET %q status = %d, want 200; body = %q", path, response.Code, response.Body.String())
+			}
+			if !bytes.Equal(response.Body.Bytes(), authored) {
+				t.Fatalf("GET %q body = %q, want exact authored bytes %q", path, response.Body.Bytes(), authored)
+			}
+		})
 	}
 }
 
