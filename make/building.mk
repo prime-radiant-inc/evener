@@ -1,16 +1,17 @@
 .PHONY: build build-runtime build-go build-hub web-preflight build-web build-dev build-all build-linux build-llmcall dist install install-home install-system test-install
 
-# GitDirty must stay blind to the tracked dist/PLACEHOLDER: build-web wipes
-# it and vite writes it back at closeBundle (build-web comment below), and
-# diff-files is read-only plumbing — it never refreshes the index's stale
-# stat for the recreated file, with or without --no-optional-locks; only an
-# index-writing command such as git status does, and the build path runs
-# none. Without the exclusion every build stamped its binary -dirty
-# (issue #3665). The exclusion names the one build-managed sentinel —
-# .gitignore keeps everything else in dist untracked — so any other tracked
-# file stays inside the dirty check.
+# GitDirty is content-true: status compares content, not index stats,
+# because the build path byte-identically rewrites tracked files —
+# build-web wipes and rewrites the tracked dist/PLACEHOLDER, and `make
+# generate` rewrites its tracked outputs — and a stat-based check such
+# as diff-files reads those stale-stat rewrites as modified forever
+# (issue #3665): diff-files never refreshes the index, and the build
+# runs no index-writing command. --no-optional-locks keeps status from
+# writing the index; -uno keeps untracked files out of the flag as
+# before; staged edits count, matching the content-true dirtiness check
+# scripts/ops/deploy-hub.sh runs before the hub build it deploys.
 LDFLAGS := -X primeradiant.com/evener/buildinfo.GitSHA=$$(git rev-parse --short HEAD) \
-           -X primeradiant.com/evener/buildinfo.GitDirty=$$(git --no-optional-locks diff-files --quiet -- ':!cmd/evener-hub/frontend/dist/PLACEHOLDER' && echo "" || echo "true") \
+           -X primeradiant.com/evener/buildinfo.GitDirty=$$(git --no-optional-locks status --porcelain -uno | grep -q . && echo "true" || echo "") \
            -X primeradiant.com/evener/buildinfo.BuildTime=$$(date -u +%Y-%m-%dT%H:%M:%SZ) \
            -X primeradiant.com/evener/buildinfo.Channel=$(BUILD_CHANNEL)
 

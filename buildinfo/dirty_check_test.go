@@ -15,9 +15,9 @@ import (
 // recipe time, right after build-web has churned the tracked
 // dist/PLACEHOLDER — the LDFLAGS comment there carries the full mechanism.
 // These tests pin the contract from the makefile's side: the flag must read
-// "" on the placeholder's delete-and-recreate churn and "true" on a real
-// edit to a tracked file, so it describes the tree the developer invoked the
-// build on (issue #3665).
+// "" on byte-identical churn and on untracked files, and "true" on any edit
+// to a tracked file — in the worktree or staged — so it describes the tree
+// the developer invoked the build on (issue #3665).
 
 // The scratch repo reproduces the real checkout's shape: the SPA build's
 // one tracked sentinel, plus an ordinary source file.
@@ -47,6 +47,17 @@ func dirtyCommandFromMakefile(t *testing.T) string {
 	return command
 }
 
+// runGit runs git in dir with the repository-selection environment stripped.
+func runGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Env = identifier.FilteredGitEnvironment(os.Environ())
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+}
+
 // scratchRepo builds a committed repository holding the tracked placeholder
 // and one ordinary source file, the layout the real checkout has.
 func scratchRepo(t *testing.T) string {
@@ -54,12 +65,7 @@ func scratchRepo(t *testing.T) string {
 	dir := t.TempDir()
 	git := func(args ...string) {
 		t.Helper()
-		cmd := exec.Command("git", args...)
-		cmd.Dir = dir
-		cmd.Env = identifier.FilteredGitEnvironment(os.Environ())
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
+		runGit(t, dir, args...)
 	}
 	git("init", "-q")
 	git("config", "user.email", "test@test.com")
@@ -130,5 +136,27 @@ func TestGitDirtyCommandFlagsRealEdits(t *testing.T) {
 	}
 	if got := gitDirtyValue(t, dirtyCommandFromMakefile(t), dir); got != "true" {
 		t.Fatalf("GitDirty = %q with a real edit to a tracked source file, want \"true\"", got)
+	}
+}
+
+func TestGitDirtyCommandFlagsStagedEdits(t *testing.T) {
+	dir := scratchRepo(t)
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main // edited\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, dir, "add", "main.go")
+	if got := gitDirtyValue(t, dirtyCommandFromMakefile(t), dir); got != "true" {
+		t.Fatalf("GitDirty = %q with a staged edit, want \"true\" — the flag must describe the tree, "+
+			"not only the worktree-versus-index slice", got)
+	}
+}
+
+func TestGitDirtyCommandIgnoresUntrackedFiles(t *testing.T) {
+	dir := scratchRepo(t)
+	if err := os.WriteFile(filepath.Join(dir, "scratch.txt"), []byte("untracked\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := gitDirtyValue(t, dirtyCommandFromMakefile(t), dir); got != "" {
+		t.Fatalf("GitDirty = %q with only an untracked file present, want \"\"", got)
 	}
 }
