@@ -19,7 +19,7 @@
 // canonical skill selections survive a reload next to its text. The v1 key
 // held plain text only; see readComposerDraft for the approved transition.
 import { canonicalSkillNames } from "@evener/appwire-client";
-import type { SkillEditorValue } from "./skillDocument";
+import { patchSelectionText, type SkillEditorValue } from "./skillDocument";
 
 const STORAGE_PREFIX = "evener.composer.draft.v1.";
 const STRUCTURED_STORAGE_PREFIX = "evener.composer.draft.v2.";
@@ -140,10 +140,11 @@ export function writeComposerDraft(ref: string, value: ComposerDraft): void {
   }
 }
 
-// A text edit preserves the draft's selections - chips apply to the request
-// independently of the prose, so editing words never drops a selected skill.
+// Explicit atoms follow their visible labels across text edits. Names-only
+// drafts retain their selections independently of the prose.
 export function writeDraft(ref: string, value: string): void {
-  writeComposerDraft(ref, { ...readComposerDraft(ref), text: value });
+  const current = readComposerDraft(ref);
+  writeComposerDraft(ref, current.mentions ? patchSelectionText(current, value) : { ...current, text: value });
 }
 
 // clearDraft drops a ref's stored draft outright - called on every

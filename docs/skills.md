@@ -349,6 +349,8 @@ They keep explicit skill and command selections as distinct canonical data:
   `{text, skillNames, commandNames?, mentions?}` record. Mention locations
   distinguish command atoms, skill atoms and unselected same-spelling prose.
   Names alone suffice when every matching reference is a skill atom.
+  Text-only edits map retained atoms to their new UTF-16 locations and remove
+  atoms whose labels were deleted, without selecting same-spelling prose.
   Selections survive a reload, a thread
   switch, and a remount next to the text. Changing chips is a draft edit even
   when the text is byte-identical — a delayed commit clears a draft only when
