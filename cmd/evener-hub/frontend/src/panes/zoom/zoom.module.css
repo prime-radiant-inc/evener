@@ -91,6 +91,24 @@
   color: var(--accent-ink);
 }
 
+.stateIndicator {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 8px;
+  height: 8px;
+}
+
+.stateLabel {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
 .content {
   display: flex;
   flex-direction: column;
@@ -189,11 +207,6 @@
 
 .spine .activityLabel {
   display: none;
-}
-
-.spine .state {
-  width: 100%;
-  text-align: center;
 }
 
 .peek {

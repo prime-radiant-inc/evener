@@ -1,5 +1,6 @@
 import { type ReactElement, useState } from "react";
 import { ACTIVITY_TABS, activityTabSpec } from "../../shell/activitybar/activityTabs";
+import { cadenceStateFor, SessionStatusIndicator } from "../../shell/SessionStatusIndicator";
 import type { ActivityScope, ActivityTab } from "../../shell/statusbar/statusScope";
 import { IconButton, Popover } from "../../widgets";
 import { DisclosurePersistenceContext } from "../../widgets/disclosure/disclosureStore";
@@ -15,6 +16,8 @@ const CLASS = {
   activityChip: requireClass(styles.activityChip, "zoom.module.css", "activityChip"),
   activityLabel: requireClass(styles.activityLabel, "zoom.module.css", "activityLabel"),
   state: requireClass(styles.state, "zoom.module.css", "state"),
+  stateIndicator: requireClass(styles.stateIndicator, "zoom.module.css", "stateIndicator"),
+  stateLabel: requireClass(styles.stateLabel, "zoom.module.css", "stateLabel"),
 };
 
 export function ActivityPeek({
@@ -91,11 +94,22 @@ export function ScopeActivityControls({ paneId, scope }: { paneId: string; scope
   );
 }
 
-export function ScopeRuntimeState({ scope }: { scope: ActivityScope }) {
+export function ScopeRuntimeState({ scope, compact = false }: { scope: ActivityScope; compact?: boolean }) {
   const state = scope.activity?.runtime?.status.type;
+  const label = state ? state.charAt(0).toUpperCase() + state.slice(1) : "State unknown";
+  if (compact) {
+    return (
+      <span className={CLASS.stateIndicator} data-runtime-state={state ?? "unknown"} title={label}>
+        <SessionStatusIndicator state={cadenceStateFor(state ?? "")} />
+        <span className={CLASS.stateLabel} data-runtime-label>
+          {label}
+        </span>
+      </span>
+    );
+  }
   return (
     <span className={CLASS.state} data-runtime-state={state ?? "unknown"}>
-      {state ? state.charAt(0).toUpperCase() + state.slice(1) : "State unknown"}
+      {label}
     </span>
   );
 }
