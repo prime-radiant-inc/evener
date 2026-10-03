@@ -1,6 +1,11 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, expect, test } from "vitest";
+import { useStore } from "zustand";
 import { MotionProvider } from "../../motion";
+import { cascadeClient, cascadeContext, cascadeThread } from "../../panes/zoom/cascadeTestUtils";
+import type { SessionZoomParams } from "../../panes/zoom/intent";
+import Zoom from "../../panes/zoom/Zoom";
+import "../../panes/zoom";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { connectionStore } from "../../stores/connection";
 import { sessionActivitySnapshot } from "../../stores/sessionActivity";
@@ -10,9 +15,11 @@ import {
   activityDelegate,
   activitySummary,
 } from "../../stores/sessionActivityTestUtils";
+import { resetThreadsStoreForTests } from "../../stores/threads";
 import { resetDisclosureStoreForTests } from "../../widgets/disclosure/disclosureStore";
+import { ClientProvider } from "../clientContext";
 import { installFocusedScope } from "../statusbar/scopeTestUtils";
-import { currentSessionRef, resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
+import { currentSessionRef, type OpenPaneRecord, resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { ActivitySidebar } from "./ActivitySidebar";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "./activitySidebarStore";
 
@@ -38,6 +45,7 @@ afterEach(() => {
   resetWorkspaceStoreForTests();
   resetActivitySidebarStoreForTests();
   connectionStore.setState({ client: null, state: "idle" });
+  resetThreadsStoreForTests();
 });
 
 test("closed sidebar owns no read and an open tab observes only its own collection", async () => {
@@ -174,36 +182,45 @@ test("Escape dismisses only an unclaimed sidebar gesture", async () => {
   expect(activitySidebarStore.getState().open).toBe(false);
 });
 
-test("delegate drill and proven parent links restore exact scope at the unchanged root URL", async () => {
-  const root = "remote:root",
-    child = "remote:child",
-    grandchild = "remote:grandchild";
-  const client = activityClient();
-  const context = (ref: string) => ({
-    ...activityContext(ref),
-    rootRef: root,
-    ancestors:
-      ref === root
-        ? []
-        : [
-            { ref: root, sessionId: "root", title: "Root work" },
-            ...(ref === grandchild ? [{ ref: child, sessionId: "child", title: "Child work" }] : []),
-          ],
+test("desktop delegate rows build six nested edges in one pane and parent crumbs pop at the unchanged root URL", async () => {
+  const refs = [
+    "remote:root",
+    "remote:child",
+    "remote:grandchild",
+    "remote:fourth",
+    "remote:fifth",
+    "remote:sixth",
+    "remote:seventh",
+  ];
+  const root = refs[0];
+  if (!root) throw new Error("Missing root fixture");
+  const title = (ref: string) => `${ref.slice("remote:".length)} work`;
+  const context = (ref: string) => cascadeContext(ref, refs.slice(0, refs.indexOf(ref)), title);
+  const client = cascadeClient(context);
+  client.on("thread/read", ({ ref, includeTurns, requestGeneration }) => {
+    if (!ref) throw new Error("Missing thread ref");
+    return cascadeThread(ref, requestGeneration, includeTurns !== false, title(ref));
   });
-  client.on("evener/thread/activity/read", ({ ref }) => ({ ...activitySummary(ref), context: context(ref) }));
+  client.on("evener/thread/activity/read", ({ ref }) => ({
+    ...activitySummary(ref),
+    context: context(ref),
+    delegates: { known: true, active: 1, total: 1, failed: 0, completed: 0 },
+    jobs: { known: true, active: refs.indexOf(ref) + 1, total: refs.indexOf(ref) + 101, failed: 0, completed: 100 },
+  }));
   client.on("evener/thread/delegates/list", ({ ref, scope }) => ({
     context: context(ref),
     scope: scope ?? "session",
-    delegates:
-      ref === grandchild
-        ? []
-        : [
-            activityDelegate({
-              ownerRef: ref,
-              childRef: ref === root ? child : grandchild,
-              description: ref === root ? "Open child" : "Open grandchild",
-            }),
-          ],
+    delegates: refs[refs.indexOf(ref) + 1]
+      ? [
+          activityDelegate({
+            ownerRef: ref,
+            rootRef: root,
+            childRef: refs[refs.indexOf(ref) + 1],
+            delegateId: `edge-${refs[refs.indexOf(ref) + 1]}`,
+            description: `Open ${refs[refs.indexOf(ref) + 1]}`,
+          }),
+        ]
+      : [],
     page: { complete: true, issues: [] },
   }));
   connectionStore.getState().connect(client);
@@ -214,18 +231,109 @@ test("delegate drill and proven parent links restore exact scope at the unchange
   });
   window.history.replaceState({}, "", "/s/remote%3Aroot");
   activitySidebarStore.getState().openWith("agents");
-  mount();
-  fireEvent.click(await screen.findByRole("button", { name: /Open child/ }));
-  fireEvent.click(await screen.findByRole("button", { name: /Open grandchild/ }));
-  await screen.findByRole("button", { name: "Child work" });
-  expect(currentSessionRef(workspaceStore.getState())).toBe(grandchild);
-  fireEvent.click(screen.getByRole("button", { name: "Child work" }));
-  await screen.findByRole("button", { name: /Open grandchild/ });
-  expect(currentSessionRef(workspaceStore.getState())).toBe(child);
-  fireEvent.click(screen.getByRole("button", { name: "Root work" }));
-  await screen.findByRole("button", { name: /Open child/ });
+  function JourneyPane() {
+    const pane = useStore(workspaceStore, (state) => state.panes.find((item) => item.id === "root"));
+    return pane?.type === "sessionZoom" ? (
+      <Zoom paneId={pane.id} params={pane.params as SessionZoomParams} focused />
+    ) : null;
+  }
+  const height = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight");
+  Object.defineProperty(HTMLElement.prototype, "offsetHeight", { configurable: true, value: 500 });
+  try {
+    render(
+      <ClientProvider client={client}>
+        <MotionProvider>
+          <JourneyPane />
+          <ActivitySidebar />
+        </MotionProvider>
+      </ClientProvider>,
+    );
+    for (const [index, child] of refs.slice(1).entries()) {
+      const drill = await within(screen.getByTestId("activity-sidebar")).findByRole("button", {
+        name: new RegExp(`Open ${child}`),
+      });
+      await act(async () => fireEvent.click(drill));
+      expect(workspaceStore.getState().panes.find((pane) => pane.id === "root")?.type).toBe("sessionZoom");
+      await screen.findByText(`${child} real content`);
+      expect(screen.getAllByTestId("cascade-column")).toHaveLength(2);
+      expect(screen.queryAllByTestId("cascade-spine")).toHaveLength(index);
+      expect(currentSessionRef(workspaceStore.getState())).toBe(child);
+    }
+    expect(screen.getAllByTestId("cascade-spine")).toHaveLength(5);
+    expect(workspaceStore.getState().panes).toHaveLength(1);
+    expect(workspaceStore.getState().panes.filter((pane) => pane.type === "transcript")).toHaveLength(0);
+    const parent = screen.getAllByTestId("cascade-column")[0];
+    if (!parent) throw new Error("Missing parent column");
+    window.getSelection()?.selectAllChildren(within(parent).getByText("remote:sixth real content"));
+    fireEvent.scroll(within(parent).getByTestId("transcript-virtual-list"));
+    expect(currentSessionRef(workspaceStore.getState())).toBe("remote:seventh");
+    const footer = screen.getByTestId("statusbar");
+    expect(
+      within(footer).getByRole("button", { name: "Jobs, 7 of 107 running - open the activity sidebar" }),
+    ).toBeTruthy();
+    const sidebar = within(screen.getByTestId("activity-sidebar"));
+    fireEvent.click(sidebar.getByRole("button", { name: "child work" }));
+    await sidebar.findByRole("button", { name: /Open remote:grandchild/ });
+    expect(currentSessionRef(workspaceStore.getState())).toBe("remote:child");
+    fireEvent.click(sidebar.getByRole("button", { name: "root work" }));
+    await sidebar.findByRole("button", { name: /Open remote:child/ });
+  } finally {
+    if (height) Object.defineProperty(HTMLElement.prototype, "offsetHeight", height);
+    else Reflect.deleteProperty(HTMLElement.prototype, "offsetHeight");
+  }
   expect(currentSessionRef(workspaceStore.getState())).toBe(root);
   expect(window.location.pathname).toBe("/s/remote%3Aroot");
+});
+
+test("cascade sidebar parent crumbs preserve the requested source alias at its proven ancestor position", async () => {
+  const context = (ref: string) =>
+    ref === "child"
+      ? {
+          ...activityContext(ref),
+          ref: "canonical-child",
+          sessionId: "child-id",
+          rootRef: "canonical-root",
+          parentRef: "canonical-root",
+          delegateId: "d1",
+          ancestors: [{ ref: "canonical-root", sessionId: "root-id", title: "Root" }],
+        }
+      : { ...activityContext(ref), ref: "canonical-root", sessionId: "root-id" };
+  const client = cascadeClient(context);
+  connectionStore.getState().connect(client);
+  installFocusedScope("child");
+  const source = { type: "session" as const, params: { ref: "root-alias" } };
+  const params: SessionZoomParams = {
+    ref: "child",
+    source,
+    edges: [{ ownerRef: "root-alias", childRef: "child", delegateId: "d1" }],
+  };
+  const unrelated: OpenPaneRecord = {
+    id: "unrelated",
+    type: "transcript",
+    params: { ref: "other" },
+    slot: "secondary",
+  };
+  workspaceStore.setState({
+    panes: [{ id: "source", type: "sessionZoom", params, slot: "main" }, unrelated],
+    focusedPaneId: "source",
+  });
+  activitySidebarStore.getState().openWith("agents");
+  mount();
+  const sidebar = within(screen.getByTestId("activity-sidebar"));
+  const parent = await sidebar.findByRole("button", { name: "Root" });
+  await act(async () => fireEvent.click(parent));
+  const pane = workspaceStore.getState().panes.find((item) => item.id === "source");
+  if (!pane) throw new Error("Missing source pane after breadcrumb pop");
+  expect(pane).toMatchObject({
+    id: "source",
+    type: "sessionZoom",
+    slot: "main",
+    params: { ref: "root-alias", edges: [] },
+  });
+  expect((pane.params as SessionZoomParams).source).toBe(source);
+  expect(workspaceStore.getState().focusedPaneId).toBe("source");
+  expect(workspaceStore.getState().panes).toHaveLength(2);
+  expect(workspaceStore.getState().panes.find((item) => item.id === "unrelated")).toBe(unrelated);
 });
 
 test("activity tabs keep a named keyboard radio group without a visible heading", async () => {

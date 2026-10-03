@@ -58,6 +58,8 @@ export interface UseTranscriptScrollOptions {
   measure?: (el: HTMLElement) => ScrollMetrics;
   /** Identity of the currently rendered transcript representation. */
   viewKey?: string;
+  /** A retained reader restores its measured view instead of landing fresh at the end. */
+  initialViewCapture?: CapturedTranscriptView;
   /** Injectable stable-entry geometry seam; production reads data-view-anchor elements. */
   measureAnchors?: (el: HTMLElement) => ViewAnchorPosition[];
   /** All entries in the active representation, including those in virtualized-out rows. */
@@ -431,6 +433,7 @@ export interface UseTranscriptViewRegistrationOptions {
   id: string;
   layout?: string;
   viewKey?: string;
+  initialViewCapture?: CapturedTranscriptView;
   listRef?: RefObject<VirtualListHandle | null>;
   measure?: (el: HTMLElement) => ScrollMetrics;
   measureAnchors?: (el: HTMLElement) => ViewAnchorPosition[];
@@ -464,7 +467,16 @@ export function useTranscriptViewRegistration(
   const { enabled, id, layout, viewKey } = options;
   const optionsRef = useRef(options);
   optionsRef.current = options;
-  const pendingRef = useRef<PendingTranscriptViewRestore | null>(null);
+  const pendingRef = useRef<PendingTranscriptViewRestore | null>(
+    options.initialViewCapture
+      ? {
+          captured: options.initialViewCapture,
+          scrollRequested: false,
+          anchorRestored: false,
+          focusScrollRequested: false,
+        }
+      : null,
+  );
 
   const restoreAfterMeasurement = useCallback(() => {
     const pending = pendingRef.current;
@@ -784,6 +796,7 @@ export function useTranscriptScroll({
   cancelOlder,
   measure = readScrollMetrics,
   viewKey = "everything",
+  initialViewCapture,
   measureAnchors = readAnchorPositions,
   anchorEntries,
   renderedRowCount: renderedRowCountInput,
@@ -1365,7 +1378,8 @@ export function useTranscriptScroll({
       // replaced the earlier per-ref restore of a stored scroll offset — the
       // whole persistence (threads.ts scrollPositions + the debounced writer
       // that lived below) was removed with it, not just bypassed.
-      scrollToLastRow(listRef, renderedRowCountRef.current);
+      if (!initialViewCapture || initialViewCapture.followingBottom)
+        scrollToLastRow(listRef, renderedRowCountRef.current);
       const m = measure(el);
       lastScrollGeometryRef.current = m;
       wasAtBottomRef.current = isAtBottom(m);

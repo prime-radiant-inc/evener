@@ -1,0 +1,228 @@
+.body {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.path {
+  display: flex;
+  flex: 0 0 auto;
+  gap: var(--space-2);
+  overflow-x: auto;
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--edge);
+}
+
+.hint {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  color: var(--ink-low);
+  font-size: var(--font-size-caption);
+}
+
+.track {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.column {
+  display: flex;
+  flex: 0 0 auto;
+  width: 400px;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  border-right: 1px solid var(--edge);
+}
+
+.column[data-leaf] {
+  flex: 1 0 auto;
+  min-width: 440px;
+  width: 440px;
+  border-right: 0;
+}
+
+.column:only-child {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.header {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--edge);
+}
+
+.title {
+  overflow: hidden;
+  margin: 0;
+  color: var(--ink-hi);
+  font-size: var(--font-size-caption);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.heading {
+  min-width: 0;
+}
+
+.state {
+  display: block;
+  overflow: hidden;
+  color: var(--ink-low);
+  font-size: var(--font-size-caption);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.state[data-runtime-state="active"] {
+  color: var(--accent-ink);
+}
+
+.content {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.spine {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  align-items: center;
+  width: 52px;
+  min-height: 0;
+  border-right: 1px solid var(--edge);
+  background: var(--surface-canvas);
+}
+
+.spinePop {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 0;
+  overflow: hidden;
+  padding: var(--space-3) var(--space-2);
+  border: 0;
+  background: transparent;
+  color: var(--ink-low);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  cursor: pointer;
+}
+
+.spineName {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  white-space: nowrap;
+}
+
+.spinePop:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: -2px;
+}
+
+.activityControls {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--edge);
+}
+
+.activityChip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1);
+  min-width: 0;
+  padding: var(--space-1);
+  border: 0;
+  border-radius: var(--radius-pane);
+  background: transparent;
+  color: var(--ink-mid);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.activityChip:hover,
+.activityChip[aria-expanded="true"] {
+  background: var(--hover-1);
+  color: var(--ink-hi);
+}
+
+.activityChip:focus-visible {
+  outline: var(--focus-ring);
+}
+
+.spine .activityControls {
+  flex-direction: column;
+  padding: var(--space-2) var(--space-1);
+  border: 0;
+}
+
+.spine .activityChip {
+  flex-direction: column;
+  gap: 0;
+}
+
+.spine .activityLabel {
+  display: none;
+}
+
+.spine .state {
+  width: 100%;
+  text-align: center;
+}
+
+.peek {
+  width: min(400px, calc(100vw - 32px));
+}
+
+.peekHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border-bottom: 1px solid var(--edge);
+  color: var(--ink-hi);
+  font-size: var(--font-size-caption);
+}
+
+.peekBody {
+  max-height: min(480px, calc(100vh - 96px));
+  overflow: auto;
+  padding: var(--space-2);
+}
+
+@media (max-width: 899px) {
+  .column[data-leaf] {
+    min-width: 0;
+  }
+
+  .column .activityLabel {
+    display: none;
+  }
+}

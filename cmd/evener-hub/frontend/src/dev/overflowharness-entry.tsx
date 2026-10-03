@@ -573,6 +573,10 @@ if (settingsMode) {
     </ClientProvider>,
   );
 } else {
+  workspaceStore.setState({
+    panes: [{ id: "oh", type: "session", params: { ref: activeRef }, slot: "main" }],
+    focusedPaneId: "oh",
+  });
   createRoot(rootEl).render(
     <ClientProvider client={fake}>
       <div id="oh-pane" style={{ width, height: 900 }}>

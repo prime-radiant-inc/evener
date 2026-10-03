@@ -2,11 +2,13 @@ import { afterEach, expect, test, vi } from "vitest";
 import {
   announceTranscriptViews,
   type CapturedTranscriptView,
+  captureTranscriptView,
   captureTranscriptViews,
   prepareTranscriptViewRemount,
   type RegisteredTranscriptView,
   registerTranscriptView,
   resetTranscriptViewRegistryForTests,
+  restoreTranscriptView,
   restoreTranscriptViews,
   transitionTranscriptViews,
 } from "./transcriptViewRegistry";
@@ -134,6 +136,33 @@ test("clears an unconsumed remount capture at the next nonmatching transition", 
 
 afterEach(() => {
   resetTranscriptViewRegistryForTests();
+});
+
+test("single-view capture and restore leave another registered reader untouched", () => {
+  let left = captured("left-anchor");
+  let right = captured("right-anchor");
+  registerTranscriptView({
+    id: "left",
+    capture: () => left,
+    restore: (value) => {
+      left = value;
+    },
+    announce() {},
+  });
+  registerTranscriptView({
+    id: "right",
+    capture: () => right,
+    restore: (value) => {
+      right = value;
+    },
+    announce() {},
+  });
+  expect(captureTranscriptView("left")).toEqual(captured("left-anchor"));
+  restoreTranscriptView("left", captured("saved-left"));
+  expect(captureTranscriptView("left")).toEqual(captured("saved-left"));
+  expect(captureTranscriptView("right")).toEqual(captured("right-anchor"));
+  expect(captureTranscriptView("missing")).toBeUndefined();
+  restoreTranscriptView("missing", captured("missing-anchor"));
 });
 
 test("captures the currently registered views from two panes", () => {

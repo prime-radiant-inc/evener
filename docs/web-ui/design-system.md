@@ -108,6 +108,32 @@ items, with full history behind Open transcript. Omit unavailable counts and tim
 distinguish unavailable activity from an empty loaded transcript. These are provenance
 rules, not permission to fabricate a summary or rewrite stored evidence.
 
+## Agent cascade
+
+Desktop Agents rows drill in place. Keep the selected child and immediate parent
+readable; earlier ancestors become live 52px spines. The parent is 400px wide.
+The leaf flexes with a 440px minimum. Narrow desktop surfaces scroll horizontally
+and reveal the selected leaf instead of squeezing either reader. Parent and
+leaf transcript scrollers remain independent.
+
+Ancestor controls open a scoped peek. Keyboard activation of a delegate replaces
+the path after that ancestor. Tasks remains inside the peek. One Escape closes
+only the topmost peek; the path and sidebar survive. Parent text selection never
+retargets the selected-leaf footer or sidebar.
+
+Only explicit drill, pop or return gestures animate geometry. Reconnect, status
+and late ancestry updates preserve geometry and focus. Reduced motion makes
+geometry changes immediate. Unknown ancestry stays visible rather than inventing
+a root or discarding the retained path.
+
+Return restores the original panel and source work. Open conversation opens an
+independent ordinary session pane. Saved intent preserves the selected ref,
+edges and return descriptor without serializing transcript payloads or image
+bytes. At the existing phone breakpoint, a saved cascade shows only its selected
+read-only content and Return; ordinary Agents activation keeps transcript
+navigation. See the [ownership contract](../product/session-activity.md#automatic-agent-cascade)
+and [real Chrome guard](../../cmd/evener-hub/frontend/scripts/cascadeguard/README.md).
+
 ## Editorial source coverage
 
 The [approved surface scope](../superpowers/specs/2026-09-09-tufte-webui-design.md#other-surfaces)

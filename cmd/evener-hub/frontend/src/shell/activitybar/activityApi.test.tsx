@@ -51,12 +51,18 @@ it("shows incomplete empty as progress then drills the exact stable delegate chi
   expect(screen.queryByText(/No subagents/)).toBeNull();
   await waitFor(() => expect(finish).toBeTypeOf("function"));
   finish?.();
-  fireEvent.click(await screen.findByRole("button", { name: /inspect/ }));
-  const child = workspaceStore.getState().panes.find((pane) => pane.type === "transcript");
-  expect(child?.params).toEqual({ ref: "other:opaque/child", parentRef: "remote:owner" });
-  expect(child?.slot).toBe("secondary");
-  expect(workspaceStore.getState().focusedPaneId).toBe(child?.id);
-  expect(workspaceStore.getState().mainPane()?.id).toBe(root);
+  const inspect = await screen.findByRole("button", { name: /inspect/ });
+  await act(async () => fireEvent.click(inspect));
+  const cascade = workspaceStore.getState().mainPane();
+  expect(cascade?.type).toBe("sessionZoom");
+  expect(cascade?.params).toEqual({
+    ref: "other:opaque/child",
+    source: { type: "session", params: { ref: "remote:owner" } },
+    edges: [{ ownerRef: "remote:owner", childRef: "other:opaque/child", delegateId: "raw-id" }],
+  });
+  expect(cascade?.id).toBe(root);
+  expect(workspaceStore.getState().focusedPaneId).toBe(root);
+  expect(workspaceStore.getState().panes.filter((pane) => pane.type === "transcript")).toHaveLength(0);
   expect(client.calls.filter((call) => call.method === "evener/thread/jobs/list")).toHaveLength(0);
 });
 it("opens job output using the supplied job transcript ref and raw owner", async () => {

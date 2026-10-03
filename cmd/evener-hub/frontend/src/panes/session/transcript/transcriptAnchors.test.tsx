@@ -1,12 +1,16 @@
 import type { ItemModel, ProjectedEntry, ProjectedTurn, ThreadModel, TurnModel } from "@evener/appwire-client";
 import { makeTranscriptDisplayConfig } from "@evener/appwire-client";
-import { fireEvent, render, screen } from "@testing-library/react";
-import { beforeEach, expect, test } from "vitest";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { createRef } from "react";
+import { beforeEach, expect, test, vi } from "vitest";
+import { makeTranscriptPreviewModel } from "../../../transcriptDisplay/previewFixture";
+import type { VirtualListHandle } from "../../../widgets";
 import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
 // Registers the tool descriptors (fsTools' read_file is fold: "quiet") the
 // same way the real session pane does - through TurnBlock's side-effect
 // import of ./tools.
 import "./TurnBlock";
+import { captureTranscriptView, resetTranscriptViewRegistryForTests } from "./flow/transcriptViewRegistry";
 import {
   TranscriptBody,
   type TranscriptTurnRow,
@@ -118,4 +122,86 @@ test("re-entering Full view reopens a run the reader closed there", () => {
   rerender(view("tools"));
   rerender(view("full"));
   expect(run().open).toBe(true);
+});
+
+test("a real body restores the same entry and offset after collapse and an older-row prepend", async () => {
+  const height = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight");
+  Object.defineProperty(HTMLElement.prototype, "offsetHeight", { configurable: true, value: 500 });
+  const geometry = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement,
+  ) {
+    const index = Number(this.dataset.viewAnchorIndex ?? 0);
+    const port = this.closest('[data-testid="transcript-virtual-list"]')?.firstElementChild;
+    const top = this.hasAttribute("data-view-anchor-id") ? index * 500 - (port?.scrollTop ?? 0) : 0;
+    return { x: 0, y: top, top, bottom: top + 120, left: 0, right: 500, width: 500, height: 120, toJSON() {} };
+  });
+  const row = (id: string): TurnModel => ({
+    id,
+    status: "completed",
+    items: [{ id: `${id}-entry`, turnId: id, type: "userMessage", text: id, status: "completed" }],
+  });
+  const model: ThreadModel = {
+    ...makeTranscriptPreviewModel(),
+    ref: "semantic",
+    threadId: "semantic-thread",
+    name: "Semantic",
+    status: { type: "idle" },
+    modelProvider: "scripted",
+    model: "scripted",
+    askPending: false,
+    pendingEscalations: [],
+    turns: [row("current"), row("tail")],
+  };
+  const config = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
+  const firstRef = createRef<VirtualListHandle>();
+  const portOf = (ref: typeof firstRef) => {
+    const port = ref.current?.getScrollElement();
+    if (!port) throw new Error("the real body has no scroll port");
+    Object.defineProperties(port, {
+      scrollHeight: { configurable: true, value: 5000 },
+      clientHeight: { configurable: true, value: 500 },
+    });
+    return port;
+  };
+  try {
+    const first = render(
+      <TranscriptBody
+        model={model}
+        config={config}
+        surface="readOnly"
+        disclosureScope="column-a"
+        viewId="column-a"
+        listRef={firstRef}
+      />,
+    );
+    const originalPort = portOf(firstRef);
+    originalPort.scrollTop = 20;
+    const capture = captureTranscriptView("column-a");
+    expect(capture).toMatchObject({ anchorId: "current-entry", anchorOffset: -20, followingBottom: false });
+    if (!capture) throw new Error("body capture is absent");
+    first.unmount();
+    const returnedRef = createRef<VirtualListHandle>();
+    const returned = render(
+      <TranscriptBody
+        model={{ ...model, turns: [row("older"), ...model.turns] }}
+        config={config}
+        surface="readOnly"
+        disclosureScope="column-a"
+        viewId="column-a"
+        listRef={returnedRef}
+        initialViewCapture={capture}
+      />,
+    );
+    const returnedPort = portOf(returnedRef);
+    await waitFor(() =>
+      expect(captureTranscriptView("column-a")).toMatchObject({ anchorId: "current-entry", anchorOffset: -20 }),
+    );
+    expect(returnedPort.scrollTop).toBe(520);
+    returned.unmount();
+  } finally {
+    geometry.mockRestore();
+    if (height) Object.defineProperty(HTMLElement.prototype, "offsetHeight", height);
+    else Reflect.deleteProperty(HTMLElement.prototype, "offsetHeight");
+    resetTranscriptViewRegistryForTests();
+  }
 });
