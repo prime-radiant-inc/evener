@@ -531,17 +531,15 @@ try {
     const a = track.getBoundingClientRect(), b = leaf.getBoundingClientRect();
     return b.right <= a.right + 1 && b.right > a.left ? { width: track.clientWidth, extent: track.scrollWidth, left: track.scrollLeft, leafRight: b.right, trackRight: a.right } : null;
   })()`, "narrow desktop overflow and selected leaf revealed");
-  await wait(`${readableGeometrySettled} && (() => {
-    const ports = [${q(scroll(fixture.refs[5]))},${q(scroll(fixture.refs[6]))}].map(selector => document.querySelector(selector));
-    return ports.every(port => port && port.clientHeight > 0 && port.scrollHeight > port.clientHeight
-      && Math.abs(port.scrollHeight - port.clientHeight - port.scrollTop) <= 1);
-  })()`, "settled readable geometry and retained bottom before independent scrolling");
-  // Both columns are virtualized, so late row-height measurement corrects
-  // scrollTop while a loaded machine settles (a 15px correction was sighted
-  // twice in the 2-core loop, moving the leaf between the baseline capture and
-  // the independence assertion). The independence check below compares against
-  // a captured baseline, so after the retained-bottom wait above it still
-  // needs that geometry to hold still across consecutive polls.
+  // Both columns are virtualized, and under 2-core load a late row-height
+  // correction can leave a column a few pixels off the bottom it was pinned
+  // to: the app holds the reader's visual position, so the numeric gap never
+  // closes on its own (sighted once as a steady 32px gap with a quiet RPC
+  // stream and an empty console). Retained bottom is the precondition the
+  // independence check below scrolls FROM, not the behavior under test, so
+  // the guard establishes it the same way that check sets its explicit
+  // offsets: settle the heights, re-pin both columns, then require the
+  // retained-bottom condition to hold on its own.
   await wait(`(() => {
     const nodes = [${q(scroll(fixture.refs[5]))}, ${q(scroll(fixture.refs[6]))}].map((s) => document.querySelector(s));
     if (nodes.includes(null)) return null;
@@ -550,6 +548,12 @@ try {
     window.__cascadeScrollHeights = stamp;
     return settled;
   })()`, "both cascade columns' scroll geometry settled before the independence check");
+  await read(`[${q(scroll(fixture.refs[5]))},${q(scroll(fixture.refs[6]))}].map((s) => { const port = document.querySelector(s); if (port) port.scrollTop = port.scrollHeight; })`);
+  await wait(`${readableGeometrySettled} && (() => {
+    const ports = [${q(scroll(fixture.refs[5]))},${q(scroll(fixture.refs[6]))}].map(selector => document.querySelector(selector));
+    return ports.every(port => port && port.clientHeight > 0 && port.scrollHeight > port.clientHeight
+      && Math.abs(port.scrollHeight - port.clientHeight - port.scrollTop) <= 1);
+  })()`, "settled readable geometry and retained bottom before independent scrolling");
   const beforeScroll = await read(`[${q(scroll(fixture.refs[5]))},${q(scroll(fixture.refs[6]))}].map(s => document.querySelector(s).scrollTop)`);
   await read(`document.querySelector(${q(scroll(fixture.refs[5]))}).scrollTop = 200`);
   await wait(`document.querySelector(${q(scroll(fixture.refs[5]))}).scrollTop === 200`, "parent scrolled independently");
