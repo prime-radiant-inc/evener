@@ -5,12 +5,9 @@ import { fileURLToPath } from "node:url";
 import { expect, test } from "vitest";
 import { contextTone, formatWorkDuration, modelLabel, totalWorkMillis } from "./statusFormat";
 
-// formatWorkDuration mirrors the daemon's own compactDuration/formatWorkMillis
-// convention verbatim (cmd/evener-hub/web_format.go:79-102): a session's
-// accumulated work time reads "Ns" under a minute, "Nm" under an hour, "Nh Nm"
-// above - the SAME bucketing the rest of the hub's duration displays use, so
-// the status row's work-time clock doesn't invent a new convention. This is
-// deliberately NOT protocol/displayFormat.ts's formatDurationMs: that one
+// A session's accumulated work time reads "Ns" under a minute, "Nm" under an
+// hour, and "Nh Nm" above. This is deliberately separate from
+// protocol/displayFormat.ts's formatDurationMs: that one
 // is scoped to short tool-call durations (sub-second precision, no hour
 // bucket) - work time can span a whole session, hours included.
 test("clamps a zero or negative duration up to the honest minimum of 1 second", () => {
