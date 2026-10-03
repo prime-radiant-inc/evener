@@ -1,7 +1,12 @@
 .PHONY: build build-runtime build-go build-hub web-preflight build-web build-dev build-all build-linux build-llmcall dist install install-home install-system test-install
 
+# GitDirty must stay blind to frontend/dist: build-web wipes the tracked
+# dist/PLACEHOLDER and vite writes it back at closeBundle (build-web comment
+# below), and with --no-optional-locks git can never refresh the index's
+# stale stat for the recreated file — without the exclusion every build
+# stamps its binary -dirty (issue #3665).
 LDFLAGS := -X primeradiant.com/evener/buildinfo.GitSHA=$$(git rev-parse --short HEAD) \
-           -X primeradiant.com/evener/buildinfo.GitDirty=$$(git --no-optional-locks diff-files --quiet && echo "" || echo "true") \
+           -X primeradiant.com/evener/buildinfo.GitDirty=$$(git --no-optional-locks diff-files --quiet -- ':!cmd/evener-hub/frontend/dist' && echo "" || echo "true") \
            -X primeradiant.com/evener/buildinfo.BuildTime=$$(date -u +%Y-%m-%dT%H:%M:%SZ) \
            -X primeradiant.com/evener/buildinfo.Channel=$(BUILD_CHANNEL)
 
