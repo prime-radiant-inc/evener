@@ -146,12 +146,20 @@ test("retargeting restores each public session's own category and fold while an 
   expect(screen.queryByRole("button", { name: /History for/ })).toBeNull();
   act(() => activitySidebarStore.getState().setTab("watches"));
   fireEvent.click(await screen.findByText("Release monitor"));
+  act(() => activitySidebarStore.getState().setTab("about"));
+  await screen.findByText("owner");
   act(() => installFocusedScope(ref));
   await screen.findByRole("button", { name: /History for remote:owner/ });
   expect(activitySidebarStore.getState().tab).toBe("jobs");
   act(() => activitySidebarStore.getState().setTab("watches"));
   await screen.findByText("Release monitor");
   expect(screen.queryByTestId("watch-facts")).toBeNull();
+  act(() => installFocusedScope(otherRef));
+  await screen.findByText("owner");
+  expect(activitySidebarStore.getState().tab).toBe("about");
+  act(() => installFocusedScope(ref));
+  await screen.findByText("Release monitor");
+  expect(activitySidebarStore.getState().tab).toBe("watches");
 });
 
 test("an explicitly closed saved sidebar starts no activity read on reload and keeps its chosen tab", async () => {
@@ -216,6 +224,10 @@ test("inactive agent disclosure and locally revealed rows survive reload without
   fireEvent.click(await screen.findByRole("button", { name: /Inactive subagents/ }));
   fireEvent.click(screen.getByRole("button", { name: /Show 1 more/ }));
   expect(screen.getByRole("button", { name: /Finished check 20/ })).toBeTruthy();
+  fireEvent.click(screen.getByRole("radio", { name: "About" }));
+  await screen.findByText("owner");
+  fireEvent.click(screen.getByRole("radio", { name: /Agents/ }));
+  await screen.findByRole("button", { name: /Finished check 20/ });
   clearLiveState();
 
   connectionStore.getState().connect(makeClient());

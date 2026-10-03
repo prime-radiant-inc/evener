@@ -222,6 +222,16 @@ test("delegate drill and proven parent links restore exact scope at the unchange
   fireEvent.click(screen.getByRole("button", { name: "Child work" }));
   await screen.findByRole("button", { name: /Open grandchild/ });
   expect(currentSessionRef(workspaceStore.getState())).toBe(child);
+  fireEvent.click(screen.getByRole("radio", { name: "About" }));
+  await screen.findByText("owner");
+  fireEvent.click(screen.getByRole("button", { name: "Root work" }));
+  await screen.findByRole("button", { name: /Open child/ });
+  expect(currentSessionRef(workspaceStore.getState())).toBe(root);
+  expect(activitySidebarStore.getState().tab).toBe("agents");
+  fireEvent.click(screen.getByRole("button", { name: /Open child/ }));
+  await screen.findByText("owner");
+  expect(currentSessionRef(workspaceStore.getState())).toBe(child);
+  expect(activitySidebarStore.getState().tab).toBe("about");
   fireEvent.click(screen.getByRole("button", { name: "Root work" }));
   await screen.findByRole("button", { name: /Open child/ });
   expect(currentSessionRef(workspaceStore.getState())).toBe(root);
