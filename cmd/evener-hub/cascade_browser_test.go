@@ -3,6 +3,7 @@
 package hub
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -289,9 +290,15 @@ func TestAgentCascadeBrowser(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer log.Close()
-	driver := exec.CommandContext(ctx, "node", "frontend/scripts/cascadeguard/run.mjs", string(body))
+	driver := exec.CommandContext(ctx, "node", "frontend/scripts/cascadeguard/run.mjs")
+	driver.Stdin = bytes.NewReader(body)
 	driver.Stdout, driver.Stderr = log, log
 	driver.WaitDelay = 15 * time.Second
+	for _, arg := range driver.Args {
+		if strings.Contains(arg, stack.token) {
+			t.Fatal("cascade driver exposes the fixture auth token in process arguments")
+		}
+	}
 	if err := driver.Run(); err != nil {
 		skillGuardLogDriverTail(t, log.Name())
 		t.Fatalf("production cascade journey: %v, evidence: %s", err, artifacts)

@@ -18,6 +18,9 @@ root siblings and a six-edge chain through the daemon. The public hub returns
 52 direct root delegates and the real ordered ancestry. Chrome opens the
 production SPA and activates those actual delegate rows.
 
+Go passes the authenticated fixture JSON through Node's stdin pipe, keeping
+its auth URL out of process arguments and environment variables.
+
 The guard checks:
 
 - Two readable columns and five 52px ancestor spines at depth six, a 400px

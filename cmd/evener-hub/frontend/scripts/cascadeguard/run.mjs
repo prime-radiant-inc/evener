@@ -6,7 +6,7 @@ import path from "node:path";
 import { Driver } from "../skillguard/run.mjs";
 import { evaluate, navigateTo } from "../browserGuardCdp.mjs";
 
-const fixture = JSON.parse(process.argv[2]);
+const fixture = JSON.parse(readFileSync(0, "utf8"));
 const driver = new Driver(fixture);
 const q = JSON.stringify;
 const column = (ref) => `[data-testid="cascade-column"][data-scope-ref=${q(ref)}]`;
