@@ -1,11 +1,11 @@
 // One visible Reader's recovering demand. Bytes and native image events publish
 // only for the complete captured identity, never under a replacement's title.
-import type { FileReference } from "../../../appwire-client/typescript/fileReferences";
 import {
 	createDocumentReadDemand,
 	type DocumentReadAttempt,
 	type DocumentReadOutcome,
-} from "../../../appwire-client/typescript/documentReadDemand";
+	type FileReference,
+} from "@evener/appwire-client/docContent";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppState } from "react-native";
 import { useConnection } from "../ConnectionProvider";

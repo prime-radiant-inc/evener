@@ -1,5 +1,5 @@
 import { isPlainObject } from "@evener/appwire-client";
-import type { FileReference } from "../../appwire-client/typescript/fileReferences";
+import type { FileReference } from "@evener/appwire-client/docContent";
 import { decodeForkTarget, type ForkTarget } from "./forkCheckpointRepository";
 import { localSessionId } from "./sessionDeletionResult";
 import { isSheetRoute } from "./sheet/sheetRoutes";

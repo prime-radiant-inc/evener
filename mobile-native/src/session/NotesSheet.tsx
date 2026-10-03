@@ -4,8 +4,7 @@
 // controller and provides it here through notesHosts, so a save the sheet
 // starts as it closes finishes after the sheet has gone.
 import type { ThreadModel } from "@evener/appwire-client";
-import { bindFilePath } from "../../../appwire-client/typescript/fileReferences";
-import { cwdRelative, fileURLToPath } from "@evener/appwire-client/docContent";
+import { bindFilePath, cwdRelative, fileURLToPath } from "@evener/appwire-client/docContent";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import * as Clipboard from "expo-clipboard";
 import { SymbolView } from "expo-symbols";

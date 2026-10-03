@@ -4,7 +4,7 @@
 // with (its params are plain data), so it needs no host. Tapping a row closes
 // the sheet, then opens the document in the Reader over the session.
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { bindFilePath } from "../../../appwire-client/typescript/fileReferences";
+import { bindFilePath } from "@evener/appwire-client/docContent";
 import { FlatList, Pressable, Text, View } from "react-native";
 import { fonts } from "../design/tokens";
 import type { Routes } from "../screens";

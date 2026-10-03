@@ -4,8 +4,7 @@
 // on its paragraphs and list items, and remembers what you read when you
 // leave. It recovers while visible, and its existing Document actions menu
 // offers Reload for files or permissions that changed.
-import { rebindFileReference, type FileReference } from "../../../appwire-client/typescript/fileReferences";
-import { docImageReadURL } from "@evener/appwire-client/docContent";
+import { docImageReadURL, rebindFileReference, type FileReference } from "@evener/appwire-client/docContent";
 import type { NativeStackHeaderItem, NativeStackScreenProps } from "@react-navigation/native-stack";
 import { SymbolView } from "expo-symbols";
 import * as SecureStore from "expo-secure-store";

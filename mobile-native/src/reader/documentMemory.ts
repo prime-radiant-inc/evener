@@ -5,7 +5,7 @@
 // expo-sqlite's kv-store under per-hub keys that ConnectionProvider.removeHub
 // clears.
 import { isPlainObject } from "@evener/appwire-client";
-import type { FileReference } from "../../../appwire-client/typescript/fileReferences";
+import type { FileReference } from "@evener/appwire-client/docContent";
 import { readJson, removeKeys, writeJson } from "../deviceStorage";
 import type { SyncStringStorage } from "../syncStringStorage";
 

@@ -1,5 +1,5 @@
 import type { CellRendererProps } from "@react-native/virtualized-lists";
-import { bindFilePath, type FileReference } from "../../appwire-client/typescript/fileReferences";
+import { bindFilePath, type FileReference } from "@evener/appwire-client/docContent";
 import { useHeaderHeight } from "@react-navigation/elements";
 import type { NavigatorScreenParams } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
