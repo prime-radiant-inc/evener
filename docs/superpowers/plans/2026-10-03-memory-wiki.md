@@ -10,6 +10,8 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-03-memory-wiki-design.md`. Original design approved at `1eb8957902c145342e38c78ba033e8c717c03db2`; the same file now records Jesse's approved 2026-10-03 request/time-limit amendment.
 
+**Receipt-pagination amendment:** Jesse settled “Large memory change records” with “Page large records” on 2026-10-03. Keep allowed edits and the 8 KiB history-read ceiling; explicit continuations retrieve complete records. Task 1's pure planner exists at `530cdf49941ff2603323f72e9c2ff26e41603cd9`; Tasks 2–8 are not implemented at this amendment boundary. The amendment below changes only proposed history delivery, its Task 3 interface/tests and affected downstream consumers. It does not reopen design, plan or eval approval. The local amendment commit is a frozen draft for parent review and scoped PAR, not acceptance or implementation evidence.
+
 ## Global Constraints
 
 - Personal memory crosses projects on the same host. Project memory follows Evener project identity, including linked worktrees.
@@ -26,6 +28,7 @@
 - Automatic index refresh uses nonblocking acquisition of both locks, a separate finite read/recovery deadline, and no overlapping in-flight attempts for a scope.
 - A replay checks the persisted operation receipt before rejecting an old expected revision. It returns the original outcome and current revision without reapplying.
 - Correction evidence belongs in active pages, not metadata-only receipts.
+- Durable receipts, replay outcomes and transaction after-images include every affected page. History pages canonical receipt JSON within the existing 8 KiB read ceiling; neither submitted page operations nor affected pages are silently capped to fit a reply.
 - Default tests use fixture-owned roots, no network, no credentials, no ambient personal wiki or history. A scripted provider is allowed only at the LLM boundary.
 - No vectors, transcript ingestion, recall agent, background gardener, sync, wiki UI, new service, compatibility layer, direct-edit adoption, or generic filesystem exemption.
 - Jesse approved this written plan with request/time limits. Execute with Sol 6.1 subagents after the budget amendment's scoped PAR review.
@@ -37,6 +40,7 @@
 3. A restored read-only delegate must retain useful memory writes without regaining withheld tools/scopes or repository writes: Task 4, `TestMemoryDelegateRestoreCeilingAndReadOnlyKernel`.
 4. Counterfeit framing and deletion of the last page must not make historical memory appear authoritative/current: Task 5, `TestMemoryProjectionHostileFraming`, `TestMemoryProjectionNowEmptyAndRebound`.
 5. Metadata corruption, symlink substitution, or unsupported direct edits must preserve the actual bytes, not turn into an empty wiki or an implicit repair: Tasks 2 and 3, `TestStoreCorruptAndDirectEditPreserved`, `TestMemoryToolCannotEscapeBinding`.
+6. A legal index-only summary rename can affect 100 pages without any submitted page operations: Task 3, `TestMemoryChangesLargeIndexOnlyReceiptReassembly`, must retrieve the entire receipt through bounded replies without weakening edit limits or durable metadata.
 
 ---
 
@@ -90,7 +94,7 @@ Every path in the task lists is exact. All `agent/memory/*`, memory-specific tes
 | --- | --- | --- |
 | `agent/memory/types.go`, `validate.go`, `index.go`, `links.go` | Wire/domain values, final-state validation, lossless index rows, inline local links | Task 1 |
 | `agent/memory/store.go`, `transaction.go`, `io_unix.go`, `io_other.go`, `lock.go`, `lock_unix.go`, `lock_other.go` | Real storage, secure descriptor operations, dual locks, recoverable after-images, receipts | Task 2 |
-| `agent/memory/read.go`, `search.go` | Revision-bound read/search pagination and bounded scanning | Task 3 |
+| `agent/memory/read.go`, `search.go`; history-only interface revision in `agent/memory/types.go` | Revision-bound read/search pagination, canonical receipt text delivery and bounded scanning | Task 3 |
 | `agent/session_memory.go`, `session_tools_memory.go`, `agent/internal/tool/definitions_memory.go`, `cmdutil/memory.go` | Explicit binding, stores, native handlers and trusted launch binding | Task 3 |
 | `agent/schema/memory.go` | Durable identity/grant ceiling and typed projection shapes | Task 3, extended Task 5 |
 | `agent/session_memory_context.go` | Direct current/empty/stale/unavailable index projection and refresh lifecycle | Task 5 |
@@ -103,11 +107,13 @@ No new RPC or screen. Client production changes are conditional on a reproduced 
 
 ## Proposed contracts, fixed before neighboring tasks start
 
-All declarations and storage names in this section are **proposed**, not existing APIs. Implement these shapes rather than letting different tasks invent incompatible interfaces. Public JSON is snake_case. Go examples omit no required algorithm behind an undefined helper.
+These are target contracts, not claims that the Store or read algorithms exist. Task 1 has declared the domain values in `agent/memory/types.go`; Store methods and Tasks 2–8 remain proposed. Implement these shapes rather than letting different tasks invent incompatible interfaces. Public JSON is snake_case. Go examples omit no required algorithm behind an undefined helper.
 
 ### Store and request/result types: Task 1 definitions, Tasks 2/3 implementation
 
 In `agent/memory/types.go`:
+
+The inspected Task 1 file has `ReadResult.Content` (`:131`), `Changes []Receipt` (`:133`), `Truncated`/`Next` (`:134–135`) and `Cursor.Sequence`/`ByteOffset` (`:119`/`:118`). The target shape below removes `Changes` in Task 3 and uses `Content` for canonical history text, avoiding a second typed-fragment hierarchy. Task 1 is not reopened and supplies no fake read implementation. No compatibility path for the unshipped `changes` result field is required or authorized. Durable `Receipt` and `ApplyResult.Receipt` are unchanged.
 
 ```go
 package memory
@@ -232,7 +238,6 @@ type ReadResult struct {
     Empty bool `json:"empty"`
     Content string `json:"content,omitempty"`
     Dates *PageMeta `json:"dates,omitempty"`
-    Changes []Receipt `json:"changes,omitempty"`
     Truncated bool `json:"truncated"`
     Next *Cursor `json:"next,omitempty"`
 }
@@ -287,11 +292,25 @@ func (s *Store) TryIndex(ctx context.Context, limitBytes int) (IndexResult, erro
 
 ### Read/search continuation semantics
 
-Read targets are exactly `index`, `page`, `changes`. `page_id` is required only for `page`. Default LimitBytes is 4096, range 256–8192. Content paging uses raw UTF-8 byte offsets cut before a split rune, emits exact concatenable source bytes, and reports total scope revision. Changes return at most 16 complete receipts and at most 8192 serialized bytes; one bounded receipt always fits. Cursor Scope must equal the authorized request scope. StoreID is the lowercase SHA-256 of the JSON tuple `[Scope, filepath.Clean(Options.Root)]`, computed by NewStore and checked on every continuation. It is a consistency key, never an authorization token or filesystem path. Cursor Target is `index`, the validated page ID, or `changes`; it must match the request target. Revision mismatch gives `stale_cursor` even if the requested page is unchanged. A cursor from another project/store rejects even when scope, revision and query happen to match.
+Read targets are exactly `index`, `page`, `changes`. `page_id` is required only for `page`. Zero/omitted LimitBytes defaults to 4096. For index/page the accepted range remains 256–8192 raw content bytes; content paging uses UTF-8 byte offsets cut before a split rune and emits exact concatenable source bytes. For changes the accepted range is **512–8192 bytes of the entire serialized ReadResult**. Nonzero values below the applicable minimum, negative values or values above 8192 return `invalid_input`, not clamping or an empty nonadvancing page. The history minimum accommodates the cursor/envelope plus at least one encoded rune; it changes no edit limit. Every successful read reports total scope revision.
+
+Cursor Scope must equal the authorized request scope. StoreID is the lowercase SHA-256 of the JSON tuple `[Scope, filepath.Clean(Options.Root)]`, computed by NewStore and checked on every continuation. It is a consistency key, never an authorization token or filesystem path. Cursor Target is `index`, the validated page ID, or `changes`; it must match the request target. Revision mismatch gives `stale_cursor` even if the requested page is unchanged. Wrong store/scope/kind/target or malformed positions give `invalid_input`. A cursor from another project/store rejects even when scope, revision and query happen to match. Authorize first; a cursor never expands access.
+
+#### History wire and boundaries: Task 3
+
+History returns **only Content**, not `Changes []Receipt` or typed partial receipts. The outer ReadResult is always complete valid JSON. Its decoded Content is a concatenable fragment of a UTF-8 JSON-lines stream: for each observable receipt in ascending Sequence, standard Go `encoding/json.Marshal(Receipt)` with default HTML escaping, no indentation, followed by exactly one LF. Re-marshal the complete persisted Receipt to this canonical delivery encoding, independent of storage whitespace. No-op receipts remain excluded. Do not parse a fragment as a complete Receipt; accumulate through the LF and only then decode that record. JSON string escapes contain no literal LF, so each LF unambiguously completes one record. Only bytes at UTF-8 rune boundaries may be cut; splitting a JSON escape or token across replies is allowed because fragments are text, not standalone receipt JSON. The resulting concatenation must equal the canonical stream byte-for-byte.
+
+An initial request without Cursor starts at `(Sequence=1, ByteOffset=0)`. A history cursor uses Kind=`changes`, Target=`changes`, the authorized Scope, StoreID and current Revision. Sequence identifies the **next record to read**, not the last returned record; ByteOffset is the next raw byte in that record's canonical JSON-plus-LF. QueryHash and FileOrdinal must be absent/zero. Sequence is in `1..ChangeSequence+1`; for a live record ByteOffset is `0..len(record)-1` and must be a UTF-8 rune boundary. A position exactly at `len(record)` is noncanonical and rejected: crossing its LF advances to `(Sequence+1,0)`. The sole exhausted position is `(ChangeSequence+1,0)`; a larger sequence or nonzero exhausted offset rejects. A missing committed sequence or malformed stored receipt is `inconsistent`, not an omitted record. Positions do not refer to page bodies or escaped outer-string offsets.
+
+Each call may touch at most **16 distinct receipts**, including an initial resumed partial receipt and a final partial receipt. Stop at the earlier of that limit, the byte budget or stream end. This retains the 16-receipt-per-call bound without requiring any one receipt to fit: one large record can occupy many calls, each touching just that record. After consuming the 16th record's LF, stop before the 17th even if bytes remain. No affected-page count limit is inferred from the 16 submitted-page-operation bound.
+
+Budget the actual `len(json.Marshal(ReadResult))` that the handler sends as Output: all field names, scope/revision/empty flags, Content quotes and escaping, Truncated and the full Next cursor count. Do not budget raw receipt bytes, raw Content length or only the receipt array. Build the largest nonempty rune-aligned prefix that fits with its actual final flags/cursor, under the 16-record bound. At stream end Next is omitted; otherwise Next points to the first unreturned byte and Truncated=true. JSON escaping is applied twice where appropriate, once inside canonical receipt JSON and again around Content. Quotes, backslashes, control characters, HTML-sensitive characters, U+2028/U+2029 and multibyte UTF-8 must never evade accounting. The existing complete-output handler must send those same marshaled bytes, with no silent generic truncation.
+
+Every nonterminal reply contains at least one raw stream byte and its Next advances lexicographically by `(Sequence,ByteOffset)` from the incoming position. Offset may reset only when Sequence advances. `Next.ByteOffset>0` explicitly means a record is partial; zero means the next record boundary. Truncated means more stream bytes exist, not necessarily that the final returned record is partial. Each LF signals record completion, including on the terminal reply, which has Truncated=false and Next=nil. An empty log or a valid exhausted cursor returns omitted/empty Content, Truncated=false, Next=nil, within budget. Empty keeps its existing meaning of no live pages, not no history: a deleted-to-empty wiki can still have nonempty history. Dates is omitted for changes. A caller follows explicit Next values under one revision and concatenates decoded Content; no record or affected-page entry may be dropped, duplicated or presented as complete prematurely.
 
 Search is literal, never regex or a path glob. Query is 1–256 UTF-8 bytes, Limit defaults to 20, range 1–50; JSON schema default for case_insensitive is true and the handler supplies it when absent. Ordering is index first, then bytewise page-ID order, then source byte offset. One hit per matching line per page, snippets at most 240 UTF-8 bytes, source ByteOffset at line start. Case-insensitive comparison uses Unicode simple case folding through `strings.EqualFold` over rune windows; punctuation stays literal, and offsets refer to original bytes. Do not lowercase source text and then return offsets into transformed text.
 
-One call inspects at most 1 MiB of body/index bytes or 128 files, whichever comes first, plus context cancellation. Files up to 64 KiB are read/hash-verified whole before scanning, and that whole read counts toward the scan budget. Resume at the next unexamined line; count remaining prefix verification bytes again on later calls. The cursor has revision, target `scope`, kind `search`, query_hash (SHA-256 of normalized request Query and CaseInsensitive), FileOrdinal and ByteOffset. Read cursor kinds are `read` and `changes`. Reject wrong kind/target/query digest, negative/out-of-range ordinals/offsets, offsets inside a rune or a non-line boundary for search, and sequence past committed ChangeSequence. No cursor contains a host path. Cursors are resume positions, not authorization tokens; knowing or constructing a cursor never expands grants. Changed requests require a fresh cursor. Exhaustion returns Truncated and Next, even with zero hits. A complete empty result returns an empty hit slice with Truncated false.
+One call inspects at most 1 MiB of body/index bytes or 128 files, whichever comes first, plus context cancellation. Files up to 64 KiB are read/hash-verified whole before scanning, and that whole read counts toward the scan budget. Resume at the next unexamined line; count remaining prefix verification bytes again on later calls. The cursor has revision, target `scope`, kind `search`, query_hash (SHA-256 of normalized request Query and CaseInsensitive), FileOrdinal and ByteOffset. Index/page read cursor kind is `read`; history uses `changes` with the sequence/offset rules above. Reject wrong kind/target/query digest, negative/out-of-range ordinals/offsets, offsets inside a rune or a non-line boundary for search, and inappropriate cursor fields. No cursor contains a host path. Cursors are resume positions, not authorization tokens; knowing or constructing a cursor never expands grants. Changed targets/queries require a fresh cursor; changing accepted LimitBytes on a read continuation is allowed because it does not change the stream. Search scan-budget exhaustion returns Truncated and Next, even with zero hits. A complete empty result returns an empty hit slice with Truncated false.
 
 ### Storage/atomicity contract: Task 2
 
@@ -307,6 +326,8 @@ One call inspects at most 1 MiB of body/index bytes or 128 files, whichever come
 ```
 
 Format version is 1. Metadata has the normalized index hash and each current page's hash/dates, never page bodies. A receipt persists only the fixed fields above; actor identity comes from the session, not the model's intent. `.changes` contains the same metadata-only receipt for observable changes; `.receipts` also contains no-op receipts. There is no receipt body/explanation/free-form quote field and no old-body archive. Receipt and change sequence filenames are core-generated. Idempotency receipts are not age-pruned in v1. A deleted page is absent from Metadata.Pages; recreating it is a new incarnation.
+
+These durable receipts and pending after-images remain complete, including implicit affected pages from index-only semantic edits. History text paging is solely Task 3's delivery concern; Task 2 must not truncate, fragment or reject a receipt to make it fit a read reply. Replay still returns the original complete Receipt.
 
 Proposed transaction shape in `transaction.go`:
 
@@ -409,6 +430,8 @@ Proposed `cmdutil.BindMemory(hostStateRoot string, workDir string, resolver iden
 **Interfaces:**
 - Consumes: existing Goldmark `parser`/`ast` and `identifier` policy only where needed, no session state.
 - Produces: all proposed domain values above; proposed internal `buildBatch(current Snapshot, request ApplyRequest, actor Actor, now time.Time) (pendingTransaction, bool, error)`. The transaction struct is defined in Task 2; place its declaration in `types.go` initially so Task 1 does not depend on an unimplemented Store. `bool` says whether wiki revision changes. `parseIndex`, `renderIndex`, `localLinks` have the exact shapes above. `buildBatch` only computes/validates after-images; no filesystem persistence yet, and no fake Apply API.
+
+The receipt-pagination amendment does not add Task 1 work. Its existing pure planner keeps all affected-page metadata; Task 3 owns the history-only ReadResult revision and reader/tests. Do not backfill a placeholder Read into Task 1.
 
 - [ ] **Step 1: Write failing date/coverage/identity tests with concrete final-state inputs.** Use package `memory`, standard `testing`, `context`, `time`, `strings` as needed. This focused complete test exercises the pure parser, not a mocked result:
 
@@ -563,15 +586,16 @@ For subprocess tests use `exec.Command(os.Args[0], "-test.run=^TestMemoryProcess
 
 **Files:**
 - Create: `agent/memory/read.go`, `agent/memory/search.go`, `agent/session_memory.go`, `agent/session_tools_memory.go`, `agent/internal/tool/definitions_memory.go`, `agent/schema/memory.go`, `cmdutil/memory.go`, `docs/tools/memory.md`
+- Modify: `agent/memory/types.go` only to remove `ReadResult.Changes` and document Content/history cursor semantics; no durable Receipt, ApplyResult, transaction or planner changes
 - Modify: `agent/session.go`, `agent/session_config.go`, `agent/session_init.go`, `agent/schema/config_snapshot.go`, `agent/schema/snapshot.go`, `agent/session_tool_registry.go`, `cmd/evener/run.go`, `cmd/evener/serve.go`
 - Test: `agent/memory/read_test.go`, `agent/memory/search_test.go`, `agent/session_memory_tools_test.go`, `agent/session_memory_binding_test.go`, `agent/internal/tool/definitions_memory_test.go`, `cmdutil/memory_test.go`, `cmd/evener/memory_launch_test.go`
 
 **Interfaces:**
-- Consumes: Task 2 Store and Task 1 request/error types; existing `tool.Registry`, `tool.StateResult`, explicit SessionConfig.Project, `identifier.ResolveProjectWith`.
+- Consumes: Task 2 Store and complete durable receipts, Task 1 request/error types and existing Content/Sequence/ByteOffset fields; existing `tool.Registry`, `tool.StateResult`, explicit SessionConfig.Project, `identifier.ResolveProjectWith`.
 - Produces: complete Store.Read/Search; binding types/BindMemory above; proposed `registerMemoryTools(reg *tool.Registry, deps *toolDeps) error`; proposed `tool.DefMemoryRead()`, `DefMemorySearch()`, `DefMemoryApply()` returning `llm.ToolDefinition`; proposed toolDeps fields `memoryBinding func() MemoryBinding`, `memoryStore func(memory.Scope) (*memory.Store,error)`, `memoryActor func() memory.Actor`.
 - Proposed Session field `memoryStores map[memory.Scope]*memory.Store`, accessed under an independent memory config mutex; construction is lazy and does not acquire protocol locks under Session.mu. Snapshot Memory captures only identity/grants. Apply success does not itself append an index; Task 5 refreshes on the next model boundary.
 
-- [ ] **Step 1: Write failing tool/schema/launch cases.** Add exact machine schemas in `definitions_memory_test.go`: scope enum personal/project, required expected_revision/operation_id/pages, put Body requirements enforced in Store, optional index and revision-bound cursors; additional properties false. The complete session test below verifies no ambient memory advertisement using existing test helpers:
+- [ ] **Step 1: Write failing tool/schema/launch cases.** Add exact machine schemas in `definitions_memory_test.go`: scope enum personal/project, required expected_revision/operation_id/pages, put Body requirements enforced in Store, optional index and revision-bound cursors; additional properties false. Read schema/handler tests cover LimitBytes zero/default, index/page 256–8192 versus history 512–8192 and target-specific cursor validation. The complete session test below verifies no ambient memory advertisement using existing test helpers:
 
 ```go
 func TestMemoryUnboundConfigHasNoTools(t *testing.T) {
@@ -589,7 +613,12 @@ Also implement these effect-based tests:
 | --- | --- |
 | `TestMemoryToolPutReadSearchRealFiles` | Script fakeAdapter tool requests through ProcessInput, create page/index through memory_apply, read and search. Reopen raw Markdown/metadata and assert actual bytes/revision; Output JSON and TOOL_CALL_END retain scope. Do not invoke a fake handler. |
 | `TestMemoryToolCannotEscapeBinding` | Bound read-only scope, withheld write, forged scope/project ID/path/cursor, symlink topic, duplicate ops/oversize input. Typed failures and unchanged fixture outside canary; unrelated file-read tool still usable. |
-| `TestMemoryReadContinuationAndChangedRevision` | Page >8192 bytes with multi-byte UTF-8, concatenate pages to exact source; mutate between pages and reject cursor; wrong target/revision/offset rejects. Changes returns only observable metadata receipts, deterministic sequence, no body or no-op. |
+| `TestMemoryReadContinuationAndChangedRevision` | Page >8192 bytes with multi-byte UTF-8, concatenate pages to exact source; mutate between pages and reject cursor; wrong target/revision/offset rejects. History emits only observable metadata receipt text, deterministic sequence, no body or no-op; use the history tests below rather than assuming one receipt fits. |
+| `TestMemoryChangesLargeIndexOnlyReceiptReassembly` | Port the frozen I2 reproduction: 100-page snapshot, zero submitted PageOperations, rename all summaries, 7590-byte normalized index and 19545-byte pure-planner receipt. Fix literal clock/actor/IDs/bodies/summaries and assert those reproduction sizes before Store-owned digest enrichment. Then seed the same snapshot through real legal batches (at most 16 puts per batch), apply the index-only edit, close/reopen and page its complete committed receipt with default and 8192 limits. Each run requires >1 reply. Independently derive all 100 expected affected page IDs/kinds/before/after hashes, index hashes and revisions from fixture bytes; compare raw durable `.receipts`/`.changes`, replay and reassembled receipt. Compare concatenated Content to separately marshaled complete persisted receipts plus LF, decode only completed lines, and assert every expected affected entry exactly once. No edit rejection or smaller durable receipt is an acceptable fix. |
+| `TestMemoryChangesSerializedBudgetEscapingAndUTF8` | Use real Apply with fixture actor/session strings containing quotes, backslashes, control LF/tab, `<>&`, U+2028/U+2029 and multibyte UTF-8. At 512, 4096/default and 8192, independently marshal each returned full ReadResult and assert its byte length <= accepted LimitBytes; also compare actual session Output bytes to that encoding and bound. Require valid outer JSON/UTF-8; permit a split inner JSON escape/token and reconstruct literal expected values. Include a raw Content prefix that fits but its escaped outer JSON does not, and a record that only fits when terminal Next is omitted. Test maximum-width revision/sequence/offset envelope accounting separately to prove 512 leaves room for an encoded rune. |
+| `TestMemoryChangesSixteenRecordBoundAndExactExhaustion` | At least 17 small observable receipts from index-only prose/organization edits (no affected pages), sized so the first 16 fit at 8192 and byte budget alone would admit a 17th; assert the call stops at exactly 16. Add a large receipt spanning calls; count distinct sequences touched including incoming/final partials, never >16. Verify exactly one LF per receipt, strict lexicographic Next progress and boundary resets, no replay/no-op log entry, and terminal Truncated=false/Next=nil immediately upon consuming the last LF, with no spurious empty continuation. Explicit `(ChangeSequence+1,0)` and absent-log reads are empty successful history; nonzero exhausted offset/past-end sequence rejects. Deleted-to-empty wiki has Empty=true yet retains history. |
+| `TestMemoryChangesCursorBindingAndPositions` | At matching revisions reject wrong scope/store (personal/project and two project roots), kind/target, query hash/file ordinal, sequence zero/past exhausted position, negative/out-of-range offset and offset inside multibyte UTF-8. Offset equal to record length rejects instead of aliasing next sequence. Mutate the store between pages and require stale_cursor before any continuation data. A missing/corrupt committed record reports inconsistent without skipping. No supplied cursor changes authority. |
+| `TestMemoryChangesMinimumLimitMakesProgress` | History 0 and omitted LimitBytes select 4096; 512 and 8192 accepted, -1/1/256/511/8193 reject invalid_input; index/page still accept 256. Walk the large/escaping fixtures entirely at 512 with an independently computed maximum of one call per raw stream byte: every nonterminal Content is nonempty, cursor strictly advances, every full JSON reply <=512, concatenation exact and final exhaustion exact. This is a progress proof, not just a timeout assertion. |
 | `TestMemorySearchLiteralCasePunctuationAndBudget` | Independently seeded mixed-case symbols/path punctuation, Unicode, index matches; deleted/staging/receipt/transcript sentinels excluded. >128 pages through legal batches and >1 MiB current bodies force continuation including zero-hit batch. Concatenated hits equal independently computed ordered expected page/line pairs with no duplicates. |
 | `TestMemorySearchForgedCursorAndFailureIsolation` | Mutated scope/store ID/query/kind/target/offset/ordinal rejects. Personal-to-project and project-alpha-to-project-beta cursors reject at matching revisions; blocked project search leaves personal read usable. |
 | `TestMemoryBindingWorktreesAndOtherProjects` | Real git init/commit/worktree add in fixture, two distinct repositories and non-Git directory. Shared personal, same project via main/worktree, no other-project knowledge. Worktree removal does not rebind main identity. |
@@ -609,13 +638,13 @@ return tool.StateResult{Output: string(encoded), State: result,
     RequireCompleteOutput: true}, nil
 ```
 
-`result` is a ReadResult, SearchResult or ApplyResult returned by the real Store. On failure return the bounded typed memory.Error, whose Error() JSON reaches the model as a failed tool result; generic clients get failed status and structured JSON diagnostic in the output/error. Bound references to 16, flag MoreReferences, never leak body/host paths. Do not label a typed failure as a successful JSON result. Tool registration uses `Limit: schema.ToolOutputLimit{MaxChars: 65536}` to fit bounded escaped UTF-8 JSON; the tool's own pagination is authoritative, not silent generic truncation. Caller overrides too small for complete output can fail display after a durable apply; receipt replay still reconciles its operation ID. Cover that uncertainty in `TestMemoryApplyResultLimitStillReplayable`.
+`result` is a ReadResult, SearchResult or ApplyResult returned by the real Store. For history, `encoded` must be the exact full serialization counted against LimitBytes in Read, not an added wrapper or a second delivery representation. Task 3 removes ReadResult.Changes and implements the canonical Content stream and cursor rules above, without changing ApplyResult.Receipt. On failure return the bounded typed memory.Error, whose Error() JSON reaches the model as a failed tool result; generic clients get failed status and structured JSON diagnostic in the output/error. Bound references to 16, flag MoreReferences, never leak body/host paths. Do not label a typed failure as a successful JSON result. Tool registration uses `Limit: schema.ToolOutputLimit{MaxChars: 65536}` to fit bounded escaped UTF-8 JSON; the tool's own pagination is authoritative, not silent generic truncation. Caller overrides too small for complete output can fail display after a durable apply; receipt replay still reconciles its operation ID. Cover that uncertainty in `TestMemoryApplyResultLimitStillReplayable`. This amendment does not introduce apply-result pagination or a new apply bound.
 
 Authorize every call against effective grants before Store access; read/search require Read, apply requires Write. Scope-unavailable state is distinct from denial. Register no memory tools when neither scope has any grant. Read-only memory bindings register read/search only. With at least one write grant register apply and enforce per-scope permission at execution. Use the session's Actor, ignore free-form intent for receipt content.
 
 At CLI/daemon launch calculate memory binding independently of the history-directory branch, with `cmdutil.DefaultStateRoot`/trusted launch environment and ResolveProjectWith. Resume passes the binding explicitly to RestoreSessionConfig. Preserve persisted canonical identity under same-root restore and cap authority with runtime grants. Session construction errors for actual invalid session config stay normal errors; memory storage faults are deferred scope failures, not startup failures.
 
-Document IDs, canonical row grammar, all enum/error/continuation fields, limits, date semantics and tools-only edits in `docs/tools/memory.md`. No arbitrary project/host path parameter. Session notes/transcript tools stay unchanged.
+Document IDs, canonical row grammar, all enum/error/continuation fields, limits, date semantics and tools-only edits in `docs/tools/memory.md`. Include history's JSON-lines Content reconstruction, partial-versus-complete boundaries, full-output byte accounting, target-specific minimum and 16-distinct-record mechanics. No arbitrary project/host path parameter. Session notes/transcript tools stay unchanged.
 
 - [ ] **Step 4: Observe green.** Repeat the red command, then `go test -race ./agent/memory ./agent -run 'TestMemory' -count=1`. Expected zero exit, no credential/network calls; raw fixture wiki bytes and persisted grants establish the result.
 
@@ -816,6 +845,8 @@ Document current source-of-truth/recovery owner and the independent root in prod
 - Consumes: real memory StateResult/error, SessionEvents/transcript, existing generic ThreadItem and ItemModel routes. No new protocol method or wiki UI.
 - Produces: proposed credential-free fixture JSON with the concrete Go shapes below, using existing serialized event/turn payloads. Named cases: `read_personal`, `search_project`, `apply_project`, `conflict_project`, `unavailable_personal`, `read_truncated`.
 
+Keep six named cases. `read_truncated` now drives a large history record through actual read calls, including both a nonzero-offset partial reply and its terminal completion. Preserve Content fragments and Next sequence/offset values through every generic consumer; never reinterpret a partial fragment as a typed Receipt. Other cases are unchanged.
+
 ```go
 type memoryWireCase struct {
     Name string `json:"name"`
@@ -833,13 +864,13 @@ type memoryWireFixture struct {
 
 - [ ] **Step 1: Produce actual fixture data and add failing consumer tests.** In `TestMemoryWireFixturesFromRealSessions`, drive real tools via fakeAdapter; keep events and persisted turns from actual session execution. Build expected scope/revision/failure from fixture setup and raw store files, not from the emitted results alone. Serialize cases into results.json only under proposed explicit Go test flag `-memory-wire-update=true`; default test compares parsed committed fixture semantics and fails drift, without writing the repository. Review credential-free bytes before committing.
 
-Use the existing test clock for timestamps. Normalize only generated fixture session/call IDs and temporary-root prefixes through a stable, one-to-one mapping before comparing recordings. Preserve ID relationships, event order, scopes, revisions, outputs, errors and continuation fields. Run the producer check twice with fresh roots to prove fixture freshness does not depend on random IDs or wall-clock time.
+Use the existing test clock for timestamps. Normalize only generated fixture session/call IDs, temporary-root prefixes and root-derived cursor StoreIDs through a stable, one-to-one mapping before comparing recordings. Within canonical history Content, normalize only generated actor session/delegate IDs using equal-encoded-byte-width mappings, preserving every cursor offset and escape boundary; change no other receipt text. Preserve ID relationships, event order, scopes, revisions, outputs, errors and continuation sequence/offset fields. Do not rewrite cursor positions or history data to hide drift. Run the producer check twice with fresh roots to prove fixture freshness does not depend on random IDs or wall-clock time.
 
 Required tests are:
 
 | Owner test | Actual route and visible assertion |
 | --- | --- |
-| `TestMemoryWireFixturesFromRealSessions` | Tool executor → registry → TOOL_CALL_END + persisted transcript. Output JSON retains scope/revision/content/continuation/error code; unavailable/conflict is failed. |
+| `TestMemoryWireFixturesFromRealSessions` | Tool executor → registry → TOOL_CALL_END + persisted transcript. Output JSON retains scope/revision/content/continuation/error code; unavailable/conflict is failed. History's partial Content and completion are unchanged through saved/live generic delivery; concatenate decoded fragments and compare the independently expected complete metadata record. |
 | `TestMemoryAppTranscriptAndProjectorDelivery` | Read real fixture turns through existing apptranscript and appprojector into generic commandExecution ThreadItems. Keep toolName, arguments scope, output, failure and completion, both live and saved read. |
 | `TestMemoryAppWireGenericDelivery` | Actual fixture session on server, AppWire subscription and saved history read/reconnect. Same generic result/failure data survives both routes; no new RPC. |
 | `TestMemoryCLIOutputIncludesScopeAndOutcome` | Existing CLI event printer with real fixture EventToolCallEnd: human sees personal/project plus done/error and bounded result/error details. Current code only prints done/error; this is a known red. Test CLI machine/JSON event output retains the full existing data. |
@@ -948,6 +979,8 @@ Run from root as separate commands/cwd choices, not a fragile single chain when 
 **Interfaces:**
 - Consumes: all implemented session/store/tool/skill paths, existing `provider.Resolve`, registry/Caps, existing credential resolution, llm.ProviderAdapter, actual fixture subprocesses.
 - Produces: proposed `TestMemoryWikiLive`; registered flags below; proposed reusable budget/verifier types:
+
+Any eval verifier reading history through Store.Read must follow explicit cursors and reassemble complete JSON-lines records before grading receipt chronology or affected pages. Verifiers using complete ApplyResult.Receipt or durable receipt files remain unchanged. No new live episode/request allowance or paid pagination experiment is authorized; the large-record proof belongs to Task 3's deterministic tests, and all eval limits below remain unchanged.
 
 ```go
 type MemoryEvalBudget struct {
@@ -1125,7 +1158,7 @@ Run existing focused notes/compaction/read-only/tool-ceiling regressions named b
 | Personal/project wiki, canonical worktrees, non-Git/clone separation, StateDir override, unavailable project | Task 3 binding/worktree/launch tests; Task 4 inherited canonical identity |
 | Model-editable dated index, core timestamps, semantic movement vs update, explicit review/recreation | Task 1 index/date/incarnation tests; Task 2 reopen/no-op tests |
 | Flat IDs, inline links outside code, final index coverage/deletion incoming links, exact bounds | Task 1 boundary/link tests; Task 2 actual security and retained bytes |
-| Tools-only native read/search/apply, revision pagination, literal punctuation-aware bounded search, structured distinction | Task 3 read/search/tool/definition tests |
+| Tools-only native read/search/apply, revision pagination, complete large history reconstruction within serialized 8 KiB replies, literal punctuation-aware bounded search, structured distinction | Task 3 read/search/tool/definition tests, including large index-only, escaping/budget, cursor/exhaustion and minimum-progress proofs; Task 7 history fragment delivery |
 | Durable scope batch, dual locks, recovery/receipt order, stale edits, no resurrection, cancellation/uncertainty | Task 2 actual process/crash/sync/replay tests |
 | Explicit zero config, root+daemon defaults, parent ceilings, read-only memory writes without workspace grants | Tasks 3/4 fresh/resume/real delegate and kernel tests |
 | Independent root/history/worktree/daemon/compaction lifetime, original transcript retained, no body archive | Tasks 2/6 settled storage and actual cleanup/lifecycle tests |

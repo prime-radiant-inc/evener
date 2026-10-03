@@ -228,6 +228,17 @@ Return content, revision, relevant dates, and read continuation when needed.
 Pagination is tied to the scope revision; a changed revision asks the caller to
 restart the read. A page reference never grants access outside its bound scope.
 
+Large memory change records are paged, as Jesse chose on 2026-10-03. History
+replies stay within 8 KiB of serialized output, including JSON escaping and
+continuation metadata. Explicit continuations retrieve every byte of canonical
+metadata-only receipt JSON, with partial-record boundaries identified rather
+than partial receipts presented as whole. Receipt storage, replay and transaction
+after-images retain every affected page ID and hash. This changes read delivery
+only: index-only edits and all edit limits remain unchanged, with no affected-page
+cap. The implementation plan fixes the wire and deterministic proof obligations
+under Task 3; this amendment neither implements pagination nor reopens any other
+design, plan or eval approval.
+
 ### `memory_search`
 
 Perform literal lexical search over the current index and page bodies in one
