@@ -295,14 +295,17 @@ describe("clicking Retry", () => {
   });
 
   test("populates connection metadata from the fresh client's initialize response", async () => {
-    const fresh = new FakeClient("ready");
+    const fresh = new FakeClient("connecting");
     const scripted: InitializeResponse = {
       serverInfo: { name: "evener-hub-retry-test", version: "9.9.9" },
       protocolVersion: "1",
       sourceId: "src_retry",
       features: ALL_FEATURES_OFF,
     };
-    fresh.scriptConnect(() => scripted);
+    fresh.scriptConnect(() => {
+      fresh.emitReady(scripted);
+      return scripted;
+    });
 
     const user = userEvent.setup();
     render(<ConnectionBanner state="closed" delayMs={0} createClient={() => fresh} />);
@@ -312,6 +315,52 @@ describe("clicking Retry", () => {
       expect(connectionStore.getState().serverInfo).toEqual({ name: "evener-hub-retry-test", version: "9.9.9" });
       expect(connectionStore.getState().features).toEqual(scripted.features);
     });
+  });
+
+  test("a late manual connect result cannot overwrite automatic reconnect metadata", async () => {
+    const fresh = new FakeClient("connecting");
+    const initial: InitializeResponse = {
+      serverInfo: { name: "initial-hub", version: "1.0.0" },
+      protocolVersion: "1",
+      sourceId: "initial-source",
+      features: ALL_FEATURES_OFF,
+    };
+    const reconnected = { ...initial, serverInfo: { name: "reconnected-hub", version: "2.0.0" } };
+    let finishConnect: (response: InitializeResponse) => void = () => {
+      throw new Error("connect is not pending");
+    };
+    const pending = new Promise<InitializeResponse>((resolve) => {
+      finishConnect = resolve;
+    });
+    fresh.scriptConnect(() => {
+      fresh.emitReady(initial);
+      return pending;
+    });
+    const replaced: unknown[] = [];
+    render(
+      <ConnectionBanner
+        state="closed"
+        delayMs={0}
+        createClient={() => fresh}
+        onClientReplaced={(client) => replaced.push(client)}
+      />,
+    );
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(connectionStore.getState().serverInfo).toEqual(initial.serverInfo));
+
+    act(() => {
+      fresh.emitStateChange("reconnecting");
+      fresh.emitReady(reconnected);
+    });
+    await act(async () => {
+      finishConnect(initial);
+      await pending;
+    });
+
+    expect(replaced).toEqual([fresh]);
+    expect(connectionStore.getState().serverInfo).toEqual(reconnected.serverInfo);
+    expect(connectionStore.getState().features).toEqual(reconnected.features);
   });
 
   test("disables the button while a retry is in flight", async () => {

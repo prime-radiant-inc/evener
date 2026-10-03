@@ -1053,14 +1053,17 @@ test("clicking the rail's own Search button opens the command palette", async ()
 });
 
 test("populates connectionStore metadata from one injected initialize response", async () => {
-  const fake = new FakeClient("ready");
+  const fake = new FakeClient("connecting");
   const scripted: InitializeResponse = {
     serverInfo: { name: "evener-hub-test", version: "9.9.9" },
     protocolVersion: "1",
     sourceId: "src_test",
     features: ALL_FEATURES_OFF,
   };
-  fake.scriptConnect(() => scripted);
+  fake.scriptConnect(() => {
+    fake.emitReady(scripted);
+    return scripted;
+  });
 
   render(<AppShell client={fake} />);
   await screen.findByText("No session open");
@@ -1069,6 +1072,41 @@ test("populates connectionStore metadata from one injected initialize response",
     expect(connectionStore.getState().serverInfo).toEqual({ name: "evener-hub-test", version: "9.9.9" });
     expect(connectionStore.getState().features).toEqual(scripted.features);
   });
+});
+
+test("a late boot connect result cannot overwrite automatic reconnect metadata", async () => {
+  const fake = new FakeClient("connecting");
+  const initial: InitializeResponse = {
+    serverInfo: { name: "initial-hub", version: "1.0.0" },
+    protocolVersion: "1",
+    sourceId: "initial-source",
+    features: ALL_FEATURES_OFF,
+  };
+  const reconnected = { ...initial, serverInfo: { name: "reconnected-hub", version: "2.0.0" } };
+  let finishConnect: (response: InitializeResponse) => void = () => {
+    throw new Error("connect is not pending");
+  };
+  const pending = new Promise<InitializeResponse>((resolve) => {
+    finishConnect = resolve;
+  });
+  fake.scriptConnect(() => {
+    fake.emitReady(initial);
+    return pending;
+  });
+  render(<AppShell client={fake} />);
+  await waitFor(() => expect(connectionStore.getState().serverInfo).toEqual(initial.serverInfo));
+
+  act(() => {
+    fake.emitStateChange("reconnecting");
+    fake.emitReady(reconnected);
+  });
+  await act(async () => {
+    finishConnect(initial);
+    await pending;
+  });
+
+  expect(connectionStore.getState().serverInfo).toEqual(reconnected.serverInfo);
+  expect(connectionStore.getState().features).toEqual(reconnected.features);
 });
 
 test("closes the client it constructed itself on unmount", () => {
@@ -3126,8 +3164,8 @@ test("kata 098n: on mobile a /thread/{ref} share link keeps its URL and its sing
 
 // A desktop boot has two consumers of the same navigation snapshot:
 // initNotifications()'s baseline and the rail. Both must share the typed
-// AppWire read seam, while publishing serverInfo through connectionStore after
-// connect must not look like a new connection to the reconnect subscriber.
+// AppWire read seam. Publishing ready with its matching metadata must not
+// trigger an extra connection event for the reconnect subscriber.
 //
 // The notifications engine is a module singleton already initialized by
 // AppShell.tsx's own import, so a REAL boot is modelled by resetting and

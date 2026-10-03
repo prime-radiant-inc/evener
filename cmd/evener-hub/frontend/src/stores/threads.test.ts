@@ -524,15 +524,14 @@ describe("useConnectionStore", () => {
     expect(setStateSpy).toHaveBeenCalledTimes(1); // one onStateChange listener, not two
   });
 
-  // AppwireClientLike DOES expose connect() (it resolves with the
-  // InitializeResponse - see protocol/testing/fakeClient.ts) - this store's
-  // own connect(client) just never calls it: it only mirrors
-  // ConnectionState, so it stays safe to call before any handshake has even
-  // started. AppShell.tsx is the caller that actually drives client.connect()
-  // and sets serverInfo directly from its resolved value.
-  test("serverInfo stays undefined: connect(client) only mirrors ConnectionState, it never calls the client's own connect()", () => {
-    connectFakeClient();
-    expect(connectionStore.getState().serverInfo).toBeUndefined();
+  // Wiring adopts an already-ready client's cached metadata. AppShell owns
+  // the actual dial, so this attachment still never calls client.connect().
+  test("connect adopts cached serverInfo without calling the client's own connect()", () => {
+    const connect = vi.spyOn(FakeClient.prototype, "connect");
+    const fake = connectFakeClient();
+    expect(connectionStore.getState().serverInfo).toBeDefined();
+    expect(connectionStore.getState().serverInfo).toBe(fake.initializeResult?.serverInfo);
+    expect(connect).not.toHaveBeenCalled();
   });
 
   test("hook reflects store state and updates on change", () => {

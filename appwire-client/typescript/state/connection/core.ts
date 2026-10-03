@@ -1,10 +1,9 @@
 // The connection lifecycle's client-swap safety, framework-free: which
 // AppwireClientLike a host is wired to right now, the ConnectionState mirror
 // that follows it, and onConnectionNotification, which follows whichever
-// client the store holds across a swap. serverInfo/features are plain
-// settable fields the host writes after its own handshake read (the
-// InitializeResponse) - this module only knows client identity and wire
-// state, never the handshake itself.
+// client the store holds across a swap. Ready publishes the current client's
+// cached negotiated serverInfo/features in the same write. They remain
+// settable for callers seeding metadata through a legacy structural adapter.
 //
 // The invariant both the connection-state mirror and onConnectionNotification
 // keep: whatever the `client` key reads, exactly one listener is wired to it,
@@ -35,9 +34,15 @@ export interface ConnectionStoreState {
 // impossible for one to accidentally clobber the other.
 export interface ConnectionStore extends FrameworkFreeStore<ConnectionStoreState> {
   // connect wires this store's `state` to the client's own ConnectionState
-  // transitions, capturing whatever state the client is already in. A thin
-  // wrapper over setState, which does the actual wiring.
+  // transitions, capturing its current state and ready metadata without
+  // dialing. A thin wrapper over setState, which does the actual wiring.
   connect(client: AppwireClientLike): void;
+}
+
+function readyMetadata(client: AppwireClientLike): Pick<ConnectionStoreState, "serverInfo" | "features"> {
+  const initialize = client.initializeResult;
+  // Legacy structural adapters without a cache retain manual seeding.
+  return initialize ? { serverInfo: initialize.serverInfo, features: initialize.features } : {};
 }
 
 // createConnectionStore builds one instance's client-swap safety. Each host
@@ -129,20 +134,34 @@ export function createConnectionStore(): ConnectionStore {
     // transition has no listener and is lost until the client's next one.
     const unwire = client
       ? client.onStateChange((s) => {
-          if (store.getState().client !== client) return;
-          store.setState(s === "closed" ? { state: s, serverInfo: undefined, features: undefined } : { state: s });
+          // Dispatch snapshots can outlive an A -> B -> A swap or a nested
+          // terminal close. Identity alone cannot establish ownership then.
+          if (connectGeneration !== generation || store.getState().client !== client || client.state !== s) return;
+          store.setState(
+            s === "closed"
+              ? { state: s, serverInfo: undefined, features: undefined }
+              : { state: s, ...(s === "ready" ? readyMetadata(client) : {}) },
+          );
         })
       : undefined;
     // A swap or clear defaults `state` to the incoming client's own state (or
     // "idle" with none - the store's own starting value, and the value every
     // existing `client: null` reset already pairs it with) and drops the
-    // outgoing client's serverInfo/features, the same reset connect() always
-    // applied - but a caller's own partial still wins where it names one, so
-    // a swap that already knows its InitializeResponse can publish it in the
-    // same write. `client` is written explicitly and normalized to `null`,
+    // outgoing client's serverInfo/features. An already-ready client's
+    // cached metadata is adopted without dialing; a caller's own partial
+    // still wins where it names one, preserving explicit metadata seeding.
+    // `client` is written explicitly and normalized to `null`,
     // never left as whatever `resolved.client` happened to be (undefined is
     // not a valid `client` value, just an easy partial to write by mistake).
-    publish({ state: client ? client.state : "idle", serverInfo: undefined, features: undefined, ...resolved, client });
+    const state = client ? client.state : "idle";
+    publish({
+      state,
+      serverInfo: undefined,
+      features: undefined,
+      ...(client && state === "ready" ? readyMetadata(client) : {}),
+      ...resolved,
+      client,
+    });
     // See connectGeneration above: only claim the slot if this write is
     // still the latest one issued once its own publish returns.
     if (connectGeneration === generation) {

@@ -10,6 +10,7 @@ import { describe, expect, test, vi } from "vitest";
 import type { ConnectionState } from "../client";
 import { ConnectionClosedError } from "../errors";
 import type { AnyNotification, InitializeResponse, MethodName } from "../types.gen";
+import { deferred } from "./deferred";
 import { deferRequest, FakeClient, gateSettlements, type Settlement } from "./fakeClient";
 import { FAKE_INITIALIZE_RESULT } from "./fakeSocket";
 
@@ -19,6 +20,63 @@ import { FAKE_INITIALIZE_RESULT } from "./fakeSocket";
 // a string built at runtime), which is exactly how the evener/dirs/complete
 // rename slipped through.
 const UNKNOWN = "evener/dirs/complete" as MethodName;
+
+describe("FakeClient negotiated metadata", () => {
+  test("an idle fixture has no cached handshake and a ready fixture has its synthetic result", async () => {
+    expect(new FakeClient("idle").initializeResult).toBeNull();
+    const ready = new FakeClient();
+    expect(ready.initializeResult).toEqual(await ready.connect());
+  });
+
+  test("ready state subscribers read the injected result before onReady dispatch", () => {
+    const fake = new FakeClient("connecting");
+    const cached: Array<InitializeResponse | null> = [];
+    fake.onStateChange((state) => {
+      if (state === "ready") cached.push(fake.initializeResult);
+    });
+    fake.emitReady(FAKE_INITIALIZE_RESULT);
+    fake.emitStateChange("reconnecting");
+    const reconnected = {
+      ...FAKE_INITIALIZE_RESULT,
+      serverInfo: { name: "replacement-hub", version: "2.0.0" },
+    };
+    fake.emitReady(reconnected);
+
+    expect(cached).toEqual([FAKE_INITIALIZE_RESULT, reconnected]);
+    expect(fake.initializeResult).toBe(reconnected);
+  });
+
+  test("scripted connect caches its result without creating a state transition", async () => {
+    const fake = new FakeClient("idle");
+    fake.scriptConnect(() => FAKE_INITIALIZE_RESULT);
+    const states: ConnectionState[] = [];
+    fake.onStateChange((state) => states.push(state));
+
+    await fake.connect();
+
+    expect(fake.initializeResult).toBe(FAKE_INITIALIZE_RESULT);
+    expect(fake.state).toBe("idle");
+    expect(states).toEqual([]);
+  });
+
+  test("a late scripted connect result cannot replace a newer injected ready cache", async () => {
+    const fake = new FakeClient("connecting");
+    const response = deferred<InitializeResponse>();
+    fake.scriptConnect(() => response.promise);
+    const connecting = fake.connect();
+    fake.emitReady(FAKE_INITIALIZE_RESULT);
+    fake.emitStateChange("reconnecting");
+    const reconnected = {
+      ...FAKE_INITIALIZE_RESULT,
+      serverInfo: { name: "replacement-hub", version: "2.0.0" },
+    };
+    fake.emitReady(reconnected);
+    response.resolve(FAKE_INITIALIZE_RESULT);
+    await connecting;
+
+    expect(fake.initializeResult).toBe(reconnected);
+  });
+});
 
 describe("FakeClient method-name validation", () => {
   test("on() rejects a method the hub does not serve", () => {

@@ -418,8 +418,8 @@ test("does not acknowledge a save from a stale client generation", async () => {
   });
   client.on("evener/settings/transcriptDisplay/patch", () => response.promise);
   connectionStore.getState().connect(client);
-  connectionStore.setState({ features: { ...(await client.connect()).features, transcriptDisplaySettings: true } });
-  client.emitReady();
+  const initialize = await client.connect();
+  client.emitReady({ ...initialize, features: { ...initialize.features, transcriptDisplaySettings: true } });
   renderWithToasts();
   await waitFor(() => expect(transcriptDisplayStore.getState().hub.desktop?.revision).toBe(1));
   await waitFor(() => expect(transcriptDisplayStore.getState().hubLoading).toBe(false));

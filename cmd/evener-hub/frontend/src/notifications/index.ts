@@ -166,10 +166,9 @@ export function initNotifications(): void {
   // replaying missed broadcasts as fresh alerts.
   //
   // Only a TRANSITION into "ready" is a connection event. Any other change to
-  // this store republishes the same "ready" to every subscriber - AppShell
-  // sets serverInfo through it the moment its own connect() promise resolves,
-  // on every single boot - and reading that as a reconnect cost a needless
-  // re-baseline (kata p5w9).
+  // this store republishes the same "ready" to every subscriber, including
+  // explicit metadata seeding. Reading that as a reconnect would trigger a
+  // needless re-baseline.
   sawReady = connectionStore.getState().state === "ready";
   subscriptions.push(
     connectionStore.subscribe((state, prev) => {

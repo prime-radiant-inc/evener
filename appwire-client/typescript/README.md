@@ -273,13 +273,23 @@ Besides the root, `package.json` `exports` publishes these subpaths:
   `fileURLToPath`, `cwdRelative`).
 - `@evener/appwire-client/state/connection` - the connection state layer:
   `createConnectionStore()` is a framework-free store holding one host's wired
-  `AppwireClientLike`, the `ConnectionState` mirror that follows it, and plain
-  settable `serverInfo`/`features` fields the host writes from its own
-  handshake read. `connect(client)` swaps the wired client with a reentrancy
+  `AppwireClientLike`, the `ConnectionState` mirror that follows it, and the
+  negotiated `serverInfo`/`features`. Each ready generation publishes its
+  matching metadata in the same store write, including automatic reconnect.
+  `AppwireClient.initializeResult` exposes the most recent successfully
+  negotiated response, cached before ready dispatch and null before the first
+  handshake. Attaching an already-ready client adopts its cached metadata;
+  attaching an idle client never dials. The property is optional on
+  `AppwireClientLike` for existing structural adapters, which may continue
+  manually seeding the settable metadata fields when they provide no cache.
+  Unknown additive feature flags are retained. `connect(client)` swaps the
+  wired client with a reentrancy
   guard and a detach of the outgoing client's connection-state listener, so a
   replaced client never keeps a live subscription; `onConnectionNotification(store, handler)`
-  follows whichever client the store holds across a swap. No handshake, no
-  view binding. Resolves to `state/connection/index.ts`, a barrel.
+  follows whichever client the store holds across a swap. Replacement drops
+  the outgoing metadata and terminal close clears it. The transport owns
+  handshake/reconnect; this binding adopts results and has no view binding.
+  Resolves to `state/connection/index.ts`, a barrel.
 - `@evener/appwire-client/state/navigation` - the navigation state layer the
   web app's navigation store is built on, adoptable by native if it ever
   gains one: the resource-key vocabulary and

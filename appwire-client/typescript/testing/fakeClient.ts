@@ -126,7 +126,7 @@ export class FakeClient implements AppwireClientLike {
   // that wants a state transition alongside a scripted connect() still
   // drives that explicitly, exactly as before.
   private connectHandler: ConnectHandler = () => DEFAULT_INITIALIZE_RESPONSE;
-  private latestInitialize: InitializeResponse = DEFAULT_INITIALIZE_RESPONSE;
+  private latestInitialize: InitializeResponse | null = null;
 
   // Defaults to "ready": tests overwhelmingly want a client stores can
   // request() against immediately, without separately staging the
@@ -134,6 +134,11 @@ export class FakeClient implements AppwireClientLike {
   // a different initial state explicitly to test pre-ready behavior.
   constructor(initialState: ConnectionState = "ready") {
     this.state = initialState;
+    if (initialState === "ready") this.latestInitialize = DEFAULT_INITIALIZE_RESPONSE;
+  }
+
+  get initializeResult(): InitializeResponse | null {
+    return this.latestInitialize;
   }
 
   // The number of listeners currently registered across onNotification,
@@ -248,10 +253,12 @@ export class FakeClient implements AppwireClientLike {
   // flight when close() runs is failed by close() instead of settling later.
   connect(): Promise<InitializeResponse> {
     if (this.state === "closed") return Promise.reject(new ConnectionClosedError(CLOSED_MESSAGE));
+    const initializeAtStart = this.latestInitialize;
     return this.defer(
       () => this.connectHandler(),
       (initialize) => {
-        this.latestInitialize = initialize;
+        // A ready result injected while this script was pending is newer.
+        if (this.latestInitialize === initializeAtStart) this.latestInitialize = initialize;
       },
     );
   }
@@ -420,7 +427,10 @@ export class FakeClient implements AppwireClientLike {
   // private setState is only ever reached through isClosed()-guarded paths):
   // once closed, a later injection is ignored rather than resurrecting a
   // client production would keep unusable.
-  emitStateChange(next: ConnectionState, initialize: InitializeResponse = this.latestInitialize): void {
+  emitStateChange(
+    next: ConnectionState,
+    initialize: InitializeResponse = this.latestInitialize ?? DEFAULT_INITIALIZE_RESPONSE,
+  ): void {
     if (this.state === "closed") return;
     if (this.state === next) return;
     // Every real path into "closed" fails pending work before transitioning
@@ -432,6 +442,8 @@ export class FakeClient implements AppwireClientLike {
     // above means a later close() cannot repair the pending set, so failing here
     // is the only chance.
     if (next === "closed") this.failPending(new Error(TRANSPORT_CLOSED_MESSAGE));
+    // Production enterReady caches before dispatching state subscribers.
+    if (next === "ready") this.latestInitialize = initialize;
     this.state = next;
     for (const cb of Array.from(this.stateChangeHandlers)) {
       try {
@@ -443,7 +455,6 @@ export class FakeClient implements AppwireClientLike {
       }
     }
     if (next === "ready") {
-      this.latestInitialize = initialize;
       for (const cb of Array.from(this.readyHandlers)) {
         try {
           cb(initialize);
@@ -456,7 +467,7 @@ export class FakeClient implements AppwireClientLike {
 
   // emitReady simulates a (re)connect succeeding — the common case tests
   // reach for — as a shorthand for emitStateChange("ready").
-  emitReady(initialize: InitializeResponse = this.latestInitialize): void {
+  emitReady(initialize: InitializeResponse = this.latestInitialize ?? DEFAULT_INITIALIZE_RESPONSE): void {
     this.emitStateChange("ready", initialize);
   }
 }

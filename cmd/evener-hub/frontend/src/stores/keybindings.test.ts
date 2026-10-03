@@ -1146,8 +1146,9 @@ describe("keybindings store: support loss", () => {
     // and editing stays silently disabled (roborev PR #884 round 11). This
     // is the finding-34 reset extended to the plain ready flap.
     payload = overridesPayload(0, []);
+    const initialize = await client.connect();
     client.emitStateChange("idle");
-    client.emitStateChange("ready");
+    client.emitReady({ ...initialize, features: { ...initialize.features, keybindingsSettings: true } });
     await nextMacrotask();
     expect(keybindingsStore.getState().loaded).toBe(true);
 
