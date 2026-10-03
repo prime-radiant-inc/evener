@@ -135,9 +135,8 @@ describe("delegate and job notifications", () => {
 		}
 	});
 
-	// A daemon steer is instructions to the agent, never the conversation, so
-	// Chat — just the conversation — shows none of its rows, cards included
-	// (Jesse, 2026-10-03).
+	// The 2026-10-03 ruling at conversationOnly: Chat shows no steering rows,
+	// cards included.
 	it("shows no steering rows at Chat", () => {
 		const { rows } = rowsAt("chat");
 		expect(rows.filter((row: TimelineRow) => row.id.startsWith("item_steering_"))).toHaveLength(0);

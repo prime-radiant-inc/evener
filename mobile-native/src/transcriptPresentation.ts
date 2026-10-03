@@ -182,7 +182,12 @@ function accountingFor(
 // row), and a saved note is spec 8.8's every-level row (a note row) — neither
 // is a steering notice (Jesse, 2026-10-03).
 function conversationOnly(items: MobileTimelineItem[]): MobileTimelineItem[] {
-	return items.filter((item) => (!isStep(item) || item.state === "failed") && !isDaemonSteering(item));
+	return items.filter((item) => !isDroppedStep(item) && !isDaemonSteering(item));
+}
+
+// A settled or running step; a failed one is not dropped (see above).
+function isDroppedStep(item: MobileTimelineItem): boolean {
+	return isStep(item) && item.state !== "failed";
 }
 
 function isDaemonSteering(item: MobileTimelineItem): boolean {

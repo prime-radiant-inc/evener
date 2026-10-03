@@ -353,8 +353,8 @@ describe("Chat", () => {
 		expect(images(rows)).toEqual(["broke.png"]);
 	});
 
-	// A daemon steer is instructions to the agent, never the conversation, so
-	// Chat drops its notice; Intent and above keep it (Jesse, 2026-10-03).
+	// The 2026-10-03 ruling at conversationOnly: Chat drops daemon steering
+	// notices; Intent and above keep them.
 	it("keeps a question and the turn's failure, and drops the steering notice", () => {
 		const { rows } = rowsAt("chat", subagent(), extra);
 		expect(rows.some((row) => row.kind === "activity" && row.label === "ask_user")).toBe(true);

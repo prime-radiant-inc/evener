@@ -228,13 +228,8 @@ it.each(["chat", "intent", "tools", "activity", "full"] as const)(
 	},
 );
 
-// Chat is just the conversation (spec 8.2), and a daemon steer is instructions
-// to the agent, never the conversation: its notice goes, together with the
-// notification cards a steer may carry (the subagent's own row, which Chat
-// keeps, already says its state). The rows that stay are the conversation's
-// own: a steered-in message is the human's words, a saved note is spec 8.8's
-// every-level row, a system event keeps its own advanced-settings gating, and
-// a failure shows at every level (Jesse, 2026-10-03).
+// The 2026-10-03 ruling recorded at conversationOnly: Chat drops daemon
+// steering notices, cards included, and keeps the conversation's own rows.
 it("drops daemon steering notices at Chat and keeps them at Intent", () => {
 	const items: MobileTimelineItem[] = [
 		{ kind: "user", id: "u1", text: "Go on" },
