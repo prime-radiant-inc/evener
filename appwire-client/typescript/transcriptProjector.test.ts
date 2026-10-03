@@ -212,9 +212,6 @@ describe("transcript projector", () => {
         item("turn-error", "systemMessage", { eventKind: "error", text: "Failure" }),
       );
       const entries = entriesFor(model, preset(level));
-      // A daemon steer is instructions to the agent, never the conversation,
-      // so the chat preset — "just the conversation" — keeps none (Jesse,
-      // 2026-10-03); every other level keeps it critical.
       const compact = level === "chat" || level === "intent";
       const steer = level === "chat" ? [] : ["steer"];
       expect(entries.map((entry) => entry.id)).toEqual([
@@ -227,16 +224,12 @@ describe("transcript projector", () => {
         "turn-error",
       ]);
       expect(entries.find((entry) => entry.id === "ask")?.kind).toBe("critical");
-      const failedId = level === "chat" || level === "intent" ? "intent:failed-tool" : "failed-tool";
-      const activeId = level === "chat" || level === "intent" ? "intent:active-tool" : "active-tool";
-      expect(entries.find((entry) => entry.id === failedId)?.kind).toBe(
-        level === "chat" || level === "intent" ? "intent" : "item",
-      );
-      expect(entries.find((entry) => entry.id === activeId)?.kind).toBe(
-        level === "chat" || level === "intent" ? "intent" : "item",
-      );
+      const failedId = compact ? "intent:failed-tool" : "failed-tool";
+      const activeId = compact ? "intent:active-tool" : "active-tool";
+      expect(entries.find((entry) => entry.id === failedId)?.kind).toBe(compact ? "intent" : "item");
+      expect(entries.find((entry) => entry.id === activeId)?.kind).toBe(compact ? "intent" : "item");
       expect(entries.find((entry) => entry.id === "hook-failure")?.kind).toBe("critical");
-      const criticalIds = level === "chat" ? ["warning", "turn-error"] : ["warning", "steer", "turn-error"];
+      const criticalIds = ["warning", ...steer, "turn-error"];
       for (const id of criticalIds) {
         expect(entries.find((entry) => entry.id === id)?.kind).toBe("critical");
       }
@@ -250,8 +243,6 @@ describe("transcript projector", () => {
     for (const level of ["intent", "tools", "activity", "full"] as const) {
       expect(entriesFor(model, preset(level)).map((entry) => [entry.id, entry.kind])).toEqual([["steer", "critical"]]);
     }
-    // Custom selections model tool intent, calls, reasoning and expansion —
-    // never steering — so daemon steering shows for them as it does at intent.
     const chatShapedCustom = custom({ toolIntent: true, toolCalls: false, reasoning: false, expandByDefault: false });
     expect(entriesFor(model, chatShapedCustom).map((entry) => [entry.id, entry.kind])).toEqual([["steer", "critical"]]);
   });
@@ -279,6 +270,19 @@ describe("transcript projector", () => {
 
     expect(projectThread(model, preset("chat")).turns[0]?.entries).toEqual([]);
     expect(entriesFor(model, preset("intent")).map((entry) => entry.id)).toEqual(["daemon-steer"]);
+  });
+
+  test("an errorless terminal turn keeps its fallback: a turn interrupted on a daemon steer still shows it at chat", () => {
+    const interruptedTurn = turn([item("daemon-steer", "steering", { text: "steer", source: "" })], {
+      status: "interrupted",
+    });
+    const model = { ...threadWith(), turns: [interruptedTurn] } as ThreadModel;
+
+    // The never-empty trade, the same one an informational notice gets: with
+    // no error end cap to render, the hidden row is the turn's only content.
+    expect(entriesFor(model, preset("chat")).map((entry) => [entry.id, entry.kind])).toEqual([
+      ["daemon-steer", "critical"],
+    ]);
   });
 
   test("keeps a blank-intent tool call visible without dropping the action", () => {

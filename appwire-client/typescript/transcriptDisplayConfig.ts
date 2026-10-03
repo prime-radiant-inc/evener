@@ -519,7 +519,8 @@ export function visibleCategoryInventory(config: TranscriptDisplayConfigV1): Vis
   // Informational notices answer from the same rule the projector gates them
   // by, so the settings summary can never disagree with what renders.
   (informationalNoticesVisible(content) ? visible : hidden).push("informationalNotices");
-  // Daemon steering answers from the projector's own rule for it, too.
+  // Daemon steering answers from the same rule the projector gates it by, so
+  // the settings summary can never disagree with what renders.
   (hidesDaemonSteering(normalized.content) ? hidden : visible).push("daemonSteering");
 
   const advanced = normalized.advanced;

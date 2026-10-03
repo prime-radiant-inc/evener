@@ -329,8 +329,6 @@ describe("transcript display config", () => {
         "daemonSteering",
       );
     }
-    // Custom selections model tool intent, calls, reasoning and expansion —
-    // never steering — so daemon steering shows for them as it does at intent.
     expect(
       visibleCategoryInventory(
         makeTranscriptDisplayConfig({

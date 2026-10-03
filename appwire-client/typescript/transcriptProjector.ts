@@ -302,6 +302,12 @@ function isToolRepairNotice(item: ItemModel): boolean {
   return item.type === "systemMessage" && item.eventKind === TOOL_REPAIR_EVENT_KIND;
 }
 
+// A daemon steer: instructions the daemon sent the agent, never a steer the
+// human wrote (source "user", the human-note kind included).
+function isDaemonSteer(item: ItemModel): boolean {
+  return item.type === "steering" && item.source !== "user";
+}
+
 function systemDecision(item: ItemModel, config: TranscriptDisplayConfigV1, vector: ContentVector): Decision {
   const eventKind = item.eventKind;
   if (eventKind === undefined || eventKind === "" || !KNOWN_EVENT_KINDS.has(eventKind)) return "item";
@@ -383,13 +389,11 @@ function decisionFor(
     if (isInformationalWarning(item)) return informationalNoticesVisible(vector) ? "critical" : "hidden";
     return "critical";
   }
-  // A daemon steer is instructions to the agent, never the conversation: at
-  // the chat preset — "just the conversation" — it hides. A steer the human
-  // wrote (source "user", the human-note kind included) is the human's own
-  // words and stays critical at every level, as it does on the phone
-  // (Jesse, 2026-10-03).
+  // Daemon steering hides at the chat preset; see hidesDaemonSteering for the
+  // one rule. A steer the human wrote is the human's own words and stays
+  // critical at every level.
   if (item.type === "steering") {
-    if (item.source === "user") return "critical";
+    if (!isDaemonSteer(item)) return "critical";
     return hidesDaemonSteering(config.content) ? "hidden" : "critical";
   }
 
@@ -443,16 +447,12 @@ function terminalFallbackEntry(
   // no end cap, so its fallback keeps the never-empty guarantee.
   const hiddenInformationalNotice =
     (isInformationalWarning(sourceItem) || isToolRepairNotice(sourceItem)) && !informationalNoticesVisible(vector);
-  if (hiddenInformationalNotice && isTurnError(turn.error)) {
-    return undefined;
-  }
   // A daemon steer the chat preset hid trades the same way: the end cap owns
-  // the failure, so the hidden steer must not come back to say it a second
+  // the failure, so the hidden row must not come back to say it a second
   // time. An errorless terminal turn keeps its fallback, so it still renders
-  // something (an interrupted turn's marker included).
-  const hiddenDaemonSteer =
-    sourceItem.type === "steering" && sourceItem.source !== "user" && hidesDaemonSteering(content);
-  if (hiddenDaemonSteer && isTurnError(turn.error)) {
+  // something (an interrupted turn ending on a steer included).
+  const hiddenDaemonSteer = isDaemonSteer(sourceItem) && hidesDaemonSteering(content);
+  if ((hiddenInformationalNotice || hiddenDaemonSteer) && isTurnError(turn.error)) {
     return undefined;
   }
   return criticalEntry(sourceItem, turn.id, sourceIndex, redactsReasoning(sourceItem, vector));
