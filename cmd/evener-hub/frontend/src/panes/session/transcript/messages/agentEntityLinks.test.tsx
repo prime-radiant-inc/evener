@@ -3,7 +3,7 @@ import { buildEntityView, type EntityView } from "@evener/appwire-client";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { StrictMode, useCallback, useRef } from "react";
 import { afterEach, expect, test } from "vitest";
-import { resetWorkspaceStoreForTests, workspaceStore } from "../../../../shell/workspace";
+import { documentPaneState, resetWorkspaceStoreForTests, workspaceStore } from "../../../../shell/workspace";
 import { TranscriptRenderProvider } from "../../../../transcriptDisplay/renderContext";
 import "../../../doc";
 import "../../index";
@@ -85,8 +85,28 @@ function entityViews(): ReadonlyMap<string, EntityView> {
       ref: thread.ref,
       label: "root",
       aggregate: "completed",
-      counts: { active: 0, failed: 0, completed: 1, complete: true },
-      entries: [{ kind: "shell", job }],
+      counts: { active: 0, failed: 0, completed: 2, complete: true },
+      entries: [
+        { kind: "shell", job },
+        {
+          kind: "delegate",
+          delegate: {
+            delegateId: UNRESOLVED,
+            ownerSessionId: OWNER,
+            rootSessionId: OWNER,
+            childSessionId: "child",
+            childRef: "local:child",
+            type: "delegate",
+            runGeneration: 1,
+            lifecycle: "ended",
+            phase: "ended",
+            status: "completed",
+            terminal: true,
+            resumable: true,
+            branch: {},
+          },
+        },
+      ],
       branch: {},
     },
   };
@@ -295,4 +315,96 @@ test("never enhances entity ids inside a diagram", () => {
   expect(root.querySelector("[data-mermaid-diagram] [data-entity-host]")).toBeNull();
   expect(root.querySelector("p [data-entity-host]")).not.toBeNull();
   expect(screen.getAllByTestId("entity-trigger")).toHaveLength(1);
+});
+
+test.each([false, true])(
+  "hydration recognizes the whole file before enhancing its delegate substring (resolved=%s)",
+  (resolved) => {
+    const sourcePaneId = workspaceStore.getState().openPane("session", { ref: thread.ref });
+    const filename = "reports/dlg_02wMz5TxvEMoJEDTDGOTil.md";
+    const body = `${filename} and ${UNRESOLVED}`;
+    const show = (snapshot: ThreadModel, live = false) => (
+      <TranscriptRenderProvider
+        sessionRef={snapshot.ref}
+        thread={snapshot}
+        sourcePaneId={sourcePaneId}
+        entities={resolved ? entities : new Map()}
+      >
+        <AgentMessageItem
+          item={{ id: "message", turnId: "turn", type: "agentMessage", text: body, pendingText: [body] }}
+          turn={turn}
+          sessionRef={snapshot.ref}
+          live={live}
+        />
+      </TranscriptRenderProvider>
+    );
+    const { container, rerender, unmount } = render(<StrictMode>{show({ ...thread, cwd: "" })}</StrictMode>);
+    expect(screen.queryByRole("link", { name: filename })).toBeNull();
+    rerender(<StrictMode>{show(thread)}</StrictMode>);
+    const link = screen.getByRole("link", { name: filename });
+    expect(link.querySelector("[data-entity-host]")).toBeNull();
+    expect(container.querySelectorAll("[data-entity-host]")).toHaveLength(1);
+    expect(container.querySelector("[data-entity-host]")?.textContent).toContain(UNRESOLVED);
+    if (resolved) {
+      expect(screen.getAllByTestId("entity-trigger")).toHaveLength(1);
+      fireEvent.click(screen.getByRole("button", { name: "Open delegate transcript" }));
+      expect(workspaceStore.getState().panes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ type: "transcript", params: { ref: "local:child", parentRef: thread.ref } }),
+        ]),
+      );
+    }
+    fireEvent.click(link);
+    const doc = workspaceStore.getState().panes.find((pane) => pane.type === "doc");
+    expect(doc && documentPaneState(doc)).toMatchObject({
+      reference: { path: filename, cwd: thread.cwd, readTarget: `${thread.cwd}/${filename}` },
+      origin: { id: sourcePaneId },
+      reopen: 0,
+    });
+    rerender(<StrictMode>{show({ ...thread, cwd: "/workspace/other" }, true)}</StrictMode>);
+    expect(screen.getAllByRole("link", { name: filename })).toHaveLength(1);
+    expect(container.querySelectorAll("[data-entity-host]")).toHaveLength(1);
+    fireEvent.click(screen.getByRole("link", { name: filename }));
+    expect(doc && documentPaneState(doc)).toMatchObject({
+      reference: { cwd: "/workspace/other", readTarget: `/workspace/other/${filename}` },
+      reopen: 1,
+    });
+    rerender(<StrictMode>{show({ ...thread, cwd: "/workspace/other" })}</StrictMode>);
+    const bubble = screen.getByTestId("agent-bubble");
+    unmount();
+    expect(bubble.querySelector("[data-entity-host]")).toBeNull();
+    expect(bubble.querySelector("a")).toBeNull();
+    expect(bubble.textContent?.trimEnd()).toBe(body);
+  },
+);
+
+function EntityTextReactHarness({ text }: { text: string }) {
+  const root = useRef<HTMLDivElement>(null);
+  const portals = useEntityTextEnhancement(root, [text]);
+  return (
+    <>
+      <div ref={root} data-testid="react-entity-root">
+        <span />
+        {text}
+      </div>
+      {portals}
+    </>
+  );
+}
+
+test("entity-only callers retire old hosts without restoring over React's updated text node", () => {
+  const show = (text: string) => (
+    <TranscriptRenderProvider sessionRef={thread.ref} thread={thread} entities={entities}>
+      <EntityTextReactHarness text={text} />
+    </TranscriptRenderProvider>
+  );
+  const { rerender, unmount } = render(<StrictMode>{show(`Before ${JOB}`)}</StrictMode>);
+  expect(screen.getByTestId("react-entity-root").textContent).toBe(`Before ${JOB}`);
+  rerender(<StrictMode>{show(`After ${JOB}`)}</StrictMode>);
+  const root = screen.getByTestId("react-entity-root");
+  expect(root.textContent).toBe(`After ${JOB}`);
+  expect(root.querySelectorAll("[data-entity-host]")).toHaveLength(1);
+  unmount();
+  expect(root.textContent).toBe(`After ${JOB}`);
+  expect(root.querySelector("[data-entity-host]")).toBeNull();
 });
