@@ -57,8 +57,19 @@ func dirtyCommandFromMakefile(t *testing.T) string {
 }
 
 // gitConfigEnvironment names the git-config environment keys hermeticGitEnv
-// strips before setting its own, so an ambient value cannot win by position.
-var gitConfigEnvironment = []string{"GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM"}
+// strips before setting its own, so an ambient value cannot win by position:
+// the file-selection variables (whose isolated replacements are set below)
+// and the config-injection variables, which can carry configuration such as
+// commit.gpgsign from the surrounding machine into the scratch repos.
+var gitConfigEnvironment = []string{
+	"GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM",
+	"GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS",
+}
+
+// gitConfigEnvironmentPrefixes names the key prefixes the same loop strips:
+// the numbered GIT_CONFIG_KEY_n / GIT_CONFIG_VALUE_n pairs GIT_CONFIG_COUNT
+// injects.
+var gitConfigEnvironmentPrefixes = []string{"GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"}
 
 // hermeticGitEnv returns the environment the tests' git and sh subprocesses
 // run with: identifier.FilteredGitEnvironment's repository-selection
@@ -78,6 +89,11 @@ outer:
 		key, _, _ := strings.Cut(entry, "=")
 		for _, banned := range gitConfigEnvironment {
 			if key == banned {
+				continue outer
+			}
+		}
+		for _, prefix := range gitConfigEnvironmentPrefixes {
+			if strings.HasPrefix(key, prefix) {
 				continue outer
 			}
 		}
@@ -271,6 +287,21 @@ func TestScratchRepoIgnoresHostileGitConfig(t *testing.T) {
 	}
 	t.Setenv("GIT_CONFIG_GLOBAL", global)
 	dir := scratchRepo(t) // must not fail: the hostile signing config never reaches the scratch repo
+	if got := gitDirtyValue(t, dirtyCommandFromMakefile(t), dir); got != "" {
+		t.Fatalf("GitDirty = %q on a fresh scratch repo, want \"\"", got)
+	}
+}
+
+func TestScratchRepoIgnoresHostileGitConfigParameters(t *testing.T) {
+	// Git also carries configuration through GIT_CONFIG_COUNT with
+	// GIT_CONFIG_KEY_n / GIT_CONFIG_VALUE_n pairs; ambient values there must
+	// not reach the scratch repo either.
+	t.Setenv("GIT_CONFIG_COUNT", "2")
+	t.Setenv("GIT_CONFIG_KEY_0", "commit.gpgsign")
+	t.Setenv("GIT_CONFIG_VALUE_0", "true")
+	t.Setenv("GIT_CONFIG_KEY_1", "gpg.program")
+	t.Setenv("GIT_CONFIG_VALUE_1", "/bin/false")
+	dir := scratchRepo(t) // must not fail: the injected signing config never reaches the scratch repo
 	if got := gitDirtyValue(t, dirtyCommandFromMakefile(t), dir); got != "" {
 		t.Fatalf("GitDirty = %q on a fresh scratch repo, want \"\"", got)
 	}
