@@ -1,3 +1,4 @@
+import type { ComposerMention } from "../../composerInput";
 import type { SecureRandomSource } from "./secureUUID";
 import { createSecureUUID, tryOrUndefined } from "./secureUUID";
 
@@ -68,6 +69,7 @@ export interface MutationIntent<A extends MutationAttachmentRef = MutationAttach
   // {type: "skill", name} items, so the outbox, optimistic and recovery
   // records all carry them in the one record they already persist.
   composerText?: string;
+  composerMentions?: readonly ComposerMention[];
 }
 
 export interface MutationRecord<A extends MutationAttachmentRef = MutationAttachmentRef> extends MutationIntent<A> {

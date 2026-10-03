@@ -986,7 +986,7 @@ func routeNoToolCalls(kind EntryKind, noContent bool, afterTerminalCommunicate b
 // drainInputs is the snapshot the drain loop feeds selectDrainNextAction after a
 // completed (non-error) turn: the kind of the turn that just ran, whether a goal
 // continuation is already deferred, the popped follow-up text and queued message
-// (its text plus image count), whether any notification work is pending, and
+// (its text plus image and selection counts), whether notification work is pending, and
 // whether the turn just rested SessionAwaiting (spec §5.3's drain-ladder gate).
 type drainInputs struct {
 	RanKind              EntryKind
@@ -995,6 +995,7 @@ type drainInputs struct {
 	QueuedText           string
 	QueuedImages         int
 	QueuedSkills         int
+	QueuedCommands       int
 	NotificationsPending bool
 	Awaiting             bool
 	// QueuedCarrier reports that the queued entry is the steering carrier
@@ -1065,7 +1066,7 @@ const (
 // fold result.
 func selectDrainNextAction(in drainInputs) (action drainAction, skipGoalGate bool) {
 	skipGoalGate = in.RanKind == EntryNotification || in.HaveDeferredCont || in.Awaiting || in.SteeringParked
-	queued := strings.TrimSpace(in.QueuedText) != "" || in.QueuedImages > 0 || in.QueuedSkills > 0 || in.QueuedCarrier
+	queued := strings.TrimSpace(in.QueuedText) != "" || in.QueuedImages > 0 || in.QueuedSkills > 0 || in.QueuedCommands > 0 || in.QueuedCarrier
 	if in.Awaiting {
 		if queued {
 			return runQueued, skipGoalGate
@@ -1403,7 +1404,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 							err = errors.Join(err, refusal)
 						} else if queued, claimRefusal := s.popQueueHeadRefusingPoison(); claimRefusal != nil {
 							err = errors.Join(err, claimRefusal)
-						} else if inputHasContent(queued.Text, queued.Images, queued.SkillNames) {
+						} else if inputHasContent(queued.Text, queued.Images, queued.SkillNames, queued.CommandNames) {
 							next = queued.Text
 							nextImages = queued.Images
 							processCtx = s.contextWithSelectedSkills(withQueuedClientMutation(cfg.nextTurnContext(), queued), queued)
@@ -1530,7 +1531,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 			// which goes on and completes -- is one attempt per external
 			// wake, and this rung is not one. The selector sees the park too
 			// and takes goIdle ahead of the autonomous rungs.
-			if !inputHasContent(queued.Text, queued.Images, queued.SkillNames) && !s.steeringParkedNow() && s.hasPendingUserSteering() {
+			if !inputHasContent(queued.Text, queued.Images, queued.SkillNames, queued.CommandNames) && !s.steeringParkedNow() && s.hasPendingUserSteering() {
 				carrier, carrierRefusal := s.claimSteeringCarrierInput()
 				if carrierRefusal != nil {
 					return strings.Join(outputs, "\n"), s.refuseTurnOnUnhealthyTranscript(processCtx)
@@ -1544,7 +1545,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 			}
 		}
 		noFollowUpOrQueued := strings.TrimSpace(fu) == "" &&
-			!inputHasContent(queued.Text, queued.Images, queued.SkillNames) && !queued.SteeringCarrier
+			!inputHasContent(queued.Text, queued.Images, queued.SkillNames, queued.CommandNames) && !queued.SteeringCarrier
 		notificationsPending := false
 		// After a terminal communicate, notification work is left to the one-shot
 		// drain rather than run here: a completion the model was never shown is
@@ -1563,6 +1564,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 			QueuedText:           queued.Text,
 			QueuedImages:         len(queued.Images),
 			QueuedSkills:         len(queued.SkillNames),
+			QueuedCommands:       len(queued.CommandNames),
 			NotificationsPending: notificationsPending,
 			Awaiting:             awaiting,
 			QueuedCarrier:        queued.SteeringCarrier,
@@ -2728,6 +2730,10 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 	if queuedIdentity.ClientMutationID == "" {
 		if !preseededInput {
 			turn := schema.NewTurn(schema.TurnUserInput, buildSelectedUserInputMessage(input, images, skillInputNames(skillInput)))
+			if selected := durableSkillSelectionFromContext(ctx); selected != nil {
+				turn.CommandInput = selected.CommandInput
+				turn.Message = appendSelectedCommands(turn.Message, selected.CommandInput, selected.CommandBodies)
+			}
 			if skillInput != nil {
 				turn.SkillState = &schema.SkillTurnState{Input: skillInput}
 			}
@@ -2740,6 +2746,10 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 		}
 	} else {
 		turn := schema.NewTurn(schema.TurnUserInput, buildSelectedUserInputMessage(input, images, skillInputNames(skillInput)))
+		if selected := durableSkillSelectionFromContext(ctx); selected != nil {
+			turn.CommandInput = selected.CommandInput
+			turn.Message = appendSelectedCommands(turn.Message, selected.CommandInput, selected.CommandBodies)
+		}
 		turn.ClientMutationID = queuedIdentity.ClientMutationID
 		turn.StableTurnID = queuedIdentity.StableTurnID
 		if skillInput != nil {

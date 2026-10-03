@@ -1820,6 +1820,40 @@ async function runScenarios(driver) {
   driver.sessionB = driver.pinnedSessionB;
   driver.milestone("sessions-visible", { sessionA: driver.sessionA, sessionB: driver.sessionB, rows: rows.rows });
 
+  // Actual owner inventories come from two real daemon cwd roots. A controller
+  // plugin shares the owners' plugin name but has a different command body.
+  for (const [ref, owner, other] of [[driver.sessionA, "alpha", "beta"], [driver.sessionB, "beta", "alpha"], [driver.sessionA, "alpha", "beta"]]) {
+    await driver.openSession(ref);
+    await driver.focusComposer(ref);
+    await driver.typeText(ref, "/");
+    const rows = await driver.waitPage(`(() => { const menu = document.querySelector("[data-testid='composer-slash-menu']");
+      const rows = menu ? [...menu.querySelectorAll("button")].map((b) => b.textContent) : [];
+      return rows.some((row) => row.includes(${JSON.stringify(`/owner-${owner}`)})) ? rows : null; })()`,
+      { label: `owning ${owner} project command in live completion` });
+    check(!rows.some((row) => row.includes(`/owner-${other}`) || row.includes("controller-only")), `wrong owner inventory: ${JSON.stringify(rows)}`);
+    await driver.clearComposerDraft(ref);
+    if (driver.ownerCommandsSent?.has(owner)) {
+      driver.milestone("owner-alpha-returned", { ref, rows });
+      continue;
+    }
+    await driver.focusComposer(ref);
+    await driver.typeText(ref, `OWNER_PROSE_${owner} /owner-${owner}`);
+    const point = await driver.waitPage(`(() => { const menu = document.querySelector("[data-testid='composer-slash-menu']");
+      const row = menu && [...menu.querySelectorAll("button")].find((b) => b.textContent.includes(${JSON.stringify(`/owner-${owner}`)}));
+      if (!row) return null; const r = row.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`,
+      { label: `project command selection for ${owner}` });
+    await driver.clickAt(point.x, point.y);
+    await driver.waitPage(`(() => { const pane = ${driver.paneScopeExpr(ref)}; return pane?.querySelector("[data-testid='composer-command-chip']")?.textContent === ${JSON.stringify(`/owner-${owner}`)} ? true : null; })()`,
+      { label: `project command atom for ${owner}` });
+    const text = `OWNER_PROSE_${owner} /owner-${owner} `;
+    driver.milestone(`owner-${owner}-command`, { ref, rows });
+    await driver.clickSubmit(ref, { text, chips: [], tiles: 0 });
+    await driver.waitForComposerCleared(ref);
+    await driver.waitForReply(ref, text);
+    await driver.waitForTurnIdle(ref);
+    (driver.ownerCommandsSent ??= new Set()).add(owner);
+  }
+
   // ---- scenario: canonical selection ----
   await driver.openSession(driver.sessionA);
   driver.milestone("composer-mounted", { ref: driver.sessionA });

@@ -37,8 +37,9 @@ import { resetThreadsStoreForTests } from "../../stores/threads";
 import { enterText } from "../../textEntryTestUtils";
 import { Toast } from "../../widgets";
 import promptCardStyles from "../../widgets/promptcard/promptcard.module.css";
-import textareaStyles from "../../widgets/textarea/textarea.module.css";
 import { getToasts, resetToastStoreForTests } from "../../widgets/toast/store";
+import editorStyles from "../session/composer/skilleditor.module.css";
+import { editorCursor, selectEditorText } from "../session/testing/editor";
 import Welcome from "../welcome/Welcome";
 import Spawn, { CONNECT_ATTACH_TIMEOUT_MS } from "./Spawn";
 import { loadDefaultsBlob } from "./spawnDefaults";
@@ -390,7 +391,7 @@ test("draft survives unmount and bare /new return before any successful start", 
   renderSpawn(client);
   await settled();
   expectWorkingDir("/tmp/draft-a");
-  expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).value).toBe("draft-a-sentinel");
+  expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLDivElement).textContent).toBe("draft-a-sentinel");
   expect((effortControl() as HTMLSelectElement).value).toBe("high");
   expect(localStorage.getItem(LAST_WORKING_DIR_KEY)).toBeNull();
 });
@@ -404,12 +405,12 @@ test("project navigation isolates drafts and ignores non-new URL prefill", async
   fireEvent.change(effortControl(), { target: { value: "high" } });
   await visitSpawnURL("/settings?dir=/tmp/foreign&prompt=foreign");
   expectWorkingDir("/tmp/draft-a");
-  expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).value).toBe("draft-a-sentinel");
+  expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLDivElement).textContent).toBe("draft-a-sentinel");
   await visitSpawnURL("/new?dir=/tmp/draft-b");
-  expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).value).toBe("");
+  expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLDivElement).textContent).toBe("");
   await fillPrompt(user, "draft-b-sentinel");
   await visitSpawnURL("/new?dir=/tmp/draft-a");
-  expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).value).toBe("draft-a-sentinel");
+  expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLDivElement).textContent).toBe("draft-a-sentinel");
   expect((effortControl() as HTMLSelectElement).value).toBe("high");
 });
 
@@ -435,7 +436,7 @@ test("re-entering the same /new URL after leaving /new re-applies its explicit p
   renderSpawn(client);
   await settled();
   expectWorkingDir("/tmp/reentry-a");
-  expect(promptField().value).toBe("sentinel-a");
+  expect(promptField().textContent).toBe("sentinel-a");
   expect(completionDraft("/tmp/reentry-b").fields.getState().prompt).toBe("sentinel-b");
 });
 
@@ -454,7 +455,7 @@ test("remounting the same /new URL without leaving /new keeps the picker-selecte
   renderSpawn(client);
   await settled();
   expectWorkingDir("/tmp/reentry-b");
-  expect(promptField().value).toBe("sentinel-b");
+  expect(promptField().textContent).toBe("sentinel-b");
 });
 
 function deferred<T>() {
@@ -550,7 +551,7 @@ test.each(["A first", "B first"])("completion ownership: concurrent launches fin
   if (order === "A first") {
     await act(async () => startA.resolve(startResponse("local:completion-a")));
     expect(window.location.pathname).toBe("/new");
-    expect(promptField().value).toBe("submitted-b");
+    expect(promptField().textContent).toBe("submitted-b");
     await act(async () => startB.resolve(startResponse("local:completion-b")));
   } else {
     await act(async () => startB.resolve(startResponse("local:completion-b")));
@@ -600,7 +601,7 @@ test.each(["preflight", "create confirmation"])(
       cwd: "/tmp/completion-a",
       input: [{ type: "text", text: "submitted-a" }],
     });
-    expect(promptField().value).toBe("");
+    expect(promptField().textContent).toBe("");
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(window.location.pathname).toBe("/new");
   },
@@ -664,7 +665,7 @@ test("completion menu ownership: a remounted prompt's cleared snapshot retires i
   renderSpawn(fake);
   await screen.findByTestId("composer-slash-menu");
   await act(async () => started.resolve(startResponse("local:completion-a")));
-  expect(promptField().value).toBe("");
+  expect(promptField().textContent).toBe("");
   expect(screen.queryByTestId("composer-slash-menu")).toBeNull();
   expect(window.location.pathname).toBe("/new");
 });
@@ -690,7 +691,7 @@ test.each(["unchanged", "newer prompt", "other draft"])("completion menu ownersh
   }
   await act(async () => started.resolve(startResponse("local:completion-a")));
   await waitFor(() => expect(completionDraft("/tmp/completion-a").fields.getState().busy).toBe(false));
-  expect(promptField().value).toBe(scenario === "unchanged" ? "" : "/rev");
+  expect(promptField().textContent).toBe(scenario === "unchanged" ? "" : "/rev");
   if (scenario === "unchanged") expect(screen.queryByTestId("composer-slash-menu")).toBeNull();
   else {
     expect(screen.queryByTestId("composer-slash-menu")).not.toBeNull();
@@ -1088,7 +1089,7 @@ test.each(["%20/tmp/review-a%20", "%20%20"])(
     renderSpawn(fake);
     await fillPrompt(user, "normalized-draft");
     await visitSpawnURL(`/new?dir=${dir}`);
-    expect(promptField().value).toBe("normalized-draft");
+    expect(promptField().textContent).toBe("normalized-draft");
     await user.click(screen.getByTestId("spawn-submit"));
     await waitFor(() => expect(fake.calls.some((c) => c.method === "thread/start")).toBe(true));
     expect(fake.calls.find((c) => c.method === "thread/start")?.params).toMatchObject({
@@ -1107,24 +1108,24 @@ test("directory picker assigns the unscoped draft and restores each project's la
   fireEvent.change(effortControl(), { target: { value: "high" } });
   mounted.unmount();
   renderSpawn(fake);
-  expect(promptField().value).toBe("unscoped-sentinel");
+  expect(promptField().textContent).toBe("unscoped-sentinel");
   await setWorkingDir(user, "/tmp/draft-a");
   await pickModel(user, "gpt-5", "openai/gpt-5");
   await user.click(screen.getByRole("button", { name: "Advanced options" }));
   await user.selectOptions(screen.getByLabelText("Access mode"), "Read-only");
   await user.selectOptions(screen.getByLabelText("Harness"), "evener");
   await setWorkingDir(user, "/tmp/draft-b");
-  expect(promptField().value).toBe("");
+  expect(promptField().textContent).toBe("");
   expect((effortControl() as HTMLSelectElement).value).toBe("");
   await fillPrompt(user, "draft-b-sentinel");
   await setWorkingDir(user, "/tmp/draft-a");
-  expect(promptField().value).toBe("unscoped-sentinel");
+  expect(promptField().textContent).toBe("unscoped-sentinel");
   expect((effortControl() as HTMLSelectElement).value).toBe("high");
   expect(modelValue().textContent).toBe("openai/gpt-5");
   expect((screen.getByLabelText("Access mode") as HTMLSelectElement).value).toBe("read-only");
   expect((screen.getByLabelText("Harness") as HTMLSelectElement).value).toBe("evener");
   await setWorkingDir(user, "/tmp/draft-b");
-  expect(promptField().value).toBe("draft-b-sentinel");
+  expect(promptField().textContent).toBe("draft-b-sentinel");
 });
 
 test("URL prefill is applied to its project but not replayed over edits on remount", async () => {
@@ -1135,13 +1136,13 @@ test("URL prefill is applied to its project but not replayed over edits on remou
   await user.type(promptField(), "-edited");
   mounted.unmount();
   renderSpawn(fake);
-  expect(promptField().value).toBe("seed-edited");
+  expect(promptField().textContent).toBe("seed-edited");
   await visitSpawnURL("/new?dir=/tmp/draft-b&prompt=other-seed");
-  expect(promptField().value).toBe("other-seed");
+  expect(promptField().textContent).toBe("other-seed");
   await visitSpawnURL("/new?dir=/tmp/draft-a");
-  expect(promptField().value).toBe("seed-edited");
+  expect(promptField().textContent).toBe("seed-edited");
   await visitSpawnURL("/new?prompt=replacement");
-  expect(promptField().value).toBe("replacement");
+  expect(promptField().textContent).toBe("replacement");
 });
 
 test("unchanged URL directory prefill does not replace a picker-selected draft on remount", async () => {
@@ -1154,10 +1155,10 @@ test("unchanged URL directory prefill does not replace a picker-selected draft o
   mounted.unmount();
   renderSpawn(fake);
   expectWorkingDir("/tmp/review-b");
-  expect(promptField().value).toBe("picker-draft");
+  expect(promptField().textContent).toBe("picker-draft");
   await visitSpawnURL("/new?dir=/tmp/review-a");
   expectWorkingDir("/tmp/review-a");
-  expect(promptField().value).toBe("");
+  expect(promptField().textContent).toBe("");
 });
 
 test.each(["unrelated field", "newer same field", "other project"])(
@@ -1233,13 +1234,14 @@ test("successful creation preserves edits made while directory preflight was pen
   await fillPrompt(user, "submitted-sentinel");
   await user.click(screen.getByTestId("spawn-submit"));
   await waitFor(() => expect(fake.calls.some((call) => call.method === "evener/path/validate")).toBe(true));
-  await user.type(promptField(), "-newer");
+  selectEditorText(promptField(), promptField().textContent?.length ?? 0);
+  await user.type(promptField(), "-newer", { skipClick: true });
   await act(async () => validation.resolve({ path: "/tmp/draft-a", valid: true }));
   await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
   expect(fake.calls.find((call) => call.method === "thread/start")?.params).toMatchObject({
     input: [{ type: "text", text: "submitted-sentinel" }],
   });
-  expect(promptField().value).toBe("submitted-sentinel-newer");
+  expect(promptField().textContent).toBe("submitted-sentinel-newer");
 });
 
 test("late missing-directory preflight keeps Create and start with its originating draft", async () => {
@@ -1263,7 +1265,7 @@ test("late missing-directory preflight keeps Create and start with its originati
     input: [{ type: "text", text: "draft-a-sentinel" }],
   });
   await visitSpawnURL("/new?dir=/tmp/draft-b");
-  expect(promptField().value).toBe("draft-b-sentinel");
+  expect(promptField().textContent).toBe("draft-b-sentinel");
 });
 
 test("late successful creation clears only the originating draft across remount and project navigation", async () => {
@@ -1287,10 +1289,10 @@ test("late successful creation clears only the originating draft across remount 
   act(() => pastePngInto(promptField(), "other.png"));
   await screen.findByRole("button", { name: "View other.png" });
   await act(async () => started.resolve(startResponse("local:abc123")));
-  expect(promptField().value).toBe("other-project-sentinel[image 1]");
+  expect(promptField().textContent).toBe("other-project-sentinel[image 1]");
   expect(screen.getByRole("button", { name: "View other.png" })).toBeTruthy();
   await visitSpawnURL("/new?dir=/tmp/draft-a");
-  expect(promptField().value).toBe("");
+  expect(promptField().textContent).toBe("");
   expect(screen.queryByTestId("attachment-tile")).toBeNull();
   expect((effortControl() as HTMLSelectElement).value).toBe("high");
   expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
@@ -1368,7 +1370,7 @@ test("missing credentials surface setup in the composer without opening a dialog
   expect(screen.getByRole("dialog")).toBeTruthy();
   expect(screen.getByText("Show all providers")).toBeTruthy();
   await user.keyboard("{Escape}");
-  expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).value).toBe("draft-sentinel");
+  expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLDivElement).textContent).toBe("draft-sentinel");
   expectWorkingDir("/tmp/my-project");
 });
 
@@ -1444,7 +1446,7 @@ test("connection handoff shows the actual instance models and preserves draft un
   expect(client.calls.filter((call) => call.method === "thread/start")).toEqual([]);
   expect(client.calls.filter((call) => call.method === "evener/instance/setDefault")).toEqual([]);
   expectWorkingDir("/tmp/handoff-project");
-  expect(screen.getByRole("textbox", { name: "Prompt" })).toHaveProperty("value", "handoff-draft");
+  expect(screen.getByRole("textbox", { name: "Prompt" })).toHaveProperty("textContent", "handoff-draft");
   await user.click(option);
   expect(modelValue().textContent).toBe("team-local/served-model");
   expect(client.calls.filter((call) => call.method === "thread/start")).toEqual([]);
@@ -1533,7 +1535,7 @@ test("fresh guided connection waits for Continue and explicit model choice witho
   expect(modelValue().textContent).not.toBe("openai/from-server");
   await user.keyboard("{Escape}");
   expectWorkingDir("/tmp/guided");
-  expect(screen.getByRole("textbox", { name: "Prompt" })).toHaveProperty("value", "guided-draft");
+  expect(screen.getByRole("textbox", { name: "Prompt" })).toHaveProperty("textContent", "guided-draft");
   expect(modelValue().textContent).not.toBe("openai/from-server");
   expect(client.calls.filter((call) => call.method === "evener/instance/setDefault")).toEqual([]);
   expect(client.calls.filter((call) => call.method === "thread/start")).toEqual([]);
@@ -1823,7 +1825,7 @@ test("credential changes reload the cached model catalog and re-enter setup afte
   await act(async () => credentialsStore.getState().fetch());
   await waitFor(() => expect(modelRequests).toBeGreaterThan(requestsBefore));
   expect(screen.queryByRole("button", { name: "Connect provider" })).toBeNull();
-  expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).value).toBe("draft-sentinel");
+  expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLDivElement).textContent).toBe("draft-sentinel");
   configured = false;
   await act(async () => credentialsStore.getState().fetch());
   await screen.findByRole("button", { name: "Connect provider" });
@@ -1883,7 +1885,7 @@ test("the directory and git info sit above the prompt; model and effort live in 
   expect(card.contains(effortControl())).toBe(true);
   expect(controls.querySelector("[data-testid='spawn-submit']")).toBeTruthy();
   // The prompt takes the page's vertical slack via its own min-height.
-  expect(screen.getByRole("textbox", { name: "Prompt" }).style.getPropertyValue("--textarea-min-lines")).toBe("6");
+  expect(screen.getByRole("textbox", { name: "Prompt" }).style.minHeight).toBe("6lh");
 
   const mobileConfig = screen.getByTestId("spawn-mobile-config");
   expect(
@@ -1936,7 +1938,7 @@ test("mobile Spawn keeps the approved prompt hierarchy visible while the prompt 
   expect(screen.getByTestId("pane-title-mobile").textContent).toBe("New session");
   expect(screen.getByRole("heading", { name: "What should the agent do?" })).toBeTruthy();
   expect(screen.getByText("Leave blank to start a dormant session.")).toBeTruthy();
-  expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).value).toBe("typed mobile work");
+  expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLDivElement).textContent).toBe("typed mobile work");
 });
 
 // The placeholder repeated the heading and subtitle standing right above it
@@ -1947,8 +1949,8 @@ test("the prompt placeholder does not repeat the heading", async () => {
   renderSpawn(readyClient());
   await settled();
 
-  const prompt = screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement;
-  expect(prompt.placeholder).toBe("Describe the task…");
+  const prompt = screen.getByRole("textbox", { name: "Prompt" }) as HTMLDivElement;
+  expect(prompt.dataset.placeholder).toBe("Describe the task…");
   expect(screen.getByText("Leave blank to start a dormant session.")).toBeTruthy();
 });
 
@@ -2066,7 +2068,7 @@ test("the prompt card IS the shared PromptCard widget, not a lookalike", async (
 test("the prompt field is seamless, so the card's border is the only one", async () => {
   renderSpawn(readyClient());
   await settled();
-  expect(screen.getByRole("textbox", { name: "Prompt" }).className.split(" ")).toContain(textareaStyles.seamless);
+  expect(screen.getByRole("textbox", { name: "Prompt" }).className.split(" ")).toContain(editorStyles.editor);
 });
 
 // --- branch: a read-only HEAD readout on the directory row -----------------
@@ -2278,7 +2280,7 @@ test.each(["bare return", "picker return", "remount", "unchanged"])(
       mounted = renderSpawn(fake);
     }
     await screen.findAllByText("Couldn't inspect plugins");
-    expect(promptField().value).toBe("unsent-a");
+    expect(promptField().textContent).toBe("unsent-a");
     expect(completionDraft("/tmp/completion-a").fields.getState().pluginSelection).toEqual({
       mode: "explicit",
       names: ["alpha", "beta"],
@@ -2352,7 +2354,7 @@ test.each(["failed", "loading then failed", "ready invalid", "newer origin selec
       await screen.findAllByText("Couldn't inspect plugins");
     }
     expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
-    expect(promptField().value).toBe("unsent-b");
+    expect(promptField().textContent).toBe("unsent-b");
     expect(window.location.pathname).toBe("/new");
     expect(completionDraft("/tmp/completion-a").fields.getState().pluginSelection).toEqual(
       scenario === "newer origin selection" ? { mode: "explicit", names: [] } : { mode: "default" },
@@ -2938,7 +2940,7 @@ test("Welcome preserves URL-prefilled setup fields when routing to Spawn", async
   renderSpawn(client);
   await settled();
   await waitFor(() =>
-    expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).value).toBe("fix it"),
+    expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLDivElement).textContent).toBe("fix it"),
   );
   expectWorkingDir("/home/me/app");
   expect(window.location.hash).toBe("#setup");
@@ -2950,7 +2952,7 @@ test("prefills the prompt and working dir from ?dir=/?prompt=", async () => {
   await settled();
 
   await waitFor(() =>
-    expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).value).toBe("fix it"),
+    expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLDivElement).textContent).toBe("fix it"),
   );
   expectWorkingDir("/home/me/app");
 });
@@ -2989,7 +2991,7 @@ test("kata 11ee: a second ?prompt= navigation while already mounted still prefil
   window.history.pushState({}, "", "/new?prompt=first");
   renderSpawn(readyClient());
   await waitFor(() =>
-    expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).value).toBe("first"),
+    expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLDivElement).textContent).toBe("first"),
   );
 
   act(() => {
@@ -2998,7 +3000,7 @@ test("kata 11ee: a second ?prompt= navigation while already mounted still prefil
   });
 
   await waitFor(() =>
-    expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).value).toBe("second"),
+    expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLDivElement).textContent).toBe("second"),
   );
 });
 
@@ -3021,7 +3023,7 @@ test("kata 11ee: a navigation with no ?dir=/?prompt= at all leaves already-typed
   });
 
   expectWorkingDir("/home/me/app");
-  expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).value).toBe("typed by hand");
+  expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLDivElement).textContent).toBe("typed by hand");
 });
 
 test("only confirming a directory updates the launch defaults", async () => {
@@ -3051,7 +3053,7 @@ test("Escape discards directory browsing while preserving the prompt and launch 
   expect(screen.queryByRole("dialog", { name: "Choose directory" })).toBeNull();
   expect(fake.calls.some((c) => c.method === "thread/start")).toBe(false);
   expect(window.location.pathname).toBe(pathname);
-  expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).value).toBe(
+  expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLDivElement).textContent).toBe(
     "my important draft text",
   );
   expectWorkingDir("/tmp/project");
@@ -4574,7 +4576,7 @@ function pastePngInto(el: HTMLElement, name = "shot.png"): void {
   const file = new File([new Uint8Array([1, 2, 3])], name, { type: "image/png" });
   const event = new Event("paste", { bubbles: true, cancelable: true });
   Object.defineProperty(event, "clipboardData", {
-    value: { items: [{ kind: "file", type: "image/png", getAsFile: () => file }] },
+    value: { getData: () => "", items: [{ kind: "file", type: "image/png", getAsFile: () => file }] },
   });
   el.dispatchEvent(event);
 }
@@ -4645,7 +4647,7 @@ test("failed creation retains images and advanced/plugin settings through remoun
   await screen.findByText(/draft-start-failure/);
   mounted.unmount();
   renderSpawn(fake);
-  expect(promptField().value).toBe("retained-sentinel[image 1]");
+  expect(promptField().textContent).toBe("retained-sentinel[image 1]");
   expect(screen.getByRole("button", { name: "View retained.png" })).toBeTruthy();
   await user.click(screen.getByRole("button", { name: "Advanced options" }));
   expect((screen.getByLabelText("Max rounds") as HTMLInputElement).value).toBe("7");
@@ -4686,7 +4688,7 @@ test("successful submitted snapshot clears only its images and preserves newer e
   await screen.findByRole("button", { name: "View newer.png" });
   fireEvent.change(effortControl(), { target: { value: "high" } });
   await act(async () => started.resolve(startResponse("local:abc123")));
-  expect(promptField().value).toBe("submitted-sentinel-newer[image 2]");
+  expect(promptField().textContent).toBe("submitted-sentinel-newer[image 2]");
   expect(screen.queryByRole("button", { name: "View submitted.png" })).toBeNull();
   expect(screen.getByRole("button", { name: "View newer.png" })).toBeTruthy();
   expect((effortControl() as HTMLSelectElement).value).toBe("high");
@@ -4695,6 +4697,84 @@ test("successful submitted snapshot clears only its images and preserves newer e
   await visitSpawnURL("/new?dir=/tmp/draft-a");
   expect(screen.getByRole("button", { name: "View newer.png" })).toBeTruthy();
 });
+
+test.each([false, true])(
+  "submitted launch markers preserve retained command and skill identities (remount: %s)",
+  async (remount) => {
+    installCanvasStubs();
+    const user = setupUser();
+    const cwd = "/tmp/retained-launch-selections";
+    window.history.pushState({}, "", `/new?dir=${cwd}`);
+    const draft = selectSpawnDirectory(cwd);
+    draft.fields.setState({
+      prompt: "😀 /same /same /same",
+      skillNames: ["same"],
+      commandNames: ["same"],
+      mentions: [
+        { kind: "command", name: "same", offset: 3 },
+        { kind: "skill", name: "same", offset: 9 },
+      ],
+    });
+    const started = deferred<ThreadStartResponse>();
+    const fake = readyClient((f) => f.on("thread/start", () => started.promise));
+    const mounted = renderSpawn(fake);
+    await settled();
+    let editor = promptField();
+    selectEditorText(editor, 0);
+    act(() => pastePngInto(editor, "before.png"));
+    await screen.findByRole("button", { name: "View before.png" });
+    selectEditorText(editor, editor.textContent?.length ?? 0);
+    act(() => pastePngInto(editor, "after.png"));
+    await screen.findByRole("button", { name: "View after.png" });
+    expect(editor.textContent).toBe("[image 1]😀 /same /same /same[image 2]");
+    expect(within(editor).getAllByTestId("composer-command-chip")).toHaveLength(1);
+    expect(within(editor).getAllByTestId("composer-skill-chip")).toHaveLength(1);
+    await user.click(screen.getByTestId("spawn-submit"));
+    await waitFor(() => expect(fake.calls.filter((call) => call.method === "thread/start")).toHaveLength(1));
+    if (remount) {
+      mounted.unmount();
+      renderSpawn(fake);
+      await settled();
+      editor = promptField();
+    }
+    selectEditorText(editor, editor.textContent?.length ?? 0);
+    await user.paste(" later");
+    await act(async () => started.resolve(startResponse("local:retained-launch")));
+
+    expect.soft(editor.textContent).toBe("😀 /same /same /same later");
+    expect.soft(within(editor).queryAllByTestId("composer-command-chip")).toHaveLength(1);
+    expect.soft(within(editor).queryAllByTestId("composer-skill-chip")).toHaveLength(1);
+    expect.soft(draft.fields.getState()).toMatchObject({
+      prompt: "😀 /same /same /same later",
+      skillNames: ["same"],
+      commandNames: ["same"],
+      mentions: [
+        { kind: "command", name: "same", offset: 3 },
+        { kind: "skill", name: "same", offset: 9 },
+      ],
+    });
+    expect(screen.queryByRole("button", { name: "View before.png" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "View after.png" })).toBeNull();
+    await visitSpawnURL(`/new?dir=${cwd}`);
+    await user.click(screen.getByTestId("spawn-submit"));
+    const submissions = fake.calls.filter((call) => call.method === "thread/start");
+    expect(submissions).toHaveLength(2);
+    expect(submissions[1]?.params).toMatchObject({
+      input: [
+        {
+          type: "text",
+          text: "😀 /same /same /same later",
+          mentions: [
+            { kind: "command", name: "same", offset: 3 },
+            { kind: "skill", name: "same", offset: 9 },
+          ],
+        },
+        { type: "skill", name: "same" },
+        { type: "command", name: "same" },
+      ],
+    });
+  },
+);
 
 test.each([
   { outcome: "success", remount: false },
@@ -4732,29 +4812,30 @@ test.each([
     expect(screen.getByRole("img", { name: "a.png (still processing)" })).toBeTruthy();
     await user.click(screen.getByTestId("spawn-submit"));
     expect(fake.calls.some((call) => call.method === "thread/start")).toBe(false);
-    await user.type(promptField(), "-newer");
+    selectEditorText(promptField(), promptField().textContent?.length ?? 0);
+    await user.type(promptField(), "-newer", { skipClick: true });
     await visitSpawnURL("/new?dir=/tmp/draft-b");
     await fillPrompt(user, "draft-b-sentinel");
     act(() => pastePngInto(promptField(), "b.png"));
     expect(images).toHaveLength(2);
-    promptField().setSelectionRange(promptField().value.length, promptField().value.length);
+    selectEditorText(promptField(), promptField().textContent?.length ?? 0);
     await act(async () => {
       if (outcome === "success") images[0]?.onload?.();
       else images[0]?.onerror?.();
     });
-    expect(promptField().value).toBe("draft-b-sentinel[image 1]");
+    expect(promptField().textContent).toBe("draft-b-sentinel[image 1]");
     expect(screen.getByRole("img", { name: "b.png (still processing)" })).toBeTruthy();
     if (outcome === "failure") {
       act(() => pastePngInto(promptField(), "b2.png"));
-      expect(promptField().value).toBe("draft-b-sentinel[image 1][image 2]");
+      expect(promptField().textContent).toBe("draft-b-sentinel[image 1][image 2]");
     }
     await visitSpawnURL("/new?dir=/tmp/draft-a");
     if (outcome === "success") {
       await screen.findByRole("button", { name: "View a.png" });
-      expect(promptField().value).toBe("draft-a-sentinel[image 1]-newer");
+      expect(promptField().textContent).toBe("draft-a-sentinel[image 1]-newer");
     } else {
       expect(screen.queryByTestId("attachment-tile")).toBeNull();
-      expect(promptField().value).toBe("draft-a-sentinel-newer");
+      expect(promptField().textContent).toBe("draft-a-sentinel-newer");
     }
     expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
     await act(async () => images[1]?.onload?.());
@@ -4771,20 +4852,20 @@ test("resets the prompt and attachments after a successful spawn, but keeps stic
   renderSpawn(fake);
   await settled();
 
-  const prompt = screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement;
+  const prompt = screen.getByRole("textbox", { name: "Prompt" }) as HTMLDivElement;
   await setWorkingDir(user, "/tmp/project");
   await fillPrompt(user, "do the thing");
   await act(async () => {
     pastePngInto(prompt);
   });
-  await waitFor(() => expect(prompt.value).toBe("do the thing[image 1]"));
+  await waitFor(() => expect(prompt.textContent).toBe("do the thing[image 1]"));
   await waitFor(() => expect(screen.getByRole("button", { name: /remove/i })).toBeTruthy());
 
   await user.click(screen.getByTestId("spawn-submit"));
 
   await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
 
-  expect(prompt.value).toBe("");
+  expect(prompt.textContent).toBe("");
   expect(screen.queryByRole("button", { name: /remove/i })).toBeNull();
   // Sticky default (floor §1.9) survives a successful spawn - only the
   // transient prompt/attachment state resets.
@@ -4802,18 +4883,18 @@ test("a failed spawn leaves the prompt and attachment staged (failure paths keep
   renderSpawn(fake);
   await settled();
 
-  const prompt = screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement;
+  const prompt = screen.getByRole("textbox", { name: "Prompt" }) as HTMLDivElement;
   await fillPrompt(user, "do the thing");
   await act(async () => {
     pastePngInto(prompt);
   });
-  await waitFor(() => expect(prompt.value).toBe("do the thing[image 1]"));
+  await waitFor(() => expect(prompt.textContent).toBe("do the thing[image 1]"));
   await waitFor(() => expect(screen.getByRole("button", { name: /remove/i })).toBeTruthy());
 
   await user.click(screen.getByTestId("spawn-submit"));
 
   await screen.findByText(/start failed/i);
-  expect(prompt.value).toBe("do the thing[image 1]");
+  expect(prompt.textContent).toBe("do the thing[image 1]");
   expect(screen.getByRole("button", { name: /remove/i })).toBeTruthy();
   // handleSpawn's catch already resets busy on a thrown startThread (same
   // class of bug, verified already-fixed here - the button must stay usable
@@ -4969,11 +5050,11 @@ test("a settled attachment renders as a thumbnail tile, not a text chip (kata kb
   renderSpawn(readyClient());
   await settled();
 
-  const prompt = screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement;
+  const prompt = screen.getByRole("textbox", { name: "Prompt" }) as HTMLDivElement;
   await act(async () => {
     pastePngInto(prompt, "shot.png");
   });
-  await waitFor(() => expect(prompt.value).toBe("[image 1]"));
+  await waitFor(() => expect(prompt.textContent).toBe("[image 1]"));
 
   // The whole thumbnail is the control that opens the lightbox, named for the
   // file it shows - the composer's tile exactly.
@@ -4988,11 +5069,11 @@ test("a pending attachment is the same tile, and says nothing about its progress
   renderSpawn(readyClient());
   await settled();
 
-  const prompt = screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement;
+  const prompt = screen.getByRole("textbox", { name: "Prompt" }) as HTMLDivElement;
   await act(async () => {
     pastePngInto(prompt, "shot.png");
   });
-  await waitFor(() => expect(prompt.value).toBe("[image 1]"));
+  await waitFor(() => expect(prompt.textContent).toBe("[image 1]"));
 
   // An empty slot the thumbnail will fill, named so a screen reader hears
   // which attachment is holding things up, with its remove button already
@@ -5019,7 +5100,7 @@ test("focus on a staged attachment's remove button survives its decode settling 
   renderSpawn(readyClient());
   await settled();
 
-  const prompt = screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement;
+  const prompt = screen.getByRole("textbox", { name: "Prompt" }) as HTMLDivElement;
   await act(async () => {
     pastePngInto(prompt, "shot.png");
   });
@@ -5247,8 +5328,8 @@ function slashOptions() {
   return within(slashMenu()).getAllByRole("option");
 }
 
-function promptField(): HTMLTextAreaElement {
-  return screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement;
+function promptField(): HTMLDivElement {
+  return screen.getByRole("textbox", { name: "Prompt" }) as HTMLDivElement;
 }
 
 // The slash catalog is debounced (useSpawnSlashCatalog): wait for the
@@ -5289,6 +5370,62 @@ test("typing /re opens the menu with builtin and catalog matches but not /simpli
     expect.stringContaining("/review"),
   ]);
   expect(slashMenu().querySelectorAll('[role="option"]')).toHaveLength(2);
+});
+
+test("launcher command and skill selections with identical spelling survive failed start and project remount", async () => {
+  const user = setupUser();
+  window.history.pushState({}, "", "/new?dir=/tmp/atomic-a");
+  const fake = readyClient((client) => {
+    client.on("evener/spawn/slashCatalog", () => ({
+      commands: [{ name: "same", description: "command intent", source: "user" }],
+      skills: [
+        {
+          name: "same",
+          description: "skill intent",
+          disableModelInvocation: false,
+          userInvocable: true,
+          available: true,
+        },
+      ],
+    }));
+    client.on("thread/start", () => {
+      throw new WireError("start refused", -32602);
+    });
+  });
+  const mounted = renderSpawn(fake);
+  await settled();
+  await typeSlashQuery(user, fake, "Use /sa");
+  await user.click(slashOptions().find((option) => option.textContent?.includes("command intent"))!);
+  await user.keyboard("and /sa");
+  await user.click(slashOptions().find((option) => option.textContent?.includes("skill intent"))!);
+  await user.paste("literal /same");
+  expect(promptField().textContent).toBe("Use /same and /same literal /same");
+  await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
+  expect(getToasts()).toEqual(
+    expect.arrayContaining([expect.objectContaining({ text: "Start failed: start refused" })]),
+  );
+  expect(promptField().querySelectorAll("[data-command-name]")).toHaveLength(1);
+  expect(promptField().querySelectorAll("[data-skill-name]")).toHaveLength(1);
+  await visitSpawnURL("/new?dir=/tmp/atomic-b");
+  expect(promptField().textContent).toBe("");
+  mounted.unmount();
+  renderSpawn(fake);
+  await visitSpawnURL("/new?dir=/tmp/atomic-a");
+  expect(promptField().textContent).toBe("Use /same and /same literal /same");
+  expect(promptField().querySelectorAll("[data-command-name]")).toHaveLength(1);
+  expect(promptField().querySelectorAll("[data-skill-name]")).toHaveLength(1);
+  fake.on("thread/start", () => startResponse("local:abc123"));
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
+  expect(fake.calls.filter((call) => call.method === "thread/start").at(-1)?.params).toMatchObject({
+    input: [
+      { type: "text", text: "Use /same and /same literal /same" },
+      { type: "skill", name: "same" },
+      { type: "command", name: "same" },
+    ],
+  });
 });
 
 test("typing further narrows the spawn slash menu live", async () => {
@@ -5334,8 +5471,8 @@ test("Tab and plain Enter commit the spawn menu; Mod+Enter submits instead", asy
   await typeSlashQuery(user, fake, "/rev");
   await user.keyboard("{Tab}");
 
-  expect((promptField() as HTMLTextAreaElement).value).toBe("/review ");
-  expect(promptField().selectionStart).toBe("/review ".length);
+  expect((promptField() as HTMLDivElement).textContent).toBe("/review ");
+  expect(editorCursor(promptField())).toBe("/review ".length);
   expect(screen.queryByTestId("composer-slash-menu")).toBeNull();
   expect(document.activeElement).toBe(promptField());
 
@@ -5345,7 +5482,7 @@ test("Tab and plain Enter commit the spawn menu; Mod+Enter submits instead", asy
   await user.type(promptField(), "/rev");
   await user.keyboard("{Enter}");
 
-  expect((promptField() as HTMLTextAreaElement).value).toBe("/review ");
+  expect((promptField() as HTMLDivElement).textContent).toBe("/review ");
   expect(fake.calls.some((call) => call.method === "thread/start")).toBe(false);
 
   // Mod+Enter ALWAYS submits, even with the menu open: commit nothing.
@@ -5357,7 +5494,7 @@ test("Tab and plain Enter commit the spawn menu; Mod+Enter submits instead", asy
   await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
   // The menu committed nothing: a successful Start clears the prompt (Spawn's
   // own doSpawn reset), so the field must NOT hold the committed "/review ".
-  expect((promptField() as HTMLTextAreaElement).value).not.toBe("/review ");
+  expect((promptField() as HTMLDivElement).textContent).not.toBe("/review ");
 });
 
 test("a successful submit closes the slash menu with the cleared prompt", async () => {
@@ -5379,7 +5516,7 @@ test("a successful submit closes the slash menu with the cleared prompt", async 
   // the session pane, so the stale token must not survive the cleared prompt.
   await user.keyboard("{Meta>}{Enter}{/Meta}");
   await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
-  expect((promptField() as HTMLTextAreaElement).value).toBe("");
+  expect((promptField() as HTMLDivElement).textContent).toBe("");
   await waitFor(() => expect(screen.queryByTestId("composer-slash-menu")).toBeNull());
 });
 
@@ -5444,7 +5581,7 @@ test("Shift+Tab does not commit the spawn menu", async () => {
   // Modified Tab falls through for focus navigation instead of committing:
   // the prompt keeps its text and no completion is spliced in.
   await user.keyboard("{Shift>}{Tab}{/Shift}");
-  expect((promptField() as HTMLTextAreaElement).value).toBe("/re");
+  expect((promptField() as HTMLDivElement).textContent).toBe("/re");
   expect(fake.calls.some((c) => c.method === "thread/start")).toBe(false);
 });
 
@@ -5472,7 +5609,7 @@ test("reopening the identical token restarts the highlight at the first option",
   // Committing now must splice the FIRST option, not the previously
   // highlighted one.
   await user.keyboard("{Tab}");
-  expect((promptField() as HTMLTextAreaElement).value).toBe("/reasoning-effort ");
+  expect((promptField() as HTMLDivElement).textContent).toBe("/reasoning-effort ");
 });
 
 test("catalog entries colliding with pre-session builtins are not offered twice", async () => {
@@ -5525,7 +5662,7 @@ test("a prefilled slash token opens its menu without waiting for a keystroke", a
   renderSpawn(fake);
 
   await waitFor(() =>
-    expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).value).toBe("/rev"),
+    expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLDivElement).textContent).toBe("/rev"),
   );
   // The catalog lands debounced; the menu for the prefilled token must open
   // on its own once rows arrive — no keystroke needed.
@@ -5549,7 +5686,7 @@ test("Escape, no-match, mid-word slash, and blur all close the spawn slash menu"
 
   await user.keyboard("{Escape}");
   expect(screen.queryByTestId("composer-slash-menu")).toBeNull();
-  expect((promptField() as HTMLTextAreaElement).value).toBe("/re");
+  expect((promptField() as HTMLDivElement).textContent).toBe("/re");
 
   await user.clear(promptField());
   await user.type(promptField(), "/zzz");
@@ -5667,7 +5804,7 @@ test("clicking a spawn menu option commits it without ever blurring the prompt",
   // index 0 is the built-in /reasoning-effort, 1 /review.
   await user.click(slashOptions()[1] as HTMLElement);
 
-  expect((promptField() as HTMLTextAreaElement).value).toBe("/review ");
+  expect((promptField() as HTMLDivElement).textContent).toBe("/review ");
   // The option's onMouseDown preventDefault keeps focus in the field, so the
   // click's onSelect commits rather than racing the blur-close.
   expect(document.activeElement).toBe(promptField());
@@ -6792,7 +6929,7 @@ test("a host switch moves the draft's typed state to the selected host's directo
 
   // The re-seed moves the draft to the selected host's directory: the person's
   // typed state travels with it (a reconnect/host move is not a discard).
-  expect(promptField().value).toBe("typed before the switch");
+  expect(promptField().textContent).toBe("typed before the switch");
   expect(completionDraft("/home/buildbox").fields.getState().prompt).toBe("typed before the switch");
   expect(spawnDraftsStore.getState().drafts.has("/tmp/typed-before-switch")).toBe(false);
 });
@@ -7018,7 +7155,7 @@ test("a re-seed onto an occupied directory keeps the live draft", async () => {
   await settled();
 
   expectWorkingDir("/home/buildbox");
-  expect(promptField().value).toBe("live work");
+  expect(promptField().textContent).toBe("live work");
   expect(completionDraft("/home/buildbox").fields.getState().prompt).toBe("live work");
   expect(spawnDraftsStore.getState().drafts.get("/home/buildbox")).toBe(spawnDraftsStore.getState().current);
   // The displaced draft is unreachable: no key resolves to it any more.

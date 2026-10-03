@@ -320,7 +320,8 @@ failures preserve useful history. Transient reads keep the existing hydration
 and activity recovery owners, so a recovered child becomes readable in place.
 
 Return restores the original pane type, ref and live source state: draft,
-selected skills, staged attachments, pending encodes, queued inputs and mutation
+selected skills and commands, text-owned UTF-16 mention locations, staged
+attachments, pending encodes, queued inputs and mutation
 identity. Promotion does not submit or replay input. An explicit Open conversation
 opens or focuses an ordinary independent session pane. Unrelated panes keep
 their identity and placement.
@@ -333,12 +334,13 @@ fenced by ownership of that shared draft.
 
 Closing the source pane or resetting the workspace retires that source lifetime.
 A fresh pane with the same ID and ref owns a new lifetime. Late recovery-write
-or acceptance completion cannot change its draft, skill selections, attachments
+or acceptance completion cannot change its draft, skill/command selections, mention locations, attachments
 or active recovery identity. Already durable input still belongs to the existing
 mutation dispatcher; retiring its editor does not cancel accepted work.
 
 Saved workspace intent contains the selected ref, validated ordered edges and
-return descriptor. Draft text and skill selections use their existing stores.
+return descriptor. Draft text, skill/command selections and mention locations use
+their existing stores through the pane-owned composer source.
 Processed image bytes and pending encodes belong to the original pane lifetime;
 they are excluded from layout JSON and localStorage and are not restored by a
 page reload. Phones keep the ordinary Agents transcript action. A saved cascade
