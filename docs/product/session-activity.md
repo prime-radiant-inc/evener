@@ -58,6 +58,9 @@ existing delegate controller and journals. The
 [source adapters](../../cmd/evener-hub/internal/appsource/session_activity.go)
 carry that contract across local and remote boundaries. A remote reference
 cannot borrow a coincidentally named local session when its source is unavailable.
+Remote adapters qualify structural session refs and preserve opaque job transcript
+anchors such as `job:<id>`. A job's qualified `ownerRef` scopes its output actions;
+the anchor is not a session routing ref.
 
 Jobs pages and summary job counts share one domain-owned eligibility rule:
 a shell job must have durable background evidence in its start journal event.

@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/hubapi"
@@ -33,6 +34,163 @@ func TestSessionActivityPublicRoutes(t *testing.T) {
 				t.Fatalf("registered read of an unavailable session = %v; want unavailable", err)
 			}
 		})
+	}
+}
+
+func TestSessionActivityBackgroundPublicRoutes(t *testing.T) {
+	t.Parallel()
+	cfg, root, child, stateDir := seedPastSessionWithActivity(t, 0)
+	at := time.Unix(1700000000, 0).UTC()
+	for _, id := range []string{root, child} {
+		writePersistedJobsLog(t, stateDir, id, at, []persistedJobFixture{
+			{id: "job_foreground", command: "foreground", output: "foreground output\n"},
+			{id: "job_equal", command: "background", output: "background output\n", background: true},
+			{id: "job_legacy", command: "legacy", output: "legacy output\n"},
+			{id: "job_second", command: "second background", output: "second output\n", background: true},
+		})
+		record, found, err := agent.LoadSessionJobGet(stateDir, id, "job_equal")
+		if err != nil || !found || !record.Background {
+			t.Fatalf("persisted background fixture %s: %+v, found=%v, err=%v", id, record, found, err)
+		}
+	}
+	direct, err := agent.LoadSessionActivityJobs(t.Context(), stateDir, root, appwire.SessionActivityListParams{Ref: "local:" + root, Scope: appwire.SessionActivityScopeSession, Limit: 1})
+	if err != nil || len(direct.Jobs) != 1 {
+		t.Fatalf("direct retained activity: %+v, err=%v", direct, err)
+	}
+	remotePages := make(chan appwire.SessionJobsResponse, 20)
+	client, calls := newScriptedRemoteHub(t, func(method string, raw json.RawMessage) any {
+		switch method {
+		case appwire.MethodInitialize:
+			return appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion, SourceID: "local"}
+		case appwire.MethodEvenerThreadJobsList:
+			var params appwire.SessionActivityListParams
+			if err := json.Unmarshal(raw, &params); err != nil {
+				t.Error(err)
+				return appwire.InvalidParams(err.Error())
+			}
+			page, err := agent.LoadSessionActivityJobs(t.Context(), stateDir, root, params)
+			if err != nil {
+				t.Error(err)
+				return appwire.Unavailable(err.Error())
+			}
+			remotePages <- page
+			return page
+		case appwire.MethodEvenerThreadActivityRead:
+			var params appwire.SessionActivityReadParams
+			if err := json.Unmarshal(raw, &params); err != nil {
+				t.Error(err)
+				return appwire.InvalidParams(err.Error())
+			}
+			summary, err := agent.LoadSessionActivitySummary(t.Context(), stateDir, root, params)
+			if err != nil {
+				t.Error(err)
+				return appwire.Unavailable(err.Error())
+			}
+			return summary
+		default:
+			return appwire.MethodNotFound(method)
+		}
+	})
+	local := newExitedLocalRegistry()
+	remote := activityHostRegistry("east", client, true)
+	for _, route := range []struct {
+		host, id string
+		registry *appsource.Registry
+	}{{"local", root, local}, {"local", child, local}, {"east", root, remote}} {
+		for _, scope := range []appwire.SessionActivityScope{appwire.SessionActivityScopeSession, appwire.SessionActivityScopeSubtree} {
+			ref := route.host + ":" + route.id
+			params := appwire.SessionActivityListParams{Ref: ref, Scope: scope, Limit: 1}
+			want := map[[2]string]bool{{ref, "job_equal"}: true, {ref, "job_second"}: true}
+			if route.id == root && scope == appwire.SessionActivityScopeSubtree {
+				want[[2]string{route.host + ":" + child, "job_equal"}] = true
+				want[[2]string{route.host + ":" + child, "job_second"}] = true
+			}
+			seen := make(map[[2]string]bool)
+			complete := false
+			for range 10 {
+				raw, err := json.Marshal(params)
+				if err != nil {
+					t.Fatal(err)
+				}
+				value, err := dispatchHubJobsRPC(t, cfg, route.registry, appwire.MethodEvenerThreadJobsList, string(raw))
+				if err != nil {
+					t.Fatal(err)
+				}
+				page := value.(appwire.SessionJobsResponse)
+				if len(page.Jobs) > 1 || page.Context.Ref != ref || page.Scope != scope {
+					t.Fatalf("routed page %s/%s after %d rows, cursor=%q: %+v", ref, scope, len(seen), params.Cursor, page)
+				}
+				if route.host == "east" {
+					original := <-remotePages
+					if page.Page.NextCursor != original.Page.NextCursor || page.Context.Epoch != original.Context.Epoch {
+						t.Fatal("remote translation changed opaque cursor or epoch")
+					}
+					forwarded := scriptedRemoteHubParams[appwire.SessionActivityListParams](t, calls(), appwire.MethodEvenerThreadJobsList)
+					last := forwarded[len(forwarded)-1]
+					if last.Ref != "local:"+root || last.Scope != scope || last.Limit != 1 || last.Cursor != params.Cursor {
+						t.Fatalf("translated request: %+v", last)
+					}
+				}
+				for _, row := range page.Jobs {
+					key := [2]string{row.OwnerRef, row.JobID}
+					if !want[key] || seen[key] || !row.Background || !row.Terminal || row.Outcome != "success" || !row.HasOutput || row.TranscriptRef != "job:"+row.JobID {
+						t.Fatalf("routed membership/outcome: %+v", row)
+					}
+					seen[key] = true
+				}
+				if page.Page.Complete {
+					complete = true
+					break
+				}
+				if page.Page.NextCursor == "" || page.Page.NextCursor == params.Cursor {
+					t.Fatal("routed cursor did not advance")
+				}
+				params.Cursor = page.Page.NextCursor
+			}
+			if !complete || len(seen) != len(want) {
+				t.Fatalf("routed set %s/%s: got %v want %v, complete=%v", ref, scope, seen, want, complete)
+			}
+			raw, err := json.Marshal(appwire.SessionActivityReadParams{Ref: ref, Scope: scope})
+			if err != nil {
+				t.Fatal(err)
+			}
+			value, err := dispatchHubJobsRPC(t, cfg, route.registry, appwire.MethodEvenerThreadActivityRead, string(raw))
+			if err != nil {
+				t.Fatal(err)
+			}
+			summary := value.(appwire.SessionActivitySummary)
+			if summary.Context.Ref != ref || !summary.Jobs.Known || summary.Jobs.Total != len(want) || summary.Jobs.Completed != len(want) || summary.Jobs.Active != 0 {
+				t.Fatalf("routed counts %s/%s: %+v", ref, scope, summary)
+			}
+		}
+	}
+	for _, id := range []string{root, child} {
+		for _, job := range []struct{ id, output string }{{"job_foreground", "foreground output\n"}, {"job_legacy", "legacy output\n"}} {
+			params := appwire.JobsGetParams{Ref: "local:" + id, JobID: job.id}
+			raw, err := json.Marshal(params)
+			if err != nil {
+				t.Fatal(err)
+			}
+			value, err := dispatchHubJobsRPC(t, cfg, local, appwire.MethodEvenerJobsGet, string(raw))
+			if err != nil {
+				t.Fatal(err)
+			}
+			record := value.(appwire.JobsGetResponse).Data
+			if record.JobID != job.id || record.Background || record.OwnerRef != params.Ref {
+				t.Fatalf("diagnostic record lost excluded job: %+v", record)
+			}
+			raw, err = json.Marshal(appwire.JobsOutputParams{Ref: params.Ref, JobID: job.id, MaxBytes: 1024})
+			if err != nil {
+				t.Fatal(err)
+			}
+			value, err = dispatchHubJobsRPC(t, cfg, local, appwire.MethodEvenerJobsOutput, string(raw))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if output := value.(appwire.JobsOutputResponse).Data; output.Tail != job.output || output.TotalBytes != int64(len(job.output)) {
+				t.Fatalf("excluded output changed: %+v", output)
+			}
+		}
 	}
 }
 
@@ -71,7 +229,7 @@ func TestSessionActivityRetainedPublicHierarchyAndSourceFences(t *testing.T) {
 	if err = file.Close(); err != nil {
 		t.Fatal(err)
 	}
-	writePersistedJobsLog(t, stateDir, grand, now, []persistedJobFixture{{id: "job_grand", command: "echo grandchild"}})
+	writePersistedJobsLog(t, stateDir, grand, now, []persistedJobFixture{{id: "job_grand", command: "echo grandchild", background: true}})
 	if _, err := cfg.Past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}

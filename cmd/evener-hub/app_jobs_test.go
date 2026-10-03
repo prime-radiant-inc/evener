@@ -64,6 +64,7 @@ type persistedJobFixture struct {
 	description string
 	command     string
 	output      string
+	background  bool
 }
 
 // seedPastSessionWithJobs builds a past-indexed session (project state dir +
@@ -136,6 +137,7 @@ func writePersistedJobsLog(t *testing.T, stateDir, sessionID string, now time.Ti
 			"owner_session_id":      sessionID,
 			"visible_to_session_id": sessionID,
 			"started_at":            started,
+			"background":            job.background,
 		})
 		finished := map[string]any{
 			"kind":     "job_finished",
@@ -195,6 +197,7 @@ func seedPastSessionWithActivity(t *testing.T, childJobs int) (hubcore.WebConfig
 			"ts":                    now.Add(3 * time.Second).Format(time.RFC3339Nano),
 			"job_id":                "job_root_shell",
 			"type":                  "shell",
+			"background":            true,
 			"status":                "running",
 			"description":           "root shell",
 			"command":               "make root",
@@ -224,6 +227,7 @@ func seedPastSessionWithActivity(t *testing.T, childJobs int) (hubcore.WebConfig
 				"ts":                    startedText,
 				"job_id":                jobID,
 				"type":                  "shell",
+				"background":            true,
 				"status":                "running",
 				"description":           fmt.Sprintf("child shell %d", i),
 				"command":               fmt.Sprintf("echo child-%d", i),

@@ -208,6 +208,47 @@ test("shell jobs attach to their actual owner and preserve output/action targets
     delegate: { ownerSessionId: "session", rootSessionId: "session", childSessionId: "child-id" },
   });
 });
+test.each([
+  { status: "running", terminal: false, outcome: undefined },
+  { status: "completed", terminal: true, outcome: "success" },
+  { status: "command_exited_nonzero", terminal: true, outcome: "failure" },
+  { status: "stopped", terminal: true, outcome: "stopped" },
+])(
+  "shared adaptation preserves background job facts for $status and delegate run generation",
+  ({ status, terminal, outcome }) => {
+    const settled = { ...delegateFixture("settled"), runGeneration: 7, terminal: true, outcome: "failed" };
+    const state = snapshot([settled]);
+    const job = {
+      ...jobFixture("background", status),
+      terminal,
+      outcome,
+      hasOutput: true,
+      transcriptRef: "job:background",
+    };
+    state.jobs.rows = [job];
+    const projection = projectSessionActivity(state);
+    if (!projection.tree) throw new Error("missing loaded projection");
+    const entries = projection.tree.root.entries;
+    const shell = entries.find((entry) => entry.kind === "shell");
+    expect(shell).toMatchObject({
+      kind: "shell",
+      job: {
+        jobId: "background",
+        ownerRef: activityRef,
+        background: true,
+        terminal,
+        status,
+        outcome,
+        hasOutput: true,
+        transcriptRef: "job:background",
+      },
+    });
+    expect(entries.find((entry) => entry.kind === "delegate")).toMatchObject({
+      delegate: { delegateId: "settled", ownerRef: activityRef, runGeneration: 7, terminal: true, outcome: "failed" },
+    });
+  },
+);
+
 test("retained unavailable runtime preserves optional failure/model/usage/worktree facts", () => {
   const row = {
     ...delegate("parent", activityRef, "remote:child"),
