@@ -1,5 +1,6 @@
 import type { InitializeResponse } from "@evener/appwire-client";
 import { AppwireClient, type ConnectionState } from "@evener/appwire-client";
+import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -326,15 +327,10 @@ describe("clicking Retry", () => {
       features: ALL_FEATURES_OFF,
     };
     const reconnected = { ...initial, serverInfo: { name: "reconnected-hub", version: "2.0.0" } };
-    let finishConnect: (response: InitializeResponse) => void = () => {
-      throw new Error("connect is not pending");
-    };
-    const pending = new Promise<InitializeResponse>((resolve) => {
-      finishConnect = resolve;
-    });
+    const pending = deferred<InitializeResponse>();
     fresh.scriptConnect(() => {
       fresh.emitReady(initial);
-      return pending;
+      return pending.promise;
     });
     const replaced: unknown[] = [];
     render(
@@ -354,8 +350,8 @@ describe("clicking Retry", () => {
       fresh.emitReady(reconnected);
     });
     await act(async () => {
-      finishConnect(initial);
-      await pending;
+      pending.resolve(initial);
+      await pending.promise;
     });
 
     expect(replaced).toEqual([fresh]);

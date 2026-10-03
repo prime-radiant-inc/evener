@@ -9,6 +9,7 @@
 import { describe, expect, test, vi } from "vitest";
 import type { ConnectionState } from "../client";
 import { ConnectionClosedError } from "../errors";
+import { createConnectionStore } from "../state/connection/core";
 import type { AnyNotification, InitializeResponse, MethodName } from "../types.gen";
 import { deferred } from "./deferred";
 import { deferRequest, FakeClient, gateSettlements, type Settlement } from "./fakeClient";
@@ -76,6 +77,44 @@ describe("FakeClient negotiated metadata", () => {
 
     expect(fake.initializeResult).toBe(reconnected);
   });
+
+  test.each(["same-object", "B → C → B"] as const)(
+    "a late scripted connect cannot replace ready metadata after %s cache reuse",
+    async (sequence) => {
+      const fake = new FakeClient("connecting");
+      const latest = {
+        ...FAKE_INITIALIZE_RESULT,
+        serverInfo: { name: "latest-hub", version: "2.0.0" },
+        features: { ...FAKE_INITIALIZE_RESULT.features, transcriptDisplaySettings: true, someFutureFeature: true },
+      };
+      const intermediate = {
+        ...latest,
+        serverInfo: { name: "intermediate-hub", version: "3.0.0" },
+      };
+      fake.emitReady(latest);
+      const alreadyAttached = createConnectionStore();
+      alreadyAttached.connect(fake);
+      const response = deferred<InitializeResponse>();
+      fake.scriptConnect(() => response.promise);
+      const connecting = fake.connect();
+
+      for (const initialize of sequence === "same-object" ? [latest] : [intermediate, latest]) {
+        fake.emitStateChange("reconnecting");
+        fake.emitReady(initialize);
+      }
+      response.resolve(FAKE_INITIALIZE_RESULT);
+      await expect(connecting).resolves.toBe(FAKE_INITIALIZE_RESULT);
+
+      const newlyAttached = createConnectionStore();
+      newlyAttached.connect(fake);
+      const expected = { state: "ready", serverInfo: latest.serverInfo, features: latest.features };
+      expect.soft(fake.initializeResult).toBe(latest);
+      expect.soft(newlyAttached.getState()).toMatchObject(expected);
+      expect.soft(alreadyAttached.getState()).toMatchObject(expected);
+      newlyAttached.setState({ client: null });
+      alreadyAttached.setState({ client: null });
+    },
+  );
 });
 
 describe("FakeClient method-name validation", () => {

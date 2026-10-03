@@ -33,16 +33,10 @@ export function bootstrapClient(injectedClient?: AppwireClientLike): void {
   initTranscriptDisplay();
   const client = injectedClient ?? new AppwireClient({ url: rpcURLFromLocation(window.location) });
   connectionStore.getState().connect(client);
-  void client.connect().then(
-    (info) => {
-      if (connectionStore.getState().client !== client || client.state === "closed") return;
-      connectionStore.setState({ serverInfo: info.serverInfo, features: info.features });
-    },
-    () => {
-      // The client's state-change listener already publishes the failed
-      // handshake as a closed connection.
-    },
-  );
+  void client.connect().catch(() => {
+    // The client's state-change listener already publishes the failed
+    // handshake as a closed connection.
+  });
 }
 
 export interface DevHarnessProps {

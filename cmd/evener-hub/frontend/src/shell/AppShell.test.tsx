@@ -11,6 +11,7 @@ import type {
 } from "@evener/appwire-client";
 import { AppwireClient, type ConnectionState, WireError } from "@evener/appwire-client";
 import { keyID } from "@evener/appwire-client/state/navigation";
+import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -1083,15 +1084,10 @@ test("a late boot connect result cannot overwrite automatic reconnect metadata",
     features: ALL_FEATURES_OFF,
   };
   const reconnected = { ...initial, serverInfo: { name: "reconnected-hub", version: "2.0.0" } };
-  let finishConnect: (response: InitializeResponse) => void = () => {
-    throw new Error("connect is not pending");
-  };
-  const pending = new Promise<InitializeResponse>((resolve) => {
-    finishConnect = resolve;
-  });
+  const pending = deferred<InitializeResponse>();
   fake.scriptConnect(() => {
     fake.emitReady(initial);
-    return pending;
+    return pending.promise;
   });
   render(<AppShell client={fake} />);
   await waitFor(() => expect(connectionStore.getState().serverInfo).toEqual(initial.serverInfo));
@@ -1101,8 +1097,8 @@ test("a late boot connect result cannot overwrite automatic reconnect metadata",
     fake.emitReady(reconnected);
   });
   await act(async () => {
-    finishConnect(initial);
-    await pending;
+    pending.resolve(initial);
+    await pending.promise;
   });
 
   expect(connectionStore.getState().serverInfo).toEqual(reconnected.serverInfo);

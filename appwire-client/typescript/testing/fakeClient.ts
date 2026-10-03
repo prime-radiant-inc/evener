@@ -127,6 +127,7 @@ export class FakeClient implements AppwireClientLike {
   // drives that explicitly, exactly as before.
   private connectHandler: ConnectHandler = () => DEFAULT_INITIALIZE_RESPONSE;
   private latestInitialize: InitializeResponse | null = null;
+  private initializeRevision = 0;
 
   // Defaults to "ready": tests overwhelmingly want a client stores can
   // request() against immediately, without separately staging the
@@ -134,11 +135,18 @@ export class FakeClient implements AppwireClientLike {
   // a different initial state explicitly to test pre-ready behavior.
   constructor(initialState: ConnectionState = "ready") {
     this.state = initialState;
-    if (initialState === "ready") this.latestInitialize = DEFAULT_INITIALIZE_RESPONSE;
+    if (initialState === "ready") this.cacheInitialize(DEFAULT_INITIALIZE_RESPONSE);
   }
 
   get initializeResult(): InitializeResponse | null {
     return this.latestInitialize;
+  }
+
+  private cacheInitialize(initialize: InitializeResponse): void {
+    this.latestInitialize = initialize;
+    // An accepted cache update has authority even when it reuses the same
+    // response object. Reference equality cannot fence same-object or ABA ready.
+    this.initializeRevision += 1;
   }
 
   // The number of listeners currently registered across onNotification,
@@ -253,12 +261,12 @@ export class FakeClient implements AppwireClientLike {
   // flight when close() runs is failed by close() instead of settling later.
   connect(): Promise<InitializeResponse> {
     if (this.state === "closed") return Promise.reject(new ConnectionClosedError(CLOSED_MESSAGE));
-    const initializeAtStart = this.latestInitialize;
+    const revisionAtStart = this.initializeRevision;
     return this.defer(
       () => this.connectHandler(),
       (initialize) => {
-        // A ready result injected while this script was pending is newer.
-        if (this.latestInitialize === initializeAtStart) this.latestInitialize = initialize;
+        // A cache update while this script was pending is newer.
+        if (this.initializeRevision === revisionAtStart) this.cacheInitialize(initialize);
       },
     );
   }
@@ -443,7 +451,7 @@ export class FakeClient implements AppwireClientLike {
     // is the only chance.
     if (next === "closed") this.failPending(new Error(TRANSPORT_CLOSED_MESSAGE));
     // Production enterReady caches before dispatching state subscribers.
-    if (next === "ready") this.latestInitialize = initialize;
+    if (next === "ready") this.cacheInitialize(initialize);
     this.state = next;
     for (const cb of Array.from(this.stateChangeHandlers)) {
       try {
