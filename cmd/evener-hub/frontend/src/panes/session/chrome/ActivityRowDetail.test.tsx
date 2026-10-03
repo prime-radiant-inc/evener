@@ -144,7 +144,7 @@ function renderDelegateStrip(delegateOverrides: Record<string, unknown> = {}) {
 function setupJobOutput() {
   return vi
     .spyOn(threadsStore.getState(), "jobOutput")
-    .mockResolvedValue({ tail: "", totalBytes: 0, retainedStart: 0 });
+    .mockResolvedValue({ tail: "", totalBytes: 0, retainedStart: 0, truncated: false });
 }
 
 let jobOutput: ReturnType<typeof setupJobOutput>;
@@ -463,7 +463,12 @@ describe("ActivityRowDetail", () => {
   });
 
   test("a shell job row with output fetches a bounded tail and renders its ANSI escapes as styled runs", async () => {
-    jobOutput.mockResolvedValue({ tail: "[32mok[39m\n[2mPASS[22m\n", totalBytes: 8, retainedStart: 0 });
+    jobOutput.mockResolvedValue({
+      tail: "[32mok[39m\n[2mPASS[22m\n",
+      totalBytes: 8,
+      retainedStart: 0,
+      truncated: false,
+    });
     render(
       <ActivityRowDetail
         row={jobRow(

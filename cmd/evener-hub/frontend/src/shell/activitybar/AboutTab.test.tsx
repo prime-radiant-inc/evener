@@ -4,7 +4,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { MotionProvider } from "../../motion";
 import { NOW_TICK_MS } from "../../panes/session/liveness";
-import Transcript from "../../panes/transcript/Transcript";
+import Transcript from "../../panes/transcript/testing/CommittedTranscript";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { connectionStore } from "../../stores/connection";
 import { sessionActivitySnapshot } from "../../stores/sessionActivity";

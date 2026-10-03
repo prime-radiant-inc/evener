@@ -11,7 +11,7 @@ import {
 	WireError,
 } from "@evener/appwire-client";
 import type { LaunchConfigLayer, ModelDescriptor, Thread } from "@evener/appwire-client";
-import { LOCAL_HOST } from "../../cmd/evener-hub/frontend/src/stores/hostRouting";
+import { LOCAL_HOST } from "@evener/appwire-client";
 import type { NewSessionService } from "../../mobile/src/services/newSession";
 import { type CreationDraft, type CreationDraftRepository, creationDraftMetadata } from "./creationDraftRepository";
 import { type DraftImageData, imageInput } from "./draftImages";

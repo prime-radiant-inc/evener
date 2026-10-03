@@ -5,6 +5,7 @@ import { installActivityFixture } from "./sessionActivityTestUtils";
 // writes more or changes state. It offers no Refresh and no Stop.
 import type { NativeStackNavigationOptions } from "@react-navigation/native-stack";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { wireThread } from "@evener/appwire-client/testing/notifications";
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { render, renderedText, screenConnection } from "../renderNative.testkit";
@@ -94,7 +95,9 @@ beforeEach(() => {
 	tree = treeWith(shellJob("j-test"));
 	output = () => ({ data: TAIL });
 	client = new FakeClient("ready");
-	client.on("thread/read", () => ({ thread: { id: "coord", modelProvider: "scripted" } }) as never);
+	client.on("thread/read", ({ ref }) => ({
+		thread: wireThread(ref, { id: "coord", sessionId: "coord", modelProvider: "scripted" }),
+	}));
 	installActivityFixture(client, (cursor) => {
 		if (cursor === "page-2") throw new Error("offline");
 		return tree;

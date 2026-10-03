@@ -1349,7 +1349,7 @@ func (s *hostAttachState) restore(name string, rec *hostAttachRecord) {
 // never dials.
 //
 // It is controller-LOCAL: these methods act on the controller's own config and
-// channels, so they MUST NOT be added to remoteHostAdminMethods (pinned by
+// channels, so they MUST NOT be added to the AppWire host-request catalog (pinned by
 // TestHostManageNotForwarded), and every handler refuses a request whose
 // routing origin is non-empty (a peer hub calling over its attach bridge) —
 // pinned by TestHostManageRefusesRemoteOrigin.
@@ -2037,7 +2037,7 @@ func registerHostManageHandlers(server *appserver.Server, sources *appsource.Reg
 	// The teardown-repair mutations register here, with the registry surface
 	// they repair: both act on this controller's own hub.toml records and
 	// channels, so they are controller-local like add/update/remove — refused
-	// for a remote origin and never added to remoteHostAdminMethods (pinned by
+	// for a remote origin and never added to the AppWire host-request catalog (pinned by
 	// TestHostManageNotForwarded) — and routed with catalog entries in the same
 	// change (the router-vs-catalog invariant).
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerHostTeardownRetry, hostManageHandler(func(ctx context.Context, params appwire.HostTeardownRetryParams) (appwire.HostTeardownRetryResult, error) {

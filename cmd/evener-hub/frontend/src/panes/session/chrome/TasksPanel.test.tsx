@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ThreadCapabilities, ThreadModel } from "@evener/appwire-client";
+import type { Task, TaskListResponse, ThreadCapabilities, ThreadModel } from "@evener/appwire-client";
 import { absoluteTime, WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, render, screen, waitFor } from "@testing-library/react";
@@ -75,7 +75,7 @@ function connectFakeClient(): FakeClient {
 
 // Wire-true fixture: the real daemon Task shape (agent/task/task_store.go:
 // 54-79), same fixture family as the package's taskListData.test.ts.
-const TASKS_DATA = [
+const TASKS_DATA: [Task, Task, Task] = [
   { id: 1, type: "implement", description: "Wire up the status row", prompt: "", status: "done" },
   { id: 2, type: "implement", description: "Wire up session actions", prompt: "", status: "in_progress" },
   { id: 3, type: "verify", description: "Gate green", prompt: "", status: "open" },
@@ -83,7 +83,7 @@ const TASKS_DATA = [
 
 const DATED_TASK_CREATED_AT = new Date(2026, 7, 8, 22, 3, 48).toISOString();
 
-const DATED_TASKS = [
+const DATED_TASKS: [Task, Task, Task, Task] = [
   {
     id: 1,
     type: "implement",
@@ -216,7 +216,7 @@ test("pins each task status's TaskCheck touch - open renders the pending box, ca
 test("opening the panel fetches via listTasks(ref) and shows a loading state until it resolves", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
-  const box: { resolve: ((r: { data: unknown }) => void) | null } = { resolve: null };
+  const box: { resolve: ((r: TaskListResponse) => void) | null } = { resolve: null };
   fake.on("evener/tasks/list", () => new Promise((resolve) => (box.resolve = resolve)));
 
   render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
@@ -790,11 +790,11 @@ test("a generic fetch failure surfaces an error toast AND an inline error state"
 // failure banner over a list that is on screen and current.
 test("a stale overlapping failure does not toast after a newer fetch succeeded", async () => {
   const fake = connectFakeClient();
-  const calls: Array<{ resolve: (value: { data: unknown }) => void; reject: (err: unknown) => void }> = [];
+  const calls: Array<{ resolve: (value: TaskListResponse) => void; reject: (err: unknown) => void }> = [];
   fake.on(
     "evener/tasks/list",
     () =>
-      new Promise<{ data: unknown }>((resolve, reject) => {
+      new Promise<TaskListResponse>((resolve, reject) => {
         calls.push({ resolve, reject });
       }),
   );
@@ -880,7 +880,7 @@ test("a rejection with no text of its own shows the headline alone, with no empt
 
 // Scripts evener/tasks/list to answer `first` once and to reject every later
 // call: the exact shape of a live re-fetch blipping under a reader.
-function failAfterFirstFetch(fake: FakeClient, first: unknown, err: unknown): void {
+function failAfterFirstFetch(fake: FakeClient, first: TaskListResponse["data"], err: unknown): void {
   let calls = 0;
   fake.on("evener/tasks/list", () => {
     calls += 1;

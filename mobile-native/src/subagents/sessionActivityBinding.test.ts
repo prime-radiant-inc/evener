@@ -1,6 +1,7 @@
 import { expect, test } from "vitest";
-import type { SessionActivityContext, SessionDelegate } from "@evener/appwire-client";
+import type { SessionActivityContext, SessionDelegate, ThreadReadResponse } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { wireThread } from "@evener/appwire-client/testing/notifications";
 import { SubagentTree } from "./subagentTree";
 const context: SessionActivityContext = {
 	ref: "remote:root",
@@ -28,7 +29,9 @@ const delegate = (id: string, ownerRef = "remote:root"): SessionDelegate => ({
 });
 function hub() {
 	const client = new FakeClient("ready");
-	client.on("thread/read", () => ({ thread: { id: "root", modelProvider: "scripted" } }) as never);
+	client.on("thread/read", ({ ref }) => ({
+		thread: wireThread(ref, { id: "root", sessionId: "root", modelProvider: "scripted" }),
+	}));
 	client.on("thread/unsubscribe", () => ({}));
 	client.on("evener/thread/activity/read", ({ scope }) => ({
 		context,
@@ -182,12 +185,12 @@ test("alias replacement retires the model and fences a pending same-client follo
 	const admitted = new Promise<void>((resolve) => {
 		admit = resolve;
 	});
-	let answer: (result: unknown) => void = () => {};
+	let answer: (result: ThreadReadResponse) => void = () => {};
 	client.on("thread/read", () => {
 		admit();
-		return new Promise((resolve) => {
+		return new Promise<ThreadReadResponse>((resolve) => {
 			answer = resolve;
-		}) as never;
+		});
 	});
 	const pending = tree.follow();
 	await admitted;
@@ -228,7 +231,7 @@ test("alias replacement retires the model and fences a pending same-client follo
 	client.emitNotification({ method: "evener/thread/resync", params: { ref: context.ref, threadId: "replacement" } });
 	await changed;
 	expect(tree.getSnapshot().coordinatorModel).toBeNull();
-	answer({ thread: { id: "root", modelProvider: "obsolete" } });
+	answer({ thread: wireThread(context.ref, { id: "root", sessionId: "root", modelProvider: "obsolete" }) });
 	await pending;
 	expect(tree.getSnapshot().coordinatorModel).toBeNull();
 	await tree.setClient(null);
@@ -246,12 +249,12 @@ test("final release and same-client remount fence an admitted obsolete follow re
 	const admitted = new Promise<void>((resolve) => {
 		admit = resolve;
 	});
-	let answer: (result: unknown) => void = () => {};
+	let answer: (result: ThreadReadResponse) => void = () => {};
 	client.on("thread/read", () => {
 		admit();
-		return new Promise((resolve) => {
+		return new Promise<ThreadReadResponse>((resolve) => {
 			answer = resolve;
-		}) as never;
+		});
 	});
 	const obsolete = tree.follow();
 	await admitted;
@@ -267,11 +270,13 @@ test("final release and same-client remount fence an admitted obsolete follow re
 	const remounted = subagentTree("remount-hub", context.ref, "root");
 	expect(remounted).toBe(tree);
 	const releaseRemount = holdSubagentTree(remounted);
-	client.on("thread/read", () => ({ thread: { id: "root", modelProvider: "current" } }) as never);
+	client.on("thread/read", ({ ref }) => ({
+		thread: wireThread(ref, { id: "root", sessionId: "root", modelProvider: "current" }),
+	}));
 	await remounted.setClient(client);
 	await remounted.follow();
 	expect(tree.getSnapshot().coordinatorModel).toBe("current");
-	answer({ thread: { id: "root", modelProvider: "obsolete" } });
+	answer({ thread: wireThread(context.ref, { id: "root", sessionId: "root", modelProvider: "obsolete" }) });
 	await obsolete;
 	expect(tree.getSnapshot().coordinatorModel).toBe("current");
 	releaseRemount();

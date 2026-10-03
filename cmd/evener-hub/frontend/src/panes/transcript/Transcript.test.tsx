@@ -14,7 +14,7 @@ import { resetThreadsStoreForTests } from "../../stores/threads";
 import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
 import { resetSubagentModuleStoreForTests } from "../session/transcript/tools/subagentModuleStore";
 import { resetTranscriptPagingForTests } from "../session/transcript/useTranscript";
-import Transcript from "./Transcript";
+import Transcript from "./testing/CommittedTranscript";
 
 // A minimal, test-only "session" pane registration - mirrors
 // subagentModule.test.tsx's own precedent: real registerPane/paneFor/openPane
@@ -527,7 +527,7 @@ test("a job log does not borrow metadata from another owner's equal job id", asy
     finishSecond = resolve;
   });
   fake.on("evener/jobs/get", ({ ref }) => (ref === "first-owner" ? metadata(ref, "First owner's job") : second));
-  fake.on("evener/jobs/output", () => ({ data: { tail: "", totalBytes: 0, retainedStart: 0 } }));
+  fake.on("evener/jobs/output", () => ({ data: { tail: "", totalBytes: 0, retainedStart: 0, truncated: false } }));
   const view = (ownerRef: string) => (
     <ClientProvider client={fake}>
       <Transcript params={{ ref: "job:shared-id", parentRef: ownerRef }} paneId="p1" focused={false} />

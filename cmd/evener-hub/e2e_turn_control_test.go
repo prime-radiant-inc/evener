@@ -706,7 +706,7 @@ func startHubStackOnProviderWithEvener(t *testing.T, providersTOML, model, evene
 			reapDaemons(t, string(body))
 		}
 		if t.Failed() && readErr == nil {
-			t.Logf("hub log:\n%s", body)
+			t.Logf("hub log:\n%s", redactHubStackLog(body))
 		}
 	})
 
@@ -789,6 +789,30 @@ func waitForProcessExit(proc *os.Process, timeout time.Duration) bool {
 // listener actually bound (main.go prints it after resolving a :0 bind).
 var hubListeningLine = regexp.MustCompile(`\[hub\] evener-hub \S+ listening on (\S+) \(run_dir=`)
 
+var hubStackAuthURL = regexp.MustCompile(`/auth/[^\s/?#"']+`)
+
+func redactHubStackLog(body []byte) string {
+	return hubStackAuthURL.ReplaceAllString(string(body), "/auth/[REDACTED]")
+}
+
+func TestHubStackFailureLogRedactsAuthURLs(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, input, want string
+	}{
+		{"startup", "Open http://127.0.0.1:1234/auth/fixture-auth-canary\n", "Open http://127.0.0.1:1234/auth/[REDACTED]\n"},
+		{"redirect", "https://host/auth/encoded%2Fcanary?next=/thread/root", "https://host/auth/[REDACTED]?next=/thread/root"},
+		{"multiple", "http://host/auth/first-canary https://host/auth/second-canary\n", "http://host/auth/[REDACTED] https://host/auth/[REDACTED]\n"},
+		{"diagnostics", "[hub] daemon session=fixture pid=1234 log=/tmp/fixture.log\n", "[hub] daemon session=fixture pid=1234 log=/tmp/fixture.log\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := redactHubStackLog([]byte(test.input)); got != test.want {
+				t.Errorf("fixture auth URL redaction failed for %s", test.name)
+			}
+		})
+	}
+}
+
 // awaitHubListening returns the address the hub under test announces in its
 // log. The hub binds before it prints that line, so the address is the hub's
 // own listener; a bare TCP dial could not tell it from another process's.
@@ -805,7 +829,7 @@ func awaitHubListening(t *testing.T, logPath string) string {
 			}
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("hub never announced its listener in %s (read err=%v):\n%s", logPath, err, body)
+			t.Fatalf("hub never announced its listener in %s (read err=%v):\n%s", logPath, err, redactHubStackLog(body))
 		}
 		time.Sleep(50 * time.Millisecond)
 	}

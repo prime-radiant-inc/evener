@@ -2706,7 +2706,10 @@ type TaskListParams struct {
 }
 
 type TaskListResponse struct {
-	Data any `json:"data"`
+	// Data is nil when task data is unavailable and non-nil (possibly empty)
+	// for an authoritative list. The nullable annotation preserves that
+	// distinction in the generated SDK without a pointer to the slice.
+	Data []Task `json:"data" appwire:"nullable"`
 }
 
 type JobsListParams struct {
@@ -2896,7 +2899,7 @@ type JobsOutputParams struct {
 }
 
 type JobsOutputResponse struct {
-	Data any `json:"data"`
+	Data JobOutputTail `json:"data"`
 }
 
 // JobsGetParams reads ONE job's metadata (the activity-tree job shape),
@@ -2911,7 +2914,7 @@ type JobsGetParams struct {
 // the activity tree renders, so a client can show the job's full command beside
 // its output.
 type JobsGetResponse struct {
-	Data any `json:"data"`
+	Data JobActivityJob `json:"data"`
 }
 
 // PathsCompleteParams asks for path completions of Prefix. IncludeFiles adds
@@ -5224,12 +5227,15 @@ type HostNotificationParams struct {
 // The mutation-result union (registry spec 08 §11)
 // ---------------------------------------------------------------------------
 
+// HostMutationOutcome identifies a host mutation result arm.
+type HostMutationOutcome string
+
 // The four discriminator values the mutation-result union carries.
 const (
-	HostMutationOutcomeCommitted        = "committed"
-	HostMutationOutcomeTeardownFailure  = "committed-with-teardown-failure"
-	HostMutationOutcomeCollisionDropped = "collision-dropped"
-	HostMutationOutcomeAmbiguous        = "ambiguous"
+	HostMutationOutcomeCommitted        HostMutationOutcome = "committed"
+	HostMutationOutcomeTeardownFailure  HostMutationOutcome = "committed-with-teardown-failure"
+	HostMutationOutcomeCollisionDropped HostMutationOutcome = "collision-dropped"
+	HostMutationOutcomeAmbiguous        HostMutationOutcome = "ambiguous"
 )
 
 // RemovedRow is evener/host/remove's dedicated removed-row arm (registry spec
@@ -5274,15 +5280,15 @@ type RemovedRow struct {
 // planned teardown completed. `host` is a HostRow for add/update and a
 // RemovedRow for remove's clean path.
 type HostMutationCommitted struct {
-	Outcome string  `json:"outcome"`
-	Host    HostRow `json:"host"`
+	Outcome HostMutationOutcome `json:"outcome"`
+	Host    HostRow             `json:"host"`
 }
 
 // HostMutationCommittedRemoved is remove's clean arm: the same outcome with the
 // dedicated removed-row shape.
 type HostMutationCommittedRemoved struct {
-	Outcome string     `json:"outcome"`
-	Host    RemovedRow `json:"host"`
+	Outcome HostMutationOutcome `json:"outcome"`
+	Host    RemovedRow          `json:"host"`
 }
 
 // HostMutationTeardownFailure is the union's failure arm: the mutation is
@@ -5291,19 +5297,19 @@ type HostMutationCommittedRemoved struct {
 // `evener/host/teardown-retry` resumes. The committed row is always present so
 // the UI renders it with a teardown-retry affordance.
 type HostMutationTeardownFailure struct {
-	Outcome   string  `json:"outcome"`
-	Seam      string  `json:"seam"`
-	RemnantID string  `json:"remnantId"`
-	Host      HostRow `json:"host"`
+	Outcome   HostMutationOutcome `json:"outcome"`
+	Seam      string              `json:"seam"`
+	RemnantID string              `json:"remnantId"`
+	Host      HostRow             `json:"host"`
 }
 
 // HostMutationTeardownFailureRemoved is remove's teardown-failure arm, carrying
 // the removed-row shape for the same reason.
 type HostMutationTeardownFailureRemoved struct {
-	Outcome   string     `json:"outcome"`
-	Seam      string     `json:"seam"`
-	RemnantID string     `json:"remnantId"`
-	Host      RemovedRow `json:"host"`
+	Outcome   HostMutationOutcome `json:"outcome"`
+	Seam      string              `json:"seam"`
+	RemnantID string              `json:"remnantId"`
+	Host      RemovedRow          `json:"host"`
 }
 
 // HostMutationCollisionDropped is the union's dropped arm: the post-rename
@@ -5315,11 +5321,11 @@ type HostMutationTeardownFailureRemoved struct {
 // the re-read finds the name gone entirely (a hand-edit deletion) the arm
 // carries no `host` and sets `removed: true`.
 type HostMutationCollisionDropped struct {
-	Outcome            string   `json:"outcome"`
-	DroppedEntry       HostRow  `json:"droppedEntry"`
-	WinningFingerprint string   `json:"winningFingerprint"`
-	Host               *HostRow `json:"host,omitempty"`
-	Removed            bool     `json:"removed,omitempty"`
+	Outcome            HostMutationOutcome `json:"outcome"`
+	DroppedEntry       HostRow             `json:"droppedEntry"`
+	WinningFingerprint string              `json:"winningFingerprint"`
+	Host               *HostRow            `json:"host,omitempty"`
+	Removed            bool                `json:"removed,omitempty"`
 }
 
 // HostMutationAmbiguous is the union's keyless-ambiguous arm (registry spec 08
@@ -5328,8 +5334,8 @@ type HostMutationCollisionDropped struct {
 // or another client's remove/re-add, so the response claims no commit and
 // carries no receipt semantics".
 type HostMutationAmbiguous struct {
-	Outcome     string  `json:"outcome"`
-	ObservedRow HostRow `json:"observedRow"`
+	Outcome     HostMutationOutcome `json:"outcome"`
+	ObservedRow HostRow             `json:"observedRow"`
 }
 
 // HostMutationResult is the mutation-result union evener/host/add,
@@ -5385,8 +5391,8 @@ func isNilArm(arm any) bool {
 // zero-valued arm.
 func (u *HostMutationResult) UnmarshalJSON(raw []byte) error {
 	var probe struct {
-		Outcome string          `json:"outcome"`
-		Host    json.RawMessage `json:"host"`
+		Outcome HostMutationOutcome `json:"outcome"`
+		Host    json.RawMessage     `json:"host"`
 	}
 	if err := json.Unmarshal(raw, &probe); err != nil {
 		return err

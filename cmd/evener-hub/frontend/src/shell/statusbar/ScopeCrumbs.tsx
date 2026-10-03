@@ -26,11 +26,13 @@ function ScopeCrumbLabel({
   depth,
   last,
   hierarchy,
+  onNavigate,
 }: {
   crumb: ScopeCrumb;
   depth: number;
   last: boolean;
   hierarchy: boolean;
+  onNavigate?: (ref: string) => void;
 }) {
   const name = useThreadsStore((state) => state.threads.get(crumb.ref)?.name);
   const row = selectSessionSummary(crumb.ref, navigationStore.getState());
@@ -52,6 +54,10 @@ function ScopeCrumbLabel({
           title={title}
           data-session-navigation-ref={crumb.ref}
           onClick={() => {
+            if (onNavigate) {
+              onNavigate(crumb.ref);
+              return;
+            }
             const workspace = workspaceStore.getState();
             const transcript = workspace.panes.find(
               (pane) => pane.type === "transcript" && refParam(pane.params) === crumb.ref,
@@ -69,7 +75,15 @@ function ScopeCrumbLabel({
   );
 }
 
-export function ScopeCrumbs({ path, hierarchy = false }: { path: ScopeCrumb[]; hierarchy?: boolean }) {
+export function ScopeCrumbs({
+  path,
+  hierarchy = false,
+  onNavigate,
+}: {
+  path: ScopeCrumb[];
+  hierarchy?: boolean;
+  onNavigate?: (ref: string) => void;
+}) {
   useNavigationStore((state) => state.resources);
   return (
     <nav className={`${CLASS.crumbs}${hierarchy ? ` ${CLASS.hierarchy}` : ""}`} aria-label="Scope">
@@ -80,6 +94,7 @@ export function ScopeCrumbs({ path, hierarchy = false }: { path: ScopeCrumb[]; h
           depth={depth}
           last={depth === path.length - 1}
           hierarchy={hierarchy}
+          onNavigate={onNavigate}
         />
       ))}
     </nav>

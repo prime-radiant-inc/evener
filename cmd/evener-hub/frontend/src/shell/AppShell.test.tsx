@@ -4435,9 +4435,14 @@ test("a popstate into a host-scoped settings URL selects the host before the pan
   expect(await screen.findByText("Couldn't check beta's registration")).toBeTruthy();
 });
 
-test.each([false, true])(
-  "desktop Activity drill keeps grandchild focus with retained ref-only observer=%s",
-  async (retained) => {
+test.each([
+  { retained: false, source: "main" },
+  { retained: true, source: "main" },
+  { retained: false, source: "nested" },
+  { retained: false, source: "transcript" },
+])(
+  "desktop Activity drill keeps grandchild focus from $source with retained ref-only observer=$retained",
+  async ({ retained, source }) => {
     const height = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight");
     Object.defineProperty(HTMLElement.prototype, "offsetHeight", { configurable: true, get: () => 500 });
     onTestFinished(() => {
@@ -4445,40 +4450,67 @@ test.each([false, true])(
       else Reflect.deleteProperty(HTMLElement.prototype, "offsetHeight");
     });
     vi.stubGlobal("innerWidth", 1280);
-    window.history.pushState({}, "", "/s/local:owner");
-    installLocationForRoute("local:owner");
+    const routeRef = source === "nested" ? "local:child" : "local:owner";
+    window.history.pushState({}, "", `/s/${routeRef}`);
+    installLocationForRoute(routeRef);
     resetActivitySidebarStoreForTests();
     const client = navClient();
+    if (source === "nested")
+      client.on("evener/navigation/read", (params) =>
+        params.resource === "location" && params.ref === "local:child"
+          ? wireSnapshot(
+              params,
+              {
+                ref: "local:child",
+                top_level_ref: "local:owner",
+                top_level: false,
+                session: { ...TREE_SESSION, ref: "local:child", session_id: "sess_local:child", kind: "subagent" },
+              },
+              '"nested"',
+            )
+          : navigationRead(params),
+      );
     const context = (ref: string) => ({
       ...activityContext(ref),
+      sessionId: `sess_${ref}`,
       rootRef: "local:owner",
       ...(ref !== "local:owner" ? { parentRef: ref === "local:child" ? "local:owner" : "local:child" } : {}),
       ancestors:
         ref === "local:owner"
           ? []
           : [
-              { ref: "local:owner", sessionId: activityContext("local:owner").sessionId, title: "Root" },
+              { ref: "local:owner", sessionId: "sess_local:owner", title: "Root" },
               ...(ref === "local:grandchild"
-                ? [{ ref: "local:child", sessionId: activityContext("local:child").sessionId, title: "Observer" }]
+                ? [{ ref: "local:child", sessionId: "sess_local:child", title: "Observer" }]
                 : []),
             ],
     });
-    client.on("thread/read", ({ ref }) => {
+    client.on("thread/read", ({ ref, includeTurns, requestGeneration }) => {
       if (!ref) throw new Error("thread ref required");
       return {
+        requestGeneration,
         thread: {
           ...threadStartResponse(ref).thread,
           name: ref,
-          turns: [
-            {
-              id: "settled",
-              status: "completed",
-              itemsView: "full",
-              items: [
-                { id: "report", turnId: "settled", type: "agentMessage", text: `report-${ref}`, status: "completed" },
-              ],
-            },
-          ],
+          turns:
+            includeTurns === false
+              ? []
+              : [
+                  {
+                    id: "settled",
+                    status: "completed",
+                    itemsView: "full",
+                    items: [
+                      {
+                        id: "report",
+                        turnId: "settled",
+                        type: "agentMessage",
+                        text: `report-${ref}`,
+                        status: "completed",
+                      },
+                    ],
+                  },
+                ],
         },
       };
     });
@@ -4513,7 +4545,7 @@ test.each([false, true])(
       throw new Error("retained metadata unavailable");
     });
     client.on("evener/jobs/output", () => ({
-      data: { tail: "retained-history-output", totalBytes: 23, retainedStart: 0 },
+      data: { tail: "retained-history-output", totalBytes: 23, retainedStart: 0, truncated: false },
     }));
     const user = userEvent.setup();
     let historyPane: string | undefined;
@@ -4522,63 +4554,97 @@ test.each([false, true])(
       await screen.findByRole("heading", { name: "local:owner" });
       await screen.findByText("report-local:owner");
       await waitFor(() => expect(getDockviewApi()).not.toBeNull());
+      if (source === "nested") await screen.findByRole("heading", { name: "local:child" });
+      const sourceId =
+        source === "transcript"
+          ? await act(async () =>
+              workspaceStore
+                .getState()
+                .openPane("transcript", { ref: "local:owner", parentRef: "local:owner" }, { slot: "secondary" }),
+            )
+          : workspaceStore.getState().focusedPaneId;
+      const sourcePane = () => workspaceStore.getState().panes.find((pane) => pane.id === sourceId);
       act(() => {
         historyPane = workspaceStore
           .getState()
           .openPane("transcript", { ref: "job:history", parentRef: "local:owner" }, { slot: "secondary" });
-        workspaceStore.getState().focusPane(workspaceStore.getState().mainPane()?.id ?? "");
+        workspaceStore.getState().focusPane(sourceId ?? "");
       });
-      await screen.findByText("retained-history-output");
+      if (source === "main") await screen.findByText("retained-history-output");
+      expect(workspaceStore.getState().panes.some((pane) => pane.id === historyPane)).toBe(true);
       if (retained)
         act(() => {
           workspaceStore.getState().openPane("transcript", { ref: "local:child" }, { slot: "secondary" });
-          workspaceStore.getState().focusPane(workspaceStore.getState().mainPane()?.id ?? "");
+          workspaceStore.getState().focusPane(sourceId ?? "");
         });
       act(() => activitySidebarStore.getState().openWith("agents"));
-      await screen.findByRole("button", { name: "Inactive subagents (1)" });
-      if (!screen.queryByRole("button", { name: /observer/ }))
-        await user.click(screen.getByRole("button", { name: "Inactive subagents (1)" }));
-      await user.click(await screen.findByRole("button", { name: /observer/ }));
-      await waitFor(() =>
-        expect(
-          (
-            workspaceStore.getState().panes.find((p) => p.id === workspaceStore.getState().focusedPaneId)?.params as {
-              ref?: string;
-            }
-          )?.ref,
-        ).toBe("local:child"),
-      );
-      act(() => activitySidebarStore.getState().openWith("agents"));
-      await screen.findByRole("button", { name: "Inactive subagents (1)" });
-      if (!screen.queryByRole("button", { name: /grandchild/ }))
-        await user.click(screen.getByRole("button", { name: "Inactive subagents (1)" }));
-      await user.click(await screen.findByRole("button", { name: /grandchild/ }));
-      await screen.findByRole("heading", { name: "local:grandchild" });
-      const grandchild = workspaceStore
-        .getState()
-        .panes.find((p) => p.type === "transcript" && (p.params as { ref?: string }).ref === "local:grandchild");
-      expect(workspaceStore.getState().focusedPaneId).toBe(grandchild?.id);
-      expect(screen.getByText("report-local:owner")).toBeTruthy();
+      const sidebar = within(screen.getByTestId("activity-sidebar"));
+      await sidebar.findByRole("button", { name: "Inactive subagents (1)" });
+      const first = source === "nested" ? /grandchild/ : /observer/;
+      if (!sidebar.queryByRole("button", { name: first }))
+        await user.click(sidebar.getByRole("button", { name: "Inactive subagents (1)" }));
+      const observer = await sidebar.findByRole("button", { name: first });
+      await act(async () => fireEvent.click(observer));
+      await waitFor(() => {
+        const pane = sourcePane();
+        expect(pane?.id).toBe(sourceId);
+        expect(pane?.type).toBe("sessionZoom");
+        expect((pane?.params as { ref?: string })?.ref).toBe(source === "nested" ? "local:grandchild" : "local:child");
+        expect(workspaceStore.getState().focusedPaneId).toBe(sourceId);
+      });
+      expect(window.location.pathname).toBe(`/s/${routeRef}`);
+      if (source !== "nested") {
+        act(() => activitySidebarStore.getState().openWith("agents"));
+        await sidebar.findByRole("button", { name: "Inactive subagents (1)" });
+        if (!sidebar.queryByRole("button", { name: /grandchild/ }))
+          await user.click(sidebar.getByRole("button", { name: "Inactive subagents (1)" }));
+        const grandchild = await sidebar.findByRole("button", { name: /grandchild/ });
+        await act(async () => fireEvent.click(grandchild));
+      }
+      await screen.findByText("report-local:grandchild");
+      expect(sourcePane()?.id).toBe(sourceId);
+      expect(workspaceStore.getState().focusedPaneId).toBe(sourceId);
+      expect((sourcePane()?.params as { ref?: string })?.ref).toBe("local:grandchild");
+      expect(screen.getByTestId("cascade-spine").getAttribute("data-scope-ref")).toBe("local:owner");
+      expect(within(screen.getByTestId("cascade-spine")).queryByText("report-local:owner")).toBeNull();
       expect(workspaceStore.getState().panes.some((p) => p.id === historyPane)).toBe(true);
       expect(
         workspaceStore
           .getState()
           .panes.filter((p) => p.type === "transcript" && (p.params as { ref?: string }).ref === "local:child"),
-      ).toHaveLength(1);
-      const scope = screen
-        .getAllByRole("navigation", { name: "Scope" })
-        .find((nav) => within(nav).queryByText("local:grandchild"));
-      expect(scope).toBeTruthy();
-      if (!scope) throw new Error("grandchild scope missing");
-      await user.click(within(scope).getByRole("button", { name: "local:owner" }));
-      expect(workspaceStore.getState().focusedPaneId).toBe(workspaceStore.getState().mainPane()?.id);
-      expect(screen.getByText("report-local:owner")).toBeTruthy();
+      ).toHaveLength(retained ? 1 : 0);
+      const selectedColumn = screen
+        .getAllByTestId("cascade-column")
+        .find((column) => column.getAttribute("data-scope-ref") === "local:grandchild");
+      if (!selectedColumn) throw new Error("Missing selected grandchild column");
+      await act(async () => fireEvent.click(within(selectedColumn).getByRole("button", { name: "Open conversation" })));
+      await waitFor(() => {
+        const state = workspaceStore.getState();
+        const focused = state.panes.find((pane) => pane.id === state.focusedPaneId);
+        expect(focused?.type).toBe("session");
+        expect(focused?.params).toEqual({ ref: "local:grandchild" });
+        expect(sourcePane()?.type).toBe("sessionZoom");
+        expect((sourcePane()?.params as { ref?: string })?.ref).toBe("local:grandchild");
+      });
+      act(() => workspaceStore.getState().focusPane(sourceId ?? ""));
+      await act(async () => fireEvent.click(sidebar.getByRole("button", { name: "local:owner" })));
+      expect(workspaceStore.getState().focusedPaneId).toBe(sourceId);
+      expect(sourcePane()?.type).toBe("sessionZoom");
+      expect((sourcePane()?.params as { ref?: string })?.ref).toBe("local:owner");
+      const rootColumn = screen.getByTestId("cascade-column");
+      expect(await within(rootColumn).findByText("report-local:owner")).toBeTruthy();
       act(() => activitySidebarStore.getState().openWith("agents"));
       // Disclosure persistence belongs to the retention suite; this journey
       // verifies navigation and focus with the core sidebar's local disclosure.
-      if (!screen.queryByRole("button", { name: /observer/ }))
-        await user.click(await screen.findByRole("button", { name: "Inactive subagents (1)" }));
-      expect(await screen.findByRole("button", { name: /observer/ })).toBeTruthy();
+      if (!sidebar.queryByRole("button", { name: /observer/ }))
+        await user.click(await sidebar.findByRole("button", { name: "Inactive subagents (1)" }));
+      expect(await sidebar.findByRole("button", { name: /observer/ })).toBeTruthy();
+      act(() => navigate("/s/local%3As1"));
+      await waitFor(() => {
+        expect(workspaceStore.getState().mainPane()?.type).toBe("session");
+        expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:s1" });
+      });
+      expect(workspaceStore.getState().panes).toHaveLength(1);
     } finally {
       act(() => resetActivitySidebarStoreForTests());
     }

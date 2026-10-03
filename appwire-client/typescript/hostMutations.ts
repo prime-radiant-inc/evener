@@ -63,15 +63,12 @@ export interface HostMutations {
   remove(name: string): Promise<RemovedRow>;
 }
 
-/**
- * The mutation-result union the registry's add/update/remove methods return
- * (registry spec 08 §11). The generated client types each method's result as the
- * union of its arm interfaces but publishes no alias for it, so the store names
- * the union off the catalog every arm registration rides: the three methods
- * share one registration, and naming the first of them keeps the alias in step
- * with the generated schema instead of restating the arm list by hand.
- */
-export type HostMutationResult = MethodTypes["evener/host/add"]["result"];
+/** Host mutation outcomes across add, update, and remove. Each method's
+ * generated result retains its own precise host shape and possible outcomes. */
+export type HostMutationResult = MethodTypes["evener/host/add" | "evener/host/update" | "evener/host/remove"]["result"];
+
+type LiveHostMutationResult = MethodTypes["evener/host/add" | "evener/host/update"]["result"];
+type RemoveHostMutationResult = MethodTypes["evener/host/remove"]["result"];
 
 /** committedMutationRow narrows the mutation-result union to the row a
  * successful mutation committed. The union's other arms are NOT success and
@@ -84,39 +81,41 @@ export type HostMutationResult = MethodTypes["evener/host/add"]["result"];
  * HostMutationOutcomeError carrying the arm, naming what happened, so the
  * caller's failure path runs instead of its success path and can still tell
  * the arm apart. */
-export function committedMutationRow(result: HostMutationResult, method: string): HostRow {
-  // The generated interfaces carry `outcome: string` rather than a literal
-  // union, so the arms are narrowed by the fields only one of them declares —
-  // the same discriminator the union's registration pins, read structurally.
-  if ("observedRow" in result) {
-    throw new HostMutationOutcomeError(
-      `${method}: the row already exists and this keyless retry cannot tell whether it committed it; re-read the host list`,
-      "ambiguous",
-    );
-  }
-  if ("droppedEntry" in result) {
-    throw new HostMutationOutcomeError(
-      `${method}: a concurrent hub.toml edit won the race, so nothing the caller asked for landed; re-read the host list`,
-      "collision-dropped",
-    );
-  }
-  if ("seam" in result) {
-    throw new HostMutationOutcomeError(
-      `${method}: the mutation committed but its ${result.seam} teardown failed; the entry is committed and its repair handle is remnantId ${result.remnantId}`,
-      "committed-with-teardown-failure",
-    );
-  }
-  if (!("host" in result)) {
-    throw new HostMutationOutcomeError(`${method}: the response carries no arm this client knows`, "unknown");
-  }
-  return result.host as HostRow;
+export function committedMutationRow(result: LiveHostMutationResult, method: string): HostRow {
+  requireCommitted(result, method);
+  return result.host;
 }
 
-/** committedRemovedRow is committedMutationRow for `remove`, whose committed arm
- * carries the dedicated removed-row shape. */
-function committedRemovedRow(result: HostMutationResult, method: string): RemovedRow {
-  committedMutationRow(result, method);
-  return (result as { host: RemovedRow }).host;
+/** Removed rows share outcome handling but retain their dedicated shape. */
+function committedRemovedRow(result: RemoveHostMutationResult, method: string): RemovedRow {
+  requireCommitted(result, method);
+  return result.host;
+}
+
+function requireCommitted<T extends HostMutationResult>(
+  result: T,
+  method: string,
+): asserts result is Extract<T, { outcome: "committed" }> {
+  switch (result.outcome) {
+    case "ambiguous":
+      throw new HostMutationOutcomeError(
+        `${method}: the row already exists and this keyless retry cannot tell whether it committed it; re-read the host list`,
+        result.outcome,
+      );
+    case "collision-dropped":
+      throw new HostMutationOutcomeError(
+        `${method}: a concurrent hub.toml edit won the race, so nothing the caller asked for landed; re-read the host list`,
+        result.outcome,
+      );
+    case "committed-with-teardown-failure":
+      throw new HostMutationOutcomeError(
+        `${method}: the mutation committed but its ${result.seam} teardown failed; the entry is committed and its repair handle is remnantId ${result.remnantId}`,
+        result.outcome,
+      );
+    case "committed":
+      if ("host" in result) return;
+  }
+  throw new HostMutationOutcomeError(`${method}: the response carries no arm this client knows`, "unknown");
 }
 
 export function createHostMutations(ports: HostMutationPorts): HostMutations {

@@ -10,10 +10,18 @@
 // animations with the SMALL feature pack (initial/animate/exit transitions -
 // everything the spatial surfaces use): `m` without it mounts inert and never
 // interpolates (pinned by motion.test.tsx's interpolation test).
-import { AnimatePresence, domAnimation, LazyMotion, MotionConfig, m, type Transition } from "motion/react";
+import {
+  AnimatePresence,
+  domAnimation,
+  LazyMotion,
+  MotionConfig,
+  m,
+  type Transition,
+  useReducedMotion,
+} from "motion/react";
 import type { ReactNode } from "react";
 
-export { AnimatePresence, m };
+export { AnimatePresence, m, useReducedMotion };
 
 export function MotionProvider({ children }: { children: ReactNode }) {
   return (

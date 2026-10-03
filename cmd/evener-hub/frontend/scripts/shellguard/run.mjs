@@ -26,6 +26,7 @@ import {
   waitForHttp,
 } from "../browserGuardCdp.mjs";
 import { describeBrowserStartupFailure, startBrowserGuard, waitForBrowserReady } from "../browserGuardProcess.mjs";
+import { Driver } from "../skillguard/run.mjs";
 
 const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -52,7 +53,7 @@ const BOOT = {
 // One page load, one measurement: opens a fresh page at `viewport`, waits for
 // the harness to settle, and returns the parsed result of `expression`. Every
 // measurement below is one call to this - the per-measure differences are the
-// viewport and the expression, nothing else.
+// viewport and the expression or page action, nothing else.
 async function measureOnPage(cdpEndpoint, vitePort, viewport, expression) {
   const page = await connectPage(cdpEndpoint);
   const { send } = page;
@@ -103,11 +104,168 @@ async function measureOnPage(cdpEndpoint, vitePort, viewport, expression) {
         }
       }
     }
-    return JSON.parse(await evaluate(send, expression));
+    return typeof expression === "function" ? await expression(page) : JSON.parse(await evaluate(send, expression));
   } finally {
     await clearViewportOverride(send);
     page.close();
   }
+}
+
+async function measureDockResize(page) {
+  const driver = new Driver({});
+  driver.page = page;
+  await driver.waitPage(
+    `(() => {
+      const shell = document.querySelector('.dv-shell');
+      const host = shell?.querySelector('.dv-floating-overlay-host');
+      return host && host.children.length === 0 && shell.clientWidth > 0 &&
+        Math.abs(parseFloat(host.style.width) - shell.clientWidth) <= 1;
+    })()`,
+    { label: "real Dockview empty floating host ready" },
+  );
+  await evaluate(
+    driver.send,
+    `(() => {
+      const measure = () => ({
+        viewport: { width: innerWidth, height: innerHeight },
+        document: { width: document.documentElement.scrollWidth, height: document.documentElement.scrollHeight },
+        scrollX,
+      });
+      window.shellguardDockResize = new Promise(resolve => {
+        window.addEventListener('resize', () => {
+          const host = document.querySelector('.dv-floating-overlay-host');
+          const before = measure();
+          const cachedHost = { width: host.style.width, height: host.style.height, children: host.children.length };
+          resolve({ before, cachedHost });
+        }, { once: true });
+      });
+    })()`,
+  );
+  await applyViewport(driver.send, { width: 1000, height: 700 });
+  return evaluate(driver.send, "window.shellguardDockResize");
+}
+
+function assertDockResize(result) {
+  const failures = [];
+  const { viewport, document } = result.before;
+  if (viewport.width !== 1000 || viewport.height !== 700) failures.push("Dockview native resize did not occur");
+  if (result.cachedHost.children !== 0) failures.push("Dockview resize fixture has a populated floating host");
+  if (document.width > viewport.width + 1 || document.height > viewport.height + 1) {
+    failures.push(`Dockview native resize leaks cached dimensions into the document: ${JSON.stringify(result)}`);
+  }
+  return failures;
+}
+
+async function measureFloatingDock(page) {
+  const driver = new Driver({});
+  driver.page = page;
+  await evaluate(
+    driver.send,
+    `(async () => {
+      const { workspaceStore, getDockviewApi } = await import('/src/shell/workspace.ts');
+      const paneId = workspaceStore.getState().openPane('settings');
+      window.shellguardFloat = { paneId, workspaceStore, getDockviewApi };
+    })()`,
+  );
+  await driver.waitPage(
+    "window.shellguardFloat.getDockviewApi()?.getPanel(window.shellguardFloat.paneId) != null",
+    { label: "real floating fixture's workspace panel" },
+  );
+  const initial = await evaluate(
+    driver.send,
+    `(() => {
+      const { paneId, workspaceStore, getDockviewApi } = window.shellguardFloat;
+      const api = getDockviewApi();
+      api.addFloatingGroup(api.getPanel(paneId), { x: 40, y: 140, width: 480, height: 300 });
+      window.measureShellguardFloat = () => {
+        const host = document.querySelector('.dv-floating-overlay-host');
+        const overlay = host?.querySelector('.dv-resize-container');
+        const box = el => {
+          const r = el?.getBoundingClientRect();
+          return r ? { left: r.left, top: r.top, width: r.width, height: r.height } : null;
+        };
+        return { host: box(host), overlay: box(overlay), children: host?.children.length,
+          focused: workspaceStore.getState().focusedPaneId, paneId };
+      };
+      window.shellguardFloatHits = [];
+      document.addEventListener('pointerdown', event => {
+        if (event.target.closest('.dv-floating-titlebar')) {
+          window.shellguardFloatHits.push({ trusted: event.isTrusted, x: event.clientX });
+        }
+      }, true);
+      return window.measureShellguardFloat();
+    })()`,
+  );
+  if (!initial.overlay || initial.overlay.width <= 0 || initial.overlay.height <= 0) {
+    throw new Error(`floating Dockview initial placement is not visible: ${JSON.stringify(initial)}`);
+  }
+  const handle = await driver.elementBox(".dv-floating-titlebar");
+  if (!handle) throw new Error("floating Dockview drag handle missing");
+  await driver.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: handle.x, y: handle.y });
+  await driver.send("Input.dispatchMouseEvent", {
+    type: "mousePressed", x: handle.x, y: handle.y, button: "left", clickCount: 1,
+  });
+  // The first movement establishes Dockview's grab offset. The second moves
+  // the actual window 240px left, exposing its titlebar over the rail.
+  await driver.send("Input.dispatchMouseEvent", {
+    type: "mouseMoved", x: handle.x + 10, y: handle.y, button: "left", buttons: 1,
+  });
+  await driver.send("Input.dispatchMouseEvent", {
+    type: "mouseMoved", x: handle.x - 230, y: handle.y, button: "left", buttons: 1,
+  });
+  await driver.send("Input.dispatchMouseEvent", {
+    type: "mouseReleased", x: handle.x - 230, y: handle.y, button: "left", clickCount: 1,
+  });
+  const overhang = await evaluate(driver.send, "window.measureShellguardFloat()");
+  const focusFromOverhang = async () => {
+    const point = await evaluate(
+      driver.send,
+      `(() => {
+        const { workspaceStore } = window.shellguardFloat;
+        workspaceStore.getState().focusPane(workspaceStore.getState().mainPane().id);
+        const r = document.querySelector('.dv-floating-titlebar').getBoundingClientRect();
+        return { x: r.left + 40, y: r.top + r.height / 2 };
+      })()`,
+    );
+    await driver.clickAt(point.x, point.y);
+    return evaluate(driver.send, "window.measureShellguardFloat()");
+  };
+  const clicked = await focusFromOverhang();
+  await applyViewport(driver.send, { width: 1000, height: 700 });
+  await driver.waitPage(
+    `(() => {
+      const host = document.querySelector('.dv-floating-overlay-host');
+      const shell = document.querySelector('.dv-shell');
+      return Math.abs(host.getBoundingClientRect().width - shell.clientWidth) <= 1 && shell.clientHeight === 700;
+    })()`,
+    { label: "real populated Dockview layout after resize" },
+  );
+  const resized = await focusFromOverhang();
+  const hits = await evaluate(driver.send, "window.shellguardFloatHits");
+  return { initial, overhang, clicked, resized, hits };
+}
+
+function assertFloatingDock(result) {
+  const failures = [];
+  const { initial, overhang, clicked, resized, hits } = result;
+  if (Math.abs(initial.overlay.left - initial.host.left - 40) > 1 ||
+      Math.abs(initial.overlay.top - initial.host.top - 140) > 1 ||
+      Math.abs(initial.overlay.width - 480) > 1 || Math.abs(initial.overlay.height - 300) > 1) {
+    failures.push(`floating Dockview initial placement changed: ${JSON.stringify(initial)}`);
+  }
+  for (const [label, state] of Object.entries({ overhang, clicked, resized })) {
+    if (state.children !== 1 || !state.overlay || state.overlay.left >= state.host.left - 100 ||
+        Math.abs(state.overlay.width - 480) > 1 || Math.abs(state.overlay.height - 300) > 1) {
+      failures.push(`floating Dockview ${label} lost its actual overhang or dimensions: ${JSON.stringify(state)}`);
+    }
+  }
+  for (const state of [clicked, resized]) {
+    if (state.focused !== state.paneId) failures.push("native overhanging titlebar click did not focus its pane");
+  }
+  if (hits.filter(hit => hit.trusted && hit.x < initial.host.left - 100).length !== 2) {
+    failures.push(`native floating titlebar input outside the workspace was clipped: ${JSON.stringify(hits)}`);
+  }
+  return failures;
 }
 
 function assertResult(result) {
@@ -732,6 +890,8 @@ async function main() {
       VIEWPORT,
       "(async () => { await window.applyShellNavigationDelta(); const renders = window.measureRailRenderCounts(); return JSON.stringify({ ...window.measureShell(), paneFooters: window.measurePaneFooters(), counts: renders.counts, changedRowID: renders.changedRowID, visibleRowIDs: renders.visibleRowIDs }); })()",
     );
+    const dockResize = await measureOnPage(cdpEndpoint, vitePort, VIEWPORT, measureDockResize);
+    const floatingDock = await measureOnPage(cdpEndpoint, vitePort, VIEWPORT, measureFloatingDock);
     // Both mobile measurements come from ONE page load of the emulated phone:
     // the sidebar geometry and the tap-floor audit need the same context.
     const mobile = await measureOnPage(
@@ -744,6 +904,8 @@ async function main() {
       ...assertResult(result),
       ...assertDeltaRenders(result),
       ...assertPaneFooters(result.paneFooters),
+      ...assertDockResize(dockResize),
+      ...assertFloatingDock(floatingDock),
       ...assertMobileResult(mobile.sidebar),
       ...assertTapTargets(mobile.tap),
     ];
@@ -767,13 +929,15 @@ async function main() {
           `rail body scrolls (${result.railBody.scrollHeight}px in ${result.railBody.clientHeight}px), ` +
           `${result.treeRows} tree rows; mobile Sheet body scrolls (${mobile.sidebar.panelBody.scrollHeight}px in ${mobile.sidebar.panelBody.clientHeight}px); ` +
           `${mobile.tap.measured} mobile tap targets all >= ${mobile.tap.min}px; ` +
-          `${result.paneFooters.panes.length} pane-local footers stay within their panes`,
+          `${result.paneFooters.panes.length} pane-local footers stay within their panes; Dockview native resize keeps the document bounded; ` +
+          "floating placement, overhang and native input survive resize",
       );
       console.log(
         `shellguard render isolation: changed=${result.changedRowID} count=${result.counts[result.changedRowID] ?? 0}; ` +
           `visible=${result.visibleRowIDs.length}; counts=${JSON.stringify(result.counts)}; ` +
           `visibleRowIDs=${JSON.stringify(result.visibleRowIDs)}`,
       );
+      console.log(`shellguard Dockview resize: ${JSON.stringify(dockResize)}; floating: ${JSON.stringify(floatingDock)}`);
     } else {
       for (const failure of failures) console.error(`shellguard FAIL: ${failure}`);
       // The rail's ancestor chain is the evidence a height fix is aimed at:

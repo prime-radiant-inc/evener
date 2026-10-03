@@ -428,10 +428,10 @@ type Server struct {
 	reasoningEffortFunc      func(string) error
 	listModelsFunc           func(context.Context) ([]appwire.ModelDescriptor, error)
 	appSessionActivity       sessionActivityHooks
-	tasksFn                  func() any
+	tasksFn                  func() []appwire.Task
 	jobsFn                   func(appwire.JobsListParams) (any, error)
-	jobOutputFn              func(jobID string, beforeBytes, maxBytes int64) (data any, found bool, err error)
-	jobGetFn                 func(jobID string) (data any, found bool, err error)
+	jobOutputFn              func(jobID string, beforeBytes, maxBytes int64) (data appwire.JobOutputTail, found bool, err error)
+	jobGetFn                 func(jobID string) (data appwire.JobActivityJob, found bool, err error)
 	shutdownFunc             func()
 	daemonStatusFunc         func() appwire.DaemonLifecycle
 	daemonRetireFunc         func(context.Context, appwire.DaemonRetireParams) (appwire.DaemonRetireResponse, error)
@@ -849,9 +849,9 @@ func (s *Server) SetListModelsFunc(fn func(context.Context) ([]appwire.ModelDesc
 	s.mu.Unlock()
 }
 
-// SetTasksFunc sets the function called by evener/tasks/list. The function should
-// return a JSON-serializable slice (typically []task.Task).
-func (s *Server) SetTasksFunc(fn func() any) {
+// SetTasksFunc sets the task-list reader called by evener/tasks/list. A nil
+// slice means no data; a non-nil slice is authoritative, including an empty one.
+func (s *Server) SetTasksFunc(fn func() []appwire.Task) {
 	s.mu.Lock()
 	s.tasksFn = fn
 	s.mu.Unlock()
@@ -871,7 +871,7 @@ func (s *Server) SetJobsFunc(fn func(appwire.JobsListParams) (any, error)) {
 // SetJobOutputFunc sets the function backing evener/jobs/output. found=false
 // maps to an invalid-params wire error (the caller guessed a job id).
 // beforeBytes > 0 pages backwards through the job's output log.
-func (s *Server) SetJobOutputFunc(fn func(jobID string, beforeBytes, maxBytes int64) (data any, found bool, err error)) {
+func (s *Server) SetJobOutputFunc(fn func(jobID string, beforeBytes, maxBytes int64) (data appwire.JobOutputTail, found bool, err error)) {
 	s.mu.Lock()
 	s.jobOutputFn = fn
 	s.mu.Unlock()
@@ -879,7 +879,7 @@ func (s *Server) SetJobOutputFunc(fn func(jobID string, beforeBytes, maxBytes in
 
 // SetJobGetFunc sets the function backing evener/jobs/get. found=false maps to
 // an invalid-params wire error (the caller guessed a job id).
-func (s *Server) SetJobGetFunc(fn func(jobID string) (data any, found bool, err error)) {
+func (s *Server) SetJobGetFunc(fn func(jobID string) (data appwire.JobActivityJob, found bool, err error)) {
 	s.mu.Lock()
 	s.jobGetFn = fn
 	s.mu.Unlock()

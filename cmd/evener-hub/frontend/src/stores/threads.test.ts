@@ -6495,11 +6495,7 @@ test("reset retires a ready scan before it can pin refs in the next runtime", as
 });
 
 describe("useThreadsStore.listTasks", () => {
-  // Wire-true shape: TaskListResponse.Data is `any` on the catalog
-  // (appwire/types.go:896-898) - server/server.go's SetTasksFunc doc
-  // comment says the registered function "should return a JSON-serializable
-  // slice (typically []task.Task)"; agent/task/task_store.go:54-74 is that
-  // struct. This fixture mirrors its real JSON field names verbatim.
+  // Fixtures use the task row's persisted snake_case wire fields.
   const TASKS_DATA = [
     { id: 1, type: "implement", description: "Wire up listModels/listTasks", prompt: "…", status: "done" },
     {
@@ -6573,9 +6569,8 @@ describe("useThreadsStore.listTasks", () => {
 });
 
 describe("useThreadsStore.listJobs / jobOutput", () => {
-  // Wire-true shape: JobsListResponse.Data / JobsOutputResponse.Data are both
-  // `any` in appwire/types.go. The replacement jobs-list payload is the
-  // recursive activity tree, while job output stays JobOutputTail. These
+  // JobsListResponse.Data is the legacy untyped recursive activity tree;
+  // JobsOutputResponse.Data is the concrete JobOutputTail. These
   // fixtures mirror the current wire JSON field names verbatim.
   const JOBS_DATA = {
     revision: 5,

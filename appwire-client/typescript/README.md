@@ -108,6 +108,37 @@ The slash-completion module is ported from Beautiful UI's prompt-bar
 completion affordance and ships its MIT attribution at
 `LICENSES/beautiful-ui.txt`, inside the tarball.
 
+## Host-scoped requests
+
+`hostRequest(client, host, method, params, opts)` sends a typed request to the
+selected host. Its method is limited to the generated `HostRequestMethod`
+catalog, retaining the method's precise parameter and result types. An absent,
+empty, or `local` host uses the plain client request;
+other hosts use `evener/host/request`. Parameters, results, errors, and caller
+timeouts pass through unchanged. AppWire owns the explicit forwarding catalog;
+the hub enforces it and owns retry-safety classification. `LOCAL_HOST`,
+`isLocalHost`, and `normalizeHost` provide the shared host spelling rules, and
+`HOST_DEPENDENT_DISCOVERY_METHODS` names the discovery calls used by the
+new-session forms.
+
+`RequestPort<Methods>` is the shared structural request interface, including
+per-call timeouts. `LaunchConfigClient`, `MarketplacesClient`, `PluginsClient`,
+and `LaunchLayerClient` combine `RequestPort<HostRequestMethod>` with
+notifications, so browser adapters can bind them to a remote host without
+advertising unsupported operations. A full `AppwireClient` or
+`AppwireClientLike` satisfies these ports and retains every protocol method.
+Use its plain `request` for local operations outside the forwarding catalog,
+including `evener/instance/refreshModels` and `evener/instance/setModelDisabled`;
+the credential store keeps its broad local client for those operations.
+
+## Forwarded method catalog
+
+`HOST_REQUEST_METHODS` and its `HostRequestMethod` type are generated from
+AppWire's explicit host-request allow-list. The hub checks that same catalog
+before forwarding; registering a new RPC never grants forwarding permission.
+Retry classification remains with the hub because session mutations and admin
+mutations have different replay guarantees.
+
 ## Older-history demand
 
 `HistoryPaging` retains a requested older page until history advances. Attach

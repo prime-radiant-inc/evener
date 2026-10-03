@@ -7,6 +7,124 @@ import { callsTo } from "./testing/fakeClient";
 import { acquireThreadSubscription } from "./threadSubscription";
 import type { ThreadReadResponse } from "./types.gen";
 
+test("shared leases expose only admitted runtime metadata, including after a rich read", async () => {
+  const client = activityClient(),
+    removed = deferred<void>();
+  const response: ThreadReadResponse = {
+    thread: {
+      ...threadFixture().thread,
+      id: "wire-root",
+      sessionId: "root-session",
+      status: { type: "active", activeFlags: ["waitingOnTool"] },
+      turns: [{ id: "rich-turn", status: "completed", items: [], itemsView: "full" }],
+    },
+  };
+  client.on("thread/read", () => response);
+  client.on("thread/unsubscribe", () => {
+    removed.resolve();
+    return {};
+  });
+  const first = acquireThreadSubscription(client, activityRef),
+    second = acquireThreadSubscription(client, activityRef);
+  expect(first.metadata?.()).toBeNull();
+  await Promise.all([first.ensure(), second.ensure()]);
+  expect(callsTo(client, "thread/read")).toBe(1);
+  expect(first.metadata?.()).toEqual({
+    threadId: "wire-root",
+    sessionId: "root-session",
+    status: { type: "active", activeFlags: ["waitingOnTool"] },
+  });
+  expect(second.metadata?.()).toEqual(first.metadata?.());
+  const rich: ThreadReadResponse = { thread: { ...response.thread, status: { type: "idle" } } };
+  client.on("thread/read", () => rich);
+  expect(await second.read({ includeTurns: true })).toBe(rich);
+  expect(second.metadata?.()).toEqual({
+    threadId: "wire-root",
+    sessionId: "root-session",
+    status: { type: "idle" },
+  });
+  expect(client.calls.filter((call) => call.method === "thread/read").map((call) => call.params)).toEqual([
+    { ref: activityRef, includeTurns: false, subscribe: true, replaceSubscription: false },
+    { ref: activityRef, includeTurns: true, subscribe: false, replaceSubscription: false },
+  ]);
+  first.release();
+  expect(first.metadata?.()).toBeNull();
+  expect(second.metadata?.()?.sessionId).toBe("root-session");
+  expect(callsTo(client, "thread/unsubscribe")).toBe(0);
+  second.release();
+  expect(second.metadata?.()).toBeNull();
+  await removed.promise;
+  expect(callsTo(client, "thread/unsubscribe")).toBe(1);
+});
+
+test("metadata uses the thread identity when the resolved session id is absent", async () => {
+  const client = activityClient();
+  const response = { thread: { ...threadFixture().thread, id: "wire-only" } };
+  Reflect.deleteProperty(response.thread, "sessionId");
+  client.on("thread/read", () => response);
+  const lease = acquireThreadSubscription(client, activityRef);
+  await lease.ensure();
+  expect(lease.metadata?.()).toEqual({ threadId: "wire-only", sessionId: "wire-only", status: { type: "idle" } });
+  lease.release();
+});
+
+test("disconnect clears metadata and fences a late rich read from the former generation", async () => {
+  const client = activityClient(),
+    late = deferred<ThreadReadResponse>(),
+    entered = deferred<void>();
+  const lease = acquireThreadSubscription(client, activityRef);
+  await lease.ensure();
+  expect(lease.metadata?.()?.sessionId).toBe("session");
+  client.on("thread/read", ({ includeTurns }) => {
+    if (includeTurns) {
+      entered.resolve();
+      return late.promise;
+    }
+    return { thread: { ...threadFixture().thread, id: "wire-new", sessionId: "replacement-session" } };
+  });
+  const prior = lease.read({ includeTurns: true });
+  await entered.promise;
+  client.emitStateChange("reconnecting");
+  expect(lease.metadata?.()).toBeNull();
+  client.emitReady();
+  await lease.ensure();
+  expect(lease.metadata?.()?.sessionId).toBe("replacement-session");
+  late.resolve(threadFixture());
+  await prior;
+  expect(lease.metadata?.()).toEqual({
+    threadId: "wire-new",
+    sessionId: "replacement-session",
+    status: { type: "idle" },
+  });
+  expect(callsTo(client, "thread/read")).toBe(3);
+  lease.release();
+});
+
+test("a late old subscribe cannot publish metadata after reconnect", async () => {
+  const client = activityClient(),
+    late = deferred<ThreadReadResponse>(),
+    entered = deferred<void>();
+  client.on("thread/read", () => {
+    if (callsTo(client, "thread/read") === 1) {
+      entered.resolve();
+      return late.promise;
+    }
+    return { thread: { ...threadFixture().thread, id: "wire-new", sessionId: "replacement-session" } };
+  });
+  const lease = acquireThreadSubscription(client, activityRef),
+    prior = lease.ensure();
+  await entered.promise;
+  client.emitStateChange("reconnecting");
+  expect(lease.metadata?.()).toBeNull();
+  client.emitReady();
+  await lease.ensure();
+  late.resolve(threadFixture());
+  await prior;
+  expect(lease.metadata?.()?.sessionId).toBe("replacement-session");
+  expect(callsTo(client, "thread/read")).toBe(2);
+  lease.release();
+});
+
 test.each(["transcript-first", "activity-first"])(
   "transcript lease and activity share membership: %s",
   async (order) => {

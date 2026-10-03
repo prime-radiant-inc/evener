@@ -3,6 +3,7 @@ package appwire
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 )
 
@@ -105,25 +106,17 @@ type MethodSpec struct {
 // pipeline 08b §10). A name absent here has an ordinary single-struct result.
 var MethodResultArms = map[string][]any{
 	MethodEvenerHostPlan: {HostPlanPlanned{}, HostPlanNoToken{}},
-	// The mutation-result union (registry spec 08 §11): the four arms, each
-	// carried by its own named Go struct, with remove's arms spelled in the
-	// dedicated RemovedRow shape. add and update never return the removed
-	// variants and remove never returns the HostRow ones, but the union is one
-	// registration because the wire discriminates by `outcome` alone.
+	// Each method advertises only the arms it can return. Ambiguous belongs
+	// to a keyless add; remove's committed arms carry RemovedRow.
 	MethodEvenerHostAdd: {
-		HostMutationCommitted{}, HostMutationCommittedRemoved{},
-		HostMutationTeardownFailure{}, HostMutationTeardownFailureRemoved{},
+		HostMutationCommitted{}, HostMutationTeardownFailure{},
 		HostMutationCollisionDropped{}, HostMutationAmbiguous{},
 	},
 	MethodEvenerHostUpdate: {
-		HostMutationCommitted{}, HostMutationCommittedRemoved{},
-		HostMutationTeardownFailure{}, HostMutationTeardownFailureRemoved{},
-		HostMutationCollisionDropped{}, HostMutationAmbiguous{},
+		HostMutationCommitted{}, HostMutationTeardownFailure{}, HostMutationCollisionDropped{},
 	},
 	MethodEvenerHostRemove: {
-		HostMutationCommitted{}, HostMutationCommittedRemoved{},
-		HostMutationTeardownFailure{}, HostMutationTeardownFailureRemoved{},
-		HostMutationCollisionDropped{}, HostMutationAmbiguous{},
+		HostMutationCommittedRemoved{}, HostMutationTeardownFailureRemoved{}, HostMutationCollisionDropped{},
 	},
 	// teardown-retry's six declared arms: three outcomes crossed with both host
 	// shapes (registry spec 08 §11).
@@ -132,6 +125,18 @@ var MethodResultArms = map[string][]any{
 		HostTeardownRetryClearedLive{}, HostTeardownRetryClearedRemoved{},
 		HostTeardownRetryFailedLive{}, HostTeardownRetryFailedRemoved{},
 	},
+}
+
+// StringDiscriminators declares fixed JSON string fields on named result arms.
+// SDK generators use these literals for narrowing, while producers use the same
+// Go constants. Keys are JSON field names, not Go field names.
+var StringDiscriminators = map[reflect.Type]map[string]string{
+	reflect.TypeFor[HostMutationCommitted]():              {"outcome": string(HostMutationOutcomeCommitted)},
+	reflect.TypeFor[HostMutationCommittedRemoved]():       {"outcome": string(HostMutationOutcomeCommitted)},
+	reflect.TypeFor[HostMutationTeardownFailure]():        {"outcome": string(HostMutationOutcomeTeardownFailure)},
+	reflect.TypeFor[HostMutationTeardownFailureRemoved](): {"outcome": string(HostMutationOutcomeTeardownFailure)},
+	reflect.TypeFor[HostMutationCollisionDropped]():       {"outcome": string(HostMutationOutcomeCollisionDropped)},
+	reflect.TypeFor[HostMutationAmbiguous]():              {"outcome": string(HostMutationOutcomeAmbiguous)},
 }
 
 // NotificationSpec is one server→client notification: the wire name, the Go

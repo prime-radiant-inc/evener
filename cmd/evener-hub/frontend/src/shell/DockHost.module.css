@@ -2,3 +2,10 @@
   height: 100%;
   width: 100%;
 }
+
+/* The empty host mirrors cached grid dimensions until Dockview's deferred
+   resize. Excluding that mirror from layout keeps native pointer targets
+   stable without clipping populated floating windows. */
+.host :global(.dv-floating-overlay-host:empty) {
+  display: none;
+}

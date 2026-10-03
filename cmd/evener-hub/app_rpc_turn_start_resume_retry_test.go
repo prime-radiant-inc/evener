@@ -1098,115 +1098,57 @@ func TestAdoptCallerMutationReceiptRestoresVerbatimCallerID(t *testing.T) {
 	}
 }
 
-// TestAdoptResponseClientMutationIDCoversReceiptShapes pins that every response
-// shape the hub can return with a mutation receipt adopts the caller's verbatim
-// id, that the receipt's other fields survive, and that responses carrying no
-// receipt, failing responses, and an empty caller id all pass through untouched.
-//
-// The extractor below is deliberately independent of the production type switch,
-// so dropping a case there makes this test fail.
-func TestAdoptResponseClientMutationIDCoversReceiptShapes(t *testing.T) {
+// TestAdoptCallerMutationResultPreservesReceipt checks the selected receipt
+// field and verifies that adopting a copied response leaves its original intact.
+func TestAdoptCallerMutationResultPreservesReceipt(t *testing.T) {
 	const verbatim = " mutation-padded "
 	const normalized = "mutation-padded"
-
-	receipt := appwire.MutationReceipt{
-		ClientMutationID: normalized,
-		Disposition:      appwire.MutationDispositionApplied,
-		ThreadID:         "th_1",
-		TurnID:           "turn_1",
-		ProjectionState:  appwire.MutationProjectionReflected,
-	}
-
+	failure := errors.New("mutation failed")
 	cases := []struct {
-		name string
-		resp any
-		get  func(any) appwire.MutationReceipt
+		name, callerID, receiptID, wantID string
+		err                               error
 	}{
-		{"turn/start", appwire.TurnStartResponse{Receipt: receipt}, func(r any) appwire.MutationReceipt {
-			return r.(appwire.TurnStartResponse).Receipt
-		}},
-		{"turn/steer", appwire.TurnSteerResponse{Receipt: receipt}, func(r any) appwire.MutationReceipt {
-			return r.(appwire.TurnSteerResponse).Receipt
-		}},
-		{"turn/interrupt", appwire.TurnInterruptResponse{Receipt: receipt}, func(r any) appwire.MutationReceipt {
-			return r.(appwire.TurnInterruptResponse).Receipt
-		}},
-		{"turn/queue", appwire.TurnQueueResponse{Receipt: receipt}, func(r any) appwire.MutationReceipt {
-			return r.(appwire.TurnQueueResponse).Receipt
-		}},
-		{"turn/drainAsSteer", appwire.TurnDrainAsSteerResponse{Receipt: receipt}, func(r any) appwire.MutationReceipt {
-			return r.(appwire.TurnDrainAsSteerResponse).Receipt
-		}},
-		{"turn/promoteQueuedAsSteer", appwire.TurnPromoteQueuedAsSteerResponse{Receipt: receipt}, func(r any) appwire.MutationReceipt {
-			return r.(appwire.TurnPromoteQueuedAsSteerResponse).Receipt
-		}},
-		{"turn/cancelQueued", appwire.TurnCancelQueuedResponse{Receipt: receipt}, func(r any) appwire.MutationReceipt {
-			return r.(appwire.TurnCancelQueuedResponse).Receipt
-		}},
-		{"thread/clear", appwire.ThreadClearResponse{Receipt: receipt}, func(r any) appwire.MutationReceipt {
-			return r.(appwire.ThreadClearResponse).Receipt
-		}},
-		{"notes/human/set", appwire.NotesHumanSetResponse{Receipt: receipt}, func(r any) appwire.MutationReceipt {
-			return r.(appwire.NotesHumanSetResponse).Receipt
-		}},
+		{"padded caller", verbatim, normalized, verbatim, nil},
+		{"canonical caller", normalized, normalized, normalized, nil},
+		{"verbatim receipt", verbatim, verbatim, verbatim, nil},
+		{"foreign receipt", verbatim, "foreign-mutation", "foreign-mutation", nil},
+		{"unnamed receipt", verbatim, "", "", nil},
+		{"empty caller", "", normalized, normalized, nil},
+		{"failed result", verbatim, normalized, normalized, failure},
 	}
-
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			adopted, err := adoptResponseClientMutationID[any](tc.resp, nil, verbatim)
-			if err != nil {
-				t.Fatalf("adopt response %s returned error %v", tc.name, err)
+			original := appwire.TurnStartResponse{
+				Turn: appwire.Turn{ID: "turn_1"},
+				Receipt: appwire.MutationReceipt{
+					ClientMutationID: tc.receiptID,
+					Disposition:      appwire.MutationDispositionReplayed,
+					ThreadID:         "th_1", InstanceID: "inst_1", TurnID: "turn_1",
+					QueueEntryIDs:             []string{"q1", "q2"},
+					ProjectionState:           appwire.MutationProjectionReflected,
+					ConsumedClientMutationIDs: []string{"consumed_1", "consumed_2"},
+				},
 			}
-			got := tc.get(adopted)
-			if got.ClientMutationID != verbatim {
-				t.Fatalf("receipt clientMutationId=%q, want the caller's verbatim %q", got.ClientMutationID, verbatim)
+			want := original
+			want.Receipt.QueueEntryIDs = slices.Clone(original.Receipt.QueueEntryIDs)
+			want.Receipt.ConsumedClientMutationIDs = slices.Clone(original.Receipt.ConsumedClientMutationIDs)
+			resp := original
+			err := adoptCallerMutationResult(&resp.Receipt, tc.err, tc.callerID)
+			if !errors.Is(err, tc.err) {
+				t.Fatalf("error = %v, want %v", err, tc.err)
 			}
-			got.ClientMutationID = normalized
-			if !reflect.DeepEqual(got, receipt) {
-				t.Fatalf("adopted receipt = %+v, want only the id changed from %+v", got, receipt)
+			if !reflect.DeepEqual(original, want) {
+				t.Fatalf("original response changed: %+v, want %+v", original, want)
 			}
-		})
-	}
-
-	// Responses with no clientMutationId have nothing to adopt and pass through.
-	for _, tc := range []struct {
-		name string
-		resp any
-	}{
-		{"goal/set", appwire.GoalSetResponse{Started: true}},
-		{"urls/remove", appwire.UrlsRemoveResponse{}},
-		{"empty", appwire.EmptyResponse{}},
-	} {
-		t.Run(tc.name+" carries no receipt", func(t *testing.T) {
-			adopted, err := adoptResponseClientMutationID[any](tc.resp, nil, verbatim)
-			if err != nil {
-				t.Fatalf("adopt response %s returned error %v", tc.name, err)
-			}
-			if adopted != tc.resp {
-				t.Fatalf("adopted %#v, want the response unchanged (%#v)", adopted, tc.resp)
+			want.Receipt.ClientMutationID = tc.wantID
+			if !reflect.DeepEqual(resp, want) {
+				t.Fatalf("response = %+v, want only the receipt ID adopted: %+v", resp, want)
 			}
 		})
-	}
-
-	failing := appwire.TurnStartResponse{Receipt: receipt}
-	adopted, err := adoptResponseClientMutationID[any](failing, errors.New("mutation failed"), verbatim)
-	if err == nil {
-		t.Fatal("adopt must hand the failure back")
-	}
-	if got := adopted.(appwire.TurnStartResponse).Receipt.ClientMutationID; got != normalized {
-		t.Fatalf("a failing response must keep the receipt as the daemon minted it: got %q, want %q", got, normalized)
-	}
-
-	unnamed, err := adoptResponseClientMutationID[any](appwire.TurnStartResponse{Receipt: receipt}, nil, "")
-	if err != nil {
-		t.Fatalf("adopt with an empty caller id returned error %v", err)
-	}
-	if got := unnamed.(appwire.TurnStartResponse).Receipt.ClientMutationID; got != normalized {
-		t.Fatalf("an empty caller id must leave the receipt alone: got %q, want %q", got, normalized)
 	}
 }
 
-// TestAdoptResponseClientMutationIDAdoptsFailureID pins that the response
+// TestAdoptCallerMutationResultAdoptsFailureID pins that the response
 // adapter adopts the caller's verbatim id onto a FAILURE as well as onto a
 // receipt, and that it leaves alone every failure adoptCallerMutationID must not
 // touch.
@@ -1215,7 +1157,7 @@ func TestAdoptResponseClientMutationIDCoversReceiptShapes(t *testing.T) {
 // so without this the daemon's normalized id would come back to a padded caller
 // and its outbox record would stay submitting with nothing to settle it -- the
 // same failure the receipt path and the retry paths already prevent.
-func TestAdoptResponseClientMutationIDAdoptsFailureID(t *testing.T) {
+func TestAdoptCallerMutationResultAdoptsFailureID(t *testing.T) {
 	const verbatim = " mutation-padded "
 	const normalized = "mutation-padded"
 
@@ -1268,13 +1210,17 @@ func TestAdoptResponseClientMutationIDAdoptsFailureID(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			resp := appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_1"}}
-			gotResp, gotErr := adoptResponseClientMutationID[appwire.TurnStartResponse](resp, tc.err, tc.callerID)
+			resp := appwire.TurnStartResponse{
+				Turn:    appwire.Turn{ID: "turn_1"},
+				Receipt: appwire.MutationReceipt{ClientMutationID: normalized, InstanceID: "inst_1", QueueEntryIDs: []string{"q1"}},
+			}
+			original := resp
+			gotErr := adoptCallerMutationResult(&resp.Receipt, tc.err, tc.callerID)
 			if gotErr == nil {
 				t.Fatal("the adapter dropped the failure")
 			}
-			if !reflect.DeepEqual(gotResp, resp) {
-				t.Fatalf("response = %+v, want the given response unchanged (%+v)", gotResp, resp)
+			if !reflect.DeepEqual(resp, original) {
+				t.Fatalf("response = %+v, want the given response unchanged (%+v)", resp, original)
 			}
 			// Only the id in the error's data may change (adopt rebuilds the
 			// WireError value, so identity is not preserved); the refusal's message
@@ -1300,12 +1246,80 @@ func TestAdoptResponseClientMutationIDAdoptsFailureID(t *testing.T) {
 	}
 
 	plain := errors.New("plain failure")
-	if _, gotErr := adoptResponseClientMutationID[appwire.TurnStartResponse](appwire.TurnStartResponse{}, plain, verbatim); !errors.Is(gotErr, plain) {
+	resp := appwire.TurnStartResponse{}
+	if gotErr := adoptCallerMutationResult(&resp.Receipt, plain, verbatim); !errors.Is(gotErr, plain) {
 		t.Fatalf("a non-WireError must be returned unchanged, got %v", gotErr)
 	}
 }
 
-// TestAdoptResponseClientMutationIDStampsUnnamedTargetDeletion pins that a direct
+// Error adoption preserves concrete extensions and clones decoded maps rather
+// than changing the daemon's error data in place.
+func TestAdoptCallerMutationResultPreservesFailureData(t *testing.T) {
+	const callerID = " mutation-padded "
+	const normalized = "mutation-padded"
+	mapData := func(id string, outcome appwire.MutationOutcome) map[string]any {
+		data := map[string]any{
+			"evenerErrorInfo":  string(appwire.ErrorConflict),
+			"mutationOutcome":  string(outcome),
+			"retryDisposition": string(appwire.RetryDispositionNone),
+			"cause":            "daemon-cause", "extension": []any{"extension-value"},
+		}
+		if id != "" {
+			data["clientMutationId"] = id
+		}
+		return data
+	}
+	typedData := appwire.HostFieldErrorData{
+		EvenerErrorInfo:  appwire.ErrorInvalidHostField,
+		ClientMutationID: normalized,
+		MutationOutcome:  appwire.MutationOutcomeNotAccepted,
+		RetryDisposition: appwire.RetryDispositionNone,
+		Cause:            "daemon-cause",
+		Field:            "hostname",
+	}
+	typedDeletion := appwire.HostFieldErrorData{
+		EvenerErrorInfo:  appwire.ErrorActionUnavailable,
+		MutationOutcome:  appwire.MutationOutcomeTargetDeleted,
+		RetryDisposition: appwire.RetryDispositionNone,
+		Field:            "hostname",
+	}
+	cases := []struct {
+		name       string
+		data, want any
+	}{
+		{"decoded refusal", mapData(normalized, appwire.MutationOutcomeNotAccepted), mapData(callerID, appwire.MutationOutcomeNotAccepted)},
+		{"decoded id-less deletion", mapData("", appwire.MutationOutcomeTargetDeleted), mapData(callerID, appwire.MutationOutcomeTargetDeleted)},
+		{"typed extension keeps canonical ID", typedData, typedData},
+		{"typed extension deletion remains id-less", typedDeletion, typedDeletion},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			failure := appwire.WireError{Code: appwire.CodeConflict, Message: "daemon refusal", Data: tc.data}
+			originalData := relayedWireDataMap(t, failure.Data)
+			resp := appwire.TurnStartResponse{Receipt: appwire.MutationReceipt{ClientMutationID: normalized}}
+			wantResp := resp
+			err := adoptCallerMutationResult(&resp.Receipt, failure, callerID)
+			wire, ok := wireErrorFromError(err)
+			if !ok {
+				t.Fatalf("error = %T %v, want WireError", err, err)
+			}
+			if wire.Code != failure.Code || wire.Message != failure.Message || !reflect.DeepEqual(wire.Data, tc.want) {
+				t.Fatalf("adopted failure = %+v, want original code/message and data %+v", wire, tc.want)
+			}
+			if !reflect.DeepEqual(resp, wantResp) {
+				t.Fatalf("failed response changed: %+v, want %+v", resp, wantResp)
+			}
+			if data, ok := wire.Data.(map[string]any); ok {
+				data["clientMutationId"] = "changed-returned-map"
+			}
+			if got := relayedWireDataMap(t, failure.Data); !reflect.DeepEqual(got, originalData) {
+				t.Fatalf("original failure data changed: %+v, want %+v", got, originalData)
+			}
+		})
+	}
+}
+
+// TestAdoptCallerMutationResultStampsUnnamedTargetDeletion pins that a direct
 // mutation path's ID-LESS target deletion comes back naming the caller's own id
 // -- with the deletion's outcome intact -- while a deletion that names a
 // DIFFERENT mutation is left exactly as it is and an ID-LESS error that is not a
@@ -1315,7 +1329,7 @@ func TestAdoptResponseClientMutationIDAdoptsFailureID(t *testing.T) {
 // that discovered the deleted target names no mutation, so without the stamp the
 // client cannot correlate the failure and the record stays submitting instead of
 // being reconciled as orphaned.
-func TestAdoptResponseClientMutationIDStampsUnnamedTargetDeletion(t *testing.T) {
+func TestAdoptCallerMutationResultStampsUnnamedTargetDeletion(t *testing.T) {
 	const verbatim = " mutation-padded "
 	const normalized = "mutation-padded"
 
@@ -1411,13 +1425,17 @@ func TestAdoptResponseClientMutationIDStampsUnnamedTargetDeletion(t *testing.T) 
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			resp := appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_1"}}
-			gotResp, gotErr := adoptResponseClientMutationID[appwire.TurnStartResponse](resp, tc.err, tc.callerID)
+			resp := appwire.TurnStartResponse{
+				Turn:    appwire.Turn{ID: "turn_1"},
+				Receipt: appwire.MutationReceipt{ClientMutationID: normalized, InstanceID: "inst_1", QueueEntryIDs: []string{"q1"}},
+			}
+			original := resp
+			gotErr := adoptCallerMutationResult(&resp.Receipt, tc.err, tc.callerID)
 			if gotErr == nil {
 				t.Fatal("the adapter dropped the failure")
 			}
-			if !reflect.DeepEqual(gotResp, resp) {
-				t.Fatalf("response = %+v, want the given response unchanged (%+v)", gotResp, resp)
+			if !reflect.DeepEqual(resp, original) {
+				t.Fatalf("response = %+v, want the given response unchanged (%+v)", resp, original)
 			}
 			var wire appwire.WireError
 			if !errors.As(gotErr, &wire) {

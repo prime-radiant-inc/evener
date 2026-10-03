@@ -7,7 +7,6 @@ import (
 	"net"
 	"os"
 	"slices"
-	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -596,17 +595,13 @@ func TestHostAdminAllowListMatchesCatalog(t *testing.T) {
 
 	// The allow-list itself must contain exactly the methods this table allows,
 	// and every allow-listed name must be a real catalog method.
-	allowed := make([]string, 0, len(remoteHostAdminMethods))
-	for name := range remoteHostAdminMethods {
-		allowed = append(allowed, name)
-	}
-	sort.Strings(allowed)
+	allowed := appwire.HostRequestMethodNames()
 	for name := range policy {
 		if policy[name] {
-			if _, ok := remoteHostAdminMethods[name]; !ok {
+			if !appwire.IsHostRequestMethod(name) {
 				t.Errorf("policy allows %q but the proxy's allow-list does not name it", name)
 			}
-		} else if _, ok := remoteHostAdminMethods[name]; ok {
+		} else if appwire.IsHostRequestMethod(name) {
 			t.Errorf("policy denies %q but the proxy's allow-list names it", name)
 		}
 	}
@@ -700,7 +695,7 @@ func TestHostAdminAllowListNamesEverySettingsPaneMethod(t *testing.T) {
 		appwire.MethodEvenerGitHead,
 		appwire.MethodModelList,
 	} {
-		if _, ok := remoteHostAdminMethods[name]; !ok {
+		if !appwire.IsHostRequestMethod(name) {
 			t.Errorf("settings-pane method %q is not in the proxy allow-list", name)
 		}
 	}
@@ -1801,7 +1796,7 @@ func TestHostAdminMutationClassificationMatchesAllowList(t *testing.T) {
 		appwire.MethodModelList:                  true,
 	}
 
-	for name := range remoteHostAdminMethods {
+	for _, name := range appwire.HostRequestMethodNames() {
 		_, mutating := remoteHostAdminMutationMethods[name]
 		_, read := readOnly[name]
 		switch {
@@ -1812,19 +1807,19 @@ func TestHostAdminMutationClassificationMatchesAllowList(t *testing.T) {
 		}
 	}
 	for name := range remoteHostAdminMutationMethods {
-		if _, ok := remoteHostAdminMethods[name]; !ok {
+		if !appwire.IsHostRequestMethod(name) {
 			t.Errorf("mutation set names %q, which is not on the proxy allow-list", name)
 		}
 	}
 	for name := range readOnly {
-		if _, ok := remoteHostAdminMethods[name]; !ok {
+		if !appwire.IsHostRequestMethod(name) {
 			t.Errorf("readOnly names %q, which is not on the proxy allow-list", name)
 		}
 	}
 	// evener/host/attach is a controller-local mutation, never a forwarded one:
 	// it must stay off both the allow-list and the forwarded-mutation set, so the
 	// proxy can never forward a dial request to a peer hub.
-	if _, ok := remoteHostAdminMethods[appwire.MethodEvenerHostAttach]; ok {
+	if appwire.IsHostRequestMethod(appwire.MethodEvenerHostAttach) {
 		t.Errorf("%q must not be on the remote-admin allow-list: it is a controller-local method", appwire.MethodEvenerHostAttach)
 	}
 	if _, ok := remoteHostAdminMutationMethods[appwire.MethodEvenerHostAttach]; ok {
@@ -1878,7 +1873,7 @@ func TestHostAdminAllowListCoversSharedForwardedMethods(t *testing.T) {
 		return okReply()
 	})
 	for _, name := range methods {
-		if _, ok := remoteHostAdminMethods[name]; !ok {
+		if !appwire.IsHostRequestMethod(name) {
 			t.Errorf("the web UI forwards %q but the proxy's allow-list does not name it; every remote call for it is refused with InvalidParams", name)
 			continue
 		}
@@ -1910,7 +1905,7 @@ func TestHostRecoveryMutationsNotForwarded(t *testing.T) {
 		return okReply()
 	})
 	for _, name := range recovery {
-		if _, ok := remoteHostAdminMethods[name]; ok {
+		if appwire.IsHostRequestMethod(name) {
 			t.Errorf("controller-local %q is on the remote forward allow-list", name)
 		}
 		if _, ok := remoteHostAdminMutationMethods[name]; ok {

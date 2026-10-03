@@ -84,6 +84,17 @@ Once a navigation location confirms the already open parent, the shell ends
 route deferral. Opening a read-only child keeps that child focused while the
 address bar retains the parent URL on both phone and desktop.
 
+## Workspace geometry
+
+[DockHost](../../cmd/evener-hub/frontend/src/shell/DockHost.tsx) owns the desktop
+Dockview integration. Its empty floating overlay host stays out of layout so
+cached grid dimensions cannot enlarge the document during a native window resize.
+Dockview still owns layout and resize observation. Populated floating windows
+keep their placement, permitted overhang and native pointer input, including
+input outside the workspace bounds. The integration does not clip those windows.
+The [shell guard](../../cmd/evener-hub/frontend/scripts/shellguard/run.mjs)
+checks native resize and real floating-window preservation in Chrome.
+
 ## Exited-session controls
 
 An exited session's follow-up keeps its model selector, session actions and Send

@@ -1,11 +1,17 @@
 import type { AppwireClientLike } from "./clientLike";
-import type { ThreadReadParams, ThreadReadResponse } from "./types.gen";
+import type { ThreadReadParams, ThreadReadResponse, ThreadStatus } from "./types.gen";
 
 export type ThreadSubscriptionClient = Pick<AppwireClientLike, "request" | "onStateChange" | "state">;
 export type ThreadSubscriptionReadParams = Omit<ThreadReadParams, "ref" | "subscribe" | "replaceSubscription">;
+export interface ThreadSubscriptionMetadata {
+  readonly threadId: string;
+  readonly sessionId: string;
+  readonly status: ThreadStatus;
+}
 export interface ThreadSubscriptionLease {
   ensure(): Promise<void>;
   read(params: ThreadSubscriptionReadParams): Promise<ThreadReadResponse>;
+  metadata(): ThreadSubscriptionMetadata | null;
   release(): void;
 }
 
@@ -14,6 +20,7 @@ interface Membership {
   holders: number;
   subscribed: boolean;
   transition: Promise<void> | null;
+  metadata: ThreadSubscriptionMetadata | null;
 }
 
 // All owners of a connection join this membership table. Transcript hydration
@@ -31,6 +38,7 @@ class ThreadSubscriptions {
       for (const member of this.members.values()) {
         member.subscribed = false;
         member.transition = null;
+        member.metadata = null;
         this.releaseEmpty(member);
       }
     });
@@ -39,7 +47,7 @@ class ThreadSubscriptions {
   acquire(ref: string): ThreadSubscriptionLease {
     let member = this.members.get(ref);
     if (!member) {
-      member = { ref, holders: 0, subscribed: false, transition: null };
+      member = { ref, holders: 0, subscribed: false, transition: null, metadata: null };
       this.members.set(ref, member);
     }
     const held = member;
@@ -56,12 +64,15 @@ class ThreadSubscriptions {
         return read(params);
       }
       if (!held.subscribed) return this.acquireWire(held, params);
-      return this.client.request("thread/read", {
+      const generation = this.generation;
+      const response = await this.client.request("thread/read", {
         ...params,
         ref,
         subscribe: false,
         replaceSubscription: false,
       });
+      if (!released) this.admitMetadata(held, response, generation);
+      return response;
     };
     return {
       ensure: async () => {
@@ -69,10 +80,12 @@ class ThreadSubscriptions {
         await this.ensure(held);
       },
       read,
+      metadata: () => (released || this.client.state !== "ready" ? null : held.metadata),
       release: () => {
         if (released) return;
         released = true;
         held.holders -= 1;
+        if (held.holders === 0) held.metadata = null;
         this.releaseEmpty(held);
       },
     };
@@ -96,11 +109,26 @@ class ThreadSubscriptions {
       subscribe: true,
       replaceSubscription: false,
     });
-    const transition = response.then(() => {
-      if (generation === this.generation) member.subscribed = true;
+    const transition = response.then((result) => {
+      if (generation === this.generation) {
+        member.subscribed = true;
+        this.admitMetadata(member, result, generation);
+      }
     });
     this.track(member, transition, generation);
     return response;
+  }
+
+  private admitMetadata(member: Membership, { thread }: ThreadReadResponse, generation: number): void {
+    if (generation !== this.generation || this.client.state !== "ready" || member.holders === 0) return;
+    member.metadata = {
+      threadId: thread.id,
+      sessionId: thread.sessionId ?? thread.id,
+      status: {
+        type: thread.status.type,
+        ...(thread.status.activeFlags ? { activeFlags: [...thread.status.activeFlags] } : {}),
+      },
+    };
   }
 
   private track(member: Membership, transition: Promise<void>, generation: number): void {

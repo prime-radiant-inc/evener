@@ -1,6 +1,7 @@
 // Activity counters share authoritative active/total labels across the footer
 // and sidebar. Tasks use done/total from the selected navigation row.
 
+import type { SessionDelegate } from "@evener/appwire-client";
 import type { ComponentType, ReactNode } from "react";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { WatchGlyph } from "../rail/RailRow";
@@ -13,6 +14,11 @@ import { TasksTab } from "./TasksTab";
 import { WatchesTab } from "./WatchesTab";
 
 const WATCH_GLYPH_CLASS = requireClass(styles.watchGlyph, "activitybar.module.css", "watchGlyph");
+
+export interface ActivityTabBodyProps {
+  scope: ActivityScope;
+  onDrill?: (sub: SessionDelegate) => void;
+}
 
 export interface ActivityTabSpec {
   id: ActivityTab;
@@ -27,7 +33,7 @@ export interface ActivityTabSpec {
   /** The kind shows in the bar only when there's something to say (tasks hide
    * with no list); About has no chip. The sidebar lists every category. */
   chipVisible(counts: ScopeCounts): boolean;
-  Body: ComponentType<{ scope: ActivityScope }>;
+  Body: ComponentType<ActivityTabBodyProps>;
 }
 
 const fraction = (active: number | null, total: number | null) =>

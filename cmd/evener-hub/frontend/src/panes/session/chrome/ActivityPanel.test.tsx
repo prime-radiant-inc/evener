@@ -219,7 +219,9 @@ test("loaded subtree job output uses the supplied owner ref and raw logical job 
     jobs: [activityJob({ ownerRef, jobId, description: "output target" })],
     page: { complete: true, issues: [] },
   }));
-  client.on("evener/jobs/output", () => ({ data: { tail: "supplied output tail", totalBytes: 20, retainedStart: 0 } }));
+  client.on("evener/jobs/output", () => ({
+    data: { tail: "supplied output tail", totalBytes: 20, retainedStart: 0, truncated: false },
+  }));
   connectionStore.getState().connect(client);
   render(<ActivityPanelBody sessionRef={ref} model={model()} />);
   fireEvent.click(await screen.findByRole("button", { name: "Hide details for output target" }));
