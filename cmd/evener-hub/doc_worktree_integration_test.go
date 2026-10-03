@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"image"
+	"image/color"
+	"image/png"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -46,9 +49,23 @@ type worktreeDocumentFixture struct {
 }
 
 var (
-	worktreeImageA = []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a, 'l', 'a', 'u', 'n', 'c', 'h', ' ', 'A'}
-	worktreeImageB = []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a, 'w', 'o', 'r', 'k', 't', 'r', 'e', 'e', ' ', 'B'}
+	worktreeImageA = encodeWorktreePNG(color.NRGBA{R: 0xd1, G: 0x49, B: 0x5b, A: 0xff})
+	worktreeImageB = encodeWorktreePNG(color.NRGBA{R: 0x28, G: 0x77, B: 0xb8, A: 0xff})
 )
+
+func encodeWorktreePNG(pixel color.NRGBA) []byte {
+	fixture := image.NewNRGBA(image.Rect(0, 0, 2, 2))
+	for y := range 2 {
+		for x := range 2 {
+			fixture.SetNRGBA(x, y, pixel)
+		}
+	}
+	var encoded bytes.Buffer
+	if err := png.Encode(&encoded, fixture); err != nil {
+		panic(err)
+	}
+	return encoded.Bytes()
+}
 
 // worktreeDocumentAdapter scripts only the provider boundary. Each queued step
 // selects one real manage_worktree call; the next provider round ends the turn.
@@ -433,6 +450,42 @@ func TestDocumentWorktree_ProducerToLocalAndRemoteReads(t *testing.T) {
 		if status != http.StatusForbidden {
 			t.Fatalf("B absolute target after exit returned %d %q", status, body)
 		}
+	}
+}
+
+func TestDocumentWorktree_ImageFixturesDecode(t *testing.T) {
+	t.Parallel()
+
+	fixtures := []struct {
+		name      string
+		data      []byte
+		wantPixel color.NRGBA
+	}{
+		{name: "launch A", data: worktreeImageA, wantPixel: color.NRGBA{R: 0xd1, G: 0x49, B: 0x5b, A: 0xff}},
+		{name: "worktree B", data: worktreeImageB, wantPixel: color.NRGBA{R: 0x28, G: 0x77, B: 0xb8, A: 0xff}},
+	}
+
+	decodedPixels := make([]color.NRGBA, 0, len(fixtures))
+	for _, fixture := range fixtures {
+		decoded, err := png.Decode(bytes.NewReader(fixture.data))
+		if err != nil {
+			t.Errorf("decode %s fixture: %v", fixture.name, err)
+			continue
+		}
+		if bounds := decoded.Bounds(); bounds.Dx() != 2 || bounds.Dy() != 2 {
+			t.Errorf("%s fixture dimensions = %v, want 2x2", fixture.name, bounds)
+		}
+		gotPixel := color.NRGBAModel.Convert(decoded.At(decoded.Bounds().Min.X, decoded.Bounds().Min.Y)).(color.NRGBA)
+		if gotPixel != fixture.wantPixel {
+			t.Errorf("%s fixture pixel = %#v, want %#v", fixture.name, gotPixel, fixture.wantPixel)
+		}
+		decodedPixels = append(decodedPixels, gotPixel)
+	}
+	if bytes.Equal(worktreeImageA, worktreeImageB) {
+		t.Error("launch A and worktree B fixture bytes are equal")
+	}
+	if len(decodedPixels) == len(fixtures) && decodedPixels[0] == decodedPixels[1] {
+		t.Errorf("launch A and worktree B fixture pixels are both %#v, want distinct pixels", decodedPixels[0])
 	}
 }
 
