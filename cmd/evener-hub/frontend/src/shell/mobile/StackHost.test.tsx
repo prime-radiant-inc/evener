@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { lazy, useState } from "react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
@@ -12,7 +12,13 @@ import { cascadeClient, cascadeContext } from "../../panes/zoom/cascadeTestUtils
 import type { SessionZoomParams } from "../../panes/zoom/intent";
 import "../../panes/zoom";
 import { connectionStore } from "../../stores/connection";
-import { activityClient, activityContext, activitySummary } from "../../stores/sessionActivityTestUtils";
+import {
+  activityClient,
+  activityContext,
+  activityDelegate,
+  activityDetailsThread,
+  activitySummary,
+} from "../../stores/sessionActivityTestUtils";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../activitybar/activitySidebarStore";
 import { chromeStore, resetChromeStoreForTests } from "../chromeStore";
 import { ClientProvider } from "../clientContext";
@@ -206,6 +212,71 @@ test("renders the new activity sidebar over the mobile stack with the selected t
   expect(screen.getByRole("radio", { name: /Jobs/ })).toBeTruthy();
 });
 
+test.each(["Close", "Escape"])(
+  "%s returns phone Overview focus to its parent link after child drilling",
+  async (dismiss) => {
+    const restoreViewport = installMobileViewport();
+    const parent = "remote:focus-parent";
+    const child = "remote:focus-child";
+    const client = activityClient();
+    const context = (ref: string) => ({
+      ...activityContext(ref),
+      rootRef: parent,
+      ancestors: ref === parent ? [] : [{ ref: parent, sessionId: "parent", title: "Parent work" }],
+    });
+    client.on("thread/read", ({ ref }) =>
+      activityDetailsThread(ref, { name: ref === parent ? "Parent work" : "Child work" }),
+    );
+    client.on("evener/thread/activity/read", ({ ref }) => ({ ...activitySummary(ref), context: context(ref) }));
+    client.on("evener/thread/delegates/list", ({ ref, scope }) => ({
+      context: context(ref),
+      scope: scope ?? "session",
+      delegates:
+        ref === parent ? [activityDelegate({ ownerRef: parent, childRef: child, description: "Open child" })] : [],
+      page: { complete: true, issues: [] },
+    }));
+    connectionStore.getState().connect(client);
+    const parentPane = workspaceStore.getState().openPane("session", { ref: parent });
+    const user = userEvent.setup();
+    try {
+      render(
+        <ClientProvider client={client}>
+          <MotionProvider>
+            <StackHost />
+          </MotionProvider>
+        </ClientProvider>,
+      );
+      await user.click(await screen.findByRole("button", { name: "Session actions" }));
+      await user.click(screen.getByRole("menuitem", { name: /Overview/ }));
+      await user.click(await screen.findByRole("button", { name: /Open child/ }));
+      const sidebar = await screen.findByTestId("activity-sidebar");
+      await user.click(within(sidebar).getByRole("radio", { name: "About" }));
+      await within(sidebar).findByText("~$1.00");
+      await screen.findByRole("heading", { name: "Child work" });
+      const parentLink = await waitFor(() => {
+        const link = screen.getAllByRole("button", { name: "Parent work" }).find((button) => !sidebar.contains(button));
+        if (!link) throw new Error("Child transcript has no parent link");
+        return link;
+      });
+      const before = workspaceStore.getState();
+      expect(before.focusedPaneId).not.toBe(parentPane);
+      expect(screen.queryByRole("button", { name: "Session actions" })).toBeNull();
+      if (dismiss === "Close") await user.click(within(sidebar).getByRole("button", { name: "Close Overview" }));
+      else await user.keyboard("{Escape}");
+      await waitFor(() => expect(document.activeElement).toBe(parentLink));
+      await waitFor(() => expect(screen.queryByTestId("activity-sidebar")).toBeNull());
+      expect(workspaceStore.getState().panes).toEqual(before.panes);
+      expect(workspaceStore.getState().focusedPaneId).toBe(before.focusedPaneId);
+      await user.keyboard("{Enter}");
+      await screen.findByRole("button", { name: "Session actions" });
+      expect(workspaceStore.getState().focusedPaneId).toBe(parentPane);
+    } finally {
+      cleanup();
+      restoreViewport();
+    }
+  },
+);
+
 test("at the mobile boundary an ordinary Agents row retains the existing transcript route", async () => {
   const restoreViewport = installMobileViewport();
   const client = activityClient();
@@ -288,6 +359,16 @@ test("a restored cascade renders only its selected reader on mobile and restores
     expect(screen.queryByTestId("cascade-spine")).toBeNull();
     expect(screen.queryByRole("textbox")).toBeNull();
     expect(workspaceStore.getState().panes[0]?.params).toBe(params);
+    phoneReturn.focus();
+    act(() => activitySidebarStore.getState().openWith("about"));
+    const sidebar = await screen.findByTestId("activity-sidebar");
+    await within(sidebar).findByText("wire-grandchild");
+    expect(within(sidebar).queryByText("wire-child")).toBeNull();
+    await userEvent.setup().keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByTestId("activity-sidebar")).toBeNull());
+    expect(document.activeElement).toBe(phoneReturn);
+    expect(workspaceStore.getState().panes[0]?.params).toBe(params);
+    expect(workspaceStore.getState().focusedPaneId).toBe("restored-cascade");
     await act(async () => {
       media.matches = false;
       media.dispatchEvent(Object.assign(new Event("change"), { matches: false }));

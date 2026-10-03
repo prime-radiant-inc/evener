@@ -302,6 +302,9 @@ that demand. Ordinary navigation can adopt a genuinely disposed predecessor's
 pending demand. The footer and shared sidebar stay scoped to the selected
 leaf, including while the reader selects text in a parent.
 
+Columns and spines expose Agents, Jobs, Watches and Tasks peeks, including empty
+Tasks. About is available in Overview and has no cascade chip.
+
 Columns and spines share the existing summary and additive subscription leases
 by client and requested ref. An ancestor peek observes only that ancestor's
 chosen direct collection; Tasks stays inside the peek. Closing it releases its
@@ -359,12 +362,31 @@ of one ref share the same owner. Agents, Jobs and Watches tabs observe their own
 session-scoped collection. A visible page boundary supplies further demand,
 while the shared store retains and retries an interrupted continuation.
 
+About is the last sidebar category and has no count or footer chip. Its
+[adapter](../../cmd/evener-hub/frontend/src/shell/activitybar/AboutTab.tsx)
+holds the shared thread model for the sidebar's explicit public session ref and
+renders the existing details body. That model owner supplies hydration,
+accounting, subscriptions and reconnect recovery. About adds no collection
+demand, lifecycle mutation, provider call, cache or retry owner. Its category
+choice uses the same per-session persistence without changing another category's
+disclosure or scroll intent.
+
 The composer names its receiving conversation even when a child or output pane
 has focus. Job rows and output tabs use the job description when present, and
 output details retain the command and exit status. Each output pane publishes
 its already loaded title through the [pane chrome store](../../cmd/evener-hub/frontend/src/shell/chromeStore.ts);
-tab naming adds no metadata request. Closing Activity from within the sidebar
-returns keyboard focus to its opener or the matching footer control.
+tab naming adds no metadata request. Closing Overview returns keyboard focus to
+its visible, connected opener or a visible session-actions control for the intended
+session, preferring the originating pane. Existing footer categories retain their
+owning-pane fallback. After child drilling replaces the phone's session controls,
+a visible parent breadcrumb outside Overview is the final fallback. Dismissal
+only moves focus; it does not navigate or create a pane.
+Same-session pane menus carry their explicit owning pane
+identity, so opening Overview preserves that instance.
+The [application shell](../../cmd/evener-hub/frontend/src/shell/AppShell.tsx)
+ends route deferral when the resolved location confirms an already placed
+session. Opening its read-only child then preserves child focus and the parent
+URL, rather than reapplying the parent route.
 
 The [activity sidebar view store](../../cmd/evener-hub/frontend/src/shell/activitybar/activitySidebarStore.ts)
 retains open/category choices and a semantic row anchor per public session ref
@@ -417,14 +439,21 @@ references use the transcript's own watch evidence. The
 observes subtree collections while its body is open. These view lifetimes do not
 cause an activity read for every session in the navigation rail.
 
-Session chrome and the navigation rail expose Activity through their session
+Session chrome and the navigation rail expose Overview through their session
 action menus. On the phone, that action opens the full-screen shared activity
 sidebar, preserving the last selected category for the focused session. Its
 optional active count sums the session's authoritative job and delegate active
 counts only when both are known; watches and completed work are not part of that
-number. The sidebar's Jobs, Agents, Watches and Tasks tabs use the same scoped
-reads as desktop. The legacy activity pane remains restorable for saved layouts,
-but new Activity actions retire that pane and open the shared sidebar instead.
+number. The sidebar's Agents, Jobs, Watches and Tasks tabs use session-scoped
+reads on both viewports; About uses the shared session model.
+The workspace registers only Tasks and Details session panels. Saved Activity
+placements are unknown panes: the existing workspace restore omits them,
+preserves registered panes and selects useful surviving focus. A valid primary
+route wins before the empty-workspace Welcome fallback. Retirement leaves
+Overview's independent per-session open/About choice intact and issues no
+deletion or lifecycle mutation. Standalone Details retains its shared accounting
+renderer. The recursive Activity Sheet and inline discovery retain subtree
+inspection through their existing owners.
 Session action menus offer Delete only for a local top-level session whose
 lifecycle is stopped, including a confirmed crash identified by an errored
 navigation row with `failure.cause_kind: "crashed"`. Live sessions and ordinary

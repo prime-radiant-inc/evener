@@ -134,6 +134,7 @@ import { recordStoplessComposer } from "./stoplessComposer";
 
 export interface ComposerProps {
   ref: string;
+  paneId?: string;
   // Whether this composer's pane is the workspace's focused one. Mount
   // autofocus keys on it: a session loading into a background tab must never
   // yank keyboard focus away from what the reader is doing.
@@ -191,7 +192,7 @@ type BusyAction = "submit" | "steer" | "interrupt" | "drain" | null;
 // shallow-equality bailout for a value that carries no information.
 const NO_TURN_VERBS: SessionMenuTurnVerbs = Object.freeze({});
 
-export function Composer({ ref, focused, source }: ComposerProps) {
+export function Composer({ ref, paneId, focused, source }: ComposerProps) {
   const model = useThreadsStore((s) => s.threads.get(ref));
   const recoveryRequired = useThreadsStore((s) => s.restartBlockingObligations.has(ref));
   // Delivery-uncertain rows: while any exist the hub's explicit Resume still
@@ -1544,7 +1545,13 @@ export function Composer({ ref, focused, source }: ComposerProps) {
                         onClick={() => fileInputRef.current?.click()}
                       />
                     </Tooltip>
-                    <MemoizedSessionChrome ref={ref} placement="composer" discoverActivity turnVerbs={turnVerbs} />
+                    <MemoizedSessionChrome
+                      ref={ref}
+                      paneId={paneId}
+                      placement="composer"
+                      discoverActivity
+                      turnVerbs={turnVerbs}
+                    />
                   </div>
                 }
                 actions={

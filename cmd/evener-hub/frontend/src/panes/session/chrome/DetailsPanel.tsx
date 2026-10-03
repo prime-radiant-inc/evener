@@ -68,6 +68,7 @@ export interface DetailsPanelHandle {
 
 const CLASS = {
   section: requireClass(styles.section, "detailspanel.module.css", "section"),
+  session: requireClass(styles.session, "detailspanel.module.css", "session"),
   sectionTitle: requireClass(styles.sectionTitle, "detailspanel.module.css", "sectionTitle"),
   list: requireClass(styles.list, "detailspanel.module.css", "list"),
   row: requireClass(styles.row, "detailspanel.module.css", "row"),
@@ -146,7 +147,7 @@ export function DetailsPanelBody({ model, now }: DetailsPanelBodyProps) {
           (.path below) that InspectorCard's row has no room for. The
           wrapping div keeps InspectorCard on the same .section divider
           rhythm as its neighbors. */}
-      <div className={CLASS.section}>
+      <div className={`${CLASS.section} ${CLASS.session}`}>
         <InspectorCard
           title="Session"
           properties={[
@@ -231,10 +232,8 @@ export const DetailsPanel = forwardRef<DetailsPanelHandle, DetailsPanelProps>(fu
 
   return (
     <>
-      {/* Omitted while hideTrigger is set (the row collapsed this into the
-          "..." menu instead - see SessionChrome). The palette's /status no
-          longer clicks this trigger; it toggles the sessionDetails workspace
-          pane (shell/palette/commands.ts toggleSessionPane). */}
+      {/* This optional Sheet trigger is separate from Overview and the
+          standalone Details workspace pane. */}
       {!hideTrigger && (
         <Button variant="quiet" size="sm" onClick={() => setOpen(true)}>
           Details

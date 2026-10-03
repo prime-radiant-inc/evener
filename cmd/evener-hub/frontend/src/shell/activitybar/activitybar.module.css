@@ -29,6 +29,22 @@
   color: var(--ink-hi);
 }
 
+.focusBody {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-block-size: 0;
+  min-inline-size: 0;
+}
+
+.sidebar > div,
+.sidebarMobile > div {
+  display: flex;
+  flex: 1 1 auto;
+  min-block-size: 0;
+  min-inline-size: 0;
+}
+
 .head {
   display: flex;
   align-items: flex-start;
@@ -42,6 +58,25 @@
   padding: var(--space-2) var(--space-3);
   border-bottom: 1px solid var(--edge);
   flex: none;
+}
+
+.tabs [role="radiogroup"] {
+  display: flex;
+  flex-wrap: wrap;
+}
+
+.tabs [role="radio"] {
+  inline-size: auto;
+  flex: 1 1 max-content;
+  block-size: auto;
+  min-block-size: max(28px, var(--tap-min, 0px));
+  padding-block: var(--space-1);
+}
+
+.tabs [role="radio"] > span {
+  white-space: pre-line;
+  overflow: visible;
+  text-overflow: clip;
 }
 
 .body {
