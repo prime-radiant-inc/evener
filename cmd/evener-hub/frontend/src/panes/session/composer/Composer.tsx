@@ -43,6 +43,7 @@ import {
   type SlashMenuItem,
   type SlashToken,
   sessionActionError,
+  slashCommandInvocation,
   spliceSlashCommand,
   type ThreadModel,
 } from "@evener/appwire-client";
@@ -1511,9 +1512,8 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
                     restoreEpoch={restoreEpoch}
                     skillDetails={skillChipDetails}
                     commandDetails={(name) =>
-                      visibleSlashCatalog.find(
-                        (item) => item.name === name || `${item.pluginName}:${item.name}` === name,
-                      )?.description ?? `${name} — no longer in this session's command catalog`
+                      visibleSlashCatalog.find((item) => slashCommandInvocation(item) === `/${name}`)?.description ??
+                      `${name} — no longer in this session's command catalog`
                     }
                     onChange={handleTextChange}
                     onKeyDown={handleKeyDown}

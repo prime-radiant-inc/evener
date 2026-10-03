@@ -5418,6 +5418,60 @@ test("skill completions keep indivisible chips in the sentence and submit both r
   });
 });
 
+test.each([
+  ["project", "review", "plugin review", "project review", "project review"],
+  ["plugin", "pkg:review", "plugin review", "project review", "plugin review"],
+  ["descriptionless plugin collision", "review", undefined, "project review", "project review"],
+  [
+    "descriptionless project",
+    "review",
+    "plugin review",
+    undefined,
+    "review — no longer in this session's command catalog",
+  ],
+])(
+  "command chip details use the canonical identity for %s",
+  async (_case, name, pluginDescription, projectDescription, details) => {
+    if (!name) throw new Error("command tooltip fixture requires a name");
+    const ref = "ref_command_tooltip";
+    writeComposerDraft(ref, { text: `Run /${name}`, skillNames: [], commandNames: [name] });
+    await mountComposer(ref, {
+      evener: {
+        ...testThread(ref).evener,
+        capabilities: { ...FULL_CAPABILITIES, commandInput: true },
+        diagnostics: {
+          commands: [
+            { name: "review", source: "plugin", pluginName: "pkg", description: pluginDescription },
+            { name: "review", source: "project", description: projectDescription },
+          ],
+        },
+      },
+    });
+
+    const chip = textarea().querySelector("[data-command-name]");
+    expect(chip?.getAttribute("data-command-name")).toBe(name);
+    expect(chip?.getAttribute("title")).toBe(details);
+    expect(chip?.getAttribute("aria-label")).toBe(`/${name}: ${details}`);
+  },
+);
+
+test.each([undefined, []])("command chip details retain the missing owner catalog fallback %s", async (commands) => {
+  const ref = "ref_missing_command_tooltip";
+  writeComposerDraft(ref, { text: "Run /review", skillNames: [], commandNames: ["review"] });
+  await mountComposer(ref, {
+    evener: {
+      ...testThread(ref).evener,
+      capabilities: { ...FULL_CAPABILITIES, commandInput: true },
+      diagnostics: { commands },
+    },
+  });
+
+  const chip = textarea().querySelector("[data-command-name]");
+  expect(chip?.getAttribute("data-command-name")).toBe("review");
+  expect(chip?.getAttribute("title")).toBe("review — no longer in this session's command catalog");
+  expect(chip?.getAttribute("aria-label")).toBe("/review: review — no longer in this session's command catalog");
+});
+
 test.each([true, false])("explicit commands persist through remount and respect commandInput %s", async (supported) => {
   const user = userEvent.setup();
   const ref = "ref_atomic_command";
