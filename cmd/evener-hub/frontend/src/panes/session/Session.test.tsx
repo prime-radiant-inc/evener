@@ -298,6 +298,44 @@ test("desktop session panes own separate location and activity footers", async (
   expect(activitySidebarStore.getState()).toMatchObject({ open: true, tab: "jobs" });
 });
 
+test("same-session pane menus open Overview from their own instance", async ({ onTestFinished }) => {
+  vi.mocked(ComposerModule.Composer).mockRestore();
+  vi.mocked(SessionChromeModule.SessionChrome).mockRestore();
+  onTestFinished(stubSessionSlots);
+  const ref = "local:duplicate-overview";
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse(ref));
+  fake.on("evener/thread/activity/read", () => activitySummary(ref));
+  fake.on("evener/git/head", () => ({ head: "main" }));
+  workspaceStore.setState({
+    panes: [
+      { id: "overview-first", type: "session", params: { ref }, slot: "main" },
+      { id: "overview-second", type: "session", params: { ref, instance: "second" }, slot: "secondary" },
+    ],
+    focusedPaneId: "overview-first",
+  });
+  const { container } = render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref }} paneId="overview-first" focused />
+      <Session params={{ ref }} paneId="overview-second" focused />
+    </ClientProvider>,
+  );
+  const menus = await screen.findAllByRole("button", { name: "Session actions" });
+  expect(menus).toHaveLength(2);
+  expect(
+    Array.from(container.querySelectorAll("[data-session-actions-ref]"), (marker) =>
+      marker.getAttribute("data-pane-id"),
+    ),
+  ).toEqual(["overview-first", "overview-second"]);
+  const user = userEvent.setup();
+  const secondMenu = menus[1];
+  if (!secondMenu) throw new Error("second session menu is missing");
+  await user.click(secondMenu);
+  await user.click(screen.getByRole("menuitem", { name: "Overview" }));
+  expect(workspaceStore.getState().focusedPaneId).toBe("overview-second");
+  expect(activitySidebarStore.getState()).toMatchObject({ open: true, ref });
+});
+
 test("mobile omits repo location and the desktop activity footer", async ({ onTestFinished }) => {
   vi.mocked(ComposerModule.Composer).mockRestore();
   onTestFinished(stubSessionSlots);

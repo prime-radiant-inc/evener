@@ -12,6 +12,7 @@
 // shared dev server.
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { writeFile } from "node:fs/promises";
 import {
   applyViewport,
   clearViewportOverride,
@@ -286,6 +287,384 @@ function assertMobileResult(result) {
   return failures;
 }
 
+const OVERVIEW_VIEWPORTS = [VIEWPORT, MOBILE_VIEWPORT, { width: 320, height: 844, mobile: true, touch: true }];
+const OVERVIEW_THEMES = ["light", "dark"];
+const OVERVIEW = '[data-testid="activity-sidebar"][aria-label="Overview"]';
+const RAIL_ACTION = '[data-session-actions-ref="local:p0-s0"]:not([data-pane-id])';
+const LONG_VALUES = [
+  `anthropic/${"modelidentifier".repeat(12)}`,
+  "sessionidentifier".repeat(12),
+  `feature/${"branchidentifier".repeat(12)}`,
+  `/work/${"directorysegment".repeat(12)}/session`,
+];
+
+async function waitForDom(send, expression, label) {
+  return evaluate(send, `(async () => {
+    const deadline = performance.now() + 15000;
+    while (!(${expression})) {
+      if (performance.now() > deadline) throw new Error(${JSON.stringify(label)} + ': ' + document.body.innerText.slice(-1500));
+      await new Promise(resolve => requestAnimationFrame(resolve));
+    }
+    return true;
+  })()`);
+}
+
+async function settleOverview(send) {
+  await waitForFonts(send);
+  await evaluate(send, `(async () => {
+    const deadline = performance.now() + 15000;
+    for (;;) {
+      await new Promise(resolve => requestAnimationFrame(resolve));
+      const animations = document.getAnimations().filter(a =>
+        a.effect.getTiming().iterations !== Infinity && a.playState !== 'finished');
+      if (!animations.length) return;
+      const results = await Promise.allSettled(animations.map(a => a.finished));
+      for (const result of results) {
+        if (result.status === 'rejected' && result.reason?.name !== 'AbortError') throw result.reason;
+      }
+      if (performance.now() > deadline) throw new Error('finite animations did not settle');
+    }
+  })()`);
+  await waitForDom(send, `(() => {
+    const aside = document.querySelector(${JSON.stringify(OVERVIEW)});
+    if (!aside) return true;
+    const box = aside.getBoundingClientRect();
+    return box.right <= innerWidth + 1 && box.left >= -1;
+  })()`, "Overview finishes its entrance");
+}
+
+async function clickControl(send, selector) {
+  await waitForDom(send, `document.querySelector(${JSON.stringify(selector)})`, `mounted control ${selector}`);
+  const point = await evaluate(send, `(async () => {
+    const marker = document.querySelector(${JSON.stringify(selector)});
+    const element = marker?.closest('button') ?? marker;
+    if (!element) throw new Error('missing control: ' + ${JSON.stringify(selector)} + ' ' + JSON.stringify({
+      state: window.overviewGuardState(),
+      markers: Array.from(document.querySelectorAll('[data-session-actions-ref]'), e => e.outerHTML)
+    }));
+    element.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    const box = element.getBoundingClientRect();
+    if (!box.width || !box.height) throw new Error('hidden control: ' + ${JSON.stringify(selector)});
+    return { x: box.left + box.width / 2, y: box.top + box.height / 2 };
+  })()`);
+  await send("Input.dispatchMouseEvent", { type: "mouseMoved", ...point });
+  try {
+    await waitForDom(send, `(() => {
+      const marker = document.querySelector(${JSON.stringify(selector)});
+      const element = marker?.closest('button') ?? marker;
+      return element && getComputedStyle(element).visibility === 'visible' && element.contains(document.elementFromPoint(${point.x}, ${point.y}));
+    })()`, `hit-testable control ${selector}`);
+  } catch (error) {
+    const witness = await evaluate(send, `(() => {
+      const marker = document.querySelector(${JSON.stringify(selector)});
+      const element = marker?.closest('button') ?? marker;
+      const box = element?.getBoundingClientRect();
+      return { point: ${JSON.stringify(point)}, box: box?.toJSON(),
+        hit: document.elementFromPoint(${point.x}, ${point.y})?.outerHTML.slice(0, 500),
+        currentHit: box && document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2)?.outerHTML.slice(0, 500),
+        visibility: element && getComputedStyle(element).visibility, state: window.overviewGuardState() };
+    })()`);
+    throw new Error(error.message + ' witness: ' + JSON.stringify(witness));
+  }
+  await send("Input.dispatchMouseEvent", { type: "mousePressed", ...point, button: "left", clickCount: 1 });
+  await send("Input.dispatchMouseEvent", { type: "mouseReleased", ...point, button: "left", clickCount: 1 });
+}
+
+async function pressKey(send, key, code, keyCode, modifiers = 0) {
+  for (const type of ["keyDown", "keyUp"]) {
+    await send("Input.dispatchKeyEvent", { type, key, code, windowsVirtualKeyCode: keyCode,
+      nativeVirtualKeyCode: keyCode, modifiers });
+  }
+}
+
+async function chooseOverviewMenu(send, selector) {
+  await clickControl(send, selector);
+  await waitForDom(send, `Array.from(document.querySelectorAll('[role="menuitem"]')).some(e => e.textContent.includes('Overview'))`, "Overview menu item");
+  await evaluate(send, `(() => {
+    document.querySelector('[data-overview-guard-item]')?.removeAttribute('data-overview-guard-item');
+    const item = Array.from(document.querySelectorAll('[role="menuitem"]')).find(e => e.textContent.includes('Overview'));
+    item.dataset.overviewGuardItem = '';
+  })()`);
+  await clickControl(send, '[data-overview-guard-item]');
+  await waitForDom(send, `document.querySelector(${JSON.stringify(OVERVIEW)})`, "opened Overview");
+  await settleOverview(send);
+}
+
+async function openRailOverview(send) {
+  const visible = await evaluate(send, `(() => {
+    const marker = document.querySelector(${JSON.stringify(RAIL_ACTION)});
+    const button = marker?.closest('button');
+    return { found: !!marker, width: button?.getBoundingClientRect().width,
+      visibility: button && getComputedStyle(button).visibility,
+      refs: Array.from(document.querySelectorAll('[data-session-actions-ref]')).slice(0, 3).map(e => e.outerHTML) };
+  })()`);
+  console.log(`Overview rail trigger: ${JSON.stringify(visible)}`);
+  if (!visible.width) await clickControl(send, 'button[aria-label="Sessions"]');
+  await settleOverview(send);
+  await chooseOverviewMenu(send, RAIL_ACTION);
+  await clickControl(send, `${OVERVIEW} [role="radio"][aria-label="About"]`);
+  await waitForDom(send, `window.overviewGuardState().overview.tab === 'about' && document.querySelector(${JSON.stringify(OVERVIEW)})?.textContent.includes(${JSON.stringify(LONG_VALUES[1])})`, "hydrated About");
+  await waitForDom(send, `document.querySelector('[data-session-actions-ref="local:p0-s0"][data-pane-id]')`, "hydrated receiving Session");
+  await settleOverview(send);
+}
+
+// Every text rect is compared with every inline clipping ancestor. Selection
+// alone can include invisible text and document overflow alone misses ellipsis.
+function fullTextMeasurement(element, expected) {
+  if (!element) return { missing: true, expected };
+  element.scrollIntoView({ block: "nearest", inline: "nearest" });
+  const range = document.createRange();
+  range.selectNodeContents(element);
+  const textRects = Array.from(range.getClientRects(), r => ({ left: r.left, right: r.right, top: r.top, bottom: r.bottom }));
+  const clips = [];
+  const scrollContainers = [];
+  const unselectable = [];
+  for (let node = element; node; node = node.parentElement) {
+    const style = getComputedStyle(node);
+    const box = node.getBoundingClientRect();
+    if (style.userSelect === "none") unselectable.push(node.tagName);
+    if (["hidden", "clip"].includes(style.overflowX) &&
+        textRects.some(r => r.left < box.left - 1 || r.right > box.right + 1)) {
+      clips.push({ tag: node.tagName, class: node.className, left: box.left, right: box.right });
+    }
+    if (["auto", "scroll"].includes(style.overflowX) && node.scrollWidth > node.clientWidth + 1) {
+      const previous = node.scrollLeft;
+      node.scrollLeft = node.scrollWidth;
+      scrollContainers.push({ clientWidth: node.clientWidth, scrollWidth: node.scrollWidth, reachable: node.scrollLeft });
+      node.scrollLeft = previous;
+    }
+  }
+  const selection = window.getSelection();
+  selection.removeAllRanges();
+  selection.addRange(range);
+  const selectable = selection.toString() === expected;
+  selection.removeAllRanges();
+  const surface = element.closest('[data-testid="activity-sidebar"]').getBoundingClientRect();
+  const inlineOverflow = textRects.some(r => r.left < surface.left - 1 || r.right > surface.right + 1);
+  return { fullText: element.textContent === expected, selectable, clips, scrollContainers, unselectable, textRects, inlineOverflow };
+}
+
+async function measureOverview(send) {
+  return evaluate(send, `(() => {
+    const aside = document.querySelector(${JSON.stringify(OVERVIEW)});
+    if (!aside) throw new Error('Overview never rendered');
+    const measure = ${fullTextMeasurement.toString()};
+    const box = element => {
+      const r = element.getBoundingClientRect();
+      return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height };
+    };
+    const categories = Array.from(aside.querySelectorAll('[role="radio"]'), element => ({
+      text: element.textContent, checked: element.getAttribute('aria-checked'), box: box(element),
+      label: measure(element.querySelector('span'), element.textContent)
+    }));
+    const values = ${JSON.stringify(LONG_VALUES)}.map(expected => {
+      const element = Array.from(aside.querySelectorAll('*')).find(e => e.textContent === expected &&
+        !Array.from(e.children).some(child => child.textContent === expected));
+      return measure(element, expected);
+    });
+    const close = aside.querySelector('button[aria-label="Close Overview"]');
+    return {
+      theme: document.documentElement.dataset.theme, font: document.body.dataset.fontSize,
+      sidebar: box(aside), categories, values, close: close && box(close),
+      tapMin: parseFloat(getComputedStyle(aside).getPropertyValue('--tap-min')),
+      footerTabs: Array.from(document.querySelectorAll('[data-testid="statusbar"]'))
+        .filter(e => !e.closest('[data-pane-footer-fixture]'))
+        .map(e => Array.from(e.querySelectorAll('[data-activity-tab]'), button => button.dataset.activityTab)),
+      document: { width: document.documentElement.scrollWidth, height: document.documentElement.scrollHeight },
+      errors: window.__shellGuardErrors || [], state: window.overviewGuardState()
+    };
+  })()`);
+}
+
+function assertOverview(result, viewport, theme) {
+  const failures = [];
+  const labels = ["Agents\n100/100", "Jobs\n100/100", "Watches\n100/100", "Tasks\n100/100", "About"];
+  if (result.theme !== theme || result.font !== "xl") failures.push("XL/theme preferences did not apply");
+  if (!viewport.mobile && Math.abs(result.sidebar.width - 320) > 1) failures.push(`desktop sidebar width ${result.sidebar.width}`);
+  if (result.sidebar.left < -1 || result.sidebar.right > viewport.width + 1) failures.push("sidebar escapes viewport");
+  if (!result.close || result.close.left < -1 || result.close.right > viewport.width + 1 || result.close.top < -1 || result.close.bottom > viewport.height + 1) failures.push(`close control escapes viewport: ${JSON.stringify(result.close)}`);
+  if (!viewport.mobile && (result.footerTabs.length !== 1 || JSON.stringify(result.footerTabs[0]) !== JSON.stringify(["agents", "jobs", "watches", "tasks"]))) failures.push(`actual pane footer identities ${JSON.stringify(result.footerTabs)}`);
+  if (viewport.mobile && result.footerTabs.length) failures.push("phone unexpectedly rendered activity footers");
+  if (JSON.stringify(result.categories.map(c => c.text)) !== JSON.stringify(labels)) failures.push(`categories/counts ${JSON.stringify(result.categories.map(c => c.text))}`);
+  if (result.categories.filter(c => c.checked === "true").map(c => c.text).join() !== "About") failures.push("About is not exclusively selected");
+  for (const category of result.categories) {
+    if (!category.label.fullText || category.label.clips.length || category.label.inlineOverflow || !category.label.textRects.length || category.box.width > result.sidebar.width + 1) failures.push(`clipped category ${category.text}: ${JSON.stringify(category.label)}`);
+  }
+  for (let i = 0; i < result.values.length; i++) {
+    const value = result.values[i];
+    if (!value.fullText || !value.selectable || value.inlineOverflow || value.clips?.length || value.unselectable?.length || value.scrollContainers?.length || !value.textRects?.length) failures.push(`unreadable ${["model", "session ID", "branch", "path"][i]}: ${JSON.stringify(value)}`);
+  }
+  if (viewport.mobile) {
+    if (!(result.tapMin >= 44)) failures.push(`missing phone tap floor: ${result.tapMin}`);
+    for (const control of [...result.categories.map(c => c.box), result.close]) {
+      if (!control || control.width < result.tapMin - 1 || control.height < result.tapMin - 1) failures.push(`sub-floor Overview target: ${JSON.stringify(control)}`);
+    }
+  }
+  if (result.document.width > viewport.width + 1 || result.document.height > viewport.height + 1) failures.push(`page overflow ${JSON.stringify(result.document)}`);
+  failures.push(...result.errors.map(error => `page error: ${error}`));
+  return failures;
+}
+
+async function trustedOverviewFlow(send, viewport) {
+  const pane = await evaluate(send, "window.overviewGuardState().panes.find(p => p.type === 'session' && p.params.ref === 'local:p0-s0').id");
+  const trigger = id => `[data-session-actions-ref="local:p0-s0"][data-pane-id="${id}"]`;
+  await evaluate(send, `document.querySelector(${JSON.stringify(OVERVIEW)}).querySelector('[role="radio"][aria-checked="true"]').focus()`);
+  for (const [key, code, keyCode, tab] of [
+    ["Home", "Home", 36, "agents"], ["ArrowRight", "ArrowRight", 39, "jobs"],
+    ["ArrowLeft", "ArrowLeft", 37, "agents"], ["End", "End", 35, "about"],
+  ]) {
+    await pressKey(send, key, code, keyCode);
+    await waitForDom(send, `window.overviewGuardState().overview.tab === ${JSON.stringify(tab)}`, `${key} selects ${tab}`);
+    const focus = await evaluate(send, `(() => {
+      const active = document.activeElement;
+      const style = getComputedStyle(active);
+      return { checked: active.getAttribute('aria-checked'), role: active.getAttribute('role'),
+        visible: active.matches(':focus-visible'), outline: style.outlineStyle,
+        width: parseFloat(style.outlineWidth), color: style.outlineColor };
+    })()`);
+    if (focus.role !== "radio" || focus.checked !== "true" || !focus.visible || focus.outline === "none" || focus.width < 1 || focus.color === "rgba(0, 0, 0, 0)") throw new Error(`${key} has no visible selected-radio focus: ${JSON.stringify(focus)}`);
+  }
+  await waitForDom(send, `document.querySelector(${JSON.stringify(OVERVIEW)})?.textContent.includes(${JSON.stringify(LONG_VALUES[1])})`, "About restored after keyboard selection");
+  await settleOverview(send);
+  const tabStops = await evaluate(send, `(() => {
+    const aside = document.querySelector(${JSON.stringify(OVERVIEW)});
+    const controls = Array.from(aside.querySelectorAll('button, a[href], input, textarea, [tabindex]'))
+      .filter(e => e.tabIndex >= 0 && !e.matches(':disabled') && e.getBoundingClientRect().width > 0 && getComputedStyle(e).visibility === 'visible');
+    if (controls.length < 2) throw new Error('Overview has fewer than two tab stops');
+    window.__overviewEnds = [controls[0], controls[controls.length - 1]];
+    controls[0].focus();
+    return controls.length;
+  })()`);
+  if (viewport.mobile) {
+    await pressKey(send, "Tab", "Tab", 9, 8);
+    await waitForDom(send, "document.activeElement === window.__overviewEnds[1]", "phone Shift+Tab wraps first to last");
+    await pressKey(send, "Tab", "Tab", 9);
+    await waitForDom(send, "document.activeElement === window.__overviewEnds[0]", "phone Tab wraps last to first");
+    for (const modifiers of [0, 8]) {
+      for (let i = 0; i < tabStops + 1; i++) {
+        await pressKey(send, "Tab", "Tab", 9, modifiers);
+        if (!await evaluate(send, `document.querySelector(${JSON.stringify(OVERVIEW)}).contains(document.activeElement)`)) throw new Error(`phone ${modifiers ? 'Shift+Tab' : 'Tab'} escaped Overview at step ${i}`);
+      }
+    }
+  } else {
+    await evaluate(send, "window.__overviewEnds[1].focus()");
+    let left = false;
+    for (let i = 0; i < tabStops + 2; i++) {
+      await pressKey(send, "Tab", "Tab", 9);
+      if (!await evaluate(send, `document.querySelector(${JSON.stringify(OVERVIEW)}).contains(document.activeElement)`)) {
+        left = true;
+        break;
+      }
+    }
+    if (!left) throw new Error("desktop Overview trapped Tab");
+  }
+
+  const dismiss = async (gesture, expectedPane, expectedButton = null) => {
+    if (gesture === "close") await clickControl(send, `${OVERVIEW} button[aria-label="Close Overview"]`);
+    else {
+      await evaluate(send, `document.querySelector(${JSON.stringify(OVERVIEW)}).querySelector('[role="radio"][aria-checked="true"]').focus()`);
+      await pressKey(send, "Escape", "Escape", 27);
+    }
+    await waitForDom(send, `!document.querySelector(${JSON.stringify(OVERVIEW)})`, `${gesture} completes Overview exit`);
+    await waitForDom(send, `(() => {
+      const active = document.activeElement;
+      const marker = active.querySelector?.('[data-session-actions-ref="local:p0-s0"]');
+      const style = getComputedStyle(active), box = active.getBoundingClientRect();
+      return active.isConnected && box.width > 0 && box.height > 0 && style.visibility === 'visible' &&
+        box.left >= -1 && box.right <= innerWidth + 1 && box.top >= -1 && box.bottom <= innerHeight + 1 &&
+        (!${viewport.mobile} || marker?.dataset.paneId === ${JSON.stringify(expectedPane)} ||
+          (${!!expectedButton} && active === window.__overviewExpectedButton)) &&
+        (${expectedButton ? `active === window.__overviewExpectedButton` : "true"});
+    })()`, `${gesture} returns to rendered original session control`);
+  };
+  // The rail opener is removed when a phone's Sessions drawer closes.
+  await dismiss("close", pane);
+  await chooseOverviewMenu(send, trigger(pane));
+  await clickControl(send, `${OVERVIEW} [role="radio"][aria-label="About"]`);
+  await evaluate(send, `void (window.__overviewExpectedButton = document.querySelector(${JSON.stringify(trigger(pane))}).closest('button'))`);
+  await dismiss("escape", pane, true);
+
+  const submitStatus = async (wrongFocusedPane = null) => {
+    const editor = '[data-pane-scaffold="session:local:p0-s0"] ~ [data-testid="pane-footer"] [role="textbox"][aria-label="Message"]';
+    await clickControl(send, editor);
+    await evaluate(send, `void (window.__overviewExpectedButton = document.querySelector(${JSON.stringify(editor)}))`);
+    if (wrongFocusedPane) {
+      await evaluate(send, `window.overviewPane('focus', ${JSON.stringify(wrongFocusedPane)})`);
+      await waitForDom(send, `window.overviewGuardState().focusedPaneId === ${JSON.stringify(wrongFocusedPane)} && document.activeElement === document.querySelector(${JSON.stringify(editor)})`, "other workspace pane focused with original composer active");
+    }
+    await send("Input.insertText", { text: "/status" });
+    await waitForDom(send, `document.querySelector(${JSON.stringify(editor)}).textContent.includes('/status')`, "real composer received status");
+    await pressKey(send, "Enter", "Enter", 13);
+    await pressKey(send, "Enter", "Enter", 13, 2);
+    await waitForDom(send, `window.overviewGuardState().overview.open && window.overviewGuardState().overview.tab === 'about' && window.overviewGuardState().overview.ref === 'local:p0-s0' && document.querySelector(${JSON.stringify(OVERVIEW)})?.textContent.includes(${JSON.stringify(LONG_VALUES[1])})`, "trusted status opens hydrated About for its own session");
+    await settleOverview(send);
+    const state = await evaluate(send, "window.overviewGuardState()");
+    if (state.panes.some(p => p.type === "sessionDetails") || state.calls.some(c => c.method === "turn/start" || c.method === "thread/resume")) throw new Error("status opened Details or requested a provider turn");
+  };
+  await submitStatus();
+  await dismiss("close", pane, true);
+  if (!viewport.mobile) {
+    const other = await evaluate(send, "window.overviewPane('other')");
+    await settleOverview(send);
+    // Keep the original composer DOM-focused while another real pane owns the
+    // workspace focus. The command must capture its own session, not that pane.
+    await submitStatus(other);
+    await dismiss("close", pane, true);
+    await evaluate(send, `window.overviewPane('close', ${JSON.stringify(other)})`);
+    const duplicate = await evaluate(send, "window.overviewPane('duplicate')");
+    await settleOverview(send);
+    for (const origin of [pane, duplicate]) {
+      await chooseOverviewMenu(send, trigger(origin));
+      await clickControl(send, `${OVERVIEW} [role="radio"][aria-label="About"]`);
+      await evaluate(send, `void (window.__overviewExpectedButton = document.querySelector(${JSON.stringify(trigger(origin))}).closest('button'))`);
+      await dismiss("escape", origin, true);
+    }
+    await chooseOverviewMenu(send, trigger(duplicate));
+    await clickControl(send, `${OVERVIEW} [role="radio"][aria-label="About"]`);
+    await evaluate(send, `window.overviewPane('close', ${JSON.stringify(duplicate)})`);
+    await settleOverview(send);
+    await evaluate(send, `void (window.__overviewExpectedButton = document.querySelector(${JSON.stringify(trigger(pane))}).closest('button'))`);
+    await dismiss("close", pane, true);
+  }
+  return { tabStops, status: true, phoneTrap: !!viewport.mobile, originalPane: pane };
+}
+
+async function overviewOnPage(cdpEndpoint, vitePort, viewport, theme) {
+  const page = await connectPage(cdpEndpoint);
+  const { send } = page;
+  try {
+    await evaluate(send, "localStorage.clear()");
+    await applyViewport(send, viewport);
+    await navigateTo(page, `http://127.0.0.1:${vitePort}/shellguard.html`, BOOT);
+    await evaluate(send, "window.settledShell");
+    await evaluate(send, `window.configureOverview(${JSON.stringify(theme)})`);
+    await settleOverview(send);
+    await openRailOverview(send);
+    const result = await measureOverview(send);
+    if (process.env.EVENER_SCRATCH_DIR) {
+      await evaluate(send, `(() => {
+        const aside = document.querySelector(${JSON.stringify(OVERVIEW)});
+        for (const element of aside.querySelectorAll('*')) {
+          if (['auto', 'scroll'].includes(getComputedStyle(element).overflowY)) element.scrollTop = 0;
+        }
+      })()`);
+      const screenshot = await send("Page.captureScreenshot", { format: "png" });
+      await writeFile(path.join(process.env.EVENER_SCRATCH_DIR, `overview-${viewport.width}-${theme}.png`), Buffer.from(screenshot.result.data, "base64"));
+    }
+    const failures = assertOverview(result, viewport, theme);
+    try {
+      result.keyboard = await trustedOverviewFlow(send, viewport);
+    } catch (error) {
+      failures.push(`trusted interaction: ${error.message}`);
+    }
+    return { result, failures };
+  } finally {
+    await clearViewportOverride(send);
+    page.close();
+  }
+}
+
 async function main() {
   let guard;
   try {
@@ -332,6 +711,18 @@ async function main() {
       ...assertMobileResult(mobile.sidebar),
       ...assertTapTargets(mobile.tap),
     ];
+    for (const viewport of OVERVIEW_VIEWPORTS) {
+      for (const theme of OVERVIEW_THEMES) {
+        const label = `Overview ${viewport.width}px ${theme} XL`;
+        try {
+          const overview = await overviewOnPage(cdpEndpoint, vitePort, viewport, theme);
+          failures.push(...overview.failures.map(failure => `${label}: ${failure}`));
+          console.log(`${label}: ${JSON.stringify(overview.result)}`);
+        } catch (error) {
+          failures.push(`${label}: ${error.message}`);
+        }
+      }
+    }
     if (failures.length === 0) {
       console.log(
         `shellguard ok: document ${result.document.scrollHeight}px in a ${result.viewport.height}px viewport, ` +

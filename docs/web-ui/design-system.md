@@ -77,6 +77,10 @@ losing the conversation that made the evidence relevant.
   until close. Return to a visible, connected opener, then a visible control for the
   intended session, preferring the originating pane. Desktop remains nonmodal. Existing
   standalone Details views and the `/tasks` pane toggle retain their behavior.
+- **Keep inspection readable at larger text sizes.** Desktop Overview stays 320px wide.
+  Its category strip wraps without shortening labels or counts at narrow widths and XL
+  text. About's model, session ID, branch and paths wrap as selectable text. Its body
+  scrolls vertically while the page stays fixed. Phone controls retain the tap floor.
 - **Preserve useful saved placements.** Workspace restore omits retired Activity
   panes through its unknown-pane handling. Registered panes keep their bodies and
   reachable tabs; valid session routes win before Welcome. Overview restores its

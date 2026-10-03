@@ -159,9 +159,11 @@ export const activitySidebarStore = createStore<ActivitySidebarState>()((set, ge
       update({ open: true, tab: tab ?? get().tab });
     },
     openFor: (ref, tab, opener) => {
-      const pane = workspaceStore
-        .getState()
-        .panes.find((candidate) => candidate.type === "session" && refParam(candidate.params) === ref);
+      const workspace = workspaceStore.getState();
+      const panes = workspace.panes.filter(
+        (candidate) => candidate.type === "session" && refParam(candidate.params) === ref,
+      );
+      const pane = panes.find((candidate) => candidate.id === workspace.focusedPaneId) ?? panes[0];
       if (pane) workspaceStore.getState().focusPane(pane.id);
       else get().retarget(ref);
       get().openWith(tab, opener);

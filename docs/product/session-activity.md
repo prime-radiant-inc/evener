@@ -296,8 +296,11 @@ The composer names its receiving conversation even when a child or output pane
 has focus. Job rows and output tabs use the job description when present, and
 output details retain the command and exit status. Each output pane publishes
 its already loaded title through the [pane chrome store](../../cmd/evener-hub/frontend/src/shell/chromeStore.ts);
-tab naming adds no metadata request. Closing Activity from within the sidebar
-returns keyboard focus to its opener or the matching footer control.
+tab naming adds no metadata request. Closing Overview returns keyboard focus to
+its visible, connected opener or a visible session-actions control for the intended
+session, preferring the originating pane. Existing footer categories retain their
+owning-pane fallback. Same-session pane menus carry their explicit owning pane
+identity, so opening Overview preserves that instance.
 
 The [activity sidebar view store](../../cmd/evener-hub/frontend/src/shell/activitybar/activitySidebarStore.ts)
 retains open/category choices and a semantic row anchor per public session ref

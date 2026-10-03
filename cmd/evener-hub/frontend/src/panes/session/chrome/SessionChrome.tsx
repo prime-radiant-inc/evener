@@ -47,7 +47,7 @@ import { isConfirmedCrashedSession } from "../../../shell/rail/sessionKind";
 import { navigate, paneToURL, refParam } from "../../../shell/routing";
 import { SessionMenu, type SessionMenuProps, type SessionMenuTurnVerbs } from "../../../shell/sessionMenu/SessionMenu";
 import { useIsMobile } from "../../../shell/useIsMobile";
-import { useWorkspaceStore } from "../../../shell/workspace";
+import { useWorkspaceStore, workspaceStore } from "../../../shell/workspace";
 import { selectLocation } from "../../../stores/navigation/selectors";
 import { buildShutdownConvergence } from "../../../stores/navigation/shutdownConvergence";
 import { navigationStore, useNavigationStore } from "../../../stores/navigation/store";
@@ -68,6 +68,7 @@ export type SessionChromePlacement = "footer" | "composer" | "menu";
 
 export interface SessionChromeProps {
   ref: string;
+  paneId?: string;
   placement?: SessionChromePlacement;
   /** Live session mounts opt into the hidden panel's initial activity discovery. */
   discoverActivity?: boolean;
@@ -104,6 +105,7 @@ const EMPTY_FRAME_TIMES: number[] = [];
 
 export function SessionChrome({
   ref: sessionRef,
+  paneId: owningPaneId,
   placement = "footer",
   discoverActivity = false,
   discoveryOnly = false,
@@ -112,7 +114,8 @@ export function SessionChrome({
   const client = useClient();
   const model = useThreadsStore((s) => s.threads.get(sessionRef));
   const paneId = useWorkspaceStore(
-    (state) => state.panes.find((pane) => pane.type === "session" && refParam(pane.params) === sessionRef)?.id,
+    (state) =>
+      owningPaneId ?? state.panes.find((pane) => pane.type === "session" && refParam(pane.params) === sessionRef)?.id,
   );
   const isMobile = useIsMobile();
   const [verbosityOpen, setVerbosityOpen] = useState(false);
@@ -206,10 +209,10 @@ export function SessionChrome({
   const openOverview = () => {
     // Mobile and desktop share the activity sidebar. Desktop toggles only when
     // the sidebar already shows THIS session; opening on another session
-    // re-scopes it here instead of closing it under the user. Opening it also
-    // retires a leftover sessionActivity pane for this session.
+    // re-scopes it here instead of closing it under the user.
     if (!isMobile && activitySidebarOpenFor(sessionRef)) activitySidebarStore.getState().close();
     else {
+      if (paneId) workspaceStore.getState().focusPane(paneId);
       activitySidebarStore.getState().openFor(sessionRef);
     }
   };

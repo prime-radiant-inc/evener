@@ -25,11 +25,14 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { navigationInvalidatedNotification } from "@evener/appwire-client/testing/notifications";
 import { createRoot } from "react-dom/client";
 import { RepoLocation } from "../panes/session/composer/RepoLocation";
+import { activitySidebarStore } from "../shell/activitybar/activitySidebarStore";
 import { ClientProvider } from "../shell/clientContext";
 import railStyles from "../shell/rail/Rail.module.css";
 import { RailRenderObserver } from "../shell/rail/railRenderObserver";
 import { StatusBar } from "../shell/statusbar/StatusBar";
-import { activitySummary, activityThread } from "../stores/sessionActivityTestUtils";
+import { workspaceStore } from "../shell/workspace";
+import { prefsStore, type ThemePref } from "../stores/prefs";
+import { activityContext, activityDetailsThread, activitySummary } from "../stores/sessionActivityTestUtils";
 import "../styles/tokens.css";
 import "../styles/global.css";
 import { PaneScaffold } from "../widgets/panescaffold";
@@ -382,7 +385,13 @@ async function boot(): Promise<void> {
   const fake = new FakeClient("ready");
   fake.on("evener/navigation/read", navigationRead);
   fake.on("thread/read", ({ ref }) => {
-    const response = activityThread(ref);
+    const response = activityDetailsThread(ref, {
+      id: "sessionidentifier".repeat(12),
+      modelProvider: `anthropic/${"modelidentifier".repeat(12)}`,
+      cwd: `/work/${"directorysegment".repeat(12)}/session`,
+      projectPath: "/work",
+      gitInfo: { branch: `feature/${"branchidentifier".repeat(12)}` },
+    });
     return { ...response, thread: { ...response.thread, tasks: { total: 100, done: 100 } } };
   });
   fake.on("thread/unsubscribe", () => ({}));
@@ -392,6 +401,24 @@ async function boot(): Promise<void> {
     delegates: { ...CROWDED_ACTIVITY_COUNTS },
     jobs: { ...CROWDED_ACTIVITY_COUNTS },
     watches: { ...CROWDED_ACTIVITY_COUNTS },
+  }));
+  fake.on("evener/thread/delegates/list", ({ ref, scope }) => ({
+    context: activityContext(ref),
+    scope: scope ?? "session",
+    delegates: [],
+    page: { complete: true, issues: [] },
+  }));
+  fake.on("evener/thread/jobs/list", ({ ref, scope }) => ({
+    context: activityContext(ref),
+    scope: scope ?? "session",
+    jobs: [],
+    page: { complete: true, issues: [] },
+  }));
+  fake.on("evener/thread/watches/list", ({ ref, scope }) => ({
+    context: activityContext(ref),
+    scope: scope ?? "session",
+    watches: [],
+    page: { complete: true, issues: [] },
   }));
   fake.on("evener/git/head", () => ({
     head: "this-is-a-long-feature-branch",
@@ -734,6 +761,9 @@ function measureTapTargets() {
 
 const target = window as typeof window & {
   settledShell: Promise<unknown>;
+  configureOverview: (theme: ThemePref) => void;
+  overviewGuardState: () => unknown;
+  overviewPane: (action: "duplicate" | "other" | "focus" | "close", id?: string) => string | undefined;
   measureShell: typeof measureShell;
   measureMobileSidebar: typeof measureMobileSidebar;
   measureTapTargets: typeof measureTapTargets;
@@ -745,6 +775,29 @@ const target = window as typeof window & {
     visibleRowIDs: string[];
     document: { scrollHeight: number; viewportHeight: number };
   };
+};
+target.configureOverview = (theme) => {
+  prefsStore.getState().setFontSize("xl");
+  prefsStore.getState().setTheme(theme);
+};
+target.overviewGuardState = () => ({
+  panes: workspaceStore.getState().panes,
+  focusedPaneId: workspaceStore.getState().focusedPaneId,
+  overview: {
+    open: activitySidebarStore.getState().open,
+    tab: activitySidebarStore.getState().tab,
+    ref: activitySidebarStore.getState().ref,
+  },
+  calls: shellClient?.calls.map(({ method, params }) => ({ method, params })) ?? [],
+});
+target.overviewPane = (action, id) => {
+  const workspace = workspaceStore.getState();
+  if (action === "duplicate") {
+    return workspace.openPane("session", { ref: "local:p0-s0", browserInstance: "second" });
+  }
+  if (action === "other") return workspace.openPane("session", { ref: "local:p0-s1" });
+  if (action === "focus" && id) workspace.focusPane(id);
+  if (action === "close" && id) workspace.closePane(id);
 };
 target.measureShell = measureShell;
 target.measureMobileSidebar = measureMobileSidebar;

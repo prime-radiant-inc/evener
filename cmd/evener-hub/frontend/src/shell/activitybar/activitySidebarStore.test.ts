@@ -92,6 +92,24 @@ test("focus return falls back to a remaining activity chip when the opener pane 
   }
 });
 
+test("openFor preserves the focused pane when the session has multiple instances", () => {
+  workspaceStore.setState({
+    panes: [
+      { id: "first-instance", type: "session", params: { ref: "remote:owner" }, slot: "main" },
+      {
+        id: "focused-instance",
+        type: "session",
+        params: { ref: "remote:owner", instance: "second" },
+        slot: "secondary",
+      },
+    ],
+    focusedPaneId: "focused-instance",
+  });
+  activitySidebarStore.getState().openFor("remote:owner", "about");
+  expect(workspaceStore.getState().focusedPaneId).toBe("focused-instance");
+  expect(activitySidebarStore.getState()).toMatchObject({ open: true, ref: "remote:owner", tab: "about" });
+});
+
 function sessionActions(parent: HTMLElement, ref: string, paneId: string): HTMLButtonElement {
   const button = parent.appendChild(document.createElement("button"));
   const marker = button.appendChild(document.createElement("span"));
