@@ -1,8 +1,9 @@
 # Memory wiki v1
 
-Status: proposed specification for Jesse's review. No product implementation or
-live memory eval has run. This document supersedes the earlier research proposal
-where they differ.
+Status: approved specification. Jesse approved the implementation plan and the
+request/time-limit amendment on 2026-10-03. No product implementation or live
+memory eval has run at this approval boundary. This document supersedes the
+earlier research proposal where they differ.
 
 ## Outcome and agreed decisions
 
@@ -478,17 +479,28 @@ Use six small episode families:
 
 Pair each episode with wiki disabled and existing transcript recall enabled.
 Keep model, effort, task, prior task history, non-memory tools, and per-session
-round/token budget equal. Reset personal/project memory and fixture workspaces
+round/request/time budgets equal. Reset personal/project memory and fixture workspaces
 between pairs and repetitions. Learning, correction, and gardening are part of
 an episode's measured cost. Capture/maintenance-specific structural checks are
 not task-success penalties for the no-wiki arm.
 
 Run one smoke pair per family, then reach three pairs per family if the harness
-and provider work. Set hard per-session rounds, output-token limits, an episode
-ceiling, and an overall run bound in the implementation plan before live calls.
-Run sequentially initially; stop and report infrastructure failures rather than
-spending retries without a bound. Three pairs are descriptive smoke evidence,
-not statistical proof or a provider-general result.
+and provider work. Jesse approved request-count and timeout limits in place of a
+hard output-token cap: the configured Sol 6.1 Codex route suppresses that field.
+Keep the configured model and record observed output usage; there is no hard
+token or monetary ceiling, and cancellation cannot guarantee billing stops.
+
+The six smoke pairs admit at most 308 model requests within 40 minutes. Two more
+repetitions admit at most 616 further requests within 80 minutes. The combined
+qualification ceiling is 924 requests and 120 minutes. Each arm episode admits
+at most 48 requests within 6 minutes; each stage has its explicit plan round and
+request ceiling within 3 minutes. Apply these ceilings to both logical model
+calls and outbound completion HTTP attempts, including roots, delegates,
+auxiliaries and replays. Do not count the two counters twice as model usage.
+Resolve the configured route and verify admission coverage before paid calls.
+Run sequentially; stop and report infrastructure failures rather than spending
+unbounded retries. Three pairs are descriptive smoke evidence, not statistical
+proof or a provider-general result.
 
 Keep held-out verifier data outside the agent's visible filesystem and context.
 Grade actual file contents, independently executed fixture tests, command/tool
@@ -557,8 +569,9 @@ not evidence that this Evener implementation works.
 
 ## Approval boundary
 
-This is the written design, not an implementation authorization. Review it with
-two independent Sol 6.1 reviewers under the installed PAR contract, resolve
-substantiated findings, and obtain Jesse's approval. Then write the implementation
-plan with red-green tasks, exact checks, live-run limits, and execution assignments.
-Jesse reviews that plan before product implementation begins.
+Jesse approved the written design and then approved the implementation plan with
+request/time limits replacing the unsupported hard output-token cap. Re-review
+this budget amendment with two independent Sol 6.1 reviewers under the installed
+PAR contract and resolve substantiated findings before product implementation.
+Execute the approved plan with Sol 6.1 implementers and reviewers. Scope changes
+still require Jesse's approval; plan approval does not authorize deployment.
