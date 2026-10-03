@@ -6,6 +6,7 @@ import type { ComponentType, ReactNode } from "react";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { WatchGlyph } from "../rail/RailRow";
 import type { ActivityScope, ActivityTab, ScopeCounts } from "../statusbar/statusScope";
+import { AboutTab } from "./AboutTab";
 import { AgentsTab } from "./AgentsTab";
 import styles from "./activitybar.module.css";
 import { JobsTab } from "./JobsTab";
@@ -30,7 +31,7 @@ export interface ActivityTabSpec {
   /** Category and shared fraction on separate lines within the tab. */
   tabLabel(counts: ScopeCounts): string;
   /** The kind shows in the bar only when there's something to say (tasks hide
-   * with no list); the sidebar's control always lists all four. */
+   * with no list); About has no chip. The sidebar lists every category. */
   chipVisible(counts: ScopeCounts): boolean;
   Body: ComponentType<ActivityTabBodyProps>;
 }
@@ -80,6 +81,16 @@ export const ACTIVITY_TABS: readonly ActivityTabSpec[] = [
     tabLabel: (c) => `Tasks\n${c.tasksDone}/${c.tasksTotal}`,
     chipVisible: (c) => c.tasksTotal > 0,
     Body: TasksTab,
+  },
+  {
+    id: "about",
+    glyph: null,
+    label: "About",
+    chipCount: () => "",
+    chipLabel: () => "About",
+    tabLabel: () => "About",
+    chipVisible: () => false,
+    Body: AboutTab,
   },
 ];
 

@@ -621,6 +621,7 @@ async function verifyShortSessionMenu(cdpEndpoint, url) {
         const box = menu.getBoundingClientRect();
         return {
           itemCount: menu.querySelectorAll('[role="menuitem"]').length,
+          itemLabels: [...menu.querySelectorAll('[role="menuitem"]')].map((item) => item.textContent.trim()),
           top: box.top,
           bottom: box.bottom,
           clientHeight: menu.clientHeight,
@@ -1339,7 +1340,12 @@ async function main() {
     if (shortMenu.viewportWidth !== 844 || shortMenu.viewportHeight !== 390) {
       shortMenuFailures.push(`realized viewport=${shortMenu.viewportWidth}x${shortMenu.viewportHeight}`);
     }
-    if (shortMenu.itemCount !== 7) shortMenuFailures.push(`items=${shortMenu.itemCount}, expected 7`);
+    const expectedMenuLabels = ["Overview", "Verbosity…", "Rename", "Pin this session…", "Archive", "Shut down"];
+    if (shortMenu.itemCount !== 6) shortMenuFailures.push(`items=${shortMenu.itemCount}, expected 6`);
+    const menuLabels = shortMenu.itemLabels.map((label) => label.replace(/^Overview · .+$/, "Overview"));
+    if (JSON.stringify(menuLabels) !== JSON.stringify(expectedMenuLabels)) {
+      shortMenuFailures.push(`labels=${JSON.stringify(shortMenu.itemLabels)}, expected ${JSON.stringify(expectedMenuLabels)}`);
+    }
     if (shortMenu.top < 8 - GEOMETRY_TOLERANCE || shortMenu.bottom > 390 - 8 + GEOMETRY_TOLERANCE) {
       shortMenuFailures.push(`bounds=${shortMenu.top}-${shortMenu.bottom}, expected within 8-382`);
     }

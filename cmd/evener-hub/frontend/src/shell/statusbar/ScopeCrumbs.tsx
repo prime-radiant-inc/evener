@@ -52,6 +52,7 @@ function ScopeCrumbLabel({
           type="button"
           className={CLASS.crumbBtn}
           title={title}
+          data-session-navigation-ref={crumb.ref}
           onClick={() => {
             if (onNavigate) {
               onNavigate(crumb.ref);

@@ -29,7 +29,6 @@ function onPageForType(type: string): OnPage {
   switch (type) {
     case "session":
     case "sessionTasks":
-    case "sessionActivity":
     case "sessionDetails":
       return "session";
     case "spawn":

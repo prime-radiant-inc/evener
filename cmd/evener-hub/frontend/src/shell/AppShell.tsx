@@ -234,7 +234,6 @@ function routePlacementIsApplied(
     });
   const focusedCompanion =
     focusedPane?.type === "sessionTasks" ||
-    focusedPane?.type === "sessionActivity" ||
     focusedPane?.type === "sessionDetails" ||
     transcriptMatchesRoute(focusedPane) ||
     focusedCascadeConversation;
@@ -915,6 +914,7 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
         placedPathnameRef.current === pathname &&
         !routePlacementInProgressRef.current;
       if (routePlacementIsApplied(pathname, location, locationTerminal, locationGone, allowFocusedCompanion)) {
+        pendingSessionRef.current = null;
         placedPathnameRef.current = pathname;
         return;
       }

@@ -5,6 +5,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { MotionProvider } from "../../motion";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { connectionStore } from "../../stores/connection";
+import { sessionActivitySnapshot } from "../../stores/sessionActivity";
 import {
   activityClient,
   activityContext,
@@ -12,15 +13,19 @@ import {
   activityJob,
   activityWatch,
 } from "../../stores/sessionActivityTestUtils";
+import { resetThreadsStoreForTests } from "../../stores/threads";
 import { resetDisclosureStoreForTests, setDisclosureOpen } from "../../widgets/disclosure/disclosureStore";
+import { requireClass } from "../../widgets/internal/requireClass";
 import { installFocusedScope } from "../statusbar/scopeTestUtils";
 import { resetWorkspaceStoreForTests } from "../workspace";
 import { ActivitySidebar } from "./ActivitySidebar";
+import styles from "./activitybar.module.css";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "./activitySidebarStore";
 
 const ref = "remote:owner";
 const ROW_HEIGHT = 48;
 const VIEW_HEIGHT = 100;
+const BODY_CLASS = requireClass(styles.body, "activitybar.module.css", "body");
 const jobs = Array.from({ length: 30 }, (_, index) =>
   activityJob({ jobId: `job-${index}`, description: `History ${index}` }),
 );
@@ -29,7 +34,7 @@ if (!target) throw new Error("fixture target missing");
 const anchor = { id: activityNodeID({ ...target, kind: "shell" }), offset: -12 };
 
 function viewport(): HTMLElement {
-  const body = screen.getByTestId("activity-sidebar").lastElementChild;
+  const body = screen.getByTestId("activity-sidebar").getElementsByClassName(BODY_CLASS).item(0);
   if (!(body instanceof HTMLElement)) throw new Error("activity body missing");
   return body;
 }
@@ -43,7 +48,7 @@ function rows(body: HTMLElement) {
 function installGeometry() {
   const nativeRect = HTMLElement.prototype.getBoundingClientRect;
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
-    const body = this.closest('[data-testid="activity-sidebar"]')?.lastElementChild;
+    const body = this.closest('[data-testid="activity-sidebar"]')?.getElementsByClassName(BODY_CLASS).item(0);
     if (!(body instanceof HTMLElement)) return nativeRect.call(this);
     if (this === body) return new DOMRect(0, 0, 320, VIEW_HEIGHT);
     const index = rows(body).indexOf(this as HTMLButtonElement);
@@ -101,6 +106,7 @@ function resetLive() {
   resetWorkspaceStoreForTests();
   resetActivitySidebarStoreForTests({ preserveStorage: true });
   resetDisclosureStoreForTests();
+  resetThreadsStoreForTests();
   connectionStore.setState({ client: null, state: "idle" });
   Visibility.observers = [];
 }
@@ -174,6 +180,80 @@ test("a real scroll survives reload and restores its semantic row through fresh 
     { ref, scope: "session", cursor: "20" },
   ]);
 });
+
+test.each(["refresh", "reconnect"] as const)(
+  "About round trip preserves a later-page job anchor and expanded history through %s",
+  async (recovery) => {
+    const client = activityClient();
+    let revision = 0;
+    client.on("evener/thread/jobs/list", ({ cursor }) => {
+      const offset = cursor ? Number(cursor) : 0;
+      return {
+        context: activityContext(),
+        scope: "session",
+        jobs: jobs.slice(offset, offset + 10).map((job) => ({
+          ...job,
+          terminal: true,
+          outcome: "success",
+          status: "completed",
+          description: `${job.description} revision ${revision}`,
+        })),
+        page: { complete: offset === 20, issues: [], ...(offset < 20 ? { nextCursor: String(offset + 10) } : {}) },
+      };
+    });
+    connectionStore.getState().connect(client);
+    installFocusedScope(ref);
+    activitySidebarStore.getState().openWith("jobs");
+    mount();
+    fireEvent.click(await screen.findByText("10 completed jobs"));
+    await act(async () => Visibility.latest().emit(true));
+    await screen.findByRole("button", { name: /History 19 revision 0/ });
+    await act(async () => Visibility.latest().emit(true));
+    await screen.findByRole("button", { name: /History 22 revision 0/ });
+    viewport().scrollTop = 22 * ROW_HEIGHT + 12;
+    fireEvent.scroll(viewport());
+    const saved = activitySidebarStore.getState().views.get(ref)?.categories.jobs?.anchor;
+    expect(saved).toEqual(anchor);
+    expect(client.calls.filter((call) => call.method === "evener/thread/jobs/list").map((call) => call.params)).toEqual(
+      [
+        { ref, scope: "session" },
+        { ref, scope: "session", cursor: "10" },
+        { ref, scope: "session", cursor: "20" },
+      ],
+    );
+
+    fireEvent.click(screen.getByRole("radio", { name: "About" }));
+    await screen.findByText("owner");
+    fireEvent.click(screen.getByRole("radio", { name: /Jobs/ }));
+    const restored = await screen.findByRole("button", { name: /History 22 revision 0/ });
+    await waitFor(() => {
+      expect(client.calls.filter((call) => call.method === "evener/thread/jobs/list")).toHaveLength(6);
+      expect(sessionActivitySnapshot(client, ref, "session")?.jobs.loading).toBe(false);
+    });
+    expect(restored.getBoundingClientRect().top).toBe(-12);
+    expect(screen.getByText("30 completed jobs").closest("details")?.open).toBe(true);
+    expect(activitySidebarStore.getState().views.get(ref)?.categories.jobs?.anchor).toEqual(saved);
+
+    revision = 1;
+    act(() => {
+      if (recovery === "refresh")
+        client.emitNotification({
+          method: "evener/thread/activity/changed",
+          params: { ref, threadId: "owner", sessionId: "owner", resources: ["jobs"] },
+        });
+      else {
+        client.emitStateChange("reconnecting");
+        client.emitReady();
+      }
+    });
+    const fresh = await screen.findByRole("button", { name: /History 22 revision 1/ });
+    await waitFor(() => expect(sessionActivitySnapshot(client, ref, "session")?.jobs.loading).toBe(false));
+    expect(fresh.getBoundingClientRect().top).toBe(-12);
+    expect(screen.getByText("30 completed jobs").closest("details")?.open).toBe(true);
+    expect(activitySidebarStore.getState().views.get(ref)?.categories.jobs?.anchor).toEqual(saved);
+    expect(client.calls.filter((call) => call.method === "evener/thread/jobs/list")).toHaveLength(9);
+  },
+);
 
 test("reload retains a clamped anchor until existing page demand supplies its trailing extent", async () => {
   prepareRetainedAnchor();
@@ -339,7 +419,7 @@ test("reopening during sidebar exit resumes the same viewport and its pending an
   const original = viewport();
   const boundary = Visibility.latest();
   vi.useFakeTimers();
-  fireEvent.click(screen.getByRole("button", { name: "Close the activity sidebar" }));
+  fireEvent.click(screen.getByRole("button", { name: "Close Overview" }));
   // Real AnimatePresence keeps its one exiting aside mounted until motion ends.
   expect(original.isConnected).toBe(true);
   act(() => boundary.emit(true));
@@ -372,7 +452,7 @@ test.each(["tab", "scope", "completed exit"])(
     const obsoleteBody = viewport();
     const obsoleteBoundary = Visibility.latest();
     if (replacement !== "completed exit") vi.useFakeTimers();
-    fireEvent.click(screen.getByRole("button", { name: "Close the activity sidebar" }));
+    fireEvent.click(screen.getByRole("button", { name: "Close Overview" }));
     expect(obsoleteBody.isConnected).toBe(true);
     if (replacement === "tab") {
       act(() => activitySidebarStore.getState().openWith("watches"));
@@ -406,7 +486,7 @@ test.each(["tab", "scope", "completed exit"])(
 test("a scroll inside expanded watch details retains that watch instead of the next summary", async () => {
   vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockReturnValue(1400);
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
-    const body = this.closest('[data-testid="activity-sidebar"]')?.lastElementChild;
+    const body = this.closest('[data-testid="activity-sidebar"]')?.getElementsByClassName(BODY_CLASS).item(0);
     if (!(body instanceof HTMLElement)) return new DOMRect();
     if (this === body) return new DOMRect(0, 0, 320, VIEW_HEIGHT);
     const details = this.closest("details") ?? this.querySelector("details");
