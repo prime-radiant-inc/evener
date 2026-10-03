@@ -46,7 +46,9 @@ export function openTopLevelSession(ref: string): void {
     // The duplicate contract of replacePrimary's matching arm, with the
     // cascade owning the route's main slot: a plain session pane for the same
     // ref elsewhere in the workspace is the duplicate, and closes instead of
-    // the cascade.
+    // the cascade. Closing a focused duplicate nulls focus (closePane's own
+    // rule), but this branch never redirects focus, so a restored layout's
+    // saved focus survives the placement.
     for (const pane of workspace.panes) {
       if (pane.type === "session" && refParam(pane.params) === ref) workspace.closePane(pane.id);
     }
