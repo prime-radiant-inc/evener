@@ -155,17 +155,21 @@ test("starts concurrent guards on Vite-owned ports and reaps their listeners", a
   for (const guard of guards) assert.equal(existsSync(guard.profileDir), false);
 });
 
-test("aborts Vite startup and removes its owned profile", async () => {
+test("aborts Vite startup and removes its owned profile", async (context) => {
   const controller = new AbortController();
   // The profile lives under the short guard root (issue #1141), not the ambient
-  // TMPDIR, and a long prefix is trimmed to fit the socket budget -- so the
-  // directory is located by the stable leading marker rather than the full
-  // prefix.
-  const profileMarker = "browser-guard-abort-";
-  const profilePrefix = `${profileMarker}${randomUUID()}-`;
+  // TMPDIR. Keep the run's UUID first so trimming the descriptive suffix to
+  // fit the socket budget cannot turn discovery into a shared-prefix lookup.
+  const profileLabel = "browser-guard-abort-";
+  const profileMarker = `${randomUUID()}-`;
+  const profilePrefix = `${profileMarker}${profileLabel}`;
   const children = [];
   let profileDir;
-  const profileRoot = browserGuardProcess.chromeProfileRoot();
+  const foreignProfileDir = browserGuardProcess.createChromeProfileDir(`${profileLabel}!foreign-`);
+  context.after(() => rmSync(foreignProfileDir, { recursive: true, force: true }));
+  const foreignSentinel = path.join(foreignProfileDir, "foreign-owner");
+  writeFileSync(foreignSentinel, "fixture-owned foreign profile");
+  const profileRoot = path.dirname(foreignProfileDir);
   await assert.rejects(
     startBrowserGuard({
       frontend: process.cwd(),
@@ -173,9 +177,9 @@ test("aborts Vite startup and removes its owned profile", async () => {
       chromeBinary: "/fake/chrome",
       signal: controller.signal,
       spawnProcess(command, args, options) {
-        const entry = readdirSync(profileRoot).find((name) => name.startsWith(profileMarker));
-        assert.ok(entry, "startup must own a profile before launching its child");
-        profileDir = path.join(profileRoot, entry);
+        const entries = readdirSync(profileRoot).filter((name) => name.startsWith(profileMarker));
+        assert.equal(entries.length, 1, "startup must own exactly one profile for this run before launching its child");
+        profileDir = path.join(profileRoot, entries[0]);
         const child = new FakeChild(command, args, options);
         child.kill = (signal) => {
           child.signals.push(signal);
@@ -193,6 +197,8 @@ test("aborts Vite startup and removes its owned profile", async () => {
     children.map((child) => child.signals),
     [["SIGTERM"]],
   );
+  assert.equal(existsSync(foreignSentinel), true, "startup must preserve the foreign profile");
+  assert.notEqual(profileDir, foreignProfileDir, "discovery must identify the current run's profile");
   assert.equal(existsSync(profileDir), false);
 });
 
@@ -1262,12 +1268,16 @@ for (const scenario of [
       return true;
     };
     const controller = new AbortController();
-    // Located by the stable leading marker under the short guard root, since a
-    // long prefix is trimmed and the profile no longer lives under TMPDIR
-    // (issue #1141).
-    const profileMarker = "browser-guard-failure-";
-    const profilePrefix = `${profileMarker}${randomUUID()}-`;
-    const profileRoot = browserGuardProcess.chromeProfileRoot();
+    // The run's UUID remains the leading marker when the descriptive suffix
+    // is trimmed to fit the short-root socket budget (issue #1141).
+    const profileLabel = "browser-guard-failure-";
+    const profileMarker = `${randomUUID()}-`;
+    const profilePrefix = `${profileMarker}${profileLabel}`;
+    const foreignProfileDir = browserGuardProcess.createChromeProfileDir(`${profileLabel}!foreign-`);
+    context.after(() => rmSync(foreignProfileDir, { recursive: true, force: true }));
+    const foreignSentinel = path.join(foreignProfileDir, "foreign-owner");
+    writeFileSync(foreignSentinel, "fixture-owned foreign profile");
+    const profileRoot = path.dirname(foreignProfileDir);
     const stderr = "fixture-vite-startup-stderr";
     let profileDir;
     let spawnCount = 0;
@@ -1282,9 +1292,9 @@ for (const scenario of [
       signal: controller.signal,
       spawnProcess() {
         spawnCount++;
-        const entry = readdirSync(profileRoot).find((name) => name.startsWith(profileMarker));
-        assert.ok(entry, "startup must create its owned profile");
-        profileDir = path.join(profileRoot, entry);
+        const entries = readdirSync(profileRoot).filter((name) => name.startsWith(profileMarker));
+        assert.equal(entries.length, 1, "startup must create exactly one profile for this run");
+        profileDir = path.join(profileRoot, entries[0]);
         return vite;
       },
     });
@@ -1306,6 +1316,8 @@ for (const scenario of [
     });
     assert.equal(spawnCount, 1, "Chrome must not start after Vite startup failed");
     if (scenario.reason !== null) assert.deepEqual(vite.signals, ["SIGTERM"]);
+    assert.equal(existsSync(foreignSentinel), true, "startup must preserve the foreign profile");
+    assert.notEqual(profileDir, foreignProfileDir, "discovery must identify the current run's profile");
     assert.equal(existsSync(profileDir), false, "startup must remove its owned profile before rejecting");
   });
 }
