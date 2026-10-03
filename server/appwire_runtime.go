@@ -2815,9 +2815,8 @@ func (s *Server) appCapabilitiesLocked(state string, processing bool) appwire.Th
 	active := status == appwire.ThreadStatusActive
 	closed := status == appwire.ThreadStatusClosed
 	// steerAvailable reads the retry-safe callback because that is the seam
-	// handleAppTurnSteer dispatches through; the legacy SetSteerFunc pair is
-	// wired alongside it and read nowhere else, so counting it advertised a
-	// steer the RPC would answer Unavailable ("steer not available").
+	// handleAppTurnSteer dispatches through. The compatibility setters have
+	// no effect on handlers or capabilities.
 	steerAvailable := s.retrySafeTurns.Steer != nil
 	clearAvailable := s.clearFunc != nil && !active && !closed && s.clearBlockedReasonLocked() == ""
 	return appwire.ThreadCapabilities{
@@ -2869,10 +2868,7 @@ func (s *Server) appCapabilitiesLocked(state string, processing bool) appwire.Th
 		// follow (#1375). It was the "active turn" gate of kata 111a.
 		//
 		// Queue reads the retry-safe callback for the same reason steerAvailable
-		// does: handleAppTurnQueue dispatches through retrySafeTurns.Queue, and
-		// the legacy SetQueueFunc pair is wired alongside it and read nowhere
-		// else. Counting the legacy pair advertised a queue the RPC would answer
-		// Unavailable ("queue not available").
+		// does: handleAppTurnQueue dispatches through retrySafeTurns.Queue.
 		Queue: s.retrySafeTurns.Queue != nil && !closed,
 		// Goal is available whenever the engine is wired and the session is
 		// open. It is intentionally NOT gated on !active: a goal may be set

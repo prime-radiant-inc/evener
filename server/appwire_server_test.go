@@ -42,7 +42,7 @@ func dialServerAppWire(t *testing.T, srv *Server) *appwire.Client {
 func TestServerAppWireRealWireReadUnsubscribeAliases(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
-	installProjectedMutationCallbacksForTest(srv)
+	installProjectedMutationCallbacksForTest(srv, RetrySafeTurnFunctions{})
 	client := dialServerAppWire(t, srv)
 	ctx := context.Background()
 	if _, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:th_1", Subscribe: true}); err != nil {
@@ -59,7 +59,7 @@ func TestServerAppWireRealWireReadUnsubscribeAliases(t *testing.T) {
 func TestServerAppWireTurnStartQueuesInput(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
-	installProjectedMutationCallbacksForTest(srv)
+	installProjectedMutationCallbacksForTest(srv, RetrySafeTurnFunctions{})
 
 	conn := srv.AppServer().NewConnection("test")
 	init := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
@@ -172,9 +172,12 @@ func TestServerAppWireThreadReadExposesReservedActiveTurnIDAlongsideSeededTurns(
 	// Production restores before it bridges: SessionStart carries the persisted
 	// entry count so live ids start above the seeded ones.
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventSessionStart, SessionID: "th_1", Data: events.SessionStartData{Restored: true, TranscriptEntries: 2}})
-	srv.SetSteerFunc(func(string) error { ; return nil })
 	srv.SetCancelFunc(func() {})
-	installProjectedMutationCallbacksForTest(srv)
+	installProjectedMutationCallbacksForTest(srv, RetrySafeTurnFunctions{
+		Steer: func(appwire.TurnSteerParams) (appwire.TurnSteerResponse, error) {
+			return appwire.TurnSteerResponse{}, nil
+		},
+	})
 
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
@@ -291,7 +294,7 @@ func TestServerAppWireGoalSetWithoutGoalFuncIsUnavailable(t *testing.T) {
 func TestServerAppWireTurnStartAcceptsCodexInput(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
-	installProjectedMutationCallbacksForTest(srv)
+	installProjectedMutationCallbacksForTest(srv, RetrySafeTurnFunctions{})
 
 	conn := srv.AppServer().NewConnection("test")
 	init := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
@@ -493,12 +496,12 @@ func TestServerAppWireTurnSteerPreservesImages(t *testing.T) {
 	srv.SetAppIdentity("local", "th_1")
 	var gotText string
 	var gotImages []ImageAttachment
-	srv.SetSteerWithImagesFunc(func(text string, images []ImageAttachment) error {
-		gotText = text
-		gotImages = append([]ImageAttachment(nil), images...)
-		return nil
+	installProjectedMutationCallbacksForTest(srv, RetrySafeTurnFunctions{
+		Steer: func(params appwire.TurnSteerParams) (appwire.TurnSteerResponse, error) {
+			gotText, gotImages = inputFromItems("", params.Input)
+			return appwire.TurnSteerResponse{}, nil
+		},
 	})
-	installProjectedMutationCallbacksForTest(srv)
 
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
@@ -526,15 +529,20 @@ func TestServerAppWireTurnSteerPreservesImages(t *testing.T) {
 	}
 }
 
-func TestServerAppWireTurnSteerRejectsImagesWithoutImageHook(t *testing.T) {
+func TestServerAppWireTurnSteerPreservesAuthorityImageRejection(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
 	var steered []string
-	srv.SetSteerFunc(func(text string) error {
-		steered = append(steered, text)
-		return nil
+	installProjectedMutationCallbacksForTest(srv, RetrySafeTurnFunctions{
+		Steer: func(params appwire.TurnSteerParams) (appwire.TurnSteerResponse, error) {
+			text, images := inputFromItems("", params.Input)
+			if len(images) > 0 {
+				return appwire.TurnSteerResponse{}, appwire.Unavailable("steer with images not available")
+			}
+			steered = append(steered, text)
+			return appwire.TurnSteerResponse{}, nil
+		},
 	})
-	installProjectedMutationCallbacksForTest(srv)
 
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
@@ -567,7 +575,7 @@ func TestServerAppWireTurnInterruptCancelsTheRunningTurn(t *testing.T) {
 	srv.SetAppIdentity("local", "th_1")
 	cancelled := 0
 	srv.SetCancelFunc(func() { cancelled++ })
-	installProjectedMutationCallbacksForTest(srv)
+	installProjectedMutationCallbacksForTest(srv, RetrySafeTurnFunctions{})
 
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
@@ -631,7 +639,7 @@ func TestServerAppWireTurnStartRejectsClosedSession(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
 	srv.SetState("closed")
-	installProjectedMutationCallbacksForTest(srv)
+	installProjectedMutationCallbacksForTest(srv, RetrySafeTurnFunctions{})
 
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
@@ -2085,7 +2093,7 @@ func TestServerAppWireQueueCapabilityAdvertisesHarnessSupport(t *testing.T) {
 }
 
 // TestServerAppWireTurnQueueAcceptsMidTurnMessage verifies the
-// turn/queue handler dispatches text to the registered QueueFunc when a
+// turn/queue handler dispatches text to the retry-safe queue callback when a
 // turn is in flight.
 func TestServerAppWireTurnQueueAcceptsMidTurnMessage(t *testing.T) {
 	srv := NewServer(ServerConfig{})
@@ -2093,11 +2101,13 @@ func TestServerAppWireTurnQueueAcceptsMidTurnMessage(t *testing.T) {
 	srv.SetProcessing(true)
 	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "active"})
 	var got []string
-	srv.SetQueueFunc(func(text string) error {
-		got = append(got, text)
-		return nil
+	installProjectedMutationCallbacksForTest(srv, RetrySafeTurnFunctions{
+		Queue: func(params appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
+			text, _ := inputFromItems("", params.Input)
+			got = append(got, text)
+			return appwire.TurnQueueResponse{}, nil
+		},
 	})
-	installProjectedMutationCallbacksForTest(srv)
 
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
@@ -2120,11 +2130,13 @@ func TestServerAppWireTurnQueueAcceptsReservedActiveTurn(t *testing.T) {
 	srv.appActiveTurnID = "turn_reserved"
 	srv.appReservedTurnID = "turn_reserved"
 	var got []string
-	srv.SetQueueFunc(func(text string) error {
-		got = append(got, text)
-		return nil
+	installProjectedMutationCallbacksForTest(srv, RetrySafeTurnFunctions{
+		Queue: func(params appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
+			text, _ := inputFromItems("", params.Input)
+			got = append(got, text)
+			return appwire.TurnQueueResponse{}, nil
+		},
 	})
-	installProjectedMutationCallbacksForTest(srv)
 
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
@@ -2146,7 +2158,7 @@ func TestServerAppWireTurnStartRejectsReservedActiveTurn(t *testing.T) {
 	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "idle"})
 	srv.appActiveTurnID = "turn_reserved"
 	srv.appReservedTurnID = "turn_reserved"
-	installProjectedMutationCallbacksForTest(srv)
+	installProjectedMutationCallbacksForTest(srv, RetrySafeTurnFunctions{})
 
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
@@ -2201,8 +2213,11 @@ func TestServerAppWireTurnQueueRejectsStaleProjectedActiveTurn(t *testing.T) {
 	srv.SetProcessing(false)
 	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "idle"})
 	srv.appActiveTurnID = "turn_stale"
-	srv.SetQueueFunc(func(string) error { return nil })
-	installProjectedMutationCallbacksForTest(srv)
+	installProjectedMutationCallbacksForTest(srv, RetrySafeTurnFunctions{
+		Queue: func(appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
+			return appwire.TurnQueueResponse{}, nil
+		},
+	})
 
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
@@ -2221,8 +2236,11 @@ func TestServerAppWireTurnQueueRejectsWhenIdle(t *testing.T) {
 	srv.SetAppIdentity("local", "th_1")
 	srv.SetProcessing(false)
 	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "idle"})
-	srv.SetQueueFunc(func(string) error { return nil })
-	installProjectedMutationCallbacksForTest(srv)
+	installProjectedMutationCallbacksForTest(srv, RetrySafeTurnFunctions{
+		Queue: func(appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
+			return appwire.TurnQueueResponse{}, nil
+		},
+	})
 
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
@@ -2244,9 +2262,12 @@ func TestServerAppWireTurnDrainAsSteerRequiresQueuedMessages(t *testing.T) {
 	srv.SetAppIdentity("local", "th_1")
 	srv.SetProcessing(true)
 	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "active"})
-	srv.SetDrainAsSteerFunc(func() error { return nil })
 	setEnvelope(srv, func(e *stubThreadEnvelopeSource) { e.queue.Depth = 0 })
-	installProjectedMutationCallbacksForTest(srv)
+	installProjectedMutationCallbacksForTest(srv, RetrySafeTurnFunctions{
+		Drain: func(appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
+			return appwire.TurnDrainAsSteerResponse{}, nil
+		},
+	})
 
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
@@ -2268,9 +2289,13 @@ func TestServerAppWireTurnDrainAsSteerRejectsReservedTurn(t *testing.T) {
 	srv.appActiveTurnID = "turn_reserved"
 	srv.appReservedTurnID = "turn_reserved"
 	called := 0
-	srv.SetDrainAsSteerFunc(func() error { called++; return nil })
 	setEnvelope(srv, func(e *stubThreadEnvelopeSource) { e.queue.Depth = 1 })
-	installProjectedMutationCallbacksForTest(srv)
+	installProjectedMutationCallbacksForTest(srv, RetrySafeTurnFunctions{
+		Drain: func(appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
+			called++
+			return appwire.TurnDrainAsSteerResponse{}, nil
+		},
+	})
 
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
@@ -2296,9 +2321,13 @@ func TestServerAppWireTurnDrainAsSteerDispatchesWhenQueued(t *testing.T) {
 	srv.SetProcessing(true)
 	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "active"})
 	called := 0
-	srv.SetDrainAsSteerFunc(func() error { called++; return nil })
 	setEnvelope(srv, func(e *stubThreadEnvelopeSource) { e.queue.Depth = 2 })
-	installProjectedMutationCallbacksForTest(srv)
+	installProjectedMutationCallbacksForTest(srv, RetrySafeTurnFunctions{
+		Drain: func(appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
+			called++
+			return appwire.TurnDrainAsSteerResponse{}, nil
+		},
+	})
 
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
@@ -2318,19 +2347,15 @@ func TestServerAppWireTurnDrainAsSteerDispatchesInputAtomically(t *testing.T) {
 	srv.SetAppIdentity("local", "th_1")
 	srv.SetProcessing(true)
 	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "active"})
-	srv.SetDrainAsSteerFunc(func() error {
-		t.Fatal("classic drain callback should not be used for input-bearing drain")
-		return nil
-	})
 	var gotText string
 	var gotImages []ImageAttachment
-	srv.SetDrainAsSteerWithInputFunc(func(text string, images []ImageAttachment) error {
-		gotText = text
-		gotImages = append([]ImageAttachment(nil), images...)
-		return nil
-	})
 	setEnvelope(srv, func(e *stubThreadEnvelopeSource) { e.queue.Depth = 0 })
-	installProjectedMutationCallbacksForTest(srv)
+	installProjectedMutationCallbacksForTest(srv, RetrySafeTurnFunctions{
+		Drain: func(params appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
+			gotText, gotImages = inputFromItems("", params.Input)
+			return appwire.TurnDrainAsSteerResponse{}, nil
+		},
+	})
 
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))

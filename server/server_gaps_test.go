@@ -17,36 +17,6 @@ func TestIncrementTurns(t *testing.T) {
 	}
 }
 
-// TestSetCancelQueuedFunc covers the setter.
-func TestSetCancelQueuedFunc(t *testing.T) {
-	s := NewServer(ServerConfig{})
-	called := false
-	fn := func(index int, id string) (string, int, error) {
-		called = true
-		if index != 2 || id != "entry" {
-			t.Fatalf("fn called with (%d, %q), want (2, entry)", index, id)
-		}
-		return "removed text", 3, nil
-	}
-	s.SetCancelQueuedFunc(fn)
-	s.mu.RLock()
-	got := s.cancelQueuedFunc
-	s.mu.RUnlock()
-	if got == nil {
-		t.Fatal("cancelQueuedFunc not set")
-	}
-	text, images, err := got(2, "entry")
-	if err != nil {
-		t.Fatalf("calling fn: %v", err)
-	}
-	if text != "removed text" || images != 3 {
-		t.Fatalf("fn returned (%q, %d), want (removed text, 3)", text, images)
-	}
-	if !called {
-		t.Fatal("fn was not called")
-	}
-}
-
 // TestSetProcessingTurn covers SetProcessingTurn.
 func TestSetProcessingTurn(t *testing.T) {
 	s := NewServer(ServerConfig{})
