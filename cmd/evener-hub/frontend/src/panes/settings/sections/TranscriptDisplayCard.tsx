@@ -49,6 +49,7 @@ const CATEGORY_LABELS: Readonly<Record<TranscriptDisplayCategory, string>> = {
   reasoning: "Reasoning",
   expandedDetails: "Expanded details",
   informationalNotices: "Informational notices",
+  daemonSteering: "System steers",
   roundTimings: "Round timings",
   tokenCounts: "Token counts",
   estimatedCost: "Estimated cost",

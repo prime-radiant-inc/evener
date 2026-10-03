@@ -25,8 +25,9 @@ import type { ThreadModel } from "@evener/appwire-client";
 import { configFingerprint, formatQuoteBlock, projectThread, resolveEffectiveConfig } from "@evener/appwire-client";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "zustand";
+import { conversationPaneLifetime } from "../../shell/paneLifetime";
 import type { PaneProps } from "../../shell/paneRegistry";
-import { navigate, paneToURL } from "../../shell/routing";
+import { navigate, paneToURL, refParam } from "../../shell/routing";
 import { ForceStopDialog } from "../../shell/sessionMenu/ForceStopDialog";
 import { StatusBar } from "../../shell/statusbar/StatusBar";
 import { useIsMobile } from "../../shell/useIsMobile";
@@ -67,6 +68,7 @@ import {
   transcriptSourceTurnRowIndexesForRows,
 } from "./transcript/TranscriptBody";
 import { SandboxEscalationRail } from "./transcript/tools/sandboxEscalation";
+import { retainedTranscriptReadView } from "./transcript/transcriptReadView";
 import { isDormantTranscript } from "./transcript/transcriptVisibility";
 import { useTranscript } from "./transcript/useTranscript";
 
@@ -228,6 +230,12 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
   const { ref } = params;
   const isMobile = useIsMobile();
   const blockedMutations = useBlockedMutationEntries(ref);
+  const pane = useStore(workspaceStore, (state) =>
+    state.panes.find((record) => record.id === paneId && record.type === "session" && refParam(record.params) === ref),
+  );
+  const lifetime = pane ? conversationPaneLifetime(pane) : null;
+  const composerSource = lifetime?.composer ?? null;
+  const readView = lifetime ? retainedTranscriptReadView(lifetime, ref, "session") : null;
 
   // One ensureThread(ref) claim on mount, one matching releaseThread(ref) on
   // unmount. AppShell mounts DockHost (and therefore this pane)
@@ -284,7 +292,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
   // a standing "load more" button and silent failure is not an option.
   const { model, loadOlder, loadingOlder, loadOlderReportingError, olderError, cancelOlder } = useTranscript(
     ref,
-    paneId,
+    readView,
   );
 
   // A DELETED ref never hydrates: the hub durably fences every request
@@ -395,6 +403,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
     ref,
     model,
     listRef: virtualListRef,
+    initialViewCapture: readView?.getCapture(),
     loadOlder,
     cancelOlder,
     viewKey: configFingerprint(displayConfig),
@@ -584,9 +593,10 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
         config={displayConfig}
         preparedView={preparedView}
         surface="live"
-        disclosureScope={`transcript:live:${ref}`}
+        disclosureScope={readView?.id ?? paneId}
         sessionRef={ref}
-        viewId={paneId}
+        viewId={readView?.id}
+        initialViewCapture={readView?.getCapture()}
         onAnnounceViewChange={(summary) => {
           announcementSequence.current += 1;
           setViewAnnouncement({ text: `Transcript detail: ${summary}`, key: announcementSequence.current });
@@ -686,7 +696,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
               <div role="alert">Message recovery has not completed. Sending will resume after recovery succeeds.</div>
             )}
             <PendingChips sessionRef={ref} />
-            <Composer ref={ref} focused={paneFocused} />
+            {composerSource && <Composer ref={ref} source={composerSource} focused={paneFocused} />}
           </div>
         </div>
       }

@@ -6,15 +6,17 @@ import { ActivityPageBoundary } from "./ActivityPageBoundary";
 import { activityNodeID, type SessionDelegate } from "@evener/appwire-client";
 import { useLayoutEffect } from "react";
 import { openTranscript } from "../../panes/session/transcript/openTranscript";
+import { enterAgentCascade } from "../../panes/zoom/actions";
 import { useSessionActivity } from "../../stores/sessionActivity";
 import { Button, Chevron } from "../../widgets";
 import { isDisclosureOpen, toggleDisclosure } from "../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../widgets/internal/requireClass";
-import type { ActivityScope } from "../statusbar/statusScope";
+import { isMobileViewport } from "../useIsMobile";
 import { useActivityScrollAnchor, useActivityScrollProgress, useActivityViewCurrent } from "./ActivityViewport";
 import styles from "./activitybar.module.css";
 import { AgentRow } from "./activityRows";
 import { activitySidebarStore, useActivitySidebarStore } from "./activitySidebarStore";
+import type { ActivityTabBodyProps } from "./activityTabs";
 
 const CLASS = {
   stack: requireClass(styles.stack, "activitybar.module.css", "stack"),
@@ -24,10 +26,11 @@ const CLASS = {
 
 const PAGE = 20;
 function drill(sub: SessionDelegate): void {
-  openTranscript(sub.childRef, sub.ownerRef);
+  if (isMobileViewport()) openTranscript(sub.childRef, sub.ownerRef);
+  else enterAgentCascade(sub);
 }
 
-export function AgentsTab({ scope }: { scope: ActivityScope }) {
+export function AgentsTab({ scope, onDrill = drill }: ActivityTabBodyProps) {
   const foldID = `${scope.leaf.ref}\0inactive-delegates`;
   const foldOpen = isDisclosureOpen(foldID, false);
   const shown = useActivitySidebarStore((state) => state.views.get(scope.leaf.ref)?.categories.agents?.shown ?? PAGE);
@@ -60,7 +63,7 @@ export function AgentsTab({ scope }: { scope: ActivityScope }) {
         <span className={CLASS.emptyNote}>No subagents at this level.</span>
       ) : null}
       {current.map((sub) => (
-        <AgentRow key={activityNodeID({ ...sub, kind: "delegate" })} sub={sub} onDrill={() => drill(sub)} />
+        <AgentRow key={activityNodeID({ ...sub, kind: "delegate" })} sub={sub} onDrill={() => onDrill(sub)} />
       ))}
       {inactive.length > 0 ? (
         <>
@@ -72,7 +75,7 @@ export function AgentsTab({ scope }: { scope: ActivityScope }) {
           {foldOpen ? (
             <>
               {inactive.slice(0, visible).map((sub) => (
-                <AgentRow key={activityNodeID({ ...sub, kind: "delegate" })} sub={sub} onDrill={() => drill(sub)} />
+                <AgentRow key={activityNodeID({ ...sub, kind: "delegate" })} sub={sub} onDrill={() => onDrill(sub)} />
               ))}
               {visible < inactive.length ? (
                 <Button

@@ -100,6 +100,12 @@ test("paneToURL returns null for a transcript pane (open-beside only, no deep li
   expect(paneToURL("transcript", { ref: "ref_abc123" })).toBeNull();
 });
 
+test("paneToURL returns null for a contextual agent cascade", () => {
+  expect(
+    paneToURL("sessionZoom", { ref: "child", source: { type: "session", params: { ref: "root" } }, edges: [] }),
+  ).toBeNull();
+});
+
 test("paneToURL formats settings with no section as /settings", () => {
   expect(paneToURL("settings", {})).toBe("/settings");
 });

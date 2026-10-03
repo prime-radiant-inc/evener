@@ -30,6 +30,7 @@ import type { InitializeResponse } from "@evener/appwire-client";
 import { APPWIRE_PROTOCOL_VERSION, AppwireClient } from "@evener/appwire-client";
 import Session from "../panes/session/Session";
 import { ClientProvider } from "../shell/clientContext";
+import { workspaceStore } from "../shell/workspace";
 import { connectionStore } from "../stores/connection";
 import { readMutationPersistence, subscribeMutationPersistence, threadsStore } from "../stores/threads";
 import {
@@ -137,6 +138,10 @@ rootEl.style.height = "100%";
 rootEl.style.display = "flex";
 rootEl.style.flexDirection = "column";
 
+workspaceStore.setState({
+  panes: [{ id: "retirement-harness", type: "session", params: { ref: REF }, slot: "main" }],
+  focusedPaneId: "retirement-harness",
+});
 createRoot(rootEl).render(
   <ClientProvider client={client}>
     <div id="retirement-session-pane" style={{ flex: "1 1 0", minHeight: 0, display: "flex", flexDirection: "column" }}>

@@ -21,6 +21,7 @@ import { modelLabel } from "../chrome/statusFormat";
 import { exchangeClosersFor } from "./exchangeClosers";
 import { exchangeOpenersFor } from "./exchangeOpeners";
 import { FlowOverlay } from "./flow/FlowOverlay";
+import type { CapturedTranscriptView } from "./flow/transcriptViewRegistry";
 import { useTranscriptViewRegistration } from "./flow/useTranscriptScroll";
 import { ProjectedIntentGroup, TurnBlock } from "./TurnBlock";
 import { foldTurnEntries } from "./toolRuns";
@@ -329,6 +330,7 @@ export interface TranscriptBodyProps {
   trailingRow?: { id: string; content: ReactNode };
   /** Stable pane identity for host-remount scroll state; optional for callers. */
   viewId?: string;
+  initialViewCapture?: CapturedTranscriptView;
   onAnnounceViewChange?: (summary: string) => void;
 }
 
@@ -347,6 +349,7 @@ export function TranscriptBody({
   trailingContent,
   trailingRow,
   viewId,
+  initialViewCapture,
   onAnnounceViewChange,
 }: TranscriptBodyProps) {
   const focusFallbackRef = useRef<HTMLElement>(null);
@@ -392,6 +395,7 @@ export function TranscriptBody({
     id: viewId ?? `${surface}:${sessionRef ?? disclosureScope}`,
     layout: displayViewport,
     viewKey: configFingerprint(config),
+    initialViewCapture,
     listRef,
     anchorEntries: preparedView?.anchorEntries ?? transcriptAnchorEntriesForRows(rows),
     // Include the synthetic trailing row: following-bottom view restores

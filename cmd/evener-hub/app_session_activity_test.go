@@ -6,12 +6,15 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
+	"primeradiant.com/evener/hubapi"
 	"primeradiant.com/evener/identifier"
 
 	"primeradiant.com/evener/appwire"
@@ -239,4 +242,175 @@ func TestSessionActivityPublicCanceledReconstructionResumes(t *testing.T) {
 		}
 		seen[job.JobID] = true
 	}
+}
+
+func TestSessionActivityArchivedNestedHierarchy(t *testing.T) {
+	t.Parallel()
+	testSessionActivityRelay(t, func(f activityRelayFixture) {
+		if _, err := f.cfg.Past.Rebuild(); err != nil {
+			t.Fatal(err)
+		}
+		for _, ref := range f.refs {
+			if _, err := f.activity.ArchiveSet(f.ctx, appwire.ArchiveParams{Kind: appwire.ArchiveTargetSession, ID: ref, Archived: true}); err != nil {
+				t.Fatalf("archive %s: %v", ref, err)
+			}
+		}
+		decisions, err := hubcore.NewArchiveStore(filepath.Join(f.cfg.HubStateRoot, "index.db")).Decisions()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, ref := range f.refs {
+			if !decisions[hubcore.ArchiveKey{Kind: "session", ID: strings.TrimPrefix(ref, "local:")}] {
+				t.Fatalf("archive decision not persisted for %s", ref)
+			}
+		}
+		assertActivityArchiveNavigation(t, f.cfg, f.activity, f.refs)
+		assertRealNestedActivity(f.ctx, t, f.activity, f.refs, "live")
+		f.stop()
+		if _, err := f.cfg.Past.Rebuild(); err != nil {
+			t.Fatal(err)
+		}
+		assertRealNestedActivity(t.Context(), t, f.activity, f.refs, "retained")
+		assertActivityArchiveNavigation(t, f.cfg, f.activity, f.refs)
+	})
+}
+
+func assertRealNestedActivity(ctx context.Context, t *testing.T, client *appwire.Client, refs []string, availability string) {
+	t.Helper()
+	for index, ref := range refs {
+		page, err := client.ThreadDelegatesList(ctx, appwire.SessionActivityListParams{Ref: ref, Scope: appwire.SessionActivityScopeSession, Limit: 200})
+		if err != nil {
+			t.Fatalf("direct %s: %v", ref, err)
+		}
+		wantRows := 0
+		if index < len(refs)-1 {
+			wantRows = 1
+		}
+		if len(page.Delegates) != wantRows || !page.Page.Complete || page.Context.Availability != availability || page.Context.Ref != ref || page.Context.RootRef != refs[0] || !page.Context.AncestryKnown {
+			t.Fatalf("direct %s/%s: %+v", ref, availability, page)
+		}
+		if wantRows == 1 && (page.Delegates[0].ChildRef != refs[index+1] || page.Delegates[0].DelegateID == "") {
+			t.Fatalf("undrillable actual edge: %+v", page.Delegates)
+		}
+		var ancestors []string
+		for _, ancestor := range page.Context.Ancestors {
+			ancestors = append(ancestors, ancestor.Ref)
+		}
+		if !slices.Equal(ancestors, refs[:index]) {
+			t.Fatalf("%s ancestry=%v, want %v", ref, ancestors, refs[:index])
+		}
+	}
+}
+
+func assertActivityArchiveNavigation(t *testing.T, cfg hubcore.WebConfig, client *appwire.Client, refs []string) {
+	t.Helper()
+	snapshot, err := (webNavigationSource{web: NewWebServer(cfg)}).Capture(t.Context(), "archive-generation", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	projection, err := buildNavigationProjection(snapshot.Inputs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootArchived := false
+	projects := append(slices.Clone(snapshot.Inputs.Tree.Projects), snapshot.Inputs.Tree.ArchivedProjects...)
+	for _, project := range projects {
+		for _, tier := range []string{"current", "recent"} {
+			page, err := projection.ProjectPage(project.Key, tier, 0, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, row := range page.Sessions {
+				if slices.Contains(refs[1:], row.Ref) {
+					t.Fatalf("delegate %s fabricated in %s navigation", row.Ref, tier)
+				}
+				if row.Ref == refs[0] {
+					t.Fatalf("archived root projected in %s", tier)
+				}
+			}
+		}
+		archived, err := client.ArchivedList(t.Context(), appwire.ArchivedListParams{ProjectKey: project.Key})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var rows []hubapi.NavigationSessionSummary
+		if err := json.Unmarshal(archived.Sessions, &rows); err != nil {
+			t.Fatal(err)
+		}
+		if archived.Total != 1 || len(rows) != 1 || rows[0].Ref != refs[0] || projection.projectSummary(project).MoreArchived != 1 {
+			t.Fatalf("archived list/navigation count changed real root: page=%+v rows=%+v", archived, rows)
+		}
+		rootArchived = true
+	}
+	if !rootArchived {
+		t.Fatal("real archived root missing from navigation and archived list")
+	}
+}
+
+func TestSessionActivityPublicInitiallyEmptyIncompletePageProgresses(t *testing.T) {
+	t.Parallel()
+	testSessionActivityRelay(t, func(f activityRelayFixture) {
+		close(f.adapter.grandSend)
+		grandID := strings.TrimPrefix(f.refs[2], "local:")
+		awaitActivityRelayNotice(f.ctx, t, f.grand, grandID, grandID, appwire.SessionActivityResourceJobs)
+		produced, err := f.activity.ThreadJobsList(f.ctx, appwire.SessionActivityListParams{Ref: f.refs[2]})
+		if err != nil || len(produced.Jobs) != 1 {
+			t.Fatalf("actual producer readiness: %+v, %v", produced, err)
+		}
+		f.stop()
+		retainedDir := filepath.Join(t.TempDir(), "project-relay-0000000000")
+		if err := os.CopyFS(retainedDir, os.DirFS(f.stateDir)); err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(retainedDir, "sessions", grandID, "jobs.jsonl")
+		original, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Legal blank journal lines spend the real scanner's bounded work
+		// allowance without fabricating a single activity record.
+		if err := os.WriteFile(path, append([]byte(strings.Repeat("\n", 8192)), original...), 0600); err != nil {
+			t.Fatal(err)
+		}
+		cfg := f.cfg
+		cfg.Past = hubcore.NewPastIndex(retainedDir)
+		cfg.Roster = hubcore.NewRosterWithEntries()
+		if _, err := cfg.Past.Rebuild(); err != nil {
+			t.Fatal(err)
+		}
+		server := newHubAppServer(cfg, newExitedLocalRegistry())
+		params := appwire.SessionActivityListParams{Ref: f.refs[2], Scope: appwire.SessionActivityScopeSession, Limit: 1}
+		seen := map[string]bool{}
+		for call := range 16 {
+			raw, err := json.Marshal(params)
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := server.Router().Dispatch(t.Context(), appwire.Request{Method: appwire.MethodEvenerThreadJobsList, Params: raw})
+			if err != nil {
+				t.Fatal(err)
+			}
+			page := result.(appwire.SessionJobsResponse)
+			if call == 0 && (len(page.Jobs) != 0 || page.Page.Complete || page.Page.NextCursor == "") {
+				t.Fatalf("cold first page must be empty, incomplete and advancing: %+v", page)
+			}
+			for _, job := range page.Jobs {
+				if job.JobID != produced.Jobs[0].JobID || job.OwnerRef != f.refs[2] || seen[job.JobID] {
+					t.Fatalf("cold walk changed or duplicated producer row: %+v", job)
+				}
+				seen[job.JobID] = true
+			}
+			if page.Page.Complete {
+				if len(seen) != 1 || page.Page.NextCursor != "" {
+					t.Fatalf("completed without exactly one actual job: %+v", page)
+				}
+				return
+			}
+			if page.Page.NextCursor == "" || page.Page.NextCursor == params.Cursor {
+				t.Fatalf("empty progress stalled: %+v", page)
+			}
+			params.Cursor = page.Page.NextCursor
+		}
+		t.Fatal("cold page did not converge within sixteen bounded reads")
+	})
 }

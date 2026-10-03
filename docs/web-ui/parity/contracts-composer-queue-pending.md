@@ -32,7 +32,10 @@ except where a line says so itself.
   selection intent while inserting/removing anchors and renumbering recovery.
 - Removing submitted image markers preserves each retained atom between them,
   including its UTF-16 location, concurrent edits and same-spelling prose. The
-  session composer restores those mapped identities during submission cleanup.
+  session pane's source owns text, command/skill selections and mention locations
+  across editor remounts, cascade promotion and Return. It restores those mapped
+  identities during each exact submitted-marker cleanup, retaining the shared
+  draft ownership and source-lifetime fences for detached continuations.
   The launch draft owns its restoration signal so a remounted editor receives
   the same mapped selections in the same render as the cleaned prompt.
 - Recovery updates retain stored mention locations when composer text is omitted.

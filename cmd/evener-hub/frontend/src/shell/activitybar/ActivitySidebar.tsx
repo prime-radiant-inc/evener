@@ -9,6 +9,8 @@
 
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import { AnimatePresence, m, spatialTransition } from "../../motion";
+import { popAgentCascade } from "../../panes/zoom/actions";
+import { deriveCascadePath, parseZoomParams } from "../../panes/zoom/intent";
 import { navigationStore, useNavigationStore } from "../../stores/navigation/store";
 import { useSessionActivity } from "../../stores/sessionActivity";
 import { IconButton, SegmentedControl } from "../../widgets";
@@ -17,6 +19,7 @@ import { requireClass } from "../../widgets/internal/requireClass";
 import { useFocusedActivityScopeRef } from "../focusedSession";
 import { ScopeCrumbs } from "../statusbar/ScopeCrumbs";
 import { type ActivityTab, deriveScope } from "../statusbar/statusScope";
+import { useWorkspaceStore } from "../workspace";
 import { ActivityViewport } from "./ActivityViewport";
 import styles from "./activitybar.module.css";
 import {
@@ -52,6 +55,7 @@ export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
   // scope's ref, not on every store touch.
   const resources = useNavigationStore((state) => state.resources);
   const ref = useFocusedActivityScopeRef();
+  const focusedPane = useWorkspaceStore((state) => state.panes.find((pane) => pane.id === state.focusedPaneId));
   useEffect(() => {
     if (open && ref !== null) activitySidebarStore.getState().retainOpenView(ref);
   }, [open, ref]);
@@ -60,10 +64,18 @@ export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
   // session, and a location lookup plus recursive walk per polling update
   // duplicates the StatusBar's own derivation for a surface nothing shows.
   // biome-ignore lint/correctness/useExhaustiveDependencies: `resources` is the memo's invalidation key, not a value the memo reads (the store is read imperatively inside)
-  const scope = useMemo(
-    () => (!open || ref === null ? null : deriveScope(navigationStore.getState(), ref, snapshot)),
-    [open, resources, ref, snapshot],
-  );
+  const scope = useMemo(() => {
+    if (!open || ref === null) return null;
+    const derived = deriveScope(navigationStore.getState(), ref, snapshot);
+    if (focusedPane?.type !== "sessionZoom" || !derived.ancestryKnown) return derived;
+    const params = parseZoomParams(focusedPane.params);
+    if (!params) return derived;
+    const { scopes } = deriveCascadePath(params, snapshot?.context ?? null);
+    return {
+      ...derived,
+      path: derived.path.map((crumb, index) => ({ ...crumb, ref: scopes[index]?.requestedRef ?? crumb.ref })),
+    };
+  }, [open, resources, ref, snapshot, focusedPane]);
   const Body = scope === null ? null : activityTabSpec(tab).Body;
   // Resolved once per mount: spatialTransition reads getComputedStyle (a
   // style pass), and the token changes with the theme at most, so paying
@@ -100,7 +112,15 @@ export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
         >
           <div className={CLASS.head}>
             <div className={CLASS.scope}>
-              <ScopeCrumbs path={scope.path} hierarchy />
+              <ScopeCrumbs
+                path={scope.path}
+                hierarchy
+                onNavigate={
+                  focusedPane?.type === "sessionZoom"
+                    ? (ancestor) => popAgentCascade(focusedPane.id, ancestor)
+                    : undefined
+                }
+              />
               {!scope.ancestryKnown ? <span className={CLASS.pending}>Finding session context…</span> : null}
             </div>
             <IconButton label="Close the activity sidebar" icon="×" variant="quiet" size="sm" onClick={close} />
