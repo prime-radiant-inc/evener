@@ -250,6 +250,41 @@ test("a compaction eventKind item renders as a scaffold disclosure", () => {
   expect(screen.queryByTestId("system-notice-line")).toBeNull();
 });
 
+test.each(["system_prompt", "compaction"] as const)(
+  "%s keeps explicit disclosure choices through Full baselines, level changes, and remounts",
+  (eventKind) => {
+    const scaffold = item("scaffold", { eventKind, text: "## Opaque scaffold body" });
+    const turn = turnWith([scaffold]);
+    const atLevel = (level: "tools" | "full") => (
+      <TranscriptRenderProvider
+        config={makeTranscriptDisplayConfig({ kind: "preset", level })}
+        surface="readOnly"
+        disclosureScope={`scaffold:${eventKind}`}
+        eligibleDisclosureIds={[scaffold.id]}
+      >
+        <SystemNoticeItem item={scaffold} turn={turn} live={false} />
+      </TranscriptRenderProvider>
+    );
+    const disclosure = () => screen.getByTestId("system-notice-scaffold") as HTMLDetailsElement;
+    const click = () => fireEvent.click(disclosure().querySelector("summary")!);
+    const view = render(atLevel("full"));
+    expect(disclosure().open).toBe(true);
+    click();
+    expect(disclosure().open).toBe(false);
+    view.rerender(atLevel("tools"));
+    expect(disclosure().open).toBe(false);
+    click();
+    expect(disclosure().open).toBe(true);
+    view.unmount();
+    const remount = render(atLevel("tools"));
+    expect(disclosure().open).toBe(true);
+    remount.rerender(atLevel("full"));
+    expect(disclosure().open).toBe(true);
+    click();
+    expect(disclosure().open).toBe(false);
+  },
+);
+
 const notesText =
   "<shared-notes>\nHuman: **keep literal**\nAgent: context & <tags>\nURLs: https://example.com/\n</shared-notes>";
 const notesItem = () => item("notes", { eventKind: "notes-context", text: notesText });

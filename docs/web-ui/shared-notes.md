@@ -23,7 +23,8 @@ Snapshots start folded at every level, including Activity and Full. Opening one
 shows its complete literal text, preserving the shared-notes framing, whitespace
 and links. Each client remembers explicit expansion by session and item through
 remounts. Native keeps list-row text bounded and reads the complete snapshot from
-retained canonical turns only when expanded. Web keeps snapshots separate from
-grouped lifecycle notices. Your saved
-note messages remain visible at every level, and the Notes panel stays available
+retained canonical turns only when expanded. If the canonical lookup misses,
+native preserves the available row text. Web keeps snapshots separate from
+grouped lifecycle notices. Your saved note messages remain visible at every level,
+and the Notes panel stays available
 independently of transcript display settings.

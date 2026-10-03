@@ -65,7 +65,8 @@ Conversation/System events visibility rule and prevents terminal fallback from
 restoring hidden snapshots. S02's browser renderer and S03's native labelled
 notice preserve complete literal text behind an initially folded disclosure,
 with explicit expansion scoped to session and item. S03 keeps list-row text
-bounded and resolves expanded snapshots from retained canonical turns.
+bounded and resolves expanded snapshots from retained canonical turns, falling
+back to available row text when that lookup misses.
 Native's Conversation-only
 presentation also suppresses snapshots because its display adapter projects at
 Intent before applying that mode. Saved human-note messages and the Notes panel

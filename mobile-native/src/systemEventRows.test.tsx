@@ -216,6 +216,37 @@ describe("shared-notes snapshots", () => {
 		},
 	);
 
+	it.each(["missing turn", "missing item", "different identity"] as const)(
+		"keeps available notes text when the canonical source has a %s",
+		(missing) => {
+			const keyedNotes = { ...notes, transcriptKey: "notes-lookup-key" };
+			const { rows, model } = rowsAt("full", [completedTurn([keyedNotes])]);
+			const row = rows.find((entry) => entry.id === keyedNotes.id);
+			if (row?.kind !== "notice") throw new Error("no notes notice");
+			const sourceTurns =
+				missing === "missing turn"
+					? []
+					: model.turns.map((turn) => ({
+							...turn,
+							items:
+								missing === "missing item"
+									? turn.items.filter((item) => item.id !== keyedNotes.id)
+									: turn.items.map((item) =>
+											item.id === keyedNotes.id
+												? { ...item, transcriptKey: "another-notes-key", text: "another snapshot" }
+												: item,
+										),
+						}));
+			const tree = render(
+				<TimelineItem item={row} hubId="hub" sessionRef={`notes-lookup-${missing}`} sourceTurns={sourceTurns} />,
+			);
+			expect(renderedText(tree)).toBe("Shared notes updated");
+			press(tree);
+			expect(renderedText(tree)).toBe(`Shared notes updated ${text}`);
+			act(() => tree.unmount());
+		},
+	);
+
 	it("hides notes at Conversation with System events on, and elsewhere with them off", () => {
 		expect(rowsAt("chat", [completedTurn([notes])]).rows.find((row) => row.id === notes.id)).toBeUndefined();
 		for (const level of ["intent", "tools", "activity", "full"] as const) {

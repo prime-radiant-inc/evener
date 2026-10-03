@@ -109,9 +109,10 @@ export function TimelineItem({
 		if (!expanded || item.origin !== "system" || item.eventKind !== "notes-context" || !sourceTurns) return item.text;
 		// List rows stay bounded. Only an opened notes disclosure reads the
 		// full opaque payload from the canonical model already held by the store.
-		return sourceTurns
-			.find((turn) => turn.id === item.turnId)
-			?.items.find((source) => itemIdentityMatches(source, item))?.text;
+		return (
+			sourceTurns.find((turn) => turn.id === item.turnId)?.items.find((source) => itemIdentityMatches(source, item))
+				?.text ?? item.text
+		);
 	}, [expanded, item, sourceTurns]);
 	let content: ReactNode;
 	switch (item.kind) {
