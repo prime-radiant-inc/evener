@@ -895,6 +895,11 @@ type EnvironmentData struct {
 	Text   string `json:"text"`
 }
 
+// EnvironmentChangedData is the payload for an EventEnvironmentChanged event.
+type EnvironmentChangedData struct {
+	WorkingDir string `json:"working_dir"`
+}
+
 // TurnEndedData is the payload for an EventTurnEnded event.
 type TurnEndedData struct {
 	TurnDurationMS int64 `json:"turn_duration_ms"`

@@ -189,7 +189,9 @@ func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment, rec
 	s.recordAbandonedEnvironmentLocked(prior, next)
 	s.rebuildToolDefsCache()
 	promptWarning := s.refreshSystemPromptCache(next)
+	installedWorkingDir := s.envInfo.WorkingDir
 	s.mu.Unlock()
+	s.emit(events.EventEnvironmentChanged, events.EnvironmentChangedData{WorkingDir: installedWorkingDir})
 	s.reportPromptRenderFailure(promptWarning)
 	// Publish the swapped-in environment's binding and its current/parked
 	// consumer roles outside any Session lock, so retention tracks the same

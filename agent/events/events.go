@@ -25,6 +25,9 @@ const (
 	EventUserInput EventKind = "USER_INPUT"
 	// EventEnvironment carries a persisted environment-context update.
 	EventEnvironment EventKind = "ENVIRONMENT"
+	// EventEnvironmentChanged reports the execution environment installed for the
+	// session, independently of prompt/transcript environment context.
+	EventEnvironmentChanged EventKind = "ENVIRONMENT_CHANGED"
 	// EventAssistantTextStart marks the start of an assistant text response.
 	EventAssistantTextStart EventKind = "ASSISTANT_TEXT_START"
 	// EventAssistantTextDelta carries an incremental chunk of assistant text.

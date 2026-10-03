@@ -380,6 +380,25 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 		start, _ := event.Data.(events.SessionStartData)
 		pending := make([]pendingAppNotification, 0, len(projected))
 		pending = append(pending, s.activityChangeNotificationLocked(event)...)
+		history := s.appHistories.get(threadID)
+		if changed, ok := event.Data.(events.EnvironmentChangedData); ok && event.Kind == events.EventEnvironmentChanged {
+			s.appEnvelope.WorkingDir = changed.WorkingDir
+			s.appEnvelope.cwdCarrierGeneration++
+			resync := appwire.ThreadResyncParams{
+				ThreadID:       threadID,
+				Ref:            ref,
+				BootGeneration: s.appBootGeneration,
+			}
+			if history != nil {
+				resync.Epoch = history.Epoch()
+			}
+			pending = append(pending, pendingAppNotification{
+				threadID: threadID,
+				ref:      ref,
+				method:   appwire.NotifyEvenerThreadResync,
+				params:   resync,
+			})
+		}
 		for _, item := range projected {
 			// The root's running execution is published by SetProcessingTurn
 			// and its end by finishProcessing (or the input's SESSION_END),
@@ -470,7 +489,6 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 				params:   appwire.ThreadStatusChangedParams{ThreadID: threadID, Ref: ref, Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}},
 			})
 		}
-		history := s.appHistories.get(threadID)
 		s.mu.Unlock()
 		// The overlay's changes commit with the projector's, in the same
 		// order the session emitted the event.
@@ -2453,6 +2471,10 @@ func (s *Server) appThreadWithDiagnosticsLocked(diagnostics func(DetailedStatus)
 	access := cloneThreadAccess(envelope.Access)
 	threadName := envelope.Name
 	threadPreview := envelope.Preview
+	workingDir := envelope.WorkingDir
+	if workingDir == "" && envelope.cwdCarrierGeneration == 0 {
+		workingDir = status.WorkingDir
+	}
 	if threadPreview == "" {
 		threadPreview = status.SessionID
 	}
@@ -2463,8 +2485,8 @@ func (s *Server) appThreadWithDiagnosticsLocked(diagnostics func(DetailedStatus)
 		Preview:       threadPreview,
 		ModelProvider: status.Model,
 		Status:        appwire.ThreadStatus{Type: statusType},
-		CWD:           status.WorkingDir,
-		Path:          filepath.Base(status.WorkingDir),
+		CWD:           workingDir,
+		Path:          filepath.Base(workingDir),
 		Source:        sourceID,
 		Evener: appwire.EvenerThread{
 			Ref:                   ref,
