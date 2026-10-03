@@ -287,6 +287,17 @@ Use both an in-process mutex and a cross-process lock per scope. Reads acquire
 the protocol lock so they never return an unrecovered partial transaction.
 There is no cross-scope transaction: personal and project writes are independent.
 
+Automatic index refresh uses nonblocking acquisition of both locks. A busy
+scope returns an unavailable projection immediately; the other scope and the
+model request proceed. Once locks are acquired, automatic read/recovery has a
+separate finite deadline that cannot consume the user turn's whole deadline.
+Expiry reports unavailable, preserves pending intent, and leaves ordinary work
+usable. Do not start overlapping refresh/recovery attempts for that scope while
+an earlier attempt is still settling. The next model boundary retries or adopts
+its completed result. Explicit memory tools may wait under their own cancellable
+request context. A cached projection must be marked stale while refresh fails;
+it cannot masquerade as a current snapshot.
+
 Before the first visible file change, durably record a pending transaction with
 its operation ID, expected and resulting revisions, complete new bytes, deletions,
 checksums, and receipt metadata. Flush files and directory entries using the
@@ -366,6 +377,11 @@ Put short stable rules in the core system template:
 6. Mark unresolved disagreement or uncertainty. Age alone proves nothing.
 7. Use bounded gardening when ordinary work exposes structural problems.
 
+Put correction evidence in the active page as source references and a concise
+account of what changed. Prefer stable transcript references, repository paths
+with revisions, or dated external sources. Metadata-only receipts record the
+operation, not its supporting argument.
+
 Project current personal and project indexes as separate lower-trust context,
 not inside system instructions. Use typed scope/revision framing and neutralize
 content that could counterfeit that framing. Deliver the indexes directly to
@@ -422,7 +438,7 @@ state roots. Test structural inputs and actual effects, not instruction wording.
 | Crash recovery and replay | Interrupt at each durability boundary, reopen, and verify old-or-completed state, one receipt, no duplicate mutation, cleanup, and correct replay after a later delete. |
 | Forgetting | Remove a page and a repeated fact across pages; read/search/index contain no active copy. Original transcripts survive. Inspect settled storage for old bodies/staging remnants. |
 | Context lifetime | Root/delegate first request, unchanged rounds, changed revision, now-empty wiki, resume, compaction, and recovered availability produce the correct current projection. |
-| Failure and recovery | Make one scope unwritable/unavailable; unrelated session work and the other scope continue. Restore access and prove the next access commits/refreshes without a restart. Preserve corrupt bytes. |
+| Failure and recovery | Hold one scope lock in a second process and keep it held until the other scope's projection and an ordinary model/tool round complete. Also test a read/recovery attempt that outlasts its separate refresh deadline, without accumulating overlapping attempts. Release the obstruction and prove a later boundary refreshes without restart. Cover unwritable storage and preserve corrupt bytes. |
 | Input boundaries | Traversal, symlinks, forged continuation/operation IDs, oversized input, broken local links, hostile framing, and duplicate operations cannot escape authority or partially commit. |
 | Cleanup independence | Delete real fixture session/project history and remove a worktree, then start another session and use surviving wiki knowledge. |
 | Shared client delivery | Real tool producer through existing transcript/event adapters and CLI/TUI/browser/native generic result consumers retains scope, result/error, and user-visible outcome. |
