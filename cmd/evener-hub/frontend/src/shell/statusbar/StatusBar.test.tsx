@@ -18,6 +18,32 @@ afterEach(() => {
   connectionStore.setState({ client: null, state: "idle" });
 });
 
+test("four footer categories keep their owning pane and About has no chip", async () => {
+  const ref = "remote:pane";
+  installFocusedScope(ref, summaryOf({ ref, title: "Pane owner", tasks: { total: 5, done: 2 } }));
+  workspaceStore.setState({
+    panes: [
+      { id: "selected", type: "transcript", params: { ref: "remote:focused" }, slot: "main" },
+      { id: "pane-secondary", type: "transcript", params: { ref }, slot: "secondary" },
+    ],
+    focusedPaneId: "selected",
+  });
+  connectionStore.getState().connect(activityClient());
+  render(<StatusBar sessionRef={ref} paneId="pane-secondary" leading={null} />);
+  await screen.findByRole("button", { name: /Jobs, 2 of 201 running/ });
+  const chips = screen.getAllByRole("button");
+  expect(chips.map((chip) => chip.dataset.activityTab)).toEqual(["agents", "jobs", "watches", "tasks"]);
+  expect(screen.queryByRole("button", { name: /About/ })).toBeNull();
+  for (const tab of ["agents", "jobs", "watches", "tasks"] as const) {
+    act(() => workspaceStore.getState().focusPane("selected"));
+    const chip = chips.find((chip) => chip.dataset.activityTab === tab);
+    if (!chip) throw new Error(`Missing ${tab} chip`);
+    fireEvent.click(chip);
+    expect(workspaceStore.getState().focusedPaneId).toBe("pane-secondary");
+    expect(activitySidebarStore.getState()).toMatchObject({ open: true, tab });
+  }
+});
+
 test("uses its owning pane's session and focuses that pane before opening activity", async () => {
   const user = userEvent.setup();
   const client = activityClient();

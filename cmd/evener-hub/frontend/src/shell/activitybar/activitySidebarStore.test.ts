@@ -17,6 +17,27 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+test("About reload preserves another category's view intent", () => {
+  const store = activitySidebarStore;
+  store.getState().retarget("remote:a");
+  store.getState().openWith("jobs");
+  store.getState().setCategoryView("remote:a", "jobs", {
+    shown: 60,
+    anchor: { id: "later-page-job", offset: 17 },
+  });
+  store.getState().setTab("about");
+  store.getState().close();
+  resetActivitySidebarStoreForTests({ preserveStorage: true });
+  store.getState().retarget("remote:a");
+  expect(store.getState()).toMatchObject({ open: false, tab: "about", ref: "remote:a" });
+  expect(store.getState().views.get("remote:a")?.categories.jobs).toEqual({
+    shown: 60,
+    anchor: { id: "later-page-job", offset: 17 },
+  });
+  store.getState().openWith();
+  expect(store.getState()).toMatchObject({ open: true, tab: "about" });
+});
+
 test("empty workspace bootstrap and passive restore never overwrite retained intent", () => {
   const retained = { "source:owner": { open: true, tab: "jobs", categories: {} } };
   localStorage.setItem(ACTIVITY_VIEW_STORAGE_KEY, JSON.stringify(retained));

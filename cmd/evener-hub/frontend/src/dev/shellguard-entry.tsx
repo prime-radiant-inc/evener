@@ -25,7 +25,6 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { navigationInvalidatedNotification } from "@evener/appwire-client/testing/notifications";
 import { createRoot } from "react-dom/client";
 import { RepoLocation } from "../panes/session/composer/RepoLocation";
-import { ACTIVITY_TABS } from "../shell/activitybar/activityTabs";
 import { ClientProvider } from "../shell/clientContext";
 import railStyles from "../shell/rail/Rail.module.css";
 import { RailRenderObserver } from "../shell/rail/railRenderObserver";
@@ -79,7 +78,8 @@ const PANE_FOOTER_FIXTURES = [
     cwd: "/home/user/project-two/worktrees/feature-two",
   },
 ];
-const EXPECTED_PANE_ACTIVITY_CONTROLS = ACTIVITY_TABS.length;
+const EXPECTED_PANE_ACTIVITY_TABS = ["agents", "jobs", "watches", "tasks"] as const;
+const EXPECTED_PANE_ACTIVITY_CONTROLS = EXPECTED_PANE_ACTIVITY_TABS.length;
 const CROWDED_ACTIVITY_COUNTS = { known: true, total: 100, active: 100, failed: 0, completed: 0 };
 
 let changedTitle = "project-0 session 0";
@@ -620,11 +620,28 @@ function measureShell() {
   };
 }
 
+function paneActivityTabs(statusbar: Element | null) {
+  return statusbar === null
+    ? []
+    : Array.from(statusbar.querySelectorAll<HTMLButtonElement>("button"), (button) => button.dataset.activityTab);
+}
+
+function hasExpectedPaneActivityTabs(statusbar: Element | null) {
+  const tabs = paneActivityTabs(statusbar);
+  return (
+    tabs.length === EXPECTED_PANE_ACTIVITY_CONTROLS &&
+    EXPECTED_PANE_ACTIVITY_TABS.every((tab, index) => tabs[index] === tab)
+  );
+}
+
 function measurePaneFooters() {
   const panes = [...document.querySelectorAll("[data-pane-footer-fixture]")].map((fixture) => {
     const pane = fixture.firstElementChild;
     const edgeFooter = pane?.querySelector('[data-testid="pane-edge-footer"]') ?? null;
     const statusbar = pane?.querySelector('[data-testid="statusbar"]') ?? null;
+    if (!hasExpectedPaneActivityTabs(statusbar)) {
+      throw new Error(`Unexpected pane footer categories: ${JSON.stringify(paneActivityTabs(statusbar))}`);
+    }
     const controls = statusbar === null ? [] : [...statusbar.querySelectorAll("button")].map(rect);
     return {
       box: pane === null ? null : rect(pane),
@@ -632,6 +649,7 @@ function measurePaneFooters() {
       statusbar: statusbar === null ? null : rect(statusbar),
       statusbarClientWidth: statusbar instanceof HTMLElement ? statusbar.clientWidth : null,
       statusbarScrollWidth: statusbar instanceof HTMLElement ? statusbar.scrollWidth : null,
+      activityTabs: paneActivityTabs(statusbar),
       controls,
       containsStatusbar: edgeFooter !== null && statusbar !== null && edgeFooter.contains(statusbar),
     };
@@ -791,6 +809,9 @@ target.settledShell = (async () => {
       !window.matchMedia("(min-width: 900px)").matches ||
       (edgeFooterCount === PANE_FOOTER_FIXTURES.length &&
         activityControlCount === expectedActivityControlCount &&
+        [...document.querySelectorAll("[data-pane-footer-fixture] [data-testid='statusbar']")].every(
+          hasExpectedPaneActivityTabs,
+        ) &&
         repositoryLinkCount === PANE_FOOTER_FIXTURES.length);
     if (treeRowCount >= expectedRows && paneFooterFixturesReady) return true;
     const errors = (window as typeof window & { __shellGuardErrors?: string[] }).__shellGuardErrors;

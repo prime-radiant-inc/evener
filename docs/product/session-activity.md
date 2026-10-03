@@ -283,6 +283,15 @@ of one ref share the same owner. Agents, Jobs and Watches tabs observe their own
 session-scoped collection. A visible page boundary supplies further demand,
 while the shared store retains and retries an interrupted continuation.
 
+About is the last sidebar category and has no count or footer chip. Its
+[adapter](../../cmd/evener-hub/frontend/src/shell/activitybar/AboutTab.tsx)
+holds the shared thread model for the sidebar's explicit public session ref and
+renders the existing details body. That model owner supplies hydration,
+accounting, subscriptions and reconnect recovery. About adds no collection
+demand, lifecycle mutation, provider call, cache or retry owner. Its category
+choice uses the same per-session persistence without changing another category's
+disclosure or scroll intent.
+
 The composer names its receiving conversation even when a child or output pane
 has focus. Job rows and output tabs use the job description when present, and
 output details retain the command and exit status. Each output pane publishes

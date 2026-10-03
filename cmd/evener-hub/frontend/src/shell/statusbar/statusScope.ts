@@ -3,7 +3,7 @@
 import type { NavigationSessionSummary, SessionActivitySnapshot } from "@evener/appwire-client";
 import { type NavigationStoreState, selectSessionSummary } from "../../stores/navigation/selectors";
 
-export type ActivityTab = "agents" | "jobs" | "watches" | "tasks";
+export type ActivityTab = "agents" | "jobs" | "watches" | "tasks" | "about";
 export interface ScopeCrumb {
   ref: string;
   title: string;

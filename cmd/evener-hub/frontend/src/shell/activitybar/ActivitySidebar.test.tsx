@@ -237,8 +237,8 @@ test("activity tabs keep a named keyboard radio group without a visible heading"
   expect(screen.getByRole("radiogroup", { name: "Activity kind" })).toBeTruthy();
   expect(screen.queryByText("Activity kind")).toBeNull();
   await act(async () => fireEvent.keyDown(screen.getByRole("radio", { name: /Agents/ }), { key: "End" }));
-  expect(activitySidebarStore.getState().tab).toBe("tasks");
-  await act(async () => fireEvent.keyDown(screen.getByRole("radio", { name: /Tasks/ }), { key: "Home" }));
+  expect(activitySidebarStore.getState().tab).toBe("about");
+  await act(async () => fireEvent.keyDown(screen.getByRole("radio", { name: "About" }), { key: "Home" }));
   expect(activitySidebarStore.getState().tab).toBe("agents");
   await act(async () => fireEvent.keyDown(screen.getByRole("radio", { name: /Agents/ }), { key: "ArrowRight" }));
   expect(activitySidebarStore.getState().tab).toBe("jobs");
