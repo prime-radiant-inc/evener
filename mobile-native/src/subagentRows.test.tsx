@@ -354,17 +354,24 @@ describe("Chat", () => {
 		expect(images(rows)).toEqual(["broke.png"]);
 	});
 
-	it("keeps a question, a steering notice and the turn's failure", () => {
+	// The 2026-10-03 ruling at conversationOnly: Chat drops daemon steering
+	// notices; Intent and above keep them.
+	it("keeps a question and the turn's failure, and drops the steering notice", () => {
 		const { rows } = rowsAt("chat", subagent(), extra);
 		expect(rows.some((row) => row.kind === "activity" && row.label === "ask_user")).toBe(true);
-		expect(rows.some((row) => row.kind === "notice" && row.id === "steer-1")).toBe(true);
+		expect(rows.some((row) => row.kind === "notice" && row.id === "steer-1")).toBe(false);
 		expect(rows.some((row) => row.kind === "failure" && row.title === "Provider exploded")).toBe(true);
+		expect(rowsAt("intent", subagent(), extra).rows.some((row) => row.kind === "notice" && row.id === "steer-1")).toBe(
+			true,
+		);
 	});
 
-	it("keeps a delegate notification's card", () => {
+	it("drops a delegate notification's card at Chat, and keeps it at Intent", () => {
 		const report = { ...notificationWireItem("delegate-reported"), turnId: "turn_1" };
-		const { rows } = rowsAt("chat", subagent(), { items: [report] });
-		expect(rows.find((row) => row.id === report.id)).toMatchObject({
+		const chat = rowsAt("chat", subagent(), { items: [report] });
+		expect(chat.rows.find((row) => row.id === report.id)).toBeUndefined();
+		const intent = rowsAt("intent", subagent(), { items: [report] });
+		expect(intent.rows.find((row) => row.id === report.id)).toMatchObject({
 			kind: "notice",
 			notifications: [{ kind: "notification" }],
 		});
