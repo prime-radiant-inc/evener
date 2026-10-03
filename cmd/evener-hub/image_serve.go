@@ -220,11 +220,11 @@ func decodeHexSha256(raw string) ([sha256.Size]byte, bool) {
 // 05). It is the AppWire counterpart of handleSessionImage and handleDocImage
 // and shares their resolution discipline: the sha branch re-scans the session
 // transcript under the 8 MiB bound, and the file-backed branch resolves a
-// session-relative path inside the session's own working directory with
-// fspaths.ResolveInRoot. SessionImageParams carries no source selector, so the
-// method can only ever resolve against the recipient's own state and can never
-// read an arbitrary host file; anything it cannot resolve is refused typed
-// rather than guessed.
+// relative or current-root absolute path inside the session's own working
+// directory with fspaths.ResolveInRoot. SessionImageParams carries no source
+// selector, so the method can only ever resolve against the recipient's own
+// state and can never read an arbitrary host file; anything it cannot resolve
+// is refused typed rather than guessed.
 func sessionImageFromHub(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.SessionImageParams) (appwire.SessionImageResponse, error) {
 	switch {
 	case params.SessionID == "":
@@ -274,20 +274,16 @@ func sessionImageBySha(cfg hubcore.WebConfig, sessionID, sha string) (appwire.Se
 	}, nil
 }
 
-// sessionImageByPath answers the file-backed form: a session-relative path
-// inside the session's own working directory, refused on any escape and bounded
-// by outputImageMaxBytes at stat time (readOutputImageInRoot).
-func sessionImageByPath(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, sessionID, rel string) (appwire.SessionImageResponse, error) {
-	// Path is session-relative by contract: an absolute path is refused even
-	// when it happens to resolve inside the session root.
-	if filepath.IsAbs(rel) {
-		return appwire.SessionImageResponse{}, appwire.InvalidParams("path must be session-relative")
-	}
+// sessionImageByPath answers the file-backed form: a relative or current-root
+// absolute path inside the session's own working directory, refused on any
+// escape and bounded by outputImageMaxBytes at stat time
+// (readOutputImageInRoot).
+func sessionImageByPath(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, sessionID, path string) (appwire.SessionImageResponse, error) {
 	cwd, err := sessionCWD(ctx, cfg, sources, sessionID)
 	if err != nil {
 		return appwire.SessionImageResponse{}, err
 	}
-	abs, err := fspaths.ResolveInRoot(cwd, rel)
+	abs, err := fspaths.ResolveInRoot(cwd, path)
 	if err != nil {
 		if errors.Is(err, fspaths.ErrPathEscapesRoot) {
 			return appwire.SessionImageResponse{}, appwire.InvalidParams("path must resolve inside the session root")

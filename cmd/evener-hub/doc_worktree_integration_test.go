@@ -31,17 +31,24 @@ import (
 )
 
 type worktreeDocumentFixture struct {
-	session     *agent.Session
-	hubClient   *appwire.Client
-	hubURL      string
-	documentURL string
-	ref         string
-	sessionID   string
-	root        string
-	step        func(t *testing.T, operation, name string) string
-	localRead   func(t *testing.T, path string) (int, []byte)
-	remoteRead  func(t *testing.T, path string) (int, []byte)
+	session         *agent.Session
+	hubClient       *appwire.Client
+	hubURL          string
+	documentURL     string
+	ref             string
+	sessionID       string
+	root            string
+	step            func(t *testing.T, operation, name string) string
+	localRead       func(t *testing.T, path string) (int, []byte)
+	remoteRead      func(t *testing.T, path string) (int, []byte)
+	localImageRead  func(t *testing.T, path string) (int, []byte)
+	remoteImageRead func(t *testing.T, path string) (int, []byte)
 }
+
+var (
+	worktreeImageA = []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a, 'l', 'a', 'u', 'n', 'c', 'h', ' ', 'A'}
+	worktreeImageB = []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a, 'w', 'o', 'r', 'k', 't', 'r', 'e', 'e', ' ', 'B'}
+)
 
 // worktreeDocumentAdapter scripts only the provider boundary. Each queued step
 // selects one real manage_worktree call; the next provider round ends the turn.
@@ -106,7 +113,10 @@ func newWorktreeDocumentFixture(t *testing.T) *worktreeDocumentFixture {
 			t.Fatal(err)
 		}
 	}
-	runWorktreeDocumentGit(t, root, "add", "seed.txt", "captured.md")
+	if err := os.WriteFile(filepath.Join(root, "captured.png"), worktreeImageB, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runWorktreeDocumentGit(t, root, "add", "seed.txt", "captured.md", "captured.png")
 	runWorktreeDocumentGit(t, root, "commit", "-m", "initial fixture")
 
 	project, err := identifier.ResolveProject(root)
@@ -232,6 +242,14 @@ func newWorktreeDocumentFixture(t *testing.T) *worktreeDocumentFixture {
 		t.Helper()
 		return readWorktreeDocumentHTTP(t, controllerHTTP.URL+"/doc/file", "h1:"+sessionID, path)
 	}
+	fixture.localImageRead = func(t *testing.T, path string) (int, []byte) {
+		t.Helper()
+		return readWorktreeImageHTTP(t, localHTTP.URL+"/doc/image", sessionID, path)
+	}
+	fixture.remoteImageRead = func(t *testing.T, path string) (int, []byte) {
+		t.Helper()
+		return readWorktreeImageHTTP(t, controllerHTTP.URL+"/doc/image", "h1:"+sessionID, path)
+	}
 
 	created := map[string]string{}
 	fixture.step = func(t *testing.T, operation, name string) string {
@@ -285,6 +303,19 @@ func newWorktreeDocumentFixture(t *testing.T) *worktreeDocumentFixture {
 				status, body := read(t, capturedA)
 				if status != http.StatusForbidden || bytes.Contains(body, []byte("captured launch A")) {
 					t.Fatalf("captured A target during held hydration = %d %q, want 403 without A bytes", status, body)
+				}
+			}
+			capturedImageA := filepath.Join(root, "captured.png")
+			for name, check := range map[string]struct {
+				read       func(*testing.T, string) (int, []byte)
+				wantStatus int
+			}{
+				"local":  {read: fixture.localImageRead, wantStatus: http.StatusForbidden},
+				"remote": {read: fixture.remoteImageRead, wantStatus: http.StatusBadRequest},
+			} {
+				status, body := check.read(t, capturedImageA)
+				if status != check.wantStatus || bytes.Contains(body, worktreeImageA) || bytes.Contains(body, worktreeImageB) {
+					t.Fatalf("%s captured A image during held hydration = %d %q, want %d without A or B bytes", name, status, body, check.wantStatus)
 				}
 			}
 		}
@@ -405,6 +436,33 @@ func TestDocumentWorktree_ProducerToLocalAndRemoteReads(t *testing.T) {
 	}
 }
 
+func TestDocumentWorktree_ImageProducerToLocalAndRemoteReads(t *testing.T) {
+	fixture := newWorktreeDocumentFixture(t)
+	if err := os.WriteFile(filepath.Join(fixture.root, "captured.png"), worktreeImageA, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, read := range []func(*testing.T, string) (int, []byte){fixture.localImageRead, fixture.remoteImageRead} {
+		status, body := read(t, "captured.png")
+		if status != http.StatusOK || !bytes.Equal(body, worktreeImageA) {
+			t.Fatalf("initial relative image read = %d %q, want launch A bytes", status, body)
+		}
+	}
+
+	rootB := fixture.step(t, "create", "docs-b")
+	for _, read := range []func(*testing.T, string) (int, []byte){fixture.localImageRead, fixture.remoteImageRead} {
+		for name, path := range map[string]string{
+			"relative":         "captured.png",
+			"current absolute": filepath.Join(rootB, "captured.png"),
+		} {
+			status, body := read(t, path)
+			if status != http.StatusOK || !bytes.Equal(body, worktreeImageB) {
+				t.Fatalf("B %s image read = %d %q, want worktree B bytes", name, status, body)
+			}
+		}
+	}
+}
+
 func TestDocumentWorktree_LiveSourceUnavailableDoesNotReadPast(t *testing.T) {
 	rootA := t.TempDir()
 	if err := os.WriteFile(filepath.Join(rootA, "plan.md"), []byte("stale launch A"), 0o600); err != nil {
@@ -494,6 +552,25 @@ func runWorktreeDocumentGit(t *testing.T, root string, args ...string) {
 func readWorktreeDocumentHTTP(t *testing.T, endpoint, session, path string) (int, []byte) {
 	t.Helper()
 	requestURL := endpoint + "?format=raw&session=" + url.QueryEscape(session) + "&path=" + url.QueryEscape(path)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, requestURL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET %s: %v", requestURL, err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return response.StatusCode, body
+}
+
+func readWorktreeImageHTTP(t *testing.T, endpoint, session, path string) (int, []byte) {
+	t.Helper()
+	requestURL := endpoint + "?session=" + url.QueryEscape(session) + "&path=" + url.QueryEscape(path)
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, requestURL, nil)
 	if err != nil {
 		t.Fatal(err)
