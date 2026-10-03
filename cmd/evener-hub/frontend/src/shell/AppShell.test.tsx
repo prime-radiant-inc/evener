@@ -1866,6 +1866,50 @@ test("a deferred deep link beats a restored active session panel", async () => {
   await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(paneFor("local:child")?.id));
 });
 
+test("a deferred deep link preserves a restored cascade main and its neighbors", async () => {
+  // Phase 1: save a real layout whose main is a cascade zoomed on
+  // local:session-a (the session pane retyped in place, as the zoom system
+  // does), with a sessionTasks panel beside it.
+  window.history.pushState({}, "", "/s/local:session-a");
+  installLocationForRoute("local:session-a");
+  const { unmount } = render(<AppShell client={new FakeClient("ready")} />);
+  await screen.findByText(/loading transcript/i);
+  act(() => {
+    const main = workspaceStore.getState().mainPane();
+    if (!main) throw new Error("no main pane to zoom");
+    workspaceStore.getState().retypePane(main, "sessionZoom", {
+      ref: "local:child",
+      source: { type: "session", params: { ref: "local:session-a" } },
+      edges: [{ ownerRef: "local:session-a", childRef: "local:child", delegateId: "edge-child" }],
+    });
+    workspaceStore.getState().openPane("sessionTasks", { ref: "local:session-a" }, { slot: "secondary" });
+  });
+  await waitFor(() => expect(workspaceStore.getState().panes).toHaveLength(2));
+  const cascadeId = workspaceStore.getState().mainPane()?.id;
+  const secondaryId = workspaceStore.getState().panes.find((pane) => pane.type === "sessionTasks")?.id;
+  unmount();
+  expect(localStorage.getItem(LAYOUT_KEY)).not.toBeNull();
+  resetWorkspaceStoreForTests();
+
+  // Phase 2: reload the same deep link with the location read still in
+  // flight - the boot shape a loaded machine produces. The restored cascade
+  // must survive the route's late placement instead of being replaced by a
+  // plain pane of the same session (which discarded every neighboring pane
+  // with it).
+  resetNavigationStoreForTests();
+  navigationStore.setState({ mode: "v3" });
+  window.history.pushState({}, "", "/s/local:session-a");
+  render(<AppShell client={new FakeClient("ready")} />);
+  await waitFor(() => expect(workspaceStore.getState().mainPane()?.type).toBe("sessionZoom"));
+  act(() => installLocationForRoute("local:session-a"));
+  await waitFor(() => expect(workspaceStore.getState().mainPane()?.id).toBe(cascadeId));
+  expect(workspaceStore.getState().panes.map((pane) => pane.id)).toEqual([cascadeId, secondaryId]);
+  // The placement must not steal focus either: the saved layout's focus (the
+  // sessionTasks pane, last focused before the save) is part of the work the
+  // deferred route placement preserves.
+  expect(workspaceStore.getState().focusedPaneId).toBe(secondaryId);
+});
+
 test("switching between /thread and /s refocuses the routed session despite a focused panel", async () => {
   window.history.pushState({}, "", "/s/local:session-a");
   installLocationForRoute("local:session-a");
