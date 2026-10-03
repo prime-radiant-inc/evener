@@ -4008,6 +4008,64 @@ test("live-next focuses the session pane even when the URL already matches", asy
   expect(focused?.type).toBe("session");
 });
 
+// The same URL-equal press against a CASCADE main: the placement seam now
+// preserves a cascade whose session source is the pressed ref (and must keep
+// preserving it - and never steal focus on its own, or a restored layout's
+// saved focus would not survive boot placement), but the live chord's own
+// contract is that the press always ends with the session pane focused. A
+// preserved cascade keeps the pane id, so the guarantee has to reach it too.
+test("live-previous focuses a preserved cascade main when the URL already matches", async () => {
+  const client = new FakeClient("ready");
+  client.on("evener/navigation/read", (params: NavigationReadParams): NavigationReadResponse => {
+    if (params.resource === "section" && params.section === "live") {
+      return wireSnapshot(params, { sessions: [LIVE_CYCLE_A, LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"');
+    }
+    return navigationRead(params);
+  });
+  client.scriptConnect(() => ({
+    serverInfo: { name: "fake", version: "1" },
+    protocolVersion: "evener-appwire-v4",
+    sourceId: "fake",
+    features: {} as never,
+    navigation: { version: 1, generationId: "generation_test", sequence: 0, readVersions: [3] },
+  }));
+  const user = userEvent.setup();
+  render(<AppShell client={client} />);
+  await rail().findByText("Live B");
+
+  // The URL names B with B's plain session pane in main, then the zoom
+  // system's in-place retype turns that pane into a cascade on the same
+  // source - the exact main a saved layout restores.
+  await user.click(rail().getByText("Live B"));
+  await waitFor(() => {
+    expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:live-b" });
+  });
+  act(() => {
+    const main = workspaceStore.getState().mainPane();
+    if (!main) throw new Error("no main pane to zoom");
+    workspaceStore.getState().retypePane(main, "sessionZoom", {
+      ref: "local:live-child",
+      source: { type: "session", params: { ref: "local:live-b" } },
+      edges: [],
+    });
+  });
+
+  // A secondary panel holds focus while the URL still names B.
+  act(() => {
+    const panelId = workspaceStore.getState().openPane("sessionTasks", { ref: "local:live-b" }, { slot: "secondary" });
+    workspaceStore.getState().focusPane(panelId);
+  });
+  await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toMatch(/^pane_sessionTasks_/));
+
+  // URL-equal press: previous from the panel targets the LAST live row (B),
+  // whose URL the route already holds. The cascade must survive the press
+  // AND take focus.
+  await user.keyboard("{Alt>}{Shift>}{ArrowLeft}{/Shift}{/Alt}");
+  const state = workspaceStore.getState();
+  expect(state.mainPane()?.type).toBe("sessionZoom");
+  expect(state.focusedPaneId).toBe(state.mainPane()?.id);
+});
+
 // Round 8, low 1: a COMPLETED demand's dedupe key must leave the in-flight
 // set. After an invalidation (not a generation change) re-stales the live
 // pages, the same page+direction demand must be issuable again instead of
