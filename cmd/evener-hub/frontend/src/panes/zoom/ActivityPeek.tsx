@@ -1,10 +1,11 @@
 import { type ReactElement, useState } from "react";
 import { ACTIVITY_TABS, activityTabSpec } from "../../shell/activitybar/activityTabs";
-import { cadenceStateFor, SessionStatusIndicator } from "../../shell/SessionStatusIndicator";
+import { SessionStatusIndicator } from "../../shell/SessionStatusIndicator";
 import type { ActivityScope, ActivityTab } from "../../shell/statusbar/statusScope";
 import { IconButton, Popover } from "../../widgets";
 import { DisclosurePersistenceContext } from "../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../widgets/internal/requireClass";
+import { cadenceStateForStatus } from "../session/liveness";
 import { enterAgentCascade } from "./actions";
 import styles from "./zoom.module.css";
 
@@ -100,7 +101,7 @@ export function ScopeRuntimeState({ scope, compact = false }: { scope: ActivityS
   if (compact) {
     return (
       <span className={CLASS.stateIndicator} data-runtime-state={state ?? "unknown"} title={label}>
-        <SessionStatusIndicator state={cadenceStateFor(state ?? "")} />
+        <SessionStatusIndicator state={cadenceStateForStatus(state ?? "")} />
         <span className={CLASS.stateLabel} data-runtime-label>
           {label}
         </span>

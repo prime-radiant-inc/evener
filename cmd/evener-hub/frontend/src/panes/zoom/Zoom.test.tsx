@@ -330,9 +330,9 @@ test.each([
   ["awaiting", "Awaiting", "Needs you", "needs-you"],
   ["warning", "Warning", "Needs you", "needs-you"],
   ["restartRequired", "RestartRequired", "Needs you", "needs-you"],
-  ["errored", "Errored", "Broken", "failed"],
+  ["systemError", "SystemError", "Broken", "failed"],
   ["idle", "Idle", null, null],
-  ["ended", "Ended", null, null],
+  ["closed", "Closed", null, null],
   ["notLoaded", "NotLoaded", null, null],
   ["futureState", "FutureState", null, null],
 ] as const)(
@@ -379,7 +379,7 @@ test("a paused ancestor updates its signal through runtime changes without repla
   expect(within(spine).getByRole("img", { name: "Running" })).toBeTruthy();
   for (const [state, text, label] of [
     ["awaiting", "Awaiting", "Needs you"],
-    ["errored", "Errored", "Broken"],
+    ["systemError", "SystemError", "Broken"],
     ["idle", "Idle", null],
   ] as const) {
     act(() =>

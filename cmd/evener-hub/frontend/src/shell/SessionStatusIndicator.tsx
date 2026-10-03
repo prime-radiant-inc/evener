@@ -7,7 +7,7 @@ const CLASS = {
   statusSpinner: requireClass(styles.statusSpinner, "SessionStatusIndicator.module.css", "statusSpinner"),
 };
 
-// Session-list signal families also apply to each cascade scope's runtime.
+// Navigation summaries carry NormalizeState's values, not raw ThreadStatus.type.
 export function cadenceStateFor(wireState: string): CadenceState {
   switch (wireState) {
     case "errored":
