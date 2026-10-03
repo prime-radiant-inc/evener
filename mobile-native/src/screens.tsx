@@ -2759,6 +2759,7 @@ export function ConversationScreen({
 						item={item}
 						hubId={route.params.hubId}
 						sessionRef={route.params.ref}
+						sourceTurns={conversation?.turns}
 						activityPresentation={presentation.activityPresentation.get(item.id)}
 						expandByDefault={presentation.expandByDefault}
 						showDuration={presentation.showDuration}

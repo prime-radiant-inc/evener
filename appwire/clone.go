@@ -2,6 +2,7 @@ package appwire
 
 import (
 	"encoding/json"
+	"slices"
 )
 
 // CloneThread returns a copy of t in which every known nested mutable field
@@ -207,6 +208,7 @@ func CloneEvenerDiagnostics(d *EvenerDiagnostics) *EvenerDiagnostics {
 		return nil
 	}
 	cp := *d
+	cp.Commands = slices.Clone(d.Commands)
 	cp.Tools = append([]EvenerToolInfo(nil), d.Tools...)
 	cp.MCP = cloneMCPServers(d.MCP)
 	cp.Skills = append([]EvenerSkillInfo(nil), d.Skills...)
@@ -308,7 +310,27 @@ func cloneQueueState(q QueueState) QueueState {
 		}
 		q.SkillNames = names
 	}
+	if q.CommandNames != nil {
+		names := make([][]string, len(q.CommandNames))
+		for i := range q.CommandNames {
+			names[i] = append([]string(nil), q.CommandNames[i]...)
+		}
+		q.CommandNames = names
+	}
+	q.Mentions = CloneInputMentions(q.Mentions)
 	return q
+}
+
+// CloneInputMentions retains FIFO locations without sharing mutable slices.
+func CloneInputMentions(src [][]InputMention) [][]InputMention {
+	if src == nil {
+		return nil
+	}
+	dst := make([][]InputMention, len(src))
+	for i := range src {
+		dst[i] = slices.Clone(src[i])
+	}
+	return dst
 }
 
 func clonePendingMutations(mutations []PendingMutation) []PendingMutation {

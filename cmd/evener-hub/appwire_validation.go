@@ -38,7 +38,7 @@ func isImageInputItem(it appwire.InputItem) bool {
 // SkillInput capability before forwarding.
 func containsSkillInputItem(items []appwire.InputItem) bool {
 	for _, item := range items {
-		if item.Type == "skill" {
+		if item.Type == "skill" || item.Type == "command" {
 			return true
 		}
 	}
@@ -61,6 +61,9 @@ func ensureSkillInputSupported(ctx context.Context, source appsource.Source, ref
 		return err
 	}
 	if err := appwire.ValidateSkillInputSupport(input, resp.Thread.Evener.Capabilities.SkillInput); err != nil {
+		return appwire.InvalidParams(err.Error())
+	}
+	if err := appwire.ValidateCommandInputSupport(input, resp.Thread.Evener.Capabilities.CommandInput); err != nil {
 		return appwire.InvalidParams(err.Error())
 	}
 	return nil
