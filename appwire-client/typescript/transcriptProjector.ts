@@ -10,13 +10,13 @@ import type { ItemModel, ThreadModel, TurnModel } from "./model";
 import { comparePositions } from "./reducer";
 import { ERROR_EVENT_KIND } from "./systemEventCopy";
 import {
-  type ContentSelection,
   type ContentVector,
   contentVectorForConfig,
   type HookExitDetail,
   hidesDaemonSteering,
   informationalNoticesVisible,
   normalizeConfig,
+  sharedNotesVisible,
   type TranscriptDisplayConfigV1,
 } from "./transcriptDisplayConfig";
 import { isInformationalWarning } from "./warnings";
@@ -119,9 +119,8 @@ const MESSAGE_TYPES = new Set(["userMessage", "agentMessage"]);
 
 // Keep this vocabulary in step with protocol/types.gen.ts. The projector treats
 // a value outside this set as an unknown event and deliberately renders it.
-// `environment` and `notes-context` are intentionally routine low-level system
-// events: their visibility is governed by Advanced.systemEvents, just like the
-// other known diagnostic announcements.
+// Environment and shared-notes snapshots are routine diagnostics. Notes also
+// stay out of Conversation, even when Advanced.systemEvents is enabled.
 const KNOWN_EVENT_KINDS = new Set([
   "system_prompt",
   "plugin_loaded",
@@ -332,6 +331,7 @@ function systemDecision(item: ItemModel, config: TranscriptDisplayConfigV1, vect
 
   if (PROMPT_EVENT_KINDS.has(eventKind)) return config.advanced.promptEvents ? "item" : "hidden";
   if (eventKind === TURN_TIMING_EVENT_KIND) return config.advanced.roundTimings ? "item" : "hidden";
+  if (eventKind === "notes-context") return sharedNotesVisible(config) ? "item" : "hidden";
   return config.advanced.systemEvents ? "item" : "hidden";
 }
 
@@ -430,7 +430,7 @@ function terminalFallbackEntry(
   turn: TurnModel,
   sourceIndexByItem: ReadonlyMap<ItemModel, number>,
   vector: ContentVector,
-  content: ContentSelection,
+  config: TranscriptDisplayConfigV1,
 ): ProjectedCriticalEntry | undefined {
   if (!isTerminalTurn(turn)) return undefined;
   const sourceItem = turn.items.at(-1);
@@ -455,7 +455,11 @@ function terminalFallbackEntry(
   // chat, exactly as the phone renders it (Jesse, 2026-10-03). The
   // informational-notice trade above keeps its narrower shape, trading only
   // where the error end cap renders.
-  if (isDaemonSteer(sourceItem) && hidesDaemonSteering(content)) {
+  if (isDaemonSteer(sourceItem) && hidesDaemonSteering(config.content)) {
+    return undefined;
+  }
+  // A hidden snapshot cannot explain a failure and must not defeat filtering.
+  if (sourceItem.type === "systemMessage" && sourceItem.eventKind === "notes-context" && !sharedNotesVisible(config)) {
     return undefined;
   }
   return criticalEntry(sourceItem, turn.id, sourceIndex, redactsReasoning(sourceItem, vector));
@@ -527,7 +531,7 @@ export function projectThread(model: ThreadModel, config: TranscriptDisplayConfi
       }
     }
     if (entries.length === 0) {
-      const fallback = terminalFallbackEntry(turn, sourceIndexByItem, vector, normalized.content);
+      const fallback = terminalFallbackEntry(turn, sourceIndexByItem, vector, normalized);
       if (fallback) {
         visibleItems.push(fallback.item);
         entries.push(fallback);

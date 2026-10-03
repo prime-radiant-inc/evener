@@ -83,6 +83,8 @@ export function systemEventWords(item: Pick<ItemModel, "eventKind" | "text" | "r
     }
     case "compaction":
       return { text: item.text, label: CONTEXT_SUMMARY_LABEL, rendersMarkdown: true };
+    case "notes-context":
+      return { text: item.text, label: "Shared notes updated" };
     default:
       return { text: item.text };
   }

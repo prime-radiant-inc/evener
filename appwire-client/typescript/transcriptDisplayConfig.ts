@@ -180,6 +180,11 @@ export function hidesDaemonSteering(content: ContentSelection): boolean {
   return content.kind === "preset" && content.level === "chat";
 }
 
+/** Internal snapshots stay out of Conversation, even with diagnostics on. */
+export function sharedNotesVisible(config: TranscriptDisplayConfigV1): boolean {
+  return config.advanced.systemEvents && !(config.content.kind === "preset" && config.content.level === "chat");
+}
+
 export function normalizeContent(content: ContentSelection): ContentSelection {
   if (content.kind === "preset") {
     // Rebuild named presets instead of retaining a caller-owned object. This
@@ -492,6 +497,7 @@ export type TranscriptDisplayCategory =
   | "expandedDetails"
   | "informationalNotices"
   | "daemonSteering"
+  | "sharedNotes"
   | "roundTimings"
   | "tokenCounts"
   | "estimatedCost"
@@ -522,6 +528,7 @@ export function visibleCategoryInventory(config: TranscriptDisplayConfigV1): Vis
   // Daemon steering answers from the same rule the projector gates it by, so
   // the settings summary can never disagree with what renders.
   (hidesDaemonSteering(normalized.content) ? hidden : visible).push("daemonSteering");
+  (sharedNotesVisible(normalized) ? visible : hidden).push("sharedNotes");
 
   const advanced = normalized.advanced;
   const advancedCategories: readonly [boolean, TranscriptDisplayCategory][] = [
