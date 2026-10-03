@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -474,7 +475,7 @@ func skillDirectoryLinksRequireDiagnostic(t *testing.T, status DetailedStatus, c
 func skillDirectoryLinksRequireBytes(t *testing.T, path string, want []byte) {
 	t.Helper()
 	got, err := os.ReadFile(path)
-	if err != nil || string(got) != string(want) {
+	if err != nil || !bytes.Equal(got, want) {
 		t.Fatalf("fixture bytes changed at %q: got=%q want=%q err=%v", path, got, want, err)
 	}
 }

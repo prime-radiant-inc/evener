@@ -225,3 +225,58 @@ $ git diff --check
 
 Full repository gates remain assigned to CI by repository policy and the
 operative brief, rather than represented by these targeted local checks.
+
+## Shepherding and first CI round
+
+Activated the actual `shepherd-pr:shepherd-pr` skill. The repository's strict
+main protection requires `static`, `web`, `race-root`, `race-modules`, `tests`
+and `fuzz`, plus one approving review. `AGENTS.md` authorizes admin squash only
+after every check is green and RoboRev's findings are low or conclusively
+refuted. Administrative authority addresses self-approval, not failed checks.
+
+Merged pinned main `abd240265411bb1a35f10d1761a56cf0685339ea` after guarding the
+feature branch, local head, fetched ref and clean state. Resolved only the S18
+documentation-row collision by preserving both the base's inline-command text
+and approved link behavior. All five feature code/test files were unchanged by
+the reconciliation. Package and affected-session checks passed again in 0.200s
+and 3.221s; the personal regression passed in 0.010s, and scoped races passed in
+1.735s and 2.468s. Frozen spec and installed skill hashes were unchanged.
+
+Pushed only `issue-3689-skill-links-trial` once, verified remote head
+`50ffaafd08b3c086cbb7cb0eb1dc7bda31b309b7`, and created
+<https://github.com/prime-radiant-inc/evener/pull/3691>.
+The installed settle detector ran as one background job with the controlling
+caller's approved budget `--count 40 --interval 60`. It exited 1 after the full
+budget, not success. This leaves the round unfinished and permits no bypass.
+
+CI run `37160711511` completed every lane, but `lint-golangci` failed and its
+`static` aggregate consequently failed. Read both complete failed-job logs.
+The underlying finding was in this task's new test:
+
+```text
+agent/session_skill_directory_links_test.go:477:19: stringXbytes:
+suggestion: !bytes.Equal(got, want) (gocritic)
+```
+
+All other checks passed. Read the complete matching combined comment:
+
+```text
+## roborev: Combined Review (`50ffaaf`)
+
+No issues found.
+```
+
+Submitted and inline review surfaces were empty. `roborev list --open` returned
+ten unrelated canceled reviews despite branch filters; exact direct queries for
+each of this task's three commit SHAs reported `no review found`. No unrelated
+review was closed.
+
+Reproduced the fault locally with the same strict configuration before editing:
+`golangci-lint run --allow-parallel-runners --config .golangci.yml ./agent/...`
+exited 1 with that same single `stringXbytes` finding. Replaced only the two
+byte-slice-to-string conversions with `!bytes.Equal(got, want)` and imported
+`bytes`; the assertion, error condition and failure message remain intact.
+The identical linter command then exited 0 with `0 issues.` Package checks
+passed in 0.198s, affected sessions in 3.272s, scoped session races in 2.253s,
+and exact formatting/diff checks exited 0. This is a local affected-module lint
+reproduction, not a claim that all nine CI module sweeps ran locally.
