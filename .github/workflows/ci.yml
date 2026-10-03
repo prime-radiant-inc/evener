@@ -84,7 +84,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v7.0.1
         with:
-          name: skillguard-artifacts-${{ github.run_id }}-${{ github.run_attempt }}
+          name: browser-guards-artifacts-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             /tmp/skillguard-browser-*/artifacts/**
             /tmp/cascadeguard-browser-*/**/
