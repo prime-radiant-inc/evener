@@ -102,3 +102,16 @@ The read-only investigator compared exact main `f980610935604ac0ff738374b68e3b71
 Final combined qualification: `node --check cmd/evener-hub/frontend/scripts/cascadeguard/run.mjs` and `GOMAXPROCS=4 BROWSER_GUARD_CONCURRENCY=3 make test-web-browser` exited 0 (`job:job_034YjykTGJS8qGFnkg7GkI_UeCUarChuVrS`). All ten lanes passed: layout, overflow, shell, spawn, transcript scroll, retirement, mermaid, session cache, skill and cascade. The complete output was read; the existing large-chunk build warning remains. The six directly integrated owner suites passed 616 tests, and the canonical full frontend gate above passed. This is local qualification, not GitHub required-check or review approval.
 
 Main fixture Ruling: preserve `tools/prompt-eval/tasks/bugfix-tally-asked.yaml` and `git-greeting-asked.yaml` unchanged. A broad staged `git diff --check` against the pre-merge HEAD exited 2 on spaces before embedded Go tabs. Both staged blobs are byte-identical to exact main and outside Overview. The staged Overview diff against main passed the same whitespace check; its 68-path set matches the authored branch plus cascadeguard, with no unexpected or missing path. Cost if wrong: a separate main fixture-format cleanup may be needed; this merge does not change those inputs or weaken the check.
+
+## Authorized PR follow-up
+
+PR [3674](https://github.com/prime-radiant-inc/evener/pull/3674) qualified head `dfa639cc39cc8054251875da647b13889bf69cd5`: all 21 current GitHub check entries passed. Both the exact-head combined RoboRev comment and own per-commit review 37773 found a Medium cascade About-chip leak and the already-deferred Low post-flow error snapshot. The finished observation batch stopped at settlement; it did not keep watching.
+
+The cascade renderer mapped the full sidebar registry, including chipless About. Running `npx vitest run src/panes/zoom/ActivityPeek.test.tsx -t 'keeps About out'` from the frontend failed on the actual `About - peek at root`, `child` and `grandchild` buttons: three failures, nine skipped existing cases. Excluding only About at the peek renderer passes all three cases, preserving Agents, Jobs, Watches and empty Tasks. The complete five cascade/About test files passed 79 tests, exit 0. An earlier command named a nonexistent sixth `activityTabs.test.tsx` argument; Vitest ran only five files. The corrected command below also passed. No count-based filtering, new reader owner or category body was introduced.
+
+```sh
+cd cmd/evener-hub/frontend
+npx vitest run src/panes/zoom/ActivityPeek.test.tsx src/panes/zoom/Zoom.test.tsx src/panes/zoom/actions.test.ts src/panes/zoom/intent.test.ts src/shell/activitybar/AboutTab.test.tsx
+```
+
+Main advanced five commits to `94a6b91c75f1633c1d784a9cfb45bab447e08ef4` while the first head qualified. Strict up-to-date protection remains required. Jesse explicitly authorized this additional PR integration fix pass, a current-main merge, one private-branch push and a new batch of 40 observations at 60-second intervals. Both Minor findings remain deferred. The original single whole-branch author review was not repeated.

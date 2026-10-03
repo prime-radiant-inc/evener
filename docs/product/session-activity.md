@@ -302,6 +302,9 @@ that demand. Ordinary navigation can adopt a genuinely disposed predecessor's
 pending demand. The footer and shared sidebar stay scoped to the selected
 leaf, including while the reader selects text in a parent.
 
+Columns and spines expose Agents, Jobs, Watches and Tasks peeks, including empty
+Tasks. About is available in Overview and has no cascade chip.
+
 Columns and spines share the existing summary and additive subscription leases
 by client and requested ref. An ancestor peek observes only that ancestor's
 chosen direct collection; Tasks stays inside the peek. Closing it releases its
