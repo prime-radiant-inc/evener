@@ -55,13 +55,9 @@ func TestWatchSendState_TimestampsAlwaysShipOnWire(t *testing.T) {
 	}
 }
 
-// TestJobRecord_BackgroundAndPhaseStayOffTheWire locks in that Background and
-// Phase never appear in a JobRecord's JSON — the live-only contract
-// LastActivity already carries. No Event field feeds either one, so a record
-// folded from the durable log always reports "foreground, no phase" whatever
-// the job actually did; only the runtime's in-memory record knows better.
-// Emitting them advertises durable state no fold can reproduce, and a reader
-// trusting a folded record's silence reads every job as foreground.
+// TestJobRecord_BackgroundAndPhaseStayOffTheWire keeps the JobRecord JSON
+// shape unchanged. An unmarked journal start carries no background evidence;
+// Phase remains live-only.
 func TestJobRecord_BackgroundAndPhaseStayOffTheWire(t *testing.T) {
 	start := time.Unix(1, 0).UTC()
 	folded := Fold([]Event{
@@ -100,6 +96,51 @@ func TestJobRecord_BackgroundAndPhaseStayOffTheWire(t *testing.T) {
 	if !live.Background || live.Phase != "process_running" {
 		t.Errorf("live record lost its in-memory background/phase: %+v", live)
 	}
+}
+
+func TestFoldBackgroundEvidenceSurvivesTerminal(t *testing.T) {
+	var start Event
+	if err := json.Unmarshal([]byte(`{"kind":"job_started","seq":1,"job_id":"bg","type":"shell","background":true}`), &start); err != nil {
+		t.Fatal(err)
+	}
+	finished := Event{Kind: EventJobFinished, Seq: 2, JobID: "bg", Status: StatusFailed, TerminalGen: "first"}
+	duplicateStart := Event{Kind: EventJobStarted, Seq: 3, JobID: "bg", Type: JobShell}
+	duplicateFinish := Event{Kind: EventJobFinished, Seq: 4, JobID: "bg", Status: StatusCompleted, TerminalGen: "duplicate"}
+	events := []Event{start, finished, duplicateStart, duplicateFinish}
+	assertRecord := func(t *testing.T, record *JobRecord) {
+		t.Helper()
+		if record == nil || !record.Background || record.Status != StatusFailed || record.TerminalGen != "first" {
+			t.Fatalf("fold lost background evidence or first terminal outcome: %+v", record)
+		}
+	}
+	t.Run("full fold", func(t *testing.T) { assertRecord(t, Fold(events)["bg"]) })
+	t.Run("incremental apply", func(t *testing.T) {
+		records := make(map[string]*JobRecord)
+		for _, event := range events {
+			Apply(records, nil, event)
+		}
+		assertRecord(t, records["bg"])
+	})
+	t.Run("event JSON round trip", func(t *testing.T) {
+		data, err := json.Marshal(start)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var roundTrip Event
+		if err := json.Unmarshal(data, &roundTrip); err != nil {
+			t.Fatal(err)
+		}
+		assertRecord(t, Fold([]Event{roundTrip, finished})["bg"])
+	})
+	t.Run("unmarked history", func(t *testing.T) {
+		var unmarked Event
+		if err := json.Unmarshal([]byte(`{"kind":"job_started","seq":1,"job_id":"old","type":"shell"}`), &unmarked); err != nil {
+			t.Fatal(err)
+		}
+		if record := Fold([]Event{unmarked})["old"]; record == nil || record.Background {
+			t.Fatalf("unmarked history claimed background evidence: %+v", record)
+		}
+	})
 }
 
 func TestStatusIsTerminal(t *testing.T) {
