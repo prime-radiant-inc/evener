@@ -125,6 +125,7 @@ const threadRead = (status: string): ThreadReadResponse =>
 	({
 		thread: {
 			id: "thread-fix",
+			cwd: "/work/a",
 			status: { type: status },
 			modelProvider: "glm",
 			evener: { ref: "local:fix", instanceId: "instance-fix", capabilities: {}, queue: { revision: 1 } },
@@ -147,7 +148,10 @@ beforeEach(() => {
 	served = { [PATH]: { body: PLAN } };
 	vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
 		const url = new URL(String(input));
-		const answer = served[url.searchParams.get("path") ?? ""] ?? { status: 404, body: "not found" };
+		const answer = served[(url.searchParams.get("path") ?? "").replace(/^\/work\/a\//, "")] ?? {
+			status: 404,
+			body: "not found",
+		};
 		return new Response(answer.body, {
 			status: answer.status ?? 200,
 			headers: { "Content-Type": "text/plain; charset=utf-8", ...answer.headers },
@@ -157,6 +161,7 @@ beforeEach(() => {
 	client.on("thread/read", () => threadRead("idle"));
 	harness.connection = {
 		profiles: [{ id: "studio", name: "Studio", origin: "https://hub.test" }],
+		activeProfile: { id: "studio" },
 		state: "ready",
 		client,
 	};
@@ -189,6 +194,7 @@ function navigationDouble() {
 	return {
 		options,
 		setOptions: vi.fn((next: NativeStackNavigationOptions) => options.push(next)),
+		setParams: vi.fn(),
 		navigate: vi.fn(),
 		goBack: vi.fn(),
 		pop: vi.fn(),
@@ -204,6 +210,7 @@ async function mount(path = PATH, extra: Record<string, unknown> = {}, flush = s
 		hubId: "studio",
 		sessionRef: "local:fix",
 		path,
+		reference: { path, cwd: "/work/a", readTarget: `/work/a/${path}`, provenance: "relative" },
 		sessionTitle: "Fix race",
 		...extra,
 	};

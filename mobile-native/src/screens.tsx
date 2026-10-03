@@ -1,4 +1,5 @@
 import type { CellRendererProps } from "@react-native/virtualized-lists";
+import { bindFilePath, type FileReference } from "../../appwire-client/typescript/fileReferences";
 import { useHeaderHeight } from "@react-navigation/elements";
 import type { NavigatorScreenParams } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
@@ -261,6 +262,7 @@ export type Routes = {
 	RowMenuSheet: { hubId: string; ref: string; archived: boolean };
 	Reader: {
 		hubId: string;
+		reference: FileReference;
 		/** The document's session, whose folder holds the file; Open session,
 		 * Quote in reply and the review go to it too (ruling 16). */
 		sessionRef: string;
@@ -291,7 +293,7 @@ export type Routes = {
 	/** A shell job's detail, over its coordinator's Activity list. */
 	ShellJob: { hubId: string; jobId: string; ownerRef: string; title: string; coordinator: Coordinator };
 	/** The session's documents as they were when the sheet opened (ruling 26). */
-	FilesSheet: { hubId: string; ref: string; title: string; documents: SessionDocument[] };
+	FilesSheet: { hubId: string; ref: string; title: string; cwd: string; documents: SessionDocument[] };
 };
 
 /** A document's comments and its review: the document, and its session's title,
@@ -1031,12 +1033,14 @@ export function ConversationScreen({
 		else openSessionDestination(SESSION_DESTINATIONS[kind]);
 	}
 	function openFiles() {
+		if (!conversation?.cwd) return;
 		Keyboard.dismiss();
 		navigation.navigate("FilesSheet", {
 			hubId: route.params.hubId,
 			ref: route.params.ref,
 			title: route.params.title,
 			documents,
+			cwd: conversation.cwd,
 		});
 	}
 	function openQueue() {
@@ -1339,15 +1343,19 @@ export function ConversationScreen({
 	const writtenKey = useMemo(() => JSON.stringify([...writtenPaths(turns ?? [], documentCwd)]), [turns, documentCwd]);
 	const written = useMemo(() => new Set<string>(JSON.parse(writtenKey) as string[]), [writtenKey]);
 	const openDocument = useCallback(
-		(path: string, updatedAt: string | undefined) =>
+		(path: string, updatedAt: string | undefined) => {
+			const reference = bindFilePath(path, documentCwd);
+			if (!reference) return;
 			navigation.navigate("Reader", {
 				hubId: route.params.hubId,
 				sessionRef: route.params.ref,
-				path,
+				path: reference.path,
+				reference,
 				sessionTitle: route.params.title,
 				...(updatedAt === undefined ? {} : { updatedAt }),
-			}),
-		[navigation, route.params.hubId, route.params.ref, route.params.title],
+			});
+		},
+		[navigation, route.params.hubId, route.params.ref, route.params.title, documentCwd],
 	);
 	// A message still streaming shows its chips once it settles.
 	const documentChips = useCallback(

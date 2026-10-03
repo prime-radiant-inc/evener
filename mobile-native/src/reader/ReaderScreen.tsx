@@ -2,9 +2,10 @@
 // It marks what changed since you last read it and steps through those
 // changes, reopens where you were, offers its outline, takes your comments
 // on its paragraphs and list items, and remembers what you read when you
-// leave. It never shows a Retry, Refresh or Reconnect: it reads
-// again on its own when it comes back to the front, when the connection
-// returns, and when the document's session ends a turn.
+// leave. It recovers while visible, and its existing Document actions menu
+// offers Reload for files or permissions that changed.
+import { rebindFileReference, type FileReference } from "../../../appwire-client/typescript/fileReferences";
+import { docImageReadURL } from "@evener/appwire-client/docContent";
 import type { NativeStackHeaderItem, NativeStackScreenProps } from "@react-navigation/native-stack";
 import { SymbolView } from "expo-symbols";
 import * as SecureStore from "expo-secure-store";
@@ -26,7 +27,6 @@ import { useHeldAlertCount, useHoldAlerts } from "../alerts/alertsContext";
 import { copyText } from "../clipboard";
 import { useConnection } from "../ConnectionProvider";
 import { HubProfiles } from "../connection";
-import { nativeDocImageSource } from "../nativeDocPort";
 import type { Routes } from "../screens";
 import { compactDuration } from "../session/format";
 import { useMinuteClock } from "../session/minuteClock";
@@ -44,7 +44,7 @@ import { documentKind, documentNotice, type LoadedDocument, truncationNote } fro
 import { documentMemory } from "./nativeDocumentMemory";
 import { type BlockAction, ReaderBlock, useCodeText } from "./ReaderBlock";
 import { type ReaderHost, readerHosts } from "./readerHosts";
-import { useDocument } from "./useDocument";
+import { useDocument, type NativeImageAttempt } from "./useDocument";
 
 const hubs = new HubProfiles(SecureStore);
 
@@ -80,9 +80,19 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 	const { hubId, sessionRef, path, sessionTitle, updatedAt } = route.params;
 	const key = useMemo(() => ({ sessionRef, path }), [sessionRef, path]);
 	const memory = documentMemory(hubId);
-	const { client } = useConnection();
-	const { document, reload } = useDocument(hubId, sessionRef, path);
+	const { client, activeProfile, state } = useConnection();
 	const inFront = useScreenInFront(route.key);
+	const routeReference = route.params.reference;
+	const [publication, setPublication] = useState<{ source: string; cwd: string } | null>(null);
+	const source = JSON.stringify([hubId, sessionRef]);
+	const reference = useMemo(
+		() =>
+			publication?.source === source && publication.cwd !== routeReference.cwd
+				? rebindFileReference(routeReference, publication.cwd)
+				: routeReference,
+		[publication, source, routeReference],
+	);
+	const { document, notice: refreshNotice, imageAttempt, reload } = useDocument(hubId, sessionRef, reference, inFront);
 	// Banners wait while you read (spec 13.3); Back counts what waits.
 	// "In front" is the Reader's own notion of reading: it stays true while a
 	// sheet covers the Reader and follows the stack, so a hold ends when the
@@ -194,6 +204,7 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 		if (!document || !READABLE.has(document.kind)) return;
 		memory.left(key, {
 			title: document.title,
+			reference,
 			blocks: blocks?.map((block) => block.hash) ?? [],
 			position: position(),
 			sessionTitle,
@@ -207,9 +218,8 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 		if (was && !inFront) leave.current();
 		if (!was && inFront) {
 			memory.opened(key);
-			reload();
 		}
-	}, [inFront, memory, key, reload]);
+	}, [inFront, memory, key]);
 	useEffect(() => {
 		memory.opened(key);
 		return () => {
@@ -222,7 +232,7 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 	// the session the document was opened in (ruling 16), which is this one.
 	const [canReview, setCanReview] = useState(false);
 	useEffect(() => {
-		if (!inFront || !client) return;
+		if (!inFront || !client || activeProfile?.id !== hubId || state !== "ready") return;
 		const link = new SessionLink(client, sessionRef);
 		let status: string | null = null;
 		const unsubscribe = link.subscribe(() => {
@@ -230,6 +240,10 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 			const next = session?.status ?? null;
 			if (status === "active" && next !== "active") reload();
 			status = next;
+			if (session?.cwd)
+				setPublication((previous) =>
+					previous?.source === source && previous.cwd === session.cwd ? previous : { source, cwd: session.cwd },
+				);
 			setCanReview(Boolean(session?.capabilities.send || session?.capabilities.queue));
 		});
 		link.read({ follow: true }).catch(() => {
@@ -239,7 +253,10 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 			unsubscribe();
 			link.dispose();
 		};
-	}, [inFront, client, sessionRef, reload]);
+	}, [inFront, client, activeProfile?.id, hubId, state, sessionRef, source, reload]);
+	useEffect(() => {
+		if (reference !== routeReference) navigation.setParams({ reference });
+	}, [reference, routeReference, navigation]);
 
 	// Your comments on this document, followed as the comment sheets change
 	// them, and how many sit on each block now (ruling 14).
@@ -297,6 +314,7 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 				icon: { type: "sfSymbol", name: "ellipsis.circle" },
 				menu: {
 					items: [
+						{ type: "action", label: "Reload", onPress: reload },
 						{
 							type: "action",
 							label: "Open session",
@@ -325,7 +343,7 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 			headerTitle: () => (titleShown ? <HeaderTitle title={title} caption={about} /> : null),
 			unstable_headerRightItems: () => items,
 		});
-	}, [navigation, held, hasOutline, hubId, sessionRef, path, sessionTitle, text, titleShown, title, about]);
+	}, [navigation, held, hasOutline, hubId, sessionRef, path, sessionTitle, text, titleShown, title, about, reload]);
 
 	const cellRenderer = useMemo(
 		() =>
@@ -414,7 +432,7 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 		[changedSet, menuOpen, selecting, commentCounts],
 	);
 	const lines = document?.kind === "code" ? rows.length : 0;
-	const notice = document ? documentNotice(document) : null;
+	const notice = refreshNotice ?? (document ? documentNotice(document) : null);
 	// The caption and the truncation note: 13/18 in ink-low.
 	const caption = { color: palette.inkLow, fontSize: 13 * scale, lineHeight: 18 * scale };
 	const header = (
@@ -445,7 +463,9 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 					{notice}
 				</Text>
 			) : null}
-			{document?.kind === "image" ? <DocumentImage hubId={hubId} sessionRef={sessionRef} path={path} /> : null}
+			{document?.kind === "image" && imageAttempt ? (
+				<DocumentImage hubId={hubId} sessionRef={sessionRef} reference={reference} attempt={imageAttempt} />
+			) : null}
 		</View>
 	);
 
@@ -684,36 +704,90 @@ function CodeLine({ number, text, lines }: { number: number; text: string; lines
 
 /** An image file, through the hub's /doc/image with this hub's token, fit to
  * the width at its own aspect ratio. */
-function DocumentImage({ hubId, sessionRef, path }: { hubId: string; sessionRef: string; path: string }) {
+function DocumentImage({
+	hubId,
+	sessionRef,
+	reference,
+	attempt,
+}: {
+	hubId: string;
+	sessionRef: string;
+	reference: FileReference;
+	attempt: NativeImageAttempt;
+}) {
 	const { profiles } = useConnection();
 	const origin = profiles.find((profile) => profile.id === hubId)?.origin ?? "";
-	const [token, setToken] = useState<string | null>(null);
-	const [aspect, setAspect] = useState(4 / 3);
+	const identity = JSON.stringify([hubId, origin, sessionRef, reference]);
+	const current = useRef({ identity, generation: attempt.generation, settled: false });
+	if (current.current.identity !== identity || current.current.generation !== attempt.generation)
+		current.current = { identity, generation: attempt.generation, settled: false };
+	const [credential, setCredential] = useState<{ identity: string; token: string } | null>(null);
+	const [healthy, setHealthy] = useState<{
+		identity: string;
+		source: { uri: string; headers: { Authorization: string } };
+		aspect: number;
+	} | null>(null);
 	useEffect(() => {
-		let current = true;
+		let live = true;
 		hubs
 			.token(hubId)
 			.then((value) => {
-				if (current) setToken(value);
+				if (live) setCredential({ identity, token: value });
 			})
 			.catch(() => {
-				if (current) setToken("");
+				if (live) attempt.failed();
 			});
 		return () => {
-			current = false;
+			live = false;
 		};
-	}, [hubId]);
-	if (token === null) return null;
+	}, [hubId, identity, attempt]);
+	if (credential?.identity !== identity) return null;
+	const source = {
+		uri: docImageReadURL(origin, sessionRef, reference.readTarget, attempt.generation),
+		headers: { Authorization: `Bearer ${credential.token}` },
+	};
+	const shown = healthy?.identity === identity ? healthy : null;
+	const pending = shown?.source.uri !== source.uri;
+	const isCurrent = () =>
+		current.current.identity === identity &&
+		current.current.generation === attempt.generation &&
+		!current.current.settled;
 	return (
-		<Image
-			source={nativeDocImageSource(origin, token, sessionRef, path)}
-			accessibilityLabel={path}
-			resizeMode="contain"
-			onLoad={(event) => {
-				const { width, height } = event.nativeEvent.source;
-				if (width > 0 && height > 0) setAspect(width / height);
-			}}
-			style={{ marginTop: 10, width: "100%", aspectRatio: aspect }}
-		/>
+		<View>
+			{shown ? (
+				<Image
+					source={shown.source}
+					accessibilityLabel={reference.path}
+					resizeMode="contain"
+					style={{ marginTop: 10, width: "100%", aspectRatio: shown.aspect }}
+				/>
+			) : null}
+			{pending ? (
+				<Image
+					key={attempt.generation}
+					source={source}
+					accessibilityLabel={shown ? undefined : reference.path}
+					resizeMode="contain"
+					onLoad={(event) => {
+						if (!isCurrent()) return;
+						current.current.settled = true;
+						const { width, height } = event.nativeEvent.source;
+						setHealthy({ identity, source, aspect: width > 0 && height > 0 ? width / height : 4 / 3 });
+						attempt.loaded();
+					}}
+					onError={() => {
+						if (isCurrent()) {
+							current.current.settled = true;
+							attempt.failed();
+						}
+					}}
+					style={
+						shown
+							? { position: "absolute", width: 1, height: 1, opacity: 0 }
+							: { marginTop: 10, width: "100%", aspectRatio: 4 / 3 }
+					}
+				/>
+			) : null}
+		</View>
 	);
 }

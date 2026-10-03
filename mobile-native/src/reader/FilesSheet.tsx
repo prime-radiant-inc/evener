@@ -4,6 +4,7 @@
 // with (its params are plain data), so it needs no host. Tapping a row closes
 // the sheet, then opens the document in the Reader over the session.
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
+import { bindFilePath } from "../../../appwire-client/typescript/fileReferences";
 import { FlatList, Pressable, Text, View } from "react-native";
 import { fonts } from "../design/tokens";
 import type { Routes } from "../screens";
@@ -16,21 +17,25 @@ import { FreshDot } from "./FreshDot";
 import type { SessionDocument } from "./sessionDocuments";
 
 export function FilesSheet({ route, navigation }: NativeStackScreenProps<Routes, "FilesSheet">) {
-	const { hubId, ref, title, documents } = route.params;
+	const { hubId, ref, title, cwd, documents } = route.params;
 	const sheet = useSheet();
 	const { palette } = useColors();
 	const scale = useTextScale();
-	const open = ({ path, updatedAt }: SessionDocument) =>
+	const open = ({ path, updatedAt }: SessionDocument) => {
+		const reference = bindFilePath(path, cwd);
+		if (!reference) return;
 		sheet.finish(() => {
 			navigation.goBack();
 			navigation.navigate("Reader", {
 				hubId,
 				sessionRef: ref,
-				path,
+				path: reference.path,
+				reference,
 				sessionTitle: title,
 				...(updatedAt === undefined ? {} : { updatedAt }),
 			});
 		});
+	};
 	return (
 		<Sheet title="Files & artifacts" done={{ onPress: () => sheet.finish() }}>
 			<FlatList

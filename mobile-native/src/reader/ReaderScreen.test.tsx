@@ -1,5 +1,11 @@
 // The Reader (spec 10.2): a document from a session's folder, with what
 // changed since you last read it, where you were, and its outline.
+import { once } from "node:events";
+import { mkdtemp, readFile, rm, rmdir, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
+import { join } from "node:path";
+import { setTimeout as wait } from "node:timers/promises";
+import type { ServerResponse } from "node:http";
 import type { NativeStackHeaderItem, NativeStackNavigationOptions } from "@react-navigation/native-stack";
 import type { ThreadReadResponse } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
@@ -29,6 +35,7 @@ const harness = vi.hoisted(() => ({
 	clipboard: [] as string[],
 	appState: [] as ((state: string) => void)[],
 	focused: true,
+	markdowns: [] as string[],
 }));
 // What the Reader holds, whether and as what kind, and the count Back shows.
 const alerts = vi.hoisted(() => ({ holds: [] as [boolean, string][], held: 0 }));
@@ -64,7 +71,11 @@ vi.mock("react-native", async () => ({
 		currentState: "active",
 		addEventListener: (_event: string, listener: (state: string) => void) => {
 			harness.appState.push(listener);
-			return { remove: () => {} };
+			return {
+				remove: () => {
+					harness.appState = harness.appState.filter((entry) => entry !== listener);
+				},
+			};
 		},
 	},
 }));
@@ -72,7 +83,15 @@ vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("react-native-safe-area-context", () => ({
 	useSafeAreaInsets: () => ({ top: 47, bottom: 34, left: 0, right: 0 }),
 }));
-vi.mock("react-native-enriched-markdown", () => ({ EnrichedMarkdownText: "EnrichedMarkdownText" }));
+vi.mock("react-native-enriched-markdown", async () => {
+	const { createElement } = await import("react");
+	return {
+		EnrichedMarkdownText: (props: { markdown: string }) => {
+			harness.markdowns.push(props.markdown);
+			return createElement("EnrichedMarkdownText", props);
+		},
+	};
+});
 vi.mock("expo-clipboard", () => ({
 	setStringAsync: vi.fn(async (text: string) => {
 		harness.clipboard.push(text);
@@ -134,6 +153,7 @@ const threadRead = (status: string): ThreadReadResponse =>
 	({
 		thread: {
 			id: "thread-fix",
+			cwd: "/work/a",
 			status: { type: status },
 			modelProvider: "glm",
 			evener: { ref: "local:fix", instanceId: "instance-fix", capabilities: {}, queue: { revision: 1 } },
@@ -142,6 +162,7 @@ const threadRead = (status: string): ThreadReadResponse =>
 
 beforeEach(() => {
 	harness.focused = true;
+	harness.markdowns = [];
 	alerts.holds = [];
 	alerts.held = 0;
 	flatListCalls.length = 0;
@@ -156,7 +177,10 @@ beforeEach(() => {
 	served = { [PATH]: { body: PLAN } };
 	fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
 		const url = new URL(String(input));
-		const answer = served[url.searchParams.get("path") ?? ""] ?? { status: 404, body: "not found" };
+		const answer = served[(url.searchParams.get("path") ?? "").replace(/^\/work\/a\//, "")] ?? {
+			status: 404,
+			body: "not found",
+		};
 		return new Response(answer.body, {
 			status: answer.status ?? 200,
 			headers: { "Content-Type": "text/plain; charset=utf-8", ...answer.headers },
@@ -166,6 +190,7 @@ beforeEach(() => {
 	client.on("thread/read", () => threadRead("idle"));
 	harness.connection = {
 		profiles: [{ id: "studio", name: "Studio", origin: "https://hub.test" }],
+		activeProfile: { id: "studio" },
 		state: "ready",
 		client,
 	};
@@ -184,6 +209,7 @@ beforeEach(() => {
 afterEach(() => {
 	for (const tree of trees.splice(0)) act(() => tree.unmount());
 	vi.restoreAllMocks();
+	vi.useRealTimers();
 });
 
 /** Lets the reads land on microtasks alone, for a test that fakes setTimeout. */
@@ -205,6 +231,7 @@ function navigationDouble() {
 	return {
 		options,
 		setOptions: vi.fn((next: NativeStackNavigationOptions) => options.push(next)),
+		setParams: vi.fn(),
 		navigate: vi.fn(),
 		goBack: vi.fn(),
 		pop: vi.fn(),
@@ -220,6 +247,7 @@ async function mount(path = PATH, extra: Record<string, unknown> = {}, flush = s
 		hubId: "studio",
 		sessionRef: "local:fix",
 		path,
+		reference: { path, cwd: "/work/a", readTarget: `/work/a/${path}`, provenance: "relative" },
 		sessionTitle: "Fix race",
 		...extra,
 	};
@@ -233,9 +261,9 @@ async function mount(path = PATH, extra: Record<string, unknown> = {}, flush = s
 	const rerender = async () => {
 		// A fresh element: React skips an update given the identical one.
 		act(() => tree.update(cloneElement(element)));
-		await settle();
+		await flush();
 	};
-	return { tree, navigation, rerender };
+	return { tree, navigation, rerender, params };
 }
 
 function documentList(tree: ReactTestRenderer): ReactTestInstance {
@@ -262,6 +290,75 @@ function menuAction(navigation: ReturnType<typeof navigationDouble>, label: stri
 	return action;
 }
 
+it("Reload in the actual Document actions recovers missing remote text from useful file bytes", async () => {
+	fetchSpy.mockRestore();
+	const scratch = process.env.EVENER_SCRATCH_DIR;
+	if (!scratch) throw new Error("HTTP fixture requires authorized EVENER_SCRATCH_DIR");
+	const directory = await mkdtemp(join(scratch, "task-8-reader-"));
+	const file = join(directory, "recovered.md");
+	const requests: { path: string | null; session: string | null; auth: string | undefined }[] = [];
+	const server = createServer(async (request, response) => {
+		const url = new URL(request.url ?? "", "http://fixture.test");
+		requests.push({
+			path: url.searchParams.get("path"),
+			session: url.searchParams.get("session"),
+			auth: request.headers.authorization,
+		});
+		try {
+			const bytes = await readFile(file);
+			response.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
+			response.end(bytes);
+		} catch {
+			response.writeHead(404);
+			response.end("missing");
+		}
+	});
+	server.listen(0, "127.0.0.1");
+	await once(server, "listening");
+	try {
+		const address = server.address();
+		if (!address || typeof address === "string") throw new Error("expected TCP fixture");
+		harness.connection.profiles = [{ id: "studio", name: "Studio", origin: `http://127.0.0.1:${address.port}` }];
+		harness.connection.activeProfile = { id: "studio" };
+		client.on("thread/read", () => ({ thread: { ...threadRead("idle").thread, cwd: "/work/owner" } }));
+		const { tree, navigation } = await mount("docs/recovered.md", {
+			sessionRef: "h1:local:02wMz5Txv1C3Hut0M8GCeB",
+			reference: {
+				path: "docs/recovered.md",
+				cwd: "/work/owner",
+				readTarget: "/work/owner/docs/recovered.md",
+				provenance: "relative",
+			},
+		});
+		await vi.waitFor(async () => {
+			await settle();
+			expect(renderedText(tree)).toContain("isn't in this session's folder");
+		});
+		await writeFile(file, "# Recovered bytes\n\nUseful file body.");
+		act(() => menuAction(navigation, "Reload").onPress?.());
+		await vi.waitFor(async () => {
+			await settle();
+			expect(
+				tree.root.findAll((node) => String(node.type) === "EnrichedMarkdownText").map((node) => node.props.markdown),
+			).toContain("Useful file body.");
+		});
+		expect(requests).toEqual([
+			{ path: "/work/owner/docs/recovered.md", session: "h1:local:02wMz5Txv1C3Hut0M8GCeB", auth: "Bearer secret" },
+			{ path: "/work/owner/docs/recovered.md", session: "h1:local:02wMz5Txv1C3Hut0M8GCeB", auth: "Bearer secret" },
+		]);
+	} finally {
+		server.closeAllConnections();
+		await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+		await rm(file, { force: true });
+		await rmdir(directory);
+	}
+});
+
+it("offers a real Reload action even after a missing document", async () => {
+	const { navigation } = await mount("docs/missing.md");
+	expect(menuAction(navigation, "Reload").onPress).toBeTypeOf("function");
+});
+
 it("renders a plan's blocks under its caption", async () => {
 	const updatedAt = new Date(Date.now() - 3 * MINUTE).toISOString();
 	const { tree } = await mount(PATH, { updatedAt });
@@ -276,7 +373,7 @@ it("renders a plan's blocks under its caption", async () => {
 		"- Fix it.",
 	]);
 	expect(fetchSpy).toHaveBeenCalledWith(
-		"https://hub.test/doc/file?format=raw&session=local%3Afix&path=docs%2Fsuperpowers%2Fplans%2Fsettle.md",
+		"https://hub.test/doc/file?format=raw&session=local%3Afix&path=%2Fwork%2Fa%2Fdocs%2Fsuperpowers%2Fplans%2Fsettle.md",
 		{ headers: { Authorization: "Bearer secret" } },
 	);
 });
@@ -569,13 +666,14 @@ it("says a document was cut short", async () => {
 	expect(renderedText(tree)).toContain(`Showing the first ${PLAN.length} bytes of 3 MB`);
 });
 
-it("says why it can't show a binary, a missing file, or another host's document", async () => {
+it("says why it can't show a binary, a missing file, or an unsupported host's document", async () => {
 	served["out/data.bin"] = { body: "\u0000\u0001", headers: { "Content-Type": "application/octet-stream" } };
 	const binary = await mount("out/data.bin");
 	expect(renderedText(binary.tree)).toContain("data.bin isn't text, so it can't be shown here (2 bytes).");
 	const missing = await mount("docs/gone.md");
 	expect(renderedText(missing.tree)).toContain("gone.md isn't in this session's folder any more.");
 	fetchSpy.mockClear();
+	served[PATH] = { status: 501, body: "unsupported host" };
 	const navigation = navigationDouble();
 	const tree = render(
 		<ReaderScreen
@@ -587,6 +685,7 @@ it("says why it can't show a binary, a missing file, or another host's document"
 						hubId: "studio",
 						sessionRef: "laptop:fix",
 						path: PATH,
+						reference: { path: PATH, cwd: "/work/a", readTarget: `/work/a/${PATH}`, provenance: "relative" },
 						sessionTitle: "Fix",
 					},
 				} as never
@@ -596,8 +695,8 @@ it("says why it can't show a binary, a missing file, or another host's document"
 	);
 	trees.push(tree);
 	await settle();
-	expect(renderedText(tree)).toContain("This document is on laptop. Open it on the host to read it.");
-	expect(fetchSpy).not.toHaveBeenCalled();
+	expect(renderedText(tree)).toContain("does not support document reads");
+	expect(fetchSpy).toHaveBeenCalledOnce();
 });
 
 it("numbers a code file's lines", async () => {
@@ -612,10 +711,13 @@ it("shows an image through the hub with the bearer header", async () => {
 	const { tree } = await mount("out/chart.png");
 	await settle();
 	const image = tree.root.findByType("Image" as never);
-	expect(image.props.source).toEqual({
-		uri: "https://hub.test/doc/image?session=local%3Afix&path=out%2Fchart.png",
-		headers: { Authorization: "Bearer secret" },
-	});
+	const url = new URL(image.props.source.uri);
+	expect(url.origin).toBe("https://hub.test");
+	expect(url.pathname).toBe("/doc/image");
+	expect(url.searchParams.get("session")).toBe("local:fix");
+	expect(url.searchParams.get("path")).toBe("/work/a/out/chart.png");
+	expect(url.searchParams.get("read")).toBeTruthy();
+	expect(image.props.source.headers).toEqual({ Authorization: "Bearer secret" });
 	expect(fetchSpy).not.toHaveBeenCalled();
 });
 
@@ -740,4 +842,187 @@ it("never offers Retry, Refresh, Reconnect or a Next capsule", async () => {
 	const text = renderedText(tree);
 	for (const word of ["Retry", "Refresh", "Reconnect", "Next"]) expect(text).not.toContain(word);
 	expect(text).toContain("settle.md couldn't be loaded right now.");
+});
+
+async function until(check: () => void) {
+	const deadline = performance.now() + 3000;
+	for (;;) {
+		try {
+			await act(async () => {
+				await wait(1);
+			});
+			check();
+			return;
+		} catch (error) {
+			if (performance.now() > deadline) throw error;
+		}
+	}
+}
+
+it.each(["relative", "absolute"] as const)(
+	"replaces %s cwd through the same real SessionLink, clears on the first render and rejects retired bytes",
+	async (provenance) => {
+		fetchSpy.mockRestore();
+		let cwd = "/work/a";
+		client.on("thread/read", () => ({ thread: { ...threadRead("idle").thread, cwd } }));
+		const requests: string[] = [];
+		let retired: ServerResponse | undefined;
+		let refreshFails = false;
+		const server = createServer((request, response) => {
+			const target = new URL(request.url ?? "", "http://fixture.test").searchParams.get("path") ?? "";
+			requests.push(target);
+			if (requests.length === 2) {
+				retired = response;
+				return;
+			}
+			response.writeHead(requests.length === 3 || refreshFails ? 503 : 200, {
+				"Content-Type": "text/plain; charset=utf-8",
+			});
+			response.end(
+				requests.length === 1
+					? "# Healthy A\n\nUseful A."
+					: requests.length === 3 || refreshFails
+						? "B offline"
+						: "# Healthy B\n\nUseful B.",
+			);
+		});
+		server.listen(0, "127.0.0.1");
+		await once(server, "listening");
+		const address = server.address();
+		if (!address || typeof address === "string") throw new Error("expected TCP fixture");
+		harness.connection.profiles = [{ id: "studio", name: "Studio", origin: `http://127.0.0.1:${address.port}` }];
+		const reference = { path: "docs/cwd.md", cwd: "/work/a", readTarget: "/work/a/docs/cwd.md", provenance };
+		const { tree, navigation } = await mount(reference.path, { reference });
+		try {
+			await until(() => expect(harness.markdowns).toContain("Useful A."));
+			act(() => menuAction(navigation, "Reload").onPress());
+			await until(() => expect(retired).toBeDefined());
+			expect(harness.markdowns).toContain("Useful A.");
+			// Unrelated publication cannot replace this Reader or start another lease.
+			act(() =>
+				client.emitNotification({
+					method: "evener/thread/resync",
+					params: { threadId: "other", ref: "local:other" },
+				} as never),
+			);
+			expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(1);
+			cwd = "/work/b";
+			harness.markdowns = [];
+			act(() =>
+				client.emitNotification({
+					method: "evener/thread/resync",
+					params: { threadId: "thread-fix", ref: "local:fix" },
+				} as never),
+			);
+			const expected = {
+				path: "docs/cwd.md",
+				cwd: "/work/b",
+				readTarget: provenance === "relative" ? "/work/b/docs/cwd.md" : "/work/a/docs/cwd.md",
+				provenance,
+			};
+			await until(() => expect(navigation.setParams).toHaveBeenLastCalledWith({ reference: expected }));
+			expect(harness.markdowns).not.toContain("Useful A.");
+			expect(tree.root.findAll((node) => String(node.type) === "EnrichedMarkdownText")).toHaveLength(0);
+			expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(2);
+			retired?.writeHead(200, { "Content-Type": "text/plain" });
+			retired?.end("# Retired completion\n\nObsolete bytes.");
+			await until(() => expect(renderedText(tree)).toContain("couldn't be loaded right now"));
+			expect(harness.markdowns).not.toContain("Obsolete bytes.");
+			expect(requests).toEqual(["/work/a/docs/cwd.md", "/work/a/docs/cwd.md", expected.readTarget]);
+			act(() => menuAction(navigation, "Reload").onPress());
+			await until(() => expect(harness.markdowns).toContain("Useful B."));
+			expect(requests.at(-1)).toBe(expected.readTarget);
+			refreshFails = true;
+			act(() => menuAction(navigation, "Reload").onPress());
+			await until(() => expect(renderedText(tree)).toContain("couldn't be loaded right now"));
+			expect(
+				tree.root.findAll((node) => String(node.type) === "EnrichedMarkdownText").map((node) => node.props.markdown),
+			).toContain("Useful B.");
+			expect(harness.connection.state).toBe("ready");
+		} finally {
+			act(() => tree.unmount());
+			server.closeAllConnections();
+			await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+		}
+		const reads = client.calls.filter((call) => call.method === "thread/read").length;
+		act(() =>
+			client.emitNotification({
+				method: "evener/thread/resync",
+				params: { threadId: "thread-fix", ref: "local:fix" },
+			} as never),
+		);
+		expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(reads);
+		expect(harness.appState).toEqual([]);
+	},
+);
+
+it("settles actual native Image attempts, retries untyped errors, retains healthy refreshes and ignores retired callbacks", async () => {
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+	const { tree, navigation } = await mount("out/chart.png", {}, settleMicrotasks);
+	await until(() => expect(tree.root.findAllByType("Image" as never)).toHaveLength(1));
+	const first = tree.root.findByType("Image" as never).props;
+	act(() => first.onError({ nativeEvent: { error: "untyped native failure" } }));
+	await until(() => expect(renderedText(tree)).toContain("This image couldn't be loaded right now."));
+	expect(vi.getTimerCount()).toBe(1);
+	await act(async () => {
+		await vi.advanceTimersByTimeAsync(999);
+	});
+	expect(tree.root.findByType("Image" as never).props.source.uri).toBe(first.source.uri);
+	await act(async () => {
+		await vi.advanceTimersByTimeAsync(1);
+	});
+	await until(() => expect(tree.root.findByType("Image" as never).props.source.uri).not.toBe(first.source.uri));
+	const second = tree.root.findByType("Image" as never).props;
+	act(() => first.onLoad({ nativeEvent: { source: { width: 9, height: 1 } } }));
+	act(() => first.onError({ nativeEvent: { error: "late failure" } }));
+	expect(vi.getTimerCount()).toBe(0);
+	act(() => second.onLoad({ nativeEvent: { source: { width: 640, height: 320 } } }));
+	await until(() => expect(tree.root.findByType("Image" as never).props.style.aspectRatio).toBe(2));
+	expect(renderedText(tree)).not.toContain("couldn't be loaded");
+	act(() => second.onError({ nativeEvent: { error: "duplicate after success" } }));
+	expect(renderedText(tree)).not.toContain("couldn't be loaded");
+	act(() => {
+		menuAction(navigation, "Reload").onPress();
+		menuAction(navigation, "Reload").onPress();
+	});
+	await until(() => expect(tree.root.findAllByType("Image" as never)).toHaveLength(2));
+	const images = tree.root.findAllByType("Image" as never);
+	expect(images[0]?.props.source.uri).toBe(second.source.uri);
+	expect(images[0]?.props.style.aspectRatio).toBe(2);
+	const pending = images[1]?.props;
+	expect(pending.style.opacity).toBe(0);
+	act(() => pending.onError({ nativeEvent: { error: "refresh failed" } }));
+	await until(() => expect(renderedText(tree)).toContain("This image couldn't be loaded right now."));
+	expect(tree.root.findAllByType("Image" as never)[0]?.props.source.uri).toBe(second.source.uri);
+	act(() => tree.unmount());
+	expect(vi.getTimerCount()).toBe(0);
+	act(() => pending.onError({ nativeEvent: { error: "after unmount" } }));
+	await act(async () => {
+		await vi.advanceTimersByTimeAsync(60000);
+	});
+	expect(fetchSpy).not.toHaveBeenCalled();
+	expect(harness.appState).toEqual([]);
+});
+
+it("clears a healthy native image on origin replacement and ignores its retired load/error callbacks", async () => {
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+	const { tree, rerender } = await mount("out/chart.png", {}, settleMicrotasks);
+	const old = tree.root.findByType("Image" as never).props;
+	act(() => old.onLoad({ nativeEvent: { source: { width: 4, height: 1 } } }));
+	expect(tree.root.findByType("Image" as never).props.style.aspectRatio).toBe(4);
+	harness.connection.profiles = [{ id: "studio", name: "Studio", origin: "https://replacement.test" }];
+	await rerender();
+	const next = tree.root.findByType("Image" as never).props;
+	expect(next.source.uri).toContain("https://replacement.test/doc/image?");
+	expect(next.source.uri).not.toBe(old.source.uri);
+	expect(next.style.aspectRatio).toBe(4 / 3);
+	act(() => old.onLoad({ nativeEvent: { source: { width: 99, height: 1 } } }));
+	act(() => old.onError({ nativeEvent: { error: "old origin" } }));
+	expect(tree.root.findByType("Image" as never).props.source.uri).toBe(next.source.uri);
+	expect(tree.root.findByType("Image" as never).props.style.aspectRatio).toBe(4 / 3);
+	expect(vi.getTimerCount()).toBe(0);
+	act(() => next.onLoad({ nativeEvent: { source: { width: 3, height: 1 } } }));
+	expect(tree.root.findByType("Image" as never).props.style.aspectRatio).toBe(3);
+	act(() => tree.unmount());
+	expect(harness.appState).toEqual([]);
 });

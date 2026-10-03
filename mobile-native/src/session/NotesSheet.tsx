@@ -4,6 +4,7 @@
 // controller and provides it here through notesHosts, so a save the sheet
 // starts as it closes finishes after the sheet has gone.
 import type { ThreadModel } from "@evener/appwire-client";
+import { bindFilePath } from "../../../appwire-client/typescript/fileReferences";
 import { cwdRelative, fileURLToPath } from "@evener/appwire-client/docContent";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import * as Clipboard from "expo-clipboard";
@@ -96,12 +97,20 @@ export function NotesSheet({ route, navigation }: NativeStackScreenProps<Routes,
 					toast={toast}
 					// A document opens in the Reader over the session, once the
 					// sheet has gone (ruling 26); closing saves the note as usual.
-					openDocument={(path) =>
+					openDocument={(path) => {
+						const reference = bindFilePath(path, host.cwd);
+						if (!reference) return;
 						sheet.finish(() => {
 							navigation.goBack();
-							navigation.navigate("Reader", { hubId, sessionRef: ref, path, sessionTitle: host.title });
-						})
-					}
+							navigation.navigate("Reader", {
+								hubId,
+								sessionRef: ref,
+								path: reference.path,
+								reference,
+								sessionTitle: host.title,
+							});
+						});
+					}}
 				/>
 			</ScrollView>
 		</Sheet>
@@ -324,13 +333,19 @@ function LinkRow({
 	// session's folder, the only place the hub serves documents from. Another
 	// machine, a malformed escape or a file elsewhere keeps its text, as on
 	// the web. Other schemes don't open.
-	const document = kind === "file" ? cwdRelative(fileURLToPath(link.url), cwd) : undefined;
+	const absolutePath = kind === "file" ? fileURLToPath(link.url) : undefined;
+	const document = absolutePath === undefined ? undefined : cwdRelative(absolutePath, cwd);
 	const open = () =>
 		void WebBrowser.openBrowserAsync(link.url, {
 			dismissButtonStyle: "done",
 			controlsColor: palette.accentInk,
 		}).catch(() => toast.show({ text: "Couldn't open that link." }));
-	const press = kind === "web" ? open : document !== undefined ? () => openDocument(document) : undefined;
+	const press =
+		kind === "web"
+			? open
+			: document !== undefined && absolutePath !== undefined
+				? () => openDocument(absolutePath)
+				: undefined;
 	const remove = () =>
 		void notes.removeLink(link.id).then((removed) => {
 			if (removed) {
