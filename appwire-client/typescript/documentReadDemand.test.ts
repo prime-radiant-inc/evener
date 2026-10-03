@@ -120,6 +120,87 @@ describe("createDocumentReadDemand", () => {
     }
   });
 
+  test("hiding before deferred dispatch does not start a retired physical read", async () => {
+    vi.useFakeTimers();
+    const attempts: DocumentReadAttempt[] = [];
+    const demand = createDocumentReadDemand(async (attempt) => {
+      attempts.push(attempt);
+      return "success";
+    });
+
+    try {
+      demand.setActive(true);
+      demand.setActive(false);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(attempts).toHaveLength(0);
+    } finally {
+      await release(demand, []);
+    }
+  });
+
+  test("disposal before deferred dispatch does not start a retired physical read", async () => {
+    vi.useFakeTimers();
+    const attempts: DocumentReadAttempt[] = [];
+    const demand = createDocumentReadDemand(async (attempt) => {
+      attempts.push(attempt);
+      return "success";
+    });
+
+    try {
+      demand.setActive(true);
+      demand.dispose();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(attempts).toHaveLength(0);
+    } finally {
+      await release(demand, []);
+    }
+  });
+
+  test("replacement before deferred dispatch starts only the current physical read", async () => {
+    vi.useFakeTimers();
+    const operations: Deferred<DocumentReadOutcome>[] = [];
+    const attempts: DocumentReadAttempt[] = [];
+    const demand = createDocumentReadDemand(async (attempt) => {
+      attempts.push(attempt);
+      const operation = deferred<DocumentReadOutcome>();
+      operations.push(operation);
+      return operation.promise;
+    });
+
+    try {
+      demand.setActive(true);
+      demand.replace();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(attempts).toHaveLength(1);
+      expect(attempts[0]?.isCurrent()).toBe(true);
+    } finally {
+      await release(demand, operations);
+    }
+  });
+
+  test("immediate hide and reactivation starts only the current physical read", async () => {
+    vi.useFakeTimers();
+    const operations: Deferred<DocumentReadOutcome>[] = [];
+    const attempts: DocumentReadAttempt[] = [];
+    const demand = createDocumentReadDemand(async (attempt) => {
+      attempts.push(attempt);
+      const operation = deferred<DocumentReadOutcome>();
+      operations.push(operation);
+      return operation.promise;
+    });
+
+    try {
+      demand.setActive(true);
+      demand.setActive(false);
+      demand.setActive(true);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(attempts).toHaveLength(1);
+      expect(attempts[0]?.isCurrent()).toBe(true);
+    } finally {
+      await release(demand, operations);
+    }
+  });
+
   test("replacement retires a deferred publication and waits for its physical read to settle", async () => {
     vi.useFakeTimers();
     const operations: Deferred<DocumentReadOutcome>[] = [];

@@ -52,7 +52,7 @@ export function createDocumentReadDemand(
       isCurrent: () => active && !disposed && publicationEpoch === attemptEpoch,
     };
 
-    const operation = Promise.resolve().then(() => read(attempt));
+    const operation = Promise.resolve().then(() => (attempt.isCurrent() ? read(attempt) : "success"));
     inFlight = operation.then(
       (outcome) => finish(attemptEpoch, outcome),
       () => finish(attemptEpoch, "transient"),
