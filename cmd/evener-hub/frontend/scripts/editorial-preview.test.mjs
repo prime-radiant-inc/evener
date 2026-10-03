@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
-import { lstat, mkdtemp, opendir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, opendir, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import test, { after } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -31,6 +31,27 @@ async function dependencySymlinks(root) {
   await walk(root);
   return links;
 }
+
+test("private editorial fixture canonicalizes a symlinked temporary parent", async () => {
+  const scratch = await mkdtemp(path.join(fixture.root, "symlinked-temp-parent-"));
+  const realTemp = path.join(scratch, "real-temp");
+  const aliasTemp = path.join(scratch, "alias-temp");
+  await mkdir(realTemp);
+  await symlink(realTemp, aliasTemp);
+  const originalTMPDIR = process.env.TMPDIR;
+  let nestedFixture;
+  try {
+    process.env.TMPDIR = aliasTemp;
+    nestedFixture = await createPrivateEditorialPreviewFixture(sourceFrontend);
+    assert.equal(nestedFixture.root, await realpath(nestedFixture.root));
+    assert.equal(nestedFixture.frontend, await realpath(nestedFixture.frontend));
+  } finally {
+    if (originalTMPDIR === undefined) delete process.env.TMPDIR;
+    else process.env.TMPDIR = originalTMPDIR;
+    await nestedFixture?.cleanup();
+    await rm(scratch, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  }
+});
 
 test("private editorial fixture owns lock-matching source, packages, and fonts", async () => {
   const privateNodeModules = path.join(frontend, "node_modules");

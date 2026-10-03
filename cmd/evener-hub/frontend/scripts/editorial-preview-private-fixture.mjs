@@ -68,7 +68,7 @@ export async function createPrivateEditorialPreviewFixture(sourceFrontend) {
     throw new Error("private editorial fixture requires node_modules built from this frontend package-lock.json");
   }
 
-  const root = await mkdtemp(path.join(os.tmpdir(), "editorial-private-fixture-"));
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "editorial-private-fixture-")));
   const privateRepo = path.join(root, "private-repo");
   const frontend = path.join(privateRepo, "cmd/evener-hub/frontend");
   const appwirePackage = path.join(privateRepo, "appwire-client/typescript");
