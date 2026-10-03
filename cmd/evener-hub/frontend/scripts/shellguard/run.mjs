@@ -16,10 +16,12 @@ import { writeFile } from "node:fs/promises";
 import {
   applyViewport,
   clearViewportOverride,
+  closePage,
   connectPage,
   createStartupDeadline,
   evaluate,
   navigateTo,
+  openPage,
   waitForFonts,
   waitForHttp,
 } from "../browserGuardCdp.mjs";
@@ -374,7 +376,8 @@ async function clickControl(send, selector) {
 async function pressKey(send, key, code, keyCode, modifiers = 0) {
   for (const type of ["keyDown", "keyUp"]) {
     await send("Input.dispatchKeyEvent", { type, key, code, windowsVirtualKeyCode: keyCode,
-      nativeVirtualKeyCode: keyCode, modifiers });
+      nativeVirtualKeyCode: keyCode, modifiers,
+      ...(type === "keyDown" && key === "Enter" && modifiers === 0 ? { text: "\r" } : {}) });
   }
 }
 
@@ -506,7 +509,7 @@ function assertOverview(result, viewport, theme) {
   return failures;
 }
 
-async function trustedOverviewFlow(send, viewport) {
+async function trustedOverviewFlow(send, viewport, childGesture) {
   const pane = await evaluate(send, "window.overviewGuardState().panes.find(p => p.type === 'session' && p.params.ref === 'local:p0-s0').id");
   const trigger = id => `[data-session-actions-ref="local:p0-s0"][data-pane-id="${id}"]`;
   await evaluate(send, `document.querySelector(${JSON.stringify(OVERVIEW)}).querySelector('[role="radio"][aria-checked="true"]').focus()`);
@@ -627,14 +630,46 @@ async function trustedOverviewFlow(send, viewport) {
     await evaluate(send, `void (window.__overviewExpectedButton = document.querySelector(${JSON.stringify(trigger(pane))}).closest('button'))`);
     await dismiss("close", pane, true);
   }
-  return { tabStops, status: true, phoneTrap: !!viewport.mobile, originalPane: pane };
+  if (viewport.mobile) {
+    if (!await evaluate(send, "window.overviewGuardState().overview.open")) await chooseOverviewMenu(send, trigger(pane));
+    await clickControl(send, `${OVERVIEW} [role="radio"][aria-label^="Agents"]`);
+    await waitForDom(send, `Array.from(document.querySelectorAll(${JSON.stringify(`${OVERVIEW} button`)})).some(e => e.textContent.includes('Open Overview child'))`, "real child delegate row");
+    await evaluate(send, `(() => {
+      const row = Array.from(document.querySelectorAll(${JSON.stringify(`${OVERVIEW} button`)})).find(e => e.textContent.includes('Open Overview child'));
+      row.dataset.overviewGuardChild = '';
+    })()`);
+    await clickControl(send, '[data-overview-guard-child]');
+    try {
+      await waitForDom(send, `window.overviewGuardState().overview.ref === 'local:overview-child' && !document.querySelector(${JSON.stringify(trigger(pane))})`, "child transcript replaces parent Session");
+    } catch (error) {
+      const witness = await evaluate(send, `(() => {
+        const state = window.overviewGuardState();
+        return { ...state, calls: state.calls.slice(-12), errors: window.__shellGuardErrors || [] };
+      })()`);
+      throw new Error(error.message + ' child-open witness: ' + JSON.stringify(witness));
+    }
+    await settleOverview(send);
+    await clickControl(send, `${OVERVIEW} [role="radio"][aria-label="About"]`);
+    await waitForDom(send, `document.querySelector(${JSON.stringify(OVERVIEW)})?.textContent.includes(${JSON.stringify(LONG_VALUES[1])})`, "child About hydrated");
+    await waitForDom(send, `Array.from(document.querySelectorAll('[data-session-navigation-ref="local:p0-s0"]')).some(e => !e.closest(${JSON.stringify(OVERVIEW)}))`, "underlying parent breadcrumb");
+    const before = await evaluate(send, "window.overviewGuardState()");
+    await evaluate(send, `void (window.__overviewExpectedButton = Array.from(document.querySelectorAll('[data-session-navigation-ref="local:p0-s0"]')).find(e => !e.closest(${JSON.stringify(OVERVIEW)})))`);
+    await dismiss(childGesture, pane, true);
+    const after = await evaluate(send, "window.overviewGuardState()");
+    if (after.focusedPaneId !== before.focusedPaneId || JSON.stringify(after.panes) !== JSON.stringify(before.panes)) throw new Error("child dismissal navigated or changed panes");
+    await pressKey(send, "Enter", "Enter", 13);
+    await waitForDom(send, `window.overviewGuardState().focusedPaneId === ${JSON.stringify(pane)} && document.querySelector(${JSON.stringify(trigger(pane))})`, "returned parent link remains keyboard-usable");
+    await settleOverview(send);
+  }
+  return { tabStops, status: true, phoneTrap: !!viewport.mobile, childReturn: childGesture, originalPane: pane };
 }
 
-async function overviewOnPage(cdpEndpoint, vitePort, viewport, theme) {
-  const page = await connectPage(cdpEndpoint);
+async function overviewOnPage(cdpEndpoint, vitePort, viewport, theme, childGesture) {
+  const target = await openPage(cdpEndpoint, "about:blank");
+  const page = await connectPage(cdpEndpoint, target.id);
   const { send } = page;
   try {
-    await evaluate(send, "localStorage.clear()");
+    await send("Storage.clearDataForOrigin", { origin: `http://127.0.0.1:${vitePort}`, storageTypes: "local_storage" });
     await applyViewport(send, viewport);
     await navigateTo(page, `http://127.0.0.1:${vitePort}/shellguard.html`, BOOT);
     await evaluate(send, "window.settledShell");
@@ -654,7 +689,7 @@ async function overviewOnPage(cdpEndpoint, vitePort, viewport, theme) {
     }
     const failures = assertOverview(result, viewport, theme);
     try {
-      result.keyboard = await trustedOverviewFlow(send, viewport);
+      result.keyboard = await trustedOverviewFlow(send, viewport, childGesture);
     } catch (error) {
       failures.push(`trusted interaction: ${error.message}`);
     }
@@ -662,6 +697,7 @@ async function overviewOnPage(cdpEndpoint, vitePort, viewport, theme) {
   } finally {
     await clearViewportOverride(send);
     page.close();
+    await closePage(cdpEndpoint, target.id);
   }
 }
 
@@ -713,13 +749,15 @@ async function main() {
     ];
     for (const viewport of OVERVIEW_VIEWPORTS) {
       for (const theme of OVERVIEW_THEMES) {
-        const label = `Overview ${viewport.width}px ${theme} XL`;
-        try {
-          const overview = await overviewOnPage(cdpEndpoint, vitePort, viewport, theme);
-          failures.push(...overview.failures.map(failure => `${label}: ${failure}`));
-          console.log(`${label}: ${JSON.stringify(overview.result)}`);
-        } catch (error) {
-          failures.push(`${label}: ${error.message}`);
+        for (const childGesture of viewport.mobile ? ["close", "escape"] : [null]) {
+          const label = `Overview ${viewport.width}px ${theme} XL${childGesture ? ` child ${childGesture}` : ""}`;
+          try {
+            const overview = await overviewOnPage(cdpEndpoint, vitePort, viewport, theme, childGesture);
+            failures.push(...overview.failures.map(failure => `${label}: ${failure}`));
+            console.log(`${label}: ${JSON.stringify(overview.result)}`);
+          } catch (error) {
+            failures.push(`${label}: ${error.message}`);
+          }
         }
       }
     }

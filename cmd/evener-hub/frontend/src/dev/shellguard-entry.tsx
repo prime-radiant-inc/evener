@@ -32,7 +32,12 @@ import { RailRenderObserver } from "../shell/rail/railRenderObserver";
 import { StatusBar } from "../shell/statusbar/StatusBar";
 import { workspaceStore } from "../shell/workspace";
 import { prefsStore, type ThemePref } from "../stores/prefs";
-import { activityContext, activityDetailsThread, activitySummary } from "../stores/sessionActivityTestUtils";
+import {
+  activityContext,
+  activityDelegate,
+  activityDetailsThread,
+  activitySummary,
+} from "../stores/sessionActivityTestUtils";
 import "../styles/tokens.css";
 import "../styles/global.css";
 import { PaneScaffold } from "../widgets/panescaffold";
@@ -84,6 +89,16 @@ const PANE_FOOTER_FIXTURES = [
 const EXPECTED_PANE_ACTIVITY_TABS = ["agents", "jobs", "watches", "tasks"] as const;
 const EXPECTED_PANE_ACTIVITY_CONTROLS = EXPECTED_PANE_ACTIVITY_TABS.length;
 const CROWDED_ACTIVITY_COUNTS = { known: true, total: 100, active: 100, failed: 0, completed: 0 };
+const OVERVIEW_CHILD = "local:overview-child";
+
+function overviewActivityContext(ref: string) {
+  return {
+    ...activityContext(ref),
+    ...(ref === OVERVIEW_CHILD
+      ? { rootRef: "local:p0-s0", ancestors: [{ ref: "local:p0-s0", sessionId: "p0-s0", title: "Overview parent" }] }
+      : {}),
+  };
+}
 
 let changedTitle = "project-0 session 0";
 let mutationRevision = 1;
@@ -397,15 +412,19 @@ async function boot(): Promise<void> {
   fake.on("thread/unsubscribe", () => ({}));
   fake.on("evener/thread/activity/read", ({ ref, scope }) => ({
     ...activitySummary(ref),
+    context: overviewActivityContext(ref),
     scope: scope ?? "session",
     delegates: { ...CROWDED_ACTIVITY_COUNTS },
     jobs: { ...CROWDED_ACTIVITY_COUNTS },
     watches: { ...CROWDED_ACTIVITY_COUNTS },
   }));
   fake.on("evener/thread/delegates/list", ({ ref, scope }) => ({
-    context: activityContext(ref),
+    context: overviewActivityContext(ref),
     scope: scope ?? "session",
-    delegates: [],
+    delegates:
+      ref === "local:p0-s0"
+        ? [activityDelegate({ ownerRef: ref, childRef: OVERVIEW_CHILD, description: "Open Overview child" })]
+        : [],
     page: { complete: true, issues: [] },
   }));
   fake.on("evener/thread/jobs/list", ({ ref, scope }) => ({

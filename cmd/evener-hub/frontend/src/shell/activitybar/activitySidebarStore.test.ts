@@ -229,6 +229,37 @@ test("return focus retains the intended ref when the open inspection retargets",
   }
 });
 
+test.each(["visible", "hidden", "disabled", "inside Overview", "wrong ref"])(
+  "return focus qualifies its last navigation fallback when it is %s",
+  (condition) => {
+    const root = document.body.appendChild(document.createElement("div"));
+    const ref = 'remote:parent"]';
+    try {
+      const navigation = root.appendChild(document.createElement("button"));
+      navigation.dataset.sessionNavigationRef = condition === "wrong ref" ? "remote:other" : ref;
+      if (condition === "hidden") navigation.hidden = true;
+      if (condition === "disabled") navigation.disabled = true;
+      if (condition === "inside Overview") root.dataset.testid = "activity-sidebar";
+      const action = sessionActions(document.body, ref, "origin");
+      try {
+        const opener = document.body.appendChild(document.createElement("button"));
+        workspaceStore.setState({ focusedPaneId: "origin" });
+        activitySidebarStore.getState().retarget(ref);
+        activitySidebarStore.getState().openWith("about", opener);
+        opener.remove();
+        activitySidebarStore.getState().retarget("remote:child");
+        expect(activitySidebarReturnFocusTarget("about")).toBe(action);
+        action.remove();
+        expect(activitySidebarReturnFocusTarget("about")).toBe(condition === "visible" ? navigation : null);
+      } finally {
+        action.remove();
+      }
+    } finally {
+      root.remove();
+    }
+  },
+);
+
 test("a focus change while the desktop sidebar is unmounted does not persist inherited open intent", () => {
   vi.useFakeTimers();
   try {

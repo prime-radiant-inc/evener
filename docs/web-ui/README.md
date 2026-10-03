@@ -76,7 +76,13 @@ Phones use the same sidebar as a full-screen surface. Opening transfers focus
 inside after the menu closes, and Tab stays inside until dismissal. Closing
 returns to a visible opener or a visible session-actions control for the intended
 session, preferring the originating pane. Existing footer categories retain
-their owning-pane fallback. Desktop Overview remains nonmodal.
+their owning-pane fallback. If child drilling replaces those controls, focus
+returns to the intended parent's visible breadcrumb outside Overview without
+navigating or creating a pane. Desktop Overview remains nonmodal.
+
+Once a navigation location confirms the already open parent, the shell ends
+route deferral. Opening a read-only child keeps that child focused while the
+address bar retains the parent URL on both phone and desktop.
 
 ## Exited-session controls
 

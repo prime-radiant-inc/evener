@@ -248,6 +248,12 @@ export function activitySidebarReturnFocusTarget(tab: ActivityTab): HTMLElement 
     chips.find((chip) => chip.dataset.paneId === activitySidebarOpenerPaneId) ??
     actions[0]?.button ??
     chips[0] ??
+    Array.from(document.querySelectorAll<HTMLElement>("[data-session-navigation-ref]")).find(
+      (control) =>
+        control.dataset.sessionNavigationRef === activitySidebarOpenerRef &&
+        !control.closest('[data-testid="activity-sidebar"]') &&
+        visible(control),
+    ) ??
     null
   );
 }

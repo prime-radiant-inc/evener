@@ -2462,6 +2462,61 @@ function installMobileViewport(): void {
   );
 }
 
+test.each(["phone", "desktop"])(
+  "%s keeps an opened child focused after the already placed parent location settles",
+  async (host) => {
+    if (host === "phone") {
+      vi.stubGlobal("innerWidth", 390);
+      installMobileViewport();
+    }
+    let releaseLocation = () => {};
+    const locationReady = new Promise<void>((resolve) => {
+      releaseLocation = resolve;
+    });
+    const client = navClient();
+    client.on("evener/navigation/read", async (params) => {
+      if (params.resource === "location" && params.ref === "local:owner") await locationReady;
+      return navigationRead(params);
+    });
+    client.on("thread/read", ({ ref }) => activityDetailsThread(ref, { name: ref }));
+    client.on("thread/unsubscribe", () => ({}));
+    client.on("evener/thread/activity/read", ({ ref }) => activitySummary(ref));
+    const user = userEvent.setup();
+    render(
+      <>
+        <AppShell client={client} />
+        <OpenTranscriptButton transcriptRef="local:child" parentRef="local:owner" label="Open child" />
+      </>,
+    );
+    await screen.findByText("No session open");
+    act(() => {
+      workspaceStore.getState().openPane("session", { ref: "local:owner" });
+      navigate("/s/local%3Aowner");
+    });
+    await screen.findByRole("textbox", { name: "Message" });
+    await waitFor(() =>
+      expect(client.calls).toContainEqual(
+        expect.objectContaining({
+          method: "evener/navigation/read",
+          params: expect.objectContaining({ resource: "location", ref: "local:owner" }),
+        }),
+      ),
+    );
+    await act(async () => {
+      releaseLocation();
+      await navigationStore.getState().lookupLocation("local:owner");
+    });
+    const owner = workspaceStore.getState().mainPane();
+    expect(owner?.params).toEqual({ ref: "local:owner" });
+    await user.click(screen.getByRole("button", { name: "Open child" }));
+    const child = paneFor("local:child");
+    expect(child).toMatchObject({ type: "transcript", params: { ref: "local:child", parentRef: "local:owner" } });
+    expect(workspaceStore.getState().focusedPaneId).toBe(child?.id);
+    expect(workspaceStore.getState().mainPane()).toEqual(owner);
+    expect(window.location.pathname).toBe("/s/local%3Aowner");
+  },
+);
+
 // Back from a child opened on phone uses StackHost's own history. The walk
 // below covers children opened on desktop, where the host swap discards it.
 test("phone Back from an opened child returns to its owner", async () => {

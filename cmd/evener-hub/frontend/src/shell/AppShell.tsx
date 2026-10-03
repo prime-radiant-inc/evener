@@ -883,6 +883,7 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
         placedPathnameRef.current === pathname &&
         !routePlacementInProgressRef.current;
       if (routePlacementIsApplied(pathname, location, locationTerminal, locationGone, allowFocusedCompanion)) {
+        pendingSessionRef.current = null;
         placedPathnameRef.current = pathname;
         return;
       }

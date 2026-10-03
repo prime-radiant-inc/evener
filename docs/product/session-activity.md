@@ -299,8 +299,15 @@ its already loaded title through the [pane chrome store](../../cmd/evener-hub/fr
 tab naming adds no metadata request. Closing Overview returns keyboard focus to
 its visible, connected opener or a visible session-actions control for the intended
 session, preferring the originating pane. Existing footer categories retain their
-owning-pane fallback. Same-session pane menus carry their explicit owning pane
+owning-pane fallback. After child drilling replaces the phone's session controls,
+a visible parent breadcrumb outside Overview is the final fallback. Dismissal
+only moves focus; it does not navigate or create a pane.
+Same-session pane menus carry their explicit owning pane
 identity, so opening Overview preserves that instance.
+The [application shell](../../cmd/evener-hub/frontend/src/shell/AppShell.tsx)
+ends route deferral when the resolved location confirms an already placed
+session. Opening its read-only child then preserves child focus and the parent
+URL, rather than reapplying the parent route.
 
 The [activity sidebar view store](../../cmd/evener-hub/frontend/src/shell/activitybar/activitySidebarStore.ts)
 retains open/category choices and a semantic row anchor per public session ref

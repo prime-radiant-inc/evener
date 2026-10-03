@@ -50,6 +50,7 @@ function ScopeCrumbLabel({
           type="button"
           className={CLASS.crumbBtn}
           title={title}
+          data-session-navigation-ref={crumb.ref}
           onClick={() => {
             const workspace = workspaceStore.getState();
             const transcript = workspace.panes.find(
