@@ -10,9 +10,11 @@ import type { ItemModel, ThreadModel, TurnModel } from "./model";
 import { comparePositions } from "./reducer";
 import { ERROR_EVENT_KIND } from "./systemEventCopy";
 import {
+  type ContentSelection,
   type ContentVector,
   contentVectorForConfig,
   type HookExitDetail,
+  hidesDaemonSteering,
   informationalNoticesVisible,
   normalizeConfig,
   type TranscriptDisplayConfigV1,
@@ -300,6 +302,12 @@ function isToolRepairNotice(item: ItemModel): boolean {
   return item.type === "systemMessage" && item.eventKind === TOOL_REPAIR_EVENT_KIND;
 }
 
+// A daemon steer: instructions the daemon sent the agent, never a steer the
+// human wrote (source "user", the human-note kind included).
+function isDaemonSteer(item: ItemModel): boolean {
+  return item.type === "steering" && item.source !== "user";
+}
+
 function systemDecision(item: ItemModel, config: TranscriptDisplayConfigV1, vector: ContentVector): Decision {
   const eventKind = item.eventKind;
   if (eventKind === undefined || eventKind === "" || !KNOWN_EVENT_KINDS.has(eventKind)) return "item";
@@ -381,7 +389,13 @@ function decisionFor(
     if (isInformationalWarning(item)) return informationalNoticesVisible(vector) ? "critical" : "hidden";
     return "critical";
   }
-  if (item.type === "steering") return "critical";
+  // Daemon steering hides at the chat preset; see hidesDaemonSteering for the
+  // one rule. A steer the human wrote is the human's own words and stays
+  // critical at every level.
+  if (item.type === "steering") {
+    if (!isDaemonSteer(item)) return "critical";
+    return hidesDaemonSteering(config.content) ? "hidden" : "critical";
+  }
 
   // Future item types render through the raw renderer instead of disappearing.
   return "item";
@@ -416,6 +430,7 @@ function terminalFallbackEntry(
   turn: TurnModel,
   sourceIndexByItem: ReadonlyMap<ItemModel, number>,
   vector: ContentVector,
+  content: ContentSelection,
 ): ProjectedCriticalEntry | undefined {
   if (!isTerminalTurn(turn)) return undefined;
   const sourceItem = turn.items.at(-1);
@@ -433,6 +448,14 @@ function terminalFallbackEntry(
   const hiddenInformationalNotice =
     (isInformationalWarning(sourceItem) || isToolRepairNotice(sourceItem)) && !informationalNoticesVisible(vector);
   if (hiddenInformationalNotice && isTurnError(turn.error)) {
+    return undefined;
+  }
+  // A daemon steer the chat preset hid never comes back, not even as the
+  // fallback of an errorless terminal turn: such a turn renders empty at
+  // chat, exactly as the phone renders it (Jesse, 2026-10-03). The
+  // informational-notice trade above keeps its narrower shape, trading only
+  // where the error end cap renders.
+  if (isDaemonSteer(sourceItem) && hidesDaemonSteering(content)) {
     return undefined;
   }
   return criticalEntry(sourceItem, turn.id, sourceIndex, redactsReasoning(sourceItem, vector));
@@ -504,7 +527,7 @@ export function projectThread(model: ThreadModel, config: TranscriptDisplayConfi
       }
     }
     if (entries.length === 0) {
-      const fallback = terminalFallbackEntry(turn, sourceIndexByItem, vector);
+      const fallback = terminalFallbackEntry(turn, sourceIndexByItem, vector, normalized.content);
       if (fallback) {
         visibleItems.push(fallback.item);
         entries.push(fallback);

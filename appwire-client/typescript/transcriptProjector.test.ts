@@ -212,26 +212,77 @@ describe("transcript projector", () => {
         item("turn-error", "systemMessage", { eventKind: "error", text: "Failure" }),
       );
       const entries = entriesFor(model, preset(level));
-      expect(entries.map((entry) => entry.id)).toEqual(
-        level === "chat" || level === "intent"
-          ? ["ask", "intent:failed-tool", "intent:active-tool", "hook-failure", "warning", "steer", "turn-error"]
-          : ["ask", "failed-tool", "active-tool", "hook-failure", "warning", "steer", "turn-error"],
-      );
+      const compact = level === "chat" || level === "intent";
+      const steer = level === "chat" ? [] : ["steer"];
+      expect(entries.map((entry) => entry.id)).toEqual([
+        "ask",
+        compact ? "intent:failed-tool" : "failed-tool",
+        compact ? "intent:active-tool" : "active-tool",
+        "hook-failure",
+        "warning",
+        ...steer,
+        "turn-error",
+      ]);
       expect(entries.find((entry) => entry.id === "ask")?.kind).toBe("critical");
-      const failedId = level === "chat" || level === "intent" ? "intent:failed-tool" : "failed-tool";
-      const activeId = level === "chat" || level === "intent" ? "intent:active-tool" : "active-tool";
-      expect(entries.find((entry) => entry.id === failedId)?.kind).toBe(
-        level === "chat" || level === "intent" ? "intent" : "item",
-      );
-      expect(entries.find((entry) => entry.id === activeId)?.kind).toBe(
-        level === "chat" || level === "intent" ? "intent" : "item",
-      );
+      const failedId = compact ? "intent:failed-tool" : "failed-tool";
+      const activeId = compact ? "intent:active-tool" : "active-tool";
+      expect(entries.find((entry) => entry.id === failedId)?.kind).toBe(compact ? "intent" : "item");
+      expect(entries.find((entry) => entry.id === activeId)?.kind).toBe(compact ? "intent" : "item");
       expect(entries.find((entry) => entry.id === "hook-failure")?.kind).toBe("critical");
-      for (const id of ["warning", "steer", "turn-error"]) {
+      const criticalIds = ["warning", ...steer, "turn-error"];
+      for (const id of criticalIds) {
         expect(entries.find((entry) => entry.id === id)?.kind).toBe("critical");
       }
     },
   );
+
+  test("the chat preset hides daemon steering; intent, tools, activity, full and custom keep it", () => {
+    const model = threadWith(item("steer", "steering", { text: "Context a hook added", source: "" }));
+
+    expect(entriesFor(model, preset("chat"))).toEqual([]);
+    for (const level of ["intent", "tools", "activity", "full"] as const) {
+      expect(entriesFor(model, preset(level)).map((entry) => [entry.id, entry.kind])).toEqual([["steer", "critical"]]);
+    }
+    const chatShapedCustom = custom({ toolIntent: true, toolCalls: false, reasoning: false, expandByDefault: false });
+    expect(entriesFor(model, chatShapedCustom).map((entry) => [entry.id, entry.kind])).toEqual([["steer", "critical"]]);
+  });
+
+  test("a steer the human wrote shows at chat: it is the human's own words", () => {
+    const model = threadWith(
+      item("steer-user", "steering", { text: "Work in a new worktree.", source: "user" }),
+      item("note", "steering", {
+        text: "human updated their whiteboard: Ship Friday",
+        source: "user",
+        steeringKind: "human-note",
+      }),
+    );
+
+    expect(entriesFor(model, preset("chat")).map((entry) => entry.id)).toEqual(["steer-user", "note"]);
+    expect(entriesFor(model, preset("chat")).every((entry) => entry.kind === "critical")).toBe(true);
+  });
+
+  test("the terminal fallback does not resurrect a daemon steer chat hid when the error end cap renders", () => {
+    const failedTurn = turn([item("daemon-steer", "steering", { text: "steer", source: "" })], {
+      status: "failed",
+      error: { message: "structured turn failure" },
+    });
+    const model = { ...threadWith(), turns: [failedTurn] } as ThreadModel;
+
+    expect(projectThread(model, preset("chat")).turns[0]?.entries).toEqual([]);
+    expect(entriesFor(model, preset("intent")).map((entry) => entry.id)).toEqual(["daemon-steer"]);
+  });
+
+  test("a turn interrupted on a daemon steer renders empty at chat, as the phone renders it", () => {
+    const interruptedTurn = turn([item("daemon-steer", "steering", { text: "steer", source: "" })], {
+      status: "interrupted",
+    });
+    const model = { ...threadWith(), turns: [interruptedTurn] } as ThreadModel;
+
+    expect(entriesFor(model, preset("chat"))).toEqual([]);
+    expect(entriesFor(model, preset("intent")).map((entry) => [entry.id, entry.kind])).toEqual([
+      ["daemon-steer", "critical"],
+    ]);
+  });
 
   test("keeps a blank-intent tool call visible without dropping the action", () => {
     const model = threadWith(item("blank-tool", "commandExecution", { toolName: "shell", description: "   " }));
@@ -773,7 +824,7 @@ describe("transcript projector", () => {
     expect(entries[0]).not.toMatchObject({ summary: "cut short" });
   });
 
-  test("keeps the typed failure marker for failed and interrupted turns", () => {
+  test("keeps the failed turn's typed marker at chat; an interrupted turn's steer marker shows where steering shows", () => {
     const model = {
       ...threadWith(),
       turns: [
@@ -789,6 +840,10 @@ describe("transcript projector", () => {
     } as ThreadModel;
 
     expect(projectThread(model, preset("chat")).turns.map((projected) => projected.entries[0]?.kind)).toEqual([
+      "critical",
+      undefined,
+    ]);
+    expect(projectThread(model, preset("intent")).turns.map((projected) => projected.entries[0]?.kind)).toEqual([
       "critical",
       "critical",
     ]);
