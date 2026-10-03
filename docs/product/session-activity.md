@@ -30,7 +30,7 @@ Daemon and hub AppWire expose four typed reads:
 | --- | --- |
 | `evener/thread/activity/read` | Session context and independent counts for delegates, jobs and watches |
 | `evener/thread/delegates/list` | Compact stable delegates, including children without a live runtime |
-| `evener/thread/jobs/list` | Shell-job metadata; output remains behind the existing output API |
+| `evener/thread/jobs/list` | Background shell-job metadata; output remains behind the existing output API |
 | `evener/thread/watches/list` | Receiver-owned watches and bounded retained watch history |
 
 Every request names an explicit public session `ref`. The default `session`
@@ -58,6 +58,22 @@ existing delegate controller and journals. The
 [source adapters](../../cmd/evener-hub/internal/appsource/session_activity.go)
 carry that contract across local and remote boundaries. A remote reference
 cannot borrow a coincidentally named local session when its source is unavailable.
+
+Jobs pages and summary job counts share one domain-owned eligibility rule:
+a shell job must have durable background evidence in its start journal event.
+Explicit background launches and foreground jobs handed back while still running
+remain eligible through terminal settlement, forwarding and restart. Retained
+inline foreground output, foreground runtime-limit settlement and unclassified
+historical jobs are excluded. Detached commands create no job record. Live
+overlays can update an admitted row's status or output length, but cannot establish
+eligibility. The clients consume the same filtered pages and counts without
+reconstructing eligibility from notifications or navigation.
+
+Complete diagnostic job history and direct saved output and job transcript reads
+remain available. Activity reads neither change historical journals nor infer
+background evidence from transcripts. Filtering precedes page admission; excluded
+records still consume bounded scan work and advance the cursor. A long excluded
+gap can yield a valid empty continuation without claiming completed empty history.
 
 These are read APIs. They do not resume a session, start a provider, repair a
 journal or change lifecycle state. Shell managers, delegate controllers and watch
