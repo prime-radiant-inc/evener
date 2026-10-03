@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/json"
 	"errors"
@@ -121,13 +122,13 @@ func FuzzSmallFaultsPass5(f *testing.F) {
 		docOpen = func(string, string) (*os.File, error) { return os.Open(cwd) }
 		_, _ = readDocFile(cwd, filepath.Join(cwd, "note.txt"))
 		docOpen = oldOpen
-		_, _ = web.localSessionCWD("remote:x")
-		_, _ = web.localSessionCWD("01MISSING")
+		_, _ = web.localSessionCWD(context.Background(), "remote:x")
+		_, _ = web.localSessionCWD(context.Background(), "01MISSING")
 		past := hubcore.NewPastIndex("")
 		past.SeedForTest([]schema.SessionMeta{{ID: "01PAST", EnvInfo: schema.EnvironmentInfo{WorkingDir: cwd}}, {ID: "01EMPTY"}})
 		pastWeb := NewWebServer(hubcore.WebConfig{Past: past})
-		_, _ = pastWeb.localSessionCWD("01PAST")
-		_, _ = pastWeb.localSessionCWD("01EMPTY")
+		_, _ = pastWeb.localSessionCWD(context.Background(), "01PAST")
+		_, _ = pastWeb.localSessionCWD(context.Background(), "01EMPTY")
 
 		t.Setenv(envvars.EVENERRecordHTTP.Name, "")
 		_ = newHTTPRequestRecorder(root)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))

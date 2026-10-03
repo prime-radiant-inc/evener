@@ -500,6 +500,54 @@ func checkResolveInRoot_AllowsNestedFile(t *testing.T) {
 	}
 }
 
+func TestResolveInRoot_CurrentTrustedAlias(t *testing.T) {
+	base := t.TempDir()
+	realRoot := filepath.Join(base, "real")
+	if err := os.Mkdir(realRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	aliasRoot := filepath.Join(base, "alias")
+	if err := os.Symlink(realRoot, aliasRoot); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	want := filepath.Join(realRoot, "plan.md")
+	if err := os.WriteFile(want, []byte("current"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, requested := range []string{"plan.md", filepath.Join(aliasRoot, "plan.md"), want} {
+		got, err := ResolveInRoot(aliasRoot, requested)
+		if err != nil || got != want {
+			t.Fatalf("ResolveInRoot(alias, %q) = %q, %v; want %q", requested, got, err, want)
+		}
+	}
+}
+
+func TestResolveInRoot_CurrentTrustedAliasDoesNotAuthorizeOtherRoots(t *testing.T) {
+	base := t.TempDir()
+	realRoot := filepath.Join(base, "real")
+	if err := os.Mkdir(realRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	aliasRoot := filepath.Join(base, "alias")
+	if err := os.Symlink(realRoot, aliasRoot); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	aliasSibling := filepath.Join(base, "alias-other")
+	oldRoot := filepath.Join(base, "old-worktree")
+	for _, root := range []string{aliasSibling, oldRoot} {
+		if err := os.Mkdir(root, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, "plan.md"), []byte("wrong"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ResolveInRoot(aliasRoot, filepath.Join(root, "plan.md")); !errors.Is(err, ErrPathEscapesRoot) {
+			t.Fatalf("ResolveInRoot(alias, %q) error = %v, want ErrPathEscapesRoot", root, err)
+		}
+	}
+}
+
 func checkResolveInRoot_RejectsDotDotTraversal(t *testing.T) {
 	root := t.TempDir()
 	outside := filepath.Join(filepath.Dir(root), "secret.txt")

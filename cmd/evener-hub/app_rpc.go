@@ -1341,13 +1341,13 @@ func registerThreadHandlers(
 	// the controller's host-qualified image routes proxy through it to the hub
 	// that owns the session (multi-host component 05). It resolves only against
 	// this hub's own local session state.
-	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSessionImage, func(_ context.Context, params appwire.SessionImageParams) (appwire.SessionImageResponse, error) {
-		return sessionImageFromHub(cfg, params)
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSessionImage, func(ctx context.Context, params appwire.SessionImageParams) (appwire.SessionImageResponse, error) {
+		return sessionImageFromHub(ctx, cfg, sources, params)
 	})
 	// evener/session/document is the AppWire counterpart of the raw /doc/file
 	// read, for the controller's /doc/file proxy (S7).
-	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSessionDocument, func(_ context.Context, params appwire.SessionDocumentParams) (appwire.SessionDocumentResponse, error) {
-		return sessionDocumentFromHub(cfg, params)
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSessionDocument, func(ctx context.Context, params appwire.SessionDocumentParams) (appwire.SessionDocumentResponse, error) {
+		return sessionDocumentFromHub(ctx, cfg, sources, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadList, func(ctx context.Context, params appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
 		return hubThreadList(ctx, cfg, sources, params)

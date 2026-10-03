@@ -20,8 +20,10 @@ import (
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/rendezvous"
+	daemonserver "primeradiant.com/evener/server"
 )
 
 // docServeTestServer seeds a past session whose cwd is a real temp directory,
@@ -88,6 +90,35 @@ func docRawRequestIfNoneMatch(t *testing.T, web *WebServer, session, path, etag 
 	rec := httptest.NewRecorder()
 	web.Handler().ServeHTTP(rec, req)
 	return rec
+}
+
+func TestDocFile_ArchivedRootBypassesWarmPastMetadata(t *testing.T) {
+	web, rootA, sessionID := docServeTestServer(t)
+	rootB := t.TempDir()
+	for root, contents := range map[string]string{rootA: "launch A", rootB: "current B"} {
+		if err := os.WriteFile(filepath.Join(root, "plan.md"), []byte(contents), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	entry, ok := web.cfg.Past.Find(sessionID)
+	if !ok {
+		t.Fatal("fixture session is missing from the warm past index")
+	}
+	meta, err := schema.LoadSessionMeta(entry.StateDir, entry.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta.EnvInfo.WorkingDir = rootB
+	if err := schema.SaveSessionMeta(entry.StateDir, meta); err != nil {
+		t.Fatal(err)
+	}
+	if cached, ok := web.cfg.Past.Find(sessionID); !ok || cached.Meta.EnvInfo.WorkingDir != rootA {
+		t.Fatalf("fixture did not preserve stale A metadata: %+v", cached)
+	}
+	response := docRawRequest(t, web, sessionID, "plan.md")
+	if response.Code != http.StatusOK || response.Body.String() != "current B" {
+		t.Fatalf("document = %d %q, want current B", response.Code, response.Body.String())
+	}
 }
 
 // docRequestWithFormat issues a /doc/file GET with an explicit format value, so
@@ -197,19 +228,27 @@ func TestDocImageServesLiveDescriptorURLWithoutPast(t *testing.T) {
 		t.Fatal(err)
 	}
 	sessionID := "02wMz5Txv2enqVTitaig6F"
+	daemon := daemonserver.NewServer(daemonserver.ServerConfig{})
+	daemon.SetAppIdentity("local", sessionID)
+	daemon.SetStatus(daemonserver.StatusInfo{SessionID: sessionID, State: appwire.ThreadStatusIdle, WorkingDir: cwd})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.AppServer().ServeWebSocket))
+	t.Cleanup(daemonHTTP.Close)
+	entry := rendezvous.Entry{
+		PID: 91, Protocol: appwire.ProtocolVersion, Endpoint: daemonHTTP.URL,
+		SourceID: "local", ThreadID: sessionID, SessionID: sessionID,
+		WorkspaceRef: "local:" + sessionID, WorkingDir: cwd,
+	}
 	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
-		Entry: rendezvous.Entry{
-			PID:        91,
-			Protocol:   appwire.ProtocolVersion,
-			Endpoint:   "ws://127.0.0.1:1/rpc",
-			ThreadID:   sessionID,
-			SessionID:  sessionID,
-			WorkingDir: cwd,
-		},
+		Entry:     entry,
 		SessionID: sessionID,
 		Status:    appwire.ThreadStatusIdle,
 	})
 	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: roster})
+	sources := appsource.NewRegistry()
+	sources.Add(appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
+		return []appsource.LocalDaemonEntry{{Entry: entry, SessionID: sessionID}}
+	}, daemonHTTP.Client()))
+	web.sources = sources
 
 	imgs := outputImagesForToolCall(sessionID, cwd, "shell", `{}`, "created plot.png")
 	if len(imgs) != 1 || imgs[0].URL == "" || imgs[0].Path != "plot.png" {

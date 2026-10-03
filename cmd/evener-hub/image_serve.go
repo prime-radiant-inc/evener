@@ -17,6 +17,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/fspaths"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
@@ -224,7 +225,7 @@ func decodeHexSha256(raw string) ([sha256.Size]byte, bool) {
 // method can only ever resolve against the recipient's own state and can never
 // read an arbitrary host file; anything it cannot resolve is refused typed
 // rather than guessed.
-func sessionImageFromHub(cfg hubcore.WebConfig, params appwire.SessionImageParams) (appwire.SessionImageResponse, error) {
+func sessionImageFromHub(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.SessionImageParams) (appwire.SessionImageResponse, error) {
 	switch {
 	case params.SessionID == "":
 		return appwire.SessionImageResponse{}, appwire.InvalidParams("sessionId is required")
@@ -236,7 +237,7 @@ func sessionImageFromHub(cfg hubcore.WebConfig, params appwire.SessionImageParam
 		}
 		return sessionImageBySha(cfg, params.SessionID, params.SHA)
 	default:
-		return sessionImageByPath(cfg, params.SessionID, params.Path)
+		return sessionImageByPath(ctx, cfg, sources, params.SessionID, params.Path)
 	}
 }
 
@@ -276,15 +277,15 @@ func sessionImageBySha(cfg hubcore.WebConfig, sessionID, sha string) (appwire.Se
 // sessionImageByPath answers the file-backed form: a session-relative path
 // inside the session's own working directory, refused on any escape and bounded
 // by outputImageMaxBytes at stat time (readOutputImageInRoot).
-func sessionImageByPath(cfg hubcore.WebConfig, sessionID, rel string) (appwire.SessionImageResponse, error) {
+func sessionImageByPath(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, sessionID, rel string) (appwire.SessionImageResponse, error) {
 	// Path is session-relative by contract: an absolute path is refused even
 	// when it happens to resolve inside the session root.
 	if filepath.IsAbs(rel) {
 		return appwire.SessionImageResponse{}, appwire.InvalidParams("path must be session-relative")
 	}
-	cwd, ok := sessionCWD(cfg, sessionID)
-	if !ok {
-		return appwire.SessionImageResponse{}, appwire.ResourceNotFound("session not found")
+	cwd, err := sessionCWD(ctx, cfg, sources, sessionID)
+	if err != nil {
+		return appwire.SessionImageResponse{}, err
 	}
 	abs, err := fspaths.ResolveInRoot(cwd, rel)
 	if err != nil {
