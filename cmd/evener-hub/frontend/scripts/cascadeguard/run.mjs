@@ -340,6 +340,13 @@ async function reloadAndMobileJourney() {
   assert.deepEqual(restored.panels[fixture.sourcePaneId].params.paneParams, expectedIntent);
   assert.deepEqual(restored.panels[unrelatedId], unrelatedPanel);
   assert.deepEqual(placement(restored, unrelatedId), unrelatedPlacement);
+  // The restored pane's React content hydrates after the layout asserts above
+  // on a loaded machine (its tab exists, its body still shows Loading), so the
+  // draft read must wait for the composer to actually mount instead of
+  // crashing on a null state. Pre-fix, the wiped pane never re-mounted and the
+  // same missing wait crashed the guard as a TypeError; the wait turns both
+  // into an honest failure naming the composer.
+  await wait(`document.querySelector(${q(`[data-composer="${fixture.childRef}"]`)}) !== null`, "restored unrelated pane's composer mounts");
   assert.equal((await driver.composerState(fixture.childRef)).text, "CASCADE_UNSENT_UNRELATED_DRAFT");
   driver.milestone("unrelated-pane-reload", { sourcePaneId: fixture.sourcePaneId, unrelatedPaneId: unrelatedId, selectedRef: fixture.refs[6], edges: expectedIntent.edges });
   await capture("unrelated-pane-reload");
@@ -523,6 +530,20 @@ try {
     return b.right <= a.right + 1 && b.right > a.left ? { width: track.clientWidth, extent: track.scrollWidth, left: track.scrollLeft, leafRight: b.right, trackRight: a.right } : null;
   })()`, "narrow desktop overflow and selected leaf revealed");
   for (const ref of fixture.refs.slice(5)) await wait(`document.querySelector(${q(scroll(ref))})?.scrollHeight > document.querySelector(${q(scroll(ref))}).clientHeight`, "independent transcript overflow");
+  // Both columns are virtualized, so late row-height measurement corrects
+  // scrollTop while a loaded machine settles (a 15px correction was sighted
+  // twice in the 2-core loop, moving the leaf between the baseline capture and
+  // the independence assertion). The independence check below compares against
+  // a captured baseline, so it needs that geometry to hold still across
+  // consecutive polls first.
+  await wait(`(() => {
+    const nodes = [${q(scroll(fixture.refs[5]))}, ${q(scroll(fixture.refs[6]))}].map((s) => document.querySelector(s));
+    if (nodes.some((node) => node === null)) return null;
+    const heights = nodes.map((node) => node.scrollHeight);
+    const previous = window.__cascadeScrollHeights;
+    window.__cascadeScrollHeights = heights;
+    return previous !== undefined && previous.every((height, i) => height === heights[i]);
+  })()`, "both cascade columns' scroll geometry settled before the independence check");
   const beforeScroll = await read(`[${q(scroll(fixture.refs[5]))},${q(scroll(fixture.refs[6]))}].map(s => document.querySelector(s).scrollTop)`);
   await read(`document.querySelector(${q(scroll(fixture.refs[5]))}).scrollTop = 200`);
   await wait(`document.querySelector(${q(scroll(fixture.refs[5]))}).scrollTop === 200`, "parent scrolled independently");
