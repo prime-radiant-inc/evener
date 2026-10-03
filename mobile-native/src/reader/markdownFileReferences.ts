@@ -92,7 +92,19 @@ function destination(href: string): string {
 	);
 }
 
-function labelEnd(raw: string): number {
+function labelEnd(raw: string, label?: string): number {
+	if (label !== undefined) {
+		if (raw[0] !== "[") return -1;
+		// marked's link text is its raw label capture, not rendered text. Only
+		// bracket backslashes are removed by outputLinkReplace. Map those bytes
+		// back instead of interpreting brackets/backtick delimiters a second time.
+		let index = 1;
+		for (let consumed = 0; consumed < label.length; consumed += 1) {
+			if (raw[index] === "\\" && /[\[\]]/u.test(raw[index + 1] ?? "")) index += 1;
+			index += 1;
+		}
+		return index;
+	}
 	let depth = 0;
 	for (let index = 0; index < raw.length; index += 1) {
 		if (raw[index] === "\\") {
@@ -155,6 +167,8 @@ function collectInline(
 ): void {
 	const spans: InlineSpan[] = [];
 	let context = "";
+	let inLink = false;
+	let inRawBlock = false;
 	const flatten = (inline: readonly Token[], parent: Source) => {
 		let cursor = 0;
 		for (const token of inline) {
@@ -165,12 +179,19 @@ function collectInline(
 				flatten(token.tokens, located.source);
 				continue;
 			}
+			if (token.type === "html") {
+				// marked records the state after this tag, including closing tags.
+				// Keep it across nested formatting, just as its inline lexer does.
+				const tag = token as Tokens.Tag;
+				inLink = tag.inLink;
+				inRawBlock = tag.inRawBlock;
+			}
 			const start = context.length;
 			// Existing anchors/images/HTML are ineligible, but still provide boundary
 			// context, rather than manufacturing a word boundary at their token edge.
 			const text = token.type === "codespan" ? token.text : token.type === "escape" ? token.text : token.raw;
 			context += text;
-			spans.push({ token, source: located.source, start, end: context.length });
+			if (!inLink && !inRawBlock) spans.push({ token, source: located.source, start, end: context.length });
 		}
 	};
 	flatten(tokens, source);
@@ -181,7 +202,7 @@ function collectInline(
 		const to = raw.offsets.at(-1);
 		if (from === undefined || to === undefined) continue;
 		if (token.type === "link") {
-			const close = labelEnd(token.raw);
+			const close = labelEnd(token.raw, token.text);
 			if (close < 0) continue;
 			if (token.raw[close + 1] === "(") {
 				const range = targetRange(token.raw, close + 2);
@@ -257,9 +278,26 @@ function collectBlocks(
 		} else if (token.type === "table") {
 			let next = 0;
 			const table = token as Tokens.Table;
+			// marked splits on even-parity pipes, then removes one backslash from
+			// escaped pipes before inline lexing. Mirror only that transformation,
+			// keeping the surviving bytes mapped to their original source offsets.
+			let text = "";
+			const offsets: number[] = [];
+			let slashes = 0;
+			for (let index = 0; index < raw.text.length; index += 1) {
+				const char = raw.text[index];
+				if (char === "|" && slashes % 2 === 1) {
+					text = text.slice(0, -1);
+					offsets.pop();
+				}
+				text += char;
+				offsets.push(raw.offsets[index]);
+				slashes = char === "\\" ? slashes + 1 : 0;
+			}
+			const cellParent = { text, offsets };
 			for (const cell of [...table.header, ...table.rows.flat()]) {
 				const cellRaw = cell.tokens.map((part) => part.raw).join("");
-				const cellSource = locate(cellRaw, raw, next);
+				const cellSource = locate(cellRaw, cellParent, next);
 				if (!cellSource) continue;
 				next = cellSource.next;
 				collectInline(cell.tokens, cellSource.source, found, defs);
@@ -312,7 +350,7 @@ export function renderMarkdownFileReferences(markdown: string, cwd: string): Mar
 			? `(${id})`
 			: candidate.label === undefined
 				? id
-				: `[${candidate.label}](${id})`;
+				: `[${markdown.slice(candidate.start, candidate.end)}](${id})`;
 		return { ...candidate, replacement };
 	});
 	let rendered = markdown;

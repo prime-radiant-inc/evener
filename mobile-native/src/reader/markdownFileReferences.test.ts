@@ -159,3 +159,113 @@ it("preserves multiline reference-label source and blockquote prefixes outside t
 	expect([...result.references.values()].map((ref) => ref.path)).toEqual(["docs/a.md"]);
 	expect(result.markdown.replace(/\(evener-file:[^)]*\)/, "[r]")).toBe(original);
 });
+
+describe("review span regressions", () => {
+	it.each([
+		'Before <a href="https://example.test/x"> docs/a.md </a> after',
+		'Before <a href="https://example.test/x"> `README.md` [R](./docs/a.md) </a> after',
+		'Before <a href="https://example.test/x"> **docs/a.md *`README.md`* [R](./docs/b.md)** </a> after',
+		'Before **<a href="https://example.test/x"> docs/a.md** `README.md` </a> after',
+		"Before <script> docs/a.md `README.md` [R](./docs/b.md) </script> after",
+		"Before <pre> docs/a.md </pre> after",
+	])("I1 excludes HTML anchor/raw interiors, %s", (original) => {
+		expect(paths(original)).toEqual([]);
+		const result = renderMarkdownFileReferences(original, cwd);
+		expect([...result.references.values()]).toEqual([]);
+		expect(result.markdown).toBe(original);
+	});
+	it.each([
+		'docs/b.md <a href="https://example.test/x"> docs/a.md </a>"docs/c.md"',
+		'docs/b.md <a href="https://example.test/x"> docs/a.md </a> docs/c.md',
+		"docs/b.md <script> docs/a.md </script> docs/c.md",
+	])("I1 keeps surrounding eligible prose and original source, %s", (original) => {
+		const result = renderMarkdownFileReferences(original, cwd);
+		expect(paths(original)).toEqual(["docs/b.md", "docs/c.md"]);
+		expect([...result.references.values()].map((ref) => ref.readTarget)).toEqual([
+			"/work/b/docs/b.md",
+			"/work/b/docs/c.md",
+		]);
+		expect(result.markdown.replace(/\[(docs\/[bc]\.md)\]\(evener-file:[^)]*\)/g, "$1")).toBe(original);
+	});
+	it("I1 does not manufacture a prose boundary after an excluded HTML edge", () => {
+		const original = 'docs/b.md <a href="https://example.test/x"> docs/a.md </a>docs/c.md';
+		const result = renderMarkdownFileReferences(original, cwd);
+		expect(paths(original)).toEqual(["docs/b.md"]);
+		expect(result.markdown.replace(/\[docs\/b\.md\]\(evener-file:[^)]*\)/, "docs/b.md")).toBe(original);
+	});
+	it("I1 does not create code boundaries at an excluded HTML edge", () => {
+		const original = 'Before <a href="https://example.test/x"> docs/a.md </a>foo`README.md` after';
+		expect(paths(original)).toEqual([]);
+		expect(renderMarkdownFileReferences(original, cwd).markdown).toBe(original);
+	});
+	it.each([
+		"[foo `]` bar](./docs/a.md)",
+		"[foo `[` bar](./docs/a.md)",
+		"[foo ``]`` bar](./docs/a.md)",
+		"[foo ``[`` bar](./docs/a.md)",
+		"[foo **`]`** bar](./docs/a.md)",
+		'[foo \\] and \\[ bar](<./docs/a.md> "keep &amp; title")',
+		"[array `arr[0]` docs](./docs/a.md)",
+		'[foo `]`\r\nbar](<./docs/a.md> "keep")',
+	])("I2 uses the recognized explicit label boundary, %s", (original) => {
+		const result = renderMarkdownFileReferences(original, cwd);
+		expect(paths(original)).toEqual(["docs/a.md"]);
+		expect([...result.references.values()].map((ref) => ref.readTarget)).toEqual(["/work/b/docs/a.md"]);
+		expect(result.markdown.replace(/evener-file:[\d-]+/, "./docs/a.md")).toBe(original);
+		expect(destinations(original).map((ref) => ref?.path)).toEqual(["docs/a.md"]);
+	});
+	it.each(["[foo `]` bar]", "[foo `[` bar]", "[foo ``]`` bar]", "[foo `]`\r\nbar]"])(
+		"I2 uses applicable full-reference label boundaries, %s",
+		(label) => {
+			const original = `${label}[r]\r\n\r\n[r]: <./docs/a.md> "keep"\r\n`;
+			const result = renderMarkdownFileReferences(original, cwd);
+			expect(paths(original)).toEqual(["docs/a.md"]);
+			expect([...result.references.values()].map((ref) => ref.readTarget)).toEqual(["/work/b/docs/a.md"]);
+			expect(result.markdown.replace(/\(evener-file:[^)]*\)/, "[r]")).toBe(original);
+			expect(destinations(original).map((ref) => ref?.path)).toEqual(["docs/a.md"]);
+		},
+	);
+	it.each([
+		"| File | Why |\n| --- | --- |\n| a\\|b docs/a.md | docs/c.md |",
+		"| File | Why |\n| --- | --- |\n| docs/a.md a\\|b | docs/c.md |",
+		"| File | Why |\n| --- | --- |\n| a\\|b `docs/a.md` | docs/c.md |",
+		"| File | Why |\n| --- | --- |\n| a\\|b [R](./docs/a.md) | docs/c.md |",
+		'| File | Why |\n| --- | --- |\n| [a\\|b](<./docs/a.md> "keep") | docs/c.md |',
+		"| File | Why |\r\n| --- | --- |\r\n| a\\|b docs/a.md | x\\|y docs/c.md |\r\n",
+		"| a\\|b docs/a.md | Why |\n| --- | --- |\n| x\\|y | docs/c.md |",
+	])("I3 maps escaped table pipes to original source, %s", (original) => {
+		const result = renderMarkdownFileReferences(original, cwd);
+		expect(paths(original)).toEqual(["docs/a.md", "docs/c.md"]);
+		expect([...result.references.values()].map((ref) => ref.readTarget)).toEqual([
+			"/work/b/docs/a.md",
+			"/work/b/docs/c.md",
+		]);
+		const restored = result.markdown
+			.replace(/\[(`?docs\/[ac]\.md`?)\]\(evener-file:[^)]*\)/g, "$1")
+			.replace(/evener-file:[\d-]+/, "./docs/a.md");
+		expect(restored).toBe(original);
+	});
+	it("I3 preserves multiple rows, slash parity and nested table prefixes", () => {
+		const original =
+			"> | File | Why |\r\n> | --- | --- |\r\n> | a\\\\\\|b docs/a.md | docs/c.md |\r\n> | docs/d.md a\\\\| docs/e.md |\r\n";
+		const result = renderMarkdownFileReferences(original, cwd);
+		expect(paths(original)).toEqual(["docs/a.md", "docs/c.md", "docs/d.md", "docs/e.md"]);
+		expect([...result.references.values()].map((ref) => ref.readTarget)).toEqual([
+			"/work/b/docs/a.md",
+			"/work/b/docs/c.md",
+			"/work/b/docs/d.md",
+			"/work/b/docs/e.md",
+		]);
+		expect(result.markdown.replace(/\[(docs\/[acde]\.md)\]\(evener-file:[^)]*\)/g, "$1")).toBe(original);
+	});
+	it("I3 preserves escaped pipes inside generated prose and code labels", () => {
+		const original = "| File | Why |\n| --- | --- |\n| `docs/a\\|b.md` | docs/c\\|d.md |";
+		const result = renderMarkdownFileReferences(original, cwd);
+		expect(paths(original)).toEqual(["docs/a|b.md", "docs/c|d.md"]);
+		expect([...result.references.values()].map((ref) => ref.readTarget)).toEqual([
+			"/work/b/docs/a|b.md",
+			"/work/b/docs/c|d.md",
+		]);
+		expect(result.markdown.replace(/\[([^\]]+)\]\(evener-file:[^)]*\)/g, "$1")).toBe(original);
+	});
+});
