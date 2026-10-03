@@ -78,12 +78,16 @@ jobs:
       # with the machine, and the failure arrives as one line naming a path
       # that no longer exists. This is the only copy that outlives the job.
       # Named for the run so two failures on the same PR do not collide.
-      - name: Keep the skill guard's artifacts
+      # The cascade guard keeps its evidence the same way (its temp dir is
+      # KeptTempDir, which on a runner is /tmp), so its path is collected too.
+      - name: Keep the browser guards' artifacts
         if: failure()
         uses: actions/upload-artifact@v7.0.1
         with:
           name: skillguard-artifacts-${{ github.run_id }}-${{ github.run_attempt }}
-          path: /tmp/skillguard-browser-*/artifacts/**
+          path: |
+            /tmp/skillguard-browser-*/artifacts/**
+            /tmp/cascadeguard-browser-*/**/
           retention-days: 7
           # The step also fires when make build-web is what failed, and then
           # there is nothing to collect: say so quietly instead of adding a
