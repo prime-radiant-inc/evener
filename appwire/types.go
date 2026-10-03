@@ -1873,8 +1873,8 @@ const (
 	ThreadItemEventKindEnvironment ThreadItemEventKind = "environment"
 	// ThreadItemEventKindNotesContext marks the systemMessage item a reloaded
 	// transcript renders for a schema.TurnNotesContext turn: the harness's
-	// shared-notes snapshot block. Same visibility contract as environment —
-	// harness chrome, never hidden by a toggle.
+	// shared-notes snapshot block. Web and native hide it at Conversation;
+	// elsewhere System events controls visibility and it starts folded.
 	ThreadItemEventKindNotesContext ThreadItemEventKind = "notes-context"
 	// ThreadItemEventKindWarning marks a live overlay notice for a session
 	// warning. Warnings are never recorded, so only the overlay shows them.
