@@ -447,12 +447,15 @@ function terminalFallbackEntry(
   // no end cap, so its fallback keeps the never-empty guarantee.
   const hiddenInformationalNotice =
     (isInformationalWarning(sourceItem) || isToolRepairNotice(sourceItem)) && !informationalNoticesVisible(vector);
-  // A daemon steer the chat preset hid trades the same way: the end cap owns
-  // the failure, so the hidden row must not come back to say it a second
-  // time. An errorless terminal turn keeps its fallback, so it still renders
-  // something (an interrupted turn ending on a steer included).
-  const hiddenDaemonSteer = isDaemonSteer(sourceItem) && hidesDaemonSteering(content);
-  if ((hiddenInformationalNotice || hiddenDaemonSteer) && isTurnError(turn.error)) {
+  if (hiddenInformationalNotice && isTurnError(turn.error)) {
+    return undefined;
+  }
+  // A daemon steer the chat preset hid never comes back, not even as the
+  // fallback of an errorless terminal turn: such a turn renders empty at
+  // chat, exactly as the phone renders it (Jesse, 2026-10-03). The
+  // informational-notice trade above keeps its narrower shape, trading only
+  // where the error end cap renders.
+  if (isDaemonSteer(sourceItem) && hidesDaemonSteering(content)) {
     return undefined;
   }
   return criticalEntry(sourceItem, turn.id, sourceIndex, redactsReasoning(sourceItem, vector));

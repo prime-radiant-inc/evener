@@ -272,15 +272,14 @@ describe("transcript projector", () => {
     expect(entriesFor(model, preset("intent")).map((entry) => entry.id)).toEqual(["daemon-steer"]);
   });
 
-  test("an errorless terminal turn keeps its fallback: a turn interrupted on a daemon steer still shows it at chat", () => {
+  test("a turn interrupted on a daemon steer renders empty at chat, as the phone renders it", () => {
     const interruptedTurn = turn([item("daemon-steer", "steering", { text: "steer", source: "" })], {
       status: "interrupted",
     });
     const model = { ...threadWith(), turns: [interruptedTurn] } as ThreadModel;
 
-    // The never-empty trade, the same one an informational notice gets: with
-    // no error end cap to render, the hidden row is the turn's only content.
-    expect(entriesFor(model, preset("chat")).map((entry) => [entry.id, entry.kind])).toEqual([
+    expect(entriesFor(model, preset("chat"))).toEqual([]);
+    expect(entriesFor(model, preset("intent")).map((entry) => [entry.id, entry.kind])).toEqual([
       ["daemon-steer", "critical"],
     ]);
   });
@@ -825,7 +824,7 @@ describe("transcript projector", () => {
     expect(entries[0]).not.toMatchObject({ summary: "cut short" });
   });
 
-  test("keeps the typed failure marker for failed and interrupted turns", () => {
+  test("keeps the failed turn's typed marker at chat; an interrupted turn's steer marker shows where steering shows", () => {
     const model = {
       ...threadWith(),
       turns: [
@@ -841,6 +840,10 @@ describe("transcript projector", () => {
     } as ThreadModel;
 
     expect(projectThread(model, preset("chat")).turns.map((projected) => projected.entries[0]?.kind)).toEqual([
+      "critical",
+      undefined,
+    ]);
+    expect(projectThread(model, preset("intent")).turns.map((projected) => projected.entries[0]?.kind)).toEqual([
       "critical",
       "critical",
     ]);
