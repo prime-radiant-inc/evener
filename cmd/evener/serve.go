@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -2158,6 +2159,7 @@ func evenerUsageFromLLM(u llm.Usage) *appwire.EvenerUsage {
 
 func agentToServerDetailedStatus(ds agent.DetailedStatus) server.DetailedStatus {
 	var out server.DetailedStatus
+	out.Commands = slices.Clone(ds.Commands)
 	if ds.Plugins != nil {
 		out.Plugins = make([]server.PluginStatusInfo, 0, len(ds.Plugins))
 	}

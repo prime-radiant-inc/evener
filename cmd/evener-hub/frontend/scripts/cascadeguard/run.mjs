@@ -148,7 +148,7 @@ async function holdStorageAcknowledgement(ref, input) {
       }, options);
     };
     IDBObjectStore.prototype.add = function(record, ...args) {
-      if (this.name === 'outbox' && this.transaction.db.name === 'evener-mutation-outbox' && record.targetRef === ${q(ref)} && record.payload?.input?.some(item => item.text === ${q(input)})) {
+      if (this.name === 'outbox' && this.transaction.db.name === 'evener-mutation-outbox' && record.targetRef === ${q(ref)} && (record.composerText === ${q(input)} || record.payload?.input?.some(item => item.text === ${q(input)}))) {
         selected = this.transaction;
         held.record = structuredClone(record);
         IDBObjectStore.prototype.add = nativeAdd;
@@ -277,6 +277,117 @@ async function sourceMutationJourney() {
   }
   driver.milestone("queued-source-single-delivery", { clientMutationId: queued.params.clientMutationId, recipient: ref });
   await capture("queued-source-single-delivery");
+}
+
+// Both rows come from the root's real project catalog. A native row click,
+// selected by its description, distinguishes identities with identical labels.
+async function completeOverlap(ref, kind) {
+  const description = `Cascade overlap ${kind} fixture`;
+  const point = await wait(`(() => {
+    const button = [...document.querySelectorAll('[data-testid="composer-slash-menu"] button')].find(node => node.textContent.includes(${q(description)}));
+    if (!button) return null;
+    const r = button.getBoundingClientRect(); return { x:r.x + r.width / 2, y:r.y + r.height / 2 };
+  })()`, `real overlapping ${kind} catalog row`);
+  await driver.clickAt(point.x, point.y);
+  await wait(`document.querySelector(${q(driver.composerSelector(ref))})?.querySelector('[data-${kind}-name="cascade-overlap"]') !== null && document.querySelector('[data-testid="composer-slash-menu"]') === null`, `selected overlapping ${kind} atom`);
+}
+
+function overlapMentions(text) {
+  const first = text.indexOf('/cascade-overlap');
+  const second = text.indexOf('/cascade-overlap', first + 1);
+  assert.ok(first >= 0 && second > first && text.indexOf('/cascade-overlap', second + 1) > second, 'two atoms plus same-spelling inert prose');
+  return [{ kind: 'command', name: 'cascade-overlap', offset: first }, { kind: 'skill', name: 'cascade-overlap', offset: second }];
+}
+
+async function assertOverlap(ref, text, label) {
+  const state = await driver.composerState(ref);
+  assert.equal(state.text, text, `${label}, exact UTF-16 text and inert prose`);
+  assert.deepEqual(state.chips, ['/cascade-overlap'], `${label}, only the selected skill is a skill atom`);
+  const atoms = await read(`(() => {
+    const editor = ${driver.editorExpr(ref)};
+    return [...editor.querySelectorAll('[data-command-name], [data-skill-name]')].map(node => {
+      const range = document.createRange(); range.selectNodeContents(editor); range.setEndBefore(node);
+      return { kind:node.hasAttribute('data-command-name') ? 'command' : 'skill', name:node.dataset.commandName ?? node.dataset.skillName, offset:range.toString().length };
+    });
+  })()`);
+  assert.deepEqual(atoms, overlapMentions(text), `${label}, atom kind and exact text-owned offsets`);
+  const stored = await read(`JSON.parse(localStorage.getItem(${q(`evener.composer.draft.v2.${ref}`)}))`);
+  assert.deepEqual(stored, { text, skillNames:['cascade-overlap'], commandNames:['cascade-overlap'], mentions:overlapMentions(text) }, `${label}, complete real persisted draft`);
+}
+
+async function mixedSourceJourney() {
+  const ref = fixture.rootRef;
+  await driver.clearComposerDraft(ref);
+  await driver.focusComposer(ref);
+  await driver.typeText(ref, '🙂 CASCADE_ROLE_0_SENTINEL CASCADE_MIXED_INPUT ');
+  await upload('mixed-first.png');
+  await wait("document.querySelector('button[aria-label=\"View mixed-first.png\"] img')?.src.startsWith('data:image/png;base64,')", 'first real overlap image');
+  await driver.focusComposer(ref);
+  await driver.typeText(ref, ' /cascade-overlap');
+  await completeOverlap(ref, 'command');
+  await holdCanvasCompletion();
+  await upload('mixed-failure.png');
+  await wait('window.__cascadeEncode?.encoded && window.__cascadeEncode.release !== null', 'real middle-image native callback held');
+  await driver.focusComposer(ref);
+  await driver.typeText(ref, ' /cascade-overlap');
+  await completeOverlap(ref, 'skill');
+  await upload('mixed-last.png');
+  await wait("document.querySelector('button[aria-label=\"View mixed-last.png\"] img')?.src.startsWith('data:image/png;base64,')", 'last real overlap image');
+  await driver.focusComposer(ref);
+  await driver.typeText(ref, ' /cascade-overlap');
+  await key('Escape', 27);
+  const before = await driver.composerState(ref);
+  const markers = before.text.match(/\[image \d+\]/g) ?? [];
+  assert.equal(markers.length, 3, 'each real upload inserted its own marker');
+  assert.equal(new Set(markers).size, 3, 'retained source allocates unique image markers');
+  const [firstMarker, failedMarker, lastMarker] = markers;
+  await assertOverlap(ref, before.text, 'before detached image settlement');
+  const imageBytes = await read("['mixed-first.png','mixed-last.png'].map(name => document.querySelector(`button[aria-label=\"View ${name}\"] img`).src)");
+  await driver.click('[data-testid="statusbar"] button[aria-label^="Agents,"]');
+  await drill(fixture.edges[0], 1);
+  await read('window.__cascadeEncode.release(false)');
+  await wait(`${driver.toastExpr()}.includes('mixed-failure.png (image decode failed)')`, 'actual failed decode settles while source editor is absent');
+  await driver.clickByText('Return to previous view');
+  await wait(`document.querySelector(${q(driver.composerSelector(ref))}) !== null`, 'return overlapping detached image draft');
+  const settledText = before.text.replace(failedMarker, '');
+  await assertOverlap(ref, settledText, 'after detached image settlement and Return');
+  assert.equal((await driver.composerState(ref)).tiles, 2, 'only failed middle image is removed');
+  assert.deepEqual(await read("['mixed-first.png','mixed-last.png'].map(name => document.querySelector(`button[aria-label=\"View ${name}\"] img`).src)"), imageBytes, 'exact retained PNG bytes');
+  driver.milestone('mixed-detached-image-return', { recipient:ref, mentions:overlapMentions(settledText) });
+
+  await holdStorageAcknowledgement(ref, settledText);
+  const after = frames.length;
+  await driver.clickSubmit(ref, { text:settledText, chips:['/cascade-overlap'], tiles:2 });
+  await wait('window.__cascadeStorage.committed && window.__cascadeStorage.release !== null', 'real mixed native outbox acknowledgement held');
+  const held = await read('window.__cascadeStorage.record');
+  assert.equal(held.targetRef, ref, 'mixed record retains original recipient');
+  assert.equal(held.method, 'turn/start');
+  assert.equal(held.composerText, settledText);
+  assert.deepEqual(held.composerMentions, overlapMentions(settledText));
+  assert.deepEqual(held.payload.input.filter(item => ['command','skill'].includes(item.type)).map(({type,name}) => ({type,name})), [{type:'skill',name:'cascade-overlap'}, {type:'command',name:'cascade-overlap'}], 'actual input keeps both identities in public wire order');
+  assert.equal(held.attachments.length, 2, 'actual outbox retains both image payloads');
+  assert.ok(held.clientMutationId, 'native committed mutation has an identity');
+  await driver.click('[data-testid="statusbar"] button[aria-label^="Agents,"]');
+  await drill(fixture.edges[0], 1);
+  await driver.clickByText('Return to previous view');
+  await wait(`document.querySelector(${q(driver.composerSelector(ref))}) !== null`, 'return mixed source while receipt is held');
+  await driver.focusComposer(ref);
+  await driver.typeText(ref, ' CASCADE_NEWER_MIXED_DRAFT');
+  const newer = await driver.composerState(ref);
+  await driver.click('[data-testid="statusbar"] button[aria-label^="Agents,"]');
+  await drill(fixture.edges[0], 1);
+  await read('window.__cascadeStorage.release()');
+  await waitFrames(() => sent(after).some(frame => frame.params?.clientMutationId === held.clientMutationId && answered(frame)), 'mixed original mutation acknowledged exactly once');
+  await driver.clickByText('Return to previous view');
+  await wait(`document.querySelector(${q(driver.composerSelector(ref))}) !== null`, 'return after detached mixed receipt');
+  await wait(`document.querySelector(${q(driver.composerSelector(ref))})?.querySelectorAll('[data-testid="attachment-tile"]').length === 0`, 'submitted images retire after native acknowledgement');
+  const cleaned = newer.text.replace(firstMarker, '').replace(lastMarker, '');
+  await assertOverlap(ref, cleaned, 'after independent submitted marker cleanup and Return');
+  const requests = sent(after).filter(frame => frame.params?.clientMutationId === held.clientMutationId);
+  assert.equal(requests.length, 1, 'mixed promotion and Return never duplicate delivery');
+  assert.equal(requests[0].params.ref, ref);
+  driver.milestone('mixed-held-storage-return', { recipient:ref, clientMutationId:held.clientMutationId, mentions:overlapMentions(cleaned) });
+  await capture('mixed-held-storage-return');
 }
 
 const layoutExpr = "JSON.parse(localStorage.getItem('evener.workspace.layout.v2') || 'null')";
@@ -682,6 +793,7 @@ try {
   await capture("return-source");
   await pendingImage("pending-success.png", true);
   await pendingImage("pending-failure.png", false);
+  await mixedSourceJourney();
   await sourceMutationJourney();
   await reloadAndMobileJourney();
   assert.deepEqual(errors, [], "unexpected browser errors or warnings");

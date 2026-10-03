@@ -1,8 +1,6 @@
-// The command catalog: the plugin and user-global slash commands a hub offers
-// (evener/command/list), re-read when the hub reports a plugin change, plus
-// the per-session view of it - the commands a session's loaded plugins can
-// run, merged with the skills its diagnostics advertise - which is what a
-// composer's slash menu shows. Both are framework-free store factories
+// Two catalogs with different owners: controller discovery (evener/command/list)
+// for the palette, and each session's loaded commands and skills (thread/read)
+// for live completion. Both are framework-free store factories
 // (frameworkFreeStore.ts); each app builds the instances it wires to its view
 // layer. Pure logic - no DOM, no React.
 //
@@ -11,15 +9,11 @@
 // once per connection") is the host's to trigger - the web app's
 // stores/commandCatalog.ts does it on every ready, client-wired transition.
 //
-// createCommandCatalog is the hub-wide catalog, unfiltered, for a host that
-// already holds each session's diagnostics and projects the catalog through
-// them itself (sessionPluginNames + visibleCatalogCommands + mergeSlashCommands).
-// createSessionCommandCatalog is the same catalog scoped to one session for a
-// host that does not: it reads the session's diagnostics through thread/read
-// beside the catalog and publishes the merged menu, atomically - a catalog
-// paired with a failed or foreign-session diagnostics read is never shown.
+// createCommandCatalog is controller-wide discovery, unchanged by live targets.
+// createSessionCommandCatalog reads only the owning session's diagnostics and
+// publishes its merged menu. Missing/empty inventory never falls back globally,
+// and a failed or foreign-session response cannot replace the last owned read.
 
-import { visibleCatalogCommands } from "./catalogCommands";
 import type { AppwireClient } from "./client";
 import { sessionActionError } from "./errors";
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "./frameworkFreeStore";
@@ -29,7 +23,7 @@ import type { CommandDescriptor } from "./types.gen";
 export type CommandCatalogClient = Pick<AppwireClient, "request" | "onNotification">;
 
 export interface CommandCatalogState {
-  /** The hub-wide catalog, unfiltered: every consumer scopes it to a session itself. */
+  /** Controller-wide catalog for the separate palette, not live completion. */
   commands: CommandDescriptor[];
   loading: boolean;
   error: string | null;
@@ -97,13 +91,10 @@ export function createSessionCommandCatalog(client: CommandCatalogClient, ref: s
   const loop = refreshLoop(
     store.setState,
     async () => {
-      const [catalog, thread] = await Promise.all([
-        readCatalog(client),
-        client.request("thread/read", { ref, includeTurns: false }),
-      ]);
+      const thread = await client.request("thread/read", { ref, includeTurns: false });
       const evener = thread.thread.evener;
       if (evener.ref !== ref) throw new Error("Catalog belongs to another session");
-      const commands = visibleCatalogCommands(catalog, sessionPluginNames(evener.diagnostics));
+      const commands = evener.diagnostics?.commands ?? [];
       return { items: mergeSlashCommands([], commands, evener.diagnostics?.skills ?? []) };
     },
     "Could not load commands and skills",

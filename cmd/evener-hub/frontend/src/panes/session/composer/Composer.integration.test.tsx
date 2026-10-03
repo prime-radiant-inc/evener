@@ -38,7 +38,7 @@ import { installControlledImageEncoding } from "../testing/imageEncoding";
 import { askDockStore, resetAskDockStoreForTests } from "./askDock/askDockStore";
 import { ackAskUserCall } from "./askDock/askDockTestUtils";
 import { Composer as ComposerView } from "./Composer";
-import { readComposerDraft, readDraft } from "./draft";
+import { readComposerDraft, readDraft, writeComposerDraft } from "./draft";
 import { usePendingTurnEntries } from "./queue";
 import { resetPendingTurnsStoreForTests, subscribeComposerSubmissionCommitted } from "./queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "./queue/testing/flushPendingTurnsProjection";
@@ -301,6 +301,97 @@ test("selected source skill chips survive a view remount without sending", async
   expect(source.getSnapshot().skillNames).toEqual(["skill-1"]);
   expect(readComposerDraft("root")).toEqual({ text: "Run /skill-1 ", skillNames: ["skill-1"] });
   expect(fake.calls.filter((call) => call.method === "turn/start" || call.method === "turn/steer")).toEqual([]);
+});
+
+// Comparing only prose and skills would clear the newly inert command token.
+test("held acceptance preserves a same-text command edit through source Return", async () => {
+  const text = "🙂 /same /same /same";
+  const mentions = [
+    { kind: "command" as const, name: "same", offset: 3 },
+    { kind: "skill" as const, name: "same", offset: 9 },
+  ];
+  writeComposerDraft("root", { text, skillNames: ["same"], commandNames: ["same"], mentions });
+  const source = createTestComposerSource("root");
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const overrides = idleFocusThread("root");
+  const fake = await mountComposer(
+    "root",
+    {
+      ...overrides,
+      evener: {
+        ...overrides.evener,
+        ref: "root",
+        queue: { revision: 0 },
+        capabilities: { ...FULL_CAPABILITIES, skillInput: true, commandInput: true },
+      },
+    },
+    source,
+  );
+  await settleActivityDiscovery("root");
+  const delivered = deferred<void>();
+  fake.on("turn/start", (params) => {
+    delivered.resolve();
+    return {
+      turn: { id: "accepted", status: "inProgress", itemsView: "full", items: [] },
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: "thr_root",
+        projectionState: "reflected",
+      },
+    };
+  });
+  const hold = holdNextWriteTransaction(["outbox", "optimistic", "recovery", "sequences"]);
+  try {
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    await hold.reached;
+    const durable = await storage.listOutbox("root");
+    expect(durable).toHaveLength(1);
+    const mutationId = durable[0]?.clientMutationId;
+    const editor = screen.getByRole("textbox", { name: "Message" });
+    expect(editor.querySelectorAll("[data-command-name]")).toHaveLength(1);
+    selectEditorText(editor, 3, 8);
+    await user.keyboard("{Backspace}");
+    await user.type(editor, "/same", { skipClick: true });
+    expect(editor.textContent).toBe(text);
+    expect(editor.querySelectorAll("[data-command-name]")).toHaveLength(0);
+    expect(editor.querySelectorAll("[data-skill-name]")).toHaveLength(1);
+    cleanup();
+    await act(async () => {
+      hold.release();
+      await delivered.promise;
+    });
+    await flushPendingTurnsProjectionForTests();
+    render(<Composer ref="root" source={source} focused={false} />);
+    await flushPendingTurnsProjectionForTests();
+    const returned = screen.getByRole("textbox", { name: "Message" });
+    expect(returned.textContent).toBe(text);
+    expect(returned.querySelectorAll("[data-command-name]")).toHaveLength(0);
+    expect(returned.querySelectorAll("[data-skill-name]")).toHaveLength(1);
+    expect(readComposerDraft("root")).toEqual({
+      text,
+      skillNames: ["same"],
+      mentions: [{ kind: "skill", name: "same", offset: 9 }],
+    });
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([
+      {
+        method: "turn/start",
+        params: expect.objectContaining({
+          ref: "root",
+          clientMutationId: mutationId,
+          input: [
+            { type: "text", text, mentions },
+            { type: "skill", name: "same" },
+            { type: "command", name: "same" },
+          ],
+        }),
+      },
+    ]);
+  } finally {
+    hold.release();
+  }
 });
 
 test.each([
