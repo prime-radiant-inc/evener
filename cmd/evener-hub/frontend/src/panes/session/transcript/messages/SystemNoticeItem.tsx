@@ -1,7 +1,7 @@
 // The systemMessage item renderer: quiet lifecycle/skill notices (model
 // switch, skill activation, plugin loads, hook completions, round timings,
 // ...) plus the scaffolding blocks (the session system prompt and compaction
-// summaries). Scaffolding is classified off the wire's typed
+// summaries and shared-notes snapshots). Scaffolding is classified off the wire's typed
 // ThreadItem.eventKind discriminator (carried onto ItemModel by reducer.ts's
 // wireItemToModel) and rendered as a collapsed-by-default disclosure. One more
 // kind earns an identity of its own: a persisted turn failure ("error"), which
@@ -40,7 +40,12 @@ import {
   useTranscriptRenderContext,
 } from "../../../../transcriptDisplay/renderContext";
 import { FailureGlyph, Markdown } from "../../../../widgets";
-import { disclosureDefault, isDisclosureOpen, toggleDisclosure } from "../../../../widgets/disclosure/disclosureStore";
+import {
+  disclosureDefault,
+  isDisclosureOpen,
+  setDisclosureOpen,
+  toggleDisclosure,
+} from "../../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { SYSTEM_PROMPT_ITEM_ID } from "../transcriptVisibility";
 import { asTurnError } from "../turnFailure";
@@ -60,6 +65,7 @@ const CLASS = {
   scaffold: requireClass(styles.scaffold, "systemnoticeitem.module.css", "scaffold"),
   scaffoldSummary: requireClass(styles.scaffoldSummary, "systemnoticeitem.module.css", "scaffoldSummary"),
   scaffoldBody: requireClass(styles.scaffoldBody, "systemnoticeitem.module.css", "scaffoldBody"),
+  literalBody: requireClass(styles.literalBody, "systemnoticeitem.module.css", "literalBody"),
 };
 
 // SYSTEM_PROMPT_ITEM_ID (imported above) is the narrow fallback signal for a
@@ -73,9 +79,10 @@ const CLASS = {
 // (apptranscript.go's ProjectTurn "Context summary"/"Context checkpoint",
 // each a wall of markdown). Every other kind (model switch, skill activation,
 // the short live context_compaction stats line, ...) stays a plain quiet
-// line. Classification is by this typed wire field, never the item's own char
+// line. Shared-notes snapshots also get a disclosure, with a literal body.
+// Classification is by this typed wire field, never the item's own char
 // count (kata ckgw).
-const SCAFFOLD_EVENT_KINDS = new Set(["system_prompt", "compaction"]);
+const SCAFFOLD_EVENT_KINDS = new Set(["system_prompt", "compaction", "notes-context"]);
 
 function isScaffoldItem(item: ItemModel): boolean {
   if (item.eventKind !== undefined && item.eventKind !== "") return SCAFFOLD_EVENT_KINDS.has(item.eventKind);
@@ -113,8 +120,8 @@ function scaffoldLabel(item: ItemModel): string {
 // prompt and any other long system-injected text (webui-ux-transcript C1):
 // collapsed to one quiet line ("System prompt · 8.2K chars") by default;
 // expanding renders the FULL text through the same Markdown pipeline every
-// other message body uses, since the wire's own text is markdown (## headers
-// etc.) that would otherwise show as literal, unformatted characters.
+// other message body uses. Shared-notes snapshots preserve their literal text
+// and stay folded at every level until explicitly opened.
 function ScaffoldDisclosure({ item, sessionRef }: { item: ItemModel; sessionRef?: string }) {
   const context = useTranscriptRenderContext();
   const { config } = context;
@@ -123,8 +130,14 @@ function ScaffoldDisclosure({ item, sessionRef }: { item: ItemModel; sessionRef?
   // plus item id, so an expanded scaffold survives a remount without colliding
   // with the same item id in another session. Collapsed by default.
   const disclosureKey = scopedDisclosureId(disclosureScope, item.id);
-  const disclosureFallback = expandDetailsByDefault(config) || disclosureDefault(disclosureScope, item.id, false);
-  const open = isDisclosureOpen(disclosureKey, disclosureFallback);
+  const isNotesSnapshot = item.eventKind === "notes-context";
+  const disclosureFallback =
+    !isNotesSnapshot && (expandDetailsByDefault(config) || disclosureDefault(disclosureScope, item.id, false));
+  const open = isDisclosureOpen(
+    disclosureKey,
+    disclosureFallback,
+    isNotesSnapshot ? { ignoreBaseline: true } : undefined,
+  );
   return (
     <details className={CLASS.scaffold} data-testid="system-notice-scaffold" open={open}>
       {/* biome-ignore lint/a11y/noStaticElementInteractions: <summary> is natively keyboard-operable; controlled to keep the store the single source of truth (see ToolCallItem.tsx) */}
@@ -132,13 +145,13 @@ function ScaffoldDisclosure({ item, sessionRef }: { item: ItemModel; sessionRef?
         className={CLASS.scaffoldSummary}
         onClick={(e) => {
           e.preventDefault();
-          toggleDisclosure(disclosureKey, disclosureFallback);
+          setDisclosureOpen(disclosureKey, !open);
         }}
       >
         {scaffoldLabel(item)} · {formatCharCount(item.text.length)}
       </summary>
       <div className={CLASS.scaffoldBody} data-testid="system-notice-scaffold-body">
-        <Markdown source={item.text} />
+        {isNotesSnapshot ? <pre className={CLASS.literalBody}>{item.text}</pre> : <Markdown source={item.text} />}
       </div>
     </details>
   );
