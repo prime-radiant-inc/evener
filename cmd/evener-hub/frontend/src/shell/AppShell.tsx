@@ -349,22 +349,15 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
     // default, no-prop production wiring - with no injected client, so a
     // REAL client's connect() must never run under vitest. An injected
     // client (AppShellProps.client - always a FakeClient in tests) has no
-    // socket to open, so it's fine - and necessary, to exercise the
-    // serverInfo-population duty below - for its connect() to run even
+    // socket to open, so it's fine to exercise its handshake under test by
+    // allowing connect() to run even
     // under MODE==="test" (mirrors dev/DevHarness.tsx's identical
     // guard/rationale, narrowed to only the client AppShell itself dialed).
     if (!(owned && import.meta.env.MODE === "test")) {
-      void client.connect().then(
-        (info) => {
-          if (connectionStore.getState().client !== client || client.state === "closed") return;
-          connectionStore.setState({ serverInfo: info.serverInfo, features: info.features });
-        },
-        () => {
-          // Failure is already reflected via the client's own onStateChange
-          // -> connectionStore.state transition (to "closed"); nothing
-          // further to do with the rejection itself.
-        },
-      );
+      void client.connect().catch(() => {
+        // State and negotiated metadata are published by the shared binding;
+        // a failure is already reflected through its state listener.
+      });
     }
     // Tear down the client we constructed ourselves on unmount (HMR
     // remount, navigating away, etc.) - the one-client-per-window invariant

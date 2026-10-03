@@ -5,7 +5,9 @@ import {
   shippedMobileConfig,
   toWireDefaults,
 } from "@evener/appwire-client";
+import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { FAKE_INITIALIZE_RESULT } from "@evener/appwire-client/testing/fakeSocket";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
@@ -183,8 +185,49 @@ describe("DevHarness", () => {
     expect(screen.getByText(/hello websockets/)).toBeTruthy();
   });
 
+  test("a late dev bootstrap connect result cannot overwrite later ready metadata", async () => {
+    const fake = new FakeClient("connecting");
+    const initial: InitializeResponse = {
+      ...FAKE_INITIALIZE_RESULT,
+      serverInfo: { name: "initial-hub", version: "1.0.0" },
+    };
+    const reconnected = {
+      ...initial,
+      serverInfo: { name: "reconnected-hub", version: "2.0.0" },
+      features: { ...initial.features, auth: true, someFutureFeature: true },
+    };
+    const pending = deferred<InitializeResponse>();
+    fake.scriptConnect(() => {
+      fake.emitReady(initial);
+      return pending.promise;
+    });
+    fake.on("thread/list", () => ({ data: [] }));
+    render(<DevHarness client={fake} />);
+    await waitFor(() => expect(connectionStore.getState().serverInfo).toEqual(initial.serverInfo));
+
+    act(() => {
+      fake.emitStateChange("reconnecting");
+      fake.emitReady(reconnected);
+    });
+    let completionPublications = 0;
+    const unsubscribe = connectionStore.subscribe(() => {
+      completionPublications += 1;
+    });
+    await act(async () => {
+      pending.resolve(initial);
+      await pending.promise;
+    });
+    unsubscribe();
+
+    expect(connectionStore.getState().client).toBe(fake);
+    expect(connectionStore.getState().state).toBe("ready");
+    expect.soft(connectionStore.getState().serverInfo).toEqual(reconnected.serverInfo);
+    expect.soft(connectionStore.getState().features).toEqual(reconnected.features);
+    expect(completionPublications).toBe(0);
+  });
+
   test("publishes the initialize response and refreshes transcript defaults for an injected harness client", async () => {
-    const fake = new FakeClient("ready");
+    const fake = new FakeClient("connecting");
     const scripted: InitializeResponse = {
       serverInfo: { name: "dev-harness-hub", version: "2.0.0" },
       protocolVersion: "evener-appwire-v6",
@@ -209,7 +252,10 @@ describe("DevHarness", () => {
       desktop: { revision: 7, config: shippedDesktopConfig },
       mobile: { revision: 8, config: shippedMobileConfig },
     };
-    fake.scriptConnect(() => scripted);
+    fake.scriptConnect(() => {
+      fake.emitReady(scripted);
+      return scripted;
+    });
     fake.on("thread/list", () => ({ data: [] }));
     fake.on("evener/settings/transcriptDisplay/get", () => toWireDefaults(defaults));
 

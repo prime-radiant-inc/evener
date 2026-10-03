@@ -1,8 +1,11 @@
 // @vitest-environment node
 
-import { describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { AppwireClient, RECONNECT_BASE_MS } from "../../client";
 import { FakeClient } from "../../testing/fakeClient";
-import { createConnectionStore, onConnectionNotification } from "./core";
+import { FAKE_INITIALIZE_RESULT, FakeSocket } from "../../testing/fakeSocket";
+import type { InitializeResponse } from "../../types.gen";
+import { type ConnectionStoreState, createConnectionStore, onConnectionNotification } from "./core";
 
 // Wraps a FakeClient's onStateChange so a test can count registrations and
 // detachments without reaching into the fake's private handler set - the
@@ -21,6 +24,194 @@ function trackStateChangeWiring(client: FakeClient): { registrations: number; de
   };
   return tracking;
 }
+
+describe("negotiated connection metadata", () => {
+  const firstResult: InitializeResponse = {
+    ...FAKE_INITIALIZE_RESULT,
+    serverInfo: { name: "first-hub", version: "1.0.0" },
+    features: { ...FAKE_INITIALIZE_RESULT.features, keybindingsSettings: false, transcriptDisplaySettings: true },
+  };
+  const nextResult = {
+    ...FAKE_INITIALIZE_RESULT,
+    serverInfo: { name: "next-hub", version: "2.0.0" },
+    features: {
+      ...FAKE_INITIALIZE_RESULT.features,
+      keybindingsSettings: true,
+      transcriptDisplaySettings: false,
+      someFutureFeature: true,
+    },
+  };
+  const clients: AppwireClient[] = [];
+
+  function socketClient(results: InitializeResponse[]) {
+    const sockets: FakeSocket[] = [];
+    const client = new AppwireClient({
+      url: "ws://x/rpc",
+      socketFactory: () => {
+        const initializeResult = results[sockets.length];
+        if (!initializeResult) throw new Error("unexpected socket generation");
+        const socket = new FakeSocket({ autoInitialize: true, initializeResult });
+        sockets.push(socket);
+        return socket;
+      },
+    });
+    clients.push(client);
+    return { client, sockets };
+  }
+
+  function socketAt(sockets: FakeSocket[], index: number): FakeSocket {
+    const socket = sockets[index];
+    if (!socket) throw new Error(`expected socket generation ${index}`);
+    return socket;
+  }
+
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => {
+    for (const client of clients.splice(0)) client.close();
+    vi.useRealTimers();
+  });
+
+  test("every automatic reconnect publishes ready with its matching metadata", async () => {
+    const store = createConnectionStore();
+    const { client, sockets } = socketClient([firstResult, nextResult]);
+    const readySnapshots: Array<Pick<ConnectionStoreState, "serverInfo" | "features">> = [];
+    store.subscribe((state) => {
+      if (state.state === "ready") readySnapshots.push({ serverInfo: state.serverInfo, features: state.features });
+    });
+    store.connect(client);
+    const connecting = client.connect();
+    socketAt(sockets, 0).open();
+    await connecting;
+
+    const reconnected = new Promise<void>((resolve) => {
+      const stop = client.onReady(() => {
+        stop();
+        resolve();
+      });
+    });
+    socketAt(sockets, 0).closeFromServer(1006);
+    expect(store.getState().state).toBe("reconnecting");
+    await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS);
+    socketAt(sockets, 1).open();
+    await reconnected;
+
+    expect(readySnapshots).toEqual([
+      { serverInfo: firstResult.serverInfo, features: firstResult.features },
+      { serverInfo: nextResult.serverInfo, features: nextResult.features },
+    ]);
+    expect(store.getState().serverInfo).toEqual(nextResult.serverInfo);
+    expect(store.getState().features).toEqual(nextResult.features);
+  });
+
+  test("attaches to an already-ready client's cached result without another handshake", async () => {
+    const { client, sockets } = socketClient([nextResult]);
+    const connecting = client.connect();
+    socketAt(sockets, 0).open();
+    await connecting;
+    const store = createConnectionStore();
+    const snapshots: ConnectionStoreState[] = [];
+    store.subscribe((state) => snapshots.push(state));
+
+    store.connect(client);
+
+    expect(snapshots).toEqual([
+      { client, state: "ready", serverInfo: nextResult.serverInfo, features: nextResult.features },
+    ]);
+    expect(sockets).toHaveLength(1);
+    expect(socketAt(sockets, 0).sent.map((frame) => JSON.parse(frame).method)).toEqual(["initialize", "initialized"]);
+  });
+
+  test("wiring an idle client does not dial or publish negotiated metadata", () => {
+    const { client, sockets } = socketClient([firstResult]);
+    const store = createConnectionStore();
+
+    store.connect(client);
+
+    expect(sockets).toHaveLength(0);
+    expect(client.state).toBe("idle");
+    expect(store.getState()).toEqual({ client, state: "idle", serverInfo: undefined, features: undefined });
+  });
+
+  test("a replaced client's ready callback already in dispatch cannot replace current metadata", () => {
+    const store = createConnectionStore();
+    const first = new FakeClient("connecting");
+    const replacement = new FakeClient("connecting");
+    replacement.emitReady(nextResult);
+    // Registered before the core, so the core's old ready callback is still
+    // in the client's dispatch snapshot after this swap detaches it.
+    first.onStateChange((state) => {
+      if (state === "ready") store.connect(replacement);
+    });
+    store.connect(first);
+
+    first.emitReady(firstResult);
+
+    expect(store.getState()).toEqual({
+      client: replacement,
+      state: "ready",
+      serverInfo: nextResult.serverInfo,
+      features: nextResult.features,
+    });
+    first.emitStateChange("reconnecting");
+    first.emitReady(firstResult);
+    expect(store.getState().serverInfo).toEqual(nextResult.serverInfo);
+    expect(store.getState().features).toEqual(nextResult.features);
+  });
+
+  test("an A -> B -> A swap during ready dispatch rejects the retired A listener", () => {
+    const store = createConnectionStore();
+    const first = new FakeClient("connecting");
+    const replacement = new FakeClient("connecting");
+    replacement.emitReady(nextResult);
+    first.onStateChange((state) => {
+      if (state === "ready") {
+        store.connect(replacement);
+        store.connect(first);
+      }
+    });
+    const tracking = trackStateChangeWiring(first);
+    store.connect(first);
+    const snapshots: ConnectionStoreState[] = [];
+    store.subscribe((state) => snapshots.push(state));
+
+    first.emitReady(firstResult);
+
+    expect(snapshots).toEqual([
+      { client: replacement, state: "ready", serverInfo: nextResult.serverInfo, features: nextResult.features },
+      { client: first, state: "ready", serverInfo: firstResult.serverInfo, features: firstResult.features },
+    ]);
+    expect(tracking).toEqual({ registrations: 2, detachments: 1 });
+  });
+
+  test("a terminal close before the core's queued ready callback cannot restore ready or metadata", async () => {
+    const { client, sockets } = socketClient([firstResult]);
+    const store = createConnectionStore();
+    client.onStateChange((state) => {
+      if (state === "ready") client.close();
+    });
+    store.connect(client);
+    const connecting = client.connect();
+    socketAt(sockets, 0).open();
+    await connecting;
+
+    expect(store.getState()).toEqual({ client, state: "closed", serverInfo: undefined, features: undefined });
+  });
+
+  test("terminal close and clearing the client reset negotiated metadata", async () => {
+    const { client, sockets } = socketClient([firstResult]);
+    const store = createConnectionStore();
+    store.connect(client);
+    const connecting = client.connect();
+    socketAt(sockets, 0).open();
+    await connecting;
+    expect(store.getState().features).toEqual(firstResult.features);
+
+    client.close();
+    expect(store.getState()).toEqual({ client, state: "closed", serverInfo: undefined, features: undefined });
+    store.setState({ client: null });
+    expect(store.getState()).toEqual({ client: null, state: "idle", serverInfo: undefined, features: undefined });
+  });
+});
 
 describe("createConnectionStore", () => {
   test("connect is a sibling of the store, not a state key", () => {
@@ -205,7 +396,7 @@ describe("createConnectionStore", () => {
     expect(publishes).toBe(1);
   });
 
-  test("connect() clears handshake metadata when swapping clients or closing", () => {
+  test("connect() adopts a ready replacement's metadata and clears it on closing", () => {
     const store = createConnectionStore();
     const first = new FakeClient("ready");
     store.connect(first);
@@ -213,11 +404,25 @@ describe("createConnectionStore", () => {
 
     const second = new FakeClient("ready");
     store.connect(second);
-    expect(store.getState().serverInfo).toBeUndefined();
+    expect(store.getState().serverInfo).toEqual(second.initializeResult?.serverInfo);
+    expect(store.getState().features).toEqual(second.initializeResult?.features);
 
     store.setState({ serverInfo: { name: "hub", version: "1.0.0" }, features: undefined });
     second.emitStateChange("closed");
     expect(store.getState().serverInfo).toBeUndefined();
+  });
+
+  test("a structural adapter without cached metadata retains manual seeding on ready", () => {
+    const store = createConnectionStore();
+    const client = new FakeClient("connecting");
+    Object.defineProperty(client, "initializeResult", { value: undefined });
+    store.connect(client);
+    const seeded = { serverInfo: FAKE_INITIALIZE_RESULT.serverInfo, features: FAKE_INITIALIZE_RESULT.features };
+    store.setState(seeded);
+
+    client.emitReady();
+
+    expect(store.getState()).toEqual({ client, state: "ready", ...seeded });
   });
 
   test("a client swapped in through setState directly (bypassing connect()) still gets its own listener", () => {

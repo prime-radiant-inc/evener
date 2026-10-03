@@ -479,9 +479,10 @@ describe("effective transcript display state", () => {
       };
     });
     connectionStore.getState().connect(client);
-    connectionStore.setState({ features: { ...(await client.connect()).features, transcriptDisplaySettings: true } });
+    const initialize = await client.connect();
+    const hello = { ...initialize, features: { ...initialize.features, transcriptDisplaySettings: true } };
     const first = waitForHubRevision(1);
-    client.emitReady();
+    client.emitReady(hello);
     await first;
     const second = waitForHubRevision(2);
     client.emitStateChange("reconnecting");
@@ -538,8 +539,8 @@ describe("effective transcript display state", () => {
     });
     client.on("evener/settings/transcriptDisplay/patch", () => pendingPatch.promise);
     connectionStore.getState().connect(client);
-    connectionStore.setState({ features: { ...(await client.connect()).features, transcriptDisplaySettings: true } });
-    client.emitReady();
+    const initialize = await client.connect();
+    client.emitReady({ ...initialize, features: { ...initialize.features, transcriptDisplaySettings: true } });
     const firstGeneration = transcriptDisplayStore.getState().refreshHubDefaults();
     const oldNotificationHandler = notificationRegistration.mock.calls[0]?.[0];
     client.emitStateChange("reconnecting");

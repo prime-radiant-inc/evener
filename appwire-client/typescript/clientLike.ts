@@ -5,7 +5,7 @@
 // client, and what lets an installed consumer type its own connection holder
 // without depending on the class.
 //
-// The eight methods are declared by lookup, so a renamed or re-signed method
+// The methods are declared by lookup, so a renamed or re-signed method
 // on AppwireClient fails right here. `state` and `terminalReason` are spelled
 // out instead, so a drifting accessor type would pass unnoticed; client.test.ts
 // assigns a real client to this interface to catch that.
@@ -32,6 +32,10 @@ export interface AppwireClientLike {
   onReady: AppwireClient["onReady"];
   onStateChange: AppwireClient["onStateChange"];
   retryNow: AppwireClient["retryNow"];
+  // Optional for existing structural adapters that seed connection-store
+  // metadata themselves. The real client exposes its cached handshake so
+  // attaching a store never needs to call connect().
+  readonly initializeResult?: AppwireClient["initializeResult"];
   get state(): ConnectionState;
   get terminalReason(): TerminalReason;
 }
