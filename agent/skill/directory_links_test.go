@@ -3,7 +3,6 @@ package skill
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"slices"
@@ -36,10 +35,7 @@ func checkDirectoryLinkLoad(t *testing.T, d Descriptor, name, source, content st
 		t.Fatalf("loaded=%+v diagnostics=%+v err=%v", loaded, diagnostics, err)
 	}
 	rendered := Render(loaded)
-	var document SkillDocument
-	if err := json.Unmarshal([]byte(strings.TrimSuffix(strings.TrimPrefix(rendered.Content, "<skill-context>\n"), "\n</skill-context>")), &document); err != nil {
-		t.Fatal(err)
-	}
+	document := decodeSkillDocument(t, rendered.Content)
 	if document.Name != name || document.Source != source || document.BaseDirectory != filepath.Dir(source) || document.Instructions != "LINKED_BYTES_3689\n" {
 		t.Fatalf("document=%+v", document)
 	}
