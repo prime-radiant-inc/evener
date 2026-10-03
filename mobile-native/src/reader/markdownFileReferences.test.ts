@@ -269,3 +269,101 @@ describe("review span regressions", () => {
 		expect(result.markdown.replace(/\[([^\]]+)\]\(evener-file:[^)]*\)/g, "$1")).toBe(original);
 	});
 });
+
+describe("HTML ancestry across marked inline collections", () => {
+	function assertReferences(original: string, expected: string[], sourceCwd = cwd) {
+		const discovered = markdownFileReferences(original, sourceCwd);
+		const result = renderMarkdownFileReferences(original, sourceCwd);
+		for (const references of [discovered.map(({ reference }) => reference), [...result.references.values()]]) {
+			expect(references.map((reference) => reference.path)).toEqual(expected);
+			expect(references.map((reference) => reference.cwd)).toEqual(expected.map(() => sourceCwd));
+			expect(references.map((reference) => reference.readTarget)).toEqual(
+				expected.map((path) => `${sourceCwd}/${path}`),
+			);
+		}
+		expect(result.markdown.replace(/\[(docs\/[bc]\.md)\]\(evener-file:[\d-]+\)/g, "$1")).toBe(original);
+	}
+
+	it.each([
+		'Before <a href="https://example.test/x"> first\n\n docs/a.md </a> after',
+		"Before <script> first\n\n docs/a.md </script> after",
+		"Before <pre> first\n\n docs/a.md </pre> after",
+	])("excludes the exact reviewer cross-paragraph interior, %s", (original) => {
+		assertReferences(original, []);
+	});
+	it("keeps only outside prose in the exact reviewer script case", () => {
+		assertReferences("Before <script> first\n\n docs/a.md </script> docs/b.md", ["docs/b.md"]);
+	});
+	it.each([
+		'Before <a href="https://example.test/x"> first\r\n\r\n docs/a.md </a> docs/b.md\r\n',
+		"Before <script> first\r\n\r\n docs/a.md </script> docs/b.md\r\n",
+		'Before **<a href="https://example.test/x"> first**\n\n *docs/a.md </a>* docs/b.md',
+		'> Before <a href="https://example.test/x"> first\n>\n> docs/a.md </a> docs/b.md',
+		'- Before <a href="https://example.test/x"> first\n\n  docs/a.md </a> docs/b.md',
+		'- Before <a href="https://example.test/x"> first\n- docs/a.md </a> docs/b.md',
+		'Before <a href="https://example.test/x"> first\n\n# docs/a.md </a> docs/b.md',
+		'Before <a href="https://example.test/x"> first\n\n> docs/a.md </a> docs/b.md',
+		'> Before <a href="https://example.test/x"> first\n\n docs/a.md </a> docs/b.md',
+		"Before <script> first\n\n| docs/a.md </script> docs/b.md | after |\n| --- | --- |",
+		"Before <script> first\n\n# docs/a.md\n\n<pre>docs/a.md</pre>\n\n docs/a.md </script> docs/b.md",
+		"Before <script> first\n\n```sh\n</script> docs/a.md\n```\n\n docs/a.md </script> docs/b.md",
+	])("retains ancestry and original bytes across collections, %s", (original) => {
+		assertReferences(original, ["docs/b.md"]);
+	});
+	it.each([
+		'| Before <a href="https://example.test/x"> first | docs/a.md </a> docs/b.md |\n| --- | --- |\n| docs/c.md | after |',
+		"| Before <script> first | docs/a.md |\n| --- | --- |\n| docs/a.md </script> docs/b.md | docs/c.md |",
+		"> | Before <pre> first | docs/a.md |\r\n> | --- | --- |\r\n> | docs/a.md </pre> docs/b.md | docs/c.md |\r\n",
+	])("carries ancestry across table cells without joining their boundaries, %s", (original) => {
+		assertReferences(original, ["docs/b.md", "docs/c.md"]);
+	});
+	it.each([
+		'Before <a href="https://example.test/x"> first\n\n docs/a.md `README.md` [R](./docs/a.md)',
+		"Before <script> first\n\n docs/a.md `README.md` [R](./docs/a.md)",
+		"Before <pre> first\n\n# docs/a.md\n\n docs/a.md",
+	])("keeps unclosed ancestry ineligible through the end of one message, %s", (original) => {
+		assertReferences(original, []);
+	});
+	it.each([
+		"Before <script> first\n\n docs/a.md </script> ../**docs/a.md** docs/b.md",
+		"Before <pre> first\n\n docs/a.md </pre> https://host/**docs/a.md** docs/b.md",
+		'Before <a href="https://example.test/x"> first\n\n docs/a.md </a>foo`README.md` docs/b.md',
+	])("retains full-block invalid-boundary context after closing tags, %s", (original) => {
+		assertReferences(original, ["docs/b.md"]);
+	});
+	it("does not join invalid boundary text from different paragraphs or cells", () => {
+		assertReferences("../\n\n docs/b.md\n\n| ../ | docs/c.md |\n| --- | --- |", ["docs/b.md", "docs/c.md"]);
+	});
+	it.each([
+		"[Before <script> first](https://example.test/x)\n\n docs/a.md </script> docs/b.md",
+		"![Before <script> first](./image.png)\n\n docs/a.md </script> docs/b.md",
+		"[Before **<script> first**](https://example.test/x) docs/a.md </script> docs/b.md",
+	])("carries raw state from actual marked link/image label lexing without scanning labels, %s", (original) => {
+		assertReferences(original, ["docs/b.md"]);
+	});
+	it("uses marked's post-link anchor state without promoting an interior file link", () => {
+		assertReferences('Before <a href="https://example.test/x"> first\n\n[inner](./docs/a.md) docs/b.md', ["docs/b.md"]);
+	});
+	it("does not leak ancestry or cwd through separate messages, render calls or cached candidates", () => {
+		const unclosed = 'Before <a href="https://example.test/x"> first\n\n docs/a.md';
+		const closed = "Before <script> first\n\n docs/a.md </script> docs/b.md";
+		for (const sourceCwd of ["/work/a", cwd, "/work/a"]) {
+			assertReferences(unclosed, [], sourceCwd);
+			assertReferences("docs/b.md", ["docs/b.md"], sourceCwd);
+			assertReferences(closed, ["docs/b.md"], sourceCwd);
+			assertReferences("[external](https://example.test/x)", [], sourceCwd);
+		}
+		const first = renderMarkdownFileReferences(closed, "/work/a");
+		const second = renderMarkdownFileReferences(closed, cwd);
+		expect([...first.references.keys()]).not.toEqual([...second.references.keys()]);
+		expect(renderMarkdownFileReferences(closed, "")).toEqual({ markdown: closed, references: new Map() });
+	});
+	it.each(["<https://example.test/x>", "<person@example.test>"])(
+		"does not clear an open HTML anchor at an actual marked autolink, %s",
+		(autolink) => {
+			assertReferences(`Before <a href="https://example.test/x"> first\n\n ${autolink} docs/a.md </a> docs/b.md`, [
+				"docs/b.md",
+			]);
+		},
+	);
+});

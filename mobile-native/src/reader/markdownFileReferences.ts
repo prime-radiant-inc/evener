@@ -27,6 +27,10 @@ interface InlineSpan {
 	start: number;
 	end: number;
 }
+interface InlineAncestry {
+	inLink: boolean;
+	inRawBlock: boolean;
+}
 
 // Content-only LRU, shared by rendering and chips. Neither cwd, destinations,
 // references nor callbacks survive here. Settled messages reuse the costly lex.
@@ -159,16 +163,31 @@ function definitions(tokens: readonly Token[], into = new Map<string, string>())
 	return into;
 }
 
+// Follow marked's recorded tag states, including tags in ineligible labels.
+// outputLink lexes link/image labels inLink, then clears only that flag.
+function advanceAncestry(token: Token, ancestry: InlineAncestry): void {
+	if (token.type === "html") {
+		const tag = token as Tokens.Tag;
+		ancestry.inLink = tag.inLink;
+		ancestry.inRawBlock = tag.inRawBlock;
+	} else if ("tokens" in token && token.tokens) {
+		// Autolink/url tokens do not use outputLink or change ancestry.
+		const label = token.type === "image" || (token.type === "link" && token.raw.startsWith("["));
+		if (label) ancestry.inLink = true;
+		for (const child of token.tokens) advanceAncestry(child, ancestry);
+		if (label) ancestry.inLink = false;
+	}
+}
+
 function collectInline(
 	tokens: readonly Token[],
 	source: Source,
 	found: Candidate[],
 	defs: ReadonlyMap<string, string>,
+	ancestry: InlineAncestry,
 ): void {
 	const spans: InlineSpan[] = [];
 	let context = "";
-	let inLink = false;
-	let inRawBlock = false;
 	const flatten = (inline: readonly Token[], parent: Source) => {
 		let cursor = 0;
 		for (const token of inline) {
@@ -179,19 +198,15 @@ function collectInline(
 				flatten(token.tokens, located.source);
 				continue;
 			}
-			if (token.type === "html") {
-				// marked records the state after this tag, including closing tags.
-				// Keep it across nested formatting, just as its inline lexer does.
-				const tag = token as Tokens.Tag;
-				inLink = tag.inLink;
-				inRawBlock = tag.inRawBlock;
-			}
+			if (token.type === "html") advanceAncestry(token, ancestry);
 			const start = context.length;
 			// Existing anchors/images/HTML are ineligible, but still provide boundary
 			// context, rather than manufacturing a word boundary at their token edge.
 			const text = token.type === "codespan" ? token.text : token.type === "escape" ? token.text : token.raw;
 			context += text;
-			if (!inLink && !inRawBlock) spans.push({ token, source: located.source, start, end: context.length });
+			if (!ancestry.inLink && !ancestry.inRawBlock)
+				spans.push({ token, source: located.source, start, end: context.length });
+			if (token.type === "link" || token.type === "image") advanceAncestry(token, ancestry);
 		}
 	};
 	flatten(tokens, source);
@@ -259,6 +274,7 @@ function collectBlocks(
 	source: Source,
 	found: Candidate[],
 	defs: ReadonlyMap<string, string>,
+	ancestry: InlineAncestry,
 ): void {
 	let cursor = 0;
 	for (const token of tokens) {
@@ -266,14 +282,14 @@ function collectBlocks(
 		if (!located) continue;
 		cursor = located.next;
 		const raw = located.source;
-		if (token.type === "blockquote") collectBlocks((token as Tokens.Blockquote).tokens, raw, found, defs);
+		if (token.type === "blockquote") collectBlocks((token as Tokens.Blockquote).tokens, raw, found, defs, ancestry);
 		else if (token.type === "list") {
 			let next = 0;
 			for (const item of (token as Tokens.List).items) {
 				const itemSource = locate(item.raw, raw, next);
 				if (!itemSource) continue;
 				next = itemSource.next;
-				collectBlocks(item.tokens, itemSource.source, found, defs);
+				collectBlocks(item.tokens, itemSource.source, found, defs, ancestry);
 			}
 		} else if (token.type === "table") {
 			let next = 0;
@@ -300,10 +316,10 @@ function collectBlocks(
 				const cellSource = locate(cellRaw, cellParent, next);
 				if (!cellSource) continue;
 				next = cellSource.next;
-				collectInline(cell.tokens, cellSource.source, found, defs);
+				collectInline(cell.tokens, cellSource.source, found, defs, ancestry);
 			}
 		} else if (["paragraph", "heading", "text"].includes(token.type) && "tokens" in token && token.tokens)
-			collectInline(token.tokens, raw, found, defs);
+			collectInline(token.tokens, raw, found, defs, ancestry);
 	}
 }
 
@@ -317,7 +333,9 @@ function candidates(markdown: string): readonly Candidate[] {
 	const found: Candidate[] = [];
 	const source = sourceOf(markdown);
 	const tokens = lexer(source.text);
-	collectBlocks(tokens, source, found, definitions(tokens));
+	// marked keeps ancestry across its inline queue, not just one paragraph/cell.
+	// Each message owns this state, while collectInline owns its boundary context.
+	collectBlocks(tokens, source, found, definitions(tokens), { inLink: false, inRawBlock: false });
 	found.sort((a, b) => a.start - b.start);
 	candidatesByMarkdown.set(markdown, found);
 	if (candidatesByMarkdown.size > TOKENS_REMEMBERED) {
