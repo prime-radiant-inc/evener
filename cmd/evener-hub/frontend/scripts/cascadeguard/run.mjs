@@ -80,7 +80,7 @@ async function openPeek(ref, kind) {
 }
 
 async function assertSpineStatus(ref, state, text, signalLabel) {
-  const status = await wait(`(() => {
+  const { reducedMotion, ...status } = await wait(`(() => {
     const spine = document.querySelector('[data-testid="cascade-spine"][data-scope-ref=${q(ref)}]');
     const runtime = spine?.querySelector('[data-runtime-state]');
     if (!runtime || runtime.dataset.runtimeState !== ${q(state)}) return null;
@@ -92,7 +92,8 @@ async function assertSpineStatus(ref, state, text, signalLabel) {
       text: label?.textContent, hiddenFromAT: label?.getAttribute('aria-hidden'),
       labelWidth: labelBox?.width, labelHeight: labelBox?.height,
       signalLabel: signal?.getAttribute('aria-label') ?? null,
-      animation: signal ? getComputedStyle(signal).animationName : null };
+      animation: signal ? getComputedStyle(signal).animationName : null,
+      reducedMotion: matchMedia("(prefers-reduced-motion: reduce)").matches };
   })()`, `actual ${state} ancestor status`);
   assert.ok(status.width <= 8.5 && status.height <= 8.5, `compact status must fit an 8px indicator, got ${status.width}x${status.height}`);
   assert.equal(status.title, text, "exact runtime state remains available on hover");
@@ -100,7 +101,7 @@ async function assertSpineStatus(ref, state, text, signalLabel) {
   assert.notEqual(status.hiddenFromAT, "true");
   assert.ok(status.labelWidth <= 1 && status.labelHeight <= 1, "runtime text does not paint horizontally in the spine");
   assert.equal(status.signalLabel, signalLabel, "ancestor uses the session-list signal family");
-  if (signalLabel === "Running" && await read('matchMedia("(prefers-reduced-motion: reduce)").matches')) {
+  if (signalLabel === "Running" && reducedMotion) {
     assert.equal(status.animation, "none", "reduced motion keeps the running indicator still");
   }
   driver.milestone("compact-spine-status", { ref, state, ...status });
