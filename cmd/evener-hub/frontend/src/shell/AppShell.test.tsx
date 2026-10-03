@@ -36,11 +36,18 @@ import {
   resetNavigationStoreForTests,
 } from "../stores/navigation/store";
 import { resetPrefsStoreForTests } from "../stores/prefs";
-import { activityContext, activityDelegate, activitySummary } from "../stores/sessionActivityTestUtils";
+import {
+  activityContext,
+  activityDelegate,
+  activityDetailsThread,
+  activitySummary,
+} from "../stores/sessionActivityTestUtils";
 import { resetSettingsHostForTests, settingsHostStore } from "../stores/settingsHost";
 import { resetSettingsOverviewStoreForTests } from "../stores/settingsOverview";
+import { resetThreadsStoreForTests } from "../stores/threads";
 import { AppShell } from "./AppShell";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "./activitybar/activitySidebarStore";
+import { ClientProvider } from "./clientContext";
 import { DockHost } from "./DockHost";
 import { paletteStore } from "./palette/paletteController";
 import { navigate } from "./routing";
@@ -510,6 +517,57 @@ async function saveLegacyNestedMainLayout(): Promise<void> {
   expect(localStorage.getItem(LAYOUT_KEY)).not.toBeNull();
   resetWorkspaceStoreForTests();
 }
+
+test("a real session URL wins over an Activity-only saved layout", async () => {
+  const client = navClient();
+  client.on("thread/read", ({ ref }) => activityDetailsThread(ref));
+  client.on("thread/unsubscribe", () => ({}));
+  client.on("evener/thread/activity/read", ({ ref, scope }) => ({
+    ...activitySummary(ref),
+    scope: scope ?? "session",
+  }));
+  connectionStore.getState().connect(client);
+  const retired = workspaceStore.getState().openPane("session", { ref: "local:saved" });
+  const saved = render(
+    <ClientProvider client={client}>
+      <DockHost />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(document.querySelector('[data-pane-scaffold="session:local:saved"]')).toBeTruthy());
+  saved.unmount();
+  const raw = localStorage.getItem(LAYOUT_KEY);
+  if (raw === null) throw new Error("Expected a real saved Dockview layout");
+  const layout = JSON.parse(raw) as { panels: Record<string, { params?: unknown }> };
+  const pane = layout.panels[retired];
+  if (!pane) throw new Error(`Missing saved pane ${retired}`);
+  pane.params = { paneType: "sessionActivity", paneParams: { ref: "local:saved" } };
+  localStorage.setItem(LAYOUT_KEY, JSON.stringify(layout));
+  resetWorkspaceStoreForTests();
+  resetThreadsStoreForTests();
+  window.history.pushState({}, "", "/s/local:routed");
+  installLocationForRoute("local:routed");
+  await act(async () => {
+    render(<AppShell client={client} />);
+  });
+  await waitFor(() =>
+    expect(workspaceStore.getState().panes).toEqual([
+      expect.objectContaining({ type: "session", params: { ref: "local:routed" }, slot: "main" }),
+    ]),
+  );
+  expect(document.querySelector('[data-pane-scaffold="session:local:routed"]')).toBeTruthy();
+  expect(screen.queryByText("No session open")).toBeNull();
+  expect(screen.queryByText("Couldn't load the workspace")).toBeNull();
+  const methods = client.calls.map((call) => call.method);
+  for (const mutation of [
+    "evener/session/delete",
+    "evener/project/delete",
+    "evener/archive/set",
+    "thread/shutdown",
+    "evener/thread/forceStop",
+  ]) {
+    expect(methods).not.toContain(mutation);
+  }
+});
 
 test("mounts and renders the welcome pane", async () => {
   render(<AppShell client={new FakeClient("ready")} />);
@@ -1823,12 +1881,12 @@ test("a focused aside-ref session panel does not invalidate a top-level route", 
 
   act(() => {
     workspaceStore.getState().openPane("session", { ref: "local:sub1" }, { slot: "secondary" });
-    workspaceStore.getState().openPane("sessionActivity", { ref: "local:sub1" }, { slot: "secondary" });
+    workspaceStore.getState().openPane("sessionDetails", { ref: "local:sub1" }, { slot: "secondary" });
   });
 
   await waitFor(() =>
     expect(workspaceStore.getState().focusedPaneId).toBe(
-      workspaceStore.getState().panes.find((pane) => pane.type === "sessionActivity")?.id,
+      workspaceStore.getState().panes.find((pane) => pane.type === "sessionDetails")?.id,
     ),
   );
   expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:session-a" });

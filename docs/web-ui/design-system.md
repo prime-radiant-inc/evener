@@ -77,6 +77,11 @@ losing the conversation that made the evidence relevant.
   until close. Return to a visible, connected opener, then a visible control for the
   intended session, preferring the originating pane. Desktop remains nonmodal. Existing
   standalone Details views and the `/tasks` pane toggle retain their behavior.
+- **Preserve useful saved placements.** Workspace restore omits retired Activity
+  panes through its unknown-pane handling. Registered panes keep their bodies and
+  reachable tabs; valid session routes win before Welcome. Overview restores its
+  own open/category choice independently. The retained recursive Activity Sheet
+  and inline discovery keep their existing scope and renderer.
 
 The provenance corrections and nested navigation/focus repairs change behavior. Folding,
 disclosure persistence, keyboard rules, preferences and semantic hue roles are retained

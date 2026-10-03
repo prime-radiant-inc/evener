@@ -766,7 +766,7 @@ test("mobile Overview opens the shared sidebar for the SessionChrome ref", async
     await user.click(screen.getByRole("menuitem", { name: "Overview" }));
 
     expect(activitySidebarStore.getState().open).toBe(true);
-    expect(workspaceStore.getState().panes.some((pane) => pane.type === "sessionActivity")).toBe(false);
+    expect(workspaceStore.getState().panes.filter((pane) => pane.type !== "session")).toEqual([]);
   } finally {
     restoreViewport();
   }
@@ -827,7 +827,7 @@ test("desktop Overview menu item toggles the activity sidebar", async () => {
     await user.click(screen.getByRole("button", { name: /session actions/i }));
     await user.click(screen.getByRole("menuitem", { name: "Overview" }));
     expect(activitySidebarStore.getState().open).toBe(true);
-    expect(workspaceStore.getState().panes.some((pane) => pane.type === "sessionActivity")).toBe(false);
+    expect(workspaceStore.getState().panes.filter((pane) => pane.type !== "session")).toEqual([]);
 
     await user.click(screen.getByRole("button", { name: /session actions/i }));
     await user.click(screen.getByRole("menuitem", { name: "Overview ✓" }));
@@ -899,10 +899,7 @@ test("desktop Overview toggles closed only when the sidebar is scoped to this se
   }
 });
 
-test("desktop Overview closes a leftover sessionActivity pane for this session when it opens the sidebar", async () => {
-  // The rail's twin: an upgrade or a restored layout can carry the
-  // pre-sidebar pane into the desktop shell, where no affordance opens it and
-  // no ✓ marks it. Opening the sidebar on the session supersedes the pane.
+test("desktop Overview preserves a retained Details placement when it opens the sidebar", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_orphan"));
@@ -913,22 +910,24 @@ test("desktop Overview closes a leftover sessionActivity pane for this session w
     title: () => "session",
     component: lazy(() => Promise.resolve({ default: () => null })),
   });
-  const restoreActivityPane = registerPaneForTests({
-    id: "sessionActivity",
-    title: () => "activity",
+  const restoreDetailsPane = registerPaneForTests({
+    id: "sessionDetails",
+    title: () => "details",
     component: lazy(() => Promise.resolve({ default: () => null })),
   });
   try {
     workspaceStore.getState().openPane("session", { ref: "ref_orphan" });
-    workspaceStore.getState().openPane("sessionActivity", { ref: "ref_orphan" });
+    const details = workspaceStore.getState().openPane("sessionDetails", { ref: "ref_orphan" });
+    const panes = workspaceStore.getState().panes;
     render(<SessionChrome ref="ref_orphan" />);
     await user.click(screen.getByRole("button", { name: /session actions/i }));
     await user.click(screen.getByRole("menuitem", { name: "Overview" }));
     expect(activitySidebarStore.getState().open).toBe(true);
-    expect(workspaceStore.getState().panes.some((p) => p.type === "sessionActivity")).toBe(false);
+    expect(workspaceStore.getState().panes).toEqual(panes);
+    expect(workspaceStore.getState().panes.find((pane) => pane.id === details)?.type).toBe("sessionDetails");
   } finally {
     restoreSession();
-    restoreActivityPane();
+    restoreDetailsPane();
   }
 });
 

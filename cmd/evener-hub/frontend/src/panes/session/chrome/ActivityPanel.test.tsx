@@ -1,7 +1,7 @@
 import { hydrateThread, type SessionJobsResponse, WireError } from "@evener/appwire-client";
 import { deferred } from "@evener/appwire-client/testing/deferred";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, expect, test } from "vitest";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, expect, test, vi } from "vitest";
 import { JobsTab } from "../../../shell/activitybar/JobsTab";
 import { deriveScope } from "../../../shell/statusbar/statusScope";
 import { activityPanelStore } from "../../../stores/activityPanel";
@@ -14,7 +14,9 @@ import {
   activityJob,
   activitySummary,
   activityThread,
+  activityWatch,
 } from "../../../stores/sessionActivityTestUtils";
+import { NOW_TICK_MS } from "../liveness";
 import { ActivityPanel, ActivityPanelBody } from "./ActivityPanel";
 
 const ref = "remote:owner";
@@ -23,6 +25,8 @@ afterEach(() => {
   cleanup();
   connectionStore.setState({ client: null, state: "idle" });
   activityPanelStore.getState().resetForTests();
+  vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 
 test("closed trigger shares session counts while an open recursive tree owns only visible subtree demand", async () => {
@@ -258,4 +262,73 @@ test("recursive activity shows the same proven parent hierarchy above its conten
   render(<ActivityPanelBody sessionRef={ref} model={model()} />);
   expect(await screen.findByRole("button", { name: "Parent session" })).toBeTruthy();
   expect(screen.getByRole("navigation", { name: "Scope" })).toBeTruthy();
+});
+
+test("recursive Activity body rebuilds typed rows on remount while retaining ref-qualified fold disclosure", async () => {
+  const fake = activityClient();
+  connectionStore.getState().connect(fake);
+  fake.on("evener/thread/jobs/list", ({ ref, scope }) => ({
+    context: activityContext(ref),
+    scope: scope ?? "session",
+    jobs: [activityJob({ ownerRef: ref, description: "completed retained row", terminal: true, status: "completed" })],
+    page: { complete: true, issues: [] },
+  }));
+  fake.on("evener/thread/delegates/list", ({ ref, scope }) => ({
+    context: activityContext(ref),
+    scope: scope ?? "session",
+    delegates: [],
+    page: { complete: true, issues: [] },
+  }));
+  fake.on("evener/thread/watches/list", ({ ref, scope }) => ({
+    context: activityContext(ref),
+    scope: scope ?? "session",
+    watches: [],
+    page: { complete: true, issues: [] },
+  }));
+  const first = render(<ActivityPanelBody sessionRef={ref} model={model()} />);
+  const fold = await screen.findByRole("treeitem", { name: "1 inactive" });
+  fireEvent.click(within(fold).getByRole("button"));
+  expect(screen.getByText("completed retained row")).toBeTruthy();
+  first.unmount();
+  render(<ActivityPanelBody sessionRef={ref} model={model()} />);
+  await screen.findByText("completed retained row");
+  expect(screen.getByRole("treeitem", { name: "1 inactive" }).getAttribute("aria-expanded")).toBe("true");
+});
+
+test("recursive Activity body preserves typed watch countdown through the tree clock", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  vi.setSystemTime(new Date("2026-08-05T15:00:12Z"));
+  const fake = activityClient();
+  connectionStore.getState().connect(fake);
+  fake.on("evener/thread/watches/list", ({ ref, scope }) => ({
+    context: activityContext(ref),
+    scope: scope ?? "session",
+    watches: [
+      activityWatch(
+        {
+          id: "watch_open",
+          note: "clock",
+          cadence: [{ kind: "every", seconds: 600, derivedNextFireAt: "2026-08-05T15:04:12Z" }],
+        },
+        ref,
+      ),
+    ],
+    page: { complete: true, issues: [] },
+  }));
+  await act(async () => {
+    render(<ActivityPanelBody sessionRef={ref} model={model()} />);
+  });
+  const row = await screen.findByRole("treeitem", { name: "Watch: clock" });
+  expect(row.textContent).toContain("next ~4m");
+  await act(async () => vi.advanceTimersByTimeAsync(60000));
+  expect(row.textContent).toContain("next ~3m");
+});
+
+test("recursive Activity body uses its row ticker without installing the Details clock", async () => {
+  const client = activityClient();
+  connectionStore.getState().connect(client);
+  const interval = vi.spyOn(globalThis, "setInterval");
+  render(<ActivityPanelBody sessionRef={ref} model={model()} />);
+  await screen.findByRole("tree");
+  expect(interval).not.toHaveBeenCalledWith(expect.any(Function), NOW_TICK_MS);
 });

@@ -10,7 +10,6 @@ export type PaneTypeId =
   | "transcript"
   | "doc"
   | "sessionTasks"
-  | "sessionActivity"
   | "sessionDetails"
   | "spawn"
   | "settings"

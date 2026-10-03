@@ -118,14 +118,13 @@ function PaneFixture() {
 
 beforeAll(() => {
   // Minimal, test-only pane registrations (TreeDrawer.test.tsx's precedent):
-  // the workspace store's openPane refuses an unregistered type, and the
-  // unified menu's Details/Tasks/Activity items open real panes now.
+  // the workspace store's openPane refuses an unregistered type.
   registerPaneForTests<{ ref: string }>({
     id: "session",
     title: () => "Session",
     component: lazy(() => Promise.resolve({ default: PaneFixture })),
   });
-  for (const id of ["sessionTasks", "sessionActivity", "sessionDetails"] as const) {
+  for (const id of ["sessionTasks", "sessionDetails"] as const) {
     registerPaneForTests<{ ref: string }>({
       id,
       title: () => id,
@@ -1224,12 +1223,10 @@ describe("session row", () => {
     expect(acts.onOpenOverview).toHaveBeenCalledWith(session);
   });
 
-  test("a restored sessionActivity pane does not mark Activity on mobile", async () => {
-    // New mobile Activity actions open the shared sidebar. A restored legacy
-    // pane has no opener and must not claim the Activity checkmark.
+  test("a retained Details pane does not mark closed Overview on mobile", async () => {
     const restoreViewport = installMobileViewport();
     try {
-      workspaceStore.getState().openPane("sessionActivity", { ref: "local:a" });
+      workspaceStore.getState().openPane("sessionDetails", { ref: "local:a" });
       renderRow();
       await openMenu(/actions for/i);
       expect(screen.getByRole("menuitem", { name: "Overview" })).toBeTruthy();
@@ -1238,11 +1235,8 @@ describe("session row", () => {
     }
   });
 
-  test("on desktop a leftover sessionActivity pane does not mark the Activity item", async () => {
-    // The chrome treats such a pane as an orphan on desktop (opening the
-    // sidebar retires it) and never marks it; the rail reads the same state
-    // per viewport, or the two menus disagree about the same session.
-    workspaceStore.getState().openPane("sessionActivity", { ref: "local:a" });
+  test("a retained Details pane does not mark closed Overview on desktop", async () => {
+    workspaceStore.getState().openPane("sessionDetails", { ref: "local:a" });
     renderRow();
     await openMenu(/actions for/i);
     expect(screen.getByRole("menuitem", { name: "Overview" })).toBeTruthy();

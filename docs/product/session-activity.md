@@ -350,14 +350,21 @@ references use the transcript's own watch evidence. The
 observes subtree collections while its body is open. These view lifetimes do not
 cause an activity read for every session in the navigation rail.
 
-Session chrome and the navigation rail expose Activity through their session
+Session chrome and the navigation rail expose Overview through their session
 action menus. On the phone, that action opens the full-screen shared activity
 sidebar, preserving the last selected category for the focused session. Its
 optional active count sums the session's authoritative job and delegate active
 counts only when both are known; watches and completed work are not part of that
-number. The sidebar's Jobs, Agents, Watches and Tasks tabs use the same scoped
-reads as desktop. The legacy activity pane remains restorable for saved layouts,
-but new Activity actions retire that pane and open the shared sidebar instead.
+number. The sidebar's Agents, Jobs, Watches and Tasks tabs use session-scoped
+reads on both viewports; About uses the shared session model.
+The workspace registers only Tasks and Details session panels. Saved Activity
+placements are unknown panes: the existing workspace restore omits them,
+preserves registered panes and selects useful surviving focus. A valid primary
+route wins before the empty-workspace Welcome fallback. Retirement leaves
+Overview's independent per-session open/About choice intact and issues no
+deletion or lifecycle mutation. Standalone Details retains its shared accounting
+renderer. The recursive Activity Sheet and inline discovery retain subtree
+inspection through their existing owners.
 Session action menus offer Delete only for a local top-level session whose
 lifecycle is stopped, including a confirmed crash identified by an errored
 navigation row with `failure.cause_kind: "crashed"`. Live sessions and ordinary

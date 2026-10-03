@@ -20,13 +20,18 @@ test("buildPaletteContext reads the focused session pane's ref and page", () => 
   expect(buildPaletteContext()).toEqual({ sessionRef: "local:abc", onPage: "session" });
 });
 
-test.each(["sessionTasks", "sessionActivity", "sessionDetails"])(
+test.each(["sessionTasks", "sessionDetails"])(
   "buildPaletteContext derives session scope from focused %s pane",
   (type) => {
     focus(type, { ref: "local:panel" });
     expect(buildPaletteContext()).toEqual({ sessionRef: "local:panel", onPage: "session" });
   },
 );
+
+test("a retired Activity descriptor carries no interactive palette context", () => {
+  focus("sessionActivity", { ref: "local:retired" });
+  expect(buildPaletteContext()).toEqual({ sessionRef: null, onPage: "other" });
+});
 
 test("buildPaletteContext yields a null sessionRef when the focused pane is not a session", () => {
   focus("spawn", {});

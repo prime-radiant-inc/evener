@@ -164,7 +164,6 @@ export const activitySidebarStore = createStore<ActivitySidebarState>()((set, ge
         .panes.find((candidate) => candidate.type === "session" && refParam(candidate.params) === ref);
       if (pane) workspaceStore.getState().focusPane(pane.id);
       else get().retarget(ref);
-      closeSessionActivityPanes(ref);
       get().openWith(tab, opener);
     },
     close: () => update({ open: false }),
@@ -272,18 +271,6 @@ export function useActivitySidebarOpenFor(ref: string): boolean {
 /** The imperative twin for non-React call sites. */
 export function activitySidebarOpenFor(ref: string): boolean {
   return activitySidebarStore.getState().open && focusedActivityScopeRef() === ref;
-}
-
-/** Closes any sessionActivity panes for a session. Activity now uses the
- * sidebar at every viewport, so a pane that survives an upgrade or restored
- * layout has no affordance that opens it. */
-export function closeSessionActivityPanes(ref: string): void {
-  const workspace = workspaceStore.getState();
-  for (const pane of workspace.panes) {
-    if (pane.type === "sessionActivity" && (pane.params as { ref?: string }).ref === ref) {
-      workspace.closePane(pane.id);
-    }
-  }
 }
 
 // resetActivitySidebarStoreForTests restores the initial state between tests -
