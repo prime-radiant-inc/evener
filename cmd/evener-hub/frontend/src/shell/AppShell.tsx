@@ -657,9 +657,9 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
         openTopLevelSession(ref);
       }
       const placed = workspaceStore.getState().mainPane();
-      if (placed !== null && workspaceStore.getState().focusedPaneId !== placed.id) {
-        workspaceStore.getState().focusPane(placed.id);
-      }
+      // focusPane already no-ops for a pane that is focused or absent, so
+      // this needs no guard of its own.
+      if (placed !== null) workspaceStore.getState().focusPane(placed.id);
     };
     const demandLivePage = (direction: "next" | "previous", beforeRefs: ReadonlySet<string>) => {
       const state = navigationStore.getState();

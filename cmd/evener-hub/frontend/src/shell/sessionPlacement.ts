@@ -1,6 +1,12 @@
 import { parseZoomParams } from "../panes/zoom/intent";
 import { navigate, paneToURL, refParam } from "./routing";
-import { workspaceStore } from "./workspace";
+import { type OpenPaneRecord, workspaceStore } from "./workspace";
+
+// A session pane's identity is the ref in its own params, derived here rather
+// than spelled by the caller so the type and the ref cannot diverge.
+function isSessionPaneFor(pane: OpenPaneRecord, ref: string): boolean {
+  return pane.type === "session" && refParam(pane.params) === ref;
+}
 
 // openSessionByRef is how anything in the app follows a link to a session.
 // Existing live session panes retain their identity and regain focus.
@@ -12,7 +18,7 @@ import { workspaceStore } from "./workspace";
 // use the two helpers below directly.
 export function openSessionByRef(ref: string): void {
   const workspace = workspaceStore.getState();
-  const existing = workspace.panes.find((pane) => pane.type === "session" && refParam(pane.params) === ref);
+  const existing = workspace.panes.find((pane) => isSessionPaneFor(pane, ref));
   if (existing) {
     workspace.focusPane(existing.id);
   }
@@ -31,17 +37,16 @@ export function openSessionByRef(ref: string): void {
 // boot shape a loaded machine produces, where the deferred placement used to
 // discard the whole restored workspace), and every later placement of the
 // same route.
-function cascadeMainFor(ref: string) {
+function cascadeMainCoversRef(ref: string): boolean {
   const main = workspaceStore.getState().mainPane();
-  if (main?.type !== "sessionZoom") return null;
+  if (main?.type !== "sessionZoom") return false;
   const source = parseZoomParams(main.params)?.source;
-  return source?.type === "session" && source.params.ref === ref ? main : null;
+  return source?.type === "session" && source.params.ref === ref;
 }
 
 // Reusable session-placement helpers shared by AppShell and contextual callers.
 export function openTopLevelSession(ref: string): void {
-  const cascade = cascadeMainFor(ref);
-  if (cascade) {
+  if (cascadeMainCoversRef(ref)) {
     const workspace = workspaceStore.getState();
     // The duplicate contract of replacePrimary's matching arm, with the
     // cascade owning the route's main slot: a plain session pane for the same
@@ -50,7 +55,7 @@ export function openTopLevelSession(ref: string): void {
     // rule), but this branch never redirects focus, so a restored layout's
     // saved focus survives the placement.
     for (const pane of workspace.panes) {
-      if (pane.type === "session" && refParam(pane.params) === ref) workspace.closePane(pane.id);
+      if (isSessionPaneFor(pane, ref)) workspace.closePane(pane.id);
     }
     return;
   }

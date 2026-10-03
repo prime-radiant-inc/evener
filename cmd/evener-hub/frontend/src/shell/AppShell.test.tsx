@@ -498,6 +498,51 @@ async function saveRealSessionPanelLayout(): Promise<void> {
   resetWorkspaceStoreForTests();
 }
 
+// The zoom system promotes a session pane into a cascade by retyping it in
+// place (panes/zoom/actions.ts) - same pane id, same slot - so this is the
+// exact main a saved layout restores. Edges are the saved cascade path.
+function retypeMainToCascade(
+  sourceRef: string,
+  leafRef: string,
+  edges: { ownerRef: string; childRef: string; delegateId: string }[] = [],
+): void {
+  const main = workspaceStore.getState().mainPane();
+  if (!main) throw new Error("no main pane to zoom");
+  if (
+    !workspaceStore.getState().retypePane(main, "sessionZoom", {
+      ref: leafRef,
+      source: { type: "session", params: { ref: sourceRef } },
+      edges,
+    })
+  ) {
+    throw new Error("cascade promotion failed");
+  }
+}
+
+// The cascade flavor of the saveReal*Layout helpers above: a real saved
+// layout whose main is a cascade zoomed on local:session-a with a
+// sessionTasks panel beside it, plus the saved pane ids for the restore
+// assertions.
+async function saveRealCascadeLayout(): Promise<{ cascadeId?: string; secondaryId?: string }> {
+  window.history.pushState({}, "", "/s/local:session-a");
+  installLocationForRoute("local:session-a");
+  const { unmount } = render(<AppShell client={new FakeClient("ready")} />);
+  await screen.findByText(/loading transcript/i);
+  act(() => {
+    retypeMainToCascade("local:session-a", "local:child", [
+      { ownerRef: "local:session-a", childRef: "local:child", delegateId: "edge-child" },
+    ]);
+    workspaceStore.getState().openPane("sessionTasks", { ref: "local:session-a" }, { slot: "secondary" });
+  });
+  await waitFor(() => expect(workspaceStore.getState().panes).toHaveLength(2));
+  const cascadeId = workspaceStore.getState().mainPane()?.id;
+  const secondaryId = workspaceStore.getState().panes.find((pane) => pane.type === "sessionTasks")?.id;
+  unmount();
+  expect(localStorage.getItem(LAYOUT_KEY)).not.toBeNull();
+  resetWorkspaceStoreForTests();
+  return { cascadeId, secondaryId };
+}
+
 async function saveLegacyNestedMainLayout(): Promise<void> {
   workspaceStore.getState().openPane("session", { ref: "local:child" });
   const { unmount } = render(<DockHost />);
@@ -1867,29 +1912,7 @@ test("a deferred deep link beats a restored active session panel", async () => {
 });
 
 test("a deferred deep link preserves a restored cascade main and its neighbors", async () => {
-  // Phase 1: save a real layout whose main is a cascade zoomed on
-  // local:session-a (the session pane retyped in place, as the zoom system
-  // does), with a sessionTasks panel beside it.
-  window.history.pushState({}, "", "/s/local:session-a");
-  installLocationForRoute("local:session-a");
-  const { unmount } = render(<AppShell client={new FakeClient("ready")} />);
-  await screen.findByText(/loading transcript/i);
-  act(() => {
-    const main = workspaceStore.getState().mainPane();
-    if (!main) throw new Error("no main pane to zoom");
-    workspaceStore.getState().retypePane(main, "sessionZoom", {
-      ref: "local:child",
-      source: { type: "session", params: { ref: "local:session-a" } },
-      edges: [{ ownerRef: "local:session-a", childRef: "local:child", delegateId: "edge-child" }],
-    });
-    workspaceStore.getState().openPane("sessionTasks", { ref: "local:session-a" }, { slot: "secondary" });
-  });
-  await waitFor(() => expect(workspaceStore.getState().panes).toHaveLength(2));
-  const cascadeId = workspaceStore.getState().mainPane()?.id;
-  const secondaryId = workspaceStore.getState().panes.find((pane) => pane.type === "sessionTasks")?.id;
-  unmount();
-  expect(localStorage.getItem(LAYOUT_KEY)).not.toBeNull();
-  resetWorkspaceStoreForTests();
+  const { cascadeId, secondaryId } = await saveRealCascadeLayout();
 
   // Phase 2: reload the same deep link with the location read still in
   // flight - the boot shape a loaded machine produces. The restored cascade
@@ -4015,22 +4038,8 @@ test("live-next focuses the session pane even when the URL already matches", asy
 // contract is that the press always ends with the session pane focused. A
 // preserved cascade keeps the pane id, so the guarantee has to reach it too.
 test("live-previous focuses a preserved cascade main when the URL already matches", async () => {
-  const client = new FakeClient("ready");
-  client.on("evener/navigation/read", (params: NavigationReadParams): NavigationReadResponse => {
-    if (params.resource === "section" && params.section === "live") {
-      return wireSnapshot(params, { sessions: [LIVE_CYCLE_A, LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"');
-    }
-    return navigationRead(params);
-  });
-  client.scriptConnect(() => ({
-    serverInfo: { name: "fake", version: "1" },
-    protocolVersion: "evener-appwire-v4",
-    sourceId: "fake",
-    features: {} as never,
-    navigation: { version: 1, generationId: "generation_test", sequence: 0, readVersions: [3] },
-  }));
   const user = userEvent.setup();
-  render(<AppShell client={client} />);
+  render(<AppShell client={navClientWithLive([LIVE_CYCLE_A, LIVE_CYCLE_B])} />);
   await rail().findByText("Live B");
 
   // The URL names B with B's plain session pane in main, then the zoom
@@ -4041,13 +4050,7 @@ test("live-previous focuses a preserved cascade main when the URL already matche
     expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:live-b" });
   });
   act(() => {
-    const main = workspaceStore.getState().mainPane();
-    if (!main) throw new Error("no main pane to zoom");
-    workspaceStore.getState().retypePane(main, "sessionZoom", {
-      ref: "local:live-child",
-      source: { type: "session", params: { ref: "local:live-b" } },
-      edges: [],
-    });
+    retypeMainToCascade("local:live-b", "local:live-child");
   });
 
   // A secondary panel holds focus while the URL still names B.

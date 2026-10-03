@@ -346,7 +346,7 @@ async function reloadAndMobileJourney() {
   // crashing on a null state. Pre-fix, the wiped pane never re-mounted and the
   // same missing wait crashed the guard as a TypeError; the wait turns both
   // into an honest failure naming the composer.
-  await wait(`document.querySelector(${q(`[data-composer="${fixture.childRef}"]`)}) !== null`, "restored unrelated pane's composer mounts");
+  await wait(`document.querySelector(${q(driver.composerSelector(fixture.childRef))}) !== null`, "restored unrelated pane's composer mounts");
   assert.equal((await driver.composerState(fixture.childRef)).text, "CASCADE_UNSENT_UNRELATED_DRAFT");
   driver.milestone("unrelated-pane-reload", { sourcePaneId: fixture.sourcePaneId, unrelatedPaneId: unrelatedId, selectedRef: fixture.refs[6], edges: expectedIntent.edges });
   await capture("unrelated-pane-reload");
@@ -538,11 +538,11 @@ try {
   // consecutive polls first.
   await wait(`(() => {
     const nodes = [${q(scroll(fixture.refs[5]))}, ${q(scroll(fixture.refs[6]))}].map((s) => document.querySelector(s));
-    if (nodes.some((node) => node === null)) return null;
-    const heights = nodes.map((node) => node.scrollHeight);
-    const previous = window.__cascadeScrollHeights;
-    window.__cascadeScrollHeights = heights;
-    return previous !== undefined && previous.every((height, i) => height === heights[i]);
+    if (nodes.includes(null)) return null;
+    const stamp = nodes.map((node) => node.scrollHeight).join(",");
+    const settled = window.__cascadeScrollHeights === stamp;
+    window.__cascadeScrollHeights = stamp;
+    return settled;
   })()`, "both cascade columns' scroll geometry settled before the independence check");
   const beforeScroll = await read(`[${q(scroll(fixture.refs[5]))},${q(scroll(fixture.refs[6]))}].map(s => document.querySelector(s).scrollTop)`);
   await read(`document.querySelector(${q(scroll(fixture.refs[5]))}).scrollTop = 200`);

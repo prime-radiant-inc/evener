@@ -87,7 +87,7 @@ jobs:
           name: browser-guards-artifacts-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             /tmp/skillguard-browser-*/artifacts/**
-            /tmp/cascadeguard-browser-*/**/
+            /tmp/cascadeguard-browser-*/**
           retention-days: 7
           # The step also fires when make build-web is what failed, and then
           # there is nothing to collect: say so quietly instead of adding a
