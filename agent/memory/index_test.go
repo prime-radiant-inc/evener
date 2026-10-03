@@ -46,6 +46,89 @@ func TestIndexPreservesInteriorCreatedProse(t *testing.T) {
 	}
 }
 
+// A nested parenthesis in prose is not a malformed date field list.
+func TestIndexPreservesNestedCreatedProse(t *testing.T) {
+	t.Parallel()
+	clock := time.Date(2026, 10, 3, 0, 0, 0, 0, time.UTC)
+	for _, source := range []string{
+		"- [A](a.md): S (created by CI (nightly))\n",
+		"- [A](a.md): S (created by CI (nightly)) (created 2024-02-29, updated 2024-03-01, reviewed never)\n",
+	} {
+		doc, err := parseIndex(source)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(doc.Entries) != 1 || doc.Entries[0].Summary != "S (created by CI (nightly))" {
+			t.Fatalf("entries %#v", doc.Entries)
+		}
+		want := "- [A](a.md): S (created by CI (nightly)) (created 2026-10-03, updated 2026-10-03, reviewed never)\n"
+		if got := renderIndex(doc, map[string]PageMeta{"a": {Created: clock, Updated: clock}}); got != want {
+			t.Fatalf("got %q, want %q", got, want)
+		}
+	}
+}
+
+// Malformed delimiters must not turn a reserved terminal clause into prose.
+func TestIndexRejectsMalformedTerminalDateDelimiters(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, suffix string
+	}{
+		{"invalid calendar extra close", " (created 2026-99-01, updated 2026-10-03, reviewed never))"},
+		{"valid calendar extra close", " (created 2026-10-03, updated 2026-10-03, reviewed never))"},
+		{"multiple extra closes", " (created 2026-10-03, updated 2026-10-03, reviewed never)))"},
+		{"extra open", " ((created 2026-10-03, updated 2026-10-03, reviewed never)"},
+		{"nested open", " (created (2026-10-03, updated 2026-10-03, reviewed never)"},
+		{"parenthesized created", " (created (2026-10-03), updated 2026-10-03, reviewed never)"},
+		{"parenthesized updated", " (created 2026-10-03, updated (2026-10-03), reviewed never)"},
+		{"parenthesized reviewed", " (created 2026-10-03, updated 2026-10-03, reviewed (never))"},
+		{"missing close", " (created 2026-10-03, updated 2026-10-03, reviewed never"},
+		{"malformed repeated clause", " (created nope)) (created 2026-10-03, updated 2026-10-03, reviewed never)"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			source := "- [A](a.md): S" + tc.suffix + "\n"
+			doc, err := parseIndex(source)
+			if err == nil {
+				t.Fatalf("accepted malformed terminal date suffix: entries=%#v source=%q", doc.Entries, source)
+			}
+			assertCode(t, err, "invalid_input")
+		})
+	}
+}
+
+// Copied dates normalize without changing prose, whitespace or full-row ranges.
+func TestIndexCopiedDateSuffixBytePreservation(t *testing.T) {
+	t.Parallel()
+	created := time.Date(2026, 10, 3, 0, 0, 0, 0, time.UTC)
+	updated := time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC)
+	reviewed := time.Date(2026, 10, 5, 0, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name, source, want string
+		start, end         int
+	}{
+		{"LF", "α\n\n- [A](a.md): Built (created by CI), rerun nightly. (created 2024-02-29, updated 2024-03-01, reviewed 2024-03-02)\n", "α\n\n- [A](a.md): Built (created by CI), rerun nightly. (created 2026-10-03, updated 2026-10-04, reviewed 2026-10-05)\n", 4, 117},
+		{"CRLF whitespace", "α\r\n\r\n- [A](a.md): Built (created by CI), rerun nightly. (created 2024-02-29, updated 2024-03-01, reviewed 2024-03-02) \t\r\n", "α\r\n\r\n- [A](a.md): Built (created by CI), rerun nightly. (created 2026-10-03, updated 2026-10-04, reviewed 2026-10-05) \t\r\n", 6, 122},
+		{"unterminated whitespace", "α\n\n- [A](a.md): Built (created by CI), rerun nightly. (created 2024-02-29, updated 2024-03-01, reviewed 2024-03-02) \t", "α\n\n- [A](a.md): Built (created by CI), rerun nightly. (created 2026-10-03, updated 2026-10-04, reviewed 2026-10-05) \t", 4, 118},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			doc, err := parseIndex(tc.source)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(doc.Entries) != 1 {
+				t.Fatalf("entries %#v", doc.Entries)
+			}
+			entry := doc.Entries[0]
+			if entry.Summary != "Built (created by CI), rerun nightly." || entry.Start != tc.start || entry.End != tc.end || entry.Line != 3 {
+				t.Fatalf("entry %#v, want range %d:%d on line 3", entry, tc.start, tc.end)
+			}
+			if got := renderIndex(doc, map[string]PageMeta{"a": {Created: created, Updated: updated, Reviewed: &reviewed}}); got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestIndexDatesCannotBeModelAuthority(t *testing.T) {
 	t.Parallel()
 	clock := time.Date(2026, 10, 3, 23, 0, 0, 0, time.UTC)

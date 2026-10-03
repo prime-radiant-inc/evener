@@ -23,7 +23,10 @@ type indexEntry struct {
 }
 
 var dateSuffix = regexp.MustCompile(` \(created ([0-9]{4}-[0-9]{2}-[0-9]{2}), updated ([0-9]{4}-[0-9]{2}-[0-9]{2}), reviewed ([0-9]{4}-[0-9]{2}-[0-9]{2}|never)\)$`)
-var trailingDateClause = regexp.MustCompile(` \(created(?:[ \t][^()\r\n]*)?\)?$`)
+
+// Extra closing delimiters still mark a terminal clause. Opening or internal
+// delimiters require the full field list, so nested ordinary prose stays valid.
+var trailingDateClause = regexp.MustCompile(` \(created(?:[ \t][^()\r\n]*)?\)*$| \(+created [^,\r\n]*, updated [^,\r\n]*, reviewed [^)\r\n]*\)*$`)
 
 func parseIndex(source string) (indexDocument, error) {
 	document := indexDocument{Source: source, Entries: []indexEntry{}}
