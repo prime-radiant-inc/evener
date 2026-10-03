@@ -748,6 +748,7 @@ function DocumentImage({
 	const shown = healthy?.identity === identity ? healthy : null;
 	const pending = shown?.source.uri !== source.uri;
 	const isCurrent = () =>
+		attempt.isCurrent() &&
 		current.current.identity === identity &&
 		current.current.generation === attempt.generation &&
 		!current.current.settled;

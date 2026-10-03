@@ -292,6 +292,21 @@ function menuAction(navigation: ReturnType<typeof navigationDouble>, label: stri
 
 it("Reload in the actual Document actions recovers missing remote text from useful file bytes", async () => {
 	fetchSpy.mockRestore();
+	const actualFetch = globalThis.fetch;
+	const errors = vi.spyOn(console, "error"); // Call through, never suppress diagnostics.
+	const reads = Array.from({ length: 2 }, () => {
+		let started!: (body: Promise<ArrayBuffer>) => void;
+		const body = new Promise<ArrayBuffer>((resolve) => {
+			started = resolve;
+		});
+		return { started, body };
+	});
+	let readIndex = 0;
+	fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+		const response = actualFetch(input, init);
+		reads[readIndex++]?.started(response.then((value) => value.clone().arrayBuffer()));
+		return response;
+	});
 	const scratch = process.env.EVENER_SCRATCH_DIR;
 	if (!scratch) throw new Error("HTTP fixture requires authorized EVENER_SCRATCH_DIR");
 	const directory = await mkdtemp(join(scratch, "task-8-reader-"));
@@ -321,31 +336,41 @@ it("Reload in the actual Document actions recovers missing remote text from usef
 		harness.connection.profiles = [{ id: "studio", name: "Studio", origin: `http://127.0.0.1:${address.port}` }];
 		harness.connection.activeProfile = { id: "studio" };
 		client.on("thread/read", () => ({ thread: { ...threadRead("idle").thread, cwd: "/work/owner" } }));
-		const { tree, navigation } = await mount("docs/recovered.md", {
-			sessionRef: "h1:local:02wMz5Txv1C3Hut0M8GCeB",
-			reference: {
-				path: "docs/recovered.md",
-				cwd: "/work/owner",
-				readTarget: "/work/owner/docs/recovered.md",
-				provenance: "relative",
+		let mounted!: Awaited<ReturnType<typeof mount>>;
+		const mounting = mount(
+			"docs/recovered.md",
+			{
+				sessionRef: "h1:local:02wMz5Txv1C3Hut0M8GCeB",
+				reference: {
+					path: "docs/recovered.md",
+					cwd: "/work/owner",
+					readTarget: "/work/owner/docs/recovered.md",
+					provenance: "relative",
+				},
 			},
+			async () => {},
+		);
+		await act(async () => {
+			mounted = await mounting;
+			await reads[0]?.body;
 		});
-		await vi.waitFor(async () => {
-			await settle();
-			expect(renderedText(tree)).toContain("isn't in this session's folder");
-		});
+		const { tree, navigation } = mounted;
+		expect(renderedText(tree)).toContain("isn't in this session's folder");
 		await writeFile(file, "# Recovered bytes\n\nUseful file body.");
-		act(() => menuAction(navigation, "Reload").onPress?.());
-		await vi.waitFor(async () => {
-			await settle();
-			expect(
-				tree.root.findAll((node) => String(node.type) === "EnrichedMarkdownText").map((node) => node.props.markdown),
-			).toContain("Useful file body.");
+		await act(async () => {
+			menuAction(navigation, "Reload").onPress?.();
+			await reads[1]?.body;
 		});
+		expect(
+			tree.root.findAll((node) => String(node.type) === "EnrichedMarkdownText").map((node) => node.props.markdown),
+		).toContain("Useful file body.");
 		expect(requests).toEqual([
 			{ path: "/work/owner/docs/recovered.md", session: "h1:local:02wMz5Txv1C3Hut0M8GCeB", auth: "Bearer secret" },
 			{ path: "/work/owner/docs/recovered.md", session: "h1:local:02wMz5Txv1C3Hut0M8GCeB", auth: "Bearer secret" },
 		]);
+		expect(errors.mock.calls.filter((args) => args.some((arg) => String(arg).includes("not wrapped in act")))).toEqual(
+			[],
+		);
 	} finally {
 		server.closeAllConnections();
 		await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
@@ -1002,6 +1027,76 @@ it("settles actual native Image attempts, retries untyped errors, retains health
 	});
 	expect(fetchSpy).not.toHaveBeenCalled();
 	expect(harness.appState).toEqual([]);
+});
+
+it.each([
+	["hidden", "load"],
+	["hidden", "error"],
+	["background", "load"],
+	["background", "error"],
+] as const)("never promotes a pending retired image after %s, with late %s first", async (reason, firstEvent) => {
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+	const { tree, rerender } = await mount("out/chart.png", {}, async () => {});
+	await until(() => expect(tree.root.findAllByType("Image" as never)).toHaveLength(1));
+	const old = tree.root.findByType("Image" as never).props;
+	if (reason === "hidden") {
+		stack.state.index = 1;
+		await rerender();
+	} else {
+		act(() => {
+			for (const listener of [...harness.appState]) listener("background");
+		});
+	}
+	const lateLoad = () => old.onLoad({ nativeEvent: { source: { width: 9, height: 1 } } });
+	const lateError = () => old.onError({ nativeEvent: { error: "retired pending image" } });
+	act(() => {
+		if (firstEvent === "load") {
+			lateLoad();
+			lateError();
+		} else {
+			lateError();
+			lateLoad();
+		}
+	});
+	const retired = tree.root.findByType("Image" as never).props;
+	expect(retired.style.aspectRatio).toBe(4 / 3);
+	expect(retired.onLoad).toBeTypeOf("function");
+	expect(renderedText(tree)).not.toContain("couldn't be loaded");
+	expect(vi.getTimerCount()).toBe(0);
+	if (reason === "hidden") {
+		stack.state.index = 2;
+		await rerender();
+	} else {
+		act(() => {
+			for (const listener of [...harness.appState]) listener("active");
+		});
+	}
+	await until(() => expect(tree.root.findByType("Image" as never).props.source.uri).not.toBe(old.source.uri));
+	const fresh = tree.root.findByType("Image" as never).props;
+	expect(fresh.style.aspectRatio).toBe(4 / 3);
+	act(() => {
+		lateLoad();
+		lateError();
+	});
+	expect(tree.root.findByType("Image" as never).props.source.uri).toBe(fresh.source.uri);
+	act(() => fresh.onLoad({ nativeEvent: { source: { width: 640, height: 320 } } }));
+	expect(tree.root.findByType("Image" as never).props.style.aspectRatio).toBe(2);
+	expect(tree.root.findByType("Image" as never).props.source.uri).toBe(fresh.source.uri);
+	act(() => fresh.onError({ nativeEvent: { error: "duplicate after success" } }));
+	expect(renderedText(tree)).not.toContain("couldn't be loaded");
+	if (reason === "hidden") {
+		stack.state.index = 1;
+		await rerender();
+	} else {
+		act(() => {
+			for (const listener of [...harness.appState]) listener("background");
+		});
+	}
+	expect(tree.root.findByType("Image" as never).props.source.uri).toBe(fresh.source.uri);
+	expect(tree.root.findByType("Image" as never).props.style.aspectRatio).toBe(2);
+	act(() => tree.unmount());
+	expect(harness.appState).toEqual([]);
+	expect(vi.getTimerCount()).toBe(0);
 });
 
 it("clears a healthy native image on origin replacement and ignores its retired load/error callbacks", async () => {

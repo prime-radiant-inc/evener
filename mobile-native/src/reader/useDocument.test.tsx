@@ -1,9 +1,11 @@
 import { once } from "node:events";
 import { createServer, request as httpRequest, type Server } from "node:http";
 import { setTimeout as wait } from "node:timers/promises";
+
+import { StrictMode, useEffect } from "react";
 import { act } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { renderHook } from "../renderNative.testkit";
+import { render, renderHook } from "../renderNative.testkit";
 import { useDocument } from "./useDocument";
 
 const harness = vi.hoisted(() => ({
@@ -87,6 +89,99 @@ const reference = {
 function mount() {
 	return renderHook(() => useDocument("studio", "local:fix", reference, true));
 }
+
+it("reads useful bytes and Reload after actual StrictMode effect replay", async () => {
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+	answers = [
+		{ status: 200, body: "# Useful replay\n\nInitial bytes." },
+		{ status: 200, body: "# Useful Reload\n\nReloaded bytes." },
+	];
+	let value!: ReturnType<typeof useDocument>;
+	const effects: string[] = [];
+	function Probe() {
+		value = useDocument("studio", "local:fix", reference, true);
+		useEffect(() => {
+			effects.push("setup");
+			return () => {
+				effects.push("cleanup");
+			};
+		}, []);
+		return null;
+	}
+	const tree = render(
+		<StrictMode>
+			<Probe />
+		</StrictMode>,
+	);
+	try {
+		expect(effects).toEqual(["setup", "cleanup", "setup"]);
+		await until(() =>
+			expect(value.document).toMatchObject({
+				kind: "markdown",
+				title: "Useful replay",
+				text: "# Useful replay\n\nInitial bytes.",
+			}),
+		);
+		expect(fetchSpy).toHaveBeenCalledOnce();
+		act(() => value.reload());
+		await until(() =>
+			expect(value.document).toMatchObject({ title: "Useful Reload", text: "# Useful Reload\n\nReloaded bytes." }),
+		);
+		expect(fetchSpy).toHaveBeenCalledTimes(2);
+		expect(harness.appState).toHaveLength(1);
+	} finally {
+		act(() => tree.unmount());
+	}
+	expect(effects).toEqual(["setup", "cleanup", "setup", "cleanup"]);
+	expect(harness.appState).toEqual([]);
+	expect(vi.getTimerCount()).toBe(0);
+});
+
+it("coalesces pending StrictMode Reload and retires late HTTP completion on cleanup", async () => {
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+	const releases: ((response: Response) => void)[] = [];
+	fetchSpy.mockImplementation(
+		() =>
+			new Promise<Response>((resolve) => {
+				releases.push(resolve);
+			}),
+	);
+	let value!: ReturnType<typeof useDocument>;
+	const seen: unknown[] = [];
+	function Probe() {
+		value = useDocument("studio", "local:fix", reference, true);
+		seen.push(value.document);
+		return null;
+	}
+	const tree = render(
+		<StrictMode>
+			<Probe />
+		</StrictMode>,
+	);
+	try {
+		await until(() => expect(releases).toHaveLength(1));
+		act(() => {
+			value.reload();
+			value.reload();
+		});
+		expect(fetchSpy).toHaveBeenCalledOnce();
+		await act(async () => releases[0]?.(new Response("# Obsolete pending bytes")));
+		await until(() => expect(releases).toHaveLength(2));
+		expect(seen.every((document) => document === null)).toBe(true);
+		act(() => tree.unmount());
+		const renders = seen.length;
+		await act(async () => {
+			releases[1]?.(new Response("offline", { status: 503 }));
+			await vi.advanceTimersByTimeAsync(60000);
+		});
+		expect(seen).toHaveLength(renders);
+		expect(fetchSpy).toHaveBeenCalledTimes(2);
+		expect(harness.appState).toEqual([]);
+		expect(vi.getTimerCount()).toBe(0);
+	} finally {
+		act(() => tree.unmount());
+	}
+});
 
 it("suppresses old bytes in the first render of a different target", async () => {
 	let target = reference;
