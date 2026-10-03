@@ -1,3 +1,4 @@
+import { isValidTranscriptRef } from "@evener/appwire-client";
 import type { CellRendererProps } from "@react-native/virtualized-lists";
 import { bindFilePath, type FileReference } from "@evener/appwire-client/docContent";
 import { useHeaderHeight } from "@react-navigation/elements";
@@ -80,6 +81,7 @@ import { type SessionSeed, seedFromSession } from "./newSession/launchSetup";
 import { readerPositions } from "./nativeReaderPosition";
 import { MessageDocuments } from "./reader/DocumentChip";
 import { documentReferences, fileWrites, writtenPaths } from "./reader/documentReferences";
+import type { NativeFileOpenContext } from "./reader/markdownFileReferences";
 import { documentMemory } from "./reader/nativeDocumentMemory";
 import { documentFreshness, type SessionDocument, sessionDocuments } from "./reader/sessionDocuments";
 import { locateSession, type SessionLocation } from "./navigationReveal";
@@ -1342,10 +1344,8 @@ export function ConversationScreen({
 	// it wrote becomes a chip even when the write carried no time.
 	const writtenKey = useMemo(() => JSON.stringify([...writtenPaths(turns ?? [], documentCwd)]), [turns, documentCwd]);
 	const written = useMemo(() => new Set<string>(JSON.parse(writtenKey) as string[]), [writtenKey]);
-	const openDocument = useCallback(
-		(path: string, updatedAt: string | undefined) => {
-			const reference = bindFilePath(path, documentCwd);
-			if (!reference) return;
+	const openFile = useCallback(
+		(reference: FileReference, updatedAt?: string) => {
 			navigation.navigate("Reader", {
 				hubId: route.params.hubId,
 				sessionRef: route.params.ref,
@@ -1355,7 +1355,21 @@ export function ConversationScreen({
 				...(updatedAt === undefined ? {} : { updatedAt }),
 			});
 		},
-		[navigation, route.params.hubId, route.params.ref, route.params.title, documentCwd],
+		[navigation, route.params.hubId, route.params.ref, route.params.title],
+	);
+	const fileContext = useMemo<NativeFileOpenContext | undefined>(
+		() =>
+			documentCwd && route.params.hubId && isValidTranscriptRef(route.params.ref)
+				? { cwd: documentCwd, openFile }
+				: undefined,
+		[documentCwd, route.params.hubId, route.params.ref, openFile],
+	);
+	const openDocument = useCallback(
+		(path: string, updatedAt: string | undefined) => {
+			const reference = bindFilePath(path, documentCwd);
+			if (reference) openFile(reference, updatedAt);
+		},
+		[documentCwd, openFile],
 	);
 	// A message still streaming shows its chips once it settles.
 	const documentChips = useCallback(
@@ -2787,6 +2801,7 @@ export function ConversationScreen({
 						}
 						onErrorAction={runErrorAction}
 						documentChips={documentChips}
+						fileContext={fileContext}
 					/>
 				</View>
 			</View>
@@ -2811,6 +2826,7 @@ export function ConversationScreen({
 			liveSendKind,
 			runErrorAction,
 			documentChips,
+			fileContext,
 		],
 	);
 
