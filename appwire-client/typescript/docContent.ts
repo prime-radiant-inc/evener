@@ -13,6 +13,8 @@
 //   markdown / escaped <pre>). It is NOT the legacy /doc/file HTML page. The
 //   request itself comes from the DocPort the host supplies, so this module
 //   names no browser global, no origin and no credentials policy of its own.
+export * from "./fileReferences";
+
 export interface DocFileContent {
   text: string;
   binary: boolean;

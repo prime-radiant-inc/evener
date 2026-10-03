@@ -91,7 +91,8 @@ for a same-origin web
 page). The doc-pane data layer is published at the `./docContent` subpath as
 well, where `readDocFile` takes the host's `DocPort` - that base origin paired
 with a fetch: the package issues no request of its own and names neither an
-origin nor a credentials policy. The hub overview store,
+origin nor a credentials policy. That subpath also exports the pure
+file-reference contract described below. The hub overview store,
 `createHubOverviewStore(client)`, is the same framework-free triple over a
 `request`-only client port; it holds the fetch-once settings-overview read
 both apps' hub settings render from. The archived list store,
@@ -107,6 +108,33 @@ with the restart wait as a port: each app says how it notices the new hub.
 The slash-completion module is ported from Beautiful UI's prompt-bar
 completion affordance and ships its MIT attribution at
 `LICENSES/beautiful-ui.txt`, inside the tarball.
+
+## Document file references
+
+`bindFilePath`, `parseFileReference`, and `findFileReferences` keep a
+reference's three identities separate: `path` is its normalized cwd-relative
+display and deduplication identity, `cwd` is the source session directory
+captured for that render, and `readTarget` is the absolute target the opening
+action reads. `provenance` records whether the source spelling was relative or
+absolute. Recognition is lexical and pure; it neither checks existence nor
+decides which session or document port has authority.
+
+Structured callers use `bindFilePath` for raw filesystem text, including
+spaces. Prose and inline-code parsing is literal too: supported numeric
+line/column suffixes are removed, but percent sequences, hashes, and question
+marks remain filename data. Markdown link destinations are URI references:
+schemes, protocol-relative values, and query- or fragment-only values are
+rejected; raw query/fragment metadata and a raw numeric location suffix are
+removed before the pathname is decoded exactly once. Every surface rejects
+parent traversal before collapsing dot segments and repeated interior
+separators.
+
+`rebindFileReference(reference, cwd)` is an explicit viewer transition, not an
+implicit read rewrite. A relative reference follows the new cwd and receives a
+new `readTarget`; an absolute reference records the new cwd but retains its
+original absolute target, including when that target is outside the new root
+and the server will forbid the read. Callers supply a nonempty trusted cwd and
+retain ownership of session/ref validation.
 
 ## Older-history demand
 
@@ -239,7 +267,9 @@ Besides the root, `package.json` `exports` publishes these subpaths:
 - `@evener/appwire-client/docContent` - the doc-pane data layer, where
   `readDocFile` takes the host's `DocPort`, and the path helpers both apps'
   document surfaces share (`filenameOf`, `isMarkdownPath`, `isImagePath`,
-  `fileURLToPath`, `cwdRelative`).
+  `fileURLToPath`, `cwdRelative`). It also exports the pure source-bound file
+  reference helpers (`bindFilePath`, `parseFileReference`,
+  `findFileReferences`, `rebindFileReference`) and their types.
 - `@evener/appwire-client/state/connection` - the connection state layer:
   `createConnectionStore()` is a framework-free store holding one host's wired
   `AppwireClientLike`, the `ConnectionState` mirror that follows it, and plain
