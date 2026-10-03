@@ -1,20 +1,26 @@
 import {
+  bindFilePath,
   DOC_FILE_MAX_BYTES,
   type DocFileContent,
-  DocFileError,
   type DocFileErrorKind,
-  docImageURL,
-  readDocFile,
+  docImageReadURL,
+  type FileReference,
+  rebindFileReference,
 } from "@evener/appwire-client/docContent";
-import { useEffect, useState } from "react";
+import { type ReactNode, useEffect, useLayoutEffect, useState } from "react";
 import type { PaneProps } from "../../shell/paneRegistry";
-import { Chip, Dialog, EmptyState, PaneScaffold, Skeleton } from "../../widgets";
+import { usePaneVisible } from "../../shell/paneVisibility";
+import { documentPaneState, recordDocumentPaneState, useWorkspaceStore } from "../../shell/workspace";
+import { connectionStore } from "../../stores/connection";
+import { threadsStore, useThreadsStore } from "../../stores/threads";
+import { Button, Chip, Dialog, EmptyState, PaneScaffold, Skeleton } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { Markdown } from "../../widgets/markdown";
 import { browserDocPort } from "./browserDocPort";
 import { filenameOf, formatDocBytes, isMarkdownPath } from "./docFile";
 import styles from "./docpane.module.css";
 import type { DocParams } from "./openDoc";
+import { useDocumentRead } from "./useDocumentRead";
 
 const CLASS = {
   markdown: requireClass(styles.markdown, "docpane.module.css", "markdown"),
@@ -26,11 +32,6 @@ const CLASS = {
   noticeText: requireClass(styles.noticeText, "docpane.module.css", "noticeText"),
 };
 
-// Error kind -> empty-state copy. The raw endpoint shares the HTML variant's
-// guard/status contract exactly (cmd/evener-hub/doc_serve.go): 403 for a path
-// that escapes the session cwd, 404 for a missing file or an unknown session,
-// 501 for a session whose host predates remote document reads
-// (cmd/evener-hub/doc_proxy.go), and a generic error for anything else.
 const ERROR_COPY: Record<DocFileErrorKind, { title: string; hint: string }> = {
   forbidden: { title: "Access denied", hint: "This path is outside the session's working directory." },
   "not-found": { title: "File not available", hint: "This file was not found in the session's working directory." },
@@ -41,43 +42,12 @@ const ERROR_COPY: Record<DocFileErrorKind, { title: string; hint: string }> = {
   error: { title: "Couldn't load file", hint: "The hub returned an unexpected error." },
 };
 
-type FileState =
-  | { status: "loading" }
-  | { status: "error"; kind: DocFileErrorKind }
-  | { status: "ok"; content: DocFileContent };
-
-function DocFileView({ session, path }: { session: string; path: string }) {
-  const [state, setState] = useState<FileState>({ status: "loading" });
-
-  useEffect(() => {
-    let cancelled = false;
-    setState({ status: "loading" });
-    readDocFile(session, path, browserDocPort).then(
-      (content) => {
-        if (!cancelled) setState({ status: "ok", content });
-      },
-      (err: unknown) => {
-        if (!cancelled) setState({ status: "error", kind: err instanceof DocFileError ? err.kind : "error" });
-      },
-    );
-    return () => {
-      cancelled = true;
-    };
-  }, [session, path]);
-
-  if (state.status === "loading") return <Skeleton />;
-  if (state.status === "error") {
-    const copy = ERROR_COPY[state.kind];
-    return <EmptyState title={copy.title} hint={copy.hint} />;
-  }
-
-  const { content } = state;
+function DocFileView({ content, path }: { content: DocFileContent; path: string }) {
   if (content.binary) {
     return (
       <EmptyState title="Binary file not shown" hint={`${filenameOf(path)} (${formatDocBytes(content.sizeBytes)})`} />
     );
   }
-
   return (
     <>
       {content.truncated && (
@@ -101,25 +71,13 @@ function DocFileView({ session, path }: { session: string; path: string }) {
   );
 }
 
-function DocImageView({ session, path }: { session: string; path: string }) {
-  const [failed, setFailed] = useState(false);
+function DocImageView({ src, path }: { src: string; path: string }) {
   const [zoomed, setZoomed] = useState(false);
   const name = filenameOf(path);
-  const src = docImageURL(browserDocPort.origin, session, path);
-
-  if (failed) {
-    return (
-      <EmptyState
-        title="Image not available"
-        hint="This image could not be loaded from the session's working directory."
-      />
-    );
-  }
-
   return (
     <>
       <button type="button" aria-label="Zoom image" className={CLASS.imageButton} onClick={() => setZoomed(true)}>
-        <img data-testid="doc-image" className={CLASS.image} src={src} alt={name} onError={() => setFailed(true)} />
+        <img data-testid="doc-image" className={CLASS.image} src={src} alt={name} />
       </button>
       {zoomed && (
         <Dialog open onClose={() => setZoomed(false)} title={name}>
@@ -130,21 +88,107 @@ function DocImageView({ session, path }: { session: string; path: string }) {
   );
 }
 
-// The native doc-viewer pane: an image (raw bytes via /doc/image, in a
-// click-to-zoom lightbox) or a file (raw bytes via /doc/file?format=raw,
-// rendered as sanitized markdown, escaped text, or a binary notice). It
-// replaces the legacy iframe-to-HTML-page boundary the rewrite removes.
-// Opened beside a specific session (a file/image tool card's "Open beside"
-// button, the ONLY producer - see fileOpenBeside.tsx), so params.session
-// already IS the parent session ref.
-export default function DocPane({ params }: PaneProps<DocParams>) {
-  return (
-    <PaneScaffold title={filenameOf(params.path)}>
-      {params.kind === "image" ? (
-        <DocImageView session={params.session} path={params.path} />
+function BoundDocument({
+  params,
+  paneId,
+  focused,
+  reference,
+  reopen,
+  visible,
+}: PaneProps<DocParams> & { reference: FileReference; reopen: number; visible: boolean }) {
+  const read = useDocumentRead(params.session, reference, reopen, visible);
+  const hasContent = read.content !== undefined || read.imageGeneration !== undefined;
+  let body: ReactNode;
+  if (params.kind === "image" && read.imageGeneration) {
+    body = (
+      <DocImageView
+        key={JSON.stringify([params.session, reference])}
+        path={reference.path}
+        src={docImageReadURL(browserDocPort.origin, params.session, reference.readTarget, read.imageGeneration)}
+      />
+    );
+  } else if (read.content) body = <DocFileView content={read.content} path={reference.path} />;
+  else if (read.errorKind) {
+    const copy = ERROR_COPY[read.errorKind];
+    body =
+      params.kind === "image" ? (
+        <EmptyState title="Image not available" hint={read.notice} />
       ) : (
-        <DocFileView session={params.session} path={params.path} />
+        <EmptyState title={copy.title} hint={copy.hint} />
+      );
+  } else body = <Skeleton />;
+  return (
+    <PaneScaffold
+      title={filenameOf(reference.path)}
+      paneId={paneId}
+      focused={focused}
+      actions={
+        <Button size="sm" variant="quiet" onClick={read.reload}>
+          Reload
+        </Button>
+      }
+    >
+      {hasContent && read.notice && (
+        <div className={CLASS.notice} role="status">
+          <span className={CLASS.noticeText}>{read.notice}</span>
+        </div>
       )}
+      {body}
     </PaneScaffold>
+  );
+}
+
+export default function DocPane({ params, paneId, focused }: PaneProps<DocParams>) {
+  const visible = usePaneVisible();
+  const panes = useWorkspaceStore((state) => state.panes);
+  const pane = panes.find((candidate) => candidate.id === paneId);
+  const retained = pane && documentPaneState(pane);
+  const cwd = useThreadsStore((state) => state.threads.get(params.session)?.cwd);
+
+  useEffect(() => {
+    let started = false;
+    const tryStart = () => {
+      if (started || connectionStore.getState().state !== "ready") return;
+      started = true;
+      threadsStore
+        .getState()
+        .ensureThread(params.session)
+        .catch(() => {});
+    };
+    tryStart();
+    const unsubscribe = connectionStore.subscribe(tryStart);
+    return () => {
+      unsubscribe();
+      if (started) threadsStore.getState().releaseThread(params.session);
+    };
+  }, [params.session]);
+
+  const reference = retained
+    ? cwd && cwd !== retained.reference.cwd
+      ? rebindFileReference(retained.reference, cwd)
+      : retained.reference
+    : cwd
+      ? bindFilePath(params.path, cwd)
+      : undefined;
+  useLayoutEffect(() => {
+    if (!pane || !reference || retained?.reference === reference) return;
+    recordDocumentPaneState(pane, { reference, origin: retained?.origin, reopen: retained?.reopen ?? 0 });
+  }, [pane, reference, retained]);
+
+  if (!reference)
+    return (
+      <PaneScaffold title={filenameOf(params.path)} paneId={paneId} focused={focused}>
+        <Skeleton />
+      </PaneScaffold>
+    );
+  return (
+    <BoundDocument
+      params={params}
+      paneId={paneId}
+      focused={focused}
+      reference={reference}
+      reopen={retained?.reopen ?? 0}
+      visible={visible}
+    />
   );
 }
