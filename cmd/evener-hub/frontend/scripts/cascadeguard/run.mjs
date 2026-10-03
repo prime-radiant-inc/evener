@@ -150,12 +150,14 @@ async function providerHeld() {
   });
 }
 
+const readableGeometrySettled = `(() => {
+  const columns = [...document.querySelectorAll('[data-testid="cascade-column"]')];
+  return columns.length === 2 && Math.abs(columns[0].getBoundingClientRect().width - 400) < .75 && columns[1].getBoundingClientRect().width >= 439.5
+    && columns.every(node => getComputedStyle(node).transform === 'none');
+})()`;
+
 async function observeGeometryAndFocus(ref) {
-  await wait(`(() => {
-    const columns = [...document.querySelectorAll('[data-testid="cascade-column"]')];
-    return columns.length === 2 && Math.abs(columns[0].getBoundingClientRect().width - 400) < .75 && columns[1].getBoundingClientRect().width >= 439.5
-      && columns.every(node => getComputedStyle(node).transform === 'none');
-  })()`, "settled geometry before live status updates");
+  await wait(readableGeometrySettled, "settled geometry before live status updates");
   await read(`(() => {
     document.querySelector(${q(peekChip(ref, "Tasks"))}).focus();
     window.__cascadeFocused = document.activeElement;
@@ -358,17 +360,17 @@ async function reloadAndMobileJourney() {
   assert.deepEqual(returned.chips, source.chips);
   await capture("phone-source-return");
   await key("Escape", 27);
-  await wait('document.querySelector("[data-testid=activity-sidebar]") === null', "dismiss restored source Activity before phone menu gesture");
+  await wait('document.querySelector("[data-testid=activity-sidebar]") === null', "dismiss restored source Overview before phone menu gesture");
   await driver.click(`${driver.composerSelector(fixture.rootRef)} [data-testid="session-chrome-inline"] button[aria-haspopup="menu"]`);
-  const activity = await wait(`(() => {
-    const button = [...document.querySelectorAll('[role="menuitem"]')].find(node => node.textContent.trim().startsWith('Activity'));
+  const overview = await wait(`(() => {
+    const button = [...document.querySelectorAll('[role="menuitem"]')].find(node => node.textContent.trim().startsWith('Overview'));
     if (!button) return null; const r = button.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
-  })()`, "existing phone Activity menu action");
-  await driver.clickAt(activity.x, activity.y);
+  })()`, "existing phone Overview menu action");
+  await driver.clickAt(overview.x, overview.y);
   await wait(`(() => {
     const sidebar = document.querySelector('[data-testid="activity-sidebar"]');
     return sidebar && getComputedStyle(sidebar).transform === 'none';
-  })()`, "phone Activity entrance settled before physical row tap");
+  })()`, "phone Overview entrance settled before physical row tap");
   const mobileRow = await reveal(fixture.edges[0], '[data-testid="activity-sidebar"]');
   await driver.click(mobileRow);
   await wait('document.querySelectorAll("[data-testid=transcript-virtual-list]").length === 1 && document.querySelectorAll("[role=textbox]").length === 0 && document.querySelector("[data-pane-scaffold=cascade]") === null', "ordinary mobile Agents transcript action stays readonly without cascade");
@@ -522,7 +524,11 @@ try {
     const a = track.getBoundingClientRect(), b = leaf.getBoundingClientRect();
     return b.right <= a.right + 1 && b.right > a.left ? { width: track.clientWidth, extent: track.scrollWidth, left: track.scrollLeft, leafRight: b.right, trackRight: a.right } : null;
   })()`, "narrow desktop overflow and selected leaf revealed");
-  for (const ref of fixture.refs.slice(5)) await wait(`document.querySelector(${q(scroll(ref))})?.scrollHeight > document.querySelector(${q(scroll(ref))}).clientHeight`, "independent transcript overflow");
+  await wait(`${readableGeometrySettled} && (() => {
+    const ports = [${q(scroll(fixture.refs[5]))},${q(scroll(fixture.refs[6]))}].map(selector => document.querySelector(selector));
+    return ports.every(port => port && port.clientHeight > 0 && port.scrollHeight > port.clientHeight
+      && Math.abs(port.scrollHeight - port.clientHeight - port.scrollTop) <= 1);
+  })()`, "settled readable geometry and retained bottom before independent scrolling");
   const beforeScroll = await read(`[${q(scroll(fixture.refs[5]))},${q(scroll(fixture.refs[6]))}].map(s => document.querySelector(s).scrollTop)`);
   await read(`document.querySelector(${q(scroll(fixture.refs[5]))}).scrollTop = 200`);
   await wait(`document.querySelector(${q(scroll(fixture.refs[5]))}).scrollTop === 200`, "parent scrolled independently");

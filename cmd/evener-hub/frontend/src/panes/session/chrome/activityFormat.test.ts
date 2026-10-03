@@ -1,5 +1,7 @@
 import { expect, test } from "vitest";
+import { activitySummary } from "../../../stores/sessionActivityTestUtils";
 import {
+  activityActionLabel,
   formatQuietAge,
   formatUsagePair,
   isFailedStatus,
@@ -7,6 +9,23 @@ import {
   jobStatusDotState,
   quietAnchorMillis,
 } from "./activityFormat";
+
+test("Overview labels retain unknown activity instead of inventing a zero count", () => {
+  expect(activityActionLabel(undefined, "Overview")).toBe("Overview");
+  expect(activityActionLabel(activitySummary(), "Overview")).toBe("Overview");
+});
+
+test("Overview labels count known active delegates and jobs", () => {
+  const summary = activitySummary();
+  summary.delegates = { known: true, total: 4, active: 3, failed: 0, completed: 1 };
+  expect(activityActionLabel(summary, "Overview")).toBe("Overview · 5 active");
+  expect(activityActionLabel(summary)).toBe("Activity · 5 active");
+  summary.delegates.active = 0;
+  summary.jobs.active = 0;
+  expect(activityActionLabel(summary, "Overview")).toBe("Overview · 0 active");
+  summary.jobs.known = false;
+  expect(activityActionLabel(summary, "Overview")).toBe("Overview");
+});
 
 test("formatUsagePair renders arrows with compact counts", () => {
   expect(formatUsagePair({ inputTokens: 41200, outputTokens: 6100 })).toBe("↑41.2K ↓6.1K");

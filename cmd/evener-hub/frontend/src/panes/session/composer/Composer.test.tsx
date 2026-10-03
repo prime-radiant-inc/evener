@@ -9,6 +9,8 @@ import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
 import { useLayoutEffect } from "react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { MotionProvider } from "../../../motion";
+import { ActivitySidebar } from "../../../shell/activitybar/ActivitySidebar";
 import {
   activitySidebarStore,
   resetActivitySidebarStoreForTests,
@@ -68,8 +70,9 @@ function Composer(props: React.ComponentProps<typeof ComposerView>) {
   );
 }
 
-beforeAll(() => {
+beforeAll(async () => {
   installLocalStorage(new MemoryStorage());
+  await import("../index");
 });
 
 const FULL_CAPABILITIES: ThreadCapabilities = {
@@ -857,8 +860,10 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   vi.useRealTimers();
   resetActivitySidebarStoreForTests();
+  resetWorkspaceStoreForTests();
   resetActivityPanelStoreForTests();
   // A narrow-layout test leaves its stub installed; jsdom has no real
   // ResizeObserver, so the honest baseline for the next test is none at all.
@@ -894,6 +899,65 @@ function installNarrowComposer(width: number): void {
 function textarea(): HTMLDivElement {
   return screen.getByRole("textbox", { name: /^message$/i }) as HTMLDivElement;
 }
+
+test.each([false, true])("repeated composer /status targets its ref, phone=%s", async (mobile) => {
+  vi.stubGlobal("matchMedia", (media: string) => ({
+    media,
+    matches: mobile && media === "(max-width: 899px)",
+    addEventListener: () => {},
+    removeEventListener: () => {},
+  }));
+  const user = userEvent.setup();
+  const { fake } = await mountComposerWithHandle(
+    "ref_a",
+    {},
+    {
+      focused: true,
+      prepare: (fake) =>
+        fake.on("evener/thread/activity/read", (params) => ({
+          ...activitySummary(params.ref),
+          scope: params.scope ?? "session",
+        })),
+    },
+  );
+  act(() => {
+    workspaceStore.setState({
+      panes: [
+        { id: "command-a", type: "session", params: { ref: "ref_a" }, slot: "main" },
+        { id: "focused-b", type: "session", params: { ref: "ref_b" }, slot: "secondary" },
+      ],
+      focusedPaneId: "focused-b",
+    });
+  });
+  render(
+    <MotionProvider>
+      <ActivitySidebar mobile={mobile} />
+    </MotionProvider>,
+  );
+  for (let invocation = 0; invocation < 2; invocation += 1) {
+    const editor = textarea();
+    await user.click(editor);
+    act(() => replaceEditorText(editor, "/status"));
+    await user.keyboard("{Enter}");
+    expect(editor.textContent).toBe("/status ");
+    await user.keyboard("{Meta>}{Enter}{/Meta}");
+    await waitFor(() => expect(editor.textContent).toBe(""));
+    expect(workspaceStore.getState().panes.some((pane) => pane.type === "sessionDetails")).toBe(false);
+    await waitFor(() =>
+      expect(activitySidebarStore.getState()).toMatchObject({
+        open: true,
+        tab: "about",
+        ref: "ref_a",
+      }),
+    );
+    expect(screen.getByRole("radio", { name: "About" }).getAttribute("aria-checked")).toBe("true");
+    if (mobile && invocation === 0) {
+      await waitFor(() => expect(screen.getByTestId("activity-sidebar").contains(document.activeElement)).toBe(true));
+    }
+  }
+  expect(workspaceStore.getState().panes.some((pane) => pane.type === "sessionDetails")).toBe(false);
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
+});
 
 // The composer's controls are addressed by their stable data-testid, not by
 // accessible name: two different buttons in this tree start with "Steer"

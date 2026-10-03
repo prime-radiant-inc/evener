@@ -53,9 +53,10 @@ export function StatusBar({ sessionRef, paneId, leading }: StatusBarProps) {
             type="button"
             data-activity-tab={tab.id}
             data-pane-id={paneId}
+            data-session-ref={sessionRef}
             className={CLASS.chip}
             title={tab.chipLabel(counts)}
-            aria-label={`${tab.chipLabel(counts)} - open the activity sidebar`}
+            aria-label={`${tab.chipLabel(counts)} - open Overview`}
             onClick={(event) => {
               workspaceStore.getState().focusPane(paneId);
               activitySidebarStore.getState().openWith(tab.id, event.currentTarget);
