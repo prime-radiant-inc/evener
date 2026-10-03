@@ -9,9 +9,11 @@
 # runs no index-writing command. --no-optional-locks keeps status from
 # writing the index; -uno keeps untracked files out of the flag as
 # before; staged edits count, matching the content-true dirtiness check
-# scripts/ops/deploy-hub.sh runs before the hub build it deploys.
+# scripts/ops/deploy-hub.sh runs before the hub build it deploys. A git
+# failure (no repository, unreadable HEAD) falls through to "true" and
+# fails dirty as diff-files did: an unreadable tree is not a clean one.
 LDFLAGS := -X primeradiant.com/evener/buildinfo.GitSHA=$$(git rev-parse --short HEAD) \
-           -X primeradiant.com/evener/buildinfo.GitDirty=$$(git --no-optional-locks status --porcelain -uno | grep -q . && echo "true" || echo "") \
+           -X primeradiant.com/evener/buildinfo.GitDirty=$$(out=$$(git --no-optional-locks status --porcelain -uno) && test -z "$$out" && echo "" || echo "true") \
            -X primeradiant.com/evener/buildinfo.BuildTime=$$(date -u +%Y-%m-%dT%H:%M:%SZ) \
            -X primeradiant.com/evener/buildinfo.Channel=$(BUILD_CHANNEL)
 
