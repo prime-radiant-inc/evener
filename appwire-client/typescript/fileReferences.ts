@@ -22,6 +22,13 @@ const LOCATION_SUFFIX = /:\d+(?::\d+)?$/u;
 const SURROUNDING_OPEN = /^[([{<]+/u;
 const SURROUNDING_CLOSE_OR_PUNCTUATION = /[)\]}>.,;:!?…]+$/u;
 const AMBIGUOUS_BRACKET = /[()[\]{}<>]/u;
+const SURROUNDING_PAIRS = new Map([
+  ["(", ")"],
+  ["[", "]"],
+  ["{", "}"],
+  ["<", ">"],
+]);
+const SURROUNDING_CLOSERS = new Set(SURROUNDING_PAIRS.values());
 
 interface NormalizedPath {
   readonly absolute: boolean;
@@ -42,7 +49,7 @@ function normalizedPath(path: string): NormalizedPath | undefined {
   }
 
   const segments = path.split("/");
-  if (segments.includes("..")) return undefined;
+  if (segments.includes("..") || segments.at(-1) === ".") return undefined;
 
   const absolute = path.startsWith("/");
   const normalizedSegments = segments.filter((segment) => segment !== "" && segment !== ".");
@@ -109,7 +116,7 @@ function proseSurface(value: string): LiteralSurface {
 
 function hasFilenameExtension(path: string): boolean {
   const filename = path.split("/").at(-1) ?? "";
-  return /^[^.].*\.[^./]+$/u.test(filename);
+  return /^.+\.[^./]+$/u.test(filename);
 }
 
 function hasAmbiguousLiteralPrefix(value: string): boolean {
@@ -172,6 +179,48 @@ function isTokenBoundary(character: string): boolean {
   return WHITESPACE.test(character) || /["'“”‘’]/u.test(character);
 }
 
+interface ProseCandidate {
+  readonly start: number;
+  readonly end: number;
+}
+
+function bracketedCandidates(token: string): ProseCandidate[] | undefined {
+  const candidates: ProseCandidate[] = [];
+  let cursor = 0;
+  while (cursor < token.length) {
+    const expectedClosers: string[] = [];
+    while (cursor < token.length) {
+      const closer = SURROUNDING_PAIRS.get(token[cursor] ?? "");
+      if (!closer) break;
+      expectedClosers.push(closer);
+      cursor += 1;
+    }
+    if (expectedClosers.length === 0) return undefined;
+
+    const candidateStart = cursor;
+    const surroundingDepth = expectedClosers.length;
+    let candidateEnd: number | undefined;
+    while (cursor < token.length && expectedClosers.length > 0) {
+      const character = token[cursor] ?? "";
+      const nestedCloser = SURROUNDING_PAIRS.get(character);
+      if (nestedCloser) {
+        expectedClosers.push(nestedCloser);
+      } else if (character === expectedClosers.at(-1)) {
+        if (expectedClosers.length === surroundingDepth && candidateEnd === undefined) candidateEnd = cursor;
+        expectedClosers.pop();
+      } else if (SURROUNDING_CLOSERS.has(character)) {
+        return undefined;
+      }
+      cursor += 1;
+    }
+    if (expectedClosers.length > 0 || candidateEnd === undefined) return undefined;
+    candidates.push({ start: candidateStart, end: candidateEnd });
+
+    while (cursor < token.length && PROSE_TRAILING_PUNCTUATION.test(token[cursor] ?? "")) cursor += 1;
+  }
+  return candidates;
+}
+
 export function findFileReferences(text: string, cwd: string): FileReferenceSpan[] {
   if (cwd === "") return [];
 
@@ -184,6 +233,22 @@ export function findFileReferences(text: string, cwd: string): FileReferenceSpan
     if (tokenStart === cursor) continue;
 
     const token = text.slice(tokenStart, cursor);
+    const surrounded = bracketedCandidates(token);
+    if (surrounded) {
+      for (const bounds of surrounded) {
+        const candidate = token.slice(bounds.start, bounds.end);
+        const reference = parseFileReference(candidate, "prose", cwd);
+        if (!reference) continue;
+        const surface = proseSurface(candidate);
+        spans.push({
+          start: tokenStart + bounds.start,
+          end: tokenStart + bounds.start + surface.end,
+          reference,
+        });
+      }
+      continue;
+    }
+
     const opening = SURROUNDING_OPEN.exec(token)?.[0].length ?? 0;
     const withoutOpening = token.slice(opening);
     const closing = SURROUNDING_CLOSE_OR_PUNCTUATION.exec(withoutOpening)?.[0].length ?? 0;

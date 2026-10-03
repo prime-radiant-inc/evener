@@ -78,6 +78,7 @@ describe("bindFilePath", () => {
     ["parent traversal before alias normalization", "docs/./../plan.md", cwd],
     ["current directory", ".", cwd],
     ["syntactic directory", "docs/", cwd],
+    ["final current-directory segment", "docs/archive.md/.", cwd],
     ["repeated trailing separators", "docs///", cwd],
     ["protocol-relative path", "//host/docs/plan.md", cwd],
     ["backslash", "docs\\plan.md", cwd],
@@ -125,9 +126,29 @@ describe("parseFileReference", () => {
       },
     ],
     [
+      "docs/.settings.json",
+      "prose",
+      {
+        path: "docs/.settings.json",
+        cwd: "/work/a",
+        readTarget: "/work/a/docs/.settings.json",
+        provenance: "relative",
+      },
+    ],
+    [
       "README.md:12",
       "code",
       { path: "README.md", cwd: "/work/a", readTarget: "/work/a/README.md", provenance: "relative" },
+    ],
+    [
+      ".settings.json",
+      "code",
+      {
+        path: ".settings.json",
+        cwd: "/work/a",
+        readTarget: "/work/a/.settings.json",
+        provenance: "relative",
+      },
     ],
     [
       "src/Makefile",
@@ -138,6 +159,11 @@ describe("parseFileReference", () => {
       "./scripts/release:9:2",
       "code",
       { path: "scripts/release", cwd: "/work/a", readTarget: "/work/a/scripts/release", provenance: "relative" },
+    ],
+    [
+      "docs/./plan.md",
+      "code",
+      { path: "docs/plan.md", cwd: "/work/a", readTarget: "/work/a/docs/plan.md", provenance: "relative" },
     ],
     [
       "docs/name#part?.md",
@@ -174,6 +200,11 @@ describe("parseFileReference", () => {
         readTarget: "/work/a/docs/foo(bar)/plan.md",
         provenance: "relative",
       },
+    ],
+    [
+      "./docs/./plan.md",
+      "link",
+      { path: "docs/plan.md", cwd: "/work/a", readTarget: "/work/a/docs/plan.md", provenance: "relative" },
     ],
     [
       "/work/a/docs/plan.md:12?download=1#L4",
@@ -259,6 +290,7 @@ describe("parseFileReference", () => {
     ["npm run build", "code"],
     ["go test ./...", "code"],
     ["src/", "code"],
+    ["docs/archive.md/.", "code"],
     ["https://host/docs/plan.md", "code"],
     ["README.md:12", "link"],
     ["https://host/docs/plan.md", "link"],
@@ -278,6 +310,8 @@ describe("parseFileReference", () => {
     ["./docs/control%0A.md", "link"],
     ["./docs/raw space.md", "link"],
     ["./docs/", "link"],
+    ["docs/archive.md/.", "link"],
+    ["docs/archive.md/%2E", "link"],
   ] as const)("rejects %s on the %s surface", (value, kind) => {
     expect(parseFileReference(value, kind, cwd)).toBeUndefined();
   });
@@ -337,6 +371,36 @@ describe("findFileReferences", () => {
     ]);
   });
 
+  it("recognizes adjacent square-bracket references as separate candidates", () => {
+    expect(findFileReferences("[docs/a.md][docs/b.md]", cwd)).toEqual([
+      {
+        start: 1,
+        end: 10,
+        reference: { path: "docs/a.md", cwd: "/work/a", readTarget: "/work/a/docs/a.md", provenance: "relative" },
+      },
+      {
+        start: 12,
+        end: 21,
+        reference: { path: "docs/b.md", cwd: "/work/a", readTarget: "/work/a/docs/b.md", provenance: "relative" },
+      },
+    ]);
+  });
+
+  it("recognizes adjacent parenthesized references as separate candidates", () => {
+    expect(findFileReferences("(docs/a.md)(docs/b.md)", cwd)).toEqual([
+      {
+        start: 1,
+        end: 10,
+        reference: { path: "docs/a.md", cwd: "/work/a", readTarget: "/work/a/docs/a.md", provenance: "relative" },
+      },
+      {
+        start: 12,
+        end: 21,
+        reference: { path: "docs/b.md", cwd: "/work/a", readTarget: "/work/a/docs/b.md", provenance: "relative" },
+      },
+    ]);
+  });
+
   it("never recognizes a shorter suffix of an invalid token", () => {
     for (const text of [
       "../docs/plan.md",
@@ -348,6 +412,9 @@ describe("findFileReferences", () => {
       "v1.2/docs/plan.md",
       "docs/foo(bar)/plan.md",
       "//host/docs/plan.md",
+      "[../docs/plan.md]",
+      "[https://host/docs/plan.md]",
+      "[docs/foo(bar)/plan.md]",
       "../**docs/plan.md**",
       "https://host/**docs/plan.md**",
     ]) {
