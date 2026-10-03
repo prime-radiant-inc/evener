@@ -367,3 +367,172 @@ describe("HTML ancestry across marked inline collections", () => {
 		},
 	);
 });
+
+describe("table escape source-range ownership", () => {
+	const trigger = "| File | Why |\n| --- | --- |\n| \\|docs/a.md a\\|b | docs/c.md |";
+	function tableActions(result: ReturnType<typeof renderMarkdownFileReferences>) {
+		const tables: Array<{ header: string[][]; rows: string[][][] }> = [];
+		function links(tokens: ReturnType<typeof lexer>): string[] {
+			return tokens.flatMap((token) => {
+				if (token.type === "link") return [result.references.get(token.href)?.path ?? token.href];
+				return "tokens" in token && token.tokens ? links(token.tokens as ReturnType<typeof lexer>) : [];
+			});
+		}
+		function visit(tokens: ReturnType<typeof lexer>) {
+			for (const token of tokens) {
+				if (token.type === "table") {
+					const table = token as import("marked").Tokens.Table;
+					tables.push({
+						header: table.header.map((cell) => links(cell.tokens as ReturnType<typeof lexer>)),
+						rows: table.rows.map((row) => row.map((cell) => links(cell.tokens as ReturnType<typeof lexer>))),
+					});
+				} else if (token.type === "list") {
+					for (const item of token.items) visit(item.tokens as ReturnType<typeof lexer>);
+				} else if ("tokens" in token && token.tokens) visit(token.tokens as ReturnType<typeof lexer>);
+			}
+		}
+		visit(lexer(result.markdown));
+		return tables;
+	}
+	function assertTable(
+		original: string,
+		expectedPaths: string[],
+		expectedMarkdown: string,
+		expectedTable: { header: string[][]; rows: string[][][] },
+		sourceCwd = cwd,
+	) {
+		const result = renderMarkdownFileReferences(original, sourceCwd);
+		for (const references of [
+			markdownFileReferences(original, sourceCwd).map(({ reference }) => reference),
+			[...result.references.values()],
+		]) {
+			expect(references.map((reference) => reference.path)).toEqual(expectedPaths);
+			expect(references.map((reference) => reference.cwd)).toEqual(expectedPaths.map(() => sourceCwd));
+			expect(references.map((reference) => reference.readTarget)).toEqual(
+				expectedPaths.map((path) => `${sourceCwd}/${path}`),
+			);
+		}
+		let normalized = result.markdown;
+		for (const [index, id] of [...result.references.keys()].entries())
+			normalized = normalized.replace(id, `action-${index}`);
+		expect(normalized).toBe(expectedMarkdown);
+		expect(tableActions(result)).toEqual([expectedTable]);
+	}
+
+	it("R1 keeps the existing docs/c.md second-cell action for the exact two-pipe trigger", () => {
+		const result = renderMarkdownFileReferences(trigger, cwd);
+		expect(tableActions(result)[0]?.rows[0]?.[1]).toEqual(["docs/c.md"]);
+	});
+	it("I3 owns the exact leading escape inside the generated filename label", () => {
+		assertTable(
+			trigger,
+			["|docs/a.md", "docs/c.md"],
+			"| File | Why |\n| --- | --- |\n| [\\|docs/a.md](action-0) a\\|b | [docs/c.md](action-1) |",
+			{ header: [[], []], rows: [[["|docs/a.md"], ["docs/c.md"]]] },
+		);
+	});
+	it.each([
+		["\\|docs/a.md", "[\\|docs/a.md](action-0)", "|docs/a.md"],
+		["\\|docs/a\\|b.md", "[\\|docs/a\\|b.md](action-0)", "|docs/a|b.md"],
+		["\\|docs/a.md\\|", "[\\|docs/a.md\\|](action-0)", "|docs/a.md|"],
+		["docs/a.md\\|", "[docs/a.md\\|](action-0)", "docs/a.md|"],
+		["(\\|docs/a.md)", "([\\|docs/a.md](action-0))", "|docs/a.md"],
+		['"\\|docs/a.md:12."', '"[\\|docs/a.md](action-0):12."', "|docs/a.md"],
+		["**\\|docs/a.md**", "**[\\|docs/a.md](action-0)**", "|docs/a.md"],
+		["`\\|docs/a.md`", "[`\\|docs/a.md`](action-0)", "|docs/a.md"],
+		["[\\|docs/a.md](./docs/z.md)", "[\\|docs/a.md](action-0)", "docs/z.md"],
+		["[R](\\|docs/a.md)", "[R](action-0)", "|docs/a.md"],
+	])("preserves independent leading/internal/trailing source bytes, %s", (cell, generated, path) => {
+		assertTable(
+			`|File|Why|\n|---|---|\n|${cell}|docs/c.md|`,
+			[path, "docs/c.md"],
+			`|File|Why|\n|---|---|\n|${generated}|[docs/c.md](action-1)|`,
+			{ header: [[], []], rows: [[[path], ["docs/c.md"]]] },
+		);
+	});
+	it.each(["\n", "\r\n"])("preserves header, repeated cells and multiple rows with %j", (newline) => {
+		assertTable(
+			[
+				"| \\|docs/a.md | docs/c.md |",
+				"| --- | --- |",
+				"| \\|docs/a.md | \\|docs/a.md |",
+				"| docs/d.md | x\\|y |",
+				"",
+			].join(newline),
+			["|docs/a.md", "docs/c.md", "|docs/a.md", "|docs/a.md", "docs/d.md"],
+			[
+				"| [\\|docs/a.md](action-0) | [docs/c.md](action-1) |",
+				"| --- | --- |",
+				"| [\\|docs/a.md](action-2) | [\\|docs/a.md](action-3) |",
+				"| [docs/d.md](action-4) | x\\|y |",
+				"",
+			].join(newline),
+			{
+				header: [["|docs/a.md"], ["docs/c.md"]],
+				rows: [
+					[["|docs/a.md"], ["|docs/a.md"]],
+					[["docs/d.md"], []],
+				],
+			},
+		);
+	});
+	it.each(["> ", "- ", "  "])("maps range ownership through nested prefixes, %j", (prefix) => {
+		const continuation = prefix === "- " ? "  " : prefix;
+		const original = `${prefix}| File | Why |\r\n${continuation}| --- | --- |\r\n${continuation}| \\|docs/a.md a\\|b | docs/c.md |\r\n`;
+		const expected = `${prefix}| File | Why |\r\n${continuation}| --- | --- |\r\n${continuation}| [\\|docs/a.md](action-0) a\\|b | [docs/c.md](action-1) |\r\n`;
+		assertTable(original, ["|docs/a.md", "docs/c.md"], expected, {
+			header: [[], []],
+			rows: [[["|docs/a.md"], ["docs/c.md"]]],
+		});
+	});
+	it.each([1, 3, 5, 7])("preserves odd backslash parity %i without admitting backslash paths", (count) => {
+		const slashes = "\\".repeat(count);
+		const first = count === 1 ? "|docs/a.md" : undefined;
+		assertTable(
+			`| File | Why |\n| --- | --- |\n| ${slashes}|docs/a.md a\\|b | docs/c.md |`,
+			first ? [first, "docs/c.md"] : ["docs/c.md"],
+			`| File | Why |\n| --- | --- |\n| ${first ? "[\\|docs/a.md](action-0)" : `${slashes}|docs/a.md`} a\\|b | [docs/c.md](action-${first ? 1 : 0}) |`,
+			{ header: [[], []], rows: [[first ? [first] : [], ["docs/c.md"]]] },
+		);
+	});
+	it.each([0, 2, 4, 6])("preserves even backslash parity %i and actual column splitting", (count) => {
+		const slashes = "\\".repeat(count);
+		assertTable(
+			`| One | Two | Three |\n| --- | --- | --- |\n| a${slashes}|docs/a.md | docs/c.md |`,
+			["docs/a.md", "docs/c.md"],
+			`| One | Two | Three |\n| --- | --- | --- |\n| a${slashes}|[docs/a.md](action-0) | [docs/c.md](action-1) |`,
+			{ header: [[], [], []], rows: [[[], ["docs/a.md"], ["docs/c.md"]]] },
+		);
+	});
+	it("keeps reference labels, definition bytes, escaped punctuation and excluded web anchors", () => {
+		assertTable(
+			'| File | Why |\n| --- | --- |\n| [\\|docs/a.md][r] | [\\|docs/c.md](https://example.test/x) |\n\n[r]: <./docs/z.md> "keep"\n',
+			["docs/z.md"],
+			'| File | Why |\n| --- | --- |\n| [\\|docs/a.md](action-0) | [\\|docs/c.md](https://example.test/x) |\n\n[r]: <./docs/z.md> "keep"\n',
+			{ header: [[], []], rows: [[["docs/z.md"], ["https://example.test/x"]]] },
+		);
+	});
+	it("retains HTML ancestry, invalid adjacency and fresh cwd bindings around escaped table paths", () => {
+		const original =
+			"Before <script> first\n\n| \\|docs/a.md | Why |\n| --- | --- |\n| </script> ../**docs/x.md** \\|docs/b.md | docs/c.md |";
+		const expected =
+			"Before <script> first\n\n| \\|docs/a.md | Why |\n| --- | --- |\n| </script> ../**docs/x.md** [\\|docs/b.md](action-0) | [docs/c.md](action-1) |";
+		for (const sourceCwd of ["/work/a", cwd, "/work/a"]) {
+			assertTable(
+				original,
+				["|docs/b.md", "docs/c.md"],
+				expected,
+				{ header: [[], []], rows: [[["|docs/b.md"], ["docs/c.md"]]] },
+				sourceCwd,
+			);
+			assertTable(
+				trigger,
+				["|docs/a.md", "docs/c.md"],
+				"| File | Why |\n| --- | --- |\n| [\\|docs/a.md](action-0) a\\|b | [docs/c.md](action-1) |",
+				{ header: [[], []], rows: [[["|docs/a.md"], ["docs/c.md"]]] },
+				sourceCwd,
+			);
+		}
+		expect(renderMarkdownFileReferences(trigger, "")).toEqual({ markdown: trigger, references: new Map() });
+	});
+});

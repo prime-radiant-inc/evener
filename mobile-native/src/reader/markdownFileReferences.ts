@@ -12,6 +12,8 @@ export interface MarkdownFileRender {
 interface Source {
 	text: string;
 	offsets: readonly number[];
+	// A removed table escape belongs to the following surviving pipe's range.
+	escapeStarts?: ReadonlyMap<number, number>;
 }
 interface Candidate {
 	start: number;
@@ -57,7 +59,11 @@ function locate(raw: string, parent: Source, cursor: number): { source: Source; 
 	const direct = parent.text.indexOf(raw, cursor);
 	if (direct >= 0)
 		return {
-			source: { text: raw, offsets: parent.offsets.slice(direct, direct + raw.length) },
+			source: {
+				text: raw,
+				offsets: parent.offsets.slice(direct, direct + raw.length),
+				escapeStarts: parent.escapeStarts,
+			},
 			next: direct + raw.length,
 		};
 	const offsets: number[] = [];
@@ -75,7 +81,7 @@ function locate(raw: string, parent: Source, cursor: number): { source: Source; 
 			next = newline + 1;
 		}
 	}
-	return { source: { text: raw, offsets }, next };
+	return { source: { text: raw, offsets, escapeStarts: parent.escapeStarts }, next };
 }
 
 // Decode escapes and entities in one pass over the recognized RAW target.
@@ -225,7 +231,7 @@ function collectInline(
 					right = raw.offsets[range.end - 1];
 				if (left !== undefined && right !== undefined)
 					found.push({
-						start: left,
+						start: raw.escapeStarts?.get(left) ?? left,
 						end: right + 1,
 						surface: "link",
 						value: destination(token.raw.slice(range.start, range.end)),
@@ -263,7 +269,13 @@ function collectInline(
 					last = raw.offsets[right - 1];
 				if (first === undefined || last === undefined) continue;
 				const value = token.raw.slice(left, right);
-				found.push({ start: first, end: last + 1, surface: "prose", value, label: value });
+				found.push({
+					start: raw.escapeStarts?.get(first) ?? first,
+					end: last + 1,
+					surface: "prose",
+					value,
+					label: value,
+				});
 			}
 		}
 	}
@@ -299,18 +311,20 @@ function collectBlocks(
 			// keeping the surviving bytes mapped to their original source offsets.
 			let text = "";
 			const offsets: number[] = [];
+			const escapeStarts = new Map<number, number>();
 			let slashes = 0;
 			for (let index = 0; index < raw.text.length; index += 1) {
 				const char = raw.text[index];
 				if (char === "|" && slashes % 2 === 1) {
 					text = text.slice(0, -1);
 					offsets.pop();
+					escapeStarts.set(raw.offsets[index], raw.offsets[index - 1]);
 				}
 				text += char;
 				offsets.push(raw.offsets[index]);
 				slashes = char === "\\" ? slashes + 1 : 0;
 			}
-			const cellParent = { text, offsets };
+			const cellParent = { text, offsets, escapeStarts };
 			for (const cell of [...table.header, ...table.rows.flat()]) {
 				const cellRaw = cell.tokens.map((part) => part.raw).join("");
 				const cellSource = locate(cellRaw, cellParent, next);
