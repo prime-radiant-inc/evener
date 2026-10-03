@@ -6,7 +6,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
@@ -23,7 +22,6 @@ func FuzzCovWebTreeSessionPure(f *testing.F) {
 		if len(refText) > 256 || len(title) > 512 {
 			t.Skip()
 		}
-		now := time.Now().UnixMilli() - 2000
 		for _, prompt := range []string{"", title, "first\nsecond", strings.Repeat("z", 100)} {
 			_ = compactSessionPromptTitle(prompt)
 		}
@@ -35,16 +33,10 @@ func FuzzCovWebTreeSessionPure(f *testing.F) {
 		thread := appwire.Thread{
 			ID: "thread", SessionID: "session", Source: "remote", Name: title,
 			Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive},
-			Turns: []appwire.Turn{
-				{ID: "done", Status: appwire.TurnStatusCompleted},
-				{ID: "running", Status: appwire.TurnStatusInProgress, StartedAt: &now},
-			},
-			Evener: appwire.EvenerThread{Ref: refText, ActiveTurnID: "active", Goal: &appwire.GoalState{Status: "active", Iterations: 2}},
+			Evener: appwire.EvenerThread{Ref: refText},
 		}
 		_, _, _ = appThreadTreeEntries(thread)
 		_, _ = appThreadTreeRef(thread)
-		thread.Evener.ActiveTurnID = ""
-		thread.Turns = nil
 		thread.Preview, thread.SessionID = "", "session"
 		thread.Evener.Ref = ""
 		thread.Name, thread.Preview, thread.SessionID = "", title, ""

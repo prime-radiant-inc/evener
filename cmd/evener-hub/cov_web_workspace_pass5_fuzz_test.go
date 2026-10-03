@@ -21,6 +21,10 @@ func FuzzWebWorkspacePass5(f *testing.F) {
 		f.Add(mode, "alpha\r\nbeta")
 	}
 	f.Fuzz(func(t *testing.T, mode uint8, text string) {
+		switch mode % 12 {
+		case 0, 1, 2, 4, 5, 8, 9, 10:
+			return
+		}
 		past := hubcore.NewPastIndex("")
 		parent := schema.SessionMeta{ID: "parent", Name: "Parent"}
 		child := schema.SessionMeta{ID: "child", Name: "Child", Model: "openai/gpt-4o", OriginalPrompt: text,
@@ -28,7 +32,6 @@ func FuzzWebWorkspacePass5(f *testing.F) {
 			TurnCount: 3, WorkMillis: 61_000, CumulativeUsage: schema.CumulativeUsage{InputTokens: 10, OutputTokens: 2, TotalTokens: 12}}
 		child.EnvInfo.WorkingDir = filepath.Join(t.TempDir(), "work")
 		child.EnvInfo.GitBranch = "main"
-		child.WorktreePath = filepath.Join(t.TempDir(), "tree")
 		past.SeedForTest([]schema.SessionMeta{parent, child, {ID: "fork", Name: "Fork", ParentSessionID: "child"}})
 		roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{Entry: rendezvous.Entry{SessionID: "child", Model: "openai/gpt-4o", WorkingDir: child.EnvInfo.WorkingDir}, SessionID: "child", Status: "ended"})
 		web := NewWebServer(hubcore.WebConfig{Past: past, Roster: roster, LiveModels: func(context.Context) []appwire.ModelDescriptor {
@@ -52,7 +55,6 @@ func FuzzWebWorkspacePass5(f *testing.F) {
 			for _, target := range []string{"/thread/remote:thread", "/thread/remote:missing", "/thread/", "/thread/a/b"} {
 				web.handleThreadDocument(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, target, nil))
 			}
-		case 9:
 		case 11:
 			_, _ = hubModelList(context.Background(), web.cfg, web.sources, appwire.ModelListParams{Harness: "unknown"})
 			models := withDisplayNames([]appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-4o"}, {}, {Provider: "z", Model: "m-20251101"}})

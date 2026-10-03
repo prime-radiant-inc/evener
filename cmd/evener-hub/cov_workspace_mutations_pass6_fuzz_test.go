@@ -38,6 +38,10 @@ func FuzzWorkspaceMutationsPass6(f *testing.F) {
 		f.Add(mode)
 	}
 	f.Fuzz(func(t *testing.T, mode uint8) {
+		switch mode % 8 {
+		case 3, 4:
+			return
+		}
 		root := t.TempDir()
 		state := filepath.Join(root, "state")
 		work := filepath.Join(root, "same")

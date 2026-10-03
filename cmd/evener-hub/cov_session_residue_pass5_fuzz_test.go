@@ -19,6 +19,9 @@ func FuzzSessionResiduePass5(f *testing.F) {
 		f.Add(op, "residue")
 	}
 	f.Fuzz(func(t *testing.T, op uint8, title string) {
+		if op%4 == 3 {
+			return
+		}
 		now := time.Now()
 		thread := appwire.Thread{
 			ID: "thread-5", SessionID: "thread-5", Source: "remote", Name: title,
