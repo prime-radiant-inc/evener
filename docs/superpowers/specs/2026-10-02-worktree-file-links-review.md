@@ -2,7 +2,7 @@
 
 ## Status and scope
 
-Two independent reviewers returned **revise** on the initial spec at commit `ff6fbc6d417b313ee8b39c7a183038cf09b7da4b`. The revised spec incorporates the corrections below and awaits their focused second review. Jesse chose to keep a clicked secondary delegate conversation visible beside its file, retaining the prior parent. Implementation has not started. Written-spec approval and implementation-plan approval remain separate gates.
+Both independent reviewers **approved the revised spec for implementation planning** at commit `a2c5a8af3b2cb9850aec6d38a28827c3bb1fd2e5`. Their first reviews returned **revise** on the initial spec at `ff6fbc6d417b313ee8b39c7a183038cf09b7da4b`; the corrections below resolve those contract findings. Jesse chose to keep a clicked secondary delegate conversation visible beside its file, retaining the prior parent. Implementation has not started. Jesse's written-spec approval and implementation-plan approval remain separate gates.
 
 Design: [Clickable worktree filenames](2026-10-02-worktree-file-links-design.md).
 
@@ -16,6 +16,13 @@ Main-checkout files remain untouched: `batch-notes.md`, `evener-fluency.exe`, an
 - Client/UX/lifecycle: `dlg_034ZCAJ0I3saVIrLOvOg1r`, transcript `local:034ZCAJ0I3wl7NBGrl0Lf4`, final report turn 165.
 
 Both reviewed independently against the original spec. Original line numbers below refer to that committed version, not the revised working file. Neither changed product files or installed dependencies.
+
+## Second-round outcomes
+
+- Backend/parser/containment: **APPROVE**, transcript `local:034ZC9kztW932wVXwkgLIT`, turn 143. All prior parsing, target-binding, directory-publication, deduplication and containment findings are resolved at contract level. No new high/medium contradiction or dangerous proof omission. Canonical-root absolute acceptance is a server contract; recognition does not discover filesystem aliases.
+- Client/UX/lifecycle: **APPROVE**, transcript `local:034ZCAJ0I3wl7NBGrl0Lf4`, turn 208. All nine prior findings are resolved at contract level. No further wording correction and no new high/medium contradiction. Native link-hold risk is resolved by explicit scope narrowing, not by proving device gestures.
+
+Both second reviews used the revised spec and existing source evidence. They ran no new implementation probes or feature tests. The client reviewer confirmed both reviewed documents matched the requested commit with `git diff --exit-code`. No behavior, browser geometry or native touch claim follows from these approvals; the acceptance checks remain implementation obligations.
 
 ## Backend/parser findings and resolutions
 
