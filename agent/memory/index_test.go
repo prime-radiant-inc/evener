@@ -23,6 +23,29 @@ func TestIndexPreservesProseAndDerivesDates(t *testing.T) {
 	}
 }
 
+// A date marker inside ordinary prose must not reserve the whole summary.
+func TestIndexPreservesInteriorCreatedProse(t *testing.T) {
+	t.Parallel()
+	clock := time.Date(2026, 10, 3, 23, 0, 0, 0, time.UTC)
+	for _, source := range []string{
+		"Intro\n\n- [A](a.md): Built (created by CI), rerun nightly.\n",
+		"Intro\n\n- [A](a.md): Built (created by CI), rerun nightly. (created 2001-01-01, updated 2002-01-01, reviewed never)\n",
+	} {
+		doc, err := parseIndex(source)
+		if err != nil {
+			t.Fatalf("valid interior prose rejected: %v", err)
+		}
+		if len(doc.Entries) != 1 || doc.Entries[0].Summary != "Built (created by CI), rerun nightly." {
+			t.Fatalf("entries %#v", doc.Entries)
+		}
+		got := renderIndex(doc, map[string]PageMeta{"a": {Created: clock, Updated: clock}})
+		want := "Intro\n\n- [A](a.md): Built (created by CI), rerun nightly. (created 2026-10-03, updated 2026-10-03, reviewed never)\n"
+		if got != want {
+			t.Fatalf("got %q, want %q", got, want)
+		}
+	}
+}
+
 func TestIndexDatesCannotBeModelAuthority(t *testing.T) {
 	t.Parallel()
 	clock := time.Date(2026, 10, 3, 23, 0, 0, 0, time.UTC)

@@ -23,6 +23,7 @@ type indexEntry struct {
 }
 
 var dateSuffix = regexp.MustCompile(` \(created ([0-9]{4}-[0-9]{2}-[0-9]{2}), updated ([0-9]{4}-[0-9]{2}-[0-9]{2}), reviewed ([0-9]{4}-[0-9]{2}-[0-9]{2}|never)\)$`)
+var trailingDateClause = regexp.MustCompile(` \(created(?:[ \t][^()\r\n]*)?\)?$`)
 
 func parseIndex(source string) (indexDocument, error) {
 	document := indexDocument{Source: source, Entries: []indexEntry{}}
@@ -122,7 +123,9 @@ func parseIndex(source string) (indexDocument, error) {
 			}
 			summary = summary[:match[0]]
 		}
-		if strings.Contains(summary, "(created") {
+		// Only the trailing clause is reserved for dates. After removing one
+		// valid suffix, another trailing clause is a repeated or malformed suffix.
+		if trailingDateClause.MatchString(strings.TrimRight(summary, " \t")) {
 			return ast.WalkStop, invalidInput()
 		}
 		label := strings.TrimSpace(decoded(line[3:close]))
