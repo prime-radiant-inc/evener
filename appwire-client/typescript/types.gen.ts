@@ -1259,7 +1259,7 @@ export interface HostPlan {
 }
 
 export interface HostPlanNoToken {
-  outcome: string;
+  outcome: "no-token";
   staleFacts: HostPlanStaleFacts;
   terminal: boolean;
   remnantId?: string;
@@ -1270,7 +1270,7 @@ export interface HostPlanParams {
 }
 
 export interface HostPlanPlanned {
-  outcome: string;
+  outcome: "planned";
   plan: HostPlan;
   token: string;
 }
@@ -1402,7 +1402,7 @@ export interface HostTeardownRecoverParams {
 }
 
 export interface HostTeardownRecoverResult {
-  outcome: string;
+  outcome: "recovered-cleared";
   remnantId: string;
   clearedName: string;
   clearedAt: string;
@@ -1410,40 +1410,40 @@ export interface HostTeardownRecoverResult {
 }
 
 export interface HostTeardownRetryClearedLive {
-  outcome: string;
-  hostKind: string;
+  outcome: "already-cleared";
+  hostKind: "live";
   host: HostRow;
   remnantId: string;
   escalationAgeSec?: number;
 }
 
 export interface HostTeardownRetryClearedRemoved {
-  outcome: string;
-  hostKind: string;
+  outcome: "already-cleared";
+  hostKind: "removed";
   host: RemovedRow;
   remnantId: string;
   escalationAgeSec?: number;
 }
 
 export interface HostTeardownRetryCompleteLive {
-  outcome: string;
-  hostKind: string;
+  outcome: "teardown-complete";
+  hostKind: "live";
   host: HostRow;
   remnantId: string;
   escalationAgeSec?: number;
 }
 
 export interface HostTeardownRetryCompleteRemoved {
-  outcome: string;
-  hostKind: string;
+  outcome: "teardown-complete";
+  hostKind: "removed";
   host: RemovedRow;
   remnantId: string;
   escalationAgeSec?: number;
 }
 
 export interface HostTeardownRetryFailedLive {
-  outcome: string;
-  hostKind: string;
+  outcome: "committed-with-teardown-failure";
+  hostKind: "live";
   host: HostRow;
   remnantId: string;
   seam: string;
@@ -1451,8 +1451,8 @@ export interface HostTeardownRetryFailedLive {
 }
 
 export interface HostTeardownRetryFailedRemoved {
-  outcome: string;
-  hostKind: string;
+  outcome: "committed-with-teardown-failure";
+  hostKind: "removed";
   host: RemovedRow;
   remnantId: string;
   seam: string;
