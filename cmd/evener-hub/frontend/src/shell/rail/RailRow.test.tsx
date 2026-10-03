@@ -15,7 +15,6 @@ import userEvent from "@testing-library/user-event";
 import { lazy } from "react";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { installMobileViewport } from "../../panes/session/testing/mobileViewport";
-import { sessionPanelPaneType } from "../../panes/sessionPanels";
 import { selectRailModel } from "../../stores/navigation/selectors";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { resetThreadsStoreForTests } from "../../stores/threads";
@@ -248,7 +247,7 @@ function info(overrides: Partial<TreeRowInfo> = {}): TreeRowInfo {
 
 function actions(overrides: Partial<RailRowActions> = {}): RailRowActions {
   return {
-    onOpenSessionPane: vi.fn(),
+    onOpenOverview: vi.fn(),
     onRenameSession: vi.fn().mockResolvedValue(undefined),
     onShutdownSession: vi.fn().mockResolvedValue(undefined),
     onForceStopSession: vi.fn().mockResolvedValue(undefined),
@@ -1196,7 +1195,7 @@ describe("session row", () => {
     renderRow({ kind: "subagent", rename: false });
     await openMenu(/actions for/i);
     const items = screen.getAllByRole("menuitem").map((el) => el.textContent);
-    expect(items).toEqual(["Details", "Activity", "Rename", "Shut down"]);
+    expect(items).toEqual(["Overview", "Rename", "Shut down"]);
   });
 
   // The row's menu is THE shared SessionMenu now - the same item list, in the
@@ -1207,8 +1206,7 @@ describe("session row", () => {
     await openMenu(/actions for/i);
     const items = screen.getAllByRole("menuitem").map((el) => el.textContent);
     expect(items).toEqual([
-      "Details",
-      "Activity",
+      "Overview",
       "Rename",
       "Pin this session…",
       "Archive",
@@ -1218,22 +1216,12 @@ describe("session row", () => {
     ]);
   });
 
-  test("Details opens the session pane, then the sessionDetails pane", async () => {
-    const acts = actions({
-      // The same wiring Rail's rowActions gives this callback: the session
-      // pane itself, plus the selected panel beside it.
-      onOpenSessionPane: (target, pane) => {
-        const workspace = workspaceStore.getState();
-        workspace.openPane("session", { ref: target.ref });
-        workspace.openPane(sessionPanelPaneType(pane), { ref: target.ref });
-      },
-    });
-    renderRow({}, acts);
+  test("Overview dispatches the row's session", async () => {
+    const acts = actions();
+    const session = renderRow({}, acts);
     const user = await openMenu(/actions for/i);
-    await user.click(screen.getByRole("menuitem", { name: "Details" }));
-    const panes = workspaceStore.getState().panes.map((p) => p.type);
-    expect(panes).toContain("session");
-    expect(panes).toContain("sessionDetails");
+    await user.click(screen.getByRole("menuitem", { name: "Overview" }));
+    expect(acts.onOpenOverview).toHaveBeenCalledWith(session);
   });
 
   test("a restored sessionActivity pane does not mark Activity on mobile", async () => {
@@ -1244,7 +1232,7 @@ describe("session row", () => {
       workspaceStore.getState().openPane("sessionActivity", { ref: "local:a" });
       renderRow();
       await openMenu(/actions for/i);
-      expect(screen.getByRole("menuitem", { name: "Activity" })).toBeTruthy();
+      expect(screen.getByRole("menuitem", { name: "Overview" })).toBeTruthy();
     } finally {
       restoreViewport();
     }
@@ -1257,7 +1245,7 @@ describe("session row", () => {
     workspaceStore.getState().openPane("sessionActivity", { ref: "local:a" });
     renderRow();
     await openMenu(/actions for/i);
-    expect(screen.getByRole("menuitem", { name: "Activity" })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "Overview" })).toBeTruthy();
   });
 
   test("a pure focus move refreshes the Activity check (the ✓ names the session the sidebar shows)", async () => {
@@ -1268,12 +1256,12 @@ describe("session row", () => {
     activitySidebarStore.getState().openWith();
     renderRow();
     await openMenu(/actions for/i);
-    expect(screen.getByRole("menuitem", { name: "Activity ✓" })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "Overview ✓" })).toBeTruthy();
     act(() => {
       workspaceStore.getState().openPane("session", { ref: "local:other" });
     });
     // The row re-rendered on the focus change: the item is plain again.
-    expect(await screen.findByRole("menuitem", { name: "Activity" })).toBeTruthy();
+    expect(await screen.findByRole("menuitem", { name: "Overview" })).toBeTruthy();
   });
 
   test("the Tasks menu item is absent while the sidebar shows its tab", async () => {

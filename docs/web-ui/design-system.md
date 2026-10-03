@@ -64,11 +64,19 @@ losing the conversation that made the evidence relevant.
 - **Keep session status inside its pane.** Every visible desktop session pane ends with its own
   flush status footer, never one strip spanning sibling panes. The footer leads with that
   session's working directory and repository/branch, then its Agents, Jobs, Watches and Tasks
-  counts. A count click focuses the owning pane before opening the shared activity sidebar.
-  The sidebar retains its scope breadcrumb and an accessible, visually hidden “Activity kind”
-  label. Phones omit the activity footer and the working-directory/repository row. The
+  counts. A count click focuses the owning pane before opening the matching Overview category.
+  The shared sidebar retains its scope breadcrumb and an accessible, visually hidden
+  “Overview kind” label. About is the fifth category and has no footer counter.
+  Phones omit the activity footer and the working-directory/repository row. The
   composer ends at the pane's bottom edge with only required safe-area clearance, which
   yields when the on-screen keyboard covers that area.
+- **Keep session inspection together.** Both session action menus offer Overview, retaining
+  the intended session's category choice. `/status` selects About without toggling a
+  standalone Details pane. About reuses the shared Details renderer and its accounting.
+  Phones move focus into the full-screen Overview after menu dismissal and contain Tab
+  until close. Return to a visible, connected opener, then a visible control for the
+  intended session, preferring the originating pane. Desktop remains nonmodal. Existing
+  standalone Details views and the `/tasks` pane toggle retain their behavior.
 
 The provenance corrections and nested navigation/focus repairs change behavior. Folding,
 disclosure persistence, keyboard rules, preferences and semantic hue roles are retained

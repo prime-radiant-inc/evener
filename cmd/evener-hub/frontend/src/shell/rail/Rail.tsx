@@ -30,7 +30,6 @@ import {
   useRef,
   useState,
 } from "react";
-import { sessionPanelPaneType } from "../../panes/sessionPanels";
 import {
   type ArchivedList,
   archivedListKey,
@@ -1574,18 +1573,9 @@ function NavigationRail({
   );
   const rowActions = useMemo<RailRowActions>(
     () => ({
-      onOpenSessionPane: (session, pane) => {
-        const workspace = workspaceStore.getState();
-        if (pane === "activity") {
-          // Activity is the shared sidebar at every viewport. Focus the
-          // session first so the sidebar derives the correct scope, then
-          // retire any restored legacy pane before opening it.
-          workspace.openPane("session", { ref: session.ref });
-          activitySidebarStore.getState().openFor(session.ref);
-        } else {
-          workspace.openPane("session", { ref: session.ref });
-          workspace.openPane(sessionPanelPaneType(pane), { ref: session.ref });
-        }
+      onOpenOverview: (session) => {
+        workspaceStore.getState().openPane("session", { ref: session.ref });
+        activitySidebarStore.getState().openFor(session.ref);
       },
       onRenameSession: (session, name) =>
         runAction(

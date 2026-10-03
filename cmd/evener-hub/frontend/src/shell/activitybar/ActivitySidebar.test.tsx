@@ -1,4 +1,5 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, test } from "vitest";
 import { MotionProvider } from "../../motion";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
@@ -26,10 +27,10 @@ beforeEach(() => {
 });
 
 const ref = "remote:owner";
-const mount = () =>
+const mount = (mobile = false) =>
   render(
     <MotionProvider>
-      <ActivitySidebar />
+      <ActivitySidebar mobile={mobile} />
     </MotionProvider>,
   );
 afterEach(() => {
@@ -55,7 +56,7 @@ test("closed sidebar owns no read and an open tab observes only its own collecti
   await screen.findByText("No jobs at this level.");
   expect(client.calls.filter((c) => c.method === "evener/thread/jobs/list")).toHaveLength(1);
   expect(client.calls.filter((c) => c.method === "thread/read")).toHaveLength(1);
-  fireEvent.click(screen.getByRole("button", { name: "Close the activity sidebar" }));
+  fireEvent.click(screen.getByRole("button", { name: "Close Overview" }));
   await waitFor(() => expect(sessionActivitySnapshot(client, ref, "session")).toBeNull());
 });
 
@@ -244,14 +245,68 @@ test("activity tabs keep a named keyboard radio group without a visible heading"
   activitySidebarStore.getState().openWith("agents");
   mount();
   await screen.findByRole("button", { name: /inspect/ });
-  expect(screen.getByRole("radiogroup", { name: "Activity kind" })).toBeTruthy();
-  expect(screen.queryByText("Activity kind")).toBeNull();
+  expect(screen.getByRole("complementary", { name: "Overview" })).toBeTruthy();
+  expect(screen.getByRole("radiogroup", { name: "Overview kind" })).toBeTruthy();
+  expect(screen.queryByText("Overview kind")).toBeNull();
   await act(async () => fireEvent.keyDown(screen.getByRole("radio", { name: /Agents/ }), { key: "End" }));
   expect(activitySidebarStore.getState().tab).toBe("about");
   await act(async () => fireEvent.keyDown(screen.getByRole("radio", { name: "About" }), { key: "Home" }));
   expect(activitySidebarStore.getState().tab).toBe("agents");
   await act(async () => fireEvent.keyDown(screen.getByRole("radio", { name: /Agents/ }), { key: "ArrowRight" }));
   expect(activitySidebarStore.getState().tab).toBe("jobs");
+});
+
+test("phone Overview enters its selected category and contains sequential keyboard focus", async () => {
+  const user = userEvent.setup();
+  connectionStore.getState().connect(activityClient());
+  installFocusedScope(ref);
+  const opener = document.body.appendChild(document.createElement("button"));
+  try {
+    opener.focus();
+    activitySidebarStore.getState().openWith("about", opener);
+    mount(true);
+    const sidebar = await screen.findByTestId("activity-sidebar");
+    const about = screen.getByRole("radio", { name: "About" });
+    await waitFor(() => expect(document.activeElement).toBe(about));
+    for (let step = 0; step < 20; step += 1) {
+      await user.tab();
+      expect(sidebar.contains(document.activeElement)).toBe(true);
+    }
+    for (let step = 0; step < 20; step += 1) {
+      await user.tab({ shift: true });
+      expect(sidebar.contains(document.activeElement)).toBe(true);
+    }
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(document.activeElement).toBe(opener));
+    expect(activitySidebarStore.getState().open).toBe(false);
+  } finally {
+    opener.remove();
+  }
+});
+
+test("desktop Overview leaves focus with the opener and permits Tab beyond the surface", async () => {
+  const user = userEvent.setup();
+  connectionStore.getState().connect(activityClient());
+  installFocusedScope(ref);
+  const opener = document.body.appendChild(document.createElement("button"));
+  const outside = document.body.appendChild(document.createElement("button"));
+  try {
+    opener.focus();
+    activitySidebarStore.getState().openWith("about", opener);
+    mount();
+    await screen.findByText("owner");
+    expect(document.activeElement).toBe(opener);
+    screen.getByRole("radio", { name: "About" }).focus();
+    let escaped = false;
+    for (let step = 0; step < 20 && !escaped; step += 1) {
+      await user.tab();
+      escaped = !screen.getByTestId("activity-sidebar").contains(document.activeElement);
+    }
+    expect(escaped).toBe(true);
+  } finally {
+    opener.remove();
+    outside.remove();
+  }
 });
 
 test("pending ancestry becomes useful parent navigation only after the domain proves it", async () => {

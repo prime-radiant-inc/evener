@@ -58,6 +58,26 @@ its group, preserving the mounted transcript and its native scroll position.
 Selecting a different tab still activates that panel. Transcript scroll and
 history recovery remain owned by the existing reader and virtual viewport.
 
+## Session Overview
+
+Both session action menus offer **Overview** for inspection. It opens the shared
+sidebar on the intended session, retaining that session's category choice.
+The categories are Agents, Jobs, Watches, Tasks and About. About shows session
+details through the shared Details renderer and adds no footer counter.
+
+`/status` opens About and keeps it open on repeated use. Its completion reads
+“Show session details in Overview” and remains searchable by details and info.
+Saved standalone Details panes remain available. `/tasks` retains its existing
+standalone pane toggle. Desktop footer counters still focus their owning pane
+before selecting their category. A checked desktop session-menu Overview action
+closes that session's sidebar; the rail action opens the requested session.
+
+Phones use the same sidebar as a full-screen surface. Opening transfers focus
+inside after the menu closes, and Tab stays inside until dismissal. Closing
+returns to a visible opener or a visible session-actions control for the intended
+session, preferring the originating pane. Existing footer categories retain
+their owning-pane fallback. Desktop Overview remains nonmodal.
+
 ## Exited-session controls
 
 An exited session's follow-up keeps its model selector, session actions and Send

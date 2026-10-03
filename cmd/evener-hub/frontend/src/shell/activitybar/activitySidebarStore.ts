@@ -4,6 +4,7 @@
 
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
+import { isRendered } from "../../widgets/focusscope/tabbable";
 import { focusedActivityScopeRef, useFocusedActivityScopeRef } from "../focusedSession";
 import { refParam } from "../routing";
 import type { ActivityTab } from "../statusbar/statusScope";
@@ -128,11 +129,14 @@ export interface ActivitySidebarState {
 
 let activitySidebarOpener: HTMLElement | null = null;
 let activitySidebarOpenerPaneId: string | null = null;
+let activitySidebarOpenerRef: string | null = null;
 
 function captureActivitySidebarOpener(opener?: HTMLElement): void {
   const active = opener ?? document.activeElement;
+  if (active instanceof HTMLElement && active.closest('[data-testid="activity-sidebar"]')) return;
   activitySidebarOpener = active instanceof HTMLElement && active !== document.body ? active : null;
   activitySidebarOpenerPaneId = workspaceStore.getState().focusedPaneId;
+  activitySidebarOpenerRef = activitySidebarStore.getState().ref;
 }
 
 export const activitySidebarStore = createStore<ActivitySidebarState>()((set, get) => {
@@ -179,8 +183,8 @@ export const activitySidebarStore = createStore<ActivitySidebarState>()((set, ge
       // A fresh child keeps the ongoing inspection open on its current kind;
       // a visited session restores its own category and explicit close choice.
       const view = views.get(ref) ?? { open: state.open, tab: state.tab, categories: {} };
-      if (view.open && !state.open) captureActivitySidebarOpener();
       set({ ref, open: view.open, tab: view.tab, views: rememberView(views, ref, view) });
+      if (view.open && !state.open) captureActivitySidebarOpener();
     },
     retainOpenView(ref) {
       const state = get();
@@ -226,12 +230,24 @@ workspaceStore.subscribe((state, previous) => {
 });
 
 export function activitySidebarReturnFocusTarget(tab: ActivityTab): HTMLElement | null {
-  if (activitySidebarOpener?.isConnected) return activitySidebarOpener;
-  const candidates = document.querySelectorAll<HTMLElement>(`[data-activity-tab="${tab}"]`);
-  if (activitySidebarOpenerPaneId === null) return candidates.item(0);
+  const visible = (element: HTMLElement | null): element is HTMLElement =>
+    element?.isConnected === true && !element.matches(":disabled") && isRendered(element);
+  if (visible(activitySidebarOpener)) return activitySidebarOpener;
+  const actions = Array.from(document.querySelectorAll<HTMLElement>("[data-session-actions-ref]"))
+    .filter((marker) => marker.dataset.sessionActionsRef === activitySidebarOpenerRef)
+    .flatMap((marker) => {
+      const button = marker.closest<HTMLButtonElement>("button");
+      return visible(button) ? [{ button, paneId: marker.dataset.paneId }] : [];
+    });
+  const chips = Array.from(document.querySelectorAll<HTMLElement>("[data-activity-tab]")).filter(
+    (chip) => chip.dataset.activityTab === tab && chip.dataset.sessionRef === activitySidebarOpenerRef && visible(chip),
+  );
   return (
-    Array.from(candidates).find((candidate) => candidate.dataset.paneId === activitySidebarOpenerPaneId) ??
-    candidates.item(0)
+    actions.find((action) => action.paneId === activitySidebarOpenerPaneId)?.button ??
+    chips.find((chip) => chip.dataset.paneId === activitySidebarOpenerPaneId) ??
+    actions[0]?.button ??
+    chips[0] ??
+    null
   );
 }
 
@@ -276,6 +292,7 @@ export function closeSessionActivityPanes(ref: string): void {
 export function resetActivitySidebarStoreForTests({ preserveStorage = false } = {}): void {
   activitySidebarOpener = null;
   activitySidebarOpenerPaneId = null;
+  activitySidebarOpenerRef = null;
   if (!preserveStorage) {
     try {
       localStorage.removeItem(ACTIVITY_VIEW_STORAGE_KEY);

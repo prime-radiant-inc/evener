@@ -15,14 +15,17 @@ import {
 } from "../../stores/sessionActivityTestUtils";
 import { resetThreadsStoreForTests } from "../../stores/threads";
 import { resetDisclosureStoreForTests, setDisclosureOpen } from "../../widgets/disclosure/disclosureStore";
+import { requireClass } from "../../widgets/internal/requireClass";
 import { installFocusedScope } from "../statusbar/scopeTestUtils";
 import { resetWorkspaceStoreForTests } from "../workspace";
 import { ActivitySidebar } from "./ActivitySidebar";
+import styles from "./activitybar.module.css";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "./activitySidebarStore";
 
 const ref = "remote:owner";
 const ROW_HEIGHT = 48;
 const VIEW_HEIGHT = 100;
+const BODY_CLASS = requireClass(styles.body, "activitybar.module.css", "body");
 const jobs = Array.from({ length: 30 }, (_, index) =>
   activityJob({ jobId: `job-${index}`, description: `History ${index}` }),
 );
@@ -31,7 +34,7 @@ if (!target) throw new Error("fixture target missing");
 const anchor = { id: activityNodeID({ ...target, kind: "shell" }), offset: -12 };
 
 function viewport(): HTMLElement {
-  const body = screen.getByTestId("activity-sidebar").lastElementChild;
+  const body = screen.getByTestId("activity-sidebar").getElementsByClassName(BODY_CLASS).item(0);
   if (!(body instanceof HTMLElement)) throw new Error("activity body missing");
   return body;
 }
@@ -45,7 +48,7 @@ function rows(body: HTMLElement) {
 function installGeometry() {
   const nativeRect = HTMLElement.prototype.getBoundingClientRect;
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
-    const body = this.closest('[data-testid="activity-sidebar"]')?.lastElementChild;
+    const body = this.closest('[data-testid="activity-sidebar"]')?.getElementsByClassName(BODY_CLASS).item(0);
     if (!(body instanceof HTMLElement)) return nativeRect.call(this);
     if (this === body) return new DOMRect(0, 0, 320, VIEW_HEIGHT);
     const index = rows(body).indexOf(this as HTMLButtonElement);
@@ -416,7 +419,7 @@ test("reopening during sidebar exit resumes the same viewport and its pending an
   const original = viewport();
   const boundary = Visibility.latest();
   vi.useFakeTimers();
-  fireEvent.click(screen.getByRole("button", { name: "Close the activity sidebar" }));
+  fireEvent.click(screen.getByRole("button", { name: "Close Overview" }));
   // Real AnimatePresence keeps its one exiting aside mounted until motion ends.
   expect(original.isConnected).toBe(true);
   act(() => boundary.emit(true));
@@ -449,7 +452,7 @@ test.each(["tab", "scope", "completed exit"])(
     const obsoleteBody = viewport();
     const obsoleteBoundary = Visibility.latest();
     if (replacement !== "completed exit") vi.useFakeTimers();
-    fireEvent.click(screen.getByRole("button", { name: "Close the activity sidebar" }));
+    fireEvent.click(screen.getByRole("button", { name: "Close Overview" }));
     expect(obsoleteBody.isConnected).toBe(true);
     if (replacement === "tab") {
       act(() => activitySidebarStore.getState().openWith("watches"));
@@ -483,7 +486,7 @@ test.each(["tab", "scope", "completed exit"])(
 test("a scroll inside expanded watch details retains that watch instead of the next summary", async () => {
   vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockReturnValue(1400);
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
-    const body = this.closest('[data-testid="activity-sidebar"]')?.lastElementChild;
+    const body = this.closest('[data-testid="activity-sidebar"]')?.getElementsByClassName(BODY_CLASS).item(0);
     if (!(body instanceof HTMLElement)) return new DOMRect();
     if (this === body) return new DOMRect(0, 0, 320, VIEW_HEIGHT);
     const details = this.closest("details") ?? this.querySelector("details");

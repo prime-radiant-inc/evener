@@ -40,7 +40,6 @@ import {
 } from "@evener/appwire-client";
 import { subagentTallyToShow } from "@evener/appwire-client/state/navigation";
 import { memo, type ReactNode, useCallback, useRef } from "react";
-import type { SessionPanelKind } from "../../panes/sessionPanels";
 import { LOCAL_HOST } from "../../stores/hostRouting";
 import {
   relativeAge,
@@ -57,7 +56,6 @@ import type { TreeRowInfo } from "../../widgets/tree";
 import { useActivitySidebarOpenFor } from "../activitybar/activitySidebarStore";
 import { navigate } from "../routing";
 import { type PinTarget, SessionMenu } from "../sessionMenu/SessionMenu";
-import { isPaneOpen, useWorkspaceStore } from "../workspace";
 import styles from "./RailRow.module.css";
 import {
   activeWatchCount,
@@ -197,7 +195,7 @@ function Signal({ wireState }: { wireState: string }) {
 export { watchCadenceLabel, watchDurationLabel, watchGloss };
 
 export interface RailRowActions {
-  onOpenSessionPane(session: RailSession, pane: SessionPanelKind): void;
+  onOpenOverview(session: RailSession): void;
   onRenameSession(session: RailSession, name: string): Promise<void>;
   onShutdownSession(session: RailSession): Promise<void>;
   onForceStopSession(session: RailSession): Promise<void>;
@@ -387,18 +385,12 @@ function saysNotStarted(session: RailSession, hasSignal: boolean): boolean {
 
 // The rail-row use of the shared session menu: same component the session
 // pane's chrome renders, fed from the RailSession instead of a ThreadModel.
-// panesOpen drives the ✓ markers via the workspace store; triggerTabIndex
+// Overview's explicit session scope drives the ✓ marker; triggerTabIndex
 // -1 keeps the Tree widget's single-roving-Tab-stop contract (see
 // ActionsMenu's own comment, which this replaces for session rows).
 function SessionMenuRow({ session, actions }: { session: RailSession; actions: RailRowActions }) {
   const ref = session.ref;
-  // Separate boolean selectors, NOT one object-literal selector: a
-  // fresh { details, activity } object every call would fail the
-  // store's reference-equality check and re-render the row on every
-  // workspace change (SessionChrome selects the same four booleans the
-  // same way).
-  const detailsOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionDetails", { ref }));
-  // The Activity ✓ marks the shared sidebar's scope. A leftover
+  // The Overview ✓ marks the shared sidebar's scope. A leftover
   // sessionActivity pane is not an opener and is intentionally not marked.
   const activitySidebarOpen = useActivitySidebarOpenFor(ref);
   return (
@@ -410,9 +402,9 @@ function SessionMenuRow({ session, actions }: { session: RailSession; actions: R
       canShutdown={session.live && session.state !== "restartRequired"}
       stopped={SHUT_DOWN_STATUSES.has(session.state) || isConfirmedCrashedSession(session)}
       treeNode={session}
-      panesOpen={{ details: detailsOpen, activity: activitySidebarOpen }}
+      overviewOpen={activitySidebarOpen}
       actions={{
-        onOpenPane: (pane) => actions.onOpenSessionPane(session, pane),
+        onOpenOverview: () => actions.onOpenOverview(session),
         onRename: (name) => actions.onRenameSession(session, name),
         onShutdown: () => actions.onShutdownSession(session),
         onForceStop:

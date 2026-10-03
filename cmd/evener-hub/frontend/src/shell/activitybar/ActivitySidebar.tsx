@@ -13,6 +13,8 @@ import { navigationStore, useNavigationStore } from "../../stores/navigation/sto
 import { useSessionActivity } from "../../stores/sessionActivity";
 import { IconButton, SegmentedControl } from "../../widgets";
 import { DisclosurePersistenceContext } from "../../widgets/disclosure/disclosureStore";
+import { FocusScope } from "../../widgets/focusscope";
+import { tabbable } from "../../widgets/focusscope/tabbable";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { useFocusedActivityScopeRef } from "../focusedSession";
 import { ScopeCrumbs } from "../statusbar/ScopeCrumbs";
@@ -34,20 +36,35 @@ const CLASS = {
   head: requireClass(styles.head, "activitybar.module.css", "head"),
   tabs: requireClass(styles.tabs, "activitybar.module.css", "tabs"),
   body: requireClass(styles.body, "activitybar.module.css", "body"),
+  focusBody: requireClass(styles.focusBody, "activitybar.module.css", "focusBody"),
 };
 
 export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
   const open = useActivitySidebarStore((state) => state.open);
   const tab = useActivitySidebarStore((state) => state.tab);
   const sidebar = useRef<HTMLElement>(null);
+  const returnFrame = useRef<number | null>(null);
+  useEffect(
+    () => () => {
+      if (returnFrame.current !== null) cancelAnimationFrame(returnFrame.current);
+    },
+    [],
+  );
   const close = useCallback(() => {
     const focusInside = sidebar.current?.contains(document.activeElement);
     activitySidebarStore.getState().close();
     if (!focusInside) return;
-    // Menus may remove the original opener; the matching footer chip remains
-    // a useful return point. Other pane changes never restore sidebar focus.
-    activitySidebarReturnFocusTarget(activitySidebarStore.getState().tab)?.focus();
-  }, []);
+    if (returnFrame.current !== null) cancelAnimationFrame(returnFrame.current);
+    // The phone shell must reveal its underlying pane before selecting a
+    // visible return control. A newer opening keeps ownership of focus.
+    const restore = () => {
+      returnFrame.current = null;
+      if (!activitySidebarStore.getState().open)
+        activitySidebarReturnFocusTarget(activitySidebarStore.getState().tab)?.focus();
+    };
+    if (mobile) returnFrame.current = requestAnimationFrame(restore);
+    else restore();
+  }, [mobile]);
   // Narrow subscriptions: re-render on the resources map (nav data) or the
   // scope's ref, not on every store touch.
   const resources = useNavigationStore((state) => state.resources);
@@ -55,6 +72,16 @@ export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
   useEffect(() => {
     if (open && ref !== null) activitySidebarStore.getState().retainOpenView(ref);
   }, [open, ref]);
+  useEffect(() => {
+    if (!open || !mobile || ref === null) return;
+    const frame = requestAnimationFrame(() => {
+      const element = sidebar.current;
+      if (!element || !activitySidebarStore.getState().open) return;
+      const selected = element.querySelector<HTMLElement>('[role="radio"][aria-checked="true"]');
+      (selected ?? tabbable(element)[0])?.focus();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [open, mobile, ref]);
   const { snapshot } = useSessionActivity(open ? ref : null);
   // Closed derives nothing: the sidebar is mounted for the whole desktop
   // session, and a location lookup plus recursive walk per polling update
@@ -97,39 +124,44 @@ export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
           exit={{ x: 320 }}
           transition={transition}
           data-testid="activity-sidebar"
+          aria-label="Overview"
         >
-          <div className={CLASS.head}>
-            <div className={CLASS.scope}>
-              <ScopeCrumbs path={scope.path} hierarchy />
-              {!scope.ancestryKnown ? <span className={CLASS.pending}>Finding session context…</span> : null}
+          <FocusScope trap={mobile} autoFocus={false}>
+            <div className={CLASS.focusBody}>
+              <div className={CLASS.head}>
+                <div className={CLASS.scope}>
+                  <ScopeCrumbs path={scope.path} hierarchy />
+                  {!scope.ancestryKnown ? <span className={CLASS.pending}>Finding session context…</span> : null}
+                </div>
+                <IconButton label="Close Overview" icon="×" variant="quiet" size="sm" onClick={close} />
+              </div>
+              <div className={CLASS.tabs}>
+                <SegmentedControl<ActivityTab>
+                  label="Overview kind"
+                  hideLabel
+                  size="sm"
+                  fullWidth
+                  value={tab}
+                  onChange={(next) => activitySidebarStore.getState().setTab(next)}
+                  options={ACTIVITY_TABS.map((spec) => ({
+                    value: spec.id,
+                    label: spec.tabLabel(scope.counts),
+                    accessibleLabel: spec.chipLabel(scope.counts),
+                  }))}
+                />
+              </div>
+              <DisclosurePersistenceContext.Provider value={JSON.stringify([scope.leaf.ref, tab])}>
+                <ActivityViewport
+                  key={JSON.stringify([scope.leaf.ref, tab])}
+                  sessionRef={scope.leaf.ref}
+                  tab={tab}
+                  className={CLASS.body}
+                >
+                  {Body === null ? null : <Body scope={scope} />}
+                </ActivityViewport>
+              </DisclosurePersistenceContext.Provider>
             </div>
-            <IconButton label="Close the activity sidebar" icon="×" variant="quiet" size="sm" onClick={close} />
-          </div>
-          <div className={CLASS.tabs}>
-            <SegmentedControl<ActivityTab>
-              label="Activity kind"
-              hideLabel
-              size="sm"
-              fullWidth
-              value={tab}
-              onChange={(next) => activitySidebarStore.getState().setTab(next)}
-              options={ACTIVITY_TABS.map((spec) => ({
-                value: spec.id,
-                label: spec.tabLabel(scope.counts),
-                accessibleLabel: spec.chipLabel(scope.counts),
-              }))}
-            />
-          </div>
-          <DisclosurePersistenceContext.Provider value={JSON.stringify([scope.leaf.ref, tab])}>
-            <ActivityViewport
-              key={JSON.stringify([scope.leaf.ref, tab])}
-              sessionRef={scope.leaf.ref}
-              tab={tab}
-              className={CLASS.body}
-            >
-              {Body === null ? null : <Body scope={scope} />}
-            </ActivityViewport>
-          </DisclosurePersistenceContext.Provider>
+          </FocusScope>
         </m.aside>
       ) : null}
     </AnimatePresence>

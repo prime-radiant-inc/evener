@@ -77,8 +77,10 @@ test("focus return falls back to a remaining activity chip when the opener pane 
   const remainingChip = document.body.appendChild(document.createElement("button"));
   remainingChip.dataset.activityTab = "jobs";
   remainingChip.dataset.paneId = "pane-remaining";
+  remainingChip.dataset.sessionRef = "source:owner";
   const removedOpener = document.body.appendChild(document.createElement("button"));
   workspaceStore.setState({ focusedPaneId: "pane-removed" });
+  activitySidebarStore.getState().retarget("source:owner");
   activitySidebarStore.getState().openWith("jobs", removedOpener);
 
   removedOpener.remove();
@@ -87,6 +89,125 @@ test("focus return falls back to a remaining activity chip when the opener pane 
     expect(activitySidebarReturnFocusTarget("jobs")).toBe(remainingChip);
   } finally {
     remainingChip.remove();
+  }
+});
+
+function sessionActions(parent: HTMLElement, ref: string, paneId: string): HTMLButtonElement {
+  const button = parent.appendChild(document.createElement("button"));
+  const marker = button.appendChild(document.createElement("span"));
+  marker.dataset.sessionActionsRef = ref;
+  marker.dataset.paneId = paneId;
+  return button;
+}
+
+test.each(["removed", "hidden ancestor", "invisible ancestor", "disabled"])(
+  "About returns to its originating pane's visible action when its opener is %s",
+  (condition) => {
+    const root = document.body.appendChild(document.createElement("div"));
+    const ref = 'remote:owner"]';
+    try {
+      sessionActions(root, "remote:other", "origin");
+      sessionActions(root, ref, "other-pane");
+      const fallback = sessionActions(root, ref, "origin");
+      const holder = root.appendChild(document.createElement("div"));
+      const opener = holder.appendChild(document.createElement("button"));
+      workspaceStore.setState({ focusedPaneId: "origin" });
+      activitySidebarStore.getState().retarget(ref);
+      opener.focus();
+      activitySidebarStore.getState().openWith("about");
+      expect(activitySidebarReturnFocusTarget("about")).toBe(opener);
+      if (condition === "removed") opener.remove();
+      if (condition === "hidden ancestor") holder.style.display = "none";
+      if (condition === "invisible ancestor") holder.style.visibility = "hidden";
+      if (condition === "disabled") opener.disabled = true;
+      expect(activitySidebarReturnFocusTarget("about")).toBe(fallback);
+      activitySidebarStore.getState().setTab("jobs");
+      activitySidebarStore.getState().setTab("about");
+      expect(activitySidebarReturnFocusTarget("about")).toBe(fallback);
+    } finally {
+      root.remove();
+    }
+  },
+);
+
+test("return focus prefers the originating pane's chip before another pane's action for the same ref", () => {
+  const root = document.body.appendChild(document.createElement("div"));
+  try {
+    sessionActions(root, "remote:other", "origin");
+    const otherAction = sessionActions(root, "remote:owner", "other-pane");
+    const chip = root.appendChild(document.createElement("button"));
+    chip.dataset.activityTab = "jobs";
+    chip.dataset.paneId = "origin";
+    chip.dataset.sessionRef = "remote:owner";
+    const opener = root.appendChild(document.createElement("button"));
+    workspaceStore.setState({ focusedPaneId: "origin" });
+    activitySidebarStore.getState().retarget("remote:owner");
+    activitySidebarStore.getState().openWith("jobs", opener);
+    opener.remove();
+    expect(activitySidebarReturnFocusTarget("jobs")).toBe(chip);
+    chip.hidden = true;
+    expect(activitySidebarReturnFocusTarget("jobs")).toBe(otherAction);
+    otherAction.disabled = true;
+    expect(activitySidebarReturnFocusTarget("jobs")).toBeNull();
+  } finally {
+    root.remove();
+  }
+});
+
+test("an internal Overview opener does not replace its external return target", () => {
+  const root = document.body.appendChild(document.createElement("div"));
+  try {
+    const opener = sessionActions(root, "remote:owner", "origin");
+    const sidebar = root.appendChild(document.createElement("aside"));
+    sidebar.dataset.testid = "activity-sidebar";
+    const internal = sidebar.appendChild(document.createElement("button"));
+    workspaceStore.setState({ focusedPaneId: "origin" });
+    activitySidebarStore.getState().retarget("remote:owner");
+    activitySidebarStore.getState().openWith("about", opener);
+    internal.focus();
+    activitySidebarStore.getState().openWith("jobs");
+    activitySidebarStore.getState().setTab("about");
+    expect(activitySidebarReturnFocusTarget("about")).toBe(opener);
+  } finally {
+    root.remove();
+  }
+});
+
+test("return focus prefers the originating pane's action to its category chip", () => {
+  const root = document.body.appendChild(document.createElement("div"));
+  try {
+    const action = sessionActions(root, "remote:owner", "origin");
+    const chip = root.appendChild(document.createElement("button"));
+    chip.dataset.activityTab = "jobs";
+    chip.dataset.paneId = "origin";
+    chip.dataset.sessionRef = "remote:owner";
+    workspaceStore.setState({ focusedPaneId: "origin" });
+    activitySidebarStore.getState().retarget("remote:owner");
+    const opener = root.appendChild(document.createElement("button"));
+    activitySidebarStore.getState().openWith("jobs", opener);
+    opener.remove();
+    expect(activitySidebarReturnFocusTarget("jobs")).toBe(action);
+    action.hidden = true;
+    expect(activitySidebarReturnFocusTarget("jobs")).toBe(chip);
+  } finally {
+    root.remove();
+  }
+});
+
+test("return focus retains the intended ref when the open inspection retargets", () => {
+  const root = document.body.appendChild(document.createElement("div"));
+  try {
+    sessionActions(root, "remote:other", "origin");
+    const action = sessionActions(root, "remote:owner", "origin");
+    const opener = root.appendChild(document.createElement("button"));
+    workspaceStore.setState({ focusedPaneId: "origin" });
+    activitySidebarStore.getState().retarget("remote:owner");
+    activitySidebarStore.getState().openWith("about", opener);
+    opener.remove();
+    activitySidebarStore.getState().retarget("remote:other");
+    expect(activitySidebarReturnFocusTarget("about")).toBe(action);
+  } finally {
+    root.remove();
   }
 });
 

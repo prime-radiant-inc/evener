@@ -168,7 +168,7 @@ test("an explicitly closed saved sidebar starts no activity read on reload and k
   activitySidebarStore.getState().openWith("jobs");
   mount();
   await screen.findByText("1 completed job");
-  fireEvent.click(screen.getByRole("button", { name: "Close the activity sidebar" }));
+  fireEvent.click(screen.getByRole("button", { name: "Close Overview" }));
   clearLiveState();
 
   const reloaded = clientWithHistory();
