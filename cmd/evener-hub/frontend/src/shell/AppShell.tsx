@@ -643,18 +643,22 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
     // session pane holds focus even when the URL already named the target -
     // navigate() no-ops on an unchanged pathname, so a secondary panel or
     // another pane holding focus would otherwise survive the press
-    // (roborev PR #1044 round-8 medium 3). replacePrimary both opens the
-    // pane and focuses it (workspace.ts), making it the URL-change and
-    // URL-equal paths' shared seam.
+    // (roborev PR #1044 round-8 medium 3). openTopLevelSession is the shared
+    // placement seam; it focuses a pane it freshly places but deliberately
+    // never steals focus for one it preserves (a restored layout's saved
+    // focus must survive a boot placement), so the chord refocuses whatever
+    // the placement left in main itself.
     const openLiveSession = (ref: string): void => {
       openNeedsYouSession(ref);
       const workspace = workspaceStore.getState();
       const main = workspace.mainPane();
       if (main === null || main.type !== "session" || refParam(main.params) !== ref) {
         openTopLevelSession(ref);
-        return;
       }
-      if (workspace.focusedPaneId !== main.id) workspace.focusPane(main.id);
+      const placed = workspaceStore.getState().mainPane();
+      // focusPane already no-ops for a pane that is focused or absent, so
+      // this needs no guard of its own.
+      if (placed !== null) workspaceStore.getState().focusPane(placed.id);
     };
     const demandLivePage = (direction: "next" | "previous", beforeRefs: ReadonlySet<string>) => {
       const state = navigationStore.getState();

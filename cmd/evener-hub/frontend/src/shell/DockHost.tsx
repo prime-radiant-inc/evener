@@ -12,7 +12,6 @@ import { Suspense, useEffect, useRef, useState } from "react";
 import "dockview-react/dist/styles/dockview.css";
 import "./dockview-theme.css";
 import { navigationSummaryFor, resolveThreadName } from "../panes/session/threadTitle";
-import { parseZoomParams } from "../panes/zoom/intent";
 import { useNavigationStore } from "../stores/navigation/store";
 import { threadsStore, useThreadsStore } from "../stores/threads";
 import { EmptyState } from "../widgets/emptystate";
@@ -21,6 +20,7 @@ import styles from "./DockHost.module.css";
 import { PaneTab } from "./PaneTab";
 import { PopoutHeaderAction } from "./PopoutHeaderAction";
 import { type PaneTitleCtx, paneFor } from "./paneRegistry";
+import { openTopLevelSession } from "./sessionPlacement";
 import {
   cancelPaneFocus,
   type OpenPaneRecord,
@@ -472,19 +472,14 @@ export function DockHost() {
     } else if (routedPrimary?.type === "spawn") {
       workspaceStore.getState().replacePrimary("spawn", routedPrimary.params);
     } else if (routedPrimary?.type === "session") {
-      // A session pane with no ref is not a session to route to; replacePrimary
-      // would mint a main pane no chrome can render from. The ref it matches on
-      // is read out of these same params.
+      // A session pane with no ref is not a session to route to; the placement
+      // helper would mint a main pane no chrome can render from. The ref it
+      // matches on is read out of these same params. openTopLevelSession owns
+      // the cascade-retention rule (a cascade keeps its route role and its
+      // restored neighbors), so the boot re-apply and every later placement
+      // of the same route agree.
       const ref = (routedPrimary.params as { ref?: unknown }).ref;
-      if (typeof ref === "string") {
-        const main = workspaceStore.getState().mainPane();
-        const source = main?.type === "sessionZoom" ? parseZoomParams(main.params)?.source : null;
-        // A cascade retains its original route role. Reapplying that same
-        // source must preserve its intent and the restored neighboring panes.
-        if (source?.type !== "session" || source.params.ref !== ref) {
-          workspaceStore.getState().replacePrimary("session", routedPrimary.params);
-        }
-      }
+      if (typeof ref === "string") openTopLevelSession(ref);
     }
     for (const pane of routedSecondary) {
       workspaceStore.getState().openPane(pane.type, pane.params, { slot: "secondary" });

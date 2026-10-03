@@ -505,6 +505,51 @@ async function saveRealSessionPanelLayout(): Promise<void> {
   resetWorkspaceStoreForTests();
 }
 
+// The zoom system promotes a session pane into a cascade by retyping it in
+// place (panes/zoom/actions.ts) - same pane id, same slot - so this is the
+// exact main a saved layout restores. Edges are the saved cascade path.
+function retypeMainToCascade(
+  sourceRef: string,
+  leafRef: string,
+  edges: { ownerRef: string; childRef: string; delegateId: string }[] = [],
+): void {
+  const main = workspaceStore.getState().mainPane();
+  if (!main) throw new Error("no main pane to zoom");
+  if (
+    !workspaceStore.getState().retypePane(main, "sessionZoom", {
+      ref: leafRef,
+      source: { type: "session", params: { ref: sourceRef } },
+      edges,
+    })
+  ) {
+    throw new Error("cascade promotion failed");
+  }
+}
+
+// The cascade flavor of the saveReal*Layout helpers above: a real saved
+// layout whose main is a cascade zoomed on local:session-a with a
+// sessionTasks panel beside it, plus the saved pane ids for the restore
+// assertions.
+async function saveRealCascadeLayout(): Promise<{ cascadeId?: string; secondaryId?: string }> {
+  window.history.pushState({}, "", "/s/local:session-a");
+  installLocationForRoute("local:session-a");
+  const { unmount } = render(<AppShell client={new FakeClient("ready")} />);
+  await screen.findByText(/loading transcript/i);
+  act(() => {
+    retypeMainToCascade("local:session-a", "local:child", [
+      { ownerRef: "local:session-a", childRef: "local:child", delegateId: "edge-child" },
+    ]);
+    workspaceStore.getState().openPane("sessionTasks", { ref: "local:session-a" }, { slot: "secondary" });
+  });
+  await waitFor(() => expect(workspaceStore.getState().panes).toHaveLength(2));
+  const cascadeId = workspaceStore.getState().mainPane()?.id;
+  const secondaryId = workspaceStore.getState().panes.find((pane) => pane.type === "sessionTasks")?.id;
+  unmount();
+  expect(localStorage.getItem(LAYOUT_KEY)).not.toBeNull();
+  resetWorkspaceStoreForTests();
+  return { cascadeId, secondaryId };
+}
+
 async function saveLegacyNestedMainLayout(): Promise<void> {
   workspaceStore.getState().openPane("session", { ref: "local:child" });
   const { unmount } = render(<DockHost />);
@@ -1922,6 +1967,28 @@ test("a deferred deep link beats a restored active session panel", async () => {
   act(() => installLocationForRoute("local:child"));
   await waitFor(() => expect(paneFor("local:child")?.slot).toBe("secondary"));
   await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(paneFor("local:child")?.id));
+});
+
+test("a deferred deep link preserves a restored cascade main and its neighbors", async () => {
+  const { cascadeId, secondaryId } = await saveRealCascadeLayout();
+
+  // Phase 2: reload the same deep link with the location read still in
+  // flight - the boot shape a loaded machine produces. The restored cascade
+  // must survive the route's late placement instead of being replaced by a
+  // plain pane of the same session (which discarded every neighboring pane
+  // with it).
+  resetNavigationStoreForTests();
+  navigationStore.setState({ mode: "v3" });
+  window.history.pushState({}, "", "/s/local:session-a");
+  render(<AppShell client={new FakeClient("ready")} />);
+  await waitFor(() => expect(workspaceStore.getState().mainPane()?.type).toBe("sessionZoom"));
+  act(() => installLocationForRoute("local:session-a"));
+  await waitFor(() => expect(workspaceStore.getState().mainPane()?.id).toBe(cascadeId));
+  expect(workspaceStore.getState().panes.map((pane) => pane.id)).toEqual([cascadeId, secondaryId]);
+  // The placement must not steal focus either: the saved layout's focus (the
+  // sessionTasks pane, last focused before the save) is part of the work the
+  // deferred route placement preserves.
+  expect(workspaceStore.getState().focusedPaneId).toBe(secondaryId);
 });
 
 test("switching between /thread and /s refocuses the routed session despite a focused panel", async () => {
@@ -4075,6 +4142,44 @@ test("live-next focuses the session pane even when the URL already matches", asy
   // for), even though the URL did not move - it already named B.
   const focused = workspaceStore.getState().panes.find((p) => p.id === workspaceStore.getState().focusedPaneId);
   expect(focused?.type).toBe("session");
+});
+
+// The same URL-equal press against a CASCADE main: the placement seam now
+// preserves a cascade whose session source is the pressed ref (and must keep
+// preserving it - and never steal focus on its own, or a restored layout's
+// saved focus would not survive boot placement), but the live chord's own
+// contract is that the press always ends with the session pane focused. A
+// preserved cascade keeps the pane id, so the guarantee has to reach it too.
+test("live-previous focuses a preserved cascade main when the URL already matches", async () => {
+  const user = userEvent.setup();
+  render(<AppShell client={navClientWithLive([LIVE_CYCLE_A, LIVE_CYCLE_B])} />);
+  await rail().findByText("Live B");
+
+  // The URL names B with B's plain session pane in main, then the zoom
+  // system's in-place retype turns that pane into a cascade on the same
+  // source - the exact main a saved layout restores.
+  await user.click(rail().getByText("Live B"));
+  await waitFor(() => {
+    expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:live-b" });
+  });
+  act(() => {
+    retypeMainToCascade("local:live-b", "local:live-child");
+  });
+
+  // A secondary panel holds focus while the URL still names B.
+  act(() => {
+    const panelId = workspaceStore.getState().openPane("sessionTasks", { ref: "local:live-b" }, { slot: "secondary" });
+    workspaceStore.getState().focusPane(panelId);
+  });
+  await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toMatch(/^pane_sessionTasks_/));
+
+  // URL-equal press: previous from the panel targets the LAST live row (B),
+  // whose URL the route already holds. The cascade must survive the press
+  // AND take focus.
+  await user.keyboard("{Alt>}{Shift>}{ArrowLeft}{/Shift}{/Alt}");
+  const state = workspaceStore.getState();
+  expect(state.mainPane()?.type).toBe("sessionZoom");
+  expect(state.focusedPaneId).toBe(state.mainPane()?.id);
 });
 
 // Round 8, low 1: a COMPLETED demand's dedupe key must leave the in-flight
