@@ -1,5 +1,6 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { wireThread } from "@evener/appwire-client/testing/notifications";
 import { SubagentTree, subagentTree, holdSubagentTree, forgetSubagentTrees } from "./subagentTree";
 import { installActivityFixture } from "./sessionActivityTestUtils";
 const session = (entries: unknown[], branch: Record<string, unknown> = {}) => ({
@@ -29,7 +30,9 @@ const second = { revision: 1, root: session([delegate("c")]) };
 function hub(read: (cursor?: string) => unknown | Promise<unknown> = () => whole) {
 	const client = new FakeClient("ready");
 	installActivityFixture(client, read);
-	client.on("thread/read", () => ({ thread: { id: "coord", modelProvider: "scripted/model" } }) as never);
+	client.on("thread/read", ({ ref }) => ({
+		thread: wireThread(ref, { id: "coord", sessionId: "coord", modelProvider: "scripted/model" }),
+	}));
 	return client;
 }
 function detail() {

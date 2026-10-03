@@ -105,6 +105,9 @@ export function paneToURL(type: PaneTypeId, params: unknown): string | null {
       const ref = refParam(params);
       return ref !== null ? `/s/${encodeURIComponent(ref)}` : null;
     }
+    case "sessionZoom":
+      // A cascade belongs to its workspace and preserves its return view.
+      return null;
     case "transcript":
       // No deep link: the read-only transcript pane is an open-beside surface
       // (opened contextually via openBeside, not a URL), the same as "doc"

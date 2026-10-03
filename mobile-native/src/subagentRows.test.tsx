@@ -14,6 +14,7 @@ import {
 } from "@evener/appwire-client";
 import { notificationWireItem } from "@evener/appwire-client/testing/notificationWireFixtures";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { wireThread } from "@evener/appwire-client/testing/notifications";
 import {
 	subagentCallItems,
 	subagentOutcomesResponse,
@@ -426,7 +427,9 @@ describe("a finished subagent's outcome (audit G13)", () => {
 				}),
 			};
 		});
-		client.on("thread/read", () => ({ thread: { id: "root", modelProvider: "scripted" } }) as never);
+		client.on("thread/read", ({ ref }) => ({
+			thread: wireThread(ref, { id: "root", sessionId: "root", modelProvider: "scripted" }),
+		}));
 		harness.client = client;
 		return client;
 	}
