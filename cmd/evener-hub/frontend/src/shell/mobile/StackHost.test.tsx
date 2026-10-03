@@ -1,17 +1,20 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { bindFilePath } from "@evener/appwire-client/docContent";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { lazy, useState } from "react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { MotionProvider } from "../../motion";
+import { openDocBeside } from "../../panes/doc/openDoc";
 import "../../panes/transcript";
 import { connectionStore } from "../../stores/connection";
 import { activityClient, activityContext, activitySummary } from "../../stores/sessionActivityTestUtils";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../activitybar/activitySidebarStore";
 import { chromeStore, resetChromeStoreForTests } from "../chromeStore";
 import { type PaneProps, registerPaneForTests } from "../paneRegistry";
+import { usePaneVisible } from "../paneVisibility";
 import { openTopLevelSession } from "../sessionPlacement";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { StackHost, setLastPopstateWasTrustedForTests } from "./StackHost";
@@ -23,12 +26,14 @@ import { StackHost, setLastPopstateWasTrustedForTests } from "./StackHost";
 // need a real example of. A local click counter proves whether a mount
 // survived a focus change (StackHost's own remount-safety contract, same
 // one DockHost's PaneHost documents - see this component's own comment).
-function DocFixture({ params, paneId, focused }: PaneProps<{ ref: string }>) {
+function DocFixture({ params, paneId, focused }: PaneProps<{ ref?: string; path?: string }>) {
   const [clicks, setClicks] = useState(0);
+  const visible = usePaneVisible();
+  const label = params.ref ?? params.path ?? "unknown";
   return (
     <div>
-      <p>
-        doc pane: {params.ref} (focused={String(focused)}) (paneId={paneId})
+      <p data-testid={`doc-visibility-${label}`} data-pane-visible={String(visible)}>
+        doc pane: {label} (focused={String(focused)}) (paneId={paneId})
       </p>
       <button type="button" onClick={() => setClicks((c) => c + 1)}>
         clicks: {clicks}
@@ -42,9 +47,9 @@ function SettingsFixture({ params }: PaneProps<{ section?: string }>) {
 }
 
 beforeAll(async () => {
-  registerPaneForTests<{ ref: string }>({
+  registerPaneForTests<{ ref?: string; path?: string }>({
     id: "doc",
-    title: (params) => `Doc ${params.ref}`,
+    title: (params) => `Doc ${params.ref ?? params.path ?? "unknown"}`,
     component: lazy(() => Promise.resolve({ default: DocFixture })),
   });
   registerPaneForTests<{ section?: string }>({
@@ -234,6 +239,15 @@ test("renders only the focused pane - a second open pane is not mounted at all",
   expect(screen.queryByText(/doc pane: ref_a/)).toBeNull();
 });
 
+test("publishes only the rendered mobile foreground pane as visible", async () => {
+  workspaceStore.getState().openPane("doc", { ref: "background" });
+  workspaceStore.getState().openPane("doc", { ref: "foreground" });
+  render(<StackHost />);
+  const foreground = await screen.findByTestId("doc-visibility-foreground");
+  expect(foreground.getAttribute("data-pane-visible")).toBe("true");
+  expect(screen.queryByTestId("doc-visibility-background")).toBeNull();
+});
+
 test("switching the focused pane (workspace.focusPane) swaps which one is rendered", async () => {
   const first = workspaceStore.getState().openPane("doc", { ref: "ref_a" });
   workspaceStore.getState().openPane("doc", { ref: "ref_b" });
@@ -362,6 +376,55 @@ test("back returns to the pane that was focused before the current one", async (
   await user.click(screen.getByRole("button", { name: "Back" }));
 
   expect(await screen.findByText(/doc pane: ref_a \(focused=true\)/)).toBeTruthy();
+});
+
+test("document Back prefers its retained exact origin over transient local history", async () => {
+  const session = "local:02wMz5TxvEMoJEDTDGOTil";
+  const workspace = workspaceStore.getState();
+  const sourceId = workspace.openPane("session", { ref: session });
+  const unrelated = workspace.openPane("doc", { ref: "unrelated" }, { slot: "secondary" });
+  render(<StackHost />);
+  await screen.findByText(/doc pane: unrelated/);
+  const reference = bindFilePath("docs/a.md", "/work/child");
+  if (!reference) throw new Error("fixture did not bind document");
+  act(() => openDocBeside({ session, reference, sourcePaneId: sourceId }));
+  await screen.findByText(/doc pane: docs\/a.md/);
+  expect(workspaceStore.getState().focusedPaneId).not.toBe(unrelated);
+
+  await userEvent.setup().click(screen.getByRole("button", { name: "Back" }));
+  expect(workspaceStore.getState().focusedPaneId).toBe(sourceId);
+});
+
+test("document Back retains its exact origin across a StackHost remount", async () => {
+  const session = "local:02wMz5TxvEMoJEDTDGOTil";
+  const workspace = workspaceStore.getState();
+  const sourceId = workspace.openPane("session", { ref: session });
+  const reference = bindFilePath("docs/a.md", "/work/child");
+  if (!reference) throw new Error("fixture did not bind document");
+  openDocBeside({ session, reference, sourcePaneId: sourceId });
+  const first = render(<StackHost />);
+  await screen.findByText(/doc pane: docs\/a.md/);
+  first.unmount();
+
+  render(<StackHost />);
+  await screen.findByText(/doc pane: docs\/a.md/);
+  await userEvent.setup().click(screen.getByRole("button", { name: "Back" }));
+  expect(workspaceStore.getState().focusedPaneId).toBe(sourceId);
+});
+
+test("document Back navigates to its bound session after the exact origin closes", async () => {
+  const session = "local:02wMz5TxvEMoJEDTDGOTil";
+  const workspace = workspaceStore.getState();
+  const sourceId = workspace.openPane("session", { ref: session });
+  const reference = bindFilePath("docs/a.md", "/work/child");
+  if (!reference) throw new Error("fixture did not bind document");
+  openDocBeside({ session, reference, sourcePaneId: sourceId });
+  workspace.closePane(sourceId);
+  render(<StackHost />);
+  await screen.findByText(/doc pane: docs\/a.md/);
+
+  await userEvent.setup().click(screen.getByRole("button", { name: "Back" }));
+  expect(window.location.pathname).toBe(`/s/${encodeURIComponent(session)}`);
 });
 
 test("back falls all the way to welcome when this component never observed an earlier pane", async () => {

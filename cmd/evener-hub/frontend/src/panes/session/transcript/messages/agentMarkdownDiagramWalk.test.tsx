@@ -79,7 +79,7 @@ test("a file link inside a diagram gets no Open beside portal, while the same hr
     '<p><a href="docs/report.md">prose</a></p>' +
     '<div data-mermaid-diagram=""><a href="docs/report.md">diagram</a></div>';
   render(
-    <TranscriptRenderProvider thread={thread}>
+    <TranscriptRenderProvider thread={thread} sourcePaneId="pane_fixture">
       <AgentMarkdown source="x" />
     </TranscriptRenderProvider>,
   );

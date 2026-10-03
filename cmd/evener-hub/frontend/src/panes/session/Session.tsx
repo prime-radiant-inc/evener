@@ -587,6 +587,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
         disclosureScope={`transcript:live:${ref}`}
         sessionRef={ref}
         viewId={paneId}
+        sourcePaneId={paneId}
         onAnnounceViewChange={(summary) => {
           announcementSequence.current += 1;
           setViewAnnouncement({ text: `Transcript detail: ${summary}`, key: announcementSequence.current });
@@ -693,7 +694,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
       edgeFooter={edgeFooter}
     >
       <div className={styles.contentColumn}>
-        <TopNotesPanel sessionRef={ref} model={model} />
+        <TopNotesPanel sessionRef={ref} model={model} sourcePaneId={paneId} />
         <SandboxEscalationRail sessionRef={ref} />
         {/* The held-steer ghosts' ONE live region, same rule as the ask
             dock's: outside the virtual list, announcing only real

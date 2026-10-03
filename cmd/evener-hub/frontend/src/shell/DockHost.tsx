@@ -20,6 +20,7 @@ import styles from "./DockHost.module.css";
 import { PaneTab } from "./PaneTab";
 import { PopoutHeaderAction } from "./PopoutHeaderAction";
 import { type PaneTitleCtx, paneFor } from "./paneRegistry";
+import { PaneVisibilityContext } from "./paneVisibility";
 import {
   cancelPaneFocus,
   type OpenPaneRecord,
@@ -51,20 +52,13 @@ const LAYOUT_SAVE_DEBOUNCE_MS = 400;
 // reconciliation effect below) but reading dockview's own truth here avoids
 // a render-order dependency between this component and DockHost's effects.
 //
-// UNMOUNT, NOT HIDE: dockview unmounts a panel's whole React tree when it
-// isn't the active tab in its group - confirmed via a live probe (see this
-// wave's task report), not just CSS-hidden. Any pane's own component-local
-// state (an in-progress draft, scroll position, anything not lifted into a
-// store) is lost the instant its tab loses focus, and the component
-// remounts from scratch when it regains it. Every real pane implementation
-// (wave 4's transcript view, most directly) must be designed remount-safe:
-// durable state belongs in a store keyed by the pane's own params (e.g.
-// threads.ts, refcounted per ref - see that file's own header comment),
-// never component-local useState for anything that needs to survive a tab
-// switch - a remount re-subscribes cleanly through the SAME refcount
-// mechanism that already handles multiple panes sharing one ref.
+// DockHost opts panels into dockview's `always` renderer so inactive tabs stay
+// mounted. A pane still needs its real per-panel visibility: activation alone
+// is insufficient when a group itself is hidden or restored. The pinned panel
+// API supplies that truth and the provider carries it to document readers.
 function PaneHost({ api, params }: IDockviewPanelProps<PanePanelParams>) {
   const [focused, setFocused] = useState(api.isActive);
+  const [visible, setVisible] = useState(api.isVisible);
   useEffect(() => {
     // This boundary is deliberately above the lazy pane component. A panel can
     // lose activation (or be unmounted) while Suspense is still showing its
@@ -74,8 +68,12 @@ function PaneHost({ api, params }: IDockviewPanelProps<PanePanelParams>) {
       if (!e.isActive) cancelPaneFocus(api.id);
       setFocused(e.isActive);
     });
+    const visibilityDisposable = api.onDidVisibilityChange((event) => {
+      setVisible(event.isVisible);
+    });
     return () => {
       disposable.dispose();
+      visibilityDisposable.dispose();
       // A host teardown (the desktop-to-mobile breakpoint swap) unmounts every
       // panel while the workspace still considers this pane focused - its
       // pending marker must survive for the next host's scaffold to consume.
@@ -97,9 +95,11 @@ function PaneHost({ api, params }: IDockviewPanelProps<PanePanelParams>) {
   // and replaces a silent gap with visible progress on the slow one.
   const Component = paneFor(params.paneType).component;
   return (
-    <Suspense fallback={<EmptyState title="Loading…" />}>
-      <Component params={params.paneParams} paneId={api.id} focused={focused} />
-    </Suspense>
+    <PaneVisibilityContext.Provider value={visible}>
+      <Suspense fallback={<EmptyState title="Loading…" />}>
+        <Component params={params.paneParams} paneId={api.id} focused={focused} />
+      </Suspense>
+    </PaneVisibilityContext.Provider>
   );
 }
 
@@ -225,6 +225,39 @@ function syncGroupHeaders(api: DockviewApi): void {
   }
 }
 
+// Slot promotion is a layout change, not a pane lifetime change. Dockview's
+// pinned panel api exposes moveTo({group, position}) specifically for this: it
+// moves the existing panel and its mounted component instead of removing and
+// re-adding an id. Keep the desired main isolated at the left, then collect
+// every secondary in one tab group.
+function syncPaneSlots(api: DockviewApi, panes: OpenPaneRecord[]): void {
+  const main = panes.find((pane) => pane.slot === "main");
+  if (!main) return;
+  const mainPanel = api.getPanel(main.id);
+  if (!mainPanel) return;
+  const secondaryPanels = panes
+    .filter((pane) => pane.slot === "secondary")
+    .map((pane) => api.getPanel(pane.id))
+    .filter((panel) => panel !== undefined);
+  if (secondaryPanels.length === 0) return;
+
+  const firstPanel = api.panels[0];
+  if (firstPanel?.id !== main.id) {
+    const anchor = firstPanel;
+    if (anchor && anchor.id !== main.id) {
+      mainPanel.api.moveTo({ group: anchor.group, position: "left", skipSetActive: true });
+    }
+  }
+
+  const secondaryGroup = secondaryPanels[0]?.group;
+  if (!secondaryGroup) return;
+  for (const panel of secondaryPanels.slice(1)) {
+    if (panel.group.id !== secondaryGroup.id) {
+      panel.api.moveTo({ group: secondaryGroup, position: "center", skipSetActive: true });
+    }
+  }
+}
+
 export function DockHost() {
   const [api, setApi] = useState<DockviewApi | null>(null);
   const panes = useWorkspaceStore((s) => s.panes);
@@ -329,6 +362,7 @@ export function DockHost() {
           component: PANE_COMPONENT_KEY,
           title: paneFor(pane.type).title(pane.params, bootTitleCtx),
           params: panelParams,
+          renderer: "always",
           ...positionFor(api, pane),
         });
         pushedParamsRef.current.set(pane.id, pane.params);
@@ -336,6 +370,8 @@ export function DockHost() {
         api.getPanel(pane.id)?.api.updateParameters(panelParams);
         pushedParamsRef.current.set(pane.id, pane.params);
       }
+      const panel = api.getPanel(pane.id);
+      if (panel && panel.api.renderer !== "always") panel.api.setRenderer("always");
     }
 
     const desiredIds = new Set(panes.map((p) => p.id));
@@ -345,6 +381,8 @@ export function DockHost() {
         pushedParamsRef.current.delete(panel.id);
       }
     }
+
+    syncPaneSlots(api, panes);
 
     // Every add/remove above can change a group's pane count, so the tab-bar
     // rule is re-applied here rather than at each mutation site - one pass over

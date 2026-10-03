@@ -329,6 +329,8 @@ export interface TranscriptBodyProps {
   trailingRow?: { id: string; content: ReactNode };
   /** Stable pane identity for host-remount scroll state; optional for callers. */
   viewId?: string;
+  /** Owning interactive pane; omitted by previews and non-owning renders. */
+  sourcePaneId?: string;
   onAnnounceViewChange?: (summary: string) => void;
 }
 
@@ -347,6 +349,7 @@ export function TranscriptBody({
   trailingContent,
   trailingRow,
   viewId,
+  sourcePaneId,
   onAnnounceViewChange,
 }: TranscriptBodyProps) {
   const focusFallbackRef = useRef<HTMLElement>(null);
@@ -372,6 +375,7 @@ export function TranscriptBody({
     surface,
     sessionRef,
     disclosureScope,
+    sourcePaneId,
   ].join("\0");
   // biome-ignore lint/correctness/useExhaustiveDependencies: itemRenderFingerprint covers projection semantics; retaining its identity avoids settled-row rerenders for unrelated stream deltas
   const itemRenderContext = useMemo(
@@ -383,6 +387,7 @@ export function TranscriptBody({
         surface,
         sessionRef,
         disclosureScope,
+        sourcePaneId,
       }),
     [itemRenderFingerprint],
   );
@@ -537,6 +542,7 @@ export function TranscriptBody({
       sessionRef={sessionRef}
       disclosureScope={disclosureScope}
       thread={model}
+      sourcePaneId={sourcePaneId}
       entities={entities}
     >
       {content}

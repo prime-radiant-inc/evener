@@ -1,5 +1,4 @@
-// @vitest-environment node
-
+import { bindFilePath, parseFileReference } from "@evener/appwire-client/docContent";
 import type { DockviewApi } from "dockview-core";
 import { lazy } from "react";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
@@ -8,6 +7,7 @@ import {
   cancelPaneFocus,
   consumePaneFocus,
   currentSessionRef,
+  documentPaneState,
   isPaneOpen,
   type OpenPaneRecord,
   registerDockviewApi,
@@ -240,6 +240,74 @@ describe("openPane", () => {
     expect(() => workspaceStore.getState().openPane("not-a-real-pane-type" as PaneTypeId, {})).toThrow(
       /not-a-real-pane-type/,
     );
+  });
+});
+
+describe("source-aware document placement", () => {
+  test("promotes the exact secondary opener and retains its parent", async () => {
+    const { openDocBeside } = await import("../panes/doc/openDoc");
+    const parentRef = "local:034MXwo6BpPH0QQCgdICSf";
+    const childRef = "local:02wMz5TxvEMoJEDTDGOTil";
+    const state = workspaceStore.getState();
+    const parentId = state.openPane("session", { ref: parentRef });
+    const sourceId = state.openPane("transcript", { ref: childRef, parentRef }, { slot: "secondary" });
+    const parent = workspaceStore.getState().panes.find((pane) => pane.id === parentId);
+    const source = workspaceStore.getState().panes.find((pane) => pane.id === sourceId);
+    const reference = bindFilePath("docs/a.md", "/work/child");
+    if (!reference || !parent || !source) throw new Error("fixture did not create bound panes");
+    openDocBeside({ session: childRef, reference, sourcePaneId: sourceId });
+    const panes = workspaceStore.getState().panes;
+    expect(panes).toContain(parent);
+    expect(panes).toContain(source);
+    expect(source.slot).toBe("main");
+    expect(parent.slot).toBe("secondary");
+    const document = panes.find((pane) => pane.type === "doc");
+    if (!document) throw new Error("document did not open");
+    expect(documentPaneState(document)?.origin).toBe(source);
+  });
+
+  test("aliases reuse one document while retaining the latest binding, origin, and reopen generation", async () => {
+    const { openDocBeside } = await import("../panes/doc/openDoc");
+    const session = "local:02wMz5TxvEMoJEDTDGOTil";
+    const workspace = workspaceStore.getState();
+    const firstId = workspace.openPane("session", { ref: session });
+    const secondId = workspace.openPane("transcript", { ref: session }, { slot: "secondary" });
+    const first = workspaceStore.getState().panes.find((pane) => pane.id === firstId);
+    const second = workspaceStore.getState().panes.find((pane) => pane.id === secondId);
+    const absolute = bindFilePath("/work/child/docs/a.md", "/work/child");
+    const located = parseFileReference("docs/a.md:17:4", "code", "/work/child");
+    if (!absolute || !located || !first || !second) throw new Error("fixture did not create aliases and sources");
+
+    openDocBeside({ session, reference: absolute, sourcePaneId: first.id });
+    const document = workspaceStore.getState().panes.find((pane) => pane.type === "doc");
+    if (!document) throw new Error("document did not open");
+    expect(documentPaneState(document)).toEqual({ reference: absolute, origin: first, reopen: 0 });
+
+    openDocBeside({ session, reference: located, sourcePaneId: second.id });
+    expect(workspaceStore.getState().panes.filter((pane) => pane.type === "doc")).toEqual([document]);
+    expect(documentPaneState(document)).toEqual({ reference: located, origin: second, reopen: 1 });
+  });
+
+  test("closing or resetting a document retires its binding even when pane ids are reused", async () => {
+    const { openDocBeside } = await import("../panes/doc/openDoc");
+    const session = "local:02wMz5TxvEMoJEDTDGOTil";
+    const workspace = workspaceStore.getState();
+    const sourceId = workspace.openPane("session", { ref: session });
+    const reference = bindFilePath("docs/a.md", "/work/child");
+    if (!reference) throw new Error("fixture did not bind the document");
+    openDocBeside({ session, reference, sourcePaneId: sourceId });
+    const oldDocument = workspaceStore.getState().panes.find((pane) => pane.type === "doc");
+    if (!oldDocument) throw new Error("document did not open");
+    workspace.closePane(oldDocument.id);
+    expect(documentPaneState(oldDocument)).toBeUndefined();
+
+    resetWorkspaceStoreForTests();
+    workspaceStore.getState().openPane("session", { ref: session });
+    const reusedId = workspaceStore.getState().openPane("doc", oldDocument.params);
+    const replacement = workspaceStore.getState().panes.find((pane) => pane.id === reusedId);
+    if (!replacement) throw new Error("replacement document did not open");
+    expect(replacement.id).toBe(oldDocument.id);
+    expect(documentPaneState(replacement)).toBeUndefined();
   });
 });
 

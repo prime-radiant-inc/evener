@@ -186,6 +186,7 @@ function ThreadTranscript({ params, paneId }: { params: TranscriptParams; paneId
               disclosureScope={`transcript:readOnly:${ref}`}
               sessionRef={ref}
               viewId={paneId}
+              sourcePaneId={paneId}
               onAnnounceViewChange={(summary) => {
                 announcementSequence.current += 1;
                 setViewAnnouncement({ text: `Transcript detail: ${summary}`, key: announcementSequence.current });

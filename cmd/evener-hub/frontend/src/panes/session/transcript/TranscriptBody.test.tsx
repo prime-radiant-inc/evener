@@ -449,6 +449,7 @@ describe("TranscriptBody", () => {
           surface={surface}
           disclosureScope={`${surface}:ordinary-initial`}
           sessionRef="ordinary:initial"
+          sourcePaneId="pane_fixture"
         />,
       );
       let shellRow: HTMLElement | undefined;

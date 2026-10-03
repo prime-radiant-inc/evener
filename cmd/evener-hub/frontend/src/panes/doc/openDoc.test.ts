@@ -1,26 +1,36 @@
-import { afterEach, expect, test, vi } from "vitest";
-import * as paneActions from "../../shell/paneActions";
+import { bindFilePath } from "@evener/appwire-client/docContent";
+import { beforeEach, expect, test } from "vitest";
+import { documentPaneState, resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspace";
 import { openDocBeside } from "./openDoc";
 
-afterEach(() => {
-  vi.restoreAllMocks();
+beforeEach(() => {
+  resetWorkspaceStoreForTests();
 });
 
-// mockImplementation isolates the delegation contract from openBeside's real
-// body: T6 filled openBeside to route through workspaceStore.openPane(), which
-// throws for a pane type not registered in this file's module graph. This test
-// asserts only that openDocBeside CALLS openBeside with the right shape, so it
-// stubs the call target rather than exercising a real pane open.
-test("openDocBeside routes a doc PaneRef through openBeside", () => {
-  const spy = vi.spyOn(paneActions, "openBeside").mockImplementation(() => {});
-  openDocBeside({ session: "sess_1", path: "src/x.ts", kind: "file" });
-  // Locks the delegation shape: a "doc" pane carrying the exact params, not
-  // some other pane type or a reshaped params bag.
-  expect(spy).toHaveBeenCalledWith({ type: "doc", params: { session: "sess_1", path: "src/x.ts", kind: "file" } });
+test("openDocBeside opens a real bound file pane owned by its source", () => {
+  const sourceId = workspaceStore.getState().openPane("transcript", { ref: "sess_1" });
+  const source = workspaceStore.getState().panes.find((pane) => pane.id === sourceId);
+  const reference = bindFilePath("src/x.ts", "/work");
+  if (!source || !reference) throw new Error("fixture did not create a source and bound file");
+
+  openDocBeside({ session: "sess_1", reference, sourcePaneId: sourceId });
+
+  const document = workspaceStore.getState().panes.find((pane) => pane.type === "doc");
+  expect(document?.params).toEqual({ session: "sess_1", path: "src/x.ts", kind: "file" });
+  if (!document) throw new Error("document did not open");
+  expect(documentPaneState(document)).toEqual({ reference, origin: source, reopen: 0 });
 });
 
-test("openDocBeside preserves the image kind unchanged", () => {
-  const spy = vi.spyOn(paneActions, "openBeside").mockImplementation(() => {});
-  openDocBeside({ session: "sess_2", path: "out/pic.png", kind: "image" });
-  expect(spy).toHaveBeenCalledWith({ type: "doc", params: { session: "sess_2", path: "out/pic.png", kind: "image" } });
+test("openDocBeside opens a real bound image pane with image dedup params", () => {
+  const sourceId = workspaceStore.getState().openPane("transcript", { ref: "sess_2" });
+  const source = workspaceStore.getState().panes.find((pane) => pane.id === sourceId);
+  const reference = bindFilePath("out/pic.png", "/work");
+  if (!source || !reference) throw new Error("fixture did not create a source and bound image");
+
+  openDocBeside({ session: "sess_2", reference, sourcePaneId: sourceId });
+
+  const document = workspaceStore.getState().panes.find((pane) => pane.type === "doc");
+  expect(document?.params).toEqual({ session: "sess_2", path: "out/pic.png", kind: "image" });
+  if (!document) throw new Error("image document did not open");
+  expect(documentPaneState(document)).toEqual({ reference, origin: source, reopen: 0 });
 });

@@ -57,7 +57,7 @@ const source = `[written **design**](${path})`;
 
 function message(markdown: string, live = false, snapshot: ThreadModel | null = thread) {
   return (
-    <TranscriptRenderProvider thread={snapshot ?? undefined}>
+    <TranscriptRenderProvider thread={snapshot ?? undefined} sourcePaneId={snapshot ? "pane_fixture" : undefined}>
       <AgentMessageItem
         item={{ id: "message", turnId: "turn", type: "agentMessage", text: markdown, pendingText: [markdown] }}
         turn={{ id: "turn", status: "completed", items: [] }}

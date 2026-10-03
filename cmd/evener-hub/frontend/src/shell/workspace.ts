@@ -9,6 +9,7 @@
 // host (rather than reading it back out of a live DockviewApi) is also what
 // lets a future mobile host (Task 4) share it without dockview at all.
 
+import type { FileReference } from "@evener/appwire-client/docContent";
 import type { DockviewApi, IDockviewPanel, SerializedDockview } from "dockview-core";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
@@ -28,12 +29,10 @@ export interface OpenPaneRecord {
   id: string;
   type: PaneTypeId;
   params: unknown;
-  // Which slot this pane belongs to. Assigned once, at open time, by the
-  // policy in openPane below; DockHost turns it into the dockview addPanel
-  // `position` that actually places the panel (see its own comment on the
-  // slot -> position mapping). It is not re-derived afterward - dockview owns
-  // geometry (splits, drag-reorder) from that point forward, and DockHost's
-  // reconciliation only ever adds a panel for an id once.
+  // Which slot this pane belongs to. openPane assigns it initially and
+  // promotePane swaps existing record slots without replacing their identities.
+  // DockHost turns changes into dockview addPanel/moveTo operations while
+  // leaving all other split and drag geometry under dockview's control.
   slot: PaneSlot;
 }
 
@@ -41,6 +40,27 @@ export interface OpenPaneRecord {
 // a same-ref SESSION and transcript are distinct retained contexts. Object keys
 // bind each edge to these pane lifetimes, not IDs a restore/reset can reuse.
 const transcriptOpenOrigins = new Map<OpenPaneRecord, OpenPaneRecord>();
+
+export interface DocumentPaneState {
+  readonly reference: FileReference;
+  readonly origin: OpenPaneRecord | undefined;
+  readonly reopen: number;
+}
+
+const documentPaneStates = new Map<OpenPaneRecord, DocumentPaneState>();
+
+export function documentPaneState(pane: OpenPaneRecord): DocumentPaneState | undefined {
+  return documentPaneStates.get(pane);
+}
+
+export function recordDocumentPaneState(pane: OpenPaneRecord, state: DocumentPaneState): void {
+  const panes = workspaceStore.getState().panes;
+  if (!panes.includes(pane)) return;
+  documentPaneStates.set(pane, state);
+  // The retained value deliberately lives outside dedup params, but consumers
+  // still need one workspace publication when an existing document is reopened.
+  workspaceStore.setState({ panes: [...panes] });
+}
 
 export function recordTranscriptOpenOrigin(pane: OpenPaneRecord, origin: OpenPaneRecord | undefined): void {
   transcriptOpenOrigins.delete(pane);
@@ -89,8 +109,8 @@ export interface WorkspaceStoreState {
   // slot: "secondary" means "place this beside the main pane, never as it" -
   // for a caller that knows its pane is not a primary one (the rail, opening
   // a subagent). Omitted, placement follows the default rule above. It only
-  // affects a pane being CREATED: slot is assign-once, so reopening an
-  // already-open pane resolves to that pane wherever it already sits.
+  // affects a pane being CREATED: reopening an already-open pane resolves to
+  // that pane wherever it currently sits. Only promotePane changes its slot.
   openPane(type: PaneTypeId, params?: unknown, opts?: { keepExistingFocus?: boolean; slot?: PaneSlot }): string;
   togglePane(type: PaneTypeId, params?: unknown): { paneId: string; opened: boolean };
   // Makes (type, params) the one pane in the main slot, keeping that pane (and
@@ -98,6 +118,7 @@ export interface WorkspaceStoreState {
   // primary - which for a session means the same ref. See primaryMatches for
   // why the identity is derived here rather than named by the caller.
   replacePrimary(type: PrimaryPaneType, params: unknown): string;
+  promotePane(paneId: string): void;
   closePane(paneId: string): void;
   // The pane occupying the main slot, or null when it is empty (the state
   // DockHost relaunches welcome into). Exposed because "is the main slot
@@ -390,6 +411,17 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
     return id;
   },
 
+  promotePane(paneId) {
+    const panes = get().panes;
+    const source = panes.find((pane) => pane.id === paneId);
+    if (!source || source.slot === "main") return;
+    for (const pane of panes) {
+      if (pane === source) pane.slot = "main";
+      else if (pane.slot === "main") pane.slot = "secondary";
+    }
+    set({ panes: [...panes] });
+  },
+
   closePane(paneId) {
     const state = get();
     if (!state.panes.some((p) => p.id === paneId)) return; // already closed: no-op
@@ -476,6 +508,9 @@ workspaceStore.subscribe((state, previous) => {
   for (const [pane, origin] of transcriptOpenOrigins) {
     if (!state.panes.includes(pane) || !state.panes.includes(origin)) transcriptOpenOrigins.delete(pane);
   }
+  for (const pane of documentPaneStates.keys()) {
+    if (!state.panes.includes(pane)) documentPaneStates.delete(pane);
+  }
 });
 
 export function useWorkspaceStore(): WorkspaceStoreState;
@@ -498,5 +533,6 @@ export function resetWorkspaceStoreForTests(): void {
   dockviewApi = null;
   nextPaneSeq = 0;
   pendingPaneFocus.clear();
+  documentPaneStates.clear();
   workspaceStore.setState({ panes: [], focusedPaneId: null });
 }

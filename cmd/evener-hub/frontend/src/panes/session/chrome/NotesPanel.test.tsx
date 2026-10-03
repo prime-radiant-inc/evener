@@ -115,7 +115,8 @@ function holdSessionPane(...refs: string[]) {
 
 function openPanel(model: ThreadModel) {
   holdSessionPane(model.ref);
-  render(<NotesPanelBody sessionRef={model.ref} model={model} />);
+  const sourcePaneId = workspaceStore.getState().panes.find((pane) => pane.type === "session")?.id;
+  render(<NotesPanelBody sessionRef={model.ref} model={model} sourcePaneId={sourcePaneId} />);
 }
 
 function editor(): HTMLTextAreaElement {

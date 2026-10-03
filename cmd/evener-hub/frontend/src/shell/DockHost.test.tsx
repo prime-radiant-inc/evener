@@ -1,10 +1,12 @@
 import type { ThreadCapabilities, ThreadModel } from "@evener/appwire-client";
+import { bindFilePath } from "@evener/appwire-client/docContent";
 import { keyID } from "@evener/appwire-client/state/navigation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { lazy } from "react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { openDocBeside } from "../panes/doc/openDoc";
 import { StubResizeObserver } from "../resizeObserverTestUtils";
 import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
 import { connectionStore } from "../stores/connection";
@@ -15,15 +17,20 @@ import { PaneScaffold } from "../widgets/panescaffold";
 import { ClientProvider } from "./clientContext";
 import { DockHost } from "./DockHost";
 import { type PaneDescriptor, type PaneProps, paneFor, registerPane, registerPaneForTests } from "./paneRegistry";
+import { usePaneVisible } from "./paneVisibility";
 import { consumePaneFocus, resetWorkspaceStoreForTests, workspaceStore } from "./workspace";
 
 // Fixture pane components, simple enough to assert on directly - "doc" is
 // this file's non-singleton fixture, "settings" its singleton one (same
 // scheme workspace.test.ts uses).
-function DocFixture({ params, focused }: PaneProps<{ ref: string }>) {
+function DocFixture({ params, focused }: PaneProps<{ ref?: string; path?: string }>) {
+  const visible = usePaneVisible();
+  const label = params.ref ?? params.path ?? "unknown";
   return (
     <div>
-      doc pane: {params.ref} (focused={String(focused)})
+      <span data-testid={`doc-visibility-${label}`} data-pane-visible={String(visible)}>
+        doc pane: {label} (focused={String(focused)})
+      </span>
     </div>
   );
 }
@@ -45,7 +52,7 @@ beforeAll(async () => {
 
   registerPaneForTests({
     id: "doc",
-    title: (params: { ref: string }) => `Doc ${params.ref}`,
+    title: (params: { ref?: string; path?: string }) => `Doc ${params.ref ?? params.path ?? "unknown"}`,
     component: lazy(() => Promise.resolve({ default: DocFixture })),
   });
   registerPaneForTests({
@@ -354,6 +361,88 @@ test("a third pane joins the existing right-hand group rather than making a thir
   // Two tabs in the right-hand group (b and c stacked); the main group's own
   // tab bar is hidden, so its pane contributes none.
   expect(visibleTabTexts()).toEqual(["Doc ref_b", "Doc ref_c"]);
+});
+
+test("publishes panel visibility independently from global dockview focus and inactive secondary tabs", async () => {
+  const main = workspaceStore.getState().openPane("doc", { ref: "visible-main" });
+  render(<DockHost />);
+  const mainProbe = await screen.findByTestId("doc-visibility-visible-main");
+  act(() => {
+    workspaceStore.getState().openPane("doc", { ref: "secondary-a" });
+  });
+  const secondaryProbe = await screen.findByTestId("doc-visibility-secondary-a");
+  expect(workspaceStore.getState().focusedPaneId).not.toBe(main);
+  expect(mainProbe.getAttribute("data-pane-visible")).toBe("true");
+  expect(secondaryProbe.getAttribute("data-pane-visible")).toBe("true");
+
+  act(() => {
+    workspaceStore.getState().openPane("doc", { ref: "secondary-b" });
+  });
+  expect((await screen.findByTestId("doc-visibility-secondary-b")).getAttribute("data-pane-visible")).toBe("true");
+  await vi.waitFor(() => expect(secondaryProbe.getAttribute("data-pane-visible")).toBe("false"));
+});
+
+test("promoting a real delegate conversation keeps both conversation instances, the parent draft, and scroll", async () => {
+  const parentRef = "local:034MXwo6BpPH0QQCgdICSf";
+  const childRef = "local:02wMz5TxvEMoJEDTDGOTil";
+  const turn = (id: string, text: string) => ({
+    id,
+    status: "completed" as const,
+    itemsView: "full" as const,
+    items: [{ id: `${id}-item`, turnId: id, type: "userMessage" as const, text, status: "completed" as const }],
+  });
+  threadsStore.setState({
+    threads: new Map([
+      [parentRef, fixtureThread(parentRef, { turns: [turn("parent-turn", "parent retained turn")] })],
+      [childRef, fixtureThread(childRef, { turns: [turn("child-turn", "delegate retained turn")] })],
+    ]),
+  });
+  const workspace = workspaceStore.getState();
+  workspace.openPane("session", { ref: parentRef });
+  const sourceId = workspace.openPane("transcript", { ref: childRef, parentRef }, { slot: "secondary" });
+  const fake = new FakeClient("ready");
+  render(
+    <ClientProvider client={fake}>
+      <DockHost />
+    </ClientProvider>,
+  );
+  const parentHeading = await screen.findByRole("heading", { name: `Thread ${parentRef}` });
+  const childHeading = await screen.findByRole("heading", { name: `Thread ${childRef}` });
+  const conversationRoot = (heading: HTMLElement): HTMLElement | null => {
+    let candidate = heading.parentElement;
+    while (candidate && candidate.querySelectorAll('[data-testid="transcript-virtual-list"]').length !== 1) {
+      candidate = candidate.parentElement;
+    }
+    return candidate;
+  };
+  const parentPanel = conversationRoot(parentHeading);
+  const childPanel = conversationRoot(childHeading);
+  if (!(parentPanel instanceof HTMLElement) || !(childPanel instanceof HTMLElement))
+    throw new Error("real conversations were not mounted in dockview panels");
+  const draft = within(parentPanel).getByRole("textbox", { name: /^message$/i });
+  const parentScroll = within(parentPanel).getByTestId("transcript-virtual-list").firstElementChild;
+  const childScroll = within(childPanel).getByTestId("transcript-virtual-list").firstElementChild;
+  if (!(parentScroll instanceof HTMLElement) || !(childScroll instanceof HTMLElement))
+    throw new Error("real transcript scroll roots were not mounted");
+  draft.textContent = "retained parent draft";
+  parentScroll.scrollTop = 137;
+  childScroll.scrollTop = 211;
+  act(() => workspace.focusPane(sourceId));
+
+  const reference = bindFilePath("docs/a.md", "/work/child");
+  if (!reference) throw new Error("fixture did not bind document");
+  act(() => openDocBeside({ session: childRef, reference, sourcePaneId: sourceId }));
+
+  await screen.findByText(/doc pane: docs\/a.md/);
+  expect(document.querySelectorAll(".dv-groupview")).toHaveLength(2);
+  expect(parentHeading.isConnected).toBe(true);
+  expect(screen.getByRole("heading", { name: `Thread ${childRef}` })).toBe(childHeading);
+  expect(parentPanel.querySelector('[role="textbox"]')).toBe(draft);
+  expect(draft.textContent).toContain("retained parent draft");
+  expect(within(parentPanel).getByTestId("transcript-virtual-list").firstElementChild).toBe(parentScroll);
+  expect(within(childPanel).getByTestId("transcript-virtual-list").firstElementChild).toBe(childScroll);
+  expect(parentScroll.scrollTop).toBe(137);
+  expect(childScroll.scrollTop).toBe(211);
 });
 
 // The main group's header is hidden ALWAYS (identity, not count - see
