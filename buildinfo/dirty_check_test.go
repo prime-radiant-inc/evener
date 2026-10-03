@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 )
@@ -12,28 +13,63 @@ import (
 // make/building.mk computes the GitDirty link flag by shelling out to git at
 // recipe time, right after build-web completes. That is exactly when the SPA
 // build has deleted and re-created the tracked
-// cmd/evener-hub/frontend/dist/PLACEHOLDER (scripts/clean-dist.mjs wipes dist,
-// vite's emptyOutDir wipes it again and its closeBundle hook writes the file
-// back), so the index's cached stat for the file is stale — and because the
-// check runs with --no-optional-locks, git can never refresh it and reads the
-// byte-identical file as modified. Every `make build` from a clean tree
-// stamped its binary "-dirty" that way (issue #3665).
+// cmd/evener-hub/frontend/dist/PLACEHOLDER
+// (cmd/evener-hub/frontend/scripts/clean-dist.mjs wipes dist, vite's
+// emptyOutDir wipes it again and its closeBundle hook writes the file back),
+// so the index's cached stat for the file is stale. diff-files is read-only
+// plumbing: it never refreshes that cached stat, with or without
+// --no-optional-locks — only an index-writing command such as git status
+// does, and the build path runs none — so git reads the byte-identical file
+// as modified. Every `make build` from a clean tree stamped its binary
+// "-dirty" that way (issue #3665).
 //
 // These tests hold the contract from the makefile's side: the dirty command
 // must stay blind to the placeholder's delete-and-recreate churn while still
 // flagging a real edit, so the flag describes the tree the developer invoked
 // the build on.
 
-// dirtyCommandFromMakefile extracts the git command make/building.mk runs for
-// the GitDirty flag, so the tests run the makefile's own command rather than a
-// copy that could drift from it.
+// repositorySelectionEnvironment mirrors identifier/git.go's
+// filteredGitEnvironment (see identifier/git_test.go): ambient values for
+// these variables would redirect the tests' git and sh subprocesses into an
+// unrelated repository.
+var repositorySelectionEnvironment = []string{
+	"GIT_DIR",
+	"GIT_WORK_TREE",
+	"GIT_COMMON_DIR",
+	"GIT_INDEX_FILE",
+	"GIT_OBJECT_DIRECTORY",
+	"GIT_ALTERNATE_OBJECT_DIRECTORIES",
+	"GIT_CEILING_DIRECTORIES",
+	"GIT_DISCOVERY_ACROSS_FILESYSTEM",
+}
+
+func hermeticEnv() []string {
+	env := os.Environ()
+	filtered := make([]string, 0, len(env))
+outer:
+	for _, entry := range env {
+		key, _, _ := strings.Cut(entry, "=")
+		for _, banned := range repositorySelectionEnvironment {
+			if strings.EqualFold(key, banned) {
+				continue outer
+			}
+		}
+		filtered = append(filtered, entry)
+	}
+	return filtered
+}
+
+// dirtyCommandFromMakefile extracts the full command substitution
+// make/building.mk runs for the GitDirty flag — the git predicate and the
+// ""/"true" mapping — so the tests run the makefile's own logic rather than
+// a copy that could drift from it.
 func dirtyCommandFromMakefile(t *testing.T) string {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join("..", "make", "building.mk"))
 	if err != nil {
 		t.Fatalf("read make/building.mk: %v", err)
 	}
-	match := regexp.MustCompile(`buildinfo\.GitDirty=\$\$\((.*?) && echo`).FindStringSubmatch(string(data))
+	match := regexp.MustCompile(`buildinfo\.GitDirty=\$\$\((.*?)\)`).FindStringSubmatch(string(data))
 	if match == nil {
 		t.Fatalf("make/building.mk carries no $$(...) GitDirty command to test")
 	}
@@ -49,6 +85,7 @@ func scratchRepo(t *testing.T) string {
 		t.Helper()
 		cmd := exec.Command("git", args...)
 		cmd.Dir = dir
+		cmd.Env = hermeticEnv()
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
 		}
@@ -71,15 +108,6 @@ func scratchRepo(t *testing.T) string {
 	return dir
 }
 
-// runDirtyCommand runs the makefile's GitDirty command in dir and reports
-// whether git read the tree as clean.
-func runDirtyCommand(t *testing.T, command, dir string) bool {
-	t.Helper()
-	cmd := exec.Command("sh", "-c", command)
-	cmd.Dir = dir
-	return cmd.Run() == nil
-}
-
 // churnPlaceholder recreates the tracked placeholder byte-identically with a
 // moved mtime, the state the SPA build leaves it in: same content, stale
 // index stat.
@@ -98,12 +126,28 @@ func churnPlaceholder(t *testing.T, dir string) {
 	}
 }
 
+// gitDirtyValue runs the makefile's GitDirty command in dir and returns the
+// flag value it would stamp: "" when the tree reads clean, "true" when a
+// tracked file reads modified. Asserting the value, not the command's exit
+// status, pins the ""/"true" mapping too.
+func gitDirtyValue(t *testing.T, command, dir string) string {
+	t.Helper()
+	cmd := exec.Command("sh", "-c", command)
+	cmd.Dir = dir
+	cmd.Env = hermeticEnv()
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("run GitDirty command %q: %v\n%s", command, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
 func TestGitDirtyCommandIgnoresPlaceholderChurn(t *testing.T) {
 	dir := scratchRepo(t)
 	churnPlaceholder(t, dir)
-	if !runDirtyCommand(t, dirtyCommandFromMakefile(t), dir) {
-		t.Fatal("the GitDirty command reads the placeholder's delete-and-recreate churn as a modified tree, " +
-			"so every make build stamps -dirty (issue #3665)")
+	if got := gitDirtyValue(t, dirtyCommandFromMakefile(t), dir); got != "" {
+		t.Fatalf("GitDirty = %q on the placeholder's delete-and-recreate churn, want \"\" — "+
+			"as-is, every make build stamps -dirty (issue #3665)", got)
 	}
 }
 
@@ -113,7 +157,7 @@ func TestGitDirtyCommandFlagsRealEdits(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main // edited\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if runDirtyCommand(t, dirtyCommandFromMakefile(t), dir) {
-		t.Fatal("the GitDirty command missed a real edit to a tracked source file")
+	if got := gitDirtyValue(t, dirtyCommandFromMakefile(t), dir); got != "true" {
+		t.Fatalf("GitDirty = %q with a real edit to a tracked source file, want \"true\"", got)
 	}
 }
