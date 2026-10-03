@@ -91,7 +91,18 @@ for a same-origin web
 page). The doc-pane data layer is published at the `./docContent` subpath as
 well, where `readDocFile` takes the host's `DocPort` - that base origin paired
 with a fetch: the package issues no request of its own and names neither an
-origin nor a credentials policy. That subpath also exports the pure
+origin nor a credentials policy. `createDocumentReadDemand(read)` is the shared,
+framework-free lifetime for later web and native readers: hosts drive active,
+refresh, replacement and disposal demand while it keeps at most one physical
+read in flight, rejects stale publication through `attempt.isCurrent()`, and
+retries transient outcomes after 1, 2, 4, 8 and then 15 seconds, capped at 15
+seconds. Each attempt's viewer-unique generation is a cache discriminator, not
+a credential; `docImageReadURL` appends it only to an active reader's image
+request. Ordinary `docImageURL` transcript previews keep their existing URL and
+cache behavior. The module stores demand, timers and publication identity, not
+file bytes. Platform visibility/foreground/source events and HTTP outcome
+classification remain host-adapter responsibilities. This feature adds no
+version fallback or alternate protocol. That subpath also exports the pure
 file-reference contract described below. The hub overview store,
 `createHubOverviewStore(client)`, is the same framework-free triple over a
 `request`-only client port; it holds the fetch-once settings-overview read
