@@ -986,7 +986,7 @@ func routeNoToolCalls(kind EntryKind, noContent bool, afterTerminalCommunicate b
 // drainInputs is the snapshot the drain loop feeds selectDrainNextAction after a
 // completed (non-error) turn: the kind of the turn that just ran, whether a goal
 // continuation is already deferred, the popped follow-up text and queued message
-// (its text plus image count), whether any notification work is pending, and
+// (its text plus image and selection counts), whether notification work is pending, and
 // whether the turn just rested SessionAwaiting (spec §5.3's drain-ladder gate).
 type drainInputs struct {
 	RanKind              EntryKind
@@ -995,6 +995,7 @@ type drainInputs struct {
 	QueuedText           string
 	QueuedImages         int
 	QueuedSkills         int
+	QueuedCommands       int
 	NotificationsPending bool
 	Awaiting             bool
 	// QueuedCarrier reports that the queued entry is the steering carrier
@@ -1065,7 +1066,7 @@ const (
 // fold result.
 func selectDrainNextAction(in drainInputs) (action drainAction, skipGoalGate bool) {
 	skipGoalGate = in.RanKind == EntryNotification || in.HaveDeferredCont || in.Awaiting || in.SteeringParked
-	queued := strings.TrimSpace(in.QueuedText) != "" || in.QueuedImages > 0 || in.QueuedSkills > 0 || in.QueuedCarrier
+	queued := strings.TrimSpace(in.QueuedText) != "" || in.QueuedImages > 0 || in.QueuedSkills > 0 || in.QueuedCommands > 0 || in.QueuedCarrier
 	if in.Awaiting {
 		if queued {
 			return runQueued, skipGoalGate
@@ -1563,6 +1564,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 			QueuedText:           queued.Text,
 			QueuedImages:         len(queued.Images),
 			QueuedSkills:         len(queued.SkillNames),
+			QueuedCommands:       len(queued.CommandNames),
 			NotificationsPending: notificationsPending,
 			Awaiting:             awaiting,
 			QueuedCarrier:        queued.SteeringCarrier,

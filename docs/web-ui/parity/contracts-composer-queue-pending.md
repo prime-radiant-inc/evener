@@ -94,6 +94,10 @@ except where a line says so itself.
   `[2 commands]` when the row has no user prose.
 - User prose, including literal `[skill]` or `[command]`, and image placeholders
   stay visible beside the named selections.
+- Queued skill-only and command-only inputs count as user work even without text
+  or images. After the current turn completes, the session drain runs them as
+  distinct turns, records their selections in the transcript and settles their
+  durable mutations rather than leaving them claimed without dispatch.
 
 ### test-queue-and-drain.js
 - the queue preview panel starts hidden with depth 0 and an empty list on init (test-queue-and-drain.js)
