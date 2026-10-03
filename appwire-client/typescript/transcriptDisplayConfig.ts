@@ -168,6 +168,18 @@ export function informationalNoticesVisible(vector: ContentVector): boolean {
   return (Object.keys(full) as (keyof ContentVector)[]).every((field) => vector[field] === full[field]);
 }
 
+/** The one rule the transcript projector and the category inventory answer
+ * from: the chat preset — "just the conversation" — shows no daemon steering
+ * (instructions to the agent, never the conversation; Jesse, 2026-10-03). A
+ * steer the human wrote (source "user", the human-note kind included) is the
+ * human's own words and shows at every level, so the projector checks the
+ * source before it consults this rule. Custom selections model tool intent,
+ * calls, reasoning and expansion — never steering — so daemon steering shows
+ * for them as it does at intent and above. */
+export function hidesDaemonSteering(content: ContentSelection): boolean {
+  return content.kind === "preset" && content.level === "chat";
+}
+
 export function normalizeContent(content: ContentSelection): ContentSelection {
   if (content.kind === "preset") {
     // Rebuild named presets instead of retaining a caller-owned object. This
@@ -479,6 +491,7 @@ export type TranscriptDisplayCategory =
   | "reasoning"
   | "expandedDetails"
   | "informationalNotices"
+  | "daemonSteering"
   | "roundTimings"
   | "tokenCounts"
   | "estimatedCost"
@@ -506,6 +519,8 @@ export function visibleCategoryInventory(config: TranscriptDisplayConfigV1): Vis
   // Informational notices answer from the same rule the projector gates them
   // by, so the settings summary can never disagree with what renders.
   (informationalNoticesVisible(content) ? visible : hidden).push("informationalNotices");
+  // Daemon steering answers from the projector's own rule for it, too.
+  (hidesDaemonSteering(normalized.content) ? hidden : visible).push("daemonSteering");
 
   const advanced = normalized.advanced;
   const advancedCategories: readonly [boolean, TranscriptDisplayCategory][] = [

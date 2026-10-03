@@ -278,6 +278,7 @@ describe("transcript display config", () => {
         "criticalRows",
         "toolIntent",
         "toolCalls",
+        "daemonSteering",
         "roundTimings",
         "tokenCounts",
         "hookExits",
@@ -317,6 +318,30 @@ describe("transcript display config", () => {
         }),
       ).hidden,
     ).toContain("informationalNotices");
+  });
+
+  test("inventory shows daemon steering at every level but the chat preset", () => {
+    expect(visibleCategoryInventory(makeTranscriptDisplayConfig({ kind: "preset", level: "chat" })).hidden).toContain(
+      "daemonSteering",
+    );
+    for (const level of ["intent", "tools", "activity", "full"] as const) {
+      expect(visibleCategoryInventory(makeTranscriptDisplayConfig({ kind: "preset", level })).visible).toContain(
+        "daemonSteering",
+      );
+    }
+    // Custom selections model tool intent, calls, reasoning and expansion —
+    // never steering — so daemon steering shows for them as it does at intent.
+    expect(
+      visibleCategoryInventory(
+        makeTranscriptDisplayConfig({
+          kind: "custom",
+          toolIntent: false,
+          toolCalls: false,
+          reasoning: false,
+          expandByDefault: false,
+        }),
+      ).visible,
+    ).toContain("daemonSteering");
   });
 
   test("maps legacy values with exact fallbacks and hook precedence", () => {

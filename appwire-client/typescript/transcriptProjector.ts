@@ -10,9 +10,11 @@ import type { ItemModel, ThreadModel, TurnModel } from "./model";
 import { comparePositions } from "./reducer";
 import { ERROR_EVENT_KIND } from "./systemEventCopy";
 import {
+  type ContentSelection,
   type ContentVector,
   contentVectorForConfig,
   type HookExitDetail,
+  hidesDaemonSteering,
   informationalNoticesVisible,
   normalizeConfig,
   type TranscriptDisplayConfigV1,
@@ -381,7 +383,15 @@ function decisionFor(
     if (isInformationalWarning(item)) return informationalNoticesVisible(vector) ? "critical" : "hidden";
     return "critical";
   }
-  if (item.type === "steering") return "critical";
+  // A daemon steer is instructions to the agent, never the conversation: at
+  // the chat preset — "just the conversation" — it hides. A steer the human
+  // wrote (source "user", the human-note kind included) is the human's own
+  // words and stays critical at every level, as it does on the phone
+  // (Jesse, 2026-10-03).
+  if (item.type === "steering") {
+    if (item.source === "user") return "critical";
+    return hidesDaemonSteering(config.content) ? "hidden" : "critical";
+  }
 
   // Future item types render through the raw renderer instead of disappearing.
   return "item";
@@ -416,6 +426,7 @@ function terminalFallbackEntry(
   turn: TurnModel,
   sourceIndexByItem: ReadonlyMap<ItemModel, number>,
   vector: ContentVector,
+  content: ContentSelection,
 ): ProjectedCriticalEntry | undefined {
   if (!isTerminalTurn(turn)) return undefined;
   const sourceItem = turn.items.at(-1);
@@ -433,6 +444,15 @@ function terminalFallbackEntry(
   const hiddenInformationalNotice =
     (isInformationalWarning(sourceItem) || isToolRepairNotice(sourceItem)) && !informationalNoticesVisible(vector);
   if (hiddenInformationalNotice && isTurnError(turn.error)) {
+    return undefined;
+  }
+  // A daemon steer the chat preset hid trades the same way: the end cap owns
+  // the failure, so the hidden steer must not come back to say it a second
+  // time. An errorless terminal turn keeps its fallback, so it still renders
+  // something (an interrupted turn's marker included).
+  const hiddenDaemonSteer =
+    sourceItem.type === "steering" && sourceItem.source !== "user" && hidesDaemonSteering(content);
+  if (hiddenDaemonSteer && isTurnError(turn.error)) {
     return undefined;
   }
   return criticalEntry(sourceItem, turn.id, sourceIndex, redactsReasoning(sourceItem, vector));
@@ -504,7 +524,7 @@ export function projectThread(model: ThreadModel, config: TranscriptDisplayConfi
       }
     }
     if (entries.length === 0) {
-      const fallback = terminalFallbackEntry(turn, sourceIndexByItem, vector);
+      const fallback = terminalFallbackEntry(turn, sourceIndexByItem, vector, normalized.content);
       if (fallback) {
         visibleItems.push(fallback.item);
         entries.push(fallback);
