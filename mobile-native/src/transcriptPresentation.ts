@@ -174,8 +174,19 @@ function accountingFor(
 // question are rows of their own, never steps, so they stay. No dropped step
 // leaves images behind: a settled step at Intent is summary-only, which drops
 // them, and the hub attaches a step's images only when it settles.
+//
+// A daemon steer is instructions to the agent, never the conversation, so its
+// notice goes too, the notification cards a steer carries included: the
+// subagent's own row, which Chat keeps, already says its state. What stays is
+// the conversation's own: a steered-in message is the human's words (a user
+// row), and a saved note is spec 8.8's every-level row (a note row) — neither
+// is a steering notice (Jesse, 2026-10-03).
 function conversationOnly(items: MobileTimelineItem[]): MobileTimelineItem[] {
-	return items.filter((item) => !isStep(item) || item.state === "failed");
+	return items.filter((item) => (!isStep(item) || item.state === "failed") && !isDaemonSteering(item));
+}
+
+function isDaemonSteering(item: MobileTimelineItem): boolean {
+	return item.kind === "notice" && item.origin === "steering";
 }
 
 export function projectNativeTranscript(

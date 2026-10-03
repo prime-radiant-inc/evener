@@ -123,7 +123,7 @@ function press(tree: ReactTestRenderer) {
 }
 
 describe("delegate and job notifications", () => {
-	it.each(LEVELS)("never show notification markup at %s", (level) => {
+	it.each(LEVELS.filter((level) => level !== "chat"))("never show notification markup at %s", (level) => {
 		const { rows, delegates } = rowsAt(level);
 		const notificationRows = rows.filter((row: TimelineRow) => row.id.startsWith("item_steering_"));
 		expect(notificationRows).toHaveLength(notificationWireItems().length);
@@ -133,6 +133,14 @@ describe("delegate and job notifications", () => {
 			);
 			expect(text).not.toMatch(/<\/?(delegate|job)-notification|&lt;|"kind"|excerpt:/);
 		}
+	});
+
+	// A daemon steer is instructions to the agent, never the conversation, so
+	// Chat — just the conversation — shows none of its rows, cards included
+	// (Jesse, 2026-10-03).
+	it("shows no steering rows at Chat", () => {
+		const { rows } = rowsAt("chat");
+		expect(rows.filter((row: TimelineRow) => row.id.startsWith("item_steering_"))).toHaveLength(0);
 	});
 
 	it("reads a subagent's report as who finished, with the report beneath, and opens the subagent", () => {
