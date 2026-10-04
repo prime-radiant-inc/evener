@@ -523,7 +523,8 @@ describe("each tool's evidence, as the tools print it", () => {
 			"[r]: https://x.test/r.png\n\nr",
 		],
 		["an image after a blank line holding spaces", "vec![1]\n  \n![a](https://x.test/a.png)", "vec![1]\n  \na"],
-	])("still takes the opener off %s", (_name, markdown, words) => {
+		["an image after a CRLF blank line", "vec![1]\r\n\r\n![a](https://x.test/a.png)", "vec![1]\r\n\r\na"],
+	])("takes the image opener off %s", (_name, markdown, words) => {
 		expect(skillMarkdown(markdown)).toBe(words);
 	});
 
