@@ -74,9 +74,10 @@ function rawOutput(text: string): Evidence[] {
 // text, but ![alt] is always taken, so the image is gone.
 // An alt can hold a pair of brackets of its own ("Figure [1]"), one level
 // deep, and escaped ones ("\["), and ends at a blank line, as a paragraph
-// does. No two branches can start at the same character, so a long run of
+// does. At any character at most one branch can match, so a long run of
 // openers stays fast.
-const ALT = String.raw`!\[((?:\\[[\]\\]|\\(?![[\]\\])|\[[^[\]\n]*\]|[^\\[\]\n]|\n(?![ \t\r]*(?:\n|$)))*)\]`;
+const ESCAPE = String.raw`\\[[\]\\]|\\(?![[\]\\])`;
+const ALT = String.raw`!\[((?:${ESCAPE}|\[(?:${ESCAPE}|[^\\[\]\n])*\]|[^\\[\]\n]|\n(?![ \t\r]*(?:\n|$)))*)\]`;
 const IMAGE_RE = new RegExp(String.raw`${ALT}(?:${INLINE_DESTINATION}|\[[^\]]*\])?`, "g");
 // A bare ![alt] or ![alt][ref] is an image only by a reference definition,
 // which needs "]:"; without one, only ![alt]( can start an image.
