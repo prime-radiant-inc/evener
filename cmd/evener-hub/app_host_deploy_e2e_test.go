@@ -303,7 +303,7 @@ func assertHostDeployCatalogs(ctx context.Context, t *testing.T, host *hostSSH, 
 		{alpha, alphaName, "OPAQUE_ALPHA_" + token, betaName},
 	} {
 		if _, err := os.Lstat(tc.cwd); !os.IsNotExist(err) {
-			t.Fatalf("remote catalog provenance requires a host-only cwd %q: %v", tc.cwd, err)
+			t.Fatalf("remote catalog provenance requires a host-only cwd %q: %v. Use an SSH target with a separate project filesystem; localhost sharing the controller's filesystem cannot satisfy this check.", tc.cwd, err)
 		}
 		params := appwire.SpawnSlashCatalogParams{CWD: tc.cwd, Harness: "evener"}
 		encoded, err := json.Marshal(params)

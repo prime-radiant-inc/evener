@@ -382,6 +382,10 @@ name, without matching the private config or port; a matching loaded unit can
 start or restart the regular hub. These private paths do not establish isolation
 on a managed host.
 
+The SSH target must provide a separate filesystem for its private catalog
+projects. Localhost on the controller's filesystem cannot satisfy the host-only
+path checks or the direct-controller negative control.
+
 Prerequisites: a disposable host reachable over non-interactive ssh, with a
 supported target (`linux/amd64` or `darwin/arm64`); the Go toolchain and this
 checkout on the controller; a **clean** checkout (the controller's build identity
