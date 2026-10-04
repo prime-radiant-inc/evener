@@ -520,6 +520,8 @@ describe("each tool's evidence, as the tools print it", () => {
 		["an image whose alt holds a code span", "![`x`](https://x.test/a.png)", "`x`"],
 		["an image after an unclosed backtick", "a ` b ![c](https://x.test/c.png)", "a ` b c"],
 		["an image whose alt holds a pair of brackets", "![Figure [1]](https://x.test/f.png)", "Figure [1]"],
+		["an image whose alt holds an escaped bracket", "![a \\[ b](https://x.test/a.png)", "a \\[ b"],
+		["an image whose alt holds an escaped close", "![a \\] b](https://x.test/a.png)", "a \\] b"],
 		["an image in text holding the placeholder marks", "\uE0000\uE001 ![a](https://x.test/a.png)", "\uE0000\uE001 a"],
 		[
 			"a reference image where a definition may exist",
