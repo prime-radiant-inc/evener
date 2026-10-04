@@ -517,6 +517,12 @@ describe("each tool's evidence, as the tools print it", () => {
 			"![Figure [1]](https://x.test/f.png)",
 			"Figure [1](https://x.test/f.png)",
 		],
+		[
+			"a reference image whose definition only stripping another image makes",
+			"[r]![](https://x.test/a.png): https://x.test/r.png\n\n![r]",
+			"[r]: https://x.test/r.png\n\nr",
+		],
+		["an image after a blank line holding spaces", "vec![1]\n  \n![a](https://x.test/a.png)", "vec![1]\n  \na"],
 	])("still takes the opener off %s", (_name, markdown, words) => {
 		expect(skillMarkdown(markdown)).toBe(words);
 	});
