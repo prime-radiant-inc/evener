@@ -274,7 +274,9 @@ function durationLabel(forMs: number): string {
 	return relativeAge(new Date(0).toISOString(), forMs) ?? "0m";
 }
 
-function subagentsText(count: number): string {
+/** The why line of a session waiting on its subagents, on the Board and in
+ * the tray alike (spec 13.1). */
+export function waitingOnSubagents(count: number): string {
 	return `Waiting on ${plural(count, "subagent")}`;
 }
 
@@ -287,7 +289,7 @@ function subagentsText(count: number): string {
  * never falls back to the row's own tally, because a real read already
  * answered the subagent question, even when the answer is zero. */
 function workingWhyLine(row: NavigationSessionSummary, activity: SessionActivity, msSinceReadMs: number): WhyLine {
-	if (activity.runningSubagents > 0) return { text: subagentsText(activity.runningSubagents) };
+	if (activity.runningSubagents > 0) return { text: waitingOnSubagents(activity.runningSubagents) };
 	const quiet = quietState(activity, msSinceReadMs);
 	if (quiet?.state === "stuck")
 		return { text: `May be stuck · no updates for ${durationLabel(quiet.forMs)}`, stuck: true };
@@ -324,7 +326,7 @@ function commandOrWorking(row: NavigationSessionSummary, latestIntent?: string):
  * members -- so the tally is the only place a subagent count comes from. */
 export function workingActivity(row: NavigationSessionSummary): string {
 	const running = row.subagents?.running ?? 0;
-	if (running > 0) return subagentsText(running);
+	if (running > 0) return waitingOnSubagents(running);
 	return commandOrWorking(row);
 }
 

@@ -1,7 +1,9 @@
-import type { TurnModel } from "@evener/appwire-client";
+import type { ThreadCapabilities, TurnModel } from "@evener/appwire-client";
+import type { PendingTurnEntry } from "@evener/appwire-client/state/mutation";
 import { describe, expect, it } from "vitest";
 import { type MobileTimelineItem, projectedRow } from "../projectedRows";
 import type { RunStep, TimelineRow } from "../timeline";
+import { type GhostSource, ghosts } from "./ghosts";
 import {
 	answerTo,
 	hideAnswerMessages,
@@ -10,8 +12,11 @@ import {
 	newRowCount,
 	runSummary,
 	runSummaryText,
+	sessionListGap,
+	sessionListKey,
 	sessionRows,
 	timeMarkerText,
+	withGhostRows,
 } from "./transcriptRows";
 
 type Activity = Extract<MobileTimelineItem, { kind: "activity" }>;
@@ -708,5 +713,109 @@ describe("the answer you gave a question", () => {
 		expect(answerTo(model([asked]), "ask-1")).toBeUndefined();
 		expect(answerTo(model([asked, answered]), "gone")).toBeUndefined();
 		expect(answerTo(null, "ask-1")).toBeUndefined();
+	});
+});
+
+// Everything waiting to reach the agent sits at the transcript's end, just
+// above the composer, and scrolls with it (spec 8.5; Jesse, 2026-10-03).
+describe("ghosts as the transcript's last rows", () => {
+	const working = (texts: string[]): GhostSource => ({
+		status: { type: "active" },
+		capabilities: { queue: true, steer: true, send: true } as ThreadCapabilities,
+		queue: { revision: 1, depth: texts.length, ids: texts.map((_, index) => `queue_${index + 1}`), texts },
+	});
+	const mine = (id: string, over: Partial<PendingTurnEntry>): PendingTurnEntry => ({
+		id,
+		ref: "ref-1",
+		method: "send",
+		text: id,
+		imageCount: 0,
+		skillNames: [],
+		state: "submitting",
+		source: "outbox",
+		fromThisClient: true,
+		...over,
+	});
+	const refused = {
+		clientMutationId: "refused",
+		status: "rejected" as const,
+		reason: "",
+		text: "refused",
+		actions: [],
+	};
+	const streaming: TimelineRow = {
+		kind: "assistant",
+		id: "r",
+		markdown: "half a repl",
+		streaming: true,
+		turnId: "turn_1",
+	};
+
+	it("follows the last real row, a streaming reply included, in the order ghosts() lists them", () => {
+		const all = ghosts(
+			working(["queued"]),
+			[mine("steer", { method: "steer", state: "accepted" }), mine("sending", {})],
+			{ text: "unsure", sentText: "unsure" },
+			[refused],
+			true,
+		);
+		const rows = withGhostRows([user("u"), streaming], all);
+		expect(rows.map((row) => (row.kind === "ghost" ? row.ghost.state : row.kind))).toEqual([
+			"user",
+			"assistant",
+			"steering",
+			"queued",
+			"sending",
+			"unconfirmed",
+			"refused",
+		]);
+		expect(rows.slice(2).map((row) => (row.kind === "ghost" ? row.ghost : null))).toEqual(all);
+	});
+
+	it("shows three queued messages, then one quiet row that counts the rest (ruling 18)", () => {
+		const all = ghosts(working(["1", "2", "3", "4", "5"]), [], { text: "unsure", sentText: "unsure" }, [], true);
+		const rows = withGhostRows([user("u")], all);
+		expect(rows.map((row) => (row.kind === "ghost" ? row.ghost.text : row.kind))).toEqual([
+			"user",
+			"1",
+			"2",
+			"3",
+			"unsure",
+			"moreQueued",
+		]);
+		expect(rows.at(-1)).toMatchObject({ kind: "moreQueued", count: 2 });
+	});
+
+	// With token counts or the estimated cost shown, those lines close the
+	// conversation and the ghosts still come last.
+	it("puts the usage lines after the conversation and before the ghosts", () => {
+		const usage = { derived: null, cumulative: null, cost: "$0.12" };
+		const rows = withGhostRows([user("u"), streaming], ghosts(working(["queued"]), [], null, [], true), usage);
+		expect(rows.map((row) => row.kind)).toEqual(["user", "assistant", "usage", "ghost"]);
+		expect(rows.map((row, index) => sessionListGap(row, rows[index + 1]))).toEqual([24, 0, 24, 0]);
+		expect(new Set(rows.map(sessionListKey)).size).toBe(rows.length);
+		expect(withGhostRows([user("u")], [], usage).map((row) => row.kind)).toEqual(["user", "usage"]);
+	});
+
+	it("leaves the rows as they are with nothing waiting", () => {
+		const rows = [user("u"), reply("r")];
+		expect(withGhostRows(rows, [])).toBe(rows);
+	});
+
+	it("keys each ghost row apart from every transcript row", () => {
+		const rows = withGhostRows([user("queue:queue_1")], ghosts(working(["1", "2", "3", "4"]), [], null, [], true));
+		const keys = rows.map(sessionListKey);
+		expect(new Set(keys).size).toBe(rows.length);
+		expect(keys[0]).toBe("queue:queue_1");
+	});
+
+	// A ghost stands where your message will land, so it keeps the gap that
+	// message gets there, and landing doesn't move it.
+	it("spaces the first ghost as your message would be, and the ghosts 8pt apart", () => {
+		const all = ghosts(working(["1", "2"]), [], null, [], true);
+		const afterReply = withGhostRows([reply("r")], all);
+		expect(afterReply.map((row, index) => sessionListGap(row, afterReply[index + 1]))).toEqual([24, 8, 0]);
+		const afterRun = withGhostRows(sessionRows([user("u"), step("a", "read_file")], [turn("turn_1")]), all);
+		expect(afterRun.map((row, index) => sessionListGap(row, afterRun[index + 1]))).toEqual([8, 8, 8, 0]);
 	});
 });

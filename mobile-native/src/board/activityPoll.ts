@@ -87,6 +87,16 @@ export class ActivityPoll {
 		this.latestRequestId++;
 	}
 
+	/** Drops the last read, telling subscribers, so a restart reports nothing
+	 * until a new read lands. For after stop(): stop() already retires any
+	 * poll in flight, so none can bring the old read back. */
+	forget(): void {
+		if (this.lastReadAt === null) return;
+		this.bySession = new Map();
+		this.lastReadAt = null;
+		this.notify();
+	}
+
 	subscribe = (listener: () => void): (() => void) => {
 		this.listeners.add(listener);
 		return () => this.listeners.delete(listener);
@@ -120,8 +130,9 @@ export class ActivityPoll {
 		this.notify();
 	}
 
-	/** Every change to what this instance reports (a landed read, or
-	 * `supported` turning false) bumps the revision and tells subscribers. */
+	/** Every change to what this instance reports (a landed read, a forgotten
+	 * one, or `supported` turning false) bumps the revision and tells
+	 * subscribers. */
 	private notify(): void {
 		this.revision++;
 		for (const listener of [...this.listeners]) listener();

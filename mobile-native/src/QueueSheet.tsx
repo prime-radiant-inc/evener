@@ -1,5 +1,5 @@
 // The Queue sheet (ruling 37): every queued message, when more are waiting
-// than the three above the composer show (ruling 18). It is a formSheet route
+// than the three at the transcript's end show (ruling 18). It is a formSheet route
 // over the session, so it reads the session's queue through the host the
 // screen provides, and follows it live.
 import { useNavigation } from "@react-navigation/native";

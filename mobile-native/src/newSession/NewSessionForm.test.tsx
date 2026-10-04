@@ -302,6 +302,12 @@ it("has Cancel, New session and Start, then the prompt, WHERE and AGENT with the
 	form.dispose();
 });
 
+it("dismisses the keyboard when the form is dragged", async () => {
+	const form = await mount();
+	expect(form.tree.root.findByType("ScrollView" as never).props.keyboardDismissMode).toBe("on-drag");
+	form.dispose();
+});
+
 it("says Choose a project with none, and blames Project quietly", async () => {
 	const form = await mount({ draft: { prompt: "hello" } });
 	expect(form.row("Project")?.props.accessibilityLabel).toBe("Project, Choose a project");

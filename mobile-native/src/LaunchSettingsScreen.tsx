@@ -93,7 +93,11 @@ function LaunchDefaults({
 	);
 	return (
 		<SafeAreaView edges={["bottom", "left", "right"]} style={[styles.fill, { backgroundColor: colors.background }]}>
-			<ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ padding: 20, gap: 10 }}>
+			<ScrollView
+				keyboardShouldPersistTaps="handled"
+				keyboardDismissMode="on-drag"
+				contentContainerStyle={{ padding: 20, gap: 10 }}
+			>
 				<Copy>{hubName}</Copy>
 				{!client && <Copy>Disconnected. Your unsaved changes are kept here.</Copy>}
 				<Copy muted>Defaults for new Evener sessions. Project and per-launch settings can override these values.</Copy>

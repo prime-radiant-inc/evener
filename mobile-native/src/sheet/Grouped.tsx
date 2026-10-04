@@ -35,6 +35,7 @@ export function GroupedPage({ children, scrollRef }: { children: ReactNode; scro
 			style={{ flex: 1, backgroundColor: palette.canvas }}
 			contentContainerStyle={{ paddingBottom: 32 }}
 			keyboardShouldPersistTaps="handled"
+			keyboardDismissMode="on-drag"
 			automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}
 		>
 			{children}
