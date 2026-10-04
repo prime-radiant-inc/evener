@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 
@@ -9,6 +11,48 @@ import (
 	"primeradiant.com/evener/cmd/evener-tui/internal/msgrender"
 	"primeradiant.com/evener/cmd/evener-tui/internal/transcript"
 )
+
+func TestMemoryGenericDelivery(t *testing.T) {
+	// The fixture is produced and checked by agent.TestMemoryGenericDelivery,
+	// using real session memory tools, retention, recovery and ProjectTurn.
+	raw, err := os.ReadFile("../../agent/testdata/toolwire/memory.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixture struct {
+		Items []appwire.ThreadItem `json:"items"`
+	}
+	if err := json.Unmarshal(raw, &fixture); err != nil {
+		t.Fatal(err)
+	}
+	m := newSessionHubModel(nil)
+	m.detail.Ref = "local:memory-fixture"
+	updated, _ := m.Update(hubNotificationMsg{ok: true, notification: *appwire.NotificationMessage(appwire.NotifyHistoryUpdated, appwire.HistoryUpdatedParams{
+		ThreadID: "memory-fixture", Ref: m.detail.Ref, Items: fixture.Items,
+	}).Notification})
+	got := updated.(hubModel)
+	for _, name := range []string{"memory_read", "memory_search"} {
+		found := false
+		for _, msg := range got.session.messages {
+			if msg.Tool == nil || msg.Tool.Name != name {
+				continue
+			}
+			found = true
+			ref := "artifact:memoryFixture1"
+			if name == "memory_search" {
+				ref = "artifact:memoryFixture2"
+			}
+			msg.Tool.Expanded = true
+			rendered := msgrender.RenderToolCall(*msg.Tool, 180, false)
+			if !strings.Contains(rendered, "opaque-delivery-001-") || !strings.Contains(rendered, ref) {
+				t.Fatalf("%s lost evidence: %s", name, rendered)
+			}
+		}
+		if !found {
+			t.Fatalf("missing %s in generic TUI adapter", name)
+		}
+	}
+}
 
 func TestHubModelLiveAgentCompletionUpdatesDeltaWithoutDuplicate(t *testing.T) {
 	m := newHubModel(nil, "")

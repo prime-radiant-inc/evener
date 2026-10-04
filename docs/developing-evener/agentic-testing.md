@@ -9,6 +9,42 @@ from real sessions.
 If you are writing a new scenario, see `test/scenarios/README.md` for
 the file structure. This document is the runbook side.
 
+## Memory evidence: deterministic plumbing versus live behavior
+
+Default memory tests supply fixture-owned memory/history/workspace roots and a
+scripted provider only at the LLM boundary. `agent/session_memory_test.go`
+drives real `ProcessInput`, native read/edit/search tools, persistence,
+retention and artifact recovery. `TestMemoryGardeningSkill` proves real
+`use_skill` activation and a focused correction, not that a live model chooses
+to garden. `TestMemoryContextProjection` verifies persisted lower-trust
+user-source context and existing CLI/AppWire display mapping.
+
+`TestMemoryGenericDelivery` produces and compares
+`agent/testdata/toolwire/memory.json` in the existing toolwire format. Regenerate
+only that recording with:
+
+```sh
+GOPROXY=off GOMAXPROCS=4 go test -p 2 ./agent -run '^TestMemoryGenericDelivery$' -count=1 -v -update-wire
+```
+
+Check it without `-update-wire`. Its actual session-produced oversized
+`memory_read`/`memory_search` results and `read_transcript` recovery pass through
+existing shared hydration, browser generic tool bodies, native row/evidence
+rendering and the TUI transcript adapter. Normalize only nondeterministic
+capability IDs and runtime times; keep output and reference relationships.
+Renderer unit checks are not physical-device or browser end-to-end evidence.
+
+Live recall/correction comparisons answer a different question: whether the
+model uses memory effectively. They require explicit `EVENER_LIVE_TESTS=1`,
+fixture-only memory/history/config/workspaces/auth, held-out verifier isolation
+and predeclared model, effort, request/tool-round/time budgets. No credential
+alone enables them. Enforce shared logical-call and HTTP-attempt admission
+budgets across retries and descendants before paid requests. Report observed
+usage and known-price cost honestly; do not imply a hard token or money cap
+where the provider offers none. Stop on infrastructure failure rather than
+adding arms or silent retries. Deterministic green checks do not establish a
+live recall advantage, and an unrun evaluation has no result.
+
 ## Setup checklist
 
 **Never Jesse's real hub, never his port `9180`.** His `evener hub` runs

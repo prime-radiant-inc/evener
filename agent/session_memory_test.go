@@ -28,9 +28,143 @@ import (
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/llm"
 )
+
+func TestMemoryGardeningSkill(t *testing.T) {
+	t.Parallel()
+	for _, disabled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("disabled=%t", disabled), func(t *testing.T) {
+			root := t.TempDir()
+			index := memorySeed(t, root, "personal", "opaque-garden-index-71")
+			path := filepath.Join(filepath.Dir(index), "topic.txt")
+			if err := os.WriteFile(path, []byte("opaque-before-72\nopaque-keep-73\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			steps := []func(llm.Request) llm.Response{
+				func(llm.Request) llm.Response { return toolCallResponse(useSkillCall("garden-1", "gardening-memory")) },
+				func(req llm.Request) llm.Response {
+					envelopes := requestSkillEnvelopes(t, req)
+					if len(envelopes) != 1 || envelopes[0].Doc.Name != "gardening-memory" {
+						t.Fatalf("skill delivery=%+v", envelopes)
+					}
+					if disabled {
+						for _, def := range req.Tools {
+							if strings.HasPrefix(def.Name, "memory_") {
+								t.Fatalf("disabled skill gained %s", def.Name)
+							}
+						}
+						return finalResponse("ordinary skill complete")
+					}
+					return memoryCallResponse("memory_read", map[string]any{"scope": "personal", "file_path": "topic.txt"})
+				},
+			}
+			if !disabled {
+				steps = append(steps,
+					func(req llm.Request) llm.Response {
+						memoryRequireResult(t, req, "memory_read", "opaque-before-72")
+						return memoryCallResponse("memory_edit", map[string]any{"scope": "personal", "file_path": "topic.txt", "old_string": "opaque-before-72", "new_string": "opaque-after-74"})
+					},
+					func(req llm.Request) llm.Response {
+						memoryRequireResult(t, req, "memory_edit", "")
+						return memoryCallResponse("memory_read", map[string]any{"scope": "personal", "file_path": "topic.txt"})
+					},
+					func(req llm.Request) llm.Response {
+						memoryRequireResult(t, req, "memory_read", "opaque-after-74")
+						return finalResponse("correction complete")
+					})
+			}
+			s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: root, DisableMemory: disabled}), withSteps(steps...))
+			evs, stop := captureEvents(s)
+			if _, err := s.ProcessInput(context.Background(), "opaque-garden-input-75", nil); err != nil {
+				t.Fatal(err)
+			}
+			stop()
+			if names := skillActivatedEventNames(*evs); !slices.Equal(names, []string{"gardening-memory"}) {
+				t.Fatalf("activations=%v", names)
+			}
+			entry := lifecycleInventory(s)["gardening-memory"]
+			if entry.Ordinary == nil || entry.Ordinary.Route != "model_tool" || entry.Ordinary.InvocationID == "" {
+				t.Fatalf("activation=%+v", entry)
+			}
+			want := "opaque-after-74\nopaque-keep-73\n"
+			if disabled {
+				want = "opaque-before-72\nopaque-keep-73\n"
+			}
+			got, err := os.ReadFile(path)
+			if err != nil || string(got) != want {
+				t.Fatalf("topic=%q err=%v", got, err)
+			}
+		})
+	}
+}
+
+func memoryRequireResult(t *testing.T, req llm.Request, name, sentinel string) {
+	t.Helper()
+	var result *llm.ToolResultData
+	for _, msg := range req.Messages {
+		for _, part := range msg.Content {
+			if part.ToolResult != nil {
+				result = part.ToolResult
+			}
+		}
+	}
+	if result == nil || result.Name != name || result.IsError || !strings.Contains(fmt.Sprint(result.Content), sentinel) {
+		t.Fatalf("result=%+v want=%s data=%q", result, name, sentinel)
+	}
+}
+
+func TestMemoryContextProjection(t *testing.T) {
+	t.Parallel()
+	root, history := t.TempDir(), t.TempDir()
+	const opaque = "opaque-projection-76"
+	memorySeed(t, root, "personal", opaque)
+	s := newSession(t, withConfig(SessionConfig{StateDir: history, MemoryStateRoot: root}), withSteps(func(llm.Request) llm.Response { return finalResponse("complete") }))
+	if _, err := s.ProcessInput(context.Background(), "opaque-input-77", nil); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	w, entries, err := transcript.OpenWriterForSession(transcriptPath(s.stateDir, s.id), s.id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	seen := false
+	for i, entry := range entries {
+		if entry.Turn.Kind != schema.TurnMemoryContext {
+			continue
+		}
+		seen = true
+		if entry.Turn.Message.Role != llm.RoleUser || entry.Turn.Message.Name != "memory_personal" {
+			t.Fatalf("source=%+v", entry.Turn.Message)
+		}
+		items := apptranscript.ProjectTurn("memory-turn", i, entry.Turn, apptranscript.NewToolCallRegistry(), nil, nil)
+		t.Run("app", func(t *testing.T) {
+			if len(items) != 1 || items[0].Type != "systemMessage" || items[0].ID != fmt.Sprintf("item_memory_context_%d", i) || !strings.Contains(items[0].Text, opaque) {
+				t.Fatalf("projection=%+v", items)
+			}
+		})
+		t.Run("CLI", func(t *testing.T) {
+			cli := renderMarkdown(transcript.Header{SessionID: s.id}, entries, 0, renderOpts{})
+			if !strings.Contains(cli, fmt.Sprintf("## Turn %d — Memory context", i)) {
+				t.Fatal("CLI lost memory context display identity")
+			}
+			full := i
+			exact := renderMarkdown(transcript.Header{SessionID: s.id}, entries, 0, renderOpts{fullResultFor: &full})
+			if !strings.Contains(exact, opaque) {
+				t.Fatal("CLI exact expansion lost persisted memory data")
+			}
+		})
+	}
+	if !seen {
+		t.Fatal("no persisted memory context")
+	}
+}
 
 // Decode only core framing and quoted opaque data, never use steering prose as
 // an oracle. The scope-specific user name is the authority boundary.
@@ -1675,6 +1809,113 @@ func TestMemoryOutputRecovery(t *testing.T) {
 			}
 		})
 	}
+}
+
+// This corpus uses the existing toolwire envelope. Every call/result comes
+// from ProcessInput, including retention and read_transcript recovery. Only
+// random capability IDs and runtime timestamps are normalized for recording.
+func TestMemoryGenericDelivery(t *testing.T) {
+	t.Parallel()
+	var items []appwire.ThreadItem
+	for arm, name := range []string{"memory_read", "memory_search"} {
+		host := t.TempDir()
+		index := memorySeed(t, host, "personal", "")
+		var body strings.Builder
+		for i := 1; i <= 40; i++ {
+			fmt.Fprintf(&body, "opaque-delivery-%03d-%s\n", i, strings.Repeat("z", 40))
+		}
+		if err := os.WriteFile(filepath.Join(filepath.Dir(index), "large.txt"), []byte(body.String()), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		store, err := artifactstore.New(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = store.Close() })
+		ref := ""
+		call := func(toolName string, args map[string]any) llm.Response {
+			response := memoryCallResponse(toolName, args)
+			id := "call_" + name
+			if toolName == "read_transcript" {
+				id += "_recovery"
+			}
+			response.Message.Content[0].ToolCall.ID = id
+			return response
+		}
+		s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: host, artifactStore: store, ToolOutputLimits: map[string]schema.ToolOutputLimit{
+			name: {MaxChars: 1024, Strategy: schema.TruncHeadTail},
+		}}), withSteps(
+			func(llm.Request) llm.Response {
+				args := map[string]any{"scope": "personal", "file_path": "large.txt"}
+				if name == "memory_search" {
+					args = map[string]any{"scope": "personal", "pattern": "opaque-delivery", "max_results": 100}
+				}
+				return call(name, args)
+			},
+			func(req llm.Request) llm.Response {
+				memoryRequireResult(t, req, name, "opaque-delivery-001-")
+				for _, msg := range req.Messages {
+					for _, part := range msg.Content {
+						if part.ToolResult != nil && part.ToolResult.Name == name {
+							text := fmt.Sprint(part.ToolResult.Content)
+							ref = regexp.MustCompile(`artifact:[a-zA-Z0-9]+`).FindString(text)
+							if strings.Contains(text, "opaque-delivery-020-") {
+								t.Fatal("oversized middle was not truncated")
+							}
+						}
+					}
+				}
+				if ref == "" {
+					t.Fatal("missing retained artifact reference")
+				}
+				return call("read_transcript", map[string]any{"transcript_ref": ref})
+			},
+			func(req llm.Request) llm.Response {
+				memoryRequireResult(t, req, "read_transcript", "opaque-delivery-020-")
+				return finalResponse("recovered")
+			}))
+		if _, err := s.ProcessInput(context.Background(), "opaque-delivery-input", nil); err != nil {
+			t.Fatal(err)
+		}
+		s.Close()
+		reg := apptranscript.NewToolCallRegistry()
+		var entries []transcript.Entry
+		for _, turn := range s.history {
+			if !slices.ContainsFunc(turn.Message.Content, func(p llm.ContentPart) bool {
+				return (p.ToolCall != nil && (p.ToolCall.Name == name || p.ToolCall.Name == "read_transcript")) || (p.ToolResult != nil && (p.ToolResult.Name == name || p.ToolResult.Name == "read_transcript"))
+			}) {
+				continue
+			}
+			turn.Timestamp = wireFixtureStart.Add(time.Duration(len(items)) * time.Second)
+			turn.RoundID = ""
+			index := len(entries) + 1
+			entries = append(entries, transcript.Entry{Turn: turn})
+			projected := apptranscript.ProjectTurn("turn_1", index+arm*4, turn, reg, nil, nil)
+			for i := range projected {
+				projected[i].DurationMS = nil
+			}
+			items = append(items, toolWireRelocated(t, projected, func(text string) string {
+				return strings.ReplaceAll(text, ref, fmt.Sprintf("artifact:memoryFixture%d", arm+1))
+			})...)
+		}
+		cli := renderMarkdown(transcript.Header{}, entries, 1, renderOpts{})
+		// The head sentinel and actual recovery route survive the ordinary CLI
+		// preview. Full artifacts remain accessible through read_transcript.
+		if !strings.Contains(cli, "opaque-delivery-001-") || !strings.Contains(cli, ref) {
+			t.Fatal("CLI lost memory result or recovery reference")
+		}
+	}
+	checkWireFixture(t, "testdata/toolwire/memory.json", struct {
+		Note  string               `json:"note"`
+		Cwd   string               `json:"cwd"`
+		Notes map[string]string    `json:"notes"`
+		Items []appwire.ThreadItem `json:"items"`
+	}{
+		Note:  "Real scripted ProcessInput memory_read and memory_search, each oversized at a configured 1024-character limit, followed by actual read_transcript artifact recovery. ProjectTurn projects recorded session turns. Only random IDs and times are normalized.",
+		Cwd:   toolWireCwd,
+		Notes: map[string]string{},
+		Items: items,
+	}, "the shared evidence, browser, native tool rows and TUI memory delivery tests")
 }
 
 func TestMemoryDisabledAndUnbound(t *testing.T) {
