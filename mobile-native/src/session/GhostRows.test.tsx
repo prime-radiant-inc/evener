@@ -1,14 +1,12 @@
-// The ghosts above the composer as a person sees them: each bubble's text,
+// The transcript's ghost rows as a person sees them: each bubble's text,
 // caption and buttons, the menu a tap opens, and the row that leads to the
 // rest of the queue.
-import { createElement, useEffect } from "react";
+import { createElement, type ReactNode, useEffect } from "react";
 import type { ReactTestRenderer } from "react-test-renderer";
 import { act } from "react-test-renderer";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { paletteFor } from "../design/tokens";
 import {
-	composerFocusedAs,
-	keyboard,
 	playedHaptics,
 	pressable,
 	render,
@@ -17,8 +15,9 @@ import {
 	swipeRowFully,
 } from "../renderNative.testkit";
 import { GhostBubble } from "./GhostBubble";
+import { GhostRowContext, GhostRowView } from "./GhostRows";
 import type { Ghost, GhostAction } from "./ghosts";
-import { QueuedMessages } from "./QueuedMessages";
+import { isGhostRow, withGhostRows } from "./transcriptRows";
 
 const native = vi.hoisted(() => ({ showActionSheetWithOptions: vi.fn() }));
 vi.mock("react-native", async () => ({
@@ -36,7 +35,6 @@ vi.mock("react-native-gesture-handler", async () =>
 beforeEach(() => {
 	native.showActionSheetWithOptions.mockReset();
 	swipeableCalls.closes = 0;
-	keyboard.reset();
 });
 
 const Image = (props: { accessibilityLabel: string }) => createElement("Image", props);
@@ -94,36 +92,22 @@ const refused: Ghost = {
 	},
 };
 
+// The ghosts as the transcript's rows, under the screen's state and actions.
 function mount(
 	ghosts: readonly Ghost[],
-	{
-		disabled = false,
-		canEdit = true,
-		editHint = null as string | null,
-		backdrop = "surface" as "surface" | "page",
-		// The keyboard is up, for the composer.
-		typing = false,
-		// Whether the composer has focus.
-		composerFocused = true,
-	} = {},
+	{ disabled = false, canEdit = true, editHint = null as string | null, draftAttachments = undefined as ReactNode } = {},
 ) {
 	const onAction = vi.fn<(ghost: Ghost, action: GhostAction) => void>();
 	const onMore = vi.fn();
+	const rows = withGhostRows([], ghosts).filter(isGhostRow);
 	const tree = render(
-		<QueuedMessages
-			ghosts={ghosts}
-			disabled={disabled}
-			canEdit={canEdit}
-			editHint={editHint}
-			backdrop={backdrop}
-			composerFocus={composerFocusedAs(composerFocused)}
-			onAction={onAction}
-			onMore={onMore}
-		/>,
+		<GhostRowContext.Provider value={{ disabled, canEdit, editHint, draftAttachments, onAction, onMore }}>
+			{rows.map((row) => (
+				<GhostRowView key={row.id} row={row} />
+			))}
+		</GhostRowContext.Provider>,
 	);
-	const setTyping = (next: boolean) => act(() => (next ? keyboard.show() : keyboard.hide()));
-	if (typing) setTyping(true);
-	return { tree, onAction, onMore, setTyping };
+	return { tree, onAction, onMore };
 }
 
 function press(tree: ReactTestRenderer, label: string) {
@@ -204,19 +188,9 @@ it("says why an action you'd expect isn't there", () => {
 });
 
 it("shows the images an unconfirmed send carried in its own bubble, and only there", () => {
-	const tree = render(
-		<QueuedMessages
-			ghosts={[queued, unconfirmed]}
-			disabled={false}
-			canEdit
-			editHint={null}
-			composerFocus={composerFocusedAs(false)}
-			backdrop="surface"
-			draftAttachments={<Image accessibilityLabel="Image 1: proof.png" />}
-			onAction={() => {}}
-			onMore={() => {}}
-		/>,
-	);
+	const { tree } = mount([queued, unconfirmed], {
+		draftAttachments: <Image accessibilityLabel="Image 1: proof.png" />,
+	});
 	const images = tree.root.findAll(
 		(node) => String(node.type) === "Image" && node.props.accessibilityLabel === "Image 1: proof.png",
 	);
@@ -341,11 +315,6 @@ it("shows three queued messages, counts the rest, and opens them", () => {
 	expect(pressable(mount([queued]).tree, "0 more queued")).toBeUndefined();
 });
 
-it("renders nothing when nothing is waiting", () => {
-	const { tree } = mount([]);
-	expect(tree.toJSON()).toBeNull();
-});
-
 describe("swiping a ghost left (spec 8.5)", () => {
 	const swipeables = (tree: ReactTestRenderer) => tree.root.findAllByType("ReanimatedSwipeable" as never);
 	const swipeLeft = (tree: ReactTestRenderer, pageX = 200) => swipeRowFully(swipeables(tree)[0], "left", { pageX });
@@ -360,14 +329,11 @@ describe("swiping a ghost left (spec 8.5)", () => {
 		expect(onAction.mock.calls).toEqual([[ghost, "cancel"]]);
 	});
 
-	it("paints a swiped ghost what it sits on, the composer or the page, since the bubble itself is unfilled", () => {
-		const palette = paletteFor("light");
-		for (const backdrop of ["surface", "page"] as const) {
-			const { tree } = mount([queued], { backdrop });
-			expect(tree.root.findByProps({ testID: "swipe-row-content" }).props.style).toEqual({
-				backgroundColor: palette[backdrop],
-			});
-		}
+	it("paints a swiped ghost the page it sits on, since the bubble itself is unfilled", () => {
+		const { tree } = mount([queued]);
+		expect(tree.root.findByProps({ testID: "swipe-row-content" }).props.style).toEqual({
+			backgroundColor: paletteFor("light").page,
+		});
 	});
 
 	it("never cancels from a swipe that began in the screen's left edge band", () => {
@@ -399,7 +365,7 @@ describe("swiping a ghost left (spec 8.5)", () => {
 				disabled={disabled}
 				canEdit
 				editHint={null}
-				backdrop="surface"
+				backdrop="page"
 				attachments={<Attachment />}
 				onAction={() => {}}
 			/>
@@ -408,90 +374,5 @@ describe("swiping a ghost left (spec 8.5)", () => {
 		act(() => tree.update(bubble(true)));
 		act(() => tree.update(bubble(false)));
 		expect(mounts).toBe(1);
-	});
-});
-
-// While you type, the queue folds to one line so the transcript keeps its
-// room: how many are waiting, and with one, what you can do to it (spec 8.5).
-// Everything returns when the keyboard lowers.
-describe("while you type", () => {
-	const second: Ghost = { ...queued, key: "queue:queue_3", text: "then deploy" };
-
-	it("folds one queued message to its count and its action", () => {
-		const { tree, onAction } = mount([queued], { typing: true });
-		expect(renderedText(tree)).not.toContain(queued.text);
-		expect(pressable(tree, "1 queued")).toBeDefined();
-		press(tree, `Steer now, ${queued.text}`);
-		expect(onAction).toHaveBeenCalledWith(queued, "steerNow");
-	});
-
-	it("folds several to their count, which opens them", () => {
-		const { tree } = mount([queued, second], { typing: true });
-		expect(renderedText(tree)).not.toContain(queued.text);
-		expect(pressable(tree, `Steer now, ${queued.text}`)).toBeUndefined();
-		press(tree, "2 queued");
-		expect(renderedText(tree)).toContain(queued.text);
-		expect(renderedText(tree)).toContain(second.text);
-	});
-
-	it("says a held message is held, and offers sending it", () => {
-		const { tree, onAction } = mount([held], { typing: true });
-		expect(pressable(tree, "1 held")).toBeDefined();
-		expect(pressable(tree, "Cancel")).toBeUndefined();
-		press(tree, `Send now, ${held.text}`);
-		expect(onAction).toHaveBeenCalledWith(held, "sendNow");
-	});
-
-	it("keeps the separator out of VoiceOver", () => {
-		const { tree } = mount([queued], { typing: true });
-		const dot = tree.root.findAll((node) => String(node.type) === "Text" && node.props.children === "·")[0];
-		expect(dot?.props).toMatchObject({ accessibilityElementsHidden: true, importantForAccessibility: "no" });
-	});
-
-	it("holds the action while another ghost action runs", () => {
-		const { tree, onAction } = mount([queued], { typing: true, disabled: true });
-		const action = pressable(tree, `Steer now, ${queued.text}`);
-		expect(action?.props.accessibilityState).toEqual({ disabled: true });
-		act(() => action?.props.onPress());
-		expect(onAction).not.toHaveBeenCalled();
-	});
-
-	it("keeps showing what isn't in the queue", () => {
-		const { tree } = mount([steering, refused, queued], { typing: true });
-		expect(renderedText(tree)).toContain(steering.text);
-		expect(renderedText(tree)).toContain(refused.text);
-		expect(renderedText(tree)).not.toContain(queued.text);
-		expect(pressable(tree, "1 queued")).toBeDefined();
-	});
-
-	it("stays open while the keyboard is up for something other than the composer", () => {
-		const { tree } = mount([queued], { typing: true, composerFocused: false });
-		expect(renderedText(tree)).toContain(queued.text);
-		expect(pressable(tree, "1 queued")).toBeUndefined();
-	});
-
-	it("shows nothing extra with nothing queued", () => {
-		const { tree } = mount([steering], { typing: true });
-		expect(renderedText(tree)).toContain(steering.text);
-		expect(renderedText(tree)).not.toContain("queued");
-	});
-
-	it("opens to the messages on a tap, and folds again the next time you type", () => {
-		const { tree, setTyping } = mount([queued], { typing: true });
-		press(tree, "1 queued");
-		expect(renderedText(tree)).toContain(queued.text);
-		setTyping(false);
-		expect(renderedText(tree)).toContain(queued.text);
-		setTyping(true);
-		expect(renderedText(tree)).not.toContain(queued.text);
-		expect(pressable(tree, "1 queued")).toBeDefined();
-	});
-
-	it("shows everything again when the keyboard lowers", () => {
-		const { tree, setTyping } = mount([queued, second], { typing: true });
-		setTyping(false);
-		expect(renderedText(tree)).toContain(queued.text);
-		expect(renderedText(tree)).toContain(second.text);
-		expect(pressable(tree, "2 queued")).toBeUndefined();
 	});
 });
