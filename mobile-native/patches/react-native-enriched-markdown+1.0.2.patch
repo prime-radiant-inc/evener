@@ -3475,10 +3475,10 @@ index 0000000..c246716
 +NS_ASSUME_NONNULL_END
 diff --git a/node_modules/react-native-enriched-markdown/ios/parser/ENRMOriginalDocumentModel.m b/node_modules/react-native-enriched-markdown/ios/parser/ENRMOriginalDocumentModel.m
 new file mode 100644
-index 0000000..b64733e
+index 0000000..fb2ea8d
 --- /dev/null
 +++ b/node_modules/react-native-enriched-markdown/ios/parser/ENRMOriginalDocumentModel.m
-@@ -0,0 +1,172 @@
+@@ -0,0 +1,173 @@
 +#import "ENRMOriginalDocumentModel.h"
 +#import "MarkdownSourceParser.h"
 +
@@ -3576,14 +3576,15 @@ index 0000000..b64733e
 +    for (ENRMSourceFragment *fragment in fragments) {
 +      if (used == keep) break;
 +      NSUInteger take = MIN(fragment.text.length, keep - used);
++      ENRMSourceFragment *kept = fragment;
 +      if (take < fragment.text.length) {
 +        NSString *raw = [_source substringWithRange:fragment.sourceRange];
 +        if (![raw isEqualToString:fragment.text]) return nil;
-+        fragment = [[ENRMSourceFragment alloc] initWithText:[fragment.text substringToIndex:take]
-+                                              sourceRange:NSMakeRange(fragment.sourceRange.location, take) generated:NO];
++        kept = [[ENRMSourceFragment alloc] initWithText:[fragment.text substringToIndex:take]
++                                          sourceRange:NSMakeRange(fragment.sourceRange.location, take) generated:NO];
 +      }
-+      [result addObject:fragment];
-+      [_ownedFragments addObject:fragment];
++      [result addObject:kept];
++      [_ownedFragments addObject:kept];
 +      used += take;
 +    }
 +    return result;
