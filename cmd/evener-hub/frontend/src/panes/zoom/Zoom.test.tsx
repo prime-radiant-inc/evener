@@ -7,7 +7,13 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { useStore } from "zustand";
 import { ClientProvider } from "../../shell/clientContext";
 import { conversationPaneLifetime } from "../../shell/paneLifetime";
-import { type OpenPaneRecord, resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspace";
+import {
+  consumePaneFocus,
+  type OpenPaneRecord,
+  requestPaneFocus,
+  resetWorkspaceStoreForTests,
+  workspaceStore,
+} from "../../shell/workspace";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { connectionStore } from "../../stores/connection";
 import {
@@ -21,6 +27,7 @@ import { resetTranscriptViewRegistryForTests } from "../session/transcript/flow/
 import { retainedTranscriptReadView } from "../session/transcript/transcriptReadView";
 import { resetTranscriptPagingForTests } from "../session/transcript/useTranscript";
 import { enterAgentCascade, popAgentCascade } from "./actions";
+import { recordCascadeOrigin } from "./inspectionOrigin";
 import type { SessionZoomParams } from "./intent";
 import Zoom from "./Zoom";
 import "./index";
@@ -168,6 +175,39 @@ test("root and child render through real read-only readers inside one scaffold",
   expect(screen.getAllByTestId("transcript-virtual-list")).toHaveLength(2);
   expect(screen.queryByRole("textbox")).toBeNull();
   expect(screen.getByRole("button", { name: "Return to previous view" })).toBeTruthy();
+  expect(fake.calls.filter((call) => /send|resume|steer|interrupt/.test(call.method))).toHaveLength(0);
+});
+
+test("separated read-only Zoom Return closes inspection and focuses its surviving source", async () => {
+  const { fake } = fixture();
+  const source: OpenPaneRecord = { id: "source", type: "session", params: { ref: "root" }, slot: "main" };
+  const inspector: OpenPaneRecord = {
+    ...currentPane(),
+    slot: "secondary",
+    params: {
+      ref: "child",
+      source: { type: "transcript", params: { ref: "root" } },
+      edges: [{ ownerRef: "root", childRef: "child", delegateId: "d1" }],
+      inspection: { origin: { paneId: source.id, type: "session", ref: "root" } },
+    } satisfies SessionZoomParams,
+  };
+  workspaceStore.setState({ panes: [source, inspector], focusedPaneId: inspector.id });
+  recordCascadeOrigin(inspector, source);
+  const sourceLifetime = conversationPaneLifetime(source);
+  const inspectorLifetime = conversationPaneLifetime(inspector);
+  mount(fake);
+  await screen.findByText("root content old-root");
+  await screen.findByText("child content child-id");
+  expect(screen.queryByRole("textbox")).toBeNull();
+  expect(inspectorLifetime.composer).toBeNull();
+  requestPaneFocus(inspector.id);
+  act(() => fireEvent.click(screen.getByRole("button", { name: "Return to previous view" })));
+  expect(workspaceStore.getState().panes).toEqual([source]);
+  expect(workspaceStore.getState().focusedPaneId).toBe(source.id);
+  expect(consumePaneFocus(source.id)).toBe(true);
+  expect(consumePaneFocus(inspector.id)).toBe(false);
+  expect(sourceLifetime.alive).toBe(true);
+  expect(inspectorLifetime.alive).toBe(false);
   expect(fake.calls.filter((call) => /send|resume|steer|interrupt/.test(call.method))).toHaveLength(0);
 });
 

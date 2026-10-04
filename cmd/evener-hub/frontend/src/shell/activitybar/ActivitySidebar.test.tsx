@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, test } from "vitest";
 import { useStore } from "zustand";
 import { MotionProvider } from "../../motion";
+import type { SessionPaneParams } from "../../panes/session/Session";
 import { cascadeClient, cascadeContext, cascadeThread } from "../../panes/zoom/cascadeTestUtils";
 import type { SessionZoomParams } from "../../panes/zoom/intent";
 import Zoom from "../../panes/zoom/Zoom";
@@ -19,6 +20,7 @@ import {
 import { resetThreadsStoreForTests } from "../../stores/threads";
 import { resetDisclosureStoreForTests } from "../../widgets/disclosure/disclosureStore";
 import { ClientProvider } from "../clientContext";
+import { conversationPaneLifetime } from "../paneLifetime";
 import { installFocusedScope } from "../statusbar/scopeTestUtils";
 import { currentSessionRef, type OpenPaneRecord, resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { ActivitySidebar } from "./ActivitySidebar";
@@ -183,7 +185,8 @@ test("Escape dismisses only an unclaimed sidebar gesture", async () => {
   expect(activitySidebarStore.getState().open).toBe(false);
 });
 
-test("desktop delegate rows build six nested edges in one pane and parent crumbs pop at the unchanged root URL", async () => {
+test("desktop delegate rows build six nested edges beside the mounted center and parent crumbs pop at the unchanged root URL", async () => {
+  const { default: Session } = await import("../../panes/session/Session");
   const refs = [
     "remote:root",
     "remote:child",
@@ -233,10 +236,30 @@ test("desktop delegate rows build six nested edges in one pane and parent crumbs
   window.history.replaceState({}, "", "/s/remote%3Aroot");
   activitySidebarStore.getState().openWith("agents");
   function JourneyPane() {
-    const pane = useStore(workspaceStore, (state) => state.panes.find((item) => item.id === "root"));
-    return pane?.type === "sessionZoom" ? (
-      <Zoom paneId={pane.id} params={pane.params as SessionZoomParams} focused />
-    ) : null;
+    const state = useStore(workspaceStore);
+    return state.panes.map((pane) => {
+      if (pane.type === "session")
+        return (
+          <div key={pane.id} data-testid={`conversation-${pane.id}`}>
+            <Session
+              paneId={pane.id}
+              params={pane.params as SessionPaneParams}
+              focused={state.focusedPaneId === pane.id}
+            />
+          </div>
+        );
+      if (pane.type === "sessionZoom")
+        return (
+          <div key={pane.id} data-testid={`inspection-${pane.id}`}>
+            <Zoom
+              paneId={pane.id}
+              params={pane.params as SessionZoomParams}
+              focused={state.focusedPaneId === pane.id}
+            />
+          </div>
+        );
+      return null;
+    });
   }
   const height = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight");
   Object.defineProperty(HTMLElement.prototype, "offsetHeight", { configurable: true, value: 500 });
@@ -249,26 +272,54 @@ test("desktop delegate rows build six nested edges in one pane and parent crumbs
         </MotionProvider>
       </ClientProvider>,
     );
+    const source = workspaceStore.getState().panes.find((pane) => pane.id === "root");
+    if (!source) throw new Error("Missing center source");
+    const lifetime = conversationPaneLifetime(source);
+    const conversation = within(screen.getByTestId(`conversation-${source.id}`));
+    await conversation.findByText(`${root} real content`);
+    const editor = await conversation.findByRole("textbox", { name: "Message" });
+    const transcript = conversation.getByTestId("transcript-virtual-list");
+    let inspectorId = "";
     for (const [index, child] of refs.slice(1).entries()) {
       const drill = await within(screen.getByTestId("activity-sidebar")).findByRole("button", {
         name: new RegExp(`Open ${child}`),
       });
       await act(async () => fireEvent.click(drill));
-      expect(workspaceStore.getState().panes.find((pane) => pane.id === "root")?.type).toBe("sessionZoom");
+      expect(workspaceStore.getState().panes.find((pane) => pane.id === source.id)).toBe(source);
+      expect(workspaceStore.getState().panes).toHaveLength(2);
+      expect(conversationPaneLifetime(source)).toBe(lifetime);
+      expect(conversation.getByRole("textbox", { name: "Message" })).toBe(editor);
+      expect(conversation.getByTestId("transcript-virtual-list")).toBe(transcript);
+      const inspector = workspaceStore.getState().panes.find((pane) => pane.type === "sessionZoom");
+      if (!inspector) throw new Error("Missing secondary inspector");
+      if (!inspectorId) inspectorId = inspector.id;
+      expect(inspector.id).toBe(inspectorId);
+      expect(inspector.slot).toBe("secondary");
       await screen.findByText(`${child} real content`);
       expect(screen.getAllByTestId("cascade-column")).toHaveLength(2);
       expect(screen.queryAllByTestId("cascade-spine")).toHaveLength(index);
       expect(currentSessionRef(workspaceStore.getState())).toBe(child);
+      expect(
+        within(conversation.getByTestId("statusbar")).getByRole("button", {
+          name: "Jobs, 1 of 101 running - open Overview",
+        }),
+      ).toBeTruthy();
+      const inspectorFooter = within(screen.getByTestId(`inspection-${inspectorId}`)).getByTestId("statusbar");
+      expect(
+        within(inspectorFooter).getByRole("button", {
+          name: `Jobs, ${index + 2} of ${index + 102} running - open Overview`,
+        }),
+      ).toBeTruthy();
     }
     expect(screen.getAllByTestId("cascade-spine")).toHaveLength(5);
-    expect(workspaceStore.getState().panes).toHaveLength(1);
+    expect(workspaceStore.getState().panes).toHaveLength(2);
     expect(workspaceStore.getState().panes.filter((pane) => pane.type === "transcript")).toHaveLength(0);
     const parent = screen.getAllByTestId("cascade-column")[0];
     if (!parent) throw new Error("Missing parent column");
     window.getSelection()?.selectAllChildren(within(parent).getByText("remote:sixth real content"));
     fireEvent.scroll(within(parent).getByTestId("transcript-virtual-list"));
     expect(currentSessionRef(workspaceStore.getState())).toBe("remote:seventh");
-    const footer = screen.getByTestId("statusbar");
+    const footer = within(screen.getByTestId(`inspection-${inspectorId}`)).getByTestId("statusbar");
     expect(within(footer).getByRole("button", { name: "Jobs, 7 of 107 running - open Overview" })).toBeTruthy();
     const sidebar = within(screen.getByTestId("activity-sidebar"));
     fireEvent.click(sidebar.getByRole("radio", { name: "About" }));

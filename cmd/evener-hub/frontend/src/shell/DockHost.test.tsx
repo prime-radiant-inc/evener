@@ -6,7 +6,6 @@ import userEvent from "@testing-library/user-event";
 import { lazy } from "react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { MotionProvider } from "../motion";
-import { enterAgentCascade } from "../panes/zoom/actions";
 import { cascadeClient, cascadeContext } from "../panes/zoom/cascadeTestUtils";
 import type { SessionZoomParams } from "../panes/zoom/intent";
 import "../panes/zoom";
@@ -14,12 +13,7 @@ import { StubResizeObserver } from "../resizeObserverTestUtils";
 import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
 import { connectionStore } from "../stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "../stores/navigation/store";
-import {
-  activityClient,
-  activityDelegate,
-  activityDetailsThread,
-  activityJob,
-} from "../stores/sessionActivityTestUtils";
+import { activityClient, activityDetailsThread, activityJob } from "../stores/sessionActivityTestUtils";
 import { resetThreadsStoreForTests, threadsStore } from "../stores/threads";
 import { PaneScaffold } from "../widgets/panescaffold";
 import { ActivitySidebar } from "./activitybar/ActivitySidebar";
@@ -1089,15 +1083,18 @@ test.each([
       await screen.findByText(/doc pane: kept-secondary/);
       act(() => workspaceStore.getState().focusPane(id));
       const before = workspaceStore.getState().layoutJSON() as { grid: unknown };
-      await act(async () =>
-        enterAgentCascade(activityDelegate({ ownerRef: "root", childRef: "child", delegateId: "edge-child" }), id),
-      );
-      await act(async () =>
-        enterAgentCascade(
-          activityDelegate({ ownerRef: "child", childRef: "grandchild", delegateId: "edge-grandchild" }),
-          id,
-        ),
-      );
+      const sourceRecord = workspaceStore.getState().panes.find((pane) => pane.id === id);
+      if (!sourceRecord) throw new Error("Missing legacy source fixture");
+      await act(async () => {
+        workspaceStore.getState().retypePane(sourceRecord, "sessionZoom", {
+          ref: "grandchild",
+          source: { type: sourceType, params: sourceRecord.params },
+          edges: [
+            { ownerRef: "root", childRef: "child", delegateId: "edge-child" },
+            { ownerRef: "child", childRef: "grandchild", delegateId: "edge-grandchild" },
+          ],
+        });
+      });
       expect(tab.isConnected).toBe(true);
       expect(tab.closest(".dv-groupview")).toBe(group);
       expect((workspaceStore.getState().layoutJSON() as { grid: unknown }).grid).toEqual(before.grid);

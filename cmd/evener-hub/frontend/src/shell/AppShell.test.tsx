@@ -50,6 +50,7 @@ import { activitySidebarStore, resetActivitySidebarStoreForTests } from "./activ
 import { ClientProvider } from "./clientContext";
 import { DockHost } from "./DockHost";
 import { paletteStore } from "./palette/paletteController";
+import { conversationPaneLifetime } from "./paneLifetime";
 import { navigate } from "./routing";
 import { getDockviewApi, resetWorkspaceStoreForTests, workspaceStore } from "./workspace";
 
@@ -4669,6 +4670,11 @@ test.each([
             )
           : workspaceStore.getState().focusedPaneId;
       const sourcePane = () => workspaceStore.getState().panes.find((pane) => pane.id === sourceId);
+      const original = sourcePane();
+      if (!original) throw new Error("Missing original Activity source");
+      const lifetime = conversationPaneLifetime(original);
+      let inspectorId = "";
+      const inspectorPane = () => workspaceStore.getState().panes.find((pane) => pane.id === inspectorId);
       act(() => {
         historyPane = workspaceStore
           .getState()
@@ -4691,11 +4697,14 @@ test.each([
       const observer = await sidebar.findByRole("button", { name: first });
       await act(async () => fireEvent.click(observer));
       await waitFor(() => {
-        const pane = sourcePane();
-        expect(pane?.id).toBe(sourceId);
+        const pane = workspaceStore.getState().panes.find((pane) => pane.type === "sessionZoom");
         expect(pane?.type).toBe("sessionZoom");
+        expect(pane?.slot).toBe("secondary");
+        expect(pane?.id).not.toBe(sourceId);
+        inspectorId = pane?.id ?? "";
         expect((pane?.params as { ref?: string })?.ref).toBe(source === "nested" ? "local:grandchild" : "local:child");
-        expect(workspaceStore.getState().focusedPaneId).toBe(sourceId);
+        expect(workspaceStore.getState().focusedPaneId).toBe(inspectorId);
+        expect(sourcePane()).toBe(original);
       });
       expect(window.location.pathname).toBe(`/s/${routeRef}`);
       if (source !== "nested") {
@@ -4707,9 +4716,10 @@ test.each([
         await act(async () => fireEvent.click(grandchild));
       }
       await screen.findByText("report-local:grandchild");
-      expect(sourcePane()?.id).toBe(sourceId);
-      expect(workspaceStore.getState().focusedPaneId).toBe(sourceId);
-      expect((sourcePane()?.params as { ref?: string })?.ref).toBe("local:grandchild");
+      expect(sourcePane()).toBe(original);
+      expect(conversationPaneLifetime(original)).toBe(lifetime);
+      expect(workspaceStore.getState().focusedPaneId).toBe(inspectorId);
+      expect((inspectorPane()?.params as { ref?: string })?.ref).toBe("local:grandchild");
       expect(screen.getByTestId("cascade-spine").getAttribute("data-scope-ref")).toBe("local:owner");
       expect(within(screen.getByTestId("cascade-spine")).queryByText("report-local:owner")).toBeNull();
       expect(workspaceStore.getState().panes.some((p) => p.id === historyPane)).toBe(true);
@@ -4728,14 +4738,16 @@ test.each([
         const focused = state.panes.find((pane) => pane.id === state.focusedPaneId);
         expect(focused?.type).toBe("session");
         expect(focused?.params).toEqual({ ref: "local:grandchild" });
-        expect(sourcePane()?.type).toBe("sessionZoom");
-        expect((sourcePane()?.params as { ref?: string })?.ref).toBe("local:grandchild");
+        expect(sourcePane()).toBe(original);
+        expect(inspectorPane()?.type).toBe("sessionZoom");
+        expect((inspectorPane()?.params as { ref?: string })?.ref).toBe("local:grandchild");
       });
-      act(() => workspaceStore.getState().focusPane(sourceId ?? ""));
+      act(() => workspaceStore.getState().focusPane(inspectorId));
       await act(async () => fireEvent.click(sidebar.getByRole("button", { name: "local:owner" })));
-      expect(workspaceStore.getState().focusedPaneId).toBe(sourceId);
-      expect(sourcePane()?.type).toBe("sessionZoom");
-      expect((sourcePane()?.params as { ref?: string })?.ref).toBe("local:owner");
+      expect(workspaceStore.getState().focusedPaneId).toBe(inspectorId);
+      expect(sourcePane()).toBe(original);
+      expect(inspectorPane()?.type).toBe("sessionZoom");
+      expect((inspectorPane()?.params as { ref?: string })?.ref).toBe("local:owner");
       const rootColumn = screen.getByTestId("cascade-column");
       expect(await within(rootColumn).findByText("report-local:owner")).toBeTruthy();
       act(() => activitySidebarStore.getState().openWith("agents"));

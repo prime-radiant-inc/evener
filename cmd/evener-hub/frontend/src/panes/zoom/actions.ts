@@ -1,13 +1,12 @@
 import type { SessionActivityContext, SessionDelegate } from "@evener/appwire-client";
 import { conversationPaneLifetime, type PaneLifetime } from "../../shell/paneLifetime";
 import { refParam } from "../../shell/routing";
-import { type OpenPaneRecord, requestPaneFocus, workspaceStore } from "../../shell/workspace";
+import { cancelPaneFocus, type OpenPaneRecord, requestPaneFocus, workspaceStore } from "../../shell/workspace";
 import { connectionStore } from "../../stores/connection";
 import { sessionActivitySnapshot } from "../../stores/sessionActivity";
-import type { SessionPaneParams } from "../session/Session";
-import { captureTranscriptView } from "../session/transcript/flow/transcriptViewRegistry";
 import { retainedTranscriptReadView } from "../session/transcript/transcriptReadView";
 import type { TranscriptParams } from "../transcript/Transcript";
+import { associatedCascade, cascadeOrigin, recordCascadeOrigin } from "./inspectionOrigin";
 import {
   type CascadePath,
   deriveCascadePath,
@@ -36,9 +35,13 @@ function contextFor(ref: string): SessionActivityContext | null {
 function intentFor(pane: OpenPaneRecord): SessionZoomParams | null {
   if (pane.type !== "sessionZoom") return null;
   const parsed = parseZoomParams(pane.params);
-  // Keep the exact runtime return descriptor, including the original params
-  // object. Saved layouts have already passed the same local validator.
-  return parsed ? { ...parsed, source: (pane.params as SessionZoomParams).source } : null;
+  // Legacy Return retains the exact source params. Inspection uses the
+  // validated read-only descriptor and leaves its separate source untouched.
+  return parsed
+    ? parsed.inspection
+      ? parsed
+      : { ...parsed, source: (pane.params as SessionZoomParams).source }
+    : null;
 }
 function pathFor(params: SessionZoomParams): CascadePath {
   return deriveCascadePath(params, contextFor(params.ref));
@@ -83,30 +86,42 @@ export function enterAgentCascade(sub: SessionDelegate, sourcePaneId?: string): 
       (source.type === "session" || (source.type === "transcript" && !ref.startsWith("job:"))) &&
       requestedOwner(ref, sub.ownerRef)
     ) {
-      const lifetime = conversationPaneLifetime(source);
-      const sourceView = retainedTranscriptReadView(lifetime, ref, lifetime.sourceType);
-      const capture = captureTranscriptView(sourceView.id);
-      if (capture) sourceView.setCapture(capture);
-      sourceView.setReadable(false);
-      const context = contextFor(ref);
-      if (context) lifetime.resolvedSessions.set(ref, context.sessionId);
+      const existing = associatedCascade(source);
+      if (existing) {
+        const intent = intentFor(existing);
+        if (!intent) throw new Error("Associated cascade has invalid intent");
+        updateIntent(existing, drillZoomIntent(intent, { ...edge, ownerRef: ref }), true);
+        workspaceStore.getState().focusPane(existing.id);
+        return existing.id;
+      }
+      const sourceParams = source.params as TranscriptParams;
       const params: SessionZoomParams = {
         ref: sub.childRef,
-        source:
-          source.type === "session"
-            ? { type: "session", params: source.params as SessionPaneParams }
-            : { type: "transcript", params: source.params as TranscriptParams },
+        source: {
+          type: "transcript",
+          params: {
+            ref,
+            ...(source.type === "transcript" && sourceParams.parentRef !== undefined
+              ? { parentRef: sourceParams.parentRef }
+              : {}),
+          },
+        },
         edges: [{ ...edge, ownerRef: ref }],
+        inspection: { origin: { paneId: source.id, type: source.type, ref } },
       };
       userTransitions.add(params);
-      workspace.retypePane(source, "sessionZoom", params);
-      return source.id;
+      const id = workspace.openPane("sessionZoom", params, { slot: "secondary" });
+      const inspector = workspaceStore.getState().panes.find((pane) => pane.id === id);
+      if (!inspector) throw new Error("Opened cascade was not committed");
+      recordCascadeOrigin(inspector, source);
+      return id;
     }
   }
   const params: SessionZoomParams = {
     ref: sub.childRef,
     source: { type: "transcript", params: { ref: sub.ownerRef } },
     edges: [edge],
+    inspection: { origin: null },
   };
   userTransitions.add(params);
   return workspace.openPane("sessionZoom", params, { slot: "secondary" });
@@ -126,6 +141,18 @@ export function returnFromAgentCascade(paneId: string): void {
   if (!pane) return;
   const params = intentFor(pane);
   if (!params) return;
+  if (params.inspection) {
+    const origin = cascadeOrigin(pane);
+    const originLifetime = origin ? conversationPaneLifetime(origin) : null;
+    cancelPaneFocus(pane.id);
+    workspace.closePane(pane.id);
+    const current = origin ? workspaceStore.getState().panes.find((record) => record.id === origin.id) : undefined;
+    if (current && originLifetime?.alive && conversationPaneLifetime(current) === originLifetime) {
+      workspaceStore.getState().focusPane(current.id);
+      requestPaneFocus(current.id);
+    }
+    return;
+  }
   const lifetime = conversationPaneLifetime(pane);
   pruneViews(lifetime, new Set([lifetime.sourceRef]));
   retainedTranscriptReadView(lifetime, lifetime.sourceRef, lifetime.sourceType).setReadable(true);
@@ -137,6 +164,11 @@ export function openCascadeConversation(paneId: string, ref: string): void {
   if (!pane) return;
   const params = intentFor(pane);
   if (!params) return;
+  const origin = params.inspection ? cascadeOrigin(pane) : null;
+  if (origin?.type === "session" && refParam(origin.params) === ref) {
+    returnFromAgentCascade(paneId);
+    return;
+  }
   if (params.source.type === "session" && params.source.params.ref === ref) {
     returnFromAgentCascade(paneId);
     workspace.focusPane(paneId);

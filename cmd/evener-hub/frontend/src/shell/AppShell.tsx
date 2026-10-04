@@ -218,6 +218,10 @@ function routePlacementIsApplied(
       (ancestorRef !== ref && params.ref === ref && params.parentRef === ancestorRef)
     );
   };
+  const rawFocused = workspace.panes.find((pane) => pane.id === workspace.focusedPaneId);
+  const focusedIntent = rawFocused?.type === "sessionZoom" ? parseZoomParams(rawFocused.params) : null;
+  const focusedSeparatedInspection =
+    allowFocusedCompanion && rawFocused?.slot === "secondary" && !!focusedIntent?.inspection;
   const conversationRef = focusedPane?.type === "session" ? sessionRefOf(focusedPane) : null;
   const focusedCascadeConversation =
     allowFocusedCompanion &&
@@ -227,7 +231,9 @@ function routePlacementIsApplied(
       const params = parseZoomParams(pane.params);
       if (!params) return false;
       const role = routeRole(pane);
-      if (!((role.type === "session" && sessionRefOf(role) === ref) || transcriptMatchesRoute(role))) return false;
+      const coversSource =
+        !!params.inspection || (role.type === "session" && sessionRefOf(role) === ref) || transcriptMatchesRoute(role);
+      if (!coversSource) return false;
       const client = connectionStore.getState().client;
       const context = client ? (sessionActivitySnapshot(client, params.ref, "session")?.context ?? null) : null;
       return deriveCascadePath(params, context).scopes.some((scope) => scope.requestedRef === conversationRef);
@@ -238,7 +244,7 @@ function routePlacementIsApplied(
     transcriptMatchesRoute(focusedPane) ||
     focusedCascadeConversation;
   const focusIsApplied = (paneId: string): boolean =>
-    workspace.focusedPaneId === paneId || (allowFocusedCompanion && focusedCompanion);
+    workspace.focusedPaneId === paneId || (allowFocusedCompanion && focusedCompanion) || focusedSeparatedInspection;
 
   if (ancestorRef === null || ancestorRef === ref) {
     return (
