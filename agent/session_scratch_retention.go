@@ -2475,7 +2475,7 @@ func (s *Session) retainedConsumerScratchSlot(sessionID, kind string) (dir strin
 // order, so an adoption can commit an earlier slot and then fail on a later one,
 // leaving the environment holding an allocation the pool has already handed
 // over; the adoption's own recovery can also re-provision and pin a fresh mint
-// before it returns the error. DisposeUnadoptedScratch would then remove a
+// before it returns the error. DisposeSessionScratch would then remove a
 // referenced directory while its reference and binding slot stay, and
 // references are append-only with no unpin API, so the root's retirement
 // preparation would refuse forever and a cold resume would fail the same way.
@@ -2571,7 +2571,7 @@ func (s *Session) settleFailedRestoreScratch(env execenv.ExecutionEnvironment, a
 	// Whatever is left is the restore's own fresh mint, which no manifest
 	// references and no later restore would reacquire.
 	if createdEnv {
-		local.DisposeUnadoptedScratch()
+		_ = local.DisposeSessionScratch()
 		return
 	}
 	// A shared parent is never this restore's to dispose: the mintedScratch

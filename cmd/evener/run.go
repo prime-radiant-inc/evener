@@ -374,7 +374,7 @@ func run(ctx context.Context, cfg runConfig) error {
 		// Provisioning allocates the session scratch and the lease under it,
 		// which nothing releases until a session owns this environment.
 		if err := startupInterrupted(ctx, "provisioning the sandbox"); err != nil {
-			env.DisposeUnadoptedScratch()
+			_ = env.DisposeSessionScratch()
 			return err
 		}
 	}

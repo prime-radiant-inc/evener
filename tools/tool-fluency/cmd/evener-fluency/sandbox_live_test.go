@@ -33,7 +33,7 @@ func newSandboxTestEnv(t *testing.T, dir string) *execenv.LocalExecutionEnvironm
 	env := execenv.NewLocalExecutionEnvironment(dir)
 	t.Cleanup(func() {
 		env.Cleanup()
-		env.DisposeUnadoptedScratch()
+		_ = env.DisposeSessionScratch()
 	})
 	return env
 }

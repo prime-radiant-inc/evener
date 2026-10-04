@@ -613,7 +613,7 @@ func pinRetainedScratchPair(t *testing.T, owner sandbox.ScratchOwner, childID, b
 // Medium. A binding's slots are transferred one at a time, so an adoption can
 // commit the earlier slot and then fail on a later one; adoptConsumerScratch
 // then reports that nothing was adopted, and the failed restore's teardown ran
-// DisposeUnadoptedScratch over the directory the earlier slot had already
+// DisposeSessionScratch over the directory the earlier slot had already
 // transferred — a directory the durable retention manifest still references, so
 // the root's retirement preparation would refuse and a cold resume would fail
 // on it. The teardown has to settle the environment by what the manifest names:

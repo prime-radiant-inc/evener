@@ -692,7 +692,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		// out between here and that hand-off has to dispose of them, or an
 		// interrupted startup leaks a directory and a lease per attempt.
 		if err := startupInterrupted(ctx, "provisioning the sandbox"); err != nil {
-			env.DisposeUnadoptedScratch()
+			_ = env.DisposeSessionScratch()
 			return err
 		}
 	}

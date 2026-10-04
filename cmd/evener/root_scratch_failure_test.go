@@ -50,7 +50,7 @@ func assertRetainedScratchStillIntact(t *testing.T, stateDir string, env *execen
 	if env == nil {
 		t.Fatal("provisioning never ran, so the failed-construction cleanup observed nothing")
 	}
-	t.Cleanup(env.DisposeUnadoptedScratch)
+	t.Cleanup(func() { _ = env.DisposeSessionScratch() })
 	binding, err := env.ScratchRetentionBinding()
 	if err != nil {
 		t.Fatalf("read the env's scratch retention binding after the failed construction: %v", err)
@@ -97,7 +97,7 @@ func assertRetainedScratchStillIntact(t *testing.T, stateDir string, env *execen
 // (installScratchRetention), and then more fallible initialization runs. A
 // failure after that publish — here an unknown --context-strategy, which fails
 // after installScratchRetention — used to reach the caller's bare
-// env.DisposeUnadoptedScratch and os.RemoveAll a directory the manifest still
+// env.DisposeSessionScratch and os.RemoveAll a directory the manifest still
 // referenced. References are append-only with no unpin API, so the root's
 // retirement preparation would then refuse forever and cold resume would fail
 // the same way. The cleanup must retain a referenced allocation instead.
@@ -130,7 +130,7 @@ func TestRunRetainsReferencedScratchWhenRootConstructionFailsAfterRetention(t *t
 
 // TestServeRetainsReferencedScratchWhenRootConstructionFailsAfterRetention is
 // the serve-startup half of the same regression: `evener serve` reaches its own
-// bare env.DisposeUnadoptedScratch on a failed fresh-session construction and
+// bare env.DisposeSessionScratch on a failed fresh-session construction and
 // owes the same retention-aware cleanup.
 func TestServeRetainsReferencedScratchWhenRootConstructionFailsAfterRetention(t *testing.T) {
 	installServeScriptedProvider(t, &scriptedProvider{name: "openai"})
@@ -159,7 +159,7 @@ func TestServeRetainsReferencedScratchWhenRootConstructionFailsAfterRetention(t 
 // is the thread/clear half of the same regression. The clear path builds its
 // replacement through the same agent.NewSession, which publishes the root's
 // durable scratch retention partway through construction, and then reaches its
-// own bare clearEnv.DisposeUnadoptedScratch. A failure after that publish would
+// own bare clearEnv.DisposeSessionScratch. A failure after that publish would
 // os.RemoveAll a directory the manifest still references; references are
 // append-only with no unpin API, so the root's retirement preparation and any
 // cold resume would then be refused forever. The cleanup owes the same

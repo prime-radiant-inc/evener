@@ -136,7 +136,7 @@ func TestResumeWorktreeReentry_ChildSessionRefusesToReenter(t *testing.T) {
 	if !scratchLeaseHeld(t, scratch) {
 		t.Fatalf("the handed-in environment's scratch %s lease was released by the refused restore", scratch)
 	}
-	env.DisposeUnadoptedScratch()
+	_ = env.DisposeSessionScratch()
 	if _, err := os.Stat(scratch); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("the handed-in environment no longer owns its scratch %s: stat err after its disposal = %v", scratch, err)
 	}
@@ -162,7 +162,7 @@ func TestResumeWorktreeReentry_BareResumeOfAPersistedChildRefusesToReenter(t *te
 	if !scratchLeaseHeld(t, scratch) {
 		t.Fatalf("the handed-in environment's scratch %s lease was released by the refused restore", scratch)
 	}
-	env.DisposeUnadoptedScratch()
+	_ = env.DisposeSessionScratch()
 	if _, err := os.Stat(scratch); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("the handed-in environment no longer owns its scratch %s: stat err after its disposal = %v", scratch, err)
 	}

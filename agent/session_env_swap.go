@@ -171,7 +171,7 @@ func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment, rec
 		case moved:
 			next.RetainSessionScratch()
 		case shared != nil && !sameEnvironment(shared, next):
-			next.DisposeUnadoptedScratch()
+			_ = next.DisposeSessionScratch()
 		}
 		return errSwapWhileClosing
 	}

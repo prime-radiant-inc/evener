@@ -173,7 +173,7 @@ type preparedSubagentRun struct {
 // still working in.
 func disposeUnadoptedScratch(env execenv.ExecutionEnvironment) {
 	if local, ok := env.(*execenv.LocalExecutionEnvironment); ok {
-		local.DisposeUnadoptedScratch()
+		_ = local.DisposeSessionScratch()
 	}
 }
 

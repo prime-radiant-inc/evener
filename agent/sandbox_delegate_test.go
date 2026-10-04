@@ -728,7 +728,7 @@ func saveColdRestorableChild(t *testing.T, stateDir string, base schema.SessionM
 // environment held no SCRATCH at adoption time, while the parent's
 // world-usable TMPDIR container — provisioned long before this restore and
 // still serving the parent's spawned children — is something
-// DisposeUnadoptedScratch also removes, breaking removeUnsandboxedTmpLocked's
+// DisposeSessionScratch also removes, breaking removeUnsandboxedTmpLocked's
 // own rule that a live env keeps its container. The settle must leave the
 // shared environment alone entirely — its container by that rule, and since
 // round 51 its scratch too: the empty-snapshot record cannot attribute what
@@ -1299,7 +1299,7 @@ func TestWorktreeReentryRestoreFailureDisposesTheReenteredScratch(t *testing.T) 
 	// The launch environment belongs to the caller, whose own failure path
 	// disposes it (run.go, serve.go, restoreIdle); everything left after that is
 	// the restore's own.
-	launchEnv.DisposeUnadoptedScratch()
+	_ = launchEnv.DisposeSessionScratch()
 
 	if leaked := scratchDirsIn(t, scratchBase); len(leaked) != 0 {
 		t.Errorf("failed worktree re-entry restore left scratch %v, which nothing will ever release", leaked)

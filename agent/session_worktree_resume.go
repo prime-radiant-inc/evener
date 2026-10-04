@@ -136,7 +136,7 @@ func (s *Session) resumeWorktreeReentry(meta schema.SessionMeta) error {
 	// running a command is what mints a scratch dir and takes its lease. Nothing
 	// keeps a reference to either past this function, so nothing else would ever
 	// release what they minted — on a successful re-entry as much as a refused one.
-	defer rootedAtTarget.DisposeUnadoptedScratch()
+	defer func() { _ = rootedAtTarget.DisposeSessionScratch() }()
 	project, err := identifier.ResolveProjectWith(target, execenv.NewProjectResolver(rootedAtTarget))
 	if err != nil {
 		notice(fmt.Sprintf("previous working directory %s is no longer part of a git repository (%v)", target, err))
@@ -160,7 +160,7 @@ func (s *Session) resumeWorktreeReentry(meta schema.SessionMeta) error {
 	}
 	mainRoot := project.CanonicalPath
 	controlEnv := local.WithWorkingDirectory(mainRoot)
-	defer controlEnv.DisposeUnadoptedScratch()
+	defer func() { _ = controlEnv.DisposeSessionScratch() }()
 	run := s.newWorktreeGitRunner(context.Background(), controlEnv)
 
 	// The path must still be a worktree git's own registry knows about (spec
@@ -352,7 +352,7 @@ func (s *Session) applyInitInsideWorktreeLock(isGitRepo bool) {
 	}
 
 	controlEnv := local.WithWorkingDirectory(project.CanonicalPath)
-	defer controlEnv.DisposeUnadoptedScratch()
+	defer func() { _ = controlEnv.DisposeSessionScratch() }()
 	run := s.newWorktreeGitRunner(context.Background(), controlEnv)
 	locked, reason, err := lockStateOf(run, activeRoot)
 	if err != nil {

@@ -2626,7 +2626,7 @@ func reconnectRecoveryWarning(name string) events.WarningData {
 // DisposeResumeScratchAfterFailure settles the per-session scratch a failed
 // resume left on the launch environment. RestoreSessionFromMetaWithConfig can
 // adopt a durable retained allocation onto env before a later initialization
-// failure, and env.DisposeUnadoptedScratch would then run os.RemoveAll over a
+// failure, and env.DisposeSessionScratch would then run os.RemoveAll over a
 // directory the root's retention manifest still references, destroying data a
 // later resume reacquires. An allocation the manifest references is therefore
 // retained (its lease released, its directory kept); everything else is the
@@ -2647,7 +2647,7 @@ func DisposeResumeScratchAfterFailure(stateDir, rootSessionID string, env *exece
 // durable scratch retention (installScratchRetention) partway through
 // construction and then runs more fallible steps, so a failure after that
 // publication leaves a manifest that references the scratch the launch
-// environment owns. The launch caller's bare env.DisposeUnadoptedScratch would
+// environment owns. The launch caller's bare env.DisposeSessionScratch would
 // then run os.RemoveAll over a directory the manifest still references;
 // references are append-only with no unpin API, so the root's retirement
 // preparation would refuse forever and cold resume would fail the same way.
@@ -2669,7 +2669,7 @@ func DisposeRootScratchAfterFailure(stateDir string, env *execenv.LocalExecution
 		settleEnvScratchByManifest(sandbox.ScratchOwner{StateDir: stateDir, RootSessionID: binding.OwnerSessionID}, env)
 		return
 	}
-	env.DisposeUnadoptedScratch()
+	_ = env.DisposeSessionScratch()
 }
 
 // settleEnvScratchByManifest settles the per-session scratch allocations env
