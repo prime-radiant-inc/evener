@@ -272,6 +272,7 @@ export function DockHost() {
   // here is enough to skip a no-op updateParameters() call on every
   // unrelated re-render without needing a second deep-equal pass.
   const pushedParamsRef = useRef(new Map<string, unknown>());
+  const syncingSlots = useRef(false);
 
   // Native-interaction wiring: mirrors dockview-native interactions
   // (closing a tab via its own (x), clicking a different tab) back into the
@@ -292,7 +293,7 @@ export function DockHost() {
     // overwrite the real target before the effect finishes. See this
     // task's report for the live dockview probe that found this.
     const activeSub = api.onDidActivePanelChange((e) => {
-      if (e.origin === "user" && e.panel) {
+      if (!syncingSlots.current && e.origin === "user" && e.panel) {
         workspaceStore.getState().focusPane(e.panel.id);
       }
     });
@@ -382,7 +383,12 @@ export function DockHost() {
       }
     }
 
+    // moveTo can activate a fallback group while moving its last panel, even
+    // with skipSetActive. Those synchronous events are our own slot work,
+    // not user selection, regardless of dockview's reported origin.
+    syncingSlots.current = true;
     syncPaneSlots(api, panes);
+    syncingSlots.current = false;
 
     // Every add/remove above can change a group's pane count, so the tab-bar
     // rule is re-applied here rather than at each mutation site - one pass over
@@ -451,7 +457,18 @@ export function DockHost() {
   // save-then-restore round-trip test, not spotted by inspection - see
   // this task's report.
   function handleReady(event: DockviewReadyEvent): void {
-    registerDockviewApi(event.api);
+    const reconstructing = registerDockviewApi(event.api);
+    if (reconstructing) {
+      // Phone has kept the workspace alive and may have changed its panes,
+      // slots and selection. Replaying these as cold routes would end their
+      // lifetimes and focus the last secondary. Only dockview geometry needs
+      // recovery; the existing reconciliation effects apply the live store.
+      const stored = readStoredLayout();
+      if (stored !== undefined) workspaceStore.getState().restoreLayout(stored, { preserveLivePanes: true });
+      ensureMainPane();
+      setApi(event.api);
+      return;
+    }
 
     // Capture the route intent by slot before restoreLayout replaces the
     // store's pane list. The routed main is reapplied through the primary

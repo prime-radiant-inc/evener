@@ -127,7 +127,9 @@ export interface WorkspaceStoreState {
   mainPane(): OpenPaneRecord | null;
   focusPane(paneId: string): void;
   layoutJSON(): unknown;
-  restoreLayout(json: unknown): boolean;
+  // On host reconstruction the live store still owns pane lifetimes, slots
+  // and focus. Restore only dockview geometry, never saved runtime ownership.
+  restoreLayout(json: unknown, opts?: { preserveLivePanes?: boolean }): boolean;
 }
 
 // The wire shape stored in each dockview panel's own `params` bag - how a
@@ -235,9 +237,15 @@ function nextPaneId(type: PaneTypeId): string {
 // threads.ts's own precedent for "the live thing a store rides but doesn't
 // own the lifecycle of".
 let dockviewApi: DockviewApi | null = null;
+let desktopHasMounted = false;
 
-export function registerDockviewApi(api: DockviewApi | null): void {
+// Returns whether this desktop is reconstructing an already hosted workspace.
+// The marker lasts for this page's workspace, not for an individual host mount.
+export function registerDockviewApi(api: DockviewApi | null): boolean {
+  const reconstructing = api !== null && desktopHasMounted;
+  if (api !== null) desktopHasMounted = true;
   dockviewApi = api;
+  return reconstructing;
 }
 
 // getDockviewApi exposes the live api (or null when no dockview host is
@@ -442,7 +450,7 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
     return dockviewApi ? dockviewApi.toJSON() : null;
   },
 
-  restoreLayout(json) {
+  restoreLayout(json, opts) {
     if (!dockviewApi) return false;
     try {
       dockviewApi.fromJSON(json as SerializedDockview);
@@ -470,6 +478,11 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
       for (const entry of entries) {
         if (entry.params === null) dockviewApi.removePanel(entry.panel);
       }
+      // A host swap is not a cold load. Even valid saved geometry can be
+      // stale after phone opens, closes, promotion or focus changes. Keep the
+      // exact living records and their object-keyed state; DockHost reconciles
+      // the restored grid against them before applying the current focus.
+      if (opts?.preserveLivePanes) return true;
       const restored = entries.filter(
         (entry): entry is { panel: IDockviewPanel; params: PanePanelParams } => entry.params !== null,
       );
@@ -494,7 +507,7 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
       // readPanelParams skips unloadable panels instead of raising, so this
       // catch now covers only a layout dockview itself rejects.
       dockviewApi?.clear();
-      set({ panes: [], focusedPaneId: null });
+      if (!opts?.preserveLivePanes) set({ panes: [], focusedPaneId: null });
       return false;
     }
   },
@@ -531,6 +544,7 @@ export function useWorkspaceStore<T>(selector?: (state: WorkspaceStoreState) => 
 // threads.ts's resetThreadsStoreForTests precedent).
 export function resetWorkspaceStoreForTests(): void {
   dockviewApi = null;
+  desktopHasMounted = false;
   nextPaneSeq = 0;
   pendingPaneFocus.clear();
   documentPaneStates.clear();

@@ -18,7 +18,7 @@ import { ClientProvider } from "./clientContext";
 import { DockHost } from "./DockHost";
 import { type PaneDescriptor, type PaneProps, paneFor, registerPane, registerPaneForTests } from "./paneRegistry";
 import { usePaneVisible } from "./paneVisibility";
-import { consumePaneFocus, resetWorkspaceStoreForTests, workspaceStore } from "./workspace";
+import { consumePaneFocus, documentPaneState, resetWorkspaceStoreForTests, workspaceStore } from "./workspace";
 
 // Fixture pane components, simple enough to assert on directly - "doc" is
 // this file's non-singleton fixture, "settings" its singleton one (same
@@ -1205,6 +1205,93 @@ test("collapses several rapid layout changes into a single debounced save", asyn
   const parsed = JSON.parse(localStorage.getItem(LAYOUT_KEY)!) as { panels: Record<string, unknown> };
   expect(Object.keys(parsed.panels)).toHaveLength(3);
 });
+
+test("desktop reconstruction retains the latest phone focus instead of the last secondary", async () => {
+  workspaceStore.getState().openPane("doc", { ref: "main" });
+  const spec = workspaceStore.getState().openPane("doc", { ref: "spec" });
+  workspaceStore.getState().openPane("doc", { ref: "review" });
+  const { unmount } = render(<DockHost />);
+  await screen.findByText(/doc pane: review/);
+  unmount();
+
+  // No desktop API is mounted while phone selection changes the real store.
+  workspaceStore.getState().focusPane(spec);
+  render(<DockHost />);
+
+  expect(await screen.findByText(/doc pane: spec/)).toBeTruthy();
+  expect(workspaceStore.getState().focusedPaneId).toBe(spec);
+  expect(tabIsActive("Doc spec")).toBe(true);
+});
+
+test.each(["retained", "phone-created"])(
+  "desktop reconstruction keeps %s documents and the latest exact same-session opener",
+  async (placement) => {
+    const restoreSession = registerPaneForTests({
+      ...paneFor("session"),
+      component: lazy(() => Promise.resolve({ default: DocFixture })),
+    });
+    const restoreTranscript = registerPaneForTests({
+      ...paneFor("transcript"),
+      component: lazy(() => Promise.resolve({ default: DocFixture })),
+    });
+    try {
+      const session = "local:02wMz5TxvEMoJEDTDGOTil";
+      const sessionId = workspaceStore.getState().openPane("session", { ref: session });
+      const transcriptId = workspaceStore.getState().openPane("transcript", { ref: session });
+      const reference = bindFilePath("/work/A/docs/spec.md", "/work/A");
+      const reviewReference = bindFilePath("docs/review.md", "/work/A");
+      if (!reference || !reviewReference) throw new Error("references did not bind");
+      openDocBeside({ session, reference, sourcePaneId: sessionId });
+      openDocBeside({ session, reference: reviewReference, sourcePaneId: sessionId });
+      const spec = workspaceStore
+        .getState()
+        .panes.find((pane) => (pane.params as { path?: string }).path === "docs/spec.md");
+      const review = workspaceStore
+        .getState()
+        .panes.find((pane) => (pane.params as { path?: string }).path === "docs/review.md");
+      if (!spec || !review) throw new Error("documents did not open");
+      const { unmount } = render(<DockHost />);
+      await screen.findByText(/doc pane: docs\/review.md/);
+      unmount();
+
+      // A same-session transcript is a distinct exact Back owner, promoted
+      // on phone. A captured absolute A target must not be inferred again.
+      openDocBeside({ session, reference, sourcePaneId: transcriptId });
+      if (placement === "phone-created") {
+        workspaceStore.getState().closePane(review.id);
+        openDocBeside({ session, reference: reviewReference, sourcePaneId: transcriptId });
+      }
+      workspaceStore.getState().focusPane(spec.id);
+      const before = workspaceStore.getState();
+      const owner = before.panes.find((pane) => pane.id === transcriptId);
+      const metadata = before.panes
+        .filter((pane) => pane.type === "doc")
+        .map((pane) => ({ pane, state: documentPaneState(pane) }));
+      expect(documentPaneState(spec)).toEqual({ reference, origin: owner, reopen: 1 });
+      render(<DockHost />);
+      await screen.findByText(/doc pane: docs\/spec.md/);
+
+      for (const pane of before.panes)
+        expect(workspaceStore.getState().panes.find((candidate) => candidate.id === pane.id)).toBe(pane);
+      for (const { pane, state } of metadata) expect(documentPaneState(pane)).toBe(state);
+      expect(workspaceStore.getState().focusedPaneId).toBe(spec.id);
+      expect(workspaceStore.getState().mainPane()).toBe(owner);
+      expect(workspaceStore.getState().panes.filter((pane) => pane.slot === "main")).toHaveLength(1);
+      expect(document.querySelectorAll(".dv-groupview")).toHaveLength(2);
+      expect(workspaceStore.getState().panes.filter((pane) => pane.type === "doc")).toHaveLength(2);
+      const persisted = localStorage.getItem(LAYOUT_KEY);
+      expect(persisted).not.toContain("readTarget");
+      expect(persisted).not.toContain("provenance");
+      expect(persisted).not.toContain("origin");
+      expect(persisted).not.toContain("reopen");
+      if (placement === "phone-created") expect(documentPaneState(review)).toBeUndefined();
+    } finally {
+      cleanup();
+      restoreSession();
+      restoreTranscript();
+    }
+  },
+);
 
 test("falls back to opening welcome when localStorage has nothing saved", async () => {
   render(<DockHost />);

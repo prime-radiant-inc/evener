@@ -832,6 +832,74 @@ describe("exact Open origin lifetime", () => {
     expect(transcriptOpenOrigin(restoredLeaf)).toBeUndefined();
   });
 
+  test.each(["saved", "empty", "invalid"])(
+    "live reconstruction with %s geometry retains exact records and document/transcript state",
+    async (shape) => {
+      const { openDocBeside } = await import("../panes/doc/openDoc");
+      const { workspace, owner, leaf, transcriptOpenOrigin } = await retainedOriginPair();
+      const reference = bindFilePath("/work/owner/docs/a.md:12", "/work/owner");
+      if (!reference) throw new Error("reference did not bind");
+      openDocBeside({ session: "local:owner", reference, sourcePaneId: owner.id });
+      openDocBeside({ session: "local:owner", reference, sourcePaneId: owner.id });
+      const before = workspaceStore.getState();
+      const document = before.panes.find((pane) => pane.type === "doc");
+      if (!document) throw new Error("document did not open");
+      const documentState = documentPaneState(document);
+      expect(documentState).toEqual({ reference, origin: owner, reopen: 1 });
+      const fake = new FakeDockviewApi();
+      registerDockviewApi(asDockviewApi(fake));
+      registerDockviewApi(null);
+      registerDockviewApi(asDockviewApi(fake));
+      fake.fromJSONBehavior = () => {
+        if (shape === "invalid") throw new Error("invalid layout");
+        fake.panels =
+          shape === "empty"
+            ? []
+            : before.panes.map((pane) => ({
+                id: pane.id,
+                params: { paneType: pane.type, paneParams: pane.params },
+              }));
+        fake.activePanel = { id: leaf.id };
+      };
+
+      expect(workspace.restoreLayout({}, { preserveLivePanes: true })).toBe(shape !== "invalid");
+
+      expect(workspaceStore.getState().panes).toBe(before.panes);
+      expect(workspaceStore.getState().focusedPaneId).toBe(document.id);
+      expect(documentPaneState(document)).toBe(documentState);
+      expect(transcriptOpenOrigin(leaf)).toBe(owner);
+    },
+  );
+
+  test("live reconstruction does not resurrect closed panes from stale geometry or discard phone-created records", async () => {
+    const { workspace, owner, leaf, transcriptOpenOrigin } = await retainedOriginPair();
+    const fake = new FakeDockviewApi();
+    registerDockviewApi(asDockviewApi(fake));
+    registerDockviewApi(null);
+    workspace.closePane(leaf.id);
+    const replacementId = workspace.openPane("transcript", leaf.params);
+    const replacement = workspaceStore.getState().panes.find((pane) => pane.id === replacementId);
+    const before = workspaceStore.getState();
+    fake.fromJSONBehavior = () => {
+      fake.panels = [owner, leaf].map((pane) => ({
+        id: pane.id,
+        params: { paneType: pane.type, paneParams: pane.params },
+      }));
+      fake.activePanel = { id: leaf.id };
+    };
+    registerDockviewApi(asDockviewApi(fake));
+
+    workspace.restoreLayout({}, { preserveLivePanes: true });
+
+    expect(workspaceStore.getState().panes).toBe(before.panes);
+    expect(workspaceStore.getState().panes).toContain(replacement);
+    expect(workspaceStore.getState().panes).not.toContain(leaf);
+    expect(transcriptOpenOrigin(leaf)).toBeUndefined();
+    if (!replacement) throw new Error("replacement did not open");
+    expect(transcriptOpenOrigin(replacement)).toBeUndefined();
+    expect(workspaceStore.getState().focusedPaneId).toBe(replacementId);
+  });
+
   test.each(["same identities", "reused identities", "invalid layout"])(
     "layout restoration with %s clears non-persisted origin edges",
     async (shape) => {
