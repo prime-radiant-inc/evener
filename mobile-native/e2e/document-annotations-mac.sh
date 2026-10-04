@@ -164,12 +164,13 @@ PY
     cmp "$app/Evener" "$installed/Evener"
     cmp "$app/main.jsbundle" "$installed/main.jsbundle"
     ;;
-  font-diagnostic)
+  font-diagnostic|empty-diagnostic)
     # Reinstall this source's exact retained app for supported metadata
     # inspection. No rebuild, selection assertions or GREEN claim follows.
-    test -z "$sim_id"
-    app="$checkout/annotation-derived-data/Build/Products/Release-iphonesimulator/Evener.app"
-    /usr/bin/python3 - "$app" "$source_artifacts/app-inventory.json" <<'PY'
+    if [[ "$phase" == font-diagnostic ]]; then test -z "$sim_id"; fi
+    if [[ -z "$sim_id" ]]; then
+      app="$checkout/annotation-derived-data/Build/Products/Release-iphonesimulator/Evener.app"
+      /usr/bin/python3 - "$app" "$source_artifacts/app-inventory.json" <<'PY'
 import hashlib, json, os, sys
 root, inventory = sys.argv[1:]
 for row in json.load(open(inventory)):
@@ -177,12 +178,17 @@ for row in json.load(open(inventory)):
     assert digest == row['sha256'], row['path']
 print('Diagnostic app bytes match the retained source inventory')
 PY
-    test "$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$app/Info.plist")" = com.primeradiant.evener.native
-    create_simulator
-    xcrun simctl install "$sim_id" "$app"
-    installed=$(xcrun simctl get_app_container "$sim_id" com.primeradiant.evener.native app)
-    cmp "$app/Evener" "$installed/Evener"
-    cmp "$app/main.jsbundle" "$installed/main.jsbundle"
+      test "$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$app/Info.plist")" = com.primeradiant.evener.native
+      create_simulator
+      xcrun simctl install "$sim_id" "$app"
+      installed=$(xcrun simctl get_app_container "$sim_id" com.primeradiant.evener.native app)
+      cmp "$app/Evener" "$installed/Evener"
+      cmp "$app/main.jsbundle" "$installed/main.jsbundle"
+      if [[ "$phase" == empty-diagnostic ]]; then
+        xcrun simctl ui "$sim_id" content_size extra-extra-large
+        test "$(xcrun simctl ui "$sim_id" content_size)" = extra-extra-large
+      fi
+    fi
     ;;
   code-preservation-scaled)
     test -n "$sim_id"
@@ -190,7 +196,6 @@ PY
     test "$(xcrun simctl ui "$sim_id" content_size)" = extra-extra-large
     printf 'Owned simulator system content size: extra-extra-large\n'
     ;;
-  empty-diagnostic) test -n "$sim_id";;
   long-press|code-preservation|qualify) test -n "$sim_id";;
   *) exit 2;;
 esac
