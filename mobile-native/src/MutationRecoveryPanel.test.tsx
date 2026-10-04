@@ -3,7 +3,7 @@
 // offers a restore of a rejected row's text and an exact-target discard of a
 // single row. The projection, the action gate and the discard wrapper are
 // pure; the rows show as ghosts at the transcript's end (session/ghosts.ts and
-// session/QueuedMessages.test.tsx), and the failure line renders through the
+// session/GhostRows.test.tsx), and the failure line renders through the
 // shared native testkit so a green run is proof about the real component.
 
 import { act } from "react-test-renderer";
