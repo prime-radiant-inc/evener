@@ -241,6 +241,221 @@ func TestMemoryContextGuidanceCapability(t *testing.T) {
 	}
 }
 
+func TestMemoryScopeRootRecovery(t *testing.T) {
+	t.Parallel()
+	for _, scope := range []string{"personal", "project"} {
+		t.Run(scope, func(t *testing.T) {
+			root := t.TempDir()
+			paths := map[string]string{
+				"personal": memorySeed(t, root, "personal", "opaque-personal-before-701"),
+				"project":  memorySeed(t, root, "projects/fixture-project", "opaque-project-before-702"),
+			}
+			other := "personal"
+			if scope == other {
+				other = "project"
+			}
+			wantState, wantBody := "current", "opaque-"+scope+"-before-701"
+			if scope == "project" {
+				wantBody = "opaque-project-before-702"
+			}
+			healthy, err := os.ReadFile(paths[other])
+			if err != nil {
+				t.Fatal(err)
+			}
+			step := func(req llm.Request) llm.Response {
+				state, body, _ := memoryRequestIndex(t, req, scope)
+				t.Logf("%s state=%s body=%q want=%s %q", scope, state, body, wantState, wantBody)
+				if state != wantState || body != wantBody {
+					t.Fatalf("restored scope not visible: state=%s body=%q want=%s %q", state, body, wantState, wantBody)
+				}
+				state, body, _ = memoryRequestIndex(t, req, other)
+				if state != "current" || body != string(healthy) {
+					t.Fatalf("healthy scope=%s %q", state, body)
+				}
+				return finalResponse("ordinary work completed")
+			}
+			s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: root, MemoryProjectID: "fixture-project"}), withSteps(step, step, step, step, func(req llm.Request) llm.Response {
+				step(req)
+				return memoryCallResponse("memory_read", map[string]any{"scope": scope, "file_path": "MEMORY.md"})
+			}, func(req llm.Request) llm.Response {
+				memoryRequireResult(t, req, "memory_read", wantBody)
+				return finalResponse("restored native read completed")
+			}))
+			run := func() {
+				t.Helper()
+				if _, err := s.ProcessInput(context.Background(), "opaque-recovery-input-703", nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			run()
+			path := paths[scope]
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Remove(filepath.Dir(path)); err != nil {
+				t.Fatal(err)
+			}
+			wantState, wantBody = "missing", ""
+			run()
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			wantState, wantBody = "current", "opaque-recovered-704"
+			if err := os.WriteFile(path, []byte(wantBody), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			run()
+			result, err := s.execMemoryRead(context.Background(), s.env, map[string]any{"scope": scope, "file_path": "MEMORY.md"})
+			if err != nil || !strings.Contains(fmt.Sprint(result), wantBody) {
+				t.Fatalf("native recovered read=%v err=%v", result, err)
+			}
+			outside := t.TempDir()
+			outsideIndex := filepath.Join(outside, "MEMORY.md")
+			if err := os.WriteFile(outsideIndex, []byte("opaque-outside-705"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			for _, remove := range []string{path, filepath.Dir(path)} {
+				if err := os.Remove(remove); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.Symlink(outside, filepath.Dir(path)); err != nil {
+				t.Fatal(err)
+			}
+			wantState, wantBody = "unavailable", ""
+			run()
+			for _, name := range []string{"memory_read", "memory_write", "memory_delete"} {
+				if res := memoryExec(t, s, name, map[string]any{"scope": scope, "file_path": "MEMORY.md", "content": "bad"}); !res.IsError {
+					t.Fatalf("symlink replacement accepted %s", name)
+				}
+			}
+			if got, err := os.ReadFile(outsideIndex); err != nil || string(got) != "opaque-outside-705" {
+				t.Fatalf("outside bytes=%q err=%v", got, err)
+			}
+			if err := os.Remove(filepath.Dir(path)); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Mkdir(filepath.Dir(path), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			wantState, wantBody = "current", "opaque-after-symlink-706"
+			if err := os.WriteFile(path, []byte(wantBody), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			run()
+		})
+	}
+}
+
+func TestMemoryScopeRootRecoveryDeleteLease(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	path := memorySeed(t, root, "personal", "opaque-delete-713")
+	s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: root}))
+	env, err := s.memoryEnvironment("personal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result := memoryExec(t, s, "memory_delete", map[string]any{"scope": "personal", "file_path": "MEMORY.md"}); result.IsError {
+		t.Fatal(result.Output)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("deleted file remains: %v", err)
+	}
+	s.Close()
+	if !reflect.ValueOf(env).Elem().FieldByName("sbfs").IsNil() {
+		t.Fatal("native delete did not drain its environment lease")
+	}
+	s.memoryMu.Lock()
+	remaining := len(s.memoryEnvUsers)
+	s.memoryMu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("native delete left lease entries=%d", remaining)
+	}
+}
+
+func TestMemoryScopeRootRecoveryRetirement(t *testing.T) {
+	t.Parallel()
+	for _, operation := range []string{"read", "index_read"} {
+		t.Run(operation, func(t *testing.T) {
+			root := t.TempDir()
+			path := memorySeed(t, root, "personal", "opaque-admitted-old-711")
+			started, release := make(chan struct{}), make(chan struct{})
+			var once sync.Once
+			unblock := func() { once.Do(func() { close(release) }) }
+			defer unblock()
+			var armed atomic.Bool
+			s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: root, testOnly: testConfig{memoryBeforeIO: func(scope, op string) error {
+				if scope == "personal" && op == operation && armed.CompareAndSwap(true, false) {
+					close(started)
+					<-release
+				}
+				return nil
+			}}}))
+			old, err := s.memoryEnvironment("personal")
+			if err != nil {
+				t.Fatal(err)
+			}
+			armed.Store(true)
+			type observation struct {
+				body string
+				err  error
+			}
+			done := make(chan observation, 1)
+			go func() {
+				if operation == "index_read" {
+					p := s.readMemoryIndex("personal")
+					if p.Status != "current" {
+						done <- observation{err: fmt.Errorf("index status=%s", p.Status)}
+						return
+					}
+					done <- observation{body: p.Content}
+					return
+				}
+				result, err := s.execMemoryRead(context.Background(), s.env, map[string]any{"scope": "personal", "file_path": "MEMORY.md"})
+				done <- observation{body: fmt.Sprint(result), err: err}
+			}()
+			<-started
+			if err := os.Rename(filepath.Dir(path), filepath.Dir(path)+"-old"); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Mkdir(filepath.Dir(path), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte("opaque-replacement-712"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			result, err := s.execMemoryRead(context.Background(), s.env, map[string]any{"scope": "personal", "file_path": "MEMORY.md"})
+			if err != nil || !strings.Contains(fmt.Sprint(result), "opaque-replacement-712") {
+				t.Fatalf("replacement read=%v err=%v", result, err)
+			}
+			closed := make(chan struct{})
+			go func() { s.Close(); close(closed) }()
+			select {
+			case <-closed:
+			case <-time.After(3 * time.Second):
+				unblock()
+				<-closed
+				t.Fatal("Close waited for admitted memory operation")
+			}
+			unblock()
+			observed := <-done
+			if observed.err != nil || !strings.Contains(observed.body, "opaque-admitted-old-711") || strings.Contains(observed.body, "opaque-replacement-712") {
+				t.Fatalf("admitted operation lost original authority: %+v", observed)
+			}
+			if !reflect.ValueOf(old).Elem().FieldByName("sbfs").IsNil() {
+				t.Fatal("replaced environment was not retired after its last admitted operation")
+			}
+			s.memoryMu.Lock()
+			remaining := len(s.memoryEnvUsers) + len(s.memoryRoots) + len(s.memoryEnvs) + len(s.memoryIndexReaders)
+			s.memoryMu.Unlock()
+			if remaining != 0 {
+				t.Fatalf("memory lifetime entries after drain=%d", remaining)
+			}
+		})
+	}
+}
+
 func TestMemoryContextTransitions(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()

@@ -273,6 +273,8 @@ type Session struct {
 	// Memory environments are independent of workspace policy and cwd.
 	memoryMu            sync.Mutex
 	memoryEnvs          map[string]*execenv.LocalExecutionEnvironment
+	memoryRoots         map[string]*execenv.ConfinedFileRoot
+	memoryEnvUsers      map[*execenv.LocalExecutionEnvironment]int
 	memoryEnvFlights    map[string]*memoryEnvironmentFlight
 	memoryClosed        bool
 	memoryLastProjected map[string]memoryProjection

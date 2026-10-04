@@ -4,11 +4,29 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 )
 
 // NewConfinedFileEnvironment grants file operations only beneath relativeRoot.
 // The host anchor is trusted; its relative tail is created by shared confinement.
 func NewConfinedFileEnvironment(stateRoot, relativeRoot string) (*LocalExecutionEnvironment, error) {
+	root, err := NewConfinedFileRoot(stateRoot, relativeRoot)
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	return root.Open(nil)
+}
+
+// ConfinedFileRoot retains host authority while memory storage is requalified.
+// Ordinary environments still retain their original scope fd for their lifetime.
+type ConfinedFileRoot struct {
+	mu                      sync.Mutex
+	host                    *sandboxFS
+	stateRoot, relativeRoot string
+}
+
+func NewConfinedFileRoot(stateRoot, relativeRoot string) (*ConfinedFileRoot, error) {
 	if stateRoot == "" || !filepath.IsAbs(stateRoot) {
 		return nil, fmt.Errorf("memory state root must be absolute")
 	}
@@ -20,22 +38,81 @@ func NewConfinedFileEnvironment(stateRoot, relativeRoot string) (*LocalExecution
 		return nil, err
 	}
 	host := newScratchSandboxFS(stateRoot)
-	defer host.retire()
-	root := filepath.Join(stateRoot, relativeRoot)
+	if _, err := host.rootFd(stateRoot); err != nil {
+		host.retire()
+		return nil, err
+	}
+	return &ConfinedFileRoot{host: host, stateRoot: stateRoot, relativeRoot: filepath.Clean(relativeRoot)}, nil
+}
+
+func (r *ConfinedFileRoot) Close() {
+	r.mu.Lock()
+	host := r.host
+	r.host = nil
+	r.mu.Unlock()
+	host.retire()
+}
+
+// Open reuses previous only when the fixed tail still names the same directory.
+// The caller owns previous's lifetime, including admitted operations on it.
+func (r *ConfinedFileRoot) Open(previous *LocalExecutionEnvironment) (*LocalExecutionEnvironment, error) {
+	r.mu.Lock()
+	host := r.host
+	if host == nil {
+		r.mu.Unlock()
+		return nil, fmt.Errorf("file root is closed")
+	}
+	host.acquire()
+	r.mu.Unlock()
+	defer host.release()
+	root := filepath.Join(r.stateRoot, r.relativeRoot)
 	if err := host.mkdirAll("memory", root); err != nil {
 		return nil, err
 	}
-	env := NewLocalExecutionEnvironment(root)
-	layer := newScratchSandboxFS(root)
-	// Open beneath the already-captured host anchor, never through the scope's
-	// host path. Transfer this fd to the lasting scope layer before retiring host.
-	fd, err := openBeneathRoot(host.rootFds[stateRoot], filepath.ToSlash(filepath.Clean(relativeRoot)), os.O_RDONLY, 0)
+	fd, err := openBeneathRoot(host.rootFds[r.stateRoot], filepath.ToSlash(r.relativeRoot), os.O_RDONLY, 0)
 	if err != nil {
 		return nil, err
 	}
+	// Stat a separately opened descriptor, never the host path. The temporary
+	// os.File owns only its duplicate, not the fd transferred to the layer.
+	info, err := confinedDirectoryInfo(fd)
+	if err != nil {
+		_ = os.NewFile(uintptr(fd), root).Close()
+		return nil, err
+	}
+	if previous != nil {
+		previous.sbMu.Lock()
+		layer := previous.sbfs
+		layer.acquire()
+		previous.sbMu.Unlock()
+		if layer != nil {
+			oldFd, oldErr := layer.rootFd(root)
+			if oldErr == nil {
+				oldInfo, statErr := confinedDirectoryInfo(oldFd)
+				if statErr == nil && os.SameFile(info, oldInfo) {
+					layer.release()
+					_ = os.NewFile(uintptr(fd), root).Close()
+					return previous, nil
+				}
+			}
+			layer.release()
+		}
+	}
+	env := NewLocalExecutionEnvironment(root)
+	layer := newScratchSandboxFS(root)
 	layer.rootFds[root] = fd
 	env.Sandbox = layer.policy
 	// Keep the layer so all operations share the same root-fd lifetime.
 	env.sbfs = layer
 	return env, nil
+}
+
+func confinedDirectoryInfo(fd int) (os.FileInfo, error) {
+	dup, err := openBeneathRoot(fd, ".", os.O_RDONLY, 0)
+	if err != nil {
+		return nil, err
+	}
+	f := os.NewFile(uintptr(dup), "confined-root")
+	defer f.Close()
+	return f.Stat()
 }

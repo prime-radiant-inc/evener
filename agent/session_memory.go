@@ -105,10 +105,6 @@ func (s *Session) memoryEnvironment(scope string) (*execenv.LocalExecutionEnviro
 		s.memoryMu.Unlock()
 		return nil, fmt.Errorf("session is closing")
 	}
-	if env := s.memoryEnvs[scope]; env != nil {
-		s.memoryMu.Unlock()
-		return env, nil
-	}
 	if flight := s.memoryEnvFlights[scope]; flight != nil {
 		s.memoryMu.Unlock()
 		<-flight.done
@@ -119,32 +115,96 @@ func (s *Session) memoryEnvironment(scope string) (*execenv.LocalExecutionEnviro
 		s.memoryEnvFlights = make(map[string]*memoryEnvironmentFlight)
 	}
 	s.memoryEnvFlights[scope] = flight
+	previous, root := s.memoryEnvs[scope], s.memoryRoots[scope]
 	s.memoryMu.Unlock()
 
 	// Root creation can stall too. Never hold session locks across host I/O.
 	err := s.beforeMemoryIO(scope, "setup")
 	var env *execenv.LocalExecutionEnvironment
+	if err == nil && root == nil {
+		root, err = execenv.NewConfinedFileRoot(s.cfg.MemoryStateRoot, relative)
+	}
 	if err == nil {
-		env, err = execenv.NewConfinedFileEnvironment(s.cfg.MemoryStateRoot, relative)
+		env, err = root.Open(previous)
 	}
 	s.memoryMu.Lock()
 	delete(s.memoryEnvFlights, scope)
-	if s.memoryClosed && env != nil {
-		s.memoryMu.Unlock()
-		env.Cleanup()
-		s.memoryMu.Lock()
-		env, err = nil, fmt.Errorf("session is closing")
-	}
-	if env != nil {
-		if s.memoryEnvs == nil {
-			s.memoryEnvs = make(map[string]*execenv.LocalExecutionEnvironment)
+	var retire *execenv.LocalExecutionEnvironment
+	if s.memoryClosed {
+		if env != previous {
+			retire = env
 		}
-		s.memoryEnvs[scope] = env
+		env, err = nil, fmt.Errorf("session is closing")
+	} else {
+		if root != nil {
+			if s.memoryRoots == nil {
+				s.memoryRoots = make(map[string]*execenv.ConfinedFileRoot)
+			}
+			s.memoryRoots[scope] = root
+		}
+		// Keep previous alive on a qualification fault, but do not hand it out.
+		// A later access retries beneath the same captured host authority.
+		if env != nil {
+			if s.memoryEnvs == nil {
+				s.memoryEnvs = make(map[string]*execenv.LocalExecutionEnvironment)
+			}
+			s.memoryEnvs[scope] = env
+			if previous != env && s.memoryEnvUsers[previous] == 0 {
+				retire = previous
+			}
+		}
 	}
+	closed := s.memoryClosed
+	s.memoryMu.Unlock()
+	if retire != nil {
+		retire.Cleanup()
+	}
+	if closed && root != nil {
+		root.Close()
+	}
+	s.memoryMu.Lock()
 	flight.env, flight.err = env, err
 	close(flight.done)
 	s.memoryMu.Unlock()
 	return env, err
+}
+
+// Lease the environment before the external pre-I/O boundary. Requalification
+// and Close stop admitting it, but cannot retire it until this operation ends.
+func (s *Session) acquireMemoryEnvironment(scope string) (*execenv.LocalExecutionEnvironment, func(), error) {
+	for {
+		env, err := s.memoryEnvironment(scope)
+		if err != nil {
+			return nil, nil, err
+		}
+		s.memoryMu.Lock()
+		if s.memoryClosed {
+			s.memoryMu.Unlock()
+			return nil, nil, fmt.Errorf("session is closing")
+		}
+		if s.memoryEnvs[scope] != env {
+			s.memoryMu.Unlock()
+			continue
+		}
+		if s.memoryEnvUsers == nil {
+			s.memoryEnvUsers = make(map[*execenv.LocalExecutionEnvironment]int)
+		}
+		s.memoryEnvUsers[env]++
+		s.memoryMu.Unlock()
+		return env, func() {
+			s.memoryMu.Lock()
+			s.memoryEnvUsers[env]--
+			unused := s.memoryEnvUsers[env] == 0
+			if unused {
+				delete(s.memoryEnvUsers, env)
+			}
+			retire := unused && (s.memoryClosed || s.memoryEnvs[scope] != env)
+			s.memoryMu.Unlock()
+			if retire {
+				env.Cleanup()
+			}
+		}, nil
+	}
 }
 
 func (s *Session) beforeMemoryIO(scope, operation string) error {
@@ -158,13 +218,18 @@ func (s *Session) closeMemoryEnvironments() {
 	s.memoryMu.Lock()
 	s.memoryClosed = true
 	var envs []*execenv.LocalExecutionEnvironment
-	for scope, env := range s.memoryEnvs {
-		if s.memoryIndexReaders[scope] != env {
+	for _, env := range s.memoryEnvs {
+		if s.memoryEnvUsers[env] == 0 {
 			envs = append(envs, env)
 		}
 	}
+	roots := s.memoryRoots
+	s.memoryRoots = nil
 	s.memoryEnvs = nil
 	s.memoryMu.Unlock()
+	for _, root := range roots {
+		root.Close()
+	}
 	for _, env := range envs {
 		// Shared confinement retires fds once an admitted file operation ends.
 		// Index readers and late setup workers retire their own environments.
@@ -174,10 +239,11 @@ func (s *Session) closeMemoryEnvironments() {
 
 func (s *Session) readMemoryIndex(scope string) memoryProjection {
 	p := memoryProjection{Scope: scope, Status: "unavailable"}
-	env, err := s.memoryEnvironment(scope)
+	env, release, err := s.acquireMemoryEnvironment(scope)
 	if err != nil {
 		return p
 	}
+	defer release()
 	// Admit before the pre-read boundary, not merely before ReadFileRaw. Close
 	// must not retire this reusable environment before the reader acquires its
 	// confined layer. One flight per scope makes this reader its sole owner.
@@ -194,13 +260,7 @@ func (s *Session) readMemoryIndex(scope string) memoryProjection {
 	defer func() {
 		s.memoryMu.Lock()
 		delete(s.memoryIndexReaders, scope)
-		closed := s.memoryClosed
 		s.memoryMu.Unlock()
-		if closed {
-			// Close stays finite even if raw I/O cannot be interrupted. Cleanup
-			// runs after this operation releases its layer, before flight.done.
-			env.Cleanup()
-		}
 	}()
 	if err := s.beforeMemoryIO(scope, "index_read"); err != nil {
 		return p

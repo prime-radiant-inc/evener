@@ -32,60 +32,67 @@ func registerMemoryTools(reg *tool.Registry, s *Session) error {
 }
 
 // memoryFileArgs changes only path authority; shared executors own file semantics.
-func (s *Session) memoryFileArgs(args map[string]any, key, operation string) (*execenv.LocalExecutionEnvironment, map[string]any, error) {
-	env, err := s.memoryEnvironment(stringArg(args, "scope"))
+func (s *Session) memoryFileArgs(args map[string]any, key, operation string) (*execenv.LocalExecutionEnvironment, map[string]any, func(), error) {
+	env, release, err := s.acquireMemoryEnvironment(stringArg(args, "scope"))
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	path := stringArg(args, key)
 	if key == "path" && path == "" {
 		path = "."
 	}
 	if !filepath.IsLocal(path) {
-		return nil, nil, fmt.Errorf("memory path must be relative and remain in its scope")
+		release()
+		return nil, nil, nil, fmt.Errorf("memory path must be relative and remain in its scope")
 	}
 	forwarded := maps.Clone(args)
 	forwarded[key] = filepath.Join(env.WorkingDirectory(), path)
 	if err := s.beforeMemoryIO(stringArg(args, "scope"), operation); err != nil {
-		return nil, nil, err
+		release()
+		return nil, nil, nil, err
 	}
-	return env, forwarded, nil
+	return env, forwarded, release, nil
 }
 
 func (s *Session) execMemoryWrite(ctx context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
-	env, args, err := s.memoryFileArgs(args, "file_path", "write")
+	env, args, release, err := s.memoryFileArgs(args, "file_path", "write")
 	if err != nil {
 		return nil, err
 	}
+	defer release()
 	return execFileWrite(ctx, env, args, s.fileReadGuard(env))
 }
 
 func (s *Session) execMemoryRead(ctx context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
-	env, args, err := s.memoryFileArgs(args, "file_path", "read")
+	env, args, release, err := s.memoryFileArgs(args, "file_path", "read")
 	if err != nil {
 		return nil, err
 	}
+	defer release()
 	return execFileRead(ctx, env, args, s.fileReadGuard(env))
 }
 func (s *Session) execMemoryEdit(ctx context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
-	env, args, err := s.memoryFileArgs(args, "file_path", "edit")
+	env, args, release, err := s.memoryFileArgs(args, "file_path", "edit")
 	if err != nil {
 		return nil, err
 	}
+	defer release()
 	return execFileEdit(ctx, env, args, s.fileReadGuard(env))
 }
 func (s *Session) execMemorySearch(ctx context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
-	env, args, err := s.memoryFileArgs(args, "path", "search")
+	env, args, release, err := s.memoryFileArgs(args, "path", "search")
 	if err != nil {
 		return nil, err
 	}
+	defer release()
 	return execFileGrep(ctx, env, args)
 }
 func (s *Session) execMemoryDelete(_ context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
-	env, args, err := s.memoryFileArgs(args, "file_path", "delete")
+	env, args, release, err := s.memoryFileArgs(args, "file_path", "delete")
 	if err != nil {
 		return nil, err
 	}
+	defer release()
 	path := stringArg(args, "file_path")
 	if _, err := env.ReadFileRaw(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err

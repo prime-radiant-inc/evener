@@ -80,6 +80,15 @@ finite wait and admits no overlapping index reads per scope. A late abandoned
 read is discarded; later access or model boundaries retry and can recover
 without restarting the session.
 
+The session requalifies each fixed scope directory beneath its captured host
+anchor before admitting memory access. A regular directory restored at that
+scope becomes usable in the same session. Symlink replacements remain refused,
+and replacing the host pathname cannot redirect the captured authority.
+Unchanged directories reuse their environment and read-before-write state.
+Replaced environments retire only after admitted index and native operations
+finish, including operations paused before filesystem I/O. Close does not wait
+for stalled storage, and those late operations own their eventual retirement.
+
 Each write/edit/delete changes one file using the shared filesystem primitive.
 Page and index edits are separate calls, not a wiki transaction. There is no
 revision check, replay receipt or stronger concurrent-edit guarantee. A whole

@@ -126,14 +126,23 @@ Automatic index-only retrieval is not credited by the explicit-tool oracle.
 Observed final-response usage includes auxiliary calls, but unfinished-response
 usage and cost without a cited price remain unknown. Cancellation does not
 prove billing stops. Two pairs cannot establish reliability or savings.
-Retained live attempts do not establish a memory comparison. An earlier attempt
-stopped during private registry setup. A later attempt ran all four arms and ten
-stages, but every final verifier failed before testing because it selected an
-older Go toolchain. The old evaluator treated those compiler failures as task
-failures and continued spending, so none of those ten independent checks ran.
-Offline qualification proves the repaired selection and stop behavior, not live
-model behavior, reliability or savings. Any later live run needs fresh controller
-authorization and valid executed held-out checks, not an automatic retry.
+The retained repaired-harness comparison is a valid negative result: the opt-in
+command exited 1 although all ten final stage checks actually executed and passed
+18 held-out tests. All ten model sessions hit their logical-call caps without
+normal completion. No native memory calls occurred, and every wiki snapshot was
+empty. The run used 96 logical calls and, separately, 96 completion HTTP attempts,
+accounted for by 86 root responses and ten naming auxiliaries.
+
+Seven successful visible checker calls used export-style environment setup that
+the narrow application oracle does not credit. Those checks prove execution,
+not memory application or benefit. Recall, correction, reliability and savings
+remain unproved. Initial verifier diagnostics and the exact live wire tool
+advertisement were not retained. Collector completion/duration fields are not
+valid outcome evidence; actual terminal events and elapsed timings are used.
+Infrastructure-stop diagnostic retention also remains limited. Historical invalid
+attempts remain in retained reports, not evidence of a valid comparison. Any
+later live run needs fresh controller authorization and valid executed held-out
+checks, not an automatic retry or changed success threshold.
 
 ## Setup checklist
 
