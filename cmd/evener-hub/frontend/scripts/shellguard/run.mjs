@@ -27,6 +27,7 @@ import {
 } from "../browserGuardCdp.mjs";
 import { describeBrowserStartupFailure, startBrowserGuard, waitForBrowserReady } from "../browserGuardProcess.mjs";
 import { Driver } from "../skillguard/run.mjs";
+import { measureDelayedFloatingDock } from "./startup.mjs";
 
 const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -159,6 +160,13 @@ function assertDockResize(result) {
 async function measureFloatingDock(page) {
   const driver = new Driver({});
   driver.page = page;
+  await driver.waitPage(
+    `(async () => {
+      const { getDockviewApi } = await import('/src/shell/workspace.ts');
+      return getDockviewApi() != null;
+    })()`,
+    { label: "real floating fixture's restored workspace" },
+  );
   await evaluate(
     driver.send,
     `(async () => {
@@ -923,6 +931,11 @@ async function main() {
         }
       }
     }
+    const delayedFloatingDock = await measureDelayedFloatingDock(
+      cdpEndpoint, `http://127.0.0.1:${vitePort}/shellguard.html`, BOOT, VIEWPORT, measureFloatingDock,
+    );
+    failures.push(...assertFloatingDock(delayedFloatingDock));
+    console.log(`shellguard delayed workspace: ${JSON.stringify(delayedFloatingDock)}`);
     if (failures.length === 0) {
       console.log(
         `shellguard ok: document ${result.document.scrollHeight}px in a ${result.viewport.height}px viewport, ` +
