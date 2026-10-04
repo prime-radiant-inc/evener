@@ -235,7 +235,14 @@ final class DocumentAnnotationsUITests: XCTestCase {
             XCTAssertEqual(app.staticTexts["native-probe-code-case"].label, "Code case \(index)")
             let reference = app.staticTexts["native-probe-code-reference"]
             let candidate = app.staticTexts["native-probe-code-candidate"]
-            // Empty text may not create a VoiceOver element. Its geometry remains in the receipt.
+            // Containers stay exposed even when empty text has no VoiceOver node.
+            // Identical unchanged padding makes their frames catch missing lines.
+            let referenceContainer = app.otherElements["native-probe-code-reference-container"]
+            let candidateContainer = app.otherElements["native-probe-code-candidate-container"]
+            XCTAssertTrue(referenceContainer.exists, "RN container geometry, case \(index)")
+            XCTAssertTrue(candidateContainer.exists, "Candidate container geometry, case \(index)")
+            XCTAssertEqual(candidateContainer.frame.width, referenceContainer.frame.width, accuracy: tolerance)
+            XCTAssertEqual(candidateContainer.frame.height, referenceContainer.frame.height, accuracy: tolerance)
             if !text.isEmpty {
                 XCTAssertEqual(Array(reference.label.utf16), Array(text.utf16), "Unchanged RN VoiceOver text, case \(index)")
                 XCTAssertEqual(Array(candidate.label.utf16), Array(text.utf16), "Candidate VoiceOver text, case \(index)")

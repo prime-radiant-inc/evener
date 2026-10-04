@@ -59,7 +59,7 @@ function ReaderCode({ text, id }: { text: string; id: string }) {
 	const { palette } = useColors();
 	const code = useCodeText();
 	return (
-		<View style={{ backgroundColor: palette.inset, borderRadius: 12 }}>
+		<View testID={`${id}-container`} style={{ backgroundColor: palette.inset, borderRadius: 12 }}>
 			<ScrollView horizontal contentContainerStyle={{ paddingVertical: 12, paddingHorizontal: 14 }}>
 				<Text testID={id} allowFontScaling={allowFontScaling} selectable style={code}>
 					{text}
@@ -83,7 +83,7 @@ function NativeReaderCode({
 	const { palette } = useColors();
 	const code = useCodeText();
 	return (
-		<View style={{ backgroundColor: palette.inset, borderRadius: 12 }}>
+		<View testID={`${id}-container`} style={{ backgroundColor: palette.inset, borderRadius: 12 }}>
 			<ScrollView horizontal contentContainerStyle={{ paddingVertical: 12, paddingHorizontal: 14 }}>
 				<EnrichedMarkdownCodeText
 					text={text}

@@ -2780,10 +2780,10 @@ index 0000000..39f253c
 +#endif
 diff --git a/node_modules/react-native-enriched-markdown/ios/EnrichedMarkdownCodeText.mm b/node_modules/react-native-enriched-markdown/ios/EnrichedMarkdownCodeText.mm
 new file mode 100644
-index 0000000..226286e
+index 0000000..d780a60
 --- /dev/null
 +++ b/node_modules/react-native-enriched-markdown/ios/EnrichedMarkdownCodeText.mm
-@@ -0,0 +1,290 @@
+@@ -0,0 +1,294 @@
 +#import "EnrichedMarkdownCodeText.h"
 +#import "EnrichedMarkdownCodeTextComponentDescriptor.h"
 +#import "EnrichedMarkdownCodeTextShadowNode.h"
@@ -2795,7 +2795,8 @@ index 0000000..226286e
 +using namespace facebook::react;
 +
 +static NSMutableAttributedString *ENRMCodeAttributedText(const EnrichedMarkdownCodeTextProps &props,
-+                                                         CGFloat fontScale, LayoutDirection direction)
++                                                         CGFloat fontScale, LayoutDirection direction,
++                                                         NSString *measurementPlaceholder = nil)
 +{
 +  auto attributes = TextAttributes::defaultTextAttributes();
 +  attributes.fontFamily = props.fontFamily;
@@ -2814,8 +2815,8 @@ index 0000000..226286e
 +  else if (props.writingDirection == "rtl") attributes.baseWritingDirection = WritingDirection::RightToLeft;
 +  else attributes.baseWritingDirection = WritingDirection::Natural;
 +
-+  NSString *text = [[NSString alloc] initWithBytes:props.text.data() length:props.text.size()
-+                                         encoding:NSUTF8StringEncoding];
++  NSString *text = measurementPlaceholder ?: [[NSString alloc] initWithBytes:props.text.data() length:props.text.size()
++                                                                    encoding:NSUTF8StringEncoding];
 +  auto result = [[NSMutableAttributedString alloc] initWithString:text
 +                                                      attributes:RCTNSTextAttributesFromTextAttributes(attributes)];
 +  return result;
@@ -2839,15 +2840,18 @@ index 0000000..226286e
 +facebook::react::Size ENRMMeasureCodeText(const EnrichedMarkdownCodeTextProps &props, const LayoutContext &context,
 +                                         const LayoutConstraints &constraints)
 +{
-+  if (props.text.empty()) return ENRMClampMeasuredSize(CGSizeZero, constraints);
 +  // These objects belong solely to this calling thread, not the mounted leaf.
++  // RN measures an empty paragraph with an I carrying its base text attributes,
++  // then resets width to zero. Keep the same intrinsic empty-line height without
++  // inserting any placeholder into the mounted drawing/Copy/selection storage.
 +  auto text = ENRMCodeAttributedText(props, ENRMFontScaleForMeasurement(props.allowFontScaling, context),
-+                                     constraints.layoutDirection);
++                                     constraints.layoutDirection, props.text.empty() ? @"I" : nil);
 +  auto storage = ENRMCreateCodeTextStorage(text, CGSizeMake(constraints.maximumSize.width, CGFLOAT_MAX));
 +  auto layout = storage.layoutManagers.firstObject;
 +  auto container = layout.textContainers.firstObject;
 +  [layout ensureLayoutForTextContainer:container];
 +  auto size = [layout usedRectForTextContainer:container].size;
++  if (props.text.empty()) size.width = 0;
 +  const auto scale = context.pointScaleFactor;
 +  size.width = std::ceil(size.width * scale) / scale;
 +  size.height = std::ceil(size.height * scale) / scale;
