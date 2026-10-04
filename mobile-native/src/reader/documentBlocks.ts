@@ -6,6 +6,7 @@
 // comment anchors recognize a block across versions (S9's fallback).
 import { filenameOf } from "@evener/appwire-client/docContent";
 import { lexer, type Tokens } from "marked";
+import { INLINE_DESTINATION } from "../markdownLinks";
 
 export type BlockKind = "heading" | "paragraph" | "listItem" | "code" | "table" | "quote" | "rule" | "html";
 
@@ -73,6 +74,9 @@ function isTableRule(line: string): boolean {
 	return /^[\s|:-]+$/.test(line) && line.includes("-");
 }
 
+const INLINE_IMAGE = new RegExp(String.raw`!\[([^\]]*)\]${INLINE_DESTINATION}`, "g");
+const INLINE_LINK = new RegExp(String.raw`\[([^\]]+)\]${INLINE_DESTINATION}`, "g");
+
 /** A block's words without markdown syntax: heading marks, quote marks, list
  * markers and task boxes, link and image syntax, and emphasis. Inline HTML tags
  * go too, unless `stripInlineTags` is false (the html block's own words keep
@@ -86,8 +90,8 @@ export function plainText(markdown: string, stripInlineTags = true): string {
 				.replace(/^\s{0,3}#{1,6}\s+/, "")
 				.replace(/^\s*>\s?/, "")
 				.replace(/^\s*(?:[-*+]|\d+[.)])\s+(?:\[[ xX]\]\s+)?/, "")
-				.replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
-				.replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+				.replace(INLINE_IMAGE, "$1")
+				.replace(INLINE_LINK, "$1")
 				.replace(/\*\*|__|~~|`/g, "")
 				.replace(/(^|[^\w*])\*([^*\n]+)\*(?=[^\w*]|$)/g, "$1$2")
 				.replace(/(^|[^\w_])_([^_\n]+)_(?=[^\w_]|$)/g, "$1$2")

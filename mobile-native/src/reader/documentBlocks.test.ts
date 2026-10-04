@@ -136,6 +136,15 @@ it("reads links and images as their words", () => {
 	);
 });
 
+it("reads a link's or image's URL holding a pair of parentheses as its words, leaving none of the URL", () => {
+	expect(plainText("See ![chart](https://x.test/a_(b).png) and [docs](https://x.test/d_(1)) here")).toBe(
+		"See chart and docs here",
+	);
+	expect(plainText('A [link](https://x.test/p "a (1) title") and ![img](u.png "fig (2)") end')).toBe(
+		"A link and img end",
+	);
+});
+
 it("drops inline HTML tags from a block's words, but not inside an inline code span", () => {
 	const [paragraph] = documentBlocks("Some <b>bold</b> text and a `Vec<String>` span.");
 	expect(paragraph?.kind).toBe("paragraph");

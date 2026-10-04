@@ -10,3 +10,9 @@ export function externalMarkdownLink(target: string): string | null {
 		return null;
 	}
 }
+
+/** An inline link's or image's destination, `(url)` or `(url "title")`, as a
+ * regex source. Its parentheses can hold a pair of their own (a_(b).png, a
+ * title's "(1)"), one level deep, as real URLs need; a URL with pairs nested
+ * deeper, or escaped or unbalanced parentheses, isn't taken whole. */
+export const INLINE_DESTINATION = String.raw`\((?:[^()]|\([^()]*\))*\)`;
