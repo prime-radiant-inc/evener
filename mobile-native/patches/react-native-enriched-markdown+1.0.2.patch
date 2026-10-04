@@ -3770,22 +3770,38 @@ index a668c26..3140e72 100644
 
 diff --git a/node_modules/react-native-enriched-markdown/lib/module/EnrichedMarkdownCodeTextNativeComponent.js b/node_modules/react-native-enriched-markdown/lib/module/EnrichedMarkdownCodeTextNativeComponent.js
 new file mode 100644
-index 0000000..3b1ecf9
+index 0000000..7161cfa
 --- /dev/null
 +++ b/node_modules/react-native-enriched-markdown/lib/module/EnrichedMarkdownCodeTextNativeComponent.js
-@@ -0,0 +1,5 @@
+@@ -0,0 +1,21 @@
 +import { codegenNativeComponent } from 'react-native';
-+export default codegenNativeComponent('EnrichedMarkdownCodeText', {
-+  interfaceOnly: true
-+});
++const NativeComponentRegistry = require('react-native/Libraries/NativeComponent/NativeComponentRegistry');
++let nativeComponentName = 'EnrichedMarkdownCodeText';
++export const __INTERNAL_VIEW_CONFIG = {
++  uiViewClassName: "EnrichedMarkdownCodeText",
++  validAttributes: {
++    text: true,
++    documentSnapshotId: true,
++    blockSourceRange: true,
++    fontFamily: true,
++    fontSize: true,
++    lineHeight: true,
++    textColor: require('react-native/Libraries/Components/View/ReactNativeStyleAttributes').colorAttribute,
++    textAlign: true,
++    writingDirection: true,
++    selectable: true,
++    allowFontScaling: true
++  }
++};
++export default NativeComponentRegistry.get(nativeComponentName, () => __INTERNAL_VIEW_CONFIG);
 +//# sourceMappingURL=EnrichedMarkdownCodeTextNativeComponent.js.map
 diff --git a/node_modules/react-native-enriched-markdown/lib/module/EnrichedMarkdownCodeTextNativeComponent.js.map b/node_modules/react-native-enriched-markdown/lib/module/EnrichedMarkdownCodeTextNativeComponent.js.map
 new file mode 100644
-index 0000000..40e9c0e
+index 0000000..06f593a
 --- /dev/null
 +++ b/node_modules/react-native-enriched-markdown/lib/module/EnrichedMarkdownCodeTextNativeComponent.js.map
 @@ -0,0 +1 @@
-+{"version":3,"names":["codegenNativeComponent","interfaceOnly"],"sources":["../../src/EnrichedMarkdownCodeTextNativeComponent.ts"],"sourcesContent":["import {\n  codegenNativeComponent,\n  type CodegenTypes,\n  type ColorValue,\n  type ViewProps,\n} from 'react-native';\n\ninterface NativeProps extends ViewProps {\n  text: string;\n  documentSnapshotId: string;\n  blockSourceRange: Readonly<{\n    start: CodegenTypes.Int32;\n    end: CodegenTypes.Int32;\n  }>;\n  fontFamily: string;\n  fontSize: CodegenTypes.Float;\n  lineHeight: CodegenTypes.Float;\n  textColor: ColorValue;\n  textAlign: string;\n  writingDirection: string;\n  selectable: boolean;\n  allowFontScaling: boolean;\n}\n\nexport default codegenNativeComponent<NativeProps>('EnrichedMarkdownCodeText', {\n  interfaceOnly: true,\n});\n"],"mappings":"AAAA,SACEA,sBAAsB,QAIjB,cAAc;AAmBrB,eAAeA,sBAAsB,CAAc,0BAA0B,EAAE;EAC7EC,aAAa,EAAE;AACjB,CAAC,CAAC","ignoreList":[]}
++{"version":3,"names":["codegenNativeComponent","NativeComponentRegistry","require","nativeComponentName","__INTERNAL_VIEW_CONFIG","uiViewClassName","validAttributes","text","documentSnapshotId","blockSourceRange","fontFamily","fontSize","lineHeight","textColor","colorAttribute","textAlign","writingDirection","selectable","allowFontScaling","get"],"sources":["../../src/EnrichedMarkdownCodeTextNativeComponent.ts"],"sourcesContent":["import {\n  codegenNativeComponent,\n  type CodegenTypes,\n  type ColorValue,\n  type ViewProps,\n} from 'react-native';\n\ninterface NativeProps extends ViewProps {\n  text: string;\n  documentSnapshotId: string;\n  blockSourceRange: Readonly<{\n    start: CodegenTypes.Int32;\n    end: CodegenTypes.Int32;\n  }>;\n  fontFamily: string;\n  fontSize: CodegenTypes.Float;\n  lineHeight: CodegenTypes.Float;\n  textColor: ColorValue;\n  textAlign: string;\n  writingDirection: string;\n  selectable: boolean;\n  allowFontScaling: boolean;\n}\n\nexport default codegenNativeComponent<NativeProps>('EnrichedMarkdownCodeText', {\n  interfaceOnly: true,\n});\n"],"mappings":"AAAA,SACEA,sBAAsB,QAIjB,cAAc;AAmBrB,MAAAC,uBAEG,GAFHC,OAEG,CAFH,gEAEE,CAAC;AAFH,IAAAC,mBAEG,GAFH,0BAEG;AAFH,aAAAC,sBAEG,GAFH;EAAAC,eAEG,EAFH,0BAEG;EAFHC,eAEG,EAFH;IAAAC,IAEG,EAFH,IAEG;IAFHC,kBAEG,EAFH,IAEG;IAFHC,gBAEG,EAFH,IAEG;IAFHC,UAEG,EAFH,IAEG;IAFHC,QAEG,EAFH,IAEG;IAFHC,UAEG,EAFH,IAEG;IAFHC,SAEG,EAFHX,OAEG,CAFH,mEAEE,CAAC,CAFHY,cAEG;IAFHC,SAEG,EAFH,IAEG;IAFHC,gBAEG,EAFH,IAEG;IAFHC,UAEG,EAFH,IAEG;IAFHC,gBAEG,EAFH;EAEE;AAAA,CAAC;AAFH,eAAAjB,uBAEG,CAFHkB,GAEG,CAFHhB,mBAEG,EAFH,MAAAC,sBAEE,CAAC","ignoreList":[]}
 diff --git a/node_modules/react-native-enriched-markdown/lib/module/index.js b/node_modules/react-native-enriched-markdown/lib/module/index.js
 index dd17039..23151a7 100644
 --- a/node_modules/react-native-enriched-markdown/lib/module/index.js

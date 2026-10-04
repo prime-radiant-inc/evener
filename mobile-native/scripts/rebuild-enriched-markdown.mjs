@@ -47,6 +47,7 @@ function main() {
 	const babel = require("@babel/core");
 	const typescriptPreset = require.resolve("@babel/preset-typescript");
 	const jsxPlugin = require.resolve("@babel/plugin-transform-react-jsx");
+	const codegenPlugin = require.resolve("@react-native/babel-plugin-codegen");
 	const inputs = sourceFiles.map((relative) => path.join(packageRoot, relative));
 	inputs.forEach(assertNotSymlink);
 	const options = {
@@ -152,7 +153,8 @@ function main() {
 			babelrc: false,
 			configFile: false,
 			presets: [[typescriptPreset, { allowDeclareFields: true }]],
-			plugins: [[jsxPlugin, { runtime: "automatic" }], relativeModuleExtensions],
+			// Native specs need their typed configuration compiled before erasure.
+			plugins: [codegenPlugin, [jsxPlugin, { runtime: "automatic" }], relativeModuleExtensions],
 			sourceMaps: true,
 			sourceFileName: path.relative(path.dirname(output), input).split(path.sep).join("/"),
 		});
