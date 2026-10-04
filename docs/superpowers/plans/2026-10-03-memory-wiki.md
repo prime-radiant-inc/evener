@@ -1,5 +1,12 @@
 # Memory Wiki Implementation Plan
 
+> **Superseded. Do not execute.** Jesse chose file-at-a-time wrappers around the
+> existing file tools and free-form model-authored content with a recommended
+> format only. The batch, schema, date, and receipt contracts below are historical.
+> Review the revised [specification](../specs/2026-10-03-memory-wiki-design.md)
+> before writing a replacement plan. Preserve existing code and review evidence;
+> do not resume the parser fixes or durable-batch work from this plan.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Carry verified lessons and preferences between Evener tasks through host-owned personal and project Markdown wikis without weakening workspace boundaries or losing acknowledged edits.
