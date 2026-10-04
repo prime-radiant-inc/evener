@@ -14,10 +14,9 @@
 // followed by Rename, the tree-gated Pin/Archive/Delete organization group,
 // and Shut down. The composer placement alone can also lead with the
 // narrow-layout turn verbs (Stop/Steer - SessionMenuProps.turnVerbs). The
-// hidden ActivityPanel stays mounted for summary discovery. Overview opens the
-// shared sidebar at every viewport, and ActivityPanel's refreshWhenHidden is
-// unconditional because the menu's "Overview · N" label reads the summary that
-// refresh maintains.
+// Overview count comes from useSessionActivity's summary. The hidden
+// ActivityPanel retains discovery and refresh wiring. Overview opens the
+// shared sidebar at every viewport.
 // Slash-command actions (goal/aside/compact/clear) are deliberately NOT in
 // the menu - the session's own composer owns those now (2026-08-14, "the
 // composer is where you act on this session"; the command palette only

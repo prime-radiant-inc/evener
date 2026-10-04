@@ -663,7 +663,6 @@ function assertOverview(result, viewport, theme) {
     }
   }
   if (result.document.width > viewport.width + 1 || result.document.height > viewport.height + 1) failures.push(`page overflow ${JSON.stringify(result.document)}`);
-  failures.push(...result.errors.map(error => `page error: ${error}`));
   return failures;
 }
 
@@ -822,7 +821,8 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
   return { tabStops, status: true, phoneTrap: !!viewport.mobile, childReturn: childGesture, originalPane: pane };
 }
 
-async function overviewOnPage(cdpEndpoint, vitePort, viewport, theme, childGesture) {
+// Browser regressions may prepare real page input without replacing the flow.
+export async function overviewOnPage(cdpEndpoint, vitePort, viewport, theme, childGesture, preparePage) {
   const target = await openPage(cdpEndpoint, "about:blank");
   const page = await connectPage(cdpEndpoint, target.id);
   const { send } = page;
@@ -834,6 +834,7 @@ async function overviewOnPage(cdpEndpoint, vitePort, viewport, theme, childGestu
     await evaluate(send, `window.configureOverview(${JSON.stringify(theme)})`);
     await settleOverview(send);
     await openRailOverview(send);
+    const fixture = preparePage && await preparePage(send);
     const result = await measureOverview(send);
     if (process.env.EVENER_SCRATCH_DIR) {
       await evaluate(send, `(() => {
@@ -851,6 +852,11 @@ async function overviewOnPage(cdpEndpoint, vitePort, viewport, theme, childGestu
     } catch (error) {
       failures.push(`trusted interaction: ${error.message}`);
     }
+    await fixture?.afterInteraction;
+    // The initial geometry snapshot predates trusted input. Read this same
+    // page again even when an interaction failed, and report each event once.
+    result.errors = await evaluate(send, "window.__shellGuardErrors || []");
+    failures.push(...result.errors.map(error => `page error: ${error}`));
     return { result, failures };
   } finally {
     await clearViewportOverride(send);
@@ -971,7 +977,9 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exitCode = 1;
-});
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((error) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  });
+}
