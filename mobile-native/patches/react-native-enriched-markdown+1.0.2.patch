@@ -2780,10 +2780,10 @@ index 0000000..39f253c
 +#endif
 diff --git a/node_modules/react-native-enriched-markdown/ios/EnrichedMarkdownCodeText.mm b/node_modules/react-native-enriched-markdown/ios/EnrichedMarkdownCodeText.mm
 new file mode 100644
-index 0000000..8cd2058
+index 0000000..6a0563c
 --- /dev/null
 +++ b/node_modules/react-native-enriched-markdown/ios/EnrichedMarkdownCodeText.mm
-@@ -0,0 +1,287 @@
+@@ -0,0 +1,286 @@
 +#import "EnrichedMarkdownCodeText.h"
 +#import "EnrichedMarkdownCodeTextComponentDescriptor.h"
 +#import "EnrichedMarkdownCodeTextShadowNode.h"
@@ -2836,8 +2836,8 @@ index 0000000..8cd2058
 +  return storage;
 +}
 +
-+Size ENRMMeasureCodeText(const EnrichedMarkdownCodeTextProps &props, const LayoutContext &context,
-+                        const LayoutConstraints &constraints)
++facebook::react::Size ENRMMeasureCodeText(const EnrichedMarkdownCodeTextProps &props, const LayoutContext &context,
++                                         const LayoutConstraints &constraints)
 +{
 +  if (props.text.empty()) return ENRMClampMeasuredSize(CGSizeZero, constraints);
 +  // These objects belong solely to this calling thread, not the mounted leaf.
@@ -3025,7 +3025,6 @@ index 0000000..8cd2058
 +- (void)updateProps:(Props::Shared const &)props oldProps:(Props::Shared const &)oldProps
 +{
 +  [super updateProps:props oldProps:oldProps];
-+  _props = props;
 +  [self refreshCodeText];
 +}
 +
