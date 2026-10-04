@@ -50,12 +50,6 @@ export interface UsageRow {
 // truncated turn window says so); Cached/Total are always the thread's whole
 // -session cumulative figures, so they are labelled with the explicit session
 // scope, never whatever scope the derived pair got.
-/** Whether the usage lines have anything to show: a token count, or the
- * estimated cost. With both settings off the accounting is all null. */
-export function hasUsageLines(accounting: SessionAccounting): boolean {
-	return usageRows(accounting).length > 0 || accounting.cost !== null;
-}
-
 export function usageRows(accounting: Pick<SessionAccounting, "derived" | "cumulative"> | null): UsageRow[] {
 	if (!accounting) return [];
 	const { derived, cumulative } = accounting;
@@ -70,6 +64,12 @@ export function usageRows(accounting: Pick<SessionAccounting, "derived" | "cumul
 	add("Cached", cumulative?.cacheReadTokens, cumulativeUnit);
 	add("Total", cumulative?.totalTokens, cumulativeUnit);
 	return rows;
+}
+
+/** Whether the usage lines have anything to show: a token count, or the
+ * estimated cost. With both settings off the accounting is all null. */
+export function hasUsageLines(accounting: SessionAccounting): boolean {
+	return usageRows(accounting).length > 0 || accounting.cost !== null;
 }
 
 export interface NativeTranscriptPresentation {
