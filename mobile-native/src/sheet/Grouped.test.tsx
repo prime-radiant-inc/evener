@@ -335,6 +335,17 @@ describe("a form's error", () => {
 	});
 });
 
+describe("a grouped page", () => {
+	it("dismisses the keyboard when dragged (audit N7)", () => {
+		const tree = render(
+			<GroupedPage>
+				<View />
+			</GroupedPage>,
+		);
+		expect(tree.root.findByType("ScrollView" as never).props.keyboardDismissMode).toBe("on-drag");
+	});
+});
+
 describe("labels, footers and tags", () => {
 	it("uppercases a section label and keeps a machine label as typed in Menlo", () => {
 		const section = merged(texts(render(<GroupLabel>Where</GroupLabel>))[0]?.props.style);
