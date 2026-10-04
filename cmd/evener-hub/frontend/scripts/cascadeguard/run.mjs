@@ -79,6 +79,34 @@ async function openPeek(ref, kind) {
   await wait('document.querySelector("[data-testid=activity-peek]") !== null', `${kind} ancestor peek`);
 }
 
+async function assertSpineStatus(ref, state, text, signalLabel) {
+  const { reducedMotion, ...status } = await wait(`(() => {
+    const spine = document.querySelector('[data-testid="cascade-spine"][data-scope-ref=${q(ref)}]');
+    const runtime = spine?.querySelector('[data-runtime-state]');
+    if (!runtime || runtime.dataset.runtimeState !== ${q(state)}) return null;
+    const label = runtime.querySelector('[data-runtime-label]');
+    const signal = runtime.querySelector('[role="img"]');
+    const box = runtime.getBoundingClientRect();
+    const labelBox = label?.getBoundingClientRect();
+    return { width: box.width, height: box.height, title: runtime.title,
+      text: label?.textContent, hiddenFromAT: label?.getAttribute('aria-hidden'),
+      labelWidth: labelBox?.width, labelHeight: labelBox?.height,
+      signalLabel: signal?.getAttribute('aria-label') ?? null,
+      animation: signal ? getComputedStyle(signal).animationName : null,
+      reducedMotion: matchMedia("(prefers-reduced-motion: reduce)").matches };
+  })()`, `actual ${state} ancestor status`);
+  assert.ok(status.width <= 8.5 && status.height <= 8.5, `compact status must fit an 8px indicator, got ${status.width}x${status.height}`);
+  assert.equal(status.title, text, "exact runtime state remains available on hover");
+  assert.equal(status.text, text, "exact runtime state remains available to screen readers");
+  assert.notEqual(status.hiddenFromAT, "true");
+  assert.ok(status.labelWidth <= 1 && status.labelHeight <= 1, "runtime text does not paint horizontally in the spine");
+  assert.equal(status.signalLabel, signalLabel, "ancestor uses the session-list signal family");
+  if (signalLabel === "Running" && reducedMotion) {
+    assert.equal(status.animation, "none", "reduced motion keeps the running indicator still");
+  }
+  driver.milestone("compact-spine-status", { ref, state, ...status });
+}
+
 async function pendingImage(name, success) {
   const rejectedMarker = `[image ${(await driver.composerState(fixture.rootRef)).tiles + 1}]`;
   await holdCanvasCompletion();
@@ -212,10 +240,28 @@ async function sourceMutationJourney() {
   await driver.typeText(ref, "CASCADE_UNSENT_AFTER_QUEUE");
   await driver.click('[data-testid="statusbar"] button[aria-label^="Agents,"]');
   await drill(fixture.edges[0], 1);
+  await drill(fixture.edges[1], 2);
+  await assertSpineStatus(ref, "active", "Active", "Running");
+  await driver.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
+  await assertSpineStatus(ref, "active", "Active", "Running");
+  const screenshotViewport = await read("({ width: innerWidth, height: innerHeight })");
+  await driver.send("Emulation.setDeviceMetricsOverride", { width: 1600, height: 1050, deviceScaleFactor: 1, mobile: false });
+  await wait(readableGeometrySettled, "settled compact-status screenshot geometry");
+  await wait(`(() => {
+    const spine = document.querySelector('[data-testid="cascade-spine"][data-scope-ref=${q(ref)}]');
+    const track = spine?.parentElement;
+    if (!track) return false;
+    const ancestor = spine.getBoundingClientRect(), viewport = track.getBoundingClientRect();
+    return ancestor.left >= viewport.left && ancestor.right <= viewport.right;
+  })()`, "running ancestor visible in replacement screenshot");
+  await capture("compact-spine-status");
+  await driver.send("Emulation.setDeviceMetricsOverride", { ...screenshotViewport, deviceScaleFactor: 1, mobile: false });
+  await driver.send("Emulation.setEmulatedMedia", { features: [] });
   await observeGeometryAndFocus(ref);
   const releasedAfter = frames.length;
   driver.control("release-provider");
   await waitFrames(() => frames.slice(releasedAfter).some(frame => frame.direction === "Network.webSocketFrameReceived" && frame.method === "thread/status/changed" && frame.params.ref === ref && frame.params.status.type === "idle"), "actual source status settles after queued provider delivery");
+  await assertSpineStatus(ref, "idle", "Idle", null);
   assert.equal(await read("document.activeElement === window.__cascadeFocused"), true, "actual source status changes preserve focused element");
   assert.deepEqual(await read("window.__cascadeGeometryChanges"), [], "actual provider completion never changes geometry");
   await read("window.__cascadeGeometryObserver.disconnect()");
@@ -620,6 +666,7 @@ try {
     const r = n.getBoundingClientRect(); return { ref: n.dataset.scopeRef, kind: n.dataset.testid, x:r.x, y:r.y, width:r.width, height:r.height };
   })`);
   assert.deepEqual(boxes.map(n => n.ref), fixture.refs);
+  await assertSpineStatus(fixture.rootRef, "idle", "Idle", null);
   driver.milestone("six-edges", { boxes, sourcePaneId: fixture.sourcePaneId, tabs: fixture.sourceTabCount });
   const paint = await capture("six-edges");
   assert.ok(paint[0].chain[0].box.width >= 398.5, `parent transcript fills its readable column, got ${paint[0].chain[0].box.width}px`);
