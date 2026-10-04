@@ -3,6 +3,7 @@
 // is doing now, and Stop. Tapping the line jumps to the live end.
 import { SymbolView } from "expo-symbols";
 import { useEffect, useMemo, useReducer } from "react";
+import type { NavigationSessionSummary } from "@evener/appwire-client";
 import { Platform, Pressable, Text, useWindowDimensions, View } from "react-native";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 import { PulseMeter } from "../board/PulseMeter";
@@ -81,6 +82,7 @@ export function LiveStatusTray({
 	frames,
 	client,
 	sessionRef,
+	row,
 	inFront,
 	...tray
 }: Omit<StatusTrayProps, "line" | "perMinute"> & {
@@ -90,13 +92,16 @@ export function LiveStatusTray({
 	 * reports none for this session. */
 	client: ConversationClientLike | null;
 	sessionRef: string;
+	/** The session's navigation row, whose subagent tally stands in without a
+	 * fresh activity read, as on the Board. */
+	row?: NavigationSessionSummary;
 	inFront: boolean;
 }) {
 	const [, tick] = useReducer((count: number) => count + 1, 0);
 	const working = session?.status.type === "active";
 	const { activityOf } = useActivityPoll(client, tray.connected, inFront && working, sessionRef);
 	const now = Date.now();
-	const line = session ? trayLine(session, now, activityOf(sessionRef)) : null;
+	const line = session ? trayLine(session, now, activityOf(sessionRef), row) : null;
 	const shown = line !== null;
 	useEffect(() => {
 		if (!shown) return;

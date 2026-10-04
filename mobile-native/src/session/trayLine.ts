@@ -3,14 +3,14 @@
 // holds: the running turn's items, the running subagents, the model's retry
 // state, and lastFrameAt, which the package's reducer restamps on every
 // streamed frame (appwire-client/typescript/model.ts). The running-subagent
-// count comes from the hub's activity read when the screen has one, the same
-// count the Board's row names (spec 13.1).
+// count is the hub's, taken as the Board's row takes it (spec 13.1).
 import {
 	type ItemModel,
 	isActiveItem,
 	isInProgressStatus,
 	formatTokenCount,
 	type ModelRetryState,
+	type NavigationSessionSummary,
 	pendingTextJoined,
 	type SessionActivity,
 	type ThreadModel,
@@ -53,8 +53,14 @@ interface Step {
 const WAITING_TOOLS = new Set(["delegate", "delegate_send", "job_watch", "job_status", "job_list"]);
 
 /** activity is the hub's live read for this session (evener/activity/read),
- * when the screen holds a fresh one. */
-export function trayLine(session: TraySource, now: number, activity?: SessionActivity): TrayLine | null {
+ * when the screen holds a fresh one; row is the session's navigation row, when
+ * the screen has it. */
+export function trayLine(
+	session: TraySource,
+	now: number,
+	activity?: SessionActivity,
+	row?: NavigationSessionSummary,
+): TrayLine | null {
 	if (session.status.type !== "active") return null;
 	const intent = latestToolIntent(session);
 	if (intent) return { text: intent, attention: false };
@@ -73,11 +79,13 @@ export function trayLine(session: TraySource, now: number, activity?: SessionAct
 			? { text: `${retry} · no updates for ${compactDuration(silence)}`, attention: true }
 			: { text: retry, attention: false };
 	}
-	// The hub counts running subagents at every depth, which the Board's row
-	// names too; the session's own delegates, which list only the subagents it
-	// started itself, are the fallback without a read (an older hub, before
-	// the first poll, or offline).
-	const running = activity ? activity.runningSubagents : runningSubagents(session);
+	// The hub counts running subagents at every depth, and the Board's row
+	// names that count by this precedence (attention.ts's whyLine): a fresh
+	// activity read wins outright, even at zero; without one, the row's own
+	// tally (S3). The session's own delegates, which list only the subagents it
+	// started itself, are the last resort (a subagent's screen, or a hub with
+	// neither).
+	const running = activity?.runningSubagents ?? row?.subagents?.running ?? runningSubagents(session);
 	// An agent waiting on subagents is never stuck (Jesse's ruling on S5): a
 	// subagent inside one long model call sends nothing for minutes. Quiet
 	// below is unreachable while one runs, since every path with a running

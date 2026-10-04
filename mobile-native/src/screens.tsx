@@ -3184,6 +3184,7 @@ export function ConversationScreen({
 								// The hub reports activity only for top-level sessions.
 								client={subagentOf ? null : client}
 								sessionRef={route.params.ref}
+								row={fleetRow}
 								inFront={focused}
 								connected={connected}
 								canStop={!!permitted?.stop}

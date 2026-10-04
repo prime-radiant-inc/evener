@@ -172,25 +172,38 @@ describe("the tray's line (spec 8.3)", () => {
 
 	// Spec 13.1: one line, the same on the Board and in the tray. The root's
 	// thread carries only the subagents the coordinator started itself
-	// (agent/status.go lists the delegates the session owns), while the hub's
-	// activity read counts running subagents at every depth (app_activity.go's
-	// runningSubagents). Both surfaces take the hub's count, so a running
-	// grandchild, or a running child of a failed subagent, counts on both.
+	// (agent/status.go lists the delegates the session owns), while the hub
+	// counts running subagents at every depth: its activity read
+	// (app_activity.go's runningSubagents), and without one the session's
+	// navigation row tally (S3). The tray takes the same count by the same
+	// precedence the Board does, so a running grandchild, or a running child of
+	// a failed subagent, counts on both, and a fresh read wins over the tally.
+	const failed = { ...delegate("failed", 2), terminal: true, outcome: "failed" };
 	it.each([
 		{
 			tree: "a running subagent with its own running subagent, and a failed one whose subagent still runs",
-			delegates: [delegate("running", 1), { ...delegate("failed", 2), terminal: true, outcome: "failed" }],
-			hubRunning: 3,
+			delegates: [delegate("running", 1), failed],
+			read: 3,
+			tally: 2,
 			text: "Waiting on 3 subagents",
 		},
 		{
 			tree: "only a failed subagent whose own subagent still runs, long silent",
-			delegates: [{ ...delegate("failed", 2), terminal: true, outcome: "failed" }],
-			hubRunning: 1,
+			delegates: [failed],
+			read: 1,
+			tally: 0,
 			text: "Waiting on 1 subagent",
 		},
-	])("names the hub's running-subagent count, as the Board does: $tree", ({ delegates, hubRunning, text }) => {
-		const activity: SessionActivity = { ref: "local:root", minutes: [0, 0, 0, 0, 0, 0, 0], runningSubagents: hubRunning };
+		{
+			tree: "the same nested tree with no activity read",
+			delegates: [delegate("running", 1), failed],
+			read: undefined,
+			tally: 3,
+			text: "Waiting on 3 subagents",
+		},
+	])("names the hub's running-subagent count, as the Board does: $tree", ({ delegates, read, tally, text }) => {
+		const activity: SessionActivity | undefined =
+			read === undefined ? undefined : { ref: "local:root", minutes: [0, 0, 0, 0, 0, 0, 0], runningSubagents: read };
 		const row: NavigationSessionSummary = {
 			ref: "local:root",
 			host_id: "local",
@@ -200,10 +213,11 @@ describe("the tray's line (spec 8.3)", () => {
 			state: "active",
 			kind: "session",
 			live: true,
+			subagents: { running: tally, failed: 1, done: 0 },
 			children: [],
 		};
 		const board = whyLine({ row, state: "working" }, activity);
-		const tray = trayLine(session({ delegates, lastFrameAt: NOW - 15 * 60_000 }), NOW, activity);
+		const tray = trayLine(session({ delegates, lastFrameAt: NOW - 15 * 60_000 }), NOW, activity, row);
 		expect(board?.text).toBe(text);
 		expect(tray).toEqual({ text, attention: false });
 	});
