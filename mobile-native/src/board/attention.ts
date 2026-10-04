@@ -328,17 +328,9 @@ export function workingActivity(row: NavigationSessionSummary): string {
 	return commandOrWorking(row);
 }
 
-/** The subagent chip's text from the counts the shared gate shows
- * (subagentTallyToShow, the same one the web rail reads): "3 running",
- * "2 failed", or "2 running · 3 failed". The chip colors each run on its own,
- * so the running count stays in the neutral ink and only the failure reads in
- * the danger ink (D2): a failed subagent is not something the user must act
- * on, so it must not wear the Needs you attention ink. */
-export function subagentChipText(tally: { running: number; failed: number }): string {
-	const parts: string[] = [];
-	if (tally.running > 0) parts.push(`${tally.running} running`);
-	if (tally.failed > 0) parts.push(`${tally.failed} failed`);
-	return parts.join(" · ");
+/** The native session-list chip names running subagents only. */
+export function subagentChipText(tally: { running: number }): string {
+	return tally.running > 0 ? `${tally.running} running` : "";
 }
 
 export interface Usual {

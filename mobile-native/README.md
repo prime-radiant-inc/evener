@@ -140,6 +140,12 @@ lasts for the app lifetime and adds no disk persistence.
   reconnect, so its existing paging owner restores later rows without a phone
   retry loop. Renderer tests cover identity and view intent; device geometry,
   keyboard and VoiceOver remain separate qualification.
+- Board, project/location and pinned session rows show only running delegates
+  in their subagent chips. Settled failures have no visual or spoken count.
+  The session header keeps neutral Subagents access with the authoritative total,
+  or “count unknown” when only a delegate roster is available. A session's own
+  errors, current questions and approvals retain their attention and priority;
+  offline and stale-input rules remain unchanged.
 - Historical production roster reads were slow. Representative-data measurement
   and normal deployment verification remain open; tiny fixtures do not establish
   production responsiveness. Voice/barge-in is outside v1.

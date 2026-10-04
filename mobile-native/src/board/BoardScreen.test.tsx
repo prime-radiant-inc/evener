@@ -627,6 +627,53 @@ const chipLabels = (tree: ReactTestRenderer) =>
 		.map((node) => node.props.accessibilityLabel);
 const headerOptions = (nav: Navigation) => nav.setOptions.mock.calls.at(-1)?.[0];
 
+it("keeps own errors and live attention while settled delegate chips stay quiet", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const settled = { running: 0, failed: 3, done: 0 };
+	const rows = [
+		session("local:error", { title: "Own error", state: "errored", ask_pending: true, subagents: settled }),
+		session("local:question", {
+			title: "Question",
+			state: "awaiting",
+			ask_pending: true,
+			updated_at: minutesAgo(6),
+			subagents: settled,
+		}),
+		session("local:approval", { title: "Approval", state: "active", approval_pending: true, subagents: settled }),
+		session("local:mixed", { title: "Mixed work", state: "active", subagents: { running: 2, failed: 3, done: 0 } }),
+		session("local:stale", { title: "Stale question", state: "active", ask_pending: true, subagents: settled }),
+		session("local:offline", {
+			title: "Offline error",
+			state: "errored",
+			offline: true,
+			ask_pending: true,
+			subagents: settled,
+		}),
+	];
+	connect(id, hub({ ...fleet, live: [rows], needsYou: rows.slice(0, 3), pins: [], pinned: {} }).client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	expect(tree.root.findAllByType(BoardRow).map((node) => [node.props.item.row.title, node.props.item.state])).toEqual([
+		["Own error", "failed"],
+		["Question", "question"],
+		["Approval", "approval"],
+		["Mixed work", "working"],
+		["Stale question", "working"],
+	]);
+	expect(renderedText(tree)).not.toContain("3 failed");
+	expect(tree.root.findAll((node) => node.props.testID === "subagent-chip")).toHaveLength(1);
+	expect(renderedText(tree)).toContain("2 running");
+	for (const title of ["Own error", "Question", "Approval", "Mixed work", "Stale question"])
+		expect(rowTitled(tree, title).props.accessibilityLabel).not.toContain("3 failed");
+	expect(rowTitled(tree, "Own error").props.accessibilityLabel).toContain("Failed");
+	expect(rowTitled(tree, "Question").props.accessibilityLabel).toContain("waiting for your answer");
+	expect(rowTitled(tree, "Approval").props.accessibilityLabel).toContain("waiting for your permission");
+	expect(hasRow(tree, "Offline error")).toBe(false);
+	act(() => rowTitled(tree, "Mixed work").props.onPress());
+	expect(nav.navigate).toHaveBeenCalledWith("Conversation", { hubId: id, ref: "local:mixed", title: "Mixed work" });
+});
+
 it("renders the fleet's bands in order with their counts, and Idle starts folded", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);

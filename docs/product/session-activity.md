@@ -114,6 +114,16 @@ Footer and sidebar badges show a dash for unknown counts and name that state
 explicitly for assistive technology. Unknown evidence does not imply that a read
 is pending; collection views show their own loading progress.
 
+Native Board, project/location and pinned session rows use a native-only
+running-delegate chip gate over navigation tallies. Settled delegate failures
+have no visual or spoken count there; shared navigation selectors and web rail
+presentation retain their existing contract. The native session header's neutral
+Subagents chip uses the authoritative activity total without a failure suffix.
+Unknown counts with an existing delegate roster keep access and announce
+“count unknown”; disconnected headers omit the chip. A session's own errors,
+current questions and approvals retain their attention and priority, including
+the existing offline and stale-input rules.
+
 List arrays are always present. An empty array establishes emptiness only when
 the page is complete and has no issues. An incomplete page can contain no rows
 while reconstruction makes progress. Issues identify incomplete or unavailable
