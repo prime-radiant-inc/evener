@@ -285,7 +285,8 @@ export function waitingOnSubagents(count: number): string {
 /** No update for this long reads "Quiet" in a session's tray, on a
  * subagent's row and in the Activity list: the web transcript's threshold
  * (cmd/evener-hub/frontend/src/panes/session/transcript/flow/liveness.ts).
- * The Board's rows read the package's quietState instead. */
+ * The tray also waits this long before showing a first model retry. The
+ * Board's rows read the package's quietState instead. */
 export const AGENT_QUIET_AFTER_MS = 20_000;
 
 /** The why line of a running agent with nothing more to say: Quiet once it

@@ -340,8 +340,7 @@ export function subagentWhy(row: SubagentRow, now: number): SubagentWhy {
 		(entry) => entry.kind === "delegate" && delegateHasActiveWork(entry.delegate),
 	).length;
 	if (waiting > 0) return { text: waitingOnSubagents(waiting) };
-	const quiet = delegateTiming(delegate, now).quietForMs;
-	return { text: quiet === undefined ? "Working" : quietOrWorking(quiet) };
+	return { text: quietOrWorking(delegateTiming(delegate, now).quietForMs ?? 0) };
 }
 
 // Cache the same qualified entity identity used by the shared projection.
