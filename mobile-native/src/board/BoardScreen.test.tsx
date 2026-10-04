@@ -2377,6 +2377,7 @@ const screenOverBoard = {
 		{ key: "conversation", name: "Conversation" },
 	],
 };
+const boardAlone = { index: 0, routes: [{ key: "Sessions", name: "Sessions" }] };
 
 it("polls activity while the Board is in front and connected, a sheet over it included, and stops otherwise", async () => {
 	const id = hubId();
@@ -2400,7 +2401,7 @@ it("polls activity while the Board is in front and connected, a sheet over it in
 	await advance(ACTIVITY_POLL_MS * 3);
 	expect(fake.activityReads).toHaveLength(3);
 
-	harness.stack = { index: 0, routes: [{ key: "Sessions", name: "Sessions" }] };
+	harness.stack = boardAlone;
 	setFocused(true);
 	expect(fake.activityReads).toHaveLength(4);
 
@@ -2642,6 +2643,31 @@ it("keeps a row's Working order in step with its label when elapsed time alone c
 	// not up to a poll interval later (the label reads msSinceRead live; the
 	// sort order used to wait for the next successful read).
 	expect(workingTitles(tree)).toEqual(["Migrate schema", "Build docs", "Tidy imports"]);
+	act(() => tree.unmount());
+});
+
+it("keeps a fresh read through leaving front, so coming back shows each row's activity at once", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const shape: Fleet = { ...busyFleet, activity: [migrateRead(4)] };
+	const fake = hub(shape);
+	connect(id, fake.client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	expect(textsIn(rowTitled(tree, "Migrate schema"))).toContain("Quiet 4m");
+
+	harness.stack = screenOverBoard;
+	rerender(tree, nav);
+	await settle();
+	// Back within the read's freshness window, with the first read after the
+	// return failing: the read from before still shows, with no round trip of
+	// fallback lines.
+	shape.activity = null;
+	harness.stack = boardAlone;
+	rerender(tree, nav);
+	await settle();
+	expect(fake.activityReads).toHaveLength(2);
+	expect(textsIn(rowTitled(tree, "Migrate schema"))).toContain("Quiet 4m");
 	act(() => tree.unmount());
 });
 

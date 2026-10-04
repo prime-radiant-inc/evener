@@ -131,12 +131,21 @@ var MethodResultArms = map[string][]any{
 // SDK generators use these literals for narrowing, while producers use the same
 // Go constants. Keys are JSON field names, not Go field names.
 var StringDiscriminators = map[reflect.Type]map[string]string{
+	reflect.TypeFor[HostPlanPlanned]():                    {"outcome": HostPlanOutcomePlanned},
+	reflect.TypeFor[HostPlanNoToken]():                    {"outcome": HostPlanOutcomeNoToken},
 	reflect.TypeFor[HostMutationCommitted]():              {"outcome": string(HostMutationOutcomeCommitted)},
 	reflect.TypeFor[HostMutationCommittedRemoved]():       {"outcome": string(HostMutationOutcomeCommitted)},
 	reflect.TypeFor[HostMutationTeardownFailure]():        {"outcome": string(HostMutationOutcomeTeardownFailure)},
 	reflect.TypeFor[HostMutationTeardownFailureRemoved](): {"outcome": string(HostMutationOutcomeTeardownFailure)},
 	reflect.TypeFor[HostMutationCollisionDropped]():       {"outcome": string(HostMutationOutcomeCollisionDropped)},
 	reflect.TypeFor[HostMutationAmbiguous]():              {"outcome": string(HostMutationOutcomeAmbiguous)},
+	reflect.TypeFor[HostTeardownRetryCompleteLive]():      {"outcome": HostTeardownOutcomeComplete, "hostKind": HostKindLive},
+	reflect.TypeFor[HostTeardownRetryCompleteRemoved]():   {"outcome": HostTeardownOutcomeComplete, "hostKind": HostKindRemoved},
+	reflect.TypeFor[HostTeardownRetryClearedLive]():       {"outcome": HostTeardownOutcomeCleared, "hostKind": HostKindLive},
+	reflect.TypeFor[HostTeardownRetryClearedRemoved]():    {"outcome": HostTeardownOutcomeCleared, "hostKind": HostKindRemoved},
+	reflect.TypeFor[HostTeardownRetryFailedLive]():        {"outcome": HostTeardownOutcomeFailed, "hostKind": HostKindLive},
+	reflect.TypeFor[HostTeardownRetryFailedRemoved]():     {"outcome": HostTeardownOutcomeFailed, "hostKind": HostKindRemoved},
+	reflect.TypeFor[HostTeardownRecoverResult]():          {"outcome": HostTeardownOutcomeRecovered},
 }
 
 // NotificationSpec is one server→client notification: the wire name, the Go

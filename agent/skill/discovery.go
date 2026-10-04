@@ -171,7 +171,12 @@ func Discover(env execenv.ExecutionEnvironment, opts DiscoverOptions) Catalog {
 			return
 		}
 		for _, entry := range entries {
-			if !entry.IsDir() {
+			candidate, err := skillDirectory(absolute, entry)
+			if err != nil {
+				c.Diagnostics = append(c.Diagnostics, Diagnostic{Category: "unreadable_source", Source: filepath.Join(absolute, entry.Name()), Message: err.Error()})
+				continue
+			}
+			if !candidate {
 				continue
 			}
 			source := filepath.Join(absolute, entry.Name(), "SKILL.md")

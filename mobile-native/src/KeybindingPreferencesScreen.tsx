@@ -121,7 +121,11 @@ export function KeybindingPreferencesScreen({
 	return (
 		<SafeAreaView edges={["bottom", "left", "right"]} style={[styles.fill, { backgroundColor: colors.background }]}>
 			<KeyboardAvoidingView style={styles.fill} behavior={Platform.OS === "ios" ? "padding" : undefined}>
-				<ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ padding: 20, gap: 16 }}>
+				<ScrollView
+					keyboardShouldPersistTaps="handled"
+					keyboardDismissMode="on-drag"
+					contentContainerStyle={{ padding: 20, gap: 16 }}
+				>
 					<Copy>{connection.activeProfile.name}</Copy>
 					<Copy muted>
 						Configure this hub’s web keyboard shortcuts. This preview uses Apple keys. The web character-key setting can
