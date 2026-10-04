@@ -451,15 +451,17 @@ describe("each tool's evidence, as the tools print it", () => {
 	// either way the image reads as exactly its alt text, with nothing of the
 	// URL or title left behind.
 	it.each([
-		["a URL with balanced parentheses", "![a](https://x.test/a_(b).png)"],
-		["a URL ending in a pair of parentheses", "![a](https://x.test/a_(b))"],
-		["a title", '![a](https://x.test/a.png "t")'],
-		["a single-quoted title", "![a](https://x.test/a.png 't')"],
-		["a title with balanced parentheses", '![a](https://x.test/a.png "see (1)")'],
-		["balanced parentheses and a title", '![a](https://x.test/a_(b).png "t")'],
-		["an angle-bracketed URL", "![a](<https://x.test/a_(b).png>)"],
-	])("shows an image with %s as its alt text", (_name, image) => {
-		expect(skillMarkdown(image)).toBe("a");
+		["a URL with balanced parentheses", "![a](https://x.test/a_(b).png)", "a"],
+		["a URL ending in a pair of parentheses", "![a](https://x.test/a_(b))", "a"],
+		["a title", '![a](https://x.test/a.png "t")', "a"],
+		["a single-quoted title", "![a](https://x.test/a.png 't')", "a"],
+		["a title with balanced parentheses", '![a](https://x.test/a.png "see (1)")', "a"],
+		["balanced parentheses and a title", '![a](https://x.test/a_(b).png "t")', "a"],
+		["an angle-bracketed URL", "![a](<https://x.test/a_(b).png>)", "a"],
+		["an empty alt", "![](https://x.test/a_(b).png)", ""],
+		["an alt across lines", "![a\nb](https://x.test/a.png)", "a\nb"],
+	])("shows an image with %s as its alt text", (_name, image, alt) => {
+		expect(skillMarkdown(image)).toBe(alt);
 	});
 
 	it("leaves the text around an image, and links and parentheses of its own, as they were", () => {
@@ -471,22 +473,14 @@ describe("each tool's evidence, as the tools print it", () => {
 	});
 
 	// An image inside another's alt text surfaces when the outer one is
-	// stripped, and would load if it were left in the result.
-	it("shows an image nested in another's alt text as words", () => {
-		expect(skillMarkdown("![a ![b](https://x.test/b.png)](https://x.test/a.png)")).toBe("a b");
-	});
-
-	// However deep images nest, taking one out never leaves another behind.
-	it("shows images nested fifty deep as words", () => {
-		expect(skillMarkdown(`${"![".repeat(50)}x${"](https://x.test/u.png)".repeat(50)}`)).toBe("x");
-	});
-
+	// stripped, and would load if it were left in the result. However deep
+	// images nest, taking one out never leaves another behind.
 	it.each([
+		["an image nested in another's alt text", "![a ![b](https://x.test/b.png)](https://x.test/a.png)", "a b"],
 		["an image that taking out another completes", "![![](https://x.test/b.png)](https://x.test/a.png)", ""],
-		["an empty alt", "![](https://x.test/a_(b).png)", ""],
-		["an alt across lines", "![a\nb](https://x.test/a.png)", "a\nb"],
-	])("reads %s as its alt text", (_name, markdown, alt) => {
-		expect(skillMarkdown(markdown)).toBe(alt);
+		["images nested fifty deep", `${"![".repeat(50)}x${"](https://x.test/u.png)".repeat(50)}`, "x"],
+	])("shows %s as words", (_name, markdown, words) => {
+		expect(skillMarkdown(markdown)).toBe(words);
 	});
 
 	// A URL the pattern doesn't cover (parentheses nested two deep, an escaped

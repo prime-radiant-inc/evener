@@ -78,7 +78,7 @@ const IMAGE_RE = /!\[([^\]]*)\](?:\((?:[^()]|\([^()]*\))*\)|\[[^\]]*\])?/g;
 // A skill's markdown is its author's, and the phone's markdown view loads
 // images from their URLs, so each image, inline (![alt](url)), by reference
 // (![alt][ref]) or shortcut (![alt]), reads as its alt text instead. Taking
-// out an image can complete another (![a ![b](u)](v) leaves ![b](v)), so this
+// out an image can complete another (![a ![b](u)](v) leaves a ![b](v)), so this
 // repeats until none is left. Each pass shortens the text, so it ends.
 function withoutImages(markdown: string): string {
 	let text = markdown;
