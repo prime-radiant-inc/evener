@@ -37,6 +37,18 @@ final class DocumentAnnotationsUITests: XCTestCase {
         }
     }
 
+    // Diagnostic only, not part of qualify or a preservation pass. The pause
+    // permits inspecting RN's documented readonly attributedText with LLDB.
+    func testMixedFontMetadataReceipt() {
+        app.buttons["native-probe-code-comparison"].tap()
+        for _ in 0..<6 { app.buttons["native-probe-next-case"].tap() }
+        XCTAssertEqual(app.staticTexts["native-probe-code-case"].label, "Code case 6")
+        receipt("mixed-font-metadata-before-inspection")
+        print("MIXED_FONT_METADATA_READY")
+        Thread.sleep(forTimeInterval: 60)
+        receipt("mixed-font-metadata-after-inspection")
+    }
+
     private func point(_ name: String) throws -> XCUICoordinate {
         let env = ProcessInfo.processInfo.environment
         guard let x = env["ANNOTATION_\(name)_X"].flatMap(Double.init),
