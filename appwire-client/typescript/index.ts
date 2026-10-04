@@ -57,6 +57,7 @@ export {
   watchName,
   watchRowID,
 } from "./activityRows";
+export { hashAnnotationText } from "./annotationFingerprint";
 export type {
   ArchivedList,
   ArchivedListCatalog,
@@ -223,7 +224,6 @@ export {
   displayedFingerprint,
   editCommentText,
   formatAnnotationReference,
-  hashAnnotationText,
   invalidateCommentCapture,
   selectCommentPassage,
   sourcePositions,
