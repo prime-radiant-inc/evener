@@ -15,6 +15,9 @@ func ToArgs(r Resolved) []string {
 		out = append(out, flag, value)
 	}
 	e := r.Effective
+	if r.DisableMemory {
+		out = append(out, "--disable-memory")
+	}
 	if e.Model != "" {
 		add("--model", e.Model)
 	}

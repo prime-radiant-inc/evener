@@ -469,6 +469,9 @@ func baseSubagentToolPolicy(agent *plugin.Agent, canDelegate bool) (allTools boo
 		return true, nil, nil
 	case agent != nil && len(agent.Tools) > 0:
 		allowed = append([]string(nil), agent.Tools...)
+		if agent.PluginName == "builtin" {
+			allowed = appendUniqueStrings(allowed, nativeMemoryToolNames...)
+		}
 		allowed = appendUniqueStrings(allowed, intrinsicSubagentTools...)
 		// Delegation tools in a typed role's list are allowance-gated: a role
 		// granted delegation keeps delegate; a leaf loses it on every spawn
@@ -834,6 +837,11 @@ func (s *Session) prepareStableDelegateRun(ctx context.Context, descriptor deleg
 // (a one-shot run's descriptor restored under serve, or the reverse).
 func subagentConfigFromFrozenDescriptor(frozenConfig schema.ConfigSnapshot, parentCfg SessionConfig) SessionConfig {
 	subCfg := configFromSnapshot(frozenConfig.Clone())
+	subCfg.MemoryStateRoot = parentCfg.MemoryStateRoot
+	subCfg.DisableMemory = subCfg.DisableMemory || parentCfg.DisableMemory
+	if subCfg.MemoryProjectID != parentCfg.MemoryProjectID {
+		subCfg.MemoryProjectID = ""
+	}
 	subCfg.Project = parentCfg.Project
 	subCfg.LifetimeContext = parentCfg.LifetimeContext
 	subCfg.LLMRetryPolicy = parentCfg.LLMRetryPolicy
@@ -1105,6 +1113,9 @@ func (s *Session) prepareSubagentRunFromSelection(
 	} else {
 		subCfg.spawn.deniedToolNames = append([]string(nil), deniedTools...)
 	}
+	// Frozen descriptors remember old allowances, never a live parent's revoked
+	// native capability. Apply this on all construction paths, even all-tools.
+	subCfg.spawn.deniedToolNames = appendUniqueStrings(subCfg.spawn.deniedToolNames, s.unavailableMemoryToolNames()...)
 
 	var reqSandbox *sandbox.SandboxPolicy
 	if v, ok := ctx.Value(ctxDelegateSandboxPolicy).(*sandbox.SandboxPolicy); ok {

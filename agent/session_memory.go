@@ -15,6 +15,31 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
+var nativeMemoryToolNames = []string{"memory_read", "memory_write", "memory_edit", "memory_search", "memory_delete"}
+
+func (s *Session) unavailableMemoryToolNames() []string {
+	var denied []string
+	for _, name := range nativeMemoryToolNames {
+		if s.reg == nil || s.reg.Get(name) == nil {
+			denied = append(denied, name)
+		}
+	}
+	return denied
+}
+
+// Profiles and extensions cannot advertise placeholders for disabled or
+// unbound native memory. Run after registration, before caching definitions.
+func (s *Session) filterUnavailableMemoryTools() {
+	if !s.cfg.DisableMemory && s.cfg.MemoryStateRoot != "" {
+		return
+	}
+	for name := range s.reg.RegisteredNames() {
+		if strings.HasPrefix(name, "memory_") {
+			s.reg.Remove(name)
+		}
+	}
+}
+
 func (s *Session) memoryEnvironment(scope string) (*execenv.LocalExecutionEnvironment, error) {
 	if s.cfg.DisableMemory || s.cfg.MemoryStateRoot == "" {
 		return nil, fmt.Errorf("memory is disabled or unbound")
@@ -75,7 +100,7 @@ func (s *Session) closeMemoryEnvironments() {
 // maybeAppendMemoryContext projects only raw entry-file data, never topic files.
 // The model sees quoted lower-trust data inside core-owned currentness framing.
 func (s *Session) maybeAppendMemoryContext(ctx context.Context) {
-	if s.cfg.DisableMemory || s.cfg.MemoryStateRoot == "" {
+	if s.cfg.DisableMemory || s.cfg.MemoryStateRoot == "" || s.reg == nil || s.reg.Get("memory_read") == nil {
 		return
 	}
 	for _, scope := range []string{"personal", "project"} {

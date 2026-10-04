@@ -385,6 +385,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	visionModel := fs.String("vision-model", "", "vision side-channel model: 'off' disables image description, 'provider/model' or bare 'model' routes it (default: the session model)")
 	workDir := fs.String("dir", "", "working directory")
 	stateDir := fs.String("state-dir", "", "override runtime state directory")
+	disableMemory := fs.Bool("disable-memory", false, "disable native memory for this session, including on resume")
 	runDirFlag := fs.String("run-dir", "", "override rendezvous run directory")
 	resume := fs.String("resume", "", "resume a previous session by ID")
 	resumeLast := fs.Bool("resume-last", false, "resume the most recent session")
@@ -628,7 +629,14 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	if err := startupInterrupted(ctx, "probing the login shell PATH"); err != nil {
 		return err
 	}
+	memoryProjectID := ""
+	if !resuming {
+		memoryProjectID = resolveMemoryProjectID(env, os.Stderr)
+	}
 	sessionCfg := agent.SessionConfig{
+		MemoryStateRoot: cmdutil.DefaultStateRoot(),
+		MemoryProjectID: memoryProjectID,
+		DisableMemory:   *disableMemory,
 		// The session tree lives exactly as long as this daemon does. Shutdown
 		// waits for the input loop before it closes the session, so work that
 		// runs synchronously on that loop -- a Notification hook, which runs
@@ -699,6 +707,8 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	var sess *agent.Session
 	if resuming {
 		sess, err = deps.restoreSession(client, profile, env, resumedMeta, agent.RestoreSessionConfig{
+			MemoryStateRoot:             sessionCfg.MemoryStateRoot,
+			DisableMemory:               *disableMemory,
 			LifetimeContext:             ctx,
 			StateDir:                    sd,
 			Project:                     project,

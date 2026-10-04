@@ -42,10 +42,11 @@ type SessionConfig struct {
 	LifetimeContext context.Context `json:"-"`
 	artifactStore   artifactStore
 
-	// MemoryStateRoot and MemoryProjectID are trusted runtime-only bindings.
+	// MemoryStateRoot is the owning runtime host's binding, never persisted.
 	// An empty state root leaves library sessions without memory access.
+	// MemoryProjectID is trusted at launch and persisted, never inferred on resume.
 	MemoryStateRoot string `json:"-"`
-	MemoryProjectID string `json:"-"`
+	MemoryProjectID string `json:"memory_project_id,omitempty"`
 	DisableMemory   bool   `json:"disable_memory,omitempty"`
 
 	// Project is the resolved canonical project identity for this launch. It is
@@ -1059,6 +1060,8 @@ func (c SessionConfig) noOneToAsk() bool {
 // round-trip test guards against any field being dropped or misrouted.
 func (c SessionConfig) toSnapshot() schema.ConfigSnapshot {
 	return schema.ConfigSnapshot{
+		MemoryProjectID:             c.MemoryProjectID,
+		DisableMemory:               c.DisableMemory,
 		MaxToolRoundsPerInput:       c.MaxToolRoundsPerInput,
 		MaxTurns:                    c.MaxTurns,
 		DefaultCommandTimeoutMS:     c.DefaultCommandTimeoutMS,
@@ -1101,6 +1104,8 @@ func (c SessionConfig) toSnapshot() schema.ConfigSnapshot {
 // after loading a meta.json or snapshot from disk.
 func configFromSnapshot(s schema.ConfigSnapshot) SessionConfig {
 	return SessionConfig{
+		MemoryProjectID:             s.MemoryProjectID,
+		DisableMemory:               s.DisableMemory,
 		MaxToolRoundsPerInput:       s.MaxToolRoundsPerInput,
 		MaxTurns:                    s.MaxTurns,
 		DefaultCommandTimeoutMS:     s.DefaultCommandTimeoutMS,

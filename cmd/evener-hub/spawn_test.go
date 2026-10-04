@@ -45,6 +45,31 @@ func writeFakeEvener(t *testing.T, path, script string) {
 	}
 }
 
+func TestMemoryLaunchArgs(t *testing.T) {
+	t.Parallel()
+	for _, disabled := range []bool{false, true} {
+		r := launchconfig.Resolved{DisableMemory: disabled}
+		for name, args := range map[string][]string{
+			"spawn":  buildSpawnArgs(hubcore.SpawnRequest{Resolved: r, WorkingDir: t.TempDir(), StateDir: t.TempDir(), RunDir: t.TempDir()}),
+			"resume": buildResumeArgs(hubcore.ResumeRequest{Resolved: r, SessionID: "02wMz5Txv1C3Hut0M8GCeB", WorkingDir: t.TempDir(), StateDir: t.TempDir(), RunDir: t.TempDir()}),
+		} {
+			count := 0
+			for _, arg := range args {
+				if arg == "--disable-memory" {
+					count++
+				}
+			}
+			want := 0
+			if disabled {
+				want = 1
+			}
+			if count != want {
+				t.Errorf("%s disabled=%t flag count=%d want=%d argv=%v", name, disabled, count, want, args)
+			}
+		}
+	}
+}
+
 func TestBuildSpawnArgs(t *testing.T) {
 	ssering := 4096
 	req := hubcore.SpawnRequest{

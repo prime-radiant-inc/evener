@@ -6,19 +6,24 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/artifactstore"
 	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
 )
 
@@ -28,6 +33,533 @@ func memoryCallResponse(name string, args map[string]any) llm.Response {
 		panic(err)
 	}
 	return llm.Response{Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "memory-test", Type: "function", Name: name, Arguments: raw}}}}}
+}
+
+// Catches dropped persisted opt-out/project binding and accidental host-root persistence.
+func TestMemoryConfigRoundTrip(t *testing.T) {
+	t.Parallel()
+	cfg := SessionConfig{DisableMemory: true, MemoryProjectID: "fixture-project", MemoryStateRoot: t.TempDir()}
+	raw, err := json.Marshal(cfg.toSnapshot())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), cfg.MemoryStateRoot) {
+		t.Fatal("runtime root persisted")
+	}
+	var saved schema.ConfigSnapshot
+	if err := json.Unmarshal(raw, &saved); err != nil {
+		t.Fatal(err)
+	}
+	got := configFromSnapshot(saved)
+	if !got.DisableMemory || got.MemoryProjectID != "fixture-project" || got.MemoryStateRoot != "" {
+		t.Fatalf("disable=%t project=%q root=%q", got.DisableMemory, got.MemoryProjectID, got.MemoryStateRoot)
+	}
+	// Decode an old snapshot into a fresh value, as the real loader does.
+	saved = schema.ConfigSnapshot{}
+	if err := json.Unmarshal([]byte(`{}`), &saved); err != nil {
+		t.Fatal(err)
+	}
+	old := configFromSnapshot(saved)
+	if old.DisableMemory || old.MemoryProjectID != "" || old.MemoryStateRoot != "" {
+		t.Fatalf("old binding=%+v", old)
+	}
+}
+
+func memorySeed(t *testing.T, root, scope, body string) string {
+	t.Helper()
+	path := filepath.Join(root, "memory", scope, "MEMORY.md")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func memoryGitFixture(t *testing.T) (string, identifier.Project) {
+	t.Helper()
+	dir := t.TempDir()
+	if out, err := exec.Command("git", "init", dir).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %s %v", out, err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "workspace.txt"), []byte("opaque-workspace-29"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"add", "workspace.txt"}, {"-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "fixture"}} {
+		if out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %s %v", args, out, err)
+		}
+	}
+	project, err := identifier.ResolveProject(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir, project
+}
+
+func memoryWaitChild(t *testing.T, parent *Session, id string) *subagent {
+	t.Helper()
+	child := parent.subagents.get(id)
+	if child == nil {
+		t.Fatalf("actual child %s not constructed", id)
+	}
+	child.mu.Lock()
+	done := child.done
+	child.mu.Unlock()
+	<-done
+	return child
+}
+
+// Catches lost runtime binding on descriptor construction, role writes, late disabled
+// overrides, and restored children regaining live-parent revoked capabilities.
+func TestMemoryDelegateRestore(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"disabled-parent", "child-disabled", "project-revoked", "project-different", "tool-ceiling", "worktree-binding"} {
+		t.Run(mode, func(t *testing.T) {
+			workspace, project := memoryGitFixture(t)
+			host, history := t.TempDir(), t.TempDir()
+			memorySeed(t, host, "personal", "opaque-personal-72")
+			memorySeed(t, host, filepath.Join("projects", project.ID), "opaque-project-44")
+			var accesses, projectAccesses atomic.Int32
+			testCfg := testConfig{sandboxProber: bwrapCapableProber(workspace), disableDelegateIdleRelease: true, memoryBeforeIO: func(scope, operation string) error {
+				accesses.Add(1)
+				if scope == "project" {
+					projectAccesses.Add(1)
+				}
+				return nil
+			}}
+			s := newSession(t, withDir(workspace), withConfig(SessionConfig{StateDir: history, MemoryStateRoot: host, MemoryProjectID: project.ID, Project: project, MaxSubagentDepth: 2,
+				AcquireSessionOwnership: func(string) error { return nil }, testOnly: testCfg}), withSteps(func(llm.Request) llm.Response { return finalResponse("child finished") }))
+			args := delegateArgs{Task: "fixture read-only child", AgentType: "explorer", DelegationAllowance: new(0)}
+			if mode == "worktree-binding" {
+				args.Isolation = "worktree"
+			}
+			result := s.createDelegate(context.Background(), args)
+			if result.Err != nil {
+				t.Fatal(result.Err)
+			}
+			child := memoryWaitChild(t, s, result.ChildSessionID)
+			if child.sess.cfg.MemoryStateRoot != host || child.sess.cfg.MemoryProjectID != project.ID {
+				t.Fatalf("fresh child binding root=%q project=%q", child.sess.cfg.MemoryStateRoot, child.sess.cfg.MemoryProjectID)
+			}
+			if mode == "worktree-binding" && child.sess.currentEnv().WorkingDirectory() == workspace {
+				t.Fatal("worktree delegate was not isolated")
+			}
+			if res := memoryExec(t, child.sess, "memory_write", map[string]any{"scope": "project", "file_path": "child.txt", "content": "opaque-child-57"}); res.IsError {
+				t.Fatalf("read-only role memory write: %s", res.Output)
+			}
+			if res := memoryExec(t, child.sess, "write_file", map[string]any{"file_path": "workspace.txt", "content": "bad"}); !res.IsError {
+				t.Fatal("read-only role regained workspace tool")
+			}
+			if _, err := child.sess.currentEnv().WriteFile("workspace.txt", "bad"); err == nil {
+				t.Fatal("memory widened workspace policy")
+			}
+			if res := memoryExec(t, child.sess, "memory_read", map[string]any{"scope": "project", "file_path": "../personal/MEMORY.md"}); !res.IsError {
+				t.Fatal("child memory escape permitted")
+			}
+			if mode == "worktree-binding" {
+				// Root close deliberately disposes clean lanes. Fixture-owned dirty
+				// work makes this lane retainable so the cold restore is meaningful.
+				if err := os.WriteFile(filepath.Join(child.sess.currentEnv().WorkingDirectory(), "retained.txt"), []byte("opaque-retain-83"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if !child.sess.releaseIdleRuntimeAfterFinalize() {
+				t.Fatal("actual idle child did not retire")
+			}
+			childMeta, err := schema.LoadSessionMeta(history, result.ChildSessionID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if mode == "child-disabled" {
+				childMeta.Config.DisableMemory = true
+				if err := schema.SaveSessionMeta(history, childMeta); err != nil {
+					t.Fatal(err)
+				}
+			}
+			s.Close()
+			meta, err := schema.LoadSessionMeta(history, s.id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch mode {
+			case "project-revoked":
+				meta.Config.MemoryProjectID = ""
+			case "project-different":
+				meta.Config.MemoryProjectID = "different-project"
+			}
+			if err := schema.SaveSessionMeta(history, meta); err != nil {
+				t.Fatal(err)
+			}
+			accesses.Store(0)
+			projectAccesses.Store(0)
+			r, err := RestoreSessionFromMetaWithConfig(s.client, s.profile, execenv.NewLocalExecutionEnvironment(workspace), meta, RestoreSessionConfig{StateDir: history, MemoryStateRoot: host, DisableMemory: mode == "disabled-parent", Project: project, AcquireSessionOwnership: func(string) error { return nil }, testOnly: testCfg})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer r.Close()
+			if mode == "tool-ceiling" {
+				r.reg.Remove("memory_write")
+				r.reg.Remove("memory_read")
+				r.rebuildToolDefsCache()
+			}
+			r.client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{func(req llm.Request) llm.Response { return finalResponse("restored child finished") }}})
+			accesses.Store(0)
+			projectAccesses.Store(0)
+			send := (delegateRuntime{owner: r}).send(context.Background(), result.DelegateID, "restore older child", 0).result
+			if send.Err != nil {
+				t.Fatalf("actual idle restore: %+v", send)
+			}
+			restored := memoryWaitChild(t, r, result.ChildSessionID)
+			if restored.sess == child.sess {
+				t.Fatal("reused old runtime instead of cold restore")
+			}
+			if restored.sess.cfg.MemoryStateRoot != host {
+				t.Fatalf("cold child root=%q", restored.sess.cfg.MemoryStateRoot)
+			}
+			switch mode {
+			case "disabled-parent", "child-disabled":
+				if !restored.sess.cfg.DisableMemory {
+					t.Fatal("cold restore re-enabled disabled child")
+				}
+				if res := memoryExec(t, restored.sess, "memory_read", map[string]any{"scope": "personal", "file_path": "MEMORY.md"}); !res.IsError {
+					t.Fatal("disabled child dispatch")
+				}
+				if accesses.Load() != 0 {
+					t.Fatalf("disabled child native accesses=%d", accesses.Load())
+				}
+			case "project-revoked", "project-different":
+				if restored.sess.cfg.MemoryProjectID != "" {
+					t.Fatalf("cold child recovered project=%q", restored.sess.cfg.MemoryProjectID)
+				}
+				if res := memoryExec(t, restored.sess, "memory_read", map[string]any{"scope": "project", "file_path": "MEMORY.md"}); !res.IsError {
+					t.Fatal("revoked project dispatched")
+				}
+				if projectAccesses.Load() != 0 {
+					t.Fatalf("old project native accesses=%d", projectAccesses.Load())
+				}
+				if res := memoryExec(t, restored.sess, "memory_read", map[string]any{"scope": "personal", "file_path": "MEMORY.md"}); res.IsError || !strings.Contains(res.Output, "opaque-personal-72") {
+					t.Fatalf("healthy personal read=%+v", res)
+				}
+			case "tool-ceiling":
+				for _, name := range []string{"memory_read", "memory_write"} {
+					if restored.sess.reg.Get(name) != nil {
+						t.Fatalf("restored child regained %s", name)
+					}
+				}
+				if accesses.Load() != 0 {
+					t.Fatalf("read ceiling allowed automatic native accesses=%d", accesses.Load())
+				}
+			case "worktree-binding":
+				if restored.sess.cfg.MemoryProjectID != project.ID || restored.sess.currentEnv().WorkingDirectory() != child.sess.currentEnv().WorkingDirectory() {
+					t.Fatalf("worktree restore identity=%q cwd=%q", restored.sess.cfg.MemoryProjectID, restored.sess.currentEnv().WorkingDirectory())
+				}
+			}
+			bytes, err := os.ReadFile(filepath.Join(host, "memory/projects", project.ID, "child.txt"))
+			if err != nil || string(bytes) != "opaque-child-57" {
+				t.Fatalf("stored child memory changed=%q err=%v", bytes, err)
+			}
+		})
+	}
+}
+
+func TestMemoryDelegateFreshCeilings(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"disabled", "parent-read-revoked", "explicit-role"} {
+		t.Run(mode, func(t *testing.T) {
+			workspace, project := memoryGitFixture(t)
+			var calls atomic.Int32
+			s := newSession(t, withDir(workspace), withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: t.TempDir(), MemoryProjectID: project.ID, DisableMemory: mode == "disabled", Project: project, testOnly: testConfig{sandboxProber: bwrapCapableProber(workspace), disableDelegateIdleRelease: true, memoryBeforeIO: func(string, string) error { calls.Add(1); return nil }}}), withSteps(func(llm.Request) llm.Response { return finalResponse("child finished") }))
+			if mode == "parent-read-revoked" {
+				for _, name := range nativeMemoryToolNames {
+					s.reg.Remove(name)
+				}
+				s.rebuildToolDefsCache()
+			}
+			agentType := "explorer"
+			if mode == "explicit-role" {
+				s.pluginAgents["fixture:readonly"] = plugin.Agent{Name: "readonly", PluginName: "fixture", Model: "inherit", Tools: []string{"read_file"}}
+				agentType = "fixture:readonly"
+			}
+			res := s.createDelegate(context.Background(), delegateArgs{Task: "fixture child", AgentType: agentType, DelegationAllowance: new(0)})
+			if res.Err != nil {
+				t.Fatal(res.Err)
+			}
+			child := memoryWaitChild(t, s, res.ChildSessionID)
+			for _, name := range nativeMemoryToolNames {
+				if child.sess.reg.Get(name) != nil {
+					t.Fatalf("%s fresh child regained %s", mode, name)
+				}
+			}
+			if calls.Load() != 0 {
+				t.Fatalf("%s native accesses=%d", mode, calls.Load())
+			}
+		})
+	}
+}
+
+func TestMemoryDisableProfilePlaceholders(t *testing.T) {
+	t.Parallel()
+	for _, cfg := range []SessionConfig{{}, {MemoryStateRoot: t.TempDir(), DisableMemory: true}} {
+		s := newSession(t, withDir(t.TempDir()), withConfig(cfg))
+		// Exercise the same profile-definition registry path used by initialization,
+		// including an unwired definition whose name is reserved for native memory.
+		s.reg = newProfileToolRegistryForDefs([]llm.ToolDefinition{tool.MemoryDefinition(tool.DefReadFile(), "memory_read"), {Name: "memory_future", Description: "fixture placeholder", Parameters: map[string]any{"type": "object"}}})
+		s.filterUnavailableMemoryTools()
+		if len(s.reg.RegisteredNames()) != 0 {
+			t.Fatalf("unavailable profile placeholders=%v", s.reg.RegisteredNames())
+		}
+	}
+}
+
+func TestMemoryBindingSeparation(t *testing.T) {
+	t.Parallel()
+	workspaceA, projectA := memoryGitFixture(t)
+	workspaceB, projectB := memoryGitFixture(t)
+	if projectA.ID == projectB.ID {
+		t.Fatal("distinct fixture repositories have same identity")
+	}
+	hostA, hostB := t.TempDir(), t.TempDir()
+	for _, tc := range []struct{ workspace, host, id, body string }{{workspaceA, hostA, projectA.ID, "opaque-project-a-33"}, {workspaceB, hostA, projectB.ID, "opaque-project-b-45"}, {workspaceA, hostB, projectA.ID, "opaque-host-b-66"}} {
+		s := newSession(t, withDir(tc.workspace), withConfig(SessionConfig{MemoryStateRoot: tc.host, MemoryProjectID: tc.id}))
+		if res := memoryExec(t, s, "memory_write", map[string]any{"scope": "project", "file_path": "MEMORY.md", "content": tc.body}); res.IsError {
+			t.Fatal(res.Output)
+		}
+		// A real command using another cwd cannot rebind the session's memory.
+		if _, err := s.currentEnv().ExecCommand(context.Background(), "pwd", 1000, workspaceB, nil); err != nil {
+			t.Fatal(err)
+		}
+		if s.cfg.MemoryProjectID != tc.id {
+			t.Fatal("command cwd rebound memory")
+		}
+	}
+	for _, tc := range []struct{ workspace, host, id, want string }{{workspaceA, hostA, projectA.ID, "opaque-project-a-33"}, {workspaceB, hostA, projectB.ID, "opaque-project-b-45"}, {workspaceA, hostB, projectA.ID, "opaque-host-b-66"}} {
+		s := newSession(t, withDir(tc.workspace), withConfig(SessionConfig{MemoryStateRoot: tc.host, MemoryProjectID: tc.id}))
+		if res := memoryExec(t, s, "memory_read", map[string]any{"scope": "project", "file_path": "MEMORY.md"}); res.IsError || !strings.Contains(res.Output, tc.want) {
+			t.Fatalf("separate binding read=%+v want=%q", res, tc.want)
+		}
+	}
+}
+
+func TestMemoryDelegateFrozenBinding(t *testing.T) {
+	t.Parallel()
+	for _, parent := range []SessionConfig{{MemoryStateRoot: t.TempDir(), MemoryProjectID: "saved", DisableMemory: true}, {MemoryStateRoot: t.TempDir()}, {MemoryStateRoot: t.TempDir(), MemoryProjectID: "different"}} {
+		got := subagentConfigFromFrozenDescriptor(schema.ConfigSnapshot{MemoryProjectID: "saved"}, parent)
+		want := ""
+		if parent.MemoryProjectID == "saved" {
+			want = "saved"
+		}
+		if got.MemoryStateRoot != parent.MemoryStateRoot || got.DisableMemory != parent.DisableMemory || got.MemoryProjectID != want {
+			t.Fatalf("frozen root=%q disabled=%t project=%q", got.MemoryStateRoot, got.DisableMemory, got.MemoryProjectID)
+		}
+	}
+}
+
+// Catches automatic context bypassing the effective memory_read role capability.
+func TestMemoryDelegateReadCeilingNoIO(t *testing.T) {
+	t.Parallel()
+	host := t.TempDir()
+	memorySeed(t, host, "personal", "opaque-unread-86")
+	var calls atomic.Int32
+	s := newSession(t, withDir(t.TempDir()), withConfig(SessionConfig{MemoryStateRoot: host, spawn: spawnConfig{deniedToolNames: []string{"memory_read"}}, testOnly: testConfig{memoryBeforeIO: func(string, string) error { calls.Add(1); return nil }}}), withSteps(func(llm.Request) llm.Response { return finalResponse("ordinary work") }))
+	if _, err := s.ProcessInput(context.Background(), "ordinary input", nil); err != nil {
+		t.Fatal(err)
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("read ceiling native accesses=%d", calls.Load())
+	}
+	// Removing read does not remove an independently allowed memory write.
+	if res := memoryExec(t, s, "memory_write", map[string]any{"scope": "personal", "file_path": "allowed.txt", "content": "opaque-write-75"}); res.IsError {
+		t.Fatal(res.Output)
+	}
+}
+
+// Observes the existing real filesystem boundary, not just tool advertisement.
+func TestMemoryDisableNoIO(t *testing.T) {
+	t.Parallel()
+	host, workspace := t.TempDir(), t.TempDir()
+	decoy := memorySeed(t, host, "personal", "opaque-decoy-68")
+	if err := os.Chmod(decoy, 0); err != nil {
+		t.Fatal(err)
+	}
+	var calls atomic.Int32
+	cfg := SessionConfig{MemoryStateRoot: host, MemoryProjectID: "fixture-project", DisableMemory: true, StateDir: t.TempDir(), testOnly: testConfig{memoryBeforeIO: func(string, string) error { calls.Add(1); return errors.New("unexpected native filesystem access") }}}
+	s := newSession(t, withDir(workspace), withConfig(cfg), withSteps(func(req llm.Request) llm.Response {
+		for _, def := range req.Tools {
+			if strings.HasPrefix(def.Name, "memory_") {
+				t.Fatalf("disabled advertised %s", def.Name)
+			}
+		}
+		for _, msg := range req.Messages {
+			if strings.HasPrefix(msg.Name, "memory_") {
+				t.Fatal("disabled projected index")
+			}
+		}
+		return finalResponse("ordinary work")
+	}))
+	if res := memoryExec(t, s, "write_file", map[string]any{"file_path": "ordinary.txt", "content": "opaque-ordinary-24"}); res.IsError {
+		t.Fatal(res.Output)
+	}
+	if _, err := s.SetHumanNote("fixture-note-op", "opaque-note-91"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ProcessInput(context.Background(), "ordinary input", nil); err != nil {
+		t.Fatal(err)
+	}
+	if res := memoryExec(t, s, "memory_read", map[string]any{"scope": "personal", "file_path": "MEMORY.md"}); !res.IsError {
+		t.Fatal("disabled native dispatch accepted")
+	}
+	if _, err := s.memoryEnvironment("personal"); err == nil {
+		t.Fatal("disabled environment accepted")
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("native accesses=%d", calls.Load())
+	}
+	if bytes, err := os.ReadFile(filepath.Join(workspace, "ordinary.txt")); err != nil || string(bytes) != "opaque-ordinary-24" {
+		t.Fatalf("ordinary bytes=%q err=%v", bytes, err)
+	}
+	if _, err := os.Stat(filepath.Join(host, "memory/projects")); !os.IsNotExist(err) {
+		t.Fatalf("disabled project setup=%v", err)
+	}
+}
+
+// Catches re-enabling persisted opt-out, late override, and lost files/history on compaction.
+func TestMemoryDisableResumeAndCompaction(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name            string
+		saved, override bool
+	}{
+		{"saved-omitted", true, false}, {"enabled-disable", false, true}, {"saved-false", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root, history, workspace := t.TempDir(), t.TempDir(), t.TempDir()
+			path := memorySeed(t, root, "personal", "opaque-surviving-61")
+			s := newScriptedSummaryCompactSession(t, "memory-summary", func(llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant("opaque-summary-53")}
+			}, withDir(workspace), withConfig(SessionConfig{MemoryStateRoot: root, MemoryProjectID: "saved-project", DisableMemory: tc.saved, StateDir: history}))
+			for range 12 {
+				s.appendTurnWithTranscriptMessage(schema.TurnUserInput, llm.User("opaque-historical-37"), llm.User("opaque-historical-37"))
+			}
+			s.maybeAppendMemoryContext(context.Background())
+			s.Close()
+			meta, err := schema.LoadSessionMeta(history, s.id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var calls atomic.Int32
+			r, err := RestoreSessionFromMetaWithConfig(s.client, s.profile, execenv.NewLocalExecutionEnvironment(workspace), meta, RestoreSessionConfig{
+				StateDir: history, MemoryStateRoot: root, DisableMemory: tc.override,
+				testOnly: testConfig{memoryBeforeIO: func(string, string) error { calls.Add(1); return nil }},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer r.Close()
+			if !r.cfg.DisableMemory || r.cfg.MemoryStateRoot != root || r.cfg.MemoryProjectID != "saved-project" {
+				t.Fatalf("restored disabled=%t root=%q project=%q", r.cfg.DisableMemory, r.cfg.MemoryStateRoot, r.cfg.MemoryProjectID)
+			}
+			if len(r.history) < 12 {
+				t.Fatal("recorded history lost on disable")
+			}
+			if err := r.Compact(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if len(r.history) >= 12 {
+				t.Fatal("real compaction did not fold history")
+			}
+			r.client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{func(llm.Request) llm.Response { return finalResponse("ordinary work") }}})
+			if _, err := r.ProcessInput(context.Background(), "ordinary input", nil); err != nil {
+				t.Fatal(err)
+			}
+			if calls.Load() != 0 {
+				t.Fatalf("disabled native accesses=%d", calls.Load())
+			}
+			if res := memoryExec(t, r, "memory_read", map[string]any{"scope": "personal", "file_path": "MEMORY.md"}); !res.IsError {
+				t.Fatal("disabled dispatch allowed")
+			}
+			r.Close()
+			saved, err := schema.LoadSessionMeta(history, r.id)
+			if err != nil || !saved.Config.DisableMemory {
+				t.Fatalf("effective disable not saved: %t err=%v", saved.Config.DisableMemory, err)
+			}
+			bytes, err := os.ReadFile(path)
+			if err != nil || string(bytes) != "opaque-surviving-61" {
+				t.Fatalf("surviving bytes=%q err=%v", bytes, err)
+			}
+			enabled := newSession(t, withDir(workspace), withConfig(SessionConfig{MemoryStateRoot: root}))
+			if res := memoryExec(t, enabled, "memory_read", map[string]any{"scope": "personal", "file_path": "MEMORY.md"}); res.IsError || !strings.Contains(res.Output, "opaque-surviving-61") {
+				t.Fatalf("another session read=%+v", res)
+			}
+			writer, entries, err := transcript.OpenWriterForSession(transcriptPath(history, r.id), r.id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := writer.Close(); err != nil {
+				t.Fatal(err)
+			}
+			found := false
+			for _, entry := range entries {
+				if strings.Contains(entry.Turn.Message.Text(), "opaque-historical-37") {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatal("original historical record erased")
+			}
+		})
+	}
+}
+
+// Catches ceilings applied to a stale caller copy instead of the restorer's authoritative reload.
+func TestMemoryResumeBindingMetadataReload(t *testing.T) {
+	t.Parallel()
+	for _, parentID := range []string{"", "different-project", "saved-project"} {
+		t.Run("parent-"+parentID, func(t *testing.T) {
+			root, history := t.TempDir(), t.TempDir()
+			memorySeed(t, root, "personal", "opaque-personal-89")
+			memorySeed(t, root, "projects/saved-project", "opaque-old-project-19")
+			s := newSession(t, withDir(t.TempDir()), withConfig(SessionConfig{MemoryStateRoot: root, MemoryProjectID: "saved-project", StateDir: history}))
+			s.Close()
+			meta, err := schema.LoadSessionMeta(history, s.id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			meta.Config.MemoryProjectID = "caller-stale-project"
+			var personal, project atomic.Int32
+			r, err := RestoreSessionFromMetaWithConfig(s.client, s.profile, execenv.NewLocalExecutionEnvironment(t.TempDir()), meta, RestoreSessionConfig{
+				StateDir: history, MemoryStateRoot: root, memoryProjectCeiling: &parentID,
+				AcquireSessionOwnership: func(string) error { return nil },
+				testOnly: testConfig{memoryBeforeIO: func(scope, operation string) error {
+					if scope == "project" {
+						project.Add(1)
+					} else {
+						personal.Add(1)
+					}
+					return nil
+				}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer r.Close()
+			r.maybeAppendMemoryContext(context.Background())
+			wantID := ""
+			if parentID == "saved-project" {
+				wantID = parentID
+			}
+			if r.cfg.MemoryProjectID != wantID || r.cfg.MemoryStateRoot != root {
+				t.Fatalf("binding project=%q root=%q", r.cfg.MemoryProjectID, r.cfg.MemoryStateRoot)
+			}
+			if personal.Load() == 0 {
+				t.Fatal("healthy personal scope not read")
+			}
+			if wantID == "" && project.Load() != 0 {
+				t.Fatalf("revoked project accesses=%d", project.Load())
+			}
+		})
+	}
 }
 
 // Catches missing native persistence, missing first-request projection, and lost tool results.
