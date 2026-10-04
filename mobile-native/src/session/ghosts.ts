@@ -1,4 +1,5 @@
-// The dashed ghost bubbles above the composer (spec 8.5 and 14):
+// The dashed ghost bubbles at the transcript's end, just above the composer
+// (spec 8.5 and 14):
 // - steers on their way to the agent's next step;
 // - your queued messages, in the order they will send, or held after a Stop
 //   parked them;
@@ -230,7 +231,7 @@ export function ghostActionTarget(queue: ThreadModel["queue"], entry: QueueEntry
 	return index === -1 ? null : { index, id: entry.id };
 }
 
-/** At most three queued messages show above the composer (ruling 18); the
+/** At most three queued messages show at the transcript's end (ruling 18); the
  * rest are counted, and open the Queue sheet. Every other ghost shows. */
 export const SHOWN_QUEUED = 3;
 
