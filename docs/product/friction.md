@@ -212,7 +212,7 @@ yet correcting and resending requires rebuilding the composition manually.
 
 **Evidence.** [MutationRecoveryPanel](../../mobile-native/src/MutationRecoveryPanel.tsx#L105)
 limits restore to attachment-free text;
-[ghost actions](../../mobile-native/src/session/ghosts.ts#L184) explicitly make
+[ghost actions](../../mobile-native/src/session/ghosts.ts#L185) explicitly make
 image rejection discard-only. `MutationRecoveryPanel.test.tsx` pins the behavior.
 Other native draft flows already preserve media; browser attachment parity is
 not established by this case.

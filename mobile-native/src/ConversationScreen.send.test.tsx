@@ -1285,6 +1285,24 @@ describe("opening a session", () => {
 		expect(opacity(tree)).toBe(1);
 	});
 
+	// A ghost is the list's last row: showing before it measures would show
+	// the end short of it and then move.
+	it("shows the live end only once a queued message at its end has measured", async () => {
+		const served = twoTurns("ref-open-ghost");
+		(served as unknown as { evener: { queue: unknown } }).evener.queue = queueState(["check the logs"]);
+		const { tree } = await mount(served);
+		layOutViewport(tree);
+		await settle();
+		layOutRow(tree, 3, 19_000);
+		await settle();
+		expect(opacity(tree)).toBe(0);
+		flatListCalls.length = 0;
+		layOutRow(tree, 4, 19_150);
+		await settle();
+		expect(flatListCalls.map((call) => call.method)).toEqual(["scrollToEnd"]);
+		expect(opacity(tree)).toBe(1);
+	});
+
 	it("shows a saved reading position only once the exact restore has landed", async () => {
 		savePosition("ref-open-anchor");
 		flatListCalls.length = 0;
@@ -1899,6 +1917,42 @@ describe("following the live end (spec 8.2)", () => {
 		expect(contentGrows(tree, 4_200)).toBe(true);
 	});
 
+	// The ghosts are the list's last rows (spec 8.5): the hub's queue frame
+	// adds or takes one away below whatever you read.
+	function queueNow(hub: { notify(notification: AnyNotification): void }, served: Thread, texts: string[]) {
+		act(() =>
+			hub.notify({
+				method: "thread/queueChanged",
+				params: { threadId: served.id, ref: served.evener.ref, queue: queueState(texts, texts.length + 1) },
+			} as AnyNotification),
+		);
+	}
+
+	it("keeps following at the live end when a queued message lands there", async () => {
+		const served = working("ref-follow-ghost");
+		const { tree, hub } = await mount(served);
+		queueNow(hub, served, ["check the logs"]);
+		expect(textOf(transcriptList(tree))).toContain("check the logs");
+		expect(contentGrows(tree, 4_200)).toBe(true);
+	});
+
+	it("never moves the list or counts as new when a ghost comes or goes while you read above", async () => {
+		const served = working("ref-follow-ghost-away");
+		const { tree, hub } = await mount(served);
+		drag(tree, 100);
+		flatListCalls.length = 0;
+		queueNow(hub, served, ["check the logs"]);
+		expect(textOf(transcriptList(tree))).toContain("check the logs");
+		expect(pill(tree)).toBeUndefined();
+		stream(hub, served, "g1");
+		expect(pill(tree)?.props.accessibilityLabel).toBe("1 new below, scroll to the end");
+		queueNow(hub, served, []);
+		expect(textOf(transcriptList(tree))).not.toContain("check the logs");
+		expect(pill(tree)?.props.accessibilityLabel).toBe("1 new below, scroll to the end");
+		expect(flatListCalls).toEqual([]);
+		expect(contentGrows(tree, 4_200)).toBe(false);
+	});
+
 	it("keeps the end in view when the viewport changes while following, as the keyboard does", async () => {
 		const served = working("ref-follow-viewport");
 		const { tree } = await mount(served);
@@ -1910,6 +1964,19 @@ describe("following the live end (spec 8.2)", () => {
 		act(() => list(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 600 } } }));
 		expect(flatListCalls.some((call) => call.method === "scrollToEnd")).toBe(false);
 	});
+});
+
+// A ghost can show before the first read lands (ghosts() lists this phone's
+// own sends with no session yet); the quiet blocks still stand in for the
+// conversation above it.
+it("keeps the loading blocks above a ghost until the conversation first loads", async () => {
+	const ref = "ref-skeleton-ghost";
+	nativeDrafts().write({ hubId: "hub-1", sessionRef: ref }, { draft: "", unconfirmed: "lost send" });
+	const { tree } = await mount(thread(ref, "idle"), { failedReads: 2 });
+	await vi.waitFor(() => expect(textOf(transcriptList(tree))).toContain("Couldn't confirm this was sent"));
+	expect(
+		transcriptList(tree).findAll((node) => node.props.accessibilityLabel === "Loading conversation").length,
+	).toBeGreaterThan(0);
 });
 
 it("shows nothing for a loaded conversation with no rows: the composer invites", async () => {
@@ -2706,13 +2773,109 @@ it("follows the hub's note in the bar and the open sheet when it changes", async
 	expect(hub.requests.filter((request) => request.method === "notes/human/set")).toEqual([]);
 });
 
-describe("queued messages above the composer (spec 8.5)", () => {
-	it("paints a swiped ghost what it sits on: the composer, or the page while the dock takes its place", async () => {
+// Everything waiting to reach the agent is the transcript's last rows, just
+// above the composer, and scrolls with it (spec 8.5; Jesse, 2026-10-03).
+describe("queued messages at the transcript's end (spec 8.5)", () => {
+	const bottomBar = (tree: ReactTestRenderer) =>
+		tree.root.find((node) => String(node.type) === "View" && node.props.testID === "session-bottom-bar");
+	const lastRow = (tree: ReactTestRenderer) => {
+		const row = transcriptList(tree)
+			.findAll((node) => String(node.type) === "Item")
+			.at(-1);
+		if (!row) throw new Error("no transcript rows");
+		return textOf(row);
+	};
+
+	it("shows a queued message as the transcript's last row, not in the bottom bar", async () => {
+		const served = thread("ref-queue-row", "active", false, ["check the logs"]);
+		(served as unknown as { turns: unknown[] }).turns = [askReplyTurn("turn_1")];
+		const { tree } = await mount(served);
+		expect(lastRow(tree)).toContain("check the logs");
+		expect(lastRow(tree)).toContain("Queued · sends when this turn ends");
+		expect(textOf(transcriptList(tree))).toContain("ask turn_1");
+		expect(textOf(bottomBar(tree))).not.toContain("check the logs");
+	});
+
+	// A message you queue shows once at every frame on its way: its ghost
+	// while it sends and while it waits in the queue, then your message once
+	// its turn starts, never beside its ghost.
+	it("shows a queued message once at every frame until it lands as your message", async () => {
+		readHistory.live = true;
+		const served = thread("ref-queue-lands", "active");
+		(served as unknown as { turns: unknown[] }).turns = [
+			{
+				id: "turn_1",
+				status: "inProgress",
+				itemsView: "default",
+				items: [
+					{
+						id: "u-turn_1",
+						turnId: "turn_1",
+						type: "userMessage",
+						status: "completed",
+						text: "ask turn_1",
+						transcriptKey: "turn_1:0:0",
+						position: { entry: 0, item: 0 },
+					},
+				],
+			},
+		];
+		const { tree, hub } = await mount(served);
+		const shown = () => textOf(transcriptList(tree)).split("check the logs").length - 1;
+		const frame = (notification: Record<string, unknown>) =>
+			act(() => hub.notify(notification as unknown as AnyNotification));
+		await type(tree, "check the logs");
+		await press(tree, "Queue message");
+		const clientMutationId = String(hub.requests.find((r) => r.method === "turn/queue")?.params.clientMutationId);
+		expect(shown()).toBe(1);
+		const queue = (texts: string[], revision: number) => ({
+			...queueState(texts, revision),
+			clientMutationIds: texts.map(() => clientMutationId),
+		});
+		frame({
+			method: "thread/queueChanged",
+			params: { threadId: served.id, ref: "ref-queue-lands", queue: queue(["check the logs"], 1) },
+		});
+		expect(shown()).toBe(1);
+		expect(lastRow(tree)).toContain("Queued · sends when this turn ends");
+		// The turn ends and the hub takes the message for the next one: the
+		// queue frame comes first, then the message's own item.
+		frame({
+			method: "thread/queueChanged",
+			params: { threadId: served.id, ref: "ref-queue-lands", queue: queue([], 2) },
+		});
+		expect(shown()).toBe(1);
+		frame({
+			method: "history/updated",
+			params: {
+				threadId: served.id,
+				ref: "ref-queue-lands",
+				...READ_HISTORY_IDENTITY,
+				items: [
+					{
+						id: "u-turn_2",
+						turnId: "turn_2",
+						type: "userMessage",
+						status: "completed",
+						text: "check the logs",
+						clientMutationId,
+						transcriptKey: "turn_2:1:0",
+						position: { entry: 1, item: 0 },
+					},
+				],
+			},
+		});
+		expect(shown()).toBe(1);
+		expect(textOf(transcriptList(tree))).not.toContain("Sending…");
+		expect(textOf(transcriptList(tree))).not.toContain("Queued ·");
+	});
+
+	it("paints a swiped ghost the page it sits on, and keeps it there while the dock is open", async () => {
 		const palette = paletteFor("light");
 		const backdrop = (tree: ReactTestRenderer) =>
-			tree.root.findByProps({ testID: "swipe-row-content" }).props.style.backgroundColor;
+			transcriptList(tree).findByProps({ testID: "swipe-row-content" }).props.style.backgroundColor;
 		const composing = (await mount(thread("ref-swipe-composer", "active", false, ["check the logs"]))).tree;
-		expect(backdrop(composing)).toBe(palette.surface);
+		expect(backdrop(composing)).toBe(palette.page);
 		const asking = (await mount(thread("ref-swipe-dock", "awaiting", true, ["check the logs"]))).tree;
 		expect(field(asking)).toBeUndefined();
 		expect(backdrop(asking)).toBe(palette.page);
@@ -2729,82 +2892,14 @@ describe("queued messages above the composer (spec 8.5)", () => {
 		expect(renderedText(tree)).not.toContain("Couldn't steer");
 	});
 
-	// While you type in the composer the queue folds to one line: with one
-	// message, its action; with several, their count, which opens them.
-	it("folds one queued message while you type, steers from there, and shows it again when the keyboard lowers", async () => {
+	// They take no room from the transcript, so nothing folds while you type.
+	it("keeps a queued message and its Steer now while you type", async () => {
 		const { tree, hub } = await mount(thread("ref-steer-typing", "active", false, ["check the logs"]));
 		typeInComposer(tree);
-		expect(renderedText(tree)).not.toContain("check the logs");
-		expect(pressable(tree, "1 queued")).toBeDefined();
-		await press(tree, "Steer now, check the logs");
+		expect(lastRow(tree)).toContain("check the logs");
+		expect(pressable(tree, "1 queued")).toBeUndefined();
+		await press(tree, "Steer now");
 		expect(hub.requests.filter((request) => request.method === "turn/promoteQueuedAsSteer")).toHaveLength(1);
-		act(() => keyboard.hide());
-		expect(renderedText(tree)).toContain("check the logs");
-	});
-
-	it("folds several queued messages to their count while you type", async () => {
-		const { tree } = await mount(thread("ref-typing-several", "active", false, ["check the logs", "then deploy"]));
-		typeInComposer(tree);
-		expect(pressable(tree, "2 queued")).toBeDefined();
-		expect(pressable(tree, "Steer now, check the logs")).toBeUndefined();
-		act(() => keyboard.hide());
-	});
-
-	it("folds a held message to its count and Send now while you type", async () => {
-		const { tree } = await mount(thread("ref-typing-held", "idle", false, ["check the logs"]));
-		typeInComposer(tree);
-		expect(pressable(tree, "1 held")).toBeDefined();
-		expect(pressable(tree, "Send now, check the logs")).toBeDefined();
-		act(() => keyboard.hide());
-	});
-
-	// The keyboard is up for the find bar's field, not the composer.
-	it("keeps the queue open while you type in the find bar", async () => {
-		const { tree } = await mount(thread("ref-typing-find", "active", false, ["check the logs"]));
-		chooseMenu("Find in session");
-		act(() => keyboard.show());
-		expect(renderedText(tree)).toContain("check the logs");
-		expect(pressable(tree, "1 queued")).toBeUndefined();
-		act(() => keyboard.hide());
-	});
-
-	// Find stays open while you type in the composer: the keyboard is the
-	// composer's then, so the queue folds as it does without find (#3232).
-	it("folds the queue while you type in the composer with find open", async () => {
-		const { tree } = await mount(thread("ref-typing-find-composer", "active", false, ["check the logs"]));
-		chooseMenu("Find in session");
-		typeInComposer(tree);
-		expect(renderedText(tree)).not.toContain("check the logs");
-		expect(pressable(tree, "1 queued")).toBeDefined();
-		act(() => keyboard.hide());
-		expect(renderedText(tree)).toContain("check the logs");
-	});
-
-	// Moving from the composer to the find bar's field keeps the keyboard up;
-	// it isn't the composer's any more, so the queue opens again.
-	it("opens the queue again when you move from the composer to the find bar with the keyboard up", async () => {
-		const { tree } = await mount(thread("ref-typing-to-find", "active", false, ["check the logs"]));
-		chooseMenu("Find in session");
-		typeInComposer(tree);
-		expect(renderedText(tree)).not.toContain("check the logs");
-		const findField = tree.root.find(
-			(node) => String(node.type) === "TextInput" && node.props.accessibilityLabel === "Find in session",
-		);
-		act(() => field(tree)?.props.onBlur());
-		act(() => findField.props.onFocus?.());
-		expect(renderedText(tree)).toContain("check the logs");
-		expect(pressable(tree, "1 queued")).toBeUndefined();
-		act(() => keyboard.hide());
-	});
-
-	// With the dock in the composer's place, a keyboard up isn't the
-	// composer's, so the queue stays as it is.
-	it("keeps the queue open when the keyboard is up while the dock takes the composer's place", async () => {
-		const { tree } = await mount(thread("ref-typing-dock", "awaiting", true, ["check the logs"]));
-		expect(field(tree)).toBeUndefined();
-		act(() => keyboard.show());
-		expect(renderedText(tree)).toContain("check the logs");
-		expect(pressable(tree, "1 queued")).toBeUndefined();
 		act(() => keyboard.hide());
 	});
 
@@ -2890,6 +2985,7 @@ describe("queued messages above the composer (spec 8.5)", () => {
 		const text = renderedText(tree);
 		for (const shown of ["one", "two", "three"]) expect(text).toContain(shown);
 		expect(text).not.toContain("four");
+		expect(lastRow(tree)).toBe("1 more queued");
 		act(() => pressable(tree, "1 more queued")?.props.onPress());
 		expect(navigation.navigate).toHaveBeenCalledWith("QueueSheet", { hubId: "hub-1", ref: "ref-four" });
 		const host = queueHosts.get(sheetKey("hub-1", "ref-four"));
