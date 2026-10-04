@@ -109,7 +109,11 @@ Automatic index-only retrieval is not credited by the explicit-tool oracle.
 Observed final-response usage includes auxiliary calls, but unfinished-response
 usage and cost without a cited price remain unknown. Cancellation does not
 prove billing stops. Two pairs cannot establish reliability or savings.
-**LIVE NOT RUN:** this offline implementation has no live behavior result.
+The single authorized live invocation failed during private offline registry
+setup, before client/session creation or completion dispatch. Neither pair ran,
+so live memory behavior remains untested. The credential-safe diagnostic does
+not identify the underlying registry error. A new attempt requires controller
+authorization, not an automatic retry.
 
 ## Setup checklist
 
