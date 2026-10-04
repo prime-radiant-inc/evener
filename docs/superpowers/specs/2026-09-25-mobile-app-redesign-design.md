@@ -585,6 +585,8 @@ The table lists the Needs you states in priority order (7.1): Failed leads, then
 
 A session waiting on its subagents is never Quiet or May be stuck, however long it has been silent: its line reads "Waiting on 8 subagents", on the Board and in the tray (Jesse, 2026-09-26). The web's liveness line still reports a stall there; the phone doesn't.
 
+A Board row reads Quiet after 3 minutes without activity, as the table says. A session's tray, a subagent's row and the Activity list read Quiet after 20 seconds, the web transcript's threshold ("Quiet 40s" in 8.3) (coordinator ruling on #3709, 2026-10-03).
+
 ### 13.2 Counts
 
 - **Needs you** = Failed + Question + Approval + Warning + Restart needed, over live, unarchived, top-level sessions. This is the single number used on the Live chip badge, the session Back button, the Live summary line and the Next capsule.
@@ -594,6 +596,7 @@ A session waiting on its subagents is never Quiet or May be stuck, however long 
 ### 13.3 In-app alerts (this version's push)
 
 - **When:** a session you are not looking at becomes Failed, Question, Approval, Warning or Restart needed; or a hub notice appears; or, with finished results turned on in Hub > Alerts, a session finishes its turn. A finished alert has a blue edge and the finished mark, and never joins, replaces or waits with alerts about sessions that need you.
+- **Warning during child work:** alerts follow Board bands. A new nonblocking Warning waits while live children run. If it remains when the last child settles, it alerts then; if it clears first, it never alerts. A Warning carrying a pending question or approval remains immediately eligible. First-read and offline rules still apply. Combined banners, Needs you counts and Next use the same Board attention membership.
 - **Alert card:** drops in just below the nav bar (never over it, so Back, the title and the ask dock stay reachable), with an amber edge, the mark, session title and why line. It stays 8 seconds and never goes away while a finger is on it; swipe up to dismiss. Tap opens the session at the relevant spot, pushed onto the stack so Back returns to where you were.
 - **Coalescing:** events within 5 seconds combine: "3 sessions need you". Tapping opens the Board scrolled to Needs you.
 - **Quiet while reading:** in the Reader, the Artifact viewer, or while typing in the composer, banners are held; the Back button shows how many are waiting as an amber count (a bare dot meant nothing to a round-4 participant). Neither screen shows the Next capsule. Held banners show when you leave, combined, and Next serves the held sessions first.

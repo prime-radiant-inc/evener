@@ -11,7 +11,8 @@
 // session's Subagents list holds the detail.
 import type { NavigationSessionSummary, SessionActivity } from "@evener/appwire-client";
 import { quietState } from "@evener/appwire-client";
-import { relativeAge } from "@evener/appwire-client/state/navigation";
+import { relativeAge, subagentTallyToShow } from "@evener/appwire-client/state/navigation";
+import { compactDuration } from "../session/format";
 
 export type BoardState =
 	| "failed"
@@ -93,10 +94,15 @@ export function boardState(row: NavigationSessionSummary, approval: boolean, see
 	// reported: it is never Working, Finished or Needs you.
 	if (row.offline) return "shutDown";
 	const decisive = decisiveState(row.state);
-	if (decisive) return decisive;
+	// Only a nonblocking warning yields to live child work. Search keeps its
+	// existing decisiveState rule, and failed children never decide this mark.
+	if (decisive && (decisive !== "warning" || row.ask_pending || approval || row.approval_pending)) return decisive;
 	if (row.state === "awaiting" && row.ask_pending) return "question";
 	if (approval || row.approval_pending === true) return "approval";
 	if (row.state === "active") return "working";
+	const runningSubagents = row.kind === "session" && (subagentTallyToShow(row)?.running ?? 0) > 0;
+	if (runningSubagents) return "working";
+	if (decisive) return decisive;
 	if (row.dormant || seen) return "idle";
 	return "finished";
 }
@@ -274,10 +280,24 @@ function durationLabel(forMs: number): string {
 	return relativeAge(new Date(0).toISOString(), forMs) ?? "0m";
 }
 
-/** The why line of a session waiting on its subagents, on the Board and in
- * the tray alike (spec 13.1). */
+/** The why line of a session or subagent waiting on its subagents: on the
+ * Board, in the tray, in the Activity list and on a subagent's row (spec
+ * 13.1). */
 export function waitingOnSubagents(count: number): string {
 	return `Waiting on ${plural(count, "subagent")}`;
+}
+
+/** No update for this long reads "Quiet" in a session's tray, on a
+ * subagent's row and in the Activity list: the web transcript's threshold
+ * (cmd/evener-hub/frontend/src/panes/session/transcript/flow/liveness.ts).
+ * The tray also waits this long before showing a first model retry. The
+ * Board's rows read the package's quietState instead. */
+export const AGENT_QUIET_AFTER_MS = 20_000;
+
+/** The why line of a running agent with nothing more to say: Quiet once it
+ * has gone AGENT_QUIET_AFTER_MS without an update, else Working. */
+export function quietOrWorking(silentMs: number): string {
+	return silentMs >= AGENT_QUIET_AFTER_MS ? `Quiet ${compactDuration(silentMs)}` : "Working";
 }
 
 /** whyLine's working-row text once a real activity read exists (S5): the
