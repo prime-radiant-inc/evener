@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -34,7 +35,6 @@ func TestMemoryFreshSession(t *testing.T) {
 	t.Parallel()
 	root, workspace := t.TempDir(), t.TempDir()
 	cfg := SessionConfig{MemoryStateRoot: root, MemoryProjectID: "fixture-project"}
-	cfg.testOnly.memoryBeforeIO = func(scope, operation string) error { t.Logf("memory I/O %s %s", scope, operation); return nil }
 	body := "opaque-lesson-71\n[unresolved](missing)\n(created someday)\n"
 	topic := "opaque-topic-83\nnot markdown, no date\n"
 	a := newSession(t, withDir(workspace), withConfig(cfg), withSteps(
@@ -551,6 +551,121 @@ func TestMemoryIndexProjection(t *testing.T) {
 	}
 }
 
+// Catches classifying setup/pre-read ENOENT as an absent index and hiding recovery.
+func TestMemoryAutomaticSetupRecovery(t *testing.T) {
+	t.Parallel()
+	for _, failingScope := range []string{"personal", "project"} {
+		for _, operation := range []string{"setup", "index_read", "missing_index"} {
+			t.Run(failingScope+"/"+operation, func(t *testing.T) {
+				root := t.TempDir()
+				paths := map[string]string{
+					"personal": filepath.Join(root, "memory/personal/MEMORY.md"),
+					"project":  filepath.Join(root, "memory/projects/fixture-project/MEMORY.md"),
+				}
+				bodies := map[string]string{"personal": "opaque-personal-retry-47\n", "project": "opaque-project-retry-93\n"}
+				for scope, path := range paths {
+					if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+						t.Fatal(err)
+					}
+					if scope != failingScope || operation != "missing_index" {
+						if err := os.WriteFile(path, []byte(bodies[scope]), 0o600); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+				fault := true
+				cfg := SessionConfig{MemoryStateRoot: root, MemoryProjectID: "fixture-project"}
+				cfg.testOnly.memoryBeforeIO = func(scope, op string) error {
+					if fault && scope == failingScope && op == operation {
+						return fmt.Errorf("fixture %s fault: %w", op, os.ErrNotExist)
+					}
+					return nil
+				}
+				assertRequest := func(req llm.Request, wantState string) llm.Response {
+					t.Helper()
+					for _, scope := range []string{"personal", "project"} {
+						var latest *llm.Message
+						for _, msg := range req.Messages {
+							if msg.Name == "memory_"+scope {
+								latest = &msg
+								if msg.Role != llm.RoleUser {
+									t.Fatalf("%s context role=%s", scope, msg.Role)
+								}
+							}
+						}
+						state, body := "current", bodies[scope]
+						if scope == failingScope {
+							state = wantState
+							if state != "current" {
+								body = ""
+							}
+						}
+						if state == "" {
+							if latest != nil {
+								t.Fatalf("genuinely missing %s index produced context: %s", scope, latest.Text())
+							}
+							continue
+						}
+						if latest == nil {
+							t.Fatalf("%s %s context absent", scope, state)
+						}
+						if !strings.Contains(latest.Text(), fmt.Sprintf("Memory scope %s, current index state %s,", scope, state)) {
+							t.Fatalf("%s latest state is not %s: %s", scope, state, latest.Text())
+						}
+						_, quoted, ok := strings.Cut(latest.Text(), "\nQuoted index data: ")
+						got, err := strconv.Unquote(quoted)
+						if !ok || err != nil || got != body {
+							t.Fatalf("%s projected bytes=%q want=%q err=%v", scope, got, body, err)
+						}
+					}
+					return finalResponse("seen")
+				}
+				initialState := "unavailable"
+				if operation == "missing_index" {
+					initialState = ""
+				}
+				steps := []func(llm.Request) llm.Response{
+					func(req llm.Request) llm.Response { return assertRequest(req, initialState) },
+					func(req llm.Request) llm.Response { return assertRequest(req, "current") },
+				}
+				if operation == "index_read" {
+					// Historical current data must not remain the latest claim during a new fault.
+					steps = append(steps,
+						func(req llm.Request) llm.Response { return assertRequest(req, "unavailable") },
+						func(req llm.Request) llm.Response { return assertRequest(req, "current") },
+					)
+				}
+				s := newSession(t, withConfig(cfg), withSteps(steps...))
+				if _, err := s.ProcessInput(context.Background(), "read indexes", nil); err != nil {
+					t.Fatal(err)
+				}
+				if operation == "missing_index" {
+					if _, err := os.Stat(paths[failingScope]); !os.IsNotExist(err) {
+						t.Fatalf("automatic index creation: %v", err)
+					}
+					if err := os.WriteFile(paths[failingScope], []byte(bodies[failingScope]), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				fault = false
+				if _, err := s.ProcessInput(context.Background(), "retry indexes", nil); err != nil {
+					t.Fatal(err)
+				}
+				if operation == "index_read" {
+					fault = true
+					if _, err := s.ProcessInput(context.Background(), "read during new fault", nil); err != nil {
+						t.Fatal(err)
+					}
+					fault = false
+					if _, err := s.ProcessInput(context.Background(), "retry again", nil); err != nil {
+						t.Fatal(err)
+					}
+				}
+			})
+		}
+	}
+}
+
 func TestMemorySetupRecoveryAndScopeIsolation(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
@@ -662,13 +777,38 @@ func TestMemoryWarningDeliveryRestricted(t *testing.T) {
 
 func TestMemorySchemaAndOutputAliases(t *testing.T) {
 	t.Parallel()
-	s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: t.TempDir()}))
-	for name, base := range map[string]string{"memory_read": "read_file", "memory_write": "write_file", "memory_edit": "edit_file", "memory_search": "grep", "memory_delete": "write_file"} {
+	pairs := map[string]string{"memory_read": "read_file", "memory_write": "write_file", "memory_edit": "edit_file", "memory_search": "grep", "memory_delete": "write_file"}
+	s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: t.TempDir()}), withSteps(func(req llm.Request) llm.Response {
+		seen := 0
+		for _, def := range req.Tools {
+			if _, memory := pairs[def.Name]; !memory {
+				continue
+			}
+			seen++
+			required := def.Parameters["required"].([]string)
+			for _, field := range []string{"scope", "intent"} {
+				if !slices.Contains(required, field) {
+					t.Fatalf("advertised %s does not require %s: %v", def.Name, field, required)
+				}
+			}
+		}
+		if seen != len(pairs) {
+			t.Fatalf("advertised memory tools=%d want=%d", seen, len(pairs))
+		}
+		return finalResponse("schemas checked")
+	}))
+	for name, base := range pairs {
 		memory, ordinary := s.reg.Get(name), s.reg.Get(base)
 		if memory == nil || ordinary == nil || memory.Limit != ordinary.Limit {
 			t.Fatalf("%s missing underlying limits", name)
 		}
+		if required := memory.Definition.Parameters["required"].([]string); !slices.Contains(required, "scope") {
+			t.Fatalf("registered %s does not require scope: %v", name, required)
+		}
 		props := memory.Definition.Parameters["properties"].(map[string]any)
+		if intent := props["intent"].(map[string]any); intent["type"] != "string" {
+			t.Fatalf("registered %s intent=%v", name, intent)
+		}
 		scope := props["scope"].(map[string]any)
 		if fmt.Sprint(scope["enum"]) != "[personal project]" {
 			t.Fatalf("scope=%v", scope)
@@ -676,6 +816,9 @@ func TestMemorySchemaAndOutputAliases(t *testing.T) {
 		if _, exists := ordinary.Definition.Parameters["properties"].(map[string]any)["scope"]; exists {
 			t.Fatal("schema clone modified ordinary tool")
 		}
+	}
+	if _, err := s.ProcessInput(context.Background(), "inspect schemas", nil); err != nil {
+		t.Fatal(err)
 	}
 }
 

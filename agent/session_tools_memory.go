@@ -53,20 +53,11 @@ func (s *Session) memoryFileArgs(args map[string]any, key, operation string) (*e
 }
 
 func (s *Session) execMemoryWrite(ctx context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
-	env, err := s.memoryEnvironment(stringArg(args, "scope"))
+	env, args, err := s.memoryFileArgs(args, "file_path", "write")
 	if err != nil {
 		return nil, err
 	}
-	path := stringArg(args, "file_path")
-	if !filepath.IsLocal(path) {
-		return nil, fmt.Errorf("memory path must be relative and remain in its scope")
-	}
-	forwarded := maps.Clone(args)
-	forwarded["file_path"] = filepath.Join(env.WorkingDirectory(), path)
-	if err := s.beforeMemoryIO(stringArg(args, "scope"), "write"); err != nil {
-		return nil, err
-	}
-	return execFileWrite(ctx, env, forwarded, s.fileReadGuard(env))
+	return execFileWrite(ctx, env, args, s.fileReadGuard(env))
 }
 
 func (s *Session) execMemoryRead(ctx context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {

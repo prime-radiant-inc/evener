@@ -91,16 +91,18 @@ func (s *Session) maybeAppendMemoryContext(ctx context.Context) {
 		if err == nil {
 			err = s.beforeMemoryIO(scope, "index_read")
 		}
-		if err == nil {
-			data, err = env.ReadFileRaw(filepath.Join(env.WorkingDirectory(), "MEMORY.md"))
-		}
-		switch {
-		case errors.Is(err, os.ErrNotExist):
-			state = "missing"
-		case err != nil:
+		if err != nil {
 			state = "unavailable"
-		case len(data) == 0:
-			state = "empty"
+		} else {
+			data, err = env.ReadFileRaw(filepath.Join(env.WorkingDirectory(), "MEMORY.md"))
+			switch {
+			case errors.Is(err, os.ErrNotExist):
+				state = "missing"
+			case err != nil:
+				state = "unavailable"
+			case len(data) == 0:
+				state = "empty"
+			}
 		}
 		truncated := len(data) > 8192
 		if truncated {
