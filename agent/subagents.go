@@ -122,9 +122,12 @@ type subagent struct {
 	disposeGated bool
 	// attentionDriveRefused records that an attention drive was refused while
 	// another drive held this child's drive guard (driving), dropping its
-	// wake. An attention drive that gives the guard back without launching a
-	// run reads it (releaseSendDriveGuard) and re-drives the child; a send's
-	// rollback re-drives the child regardless. Guarded by sub.mu.
+	// wake. The holder reads it when it gives the guard back
+	// (releaseDriveGuard): an attention drive that launched no run, or a
+	// notification turn, then re-drives the child. A holder that hands the
+	// guard to a run leaves it set, since that run drains the child, and the
+	// next attention drive clears it when it takes the guard. Guarded by
+	// sub.mu.
 	attentionDriveRefused bool
 }
 
@@ -1593,9 +1596,11 @@ func (s *Session) driveSubagentNotificationTurn(sub *subagent) bool {
 		// the release first: the paced re-drive wait below holds no slot, and
 		// the re-drive can claim one even at drive budget 1.
 		defer func() {
-			sub.mu.Lock()
-			sub.driving = false
-			sub.mu.Unlock()
+			// Attention refused on this turn's guard dropped its wake
+			// (#3723): drive it now, ahead of the paced notification check.
+			if releaseDriveGuard(sub) {
+				s.redriveLiveChild(childSess.id)
+			}
 			s.redriveChildIfAttentionRemains(driveCtx, sub, childSess)
 		}()
 		defer treeSlot.release()

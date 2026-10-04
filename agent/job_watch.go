@@ -5633,9 +5633,10 @@ func (s *Session) driveChildrenWithUndeliveredAttention() {
 //     (driveStableDelegateAttention) refused every drive for that child, so a
 //     child notification, pending watch send or armed stable attention that
 //     landed in the window was DROPPED;
-//   - an attention drive that launched no run after another attention drive
-//     was refused on its drive guard (#3723), such as the finalize tail's
-//     re-arm drive landing while a drive refused busy still held the guard.
+//   - an attention drive that launched no run, or a notification turn, after
+//     an attention drive was refused on its drive guard (#3723), such as the
+//     finalize tail's re-arm drive landing while a drive refused busy still
+//     held the guard.
 //
 // The run that would have drained the child's queue never launched, so the
 // exit must re-drive it. Only that child can hold the dropped wake, so this
@@ -5649,8 +5650,9 @@ func (s *Session) driveChildrenWithUndeliveredAttention() {
 // the notification turn first; when both were pending the notification drive
 // set sub.driving synchronously, the attention drive then refused on that flag,
 // and nothing retried it -- the armed attention stayed stranded. The claim or
-// guard is released before this call, so driveChildIfNotStopGated's own childDriveGated
-// check is the same stop/fatal/drain gate every other drive reads.
+// guard is released before this call, so driveChildIfNotStopGated's own
+// childDriveGated check is the same stop/fatal/drain gate every other drive
+// reads.
 func (s *Session) redriveLiveChild(childSessionID string) {
 	if s == nil || childSessionID == "" {
 		return

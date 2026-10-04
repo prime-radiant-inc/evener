@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -3443,7 +3444,7 @@ func TestSupervisionRootDrivesAttentionTheChildDropped(t *testing.T) {
 	}
 	armStableSupervisionAttention(t, sub, "attention:dropped", "inspect after the dropped drive")
 	root.delegateController.retryDelegateAttentionLater()
-	releaseSendDriveGuard(sub)
+	releaseDriveGuard(sub)
 
 	waitForStableSupervisionRun(t, root, fixture.childID)
 
@@ -3562,7 +3563,14 @@ func TestDelegateResourceSupervision_AttentionRedriveThatLosesStops(t *testing.T
 	updateSessionTestConfig(root, func(cfg *testConfig) {
 		cfg.delegateAttentionStartCommitted = func(*subagent) { starts.Add(1) }
 		cfg.delegateAttentionBeforeGuardRelease = func(held *subagent) {
-			if releases.Add(1) != 1 {
+			n := releases.Add(1)
+			if n > 2 {
+				// A looping re-drive would recurse until the stack overflows;
+				// stop it here so the count below reports it.
+				t.Errorf("attention drive %d let the guard go: the re-drive is looping", n)
+				runtime.Goexit()
+			}
+			if n != 1 {
 				return
 			}
 			// A second drive refused on the busy drive's guard owes the
@@ -3584,6 +3592,63 @@ func TestDelegateResourceSupervision_AttentionRedriveThatLosesStops(t *testing.T
 	finished := latestDelegateControllerRunFinished(t, root.delegateController, fixture.delegateID)
 	if finished.Generation != 3 || finished.Disposition != delegatestore.DispositionCompletedNoAction || finished.DeliveryID != "" {
 		t.Fatalf("re-armed attention finish = %#v, want generation 3's private no-action", finished)
+	}
+	if got := starts.Load(); got != 1 {
+		t.Fatalf("attention generations started = %d, want exactly 1", got)
+	}
+}
+
+// TestDelegateResourceSupervision_AttentionRefusedOnANotificationTurnIsRedriven
+// pins #3723 for the other drive that holds the guard on an idle child: a
+// notification turn. Attention armed while that turn runs is refused on its
+// guard, and the turn drives the child again when it ends. Nothing wakes this
+// root, so only that re-drive can deliver.
+func TestDelegateResourceSupervision_AttentionRefusedOnANotificationTurnIsRedriven(t *testing.T) {
+	fixture := newColdStableDelegateFixture(t, "")
+	inTurn, endTurn := make(chan struct{}), make(chan struct{})
+	fixture.adapter.steps = []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return finalResponse("warm result") },
+		func(llm.Request) llm.Response {
+			close(inTurn)
+			<-endTurn
+			return llm.Response{Message: llm.Assistant("noted the finished job")}
+		},
+		func(llm.Request) llm.Response {
+			return llm.Response{Message: llm.Assistant("attention requires no action")}
+		},
+	}
+	root := restoreSupervisionRoot(t, fixture, nil)
+	sub := warmStableDelegateUnservedRoot(t, root, fixture)
+	waitForStableSupervisionRun(t, root, fixture.childID)
+
+	var starts atomic.Int32
+	updateSessionTestConfig(root, func(cfg *testConfig) {
+		cfg.delegateAttentionStartCommitted = func(*subagent) { starts.Add(1) }
+	})
+	enqueueCompletedJobNotification(t, sub.sess, "job:finished")
+	if !root.driveSubagentNotificationTurn(sub) {
+		t.Fatal("the child's notification turn did not launch")
+	}
+	select {
+	case <-inTurn:
+	case <-time.After(30 * time.Second): // TRIPWIRE: the turn reaches the scripted provider in milliseconds.
+		t.Fatal("the child's notification turn never reached the provider")
+	}
+	armStableSupervisionAttention(t, sub, "attention:notification-turn", "inspect after the notification turn")
+	if got := starts.Load(); got != 0 {
+		t.Fatalf("attention generations started during the notification turn = %d, want 0", got)
+	}
+	close(endTurn)
+
+	// TRIPWIRE: the re-drive starts the generation as the turn ends; without
+	// it nothing does.
+	waitForCondition(t, 10*time.Second, "the attention refused on the notification turn's guard to start", func() bool {
+		return starts.Load() == 1
+	})
+	waitForStableSupervisionRun(t, root, fixture.childID)
+	finished := latestDelegateControllerRunFinished(t, root.delegateController, fixture.delegateID)
+	if finished.Generation != 2 || finished.Disposition != delegatestore.DispositionCompletedNoAction || finished.DeliveryID != "" {
+		t.Fatalf("re-driven attention finish = %#v, want generation 2's private no-action", finished)
 	}
 	if got := starts.Load(); got != 1 {
 		t.Fatalf("attention generations started = %d, want exactly 1", got)

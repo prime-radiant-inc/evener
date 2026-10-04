@@ -720,7 +720,7 @@ func (s *Session) driveStableDelegateAttention(sub *subagent) bool {
 		// again now the guard is free (#3723). The re-drive can only re-drive
 		// in turn if another drive is refused on its own guard, so a drive
 		// that keeps losing stops.
-		if releaseSendDriveGuard(sub) {
+		if releaseDriveGuard(sub) {
 			s.redriveLiveChild(sub.sess.id)
 		}
 	}()
@@ -1403,12 +1403,13 @@ func (s *Session) takeSendDriveGuard(sub *subagent) bool {
 	return true
 }
 
-// releaseSendDriveGuard gives back a drive guard taken by takeSendDriveGuard or
-// by driveStableDelegateAttention, on a start that didn't hand over to a run,
-// and reports whether an attention drive was refused on the guard while it
-// was held. The send path ignores the report: its rollback re-drives the
-// child whenever it releases the guard.
-func releaseSendDriveGuard(sub *subagent) bool {
+// releaseDriveGuard gives back a child's drive guard (sub.driving) that no run
+// took over, and reports whether an attention drive was refused on the guard
+// while it was held. An attention drive or notification turn that gets true
+// re-drives the child (#3723). A send ignores the report: a send that fails
+// re-drives the child in its rollback, and one that succeeds hands the child
+// to a run that drains it.
+func releaseDriveGuard(sub *subagent) bool {
 	sub.mu.Lock()
 	defer sub.mu.Unlock()
 	sub.driving = false
@@ -1616,7 +1617,7 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	var guarded *subagent
 	defer func() {
 		if guarded != nil {
-			releaseSendDriveGuard(guarded)
+			releaseDriveGuard(guarded)
 		}
 	}()
 	if committedChildID != "" {
@@ -1701,7 +1702,7 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	// recorded as failed.
 	if sub != guarded {
 		if guarded != nil {
-			releaseSendDriveGuard(guarded)
+			releaseDriveGuard(guarded)
 			guarded = nil
 		}
 		if !s.takeSendDriveGuard(sub) {
