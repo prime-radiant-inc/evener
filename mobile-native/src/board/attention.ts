@@ -12,6 +12,7 @@
 import type { NavigationSessionSummary, SessionActivity } from "@evener/appwire-client";
 import { quietState } from "@evener/appwire-client";
 import { relativeAge } from "@evener/appwire-client/state/navigation";
+import { compactDuration } from "../session/format";
 
 export type BoardState =
 	| "failed"
@@ -279,6 +280,18 @@ function durationLabel(forMs: number): string {
  * 13.1). */
 export function waitingOnSubagents(count: number): string {
 	return `Waiting on ${plural(count, "subagent")}`;
+}
+
+/** No update for this long reads "Quiet" in a session's tray, on a
+ * subagent's row and in the Activity list: the web transcript's threshold
+ * (cmd/evener-hub/frontend/src/panes/session/transcript/flow/liveness.ts).
+ * The Board's rows read the package's quietState instead. */
+export const QUIET_AFTER_MS = 20_000;
+
+/** The why line of a running agent with nothing more to say: Quiet once it
+ * has gone QUIET_AFTER_MS without an update, else Working. */
+export function quietOrWorking(silentMs: number): string {
+	return silentMs >= QUIET_AFTER_MS ? `Quiet ${compactDuration(silentMs)}` : "Working";
 }
 
 /** whyLine's working-row text once a real activity read exists (S5): the
