@@ -24,7 +24,7 @@ const BUTTON_LABELS: Record<GhostAction, string> = {
 // queue says so in full there.
 const MENU_LABELS: Record<GhostAction, string> = { ...BUTTON_LABELS, cancel: "Cancel message" };
 
-export type GhostBackdrop = "page" | "canvas";
+type GhostBackdrop = "page" | "canvas";
 
 export interface GhostBubbleProps {
 	ghost: Ghost;
