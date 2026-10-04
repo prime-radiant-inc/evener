@@ -3181,6 +3181,10 @@ export function ConversationScreen({
 							<LiveStatusTray
 								session={conversation}
 								frames={frames}
+								// The hub reports activity only for top-level sessions.
+								client={subagentOf ? null : client}
+								sessionRef={route.params.ref}
+								inFront={focused}
 								connected={connected}
 								canStop={!!permitted?.stop}
 								stopping={stopping || pending}

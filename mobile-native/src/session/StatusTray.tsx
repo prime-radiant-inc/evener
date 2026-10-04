@@ -4,7 +4,9 @@
 import { SymbolView } from "expo-symbols";
 import { useEffect, useMemo, useReducer } from "react";
 import { Platform, Pressable, Text, useWindowDimensions, View } from "react-native";
+import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 import { PulseMeter } from "../board/PulseMeter";
+import { useActivityPoll } from "../board/useActivityPoll";
 import { allowFontScaling, useColors } from "../ui";
 import { SymbolButton } from "./SymbolButton";
 import { FrameCounter, type TrayLine, type TraySource, trayLine } from "./trayLine";
@@ -71,18 +73,30 @@ export function StatusTray({ line, perMinute, connected, canStop, stopping, onSt
 
 /** The tray with its own one-second clock, so only the tray re-renders each
  * second. The clock runs only while the tray shows a line, so an idle session
- * runs no timer. */
+ * runs no timer. While the agent works and the screen is in front, it also
+ * polls the hub's activity for this session (S5), whose running-subagent
+ * count is the one the Board's row names (spec 13.1). */
 export function LiveStatusTray({
 	session,
 	frames,
+	client,
+	sessionRef,
+	inFront,
 	...tray
 }: Omit<StatusTrayProps, "line" | "perMinute"> & {
 	session: TraySource | null;
 	frames: FrameCounter;
+	/** The client to poll the hub's activity through; null where the hub
+	 * reports none for this session. */
+	client: ConversationClientLike | null;
+	sessionRef: string;
+	inFront: boolean;
 }) {
 	const [, tick] = useReducer((count: number) => count + 1, 0);
+	const working = session?.status.type === "active";
+	const { activityOf } = useActivityPoll(client, tray.connected, inFront && working, sessionRef);
 	const now = Date.now();
-	const line = session ? trayLine(session, now) : null;
+	const line = session ? trayLine(session, now, activityOf(sessionRef)) : null;
 	const shown = line !== null;
 	useEffect(() => {
 		if (!shown) return;
