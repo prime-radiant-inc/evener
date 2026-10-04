@@ -17,9 +17,10 @@ one uninterrupted activity.
 The feature covers the desktop browser document pane, the phone-browser document
 viewer, and the native iPhone Reader. Android remains deferred under the native
 release scope. Saved annotations belong to a session and file in the browser or
-native app where they were created. They survive reopening and restart. They do
-not sync between devices, between browser profiles, or between browser and native
-storage on the same phone.
+native app where they were created. They survive reopening and restart while the
+document remains unchanged. A detected source change expires and deletes its
+saved annotations. They do not sync between devices, between browser profiles,
+or between browser and native storage on the same phone.
 
 The document is read-only. Creating an annotation does not modify its source
 file, send input, queue a turn, steer an agent, or start/resume a session.
@@ -41,8 +42,10 @@ file, send input, queue a turn, steer an agent, or start/resume a session.
 5. More annotations append in creation order. Returning to the composer shows
    the complete accumulated draft. The user edits or submits it through the
    ordinary composer controls.
-6. Reopening the document or restarting the client restores saved highlights and
-   notes. Restoration never appends an already-applied annotation again.
+6. Reopening the unchanged document or restarting the client restores saved
+   highlights and notes. Restoration never appends an already-applied annotation
+   again. A detected document change deletes its saved annotations without
+   modifying text already inserted into the composer.
 
 ```mermaid
 flowchart LR
@@ -56,7 +59,7 @@ flowchart LR
 
 Send completes a local annotation operation. It has no agent-input side effect.
 The local operation owns both saved-note preservation and draft handoff until
-those outcomes are settled.
+those outcomes are settled or the annotation expires.
 
 Send requires a nonempty selection and a nonblank note. Preserve the entered note
 text, including line breaks. Editing the note freezes its selected passage;
@@ -65,11 +68,26 @@ Return key inserts a line break and cannot trigger the session's Send shortcut.
 
 ## Passage references and anchors
 
-A composer entry has this shape:
+A composer entry starts with this line:
 
 ```text
-A note on `docs/plan.md:42:5-44:18`, selecting “ship the smaller core”: "Keep this scope."
+A note on `docs/plan.md:42:5-44:18` (captured source positions), selecting “ship the smaller core”: "Keep this scope."
 ```
+
+Every entry also includes the captured whole-file revision, or an explicitly
+prefix-scoped fingerprint when no whole-file revision exists, and the selected
+passage's distinguishing surrounding text. These values travel as literal draft
+text; device-local annotation metadata alone cannot identify the passage for the
+receiving session. Emit the actual captured revision/fingerprint, not a claim
+that it exists elsewhere.
+
+A reference describes the captured document, not a live location. Its text
+tells the receiving session to verify the quotation and context against current
+content before relying on the coordinates. The document endpoint serves current
+content; including a revision does not promise historical reads. Later source
+edits and annotation expiry must not rewrite an applied entry, append it again,
+or overwrite the user's draft edits. The original quotation, context, and
+revision keep the snapshot interpretable after its coordinates become stale.
 
 The path is the session-relative document path already used by document reads.
 Positions refer to the original Markdown source, not the rendered DOM or a
@@ -96,33 +114,61 @@ escapes, list markers, and repeated words must not move the anchor to another
 occurrence. Source coordinates must come from a verified rendering map, not a
 first string match, approximate block index, or regex that strips Markdown.
 
-Use the endpoint's whole-file revision when present. When it is absent, retain a
-fingerprint of the displayed source and identify its scope honestly. A truncated
-prefix fingerprint is not a whole-file revision. Users may annotate text in the
-visible prefix of a truncated document; references must stay within that prefix.
+Retain the endpoint's whole-file revision when present and a fingerprint of the
+displayed source with its coverage. When no whole-file revision exists, identify
+the fingerprint's scope honestly. A truncated prefix fingerprint is not a
+whole-file revision. Users may annotate text in the visible prefix of a truncated
+document; references must stay within that prefix.
 
 The selected range may cross inline formatting and textual Markdown blocks,
 including paragraphs, lists, quotes, tables, and code. Browser and native adapters
 must capture the actual selected range. Diagram shapes, raster images, viewer
 chrome, and non-text controls are outside text annotation scope.
 
-## File changes and unavailable content
+## File changes, expiry, and unavailable content
 
-For the same displayed revision, restore the original exact range. After edits,
-use the saved quotation, context, and source mapping to relocate the passage only
-when the match is unique. Update its displayed location while retaining its
-original provenance. A changed revision alone does not abandon the note.
+For unchanged source, restore the original exact range. A successful current
+document read that establishes a source change expires the affected session/file
+annotations. Delete their saved quote, note, and anchor payloads and remove their
+highlights. Cancel draft handoffs that have not been applied. There is no
+relocation, Unplaced notes disclosure, expired-note archive, or automatic
+restoration if the old passage or file contents later return.
 
-A missing or ambiguous passage remains an unresolved annotation. The viewer
-exposes its quote and note in an Unplaced notes disclosure and automatically
-tries placement again when a later document read supplies usable content. It
-must not highlight a guessed occurrence or delete the note. Later reappearance
-of the passage restores useful highlighting without another annotation gesture.
+Compare whole-file revisions when both are available. A changed whole-file
+revision expires annotations even if their selected text or the displayed prefix
+is unchanged. Otherwise compare the captured and current displayed-source
+evidence only over comparable coverage. Missing revision metadata or changed
+coverage alone is not evidence of an edit. Without a whole-file revision, edits
+outside a truncated prefix cannot be detected; expose that detection limit and
+never claim a prefix fingerprint covers the whole file. Do not infer expiry from
+an incomplete quotation search.
+
+Expiry is a versioned local operation. Serialize it with annotation creation and
+draft handoff so stale reads, old tabs, delayed saves, retries, and restart cannot
+resurrect expired records or delete annotations created for a newer accepted
+version. Retain only the operation receipts or cancellation/version markers
+needed for that guarantee, without retaining expired note payloads. If deletion
+cannot be persisted, keep expired highlights hidden, cancel pending appends, and
+show expiry as pending while retrying when local storage recovers. Final expiry
+requires durable cancellation and deletion receipts. The next successful read
+must reconcile stored versions and any durable expiry receipts before painting
+restored highlights. Process death before any expiry receipt is persisted cannot
+guarantee deletion if the source reverts before the next read; expose that limit
+instead of claiming the stored notes have already been erased.
+
+Draft text already inserted remains unchanged, including edits the user made.
+Reconcile an interrupted handoff against its committed draft edit before deciding
+whether it was applied or must be cancelled. Expiry never removes composer text
+or resends it. Comment text that has not been sent remains available; require a
+fresh selection before saving it against changed content, rather than silently
+retargeting the old selection.
 
 A missing file or failed read retains annotations and in-progress comment work.
 The existing document read boundary remains the content authority. Annotations
 can be added to already-loaded content while disconnected because saving a note
-and editing an unsent draft are local actions.
+and editing an unsent draft are local actions. On recovery, a successful read
+restores exact highlights for unchanged content or expires saved annotations for
+changed content. Read failure alone never deletes them.
 
 ## Composer ownership and preservation
 
@@ -145,26 +191,28 @@ comment box opened. Preserve attachments, selected skills/commands, mention
 locations, and existing recovery ownership.
 
 If the originating pane is closed, replaced, or temporarily lacks a writable
-composer, retain the note and pending handoff for that same session. Reconcile
-against its retained draft owner when useful composition returns. Never write
-through a disposed lifetime, overwrite another pane's newer work, or redirect to
-the currently focused session. Read-only session views can retain annotations;
-a permanently unavailable destination exposes the saved note and its copyable
+composer, retain the unexpired note and pending handoff for that same session.
+Reconcile against its retained draft owner when useful composition returns.
+Expiry cancels an unapplied handoff. Never write through a disposed lifetime,
+overwrite another pane's newer work, or redirect to the currently focused
+session. Read-only session views can retain unexpired annotations; a
+permanently unavailable destination exposes the saved note and its copyable
 formatted text rather than losing it or inventing a different recipient.
 
 **Explicit compatibility approval requested:** Existing saved browser document
-pane records contain a session/path but no originating pane identity. Keep those
-panes readable and allow annotations to retain a session-bound pending handoff
-until the correct draft owner is available. Do not guess an unrelated pane or
-add other legacy-schema migrations. Approval of this specification authorizes
-only this narrow compatibility behavior.
+pane records contain a session/path but no originating pane identity. Keep
+those panes readable and allow unexpired annotations to retain a session-bound
+pending handoff until the correct draft owner is available. Do not guess an
+unrelated pane or add other legacy-schema migrations. Approval of this
+specification authorizes only this narrow compatibility behavior.
 
 ## Local storage, recovery, and retention
 
-A shared, headless annotation model owns reference formatting, range validation,
-anchor resolution, ordered handoff semantics, and restoration decisions. Browser
-and native adapters own their existing local storage and actual draft editors.
-No new hub protocol or server-side annotation store is required.
+A shared, headless annotation model owns reference formatting, range
+validation, version/expiry decisions, ordered handoff semantics, and
+exact-range restoration. Browser and native adapters own their existing local
+storage and actual draft editors. No new hub protocol or server-side annotation
+store is required.
 
 Persist saved annotations independently of disposable document-reading caches
 and independently of native review-comment membership. Reuse local-storage
@@ -172,32 +220,37 @@ infrastructure without inheriting the existing native DocumentMemory's
 100-document eviction cap. Opening many files must not delete authored notes or
 pending handoffs.
 
-Saving has a durable receipt. A storage failure retains the comment, anchor, and
-pending operation in memory and exposes the unsaved state beside the note.
-Duplicate Send activation retries the same operation, not a new annotation.
-Reopening the relevant reader/composer, client foregrounding, and observed local
-storage recovery trigger another bounded persistence/handoff attempt. Healthy
-reading, other sessions, and other saved annotations remain usable. Do not show a
-fully saved annotation when the local write failed. An unpersisted operation
-cannot promise survival of process death; its status must make that limitation
-clear.
+Saving has a durable receipt. A storage failure retains the comment, anchor,
+and unexpired pending operation in memory and exposes the unsaved state beside
+the note. Duplicate Send activation retries the same operation, not a new
+annotation. Reopening the relevant reader/composer, client foregrounding, and
+observed local storage recovery trigger another bounded persistence/handoff
+attempt for unexpired operations. Healthy reading, other sessions, and other
+saved annotations remain usable. Do not show a fully saved annotation when the
+local write failed. An unpersisted operation cannot promise survival of process
+death; its status must make that limitation clear.
 
 Successful draft insertion and acknowledgment must be recoverable as one logical
 operation. Injected interruption between writes must result in one applied note
-or one still-pending handoff, with no duplicate or dropped note. Multiple browser
+or one still-pending unexpired handoff, with no duplicate or dropped note.
+Confirmed expiry may instead cancel an unapplied handoff. Multiple browser
 panes/tabs must reconcile their changes against the current local owner without
 clobbering a newer draft or silently deleting another annotation.
 
 Closing a viewer, sending/clearing a composer draft, clearing session-history
-cache, and sending a native review do not delete saved annotations. Existing
-explicit local-data reset or native hub-removal boundaries may remove their owned
-annotation data and pending operations; they must leave other hubs/sessions
-untouched. No background cleanup infers deletion from inactivity.
+cache, and sending a native review do not delete saved annotations. Detected
+document changes delete the affected saved annotations under the expiry
+contract. Existing explicit local-data reset or native hub-removal boundaries
+may remove their owned annotation data and pending operations; they must leave
+other hubs/sessions untouched. No background cleanup infers deletion from
+inactivity.
 
 In-progress comment text and its selection survive ordinary remount/navigation
-and native backgrounding. Cancel is an explicit dismissal of that unsaved
-comment; it leaves existing highlights and composer work unchanged. Text entry,
-focus, touch selection handles, and the on-screen keyboard must remain usable.
+and native backgrounding while their source remains unchanged. Source changes
+preserve unsent comment text under the fresh-selection rule above. Cancel is an
+explicit dismissal of that unsaved comment; it leaves existing highlights and
+composer work unchanged. Text entry, focus, touch selection handles, and the
+on-screen keyboard must remain usable.
 
 ## Native Reader and existing Review
 
@@ -229,7 +282,8 @@ unchanged; no comment migration or compatibility layer is requested.
   remains readable and the original note remains intact.
 - No cross-device synchronization, source-file writes, automatic submissions,
   PDF/image annotations, review redesign, WebView replacement, or annotation
-  editing/deletion UI beyond existing local-data clearing boundaries.
+  editing/deletion UI beyond existing local-data clearing boundaries. No
+  cross-version reanchoring or expired-note archive.
 - Do not change transcript selection quoting, ordinary composer Send, queue
   behavior, history caching, or Android's recorded release deferral.
 
@@ -273,10 +327,13 @@ algorithm to manufacture its own expected values.
 | Phone-browser reading | Touch-sized viewport and selection, usable comment box above the keyboard, multiple notes while the composer is unmounted, Return preserves reading/draft work |
 | Native iPhone journey | Built current-source native renderer demonstrates automatic completed-selection opening, exact persistent highlights and tap notes, correct session draft handoff, and no send/queue/steer |
 | Markdown coordinate cases | Independent fixtures cover duplicate passages in one block and different blocks, emphasis, links/entities/escapes, Unicode, CRLF, lists, tables, code, and multi-block selections |
-| Persistence and recovery | Reload/restart/background/foreground restores saved notes, resumes pending handoffs once, and preserves in-progress comment work |
+| Captured draft references | Edits after handoff move the selected passage and put an identical quotation at its old coordinates; saved annotations expire, while the draft entry retains its captured revision and distinguishing context, stays snapshot-scoped, and preserves later user edits |
+| Persistence and recovery | Reload/restart/background/foreground restores unchanged-file notes, resumes unexpired pending handoffs once, and preserves in-progress comment work |
 | Draft lifetime and concurrent work | Origin/focus/session changes, pane remount/replacement/close, updated draft text, attachments, skills/commands and mentions survive without wrong-recipient writes |
-| Storage faults | Failure before save and interruption around draft acknowledgment retain honest pending state, automatically recover after the fault clears, and apply one note |
-| Changed/unavailable files | Unique relocation succeeds, missing/ambiguous passages remain visible as unplaced notes, and later content recovery restores highlights without duplication |
+| Storage faults | For an unexpired operation, failure before save and interruption around draft acknowledgment retain honest pending state, automatically recover after the fault clears, and apply one note |
+| Expiry and read recovery | Source changes delete saved quote/note/anchor payloads and cancel unapplied handoffs, keep existing composer text unchanged, and never restore expired notes when old content returns; failed reads preserve notes until a successful read settles the version |
+| Truncated/version evidence | A whole-file revision change expires notes even with an unchanged prefix; changed comparable prefixes expire notes without revision metadata; missing metadata and changed coverage alone do not prove edits; unseen suffix changes remain an explicit detection limit |
+| Expiry races and storage faults | Old tabs, delayed callbacks, and restart cannot resurrect durably expired notes, apply cancelled handoffs, or delete newer-version annotations; failed expiry writes suppress highlights/appends and recover after storage returns, with honest process-death limits before any receipt |
 | Retention and review isolation | More than 100 annotated files retain all authored notes; explicit native Review affects only its comments; history-cache clearing leaves annotations intact |
 | Security and non-regression | Literal malicious note/quote text remains inert, Markdown sanitation survives, and transcript quoting and ordinary review/composer controls keep working |
 
