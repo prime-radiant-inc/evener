@@ -405,6 +405,12 @@ mutation dispatcher; retiring its editor does not cancel accepted work.
 
 Saved workspace intent contains the selected ref, validated ordered edges and
 return descriptor. Draft text and skill selections use their existing stores.
+On desktop startup, AppShell recognizes a saved cascade's source as the initial
+route role before route placement completes. A matching source keeps the saved
+edges, pane identities and neighboring panes when the restored workspace meets
+the route's existing focus and placement rules. Location and DockHost restoration
+may finish in either order. A different route takes precedence; later pathname
+changes retain the ordinary route-placement and companion-focus rules.
 Processed image bytes and pending encodes belong to the original pane lifetime;
 they are excluded from layout JSON and localStorage and are not restored by a
 page reload. Phones keep the ordinary Agents transcript action. A saved cascade
