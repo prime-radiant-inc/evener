@@ -27,7 +27,8 @@ font-diagnostic reinstalls the exact retained app on a new owned simulator,
 mounts mixed-font case 6 with real taps and pauses 60 seconds for supported
 readonly metadata inspection. It always cleans up and proves no selection GREEN.
 empty-diagnostic mounts empty case 0 on the existing owned simulator and pauses
-60 seconds for supported geometry inspection, then always cleans up.
+60 seconds for supported geometry inspection, then always cleans up. If no owned
+device remains, it restores the exact retained app on a new scaled task device.
 qualify runs cross-row, table, Reader-code, prose/code-boundary and exact Copy checks.
 Geometry JSON: {"FIRST":{"x":0,"y":0},"HANDLE":{"x":0,"y":0},"SECOND":{"x":0,"y":0}}
 The amended probe also needs TABLE/CODE and FIRST_TO_CODE measured targets.
