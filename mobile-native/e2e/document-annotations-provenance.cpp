@@ -102,6 +102,18 @@ static void checkCodeBounds(const char *name, const std::string &source, size_t 
   }
   std::cout << "PASS " << name << "\n";
 }
+static void checkBlockBounds(const char *name, const std::string &source, Markdown::NodeType type,
+                             size_t start, size_t end) {
+  Markdown::MD4CParser parser;
+  auto ast = parser.parse(source);
+  if (ast->children.size() != 1 || ast->children.front()->type != type) std::exit(1);
+  const auto &node = *ast->children.front();
+  if (!node.hasSourceRange || node.sourceByteStart != start || node.sourceByteEnd != end) {
+    std::cerr << name << ": incorrect full block span [" << node.sourceByteStart << "," << node.sourceByteEnd << ")\n";
+    std::exit(1);
+  }
+  std::cout << "PASS " << name << "\n";
+}
 int main() {
   check("repeated strong text", "same **same**", {
     {MD_TEXT_NORMAL, "same ", 0, 5, false}, {MD_TEXT_NORMAL, "same", 7, 11, false}
@@ -180,4 +192,9 @@ int main() {
   checkCodeBounds("Reader empty literal block", "```text\n\n```\n", 0, 13);
   checkCodeBounds("indented block includes original tab", "    \tcode\r\n", 0, 11);
   checkCodeBounds("unterminated block excludes generated LF", "```text\nsame()", 0, 14);
+  checkBlockBounds("full heading syntax and CRLF", "# Note\r\n", Markdown::NodeType::Heading, 0, 8);
+  checkBlockBounds("full paragraph syntax and CRLF", "**same**\r\n", Markdown::NodeType::Paragraph, 0, 10);
+  checkBlockBounds("empty heading original span", "#\r\n", Markdown::NodeType::Heading, 0, 3);
+  checkBlockBounds("thematic rule original span", "---\r\n", Markdown::NodeType::ThematicBreak, 0, 5);
+  checkBlockBounds("full table syntax and CRLF", "| A |\r\n| --- |\r\n| same |\r\n", Markdown::NodeType::Table, 0, 26);
 }
