@@ -32,7 +32,7 @@
     "anser": "^2.3.5",
     "dockview": "^7.0.2",
     "dockview-react": "^7.0.2",
-    "dompurify": "^3.4.12",
+    "dompurify": "^3.4.16",
     "marked": "^18.0.6",
     "mermaid": "11.17.2",
     "motion": "^13.4.5",
