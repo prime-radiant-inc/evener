@@ -10,6 +10,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"primeradiant.com/evener/agent/sandbox"
 )
 
 func TestDisposeSessionScratchRemovesScratchAndTmp(t *testing.T) {
@@ -61,6 +63,48 @@ func TestDisposeSessionScratchKeepsADetachedCommandsTmp(t *testing.T) {
 	}
 	if _, err := os.Lstat(scratch); !os.IsNotExist(err) {
 		t.Errorf("session scratch %s kept: %v", scratch, err)
+	}
+}
+
+// TestDetachedCommandFromAConfinedEnvKeepsItsTMPDIR: an unsandboxed env whose
+// file tools are confined names its private scratch as TMPDIR, and that scratch
+// is deleted when the session ends; a detached command outlives the session, so
+// its TMPDIR must be the world-usable container the disposal keeps.
+func TestDetachedCommandFromAConfinedEnvKeepsItsTMPDIR(t *testing.T) {
+	env := NewLocalExecutionEnvironment(t.TempDir())
+	if err := env.EnableSandbox(&sandbox.ResolvedPolicy{Mode: sandbox.ModeOff, WriteBlocked: true}); err != nil {
+		t.Fatalf("EnableSandbox: %v", err)
+	}
+	if !env.DetachSupported() {
+		t.Skip("detach unsupported here")
+	}
+	out := filepath.Join(t.TempDir(), "tmpdir.txt")
+	started, err := env.DetachCommand(context.Background(), `printf %s "$TMPDIR" > `+out+`.part && mv `+out+`.part `+out+` && sleep 30`, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = syscall.Kill(started.PID, syscall.SIGKILL)
+		select {
+		case <-started.Done:
+		case <-time.After(5 * time.Second):
+			t.Error("detached command did not exit after SIGKILL")
+		}
+	})
+	data, ok := waitForTestFile(out, 10*time.Second)
+	if !ok {
+		t.Fatal("the detached command never wrote its TMPDIR")
+	}
+	tmpdir := string(data)
+	if tmpdir == "" {
+		t.Fatal("the detached command ran with no TMPDIR")
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(tmpdir)) })
+	if err := env.DisposeSessionScratch(); err != nil {
+		t.Fatalf("DisposeSessionScratch: %v", err)
+	}
+	if _, err := os.Stat(tmpdir); err != nil {
+		t.Errorf("the detached command's TMPDIR %s was removed with the session's scratch: %v", tmpdir, err)
 	}
 }
 

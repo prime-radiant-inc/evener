@@ -2559,11 +2559,18 @@ func (e *LocalExecutionEnvironment) DetachCommand(ctx context.Context, command, 
 	}
 	cmd := e.commands().Shell(command)
 	env := injectLocalVenvPath(e.commandEnvironment(envVars), []string{dir, e.RootDir})
-	// A detached process outlives the session; the scratch EVENER_SCRATCH_DIR names
-	// is deleted when the session ends, so the process must not be told about it.
+	// A detached process outlives the session, and the session's scratch is
+	// deleted when it ends, so the process must not be told about the scratch,
+	// and its TMPDIR must be the world-usable container DisposeSessionScratch
+	// keeps for it — never the scratch, which a confined env's TMPDIR names.
+	// With no container, TMPDIR is left unset rather than pointed at scratch.
+	container := e.unsandboxedTmpDir()
 	env = slices.DeleteFunc(env, func(kv string) bool {
-		return strings.HasPrefix(kv, envvars.EVENERScratchDir.Name+"=")
+		return strings.HasPrefix(kv, envvars.EVENERScratchDir.Name+"=") || strings.HasPrefix(kv, envvars.TmpDir.Name+"=")
 	})
+	if container != "" {
+		env = append(env, envvars.TmpDir.Assignment(container))
+	}
 	config := commandRuntimeConfig{
 		Dir:         dir,
 		Env:         env,
