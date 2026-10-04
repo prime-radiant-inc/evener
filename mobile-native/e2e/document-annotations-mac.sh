@@ -64,7 +64,7 @@ scripts = [o['shellScript'] for o in p['objects'].values() if 'shellScript' in o
 for s in scripts:
     if 'react-native-xcode.sh' in s:
         print('Actual generated bundle phase:\n' + s)
-        assert 'if [ -z "$ENTRY_FILE" ]' in s, 'Generated phase must honor explicit ENTRY_FILE'
+        assert 'if [[ -z "$ENTRY_FILE" ]]' in s, 'Generated phase must honor explicit ENTRY_FILE'
         break
 else: raise RuntimeError('No generated React Native bundle phase')
 PY
