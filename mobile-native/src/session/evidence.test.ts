@@ -497,6 +497,30 @@ describe("each tool's evidence, as the tools print it", () => {
 		expect(skillMarkdown(markdown)).not.toContain("![");
 	});
 
+	// Brackets after a "!" that can't make an image read as written (#3696): an
+	// image needs "](" in its paragraph, or a reference definition ("]:").
+	it.each([
+		["a Rust macro in prose", "let v = vec![1, 2, 3];"],
+		["a shell test in prose", "if ![ -f x ]; then"],
+		["a Rust macro in a fence", "```rust\nlet v = vec![1, 2, 3];\n```"],
+		["a shell test in a fence", "```sh\nif ![ -f x ]; then\n  exit 1\nfi\n```"],
+	])("leaves %s as it was", (_name, markdown) => {
+		expect(skillMarkdown(markdown)).toBe(markdown);
+	});
+
+	it.each([
+		["an inline image", "See ![a](https://x.test/a.png).", "See a."],
+		["an image beside a macro in another paragraph", "vec![1, 2]\n\n![a](https://x.test/a.png)", "vec![1, 2]\n\na"],
+		["a reference image with its definition", "![a][r]\n\n[r]: https://x.test/r.png", "a\n\n[r]: https://x.test/r.png"],
+		[
+			"an image whose alt holds a pair of brackets",
+			"![Figure [1]](https://x.test/f.png)",
+			"Figure [1](https://x.test/f.png)",
+		],
+	])("still takes the opener off %s", (_name, markdown, words) => {
+		expect(skillMarkdown(markdown)).toBe(words);
+	});
+
 	// -1 is the shell tool's sentinel for a command stopped by a signal or by
 	// evener's runtime limit, not an exit code, so it reads as no exit at all.
 	it("never says a command exited -1", () => {
