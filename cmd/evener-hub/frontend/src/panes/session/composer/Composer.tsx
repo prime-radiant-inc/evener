@@ -29,6 +29,7 @@
 
 import {
   type BuiltinMatch,
+  type ComposerMention,
   decideSteerRoute,
   decideSubmitRoute,
   deriveSendQueueAvailability,
@@ -42,7 +43,7 @@ import {
   type SlashMenuItem,
   type SlashToken,
   sessionActionError,
-  sessionPluginNames,
+  slashCommandInvocation,
   spliceSlashCommand,
   type ThreadModel,
 } from "@evener/appwire-client";
@@ -61,11 +62,10 @@ import {
 } from "react";
 import { activitySidebarStore } from "../../../shell/activitybar/activitySidebarStore";
 import type { PaletteRunContext, ScopedCommand } from "../../../shell/palette/commands";
-import { sessionBuiltinCommands, visibleCatalogCommands } from "../../../shell/palette/commands";
+import { sessionBuiltinCommands } from "../../../shell/palette/commands";
 import type { SessionMenuTurnVerbs } from "../../../shell/sessionMenu/SessionMenu";
 import { useIsMobile } from "../../../shell/useIsMobile";
 import { useMountAutofocus } from "../../../shell/useMountAutofocus";
-import { useCommandCatalog } from "../../../stores/commandCatalog";
 import {
   controlsFor,
   isLocalRecoveryFenced,
@@ -121,7 +121,15 @@ import { consumeQuoteInsert, useQuoteInsertRequest } from "./quoteInsert";
 import { mergeRecoveryComposerDraft, recoveryComposerDraft } from "./recovery/recoveryDraft";
 import { SkillEditor, type SkillEditorHandle } from "./SkillEditor";
 import { SlashCompletionMenu, optionId as slashOptionId } from "./SlashCompletionMenu";
-import { maskSkillAtoms, materializeSkillReferences, type SkillEditorValue } from "./skillDocument";
+import {
+  maskSkillAtoms,
+  materializeSelectionReferences,
+  parseSkillDocument,
+  patchSelectionText,
+  type SkillEditorValue,
+  serializeSkillDocument,
+  skillAtomMentions,
+} from "./skillDocument";
 import { type ComposerSourceState, restoredSkillNames } from "./sourceState";
 import { recordStoplessComposer } from "./stoplessComposer";
 
@@ -215,17 +223,16 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     cursorToRestoreRef.current = cursor;
     setCursorRestoreSeq((seq) => seq + 1);
   }, []);
-  const { text, skillNames, restoreEpoch, activeRecoveryId, freshRecoveryRef } = useSyncExternalStore(
-    source.subscribe,
-    source.getSnapshot,
-    source.getSnapshot,
-  );
+  const { text, skillNames, commandNames, mentions, restoreEpoch, activeRecoveryId, freshRecoveryRef } =
+    useSyncExternalStore(source.subscribe, source.getSnapshot, source.getSnapshot);
+  const selectionMeta = useMemo(() => ({ commandNames, mentions }), [commandNames, mentions]);
   const {
     lastDrainSnapshotRef,
     draftEditRevisionRef,
     ownedDraftRevisionRef,
     textRef,
     skillNamesRef,
+    selectionMetaRef,
     activeRecoveryIdRef,
     recoveryWriteVersionRef,
     recoveryReplacementEpochRef,
@@ -236,6 +243,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     editText,
     updateSkillNames,
     editSkillNames,
+    updateSelectionMeta,
     setActiveRecoveryId,
     markRestore,
     persistDraft,
@@ -316,20 +324,16 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
   // token itself changes (new match, or the query narrowed/widened) rather
   // than persisted across it - an index into a list that just changed shape
   // is not a meaningful position to keep.
-  const slashCatalog = useCommandCatalog((s) => s.commands);
   const [slashToken, setSlashToken] = useState<SlashToken | null>(null);
   const [slashHighlighted, setSlashHighlighted] = useState(0);
   // The composer's own single command line (2026-08-14: "the composer is
   // where you act on this session"): the session-scoped BUILT-IN registry
   // (shell/palette/commands.ts's sessionBuiltinCommands, unavailableReason-
-  // resolved against THIS ref) merged with the plugin catalog
+  // resolved against THIS ref) merged with the owning session's loaded inventory
   // (slashCompletion.ts's mergeSlashCommands) - one list, one menu, whether a
-  // row's provenance is a built-in or a plugin.
-  const activePluginNames = useMemo(() => sessionPluginNames(model?.diagnostics), [model?.diagnostics]);
-  const visibleSlashCatalog = useMemo(
-    () => visibleCatalogCommands(slashCatalog, activePluginNames),
-    [activePluginNames, slashCatalog],
-  );
+  // row's provenance is a built-in, plugin, project or user command. The model
+  // is keyed by ref, so loading a different target never borrows old/global rows.
+  const visibleSlashCatalog = model?.diagnostics?.commands ?? [];
   const sessionBuiltins = sessionBuiltinCommands({ sessionRef: ref, onPage: "session" });
   const slashMenuCatalog = mergeSlashCommands(sessionBuiltins, visibleSlashCatalog, model?.skills ?? []);
   // The menu is only ever open when a token matched AND the merged catalog
@@ -401,6 +405,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     setActiveRecoveryId(null);
     attachments.reset();
     updateSkillNames([]);
+    updateSelectionMeta({ text: "", skillNames: [] });
     setSlashToken(null);
     setSlashHighlighted(0);
     lastDrainSnapshotRef.current = null;
@@ -415,7 +420,8 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
       textRef.current !== "" ||
       attachmentItemsRef.current.length > 0 ||
       activeRecoveryIdRef.current !== null ||
-      skillNamesRef.current.length > 0
+      skillNamesRef.current.length > 0 ||
+      selectionMetaRef.current.commandNames.length > 0
     ) {
       setPendingGoalReplacement(objective);
       return;
@@ -437,7 +443,14 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
 
   useEffect(() => {
     if (activeRecoveryId === null || attachments.hasPending) return;
-    void queueRecoveryPersistence(activeRecoveryId, text, attachments.toInputAttachments(), skillNames);
+    void queueRecoveryPersistence(
+      activeRecoveryId,
+      text,
+      attachments.toInputAttachments(),
+      skillNames,
+      selectionMeta.commandNames,
+      selectionMeta.mentions,
+    );
   }, [
     activeRecoveryId,
     attachments.hasPending,
@@ -445,6 +458,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     queueRecoveryPersistence,
     text,
     skillNames,
+    selectionMeta,
   ]);
 
   useEffect(() => {
@@ -453,7 +467,8 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
       activeRecoveryId !== null ||
       textRef.current.trim() !== "" ||
       attachmentItemsRef.current.length > 0 ||
-      skillNamesRef.current.length > 0
+      skillNamesRef.current.length > 0 ||
+      selectionMetaRef.current.commandNames.length > 0
     ) {
       return;
     }
@@ -466,6 +481,8 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     );
     if (!record) return;
     const recovered = recoveryComposerDraft(record);
+    const visible = materializeSelectionReferences({ ...recovered, skillNames: restoredSkillNames(recovered) });
+    Object.assign(recovered, visible);
     recoveryOwnsLocalDraftRef.current = false;
     setActiveRecoveryId(record.clientMutationId);
     // Restoration replaces this mount's local owner without editing the
@@ -474,6 +491,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     markRestore();
     updateText(recovered.text);
     updateSkillNames(restoredSkillNames(recovered));
+    updateSelectionMeta(recovered);
     attachments.replaceWithSettled(recovered.attachments);
     clearPersistedDraft(ref);
     scheduleCursorRestore(recovered.text.length);
@@ -489,9 +507,11 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     scheduleCursorRestore,
     setActiveRecoveryId,
     skillNamesRef,
+    selectionMetaRef,
     textRef,
     updateText,
     updateSkillNames,
+    updateSelectionMeta,
   ]);
 
   // askPending gates hiding/inerting the input row below (AskDock's own
@@ -708,7 +728,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
   const availability = availabilityFor(model, hasPendingSend, recoveryRequired, resumeOnlySignals);
   const hasText = text.trim() !== "";
   const hasAttachments = attachments.items.length > 0;
-  const hasContent = hasText || hasAttachments || skillNames.length > 0;
+  const hasContent = hasText || hasAttachments || skillNames.length > 0 || selectionMeta.commandNames.length > 0;
   const showStop = controls.stop;
   const showSteer = controls.steer;
   // The Steer control's own reading of the recovery fence (see
@@ -746,6 +766,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
 
   function handleTextChange(value: SkillEditorValue, caret: number): void {
     editSkillNames(value.skillNames);
+    updateSelectionMeta(value);
     editText(value.text);
     if (activeRecoveryIdRef.current === null) persistDraft(value.text);
     // Every keystroke re-evaluates the trailing-token match fresh - a token
@@ -772,12 +793,18 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     if (!slashToken) return;
     // The editor replaces this range with one atomic mention and records the
     // text and activation metadata together in its undo history.
-    if (item.kind === "skill" && item.canonicalName !== undefined) {
+    if (item.kind !== "builtin" && item.canonicalName !== undefined) {
       // The editor refuses the insertion while an IME composition is live, so
       // only dismiss the menu for a skill that actually landed: closing it over
       // a token left as prose would tell the user something was staged that is
       // not in the request at all.
-      if (!editorRef.current?.insertSkill(slashToken.start, slashToken.end, item.canonicalName)) return;
+      const editor = editorRef.current;
+      if (
+        !(item.kind === "skill"
+          ? editor?.insertSkill(slashToken.start, slashToken.end, item.canonicalName)
+          : editor?.insertCommand(slashToken.start, slashToken.end, item.canonicalName))
+      )
+        return;
       setSlashToken(null);
       editorRef.current?.focus();
       return;
@@ -793,7 +820,13 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
   function handleDrainSuccess(): void {
     const snapshot = lastDrainSnapshotRef.current;
     if (!snapshot || !source.alive) return;
-    clearIfUnchanged(snapshot.text, snapshot.revision, snapshot.draftRevision, snapshot.skillNames);
+    clearIfUnchanged(
+      snapshot.text,
+      snapshot.revision,
+      snapshot.draftRevision,
+      snapshot.skillNames,
+      snapshot.commandNames,
+    );
     clearSubmittedAttachments(snapshot.attachments);
   }
 
@@ -833,19 +866,40 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     restoredText: string,
     _attachments?: InputAttachment[],
     restoredNames?: readonly string[],
+    restoredCommands?: readonly string[],
+    restoredMentions?: readonly ComposerMention[],
   ): void {
-    const merged = mergeDraftText(textRef.current, restoredText);
-    const wanted = [...new Set([...skillNamesRef.current, ...(restoredNames ?? [])])];
+    const current = patchSelectionText(
+      { text: textRef.current, skillNames: skillNamesRef.current, ...selectionMetaRef.current },
+      textRef.current.trim() === "" ? "" : textRef.current.replace(/\s+$/, ""),
+    );
     // An entry can carry a selection with no prose of its own. Its chip has to
     // be visible in the sentence either way, so spell the reference out rather
     // than let the restore drop what the user chose.
-    const text = materializeSkillReferences(merged, wanted);
-    if (restoredNames?.length) editSkillNames(wanted);
+    const restored = materializeSelectionReferences({
+      text: restoredText,
+      skillNames: [...(restoredNames ?? [])],
+      commandNames: [...(restoredCommands ?? [])],
+      ...(restoredMentions ? { mentions: [...restoredMentions] } : {}),
+    });
+    const merged = mergeRecoveryComposerDraft(
+      current.text,
+      [],
+      { ...restored, attachments: [], mentions: skillAtomMentions(parseSkillDocument(restored)) },
+      current.skillNames,
+      current.commandNames,
+      skillAtomMentions(parseSkillDocument(current)),
+    );
+    const value = serializeSkillDocument(parseSkillDocument(merged));
+    const text = value.text;
+    editSkillNames(value.skillNames);
+    updateSelectionMeta(value);
     // A queued entry's selections are named, not spelled out, so the value that
     // carries them is authoritative here exactly as a recovery activation's is:
     // without this the merge is a partial append, the references land as plain
     // text, and the request would carry activations the user cannot see.
     markRestore();
+    updateText(text);
     textEditor.write(text, text.length);
     editorRef.current?.focus();
   }
@@ -860,6 +914,8 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
       attachments.items,
       recoveryComposerDraft(record),
       skillNamesRef.current,
+      selectionMetaRef.current.commandNames,
+      selectionMetaRef.current.mentions,
     );
     const currentRecoveryId = activeRecoveryIdRef.current;
     if (currentRecoveryId === null) {
@@ -870,6 +926,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     markRestore();
     editText(merged.text);
     editSkillNames(nextSkillNames);
+    updateSelectionMeta(merged);
     attachments.replaceWithSettled(merged.attachments);
     scheduleCursorRestore(merged.text.length);
     editorRef.current?.focus();
@@ -881,6 +938,8 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
       merged.text,
       settledInputAttachments(merged.attachments),
       nextSkillNames,
+      merged.commandNames,
+      merged.mentions,
     );
     if (currentRecoveryId !== null && currentRecoveryId !== record.clientMutationId) {
       void persistence
@@ -917,6 +976,8 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
       text: textRef.current,
       attachments: attachments.items,
       skillNames: [...skillNamesRef.current],
+      commandNames: [...selectionMetaRef.current.commandNames],
+      mentions: selectionMetaRef.current.mentions,
       revision: draftEditRevisionRef.current,
       draftRevision: readDraftRevision(ref),
     };
@@ -925,6 +986,8 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
       attachments: attachments.toInputAttachments(),
       hasPending: attachments.hasPending,
       skillNames: [...skillNamesRef.current],
+      commandNames: [...selectionMetaRef.current.commandNames],
+      mentions: selectionMetaRef.current.mentions,
     };
   }
 
@@ -949,6 +1012,8 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     const submittedText = textRef.current;
     const submittedAttachments = attachments.items;
     const submittedSkillNames = [...skillNamesRef.current];
+    const submittedCommandNames = [...selectionMetaRef.current.commandNames];
+    const submittedMentions = selectionMetaRef.current.mentions;
     const submittedRevision = draftEditRevisionRef.current;
     const submittedDraftRevision = readDraftRevision(ref);
     const payload = attachments.toInputAttachments();
@@ -962,6 +1027,10 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
       toasts.push("error", "Skill selections aren't supported on this session yet; your draft is kept");
       return;
     }
+    if (submittedCommandNames.length > 0 && model?.capabilities.commandInput !== true) {
+      toasts.push("error", "Command selections are not supported on this session; your draft is kept");
+      return;
+    }
     setBusyAction(kind === "send" || kind === "queue" ? "submit" : "steer");
     try {
       await submitWithPendingTracking(
@@ -970,6 +1039,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
           text: submittedText,
           attachments: payload,
           skillNames: submittedSkillNames,
+          commandNames: submittedCommandNames,
           recoveryId: submittedRecoveryId ?? undefined,
           onFailure: (err) => {
             const label = kind === "send" ? "Send" : kind === "queue" ? "Queue" : kind === "steer" ? "Steer" : "Drain";
@@ -978,7 +1048,14 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
         },
         async () => {
           if (submittedRecoveryId !== null) {
-            await queueRecoveryPersistence(submittedRecoveryId, submittedText, payload, submittedSkillNames);
+            await queueRecoveryPersistence(
+              submittedRecoveryId,
+              submittedText,
+              payload,
+              submittedSkillNames,
+              submittedCommandNames,
+              submittedMentions,
+            );
             wonRecoveryResend = await resendRecoveryPendingTurn(
               submittedRecoveryId,
               ref,
@@ -986,18 +1063,37 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
               submittedText,
               payload,
               submittedSkillNames,
+              submittedCommandNames,
+              submittedMentions,
             );
             return;
           }
-          if (kind === "send") return threadsStore.getState().send(ref, submittedText, payload, submittedSkillNames);
-          if (kind === "queue") return threadsStore.getState().queue(ref, submittedText, payload, submittedSkillNames);
-          if (kind === "steer") return threadsStore.getState().steer(ref, submittedText, payload, submittedSkillNames);
-          return threadsStore.getState().drainAsSteer(ref, submittedText, payload, submittedSkillNames);
+          if (kind === "send")
+            return threadsStore
+              .getState()
+              .send(ref, submittedText, payload, submittedSkillNames, submittedCommandNames, submittedMentions);
+          if (kind === "queue")
+            return threadsStore
+              .getState()
+              .queue(ref, submittedText, payload, submittedSkillNames, submittedCommandNames, submittedMentions);
+          if (kind === "steer")
+            return threadsStore
+              .getState()
+              .steer(ref, submittedText, payload, submittedSkillNames, submittedCommandNames, submittedMentions);
+          return threadsStore
+            .getState()
+            .drainAsSteer(ref, submittedText, payload, submittedSkillNames, submittedCommandNames, submittedMentions);
         },
       );
       if (!source.alive) return;
       if (!wonRecoveryResend) toasts.push("info", "This message was already sent in another tab.");
-      clearIfUnchanged(submittedText, submittedRevision, submittedDraftRevision, submittedSkillNames);
+      clearIfUnchanged(
+        submittedText,
+        submittedRevision,
+        submittedDraftRevision,
+        submittedSkillNames,
+        submittedCommandNames,
+      );
       clearSubmittedAttachments(submittedAttachments);
     } catch {
       // The local durable write failed. The submitted composer payload stays
@@ -1036,6 +1132,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     }
     const submittedText = textRef.current;
     const submittedSkillNames = [...skillNamesRef.current];
+    const submittedCommandNames = [...selectionMetaRef.current.commandNames];
     const submittedRevision = draftEditRevisionRef.current;
     const submittedDraftRevision = readDraftRevision(ref);
     setBusyAction("submit");
@@ -1050,7 +1147,14 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     };
     const outcome = await runBuiltinCommand(match, ctx);
     setBusyAction(null);
-    if (outcome.ok) clearIfUnchanged(submittedText, submittedRevision, submittedDraftRevision, submittedSkillNames);
+    if (outcome.ok)
+      clearIfUnchanged(
+        submittedText,
+        submittedRevision,
+        submittedDraftRevision,
+        submittedSkillNames,
+        submittedCommandNames,
+      );
     // On failure: the draft is left exactly as typed (clearIfUnchanged is
     // simply never called) - runBuiltinCommand has already toasted why.
   }
@@ -1074,7 +1178,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     // (matchBuiltinInvocation only ever matches sessionBuiltins, never the
     // catalog - see that function's own doc comment) - falls straight through
     // to the ordinary routing below, unchanged: that's the escape hatch.
-    if (!hasAttachments && skillNames.length === 0) {
+    if (!hasAttachments && skillNames.length === 0 && selectionMeta.commandNames.length === 0) {
       const match = matchBuiltinInvocation(text, sessionBuiltins);
       if (match) {
         void handleBuiltinSubmit(match);
@@ -1140,7 +1244,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     const route = decideSteerRoute({
       hasText,
       hasAttachments,
-      hasSkills: skillNames.length > 0,
+      hasSkills: skillNames.length > 0 || selectionMeta.commandNames.length > 0,
       queueDepth: liveThreadModel(ref)?.queue?.depth ?? queueDepth,
     });
     if (route === "none") {
@@ -1404,9 +1508,13 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
                 field={
                   <SkillEditor
                     ref={editorRef}
-                    value={{ text, skillNames }}
+                    value={{ text, skillNames, ...selectionMeta }}
                     restoreEpoch={restoreEpoch}
                     skillDetails={skillChipDetails}
+                    commandDetails={(name) =>
+                      visibleSlashCatalog.find((item) => slashCommandInvocation(item) === `/${name}`)?.description ??
+                      `${name} — no longer in this session's command catalog`
+                    }
                     onChange={handleTextChange}
                     onKeyDown={handleKeyDown}
                     onPaste={handlePaste}

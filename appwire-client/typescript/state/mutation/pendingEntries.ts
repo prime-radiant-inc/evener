@@ -20,6 +20,7 @@ export interface PendingTurnEntry {
   // queued submission has no text at all, so these names are its whole
   // user-visible content.
   skillNames: string[];
+  commandNames?: string[];
   createdAt?: number;
   state: PendingTurnState;
   source: "outbox" | "optimistic" | "authoritative";
@@ -93,8 +94,13 @@ export function pendingEntryPreview(entry: {
   text: string;
   imageCount: number;
   skillNames: readonly string[];
+  commandNames?: readonly string[];
 }): string {
-  return [queueEntryPreviewText(entry.text, entry.imageCount), skillMarkers(entry.skillNames)]
+  return [
+    queueEntryPreviewText(entry.text, entry.imageCount),
+    skillMarkers(entry.skillNames),
+    commandMarkers(entry.commandNames ?? []),
+  ]
     .filter((part) => part !== "")
     .join(" ");
 }
@@ -125,7 +131,16 @@ export function truncateForDisplay(text: string, max: number = DEFAULT_MAX_DISPL
   return `${text.slice(0, max)}…`;
 }
 
-function inputPreview(input: InputItem[] | undefined): { text: string; imageCount: number; skillNames: string[] } {
+export function commandMarkers(names: readonly string[]): string {
+  return names.map((name) => `[command: ${name}]`).join(" ");
+}
+
+function inputPreview(input: InputItem[] | undefined): {
+  text: string;
+  imageCount: number;
+  skillNames: string[];
+  commandNames: string[];
+} {
   const text = input
     ?.filter((item): item is InputItem & { text: string } => item.type === "text" && typeof item.text === "string")
     .map((item) => item.text)
@@ -136,7 +151,12 @@ function inputPreview(input: InputItem[] | undefined): { text: string; imageCoun
       ?.filter((item): item is InputItem & { name: string } => item.type === "skill" && typeof item.name === "string")
       .map((item) => item.name),
   );
-  return { text: text ?? "", imageCount, skillNames };
+  const commandNames = canonicalSkillNames(
+    input
+      ?.filter((item): item is InputItem & { name: string } => item.type === "command" && typeof item.name === "string")
+      .map((item) => item.name),
+  );
+  return { text: text ?? "", imageCount, skillNames, commandNames };
 }
 
 type PendingRecord = MutationOutboxRecord | MutationOptimisticRecord;

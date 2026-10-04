@@ -6,6 +6,7 @@ import type { NativeStackNavigationOptions } from "@react-navigation/native-stac
 import { WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import type { ReactElement } from "react";
+import { FlatList } from "react-native";
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { playedHaptics, pressable, render, renderedText, screenConnection } from "../renderNative.testkit";
@@ -205,6 +206,12 @@ it("lists failed, then running, then a folded done, with chips that count the sa
 	expect(shown).not.toContain("Finished task 0");
 	for (const label of ["All, 55", "Failed, 2", "Running, 32", "Done, 21"]) expect(pressable(tree, label)).toBeDefined();
 	expect(tree.root.find((node) => node.props.accessibilityLabel === "2 failed, 32 running, 21 done")).toBeDefined();
+});
+
+it("lets a drag of the list put the filter's keyboard away", async () => {
+	const tree = await mount();
+	expect(tree.root.findByProps({ accessibilityLabel: "Filter activity" })).toBeDefined();
+	expect(tree.root.findByType(FlatList).props.keyboardDismissMode).toBe("on-drag");
 });
 
 // Spec 9 draws the filter chips as one row, as the Board's and the Session's

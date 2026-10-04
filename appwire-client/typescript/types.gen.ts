@@ -564,6 +564,11 @@ export interface EvenerDelegateParams {
 }
 
 export interface EvenerDiagnostics {
+  /**
+   * Commands is this owning session's loaded, path-free command inventory.
+   * Nil is unreported, an explicit empty slice is an authoritative empty inventory.
+   */
+  commands?: CommandDescriptor[];
   tools?: EvenerToolInfo[];
   mcp?: EvenerMCPServerInfo[];
   skills?: EvenerSkillInfo[];
@@ -1259,7 +1264,7 @@ export interface HostPlan {
 }
 
 export interface HostPlanNoToken {
-  outcome: string;
+  outcome: "no-token";
   staleFacts: HostPlanStaleFacts;
   terminal: boolean;
   remnantId?: string;
@@ -1270,7 +1275,7 @@ export interface HostPlanParams {
 }
 
 export interface HostPlanPlanned {
-  outcome: string;
+  outcome: "planned";
   plan: HostPlan;
   token: string;
 }
@@ -1402,7 +1407,7 @@ export interface HostTeardownRecoverParams {
 }
 
 export interface HostTeardownRecoverResult {
-  outcome: string;
+  outcome: "recovered-cleared";
   remnantId: string;
   clearedName: string;
   clearedAt: string;
@@ -1410,40 +1415,40 @@ export interface HostTeardownRecoverResult {
 }
 
 export interface HostTeardownRetryClearedLive {
-  outcome: string;
-  hostKind: string;
+  outcome: "already-cleared";
+  hostKind: "live";
   host: HostRow;
   remnantId: string;
   escalationAgeSec?: number;
 }
 
 export interface HostTeardownRetryClearedRemoved {
-  outcome: string;
-  hostKind: string;
+  outcome: "already-cleared";
+  hostKind: "removed";
   host: RemovedRow;
   remnantId: string;
   escalationAgeSec?: number;
 }
 
 export interface HostTeardownRetryCompleteLive {
-  outcome: string;
-  hostKind: string;
+  outcome: "teardown-complete";
+  hostKind: "live";
   host: HostRow;
   remnantId: string;
   escalationAgeSec?: number;
 }
 
 export interface HostTeardownRetryCompleteRemoved {
-  outcome: string;
-  hostKind: string;
+  outcome: "teardown-complete";
+  hostKind: "removed";
   host: RemovedRow;
   remnantId: string;
   escalationAgeSec?: number;
 }
 
 export interface HostTeardownRetryFailedLive {
-  outcome: string;
-  hostKind: string;
+  outcome: "committed-with-teardown-failure";
+  hostKind: "live";
   host: HostRow;
   remnantId: string;
   seam: string;
@@ -1451,8 +1456,8 @@ export interface HostTeardownRetryFailedLive {
 }
 
 export interface HostTeardownRetryFailedRemoved {
-  outcome: string;
-  hostKind: string;
+  outcome: "committed-with-teardown-failure";
+  hostKind: "removed";
   host: RemovedRow;
   remnantId: string;
   seam: string;
@@ -1516,12 +1521,19 @@ export interface InitializeResponse {
 export interface InputItem {
   type: string;
   text?: string;
+  mentions?: InputMention[];
   url?: string;
   mediaType?: string;
   data?: string;
   name?: string;
   path?: string;
   metadata?: Record<string, string>;
+}
+
+export interface InputMention {
+  kind: string;
+  name: string;
+  offset: number;
 }
 
 export interface InstanceCreateParams {
@@ -2871,6 +2883,16 @@ export interface QueueState {
    * selections".
    */
   skillNames?: string[][];
+  /**
+   * CommandNames is FIFO-aligned with Preview and retains exact command
+   * identities independently from skill selections when editing or returning.
+   */
+  commandNames?: string[][];
+  /**
+   * Mentions is FIFO-aligned with Texts, retaining each atom's exact kind
+   * and UTF-16 location. It is editing metadata, not activation authority.
+   */
+  mentions?: InputMention[][];
 }
 
 export interface RemovedRow {
@@ -3648,6 +3670,11 @@ export interface ThreadCapabilities {
    * rejected wherever this capability is false.
    */
   skillInput?: boolean;
+  /**
+   * CommandInput advertises canonical {type:"command", name} consumption
+   * on input-bearing mutations, with empty args and exact catalog identity.
+   */
+  commandInput?: boolean;
   /**
    * StopSubagent advertises evener/delegate/stop on a root session (S6):
    * true while its daemon wires the stop and the session is open. Absent

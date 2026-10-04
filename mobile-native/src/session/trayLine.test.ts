@@ -1,5 +1,13 @@
-import type { EvenerDelegateInfo, ItemModel, ModelRetryState, TurnModel } from "@evener/appwire-client";
+import type {
+	EvenerDelegateInfo,
+	ItemModel,
+	ModelRetryState,
+	NavigationSessionSummary,
+	SessionActivity,
+	TurnModel,
+} from "@evener/appwire-client";
 import { describe, expect, it } from "vitest";
+import { whyLine } from "../board/attention";
 import { subagentTally } from "./sessionState";
 import { FrameCounter, type TraySource, trayLine } from "./trayLine";
 
@@ -139,9 +147,10 @@ describe("the tray's line (spec 8.3)", () => {
 		expect(trayLine(session({ turns: [turn([reply])] }), NOW)?.text).toBe("Writing…");
 	});
 
-	// The tray counts what the Subagents list, its chip and the transcript row
-	// call running (subagentState), so the four never disagree.
-	it("counts the subagents the list counts as running", () => {
+	// Without a hub read, the tray counts what the Subagents list, its chip and
+	// the transcript row call running (subagentState) among the session's own
+	// delegates.
+	it("without a hub read, counts the delegates the list counts as running", () => {
 		// Resumable with no ended run, so not terminal: running. An idle
 		// subagent whose run ended is terminal on the wire.
 		const idle = { ...delegate("idle", 2), resumable: true };
@@ -159,6 +168,58 @@ describe("the tray's line (spec 8.3)", () => {
 		expect(trayLine(session({ delegates: [delegate("running", 1)] }), NOW)?.text).toBe("Waiting on 1 subagent");
 		const watching = item({ toolName: "job_watch", description: "Watching the jobs", status: "inProgress" });
 		expect(trayLine(session({ turns: [turn([watching])], delegates: running }), NOW)?.text).toBe("Watching the jobs");
+	});
+
+	// Spec 13.1: one line, the same on the Board and in the tray. The root's
+	// thread carries only the subagents the coordinator started itself
+	// (agent/status.go lists the delegates the session owns), while the hub
+	// counts running subagents at every depth: its activity read
+	// (app_activity.go's runningSubagents), and without one the session's
+	// navigation row tally (S3). The tray takes the same count by the same
+	// precedence the Board does, so a running grandchild, or a running child of
+	// a failed subagent, counts on both, and a fresh read wins over the tally.
+	const failed = { ...delegate("failed", 2), terminal: true, outcome: "failed" };
+	it.each([
+		{
+			tree: "a running subagent with its own running subagent, and a failed one whose subagent still runs",
+			delegates: [delegate("running", 1), failed],
+			read: 3,
+			tally: 2,
+			text: "Waiting on 3 subagents",
+		},
+		{
+			tree: "only a failed subagent whose own subagent still runs, long silent",
+			delegates: [failed],
+			read: 1,
+			tally: 0,
+			text: "Waiting on 1 subagent",
+		},
+		{
+			tree: "the same nested tree with no activity read",
+			delegates: [delegate("running", 1), failed],
+			read: undefined,
+			tally: 3,
+			text: "Waiting on 3 subagents",
+		},
+	])("names the hub's running-subagent count, as the Board does: $tree", ({ delegates, read, tally, text }) => {
+		const activity: SessionActivity | undefined =
+			read === undefined ? undefined : { ref: "local:root", minutes: [0, 0, 0, 0, 0, 0, 0], runningSubagents: read };
+		const row: NavigationSessionSummary = {
+			ref: "local:root",
+			host_id: "local",
+			session_id: "root",
+			title: "Get PR 2138 Test Clean",
+			project: "evener",
+			state: "active",
+			kind: "session",
+			live: true,
+			subagents: { running: tally, failed: 1, done: 0 },
+			children: [],
+		};
+		const board = whyLine({ row, state: "working" }, activity);
+		const tray = trayLine(session({ delegates, lastFrameAt: NOW - 15 * 60_000 }), NOW, activity, row);
+		expect(board?.text).toBe(text);
+		expect(tray).toEqual({ text, attention: false });
 	});
 
 	it("keeps the newest completed tool intent above status fallbacks", () => {

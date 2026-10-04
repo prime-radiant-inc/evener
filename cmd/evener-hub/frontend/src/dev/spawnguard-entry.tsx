@@ -330,7 +330,7 @@ function measureAttachments() {
 function measurePromptCard() {
   const card = document.querySelector<HTMLElement>('[data-testid="spawn-prompt-card"]');
   const controls = document.querySelector<HTMLElement>('[data-testid="spawn-controls"]');
-  const field = document.querySelector<HTMLElement>('[data-testid="spawn-prompt-card"] textarea');
+  const field = document.querySelector<HTMLElement>('[data-testid="spawn-prompt-card"] [role="textbox"]');
   const attach = document.querySelector<HTMLElement>('[data-testid="spawn-attach"]');
   const submit = document.querySelector<HTMLElement>('[data-testid="spawn-submit"]');
   const modelTrigger = document.querySelector<HTMLElement>('[data-testid="spawn-model-trigger"]');
@@ -670,11 +670,10 @@ async function onboardingButton(name: string): Promise<HTMLButtonElement> {
 
 async function exerciseProviderOnboarding(): Promise<string[]> {
   const failures: string[] = [];
-  const prompt = await directoryElement<HTMLTextAreaElement>('textarea[aria-label="Prompt"]');
-  const promptSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
-  if (!promptSetter) throw new Error("Missing textarea setter");
-  promptSetter.call(prompt, "onboarding-draft");
-  prompt.dispatchEvent(new Event("input", { bubbles: true }));
+  const prompt = await directoryElement<HTMLElement>('[role="textbox"][aria-label="Prompt"]');
+  prompt.focus();
+  if (!document.execCommand("insertText", false, "onboarding-draft")) throw new Error("Prompt insertion failed");
+  await new Promise((resolve) => requestAnimationFrame(resolve));
   (await onboardingButton("Connect provider")).click();
   (await onboardingButton("OpenAI")).click();
   const key = await directoryElement<HTMLInputElement>("#provider-credential");
@@ -691,7 +690,7 @@ async function exerciseProviderOnboarding(): Promise<string[]> {
   (await onboardingButton("Connect provider")).click();
   (await onboardingButton("OpenAI")).click();
   const freshKey = await directoryElement<HTMLInputElement>("#provider-credential");
-  if (prompt.value !== "onboarding-draft") failures.push("cancel lost prompt");
+  if (prompt.textContent !== "onboarding-draft") failures.push("cancel lost prompt");
   const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
   if (!setter) throw new Error("Missing input setter");
   setter.call(freshKey, "fixture-not-a-real-key");

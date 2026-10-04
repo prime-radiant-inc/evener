@@ -237,6 +237,11 @@ it("names where the review goes, lists the comments, and waits for a verdict", a
 	expect(sendDisabled(tree)).toBe(false);
 });
 
+it("lets a drag of the sheet put the keyboard away", async () => {
+	const tree = await mount();
+	expect(tree.root.findAllByType("ScrollView" as never)[0]?.props.keyboardDismissMode).toBe("on-drag");
+});
+
 it("keeps a chosen verdict's words where they were, centred, at the same weight", async () => {
 	// A bolder "Request changes" no longer fit its third of the row and wrapped
 	// flush left (seen on the simulator, phase 4 PR 9).

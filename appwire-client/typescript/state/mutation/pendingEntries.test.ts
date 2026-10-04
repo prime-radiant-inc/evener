@@ -79,6 +79,23 @@ test("a skill-only pending entry carries its canonical skill selection", () => {
   ]);
 });
 
+test("pending input retains a command alongside the same-spelling skill across serialized recovery", () => {
+  const input: InputItem[] = [
+    { type: "skill", name: "probe" },
+    { type: "command", name: "probe" },
+    { type: "command", name: "probe" },
+  ];
+  const record: MutationOutboxRecord = {
+    ...outbox("mutation_1", "turn/queue", ""),
+    payload: { ref: "ref_a", input, clientMutationId: "mutation_1" },
+    optimisticDisplay: { method: "turn/queue", input },
+  };
+  const recovered = JSON.parse(JSON.stringify(record)) as MutationOutboxRecord;
+  expect(
+    reconcilePendingEntries("ref_a", [recovered], model(), NOTHING_SUBMITTED_HERE, UNATTRIBUTED_ONLY),
+  ).toMatchObject([{ skillNames: ["probe"], commandNames: ["probe"] }]);
+});
+
 test("the authoritative pending projection replaces the same outbox identity", () => {
   const pending: PendingMutation = {
     clientMutationId: "mutation_1",

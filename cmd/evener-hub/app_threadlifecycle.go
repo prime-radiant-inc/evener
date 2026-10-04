@@ -194,6 +194,10 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 		if err := appwire.ValidateSkillInputSupport(params.Input, threadResp.Thread.Evener.Capabilities.SkillInput); err != nil {
 			return appwire.ThreadStartResponse{}, appwire.InvalidParams(err.Error())
 		}
+		if err := appwire.ValidateCommandInputSupport(params.Input, threadResp.Thread.Evener.Capabilities.CommandInput); err != nil {
+			return appwire.ThreadStartResponse{}, appwire.InvalidParams(err.Error())
+
+		}
 		clientMutationID, err := identifier.NewClientMutationID()
 		if err != nil {
 			return appwire.ThreadStartResponse{}, appwire.InternalError("create initial turn mutation id: " + err.Error())

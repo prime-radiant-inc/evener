@@ -122,6 +122,33 @@ describe("ActivityPoll (S5)", () => {
 		expect(poll.msSinceRead()).toBeNull();
 	});
 
+	it("keeps its read through stop(), and forget() drops it, telling subscribers, until a new read lands", async () => {
+		const fake = client();
+		const settlements = gateSettlements(fake, "evener/activity/read");
+		const poll = new ActivityPoll(fake);
+		const listener = vi.fn();
+		poll.subscribe(listener);
+		poll.start();
+		await vi.advanceTimersByTimeAsync(0);
+		settlements[0]?.resolve({ sessions: [activityA] });
+		await vi.advanceTimersByTimeAsync(0);
+		listener.mockClear();
+
+		poll.stop();
+		expect(poll.activity("local:a")).toEqual(activityA);
+		expect(listener).not.toHaveBeenCalled();
+		poll.forget();
+		expect(listener).toHaveBeenCalledTimes(1);
+		expect(poll.activity("local:a")).toBeUndefined();
+		expect(poll.msSinceRead()).toBeNull();
+
+		poll.start();
+		await vi.advanceTimersByTimeAsync(0);
+		settlements[1]?.resolve({ sessions: [{ ...activityA, runningSubagents: 2 }] });
+		await vi.advanceTimersByTimeAsync(0);
+		expect(poll.activity("local:a")?.runningSubagents).toBe(2);
+	});
+
 	it("a method-not-found answer landing after stop() does not disable the hub", async () => {
 		const fake = client();
 		const settlements = gateSettlements(fake, "evener/activity/read");

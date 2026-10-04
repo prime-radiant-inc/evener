@@ -1,12 +1,12 @@
-// The app's one command catalog: the package's hub-wide catalog store bound to
+// The controller palette's command catalog: the package's hub-wide store bound to
 // zustand's useStore for the reactive read. Every ready, client-wired
 // connection loads it (the subscription below); the palette re-reads it on
-// open (paletteController), the composer's slash menu reads it, and a plugin
+// open (paletteController), and a plugin
 // change on the hub re-reads it. The store is created once and outlives any
 // connection: its client port forwards each request to whichever client the
 // connection store holds now, and follows that store so the plugin-change
-// subscription moves to a replacement client. Each consumer scopes the catalog
-// to a session itself, from the diagnostics the threads store already holds.
+// subscription moves to a replacement client. Live completion instead reads the
+// owning thread's diagnostics.commands, never this controller inventory.
 import { type CommandCatalogClient, type CommandCatalogState, createCommandCatalog } from "@evener/appwire-client";
 import { useStore } from "zustand";
 import { connectionStore, readyConnectionTransition } from "./connection";
@@ -62,8 +62,7 @@ store.watch();
 
 // The catalog's "read once per connection" half: the palette's lazy open and
 // evener/plugin/updated only ever re-read a catalog someone loaded first, so
-// without this a fresh browser's composer slash menu held no plugin or user
-// commands until the palette had been opened once on a session page. Every
+// this eagerly warms the controller palette independently of live completion. Every
 // transition into a ready, client-wired connection - first connect, client
 // replacement, recovery after a gap whose plugin changes went unheard - is a
 // connection whose catalog this store has not read, so it reads now.
