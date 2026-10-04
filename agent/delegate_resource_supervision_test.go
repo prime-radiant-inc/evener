@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -3225,7 +3226,16 @@ func waitForStableSupervisionRun(t *testing.T, root *Session, childID string) {
 	// TRIPWIRE: every supervision run in these tests is served by a scripted
 	// in-process adapter, so quiescence is reached in milliseconds; this bound
 	// only fires on a genuine hang.
+	var why string
+	defer func() {
+		if t.Failed() {
+			buf := make([]byte, 8<<20)
+			n := runtime.Stack(buf, true)
+			t.Logf("DIAG last blocker: %s\nDIAG state: %s\n%s", why, stableSupervisionDiagState(root, sub), buf[:n])
+		}
+	}()
 	waitForCondition(t, 30*time.Second, desc, func() bool {
+		why = "start"
 		sub.mu.Lock()
 		sess := sub.sess
 		closed := sub.closed
@@ -3240,13 +3250,16 @@ func waitForStableSupervisionRun(t *testing.T, root *Session, childID string) {
 		// that races past one read is caught by a later one.
 		if sess != nil && !closed {
 			if sess.hasPendingDelegateAttentionArmRetry() {
+				why = "arm retry"
 				return false
 			}
 			if pending, err := sess.pendingDelegateAttentionIDs(); err != nil || len(pending) != 0 {
+				why = fmt.Sprintf("pending %v %v", pending, err)
 				return false
 			}
 			if controller, delegateID := sess.delegateController, sess.owningDelegateID; controller != nil && delegateID != "" {
 				if controller.reservedAttentionID(sess) != "" {
+					why = "reserved"
 					return false
 				}
 				controller.mu.Lock()
@@ -3258,6 +3271,7 @@ func waitForStableSupervisionRun(t *testing.T, root *Session, childID string) {
 				finalizing := live != nil && live.finalizing != nil
 				controller.mu.Unlock()
 				if runOpen || finalizing {
+					why = fmt.Sprintf("runOpen=%v finalizing=%v", runOpen, finalizing)
 					return false
 				}
 			}
@@ -3265,10 +3279,13 @@ func waitForStableSupervisionRun(t *testing.T, root *Session, childID string) {
 		sub.mu.Lock()
 		done := sub.done
 		live := sub.running || sub.driving || sub.finalizing
+		flags := fmt.Sprintf("running=%v driving=%v finalizing=%v done=%v", sub.running, sub.driving, sub.finalizing, done != nil)
 		sub.mu.Unlock()
 		if live || done == nil {
+			why = flags
 			return false
 		}
+		why = "done not closed"
 		select {
 		case <-done:
 			return true
@@ -3276,6 +3293,38 @@ func waitForStableSupervisionRun(t *testing.T, root *Session, childID string) {
 			return false
 		}
 	})
+}
+
+func stableSupervisionDiagState(root *Session, sub *subagent) string {
+	sess := sub.sess
+	c := sess.delegateController
+	c.mu.Lock()
+	var b strings.Builder
+	if agg := c.durable[sess.owningDelegateID]; agg != nil {
+		fmt.Fprintf(&b, "aggregate{gen=%d phase=%v open=%v needs=%v} ", agg.Generation, agg.Phase, agg.CurrentRunOpen, agg.NeedsAttention)
+	}
+	if live := c.live[sess.owningDelegateID]; live != nil {
+		fmt.Fprintf(&b, "live{binding=%v finalizing=%v recovery=%v} ", live.binding != nil, live.finalizing != nil, live.recoveryRequired)
+	}
+	if st := c.attention[sess.owningDelegateID]; st != nil {
+		fmt.Fprintf(&b, "attention{wake=%v parked=%v restoreFailures=%d turn=%d} ", st.wakeIDs, st.parked, st.restoreFailures, st.driveTurn)
+	}
+	fmt.Fprintf(&b, "reservations=%d eligible=%v delivery=%v ", len(c.reservations), c.delegateAttentionWakeEligibleLocked(sess.owningDelegateID), c.hasDeliveryWorkForOwnerLocked(sess.owningDelegateID))
+	c.mu.Unlock()
+	root.attentionMu.Lock()
+	fmt.Fprintf(&b, "rootRetry{active=%v delay=%v} ", root.stableAttentionRetry.active, root.stableAttentionRetry.delay)
+	root.attentionMu.Unlock()
+	sub.mu.Lock()
+	fmt.Fprintf(&b, "sub{running=%v driving=%v finalizing=%v dispose=%v closed=%v fatal=%v status=%v} ", sub.running, sub.driving, sub.finalizing, sub.disposeGated, sub.closed, sub.fatalRunGated, sub.status)
+	sub.mu.Unlock()
+	root.mu.Lock()
+	fmt.Fprintf(&b, "root{state=%v} ", root.state)
+	root.mu.Unlock()
+	sess.mu.Lock()
+	fmt.Fprintf(&b, "child{state=%v} ", sess.state)
+	sess.mu.Unlock()
+	fmt.Fprintf(&b, "childGated=%v committedSend=%v", root.childDriveGated(sess.id), root.childCommittedSendStart(sess.id))
+	return b.String()
 }
 
 // TestWaitForStableSupervisionRunOutlastsDeferredAttentionDrive pins the
