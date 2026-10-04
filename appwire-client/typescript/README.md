@@ -108,6 +108,15 @@ The slash-completion module is ported from Beautiful UI's prompt-bar
 completion affordance and ships its MIT attribution at
 `LICENSES/beautiful-ui.txt`, inside the tarball.
 
+## Generated results
+
+`MethodTypes` correlates each method's parameters and result. Fixed result
+discriminators come from Go's `StringDiscriminators` catalog: host plans narrow
+on `outcome`, and teardown retry results narrow on `outcome` and `hostKind`.
+Use those generated unions directly when consuming results; the failure arms
+carry `seam`, and planned results carry `plan` and `token`. The public Go arm
+structs and their wire fields remain the protocol authority.
+
 ## Host-scoped requests
 
 `hostRequest(client, host, method, params, opts)` sends a typed request to the
