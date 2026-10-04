@@ -180,19 +180,21 @@ final class DocumentAnnotationsUITests: XCTestCase {
             let candidate = app.staticTexts["native-probe-code-candidate"]
             // Empty text may not create a VoiceOver element. Its geometry remains in the receipt.
             if !text.isEmpty {
-                XCTAssertEqual(reference.label, text, "Unchanged RN VoiceOver text, case \(index)")
-                XCTAssertEqual(candidate.label, text, "Candidate VoiceOver text, case \(index)")
+                XCTAssertEqual(Array(reference.label.utf16), Array(text.utf16), "Unchanged RN VoiceOver text, case \(index)")
+                XCTAssertEqual(Array(candidate.label.utf16), Array(text.utf16), "Candidate VoiceOver text, case \(index)")
                 XCTAssertEqual(candidate.frame.width, reference.frame.width, accuracy: tolerance)
                 XCTAssertEqual(candidate.frame.height, reference.frame.height, accuracy: tolerance)
                 for leaf in [reference, candidate] {
                     leaf.press(forDuration: 1.2)
                     XCTAssertTrue(copyMenu.waitForExistence(timeout: 5))
                     copyMenu.tap()
-                    XCTAssertEqual(try clipboardText(), text, "Legacy RN paragraph Copy, case \(index)")
+                    let copied = try XCTUnwrap(clipboardText())
+                    XCTAssertEqual(Array(copied.utf16), Array(text.utf16), "Legacy RN paragraph Copy, case \(index)")
                 }
             }
             app.buttons["native-probe-block-copy"].tap()
-            XCTAssertEqual(try clipboardText(), text, "Whole block Copy, case \(index)")
+            let copied = try XCTUnwrap(clipboardText())
+            XCTAssertEqual(Array(copied.utf16), Array(text.utf16), "Whole block Copy, case \(index)")
             receipt("code-comparison-\(index)-preservation")
             app.buttons["native-probe-next-case"].tap()
         }
