@@ -23,11 +23,12 @@ const noRevision = () => 0;
  * everything drawn from it (the Board's rows, their meters and the Working
  * order; a session's tray) falls back to its pre-S5 appearance the moment
  * either one fails, and agrees since there is only the one gate. Nothing
- * re-renders the caller when a read merely ages, so while a fresh read is on screen the recheck below re-renders at
- * the polling cadence, dropping the read within one interval of its going
- * stale, whatever becomes of the poll meanwhile. With no fresh read on screen
- * there is nothing to expire, so it doesn't run: not before the first read
- * lands, not while reads keep failing, and never on a hub that predates S5.
+ * re-renders the caller when a read merely ages, so while a fresh read is on
+ * screen the recheck below re-renders at the polling cadence, dropping the
+ * read within one interval of its going stale, whatever becomes of the poll
+ * meanwhile. With no fresh read on screen there is nothing to expire, so it
+ * doesn't run: not before the first read lands, not while reads keep failing,
+ * and never on a hub that predates S5.
  * The returned `tick` is that same recheck's counter: the Board's `bands`'
  * isStuck sort closes over `msSinceRead`, so it needs this to re-sort Working
  * within one poll interval of a row crossing into stuck from elapsed time
