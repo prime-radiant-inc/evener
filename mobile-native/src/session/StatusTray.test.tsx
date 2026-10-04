@@ -1,4 +1,4 @@
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { FakeClient, gateSettlements } from "@evener/appwire-client/testing/fakeClient";
 import type { ReactTestInstance, ReactTestRenderer } from "react-test-renderer";
 import { act } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -14,6 +14,10 @@ vi.mock("react-native", async () => ({
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 
 const light = palettes.light;
+
+function rootRead(runningSubagents: number) {
+	return { ref: "local:root", minutes: [0, 0, 0, 0, 0, 0, 0], runningSubagents };
+}
 
 function tray(overrides: Partial<Parameters<typeof StatusTray>[0]> = {}) {
 	const props = {
@@ -163,7 +167,7 @@ describe("LiveStatusTray", () => {
 	it("polls the hub's activity for its own session only while the agent works, and names its count", async () => {
 		const client = new FakeClient("ready");
 		client.on("evener/activity/read", () => ({
-			sessions: [{ ref: "local:root", minutes: [0, 0, 0, 0, 0, 0, 0], runningSubagents: 3 }],
+			sessions: [rootRead(3)],
 		}));
 		const tree = render(live(session(true, Date.now()), new FrameCounter(), client));
 		await act(async () => {});
@@ -176,6 +180,27 @@ describe("LiveStatusTray", () => {
 		});
 		expect(client.calls).toHaveLength(1);
 		expect(vi.getTimerCount()).toBe(0);
+	});
+
+	it("never shows the count from before an idle spell once the agent works again", async () => {
+		const client = new FakeClient("ready");
+		const reads = gateSettlements(client, "evener/activity/read");
+		const tree = render(live(session(true, Date.now()), new FrameCounter(), client));
+		await act(async () => {});
+		await act(async () => {
+			reads[0]?.resolve({ sessions: [rootRead(3)] });
+		});
+		expect(renderedText(tree)).toContain("Waiting on 3 subagents");
+
+		act(() => tree.update(live(session(false, Date.now()), new FrameCounter(), client)));
+		await act(async () => tree.update(live(session(true, Date.now()), new FrameCounter(), client)));
+		expect(reads).toHaveLength(2);
+		expect(renderedText(tree)).not.toContain("Waiting on 3 subagents");
+
+		await act(async () => {
+			reads[1]?.resolve({ sessions: [rootRead(5)] });
+		});
+		expect(renderedText(tree)).toContain("Waiting on 5 subagents");
 	});
 
 	it("shows the one-bar fallback until a frame arrives, then this phone's counts", () => {
