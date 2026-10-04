@@ -19,9 +19,13 @@ Expo SDK 57, SQLite, patched react-native-enriched-markdown 1.0.2, Objective-C++
 Chrome/CDP, and installed iOS Simulator tests.
 
 **Spec:** `docs/superpowers/specs/2026-10-04-markdown-document-annotations-design.md`. Read the
-entire spec before this plan. The reviewed behavior baseline is commit
-`025289b1316cb5534984b0ea1338db1dc5c71d57`; source baseline is
-`abd240265411bb1a35f10d1761a56cf0685339ea`.
+entire spec before this plan. The original approved behavior baseline is
+`025289b1316cb5534984b0ea1338db1dc5c71d57`; the approved and independently re-reviewed native
+code-text amendment is `19afe6b9e69b3caffcf9e6d4d7efebf6b0f74727`. The original approved plan is
+`dd919c9a597a57c00f14d9fc61287edcfeffddb6`; source baseline is
+`abd240265411bb1a35f10d1761a56cf0685339ea`. This bounded plan amendment changes only native
+boundary implementation, its Reader consumer and their qualification instructions. Its written-plan
+approval is pending. Product edits remain paused until Jesse approves it.
 
 ## Global Constraints
 
@@ -50,6 +54,10 @@ entire spec before this plan. The reviewed behavior baseline is commit
 - "Keep the native Reader and its reading behavior." Extend the patched native boundary. No WebView
   replacement; preserve reading position, outline, changes, text scaling, links, code/table
   scrolling, selection/copy, and explicit Review.
+- Replace only Markdown code blocks' text leaf with the new content-only native leaf in the existing
+  enriched-markdown patch. Keep Reader's inset View and horizontal ScrollView, `useCodeText`, exact
+  `block.code?.text ?? block.text`, baselines, size, direction, accessibility and Copy. Add no header,
+  inset or internal scroller. Plain-code-file lines remain unchanged. No React Native package patch.
 - "No background cleanup infers deletion from inactivity." Annotation retention does not inherit
   DocumentMemory's 100-document cap. Review and history-cache clearing do not own annotations.
 - Shared consumers use package-name imports and documented root exports. No relative imports into
@@ -57,8 +65,10 @@ entire spec before this plan. The reviewed behavior baseline is commit
 - Default tests are deterministic. Script only the external LLM provider for real-stack journeys;
   use real hub, daemon, AppWire, document reads, storage, renderer, and draft editing below that
   boundary.
-- No product code, dependency installation, build, or product test has run during planning. Commands
-  and proposed APIs below are implementation instructions, not passed checks.
+- Commands and proposed APIs below are implementation instructions, not passed checks. Task 1 is
+  complete at `447d6bc616cd55d2ae1846ab61743c5f9cf28fc9` and must not be redispatched. Task 2 remains
+  incomplete. Retained-run native RED, compilation/layout evidence and unproved GREEN remain
+  separate, as recorded in Task 2.
 
 ### Additional approvals recorded on 2026-10-04
 
@@ -75,6 +85,14 @@ Jesse provided the passwordless SSH Mac `jesses-macbook-pro-2-1`. Read-only insp
 26.6 (17F113), iOS 26.5 Simulator runtime, iPhone 17 Pro device type, Node 26.0.0, Ruby 3.3.6,
 Bundler 2.7.2, XcodeGen 2.44.1, and Maestro 2.0.9. This establishes a build route, not native
 behavior evidence.
+
+Jesse approved the content-only native Markdown code leaf direction and then the written amendment
+at `19afe6b9e69b3caffcf9e6d4d7efebf6b0f74727`. Both independent spec re-reviews approved it with no
+significant findings. Those gates are closed. Preserve the already-approved subagent-driven method
+and original sole Task 2 implementer `dlg_034a9F17VZIlYAZuj7JLqC`; the controller edits docs and
+review artifacts only. Self-review and dual independent review of this plan amendment precede
+Jesse's written-plan approval. No product resume, push, merge or deployment before that approval.
+Controller push, merge and deployment remain prohibited after approval too.
 
 ## Review Focus
 
@@ -113,11 +131,12 @@ flowchart TD
 ```
 
 The first native gate deliberately precedes the broad browser draft transition. Separate React rows,
-the GFM renderer's segmented text, raster tables, and React Native code text are not one native
-selection surface today. Prove document-wide gestures and exact source coordinates on the installed
-renderer before paying for the rest of the integration. If that proof requires replacing the Reader,
-losing a preserved behavior, or weakening cross-block selection, stop and bring the evidence to
-Jesse.
+the GFM renderer's segmented text, raster tables, and the current code text are not one native
+selection surface today. Task 2 adds the approved code leaf and proves it in production-shaped
+qualification rows; Task 9 alone integrates it into production `ReaderBlock`. Prove document-wide
+gestures and exact source coordinates on the installed renderer before the remaining integration.
+If preservation requires changing Reader's containers, plain-code-file renderer, selection scope
+or adding a React Native patch, stop and obtain a new approved and independently reviewed amendment.
 
 Tasks 2 and 3 can be implemented independently after Task 1, but one implementer must own each patch
 or renderer path. Task 4 changes shared settlement interfaces, so land it before other browser
@@ -136,13 +155,13 @@ All **Create** paths below are proposed new files, not existing APIs.
 | Owner | Files and responsibility |
 | --- | --- |
 | Shared contracts | Create `appwire-client/typescript/documentAnnotations.ts`, `annotationFingerprint.ts`, and `documentAnnotations.test.ts`; modify `index.ts`, `README.md`, and `docContent.ts`/`docContent.test.ts`. Source evidence, positions, context, formatting, lease and operation types. |
-| Native selection boundary | Modify `mobile-native/patches/react-native-enriched-markdown+1.0.2.patch`; create `mobile-native/src/reader/ReaderSelectionSurface.tsx` and `nativeSelection.ts`/`nativeSelection.test.ts`. Patch owns MD4C provenance, attributed ranges, document-wide selection coordination, range painting and native event/codegen contracts. |
+| Native selection boundary | Modify `mobile-native/patches/react-native-enriched-markdown+1.0.2.patch`; create `mobile-native/src/reader/ReaderSelectionSurface.tsx` and `nativeSelection.ts`/`nativeSelection.test.ts`, plus `mobile-native/scripts/rebuild-enriched-markdown.mjs`. Patch owns MD4C provenance, attributed ranges, document-wide coordination, range painting, the content-only code leaf, actual public package outputs and Fabric registration. Extend the existing native probe and Mac/XCTest driver. |
 | Browser source map | Create `cmd/evener-hub/frontend/src/widgets/markdown/{sourceMap.ts,mappedLexer.ts,mappedTokenizer.ts,mappedHelpers.ts,MappedDocumentMarkdown.tsx,renderPolicy.ts,sourceMap.test.ts}`. Modify `index.tsx` and `segments.ts` only to share existing render/sanitize policy. Keep original Marked source attribution/license beside the extension. |
 | Browser draft authority | Create `cmd/evener-hub/frontend/src/stores/localCompositionIndexedDB.ts`/`.test.ts`. Modify `mutationOutboxIndexedDB.ts`, composer `draft.ts`, `sourceState.ts`, `Composer.tsx`, pending-turn settlement and all enumerated producers. One schema/transaction domain, persistent revisions, supported-draft transfer and recoverable conflicts. |
 | Browser annotation repository | Create `cmd/evener-hub/frontend/src/stores/documentAnnotations.ts`/`.test.ts`. Document heads, evidence, annotation payloads, receipts, expiry and bounded recovery. |
 | Browser origin and UI | Create `cmd/evener-hub/frontend/src/panes/doc/{documentOrigin.tsx,openDocument.ts,documentSelection.ts,DocumentHighlights.tsx,DocumentAnnotationBox.tsx,documentannotations.module.css,documentOrigin.test.tsx,documentSelection.test.ts}`. Modify `DocPane.tsx`, `openDoc.ts`, direct opening producers and conversation provider boundaries. |
 | Native storage and editor | Create `mobile-native/src/documentAnnotations.ts`/`.test.ts`. Modify `draftRepository.ts`, `draftDocument.ts`, `draftLibrary.ts`, `nativeDrafts.ts` and hub cleanup wiring. Reuse `evener-drafts.db`, savepoints and retained documents. |
-| Native Reader UI | Create `mobile-native/src/reader/AnnotationBox.tsx`, `useDocumentAnnotations.ts`, and their headless/controller tests. Modify `ReaderScreen.tsx`, `ReaderBlock.tsx`, `documentBlocks.ts`, `documentSource.ts`, navigation types and `screens.tsx` only where the owner/controller requires it. Keep existing Comment/Review records untouched. |
+| Native Reader UI | Create `mobile-native/src/reader/AnnotationBox.tsx`, `useDocumentAnnotations.ts`, and their headless/controller tests. Modify `ReaderScreen.tsx`, `ReaderBlock.tsx`, `documentBlocks.ts`, `documentSource.ts`, navigation types and `screens.tsx` only where the owner/controller requires it. Task 9 consumes Task 2's public code leaf inside unchanged containers. Keep existing Comment/Review records and plain-code-file rendering untouched. |
 | Real-stack evidence | Create `scripts/e2e/e2e-document-annotations.sh`, `e2e-native-document-annotations.sh`, frontend `scripts/documentannotationsguard/run.mjs`, `test/e2e/fakellm/docannotations/cmd/main.go`, and native `e2e/document-annotations.yaml`. Reuse `scripts/lib/e2e-lib.sh`; register the browser launcher in `cmd/evener-dev/webbrowser.go`. |
 | Evergreen docs | Create `docs/product/document-annotations.md`; modify `docs/product/{README.md,subsystems.md}`, `docs/web-ui/{README.md,contracts-composer-queue-pending.md}`, `mobile-native/README.md`, and parser/patch maintenance documentation. |
 
@@ -431,10 +450,36 @@ export function displayedFingerprint(source: string, truncated: boolean): Displa
 
 ### Task 2: Prove exact document-wide native selection on the compiled renderer
 
-**Files:** Modify the existing enriched-markdown patch; create `ReaderSelectionSurface.tsx`,
-`nativeSelection.ts`/`.test.ts`, the task-owned native probe flow under `mobile-native/e2e/`, and
-`scripts/e2e/e2e-native-document-annotations.sh`. Include patch maintenance notes and the scoped
-probe in this task, not an untested setup-only task.
+**Files:** Modify `mobile-native/patches/react-native-enriched-markdown+1.0.2.patch`; create
+`mobile-native/src/reader/ReaderSelectionSurface.tsx`, `nativeSelection.ts`/`.test.ts` in that
+directory, and `mobile-native/scripts/rebuild-enriched-markdown.mjs`. Extend the already-created
+probe `mobile-native/e2e/document-annotations-probe.tsx`, Mac helper
+`mobile-native/e2e/document-annotations-mac.sh`, Swift UI driver
+`mobile-native/e2e/document-annotations-ui/DocumentAnnotationsUITests.swift` and
+`scripts/e2e/e2e-native-document-annotations.sh`. Include patch maintenance notes. Task 2 owns no
+production `ReaderBlock.tsx`, `ReaderScreen.tsx`, `ui.tsx`, annotation UI or plain-code-file edits.
+
+**Resume and evidence:** Continue the original task with the original sole implementer. Task review
+BASE remains `447d6bc616cd55d2ae1846ab61743c5f9cf28fc9`, including every probe/harness commit;
+spec/plan commits do not reset it. Preserve these distinct native baseline pins verbatim:
+
+- RED **source**: `312684b7ec7826980c7b04d14b2299ac0da0da8a`.
+- RED **test harness**: `7f5a46ae2a55d288c7025308f244d51f5b8d9d6a`.
+
+**Retained-run RED:** real long press, Copy-menu assertion and real handle drag ran against those
+separate pins; source/completion/cross-row assertions failed, exit 65. Controller verified retained
+run `job:job_034a9F17VZOOMlziEKkvVP_HIa0M1WXZ9gi`, not a controller rerun. Log
+`.superpowers/sdd/2026-10-04-markdown-document-annotations/task-2-evidence/baseline-red-qualify.log`
+has SHA256 `f6c050a448f4aba4a6a68a49525394732b2e70809dd1f18e1cc80e4438ef60b4`; retained gesture
+attachments and `task-2-report.md` document it. This RED used the library's code rendering, not
+Reader's RN Text leaf. It does not qualify the new Reader-shaped code comparison.
+
+**Compilation/layout:** successful app/test compilation and `testLayoutReceipt` are distinct
+infrastructure/layout evidence. The earlier `KeyError: TestConfigurations` was a harness-format
+failure before gestures, not behavioral RED. **Unproved GREEN:** no installed native behavior pass
+has been retained. Spec reviews and this plan cannot supply one. Keep the existing driver and
+assertions; add real installed RED for new code cases rather than relabeling the old run. Stop after
+two rejected attempts at one finding or three unsuccessful fixes, and report the evidence.
 
 **Interfaces:** Produces the proposed native boundary below. All props/events are new and must be
 added to the public wrapper, Fabric codegen spec, and actual GFM component. Reader uses
@@ -468,6 +513,32 @@ export function captureNativePassage(
   evidence: CapturedEvidence,
 ): CapturedPassage;
 ```
+
+The following is a **new** public package interface, produced by Task 2 and consumed by Task 9.
+Export it from `react-native-enriched-markdown`, not from a private Reader adapter:
+
+```ts
+import type { ReactElement } from "react";
+import type { StyleProp, TextStyle, ViewProps } from "react-native";
+
+export interface MarkdownCodeSourceRange { start: number; end: number }
+export interface EnrichedMarkdownCodeTextProps extends Omit<ViewProps, "style"> {
+  text: string;
+  documentSnapshotId: string;
+  blockSourceRange: MarkdownCodeSourceRange;
+  selectable: boolean;
+  allowFontScaling: boolean;
+  style?: StyleProp<TextStyle>;
+}
+export function EnrichedMarkdownCodeText(props: EnrichedMarkdownCodeTextProps): ReactElement;
+```
+
+Support the existing `useCodeText` fields and effective text alignment/writing direction. Flatten
+text style in the public wrapper without adding a View. Forward accessibility/testID/native View
+props unchanged. `documentSnapshotId` resolves the ancestor surface's original-document model;
+`blockSourceRange` chooses a verified node projection, never a guessed offset. Native registration
+obtains `mappingId` from that model and identifies mounted row/native tag and layout generation.
+Selection/range-press events still go through `ReaderSelectionSurface`, not a second JS coordinator.
 
 - [ ] **Create a real installed baseline probe** using `RICH_SOURCE`. It reports actual native
       selection events/ranges in an accessibility value only in the qualification build; it must not
@@ -521,7 +592,7 @@ src/types/MarkdownTextProps.ts
 src/EnrichedMarkdownNativeComponent.ts
 src/native/EnrichedMarkdownText.tsx
 ios/EnrichedMarkdown.mm
-ios/EnrichedMarkdownInternalText.mm
+ios/views/EnrichedMarkdownInternalText.h and EnrichedMarkdownInternalText.m
 ios/views/ENRMTableIOSGridView.m and TableContainerView.m
 ```
 
@@ -549,9 +620,11 @@ Keep FlatList/reader memory, block identities, outline/change markers and existi
 row-local UITextView selection event is insufficient. The coordinator owns endpoint movement across
 registered rows, keeps the full document position model when rows recycle, autoscrolls the existing
 vertical list, and computes range rectangles from the actual text layout. Table cells must provide
-text layout hit-testing/ranges despite their current raster-grid drawing. Code's existing React
-Native Text path must register exact mapped text/layout; it cannot remain an uninstrumented
-exception. Generated labels, images and diagram shapes remain unmapped.
+text layout hit-testing/ranges despite their current raster-grid drawing. Markdown code uses the
+new content-only `EnrichedMarkdownCodeText` leaf in this same patch. Its mounted drawing layout
+supplies hit-testing, carets and every range rectangle to the same coordinator. No second RN patch
+or recreated selection layout is authorized. Generated labels, images and diagram shapes remain
+unmapped.
 
 The surface owns a native parsed model of the immutable ORIGINAL document, keyed by
 `displayedSnapshotId` and `mappingId`. Extend the patched row renderer with `documentSnapshotId:
@@ -568,24 +641,212 @@ actions, horizontal code/table scroll, and keyboard focus. Saved ranges are draw
 geometry and hit-tested to return every overlapping operation ID. Rebuild geometry after font scale,
 row remount, width or scrolling changes.
 
-- [ ] **Regenerate the patch** in this task's real, non-symlinked native install: `cd mobile-native
-      && npx patch-package react-native-enriched-markdown`. Inspect generated hunks and run the
-      lock-preserving pod/build route again so Fabric codegen and C++/Objective-C++ changes actually
-      compile.
+- [ ] **Add installed code-leaf RED and preservation cases to the existing probe/Swift driver.**
+      Mount the current RN Text leaf and the new leaf in identical Reader-shaped inset Views and
+      horizontal ScrollViews in the same qualification build. Keep the current RN leaf's code
+      props/style untouched. Before implementation the probe remains buildable: the comparison
+      slot uses the old leaf, and the real source/completion/cross-boundary assertions fail after
+      gestures. Do not count import/codegen/build failure as RED. Preserve the earlier RED record.
+
+```ts
+// Literal preservation inputs, independent of the new parser/layout implementation.
+const CODE_TEXT_CASES = [
+  "", "same()", "same()\n", "same()\n\n", "\nsame()\n\nnext()\n",
+  "\tfirst\tsecond\n", "😀 e\u0301 שלום same()\n",
+  "0123456789012345678901234567890123456789012345678901234567890123456789\n",
+] as const;
+// Both comparison slots retain these outer props and literal text.
+// The new slot consumes documentSnapshotId/blockSourceRange from its verified fixture model.
+<View style={{ backgroundColor: palette.inset, borderRadius: 12 }}>
+  <ScrollView horizontal contentContainerStyle={{ paddingVertical: 12, paddingHorizontal: 14 }}>
+    <Text allowFontScaling={allowFontScaling} selectable={selecting} style={code} {...accessibility}>
+      {literalText}
+    </Text>
+  </ScrollView>
+</View>;
+```
+
+Set up independently authored original-document fixtures for these code strings; do not derive
+their expected source endpoints from the new model. Keep the unchanged `RICH_SOURCE` endpoint
+assertions `[18,22)`, `[18,77)`, `[135,139)`, `[159,163)`. Capture exact displayed/VoiceOver and
+clipboard text. Zero/one/multiple trailing LF and blank-line counts are exact, with no tolerance.
+Existing whole-block Copy uses `block.text`; existing RN paragraph Copy uses the whole paragraph.
+Preserve those actions separately from proving NEW selected-range Copy and real selection handles.
+
+Add these methods to the existing Swift test class, retaining `point`, `copyMenu`, `receipt` and
+`testCompletedOriginalSourceSelectionAcrossRows`. TABLE and CODE coordinates come from that
+simulator's native layout/screenshot receipt, not the source map:
+
+```swift
+func testTableOriginalSourceSelection() throws {
+    try point("TABLE").press(forDuration: 1.2)
+    XCTAssertTrue(copyMenu.waitForExistence(timeout: 5))
+    receipt("table-selected")
+    XCTAssertTrue(app.staticTexts["Captured source 135:139"].waitForExistence(timeout: 5))
+    XCTAssertTrue(app.staticTexts["Selection completed"].exists)
+}
+func testMarkdownCodeOriginalSourceSelection() throws {
+    try point("CODE").press(forDuration: 1.2)
+    XCTAssertTrue(copyMenu.waitForExistence(timeout: 5))
+    receipt("reader-code-selected")
+    XCTAssertTrue(app.staticTexts["Captured source 159:163"].waitForExistence(timeout: 5))
+    XCTAssertTrue(app.staticTexts["Selection completed"].exists)
+}
+```
+
+Extend the Mac helper's finite-coordinate allowlist with TABLE/CODE and the independently measured
+handle/target names used by the boundary cases. Keep FIRST/HANDLE/SECOND and FormatVersion 1
+per-run xctestrun copying/digest checks. Its current qualify phase selects only
+`testCompletedOriginalSourceSelectionAcrossRows`; change that phase's `-only-testing` arguments
+to include that unchanged test, both methods above and each new preservation/boundary test. Retain
+layout/long-press phases. Verify the xcresult lists each intended method and no failures before
+claiming GREEN; merely adding methods that the helper never selects does not run them.
+
+Before the comparison, record the installed screen scale `s`; the maximum rounding tolerance is
+`1 / s` points for each baseline, rectangle edge and intrinsic size dimension. Compare corresponding
+RN/new-leaf measurements at identical constraints, palette, font and scale, with an independent
+layout/screenshot receipt. No larger tolerance may hide a missing line, changed wrapping or text.
+Exercise Reader scaling and system Dynamic Type. On iOS `useTextScale` already multiplies sizes
+and `allowFontScaling` is false; forward `13 * scale` and `18 * scale` without double scaling.
+
+- [ ] **Implement the public wrapper, Fabric contracts and native content-only leaf in the patch.**
+      Create these installed-package paths, captured in the existing patch:
+
+```text
+src/types/MarkdownCodeTextProps.ts
+src/native/EnrichedMarkdownCodeText.tsx
+src/EnrichedMarkdownCodeTextNativeComponent.ts
+ios/EnrichedMarkdownCodeText.h and EnrichedMarkdownCodeText.mm
+ios/internals/EnrichedMarkdownCodeTextShadowNode.h and EnrichedMarkdownCodeTextShadowNode.mm
+ios/internals/EnrichedMarkdownCodeTextComponentDescriptor.h
+ios/internals/EnrichedMarkdownCodeTextState.h
+```
+
+Add public exports to `src/index.tsx` and matching runtime/declaration outputs under
+`lib/module/` and `lib/typescript/src/`. Register `EnrichedMarkdownCodeText` with class name
+`EnrichedMarkdownCodeText` in `package.json`'s existing `codegenConfig.ios.components`. The new
+native spec extends `ViewProps`, uses `CodegenTypes.Float` for fontSize/lineHeight,
+`ColorValue` for textColor, string fields for text/fontFamily/textAlign/writingDirection and
+documentSnapshotId, explicit start/end fields for blockSourceRange, and boolean selectable and
+allowFontScaling. The wrapper converts the public style to those fields; register the exact
+generated component descriptor/name and implement Fabric props/state/layout/recycling updates.
+The existing `ReactNativeEnrichedMarkdown.podspec` source globs cover new iOS files; do not invent
+a separate pod or switch the dependency version.
+
+```ts
+// NEW src/EnrichedMarkdownCodeTextNativeComponent.ts, self-contained for codegen.
+import { codegenNativeComponent, type CodegenTypes, type ColorValue, type ViewProps } from "react-native";
+interface NativeProps extends ViewProps {
+  text: string;
+  documentSnapshotId: string;
+  blockSourceRange: Readonly<{ start: CodegenTypes.Int32; end: CodegenTypes.Int32 }>;
+  fontFamily: string;
+  fontSize: CodegenTypes.Float;
+  lineHeight: CodegenTypes.Float;
+  textColor: ColorValue;
+  textAlign: string;
+  writingDirection: string;
+  selectable: boolean;
+  allowFontScaling: boolean;
+}
+export default codegenNativeComponent<NativeProps>("EnrichedMarkdownCodeText");
+```
+
+The mounted leaf owns its text storage/layout manager/container for drawing and all selection
+geometry. Verify its displayed text through the original model's parser transformations. Preserve
+tabs, CRLF spelling and trailing lines; library helpers that trim LF, force LTR or impose code
+padding are not preservation shortcuts. Associate registrations with snapshot, mapping, mounted row
+and generation. Convert through current inset/scroll transforms, clip painting and hits, and
+invalidate on source/style/font/width/scroll/remount changes before accepting new events.
+
+Yoga sizing remains view-free. `measureContent` can run off-main while RN holds commit locks:
+never wait synchronously for main, access live UIKit, or share mutable mounted TextKit state with
+that measurement. Use a separate thread-confined sizing layout with identical text/font/paragraph
+rules, existing `ENRMFontScaleForMeasurement` and `ENRMClampMeasuredSize` where suitable. Sizing
+is not a selection geometry oracle. Compare its output to the actual mounted RN leaf; the mounted
+leaf remains the only drawing/hit/caret/range layout.
+
+- [ ] **Regenerate actual package outputs reproducibly before patch capture.** Create
+      `mobile-native/scripts/rebuild-enriched-markdown.mjs` with `--help` and checked nonzero errors.
+      Refuse a symlinked install and verify package version 1.0.2/RN 0.86.3. Use installed
+      TypeScript and Babel tools, not the absent monorepo `bob`/`prepare` scripts. Its explicit source
+      allowlist comprises the new leaf's three TS files, `src/index.tsx` and the existing public
+      wrapper/prop/spec files changed by this task. Emit only their matching runtime/declaration
+      outputs and maps; leave unrelated package files intact. Babel uses the installed TypeScript
+      preset and JSX transform, ESM output and `.js` relative module specifiers. TypeScript uses a
+      checked program with declaration-only emit; diagnostics fail generation, and its write
+      callback admits only allowlisted `lib/typescript/src/` outputs. No handwritten divergence
+      between source exports and shipped exports. Keep generated mirrors in this same patch.
+
+```sh
+set -euo pipefail
+# IMPLEMENTATION commands, not checks already run. From mobile-native:
+node scripts/rebuild-enriched-markdown.mjs
+PKG="$(pwd)/node_modules/react-native-enriched-markdown"
+node node_modules/react-native/scripts/generate-codegen-artifacts.js \
+  --path "$PKG" --targetPlatform ios --source library
+npx patch-package react-native-enriched-markdown --exclude '^$'
+```
+
+The installed codegen executor includes its own root library even with
+`includesGeneratedCode:true`; `--source library` avoids app-only provider generation. Its package
+outputDir places artifacts under `ios/generated/ReactCodegen/EnrichedMarkdownTextSpec/`. Normal
+app/pod codegen skips dependencies shipping generated code, so pod install alone cannot refresh
+these contracts. Inspect generated Props, EventEmitters, States, ComponentDescriptors and
+RCTComponentViewHelpers for the new leaf and changed GFM contracts before patch capture. Prove
+package-name import/type resolution against `lib/typescript/src/index.d.ts`, shipped module export
+presence and Metro source resolution; preserve all existing public exports. Repeat generation and
+assert the allowlisted outputs are byte-identical before recording the patch digest.
+
+Installed patch-package excludes `package.json` by default. The explicit `--exclude '^$'` above
+retains the new codegen component/class registration. Inspect that exact hunk, preserve existing
+patch hunks and reject unrelated package changes. Verify patch reapplication in the task-owned Mac
+install retains the registration and generated contracts; do not change lockfiles to hide failure.
+
+- [ ] **Inspect the complete regenerated patch and rebuild with the lock-preserving Mac route**
+      so public outputs, Fabric registration and C++/Objective-C++ changes actually compile.
 - [ ] **Run green on the installed probe**, capture exact offsets, real cross-block handle movement,
       selectable table/code text, saved-range rectangles, tap events, and preservation checks. If
       the chosen coordinator cannot meet them while preserving Reader, stop here; do not substitute
       menu-only activation or a WebView.
+- [ ] **Run code/prose/table boundary and invalidation checks in the same installed artifact.**
+      Drive handles both directions across each boundary, vertical autoscroll and recycled rows.
+      On a wide code line, distinguish ordinary horizontal scrolling from active handle dragging;
+      repeat endpoint movement after horizontal/vertical scrolling. Exercise width/font changes,
+      remount, clipped saved-range painting/hits and a tap returning all overlapping operation IDs.
+      Reject stale generation events without moving saved source anchors; reading must recover
+      after layout refresh. Keep legacy menu/Copy/accessibility actions and all old proof gates.
+      No JS-generated completion or separately reconstructed layout counts as handle evidence.
 - [ ] **Commit the patch, native adapter/tests, probe/harness and maintenance notes**, message
       `feat(native): expose verified document-wide passage selections`.
 
 #### Exact Mac build route, used by Tasks 2, 9 and 10
 
-The new harness has `--host HOST`, `--source-ref REF`, and `--keep-artifacts` options with help and
-nonzero failures. Default host is `jesses-macbook-pro-2-1`; source defaults to committed `HEAD`. It
-creates only `/Users/jesse/tmp/evener-markdown-document-annotations`, whose absence was verified
-during planning. On reuse, read its task manifest before touching it. Transfer a Git bundle of the
-exact commit, not an untracked copy of someone else's checkout.
+The existing harness has `--host HOST`, `--source-ref REF`, `--harness-ref REF`, `--keep-artifacts`,
+`--phase layout|restore|long-press|qualify|cleanup` and `--geometry FILE`. Default host is
+`jesses-macbook-pro-2-1`; source and harness default separately to committed `HEAD`. Read it and its
+Mac helper before execution. Its reserved `/Users/jesse/tmp/evener-markdown-document-annotations`
+already contains retained task evidence: read the manifest/retention notes before touching it.
+Transfer exact committed Git bundles, preserve source/harness/app/driver digests and per-run
+copies of the original xctestrun format. Do not overwrite retained RED artifacts or substitute an
+unrelated app. Extend this driver, not a replacement harness.
+
+```sh
+# Unchanged historical source and harness identities, not instructions to rebuild old RED.
+RED_SOURCE=312684b7ec7826980c7b04d14b2299ac0da0da8a
+RED_HARNESS=7f5a46ae2a55d288c7025308f244d51f5b8d9d6a
+# After committing the amended implementation and driver, pin both current identities separately.
+SOURCE_SHA=$(git rev-parse HEAD)
+HARNESS_SHA=$(git rev-parse HEAD)
+bash scripts/e2e/e2e-native-document-annotations.sh --host jesses-macbook-pro-2-1 \
+  --source-ref "$SOURCE_SHA" --harness-ref "$HARNESS_SHA" --phase layout --keep-artifacts
+```
+
+Inspect that run's native layout/screenshots to record FIRST/HANDLE/SECOND in the existing geometry
+JSON; then use the same source/harness pins with `--phase long-press` and `--phase qualify` and
+`--geometry` pointing to that exact simulator's receipt. Add code comparison/gesture cases to the
+existing Swift target and qualify phase. A layout phase by itself is never GREEN. If stopping before
+qualify, invoke the harness's cleanup phase for the same pins and only its owned simulator.
 
 ```sh
 # Read-only preflight, repeat before making the task-owned workspace.
@@ -1181,7 +1442,9 @@ types and `screens.tsx` only at actual ownership/UI seams. Keep `CommentSheet.ts
 `ReviewSheet.tsx` behavior, adding regression evidence rather than repurposing their records.
 
 **Interfaces:** Consumes `ReaderSelectionSurface` events, accepted source leases, actual
-`DraftLibrary.open`, and `NativeDocumentAnnotations`. `LoadedDocument` preserves the original
+`DraftLibrary.open`, `NativeDocumentAnnotations` and Task 2's public
+`EnrichedMarkdownCodeText`/`EnrichedMarkdownCodeTextProps` from `react-native-enriched-markdown`.
+`LoadedDocument` preserves the original
 source, optional whole revision and displayed coverage in addition to existing
 blocks/title/truncation. The controller uses shared comment-work functions from Task 1. New native
 annotation box callbacks are save/retry/cancel, never Review/submit.
@@ -1220,6 +1483,30 @@ new native controller methods defined in `useDocumentAnnotations.ts`'s framework
       verified original ranges without changing legacy hash values. Native parser maps rendered text
       to the original source; the block parser remains the reader's layout/change identity.
 
+- [ ] **Replace only the Markdown code text leaf in `ReaderBlock.tsx`.** Import Task 2's public
+      component by package name. Thread `documentSnapshotId` and verified `blockSourceRange` from
+      the same snapshot/block records used by the prose renderer. Inside the unchanged inset View
+      and horizontal ScrollView replace only `<Text>` with:
+
+```tsx
+<EnrichedMarkdownCodeText
+  text={block.code?.text ?? block.text}
+  documentSnapshotId={documentSnapshotId}
+  blockSourceRange={blockSourceRange}
+  allowFontScaling={allowFontScaling}
+  selectable={selecting}
+  style={code}
+  {...accessibility}
+/>
+```
+
+`code` remains the existing `useCodeText()` return value. Keep padding, palette, border radius,
+block menu actions, change/comment markers and selected-block behavior untouched. Do not add a
+second Reader code wrapper or edit `useCodeText`/`ui.tsx` to compensate for a leaf mismatch. Plain
+code files and `ReaderScreen`'s code-file lines retain RN Text. Assert the leaf receives the exact
+existing code string, scaled style and accessibility actions; the native patch owns geometry and
+source verification, not this UI integration.
+
 Render automatic annotation entry as a keyboard-safe reader sheet/overlay that leaves position
 intact. Multiline Return stays in the note. Another selection never silently retargets a typed note.
 Tap a stored range to reveal all notes at that passage. On unchanged source, native remount
@@ -1236,6 +1523,9 @@ comment/Review membership and explicit send/queue remain separate.
       test background/foreground/restart, overlaps/tap, multiline keyboard, repeated text and
       cross-row/code/table selections. Preserve links, copy, font scaling, horizontal scroll, read
       position and change markers in the same installed artifact.
+      Repeat Task 2's RN/new-leaf comparison and bidirectional boundary, scroll/handle, clipping and
+      generation/recycling cases against the actual integrated Reader, not only the probe. Separate
+      retained-run RED, compilation/layout and installed behavioral GREEN in the report.
 - [ ] **Commit native Reader/controller/navigation/test files**, message `feat(native): annotate
       passages and retain unsent session drafts`.
 
@@ -1330,6 +1620,14 @@ assert.equal(providerCallsAfterAnnotation, providerCallsBeforeAnnotation);
       reads/creation/drafts; later older-bundle legacy draft recovery; >100 files; native Review and
       browser history-cache clear isolation. Compare actual stored/draft bytes to handwritten
       goldens and verify old payload fields are physically absent after final expiry.
+- [ ] **Repeat integrated native code preservation and geometry.** In the current installed iPhone
+      build compare Task 2's literal code cases with the retained RN Text comparison leaf using
+      unchanged Reader containers. Assert exact text/Copy/blank lines, the predeclared one-physical-
+      pixel geometry tolerance, scale/direction/accessibility/menu behavior and ordinary horizontal
+      scrolling. Drive real handles both directions across code/prose/table rows, scrolling,
+      autoscroll/reflow/recycling, clipped painting and all-overlap taps through production Reader.
+      Keep the original source/completion/table/highlight gates. A standalone library code block,
+      layout pass or fabricated event does not qualify this integrated journey.
 - [ ] **Run the actual proposed commands**, first red at the missing feature then unchanged green
       after integration:
 
