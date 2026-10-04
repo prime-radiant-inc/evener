@@ -164,6 +164,26 @@ PY
     cmp "$app/Evener" "$installed/Evener"
     cmp "$app/main.jsbundle" "$installed/main.jsbundle"
     ;;
+  font-diagnostic)
+    # Reinstall this source's exact retained app for supported metadata
+    # inspection. No rebuild, selection assertions or GREEN claim follows.
+    test -z "$sim_id"
+    app="$checkout/annotation-derived-data/Build/Products/Release-iphonesimulator/Evener.app"
+    /usr/bin/python3 - "$app" "$source_artifacts/app-inventory.json" <<'PY'
+import hashlib, json, os, sys
+root, inventory = sys.argv[1:]
+for row in json.load(open(inventory)):
+    with open(os.path.join(root, row['path']), 'rb') as f: digest = hashlib.sha256(f.read()).hexdigest()
+    assert digest == row['sha256'], row['path']
+print('Diagnostic app bytes match the retained source inventory')
+PY
+    test "$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$app/Info.plist")" = com.primeradiant.evener.native
+    create_simulator
+    xcrun simctl install "$sim_id" "$app"
+    installed=$(xcrun simctl get_app_container "$sim_id" com.primeradiant.evener.native app)
+    cmp "$app/Evener" "$installed/Evener"
+    cmp "$app/main.jsbundle" "$installed/main.jsbundle"
+    ;;
   long-press|code-preservation|qualify) test -n "$sim_id";;
   *) exit 2;;
 esac
@@ -192,6 +212,7 @@ cmp "$xctestrun" "$artifacts/original.xctestrun"
 case "$phase" in
   layout|restore) test_names=(testLayoutReceipt);;
   code-preservation) test_names=(testCodePreservationAndLegacyCopy);;
+  font-diagnostic) test_names=(testMixedFontMetadataReceipt);;
   long-press|qualify)
     /usr/bin/python3 - "$run_xctestrun" "$checkout/mobile-native/e2e/measured-geometry.json" <<'PY'
 import json, math, plistlib, sys
@@ -244,7 +265,7 @@ shasum -a 256 "$artifacts/original.xctestrun" "$run_xctestrun" \
   "$runner/DocumentAnnotationsUITests-Runner" \
   "$runner/PlugIns/DocumentAnnotationsUITests.xctest/DocumentAnnotationsUITests"
 if [[ "$test_status" != 0 ]]; then exit "$test_status"; fi
-if [[ "$phase" != qualify ]]; then
+if [[ "$phase" != qualify && "$phase" != font-diagnostic ]]; then
   # Keep this exact newly created simulator while the operator measures its
   # screenshot. The next phase or explicit cleanup owns its teardown.
   trap - EXIT

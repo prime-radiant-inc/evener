@@ -11,7 +11,7 @@ usage() {
   cat <<'HELP'
 Usage: e2e-native-document-annotations.sh [--host HOST] [--source-ref REF]
        [--harness-ref REF] [--keep-artifacts]
-       [--phase layout|restore|long-press|code-preservation|qualify|cleanup] [--geometry FILE]
+       [--phase layout|restore|long-press|code-preservation|font-diagnostic|qualify|cleanup] [--geometry FILE]
 
 Transfers an exact committed Git bundle into the reserved Mac directory.
 Source and harness refs default to committed HEAD, and are recorded separately.
@@ -21,6 +21,9 @@ creates a new task simulator and records fresh geometry on that exact device.
 long-press uses measured FIRST coordinates and saves the real handle receipt.
 code-preservation runs only the RN/new-leaf exact text, frame and Copy comparison,
 not the complete selection qualification. It needs no gesture-coordinate file.
+font-diagnostic reinstalls the exact retained app on a new owned simulator,
+mounts mixed-font case 6 with real taps and pauses 60 seconds for supported
+readonly metadata inspection. It always cleans up and proves no selection GREEN.
 qualify runs cross-row, table, Reader-code, prose/code-boundary and exact Copy checks.
 Geometry JSON: {"FIRST":{"x":0,"y":0},"HANDLE":{"x":0,"y":0},"SECOND":{"x":0,"y":0}}
 The amended probe also needs TABLE/CODE and FIRST_TO_CODE measured targets.
@@ -46,7 +49,7 @@ while (($#)); do
   esac
 done
 case "$host" in -*|*[!a-zA-Z0-9@._-]*) echo 'Invalid SSH host' >&2; exit 2;; esac
-case "$phase" in layout|restore|long-press|code-preservation|qualify|cleanup) ;; *) usage >&2; exit 2;; esac
+case "$phase" in layout|restore|long-press|code-preservation|font-diagnostic|qualify|cleanup) ;; *) usage >&2; exit 2;; esac
 root=$(cd "$(dirname "$0")/../.." && pwd)
 cd "$root"
 sha=$(git rev-parse --verify "$ref^{commit}")
