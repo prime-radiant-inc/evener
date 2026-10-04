@@ -50,8 +50,45 @@ func TestRootCloseSweepsOldScratch(t *testing.T) {
 	}
 	root := newQueuePersistTestSession(t, t.TempDir())
 	root.Close()
-	if _, err := os.Lstat(old); !os.IsNotExist(err) {
-		t.Fatalf("root close did not sweep %s: %v", old, err)
+	// The sweep runs off the close path, so wait for it rather than expect it
+	// to have finished when Close returns.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := os.Lstat(old); os.IsNotExist(err) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("root close did not sweep %s within 10s", old)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// TestRootCloseDoesNotWaitForTheSweep: the sweep can take a long time on a big
+// temp base, so close starts it and returns.
+func TestRootCloseDoesNotWaitForTheSweep(t *testing.T) {
+	base := t.TempDir()
+	t.Setenv("TMPDIR", base)
+	release := make(chan struct{})
+	started := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	root := newQueuePersistTestSession(t, t.TempDir())
+	root.cfg.testOnly.scratchSweep = func(string) error {
+		close(started)
+		<-release
+		return nil
+	}
+	done := make(chan struct{})
+	go func() { root.Close(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("root close waited for the scratch sweep")
+	}
+	select {
+	case <-started:
+	case <-time.After(10 * time.Second):
+		t.Fatal("root close never started the scratch sweep")
 	}
 }
 

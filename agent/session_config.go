@@ -673,6 +673,10 @@ type testConfig struct {
 	// close cancels that work. Nil in production.
 	swapEnvAfterAdopt func(refreshCtx context.Context)
 
+	// scratchSweep replaces the crashed-scratch sweep a root's close starts, so
+	// a test can hold it and prove close does not wait. Nil in production.
+	scratchSweep func(workspaceRoot string) error
+
 	// enterWorktreeAfterSwap observes the point in enterWorktree right after
 	// the environment swap returned — the earliest point outside the swap a
 	// close can land — so a test can run one there against a session whose

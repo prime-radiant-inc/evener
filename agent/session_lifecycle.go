@@ -836,13 +836,28 @@ func (s *Session) disposeParkedWorktreeEnvironmentScratch() {
 	}
 }
 
-// sweepStaleScratch runs the crashed-scratch sweep for this session's workspace:
-// it removes scratch directories older than a day whose lease nobody holds.
+// sweepsInFlight holds the workspace roots a close-time sweep is running for,
+// so concurrent closes in one daemon start at most one sweep per root.
+var sweepsInFlight sync.Map
+
+// sweepStaleScratch starts the crashed-scratch sweep for this session's
+// workspace, which removes scratch directories older than a day whose lease
+// nobody holds. It runs off the close path: on a large temp base it can take a
+// while, and its findings have no session left to report to, so a failure is
+// left for the next sweep, the way the startup sweep leaves it for the next start.
 func (s *Session) sweepStaleScratch() {
 	root := execenv.SessionScratchWorkspaceRoot(s.currentEnv().WorkingDirectory())
-	if err := sandbox.SweepCrashedSessionScratch(root); err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: "scratch sweep incomplete: " + err.Error()})
+	if _, running := sweepsInFlight.LoadOrStore(root, struct{}{}); running {
+		return
 	}
+	sweep := sandbox.SweepCrashedSessionScratch
+	if hook := s.cfg.testOnly.scratchSweep; hook != nil {
+		sweep = hook
+	}
+	go func() {
+		defer sweepsInFlight.Delete(root)
+		_ = sweep(root)
+	}()
 }
 
 // disposeOwnedCurrentScratch removes the current environment's scratch when this
