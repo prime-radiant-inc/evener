@@ -135,7 +135,7 @@ import { BackButton } from "./session/BackButton";
 import { liveOrder, neighbor, nextNavigation, nextQueue, othersNeedingYou } from "./session/fleetOrder";
 import { NextCapsule } from "./session/NextCapsule";
 import { useFleet } from "./session/useFleet";
-import { GhostRowContext, type GhostRowHost, GhostRowView } from "./session/QueuedMessages";
+import { GhostRowContext, type GhostRowHost, GhostRowView } from "./session/GhostRows";
 import { TranscriptSkeleton } from "./session/TranscriptSkeleton";
 import { useReadRetry } from "./session/useReadRetry";
 import {
