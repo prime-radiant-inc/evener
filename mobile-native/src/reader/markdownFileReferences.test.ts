@@ -851,10 +851,10 @@ describe("approved authored HTML literal text", () => {
 		{
 			name: "literal-entity-percent",
 			markdown: "Before <!-- docs/a&amp;b.md docs/100%25.md -->",
-			paths: ["docs/a&amp;b.md", "docs/100%25.md"],
+			paths: ["docs/a&b.md", "docs/100%25.md"],
 		},
 	];
-	it.each(corpus)("discovers and renders $name with original offsets", ({ markdown, paths: expected }) => {
+	it.each(corpus)("discovers and renders $name with original offsets", ({ name, markdown, paths: expected }) => {
 		expect(paths(markdown)).toEqual(expected);
 		const result = renderMarkdownFileReferences(markdown, cwd);
 		expect([...result.references.values()].map((ref) => ref.path)).toEqual(expected);
@@ -863,7 +863,11 @@ describe("approved authored HTML literal text", () => {
 		);
 		expect(
 			result.markdown.replace(/\[([^\]]+)\]\(evener-file:[\d-]+\)/g, (_, label: string) =>
-				label === "R" ? "[R](./docs/file.md)" : label,
+				label === "R"
+					? "[R](./docs/file.md)"
+					: name === "literal-entity-percent" && label === "docs/a\\&b.md"
+						? "docs/a&amp;b.md"
+						: label,
 			),
 		).toBe(markdown);
 		const next = renderMarkdownFileReferences(markdown, "/work/a");
@@ -872,5 +876,88 @@ describe("approved authored HTML literal text", () => {
 		);
 		if (expected.length) expect([...next.references.keys()]).not.toEqual([...result.references.keys()]);
 		expect(renderMarkdownFileReferences(markdown, "")).toEqual({ markdown, references: new Map() });
+	});
+});
+
+describe("resolved native prose filename entities", () => {
+	const cases: Array<{ markdown: string; paths: string[] }> = [
+		{ markdown: "docs/a&amp;b.md", paths: ["docs/a&b.md"] },
+		{ markdown: "Before <!-- docs/a&amp;b.md --> after", paths: ["docs/a&b.md"] },
+		{
+			markdown: "docs/&eacute;.md docs/a&#38;b.md docs/a&#x26;b.md",
+			paths: ["docs/é.md", "docs/a&b.md", "docs/a&b.md"],
+		},
+		{ markdown: "docs/&#x1F600;.md docs/&NotEqualTilde;.md", paths: ["docs/😀.md", "docs/≂̸.md"] },
+		{ markdown: String.raw`docs/a\\&amp;b.md`, paths: [] },
+		{ markdown: String.raw`docs/a\&amp;b.md`, paths: ["docs/a&amp;b.md"] },
+		{
+			markdown: String.raw`docs/&unknown;.md docs/&constructor;.md docs/&toString;.md docs/&\_\_proto\_\_;.md`,
+			paths: ["docs/&unknown;.md", "docs/&constructor;.md", "docs/&toString;.md", "docs/&__proto__;.md"],
+		},
+		{
+			markdown: "docs/a&amp;lt;b.md docs/100&percnt;25.md docs/100%25.md",
+			paths: ["docs/a&lt;b.md", "docs/100%25.md", "docs/100%25.md"],
+		},
+		{ markdown: "docs/a&lt;b.md docs/a&bsol;b.md ../**docs/a&amp;b.md** https://host/**docs/a&amp;b.md**", paths: [] },
+		{
+			markdown: "&quot;docs/a&amp;b.md&quot; docs/a.md&Tab;docs/b.md &#46;&#46;/docs/no.md",
+			paths: ["docs/a&b.md", "docs/a.md", "docs/b.md"],
+		},
+		{
+			markdown: "`docs/a&amp;b.md` [R](./docs/a&amp;b.md) [E](./docs/a\\&amp;b.md)",
+			paths: ["docs/a&amp;b.md", "docs/a&b.md", "docs/a&amp;b.md"],
+		},
+		{
+			markdown: '[R](<./docs/a&amp;b.md> "keep") [D][d]\n\n[d]: ./docs/a\\&amp;b.md "title"',
+			paths: ["docs/a&b.md", "docs/a&amp;b.md"],
+		},
+		{ markdown: "> - **docs/a&amp;b.md**\r\n>   - docs/&#x1F600;.md\r\n", paths: ["docs/a&b.md", "docs/😀.md"] },
+		{ markdown: "A | B\n--- | ---\n\\|docs/a&amp;b.md | docs/&eacute;.md", paths: ["|docs/a&b.md", "docs/é.md"] },
+		{
+			markdown:
+				"[docs/a&amp;b.md](https://example.test/x) ![docs/a&amp;b.md](./image.png)\n\n```mermaid\ndocs/a&amp;b.md\n```\n\n```sh\ndocs/a&amp;b.md\n```",
+			paths: [],
+		},
+		{
+			markdown:
+				"docs/a&lowbar;&lowbar;b&lowbar;&lowbar;.md docs/a&dollar;b&dollar;.md docs/a&vert;b.md docs/a&ast;b&ast;.md docs/a&grave;b&grave;.md docs/a&#126;b&#126;.md",
+			paths: ["docs/a__b__.md", "docs/a$b$.md", "docs/a|b.md", "docs/a*b*.md", "docs/a`b`.md", "docs/a~b~.md"],
+		},
+		{
+			markdown: "docs&sol;a.md &lpar;docs/a&amp;b.md&rpar; docs/&#0;.md docs/&#xD800;.md docs/&#x110000;.md",
+			paths: ["docs/a.md", "docs/a&b.md", "docs/�.md", "docs/�.md", "docs/�.md"],
+		},
+		{ markdown: "docs/**a&amp;b.md** docs/`a&amp;b.md` ../**docs/a&amp;b.md**", paths: [] },
+	];
+	it.each(cases)(
+		"binds resolved meaning without changing surface controls, $markdown",
+		({ markdown, paths: expected }) => {
+			expect(paths(markdown)).toEqual(expected);
+			const generations = new Set<string>();
+			for (const owner of ["/work/tree", "/work/other", "/work/tree"]) {
+				const result = renderMarkdownFileReferences(markdown, owner);
+				expect([...result.references.values()].map((ref) => ref.path)).toEqual(expected);
+				expect([...result.references.values()].map((ref) => ref.readTarget)).toEqual(
+					expected.map((path) => `${owner}/${path}`),
+				);
+				expect([...result.references.values()].map((ref) => ref.cwd)).toEqual(expected.map(() => owner));
+				for (const id of result.references.keys()) {
+					expect(generations.has(id)).toBe(false);
+					generations.add(id);
+					expect(result.markdown.split(id)).toHaveLength(2);
+				}
+			}
+			expect(markdownFileReferences(markdown, "")).toEqual([]);
+			expect(renderMarkdownFileReferences(markdown, "")).toEqual({ markdown, references: new Map() });
+		},
+	);
+	it("keeps exact bytes outside shrinking and expanding entity replacements", () => {
+		const markdown = "lead &eacute;: docs/a&amp;b.md, docs/&#x1F600;.md:12. docs/&NotEqualTilde;.md! tail &amp;\r\n";
+		const result = renderMarkdownFileReferences(markdown, "/work/tree");
+		const ids = [...result.references.keys()];
+		expect(result.markdown).toBe(
+			`lead &eacute;: [docs/a\\&b.md](${ids[0]}), [docs/😀.md](${ids[1]}):12. [docs/≂̸.md](${ids[2]})! tail &amp;\r\n`,
+		);
+		expect([...result.references.values()].map((ref) => ref.path)).toEqual(["docs/a&b.md", "docs/😀.md", "docs/≂̸.md"]);
 	});
 });

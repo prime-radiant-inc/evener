@@ -38,6 +38,7 @@ interface InlineSpan {
 	source: Source;
 	start: number;
 	end: number;
+	prose?: { starts: number[]; ends: number[] };
 }
 
 // Content-only LRU, shared by rendering and chips. Neither cwd, destinations,
@@ -98,14 +99,50 @@ function destination(href: string): string {
 		/\\([!"#$%&'()*+,\-./:;<=>?@[\]\\^_`{|}~])|&(#(?:x[\da-f]+|\d+)|[a-z][\da-z]+);/giu,
 		(raw: string, escaped: string | undefined, entity: string) => {
 			if (escaped !== undefined) return escaped;
-			if (!entity.startsWith("#")) return Object.hasOwn(namedEntities, entity) ? namedEntities[entity] : raw;
-			const hex = entity[1]?.toLowerCase() === "x";
-			const value = Number.parseInt(entity.slice(hex ? 2 : 1), hex ? 16 : 10);
-			return value === 0 || value > 0x10ffff || (value >= 0xd800 && value <= 0xdfff)
-				? "\ufffd"
-				: String.fromCodePoint(value);
+			return entityText(raw, entity);
 		},
 	);
+}
+
+function entityText(raw: string, entity: string): string {
+	if (!entity.startsWith("#")) return Object.hasOwn(namedEntities, entity) ? namedEntities[entity] : raw;
+	const hex = entity[1]?.toLowerCase() === "x";
+	const value = Number.parseInt(entity.slice(hex ? 2 : 1), hex ? 16 : 10);
+	return value === 0 || value > 0x10ffff || (value >= 0xd800 && value <= 0xdfff)
+		? "\ufffd"
+		: String.fromCodePoint(value);
+}
+
+// Each resolved UTF-16 unit owns its complete original range, including escapes
+// removed by marked's table/inline lexing. Never decode an escape token again.
+function proseText(token: Token, source: Source) {
+	let text = "";
+	const starts: number[] = [];
+	const ends: number[] = [];
+	const append = (value: string, start: number, end: number) => {
+		text += value;
+		for (let index = 0; index < value.length; index += 1) {
+			starts.push(source.escapeStarts?.get(source.offsets[start]) ?? source.offsets[start]);
+			ends.push(source.offsets[end - 1] + 1);
+		}
+	};
+	if (token.type === "escape") append(token.text, 0, token.raw.length);
+	else {
+		let cursor = 0;
+		for (const match of token.raw.matchAll(/&(#(?:x[\da-f]+|\d+)|[a-z][\da-z]+);/giu)) {
+			for (; cursor < match.index; cursor += 1) append(token.raw[cursor], cursor, cursor + 1);
+			append(entityText(match[0], match[1]), cursor, cursor + match[0].length);
+			cursor += match[0].length;
+		}
+		for (; cursor < token.raw.length; cursor += 1) append(token.raw[cursor], cursor, cursor + 1);
+	}
+	return { text, starts, ends };
+}
+
+// MD4C's installed text callback ignores entity nodes. Escaped punctuation is
+// normal text instead, and cannot become fresh entity, emphasis or math syntax.
+function proseLabel(text: string): string {
+	return text.replace(/[\\&`*_[\]<>|~$]/gu, "\\$&");
 }
 
 function labelEnd(raw: string, label?: string): number {
@@ -197,9 +234,18 @@ function collectInline(
 			// Authored HTML is displayed literally, not an anchor or code context.
 			// Keep its full text in the shared boundary context. Actual link/image
 			// labels stay opaque tokens, never recursively scanned as prose.
-			const text = token.type === "codespan" ? token.text : token.type === "escape" ? token.text : token.raw;
-			context += text;
-			spans.push({ token, source: located.source, start, end: context.length });
+			const eligible =
+				token.type === "escape" || token.type === "html" || (token.type === "text" && !("tokens" in token));
+			const prose = eligible ? proseText(token, located.source) : undefined;
+			context += prose?.text ?? (token.type === "codespan" ? token.text : token.raw);
+			const previous = spans.at(-1);
+			// Join escaped characters with their filename, but not across raw
+			// emphasis delimiters, opaque links/images or code wrappers.
+			if (prose && previous?.prose && previous.prose.ends.at(-1) === prose.starts[0]) {
+				previous.prose.starts.push(...prose.starts);
+				previous.prose.ends.push(...prose.ends);
+				previous.end = context.length;
+			} else spans.push({ token, source: located.source, start, end: context.length, prose });
 		}
 	};
 	flatten(tokens, source);
@@ -247,21 +293,21 @@ function collectInline(
 			const block = context.slice(0, start) + probe + context.slice(end);
 			if (findFileReferences(block, "/").some((ref) => ref.start === start && ref.end === start + probe.length))
 				found.push({ start: from, end: to + 1, surface: "code", value: token.text, label: token.raw });
-		} else if (token.type === "html" || (token.type === "text" && !("tokens" in token))) {
+		} else if (span.prose) {
 			for (const ref of prose) {
 				if (ref.start < start || ref.end > end) continue;
 				const left = ref.start - start,
 					right = ref.end - start;
-				const first = raw.offsets[left],
-					last = raw.offsets[right - 1];
+				const first = span.prose.starts[left],
+					last = span.prose.ends[right - 1];
 				if (first === undefined || last === undefined) continue;
-				const value = token.raw.slice(left, right);
+				const value = context.slice(ref.start, ref.end);
 				found.push({
-					start: raw.escapeStarts?.get(first) ?? first,
-					end: last + 1,
+					start: first,
+					end: last,
 					surface: "prose",
 					value,
-					label: value,
+					label: proseLabel(value),
 				});
 			}
 		}
@@ -366,7 +412,7 @@ export function renderMarkdownFileReferences(markdown: string, cwd: string): Mar
 			? `(${id})`
 			: candidate.label === undefined
 				? id
-				: `[${markdown.slice(candidate.start, candidate.end)}](${id})`;
+				: `[${candidate.surface === "prose" ? candidate.label : markdown.slice(candidate.start, candidate.end)}](${id})`;
 		return { ...candidate, replacement };
 	});
 	let rendered = markdown;
