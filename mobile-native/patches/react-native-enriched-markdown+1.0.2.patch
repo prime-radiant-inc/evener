@@ -3475,7 +3475,7 @@ index 0000000..c246716
 +NS_ASSUME_NONNULL_END
 diff --git a/node_modules/react-native-enriched-markdown/ios/parser/ENRMOriginalDocumentModel.m b/node_modules/react-native-enriched-markdown/ios/parser/ENRMOriginalDocumentModel.m
 new file mode 100644
-index 0000000..09f73b8
+index 0000000..14ad759
 --- /dev/null
 +++ b/node_modules/react-native-enriched-markdown/ios/parser/ENRMOriginalDocumentModel.m
 @@ -0,0 +1,175 @@
@@ -3617,7 +3617,7 @@ index 0000000..09f73b8
 +                           longestEffectiveRange:&run inRange:NSMakeRange(0, text.length)];
 +    NSRange overlap = NSIntersectionRange(run, range);
 +    if (overlap.length && [fragment isKindOfClass:ENRMSourceFragment.class] &&
-+        !fragment.isGenerated && [_ownedFragments containsObject:fragment]) {
++        !fragment.isGenerated && [_ownedFragments containsObject:fragment.originalFragment]) {
 +      NSUInteger a = [self sourceBoundaryForFragment:fragment offset:overlap.location - run.location end:NO];
 +      NSUInteger b = [self sourceBoundaryForFragment:fragment offset:NSMaxRange(overlap) - run.location end:YES];
 +      if (a == NSNotFound || b == NSNotFound) return NSMakeRange(NSNotFound, 0);
@@ -3639,7 +3639,7 @@ index 0000000..09f73b8
 +    ENRMSourceFragment *fragment = [text attribute:ENRMSourceFragmentAttributeName atIndex:index
 +                           longestEffectiveRange:&run inRange:NSMakeRange(0, text.length)];
 +    if ([fragment isKindOfClass:ENRMSourceFragment.class] &&
-+        !fragment.isGenerated && [_ownedFragments containsObject:fragment]) {
++        !fragment.isGenerated && [_ownedFragments containsObject:fragment.originalFragment]) {
 +      NSRange overlap = NSIntersectionRange(range, fragment.sourceRange);
 +      if (overlap.length) {
 +        NSString *raw = [_source substringWithRange:fragment.sourceRange];
@@ -3655,10 +3655,10 @@ index 0000000..09f73b8
 +}
 +@end
 diff --git a/node_modules/react-native-enriched-markdown/ios/parser/MarkdownASTNode.h b/node_modules/react-native-enriched-markdown/ios/parser/MarkdownASTNode.h
-index 5ace29e..0808294 100644
+index 5ace29e..2c0302d 100644
 --- a/node_modules/react-native-enriched-markdown/ios/parser/MarkdownASTNode.h
 +++ b/node_modules/react-native-enriched-markdown/ios/parser/MarkdownASTNode.h
-@@ -34,15 +34,27 @@ typedef NS_ENUM(NSInteger, MarkdownNodeType) {
+@@ -34,15 +34,29 @@ typedef NS_ENUM(NSInteger, MarkdownNodeType) {
    MarkdownNodeTypeSoftBreak
  };
 
@@ -3668,7 +3668,9 @@ index 5ace29e..0808294 100644
 +@property (nonatomic, copy, readonly) NSString *text;
 +@property (nonatomic, readonly) NSRange sourceRange;
 +@property (nonatomic, readonly, getter=isGenerated) BOOL generated;
++@property (nonatomic, strong, readonly) ENRMSourceFragment *originalFragment;
 +- (instancetype)initWithText:(NSString *)text sourceRange:(NSRange)sourceRange generated:(BOOL)generated;
++- (ENRMSourceFragment *)fragmentByRenderingText:(NSString *)text;
 +@end
 +
  @interface MarkdownASTNode : NSObject
@@ -3687,15 +3689,17 @@ index 5ace29e..0808294 100644
 
  @end
 diff --git a/node_modules/react-native-enriched-markdown/ios/parser/MarkdownASTNode.m b/node_modules/react-native-enriched-markdown/ios/parser/MarkdownASTNode.m
-index 61a9deb..52121af 100644
+index 61a9deb..d598b6c 100644
 --- a/node_modules/react-native-enriched-markdown/ios/parser/MarkdownASTNode.m
 +++ b/node_modules/react-native-enriched-markdown/ios/parser/MarkdownASTNode.m
-@@ -1,5 +1,19 @@
+@@ -1,5 +1,34 @@
  #import "MarkdownASTNode.h"
 
 +NSAttributedStringKey const ENRMSourceFragmentAttributeName = @"ENRMSourceFragment";
 +
-+@implementation ENRMSourceFragment
++@implementation ENRMSourceFragment {
++  ENRMSourceFragment *_originalFragment;
++}
 +- (instancetype)initWithText:(NSString *)text sourceRange:(NSRange)sourceRange generated:(BOOL)generated
 +{
 +  if (self = [super init]) {
@@ -3705,12 +3709,25 @@ index 61a9deb..52121af 100644
 +  }
 +  return self;
 +}
++
++- (ENRMSourceFragment *)originalFragment
++{
++  return _originalFragment ?: self;
++}
++
++- (ENRMSourceFragment *)fragmentByRenderingText:(NSString *)text
++{
++  if ([text isEqualToString:_text]) return self;
++  ENRMSourceFragment *rendered = [[ENRMSourceFragment alloc] initWithText:text sourceRange:_sourceRange generated:_generated];
++  rendered->_originalFragment = self.originalFragment;
++  return rendered;
++}
 +@end
 +
  @implementation MarkdownASTNode
 
  - (instancetype)initWithType:(MarkdownNodeType)type
-@@ -9,6 +23,8 @@
+@@ -9,6 +38,8 @@
      _content = nil;
      _attributes = [[NSMutableDictionary alloc] init];
      _children = [[NSMutableArray alloc] init];
@@ -3719,7 +3736,7 @@ index 61a9deb..52121af 100644
    }
    return self;
  }
-@@ -23,6 +39,29 @@
+@@ -23,6 +54,28 @@
    _attributes[key] = value;
  }
 
@@ -3728,8 +3745,7 @@ index 61a9deb..52121af 100644
 +  [string addAttribute:ENRMSourceFragmentAttributeName value:[NSNull null] range:range];
 +  if ((_type == MarkdownNodeTypeSoftBreak || _type == MarkdownNodeTypeLineBreak) && _sourceFragments.count == 1) {
 +    ENRMSourceFragment *parsed = _sourceFragments.firstObject;
-+    ENRMSourceFragment *rendered = [[ENRMSourceFragment alloc]
-+        initWithText:[string.string substringWithRange:range] sourceRange:parsed.sourceRange generated:parsed.generated];
++    ENRMSourceFragment *rendered = [parsed fragmentByRenderingText:[string.string substringWithRange:range]];
 +    [string addAttribute:ENRMSourceFragmentAttributeName value:rendered range:range];
 +    return;
 +  }
