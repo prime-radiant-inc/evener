@@ -2780,10 +2780,10 @@ index 0000000..39f253c
 +#endif
 diff --git a/node_modules/react-native-enriched-markdown/ios/EnrichedMarkdownCodeText.mm b/node_modules/react-native-enriched-markdown/ios/EnrichedMarkdownCodeText.mm
 new file mode 100644
-index 0000000..1a4e4fa
+index 0000000..6a0563c
 --- /dev/null
 +++ b/node_modules/react-native-enriched-markdown/ios/EnrichedMarkdownCodeText.mm
-@@ -0,0 +1,288 @@
+@@ -0,0 +1,286 @@
 +#import "EnrichedMarkdownCodeText.h"
 +#import "EnrichedMarkdownCodeTextComponentDescriptor.h"
 +#import "EnrichedMarkdownCodeTextShadowNode.h"
@@ -2818,6 +2818,7 @@ index 0000000..1a4e4fa
 +                                         encoding:NSUTF8StringEncoding];
 +  auto result = [[NSMutableAttributedString alloc] initWithString:text
 +                                                      attributes:RCTNSTextAttributesFromTextAttributes(attributes)];
++  if (result.length > 0) RCTApplyBaselineOffset(result);
 +  return result;
 +}
 +
@@ -2831,8 +2832,6 @@ index 0000000..1a4e4fa
 +  layout.usesFontLeading = NO;
 +  [layout addTextContainer:container];
 +  auto storage = [[NSTextStorage alloc] initWithAttributedString:text];
-+  // NSTextStorage resolves fallback fonts before RN computes baseline offsets.
-+  if (storage.length > 0) RCTApplyBaselineOffset(storage);
 +  [storage addLayoutManager:layout];
 +  return storage;
 +}
@@ -2884,7 +2883,6 @@ index 0000000..1a4e4fa
 +  NSAssert([NSThread isMainThread], @"Mounted code layout is main-thread confined");
 +  if ([_textStorage isEqualToAttributedString:text]) return;
 +  [_textStorage setAttributedString:text];
-+  if (_textStorage.length > 0) RCTApplyBaselineOffset(_textStorage);
 +  ++_layoutGeneration;
 +  [self setNeedsDisplay];
 +}
