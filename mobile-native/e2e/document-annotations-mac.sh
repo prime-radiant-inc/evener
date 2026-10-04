@@ -68,6 +68,12 @@ PY
 }
 case "$phase" in
   cleanup) exit 0;;
+  model)
+    test -z "$sim_id"
+    test ! -L mobile-native/node_modules
+    npm ci --prefix mobile-native
+    bash mobile-native/e2e/document-annotations-model.sh "$artifacts"
+    exit 0;;
   layout)
     test -z "$sim_id"
     test ! -L mobile-native/node_modules
