@@ -3427,7 +3427,7 @@ func TestWaitForStableSupervisionRunOutlastsDeferredAttentionDrive(t *testing.T)
 // generation's release and the root's retry both wake the served root, whose
 // notification turn drives the attention; warmStableSupervisionDelegate serves
 // the harness root's wakes the same way. The guard taken here stands in for
-// the drive that is refused busy, and the retry and release that follow are
+// the drive that is refused busy, and the retry and guard release that follow are
 // that drive's exit; the retry is the wake this test exercises.
 func TestSupervisionRootDrivesAttentionTheChildDropped(t *testing.T) {
 	fixture := newColdStableDelegateFixture(t, "")
