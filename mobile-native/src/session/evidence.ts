@@ -73,8 +73,9 @@ function rawOutput(text: string): Evidence[] {
 // title's "(1)"), one level deep, as real URLs need. A URL the pattern can't
 // take whole (pairs nested deeper, escaped or unbalanced parentheses) leaves
 // some of itself as text, but ![alt] is always taken, so the image is gone.
-// An alt ends at a blank line, as a paragraph does.
-const ALT = String.raw`!\[((?:[^\]\n]|\n(?![ \t\r]*(?:\n|$)))*)\]`;
+// An alt can hold a pair of brackets of its own ("Figure [1]"), one level
+// deep, and ends at a blank line, as a paragraph does.
+const ALT = String.raw`!\[((?:\[[^[\]\n]*\]|[^[\]\n]|\n(?![ \t\r]*(?:\n|$)))*)\]`;
 const DESTINATION = String.raw`\((?:[^()]|\([^()]*\))*\)`;
 const IMAGE_RE = new RegExp(String.raw`${ALT}(?:${DESTINATION}|\[[^\]]*\])?`, "g");
 // A bare ![alt] or ![alt][ref] is an image only by a reference definition,
@@ -116,7 +117,8 @@ function savingCode(markdown: string, code: string[]): string {
 function withoutImages(markdown: string): string {
 	if (/[\uE000\uE001]/.test(markdown)) return stripImages(markdown, IMAGE_RE);
 	const code: string[] = [];
-	const text = stripImages(savingCode(markdown, code), markdown.includes("]:") ? IMAGE_RE : INLINE_IMAGE_RE);
+	const saved = savingCode(markdown, code);
+	const text = stripImages(saved, saved.includes("]:") ? IMAGE_RE : INLINE_IMAGE_RE);
 	return text.replace(SAVED_CODE_RE, (_, index: string) => code[Number(index)] ?? "");
 }
 

@@ -479,6 +479,7 @@ describe("each tool's evidence, as the tools print it", () => {
 		["an image nested in another's alt text", "![a ![b](https://x.test/b.png)](https://x.test/a.png)", "a b"],
 		["an image that taking out another completes", "![![](https://x.test/b.png)](https://x.test/a.png)", ""],
 		["a link a stray '!' turns into an image", "!![](https://x.test/b.png)[x](https://x.test/a.png)", "x"],
+		["twenty thousand openers in a row", "![".repeat(20_000), "![".repeat(20_000)],
 		["images nested fifty deep", `${"![".repeat(50)}x${"](https://x.test/u.png)".repeat(50)}`, "x"],
 	])("shows %s as words", (_name, markdown, words) => {
 		expect(skillMarkdown(markdown)).toBe(words);
@@ -507,6 +508,7 @@ describe("each tool's evidence, as the tools print it", () => {
 		["a macro in a double-backtick span", "Call ``vec![1](x)`` here."],
 		["a Rust macro in prose", "let v = vec![1, 2, 3];"],
 		["a shell test in prose", "if ![ -f x ]; then"],
+		['a macro in prose beside code holding "]:"', "vec![1, 2] and `d[0]: x`"],
 		["text after an opener a blank line ends", "Use ![ to open.\n\nThen arr[0] reads."],
 	])("leaves %s as it was", (_name, markdown) => {
 		expect(skillMarkdown(markdown)).toBe(markdown);
@@ -517,6 +519,8 @@ describe("each tool's evidence, as the tools print it", () => {
 		["an image beside a code span", "`x` and ![a](https://x.test/a.png)", "`x` and a"],
 		["an image whose alt holds a code span", "![`x`](https://x.test/a.png)", "`x`"],
 		["an image after an unclosed backtick", "a ` b ![c](https://x.test/c.png)", "a ` b c"],
+		["an image whose alt holds a pair of brackets", "![Figure [1]](https://x.test/f.png)", "Figure [1]"],
+		["an image in text holding the placeholder marks", "\uE0000\uE001 ![a](https://x.test/a.png)", "\uE0000\uE001 a"],
 		[
 			"a reference image where a definition may exist",
 			"![a][r] and ![b]\n\n[r]: https://x.test/r.png",
