@@ -3475,10 +3475,10 @@ index 0000000..c246716
 +NS_ASSUME_NONNULL_END
 diff --git a/node_modules/react-native-enriched-markdown/ios/parser/ENRMOriginalDocumentModel.m b/node_modules/react-native-enriched-markdown/ios/parser/ENRMOriginalDocumentModel.m
 new file mode 100644
-index 0000000..14ad759
+index 0000000..0719b0c
 --- /dev/null
 +++ b/node_modules/react-native-enriched-markdown/ios/parser/ENRMOriginalDocumentModel.m
-@@ -0,0 +1,175 @@
+@@ -0,0 +1,182 @@
 +#import "ENRMOriginalDocumentModel.h"
 +#import "MarkdownSourceParser.h"
 +
@@ -3491,6 +3491,12 @@ index 0000000..14ad759
 +  copy.sourceFragments = node.sourceFragments;
 +  for (MarkdownASTNode *child in node.children) [copy addChild:copyNode(child)];
 +  return copy;
++}
++
++static void collectFragments(MarkdownASTNode *node, NSMutableArray<ENRMSourceFragment *> *fragments)
++{
++  [fragments addObjectsFromArray:node.sourceFragments];
++  for (MarkdownASTNode *child in node.children) collectFragments(child, fragments);
 +}
 +
 +@implementation ENRMOriginalDocumentModel {
@@ -3551,7 +3557,8 @@ index 0000000..14ad759
 +{
 +  MarkdownASTNode *projection = [self projectBlockRange:range];
 +  if (projection.children.count != 1 || projection.children.firstObject.type != MarkdownNodeTypeCodeBlock) return nil;
-+  NSArray<ENRMSourceFragment *> *original = projection.children.firstObject.sourceFragments;
++  NSMutableArray<ENRMSourceFragment *> *original = [NSMutableArray new];
++  collectFragments(projection.children.firstObject, original);
 +  // Reader normalizes CRLF, while the public leaf also accepts exact literal
 +  // input. Verify complete candidate strings, never search row Markdown or add
 +  // an offset. Only the known final code separator may be removed.
