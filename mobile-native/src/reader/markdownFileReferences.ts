@@ -1,5 +1,15 @@
 import { findFileReferences, parseFileReference, type FileReference } from "@evener/appwire-client/docContent";
-import { lexer, type Token, type Tokens } from "marked";
+import { Marked, type Token, type Tokens } from "marked";
+
+// The installed native parser uses NOHTML. Keep marked's Markdown grammar and
+// raw offsets, but do not let authored tags swallow links/code or set HTML
+// ancestry. They remain literal text in the same lexical boundary context.
+const nativeMarkdown = new Marked({
+	tokenizer: {
+		html: () => undefined,
+		tag: () => undefined,
+	},
+});
 
 export interface NativeFileOpenContext {
 	readonly cwd: string;
@@ -308,9 +318,6 @@ function collectBlocks(
 				next = cellSource.next;
 				collectInline(cell.tokens, cellSource.source, found, defs);
 			}
-		} else if (token.type === "html") {
-			// Block HTML is one displayed literal token, not nested Markdown.
-			collectInline([token], raw, found, defs);
 		} else if (["paragraph", "heading", "text"].includes(token.type) && "tokens" in token && token.tokens)
 			collectInline(token.tokens, raw, found, defs);
 	}
@@ -325,7 +332,7 @@ function candidates(markdown: string): readonly Candidate[] {
 	}
 	const found: Candidate[] = [];
 	const source = sourceOf(markdown);
-	const tokens = lexer(source.text);
+	const tokens = nativeMarkdown.lexer(source.text);
 	collectBlocks(tokens, source, found, definitions(tokens));
 	found.sort((a, b) => a.start - b.start);
 	candidatesByMarkdown.set(markdown, found);

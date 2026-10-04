@@ -109,8 +109,10 @@ lasts for the app lifetime and adds no disk persistence.
 Assistant filename actions and document chips share the file-reference grammar.
 Authored HTML tags are literal text, so they do not suppress otherwise eligible
 filenames, including across paragraphs and table cells. Actual Markdown link
-labels, fenced code and Mermaid keep their existing exclusions; inline-code
-filenames remain eligible. Recognition preserves the original response and
+destinations, opaque labels, fenced/indented code and Mermaid keep native Markdown
+rules even inside HTML-shaped blocks; inline-code filenames remain eligible.
+Web may instead display that block's Markdown syntax as literal text.
+Recognition preserves the original response and
 binds actions to the owning conversation's current cwd, without reading files.
 
 - The recent-session roster is bounded and has server-side search. Project

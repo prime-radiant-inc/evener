@@ -123,6 +123,113 @@ describe("native token/source-span file adapter", () => {
 		expect([...first.references.keys()]).not.toEqual([...next.references.keys()]);
 	});
 });
+
+describe("native Markdown contexts inside literal HTML blocks", () => {
+	const corpus = [
+		{
+			name: "reviewed file destination",
+			markdown: "<div>\n[R](./docs/file.md)\n</div>",
+			paths: ["docs/file.md"],
+			surfaces: ["link"],
+			rendered: "<div>\n[R](action-0)\n</div>",
+		},
+		{
+			name: "reviewed fence",
+			markdown: "<script>\n```sh\ndocs/a.md\n```\n</script>",
+			paths: [],
+			surfaces: [],
+		},
+		{
+			name: "reviewed inline code",
+			markdown: "<div>\n`docs/a.md`\n</div>",
+			paths: ["docs/a.md"],
+			surfaces: ["code"],
+			rendered: "<div>\n[`docs/a.md`](action-0)\n</div>",
+		},
+		{
+			name: "reviewed opaque external label",
+			markdown: "<div>\n[docs/label.md](https://example.test/x)\n</div>",
+			paths: [],
+			surfaces: [],
+		},
+		{
+			name: "reviewed indented paragraph continuation, not a code block",
+			markdown: "<div>\n    docs/a.md\n</div>",
+			paths: ["docs/a.md"],
+			surfaces: ["prose"],
+			rendered: "<div>\n    [docs/a.md](action-0)\n</div>",
+		},
+		{
+			name: "actual blank-separated indented code",
+			markdown: "<div>\n\n    docs/a.md\n\n</div>",
+			paths: [],
+			surfaces: [],
+		},
+		{
+			name: "Mermaid fence",
+			markdown: "<style>\n```mermaid\ndocs/a.md\n```\n</style>",
+			paths: [],
+			surfaces: [],
+		},
+		{
+			name: "opaque file label and retained title and angle delimiters",
+			markdown: '<pre>\n[docs/label.md `]`](<./docs/a%20b.md> "keep")\n</pre>',
+			paths: ["docs/a b.md"],
+			surfaces: ["link"],
+			rendered: '<pre>\n[docs/label.md `]`](<action-0> "keep")\n</pre>',
+		},
+		{
+			name: "reference definition inside the same block",
+			markdown: '<script>\n[R][r]\n\n[r]: ./docs/a.md "keep"\n</script>',
+			paths: ["docs/a.md"],
+			surfaces: ["link"],
+			rendered: '<script>\n[R](action-0)\n\n[r]: ./docs/a.md "keep"\n</script>',
+		},
+		{
+			name: "forward reference outside the block",
+			markdown: '<div>\n[R][r]\n</div>\n\n[r]: ./docs/a.md "keep"',
+			paths: ["docs/a.md"],
+			surfaces: ["link"],
+			rendered: '<div>\n[R](action-0)\n</div>\n\n[r]: ./docs/a.md "keep"',
+		},
+		{
+			name: "CRLF and blockquote offsets",
+			markdown: "> <div>\r\n> [R](./docs/file.md)\r\n> </div>\r\n",
+			paths: ["docs/file.md"],
+			surfaces: ["link"],
+			rendered: "> <div>\r\n> [R](action-0)\r\n> </div>\r\n",
+		},
+		{
+			name: "list-contained fence",
+			markdown: "- <script>\n  ```sh\n  docs/a.md\n  ```\n  </script>",
+			paths: [],
+			surfaces: [],
+		},
+		{
+			name: "inline code command remains excluded",
+			markdown: "<pre>\n`cat docs/a.md`\n</pre>",
+			paths: [],
+			surfaces: [],
+		},
+	];
+	it.each(corpus)("preserves $name", ({ markdown, paths: expected, surfaces, rendered }) => {
+		for (const sourceCwd of [cwd, "/work/a", cwd]) {
+			const discovered = markdownFileReferences(markdown, sourceCwd);
+			const result = renderMarkdownFileReferences(markdown, sourceCwd);
+			expect(discovered.map(({ surface }) => surface)).toEqual(surfaces);
+			for (const refs of [discovered.map(({ reference }) => reference), [...result.references.values()]]) {
+				expect(refs.map((ref) => ref.path)).toEqual(expected);
+				expect(refs.map((ref) => ref.cwd)).toEqual(expected.map(() => sourceCwd));
+				expect(refs.map((ref) => ref.readTarget)).toEqual(expected.map((path) => `${sourceCwd}/${path}`));
+			}
+			let normalized = result.markdown;
+			for (const [index, id] of [...result.references.keys()].entries())
+				normalized = normalized.replace(id, `action-${index}`);
+			expect(normalized).toBe(rendered ?? markdown);
+		}
+		expect(renderMarkdownFileReferences(markdown, "")).toEqual({ markdown, references: new Map() });
+	});
+});
 it("unescapes an escaped entity marker once and preserves explicit link titles and angle syntax", () => {
 	const original = '[R](<./docs/a\\&amp;b.md> "keep &amp; title")';
 	const result = renderMarkdownFileReferences(original, cwd);
