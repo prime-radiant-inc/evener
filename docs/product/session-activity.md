@@ -22,6 +22,34 @@ selected entity remains one whole snapshot, so resumed status is not combined
 with a previous generation's report. These labels reuse the
 transcript's existing activity binding without adding reads or subscriptions.
 
+## Navigation session status
+
+A top-level session's Broken/Failed status comes from its own `errored` state.
+Retained failed subagents remain in the web title context, phone subagent chips
+and Agents/Subagents detail views without making a healthy parent look broken.
+
+The existing live compact navigation summary supplies running-subagent work.
+The web rail shows its Running spinner; the phone Board classifies the parent
+as Working, using its existing pulse meter in Live and static mark elsewhere.
+This applies to quiet parents and nonblocking warnings, including mixed running
+and failed children. Questions and approvals keep their attention presentation.
+Warnings carrying a question or approval remain attention states. Own failure,
+restart-required and existing unavailable-session presentations remain unchanged.
+
+Question resolution returns to working presentation while children run. Once
+the last running child settles, each client resumes its normal parent-state and
+quiet/completion presentation, even with retained failures. Refresh and reconnect
+apply the same rule to newly delivered summaries without clearing failure history
+or changing session lifecycle state.
+
+The browser's [`effectiveSessionState`](../../cmd/evener-hub/frontend/src/shell/rail/RailRow.tsx)
+and the phone's [`boardState`](../../mobile-native/src/board/attention.ts) own
+these projections. The browser uses the shared navigation store; the phone keeps
+its existing BoardController/NavigationPages delivery and shared decoding.
+Both reuse the [shared live tally selector](../../appwire-client/typescript/state/navigation/selectors.ts).
+Status does not reconstruct counts from loaded child rows or acquire activity
+collection demand. Hub aggregation and domain activity authority stay independent.
+
 ## APIs and ownership
 
 Daemon and hub AppWire expose four typed reads:
