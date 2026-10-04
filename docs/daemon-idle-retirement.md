@@ -8,8 +8,9 @@ identity.
 
 The mechanism is daemon-owned. The daemon runs its own idle timer; the Hub
 observes and recovers, and never signals a process to retire it. Detached
-external processes (shell jobs, delegates' worktrees, retained scratch) keep
-their existing independent lifetime — retirement does not sweep them away.
+external processes (shell jobs, delegates' worktrees) keep their existing
+independent lifetime — retirement does not sweep them away. Session scratch is
+deleted at retirement; the replacement starts with a fresh one.
 
 ## Configuration
 
@@ -73,10 +74,10 @@ Questions and watches **can** pin the daemon indefinitely. An unanswered
 blocker; neither is a timeout that expires on its own. That is deliberate: the
 session has work a person asked for, so it is not idle.
 
-Idle delegates, worktrees and scratch are preserved. An idle, resumable delegate
-does not block retirement once its whole subtree is settled and its descriptor,
+Idle delegates and worktrees are preserved. An idle, resumable delegate does not
+block retirement once its whole subtree is settled and its descriptor,
 transcript, environment and lane ownership can be preserved; the delegate's
-worktree and scratch are pinned so a later resume finds them. A missing runtime
+worktree is kept so a later resume finds it. Its scratch is deleted. A missing runtime
 pointer is never treated as proof of eligibility — uncertain state blocks.
 
 ## Recovery
