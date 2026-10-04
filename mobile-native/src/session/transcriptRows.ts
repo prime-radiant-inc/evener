@@ -23,8 +23,9 @@ import {
 } from "@evener/appwire-client";
 import { hubTime } from "../board/attention";
 import { readerKey } from "../readerPosition";
-import { type RunStep, rowTurnId, type TimelineRow } from "../timeline";
+import { type RunStep, rowTurnId, type TimelineRow, timelineGap } from "../timeline";
 import { compactDuration } from "./format";
+import { type Ghost, shownGhosts } from "./ghosts";
 
 type RunRow = Extract<TimelineRow, { kind: "run" }>;
 type TimeRow = Extract<TimelineRow, { kind: "time" }>;
@@ -115,6 +116,47 @@ export function sessionRows(
 		out.push(row);
 	}
 	return out;
+}
+
+/** A ghost (spec 8.5) as one of the transcript list's last rows, and the
+ * quiet row that counts the queued messages past the three that show
+ * (ruling 18). They are the list's rows and never the conversation's, so
+ * what reads the conversation (find, reading positions, "↓ N new") never
+ * sees them. */
+export type GhostRow = { kind: "ghost"; id: string; ghost: Ghost } | { kind: "moreQueued"; id: string; count: number };
+
+export type SessionListRow = TimelineRow | GhostRow;
+
+/** The transcript list's rows: the conversation's, then everything waiting to
+ * reach the agent, so the ghosts sit after its last row, a streaming reply
+ * included, and scroll with it. */
+export function withGhostRows(rows: readonly TimelineRow[], all: readonly Ghost[]): readonly SessionListRow[] {
+	if (all.length === 0) return rows;
+	const { shown, moreQueued } = shownGhosts(all);
+	const ghostRows: GhostRow[] = shown.map((ghost) => ({ kind: "ghost", id: `ghost:${ghost.key}`, ghost }));
+	if (moreQueued > 0) ghostRows.push({ kind: "moreQueued", id: "ghost:moreQueued", count: moreQueued });
+	return [...rows, ...ghostRows];
+}
+
+export function isGhostRow(row: SessionListRow): row is GhostRow {
+	return row.kind === "ghost" || row.kind === "moreQueued";
+}
+
+/** A list row's key: a transcript row's reader key, or a ghost row's own id. */
+export function sessionListKey(row: SessionListRow): string {
+	return isGhostRow(row) ? row.id : readerKey(row);
+}
+
+// What a ghost lands as: a message of yours.
+const LANDED_GHOST: TimelineRow = { kind: "user", id: "", text: "" };
+
+/** The room under a list row. A ghost stands where your message will land,
+ * so the row above it keeps the gap that message gets there and landing
+ * never moves it; the ghosts stand 8pt apart. */
+export function sessionListGap(row: SessionListRow, next: SessionListRow | undefined): number {
+	if (next === undefined) return 0;
+	if (isGhostRow(row)) return 8;
+	return timelineGap(row, isGhostRow(next) ? LANDED_GHOST : next);
 }
 
 /** The questions an earlier ask_user row shows (QuestionHistory), or
