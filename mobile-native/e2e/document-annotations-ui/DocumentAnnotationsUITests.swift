@@ -1,4 +1,5 @@
 import XCTest
+import UIKit
 
 final class DocumentAnnotationsUITests: XCTestCase {
     private let app = XCUIApplication(bundleIdentifier: "com.primeradiant.evener.native")
@@ -167,6 +168,36 @@ final class DocumentAnnotationsUITests: XCTestCase {
         "same()\r\n\r\n"
     ]
 
+    // Inspect screenshot pixels, not geometry returned by the candidate layout.
+    // The comparison fixture has dark glyphs on the unchanged pale Reader inset.
+    private func glyphInkBounds(_ image: CGImage, frame: CGRect, scale: Double) throws -> CGRect {
+        let pixelFrame = CGRect(x: frame.minX * scale, y: frame.minY * scale,
+                                width: min(frame.width, app.frame.maxX - frame.minX) * scale,
+                                height: frame.height * scale).integral
+        let crop = try XCTUnwrap(image.cropping(to: pixelFrame))
+        let width = crop.width, height = crop.height
+        var bytes = [UInt8](repeating: 0, count: width * height * 4)
+        try bytes.withUnsafeMutableBytes { buffer in
+            let context = try XCTUnwrap(CGContext(data: buffer.baseAddress, width: width, height: height,
+                bitsPerComponent: 8, bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+            context.draw(crop, in: CGRect(x: 0, y: 0, width: CGFloat(width), height: CGFloat(height)))
+        }
+        var minX = width, minY = height, maxX = -1, maxY = -1
+        for y in 0..<height {
+            for x in 0..<width {
+                let offset = (y * width + x) * 4
+                if bytes[offset] < 128 && bytes[offset + 1] < 128 && bytes[offset + 2] < 128 {
+                    minX = min(minX, x); minY = min(minY, y)
+                    maxX = max(maxX, x); maxY = max(maxY, y)
+                }
+            }
+        }
+        XCTAssertGreaterThanOrEqual(maxX, minX, "The screenshot must contain actual drawn glyphs")
+        return CGRect(x: CGFloat(minX), y: CGFloat(minY),
+                      width: CGFloat(maxX - minX + 1), height: CGFloat(maxY - minY + 1))
+    }
+
     func testCodePreservationAndLegacyCopy() throws {
         app.buttons["native-probe-code-comparison"].tap()
         let scaleLabel = app.staticTexts["native-probe-display-scale"].label
@@ -184,6 +215,13 @@ final class DocumentAnnotationsUITests: XCTestCase {
                 XCTAssertEqual(Array(candidate.label.utf16), Array(text.utf16), "Candidate VoiceOver text, case \(index)")
                 XCTAssertEqual(candidate.frame.width, reference.frame.width, accuracy: tolerance)
                 XCTAssertEqual(candidate.frame.height, reference.frame.height, accuracy: tolerance)
+                let screenshot = try XCTUnwrap(app.screenshot().image.cgImage)
+                let referenceInk = try glyphInkBounds(screenshot, frame: reference.frame, scale: scale)
+                let candidateInk = try glyphInkBounds(screenshot, frame: candidate.frame, scale: scale)
+                XCTAssertEqual(candidateInk.minX, referenceInk.minX, accuracy: 1, "Drawn glyph left, case \(index)")
+                XCTAssertEqual(candidateInk.maxX, referenceInk.maxX, accuracy: 1, "Drawn glyph right, case \(index)")
+                XCTAssertEqual(candidateInk.minY, referenceInk.minY, accuracy: 1, "Drawn glyph top, case \(index)")
+                XCTAssertEqual(candidateInk.maxY, referenceInk.maxY, accuracy: 1, "Drawn glyph bottom, case \(index)")
                 for leaf in [reference, candidate] {
                     leaf.press(forDuration: 1.2)
                     XCTAssertTrue(copyMenu.waitForExistence(timeout: 5))
