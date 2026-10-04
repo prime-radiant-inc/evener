@@ -1436,6 +1436,18 @@ func TestDelegateIdleRelease_ColdRestoreResumesRetainedScratch(t *testing.T) {
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("done two") },
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("done three") },
 	}})
+	// Teardown completes after the resident pointer is cleared. Key its
+	// completion by runtime, not session ID, which both restores reuse.
+	var teardownMu sync.Mutex
+	teardownDone := make(map[*Session]chan struct{})
+	teardownDoneFor := func(runtime *Session) chan struct{} {
+		teardownMu.Lock()
+		defer teardownMu.Unlock()
+		if teardownDone[runtime] == nil {
+			teardownDone[runtime] = make(chan struct{})
+		}
+		return teardownDone[runtime]
+	}
 	shortGrace := 100 * time.Millisecond
 	s := newSession(t, withClient(client), withConfig(SessionConfig{
 		StateDir:         packageFixtureTempDir(t, "scratch-continuity-*"),
@@ -1446,6 +1458,9 @@ func TestDelegateIdleRelease_ColdRestoreResumesRetainedScratch(t *testing.T) {
 			noSyncJobStore:           true,
 			sandboxProber:            sandbox.FakeProber{Facts: facts},
 			delegateIdleReleaseDelay: &shortGrace,
+			idleTeardownMemberSettled: func(runtime *Session) {
+				close(teardownDoneFor(runtime))
+			},
 		},
 	}))
 	defer s.Close()
@@ -1491,6 +1506,16 @@ func TestDelegateIdleRelease_ColdRestoreResumesRetainedScratch(t *testing.T) {
 			tree.mu.Unlock()
 			return released
 		})
+		// Pointer removal admits a racing cold restore while the old runtime
+		// still owns its lease. This continuity check needs that exact runtime's
+		// teardown to finish first, not the supported fresh-scratch fallback.
+		// The callback remains safe after test cleanup.
+		select {
+		case <-teardownDoneFor(prev.sess):
+		// TRIPWIRE: teardown normally settles in milliseconds; 15s only bounds a genuine hang.
+		case <-time.After(15 * time.Second):
+			t.Fatalf("idle teardown of %s did not finish", label)
+		}
 		// TRIPWIRE: the scripted send and restore complete in well under a
 		// second; 30s only bounds a genuine hang.
 		sendCtx, sendCancel := context.WithTimeout(context.Background(), 30*time.Second)
