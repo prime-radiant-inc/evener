@@ -1,8 +1,7 @@
 # Agent cascade in the secondary pane group
 
-Status: desktop destination and Return approved in chat. The written amendment
-and the previous-layout policy below await Jesse's approval. No implementation
-is approved by this document alone.
+Status: approved by Jesse on 2026-10-04, including the previous-layout policy.
+Implementation follows independent spec review and the native TDD plan.
 
 ## Authority and scope
 
@@ -110,7 +109,7 @@ what the secondary inspector reads. Return removes that inspector.
   JSON/localStorage. Page reload does not restore those bytes. Persisted draft
   metadata and pending delivery retain their existing storage contracts.
 
-## Previous-layout policy, proposed for explicit approval
+## Previous layouts
 
 Keep the existing Return behavior for already-saved cascades: Return restores
 their source view in that same pane. This includes in-place cascades that occupy
@@ -118,10 +117,8 @@ the center and older secondary fallback cascades. Do not discard or move those
 saved views automatically. Newly opened secondary cascades use the new
 close-and-focus behavior, including after reload.
 
-This is a narrow compatibility boundary. It adds no automatic migration and no
-second composer or history implementation. Jesse must explicitly approve it
-before implementation. If declined, discuss the replacement policy before changing
-saved layouts or removing their existing Return path.
+Jesse explicitly approved this narrow compatibility boundary. It adds no
+automatic migration and no second composer or history implementation.
 
 ## Geometry and clients
 
@@ -166,8 +163,8 @@ Required evidence:
 - Retain independent provider-delivery and mutation-ID assertions. Keep existing
   detached-continuation tests as detached tests; do not describe the newly mounted
   center journey as editor detachment.
-- Keep mobile-entry and saved-phone-cascade cases. Cover the proposed old in-place
-  Return policy only if Jesse approves it.
+- Keep mobile-entry and saved-phone-cascade cases. Cover the old in-place and
+  older secondary fallback Return policy.
 
 Verification commands from the repository root:
 
