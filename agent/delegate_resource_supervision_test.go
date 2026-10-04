@@ -3201,11 +3201,13 @@ func restoreSupervisionRoot(t *testing.T, fixture coldStableDelegateFixture, clo
 // channel, and each one runs the root's stable delegate attention drive, the
 // first thing the root's notification turn does (acceptNotificationInput).
 // Attention whose child-side drive was refused falls back to that drive
-// through the root's retry (retryDelegateAttentionLater), so a root nothing
-// wakes leaves it undriven
-// (TestSupervisionRootDrivesAttentionTheChildDropped). Tests that drive the
-// root by hand don't call this. The loop stops before the root closes, since
-// cleanups run last-registered first.
+// through two root wakes: the one releaseFinalizationLocked sends when a
+// finished generation is released with attention still owed, and the root's
+// retry (retryDelegateAttentionLater). A root nothing wakes leaves it undriven
+// (TestSupervisionRootDrivesAttentionTheChildDropped). Tests that call
+// drivePendingStableDelegateAttention or run root turns themselves don't call
+// this. The loop stops before the root closes, since cleanups run
+// last-registered first.
 func serveSupervisionRootWakes(t *testing.T, root *Session) {
 	t.Helper()
 	wakes := make(chan struct{}, 1)
@@ -3262,9 +3264,12 @@ func waitForStableSupervisionRun(t *testing.T, root *Session, childID string) {
 	desc := fmt.Sprintf("stable child %q supervision to quiesce", childID)
 	// why is the last check that refused; a timeout reports it with the state
 	// behind it, since the hang this guards against has only shown on CI.
+	// Only the wait's own timeout reports: a failure from earlier in the test
+	// is not this wait's.
 	var why string
+	failedBefore := t.Failed()
 	defer func() {
-		if t.Failed() {
+		if !failedBefore && t.Failed() {
 			t.Logf("last refusal: %s; state: %s", why, stableSupervisionState(root, sub))
 		}
 	}()
@@ -3333,7 +3338,12 @@ func waitForStableSupervisionRun(t *testing.T, root *Session, childID string) {
 // stableSupervisionState renders the controller, root and child state a
 // supervision quiescence wait reads, for its timeout report.
 func stableSupervisionState(root *Session, sub *subagent) string {
+	sub.mu.Lock()
 	sess := sub.sess
+	sub.mu.Unlock()
+	if sess == nil || sess.delegateController == nil {
+		return "child has no session or controller"
+	}
 	c := sess.delegateController
 	c.mu.Lock()
 	var b strings.Builder
@@ -3410,14 +3420,15 @@ func TestWaitForStableSupervisionRunOutlastsDeferredAttentionDrive(t *testing.T)
 // wake consumer (#3592). The child's own wake path does not retry a drive it
 // refuses: driveStableDelegateAttention returns on a child whose drive guard
 // another drive holds, and a drive the controller refuses as busy (the
-// previous generation not yet released) hands the attention to the root's
-// retry. The two overlap when attention is armed as the previous generation
+// previous generation not yet released) leaves the attention to the root.
+// The two overlap when attention is armed as the previous generation
 // finishes: the armed drive takes the guard and is refused busy, and the
 // finalize tail's re-arm drive is refused on that guard. In production the
-// retry wakes the served root, whose notification turn drives the attention;
-// warmStableSupervisionDelegate serves the harness root's wakes the same way.
-// The guard taken here stands in for the drive that is refused busy, and the
-// retry and release that follow are that drive's exit.
+// generation's release and the root's retry both wake the served root, whose
+// notification turn drives the attention; warmStableSupervisionDelegate serves
+// the harness root's wakes the same way. The guard taken here stands in for
+// the drive that is refused busy, and the retry and release that follow are
+// that drive's exit; the retry is the wake this test exercises.
 func TestSupervisionRootDrivesAttentionTheChildDropped(t *testing.T) {
 	fixture := newColdStableDelegateFixture(t, "")
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
