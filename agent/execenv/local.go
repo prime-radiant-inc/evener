@@ -224,30 +224,6 @@ type LocalExecutionEnvironment struct {
 	// deterministically instead of racing for it. Guarded by scratchMu like the
 	// two fields above; nil in production, and not copied by either clone path.
 	scratchMovedOut func()
-
-	// retentionOwner/retentionBinding record this environment's persisted
-	// logical identity for the root's scratch-retention manifest. They are
-	// installed by SetScratchRetentionBinding before publication and guarded by
-	// scratchMu like the scratch fields above. retentionSet distinguishes "no
-	// binding" from a zero-valued binding.
-	retentionOwner   sandbox.ScratchOwner
-	retentionBinding sandbox.ScratchBinding
-	retentionSet     bool
-	// retentionPending records the scratch kinds whose retained owning slot
-	// adoption skipped because the lease was contended elsewhere in this
-	// process. While a kind is pending, PinOwnedScratch pins a fresh fallback
-	// mint as a bare protected reference without claiming the binding's slot,
-	// so the manifest row keeps naming the retained directory and the next
-	// refresh re-probes it. Guarded by scratchMu like the fields above.
-	retentionPending map[string]struct{}
-	// retentionPinErr is the first sticky scratch-retention pin/publish failure
-	// seen on this environment. Preparation surfaces it as a persistence error
-	// rather than trusting a partially pinned allocation.
-	retentionPinErr error
-
-	// scratchPinProbe observes each PinOwnedScratch attempt for deterministic
-	// lock-contention fixtures in same-package tests. Nil in production.
-	scratchPinProbe func(attempt int)
 }
 
 // ObserveScratchMoveWindowForTesting installs fn as this environment's
@@ -721,7 +697,6 @@ func (e *LocalExecutionEnvironment) unsandboxedScratchDir() string {
 	}
 	e.unsandboxedScratch = tmp
 	e.scratchMu.Unlock()
-	e.pinOwnedScratchAfterMint()
 	return tmp.Dir
 }
 
@@ -761,16 +736,9 @@ func SessionScratchWorkspaceRoot(dir string) string {
 // retainUnsandboxedScratch releases the leases of the per-session directories
 // this env lazily provisioned for an unsandboxed spawn — the private scratch
 // (unsandboxedScratchDir) and the world-usable temp container
-// (unsandboxedTmpDir) — without removing either directory. It is the retain-side
-// counterpart to RetainSandboxScratch for the unsandboxed case, so a session
-// close never holds either lease open for the rest of the daemon's uptime.
-//
-// The container is RETAINED, not removed, for the same reason the scratch is: a
-// process this env deliberately did not kill can outlive the close. A detached
-// command (DetachCommand) leaves the session on purpose, keeps the TMPDIR it was
-// spawned with, and would find that directory gone if close removed it. Releasing
-// the lease instead hands the directory to the crashed-scratch sweep's 24h
-// reclaim, which is already the reaper of record for both directories.
+// (unsandboxedTmpDir) — without removing either directory. It is the
+// counterpart to RetainSandboxScratch for the unsandboxed case, so a Cleanup
+// never leaves either lease held for the rest of the daemon's uptime.
 func (e *LocalExecutionEnvironment) retainUnsandboxedScratch() {
 	e.scratchMu.Lock()
 	defer e.scratchMu.Unlock()
@@ -785,98 +753,12 @@ func (e *LocalExecutionEnvironment) retainUnsandboxedScratch() {
 // RetainSessionScratch releases the lease of every per-session scratch
 // directory this env provisioned — the one it owns from EnableSandbox, the one
 // an unsandboxed env mints lazily on its first command, and the world-usable temp
-// container such an env mints for TMPDIR — keeping the directories for the human
-// handoff. It is the retain-side twin of DisposeSessionScratch: a session's own
-// teardown reaches it through Cleanup, and a child whose environment must never be
-// Cleanup'd (its process table belongs to its parent) calls it directly, so no
-// lease is held for the rest of the daemon's uptime.
+// container such an env mints for TMPDIR — without removing the directories.
+// Cleanup calls it once the env's processes are gone; DisposeSessionScratch then
+// removes the directories.
 func (e *LocalExecutionEnvironment) RetainSessionScratch() {
 	e.RetainSandboxScratch()
 	e.retainUnsandboxedScratch()
-}
-
-// ReleaseSessionScratch takes the retained allocation this env currently holds
-// for kind off the environment and returns its handle WITHOUT releasing the
-// lease and WITHOUT removing the directory. It is the undo of
-// RestoreSessionScratch for a caller that installed part of a binding and has to
-// give the allocation back: RetainSandboxScratch/RetainSessionScratch keep the
-// allocation installed while releasing its lease, and the Dispose* methods
-// remove the directory, so neither can express it. The file-tool layers are
-// invalidated exactly as RestoreSessionScratch invalidates them, because the
-// effective scratch path changed. A kernel wrapper the env still carries keeps
-// reporting the released path — the wrapper is rebuilt around a retained
-// directory before an adopter installs it — so this runs only on an environment
-// its caller is abandoning, never on one that goes on working.
-func (e *LocalExecutionEnvironment) ReleaseSessionScratch(kind string) *sandbox.SessionScratch {
-	e.scratchMu.Lock()
-	var handle *sandbox.SessionScratch
-	switch kind {
-	case sandbox.ScratchKindSandbox:
-		handle, e.ownedSessionTmp = e.ownedSessionTmp, nil
-	case sandbox.ScratchKindUnsandboxed:
-		handle, e.unsandboxedScratch = e.unsandboxedScratch, nil
-	default:
-		e.scratchMu.Unlock()
-		return nil
-	}
-	e.scratchMu.Unlock()
-	e.invalidateSandboxFS()
-	return handle
-}
-
-// SettleScratchByReferences settles every per-session scratch allocation this
-// environment owns against referenced, the canonical directories a durable
-// retention manifest still names. An allocation whose directory is named is
-// retained: it is taken off the environment with its lease released and its
-// directory kept for a later resume to reacquire. Every other allocation is
-// disposed with its directory — it is this environment's own fresh mint, and
-// nothing will ever reacquire it. The world-usable temp container follows
-// the same whole-env verdict RetainSessionScratch and DisposeSessionScratch
-// already give it: removed when no allocation was kept, since a failed launch
-// must not leak the container either, and its lease released for the
-// crashed-scratch sweep otherwise, because a process this environment
-// deliberately did not kill can outlive the settle. The caller must be
-// abandoning the environment: this takes the kept allocations off it, exactly
-// as ReleaseSessionScratch does.
-func (e *LocalExecutionEnvironment) SettleScratchByReferences(referenced map[string]struct{}) {
-	refs, err := e.ScratchRetentionReferences()
-	if err != nil {
-		// What the environment holds cannot be read, so no held directory can
-		// be told apart from a fresh mint: keep them all and give up only the
-		// leases, never the allocation a reference may name.
-		e.RetainSessionScratch()
-		return
-	}
-	kept := false
-	for _, ref := range refs {
-		dir, absErr := filepath.Abs(ref.Dir)
-		if absErr != nil {
-			continue
-		}
-		if _, ok := referenced[filepath.Clean(dir)]; !ok {
-			continue
-		}
-		kept = true
-		if handle := e.ReleaseSessionScratch(ref.Kind); handle != nil {
-			// Retain is the release side of the handoff: the lease goes, the
-			// directory stays for the later resume the manifest still names.
-			_ = handle.Retain()
-		}
-	}
-	if !kept {
-		_ = e.DisposeSessionScratch()
-		return
-	}
-	// Whatever the environment still owns is its own fresh mint: dispose it
-	// with its directory. The container's lease is released rather than its
-	// directory removed, for the same reason RetainSessionScratch keeps it.
-	e.DisposeSandboxScratch()
-	e.DisposeUnsandboxedScratch()
-	e.scratchMu.Lock()
-	if e.unsandboxedTmp != nil {
-		_ = e.unsandboxedTmp.Retain()
-	}
-	e.scratchMu.Unlock()
 }
 
 func (e *LocalExecutionEnvironment) findExecutable(name string) (string, error) {
@@ -934,7 +816,6 @@ func (e *LocalExecutionEnvironment) EnableSandbox(policy *sandbox.ResolvedPolicy
 		if policy != nil && policy.FileToolConfined() {
 			if tmp, err := e.newSessionScratch(); err == nil {
 				e.setOwnedSessionTmp(tmp)
-				e.pinOwnedScratchAfterMint()
 			}
 		}
 		return nil
@@ -972,7 +853,6 @@ func (e *LocalExecutionEnvironment) EnableSandbox(policy *sandbox.ResolvedPolicy
 	e.Wrapper = w
 	e.Sandbox = policy
 	e.setOwnedSessionTmp(tmp)
-	e.pinOwnedScratchAfterMint()
 	return nil
 }
 
@@ -984,9 +864,7 @@ func (e *LocalExecutionEnvironment) setOwnedSessionTmp(tmp *sandbox.SessionScrat
 
 // RetainSandboxScratch releases the per-session/per-lane scratch lease and cached
 // file-tool fds this env provisioned via EnableSandbox without removing the path.
-// Normal session and delegate teardown use this so a parent can inspect or retain
-// artifacts after the child exits. DisposeSandboxScratch is the explicit removal
-// operation for an allocation that should not survive.
+// Cleanup uses it; DisposeSessionScratch and DisposeSandboxScratch remove it.
 func (e *LocalExecutionEnvironment) RetainSandboxScratch() {
 	e.invalidateSandboxFS()
 	// Releasing a lease mutates it, and two teardowns can retain the same env
@@ -1150,14 +1028,6 @@ func (e *LocalExecutionEnvironment) AdoptSessionScratch(from *LocalExecutionEnvi
 	// works in.
 	from.invalidateSandboxFS()
 	e.retireStaleFileToolLayers()
-	// Persist the destination's pin for whatever this env just adopted. A
-	// source's own post-mint pin can run in the move window above, after its
-	// scratch fields were taken, and observe no leased handle: without this
-	// publication the moved allocation would hold a lease nothing in the
-	// manifest attributes, so a restore would mint a replacement instead of
-	// reacquiring it. PinOwnedScratch no-ops when this env carries no retention
-	// binding and records any failure sticky for preparation to surface.
-	_ = e.PinOwnedScratch()
 }
 
 // retireStaleFileToolLayers retires every cached file-tool layer whose scratch
@@ -1327,18 +1197,17 @@ func (e *LocalExecutionEnvironment) Cleanup() {
 	// teardown below.
 	e.invalidateSandboxFS()
 
-	// Retain both per-session scratch dirs this env provisioned — the one it owns
-	// from EnableSandbox and the one an unsandboxed env lazily minted via
-	// unsandboxedScratchDir — only AFTER the SIGTERM/grace/SIGKILL sequence below:
-	// tracked children may still be writing artifacts into them. The retain
-	// releases each live lease and closes any cached file-tool fds, but
-	// deliberately leaves the absolute paths available for the human handoff (each
-	// dir becomes eligible for sweepCrashedSessionScratch's 24h reclaim instead of
-	// holding its lease open for the rest of the daemon's uptime). Off/unsandboxed
-	// is the DEFAULT mode, so without the unsandboxed half every ordinary session
-	// close would leak one held lease indefinitely. A clone owns the sandbox one
-	// only if a session moved ownership onto it (AdoptSessionScratch), so a
-	// clone's Cleanup never retains or removes a tmp some other env still owns.
+	// Release the leases of the per-session scratch dirs this env provisioned —
+	// the one it owns from EnableSandbox and the one an unsandboxed env lazily
+	// minted via unsandboxedScratchDir — only AFTER the SIGTERM/grace/SIGKILL
+	// sequence below: tracked children may still be writing into them. Cleanup
+	// does not remove them: a session's close does that last, after its
+	// SessionEnd hooks and MCP servers (which still use TMPDIR) are done, with
+	// DisposeSessionScratch. An env no session disposes is left to
+	// sweepCrashedSessionScratch's 24h reclaim instead of holding its lease for
+	// the daemon's uptime. A clone owns the sandbox one only if a session moved
+	// ownership onto it (AdoptSessionScratch), so a clone's Cleanup never
+	// releases a tmp some other env still owns.
 	defer e.RetainSessionScratch()
 
 	// Collect running process handles and send SIGTERM. Command execution stores a

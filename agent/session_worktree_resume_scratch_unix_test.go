@@ -73,11 +73,8 @@ func TestResumeWorktreeReentry_LaunchEnvironmentScratchFollowsTheSession(t *test
 
 	sess.Close()
 
-	if _, err := os.Stat(scratch); err != nil {
-		t.Errorf("session close removed the scratch %s, want it retained for the handoff: %v", scratch, err)
-	}
-	if scratchLeaseHeld(t, scratch) {
-		t.Errorf("the launch environment's scratch %s lease is still held after the session closed", scratch)
+	if _, err := os.Lstat(scratch); !os.IsNotExist(err) {
+		t.Errorf("session close left the scratch %s: %v", scratch, err)
 	}
 }
 

@@ -593,7 +593,7 @@ func (s *Session) releaseRuntimeOnce(ctx context.Context, options closeOptions, 
 		// 3. Close subagents before shared environment cleanup; child sessions
 		// can own durable jobs whose process handles live in the parent env. The
 		// parent owns cleanup of that env (step 4), so a child's teardown never
-		// runs it; what a child owns is its scratch, retained for the handoff.
+		// runs it; what a child owns is its scratch, which its teardown removes.
 		if !retirement {
 			for _, sub := range subs {
 				teardownChildSession(budgetCtx, sub.sess)
@@ -667,12 +667,6 @@ func (s *Session) releaseRuntimeOnce(ctx context.Context, options closeOptions, 
 			// environment, so a switch leaves the clone it came from reachable
 			// from nothing.
 			s.disposeAbandonedEnvironmentScratch()
-		}
-
-		// A terminal root close has committed: write the retention tombstone
-		// for this root's own manifest. Retirement never reaches here.
-		if !retirement && cleanupEnv {
-			s.releaseTerminalScratchRetention()
 		}
 
 		if !retirement {
@@ -887,18 +881,10 @@ func (s *Session) discardRestoredCandidate() {
 			_ = s.artifactStore.Close()
 		}
 		_ = s.closeOwnedDelegateStore()
-		// A discarded candidate was never adopted by anything, so unlike a normal
-		// teardown (which RETAINS both scratch dirs for the human handoff), there
-		// is no one left to retain them for: both go, the same decision the
+		// A discarded candidate's own scratch goes with it, the same decision the
 		// create-path twin of this abort (disposeUnadoptedSubagentSession) makes.
-		// The one exception is an allocation this candidate ADOPTED from the
-		// root's durable retention manifest: that directory is referenced on
-		// disk and a later resume reacquires it, so it is retained (lease
-		// released) instead of removed with the mint a fresh restore allocated.
-		// The settle is per kind, so an adopted allocation never holds its
-		// sibling fresh mint open with it (round 83).
 		env := s.environmentOwnedAtTeardown()
-		s.settleOwnedScratchByManifest(env)
+		disposeUnadoptedScratch(env)
 		if s.mcpMgr != nil {
 			s.mcpMgr.Close()
 		}

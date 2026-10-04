@@ -1217,10 +1217,8 @@ func runLiveProbe(ctx context.Context, cfg runConfig, probe probeFile, res *prob
 	sess, err := runnerNewSession(client, profile, env, sessCfg)
 	if err != nil {
 		// The session that would have owned whatever this env provisioned was
-		// never built; settle its scratch against the root retention manifest
-		// the way the production launch path does, rather than removing a
-		// directory a durable manifest may still reference.
-		agent.DisposeRootScratchAfterFailure(sessCfg.StateDir, env)
+		// never built, so its scratch goes here, as on the production launch path.
+		_ = env.DisposeSessionScratch()
 		return err
 	}
 	res.SessionID = sess.ID()
