@@ -2,8 +2,10 @@
 
 Date: 2026-10-04
 
-Status: In-chat design approved. Written specification awaits Jesse's approval.
-Implementation has not started.
+Status: Written specification approved by Jesse on 2026-10-04, including the
+saved-pane origin compatibility below. Subsequent storage/parser approvals are
+recorded under local storage. The implementation plan awaits review; product
+implementation has not started.
 
 Source baseline: `abd240265411bb1a35f10d1761a56cf0685339ea`.
 
@@ -199,12 +201,13 @@ session. Read-only session views can retain unexpired annotations; a
 permanently unavailable destination exposes the saved note and its copyable
 formatted text rather than losing it or inventing a different recipient.
 
-**Explicit compatibility approval requested:** Existing saved browser document
+**Approved saved-pane compatibility:** Existing saved browser document
 pane records contain a session/path but no originating pane identity. Keep
 those panes readable and allow unexpired annotations to retain a session-bound
 pending handoff until the correct draft owner is available. Do not guess an
 unrelated pane or add other legacy-schema migrations. Approval of this
-specification authorizes only this narrow compatibility behavior.
+specification covers only this narrow compatibility behavior. The separately
+approved supported-draft transfer is recorded below.
 
 ## Local storage, recovery, and retention
 
@@ -213,6 +216,18 @@ validation, version/expiry decisions, ordered handoff semantics, and
 exact-range restoration. Browser and native adapters own their existing local
 storage and actual draft editors. No new hub protocol or server-side annotation
 store is required.
+
+Jesse separately approved transferring currently supported browser composer
+drafts from localStorage into the existing IndexedDB infrastructure, retaining
+their work and current owner protections. Ordinary edits, clearing, recovery,
+and annotation handoffs use that transactional authority so an applied receipt
+commits with its actual draft edit. This authorizes the supported-draft transfer,
+not additional historical-schema adapters.
+
+Jesse also approved a pinned source-aware extension of Marked 18.0.6, including
+lexer/tokenizer instrumentation for original-source positions. Preserve document
+rendering and sanitization and leave transcript rendering unchanged. Replacing
+Marked with another parser is outside this approval.
 
 Persist saved annotations independently of disposable document-reading caches
 and independently of native review-comment membership. Reuse local-storage
