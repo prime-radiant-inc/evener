@@ -82,13 +82,25 @@ if ! ssh "${ssh_options[@]}" "$host" "test -d /Users/jesse/tmp/evener-markdown-d
     git clone bundles/$harness_sha.bundle checkouts/$harness_sha
     git -C checkouts/$harness_sha checkout --detach $harness_sha"
 fi
+if ! ssh "${ssh_options[@]}" "$host" "test -d /Users/jesse/tmp/evener-markdown-document-annotations/checkouts/$sha"; then
+  # An existing harness can predate this source. Its retained bundle cannot be
+  # assumed to contain the source, and must never be overwritten to add it.
+  source_bundle="$scratch/document-annotations-$sha.bundle"
+  git bundle create "$source_bundle" HEAD "$ref" "$harness_ref"
+  git bundle verify "$source_bundle"
+  sha256sum "$source_bundle"
+  ssh "${ssh_options[@]}" "$host" "test ! -e /Users/jesse/tmp/evener-markdown-document-annotations/bundles/$sha.bundle"
+  scp "${ssh_options[@]}" "$source_bundle" "$host:/Users/jesse/tmp/evener-markdown-document-annotations/bundles/$sha.bundle"
+  ssh "${ssh_options[@]}" "$host" "set -eu
+    cd /Users/jesse/tmp/evener-markdown-document-annotations
+    test ! -e checkouts/$sha
+    git clone bundles/$sha.bundle checkouts/$sha
+    git -C checkouts/$sha checkout --detach $sha"
+  if [[ "$keep" == 0 ]]; then rm -- "$source_bundle"; fi
+fi
 ssh "${ssh_options[@]}" "$host" "set -eu
   cd /Users/jesse/tmp/evener-markdown-document-annotations
   test \"\$(git -C checkouts/$harness_sha rev-parse HEAD)\" = $harness_sha
-  if ! test -d checkouts/$sha; then
-    git clone bundles/$harness_sha.bundle checkouts/$sha
-    git -C checkouts/$sha checkout --detach $sha
-  fi
   test \"\$(git -C checkouts/$sha rev-parse HEAD)\" = $sha"
 if [[ -n "$geometry" ]]; then
   test -f "$geometry"
