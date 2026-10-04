@@ -127,7 +127,7 @@ export function sessionRows(
 export type GhostRow = { kind: "ghost"; id: string; ghost: Ghost } | { kind: "moreQueued"; id: string; count: number };
 
 /** The conversation's usage lines (token counts, estimated cost) as a list
- * row, like the ghosts never the conversation's own. */
+ * row. Like a ghost row, it is the list's and never the conversation's. */
 export type UsageListRow = { kind: "usage"; id: string; usage: SessionAccounting };
 
 export type SessionListRow = TimelineRow | UsageListRow | GhostRow;

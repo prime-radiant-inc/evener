@@ -2895,6 +2895,18 @@ describe("queued messages at the transcript's end (spec 8.5)", () => {
 		expect(text.indexOf("Input: 1,200")).toBeLessThan(text.indexOf("check the logs"));
 	});
 
+	// With both settings off there are no usage lines, and no row stands in
+	// for them between the conversation and the ghosts.
+	it("adds no usage row when there are no usage lines to show", async () => {
+		displayPrefs.hubId = "hub-1";
+		displayPrefs.config = makeTranscriptDisplayConfig({ kind: "preset", level: "intent" });
+		const served = thread("ref-usage-none", "active", false, ["check the logs"]);
+		(served as unknown as { turns: unknown[] }).turns = [askReplyTurn("turn_1")];
+		const { tree } = await mount(served);
+		const rows = transcriptList(tree).props.data as { kind: string }[];
+		expect(rows.map((row) => row.kind)).toEqual(["user", "assistant", "ghost"]);
+	});
+
 	it("paints a swiped ghost the page it sits on, and keeps it there while the dock is open", async () => {
 		const palette = paletteFor("light");
 		const backdrop = (tree: ReactTestRenderer) =>
