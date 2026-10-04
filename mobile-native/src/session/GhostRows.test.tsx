@@ -6,14 +6,7 @@ import type { ReactTestRenderer } from "react-test-renderer";
 import { act } from "react-test-renderer";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { paletteFor } from "../design/tokens";
-import {
-	playedHaptics,
-	pressable,
-	render,
-	renderedText,
-	swipeableCalls,
-	swipeRowFully,
-} from "../renderNative.testkit";
+import { playedHaptics, pressable, render, renderedText, swipeableCalls, swipeRowFully } from "../renderNative.testkit";
 import { GhostBubble } from "./GhostBubble";
 import { GhostRowContext, GhostRowView } from "./GhostRows";
 import type { Ghost, GhostAction } from "./ghosts";
@@ -95,7 +88,12 @@ const refused: Ghost = {
 // The ghosts as the transcript's rows, under the screen's state and actions.
 function mount(
 	ghosts: readonly Ghost[],
-	{ disabled = false, canEdit = true, editHint = null as string | null, draftAttachments = undefined as ReactNode } = {},
+	{
+		disabled = false,
+		canEdit = true,
+		editHint = null as string | null,
+		draftAttachments = undefined as ReactNode,
+	} = {},
 ) {
 	const onAction = vi.fn<(ghost: Ghost, action: GhostAction) => void>();
 	const onMore = vi.fn();
