@@ -1,26 +1,19 @@
 import { activityNodeID } from "@evener/appwire-client";
-import {
-	type ActivityListRow,
-	isSubagentRow,
-	matchesSearch,
-	STATE_ORDER,
-	type SubagentState,
-	subagentSections,
-} from "./subagentModel";
+import { type ActivityListRow, isSubagentRow, matchesSearch, newestFirst } from "./subagentModel";
 
-export type ActivityFilter = "all" | SubagentState;
+export type ActivityFilter = "all" | "running" | "done";
 
 export type ActivityListItem =
-	| { kind: "section"; state: SubagentState; count: number }
+	| { kind: "section"; state: "running" | "done" | "completed"; count: number }
 	| { kind: "row"; row: ActivityListRow }
 	| { kind: "doneFold"; count: number; open: boolean }
+	| { kind: "completedJobsFold"; count: number; open: boolean }
 	// A branch whose subagent isn't loaded yet has no title to give.
 	| { kind: "missing"; title?: string };
 
-/** The list's items for a filter and a search (spec 9): subagents and shell
- * jobs together, failed, then running, then done, where done is one folded
- * row under All until you open it. Section counts follow the search; the
- * chips and the strip don't (ruling 8). What couldn't be listed comes last,
+/** Live work followed by independent delegate and job histories. Section
+ * counts follow the search; authoritative chips and the strip don't.
+ * What couldn't be listed comes last,
  * each branch (`missing` holds their session refs) named by whose it is: the
  * coordinator by its title, a subagent by its row's. */
 export function activityListItems(
@@ -29,23 +22,35 @@ export function activityListItems(
 		filter: ActivityFilter;
 		query: string;
 		doneOpen: boolean;
+		completedJobsOpen: boolean;
 		missing: readonly string[];
 		coordinator: { ref: string; title: string };
 	},
 ): ActivityListItem[] {
-	const sections = subagentSections(rows.filter((row) => matchesSearch(row, view.query)));
+	const matching = rows.filter((row) => matchesSearch(row, view.query));
+	const running = matching.filter((row) => row.state === "running").sort(newestFirst);
+	const delegates = matching.filter((row) => row.kind === "subagent" && row.state !== "running").sort(newestFirst);
+	const jobs = matching.filter((row) => row.kind === "job" && row.state !== "running").sort(newestFirst);
 	const items: ActivityListItem[] = [];
-	for (const state of STATE_ORDER) {
-		if (view.filter !== "all" && view.filter !== state) continue;
-		const section = sections[state];
-		if (section.length === 0) continue;
-		if (state === "done" && view.filter === "all") {
-			items.push({ kind: "doneFold", count: section.length, open: view.doneOpen });
-			if (view.doneOpen) for (const row of section) items.push({ kind: "row", row });
-			continue;
+	if (view.filter !== "done" && running.length > 0) {
+		items.push({ kind: "section", state: "running", count: running.length });
+		for (const row of running) items.push({ kind: "row", row });
+	}
+	if (view.filter !== "running") {
+		const histories = [
+			{ state: "done", kind: "doneFold", rows: delegates, open: view.doneOpen },
+			{ state: "completed", kind: "completedJobsFold", rows: jobs, open: view.completedJobsOpen },
+		] as const;
+		for (const history of histories) {
+			if (history.rows.length === 0) continue;
+			if (view.filter === "all") {
+				items.push({ kind: history.kind, count: history.rows.length, open: history.open });
+				if (!history.open) continue;
+			} else {
+				items.push({ kind: "section", state: history.state, count: history.rows.length });
+			}
+			for (const row of history.rows) items.push({ kind: "row", row });
 		}
-		items.push({ kind: "section", state, count: section.length });
-		for (const row of section) items.push({ kind: "row", row });
 	}
 	const titleOf = (ref: string) =>
 		ref === view.coordinator.ref
@@ -67,6 +72,8 @@ export function activityListKey(item: ActivityListItem): string {
 				: activityNodeID({ kind: "delegate", ...item.row.delegate });
 		case "doneFold":
 			return "done-fold";
+		case "completedJobsFold":
+			return "completed-jobs-fold";
 		case "missing":
 			return item.title === undefined ? "missing" : `missing:${item.title}`;
 	}

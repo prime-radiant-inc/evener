@@ -131,6 +131,15 @@ lasts for the app lifetime and adds no disk persistence.
   configuration/trust. These advertised operations are wired in source and await
   current-artifact workflow qualification. Full parity, upgrade/recovery and
   failure/lifecycle acceptance are unfinished; see the [acceptance ledger](../docs/design/mobile/acceptance.md).
+- Activity separates current work from independent Done delegate and Completed
+  background-job histories. All starts both histories closed; Done reveals every
+  terminal outcome, including failures, with neutral rows and truthful reasons.
+  Active descendants retain navigation and stop controls. Search narrows loaded
+  rows while chips keep authoritative counts, including unknown counts. The
+  binding carries loaded membership into its replacement shared store after
+  reconnect, so its existing paging owner restores later rows without a phone
+  retry loop. Renderer tests cover identity and view intent; device geometry,
+  keyboard and VoiceOver remain separate qualification.
 - Historical production roster reads were slow. Representative-data measurement
   and normal deployment verification remain open; tiny fixtures do not establish
   production responsiveness. Voice/barge-in is outside v1.

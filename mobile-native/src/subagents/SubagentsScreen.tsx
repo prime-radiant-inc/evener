@@ -18,13 +18,10 @@ import { type ActivityFilter, type ActivityListItem, activityListItems, activity
 import {
 	flattenActivity,
 	SEARCH_AFTER,
-	STATE_ORDER,
 	type ShellJobRow,
 	type SubagentRow,
-	type SubagentState,
 	isSubagentRow,
 	sameModel,
-	subagentStateWord,
 	summaryTally,
 } from "./subagentModel";
 import { stopRequests } from "./nativeStopRequests";
@@ -54,6 +51,7 @@ export function SubagentsScreen({ route, navigation }: NativeStackScreenProps<Ro
 	const [filter, setFilter] = useState<ActivityFilter>("all");
 	const [query, setQuery] = useState("");
 	const [doneOpen, setDoneOpen] = useState(false);
+	const [completedJobsOpen, setCompletedJobsOpen] = useState(false);
 	// The hub's own ref for the coordinator, once a tree carries it, names
 	// the coordinator's branch in what couldn't be listed.
 	const coordinatorRef = snapshot.tree?.root.ref ?? ref;
@@ -63,10 +61,11 @@ export function SubagentsScreen({ route, navigation }: NativeStackScreenProps<Ro
 				filter,
 				query,
 				doneOpen,
+				completedJobsOpen,
 				missing: snapshot.missing,
 				coordinator: { ref: coordinatorRef, title },
 			}),
-		[activity, filter, query, doneOpen, snapshot.missing, coordinatorRef, title],
+		[activity, filter, query, doneOpen, completedJobsOpen, snapshot.missing, coordinatorRef, title],
 	);
 
 	// The stops you asked for, on their rows, and settled against each new
@@ -143,9 +142,25 @@ export function SubagentsScreen({ route, navigation }: NativeStackScreenProps<Ro
 		({ item }: { item: ActivityListItem }) => {
 			switch (item.kind) {
 				case "section":
-					return <BandHeader text={`${subagentStateWord(item.state).toUpperCase()} · ${item.count}`} />;
+					return <BandHeader text={`${item.state.toUpperCase()} · ${item.count}`} />;
 				case "doneFold":
-					return <DoneFold count={item.count} open={item.open} onToggle={() => setDoneOpen((open) => !open)} />;
+					return (
+						<HistoryFold
+							label="Done"
+							count={item.count}
+							open={item.open}
+							onToggle={() => setDoneOpen((open) => !open)}
+						/>
+					);
+				case "completedJobsFold":
+					return (
+						<HistoryFold
+							label="Completed"
+							count={item.count}
+							open={item.open}
+							onToggle={() => setCompletedJobsOpen((open) => !open)}
+						/>
+					);
 				case "missing":
 					return <MissingLine title={item.title} />;
 				case "row":
@@ -187,16 +202,25 @@ export function SubagentsScreen({ route, navigation }: NativeStackScreenProps<Ro
 						selected={filter === "all"}
 						onPress={() => setFilter("all")}
 					/>
-					{STATE_ORDER.filter((state) => !activityTally || activityTally[state] > 0).map((state) => (
-						<FilterChip
-							key={state}
-							state={state}
-							label={subagentStateWord(state)}
-							count={activityTally?.[state] ?? "…"}
-							selected={filter === state}
-							onPress={() => setFilter(state)}
-						/>
-					))}
+					{[
+						{ id: "running" as const, label: "Running", count: activityTally?.running },
+						{
+							id: "done" as const,
+							label: "Done",
+							count: activityTally ? activityTally.failed + activityTally.done : undefined,
+						},
+					]
+						.filter((state) => state.count === undefined || state.count > 0)
+						.map((state) => (
+							<FilterChip
+								key={state.id}
+								state={state.id}
+								label={state.label}
+								count={state.count ?? "…"}
+								selected={filter === state.id}
+								onPress={() => setFilter(state.id)}
+							/>
+						))}
 				</ChipStrip>
 			) : null}
 			{/* Kept while it has words, so a list that shrinks never stays filtered with no way to clear it. */}
@@ -284,7 +308,7 @@ function FilterChip({
 	selected,
 	onPress,
 }: {
-	state?: SubagentState;
+	state?: "running" | "done";
 	label: string;
 	count: number | string;
 	selected: boolean;
@@ -326,14 +350,24 @@ function FilterChip({
 	);
 }
 
-function DoneFold({ count, open, onToggle }: { count: number; open: boolean; onToggle(): void }) {
+function HistoryFold({
+	label,
+	count,
+	open,
+	onToggle,
+}: {
+	label: "Done" | "Completed";
+	count: number;
+	open: boolean;
+	onToggle(): void;
+}) {
 	const { palette } = useColors();
 	const scale = useTextScale();
-	const label = `Done · ${count}`;
+	const text = `${label} · ${count}`;
 	return (
 		<Pressable
 			accessibilityRole="button"
-			accessibilityLabel={label}
+			accessibilityLabel={text}
 			accessibilityState={{ expanded: open }}
 			onPress={onToggle}
 			style={{ minHeight: 44, flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 16 }}
@@ -342,7 +376,7 @@ function DoneFold({ count, open, onToggle }: { count: number; open: boolean; onT
 				allowFontScaling={allowFontScaling}
 				style={{ fontSize: 15 * scale, lineHeight: 20 * scale, fontWeight: "600", color: palette.inkMid }}
 			>
-				{label}
+				{text}
 			</Text>
 			<SymbolView name={open ? "chevron.down" : "chevron.right"} size={13} tintColor={palette.inkLow} />
 		</Pressable>

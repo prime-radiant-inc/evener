@@ -234,6 +234,14 @@ removes absent rows. Explicit paging during recovery extends the displayed
 boundary; provisional refresh rows do not. Source issues remain pending across
 clean continuation pages until a fresh root walk reconciles them.
 
+When a binding replaces its client object, it can pass its already loaded
+`SessionActivitySnapshot` through the store's `retained` constructor option.
+Only matching requested refs and scopes retain evidence. Rows, context, issues
+and summary survive in memory while the new owner recovers; read flags reset to
+pending, and runtime metadata, cursors and in-flight requests never transfer.
+The existing fresh walk restores the displayed boundary with new cursors.
+Resolved-session replacement still retires the former evidence together.
+
 Refresh continuations yield for 100 ms between pages and stop when their view
 releases demand or the connection goes offline. The usual refresh rereads the
 displayed extent plus new rows and the final page's overhang. If the old boundary
@@ -297,6 +305,28 @@ See the [store tests](../../appwire-client/typescript/sessionActivityStore.test.
 [lease tests](../../appwire-client/typescript/threadSubscription.test.ts) and
 [presentation tests](../../appwire-client/typescript/sessionActivityPresentation.test.ts)
 for these shared ownership contracts.
+
+## Native activity histories
+
+The phone's Activity screen shows current work outside two independent history
+folds: Done for terminal delegates and Completed for terminal background jobs.
+Both start closed under All. Opening one leaves the other unchanged. The Done
+filter reveals both terminal histories without an extra disclosure and includes
+failed outcomes in its count. Summary counts remain independent of loaded rows;
+search narrows loaded labels without changing those counts.
+
+Terminal rows keep their true failure, stop and report evidence in ordinary ink.
+Running descendants remain visible even when a terminal parent is folded, with
+their original navigation and stop identities. Live questions and approvals keep
+their attention treatment. The active strip combines all terminal outcomes in
+its quiet Done segment and disappears when no work is running.
+
+The native binding retains shared membership across disconnection and client
+replacement. Its shared store owns paging, retries and later-page replay; the
+screen owns filter, search and independent disclosures. Renderer tests prove
+stable qualified row identity and preserved view intent through recovery.
+Physical-device scroll geometry, safe areas, keyboard and VoiceOver behavior
+require separate qualification.
 
 ## Automatic agent cascade
 

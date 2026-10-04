@@ -227,23 +227,21 @@ describe("authoritative summary tallies", () => {
 });
 
 describe("the strip", () => {
-	it("sizes segments by count in the list's order, with failures never thinner than 3pt", () => {
+	it("combines all terminal outcomes into quiet history and preserves the running minimum", () => {
 		const segments = stripSegments({ failed: 2, running: 32, done: 21 }, 361);
-		expect(segments.map((segment) => segment.state)).toEqual(["failed", "running", "done"]);
-		expect(segments.reduce((sum, segment) => sum + segment.width, 0) + 2).toBeCloseTo(361);
-		expect(segments[0]?.width).toBeCloseTo(13.0545, 3);
-		expect(stripSegments({ failed: 1, running: 0, done: 499 }, 300)).toEqual([
-			{ state: "failed", width: 3 },
-			{ state: "done", width: 296 },
-		]);
+		expect(segments.map((segment) => segment.state)).toEqual(["running", "done"]);
+		expect(segments.reduce((sum, segment) => sum + segment.width, 0) + 1).toBeCloseTo(361);
+		expect(segments[0]?.width).toBeCloseTo((360 * 32) / 55);
+		expect(stripSegments({ failed: 1, running: 0, done: 499 }, 300)).toEqual([]);
 		expect(stripSegments({ failed: 0, running: 1, done: 999 }, 200)).toEqual([
 			{ state: "running", width: 1 },
 			{ state: "done", width: 198 },
 		]);
 	});
 
-	it("draws no strip once nothing is running or failed", () => {
+	it("draws no strip once nothing is running", () => {
 		expect(stripSegments({ failed: 0, running: 0, done: 5 }, 200)).toEqual([]);
+		expect(stripSegments({ failed: 5, running: 0, done: 0 }, 200)).toEqual([]);
 		expect(stripSegments({ failed: 0, running: 0, done: 0 }, 200)).toEqual([]);
 	});
 });

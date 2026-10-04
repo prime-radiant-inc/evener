@@ -4,6 +4,7 @@ import {
 	type ActivityTree,
 	type SessionActivitySummary,
 	type SessionActivityPresentation,
+	type SessionActivitySnapshot,
 	SessionActivityStore,
 	projectSessionActivity,
 	acquireThreadSubscription,
@@ -30,6 +31,7 @@ export class SubagentTree {
 	private detachStore: (() => void) | null = null;
 	private followLease: ThreadSubscriptionLease | null = null;
 	private presentation: SessionActivityPresentation | null = null;
+	private retained: SessionActivitySnapshot | null = null;
 	private coordinatorModel: string | null = null;
 	private modelGeneration = 0;
 	private observedSessionID: string | null = null;
@@ -58,6 +60,7 @@ export class SubagentTree {
 		this.detachStore = null;
 		this.stopActivity.forEach((stop) => stop());
 		this.stopActivity = [];
+		this.retained = this.store?.getSnapshot() ?? this.retained;
 		this.store?.dispose();
 		this.store = null;
 		this.followLease?.release();
@@ -67,7 +70,10 @@ export class SubagentTree {
 			this.publish();
 			return Promise.resolve();
 		}
-		const store = new SessionActivityStore(client, this.ref, { scope: "subtree" });
+		const store = new SessionActivityStore(client, this.ref, {
+			scope: "subtree",
+			retained: this.retained ?? undefined,
+		});
 		this.store = store;
 		this.detachStore = store.subscribe(() => {
 			const state = store.getSnapshot();
