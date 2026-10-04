@@ -45,6 +45,60 @@ where the provider offers none. Stop on infrastructure failure rather than
 adding arms or silent retries. Deterministic green checks do not establish a
 live recall advantage, and an unrun evaluation has no result.
 
+### Bounded memory fixture pairs
+
+`TestMemoryEvalAdmission` and `TestMemoryEvalIsolation` exercise real sessions,
+children, auxiliary naming, Responses retry/cancellation and Linux bwrap file
+and shell confinement. Positive-controlled inotify observations cover ambient
+memory/history/config decoys. Scripted tests forbid completion HTTP except for
+their local scripted server. `TestMemoryEvalEpisodes` runs the real checker and
+independent verifier-only Go tests through recall A/B and correction A/B/C,
+enabled then disabled for each pair. Each fresh session retains its arm's actual
+transcripts, with the same ordinary recall tools. These are plumbing checks,
+not evidence that a live model learns, retrieves or corrects memory.
+
+Run offline, with working Linux bwrap and the repository's Go toolchain:
+
+```sh
+env -u EVENER_LIVE_TESTS GOPROXY=off GOMAXPROCS=4 go test -p 2 ./agent -run '^TestMemoryEval' -count=1 -v
+env -u EVENER_LIVE_TESTS GOPROXY=off GOMAXPROCS=4 go test -race -p 2 ./agent -run '^TestMemoryEval(Admission|Isolation)$' -count=1
+env -u EVENER_LIVE_TESTS GOPROXY=off GOMAXPROCS=4 go test -p 2 ./agent -run '^TestMemoryEvalLivePairs$' -count=1 -v
+```
+
+The last command skips before provider-config/auth discovery. Only after offline
+qualification, independent implementation review and controller authorization:
+
+```sh
+EVENER_LIVE_TESTS=1 go test ./agent -run '^TestMemoryEvalLivePairs$' -count=1 -timeout=26m -v
+```
+
+One serial test owns exactly two sequential pairs on
+`codex-jesse-at-pr/gpt-6.1-sol`, effort `high`. Shared admission caps logical
+calls and completion HTTP attempts separately at 96 across roots, children,
+auxiliaries and provider retries. Stage request/HTTP/tool-round caps are recall
+8/10 and correction 8/12/10, with nested stage/arm/run deadlines of 3/6/24
+minutes. Engine-level retries and model fallbacks are disabled. An expired or
+exhausted stage is not retried. The outer 26-minute timeout adds no request time.
+
+After that gate, the evaluator privately copies only the selected
+`providers.toml` and `auth/codex-jesse-at-pr.json`, byte-for-byte, before offline
+resolution. Present-empty `EVENER_PROVIDERS_CONFIG` refuses without fallback.
+Private directories/files use 0700/0600 and are outside every agent grant.
+Auth is call-scoped, never a mutation of `DefaultCodex.StateDir`; refreshed
+copies are not synced back. Missing auth or an unexpected route fails without
+a paid availability probe. All disposable fixture roots are inspected before
+cleanup, after joined work. Credential-redacted evidence is retained in the
+printed `memory-eval-evidence-*` directory outside agent grants.
+
+Evidence separates executed task checks from capture, retrieval, application
+and correction tool/file grades. Literal workflow recognition is a sufficient
+oracle, not a wiki schema; other phrasing remains unproven for human review.
+Automatic index-only retrieval is not credited by the explicit-tool oracle.
+Observed final-response usage includes auxiliary calls, but unfinished-response
+usage and cost without a cited price remain unknown. Cancellation does not
+prove billing stops. Two pairs cannot establish reliability or savings.
+**LIVE NOT RUN:** this offline implementation has no live behavior result.
+
 ## Setup checklist
 
 **Never Jesse's real hub, never his port `9180`.** His `evener hub` runs
