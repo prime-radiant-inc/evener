@@ -80,23 +80,9 @@ func (r *ConfinedFileRoot) Open(previous *LocalExecutionEnvironment) (*LocalExec
 		_ = os.NewFile(uintptr(fd), root).Close()
 		return nil, err
 	}
-	if previous != nil {
-		previous.sbMu.Lock()
-		layer := previous.sbfs
-		layer.acquire()
-		previous.sbMu.Unlock()
-		if layer != nil {
-			oldFd, oldErr := layer.rootFd(root)
-			if oldErr == nil {
-				oldInfo, statErr := confinedDirectoryInfo(oldFd)
-				if statErr == nil && os.SameFile(info, oldInfo) {
-					layer.release()
-					_ = os.NewFile(uintptr(fd), root).Close()
-					return previous, nil
-				}
-			}
-			layer.release()
-		}
+	if confinedEnvironmentMatches(previous, root, info) {
+		_ = os.NewFile(uintptr(fd), root).Close()
+		return previous, nil
 	}
 	env := NewLocalExecutionEnvironment(root)
 	layer := newScratchSandboxFS(root)
@@ -105,6 +91,29 @@ func (r *ConfinedFileRoot) Open(previous *LocalExecutionEnvironment) (*LocalExec
 	// Keep the layer so all operations share the same root-fd lifetime.
 	env.sbfs = layer
 	return env, nil
+}
+
+func confinedEnvironmentMatches(previous *LocalExecutionEnvironment, root string, info os.FileInfo) bool {
+	if previous == nil {
+		return false
+	}
+	previous.sbMu.Lock()
+	layer := previous.sbfs
+	layer.acquire()
+	previous.sbMu.Unlock()
+	defer layer.release()
+	if layer == nil {
+		return false
+	}
+	oldFd, err := layer.rootFd(root)
+	if err != nil {
+		return false
+	}
+	oldInfo, err := confinedDirectoryInfo(oldFd)
+	if err != nil {
+		return false
+	}
+	return os.SameFile(info, oldInfo)
 }
 
 func confinedDirectoryInfo(fd int) (os.FileInfo, error) {

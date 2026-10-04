@@ -748,11 +748,14 @@ func memoryEvalGrade(e *memoryEvalStageEvidence, current bool) {
 }
 
 func memoryEvalCheckerSource(current bool) string {
-	condition := `test "$#" -eq 0 || { printf '%s\n' 'This checker takes no arguments' >&2; exit 2; }`
+	return "#!/bin/sh\n# Initial scripts/check.sh in both fixtures, invoked from the fixture root.\nset -eu\ntest -f go.mod || { printf '%s\\n' 'Run this checker from the repository root' >&2; exit 2; }\n" + memoryEvalCheckerCondition(current) + "\nexec go test ./...\n"
+}
+
+func memoryEvalCheckerCondition(current bool) string {
 	if current {
-		condition = `test "$#" -eq 1 && test "$1" = --current || { printf '%s\n' 'Checker now requires --current' >&2; exit 2; }`
+		return `test "$#" -eq 1 && test "$1" = --current || { printf '%s\n' 'Checker now requires --current' >&2; exit 2; }`
 	}
-	return "#!/bin/sh\n# Initial scripts/check.sh in both fixtures, invoked from the fixture root.\nset -eu\ntest -f go.mod || { printf '%s\\n' 'Run this checker from the repository root' >&2; exit 2; }\n" + condition + "\nexec go test ./...\n"
+	return `test "$#" -eq 0 || { printf '%s\n' 'This checker takes no arguments' >&2; exit 2; }`
 }
 
 type memoryEvalToolObservation struct {
@@ -877,7 +880,7 @@ func memoryEvalRunPairs(t *testing.T, b *memoryEvalAdmission, c *llm.Client, p *
 					if err != nil {
 						t.Fatal(err)
 					}
-					revised := strings.Replace(string(script), `test "$#" -eq 0 || { printf '%s\n' 'This checker takes no arguments' >&2; exit 2; }`, `test "$#" -eq 1 && test "$1" = --current || { printf '%s\n' 'Checker now requires --current' >&2; exit 2; }`, 1)
+					revised := strings.Replace(string(script), memoryEvalCheckerCondition(false), memoryEvalCheckerCondition(true), 1)
 					if revised == string(script) {
 						t.Fatal("checker revision source mismatch")
 					}

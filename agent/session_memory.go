@@ -9,9 +9,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/runetrim"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -45,14 +45,11 @@ type memoryEnvironmentFlight struct {
 }
 
 func boundedMemoryIndex(raw []byte) (string, bool) {
-	if len(raw) <= 8192 {
+	const limit = 8192
+	if len(raw) <= limit {
 		return string(raw), false
 	}
-	end := 8192
-	for end > 0 && !utf8.RuneStart(raw[end]) {
-		end--
-	}
-	return string(raw[:end]), true
+	return runetrim.Cut(string(raw[:limit+1]), limit), true
 }
 
 func (s *Session) unavailableMemoryToolNames() []string {
@@ -361,6 +358,9 @@ func (s *Session) restoreMemoryProjection(history []schema.Turn) {
 					s.memoryEverProjected[scope] = true
 				}
 			}
+		}
+		if s.memoryEverProjected["personal"] && s.memoryEverProjected["project"] {
+			break
 		}
 	}
 }

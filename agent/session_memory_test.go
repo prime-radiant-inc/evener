@@ -1076,7 +1076,7 @@ func memoryCallResponse(name string, args map[string]any) llm.Response {
 	if err != nil {
 		panic(err)
 	}
-	return llm.Response{Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "memory-test", Type: "function", Name: name, Arguments: raw}}}}}
+	return toolCallResponse(llm.ToolCallData{ID: "memory-test", Type: "function", Name: name, Arguments: raw})
 }
 
 // Catches dropped persisted opt-out/project binding and accidental host-root persistence.
