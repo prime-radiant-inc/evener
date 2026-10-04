@@ -1,0 +1,24 @@
+name: DocumentAnnotationsUI
+options:
+  deploymentTarget:
+    iOS: "16.0"
+targets:
+  DocumentAnnotationsUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - DocumentAnnotationsUITests.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.primeradiant.evener.native.annotation-tests
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_VERSION: "5.0"
+        TEST_TARGET_NAME: ""
+schemes:
+  DocumentAnnotationsUI:
+    build:
+      targets:
+        DocumentAnnotationsUITests: [test]
+    test:
+      targets:
+        - DocumentAnnotationsUITests
