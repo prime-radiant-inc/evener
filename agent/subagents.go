@@ -2229,9 +2229,10 @@ type delegateTerminalPacketMetadata struct {
 	// ScratchPath is the delegate's absolute per-session scratch directory
 	// (SessionScratchDir), reported for the same reason Worktree is: it is
 	// partial evidence a parent needs to recover after an externally cancelled
-	// run (kata tpb0). It exists until the delegate's runtime is torn down,
-	// after which it is deleted. Empty when the delegate never provisioned one
-	// (unsandboxed and no tool spawned yet).
+	// run (kata tpb0). It is deleted when the delegate's runtime is torn down,
+	// which for an idle finished delegate is about 30 seconds after it finishes
+	// (delegateIdleReleaseDelayDefault). Empty when the delegate never
+	// provisioned one (unsandboxed and no tool spawned yet).
 	ScratchPath         string                         `json:"scratch_path,omitempty"`
 	ExhaustionBudget    delegatestore.ExhaustionBudget `json:"exhaustion_budget,omitempty"`
 	ExhaustionLimit     int                            `json:"exhaustion_limit,omitempty"`
