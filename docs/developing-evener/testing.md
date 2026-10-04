@@ -348,11 +348,12 @@ for a write. It needs `EVENER_SSH_E2E=1` and `EVENER_SSH_E2E_HOST` as well, and
 skips under `-short`. `EVENER_SSH_E2E_USER` sets the entry's ssh user, as in the
 sibling check.
 
-What it writes, and where: under the host's `HOME` it creates its own
+What it writes, and where: under the host's `/tmp` it creates its own
 `evener-deploy-e2e-{source,binary}-<run-id>` directory with an atomic claim that
-refuses existing paths, deploys the binary to
-`<dir>/bin/evener` (the basename `checkRunTarget` requires), and writes a private
-`hub.toml` beside it. The config explicitly sets the hub state root, daemon
+refuses existing paths. Both machines need a writable `/tmp` ancestor for catalog
+previews, while the run-unique project paths exist only on the host. It deploys
+the binary to `<dir>/bin/evener` (the basename `checkRunTarget` requires), and
+writes a private `hub.toml` beside it. The config explicitly sets the hub state root, daemon
 directory, project-state glob and history database under `<dir>/state`, alongside
 its loopback port (`127.0.0.1:19180` / `:19181`) and private lock. Setting only
 `hub_state_root` leaves the other runtime paths on their normal defaults.

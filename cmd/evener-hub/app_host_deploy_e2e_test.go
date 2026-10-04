@@ -179,7 +179,9 @@ func runHostDeployCase(t *testing.T, provider *fakellm.Server, hubBin, version, 
 	t.Helper()
 
 	host := newHostSSH(t, dest, user)
-	hostDir := home + "/" + dirName
+	// Both machines need a writable ancestor for catalog previews, while the
+	// run-unique project paths themselves exist only on the host.
+	hostDir := path.Join("/tmp", dirName)
 	runTarget := hostDir + "/bin/evener"
 
 	// The test creates the host directory itself, because the deploy path needs
