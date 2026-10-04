@@ -497,6 +497,35 @@ describe("each tool's evidence, as the tools print it", () => {
 		expect(skillMarkdown(markdown)).not.toContain("![");
 	});
 
+	// Code is never an image to the phone's markdown view, so code that looks
+	// like one (a Rust macro, a shell test) reads as it was written (#3696).
+	it.each([
+		["a Rust macro in a fenced block", "```rust\nlet v = vec![1, 2, 3];\nlet w = vec![4](x);\n```"],
+		["an image in a tilde fence", "~~~\n![a](https://x.test/a.png)\n~~~"],
+		["an image in a fence no one closes", "```\n![a](https://x.test/a.png)"],
+		["an image in a code span", "Write `![a](https://x.test/a.png)` for an image."],
+		["a macro in a double-backtick span", "Call ``vec![1](x)`` here."],
+		["a Rust macro in prose", "let v = vec![1, 2, 3];"],
+		["a shell test in prose", "if ![ -f x ]; then"],
+		["text after an opener a blank line ends", "Use ![ to open.\n\nThen arr[0] reads."],
+	])("leaves %s as it was", (_name, markdown) => {
+		expect(skillMarkdown(markdown)).toBe(markdown);
+	});
+
+	it.each([
+		["an image after a fence", "```\ncode\n```\n![a](https://x.test/a.png)", "```\ncode\n```\na"],
+		["an image beside a code span", "`x` and ![a](https://x.test/a.png)", "`x` and a"],
+		["an image whose alt holds a code span", "![`x`](https://x.test/a.png)", "`x`"],
+		["an image after an unclosed backtick", "a ` b ![c](https://x.test/c.png)", "a ` b c"],
+		[
+			"a reference image where a definition may exist",
+			"![a][r] and ![b]\n\n[r]: https://x.test/r.png",
+			"a and b\n\n[r]: https://x.test/r.png",
+		],
+	])("still shows %s as words", (_name, markdown, words) => {
+		expect(skillMarkdown(markdown)).toBe(words);
+	});
+
 	// -1 is the shell tool's sentinel for a command stopped by a signal or by
 	// evener's runtime limit, not an exit code, so it reads as no exit at all.
 	it("never says a command exited -1", () => {

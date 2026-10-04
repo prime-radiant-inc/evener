@@ -73,19 +73,59 @@ function rawOutput(text: string): Evidence[] {
 // title's "(1)"), one level deep, as real URLs need. A URL the pattern can't
 // take whole (pairs nested deeper, escaped or unbalanced parentheses) leaves
 // some of itself as text, but ![alt] is always taken, so the image is gone.
-const IMAGE_RE = /!\[([^\]]*)\](?:\((?:[^()]|\([^()]*\))*\)|\[[^\]]*\])?/g;
+// An alt ends at a blank line, as a paragraph does.
+const ALT = String.raw`!\[((?:[^\]\n]|\n(?![ \t\r]*(?:\n|$)))*)\]`;
+const DESTINATION = String.raw`\((?:[^()]|\([^()]*\))*\)`;
+const IMAGE_RE = new RegExp(String.raw`${ALT}(?:${DESTINATION}|\[[^\]]*\])?`, "g");
+// A bare ![alt] or ![alt][ref] is an image only by a reference definition,
+// which needs "]:"; without one, only ![alt]( can start an image.
+const INLINE_IMAGE_RE = new RegExp(String.raw`${ALT}(?:${DESTINATION}|(?=\())`, "g");
+
+// Code stands in for itself while images go, as a placeholder with no
+// brackets, so an image whose alt holds code still goes whole.
+const SAVED_CODE_RE = /\uE000(\d+)\uE001/g;
+const FENCE_RE = /^ {0,3}(`{3,}(?=[^`]*$)|~{3,})/;
+// A run of backticks, to the next run of exactly as many.
+const CODE_SPAN_RE = /(?<!`)(`+)(?!`).*?(?<!`)\1(?!`)/g;
+
+// A fenced block (to its closing fence, or the end) and a code span on one
+// line, each as a placeholder in `code`.
+function savingCode(markdown: string, code: string[]): string {
+	const save = (text: string) => `\uE000${code.push(text) - 1}\uE001`;
+	const lines = markdown.split("\n");
+	const out: string[] = [];
+	for (let i = 0; i < lines.length; i++) {
+		const fence = FENCE_RE.exec(lines[i] ?? "")?.[1];
+		if (fence) {
+			const closing = new RegExp(`^ {0,3}${fence[0]}{${fence.length},}[ \\t\\r]*$`);
+			let end = i + 1;
+			while (end < lines.length && !closing.test(lines[end] ?? "")) end++;
+			out.push(save(lines.slice(i, end + 1).join("\n")));
+			i = end;
+		} else out.push((lines[i] ?? "").replace(CODE_SPAN_RE, save));
+	}
+	return out.join("\n");
+}
 
 // A skill's markdown is its author's, and the phone's markdown view loads
 // images from their URLs, so each image, inline (![alt](url)), by reference
-// (![alt][ref]) or shortcut (![alt]), reads as its alt text instead. Taking
-// out an image can complete another (![a ![b](u)](v) leaves a ![b](v)), so this
-// repeats until none is left. Each pass shortens the text, so it ends.
+// (![alt][ref]) or shortcut (![alt]), reads as its alt text instead. Code is
+// left as written. Taking out an image can complete another (![a ![b](u)](v)
+// leaves a ![b](v)), so this repeats until none is left. Each pass shortens
+// the text, so it ends.
 function withoutImages(markdown: string): string {
+	if (/[\uE000\uE001]/.test(markdown)) return stripImages(markdown, IMAGE_RE);
+	const code: string[] = [];
+	const text = stripImages(savingCode(markdown, code), markdown.includes("]:") ? IMAGE_RE : INLINE_IMAGE_RE);
+	return text.replace(SAVED_CODE_RE, (_, index: string) => code[Number(index)] ?? "");
+}
+
+function stripImages(markdown: string, image: RegExp): string {
 	let text = markdown;
 	let before: string;
 	do {
 		before = text;
-		text = text.replace(IMAGE_RE, "$1");
+		text = text.replace(image, "$1");
 	} while (text !== before);
 	return text;
 }
