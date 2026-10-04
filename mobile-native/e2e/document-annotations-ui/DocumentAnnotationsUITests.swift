@@ -106,6 +106,43 @@ final class DocumentAnnotationsUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Selection completed"].exists)
     }
 
+    private func selectBoundaryOrigin(_ name: String, source: String) throws -> Bool {
+        app.buttons["native-probe-show-code"].tap()
+        try point(name).press(forDuration: 1.2)
+        XCTAssertTrue(copyMenu.waitForExistence(timeout: 5))
+        receipt("\(name.lowercased())-boundary-origin")
+        // RN Text has paragraph Copy but no adjustable native selection handles.
+        // Fail on the missing native selection before requesting handle geometry.
+        let captured = app.staticTexts[source].waitForExistence(timeout: 5)
+        XCTAssertTrue(captured, "The boundary origin needs genuine mapped native selection before dragging its handle")
+        XCTAssertTrue(app.staticTexts["Selection completed"].exists)
+        return captured
+    }
+
+    func testCodeToProseBoundary() throws {
+        guard try selectBoundaryOrigin("CODE", source: "Captured source 159:163") else { return }
+        try point("CODE_HANDLE").press(forDuration: 0.2, thenDragTo: point("CODE_TO_FIRST"))
+        receipt("code-to-prose-after-drag")
+        XCTAssertTrue(app.staticTexts["Captured source 18:163"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Selection completed"].exists)
+    }
+
+    func testTableToCodeBoundary() throws {
+        guard try selectBoundaryOrigin("TABLE", source: "Captured source 135:139") else { return }
+        try point("TABLE_HANDLE").press(forDuration: 0.2, thenDragTo: point("TABLE_TO_CODE"))
+        receipt("table-to-code-after-drag")
+        XCTAssertTrue(app.staticTexts["Captured source 135:163"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Selection completed"].exists)
+    }
+
+    func testCodeToTableBoundary() throws {
+        guard try selectBoundaryOrigin("CODE", source: "Captured source 159:163") else { return }
+        try point("CODE_HANDLE").press(forDuration: 0.2, thenDragTo: point("CODE_TO_TABLE"))
+        receipt("code-to-table-after-drag")
+        XCTAssertTrue(app.staticTexts["Captured source 135:163"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Selection completed"].exists)
+    }
+
     private var clipboardRead = 0
 
     private func clipboardText() throws -> String? {

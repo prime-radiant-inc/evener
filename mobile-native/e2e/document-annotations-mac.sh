@@ -8,6 +8,7 @@ harness_sha=${3:-$sha}
 [[ "$harness_sha" =~ ^[0-9a-f]{40}$ ]] || exit 2
 root=/Users/jesse/tmp/evener-markdown-document-annotations
 checkout="$root/checkouts/$sha"
+ui_derived="$checkout/annotation-ui-derived-data-$harness_sha"
 manifest="$root/task-manifest.json"
 export PATH="/Users/jesse/.rbenv/versions/3.3.6/bin:/opt/homebrew/bin:$PATH"
 cd "$checkout"
@@ -121,11 +122,6 @@ PY
     cmp "$app/Evener" "$installed/Evener"
     cmp "$app/main.jsbundle" "$installed/main.jsbundle"
     xcrun simctl launch "$sim_id" com.primeradiant.evener.native
-    cd e2e/document-annotations-ui
-    xcodegen generate
-    xcodebuild -project DocumentAnnotationsUI.xcodeproj -scheme DocumentAnnotationsUI \
-      -configuration Release -sdk iphonesimulator -destination "id=$sim_id" \
-      -derivedDataPath "$checkout/annotation-ui-derived-data" -jobs 2 build-for-testing
     ;;
   restore)
     /usr/bin/python3 - "$checkout" "$sha" "$source_artifacts/retained-baseline-digests.json" <<'PY'
@@ -156,7 +152,16 @@ PY
   long-press|qualify) test -n "$sim_id";;
   *) exit 2;;
 esac
-xctestrun=$(/usr/bin/python3 - "$checkout/annotation-ui-derived-data/Build/Products" <<'PY'
+# Source and driver have separate pins. Never compile driver sources from the
+# app checkout when a different committed harness was explicitly requested.
+if [[ ! -d "$ui_derived/Build/Products" ]]; then
+  cd "$root/checkouts/$harness_sha/mobile-native/e2e/document-annotations-ui"
+  xcodegen generate
+  xcodebuild -project DocumentAnnotationsUI.xcodeproj -scheme DocumentAnnotationsUI \
+    -configuration Release -sdk iphonesimulator -destination "id=$sim_id" \
+    -derivedDataPath "$ui_derived" -jobs 2 build-for-testing
+fi
+xctestrun=$(/usr/bin/python3 - "$ui_derived/Build/Products" <<'PY'
 import glob, sys
 files = glob.glob(sys.argv[1]+'/DocumentAnnotationsUI_*.xctestrun'); assert len(files) == 1, files
 print(files[0])
@@ -192,7 +197,8 @@ PY
     else
       test_names=(testCompletedOriginalSourceSelectionAcrossRows
         testTableOriginalSourceSelection testMarkdownCodeOriginalSourceSelection
-        testProseToCodeBoundary testCodePreservationAndLegacyCopy)
+        testProseToCodeBoundary testCodeToProseBoundary testTableToCodeBoundary
+        testCodeToTableBoundary testCodePreservationAndLegacyCopy)
     fi;;
 esac
 result="$artifacts/$phase.xcresult"
@@ -206,7 +212,7 @@ xcodebuild test-without-building -xctestrun "$run_xctestrun" \
   "${test_args[@]}" \
   -resultBundlePath "$result"
 cmp "$xctestrun" "$artifacts/original.xctestrun"
-runner="$checkout/annotation-ui-derived-data/Build/Products/Release-iphonesimulator/DocumentAnnotationsUITests-Runner.app"
+runner="$ui_derived/Build/Products/Release-iphonesimulator/DocumentAnnotationsUITests-Runner.app"
 installed_runner=$(xcrun simctl get_app_container "$sim_id" com.primeradiant.evener.native.annotation-tests.xctrunner app)
 cmp "$runner/DocumentAnnotationsUITests-Runner" "$installed_runner/DocumentAnnotationsUITests-Runner"
 cmp "$runner/PlugIns/DocumentAnnotationsUITests.xctest/DocumentAnnotationsUITests" \
