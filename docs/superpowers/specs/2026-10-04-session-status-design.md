@@ -20,6 +20,10 @@ status.” He approved “Web and phone” and “Keep the phone’s working ind
 - Pending questions and approvals keep their existing needs-you presentation
   ahead of running-subagent work. A warning carrying a pending question or
   approval remains an attention state.
+- On the phone, a new nonblocking Warning alert waits while live children run.
+  A retained warning alerts when the last child settles; a warning that clears
+  first never alerts. Warnings carrying a pending question or approval retain
+  immediate alert eligibility. Existing first-read and offline rules still apply.
 - The parent’s own failure, restart-required state, and existing unavailable,
   ended and unloaded presentations remain unchanged. Only live compact summaries
   can contribute running-subagent work.
@@ -55,6 +59,10 @@ Update `docs/product/session-activity.md` and the affected rows in
 No daemon, hub aggregation, session lifecycle, TUI or phone-search redesign is in
 scope. Deployment requires separate authorization.
 
+The phone’s `mobile-native/src/alerts/alertEvents.ts` consumes Board bands. Pin
+the approved delayed-warning policy without changing alert detection, combined
+banners, Needs you counts or Next navigation.
+
 ## Test plan and acceptance
 
 Start with failing regressions against the current implementation. Cover own
@@ -70,6 +78,10 @@ refresh/reconnect. Verify attention and working transitions, normal quiet/comple
 presentation, and preserved access to failed-child details. Keep deterministic
 transport fixtures at the external boundary; do not replace the selectors, store
 or renderers under test.
+
+Exercise the real Board-to-alert feed for warning onset during child work,
+retained-warning settlement, clearing before settlement and warning with a
+pending question or approval. Include hub Needs you membership and duplicate reads.
 
 Run affected tests, `make test-web`, `make test-native`, and relevant browser guards
 after reading their runners. Use CI for the full repository gates. Report any
