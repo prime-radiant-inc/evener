@@ -31,6 +31,7 @@ export function LaunchModelPicker({
 			contentContainerStyle={{ padding: 20, paddingBottom: 28 }}
 			automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}
 			keyboardShouldPersistTaps="handled"
+			keyboardDismissMode="on-drag"
 			data={rows}
 			keyExtractor={(row) => row.key}
 			ListHeaderComponent={
