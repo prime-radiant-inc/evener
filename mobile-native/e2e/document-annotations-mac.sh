@@ -184,6 +184,13 @@ PY
     cmp "$app/Evener" "$installed/Evener"
     cmp "$app/main.jsbundle" "$installed/main.jsbundle"
     ;;
+  code-preservation-scaled)
+    test -n "$sim_id"
+    xcrun simctl ui "$sim_id" content_size extra-extra-large
+    test "$(xcrun simctl ui "$sim_id" content_size)" = extra-extra-large
+    printf 'Owned simulator system content size: extra-extra-large\n'
+    ;;
+  empty-diagnostic) test -n "$sim_id";;
   long-press|code-preservation|qualify) test -n "$sim_id";;
   *) exit 2;;
 esac
@@ -209,10 +216,21 @@ run_xctestrun="$(dirname "$xctestrun")/annotation-$phase-$harness_sha.xctestrun"
 test ! -e "$run_xctestrun"
 cp "$xctestrun" "$run_xctestrun"
 cmp "$xctestrun" "$artifacts/original.xctestrun"
+if [[ "$phase" == code-preservation-scaled ]]; then
+  /usr/bin/python3 - "$run_xctestrun" <<'PY'
+import plistlib, sys
+p = sys.argv[1]
+with open(p, 'rb') as f: run = plistlib.load(f)
+assert run['__xctestrun_metadata__']['FormatVersion'] == 1
+run['DocumentAnnotationsUITests'].setdefault('EnvironmentVariables', {})['ANNOTATION_REQUIRE_SCALED_CODE'] = '1'
+with open(p, 'wb') as f: plistlib.dump(run, f)
+PY
+fi
 case "$phase" in
   layout|restore) test_names=(testLayoutReceipt);;
-  code-preservation) test_names=(testCodePreservationAndLegacyCopy);;
+  code-preservation|code-preservation-scaled) test_names=(testCodePreservationAndLegacyCopy);;
   font-diagnostic) test_names=(testMixedFontMetadataReceipt);;
+  empty-diagnostic) test_names=(testEmptyCodeGeometryReceipt);;
   long-press|qualify)
     /usr/bin/python3 - "$run_xctestrun" "$checkout/mobile-native/e2e/measured-geometry.json" <<'PY'
 import json, math, plistlib, sys
@@ -265,7 +283,7 @@ shasum -a 256 "$artifacts/original.xctestrun" "$run_xctestrun" \
   "$runner/DocumentAnnotationsUITests-Runner" \
   "$runner/PlugIns/DocumentAnnotationsUITests.xctest/DocumentAnnotationsUITests"
 if [[ "$test_status" != 0 ]]; then exit "$test_status"; fi
-if [[ "$phase" != qualify && "$phase" != font-diagnostic ]]; then
+if [[ "$phase" != qualify && "$phase" != font-diagnostic && "$phase" != empty-diagnostic ]]; then
   # Keep this exact newly created simulator while the operator measures its
   # screenshot. The next phase or explicit cleanup owns its teardown.
   trap - EXIT
