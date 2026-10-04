@@ -76,6 +76,7 @@ export async function measureDelayedFloatingDock(endpoint, url, boot, viewport, 
     await send("Fetch.continueRequest", { requestId: heldRequest });
     heldRequest = null;
     await send("Fetch.disable");
+    page.ws.removeEventListener("message", handler);
     const outcome = await measurement;
     if (outcome.error) throw outcome.error;
     const after = await evaluate(send, "window.__shellGuardErrors ?? []");
