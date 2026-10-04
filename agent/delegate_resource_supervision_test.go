@@ -3322,7 +3322,7 @@ func waitForStableSupervisionRun(t *testing.T, root *Session, childID string) {
 		live := sub.running || sub.driving || sub.finalizing
 		sub.mu.Unlock()
 		if live || done == nil {
-			why = "child run live or without a completion channel"
+			why = fmt.Sprintf("child live=%t completion channel=%t", live, done != nil)
 			return false
 		}
 		why = "completion channel open"
@@ -3370,7 +3370,8 @@ func stableSupervisionState(root *Session, sub *subagent) string {
 	sess.mu.Lock()
 	fmt.Fprintf(&b, "child{state=%v} ", sess.state)
 	sess.mu.Unlock()
-	fmt.Fprintf(&b, "childGated=%v committedSend=%v", root.childDriveGated(sess.id), root.childCommittedSendStart(sess.id))
+	id := sess.id
+	fmt.Fprintf(&b, "childGates{stop=%v fatalRun=%v drainAbandoned=%v drainGrace=%v committedSend=%v}", root.childStopGated(id), root.childFatalRunGated(id), root.childDrainAbandoned(id), root.childDrainGracePending(id), root.childCommittedSendStart(id))
 	return b.String()
 }
 
@@ -3417,18 +3418,13 @@ func TestWaitForStableSupervisionRunOutlastsDeferredAttentionDrive(t *testing.T)
 }
 
 // TestSupervisionRootDrivesAttentionTheChildDropped pins the harness root's
-// wake consumer (#3592). The child's own wake path does not retry a drive it
-// refuses: driveStableDelegateAttention returns on a child whose drive guard
-// another drive holds, and a drive the controller refuses as busy (the
-// previous generation not yet released) leaves the attention to the root.
-// The two overlap when attention is armed as the previous generation
+// wake consumer (#3592; the mechanism is on serveSupervisionRootWakes). The
+// child drops a drive when attention is armed as the previous generation
 // finishes: the armed drive takes the guard and is refused busy, and the
-// finalize tail's re-arm drive is refused on that guard. In production the
-// generation's release and the root's retry both wake the served root, whose
-// notification turn drives the attention; warmStableSupervisionDelegate serves
-// the harness root's wakes the same way. The guard taken here stands in for
-// the drive that is refused busy, and the retry and guard release that follow are
-// that drive's exit; the retry is the wake this test exercises.
+// finalize tail's re-arm drive is refused on that guard. The guard taken here
+// stands in for the drive that is refused busy, and the retry and guard
+// release that follow are that drive's exit; the retry is the wake this test
+// exercises.
 func TestSupervisionRootDrivesAttentionTheChildDropped(t *testing.T) {
 	fixture := newColdStableDelegateFixture(t, "")
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
