@@ -343,6 +343,52 @@ func TestWorktreeSwap_CloseDuringTheSwapLeavesNoOwnerlessLease(t *testing.T) {
 	}
 }
 
+// A swap that a close aborts after the move hands the session's scratch back to
+// the environment the session still holds, so the close removes it LAST, after
+// its SessionEnd hooks and MCP servers — which still run with TMPDIR inside it,
+// and under bubblewrap fail on a missing bind source. Deleting it in the abort
+// would pull it out from under them.
+func TestWorktreeSwap_CloseDuringTheSwapKeepsTheScratchUntilCloseEnds(t *testing.T) {
+	sr := newScriptedLaneRepo(t)
+	r := sr.wt()
+	launch := currentLocalEnv(t, r.s)
+	if _, err := launch.ExecCommand(context.Background(), "true", 5000, "", nil); err != nil {
+		t.Fatalf("root command on the launch environment: %v", err)
+	}
+	scratch := launch.SessionScratchDir()
+	if scratch == "" {
+		t.Fatal("the root's command minted no session scratch")
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(scratch) })
+	var presentAtCleanup bool
+	r.s.cfg.testOnly.envCleanupObserved = func(execenv.ExecutionEnvironment) {
+		_, err := os.Stat(scratch)
+		presentAtCleanup = err == nil
+	}
+	closeBegun := make(chan struct{})
+	closeDone := make(chan struct{})
+	r.s.cfg.testOnly.closeAfterDisposeSweepJoin = func() { close(closeBegun) }
+	r.s.cfg.testOnly.swapEnvAfterAdopt = func(context.Context) {
+		go func() {
+			defer close(closeDone)
+			r.s.Close()
+		}()
+		<-closeBegun
+	}
+
+	if _, err := r.create(t, map[string]any{"name": "lane"}); err == nil {
+		t.Error("the enter succeeded while the session closed under it, want a refusal")
+	}
+	<-closeDone
+
+	if !presentAtCleanup {
+		t.Errorf("the aborted swap removed the session's scratch %s before the close's own cleanup and hooks ran", scratch)
+	}
+	if _, err := os.Lstat(scratch); !os.IsNotExist(err) {
+		t.Errorf("close left the scratch %s: %v", scratch, err)
+	}
+}
+
 // The swap installs the new environment and runs the caller's record — which
 // publishes the environment the enter parks (worktreeRestoreEnv) — in ONE
 // s.mu hold, so no observer can see one without the other. By the time the
