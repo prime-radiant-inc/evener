@@ -161,23 +161,20 @@ describe("LiveStatusTray", () => {
 	});
 
 	it("polls the hub's activity for its own session only while the agent works, and names its count", async () => {
-		const requests: { method: string; params: unknown }[] = [];
-		const client = Object.assign(new FakeClient("ready"), {
-			request: async (method: string, params?: unknown) => {
-				requests.push({ method, params });
-				return { sessions: [{ ref: "local:root", minutes: [0, 0, 0, 0, 0, 0, 0], runningSubagents: 3 }] };
-			},
-		});
+		const client = new FakeClient("ready");
+		client.on("evener/activity/read", () => ({
+			sessions: [{ ref: "local:root", minutes: [0, 0, 0, 0, 0, 0, 0], runningSubagents: 3 }],
+		}));
 		const tree = render(live(session(true, Date.now()), new FrameCounter(), client));
 		await act(async () => {});
-		expect(requests).toEqual([{ method: "evener/activity/read", params: { refs: ["local:root"] } }]);
+		expect(client.calls).toEqual([{ method: "evener/activity/read", params: { refs: ["local:root"] } }]);
 		expect(renderedText(tree)).toContain("Waiting on 3 subagents");
 
 		act(() => tree.update(live(session(false, Date.now()), new FrameCounter(), client)));
 		act(() => {
 			vi.advanceTimersByTime(30_000);
 		});
-		expect(requests).toHaveLength(1);
+		expect(client.calls).toHaveLength(1);
 		expect(vi.getTimerCount()).toBe(0);
 	});
 
