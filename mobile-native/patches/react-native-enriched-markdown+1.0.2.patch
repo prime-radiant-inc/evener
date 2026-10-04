@@ -3449,6 +3449,208 @@ index 0000000..b17b011
 +};
 +
 +} // namespace facebook::react
+diff --git a/node_modules/react-native-enriched-markdown/ios/parser/ENRMOriginalDocumentModel.h b/node_modules/react-native-enriched-markdown/ios/parser/ENRMOriginalDocumentModel.h
+new file mode 100644
+index 0000000..c246716
+--- /dev/null
++++ b/node_modules/react-native-enriched-markdown/ios/parser/ENRMOriginalDocumentModel.h
+@@ -0,0 +1,18 @@
++#import "MarkdownASTNode.h"
++
++NS_ASSUME_NONNULL_BEGIN
++
++// A snapshot owns its private original tree. Renderers receive copies, never the
++// original tree or a reparse of normalized row Markdown.
++@interface ENRMOriginalDocumentModel : NSObject
++@property (nonatomic, copy, readonly) NSString *source;
++@property (nonatomic, copy, readonly) NSString *displayedSnapshotId;
++@property (nonatomic, copy, readonly) NSString *mappingId;
++- (nullable instancetype)initWithSource:(NSString *)source snapshotId:(NSString *)snapshotId;
++- (nullable MarkdownASTNode *)projectBlockRange:(NSRange)range;
++- (nullable NSArray<ENRMSourceFragment *> *)codeFragmentsForText:(NSString *)text blockRange:(NSRange)range;
++- (NSRange)sourceRangeForRenderedRange:(NSRange)range inText:(NSAttributedString *)text;
++- (NSArray<NSValue *> *)renderedRangesForSourceRange:(NSRange)range inText:(NSAttributedString *)text;
++@end
++
++NS_ASSUME_NONNULL_END
+diff --git a/node_modules/react-native-enriched-markdown/ios/parser/ENRMOriginalDocumentModel.m b/node_modules/react-native-enriched-markdown/ios/parser/ENRMOriginalDocumentModel.m
+new file mode 100644
+index 0000000..b64733e
+--- /dev/null
++++ b/node_modules/react-native-enriched-markdown/ios/parser/ENRMOriginalDocumentModel.m
+@@ -0,0 +1,172 @@
++#import "ENRMOriginalDocumentModel.h"
++#import "MarkdownSourceParser.h"
++
++static MarkdownASTNode *copyNode(MarkdownASTNode *node)
++{
++  MarkdownASTNode *copy = [[MarkdownASTNode alloc] initWithType:node.type];
++  copy.content = [node.content copy];
++  copy.attributes = [node.attributes mutableCopy];
++  copy.sourceRange = node.sourceRange;
++  copy.sourceFragments = node.sourceFragments;
++  for (MarkdownASTNode *child in node.children) [copy addChild:copyNode(child)];
++  return copy;
++}
++
++@implementation ENRMOriginalDocumentModel {
++  MarkdownASTNode *_original;
++  NSHashTable<ENRMSourceFragment *> *_ownedFragments;
++}
++
++- (nullable instancetype)initWithSource:(NSString *)source snapshotId:(NSString *)snapshotId
++{
++  if (self = [super init]) {
++    _source = [source copy];
++    _displayedSnapshotId = [snapshotId copy];
++    _mappingId = NSUUID.UUID.UUIDString;
++    _original = ENRMParseOriginalMarkdown(_source, nil);
++    if (!_original) return nil;
++    _ownedFragments = [NSHashTable weakObjectsHashTable];
++    [self registerOriginalFragments:_original];
++  }
++  return self;
++}
++
++- (void)registerOriginalFragments:(MarkdownASTNode *)node
++{
++  for (ENRMSourceFragment *fragment in node.sourceFragments) [_ownedFragments addObject:fragment];
++  for (MarkdownASTNode *child in node.children) [self registerOriginalFragments:child];
++}
++
++- (BOOL)isBoundary:(NSUInteger)offset
++{
++  if (offset > _source.length) return NO;
++  if (offset == 0 || offset == _source.length) return YES;
++  return !(CFStringIsSurrogateHighCharacter([_source characterAtIndex:offset - 1]) &&
++           CFStringIsSurrogateLowCharacter([_source characterAtIndex:offset]));
++}
++
++- (BOOL)isValidRange:(NSRange)range
++{
++  return range.location <= _source.length && range.length <= _source.length - range.location &&
++         [self isBoundary:range.location] && [self isBoundary:NSMaxRange(range)];
++}
++
++- (nullable MarkdownASTNode *)projectBlockRange:(NSRange)range
++{
++  if (![self isValidRange:range]) return nil;
++  MarkdownASTNode *projection = [[MarkdownASTNode alloc] initWithType:MarkdownNodeTypeDocument];
++  for (MarkdownASTNode *node in _original.children) {
++    NSRange span = node.sourceRange;
++    if (span.location == NSNotFound || NSIntersectionRange(span, range).length == 0) continue;
++    // A row cannot clip a verified node. This includes references resolved from
++    // outside the row, nested lists and table structure from the original parse.
++    if (span.location < range.location || NSMaxRange(span) > NSMaxRange(range)) return nil;
++    [projection addChild:copyNode(node)];
++  }
++  return projection.children.count ? projection : nil;
++}
++
++- (nullable NSArray<ENRMSourceFragment *> *)codeFragmentsForText:(NSString *)text blockRange:(NSRange)range
++{
++  MarkdownASTNode *projection = [self projectBlockRange:range];
++  if (projection.children.count != 1 || projection.children.firstObject.type != MarkdownNodeTypeCodeBlock) return nil;
++  NSArray<ENRMSourceFragment *> *original = projection.children.firstObject.sourceFragments;
++  // Reader normalizes CRLF, while the public leaf also accepts exact literal
++  // input. Verify complete candidate strings, never search row Markdown or add
++  // an offset. Only the known final code separator may be removed.
++  for (NSUInteger variant = 0; variant < 3; variant++) {
++    NSMutableArray<ENRMSourceFragment *> *fragments = [NSMutableArray new];
++    NSMutableString *candidate = [NSMutableString new];
++    for (ENRMSourceFragment *fragment in original) {
++      if (fragment.isGenerated) continue;
++      NSString *part = variant == 0 ? fragment.text : [_source substringWithRange:fragment.sourceRange];
++      if (variant == 2) part = [part stringByReplacingOccurrencesOfString:@"\r\n" withString:@"\n"];
++      [fragments addObject:[[ENRMSourceFragment alloc] initWithText:part sourceRange:fragment.sourceRange generated:NO]];
++      [candidate appendString:part];
++    }
++    NSUInteger keep = candidate.length;
++    if (![candidate isEqualToString:text]) {
++      NSUInteger separator = [candidate hasSuffix:@"\r\n"] ? 2 : [candidate hasSuffix:@"\n"] ? 1 : 0;
++      if (separator == 0 || ![[candidate substringToIndex:keep - separator] isEqualToString:text]) continue;
++      keep -= separator;
++    }
++    NSMutableArray<ENRMSourceFragment *> *result = [NSMutableArray new];
++    NSUInteger used = 0;
++    for (ENRMSourceFragment *fragment in fragments) {
++      if (used == keep) break;
++      NSUInteger take = MIN(fragment.text.length, keep - used);
++      if (take < fragment.text.length) {
++        NSString *raw = [_source substringWithRange:fragment.sourceRange];
++        if (![raw isEqualToString:fragment.text]) return nil;
++        fragment = [[ENRMSourceFragment alloc] initWithText:[fragment.text substringToIndex:take]
++                                              sourceRange:NSMakeRange(fragment.sourceRange.location, take) generated:NO];
++      }
++      [result addObject:fragment];
++      [_ownedFragments addObject:fragment];
++      used += take;
++    }
++    return result;
++  }
++  return nil;
++}
++
++- (NSUInteger)sourceBoundaryForFragment:(ENRMSourceFragment *)fragment offset:(NSUInteger)offset end:(BOOL)end
++{
++  if (offset == 0) return fragment.sourceRange.location;
++  if (offset == fragment.text.length) return NSMaxRange(fragment.sourceRange);
++  NSString *raw = [_source substringWithRange:fragment.sourceRange];
++  if ([raw isEqualToString:fragment.text]) {
++    NSUInteger boundary = fragment.sourceRange.location + offset;
++    return [self isBoundary:boundary] ? boundary : NSNotFound;
++  }
++  // Decoded entities, collapsed whitespace and expanded tabs are atomic spans.
++  return end ? NSMaxRange(fragment.sourceRange) : fragment.sourceRange.location;
++}
++
++- (NSRange)sourceRangeForRenderedRange:(NSRange)range inText:(NSAttributedString *)text
++{
++  if (range.location > text.length || range.length == 0 || range.length > text.length - range.location)
++    return NSMakeRange(NSNotFound, 0);
++  __block NSUInteger start = NSNotFound, end = 0;
++  NSUInteger index = 0;
++  while (index < text.length) {
++    NSRange run;
++    ENRMSourceFragment *fragment = [text attribute:ENRMSourceFragmentAttributeName atIndex:index
++                           longestEffectiveRange:&run inRange:NSMakeRange(0, text.length)];
++    NSRange overlap = NSIntersectionRange(run, range);
++    if (overlap.length && fragment && !fragment.isGenerated && [_ownedFragments containsObject:fragment]) {
++      NSUInteger a = [self sourceBoundaryForFragment:fragment offset:overlap.location - run.location end:NO];
++      NSUInteger b = [self sourceBoundaryForFragment:fragment offset:NSMaxRange(overlap) - run.location end:YES];
++      if (a == NSNotFound || b == NSNotFound) return NSMakeRange(NSNotFound, 0);
++      start = MIN(start, a);
++      end = MAX(end, b);
++    }
++    index = NSMaxRange(run);
++  }
++  return start == NSNotFound ? NSMakeRange(NSNotFound, 0) : NSMakeRange(start, end - start);
++}
++
++- (NSArray<NSValue *> *)renderedRangesForSourceRange:(NSRange)range inText:(NSAttributedString *)text
++{
++  if (![self isValidRange:range]) return @[];
++  NSMutableArray<NSValue *> *result = [NSMutableArray new];
++  NSUInteger index = 0;
++  while (index < text.length) {
++    NSRange run;
++    ENRMSourceFragment *fragment = [text attribute:ENRMSourceFragmentAttributeName atIndex:index
++                           longestEffectiveRange:&run inRange:NSMakeRange(0, text.length)];
++    if (fragment && !fragment.isGenerated && [_ownedFragments containsObject:fragment]) {
++      NSRange overlap = NSIntersectionRange(range, fragment.sourceRange);
++      if (overlap.length) {
++        NSString *raw = [_source substringWithRange:fragment.sourceRange];
++        NSRange rendered = run;
++        if ([raw isEqualToString:fragment.text])
++          rendered = NSMakeRange(run.location + overlap.location - fragment.sourceRange.location, overlap.length);
++        [result addObject:[NSValue valueWithRange:rendered]];
++      }
++    }
++    index = NSMaxRange(run);
++  }
++  return result;
++}
++@end
 diff --git a/node_modules/react-native-enriched-markdown/ios/parser/MarkdownASTNode.h b/node_modules/react-native-enriched-markdown/ios/parser/MarkdownASTNode.h
 index 5ace29e..0808294 100644
 --- a/node_modules/react-native-enriched-markdown/ios/parser/MarkdownASTNode.h
@@ -3545,13 +3747,204 @@ index 61a9deb..52121af 100644
  {
    return [NSString stringWithFormat:@"MarkdownASTNode(type=%ld, content=%@, children=%lu)", (long)_type, _content,
 diff --git a/node_modules/react-native-enriched-markdown/ios/parser/MarkdownParserBridge.mm b/node_modules/react-native-enriched-markdown/ios/parser/MarkdownParserBridge.mm
-index 3131dc7..ff8cbc8 100644
+index 3131dc7..cc13c61 100644
 --- a/node_modules/react-native-enriched-markdown/ios/parser/MarkdownParserBridge.mm
 +++ b/node_modules/react-native-enriched-markdown/ios/parser/MarkdownParserBridge.mm
-@@ -4,8 +4,27 @@
- #include "MarkdownASTNode.hpp"
+@@ -1,165 +1,12 @@
+-#import "ENRMMarkdownParser.h"
+-#include "MD4CParser.hpp"
+-#import "MarkdownASTNode.h"
+-#include "MarkdownASTNode.hpp"
++#import "MarkdownSourceParser.h"
  #import <React/RCTLog.h>
 
+-// Convert C++ AST node to Objective-C AST node
+-static MarkdownASTNode *convertCppASTToObjC(std::shared_ptr<Markdown::MarkdownASTNode> cppNode)
+-{
+-  if (!cppNode) {
+-    return [[MarkdownASTNode alloc] initWithType:MarkdownNodeTypeDocument];
+-  }
+-
+-  // Convert C++ NodeType enum to Objective-C MarkdownNodeType
+-  MarkdownNodeType objcType;
+-  switch (cppNode->type) {
+-    case Markdown::NodeType::Document:
+-      objcType = MarkdownNodeTypeDocument;
+-      break;
+-    case Markdown::NodeType::Paragraph:
+-      objcType = MarkdownNodeTypeParagraph;
+-      break;
+-    case Markdown::NodeType::Text:
+-      objcType = MarkdownNodeTypeText;
+-      break;
+-    case Markdown::NodeType::Link:
+-      objcType = MarkdownNodeTypeLink;
+-      break;
+-    case Markdown::NodeType::Heading:
+-      objcType = MarkdownNodeTypeHeading;
+-      break;
+-    case Markdown::NodeType::LineBreak:
+-      objcType = MarkdownNodeTypeLineBreak;
+-      break;
+-    case Markdown::NodeType::Strong:
+-      objcType = MarkdownNodeTypeStrong;
+-      break;
+-    case Markdown::NodeType::Emphasis:
+-      objcType = MarkdownNodeTypeEmphasis;
+-      break;
+-    case Markdown::NodeType::Strikethrough:
+-      objcType = MarkdownNodeTypeStrikethrough;
+-      break;
+-    case Markdown::NodeType::Underline:
+-      objcType = MarkdownNodeTypeUnderline;
+-      break;
+-    case Markdown::NodeType::Code:
+-      objcType = MarkdownNodeTypeCode;
+-      break;
+-    case Markdown::NodeType::Image:
+-      objcType = MarkdownNodeTypeImage;
+-      break;
+-    case Markdown::NodeType::Blockquote:
+-      objcType = MarkdownNodeTypeBlockquote;
+-      break;
+-    case Markdown::NodeType::UnorderedList:
+-      objcType = MarkdownNodeTypeUnorderedList;
+-      break;
+-    case Markdown::NodeType::OrderedList:
+-      objcType = MarkdownNodeTypeOrderedList;
+-      break;
+-    case Markdown::NodeType::ListItem:
+-      objcType = MarkdownNodeTypeListItem;
+-      break;
+-    case Markdown::NodeType::CodeBlock:
+-      objcType = MarkdownNodeTypeCodeBlock;
+-      break;
+-    case Markdown::NodeType::ThematicBreak:
+-      objcType = MarkdownNodeTypeThematicBreak;
+-      break;
+-    case Markdown::NodeType::Table:
+-      objcType = MarkdownNodeTypeTable;
+-      break;
+-    case Markdown::NodeType::TableHead:
+-      objcType = MarkdownNodeTypeTableHead;
+-      break;
+-    case Markdown::NodeType::TableBody:
+-      objcType = MarkdownNodeTypeTableBody;
+-      break;
+-    case Markdown::NodeType::TableRow:
+-      objcType = MarkdownNodeTypeTableRow;
+-      break;
+-    case Markdown::NodeType::TableHeaderCell:
+-      objcType = MarkdownNodeTypeTableHeaderCell;
+-      break;
+-    case Markdown::NodeType::TableCell:
+-      objcType = MarkdownNodeTypeTableCell;
+-      break;
+-    case Markdown::NodeType::LatexMathInline:
+-      objcType = MarkdownNodeTypeLatexMathInline;
+-      break;
+-    case Markdown::NodeType::LatexMathDisplay:
+-      objcType = MarkdownNodeTypeLatexMathDisplay;
+-      break;
+-    case Markdown::NodeType::Spoiler:
+-      objcType = MarkdownNodeTypeSpoiler;
+-      break;
+-    case Markdown::NodeType::Superscript:
+-      objcType = MarkdownNodeTypeSuperscript;
+-      break;
+-    case Markdown::NodeType::Subscript:
+-      objcType = MarkdownNodeTypeSubscript;
+-      break;
+-    case Markdown::NodeType::Highlight:
+-      objcType = MarkdownNodeTypeHighlight;
+-      break;
+-    case Markdown::NodeType::SoftBreak:
+-      objcType = MarkdownNodeTypeSoftBreak;
+-      break;
+-  }
+-
+-  MarkdownASTNode *objcNode = [[MarkdownASTNode alloc] initWithType:objcType];
+-
+-  // Convert content
+-  if (!cppNode->content.empty()) {
+-    objcNode.content = [NSString stringWithUTF8String:cppNode->content.c_str()];
+-  }
+-
+-  // Convert attributes
+-  for (const auto &[key, value] : cppNode->attributes) {
+-    NSString *objcKey = [NSString stringWithUTF8String:key.c_str()];
+-    NSString *objcValue = [NSString stringWithUTF8String:value.c_str()];
+-    [objcNode setAttribute:objcKey value:objcValue];
+-  }
+-
+-  // Convert children recursively
+-  for (const auto &child : cppNode->children) {
+-    MarkdownASTNode *objcChild = convertCppASTToObjC(child);
+-    [objcNode addChild:objcChild];
+-  }
+-
+-  return objcNode;
+-}
+-
+-// Public function to parse markdown using C++ parser and convert to Objective-C AST
+ MarkdownASTNode *parseMarkdownWithCppParser(NSString *markdown, ENRMMd4cFlags *flags)
+ {
+-  if (markdown.length == 0) {
+-    return [[MarkdownASTNode alloc] initWithType:MarkdownNodeTypeDocument];
+-  }
+-
+-  // Convert NSString to std::string
+-  const char *utf8String = [markdown UTF8String];
+-  if (!utf8String) {
++  MarkdownASTNode *root = ENRMParseOriginalMarkdown(markdown, flags);
++  if (!root) {
+     RCTLogError(@"MarkdownParserBridge: Failed to convert markdown to UTF-8");
+     return [[MarkdownASTNode alloc] initWithType:MarkdownNodeTypeDocument];
+   }
+-
+-  std::string cppMarkdown(utf8String);
+-
+-  // Convert Objective-C flags to C++ flags
+-  Markdown::Md4cFlags cppFlags;
+-  cppFlags.underline = flags.underline;
+-  cppFlags.latexMath = flags.latexMath;
+-  cppFlags.superscript = flags.superscript;
+-  cppFlags.subscript = flags.subscript;
+-  cppFlags.highlight = flags.highlight;
+-  cppFlags.hardSoftBreaks = flags.hardSoftBreaks;
+-
+-  Markdown::MD4CParser parser;
+-  auto cppAST = parser.parse(cppMarkdown, cppFlags);
+-
+-  // Convert C++ AST to Objective-C AST
+-  return convertCppASTToObjC(cppAST);
++  return root;
+ }
+diff --git a/node_modules/react-native-enriched-markdown/ios/parser/MarkdownSourceParser.h b/node_modules/react-native-enriched-markdown/ios/parser/MarkdownSourceParser.h
+new file mode 100644
+index 0000000..5bfadad
+--- /dev/null
++++ b/node_modules/react-native-enriched-markdown/ios/parser/MarkdownSourceParser.h
+@@ -0,0 +1,7 @@
++#import "ENRMMarkdownParser.h"
++
++NS_ASSUME_NONNULL_BEGIN
++// Shared conversion of a complete original input, not a row-local parser.
++FOUNDATION_EXPORT MarkdownASTNode *_Nullable ENRMParseOriginalMarkdown(NSString *markdown,
++                                                                      ENRMMd4cFlags *_Nullable flags);
++NS_ASSUME_NONNULL_END
+diff --git a/node_modules/react-native-enriched-markdown/ios/parser/MarkdownSourceParser.mm b/node_modules/react-native-enriched-markdown/ios/parser/MarkdownSourceParser.mm
+new file mode 100644
+index 0000000..6e66975
+--- /dev/null
++++ b/node_modules/react-native-enriched-markdown/ios/parser/MarkdownSourceParser.mm
+@@ -0,0 +1,194 @@
++#import "ENRMMarkdownParser.h"
++#include "MD4CParser.hpp"
++#import "MarkdownASTNode.h"
++#include "MarkdownASTNode.hpp"
++#import "MarkdownSourceParser.h"
++
 +// Compute valid byte boundaries once for the complete original input. Continuation
 +// bytes are not UTF-16 boundaries and must never become selection endpoints.
 +static std::vector<NSUInteger> sourceUTF16Boundaries(const std::string &source)
@@ -3570,18 +3963,116 @@ index 3131dc7..ff8cbc8 100644
 +  return boundaries;
 +}
 +
- // Convert C++ AST node to Objective-C AST node
--static MarkdownASTNode *convertCppASTToObjC(std::shared_ptr<Markdown::MarkdownASTNode> cppNode)
++// Convert C++ AST node to Objective-C AST node
 +static MarkdownASTNode *convertCppASTToObjC(std::shared_ptr<Markdown::MarkdownASTNode> cppNode,
 +                                          const std::vector<NSUInteger> &boundaries)
- {
-   if (!cppNode) {
-     return [[MarkdownASTNode alloc] initWithType:MarkdownNodeTypeDocument];
-@@ -113,7 +132,31 @@ static MarkdownASTNode *convertCppASTToObjC(std::shared_ptr<Markdown::MarkdownAS
-
-   // Convert content
-   if (!cppNode->content.empty()) {
--    objcNode.content = [NSString stringWithUTF8String:cppNode->content.c_str()];
++{
++  if (!cppNode) {
++    return [[MarkdownASTNode alloc] initWithType:MarkdownNodeTypeDocument];
++  }
++
++  // Convert C++ NodeType enum to Objective-C MarkdownNodeType
++  MarkdownNodeType objcType;
++  switch (cppNode->type) {
++    case Markdown::NodeType::Document:
++      objcType = MarkdownNodeTypeDocument;
++      break;
++    case Markdown::NodeType::Paragraph:
++      objcType = MarkdownNodeTypeParagraph;
++      break;
++    case Markdown::NodeType::Text:
++      objcType = MarkdownNodeTypeText;
++      break;
++    case Markdown::NodeType::Link:
++      objcType = MarkdownNodeTypeLink;
++      break;
++    case Markdown::NodeType::Heading:
++      objcType = MarkdownNodeTypeHeading;
++      break;
++    case Markdown::NodeType::LineBreak:
++      objcType = MarkdownNodeTypeLineBreak;
++      break;
++    case Markdown::NodeType::Strong:
++      objcType = MarkdownNodeTypeStrong;
++      break;
++    case Markdown::NodeType::Emphasis:
++      objcType = MarkdownNodeTypeEmphasis;
++      break;
++    case Markdown::NodeType::Strikethrough:
++      objcType = MarkdownNodeTypeStrikethrough;
++      break;
++    case Markdown::NodeType::Underline:
++      objcType = MarkdownNodeTypeUnderline;
++      break;
++    case Markdown::NodeType::Code:
++      objcType = MarkdownNodeTypeCode;
++      break;
++    case Markdown::NodeType::Image:
++      objcType = MarkdownNodeTypeImage;
++      break;
++    case Markdown::NodeType::Blockquote:
++      objcType = MarkdownNodeTypeBlockquote;
++      break;
++    case Markdown::NodeType::UnorderedList:
++      objcType = MarkdownNodeTypeUnorderedList;
++      break;
++    case Markdown::NodeType::OrderedList:
++      objcType = MarkdownNodeTypeOrderedList;
++      break;
++    case Markdown::NodeType::ListItem:
++      objcType = MarkdownNodeTypeListItem;
++      break;
++    case Markdown::NodeType::CodeBlock:
++      objcType = MarkdownNodeTypeCodeBlock;
++      break;
++    case Markdown::NodeType::ThematicBreak:
++      objcType = MarkdownNodeTypeThematicBreak;
++      break;
++    case Markdown::NodeType::Table:
++      objcType = MarkdownNodeTypeTable;
++      break;
++    case Markdown::NodeType::TableHead:
++      objcType = MarkdownNodeTypeTableHead;
++      break;
++    case Markdown::NodeType::TableBody:
++      objcType = MarkdownNodeTypeTableBody;
++      break;
++    case Markdown::NodeType::TableRow:
++      objcType = MarkdownNodeTypeTableRow;
++      break;
++    case Markdown::NodeType::TableHeaderCell:
++      objcType = MarkdownNodeTypeTableHeaderCell;
++      break;
++    case Markdown::NodeType::TableCell:
++      objcType = MarkdownNodeTypeTableCell;
++      break;
++    case Markdown::NodeType::LatexMathInline:
++      objcType = MarkdownNodeTypeLatexMathInline;
++      break;
++    case Markdown::NodeType::LatexMathDisplay:
++      objcType = MarkdownNodeTypeLatexMathDisplay;
++      break;
++    case Markdown::NodeType::Spoiler:
++      objcType = MarkdownNodeTypeSpoiler;
++      break;
++    case Markdown::NodeType::Superscript:
++      objcType = MarkdownNodeTypeSuperscript;
++      break;
++    case Markdown::NodeType::Subscript:
++      objcType = MarkdownNodeTypeSubscript;
++      break;
++    case Markdown::NodeType::Highlight:
++      objcType = MarkdownNodeTypeHighlight;
++      break;
++    case Markdown::NodeType::SoftBreak:
++      objcType = MarkdownNodeTypeSoftBreak;
++      break;
++  }
++
++  MarkdownASTNode *objcNode = [[MarkdownASTNode alloc] initWithType:objcType];
++
++  // Convert content
++  if (!cppNode->content.empty()) {
 +    objcNode.content = [[NSString alloc] initWithBytes:cppNode->content.data()
 +                                             length:cppNode->content.size() encoding:NSUTF8StringEncoding];
 +  }
@@ -3607,45 +4098,41 @@ index 3131dc7..ff8cbc8 100644
 +    NSUInteger end = boundaries[cppNode->sourceByteEnd];
 +    if (start != NSNotFound && end != NSNotFound)
 +      objcNode.sourceRange = NSMakeRange(start, end - start);
-   }
-
-   // Convert attributes
-@@ -125,7 +168,7 @@ static MarkdownASTNode *convertCppASTToObjC(std::shared_ptr<Markdown::MarkdownAS
-
-   // Convert children recursively
-   for (const auto &child : cppNode->children) {
--    MarkdownASTNode *objcChild = convertCppASTToObjC(child);
++  }
++
++  // Convert attributes
++  for (const auto &[key, value] : cppNode->attributes) {
++    NSString *objcKey = [NSString stringWithUTF8String:key.c_str()];
++    NSString *objcValue = [NSString stringWithUTF8String:value.c_str()];
++    [objcNode setAttribute:objcKey value:objcValue];
++  }
++
++  // Convert children recursively
++  for (const auto &child : cppNode->children) {
 +    MarkdownASTNode *objcChild = convertCppASTToObjC(child, boundaries);
-     [objcNode addChild:objcChild];
-   }
-
-@@ -139,14 +182,15 @@ MarkdownASTNode *parseMarkdownWithCppParser(NSString *markdown, ENRMMd4cFlags *f
-     return [[MarkdownASTNode alloc] initWithType:MarkdownNodeTypeDocument];
-   }
-
--  // Convert NSString to std::string
--  const char *utf8String = [markdown UTF8String];
--  if (!utf8String) {
-+  // Use a length-bearing encoding, preserving original embedded NULs and BOM.
++    [objcNode addChild:objcChild];
++  }
++
++  return objcNode;
++}
++
++MarkdownASTNode *ENRMParseOriginalMarkdown(NSString *markdown, ENRMMd4cFlags *flags)
++{
 +  NSData *utf8 = [markdown dataUsingEncoding:NSUTF8StringEncoding];
-+  if (!utf8) {
-     RCTLogError(@"MarkdownParserBridge: Failed to convert markdown to UTF-8");
-     return [[MarkdownASTNode alloc] initWithType:MarkdownNodeTypeDocument];
-   }
-
--  std::string cppMarkdown(utf8String);
-+  std::string cppMarkdown(static_cast<const char *>(utf8.bytes), utf8.length);
-+  const auto boundaries = sourceUTF16Boundaries(cppMarkdown);
-
-   // Convert Objective-C flags to C++ flags
-   Markdown::Md4cFlags cppFlags;
-@@ -161,5 +205,5 @@ MarkdownASTNode *parseMarkdownWithCppParser(NSString *markdown, ENRMMd4cFlags *f
-   auto cppAST = parser.parse(cppMarkdown, cppFlags);
-
-   // Convert C++ AST to Objective-C AST
--  return convertCppASTToObjC(cppAST);
-+  return convertCppASTToObjC(cppAST, boundaries);
- }
++  if (!utf8) return nil;
++  std::string original(static_cast<const char *>(utf8.bytes), utf8.length);
++  Markdown::Md4cFlags cppFlags;
++  if (flags) {
++    cppFlags.underline = flags.underline;
++    cppFlags.latexMath = flags.latexMath;
++    cppFlags.superscript = flags.superscript;
++    cppFlags.subscript = flags.subscript;
++    cppFlags.highlight = flags.highlight;
++    cppFlags.hardSoftBreaks = flags.hardSoftBreaks;
++  }
++  Markdown::MD4CParser parser;
++  return convertCppASTToObjC(parser.parse(original, cppFlags), sourceUTF16Boundaries(original));
++}
 diff --git a/node_modules/react-native-enriched-markdown/ios/renderer/CodeRenderer.m b/node_modules/react-native-enriched-markdown/ios/renderer/CodeRenderer.m
 index 7bc14ae..ebe4069 100644
 --- a/node_modules/react-native-enriched-markdown/ios/renderer/CodeRenderer.m

@@ -11,10 +11,12 @@ usage() {
   cat <<'HELP'
 Usage: e2e-native-document-annotations.sh [--host HOST] [--source-ref REF]
        [--harness-ref REF] [--keep-artifacts]
-       [--phase layout|restore|long-press|code-preservation|code-preservation-scaled|font-diagnostic|empty-diagnostic|qualify|cleanup] [--geometry FILE]
+       [--phase model|layout|restore|long-press|code-preservation|code-preservation-scaled|font-diagnostic|empty-diagnostic|qualify|cleanup] [--geometry FILE]
 
 Transfers an exact committed Git bundle into the reserved Mac directory.
 Source and harness refs default to committed HEAD, and are recorded separately.
+model runs the real original-document parser/projection Foundation regression
+under ASan/UBSan, without creating an app or simulator or claiming selection GREEN.
 layout builds the qualification-only Release entry and saves XCTest geometry.
 restore reinstalls that source's retained verified app without rebuilding it,
 creates a new task simulator and records fresh geometry on that exact device.
@@ -54,7 +56,7 @@ while (($#)); do
   esac
 done
 case "$host" in -*|*[!a-zA-Z0-9@._-]*) echo 'Invalid SSH host' >&2; exit 2;; esac
-case "$phase" in layout|restore|long-press|code-preservation|code-preservation-scaled|font-diagnostic|empty-diagnostic|qualify|cleanup) ;; *) usage >&2; exit 2;; esac
+case "$phase" in model|layout|restore|long-press|code-preservation|code-preservation-scaled|font-diagnostic|empty-diagnostic|qualify|cleanup) ;; *) usage >&2; exit 2;; esac
 root=$(cd "$(dirname "$0")/../.." && pwd)
 cd "$root"
 sha=$(git rev-parse --verify "$ref^{commit}")
