@@ -25,6 +25,7 @@ import {
 	webFetchResult,
 	worktreeMessage,
 } from "@evener/appwire-client";
+import { INLINE_DESTINATION } from "../markdownLinks";
 import type { ActivityDetail, DetailTask } from "../projectedRows";
 import type { RunStep } from "../timeline";
 
@@ -68,21 +69,18 @@ function rawOutput(text: string): Evidence[] {
 	return text ? [{ kind: "output", text, lines: lineCount(text) }] : [];
 }
 
-// An image: ![alt] and then its (url) or (url "title"), or its [ref]. The
-// parentheses of an inline image can hold a pair of their own (a_(b).png, a
-// title's "(1)"), one level deep, as real URLs need. A URL the pattern can't
-// take whole (pairs nested deeper, escaped or unbalanced parentheses) leaves
-// some of itself as text, but ![alt] is always taken, so the image is gone.
+// An image: ![alt] and then its (url) or (url "title") (INLINE_DESTINATION),
+// or its [ref]. A URL the pattern can't take whole leaves some of itself as
+// text, but ![alt] is always taken, so the image is gone.
 // An alt can hold a pair of brackets of its own ("Figure [1]"), one level
 // deep, and escaped ones ("\["), and ends at a blank line, as a paragraph
 // does. No two branches can start at the same character, so a long run of
 // openers stays fast.
 const ALT = String.raw`!\[((?:\\[[\]\\]|\\(?![[\]\\])|\[[^[\]\n]*\]|[^\\[\]\n]|\n(?![ \t\r]*(?:\n|$)))*)\]`;
-const DESTINATION = String.raw`\((?:[^()]|\([^()]*\))*\)`;
-const IMAGE_RE = new RegExp(String.raw`${ALT}(?:${DESTINATION}|\[[^\]]*\])?`, "g");
+const IMAGE_RE = new RegExp(String.raw`${ALT}(?:${INLINE_DESTINATION}|\[[^\]]*\])?`, "g");
 // A bare ![alt] or ![alt][ref] is an image only by a reference definition,
 // which needs "]:"; without one, only ![alt]( can start an image.
-const INLINE_IMAGE_RE = new RegExp(String.raw`${ALT}(?:${DESTINATION}|(?=\())`, "g");
+const INLINE_IMAGE_RE = new RegExp(String.raw`${ALT}(?:${INLINE_DESTINATION}|(?=\())`, "g");
 
 // Code stands in for itself while images go, as a placeholder with no
 // brackets, so an image whose alt holds code still goes whole.

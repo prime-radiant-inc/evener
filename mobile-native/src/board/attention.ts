@@ -274,8 +274,9 @@ function durationLabel(forMs: number): string {
 	return relativeAge(new Date(0).toISOString(), forMs) ?? "0m";
 }
 
-/** The why line of a session waiting on its subagents, on the Board and in
- * the tray alike (spec 13.1). */
+/** The why line of a session or subagent waiting on its subagents: on the
+ * Board, in the tray, in the Activity list and on a subagent's row (spec
+ * 13.1). */
 export function waitingOnSubagents(count: number): string {
 	return `Waiting on ${plural(count, "subagent")}`;
 }

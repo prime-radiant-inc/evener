@@ -4,7 +4,7 @@
 // Pure: the row re-renders with the transcript, so no clock of its own.
 import { delegateEndingText, delegateTiming, type EvenerDelegateInfo } from "@evener/appwire-client";
 import { endedInStop, subagentState } from "../subagents/subagentModel";
-import { hubTime } from "../board/attention";
+import { hubTime, waitingOnSubagents } from "../board/attention";
 import type { TimelineRow } from "../timeline";
 import { compactDuration } from "./format";
 
@@ -96,7 +96,7 @@ export function subagentLine(
 		// An agent waiting on its own subagents is never stuck (ruling 10).
 		line.activity =
 			waitingOn > 0
-				? `Waiting on ${waitingOn} ${waitingOn === 1 ? "subagent" : "subagents"}`
+				? waitingOnSubagents(waitingOn)
 				: quietFor >= QUIET_AFTER_MS
 					? `Quiet ${compactDuration(quietFor)}`
 					: "Working";
