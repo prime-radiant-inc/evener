@@ -45,11 +45,54 @@ type memoryEvalAdmission struct {
 	authRoot                                                             string
 	sensitive                                                            []string
 	boundModel                                                           bool
+	failure                                                              error
+	runContext                                                           context.Context
+	runCancel                                                            context.CancelFunc
+}
+
+func (b *memoryEvalAdmission) terminalFailure() error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.failure
+}
+
+func (b *memoryEvalAdmission) fail(err error) {
+	if err == nil || memoryEvalBudgetError(err) || errors.Is(err, llm.ErrStreamUnsupported) {
+		return
+	}
+	b.mu.Lock()
+	if b.failure == nil {
+		b.failure = err
+	}
+	cancel := b.runCancel
+	b.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+func (b *memoryEvalAdmission) bindContext(parent context.Context) (context.Context, context.CancelFunc) {
+	b.mu.Lock()
+	if b.runContext == nil {
+		b.runContext, b.runCancel = context.WithCancel(context.Background())
+	}
+	run := b.runContext
+	failed := b.failure != nil
+	b.mu.Unlock()
+	ctx, cancel := context.WithCancel(parent)
+	stop := context.AfterFunc(run, cancel)
+	if failed {
+		cancel()
+	}
+	return ctx, func() { stop(); cancel() }
 }
 
 func (b *memoryEvalAdmission) admit(httpAttempt bool, now time.Time) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.failure != nil {
+		return b.failure
+	}
 	if !now.Before(b.deadline) {
 		return errors.New("memory eval deadline reached")
 	}
@@ -71,6 +114,9 @@ func (b *memoryEvalAdmission) admit(httpAttempt bool, now time.Time) error {
 func (b *memoryEvalAdmission) admitToolRound(now time.Time) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.failure != nil {
+		return b.failure
+	}
 	if !now.Before(b.deadline) {
 		return errors.New("memory eval deadline reached")
 	}
@@ -82,18 +128,28 @@ func (b *memoryEvalAdmission) admitToolRound(now time.Time) error {
 }
 
 // The caller must cancel, close and join the preceding stage before this reset.
-func (b *memoryEvalAdmission) beginStage(cap int, deadline time.Time) {
+func (b *memoryEvalAdmission) beginStage(cap int, deadline time.Time) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.failure != nil {
+		return b.failure
+	}
 	b.stageLogical, b.stageHTTP, b.toolRounds, b.stageCap, b.deadline = 0, 0, 0, cap, deadline
+	return nil
 }
 func (b *memoryEvalAdmission) middleware(auth llm.Authenticator) llm.MiddlewareFunc {
 	return llm.MiddlewareFunc{
 		Complete: func(ctx context.Context, req llm.Request, next llm.CompleteFunc) (llm.Response, error) {
+			if err := b.terminalFailure(); err != nil {
+				return llm.Response{}, err
+			}
+			ctx, cancel := b.bindContext(ctx)
+			defer cancel()
 			if err := ctx.Err(); err != nil {
 				return llm.Response{}, err
 			}
 			if err := b.approvedRequest(req); err != nil {
+				b.fail(err)
 				return llm.Response{}, err
 			}
 			if err := b.admit(false, time.Now()); err != nil {
@@ -102,6 +158,7 @@ func (b *memoryEvalAdmission) middleware(auth llm.Authenticator) llm.MiddlewareF
 			b.active.Add(1)
 			defer b.active.Done()
 			resp, err := next(llm.WithAuthenticatorOverride(ctx, auth), req)
+			b.fail(err)
 			if err == nil {
 				b.observeUsage(resp.Usage)
 			}
@@ -114,19 +171,27 @@ func (b *memoryEvalAdmission) middleware(auth llm.Authenticator) llm.MiddlewareF
 			return resp, nil
 		},
 		Stream: func(ctx context.Context, req llm.Request, next llm.StreamFunc) (llm.Stream, error) {
+			if err := b.terminalFailure(); err != nil {
+				return nil, err
+			}
+			ctx, cancel := b.bindContext(llm.WithAuthenticatorOverride(ctx, auth))
 			if err := ctx.Err(); err != nil {
+				cancel()
 				return nil, err
 			}
 			if err := b.approvedRequest(req); err != nil {
+				b.fail(err)
+				cancel()
 				return nil, err
 			}
 			if err := b.admit(false, time.Now()); err != nil {
+				cancel()
 				return nil, err
 			}
 			b.active.Add(1)
-			ctx, cancel := context.WithCancel(llm.WithAuthenticatorOverride(ctx, auth))
 			original, err := next(ctx, req)
 			if err != nil {
+				b.fail(err)
 				cancel()
 				b.active.Done()
 				return nil, err
@@ -147,6 +212,9 @@ func (b *memoryEvalAdmission) middleware(auth llm.Authenticator) llm.MiddlewareF
 					case ev, ok := <-original.Events():
 						if !ok {
 							return
+						}
+						if ev.Err != nil {
+							b.fail(ev.Err)
 						}
 						if !usageObserved && ev.Type == llm.StreamEventFinish && ev.Response != nil {
 							b.observeUsage(ev.Response.Usage)
@@ -194,12 +262,16 @@ type memoryEvalTransport struct {
 
 func (r *memoryEvalTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if req.Method != http.MethodPost || req.URL.String() != r.endpoint {
-		return nil, errors.New("memory eval uninstrumented completion route")
+		err := errors.New("memory eval uninstrumented completion route")
+		r.budget.fail(err)
+		return nil, err
 	}
 	if err := r.budget.admit(true, time.Now()); err != nil {
 		return nil, err
 	}
-	return r.base.RoundTrip(req)
+	resp, err := r.base.RoundTrip(req)
+	r.budget.fail(err)
+	return resp, err
 }
 
 const memoryEvalModel = "codex-jesse-at-pr/gpt-6.1-sol"
@@ -227,9 +299,7 @@ func memoryEvalRegistry(t *testing.T, root, config string) *registry.Registry {
 func memoryEvalLocal(t *testing.T, home, workspace, scratch string) *execenv.LocalExecutionEnvironment {
 	t.Helper()
 	facts := sandbox.RealProber{}.Probe()
-	if facts.OS != "linux" || !facts.BwrapCapable || facts.BwrapPath == "" {
-		t.Fatal("memory eval requires working Linux bwrap, no isolation fallback")
-	}
+	memoryEvalRequireHost(t, false, facts)
 	facts.Home = home
 	net := false
 	rp, err := sandbox.Resolve(sandbox.SandboxPolicy{Mode: sandbox.ModeRestricted, Network: &net, ExtraReadRoots: []string{runtime.GOROOT()}}, facts, workspace)
@@ -245,6 +315,16 @@ func memoryEvalLocal(t *testing.T, home, workspace, scratch string) *execenv.Loc
 	env.Sandbox = &rp
 	env.Wrapper = w
 	return env
+}
+
+func memoryEvalRequireHost(t *testing.T, live bool, facts sandbox.HostFacts) {
+	t.Helper()
+	if facts.OS != "linux" || !facts.BwrapCapable || facts.BwrapPath == "" {
+		if !live {
+			t.Skip("offline memory isolation qualification requires working Linux bwrap")
+		}
+		t.Fatal("memory eval requires working Linux bwrap, no isolation fallback")
+	}
 }
 func memoryEvalConfig(ctx context.Context, root string, disabled bool, cap int) SessionConfig {
 	return SessionConfig{LifetimeContext: ctx, LLMRetryPolicy: &llm.RetryPolicy{MaxRetries: 0}, MemoryStateRoot: filepath.Join(root, "wiki"), MemoryProjectID: "fixture-project", DisableMemory: disabled, StateDir: filepath.Join(root, "history"), AgentsDocPath: filepath.Join(root, "no-user-AGENTS.md"), ReasoningEffort: "high", NonInteractive: true, MaxToolRoundsPerInput: cap, MaxSubagentDepth: 1, TurnEndsProcess: true, VisionModel: "off", DefaultCommandTimeoutMS: 10000, MaxCommandTimeoutMS: 180000}
@@ -336,6 +416,8 @@ type memoryEvalStageEvidence struct {
 	Files, WikiBefore, WikiAfter                                                   map[string]string
 	Trace                                                                          []events.SessionEvent
 	Metrics                                                                        evalMetrics
+	Observations                                                                   []memoryEvalToolObservation
+	Unproven                                                                       []string
 	Counters                                                                       string
 	Elapsed                                                                        time.Duration
 	Limitation                                                                     string
@@ -490,7 +572,7 @@ func memoryEvalCheckerInWiki(wiki map[string]string, current bool) bool {
 	// schema. Unrecognized phrasing remains unproven and needs human review.
 	for _, body := range wiki {
 		for _, line := range strings.Split(body, "\n") {
-			if strings.Contains(line, "scripts/check.sh") && strings.Contains(line, "--current") == current {
+			if strings.Contains(line, "repository root") && strings.Contains(line, "sh scripts/check.sh") && strings.Contains(line, "--current") == current {
 				return true
 			}
 		}
@@ -498,29 +580,50 @@ func memoryEvalCheckerInWiki(wiki map[string]string, current bool) bool {
 	return false
 }
 func memoryEvalGrade(e *memoryEvalStageEvidence, current bool) {
+	e.Capture, e.Retrieval, e.Application, e.Counterevidence, e.Correction = false, false, false, false, false
+	e.Unproven = nil
 	appliedAt, readAt, failedAt, correctedAt, completedAt := -1, -1, -1, -1, len(e.Trace)
+	failedObservation, correctedObservation := -1, -1
 	for i, ev := range e.Trace {
 		if ev.Kind == events.EventAssistantTextEnd {
-			completedAt = i
+			data, ok := ev.Data.(events.AssistantTextEndData)
+			terminal := ok && data.Text != ""
+			for _, later := range e.Trace[i+1:] {
+				if later.Kind == events.EventRoundEnded {
+					break
+				}
+				if later.Kind == events.EventToolCallStart {
+					terminal = false
+					break
+				}
+			}
+			if terminal && completedAt == len(e.Trace) {
+				completedAt = i
+			}
 		}
 		if ev.Kind == events.EventCommunicate {
 			d := ev.Data.(events.CommunicateData)
 			if d.EndTurn {
-				completedAt = i
+				if completedAt == len(e.Trace) {
+					completedAt = i
+				}
 			}
 		}
 		if ev.Kind != events.EventToolCallEnd {
 			continue
 		}
 		d := ev.Data.(events.ToolCallEndData)
-		if readAt < 0 && (d.ToolName == "memory_read" || d.ToolName == "memory_search") && d.Error == "" {
+		if readAt < 0 && (d.ToolName == "memory_read" || d.ToolName == "memory_search") && d.Error == "" && (memoryEvalCheckerInWiki(map[string]string{"returned": d.Output}, current) || (current && memoryEvalCheckerInWiki(map[string]string{"returned": d.Output}, false))) {
 			readAt = i
 		}
-		if strings.HasPrefix(d.ToolName, "memory_") && d.Error == "" && (d.ToolName == "memory_write" || d.ToolName == "memory_edit") {
-			if memoryEvalCheckerInWiki(e.WikiAfter, false) {
+		obs, ordinal := memoryEvalObservationFor(e.Observations, d)
+		if ordinal >= 0 && d.Error == "" && (d.ToolName == "memory_write" || d.ToolName == "memory_edit") {
+			if memoryEvalCheckerInWiki(map[string]string{"committed": obs.After}, false) {
 				e.Capture = true
 			}
-			correctedAt = i
+			if memoryEvalCheckerInWiki(map[string]string{"before": obs.Before}, false) && memoryEvalCheckerInWiki(map[string]string{"after": obs.After}, true) && !memoryEvalCheckerInWiki(map[string]string{"after": obs.After}, false) {
+				correctedAt, correctedObservation = i, ordinal
+			}
 		}
 		if d.ToolName == "shell" {
 			var args struct{ Command, Cwd string }
@@ -529,19 +632,128 @@ func memoryEvalGrade(e *memoryEvalStageEvidence, current bool) {
 				ExitCode *int `json:"exit_code"`
 			}
 			_ = json.Unmarshal(d.ToolState, &state)
-			if strings.Contains(d.Output, "Checker now requires --current") {
-				failedAt = i
+			root := args.Cwd == "" || args.Cwd == e.Files["workspace"]
+			command := strings.TrimPrefix(args.Command, memoryEvalGoEnv())
+			oldInvocation := command == "sh scripts/check.sh"
+			newInvocation := command == "sh scripts/check.sh --current"
+			verified := ordinal >= 0 && root && obs.Checker == memoryEvalCheckerSource(current)
+			if verified && current && oldInvocation && state.ExitCode != nil && *state.ExitCode == 2 && strings.Contains(d.Output, "Checker now requires --current") {
+				failedAt, failedObservation = i, ordinal
 				e.Counterevidence = true
 			}
-			root := args.Cwd == "" || args.Cwd == e.Files["workspace"]
-			if root && !strings.Contains(args.Command, "cd ") && strings.Contains(args.Command, "scripts/check.sh") && strings.Contains(args.Command, "--current") == current && d.Error == "" && state.ExitCode != nil && *state.ExitCode == 0 {
+			if verified && ((oldInvocation && !current) || (newInvocation && current)) && d.Error == "" && state.ExitCode != nil && *state.ExitCode == 0 && strings.Contains(d.Output, "ok") && strings.Contains(d.Output, "memoryfixture") {
 				appliedAt = i
 				e.Application = true
 			}
 		}
 	}
 	e.Retrieval = readAt >= 0 && appliedAt > readAt
-	e.Correction = failedAt >= 0 && correctedAt > failedAt && correctedAt < completedAt && memoryEvalCheckerInWiki(e.WikiBefore, false) && memoryEvalCheckerInWiki(e.WikiAfter, true) && !memoryEvalCheckerInWiki(e.WikiAfter, false)
+	e.Correction = completedAt < len(e.Trace) && failedAt >= 0 && correctedAt > failedAt && correctedAt < completedAt && correctedObservation > failedObservation && memoryEvalCheckerInWiki(e.WikiBefore, false) && memoryEvalCheckerInWiki(e.WikiAfter, true) && !memoryEvalCheckerInWiki(e.WikiAfter, false)
+	for _, grade := range []struct {
+		name   string
+		proven bool
+	}{{"capture", e.Capture}, {"retrieval", e.Retrieval}, {"application", e.Application}, {"counterevidence", e.Counterevidence}, {"correction", e.Correction}} {
+		if !grade.proven {
+			e.Unproven = append(e.Unproven, grade.name)
+		}
+	}
+}
+
+func memoryEvalCheckerSource(current bool) string {
+	condition := `test "$#" -eq 0 || { printf '%s\n' 'This checker takes no arguments' >&2; exit 2; }`
+	if current {
+		condition = `test "$#" -eq 1 && test "$1" = --current || { printf '%s\n' 'Checker now requires --current' >&2; exit 2; }`
+	}
+	return "#!/bin/sh\n# Initial scripts/check.sh in both fixtures, invoked from the fixture root.\nset -eu\ntest -f go.mod || { printf '%s\\n' 'Run this checker from the repository root' >&2; exit 2; }\n" + condition + "\nexec go test ./...\n"
+}
+
+type memoryEvalToolObservation struct {
+	ToolName, Arguments, Before, After, Checker string
+}
+
+func memoryEvalObservationKey(raw string) string {
+	var args map[string]any
+	if json.Unmarshal([]byte(raw), &args) != nil {
+		return ""
+	}
+	delete(args, "intent")
+	return memoryEvalJSON(args)
+}
+
+func memoryEvalObservationFor(observations []memoryEvalToolObservation, d events.ToolCallEndData) (memoryEvalToolObservation, int) {
+	key, found := memoryEvalObservationKey(d.ArgumentsJSON), -1
+	for i, obs := range observations {
+		if obs.ToolName == d.ToolName && obs.Arguments == key {
+			if found >= 0 {
+				return memoryEvalToolObservation{}, -1
+			} // Ambiguous repeated calls stay unproven.
+			found = i
+		}
+	}
+	if found < 0 {
+		return memoryEvalToolObservation{}, -1
+	}
+	return observations[found], found
+}
+
+// Observe real executors, without replacing their outputs. Serialized observed
+// root operations give snapshots at the specific commit, not a later final wiki.
+// Unobserved descendants and ambiguous repeated calls remain unproven.
+func memoryEvalObserveTools(t *testing.T, s *Session) func() []memoryEvalToolObservation {
+	t.Helper()
+	var mu sync.Mutex
+	var observations []memoryEvalToolObservation
+	for _, name := range []string{"memory_write", "memory_edit", "shell"} {
+		registered := s.reg.Get(name)
+		if registered == nil {
+			continue
+		}
+		wrapped := *registered
+		execute := wrapped.Exec
+		wrapped.Execute = nil
+		wrapped.Exec = func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			obs := memoryEvalToolObservation{ToolName: name, Arguments: memoryEvalObservationKey(memoryEvalJSON(args))}
+			var memoryEnv *execenv.LocalExecutionEnvironment
+			path, _ := args["file_path"].(string)
+			if name == "shell" {
+				if local, ok := env.(*execenv.LocalExecutionEnvironment); ok {
+					if raw, err := local.ReadFileRaw("scripts/check.sh"); err == nil {
+						obs.Checker = string(raw)
+					}
+				}
+			} else {
+				scope, _ := args["scope"].(string)
+				if candidate, err := s.memoryEnvironment(scope); err == nil && filepath.IsLocal(path) {
+					memoryEnv = candidate
+					if raw, err := memoryEnv.ReadFileRaw(path); err == nil {
+						obs.Before = string(raw)
+					}
+				}
+			}
+			result, err := execute(ctx, env, args)
+			if err == nil {
+				if memoryEnv != nil {
+					if raw, readErr := memoryEnv.ReadFileRaw(path); readErr == nil {
+						obs.After = string(raw)
+					}
+				}
+				observations = append(observations, obs)
+			} else if name == "shell" {
+				observations = append(observations, obs)
+			}
+			return result, err
+		}
+		if err := s.reg.Register(wrapped); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return func() []memoryEvalToolObservation {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]memoryEvalToolObservation(nil), observations...)
+	}
 }
 func memoryEvalRunPairs(t *testing.T, b *memoryEvalAdmission, c *llm.Client, p *provider.Profile, home string, hook func(string, bool, memoryEvalStage, string)) []memoryEvalEpisode {
 	t.Helper()
@@ -564,9 +776,13 @@ func memoryEvalRunPairs(t *testing.T, b *memoryEvalAdmission, c *llm.Client, p *
 			for _, stage := range stages {
 				start := time.Now()
 				deadline := memoryEvalDeadline(start, armStart, runStart)
-				ctx, cancel := context.WithDeadline(context.Background(), deadline)
+				stageContext, stopStage := b.bindContext(context.Background())
+				ctx, cancel := context.WithDeadline(stageContext, deadline)
+				defer stopStage()
 				defer cancel()
-				b.beginStage(stage.cap, deadline) // The previous stage below has joined fully.
+				if err := b.beginStage(stage.cap, deadline); err != nil {
+					t.Fatal("memory eval infrastructure failure, next stage refused")
+				}
 				memoryEvalWrite(t, filepath.Join(workspace, "main_test.go"), memoryEvalVisible(stage.name))
 				if pair == "correction" && stage.name == "B" {
 					script, err := os.ReadFile(filepath.Join(workspace, "scripts", "check.sh"))
@@ -600,6 +816,7 @@ func memoryEvalRunPairs(t *testing.T, b *memoryEvalAdmission, c *llm.Client, p *
 				}
 				defer func() { cancel(); s.Close() }()
 				evidence.SessionID = s.ID()
+				observedTools := memoryEvalObserveTools(t, s)
 				seen, stop := captureEvents(s)
 				goal := "Implement normalize to trim surrounding whitespace."
 				if stage.name == "B" {
@@ -627,6 +844,9 @@ func memoryEvalRunPairs(t *testing.T, b *memoryEvalAdmission, c *llm.Client, p *
 					<-done
 				}
 				b.active.Wait()
+				if b.terminalFailure() != nil {
+					t.Fatal("memory eval shared infrastructure failure, run stopped without retry")
+				}
 				if err != nil {
 					if !memoryEvalBudgetError(err) {
 						t.Fatal("memory eval session infrastructure failure, run stopped without retry")
@@ -638,6 +858,7 @@ func memoryEvalRunPairs(t *testing.T, b *memoryEvalAdmission, c *llm.Client, p *
 					collector.ProcessEvent(ev)
 				}
 				evidence.Trace = *seen
+				evidence.Observations = observedTools()
 				evidence.Metrics = collector.Metrics()
 				// Verifier keeps the same absolute stage deadline, with no extra time.
 				verifyCtx, verifyCancel := context.WithDeadline(context.Background(), deadline)

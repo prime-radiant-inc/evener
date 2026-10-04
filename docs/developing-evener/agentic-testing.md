@@ -57,7 +57,10 @@ enabled then disabled for each pair. Each fresh session retains its arm's actual
 transcripts, with the same ordinary recall tools. These are plumbing checks,
 not evidence that a live model learns, retrieves or corrects memory.
 
-Run offline, with working Linux bwrap and the repository's Go toolchain:
+Run offline with the repository's Go toolchain. Host-dependent isolation and
+episode cases skip without working Linux bwrap, while source, route and pure
+admission checks remain active. Opted-in live evaluation refuses an unsupported
+host before source discovery or paid work, with no isolation fallback:
 
 ```sh
 env -u EVENER_LIVE_TESTS GOPROXY=off GOMAXPROCS=4 go test -p 2 ./agent -run '^TestMemoryEval' -count=1 -v
@@ -77,12 +80,17 @@ One serial test owns exactly two sequential pairs on
 calls and completion HTTP attempts separately at 96 across roots, children,
 auxiliaries and provider retries. Stage request/HTTP/tool-round caps are recall
 8/10 and correction 8/12/10, with nested stage/arm/run deadlines of 3/6/24
-minutes. Engine-level retries and model fallbacks are disabled. An expired or
-exhausted stage is not retried. The outer 26-minute timeout adds no request time.
+minutes. Root turn retries and model fallbacks are disabled. Naming retains its
+own retry policy, but a shared terminal infrastructure failure cancels admitted
+work and refuses subsequent logical/HTTP dispatch and stages. Planned budget
+and context stops remain distinct. An expired or exhausted stage is not retried.
+The outer 26-minute timeout adds no request time.
 
 After that gate, the evaluator privately copies only the selected
 `providers.toml` and `auth/codex-jesse-at-pr.json`, byte-for-byte, before offline
-resolution. Present-empty `EVENER_PROVIDERS_CONFIG` refuses without fallback.
+resolution. Opt-in source paths are captured before TestMain resets HOME/XDG,
+without opening files. Ordinary startup selects no sources. Present-empty
+`EVENER_PROVIDERS_CONFIG` refuses without fallback.
 Private directories/files use 0700/0600 and are outside every agent grant.
 Auth is call-scoped, never a mutation of `DefaultCodex.StateDir`; refreshed
 copies are not synced back. Missing auth or an unexpected route fails without
@@ -91,8 +99,12 @@ cleanup, after joined work. Credential-redacted evidence is retained in the
 printed `memory-eval-evidence-*` directory outside agent grants.
 
 Evidence separates executed task checks from capture, retrieval, application
-and correction tool/file grades. Literal workflow recognition is a sufficient
-oracle, not a wiki schema; other phrasing remains unproven for human review.
+and correction tool/file grades. Root tool observers retain specific memory
+commit before/after bodies and checker bytes without replacing tool results.
+Only relevant returned lesson text, supported standalone checker invocations
+and rule-changing commits in the observed order earn positive grades. Arbitrary
+Markdown remains legal. Other prose, command forms, repeated ambiguous calls
+and unobserved descendant commits remain explicitly unproven with raw evidence.
 Automatic index-only retrieval is not credited by the explicit-tool oracle.
 Observed final-response usage includes auxiliary calls, but unfinished-response
 usage and cost without a cited price remain unknown. Cancellation does not

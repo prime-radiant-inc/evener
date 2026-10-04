@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -12,6 +13,7 @@ import (
 
 	"primeradiant.com/evener/agent/internal/liveeval"
 	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/auth/openai"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/envvars/userdirs"
@@ -54,7 +56,34 @@ func memoryEvalConfigSource(lookup func() (string, bool), root func() string) (s
 	}
 	return filepath.Join(resolved, "providers.toml"), nil
 }
+
+// Set once before TestMain replaces HOME and XDG_CONFIG_HOME. No source file
+// is opened here, and ordinary startup does not even select paths.
+var memoryEvalStartupSources *struct {
+	config, auth string
+	err          error
+}
+
+func memoryEvalCaptureSources() {
+	if !liveeval.Enabled(os.Getenv(liveeval.OptInEnv)) {
+		return
+	}
+	config, auth, err := memoryEvalSelectSources()
+	memoryEvalStartupSources = &struct {
+		config, auth string
+		err          error
+	}{config, auth, err}
+}
+
 func memoryEvalDiscover() (string, string, error) {
+	if memoryEvalStartupSources == nil {
+		return "", "", errors.New("memory eval startup sources not captured")
+	}
+	s := memoryEvalStartupSources
+	return s.config, s.auth, s.err
+}
+
+func memoryEvalSelectSources() (string, string, error) {
 	config, err := memoryEvalConfigSource(envvars.EVENERProvidersConfig.LookupEnv, userdirs.DefaultConfigRoot)
 	if err != nil {
 		return "", "", err
@@ -73,6 +102,12 @@ func memoryEvalLivePairs(t *testing.T, enabled bool, discover func() (string, st
 	if !enabled {
 		t.Skip("live memory pairs require explicit opt-in after offline review")
 	}
+	memoryEvalLivePairsOnHost(t, discover, sandbox.RealProber{}.Probe())
+}
+
+func memoryEvalLivePairsOnHost(t *testing.T, discover func() (string, string, error), facts sandbox.HostFacts) {
+	t.Helper()
+	memoryEvalRequireHost(t, true, facts)
 	// Controller authorization is the external staged gate. Opt-in alone is not
 	// permission for the offline implementer to invoke this test.
 	runStart := time.Now()
@@ -257,5 +292,104 @@ func TestMemoryEvalRoute(t *testing.T) {
 		if memoryEvalApprovedRoute(wrong) {
 			t.Fatalf("accepted %s route mismatch", kind)
 		}
+	}
+}
+
+func TestMemoryEvalStartupDiscovery(t *testing.T) {
+	for _, mode := range []string{"defaults", "xdg", "override", "empty", "no-opt-in"} {
+		t.Run(mode, func(t *testing.T) {
+			root := t.TempDir()
+			configRoot, stateRoot := filepath.Join(root, ".config"), filepath.Join(root, ".local", "state")
+			if mode == "xdg" {
+				configRoot, stateRoot = filepath.Join(root, "config-xdg"), filepath.Join(root, "state-xdg")
+			}
+			config := filepath.Join(configRoot, "evener", "providers.toml")
+			if mode == "override" {
+				config = filepath.Join(root, "selected.toml")
+			}
+			auth := openai.AuthFilePath(filepath.Join(stateRoot, "evener"), "codex-jesse-at-pr")
+			memoryEvalWrite(t, config, "[providers.codex-jesse-at-pr]\nbase = \"openai-codex\"\n")
+			memoryEvalWrite(t, auth, memoryEvalJSON(openai.AuthRecord{Version: 1, Source: openai.AuthSourceOAuth, TokenType: "Bearer", AccessToken: "opaque-startup-701", RefreshToken: "opaque-startup-refresh-702", ObtainedAt: time.Now(), Expiry: time.Now().Add(time.Hour)}))
+			cmd := exec.Command(os.Args[0], "-test.run=^TestMemoryEvalStartupProbe$", "-test.v")
+			for _, entry := range os.Environ() {
+				key, _, _ := strings.Cut(entry, "=")
+				switch key {
+				case "HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "EVENER_PROVIDERS_CONFIG", liveeval.OptInEnv:
+					continue
+				}
+				cmd.Env = append(cmd.Env, entry)
+			}
+			cmd.Env = append(cmd.Env, "HOME="+root, "MEMORY_EVAL_STARTUP_MODE="+mode, "MEMORY_EVAL_STARTUP_CONFIG="+config, "MEMORY_EVAL_STARTUP_AUTH="+auth)
+			if mode != "no-opt-in" {
+				cmd.Env = append(cmd.Env, liveeval.OptInEnv+"=1")
+			}
+			if mode == "xdg" {
+				cmd.Env = append(cmd.Env, "XDG_CONFIG_HOME="+configRoot, "XDG_STATE_HOME="+stateRoot)
+			}
+			if mode == "override" || mode == "empty" {
+				value := config
+				if mode == "empty" {
+					value = ""
+				}
+				cmd.Env = append(cmd.Env, "EVENER_PROVIDERS_CONFIG="+value)
+			}
+			out, err := cmd.CombinedOutput()
+			t.Log(string(out))
+			if err != nil {
+				t.Fatalf("real TestMain startup regression: %v", err)
+			}
+		})
+	}
+}
+
+func TestMemoryEvalStartupProbe(t *testing.T) {
+	mode := os.Getenv("MEMORY_EVAL_STARTUP_MODE")
+	if mode == "" {
+		t.Skip("subprocess-only fixture startup probe")
+	}
+	if mode == "no-opt-in" {
+		if memoryEvalStartupSources != nil {
+			t.Fatal("ordinary startup selected source paths")
+		}
+		called := false
+		t.Run("skip", func(t *testing.T) {
+			memoryEvalLivePairs(t, false, func() (string, string, error) { called = true; return "", "", nil })
+		})
+		if called {
+			t.Fatal("ordinary startup discovered sources")
+		}
+		return
+	}
+	config, auth, err := memoryEvalDiscover()
+	if mode == "empty" {
+		if err == nil {
+			t.Fatal("present-empty provider override fell back")
+		}
+		return
+	}
+	if err != nil || config != os.Getenv("MEMORY_EVAL_STARTUP_CONFIG") || auth != os.Getenv("MEMORY_EVAL_STARTUP_AUTH") {
+		t.Fatalf("TestMain lost original source selection: config=%q auth=%q error=%v", config, auth, err)
+	}
+	private := t.TempDir()
+	copyConfig, copyAuth, err := memoryEvalCopySources(private, config, auth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, pair := range [][2]string{{config, copyConfig}, {auth, copyAuth}} {
+		a, _ := os.ReadFile(pair[0])
+		b, _ := os.ReadFile(pair[1])
+		if string(a) != string(b) {
+			t.Fatal("startup private copy changed bytes")
+		}
+		if err := os.Remove(pair[0]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r := memoryEvalRegistry(t, private, copyConfig)
+	if _, err := provider.Resolve(r, memoryEvalModel); err != nil {
+		t.Fatal("private-only resolution failed")
+	}
+	if _, err := openai.LoadAuth(private, "codex-jesse-at-pr"); err != nil {
+		t.Fatal("private-only auth parsing failed")
 	}
 }

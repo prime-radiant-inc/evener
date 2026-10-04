@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -22,6 +23,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/auth/openai"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/providers/responses"
@@ -429,7 +431,9 @@ func memoryEvalCancellation(t *testing.T) {
 	defer srv.Close()
 	originalAuthRoot := tokenauth.DefaultCodex.StateDir
 	b := &memoryEvalAdmission{}
-	b.beginStage(20, time.Now().Add(time.Minute))
+	// Root, auxiliary and child occupy exactly three held admissions. A child's
+	// advisory naming call must not race this fixture's cancellation into a fourth.
+	b.beginStage(3, time.Now().Add(time.Minute))
 	c, p := memoryEvalHTTPClient(t, b, srv.URL)
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(time.Minute))
 	defer cancel()
@@ -673,7 +677,7 @@ func TestMemoryEvalChildBoundaries(t *testing.T) {
 func memoryEvalTrackAmbientReads(t *testing.T, paths []string) func() {
 	t.Helper()
 	if runtime.GOOS != "linux" {
-		t.Fatal("memory eval requires Linux isolation qualification")
+		t.Skip("offline ambient-read observation requires Linux inotify")
 	}
 	root := t.TempDir()
 	path := filepath.Join(root, "watch.go")
@@ -838,4 +842,274 @@ func TestMemoryEvalVerifierIsolation(t *testing.T) {
 	if pass || strings.Contains(result, "691") || result != "candidate source unavailable" {
 		t.Fatal("verifier followed candidate source symlink")
 	}
+}
+
+func TestMemoryEvalTerminalFailure(t *testing.T) {
+	t.Run("actual-auxiliary-retry", func(t *testing.T) {
+		b := &memoryEvalAdmission{stageCap: 20, deadline: time.Now().Add(time.Minute)}
+		c, p := memoryEvalFixtureClient(t, b, &memoryEvalAdapter{})
+		var calls atomic.Int32
+		cause := transientRateLimit429()
+		// Override the external adapter only, keeping nameSession's real retry policy.
+		c.Register(&memoryEvalFailureAdapter{cause: cause, calls: &calls})
+		_, err := nameSession(context.Background(), c, p, sessionNameSourcePrompt, "opaque-terminal-703", "", noNamerSleep)
+		b.active.Wait()
+		if err == nil || calls.Load() != 1 {
+			t.Errorf("auxiliary infrastructure retried, calls=%d error=%v", calls.Load(), err)
+		}
+		b.beginStage(8, time.Now().Add(time.Minute))
+		_, _ = c.Complete(context.Background(), llm.Request{Provider: "codex-jesse-at-pr", Model: "gpt-6.1-sol"})
+		if calls.Load() != 1 {
+			t.Errorf("next stage dispatched after auxiliary failure, calls=%d", calls.Load())
+		}
+		var httpCalls int
+		tr := &memoryEvalTransport{budget: b, endpoint: "http://fixture.invalid/responses", base: memoryEvalRoundTripFunc(func(*http.Request) (*http.Response, error) { httpCalls++; return nil, cause })}
+		req, _ := http.NewRequest("POST", tr.endpoint, nil)
+		_, _ = tr.RoundTrip(req)
+		if httpCalls != 0 {
+			t.Error("HTTP dispatched after terminal failure")
+		}
+		if !errors.Is(b.terminalFailure(), cause) || b.beginStage(8, time.Now().Add(time.Minute)) == nil {
+			t.Fatal("joined auxiliary failure lost its cause or admitted next stage")
+		}
+	})
+	for _, mode := range []string{"immediate", "event"} {
+		t.Run("stream-"+mode, func(t *testing.T) {
+			b := &memoryEvalAdmission{stageCap: 8, deadline: time.Now().Add(time.Minute)}
+			cause := errors.New("opaque-stream-infrastructure-704")
+			var calls int
+			stream := b.middleware(nil).WrapStream(func(context.Context, llm.Request) (llm.Stream, error) {
+				calls++
+				if mode == "immediate" {
+					return nil, cause
+				}
+				s := llm.NewChanStream(nil)
+				s.Send(llm.StreamEvent{Type: llm.StreamEventError, Err: cause})
+				s.CloseSend()
+				return s, nil
+			})
+			s, err := stream(context.Background(), llm.Request{})
+			if s != nil {
+				for range s.Events() {
+				}
+				s.Close()
+			} else if err == nil {
+				t.Fatal("missing immediate error")
+			}
+			b.active.Wait()
+			b.beginStage(8, time.Now().Add(time.Minute))
+			s, _ = stream(context.Background(), llm.Request{})
+			if s != nil {
+				for range s.Events() {
+				}
+				s.Close()
+			}
+			if calls != 1 {
+				t.Errorf("stream failure did not stop subsequent dispatch, calls=%d", calls)
+			}
+			if !errors.Is(b.terminalFailure(), cause) {
+				t.Fatal("stream terminal cause not retained after join")
+			}
+		})
+	}
+	t.Run("cancel-admitted-sibling", func(t *testing.T) {
+		b := &memoryEvalAdmission{stageCap: 8, deadline: time.Now().Add(time.Minute)}
+		entered, settled := make(chan struct{}), make(chan struct{})
+		call := b.middleware(nil).WrapComplete(func(ctx context.Context, _ llm.Request) (llm.Response, error) {
+			close(entered)
+			<-ctx.Done()
+			return llm.Response{}, ctx.Err()
+		})
+		go func() { defer close(settled); _, _ = call(context.Background(), llm.Request{}) }()
+		<-entered
+		cause := errors.New("opaque-sibling-infrastructure-705")
+		failure := b.middleware(nil).WrapComplete(func(context.Context, llm.Request) (llm.Response, error) { return llm.Response{}, cause })
+		_, _ = failure(context.Background(), llm.Request{})
+		select {
+		case <-settled:
+		case <-time.After(5 * time.Second):
+			t.Fatal("terminal failure did not cancel admitted sibling")
+		}
+		b.active.Wait()
+		if !errors.Is(b.terminalFailure(), cause) {
+			t.Fatal("sibling context cancellation replaced infrastructure cause")
+		}
+	})
+	t.Run("planned-stops", func(t *testing.T) {
+		for _, cause := range []error{context.Canceled, context.DeadlineExceeded, errors.New("memory eval HTTP cap reached")} {
+			b := &memoryEvalAdmission{}
+			b.fail(cause)
+			if b.terminalFailure() != nil || b.beginStage(8, time.Now().Add(time.Minute)) != nil {
+				t.Fatal("planned stop classified as infrastructure")
+			}
+		}
+	})
+}
+
+type memoryEvalFailureAdapter struct {
+	cause error
+	calls *atomic.Int32
+}
+
+func (*memoryEvalFailureAdapter) Name() string { return "codex-jesse-at-pr" }
+func (a *memoryEvalFailureAdapter) Complete(context.Context, llm.Request) (llm.Response, error) {
+	a.calls.Add(1)
+	return llm.Response{}, a.cause
+}
+func (*memoryEvalFailureAdapter) Stream(context.Context, llm.Request) (llm.Stream, error) {
+	return nil, llm.ErrStreamUnsupported
+}
+
+func TestMemoryEvalGradeFalsePositives(t *testing.T) {
+	old, revised := "From the repository root run sh scripts/check.sh\n", "From the repository root run sh scripts/check.sh --current\n"
+	toolEvent := func(name string, args map[string]any, output string, exit int) events.SessionEvent {
+		return events.SessionEvent{Kind: events.EventToolCallEnd, Data: events.ToolCallEndData{ToolName: name, ArgumentsJSON: memoryEvalJSON(args), Output: output, ToolState: json.RawMessage(fmt.Sprintf(`{"exit_code":%d}`, exit))}}
+	}
+	read := func(output string) events.SessionEvent {
+		return toolEvent("memory_read", map[string]any{"scope": "project", "file_path": "MEMORY.md"}, output, 0)
+	}
+	write := func(path, body string) events.SessionEvent {
+		return toolEvent("memory_write", map[string]any{"scope": "project", "file_path": path, "content": body}, "", 0)
+	}
+	shell := func(command, output string, exit int) events.SessionEvent {
+		return toolEvent("shell", map[string]any{"command": command, "cwd": "/fixture"}, output, exit)
+	}
+	finish := events.SessionEvent{Kind: events.EventCommunicate, Data: events.CommunicateData{EndTurn: true}}
+	for _, tc := range []struct {
+		name    string
+		trace   []events.SessionEvent
+		after   map[string]string
+		grade   string
+		current bool
+	}{
+		{"unrelated-read", []events.SessionEvent{read("opaque-unrelated-note"), shell("sh scripts/check.sh", "ok\tmemoryfixture\t0.1s", 0)}, map[string]string{}, "retrieval", false},
+		{"empty-read", []events.SessionEvent{read(""), shell("sh scripts/check.sh", "ok\tmemoryfixture\t0.1s", 0)}, map[string]string{}, "retrieval", false},
+		{"printf-checker", []events.SessionEvent{shell("printf '%s\\n' 'scripts/check.sh'", "scripts/check.sh", 0)}, map[string]string{}, "application", false},
+		{"hidden-failed-checker", []events.SessionEvent{shell("sh scripts/check.sh --current || true", "FAIL", 0)}, map[string]string{}, "application", true},
+		{"correction-before-counterevidence", []events.SessionEvent{write("MEMORY.md", revised), shell("sh scripts/check.sh", "Checker now requires --current", 2), write("notes.md", "opaque-unrelated-note"), finish}, map[string]string{"projects/fixture-project/MEMORY.md": revised}, "correction", true},
+		{"incomplete-root-capture", []events.SessionEvent{write("MEMORY.md", "sh scripts/check.sh\n")}, map[string]string{"projects/fixture-project/MEMORY.md": "sh scripts/check.sh\n"}, "capture", false},
+		{"unrelated-capture-write", []events.SessionEvent{write("notes.md", "opaque-unrelated-note")}, map[string]string{"projects/fixture-project/MEMORY.md": old}, "capture", false},
+		{"successful-counterevidence-text", []events.SessionEvent{shell("sh scripts/check.sh", "Checker now requires --current", 0)}, map[string]string{}, "counterevidence", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := memoryEvalStageEvidence{Trace: tc.trace, Files: map[string]string{"workspace": "/fixture"}, WikiBefore: map[string]string{"projects/fixture-project/MEMORY.md": old}, WikiAfter: tc.after}
+			body := old
+			for _, ev := range tc.trace {
+				if ev.Kind != events.EventToolCallEnd {
+					continue
+				}
+				d := ev.Data.(events.ToolCallEndData)
+				var args map[string]any
+				_ = json.Unmarshal([]byte(d.ArgumentsJSON), &args)
+				obs := memoryEvalToolObservation{ToolName: d.ToolName, Arguments: memoryEvalObservationKey(d.ArgumentsJSON)}
+				if d.ToolName == "shell" {
+					obs.Checker = memoryEvalCheckerSource(tc.current)
+				}
+				if d.ToolName == "memory_write" {
+					obs.After, _ = args["content"].(string)
+					if args["file_path"] == "MEMORY.md" {
+						obs.Before = body
+						body = obs.After
+					}
+				}
+				e.Observations = append(e.Observations, obs)
+			}
+			memoryEvalGrade(&e, tc.current)
+			positive := map[string]bool{"retrieval": e.Retrieval, "application": e.Application, "correction": e.Correction, "capture": e.Capture, "counterevidence": e.Counterevidence}[tc.grade]
+			if positive {
+				t.Fatalf("false positive %s from unsupported evidence", tc.grade)
+			}
+			if !slices.Contains(e.Unproven, tc.grade) {
+				t.Fatal("unsupported grade not marked unproven")
+			}
+			if tc.grade == "retrieval" && !e.Application {
+				t.Fatal("retrieval negative lost its independent valid application")
+			}
+		})
+	}
+}
+
+func TestMemoryEvalCheckerOracle(t *testing.T) {
+	for _, pair := range []string{"recall", "correction"} {
+		raw, err := os.ReadFile(filepath.Join("testdata", "memory-eval", pair, "task", "scripts", "check.sh"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(raw) != memoryEvalCheckerSource(false) {
+			t.Fatal("checker oracle differs from approved fixture bytes")
+		}
+	}
+}
+
+func TestMemoryEvalGradeCompletion(t *testing.T) {
+	old, newRule := "From the repository root run sh scripts/check.sh\n", "From the repository root run sh scripts/check.sh --current\n"
+	for _, completion := range []events.SessionEvent{{Kind: events.EventCommunicate, Data: events.CommunicateData{EndTurn: true}}, {Kind: events.EventAssistantTextEnd, Data: events.AssistantTextEndData{Text: "opaque-final-706"}}} {
+		e := memoryEvalStageEvidence{Files: map[string]string{"workspace": "/fixture"}, WikiBefore: map[string]string{"lesson": old}, WikiAfter: map[string]string{"lesson": newRule}}
+		add := func(name string, args map[string]any, output string, exit int, obs memoryEvalToolObservation) {
+			e.Trace = append(e.Trace, events.SessionEvent{Kind: events.EventAssistantTextEnd, Data: events.AssistantTextEndData{}}, events.SessionEvent{Kind: events.EventToolCallEnd, Data: events.ToolCallEndData{ToolName: name, ArgumentsJSON: memoryEvalJSON(args), Output: output, ToolState: json.RawMessage(fmt.Sprintf(`{"exit_code":%d}`, exit))}})
+			obs.ToolName, obs.Arguments = name, memoryEvalJSON(args)
+			e.Observations = append(e.Observations, obs)
+		}
+		add("memory_read", map[string]any{"file_path": "MEMORY.md", "scope": "project"}, old, 0, memoryEvalToolObservation{})
+		add("shell", map[string]any{"command": "sh scripts/check.sh"}, "Checker now requires --current", 2, memoryEvalToolObservation{Checker: memoryEvalCheckerSource(true)})
+		add("memory_edit", map[string]any{"file_path": "MEMORY.md", "scope": "project", "old_string": "sh scripts/check.sh", "new_string": "sh scripts/check.sh --current"}, "", 0, memoryEvalToolObservation{Before: old, After: newRule})
+		add("shell", map[string]any{"command": "sh scripts/check.sh --current"}, "ok\tmemoryfixture\t0.1s", 0, memoryEvalToolObservation{Checker: memoryEvalCheckerSource(true)})
+		e.Trace = append(e.Trace, completion)
+		memoryEvalGrade(&e, true)
+		if !e.Retrieval || !e.Application || !e.Counterevidence || !e.Correction {
+			t.Fatalf("supported chronology not proven: %+v", e.Unproven)
+		}
+	}
+}
+
+func TestMemoryEvalPrerequisites(t *testing.T) {
+	for _, mode := range []string{"offline-darwin", "offline-no-bwrap", "live-darwin", "live-no-bwrap", "available"} {
+		t.Run(mode, func(t *testing.T) {
+			cmd := exec.Command(os.Args[0], "-test.run=^TestMemoryEvalPrerequisiteProbe$", "-test.v")
+			for _, entry := range os.Environ() {
+				if !strings.HasPrefix(entry, "EVENER_LIVE_TESTS=") {
+					cmd.Env = append(cmd.Env, entry)
+				}
+			}
+			cmd.Env = append(cmd.Env, "MEMORY_EVAL_PREREQUISITE_MODE="+mode)
+			out, err := cmd.CombinedOutput()
+			t.Log(string(out))
+			if strings.HasPrefix(mode, "live-") {
+				if err == nil || strings.Contains(string(out), "qualified-before-discovery") {
+					t.Fatal("unsupported live prerequisite did not refuse before discovery")
+				}
+			} else if err != nil {
+				t.Fatalf("offline unavailable qualification failed package: %v", err)
+			} else if mode == "available" {
+				if !strings.Contains(string(out), "qualified-before-discovery") {
+					t.Fatal("available qualification skipped")
+				}
+			} else if !strings.Contains(string(out), "--- SKIP:") {
+				t.Fatal("offline unsupported qualification not skipped")
+			}
+		})
+	}
+}
+
+func TestMemoryEvalPrerequisiteProbe(t *testing.T) {
+	mode := os.Getenv("MEMORY_EVAL_PREREQUISITE_MODE")
+	if mode == "" {
+		t.Skip("fixture subprocess only")
+	}
+	facts := sandbox.HostFacts{OS: "linux", BwrapCapable: true, BwrapPath: "/fixture/bwrap"}
+	if strings.HasSuffix(mode, "darwin") {
+		facts.OS = "darwin"
+	}
+	if strings.HasSuffix(mode, "no-bwrap") {
+		facts.BwrapCapable = false
+	}
+	if strings.HasPrefix(mode, "live-") {
+		memoryEvalLivePairsOnHost(t, func() (string, string, error) {
+			t.Fatal("qualified-before-discovery, unexpected source discovery")
+			return "", "", nil
+		}, facts)
+	} else {
+		memoryEvalRequireHost(t, false, facts)
+	}
+	t.Log("qualified-before-discovery")
 }
