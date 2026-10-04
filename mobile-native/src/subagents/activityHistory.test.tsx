@@ -1,5 +1,7 @@
 // Recorded producers and real phone decisions, with only API and native platform edges substituted.
-import type { JobActivityJob, SessionDelegatesResponse } from "@evener/appwire-client";
+import { readFileSync } from "node:fs";
+import { runInNewContext } from "node:vm";
+import type { JobActivityJob, SessionDelegatesResponse, SessionJobsResponse } from "@evener/appwire-client";
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { wireThread } from "@evener/appwire-client/testing/notifications";
@@ -10,13 +12,17 @@ import {
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { pressable, render, renderedText, screenConnection } from "../renderNative.testkit";
-import { activityListKey } from "./activityList";
+import { type ActivityListItem, activityListKey } from "./activityList";
 import { forgetStopRequestsForHub } from "./nativeStopRequests";
 import { flattenSubagents } from "./subagentModel";
 import { forgetSubagentTrees, subagentTree, type SubagentTreeSnapshot } from "./subagentTree";
 import { SubagentsScreen } from "./SubagentsScreen";
 
-const harness = vi.hoisted(() => ({ connection: {} as Record<string, unknown>, kv: new Map<string, string>() }));
+const harness = vi.hoisted(() => ({
+	connection: {} as Record<string, unknown>,
+	kv: new Map<string, string>(),
+	focused: true,
+}));
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 	TextInput: "TextInput",
@@ -27,7 +33,7 @@ vi.mock("@react-navigation/native", async () => {
 	const { useEffect } = await import("react");
 	return {
 		useFocusEffect: (effect: () => void | (() => void)) => useEffect(effect, [effect]),
-		useIsFocused: () => true,
+		useIsFocused: () => harness.focused,
 	};
 });
 vi.mock("../ConnectionProvider", () => ({ useConnection: () => harness.connection }));
@@ -51,6 +57,7 @@ beforeEach(() => {
 	forgetSubagentTrees(hubId);
 	forgetStopRequestsForHub(hubId);
 	vi.clearAllMocks();
+	harness.focused = true;
 });
 afterEach(() => {
 	for (const screen of screens.splice(0)) act(() => screen.unmount());
@@ -315,6 +322,82 @@ function laterRow(screen: ReactTestRenderer) {
 	return screen.root.find((node) => node.props.row?.kind === "job" && node.props.row.id === "later");
 }
 
+// Characterize the installed platform's content-length latch, not a second
+// callback supplied by the test. Product paging and rendered decisions stay real.
+function nativeEndBoundary(screen: ReactTestRenderer, visibleLength = 800, offset = 0) {
+	const source = readFileSync(
+		new URL("../../node_modules/@react-native/virtualized-lists/Lists/VirtualizedList.js", import.meta.url),
+		"utf8",
+	);
+	const start = source.indexOf("  _maybeCallOnEdgeReached() {");
+	const end = source.indexOf("\n  _onContentSizeChange =", start);
+	if (start < 0 || end < start) throw new Error("installed native edge method not found");
+	const platform = runInNewContext(`({${source.slice(start, end)}})`, { ON_EDGE_REACHED_EPSILON: 0.001 }) as {
+		_maybeCallOnEdgeReached(): void;
+	};
+	let callbacks = 0;
+	const list = () => screen.root.find((node) => node.props.keyExtractor === activityListKey);
+	const owner = {
+		props: {
+			data: [] as ActivityListItem[],
+			getItemCount: (data: ActivityListItem[]) => data.length,
+			onEndReached: (event: { distanceFromEnd: number }) => {
+				callbacks += 1;
+				list().props.onEndReached(event);
+			},
+		},
+		state: { pendingScrollUpdateCount: 0, cellsAroundViewport: { first: 0, last: 0 } },
+		_listMetrics: { hasContentLength: () => true, getContentLength: () => 180 },
+		_scrollMetrics: { visibleLength, offset },
+		_sentEndForContentLength: 0,
+		_sentStartForContentLength: 0,
+	};
+	return {
+		check() {
+			owner.props.data = list().props.data;
+			owner.state.cellsAroundViewport.last = owner.props.data.length - 1;
+			platform._maybeCallOnEdgeReached.call(owner);
+		},
+		get callbacks() {
+			return callbacks;
+		},
+	};
+}
+
+function heldSecondPage() {
+	const client = pagedHub({ active: true });
+	const entered = deferred<void>();
+	const answer = deferred<SessionJobsResponse>();
+	client.on("evener/thread/jobs/list", ({ scope, cursor }) => {
+		if (cursor === "page-2") {
+			entered.resolve();
+			return answer.promise;
+		}
+		const page = cursor === "page-3" ? 2 : 0;
+		return {
+			context,
+			scope: scope ?? "session",
+			jobs: Array.from({ length: 4 }, (_, offset) =>
+				job(page * 4 + offset, page === 2 && offset === 3 ? { terminal: false, status: "running" } : {}),
+			),
+			page: { complete: page === 2, issues: [], ...(page === 0 ? { nextCursor: "page-2" } : {}) },
+		};
+	});
+	return {
+		client,
+		entered: entered.promise,
+		answer,
+		respond(over: Partial<JobActivityJob> = {}) {
+			answer.resolve({
+				context,
+				scope: "subtree",
+				jobs: Array.from({ length: 4 }, (_, offset) => job(4 + offset, offset === 3 ? over : {})),
+				page: { complete: false, issues: [], nextCursor: "page-3" },
+			});
+		},
+	};
+}
+
 it("retains an open later job history, filter, search and qualified row through refresh and client replacement", async () => {
 	const options = { description: "History task 11" };
 	const client = pagedHub(options);
@@ -363,17 +446,14 @@ it("closed histories discover later live work, then retain one terminal output t
 	const second = published(
 		(snapshot) => !!snapshot.tree?.root.entries.some((entry) => entry.kind === "shell" && entry.job.jobId === "job-7"),
 	);
+	const boundary = nativeEndBoundary(screen);
+	act(() => boundary.check());
 	await act(async () => {
-		screen.root.findByType("FlatList" as never).props.onEndReached({ distanceFromEnd: 0 });
 		await second;
 	});
-	const third = published(
-		(snapshot) => !!snapshot.tree?.root.entries.some((entry) => entry.kind === "shell" && entry.job.jobId === "later"),
-	);
-	await act(async () => {
-		screen.root.findByType("FlatList" as never).props.onEndReached({ distanceFromEnd: 0 });
-		await third;
-	});
+	act(() => boundary.check());
+	expect(boundary.callbacks).toBe(1);
+	expect(cursors(client)).toEqual([undefined, "page-2", "page-3"]);
 	expect(laterRow(screen).props.row).toMatchObject({
 		state: "running",
 		job: { terminal: false, ownerRef: "local:root" },
@@ -406,6 +486,193 @@ it("closed histories discover later live work, then retain one terminal output t
 		title: "History task 11",
 		coordinator,
 	});
+});
+
+it("one native edge callback discovers a terminal parent's page-three active descendant with Done closed", async () => {
+	const recorded = subagentOutcomesDelegatesResponse().delegates.find((delegate) => delegate.outcome === "failed");
+	if (!recorded) throw new Error("missing recorded failed producer");
+	const client = hub();
+	client.on("evener/thread/activity/read", () => ({
+		context,
+		scope: "subtree",
+		delegates: { known: true, total: 101, active: 1, failed: 100, completed: 0 },
+		jobs: emptyCounts,
+		watches: emptyCounts,
+	}));
+	client.on("evener/thread/delegates/list", ({ cursor }) => {
+		const page = cursor === "page-3" ? 2 : cursor === "page-2" ? 1 : 0;
+		return {
+			context,
+			scope: "subtree",
+			delegates: Array.from({ length: page === 2 ? 1 : 50 }, (_, offset) => {
+				const index = page * 50 + offset;
+				return page === 2
+					? {
+							...recorded,
+							delegateId: "active-descendant",
+							ownerRef: "local:child-0",
+							childRef: "local:active-descendant",
+							parentDelegateId: "failed-parent-0",
+							name: "Active descendant",
+							lifecycle: "running",
+							phase: "running",
+							status: "running",
+							terminal: false,
+							outcome: undefined,
+							reason: undefined,
+							reportPreview: undefined,
+							runEndedAt: undefined,
+						}
+					: {
+							...recorded,
+							delegateId: `failed-parent-${index}`,
+							ownerRef: "local:root",
+							childRef: `local:child-${index}`,
+							name: `Failed parent ${index}`,
+						};
+			}),
+			page: { complete: page === 2, issues: [], ...(page < 2 ? { nextCursor: `page-${page + 2}` } : {}) },
+		};
+	});
+	const screen = await mount(client);
+	expect(pressable(screen, "Done · 50")?.props.accessibilityState).toEqual({ expanded: false });
+	const boundary = nativeEndBoundary(screen);
+	const second = published((snapshot) => flattenSubagents(snapshot.tree!).some((row) => row.id === "failed-parent-99"));
+	act(() => boundary.check());
+	await act(async () => {
+		await second;
+	});
+	act(() => boundary.check());
+	expect(boundary.callbacks).toBe(1);
+	expect(
+		client.calls
+			.filter((call) => call.method === "evener/thread/delegates/list")
+			.map((call) => (call.params as { cursor?: string }).cursor),
+	).toEqual([undefined, "page-2", "page-3"]);
+	const row = screen.root.find((node) => node.props.row?.id === "active-descendant").props.row;
+	expect(row).toMatchObject({
+		state: "running",
+		active: true,
+		parentTitle: "Failed parent 0",
+		ref: "local:active-descendant",
+	});
+	expect(pressable(screen, "Done · 100")?.props.accessibilityState).toEqual({ expanded: false });
+	expect(renderedText(screen)).toContain("RUNNING · 1");
+});
+
+it("new visible rows retire old closed-fold demand until the native edge is observed again", async () => {
+	const held = heldSecondPage();
+	const screen = await mount(held.client);
+	act(() => nativeEndBoundary(screen).check());
+	await held.entered;
+	await act(async () => held.respond({ terminal: false, status: "running", endedAt: undefined }));
+	expect(cursors(held.client)).toEqual([undefined, "page-2"]);
+	expect(screen.root.find((node) => node.props.row?.id === "job-7").props.row.state).toBe("running");
+	expect(subagentTree(hubId, coordinator.ref, "root").getSnapshot().hasMore).toBe(true);
+});
+
+it("scrolling away retires admitted demand before a same-height page completes", async () => {
+	const held = heldSecondPage();
+	const screen = await mount(held.client);
+	act(() => nativeEndBoundary(screen, 100, 80).check());
+	await held.entered;
+	act(() =>
+		screen.root
+			.find((node) => node.props.keyExtractor === activityListKey)
+			.props.onScroll({
+				nativeEvent: {
+					contentSize: { width: 393, height: 180 },
+					contentOffset: { x: 0, y: 0 },
+					layoutMeasurement: { width: 393, height: 100 },
+				},
+			}),
+	);
+	await act(async () => held.respond());
+	expect(cursors(held.client)).toEqual([undefined, "page-2"]);
+	expect(pressable(screen, "Completed · 8")?.props.accessibilityState).toEqual({ expanded: false });
+});
+
+it("changed content geometry retires old demand until the native list observes its edge again", async () => {
+	const held = heldSecondPage();
+	const screen = await mount(held.client);
+	const list = () => screen.root.find((node) => node.props.keyExtractor === activityListKey);
+	act(() => list().props.onContentSizeChange(393, 180));
+	act(() => nativeEndBoundary(screen).check());
+	await held.entered;
+	act(() => list().props.onContentSizeChange(393, 1000));
+	await act(async () => held.respond());
+	expect(cursors(held.client)).toEqual([undefined, "page-2"]);
+	expect(pressable(screen, "Completed · 8")?.props.accessibilityState).toEqual({ expanded: false });
+});
+
+it("an unfocused list pauses demand and returning resumes the same visible boundary", async () => {
+	const held = heldSecondPage();
+	const screen = await mount(held.client);
+	act(() => nativeEndBoundary(screen).check());
+	await held.entered;
+	act(() => {
+		harness.focused = false;
+		screen.update(element());
+	});
+	await act(async () => held.respond());
+	expect(cursors(held.client)).toEqual([undefined, "page-2"]);
+	await act(async () => {
+		harness.focused = true;
+		screen.update(element());
+	});
+	expect(cursors(held.client)).toEqual([undefined, "page-2", "page-3"]);
+	expect(laterRow(screen).props.row.state).toBe("running");
+});
+
+it("a failed continuation retains healthy history and recovers through shared backoff, not view retries", async () => {
+	vi.useFakeTimers();
+	try {
+		const held = heldSecondPage();
+		const screen = await mount(held.client);
+		act(() => nativeEndBoundary(screen).check());
+		await held.entered;
+		const error = new Error("temporary owner failure");
+		await act(async () => held.answer.reject(error));
+		expect(cursors(held.client)).toEqual([undefined, "page-2"]);
+		expect(pressable(screen, "Completed · 4")?.props.accessibilityState).toEqual({ expanded: false });
+		expect(subagentTree(hubId, coordinator.ref, "root").getSnapshot().pages?.jobs.error).toBe(error);
+		held.client.on("evener/thread/jobs/list", ({ cursor }) => {
+			const page = cursor === "page-3" ? 2 : cursor === "page-2" ? 1 : 0;
+			return {
+				context,
+				scope: "subtree",
+				jobs: Array.from({ length: 4 }, (_, offset) =>
+					job(page * 4 + offset, page === 2 && offset === 3 ? { terminal: false, status: "running" } : {}),
+				),
+				page: { complete: page === 2, issues: [], ...(page < 2 ? { nextCursor: `page-${page + 2}` } : {}) },
+			};
+		});
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(999);
+		});
+		expect(cursors(held.client)).toEqual([undefined, "page-2"]);
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(1);
+		});
+		expect(cursors(held.client)).toEqual([undefined, "page-2", "page-2", "page-3"]);
+		expect(laterRow(screen).props.row.state).toBe("running");
+		expect(pressable(screen, "Completed · 11")?.props.accessibilityState).toEqual({ expanded: false });
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
+it("disposing the list drops demand and rejects the delayed admitted page", async () => {
+	const held = heldSecondPage();
+	const screen = await mount(held.client);
+	const binding = subagentTree(hubId, coordinator.ref, "root");
+	act(() => nativeEndBoundary(screen).check());
+	await held.entered;
+	act(() => screen.unmount());
+	await act(async () => held.respond());
+	expect(cursors(held.client)).toEqual([undefined, "page-2"]);
+	expect(binding.getSnapshot().tree?.root.entries.filter((entry) => entry.kind === "shell")).toHaveLength(4);
+	expect(binding.getSnapshot().pages).toBeNull();
 });
 
 it("keeps healthy rows and unknown counts until a missing owner recovers", async () => {

@@ -333,8 +333,15 @@ its quiet Done segment and disappears when no work is running.
 
 The native binding retains shared membership across disconnection and client
 replacement. Its shared store owns paging, retries and later-page replay; the
-screen owns filter, search and independent disclosures. Renderer tests prove
-stable qualified row identity and preserved view intent through recovery.
+screen owns filter, search, independent disclosures and visible page demand.
+A successful page that only changes a closed fold's count keeps the observed
+end demand, because the native list emits its end callback once per content
+length. Each resource's shared loading/error state gates that demand. New visible
+rows, changed content geometry or scrolling away require a fresh native edge
+observation; an unfocused screen supplies no new demand. Errors recover through
+the shared backoff, and disposal rejects delayed pages. Renderer tests exercise
+the installed native edge latch, stable qualified row identity and preserved
+view intent through recovery.
 Physical-device scroll geometry, safe areas, keyboard and VoiceOver behavior
 require separate qualification.
 

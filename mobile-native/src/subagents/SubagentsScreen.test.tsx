@@ -772,8 +772,10 @@ it("keeps authoritative counts while visible end-of-list demand loads the next s
 	const screen = await mount();
 	expect(headerTitle()).toBe("Activity · 501 Get PR 2138 Test Clean");
 	expect(client.calls.filter((call) => call.method === "evener/thread/delegates/list")).toHaveLength(1);
-	await act(async () => {
+	act(() => {
 		screen.root.findByType("FlatList" as never).props.onEndReached({ distanceFromEnd: 0 });
+	});
+	await act(async () => {
 		await admitted;
 	});
 	expect(

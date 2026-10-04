@@ -17,8 +17,9 @@ header totals stay authoritative and a session's own attention stays intact.
 
 All six implementation slices are committed and their completion checks pass.
 All four simplify reports were read and six quality-only cleanups were applied.
-Their individual checks and full post-cleanup gates pass.
-The separate fresh whole-branch correctness review is pending.
+Their individual checks and full post-cleanup gates passed. The separate fresh
+whole-branch correctness review found one Important native discovery defect.
+The single author fix has observed red-green proof and passing full post-fix gates.
 This file does not authorize a push, a pull request, monitoring or deployment.
 
 ## Behavior proof
@@ -41,7 +42,7 @@ are recorded in the ledger; they are not counted as product regressions.
 | J10 | `mobile-native/src/subagents/activityHistory.test.tsx` uses recorded producers from `agent/testdata/subagentwire` through the shared adapter and phone renderer. Reported/failed/stopped generations, resumed running generations and delayed old replies retain coherent evidence. Existing descendant navigation and stop decisions remain covered. |
 | J11 | Board/project/location/pin/header regressions use the actual `subagents` navigation field and authoritative total 5, active 2, failed 3. Thirteen quiet-chip behavior assertions failed before the native-only fix. Own errors remain in Needs you ahead of questions/approvals; offline and stale-input decisions stay intact. Eight focused files, 428 tests and native typecheck pass after fixture repairs. |
 | J12 | Shared third-page recovery tests, real Chrome four-page history and native three-page renderer/binding tests retain current content and qualified identity. Native client replacement initially lost later rows; independent binding and shared retained-input regressions failed, then passed after the approved existing-owner fix. Chrome semantic offsets differ by at most 1 px against a 2 px bound through refresh/reconnect/reload. Phone proof covers view intent, not device geometry. |
-| J13 | Real Chrome discovers the oldest active producer on page four with Completed closed, then settles it once with its original output target. Phone `closed histories discover later live work, then retain one terminal output target after recovery` exercises actual FlatList page demand and separate closed folds. |
+| J13 | Real Chrome discovers the oldest active producer on page four with Completed closed, then settles it once with its original output target. Phone `closed histories discover later live work, then retain one terminal output target after recovery` now executes the installed native content-length latch rather than injecting two end callbacks. It and the failed-parent/active-descendant page-three case failed on the original view, then pass with one native callback and continued shared-owner demand. Separate closed folds, later terminal recovery and original output access remain asserted. |
 | J14 | Real start/forward failure and terminal-append retry tests preserve lifecycle results and prevent false background acknowledgement. These retain the existing failure/retry owner. |
 
 ## Paging and recovery matrix
@@ -130,7 +131,67 @@ iOS Metro modules, passed 5,536 native tests in 365 files and 785 shared-mobile
 tests in six files, native types/lint/script imports, all three web gate lanes,
 the production web build and all eleven real browser guards. Test counts did not
 decrease. Existing SQLite/cache/npm/generated-size/large-chunk warnings remain
-unsuppressed. The separate whole-branch correctness review has not run.
+unsuppressed. The separate whole-branch correctness result follows.
+
+## Final correctness review and author fix
+
+The sole actual fresh-context reviewer, `dlg_034ZqDdM222b7UQRJ6Xp6G`, reviewed
+all nine commits and 67 paths from the branch base through
+`109fd8ec6ee20738baeaa110980e426e2c2237a6`, with the explicit most-capable
+`codex-jesse-at-pr/gpt-6.1-sol-1m` model and high reasoning effort. The initial
+explorer dispatch, `dlg_034Zq9QwUu2E3cnIrRZr5p`, returned an inventory and
+explicitly performed no correctness analysis. It is not a review or verdict.
+
+The actual review found no Critical issues, one Important issue and no new
+Minors. Its technical verdict was With fixes, with no integration authorization.
+The author read the complete report, graded the Important finding by its effect
+and recorded every declined behavior in the chronological rulings below.
+
+Closed phone history can consume a second page without changing its height.
+The installed native `VirtualizedList` emits its end callback once per content
+length, so page-three live jobs or a failed parent's active descendants could
+remain unloaded despite authoritative active counts. The author independently
+executed both real-binding/platform-latch reproductions: one callback, two pages,
+100 folded terminal rows, `hasMore: true` and no reachable live row. Explicit
+page-three admission proved that shared cursors and projection preserved identity.
+
+The single fix retains observed visible-edge demand when only folded membership
+changes. The native view gates each resource with shared loading/error state;
+new visible keys, changed geometry, scrolling away, focus and disposal bound that
+demand. The existing store still owns admission, cursors, backoff and recovery.
+No new reader, subscription, retry timer or shared-store implementation was added.
+
+Both final synchronized acceptance tests failed on the original view with only
+root/page-two requests, then passed after restoring the fix. All twelve real
+phone history tests and native typecheck exited 0. Preserved cases include recorded
+reports, later-row client replacement, terminal/output identity and missing-owner
+recovery. New cases cover changed rows/geometry, scrolling away, focus pause and
+return, shared 1-second backoff followed by useful live recovery, and disposal with
+a delayed reply. No assertion was weakened. A React effect synchronization error
+and an `act` callback return-type error were fixture repairs, not extra product fixes.
+
+The first full post-fix gate, `job_034YjykTGJS8qGFnkg7GkI_0ZKns0uIZplG`,
+exited 2 after native tests: 5,542 passed and one existing screen paging test timed
+out. All 7,699 output bytes were read; later gates did not run. The exact case
+also timed out alone. Its asynchronous `act` awaited page admission before the
+event's state update could commit and trigger the effect. Committing the native
+event synchronously before awaiting admission fixed the fixture. All forty
+screen/history cases and native typecheck passed, with every assertion and
+deadline unchanged. No production change was needed for this timeout.
+
+Full post-fix `make test-native && make test-web && make test-api-package && make
+test-web-browser` exited 0 as `job_034YjykTGJS8qGFnkg7GkI_DwBPl6BqAM9N`.
+All 31,338 output bytes were read. The run bundled 2,463 iOS Metro modules,
+passed all 5,543 native tests in 365 files and all 785 shared-mobile tests in six
+files, native typecheck/lint/script imports, all three frontend gate lanes,
+installed packed-package qualification, the production web build and all eleven
+real browser guards. Existing warnings remain disclosed and unsuppressed.
+No second correctness review is scheduled. The report and reproduction were copied
+before reading into supplied scratch `sdd/2026-10-03-background-jobs/final-review/`.
+Historical author-observed gate logs and Chrome offsets were not independently
+replayed by this source reviewer. Full-repository CI and physical platform limits
+remain as stated below. The separate recursive Activity Sheet retains its existing
+failure-first presentation; this sidebar/native lane did not quiet that renderer.
 
 ### Deferred minors
 
@@ -185,3 +246,10 @@ No historical job files, output or transcripts were removed.
 - Task 4: Refresh cause confirmed at agent/session.go61-62: only actual shell start/finish lifecycle events publish Jobs invalidations. agent/jobs.go1439-1453 appends output and feeds watches, not Jobs; ordinary output is not a page-refresh producer. Copied browser failure has only initial four page calls despite the refresh control record. Ruling: Hold the newest of the existing151 backgrounds too, release its actual successful terminal lifecycle for refresh after the Go client confirms the oldest producer's refresh output, and retain the oldest for reconnect/final output. This uses the existing domain producer rather than adding invalidation behavior or synthetic notifications. Initial active count becomes2 and closed terminal fold149; membership151 and late visible semantic anchor remain required. Cost if wrong: terminal relocation adds a real layout transition to refresh qualification; the same completed target row and unchanged viewport still must preserve offset within2px.
 - Task 5: Ruling: Add retained same-ref/same-scope snapshot input to the existing SessionActivityStore, and pass native held membership before old-owner disposal — client replacement discards the rows from which the shared owner derives its displayed boundary; retaining them lets the existing paced replay and session fences recover without a native paging loop — cost if wrong: retained evidence could cross connection/identity boundaries, so test ref/scope isolation, runtime/read reset, resolved-session retirement, partial membership and late old replies before completion.
 - Task 6: Demo RED observed before assertion migration: frame7 expected deleted failed suffix but received undefined; focused runtime exit1. Fixture-only repairs then native tsc and eight real Vitest files428tests exit0, full outputs recovered/read at transcript6171-6184. Existing failed delegate outcome checks remain. Ruling: Include src/dev/demoSessions.test.ts in this task and final focused gate because its real frame7 assertion consumed removed ContextChip.failed; replace that presentation assertion with exact neutral labels/accessibility, retaining true outcome checks. Cost if wrong: demo chip expectations need adjustment, no product scope expansion.
+- Final: Ruling: Keep historical RED/GREEN logs, gate counts and Chrome offsets qualified by the author-observed retained artifacts, not the reviewer's inaccessible private logs — the reviewer inspected source/test construction but did not independently reproduce those historical runs, and completed full reads remain completed — cost if wrong: replay a disputed qualification without representing this review as independent execution evidence.
+- Final: Ruling: Leave full-repository lint/vet/test/race/fuzz and CI readiness unqualified — bounded local impacted gates and source review are the actual evidence, with no authorized push or CI run — cost if wrong: an integration or untargeted regression can remain until the future CI gate; no CI-green claim.
+- Final: Ruling: Leave Safari, installed-phone geometry/safe areas/keyboard and VoiceOver unqualified, while accepting the executed native source-level latch reproduction as an Important discovery defect — installed platform logic and real native decisions establish the missing demand without pretending to be a device journey — cost if wrong: device-specific layout/accessibility behavior still requires its own platform run.
+- Final: Ruling: Keep Chrome-specific runtime-limit routing expressly unqualified under the approved public-tool schema ruling — actual domain runtime-limit and web terminal-wording cases pass, but forcing the real browser producer would add an unapproved tool field or timeout policy — cost if wrong: the browser-specific runtime-limit path needs a separately approved producer surface.
+- Final: Ruling: Keep the unchanged recursive Activity Sheet failure-first/danger presentation outside this approved sidebar/native execution lane — the approved web slice changes JobsTab and shared sidebar rows, the recursive Activity Sheet retains its documented separate owner and was not changed — cost if wrong: opening that Sheet still emphasizes failed activity; broaden its presentation only with Jesse's scope decision rather than claim it quieted here.
+- Final: Ruling: Leave dependency advisories, Overview leftovers, cascade reload diagnosis, job-output auto-follow and bundle architecture as the independent unfinished follow-ups already recorded — this Jobs lane neither repairs nor qualifies those owners — cost if wrong: those recorded bugs/advisories remain until separately approved work; no completion claim for them.
+- Final: Ruling: Re-arm native visible-end demand after a successful same-height folded page through the existing shared owner, and replace twice-injected callback proof with the installed platform latch — the plan's original renderer test bypassed React Native's per-content-length latch and therefore missed closed-history live discovery; the native facade exposes existing per-resource read state without new cursors, subscriptions or retry timers — cost if wrong: stale visible demand could drain unseen pages or override backoff, so pin new visible rows, changed geometry, scrolling away, focus pause/resume, errors/backoff recovery and route disposal before completion.

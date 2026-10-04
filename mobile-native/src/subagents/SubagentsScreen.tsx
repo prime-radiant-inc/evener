@@ -3,7 +3,7 @@
 import { useIsFocused } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { SymbolView } from "expo-symbols";
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { FlatList, Pressable, Text, useWindowDimensions, View } from "react-native";
 import { BandHeader } from "../board/BoardRow";
 import { useConnection } from "../ConnectionProvider";
@@ -28,6 +28,7 @@ import { stopRequests } from "./nativeStopRequests";
 import { ShellJobRowView } from "./ShellJobRowView";
 import { SubagentRowView } from "./SubagentRowView";
 import { SubagentStrip, stateColors } from "./SubagentStrip";
+import type { SubagentTree } from "./subagentTree";
 import { useFollowedSubagentTree } from "./useSubagentTree";
 import { haptic } from "../haptics";
 
@@ -75,6 +76,22 @@ export function SubagentsScreen({ route, navigation }: NativeStackScreenProps<Ro
 	const requests = stopRequests(hubId);
 	const stopRevision = useSyncExternalStore(requests.subscribe, requests.getRevision);
 	const focused = useIsFocused();
+	const boundaryKeys = JSON.stringify(items.map(activityListKey));
+	const [boundary, setBoundary] = useState<{ tree: SubagentTree; keys: string } | null>(null);
+	const contentSize = useRef<{ width: number; height: number } | null>(null);
+	const delegatePage = snapshot.pages?.delegates;
+	const jobPage = snapshot.pages?.jobs;
+	useEffect(() => {
+		if (!focused || boundary?.tree !== tree || boundary.keys !== boundaryKeys) return;
+		// A closed fold can consume a page without changing the native list's
+		// height. Keep its observed edge demand, not a view-owned retry loop.
+		for (const [resource, page] of [
+			["delegates", delegatePage],
+			["jobs", jobPage],
+		] as const) {
+			if (page?.hasMore && !page.loading && !page.error && !page.permanent) void tree.loadMore(resource);
+		}
+	}, [focused, boundary, boundaryKeys, tree, delegatePage, jobPage]);
 	const toast = useToast();
 	const showToast = toast.show;
 	useEffect(() => {
@@ -237,8 +254,14 @@ export function SubagentsScreen({ route, navigation }: NativeStackScreenProps<Ro
 		<View style={{ flex: 1, backgroundColor: palette.page }}>
 			<FlatList
 				data={items}
-				onEndReached={() => {
-					if (snapshot.hasMore) void tree.loadMore();
+				onEndReached={() => setBoundary({ tree, keys: boundaryKeys })}
+				onScroll={({ nativeEvent: { contentSize, contentOffset, layoutMeasurement } }) => {
+					if (contentSize.height - contentOffset.y - layoutMeasurement.height > 2) setBoundary(null);
+				}}
+				onContentSizeChange={(width, height) => {
+					const previous = contentSize.current;
+					contentSize.current = { width, height };
+					if (previous && (previous.width !== width || previous.height !== height)) setBoundary(null);
 				}}
 				keyExtractor={activityListKey}
 				renderItem={renderItem}

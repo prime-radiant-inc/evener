@@ -15,6 +15,7 @@ import type { ConversationClientLike } from "../../../mobile/src/services/conver
 export interface SubagentTreeSnapshot {
 	tree: ActivityTree | null;
 	summary: SessionActivitySummary | null;
+	pages: Pick<SessionActivitySnapshot, "delegates" | "jobs"> | null;
 	loading: boolean;
 	failed: boolean;
 	unsupported: boolean;
@@ -139,10 +140,12 @@ export class SubagentTree {
 	reload(): Promise<void> {
 		return this.store?.refresh() ?? Promise.resolve();
 	}
-	loadMore(): Promise<void> {
+	loadMore(resource?: "delegates" | "jobs"): Promise<void> {
 		const store = this.store;
 		return store
-			? Promise.all([store.loadMore("delegates"), store.loadMore("jobs")]).then(() => {})
+			? Promise.all(
+					(resource ? [resource] : (["delegates", "jobs"] as const)).map((name) => store.loadMore(name)),
+				).then(() => {})
 			: Promise.resolve();
 	}
 	private build(): SubagentTreeSnapshot {
@@ -154,6 +157,7 @@ export class SubagentTree {
 		return {
 			tree,
 			summary: state?.summary ?? this.presentation?.summary ?? null,
+			pages: state ? { delegates: state.delegates, jobs: state.jobs } : null,
 			loading: tree === null && this.client !== null && errors.some((read) => read.loading || read.pending),
 			failed: tree === null && errors.some((read) => read.error !== null && !read.permanent),
 			unsupported: errors.some((read) => read.permanent),

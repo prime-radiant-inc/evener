@@ -138,7 +138,10 @@ lasts for the app lifetime and adds no disk persistence.
   rows while chips keep authoritative counts, including unknown counts. The
   binding carries loaded membership into its replacement shared store after
   reconnect, so its existing paging owner restores later rows without a phone
-  retry loop. Renderer tests cover identity and view intent; device geometry,
+  retry loop. Visible end demand survives same-height closed-history pages;
+  changed rows/geometry, scrolling away and focus gate further demand, while
+  errors retain the shared backoff. Tests execute the installed native edge
+  latch with real paging and rendering. They cover identity and view intent; device geometry,
   keyboard and VoiceOver remain separate qualification.
 - Board, project/location and pinned session rows show only running delegates
   in their subagent chips. Settled failures have no visual or spoken count.
