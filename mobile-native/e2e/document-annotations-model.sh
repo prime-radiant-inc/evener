@@ -2,8 +2,9 @@
 # Real Foundation regression, no React UI runtime or generated selection events.
 set -euo pipefail
 [[ $(uname -s) == Darwin ]]
-root=$(cd "$(dirname "$0")/../.." && pwd)
+driver=$(cd "$(dirname "$0")" && pwd)
 artifacts=${1:?new owned artifact directory required}
+root=${2:?exact source checkout required}
 test -d "$artifacts"
 pkg="$root/mobile-native/node_modules/react-native-enriched-markdown"
 test ! -L "$root/mobile-native/node_modules"
@@ -13,11 +14,16 @@ mkdir "$artifacts/model-objects"
 objects="$artifacts/model-objects"
 cleanup() {
   local status=$?
+  local cleanup_status=0
   trap - EXIT
   for name in md4c.o parser.o ast.o model.o native-model; do
-    if [[ -e "$objects/$name" ]]; then rm -- "$objects/$name" || status=1; fi
+    if [[ -e "$objects/$name" ]]; then rm -- "$objects/$name" || cleanup_status=1; fi
   done
-  rmdir "$objects" || status=1
+  # clang emits this debug bundle alongside a linked -g executable. It is
+  # disposable output of this check, not the retained source or failure log.
+  rm -rf -- "$objects/native-model.dSYM" || cleanup_status=1
+  rmdir "$objects" || cleanup_status=1
+  if [[ "$status" == 0 ]]; then status=$cleanup_status; fi
   exit "$status"
 }
 trap cleanup EXIT
@@ -29,6 +35,6 @@ xcrun clang "${cflags[@]}" -fobjc-arc -Wall -Wextra -Werror -I "$pkg/ios/parser"
   -c "$pkg/ios/parser/ENRMOriginalDocumentModel.m" -o "$objects/model.o"
 xcrun clang++ "${cflags[@]}" -std=c++17 -fobjc-arc -Wall -Wextra -Werror -framework Foundation \
   -I "$pkg/ios/parser" -I "$pkg/cpp/parser" \
-  "$pkg/ios/parser/MarkdownSourceParser.mm" "$root/mobile-native/e2e/document-annotations-model.mm" \
+  "$pkg/ios/parser/MarkdownSourceParser.mm" "$driver/document-annotations-model.mm" \
   "$objects/md4c.o" "$objects/parser.o" "$objects/ast.o" "$objects/model.o" -o "$objects/native-model"
 "$objects/native-model"
