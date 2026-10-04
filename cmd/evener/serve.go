@@ -107,16 +107,9 @@ type serveServer interface {
 	SetSandboxEscalationResolveFunc(func(string, bool) error)
 	SetDelegateStopFunc(func(string) (appwire.DelegateStopOutcome, error))
 	SetCompactFunc(func(context.Context) error)
-	SetSteerFunc(func(string) error)
-	SetSteerWithImagesFunc(func(string, []server.ImageAttachment) error)
-	SetQueueFunc(func(string) error)
-	SetQueueWithImagesFunc(func(string, []server.ImageAttachment) error)
 	SetGoalFunc(func(string) (bool, error))
 	SetNotesHumanSetFunc(func(outerID, note string) (appwire.NotesHumanSetResponse, error))
 	SetUrlsRemoveFunc(func(outerID, id string) (bool, error))
-	SetDrainAsSteerFunc(func() error)
-	SetDrainAsSteerWithInputFunc(func(string, []server.ImageAttachment) error)
-	SetCancelQueuedFunc(func(int, string) (string, int, error))
 	// SetThreadEnvelopeSource replaces sixteen read-time session callbacks with
 	// one seam the daemon samples at change time. See server/thread_envelope.go.
 	SetThreadEnvelopeSource(server.ThreadEnvelopeSource)
@@ -1434,17 +1427,6 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		return getSession().StopDelegateRun(delegateID)
 	})
 	srv.SetCompactFunc(func(ctx context.Context) error { return getSession().Compact(ctx) })
-	// The steer RPC carries human-sent steering, so it takes the user-sourced
-	// entry points: UIs render it as a user message, not a system steering
-	// divider (issue #24).
-	srv.SetSteerFunc(func(text string) error { return getSession().SteerFromUser(text) })
-	srv.SetSteerWithImagesFunc(func(text string, images []server.ImageAttachment) error {
-		return getSession().SteerFromUserWithImages(text, images)
-	})
-	srv.SetQueueFunc(func(text string) error { return getSession().Enqueue(ctx, text) })
-	srv.SetQueueWithImagesFunc(func(text string, images []server.ImageAttachment) error {
-		return getSession().EnqueueWithImages(ctx, text, images)
-	})
 	srv.SetGoalFunc(func(objective string) (bool, error) {
 		if strings.TrimSpace(objective) == "" {
 			return false, getSession().ClearGoal()
@@ -1456,13 +1438,6 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	})
 	srv.SetUrlsRemoveFunc(func(outerID, id string) (bool, error) {
 		return getSession().RemoveSessionURL(outerID, id)
-	})
-	srv.SetDrainAsSteerFunc(func() error { return getSession().DrainAsSteer(ctx) })
-	srv.SetDrainAsSteerWithInputFunc(func(text string, images []server.ImageAttachment) error {
-		return getSession().DrainAsSteerWithInput(ctx, text, images)
-	})
-	srv.SetCancelQueuedFunc(func(index int, expectedID string) (string, int, error) {
-		return getSession().CancelQueued(ctx, index, expectedID)
 	})
 	srv.SetRetrySafeTurnFunctions(server.RetrySafeTurnFunctions{
 		Start: func(params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {

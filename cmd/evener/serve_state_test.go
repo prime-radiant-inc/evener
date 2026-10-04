@@ -1184,6 +1184,35 @@ func TestRunServeClearSuccessClosesOldStreamAndInstallsPreparedIdentity(t *testi
 	}
 }
 
+func TestRunServeRetrySafeQueueUsesReplacementAfterClear(t *testing.T) {
+	deps, state, args := newClearServeDeps(t)
+	runClearAttempt(t, deps, state, args, func(obs *clearObservation) {
+		if obs.clearErr != nil {
+			t.Fatalf("clear: %v", obs.clearErr)
+		}
+		conn := state.srv.AppServer().NewConnection("queue-after-clear")
+		conn.HandleMessage(context.Background(), appwire.RequestMessage(
+			appwire.NewIntID(1), appwire.MethodInitialize,
+			appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion},
+		))
+		response := conn.HandleMessage(context.Background(), appwire.RequestMessage(
+			appwire.NewIntID(2), appwire.MethodTurnQueue, appwire.TurnQueueParams{
+				Ref:                "local:" + obs.oldSessionID,
+				ExpectedInstanceID: obs.newSessionID,
+				ClientMutationID:   "queue-after-clear",
+				Input:              []appwire.InputItem{{Type: "text", Text: "NEW-THREAD-INPUT"}},
+			},
+		))
+		if response.Kind() != appwire.MessageResponse {
+			t.Fatalf("queue after clear: %+v", response)
+		}
+		receipt := response.Response.Result.(appwire.TurnQueueResponse).Receipt
+		if receipt.ClientMutationID != "queue-after-clear" || receipt.InstanceID != obs.newSessionID || receipt.ThreadID != obs.newSessionID || len(receipt.QueueEntryIDs) != 1 {
+			t.Fatalf("queue receipt = %+v, want replacement instance %q", receipt, obs.newSessionID)
+		}
+	})
+}
+
 // TestClearSeedsTheReplacementEnvelopeBeforeItsBridgeRuns pins the seed that
 // follows /clear's identity commit.
 //
