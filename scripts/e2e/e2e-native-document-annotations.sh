@@ -11,7 +11,7 @@ usage() {
   cat <<'HELP'
 Usage: e2e-native-document-annotations.sh [--host HOST] [--source-ref REF]
        [--harness-ref REF] [--keep-artifacts]
-       [--phase layout|restore|long-press|code-preservation|font-diagnostic|qualify|cleanup] [--geometry FILE]
+       [--phase layout|restore|long-press|code-preservation|code-preservation-scaled|font-diagnostic|empty-diagnostic|qualify|cleanup] [--geometry FILE]
 
 Transfers an exact committed Git bundle into the reserved Mac directory.
 Source and harness refs default to committed HEAD, and are recorded separately.
@@ -21,14 +21,18 @@ creates a new task simulator and records fresh geometry on that exact device.
 long-press uses measured FIRST coordinates and saves the real handle receipt.
 code-preservation runs only the RN/new-leaf exact text, frame and Copy comparison,
 not the complete selection qualification. It needs no gesture-coordinate file.
+code-preservation-scaled sets the owned simulator's system content size to
+extra-extra-large and requires the same comparison to report real fontScale > 1.
 font-diagnostic reinstalls the exact retained app on a new owned simulator,
 mounts mixed-font case 6 with real taps and pauses 60 seconds for supported
 readonly metadata inspection. It always cleans up and proves no selection GREEN.
+empty-diagnostic mounts empty case 0 on the existing owned simulator and pauses
+60 seconds for supported geometry inspection, then always cleans up.
 qualify runs cross-row, table, Reader-code, prose/code-boundary and exact Copy checks.
 Geometry JSON: {"FIRST":{"x":0,"y":0},"HANDLE":{"x":0,"y":0},"SECOND":{"x":0,"y":0}}
 The amended probe also needs TABLE/CODE and FIRST_TO_CODE measured targets.
 Coordinates must come from this simulator's actual layout/screenshot receipt.
-layout, long-press and code-preservation retain only the new simulator. Always run
+layout, long-press and both code-preservation phases retain only the new simulator. Always run
 cleanup if qualification cannot continue. qualify cleans that simulator on exit.
 --keep-artifacts retains the local transfer bundle. Remote build/test evidence
 is retained in the manifest-owned directory on success and failure.
@@ -49,7 +53,7 @@ while (($#)); do
   esac
 done
 case "$host" in -*|*[!a-zA-Z0-9@._-]*) echo 'Invalid SSH host' >&2; exit 2;; esac
-case "$phase" in layout|restore|long-press|code-preservation|font-diagnostic|qualify|cleanup) ;; *) usage >&2; exit 2;; esac
+case "$phase" in layout|restore|long-press|code-preservation|code-preservation-scaled|font-diagnostic|empty-diagnostic|qualify|cleanup) ;; *) usage >&2; exit 2;; esac
 root=$(cd "$(dirname "$0")/../.." && pwd)
 cd "$root"
 sha=$(git rev-parse --verify "$ref^{commit}")

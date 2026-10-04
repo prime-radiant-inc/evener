@@ -49,6 +49,15 @@ final class DocumentAnnotationsUITests: XCTestCase {
         receipt("mixed-font-metadata-after-inspection")
     }
 
+    func testEmptyCodeGeometryReceipt() {
+        app.buttons["native-probe-code-comparison"].tap()
+        XCTAssertEqual(app.staticTexts["native-probe-code-case"].label, "Code case 0")
+        receipt("empty-code-geometry-before-inspection")
+        print("EMPTY_CODE_GEOMETRY_READY")
+        Thread.sleep(forTimeInterval: 60)
+        receipt("empty-code-geometry-after-inspection")
+    }
+
     private func point(_ name: String) throws -> XCUICoordinate {
         let env = ProcessInfo.processInfo.environment
         guard let x = env["ANNOTATION_\(name)_X"].flatMap(Double.init),
@@ -216,6 +225,11 @@ final class DocumentAnnotationsUITests: XCTestCase {
         let dimensions = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(scaleLabel.utf8)) as? [String: Double])
         let scale = try XCTUnwrap(dimensions["scale"])
         XCTAssertGreaterThan(scale, 0)
+        let fontScale = try XCTUnwrap(dimensions["fontScale"])
+        print("Code preservation actual fontScale: \(fontScale), screen scale: \(scale)")
+        if ProcessInfo.processInfo.environment["ANNOTATION_REQUIRE_SCALED_CODE"] == "1" {
+            XCTAssertGreaterThan(fontScale, 1, "The system category must drive real Reader scaling, not a test-only style")
+        }
         let tolerance = 1 / scale
         for (index, text) in codeStrings.enumerated() {
             XCTAssertEqual(app.staticTexts["native-probe-code-case"].label, "Code case \(index)")
