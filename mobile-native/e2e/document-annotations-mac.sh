@@ -72,7 +72,7 @@ case "$phase" in
     test -z "$sim_id"
     test ! -L mobile-native/node_modules
     npm ci --prefix mobile-native
-    bash mobile-native/e2e/document-annotations-model.sh "$artifacts"
+    bash "$root/checkouts/$harness_sha/mobile-native/e2e/document-annotations-model.sh" "$artifacts" "$checkout"
     exit 0;;
   layout)
     test -z "$sim_id"

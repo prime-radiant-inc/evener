@@ -3475,10 +3475,10 @@ index 0000000..c246716
 +NS_ASSUME_NONNULL_END
 diff --git a/node_modules/react-native-enriched-markdown/ios/parser/ENRMOriginalDocumentModel.m b/node_modules/react-native-enriched-markdown/ios/parser/ENRMOriginalDocumentModel.m
 new file mode 100644
-index 0000000..fb2ea8d
+index 0000000..09f73b8
 --- /dev/null
 +++ b/node_modules/react-native-enriched-markdown/ios/parser/ENRMOriginalDocumentModel.m
-@@ -0,0 +1,173 @@
+@@ -0,0 +1,175 @@
 +#import "ENRMOriginalDocumentModel.h"
 +#import "MarkdownSourceParser.h"
 +
@@ -3616,7 +3616,8 @@ index 0000000..fb2ea8d
 +    ENRMSourceFragment *fragment = [text attribute:ENRMSourceFragmentAttributeName atIndex:index
 +                           longestEffectiveRange:&run inRange:NSMakeRange(0, text.length)];
 +    NSRange overlap = NSIntersectionRange(run, range);
-+    if (overlap.length && fragment && !fragment.isGenerated && [_ownedFragments containsObject:fragment]) {
++    if (overlap.length && [fragment isKindOfClass:ENRMSourceFragment.class] &&
++        !fragment.isGenerated && [_ownedFragments containsObject:fragment]) {
 +      NSUInteger a = [self sourceBoundaryForFragment:fragment offset:overlap.location - run.location end:NO];
 +      NSUInteger b = [self sourceBoundaryForFragment:fragment offset:NSMaxRange(overlap) - run.location end:YES];
 +      if (a == NSNotFound || b == NSNotFound) return NSMakeRange(NSNotFound, 0);
@@ -3637,7 +3638,8 @@ index 0000000..fb2ea8d
 +    NSRange run;
 +    ENRMSourceFragment *fragment = [text attribute:ENRMSourceFragmentAttributeName atIndex:index
 +                           longestEffectiveRange:&run inRange:NSMakeRange(0, text.length)];
-+    if (fragment && !fragment.isGenerated && [_ownedFragments containsObject:fragment]) {
++    if ([fragment isKindOfClass:ENRMSourceFragment.class] &&
++        !fragment.isGenerated && [_ownedFragments containsObject:fragment]) {
 +      NSRange overlap = NSIntersectionRange(range, fragment.sourceRange);
 +      if (overlap.length) {
 +        NSString *raw = [_source substringWithRange:fragment.sourceRange];
