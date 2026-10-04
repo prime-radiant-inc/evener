@@ -951,6 +951,47 @@ describe("resolved native prose filename entities", () => {
 			expect(renderMarkdownFileReferences(markdown, "")).toEqual({ markdown, references: new Map() });
 		},
 	);
+	it("maps numeric C1 prose entities to fixed displayed values", () => {
+		const markdown =
+			"docs/&#128;.md docs/&#x80;.md docs/&#130;.md docs/&#x9F;.md\n\nBefore <!-- docs/&#128;.md --> docs/&euro;.md docs/€.md after";
+		const expected = ["docs/€.md", "docs/€.md", "docs/‚.md", "docs/Ÿ.md", "docs/€.md", "docs/€.md", "docs/€.md"];
+		expect(markdownFileReferences(markdown, "/work/tree").map(({ reference }) => reference.path)).toEqual(expected);
+		const result = renderMarkdownFileReferences(markdown, "/work/tree");
+		expect([...result.references.values()].map((reference) => reference.path)).toEqual(expected);
+		expect([...result.references.values()].map((reference) => reference.readTarget)).toEqual(
+			expected.map((value) => `/work/tree/${value}`),
+		);
+		const ids = [...result.references.keys()];
+		expect(result.markdown).toBe(
+			`[docs/€.md](${ids[0]}) [docs/€.md](${ids[1]}) [docs/‚.md](${ids[2]}) [docs/Ÿ.md](${ids[3]})\n\nBefore <!-- [docs/€.md](${ids[4]}) --> [docs/€.md](${ids[5]}) [docs/€.md](${ids[6]}) after`,
+		);
+	});
+	it("keeps unmapped C1 controls and non-prose entity surfaces unchanged", () => {
+		for (const markdown of [
+			"docs/&#129;.md",
+			"docs/&#x9D;.md",
+			"docs/a&#145;b.md",
+			"docs/a‘b.md",
+			"docs/a&#x92;b.md",
+			"docs/a’b.md",
+		]) {
+			expect(markdownFileReferences(markdown, "/work/tree")).toEqual([]);
+			expect(renderMarkdownFileReferences(markdown, "/work/tree")).toEqual({ markdown, references: new Map() });
+		}
+		const markdown =
+			'`docs/&#128;.md` docs/\\&#128;.md [R](./docs/&#128;.md) [N](./docs/&euro;.md) [E](./docs/\\&#128;.md) [D][d]\n\n[d]: ./docs/\\&#128;.md "keep &#128; title"';
+		const expected = ["docs/&#128;.md", "docs/&#128;.md", "docs/€.md", "docs/&", "docs/&"];
+		const discovered = markdownFileReferences(markdown, "/work/tree");
+		expect(discovered.map(({ reference }) => reference.path)).toEqual(expected);
+		expect(discovered.map(({ surface }) => surface)).toEqual(["code", "prose", "link", "link", "link"]);
+		const result = renderMarkdownFileReferences(markdown, "/work/tree");
+		expect([...result.references.values()].map((reference) => reference.path)).toEqual(expected);
+		expect([...result.references.values()].map((reference) => reference.readTarget)).toEqual(
+			expected.map((value) => `/work/tree/${value}`),
+		);
+		expect(result.markdown).toContain("[R](./docs/&#128;.md)");
+		expect(result.markdown).toContain('[d]: ./docs/\\&#128;.md "keep &#128; title"');
+	});
 	it("keeps exact bytes outside shrinking and expanding entity replacements", () => {
 		const markdown = "lead &eacute;: docs/a&amp;b.md, docs/&#x1F600;.md:12. docs/&NotEqualTilde;.md! tail &amp;\r\n";
 		const result = renderMarkdownFileReferences(markdown, "/work/tree");
@@ -959,5 +1000,21 @@ describe("resolved native prose filename entities", () => {
 			`lead &eacute;: [docs/a\\&b.md](${ids[0]}), [docs/😀.md](${ids[1]}):12. [docs/≂̸.md](${ids[2]})! tail &amp;\r\n`,
 		);
 		expect([...result.references.values()].map((ref) => ref.path)).toEqual(["docs/a&b.md", "docs/😀.md", "docs/≂̸.md"]);
+	});
+});
+
+describe("large adjoining prose spans", () => {
+	it.each([1, 1000, 30000])("preserves an escaped-star suffix with %i repeated words", (count) => {
+		const markdown = String.raw`docs/a.md \* ` + "word ".repeat(count);
+		if (count === 30000) expect(Buffer.byteLength(markdown, "utf8")).toBe(150013);
+		const discovered = markdownFileReferences(markdown, "/work/tree");
+		expect(discovered.map(({ reference }) => reference.path)).toEqual(["docs/a.md"]);
+		expect(discovered.map(({ reference }) => reference.readTarget)).toEqual(["/work/tree/docs/a.md"]);
+		const result = renderMarkdownFileReferences(markdown, "/work/tree");
+		const entries = [...result.references.entries()];
+		expect(entries.map(([, reference]) => reference.path)).toEqual(["docs/a.md"]);
+		expect(entries.map(([, reference]) => reference.readTarget)).toEqual(["/work/tree/docs/a.md"]);
+		expect(result.markdown).toBe(`[docs/a.md](${entries[0]?.[0]})${markdown.slice("docs/a.md".length)}`);
+		expect(result.markdown.split(entries[0]?.[0] ?? "missing-generated-id")).toHaveLength(2);
 	});
 });

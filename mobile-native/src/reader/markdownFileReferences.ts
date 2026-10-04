@@ -113,6 +113,46 @@ function entityText(raw: string, entity: string): string {
 		: String.fromCodePoint(value);
 }
 
+const proseNumericC1Replacements: Readonly<Record<number, string>> = {
+	0x80: "€",
+	0x82: "‚",
+	0x83: "ƒ",
+	0x84: "„",
+	0x85: "…",
+	0x86: "†",
+	0x87: "‡",
+	0x88: "ˆ",
+	0x89: "‰",
+	0x8a: "Š",
+	0x8b: "‹",
+	0x8c: "Œ",
+	0x8e: "Ž",
+	0x91: "‘",
+	0x92: "’",
+	0x93: "“",
+	0x94: "”",
+	0x95: "•",
+	0x96: "–",
+	0x97: "—",
+	0x98: "˜",
+	0x99: "™",
+	0x9a: "š",
+	0x9b: "›",
+	0x9c: "œ",
+	0x9e: "ž",
+	0x9f: "Ÿ",
+};
+
+// HTML resolves selected numeric C1 references through the Windows-1252 table
+// in displayed prose. Explicit destinations retain entityText's inherited URI
+// behavior, including controls which the shared filename grammar rejects.
+function proseEntityText(raw: string, entity: string): string {
+	const text = entityText(raw, entity);
+	if (!entity.startsWith("#")) return text;
+	const codePoint = text.codePointAt(0);
+	return codePoint === undefined ? text : (proseNumericC1Replacements[codePoint] ?? text);
+}
+
 // Each resolved UTF-16 unit owns its complete original range, including escapes
 // removed by marked's table/inline lexing. Never decode an escape token again.
 function proseText(token: Token, source: Source) {
@@ -131,7 +171,7 @@ function proseText(token: Token, source: Source) {
 		let cursor = 0;
 		for (const match of token.raw.matchAll(/&(#(?:x[\da-f]+|\d+)|[a-z][\da-z]+);/giu)) {
 			for (; cursor < match.index; cursor += 1) append(token.raw[cursor], cursor, cursor + 1);
-			append(entityText(match[0], match[1]), cursor, cursor + match[0].length);
+			append(proseEntityText(match[0], match[1]), cursor, cursor + match[0].length);
 			cursor += match[0].length;
 		}
 		for (; cursor < token.raw.length; cursor += 1) append(token.raw[cursor], cursor, cursor + 1);
@@ -242,8 +282,8 @@ function collectInline(
 			// Join escaped characters with their filename, but not across raw
 			// emphasis delimiters, opaque links/images or code wrappers.
 			if (prose && previous?.prose && previous.prose.ends.at(-1) === prose.starts[0]) {
-				previous.prose.starts.push(...prose.starts);
-				previous.prose.ends.push(...prose.ends);
+				for (const proseStart of prose.starts) previous.prose.starts.push(proseStart);
+				for (const proseEnd of prose.ends) previous.prose.ends.push(proseEnd);
 				previous.end = context.length;
 			} else spans.push({ token, source: located.source, start, end: context.length, prose });
 		}
