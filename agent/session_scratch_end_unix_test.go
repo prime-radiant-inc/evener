@@ -82,11 +82,16 @@ func TestRootCloseDoesNotWaitForTheSweep(t *testing.T) {
 	go func() { root.Close(); close(done) }()
 	select {
 	case <-done:
+	// TRIPWIRE: close returns in well under a second here; the sweep is held
+	// open forever, so a close that waits for it never returns at all, and this
+	// bound only turns that hang into a failure.
 	case <-time.After(10 * time.Second):
 		t.Fatal("root close waited for the scratch sweep")
 	}
 	select {
 	case <-started:
+	// TRIPWIRE: the sweep goroutine starts within milliseconds of close; this
+	// bound only turns a close that never starts it into a failure, not a hang.
 	case <-time.After(10 * time.Second):
 		t.Fatal("root close never started the scratch sweep")
 	}
