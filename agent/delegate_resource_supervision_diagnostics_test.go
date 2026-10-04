@@ -2,13 +2,17 @@ package agent
 
 import (
 	"fmt"
+	"os"
 	"reflect"
 	"runtime"
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/llm"
 )
 
@@ -70,6 +74,233 @@ func TestStableSupervisionFailureSnapshotCapturesPendingAttention(t *testing.T) 
 			}
 		}
 	})
+}
+
+// Dropping a populated reservation, or flattening its admission flags, must
+// lose evidence here even though the previous warm run is already quiescent.
+func TestStableSupervisionFailureSnapshotCapturesAttentionReservation(t *testing.T) {
+	t.Parallel()
+	fixture := newColdStableDelegateFixture(t, "")
+	fixture.adapter.steps = []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return finalResponse("warm result") },
+		func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("no action")} },
+	}
+	root := restoreSupervisionRoot(t, fixture, nil)
+	sub := warmStableSupervisionDelegate(t, root, fixture)
+	waitForStableSupervisionRun(t, root, fixture.childID)
+	const attentionID = "attention:diagnostic-reservation"
+	if appended, err := sub.sess.appendDelegateNotificationDurably(attentionID, "reservation-sentinel"); err != nil || !appended {
+		t.Fatalf("append reserved attention = %t, %v", appended, err)
+	}
+	reservation, err := root.delegateController.ReserveAttention(sub.sess, attentionID)
+	if err != nil {
+		t.Fatalf("reserve attention: %v", err)
+	}
+	snapshot := stableSupervisionFailureSnapshot(root, sub, fixture.adapter)
+	wantReservation := []map[string]any{{"generation": uint64(2), "attention_id": attentionID, "admitted": false, "resolution_ready": false}}
+	if !reflect.DeepEqual(snapshot["attention_reservations"], wantReservation) || !reflect.DeepEqual(snapshot["pending_attention_ids"], []string{attentionID}) {
+		t.Fatalf("unaccepted reservation diagnostics = %#v", snapshot)
+	}
+	if !reflect.DeepEqual(snapshot["blocking_predicates"], []string{"pending_attention_ids", "attention_reservations"}) {
+		t.Fatalf("unaccepted reservation blockers = %#v", snapshot["blocking_predicates"])
+	}
+	if err := sub.sess.acceptDelegateAttention(reservation); err != nil {
+		t.Fatalf("accept attention: %v", err)
+	}
+	snapshot = stableSupervisionFailureSnapshot(root, sub, fixture.adapter)
+	wantReservation = []map[string]any{{"generation": uint64(2), "attention_id": attentionID, "admitted": true, "resolution_ready": true}}
+	if !reflect.DeepEqual(snapshot["attention_reservations"], wantReservation) || !reflect.DeepEqual(snapshot["blocking_predicates"], []string{"attention_reservations"}) {
+		t.Fatalf("accepted reservation diagnostics = %#v", snapshot)
+	}
+	if !reflect.DeepEqual(snapshot["attention_resolutions"], map[string]delegateAttentionResolution{attentionID: delegateAttentionConsumed}) ||
+		!reflect.DeepEqual(snapshot["attention_resume_generations"], map[string]uint64{attentionID: 2}) {
+		t.Fatalf("accepted reservation transcript identity = %#v", snapshot)
+	}
+	started, err := root.delegateController.CommitStart(reservation)
+	if err != nil {
+		t.Fatalf("commit attention: %v", err)
+	}
+	if err := root.launchAcceptedDelegateAttention(sub, started); err != nil {
+		t.Fatalf("launch attention: %v", err)
+	}
+	waitForStableSupervisionRun(t, root, fixture.childID, fixture.adapter)
+	snapshot = stableSupervisionFailureSnapshot(root, sub, fixture.adapter)
+	if !reflect.DeepEqual(snapshot["attention_reservations"], []map[string]any{}) || !reflect.DeepEqual(snapshot["blocking_predicates"], []string{}) || snapshot["generation"] != uint64(2) {
+		t.Fatalf("settled reservation diagnostics = %#v", snapshot)
+	}
+}
+
+// The no-action path keeps its real ordinary settlement claim until
+// FinishNoAction, so the observer sees populated evidence rather than a mock.
+func TestStableSupervisionFailureSnapshotCapturesSettlementClaim(t *testing.T) {
+	t.Parallel()
+	fixture := newColdStableDelegateFixture(t, "")
+	fixture.adapter.steps = []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return finalResponse("warm result") },
+		func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("no action")} },
+	}
+	root := restoreSupervisionRoot(t, fixture, nil)
+	sub := warmStableSupervisionDelegate(t, root, fixture)
+	waitForStableSupervisionRun(t, root, fixture.childID)
+	snapshots := make(chan map[string]any, 1)
+	updateSessionTestConfig(sub.sess, func(cfg *testConfig) {
+		cfg.subagentAfterFinalStatePublish = func(got *subagent) {
+			snapshots <- stableSupervisionFailureSnapshot(root, got, fixture.adapter)
+		}
+	})
+	const attentionID = "attention:diagnostic-settlement"
+	armStableSupervisionAttention(t, sub, attentionID, "settlement-sentinel")
+	waitForStableSupervisionRun(t, root, fixture.childID, fixture.adapter)
+	var snapshot map[string]any
+	select {
+	case snapshot = <-snapshots:
+	default:
+		t.Fatal("real no-action final state observer was not reached")
+	}
+	wantClaim := []map[string]any{{"generation": uint64(2), "ready": true, "mode": delegateSettlementOrdinary}}
+	if !reflect.DeepEqual(snapshot["settlement_claims"], wantClaim) || snapshot["settlement_claimed"] != true ||
+		snapshot["binding_generation"] != uint64(2) || snapshot["binding_ready"] != true || snapshot["current_run_open"] != true {
+		t.Fatalf("live settlement claim diagnostics = %#v", snapshot)
+	}
+	if snapshot["completion_requirement"] != delegateCompletionAttentionOnly || snapshot["completion_outcome"] != delegateCompletionOutcomeAttentionNoAction || snapshot["terminal_seen"] != false {
+		t.Fatalf("no-action settlement evidence = %#v", snapshot)
+	}
+	if !reflect.DeepEqual(snapshot["attention_resolutions"], map[string]delegateAttentionResolution{attentionID: delegateAttentionConsumed}) ||
+		!reflect.DeepEqual(snapshot["attention_resume_generations"], map[string]uint64{attentionID: 2}) ||
+		!reflect.DeepEqual(snapshot["blocking_predicates"], []string{"subagent_finalizing", "current_run_open", "completion_channel"}) {
+		t.Fatalf("settlement transcript or blockers = %#v", snapshot)
+	}
+	snapshot = stableSupervisionFailureSnapshot(root, sub, fixture.adapter)
+	if !reflect.DeepEqual(snapshot["settlement_claims"], []map[string]any{}) || !reflect.DeepEqual(snapshot["blocking_predicates"], []string{}) {
+		t.Fatalf("settled claim diagnostics = %#v", snapshot)
+	}
+}
+
+func TestStableSupervisionFailureSnapshotCapturesArmRetryIDs(t *testing.T) {
+	t.Parallel()
+	fixture := newColdStableDelegateFixture(t, "")
+	fixture.adapter.steps = []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return finalResponse("warm result") },
+		func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("no action")} },
+	}
+	clock := agenttest.NewFakeClockAt(time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC))
+	root := restoreSupervisionRoot(t, fixture, clock)
+	sub := warmStableSupervisionDelegate(t, root, fixture)
+	waitForStableSupervisionRun(t, root, fixture.childID)
+	if !sub.trySetDisposeGate() {
+		t.Fatal("gate quiescent child during arm retry")
+	}
+	defer sub.clearDisposeGate()
+	for _, id := range []string{"attention:diagnostic-z", "attention:diagnostic-a"} {
+		if appended, err := sub.sess.appendDelegateNotificationDurably(id, "arm-retry-sentinel"); err != nil || !appended {
+			t.Fatalf("append retry attention %q = %t, %v", id, appended, err)
+		}
+	}
+	// Make the real filesystem read fail without changing or truncating the
+	// writer's bytes. The fake clock keeps both admitted retries observable.
+	path := transcriptPath(root.stateDir, fixture.childID)
+	backup := path + ".diagnostic-arm-backup"
+	if err := os.Rename(path, backup); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(path, 0o700); err != nil {
+		if restoreErr := os.Rename(backup, path); restoreErr != nil {
+			t.Errorf("restore transcript: %v", restoreErr)
+		}
+		t.Fatal(err)
+	}
+	restore := func() {
+		t.Helper()
+		if err := os.Remove(path); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(backup, path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Restore before root.Close even when an assertion fails during forcing.
+	restored := false
+	t.Cleanup(func() {
+		if !restored {
+			restore()
+		}
+	})
+	for _, id := range []string{"attention:diagnostic-z", "attention:diagnostic-a"} {
+		if err := sub.sess.armDelegateAttention(id); err == nil {
+			t.Fatalf("arm %q against directory transcript succeeded", id)
+		}
+	}
+	restore()
+	restored = true
+	snapshot := stableSupervisionFailureSnapshot(root, sub, fixture.adapter)
+	if !reflect.DeepEqual(snapshot["arm_retry_ids"], []string{"attention:diagnostic-a", "attention:diagnostic-z"}) ||
+		!reflect.DeepEqual(snapshot["pending_attention_ids"], []string{"attention:diagnostic-z", "attention:diagnostic-a"}) ||
+		!reflect.DeepEqual(snapshot["blocking_predicates"], []string{"arm_retry_ids", "pending_attention_ids"}) {
+		t.Fatalf("populated arm retry diagnostics = %#v", snapshot)
+	}
+	clock.Advance(jobNotificationRetryInitialDelay)
+	clock.Drain()
+	snapshot = stableSupervisionFailureSnapshot(root, sub, fixture.adapter)
+	if !reflect.DeepEqual(snapshot["arm_retry_ids"], []string{}) || snapshot["needs_attention"] != true || snapshot["generation"] != uint64(1) {
+		t.Fatalf("successful retry diagnostics = %#v", snapshot)
+	}
+	sub.clearDisposeGate()
+	sub.sess.notify()
+	waitForStableSupervisionRun(t, root, fixture.childID, fixture.adapter)
+}
+
+func TestStableSupervisionFailureSnapshotCapturesNotificationPayload(t *testing.T) {
+	t.Parallel()
+	fixture := newColdStableDelegateFixture(t, "")
+	fixture.adapter.steps = []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return finalResponse("warm result") },
+		func(llm.Request) llm.Response {
+			return llm.Response{Message: llm.Assistant("notification acknowledged")}
+		},
+	}
+	root := restoreSupervisionRoot(t, fixture, nil)
+	sub := warmStableSupervisionDelegate(t, root, fixture)
+	waitForStableSupervisionRun(t, root, fixture.childID)
+	if !sub.trySetDisposeGate() {
+		t.Fatal("gate quiescent child during notification delivery")
+	}
+	defer sub.clearDisposeGate()
+	started := time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC)
+	ended := started.Add(time.Second)
+	code := 7
+	jm := sub.sess.jobManager
+	for _, event := range []jobstore.Event{
+		{Kind: jobstore.EventJobStarted, TS: started, JobID: "job_diagnostic", Type: jobstore.JobShell, OwnerSessionID: fixture.childID, StartedAt: &started, Description: "notification-label", Intent: "notification-intent"},
+		{Kind: jobstore.EventJobFinished, TS: ended, JobID: "job_diagnostic", Status: jobstore.StatusFailed, Reason: "exit_nonzero", ExitCode: &code, EndedAt: &ended, OutputBytes: 42, TerminalGen: "diagnostic-generation"},
+		{Kind: jobstore.EventJobNotificationPending, TS: ended, JobID: "job_diagnostic", TerminalGen: "diagnostic-generation"},
+	} {
+		if err := jm.forwardEvent(event); err != nil {
+			t.Fatalf("route diagnostic job event %q: %v", event.Kind, err)
+		}
+	}
+	snapshot := stableSupervisionFailureSnapshot(root, sub, fixture.adapter)
+	want := []jobNotification{{
+		Kind: jobNotificationKindTerminal, JobID: "job_diagnostic", JobType: "shell", Status: "failed", Reason: "exit_nonzero",
+		Description: "notification-label", Intent: "notification-intent", TerminalGen: "diagnostic-generation", OutputBytes: 42, ExitCode: &code,
+		TranscriptRef: "job:job_diagnostic",
+	}}
+	if !reflect.DeepEqual(snapshot["pending_notifications"], want) || snapshot["notify_callback"] == "0x0" || snapshot["notify_callback"] == nil {
+		t.Fatalf("queued notification diagnostics = %#v", snapshot)
+	}
+	sub.clearDisposeGate()
+	sub.sess.notify()
+	waitForStableSupervisionRun(t, root, fixture.childID, fixture.adapter)
+	snapshot = stableSupervisionFailureSnapshot(root, sub, fixture.adapter)
+	if notifications, ok := snapshot["pending_notifications"].([]jobNotification); !ok || len(notifications) != 0 {
+		t.Fatalf("drained notification diagnostics = %#v", snapshot)
+	}
+	records, err := jm.store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record := records["job_diagnostic"]; record == nil || record.NotifyState != jobstore.NotifyDelivered || record.TerminalGen != "diagnostic-generation" {
+		t.Fatalf("durable notification delivery = %#v", record)
+	}
 }
 
 func stableSupervisionFailureSnapshot(root *Session, sub *subagent, adapter *fakeAdapter) map[string]any {
