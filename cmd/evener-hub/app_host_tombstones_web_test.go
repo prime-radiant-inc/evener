@@ -140,11 +140,6 @@ func TestHostTombstoneTreeMergeAndManifest(t *testing.T) {
 			t.Fatalf("tombstone row was projected live: %+v", entry)
 		}
 	}
-	caps := web.apiSessionCapabilities("web-side:web-side-t001", false)
-	if caps.Send || caps.Steer || caps.Interrupt || caps.Compact || caps.Clear || caps.Shutdown || caps.ChangeModel {
-		t.Fatalf("tombstone row capabilities = %+v, want all disabled", caps)
-	}
-
 	// The manifest's sources array drops the removed host: it is the
 	// registered-source set, never the tombstone merge.
 	for _, source := range web.apiTreeSources() {

@@ -578,8 +578,7 @@ func stateLabel(state string) string {
 
 // displayWord returns the unified display word (Track A §1/§2) for a raw
 // wire state, normalizing via stateLabel first and then delegating to
-// hubapi.StateWord — the same table cmd/evener-hub's stateLabel uses, so the
-// TUI and the web can never independently drift on vocabulary.
+// hubapi.StateWord, the shared display vocabulary.
 func displayWord(state string, askPending bool) string {
 	return hubapi.StateWord(stateLabel(state), askPending)
 }

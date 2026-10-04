@@ -1005,6 +1005,27 @@ func TestPastEntryTurns_StampsCostFromSessionModel(t *testing.T) {
 	}
 }
 
+// TestEvenerUsageFromCumulative pins the nil-when-zero convention (mirrors
+// evenerUsageFromLLM in cmd/evener/serve.go): an all-zero CumulativeUsage — a
+// fresh session or a meta written before WS2 — must map to a nil
+// *appwire.EvenerUsage so the usage cluster hides rather than rendering ↑0 ↓0.
+func TestEvenerUsageFromCumulative(t *testing.T) {
+	if got := evenerUsageFromCumulative(schema.CumulativeUsage{}); got != nil {
+		t.Fatalf("evenerUsageFromCumulative(zero) = %+v, want nil", got)
+	}
+
+	got := evenerUsageFromCumulative(schema.CumulativeUsage{
+		InputTokens:     100,
+		OutputTokens:    50,
+		CacheReadTokens: 10,
+		TotalTokens:     150,
+	})
+	want := &appwire.EvenerUsage{InputTokens: 100, OutputTokens: 50, CacheReadTokens: 10, TotalTokens: 150}
+	if got == nil || *got != *want {
+		t.Fatalf("evenerUsageFromCumulative = %+v, want %+v", got, want)
+	}
+}
+
 func TestPastEntryThread_CarriesWorkMetrics(t *testing.T) {
 	sessionID := hubtest.SessionID(t)
 	entry := hubcore.PastEntry{

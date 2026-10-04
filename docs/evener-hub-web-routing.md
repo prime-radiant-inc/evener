@@ -1,33 +1,28 @@
 # Evener Hub Web Routing
 
-Evener Hub uses a full-page app shell plus HTMX-loaded fragments.
+Evener Hub serves the SPA shell for page navigation. The browser reads session
+data and performs mutations over the authenticated AppWire connection at `/rpc`.
+The [HTTP mux](../cmd/evener-hub/web.go) retains document, image, asset, auth,
+health, and subscription-debug surfaces.
 
-- User-facing page routes stay clean and deep-linkable: `/`, `/new`, `/s/:ref`, `/settings`, and `/settings/:section`.
-- AppWire requests use `/rpc`; HTTP routes that have not yet migrated stay
-  under `/api`.
-- Internal fragments live under `/_partials/*` and require `HX-Request: true`.
+- Deep-linkable page routes include `/`, `/new`, `/s/:ref`, `/thread/:ref`,
+  `/settings`, `/settings/:section`, and `/credentials`.
+- `/s/:ref/images/:sha` serves session images through the
+  [session route handler](../cmd/evener-hub/web_workspace.go).
+- `/doc/file` serves raw session documents; `/doc/image` serves document images.
+- `/api/health` and `/api/debug/subscriptions` expose health and subscription
+  diagnostics.
 
-Fragment routes:
+The `/_partials/*` fragment endpoints and session form-action endpoints are
+unregistered. The session route handler returns 404 for unsupported
+`/s/:ref/:subroute` paths, including `state`, `details`, and `tasks`. Other
+unmatched paths may serve the SPA shell through the root catch-all route.
 
-- `/_partials/workspace/empty`
-- `/_partials/workspace/spawn`
-- `/_partials/s/:ref/workspace`
-- `/_partials/s/:ref/state`
-- `/_partials/s/:ref/details`
-- `/_partials/s/:ref/tasks`
-- `/_partials/settings/:section`
-
-Legacy fragment-looking paths such as `/sidebar`, `/workspace/spawn`, and
-`/s/:ref/state` are not public routes. Direct browser navigation should land on
-a page route or fail instead of rendering a fragment without the app shell.
-
-Sidebar navigation (AppWire, not fragments):
+Sidebar navigation:
 
 The sidebar is client-rendered: it reads typed navigation resources over the
 authenticated AppWire connection and keeps its own keyed DOM, instead of
-swapping in a server-rendered HTML partial. `/_partials/sidebar` and
-`/_partials/sidebar/project` are gone — there is no server-rendered sidebar
-left to fragment-route.
+swapping in a server-rendered HTML partial.
 
 - `evener/navigation/read` — the typed sidebar read surface. Its `manifest`
   resource provides the bounded descriptor/count index and attention summary;
