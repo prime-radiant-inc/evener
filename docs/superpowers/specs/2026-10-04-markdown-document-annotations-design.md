@@ -4,8 +4,11 @@ Date: 2026-10-04
 
 Status: Written specification approved by Jesse on 2026-10-04, including the
 saved-pane origin compatibility below. Subsequent storage/parser approvals are
-recorded under local storage. The implementation plan awaits review; product
-implementation has not started.
+recorded under local storage. Jesse approved the implementation plan and
+subagent-driven execution. Shared contracts are complete; native selection work
+is paused. Jesse selected a native code-text component. The written amendment
+below awaits independent re-review and Jesse's written-spec approval before a
+reviewed plan amendment or further native product edits.
 
 Source baseline: `abd240265411bb1a35f10d1761a56cf0685339ea`.
 
@@ -288,6 +291,73 @@ where useful but remain distinct records. Review must neither resend annotation
 handoffs nor clear annotation highlights. Previously saved review comments stay
 unchanged; no comment migration or compatibility layer is requested.
 
+### Native code-text amendment
+
+Replace only the React Native Text leaf for Markdown code blocks in
+`mobile-native/src/reader/ReaderBlock.tsx` with a content-only native code-text
+component maintained in the existing enriched-markdown patch. Jesse selected
+this direction; approval of this written amendment remains pending. Plain code
+files and `ReaderScreen`'s code-file lines retain their current renderer. This
+amendment authorizes no second React Native patch, WebView, renderer replacement
+for other content, or reduced selection scope.
+
+Keep Reader's existing inset View and horizontal ScrollView, including their
+padding, background, border radius and scrolling ownership. The new leaf adds
+no header, internal scroller, inset or code-language chrome. Keep block actions,
+change markers, outline, reading position and explicit Comment/Review behavior.
+
+Preserve the exact displayed code string currently supplied by
+`block.code?.text ?? block.text`, including tabs, newline spelling and trailing
+blank lines. Preserve the current `useCodeText` font, size, line height and
+palette color, Reader and system text-scaling behavior, direction/alignment,
+baselines, wrapping and intrinsic width/height. Match the existing Reader code
+leaf, not the library's code-block container. Existing helpers that trim
+trailing LF, force left-to-right paragraphs or change font-leading/height rules
+are reusable only where they preserve that contract. Preserve both the existing
+whole-block Copy action and selected-text system Copy, selectable text,
+VoiceOver text/actions and ordinary selection adjustment.
+
+Wire the leaf through the patched package's public TypeScript wrapper, Fabric
+codegen and native component. Register its verified text provenance and live
+layout with the same document-wide coordinator as prose and table cells. The
+coordinator retains the immutable original-document model and global UTF-16
+ranges across row recycling. Verify the displayed code against that model,
+including any parser transformations. A local string match, reconstructed row
+Markdown or guessed block offset cannot establish source provenance.
+
+The leaf's drawing, hit-testing, caret positions and every rectangle for a
+mapped range use the same owned text layout. Geometry registrations identify
+their snapshot, mapping, mounted row and layout generation. Convert geometry
+through the existing inset and horizontal/vertical scrolling coordinates and
+clip painting and hits to visible text. Source/style/font/width changes,
+scrolling and row remount/recycling invalidate affected geometry. The leaf and
+coordinator rebuild it from current layout before accepting events or painting
+saved ranges. Stale geometry never changes a saved source anchor; ordinary
+reading remains usable while layout is refreshed.
+
+Real native handle movement must cross code, prose, table and row boundaries.
+The coordinator owns selection completion at gesture end and vertical
+autoscroll; the existing scrollers retain ordinary horizontal reading gestures.
+Saved-range taps return all overlapping annotation identities. Neither
+JavaScript-generated events nor a separately recreated text layout qualify
+this boundary.
+
+Qualify the new leaf against the existing Reader code path in the same installed
+iPhone build, using unchanged outer containers and independent literal
+fixtures. Compare code with zero, one and multiple trailing LF, empty lines,
+tabs, Unicode/combining characters, mixed direction, and lines wider than the
+viewport. Verify displayed/copied text, baseline and size measurements, Reader
+and system scale changes, accessibility actions, horizontal scrolling, real
+selection handles and block menus. Then run the unchanged document-wide source,
+completion, table, saved-highlight/tap and recycling/reflow gates. A standalone
+library code block is not the Reader preservation oracle.
+
+If installed comparison exposes a preservation failure that cannot be fixed
+within this leaf boundary, stop and report it to Jesse. Changing Reader's
+containers, plain-code-file rendering, selection scope or adding a React Native
+patch requires a new approved and independently reviewed amendment. Compilation
+or a layout-only result never establishes native selection GREEN.
+
 ## Boundaries, security, and non-goals
 
 - Preserve existing local and remote document-read permissions and routing.
@@ -316,7 +386,7 @@ Current entry points and constraints, verified from the source baseline:
 | Document content/revision contract | `appwire-client/typescript/docContent.ts` and `cmd/evener-hub/doc_serve.go` |
 | Native reader, block parsing and local memory | `mobile-native/src/reader/ReaderScreen.tsx`, `ReaderBlock.tsx`, `documentBlocks.ts`, `documentMemory.ts`, `nativeDocumentMemory.ts` |
 | Native comment/review and draft handoff | `mobile-native/src/reader/CommentSheet.tsx`, `ReviewSheet.tsx`, `mobile-native/src/session/pendingQuote.ts`, `mobile-native/src/screens.tsx` |
-| Native renderer extension | `mobile-native/patches/react-native-enriched-markdown+1.0.2.patch` |
+| Native renderer extension | `mobile-native/patches/react-native-enriched-markdown+1.0.2.patch`, including the proposed content-only Markdown code-text component and its public/Fabric/native wiring |
 
 Implementation must publish reusable headless annotation behavior through the
 shared AppWire TypeScript package's documented export boundary. Consumers import
@@ -341,6 +411,7 @@ algorithm to manufacture its own expected values.
 | Desktop selection to draft | Real browser selection opens the box, Send draws the exact highlight, hover/focus shows the note, and the opening draft receives one reference with zero input mutations |
 | Phone-browser reading | Touch-sized viewport and selection, usable comment box above the keyboard, multiple notes while the composer is unmounted, Return preserves reading/draft work |
 | Native iPhone journey | Built current-source native renderer demonstrates automatic completed-selection opening, exact persistent highlights and tap notes, correct session draft handoff, and no send/queue/steer |
+| Native Markdown code preservation | Installed comparison against the existing Reader code leaf preserves exact text/Copy, trailing blank lines, direction, baseline/size, scaling, scrolling, menus and accessibility; real handles and mapped saved-range rectangles/taps work across code and other rows |
 | Markdown coordinate cases | Independent fixtures cover duplicate passages in one block and different blocks, emphasis, links/entities/escapes, Unicode, CRLF, lists, tables, code, and multi-block selections |
 | Captured draft references | Edits after handoff move the selected passage and put an identical quotation at its old coordinates; saved annotations expire, while the draft entry retains its captured revision and distinguishing context, stays snapshot-scoped, and preserves later user edits |
 | Persistence and recovery | Reload/restart/background/foreground restores unchanged-file notes, resumes unexpired pending handoffs once, and preserves in-progress comment work |
