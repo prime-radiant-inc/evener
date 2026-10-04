@@ -79,8 +79,8 @@ const IMAGE_RE = new RegExp(String.raw`!\[([^\]]*)\](?:${INLINE_DESTINATION}|\[[
 // (![alt][ref]) or shortcut (![alt]), reads as its alt text instead. An image
 // needs "](" in its paragraph, or a reference definition, which needs "]:", so
 // a paragraph with neither reads as written, keeping code like vec![1, 2, 3].
-// Stripping can write a "]:" of its own ([r]![](u): ...), so if the result
-// holds one, every paragraph is stripped as before.
+// If the markdown holds a "]:", or stripping writes one ([r]![](u): ...), the
+// whole markdown goes through withoutAnyImages.
 function withoutImages(markdown: string): string {
 	if (markdown.includes("]:")) return withoutAnyImages(markdown);
 	const text = markdown
