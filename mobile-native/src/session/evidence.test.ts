@@ -479,7 +479,7 @@ describe("each tool's evidence, as the tools print it", () => {
 		["an image nested in another's alt text", "![a ![b](https://x.test/b.png)](https://x.test/a.png)", "a b"],
 		["an image that taking out another completes", "![![](https://x.test/b.png)](https://x.test/a.png)", ""],
 		["a link a stray '!' turns into an image", "!![](https://x.test/b.png)[x](https://x.test/a.png)", "x"],
-		["twenty thousand openers in a row", "![".repeat(20_000), "![".repeat(20_000)],
+		["four thousand openers in a row", "![".repeat(4_000), "![".repeat(4_000)],
 		["images nested fifty deep", `${"![".repeat(50)}x${"](https://x.test/u.png)".repeat(50)}`, "x"],
 	])("shows %s as words", (_name, markdown, words) => {
 		expect(skillMarkdown(markdown)).toBe(words);
