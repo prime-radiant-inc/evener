@@ -207,16 +207,27 @@ test_args=()
 for test_name in "${test_names[@]}"; do
   test_args+=("-only-testing:DocumentAnnotationsUITests/DocumentAnnotationsUITests/$test_name")
 done
+test_status=0
 xcodebuild test-without-building -xctestrun "$run_xctestrun" \
   -destination "id=$sim_id" -parallel-testing-enabled NO \
   "${test_args[@]}" \
-  -resultBundlePath "$result"
-cmp "$xctestrun" "$artifacts/original.xctestrun"
+  -resultBundlePath "$result" || test_status=$?
+if ! cmp "$xctestrun" "$artifacts/original.xctestrun"; then
+  echo 'Original generated xctestrun changed during the run' >&2
+  if [[ "$test_status" == 0 ]]; then test_status=1; fi
+fi
 runner="$ui_derived/Build/Products/Release-iphonesimulator/DocumentAnnotationsUITests-Runner.app"
 installed_runner=$(xcrun simctl get_app_container "$sim_id" com.primeradiant.evener.native.annotation-tests.xctrunner app)
-cmp "$runner/DocumentAnnotationsUITests-Runner" "$installed_runner/DocumentAnnotationsUITests-Runner"
-cmp "$runner/PlugIns/DocumentAnnotationsUITests.xctest/DocumentAnnotationsUITests" \
-  "$installed_runner/PlugIns/DocumentAnnotationsUITests.xctest/DocumentAnnotationsUITests"
+if ! cmp "$runner/DocumentAnnotationsUITests-Runner" "$installed_runner/DocumentAnnotationsUITests-Runner" ||
+   ! cmp "$runner/PlugIns/DocumentAnnotationsUITests.xctest/DocumentAnnotationsUITests" \
+     "$installed_runner/PlugIns/DocumentAnnotationsUITests.xctest/DocumentAnnotationsUITests"; then
+  echo 'Installed XCTest bytes differ from the pinned driver' >&2
+  if [[ "$test_status" == 0 ]]; then test_status=1; fi
+fi
+shasum -a 256 "$artifacts/original.xctestrun" "$run_xctestrun" \
+  "$runner/DocumentAnnotationsUITests-Runner" \
+  "$runner/PlugIns/DocumentAnnotationsUITests.xctest/DocumentAnnotationsUITests"
+if [[ "$test_status" != 0 ]]; then exit "$test_status"; fi
 if [[ "$phase" != qualify ]]; then
   # Keep this exact newly created simulator while the operator measures its
   # screenshot. The next phase or explicit cleanup owns its teardown.
