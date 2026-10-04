@@ -67,9 +67,10 @@ export function QueuedMessages({
 }
 
 /** What a ghost row of the transcript needs from the screen besides the row.
- * It comes by context, so a change to it re-renders the ghost rows alone:
- * the list keeps one renderItem while nothing a transcript row reads
- * changes, and its other cells stay as they are (#3247). */
+ * It comes by context, a new value on each screen render, which re-renders
+ * the ghost rows alone: the list keeps one renderItem while nothing a
+ * transcript row reads changes, and its other cells stay as they are
+ * (#3247). */
 export interface GhostRowHost {
 	disabled: boolean;
 	canEdit: boolean;

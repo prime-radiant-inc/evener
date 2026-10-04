@@ -1285,6 +1285,24 @@ describe("opening a session", () => {
 		expect(opacity(tree)).toBe(1);
 	});
 
+	// A ghost is the list's last row: showing before it measures would show
+	// the end short of it and then move.
+	it("shows the live end only once a queued message at its end has measured", async () => {
+		const served = twoTurns("ref-open-ghost");
+		(served as unknown as { evener: { queue: unknown } }).evener.queue = queueState(["check the logs"]);
+		const { tree } = await mount(served);
+		layOutViewport(tree);
+		await settle();
+		layOutRow(tree, 3, 19_000);
+		await settle();
+		expect(opacity(tree)).toBe(0);
+		flatListCalls.length = 0;
+		layOutRow(tree, 4, 19_150);
+		await settle();
+		expect(flatListCalls.map((call) => call.method)).toEqual(["scrollToEnd"]);
+		expect(opacity(tree)).toBe(1);
+	});
+
 	it("shows a saved reading position only once the exact restore has landed", async () => {
 		savePosition("ref-open-anchor");
 		flatListCalls.length = 0;
@@ -1946,6 +1964,19 @@ describe("following the live end (spec 8.2)", () => {
 		act(() => list(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 600 } } }));
 		expect(flatListCalls.some((call) => call.method === "scrollToEnd")).toBe(false);
 	});
+});
+
+// A ghost can show before the first read lands (ghosts() lists this phone's
+// own sends with no session yet); the quiet blocks still stand in for the
+// conversation above it.
+it("keeps the loading blocks above a ghost until the conversation first loads", async () => {
+	const ref = "ref-skeleton-ghost";
+	nativeDrafts().write({ hubId: "hub-1", sessionRef: ref }, { draft: "", unconfirmed: "lost send" });
+	const { tree } = await mount(thread(ref, "idle"), { failedReads: 2 });
+	await vi.waitFor(() => expect(textOf(transcriptList(tree))).toContain("Couldn't confirm this was sent"));
+	expect(
+		transcriptList(tree).findAll((node) => node.props.accessibilityLabel === "Loading conversation").length,
+	).toBeGreaterThan(0);
 });
 
 it("shows nothing for a loaded conversation with no rows: the composer invites", async () => {
@@ -2836,7 +2867,7 @@ describe("queued messages at the transcript's end (spec 8.5)", () => {
 		expect(textOf(transcriptList(tree))).not.toContain("Queued ·");
 	});
 
-	it("paints a swiped ghost the page it sits on, beside the composer or the dock", async () => {
+	it("paints a swiped ghost the page it sits on, and keeps it there while the dock is open", async () => {
 		const palette = paletteFor("light");
 		const backdrop = (tree: ReactTestRenderer) =>
 			transcriptList(tree).findByProps({ testID: "swipe-row-content" }).props.style.backgroundColor;

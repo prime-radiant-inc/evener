@@ -316,8 +316,8 @@ function typeInComposer(tree: ReactTestRenderer) {
 }
 
 // The keyboard rising or falling, and the composer's focus, change only what
-// folds or steps aside over the composer (the queue, Next, the header's
-// chips); each reads them itself, so the flip never re-renders the screen
+// steps aside over the composer (Next, the header's chips); each reads them
+// itself, so the flip never re-renders the screen
 // or its transcript rows. A screen-wide commit as the keyboard starts to
 // move holds back the keyboard controller's per-frame padding for as long as
 // it takes (#3247).

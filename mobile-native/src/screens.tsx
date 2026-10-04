@@ -463,9 +463,10 @@ export function ConversationScreen({
 	const [openingLanded, setOpeningLanded] = useState(false);
 	const openingLandedNow = useRef(false);
 	// This render's rows, for what runs outside a render (the cap's timer and
-	// the list's cells), and the list's last row, a ghost when one waits.
+	// the list's cells), and the key of the list's last row, a ghost when one
+	// waits.
 	const rowsNow = useRef<readonly TimelineRow[]>([]);
-	const listEndNow = useRef<SessionListRow | undefined>(undefined);
+	const listEndKey = useRef<string | null>(null);
 	// A fresh cap, once the opening turns to the live end at the first.
 	const [openingCapRound, setOpeningCapRound] = useState(0);
 	function landOpening() {
@@ -1397,11 +1398,11 @@ export function ConversationScreen({
 	// and it runs before the opening effect below.
 	useLayoutEffect(() => {
 		rowsNow.current = timelineRows;
-		listEndNow.current = listRows.at(-1);
+		const last = listRows.at(-1);
+		listEndKey.current = last === undefined ? null : sessionListKey(last);
 	});
 	function lastRowKey() {
-		const last = listEndNow.current;
-		return last === undefined ? null : sessionListKey(last);
+		return listEndKey.current;
 	}
 	function lastRowMeasured() {
 		const key = lastRowKey();
@@ -2857,7 +2858,7 @@ export function ConversationScreen({
 								// Cells re-render only for a new renderItem or new rows, and
 								// renderItem changes with everything a row reads (the live run
 								// included): a screen render that changes nothing a row reads
-								// (the bottom bar re-laying out as the keyboard folds the queue)
+								// (typing in the composer, which a ghost row reads by context)
 								// leaves them alone, where FlatList otherwise rebuilds its
 								// renderer, and so every visible cell, on every render (#3247).
 								strictMode
@@ -3031,12 +3032,13 @@ export function ConversationScreen({
 										{connected && permitted && !subagentBar && !permitted.send && !permitted.steer && !permitted.queue ? (
 											<Copy muted>Sending is unavailable for this session.</Copy>
 										) : null}
+										{/* Until the conversation first loads, three quiet blocks stand
+										    in for it, above any ghost already waiting. A loaded
+										    conversation with no rows shows nothing: the composer's
+										    placeholder invites. */}
+										{conversation ? null : <TranscriptSkeleton />}
 									</View>
 								}
-								// Until the conversation first loads, three quiet blocks stand
-								// in for it. A loaded conversation with no rows shows nothing:
-								// the composer's placeholder invites.
-								ListEmptyComponent={conversation ? null : <TranscriptSkeleton />}
 							/>
 						</GhostRowContext.Provider>
 						<SessionHeader
