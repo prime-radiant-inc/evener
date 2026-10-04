@@ -8,7 +8,7 @@
 // so mounting this inside Composer's own tree happens at the wave
 // integration merge (T6), not here.
 
-import type { InputItem } from "@evener/appwire-client";
+import type { ComposerMention, InputItem } from "@evener/appwire-client";
 import { canonicalSkillNames, errorText, STEER_UNAVAILABLE, sessionActionError } from "@evener/appwire-client";
 import { type ReactNode, useState } from "react";
 import { copyToClipboard } from "../../../../shell/palette/commands";
@@ -29,7 +29,7 @@ import {
   usePendingTurnEntries,
   useRecoveryEntries,
 } from "./pendingTurnsStore";
-import { queueEntryPreviewText, skillMarkers, truncateForDisplay } from "./queueDisplay";
+import { commandMarkers, pendingEntryPreview, skillMarkers, truncateForDisplay } from "./queueDisplay";
 import styles from "./queuestrip.module.css";
 
 const CLASS = {
@@ -66,6 +66,8 @@ export interface QueueStripProps {
     attachments?: InputAttachment[];
     hasPending: boolean;
     skillNames?: readonly string[];
+    commandNames?: readonly string[];
+    mentions?: readonly ComposerMention[];
   };
   // Restores a queued entry's full text into the composer - called BEFORE
   // cancelQueued on an edit (loser-safe order: a contract row - the text
@@ -80,7 +82,13 @@ export interface QueueStripProps {
   // `skillNames` carries the entry's canonical skill selections from the
   // queue projection (QueueState.skillNames) so an edit restores its chips
   // too - a queued {type:"skill"} item is otherwise unrecoverable.
-  onRestoreToComposer(text: string, attachments?: InputAttachment[], skillNames?: readonly string[]): void;
+  onRestoreToComposer(
+    text: string,
+    attachments?: InputAttachment[],
+    skillNames?: readonly string[],
+    commandNames?: readonly string[],
+    mentions?: readonly ComposerMention[],
+  ): void;
   activeRecoveryId?: string;
   onEditRecovery?(record: MutationRecoveryRecord): void;
   // Called once a drain-as-steer intent commits to IndexedDB, so the
@@ -122,7 +130,12 @@ const ACTIONS_UNAVAILABLE_REASON = "Queue actions aren't available for this sess
 // that path rather than a generic unavailability.
 const RECOVERY_ACTIONS_UNAVAILABLE_REASON = "Queue actions aren't available until this session is resumed";
 
-function recordContent(record: MutationOutboxRecord): { text: string; imageCount: number; skillNames: string[] } {
+function recordContent(record: MutationOutboxRecord): {
+  text: string;
+  imageCount: number;
+  skillNames: string[];
+  commandNames: string[];
+} {
   // A promoted row's composed content lives in its optimisticDisplay.input -
   // its wire params carry only the queue position - so this reading prefers
   // the display input and falls back to the payload input every other
@@ -143,15 +156,16 @@ function recordContent(record: MutationOutboxRecord): { text: string; imageCount
       .filter((item): item is InputItem & { name: string } => item.type === "skill" && typeof item.name === "string")
       .map((item) => item.name),
   );
-  return { text, imageCount: input.filter((item) => item.type === "image").length, skillNames };
+  return {
+    text,
+    imageCount: input.filter((item) => item.type === "image").length,
+    skillNames,
+    commandNames: canonicalSkillNames(input.filter((item) => item.type === "command").map((item) => item.name ?? "")),
+  };
 }
 
 function recordPreview(record: MutationOutboxRecord): string {
-  const { text, imageCount, skillNames } = recordContent(record);
-  const preview = [queueEntryPreviewText(text, imageCount), skillMarkers(skillNames)]
-    .filter((part) => part !== "")
-    .join(" ");
-  return truncateForDisplay(preview);
+  return truncateForDisplay(pendingEntryPreview(recordContent(record)));
 }
 
 // A pending entry already carries its canonical skill names, so it renders the
@@ -159,9 +173,7 @@ function recordPreview(record: MutationOutboxRecord): string {
 // entry with no text and no images (a skill-only submission) would be blank
 // until the authoritative queue row replaces it.
 function pendingPreview(entry: PendingTurnEntry): string {
-  return [queueEntryPreviewText(entry.text, entry.imageCount), skillMarkers(entry.skillNames)]
-    .filter((part) => part !== "")
-    .join(" ");
+  return pendingEntryPreview(entry);
 }
 
 function editDisabledReason(opts: {
@@ -247,6 +259,7 @@ export function QueueStrip({
     entryId: string,
     displayText: string,
     skillNames?: readonly string[],
+    commandNames?: readonly string[],
   ): Promise<void> {
     // The recovery fence, re-read live at the press (the same render-vs-press
     // rule as pressRefusal below): the hub refuses turn/promoteQueuedAsSteer
@@ -268,6 +281,7 @@ export function QueueStrip({
       await threadsStore.getState().promoteQueuedAsSteer(sessionRef, index, entryId, {
         text: displayText,
         skillNames,
+        commandNames,
       });
       // Success is entirely rendered by the daemon's own thread/queueChanged
       // (row removed) + evener/steering/injected (transcript shows it) - no
@@ -306,6 +320,8 @@ export function QueueStrip({
     entryId: string,
     fullText: string,
     skillNames?: readonly string[],
+    commandNames?: readonly string[],
+    mentions?: readonly ComposerMention[],
   ): Promise<void> {
     // The recovery fence, re-read live at the press. An edit refuses as a
     // whole: restoring the text without the cancelQueued half would leave the
@@ -323,7 +339,8 @@ export function QueueStrip({
       // must not borrow the cancel's message below, and must leave the queued
       // entry alone rather than removing a message with nowhere to go.
       try {
-        onRestoreToComposer(fullText, undefined, skillNames);
+        if (mentions) onRestoreToComposer(fullText, undefined, skillNames, commandNames, mentions);
+        else onRestoreToComposer(fullText, undefined, skillNames, ...(commandNames ? [commandNames] : []));
       } catch (err) {
         toasts.push("error", `Couldn't move this message to the composer: ${errorText(err)}`);
         return;
@@ -351,7 +368,7 @@ export function QueueStrip({
       toasts.push("error", refusal);
       return;
     }
-    const { text, attachments, hasPending, skillNames } = getComposerText();
+    const { text, attachments, hasPending, skillNames, commandNames, mentions } = getComposerText();
     if (hasPending) {
       toasts.push("error", "Image attachment is still processing");
       return;
@@ -364,6 +381,10 @@ export function QueueStrip({
       toasts.push("error", "Skill selections aren't supported on this session yet; your draft is kept");
       return;
     }
+    if ((commandNames?.length ?? 0) > 0 && model?.capabilities.commandInput !== true) {
+      toasts.push("error", "Command selections are not supported on this session; your draft is kept");
+      return;
+    }
     let wonRecoveryResend = true;
     onDrainBusyChange(true);
     try {
@@ -374,6 +395,7 @@ export function QueueStrip({
           text,
           attachments,
           skillNames,
+          commandNames,
           onFailure: (err) => {
             toasts.push("error", sessionActionError("Drain failed", err));
           },
@@ -387,10 +409,14 @@ export function QueueStrip({
               text,
               attachments ?? [],
               skillNames,
+              commandNames,
+              mentions,
             );
             return;
           }
-          return threadsStore.getState().drainAsSteer(sessionRef, text, attachments, skillNames);
+          return threadsStore
+            .getState()
+            .drainAsSteer(sessionRef, text, attachments, skillNames, commandNames, mentions);
         },
       );
       if (!wonRecoveryResend) toasts.push("info", "This message was already sent in another tab.");
@@ -454,8 +480,10 @@ export function QueueStrip({
   async function handleCopy(record: MutationRecoveryRecord): Promise<void> {
     setRowBusy(record.clientMutationId, true);
     try {
-      const { text, skillNames } = recordContent(record);
-      const content = [text, skillMarkers(skillNames)].filter((part) => part !== "").join("\n");
+      const { text, skillNames, commandNames } = recordContent(record);
+      const content = [text, skillMarkers(skillNames), commandMarkers(commandNames)]
+        .filter((part) => part !== "")
+        .join("\n");
       await copyToClipboard(content);
       toasts.push("success", "Copied message");
     } catch (error) {
@@ -482,27 +510,32 @@ export function QueueStrip({
           const entryId = ids?.[index];
           const fullText = texts?.[index];
           const entrySkillNames = queue?.skillNames?.[index];
-          // The daemon's preview names skills only generically ("[skill]" /
-          // "[N skills]"), while the pending and durable rows for the SAME
-          // submission name them from the entry's own canonical selections.
-          // When the preview is NOTHING BUT that generic placeholder - the
-          // skill-only case, where it carries no information the named markers
-          // do not - the placeholder is redundant and is dropped rather than
-          // doubled ("[skill] [skill: pkg:probe]"). Every other preview keeps
-          // whatever it holds: prose (even when only the daemon supplies it),
-          // an image placeholder, or a mix of them, with the named markers
-          // appended after it. The preview text is truncated first so a
-          // full-length line can never push the markers past the display cap.
-          const namedMarkers = skillMarkers(entrySkillNames ?? []);
+          // Named markers replace synthetic selection-only previews. Full user
+          // text, including literal "[skill]" or "[command]", stays visible.
+          // Truncate the preview first so it cannot push the markers past the cap.
+          const entryCommandNames = queue?.commandNames?.[index];
+          const entryMentions = queue?.mentions?.[index]?.flatMap((item): ComposerMention[] =>
+            item.kind === "skill" || item.kind === "command" ? [{ ...item, kind: item.kind }] : [],
+          );
+          const namedMarkers = [skillMarkers(entrySkillNames ?? []), commandMarkers(entryCommandNames ?? [])]
+            .filter(Boolean)
+            .join(" ");
           const entryPreview = truncateForDisplay(preview?.[index] ?? fullText ?? "");
-          const genericSkillPlaceholder = /^\[\d*\s*skills?\]$/i.test(entryPreview.trim());
-          const previewText = genericSkillPlaceholder ? "" : entryPreview;
+          const genericSelectionPlaceholder =
+            (fullText ?? "").trim() === "" &&
+            namedMarkers !== "" &&
+            /^\[\d*\s*(skills?|commands?)\]$/i.test(entryPreview.trim());
+          const previewText = genericSelectionPlaceholder ? "" : entryPreview;
           const displayText = [previewText, namedMarkers].filter((part) => part !== "").join(" ");
           const busy = entryId !== undefined && busyEntryIds.has(entryId);
           const actionsAvailable = hasIds && entryId !== undefined;
           // A blank-text entry is uneditable only when it carries nothing
-          // else restorable - a skill-only entry's chips ARE the content.
-          const imageOnly = hasTexts && (fullText ?? "").trim() === "" && (entrySkillNames?.length ?? 0) === 0;
+          // else restorable - a selection-only entry's chips ARE the content.
+          const imageOnly =
+            hasTexts &&
+            (fullText ?? "").trim() === "" &&
+            (entrySkillNames?.length ?? 0) === 0 &&
+            (entryCommandNames?.length ?? 0) === 0;
           const editAvailable = actionsAvailable && hasTexts && !imageOnly;
 
           return (
@@ -530,12 +563,12 @@ export function QueueStrip({
                       // The ghost's display text: the row's full text, or - for a
                       // blank row - the same stripped preview the row renders
                       // above: the image placeholder for an image-only row (its
-                      // whole content), and nothing for a skill-only row, where
+                      // whole content), and nothing for a selection-only row, where
                       // the named markers carry the whole content and the raw
-                      // "[skill]" placeholder would only double it.
+                      // generic placeholder would only double it.
                       const rowText = fullText ?? "";
                       const displayText = rowText.trim() !== "" ? rowText : previewText;
-                      void handlePromote(index, entryId, displayText, entrySkillNames);
+                      void handlePromote(index, entryId, displayText, entrySkillNames, entryCommandNames);
                     }
                   }}
                 />
@@ -547,7 +580,7 @@ export function QueueStrip({
                   disabledReason={editDisabledReason({ actionsAvailable, hasTexts, imageOnly })}
                   onClick={() => {
                     if (entryId !== undefined && fullText !== undefined) {
-                      void handleEdit(index, entryId, fullText, entrySkillNames);
+                      void handleEdit(index, entryId, fullText, entrySkillNames, entryCommandNames, entryMentions);
                     }
                   }}
                 />

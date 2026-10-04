@@ -1310,6 +1310,7 @@ func TestPastEntryThreadAdvertisesResumableCapabilities(t *testing.T) {
 		SharedNotes:       true,
 		Rename:            true,
 		SkillInput:        true,
+		CommandInput:      true,
 		Queue:             true,
 		// The hub pages the saved transcript from a before position itself.
 		PageBefore: true,

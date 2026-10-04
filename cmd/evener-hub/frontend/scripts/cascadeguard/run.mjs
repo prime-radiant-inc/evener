@@ -120,7 +120,7 @@ async function holdStorageAcknowledgement(ref, input) {
       }, options);
     };
     IDBObjectStore.prototype.add = function(record, ...args) {
-      if (this.name === 'outbox' && this.transaction.db.name === 'evener-mutation-outbox' && record.targetRef === ${q(ref)} && record.payload?.input?.some(item => item.text === ${q(input)})) {
+      if (this.name === 'outbox' && this.transaction.db.name === 'evener-mutation-outbox' && record.targetRef === ${q(ref)} && (record.composerText === ${q(input)} || record.payload?.input?.some(item => item.text === ${q(input)}))) {
         selected = this.transaction;
         held.record = structuredClone(record);
         IDBObjectStore.prototype.add = nativeAdd;
@@ -150,12 +150,14 @@ async function providerHeld() {
   });
 }
 
+const readableGeometrySettled = `(() => {
+  const columns = [...document.querySelectorAll('[data-testid="cascade-column"]')];
+  return columns.length === 2 && Math.abs(columns[0].getBoundingClientRect().width - 400) < .75 && columns[1].getBoundingClientRect().width >= 439.5
+    && columns.every(node => getComputedStyle(node).transform === 'none');
+})()`;
+
 async function observeGeometryAndFocus(ref) {
-  await wait(`(() => {
-    const columns = [...document.querySelectorAll('[data-testid="cascade-column"]')];
-    return columns.length === 2 && Math.abs(columns[0].getBoundingClientRect().width - 400) < .75 && columns[1].getBoundingClientRect().width >= 439.5
-      && columns.every(node => getComputedStyle(node).transform === 'none');
-  })()`, "settled geometry before live status updates");
+  await wait(readableGeometrySettled, "settled geometry before live status updates");
   await read(`(() => {
     document.querySelector(${q(peekChip(ref, "Tasks"))}).focus();
     window.__cascadeFocused = document.activeElement;
@@ -229,6 +231,117 @@ async function sourceMutationJourney() {
   }
   driver.milestone("queued-source-single-delivery", { clientMutationId: queued.params.clientMutationId, recipient: ref });
   await capture("queued-source-single-delivery");
+}
+
+// Both rows come from the root's real project catalog. A native row click,
+// selected by its description, distinguishes identities with identical labels.
+async function completeOverlap(ref, kind) {
+  const description = `Cascade overlap ${kind} fixture`;
+  const point = await wait(`(() => {
+    const button = [...document.querySelectorAll('[data-testid="composer-slash-menu"] button')].find(node => node.textContent.includes(${q(description)}));
+    if (!button) return null;
+    const r = button.getBoundingClientRect(); return { x:r.x + r.width / 2, y:r.y + r.height / 2 };
+  })()`, `real overlapping ${kind} catalog row`);
+  await driver.clickAt(point.x, point.y);
+  await wait(`document.querySelector(${q(driver.composerSelector(ref))})?.querySelector('[data-${kind}-name="cascade-overlap"]') !== null && document.querySelector('[data-testid="composer-slash-menu"]') === null`, `selected overlapping ${kind} atom`);
+}
+
+function overlapMentions(text) {
+  const first = text.indexOf('/cascade-overlap');
+  const second = text.indexOf('/cascade-overlap', first + 1);
+  assert.ok(first >= 0 && second > first && text.indexOf('/cascade-overlap', second + 1) > second, 'two atoms plus same-spelling inert prose');
+  return [{ kind: 'command', name: 'cascade-overlap', offset: first }, { kind: 'skill', name: 'cascade-overlap', offset: second }];
+}
+
+async function assertOverlap(ref, text, label) {
+  const state = await driver.composerState(ref);
+  assert.equal(state.text, text, `${label}, exact UTF-16 text and inert prose`);
+  assert.deepEqual(state.chips, ['/cascade-overlap'], `${label}, only the selected skill is a skill atom`);
+  const atoms = await read(`(() => {
+    const editor = ${driver.editorExpr(ref)};
+    return [...editor.querySelectorAll('[data-command-name], [data-skill-name]')].map(node => {
+      const range = document.createRange(); range.selectNodeContents(editor); range.setEndBefore(node);
+      return { kind:node.hasAttribute('data-command-name') ? 'command' : 'skill', name:node.dataset.commandName ?? node.dataset.skillName, offset:range.toString().length };
+    });
+  })()`);
+  assert.deepEqual(atoms, overlapMentions(text), `${label}, atom kind and exact text-owned offsets`);
+  const stored = await read(`JSON.parse(localStorage.getItem(${q(`evener.composer.draft.v2.${ref}`)}))`);
+  assert.deepEqual(stored, { text, skillNames:['cascade-overlap'], commandNames:['cascade-overlap'], mentions:overlapMentions(text) }, `${label}, complete real persisted draft`);
+}
+
+async function mixedSourceJourney() {
+  const ref = fixture.rootRef;
+  await driver.clearComposerDraft(ref);
+  await driver.focusComposer(ref);
+  await driver.typeText(ref, '🙂 CASCADE_ROLE_0_SENTINEL CASCADE_MIXED_INPUT ');
+  await upload('mixed-first.png');
+  await wait("document.querySelector('button[aria-label=\"View mixed-first.png\"] img')?.src.startsWith('data:image/png;base64,')", 'first real overlap image');
+  await driver.focusComposer(ref);
+  await driver.typeText(ref, ' /cascade-overlap');
+  await completeOverlap(ref, 'command');
+  await holdCanvasCompletion();
+  await upload('mixed-failure.png');
+  await wait('window.__cascadeEncode?.encoded && window.__cascadeEncode.release !== null', 'real middle-image native callback held');
+  await driver.focusComposer(ref);
+  await driver.typeText(ref, ' /cascade-overlap');
+  await completeOverlap(ref, 'skill');
+  await upload('mixed-last.png');
+  await wait("document.querySelector('button[aria-label=\"View mixed-last.png\"] img')?.src.startsWith('data:image/png;base64,')", 'last real overlap image');
+  await driver.focusComposer(ref);
+  await driver.typeText(ref, ' /cascade-overlap');
+  await key('Escape', 27);
+  const before = await driver.composerState(ref);
+  const markers = before.text.match(/\[image \d+\]/g) ?? [];
+  assert.equal(markers.length, 3, 'each real upload inserted its own marker');
+  assert.equal(new Set(markers).size, 3, 'retained source allocates unique image markers');
+  const [firstMarker, failedMarker, lastMarker] = markers;
+  await assertOverlap(ref, before.text, 'before detached image settlement');
+  const imageBytes = await read("['mixed-first.png','mixed-last.png'].map(name => document.querySelector(`button[aria-label=\"View ${name}\"] img`).src)");
+  await driver.click('[data-testid="statusbar"] button[aria-label^="Agents,"]');
+  await drill(fixture.edges[0], 1);
+  await read('window.__cascadeEncode.release(false)');
+  await wait(`${driver.toastExpr()}.includes('mixed-failure.png (image decode failed)')`, 'actual failed decode settles while source editor is absent');
+  await driver.clickByText('Return to previous view');
+  await wait(`document.querySelector(${q(driver.composerSelector(ref))}) !== null`, 'return overlapping detached image draft');
+  const settledText = before.text.replace(failedMarker, '');
+  await assertOverlap(ref, settledText, 'after detached image settlement and Return');
+  assert.equal((await driver.composerState(ref)).tiles, 2, 'only failed middle image is removed');
+  assert.deepEqual(await read("['mixed-first.png','mixed-last.png'].map(name => document.querySelector(`button[aria-label=\"View ${name}\"] img`).src)"), imageBytes, 'exact retained PNG bytes');
+  driver.milestone('mixed-detached-image-return', { recipient:ref, mentions:overlapMentions(settledText) });
+
+  await holdStorageAcknowledgement(ref, settledText);
+  const after = frames.length;
+  await driver.clickSubmit(ref, { text:settledText, chips:['/cascade-overlap'], tiles:2 });
+  await wait('window.__cascadeStorage.committed && window.__cascadeStorage.release !== null', 'real mixed native outbox acknowledgement held');
+  const held = await read('window.__cascadeStorage.record');
+  assert.equal(held.targetRef, ref, 'mixed record retains original recipient');
+  assert.equal(held.method, 'turn/start');
+  assert.equal(held.composerText, settledText);
+  assert.deepEqual(held.composerMentions, overlapMentions(settledText));
+  assert.deepEqual(held.payload.input.filter(item => ['command','skill'].includes(item.type)).map(({type,name}) => ({type,name})), [{type:'skill',name:'cascade-overlap'}, {type:'command',name:'cascade-overlap'}], 'actual input keeps both identities in public wire order');
+  assert.equal(held.attachments.length, 2, 'actual outbox retains both image payloads');
+  assert.ok(held.clientMutationId, 'native committed mutation has an identity');
+  await driver.click('[data-testid="statusbar"] button[aria-label^="Agents,"]');
+  await drill(fixture.edges[0], 1);
+  await driver.clickByText('Return to previous view');
+  await wait(`document.querySelector(${q(driver.composerSelector(ref))}) !== null`, 'return mixed source while receipt is held');
+  await driver.focusComposer(ref);
+  await driver.typeText(ref, ' CASCADE_NEWER_MIXED_DRAFT');
+  const newer = await driver.composerState(ref);
+  await driver.click('[data-testid="statusbar"] button[aria-label^="Agents,"]');
+  await drill(fixture.edges[0], 1);
+  await read('window.__cascadeStorage.release()');
+  await waitFrames(() => sent(after).some(frame => frame.params?.clientMutationId === held.clientMutationId && answered(frame)), 'mixed original mutation acknowledged exactly once');
+  await driver.clickByText('Return to previous view');
+  await wait(`document.querySelector(${q(driver.composerSelector(ref))}) !== null`, 'return after detached mixed receipt');
+  await wait(`document.querySelector(${q(driver.composerSelector(ref))})?.querySelectorAll('[data-testid="attachment-tile"]').length === 0`, 'submitted images retire after native acknowledgement');
+  const cleaned = newer.text.replace(firstMarker, '').replace(lastMarker, '');
+  await assertOverlap(ref, cleaned, 'after independent submitted marker cleanup and Return');
+  const requests = sent(after).filter(frame => frame.params?.clientMutationId === held.clientMutationId);
+  assert.equal(requests.length, 1, 'mixed promotion and Return never duplicate delivery');
+  assert.equal(requests[0].params.ref, ref);
+  driver.milestone('mixed-held-storage-return', { recipient:ref, clientMutationId:held.clientMutationId, mentions:overlapMentions(cleaned) });
+  await capture('mixed-held-storage-return');
 }
 
 const layoutExpr = "JSON.parse(localStorage.getItem('evener.workspace.layout.v2') || 'null')";
@@ -340,6 +453,13 @@ async function reloadAndMobileJourney() {
   assert.deepEqual(restored.panels[fixture.sourcePaneId].params.paneParams, expectedIntent);
   assert.deepEqual(restored.panels[unrelatedId], unrelatedPanel);
   assert.deepEqual(placement(restored, unrelatedId), unrelatedPlacement);
+  // The restored pane's React content hydrates after the layout asserts above
+  // on a loaded machine (its tab exists, its body still shows Loading), so the
+  // draft read must wait for the composer to actually mount instead of
+  // crashing on a null state. Pre-fix, the wiped pane never re-mounted and the
+  // same missing wait crashed the guard as a TypeError; the wait turns both
+  // into an honest failure naming the composer.
+  await wait(`document.querySelector(${q(driver.composerSelector(fixture.childRef))}) !== null`, "restored unrelated pane's composer mounts");
   assert.equal((await driver.composerState(fixture.childRef)).text, "CASCADE_UNSENT_UNRELATED_DRAFT");
   driver.milestone("unrelated-pane-reload", { sourcePaneId: fixture.sourcePaneId, unrelatedPaneId: unrelatedId, selectedRef: fixture.refs[6], edges: expectedIntent.edges });
   await capture("unrelated-pane-reload");
@@ -358,17 +478,17 @@ async function reloadAndMobileJourney() {
   assert.deepEqual(returned.chips, source.chips);
   await capture("phone-source-return");
   await key("Escape", 27);
-  await wait('document.querySelector("[data-testid=activity-sidebar]") === null', "dismiss restored source Activity before phone menu gesture");
+  await wait('document.querySelector("[data-testid=activity-sidebar]") === null', "dismiss restored source Overview before phone menu gesture");
   await driver.click(`${driver.composerSelector(fixture.rootRef)} [data-testid="session-chrome-inline"] button[aria-haspopup="menu"]`);
-  const activity = await wait(`(() => {
-    const button = [...document.querySelectorAll('[role="menuitem"]')].find(node => node.textContent.trim().startsWith('Activity'));
+  const overview = await wait(`(() => {
+    const button = [...document.querySelectorAll('[role="menuitem"]')].find(node => node.textContent.trim().startsWith('Overview'));
     if (!button) return null; const r = button.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
-  })()`, "existing phone Activity menu action");
-  await driver.clickAt(activity.x, activity.y);
+  })()`, "existing phone Overview menu action");
+  await driver.clickAt(overview.x, overview.y);
   await wait(`(() => {
     const sidebar = document.querySelector('[data-testid="activity-sidebar"]');
     return sidebar && getComputedStyle(sidebar).transform === 'none';
-  })()`, "phone Activity entrance settled before physical row tap");
+  })()`, "phone Overview entrance settled before physical row tap");
   const mobileRow = await reveal(fixture.edges[0], '[data-testid="activity-sidebar"]');
   await driver.click(mobileRow);
   await wait('document.querySelectorAll("[data-testid=transcript-virtual-list]").length === 1 && document.querySelectorAll("[role=textbox]").length === 0 && document.querySelector("[data-pane-scaffold=cascade]") === null', "ordinary mobile Agents transcript action stays readonly without cascade");
@@ -522,7 +642,29 @@ try {
     const a = track.getBoundingClientRect(), b = leaf.getBoundingClientRect();
     return b.right <= a.right + 1 && b.right > a.left ? { width: track.clientWidth, extent: track.scrollWidth, left: track.scrollLeft, leafRight: b.right, trackRight: a.right } : null;
   })()`, "narrow desktop overflow and selected leaf revealed");
-  for (const ref of fixture.refs.slice(5)) await wait(`document.querySelector(${q(scroll(ref))})?.scrollHeight > document.querySelector(${q(scroll(ref))}).clientHeight`, "independent transcript overflow");
+  // Both columns are virtualized, and under 2-core load a late row-height
+  // correction can leave a column a few pixels off the bottom it was pinned
+  // to: the app holds the reader's visual position, so the numeric gap never
+  // closes on its own (sighted once as a steady 32px gap with a quiet RPC
+  // stream and an empty console). Retained bottom is the precondition the
+  // independence check below scrolls FROM, not the behavior under test, so
+  // the guard establishes it the same way that check sets its explicit
+  // offsets: settle the heights, re-pin both columns, then require the
+  // retained-bottom condition to hold on its own.
+  await wait(`(() => {
+    const nodes = [${q(scroll(fixture.refs[5]))}, ${q(scroll(fixture.refs[6]))}].map((s) => document.querySelector(s));
+    if (nodes.includes(null)) return null;
+    const stamp = nodes.map((node) => node.scrollHeight).join(",");
+    const settled = window.__cascadeScrollHeights === stamp;
+    window.__cascadeScrollHeights = stamp;
+    return settled;
+  })()`, "both cascade columns' scroll geometry settled before the independence check");
+  await read(`[${q(scroll(fixture.refs[5]))},${q(scroll(fixture.refs[6]))}].map((s) => { const port = document.querySelector(s); if (port) port.scrollTop = port.scrollHeight; })`);
+  await wait(`${readableGeometrySettled} && (() => {
+    const ports = [${q(scroll(fixture.refs[5]))},${q(scroll(fixture.refs[6]))}].map(selector => document.querySelector(selector));
+    return ports.every(port => port && port.clientHeight > 0 && port.scrollHeight > port.clientHeight
+      && Math.abs(port.scrollHeight - port.clientHeight - port.scrollTop) <= 1);
+  })()`, "settled readable geometry and retained bottom before independent scrolling");
   const beforeScroll = await read(`[${q(scroll(fixture.refs[5]))},${q(scroll(fixture.refs[6]))}].map(s => document.querySelector(s).scrollTop)`);
   await read(`document.querySelector(${q(scroll(fixture.refs[5]))}).scrollTop = 200`);
   await wait(`document.querySelector(${q(scroll(fixture.refs[5]))}).scrollTop === 200`, "parent scrolled independently");
@@ -604,6 +746,7 @@ try {
   await capture("return-source");
   await pendingImage("pending-success.png", true);
   await pendingImage("pending-failure.png", false);
+  await mixedSourceJourney();
   await sourceMutationJourney();
   await reloadAndMobileJourney();
   assert.deepEqual(errors, [], "unexpected browser errors or warnings");

@@ -367,6 +367,7 @@ func TestSkillComposerBrowser(t *testing.T) {
 		RunDir:        fixture.runDir,
 		Past:          past,
 		Roster:        roster,
+		PluginDirs:    []string{filepath.Join(fixture.root, "controller-plugin")},
 		StateDir:      fixture.stateRoot,
 		PastIndexPath: filepath.Join(hubStateRoot, "index.db"),
 	}, appwireTrace)
@@ -566,6 +567,13 @@ func skillGuardSetup(t *testing.T) *skillGuardFixture {
 				t.Fatal(err)
 			}
 		}
+		commandDir := filepath.Join(fixture.workDir[i], ".evener", "commands")
+		if err := os.MkdirAll(commandDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(commandDir, "owner-"+name+".md"), []byte("---\ndescription: owner project command\n---\nOWNER_BODY_"+name+"_14m"), 0o600); err != nil {
+			t.Fatal(err)
+		}
 		// The fixture plugin: manifest "pkg" + skills/probe → catalog pkg:probe.
 		pluginDir := filepath.Join(fixture.workDir[i], "fixture-plugin")
 		for _, dir := range []string{
@@ -584,6 +592,20 @@ func skillGuardSetup(t *testing.T) *skillGuardFixture {
 		if err := skillGuardWriteSkill(fixture.skillFile[i], skillGuardSkillBody); err != nil {
 			t.Fatalf("write SKILL.md: %v", err)
 		}
+	}
+	// Same plugin name as the owners, different controller-only inventory:
+	// filtering the global catalog by active plugin name must not pass this.
+	controllerPlugin := filepath.Join(root, "controller-plugin")
+	for _, dir := range []string{filepath.Join(controllerPlugin, ".claude-plugin"), filepath.Join(controllerPlugin, "commands")} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(controllerPlugin, ".claude-plugin", "plugin.json"), []byte(`{"name":"pkg","version":"1.0.0"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(controllerPlugin, "commands", "controller-only.md"), []byte("CONTROLLER_BODY_14m"), 0o600); err != nil {
+		t.Fatal(err)
 	}
 	fixture.helperBin = filepath.Join(root, "evener-helper.test")
 	repoRoot := skillGuardRepoRoot(t)
@@ -1099,10 +1121,18 @@ func skillGuardAssert(t *testing.T, fixture *skillGuardFixture, milestonesPath s
 	if len(turnsA) == 0 {
 		t.Fatalf("helper alpha recorded no turn requests; the browser never reached a real daemon (artifacts: %s)", fixture.artifact)
 	}
+	trace, err := os.ReadFile(filepath.Join(fixture.artifact, "appwire-trace.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(trace), "controller-only") || !strings.Contains(string(trace), "owner-alpha") || !strings.Contains(string(trace), "owner-beta") {
+		t.Fatal("real RPC trace must contain controller discovery and both owning project inventories")
+	}
 
 	// Every scenario must be present in the driver's milestones — the browser
 	// report names each one and skips nothing silently.
 	for _, name := range []string{
+		"owner-alpha-command", "owner-beta-command", "owner-alpha-returned",
 		"sessions-visible", "composer-mounted", "chip-added", "chip-removed", "chip-reselected",
 		"chip-labels", "inline-editing", "inline-layout", "inline-ime", "submitted-two-skills", "submitted-canonical", "durable-mutation", "draft-after-commit",
 		"draft-staged", "thread-switched", "draft-remounted",
@@ -1116,6 +1146,35 @@ func skillGuardAssert(t *testing.T, fixture *skillGuardFixture, milestonesPath s
 	} {
 		if !skillGuardMilestonePresent(milestones, name) {
 			t.Errorf("browser report is missing the %q scenario — the guard silently skipped it", name)
+		}
+	}
+	for i, owner := range []string{"alpha", "beta"} {
+		deliveries := 0
+		for _, rec := range skillGuardTurnRequests(t, fixture.requestLog[i]) {
+			if rec.Request.lastUserText() != "OWNER_PROSE_"+owner+" /owner-"+owner+" \n\nOWNER_BODY_"+owner+"_14m" {
+				continue
+			}
+			deliveries++
+			for j := len(rec.Request.Messages) - 1; j >= 0; j-- {
+				message := rec.Request.Messages[j]
+				if message.Role != "user" {
+					continue
+				}
+				if len(message.Content) != 2 || message.Content[0].Kind != "text" || message.Content[0].Text != "OWNER_PROSE_"+owner+" /owner-"+owner+" " ||
+					message.Content[1].Kind != "text" || message.Content[1].Text != "\n\nOWNER_BODY_"+owner+"_14m" {
+					t.Errorf("owner %s lost separate original prose and appended command parts: %+v", owner, message.Content)
+				}
+				break
+			}
+			if !strings.Contains(rec.Request.allText(), "OWNER_BODY_"+owner+"_14m") {
+				t.Errorf("owner %s project command body did not reach the provider: %s", owner, skillGuardDumpCall(t, rec.Request))
+			}
+			if strings.Contains(rec.Request.allText(), "CONTROLLER_BODY_14m") {
+				t.Errorf("owner %s received the controller-only command body", owner)
+			}
+		}
+		if deliveries != 1 {
+			t.Errorf("owner %s project command dispatched %d times, want 1", owner, deliveries)
 		}
 	}
 

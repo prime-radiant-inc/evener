@@ -1,20 +1,25 @@
 // The status tray's one line while the agent works (spec 8.3), and the counts
-// behind its pulse meter (spec 16.4). Built only from what the session
-// already holds: the running turn's items, the running subagents, the
-// model's retry state, and lastFrameAt, which the package's reducer restamps
-// on every streamed frame (appwire-client/typescript/model.ts).
+// behind its pulse meter (spec 16.4). Built from what the session already
+// holds: the running turn's items, the model's retry state, and lastFrameAt,
+// which the package's reducer restamps on every streamed frame
+// (appwire-client/typescript/model.ts). The running-subagent count is the
+// hub's, taken as the Board's row takes it (spec 13.1), with the session's own
+// delegates as the last resort.
 import {
 	type ItemModel,
 	isActiveItem,
 	isInProgressStatus,
 	formatTokenCount,
 	type ModelRetryState,
+	type NavigationSessionSummary,
 	pendingTextJoined,
+	type SessionActivity,
 	type ThreadModel,
 	toolFamily,
 	toolStepProgress,
 } from "@evener/appwire-client";
 import { subagentState } from "../subagents/subagentModel";
+import { waitingOnSubagents } from "../board/attention";
 import { PULSE_BARS } from "../board/pulse";
 import { compactDuration } from "./format";
 
@@ -48,7 +53,15 @@ interface Step {
 // An intent-less delegating or job step falls back to what it waits on.
 const WAITING_TOOLS = new Set(["delegate", "delegate_send", "job_watch", "job_status", "job_list"]);
 
-export function trayLine(session: TraySource, now: number): TrayLine | null {
+/** activity is the hub's live read for this session (evener/activity/read),
+ * when the screen holds a fresh one; row is the session's navigation row, when
+ * the screen has it. */
+export function trayLine(
+	session: TraySource,
+	now: number,
+	activity?: SessionActivity,
+	row?: NavigationSessionSummary,
+): TrayLine | null {
 	if (session.status.type !== "active") return null;
 	const intent = latestToolIntent(session);
 	if (intent) return { text: intent, attention: false };
@@ -67,7 +80,13 @@ export function trayLine(session: TraySource, now: number): TrayLine | null {
 			? { text: `${retry} · no updates for ${compactDuration(silence)}`, attention: true }
 			: { text: retry, attention: false };
 	}
-	const running = runningSubagents(session);
+	// The hub counts running subagents at every depth, and the Board's row
+	// names that count by this precedence (attention.ts's whyLine): a fresh
+	// activity read wins outright, even at zero; without one, the row's own
+	// tally (S3). The session's own delegates, which list only the subagents it
+	// started itself, are the last resort (a subagent's screen, or a hub with
+	// neither).
+	const running = activity?.runningSubagents ?? row?.subagents?.running ?? runningSubagents(session);
 	// An agent waiting on subagents is never stuck (Jesse's ruling on S5): a
 	// subagent inside one long model call sends nothing for minutes. Quiet
 	// below is unreachable while one runs, since every path with a running
@@ -75,8 +94,7 @@ export function trayLine(session: TraySource, now: number): TrayLine | null {
 	if (running === 0 && silence >= STUCK_AFTER_MS)
 		return { text: `May be stuck · no updates for ${compactDuration(silence)}`, attention: true };
 	const step = currentStep(session);
-	if (running > 0 && (!step || step.waitsOnSubagents))
-		return { text: `Waiting on ${running} ${running === 1 ? "subagent" : "subagents"}`, attention: false };
+	if (running > 0 && (!step || step.waitsOnSubagents)) return { text: waitingOnSubagents(running), attention: false };
 	if (step)
 		return {
 			// The hub's startedAt against this phone's clock: a small skew is

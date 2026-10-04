@@ -4,6 +4,7 @@
 
 import type {
   AdvancedValues,
+  ComposerMention,
   LaunchConfigLayer,
   PluginSelectionError,
   PluginSelectionState,
@@ -17,7 +18,11 @@ import { readUrlPrefill } from "./urlPrefill";
 
 interface DraftFields {
   prompt: string;
+  skillNames: string[];
+  commandNames: string[];
+  mentions?: ComposerMention[];
   promptRevision: number;
+  selectionRestoreRevision: number;
   harness: string;
   model: string;
   /** The model value the uncredentialed-default fallback installed into `model`
@@ -63,7 +68,10 @@ function createDraft(cwd: string) {
     cwd,
     fields: createStore<DraftFields>(() => ({
       prompt: "",
+      skillNames: [],
+      commandNames: [],
       promptRevision: 0,
+      selectionRestoreRevision: 0,
       harness: defaults.harness ?? "",
       model: defaults.model ?? "",
       defaultModelFallback: null,
@@ -151,7 +159,10 @@ export function applySpawnURL(onNavigation = false): void {
   const cwd = urlDir || (state.current?.cwd ?? resolveInitialDefaults({}).workingDir ?? "");
   const draft = selectSpawnDirectory(cwd);
   if (applyPrefill) {
-    if (prefill.prompt) setDraftField(draft, "prompt", prefill.prompt);
+    if (prefill.prompt) {
+      setDraftField(draft, "prompt", prefill.prompt);
+      draft.fields.setState({ skillNames: [], commandNames: [], mentions: undefined });
+    }
     // The rail's project-copy launch hands its host over as ?host=; Spawn's
     // host picker owns the fallback when that host is unknown or offline.
     if (prefill.host) setDraftField(draft, "source", prefill.host);
@@ -185,7 +196,9 @@ export function setDraftField<K extends keyof DraftFields>(
   if (Object.is(state[key], value)) return;
   draft.fields.setState({
     [key]: value,
-    ...(key === "prompt" ? { promptRevision: state.promptRevision + 1 } : {}),
+    ...(key === "prompt" || key === "skillNames" || key === "commandNames" || key === "mentions"
+      ? { promptRevision: state.promptRevision + 1 }
+      : {}),
   });
 }
 

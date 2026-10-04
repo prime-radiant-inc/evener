@@ -2,7 +2,7 @@
 // composite target's durable recovery rows (the landed slice-3 projection),
 // offers a restore of a rejected row's text and an exact-target discard of a
 // single row. The projection, the action gate and the discard wrapper are
-// pure; the rows show as ghosts above the composer (session/ghosts.ts and
+// pure; the rows show as ghosts at the transcript's end (session/ghosts.ts and
 // session/QueuedMessages.test.tsx), and the failure line renders through the
 // shared native testkit so a green run is proof about the real component.
 

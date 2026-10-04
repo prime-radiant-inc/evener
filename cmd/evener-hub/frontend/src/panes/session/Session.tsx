@@ -691,12 +691,12 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
               !recoveryOwnerRef &&
               ref.startsWith("local:") &&
               !restartPending &&
-              !controlsFor(model).send && <SessionChrome ref={ref} placement="menu" discoverActivity />}
+              !controlsFor(model).send && <SessionChrome ref={ref} paneId={paneId} placement="menu" discoverActivity />}
             {reconciliationFailed && (
               <div role="alert">Message recovery has not completed. Sending will resume after recovery succeeds.</div>
             )}
             <PendingChips sessionRef={ref} />
-            {composerSource && <Composer ref={ref} source={composerSource} focused={paneFocused} />}
+            {composerSource && <Composer ref={ref} paneId={paneId} source={composerSource} focused={paneFocused} />}
           </div>
         </div>
       }
