@@ -20,7 +20,7 @@ import {
   jobFixture,
   summaryFixture,
 } from "./sessionActivityTestUtils";
-import { subagentOutcomesDelegatesResponse } from "./testing/subagentWireFixtures";
+import { subagentOutcomesDelegatesResponse, subagentResumedDelegatesResponse } from "./testing/subagentWireFixtures";
 import type { SessionDelegate, SessionWatch } from "./types.gen";
 import { watchArmedLabel, watchGloss } from "./watchText";
 
@@ -90,7 +90,7 @@ test("stable active delegate projection remains visible and preserves its raw ac
   expect(entity.open).toEqual({ ref: active.childRef, parentRef: active.ownerRef });
 });
 
-test("retained failed stable delegate projection keeps failure visible with its action target", () => {
+test("retained failed stable delegate projection folds without losing its action target", () => {
   const failed = {
     ...delegateFixture("failed_raw"),
     lifecycle: "idle",
@@ -107,11 +107,12 @@ test("retained failed stable delegate projection keeps failure visible with its 
   if (!projected.tree) throw new Error("missing retained projection");
   const closed = buildActivityRows(projected.tree, new Set());
   expect(closed).toHaveLength(1);
-  const row = closed[0];
-  if (row?.kind !== "delegate") throw new Error("missing visible retained failure");
+  expect(closed[0]).toMatchObject({ kind: "fold", inactiveCount: 1 });
+  const row = [...indexActivityEntities(projected.tree).values()][0];
+  if (row?.kind !== "delegate") throw new Error("missing indexed retained failure");
   expect(activityDelegateState(row.delegate)).toEqual({ active: false, failed: true, status: "failed" });
   expect(row.live).toBe(false);
-  expect(row.defaultDetailOpen).toBe(true);
+  expect(row.defaultDetailOpen).toBe(false);
   expect(row.delegate.error).toBe(failed.error);
   const entities = buildEntityView({
     sessionRef: activityRef,
@@ -354,4 +355,49 @@ test("recorded delegate names survive domain projection", () => {
   expect(named?.task).toBe("Fix race in tree settle");
   expect(named?.runGeneration).toBe(1);
   expect(named?.reportPreview).toContain("Fixed the race");
+});
+
+test.each([
+  [
+    subagentOutcomesDelegatesResponse,
+    1,
+    "Fixed the race: settle now waits for the drain.\n\nThe new test covers both orders.",
+  ],
+  [subagentResumedDelegatesResponse, 2, "Second run report."],
+] as const)("recorded settled generation remains indexed while every outcome folds: %s", (load, generation, report) => {
+  const recorded = load();
+  const state = snapshot(recorded.delegates);
+  const projected = projectSessionActivity({ ...state, context: recorded.context });
+  if (!projected.tree) throw new Error("missing recorded tree");
+  expect(buildActivityRows(projected.tree, new Set())).toEqual([
+    expect.objectContaining({ kind: "fold", id: "session:local:root:inactive-fold", inactiveCount: 3 }),
+  ]);
+  const rows = buildActivityRows(projected.tree, new Set(["session:local:root:inactive-fold"]));
+  expect(
+    rows.filter((row) => row.kind === "delegate").map((row) => [row.delegate.delegateId, row.delegate.outcome]),
+  ).toEqual([
+    ["dlg_stopped", "cancelled"],
+    ["dlg_reported", "completed"],
+    ["dlg_failed", "failed"],
+  ]);
+  const entities = buildEntityView({
+    sessionRef: "local:root",
+    tree: projected.tree,
+    turns: [],
+    stale: false,
+    ended: false,
+  });
+  expect(entities.size).toBe(3);
+  const failed = findEntityView(entities, "delegate", "dlg_failed", "local:root");
+  expect(failed).toMatchObject({
+    row: {
+      defaultDetailOpen: false,
+      delegate: { terminal: true, outcome: "failed", runGeneration: 1, error: "provider returned 500" },
+    },
+    open: { ref: "local:child-dlg_failed", parentRef: "local:root" },
+  });
+  expect(findEntityView(entities, "delegate", "dlg_failed", "remote:root")).toBeUndefined();
+  expect(findEntityView(entities, "delegate", "dlg_reported", "local:root")).toMatchObject({
+    row: { defaultDetailOpen: false, delegate: { runGeneration: generation, reportPreview: report } },
+  });
 });

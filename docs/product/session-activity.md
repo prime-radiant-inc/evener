@@ -539,9 +539,19 @@ non-crashed errors keep Delete hidden; Force shutdown remains the recovery actio
 for eligible live sessions.
 Expanded watch details reveal the full user note as wrapped text, regardless of
 how much fits in the compact collapsed row.
-Failed entries remain visible outside the inactive fold, including parent rows
-needed to expose failed descendants. The fold count covers only the other
-inactive entries grouped beneath it.
+The recursive Activity Sheet groups every settled job and delegate, including
+failures, under its existing per-session Inactive folds. Counts include every
+entry grouped there. Opening a fold reveals rows in their original order with
+details collapsed by default. Active descendants and the ancestors needed to
+reach them remain outside the folds, regardless of an ancestor's settled outcome.
+Settled row glyphs and status text use ordinary quiet ink. True outcomes remain
+available to assistive technology even when duration replaces visible status;
+live questions, approvals and current errors retain their attention treatment.
+Detail, action and read failures remain recovery information, not settled outcomes.
+The shared entity index includes every loaded entry regardless of disclosure and
+keeps its fold origin truthful. Folding does not change owner-qualified output or
+child transcript actions, watches, paging or shared reconnect recovery. Overview
+and native retain their separate history groups and own-session error priority.
 The [panel view store](../../cmd/evener-hub/frontend/src/stores/activityPanel.ts)
 retains sheet visibility, disclosure choices and each collection's last loaded
 row identity by session ref for the lifetime of its retained workspace panes.

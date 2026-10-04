@@ -107,16 +107,98 @@ test("mobile Activity starts with compact details and each watch or job opens in
   expect(screen.getByRole("button", { name: "Show details for Run tests" })).toBeTruthy();
 });
 
-test("mobile overview exposes failed work while successful completed work stays folded", async () => {
+test("mobile recursive Activity folds all settled outcomes with quiet truthful rows", async () => {
   connectActivity();
   render(<ActivityPanelBody sessionRef={ref} model={model()} />);
-  const failed = await screen.findByRole("treeitem", { name: "Failed checks" });
-  expect(within(failed).getByRole("img", { name: "Failed" })).toBeTruthy();
-  expect(screen.getByRole("treeitem", { name: "2 inactive" })).toBeTruthy();
+  const fold = await screen.findByRole("treeitem", { name: "3 inactive" });
+  expect(screen.queryByRole("treeitem", { name: "Failed checks" })).toBeNull();
   expect(screen.queryByRole("treeitem", { name: "Completed checks" })).toBeNull();
-  fireEvent.click(screen.getByRole("treeitem", { name: "2 inactive" }));
+  fireEvent.click(fold);
+  const failed = screen.getByRole("treeitem", { name: "Failed checks" });
+  const glyph = within(failed).getByRole("img", { name: "Failed" });
+  expect(glyph.className).not.toContain("kindDanger");
   expect(screen.getByRole("treeitem", { name: "Completed checks" })).toBeTruthy();
   expect(screen.getAllByRole("treeitem", { name: "Failed checks" })).toHaveLength(1);
+  expect(failed.getAttribute("aria-expanded")).toBe("false");
+  expect(screen.getAllByTestId("watch-glyph")).toHaveLength(3);
+  fireEvent.click(fold);
+  expect(screen.queryByRole("treeitem", { name: "Failed checks" })).toBeNull();
+});
+
+test("a folded failed job opens actual output through its authoritative owner, not an equal ID", async () => {
+  const client = activityClient();
+  const jobId = "equal-job-id";
+  const ownerRef = "source:opaque-owner";
+  const failed = activityJob({
+    jobId,
+    ownerRef,
+    description: "Failed owned output",
+    terminal: true,
+    status: "command_exited_nonzero",
+    outcome: "failure",
+    transcriptRef: `job:${jobId}`,
+  });
+  client.on("evener/thread/jobs/list", ({ ref, scope }) => ({
+    context: activityContext(ref),
+    scope: scope ?? "session",
+    jobs: [failed, activityJob({ ...failed, ownerRef: "other:opaque-owner", description: "Other owner's equal ID" })],
+    page: { complete: true, issues: [] },
+  }));
+  client.on("evener/jobs/output", ({ ref, jobId: requestedJobId }) => {
+    expect(ref).toBe(ownerRef);
+    expect(requestedJobId).toBe(jobId);
+    return { data: { tail: "Authoritative failed output", totalBytes: 27, retainedStart: 0, truncated: false } };
+  });
+  client.on("evener/jobs/get", ({ ref, jobId: requestedJobId }) => {
+    expect(ref).toBe(ownerRef);
+    expect(requestedJobId).toBe(jobId);
+    return { data: failed };
+  });
+  connectionStore.getState().connect(client);
+  const restoreSessionPane = registerPaneForTests<{ ref: string }>({
+    id: "session",
+    title: () => "Activity owner",
+    component: lazy(() =>
+      Promise.resolve({
+        default: ({ params }: PaneProps<{ ref: string }>) => (
+          <ActivityPanel sessionRef={params.ref} model={model(params.ref)} />
+        ),
+      }),
+    ),
+  });
+  try {
+    const ownerPane = workspaceStore.getState().openPane("session", { ref });
+    render(
+      <ClientProvider client={client}>
+        <StackHost />
+      </ClientProvider>,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: /^Activity/ }));
+    const fold = await screen.findByRole("treeitem", { name: "2 inactive" });
+    expect(screen.queryByRole("treeitem", { name: "Failed owned output" })).toBeNull();
+    fireEvent.click(fold);
+    const row = screen.getByRole("treeitem", { name: "Failed owned output" });
+    expect(within(row).getByRole("img", { name: "Failed" }).className).not.toContain("kindDanger");
+    fireEvent.click(within(row).getByRole("button", { name: "Open transcript" }));
+    await act(async () => await vi.dynamicImportSettled());
+    expect(await screen.findByTestId("joblog-content")).toHaveProperty("textContent", "Authoritative failed output");
+    const workspace = workspaceStore.getState();
+    expect(workspace.panes.find((pane) => pane.id === ownerPane)?.params).toEqual({ ref });
+    expect(workspace.panes.find((pane) => pane.id === workspace.focusedPaneId)?.params).toEqual({
+      ref: `job:${jobId}`,
+      parentRef: ownerRef,
+    });
+    expect(client.calls.filter((call) => call.method === "evener/jobs/output").map((call) => call.params)).toEqual([
+      { ref: ownerRef, jobId },
+    ]);
+    expect(
+      client.calls.some(
+        (call) => call.method === "thread/read" && (call.params as { ref: string }).ref === `job:${jobId}`,
+      ),
+    ).toBe(false);
+  } finally {
+    restoreSessionPane();
+  }
 });
 
 test("mobile child transcript Back restores Activity and disclosures until explicitly closed", async () => {
@@ -238,9 +320,10 @@ test("mobile child Back restores the loaded job extent and expanded older failur
     );
     fireEvent.click(await screen.findByRole("button", { name: /^Activity/ }));
     fireEvent.click(await screen.findByRole("button", { name: "Load more jobs" }));
+    fireEvent.click(await screen.findByRole("treeitem", { name: "62 inactive" }));
     fireEvent.click(await screen.findByRole("button", { name: "Show details for Older failed checks" }));
     expect(await screen.findByText("Older failure output")).toBeTruthy();
-    fireEvent.click(screen.getByRole("treeitem", { name: "61 inactive" }));
+
     await act(async () => {
       fireEvent.click(
         within(screen.getByRole("treeitem", { name: "Observer" })).getByRole("button", { name: "Open transcript" }),
@@ -256,7 +339,7 @@ test("mobile child Back restores the loaded job extent and expanded older failur
     const dialog = await screen.findByRole("dialog", { name: "Activity" });
     expect(await within(dialog).findByRole("button", { name: "Hide details for Older failed checks" })).toBeTruthy();
     expect(await within(dialog).findByText("Older failure output")).toBeTruthy();
-    expect(within(dialog).getByRole("treeitem", { name: "61 inactive" })).toBeTruthy();
+    expect(within(dialog).getByRole("treeitem", { name: "62 inactive" })).toBeTruthy();
     expect(within(dialog).getByRole("treeitem", { name: "Completed history 59" })).toBeTruthy();
     expect(
       client.calls

@@ -8,6 +8,7 @@ import {
   type ActivityTree,
   activityNodeID,
 } from "./activityData";
+import { buildActivityRows } from "./activityRows";
 import {
   buildEntityView,
   type DelegateEntityView,
@@ -205,6 +206,27 @@ test("transcript lookup selects raw IDs only within their authoritative owner", 
   expect(view.size).toBe(2);
   expect(findEntityView(view, "job", "same", "host-a:s")?.ownerRef).toBe("host-a:s");
   expect(findEntityView(view, "job", "same", "host-b:s")?.ownerRef).toBe("host-b:s");
+  expect(findEntityView(view, "job", "same", "local:s")).toBeUndefined();
+});
+
+test("closed failed job folds retain equal logical IDs and authoritative output owners", () => {
+  const tree = treeWithEntries([
+    {
+      kind: "shell",
+      job: { ...job("same"), ownerRef: "host-a:s", status: "command_exited_nonzero", outcome: "failure" },
+    },
+    { kind: "shell", job: { ...job("same"), ownerRef: "host-b:s", status: "completed", outcome: "success" } },
+  ]);
+  expect(buildActivityRows(tree, new Set())).toEqual([expect.objectContaining({ kind: "fold", inactiveCount: 2 })]);
+  const view = buildEntityView({ sessionRef: "local:s", tree, turns: [], stale: false, ended: false });
+  expect(view.size).toBe(2);
+  expect(findEntityView(view, "job", "same", "host-a:s")).toMatchObject({
+    row: { defaultDetailOpen: false, job: { status: "command_exited_nonzero", outcome: "failure" } },
+    open: { ref: "job:same", parentRef: "host-a:s" },
+  });
+  expect(findEntityView(view, "job", "same", "host-b:s")).toMatchObject({
+    open: { ref: "job:same", parentRef: "host-b:s" },
+  });
   expect(findEntityView(view, "job", "same", "local:s")).toBeUndefined();
 });
 
