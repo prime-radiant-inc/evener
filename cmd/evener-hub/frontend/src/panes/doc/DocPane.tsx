@@ -49,6 +49,13 @@ const ERROR_COPY: Record<DocFileErrorKind, { title: string; hint: string }> = {
   error: { title: "Couldn't load file", hint: "The hub returned an unexpected error." },
 };
 
+// DocFileContent keeps a leading BOM because annotations use the original
+// source's UTF-16 coordinates. Marked does not recognize a heading through it,
+// so remove it only from the legacy display input, never from stored source.
+function markdownDisplaySource(source: string): string {
+  return source.startsWith("\ufeff") ? source.slice(1) : source;
+}
+
 function DocFileView({ content, path }: { content: DocFileContent; path: string }) {
   if (content.binary) {
     return (
@@ -69,7 +76,7 @@ function DocFileView({ content, path }: { content: DocFileContent; path: string 
       )}
       {isMarkdownPath(path) ? (
         <div className={CLASS.markdown}>
-          <Markdown source={content.text} />
+          <Markdown source={markdownDisplaySource(content.text)} />
         </div>
       ) : (
         <CodeBlock text={content.text} fold={false} />

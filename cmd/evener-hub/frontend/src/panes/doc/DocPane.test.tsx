@@ -4,6 +4,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Thread, ThreadReadResponse } from "@evener/appwire-client";
+import { type CapturedPassage, type DocFileContent, displayedFingerprint, formatAnnotationReference } from "@evener/appwire-client";
 import { bindFilePath, DOC_FILE_MAX_BYTES } from "@evener/appwire-client/docContent";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -70,6 +71,7 @@ let answer: (request: IncomingMessage, response: ServerResponse) => void;
 let closeHTTP: () => Promise<void>;
 const nativeFetch = globalThis.fetch;
 let images: HTMLImageElement[];
+let mockRead: MockInstance<typeof docContentModule.readDocFile>;
 
 async function listenHTTP(server: Server): Promise<string> {
   for (let attempt = 0; attempt < 64; attempt += 1) {
@@ -99,6 +101,9 @@ beforeEach(async () => {
   cwd = "/work/a";
   requests = [];
   images = [];
+  // The annotation suite scripts its reads through a fresh spy on the module's
+  // export each test; the fixture's own afterEach restores it after its disposers.
+  mockRead = vi.spyOn(docContentModule, "readDocFile");
   client = new FakeClient("ready");
   client.on("thread/read", (params) => ({ thread: thread(cwd), requestGeneration: params.requestGeneration }));
   client.on("thread/unsubscribe", () => ({}));
@@ -157,6 +162,14 @@ function renderDoc(path: string, kind: "file" | "image" = "file", retained = tru
   );
   return { ...view, pane, sourcePaneId };
 }
+function textContent(over: Partial<DocFileContent> = {}): DocFileContent {
+  return { text: "", binary: false, mediaType: "text/plain", truncated: false, sizeBytes: 0, ...over };
+}
+
+function renderFile(path: string) {
+  return render(<DocPane params={{ session: "s1", path, kind: "file" }} paneId="doc-1" focused={true} />);
+}
+
 async function publishCWD(next: string) {
   cwd = next;
   await act(async () => {
@@ -193,6 +206,39 @@ test("a markdown file uses the sanitizing Markdown widget and prose host", async
   const heading = await screen.findByRole("heading", { name: "Heading" });
   expect(heading.tagName).toBe("H1");
   expect(heading.closest(`.${docpaneStyles.markdown}`)).toBeTruthy();
+});
+
+test("a decoded leading BOM stays in source coordinates without demoting the first Markdown heading", async () => {
+  mockRead.mockRestore();
+  vi.spyOn(globalThis, "fetch").mockResolvedValue(
+    new Response(new Uint8Array([0xef, 0xbb, 0xbf, 0x23, 0x20, 0x48, 0x65, 0x61, 0x64, 0x69, 0x6e, 0x67, 0x0a]), {
+      headers: { "Content-Type": "text/plain; charset=utf-8" },
+    }),
+  );
+  renderFile("docs/README.md");
+  const heading = await screen.findByRole("heading", { name: "Heading" });
+  expect(heading.tagName).toBe("H1");
+});
+
+test("an annotation locator with a backtick and encoded controls round-trips through pinned Markdown", async () => {
+  const source = "First occurrence: same\n";
+  const capture: CapturedPassage = {
+    evidence: { wholeRevision: "rev-A", fingerprint: displayedFingerprint(source, false) },
+    sourceRange: { start: 18, end: 22 },
+    start: { line: 1, column: 19 },
+    endInclusive: { line: 1, column: 22 },
+    selectedRenderedText: "same",
+    contextBefore: "First occurrence: ",
+    contextAfter: "\n",
+    mappingId: "fixture-map",
+    displayedSnapshotId: "snapshot-A",
+  };
+  mockRead.mockResolvedValue(
+    textContent({ text: formatAnnotationReference(capture, "dir/a`b\nback\\slash.md", "Keep this scope.") }),
+  );
+  renderFile("docs/reference.md");
+  const locator = await screen.findByText("dir/a`b\\nback\\\\slash.md:1:19-1:22");
+  expect(locator.tagName).toBe("CODE");
 });
 test("raw HTML is neutralized", async () => {
   respond("before <img src=x onerror=alert(1)> after");

@@ -4,8 +4,11 @@
 // the parser the web's doc pane uses (ruling 12). Each block keeps its own
 // markdown for the renderer, and a hash of it: that hash is how changes and
 // comment anchors recognize a block across versions (S9's fallback).
+import { hashAnnotationText } from "@evener/appwire-client";
 import { filenameOf } from "@evener/appwire-client/docContent";
 import { getDefaults, Lexer, lexer, type Token, Tokenizer, type Tokens } from "marked";
+
+export { hashAnnotationText as hashText } from "@evener/appwire-client";
 
 export type BlockKind = "heading" | "paragraph" | "listItem" | "code" | "table" | "quote" | "rule" | "html";
 
@@ -27,23 +30,6 @@ export interface DocumentBlock {
 
 const LIST_MARKER = /^\s*(?:[-*+]|\d+[.)])\s+/;
 
-/** cyrb53: a small, stable 53-bit string hash. Collisions don't matter at a
- * document's scale; stability across launches does. */
-export function hashText(text: string): string {
-	let h1 = 0xdeadbeef;
-	let h2 = 0x41c6ce57;
-	for (let index = 0; index < text.length; index += 1) {
-		const code = text.charCodeAt(index);
-		h1 = Math.imul(h1 ^ code, 2654435761);
-		h2 = Math.imul(h2 ^ code, 1597334677);
-	}
-	h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507);
-	h1 ^= Math.imul(h2 ^ (h2 >>> 13), 3266489909);
-	h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507);
-	h2 ^= Math.imul(h1 ^ (h1 >>> 13), 3266489909);
-	return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
-}
-
 function trimBlock(raw: string): string {
 	return raw.replace(/^\n+/, "").replace(/\s+$/, "");
 }
@@ -55,7 +41,7 @@ function identity(kind: BlockKind, source: string): string {
 		.map((line) => line.trimEnd())
 		.join("\n")
 		.trim();
-	return hashText(`${kind}:${normalized}`);
+	return hashAnnotationText(`${kind}:${normalized}`);
 }
 
 // Reads HTML, a block or a tag, as markdown text, as md4c's NOHTML does.
