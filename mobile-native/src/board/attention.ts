@@ -92,18 +92,16 @@ export function boardState(row: NavigationSessionSummary, approval: boolean, see
 	// A row from an offline source can't be reached, whatever state it last
 	// reported: it is never Working, Finished or Needs you.
 	if (row.offline) return "shutDown";
-	const runningSubagents = row.kind === "session" && (subagentTallyToShow(row)?.running ?? 0) > 0;
 	const decisive = decisiveState(row.state);
 	// Only a nonblocking warning yields to live child work. Search keeps its
 	// existing decisiveState rule, and failed children never decide this mark.
-	if (
-		decisive &&
-		!(decisive === "warning" && runningSubagents && !row.ask_pending && !approval && !row.approval_pending)
-	)
-		return decisive;
+	if (decisive && (decisive !== "warning" || row.ask_pending || approval || row.approval_pending)) return decisive;
 	if (row.state === "awaiting" && row.ask_pending) return "question";
 	if (approval || row.approval_pending === true) return "approval";
-	if (row.state === "active" || runningSubagents) return "working";
+	if (row.state === "active") return "working";
+	const runningSubagents = row.kind === "session" && (subagentTallyToShow(row)?.running ?? 0) > 0;
+	if (runningSubagents) return "working";
+	if (decisive) return decisive;
 	if (row.dormant || seen) return "idle";
 	return "finished";
 }
