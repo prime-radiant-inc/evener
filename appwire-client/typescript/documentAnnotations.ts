@@ -193,8 +193,14 @@ export function compareDisplayedSources(
     return { changed: true, detection: "whole-revision" };
   }
 
-  const capturedCoverage = captured.evidence.fingerprint.coverage;
-  const currentCoverage = current.evidence.fingerprint.coverage;
+  const capturedFingerprint = captured.evidence.fingerprint;
+  const currentFingerprint = current.evidence.fingerprint;
+  if (capturedFingerprint.scope === "displayed-full" && currentFingerprint.scope === "displayed-full") {
+    return { changed: captured.source !== current.source, detection: "comparable-source" };
+  }
+
+  const capturedCoverage = capturedFingerprint.coverage;
+  const currentCoverage = currentFingerprint.coverage;
   const overlapStart = Math.max(capturedCoverage.start, currentCoverage.start, 0);
   const overlapEnd = Math.min(capturedCoverage.end, currentCoverage.end, captured.source.length, current.source.length);
   if (overlapStart >= overlapEnd) return { changed: false, detection: "insufficient-coverage" };

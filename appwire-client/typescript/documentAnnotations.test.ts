@@ -107,6 +107,20 @@ describe("display evidence", () => {
     ).toEqual({ changed: false, detection: "insufficient-coverage" });
   });
 
+  it.each([
+    ["a suffix deletion", "abcdef", "abc", { changed: true, detection: "comparable-source" }],
+    ["a suffix insertion", "abc", "abcdef", { changed: true, detection: "comparable-source" }],
+    ["deletion to empty", "abc", "", { changed: true, detection: "comparable-source" }],
+    ["insertion from empty", "", "abc", { changed: true, detection: "comparable-source" }],
+  ] as const)("detects %s between complete displayed sources", (_case, captured, current, expected) => {
+    expect(
+      compareDisplayedSources(
+        { source: captured, evidence: { fingerprint: displayedFingerprint(captured, false) } },
+        { source: current, evidence: { fingerprint: displayedFingerprint(current, false) } },
+      ),
+    ).toEqual(expected);
+  });
+
   it("expires on whole revision change despite equal visible source", () => {
     const fingerprint = displayedFingerprint("abc", true);
     expect(
