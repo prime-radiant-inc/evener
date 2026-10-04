@@ -377,38 +377,79 @@ func backgroundJobsAwaitOutput(ctx context.Context, client *appwire.Client, ref,
 
 func backgroundJobsAwait(ctx context.Context, t *testing.T, client *appwire.Client, ref string, ready func([]appwire.JobActivityJob) bool) []appwire.JobActivityJob {
 	t.Helper()
+	rows, err := backgroundJobsReadUntil(ctx, client, ref, ready)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rows
+}
+
+func backgroundJobsReadUntil(ctx context.Context, client *appwire.Client, ref string, ready func([]appwire.JobActivityJob) bool) ([]appwire.JobActivityJob, error) {
 	for {
 		var rows []appwire.JobActivityJob
+		var scope appwire.SessionActivityContext
 		cursor := ""
 		for {
 			page, err := client.ThreadJobsList(ctx, appwire.SessionActivityListParams{Ref: ref, Cursor: cursor})
 			if err != nil {
-				t.Fatal(err)
+				return nil, err
 			}
 			if len(page.Page.Issues) > 0 {
-				t.Fatalf("actual Jobs page issues: %+v", page.Page)
+				return nil, fmt.Errorf("actual Jobs page issues: %+v", page.Page)
 			}
+			scope = page.Context
 			rows = append(rows, page.Jobs...)
 			if page.Page.Complete {
 				break
 			}
 			if page.Page.NextCursor == "" || page.Page.NextCursor == cursor {
-				t.Fatal("actual Jobs cursor does not advance")
+				return nil, fmt.Errorf("actual Jobs cursor does not advance")
 			}
 			cursor = page.Page.NextCursor
 		}
 		if ready(rows) {
-			return rows
+			return rows, nil
 		}
-		select {
-		case <-ctx.Done():
-			t.Fatalf("actual Jobs state did not arrive: %v, last rows %+v", ctx.Err(), rows)
-		case _, ok := <-client.Notifications():
-			if !ok {
-				t.Fatal("actual Jobs subscription closed")
+		wake := false
+		for !wake {
+			select {
+			case <-ctx.Done():
+				return nil, fmt.Errorf("actual Jobs state did not arrive: %w, last rows %+v", ctx.Err(), rows)
+			case note, ok := <-client.Notifications():
+				if !ok {
+					return nil, fmt.Errorf("actual Jobs subscription closed")
+				}
+				wake = backgroundJobsInvalidated(note, ref, scope)
+			}
+		}
+		// This next walk covers the already queued burst. Drain only before it:
+		// notices arriving during the walk must still demand a subsequent read.
+		// A bounded snapshot cannot starve that read under continuous traffic.
+		for queued := len(client.Notifications()); queued > 0; queued-- {
+			if _, ok := <-client.Notifications(); !ok {
+				return nil, fmt.Errorf("actual Jobs subscription closed")
 			}
 		}
 	}
+}
+
+func backgroundJobsInvalidated(note appwire.Notification, ref string, scope appwire.SessionActivityContext) bool {
+	switch note.Method {
+	case appwire.NotifyEvenerThreadActivityChanged:
+		var changed appwire.SessionActivityChangedParams
+		if json.Unmarshal(note.Params, &changed) != nil || (changed.Ref != ref && changed.Ref != scope.Ref) || changed.SessionID != scope.SessionID {
+			return false
+		}
+		for _, resource := range changed.Resources {
+			if resource == appwire.SessionActivityResourceJobs {
+				return true
+			}
+		}
+	case appwire.NotifyEvenerThreadResync:
+		var resync appwire.ThreadResyncParams
+		return json.Unmarshal(note.Params, &resync) == nil && (resync.Ref == ref || resync.Ref == scope.Ref)
+	}
+	return false
 }
 
 func backgroundJobsDiagnostics(ctx context.Context, t *testing.T, client *appwire.Client, ref string) []appwire.JobActivityJob {
