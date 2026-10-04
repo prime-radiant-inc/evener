@@ -743,7 +743,13 @@ describe("ghosts as the transcript's last rows", () => {
 		text: "refused",
 		actions: [],
 	};
-	const streaming: TimelineRow = { kind: "assistant", id: "r", markdown: "half a repl", streaming: true, turnId: "turn_1" };
+	const streaming: TimelineRow = {
+		kind: "assistant",
+		id: "r",
+		markdown: "half a repl",
+		streaming: true,
+		turnId: "turn_1",
+	};
 
 	it("follows the last real row, a streaming reply included, in the order ghosts() lists them", () => {
 		const all = ghosts(

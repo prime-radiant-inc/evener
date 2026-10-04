@@ -2840,7 +2840,10 @@ describe("queued messages at the transcript's end (spec 8.5)", () => {
 		expect(lastRow(tree)).toContain("Queued · sends when this turn ends");
 		// The turn ends and the hub takes the message for the next one: the
 		// queue frame comes first, then the message's own item.
-		frame({ method: "thread/queueChanged", params: { threadId: served.id, ref: "ref-queue-lands", queue: queue([], 2) } });
+		frame({
+			method: "thread/queueChanged",
+			params: { threadId: served.id, ref: "ref-queue-lands", queue: queue([], 2) },
+		});
 		expect(shown()).toBe(1);
 		frame({
 			method: "history/updated",

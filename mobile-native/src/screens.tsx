@@ -3025,7 +3025,12 @@ export function ConversationScreen({
 										{/* A failed read says so above, once, and retries on its own. */}
 										<ErrorMessage message={snapshot.status === "error" ? null : snapshot.error} />
 										{/* A subagent's bar already says what you can do instead. */}
-										{connected && permitted && !subagentBar && !permitted.send && !permitted.steer && !permitted.queue ? (
+										{connected &&
+										permitted &&
+										!subagentBar &&
+										!permitted.send &&
+										!permitted.steer &&
+										!permitted.queue ? (
 											<Copy muted>Sending is unavailable for this session.</Copy>
 										) : null}
 										{/* Until the conversation first loads, three quiet blocks stand
