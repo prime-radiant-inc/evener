@@ -60,7 +60,7 @@ index 380c6be..fd7f5cb 100644
        if (text.isEmpty()) return headerH + inset * 2f
        val paint = createCodePaint(style, context)
 diff --git a/node_modules/react-native-enriched-markdown/cpp/md4c/md4c.c b/node_modules/react-native-enriched-markdown/cpp/md4c/md4c.c
-index 394b69f..f6b7a65 100644
+index 394b69f..43e0b73 100644
 --- a/node_modules/react-native-enriched-markdown/cpp/md4c/md4c.c
 +++ b/node_modules/react-native-enriched-markdown/cpp/md4c/md4c.c
 @@ -325,6 +325,8 @@ struct MD_VERBATIMLINE_tag {
@@ -300,7 +300,26 @@ index 394b69f..f6b7a65 100644
              break;
 
          case MD_BLOCK_TABLE:
-@@ -5825,6 +5863,14 @@ md_add_line_into_current_block(MD_CTX* ctx, const MD_LINE_ANALYSIS* analysis)
+@@ -5491,8 +5529,16 @@ md_process_leaf_block(MD_CTX* ctx, MD_BLOCK* block)
+             break;
+     }
+
+-    if(!is_in_tight_list  ||  block->type != MD_BLOCK_P)
+-        MD_ENTER_BLOCK(block->type, (void*) &det);
++    if(!is_in_tight_list  ||  block->type != MD_BLOCK_P) {
++        if(ctx->parser.enter_leaf_block_with_source != NULL) {
++            ret = ctx->parser.enter_leaf_block_with_source(block->type, (void*) &det,
++                    block->source_beg, block->source_end, ctx->userdata);
++            if(ret != 0)
++                goto abort;
++        } else {
++            MD_ENTER_BLOCK(block->type, (void*) &det);
++        }
++    }
+
+     /* Process the block contents accordingly to is type. */
+     switch(block->type) {
+@@ -5825,6 +5871,14 @@ md_add_line_into_current_block(MD_CTX* ctx, const MD_LINE_ANALYSIS* analysis)
  {
      MD_ASSERT(ctx->current_block != NULL);
 
@@ -315,7 +334,7 @@ index 394b69f..f6b7a65 100644
      if(ctx->current_block->type == MD_BLOCK_CODE || ctx->current_block->type == MD_BLOCK_HTML) {
          MD_VERBATIMLINE* line;
 
-@@ -5835,6 +5881,18 @@ md_add_line_into_current_block(MD_CTX* ctx, const MD_LINE_ANALYSIS* analysis)
+@@ -5835,6 +5889,18 @@ md_add_line_into_current_block(MD_CTX* ctx, const MD_LINE_ANALYSIS* analysis)
          line->indent = analysis->indent;
          line->beg = analysis->beg;
          line->end = analysis->end;
@@ -334,7 +353,7 @@ index 394b69f..f6b7a65 100644
      } else {
          MD_LINE* line;
 
-@@ -6552,6 +6610,8 @@ md_analyze_line(MD_CTX* ctx, OFF beg, OFF* p_end,
+@@ -6552,6 +6618,8 @@ md_analyze_line(MD_CTX* ctx, OFF beg, OFF* p_end,
               * which we transform into MD_LINE_BLANK. */
              if(line->indent < ctx->code_indent_offset) {
                  if(md_is_closing_code_fence(ctx, CH(pivot_line->beg), off, &off)) {
@@ -344,7 +363,7 @@ index 394b69f..f6b7a65 100644
                      ctx->last_line_has_list_loosening_effect = FALSE;
                      break;
 diff --git a/node_modules/react-native-enriched-markdown/cpp/md4c/md4c.h b/node_modules/react-native-enriched-markdown/cpp/md4c/md4c.h
-index e920bc4..7232992 100644
+index e920bc4..a3e627b 100644
 --- a/node_modules/react-native-enriched-markdown/cpp/md4c/md4c.h
 +++ b/node_modules/react-native-enriched-markdown/cpp/md4c/md4c.h
 @@ -47,6 +47,10 @@ typedef char MD_CHAR;
@@ -367,7 +386,7 @@ index e920bc4..7232992 100644
  } MD_BLOCK_CODE_DETAIL;
 
  /* Detailed info for MD_BLOCK_TABLE. */
-@@ -451,6 +457,13 @@ typedef struct MD_PARSER {
+@@ -451,6 +457,18 @@ typedef struct MD_PARSER {
    /* Reserved. Set to NULL.
       */
    void (*syntax)(void);
@@ -378,11 +397,16 @@ index e920bc4..7232992 100644
 +   * Initialize to NULL for the ordinary text callback. */
 +  int (*text_with_source)(MD_TEXTTYPE, const MD_CHAR *, MD_SIZE,
 +                          MD_OFFSET, MD_OFFSET, int /*generated*/, void *);
++  /* Optional replacement for enter_block() on leaf blocks only. The offsets
++   * include original block syntax and line endings, before text normalization.
++   * Containers retain the ordinary callback and enclose their child spans. */
++  int (*enter_leaf_block_with_source)(MD_BLOCKTYPE, void * /*detail*/,
++                                      MD_OFFSET, MD_OFFSET, void * /*userdata*/);
  } MD_PARSER;
 
  /* For backward compatibility. Do not use in new code.
 diff --git a/node_modules/react-native-enriched-markdown/cpp/parser/MD4CParser.cpp b/node_modules/react-native-enriched-markdown/cpp/parser/MD4CParser.cpp
-index 4653212..42ec1a9 100644
+index 4653212..ad866a7 100644
 --- a/node_modules/react-native-enriched-markdown/cpp/parser/MD4CParser.cpp
 +++ b/node_modules/react-native-enriched-markdown/cpp/parser/MD4CParser.cpp
 @@ -1,16 +1,2192 @@
@@ -2608,7 +2632,32 @@ index 4653212..42ec1a9 100644
            // Extract fence character (if fenced code block)
            if (codeDetail->fence_char != 0) {
              char fenceStr[2] = {static_cast<char>(codeDetail->fence_char), '\0'};
-@@ -350,23 +2532,37 @@ public:
+@@ -225,6 +2407,24 @@ public:
+     return 0;
+   }
+
++  static int enterLeafBlockWithSource(MD_BLOCKTYPE type, void *detail, MD_OFFSET start, MD_OFFSET end,
++                                      void *userdata) {
++    const int result = enterBlock(type, detail, userdata);
++    if (result != 0) return result;
++    // Unsupported blocks do not push an AST node, so never assign their
++    // original span to an unrelated parent that happens to be on the stack.
++    if (type != MD_BLOCK_H && type != MD_BLOCK_P && type != MD_BLOCK_HR &&
++        type != MD_BLOCK_TABLE && type != MD_BLOCK_CODE) return 0;
++    auto *impl = static_cast<Impl *>(userdata);
++    if (!impl->nodeStack.empty()) {
++      auto &node = *impl->nodeStack.back();
++      node.sourceByteStart = start;
++      node.sourceByteEnd = end;
++      node.hasSourceRange = true;
++    }
++    return 0;
++  }
++
+   static int leaveBlock(MD_BLOCKTYPE type, void *detail, void *userdata) {
+     (void)detail;
+     if (!userdata)
+@@ -350,23 +2550,37 @@ public:
    }
 
    static int text(MD_TEXTTYPE type, const MD_CHAR *text, MD_SIZE size, void *userdata) {
@@ -2653,7 +2702,7 @@ index 4653212..42ec1a9 100644
      }
 
      return 0;
-@@ -565,6 +2761,25 @@ void wrapListItemInlineRuns(MarkdownASTNode &node) {
+@@ -565,6 +2779,25 @@ void wrapListItemInlineRuns(MarkdownASTNode &node) {
    node.children = std::move(newChildren);
  }
 
@@ -2679,7 +2728,7 @@ index 4653212..42ec1a9 100644
  } // anonymous namespace
 
  MD4CParser::MD4CParser() : impl_(std::make_unique<Impl>()) {}
-@@ -587,7 +2802,6 @@ std::shared_ptr<MarkdownASTNode> MD4CParser::parse(const std::string &markdown,
+@@ -587,7 +2820,6 @@ std::shared_ptr<MarkdownASTNode> MD4CParser::parse(const std::string &markdown,
    }
 
    impl_->reset(estimatedDepth);
@@ -2687,17 +2736,18 @@ index 4653212..42ec1a9 100644
 
    unsigned flags = MD_FLAG_NOHTML | MD_FLAG_STRIKETHROUGH | MD_FLAG_TABLES | MD_FLAG_TASKLISTS | MD_FLAG_SPOILERS;
    if (md4cFlags.permissiveAutolinks) {
-@@ -617,7 +2831,8 @@ std::shared_ptr<MarkdownASTNode> MD4CParser::parse(const std::string &markdown,
+@@ -617,7 +2849,9 @@ std::shared_ptr<MarkdownASTNode> MD4CParser::parse(const std::string &markdown,
        0, // abi_version
        flags,   &Impl::enterBlock, &Impl::leaveBlock, &Impl::enterSpan, &Impl::leaveSpan, &Impl::text,
        nullptr, // debug_log
 -      nullptr  // syntax
 +      nullptr, // syntax
-+      &Impl::textWithSource
++      &Impl::textWithSource,
++      &Impl::enterLeafBlockWithSource
    };
 
    // Parse the markdown
-@@ -633,6 +2848,10 @@ std::shared_ptr<MarkdownASTNode> MD4CParser::parse(const std::string &markdown,
+@@ -633,6 +2867,10 @@ std::shared_ptr<MarkdownASTNode> MD4CParser::parse(const std::string &markdown,
    if (impl_->root) {
      promoteDisplayMathFromParagraphs(*impl_->root);
      wrapListItemInlineRuns(*impl_->root);
