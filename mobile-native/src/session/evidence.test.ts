@@ -477,8 +477,16 @@ describe("each tool's evidence, as the tools print it", () => {
 	});
 
 	// However deep images nest, taking one out never leaves another behind.
-	it("shows images nested five deep as words", () => {
-		expect(skillMarkdown(`${"![".repeat(5)}x${"](https://x.test/u.png)".repeat(5)}`)).toBe("x");
+	it("shows images nested fifty deep as words", () => {
+		expect(skillMarkdown(`${"![".repeat(50)}x${"](https://x.test/u.png)".repeat(50)}`)).toBe("x");
+	});
+
+	it.each([
+		["an image that taking out another completes", "![![](https://x.test/b.png)](https://x.test/a.png)", ""],
+		["an empty alt", "![](https://x.test/a_(b).png)", ""],
+		["an alt across lines", "![a\nb](https://x.test/a.png)", "a\nb"],
+	])("reads %s as its alt text", (_name, markdown, alt) => {
+		expect(skillMarkdown(markdown)).toBe(alt);
 	});
 
 	// A URL the pattern doesn't cover (parentheses nested two deep, an escaped
@@ -490,9 +498,6 @@ describe("each tool's evidence, as the tools print it", () => {
 		["parentheses nested two deep", "![a](https://x.test/a_(b_(c)).png)"],
 		["an escaped parenthesis", "![a](https://x.test/a\\).png)"],
 		["a close inside angle brackets", "![a](<https://x.test/a).png>)"],
-		["an image that completes another", "![![](https://x.test/b.png)](https://x.test/a.png)"],
-		["an empty alt", "![](https://x.test/a_(b).png)"],
-		["an alt across lines", "![a\nb](https://x.test/a.png)"],
 	])("never leaves an image's opener behind for %s", (_name, markdown) => {
 		expect(skillMarkdown(markdown)).not.toContain("![");
 	});
