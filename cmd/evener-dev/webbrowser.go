@@ -39,8 +39,6 @@ func newBrowserGate(slots int, buildFrontend bool) *webGate {
 		name:          "web-browser-guards",
 		checks:        browserGuards,
 		spec:          browserGuardSpec,
-		needsBuild:    []string{skillGuard, cascadeGuard, backgroundJobsGuard},
-		unsignalled:   []string{retirementGuard, skillGuard, cascadeGuard, backgroundJobsGuard},
 		slots:         slots,
 		buildFrontend: buildFrontend,
 	}
@@ -55,16 +53,21 @@ func browserGuardSpec(guard, root string) guardSpec {
 	switch guard {
 	case backgroundJobsGuard:
 		return guardSpec{
-			name: guard,
-			argv: []string{"go", "test", "-tags", "browserguard", "./cmd/evener-hub", "-run", "^TestBackgroundJobsBrowser$", "-count=1"},
-			dir:  ".", env: []string{vite},
+			name:            guard,
+			argv:            []string{"go", "test", "-tags", "browserguard", "./cmd/evener-hub", "-run", "^TestBackgroundJobsBrowser$", "-count=1"},
+			dir:             ".",
+			env:             []string{vite},
+			needsBuild:      true,
+			waitOnInterrupt: true,
 		}
 	case cascadeGuard:
 		return guardSpec{
-			name: guard,
-			argv: []string{"go", "test", "-tags", "browserguard", "./cmd/evener-hub", "-run", "^TestAgentCascadeBrowser$", "-count=1"},
-			dir:  ".",
-			env:  []string{vite},
+			name:            guard,
+			argv:            []string{"go", "test", "-tags", "browserguard", "./cmd/evener-hub", "-run", "^TestAgentCascadeBrowser$", "-count=1"},
+			dir:             ".",
+			env:             []string{vite},
+			needsBuild:      true,
+			waitOnInterrupt: true,
 		}
 	case skillGuard:
 		// web-skillguard is the full-stack guard: cmd/evener-hub's
@@ -73,21 +76,24 @@ func browserGuardSpec(guard, root string) guardSpec {
 		// real `evener serve` daemons. The TestSkillGuard* unit tests ride
 		// along: they need no browser and only this tag compiles them.
 		return guardSpec{
-			name: guard,
-			argv: []string{"go", "test", "-tags", "browserguard", "./cmd/evener-hub", "-run", "^TestSkillComposerBrowser$|^TestSkillGuard", "-count=1"},
-			dir:  ".",
-			env:  []string{vite},
+			name:            guard,
+			argv:            []string{"go", "test", "-tags", "browserguard", "./cmd/evener-hub", "-run", "^TestSkillComposerBrowser$|^TestSkillGuard", "-count=1"},
+			dir:             ".",
+			env:             []string{vite},
+			needsBuild:      true,
+			waitOnInterrupt: true,
 		}
 	case retirementGuard:
 		// retirementguard's contract is `npm run retirementguard`: it runs the
 		// isolated Go fixture (TestRetirementBrowser), which starts the fixture
 		// Hub and drives scripts/retirementguard/run.mjs against it.
 		return guardSpec{
-			name:          guard,
-			argv:          []string{"npm", "run", "retirementguard"},
-			dir:           frontendDir,
-			env:           []string{"TMPDIR=" + filepath.Join(root, "tmp"), "NODE_DISABLE_COMPILE_CACHE=1", vite},
-			privateGoHome: true,
+			name:            guard,
+			argv:            []string{"npm", "run", "retirementguard"},
+			dir:             frontendDir,
+			env:             []string{"TMPDIR=" + filepath.Join(root, "tmp"), "NODE_DISABLE_COMPILE_CACHE=1", vite},
+			privateGoHome:   true,
+			waitOnInterrupt: true,
 		}
 	default:
 		return guardSpec{
