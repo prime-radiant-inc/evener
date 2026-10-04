@@ -349,13 +349,37 @@ skips under `-short`. `EVENER_SSH_E2E_USER` sets the entry's ssh user, as in the
 sibling check.
 
 What it writes, and where: under the host's `HOME` it creates its own
-`evener-deploy-e2e-{source,binary}` directory, deploys the binary to
+`evener-deploy-e2e-{source,binary}-<run-id>` directory with an atomic claim that
+refuses existing paths, deploys the binary to
 `<dir>/bin/evener` (the basename `checkRunTarget` requires), and writes a private
-`hub.toml` and state root beside it so the host hub it starts uses its own
-loopback port (`127.0.0.1:19180` / `:19181`) and its own lock. It removes that
-directory when it finishes. It never addresses the host's real install
-(`~/.local/bin/evener`); the check hashes that file before and after and fails if
-it changed.
+`hub.toml` beside it. The config explicitly sets the hub state root, daemon
+directory, project-state glob and history database under `<dir>/state`, alongside
+its loopback port (`127.0.0.1:19180` / `:19181`) and private lock. Setting only
+`hub_state_root` leaves the other runtime paths on their normal defaults.
+The controller's fixture-only SSH wrapper executes the real OpenSSH client and
+sets the remote command's `HOME` to `<dir>/home`, with config, state and cache XDG
+roots beneath that home. It unsets inherited `EVENER_PROVIDERS_CONFIG`,
+`EVENER_CREDENTIALS_CONFIG` and `EVENER_STATE_DIR` overrides before bootstrap or
+attach. Startup extension directories and child processes therefore use private
+roots too. The host's login environment and SSH server configuration are unchanged.
+Cleanup signals only
+a listener whose command line names that private config. It removes the directory
+only after proving shutdown; an unproved shutdown fails the check and leaves the
+directory in place. It never writes the host's real install (`~/.local/bin/evener`);
+the check hashes that file before and after and fails if it changed. A failed or
+unrecognized hash probe cannot establish absence.
+
+Each case creates two private remote projects with distinct command and skill
+descriptors. Forwarded slash catalogs must follow an alpha → beta → alpha
+directory switch without leaking the other project's or controller's entries.
+Direct controller calls for the same host-only paths must exclude those remote
+entries. A separate controller project supplies the local positive control.
+
+Use an unmanaged host for this fixture and inspect its supervisor listings before
+running it. The current bootstrap selects evener hub launchd/systemd units by
+name, without matching the private config or port; a matching loaded unit can
+start or restart the regular hub. These private paths do not establish isolation
+on a managed host.
 
 Prerequisites: a disposable host reachable over non-interactive ssh, with a
 supported target (`linux/amd64` or `darwin/arm64`); the Go toolchain and this
