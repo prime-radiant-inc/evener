@@ -144,23 +144,18 @@ export function SubagentsScreen({ route, navigation }: NativeStackScreenProps<Ro
 				case "section":
 					return <BandHeader text={`${item.state.toUpperCase()} · ${item.count}`} />;
 				case "doneFold":
+				case "completedJobsFold": {
+					const delegates = item.kind === "doneFold";
+					const setOpen = delegates ? setDoneOpen : setCompletedJobsOpen;
 					return (
 						<HistoryFold
-							label="Done"
+							label={delegates ? "Done" : "Completed"}
 							count={item.count}
 							open={item.open}
-							onToggle={() => setDoneOpen((open) => !open)}
+							onToggle={() => setOpen((open) => !open)}
 						/>
 					);
-				case "completedJobsFold":
-					return (
-						<HistoryFold
-							label="Completed"
-							count={item.count}
-							open={item.open}
-							onToggle={() => setCompletedJobsOpen((open) => !open)}
-						/>
-					);
+				}
 				case "missing":
 					return <MissingLine title={item.title} />;
 				case "row":

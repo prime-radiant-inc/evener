@@ -147,11 +147,20 @@ async function retained(jobId, baseline, after, label, outputBytes) {
 }
 async function capture(name) {
   await driver.screenshot(name);
-  save(`${name}-state.json`, { frames, sockets, errors, consoleEvents,
-    rows: await read(`(() => { const b = document.querySelector(${q(viewport)}); return b ? [...b.querySelectorAll('[data-activity-anchor]')].map(n => { const r=n.getBoundingClientRect(); return {anchor:n.dataset.activityAnchor,text:n.textContent,top:r.top,bottom:r.bottom}; }) : []; })()`),
-    viewport: await read(`(() => { const b = document.querySelector(${q(viewport)}); if (!b) return null; const r=b.getBoundingClientRect(); return {top:r.top,bottom:r.bottom,scrollTop:b.scrollTop,clientHeight:b.clientHeight,scrollHeight:b.scrollHeight}; })()`),
-    sidebarStorage: await read("localStorage.getItem('evener.activity-sidebar.v1')") });
-  const html = await read("document.documentElement.outerHTML");
+  const state = await read(`(() => {
+    const b = document.querySelector(${q(viewport)}), r = b?.getBoundingClientRect();
+    return {
+      rows: b ? [...b.querySelectorAll('[data-activity-anchor]')].map(n => {
+        const r = n.getBoundingClientRect();
+        return {anchor:n.dataset.activityAnchor,text:n.textContent,top:r.top,bottom:r.bottom};
+      }) : [],
+      viewport: b ? {top:r.top,bottom:r.bottom,scrollTop:b.scrollTop,clientHeight:b.clientHeight,scrollHeight:b.scrollHeight} : null,
+      sidebarStorage: localStorage.getItem('evener.activity-sidebar.v1'),
+      html: document.documentElement.outerHTML,
+    };
+  })()`);
+  const { html, ...page } = state;
+  save(`${name}-state.json`, { frames, sockets, errors, consoleEvents, ...page });
   writeFileSync(path.join(fixture.artifactDir, `${name}.html`), JSON.parse(redact(html)));
 }
 

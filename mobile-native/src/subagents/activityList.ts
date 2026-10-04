@@ -27,12 +27,18 @@ export function activityListItems(
 		coordinator: { ref: string; title: string };
 	},
 ): ActivityListItem[] {
-	const matching = rows.filter((row) => matchesSearch(row, view.query));
-	const running = matching.filter((row) => row.state === "running").sort(newestFirst);
-	const delegates = matching.filter((row) => row.kind === "subagent" && row.state !== "running").sort(newestFirst);
-	const jobs = matching.filter((row) => row.kind === "job" && row.state !== "running").sort(newestFirst);
+	const running: ActivityListRow[] = [];
+	const delegates: ActivityListRow[] = [];
+	const jobs: ActivityListRow[] = [];
+	for (const row of rows) {
+		if (!matchesSearch(row, view.query)) continue;
+		if (row.state === "running") running.push(row);
+		else if (row.kind === "subagent") delegates.push(row);
+		else jobs.push(row);
+	}
 	const items: ActivityListItem[] = [];
 	if (view.filter !== "done" && running.length > 0) {
+		running.sort(newestFirst);
 		items.push({ kind: "section", state: "running", count: running.length });
 		for (const row of running) items.push({ kind: "row", row });
 	}
@@ -49,6 +55,7 @@ export function activityListItems(
 			} else {
 				items.push({ kind: "section", state: history.state, count: history.rows.length });
 			}
+			history.rows.sort(newestFirst);
 			for (const row of history.rows) items.push({ kind: "row", row });
 		}
 	}

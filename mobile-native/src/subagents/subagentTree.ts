@@ -75,6 +75,7 @@ export class SubagentTree {
 			retained: this.retained ?? undefined,
 		});
 		this.store = store;
+		this.retained = null;
 		this.detachStore = store.subscribe(() => {
 			const state = store.getSnapshot();
 			const next = projectSessionActivity(state);

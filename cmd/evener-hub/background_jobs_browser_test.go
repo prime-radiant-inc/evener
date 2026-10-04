@@ -340,17 +340,17 @@ func TestBackgroundJobsBrowser(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"closed-history-late-live", "quiet-later-history", "refresh-extent", "reconnect-extent", "reload-extent", "settled-output", "post-journey-errors"} {
-		found := false
-		for _, line := range strings.Split(string(milestones), "\n") {
-			var record struct {
-				Milestone string `json:"milestone"`
-			}
-			if json.Unmarshal([]byte(line), &record) == nil && record.Milestone == want {
-				found = true
-			}
+	found := make(map[string]bool)
+	for _, line := range strings.Split(string(milestones), "\n") {
+		var record struct {
+			Milestone string `json:"milestone"`
 		}
-		if !found {
+		if json.Unmarshal([]byte(line), &record) == nil {
+			found[record.Milestone] = true
+		}
+	}
+	for _, want := range []string{"closed-history-late-live", "quiet-later-history", "refresh-extent", "reconnect-extent", "reload-extent", "settled-output", "post-journey-errors"} {
+		if !found[want] {
 			t.Errorf("missing actual browser milestone %s", want)
 		}
 	}

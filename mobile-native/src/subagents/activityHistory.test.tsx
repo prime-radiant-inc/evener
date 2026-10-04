@@ -1,5 +1,6 @@
 // Recorded producers and real phone decisions, with only API and native platform edges substituted.
 import type { JobActivityJob, SessionDelegatesResponse } from "@evener/appwire-client";
+import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { wireThread } from "@evener/appwire-client/testing/notifications";
 import {
@@ -175,23 +176,18 @@ it("rejects a delayed prior report after a newer running generation reaches the 
 	const old = hub(() => subagentResumedDelegatesResponse());
 	const screen = await mount(old);
 	press(screen, "Done · 3");
-	let admitted = () => {};
-	const entered = new Promise<void>((resolve) => {
-		admitted = resolve;
-	});
-	let answer = (_response: SessionDelegatesResponse) => {};
+	const entered = deferred<void>();
+	const answer = deferred<SessionDelegatesResponse>();
 	old.on("evener/thread/delegates/list", () => {
-		admitted();
-		return new Promise<SessionDelegatesResponse>((resolve) => {
-			answer = resolve;
-		});
+		entered.resolve();
+		return answer.promise;
 	});
 	const binding = subagentTree(hubId, coordinator.ref, "root");
 	let pending = Promise.resolve();
 	act(() => {
 		pending = binding.reload();
 	});
-	await entered;
+	await entered.promise;
 	const running = subagentResumedDelegatesResponse();
 	running.delegates = running.delegates.map((delegate) =>
 		delegate.delegateId === "dlg_reported"
@@ -222,7 +218,7 @@ it("rejects a delayed prior report after a newer running generation reaches the 
 		seen.push(flattenSubagents(projection()).find((row) => row.id === "dlg_reported")?.delegate.reportPreview),
 	);
 	await act(async () => {
-		answer(subagentResumedDelegatesResponse());
+		answer.resolve(subagentResumedDelegatesResponse());
 		await pending;
 	});
 	stop();
