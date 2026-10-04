@@ -1,10 +1,10 @@
 # Memory wiki v1
 
-Status: revised specification awaiting Jesse's review. This draft follows his
-choices of file-at-a-time wrappers and free-form content with a recommended
-format. It supersedes the earlier batch, schema, and receipt design. The old
-implementation plan is paused; product implementation must wait for approval
-of this specification and its replacement plan.
+Status: Jesse approved this revised specification on 2026-10-04, with `MEMORY.md`
+as the entry filename. It follows his choices of file-at-a-time wrappers and
+free-form content with a recommended format. Independent specification review
+is pending. The earlier batch, schema, receipt design, and implementation plan
+are superseded. Product implementation awaits the replacement plan's approval.
 
 ## Outcome
 
@@ -19,7 +19,7 @@ coding outcomes or total cost remains an eval question.
 
 ## Free-form files
 
-`index.md` is the entry point for each wiki. Everything inside it and the topic
+`MEMORY.md` is the entry point for each wiki. Everything inside it and the topic
 files is model-authored text. Models may organize, name, and nest topic files
 as useful. Markdown and `.md` filenames are recommendations.
 
@@ -31,7 +31,7 @@ ordinary matching and read-display behavior.
 
 Recommended practice:
 
-- Keep `index.md` short, with links and useful summaries of topics.
+- Keep `MEMORY.md` short, with links and useful summaries of topics.
 - Record evidence, uncertainty, corrections, and useful dates in the pages.
 - Keep related knowledge together and link it where helpful.
 - Use an ordinary `log.md` if a brief maintenance history helps. It is optional
@@ -294,10 +294,10 @@ verified behavior. The dated specification is not evidence of implementation.
 Preserve existing code and review evidence until the replacement plan explicitly
 accounts for the superseded parser/batch implementation.
 
-Jesse reviews this written revision before a replacement plan is written.
-Required independent specification and implementation reviews, simplification,
-PR checks, verified merge, and cleanup remain. Use the agreed Sol 6.1 agents for
-implementation and review. Deployment still needs separate authorization.
+Complete independent specification review before writing the replacement plan
+for Jesse's approval. Independent implementation review, simplification, PR
+checks, verified merge, and cleanup remain required. Use the agreed Sol 6.1
+agents for implementation and review. Deployment needs separate authorization.
 
 The index-and-pages recommendation draws on Andrej Karpathy's
 [LLM Wiki note](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f)
