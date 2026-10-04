@@ -9,7 +9,13 @@ import type { ComponentProps, ReactNode } from "react";
 import { createElement } from "react";
 import { act, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { type AnyNotification, type SessionDelegatesResponse, type Thread, WireError } from "@evener/appwire-client";
+import {
+	type AnyNotification,
+	makeTranscriptDisplayConfig,
+	type SessionDelegatesResponse,
+	type Thread,
+	WireError,
+} from "@evener/appwire-client";
 import { nativeDrafts } from "./nativeDrafts";
 import { getNativeMutationRuntime, nativeMutationTargetKey } from "./nativeMutationRuntime";
 import {
@@ -186,12 +192,14 @@ vi.mock("./alerts/alertsContext", async (importOriginal) => ({
 	useAlertedRecently: () => alerts.recent,
 	useNextUsed: () => alerts.nextUsed,
 }));
+// The hub's transcript display setting, when a test sets one.
+const displayPrefs = vi.hoisted(() => ({ hubId: null as string | null, config: null as unknown }));
 vi.mock("./NativePreferencesProvider", () => ({
 	useNativePreferences: () => ({
-		hubId: null,
+		hubId: displayPrefs.hubId,
 		model: null,
 		snapshot: null,
-		config: null,
+		config: displayPrefs.config,
 		connected: false,
 		offlineDraftUnreadable: false,
 		offlineStorageUnavailable: false,
@@ -344,6 +352,8 @@ const READ_HISTORY_IDENTITY = {
 // Whether model/list refuses, as a hub mid-restart does.
 const catalogHub = { fails: false };
 afterEach(() => {
+	displayPrefs.hubId = null;
+	displayPrefs.config = null;
 	catalogHub.fails = false;
 	readHistory.live = false;
 	for (const tree of mountedScreens.splice(0)) if (tree.toJSON() !== null) act(() => tree.unmount());
@@ -2868,6 +2878,33 @@ describe("queued messages at the transcript's end (spec 8.5)", () => {
 		expect(shown()).toBe(1);
 		expect(textOf(transcriptList(tree))).not.toContain("Sending…");
 		expect(textOf(transcriptList(tree))).not.toContain("Queued ·");
+	});
+
+	// The usage lines (token counts, estimated cost) close the conversation;
+	// the ghosts still come last, just above the composer.
+	it("keeps the ghosts last, below the usage lines", async () => {
+		displayPrefs.hubId = "hub-1";
+		displayPrefs.config = makeTranscriptDisplayConfig({ kind: "preset", level: "intent" }, { tokenCounts: true });
+		const served = thread("ref-usage-ghost", "active", false, ["check the logs"]);
+		(served as unknown as { turns: unknown[] }).turns = [askReplyTurn("turn_1")];
+		(served as unknown as { evener: Record<string, unknown> }).evener.usage = { inputTokens: 1200, outputTokens: 300 };
+		const { tree } = await mount(served);
+		const text = textOf(transcriptList(tree));
+		expect(text).toContain("Input: 1,200");
+		expect(lastRow(tree)).toContain("check the logs");
+		expect(text.indexOf("Input: 1,200")).toBeLessThan(text.indexOf("check the logs"));
+	});
+
+	// With both settings off there are no usage lines, and no row stands in
+	// for them between the conversation and the ghosts.
+	it("adds no usage row when there are no usage lines to show", async () => {
+		displayPrefs.hubId = "hub-1";
+		displayPrefs.config = makeTranscriptDisplayConfig({ kind: "preset", level: "intent" });
+		const served = thread("ref-usage-none", "active", false, ["check the logs"]);
+		(served as unknown as { turns: unknown[] }).turns = [askReplyTurn("turn_1")];
+		const { tree } = await mount(served);
+		const rows = transcriptList(tree).props.data as { kind: string }[];
+		expect(rows.map((row) => row.kind)).toEqual(["user", "assistant", "ghost"]);
 	});
 
 	it("paints a swiped ghost the page it sits on, and keeps it there while the dock is open", async () => {

@@ -13,7 +13,7 @@ import type {
 	ThreadModel,
 	TurnModel,
 } from "@evener/appwire-client";
-import { projectNativeTranscript, usageRows } from "./transcriptPresentation";
+import { hasUsageLines, projectNativeTranscript, usageRows } from "./transcriptPresentation";
 
 function conversation(
 	items: MobileTimelineItem[],
@@ -974,3 +974,10 @@ it.each([
 		expect(result.items.map((item) => item.id)).toEqual(["notice"]);
 	},
 );
+
+it("has usage lines only when a token count or the cost would show", () => {
+	expect(hasUsageLines({ derived: null, cumulative: null, cost: null })).toBe(false);
+	expect(hasUsageLines({ derived: null, cumulative: null, cost: "$0.12" })).toBe(true);
+	expect(hasUsageLines({ derived: null, cumulative: { totalTokens: 900 }, cost: null })).toBe(true);
+	expect(hasUsageLines({ derived: null, cumulative: { cacheReadTokens: undefined }, cost: null })).toBe(false);
+});

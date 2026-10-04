@@ -202,7 +202,7 @@ import { TimelineItem } from "./TimelineItem";
 import { Toast, type ToastMessage, useToast } from "./Toast";
 import { TranscriptUsage } from "./TranscriptUsage";
 import { groupTimeline, type TimelineRow } from "./timeline";
-import { projectNativeTranscript } from "./transcriptPresentation";
+import { hasUsageLines, projectNativeTranscript } from "./transcriptPresentation";
 import { refreshLoadedArchivedLists } from "./archivedLists";
 import { Action, Copy, ErrorMessage, styles, useColors, useTextScale } from "./ui";
 import { haptic } from "./haptics";
@@ -1265,7 +1265,7 @@ export function ConversationScreen({
 	// The conversation's rows are already level-correct: the store projected
 	// them at displayConfig (D24-6's seam routing), so the presentation layer
 	// only reshapes (member unrolling, attachment adjacency) and computes the
-	// footer's accounting — no second, screen-level projection.
+	// usage lines' accounting — no second, screen-level projection.
 	const presentation = useMemo(
 		() => projectNativeTranscript(conversation, displayConfig, { justTheConversation: display.justTheConversation }),
 		[conversation, displayConfig, display.justTheConversation],
@@ -2485,10 +2485,12 @@ export function ConversationScreen({
 	);
 	const canEditGhost = document.canRestoreRecoveredDraft();
 	const ghostEditHint = document.recoveredRestoreHint();
-	// The transcript list's rows: the conversation's, then the ghosts.
+	// The transcript list's rows: the conversation's, its usage lines when they
+	// have anything to show, then the ghosts.
 	const ghostsKey = JSON.stringify(allGhosts);
+	const usage = presentation.usage && hasUsageLines(presentation.usage) ? presentation.usage : null;
 	// biome-ignore lint/correctness/useExhaustiveDependencies: ghostsKey stands in for allGhosts, a new array each render
-	const listRows = useMemo(() => withGhostRows(timelineRows, allGhosts), [timelineRows, ghostsKey]);
+	const listRows = useMemo(() => withGhostRows(timelineRows, allGhosts, usage), [timelineRows, ghostsKey, usage]);
 	const [ghostBusy, setGhostBusy] = useState(false);
 	const ghostBusyRef = useRef(false);
 	// One ghost action at a time, each reading the live session at the press.
@@ -2740,6 +2742,12 @@ export function ConversationScreen({
 	const renderItem = useCallback(
 		({ item, index }: { item: SessionListRow; index: number }) => {
 			const gap = sessionListGap(item, listRows[index + 1]);
+			if (item.kind === "usage")
+				return (
+					<View style={{ paddingBottom: gap }}>
+						<TranscriptUsage {...item.usage} />
+					</View>
+				);
 			if (isGhostRow(item))
 				return (
 					<View style={{ paddingBottom: gap }}>
@@ -2858,7 +2866,6 @@ export function ConversationScreen({
 								// leaves them alone, where FlatList otherwise rebuilds its
 								// renderer, and so every visible cell, on every render (#3247).
 								strictMode
-								ListFooterComponent={presentation.usage ? <TranscriptUsage {...presentation.usage} /> : null}
 								CellRendererComponent={readerCellRenderer}
 								// A row keeps its reader key when history records it, so the
 								// list keeps its cell (a streamed reply's wire id changes).

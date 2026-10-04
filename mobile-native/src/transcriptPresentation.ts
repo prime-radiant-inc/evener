@@ -45,7 +45,7 @@ export interface UsageRow {
 	unit: string;
 }
 
-// usageRows picks the footer's visible rows and labels each with what it
+// usageRows picks the usage lines' visible rows and labels each with what it
 // actually counts. Input/Output take the derived pair's own scope (a
 // truncated turn window says so); Cached/Total are always the thread's whole
 // -session cumulative figures, so they are labelled with the explicit session
@@ -64,6 +64,12 @@ export function usageRows(accounting: Pick<SessionAccounting, "derived" | "cumul
 	add("Cached", cumulative?.cacheReadTokens, cumulativeUnit);
 	add("Total", cumulative?.totalTokens, cumulativeUnit);
 	return rows;
+}
+
+/** Whether the usage lines have anything to show: a token count, or the
+ * estimated cost. With both settings off the accounting is all null. */
+export function hasUsageLines(accounting: SessionAccounting): boolean {
+	return usageRows(accounting).length > 0 || accounting.cost !== null;
 }
 
 export interface NativeTranscriptPresentation {
