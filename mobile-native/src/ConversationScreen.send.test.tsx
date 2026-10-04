@@ -3636,6 +3636,12 @@ describe("document chips under the agent's messages (spec 8.2)", () => {
 			hubId: "hub-1",
 			sessionRef: "ref-chips",
 			path: PLAN_PATH,
+			reference: {
+				cwd: "/home/jesse/git/evener",
+				path: "docs/superpowers/plans/settle-race.md",
+				provenance: "relative",
+				readTarget: "/home/jesse/git/evener/docs/superpowers/plans/settle-race.md",
+			},
 			sessionTitle: "Session",
 			updatedAt: WROTE_AT,
 		});
@@ -3652,6 +3658,7 @@ describe("document chips under the agent's messages (spec 8.2)", () => {
 			hubId: "hub-1",
 			ref: "ref-files",
 			title: "Session",
+			cwd: "/home/jesse/git/evener",
 			documents: [{ path: PLAN_PATH, kind: "Plan", updatedAt: WROTE_AT }],
 		});
 	});
@@ -4514,6 +4521,12 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 			hubId: "hub-1",
 			sessionRef: "local:fix",
 			path: "docs/superpowers/plans/settle-race.md",
+			reference: {
+				cwd: "/home/jesse/git/evener",
+				path: "docs/superpowers/plans/settle-race.md",
+				provenance: "relative",
+				readTarget: "/home/jesse/git/evener/docs/superpowers/plans/settle-race.md",
+			},
 			sessionTitle: "Fix race in tree settle",
 		});
 	});
