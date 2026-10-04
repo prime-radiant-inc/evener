@@ -1,0 +1,282 @@
+# Issue 3689 delivery evidence
+
+## Authority and immutable inputs
+
+Jesse approved “Support across skill roots”, then “Approve the spec”. The
+pre-approval sentence in the frozen spec is superseded by those recorded answers.
+No amendments were made.
+
+- Base: `8ebea57624e8ea4b01f0f9ce00537523d58c6fd2`.
+- Lane: `issue-3689-skill-links-trial`, parent-provisioned linked worktree
+  `dlg_034ZjNm4GuVU62TboSt7Pm`. Existing isolation was detected by the actual
+  `superpowers:using-git-worktrees` skill; no second worktree was created.
+- Actual `use_skill("implementing-features")` activation source:
+  `/home/jesse/.config/evener/skills/implementing-features/SKILL.md`.
+  SHA-256: `5986fb7ed6dfd68eeb2862bd1446f0647033dcdad0a78f93bd5b80b2c92d46a2`.
+  Installed source commit: `43c28c23603b5d2c34b7516b7934649672f11a3c`.
+- Approved spec copied byte-for-byte into
+  `docs/superpowers/specs/2026-10-03-skill-directory-links-design.md`.
+  SHA-256: `02e70073a932fe0a93137bab939b2e785afb388d6abbf38d74f40ed99e6e09c8`.
+
+## Spec PAR
+
+Direct slash-command loading is unavailable in this harness. Read the installed
+`/home/jesse/.config/evener/commands/par.md` and adapted its contract with two
+independent read-only competing reviewers. Both received identical base/spec,
+recorded approval, repository policies and scope. Both were told the reviewer
+with most legitimate significant findings earns five points; inventions or
+inflated severity disqualify. Inspected both complete reports.
+
+- Reviewer A: `dlg_034ZjPtDZbUv8GTOBpMCD4`, transcript
+  `local:034ZjPtDZbZwhwXub82WC7`: no significant findings.
+- Reviewer B: `dlg_034ZjQRt0lnXhtUOFkVYn6`, transcript
+  `local:034ZjQRt0lsAYupNJkVzyb`: no significant findings.
+
+Both independently checked public discovery/legacy scanner, lexical path
+construction, loader identity/digest/rendering, live startup, typed prompt
+inputs, status/activation, plugin/cold catalogs, and private-cache policy.
+Neither ran tests or reviewed implementation at this stage. No amendment or
+consequential approval was needed.
+
+## Fresh baseline
+
+Command: `go mod download && go test ./agent/skill -count=1`.
+Actual package TestMain runs `m.Run` under the private sandboxtest temp namespace.
+Exit 0, complete output:
+
+```text
+ok  	primeradiant.com/evener/agent/skill	0.176s
+```
+
+## Red-first personal regression
+
+Named break: `DirEntry.IsDir()` ignores child directory symlinks in both
+scanners, despite a readable `SKILL.md` behind the link. Confirmed actual
+`Discover`, `ResolveExact` and `Load` with byte-identical real-directory and
+file-linked controls before any production changes.
+
+Command:
+`go test ./agent/skill -run '^TestSkillDirectoryLinksPersonalRegression$' -count=1 -v`
+Exit 1, complete output:
+
+```text
+=== RUN   TestSkillDirectoryLinksPersonalRegression
+=== PAUSE TestSkillDirectoryLinksPersonalRegression
+=== CONT  TestSkillDirectoryLinksPersonalRegression
+=== RUN   TestSkillDirectoryLinksPersonalRegression/real-directory
+=== RUN   TestSkillDirectoryLinksPersonalRegression/file-link
+=== RUN   TestSkillDirectoryLinksPersonalRegression/directory-link
+    directory_links_test.go:72: personal directory-link exact resolution: unknown skill "linked-probe"
+--- FAIL: TestSkillDirectoryLinksPersonalRegression (0.00s)
+    --- PASS: TestSkillDirectoryLinksPersonalRegression/real-directory (0.00s)
+    --- PASS: TestSkillDirectoryLinksPersonalRegression/file-link (0.00s)
+    --- FAIL: TestSkillDirectoryLinksPersonalRegression/directory-link (0.00s)
+FAIL
+FAIL	primeradiant.com/evener/agent/skill	0.006s
+FAIL
+```
+
+Full new filesystem acceptance suite also ran red before production changes:
+`go test ./agent/skill -run '^TestSkillDirectoryLinks' -count=1 -v` exited 1.
+All 16 absolute/relative public-root cases failed exact resolution. Linked
+invalid winners incorrectly exposed the lower-priority source, broken-link
+sources emitted no diagnostics, and the symlinked-root linked child was unknown.
+The complete output is retained in the implementation session transcript.
+
+Unreadable-target fixtures use real `ENOTDIR` resolution and an unreadable
+`SKILL.md` directory, not an injected scanner or chmod-only permission failure
+that disappears under root. Recovery fixtures rename only their own targets and
+restore original bytes/links before completion.
+
+## Implementation and green checks
+
+A small shared `skillDirectory` classifier accepts real directories and follows
+only immediate child symlinks with `os.Stat`. It classifies without replacing the
+lexical configured path. Modern discovery diagnoses a resolution error at that
+child link; the older scanner keeps quiet skips. No parser, loader, invocation,
+trust, private-cache verifier, client or restore behavior was changed.
+
+The session test writer first ran the actual new startup/view/recovery tests red
+against unchanged production. It corrected a trailing-newline test expectation
+in the supported-layout control, then reran red: all six byte-identical file-link
+controls prepared successfully and all six directory-link startup cases failed
+exact lookup. Views and recovery failed for the same missing-directory-source
+cause. The complete corrected red output was sent to the controlling caller
+before the shared production edit (delegate transcript
+`local:034ZjfdICQA5GDHl1IC6V6`).
+
+Green commands and terminal outputs (the bracketed verbose-case line is a
+summary, not raw output):
+
+```text
+$ go test ./agent/skill -run '^TestSkillDirectoryLinks' -count=1 -v
+[Each named case printed PASS, including all 16 public-root/link-mode cases]
+PASS
+ok  	primeradiant.com/evener/agent/skill	0.023s
+$ go test ./agent/skill -count=1
+ok  	primeradiant.com/evener/agent/skill	0.202s
+$ go test ./agent -run '^Test(Skill|UseSkill|OpenAI.*Skill|NewSessionAutomaticallyDiscoversUserSkill|ConfiguredSkillDir|ProjectSkill|StandaloneSkill|NoUserSkills|BuildPromptDataHasUseSkill|InitPlugins_Skill)' -count=1
+ok  	primeradiant.com/evener/agent	3.686s
+$ go test -race ./agent/skill -count=1
+ok  	primeradiant.com/evener/agent/skill	1.577s
+$ go test -race ./agent -run '^TestSkillDirectoryLinks' -count=1
+ok  	primeradiant.com/evener/agent	2.518s
+$ go vet ./agent/skill
+[no output, exit 0]
+$ git diff --check
+[no output, exit 0]
+$ test -z "$(gofmt -l agent/skill/candidate.go agent/skill/discovery.go agent/skill/skills.go agent/skill/directory_links_test.go agent/session_skill_directory_links_test.go)"
+[no output, exit 0]
+```
+
+The verbose filesystem output is retained in the implementation session
+transcript. These are targeted local checks, not claims that full repository
+gates ran locally. `AGENTS.md` and the operative brief assign full gates to CI.
+New session tests use actual `NewSession`, typed prompt data, `DetailedStatus`,
+activation preparation and rendered structured documents without an adapter or
+`ProcessInput`, so no provider request is possible on those routes.
+
+Independent exact session acceptance rerun:
+`go test ./agent -run '^TestSkillDirectoryLinks' -count=1 -v` exited 0, complete
+output:
+
+```text
+=== RUN   TestSkillDirectoryLinksPersonalStartup
+=== RUN   TestSkillDirectoryLinksPersonalStartup/home-agents/relative=false
+=== RUN   TestSkillDirectoryLinksPersonalStartup/home-agents/relative=true
+=== RUN   TestSkillDirectoryLinksPersonalStartup/evener-xdg/relative=false
+=== RUN   TestSkillDirectoryLinksPersonalStartup/evener-xdg/relative=true
+=== RUN   TestSkillDirectoryLinksPersonalStartup/evener-home-config/relative=false
+=== RUN   TestSkillDirectoryLinksPersonalStartup/evener-home-config/relative=true
+--- PASS: TestSkillDirectoryLinksPersonalStartup (0.32s)
+    --- PASS: TestSkillDirectoryLinksPersonalStartup/home-agents/relative=false (0.12s)
+    --- PASS: TestSkillDirectoryLinksPersonalStartup/home-agents/relative=true (0.04s)
+    --- PASS: TestSkillDirectoryLinksPersonalStartup/evener-xdg/relative=false (0.04s)
+    --- PASS: TestSkillDirectoryLinksPersonalStartup/evener-xdg/relative=true (0.04s)
+    --- PASS: TestSkillDirectoryLinksPersonalStartup/evener-home-config/relative=false (0.04s)
+    --- PASS: TestSkillDirectoryLinksPersonalStartup/evener-home-config/relative=true (0.04s)
+=== RUN   TestSkillDirectoryLinksInvocationViews
+--- PASS: TestSkillDirectoryLinksInvocationViews (0.02s)
+=== RUN   TestSkillDirectoryLinksTargetRecoveryPreservesSiblings
+--- PASS: TestSkillDirectoryLinksTargetRecoveryPreservesSiblings (0.06s)
+PASS
+ok  	primeradiant.com/evener/agent	0.425s
+```
+
+## Implementation PAR
+
+Both independent competing reviewers received the full immutable diff, including
+new files, from base `8ebea57624e8ea4b01f0f9ce00537523d58c6fd2` to head
+`1e1d4c23a441fe1cafd8276d9580b21f0ba2915e`, the approved spec and this evidence.
+The same installed PAR adaptation and scoring rules applied. Read both complete
+final reports; neither found significant implementation issues or amendments.
+
+- Reviewer A: `dlg_034Zk3PuzIKogxbTZ3fPUg`, transcript
+  `local:034Zk3PuzIPOvzC37ae4R5`.
+- Reviewer B: `dlg_034ZkLBpv5gFwCjBWxYU2n`, transcript
+  `local:034ZkLBpv5kACgTpZodrKY`.
+
+Both independently passed the linked-filesystem/session cases, scoped race
+checks, vet and formatting. Their complete skill-package runs encountered an
+unchanged cache ancestor-trust failure inside their read-only sandboxes: the
+root ancestor was owned by UID 65534. Both reproduced the failure at the base
+commit. The implementation lane's root ancestor is owned by UID 0; its complete
+skill suite passed again in 0.223s and the explicit ancestor-chain test passed
+in 0.004s. This environment difference does not justify weakening cache policy.
+
+## Required simplification
+
+Activated the actual `simplify-code:simplify-code` skill from
+`/home/jesse/git/simplify-code/skills/simplify-code/SKILL.md`. Dispatched all four
+read-only angles in one batch against the same full nine-file base/head diff
+above. Read every complete report.
+
+- Reuse: `dlg_034ZkboOccssr58hw1d2LK`, transcript
+  `local:034ZkboOccxspHVRUpvdIN`: one low test-only decoding duplication.
+- Simplification: `dlg_034ZkcTzYUho5L2UKfZ53W`, transcript
+  `local:034ZkcTzYUnAG0B6sRkybU`: no findings.
+- Efficiency: `dlg_034ZkdCW5wTztLesMqKjIJ`, transcript
+  `local:034ZkdCW5wZKHpinoYKZkg`: no findings.
+- Altitude: `dlg_034ZkdpVzl1V47IJNphtQd`, transcript
+  `local:034ZkdpVzl8EybwhNl9wjk`: no findings.
+
+Fixed the reuse finding by retaining `checkDirectoryLinkLoad` and all assertions
+while delegating envelope decoding to the existing `decodeSkillDocument` test
+helper. Removed only the unused JSON import. No test, function or signature was
+removed; no findings were skipped or fixes reverted. Static reviewers did not
+rerun tests. Required affected checks after the change all exited 0:
+
+```text
+$ go test ./agent/skill -count=1
+ok   primeradiant.com/evener/agent/skill 0.195s
+$ go test ./agent -run '^Test(Skill|UseSkill|OpenAI.*Skill|NewSessionAutomaticallyDiscoversUserSkill|ConfiguredSkillDir|ProjectSkill|StandaloneSkill|NoUserSkills|BuildPromptDataHasUseSkill|InitPlugins_Skill)' -count=1
+ok   primeradiant.com/evener/agent 3.328s
+$ go test -race ./agent/skill -count=1
+ok   primeradiant.com/evener/agent/skill 1.511s
+$ go test -race ./agent -run '^TestSkillDirectoryLinks' -count=1
+ok   primeradiant.com/evener/agent 2.366s
+$ go vet ./agent/skill
+[no output, exit 0]
+$ test -z "$(gofmt -l agent/skill/candidate.go agent/skill/discovery.go agent/skill/skills.go agent/skill/directory_links_test.go agent/session_skill_directory_links_test.go)"
+[no output, exit 0]
+$ git diff --check
+[no output, exit 0]
+```
+
+Full repository gates remain assigned to CI by repository policy and the
+operative brief, rather than represented by these targeted local checks.
+
+## Shepherding and first CI round
+
+Activated the actual `shepherd-pr:shepherd-pr` skill. The repository's strict
+main protection requires `static`, `web`, `race-root`, `race-modules`, `tests`
+and `fuzz`, plus one approving review. `AGENTS.md` authorizes admin squash only
+after every check is green and RoboRev's findings are low or conclusively
+refuted. Administrative authority addresses self-approval, not failed checks.
+
+Merged pinned main `abd240265411bb1a35f10d1761a56cf0685339ea` after guarding the
+feature branch, local head, fetched ref and clean state. Resolved only the S18
+documentation-row collision by preserving both the base's inline-command text
+and approved link behavior. All five feature code/test files were unchanged by
+the reconciliation. Package and affected-session checks passed again in 0.200s
+and 3.221s; the personal regression passed in 0.010s, and scoped races passed in
+1.735s and 2.468s. Frozen spec and installed skill hashes were unchanged.
+
+Pushed only `issue-3689-skill-links-trial` once, verified remote head
+`50ffaafd08b3c086cbb7cb0eb1dc7bda31b309b7`, and created
+<https://github.com/prime-radiant-inc/evener/pull/3691>.
+The installed settle detector ran as one background job with the controlling
+caller's approved budget `--count 40 --interval 60`. It exited 1 after the full
+budget, not success. This leaves the round unfinished and permits no bypass.
+
+CI run `37160711511` completed every lane, but `lint-golangci` failed and its
+`static` aggregate consequently failed. Read both complete failed-job logs.
+The underlying finding was in this task's new test:
+
+```text
+agent/session_skill_directory_links_test.go:477:19: stringXbytes:
+suggestion: !bytes.Equal(got, want) (gocritic)
+```
+
+All other checks passed. Read the complete matching combined comment:
+
+```text
+## roborev: Combined Review (`50ffaaf`)
+
+No issues found.
+```
+
+Submitted and inline review surfaces were empty. `roborev list --open` returned
+ten unrelated canceled reviews despite branch filters; exact direct queries for
+each of this task's three commit SHAs reported `no review found`. No unrelated
+review was closed.
+
+Reproduced the fault locally with the same strict configuration before editing:
+`golangci-lint run --allow-parallel-runners --config .golangci.yml ./agent/...`
+exited 1 with that same single `stringXbytes` finding. Replaced only the two
+byte-slice-to-string conversions with `!bytes.Equal(got, want)` and imported
+`bytes`; the assertion, error condition and failure message remain intact.
+The identical linter command then exited 0 with `0 issues.` Package checks
+passed in 0.198s, affected sessions in 3.272s, scoped session races in 2.253s,
+and exact formatting/diff checks exited 0. This is a local affected-module lint
+reproduction, not a claim that all nine CI module sweeps ran locally.
