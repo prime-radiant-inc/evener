@@ -288,6 +288,8 @@ describe("why lines on the fallbacks (ruling 6)", () => {
 			child: session("local:w", [entry(running("a")), entry(running("b")), entry(done("c"))]),
 		});
 		expect(subagentWhy(rowOf(waiting), NOW)).toEqual({ text: "Waiting on 2 subagents" });
+		const waitingOnOne = running("o", { child: session("local:o", [entry(running("a")), entry(done("c"))]) });
+		expect(subagentWhy(rowOf(waitingOnOne), NOW)).toEqual({ text: "Waiting on 1 subagent" });
 		expect(subagentWhy(rowOf(running("q", { latestActivityAt: ago(4 * MIN) })), NOW)).toEqual({ text: "Quiet 4m" });
 		expect(subagentWhy(rowOf(running("n", { latestActivityAt: ago(1 * MIN) })), NOW)).toEqual({ text: "Working" });
 	});

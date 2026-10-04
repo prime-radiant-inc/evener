@@ -72,6 +72,7 @@ describe("a subagent's row (spec 8.2)", () => {
 		expect(subagentLine(row(), [delegate({ quietForMs: 300_000 }), ...children], NOW).activity).toBe(
 			"Waiting on 2 subagents",
 		);
+		expect(subagentLine(row(), [delegate(), children[0], children[2]], NOW).activity).toBe("Waiting on 1 subagent");
 	});
 
 	it("says how long ago a failed one failed, and why", () => {
