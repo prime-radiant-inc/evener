@@ -585,6 +585,8 @@ The table lists the Needs you states in priority order (7.1): Failed leads, then
 
 A session waiting on its subagents is never Quiet or May be stuck, however long it has been silent: its line reads "Waiting on 8 subagents", on the Board and in the tray (Jesse, 2026-09-26). The web's liveness line still reports a stall there; the phone doesn't.
 
+A Board row reads Quiet after 3 minutes without activity, as the table says. A session's tray, a subagent's row and the Activity list read Quiet after 20 seconds, the web transcript's threshold ("Quiet 40s" in 8.3) (coordinator ruling on #3709, 2026-10-03).
+
 ### 13.2 Counts
 
 - **Needs you** = Failed + Question + Approval + Warning + Restart needed, over live, unarchived, top-level sessions. This is the single number used on the Live chip badge, the session Back button, the Live summary line and the Next capsule.

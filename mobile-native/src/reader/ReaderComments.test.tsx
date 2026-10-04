@@ -296,6 +296,11 @@ describe("comments (Task 16)", () => {
 		act(() => field.props.onChangeText(text));
 	}
 
+	it("lets a drag of the comment sheet put the keyboard away", () => {
+		const tree = commentSheet();
+		expect(tree.root.findAllByType("ScrollView" as never)[0]?.props.keyboardDismissMode).toBe("on-drag");
+	});
+
 	it("opens the block's four actions on a long press, and highlights that block while it's open", async () => {
 		const { tree } = await mount();
 		const menu = openMenu(tree, 1);

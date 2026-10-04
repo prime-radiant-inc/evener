@@ -19,13 +19,10 @@ import {
 	toolStepProgress,
 } from "@evener/appwire-client";
 import { subagentState } from "../subagents/subagentModel";
-import { waitingOnSubagents } from "../board/attention";
+import { AGENT_QUIET_AFTER_MS, quietOrWorking, waitingOnSubagents } from "../board/attention";
 import { PULSE_BARS } from "../board/pulse";
 import { compactDuration } from "./format";
 
-/** No frame for this long reads "Quiet": the web's threshold
- * (cmd/evener-hub/frontend/src/panes/session/transcript/flow/liveness.ts). */
-export const QUIET_AFTER_MS = 20_000;
 /** No frame for this long reads "May be stuck" (spec 13.1). */
 export const STUCK_AFTER_MS = 10 * 60_000;
 
@@ -74,7 +71,7 @@ export function trayLine(
 	// retryKnownEarly = retry.attempt >= 2): a retry that resolves on its
 	// next try shouldn't flash across the tray, but from the second attempt
 	// on, the retry is known information and always wins.
-	if (session.modelRetry && (silence >= QUIET_AFTER_MS || session.modelRetry.attempt >= 2)) {
+	if (session.modelRetry && (silence >= AGENT_QUIET_AFTER_MS || session.modelRetry.attempt >= 2)) {
 		const retry = retryText(session.modelRetry);
 		return silence >= STUCK_AFTER_MS
 			? { text: `${retry} · no updates for ${compactDuration(silence)}`, attention: true }
@@ -102,8 +99,7 @@ export function trayLine(
 			text: step.startedAt === undefined ? step.text : `${step.text} · ${compactDuration(now - step.startedAt)}`,
 			attention: false,
 		};
-	if (silence >= QUIET_AFTER_MS) return { text: `Quiet ${compactDuration(silence)}`, attention: false };
-	return { text: "Working", attention: false };
+	return { text: quietOrWorking(silence), attention: false };
 }
 
 function retryText(retry: ModelRetryState): string {

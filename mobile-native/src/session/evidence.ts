@@ -25,6 +25,7 @@ import {
 	webFetchResult,
 	worktreeMessage,
 } from "@evener/appwire-client";
+import { INLINE_DESTINATION } from "../markdownLinks";
 import type { ActivityDetail, DetailTask } from "../projectedRows";
 import type { RunStep } from "../timeline";
 
@@ -68,12 +69,10 @@ function rawOutput(text: string): Evidence[] {
 	return text ? [{ kind: "output", text, lines: lineCount(text) }] : [];
 }
 
-// An image: ![alt] and then its (url) or (url "title"), or its [ref]. The
-// parentheses of an inline image can hold a pair of their own (a_(b).png, a
-// title's "(1)"), one level deep, as real URLs need. A URL the pattern can't
-// take whole (pairs nested deeper, escaped or unbalanced parentheses) leaves
-// some of itself as text, but ![alt] is always taken, so the image is gone.
-const IMAGE_RE = /!\[([^\]]*)\](?:\((?:[^()]|\([^()]*\))*\)|\[[^\]]*\])?/g;
+// An image: ![alt] and then its (url) or (url "title") (INLINE_DESTINATION),
+// or its [ref]. A URL the pattern can't take whole leaves some of itself as
+// text, but ![alt] is always taken, so the image is gone.
+const IMAGE_RE = new RegExp(String.raw`!\[([^\]]*)\](?:${INLINE_DESTINATION}|\[[^\]]*\])?`, "g");
 
 // A skill's markdown is its author's, and the phone's markdown view loads
 // images from their URLs, so each image, inline (![alt](url)), by reference

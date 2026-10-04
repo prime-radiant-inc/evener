@@ -128,6 +128,7 @@ export function LaunchScalarEditor({
 						<ScrollView
 							automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}
 							keyboardShouldPersistTaps="handled"
+							keyboardDismissMode="on-drag"
 							contentContainerStyle={{ padding: 20, gap: 12 }}
 						>
 							{fieldHeader}

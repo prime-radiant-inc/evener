@@ -233,6 +233,11 @@ async function send(mounted: ReactTestRenderer) {
 	await settle();
 }
 
+it("lets a drag of the sheet put the keyboard away", async () => {
+	const mounted = await mount();
+	expect(mounted.root.findAllByType("ScrollView" as never)[0]?.props.keyboardDismissMode).toBe("on-drag");
+});
+
 it("prefills the message for a running subagent, and says when it arrives", async () => {
 	const mounted = await mount();
 	expect(renderedText(mounted)).toContain("Stop subagent");
