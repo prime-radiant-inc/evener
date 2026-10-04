@@ -19,7 +19,7 @@ import {
 	toolStepProgress,
 } from "@evener/appwire-client";
 import { subagentState } from "../subagents/subagentModel";
-import { QUIET_AFTER_MS, quietOrWorking, waitingOnSubagents } from "../board/attention";
+import { AGENT_QUIET_AFTER_MS, quietOrWorking, waitingOnSubagents } from "../board/attention";
 import { PULSE_BARS } from "../board/pulse";
 import { compactDuration } from "./format";
 
@@ -71,7 +71,7 @@ export function trayLine(
 	// retryKnownEarly = retry.attempt >= 2): a retry that resolves on its
 	// next try shouldn't flash across the tray, but from the second attempt
 	// on, the retry is known information and always wins.
-	if (session.modelRetry && (silence >= QUIET_AFTER_MS || session.modelRetry.attempt >= 2)) {
+	if (session.modelRetry && (silence >= AGENT_QUIET_AFTER_MS || session.modelRetry.attempt >= 2)) {
 		const retry = retryText(session.modelRetry);
 		return silence >= STUCK_AFTER_MS
 			? { text: `${retry} · no updates for ${compactDuration(silence)}`, attention: true }
