@@ -2485,10 +2485,14 @@ export function ConversationScreen({
 	);
 	const canEditGhost = document.canRestoreRecoveredDraft();
 	const ghostEditHint = document.recoveredRestoreHint();
-	// The transcript list's rows: the conversation's, then the ghosts.
+	// The transcript list's rows: the conversation's, its usage lines, then the
+	// ghosts.
 	const ghostsKey = JSON.stringify(allGhosts);
 	// biome-ignore lint/correctness/useExhaustiveDependencies: ghostsKey stands in for allGhosts, a new array each render
-	const listRows = useMemo(() => withGhostRows(timelineRows, allGhosts), [timelineRows, ghostsKey]);
+	const listRows = useMemo(
+		() => withGhostRows(timelineRows, allGhosts, presentation.usage),
+		[timelineRows, ghostsKey, presentation.usage],
+	);
 	const [ghostBusy, setGhostBusy] = useState(false);
 	const ghostBusyRef = useRef(false);
 	// One ghost action at a time, each reading the live session at the press.
@@ -2740,10 +2744,10 @@ export function ConversationScreen({
 	const renderItem = useCallback(
 		({ item, index }: { item: SessionListRow; index: number }) => {
 			const gap = sessionListGap(item, listRows[index + 1]);
-			if (isGhostRow(item))
+			if (isGhostRow(item) || item.kind === "usage")
 				return (
 					<View style={{ paddingBottom: gap }}>
-						<GhostRowView row={item} />
+						{item.kind === "usage" ? <TranscriptUsage {...item.usage} /> : <GhostRowView row={item} />}
 					</View>
 				);
 			return (
@@ -2858,7 +2862,6 @@ export function ConversationScreen({
 								// leaves them alone, where FlatList otherwise rebuilds its
 								// renderer, and so every visible cell, on every render (#3247).
 								strictMode
-								ListFooterComponent={presentation.usage ? <TranscriptUsage {...presentation.usage} /> : null}
 								CellRendererComponent={readerCellRenderer}
 								// A row keeps its reader key when history records it, so the
 								// list keeps its cell (a streamed reply's wire id changes).
