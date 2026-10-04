@@ -57,6 +57,23 @@ enabled then disabled for each pair. Each fresh session retains its arm's actual
 transcripts, with the same ordinary recall tools. These are plumbing checks,
 not evidence that a live model learns, retrieves or corrects memory.
 
+The evaluator captures and validates the compiling Go version before TestMain
+isolates HOME/XDG. When a trimpath build has no runtime GOROOT, Go's own exact
+version resolver selects an already installed/cached toolchain with GOPROXY=off,
+not a download or a machine-specific path. That root is reused for restricted
+read grants, fixture checkers, held-out tests and the ambient-read observer.
+Fixture execution keeps GOTOOLCHAIN=local and network access disabled.
+Both ordinary `go test` and direct installed-Go launchers are qualified offline.
+
+The verifier uses real `go test -json` run and terminal pass/fail events for
+every expected held-out test, plus a matching package result and exit status.
+Completed assertion failures remain behavioral task failures. Compiler/setup
+errors, missing/skipped tests and incomplete output are infrastructure errors.
+An initial verifier infrastructure error stops before session/model dispatch.
+A final verifier infrastructure error stops before another stage or pair.
+The shared terminal error also refuses further admission, with no retry.
+Stage deadline exhaustion remains a planned budget limitation, not a pass.
+
 Run offline with the repository's Go toolchain. Host-dependent isolation and
 episode cases skip without working Linux bwrap, while source, route and pure
 admission checks remain active. Opted-in live evaluation refuses an unsupported
@@ -64,7 +81,7 @@ host before source discovery or paid work, with no isolation fallback:
 
 ```sh
 env -u EVENER_LIVE_TESTS GOPROXY=off GOMAXPROCS=4 go test -p 2 ./agent -run '^TestMemoryEval' -count=1 -v
-env -u EVENER_LIVE_TESTS GOPROXY=off GOMAXPROCS=4 go test -race -p 2 ./agent -run '^TestMemoryEval(Admission|Isolation)$' -count=1
+env -u EVENER_LIVE_TESTS GOPROXY=off GOMAXPROCS=4 go test -race -p 2 ./agent -run '^TestMemoryEval' -count=1
 env -u EVENER_LIVE_TESTS GOPROXY=off GOMAXPROCS=4 go test -p 2 ./agent -run '^TestMemoryEvalLivePairs$' -count=1 -v
 ```
 
@@ -109,11 +126,14 @@ Automatic index-only retrieval is not credited by the explicit-tool oracle.
 Observed final-response usage includes auxiliary calls, but unfinished-response
 usage and cost without a cited price remain unknown. Cancellation does not
 prove billing stops. Two pairs cannot establish reliability or savings.
-The single authorized live invocation failed during private offline registry
-setup, before client/session creation or completion dispatch. Neither pair ran,
-so live memory behavior remains untested. The credential-safe diagnostic does
-not identify the underlying registry error. A new attempt requires controller
-authorization, not an automatic retry.
+Retained live attempts do not establish a memory comparison. An earlier attempt
+stopped during private registry setup. A later attempt ran all four arms and ten
+stages, but every final verifier failed before testing because it selected an
+older Go toolchain. The old evaluator treated those compiler failures as task
+failures and continued spending, so none of those ten independent checks ran.
+Offline qualification proves the repaired selection and stop behavior, not live
+model behavior, reliability or savings. Any later live run needs fresh controller
+authorization and valid executed held-out checks, not an automatic retry.
 
 ## Setup checklist
 

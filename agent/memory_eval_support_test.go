@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -33,6 +35,36 @@ type memoryEvalStage struct {
 
 var memoryRecallStages = []memoryEvalStage{{"A", 8}, {"B", 10}}
 var memoryCorrectionStages = []memoryEvalStage{{"A", 8}, {"B", 12}, {"C", 10}}
+
+// Capture before TestMain replaces HOME. Trimpath removes the compiled-in root,
+// and a directly launched installed Go does not export GOROOT to its tests.
+// Let Go resolve the exact compiling version offline, not a guessed cache path.
+var memoryEvalToolchainRoot, memoryEvalToolchainError = memoryEvalCaptureToolchain()
+
+func memoryEvalCaptureToolchain() (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	goBinary, selection := "go", runtime.Version()
+	if root := runtime.GOROOT(); root != "" {
+		goBinary, selection = filepath.Join(root, "bin", "go"), "local"
+	}
+	cmd := exec.CommandContext(ctx, goBinary, "env", "GOROOT", "GOVERSION")
+	cmd.Env = []string{"GOENV=off", "GOTOOLCHAIN=" + selection, "GOPROXY=off", "GOSUMDB=off", "GOWORK=off"}
+	for _, key := range []string{"PATH", "HOME", "GOPATH", "GOMODCACHE", "GOCACHE"} {
+		if value, ok := os.LookupEnv(key); ok {
+			cmd.Env = append(cmd.Env, key+"="+value)
+		}
+	}
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("memory eval exact offline Go resolution failed: %w", err)
+	}
+	fields := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(fields) != 2 || !filepath.IsAbs(fields[0]) || fields[1] != runtime.Version() {
+		return "", errors.New("memory eval offline Go does not match compiling toolchain")
+	}
+	return fields[0], nil
+}
 
 type memoryEvalAdmission struct {
 	mu                                                                   sync.Mutex
@@ -302,7 +334,10 @@ func memoryEvalLocal(t *testing.T, home, workspace, scratch string) *execenv.Loc
 	memoryEvalRequireHost(t, false, facts)
 	facts.Home = home
 	net := false
-	rp, err := sandbox.Resolve(sandbox.SandboxPolicy{Mode: sandbox.ModeRestricted, Network: &net, ExtraReadRoots: []string{runtime.GOROOT()}}, facts, workspace)
+	if memoryEvalToolchainError != nil {
+		t.Fatal(memoryEvalToolchainError)
+	}
+	rp, err := sandbox.Resolve(sandbox.SandboxPolicy{Mode: sandbox.ModeRestricted, Network: &net, ExtraReadRoots: []string{memoryEvalToolchainRoot}}, facts, workspace)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -438,7 +473,8 @@ func memoryEvalJSON(v any) string {
 	return string(raw)
 }
 func memoryEvalGoEnv() string {
-	return fmt.Sprintf("PATH=%s/bin:/usr/bin:/bin HOME=/tmp GOCACHE=/tmp/memory-go-cache GOMODCACHE=/tmp/memory-go-mod GOTOOLCHAIN=local GOPROXY=off GOWORK=off GOMAXPROCS=2 ", runtime.GOROOT())
+	quote := func(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'" }
+	return fmt.Sprintf("PATH=%s GOROOT=%s GOENV=off HOME=/tmp GOCACHE=/tmp/memory-go-cache GOMODCACHE=/tmp/memory-go-mod GOTOOLCHAIN=local GOPROXY=off GOWORK=off GOMAXPROCS=2 ", quote(filepath.Join(memoryEvalToolchainRoot, "bin")+":/usr/bin:/bin"), quote(memoryEvalToolchainRoot))
 }
 func memoryEvalFixture(t *testing.T, pair, workspace string) {
 	t.Helper()
@@ -494,7 +530,7 @@ var _ = reflect.DeepEqual
 	}
 	return s
 }
-func memoryEvalVerify(t *testing.T, ctx context.Context, home, workspace, stage string) (bool, string) {
+func memoryEvalVerify(t *testing.T, ctx context.Context, home, workspace, stage string) (bool, string, error) {
 	t.Helper()
 	verifier, scratch := memoryEvalDisposable(t), memoryEvalDisposable(t)
 	// Confined file reads reject candidate symlinks. Copy only production source,
@@ -504,36 +540,88 @@ func memoryEvalVerify(t *testing.T, ctx context.Context, home, workspace, stage 
 	for _, name := range []string{"main.go", "go.mod"} {
 		raw, err := sourceEnv.ReadFileRaw(name)
 		if err != nil {
-			return false, "candidate source unavailable"
+			return false, "candidate source unavailable", errors.New("memory eval verifier candidate source unavailable")
 		}
 		memoryEvalWrite(t, filepath.Join(verifier, name), string(raw))
 	}
 	memoryEvalWrite(t, filepath.Join(verifier, "held_out_test.go"), memoryEvalHeldOut(stage))
 	env := memoryEvalLocal(t, home, verifier, scratch)
 	defer env.Cleanup()
-	result, err := env.ExecCommand(ctx, memoryEvalGoEnv()+"go test -v -count=1 ./...", 180000, verifier, nil)
+	result, err := env.ExecCommand(ctx, memoryEvalGoEnv()+"go test -json -count=1 ./...", 180000, verifier, nil)
 	if result.TimedOut || ctx.Err() != nil {
-		return false, "held-out verifier deadline exhausted"
+		return false, "held-out verifier deadline exhausted", nil
 	}
+	output := result.Stdout + result.Stderr
 	if (err != nil && result.ExitCode != 1) || (result.ExitCode != 0 && result.ExitCode != 1) {
-		t.Fatal("memory eval verifier infrastructure failure")
+		return false, output, errors.New("memory eval verifier execution infrastructure failure")
 	}
-	passed := result.ExitCode == 0
-	if passed {
-		names := []string{"TestNormalizeHeldOut"}
-		if stage != "A" {
-			names = append(names, "TestSplitHeldOut")
-		}
-		if stage == "C" {
-			names = append(names, "TestJoinHeldOut")
-		}
-		for _, name := range names {
-			if !strings.Contains(result.Stdout, "--- PASS: "+name+" (") {
-				passed = false
+	passed, evidenceErr := memoryEvalVerifierResult(result.Stdout, result.ExitCode, stage)
+	return passed, output, evidenceErr
+}
+
+func memoryEvalVerifierResult(output string, exit int, stage string) (bool, error) {
+	names := []string{"TestNormalizeHeldOut"}
+	if stage != "A" {
+		names = append(names, "TestSplitHeldOut")
+	}
+	if stage == "C" {
+		names = append(names, "TestJoinHeldOut")
+	}
+	states := make(map[string]string, len(names))
+	for _, name := range names {
+		states[name] = ""
+	}
+	failure := errors.New("memory eval verifier missing complete held-out execution evidence")
+	decoder := json.NewDecoder(strings.NewReader(output))
+	packageResult := ""
+	for {
+		var event struct{ Action, Package, Test string }
+		if err := decoder.Decode(&event); err != nil {
+			if err != io.EOF {
+				return false, failure
 			}
+			break
+		}
+		if event.Package != "memoryfixture" {
+			continue
+		}
+		if event.Test == "" {
+			if event.Action == "pass" || event.Action == "fail" {
+				if packageResult != "" {
+					return false, failure
+				}
+				packageResult = event.Action
+			}
+			continue
+		}
+		state, expected := states[event.Test]
+		if !expected {
+			continue
+		}
+		switch event.Action {
+		case "run":
+			if state != "" {
+				return false, failure
+			}
+			states[event.Test] = "run"
+		case "pass", "fail":
+			if state != "run" {
+				return false, failure
+			}
+			states[event.Test] = event.Action
 		}
 	}
-	return passed, result.Stdout + result.Stderr
+	passed := true
+	for _, state := range states {
+		if state != "pass" && state != "fail" {
+			return false, failure
+		}
+		passed = passed && state == "pass"
+	}
+	if (passed && (exit != 0 || packageResult != "pass")) || (!passed && (exit != 1 || packageResult != "fail")) {
+		return false, failure
+	}
+	return passed, nil
 }
 func memoryEvalWiki(t *testing.T, root string) map[string]string {
 	t.Helper()
@@ -755,7 +843,7 @@ func memoryEvalObserveTools(t *testing.T, s *Session) func() []memoryEvalToolObs
 		return append([]memoryEvalToolObservation(nil), observations...)
 	}
 }
-func memoryEvalRunPairs(t *testing.T, b *memoryEvalAdmission, c *llm.Client, p *provider.Profile, home string, hook func(string, bool, memoryEvalStage, string)) []memoryEvalEpisode {
+func memoryEvalRunPairs(t *testing.T, b *memoryEvalAdmission, c *llm.Client, p *provider.Profile, home string, hook func(string, bool, memoryEvalStage, string, string)) ([]memoryEvalEpisode, error) {
 	t.Helper()
 	runStart := b.runStart
 	if runStart.IsZero() {
@@ -804,9 +892,17 @@ func memoryEvalRunPairs(t *testing.T, b *memoryEvalAdmission, c *llm.Client, p *
 					t.Fatal("fixture checker does not execute tests")
 				}
 				evidence := memoryEvalStageEvidence{Name: stage.name, PriorSessionID: prior, WikiBefore: memoryEvalWiki(t, filepath.Join(root, "wiki")), Files: map[string]string{"workspace": workspace}}
-				evidence.BeforeTask, _ = memoryEvalVerify(t, ctx, home, workspace, stage.name)
 				if hook != nil {
-					hook(pair, disabled, stage, prior)
+					hook(pair, disabled, stage, prior, workspace)
+				}
+				var verifyErr error
+				evidence.BeforeTask, _, verifyErr = memoryEvalVerify(t, ctx, home, workspace, stage.name)
+				if verifyErr != nil {
+					err := fmt.Errorf("memory eval initial verifier infrastructure failure: %w", verifyErr)
+					b.fail(err)
+					cancel()
+					stopStage()
+					return episodes, err
 				}
 				cfg := memoryEvalConfig(ctx, root, disabled, stage.cap)
 				s, err := NewSession(c, p, memoryEvalLocal(t, home, workspace, t.TempDir()), cfg)
@@ -862,8 +958,14 @@ func memoryEvalRunPairs(t *testing.T, b *memoryEvalAdmission, c *llm.Client, p *
 				evidence.Metrics = collector.Metrics()
 				// Verifier keeps the same absolute stage deadline, with no extra time.
 				verifyCtx, verifyCancel := context.WithDeadline(context.Background(), deadline)
-				evidence.Task, evidence.Verifier = memoryEvalVerify(t, verifyCtx, home, workspace, stage.name)
+				evidence.Task, evidence.Verifier, verifyErr = memoryEvalVerify(t, verifyCtx, home, workspace, stage.name)
 				verifyCancel()
+				if verifyErr != nil {
+					err := fmt.Errorf("memory eval final verifier infrastructure failure: %w", verifyErr)
+					b.fail(err)
+					stopStage()
+					return episodes, err
+				}
 				evidence.WikiAfter = memoryEvalWiki(t, filepath.Join(root, "wiki"))
 				evidenceEnv := memoryEvalLocal(t, home, workspace, t.TempDir())
 				for _, name := range []string{"main.go", "go.mod", "main_test.go", "scripts/check.sh"} {
@@ -893,7 +995,7 @@ func memoryEvalRunPairs(t *testing.T, b *memoryEvalAdmission, c *llm.Client, p *
 			episodes = append(episodes, episode)
 		}
 	}
-	return episodes
+	return episodes, nil
 }
 
 func memoryEvalDisposable(t *testing.T) string {

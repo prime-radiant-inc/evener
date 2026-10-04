@@ -162,7 +162,10 @@ func memoryEvalLivePairsOnHost(t *testing.T, discover func() (string, string, er
 		memoryEvalWriteEvidence(t, b, filepath.Join(evidenceRoot, "usage.json"), b.observedUsage())
 		memoryEvalWrite(t, filepath.Join(evidenceRoot, "limits.txt"), memoryEvalSnapshot(b)+"\nObserved root session usage is in stage files. Aggregate reported final-response usage is in usage.json, unfinished responses are unknown. Cost is unknown, no cited price. Cancellation does not prove billing stops.\n")
 	}()
-	episodes := memoryEvalRunPairs(t, b, c, p, home, nil)
+	episodes, err := memoryEvalRunPairs(t, b, c, p, home, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	memoryEvalWriteEvidence(t, b, filepath.Join(evidenceRoot, "episodes.json"), episodes)
 	for _, e := range episodes {
 		for _, stage := range e.Stages {

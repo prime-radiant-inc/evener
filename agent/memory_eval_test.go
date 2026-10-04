@@ -34,6 +34,157 @@ type memoryEvalRoundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f memoryEvalRoundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
+func TestMemoryEvalToolchain(t *testing.T) {
+	// Serial: fixture HOME/XDG isolation is process-global.
+	home := memoryEvalIsolateProcess(t)
+	workspace := t.TempDir()
+	memoryEvalFixture(t, "recall", workspace)
+	memoryEvalWrite(t, filepath.Join(workspace, "main_test.go"), memoryEvalVisible("A"))
+	raw, err := os.ReadFile(filepath.Join(workspace, "main.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	memoryEvalWrite(t, filepath.Join(workspace, "main.go"), strings.Replace(string(raw), "return v", "return strings.TrimSpace(v)", 1))
+	env := memoryEvalLocal(t, home, workspace, t.TempDir())
+	defer env.Cleanup()
+	result, err := env.ExecCommand(context.Background(), memoryEvalGoEnv()+"sh -c 'go version && sh scripts/check.sh'", 180000, workspace, nil)
+	if err != nil || result.ExitCode != 0 || !strings.Contains(result.Stdout, runtime.Version()) {
+		t.Fatalf("fixture checker lost compiling toolchain %s: exit=%d error=%v output=%s%s", runtime.Version(), result.ExitCode, err, result.Stdout, result.Stderr)
+	}
+}
+
+func TestMemoryEvalVerifierInfrastructure(t *testing.T) {
+	// Serial: fixture HOME/XDG isolation is process-global.
+	home := memoryEvalIsolateProcess(t)
+	for _, mode := range []string{"compile", "module"} {
+		t.Run(mode, func(t *testing.T) {
+			workspace := t.TempDir()
+			memoryEvalFixture(t, "recall", workspace)
+			if mode == "compile" {
+				memoryEvalWrite(t, filepath.Join(workspace, "main.go"), "package main\nfunc normalize(v string) string { return missingSymbol }\n")
+			} else {
+				memoryEvalWrite(t, filepath.Join(workspace, "go.mod"), "module memoryfixture\ngo 99.0.0\n")
+			}
+			pass, output, err := memoryEvalVerify(t, context.Background(), home, workspace, "A")
+			if err == nil || pass {
+				t.Fatalf("real Go setup/compiler failure accepted: pass=%t error=%v output=%s", pass, err, output)
+			}
+		})
+	}
+}
+
+func TestMemoryEvalVerifierStopsRunner(t *testing.T) {
+	// Serial: fixture HOME and Responses client are process-global.
+	for _, mode := range []string{"initial-module", "initial-compile", "final-compile"} {
+		t.Run(mode, func(t *testing.T) {
+			home := memoryEvalIsolateProcess(t)
+			b := &memoryEvalAdmission{}
+			adapter := &memoryEvalAdapter{}
+			c, p := memoryEvalFixtureClient(t, b, adapter)
+			stages, calls := 0, 0
+			episodes, runErr := memoryEvalRunPairs(t, b, c, p, home, func(_ string, _ bool, _ memoryEvalStage, _ string, workspace string) {
+				stages++
+				if mode == "initial-module" {
+					memoryEvalWrite(t, filepath.Join(workspace, "go.mod"), "module memoryfixture\ngo 99.0.0\n")
+				}
+				broken := "package main\nfunc normalize(v string) string { return missingSymbol }\n"
+				if mode == "initial-compile" {
+					memoryEvalWrite(t, filepath.Join(workspace, "main.go"), broken)
+				}
+				adapter.complete = func(context.Context, llm.Request) (llm.Response, error) {
+					calls++
+					if mode == "final-compile" && calls == 1 {
+						return memoryEvalCall("write_file", map[string]any{"file_path": "main.go", "content": broken}), nil
+					}
+					return finalResponse("opaque-verifier-stop-707"), nil
+				}
+			})
+			if stages != 1 || runErr == nil || !errors.Is(b.terminalFailure(), runErr) || len(episodes) != 0 {
+				t.Fatalf("verifier infrastructure did not stop runner: stages=%d calls=%d %s", stages, calls, memoryEvalSnapshot(b))
+			}
+			if strings.HasPrefix(mode, "initial-") && (calls != 0 || b.logical != 0 || b.httpAttempts != 0) {
+				t.Fatalf("initial verifier allowed dispatch: calls=%d %s", calls, memoryEvalSnapshot(b))
+			}
+			if mode == "final-compile" && (calls != 2 || b.logical < 2) {
+				t.Fatalf("final verifier control never executed candidate write and completion: calls=%d %s", calls, memoryEvalSnapshot(b))
+			}
+			before := b.logical
+			if b.beginStage(8, time.Now().Add(time.Minute)) == nil {
+				t.Fatal("verifier failure admitted another stage")
+			}
+			_, dispatchErr := c.Complete(context.Background(), llm.Request{Provider: "codex-jesse-at-pr", Model: "gpt-6.1-sol", Messages: []llm.Message{llm.User("opaque-refused-dispatch-708")}})
+			if !errors.Is(dispatchErr, runErr) || b.logical != before {
+				t.Fatalf("verifier terminal error lost before another dispatch: returned=%v cause=%v logical=%d want=%d", dispatchErr, runErr, b.logical, before)
+			}
+		})
+	}
+}
+
+func TestMemoryEvalVerifierBehavior(t *testing.T) {
+	// Serial: fixture HOME/XDG isolation is process-global.
+	home := memoryEvalIsolateProcess(t)
+	for _, stage := range []string{"A", "B", "C"} {
+		for _, wantPass := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/pass=%t", stage, wantPass), func(t *testing.T) {
+				workspace := t.TempDir()
+				memoryEvalFixture(t, "recall", workspace)
+				if wantPass {
+					memoryEvalWrite(t, filepath.Join(workspace, "main.go"), `package main
+import "strings"
+func normalize(v string) string { return strings.TrimSpace(v) }
+func split(v string) []string { r:=strings.Split(v,","); for i:=range r { r[i]=strings.TrimSpace(r[i]) }; return r }
+func join(v []string) string { r:=make([]string,len(v)); for i:=range v { r[i]=strings.TrimSpace(v[i]) }; return strings.Join(r,",") }
+func main() {}
+`)
+				}
+				pass, output, err := memoryEvalVerify(t, context.Background(), home, workspace, stage)
+				if err != nil || pass != wantPass {
+					t.Fatalf("real held-out behavior: pass=%t want=%t error=%v output=%s", pass, wantPass, err, output)
+				}
+			})
+		}
+	}
+}
+
+func TestMemoryEvalVerifierExecutionEvidence(t *testing.T) {
+	// Serial: fixture HOME/XDG isolation is process-global.
+	home := memoryEvalIsolateProcess(t)
+	for _, mode := range []string{"missing", "skipped", "incomplete"} {
+		t.Run(mode, func(t *testing.T) {
+			workspace := t.TempDir()
+			memoryEvalFixture(t, "recall", workspace)
+			source := "package main\n"
+			if mode == "skipped" {
+				source += "import \"testing\"\nfunc TestNormalizeHeldOut(t *testing.T) { t.Skip() }\n"
+			}
+			if mode == "incomplete" {
+				source = memoryEvalHeldOut("A")
+			}
+			memoryEvalWrite(t, filepath.Join(workspace, "held_out_test.go"), source)
+			env := memoryEvalLocal(t, home, workspace, t.TempDir())
+			defer env.Cleanup()
+			result, execErr := env.ExecCommand(context.Background(), memoryEvalGoEnv()+"go test -json -count=1 ./...", 180000, workspace, nil)
+			wantExit := 0
+			if mode == "incomplete" {
+				wantExit = 1 // The real assertion fails before its output is truncated.
+			}
+			if result.ExitCode != wantExit || (wantExit == 0 && execErr != nil) {
+				t.Fatalf("real Go evidence control failed: exit=%d err=%v output=%s%s", result.ExitCode, execErr, result.Stdout, result.Stderr)
+			}
+			output := result.Stdout
+			if mode == "incomplete" {
+				// Drop only the terminal package event from actual Go output.
+				lines := strings.Split(strings.TrimSpace(output), "\n")
+				output = strings.Join(lines[:len(lines)-1], "\n")
+			}
+			pass, err := memoryEvalVerifierResult(output, result.ExitCode, "A")
+			if err == nil || pass {
+				t.Fatalf("%s held-out execution evidence accepted: pass=%t error=%v", mode, pass, err)
+			}
+		})
+	}
+}
+
 func TestMemoryEvalAdmission(t *testing.T) {
 	// Serial: actual Responses client seam and fixture HOME are process-global.
 	now := time.Now()
@@ -494,7 +645,7 @@ func TestMemoryEvalEpisodes(t *testing.T) {
 	b := &memoryEvalAdmission{}
 	adapter := &memoryEvalAdapter{}
 	c, p := memoryEvalFixtureClient(t, b, adapter)
-	episodes := memoryEvalRunPairs(t, b, c, p, home, func(pair string, disabled bool, stage memoryEvalStage, prior string) {
+	episodes, err := memoryEvalRunPairs(t, b, c, p, home, func(pair string, disabled bool, stage memoryEvalStage, prior, _ string) {
 		var steps []llm.Response
 		checker := "sh scripts/check.sh"
 		shell := func(command string) llm.Response {
@@ -551,6 +702,9 @@ func main() {}
 			return r, nil
 		}
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(episodes) != 4 {
 		t.Fatalf("arm episodes=%d want 4", len(episodes))
 	}
@@ -700,8 +854,12 @@ func main() {
 `
 	memoryEvalWrite(t, path, source)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	cmd := exec.CommandContext(ctx, filepath.Join(runtime.GOROOT(), "bin", "go"), append([]string{"run", path}, paths...)...)
-	cmd.Env = []string{"PATH=" + filepath.Join(runtime.GOROOT(), "bin") + ":/usr/bin:/bin", "HOME=" + root, "GOCACHE=" + filepath.Join(root, "cache"), "GOTOOLCHAIN=local", "GOPROXY=off", "GOWORK=off", "GOMAXPROCS=2"}
+	if memoryEvalToolchainError != nil {
+		cancel()
+		t.Fatal(memoryEvalToolchainError)
+	}
+	cmd := exec.CommandContext(ctx, filepath.Join(memoryEvalToolchainRoot, "bin", "go"), append([]string{"run", path}, paths...)...)
+	cmd.Env = []string{"PATH=" + filepath.Join(memoryEvalToolchainRoot, "bin") + ":/usr/bin:/bin", "GOROOT=" + memoryEvalToolchainRoot, "GOENV=off", "HOME=" + root, "GOCACHE=" + filepath.Join(root, "cache"), "GOTOOLCHAIN=local", "GOPROXY=off", "GOWORK=off", "GOMAXPROCS=2"}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		cancel()
@@ -838,8 +996,8 @@ func TestMemoryEvalVerifierIsolation(t *testing.T) {
 	if err := os.Symlink(secret, original); err != nil {
 		t.Fatal(err)
 	}
-	pass, result := memoryEvalVerify(t, context.Background(), home, workspace, "A")
-	if pass || strings.Contains(result, "691") || result != "candidate source unavailable" {
+	pass, result, err := memoryEvalVerify(t, context.Background(), home, workspace, "A")
+	if pass || err == nil || strings.Contains(result, "691") || result != "candidate source unavailable" {
 		t.Fatal("verifier followed candidate source symlink")
 	}
 }
