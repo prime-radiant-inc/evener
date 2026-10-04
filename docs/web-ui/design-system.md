@@ -52,9 +52,10 @@ losing the conversation that made the evidence relevant.
   investigate without rebuilding their place. See
   [Open routing](../../cmd/evener-hub/frontend/src/panes/session/transcript/openTranscript.tsx)
   and [retained origins](../../cmd/evener-hub/frontend/src/shell/workspace.ts).
-- **Reconstruct the host, not the workspace.** Returning from phone to an already
-  hosted desktop restores dockview geometry around the exact living pane records,
-  their current slots and the latest selection. Document Back owners, captured
+- **Reconstruct the host, not the workspace.** Switching from a living phone
+  workspace to desktop, including its first desktop mount, restores dockview
+  geometry around the exact living pane records, their current slots and the
+  latest selection. Document Back owners, captured
   file references and reopen generations stay with those records, outside pane
   params and saved layouts. Phone-created panes survive; closed panes do not
   return from stale geometry. Cold layout restoration creates fresh records and

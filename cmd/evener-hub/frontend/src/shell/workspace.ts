@@ -11,10 +11,12 @@
 
 import type { FileReference } from "@evener/appwire-client/docContent";
 import type { DockviewApi, IDockviewPanel, SerializedDockview } from "dockview-core";
+import { useEffect } from "react";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import { type PaneTypeId, paneFor } from "./paneRegistry";
 import { paramString, refParam } from "./routing";
+import { isMobileViewport } from "./useIsMobile";
 
 // Which of the workspace's two slots a pane lives in. The main slot holds
 // exactly ONE pane - the big one in the top left, beside the rail - and
@@ -237,13 +239,16 @@ function nextPaneId(type: PaneTypeId): string {
 // threads.ts's own precedent for "the live thing a store rides but doesn't
 // own the lifecycle of".
 let dockviewApi: DockviewApi | null = null;
-let desktopHasMounted = false;
+let workspaceHasMounted = false;
 
-// Returns whether this desktop is reconstructing an already hosted workspace.
+// A cold route creates records before any host mounts, but does not create
+// runtime owners. A presented phone workspace or an explicit document/transcript
+// open is already living, even when this is its first desktop registration.
 // The marker lasts for this page's workspace, not for an individual host mount.
 export function registerDockviewApi(api: DockviewApi | null): boolean {
-  const reconstructing = api !== null && desktopHasMounted;
-  if (api !== null) desktopHasMounted = true;
+  const reconstructing =
+    api !== null && (workspaceHasMounted || documentPaneStates.size > 0 || transcriptOpenOrigins.size > 0);
+  if (api !== null) workspaceHasMounted = true;
   dockviewApi = api;
   return reconstructing;
 }
@@ -529,6 +534,11 @@ workspaceStore.subscribe((state, previous) => {
 export function useWorkspaceStore(): WorkspaceStoreState;
 export function useWorkspaceStore<T>(selector: (state: WorkspaceStoreState) => T): T;
 export function useWorkspaceStore<T>(selector?: (state: WorkspaceStoreState) => T): T | WorkspaceStoreState {
+  // Record a committed phone workspace, not a render-time cold route. Desktop
+  // registers synchronously in onReady; phone has no DockviewApi to register.
+  useEffect(() => {
+    if (isMobileViewport()) workspaceHasMounted = true;
+  }, []);
   // Not a real conditional hook call - see stores/connection.ts's own
   // useConnectionStore for the full explanation (zustand's useStore has a
   // `selector = identity` JS default param, so both arms run identically).
@@ -544,7 +554,7 @@ export function useWorkspaceStore<T>(selector?: (state: WorkspaceStoreState) => 
 // threads.ts's resetThreadsStoreForTests precedent).
 export function resetWorkspaceStoreForTests(): void {
   dockviewApi = null;
-  desktopHasMounted = false;
+  workspaceHasMounted = false;
   nextPaneSeq = 0;
   pendingPaneFocus.clear();
   documentPaneStates.clear();

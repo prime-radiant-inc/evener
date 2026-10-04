@@ -16,8 +16,10 @@ import { resetThreadsStoreForTests, threadsStore } from "../stores/threads";
 import { PaneScaffold } from "../widgets/panescaffold";
 import { ClientProvider } from "./clientContext";
 import { DockHost } from "./DockHost";
+import { StackHost } from "./mobile/StackHost";
 import { type PaneDescriptor, type PaneProps, paneFor, registerPane, registerPaneForTests } from "./paneRegistry";
 import { usePaneVisible } from "./paneVisibility";
+import { resetMobileViewportForTests } from "./useIsMobile";
 import { consumePaneFocus, documentPaneState, resetWorkspaceStoreForTests, workspaceStore } from "./workspace";
 
 // Fixture pane components, simple enough to assert on directly - "doc" is
@@ -1289,6 +1291,147 @@ test.each(["retained", "phone-created"])(
       cleanup();
       restoreSession();
       restoreTranscript();
+    }
+  },
+);
+
+test.each(["saved", "empty", "invalid", "malformed", "missing"])(
+  "first phone workspace retains exact owners, binding and latest selection with %s geometry",
+  async (geometry) => {
+    const restoreSession = registerPaneForTests({
+      ...paneFor("session"),
+      component: lazy(() => Promise.resolve({ default: DocFixture })),
+    });
+    const restoreTranscript = registerPaneForTests({
+      ...paneFor("transcript"),
+      component: lazy(() => Promise.resolve({ default: DocFixture })),
+    });
+    try {
+      // Geometry belongs to a previous page. Reset after creating it so the
+      // tested page has never registered desktop, including for lazy warmup.
+      workspaceStore.getState().openPane("session", { ref: "local:old" });
+      workspaceStore.getState().openPane("doc", { path: "docs/stale.md" });
+      await act(async () => {
+        render(<DockHost />);
+      });
+      await screen.findByText(/doc pane: docs\/stale.md/);
+      const saved = workspaceStore.getState().layoutJSON();
+      cleanup();
+      resetWorkspaceStoreForTests();
+      localStorage.clear();
+      if (geometry === "saved") localStorage.setItem(LAYOUT_KEY, JSON.stringify(saved));
+      if (geometry === "empty")
+        localStorage.setItem(
+          LAYOUT_KEY,
+          JSON.stringify({
+            grid: { root: { type: "branch", data: [], size: 0 }, width: 0, height: 0, orientation: "HORIZONTAL" },
+            panels: {},
+          }),
+        );
+      if (geometry === "invalid") localStorage.setItem(LAYOUT_KEY, "{}");
+      if (geometry === "malformed") localStorage.setItem(LAYOUT_KEY, "{not json");
+
+      const session = "local:02wMz5TxvEMoJEDTDGOTil";
+      const sourceId = workspaceStore.getState().openPane("session", { ref: session });
+      const transcriptId = workspaceStore.getState().openPane("transcript", { ref: session });
+      const reference = bindFilePath("/work/A/docs/spec.md", "/work/A");
+      const reviewReference = bindFilePath("docs/review.md", "/work/A");
+      if (!reference || !reviewReference) throw new Error("references did not bind");
+      openDocBeside({ session, reference, sourcePaneId: sourceId });
+      openDocBeside({ session, reference: reviewReference, sourcePaneId: sourceId });
+      const closedReview = workspaceStore
+        .getState()
+        .panes.find((pane) => (pane.params as { path?: string }).path === "docs/review.md");
+      if (!closedReview) throw new Error("review did not open");
+      workspaceStore.getState().closePane(closedReview.id);
+      openDocBeside({ session, reference: reviewReference, sourcePaneId: transcriptId });
+      openDocBeside({ session, reference, sourcePaneId: transcriptId });
+      const before = workspaceStore.getState();
+      const spec = before.panes.find((pane) => (pane.params as { path?: string }).path === "docs/spec.md");
+      const owner = before.panes.find((pane) => pane.id === transcriptId);
+      if (!spec || !owner) throw new Error("source/spec did not survive phone opens");
+      const metadata = before.panes
+        .filter((pane) => pane.type === "doc")
+        .map((pane) => ({ pane, state: documentPaneState(pane) }));
+      expect(documentPaneState(spec)).toEqual({ reference, origin: owner, reopen: 1 });
+      expect(before.focusedPaneId).toBe(spec.id);
+      await act(async () => {
+        render(<DockHost />);
+      });
+      await screen.findByText(/doc pane: docs\/spec.md/);
+
+      for (const pane of before.panes)
+        expect(workspaceStore.getState().panes.find((candidate) => candidate.id === pane.id)).toBe(pane);
+      for (const { pane, state } of metadata) expect(documentPaneState(pane)).toBe(state);
+      expect(workspaceStore.getState().focusedPaneId).toBe(spec.id);
+      expect(tabIsActive("Doc docs/spec.md")).toBe(true);
+      expect(workspaceStore.getState().mainPane()).toBe(owner);
+      expect(workspaceStore.getState().panes.filter((pane) => pane.slot === "main")).toHaveLength(1);
+      expect(document.querySelectorAll(".dv-groupview")).toHaveLength(2);
+      expect(documentPaneState(closedReview)).toBeUndefined();
+      expect(workspaceStore.getState().panes).not.toContain(closedReview);
+      expect(
+        workspaceStore.getState().panes.some((pane) => (pane.params as { path?: string }).path === "docs/stale.md"),
+      ).toBe(false);
+      const persisted = JSON.stringify(workspaceStore.getState().layoutJSON());
+      for (const runtimeField of ["readTarget", "provenance", "origin", "reopen"])
+        expect(persisted).not.toContain(runtimeField);
+    } finally {
+      cleanup();
+      restoreSession();
+      restoreTranscript();
+    }
+  },
+);
+
+test.each(["session", "explicit settings route"])(
+  "first mounted phone workspace retains %s intent without document metadata",
+  async (intent) => {
+    const restoreSession = registerPaneForTests({
+      ...paneFor("session"),
+      component: lazy(() => Promise.resolve({ default: DocFixture })),
+    });
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      matches: query === "(max-width: 899px)",
+      media: query,
+      onchange: null,
+      addListener: () => {},
+      removeListener: () => {},
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => true,
+    }));
+    resetMobileViewportForTests();
+    try {
+      const sourceId = workspaceStore.getState().replacePrimary("session", { ref: "local:phone" });
+      const source = workspaceStore.getState().panes.find((pane) => pane.id === sourceId);
+      await act(async () => {
+        render(<StackHost />);
+      });
+      await screen.findByText(/doc pane: local:phone/);
+      cleanup();
+      if (intent === "explicit settings route")
+        workspaceStore.getState().replacePrimary("settings", { section: "models" });
+      const main = workspaceStore.getState().mainPane();
+      localStorage.setItem(LAYOUT_KEY, "{}");
+      vi.unstubAllGlobals();
+      resetMobileViewportForTests();
+      await act(async () => {
+        render(<DockHost />);
+      });
+      expect(workspaceStore.getState().mainPane()).toBe(main);
+      expect(workspaceStore.getState().focusedPaneId).toBe(main?.id);
+      if (intent === "session") expect(main).toBe(source);
+      else {
+        expect(main?.type).toBe("settings");
+        expect(main?.params).toEqual({ section: "models" });
+        expect(workspaceStore.getState().panes).not.toContain(source);
+      }
+    } finally {
+      cleanup();
+      vi.unstubAllGlobals();
+      resetMobileViewportForTests();
+      restoreSession();
     }
   },
 );
