@@ -175,6 +175,7 @@ function routePlacementIsApplied(
   locationTerminal = false,
   locationGone = false,
   allowFocusedCompanion = false,
+  allowRestoredInspection = false,
 ): boolean {
   const route = urlToPane(pathname);
   if (route === null || route.type === "welcome") return true;
@@ -185,7 +186,8 @@ function routePlacementIsApplied(
   // Contextual drill keeps the URL's original conversation role. A new
   // pathname must still place its ordinary session, regardless of saved intent.
   const routeRole = (pane: OpenPaneRecord): OpenPaneRecord => {
-    const source = allowFocusedCompanion && pane.type === "sessionZoom" ? parseZoomParams(pane.params)?.source : null;
+    const params = allowFocusedCompanion && pane.type === "sessionZoom" ? parseZoomParams(pane.params) : null;
+    const source = params && !params.inspection ? params.source : null;
     return source ? { ...pane, ...source } : pane;
   };
   const main = routeRole(mainRecord);
@@ -221,7 +223,9 @@ function routePlacementIsApplied(
   const rawFocused = workspace.panes.find((pane) => pane.id === workspace.focusedPaneId);
   const focusedIntent = rawFocused?.type === "sessionZoom" ? parseZoomParams(rawFocused.params) : null;
   const focusedSeparatedInspection =
-    allowFocusedCompanion && rawFocused?.slot === "secondary" && !!focusedIntent?.inspection;
+    (allowFocusedCompanion || allowRestoredInspection) &&
+    rawFocused?.slot === "secondary" &&
+    !!focusedIntent?.inspection;
   const conversationRef = focusedPane?.type === "session" ? sessionRefOf(focusedPane) : null;
   const focusedCascadeConversation =
     allowFocusedCompanion &&
@@ -919,7 +923,21 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
         pendingSessionRef.current === null &&
         placedPathnameRef.current === pathname &&
         !routePlacementInProgressRef.current;
-      if (routePlacementIsApplied(pathname, location, locationTerminal, locationGone, allowFocusedCompanion)) {
+      const allowRestoredInspection =
+        route.type === "session" &&
+        openedForPathnameRef.current === pathname &&
+        (placedPathnameRef.current === null ||
+          (placedPathnameRef.current === pathname && pendingSessionRef.current === refParam(route.params)));
+      if (
+        routePlacementIsApplied(
+          pathname,
+          location,
+          locationTerminal,
+          locationGone,
+          allowFocusedCompanion,
+          allowRestoredInspection,
+        )
+      ) {
         pendingSessionRef.current = null;
         placedPathnameRef.current = pathname;
         return;

@@ -7,6 +7,7 @@ import type {
   NavigationReadResponse,
   NavigationSessionLocation,
   NavigationSessionSummary,
+  NavigationSnapshot,
   ThreadStartResponse,
 } from "@evener/appwire-client";
 import { AppwireClient, type ConnectionState, WireError } from "@evener/appwire-client";
@@ -24,6 +25,7 @@ import { afterEach, beforeAll, beforeEach, expect, onTestFinished, test, vi } fr
 import { initNotifications, resetNotificationsForTests } from "../notifications";
 import * as composerFocus from "../panes/session/composer/composerFocus";
 import { OpenTranscriptButton } from "../panes/session/transcript/openTranscript";
+import { enterAgentCascade, openCascadeConversation, returnFromAgentCascade } from "../panes/zoom/actions";
 import { StubResizeObserver } from "../resizeObserverTestUtils";
 import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
 import { resetAuthStatusesStoreForTests } from "../stores/authStatuses";
@@ -51,7 +53,7 @@ import { ClientProvider } from "./clientContext";
 import { DockHost } from "./DockHost";
 import { paletteStore } from "./palette/paletteController";
 import { conversationPaneLifetime } from "./paneLifetime";
-import { navigate } from "./routing";
+import { navigate, refParam } from "./routing";
 import { getDockviewApi, resetWorkspaceStoreForTests, workspaceStore } from "./workspace";
 
 // Matches DockHost.tsx's own LAYOUT_STORAGE_KEY exactly (not exported - a
@@ -549,6 +551,70 @@ async function saveRealCascadeLayout(): Promise<{ cascadeId?: string; secondaryI
   expect(localStorage.getItem(LAYOUT_KEY)).not.toBeNull();
   resetWorkspaceStoreForTests();
   return { cascadeId, secondaryId };
+}
+
+async function saveRealSecondaryCascadeLayout(ref = "local:session-a") {
+  window.history.pushState({}, "", `/s/${ref}`);
+  installLocationForRoute(ref);
+  const { unmount } = render(<AppShell client={new FakeClient("ready")} />);
+  await waitFor(() => expect(getDockviewApi()?.panels).toHaveLength(ref === "local:child" ? 2 : 1));
+  const mainId = workspaceStore.getState().mainPane()?.id;
+  const source = paneFor(ref);
+  if (!mainId || !source || source.type !== "session") throw new Error("Expected real routed conversations");
+  let cascadeId = "";
+  let secondaryId = "";
+  act(() => {
+    secondaryId = workspaceStore.getState().openPane("sessionTasks", { ref: "local:neighbor" }, { slot: "secondary" });
+    cascadeId = enterAgentCascade(
+      activityDelegate({
+        ownerRef: ref,
+        childRef: ref === "local:child" ? "local:grandchild" : "local:child",
+        delegateId: "edge-child",
+      }),
+      source.id,
+    );
+    workspaceStore.getState().focusPane(cascadeId);
+  });
+  await waitFor(() => expect(getDockviewApi()?.panels).toHaveLength(ref === "local:child" ? 4 : 3));
+  expect(workspaceStore.getState().focusedPaneId).toBe(cascadeId);
+  unmount();
+  expect(localStorage.getItem(LAYOUT_KEY)).not.toBeNull();
+  resetWorkspaceStoreForTests();
+  return { mainId, sourceId: source.id, cascadeId, secondaryId };
+}
+
+function heldRouteLocation(ref: string) {
+  const client = navClient();
+  const finishes: (() => void)[] = [];
+  client.on("evener/navigation/read", (params) => {
+    if (params.resource !== "location" || params.ref !== ref) return navigationRead(params);
+    return new Promise<NavigationReadResponse>((resolve) => {
+      finishes.push(() => {
+        const owner = ref === "local:child" ? "local:owner" : ref;
+        const response = wireSnapshot(
+          params,
+          { session: { ...TREE_SESSION, ref, session_id: ref, kind: owner === ref ? "session" : "subagent" } },
+          '"test"',
+        );
+        (response.data as NavigationSnapshot).metadata = {
+          generation_id: "generation_test",
+          revision: 1,
+          ref,
+          top_level_ref: owner,
+          top_level: owner === ref,
+          tier: "current",
+        };
+        resolve(response);
+      });
+    });
+  });
+  return {
+    client,
+    release: () => {
+      if (finishes.length === 0) throw new Error("No actual location request to release");
+      for (const finish of finishes.splice(0)) finish();
+    },
+  };
 }
 
 async function saveLegacyNestedMainLayout(): Promise<void> {
@@ -1991,6 +2057,145 @@ test("a deferred deep link preserves a restored cascade main and its neighbors",
   // deferred route placement preserves.
   expect(workspaceStore.getState().focusedPaneId).toBe(secondaryId);
 });
+
+test("deferred location preserves a restored secondary inspector and its real center", async () => {
+  const { mainId, cascadeId, secondaryId } = await saveRealSecondaryCascadeLayout();
+  resetNavigationStoreForTests();
+  navigationStore.setState({ mode: "v3" });
+  const held = heldRouteLocation("local:session-a");
+  window.history.pushState({}, "", "/s/local:session-a");
+  await act(async () => {
+    render(<AppShell client={held.client} />);
+  });
+  expect(workspaceStore.getState().focusedPaneId).toBe(cascadeId);
+  expect(navigationStore.getState().resources.get(keyID({ kind: "location", ref: "local:session-a" }))?.loading).toBe(
+    true,
+  );
+  await act(async () => held.release());
+  await waitFor(() => expect(workspaceStore.getState().mainPane()?.id).toBe(mainId));
+  expect(workspaceStore.getState().mainPane()?.type).toBe("session");
+  expect(workspaceStore.getState().panes.map((pane) => pane.id)).toEqual([mainId, secondaryId, cascadeId]);
+  expect(workspaceStore.getState().focusedPaneId).toBe(cascadeId);
+  act(() => returnFromAgentCascade(cascadeId));
+  expect(workspaceStore.getState().panes.map((pane) => pane.id)).toEqual([mainId, secondaryId]);
+  expect(workspaceStore.getState().focusedPaneId).toBe(mainId);
+});
+
+test("a fresh child pathname waits for real location then focuses its existing conversation over inspection", async () => {
+  const { mainId, cascadeId } = await saveRealSecondaryCascadeLayout("local:owner");
+  resetNavigationStoreForTests();
+  navigationStore.setState({ mode: "v3" });
+  installLocationForRoute("local:owner");
+  const held = heldRouteLocation("local:child");
+  window.history.pushState({}, "", "/s/local:owner");
+  await act(async () => render(<AppShell client={held.client} />));
+  expect(workspaceStore.getState().focusedPaneId).toBe(cascadeId);
+  await act(async () => openCascadeConversation(cascadeId, "local:child"));
+  const child = workspaceStore
+    .getState()
+    .panes.find((pane) => pane.type === "session" && refParam(pane.params) === "local:child");
+  if (!child) throw new Error("Missing explicit ordinary child conversation");
+  expect(workspaceStore.getState().focusedPaneId).toBe(child.id);
+  await act(async () => workspaceStore.getState().focusPane(cascadeId));
+  await act(async () => navigate("/s/local:child"));
+  expect(navigationStore.getState().resources.get(keyID({ kind: "location", ref: "local:child" }))?.loading).toBe(true);
+  await act(async () => held.release());
+  expect(workspaceStore.getState().mainPane()).toMatchObject({
+    id: mainId,
+    type: "session",
+    params: { ref: "local:owner" },
+  });
+  expect(workspaceStore.getState().panes).toContain(child);
+  expect(
+    workspaceStore
+      .getState()
+      .panes.filter((pane) => pane.type === "session" && refParam(pane.params) === "local:child"),
+  ).toHaveLength(1);
+  expect(workspaceStore.getState().focusedPaneId).toBe(child.id);
+  expect(window.location.pathname).toBe("/s/local:child");
+});
+
+test.each([
+  { ref: "local:session-a", deferred: false },
+  { ref: "local:child", deferred: false },
+  { ref: "local:child", deferred: true },
+])("secondary inspector boot keeps actual $ref conversations with deferred=$deferred", async ({ ref, deferred }) => {
+  const { mainId, sourceId, cascadeId, secondaryId } = await saveRealSecondaryCascadeLayout(ref);
+  resetNavigationStoreForTests();
+  navigationStore.setState({ mode: "v3" });
+  if (!deferred) installLocationForRoute(ref);
+  const held = deferred ? heldRouteLocation(ref) : null;
+  window.history.pushState({}, "", `/s/${ref}`);
+  await act(async () => {
+    render(<AppShell client={held?.client ?? navClient()} />);
+  });
+  expect(workspaceStore.getState().focusedPaneId).toBe(cascadeId);
+  if (held) await act(async () => held.release());
+  expect(workspaceStore.getState().mainPane()).toMatchObject({
+    id: mainId,
+    type: "session",
+    params: { ref: ref === "local:child" ? "local:owner" : ref },
+  });
+  expect(paneFor(ref)?.id).toBe(sourceId);
+  expect(workspaceStore.getState().panes.map((pane) => pane.id)).toEqual(
+    ref === "local:child" ? [mainId, sourceId, secondaryId, cascadeId] : [mainId, secondaryId, cascadeId],
+  );
+  expect(workspaceStore.getState().focusedPaneId).toBe(cascadeId);
+  const source = paneFor(ref);
+  if (!source) throw new Error("Missing restored source");
+  const lifetime = conversationPaneLifetime(source);
+  act(() => returnFromAgentCascade(cascadeId));
+  expect(workspaceStore.getState().focusedPaneId).toBe(sourceId);
+  expect(paneFor(ref)).toBe(source);
+  expect(conversationPaneLifetime(source)).toBe(lifetime);
+  expect(workspaceStore.getState().panes.some((pane) => pane.id === secondaryId)).toBe(true);
+  expect(workspaceStore.getState().panes.some((pane) => pane.id === cascadeId)).toBe(false);
+});
+
+test.each(["transcript", "fallback"] as const)(
+  "a settled route preserves focus for %s inspection and its explicit child conversation",
+  async (originKind) => {
+    window.history.pushState({}, "", "/s/local:session-a");
+    installLocationForRoute("local:session-a");
+    render(<AppShell client={new FakeClient("ready")} />);
+    await screen.findByText(/loading transcript/i);
+    const main = workspaceStore.getState().mainPane();
+    if (main?.type !== "session") throw new Error("Expected real route session");
+    let inspectorId = "";
+    await act(async () => {
+      const originId = workspaceStore
+        .getState()
+        .openPane(
+          "transcript",
+          { ref: originKind === "transcript" ? "local:outside" : "job:outside" },
+          { slot: "secondary" },
+        );
+      inspectorId = enterAgentCascade(
+        activityDelegate({ ownerRef: "local:outside", childRef: "local:inspected", delegateId: "edge-outside" }),
+        originId,
+      );
+    });
+    expect(workspaceStore.getState().mainPane()).toBe(main);
+    expect(workspaceStore.getState().focusedPaneId).toBe(inspectorId);
+    expect(workspaceStore.getState().panes.find((pane) => pane.id === inspectorId)?.slot).toBe("secondary");
+    await act(async () => openCascadeConversation(inspectorId, "local:inspected"));
+    const child = workspaceStore
+      .getState()
+      .panes.find((pane) => pane.type === "session" && refParam(pane.params) === "local:inspected");
+    if (!child) throw new Error("Expected explicit full child conversation");
+    expect(workspaceStore.getState().mainPane()).toBe(main);
+    expect(workspaceStore.getState().focusedPaneId).toBe(child.id);
+    expect(window.location.pathname).toBe("/s/local:session-a");
+    for (const pathname of ["/thread/local:session-a", "/s/local:session-a"]) {
+      await act(async () => navigate(pathname));
+      await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(main.id));
+      expect(workspaceStore.getState().mainPane()).toBe(main);
+      expect(window.location.pathname).toBe(pathname);
+      await act(async () => workspaceStore.getState().focusPane(inspectorId));
+      expect(workspaceStore.getState().focusedPaneId).toBe(inspectorId);
+    }
+  },
+);
 
 test("switching between /thread and /s refocuses the routed session despite a focused panel", async () => {
   window.history.pushState({}, "", "/s/local:session-a");
