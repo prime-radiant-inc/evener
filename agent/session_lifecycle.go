@@ -596,7 +596,7 @@ func (s *Session) releaseRuntimeOnce(ctx context.Context, options closeOptions, 
 		// runs it; what a child owns is its scratch, retained for the handoff.
 		if !retirement {
 			for _, sub := range subs {
-				teardownChildSession(budgetCtx, sub.sess, retainChildScratch)
+				teardownChildSession(budgetCtx, sub.sess)
 			}
 		}
 		if s.ownsArtifactStore && s.artifactStore != nil {
@@ -642,10 +642,11 @@ func (s *Session) releaseRuntimeOnce(ctx context.Context, options closeOptions, 
 			}
 		}
 
-		// Retirement releases the live scratch leases without signalling any
-		// process or deleting a required directory, keeping Released:false.
+		// Retirement removes the parked and abandoned environments' scratch
+		// without signalling any process; the current environment's goes at the
+		// end of close, after MCP shutdown.
 		if retirement {
-			s.releaseRetirementScratch()
+			s.disposeRetirementScratch()
 		}
 		// 4. Kill any remaining child processes (SIGTERM → wait 2s → SIGKILL).
 		if options.cleanupEnv {
@@ -659,13 +660,13 @@ func (s *Session) releaseRuntimeOnce(ctx context.Context, options closeOptions, 
 			// child's teardown skips (not its own) and the current clone's
 			// Cleanup never reaches. The parked environment shares the current
 			// clone's process table, which was just reaped, so only its scratch
-			// is left: retained, never a second Cleanup.
-			s.retainParkedWorktreeEnvironmentScratch()
+			// is left: removed, never a second Cleanup.
+			s.disposeParkedWorktreeEnvironmentScratch()
 			// And every environment a later enter dropped, which the parked one
 			// does not cover: worktreeRestoreEnv holds only the launch
 			// environment, so a switch leaves the clone it came from reachable
 			// from nothing.
-			s.settleAbandonedEnvironmentScratch(retainChildScratch)
+			s.disposeAbandonedEnvironmentScratch()
 		}
 
 		// A terminal root close has committed: write the retention tombstone
@@ -716,6 +717,12 @@ func (s *Session) releaseRuntimeOnce(ctx context.Context, options closeOptions, 
 
 		if s.mcpMgr != nil {
 			s.mcpMgr.Close()
+		}
+
+		// Scratch goes last: SessionEnd hooks and MCP servers above still run with
+		// TMPDIR inside it, and bubblewrap refuses a missing bind source.
+		if cleanupEnv || retirement {
+			s.disposeOwnedCurrentScratch()
 		}
 
 		if retirement {
@@ -793,48 +800,55 @@ func (s *Session) recordAbandonedEnvironmentLocked(prior, next *execenv.LocalExe
 	s.abandonedEnvs = append(s.abandonedEnvs, prior)
 }
 
-// settleAbandonedEnvironmentScratch settles the scratch every environment this
-// session swapped away from still owns, under the same disposition as the
-// environment the session holds now: a handoff releases the leases and keeps
-// the directories, a discard drops both. Neither settlement runs Cleanup, so
-// no process table is touched.
+// disposeAbandonedEnvironmentScratch removes the scratch every environment this
+// session swapped away from still owns. It never runs Cleanup, so no process
+// table is touched.
 //
-// close calls it (always a handoff) after the current environment's Cleanup,
-// for the same reason the parked environment's retain runs there: an abandoned
+// close calls it after the current environment's Cleanup: an abandoned
 // environment shares the current clone's process table, so its processes are
 // already reaped and running Cleanup on it would reap that table a second
 // time. What is left on it is what a shared child minted after the session
-// moved on, which nothing else will ever release. teardownChildSession also
+// moved on, which nothing else will ever remove. teardownChildSession also
 // calls it: a session whose environment is its live parent's own never runs
 // cleanupEnv at all, so this is the only place that ever drains a worktree
-// clone such a child built for itself and then swapped away from. It passes
-// its own disposition for symmetry with the current environment — the scratch
-// of a child being dropped is dropped wherever it sits. No production caller
-// reaches the discard side with a swapped child today: only a manage_worktree
-// op records an abandoned environment, which takes a turn, and every teardown
-// that discards fires before the child's run loop starts.
-func (s *Session) settleAbandonedEnvironmentScratch(scratch childScratchDisposition) {
+// clone such a child built for itself and then swapped away from.
+func (s *Session) disposeAbandonedEnvironmentScratch() {
 	s.mu.Lock()
 	abandoned := s.abandonedEnvs
 	s.abandonedEnvs = nil
 	s.mu.Unlock()
 	for _, env := range abandoned {
-		releaseOwnedChildEnvironment(env, scratch)
+		releaseOwnedChildEnvironment(env)
 	}
 }
 
-// retainParkedWorktreeEnvironmentScratch releases the leases of every scratch
-// the environment parked by a worktree enter (worktreeRestoreEnv) still owns,
-// keeping the directories for the handoff. Only close calls it, after the
-// current environment's Cleanup: the parked environment shares that process
-// table, so its processes are already reaped and running Cleanup on it would
-// reap the table a second time.
-func (s *Session) retainParkedWorktreeEnvironmentScratch() {
+// disposeParkedWorktreeEnvironmentScratch removes every scratch the environment
+// parked by a worktree enter (worktreeRestoreEnv) still owns. Only close calls
+// it, after the current environment's Cleanup: the parked environment shares
+// that process table, so its processes are already reaped and running Cleanup
+// on it would reap the table a second time.
+func (s *Session) disposeParkedWorktreeEnvironmentScratch() {
 	s.mu.Lock()
 	parked := s.worktreeRestoreEnv
 	s.mu.Unlock()
 	if parked != nil {
-		parked.RetainSessionScratch()
+		_ = parked.DisposeSessionScratch()
+	}
+}
+
+// disposeOwnedCurrentScratch removes the current environment's scratch when this
+// session owns that environment. A child still holding its live parent's own
+// environment owns none of it; the parent's close removes it.
+func (s *Session) disposeOwnedCurrentScratch() {
+	s.mu.Lock()
+	current, parentShared := s.env, s.parentSharedEnv
+	s.mu.Unlock()
+	local, ok := current.(*execenv.LocalExecutionEnvironment)
+	if !ok || sameEnvironment(current, parentShared) {
+		return
+	}
+	if err := local.DisposeSessionScratch(); err != nil {
+		s.emit(events.EventWarning, events.WarningData{Message: "session scratch removal incomplete: " + err.Error()})
 	}
 }
 

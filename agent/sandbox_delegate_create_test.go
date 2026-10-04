@@ -286,7 +286,7 @@ func TestSpawnAgent_PerDelegateSandboxCleansScratchWhenLaunchIsRejected(t *testi
 // which skips env cleanup (children historically shared the parent env), so the
 // sandboxed child's scratch must be retained and its live lease released. Not
 // parallel: isolates TMPDIR to observe the scratch base.
-func TestParentClose_RetainsPerDelegateSandboxScratch(t *testing.T) {
+func TestParentCloseRemovesPerDelegateSandboxScratch(t *testing.T) {
 	isolated := t.TempDir()
 	t.Setenv("TMPDIR", isolated)
 
@@ -316,16 +316,10 @@ func TestParentClose_RetainsPerDelegateSandboxScratch(t *testing.T) {
 		t.Fatalf("expected a per-delegate sandbox scratch dir after spawn, found none in %s", isolated)
 	}
 
-	// Closing the parent must retain the child's owned scratch for the handoff.
+	// Closing the parent removes the scratch the child's own environment owned.
 	s.Close()
-	left := sandboxScratchDirs(t, isolated)
-	if len(left) == 0 {
-		t.Errorf("parent close must retain the per-delegate-sandbox scratch for manual cleanup")
-	}
-	for _, name := range left {
-		if err := os.RemoveAll(filepath.Join(isolated, name)); err != nil {
-			t.Errorf("manual cleanup of retained scratch %q: %v", name, err)
-		}
+	if left := sandboxScratchDirs(t, isolated); len(left) != 0 {
+		t.Errorf("parent close left the per-delegate sandbox scratch behind: %v", left)
 	}
 }
 

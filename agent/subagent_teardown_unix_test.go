@@ -117,7 +117,7 @@ func assertParentScratchUntouched(t *testing.T, what, scratch string) {
 // scratch is the one an env mints lazily on its first command; a teardown that
 // retains only the sandbox-provisioned kind holds this lease for the rest of
 // the daemon's uptime.
-func TestParentCloseReleasesAnOwnedUnsandboxedChildScratchLease(t *testing.T) {
+func TestParentCloseRemovesAnOwnedUnsandboxedChildScratch(t *testing.T) {
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
 	parent := newSession(t, withClient(client), withDir(t.TempDir()), withoutGitSnapshot())
@@ -154,11 +154,8 @@ func TestParentCloseReleasesAnOwnedUnsandboxedChildScratchLease(t *testing.T) {
 	if got := child.State(); got != SessionClosed {
 		t.Errorf("owned child state after parent close = %q, want %q", got, SessionClosed)
 	}
-	if _, err := os.Stat(scratch); err != nil {
-		t.Errorf("parent close removed the child's scratch %s, want it retained for the handoff: %v", scratch, err)
-	}
-	if scratchLeaseHeld(t, scratch) {
-		t.Errorf("the child's scratch %s lease is still held after the parent closed", scratch)
+	if _, err := os.Lstat(scratch); !os.IsNotExist(err) {
+		t.Errorf("close left the scratch %s: %v", scratch, err)
 	}
 }
 
@@ -302,11 +299,8 @@ func TestDisposedLaneChildLeavesTheRootEnvironmentAlone(t *testing.T) {
 	if laneWorktreePresent(lanePath) {
 		t.Errorf("disposal retained the lane %s", lanePath)
 	}
-	if _, err := os.Stat(childScratch); err != nil {
-		t.Errorf("disposal removed the child's scratch %s, want it retained for the handoff: %v", childScratch, err)
-	}
-	if scratchLeaseHeld(t, childScratch) {
-		t.Errorf("the child's scratch %s lease is still held after the disposal", childScratch)
+	if _, err := os.Lstat(childScratch); !os.IsNotExist(err) {
+		t.Errorf("close left the scratch %s: %v", childScratch, err)
 	}
 	assertInFlightProcessSurvived(t, "lane disposal", pid, done)
 	assertParentScratchUntouched(t, "lane disposal", rootScratch)
@@ -366,7 +360,7 @@ func TestControllerCloseRuntimeTreeLeavesTheRootEnvironmentAlone(t *testing.T) {
 // entry names. Such a runtime still owns its clone's scratch, and the root's
 // close of the runtime tree is the only teardown it ever gets: it has to
 // release the lease and keep the directory, like every other child teardown.
-func TestRootCloseReleasesAnUntrackedResidentRuntimeScratchLease(t *testing.T) {
+func TestRootCloseRemovesAnUntrackedResidentRuntimeScratch(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 8, 4)
 	shared := execenv.NewLocalExecutionEnvironment(t.TempDir())
 	t.Cleanup(shared.Cleanup)
@@ -408,11 +402,8 @@ func TestRootCloseReleasesAnUntrackedResidentRuntimeScratchLease(t *testing.T) {
 	if got := resident.State(); got != SessionClosed {
 		t.Errorf("untracked resident runtime state after the root close = %q, want %q", got, SessionClosed)
 	}
-	if _, err := os.Stat(scratch); err != nil {
-		t.Errorf("the root close removed the runtime's scratch %s, want it retained for the handoff: %v", scratch, err)
-	}
-	if scratchLeaseHeld(t, scratch) {
-		t.Errorf("the untracked runtime's scratch %s lease is still held after the root closed", scratch)
+	if _, err := os.Lstat(scratch); !os.IsNotExist(err) {
+		t.Errorf("close left the scratch %s: %v", scratch, err)
 	}
 	assertInFlightProcessSurvived(t, "the root's delegate tree close", pid, done)
 	assertParentScratchUntouched(t, "the root's delegate tree close", sharedScratch)
@@ -457,7 +448,7 @@ func TestSpawnedChildOnTheParentEnvironmentRecordsNoOwnership(t *testing.T) {
 		t.Error("a child spawned onto the parent's environment recorded that it owns it")
 	}
 
-	teardownChildSession(context.Background(), child, retainChildScratch)
+	teardownChildSession(context.Background(), child)
 
 	if got := child.State(); got != SessionClosed {
 		t.Errorf("child state after its teardown = %q, want %q", got, SessionClosed)
@@ -560,16 +551,13 @@ func TestRestoredDelegateRuntimeOwnsItsCloneScratch(t *testing.T) {
 		t.Error("a restored delegate on a clone of its own recorded that it does not own it")
 	}
 
-	teardownChildSession(context.Background(), r.runtime, retainChildScratch)
+	teardownChildSession(context.Background(), r.runtime)
 
 	if got := r.runtime.State(); got != SessionClosed {
 		t.Errorf("restored runtime state after its teardown = %q, want %q", got, SessionClosed)
 	}
-	if _, err := os.Stat(r.scratch); err != nil {
-		t.Errorf("the teardown removed the clone's scratch %s, want it retained for the handoff: %v", r.scratch, err)
-	}
-	if scratchLeaseHeld(t, r.scratch) {
-		t.Errorf("the clone's scratch %s lease is still held after the runtime's teardown", r.scratch)
+	if _, err := os.Lstat(r.scratch); !os.IsNotExist(err) {
+		t.Errorf("the teardown left the clone's scratch %s: %v", r.scratch, err)
 	}
 	assertInFlightProcessSurvived(t, "the restored runtime's teardown", r.pid, r.done)
 	assertParentScratchUntouched(t, "the restored runtime's teardown", r.rootScratch)
@@ -658,13 +646,10 @@ func TestSharedEnvChildTeardownReleasesTheEnteredWorktreeScratch(t *testing.T) {
 		t.Fatal("the entered clone's scratch lease is not held before the child's teardown")
 	}
 
-	teardownChildSession(context.Background(), child, retainChildScratch)
+	teardownChildSession(context.Background(), child)
 
-	if _, err := os.Stat(scratch); err != nil {
-		t.Errorf("the child's teardown removed the entered clone's scratch %s, want it retained for the handoff: %v", scratch, err)
-	}
-	if scratchLeaseHeld(t, scratch) {
-		t.Errorf("the entered clone's scratch %s lease is still held after the shared child's teardown", scratch)
+	if _, err := os.Lstat(scratch); !os.IsNotExist(err) {
+		t.Errorf("close left the scratch %s: %v", scratch, err)
 	}
 	assertParentScratchUntouched(t, "the shared child's teardown", sharedScratch)
 	assertInFlightProcessSurvived(t, "the shared child's teardown", pid, done)
@@ -687,7 +672,7 @@ func TestSharedEnvChildTeardownReleasesTheEnteredWorktreeScratch(t *testing.T) {
 // child that started on its parent's own object parks THAT environment, and its
 // teardown must leave the live parent's scratch lease alone (the sibling test
 // above pins that half).
-func TestOwnedChildTeardownRetainsTheParkedWorktreeEnvironmentScratch(t *testing.T) {
+func TestOwnedChildTeardownRemovesTheParkedWorktreeEnvironmentScratch(t *testing.T) {
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
 	parent := newSession(t, withClient(client), withDir(t.TempDir()), withoutGitSnapshot())
@@ -739,13 +724,10 @@ func TestOwnedChildTeardownRetainsTheParkedWorktreeEnvironmentScratch(t *testing
 		t.Fatal("the grandchild's scratch lease is not held before the child's teardown")
 	}
 
-	teardownChildSession(context.Background(), child, retainChildScratch)
+	teardownChildSession(context.Background(), child)
 
-	if _, err := os.Stat(parkedScratch); err != nil {
-		t.Errorf("the child's teardown removed the parked environment's scratch %s, want it retained for the handoff: %v", parkedScratch, err)
-	}
-	if scratchLeaseHeld(t, parkedScratch) {
-		t.Errorf("the parked environment's scratch %s lease is still held after the child's teardown; nothing else will ever release it", parkedScratch)
+	if _, err := os.Lstat(parkedScratch); !os.IsNotExist(err) {
+		t.Errorf("close left the scratch %s: %v", parkedScratch, err)
 	}
 }
 
@@ -815,13 +797,10 @@ func TestSharedEnvChildKeepsItsWorktreeScratchAcrossExit(t *testing.T) {
 	}
 	assertParentScratchUntouched(t, "the child's exit", parentScratch)
 
-	teardownChildSession(context.Background(), child, retainChildScratch)
+	teardownChildSession(context.Background(), child)
 
-	if _, err := os.Stat(cloneScratch); err != nil {
-		t.Errorf("the child's teardown removed the entered clone's scratch %s, want it retained for the handoff: %v", cloneScratch, err)
-	}
-	if scratchLeaseHeld(t, cloneScratch) {
-		t.Errorf("the entered clone's scratch %s lease is still held after the child's teardown", cloneScratch)
+	if _, err := os.Lstat(cloneScratch); !os.IsNotExist(err) {
+		t.Errorf("close left the scratch %s: %v", cloneScratch, err)
 	}
 	assertParentScratchUntouched(t, "the shared child's teardown", parentScratch)
 }
@@ -885,7 +864,7 @@ func TestSharedEnvChildInsideTheParentBoxKeepsTheParentScratchLease(t *testing.T
 		t.Errorf("entered clone scratch = %q, want the box's own %q carried by the re-rooted wrapper", got, boxTmp)
 	}
 
-	teardownChildSession(context.Background(), child, retainChildScratch)
+	teardownChildSession(context.Background(), child)
 
 	if _, err := os.Stat(boxTmp); err != nil {
 		t.Errorf("the child's teardown removed the box's scratch %s, want it retained for the live parent: %v", boxTmp, err)
@@ -905,7 +884,7 @@ func TestSharedEnvChildInsideTheParentBoxKeepsTheParentScratchLease(t *testing.T
 // turn, and every teardown that discards fires before the child's run loop
 // starts — so this drives teardownChildSession directly rather than faking a
 // production path into it.
-func TestChildTeardownSettlesAbandonedEnvironmentsByDisposition(t *testing.T) {
+func TestChildTeardownRemovesAbandonedEnvironmentScratch(t *testing.T) {
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
 	parent := newSession(t, withClient(client), withDir(t.TempDir()), withoutGitSnapshot())
@@ -943,23 +922,12 @@ func TestChildTeardownSettlesAbandonedEnvironmentsByDisposition(t *testing.T) {
 		return child, scratch
 	}
 
-	discarded, discardedScratch := childWithAbandonedScratch(t)
-	t.Cleanup(func() { _ = os.RemoveAll(discardedScratch) })
+	child, scratch := childWithAbandonedScratch(t)
+	t.Cleanup(func() { _ = os.RemoveAll(scratch) })
 
-	teardownChildSession(context.Background(), discarded, disposeChildScratch)
+	teardownChildSession(context.Background(), child)
 
-	if _, err := os.Stat(discardedScratch); !os.IsNotExist(err) {
-		t.Errorf("a discarded child's abandoned scratch %s survived its teardown (stat: %v), want it dropped with its lease", discardedScratch, err)
-	}
-
-	handed, handedScratch := childWithAbandonedScratch(t)
-	t.Cleanup(func() { _ = os.RemoveAll(handedScratch) })
-
-	teardownChildSession(context.Background(), handed, retainChildScratch)
-
-	if _, err := os.Stat(handedScratch); err != nil {
-		t.Errorf("a handed-off child's abandoned scratch %s was removed, want it kept for the handoff: %v", handedScratch, err)
-	} else if scratchLeaseHeld(t, handedScratch) {
-		t.Errorf("the handed-off child's abandoned scratch %s lease is still held after its teardown", handedScratch)
+	if _, err := os.Stat(scratch); !os.IsNotExist(err) {
+		t.Errorf("a child's abandoned scratch %s survived its teardown (stat: %v), want it removed", scratch, err)
 	}
 }

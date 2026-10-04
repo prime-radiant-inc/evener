@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/execenv"
-	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/llm"
 )
 
@@ -69,12 +68,11 @@ func TestRetirementReleaseOfASharedChildKeepsTheParentScratchLease(t *testing.T)
 	}
 }
 
-// TestRetirementReleaseRetainsOwnEnvironmentScratch pins the positive direction
+// TestRetirementRemovesOwnEnvironmentScratch pins the positive direction
 // the trap section warns about: a ROOT has parentSharedEnv nil, so the ownership
-// guard must skip nothing and the root's own current and parked scratch leases
-// must still be released by retirement, with the directories kept for the
-// handoff and the manifest left unreleased.
-func TestRetirementReleaseRetainsOwnEnvironmentScratch(t *testing.T) {
+// guard must skip nothing and retirement must remove the root's own current and
+// parked scratch.
+func TestRetirementRemovesOwnEnvironmentScratch(t *testing.T) {
 	dir := t.TempDir()
 	root := newQueuePersistTestSession(t, dir)
 	t.Cleanup(func() { root.Close() })
@@ -103,27 +101,13 @@ func TestRetirementReleaseRetainsOwnEnvironmentScratch(t *testing.T) {
 	root.worktreeRestoreEnv = parked
 	root.mu.Unlock()
 
-	root.releaseRetirementScratch()
+	root.disposeRetirementScratch()
+	root.disposeOwnedCurrentScratch()
 
 	for name, scratch := range map[string]string{"current": currentScratch, "parked": parkedScratch} {
-		if _, err := os.Stat(scratch); err != nil {
-			t.Errorf("retirement removed the root's %s scratch %s, want it kept for the handoff: %v", name, scratch, err)
+		if _, err := os.Lstat(scratch); !os.IsNotExist(err) {
+			t.Errorf("retirement left the root's %s scratch %s: %v", name, scratch, err)
 		}
-		if scratchLeaseHeld(t, scratch) {
-			t.Errorf("the root's own %s scratch %s lease is still held after retirement", name, scratch)
-		}
-	}
-
-	owner, ok := root.scratchRetentionOwner()
-	if !ok {
-		t.Fatal("the root has no scratch retention owner")
-	}
-	manifest, err := sandbox.LoadScratchRetention(owner)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if manifest.Released {
-		t.Error("retirement wrote the Released tombstone")
 	}
 }
 
@@ -166,10 +150,7 @@ func TestRetirementReleaseOfAnOwningChildReleasesItsOwnScratch(t *testing.T) {
 		t.Fatalf("releaseChildRuntimeForRetirement: %v", err)
 	}
 
-	if _, err := os.Stat(childScratch); err != nil {
-		t.Errorf("retirement removed the owning child's scratch %s, want it kept for the handoff: %v", childScratch, err)
-	}
-	if scratchLeaseHeld(t, childScratch) {
-		t.Errorf("the owning child's scratch %s lease is still held after retirement", childScratch)
+	if _, err := os.Lstat(childScratch); !os.IsNotExist(err) {
+		t.Errorf("retirement left the owning child's scratch %s: %v", childScratch, err)
 	}
 }

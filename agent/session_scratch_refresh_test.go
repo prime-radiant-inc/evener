@@ -970,7 +970,7 @@ func TestScratchBorrowReportsDeclinedWhenRetirementSealsThePool(t *testing.T) {
 	// retained: the decline must come from the seal, and the caller must be
 	// able to see that the borrow installed nothing.
 	s.cfg.testOnly.scratchAdoptionBeforeBorrow = func() {
-		s.releaseRetirementScratch()
+		s.disposeRetirementScratch()
 	}
 	installed, _, err := s.adoptRetainedScratchFor(env, bindingID, consumerID)
 	if err != nil {
@@ -4220,7 +4220,7 @@ func TestChildTeardownReleasesTheSeededPool(t *testing.T) {
 		adopted:   map[string]string{},
 	})
 
-	teardownChildSession(context.Background(), s, retainChildScratch)
+	teardownChildSession(context.Background(), s)
 
 	// The teardown must have handed the seeded pool's leases back: a leaked
 	// flock pins the slot against every later cold restore of this delegate.

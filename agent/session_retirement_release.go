@@ -245,15 +245,13 @@ func (c *RetirementController) setReleaseFailure() {
 // resident child runtime and settles its scratch under the handoff disposition:
 // leases are released, directories and durable records are kept.
 func (s *Session) releaseChildRuntimeForRetirement(ctx context.Context) error {
-	return teardownChildSessionWithPolicy(ctx, s, retainChildScratch, releaseRetirement)
+	return teardownChildSessionWithPolicy(ctx, s, releaseRetirement)
 }
 
-// releaseRetirementScratch releases the live scratch leases this session's
-// environments hold (current, parked and abandoned) plus the ones the retained
-// pool reacquired, keeping every directory and the manifest/pin records so the
-// session can be restored at its original paths. It never writes the Released
-// tombstone and never removes a durable pin.
-func (s *Session) releaseRetirementScratch() {
+// disposeRetirementScratch removes the scratch this session's parked and
+// abandoned environments own. The current environment's scratch is removed at
+// the end of close (disposeOwnedCurrentScratch), after MCP servers shut down.
+func (s *Session) disposeRetirementScratch() {
 	// Seal before the detach, exactly like the terminal and child-teardown
 	// paths: the retired session is never resumed in-process, and the
 	// retirement consumes closeOnce — the terminal release that would sweep a
@@ -262,28 +260,13 @@ func (s *Session) releaseRetirementScratch() {
 	// ever release, holding every retained directory's lease for the daemon's
 	// life (round 28).
 	s.sealRetainedScratch()
-	s.mu.Lock()
-	current := s.env
-	parentShared := s.parentSharedEnv
-	abandoned := append([]*execenv.LocalExecutionEnvironment(nil), s.abandonedEnvs...)
-	s.mu.Unlock()
-	// The current environment belongs to this session except when it is a child
-	// still holding its live parent's own object (parentSharedEnv); releasing
-	// that lease here would take the scratch off an environment the parent is
-	// still working in. A root and a child on an environment built for it have
-	// parentSharedEnv nil or distinct, so this guard skips nothing for them.
-	if local, ok := current.(*execenv.LocalExecutionEnvironment); ok && !sameEnvironment(current, parentShared) {
-		local.RetainSessionScratch()
-	}
 	// The parked environment is the parent's own for a child that started on it
 	// and then entered a worktree; ownedParkedWorktreeEnvironment names the
 	// parked object this session owns and returns nil for that shared one.
 	if parked, ok := s.ownedParkedWorktreeEnvironment().(*execenv.LocalExecutionEnvironment); ok {
-		parked.RetainSessionScratch()
+		_ = parked.DisposeSessionScratch()
 	}
-	for _, env := range abandoned {
-		env.RetainSessionScratch()
-	}
+	s.disposeAbandonedEnvironmentScratch()
 	s.detachRetainedScratch()
 	if hook := s.cfg.testOnly.scratchRetirementAfterDetach; hook != nil {
 		hook()

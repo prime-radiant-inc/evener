@@ -154,8 +154,8 @@ func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment, rec
 	s.mu.Lock()
 	if s.closing {
 		s.mu.Unlock()
-		// Roll back exactly what step 0 moved: the session's own scratch, whose
-		// directory is kept for the handoff its close would have made.
+		// Roll back exactly what step 0 moved: the session's own scratch, which
+		// now sits on next, where the close will never reach it, so it goes here.
 		//
 		// A swap exempt from the move has no adopted lease to release, and what
 		// it must do instead depends on what next is. On a shared child's exit
@@ -167,10 +167,7 @@ func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment, rec
 		// reference. It goes with the clone, the decision every other discarded
 		// clone's scratch takes (the re-entry probes, the worktree control env,
 		// a spawn that failed before adoption).
-		switch {
-		case moved:
-			next.RetainSessionScratch()
-		case shared != nil && !sameEnvironment(shared, next):
+		if moved || (shared != nil && !sameEnvironment(shared, next)) {
 			_ = next.DisposeSessionScratch()
 		}
 		return errSwapWhileClosing

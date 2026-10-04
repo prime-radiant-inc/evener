@@ -218,7 +218,7 @@ func TestRetirementScratchSealDeclinesInFlightRefreshSeed(t *testing.T) {
 	retirementDone := make(chan struct{})
 	go func() {
 		defer close(retirementDone)
-		s.releaseRetirementScratch()
+		s.disposeRetirementScratch()
 	}()
 	<-detached
 	// The retirement detach has swept the pointer and nothing will ever run

@@ -57,11 +57,8 @@ func TestWorktreeSwap_ScratchFollowsTheSessionThroughExitAfterReentry(t *testing
 
 	sess.Close()
 
-	if _, err := os.Stat(scratch); err != nil {
-		t.Errorf("session close removed the scratch %s, want it retained for the handoff: %v", scratch, err)
-	}
-	if scratchLeaseHeld(t, scratch) {
-		t.Errorf("the scratch %s lease is still held after the session closed", scratch)
+	if _, err := os.Lstat(scratch); !os.IsNotExist(err) {
+		t.Errorf("close left the scratch %s: %v", scratch, err)
 	}
 }
 
@@ -107,11 +104,8 @@ func TestWorktreeSwap_ScratchFollowsTheSessionThroughEnterExitEnter(t *testing.T
 
 	r.s.Close()
 
-	if _, err := os.Stat(scratch); err != nil {
-		t.Errorf("session close removed the scratch %s, want it retained for the handoff: %v", scratch, err)
-	}
-	if scratchLeaseHeld(t, scratch) {
-		t.Errorf("the scratch %s lease is still held after the session closed", scratch)
+	if _, err := os.Lstat(scratch); !os.IsNotExist(err) {
+		t.Errorf("close left the scratch %s: %v", scratch, err)
 	}
 }
 
@@ -164,13 +158,16 @@ func TestWorktreeSwap_ExitKeepsTheScratchAChildMintedOnTheSharedEnvironment(t *t
 
 	r.s.Close()
 
-	for name, dir := range map[string]string{"launch": first, "child": second} {
-		if _, err := os.Stat(dir); err != nil {
-			t.Errorf("session close removed the %s scratch %s, want it retained for the handoff: %v", name, dir, err)
-		}
-		if scratchLeaseHeld(t, dir) {
-			t.Errorf("the %s scratch %s lease is still held after the session closed", name, dir)
-		}
+	// The exit handed the session's own scratch back to an environment that
+	// already owned one, so AdoptSessionScratch released its lease and kept the
+	// directory for anything still using it; the sweep reclaims it later.
+	if _, err := os.Stat(first); err != nil {
+		t.Errorf("the scratch the exit released (%s) is gone, want it left for the sweep: %v", first, err)
+	} else if scratchLeaseHeld(t, first) {
+		t.Errorf("the scratch the exit released (%s) still has its lease held", first)
+	}
+	if _, err := os.Lstat(second); !os.IsNotExist(err) {
+		t.Errorf("close left the shared environment's scratch %s: %v", second, err)
 	}
 }
 
@@ -181,7 +178,7 @@ func TestWorktreeSwap_ExitKeepsTheScratchAChildMintedOnTheSharedEnvironment(t *t
 // current clone only, so the parked environment's scratch has to be retained
 // at the parent's close — without a second process-table cleanup, since the
 // parked environment shares the table the current clone's Cleanup just reaped.
-func TestParentCloseWhileEnteredRetainsTheParkedEnvironmentScratch(t *testing.T) {
+func TestParentCloseWhileEnteredRemovesTheParkedEnvironmentScratch(t *testing.T) {
 	sr := newScriptedLaneRepo(t)
 	r := sr.wt()
 	parent := r.s
@@ -233,11 +230,8 @@ func TestParentCloseWhileEnteredRetainsTheParkedEnvironmentScratch(t *testing.T)
 		t.Errorf("shared-env child state after parent close = %q, want %q", got, SessionClosed)
 	}
 	for name, dir := range map[string]string{"parked": parked, "current": current} {
-		if _, err := os.Stat(dir); err != nil {
-			t.Errorf("parent close removed the %s environment's scratch %s, want it retained for the handoff: %v", name, dir, err)
-		}
-		if scratchLeaseHeld(t, dir) {
-			t.Errorf("the %s environment's scratch %s lease is still held after the parent closed", name, dir)
+		if _, err := os.Lstat(dir); !os.IsNotExist(err) {
+			t.Errorf("parent close left the %s environment's scratch %s: %v", name, dir, err)
 		}
 	}
 	if len(cleaned) != 1 || cleaned[0] != execenv.ExecutionEnvironment(entered) {
@@ -344,11 +338,8 @@ func TestWorktreeSwap_CloseDuringTheSwapLeavesNoOwnerlessLease(t *testing.T) {
 	if got := currentLocalEnv(t, r.s); got != launch {
 		t.Errorf("the session installed %p during its close, want the launch environment %p kept", got, launch)
 	}
-	if _, statErr := os.Stat(scratch); statErr != nil {
-		t.Errorf("the scratch %s was removed, want it retained for the handoff: %v", scratch, statErr)
-	}
-	if scratchLeaseHeld(t, scratch) {
-		t.Errorf("the scratch %s lease is still held after the close: no environment the session closes owns it", scratch)
+	if _, statErr := os.Lstat(scratch); !os.IsNotExist(statErr) {
+		t.Errorf("close left the scratch %s: %v", scratch, statErr)
 	}
 }
 
@@ -372,7 +363,7 @@ func TestWorktreeSwap_CloseDuringTheSwapLeavesNoOwnerlessLease(t *testing.T) {
 // blocked on the close cannot release it. Only the close budget breaks the tie,
 // thirty seconds later and with a fence warning that means the opposite of what
 // it says here. The assertions below pin both.
-func TestWorktreeSwap_CloseAfterTheEnterRetainsTheParkedEnvironmentScratch(t *testing.T) {
+func TestWorktreeSwap_CloseAfterTheEnterRemovesTheParkedEnvironmentScratch(t *testing.T) {
 	started := time.Now()
 	sr := newScriptedLaneRepo(t)
 	r := sr.wt()
@@ -430,11 +421,8 @@ func TestWorktreeSwap_CloseAfterTheEnterRetainsTheParkedEnvironmentScratch(t *te
 	t.Cleanup(func() { _ = os.RemoveAll(second) })
 
 	for name, dir := range map[string]string{"session": first, "parked environment": second} {
-		if _, statErr := os.Stat(dir); statErr != nil {
-			t.Errorf("the %s scratch %s was removed, want it retained for the handoff: %v", name, dir, statErr)
-		}
-		if scratchLeaseHeld(t, dir) {
-			t.Errorf("the %s scratch %s lease is still held after the close", name, dir)
+		if _, statErr := os.Lstat(dir); !os.IsNotExist(statErr) {
+			t.Errorf("close left the %s scratch %s: %v", name, dir, statErr)
 		}
 	}
 	// The close drained its fence join instead of giving up on it. Both of
@@ -494,11 +482,8 @@ func assertMidMoveOutcome(t *testing.T, s *Session, source *execenv.LocalExecuti
 	s.Close()
 
 	for name, dir := range map[string]string{"session": carried, "mid-move": midMove} {
-		if _, err := os.Stat(dir); err != nil {
-			t.Errorf("close removed the %s scratch %s, want it retained for the handoff: %v", name, dir, err)
-		}
-		if scratchLeaseHeld(t, dir) {
-			t.Errorf("the %s scratch %s lease is still held after the close", name, dir)
+		if _, err := os.Lstat(dir); !os.IsNotExist(err) {
+			t.Errorf("close left the %s scratch %s: %v", name, dir, err)
 		}
 	}
 }
@@ -731,7 +716,7 @@ func enterLaneWithSharedChild(t *testing.T, r *wtRepo, name string) *execenv.Loc
 // own teardown skips, because the environment is not the child's, and one the
 // current clone's Cleanup never reaches. Nothing but the parent's close can
 // release it, so the parent's close has to.
-func TestParentCloseRetainsScratchOnAnEnvironmentASecondEnterAbandoned(t *testing.T) {
+func TestParentCloseRemovesScratchOnAnEnvironmentASecondEnterAbandoned(t *testing.T) {
 	sr := newScriptedLaneRepo(t)
 	r := sr.wt()
 	launch := currentLocalEnv(t, r.s)
@@ -764,11 +749,8 @@ func TestParentCloseRetainsScratchOnAnEnvironmentASecondEnterAbandoned(t *testin
 
 	r.s.Close()
 
-	if _, err := os.Stat(abandoned); err != nil {
-		t.Errorf("close removed the abandoned environment's scratch %s, want it retained for the handoff: %v", abandoned, err)
-	}
-	if scratchLeaseHeld(t, abandoned) {
-		t.Errorf("the abandoned environment's scratch %s lease is still held after the close; nothing else will ever release it", abandoned)
+	if _, err := os.Lstat(abandoned); !os.IsNotExist(err) {
+		t.Errorf("close left the scratch %s: %v", abandoned, err)
 	}
 }
 
@@ -777,7 +759,7 @@ func TestParentCloseRetainsScratchOnAnEnvironmentASecondEnterAbandoned(t *testin
 // launch environment it swapped back ONTO is not: it is current, close cleans
 // it, and recording it as abandoned would have close retain the very
 // environment it is about to tear down.
-func TestParentCloseAfterExitRetainsEachAbandonedEnvironmentAndNotTheLaunchOne(t *testing.T) {
+func TestParentCloseAfterExitRemovesEachAbandonedEnvironmentAndNotTheLaunchOne(t *testing.T) {
 	sr := newScriptedLaneRepo(t)
 	r := sr.wt()
 	launch := currentLocalEnv(t, r.s)
@@ -822,11 +804,8 @@ func TestParentCloseAfterExitRetainsEachAbandonedEnvironmentAndNotTheLaunchOne(t
 	r.s.Close()
 
 	for name, dir := range scratches {
-		if _, err := os.Stat(dir); err != nil {
-			t.Errorf("close removed %s's scratch %s, want it retained: %v", name, dir, err)
-		}
-		if scratchLeaseHeld(t, dir) {
-			t.Errorf("%s's scratch %s lease is still held after the close", name, dir)
+		if _, err := os.Lstat(dir); !os.IsNotExist(err) {
+			t.Errorf("close left the %s scratch %s: %v", name, dir, err)
 		}
 	}
 }
@@ -899,7 +878,7 @@ func TestWorktreeSwap_CloseDuringASharedChildExitKeepsTheParentScratchLease(t *t
 	child.cfg.testOnly.swapEnvAfterAdopt = func(context.Context) {
 		go func() {
 			defer close(closeDone)
-			teardownChildSession(context.Background(), child, retainChildScratch)
+			teardownChildSession(context.Background(), child)
 		}()
 		<-closeBegun
 	}
@@ -911,11 +890,8 @@ func TestWorktreeSwap_CloseDuringASharedChildExitKeepsTheParentScratchLease(t *t
 		t.Error("the exit succeeded while the child's own close began under it, want a refusal")
 	}
 	assertParentScratchUntouched(t, "the exit refused under the child's close", parentScratch)
-	if _, err := os.Stat(cloneScratch); err != nil {
-		t.Errorf("the child's teardown removed its entered clone's scratch %s, want it retained for the handoff: %v", cloneScratch, err)
-	}
-	if scratchLeaseHeld(t, cloneScratch) {
-		t.Errorf("the entered clone's scratch %s lease is still held after the child's teardown", cloneScratch)
+	if _, err := os.Lstat(cloneScratch); !os.IsNotExist(err) {
+		t.Errorf("close left the scratch %s: %v", cloneScratch, err)
 	}
 }
 
@@ -993,7 +969,7 @@ func TestWorktreeSwap_CloseDuringASharedChildEnterDropsTheRefreshScratch(t *test
 	if !scratchLeaseHeld(t, controlScratch) {
 		t.Fatal("the scratch the enter's refresh minted holds no lease, so the racing arm below would prove nothing")
 	}
-	teardownChildSession(context.Background(), control, retainChildScratch)
+	teardownChildSession(context.Background(), control)
 	releasePreparedTreeSlot(controlPrepared)
 
 	before := scratchDirsIn(t, isolated)
@@ -1004,7 +980,7 @@ func TestWorktreeSwap_CloseDuringASharedChildEnterDropsTheRefreshScratch(t *test
 	child.cfg.testOnly.swapEnvAfterAdopt = func(context.Context) {
 		go func() {
 			defer close(closeDone)
-			teardownChildSession(context.Background(), child, retainChildScratch)
+			teardownChildSession(context.Background(), child)
 		}()
 		<-closeBegun
 	}
