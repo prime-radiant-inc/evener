@@ -462,9 +462,8 @@ export function ConversationScreen({
 	// watches it land, move and land again as rows measure.
 	const [openingLanded, setOpeningLanded] = useState(false);
 	const openingLandedNow = useRef(false);
-	// This render's rows, for what runs outside a render (the cap's timer and
-	// the list's cells), and the key of the list's last row, a ghost when one
-	// waits.
+	// This render's rows, for the cap's timer, and the key of the list's last
+	// row, a ghost when one waits, for the list's cells.
 	const rowsNow = useRef<readonly TimelineRow[]>([]);
 	const listEndKey = useRef<string | null>(null);
 	// A fresh cap, once the opening turns to the live end at the first.
@@ -1401,11 +1400,8 @@ export function ConversationScreen({
 		const last = listRows.at(-1);
 		listEndKey.current = last === undefined ? null : sessionListKey(last);
 	});
-	function lastRowKey() {
-		return listEndKey.current;
-	}
 	function lastRowMeasured() {
-		const key = lastRowKey();
+		const key = listEndKey.current;
 		return key !== null && readerMeasurements.current.has(key);
 	}
 	// Follows the live end while opening: pins the list there, and lands the
@@ -2724,7 +2720,7 @@ export function ConversationScreen({
 							});
 							// Opening at the live end lands once its last row has
 							// measured: pin the end, then show the list.
-							if (!openingLandedNow.current && key === lastRowKey() && follow.state.current.following) {
+							if (!openingLandedNow.current && key === listEndKey.current && follow.state.current.following) {
 								pinOpeningToEnd();
 							}
 							restoreAfterLayout();
