@@ -1,9 +1,10 @@
 // The status tray's one line while the agent works (spec 8.3), and the counts
 // behind its pulse meter (spec 16.4). Built from what the session already
-// holds: the running turn's items, the running subagents, the model's retry
-// state, and lastFrameAt, which the package's reducer restamps on every
-// streamed frame (appwire-client/typescript/model.ts). The running-subagent
-// count is the hub's, taken as the Board's row takes it (spec 13.1).
+// holds: the running turn's items, the model's retry state, and lastFrameAt,
+// which the package's reducer restamps on every streamed frame
+// (appwire-client/typescript/model.ts). The running-subagent count is the
+// hub's, taken as the Board's row takes it (spec 13.1), with the session's own
+// delegates as the last resort.
 import {
 	type ItemModel,
 	isActiveItem,
