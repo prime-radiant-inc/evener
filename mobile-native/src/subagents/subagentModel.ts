@@ -22,6 +22,7 @@ import {
 	plainQuoteLine,
 	shellJobState,
 } from "@evener/appwire-client";
+import { waitingOnSubagents } from "../board/attention";
 import { compactDuration, spokenDuration } from "../session/format";
 import type { SubagentTally } from "../session/sessionState";
 
@@ -340,7 +341,7 @@ export function subagentWhy(row: SubagentRow, now: number): SubagentWhy {
 	const waiting = (delegate.child?.entries ?? []).filter(
 		(entry) => entry.kind === "delegate" && delegateHasActiveWork(entry.delegate),
 	).length;
-	if (waiting > 0) return { text: `Waiting on ${waiting} ${waiting === 1 ? "subagent" : "subagents"}` };
+	if (waiting > 0) return { text: waitingOnSubagents(waiting) };
 	const quiet = delegateTiming(delegate, now).quietForMs;
 	if (quiet !== undefined && quiet >= QUIET_AFTER_MS) return { text: `Quiet ${compactDuration(quiet)}` };
 	return { text: "Working" };
