@@ -87,10 +87,7 @@ func stableSupervisionFailureSnapshot(root *Session, sub *subagent, adapter *fak
 	}
 	sess := sub.sess
 	if sess.attentionMu.TryLock() {
-		ids := make([]string, 0, len(sess.delegateAttentionArmIDs))
-		for id := range sess.delegateAttentionArmIDs {
-			ids = append(ids, id)
-		}
+		ids := keys(sess.delegateAttentionArmIDs)
 		sort.Strings(ids)
 		snapshot["arm_retry_ids"] = ids
 		sess.attentionMu.Unlock()
@@ -170,7 +167,7 @@ func stableSupervisionFailureSnapshot(root *Session, sub *subagent, adapter *fak
 	buf := make([]byte, 1<<20)
 	n := runtime.Stack(buf, true)
 	stacks := []string{}
-	for _, stack := range strings.Split(string(buf[:n]), "\n\n") {
+	for stack := range strings.SplitSeq(string(buf[:n]), "\n\n") {
 		if strings.Contains(stack, "primeradiant.com/evener/agent.") {
 			stacks = append(stacks, stack)
 		}
@@ -202,10 +199,5 @@ func stableSupervisionFailureSnapshot(root *Session, sub *subagent, adapter *fak
 }
 
 func supervisionChannelClosed(ch <-chan struct{}) bool {
-	select {
-	case <-ch:
-		return true
-	default:
-		return false
-	}
+	return channelClosed(ch)
 }

@@ -69,6 +69,7 @@ export async function createPrivateEditorialPreviewFixture(sourceFrontend) {
   }
 
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "editorial-private-fixture-")));
+  const cleanup = () => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   const privateRepo = path.join(root, "private-repo");
   const frontend = path.join(privateRepo, "cmd/evener-hub/frontend");
   const appwirePackage = path.join(privateRepo, "appwire-client/typescript");
@@ -83,7 +84,7 @@ export async function createPrivateEditorialPreviewFixture(sourceFrontend) {
     await copyTree(sourceNodeModules, path.join(frontend, "node_modules"), { dependencyRoot: sourceNodeModules });
     await symlink(path.join(frontend, "node_modules"), path.join(sharedFrontend, "node_modules"));
   } catch (error) {
-    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    await cleanup();
     throw error;
   }
 
@@ -95,6 +96,6 @@ export async function createPrivateEditorialPreviewFixture(sourceFrontend) {
     sharedFrontend,
     sharedConfigFile: path.join(sharedFrontend, "scripts/editorial-preview.vite.config.mjs"),
     sourceNodeModules,
-    cleanup: () => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }),
+    cleanup,
   };
 }
