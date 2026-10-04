@@ -836,6 +836,14 @@ npm/network access or an existing compatible worktree install, so an
 unavailable setup is a reported prerequisite failure rather than a
 deterministic test pass.
 
+The production editorial-preview config still refuses a symlinked
+`node_modules`: its server boundary must not serve dependencies that concurrent
+lanes can write. Its Node isolation tests do not skip in a worktree that uses
+the lockfile-matched shared install. They copy the real frontend, AppWire
+sources, and dependency tree into a private repository-shaped fixture, then run
+the config, HTTP routes, and wrapper there. Never run `npm ci` through the
+shared symlink to make those tests pass.
+
 The frontend unit gate sizes Vitest from the machine's spare capacity through
 `scripts/lib/load-aware-workers.sh`: worker count is the CPUs the process may
 actually use (affinity- and cgroup-quota-aware, not the host's advertised

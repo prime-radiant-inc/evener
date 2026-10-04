@@ -1,29 +1,101 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import os from "node:os";
+import { createRequire } from "node:module";
+import { lstat, mkdir, mkdtemp, opendir, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
-import test from "node:test";
-import { fileURLToPath } from "node:url";
-import { createServer, resolveConfig } from "vite";
+import test, { after } from "node:test";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { findAvailablePort, parseViteReadyAnnouncement } from "./browserGuardProcess.mjs";
-import { isSharedNodeModules } from "./editorial-preview-install.mjs";
+import { createPrivateEditorialPreviewFixture } from "./editorial-preview-private-fixture.mjs";
 
-const frontend = fileURLToPath(new URL("../", import.meta.url));
-const appwirePackage = fileURLToPath(new URL("../../../../appwire-client/typescript/", import.meta.url));
-const configFile = fileURLToPath(new URL("./editorial-preview.vite.config.mjs", import.meta.url));
-// A fleet worktree shares node_modules through a symlink; the preview's
-// isolation contract (fs.allow pinned to the checkout, private dep cache)
-// cannot hold there, so the config refuses to load and its tests skip with
-// this reason. CI's fresh npm ci checkout is where they actually run.
-const sharedInstall = isSharedNodeModules(frontend);
-const skipIfSharedInstall = (t) =>
-  t.skip(
-    "fleet worktree shares node_modules with other lanes; the isolated preview requires its own npm ci install",
+const sourceFrontend = fileURLToPath(new URL("../", import.meta.url));
+const fixture = await createPrivateEditorialPreviewFixture(sourceFrontend);
+after(fixture.cleanup);
+const frontend = `${fixture.frontend}${path.sep}`;
+const appwirePackage = `${fixture.appwirePackage}${path.sep}`;
+const { configFile } = fixture;
+const fixtureRequire = createRequire(path.join(frontend, "package.json"));
+const { createServer, resolveConfig } = await import(pathToFileURL(fixtureRequire.resolve("vite")));
+let completedIsolationCases = 0;
+
+async function dependencySymlinks(root) {
+  const links = [];
+  async function walk(directory) {
+    const entries = await opendir(directory);
+    for await (const entry of entries) {
+      const entryPath = path.join(directory, entry.name);
+      if (entry.isDirectory()) await walk(entryPath);
+      else if (entry.isSymbolicLink()) links.push(entryPath);
+    }
+  }
+  await walk(root);
+  return links;
+}
+
+test("private editorial fixture canonicalizes a symlinked temporary parent", async () => {
+  const scratch = await mkdtemp(path.join(fixture.root, "symlinked-temp-parent-"));
+  const realTemp = path.join(scratch, "real-temp");
+  const aliasTemp = path.join(scratch, "alias-temp");
+  await mkdir(realTemp);
+  await symlink(realTemp, aliasTemp);
+  const originalTMPDIR = process.env.TMPDIR;
+  let nestedFixture;
+  try {
+    process.env.TMPDIR = aliasTemp;
+    nestedFixture = await createPrivateEditorialPreviewFixture(sourceFrontend);
+    assert.equal(nestedFixture.root, await realpath(nestedFixture.root));
+    assert.equal(nestedFixture.frontend, await realpath(nestedFixture.frontend));
+  } finally {
+    if (originalTMPDIR === undefined) delete process.env.TMPDIR;
+    else process.env.TMPDIR = originalTMPDIR;
+    await nestedFixture?.cleanup();
+    await rm(scratch, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  }
+});
+
+test("private editorial fixture owns lock-matching source, packages, and fonts", async () => {
+  const privateNodeModules = path.join(frontend, "node_modules");
+  assert.equal((await lstat(privateNodeModules)).isSymbolicLink(), false);
+  assert.deepEqual(await readFile(path.join(frontend, "package-lock.json")), await readFile(path.join(sourceFrontend, "package-lock.json")));
+
+  for (const relative of [
+    "vite/package.json",
+    "@ibm/plex-sans/fonts/complete/woff2/IBMPlexSans-Text.woff2",
+  ]) {
+    const source = path.join(fixture.sourceNodeModules, relative);
+    const copy = path.join(privateNodeModules, relative);
+    assert.deepEqual(await readFile(copy), await readFile(source), relative);
+    const [sourceStat, copyStat] = await Promise.all([stat(source), stat(copy)]);
+    assert.notDeepEqual([copyStat.dev, copyStat.ino], [sourceStat.dev, sourceStat.ino], relative);
+  }
+  const sourceConfig = path.join(sourceFrontend, "scripts/editorial-preview.vite.config.mjs");
+  assert.deepEqual(await readFile(configFile), await readFile(sourceConfig));
+  const [sourceConfigStat, configStat] = await Promise.all([stat(sourceConfig), stat(configFile)]);
+  assert.notDeepEqual([configStat.dev, configStat.ino], [sourceConfigStat.dev, sourceConfigStat.ino]);
+
+  for (const link of await dependencySymlinks(privateNodeModules)) {
+    assert(path.relative(privateNodeModules, link).split(path.sep).includes(".bin"), link);
+    const target = await realpath(link);
+    const relativeTarget = path.relative(privateNodeModules, target);
+    assert(relativeTarget === "" || (!relativeTarget.startsWith(`..${path.sep}`) && relativeTarget !== ".." && !path.isAbsolute(relativeTarget)), `${link} -> ${target}`);
+  }
+
+  const privateFont = path.join(privateNodeModules, "@ibm/plex-sans/fonts/complete/woff2/IBMPlexSans-Text.woff2");
+  const sourceFont = path.join(fixture.sourceNodeModules, "@ibm/plex-sans/fonts/complete/woff2/IBMPlexSans-Text.woff2");
+  const [privateBytes, sourceBytes] = await Promise.all([readFile(privateFont), readFile(sourceFont)]);
+  await writeFile(privateFont, Buffer.concat([privateBytes, Buffer.from("private-write-proof")]));
+  assert.deepEqual(await readFile(sourceFont), sourceBytes);
+  await writeFile(privateFont, privateBytes);
+});
+
+test("production editorial config still refuses a shared writable install", async () => {
+  await assert.rejects(
+    resolveConfig({ root: fixture.sharedFrontend, configFile: fixture.sharedConfigFile, logLevel: "silent" }, "serve"),
+    { message: "Editorial preview requires its own npm ci, not a shared writable install" },
   );
+});
 
-test("editorial preview removes RESOLVED inherited proxy and restricts filesystem", async (t) => {
-  if (sharedInstall) return skipIfSharedInstall(t);
+test("editorial preview removes RESOLVED inherited proxy and restricts filesystem", async () => {
   const config = await resolveConfig({ root: frontend, configFile }, "serve");
   assert.equal(config.server.proxy, undefined);
   assert.equal(config.server.host, "0.0.0.0");
@@ -35,15 +107,16 @@ test("editorial preview removes RESOLVED inherited proxy and restricts filesyste
   // to serve; everything else stays denied, which the sentinel test below proves.
   assert.deepEqual(config.server.fs.allow, [frontend, appwirePackage]);
   assert.equal(config.server.fs.strict, true);
+  assert.equal(config.cacheDir, path.join(frontend, ".vite-cache"));
+  completedIsolationCases += 1;
 });
 
-test("normal app-route reloads remain fixture-backed; backend and outside files denied", async (t) => {
-  if (sharedInstall) return skipIfSharedInstall(t);
+test("normal app-route reloads remain fixture-backed; backend and outside files denied", async () => {
   const phase = (message) => {
     if (process.env.EDITORIAL_ISOLATION_TRACE) console.error(`[editorial-isolation] ${message}`);
   };
   phase("scratch:start");
-  const scratch = await mkdtemp(path.join(os.tmpdir(), "editorial-isolation-"));
+  const scratch = await mkdtemp(path.join(fixture.root, "editorial-isolation-"));
   const sentinel = path.join(scratch, "not-served.txt");
   await writeFile(sentinel, "private sentinel — never serve");
   phase("port:start");
@@ -112,10 +185,10 @@ test("normal app-route reloads remain fixture-backed; backend and outside files 
     await rm(scratch, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     phase("scratch:removed");
   }
+  completedIsolationCases += 1;
 });
 
-test("browserguard wrapper serves a passed fixture config on its announced port", async (t) => {
-  if (sharedInstall) return skipIfSharedInstall(t);
+test("browserguard wrapper serves a passed fixture config on its announced port", async () => {
   // The editorial-preview runner goes through startBrowserGuard, which spawns
   // the Node wrapper rather than a `vite` binary, so the fixture config must
   // reach the wrapper as an argument (the runner's old spawn-argument rewrite
@@ -126,10 +199,15 @@ test("browserguard wrapper serves a passed fixture config on its announced port"
     { cwd: frontend, stdio: ["ignore", "pipe", "pipe"] },
   );
   let stdout = "";
+  let stderr = "";
+  child.stderr.on("data", (chunk) => {
+    stderr += chunk.toString();
+  });
+  const exited = new Promise((resolve) => child.once("exit", (code, signal) => resolve({ code, signal })));
   const announced = new Promise((resolve, reject) => {
     child.once("error", reject);
     child.once("exit", (code, signal) =>
-      reject(new Error(`wrapper exited before readiness (code ${code ?? "unknown"}, signal ${signal ?? "none"})`)),
+      reject(new Error(`wrapper exited before readiness (code ${code ?? "unknown"}, signal ${signal ?? "none"}): ${stderr}`)),
     );
     child.stdout.on("data", (chunk) => {
       stdout += chunk.toString();
@@ -155,12 +233,26 @@ test("browserguard wrapper serves a passed fixture config on its announced port"
   } finally {
     child.stdout.removeAllListeners("data");
     child.kill("SIGTERM");
-    const exited = new Promise((resolve) => child.once("exit", resolve));
-    if ((await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, 5000))])) === undefined) {
+    const timeout = Symbol("timeout");
+    let timeoutID;
+    const timeoutReached = new Promise((resolve) => {
+      timeoutID = setTimeout(resolve, 5000, timeout);
+    });
+    if ((await Promise.race([exited, timeoutReached])) === timeout) {
       child.kill("SIGKILL");
       await exited;
     }
+    clearTimeout(timeoutID);
   }
+  assert(child.exitCode !== null || child.signalCode !== null, "browserguard wrapper child did not exit");
+  const cacheDir = await realpath(path.join(frontend, ".vite-cache"));
+  const relativeCache = path.relative(fixture.root, cacheDir);
+  assert(!relativeCache.startsWith(`..${path.sep}`) && relativeCache !== ".." && !path.isAbsolute(relativeCache), cacheDir);
+  completedIsolationCases += 1;
+});
+
+test("all editorial isolation cases complete without shared-install skips", () => {
+  assert.equal(completedIsolationCases, 3);
 });
 
 test("browserguard wrapper rejects a config path that escapes the frontend directory", async () => {
