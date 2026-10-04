@@ -96,14 +96,15 @@ function savingCode(markdown: string, code: string[]): string {
 	const lines = markdown.split("\n");
 	const out: string[] = [];
 	for (let i = 0; i < lines.length; i++) {
-		const fence = FENCE_RE.exec(lines[i] ?? "")?.[1];
+		const line = lines[i] ?? "";
+		const fence = FENCE_RE.exec(line)?.[1];
 		if (fence) {
 			const closing = new RegExp(`^ {0,3}${fence[0]}{${fence.length},}[ \\t\\r]*$`);
 			let end = i + 1;
 			while (end < lines.length && !closing.test(lines[end] ?? "")) end++;
 			out.push(save(lines.slice(i, end + 1).join("\n")));
 			i = end;
-		} else out.push((lines[i] ?? "").replace(CODE_SPAN_RE, save));
+		} else out.push(line.replace(CODE_SPAN_RE, save));
 	}
 	return out.join("\n");
 }
