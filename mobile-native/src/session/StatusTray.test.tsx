@@ -15,6 +15,10 @@ vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 
 const light = palettes.light;
 
+function rootRead(runningSubagents: number) {
+	return { ref: "local:root", minutes: [0, 0, 0, 0, 0, 0, 0], runningSubagents };
+}
+
 function tray(overrides: Partial<Parameters<typeof StatusTray>[0]> = {}) {
 	const props = {
 		line: { text: "Running go test ./agent/... · 42s", attention: false },
@@ -163,7 +167,7 @@ describe("LiveStatusTray", () => {
 	it("polls the hub's activity for its own session only while the agent works, and names its count", async () => {
 		const client = new FakeClient("ready");
 		client.on("evener/activity/read", () => ({
-			sessions: [{ ref: "local:root", minutes: [0, 0, 0, 0, 0, 0, 0], runningSubagents: 3 }],
+			sessions: [rootRead(3)],
 		}));
 		const tree = render(live(session(true, Date.now()), new FrameCounter(), client));
 		await act(async () => {});
@@ -184,7 +188,7 @@ describe("LiveStatusTray", () => {
 		const tree = render(live(session(true, Date.now()), new FrameCounter(), client));
 		await act(async () => {});
 		await act(async () => {
-			reads[0]?.resolve({ sessions: [{ ref: "local:root", minutes: [0, 0, 0, 0, 0, 0, 0], runningSubagents: 3 }] });
+			reads[0]?.resolve({ sessions: [rootRead(3)] });
 		});
 		expect(renderedText(tree)).toContain("Waiting on 3 subagents");
 
@@ -194,7 +198,7 @@ describe("LiveStatusTray", () => {
 		expect(renderedText(tree)).not.toContain("Waiting on 3 subagents");
 
 		await act(async () => {
-			reads[1]?.resolve({ sessions: [{ ref: "local:root", minutes: [0, 0, 0, 0, 0, 0, 0], runningSubagents: 5 }] });
+			reads[1]?.resolve({ sessions: [rootRead(5)] });
 		});
 		expect(renderedText(tree)).toContain("Waiting on 5 subagents");
 	});

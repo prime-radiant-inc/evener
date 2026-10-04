@@ -2294,6 +2294,7 @@ const screenOverBoard = {
 		{ key: "conversation", name: "Conversation" },
 	],
 };
+const boardAlone = { index: 0, routes: [{ key: "Sessions", name: "Sessions" }] };
 
 it("polls activity while the Board is in front and connected, a sheet over it included, and stops otherwise", async () => {
 	const id = hubId();
@@ -2317,7 +2318,7 @@ it("polls activity while the Board is in front and connected, a sheet over it in
 	await advance(ACTIVITY_POLL_MS * 3);
 	expect(fake.activityReads).toHaveLength(3);
 
-	harness.stack = { index: 0, routes: [{ key: "Sessions", name: "Sessions" }] };
+	harness.stack = boardAlone;
 	setFocused(true);
 	expect(fake.activityReads).toHaveLength(4);
 
@@ -2579,7 +2580,7 @@ it("keeps a fresh read through leaving front, so coming back shows each row's ac
 	// return failing: the read from before still shows, with no round trip of
 	// fallback lines.
 	shape.activity = null;
-	harness.stack = { index: 0, routes: [{ key: "Sessions", name: "Sessions" }] };
+	harness.stack = boardAlone;
 	rerender(tree, nav);
 	await settle();
 	expect(fake.activityReads).toHaveLength(2);
