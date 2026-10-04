@@ -12,10 +12,11 @@ const noRevision = () => 0;
  * revision changes whenever the poll's report does: a read lands, or the hub
  * turns out to predate S5.
  *
- * The underlying client survives a reconnect (hubConnection.ts), so a poll
- * that stops on disconnect still holds its last read, and a hub that reports
- * ready but has stopped delivering reads leaves the same stale data behind
- * without ever disconnecting at all - reading either as current would let a
+ * Stopping (idle, out of front, disconnected) forgets the poll's read
+ * (ActivityPoll.stop), but the render that sees `connected` turn false comes
+ * before the effect that stops it, and a hub that reports ready but has
+ * stopped delivering reads leaves stale data behind without ever
+ * disconnecting at all - reading either as current would let a
  * read merely aging past isFreshRead's threshold read as "stuck", a false
  * alarm about the connection or the hub rather than the session (Jesse's
  * ruling). Gating the RETURNED reading on `connected` AND freshness, and
