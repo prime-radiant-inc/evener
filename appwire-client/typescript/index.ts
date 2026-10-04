@@ -54,6 +54,7 @@ export {
   watchName,
   watchRowID,
 } from "./activityRows";
+export { hashAnnotationText } from "./annotationFingerprint";
 export {
   APPROVAL_DECISION_EVENT_KIND,
   type ApprovalDecision,
@@ -233,7 +234,6 @@ export {
   displayedFingerprint,
   editCommentText,
   formatAnnotationReference,
-  hashAnnotationText,
   invalidateCommentCapture,
   selectCommentPassage,
   sourcePositions,
