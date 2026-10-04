@@ -16,6 +16,7 @@ import (
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/provenance"
+	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
@@ -717,6 +718,11 @@ func (s *Session) releaseRuntimeOnce(ctx context.Context, options closeOptions, 
 		// TMPDIR inside it, and bubblewrap refuses a missing bind source.
 		if cleanupEnv || retirement {
 			s.disposeOwnedCurrentScratch()
+			// A daemon runs for weeks; sweeping as each root ends reclaims crash
+			// leftovers and detached commands' finished TMPDIRs without a timer.
+			if s.cfg.spawn.parentSessionID == "" {
+				s.sweepStaleScratch()
+			}
 		}
 
 		if retirement {
@@ -827,6 +833,15 @@ func (s *Session) disposeParkedWorktreeEnvironmentScratch() {
 	s.mu.Unlock()
 	if parked != nil {
 		_ = parked.DisposeSessionScratch()
+	}
+}
+
+// sweepStaleScratch runs the crashed-scratch sweep for this session's workspace:
+// it removes scratch directories older than a day whose lease nobody holds.
+func (s *Session) sweepStaleScratch() {
+	root := execenv.SessionScratchWorkspaceRoot(s.currentEnv().WorkingDirectory())
+	if err := sandbox.SweepCrashedSessionScratch(root); err != nil {
+		s.emit(events.EventWarning, events.WarningData{Message: "scratch sweep incomplete: " + err.Error()})
 	}
 }
 

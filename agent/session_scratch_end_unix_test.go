@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/schema"
@@ -31,6 +32,26 @@ func TestRootCloseRemovesItsScratch(t *testing.T) {
 	root.Close()
 	if _, err := os.Lstat(scratch); !os.IsNotExist(err) {
 		t.Fatalf("root close left its scratch %s: %v", scratch, err)
+	}
+}
+
+// TestRootCloseSweepsOldScratch: a long-running daemon reclaims old scratch as
+// root sessions end, without waiting for a restart.
+func TestRootCloseSweepsOldScratch(t *testing.T) {
+	base := t.TempDir()
+	t.Setenv("TMPDIR", base)
+	old := filepath.Join(base, "evener-sandbox-424242")
+	if err := os.Mkdir(old, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stamp := time.Now().Add(-48 * time.Hour)
+	if err := os.Chtimes(old, stamp, stamp); err != nil {
+		t.Fatal(err)
+	}
+	root := newQueuePersistTestSession(t, t.TempDir())
+	root.Close()
+	if _, err := os.Lstat(old); !os.IsNotExist(err) {
+		t.Fatalf("root close did not sweep %s: %v", old, err)
 	}
 }
 
