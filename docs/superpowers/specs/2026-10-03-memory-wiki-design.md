@@ -2,9 +2,10 @@
 
 Status: Jesse approved this revised specification on 2026-10-04, with `MEMORY.md`
 as the entry filename. It follows his choices of file-at-a-time wrappers and
-free-form content with a recommended format. Independent specification review
-is pending. The earlier batch, schema, receipt design, and implementation plan
-are superseded. Product implementation awaits the replacement plan's approval.
+free-form content with a recommended format, plus his session-wide memory opt-out.
+Independent specification review precedes replacement planning. The earlier
+batch, schema, receipt design, and implementation plan are superseded. Product
+implementation awaits the replacement plan's approval.
 
 ## Outcome
 
@@ -133,6 +134,25 @@ project-history deletion, compaction, daemon retirement, and worktree removal
 do not delete memory. A project reopened at the same canonical identity sees
 its surviving wiki. Local and remote runtimes use their own host's storage.
 
+### Per-session opt-out
+
+`--disable-memory` disables the wiki feature for one session, across both
+personal and project scopes. It is a session setting, not a host-wide default.
+Carry it through the shared launch/session configuration so CLI and daemon
+sessions honor the same choice. New sessions enable memory by default.
+
+When disabled, do not advertise or execute memory tools, add memory-use
+instructions, inject `MEMORY.md`, or read/write wiki storage for that session.
+Persist the choice through resume and compaction. An omitted flag on resume
+preserves it; passing the flag disables memory before resumed memory work.
+Delegates inherit the disabled state, including on restore, and cannot re-enable
+memory under a disabled parent. Ordinary tools and session notes still work.
+
+The switch leaves stored wiki files and other sessions untouched. It does not
+erase earlier conversation content or change general filesystem permissions.
+It controls the native memory feature, not access already granted through
+unrestricted file or shell tools. V1 needs no live-session toggle or new screen.
+
 ## Writes, errors, and forgetting
 
 Each operation changes one file. Page and index edits are separate writes and
@@ -174,8 +194,9 @@ flowchart LR
     W --> I
 ```
 
-The session supplies the current indexes; the model reads relevant pages and
-writes useful lessons. Later sessions and delegates receive the updated indexes.
+When memory is enabled, the session supplies the current indexes; the model
+reads relevant pages and writes useful lessons. Later enabled sessions and
+delegates receive the updated indexes.
 This happens in the session engine for CLI, TUI, browser, and native clients.
 No new wiki RPC, UI, or client-specific protocol is needed.
 
@@ -224,6 +245,10 @@ and no live requests in default tests. Required deterministic evidence:
 - **Scope and authority:** distinct projects, linked worktrees, history overrides,
   and real read-only delegates, including restore. Memory writes work while
   workspace writes and out-of-scope access remain denied. Parent ceilings hold.
+- **Disabled session:** real CLI/shared launch, resume, compaction, and delegate
+  restore preserve the setting. No memory tools, automatic context, or wiki I/O
+  occurs. Stored files and another enabled session remain usable; ordinary work
+  and session notes continue. Reject attempted dispatch to a disabled memory tool.
 - **Current context:** root/delegate startup, changed and unchanged indexes,
   truncation, empty/deleted indexes, resume, compaction, revoked scope, and
   unavailable-then-recovered storage. Stored text cannot create trusted framing.
