@@ -170,7 +170,7 @@ test ! -e "$run_xctestrun"
 cp "$xctestrun" "$run_xctestrun"
 cmp "$xctestrun" "$artifacts/original.xctestrun"
 case "$phase" in
-  layout|restore) test_name=testLayoutReceipt;;
+  layout|restore) test_names=(testLayoutReceipt);;
   long-press|qualify)
     /usr/bin/python3 - "$run_xctestrun" "$checkout/mobile-native/e2e/measured-geometry.json" <<'PY'
 import json, math, plistlib, sys
@@ -178,7 +178,8 @@ p, receipt = sys.argv[1:]
 m = json.load(open(receipt))
 env = {}
 for name, point in m.items():
-    assert name in ('FIRST', 'HANDLE', 'SECOND')
+    assert name in ('FIRST', 'HANDLE', 'SECOND', 'TABLE', 'CODE', 'FIRST_TO_CODE',
+                    'TABLE_HANDLE', 'CODE_HANDLE', 'CODE_TO_FIRST', 'TABLE_TO_CODE', 'CODE_TO_TABLE')
     for axis in ('x', 'y'):
         value = point[axis]; assert isinstance(value, (int, float)) and math.isfinite(value) and value >= 0
         env[f'ANNOTATION_{name}_{axis.upper()}'] = str(value)
@@ -187,14 +188,22 @@ assert run['__xctestrun_metadata__']['FormatVersion'] == 1
 run['DocumentAnnotationsUITests'].setdefault('EnvironmentVariables', {}).update(env)
 with open(p, 'wb') as f: plistlib.dump(run, f)
 PY
-    if [[ "$phase" == long-press ]]; then test_name=testLongPressReceipt
-    else test_name=testCompletedOriginalSourceSelectionAcrossRows; fi;;
+    if [[ "$phase" == long-press ]]; then test_names=(testLongPressReceipt)
+    else
+      test_names=(testCompletedOriginalSourceSelectionAcrossRows
+        testTableOriginalSourceSelection testMarkdownCodeOriginalSourceSelection
+        testProseToCodeBoundary testCodePreservationAndLegacyCopy)
+    fi;;
 esac
 result="$artifacts/$phase.xcresult"
 test ! -e "$result"
+test_args=()
+for test_name in "${test_names[@]}"; do
+  test_args+=("-only-testing:DocumentAnnotationsUITests/DocumentAnnotationsUITests/$test_name")
+done
 xcodebuild test-without-building -xctestrun "$run_xctestrun" \
   -destination "id=$sim_id" -parallel-testing-enabled NO \
-  -only-testing:"DocumentAnnotationsUITests/DocumentAnnotationsUITests/$test_name" \
+  "${test_args[@]}" \
   -resultBundlePath "$result"
 cmp "$xctestrun" "$artifacts/original.xctestrun"
 runner="$checkout/annotation-ui-derived-data/Build/Products/Release-iphonesimulator/DocumentAnnotationsUITests-Runner.app"

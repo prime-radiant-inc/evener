@@ -19,8 +19,9 @@ layout builds the qualification-only Release entry and saves XCTest geometry.
 restore reinstalls that source's retained verified app without rebuilding it,
 creates a new task simulator and records fresh geometry on that exact device.
 long-press uses measured FIRST coordinates and saves the real handle receipt.
-qualify uses measured FIRST/HANDLE/SECOND coordinates and runs source assertions.
+qualify runs cross-row, table, Reader-code, prose/code-boundary and exact Copy checks.
 Geometry JSON: {"FIRST":{"x":0,"y":0},"HANDLE":{"x":0,"y":0},"SECOND":{"x":0,"y":0}}
+The amended probe also needs TABLE/CODE and FIRST_TO_CODE measured targets.
 Coordinates must come from this simulator's actual layout/screenshot receipt.
 layout/long-press retain only the new simulator for the next stage. Always run
 cleanup if qualification cannot continue. qualify cleans that simulator on exit.
