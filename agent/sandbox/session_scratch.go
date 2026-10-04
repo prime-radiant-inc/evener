@@ -15,6 +15,9 @@ var (
 	sessionScratchTempDir      = os.TempDir
 	sessionScratchUserCacheDir = os.UserCacheDir
 	sessionScratchReadDir      = os.ReadDir
+	// sessionScratchRemoveTree removes a sweep tombstone. A test swaps it to model
+	// a tree this process cannot remove, such as one another uid planted.
+	sessionScratchRemoveTree = removeTree
 )
 
 const (
@@ -234,7 +237,7 @@ func (s *SessionScratch) Cleanup() error {
 		return fmt.Errorf("sandbox: refuse cleanup outside session scratch namespace: %q", s.Dir)
 	}
 	releaseErr := s.Retain()
-	return errors.Join(releaseErr, os.RemoveAll(dir))
+	return errors.Join(releaseErr, removeTree(dir))
 }
 
 // SweepCrashedSessionScratch reclaims the session scratch directories left in
@@ -412,7 +415,7 @@ func sweepCrashedSessionScratch(base string) error {
 			if leaseErr != nil || contended {
 				continue
 			}
-			if removeErr := os.RemoveAll(tombstone); removeErr != nil {
+			if removeErr := sessionScratchRemoveTree(tombstone); removeErr != nil {
 				failures = append(failures, fmt.Errorf("sandbox: remove crashed session scratch tombstone %q: %w", tombstone, removeErr))
 			}
 			_ = lease.Release()
@@ -537,7 +540,7 @@ func sweepCrashedSessionScratch(base string) error {
 		if scratchSweepAfterRename != nil {
 			scratchSweepAfterRename()
 		}
-		if err := os.RemoveAll(tombstone); err != nil {
+		if err := sessionScratchRemoveTree(tombstone); err != nil {
 			// A failed removal must not leave the candidate renamed: the
 			// sweep's contract with an unremovable directory is to leave it
 			// at its original path — where the operator expects it and a

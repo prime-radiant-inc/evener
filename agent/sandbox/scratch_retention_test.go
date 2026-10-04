@@ -354,11 +354,9 @@ func TestSweepRenameBackRefusesAnOrphanedPin(t *testing.T) {
 			t.Fatalf("fixture: the committed manifest still names %q", scratch.Dir)
 		}
 	}
-	// Fail the removal: with the tombstone itself read-only no child can be
-	// unlinked, so the failure touches nothing and the pin survives it.
-	if err := os.Chmod(tombstone, 0o500); err != nil {
-		t.Fatal(err)
-	}
+	// Fail the removal without touching anything, so the pin survives it.
+	sessionScratchRemoveTree = func(string) error { return errors.New("permission denied") }
+	t.Cleanup(func() { sessionScratchRemoveTree = removeTree })
 	close(proceed)
 
 	select {
