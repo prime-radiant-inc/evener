@@ -445,6 +445,61 @@ describe("each tool's evidence, as the tools print it", () => {
 		]);
 	});
 
+	// A skill's instructions as the phone shows them, so a test reads what an
+	// image's markdown turns into.
+	const skillMarkdown = (instructions: string) => {
+		const loaded = `<skill-context>\n${JSON.stringify({ name: "diagrams", instructions })}\n</skill-context>`;
+		const [shown] = stepEvidence({ label: "use_skill", detail: { output: loaded } });
+		if (shown?.kind !== "markdown") throw new Error(`a skill shows markdown, got ${shown?.kind}`);
+		return shown.markdown;
+	};
+
+	// An inline image's URL can hold parentheses and be followed by a title;
+	// either way the image reads as exactly its alt text, with nothing of the
+	// URL or title left behind.
+	it.each([
+		["a plain image", "![a](https://x.test/a.png)"],
+		["a URL with balanced parentheses", "![a](https://x.test/a_(b).png)"],
+		["a URL with nested parentheses at its end", "![a](https://x.test/a_(b))"],
+		["a title", '![a](https://x.test/a.png "t")'],
+		["a single-quoted title", "![a](https://x.test/a.png 't')"],
+		["a title with balanced parentheses", '![a](https://x.test/a.png "see (1)")'],
+		["balanced parentheses and a title", '![a](https://x.test/a_(b).png "t")'],
+		["an angle-bracketed URL", "![a](<https://x.test/a_(b).png>)"],
+	])("shows an image with %s as its alt text", (_name, image) => {
+		expect(skillMarkdown(image)).toBe("a");
+	});
+
+	it("leaves the text around an image, and links and parentheses of its own, as they were", () => {
+		expect(
+			skillMarkdown(
+				"Before ![a](https://x.test/a_(b).png) and ![c](https://x.test/c.png \"t\") after (see [docs](https://x.test/d_(1))).",
+			),
+		).toBe("Before a and c after (see [docs](https://x.test/d_(1))).");
+	});
+
+	// An image inside another's alt text surfaces when the outer one is
+	// stripped, and would load if it were left in the result.
+	it("shows an image nested in another's alt text as words", () => {
+		expect(skillMarkdown("![a ![b](https://x.test/b.png)](https://x.test/a.png)")).toBe("a b");
+	});
+
+	// Whatever its shape, no image's opener survives, so none loads.
+	it.each([
+		["a URL with parentheses", "![a](https://x.test/a_(b).png)"],
+		["a title", '![a](https://x.test/a.png "t")'],
+		["a URL no one closes", "![a](https://x.test/a_(b.png"],
+		["a URL with a stray close", "![a](https://x.test/a.png))"],
+		["an image in an image", "![a ![b](https://x.test/b.png)](https://x.test/a.png)"],
+		["an image that completes another", "![![](https://x.test/b.png)](https://x.test/a.png)"],
+		["a reference", "![a][logo]\n\n[logo]: https://x.test/logo.png"],
+		["a shortcut", "![a]\n\n[a]: https://x.test/a.png"],
+		["an empty alt", "![](https://x.test/a_(b).png)"],
+		["an alt across lines", "![a\nb](https://x.test/a.png)"],
+	])("never leaves an image's opener behind for %s", (_name, markdown) => {
+		expect(skillMarkdown(markdown)).not.toContain("![");
+	});
+
 	// -1 is the shell tool's sentinel for a command stopped by a signal or by
 	// evener's runtime limit, not an exit code, so it reads as no exit at all.
 	it("never says a command exited -1", () => {

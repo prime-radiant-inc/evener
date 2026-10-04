@@ -68,11 +68,24 @@ function rawOutput(text: string): Evidence[] {
 	return text ? [{ kind: "output", text, lines: lineCount(text) }] : [];
 }
 
+// An image: ![alt] and then its (url) or (url "title"), or its [ref]. Inside
+// an inline image's parentheses go any characters, and a pair of parentheses
+// nests one level deep (a_(b).png, a title's "(1)"), as real URLs do.
+const IMAGE = /!\[([^\]]*)\](?:\((?:[^()]|\([^()]*\))*\)|\[[^\]]*\])?/g;
+
 // A skill's markdown is its author's, and the phone's markdown view loads
 // images from their URLs, so each image, inline (![alt](url)), by reference
-// (![alt][ref]) or shortcut (![alt]), reads as its alt text instead.
+// (![alt][ref]) or shortcut (![alt]), reads as its alt text instead. Taking
+// out an image can complete another (![a ![b](u)](v) leaves ![b](v)), so this
+// repeats until none is left. Each pass shortens the text, so it ends.
 function withoutImages(markdown: string): string {
-	return markdown.replace(/!\[([^\]]*)\](?:\([^)]*\)|\[[^\]]*\])?/g, "$1");
+	let text = markdown;
+	let before: string;
+	do {
+		before = text;
+		text = text.replace(IMAGE, "$1");
+	} while (text !== before);
+	return text;
 }
 
 // What the shell tool's footer says besides the exit.
