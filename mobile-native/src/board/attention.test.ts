@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { NavigationSessionSummary } from "@evener/appwire-client";
 import { QUIET_AFTER_MS, STUCK_AFTER_MS } from "@evener/appwire-client";
 import {
+	AGENT_QUIET_AFTER_MS,
 	approvalRefs,
 	bandOf,
 	boardState,
@@ -10,6 +11,7 @@ import {
 	lastLine,
 	liveBands,
 	liveSummary,
+	quietOrWorking,
 	stateWord,
 	subagentChipText,
 	summaryText,
@@ -329,6 +331,14 @@ describe("the Live summary line", () => {
 		expect(summaryText("finished", 4)).toBe("4 finished");
 		expect(summaryText("working", 9)).toBe("9 working");
 		expect(summaryText("idle", 3)).toBe("3 idle");
+	});
+});
+
+describe("a running agent's last words", () => {
+	it("reads Working until 20 seconds pass without an update, then Quiet", () => {
+		expect(AGENT_QUIET_AFTER_MS).toBe(20_000);
+		expect(quietOrWorking(19_999)).toBe("Working");
+		expect(quietOrWorking(20_000)).toBe("Quiet 20s");
 	});
 });
 
