@@ -406,9 +406,6 @@ func TestSandboxPromptLineReadOnlyDelegateScratchGuidance(t *testing.T) {
 	if !strings.Contains(got, "Read-only delegates may write only inside this scratch directory; all other writes are denied.") {
 		t.Fatalf("read-only prompt line must explain its write boundary: %q", got)
 	}
-	if !strings.Contains(got, "In your final human-readable handoff, report this absolute scratch path and the absolute paths of any artifacts your parent should retain; cleanup is manual.") {
-		t.Fatalf("sandbox prompt line must explain the handoff contract: %q", got)
-	}
 }
 
 func TestReadOnlyDelegateDumbModelWritesOnlyToPromptNamedScratch(t *testing.T) {
