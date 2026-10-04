@@ -18,6 +18,13 @@ function destinations(markdown: string) {
 	visit(lexer(result.markdown));
 	return urls.map((url) => result.references.get(url));
 }
+// Undo generated ranges only, leaving authored HTML and surrounding bytes intact.
+function restoreLiteralHTML(rendered: string, original: string): string {
+	return rendered.replace(/\[([^\]]+)\]\(evener-file:[\d-]+\)/g, (_, label: string) => {
+		const authored = original.match(new RegExp(`\\[${label}\\]\\(([^)]+)\\)`));
+		return authored?.[0] ?? label;
+	});
+}
 describe("native token/source-span file adapter", () => {
 	it("generates source-bound native file actions", () => {
 		const original = "Spec: docs/plan.md\n\n`README.md` and [R](./docs/a%26b.md)";
@@ -162,41 +169,46 @@ it("preserves multiline reference-label source and blockquote prefixes outside t
 
 describe("review span regressions", () => {
 	it.each([
-		'Before <a href="https://example.test/x"> docs/a.md </a> after',
-		'Before <a href="https://example.test/x"> `README.md` [R](./docs/a.md) </a> after',
-		'Before <a href="https://example.test/x"> **docs/a.md *`README.md`* [R](./docs/b.md)** </a> after',
-		'Before **<a href="https://example.test/x"> docs/a.md** `README.md` </a> after',
-		"Before <script> docs/a.md `README.md` [R](./docs/b.md) </script> after",
-		"Before <pre> docs/a.md </pre> after",
-	])("I1 excludes HTML anchor/raw interiors, %s", (original) => {
-		expect(paths(original)).toEqual([]);
+		['Before <a href="https://example.test/x"> docs/a.md </a> after', ["docs/a.md"]],
+		['Before <a href="https://example.test/x"> `README.md` [R](./docs/a.md) </a> after', ["README.md", "docs/a.md"]],
+		[
+			'Before <a href="https://example.test/x"> **docs/a.md *`README.md`* [R](./docs/b.md)** </a> after',
+			["docs/a.md", "README.md", "docs/b.md"],
+		],
+		['Before **<a href="https://example.test/x"> docs/a.md** `README.md` </a> after', ["docs/a.md", "README.md"]],
+		["Before <script> docs/a.md `README.md` [R](./docs/b.md) </script> after", ["docs/a.md", "README.md", "docs/b.md"]],
+		["Before <pre> docs/a.md </pre> after", ["docs/a.md"]],
+	] as const)("literal authored HTML interiors follow displayed-text grammar, %s", (original, expected) => {
+		expect(paths(original)).toEqual(expected);
 		const result = renderMarkdownFileReferences(original, cwd);
-		expect([...result.references.values()]).toEqual([]);
-		expect(result.markdown).toBe(original);
+		expect([...result.references.values()].map((ref) => ref.path)).toEqual(expected);
+		expect(restoreLiteralHTML(result.markdown, original)).toBe(original);
 	});
 	it.each([
-		'docs/b.md <a href="https://example.test/x"> docs/a.md </a>"docs/c.md"',
-		'docs/b.md <a href="https://example.test/x"> docs/a.md </a> docs/c.md',
-		"docs/b.md <script> docs/a.md </script> docs/c.md",
-	])("I1 keeps surrounding eligible prose and original source, %s", (original) => {
-		const result = renderMarkdownFileReferences(original, cwd);
-		expect(paths(original)).toEqual(["docs/b.md", "docs/c.md"]);
-		expect([...result.references.values()].map((ref) => ref.readTarget)).toEqual([
-			"/work/b/docs/b.md",
-			"/work/b/docs/c.md",
-		]);
-		expect(result.markdown.replace(/\[(docs\/[bc]\.md)\]\(evener-file:[^)]*\)/g, "$1")).toBe(original);
-	});
+		['docs/b.md <a href="https://example.test/x"> docs/a.md </a>"docs/c.md"', ["docs/b.md", "docs/a.md", "docs/c.md"]],
+		['docs/b.md <a href="https://example.test/x"> docs/a.md </a> docs/c.md', ["docs/b.md", "docs/a.md", "docs/c.md"]],
+		["docs/b.md <script> docs/a.md </script> docs/c.md", ["docs/b.md", "docs/a.md", "docs/c.md"]],
+	] as const)(
+		"literal authored HTML keeps interior and surrounding eligible prose and original source, %s",
+		(original, expected) => {
+			const result = renderMarkdownFileReferences(original, cwd);
+			expect(paths(original)).toEqual(expected);
+			expect([...result.references.values()].map((ref) => ref.readTarget)).toEqual(
+				expected.map((path) => `${cwd}/${path}`),
+			);
+			expect(restoreLiteralHTML(result.markdown, original)).toBe(original);
+		},
+	);
 	it("I1 does not manufacture a prose boundary after an excluded HTML edge", () => {
 		const original = 'docs/b.md <a href="https://example.test/x"> docs/a.md </a>docs/c.md';
 		const result = renderMarkdownFileReferences(original, cwd);
-		expect(paths(original)).toEqual(["docs/b.md"]);
-		expect(result.markdown.replace(/\[docs\/b\.md\]\(evener-file:[^)]*\)/, "docs/b.md")).toBe(original);
+		expect(paths(original)).toEqual(["docs/b.md", "docs/a.md"]);
+		expect(restoreLiteralHTML(result.markdown, original)).toBe(original);
 	});
 	it("I1 does not create code boundaries at an excluded HTML edge", () => {
 		const original = 'Before <a href="https://example.test/x"> docs/a.md </a>foo`README.md` after';
-		expect(paths(original)).toEqual([]);
-		expect(renderMarkdownFileReferences(original, cwd).markdown).toBe(original);
+		expect(paths(original)).toEqual(["docs/a.md"]);
+		expect(restoreLiteralHTML(renderMarkdownFileReferences(original, cwd).markdown, original)).toBe(original);
 	});
 	it.each([
 		"[foo `]` bar](./docs/a.md)",
@@ -270,7 +282,7 @@ describe("review span regressions", () => {
 	});
 });
 
-describe("HTML ancestry across marked inline collections", () => {
+describe("literal HTML eligibility across marked inline collections", () => {
 	function assertReferences(original: string, expected: string[], sourceCwd = cwd) {
 		const discovered = markdownFileReferences(original, sourceCwd);
 		const result = renderMarkdownFileReferences(original, sourceCwd);
@@ -281,76 +293,103 @@ describe("HTML ancestry across marked inline collections", () => {
 				expected.map((path) => `${sourceCwd}/${path}`),
 			);
 		}
-		expect(result.markdown.replace(/\[(docs\/[bc]\.md)\]\(evener-file:[\d-]+\)/g, "$1")).toBe(original);
+		expect(restoreLiteralHTML(result.markdown, original)).toBe(original);
 	}
 
 	it.each([
-		'Before <a href="https://example.test/x"> first\n\n docs/a.md </a> after',
-		"Before <script> first\n\n docs/a.md </script> after",
-		"Before <pre> first\n\n docs/a.md </pre> after",
-	])("excludes the exact reviewer cross-paragraph interior, %s", (original) => {
-		assertReferences(original, []);
+		['Before <a href="https://example.test/x"> first\n\n docs/a.md </a> after', ["docs/a.md"]],
+		["Before <script> first\n\n docs/a.md </script> after", ["docs/a.md"]],
+		["Before <pre> first\n\n docs/a.md </pre> after", ["docs/a.md"]],
+	] as const)("recognizes the approved cross-paragraph literal interior, %s", (original, expected) => {
+		assertReferences(original, [...expected]);
 	});
-	it("keeps only outside prose in the exact reviewer script case", () => {
-		assertReferences("Before <script> first\n\n docs/a.md </script> docs/b.md", ["docs/b.md"]);
-	});
-	it.each([
-		'Before <a href="https://example.test/x"> first\r\n\r\n docs/a.md </a> docs/b.md\r\n',
-		"Before <script> first\r\n\r\n docs/a.md </script> docs/b.md\r\n",
-		'Before **<a href="https://example.test/x"> first**\n\n *docs/a.md </a>* docs/b.md',
-		'> Before <a href="https://example.test/x"> first\n>\n> docs/a.md </a> docs/b.md',
-		'- Before <a href="https://example.test/x"> first\n\n  docs/a.md </a> docs/b.md',
-		'- Before <a href="https://example.test/x"> first\n- docs/a.md </a> docs/b.md',
-		'Before <a href="https://example.test/x"> first\n\n# docs/a.md </a> docs/b.md',
-		'Before <a href="https://example.test/x"> first\n\n> docs/a.md </a> docs/b.md',
-		'> Before <a href="https://example.test/x"> first\n\n docs/a.md </a> docs/b.md',
-		"Before <script> first\n\n| docs/a.md </script> docs/b.md | after |\n| --- | --- |",
-		"Before <script> first\n\n# docs/a.md\n\n<pre>docs/a.md</pre>\n\n docs/a.md </script> docs/b.md",
-		"Before <script> first\n\n```sh\n</script> docs/a.md\n```\n\n docs/a.md </script> docs/b.md",
-	])("retains ancestry and original bytes across collections, %s", (original) => {
-		assertReferences(original, ["docs/b.md"]);
+	it("keeps eligible interior and outside prose in the script-shaped case", () => {
+		assertReferences("Before <script> first\n\n docs/a.md </script> docs/b.md", ["docs/a.md", "docs/b.md"]);
 	});
 	it.each([
-		'| Before <a href="https://example.test/x"> first | docs/a.md </a> docs/b.md |\n| --- | --- |\n| docs/c.md | after |',
-		"| Before <script> first | docs/a.md |\n| --- | --- |\n| docs/a.md </script> docs/b.md | docs/c.md |",
-		"> | Before <pre> first | docs/a.md |\r\n> | --- | --- |\r\n> | docs/a.md </pre> docs/b.md | docs/c.md |\r\n",
-	])("carries ancestry across table cells without joining their boundaries, %s", (original) => {
-		assertReferences(original, ["docs/b.md", "docs/c.md"]);
+		['Before <a href="https://example.test/x"> first\r\n\r\n docs/a.md </a> docs/b.md\r\n', ["docs/a.md", "docs/b.md"]],
+		["Before <script> first\r\n\r\n docs/a.md </script> docs/b.md\r\n", ["docs/a.md", "docs/b.md"]],
+		['Before **<a href="https://example.test/x"> first**\n\n *docs/a.md </a>* docs/b.md', ["docs/a.md", "docs/b.md"]],
+		['> Before <a href="https://example.test/x"> first\n>\n> docs/a.md </a> docs/b.md', ["docs/a.md", "docs/b.md"]],
+		['- Before <a href="https://example.test/x"> first\n\n  docs/a.md </a> docs/b.md', ["docs/a.md", "docs/b.md"]],
+		['- Before <a href="https://example.test/x"> first\n- docs/a.md </a> docs/b.md', ["docs/a.md", "docs/b.md"]],
+		['Before <a href="https://example.test/x"> first\n\n# docs/a.md </a> docs/b.md', ["docs/a.md", "docs/b.md"]],
+		['Before <a href="https://example.test/x"> first\n\n> docs/a.md </a> docs/b.md', ["docs/a.md", "docs/b.md"]],
+		['> Before <a href="https://example.test/x"> first\n\n docs/a.md </a> docs/b.md', ["docs/a.md", "docs/b.md"]],
+		["Before <script> first\n\n| docs/a.md </script> docs/b.md | after |\n| --- | --- |", ["docs/a.md", "docs/b.md"]],
+		[
+			"Before <script> first\n\n# docs/a.md\n\n<pre>docs/a.md</pre>\n\n docs/a.md </script> docs/b.md",
+			["docs/a.md", "docs/a.md", "docs/b.md"],
+		],
+		[
+			"Before <script> first\n\n```sh\n</script> docs/a.md\n```\n\n docs/a.md </script> docs/b.md",
+			["docs/a.md", "docs/b.md"],
+		],
+	] as const)("retains literal eligibility and original bytes across collections, %s", (original, expected) => {
+		assertReferences(original, [...expected]);
 	});
 	it.each([
-		'Before <a href="https://example.test/x"> first\n\n docs/a.md `README.md` [R](./docs/a.md)',
-		"Before <script> first\n\n docs/a.md `README.md` [R](./docs/a.md)",
-		"Before <pre> first\n\n# docs/a.md\n\n docs/a.md",
-	])("keeps unclosed ancestry ineligible through the end of one message, %s", (original) => {
-		assertReferences(original, []);
+		[
+			'| Before <a href="https://example.test/x"> first | docs/a.md </a> docs/b.md |\n| --- | --- |\n| docs/c.md | after |',
+			["docs/a.md", "docs/b.md", "docs/c.md"],
+		],
+		[
+			"| Before <script> first | docs/a.md |\n| --- | --- |\n| docs/a.md </script> docs/b.md | docs/c.md |",
+			["docs/a.md", "docs/a.md", "docs/b.md", "docs/c.md"],
+		],
+		[
+			"> | Before <pre> first | docs/a.md |\r\n> | --- | --- |\r\n> | docs/a.md </pre> docs/b.md | docs/c.md |\r\n",
+			["docs/a.md", "docs/a.md", "docs/b.md", "docs/c.md"],
+		],
+	] as const)(
+		"recognizes literal text across table cells without joining their boundaries, %s",
+		(original, expected) => {
+			assertReferences(original, [...expected]);
+		},
+	);
+	it.each([
+		[
+			'Before <a href="https://example.test/x"> first\n\n docs/a.md `README.md` [R](./docs/a.md)',
+			["docs/a.md", "README.md", "docs/a.md"],
+		],
+		["Before <script> first\n\n docs/a.md `README.md` [R](./docs/a.md)", ["docs/a.md", "README.md", "docs/a.md"]],
+		["Before <pre> first\n\n# docs/a.md\n\n docs/a.md", ["docs/a.md", "docs/a.md"]],
+	] as const)("recognizes eligible literal text after unclosed tags, %s", (original, expected) => {
+		assertReferences(original, [...expected]);
 	});
 	it.each([
-		"Before <script> first\n\n docs/a.md </script> ../**docs/a.md** docs/b.md",
-		"Before <pre> first\n\n docs/a.md </pre> https://host/**docs/a.md** docs/b.md",
-		'Before <a href="https://example.test/x"> first\n\n docs/a.md </a>foo`README.md` docs/b.md',
-	])("retains full-block invalid-boundary context after closing tags, %s", (original) => {
-		assertReferences(original, ["docs/b.md"]);
+		["Before <script> first\n\n docs/a.md </script> ../**docs/a.md** docs/b.md", ["docs/a.md", "docs/b.md"]],
+		["Before <pre> first\n\n docs/a.md </pre> https://host/**docs/a.md** docs/b.md", ["docs/a.md", "docs/b.md"]],
+		[
+			'Before <a href="https://example.test/x"> first\n\n docs/a.md </a>foo`README.md` docs/b.md',
+			["docs/a.md", "docs/b.md"],
+		],
+	] as const)("retains full-block invalid-boundary context after closing tags, %s", (original, expected) => {
+		assertReferences(original, [...expected]);
 	});
 	it("does not join invalid boundary text from different paragraphs or cells", () => {
 		assertReferences("../\n\n docs/b.md\n\n| ../ | docs/c.md |\n| --- | --- |", ["docs/b.md", "docs/c.md"]);
 	});
 	it.each([
-		"[Before <script> first](https://example.test/x)\n\n docs/a.md </script> docs/b.md",
-		"![Before <script> first](./image.png)\n\n docs/a.md </script> docs/b.md",
-		"[Before **<script> first**](https://example.test/x) docs/a.md </script> docs/b.md",
-	])("carries raw state from actual marked link/image label lexing without scanning labels, %s", (original) => {
-		assertReferences(original, ["docs/b.md"]);
+		["[Before <script> first](https://example.test/x)\n\n docs/a.md </script> docs/b.md", ["docs/a.md", "docs/b.md"]],
+		["![Before <script> first](./image.png)\n\n docs/a.md </script> docs/b.md", ["docs/a.md", "docs/b.md"]],
+		["[Before **<script> first**](https://example.test/x) docs/a.md </script> docs/b.md", ["docs/a.md", "docs/b.md"]],
+	] as const)("does not let literal tags inside actual labels suppress following prose, %s", (original, expected) => {
+		assertReferences(original, [...expected]);
 	});
-	it("uses marked's post-link anchor state without promoting an interior file link", () => {
-		assertReferences('Before <a href="https://example.test/x"> first\n\n[inner](./docs/a.md) docs/b.md', ["docs/b.md"]);
+	it("recognizes an actual file destination inside literal authored tags", () => {
+		assertReferences('Before <a href="https://example.test/x"> first\n\n[inner](./docs/a.md) docs/b.md', [
+			"docs/a.md",
+			"docs/b.md",
+		]);
 	});
-	it("does not leak ancestry or cwd through separate messages, render calls or cached candidates", () => {
+	it("does not leak literal eligibility or cwd through separate messages, render calls or cached candidates", () => {
 		const unclosed = 'Before <a href="https://example.test/x"> first\n\n docs/a.md';
 		const closed = "Before <script> first\n\n docs/a.md </script> docs/b.md";
 		for (const sourceCwd of ["/work/a", cwd, "/work/a"]) {
-			assertReferences(unclosed, [], sourceCwd);
+			assertReferences(unclosed, ["docs/a.md"], sourceCwd);
 			assertReferences("docs/b.md", ["docs/b.md"], sourceCwd);
-			assertReferences(closed, ["docs/b.md"], sourceCwd);
+			assertReferences(closed, ["docs/a.md", "docs/b.md"], sourceCwd);
 			assertReferences("[external](https://example.test/x)", [], sourceCwd);
 		}
 		const first = renderMarkdownFileReferences(closed, "/work/a");
@@ -359,9 +398,10 @@ describe("HTML ancestry across marked inline collections", () => {
 		expect(renderMarkdownFileReferences(closed, "")).toEqual({ markdown: closed, references: new Map() });
 	});
 	it.each(["<https://example.test/x>", "<person@example.test>"])(
-		"does not clear an open HTML anchor at an actual marked autolink, %s",
+		"keeps actual autolinks excluded while following literal prose stays eligible, %s",
 		(autolink) => {
 			assertReferences(`Before <a href="https://example.test/x"> first\n\n ${autolink} docs/a.md </a> docs/b.md`, [
+				"docs/a.md",
 				"docs/b.md",
 			]);
 		},
@@ -512,17 +552,17 @@ describe("table escape source-range ownership", () => {
 			{ header: [[], []], rows: [[["docs/z.md"], ["https://example.test/x"]]] },
 		);
 	});
-	it("retains HTML ancestry, invalid adjacency and fresh cwd bindings around escaped table paths", () => {
+	it("retains literal HTML eligibility, invalid adjacency and fresh cwd bindings around escaped table paths", () => {
 		const original =
 			"Before <script> first\n\n| \\|docs/a.md | Why |\n| --- | --- |\n| </script> ../**docs/x.md** \\|docs/b.md | docs/c.md |";
 		const expected =
-			"Before <script> first\n\n| \\|docs/a.md | Why |\n| --- | --- |\n| </script> ../**docs/x.md** [\\|docs/b.md](action-0) | [docs/c.md](action-1) |";
+			"Before <script> first\n\n| [\\|docs/a.md](action-0) | Why |\n| --- | --- |\n| </script> ../**docs/x.md** [\\|docs/b.md](action-1) | [docs/c.md](action-2) |";
 		for (const sourceCwd of ["/work/a", cwd, "/work/a"]) {
 			assertTable(
 				original,
-				["|docs/b.md", "docs/c.md"],
+				["|docs/a.md", "|docs/b.md", "docs/c.md"],
 				expected,
-				{ header: [[], []], rows: [[["|docs/b.md"], ["docs/c.md"]]] },
+				{ header: [["|docs/a.md"], []], rows: [[["|docs/b.md"], ["docs/c.md"]]] },
 				sourceCwd,
 			);
 			assertTable(
@@ -534,5 +574,196 @@ describe("table escape source-range ownership", () => {
 			);
 		}
 		expect(renderMarkdownFileReferences(trigger, "")).toEqual({ markdown: trigger, references: new Map() });
+	});
+});
+
+describe("approved authored HTML literal text", () => {
+	const corpus = [
+		{
+			name: "standalone-a",
+			markdown: '<a href="https://example.test/x">\n\ndocs/private.md\n\n</a>',
+			paths: ["docs/private.md"],
+		},
+		{
+			name: "inline-a-paragraphs",
+			markdown: 'Before <a href="https://example.test/x"> first\n\n docs/a.md </a> after',
+			paths: ["docs/a.md"],
+		},
+		{
+			name: "inline-a",
+			markdown: "Before <a> docs/a.md </a> after",
+			paths: ["docs/a.md"],
+		},
+		{
+			name: "block-a",
+			markdown: "<a>\n docs/a.md\n</a>",
+			paths: ["docs/a.md"],
+		},
+		{
+			name: "inline-div",
+			markdown: "Before <div> docs/a.md </div> after",
+			paths: ["docs/a.md"],
+		},
+		{
+			name: "block-div",
+			markdown: "<div>\n docs/a.md\n</div>",
+			paths: ["docs/a.md"],
+		},
+		{
+			name: "inline-span",
+			markdown: "Before <span> docs/a.md </span> after",
+			paths: ["docs/a.md"],
+		},
+		{
+			name: "block-span",
+			markdown: "<span>\n docs/a.md\n</span>",
+			paths: ["docs/a.md"],
+		},
+		{
+			name: "inline-script",
+			markdown: "Before <script> docs/a.md </script> after",
+			paths: ["docs/a.md"],
+		},
+		{
+			name: "block-script",
+			markdown: "<script>\n docs/a.md\n</script>",
+			paths: ["docs/a.md"],
+		},
+		{
+			name: "inline-style",
+			markdown: "Before <style> docs/a.md </style> after",
+			paths: ["docs/a.md"],
+		},
+		{
+			name: "block-style",
+			markdown: "<style>\n docs/a.md\n</style>",
+			paths: ["docs/a.md"],
+		},
+		{
+			name: "inline-pre",
+			markdown: "Before <pre> docs/a.md </pre> after",
+			paths: ["docs/a.md"],
+		},
+		{
+			name: "block-pre",
+			markdown: "<pre>\n docs/a.md\n</pre>",
+			paths: ["docs/a.md"],
+		},
+		{
+			name: "inline-code",
+			markdown: "Before <code> docs/a.md </code> after",
+			paths: ["docs/a.md"],
+		},
+		{
+			name: "block-code",
+			markdown: "<code>\n docs/a.md\n</code>",
+			paths: ["docs/a.md"],
+		},
+		{
+			name: "comment-inline",
+			markdown: "Before <!-- docs/a.md --> after",
+			paths: ["docs/a.md"],
+		},
+		{
+			name: "comment-block",
+			markdown: "<!--\ndocs/a.md\n-->",
+			paths: ["docs/a.md"],
+		},
+		{
+			name: "unclosed-script",
+			markdown: "Before <script> first\n\n docs/a.md",
+			paths: ["docs/a.md"],
+		},
+		{
+			name: "unclosed-a",
+			markdown: 'Before <a href="https://example.test/x"> first\n\n docs/a.md',
+			paths: ["docs/a.md"],
+		},
+		{
+			name: "malformed-tag",
+			markdown: "Before <a href= docs/a.md after",
+			paths: ["docs/a.md"],
+		},
+		{
+			name: "table",
+			markdown: "| Before <script> first | docs/a.md |\n| --- | --- |\n| docs/b.md </script> | docs/c.md |",
+			paths: ["docs/a.md", "docs/b.md", "docs/c.md"],
+		},
+		{
+			name: "list",
+			markdown: '- Before <a href="https://example.test/x"> first\n- docs/a.md </a> docs/b.md',
+			paths: ["docs/a.md", "docs/b.md"],
+		},
+		{
+			name: "blockquote-crlf",
+			markdown: "> Before <pre> first\r\n>\r\n> docs/a.md </pre> docs/b.md\r\n",
+			paths: ["docs/a.md", "docs/b.md"],
+		},
+		{
+			name: "quoted-attribute",
+			markdown:
+				'Before <a href="https://example.test/docs/url.md" data-file="docs/attribute.md"> docs/body.md </a> after',
+			paths: ["docs/attribute.md", "docs/body.md"],
+		},
+		{
+			name: "unsafe-attributes",
+			markdown:
+				'Before <a href="https://example.test/docs/url.md" data-file="../docs/no.md" data-other="mailto:a/docs/no.md"> docs/body.md </a> after',
+			paths: ["docs/body.md"],
+		},
+		{
+			name: "tag-adjacent",
+			markdown: "Before <code>docs/a.md</code> after",
+			paths: [],
+		},
+		{
+			name: "closing-boundary",
+			markdown: "Before <a> docs/a.md </a>docs/b.md",
+			paths: ["docs/a.md"],
+		},
+		{
+			name: "invalid-boundaries",
+			markdown: "Before <script> ../docs/a.md https://host/docs/b.md </script> ../**docs/c.md**",
+			paths: [],
+		},
+		{
+			name: "actual-links",
+			markdown: "Before <a> [docs/label.md](https://example.test/x) [R](./docs/file.md) </a> after",
+			paths: ["docs/file.md"],
+		},
+		{
+			name: "inline-code",
+			markdown: "Before <a> `README.md` </a> after",
+			paths: ["README.md"],
+		},
+		{
+			name: "fences",
+			markdown: "<a>\n\n```sh\ndocs/no.md\n```\n\n```mermaid\ndocs/no.md\n```\n\n docs/yes.md </a>",
+			paths: ["docs/yes.md"],
+		},
+		{
+			name: "literal-entity-percent",
+			markdown: "Before <!-- docs/a&amp;b.md docs/100%25.md -->",
+			paths: ["docs/a&amp;b.md", "docs/100%25.md"],
+		},
+	];
+	it.each(corpus)("discovers and renders $name with original offsets", ({ markdown, paths: expected }) => {
+		expect(paths(markdown)).toEqual(expected);
+		const result = renderMarkdownFileReferences(markdown, cwd);
+		expect([...result.references.values()].map((ref) => ref.path)).toEqual(expected);
+		expect([...result.references.values()].map((ref) => ref.readTarget)).toEqual(
+			expected.map((path) => `${cwd}/${path}`),
+		);
+		expect(
+			result.markdown.replace(/\[([^\]]+)\]\(evener-file:[\d-]+\)/g, (_, label: string) =>
+				label === "R" ? "[R](./docs/file.md)" : label,
+			),
+		).toBe(markdown);
+		const next = renderMarkdownFileReferences(markdown, "/work/a");
+		expect([...next.references.values()].map((ref) => ref.readTarget)).toEqual(
+			expected.map((path) => `/work/a/${path}`),
+		);
+		if (expected.length) expect([...next.references.keys()]).not.toEqual([...result.references.keys()]);
+		expect(renderMarkdownFileReferences(markdown, "")).toEqual({ markdown, references: new Map() });
 	});
 });

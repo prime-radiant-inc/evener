@@ -106,6 +106,13 @@ lasts for the app lifetime and adds no disk persistence.
 
 ## Current scope
 
+Assistant filename actions and document chips share the file-reference grammar.
+Authored HTML tags are literal text, so they do not suppress otherwise eligible
+filenames, including across paragraphs and table cells. Actual Markdown link
+labels, fenced code and Mermaid keep their existing exclusions; inline-code
+filenames remain eligible. Recognition preserves the original response and
+binds actions to the owning conversation's current cwd, without reading files.
+
 - The recent-session roster is bounded and has server-side search. Project
   navigation has paged catalogs, archived views, favorites and archive actions.
   Complete organization/pinning and management acceptance remain open.
