@@ -696,8 +696,13 @@ func (s *Session) driveStableDelegateAttention(sub *subagent) bool {
 	// through takeSendDriveGuard, so the two busy lists cannot drift. The
 	// attention-only extras are layered on top.
 	blocked := sub.startBlockedLocked() || sub.closed || sub.fatalRunGated || s.childCommittedSendStart(sub.sess.id)
+	if blocked && sub.driving {
+		sub.attentionDriveRefused = true
+	}
 	if !blocked {
 		sub.driving = true
+		// Only a drive refused during this hold is this drive's to re-drive.
+		sub.attentionDriveRefused = false
 	}
 	sub.mu.Unlock()
 	if blocked {
@@ -708,7 +713,16 @@ func (s *Session) driveStableDelegateAttention(sub *subagent) bool {
 		if launched {
 			return
 		}
-		releaseSendDriveGuard(sub)
+		if observer := s.cfg.testOnly.delegateAttentionBeforeGuardRelease; observer != nil {
+			observer(sub)
+		}
+		// A drive refused on this guard dropped its wake: drive the child
+		// again now the guard is free (#3723). The re-drive can only re-drive
+		// in turn if another drive is refused on its own guard, so a drive
+		// that keeps losing stops.
+		if releaseSendDriveGuard(sub) {
+			s.redriveLiveChild(sub.sess.id)
+		}
 	}()
 	s.mu.Lock()
 	closed := s.closingOrClosedLocked()
@@ -1390,11 +1404,17 @@ func (s *Session) takeSendDriveGuard(sub *subagent) bool {
 }
 
 // releaseSendDriveGuard gives back a drive guard taken by takeSendDriveGuard or
-// by driveStableDelegateAttention, on a start that didn't hand over to a run.
-func releaseSendDriveGuard(sub *subagent) {
+// by driveStableDelegateAttention, on a start that didn't hand over to a run,
+// and reports whether an attention drive was refused on the guard while it
+// was held. The send path ignores the report: its rollback re-drives the
+// child whenever it releases the guard.
+func releaseSendDriveGuard(sub *subagent) bool {
 	sub.mu.Lock()
+	defer sub.mu.Unlock()
 	sub.driving = false
-	sub.mu.Unlock()
+	refused := sub.attentionDriveRefused
+	sub.attentionDriveRefused = false
+	return refused
 }
 
 // delegateFinalizationWaitCeiling bounds how long a send waits for a finished
@@ -1581,7 +1601,7 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 			// This runs from the deferred rollback after every failure exit
 			// (aborted reservation, failed commit, failed restore, blocked
 			// hand-off, start-input failure), and send holds no lock here.
-			s.redriveChildAfterSendStartRollback(committedChildID)
+			s.redriveLiveChild(committedChildID)
 		}
 	}()
 	if observer := s.cfg.testOnly.delegateSendStartClaimed; observer != nil {

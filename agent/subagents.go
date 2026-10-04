@@ -120,6 +120,12 @@ type subagent struct {
 	// or resume that raced ahead wins and the gate is refused. Reversed on every
 	// pre-eviction dispose refusal/failure exit.
 	disposeGated bool
+	// attentionDriveRefused records that an attention drive was refused while
+	// another drive held this child's drive guard (driving), dropping its
+	// wake. An attention drive that gives the guard back without launching a
+	// run reads it (releaseSendDriveGuard) and re-drives the child; a send's
+	// rollback re-drives the child regardless. Guarded by sub.mu.
+	attentionDriveRefused bool
 }
 
 // startBlockedLocked reports whether the child can't take a new generation
