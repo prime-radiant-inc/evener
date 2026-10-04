@@ -11,7 +11,7 @@
 // session's Subagents list holds the detail.
 import type { NavigationSessionSummary, SessionActivity } from "@evener/appwire-client";
 import { quietState } from "@evener/appwire-client";
-import { relativeAge } from "@evener/appwire-client/state/navigation";
+import { relativeAge, subagentTallyToShow } from "@evener/appwire-client/state/navigation";
 
 export type BoardState =
 	| "failed"
@@ -92,11 +92,18 @@ export function boardState(row: NavigationSessionSummary, approval: boolean, see
 	// A row from an offline source can't be reached, whatever state it last
 	// reported: it is never Working, Finished or Needs you.
 	if (row.offline) return "shutDown";
+	const runningSubagents = row.kind === "session" && (subagentTallyToShow(row)?.running ?? 0) > 0;
 	const decisive = decisiveState(row.state);
-	if (decisive) return decisive;
+	// Only a nonblocking warning yields to live child work. Search keeps its
+	// existing decisiveState rule, and failed children never decide this mark.
+	if (
+		decisive &&
+		!(decisive === "warning" && runningSubagents && !row.ask_pending && !approval && !row.approval_pending)
+	)
+		return decisive;
 	if (row.state === "awaiting" && row.ask_pending) return "question";
 	if (approval || row.approval_pending === true) return "approval";
-	if (row.state === "active") return "working";
+	if (row.state === "active" || runningSubagents) return "working";
 	if (row.dormant || seen) return "idle";
 	return "finished";
 }
