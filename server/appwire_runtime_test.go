@@ -40,14 +40,14 @@ func TestAppCapabilities_SteerAdvertisesHarnessSupport(t *testing.T) {
 		setSteer   bool
 		wantSteer  bool
 	}{
-		{"processing with steerFunc", "active", true, false, false, true, true},
-		{"reserved idle with steerFunc", "idle", false, true, false, true, true},
-		{"stale projected active turn with steerFunc", "idle", false, false, true, true, true},
-		{"idle with steerFunc", "idle", false, false, false, true, true},
-		{"awaiting with steerFunc", "awaiting", false, false, false, true, true},
-		{"closed with steerFunc", "closed", false, false, false, true, false},
-		{"processing without steerFunc", "active", true, false, false, false, false},
-		{"idle without steerFunc", "idle", false, false, false, false, false},
+		{"processing with steer handler", "active", true, false, false, true, true},
+		{"reserved idle with steer handler", "idle", false, true, false, true, true},
+		{"stale projected active turn with steer handler", "idle", false, false, true, true, true},
+		{"idle with steer handler", "idle", false, false, false, true, true},
+		{"awaiting with steer handler", "awaiting", false, false, false, true, true},
+		{"closed with steer handler", "closed", false, false, false, true, false},
+		{"processing without steer handler", "active", true, false, false, false, false},
+		{"idle without steer handler", "idle", false, false, false, false, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -87,9 +87,6 @@ func TestAppCapabilities_AdvertisesTheRetrySafeRegistrations(t *testing.T) {
 			return appwire.TurnSteerResponse{}, nil
 		},
 	})
-	if s.queueFunc != nil || s.steerFunc != nil || s.steerWithImagesFunc != nil {
-		t.Fatal("precondition: no legacy callback is registered")
-	}
 	caps := s.appCapabilities(appwire.ThreadStatusIdle, false)
 	if !caps.Queue {
 		t.Fatalf("Queue = false while handleAppTurnQueue can dispatch: %+v", caps)
@@ -116,6 +113,9 @@ func TestAppCapabilities_IgnoresTheLegacySettersNoHandlerReads(t *testing.T) {
 	s.SetSteerWithImagesFunc(func(string, []ImageAttachment) error { return nil })
 	s.SetQueueFunc(func(string) error { return nil })
 	s.SetQueueWithImagesFunc(func(string, []ImageAttachment) error { return nil })
+	s.SetDrainAsSteerFunc(func() error { return nil })
+	s.SetDrainAsSteerWithInputFunc(func(string, []ImageAttachment) error { return nil })
+	s.SetCancelQueuedFunc(func(int, string) (string, int, error) { return "", 0, nil })
 	s.SetCancelFunc(func() {})
 	caps := s.appCapabilities(appwire.ThreadStatusIdle, false)
 	if caps.Steer || caps.Queue || caps.Interrupt {

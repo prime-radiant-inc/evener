@@ -12,9 +12,7 @@ import (
 // wireRetrySafeCapabilities installs the retry-safe steer, queue and interrupt
 // seams the AppWire handlers actually dispatch through (handleAppTurnSteer,
 // handleAppTurnQueue, handleAppTurnInterrupt). Capabilities follow those
-// registrations; the legacy SetSteerFunc/SetQueueFunc/SetCancelFunc setters are
-// wired alongside them and read by no RPC handler, so a fixture that sets only
-// the legacy pair advertises an action the RPC would answer Unavailable.
+// registrations; compatibility setters cannot enable an RPC handler.
 func wireRetrySafeCapabilities(s *Server) {
 	s.SetRetrySafeTurnFunctions(RetrySafeTurnFunctions{
 		Steer: func(appwire.TurnSteerParams) (appwire.TurnSteerResponse, error) {
@@ -33,19 +31,13 @@ func wireRetrySafeCapabilities(s *Server) {
 // explicit about their fake mutation authority. Production AppWire handlers do
 // not consult these server projections; the callback bundle below is the test
 // double for the Session-owned compare-and-commit layer.
-func installProjectedMutationCallbacksForTest(s *Server) {
+func installProjectedMutationCallbacksForTest(s *Server, functions RetrySafeTurnFunctions) {
 	s.mu.RLock()
-	steer := s.steerFunc
-	steerImages := s.steerWithImagesFunc
-	queue := s.queueFunc
-	queueImages := s.queueWithImagesFunc
-	drain := s.drainSteerFunc
-	drainInput := s.drainSteerInputFunc
 	cancel := s.cancelFunc
 	s.mu.RUnlock()
 
-	functions := RetrySafeTurnFunctions{
-		Start: func(params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+	if functions.Start == nil {
+		functions.Start = func(params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
 			text, images := inputFromItems("", params.Input)
 			turnID, err := s.reserveAppTurnIDForStart()
 			if err != nil {
@@ -58,11 +50,10 @@ func installProjectedMutationCallbacksForTest(s *Server) {
 				s.releaseAppTurnID(turnID)
 				return appwire.TurnStartResponse{}, appwire.Conflict("input buffer full")
 			}
-		},
+		}
 	}
-	if steer != nil || steerImages != nil {
+	if steer := functions.Steer; steer != nil {
 		functions.Steer = func(params appwire.TurnSteerParams) (appwire.TurnSteerResponse, error) {
-			text, images := inputFromItems("", params.Input)
 			s.mu.RLock()
 			reservedTurnID := s.appReservedTurnID
 			processing := s.processing
@@ -70,24 +61,11 @@ func installProjectedMutationCallbacksForTest(s *Server) {
 			if !processing && strings.TrimSpace(reservedTurnID) == "" {
 				return appwire.TurnSteerResponse{}, appwire.Conflict("turn is not active")
 			}
-			if len(images) > 0 && steerImages == nil {
-				return appwire.TurnSteerResponse{}, appwire.Unavailable("steer with images not available")
-			}
-			if steerImages != nil {
-				if err := steerImages(text, images); err != nil {
-					return appwire.TurnSteerResponse{}, err
-				}
-			} else {
-				if err := steer(text); err != nil {
-					return appwire.TurnSteerResponse{}, err
-				}
-			}
-			return appwire.TurnSteerResponse{}, nil
+			return steer(params)
 		}
 	}
-	if queue != nil || queueImages != nil {
+	if queue := functions.Queue; queue != nil {
 		functions.Queue = func(params appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
-			text, images := inputFromItems("", params.Input)
 			s.mu.RLock()
 			processing := s.processing
 			reservedTurnID := s.appReservedTurnID
@@ -99,25 +77,10 @@ func installProjectedMutationCallbacksForTest(s *Server) {
 			if !processing && strings.TrimSpace(reservedTurnID) == "" {
 				return appwire.TurnQueueResponse{}, appwire.Conflict("no active turn to queue against")
 			}
-			if len(images) > 0 {
-				if queueImages == nil {
-					return appwire.TurnQueueResponse{}, appwire.Unavailable("image queue not available")
-				}
-				err := queueImages(text, images)
-				// Stand in for the bridge: a real session emits QUEUE_CHANGED
-				// here and the daemon re-samples the queue facet. A double that
-				// mutated the queue without republishing would leave the
-				// materialized depth at whatever it was before.
-				s.RefreshThreadEnvelope()
-				return appwire.TurnQueueResponse{}, err
-			}
-			if queue == nil {
-				return appwire.TurnQueueResponse{}, appwire.Unavailable("queue not available")
-			}
-			return appwire.TurnQueueResponse{}, queue(text)
+			return queue(params)
 		}
 	}
-	if drain != nil {
+	if drain := functions.Drain; drain != nil {
 		functions.Drain = func(params appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
 			text, images := inputFromItems("", params.Input)
 			hasInput := strings.TrimSpace(text) != "" || len(images) > 0
@@ -131,16 +94,10 @@ func installProjectedMutationCallbacksForTest(s *Server) {
 			if !processing {
 				return appwire.TurnDrainAsSteerResponse{}, appwire.Conflict("no active turn to steer")
 			}
-			if hasInput {
-				if drainInput == nil {
-					return appwire.TurnDrainAsSteerResponse{}, appwire.Unavailable("drain-as-steer with input not available")
-				}
-				return appwire.TurnDrainAsSteerResponse{}, drainInput(text, images)
-			}
-			if s.materializedQueueDepth() == 0 {
+			if !hasInput && s.materializedQueueDepth() == 0 {
 				return appwire.TurnDrainAsSteerResponse{}, appwire.Conflict("queue is empty")
 			}
-			return appwire.TurnDrainAsSteerResponse{}, drain()
+			return drain(params)
 		}
 	}
 	if cancel != nil {
