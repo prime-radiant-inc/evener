@@ -20,12 +20,14 @@ import { WatchesTab } from "./WatchesTab";
 
 beforeAll(async () => {
   await import("../../panes/session");
+  await import("../../panes/transcript");
 });
 beforeEach(() => resetWorkspaceStoreForTests());
 
 afterEach(() => {
   cleanup();
   connectionStore.setState({ client: null, state: "idle" });
+  resetWorkspaceStoreForTests();
   vi.restoreAllMocks();
 });
 const scope = () =>
@@ -74,14 +76,14 @@ it("opens job output using the supplied job transcript ref and raw owner", async
     page: { complete: true, issues: [] },
   }));
   connectionStore.getState().connect(client);
-  const open = vi.spyOn(workspaceStore.getState(), "openPane").mockImplementation(() => "test-pane");
   render(<JobsTab scope={scope()} />);
   fireEvent.click(await screen.findByRole("button", { name: /run checks/ }));
-  expect(open).toHaveBeenCalledWith(
-    "transcript",
-    { ref: "job:authoritative", parentRef: "source:owner" },
-    { slot: "secondary" },
-  );
+  const opened = workspaceStore.getState().panes.find((pane) => pane.type === "transcript");
+  expect(opened).toMatchObject({
+    slot: "secondary",
+    params: { ref: "job:authoritative", parentRef: "source:owner" },
+  });
+  expect(workspaceStore.getState().focusedPaneId).toBe(opened?.id);
 });
 
 it("visible page-boundary demand heals a failed continuation while the actual tab stays mounted", async () => {

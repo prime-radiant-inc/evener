@@ -6,7 +6,7 @@ package dev
 // scripts/web/test-web-browser.sh keeps only the load-aware default for the
 // slot count and hands off here.
 //
-// The skill, cascade and retirement guards are never-signalled checks: each
+// The skill, cascade, background Jobs and retirement guards are never-signalled checks: each
 // is a go test (the retirement guard's behind `npm run`) whose driver, Chrome
 // and helper daemons are cleaned up by the test binary's own t.Cleanup, which a
 // TERM to go test would skip and a TERM to npm alone would orphan; an interrupt
@@ -23,12 +23,13 @@ import (
 )
 
 // browserGuards is every guard in verdict order.
-var browserGuards = []string{"layoutguard", "overflowguard", "shellguard", "spawnguard", "transcriptscrollguard", "retirementguard", "mermaidguard", "sessioncacheguard", "skillguard", "cascadeguard"}
+var browserGuards = []string{"layoutguard", "overflowguard", "shellguard", "spawnguard", "transcriptscrollguard", "retirementguard", "mermaidguard", "sessioncacheguard", "skillguard", "cascadeguard", "backgroundjobsguard"}
 
 const (
-	skillGuard      = "skillguard"
-	cascadeGuard    = "cascadeguard"
-	retirementGuard = "retirementguard"
+	skillGuard          = "skillguard"
+	cascadeGuard        = "cascadeguard"
+	retirementGuard     = "retirementguard"
+	backgroundJobsGuard = "backgroundjobsguard"
 )
 
 // newBrowserGate is the browser gate over its guards; the caller supplies
@@ -38,8 +39,8 @@ func newBrowserGate(slots int, buildFrontend bool) *webGate {
 		name:          "web-browser-guards",
 		checks:        browserGuards,
 		spec:          browserGuardSpec,
-		needsBuild:    []string{skillGuard, cascadeGuard},
-		unsignalled:   []string{retirementGuard, skillGuard, cascadeGuard},
+		needsBuild:    []string{skillGuard, cascadeGuard, backgroundJobsGuard},
+		unsignalled:   []string{retirementGuard, skillGuard, cascadeGuard, backgroundJobsGuard},
 		slots:         slots,
 		buildFrontend: buildFrontend,
 	}
@@ -52,6 +53,12 @@ func newBrowserGate(slots int, buildFrontend bool) *webGate {
 func browserGuardSpec(guard, root string) guardSpec {
 	vite := "BROWSER_GUARD_VITE_CACHE_DIR=" + filepath.Join(root, "vite-cache")
 	switch guard {
+	case backgroundJobsGuard:
+		return guardSpec{
+			name: guard,
+			argv: []string{"go", "test", "-tags", "browserguard", "./cmd/evener-hub", "-run", "^TestBackgroundJobsBrowser$", "-count=1"},
+			dir:  ".", env: []string{vite},
+		}
 	case cascadeGuard:
 		return guardSpec{
 			name: guard,

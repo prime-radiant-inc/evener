@@ -417,10 +417,18 @@ save, so a reload does not make that session an older eviction candidate. Focus
 changes while the sidebar is unmounted do not persist inherited view intent.
 
 Without a retained choice, the desktop [Jobs tab](../../cmd/evener-hub/frontend/src/shell/activitybar/JobsTab.tsx)
-starts successful completed job history folded, and the shared
+folds every terminal background job under Completed, including failed,
+cancelled, stopped, killed and unknown outcomes. Current jobs remain outside
+the fold. Terminal Jobs and Agents glyphs use ordinary quiet color while their
+status text retains the actual outcome; live input and approval requests retain
+attention color. Closing history leaves the existing visible page boundary active,
+so current work on later pages remains discoverable. Opening output uses the
+returned job owner and transcript ref in a secondary pane.
+
+The shared
 [task panel](../../cmd/evener-hub/frontend/src/panes/session/chrome/TasksPanel.tsx)
-starts settled done/cancelled task history folded. Running and unsuccessful jobs
-remain visible, as do the Current and Remaining task sections. Task details
+starts settled done/cancelled task history folded. Current and Remaining task sections
+remain visible. Task details
 remain an explicit disclosure choice.
 
 The [Activity viewport](../../cmd/evener-hub/frontend/src/shell/activitybar/ActivityViewport.tsx)
