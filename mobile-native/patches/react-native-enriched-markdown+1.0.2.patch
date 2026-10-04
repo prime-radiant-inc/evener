@@ -3,12 +3,12 @@ index 380c6be..fd7f5cb 100644
 --- a/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/views/CodeBlockContainerView.kt
 +++ b/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/views/CodeBlockContainerView.kt
 @@ -54,7 +54,7 @@ class CodeBlockContainerView(
- 
+
    private val inset = contentInset(codeBlockStyle)
    private val borderW = borderPx(codeBlockStyle)
 -  private val headerH = headerHeight(codeBlockStyle)
 +  private val headerH = headerHeight(codeBlockStyle, context)
- 
+
    override val segmentMarginTop: Int get() = codeBlockStyle.marginTop.toInt()
    override val segmentMarginBottom: Int get() = codeBlockStyle.marginBottom.toInt()
 @@ -211,7 +211,7 @@ class CodeBlockContainerView(
@@ -23,7 +23,7 @@ index 380c6be..fd7f5cb 100644
 @@ -219,10 +219,8 @@ class CodeBlockContainerView(
        labelTop + languageView.measuredHeight,
      )
- 
+
 -    val iconWidth = copyButton.drawable?.intrinsicWidth ?: copyButton.measuredWidth
 -    val iconSlack = ((copyButton.measuredWidth - iconWidth) / 2).coerceAtLeast(0)
 -    val buttonLeft = (width - inset - copyButton.measuredWidth + iconSlack).coerceAtLeast(0)
@@ -34,7 +34,7 @@ index 380c6be..fd7f5cb 100644
        buttonLeft,
        buttonTop,
 @@ -325,14 +323,14 @@ class CodeBlockContainerView(
- 
+
      // Header is the top content inset plus one label line; the code text
      // view's own top inset then forms the single gap below the label.
 -    private fun headerHeight(style: CodeBlockStyle): Int {
@@ -48,7 +48,7 @@ index 380c6be..fd7f5cb 100644
 -      return contentInset(style) + ceil(metrics.descent - metrics.ascent).toInt()
 +      return maxOf(ceil(48 * context.resources.displayMetrics.density).toInt(), contentInset(style) + ceil(metrics.descent - metrics.ascent).toInt())
      }
- 
+
      private fun createCodePaint(
 @@ -364,7 +362,7 @@ class CodeBlockContainerView(
      ): Float {
@@ -59,16 +59,3545 @@ index 380c6be..fd7f5cb 100644
        val text = buildCodeText(CodeBlockNode.extractCode(node), style)
        if (text.isEmpty()) return headerH + inset * 2f
        val paint = createCodePaint(style, context)
+diff --git a/node_modules/react-native-enriched-markdown/cpp/md4c/md4c.c b/node_modules/react-native-enriched-markdown/cpp/md4c/md4c.c
+index 394b69f..f6b7a65 100644
+--- a/node_modules/react-native-enriched-markdown/cpp/md4c/md4c.c
++++ b/node_modules/react-native-enriched-markdown/cpp/md4c/md4c.c
+@@ -325,6 +325,8 @@ struct MD_VERBATIMLINE_tag {
+     OFF beg;
+     OFF end;
+     OFF indent;
++    OFF indent_beg;
++    unsigned indent_column;
+ };
+
+
+@@ -407,7 +409,31 @@ md_ascii_eq(const CHAR* s1, const CHAR* s2, SZ n)
+ }
+
+ static int
+-md_text_with_null_replacement(MD_CTX* ctx, MD_TEXTTYPE type, const CHAR* str, SZ size)
++md_text_with_source(MD_CTX* ctx, MD_TEXTTYPE type, const CHAR* str, SZ size,
++                    OFF source_beg, OFF source_end, int generated)
++{
++    if(ctx->parser.text_with_source != NULL)
++        return ctx->parser.text_with_source(type, str, size, source_beg,
++                                            source_end, generated, ctx->userdata);
++    return ctx->parser.text(type, str, size, ctx->userdata);
++}
++
++/* Lines omit their terminating CR/LF and sometimes trailing blanks. The span
++ * comes from the original input, never from a synthetic callback pointer. */
++static OFF
++md_source_line_end(MD_CTX* ctx, OFF end)
++{
++    while(end < ctx->size && ISBLANK(end))
++        end++;
++    if(end < ctx->size && CH(end) == _T('\r'))
++        end++;
++    if(end < ctx->size && CH(end) == _T('\n'))
++        end++;
++    return end;
++}
++
++static int
++md_text_with_null_replacement(MD_CTX* ctx, MD_TEXTTYPE type, const CHAR* str, SZ size, OFF source_beg)
+ {
+     OFF off = 0;
+     int ret = 0;
+@@ -417,11 +443,12 @@ md_text_with_null_replacement(MD_CTX* ctx, MD_TEXTTYPE type, const CHAR* str, SZ
+             off++;
+
+         if(off > 0) {
+-            ret = ctx->parser.text(type, str, off, ctx->userdata);
++            ret = md_text_with_source(ctx, type, str, off, source_beg, source_beg + off, FALSE);
+             if(ret != 0)
+                 return ret;
+
+             str += off;
++            source_beg += off;
+             size -= off;
+             off = 0;
+         }
+@@ -429,10 +456,12 @@ md_text_with_null_replacement(MD_CTX* ctx, MD_TEXTTYPE type, const CHAR* str, SZ
+         if(off >= size)
+             return 0;
+
+-        ret = ctx->parser.text(MD_TEXT_NULLCHAR, _T(""), 1, ctx->userdata);
++        ret = md_text_with_source(ctx, MD_TEXT_NULLCHAR, _T(""), 1, source_beg, source_beg + 1, FALSE);
+         if(ret != 0)
+             return ret;
+-        off++;
++        str++;
++        source_beg++;
++        size--;
+     }
+ }
+
+@@ -500,10 +529,10 @@ md_text_with_null_replacement(MD_CTX* ctx, MD_TEXTTYPE type, const CHAR* str, SZ
+         }                                                                   \
+     } while(0)
+
+-#define MD_TEXT(type, str, size)                                            \
++#define MD_TEXT(type, str, size, beg, end, generated)                        \
+     do {                                                                    \
+         if(size > 0) {                                                      \
+-            ret = ctx->parser.text((type), (str), (size), ctx->userdata);   \
++            ret = md_text_with_source(ctx, (type), (str), (size), (beg), (end), (generated)); \
+             if(ret != 0) {                                                  \
+                 MD_LOG("Aborted from text() callback.");                    \
+                 goto abort;                                                 \
+@@ -511,10 +540,10 @@ md_text_with_null_replacement(MD_CTX* ctx, MD_TEXTTYPE type, const CHAR* str, SZ
+         }                                                                   \
+     } while(0)
+
+-#define MD_TEXT_INSECURE(type, str, size)                                   \
++#define MD_TEXT_INSECURE(type, str, size, beg)                              \
+     do {                                                                    \
+         if(size > 0) {                                                      \
+-            ret = md_text_with_null_replacement(ctx, type, str, size);      \
++            ret = md_text_with_null_replacement(ctx, type, str, size, beg); \
+             if(ret != 0) {                                                  \
+                 MD_LOG("Aborted from text() callback.");                    \
+                 goto abort;                                                 \
+@@ -4798,7 +4827,7 @@ md_process_inlines(MD_CTX* ctx, const MD_LINE* lines, MD_SIZE n_lines)
+         /* Process the text up to the next mark or end-of-line. */
+         tmp = (line->end < mark->beg ? line->end : mark->beg);
+         if(tmp > off) {
+-            MD_TEXT(text_type, STR(off), tmp - off);
++            MD_TEXT(text_type, STR(off), tmp - off, off, tmp, FALSE);
+             off = tmp;
+         }
+
+@@ -4809,11 +4838,11 @@ md_process_inlines(MD_CTX* ctx, const MD_LINE* lines, MD_SIZE n_lines)
+                     if(ISNEWLINE(mark->beg+1))
+                         enforce_hardbreak = 1;
+                     else
+-                        MD_TEXT(text_type, STR(mark->beg+1), 1);
++                        MD_TEXT(text_type, STR(mark->beg+1), 1, mark->beg, mark->end, FALSE);
+                     break;
+
+                 case ' ':       /* Non-trivial space. */
+-                    MD_TEXT(text_type, _T(" "), 1);
++                    MD_TEXT(text_type, _T(" "), 1, mark->beg, mark->end, FALSE);
+                     break;
+
+                 case '`':       /* Code span. */
+@@ -5030,11 +5059,11 @@ md_process_inlines(MD_CTX* ctx, const MD_LINE* lines, MD_SIZE n_lines)
+                 }
+
+                 case '&':       /* Entity. */
+-                    MD_TEXT(MD_TEXT_ENTITY, STR(mark->beg), mark->end - mark->beg);
++                    MD_TEXT(MD_TEXT_ENTITY, STR(mark->beg), mark->end - mark->beg, mark->beg, mark->end, FALSE);
+                     break;
+
+                 case '\0':
+-                    MD_TEXT(MD_TEXT_NULLCHAR, _T(""), 1);
++                    MD_TEXT(MD_TEXT_NULLCHAR, _T(""), 1, mark->beg, mark->end, FALSE);
+                     break;
+
+                 case 127:
+@@ -5067,11 +5096,11 @@ md_process_inlines(MD_CTX* ctx, const MD_LINE* lines, MD_SIZE n_lines)
+                 while(off < ctx->size  &&  ISBLANK(off))
+                     off++;
+                 if(off > tmp)
+-                    MD_TEXT(text_type, STR(tmp), off-tmp);
++                    MD_TEXT(text_type, STR(tmp), off-tmp, tmp, off, FALSE);
+
+                 /* and new lines are transformed into single spaces. */
+                 if(off == line->end)
+-                    MD_TEXT(text_type, _T(" "), 1);
++                    MD_TEXT(text_type, _T(" "), 1, line->end, md_source_line_end(ctx, line->end), FALSE);
+             } else if(text_type == MD_TEXT_HTML) {
+                 /* Inside raw HTML, we output the new line verbatim, including
+                  * any trailing spaces. */
+@@ -5079,8 +5108,8 @@ md_process_inlines(MD_CTX* ctx, const MD_LINE* lines, MD_SIZE n_lines)
+                 while(tmp < end  &&  ISBLANK(tmp))
+                     tmp++;
+                 if(tmp > off)
+-                    MD_TEXT(MD_TEXT_HTML, STR(off), tmp - off);
+-                MD_TEXT(MD_TEXT_HTML, _T("\n"), 1);
++                    MD_TEXT(MD_TEXT_HTML, STR(off), tmp - off, off, tmp, FALSE);
++                MD_TEXT(MD_TEXT_HTML, _T("\n"), 1, tmp, md_source_line_end(ctx, tmp), FALSE);
+             } else {
+                 /* Output soft or hard line break. */
+                 MD_TEXTTYPE break_type = MD_TEXT_SOFTBR;
+@@ -5096,7 +5125,7 @@ md_process_inlines(MD_CTX* ctx, const MD_LINE* lines, MD_SIZE n_lines)
+                     }
+                 }
+
+-                MD_TEXT(break_type, _T("\n"), 1);
++                MD_TEXT(break_type, _T("\n"), 1, enforce_hardbreak ? prev_mark->beg : line->end, md_source_line_end(ctx, line->end), FALSE);
+             }
+
+             /* Move to the next line. */
+@@ -5290,6 +5319,8 @@ struct MD_BLOCK_tag {
+      * MD_BLOCK_OL:     Start item number.
+      */
+     MD_SIZE n_lines;
++    OFF source_beg;
++    OFF source_end;
+ };
+
+ struct MD_CONTAINER_tag {
+@@ -5327,31 +5358,36 @@ abort:
+ static int
+ md_process_verbatim_block_contents(MD_CTX* ctx, MD_TEXTTYPE text_type, const MD_VERBATIMLINE* lines, MD_SIZE n_lines)
+ {
+-    static const CHAR indent_chunk_str[] = _T("                ");
+-    static const SZ indent_chunk_size = SIZEOF_ARRAY(indent_chunk_str) - 1;
++    static const CHAR indent_spaces[] = _T("    ");
+
+     MD_SIZE line_index;
+     int ret = 0;
+
+     for(line_index = 0; line_index < n_lines; line_index++) {
+         const MD_VERBATIMLINE* line = &lines[line_index];
+-        int indent = line->indent;
+-
+-        MD_ASSERT(indent >= 0);
+-
+-        /* Output code indentation. */
+-        while(indent > (int) indent_chunk_size) {
+-            MD_TEXT(text_type, indent_chunk_str, indent_chunk_size);
+-            indent -= indent_chunk_size;
++        OFF indent_off;
++        unsigned column = line->indent_column;
++        unsigned keep_from;
++
++        /* The parser removed container/fence indentation in columns, not bytes.
++         * Retain the suffix in columns, including a partially consumed tab. */
++        for(indent_off = line->indent_beg; indent_off < line->beg; indent_off++)
++            column += (CH(indent_off) == _T('\t') ? 4 - column % 4 : 1);
++        MD_ASSERT(column >= line->indent);
++        keep_from = column - line->indent;
++        column = line->indent_column;
++        for(indent_off = line->indent_beg; indent_off < line->beg; indent_off++) {
++            unsigned next_column = column + (CH(indent_off) == _T('\t') ? 4 - column % 4 : 1);
++            unsigned count = next_column > keep_from ? next_column - MAX(column, keep_from) : 0;
++            MD_TEXT(text_type, indent_spaces, count, indent_off, indent_off + 1, FALSE);
++            column = next_column;
+         }
+-        if(indent > 0)
+-            MD_TEXT(text_type, indent_chunk_str, indent);
+
+         /* Output the code line itself. */
+-        MD_TEXT_INSECURE(text_type, STR(line->beg), line->end - line->beg);
++        MD_TEXT_INSECURE(text_type, STR(line->beg), line->end - line->beg, line->beg);
+
+         /* Enforce end-of-line. */
+-        MD_TEXT(text_type, _T("\n"), 1);
++        MD_TEXT(text_type, _T("\n"), 1, line->end, md_source_line_end(ctx, line->end), line->end == ctx->size);
+     }
+
+ abort:
+@@ -5478,6 +5514,8 @@ md_process_leaf_block(MD_CTX* ctx, MD_BLOCK* block)
+                 clean_fence_code_detail = TRUE;
+                 MD_CHECK(md_setup_fenced_code_detail(ctx, block, &det.code, &info_build, &lang_build));
+             }
++            det.code.source_beg = block->source_beg;
++            det.code.source_end = block->source_end;
+             break;
+
+         case MD_BLOCK_TABLE:
+@@ -5825,6 +5863,14 @@ md_add_line_into_current_block(MD_CTX* ctx, const MD_LINE_ANALYSIS* analysis)
+ {
+     MD_ASSERT(ctx->current_block != NULL);
+
++    if(ctx->current_block->n_lines == 0) {
++        OFF beg = analysis->beg;
++        while(beg > 0 && !ISNEWLINE(beg - 1))
++            beg--;
++        ctx->current_block->source_beg = beg;
++    }
++    ctx->current_block->source_end = md_source_line_end(ctx, analysis->end);
++
+     if(ctx->current_block->type == MD_BLOCK_CODE || ctx->current_block->type == MD_BLOCK_HTML) {
+         MD_VERBATIMLINE* line;
+
+@@ -5835,6 +5881,18 @@ md_add_line_into_current_block(MD_CTX* ctx, const MD_LINE_ANALYSIS* analysis)
+         line->indent = analysis->indent;
+         line->beg = analysis->beg;
+         line->end = analysis->end;
++        line->indent_beg = line->beg;
++        while(line->indent_beg > 0 && ISBLANK(line->indent_beg - 1))
++            line->indent_beg--;
++        {
++            OFF off = line->indent_beg;
++            unsigned column = 0;
++            while(off > 0 && !ISNEWLINE(off - 1))
++                off--;
++            for(; off < line->indent_beg; off++)
++                column += (CH(off) == _T('\t') ? 4 - column % 4 : 1);
++            line->indent_column = column;
++        }
+     } else {
+         MD_LINE* line;
+
+@@ -6552,6 +6610,8 @@ md_analyze_line(MD_CTX* ctx, OFF beg, OFF* p_end,
+              * which we transform into MD_LINE_BLANK. */
+             if(line->indent < ctx->code_indent_offset) {
+                 if(md_is_closing_code_fence(ctx, CH(pivot_line->beg), off, &off)) {
++                    MD_ASSERT(ctx->current_block != NULL && ctx->current_block->type == MD_BLOCK_CODE);
++                    ctx->current_block->source_end = md_source_line_end(ctx, off);
+                     line->type = MD_LINE_BLANK;
+                     ctx->last_line_has_list_loosening_effect = FALSE;
+                     break;
+diff --git a/node_modules/react-native-enriched-markdown/cpp/md4c/md4c.h b/node_modules/react-native-enriched-markdown/cpp/md4c/md4c.h
+index e920bc4..7232992 100644
+--- a/node_modules/react-native-enriched-markdown/cpp/md4c/md4c.h
++++ b/node_modules/react-native-enriched-markdown/cpp/md4c/md4c.h
+@@ -47,6 +47,10 @@ typedef char MD_CHAR;
+ typedef unsigned MD_SIZE;
+ typedef unsigned MD_OFFSET;
+
++/* Enriched Markdown's optional original-input provenance callback. Offsets are
++ * bytes in the UTF-8 build, not offsets into a possibly synthetic text buffer. */
++#define MD4C_SOURCE_SPANS 1
++
+ /* Block represents a part of document hierarchy structure like a paragraph
+  * or list item.
+  */
+@@ -308,6 +312,8 @@ typedef struct MD_BLOCK_CODE_DETAIL {
+   MD_ATTRIBUTE info;
+   MD_ATTRIBUTE lang;
+   MD_CHAR fence_char; /* The character used for fenced code block; or zero for indented code block. */
++  MD_OFFSET source_beg;
++  MD_OFFSET source_end;
+ } MD_BLOCK_CODE_DETAIL;
+
+ /* Detailed info for MD_BLOCK_TABLE. */
+@@ -451,6 +457,13 @@ typedef struct MD_PARSER {
+   /* Reserved. Set to NULL.
+      */
+   void (*syntax)(void);
++
++  /* Optional replacement for text(). A transformed emission (escaped character,
++   * CRLF, expanded tab) retains the actual consumed input span. generated is
++   * nonzero only for text with no original input, e.g. an enforced EOF newline.
++   * Initialize to NULL for the ordinary text callback. */
++  int (*text_with_source)(MD_TEXTTYPE, const MD_CHAR *, MD_SIZE,
++                          MD_OFFSET, MD_OFFSET, int /*generated*/, void *);
+ } MD_PARSER;
+
+ /* For backward compatibility. Do not use in new code.
+diff --git a/node_modules/react-native-enriched-markdown/cpp/parser/MD4CParser.cpp b/node_modules/react-native-enriched-markdown/cpp/parser/MD4CParser.cpp
+index 4653212..42ec1a9 100644
+--- a/node_modules/react-native-enriched-markdown/cpp/parser/MD4CParser.cpp
++++ b/node_modules/react-native-enriched-markdown/cpp/parser/MD4CParser.cpp
+@@ -1,16 +1,2192 @@
+ #include "MD4CParser.hpp"
+ #include "../md4c/md4c.h"
++#include <algorithm>
++#include <cstdint>
+ #include <cstring>
+ #include <vector>
+
+ namespace Markdown {
+
++namespace {
++// WHATWG named references, generated from Python's standard HTML5 entity table.
++// Only semicolon-terminated references are admitted by MD4C's entity callback.
++std::string decodeEntity(const std::string &entity) {
++  if (entity.size() > 3 && entity[1] == '#') {
++    size_t offset = 2;
++    unsigned base = 10;
++    if (entity[offset] == 'x' || entity[offset] == 'X') { base = 16; ++offset; }
++    uint32_t scalar = 0;
++    for (; offset + 1 < entity.size(); ++offset) {
++      unsigned digit = entity[offset] >= '0' && entity[offset] <= '9' ? entity[offset] - '0' :
++                       entity[offset] >= 'A' && entity[offset] <= 'F' ? entity[offset] - 'A' + 10 : entity[offset] - 'a' + 10;
++      scalar = scalar > 0x10FFFF ? 0x110000 : scalar * base + digit;
++    }
++    static const uint32_t replacements[] = {
++      0x20AC,0x81,0x201A,0x192,0x201E,0x2026,0x2020,0x2021,
++      0x2C6,0x2030,0x160,0x2039,0x152,0x8D,0x17D,0x8F,
++      0x90,0x2018,0x2019,0x201C,0x201D,0x2022,0x2013,0x2014,
++      0x2DC,0x2122,0x161,0x203A,0x153,0x9D,0x17E,0x178
++    };
++    if (scalar >= 0x80 && scalar <= 0x9F) scalar = replacements[scalar - 0x80];
++    if (scalar == 0 || scalar > 0x10FFFF || (scalar >= 0xD800 && scalar <= 0xDFFF)) scalar = 0xFFFD;
++    std::string result;
++    if (scalar < 0x80) result += static_cast<char>(scalar);
++    else if (scalar < 0x800) {
++      result += static_cast<char>(0xC0 | scalar >> 6);
++      result += static_cast<char>(0x80 | (scalar & 0x3F));
++    } else if (scalar < 0x10000) {
++      result += static_cast<char>(0xE0 | scalar >> 12);
++      result += static_cast<char>(0x80 | (scalar >> 6 & 0x3F));
++      result += static_cast<char>(0x80 | (scalar & 0x3F));
++    } else {
++      result += static_cast<char>(0xF0 | scalar >> 18);
++      result += static_cast<char>(0x80 | (scalar >> 12 & 0x3F));
++      result += static_cast<char>(0x80 | (scalar >> 6 & 0x3F));
++      result += static_cast<char>(0x80 | (scalar & 0x3F));
++    }
++    return result;
++  }
++  static const std::pair<const char *, const char *> named[] = {
++    {"&AElig;", "Æ"},
++    {"&AMP;", "&"},
++    {"&Aacute;", "Á"},
++    {"&Abreve;", "Ă"},
++    {"&Acirc;", "Â"},
++    {"&Acy;", "А"},
++    {"&Afr;", "𝔄"},
++    {"&Agrave;", "À"},
++    {"&Alpha;", "Α"},
++    {"&Amacr;", "Ā"},
++    {"&And;", "⩓"},
++    {"&Aogon;", "Ą"},
++    {"&Aopf;", "𝔸"},
++    {"&ApplyFunction;", "⁡"},
++    {"&Aring;", "Å"},
++    {"&Ascr;", "𝒜"},
++    {"&Assign;", "≔"},
++    {"&Atilde;", "Ã"},
++    {"&Auml;", "Ä"},
++    {"&Backslash;", "∖"},
++    {"&Barv;", "⫧"},
++    {"&Barwed;", "⌆"},
++    {"&Bcy;", "Б"},
++    {"&Because;", "∵"},
++    {"&Bernoullis;", "ℬ"},
++    {"&Beta;", "Β"},
++    {"&Bfr;", "𝔅"},
++    {"&Bopf;", "𝔹"},
++    {"&Breve;", "˘"},
++    {"&Bscr;", "ℬ"},
++    {"&Bumpeq;", "≎"},
++    {"&CHcy;", "Ч"},
++    {"&COPY;", "©"},
++    {"&Cacute;", "Ć"},
++    {"&Cap;", "⋒"},
++    {"&CapitalDifferentialD;", "ⅅ"},
++    {"&Cayleys;", "ℭ"},
++    {"&Ccaron;", "Č"},
++    {"&Ccedil;", "Ç"},
++    {"&Ccirc;", "Ĉ"},
++    {"&Cconint;", "∰"},
++    {"&Cdot;", "Ċ"},
++    {"&Cedilla;", "¸"},
++    {"&CenterDot;", "·"},
++    {"&Cfr;", "ℭ"},
++    {"&Chi;", "Χ"},
++    {"&CircleDot;", "⊙"},
++    {"&CircleMinus;", "⊖"},
++    {"&CirclePlus;", "⊕"},
++    {"&CircleTimes;", "⊗"},
++    {"&ClockwiseContourIntegral;", "∲"},
++    {"&CloseCurlyDoubleQuote;", "”"},
++    {"&CloseCurlyQuote;", "’"},
++    {"&Colon;", "∷"},
++    {"&Colone;", "⩴"},
++    {"&Congruent;", "≡"},
++    {"&Conint;", "∯"},
++    {"&ContourIntegral;", "∮"},
++    {"&Copf;", "ℂ"},
++    {"&Coproduct;", "∐"},
++    {"&CounterClockwiseContourIntegral;", "∳"},
++    {"&Cross;", "⨯"},
++    {"&Cscr;", "𝒞"},
++    {"&Cup;", "⋓"},
++    {"&CupCap;", "≍"},
++    {"&DD;", "ⅅ"},
++    {"&DDotrahd;", "⤑"},
++    {"&DJcy;", "Ђ"},
++    {"&DScy;", "Ѕ"},
++    {"&DZcy;", "Џ"},
++    {"&Dagger;", "‡"},
++    {"&Darr;", "↡"},
++    {"&Dashv;", "⫤"},
++    {"&Dcaron;", "Ď"},
++    {"&Dcy;", "Д"},
++    {"&Del;", "∇"},
++    {"&Delta;", "Δ"},
++    {"&Dfr;", "𝔇"},
++    {"&DiacriticalAcute;", "´"},
++    {"&DiacriticalDot;", "˙"},
++    {"&DiacriticalDoubleAcute;", "˝"},
++    {"&DiacriticalGrave;", "`"},
++    {"&DiacriticalTilde;", "˜"},
++    {"&Diamond;", "⋄"},
++    {"&DifferentialD;", "ⅆ"},
++    {"&Dopf;", "𝔻"},
++    {"&Dot;", "¨"},
++    {"&DotDot;", "⃜"},
++    {"&DotEqual;", "≐"},
++    {"&DoubleContourIntegral;", "∯"},
++    {"&DoubleDot;", "¨"},
++    {"&DoubleDownArrow;", "⇓"},
++    {"&DoubleLeftArrow;", "⇐"},
++    {"&DoubleLeftRightArrow;", "⇔"},
++    {"&DoubleLeftTee;", "⫤"},
++    {"&DoubleLongLeftArrow;", "⟸"},
++    {"&DoubleLongLeftRightArrow;", "⟺"},
++    {"&DoubleLongRightArrow;", "⟹"},
++    {"&DoubleRightArrow;", "⇒"},
++    {"&DoubleRightTee;", "⊨"},
++    {"&DoubleUpArrow;", "⇑"},
++    {"&DoubleUpDownArrow;", "⇕"},
++    {"&DoubleVerticalBar;", "∥"},
++    {"&DownArrow;", "↓"},
++    {"&DownArrowBar;", "⤓"},
++    {"&DownArrowUpArrow;", "⇵"},
++    {"&DownBreve;", "̑"},
++    {"&DownLeftRightVector;", "⥐"},
++    {"&DownLeftTeeVector;", "⥞"},
++    {"&DownLeftVector;", "↽"},
++    {"&DownLeftVectorBar;", "⥖"},
++    {"&DownRightTeeVector;", "⥟"},
++    {"&DownRightVector;", "⇁"},
++    {"&DownRightVectorBar;", "⥗"},
++    {"&DownTee;", "⊤"},
++    {"&DownTeeArrow;", "↧"},
++    {"&Downarrow;", "⇓"},
++    {"&Dscr;", "𝒟"},
++    {"&Dstrok;", "Đ"},
++    {"&ENG;", "Ŋ"},
++    {"&ETH;", "Ð"},
++    {"&Eacute;", "É"},
++    {"&Ecaron;", "Ě"},
++    {"&Ecirc;", "Ê"},
++    {"&Ecy;", "Э"},
++    {"&Edot;", "Ė"},
++    {"&Efr;", "𝔈"},
++    {"&Egrave;", "È"},
++    {"&Element;", "∈"},
++    {"&Emacr;", "Ē"},
++    {"&EmptySmallSquare;", "◻"},
++    {"&EmptyVerySmallSquare;", "▫"},
++    {"&Eogon;", "Ę"},
++    {"&Eopf;", "𝔼"},
++    {"&Epsilon;", "Ε"},
++    {"&Equal;", "⩵"},
++    {"&EqualTilde;", "≂"},
++    {"&Equilibrium;", "⇌"},
++    {"&Escr;", "ℰ"},
++    {"&Esim;", "⩳"},
++    {"&Eta;", "Η"},
++    {"&Euml;", "Ë"},
++    {"&Exists;", "∃"},
++    {"&ExponentialE;", "ⅇ"},
++    {"&Fcy;", "Ф"},
++    {"&Ffr;", "𝔉"},
++    {"&FilledSmallSquare;", "◼"},
++    {"&FilledVerySmallSquare;", "▪"},
++    {"&Fopf;", "𝔽"},
++    {"&ForAll;", "∀"},
++    {"&Fouriertrf;", "ℱ"},
++    {"&Fscr;", "ℱ"},
++    {"&GJcy;", "Ѓ"},
++    {"&GT;", ">"},
++    {"&Gamma;", "Γ"},
++    {"&Gammad;", "Ϝ"},
++    {"&Gbreve;", "Ğ"},
++    {"&Gcedil;", "Ģ"},
++    {"&Gcirc;", "Ĝ"},
++    {"&Gcy;", "Г"},
++    {"&Gdot;", "Ġ"},
++    {"&Gfr;", "𝔊"},
++    {"&Gg;", "⋙"},
++    {"&Gopf;", "𝔾"},
++    {"&GreaterEqual;", "≥"},
++    {"&GreaterEqualLess;", "⋛"},
++    {"&GreaterFullEqual;", "≧"},
++    {"&GreaterGreater;", "⪢"},
++    {"&GreaterLess;", "≷"},
++    {"&GreaterSlantEqual;", "⩾"},
++    {"&GreaterTilde;", "≳"},
++    {"&Gscr;", "𝒢"},
++    {"&Gt;", "≫"},
++    {"&HARDcy;", "Ъ"},
++    {"&Hacek;", "ˇ"},
++    {"&Hat;", "^"},
++    {"&Hcirc;", "Ĥ"},
++    {"&Hfr;", "ℌ"},
++    {"&HilbertSpace;", "ℋ"},
++    {"&Hopf;", "ℍ"},
++    {"&HorizontalLine;", "─"},
++    {"&Hscr;", "ℋ"},
++    {"&Hstrok;", "Ħ"},
++    {"&HumpDownHump;", "≎"},
++    {"&HumpEqual;", "≏"},
++    {"&IEcy;", "Е"},
++    {"&IJlig;", "Ĳ"},
++    {"&IOcy;", "Ё"},
++    {"&Iacute;", "Í"},
++    {"&Icirc;", "Î"},
++    {"&Icy;", "И"},
++    {"&Idot;", "İ"},
++    {"&Ifr;", "ℑ"},
++    {"&Igrave;", "Ì"},
++    {"&Im;", "ℑ"},
++    {"&Imacr;", "Ī"},
++    {"&ImaginaryI;", "ⅈ"},
++    {"&Implies;", "⇒"},
++    {"&Int;", "∬"},
++    {"&Integral;", "∫"},
++    {"&Intersection;", "⋂"},
++    {"&InvisibleComma;", "⁣"},
++    {"&InvisibleTimes;", "⁢"},
++    {"&Iogon;", "Į"},
++    {"&Iopf;", "𝕀"},
++    {"&Iota;", "Ι"},
++    {"&Iscr;", "ℐ"},
++    {"&Itilde;", "Ĩ"},
++    {"&Iukcy;", "І"},
++    {"&Iuml;", "Ï"},
++    {"&Jcirc;", "Ĵ"},
++    {"&Jcy;", "Й"},
++    {"&Jfr;", "𝔍"},
++    {"&Jopf;", "𝕁"},
++    {"&Jscr;", "𝒥"},
++    {"&Jsercy;", "Ј"},
++    {"&Jukcy;", "Є"},
++    {"&KHcy;", "Х"},
++    {"&KJcy;", "Ќ"},
++    {"&Kappa;", "Κ"},
++    {"&Kcedil;", "Ķ"},
++    {"&Kcy;", "К"},
++    {"&Kfr;", "𝔎"},
++    {"&Kopf;", "𝕂"},
++    {"&Kscr;", "𝒦"},
++    {"&LJcy;", "Љ"},
++    {"&LT;", "<"},
++    {"&Lacute;", "Ĺ"},
++    {"&Lambda;", "Λ"},
++    {"&Lang;", "⟪"},
++    {"&Laplacetrf;", "ℒ"},
++    {"&Larr;", "↞"},
++    {"&Lcaron;", "Ľ"},
++    {"&Lcedil;", "Ļ"},
++    {"&Lcy;", "Л"},
++    {"&LeftAngleBracket;", "⟨"},
++    {"&LeftArrow;", "←"},
++    {"&LeftArrowBar;", "⇤"},
++    {"&LeftArrowRightArrow;", "⇆"},
++    {"&LeftCeiling;", "⌈"},
++    {"&LeftDoubleBracket;", "⟦"},
++    {"&LeftDownTeeVector;", "⥡"},
++    {"&LeftDownVector;", "⇃"},
++    {"&LeftDownVectorBar;", "⥙"},
++    {"&LeftFloor;", "⌊"},
++    {"&LeftRightArrow;", "↔"},
++    {"&LeftRightVector;", "⥎"},
++    {"&LeftTee;", "⊣"},
++    {"&LeftTeeArrow;", "↤"},
++    {"&LeftTeeVector;", "⥚"},
++    {"&LeftTriangle;", "⊲"},
++    {"&LeftTriangleBar;", "⧏"},
++    {"&LeftTriangleEqual;", "⊴"},
++    {"&LeftUpDownVector;", "⥑"},
++    {"&LeftUpTeeVector;", "⥠"},
++    {"&LeftUpVector;", "↿"},
++    {"&LeftUpVectorBar;", "⥘"},
++    {"&LeftVector;", "↼"},
++    {"&LeftVectorBar;", "⥒"},
++    {"&Leftarrow;", "⇐"},
++    {"&Leftrightarrow;", "⇔"},
++    {"&LessEqualGreater;", "⋚"},
++    {"&LessFullEqual;", "≦"},
++    {"&LessGreater;", "≶"},
++    {"&LessLess;", "⪡"},
++    {"&LessSlantEqual;", "⩽"},
++    {"&LessTilde;", "≲"},
++    {"&Lfr;", "𝔏"},
++    {"&Ll;", "⋘"},
++    {"&Lleftarrow;", "⇚"},
++    {"&Lmidot;", "Ŀ"},
++    {"&LongLeftArrow;", "⟵"},
++    {"&LongLeftRightArrow;", "⟷"},
++    {"&LongRightArrow;", "⟶"},
++    {"&Longleftarrow;", "⟸"},
++    {"&Longleftrightarrow;", "⟺"},
++    {"&Longrightarrow;", "⟹"},
++    {"&Lopf;", "𝕃"},
++    {"&LowerLeftArrow;", "↙"},
++    {"&LowerRightArrow;", "↘"},
++    {"&Lscr;", "ℒ"},
++    {"&Lsh;", "↰"},
++    {"&Lstrok;", "Ł"},
++    {"&Lt;", "≪"},
++    {"&Map;", "⤅"},
++    {"&Mcy;", "М"},
++    {"&MediumSpace;", " "},
++    {"&Mellintrf;", "ℳ"},
++    {"&Mfr;", "𝔐"},
++    {"&MinusPlus;", "∓"},
++    {"&Mopf;", "𝕄"},
++    {"&Mscr;", "ℳ"},
++    {"&Mu;", "Μ"},
++    {"&NJcy;", "Њ"},
++    {"&Nacute;", "Ń"},
++    {"&Ncaron;", "Ň"},
++    {"&Ncedil;", "Ņ"},
++    {"&Ncy;", "Н"},
++    {"&NegativeMediumSpace;", "​"},
++    {"&NegativeThickSpace;", "​"},
++    {"&NegativeThinSpace;", "​"},
++    {"&NegativeVeryThinSpace;", "​"},
++    {"&NestedGreaterGreater;", "≫"},
++    {"&NestedLessLess;", "≪"},
++    {"&NewLine;", "\n"},
++    {"&Nfr;", "𝔑"},
++    {"&NoBreak;", "⁠"},
++    {"&NonBreakingSpace;", " "},
++    {"&Nopf;", "ℕ"},
++    {"&Not;", "⫬"},
++    {"&NotCongruent;", "≢"},
++    {"&NotCupCap;", "≭"},
++    {"&NotDoubleVerticalBar;", "∦"},
++    {"&NotElement;", "∉"},
++    {"&NotEqual;", "≠"},
++    {"&NotEqualTilde;", "≂̸"},
++    {"&NotExists;", "∄"},
++    {"&NotGreater;", "≯"},
++    {"&NotGreaterEqual;", "≱"},
++    {"&NotGreaterFullEqual;", "≧̸"},
++    {"&NotGreaterGreater;", "≫̸"},
++    {"&NotGreaterLess;", "≹"},
++    {"&NotGreaterSlantEqual;", "⩾̸"},
++    {"&NotGreaterTilde;", "≵"},
++    {"&NotHumpDownHump;", "≎̸"},
++    {"&NotHumpEqual;", "≏̸"},
++    {"&NotLeftTriangle;", "⋪"},
++    {"&NotLeftTriangleBar;", "⧏̸"},
++    {"&NotLeftTriangleEqual;", "⋬"},
++    {"&NotLess;", "≮"},
++    {"&NotLessEqual;", "≰"},
++    {"&NotLessGreater;", "≸"},
++    {"&NotLessLess;", "≪̸"},
++    {"&NotLessSlantEqual;", "⩽̸"},
++    {"&NotLessTilde;", "≴"},
++    {"&NotNestedGreaterGreater;", "⪢̸"},
++    {"&NotNestedLessLess;", "⪡̸"},
++    {"&NotPrecedes;", "⊀"},
++    {"&NotPrecedesEqual;", "⪯̸"},
++    {"&NotPrecedesSlantEqual;", "⋠"},
++    {"&NotReverseElement;", "∌"},
++    {"&NotRightTriangle;", "⋫"},
++    {"&NotRightTriangleBar;", "⧐̸"},
++    {"&NotRightTriangleEqual;", "⋭"},
++    {"&NotSquareSubset;", "⊏̸"},
++    {"&NotSquareSubsetEqual;", "⋢"},
++    {"&NotSquareSuperset;", "⊐̸"},
++    {"&NotSquareSupersetEqual;", "⋣"},
++    {"&NotSubset;", "⊂⃒"},
++    {"&NotSubsetEqual;", "⊈"},
++    {"&NotSucceeds;", "⊁"},
++    {"&NotSucceedsEqual;", "⪰̸"},
++    {"&NotSucceedsSlantEqual;", "⋡"},
++    {"&NotSucceedsTilde;", "≿̸"},
++    {"&NotSuperset;", "⊃⃒"},
++    {"&NotSupersetEqual;", "⊉"},
++    {"&NotTilde;", "≁"},
++    {"&NotTildeEqual;", "≄"},
++    {"&NotTildeFullEqual;", "≇"},
++    {"&NotTildeTilde;", "≉"},
++    {"&NotVerticalBar;", "∤"},
++    {"&Nscr;", "𝒩"},
++    {"&Ntilde;", "Ñ"},
++    {"&Nu;", "Ν"},
++    {"&OElig;", "Œ"},
++    {"&Oacute;", "Ó"},
++    {"&Ocirc;", "Ô"},
++    {"&Ocy;", "О"},
++    {"&Odblac;", "Ő"},
++    {"&Ofr;", "𝔒"},
++    {"&Ograve;", "Ò"},
++    {"&Omacr;", "Ō"},
++    {"&Omega;", "Ω"},
++    {"&Omicron;", "Ο"},
++    {"&Oopf;", "𝕆"},
++    {"&OpenCurlyDoubleQuote;", "“"},
++    {"&OpenCurlyQuote;", "‘"},
++    {"&Or;", "⩔"},
++    {"&Oscr;", "𝒪"},
++    {"&Oslash;", "Ø"},
++    {"&Otilde;", "Õ"},
++    {"&Otimes;", "⨷"},
++    {"&Ouml;", "Ö"},
++    {"&OverBar;", "‾"},
++    {"&OverBrace;", "⏞"},
++    {"&OverBracket;", "⎴"},
++    {"&OverParenthesis;", "⏜"},
++    {"&PartialD;", "∂"},
++    {"&Pcy;", "П"},
++    {"&Pfr;", "𝔓"},
++    {"&Phi;", "Φ"},
++    {"&Pi;", "Π"},
++    {"&PlusMinus;", "±"},
++    {"&Poincareplane;", "ℌ"},
++    {"&Popf;", "ℙ"},
++    {"&Pr;", "⪻"},
++    {"&Precedes;", "≺"},
++    {"&PrecedesEqual;", "⪯"},
++    {"&PrecedesSlantEqual;", "≼"},
++    {"&PrecedesTilde;", "≾"},
++    {"&Prime;", "″"},
++    {"&Product;", "∏"},
++    {"&Proportion;", "∷"},
++    {"&Proportional;", "∝"},
++    {"&Pscr;", "𝒫"},
++    {"&Psi;", "Ψ"},
++    {"&QUOT;", "\""},
++    {"&Qfr;", "𝔔"},
++    {"&Qopf;", "ℚ"},
++    {"&Qscr;", "𝒬"},
++    {"&RBarr;", "⤐"},
++    {"&REG;", "®"},
++    {"&Racute;", "Ŕ"},
++    {"&Rang;", "⟫"},
++    {"&Rarr;", "↠"},
++    {"&Rarrtl;", "⤖"},
++    {"&Rcaron;", "Ř"},
++    {"&Rcedil;", "Ŗ"},
++    {"&Rcy;", "Р"},
++    {"&Re;", "ℜ"},
++    {"&ReverseElement;", "∋"},
++    {"&ReverseEquilibrium;", "⇋"},
++    {"&ReverseUpEquilibrium;", "⥯"},
++    {"&Rfr;", "ℜ"},
++    {"&Rho;", "Ρ"},
++    {"&RightAngleBracket;", "⟩"},
++    {"&RightArrow;", "→"},
++    {"&RightArrowBar;", "⇥"},
++    {"&RightArrowLeftArrow;", "⇄"},
++    {"&RightCeiling;", "⌉"},
++    {"&RightDoubleBracket;", "⟧"},
++    {"&RightDownTeeVector;", "⥝"},
++    {"&RightDownVector;", "⇂"},
++    {"&RightDownVectorBar;", "⥕"},
++    {"&RightFloor;", "⌋"},
++    {"&RightTee;", "⊢"},
++    {"&RightTeeArrow;", "↦"},
++    {"&RightTeeVector;", "⥛"},
++    {"&RightTriangle;", "⊳"},
++    {"&RightTriangleBar;", "⧐"},
++    {"&RightTriangleEqual;", "⊵"},
++    {"&RightUpDownVector;", "⥏"},
++    {"&RightUpTeeVector;", "⥜"},
++    {"&RightUpVector;", "↾"},
++    {"&RightUpVectorBar;", "⥔"},
++    {"&RightVector;", "⇀"},
++    {"&RightVectorBar;", "⥓"},
++    {"&Rightarrow;", "⇒"},
++    {"&Ropf;", "ℝ"},
++    {"&RoundImplies;", "⥰"},
++    {"&Rrightarrow;", "⇛"},
++    {"&Rscr;", "ℛ"},
++    {"&Rsh;", "↱"},
++    {"&RuleDelayed;", "⧴"},
++    {"&SHCHcy;", "Щ"},
++    {"&SHcy;", "Ш"},
++    {"&SOFTcy;", "Ь"},
++    {"&Sacute;", "Ś"},
++    {"&Sc;", "⪼"},
++    {"&Scaron;", "Š"},
++    {"&Scedil;", "Ş"},
++    {"&Scirc;", "Ŝ"},
++    {"&Scy;", "С"},
++    {"&Sfr;", "𝔖"},
++    {"&ShortDownArrow;", "↓"},
++    {"&ShortLeftArrow;", "←"},
++    {"&ShortRightArrow;", "→"},
++    {"&ShortUpArrow;", "↑"},
++    {"&Sigma;", "Σ"},
++    {"&SmallCircle;", "∘"},
++    {"&Sopf;", "𝕊"},
++    {"&Sqrt;", "√"},
++    {"&Square;", "□"},
++    {"&SquareIntersection;", "⊓"},
++    {"&SquareSubset;", "⊏"},
++    {"&SquareSubsetEqual;", "⊑"},
++    {"&SquareSuperset;", "⊐"},
++    {"&SquareSupersetEqual;", "⊒"},
++    {"&SquareUnion;", "⊔"},
++    {"&Sscr;", "𝒮"},
++    {"&Star;", "⋆"},
++    {"&Sub;", "⋐"},
++    {"&Subset;", "⋐"},
++    {"&SubsetEqual;", "⊆"},
++    {"&Succeeds;", "≻"},
++    {"&SucceedsEqual;", "⪰"},
++    {"&SucceedsSlantEqual;", "≽"},
++    {"&SucceedsTilde;", "≿"},
++    {"&SuchThat;", "∋"},
++    {"&Sum;", "∑"},
++    {"&Sup;", "⋑"},
++    {"&Superset;", "⊃"},
++    {"&SupersetEqual;", "⊇"},
++    {"&Supset;", "⋑"},
++    {"&THORN;", "Þ"},
++    {"&TRADE;", "™"},
++    {"&TSHcy;", "Ћ"},
++    {"&TScy;", "Ц"},
++    {"&Tab;", "\t"},
++    {"&Tau;", "Τ"},
++    {"&Tcaron;", "Ť"},
++    {"&Tcedil;", "Ţ"},
++    {"&Tcy;", "Т"},
++    {"&Tfr;", "𝔗"},
++    {"&Therefore;", "∴"},
++    {"&Theta;", "Θ"},
++    {"&ThickSpace;", "  "},
++    {"&ThinSpace;", " "},
++    {"&Tilde;", "∼"},
++    {"&TildeEqual;", "≃"},
++    {"&TildeFullEqual;", "≅"},
++    {"&TildeTilde;", "≈"},
++    {"&Topf;", "𝕋"},
++    {"&TripleDot;", "⃛"},
++    {"&Tscr;", "𝒯"},
++    {"&Tstrok;", "Ŧ"},
++    {"&Uacute;", "Ú"},
++    {"&Uarr;", "↟"},
++    {"&Uarrocir;", "⥉"},
++    {"&Ubrcy;", "Ў"},
++    {"&Ubreve;", "Ŭ"},
++    {"&Ucirc;", "Û"},
++    {"&Ucy;", "У"},
++    {"&Udblac;", "Ű"},
++    {"&Ufr;", "𝔘"},
++    {"&Ugrave;", "Ù"},
++    {"&Umacr;", "Ū"},
++    {"&UnderBar;", "_"},
++    {"&UnderBrace;", "⏟"},
++    {"&UnderBracket;", "⎵"},
++    {"&UnderParenthesis;", "⏝"},
++    {"&Union;", "⋃"},
++    {"&UnionPlus;", "⊎"},
++    {"&Uogon;", "Ų"},
++    {"&Uopf;", "𝕌"},
++    {"&UpArrow;", "↑"},
++    {"&UpArrowBar;", "⤒"},
++    {"&UpArrowDownArrow;", "⇅"},
++    {"&UpDownArrow;", "↕"},
++    {"&UpEquilibrium;", "⥮"},
++    {"&UpTee;", "⊥"},
++    {"&UpTeeArrow;", "↥"},
++    {"&Uparrow;", "⇑"},
++    {"&Updownarrow;", "⇕"},
++    {"&UpperLeftArrow;", "↖"},
++    {"&UpperRightArrow;", "↗"},
++    {"&Upsi;", "ϒ"},
++    {"&Upsilon;", "Υ"},
++    {"&Uring;", "Ů"},
++    {"&Uscr;", "𝒰"},
++    {"&Utilde;", "Ũ"},
++    {"&Uuml;", "Ü"},
++    {"&VDash;", "⊫"},
++    {"&Vbar;", "⫫"},
++    {"&Vcy;", "В"},
++    {"&Vdash;", "⊩"},
++    {"&Vdashl;", "⫦"},
++    {"&Vee;", "⋁"},
++    {"&Verbar;", "‖"},
++    {"&Vert;", "‖"},
++    {"&VerticalBar;", "∣"},
++    {"&VerticalLine;", "|"},
++    {"&VerticalSeparator;", "❘"},
++    {"&VerticalTilde;", "≀"},
++    {"&VeryThinSpace;", " "},
++    {"&Vfr;", "𝔙"},
++    {"&Vopf;", "𝕍"},
++    {"&Vscr;", "𝒱"},
++    {"&Vvdash;", "⊪"},
++    {"&Wcirc;", "Ŵ"},
++    {"&Wedge;", "⋀"},
++    {"&Wfr;", "𝔚"},
++    {"&Wopf;", "𝕎"},
++    {"&Wscr;", "𝒲"},
++    {"&Xfr;", "𝔛"},
++    {"&Xi;", "Ξ"},
++    {"&Xopf;", "𝕏"},
++    {"&Xscr;", "𝒳"},
++    {"&YAcy;", "Я"},
++    {"&YIcy;", "Ї"},
++    {"&YUcy;", "Ю"},
++    {"&Yacute;", "Ý"},
++    {"&Ycirc;", "Ŷ"},
++    {"&Ycy;", "Ы"},
++    {"&Yfr;", "𝔜"},
++    {"&Yopf;", "𝕐"},
++    {"&Yscr;", "𝒴"},
++    {"&Yuml;", "Ÿ"},
++    {"&ZHcy;", "Ж"},
++    {"&Zacute;", "Ź"},
++    {"&Zcaron;", "Ž"},
++    {"&Zcy;", "З"},
++    {"&Zdot;", "Ż"},
++    {"&ZeroWidthSpace;", "​"},
++    {"&Zeta;", "Ζ"},
++    {"&Zfr;", "ℨ"},
++    {"&Zopf;", "ℤ"},
++    {"&Zscr;", "𝒵"},
++    {"&aacute;", "á"},
++    {"&abreve;", "ă"},
++    {"&ac;", "∾"},
++    {"&acE;", "∾̳"},
++    {"&acd;", "∿"},
++    {"&acirc;", "â"},
++    {"&acute;", "´"},
++    {"&acy;", "а"},
++    {"&aelig;", "æ"},
++    {"&af;", "⁡"},
++    {"&afr;", "𝔞"},
++    {"&agrave;", "à"},
++    {"&alefsym;", "ℵ"},
++    {"&aleph;", "ℵ"},
++    {"&alpha;", "α"},
++    {"&amacr;", "ā"},
++    {"&amalg;", "⨿"},
++    {"&amp;", "&"},
++    {"&and;", "∧"},
++    {"&andand;", "⩕"},
++    {"&andd;", "⩜"},
++    {"&andslope;", "⩘"},
++    {"&andv;", "⩚"},
++    {"&ang;", "∠"},
++    {"&ange;", "⦤"},
++    {"&angle;", "∠"},
++    {"&angmsd;", "∡"},
++    {"&angmsdaa;", "⦨"},
++    {"&angmsdab;", "⦩"},
++    {"&angmsdac;", "⦪"},
++    {"&angmsdad;", "⦫"},
++    {"&angmsdae;", "⦬"},
++    {"&angmsdaf;", "⦭"},
++    {"&angmsdag;", "⦮"},
++    {"&angmsdah;", "⦯"},
++    {"&angrt;", "∟"},
++    {"&angrtvb;", "⊾"},
++    {"&angrtvbd;", "⦝"},
++    {"&angsph;", "∢"},
++    {"&angst;", "Å"},
++    {"&angzarr;", "⍼"},
++    {"&aogon;", "ą"},
++    {"&aopf;", "𝕒"},
++    {"&ap;", "≈"},
++    {"&apE;", "⩰"},
++    {"&apacir;", "⩯"},
++    {"&ape;", "≊"},
++    {"&apid;", "≋"},
++    {"&apos;", "'"},
++    {"&approx;", "≈"},
++    {"&approxeq;", "≊"},
++    {"&aring;", "å"},
++    {"&ascr;", "𝒶"},
++    {"&ast;", "*"},
++    {"&asymp;", "≈"},
++    {"&asympeq;", "≍"},
++    {"&atilde;", "ã"},
++    {"&auml;", "ä"},
++    {"&awconint;", "∳"},
++    {"&awint;", "⨑"},
++    {"&bNot;", "⫭"},
++    {"&backcong;", "≌"},
++    {"&backepsilon;", "϶"},
++    {"&backprime;", "‵"},
++    {"&backsim;", "∽"},
++    {"&backsimeq;", "⋍"},
++    {"&barvee;", "⊽"},
++    {"&barwed;", "⌅"},
++    {"&barwedge;", "⌅"},
++    {"&bbrk;", "⎵"},
++    {"&bbrktbrk;", "⎶"},
++    {"&bcong;", "≌"},
++    {"&bcy;", "б"},
++    {"&bdquo;", "„"},
++    {"&becaus;", "∵"},
++    {"&because;", "∵"},
++    {"&bemptyv;", "⦰"},
++    {"&bepsi;", "϶"},
++    {"&bernou;", "ℬ"},
++    {"&beta;", "β"},
++    {"&beth;", "ℶ"},
++    {"&between;", "≬"},
++    {"&bfr;", "𝔟"},
++    {"&bigcap;", "⋂"},
++    {"&bigcirc;", "◯"},
++    {"&bigcup;", "⋃"},
++    {"&bigodot;", "⨀"},
++    {"&bigoplus;", "⨁"},
++    {"&bigotimes;", "⨂"},
++    {"&bigsqcup;", "⨆"},
++    {"&bigstar;", "★"},
++    {"&bigtriangledown;", "▽"},
++    {"&bigtriangleup;", "△"},
++    {"&biguplus;", "⨄"},
++    {"&bigvee;", "⋁"},
++    {"&bigwedge;", "⋀"},
++    {"&bkarow;", "⤍"},
++    {"&blacklozenge;", "⧫"},
++    {"&blacksquare;", "▪"},
++    {"&blacktriangle;", "▴"},
++    {"&blacktriangledown;", "▾"},
++    {"&blacktriangleleft;", "◂"},
++    {"&blacktriangleright;", "▸"},
++    {"&blank;", "␣"},
++    {"&blk12;", "▒"},
++    {"&blk14;", "░"},
++    {"&blk34;", "▓"},
++    {"&block;", "█"},
++    {"&bne;", "=⃥"},
++    {"&bnequiv;", "≡⃥"},
++    {"&bnot;", "⌐"},
++    {"&bopf;", "𝕓"},
++    {"&bot;", "⊥"},
++    {"&bottom;", "⊥"},
++    {"&bowtie;", "⋈"},
++    {"&boxDL;", "╗"},
++    {"&boxDR;", "╔"},
++    {"&boxDl;", "╖"},
++    {"&boxDr;", "╓"},
++    {"&boxH;", "═"},
++    {"&boxHD;", "╦"},
++    {"&boxHU;", "╩"},
++    {"&boxHd;", "╤"},
++    {"&boxHu;", "╧"},
++    {"&boxUL;", "╝"},
++    {"&boxUR;", "╚"},
++    {"&boxUl;", "╜"},
++    {"&boxUr;", "╙"},
++    {"&boxV;", "║"},
++    {"&boxVH;", "╬"},
++    {"&boxVL;", "╣"},
++    {"&boxVR;", "╠"},
++    {"&boxVh;", "╫"},
++    {"&boxVl;", "╢"},
++    {"&boxVr;", "╟"},
++    {"&boxbox;", "⧉"},
++    {"&boxdL;", "╕"},
++    {"&boxdR;", "╒"},
++    {"&boxdl;", "┐"},
++    {"&boxdr;", "┌"},
++    {"&boxh;", "─"},
++    {"&boxhD;", "╥"},
++    {"&boxhU;", "╨"},
++    {"&boxhd;", "┬"},
++    {"&boxhu;", "┴"},
++    {"&boxminus;", "⊟"},
++    {"&boxplus;", "⊞"},
++    {"&boxtimes;", "⊠"},
++    {"&boxuL;", "╛"},
++    {"&boxuR;", "╘"},
++    {"&boxul;", "┘"},
++    {"&boxur;", "└"},
++    {"&boxv;", "│"},
++    {"&boxvH;", "╪"},
++    {"&boxvL;", "╡"},
++    {"&boxvR;", "╞"},
++    {"&boxvh;", "┼"},
++    {"&boxvl;", "┤"},
++    {"&boxvr;", "├"},
++    {"&bprime;", "‵"},
++    {"&breve;", "˘"},
++    {"&brvbar;", "¦"},
++    {"&bscr;", "𝒷"},
++    {"&bsemi;", "⁏"},
++    {"&bsim;", "∽"},
++    {"&bsime;", "⋍"},
++    {"&bsol;", "\\"},
++    {"&bsolb;", "⧅"},
++    {"&bsolhsub;", "⟈"},
++    {"&bull;", "•"},
++    {"&bullet;", "•"},
++    {"&bump;", "≎"},
++    {"&bumpE;", "⪮"},
++    {"&bumpe;", "≏"},
++    {"&bumpeq;", "≏"},
++    {"&cacute;", "ć"},
++    {"&cap;", "∩"},
++    {"&capand;", "⩄"},
++    {"&capbrcup;", "⩉"},
++    {"&capcap;", "⩋"},
++    {"&capcup;", "⩇"},
++    {"&capdot;", "⩀"},
++    {"&caps;", "∩︀"},
++    {"&caret;", "⁁"},
++    {"&caron;", "ˇ"},
++    {"&ccaps;", "⩍"},
++    {"&ccaron;", "č"},
++    {"&ccedil;", "ç"},
++    {"&ccirc;", "ĉ"},
++    {"&ccups;", "⩌"},
++    {"&ccupssm;", "⩐"},
++    {"&cdot;", "ċ"},
++    {"&cedil;", "¸"},
++    {"&cemptyv;", "⦲"},
++    {"&cent;", "¢"},
++    {"&centerdot;", "·"},
++    {"&cfr;", "𝔠"},
++    {"&chcy;", "ч"},
++    {"&check;", "✓"},
++    {"&checkmark;", "✓"},
++    {"&chi;", "χ"},
++    {"&cir;", "○"},
++    {"&cirE;", "⧃"},
++    {"&circ;", "ˆ"},
++    {"&circeq;", "≗"},
++    {"&circlearrowleft;", "↺"},
++    {"&circlearrowright;", "↻"},
++    {"&circledR;", "®"},
++    {"&circledS;", "Ⓢ"},
++    {"&circledast;", "⊛"},
++    {"&circledcirc;", "⊚"},
++    {"&circleddash;", "⊝"},
++    {"&cire;", "≗"},
++    {"&cirfnint;", "⨐"},
++    {"&cirmid;", "⫯"},
++    {"&cirscir;", "⧂"},
++    {"&clubs;", "♣"},
++    {"&clubsuit;", "♣"},
++    {"&colon;", ":"},
++    {"&colone;", "≔"},
++    {"&coloneq;", "≔"},
++    {"&comma;", ","},
++    {"&commat;", "@"},
++    {"&comp;", "∁"},
++    {"&compfn;", "∘"},
++    {"&complement;", "∁"},
++    {"&complexes;", "ℂ"},
++    {"&cong;", "≅"},
++    {"&congdot;", "⩭"},
++    {"&conint;", "∮"},
++    {"&copf;", "𝕔"},
++    {"&coprod;", "∐"},
++    {"&copy;", "©"},
++    {"&copysr;", "℗"},
++    {"&crarr;", "↵"},
++    {"&cross;", "✗"},
++    {"&cscr;", "𝒸"},
++    {"&csub;", "⫏"},
++    {"&csube;", "⫑"},
++    {"&csup;", "⫐"},
++    {"&csupe;", "⫒"},
++    {"&ctdot;", "⋯"},
++    {"&cudarrl;", "⤸"},
++    {"&cudarrr;", "⤵"},
++    {"&cuepr;", "⋞"},
++    {"&cuesc;", "⋟"},
++    {"&cularr;", "↶"},
++    {"&cularrp;", "⤽"},
++    {"&cup;", "∪"},
++    {"&cupbrcap;", "⩈"},
++    {"&cupcap;", "⩆"},
++    {"&cupcup;", "⩊"},
++    {"&cupdot;", "⊍"},
++    {"&cupor;", "⩅"},
++    {"&cups;", "∪︀"},
++    {"&curarr;", "↷"},
++    {"&curarrm;", "⤼"},
++    {"&curlyeqprec;", "⋞"},
++    {"&curlyeqsucc;", "⋟"},
++    {"&curlyvee;", "⋎"},
++    {"&curlywedge;", "⋏"},
++    {"&curren;", "¤"},
++    {"&curvearrowleft;", "↶"},
++    {"&curvearrowright;", "↷"},
++    {"&cuvee;", "⋎"},
++    {"&cuwed;", "⋏"},
++    {"&cwconint;", "∲"},
++    {"&cwint;", "∱"},
++    {"&cylcty;", "⌭"},
++    {"&dArr;", "⇓"},
++    {"&dHar;", "⥥"},
++    {"&dagger;", "†"},
++    {"&daleth;", "ℸ"},
++    {"&darr;", "↓"},
++    {"&dash;", "‐"},
++    {"&dashv;", "⊣"},
++    {"&dbkarow;", "⤏"},
++    {"&dblac;", "˝"},
++    {"&dcaron;", "ď"},
++    {"&dcy;", "д"},
++    {"&dd;", "ⅆ"},
++    {"&ddagger;", "‡"},
++    {"&ddarr;", "⇊"},
++    {"&ddotseq;", "⩷"},
++    {"&deg;", "°"},
++    {"&delta;", "δ"},
++    {"&demptyv;", "⦱"},
++    {"&dfisht;", "⥿"},
++    {"&dfr;", "𝔡"},
++    {"&dharl;", "⇃"},
++    {"&dharr;", "⇂"},
++    {"&diam;", "⋄"},
++    {"&diamond;", "⋄"},
++    {"&diamondsuit;", "♦"},
++    {"&diams;", "♦"},
++    {"&die;", "¨"},
++    {"&digamma;", "ϝ"},
++    {"&disin;", "⋲"},
++    {"&div;", "÷"},
++    {"&divide;", "÷"},
++    {"&divideontimes;", "⋇"},
++    {"&divonx;", "⋇"},
++    {"&djcy;", "ђ"},
++    {"&dlcorn;", "⌞"},
++    {"&dlcrop;", "⌍"},
++    {"&dollar;", "$"},
++    {"&dopf;", "𝕕"},
++    {"&dot;", "˙"},
++    {"&doteq;", "≐"},
++    {"&doteqdot;", "≑"},
++    {"&dotminus;", "∸"},
++    {"&dotplus;", "∔"},
++    {"&dotsquare;", "⊡"},
++    {"&doublebarwedge;", "⌆"},
++    {"&downarrow;", "↓"},
++    {"&downdownarrows;", "⇊"},
++    {"&downharpoonleft;", "⇃"},
++    {"&downharpoonright;", "⇂"},
++    {"&drbkarow;", "⤐"},
++    {"&drcorn;", "⌟"},
++    {"&drcrop;", "⌌"},
++    {"&dscr;", "𝒹"},
++    {"&dscy;", "ѕ"},
++    {"&dsol;", "⧶"},
++    {"&dstrok;", "đ"},
++    {"&dtdot;", "⋱"},
++    {"&dtri;", "▿"},
++    {"&dtrif;", "▾"},
++    {"&duarr;", "⇵"},
++    {"&duhar;", "⥯"},
++    {"&dwangle;", "⦦"},
++    {"&dzcy;", "џ"},
++    {"&dzigrarr;", "⟿"},
++    {"&eDDot;", "⩷"},
++    {"&eDot;", "≑"},
++    {"&eacute;", "é"},
++    {"&easter;", "⩮"},
++    {"&ecaron;", "ě"},
++    {"&ecir;", "≖"},
++    {"&ecirc;", "ê"},
++    {"&ecolon;", "≕"},
++    {"&ecy;", "э"},
++    {"&edot;", "ė"},
++    {"&ee;", "ⅇ"},
++    {"&efDot;", "≒"},
++    {"&efr;", "𝔢"},
++    {"&eg;", "⪚"},
++    {"&egrave;", "è"},
++    {"&egs;", "⪖"},
++    {"&egsdot;", "⪘"},
++    {"&el;", "⪙"},
++    {"&elinters;", "⏧"},
++    {"&ell;", "ℓ"},
++    {"&els;", "⪕"},
++    {"&elsdot;", "⪗"},
++    {"&emacr;", "ē"},
++    {"&empty;", "∅"},
++    {"&emptyset;", "∅"},
++    {"&emptyv;", "∅"},
++    {"&emsp13;", " "},
++    {"&emsp14;", " "},
++    {"&emsp;", " "},
++    {"&eng;", "ŋ"},
++    {"&ensp;", " "},
++    {"&eogon;", "ę"},
++    {"&eopf;", "𝕖"},
++    {"&epar;", "⋕"},
++    {"&eparsl;", "⧣"},
++    {"&eplus;", "⩱"},
++    {"&epsi;", "ε"},
++    {"&epsilon;", "ε"},
++    {"&epsiv;", "ϵ"},
++    {"&eqcirc;", "≖"},
++    {"&eqcolon;", "≕"},
++    {"&eqsim;", "≂"},
++    {"&eqslantgtr;", "⪖"},
++    {"&eqslantless;", "⪕"},
++    {"&equals;", "="},
++    {"&equest;", "≟"},
++    {"&equiv;", "≡"},
++    {"&equivDD;", "⩸"},
++    {"&eqvparsl;", "⧥"},
++    {"&erDot;", "≓"},
++    {"&erarr;", "⥱"},
++    {"&escr;", "ℯ"},
++    {"&esdot;", "≐"},
++    {"&esim;", "≂"},
++    {"&eta;", "η"},
++    {"&eth;", "ð"},
++    {"&euml;", "ë"},
++    {"&euro;", "€"},
++    {"&excl;", "!"},
++    {"&exist;", "∃"},
++    {"&expectation;", "ℰ"},
++    {"&exponentiale;", "ⅇ"},
++    {"&fallingdotseq;", "≒"},
++    {"&fcy;", "ф"},
++    {"&female;", "♀"},
++    {"&ffilig;", "ﬃ"},
++    {"&fflig;", "ﬀ"},
++    {"&ffllig;", "ﬄ"},
++    {"&ffr;", "𝔣"},
++    {"&filig;", "ﬁ"},
++    {"&fjlig;", "fj"},
++    {"&flat;", "♭"},
++    {"&fllig;", "ﬂ"},
++    {"&fltns;", "▱"},
++    {"&fnof;", "ƒ"},
++    {"&fopf;", "𝕗"},
++    {"&forall;", "∀"},
++    {"&fork;", "⋔"},
++    {"&forkv;", "⫙"},
++    {"&fpartint;", "⨍"},
++    {"&frac12;", "½"},
++    {"&frac13;", "⅓"},
++    {"&frac14;", "¼"},
++    {"&frac15;", "⅕"},
++    {"&frac16;", "⅙"},
++    {"&frac18;", "⅛"},
++    {"&frac23;", "⅔"},
++    {"&frac25;", "⅖"},
++    {"&frac34;", "¾"},
++    {"&frac35;", "⅗"},
++    {"&frac38;", "⅜"},
++    {"&frac45;", "⅘"},
++    {"&frac56;", "⅚"},
++    {"&frac58;", "⅝"},
++    {"&frac78;", "⅞"},
++    {"&frasl;", "⁄"},
++    {"&frown;", "⌢"},
++    {"&fscr;", "𝒻"},
++    {"&gE;", "≧"},
++    {"&gEl;", "⪌"},
++    {"&gacute;", "ǵ"},
++    {"&gamma;", "γ"},
++    {"&gammad;", "ϝ"},
++    {"&gap;", "⪆"},
++    {"&gbreve;", "ğ"},
++    {"&gcirc;", "ĝ"},
++    {"&gcy;", "г"},
++    {"&gdot;", "ġ"},
++    {"&ge;", "≥"},
++    {"&gel;", "⋛"},
++    {"&geq;", "≥"},
++    {"&geqq;", "≧"},
++    {"&geqslant;", "⩾"},
++    {"&ges;", "⩾"},
++    {"&gescc;", "⪩"},
++    {"&gesdot;", "⪀"},
++    {"&gesdoto;", "⪂"},
++    {"&gesdotol;", "⪄"},
++    {"&gesl;", "⋛︀"},
++    {"&gesles;", "⪔"},
++    {"&gfr;", "𝔤"},
++    {"&gg;", "≫"},
++    {"&ggg;", "⋙"},
++    {"&gimel;", "ℷ"},
++    {"&gjcy;", "ѓ"},
++    {"&gl;", "≷"},
++    {"&glE;", "⪒"},
++    {"&gla;", "⪥"},
++    {"&glj;", "⪤"},
++    {"&gnE;", "≩"},
++    {"&gnap;", "⪊"},
++    {"&gnapprox;", "⪊"},
++    {"&gne;", "⪈"},
++    {"&gneq;", "⪈"},
++    {"&gneqq;", "≩"},
++    {"&gnsim;", "⋧"},
++    {"&gopf;", "𝕘"},
++    {"&grave;", "`"},
++    {"&gscr;", "ℊ"},
++    {"&gsim;", "≳"},
++    {"&gsime;", "⪎"},
++    {"&gsiml;", "⪐"},
++    {"&gt;", ">"},
++    {"&gtcc;", "⪧"},
++    {"&gtcir;", "⩺"},
++    {"&gtdot;", "⋗"},
++    {"&gtlPar;", "⦕"},
++    {"&gtquest;", "⩼"},
++    {"&gtrapprox;", "⪆"},
++    {"&gtrarr;", "⥸"},
++    {"&gtrdot;", "⋗"},
++    {"&gtreqless;", "⋛"},
++    {"&gtreqqless;", "⪌"},
++    {"&gtrless;", "≷"},
++    {"&gtrsim;", "≳"},
++    {"&gvertneqq;", "≩︀"},
++    {"&gvnE;", "≩︀"},
++    {"&hArr;", "⇔"},
++    {"&hairsp;", " "},
++    {"&half;", "½"},
++    {"&hamilt;", "ℋ"},
++    {"&hardcy;", "ъ"},
++    {"&harr;", "↔"},
++    {"&harrcir;", "⥈"},
++    {"&harrw;", "↭"},
++    {"&hbar;", "ℏ"},
++    {"&hcirc;", "ĥ"},
++    {"&hearts;", "♥"},
++    {"&heartsuit;", "♥"},
++    {"&hellip;", "…"},
++    {"&hercon;", "⊹"},
++    {"&hfr;", "𝔥"},
++    {"&hksearow;", "⤥"},
++    {"&hkswarow;", "⤦"},
++    {"&hoarr;", "⇿"},
++    {"&homtht;", "∻"},
++    {"&hookleftarrow;", "↩"},
++    {"&hookrightarrow;", "↪"},
++    {"&hopf;", "𝕙"},
++    {"&horbar;", "―"},
++    {"&hscr;", "𝒽"},
++    {"&hslash;", "ℏ"},
++    {"&hstrok;", "ħ"},
++    {"&hybull;", "⁃"},
++    {"&hyphen;", "‐"},
++    {"&iacute;", "í"},
++    {"&ic;", "⁣"},
++    {"&icirc;", "î"},
++    {"&icy;", "и"},
++    {"&iecy;", "е"},
++    {"&iexcl;", "¡"},
++    {"&iff;", "⇔"},
++    {"&ifr;", "𝔦"},
++    {"&igrave;", "ì"},
++    {"&ii;", "ⅈ"},
++    {"&iiiint;", "⨌"},
++    {"&iiint;", "∭"},
++    {"&iinfin;", "⧜"},
++    {"&iiota;", "℩"},
++    {"&ijlig;", "ĳ"},
++    {"&imacr;", "ī"},
++    {"&image;", "ℑ"},
++    {"&imagline;", "ℐ"},
++    {"&imagpart;", "ℑ"},
++    {"&imath;", "ı"},
++    {"&imof;", "⊷"},
++    {"&imped;", "Ƶ"},
++    {"&in;", "∈"},
++    {"&incare;", "℅"},
++    {"&infin;", "∞"},
++    {"&infintie;", "⧝"},
++    {"&inodot;", "ı"},
++    {"&int;", "∫"},
++    {"&intcal;", "⊺"},
++    {"&integers;", "ℤ"},
++    {"&intercal;", "⊺"},
++    {"&intlarhk;", "⨗"},
++    {"&intprod;", "⨼"},
++    {"&iocy;", "ё"},
++    {"&iogon;", "į"},
++    {"&iopf;", "𝕚"},
++    {"&iota;", "ι"},
++    {"&iprod;", "⨼"},
++    {"&iquest;", "¿"},
++    {"&iscr;", "𝒾"},
++    {"&isin;", "∈"},
++    {"&isinE;", "⋹"},
++    {"&isindot;", "⋵"},
++    {"&isins;", "⋴"},
++    {"&isinsv;", "⋳"},
++    {"&isinv;", "∈"},
++    {"&it;", "⁢"},
++    {"&itilde;", "ĩ"},
++    {"&iukcy;", "і"},
++    {"&iuml;", "ï"},
++    {"&jcirc;", "ĵ"},
++    {"&jcy;", "й"},
++    {"&jfr;", "𝔧"},
++    {"&jmath;", "ȷ"},
++    {"&jopf;", "𝕛"},
++    {"&jscr;", "𝒿"},
++    {"&jsercy;", "ј"},
++    {"&jukcy;", "є"},
++    {"&kappa;", "κ"},
++    {"&kappav;", "ϰ"},
++    {"&kcedil;", "ķ"},
++    {"&kcy;", "к"},
++    {"&kfr;", "𝔨"},
++    {"&kgreen;", "ĸ"},
++    {"&khcy;", "х"},
++    {"&kjcy;", "ќ"},
++    {"&kopf;", "𝕜"},
++    {"&kscr;", "𝓀"},
++    {"&lAarr;", "⇚"},
++    {"&lArr;", "⇐"},
++    {"&lAtail;", "⤛"},
++    {"&lBarr;", "⤎"},
++    {"&lE;", "≦"},
++    {"&lEg;", "⪋"},
++    {"&lHar;", "⥢"},
++    {"&lacute;", "ĺ"},
++    {"&laemptyv;", "⦴"},
++    {"&lagran;", "ℒ"},
++    {"&lambda;", "λ"},
++    {"&lang;", "⟨"},
++    {"&langd;", "⦑"},
++    {"&langle;", "⟨"},
++    {"&lap;", "⪅"},
++    {"&laquo;", "«"},
++    {"&larr;", "←"},
++    {"&larrb;", "⇤"},
++    {"&larrbfs;", "⤟"},
++    {"&larrfs;", "⤝"},
++    {"&larrhk;", "↩"},
++    {"&larrlp;", "↫"},
++    {"&larrpl;", "⤹"},
++    {"&larrsim;", "⥳"},
++    {"&larrtl;", "↢"},
++    {"&lat;", "⪫"},
++    {"&latail;", "⤙"},
++    {"&late;", "⪭"},
++    {"&lates;", "⪭︀"},
++    {"&lbarr;", "⤌"},
++    {"&lbbrk;", "❲"},
++    {"&lbrace;", "{"},
++    {"&lbrack;", "["},
++    {"&lbrke;", "⦋"},
++    {"&lbrksld;", "⦏"},
++    {"&lbrkslu;", "⦍"},
++    {"&lcaron;", "ľ"},
++    {"&lcedil;", "ļ"},
++    {"&lceil;", "⌈"},
++    {"&lcub;", "{"},
++    {"&lcy;", "л"},
++    {"&ldca;", "⤶"},
++    {"&ldquo;", "“"},
++    {"&ldquor;", "„"},
++    {"&ldrdhar;", "⥧"},
++    {"&ldrushar;", "⥋"},
++    {"&ldsh;", "↲"},
++    {"&le;", "≤"},
++    {"&leftarrow;", "←"},
++    {"&leftarrowtail;", "↢"},
++    {"&leftharpoondown;", "↽"},
++    {"&leftharpoonup;", "↼"},
++    {"&leftleftarrows;", "⇇"},
++    {"&leftrightarrow;", "↔"},
++    {"&leftrightarrows;", "⇆"},
++    {"&leftrightharpoons;", "⇋"},
++    {"&leftrightsquigarrow;", "↭"},
++    {"&leftthreetimes;", "⋋"},
++    {"&leg;", "⋚"},
++    {"&leq;", "≤"},
++    {"&leqq;", "≦"},
++    {"&leqslant;", "⩽"},
++    {"&les;", "⩽"},
++    {"&lescc;", "⪨"},
++    {"&lesdot;", "⩿"},
++    {"&lesdoto;", "⪁"},
++    {"&lesdotor;", "⪃"},
++    {"&lesg;", "⋚︀"},
++    {"&lesges;", "⪓"},
++    {"&lessapprox;", "⪅"},
++    {"&lessdot;", "⋖"},
++    {"&lesseqgtr;", "⋚"},
++    {"&lesseqqgtr;", "⪋"},
++    {"&lessgtr;", "≶"},
++    {"&lesssim;", "≲"},
++    {"&lfisht;", "⥼"},
++    {"&lfloor;", "⌊"},
++    {"&lfr;", "𝔩"},
++    {"&lg;", "≶"},
++    {"&lgE;", "⪑"},
++    {"&lhard;", "↽"},
++    {"&lharu;", "↼"},
++    {"&lharul;", "⥪"},
++    {"&lhblk;", "▄"},
++    {"&ljcy;", "љ"},
++    {"&ll;", "≪"},
++    {"&llarr;", "⇇"},
++    {"&llcorner;", "⌞"},
++    {"&llhard;", "⥫"},
++    {"&lltri;", "◺"},
++    {"&lmidot;", "ŀ"},
++    {"&lmoust;", "⎰"},
++    {"&lmoustache;", "⎰"},
++    {"&lnE;", "≨"},
++    {"&lnap;", "⪉"},
++    {"&lnapprox;", "⪉"},
++    {"&lne;", "⪇"},
++    {"&lneq;", "⪇"},
++    {"&lneqq;", "≨"},
++    {"&lnsim;", "⋦"},
++    {"&loang;", "⟬"},
++    {"&loarr;", "⇽"},
++    {"&lobrk;", "⟦"},
++    {"&longleftarrow;", "⟵"},
++    {"&longleftrightarrow;", "⟷"},
++    {"&longmapsto;", "⟼"},
++    {"&longrightarrow;", "⟶"},
++    {"&looparrowleft;", "↫"},
++    {"&looparrowright;", "↬"},
++    {"&lopar;", "⦅"},
++    {"&lopf;", "𝕝"},
++    {"&loplus;", "⨭"},
++    {"&lotimes;", "⨴"},
++    {"&lowast;", "∗"},
++    {"&lowbar;", "_"},
++    {"&loz;", "◊"},
++    {"&lozenge;", "◊"},
++    {"&lozf;", "⧫"},
++    {"&lpar;", "("},
++    {"&lparlt;", "⦓"},
++    {"&lrarr;", "⇆"},
++    {"&lrcorner;", "⌟"},
++    {"&lrhar;", "⇋"},
++    {"&lrhard;", "⥭"},
++    {"&lrm;", "‎"},
++    {"&lrtri;", "⊿"},
++    {"&lsaquo;", "‹"},
++    {"&lscr;", "𝓁"},
++    {"&lsh;", "↰"},
++    {"&lsim;", "≲"},
++    {"&lsime;", "⪍"},
++    {"&lsimg;", "⪏"},
++    {"&lsqb;", "["},
++    {"&lsquo;", "‘"},
++    {"&lsquor;", "‚"},
++    {"&lstrok;", "ł"},
++    {"&lt;", "<"},
++    {"&ltcc;", "⪦"},
++    {"&ltcir;", "⩹"},
++    {"&ltdot;", "⋖"},
++    {"&lthree;", "⋋"},
++    {"&ltimes;", "⋉"},
++    {"&ltlarr;", "⥶"},
++    {"&ltquest;", "⩻"},
++    {"&ltrPar;", "⦖"},
++    {"&ltri;", "◃"},
++    {"&ltrie;", "⊴"},
++    {"&ltrif;", "◂"},
++    {"&lurdshar;", "⥊"},
++    {"&luruhar;", "⥦"},
++    {"&lvertneqq;", "≨︀"},
++    {"&lvnE;", "≨︀"},
++    {"&mDDot;", "∺"},
++    {"&macr;", "¯"},
++    {"&male;", "♂"},
++    {"&malt;", "✠"},
++    {"&maltese;", "✠"},
++    {"&map;", "↦"},
++    {"&mapsto;", "↦"},
++    {"&mapstodown;", "↧"},
++    {"&mapstoleft;", "↤"},
++    {"&mapstoup;", "↥"},
++    {"&marker;", "▮"},
++    {"&mcomma;", "⨩"},
++    {"&mcy;", "м"},
++    {"&mdash;", "—"},
++    {"&measuredangle;", "∡"},
++    {"&mfr;", "𝔪"},
++    {"&mho;", "℧"},
++    {"&micro;", "µ"},
++    {"&mid;", "∣"},
++    {"&midast;", "*"},
++    {"&midcir;", "⫰"},
++    {"&middot;", "·"},
++    {"&minus;", "−"},
++    {"&minusb;", "⊟"},
++    {"&minusd;", "∸"},
++    {"&minusdu;", "⨪"},
++    {"&mlcp;", "⫛"},
++    {"&mldr;", "…"},
++    {"&mnplus;", "∓"},
++    {"&models;", "⊧"},
++    {"&mopf;", "𝕞"},
++    {"&mp;", "∓"},
++    {"&mscr;", "𝓂"},
++    {"&mstpos;", "∾"},
++    {"&mu;", "μ"},
++    {"&multimap;", "⊸"},
++    {"&mumap;", "⊸"},
++    {"&nGg;", "⋙̸"},
++    {"&nGt;", "≫⃒"},
++    {"&nGtv;", "≫̸"},
++    {"&nLeftarrow;", "⇍"},
++    {"&nLeftrightarrow;", "⇎"},
++    {"&nLl;", "⋘̸"},
++    {"&nLt;", "≪⃒"},
++    {"&nLtv;", "≪̸"},
++    {"&nRightarrow;", "⇏"},
++    {"&nVDash;", "⊯"},
++    {"&nVdash;", "⊮"},
++    {"&nabla;", "∇"},
++    {"&nacute;", "ń"},
++    {"&nang;", "∠⃒"},
++    {"&nap;", "≉"},
++    {"&napE;", "⩰̸"},
++    {"&napid;", "≋̸"},
++    {"&napos;", "ŉ"},
++    {"&napprox;", "≉"},
++    {"&natur;", "♮"},
++    {"&natural;", "♮"},
++    {"&naturals;", "ℕ"},
++    {"&nbsp;", " "},
++    {"&nbump;", "≎̸"},
++    {"&nbumpe;", "≏̸"},
++    {"&ncap;", "⩃"},
++    {"&ncaron;", "ň"},
++    {"&ncedil;", "ņ"},
++    {"&ncong;", "≇"},
++    {"&ncongdot;", "⩭̸"},
++    {"&ncup;", "⩂"},
++    {"&ncy;", "н"},
++    {"&ndash;", "–"},
++    {"&ne;", "≠"},
++    {"&neArr;", "⇗"},
++    {"&nearhk;", "⤤"},
++    {"&nearr;", "↗"},
++    {"&nearrow;", "↗"},
++    {"&nedot;", "≐̸"},
++    {"&nequiv;", "≢"},
++    {"&nesear;", "⤨"},
++    {"&nesim;", "≂̸"},
++    {"&nexist;", "∄"},
++    {"&nexists;", "∄"},
++    {"&nfr;", "𝔫"},
++    {"&ngE;", "≧̸"},
++    {"&nge;", "≱"},
++    {"&ngeq;", "≱"},
++    {"&ngeqq;", "≧̸"},
++    {"&ngeqslant;", "⩾̸"},
++    {"&nges;", "⩾̸"},
++    {"&ngsim;", "≵"},
++    {"&ngt;", "≯"},
++    {"&ngtr;", "≯"},
++    {"&nhArr;", "⇎"},
++    {"&nharr;", "↮"},
++    {"&nhpar;", "⫲"},
++    {"&ni;", "∋"},
++    {"&nis;", "⋼"},
++    {"&nisd;", "⋺"},
++    {"&niv;", "∋"},
++    {"&njcy;", "њ"},
++    {"&nlArr;", "⇍"},
++    {"&nlE;", "≦̸"},
++    {"&nlarr;", "↚"},
++    {"&nldr;", "‥"},
++    {"&nle;", "≰"},
++    {"&nleftarrow;", "↚"},
++    {"&nleftrightarrow;", "↮"},
++    {"&nleq;", "≰"},
++    {"&nleqq;", "≦̸"},
++    {"&nleqslant;", "⩽̸"},
++    {"&nles;", "⩽̸"},
++    {"&nless;", "≮"},
++    {"&nlsim;", "≴"},
++    {"&nlt;", "≮"},
++    {"&nltri;", "⋪"},
++    {"&nltrie;", "⋬"},
++    {"&nmid;", "∤"},
++    {"&nopf;", "𝕟"},
++    {"&not;", "¬"},
++    {"&notin;", "∉"},
++    {"&notinE;", "⋹̸"},
++    {"&notindot;", "⋵̸"},
++    {"&notinva;", "∉"},
++    {"&notinvb;", "⋷"},
++    {"&notinvc;", "⋶"},
++    {"&notni;", "∌"},
++    {"&notniva;", "∌"},
++    {"&notnivb;", "⋾"},
++    {"&notnivc;", "⋽"},
++    {"&npar;", "∦"},
++    {"&nparallel;", "∦"},
++    {"&nparsl;", "⫽⃥"},
++    {"&npart;", "∂̸"},
++    {"&npolint;", "⨔"},
++    {"&npr;", "⊀"},
++    {"&nprcue;", "⋠"},
++    {"&npre;", "⪯̸"},
++    {"&nprec;", "⊀"},
++    {"&npreceq;", "⪯̸"},
++    {"&nrArr;", "⇏"},
++    {"&nrarr;", "↛"},
++    {"&nrarrc;", "⤳̸"},
++    {"&nrarrw;", "↝̸"},
++    {"&nrightarrow;", "↛"},
++    {"&nrtri;", "⋫"},
++    {"&nrtrie;", "⋭"},
++    {"&nsc;", "⊁"},
++    {"&nsccue;", "⋡"},
++    {"&nsce;", "⪰̸"},
++    {"&nscr;", "𝓃"},
++    {"&nshortmid;", "∤"},
++    {"&nshortparallel;", "∦"},
++    {"&nsim;", "≁"},
++    {"&nsime;", "≄"},
++    {"&nsimeq;", "≄"},
++    {"&nsmid;", "∤"},
++    {"&nspar;", "∦"},
++    {"&nsqsube;", "⋢"},
++    {"&nsqsupe;", "⋣"},
++    {"&nsub;", "⊄"},
++    {"&nsubE;", "⫅̸"},
++    {"&nsube;", "⊈"},
++    {"&nsubset;", "⊂⃒"},
++    {"&nsubseteq;", "⊈"},
++    {"&nsubseteqq;", "⫅̸"},
++    {"&nsucc;", "⊁"},
++    {"&nsucceq;", "⪰̸"},
++    {"&nsup;", "⊅"},
++    {"&nsupE;", "⫆̸"},
++    {"&nsupe;", "⊉"},
++    {"&nsupset;", "⊃⃒"},
++    {"&nsupseteq;", "⊉"},
++    {"&nsupseteqq;", "⫆̸"},
++    {"&ntgl;", "≹"},
++    {"&ntilde;", "ñ"},
++    {"&ntlg;", "≸"},
++    {"&ntriangleleft;", "⋪"},
++    {"&ntrianglelefteq;", "⋬"},
++    {"&ntriangleright;", "⋫"},
++    {"&ntrianglerighteq;", "⋭"},
++    {"&nu;", "ν"},
++    {"&num;", "#"},
++    {"&numero;", "№"},
++    {"&numsp;", " "},
++    {"&nvDash;", "⊭"},
++    {"&nvHarr;", "⤄"},
++    {"&nvap;", "≍⃒"},
++    {"&nvdash;", "⊬"},
++    {"&nvge;", "≥⃒"},
++    {"&nvgt;", ">⃒"},
++    {"&nvinfin;", "⧞"},
++    {"&nvlArr;", "⤂"},
++    {"&nvle;", "≤⃒"},
++    {"&nvlt;", "<⃒"},
++    {"&nvltrie;", "⊴⃒"},
++    {"&nvrArr;", "⤃"},
++    {"&nvrtrie;", "⊵⃒"},
++    {"&nvsim;", "∼⃒"},
++    {"&nwArr;", "⇖"},
++    {"&nwarhk;", "⤣"},
++    {"&nwarr;", "↖"},
++    {"&nwarrow;", "↖"},
++    {"&nwnear;", "⤧"},
++    {"&oS;", "Ⓢ"},
++    {"&oacute;", "ó"},
++    {"&oast;", "⊛"},
++    {"&ocir;", "⊚"},
++    {"&ocirc;", "ô"},
++    {"&ocy;", "о"},
++    {"&odash;", "⊝"},
++    {"&odblac;", "ő"},
++    {"&odiv;", "⨸"},
++    {"&odot;", "⊙"},
++    {"&odsold;", "⦼"},
++    {"&oelig;", "œ"},
++    {"&ofcir;", "⦿"},
++    {"&ofr;", "𝔬"},
++    {"&ogon;", "˛"},
++    {"&ograve;", "ò"},
++    {"&ogt;", "⧁"},
++    {"&ohbar;", "⦵"},
++    {"&ohm;", "Ω"},
++    {"&oint;", "∮"},
++    {"&olarr;", "↺"},
++    {"&olcir;", "⦾"},
++    {"&olcross;", "⦻"},
++    {"&oline;", "‾"},
++    {"&olt;", "⧀"},
++    {"&omacr;", "ō"},
++    {"&omega;", "ω"},
++    {"&omicron;", "ο"},
++    {"&omid;", "⦶"},
++    {"&ominus;", "⊖"},
++    {"&oopf;", "𝕠"},
++    {"&opar;", "⦷"},
++    {"&operp;", "⦹"},
++    {"&oplus;", "⊕"},
++    {"&or;", "∨"},
++    {"&orarr;", "↻"},
++    {"&ord;", "⩝"},
++    {"&order;", "ℴ"},
++    {"&orderof;", "ℴ"},
++    {"&ordf;", "ª"},
++    {"&ordm;", "º"},
++    {"&origof;", "⊶"},
++    {"&oror;", "⩖"},
++    {"&orslope;", "⩗"},
++    {"&orv;", "⩛"},
++    {"&oscr;", "ℴ"},
++    {"&oslash;", "ø"},
++    {"&osol;", "⊘"},
++    {"&otilde;", "õ"},
++    {"&otimes;", "⊗"},
++    {"&otimesas;", "⨶"},
++    {"&ouml;", "ö"},
++    {"&ovbar;", "⌽"},
++    {"&par;", "∥"},
++    {"&para;", "¶"},
++    {"&parallel;", "∥"},
++    {"&parsim;", "⫳"},
++    {"&parsl;", "⫽"},
++    {"&part;", "∂"},
++    {"&pcy;", "п"},
++    {"&percnt;", "%"},
++    {"&period;", "."},
++    {"&permil;", "‰"},
++    {"&perp;", "⊥"},
++    {"&pertenk;", "‱"},
++    {"&pfr;", "𝔭"},
++    {"&phi;", "φ"},
++    {"&phiv;", "ϕ"},
++    {"&phmmat;", "ℳ"},
++    {"&phone;", "☎"},
++    {"&pi;", "π"},
++    {"&pitchfork;", "⋔"},
++    {"&piv;", "ϖ"},
++    {"&planck;", "ℏ"},
++    {"&planckh;", "ℎ"},
++    {"&plankv;", "ℏ"},
++    {"&plus;", "+"},
++    {"&plusacir;", "⨣"},
++    {"&plusb;", "⊞"},
++    {"&pluscir;", "⨢"},
++    {"&plusdo;", "∔"},
++    {"&plusdu;", "⨥"},
++    {"&pluse;", "⩲"},
++    {"&plusmn;", "±"},
++    {"&plussim;", "⨦"},
++    {"&plustwo;", "⨧"},
++    {"&pm;", "±"},
++    {"&pointint;", "⨕"},
++    {"&popf;", "𝕡"},
++    {"&pound;", "£"},
++    {"&pr;", "≺"},
++    {"&prE;", "⪳"},
++    {"&prap;", "⪷"},
++    {"&prcue;", "≼"},
++    {"&pre;", "⪯"},
++    {"&prec;", "≺"},
++    {"&precapprox;", "⪷"},
++    {"&preccurlyeq;", "≼"},
++    {"&preceq;", "⪯"},
++    {"&precnapprox;", "⪹"},
++    {"&precneqq;", "⪵"},
++    {"&precnsim;", "⋨"},
++    {"&precsim;", "≾"},
++    {"&prime;", "′"},
++    {"&primes;", "ℙ"},
++    {"&prnE;", "⪵"},
++    {"&prnap;", "⪹"},
++    {"&prnsim;", "⋨"},
++    {"&prod;", "∏"},
++    {"&profalar;", "⌮"},
++    {"&profline;", "⌒"},
++    {"&profsurf;", "⌓"},
++    {"&prop;", "∝"},
++    {"&propto;", "∝"},
++    {"&prsim;", "≾"},
++    {"&prurel;", "⊰"},
++    {"&pscr;", "𝓅"},
++    {"&psi;", "ψ"},
++    {"&puncsp;", " "},
++    {"&qfr;", "𝔮"},
++    {"&qint;", "⨌"},
++    {"&qopf;", "𝕢"},
++    {"&qprime;", "⁗"},
++    {"&qscr;", "𝓆"},
++    {"&quaternions;", "ℍ"},
++    {"&quatint;", "⨖"},
++    {"&quest;", "?"},
++    {"&questeq;", "≟"},
++    {"&quot;", "\""},
++    {"&rAarr;", "⇛"},
++    {"&rArr;", "⇒"},
++    {"&rAtail;", "⤜"},
++    {"&rBarr;", "⤏"},
++    {"&rHar;", "⥤"},
++    {"&race;", "∽̱"},
++    {"&racute;", "ŕ"},
++    {"&radic;", "√"},
++    {"&raemptyv;", "⦳"},
++    {"&rang;", "⟩"},
++    {"&rangd;", "⦒"},
++    {"&range;", "⦥"},
++    {"&rangle;", "⟩"},
++    {"&raquo;", "»"},
++    {"&rarr;", "→"},
++    {"&rarrap;", "⥵"},
++    {"&rarrb;", "⇥"},
++    {"&rarrbfs;", "⤠"},
++    {"&rarrc;", "⤳"},
++    {"&rarrfs;", "⤞"},
++    {"&rarrhk;", "↪"},
++    {"&rarrlp;", "↬"},
++    {"&rarrpl;", "⥅"},
++    {"&rarrsim;", "⥴"},
++    {"&rarrtl;", "↣"},
++    {"&rarrw;", "↝"},
++    {"&ratail;", "⤚"},
++    {"&ratio;", "∶"},
++    {"&rationals;", "ℚ"},
++    {"&rbarr;", "⤍"},
++    {"&rbbrk;", "❳"},
++    {"&rbrace;", "}"},
++    {"&rbrack;", "]"},
++    {"&rbrke;", "⦌"},
++    {"&rbrksld;", "⦎"},
++    {"&rbrkslu;", "⦐"},
++    {"&rcaron;", "ř"},
++    {"&rcedil;", "ŗ"},
++    {"&rceil;", "⌉"},
++    {"&rcub;", "}"},
++    {"&rcy;", "р"},
++    {"&rdca;", "⤷"},
++    {"&rdldhar;", "⥩"},
++    {"&rdquo;", "”"},
++    {"&rdquor;", "”"},
++    {"&rdsh;", "↳"},
++    {"&real;", "ℜ"},
++    {"&realine;", "ℛ"},
++    {"&realpart;", "ℜ"},
++    {"&reals;", "ℝ"},
++    {"&rect;", "▭"},
++    {"&reg;", "®"},
++    {"&rfisht;", "⥽"},
++    {"&rfloor;", "⌋"},
++    {"&rfr;", "𝔯"},
++    {"&rhard;", "⇁"},
++    {"&rharu;", "⇀"},
++    {"&rharul;", "⥬"},
++    {"&rho;", "ρ"},
++    {"&rhov;", "ϱ"},
++    {"&rightarrow;", "→"},
++    {"&rightarrowtail;", "↣"},
++    {"&rightharpoondown;", "⇁"},
++    {"&rightharpoonup;", "⇀"},
++    {"&rightleftarrows;", "⇄"},
++    {"&rightleftharpoons;", "⇌"},
++    {"&rightrightarrows;", "⇉"},
++    {"&rightsquigarrow;", "↝"},
++    {"&rightthreetimes;", "⋌"},
++    {"&ring;", "˚"},
++    {"&risingdotseq;", "≓"},
++    {"&rlarr;", "⇄"},
++    {"&rlhar;", "⇌"},
++    {"&rlm;", "‏"},
++    {"&rmoust;", "⎱"},
++    {"&rmoustache;", "⎱"},
++    {"&rnmid;", "⫮"},
++    {"&roang;", "⟭"},
++    {"&roarr;", "⇾"},
++    {"&robrk;", "⟧"},
++    {"&ropar;", "⦆"},
++    {"&ropf;", "𝕣"},
++    {"&roplus;", "⨮"},
++    {"&rotimes;", "⨵"},
++    {"&rpar;", ")"},
++    {"&rpargt;", "⦔"},
++    {"&rppolint;", "⨒"},
++    {"&rrarr;", "⇉"},
++    {"&rsaquo;", "›"},
++    {"&rscr;", "𝓇"},
++    {"&rsh;", "↱"},
++    {"&rsqb;", "]"},
++    {"&rsquo;", "’"},
++    {"&rsquor;", "’"},
++    {"&rthree;", "⋌"},
++    {"&rtimes;", "⋊"},
++    {"&rtri;", "▹"},
++    {"&rtrie;", "⊵"},
++    {"&rtrif;", "▸"},
++    {"&rtriltri;", "⧎"},
++    {"&ruluhar;", "⥨"},
++    {"&rx;", "℞"},
++    {"&sacute;", "ś"},
++    {"&sbquo;", "‚"},
++    {"&sc;", "≻"},
++    {"&scE;", "⪴"},
++    {"&scap;", "⪸"},
++    {"&scaron;", "š"},
++    {"&sccue;", "≽"},
++    {"&sce;", "⪰"},
++    {"&scedil;", "ş"},
++    {"&scirc;", "ŝ"},
++    {"&scnE;", "⪶"},
++    {"&scnap;", "⪺"},
++    {"&scnsim;", "⋩"},
++    {"&scpolint;", "⨓"},
++    {"&scsim;", "≿"},
++    {"&scy;", "с"},
++    {"&sdot;", "⋅"},
++    {"&sdotb;", "⊡"},
++    {"&sdote;", "⩦"},
++    {"&seArr;", "⇘"},
++    {"&searhk;", "⤥"},
++    {"&searr;", "↘"},
++    {"&searrow;", "↘"},
++    {"&sect;", "§"},
++    {"&semi;", ";"},
++    {"&seswar;", "⤩"},
++    {"&setminus;", "∖"},
++    {"&setmn;", "∖"},
++    {"&sext;", "✶"},
++    {"&sfr;", "𝔰"},
++    {"&sfrown;", "⌢"},
++    {"&sharp;", "♯"},
++    {"&shchcy;", "щ"},
++    {"&shcy;", "ш"},
++    {"&shortmid;", "∣"},
++    {"&shortparallel;", "∥"},
++    {"&shy;", "­"},
++    {"&sigma;", "σ"},
++    {"&sigmaf;", "ς"},
++    {"&sigmav;", "ς"},
++    {"&sim;", "∼"},
++    {"&simdot;", "⩪"},
++    {"&sime;", "≃"},
++    {"&simeq;", "≃"},
++    {"&simg;", "⪞"},
++    {"&simgE;", "⪠"},
++    {"&siml;", "⪝"},
++    {"&simlE;", "⪟"},
++    {"&simne;", "≆"},
++    {"&simplus;", "⨤"},
++    {"&simrarr;", "⥲"},
++    {"&slarr;", "←"},
++    {"&smallsetminus;", "∖"},
++    {"&smashp;", "⨳"},
++    {"&smeparsl;", "⧤"},
++    {"&smid;", "∣"},
++    {"&smile;", "⌣"},
++    {"&smt;", "⪪"},
++    {"&smte;", "⪬"},
++    {"&smtes;", "⪬︀"},
++    {"&softcy;", "ь"},
++    {"&sol;", "/"},
++    {"&solb;", "⧄"},
++    {"&solbar;", "⌿"},
++    {"&sopf;", "𝕤"},
++    {"&spades;", "♠"},
++    {"&spadesuit;", "♠"},
++    {"&spar;", "∥"},
++    {"&sqcap;", "⊓"},
++    {"&sqcaps;", "⊓︀"},
++    {"&sqcup;", "⊔"},
++    {"&sqcups;", "⊔︀"},
++    {"&sqsub;", "⊏"},
++    {"&sqsube;", "⊑"},
++    {"&sqsubset;", "⊏"},
++    {"&sqsubseteq;", "⊑"},
++    {"&sqsup;", "⊐"},
++    {"&sqsupe;", "⊒"},
++    {"&sqsupset;", "⊐"},
++    {"&sqsupseteq;", "⊒"},
++    {"&squ;", "□"},
++    {"&square;", "□"},
++    {"&squarf;", "▪"},
++    {"&squf;", "▪"},
++    {"&srarr;", "→"},
++    {"&sscr;", "𝓈"},
++    {"&ssetmn;", "∖"},
++    {"&ssmile;", "⌣"},
++    {"&sstarf;", "⋆"},
++    {"&star;", "☆"},
++    {"&starf;", "★"},
++    {"&straightepsilon;", "ϵ"},
++    {"&straightphi;", "ϕ"},
++    {"&strns;", "¯"},
++    {"&sub;", "⊂"},
++    {"&subE;", "⫅"},
++    {"&subdot;", "⪽"},
++    {"&sube;", "⊆"},
++    {"&subedot;", "⫃"},
++    {"&submult;", "⫁"},
++    {"&subnE;", "⫋"},
++    {"&subne;", "⊊"},
++    {"&subplus;", "⪿"},
++    {"&subrarr;", "⥹"},
++    {"&subset;", "⊂"},
++    {"&subseteq;", "⊆"},
++    {"&subseteqq;", "⫅"},
++    {"&subsetneq;", "⊊"},
++    {"&subsetneqq;", "⫋"},
++    {"&subsim;", "⫇"},
++    {"&subsub;", "⫕"},
++    {"&subsup;", "⫓"},
++    {"&succ;", "≻"},
++    {"&succapprox;", "⪸"},
++    {"&succcurlyeq;", "≽"},
++    {"&succeq;", "⪰"},
++    {"&succnapprox;", "⪺"},
++    {"&succneqq;", "⪶"},
++    {"&succnsim;", "⋩"},
++    {"&succsim;", "≿"},
++    {"&sum;", "∑"},
++    {"&sung;", "♪"},
++    {"&sup1;", "¹"},
++    {"&sup2;", "²"},
++    {"&sup3;", "³"},
++    {"&sup;", "⊃"},
++    {"&supE;", "⫆"},
++    {"&supdot;", "⪾"},
++    {"&supdsub;", "⫘"},
++    {"&supe;", "⊇"},
++    {"&supedot;", "⫄"},
++    {"&suphsol;", "⟉"},
++    {"&suphsub;", "⫗"},
++    {"&suplarr;", "⥻"},
++    {"&supmult;", "⫂"},
++    {"&supnE;", "⫌"},
++    {"&supne;", "⊋"},
++    {"&supplus;", "⫀"},
++    {"&supset;", "⊃"},
++    {"&supseteq;", "⊇"},
++    {"&supseteqq;", "⫆"},
++    {"&supsetneq;", "⊋"},
++    {"&supsetneqq;", "⫌"},
++    {"&supsim;", "⫈"},
++    {"&supsub;", "⫔"},
++    {"&supsup;", "⫖"},
++    {"&swArr;", "⇙"},
++    {"&swarhk;", "⤦"},
++    {"&swarr;", "↙"},
++    {"&swarrow;", "↙"},
++    {"&swnwar;", "⤪"},
++    {"&szlig;", "ß"},
++    {"&target;", "⌖"},
++    {"&tau;", "τ"},
++    {"&tbrk;", "⎴"},
++    {"&tcaron;", "ť"},
++    {"&tcedil;", "ţ"},
++    {"&tcy;", "т"},
++    {"&tdot;", "⃛"},
++    {"&telrec;", "⌕"},
++    {"&tfr;", "𝔱"},
++    {"&there4;", "∴"},
++    {"&therefore;", "∴"},
++    {"&theta;", "θ"},
++    {"&thetasym;", "ϑ"},
++    {"&thetav;", "ϑ"},
++    {"&thickapprox;", "≈"},
++    {"&thicksim;", "∼"},
++    {"&thinsp;", " "},
++    {"&thkap;", "≈"},
++    {"&thksim;", "∼"},
++    {"&thorn;", "þ"},
++    {"&tilde;", "˜"},
++    {"&times;", "×"},
++    {"&timesb;", "⊠"},
++    {"&timesbar;", "⨱"},
++    {"&timesd;", "⨰"},
++    {"&tint;", "∭"},
++    {"&toea;", "⤨"},
++    {"&top;", "⊤"},
++    {"&topbot;", "⌶"},
++    {"&topcir;", "⫱"},
++    {"&topf;", "𝕥"},
++    {"&topfork;", "⫚"},
++    {"&tosa;", "⤩"},
++    {"&tprime;", "‴"},
++    {"&trade;", "™"},
++    {"&triangle;", "▵"},
++    {"&triangledown;", "▿"},
++    {"&triangleleft;", "◃"},
++    {"&trianglelefteq;", "⊴"},
++    {"&triangleq;", "≜"},
++    {"&triangleright;", "▹"},
++    {"&trianglerighteq;", "⊵"},
++    {"&tridot;", "◬"},
++    {"&trie;", "≜"},
++    {"&triminus;", "⨺"},
++    {"&triplus;", "⨹"},
++    {"&trisb;", "⧍"},
++    {"&tritime;", "⨻"},
++    {"&trpezium;", "⏢"},
++    {"&tscr;", "𝓉"},
++    {"&tscy;", "ц"},
++    {"&tshcy;", "ћ"},
++    {"&tstrok;", "ŧ"},
++    {"&twixt;", "≬"},
++    {"&twoheadleftarrow;", "↞"},
++    {"&twoheadrightarrow;", "↠"},
++    {"&uArr;", "⇑"},
++    {"&uHar;", "⥣"},
++    {"&uacute;", "ú"},
++    {"&uarr;", "↑"},
++    {"&ubrcy;", "ў"},
++    {"&ubreve;", "ŭ"},
++    {"&ucirc;", "û"},
++    {"&ucy;", "у"},
++    {"&udarr;", "⇅"},
++    {"&udblac;", "ű"},
++    {"&udhar;", "⥮"},
++    {"&ufisht;", "⥾"},
++    {"&ufr;", "𝔲"},
++    {"&ugrave;", "ù"},
++    {"&uharl;", "↿"},
++    {"&uharr;", "↾"},
++    {"&uhblk;", "▀"},
++    {"&ulcorn;", "⌜"},
++    {"&ulcorner;", "⌜"},
++    {"&ulcrop;", "⌏"},
++    {"&ultri;", "◸"},
++    {"&umacr;", "ū"},
++    {"&uml;", "¨"},
++    {"&uogon;", "ų"},
++    {"&uopf;", "𝕦"},
++    {"&uparrow;", "↑"},
++    {"&updownarrow;", "↕"},
++    {"&upharpoonleft;", "↿"},
++    {"&upharpoonright;", "↾"},
++    {"&uplus;", "⊎"},
++    {"&upsi;", "υ"},
++    {"&upsih;", "ϒ"},
++    {"&upsilon;", "υ"},
++    {"&upuparrows;", "⇈"},
++    {"&urcorn;", "⌝"},
++    {"&urcorner;", "⌝"},
++    {"&urcrop;", "⌎"},
++    {"&uring;", "ů"},
++    {"&urtri;", "◹"},
++    {"&uscr;", "𝓊"},
++    {"&utdot;", "⋰"},
++    {"&utilde;", "ũ"},
++    {"&utri;", "▵"},
++    {"&utrif;", "▴"},
++    {"&uuarr;", "⇈"},
++    {"&uuml;", "ü"},
++    {"&uwangle;", "⦧"},
++    {"&vArr;", "⇕"},
++    {"&vBar;", "⫨"},
++    {"&vBarv;", "⫩"},
++    {"&vDash;", "⊨"},
++    {"&vangrt;", "⦜"},
++    {"&varepsilon;", "ϵ"},
++    {"&varkappa;", "ϰ"},
++    {"&varnothing;", "∅"},
++    {"&varphi;", "ϕ"},
++    {"&varpi;", "ϖ"},
++    {"&varpropto;", "∝"},
++    {"&varr;", "↕"},
++    {"&varrho;", "ϱ"},
++    {"&varsigma;", "ς"},
++    {"&varsubsetneq;", "⊊︀"},
++    {"&varsubsetneqq;", "⫋︀"},
++    {"&varsupsetneq;", "⊋︀"},
++    {"&varsupsetneqq;", "⫌︀"},
++    {"&vartheta;", "ϑ"},
++    {"&vartriangleleft;", "⊲"},
++    {"&vartriangleright;", "⊳"},
++    {"&vcy;", "в"},
++    {"&vdash;", "⊢"},
++    {"&vee;", "∨"},
++    {"&veebar;", "⊻"},
++    {"&veeeq;", "≚"},
++    {"&vellip;", "⋮"},
++    {"&verbar;", "|"},
++    {"&vert;", "|"},
++    {"&vfr;", "𝔳"},
++    {"&vltri;", "⊲"},
++    {"&vnsub;", "⊂⃒"},
++    {"&vnsup;", "⊃⃒"},
++    {"&vopf;", "𝕧"},
++    {"&vprop;", "∝"},
++    {"&vrtri;", "⊳"},
++    {"&vscr;", "𝓋"},
++    {"&vsubnE;", "⫋︀"},
++    {"&vsubne;", "⊊︀"},
++    {"&vsupnE;", "⫌︀"},
++    {"&vsupne;", "⊋︀"},
++    {"&vzigzag;", "⦚"},
++    {"&wcirc;", "ŵ"},
++    {"&wedbar;", "⩟"},
++    {"&wedge;", "∧"},
++    {"&wedgeq;", "≙"},
++    {"&weierp;", "℘"},
++    {"&wfr;", "𝔴"},
++    {"&wopf;", "𝕨"},
++    {"&wp;", "℘"},
++    {"&wr;", "≀"},
++    {"&wreath;", "≀"},
++    {"&wscr;", "𝓌"},
++    {"&xcap;", "⋂"},
++    {"&xcirc;", "◯"},
++    {"&xcup;", "⋃"},
++    {"&xdtri;", "▽"},
++    {"&xfr;", "𝔵"},
++    {"&xhArr;", "⟺"},
++    {"&xharr;", "⟷"},
++    {"&xi;", "ξ"},
++    {"&xlArr;", "⟸"},
++    {"&xlarr;", "⟵"},
++    {"&xmap;", "⟼"},
++    {"&xnis;", "⋻"},
++    {"&xodot;", "⨀"},
++    {"&xopf;", "𝕩"},
++    {"&xoplus;", "⨁"},
++    {"&xotime;", "⨂"},
++    {"&xrArr;", "⟹"},
++    {"&xrarr;", "⟶"},
++    {"&xscr;", "𝓍"},
++    {"&xsqcup;", "⨆"},
++    {"&xuplus;", "⨄"},
++    {"&xutri;", "△"},
++    {"&xvee;", "⋁"},
++    {"&xwedge;", "⋀"},
++    {"&yacute;", "ý"},
++    {"&yacy;", "я"},
++    {"&ycirc;", "ŷ"},
++    {"&ycy;", "ы"},
++    {"&yen;", "¥"},
++    {"&yfr;", "𝔶"},
++    {"&yicy;", "ї"},
++    {"&yopf;", "𝕪"},
++    {"&yscr;", "𝓎"},
++    {"&yucy;", "ю"},
++    {"&yuml;", "ÿ"},
++    {"&zacute;", "ź"},
++    {"&zcaron;", "ž"},
++    {"&zcy;", "з"},
++    {"&zdot;", "ż"},
++    {"&zeetrf;", "ℨ"},
++    {"&zeta;", "ζ"},
++    {"&zfr;", "𝔷"},
++    {"&zhcy;", "ж"},
++    {"&zigrarr;", "⇝"},
++    {"&zopf;", "𝕫"},
++    {"&zscr;", "𝓏"},
++    {"&zwj;", "‍"},
++    {"&zwnj;", "‌"},
++  };
++  auto first = std::begin(named);
++  auto last = std::end(named);
++  auto found = std::lower_bound(first, last, entity,
++      [](const auto &entry, const auto &value) { return value.compare(entry.first) > 0; });
++  return found != last && entity == found->first ? found->second : entity;
++}
++} // namespace
++
+ class MD4CParser::Impl {
+ public:
+   std::shared_ptr<MarkdownASTNode> root;
+   std::vector<std::shared_ptr<MarkdownASTNode>> nodeStack;
+   std::string currentText;
+-  const char *inputText = nullptr;
++  std::vector<SourceFragment> currentFragments;
+
+   static const std::string ATTR_LEVEL;
+   static const std::string ATTR_URL;
+@@ -30,6 +2206,7 @@ public:
+     nodeStack.reserve(std::min(estimatedDepth, static_cast<size_t>(128)));
+     nodeStack.push_back(root);
+     currentText.clear();
++    currentFragments.clear();
+     currentText.reserve(256);
+   }
+
+@@ -37,8 +2214,10 @@ public:
+     if (!currentText.empty() && !nodeStack.empty()) {
+       auto textNode = std::make_shared<MarkdownASTNode>(NodeType::Text);
+       textNode->content = std::move(currentText);
++      textNode->sourceFragments = std::move(currentFragments);
+       nodeStack.back()->addChild(std::move(textNode));
+       currentText.clear();
++      currentFragments.clear();
+     }
+   }
+
+@@ -143,6 +2322,9 @@ public:
+         auto node = std::make_shared<MarkdownASTNode>(NodeType::CodeBlock);
+         if (detail) {
+           auto *codeDetail = static_cast<MD_BLOCK_CODE_DETAIL *>(detail);
++          node->sourceByteStart = codeDetail->source_beg;
++          node->sourceByteEnd = codeDetail->source_end;
++          node->hasSourceRange = true;
+           // Extract fence character (if fenced code block)
+           if (codeDetail->fence_char != 0) {
+             char fenceStr[2] = {static_cast<char>(codeDetail->fence_char), '\0'};
+@@ -350,23 +2532,37 @@ public:
+   }
+
+   static int text(MD_TEXTTYPE type, const MD_CHAR *text, MD_SIZE size, void *userdata) {
++    return textWithSource(type, text, size, 0, 0, true, userdata);
++  }
++
++  static int textWithSource(MD_TEXTTYPE type, const MD_CHAR *text, MD_SIZE size,
++                            MD_OFFSET start, MD_OFFSET end, int generated, void *userdata) {
+     if (!userdata || !text || size == 0)
+       return 0;
+     auto *impl = static_cast<Impl *>(userdata);
+
+-    if (type == MD_TEXT_SOFTBR) {
+-      impl->addInlineNode(std::make_shared<MarkdownASTNode>(NodeType::SoftBreak));
++    if (type == MD_TEXT_SOFTBR || type == MD_TEXT_BR) {
++      auto node = std::make_shared<MarkdownASTNode>(type == MD_TEXT_SOFTBR ? NodeType::SoftBreak : NodeType::LineBreak);
++      node->sourceFragments.push_back({"\n", start, end, generated != 0});
++      impl->addInlineNode(std::move(node));
+       return 0;
+     }
+
+-    if (type == MD_TEXT_BR) {
+-      impl->addInlineNode(std::make_shared<MarkdownASTNode>(NodeType::LineBreak));
++    if (type == MD_TEXT_ENTITY) {
++      // Decode the entity into one fragment, retaining its complete original
++      // spelling span even for two-codepoint or astral references.
++      auto node = std::make_shared<MarkdownASTNode>(NodeType::Text);
++      node->content = decodeEntity(std::string(text, size));
++      node->setAttribute("entity", "true");
++      node->sourceFragments.push_back({node->content, start, end, generated != 0});
++      impl->addInlineNode(std::move(node));
+       return 0;
+     }
+
+-    // Handle text content (normal text, code text, LaTeX math, etc.)
+-    if (type == MD_TEXT_NORMAL || type == MD_TEXT_CODE || type == MD_TEXT_LATEXMATH) {
+-      impl->currentText.append(text, size);
++    if (type == MD_TEXT_NORMAL || type == MD_TEXT_CODE || type == MD_TEXT_LATEXMATH || type == MD_TEXT_NULLCHAR) {
++      std::string rendered = type == MD_TEXT_NULLCHAR ? "\xEF\xBF\xBD" : std::string(text, size);
++      impl->currentText.append(rendered);
++      impl->currentFragments.push_back({std::move(rendered), start, end, generated != 0});
+     }
+
+     return 0;
+@@ -565,6 +2761,25 @@ void wrapListItemInlineRuns(MarkdownASTNode &node) {
+   node.children = std::move(newChildren);
+ }
+
++void collectSourceBounds(MarkdownASTNode &node) {
++  auto include = [&](size_t start, size_t end) {
++    if (!node.hasSourceRange) {
++      node.sourceByteStart = start;
++      node.sourceByteEnd = end;
++      node.hasSourceRange = true;
++    } else {
++      node.sourceByteStart = std::min(node.sourceByteStart, start);
++      node.sourceByteEnd = std::max(node.sourceByteEnd, end);
++    }
++  };
++  for (const auto &fragment : node.sourceFragments)
++    if (!fragment.generated) include(fragment.sourceByteStart, fragment.sourceByteEnd);
++  for (auto &child : node.children) {
++    collectSourceBounds(*child);
++    if (child->hasSourceRange) include(child->sourceByteStart, child->sourceByteEnd);
++  }
++}
++
+ } // anonymous namespace
+
+ MD4CParser::MD4CParser() : impl_(std::make_unique<Impl>()) {}
+@@ -587,7 +2802,6 @@ std::shared_ptr<MarkdownASTNode> MD4CParser::parse(const std::string &markdown,
+   }
+
+   impl_->reset(estimatedDepth);
+-  impl_->inputText = markdown.c_str();
+
+   unsigned flags = MD_FLAG_NOHTML | MD_FLAG_STRIKETHROUGH | MD_FLAG_TABLES | MD_FLAG_TASKLISTS | MD_FLAG_SPOILERS;
+   if (md4cFlags.permissiveAutolinks) {
+@@ -617,7 +2831,8 @@ std::shared_ptr<MarkdownASTNode> MD4CParser::parse(const std::string &markdown,
+       0, // abi_version
+       flags,   &Impl::enterBlock, &Impl::leaveBlock, &Impl::enterSpan, &Impl::leaveSpan, &Impl::text,
+       nullptr, // debug_log
+-      nullptr  // syntax
++      nullptr, // syntax
++      &Impl::textWithSource
+   };
+
+   // Parse the markdown
+@@ -633,6 +2848,10 @@ std::shared_ptr<MarkdownASTNode> MD4CParser::parse(const std::string &markdown,
+   if (impl_->root) {
+     promoteDisplayMathFromParagraphs(*impl_->root);
+     wrapListItemInlineRuns(*impl_->root);
++    collectSourceBounds(*impl_->root);
++    impl_->root->sourceByteStart = 0;
++    impl_->root->sourceByteEnd = markdown.size();
++    impl_->root->hasSourceRange = true;
+   }
+
+   return impl_->root ? impl_->root : std::make_shared<MarkdownASTNode>(NodeType::Document);
+diff --git a/node_modules/react-native-enriched-markdown/cpp/parser/MarkdownASTNode.hpp b/node_modules/react-native-enriched-markdown/cpp/parser/MarkdownASTNode.hpp
+index 9570bf5..a3b8a21 100644
+--- a/node_modules/react-native-enriched-markdown/cpp/parser/MarkdownASTNode.hpp
++++ b/node_modules/react-native-enriched-markdown/cpp/parser/MarkdownASTNode.hpp
+@@ -41,11 +41,24 @@ enum class NodeType {
+     SoftBreak
+ };
+
++// A fragment's text may be transformed (CRLF, escaped punctuation, tabs).
++// Its source span always belongs to the original immutable input.
++struct SourceFragment {
++    std::string text;
++    size_t sourceByteStart;
++    size_t sourceByteEnd;
++    bool generated;
++};
++
+ struct MarkdownASTNode {
+     NodeType type;
+     std::string content;
+     std::unordered_map<std::string, std::string> attributes;
+     std::vector<std::shared_ptr<MarkdownASTNode>> children;
++    std::vector<SourceFragment> sourceFragments;
++    size_t sourceByteStart = 0;
++    size_t sourceByteEnd = 0;
++    bool hasSourceRange = false;
+
+     explicit MarkdownASTNode(NodeType t) : type(t) {}
+
+diff --git a/node_modules/react-native-enriched-markdown/ios/EnrichedMarkdownCodeText.h b/node_modules/react-native-enriched-markdown/ios/EnrichedMarkdownCodeText.h
+new file mode 100644
+index 0000000..39f253c
+--- /dev/null
++++ b/node_modules/react-native-enriched-markdown/ios/EnrichedMarkdownCodeText.h
+@@ -0,0 +1,35 @@
++#import <React/RCTViewComponentView.h>
++#import <UIKit/UIKit.h>
++
++NS_ASSUME_NONNULL_BEGIN
++
++// One mounted layout owns both drawing and all UTF-16 hit/caret/range geometry.
++@interface ENRMCodeTextLayoutView : UIView
++@property (nonatomic, copy) NSAttributedString *attributedText;
++@property (nonatomic, readonly) NSUInteger layoutGeneration;
++@property (nonatomic, readonly) NSTextStorage *textStorage;
++@property (nonatomic, readonly) NSLayoutManager *textLayoutManager;
++@property (nonatomic, readonly) NSTextContainer *textContainer;
++- (NSUInteger)characterIndexAtPoint:(CGPoint)point;
++- (CGRect)caretRectAtIndex:(NSUInteger)index;
++- (NSArray<NSValue *> *)rectsForCharacterRange:(NSRange)range;
++@end
++
++@interface EnrichedMarkdownCodeText : RCTViewComponentView
++@property (nonatomic, readonly) ENRMCodeTextLayoutView *codeLayoutView;
++@property (nonatomic, readonly, copy) NSString *documentSnapshotId;
++@property (nonatomic, readonly) NSRange blockSourceRange;
++@end
++
++NS_ASSUME_NONNULL_END
++
++#ifdef __cplusplus
++#include <ReactNativeEnrichedMarkdown/Props.h>
++#include <react/renderer/core/LayoutConstraints.h>
++#include <react/renderer/core/LayoutContext.h>
++
++// Builds a fresh, thread-confined sizing layout. Never reads a mounted view.
++facebook::react::Size ENRMMeasureCodeText(const facebook::react::EnrichedMarkdownCodeTextProps &props,
++                                         const facebook::react::LayoutContext &context,
++                                         const facebook::react::LayoutConstraints &constraints);
++#endif
+diff --git a/node_modules/react-native-enriched-markdown/ios/EnrichedMarkdownCodeText.mm b/node_modules/react-native-enriched-markdown/ios/EnrichedMarkdownCodeText.mm
+new file mode 100644
+index 0000000..8cd2058
+--- /dev/null
++++ b/node_modules/react-native-enriched-markdown/ios/EnrichedMarkdownCodeText.mm
+@@ -0,0 +1,287 @@
++#import "EnrichedMarkdownCodeText.h"
++#import "EnrichedMarkdownCodeTextComponentDescriptor.h"
++#import "EnrichedMarkdownCodeTextShadowNode.h"
++#import "ShadowMeasurementUtils.h"
++#import <ReactNativeEnrichedMarkdown/RCTComponentViewHelpers.h>
++#import <react/renderer/textlayoutmanager/RCTAttributedTextUtils.h>
++#include <vector>
++
++using namespace facebook::react;
++
++static NSMutableAttributedString *ENRMCodeAttributedText(const EnrichedMarkdownCodeTextProps &props,
++                                                         CGFloat fontScale, LayoutDirection direction)
++{
++  auto attributes = TextAttributes::defaultTextAttributes();
++  attributes.fontFamily = props.fontFamily;
++  attributes.fontSize = props.fontSize;
++  attributes.fontSizeMultiplier = fontScale;
++  attributes.allowFontScaling = props.allowFontScaling;
++  attributes.foregroundColor = props.textColor;
++  attributes.layoutDirection = direction;
++  if (props.lineHeight > 0) attributes.lineHeight = props.lineHeight;
++  if (props.textAlign == "left") attributes.alignment = TextAlignment::Left;
++  else if (props.textAlign == "right") attributes.alignment = TextAlignment::Right;
++  else if (props.textAlign == "center") attributes.alignment = TextAlignment::Center;
++  else if (props.textAlign == "justify") attributes.alignment = TextAlignment::Justified;
++  else attributes.alignment = TextAlignment::Natural;
++  if (props.writingDirection == "ltr") attributes.baseWritingDirection = WritingDirection::LeftToRight;
++  else if (props.writingDirection == "rtl") attributes.baseWritingDirection = WritingDirection::RightToLeft;
++  else attributes.baseWritingDirection = WritingDirection::Natural;
++
++  NSString *text = [[NSString alloc] initWithBytes:props.text.data() length:props.text.size()
++                                         encoding:NSUTF8StringEncoding];
++  auto result = [[NSMutableAttributedString alloc] initWithString:text
++                                                      attributes:RCTNSTextAttributesFromTextAttributes(attributes)];
++  if (result.length > 0) RCTApplyBaselineOffset(result);
++  return result;
++}
++
++static NSTextStorage *ENRMCreateCodeTextStorage(NSAttributedString *text, CGSize size)
++{
++  auto container = [[NSTextContainer alloc] initWithSize:size];
++  container.lineFragmentPadding = 0;
++  container.maximumNumberOfLines = 0;
++  container.lineBreakMode = NSLineBreakByClipping;
++  auto layout = [[NSLayoutManager alloc] init];
++  layout.usesFontLeading = NO;
++  [layout addTextContainer:container];
++  auto storage = [[NSTextStorage alloc] initWithAttributedString:text];
++  [storage addLayoutManager:layout];
++  return storage;
++}
++
++Size ENRMMeasureCodeText(const EnrichedMarkdownCodeTextProps &props, const LayoutContext &context,
++                        const LayoutConstraints &constraints)
++{
++  if (props.text.empty()) return ENRMClampMeasuredSize(CGSizeZero, constraints);
++  // These objects belong solely to this calling thread, not the mounted leaf.
++  auto text = ENRMCodeAttributedText(props, ENRMFontScaleForMeasurement(props.allowFontScaling, context),
++                                     constraints.layoutDirection);
++  auto storage = ENRMCreateCodeTextStorage(text, CGSizeMake(constraints.maximumSize.width, CGFLOAT_MAX));
++  auto layout = storage.layoutManagers.firstObject;
++  auto container = layout.textContainers.firstObject;
++  [layout ensureLayoutForTextContainer:container];
++  auto size = [layout usedRectForTextContainer:container].size;
++  const auto scale = context.pointScaleFactor;
++  size.width = std::ceil(size.width * scale) / scale;
++  size.height = std::ceil(size.height * scale) / scale;
++  return ENRMClampMeasuredSize(size, constraints);
++}
++
++@implementation ENRMCodeTextLayoutView {
++  NSTextStorage *_textStorage;
++  NSUInteger _layoutGeneration;
++}
++
++- (instancetype)initWithFrame:(CGRect)frame
++{
++  if ((self = [super initWithFrame:frame])) {
++    self.opaque = NO;
++    self.backgroundColor = [UIColor clearColor];
++    self.contentMode = UIViewContentModeRedraw;
++    _textStorage = ENRMCreateCodeTextStorage([[NSAttributedString alloc] initWithString:@""],
++                                            CGSizeMake(frame.size.width, CGFLOAT_MAX));
++    _layoutGeneration = 1;
++  }
++  return self;
++}
++
++- (NSTextStorage *)textStorage { return _textStorage; }
++- (NSLayoutManager *)textLayoutManager { return _textStorage.layoutManagers.firstObject; }
++- (NSTextContainer *)textContainer { return self.textLayoutManager.textContainers.firstObject; }
++- (NSUInteger)layoutGeneration { return _layoutGeneration; }
++- (NSAttributedString *)attributedText { return [_textStorage copy]; }
++
++- (void)setAttributedText:(NSAttributedString *)text
++{
++  NSAssert([NSThread isMainThread], @"Mounted code layout is main-thread confined");
++  if ([_textStorage isEqualToAttributedString:text]) return;
++  [_textStorage setAttributedString:text];
++  ++_layoutGeneration;
++  [self setNeedsDisplay];
++}
++
++- (void)layoutSubviews
++{
++  [super layoutSubviews];
++  if (self.textContainer.size.width != self.bounds.size.width) {
++    self.textContainer.size = CGSizeMake(self.bounds.size.width, CGFLOAT_MAX);
++    ++_layoutGeneration;
++    [self setNeedsDisplay];
++  }
++  [self.textLayoutManager ensureLayoutForTextContainer:self.textContainer];
++}
++
++- (void)didMoveToWindow
++{
++  [super didMoveToWindow];
++  ++_layoutGeneration;
++}
++
++- (void)drawRect:(CGRect)rect
++{
++  NSAssert([NSThread isMainThread], @"Mounted code layout is main-thread confined");
++  [self.textLayoutManager ensureLayoutForTextContainer:self.textContainer];
++  auto glyphs = [self.textLayoutManager glyphRangeForTextContainer:self.textContainer];
++  [self.textLayoutManager drawBackgroundForGlyphRange:glyphs atPoint:CGPointZero];
++  [self.textLayoutManager drawGlyphsForGlyphRange:glyphs atPoint:CGPointZero];
++}
++
++- (NSUInteger)characterIndexAtPoint:(CGPoint)point
++{
++  NSAssert([NSThread isMainThread], @"Mounted code layout is main-thread confined");
++  if (_textStorage.length == 0) return NSNotFound;
++  [self.textLayoutManager ensureLayoutForTextContainer:self.textContainer];
++  CGFloat fraction = 0;
++  auto index = [self.textLayoutManager characterIndexForPoint:point inTextContainer:self.textContainer
++                    fractionOfDistanceBetweenInsertionPoints:&fraction];
++  if (index >= _textStorage.length) return _textStorage.length;
++  auto composed = [_textStorage.string rangeOfComposedCharacterSequenceAtIndex:index];
++  return fraction < 0.5 ? composed.location : NSMaxRange(composed);
++}
++
++- (CGRect)caretRectAtIndex:(NSUInteger)index
++{
++  NSAssert([NSThread isMainThread], @"Mounted code layout is main-thread confined");
++  if (_textStorage.length == 0 || index > _textStorage.length) return CGRectZero;
++  auto layout = self.textLayoutManager;
++  [layout ensureLayoutForTextContainer:self.textContainer];
++  if (index == _textStorage.length && layout.extraLineFragmentTextContainer == self.textContainer) {
++    auto extra = layout.extraLineFragmentRect;
++    return CGRectMake(extra.origin.x, extra.origin.y, 1, extra.size.height);
++  }
++  auto character = std::min(index, _textStorage.length - 1);
++  auto glyph = [layout glyphIndexForCharacterAtIndex:character];
++  auto line = [layout lineFragmentRectForGlyphAtIndex:glyph effectiveRange:NULL];
++  auto count = [layout getLineFragmentInsertionPointsForCharacterAtIndex:character alternatePositions:YES
++                                                         inDisplayOrder:NO positions:NULL characterIndexes:NULL];
++  std::vector<CGFloat> positions(count);
++  std::vector<NSUInteger> indexes(count);
++  [layout getLineFragmentInsertionPointsForCharacterAtIndex:character alternatePositions:YES inDisplayOrder:NO
++                                                 positions:positions.data() characterIndexes:indexes.data()];
++  for (NSUInteger i = 0; i < count; ++i) {
++    if (indexes[i] == index) return CGRectMake(line.origin.x + positions[i], line.origin.y, 1, line.size.height);
++  }
++  return CGRectZero;
++}
++
++- (NSArray<NSValue *> *)rectsForCharacterRange:(NSRange)range
++{
++  NSAssert([NSThread isMainThread], @"Mounted code layout is main-thread confined");
++  if (range.location == NSNotFound || range.location > _textStorage.length ||
++      range.length > _textStorage.length - range.location || range.length == 0) return @[];
++  auto layout = self.textLayoutManager;
++  [layout ensureLayoutForTextContainer:self.textContainer];
++  auto glyphs = [layout glyphRangeForCharacterRange:range actualCharacterRange:NULL];
++  auto result = [NSMutableArray array];
++  [layout enumerateEnclosingRectsForGlyphRange:glyphs withinSelectedGlyphRange:glyphs
++                               inTextContainer:self.textContainer usingBlock:^(CGRect rect, BOOL *stop) {
++    [result addObject:[NSValue valueWithCGRect:rect]];
++  }];
++  return result;
++}
++
++@end
++
++@interface EnrichedMarkdownCodeText () <RCTEnrichedMarkdownCodeTextViewProtocol, UIEditMenuInteractionDelegate>
++@end
++
++@implementation EnrichedMarkdownCodeText {
++  ENRMCodeTextLayoutView *_codeLayoutView;
++  EnrichedMarkdownCodeTextState _layoutState;
++  UIEditMenuInteraction *_copyMenu;
++  UILongPressGestureRecognizer *_wholeTextCopyGesture;
++}
++
+++ (ComponentDescriptorProvider)componentDescriptorProvider
++{
++  return concreteComponentDescriptorProvider<EnrichedMarkdownCodeTextComponentDescriptor>();
++}
++
++- (instancetype)initWithFrame:(CGRect)frame
++{
++  if ((self = [super initWithFrame:frame])) {
++    _props = std::make_shared<const EnrichedMarkdownCodeTextProps>();
++    _codeLayoutView = [[ENRMCodeTextLayoutView alloc] initWithFrame:self.bounds];
++    self.contentView = _codeLayoutView;
++    _copyMenu = [[UIEditMenuInteraction alloc] initWithDelegate:self];
++    [self addInteraction:_copyMenu];
++    _wholeTextCopyGesture = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(showWholeTextCopy:)];
++    [self addGestureRecognizer:_wholeTextCopyGesture];
++  }
++  return self;
++}
++
++- (ENRMCodeTextLayoutView *)codeLayoutView { return _codeLayoutView; }
++- (NSString *)documentSnapshotId
++{
++  const auto &props = *std::static_pointer_cast<const EnrichedMarkdownCodeTextProps>(_props);
++  return [[NSString alloc] initWithBytes:props.documentSnapshotId.data() length:props.documentSnapshotId.size()
++                                encoding:NSUTF8StringEncoding];
++}
++- (NSRange)blockSourceRange
++{
++  const auto &range = std::static_pointer_cast<const EnrichedMarkdownCodeTextProps>(_props)->blockSourceRange;
++  if (range.start < 0 || range.end < range.start) return NSMakeRange(NSNotFound, 0);
++  return NSMakeRange(range.start, range.end - range.start);
++}
++
++- (void)refreshCodeText
++{
++  const auto &props = *std::static_pointer_cast<const EnrichedMarkdownCodeTextProps>(_props);
++  _codeLayoutView.attributedText = ENRMCodeAttributedText(props, _layoutState.fontScale, _layoutState.layoutDirection);
++  _wholeTextCopyGesture.enabled = props.selectable;
++  // The literal component input remains intact for ordinary Copy and VoiceOver.
++  if (props.accessibilityLabel.empty()) self.accessibilityLabel = _codeLayoutView.textStorage.string;
++  [self setNeedsLayout];
++}
++
++- (void)updateProps:(Props::Shared const &)props oldProps:(Props::Shared const &)oldProps
++{
++  [super updateProps:props oldProps:oldProps];
++  _props = props;
++  [self refreshCodeText];
++}
++
++- (void)updateState:(State::Shared const &)state oldState:(State::Shared const &)oldState
++{
++  [super updateState:state oldState:oldState];
++  if (state) {
++    _layoutState = std::static_pointer_cast<const EnrichedMarkdownCodeTextShadowNode::ConcreteState>(state)->getData();
++    [self refreshCodeText];
++  }
++}
++
++- (void)prepareForRecycle
++{
++  [_copyMenu dismissMenu];
++  _codeLayoutView.attributedText = [[NSAttributedString alloc] initWithString:@""];
++  _layoutState = {};
++  _wholeTextCopyGesture.enabled = NO;
++  [super prepareForRecycle];
++}
++
++- (void)showWholeTextCopy:(UILongPressGestureRecognizer *)gesture
++{
++  if (gesture.state != UIGestureRecognizerStateBegan || _codeLayoutView.textStorage.length == 0) return;
++  auto config = [UIEditMenuConfiguration configurationWithIdentifier:nil sourcePoint:[gesture locationInView:self]];
++  [_copyMenu presentEditMenuWithConfiguration:config];
++}
++
++- (UIMenu *)editMenuInteraction:(UIEditMenuInteraction *)interaction menuForConfiguration:(UIEditMenuConfiguration *)configuration
++               suggestedActions:(NSArray<UIMenuElement *> *)suggestedActions
++{
++  __weak EnrichedMarkdownCodeText *weakSelf = self;
++  auto copy = [UIAction actionWithTitle:NSLocalizedString(@"Copy", nil) image:nil identifier:nil handler:^(UIAction *action) {
++    EnrichedMarkdownCodeText *leaf = weakSelf;
++    if (leaf) UIPasteboard.generalPasteboard.string = leaf.codeLayoutView.textStorage.string;
++  }];
++  return [UIMenu menuWithChildren:@[copy]];
++}
++
++@end
++
++Class<RCTComponentViewProtocol> EnrichedMarkdownCodeTextCls(void)
++{
++  return EnrichedMarkdownCodeText.class;
++}
+diff --git a/node_modules/react-native-enriched-markdown/ios/generated/ReactCodegen/EnrichedMarkdownTextSpec/EventEmitters.cpp b/node_modules/react-native-enriched-markdown/ios/generated/ReactCodegen/EnrichedMarkdownTextSpec/EventEmitters.cpp
+index b9c4939..4d0ad4a 100644
+--- a/node_modules/react-native-enriched-markdown/ios/generated/ReactCodegen/EnrichedMarkdownTextSpec/EventEmitters.cpp
++++ b/node_modules/react-native-enriched-markdown/ios/generated/ReactCodegen/EnrichedMarkdownTextSpec/EventEmitters.cpp
+@@ -13,6 +13,7 @@
+
+ namespace facebook::react {
+
++
+ void EnrichedMarkdownEventEmitter::onLinkPress(OnLinkPress event) const {
+   dispatchEvent("linkPress", [event=std::move(event)](jsi::Runtime &runtime) {
+     auto payload = jsi::Object(runtime);
+diff --git a/node_modules/react-native-enriched-markdown/ios/generated/ReactCodegen/EnrichedMarkdownTextSpec/EventEmitters.h b/node_modules/react-native-enriched-markdown/ios/generated/ReactCodegen/EnrichedMarkdownTextSpec/EventEmitters.h
+index f8c9332..089f8d2 100644
+--- a/node_modules/react-native-enriched-markdown/ios/generated/ReactCodegen/EnrichedMarkdownTextSpec/EventEmitters.h
++++ b/node_modules/react-native-enriched-markdown/ios/generated/ReactCodegen/EnrichedMarkdownTextSpec/EventEmitters.h
+@@ -13,6 +13,13 @@
+
+
+ namespace facebook::react {
++class EnrichedMarkdownCodeTextEventEmitter : public ViewEventEmitter {
++ public:
++  using ViewEventEmitter::ViewEventEmitter;
++
++
++
++};
+ class EnrichedMarkdownEventEmitter : public ViewEventEmitter {
+  public:
+   using ViewEventEmitter::ViewEventEmitter;
+diff --git a/node_modules/react-native-enriched-markdown/ios/generated/ReactCodegen/EnrichedMarkdownTextSpec/Props.cpp b/node_modules/react-native-enriched-markdown/ios/generated/ReactCodegen/EnrichedMarkdownTextSpec/Props.cpp
+index 9042352..9e05d39 100644
+--- a/node_modules/react-native-enriched-markdown/ios/generated/ReactCodegen/EnrichedMarkdownTextSpec/Props.cpp
++++ b/node_modules/react-native-enriched-markdown/ios/generated/ReactCodegen/EnrichedMarkdownTextSpec/Props.cpp
+@@ -14,6 +14,85 @@
+
+ namespace facebook::react {
+
++EnrichedMarkdownCodeTextProps::EnrichedMarkdownCodeTextProps(
++    const PropsParserContext &context,
++    const EnrichedMarkdownCodeTextProps &sourceProps,
++    const RawProps &rawProps): ViewProps(context, sourceProps, rawProps),
++
++    text(convertRawProp(context, rawProps, "text", sourceProps.text, {})),
++    documentSnapshotId(convertRawProp(context, rawProps, "documentSnapshotId", sourceProps.documentSnapshotId, {})),
++    blockSourceRange(convertRawProp(context, rawProps, "blockSourceRange", sourceProps.blockSourceRange, {})),
++    fontFamily(convertRawProp(context, rawProps, "fontFamily", sourceProps.fontFamily, {})),
++    fontSize(convertRawProp(context, rawProps, "fontSize", sourceProps.fontSize, {0.0})),
++    lineHeight(convertRawProp(context, rawProps, "lineHeight", sourceProps.lineHeight, {0.0})),
++    textColor(convertRawProp(context, rawProps, "textColor", sourceProps.textColor, {})),
++    textAlign(convertRawProp(context, rawProps, "textAlign", sourceProps.textAlign, {})),
++    writingDirection(convertRawProp(context, rawProps, "writingDirection", sourceProps.writingDirection, {})),
++    selectable(convertRawProp(context, rawProps, "selectable", sourceProps.selectable, {false})),
++    allowFontScaling(convertRawProp(context, rawProps, "allowFontScaling", sourceProps.allowFontScaling, {false})) {}
++
++#ifdef RN_SERIALIZABLE_STATE
++ComponentName EnrichedMarkdownCodeTextProps::getDiffPropsImplementationTarget() const {
++  return "EnrichedMarkdownCodeText";
++}
++
++folly::dynamic EnrichedMarkdownCodeTextProps::getDiffProps(
++    const Props* prevProps) const {
++  static const auto defaultProps = EnrichedMarkdownCodeTextProps();
++  const EnrichedMarkdownCodeTextProps* oldProps = prevProps == nullptr
++      ? &defaultProps
++      : static_cast<const EnrichedMarkdownCodeTextProps*>(prevProps);
++  if (this == oldProps) {
++    return folly::dynamic::object();
++  }
++  folly::dynamic result = HostPlatformViewProps::getDiffProps(prevProps);
++
++  if (text != oldProps->text) {
++    result["text"] = text;
++  }
++
++  if (documentSnapshotId != oldProps->documentSnapshotId) {
++    result["documentSnapshotId"] = documentSnapshotId;
++  }
++
++  if (blockSourceRange != oldProps->blockSourceRange) {
++    result["blockSourceRange"] = toDynamic(blockSourceRange);
++  }
++
++  if (fontFamily != oldProps->fontFamily) {
++    result["fontFamily"] = fontFamily;
++  }
++
++  if ((fontSize != oldProps->fontSize) && !(std::isnan(fontSize) && std::isnan(oldProps->fontSize))) {
++    result["fontSize"] = fontSize;
++  }
++
++  if ((lineHeight != oldProps->lineHeight) && !(std::isnan(lineHeight) && std::isnan(oldProps->lineHeight))) {
++    result["lineHeight"] = lineHeight;
++  }
++
++  if (textColor != oldProps->textColor) {
++    result["textColor"] = *textColor;
++  }
++
++  if (textAlign != oldProps->textAlign) {
++    result["textAlign"] = textAlign;
++  }
++
++  if (writingDirection != oldProps->writingDirection) {
++    result["writingDirection"] = writingDirection;
++  }
++
++  if (selectable != oldProps->selectable) {
++    result["selectable"] = selectable;
++  }
++
++  if (allowFontScaling != oldProps->allowFontScaling) {
++    result["allowFontScaling"] = allowFontScaling;
++  }
++  return result;
++}
++#endif
+ EnrichedMarkdownProps::EnrichedMarkdownProps(
+     const PropsParserContext &context,
+     const EnrichedMarkdownProps &sourceProps,
+diff --git a/node_modules/react-native-enriched-markdown/ios/generated/ReactCodegen/EnrichedMarkdownTextSpec/Props.h b/node_modules/react-native-enriched-markdown/ios/generated/ReactCodegen/EnrichedMarkdownTextSpec/Props.h
+index 1416540..27bb02b 100644
+--- a/node_modules/react-native-enriched-markdown/ios/generated/ReactCodegen/EnrichedMarkdownTextSpec/Props.h
++++ b/node_modules/react-native-enriched-markdown/ios/generated/ReactCodegen/EnrichedMarkdownTextSpec/Props.h
+@@ -18,6 +18,73 @@
+
+ namespace facebook::react {
+
++struct EnrichedMarkdownCodeTextBlockSourceRangeStruct {
++  int start{0};
++  int end{0};
++
++
++#ifdef RN_SERIALIZABLE_STATE
++  bool operator==(const EnrichedMarkdownCodeTextBlockSourceRangeStruct&) const = default;
++
++  folly::dynamic toDynamic() const {
++    folly::dynamic result = folly::dynamic::object();
++    result["start"] = start;
++    result["end"] = end;
++    return result;
++  }
++#endif
++};
++
++static inline void fromRawValue(const PropsParserContext& context, const RawValue &value, EnrichedMarkdownCodeTextBlockSourceRangeStruct &result) {
++  auto map = (std::unordered_map<std::string, RawValue>)value;
++
++  auto tmp_start = map.find("start");
++  if (tmp_start != map.end()) {
++    fromRawValue(context, tmp_start->second, result.start);
++  }
++  auto tmp_end = map.find("end");
++  if (tmp_end != map.end()) {
++    fromRawValue(context, tmp_end->second, result.end);
++  }
++}
++
++static inline std::string toString(const EnrichedMarkdownCodeTextBlockSourceRangeStruct &value) {
++  return "[Object EnrichedMarkdownCodeTextBlockSourceRangeStruct]";
++}
++
++#ifdef RN_SERIALIZABLE_STATE
++static inline folly::dynamic toDynamic(const EnrichedMarkdownCodeTextBlockSourceRangeStruct &value) {
++  return value.toDynamic();
++}
++#endif
++class EnrichedMarkdownCodeTextProps final : public ViewProps {
++ public:
++  EnrichedMarkdownCodeTextProps() = default;
++  EnrichedMarkdownCodeTextProps(const PropsParserContext& context, const EnrichedMarkdownCodeTextProps &sourceProps, const RawProps &rawProps);
++
++#pragma mark - Props
++
++  std::string text{};
++  std::string documentSnapshotId{};
++  EnrichedMarkdownCodeTextBlockSourceRangeStruct blockSourceRange{};
++  std::string fontFamily{};
++  Float fontSize{0.0};
++  Float lineHeight{0.0};
++  SharedColor textColor{};
++  std::string textAlign{};
++  std::string writingDirection{};
++  bool selectable{false};
++  bool allowFontScaling{false};
++
++  #ifdef RN_SERIALIZABLE_STATE
++  ComponentName getDiffPropsImplementationTarget() const override;
++
++  folly::dynamic getDiffProps(const Props* prevProps) const override;
++  #endif
++
++
++};
++
+ struct EnrichedMarkdownMarkdownStyleParagraphStruct {
+   Float fontSize{0.0};
+   std::string fontFamily{};
+diff --git a/node_modules/react-native-enriched-markdown/ios/generated/ReactCodegen/EnrichedMarkdownTextSpec/RCTComponentViewHelpers.h b/node_modules/react-native-enriched-markdown/ios/generated/ReactCodegen/EnrichedMarkdownTextSpec/RCTComponentViewHelpers.h
+index 58b4356..cca29bc 100644
+--- a/node_modules/react-native-enriched-markdown/ios/generated/ReactCodegen/EnrichedMarkdownTextSpec/RCTComponentViewHelpers.h
++++ b/node_modules/react-native-enriched-markdown/ios/generated/ReactCodegen/EnrichedMarkdownTextSpec/RCTComponentViewHelpers.h
+@@ -13,6 +13,10 @@
+
+ NS_ASSUME_NONNULL_BEGIN
+
++@protocol RCTEnrichedMarkdownCodeTextViewProtocol <NSObject>
++
++@end
++
+ @protocol RCTEnrichedMarkdownViewProtocol <NSObject>
+
+ @end
+diff --git a/node_modules/react-native-enriched-markdown/ios/internals/EnrichedMarkdownCodeTextComponentDescriptor.h b/node_modules/react-native-enriched-markdown/ios/internals/EnrichedMarkdownCodeTextComponentDescriptor.h
+new file mode 100644
+index 0000000..dced57f
+--- /dev/null
++++ b/node_modules/react-native-enriched-markdown/ios/internals/EnrichedMarkdownCodeTextComponentDescriptor.h
+@@ -0,0 +1,13 @@
++#pragma once
++#include "EnrichedMarkdownCodeTextShadowNode.h"
++#include <react/renderer/core/ConcreteComponentDescriptor.h>
++
++namespace facebook::react {
++
++class EnrichedMarkdownCodeTextComponentDescriptor final
++    : public ConcreteComponentDescriptor<EnrichedMarkdownCodeTextShadowNode> {
++public:
++  using ConcreteComponentDescriptor::ConcreteComponentDescriptor;
++};
++
++} // namespace facebook::react
+diff --git a/node_modules/react-native-enriched-markdown/ios/internals/EnrichedMarkdownCodeTextShadowNode.h b/node_modules/react-native-enriched-markdown/ios/internals/EnrichedMarkdownCodeTextShadowNode.h
+new file mode 100644
+index 0000000..5705c74
+--- /dev/null
++++ b/node_modules/react-native-enriched-markdown/ios/internals/EnrichedMarkdownCodeTextShadowNode.h
+@@ -0,0 +1,29 @@
++#pragma once
++#include "EnrichedMarkdownCodeTextState.h"
++#include <ReactNativeEnrichedMarkdown/EventEmitters.h>
++#include <ReactNativeEnrichedMarkdown/Props.h>
++#include <react/renderer/components/view/ConcreteViewShadowNode.h>
++
++namespace facebook::react {
++
++JSI_EXPORT extern const char EnrichedMarkdownCodeTextComponentName[];
++
++class EnrichedMarkdownCodeTextShadowNode final
++    : public ConcreteViewShadowNode<EnrichedMarkdownCodeTextComponentName, EnrichedMarkdownCodeTextProps,
++                                    EnrichedMarkdownCodeTextEventEmitter, EnrichedMarkdownCodeTextState> {
++public:
++  using ConcreteViewShadowNode::ConcreteViewShadowNode;
++
++  static ShadowNodeTraits BaseTraits()
++  {
++    auto traits = ConcreteViewShadowNode::BaseTraits();
++    traits.set(ShadowNodeTraits::Trait::LeafYogaNode);
++    traits.set(ShadowNodeTraits::Trait::MeasurableYogaNode);
++    return traits;
++  }
++
++  Size measureContent(const LayoutContext &context, const LayoutConstraints &constraints) const override;
++  void layout(LayoutContext context) override;
++};
++
++} // namespace facebook::react
+diff --git a/node_modules/react-native-enriched-markdown/ios/internals/EnrichedMarkdownCodeTextShadowNode.mm b/node_modules/react-native-enriched-markdown/ios/internals/EnrichedMarkdownCodeTextShadowNode.mm
+new file mode 100644
+index 0000000..4936b44
+--- /dev/null
++++ b/node_modules/react-native-enriched-markdown/ios/internals/EnrichedMarkdownCodeTextShadowNode.mm
+@@ -0,0 +1,29 @@
++#import "EnrichedMarkdownCodeTextShadowNode.h"
++#import "EnrichedMarkdownCodeText.h"
++#import "ShadowMeasurementUtils.h"
++
++namespace facebook::react {
++
++extern const char EnrichedMarkdownCodeTextComponentName[] = "EnrichedMarkdownCodeText";
++
++Size EnrichedMarkdownCodeTextShadowNode::measureContent(const LayoutContext &context,
++                                                       const LayoutConstraints &constraints) const
++{
++  @autoreleasepool {
++    return ENRMMeasureCodeText(getConcreteProps(), context, constraints);
++  }
++}
++
++void EnrichedMarkdownCodeTextShadowNode::layout(LayoutContext context)
++{
++  ensureUnsealed();
++  const auto scale = (Float)ENRMFontScaleForMeasurement(getConcreteProps().allowFontScaling, context);
++  const auto direction = getLayoutMetrics().layoutDirection;
++  const auto &state = getStateData();
++  if (state.fontScale != scale || state.layoutDirection != direction) {
++    setStateData(EnrichedMarkdownCodeTextState{scale, direction});
++  }
++  ConcreteViewShadowNode::layout(context);
++}
++
++} // namespace facebook::react
+diff --git a/node_modules/react-native-enriched-markdown/ios/internals/EnrichedMarkdownCodeTextState.h b/node_modules/react-native-enriched-markdown/ios/internals/EnrichedMarkdownCodeTextState.h
+new file mode 100644
+index 0000000..a4d7ce8
+--- /dev/null
++++ b/node_modules/react-native-enriched-markdown/ios/internals/EnrichedMarkdownCodeTextState.h
+@@ -0,0 +1,12 @@
++#pragma once
++#include <react/renderer/core/LayoutPrimitives.h>
++
++namespace facebook::react {
++
++// Immutable commit data only, never a mounted view or mutable TextKit layout.
++struct EnrichedMarkdownCodeTextState {
++  Float fontScale{1};
++  LayoutDirection layoutDirection{LayoutDirection::LeftToRight};
++};
++
++} // namespace facebook::react
+diff --git a/node_modules/react-native-enriched-markdown/ios/parser/MarkdownASTNode.h b/node_modules/react-native-enriched-markdown/ios/parser/MarkdownASTNode.h
+index 5ace29e..0808294 100644
+--- a/node_modules/react-native-enriched-markdown/ios/parser/MarkdownASTNode.h
++++ b/node_modules/react-native-enriched-markdown/ios/parser/MarkdownASTNode.h
+@@ -34,15 +34,27 @@ typedef NS_ENUM(NSInteger, MarkdownNodeType) {
+   MarkdownNodeTypeSoftBreak
+ };
+
++FOUNDATION_EXPORT NSAttributedStringKey const ENRMSourceFragmentAttributeName;
++
++@interface ENRMSourceFragment : NSObject
++@property (nonatomic, copy, readonly) NSString *text;
++@property (nonatomic, readonly) NSRange sourceRange;
++@property (nonatomic, readonly, getter=isGenerated) BOOL generated;
++- (instancetype)initWithText:(NSString *)text sourceRange:(NSRange)sourceRange generated:(BOOL)generated;
++@end
++
+ @interface MarkdownASTNode : NSObject
+
+ @property (nonatomic, assign) MarkdownNodeType type;
+ @property (nonatomic, strong) NSString *content;
+ @property (nonatomic, strong) NSMutableDictionary *attributes;
+ @property (nonatomic, strong) NSMutableArray<MarkdownASTNode *> *children;
++@property (nonatomic, copy) NSArray<ENRMSourceFragment *> *sourceFragments;
++@property (nonatomic) NSRange sourceRange;
+
+ - (instancetype)initWithType:(MarkdownNodeType)type;
+ - (void)addChild:(MarkdownASTNode *)child;
+ - (void)setAttribute:(NSString *)key value:(NSString *)value;
++- (void)applySourceFragmentsToString:(NSMutableAttributedString *)string range:(NSRange)range;
+
+ @end
+diff --git a/node_modules/react-native-enriched-markdown/ios/parser/MarkdownASTNode.m b/node_modules/react-native-enriched-markdown/ios/parser/MarkdownASTNode.m
+index 61a9deb..52121af 100644
+--- a/node_modules/react-native-enriched-markdown/ios/parser/MarkdownASTNode.m
++++ b/node_modules/react-native-enriched-markdown/ios/parser/MarkdownASTNode.m
+@@ -1,5 +1,19 @@
+ #import "MarkdownASTNode.h"
+
++NSAttributedStringKey const ENRMSourceFragmentAttributeName = @"ENRMSourceFragment";
++
++@implementation ENRMSourceFragment
++- (instancetype)initWithText:(NSString *)text sourceRange:(NSRange)sourceRange generated:(BOOL)generated
++{
++  if (self = [super init]) {
++    _text = [text copy];
++    _sourceRange = sourceRange;
++    _generated = generated;
++  }
++  return self;
++}
++@end
++
+ @implementation MarkdownASTNode
+
+ - (instancetype)initWithType:(MarkdownNodeType)type
+@@ -9,6 +23,8 @@
+     _content = nil;
+     _attributes = [[NSMutableDictionary alloc] init];
+     _children = [[NSMutableArray alloc] init];
++    _sourceFragments = @[];
++    _sourceRange = NSMakeRange(NSNotFound, 0);
+   }
+   return self;
+ }
+@@ -23,6 +39,29 @@
+   _attributes[key] = value;
+ }
+
++- (void)applySourceFragmentsToString:(NSMutableAttributedString *)string range:(NSRange)range
++{
++  [string addAttribute:ENRMSourceFragmentAttributeName value:[NSNull null] range:range];
++  if ((_type == MarkdownNodeTypeSoftBreak || _type == MarkdownNodeTypeLineBreak) && _sourceFragments.count == 1) {
++    ENRMSourceFragment *parsed = _sourceFragments.firstObject;
++    ENRMSourceFragment *rendered = [[ENRMSourceFragment alloc]
++        initWithText:[string.string substringWithRange:range] sourceRange:parsed.sourceRange generated:parsed.generated];
++    [string addAttribute:ENRMSourceFragmentAttributeName value:rendered range:range];
++    return;
++  }
++  NSMutableString *projected = [NSMutableString new];
++  for (ENRMSourceFragment *fragment in _sourceFragments)
++    [projected appendString:fragment.text];
++  if (![projected isEqualToString:[string.string substringWithRange:range]])
++    return;
++  NSUInteger offset = range.location;
++  for (ENRMSourceFragment *fragment in _sourceFragments) {
++    NSRange part = NSMakeRange(offset, fragment.text.length);
++    [string addAttribute:ENRMSourceFragmentAttributeName value:fragment range:part];
++    offset += part.length;
++  }
++}
++
+ - (NSString *)description
+ {
+   return [NSString stringWithFormat:@"MarkdownASTNode(type=%ld, content=%@, children=%lu)", (long)_type, _content,
+diff --git a/node_modules/react-native-enriched-markdown/ios/parser/MarkdownParserBridge.mm b/node_modules/react-native-enriched-markdown/ios/parser/MarkdownParserBridge.mm
+index 3131dc7..ff8cbc8 100644
+--- a/node_modules/react-native-enriched-markdown/ios/parser/MarkdownParserBridge.mm
++++ b/node_modules/react-native-enriched-markdown/ios/parser/MarkdownParserBridge.mm
+@@ -4,8 +4,27 @@
+ #include "MarkdownASTNode.hpp"
+ #import <React/RCTLog.h>
+
++// Compute valid byte boundaries once for the complete original input. Continuation
++// bytes are not UTF-16 boundaries and must never become selection endpoints.
++static std::vector<NSUInteger> sourceUTF16Boundaries(const std::string &source)
++{
++  std::vector<NSUInteger> boundaries(source.size() + 1, NSNotFound);
++  NSUInteger utf16 = 0;
++  size_t byte = 0;
++  while (byte < source.size()) {
++    boundaries[byte] = utf16;
++    const unsigned char lead = source[byte];
++    const size_t count = lead < 0x80 ? 1 : lead < 0xE0 ? 2 : lead < 0xF0 ? 3 : 4;
++    byte += count;
++    utf16 += count == 4 ? 2 : 1;
++  }
++  boundaries[source.size()] = utf16;
++  return boundaries;
++}
++
+ // Convert C++ AST node to Objective-C AST node
+-static MarkdownASTNode *convertCppASTToObjC(std::shared_ptr<Markdown::MarkdownASTNode> cppNode)
++static MarkdownASTNode *convertCppASTToObjC(std::shared_ptr<Markdown::MarkdownASTNode> cppNode,
++                                          const std::vector<NSUInteger> &boundaries)
+ {
+   if (!cppNode) {
+     return [[MarkdownASTNode alloc] initWithType:MarkdownNodeTypeDocument];
+@@ -113,7 +132,31 @@ static MarkdownASTNode *convertCppASTToObjC(std::shared_ptr<Markdown::MarkdownAS
+
+   // Convert content
+   if (!cppNode->content.empty()) {
+-    objcNode.content = [NSString stringWithUTF8String:cppNode->content.c_str()];
++    objcNode.content = [[NSString alloc] initWithBytes:cppNode->content.data()
++                                             length:cppNode->content.size() encoding:NSUTF8StringEncoding];
++  }
++
++  NSMutableArray<ENRMSourceFragment *> *fragments = [NSMutableArray new];
++  for (const auto &fragment : cppNode->sourceFragments) {
++    NSString *text = [[NSString alloc] initWithBytes:fragment.text.data() length:fragment.text.size()
++                                           encoding:NSUTF8StringEncoding];
++    if (!text || fragment.sourceByteEnd >= boundaries.size() || fragment.sourceByteStart > fragment.sourceByteEnd)
++      continue;
++    NSUInteger start = boundaries[fragment.sourceByteStart];
++    NSUInteger end = boundaries[fragment.sourceByteEnd];
++    if (start == NSNotFound || end == NSNotFound)
++      continue;
++    [fragments addObject:[[ENRMSourceFragment alloc] initWithText:text sourceRange:NSMakeRange(start, end - start)
++                                                     generated:fragment.generated]];
++  }
++  objcNode.sourceFragments = fragments;
++
++  if (cppNode->hasSourceRange && cppNode->sourceByteStart <= cppNode->sourceByteEnd &&
++      cppNode->sourceByteEnd < boundaries.size()) {
++    NSUInteger start = boundaries[cppNode->sourceByteStart];
++    NSUInteger end = boundaries[cppNode->sourceByteEnd];
++    if (start != NSNotFound && end != NSNotFound)
++      objcNode.sourceRange = NSMakeRange(start, end - start);
+   }
+
+   // Convert attributes
+@@ -125,7 +168,7 @@ static MarkdownASTNode *convertCppASTToObjC(std::shared_ptr<Markdown::MarkdownAS
+
+   // Convert children recursively
+   for (const auto &child : cppNode->children) {
+-    MarkdownASTNode *objcChild = convertCppASTToObjC(child);
++    MarkdownASTNode *objcChild = convertCppASTToObjC(child, boundaries);
+     [objcNode addChild:objcChild];
+   }
+
+@@ -139,14 +182,15 @@ MarkdownASTNode *parseMarkdownWithCppParser(NSString *markdown, ENRMMd4cFlags *f
+     return [[MarkdownASTNode alloc] initWithType:MarkdownNodeTypeDocument];
+   }
+
+-  // Convert NSString to std::string
+-  const char *utf8String = [markdown UTF8String];
+-  if (!utf8String) {
++  // Use a length-bearing encoding, preserving original embedded NULs and BOM.
++  NSData *utf8 = [markdown dataUsingEncoding:NSUTF8StringEncoding];
++  if (!utf8) {
+     RCTLogError(@"MarkdownParserBridge: Failed to convert markdown to UTF-8");
+     return [[MarkdownASTNode alloc] initWithType:MarkdownNodeTypeDocument];
+   }
+
+-  std::string cppMarkdown(utf8String);
++  std::string cppMarkdown(static_cast<const char *>(utf8.bytes), utf8.length);
++  const auto boundaries = sourceUTF16Boundaries(cppMarkdown);
+
+   // Convert Objective-C flags to C++ flags
+   Markdown::Md4cFlags cppFlags;
+@@ -161,5 +205,5 @@ MarkdownASTNode *parseMarkdownWithCppParser(NSString *markdown, ENRMMd4cFlags *f
+   auto cppAST = parser.parse(cppMarkdown, cppFlags);
+
+   // Convert C++ AST to Objective-C AST
+-  return convertCppASTToObjC(cppAST);
++  return convertCppASTToObjC(cppAST, boundaries);
+ }
 diff --git a/node_modules/react-native-enriched-markdown/ios/renderer/CodeRenderer.m b/node_modules/react-native-enriched-markdown/ios/renderer/CodeRenderer.m
-index 7bc14ae..579c228 100644
+index 7bc14ae..ebe4069 100644
 --- a/node_modules/react-native-enriched-markdown/ios/renderer/CodeRenderer.m
 +++ b/node_modules/react-native-enriched-markdown/ios/renderer/CodeRenderer.m
 @@ -25,6 +25,7 @@
    UIFontWeight weight = (traits & UIFontDescriptorTraitBold) ? UIFontWeightBold : UIFontWeightRegular;
- 
+
    CGFloat codeFontSize = _config.codeFontSize > 0 ? _config.codeFontSize : blockStyle.fontSize;
 +  CGFloat codeScale = [context fontSizeMultiplier];
- 
+
    NSString *codeFontFamily = _config.codeFontFamily;
    UIFont *codeFont;
 @@ -36,9 +37,9 @@
@@ -81,15 +3610,27 @@ index 7bc14ae..579c228 100644
 -    codeFont = [UIFont monospacedSystemFontOfSize:codeFontSize weight:weight];
 +    codeFont = [UIFont monospacedSystemFontOfSize:codeFontSize * codeScale weight:weight];
    }
- 
+
    NSUInteger start = output.length;
+@@ -59,7 +60,10 @@
+     // Store block line height directly for CodeBackground to use
+     codeAttributes[@"BlockLineHeight"] = @(UIFontLineHeight(blockFont));
+
+-    [output setAttributes:codeAttributes range:range];
++    // Presentation must not smear the first fragment's original span over the
++    // rest of an inline-code run containing transformed line breaks.
++    [codeAttributes removeObjectForKey:ENRMSourceFragmentAttributeName];
++    [output addAttributes:codeAttributes range:range];
+   }
+ }
+
 diff --git a/node_modules/react-native-enriched-markdown/ios/renderer/RenderContext.h b/node_modules/react-native-enriched-markdown/ios/renderer/RenderContext.h
 index 4bccd4b..08298dd 100644
 --- a/node_modules/react-native-enriched-markdown/ios/renderer/RenderContext.h
 +++ b/node_modules/react-native-enriched-markdown/ios/renderer/RenderContext.h
 @@ -50,6 +50,12 @@ typedef NS_ENUM(NSInteger, ListType) { ListTypeUnordered, ListTypeOrdered };
  - (void)reset;
- 
+
  - (UIFont *)cachedFontForSize:(CGFloat)fontSize family:(NSString *)fontFamily weight:(NSString *)fontWeight;
 +
 +/** The Dynamic Type scale applied to block text, capped by
@@ -105,9 +3646,9 @@ index f7b2f1f..f2e5a17 100644
 --- a/node_modules/react-native-enriched-markdown/ios/renderer/RenderContext.m
 +++ b/node_modules/react-native-enriched-markdown/ios/renderer/RenderContext.m
 @@ -70,9 +70,14 @@ static NSArray<NSString *> *ENRMScopedKeyPaths(void)
- 
+
  #pragma mark - Font Cache
- 
+
 +- (CGFloat)fontSizeMultiplier
 +{
 +  return _allowFontScaling ? RCTFontSizeMultiplierWithMax(_maxFontSizeMultiplier) : 1.0;
@@ -117,21 +3658,82 @@ index f7b2f1f..f2e5a17 100644
  {
 -  CGFloat effectiveMultiplier = _allowFontScaling ? RCTFontSizeMultiplierWithMax(_maxFontSizeMultiplier) : 1.0;
 +  CGFloat effectiveMultiplier = [self fontSizeMultiplier];
- 
+
    NSString *weightKey = (fontWeight.length > 0) ? fontWeight : @"";
    NSString *key =
+diff --git a/node_modules/react-native-enriched-markdown/ios/renderer/RendererFactory.m b/node_modules/react-native-enriched-markdown/ios/renderer/RendererFactory.m
+index 1f4ff79..208f5aa 100644
+--- a/node_modules/react-native-enriched-markdown/ios/renderer/RendererFactory.m
++++ b/node_modules/react-native-enriched-markdown/ios/renderer/RendererFactory.m
+@@ -138,23 +138,36 @@
+ {
+   for (MarkdownASTNode *child in node.children) {
+     if (child.type == MarkdownNodeTypeLineBreak) {
+-      NSAttributedString *lineBreak = [[NSAttributedString alloc] initWithString:@"\u2028"
+-                                                                      attributes:[context getTextAttributes]];
++      NSMutableAttributedString *lineBreak = [[NSMutableAttributedString alloc] initWithString:@"\u2028"
++                                                                                   attributes:[context getTextAttributes]];
++      [child applySourceFragmentsToString:lineBreak range:NSMakeRange(0, lineBreak.length)];
+       [output appendAttributedString:lineBreak];
+       continue;
+     }
+     if (child.type == MarkdownNodeTypeSoftBreak) {
+-      NSAttributedString *softBreak = [[NSAttributedString alloc] initWithString:@" "
+-                                                                      attributes:[context getTextAttributes]];
++      NSMutableAttributedString *softBreak = [[NSMutableAttributedString alloc] initWithString:@" "
++                                                                                   attributes:[context getTextAttributes]];
++      [child applySourceFragmentsToString:softBreak range:NSMakeRange(0, softBreak.length)];
+       [output appendAttributedString:softBreak];
+       continue;
+     }
++    NSUInteger start = output.length;
+     id<NodeRenderer> renderer = [self rendererForNodeType:child.type];
+     if (renderer) {
+       [renderer renderNode:child into:output context:context];
+     } else if (child.children.count > 0) {
+       [self renderChildrenOfNode:child into:output context:context];
+     }
++    // Generated list markers, block spacing and image/diagram chrome carry an
++    // explicit unmapped value. They can never impersonate a parser text leaf.
++    NSRange rendered = NSMakeRange(start, output.length - start);
++    NSMutableArray<NSValue *> *unmapped = [NSMutableArray new];
++    [output enumerateAttribute:ENRMSourceFragmentAttributeName inRange:rendered options:0
++                    usingBlock:^(id value, NSRange range, BOOL *stop) {
++                      if (!value) [unmapped addObject:[NSValue valueWithRange:range]];
++                    }];
++    for (NSValue *range in unmapped)
++      [output addAttribute:ENRMSourceFragmentAttributeName value:[NSNull null] range:range.rangeValue];
+   }
+ }
+
+diff --git a/node_modules/react-native-enriched-markdown/ios/renderer/TextRenderer.m b/node_modules/react-native-enriched-markdown/ios/renderer/TextRenderer.m
+index cbd3cc7..6b62bce 100644
+--- a/node_modules/react-native-enriched-markdown/ios/renderer/TextRenderer.m
++++ b/node_modules/react-native-enriched-markdown/ios/renderer/TextRenderer.m
+@@ -10,8 +10,9 @@
+   if (!node.content)
+     return;
+
+-  NSAttributedString *text = [[NSAttributedString alloc] initWithString:node.content
+-                                                             attributes:[context getTextAttributes]];
++  NSMutableAttributedString *text = [[NSMutableAttributedString alloc] initWithString:node.content
++                                                                          attributes:[context getTextAttributes]];
++  [node applySourceFragmentsToString:text range:NSMakeRange(0, text.length)];
+   [output appendAttributedString:text];
+ }
+
 diff --git a/node_modules/react-native-enriched-markdown/ios/views/ENRMCodeBlockContainerView.m b/node_modules/react-native-enriched-markdown/ios/views/ENRMCodeBlockContainerView.m
 index a668c26..3140e72 100644
 --- a/node_modules/react-native-enriched-markdown/ios/views/ENRMCodeBlockContainerView.m
 +++ b/node_modules/react-native-enriched-markdown/ios/views/ENRMCodeBlockContainerView.m
-@@ -293,20 +293,14 @@ - (void)layoutScrollArea
+@@ -293,20 +293,14 @@ static BOOL ENRMColorIsDark(RCTUIColor *color)
  // top inset then forms the single gap below the label.
  - (CGFloat)headerHeight
  {
 -  return [self contentInset] + _headerLabelLineHeight;
 +  return MAX(44, [self contentInset] + _headerLabelLineHeight);
  }
- 
+
  - (void)layoutHeaderButton
  {
    CGFloat headerH = [self headerHeight];
@@ -147,8 +3749,8 @@ index a668c26..3140e72 100644
 +  CGFloat buttonTop = 0;
    _copyButton.frame = CGRectMake(buttonLeft, buttonTop, headerH, headerH);
  }
- 
-@@ -412,7 +406,7 @@ - (CGFloat)measureHeight:(CGFloat)maxWidth
+
+@@ -412,7 +406,7 @@ static BOOL ENRMColorIsDark(RCTUIColor *color)
  + (CGFloat)measureHeightForCodeBlockNode:(MarkdownASTNode *)node config:(StyleConfig *)config
  {
    CGFloat inset = ENRMCodeBlockContentInset(config);
@@ -157,12 +3759,344 @@ index a668c26..3140e72 100644
    NSAttributedString *code = ENRMCodeBlockPlainAttributedCode(ENRMCodeBlockExtractCode(node), config);
    return ENRMCodeBlockCodeSize(code).height + inset * 2 + headerH;
  }
-@@ -460,7 +454,7 @@ - (void)drawRect:(CGRect)rect
+@@ -460,7 +454,7 @@ static BOOL ENRMColorIsDark(RCTUIColor *color)
    }
- 
+
    if (_languageLabel.length > 0) {
 -    [_languageLabel drawAtPoint:CGPointMake(inset, headerH - _languageLabelSize.height)];
 +    [_languageLabel drawAtPoint:CGPointMake(inset, (headerH - _languageLabelSize.height) / 2)];
    }
  }
- 
+
+diff --git a/node_modules/react-native-enriched-markdown/lib/module/EnrichedMarkdownCodeTextNativeComponent.js b/node_modules/react-native-enriched-markdown/lib/module/EnrichedMarkdownCodeTextNativeComponent.js
+new file mode 100644
+index 0000000..3b1ecf9
+--- /dev/null
++++ b/node_modules/react-native-enriched-markdown/lib/module/EnrichedMarkdownCodeTextNativeComponent.js
+@@ -0,0 +1,5 @@
++import { codegenNativeComponent } from 'react-native';
++export default codegenNativeComponent('EnrichedMarkdownCodeText', {
++  interfaceOnly: true
++});
++//# sourceMappingURL=EnrichedMarkdownCodeTextNativeComponent.js.map
+diff --git a/node_modules/react-native-enriched-markdown/lib/module/EnrichedMarkdownCodeTextNativeComponent.js.map b/node_modules/react-native-enriched-markdown/lib/module/EnrichedMarkdownCodeTextNativeComponent.js.map
+new file mode 100644
+index 0000000..40e9c0e
+--- /dev/null
++++ b/node_modules/react-native-enriched-markdown/lib/module/EnrichedMarkdownCodeTextNativeComponent.js.map
+@@ -0,0 +1 @@
++{"version":3,"names":["codegenNativeComponent","interfaceOnly"],"sources":["../../src/EnrichedMarkdownCodeTextNativeComponent.ts"],"sourcesContent":["import {\n  codegenNativeComponent,\n  type CodegenTypes,\n  type ColorValue,\n  type ViewProps,\n} from 'react-native';\n\ninterface NativeProps extends ViewProps {\n  text: string;\n  documentSnapshotId: string;\n  blockSourceRange: Readonly<{\n    start: CodegenTypes.Int32;\n    end: CodegenTypes.Int32;\n  }>;\n  fontFamily: string;\n  fontSize: CodegenTypes.Float;\n  lineHeight: CodegenTypes.Float;\n  textColor: ColorValue;\n  textAlign: string;\n  writingDirection: string;\n  selectable: boolean;\n  allowFontScaling: boolean;\n}\n\nexport default codegenNativeComponent<NativeProps>('EnrichedMarkdownCodeText', {\n  interfaceOnly: true,\n});\n"],"mappings":"AAAA,SACEA,sBAAsB,QAIjB,cAAc;AAmBrB,eAAeA,sBAAsB,CAAc,0BAA0B,EAAE;EAC7EC,aAAa,EAAE;AACjB,CAAC,CAAC","ignoreList":[]}
+diff --git a/node_modules/react-native-enriched-markdown/lib/module/index.js b/node_modules/react-native-enriched-markdown/lib/module/index.js
+index dd17039..23151a7 100644
+--- a/node_modules/react-native-enriched-markdown/lib/module/index.js
++++ b/node_modules/react-native-enriched-markdown/lib/module/index.js
+@@ -1,6 +1,5 @@
+-"use strict";
+-
+ export { default as EnrichedMarkdownText } from "./native/EnrichedMarkdownText.js";
+ export { DEFAULT_ACCESSIBILITY_LABELS, resolveAccessibilityLabels } from "./accessibilityLabelDefaults.js";
+ export { EnrichedMarkdownTextInput } from "./EnrichedMarkdownTextInput.js";
++export { EnrichedMarkdownCodeText } from "./native/EnrichedMarkdownCodeText.js";
+ //# sourceMappingURL=index.js.map
+diff --git a/node_modules/react-native-enriched-markdown/lib/module/index.js.map b/node_modules/react-native-enriched-markdown/lib/module/index.js.map
+index e66a69e..d4072b2 100644
+--- a/node_modules/react-native-enriched-markdown/lib/module/index.js.map
++++ b/node_modules/react-native-enriched-markdown/lib/module/index.js.map
+@@ -1 +1 @@
+-{"version":3,"names":["default","EnrichedMarkdownText","DEFAULT_ACCESSIBILITY_LABELS","resolveAccessibilityLabels","EnrichedMarkdownTextInput"],"sourceRoot":"../../src","sources":["index.tsx"],"mappings":";;AAAA,SAASA,OAAO,IAAIC,oBAAoB,QAAQ,kCAA+B;AAoB/E,SACEC,4BAA4B,EAC5BC,0BAA0B,QACrB,iCAA8B;AAErC,SAASC,yBAAyB,QAAQ,gCAA6B","ignoreList":[]}
++{"version":3,"names":["default","EnrichedMarkdownText","DEFAULT_ACCESSIBILITY_LABELS","resolveAccessibilityLabels","EnrichedMarkdownTextInput","EnrichedMarkdownCodeText"],"sources":["../../src/index.tsx"],"sourcesContent":["export { default as EnrichedMarkdownText } from './native/EnrichedMarkdownText';\nexport type {\n  EnrichedMarkdownTextProps,\n  StreamingConfig,\n  MarkdownStyle,\n  Md4cFlags,\n  ContextMenuItem as TextContextMenuItem,\n  SelectionMenuConfig as TextSelectionMenuConfig,\n  SelectionMenuPluralLabels as TextSelectionMenuPluralLabels,\n} from './native/EnrichedMarkdownText';\nexport type {\n  LinkPressEvent,\n  LinkLongPressEvent,\n  TaskListItemPressEvent,\n  CopyPressEvent,\n} from './types/events';\nexport type {\n  AccessibilityLabels,\n  ResolvedAccessibilityLabels,\n} from './types/AccessibilityLabels';\nexport {\n  DEFAULT_ACCESSIBILITY_LABELS,\n  resolveAccessibilityLabels,\n} from './accessibilityLabelDefaults';\n\nexport { EnrichedMarkdownTextInput } from './EnrichedMarkdownTextInput';\nexport type {\n  EnrichedMarkdownTextInputProps,\n  EnrichedMarkdownTextInputInstance,\n  MarkdownTextInputStyle,\n  StyleState,\n  ContextMenuItem,\n  InputSelectionMenuConfig,\n  FormatMenuConfig,\n  OnKeyPressEvent,\n  OnLinkDetected,\n  OnStartMentionEvent,\n  OnChangeMentionEvent,\n  OnEndMentionEvent,\n  CaretRect,\n  HeadingLevel,\n  HeadingStyle,\n} from './EnrichedMarkdownTextInput';\n\nexport { EnrichedMarkdownCodeText } from './native/EnrichedMarkdownCodeText';\nexport type {\n  EnrichedMarkdownCodeTextProps,\n  MarkdownCodeSourceRange,\n} from './types/MarkdownCodeTextProps';\n"],"mappings":"AAAA,SAASA,OAAO,IAAIC,oBAAoB,QAAQ,kCAA+B;AAoB/E,SACEC,4BAA4B,EAC5BC,0BAA0B,QACrB,iCAA8B;AAErC,SAASC,yBAAyB,QAAQ,gCAA6B;AAmBvE,SAASC,wBAAwB,QAAQ,sCAAmC","ignoreList":[]}
+diff --git a/node_modules/react-native-enriched-markdown/lib/module/native/EnrichedMarkdownCodeText.js b/node_modules/react-native-enriched-markdown/lib/module/native/EnrichedMarkdownCodeText.js
+new file mode 100644
+index 0000000..0c70201
+--- /dev/null
++++ b/node_modules/react-native-enriched-markdown/lib/module/native/EnrichedMarkdownCodeText.js
+@@ -0,0 +1,32 @@
++import { StyleSheet } from 'react-native';
++import NativeCodeText from "../EnrichedMarkdownCodeTextNativeComponent.js";
++import { jsx as _jsx } from "react/jsx-runtime";
++export function EnrichedMarkdownCodeText({
++  text,
++  documentSnapshotId,
++  blockSourceRange,
++  selectable,
++  allowFontScaling,
++  style,
++  ...viewProps
++}) {
++  const flattened = StyleSheet.flatten(style);
++  return /*#__PURE__*/_jsx(NativeCodeText, {
++    ...viewProps,
++    accessible: viewProps.accessible ?? true,
++    accessibilityRole: viewProps.accessibilityRole ?? 'text',
++    text: text,
++    documentSnapshotId: documentSnapshotId,
++    blockSourceRange: blockSourceRange,
++    selectable: selectable,
++    allowFontScaling: allowFontScaling,
++    fontFamily: flattened?.fontFamily ?? '',
++    fontSize: flattened?.fontSize ?? 14,
++    lineHeight: flattened?.lineHeight ?? 0,
++    textColor: flattened?.color ?? 'black',
++    textAlign: flattened?.textAlign ?? 'auto',
++    writingDirection: flattened?.writingDirection ?? 'auto'
++  });
++}
++export default EnrichedMarkdownCodeText;
++//# sourceMappingURL=EnrichedMarkdownCodeText.js.map
+diff --git a/node_modules/react-native-enriched-markdown/lib/module/native/EnrichedMarkdownCodeText.js.map b/node_modules/react-native-enriched-markdown/lib/module/native/EnrichedMarkdownCodeText.js.map
+new file mode 100644
+index 0000000..0479513
+--- /dev/null
++++ b/node_modules/react-native-enriched-markdown/lib/module/native/EnrichedMarkdownCodeText.js.map
+@@ -0,0 +1 @@
++{"version":3,"names":["StyleSheet","NativeCodeText","jsx","_jsx","EnrichedMarkdownCodeText","text","documentSnapshotId","blockSourceRange","selectable","allowFontScaling","style","viewProps","flattened","flatten","accessible","accessibilityRole","fontFamily","fontSize","lineHeight","textColor","color","textAlign","writingDirection"],"sources":["../../../src/native/EnrichedMarkdownCodeText.tsx"],"sourcesContent":["import type { ReactElement } from 'react';\nimport { StyleSheet } from 'react-native';\nimport NativeCodeText from '../EnrichedMarkdownCodeTextNativeComponent';\nimport type { EnrichedMarkdownCodeTextProps } from '../types/MarkdownCodeTextProps';\n\nexport type {\n  EnrichedMarkdownCodeTextProps,\n  MarkdownCodeSourceRange,\n} from '../types/MarkdownCodeTextProps';\n\nexport function EnrichedMarkdownCodeText({\n  text,\n  documentSnapshotId,\n  blockSourceRange,\n  selectable,\n  allowFontScaling,\n  style,\n  ...viewProps\n}: EnrichedMarkdownCodeTextProps): ReactElement {\n  const flattened = StyleSheet.flatten(style);\n  return (\n    <NativeCodeText\n      {...viewProps}\n      accessible={viewProps.accessible ?? true}\n      accessibilityRole={viewProps.accessibilityRole ?? 'text'}\n      text={text}\n      documentSnapshotId={documentSnapshotId}\n      blockSourceRange={blockSourceRange}\n      selectable={selectable}\n      allowFontScaling={allowFontScaling}\n      fontFamily={flattened?.fontFamily ?? ''}\n      fontSize={flattened?.fontSize ?? 14}\n      lineHeight={flattened?.lineHeight ?? 0}\n      textColor={flattened?.color ?? 'black'}\n      textAlign={flattened?.textAlign ?? 'auto'}\n      writingDirection={flattened?.writingDirection ?? 'auto'}\n    />\n  );\n}\n\nexport default EnrichedMarkdownCodeText;\n"],"mappings":"AACA,SAASA,UAAU,QAAQ,cAAc;AACzC,OAAOC,cAAc,MAAM,+CAA4C;AAAC,SAAAC,GAAA,IAAAC,IAAA;AAQxE,OAAO,SAASC,wBAAwBA,CAAC;EACvCC,IAAI;EACJC,kBAAkB;EAClBC,gBAAgB;EAChBC,UAAU;EACVC,gBAAgB;EAChBC,KAAK;EACL,GAAGC;AAC0B,CAAC,EAAgB;EAC9C,MAAMC,SAAS,GAAGZ,UAAU,CAACa,OAAO,CAACH,KAAK,CAAC;EAC3C,oBACEP,IAAA,CAACF,cAAc;IAAA,GACTU,SAAS;IACbG,UAAU,EAAEH,SAAS,CAACG,UAAU,IAAI,IAAK;IACzCC,iBAAiB,EAAEJ,SAAS,CAACI,iBAAiB,IAAI,MAAO;IACzDV,IAAI,EAAEA,IAAK;IACXC,kBAAkB,EAAEA,kBAAmB;IACvCC,gBAAgB,EAAEA,gBAAiB;IACnCC,UAAU,EAAEA,UAAW;IACvBC,gBAAgB,EAAEA,gBAAiB;IACnCO,UAAU,EAAEJ,SAAS,EAAEI,UAAU,IAAI,EAAG;IACxCC,QAAQ,EAAEL,SAAS,EAAEK,QAAQ,IAAI,EAAG;IACpCC,UAAU,EAAEN,SAAS,EAAEM,UAAU,IAAI,CAAE;IACvCC,SAAS,EAAEP,SAAS,EAAEQ,KAAK,IAAI,OAAQ;IACvCC,SAAS,EAAET,SAAS,EAAES,SAAS,IAAI,MAAO;IAC1CC,gBAAgB,EAAEV,SAAS,EAAEU,gBAAgB,IAAI;EAAO,CACzD,CAAC;AAEN;AAEA,eAAelB,wBAAwB","ignoreList":[]}
+diff --git a/node_modules/react-native-enriched-markdown/lib/module/types/MarkdownCodeTextProps.js b/node_modules/react-native-enriched-markdown/lib/module/types/MarkdownCodeTextProps.js
+new file mode 100644
+index 0000000..0869d4e
+--- /dev/null
++++ b/node_modules/react-native-enriched-markdown/lib/module/types/MarkdownCodeTextProps.js
+@@ -0,0 +1,2 @@
++export {};
++//# sourceMappingURL=MarkdownCodeTextProps.js.map
+diff --git a/node_modules/react-native-enriched-markdown/lib/module/types/MarkdownCodeTextProps.js.map b/node_modules/react-native-enriched-markdown/lib/module/types/MarkdownCodeTextProps.js.map
+new file mode 100644
+index 0000000..6a94a67
+--- /dev/null
++++ b/node_modules/react-native-enriched-markdown/lib/module/types/MarkdownCodeTextProps.js.map
+@@ -0,0 +1 @@
++{"version":3,"names":[],"sources":["../../../src/types/MarkdownCodeTextProps.ts"],"sourcesContent":["import type { StyleProp, TextStyle, ViewProps } from 'react-native';\n\nexport interface MarkdownCodeSourceRange {\n  start: number;\n  end: number;\n}\n\nexport interface EnrichedMarkdownCodeTextProps extends Omit<ViewProps, 'style'> {\n  text: string;\n  documentSnapshotId: string;\n  blockSourceRange: MarkdownCodeSourceRange;\n  selectable: boolean;\n  allowFontScaling: boolean;\n  style?: StyleProp<TextStyle>;\n}\n"],"mappings":"","ignoreList":[]}
+diff --git a/node_modules/react-native-enriched-markdown/lib/typescript/src/EnrichedMarkdownCodeTextNativeComponent.d.ts b/node_modules/react-native-enriched-markdown/lib/typescript/src/EnrichedMarkdownCodeTextNativeComponent.d.ts
+new file mode 100644
+index 0000000..8c796da
+--- /dev/null
++++ b/node_modules/react-native-enriched-markdown/lib/typescript/src/EnrichedMarkdownCodeTextNativeComponent.d.ts
+@@ -0,0 +1,20 @@
++import { type CodegenTypes, type ColorValue, type ViewProps } from 'react-native';
++interface NativeProps extends ViewProps {
++    text: string;
++    documentSnapshotId: string;
++    blockSourceRange: Readonly<{
++        start: CodegenTypes.Int32;
++        end: CodegenTypes.Int32;
++    }>;
++    fontFamily: string;
++    fontSize: CodegenTypes.Float;
++    lineHeight: CodegenTypes.Float;
++    textColor: ColorValue;
++    textAlign: string;
++    writingDirection: string;
++    selectable: boolean;
++    allowFontScaling: boolean;
++}
++declare const _default: import("react-native").HostComponent<NativeProps>;
++export default _default;
++//# sourceMappingURL=EnrichedMarkdownCodeTextNativeComponent.d.ts.map
+\ No newline at end of file
+diff --git a/node_modules/react-native-enriched-markdown/lib/typescript/src/EnrichedMarkdownCodeTextNativeComponent.d.ts.map b/node_modules/react-native-enriched-markdown/lib/typescript/src/EnrichedMarkdownCodeTextNativeComponent.d.ts.map
+new file mode 100644
+index 0000000..411a06c
+--- /dev/null
++++ b/node_modules/react-native-enriched-markdown/lib/typescript/src/EnrichedMarkdownCodeTextNativeComponent.d.ts.map
+@@ -0,0 +1 @@
++{"version":3,"file":"EnrichedMarkdownCodeTextNativeComponent.d.ts","sourceRoot":"","sources":["../../../src/EnrichedMarkdownCodeTextNativeComponent.ts"],"names":[],"mappings":"AAAA,OAAO,EAEL,KAAK,YAAY,EACjB,KAAK,UAAU,EACf,KAAK,SAAS,EACf,MAAM,cAAc,CAAC;AAEtB,UAAU,WAAY,SAAQ,SAAS;IACrC,IAAI,EAAE,MAAM,CAAC;IACb,kBAAkB,EAAE,MAAM,CAAC;IAC3B,gBAAgB,EAAE,QAAQ,CAAC;QACzB,KAAK,EAAE,YAAY,CAAC,KAAK,CAAC;QAC1B,GAAG,EAAE,YAAY,CAAC,KAAK,CAAC;KACzB,CAAC,CAAC;IACH,UAAU,EAAE,MAAM,CAAC;IACnB,QAAQ,EAAE,YAAY,CAAC,KAAK,CAAC;IAC7B,UAAU,EAAE,YAAY,CAAC,KAAK,CAAC;IAC/B,SAAS,EAAE,UAAU,CAAC;IACtB,SAAS,EAAE,MAAM,CAAC;IAClB,gBAAgB,EAAE,MAAM,CAAC;IACzB,UAAU,EAAE,OAAO,CAAC;IACpB,gBAAgB,EAAE,OAAO,CAAC;CAC3B;;AAED,wBAEG"}
+\ No newline at end of file
+diff --git a/node_modules/react-native-enriched-markdown/lib/typescript/src/index.d.ts b/node_modules/react-native-enriched-markdown/lib/typescript/src/index.d.ts
+index b67e74f..da775ec 100644
+--- a/node_modules/react-native-enriched-markdown/lib/typescript/src/index.d.ts
++++ b/node_modules/react-native-enriched-markdown/lib/typescript/src/index.d.ts
+@@ -5,4 +5,6 @@ export type { AccessibilityLabels, ResolvedAccessibilityLabels, } from './types/
+ export { DEFAULT_ACCESSIBILITY_LABELS, resolveAccessibilityLabels, } from './accessibilityLabelDefaults';
+ export { EnrichedMarkdownTextInput } from './EnrichedMarkdownTextInput';
+ export type { EnrichedMarkdownTextInputProps, EnrichedMarkdownTextInputInstance, MarkdownTextInputStyle, StyleState, ContextMenuItem, InputSelectionMenuConfig, FormatMenuConfig, OnKeyPressEvent, OnLinkDetected, OnStartMentionEvent, OnChangeMentionEvent, OnEndMentionEvent, CaretRect, HeadingLevel, HeadingStyle, } from './EnrichedMarkdownTextInput';
++export { EnrichedMarkdownCodeText } from './native/EnrichedMarkdownCodeText';
++export type { EnrichedMarkdownCodeTextProps, MarkdownCodeSourceRange, } from './types/MarkdownCodeTextProps';
+ //# sourceMappingURL=index.d.ts.map
+\ No newline at end of file
+diff --git a/node_modules/react-native-enriched-markdown/lib/typescript/src/index.d.ts.map b/node_modules/react-native-enriched-markdown/lib/typescript/src/index.d.ts.map
+index 9fabecc..28009b1 100644
+--- a/node_modules/react-native-enriched-markdown/lib/typescript/src/index.d.ts.map
++++ b/node_modules/react-native-enriched-markdown/lib/typescript/src/index.d.ts.map
+@@ -1 +1 @@
+-{"version":3,"file":"index.d.ts","sourceRoot":"","sources":["../../../src/index.tsx"],"names":[],"mappings":"AAAA,OAAO,EAAE,OAAO,IAAI,oBAAoB,EAAE,MAAM,+BAA+B,CAAC;AAChF,YAAY,EACV,yBAAyB,EACzB,eAAe,EACf,aAAa,EACb,SAAS,EACT,eAAe,IAAI,mBAAmB,EACtC,mBAAmB,IAAI,uBAAuB,EAC9C,yBAAyB,IAAI,6BAA6B,GAC3D,MAAM,+BAA+B,CAAC;AACvC,YAAY,EACV,cAAc,EACd,kBAAkB,EAClB,sBAAsB,EACtB,cAAc,GACf,MAAM,gBAAgB,CAAC;AACxB,YAAY,EACV,mBAAmB,EACnB,2BAA2B,GAC5B,MAAM,6BAA6B,CAAC;AACrC,OAAO,EACL,4BAA4B,EAC5B,0BAA0B,GAC3B,MAAM,8BAA8B,CAAC;AAEtC,OAAO,EAAE,yBAAyB,EAAE,MAAM,6BAA6B,CAAC;AACxE,YAAY,EACV,8BAA8B,EAC9B,iCAAiC,EACjC,sBAAsB,EACtB,UAAU,EACV,eAAe,EACf,wBAAwB,EACxB,gBAAgB,EAChB,eAAe,EACf,cAAc,EACd,mBAAmB,EACnB,oBAAoB,EACpB,iBAAiB,EACjB,SAAS,EACT,YAAY,EACZ,YAAY,GACb,MAAM,6BAA6B,CAAC"}
+\ No newline at end of file
++{"version":3,"file":"index.d.ts","sourceRoot":"","sources":["../../../src/index.tsx"],"names":[],"mappings":"AAAA,OAAO,EAAE,OAAO,IAAI,oBAAoB,EAAE,MAAM,+BAA+B,CAAC;AAChF,YAAY,EACV,yBAAyB,EACzB,eAAe,EACf,aAAa,EACb,SAAS,EACT,eAAe,IAAI,mBAAmB,EACtC,mBAAmB,IAAI,uBAAuB,EAC9C,yBAAyB,IAAI,6BAA6B,GAC3D,MAAM,+BAA+B,CAAC;AACvC,YAAY,EACV,cAAc,EACd,kBAAkB,EAClB,sBAAsB,EACtB,cAAc,GACf,MAAM,gBAAgB,CAAC;AACxB,YAAY,EACV,mBAAmB,EACnB,2BAA2B,GAC5B,MAAM,6BAA6B,CAAC;AACrC,OAAO,EACL,4BAA4B,EAC5B,0BAA0B,GAC3B,MAAM,8BAA8B,CAAC;AAEtC,OAAO,EAAE,yBAAyB,EAAE,MAAM,6BAA6B,CAAC;AACxE,YAAY,EACV,8BAA8B,EAC9B,iCAAiC,EACjC,sBAAsB,EACtB,UAAU,EACV,eAAe,EACf,wBAAwB,EACxB,gBAAgB,EAChB,eAAe,EACf,cAAc,EACd,mBAAmB,EACnB,oBAAoB,EACpB,iBAAiB,EACjB,SAAS,EACT,YAAY,EACZ,YAAY,GACb,MAAM,6BAA6B,CAAC;AAErC,OAAO,EAAE,wBAAwB,EAAE,MAAM,mCAAmC,CAAC;AAC7E,YAAY,EACV,6BAA6B,EAC7B,uBAAuB,GACxB,MAAM,+BAA+B,CAAC"}
+\ No newline at end of file
+diff --git a/node_modules/react-native-enriched-markdown/lib/typescript/src/native/EnrichedMarkdownCodeText.d.ts b/node_modules/react-native-enriched-markdown/lib/typescript/src/native/EnrichedMarkdownCodeText.d.ts
+new file mode 100644
+index 0000000..299f179
+--- /dev/null
++++ b/node_modules/react-native-enriched-markdown/lib/typescript/src/native/EnrichedMarkdownCodeText.d.ts
+@@ -0,0 +1,6 @@
++import type { ReactElement } from 'react';
++import type { EnrichedMarkdownCodeTextProps } from '../types/MarkdownCodeTextProps';
++export type { EnrichedMarkdownCodeTextProps, MarkdownCodeSourceRange, } from '../types/MarkdownCodeTextProps';
++export declare function EnrichedMarkdownCodeText({ text, documentSnapshotId, blockSourceRange, selectable, allowFontScaling, style, ...viewProps }: EnrichedMarkdownCodeTextProps): ReactElement;
++export default EnrichedMarkdownCodeText;
++//# sourceMappingURL=EnrichedMarkdownCodeText.d.ts.map
+\ No newline at end of file
+diff --git a/node_modules/react-native-enriched-markdown/lib/typescript/src/native/EnrichedMarkdownCodeText.d.ts.map b/node_modules/react-native-enriched-markdown/lib/typescript/src/native/EnrichedMarkdownCodeText.d.ts.map
+new file mode 100644
+index 0000000..a8755e7
+--- /dev/null
++++ b/node_modules/react-native-enriched-markdown/lib/typescript/src/native/EnrichedMarkdownCodeText.d.ts.map
+@@ -0,0 +1 @@
++{"version":3,"file":"EnrichedMarkdownCodeText.d.ts","sourceRoot":"","sources":["../../../../src/native/EnrichedMarkdownCodeText.tsx"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,YAAY,EAAE,MAAM,OAAO,CAAC;AAG1C,OAAO,KAAK,EAAE,6BAA6B,EAAE,MAAM,gCAAgC,CAAC;AAEpF,YAAY,EACV,6BAA6B,EAC7B,uBAAuB,GACxB,MAAM,gCAAgC,CAAC;AAExC,wBAAgB,wBAAwB,CAAC,EACvC,IAAI,EACJ,kBAAkB,EAClB,gBAAgB,EAChB,UAAU,EACV,gBAAgB,EAChB,KAAK,EACL,GAAG,SAAS,EACb,EAAE,6BAA6B,GAAG,YAAY,CAoB9C;AAED,eAAe,wBAAwB,CAAC"}
+\ No newline at end of file
+diff --git a/node_modules/react-native-enriched-markdown/lib/typescript/src/types/MarkdownCodeTextProps.d.ts b/node_modules/react-native-enriched-markdown/lib/typescript/src/types/MarkdownCodeTextProps.d.ts
+new file mode 100644
+index 0000000..d21babd
+--- /dev/null
++++ b/node_modules/react-native-enriched-markdown/lib/typescript/src/types/MarkdownCodeTextProps.d.ts
+@@ -0,0 +1,14 @@
++import type { StyleProp, TextStyle, ViewProps } from 'react-native';
++export interface MarkdownCodeSourceRange {
++    start: number;
++    end: number;
++}
++export interface EnrichedMarkdownCodeTextProps extends Omit<ViewProps, 'style'> {
++    text: string;
++    documentSnapshotId: string;
++    blockSourceRange: MarkdownCodeSourceRange;
++    selectable: boolean;
++    allowFontScaling: boolean;
++    style?: StyleProp<TextStyle>;
++}
++//# sourceMappingURL=MarkdownCodeTextProps.d.ts.map
+\ No newline at end of file
+diff --git a/node_modules/react-native-enriched-markdown/lib/typescript/src/types/MarkdownCodeTextProps.d.ts.map b/node_modules/react-native-enriched-markdown/lib/typescript/src/types/MarkdownCodeTextProps.d.ts.map
+new file mode 100644
+index 0000000..9d6e3d1
+--- /dev/null
++++ b/node_modules/react-native-enriched-markdown/lib/typescript/src/types/MarkdownCodeTextProps.d.ts.map
+@@ -0,0 +1 @@
++{"version":3,"file":"MarkdownCodeTextProps.d.ts","sourceRoot":"","sources":["../../../../src/types/MarkdownCodeTextProps.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,SAAS,EAAE,SAAS,EAAE,SAAS,EAAE,MAAM,cAAc,CAAC;AAEpE,MAAM,WAAW,uBAAuB;IACtC,KAAK,EAAE,MAAM,CAAC;IACd,GAAG,EAAE,MAAM,CAAC;CACb;AAED,MAAM,WAAW,6BAA8B,SAAQ,IAAI,CAAC,SAAS,EAAE,OAAO,CAAC;IAC7E,IAAI,EAAE,MAAM,CAAC;IACb,kBAAkB,EAAE,MAAM,CAAC;IAC3B,gBAAgB,EAAE,uBAAuB,CAAC;IAC1C,UAAU,EAAE,OAAO,CAAC;IACpB,gBAAgB,EAAE,OAAO,CAAC;IAC1B,KAAK,CAAC,EAAE,SAAS,CAAC,SAAS,CAAC,CAAC;CAC9B"}
+\ No newline at end of file
+diff --git a/node_modules/react-native-enriched-markdown/package.json b/node_modules/react-native-enriched-markdown/package.json
+index 0d9bf23..c620a6b 100644
+--- a/node_modules/react-native-enriched-markdown/package.json
++++ b/node_modules/react-native-enriched-markdown/package.json
+@@ -161,6 +161,9 @@
+         },
+         "EnrichedMarkdownTextInput": {
+           "className": "EnrichedMarkdownTextInput"
++        },
++        "EnrichedMarkdownCodeText": {
++          "className": "EnrichedMarkdownCodeText"
+         }
+       }
+     },
+diff --git a/node_modules/react-native-enriched-markdown/src/EnrichedMarkdownCodeTextNativeComponent.ts b/node_modules/react-native-enriched-markdown/src/EnrichedMarkdownCodeTextNativeComponent.ts
+new file mode 100644
+index 0000000..2401b3e
+--- /dev/null
++++ b/node_modules/react-native-enriched-markdown/src/EnrichedMarkdownCodeTextNativeComponent.ts
+@@ -0,0 +1,27 @@
++import {
++  codegenNativeComponent,
++  type CodegenTypes,
++  type ColorValue,
++  type ViewProps,
++} from 'react-native';
++
++interface NativeProps extends ViewProps {
++  text: string;
++  documentSnapshotId: string;
++  blockSourceRange: Readonly<{
++    start: CodegenTypes.Int32;
++    end: CodegenTypes.Int32;
++  }>;
++  fontFamily: string;
++  fontSize: CodegenTypes.Float;
++  lineHeight: CodegenTypes.Float;
++  textColor: ColorValue;
++  textAlign: string;
++  writingDirection: string;
++  selectable: boolean;
++  allowFontScaling: boolean;
++}
++
++export default codegenNativeComponent<NativeProps>('EnrichedMarkdownCodeText', {
++  interfaceOnly: true,
++});
+diff --git a/node_modules/react-native-enriched-markdown/src/index.tsx b/node_modules/react-native-enriched-markdown/src/index.tsx
+index ef593ec..649aa6a 100644
+--- a/node_modules/react-native-enriched-markdown/src/index.tsx
++++ b/node_modules/react-native-enriched-markdown/src/index.tsx
+@@ -41,3 +41,9 @@ export type {
+   HeadingLevel,
+   HeadingStyle,
+ } from './EnrichedMarkdownTextInput';
++
++export { EnrichedMarkdownCodeText } from './native/EnrichedMarkdownCodeText';
++export type {
++  EnrichedMarkdownCodeTextProps,
++  MarkdownCodeSourceRange,
++} from './types/MarkdownCodeTextProps';
+diff --git a/node_modules/react-native-enriched-markdown/src/native/EnrichedMarkdownCodeText.tsx b/node_modules/react-native-enriched-markdown/src/native/EnrichedMarkdownCodeText.tsx
+new file mode 100644
+index 0000000..0e1c5bb
+--- /dev/null
++++ b/node_modules/react-native-enriched-markdown/src/native/EnrichedMarkdownCodeText.tsx
+@@ -0,0 +1,41 @@
++import type { ReactElement } from 'react';
++import { StyleSheet } from 'react-native';
++import NativeCodeText from '../EnrichedMarkdownCodeTextNativeComponent';
++import type { EnrichedMarkdownCodeTextProps } from '../types/MarkdownCodeTextProps';
++
++export type {
++  EnrichedMarkdownCodeTextProps,
++  MarkdownCodeSourceRange,
++} from '../types/MarkdownCodeTextProps';
++
++export function EnrichedMarkdownCodeText({
++  text,
++  documentSnapshotId,
++  blockSourceRange,
++  selectable,
++  allowFontScaling,
++  style,
++  ...viewProps
++}: EnrichedMarkdownCodeTextProps): ReactElement {
++  const flattened = StyleSheet.flatten(style);
++  return (
++    <NativeCodeText
++      {...viewProps}
++      accessible={viewProps.accessible ?? true}
++      accessibilityRole={viewProps.accessibilityRole ?? 'text'}
++      text={text}
++      documentSnapshotId={documentSnapshotId}
++      blockSourceRange={blockSourceRange}
++      selectable={selectable}
++      allowFontScaling={allowFontScaling}
++      fontFamily={flattened?.fontFamily ?? ''}
++      fontSize={flattened?.fontSize ?? 14}
++      lineHeight={flattened?.lineHeight ?? 0}
++      textColor={flattened?.color ?? 'black'}
++      textAlign={flattened?.textAlign ?? 'auto'}
++      writingDirection={flattened?.writingDirection ?? 'auto'}
++    />
++  );
++}
++
++export default EnrichedMarkdownCodeText;
+diff --git a/node_modules/react-native-enriched-markdown/src/types/MarkdownCodeTextProps.ts b/node_modules/react-native-enriched-markdown/src/types/MarkdownCodeTextProps.ts
+new file mode 100644
+index 0000000..122ecb3
+--- /dev/null
++++ b/node_modules/react-native-enriched-markdown/src/types/MarkdownCodeTextProps.ts
+@@ -0,0 +1,15 @@
++import type { StyleProp, TextStyle, ViewProps } from 'react-native';
++
++export interface MarkdownCodeSourceRange {
++  start: number;
++  end: number;
++}
++
++export interface EnrichedMarkdownCodeTextProps extends Omit<ViewProps, 'style'> {
++  text: string;
++  documentSnapshotId: string;
++  blockSourceRange: MarkdownCodeSourceRange;
++  selectable: boolean;
++  allowFontScaling: boolean;
++  style?: StyleProp<TextStyle>;
++}

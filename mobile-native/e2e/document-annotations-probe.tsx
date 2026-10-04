@@ -3,7 +3,7 @@ import { registerRootComponent } from "expo";
 import * as Clipboard from "expo-clipboard";
 import { useRef, useState } from "react";
 import { FlatList, Pressable, SafeAreaView, ScrollView, Text, View, useWindowDimensions } from "react-native";
-import { EnrichedMarkdownText } from "react-native-enriched-markdown";
+import { EnrichedMarkdownCodeText, EnrichedMarkdownText } from "react-native-enriched-markdown";
 import { useCodeText } from "../src/reader/ReaderBlock";
 import { allowFontScaling, useColors } from "../src/ui";
 
@@ -43,7 +43,13 @@ export const CODE_FIXTURES = [
 
 function ProbeButton({ id, title, onPress }: { id: string; title: string; onPress(): void }) {
 	return (
-		<Pressable testID={id} accessibilityRole="button" accessibilityLabel={title} onPress={onPress} style={{ padding: 8 }}>
+		<Pressable
+			testID={id}
+			accessibilityRole="button"
+			accessibilityLabel={title}
+			onPress={onPress}
+			style={{ padding: 8 }}
+		>
 			<Text>{title}</Text>
 		</Pressable>
 	);
@@ -63,6 +69,36 @@ function ReaderCode({ text, id }: { text: string; id: string }) {
 	);
 }
 
+function NativeReaderCode({
+	text,
+	id,
+	snapshotId,
+	blockEnd,
+}: {
+	text: string;
+	id: string;
+	snapshotId: string;
+	blockEnd: number;
+}) {
+	const { palette } = useColors();
+	const code = useCodeText();
+	return (
+		<View style={{ backgroundColor: palette.inset, borderRadius: 12 }}>
+			<ScrollView horizontal contentContainerStyle={{ paddingVertical: 12, paddingHorizontal: 14 }}>
+				<EnrichedMarkdownCodeText
+					text={text}
+					documentSnapshotId={snapshotId}
+					blockSourceRange={{ start: 0, end: blockEnd }}
+					testID={id}
+					allowFontScaling={allowFontScaling}
+					selectable
+					style={code}
+				/>
+			</ScrollView>
+		</View>
+	);
+}
+
 function CodeComparison() {
 	const [index, setIndex] = useState(0);
 	const [clipboard, setClipboard] = useState("Clipboard unread");
@@ -75,17 +111,36 @@ function CodeComparison() {
 			<Text testID="native-probe-display-scale">{JSON.stringify(dimensions)}</Text>
 			<Text>Unchanged Reader RN Text</Text>
 			<ReaderCode text={fixture.text} id="native-probe-code-reference" />
-			<Text>Comparison slot, RN Text before amendment implementation</Text>
-			<ReaderCode text={fixture.text} id="native-probe-code-candidate" />
-			<Text testID="native-probe-clipboard" accessibilityValue={{ text: clipboard }}>{clipboard}</Text>
-			<ProbeButton id="native-probe-read-clipboard" title="Read clipboard" onPress={() => {
-				const read = ++readId.current;
-				void Clipboard.getStringAsync().then((text) => setClipboard(JSON.stringify({ read, text })));
-			}} />
-			<ProbeButton id="native-probe-block-copy" title="Whole block Copy" onPress={() => {
-				void Clipboard.setStringAsync(fixture.text);
-			}} />
-			<ProbeButton id="native-probe-next-case" title="Next code case" onPress={() => setIndex((index + 1) % CODE_FIXTURES.length)} />
+			<Text>Native content-only code leaf</Text>
+			<NativeReaderCode
+				text={fixture.text}
+				id="native-probe-code-candidate"
+				snapshotId={`code-fixture-${index}`}
+				blockEnd={fixture.blockEnd}
+			/>
+			<Text testID="native-probe-clipboard" accessibilityValue={{ text: clipboard }}>
+				{clipboard}
+			</Text>
+			<ProbeButton
+				id="native-probe-read-clipboard"
+				title="Read clipboard"
+				onPress={() => {
+					const read = ++readId.current;
+					void Clipboard.getStringAsync().then((text) => setClipboard(JSON.stringify({ read, text })));
+				}}
+			/>
+			<ProbeButton
+				id="native-probe-block-copy"
+				title="Whole block Copy"
+				onPress={() => {
+					void Clipboard.setStringAsync(fixture.text);
+				}}
+			/>
+			<ProbeButton
+				id="native-probe-next-case"
+				title="Next code case"
+				onPress={() => setIndex((index + 1) % CODE_FIXTURES.length)}
+			/>
 		</View>
 	);
 }
@@ -100,38 +155,54 @@ function DocumentAnnotationsProbe() {
 			<Text testID="native-probe-menu-event" accessibilityValue={{ text: menuEvent }}>
 				{menuEvent}
 			</Text>
-			{comparison ? <CodeComparison /> : <FlatList
-				ref={list}
-				data={ROWS}
-				keyExtractor={(row) => row.id}
-				contentContainerStyle={{ padding: 24, gap: 24 }}
-				renderItem={({ item }) => (
-					<View testID={`native-probe-${item.id}`} collapsable={false}>
-						{item.id === "code" ? <ReaderCode text="same()" id="native-probe-reader-code-text" /> : <EnrichedMarkdownText
-							markdown={RICH_SOURCE.slice(item.start, item.end)}
-							flavor="github"
-							selectable
-							allowFontScaling
-							enableTaskListItemToggle={false}
-							streamingAnimation={false}
-							markdownStyle={{ paragraph: { fontSize: 20, lineHeight: 28, color: "#000000" } }}
-							contextMenuItems={[
-								{
-									text: "Observe selection",
-									onPress: ({ text, selection }) => {
-										// Existing event coordinates are rendered, row-local offsets.
-										// Never label them original source or gesture completion.
-										setMenuEvent(JSON.stringify({ row: item.id, text, renderedRange: selection }));
-									},
-								},
-							]}
-						/>}
-					</View>
-				)}
-			/>}
+			{comparison ? (
+				<CodeComparison />
+			) : (
+				<FlatList
+					ref={list}
+					data={ROWS}
+					keyExtractor={(row) => row.id}
+					contentContainerStyle={{ padding: 24, gap: 24 }}
+					renderItem={({ item }) => (
+						<View testID={`native-probe-${item.id}`} collapsable={false}>
+							{item.id === "code" ? (
+								<ReaderCode text="same()" id="native-probe-reader-code-text" />
+							) : (
+								<EnrichedMarkdownText
+									markdown={RICH_SOURCE.slice(item.start, item.end)}
+									flavor="github"
+									selectable
+									allowFontScaling
+									enableTaskListItemToggle={false}
+									streamingAnimation={false}
+									markdownStyle={{ paragraph: { fontSize: 20, lineHeight: 28, color: "#000000" } }}
+									contextMenuItems={[
+										{
+											text: "Observe selection",
+											onPress: ({ text, selection }) => {
+												// Existing event coordinates are rendered, row-local offsets.
+												// Never label them original source or gesture completion.
+												setMenuEvent(JSON.stringify({ row: item.id, text, renderedRange: selection }));
+											},
+										},
+									]}
+								/>
+							)}
+						</View>
+					)}
+				/>
+			)}
 			<View style={{ flexDirection: "row" }}>
-				<ProbeButton id="native-probe-show-code" title="Show table and code" onPress={() => list.current?.scrollToEnd({ animated: false })} />
-				<ProbeButton id="native-probe-code-comparison" title={comparison ? "Rich document" : "Code comparison"} onPress={() => setComparison(!comparison)} />
+				<ProbeButton
+					id="native-probe-show-code"
+					title="Show table and code"
+					onPress={() => list.current?.scrollToEnd({ animated: false })}
+				/>
+				<ProbeButton
+					id="native-probe-code-comparison"
+					title={comparison ? "Rich document" : "Code comparison"}
+					onPress={() => setComparison(!comparison)}
+				/>
 			</View>
 		</SafeAreaView>
 	);

@@ -74,6 +74,21 @@ case "$phase" in
     test ! -L appwire-client/typescript/node_modules
     npm ci --prefix mobile-native
     npm ci --prefix appwire-client/typescript
+    node <<'JS'
+const fs = require('node:fs');
+const root = 'mobile-native/node_modules/react-native-enriched-markdown';
+if (fs.existsSync(root + '/src/native/EnrichedMarkdownCodeText.tsx')) {
+  const pkg = JSON.parse(fs.readFileSync(root + '/package.json', 'utf8'));
+  if (pkg.codegenConfig.ios.components.EnrichedMarkdownCodeText?.className !== 'EnrichedMarkdownCodeText') {
+    throw new Error('Reapplied patch lost native code-leaf class registration');
+  }
+  const props = fs.readFileSync(root + '/ios/generated/ReactCodegen/EnrichedMarkdownTextSpec/Props.h', 'utf8');
+  for (const field of ['EnrichedMarkdownCodeTextProps', 'documentSnapshotId', 'blockSourceRange', 'fontSize', 'lineHeight']) {
+    if (!props.includes(field)) throw new Error('Reapplied patch lost generated field: ' + field);
+  }
+  console.log('Reapplied code-leaf class registration and generated Fabric props verified');
+}
+JS
     cd mobile-native
     npx expo prebuild --platform ios --no-install
     # Save actual generated phases. ENTRY_FILE must remain caller-owned.
@@ -149,7 +164,7 @@ PY
     cmp "$app/Evener" "$installed/Evener"
     cmp "$app/main.jsbundle" "$installed/main.jsbundle"
     ;;
-  long-press|qualify) test -n "$sim_id";;
+  long-press|code-preservation|qualify) test -n "$sim_id";;
   *) exit 2;;
 esac
 # Source and driver have separate pins. Never compile driver sources from the
@@ -176,6 +191,7 @@ cp "$xctestrun" "$run_xctestrun"
 cmp "$xctestrun" "$artifacts/original.xctestrun"
 case "$phase" in
   layout|restore) test_names=(testLayoutReceipt);;
+  code-preservation) test_names=(testCodePreservationAndLegacyCopy);;
   long-press|qualify)
     /usr/bin/python3 - "$run_xctestrun" "$checkout/mobile-native/e2e/measured-geometry.json" <<'PY'
 import json, math, plistlib, sys
