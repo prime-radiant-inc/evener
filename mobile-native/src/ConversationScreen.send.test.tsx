@@ -2765,6 +2765,77 @@ describe("queued messages at the transcript's end (spec 8.5)", () => {
 		expect(textOf(bottomBar(tree))).not.toContain("check the logs");
 	});
 
+	// A message you queue shows once at every frame on its way: its ghost
+	// while it sends and while it waits in the queue, then your message once
+	// its turn starts, never beside its ghost.
+	it("shows a queued message once at every frame until it lands as your message", async () => {
+		readHistory.live = true;
+		const served = thread("ref-queue-lands", "active");
+		(served as unknown as { turns: unknown[] }).turns = [
+			{
+				id: "turn_1",
+				status: "inProgress",
+				itemsView: "default",
+				items: [
+					{
+						id: "u-turn_1",
+						turnId: "turn_1",
+						type: "userMessage",
+						status: "completed",
+						text: "ask turn_1",
+						transcriptKey: "turn_1:0:0",
+						position: { entry: 0, item: 0 },
+					},
+				],
+			},
+		];
+		const { tree, hub } = await mount(served);
+		const shown = () => textOf(transcriptList(tree)).split("check the logs").length - 1;
+		const frame = (notification: Record<string, unknown>) =>
+			act(() => hub.notify(notification as unknown as AnyNotification));
+		await type(tree, "check the logs");
+		await press(tree, "Queue message");
+		const clientMutationId = String(hub.requests.find((r) => r.method === "turn/queue")?.params.clientMutationId);
+		expect(shown()).toBe(1);
+		const queue = (texts: string[], revision: number) => ({
+			...queueState(texts, revision),
+			clientMutationIds: texts.map(() => clientMutationId),
+		});
+		frame({
+			method: "thread/queueChanged",
+			params: { threadId: served.id, ref: "ref-queue-lands", queue: queue(["check the logs"], 1) },
+		});
+		expect(shown()).toBe(1);
+		expect(lastRow(tree)).toContain("Queued · sends when this turn ends");
+		// The turn ends and the hub takes the message for the next one: the
+		// queue frame comes first, then the message's own item.
+		frame({ method: "thread/queueChanged", params: { threadId: served.id, ref: "ref-queue-lands", queue: queue([], 2) } });
+		expect(shown()).toBe(1);
+		frame({
+			method: "history/updated",
+			params: {
+				threadId: served.id,
+				ref: "ref-queue-lands",
+				...READ_HISTORY_IDENTITY,
+				items: [
+					{
+						id: "u-turn_2",
+						turnId: "turn_2",
+						type: "userMessage",
+						status: "completed",
+						text: "check the logs",
+						clientMutationId,
+						transcriptKey: "turn_2:1:0",
+						position: { entry: 1, item: 0 },
+					},
+				],
+			},
+		});
+		expect(shown()).toBe(1);
+		expect(textOf(transcriptList(tree))).not.toContain("Sending…");
+		expect(textOf(transcriptList(tree))).not.toContain("Queued ·");
+	});
+
 	it("paints a swiped ghost the page it sits on, beside the composer or the dock", async () => {
 		const palette = paletteFor("light");
 		const backdrop = (tree: ReactTestRenderer) =>
