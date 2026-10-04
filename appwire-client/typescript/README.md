@@ -21,11 +21,11 @@ rules, the job log tail parser, the send/queue availability table, the
 send/steer/queue/drain routing decisions a composer makes off it, the stable
 delegate status rule, the delegate timing and model derivations both apps'
 delegate details render from,
-the slash invocation and catalog visibility rules the palette and composer
-share, the command catalog itself as a framework-free store
-(`createCommandCatalog(client)`, the hub-wide list re-read on a plugin change,
-and `createSessionCommandCatalog(client, ref)`, one session's slash menu read
-beside its diagnostics), the inline slash-completion token parser, menu merge, filter and
+the shared slash invocation rules, and two command catalog stores with distinct
+owners (`createCommandCatalog(client)`, the controller palette's global list,
+and `createSessionCommandCatalog(client, ref)`, the owning session's loaded
+commands and skills read only through `thread/read` diagnostics, with no global
+fallback), the inline slash-completion token parser, menu merge, filter and
 splice the composer's own menu is built from, the reasoning-effort labels
 and picker ladders every effort chip and select share, the task-list
 parser, aggregate sentence, status grouping and timestamp formatters the
@@ -107,6 +107,15 @@ with the restart wait as a port: each app says how it notices the new hub.
 The slash-completion module is ported from Beautiful UI's prompt-bar
 completion affordance and ships its MIT attribution at
 `LICENSES/beautiful-ui.txt`, inside the tarball.
+
+## Generated results
+
+`MethodTypes` correlates each method's parameters and result. Fixed result
+discriminators come from Go's `StringDiscriminators` catalog: host plans narrow
+on `outcome`, and teardown retry results narrow on `outcome` and `hostKind`.
+Use those generated unions directly when consuming results; the failure arms
+carry `seam`, and planned results carry `plan` and `token`. The public Go arm
+structs and their wire fields remain the protocol authority.
 
 ## Host-scoped requests
 

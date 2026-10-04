@@ -1,7 +1,8 @@
-import type { InputItem } from "@evener/appwire-client";
+import type { ComposerMention, InputItem } from "@evener/appwire-client";
 import { canonicalSkillNames, markerPattern, markerText } from "@evener/appwire-client";
 import type { MutationRecoveryRecord } from "../../../../stores/mutationOutbox";
 import type { PendingAttachment } from "../attachments/useAttachments";
+import { parseSkillDocument, skillAtomMentions } from "../skillDocument";
 
 export interface RecoveredComposerDraft {
   text: string;
@@ -11,6 +12,8 @@ export interface RecoveredComposerDraft {
   // name} input item, and restoring it puts the name back on the composer's
   // selection list rather than into the textarea.
   skillNames: string[];
+  commandNames?: string[];
+  mentions?: ComposerMention[];
 }
 
 function recordInput(record: MutationRecoveryRecord): InputItem[] {
@@ -57,7 +60,32 @@ export function recoveryComposerDraft(record: MutationRecoveryRecord): Recovered
       pending: false,
     };
   });
-  return { text, attachments, skillNames: skillSelections(input) };
+  const commandNames = canonicalSkillNames(
+    input.filter((item) => item.type === "command").map((item) => item.name ?? ""),
+  );
+  let mentions = record.composerMentions;
+  if (mentions === undefined && record.composerText === undefined) {
+    const textItems = input.filter((item) => item.type === "text" && typeof item.text === "string");
+    if (textItems.some((item) => item.mentions !== undefined)) {
+      let offset = 0;
+      mentions = textItems.flatMap((item) => {
+        const locations = (item.mentions ?? []).flatMap((mention): ComposerMention[] =>
+          mention.kind === "skill" || mention.kind === "command"
+            ? [{ ...mention, kind: mention.kind, offset: offset + mention.offset }]
+            : [],
+        );
+        offset += (item.text?.length ?? 0) + 1;
+        return locations;
+      });
+    }
+  }
+  return {
+    text,
+    attachments,
+    skillNames: skillSelections(input),
+    ...(commandNames.length ? { commandNames } : {}),
+    ...(mentions ? { mentions: [...mentions] } : {}),
+  };
 }
 
 export function mergeRecoveryComposerDraft(
@@ -65,6 +93,8 @@ export function mergeRecoveryComposerDraft(
   currentAttachments: PendingAttachment[],
   recovered: RecoveredComposerDraft,
   currentSkillNames: readonly string[] = [],
+  currentCommandNames: readonly string[] = [],
+  currentMentions?: readonly ComposerMention[],
 ): RecoveredComposerDraft {
   const usedMarkers = new Set([
     ...markerNumbers(currentText),
@@ -78,9 +108,12 @@ export function mergeRecoveryComposerDraft(
     markerMapping.set(attachment.marker, marker);
     return { ...attachment, marker };
   });
-  const recoveredText = recovered.text.replace(markerPattern(), (match, marker: string) => {
+  const markerShifts: { offset: number; delta: number }[] = [];
+  const recoveredText = recovered.text.replace(markerPattern(), (match, marker: string, offset: number) => {
     const replacement = markerMapping.get(Number(marker));
-    return replacement === undefined ? match : markerText(replacement);
+    const text = replacement === undefined ? match : markerText(replacement);
+    if (text.length !== match.length) markerShifts.push({ offset, delta: text.length - match.length });
+    return text;
   });
   const text = [currentText, recoveredText].filter((part) => part.length > 0).join("\n\n");
   // Selections union the same way the text does, current names first, so a
@@ -88,9 +121,39 @@ export function mergeRecoveryComposerDraft(
   // duplicates one the record carries too. The union is canonicalized so a
   // padded or empty name from either side collapses to the same list.
   const skillNames = canonicalSkillNames([...currentSkillNames, ...recovered.skillNames]);
+  let mentions: ComposerMention[] | undefined;
+  if (currentMentions || recovered.mentions) {
+    const currentLocations =
+      currentMentions ??
+      skillAtomMentions(
+        parseSkillDocument({
+          text: currentText,
+          skillNames: [...currentSkillNames],
+          commandNames: [...currentCommandNames],
+        }),
+      );
+    const recoveredLocations = recovered.mentions ?? skillAtomMentions(parseSkillDocument(recovered));
+    const appendOffset = currentText.length ? currentText.length + 2 : 0;
+    mentions = [
+      ...currentLocations,
+      ...recoveredLocations.map((mention) => ({
+        ...mention,
+        offset:
+          mention.offset +
+          appendOffset +
+          markerShifts
+            .filter((shift) => shift.offset < mention.offset)
+            .reduce((delta, shift) => delta + shift.delta, 0),
+      })),
+    ];
+  }
   return {
     text,
     attachments: [...currentAttachments, ...attachments],
     skillNames,
+    ...(currentCommandNames.length || recovered.commandNames?.length
+      ? { commandNames: canonicalSkillNames([...currentCommandNames, ...(recovered.commandNames ?? [])]) }
+      : {}),
+    ...(mentions ? { mentions } : {}),
   };
 }

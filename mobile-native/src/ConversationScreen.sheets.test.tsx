@@ -986,6 +986,22 @@ const busy = {
 	},
 } as unknown as Thread;
 
+// Spec 13.1: the tray names the hub's running-subagent count, the one the
+// Board's row names, polled for this session alone. The thread's own
+// delegates list only the subagent it started itself; the hub counts 3 at
+// every depth.
+it("names the hub's running-subagent count in the tray, as the Board's row does", async () => {
+	const working = { ...busy, status: { type: "active" } } as Thread;
+	const { tree, requests } = mount(working, {
+		"evener/activity/read": { sessions: [{ ref, minutes: [0, 0, 0, 0, 0, 0, 0], runningSubagents: 3 }] },
+	});
+	await flush();
+	const reads = requests.filter((request) => request.method === "evener/activity/read");
+	expect(reads.map((request) => request.params)).toContainEqual({ refs: [ref] });
+	expect(renderedText(tree)).toContain("Waiting on 3 subagents");
+	tree.unmount();
+});
+
 /** The screen's header block, its list, and scrolling it. */
 function sessionList(tree: ReturnType<typeof render>) {
 	const block = () => tree.root.findByType(SessionHeader);

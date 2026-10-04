@@ -28,6 +28,7 @@ export type {
 export { isClientReady, MutationOutbox } from "./outbox";
 export type { PendingMethod, PendingTurnEntry, PendingTurnState } from "./pendingEntries";
 export {
+  commandMarkers,
   imagePlaceholder,
   normalizeText,
   ownPendingSend,

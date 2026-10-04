@@ -48,15 +48,16 @@ interface FakeDraftState {
   revision: number;
   text: string;
   skillNames: string[];
+  commandNames: string[];
   cleared: string[];
 }
 
 function fakeDraftPort(initial: Partial<FakeDraftState> = {}): PendingTurnsDraftPort & { state: FakeDraftState } {
-  const state: FakeDraftState = { revision: 0, text: "", skillNames: [], cleared: [], ...initial };
+  const state: FakeDraftState = { revision: 0, text: "", skillNames: [], commandNames: [], cleared: [], ...initial };
   return {
     state,
     readDraftRevision: () => state.revision,
-    readComposerDraft: () => ({ text: state.text, skillNames: state.skillNames }),
+    readComposerDraft: () => ({ text: state.text, skillNames: state.skillNames, commandNames: state.commandNames }),
     clearDraft: (ref) => {
       state.cleared.push(ref);
     },
@@ -64,6 +65,17 @@ function fakeDraftPort(initial: Partial<FakeDraftState> = {}): PendingTurnsDraft
 }
 
 describe("createPendingTurnsStore", () => {
+  test("settling a send retains a draft whose command selection changed but text and skills match", () => {
+    const draft = fakeDraftPort({ text: "DATA_318", skillNames: ["probe"], commandNames: ["other"] });
+    const store = createPendingTurnsStore({ threads: fakeThreadsPort(), draft, identity: UNATTRIBUTED_ONLY_IDENTITY });
+    const submitted = { draftRevisionAtStart: 0, text: "DATA_318", skillNames: ["probe"], commandNames: ["probe"] };
+    expect(store.settleSubmittedDraft("ref-a", submitted).cleared).toBe(false);
+    expect(draft.state.cleared).toEqual([]);
+    draft.state.commandNames = ["probe"];
+    expect(store.settleSubmittedDraft("ref-a", submitted).cleared).toBe(true);
+    expect(draft.state.cleared).toEqual(["ref-a"]);
+  });
+
   test("starts with empty state", () => {
     const store = createPendingTurnsStore({
       threads: fakeThreadsPort(),

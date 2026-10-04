@@ -1064,6 +1064,39 @@ func TestHostMutationDiscriminatorLiterals(t *testing.T) {
 	}
 }
 
+func TestHostPlanAndTeardownDiscriminatorLiterals(t *testing.T) {
+	for _, tc := range []struct {
+		arm      any
+		outcome  string
+		hostKind string
+	}{
+		{appwire.HostPlanPlanned{}, appwire.HostPlanOutcomePlanned, ""},
+		{appwire.HostPlanNoToken{}, appwire.HostPlanOutcomeNoToken, ""},
+		{appwire.HostTeardownRetryCompleteLive{}, appwire.HostTeardownOutcomeComplete, appwire.HostKindLive},
+		{appwire.HostTeardownRetryCompleteRemoved{}, appwire.HostTeardownOutcomeComplete, appwire.HostKindRemoved},
+		{appwire.HostTeardownRetryClearedLive{}, appwire.HostTeardownOutcomeCleared, appwire.HostKindLive},
+		{appwire.HostTeardownRetryClearedRemoved{}, appwire.HostTeardownOutcomeCleared, appwire.HostKindRemoved},
+		{appwire.HostTeardownRetryFailedLive{}, appwire.HostTeardownOutcomeFailed, appwire.HostKindLive},
+		{appwire.HostTeardownRetryFailedRemoved{}, appwire.HostTeardownOutcomeFailed, appwire.HostKindRemoved},
+		{appwire.HostTeardownRecoverResult{}, appwire.HostTeardownOutcomeRecovered, ""},
+	} {
+		typ := reflect.TypeOf(tc.arm)
+		t.Run(typ.Name(), func(t *testing.T) {
+			got := emitInterface(typ.Name(), typ)
+			want := fmt.Sprintf("outcome: %q;", tc.outcome)
+			if !strings.Contains(got, want) {
+				t.Fatalf("generated arm lacks %s:\n%s", want, got)
+			}
+			if tc.hostKind != "" {
+				want := fmt.Sprintf("hostKind: %q;", tc.hostKind)
+				if !strings.Contains(got, want) {
+					t.Fatalf("generated arm lacks %s:\n%s", want, got)
+				}
+			}
+		})
+	}
+}
+
 func TestEmitHostRequestMethodCatalog(t *testing.T) {
 	out := EmitCatalog()
 	names := runtimeNameList(t, out, "HOST_REQUEST_METHODS")

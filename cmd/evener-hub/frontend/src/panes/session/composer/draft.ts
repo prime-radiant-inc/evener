@@ -19,6 +19,7 @@
 // canonical skill selections survive a reload next to its text. The v1 key
 // held plain text only; see readComposerDraft for the approved transition.
 import { canonicalSkillNames } from "@evener/appwire-client";
+import { patchSelectionText, type SkillEditorValue } from "./skillDocument";
 
 const STORAGE_PREFIX = "evener.composer.draft.v1.";
 const STRUCTURED_STORAGE_PREFIX = "evener.composer.draft.v2.";
@@ -29,10 +30,7 @@ const draftRevisions = new Map<string, number>();
 // (never prose): the submit boundary assembles them as {type: "skill", name}
 // input items after the ordinary text/attachment items, and a chip change is
 // a draft edit even when the text is byte-identical.
-export interface ComposerDraft {
-  text: string;
-  skillNames: string[];
-}
+export interface ComposerDraft extends SkillEditorValue {}
 
 // A remount inherits the same draft revision. Editing or replacing its
 // contents changes ownership even when the resulting text is identical.
@@ -58,7 +56,20 @@ function isStoredComposerDraft(value: unknown): value is ComposerDraft {
   return (
     typeof record.text === "string" &&
     Array.isArray(record.skillNames) &&
-    record.skillNames.every((name) => typeof name === "string")
+    record.skillNames.every((name) => typeof name === "string") &&
+    (record.commandNames === undefined ||
+      (Array.isArray(record.commandNames) && record.commandNames.every((name) => typeof name === "string"))) &&
+    (record.mentions === undefined ||
+      (Array.isArray(record.mentions) &&
+        record.mentions.every(
+          (mention) =>
+            mention !== null &&
+            typeof mention === "object" &&
+            (mention.kind === "skill" || mention.kind === "command") &&
+            typeof mention.name === "string" &&
+            Number.isInteger(mention.offset) &&
+            mention.offset >= 0,
+        )))
   );
 }
 
@@ -85,7 +96,12 @@ export function readComposerDraft(ref: string): ComposerDraft {
       // hand padded, empty or repeated names straight to the chips. Canonical
       // names are the contract everywhere else; enforce it here too.
       if (isStoredComposerDraft(parsed)) {
-        return { text: parsed.text, skillNames: canonicalSkillNames(parsed.skillNames) };
+        return {
+          text: parsed.text,
+          skillNames: canonicalSkillNames(parsed.skillNames),
+          ...(parsed.commandNames ? { commandNames: canonicalSkillNames(parsed.commandNames) } : {}),
+          ...(parsed.mentions ? { mentions: parsed.mentions } : {}),
+        };
       }
     }
     return { text: localStorage.getItem(draftStorageKey(ref)) ?? "", skillNames: [] };
@@ -111,7 +127,7 @@ export function readDraft(ref: string): string {
 export function writeComposerDraft(ref: string, value: ComposerDraft): void {
   markDraftEdited(ref);
   try {
-    if (value.text.trim() === "" && value.skillNames.length === 0) {
+    if (value.text.trim() === "" && value.skillNames.length === 0 && !value.commandNames?.length) {
       localStorage.removeItem(composerDraftStorageKey(ref));
       localStorage.removeItem(draftStorageKey(ref));
     } else {
@@ -124,10 +140,11 @@ export function writeComposerDraft(ref: string, value: ComposerDraft): void {
   }
 }
 
-// A text edit preserves the draft's selections - chips apply to the request
-// independently of the prose, so editing words never drops a selected skill.
+// Explicit atoms follow their visible labels across text edits. Names-only
+// drafts retain their selections independently of the prose.
 export function writeDraft(ref: string, value: string): void {
-  writeComposerDraft(ref, { text: value, skillNames: readComposerDraft(ref).skillNames });
+  const current = readComposerDraft(ref);
+  writeComposerDraft(ref, current.mentions ? patchSelectionText(current, value) : { ...current, text: value });
 }
 
 // clearDraft drops a ref's stored draft outright - called on every
