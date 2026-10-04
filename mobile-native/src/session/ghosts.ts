@@ -247,25 +247,3 @@ export function shownGhosts(all: readonly Ghost[]): { shown: Ghost[]; moreQueued
 	}
 	return { shown, moreQueued: Math.max(0, queued - SHOWN_QUEUED) };
 }
-
-/** The queue as one line while you type (spec 8.5): its count, "2 queued" or
- * "1 held", and with one message, what you can do to it now. */
-export interface QueueFold {
-	label: string;
-	act: { ghost: Ghost; action: "steerNow" | "sendNow" } | null;
-}
-
-/** Folds the queued ghosts into one line and keeps every other ghost, which
- * is about something you may need to act on now. Nothing folds when nothing
- * is queued. */
-export function foldQueue(all: readonly Ghost[]): { fold: QueueFold | null; rest: Ghost[] } {
-	const queued = all.filter((ghost) => ghost.origin.kind === "queue");
-	const rest = all.filter((ghost) => ghost.origin.kind !== "queue");
-	const [first] = queued;
-	if (first === undefined) return { fold: null, rest };
-	// A queue is held or queued as a whole (queueGhosts).
-	const label = `${queued.length} ${first.state === "held" ? "held" : "queued"}`;
-	const action = first.buttons.find((button) => button === "steerNow" || button === "sendNow");
-	const act = queued.length === 1 && action !== undefined ? { ghost: first, action } : null;
-	return { fold: { label, act }, rest };
-}
