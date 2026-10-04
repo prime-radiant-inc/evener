@@ -64,6 +64,44 @@ describe("a row's Board state (spec 13.1)", () => {
 	});
 
 	it.each([
+		[{ state: "idle" }, false, false, "working"],
+		[{ state: "awaiting" }, false, true, "working"],
+		[{ state: "idle", dormant: true }, false, false, "working"],
+		[{ state: "warning" }, false, false, "working"],
+		[{ state: "warning", ask_pending: true }, false, false, "warning"],
+		[{ state: "warning", approval_pending: true }, false, false, "warning"],
+		[{ state: "warning" }, true, false, "warning"],
+		[{ state: "awaiting", ask_pending: true }, false, false, "question"],
+		[{ state: "idle", approval_pending: true }, false, false, "approval"],
+		[{ state: "idle" }, true, false, "approval"],
+		[{ state: "errored" }, false, false, "failed"],
+		[{ state: "restartRequired" }, false, false, "restartNeeded"],
+		[{ state: "idle", offline: true }, false, false, "shutDown"],
+		[{ state: "ended" }, false, false, "shutDown"],
+		[{ state: "notLoaded" }, false, false, "shutDown"],
+		[{ state: "idle", live: false }, false, false, "finished"],
+		[{ state: "idle", kind: "subagent" }, false, false, "finished"],
+		[{ state: "idle", kind: "fork" }, false, false, "finished"],
+		[{ state: "idle", kind: "cluster" }, false, false, "finished"],
+		[{ state: "active", kind: "subagent" }, false, true, "working"],
+	] as const)("mixed running/failed children, %o, approval %s, seen %s → %s", (over, approval, seen, expected) => {
+		const parent = row("s", { subagents: { running: 1, failed: 1, done: 0 }, ...over });
+		expect(boardState(parent, approval, seen)).toBe(expected);
+	});
+
+	it.each([
+		[{ subagents: { running: 1, failed: 0, done: 0 } }, false, "working"],
+		[{ subagents: { running: 0, failed: 1, done: 1 } }, false, "finished"],
+		[{ subagents: { running: 0, failed: 1, done: 1 } }, true, "idle"],
+		[{ state: "errored", subagents: { running: 0, failed: 1, done: 1 } }, false, "failed"],
+		[{}, false, "finished"],
+		[{}, true, "idle"],
+		[{ children: Array.of(row("child", { state: "active", kind: "subagent" })) }, false, "finished"],
+	] as const)("only the compact live tally contributes work, %o, seen %s → %s", (over, seen, expected) => {
+		expect(boardState(row("s", over), false, seen)).toBe(expected);
+	});
+
+	it.each([
 		["failed", "Failed"],
 		["question", "Question"],
 		["approval", "Approval"],
