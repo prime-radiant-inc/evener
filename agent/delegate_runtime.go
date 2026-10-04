@@ -669,6 +669,9 @@ func (s *Session) driveStableDelegateAttention(sub *subagent) bool {
 		}
 		return false
 	}
+	if observer := s.cfg.testOnly.delegateAttentionBeforeDriveClaim; observer != nil {
+		observer(sub)
+	}
 	// Claim the child for the WHOLE start, not just for this check. Everything
 	// between here and launchAcceptedDelegateAttention is durable work
 	// (ReserveAttention, acceptDelegateAttention's transcript append,
@@ -712,6 +715,26 @@ func (s *Session) driveStableDelegateAttention(sub *subagent) bool {
 	s.mu.Unlock()
 	if closed {
 		return true
+	}
+	// The first read precedes the child claim. Another drive may consume and
+	// finish that attention generation before this drive takes the claim, so
+	// select again while the claim fences every competing drive. A reservation
+	// already held for this runtime must still retry its exact accepted marker.
+	if retryID := s.delegateController.reservedAttentionID(sub.sess); retryID != "" {
+		ids = []string{retryID}
+	} else {
+		pending, err := sub.sess.pendingDelegateAttentionIDs()
+		if err != nil {
+			s.emit(events.EventWarning, warningDataFromError("inspect delegate attention", err))
+			return true
+		}
+		if len(pending) == 0 {
+			if err := s.delegateController.clearResolvedDelegateAttention(sub.sess.owningDelegateID); err != nil {
+				s.emit(events.EventWarning, warningDataFromError("clear resolved delegate attention", err))
+			}
+			return false
+		}
+		ids = pending
 	}
 	reservation, err := s.delegateController.ReserveAttention(sub.sess, ids[0])
 	if err != nil {
