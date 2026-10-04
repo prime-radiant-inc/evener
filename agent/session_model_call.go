@@ -189,6 +189,11 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// the session's configured effort so it is restored when the task ends.
 	reasoningEffort = effectiveReasoningEffort(strings.TrimSpace(s.cfg.ReasoningEffort), effortOverride, s.loopEffortEscalated)
 	s.mu.Unlock()
+	if s.memoryContextEnabled() {
+		// Core-owned guidance is stable even when both indexes are absent. No
+		// stored bytes enter system instructions or the cached workspace prompt.
+		sys += "\n\n" + memoryGuidance
+	}
 	if s.contextMgr != nil {
 		s.contextMgr.SetProfile(profile)
 	}
@@ -338,6 +343,8 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// notification wake, delegate attention) funnels through, so the refresh
 	// covers entry paths whose accept step projects nothing.
 	s.maybeAppendNotesContext()
+	// Independent scope reads share one finite wait for this boundary. Workers
+	// only return observations, the owner loop appends currentness transitions.
 	s.maybeAppendMemoryContext(ctx)
 	// Re-snapshot so the request expands the refreshed history. The
 	// in-flight boundary is re-captured alongside the final history copy

@@ -1310,6 +1310,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// new content still emits, and a still-empty store stays silent.
 	s.notesLastProjected = restoredNotesBlock
 	s.notesEverProjected = notesEverProjected
+	s.restoreMemoryProjection(s.history)
 	if meta.Skills != nil {
 		s.skillLifecycle = meta.Skills.Clone()
 		s.pinnedNoteGen = meta.Skills.PinnedNoteGen
