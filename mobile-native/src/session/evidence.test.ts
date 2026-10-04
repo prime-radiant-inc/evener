@@ -428,25 +428,8 @@ describe("each tool's evidence, as the tools print it", () => {
 		]);
 	});
 
-	// A skill's markdown is the skill author's, so its images never load a
-	// remote URL on the phone: each reads as its alt text.
-	it("shows a skill's images as their alt text, never loading them", () => {
-		const loaded = `<skill-context>\n${JSON.stringify({
-			name: "diagrams",
-			instructions:
-				"# Diagrams\n\n![the flow](https://example.com/flow.png)\n\nThen ![](https://t.test/x.gif) done.\n\n![by ref][logo] and ![short]\n\n[logo]: https://t.test/logo.png",
-		})}\n</skill-context>`;
-		expect(stepEvidence({ label: "use_skill", detail: { output: loaded } })).toEqual([
-			{
-				kind: "markdown",
-				title: "diagrams",
-				markdown: "# Diagrams\n\nthe flow\n\nThen  done.\n\nby ref and short\n\n[logo]: https://t.test/logo.png",
-			},
-		]);
-	});
-
-	// A skill's instructions as the phone shows them, so a test reads what an
-	// image's markdown turns into.
+	// A skill's instructions as the phone shows them, so a test reads what its
+	// markdown turns into.
 	const skillMarkdown = (instructions: string) => {
 		const loaded = `<skill-context>\n${JSON.stringify({ name: "diagrams", instructions })}\n</skill-context>`;
 		const [shown] = stepEvidence({ label: "use_skill", detail: { output: loaded } });
@@ -454,13 +437,22 @@ describe("each tool's evidence, as the tools print it", () => {
 		return shown.markdown;
 	};
 
+	// A skill's markdown is the skill author's, so its images never load a
+	// remote URL on the phone: each reads as its alt text.
+	it("shows a skill's images as their alt text, never loading them", () => {
+		expect(
+			skillMarkdown(
+				"# Diagrams\n\n![the flow](https://example.com/flow.png)\n\nThen ![](https://t.test/x.gif) done.\n\n![by ref][logo] and ![short]\n\n[logo]: https://t.test/logo.png",
+			),
+		).toBe("# Diagrams\n\nthe flow\n\nThen  done.\n\nby ref and short\n\n[logo]: https://t.test/logo.png");
+	});
+
 	// An inline image's URL can hold parentheses and be followed by a title;
 	// either way the image reads as exactly its alt text, with nothing of the
 	// URL or title left behind.
 	it.each([
-		["a plain image", "![a](https://x.test/a.png)"],
 		["a URL with balanced parentheses", "![a](https://x.test/a_(b).png)"],
-		["a URL with nested parentheses at its end", "![a](https://x.test/a_(b))"],
+		["a URL ending in a pair of parentheses", "![a](https://x.test/a_(b))"],
 		["a title", '![a](https://x.test/a.png "t")'],
 		["a single-quoted title", "![a](https://x.test/a.png 't')"],
 		["a title with balanced parentheses", '![a](https://x.test/a.png "see (1)")'],
@@ -473,7 +465,7 @@ describe("each tool's evidence, as the tools print it", () => {
 	it("leaves the text around an image, and links and parentheses of its own, as they were", () => {
 		expect(
 			skillMarkdown(
-				"Before ![a](https://x.test/a_(b).png) and ![c](https://x.test/c.png \"t\") after (see [docs](https://x.test/d_(1))).",
+				'Before ![a](https://x.test/a_(b).png) and ![c](https://x.test/c.png "t") after (see [docs](https://x.test/d_(1))).',
 			),
 		).toBe("Before a and c after (see [docs](https://x.test/d_(1))).");
 	});
@@ -484,16 +476,21 @@ describe("each tool's evidence, as the tools print it", () => {
 		expect(skillMarkdown("![a ![b](https://x.test/b.png)](https://x.test/a.png)")).toBe("a b");
 	});
 
-	// Whatever its shape, no image's opener survives, so none loads.
+	// However deep images nest, taking one out never leaves another behind.
+	it("shows images nested five deep as words", () => {
+		expect(skillMarkdown(`${"![".repeat(5)}x${"](https://x.test/u.png)".repeat(5)}`)).toBe("x");
+	});
+
+	// A URL the pattern doesn't cover (parentheses nested two deep, an escaped
+	// or unbalanced one, a ")" inside angle brackets) can leave some of the
+	// URL as text, but never the image's opener, so none loads.
 	it.each([
-		["a URL with parentheses", "![a](https://x.test/a_(b).png)"],
-		["a title", '![a](https://x.test/a.png "t")'],
 		["a URL no one closes", "![a](https://x.test/a_(b.png"],
 		["a URL with a stray close", "![a](https://x.test/a.png))"],
-		["an image in an image", "![a ![b](https://x.test/b.png)](https://x.test/a.png)"],
+		["parentheses nested two deep", "![a](https://x.test/a_(b_(c)).png)"],
+		["an escaped parenthesis", "![a](https://x.test/a\\).png)"],
+		["a close inside angle brackets", "![a](<https://x.test/a).png>)"],
 		["an image that completes another", "![![](https://x.test/b.png)](https://x.test/a.png)"],
-		["a reference", "![a][logo]\n\n[logo]: https://x.test/logo.png"],
-		["a shortcut", "![a]\n\n[a]: https://x.test/a.png"],
 		["an empty alt", "![](https://x.test/a_(b).png)"],
 		["an alt across lines", "![a\nb](https://x.test/a.png)"],
 	])("never leaves an image's opener behind for %s", (_name, markdown) => {
