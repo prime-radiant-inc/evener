@@ -94,8 +94,7 @@ export function trayLine(
 	if (running === 0 && silence >= STUCK_AFTER_MS)
 		return { text: `May be stuck · no updates for ${compactDuration(silence)}`, attention: true };
 	const step = currentStep(session);
-	if (running > 0 && (!step || step.waitsOnSubagents))
-		return { text: waitingOnSubagents(running), attention: false };
+	if (running > 0 && (!step || step.waitsOnSubagents)) return { text: waitingOnSubagents(running), attention: false };
 	if (step)
 		return {
 			// The hub's startedAt against this phone's clock: a small skew is
