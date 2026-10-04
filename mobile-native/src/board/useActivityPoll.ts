@@ -9,8 +9,8 @@ const noRevision = () => 0;
  * every live session (the Board), or for the one session `sessionRef` names (a
  * session's tray). A poll is bound to the client it was made with, so
  * each client gets a fresh one, and there is none without a client. The
- * revision changes whenever the poll's report does: a read lands, or the hub
- * turns out to predate S5.
+ * revision changes whenever the poll's report does: a read lands, a stop
+ * forgets it, or the hub turns out to predate S5.
  *
  * Stopping (idle, out of front, disconnected) forgets the poll's read
  * (ActivityPoll.stop), but the render that sees `connected` turn false comes

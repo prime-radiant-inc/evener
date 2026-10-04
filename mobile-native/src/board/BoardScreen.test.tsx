@@ -2562,6 +2562,35 @@ it("keeps a row's Working order in step with its label when elapsed time alone c
 	act(() => tree.unmount());
 });
 
+it("drops its read on leaving front, so coming back shows no row's old activity until a new read lands", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const shape: Fleet = { ...busyFleet, activity: [migrateRead(4)] };
+	const fake = hub(shape);
+	connect(id, fake.client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	expect(textsIn(rowTitled(tree, "Migrate schema"))).toContain("Quiet 4m");
+
+	harness.stack = screenOverBoard;
+	rerender(tree, nav);
+	await settle();
+	// Back within the read's freshness window, the first read fails: the row
+	// falls back to its pre-S5 line rather than the read from before.
+	shape.activity = null;
+	harness.stack = { index: 0, routes: [{ key: "Sessions", name: "Sessions" }] };
+	rerender(tree, nav);
+	await settle();
+	expect(fake.activityReads).toHaveLength(2);
+	expect(textsIn(rowTitled(tree, "Migrate schema"))).not.toContain("Quiet 4m");
+	expect(textsIn(rowTitled(tree, "Migrate schema"))).toContain("Working");
+
+	shape.activity = [migrateRead(6)];
+	await advance(ACTIVITY_POLL_MS);
+	expect(textsIn(rowTitled(tree, "Migrate schema"))).toContain("Quiet 6m");
+	act(() => tree.unmount());
+});
+
 it("still lets a read on screen go stale once the hub stops answering activity reads", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
