@@ -1,4 +1,12 @@
-import { DOC_FILE_MAX_BYTES, type DocFileContent, DocFileError, docImageURL } from "@evener/appwire-client";
+import {
+  type CapturedPassage,
+  DOC_FILE_MAX_BYTES,
+  type DocFileContent,
+  DocFileError,
+  displayedFingerprint,
+  docImageURL,
+  formatAnnotationReference,
+} from "@evener/appwire-client";
 import * as docContentModule from "@evener/appwire-client/docContent";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -85,6 +93,39 @@ test("a markdown file renders through the sanitizing Markdown widget, not a raw 
   // this, a wrapper rename would leave the CSS contract test above green while
   // the documents silently fall back to the ambient body step.
   expect(heading.closest(`.${docpaneStyles.markdown}`)).toBeTruthy();
+});
+
+test("a decoded leading BOM stays in source coordinates without demoting the first Markdown heading", async () => {
+  mockRead.mockRestore();
+  vi.spyOn(globalThis, "fetch").mockResolvedValue(
+    new Response(new Uint8Array([0xef, 0xbb, 0xbf, 0x23, 0x20, 0x48, 0x65, 0x61, 0x64, 0x69, 0x6e, 0x67, 0x0a]), {
+      headers: { "Content-Type": "text/plain; charset=utf-8" },
+    }),
+  );
+  renderFile("docs/README.md");
+  const heading = await screen.findByRole("heading", { name: "Heading" });
+  expect(heading.tagName).toBe("H1");
+});
+
+test("an annotation locator with a backtick and encoded controls round-trips through pinned Markdown", async () => {
+  const source = "First occurrence: same\n";
+  const capture: CapturedPassage = {
+    evidence: { wholeRevision: "rev-A", fingerprint: displayedFingerprint(source, false) },
+    sourceRange: { start: 18, end: 22 },
+    start: { line: 1, column: 19 },
+    endInclusive: { line: 1, column: 22 },
+    selectedRenderedText: "same",
+    contextBefore: "First occurrence: ",
+    contextAfter: "\n",
+    mappingId: "fixture-map",
+    displayedSnapshotId: "snapshot-A",
+  };
+  mockRead.mockResolvedValue(
+    textContent({ text: formatAnnotationReference(capture, "dir/a`b\nback\\slash.md", "Keep this scope.") }),
+  );
+  renderFile("docs/reference.md");
+  const locator = await screen.findByText("dir/a`b\\nback\\\\slash.md:1:19-1:22");
+  expect(locator.tagName).toBe("CODE");
 });
 
 test("a markdown file with raw HTML in the source has it neutralized (sanitizer posture, beyond legacy)", async () => {

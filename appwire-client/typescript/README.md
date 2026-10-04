@@ -139,6 +139,24 @@ before forwarding; registering a new RPC never grants forwarding permission.
 Retry classification remains with the hub because session mutations and admin
 mutations have different replay guarantees.
 
+## Document annotation contracts
+
+The package root exports the shared browser/native document annotation shapes,
+the `DocumentAnnotationRepository` port, and pure range, evidence, reference,
+and comment-work functions from `documentAnnotations.ts`. Source ranges are
+zero-based UTF-16 `[start,end)` coordinates over the original decoded source;
+`sourcePositions` derives one-based display positions with an inclusive end.
+
+`displayedFingerprint` uses the stable `cyrb53` identifier and records whether
+its coverage is the whole displayed source or only a displayed prefix.
+`compareDisplayedSources` treats unequal whole-file revisions as authoritative,
+then compares the actual raw source covered by both reads. A hash match is never
+proof of equality, and compatible unequal prefix coverage is insufficient
+evidence of an edit. `formatAnnotationReference` emits literal captured data for
+an ordinary composer draft, including a Markdown-safe locator and escaped user
+text. Comment-work helpers freeze the first captured passage when note editing
+begins and retain note bytes when source expiry invalidates that capture.
+
 ## Older-history demand
 
 `HistoryPaging` retains a requested older page until history advances. Attach

@@ -118,6 +118,70 @@ describe("readDocFile", () => {
     expect(doc.binary).toBe(false);
   });
 
+  test("preserves a UTF-8 BOM in the source coordinate space", async () => {
+    const bytes = new Uint8Array([0xef, 0xbb, 0xbf, 0x61]);
+    const doc = await readDocFile(
+      "s1",
+      "README.md",
+      respondWith(new Response(bytes, { headers: headers("text/plain; charset=utf-8") })),
+    );
+    expect(doc.text).toBe("\ufeffa");
+    expect(doc.sizeBytes).toBe(4);
+  });
+
+  test("omits only an incomplete UTF-8 scalar at a truncated byte boundary", async () => {
+    const revision = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
+    const doc = await readDocFile(
+      "s1",
+      "truncated.md",
+      respondWith(
+        new Response(new Uint8Array([0x61, 0xf0, 0x9f]), {
+          headers: {
+            "Content-Type": "text/plain; charset=utf-8",
+            "X-Doc-Truncated": "true",
+            ETag: `"${revision}"`,
+          },
+        }),
+      ),
+    );
+    expect(doc.text).toBe("a");
+    expect(doc.sizeBytes).toBe(3);
+    expect(doc.revision).toBe(revision);
+  });
+
+  test("keeps a complete UTF-8 scalar at a truncated boundary", async () => {
+    const doc = await readDocFile(
+      "s1",
+      "truncated.md",
+      respondWith(
+        new Response(new Uint8Array([0x61, 0xf0, 0x9f, 0x98, 0x80]), {
+          headers: { "Content-Type": "text/plain; charset=utf-8", "X-Doc-Truncated": "true" },
+        }),
+      ),
+    );
+    expect(doc.text).toBe("a😀");
+    expect(doc.sizeBytes).toBe(5);
+  });
+
+  test("does not trim invalid bytes from complete files or arbitrary invalid truncated tails", async () => {
+    const complete = await readDocFile(
+      "s1",
+      "invalid.txt",
+      respondWith(new Response(new Uint8Array([0x61, 0xf0, 0x9f]), { headers: headers("text/plain; charset=utf-8") })),
+    );
+    const invalidTail = await readDocFile(
+      "s1",
+      "invalid-tail.txt",
+      respondWith(
+        new Response(new Uint8Array([0x61, 0xff]), {
+          headers: { "Content-Type": "text/plain; charset=utf-8", "X-Doc-Truncated": "true" },
+        }),
+      ),
+    );
+    expect(complete.text).toBe("a�");
+    expect(invalidTail.text).toBe("a�");
+  });
+
   test("an octet-stream response is binary with empty text and the octet-stream mediaType", async () => {
     const body = new Uint8Array([0x00, 0x01, 0x02, 0x03]);
     const port = respondWith(new Response(body, { headers: headers("application/octet-stream") }));

@@ -133,7 +133,10 @@ export async function readDocFile(session: string, path: string, port: DocPort):
   const totalHeader = res.headers.get("X-Doc-Total-Size");
   const parsedTotal = totalHeader === null ? Number.NaN : Number.parseInt(totalHeader, 10);
   const totalBytes = Number.isFinite(parsedTotal) ? parsedTotal : undefined;
-  const text = binary ? "" : new TextDecoder().decode(buf);
+  const bytes = new Uint8Array(buf);
+  const incompleteTail = truncated ? incompleteUTF8TailStart(bytes) : undefined;
+  const decodedBytes = incompleteTail === undefined ? bytes : bytes.subarray(0, incompleteTail);
+  const text = binary ? "" : new TextDecoder("utf-8", { ignoreBOM: true }).decode(decodedBytes);
   const revision = etagRevision(res.headers.get("ETag"));
   const modifiedAt = Number(res.headers.get("X-Doc-Modified-At") ?? Number.NaN);
   return {
@@ -146,6 +149,48 @@ export async function readDocFile(session: string, path: string, port: DocPort):
     ...(revision === undefined ? {} : { revision }),
     ...(Number.isSafeInteger(modifiedAt) && modifiedAt > 0 ? { modifiedAt } : {}),
   };
+}
+
+// A truncated response can stop inside its last UTF-8 scalar. Inspect only the
+// scalar-sized tail and omit it when every byte received so far is a valid
+// prefix of one scalar. Invalid bytes are source data and still decode as U+FFFD.
+function incompleteUTF8TailStart(bytes: Uint8Array): number | undefined {
+  if (bytes.length === 0) return undefined;
+  const scanStart = Math.max(0, bytes.length - 4);
+  let start = bytes.length - 1;
+  while (start >= scanStart && isUTF8Continuation(bytes[start] ?? 0)) start -= 1;
+  if (start < scanStart) return undefined;
+
+  const lead = bytes[start] ?? 0;
+  const expectedLength = utf8ScalarLength(lead);
+  if (expectedLength === undefined) return undefined;
+  const available = bytes.length - start;
+  if (available >= expectedLength) return undefined;
+  for (let index = start + 1; index < bytes.length; index += 1) {
+    if (!isUTF8Continuation(bytes[index] ?? 0)) return undefined;
+  }
+  if (available > 1 && !validUTF8SecondByte(lead, bytes[start + 1] ?? 0)) return undefined;
+  return start;
+}
+
+function isUTF8Continuation(byte: number): boolean {
+  return byte >= 0x80 && byte <= 0xbf;
+}
+
+function utf8ScalarLength(lead: number): 2 | 3 | 4 | undefined {
+  if (lead >= 0xc2 && lead <= 0xdf) return 2;
+  if (lead >= 0xe0 && lead <= 0xef) return 3;
+  if (lead >= 0xf0 && lead <= 0xf4) return 4;
+  return undefined;
+}
+
+function validUTF8SecondByte(lead: number, second: number): boolean {
+  if (!isUTF8Continuation(second)) return false;
+  if (lead === 0xe0) return second >= 0xa0;
+  if (lead === 0xed) return second <= 0x9f;
+  if (lead === 0xf0) return second >= 0x90;
+  if (lead === 0xf4) return second <= 0x8f;
+  return true;
 }
 
 // etagRevision reads the revision out of an ETag. The hub sends the whole

@@ -46,6 +46,13 @@ type FileState =
   | { status: "error"; kind: DocFileErrorKind }
   | { status: "ok"; content: DocFileContent };
 
+// DocFileContent keeps a leading BOM because annotations use the original
+// source's UTF-16 coordinates. Marked does not recognize a heading through it,
+// so remove it only from the legacy display input, never from stored source.
+function markdownDisplaySource(source: string): string {
+  return source.startsWith("\ufeff") ? source.slice(1) : source;
+}
+
 function DocFileView({ session, path }: { session: string; path: string }) {
   const [state, setState] = useState<FileState>({ status: "loading" });
 
@@ -92,7 +99,7 @@ function DocFileView({ session, path }: { session: string; path: string }) {
       )}
       {isMarkdownPath(path) ? (
         <div className={CLASS.markdown}>
-          <Markdown source={content.text} />
+          <Markdown source={markdownDisplaySource(content.text)} />
         </div>
       ) : (
         <pre className={CLASS.pre}>{content.text}</pre>
