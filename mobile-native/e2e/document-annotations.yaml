@@ -1,0 +1,8 @@
+# XCTest drives measured glyph long press and press/drag on an actual selection
+# handle. Maestro alone does not establish handle movement. This smoke flow only
+# checks entry reachability and is not the installed selection qualification.
+appId: com.primeradiant.evener.native
+---
+- launchApp
+- assertVisible:
+    id: native-probe-ready
