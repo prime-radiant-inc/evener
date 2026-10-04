@@ -270,6 +270,11 @@ type Session struct {
 	// Guarded by mu.
 	notesEverProjected bool
 
+	// Memory environments are independent of workspace policy and cwd.
+	memoryMu            sync.Mutex
+	memoryEnvs          map[string]*execenv.LocalExecutionEnvironment
+	memoryLastProjected map[string]string
+
 	// --- Synchronization / lock discipline ---
 	//
 	// The turn loop (ProcessInput → processOneInput) is the primary owner of

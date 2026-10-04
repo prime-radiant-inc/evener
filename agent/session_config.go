@@ -42,6 +42,12 @@ type SessionConfig struct {
 	LifetimeContext context.Context `json:"-"`
 	artifactStore   artifactStore
 
+	// MemoryStateRoot and MemoryProjectID are trusted runtime-only bindings.
+	// An empty state root leaves library sessions without memory access.
+	MemoryStateRoot string `json:"-"`
+	MemoryProjectID string `json:"-"`
+	DisableMemory   bool   `json:"disable_memory,omitempty"`
+
 	// Project is the resolved canonical project identity for this launch. It is
 	// separate from the execution environment's active working directory, which
 	// may be a linked worktree.
@@ -289,6 +295,8 @@ type SessionConfig struct {
 // deterministic. Never set by app callers; never persisted (json:"-" on the
 // parent field).
 type testConfig struct {
+	// memoryBeforeIO observes the native scope boundary without providing data.
+	memoryBeforeIO func(scope, operation string) error
 	// visionSideChannelTimeout supplies an explicit owned deadline only for
 	// deterministic package tests. Zero leaves caller deadlines authoritative.
 	visionSideChannelTimeout time.Duration

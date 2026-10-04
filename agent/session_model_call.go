@@ -338,6 +338,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// notification wake, delegate attention) funnels through, so the refresh
 	// covers entry paths whose accept step projects nothing.
 	s.maybeAppendNotesContext()
+	s.maybeAppendMemoryContext(ctx)
 	// Re-snapshot so the request expands the refreshed history. The
 	// in-flight boundary is re-captured alongside the final history copy
 	// under the same lock: a concurrent compaction landing between the two
@@ -1712,7 +1713,7 @@ func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message 
 			} else {
 				history = append(history, t.Message)
 			}
-		case schema.TurnEnvironment, schema.TurnNotesContext:
+		case schema.TurnEnvironment, schema.TurnNotesContext, schema.TurnMemoryContext:
 			// Turn-boundary context only ever lands at a turn boundary, so no
 			// mid-tool-round deferral: pass the message straight through.
 			history = append(history, t.Message)

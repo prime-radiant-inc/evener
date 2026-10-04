@@ -202,26 +202,7 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 	if err := register(tool.RegisteredTool{
 		Definition: tool.DefGrep(), ReadOnly: true,
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
-			pat := stringArg(args, "pattern")
-			path := stringArg(args, "path")
-			glob := stringArg(args, "glob_filter")
-			ci := false
-			if v, ok := args["case_insensitive"].(bool); ok {
-				ci = v
-			}
-			maxRes := execenv.DefaultGrepMaxResults
-			if v, ok := args["max_results"].(float64); ok && int(v) > 0 {
-				maxRes = int(v)
-			}
-			outputMode := ""
-			if v, ok := args["output_mode"].(string); ok {
-				outputMode = v
-			}
-			contextLines := 0
-			if v, ok := args["context_lines"].(float64); ok && int(v) > 0 {
-				contextLines = min(int(v), 10)
-			}
-			return env.Grep(ctx, pat, path, glob, ci, maxRes, outputMode, contextLines)
+			return execFileGrep(ctx, env, args)
 		},
 	}); err != nil {
 		return err
@@ -757,4 +738,27 @@ func runBufferedShell(ctx context.Context, env execenv.ExecutionEnvironment, dep
 	}
 	fmt.Fprintf(&b, "exit_code=%d duration_ms=%d timed_out=%t\n", res.ExitCode, res.DurationMS, res.TimedOut)
 	return b.String(), err
+}
+
+func execFileGrep(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
+	pat := stringArg(args, "pattern")
+	path := stringArg(args, "path")
+	glob := stringArg(args, "glob_filter")
+	ci := false
+	if v, ok := args["case_insensitive"].(bool); ok {
+		ci = v
+	}
+	maxRes := execenv.DefaultGrepMaxResults
+	if v, ok := args["max_results"].(float64); ok && int(v) > 0 {
+		maxRes = int(v)
+	}
+	outputMode := ""
+	if v, ok := args["output_mode"].(string); ok {
+		outputMode = v
+	}
+	contextLines := 0
+	if v, ok := args["context_lines"].(float64); ok && int(v) > 0 {
+		contextLines = min(int(v), 10)
+	}
+	return env.Grep(ctx, pat, path, glob, ci, maxRes, outputMode, contextLines)
 }

@@ -1534,6 +1534,10 @@ func (s *Session) trackReadFile(path string) {
 // readBeforeWriteWarning returns a warning string if the file exists but hasn't
 // been read in this session. Returns "" for new files or previously-read files.
 func (s *Session) readBeforeWriteWarning(path string) string {
+	return s.readBeforeWriteWarningIn(s.currentEnv(), path)
+}
+
+func (s *Session) readBeforeWriteWarningIn(env execenv.ExecutionEnvironment, path string) string {
 	abs := s.resolveFilePath(path)
 	s.readFilesMu.RLock()
 	_, seen := s.readFiles[abs]
@@ -1542,7 +1546,7 @@ func (s *Session) readBeforeWriteWarning(path string) string {
 		return ""
 	}
 	// New file creation is exempt from the warning.
-	if !s.currentEnv().FileExists(path) {
+	if !env.FileExists(path) {
 		return ""
 	}
 	return "[WARNING: Writing to file that has not been read in this session. Consider reading first.]\n"
