@@ -3375,12 +3375,13 @@ index 0000000..4936b44
 +} // namespace facebook::react
 diff --git a/node_modules/react-native-enriched-markdown/ios/internals/EnrichedMarkdownCodeTextState.h b/node_modules/react-native-enriched-markdown/ios/internals/EnrichedMarkdownCodeTextState.h
 new file mode 100644
-index 0000000..a4d7ce8
+index 0000000..b17b011
 --- /dev/null
 +++ b/node_modules/react-native-enriched-markdown/ios/internals/EnrichedMarkdownCodeTextState.h
-@@ -0,0 +1,12 @@
+@@ -0,0 +1,13 @@
 +#pragma once
 +#include <react/renderer/core/LayoutPrimitives.h>
++#include <react/renderer/graphics/Float.h>
 +
 +namespace facebook::react {
 +
