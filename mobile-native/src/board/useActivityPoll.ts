@@ -13,13 +13,13 @@ const noRevision = () => 0;
  * stop forgets it, or the hub turns out to predate S5.
  *
  * The underlying client survives a reconnect (hubConnection.ts), so a Board
- * poll that stops on disconnect still holds its last read, and a hub that reports
- * ready but has stopped delivering reads leaves the same stale data behind
- * without ever disconnecting at all - reading either as current would let a
- * read merely aging past isFreshRead's threshold read as "stuck", a false
- * alarm about the connection or the hub rather than the session (Jesse's
- * ruling). Gating the RETURNED reading on `connected` AND freshness, and
- * never handing back the poll itself, means no caller can read around this:
+ * poll that stops on disconnect still holds its last read, and a hub that
+ * reports ready but has stopped delivering reads leaves the same stale data
+ * behind without ever disconnecting at all - reading either as current would
+ * let a read merely aging past isFreshRead's threshold read as "stuck", a
+ * false alarm about the connection or the hub rather than the session (Jesse's
+ * ruling). Gating the RETURNED reading on `connected` AND freshness, and never
+ * handing back the poll itself, means no caller can read around this:
  * everything drawn from it (the Board's rows, their meters and the Working
  * order; a session's tray) falls back to its pre-S5 appearance the moment
  * either one fails, and agrees since there is only the one gate. Nothing

@@ -130,8 +130,9 @@ export class ActivityPoll {
 		this.notify();
 	}
 
-	/** Every change to what this instance reports (a landed read, a
-	 * forgotten one, or `supported` turning false) bumps the revision and tells subscribers. */
+	/** Every change to what this instance reports (a landed read, a forgotten
+	 * one, or `supported` turning false) bumps the revision and tells
+	 * subscribers. */
 	private notify(): void {
 		this.revision++;
 		for (const listener of [...this.listeners]) listener();
