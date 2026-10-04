@@ -77,14 +77,21 @@ export class ActivityPoll {
 		this.timer = setInterval(() => this.poll(), ACTIVITY_POLL_MS);
 	}
 
-	/** Stops polling and forgets the last read: a stopped poll's read says
-	 * nothing about now, and restarted before it aged out it would show an old
-	 * count (a tray's "Waiting on 3 subagents" from before an idle spell)
-	 * until the next read landed. */
 	stop(): void {
 		if (this.timer === undefined) return;
-		this.halt();
-		if (this.lastReadAt === null) return; // no read to forget
+		clearInterval(this.timer);
+		this.timer = undefined;
+		// Invalidates a poll already in flight: its answer, whichever way it
+		// lands, must not apply after stopping (a fresh-looking read right
+		// after a later restart, or a stale hub predates S5 verdict).
+		this.latestRequestId++;
+	}
+
+	/** Drops the last read, telling subscribers, so a restart reports nothing
+	 * until a new read lands. For after stop(): stop() already retires any
+	 * poll in flight, so none can bring the old read back. */
+	forget(): void {
+		if (this.lastReadAt === null) return;
 		this.bySession = new Map();
 		this.lastReadAt = null;
 		this.notify();
@@ -97,16 +104,6 @@ export class ActivityPoll {
 
 	getRevision = (): number => this.revision;
 
-	/** Stops the timer and retires any poll in flight, keeping the last read. */
-	private halt(): void {
-		clearInterval(this.timer);
-		this.timer = undefined;
-		// Invalidates a poll already in flight: its answer, whichever way it
-		// lands, must not apply after stopping (a fresh-looking read right
-		// after a later restart, or a stale hub predates S5 verdict).
-		this.latestRequestId++;
-	}
-
 	private async poll(): Promise<void> {
 		const requestId = ++this.latestRequestId;
 		let response: unknown;
@@ -116,8 +113,7 @@ export class ActivityPoll {
 			if (requestId !== this.latestRequestId) return; // superseded by a newer poll, or stopped
 			if (isMethodNotFound(error)) {
 				this.unsupported = true;
-				// Keeps the last read, left to age out on its own.
-				this.halt();
+				this.stop();
 				this.notify();
 			}
 			return;
@@ -134,8 +130,8 @@ export class ActivityPoll {
 		this.notify();
 	}
 
-	/** Every change to what this instance reports (a landed read, a stop
-	 * forgetting it, or `supported` turning false) bumps the revision and tells subscribers. */
+	/** Every change to what this instance reports (a landed read, a
+	 * forgotten one, or `supported` turning false) bumps the revision and tells subscribers. */
 	private notify(): void {
 		this.revision++;
 		for (const listener of [...this.listeners]) listener();

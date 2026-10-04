@@ -9,14 +9,13 @@ const noRevision = () => 0;
  * every live session (the Board), or for the one session `sessionRef` names (a
  * session's tray). A poll is bound to the client it was made with, so
  * each client gets a fresh one, and there is none without a client. The
- * revision changes whenever the poll's report does: a read lands, a stop
- * forgets it, or the hub turns out to predate S5.
+ * revision changes whenever the poll's report does: a read lands, a tray's
+ * stop forgets it, or the hub turns out to predate S5.
  *
- * Stopping (idle, out of front, disconnected) forgets the poll's read
- * (ActivityPoll.stop), but the render that sees `connected` turn false comes
- * before the effect that stops it, and a hub that reports ready but has
- * stopped delivering reads leaves stale data behind without ever
- * disconnecting at all - reading either as current would let a
+ * The underlying client survives a reconnect (hubConnection.ts), so a Board
+ * poll that stops on disconnect still holds its last read, and a hub that reports
+ * ready but has stopped delivering reads leaves the same stale data behind
+ * without ever disconnecting at all - reading either as current would let a
  * read merely aging past isFreshRead's threshold read as "stuck", a false
  * alarm about the connection or the hub rather than the session (Jesse's
  * ruling). Gating the RETURNED reading on `connected` AND freshness, and
@@ -49,8 +48,17 @@ export function useActivityPoll(
 	useEffect(() => {
 		if (!poll || !connected || !inFront) return;
 		poll.start();
-		return () => poll.stop();
-	}, [poll, connected, inFront]);
+		return () => {
+			poll.stop();
+			// A session's tray stops whenever its session goes idle; restarted
+			// within the freshness window, the old read would show a count from
+			// before the idle spell ("Waiting on 3 subagents") until the next
+			// read lands. The Board keeps its read, so a return to it within
+			// that window shows its rows' activity at once instead of a round
+			// trip of fallback lines.
+			if (sessionRef !== undefined) poll.forget();
+		};
+	}, [poll, connected, inFront, sessionRef]);
 	const msSinceRead = poll?.msSinceRead() ?? null;
 	const reading = connected && isFreshRead(msSinceRead) ? poll : null;
 	const [tick, recheck] = useReducer((n: number) => n + 1, 0);

@@ -2562,7 +2562,7 @@ it("keeps a row's Working order in step with its label when elapsed time alone c
 	act(() => tree.unmount());
 });
 
-it("drops its read on leaving front, so coming back shows no row's old activity until a new read lands", async () => {
+it("keeps a fresh read through leaving front, so coming back shows each row's activity at once", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
 	const shape: Fleet = { ...busyFleet, activity: [migrateRead(4)] };
@@ -2575,19 +2575,15 @@ it("drops its read on leaving front, so coming back shows no row's old activity 
 	harness.stack = screenOverBoard;
 	rerender(tree, nav);
 	await settle();
-	// Back within the read's freshness window, the first read fails: the row
-	// falls back to its pre-S5 line rather than the read from before.
+	// Back within the read's freshness window, with the first read after the
+	// return failing: the read from before still shows, with no round trip of
+	// fallback lines.
 	shape.activity = null;
 	harness.stack = { index: 0, routes: [{ key: "Sessions", name: "Sessions" }] };
 	rerender(tree, nav);
 	await settle();
 	expect(fake.activityReads).toHaveLength(2);
-	expect(textsIn(rowTitled(tree, "Migrate schema"))).not.toContain("Quiet 4m");
-	expect(textsIn(rowTitled(tree, "Migrate schema"))).toContain("Working");
-
-	shape.activity = [migrateRead(6)];
-	await advance(ACTIVITY_POLL_MS);
-	expect(textsIn(rowTitled(tree, "Migrate schema"))).toContain("Quiet 6m");
+	expect(textsIn(rowTitled(tree, "Migrate schema"))).toContain("Quiet 4m");
 	act(() => tree.unmount());
 });
 
