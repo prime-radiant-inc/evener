@@ -472,6 +472,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		// transcript is seeded from inheritedContext below, so it keeps the raw
 		// text for display.
 		s.history = escapeInheritedHistory(inheritedContext)
+		s.restoreMemoryProjection(s.history)
 		boundary := schema.NewTurn(schema.TurnSteering, llm.User("The conversation above is inherited context from your parent. You are a separate delegate. Use that history as background for the assignment that follows; your own role, tools, permissions, and working directory govern this session."))
 		s.history = append(s.history, boundary)
 		s.pendingTranscriptTurns = append(s.pendingTranscriptTurns, boundary)

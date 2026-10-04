@@ -157,12 +157,17 @@ func (s *Session) beforeMemoryIO(scope, operation string) error {
 func (s *Session) closeMemoryEnvironments() {
 	s.memoryMu.Lock()
 	s.memoryClosed = true
-	envs := s.memoryEnvs
+	var envs []*execenv.LocalExecutionEnvironment
+	for scope, env := range s.memoryEnvs {
+		if s.memoryIndexReaders[scope] != env {
+			envs = append(envs, env)
+		}
+	}
 	s.memoryEnvs = nil
 	s.memoryMu.Unlock()
 	for _, env := range envs {
 		// Shared confinement retires fds once an admitted file operation ends.
-		// Setup workers that return after this point retire their own environment.
+		// Index readers and late setup workers retire their own environments.
 		env.Cleanup()
 	}
 }
@@ -173,6 +178,30 @@ func (s *Session) readMemoryIndex(scope string) memoryProjection {
 	if err != nil {
 		return p
 	}
+	// Admit before the pre-read boundary, not merely before ReadFileRaw. Close
+	// must not retire this reusable environment before the reader acquires its
+	// confined layer. One flight per scope makes this reader its sole owner.
+	s.memoryMu.Lock()
+	if s.memoryClosed {
+		s.memoryMu.Unlock()
+		return p
+	}
+	if s.memoryIndexReaders == nil {
+		s.memoryIndexReaders = make(map[string]*execenv.LocalExecutionEnvironment)
+	}
+	s.memoryIndexReaders[scope] = env
+	s.memoryMu.Unlock()
+	defer func() {
+		s.memoryMu.Lock()
+		delete(s.memoryIndexReaders, scope)
+		closed := s.memoryClosed
+		s.memoryMu.Unlock()
+		if closed {
+			// Close stays finite even if raw I/O cannot be interrupted. Cleanup
+			// runs after this operation releases its layer, before flight.done.
+			env.Cleanup()
+		}
+	}()
 	if err := s.beforeMemoryIO(scope, "index_read"); err != nil {
 		return p
 	}
@@ -257,8 +286,9 @@ func (s *Session) resetMemoryProjectionAfterCompaction() {
 	s.memoryMu.Unlock()
 }
 
-// Restore only remembers which scopes were observed, never historical bytes as
-// a current read. Missing or revoked storage must supersede old observations.
+// Restored and forked history only seeds which scopes were observed, never
+// historical bytes as a current read. Missing or revoked storage must supersede
+// old observations.
 func (s *Session) restoreMemoryProjection(history []schema.Turn) {
 	if s.cfg.DisableMemory || s.cfg.MemoryStateRoot == "" {
 		return

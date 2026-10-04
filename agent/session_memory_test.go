@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"strconv"
@@ -407,6 +408,120 @@ func TestMemoryContextLifecycleDelegate(t *testing.T) {
 	}
 }
 
+func TestMemoryContextForkInvalidation(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"missing", "empty", "read-revoked"} {
+		t.Run(mode, func(t *testing.T) {
+			workspace, project := memoryGitFixture(t)
+			root, history := t.TempDir(), t.TempDir()
+			paths := []string{
+				memorySeed(t, root, "personal", "opaque-parent-personal-601"),
+				memorySeed(t, root, filepath.Join("projects", project.ID), "opaque-parent-project-602"),
+			}
+			requests := make(chan llm.Request, 2)
+			step := func(req llm.Request) llm.Response {
+				requests <- req
+				return finalResponse("fixture completed")
+			}
+			var indexReads atomic.Int32
+			s := newSession(t, withDir(workspace), withConfig(SessionConfig{
+				StateDir: history, MemoryStateRoot: root, MemoryProjectID: project.ID, Project: project,
+				MaxSubagentDepth: 2, AcquireSessionOwnership: func(string) error { return nil },
+				testOnly: testConfig{disableDelegateIdleRelease: true, memoryBeforeIO: func(_, op string) error {
+					if op == "index_read" {
+						indexReads.Add(1)
+					}
+					return nil
+				}},
+			}), withSteps(step, step))
+			if _, err := s.ProcessInput(context.Background(), "parent observes indexes", nil); err != nil {
+				t.Fatal(err)
+			}
+			parentReq := <-requests
+			original := make(map[string]llm.Message)
+			for _, msg := range parentReq.Messages {
+				if msg.Name == "memory_personal" || msg.Name == "memory_project" {
+					original[msg.Name] = msg
+				}
+			}
+			if len(original) != 2 {
+				t.Fatalf("parent index observations=%d want=2", len(original))
+			}
+			parentBefore, err := os.ReadFile(transcriptPath(s.stateDir, s.id))
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantState := "missing"
+			switch mode {
+			case "missing":
+				for _, path := range paths {
+					if err := os.Remove(path); err != nil {
+						t.Fatal(err)
+					}
+				}
+			case "empty":
+				wantState = "current"
+				for _, path := range paths {
+					if err := os.WriteFile(path, nil, 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+			case "read-revoked":
+				wantState = "revoked"
+				s.reg.Remove("memory_read")
+			}
+			readsBeforeFork := indexReads.Load()
+			res := s.createDelegate(context.Background(), delegateArgs{Task: "forked memory fixture", AgentType: "explorer", ForkContext: true, DelegationAllowance: new(0)})
+			if res.Err != nil {
+				t.Fatal(res.Err)
+			}
+			child := memoryWaitChild(t, s, res.ChildSessionID)
+			var childReq llm.Request
+			select {
+			case childReq = <-requests:
+			default:
+				t.Fatal("forked child did not reach the model request")
+			}
+			data, err := readTranscriptFull(transcriptPath(child.sess.stateDir, child.sess.id), "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, scope := range []string{"personal", "project"} {
+				name := "memory_" + scope
+				var observations []llm.Message
+				for _, msg := range childReq.Messages {
+					if msg.Name == name {
+						observations = append(observations, msg)
+					}
+				}
+				if len(observations) == 0 || observations[0].Text() != original[name].Text() {
+					t.Fatalf("%s inherited index observation was lost or changed", scope)
+				}
+				state, body, _ := memoryRequestIndex(t, childReq, scope)
+				if len(observations) != 2 || state != wantState || body != "" {
+					t.Errorf("forked %s observations=%d latest=%s %q want=2 %s empty", scope, len(observations), state, body, wantState)
+				}
+				var recorded []llm.Message
+				for _, entry := range data.Entries {
+					if entry.Turn.Kind == schema.TurnMemoryContext && entry.Turn.Message.Name == name {
+						recorded = append(recorded, entry.Turn.Message)
+					}
+				}
+				if len(recorded) != 2 || recorded[0].Text() != original[name].Text() || recorded[1].Text() != observations[len(observations)-1].Text() {
+					t.Errorf("%s child transcript did not preserve the inherited observation and append its current state", scope)
+				}
+			}
+			if mode == "read-revoked" && (child.sess.reg.Get("memory_read") != nil || indexReads.Load() != readsBeforeFork) {
+				t.Error("forked child regained revoked memory_read or performed index I/O")
+			}
+			parentAfter, err := os.ReadFile(transcriptPath(s.stateDir, s.id))
+			if err != nil || !bytes.HasPrefix(parentAfter, parentBefore) {
+				t.Fatalf("parent transcript prefix changed: %v", err)
+			}
+		})
+	}
+}
+
 func TestMemoryStorageWaitAndRecovery(t *testing.T) {
 	t.Parallel()
 	for _, operation := range []string{"setup", "index_read"} {
@@ -535,6 +650,13 @@ func TestMemoryStorageSharedWaitAndClose(t *testing.T) {
 			<-started
 			s.memoryMu.Lock()
 			personal, project := s.memoryIndexFlights["personal"], s.memoryIndexFlights["project"]
+			var heldEnvs []*execenv.LocalExecutionEnvironment
+			if mode == "close-index_read" {
+				for _, env := range s.memoryEnvs {
+					heldEnvs = append(heldEnvs, env)
+					t.Cleanup(env.Cleanup)
+				}
+			}
 			s.memoryMu.Unlock()
 			switch mode {
 			case "shared-deadline":
@@ -574,10 +696,26 @@ func TestMemoryStorageSharedWaitAndClose(t *testing.T) {
 			}
 			if strings.HasPrefix(mode, "close-") {
 				s.memoryMu.Lock()
-				remaining := len(s.memoryEnvs) + len(s.memoryEnvFlights)
+				remaining := len(s.memoryEnvs) + len(s.memoryEnvFlights) + len(s.memoryIndexReaders)
 				s.memoryMu.Unlock()
 				if remaining != 0 {
 					t.Fatalf("late environment leaked=%d", remaining)
+				}
+			}
+			if mode == "close-index_read" {
+				if personal.projection.Status != "current" || personal.projection.Content != "opaque-held-personal-501" || project.projection.Status != "current" || project.projection.Content != "opaque-held-project-502" {
+					t.Fatal("Close interrupted an admitted read instead of leaving it responsible for retirement")
+				}
+				if len(heldEnvs) != 2 {
+					t.Fatalf("paused reader environments=%d want=2", len(heldEnvs))
+				}
+				for _, env := range heldEnvs {
+					// After Close and both completion barriers, no operation can
+					// mutate this layer. Inspect the real cache without adding an
+					// execenv API or mistaking an empty session map for retirement.
+					if !reflect.ValueOf(env).Elem().FieldByName("sbfs").IsNil() {
+						t.Errorf("late reader left a confined layer cached for %s", env.WorkingDirectory())
+					}
 				}
 			}
 		})

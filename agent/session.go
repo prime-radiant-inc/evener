@@ -278,6 +278,9 @@ type Session struct {
 	memoryLastProjected map[string]memoryProjection
 	memoryEverProjected map[string]bool
 	memoryIndexFlights  map[string]*memoryIndexFlight
+	// The sole automatic reader per scope owns cleanup until it returns.
+	// Admission and retirement share memoryMu, including the pre-read window.
+	memoryIndexReaders map[string]*execenv.LocalExecutionEnvironment
 
 	// --- Synchronization / lock discipline ---
 	//
