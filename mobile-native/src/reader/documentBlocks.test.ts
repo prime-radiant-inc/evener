@@ -145,6 +145,10 @@ it("reads a link's or image's URL holding a pair of parentheses as its words, le
 	);
 });
 
+it("still reads a link as its words when its URL's parentheses don't pair up", () => {
+	expect(plainText("An [unbalanced](b(c) link")).toBe("An unbalanced link");
+});
+
 it("drops inline HTML tags from a block's words, but not inside an inline code span", () => {
 	const [paragraph] = documentBlocks("Some <b>bold</b> text and a `Vec<String>` span.");
 	expect(paragraph?.kind).toBe("paragraph");

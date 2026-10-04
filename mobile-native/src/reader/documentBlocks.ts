@@ -74,8 +74,12 @@ function isTableRule(line: string): boolean {
 	return /^[\s|:-]+$/.test(line) && line.includes("-");
 }
 
-const INLINE_IMAGE = new RegExp(String.raw`!\[([^\]]*)\]${INLINE_DESTINATION}`, "g");
-const INLINE_LINK = new RegExp(String.raw`\[([^\]]+)\]${INLINE_DESTINATION}`, "g");
+// A destination INLINE_DESTINATION can't take whole (unbalanced or deeper
+// parentheses) falls back to ending at its first ")", so the link still reads
+// as its words with at most a little of the URL left, never its whole syntax.
+const DESTINATION = String.raw`(?:${INLINE_DESTINATION}|\([^)]*\))`;
+const INLINE_IMAGE = new RegExp(String.raw`!\[([^\]]*)\]${DESTINATION}`, "g");
+const INLINE_LINK = new RegExp(String.raw`\[([^\]]+)\]${DESTINATION}`, "g");
 
 /** A block's words without markdown syntax: heading marks, quote marks, list
  * markers and task boxes, link and image syntax, and emphasis. Inline HTML tags
