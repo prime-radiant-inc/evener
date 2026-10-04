@@ -42,6 +42,13 @@ quiet/completion presentation, even with retained failures. Refresh and reconnec
 apply the same rule to newly delivered summaries without clearing failure history
 or changing session lifecycle state.
 
+The phone's [alert feed](../../mobile-native/src/alerts/alertEvents.ts) follows
+Board bands. A new nonblocking Warning waits while live children run. A warning
+that remains alerts when the last child settles; one that clears first never
+alerts. Warnings carrying a pending question or approval remain immediately
+eligible. First-read and offline rules still apply. Combined banners, Needs you
+counts and Next navigation use the same Board attention membership.
+
 The browser's [`effectiveSessionState`](../../cmd/evener-hub/frontend/src/shell/rail/RailRow.tsx)
 and the phone's [`boardState`](../../mobile-native/src/board/attention.ts) own
 these projections. The browser uses the shared navigation store; the phone keeps
