@@ -17,6 +17,27 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+test("About reload preserves another category's view intent", () => {
+  const store = activitySidebarStore;
+  store.getState().retarget("remote:a");
+  store.getState().openWith("jobs");
+  store.getState().setCategoryView("remote:a", "jobs", {
+    shown: 60,
+    anchor: { id: "later-page-job", offset: 17 },
+  });
+  store.getState().setTab("about");
+  store.getState().close();
+  resetActivitySidebarStoreForTests({ preserveStorage: true });
+  store.getState().retarget("remote:a");
+  expect(store.getState()).toMatchObject({ open: false, tab: "about", ref: "remote:a" });
+  expect(store.getState().views.get("remote:a")?.categories.jobs).toEqual({
+    shown: 60,
+    anchor: { id: "later-page-job", offset: 17 },
+  });
+  store.getState().openWith();
+  expect(store.getState()).toMatchObject({ open: true, tab: "about" });
+});
+
 test("empty workspace bootstrap and passive restore never overwrite retained intent", () => {
   const retained = { "source:owner": { open: true, tab: "jobs", categories: {} } };
   localStorage.setItem(ACTIVITY_VIEW_STORAGE_KEY, JSON.stringify(retained));
@@ -56,8 +77,10 @@ test("focus return falls back to a remaining activity chip when the opener pane 
   const remainingChip = document.body.appendChild(document.createElement("button"));
   remainingChip.dataset.activityTab = "jobs";
   remainingChip.dataset.paneId = "pane-remaining";
+  remainingChip.dataset.sessionRef = "source:owner";
   const removedOpener = document.body.appendChild(document.createElement("button"));
   workspaceStore.setState({ focusedPaneId: "pane-removed" });
+  activitySidebarStore.getState().retarget("source:owner");
   activitySidebarStore.getState().openWith("jobs", removedOpener);
 
   removedOpener.remove();
@@ -68,6 +91,174 @@ test("focus return falls back to a remaining activity chip when the opener pane 
     remainingChip.remove();
   }
 });
+
+test("openFor preserves the focused pane when the session has multiple instances", () => {
+  workspaceStore.setState({
+    panes: [
+      { id: "first-instance", type: "session", params: { ref: "remote:owner" }, slot: "main" },
+      {
+        id: "focused-instance",
+        type: "session",
+        params: { ref: "remote:owner", instance: "second" },
+        slot: "secondary",
+      },
+    ],
+    focusedPaneId: "focused-instance",
+  });
+  activitySidebarStore.getState().openFor("remote:owner", "about");
+  expect(workspaceStore.getState().focusedPaneId).toBe("focused-instance");
+  expect(activitySidebarStore.getState()).toMatchObject({ open: true, ref: "remote:owner", tab: "about" });
+});
+
+function sessionActions(parent: HTMLElement, ref: string, paneId: string): HTMLButtonElement {
+  const button = parent.appendChild(document.createElement("button"));
+  const marker = button.appendChild(document.createElement("span"));
+  marker.dataset.sessionActionsRef = ref;
+  marker.dataset.paneId = paneId;
+  return button;
+}
+
+test.each(["removed", "hidden ancestor", "invisible ancestor", "disabled"])(
+  "About returns to its originating pane's visible action when its opener is %s",
+  (condition) => {
+    const root = document.body.appendChild(document.createElement("div"));
+    const ref = 'remote:owner"]';
+    try {
+      sessionActions(root, "remote:other", "origin");
+      sessionActions(root, ref, "other-pane");
+      const fallback = sessionActions(root, ref, "origin");
+      const holder = root.appendChild(document.createElement("div"));
+      const opener = holder.appendChild(document.createElement("button"));
+      workspaceStore.setState({ focusedPaneId: "origin" });
+      activitySidebarStore.getState().retarget(ref);
+      opener.focus();
+      activitySidebarStore.getState().openWith("about");
+      expect(activitySidebarReturnFocusTarget("about")).toBe(opener);
+      if (condition === "removed") opener.remove();
+      if (condition === "hidden ancestor") holder.style.display = "none";
+      if (condition === "invisible ancestor") holder.style.visibility = "hidden";
+      if (condition === "disabled") opener.disabled = true;
+      expect(activitySidebarReturnFocusTarget("about")).toBe(fallback);
+      activitySidebarStore.getState().setTab("jobs");
+      activitySidebarStore.getState().setTab("about");
+      expect(activitySidebarReturnFocusTarget("about")).toBe(fallback);
+    } finally {
+      root.remove();
+    }
+  },
+);
+
+test("return focus prefers the originating pane's chip before another pane's action for the same ref", () => {
+  const root = document.body.appendChild(document.createElement("div"));
+  try {
+    sessionActions(root, "remote:other", "origin");
+    const otherAction = sessionActions(root, "remote:owner", "other-pane");
+    const chip = root.appendChild(document.createElement("button"));
+    chip.dataset.activityTab = "jobs";
+    chip.dataset.paneId = "origin";
+    chip.dataset.sessionRef = "remote:owner";
+    const opener = root.appendChild(document.createElement("button"));
+    workspaceStore.setState({ focusedPaneId: "origin" });
+    activitySidebarStore.getState().retarget("remote:owner");
+    activitySidebarStore.getState().openWith("jobs", opener);
+    opener.remove();
+    expect(activitySidebarReturnFocusTarget("jobs")).toBe(chip);
+    chip.hidden = true;
+    expect(activitySidebarReturnFocusTarget("jobs")).toBe(otherAction);
+    otherAction.disabled = true;
+    expect(activitySidebarReturnFocusTarget("jobs")).toBeNull();
+  } finally {
+    root.remove();
+  }
+});
+
+test("an internal Overview opener does not replace its external return target", () => {
+  const root = document.body.appendChild(document.createElement("div"));
+  try {
+    const opener = sessionActions(root, "remote:owner", "origin");
+    const sidebar = root.appendChild(document.createElement("aside"));
+    sidebar.dataset.testid = "activity-sidebar";
+    const internal = sidebar.appendChild(document.createElement("button"));
+    workspaceStore.setState({ focusedPaneId: "origin" });
+    activitySidebarStore.getState().retarget("remote:owner");
+    activitySidebarStore.getState().openWith("about", opener);
+    internal.focus();
+    activitySidebarStore.getState().openWith("jobs");
+    activitySidebarStore.getState().setTab("about");
+    expect(activitySidebarReturnFocusTarget("about")).toBe(opener);
+  } finally {
+    root.remove();
+  }
+});
+
+test("return focus prefers the originating pane's action to its category chip", () => {
+  const root = document.body.appendChild(document.createElement("div"));
+  try {
+    const action = sessionActions(root, "remote:owner", "origin");
+    const chip = root.appendChild(document.createElement("button"));
+    chip.dataset.activityTab = "jobs";
+    chip.dataset.paneId = "origin";
+    chip.dataset.sessionRef = "remote:owner";
+    workspaceStore.setState({ focusedPaneId: "origin" });
+    activitySidebarStore.getState().retarget("remote:owner");
+    const opener = root.appendChild(document.createElement("button"));
+    activitySidebarStore.getState().openWith("jobs", opener);
+    opener.remove();
+    expect(activitySidebarReturnFocusTarget("jobs")).toBe(action);
+    action.hidden = true;
+    expect(activitySidebarReturnFocusTarget("jobs")).toBe(chip);
+  } finally {
+    root.remove();
+  }
+});
+
+test("return focus retains the intended ref when the open inspection retargets", () => {
+  const root = document.body.appendChild(document.createElement("div"));
+  try {
+    sessionActions(root, "remote:other", "origin");
+    const action = sessionActions(root, "remote:owner", "origin");
+    const opener = root.appendChild(document.createElement("button"));
+    workspaceStore.setState({ focusedPaneId: "origin" });
+    activitySidebarStore.getState().retarget("remote:owner");
+    activitySidebarStore.getState().openWith("about", opener);
+    opener.remove();
+    activitySidebarStore.getState().retarget("remote:other");
+    expect(activitySidebarReturnFocusTarget("about")).toBe(action);
+  } finally {
+    root.remove();
+  }
+});
+
+test.each(["visible", "hidden", "disabled", "inside Overview", "wrong ref"])(
+  "return focus qualifies its last navigation fallback when it is %s",
+  (condition) => {
+    const root = document.body.appendChild(document.createElement("div"));
+    const ref = 'remote:parent"]';
+    try {
+      const navigation = root.appendChild(document.createElement("button"));
+      navigation.dataset.sessionNavigationRef = condition === "wrong ref" ? "remote:other" : ref;
+      if (condition === "hidden") navigation.hidden = true;
+      if (condition === "disabled") navigation.disabled = true;
+      if (condition === "inside Overview") root.dataset.testid = "activity-sidebar";
+      const action = sessionActions(document.body, ref, "origin");
+      try {
+        const opener = document.body.appendChild(document.createElement("button"));
+        workspaceStore.setState({ focusedPaneId: "origin" });
+        activitySidebarStore.getState().retarget(ref);
+        activitySidebarStore.getState().openWith("about", opener);
+        opener.remove();
+        activitySidebarStore.getState().retarget("remote:child");
+        expect(activitySidebarReturnFocusTarget("about")).toBe(action);
+        action.remove();
+        expect(activitySidebarReturnFocusTarget("about")).toBe(condition === "visible" ? navigation : null);
+      } finally {
+        action.remove();
+      }
+    } finally {
+      root.remove();
+    }
+  },
+);
 
 test("a focus change while the desktop sidebar is unmounted does not persist inherited open intent", () => {
   vi.useFakeTimers();

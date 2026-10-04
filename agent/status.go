@@ -187,12 +187,13 @@ type HookEventStatus struct {
 
 // DetailedStatus captures the full session configuration for typed diagnostics.
 type DetailedStatus struct {
-	SkillCatalog     []skill.Descriptor     `json:"skill_catalog,omitempty"`
-	SkillDiagnostics []skill.Diagnostic     `json:"skill_diagnostics,omitempty"`
-	Tools            []ToolInfo             `json:"tools,omitempty"`   // every registered tool and its source
-	MCP              []mcpconfig.ServerInfo `json:"mcp,omitempty"`     // connected MCP servers
-	Skills           []skill.SkillMeta      `json:"skills,omitempty"`  // discovered skills, sorted by name
-	Plugins          []PluginInfo           `json:"plugins,omitempty"` // loaded plugins
+	Commands         []appwire.CommandDescriptor `json:"commands,omitzero"`
+	SkillCatalog     []skill.Descriptor          `json:"skill_catalog,omitempty"`
+	SkillDiagnostics []skill.Diagnostic          `json:"skill_diagnostics,omitempty"`
+	Tools            []ToolInfo                  `json:"tools,omitempty"`   // every registered tool and its source
+	MCP              []mcpconfig.ServerInfo      `json:"mcp,omitempty"`     // connected MCP servers
+	Skills           []skill.SkillMeta           `json:"skills,omitempty"`  // discovered skills, sorted by name
+	Plugins          []PluginInfo                `json:"plugins,omitempty"` // loaded plugins
 	// HookEvents lists all registered hook events (supported) plus any
 	// recognized-but-unsupported events declared by loaded plugins.
 	HookEvents []HookEventStatus    `json:"hook_events,omitempty"`
@@ -210,8 +211,22 @@ const detailedStatusTerminalJobsLimit = 50
 // DetailedStatus builds a snapshot of the session's loaded tools, MCP servers,
 // skills, plugins, hooks, jobs, and public agent names.
 func (s *Session) DetailedStatus() DetailedStatus {
-	ds := DetailedStatus{Plugins: make([]PluginInfo, 0)}
+	ds := DetailedStatus{Plugins: make([]PluginInfo, 0), Commands: make([]appwire.CommandDescriptor, 0, len(s.pluginCommands))}
 	now := s.sclock().Now().UTC()
+	// Loaded winners, not a fresh filesystem scan: completion advertises exactly
+	// the inventory this session resolves when it consumes a selected name.
+	names := make([]string, 0, len(s.pluginCommands))
+	for name := range s.pluginCommands {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		cmd := s.pluginCommands[name]
+		ds.Commands = append(ds.Commands, appwire.CommandDescriptor{
+			Name: cmd.Name, PluginName: cmd.PluginName, Description: cmd.Description,
+			ArgumentHint: cmd.ArgumentHint, Source: cmd.Source,
+		})
+	}
 
 	// Build MCP tool → server name map for tool categorization.
 	mcpToolServer := map[string]string{}

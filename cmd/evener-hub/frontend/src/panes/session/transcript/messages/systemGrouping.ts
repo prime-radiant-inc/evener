@@ -39,8 +39,14 @@ function isSystemMessage(item: ItemModel): boolean {
 // summary that names the run's FIRST member, which need not be the failure at
 // all. So a failure both stays out of its neighbours' run and breaks it, and
 // so does a daemon warning a human should see (attentionWarningNotice).
+// Shared-notes snapshots stay separate under their own folded label.
 function joinsRun(item: ItemModel): boolean {
-  return isSystemMessage(item) && !isErrorEvent(item) && attentionWarningNotice(item) === null;
+  return (
+    isSystemMessage(item) &&
+    item.eventKind !== "notes-context" &&
+    !isErrorEvent(item) &&
+    attentionWarningNotice(item) === null
+  );
 }
 
 // systemRunFor finds the contiguous run of systemMessage items in

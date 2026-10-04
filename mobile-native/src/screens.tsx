@@ -2759,6 +2759,7 @@ export function ConversationScreen({
 						item={item}
 						hubId={route.params.hubId}
 						sessionRef={route.params.ref}
+						sourceTurns={conversation?.turns}
 						activityPresentation={presentation.activityPresentation.get(item.id)}
 						expandByDefault={presentation.expandByDefault}
 						showDuration={presentation.showDuration}
@@ -3180,6 +3181,11 @@ export function ConversationScreen({
 							<LiveStatusTray
 								session={conversation}
 								frames={frames}
+								// The hub reports activity only for top-level sessions.
+								client={subagentOf ? null : client}
+								sessionRef={route.params.ref}
+								row={fleetRow}
+								inFront={focused}
 								connected={connected}
 								canStop={!!permitted?.stop}
 								stopping={stopping || pending}

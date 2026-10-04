@@ -109,6 +109,21 @@ function leaf() {
   return (pane.params as SessionZoomParams).ref;
 }
 
+test.each(["root", "child", "grandchild"])(
+  "cascade scope %s keeps About out of its four activity peeks",
+  async (ref) => {
+    fixture().mount();
+    await scope("child").findByRole("button", { name: "Open conversation" });
+    const controls = scope(ref);
+    for (const category of ["Agents", "Jobs", "Watches", "Tasks"]) {
+      expect(controls.getByRole("button", { name: new RegExp(`^${category},.* - peek at ${ref}$`) })).toBeTruthy();
+    }
+    expect(controls.getByRole("button", { name: `Tasks, 0 of 0 done - peek at ${ref}` })).toBeTruthy();
+    expect(controls.queryByRole("button", { name: `About - peek at ${ref}` })).toBeNull();
+    expect(controls.getAllByRole("button", { name: new RegExp(` - peek at ${ref}$`) })).toHaveLength(4);
+  },
+);
+
 test.each(["success", "failure"] as const)(
   "a pending source encode %s cannot change a same-ID restored cascade source",
   async (outcome) => {

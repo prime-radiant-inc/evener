@@ -180,9 +180,15 @@ function accountingFor(
 // subagent's own row, which Chat keeps, already says its state. What stays is
 // the conversation's own: a steered-in message is the human's words (a user
 // row), and a saved note is spec 8.8's every-level row (a note row) — neither
-// is a steering notice (Jesse, 2026-10-03).
+// is a steering notice (Jesse, 2026-10-03). Internal shared-notes snapshots
+// also stay out of the conversation, independently of saved-note rows.
 function conversationOnly(items: MobileTimelineItem[]): MobileTimelineItem[] {
-	return items.filter((item) => !isDroppedStep(item) && !isDaemonSteering(item));
+	return items.filter(
+		(item) =>
+			!isDroppedStep(item) &&
+			!isDaemonSteering(item) &&
+			!(item.kind === "notice" && item.eventKind === "notes-context"),
+	);
 }
 
 // A settled or running step; a failed one is not dropped (see above).
