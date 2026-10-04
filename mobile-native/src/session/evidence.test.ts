@@ -480,7 +480,7 @@ describe("each tool's evidence, as the tools print it", () => {
 		["an image that taking out another completes", "![![](https://x.test/b.png)](https://x.test/a.png)", ""],
 		["a link a stray '!' turns into an image", "!![](https://x.test/b.png)[x](https://x.test/a.png)", "x"],
 		["four thousand openers in a row", "![".repeat(4_000), "![".repeat(4_000)],
-		["four thousand escaped closes in a row", "![\\]".repeat(4_000), "![\\]".repeat(4_000)],
+		["sixty-four thousand escaped closes in a row", "![\\]".repeat(64_000), "![\\]".repeat(64_000)],
 		["images nested fifty deep", `${"![".repeat(50)}x${"](https://x.test/u.png)".repeat(50)}`, "x"],
 	])("shows %s as words", (_name, markdown, words) => {
 		expect(skillMarkdown(markdown)).toBe(words);
@@ -525,6 +525,7 @@ describe("each tool's evidence, as the tools print it", () => {
 		["an image whose alt holds an escaped bracket", "![a \\[ b](https://x.test/a.png)", "a \\[ b"],
 		["an image whose alt holds an escaped close", "![a \\] b](https://x.test/a.png)", "a \\] b"],
 		["an image whose alt holds an escaped bracket in a pair", "![a [b\\] c] d](https://x.test/a.png)", "a [b\\] c] d"],
+		["an image whose alt holds an escaped opener in a pair", "![a [b \\[ c] d](https://x.test/a.png)", "a [b \\[ c] d"],
 		["an image whose alt ends in an escaped backslash", "![a\\\\](https://x.test/a.png)", "a\\\\"],
 		["an image whose alt holds a lone backslash", "![a \\ b](https://x.test/a.png)", "a \\ b"],
 		["an image in text holding the placeholder marks", "\uE0000\uE001 ![a](https://x.test/a.png)", "\uE0000\uE001 a"],
