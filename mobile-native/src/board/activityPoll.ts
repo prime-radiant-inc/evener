@@ -84,6 +84,7 @@ export class ActivityPoll {
 	stop(): void {
 		if (this.timer === undefined) return;
 		this.halt();
+		if (this.lastReadAt === null) return; // no read to forget
 		this.bySession = new Map();
 		this.lastReadAt = null;
 		this.notify();
@@ -96,8 +97,7 @@ export class ActivityPoll {
 
 	getRevision = (): number => this.revision;
 
-	/** Stops the timer, keeping the last read (left to age out on its own
-	 * when a hub turns out to predate S5 mid-session). */
+	/** Stops the timer and retires any poll in flight, keeping the last read. */
 	private halt(): void {
 		clearInterval(this.timer);
 		this.timer = undefined;
@@ -116,6 +116,7 @@ export class ActivityPoll {
 			if (requestId !== this.latestRequestId) return; // superseded by a newer poll, or stopped
 			if (isMethodNotFound(error)) {
 				this.unsupported = true;
+				// Keeps the last read, left to age out on its own.
 				this.halt();
 				this.notify();
 			}

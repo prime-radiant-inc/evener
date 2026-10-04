@@ -267,7 +267,7 @@ function Board({
 				},
 			),
 		// seen re-runs isSeen after a mark, a pruned mark or first run.
-		// activityRevision re-runs isStuck after each read, and activityOf
+		// activityRevision re-runs isStuck after each read or a stop forgetting it, and activityOf
 		// changes when the connection drops or returns, or the read goes
 		// stale. Bare msSinceRead is left out on purpose: it changes on every
 		// render, which would re-sort Working every render. activityTick
