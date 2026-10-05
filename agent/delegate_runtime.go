@@ -714,10 +714,8 @@ func (s *Session) driveStableDelegateAttention(sub *subagent) bool {
 		if observer := s.cfg.testOnly.delegateAttentionBeforeGuardRelease; observer != nil {
 			observer(sub)
 		}
-		// A drive refused on this guard dropped its wake: drive the child
-		// again now the guard is free (#3723). The re-drive can only re-drive
-		// in turn if another drive is refused on its own guard, so a drive
-		// that keeps losing stops.
+		// The re-drive re-drives again only if a drive is refused on its own
+		// guard, so one that keeps losing stops (#3723).
 		if releaseDriveGuard(sub) {
 			s.redriveLiveChild(sub.sess.id)
 		}

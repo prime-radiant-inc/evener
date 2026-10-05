@@ -1595,8 +1595,6 @@ func (s *Session) driveSubagentNotificationTurn(sub *subagent) bool {
 		// the release first: the paced re-drive wait below holds no slot, and
 		// the re-drive can claim one even at drive budget 1.
 		defer func() {
-			// Attention refused on this turn's guard dropped its wake
-			// (#3723): drive it now, ahead of the paced notification check.
 			if releaseDriveGuard(sub) {
 				s.redriveLiveChild(childSess.id)
 			}

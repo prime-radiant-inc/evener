@@ -3420,12 +3420,9 @@ func TestWaitForStableSupervisionRunOutlastsDeferredAttentionDrive(t *testing.T)
 
 // TestSupervisionRootDrivesAttentionTheChildDropped pins the harness root's
 // wake consumer (#3592; the mechanism is on serveSupervisionRootWakes). The
-// child drops a drive when attention is armed as the previous generation
-// finishes: the armed drive takes the guard and is refused busy, and the
-// finalize tail's re-arm drive is refused on that guard. The guard taken here
-// stands in for the drive that is refused busy, and the retry and guard
-// release that follow are that drive's exit; the retry is the wake this test
-// exercises.
+// child drops an attention drive refused on a send's drive guard, and a send
+// that gives the guard back does not re-drive the child (releaseDriveGuard).
+// The root's retry is the wake this test exercises.
 func TestSupervisionRootDrivesAttentionTheChildDropped(t *testing.T) {
 	fixture := newColdStableDelegateFixture(t, "")
 	fixture.adapter.steps = []func(llm.Request) llm.Response{

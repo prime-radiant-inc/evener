@@ -5638,9 +5638,10 @@ func (s *Session) driveChildrenWithUndeliveredAttention() {
 //     finalize tail's re-arm drive landing while a drive refused busy still
 //     held the guard.
 //
-// Nothing that ran drains the dropped wake, so the exit must re-drive it. Only that child can hold the dropped wake, so this
-// is scoped to childSessionID: a whole-tree sweep would re-drive unrelated
-// children and read every child's transcript fold.
+// Nothing that ran drains the dropped wake, so the exit must re-drive it.
+// Only that child can hold the dropped wake, so this is scoped to
+// childSessionID: a whole-tree sweep would re-drive unrelated children and
+// read every child's transcript fold.
 //
 // It delegates to the shared wake-edge driver driveChildIfNotStopGated so the
 // re-drive order cannot drift from the wake edge: stable delegate attention
