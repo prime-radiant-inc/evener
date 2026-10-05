@@ -59,6 +59,13 @@ type ServerConfig struct {
 	// ConnectionAdmissionContext captures immutable metadata before accepting
 	// any WebSocket frames. It must preserve the supplied context cancellation.
 	ConnectionAdmissionContext func(context.Context) context.Context
+	// ConcurrentRequest names requests beyond the built-in slow reads
+	// (concurrentDispatchMethod) that may leave the connection's serial worker,
+	// judged from the method and its params: the hub uses it for a forwarded
+	// read, whose cost is the remote host's. It must be pure and synchronous,
+	// and answer true only for a request safe to run out of order against
+	// every other request on the connection. Nil adds none.
+	ConcurrentRequest func(method string, params json.RawMessage) bool
 }
 
 type SubscriptionAdmissionIntent uint8
@@ -1852,7 +1859,7 @@ func (c *Connection) executeOrdered(ctx context.Context, msg appwire.Message) {
 			}
 		}
 	}
-	if msg.Request != nil && concurrentDispatchMethod(msg.Request.Method) && c.isInitialized() {
+	if msg.Request != nil && c.dispatchesConcurrently(msg.Request) && c.isInitialized() {
 		method := msg.Request.Method
 		var admission *subscriptionAdmission
 		if method == appwire.MethodThreadRead {
@@ -1875,6 +1882,16 @@ func (c *Connection) executeOrdered(ctx context.Context, msg appwire.Message) {
 		return
 	}
 	c.handleAndEnqueue(ctx, msg)
+}
+
+// dispatchesConcurrently reports whether req leaves the serial worker: a
+// built-in slow read, or one the server's ConcurrentRequest names.
+func (c *Connection) dispatchesConcurrently(req *appwire.Request) bool {
+	if concurrentDispatchMethod(req.Method) {
+		return true
+	}
+	concurrent := c.server.cfg.ConcurrentRequest
+	return concurrent != nil && concurrent(req.Method, req.Params)
 }
 
 func safeResolveAdmission(server *Server, resolve func(appwire.Message) (string, bool), msg appwire.Message) (key string, ok, panicked bool) {
@@ -1978,8 +1995,9 @@ func (c *Connection) releaseSlowReadSlot(method string) {
 }
 
 // inflightSlowReads renders the per-method tally the stall advisory names.
-// Every key is a concurrentDispatchMethod member, so the strings are ours,
-// not client-controlled.
+// Every key is a method dispatchesConcurrently admitted, a concurrentDispatchMethod
+// member or one the server's own ConcurrentRequest named, so the strings are
+// ours, not client-controlled.
 func (c *Connection) inflightSlowReads() string {
 	c.slowReadMu.Lock()
 	defer c.slowReadMu.Unlock()

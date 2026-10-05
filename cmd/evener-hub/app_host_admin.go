@@ -241,6 +241,27 @@ func (c *hubHostAdminController) Request(ctx context.Context, params appwire.Hos
 	return out, nil
 }
 
+// forwardedHostRead reports an evener/host/request that forwards a read, which
+// the RPC server runs off the connection's serial worker
+// (appserver.ServerConfig.ConcurrentRequest). A read's cost is the remote
+// host's: a plugin update check there can take minutes, and inline it would
+// hold every later request on the browser's socket, for every host, behind
+// it. A read is retry-safe, so running out of order against the socket's
+// other requests changes no outcome. A forwarded mutation stays inline so a
+// caller's writes reach the remote in the order it sent them, and a request
+// the proxy will refuse stays inline so its refusal is answered in order.
+func forwardedHostRead(method string, params json.RawMessage) bool {
+	if method != appwire.MethodEvenerHostRequest {
+		return false
+	}
+	var forwarded appwire.HostRequestParams
+	if json.Unmarshal(params, &forwarded) != nil || !appwire.IsHostRequestMethod(forwarded.Method) {
+		return false
+	}
+	_, mutating := remoteHostAdminMutationMethods[forwarded.Method]
+	return !mutating
+}
+
 // remoteSourceFor returns the attached component-05 source for host, or the
 // typed refusal for a host that cannot serve a proxied call (the shared
 // attachedRemoteHostSource rule).
