@@ -2083,6 +2083,9 @@ func (a *subagent) announceFinishedGeneration(lease delegateLease, announcements
 	if err := a.sess.executeDelegateMutationPlans(announcements); err != nil {
 		a.sess.emit(events.EventWarning, warningDataFromError("delegate result delivery incomplete", err))
 	}
+	if hook := a.sess.cfg.testOnly.subagentBeforeGenerationReleased; hook != nil {
+		hook(a, lease)
+	}
 	a.sess.releaseFinishedGeneration(lease, a.sess)
 }
 

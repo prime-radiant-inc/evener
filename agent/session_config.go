@@ -435,6 +435,11 @@ type testConfig struct {
 	// the child has stopped finalizing, the delegate is idle but not yet
 	// released. Nil in production.
 	subagentBeforeGenerationAnnounced func(*subagent)
+	// subagentBeforeGenerationReleased observes the unlocked boundary after
+	// announcement execution, before the exact controller finalizing claim is
+	// released. An inline result can be acknowledged while this seam is held.
+	// Nil in production.
+	subagentBeforeGenerationReleased func(*subagent, delegateLease)
 	// delegateFinalizationWaitCeiling overrides how long a send waits for a
 	// finished generation's finalize tail to release the delegate
 	// (delegateFinalizationWaitCeiling), so a test can exercise a tail that
