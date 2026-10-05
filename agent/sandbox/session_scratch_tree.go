@@ -97,13 +97,14 @@ func (s *SessionScratch) End() error {
 // RemoveSessionScratchTree removes rootID's whole scratch tree — the root's and
 // every child's scratch — from every scratch base a session may have used. An
 // absent tree is not an error; one that is a symlink or owned by another user is
-// left alone.
-func RemoveSessionScratchTree(rootID string) error {
+// left alone. extraBases are further bases to look in: the temp dir a session's
+// daemon recorded, when it may differ from this process's.
+func RemoveSessionScratchTree(rootID string, extraBases ...string) error {
 	if !safeScratchName(rootID) {
 		return fmt.Errorf("sandbox: unsafe session scratch identity %q", rootID)
 	}
 	var errs []error
-	for _, base := range sessionScratchTreeBases() {
+	for _, base := range sessionScratchTreeBases(extraBases...) {
 		tree := filepath.Join(base, sessionScratchTreePrefix+rootID)
 		info, err := os.Lstat(tree)
 		if os.IsNotExist(err) {
@@ -125,10 +126,10 @@ func RemoveSessionScratchTree(rootID string) error {
 }
 
 // SessionScratchTreeRootIDs lists the root sessions whose scratch trees exist
-// in any base a session may have used, each once.
-func SessionScratchTreeRootIDs() []string {
+// in any base a session may have used, or in extraBases, each once.
+func SessionScratchTreeRootIDs(extraBases ...string) []string {
 	var ids []string
-	for _, base := range sessionScratchTreeBases() {
+	for _, base := range sessionScratchTreeBases(extraBases...) {
 		entries, err := os.ReadDir(base)
 		if err != nil {
 			continue
@@ -201,15 +202,15 @@ func removeEmptySessionScratchTree(tree string) {
 }
 
 // sessionScratchTreeBases are the bases a tree may live in: the temp dir and
-// the user cache dir, the two OpenSessionScratch chooses between.
-func sessionScratchTreeBases() []string {
+// the user cache dir, the two OpenSessionScratch chooses between, then extra.
+func sessionScratchTreeBases(extra ...string) []string {
+	candidates := []string{sessionScratchTempDir()}
+	if dir, err := sessionScratchUserCacheDir(); err == nil {
+		candidates = append(candidates, dir)
+	}
 	var bases []string
-	for _, candidate := range []func() (string, error){
-		func() (string, error) { return sessionScratchTempDir(), nil },
-		sessionScratchUserCacheDir,
-	} {
-		dir, err := candidate()
-		if err != nil || dir == "" {
+	for _, dir := range append(candidates, extra...) {
+		if dir == "" || !filepath.IsAbs(dir) {
 			continue
 		}
 		if resolved, err := filepath.EvalSymlinks(dir); err == nil {

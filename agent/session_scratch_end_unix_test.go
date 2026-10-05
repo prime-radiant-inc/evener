@@ -159,6 +159,18 @@ func TestDelegateRestoreLeavesTheHandedEnvironmentUnnamed(t *testing.T) {
 	}
 }
 
+// TestMetaRecordsTheScratchTempDir: the hub removes an archived session's tree
+// from its own temp dir, which a daemon started with another TMPDIR does not
+// use. The meta records the daemon's temp dir so the hub looks there too.
+func TestMetaRecordsTheScratchTempDir(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	root := newSession(t, withoutGitSnapshot())
+	if got := root.Meta().ScratchTempDir; got != os.TempDir() {
+		t.Errorf("meta ScratchTempDir = %q, want this process's temp dir %q", got, os.TempDir())
+	}
+}
+
 // TestDelegateResumedAsRootReopensItsScratchInItsRootsTree: `serve --resume
 // <delegate>` restores a delegate as a top-level session. Its scratch is still
 // its directory in its root's tree, so it reopens what it had and goes when the

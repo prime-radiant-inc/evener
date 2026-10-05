@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"os"
 	"slices"
 	"time"
 
@@ -296,6 +297,7 @@ func (s *Session) metaWithNotes(human, agentNote string, urls []schema.SessionUR
 		LastMessage:              s.lastMessage,
 		CumulativeUsage:          cumulativeUsageSnapshot(s.contextMgr.CumulativeUsage()),
 		JobTreeRootSessionID:     jobTreeRootSessionID,
+		ScratchTempDir:           os.TempDir(),
 		JobTreeRevision:          jobTreeRevision,
 		EnvContext:               s.envContextState,
 	}

@@ -605,6 +605,20 @@ func (s *WebServer) cleanupProjectDeletion(
 	return result
 }
 
+// recordedScratchTempDir is the temp dir sessionID's daemon recorded in its
+// meta, as the index still holds it while the session's files are removed.
+// The hub's own temp dir is always searched; this adds the daemon's, which
+// differs when the daemon was started with another TMPDIR.
+func (s *WebServer) recordedScratchTempDir(sessionID string) []string {
+	if s.cfg.Past == nil {
+		return nil
+	}
+	if entry, ok := s.cfg.Past.FindIndexed(sessionID); ok && entry.Meta.ScratchTempDir != "" {
+		return []string{entry.Meta.ScratchTempDir}
+	}
+	return nil
+}
+
 func (s *WebServer) cleanupProjectDeletionTarget(stateDir, sessionID string) error {
 	// Tombstone first, under the metadata writers' lock: an in-flight
 	// out-of-process autosave holding or waiting on that lock would otherwise
@@ -685,7 +699,7 @@ func (s *WebServer) removeProjectDeletionArtifacts(stateDir, sessionID string) e
 	}
 	// Last and best-effort, as on archive: the session is already gone, and an
 	// entry the scratch removal cannot take must not leave it half-deleted.
-	_ = agentsandbox.RemoveSessionScratchTree(sessionID)
+	_ = agentsandbox.RemoveSessionScratchTree(sessionID, s.recordedScratchTempDir(sessionID)...)
 	return nil
 }
 
