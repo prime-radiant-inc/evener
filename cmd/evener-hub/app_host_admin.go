@@ -255,7 +255,9 @@ func (c *hubHostAdminController) Request(ctx context.Context, params appwire.Hos
 // with its hub write gate. A method outside the allow-list, or params that
 // do not parse, stay inline so the refusal is answered in order; an
 // allow-listed read to an unknown or offline host goes concurrent and is
-// refused out of order, which changes nothing.
+// refused out of order, which changes nothing. A read beyond the server's
+// pool of waiting ones is refused Unavailable at once, as an offline host's
+// would be.
 func forwardedHostRead(method string, params json.RawMessage) bool {
 	if method != appwire.MethodEvenerHostRequest {
 		return false

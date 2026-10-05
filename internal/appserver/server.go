@@ -66,8 +66,9 @@ type ServerConfig struct {
 	// and answer true only for a request safe to run out of order against
 	// every other request on the connection; it runs on the serial worker,
 	// which has no panic barrier, so it must not panic. The requests it admits
-	// share a pool of concurrentRequestCap slots apart from the slow reads'.
-	// Nil adds none.
+	// share a pool of concurrentRequestCap slots apart from the slow reads',
+	// and one beyond a full pool is answered Unavailable without running, so
+	// admit only requests a client can simply retry. Nil adds none.
 	ConcurrentRequest func(method string, params json.RawMessage) bool
 }
 
@@ -113,8 +114,11 @@ const slowReadDispatchCap = 16
 // reads' so neither kind can take the other's slots: the hub's forwarded
 // reads wait on remote hosts, and a slow host must not cost thread reads
 // their burst room. A full pool refuses the next one as Unavailable rather
-// than parking the worker (tryRequestSlot).
-const concurrentRequestCap = 8
+// than parking the worker (tryRequestSlot). The pool is per connection, not
+// per host, so it is sized well past a pane's burst (a spawn form opened on a
+// remote host sends about 7): one stalled host's reads must leave room for
+// another host's. The goroutines it bounds are cheap.
+const concurrentRequestCap = 32
 
 // slowReadCapStallAdvisory is how long a single blocked slow-read acquire
 // parks before the worker reports the wedged lane — the same scale as
@@ -1884,9 +1888,9 @@ func (c *Connection) executeOrdered(ctx context.Context, msg appwire.Message) {
 			}
 		}
 		if slots == c.requestSlots {
-			if !c.tryRequestSlot(method) {
+			if !c.tryRequestSlot(ctx, method) {
 				c.recoverPanic(msg, func() {
-					c.enqueueDispatched(ctx, appwire.ErrorMessage(msg.Request.ID, appwire.Unavailable(fmt.Sprintf("%d requests of this kind are still waiting on this connection; try again", concurrentRequestCap))))
+					c.enqueueDispatched(ctx, appwire.ErrorMessage(msg.Request.ID, appwire.Unavailable(fmt.Sprintf("this connection already has %d requests waiting on slow answers (a remote host's, for a forwarded read); try again shortly", concurrentRequestCap))))
 				})
 				return
 			}
@@ -2018,10 +2022,17 @@ func (c *Connection) acquireSlowReadSlot(ctx context.Context, method string) boo
 // bound (a remote host), so a full pool parking the worker would wedge every
 // request on the connection behind them, the very stall the pool exists to
 // prevent. The refusal is Unavailable, which a read can simply retry.
-func (c *Connection) tryRequestSlot(method string) bool {
+func (c *Connection) tryRequestSlot(ctx context.Context, method string) bool {
 	select {
 	case c.requestSlots <- struct{}{}:
 	default:
+		return false
+	}
+	// As the slow-read acquire does: a request dequeued after cancellation
+	// starts nothing. The caller's refusal enqueue then fails on the same
+	// cancellation, which tears the connection down anyway.
+	if ctx.Err() != nil {
+		<-c.requestSlots
 		return false
 	}
 	c.slowReadMu.Lock()

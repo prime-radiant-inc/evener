@@ -36,6 +36,9 @@ func concurrentScriptedRemote(t *testing.T, handle func(method string, params js
 		var result any = appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion, SourceID: "local"}
 		if req.Method != appwire.MethodInitialize {
 			reply := handle(req.Method, req.Params)
+			if reply.closeConn {
+				t.Errorf("concurrentScriptedRemote cannot close the connection for %s", req.Method)
+			}
 			if reply.wireErr != nil {
 				send(appwire.ErrorMessage(req.ID, *reply.wireErr))
 				return
