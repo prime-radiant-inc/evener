@@ -25,6 +25,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createConversationService } from "../../mobile/src/services/conversation";
 import { createActivityStore } from "../../mobile/src/state/activity";
 import { createConversationStore } from "../../mobile/src/state/conversation";
+import { palettes } from "./design/tokens";
 import { MAX_ITEM_BYTES, projectConversation } from "./projectedRows";
 import { render, renderedText } from "./renderNative.testkit";
 import { displayForLevel } from "./session/detailLevels";
@@ -186,6 +187,99 @@ describe("system events (G7, G9)", () => {
 		expect(renderedText(show("context-compaction"))).toBe("Context compacted · 412K → 38K tokens");
 		expect(renderedText(show("context-compaction-turns"))).toBe("Context compacted · 40 → 5 turns");
 		expect(renderedText(show("context-compaction-bare"))).toBe("Context compacted");
+	});
+});
+
+describe("approval history (spec 8.2)", () => {
+	// The fixture's decisions were made at the daemon's fixture instant.
+	const decidedAt = () => systemEventWireItem("approval-allowed").startedAt ?? 0;
+
+	// A human's Allow or Deny is a decision they made, like a question's
+	// answer: it shows at every level, system events off.
+	it.each(LEVELS)("shows an Allow and a Deny with their words and when, at %s", (level) => {
+		const items = [systemEventWireItem("approval-allowed"), systemEventWireItem("approval-denied")];
+		const { rows } = rowsAt(level, [completedTurn(items)], false);
+		const approvals = rows.filter((row) => row.kind === "notice" && row.family === "approval");
+		expect(approvals).toEqual([
+			expect.objectContaining({ text: "Allowed: write /Users/j/sites/docs/index.md", decidedAtMs: decidedAt() }),
+			expect.objectContaining({ text: "Denied: read /etc/hosts", decidedAtMs: decidedAt() }),
+		]);
+		for (const approval of approvals) {
+			if (approval.kind !== "notice") throw new Error("not a notice row");
+			expect(isCriticalNotice(approval)).toBe(false);
+		}
+	});
+
+	// Each render subscribes to the shared minute clock; unmounting releases
+	// it, so the next test's fake time starts a fresh clock.
+	function atTime(
+		nowMs: number,
+		name: "approval-allowed" | "approval-denied",
+		check: (tree: ReactTestRenderer) => void,
+	) {
+		vi.useFakeTimers();
+		vi.setSystemTime(nowMs);
+		const tree = show(name, "chat");
+		try {
+			check(tree);
+		} finally {
+			act(() => tree.unmount());
+			vi.useRealTimers();
+		}
+	}
+
+	function spoken(tree: ReactTestRenderer): string | undefined {
+		return tree.root.findAll((node) => typeof node.props.accessibilityLabel === "string")[0]?.props.accessibilityLabel;
+	}
+
+	// Spec 8.2: "Allowed: write …" or "Denied: …" in ink-mid with the
+	// approval mark. Amber is for an approval still waiting on you (the dock).
+	it.each([
+		["approval-allowed", "Allowed: write /Users/j/sites/docs/index.md"],
+		["approval-denied", "Denied: read /etc/hosts"],
+	] as const)("reads %s in ink-mid with the approval mark and how long ago", (name, words) => {
+		atTime(decidedAt() + 5 * 60_000, name, (tree) => {
+			expect(renderedText(tree).replaceAll("\u200b", "")).toBe(`${words} · 5m ago`);
+			expect(spoken(tree)).toBe(`${words}, 5 minutes ago`);
+			const mark = tree.root.findAll((node) => String(node.type) === "SymbolView");
+			expect(mark.map((node) => [node.props.name, node.props.tintColor])).toEqual([
+				["hand.raised.circle.fill", palettes.light.inkMid],
+			]);
+			expect(inked(tree, palettes.light.inkMid)).toBe(true);
+			expect(inked(tree, palettes.light.attention)).toBe(false);
+			expect(inked(tree, DANGER_INK)).toBe(false);
+		});
+	});
+
+	// The minute clock can lag the decision by up to a minute, or a skewed
+	// clock put it ahead: either reads as just now, never "0s ago".
+	it.each([
+		["a moment ago", 20_000],
+		["ahead of the phone's clock", -30_000],
+	])("says just now for a decision made %s", (_, offsetMs) => {
+		atTime(decidedAt() + offsetMs, "approval-allowed", (tree) => {
+			expect(renderedText(tree).replaceAll("\u200b", "")).toBe(
+				"Allowed: write /Users/j/sites/docs/index.md · just now",
+			);
+			expect(spoken(tree)).toBe("Allowed: write /Users/j/sites/docs/index.md, just now");
+		});
+	});
+
+	it("leaves the time out when the decision has none", () => {
+		const item = { ...systemEventWireItem("approval-denied"), startedAt: undefined };
+		const row = rowsAt("chat", [completedTurn([item])], false).rows.find((candidate) => candidate.id === item.id);
+		if (!row) throw new Error("no approval row");
+		const tree = render(<TimelineItem item={row} hubId="hub" sessionRef="approval-untimed" />);
+		expect(renderedText(tree).replaceAll("\u200b", "")).toBe("Denied: read /etc/hosts");
+		expect(spoken(tree)).toBe("Denied: read /etc/hosts");
+		act(() => tree.unmount());
+	});
+
+	// A long path breaks only at its slashes when it wraps, as the dock's does.
+	it("lets the path wrap at its slashes", () => {
+		atTime(decidedAt() + 5 * 60_000, "approval-allowed", (tree) => {
+			expect(renderedText(tree)).toContain("/\u200bUsers/\u200bj/\u200bsites/\u200bdocs/\u200bindex.md");
+		});
 	});
 });
 

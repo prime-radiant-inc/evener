@@ -737,6 +737,11 @@ type Session struct {
 	// in s.fork. Empty on the fresh-session path. Read without a lock, like cfg —
 	// it is set once before the session goes live and never mutated after.
 	restoredMetaParentSessionID string
+	// restoredScratchTreeRoot is the root whose scratch tree a delegate resumed
+	// on its own keeps its scratch in (restoredScratchTreeRoot in
+	// session_init.go). Set once during restore and read like cfg; empty
+	// otherwise.
+	restoredScratchTreeRoot string
 
 	// pendingJobNotifs is the durable per-parent queue of pending job-completion
 	// notifications. It is drop-safe and drained later by a notification turn.

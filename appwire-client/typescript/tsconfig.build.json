@@ -42,6 +42,7 @@
     "watchRows.ts",
     "watchText.ts",
     "steeringLabels.ts",
+    "approvalDecision.ts",
     "systemEventCopy.ts",
     "toolEvidence.ts",
     "stepWords.ts",

@@ -279,6 +279,50 @@ func TestSessionDeleteRemovesTheSessionsScratchTree(t *testing.T) {
 	}
 }
 
+// Deleting a session whose daemon ran with its own TMPDIR removes the tree
+// from that temp dir, which the session's meta records.
+func TestSessionDeleteRemovesTheTreeInTheDaemonsTempDir(t *testing.T) {
+	hubTmp, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	daemonTmp, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	project, err := identifier.ResolveProject(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateDir := filepath.Join(root, "projects", project.ID)
+	sessionID := projectDeleteCanonicalSessionIDs[0]
+	writeSession(t, stateDir, sessionID, project.CanonicalPath)
+	meta, err := schema.LoadSessionMeta(stateDir, sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta.ScratchTempDir = daemonTmp
+	if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
+		t.Fatal(err)
+	}
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMPDIR", daemonTmp)
+	tree := mintEndedScratchTree(t, sessionID)
+	t.Setenv("TMPDIR", hubTmp)
+
+	web := NewWebServer(hubcore.WebConfig{StateDir: root, Past: past, Roster: hubcore.NewRosterWithEntries()})
+	if resp := mustDeleteSession(t, web, sessionID); len(resp.Deleted) != 1 {
+		t.Fatalf("session should have been deleted: %+v", resp)
+	}
+	if _, err := os.Lstat(tree); !os.IsNotExist(err) {
+		t.Errorf("the delete left the tree %s in the daemon's temp dir: %v", tree, err)
+	}
+}
+
 // TestSessionDeleteRemovesCrashedSessionAndRendezvous covers n15j's
 // verification #3, reusing kata 8at6's crash-vs-live predicate: a confirmed
 // crash marker is deletable, and its stale rendezvous records go with it.

@@ -3774,7 +3774,7 @@ describe("document chips under the agent's messages (spec 8.2)", () => {
 		});
 	});
 
-	it("counts the session's documents on a Files chip, dotted while one is new, which opens Files & artifacts", async () => {
+	it("counts the session's documents on a Files chip, dotted while one is new, which opens Files", async () => {
 		vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("# Fix the settle race\n"));
 		vi.mocked(navigation.navigate).mockClear();
 		const { tree } = await mount(namedAfterWriting("ref-files"));
