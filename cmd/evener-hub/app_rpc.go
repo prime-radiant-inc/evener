@@ -2245,6 +2245,9 @@ func registerPluginHandlers(server *appserver.Server, pluginsController *hubPlug
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginSetAutoUpgrade, func(ctx context.Context, params appwire.PluginSetAutoUpgradeParams) (appwire.PluginListResponse, error) {
 		return pluginsController.SetAutoUpgrade(ctx, params)
 	})
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginCheckUpdates, func(ctx context.Context, _ appwire.EmptyParams) (appwire.PluginListResponse, error) {
+		return pluginsController.CheckUpdates(ctx)
+	})
 }
 
 // notifyMarketplaceUpdated broadcasts a evener/marketplace/updated notification
