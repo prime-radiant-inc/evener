@@ -214,9 +214,9 @@ func SkillActivatedAnnouncement(notice schema.SkillActivatedNotice) NoticeAnnoun
 }
 
 // ApprovalDecisionAnnouncement is the history line a human's Allow or Deny on
-// a sandbox escalation leaves (S16), worded like the approval card that asked.
-// Its Raw carries the decision under "approvalDecision", so a client draws the
-// approval history row without parsing the text.
+// a sandbox escalation leaves (S16). Its Raw carries the decision under
+// "approvalDecision", so a client draws the approval history row without
+// parsing the text.
 func ApprovalDecisionAnnouncement(notice schema.ApprovalDecisionNotice) NoticeAnnouncement {
 	text := fmt.Sprintf("Denied %s access to %s", notice.Tool, notice.DeniedPath)
 	if notice.Approved {

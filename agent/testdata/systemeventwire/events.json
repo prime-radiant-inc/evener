@@ -16,6 +16,54 @@
       }
     },
     {
+      "case": "approval-allowed",
+      "note": "A NOTICE entry for a human's Allow on a sandbox escalation (session_escalation.go recordNotice): raw.approvalDecision carries the decision, startedAt when it was made.",
+      "item": {
+        "type": "systemMessage",
+        "id": "item_approval_decision_1",
+        "turnId": "turn_1",
+        "transcriptEntryIndex": 1,
+        "text": "Allowed write_file to access /Users/j/sites/docs/index.md",
+        "description": "Approval",
+        "status": "completed",
+        "startedAt": 1790625600000,
+        "raw": {
+          "approvalDecision": {
+            "escalationId": "esc_1_a",
+            "approved": true,
+            "tool": "write_file",
+            "kind": "file_tool",
+            "deniedPath": "/Users/j/sites/docs/index.md"
+          }
+        },
+        "eventKind": "approval_decision"
+      }
+    },
+    {
+      "case": "approval-denied",
+      "note": "A NOTICE entry for a human's Deny on a sandbox escalation.",
+      "item": {
+        "type": "systemMessage",
+        "id": "item_approval_decision_2",
+        "turnId": "turn_1",
+        "transcriptEntryIndex": 2,
+        "text": "Denied read_file access to /etc/hosts",
+        "description": "Approval",
+        "status": "completed",
+        "startedAt": 1790625600000,
+        "raw": {
+          "approvalDecision": {
+            "escalationId": "esc_2_b",
+            "approved": false,
+            "tool": "read_file",
+            "kind": "file_tool",
+            "deniedPath": "/etc/hosts"
+          }
+        },
+        "eventKind": "approval_decision"
+      }
+    },
+    {
       "case": "compaction-summary",
       "note": "A summary turn: description Context summary, the whole summary as markdown text.",
       "item": {
