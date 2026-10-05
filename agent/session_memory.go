@@ -44,7 +44,7 @@ func (s *Session) memorySaveInstructionsEnabled() bool {
 // whenever memory is readable, save instructions only when the save tools are
 // callable, and project wording only when project memory is bound.
 func (s *Session) memoryGuidance() string {
-	if !s.memoryContextEnabled() || !s.canInstructTool("memory_search") {
+	if !s.memoryContextEnabled() {
 		return ""
 	}
 	project := s.cfg.MemoryProjectID != ""
@@ -58,7 +58,11 @@ func (s *Session) memoryGuidance() string {
 	if project {
 		b.WriteString(" Project memory holds knowledge about this project.")
 	}
-	b.WriteString(" Each scope keeps an index, MEMORY.md, with one line per page; when an index has entries, it appears in the conversation. When an index line bears on what you are doing, read that page with memory_read; use memory_search to look for a topic the index doesn't mention. " + memoryTrustGuard)
+	b.WriteString(" Each scope keeps an index, MEMORY.md, with one line per page; when an index has entries, it appears in the conversation. When an index line bears on what you are doing, read that page with memory_read")
+	if s.canInstructTool("memory_search") {
+		b.WriteString("; use memory_search to look for a topic the index doesn't mention")
+	}
+	b.WriteString(". " + memoryTrustGuard)
 	if !save {
 		return b.String()
 	}

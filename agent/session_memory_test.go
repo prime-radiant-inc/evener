@@ -2678,14 +2678,15 @@ func TestMemoryGuidanceFollowsCapabilities(t *testing.T) {
 	for _, tc := range []struct {
 		name                string
 		cfg                 SessionConfig
-		revokeWrites        bool
+		revoke              string
 		read, save, project bool
 	}{
-		{"enabled", SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project"}, false, true, true, true},
-		{"personal-only", SessionConfig{MemoryStateRoot: t.TempDir()}, false, true, true, false},
-		{"write-revoked", SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project"}, true, true, false, true},
-		{"disabled", SessionConfig{MemoryStateRoot: t.TempDir(), DisableMemory: true}, false, false, false, false},
-		{"unbound", SessionConfig{}, false, false, false, false},
+		{"enabled", SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project"}, "", true, true, true},
+		{"personal-only", SessionConfig{MemoryStateRoot: t.TempDir()}, "", true, true, false},
+		{"write-revoked", SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project"}, "memory_write", true, false, true},
+		{"search-revoked", SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project"}, "memory_search", true, true, true},
+		{"disabled", SessionConfig{MemoryStateRoot: t.TempDir(), DisableMemory: true}, "", false, false, false},
+		{"unbound", SessionConfig{}, "", false, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -2702,8 +2703,8 @@ func TestMemoryGuidanceFollowsCapabilities(t *testing.T) {
 				}
 				return finalResponse("done")
 			}))
-			if tc.revokeWrites {
-				s.reg.Remove("memory_write")
+			if tc.revoke != "" {
+				s.reg.Remove(tc.revoke)
 				s.rebuildToolDefsCache()
 			}
 			if _, err := s.ProcessInput(context.Background(), "go", nil); err != nil {
@@ -2722,6 +2723,11 @@ func TestMemoryGuidanceFollowsCapabilities(t *testing.T) {
 				guidance := s.memoryGuidance()
 				if mentions := strings.Contains(strings.ToLower(guidance), "project memory"); mentions != tc.project {
 					t.Fatalf("guidance mentions project memory=%v, want %v", mentions, tc.project)
+				}
+				for _, name := range nativeMemoryToolNames {
+					if strings.Contains(guidance, name) && !s.canInstructTool(name) {
+						t.Fatalf("guidance names %s, which this session cannot call", name)
+					}
 				}
 			}
 		})
