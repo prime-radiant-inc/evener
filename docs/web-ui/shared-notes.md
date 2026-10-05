@@ -2,6 +2,21 @@
 
 The Notes panel contains your note, the agent's note, and session links.
 
+Both notes are whiteboards: short texts that keep their line breaks. When a
+note is saved, the server removes terminal control characters, turns `\r\n` and
+`\r` into newlines, collapses spaces within each line, drops blank lines at the
+start and end, keeps at most one blank line in a row, and limits the note to
+1000 characters. Web and native show the saved lines as written. Link labels
+are single-line, so their line breaks become spaces.
+
+The agent's note is a capsule of the session for a manager checking in. The
+agent writes it in plain words, in three parts on their own lines: a short
+paragraph with the mission and what is done so far, a line starting `Now:` with
+what it is doing, and one or two lines starting `Next:` with what is left. Each
+update replaces the whole note. The agent updates it with `notes_agent_set`
+when a phase finishes, the plan changes, or it is blocked. The tool description
+and the system prompt's Reporting section carry this guidance.
+
 Editing your note changes a shared draft for that session. Multiple open panels show the same draft. Leaving the editor schedules a save **10 seconds later**; focusing any editor for the same session cancels that delay. Saving also notifies the agent and may wake an idle agent.
 
 Closing a panel without leaving the field does not save. The draft remains available when you reopen it in the same browser session. If you already left the field, its scheduled save survives closing the panel.

@@ -1007,13 +1007,13 @@ type EvenerThread struct {
 	// bespoke transport — like Queue, it is structured per-session state read
 	// from the already-fetched thread snapshot.
 	Goal *GoalState `json:"goal,omitempty"`
-	// HumanNote carries the human's one-paragraph session whiteboard when set,
-	// else empty. It powers the shared-notes display without a bespoke
+	// HumanNote carries the human's session whiteboard, line breaks kept, when
+	// set, else empty. It powers the shared-notes display without a bespoke
 	// transport — like Goal, it is structured per-session state read from the
 	// already-fetched thread snapshot.
 	HumanNote string `json:"humanNote,omitempty"`
-	// AgentNote carries the agent's one-paragraph session whiteboard when set,
-	// else empty. It is read from the already-fetched thread snapshot like
+	// AgentNote carries the agent's session whiteboard, line breaks kept, when
+	// set, else empty. It is read from the already-fetched thread snapshot like
 	// HumanNote.
 	AgentNote string `json:"agentNote,omitempty"`
 	// SessionURLs carries the session's shared-notes URL list when set, else
