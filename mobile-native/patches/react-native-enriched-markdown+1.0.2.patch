@@ -3478,10 +3478,10 @@ index 0000000..1f3af53
 +NS_ASSUME_NONNULL_END
 diff --git a/node_modules/react-native-enriched-markdown/ios/parser/ENRMOriginalDocumentModel.m b/node_modules/react-native-enriched-markdown/ios/parser/ENRMOriginalDocumentModel.m
 new file mode 100644
-index 0000000..246da9e
+index 0000000..88b9a6b
 --- /dev/null
 +++ b/node_modules/react-native-enriched-markdown/ios/parser/ENRMOriginalDocumentModel.m
-@@ -0,0 +1,279 @@
+@@ -0,0 +1,280 @@
 +#import "ENRMOriginalDocumentModel.h"
 +#import "MarkdownSourceParser.h"
 +
@@ -3542,7 +3542,8 @@ index 0000000..246da9e
 +  if (node.type == MarkdownNodeTypeImage || node.type == MarkdownNodeTypeLatexMathInline ||
 +      node.type == MarkdownNodeTypeLatexMathDisplay) return;
 +  if (node.type == MarkdownNodeTypeCodeBlock) {
-+    if ([node.attributes[@"language"].lowercaseString isEqualToString:@"mermaid"]) return;
++    NSString *language = node.attributes[@"language"];
++    if ([language.lowercaseString isEqualToString:@"mermaid"]) return;
 +    NSValue *key = [NSValue valueWithRange:node.sourceRange];
 +    NSArray<ENRMSourceFragment *> *fragments = _codePresentations[key];
 +    if (!fragments) {
