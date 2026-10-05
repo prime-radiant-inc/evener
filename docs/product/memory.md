@@ -30,18 +30,24 @@ tried and found). The root session owns it;
 delegates resolve the scope to their root and can read but not write it. A
 delegate resumed on its own (`serve --resume <delegate-id>`) is still a
 delegate: it has no root to resolve, so it gets no session scope, no session
-guidance and no fork copy. Resume keeps a root's session memory. A fork or
-`--resume-with` child copies its parent's session memory the
-first time it opens the scope, in its own process, normally at its first model
-call; then the two diverge. A missing or empty parent scope means a silent empty
+guidance and no fork copy. Resume keeps a root's session memory. The session
+directory appears only when the root session first writes or edits its session
+memory, or when a fork copies its parent's. Reading an absent scope (the index
+refresh, `memory_read`, `memory_search`, `memory_delete`) creates nothing: the
+index projects as missing, a read finds no file, a search finds no matches and
+a delete reports the file removed or already absent. Delegates never create it.
+A fork or `--resume-with` child copies its parent's session memory the
+first time it reads or writes the scope, in its own process, normally at its first model
+call; then the two diverge. A delegate of the fork that reads first leaves the
+directory absent, so it cannot block the copy. A missing or empty parent scope means a silent empty
 start. The copy reads the parent and writes the child through the same confined
 layer the memory tools use, so no symlink anywhere on the path is followed. It
 takes only regular files and directories within a size limit (empty directories
 are skipped); anything else, including a parent scope that exists but is a
 symlink or a file, means a warning and an empty start. A copy failure is a session warning and leaves the scope empty; it never
 blocks the session. Deleting a session keeps its session memory. No native
-memory tool reaches another session's session directory, so removing it is
-manual for now (#3748 tracks cleanup).
+memory tool reaches another session's session directory, so removing one that
+was written is manual.
 
 Production CLI and daemon sessions bind memory by default. Trusted launch
 binding uses `identifier.ResolveProjectWith`; linked worktrees share their main
