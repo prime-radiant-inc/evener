@@ -1034,40 +1034,6 @@ func TestRetirementForeignSweepPreservesOccupiedLanes(t *testing.T) {
 	restored.Close()
 }
 
-// --- Task 6 fix round 2: plan 776-778, shared-child scratch bindings across a
-// worktree move, retirement, sweep, cold restore and the root backswap. ---
-
-// sharedChildScratchMintAdapter is a scripted provider that issues exactly one
-// real `shell` tool call on a specific child session's first turn after it is
-// installed, so that child's live environment really mints a fresh allocation
-// through the normal command path. Every other session ends through the real
-// communicate/result path. Routing is by the structural Request.SessionID.
-type sharedChildScratchMintAdapter struct {
-	fakeAdapter
-	childSessionID string
-	mu             sync.Mutex
-	issued         bool
-}
-
-func (a *sharedChildScratchMintAdapter) Complete(_ context.Context, req llm.Request) (llm.Response, error) {
-	if req.SessionID == a.childSessionID {
-		a.mu.Lock()
-		first := !a.issued
-		a.issued = true
-		a.mu.Unlock()
-		if first {
-			raw, err := json.Marshal(map[string]any{"command": "true"})
-			if err != nil {
-				return llm.Response{}, err
-			}
-			return toolCallResponse(llm.ToolCallData{ID: "shared-child-mint", Name: "shell", Arguments: raw}), nil
-		}
-	}
-	response := communicateWithDefaultOutput("shared-child-result")
-	response.Provider, response.Model = a.name, req.Model
-	return response, nil
-}
-
 // TestRetirementConcurrentReleaseOnlyOneProceeds is the regression test for the
 // unsynchronized one-use release guard. Concurrent ReleaseForRetirement calls
 // for the same committed preparation must win teardown exactly once; run under
