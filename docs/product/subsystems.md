@@ -60,6 +60,13 @@ executable provides the commands that launch these processes. See
 | **S04 Terminal dashboard** — the same sessions and actions through a terminal | [TUI entry](../../cmd/evener-tui/main.go), [commands](../../cmd/evener-tui/hub_commands.go), [reconnect](../../cmd/evener-tui/hub_reconnect.go), [attachments](../../cmd/evener-tui/hub_attachments.go) | The model owns composer state and optimistic feedback. Reconnect continually redials and resubscribes; the pending coordinator reconciles authoritative notifications. A connection recovering does not itself replay every failed user action. | [Hub guide](../evener-hub.md), [architecture](../architecture.md) |
 | **S05 Protocol and shared client** — identities, requests, subscriptions, results, ordered events and capabilities | [AppWire catalog](../../appwire/protocol.go), [Go client](../../appwire/client.go), [server transport](../../internal/appserver), [TypeScript client](../../appwire-client/typescript), [shared state](../../appwire-client/typescript/state) | Generated contracts describe requests and results. AppWire owns the catalog of methods eligible for forwarding. The SDK constrains host-scoped requests and remote-capable launch/extension store ports to that generated catalog, owns request wrapping and host spelling rules for browser and native clients, and retains the broad transport for valid local operations; the hub owns forwarding authorization and retry classification. Mutation identity and acceptance state determine replay semantics; connection owners handle reattachment and resubscription. The shared session activity store owns collection demand and recovery, driven by scoped activity invalidations rather than legacy lifecycle/tree notifications; connection/ref leases share transcript and activity subscription membership. Wire compatibility, a stale cache, a lost response and an authoritative refusal are distinct states. | [AppWire protocol](../appwire-protocol.md), [TypeScript package](../../appwire-client/typescript/README.md), [session activity](session-activity.md) |
 
+S02's Rail owns the sidebar boundary and session-row geometry for navigation
+context cards. HoverCard's shared floating layer owns the body portal,
+measurement and reveal/dismiss lifetime. Session cards float beside the rail
+with viewport-aware fallback; other floating descriptions keep their placement.
+Scroll and viewport resize cancel both visible and pending reveals without
+changing navigation state. See the [sidebar placement contract](../web-ui/design-system.md).
+
 For shared-notes transcript updates, S05's shared projector owns the
 Conversation/System events visibility rule and prevents terminal fallback from
 restoring hidden snapshots. S02's browser renderer and S03's native labelled

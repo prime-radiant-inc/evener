@@ -6,7 +6,11 @@ one-line status and title; its title HoverCard exposes the summary's project,
 host, branch, running-job, subagent, watch, pin-section, tier and age context. This remains a
 navigation-domain read. Hovering the title or focusing its tree row reveals that
 context; on a hoverless device, a long press on the title reveals it, and a tap
-activates the session. Reading a session's activity is a separate operation, so
+activates the session. The card floats beside the sidebar, aligned with the row,
+with viewport-aware above/below fallback in the sessions drawer or a narrow
+window. Scroll and resize cancel visible and pending reveals; a fresh gesture
+opens it at the new position. See the [placement contract](../web-ui/design-system.md).
+Reading a session's activity is a separate operation, so
 browsing navigation does not load every session's work tree.
 
 Transcript delegate cards and status indicators use the same

@@ -787,7 +787,7 @@ const target = window as typeof window & {
   measureMobileSidebar: typeof measureMobileSidebar;
   measureTapTargets: typeof measureTapTargets;
   measurePaneFooters: typeof measurePaneFooters;
-  applyShellNavigationDelta: () => Promise<unknown>;
+  applyShellNavigationDelta: (title?: string) => Promise<unknown>;
   measureRailRenderCounts: () => {
     counts: Record<string, number>;
     changedRowID: string | null;
@@ -828,7 +828,7 @@ target.measureRailRenderCounts = () => ({
   visibleRowIDs,
   document: { scrollHeight: document.documentElement.scrollHeight, viewportHeight: window.innerHeight },
 });
-target.applyShellNavigationDelta = async () => {
+target.applyShellNavigationDelta = async (title = "project-0 session 0 changed") => {
   if (!shellClient) throw new Error("shellguard client is not ready");
   visibleRowIDs = [...renderCounts.keys()];
   const expectedChangedRowID = await navigationEntityKey(
@@ -840,7 +840,7 @@ target.applyShellNavigationDelta = async () => {
   if (changedObserverRowID === null) {
     throw new Error(`shellguard changed row was not observed before delta: ${expectedChangedRowID}`);
   }
-  changedTitle = "project-0 session 0 changed";
+  changedTitle = title;
   mutationRevision = 2;
   // Preserve the visible observer IDs above; clear only invocation counts and
   // do it immediately before publishing the one-entity delta.

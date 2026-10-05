@@ -27,6 +27,7 @@ import {
 } from "../browserGuardCdp.mjs";
 import { describeBrowserStartupFailure, startBrowserGuard, waitForBrowserReady } from "../browserGuardProcess.mjs";
 import { Driver } from "../skillguard/run.mjs";
+import { checkSessionHoverCards } from "./sessionHoverCard.mjs";
 
 const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -865,6 +866,9 @@ async function main() {
     guard = await startBrowserGuard({
       frontend: FRONTEND,
       profilePrefix: "shellguard-chrome-",
+      // Headless hosts may have no pointer hardware. These Chromium settings
+      // supply a hover-capable mouse, touch emulation still owns phone cases.
+      chromeArgs: ["--blink-settings=availableHoverTypes=2,primaryHoverType=2,availablePointerTypes=4,primaryPointerType=4"],
     });
   } catch (error) {
     throw new Error(describeBrowserStartupFailure({ error, subsystem: "launch" }));
@@ -923,6 +927,7 @@ async function main() {
         }
       }
     }
+    failures.push(...await checkSessionHoverCards(cdpEndpoint, vitePort));
     if (failures.length === 0) {
       console.log(
         `shellguard ok: document ${result.document.scrollHeight}px in a ${result.viewport.height}px viewport, ` +
