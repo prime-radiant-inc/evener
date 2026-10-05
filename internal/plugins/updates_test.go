@@ -338,3 +338,40 @@ func TestCheckUpdates_UnfetchedMarketplaceIsNotReadFromTheWorkingDirectory(t *te
 		t.Fatal("plugin flagged from a catalog read out of the working directory")
 	}
 }
+
+// An upgrade that lands while a check is in flight leaves the plugin
+// unflagged once the check publishes: the check's answer (the remote's head
+// before it moved) is for the install it read, which the upgrade replaced.
+// This is the overlap the hub allows by running evener/plugin/checkUpdates
+// off the connection's serial worker.
+func TestCheckUpdates_AnUpgradeDuringACheckIsNotFlaggedAfterIt(t *testing.T) {
+	f := installURLPlugin(t, unpinned)
+	answered := make(chan struct{})
+	publish := make(chan struct{})
+	realGit := gitRun
+	t.Cleanup(func() { gitRun = realGit })
+	gitRun = func(ctx context.Context, dir string, args ...string) (string, error) {
+		out, err := realGit(ctx, dir, args...)
+		if len(args) > 0 && args[0] == "ls-remote" {
+			close(answered)
+			<-publish
+		}
+		return out, err
+	}
+	checked := make(chan error, 1)
+	go func() { checked <- f.m.CheckUpdates(context.Background()) }()
+	<-answered
+	// The remote moves on and the plugin is upgraded to it after the check
+	// read the old head, before it publishes.
+	advanceRepo(t, f.pluginRepo)
+	if _, err := f.m.Upgrade(context.Background(), "widget", "acme"); err != nil {
+		t.Fatalf("Upgrade: %v", err)
+	}
+	close(publish)
+	if err := <-checked; err != nil {
+		t.Fatalf("CheckUpdates: %v", err)
+	}
+	if listedUpdateAvailable(t, f.m) {
+		t.Fatal("a check that read the remote before an upgrade flagged the upgraded plugin")
+	}
+}
