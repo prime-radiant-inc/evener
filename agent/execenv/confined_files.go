@@ -78,9 +78,20 @@ func (r *ConfinedFileRoot) Close() {
 	host.retire()
 }
 
-// Open reuses previous only when the fixed tail still names the same directory.
-// The caller owns previous's lifetime, including admitted operations on it.
+// Open creates the fixed tail if needed and reuses previous only when the tail
+// still names the same directory. The caller owns previous's lifetime,
+// including admitted operations on it.
 func (r *ConfinedFileRoot) Open(previous *LocalExecutionEnvironment) (*LocalExecutionEnvironment, error) {
+	return r.open(previous, true)
+}
+
+// OpenExisting is Open for a reader that must leave an absent tail absent: it
+// reports fs.ErrNotExist instead of creating the directory.
+func (r *ConfinedFileRoot) OpenExisting(previous *LocalExecutionEnvironment) (*LocalExecutionEnvironment, error) {
+	return r.open(previous, false)
+}
+
+func (r *ConfinedFileRoot) open(previous *LocalExecutionEnvironment, create bool) (*LocalExecutionEnvironment, error) {
 	r.mu.Lock()
 	host := r.host
 	if host == nil {
@@ -91,8 +102,10 @@ func (r *ConfinedFileRoot) Open(previous *LocalExecutionEnvironment) (*LocalExec
 	r.mu.Unlock()
 	defer host.release()
 	root := filepath.Join(r.stateRoot, r.relativeRoot)
-	if err := host.mkdirAll("memory", root); err != nil {
-		return nil, err
+	if create {
+		if err := host.mkdirAll("memory", root); err != nil {
+			return nil, err
+		}
 	}
 	fd, err := openBeneathRoot(host.rootFds[r.stateRoot], filepath.ToSlash(r.relativeRoot), os.O_RDONLY, 0)
 	if err != nil {

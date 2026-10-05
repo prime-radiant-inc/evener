@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,6 +18,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 	"unicode/utf8"
 
@@ -365,7 +367,7 @@ func TestMemoryScopeRootRecoveryDeleteLease(t *testing.T) {
 	root := t.TempDir()
 	path := memorySeed(t, root, "personal", "opaque-delete-713")
 	s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: root}))
-	env, err := s.memoryEnvironment("personal")
+	env, err := s.openMemoryEnvironment("personal", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -405,7 +407,7 @@ func TestMemoryScopeRootRecoveryRetirement(t *testing.T) {
 				}
 				return nil
 			}}}))
-			old, err := s.memoryEnvironment("personal")
+			old, err := s.openMemoryEnvironment("personal", true)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1475,7 +1477,7 @@ func TestMemoryDisableNoIO(t *testing.T) {
 	if res := memoryExec(t, s, "memory_read", map[string]any{"scope": "personal", "file_path": "MEMORY.md"}); !res.IsError {
 		t.Fatal("disabled native dispatch accepted")
 	}
-	if _, err := s.memoryEnvironment("personal"); err == nil {
+	if _, err := s.openMemoryEnvironment("personal", true); err == nil {
 		t.Fatal("disabled environment accepted")
 	}
 	if calls.Load() != 0 {
@@ -1715,7 +1717,7 @@ func TestMemoryDeleteIdempotentOutcome(t *testing.T) {
 		for _, state := range []string{"present", "missing_leaf", "missing_parent"} {
 			t.Run(scope+"/"+state, func(t *testing.T) {
 				s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project"}))
-				env, err := s.memoryEnvironment(scope)
+				env, err := s.openMemoryEnvironment(scope, true)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -1747,7 +1749,7 @@ func TestMemoryDeleteUnreadable(t *testing.T) {
 	for _, scope := range []string{"personal", "project"} {
 		t.Run(scope, func(t *testing.T) {
 			s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project"}))
-			env, err := s.memoryEnvironment(scope)
+			env, err := s.openMemoryEnvironment(scope, true)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1789,7 +1791,7 @@ func TestMemoryDeleteReadGuard(t *testing.T) {
 		for _, read := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/read=%t", scope, read), func(t *testing.T) {
 				s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project"}))
-				env, err := s.memoryEnvironment(scope)
+				env, err := s.openMemoryEnvironment(scope, true)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -1912,7 +1914,7 @@ func TestMemoryPathAuthority(t *testing.T) {
 	t.Parallel()
 	root, workspace, outside := t.TempDir(), t.TempDir(), t.TempDir()
 	s := newSession(t, withDir(workspace), withConfig(SessionConfig{MemoryStateRoot: root, MemoryProjectID: "fixture-project"}))
-	env, err := s.memoryEnvironment("project")
+	env, err := s.openMemoryEnvironment("project", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2004,7 +2006,7 @@ func TestMemoryReadGuardIsolation(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, scope := range []string{"personal", "project"} {
-		env, err := s.memoryEnvironment(scope)
+		env, err := s.openMemoryEnvironment(scope, true)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2016,7 +2018,7 @@ func TestMemoryReadGuardIsolation(t *testing.T) {
 		t.Fatal(res.Output)
 	}
 	for _, scope := range []string{"personal", "project"} {
-		env, err := s.memoryEnvironment(scope)
+		env, err := s.openMemoryEnvironment(scope, true)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2034,7 +2036,7 @@ func TestMemoryReadGuardIsolation(t *testing.T) {
 			t.Fatalf("%s actual read not tracked", scope)
 		}
 		if scope == "personal" {
-			project, _ := s.memoryEnvironment("project")
+			project, _ := s.openMemoryEnvironment("project", true)
 			if s.fileReadGuard(project).ReadBeforeWriteWarning(filepath.Join(project.WorkingDirectory(), "same.txt")) == "" {
 				t.Fatal("project inherited personal read")
 			}
@@ -2295,7 +2297,7 @@ func TestMemoryDisabledAndUnbound(t *testing.T) {
 		if res := memoryExec(t, s, "memory_write", map[string]any{"scope": "personal", "file_path": "data", "content": "bad"}); !res.IsError {
 			t.Fatal("disabled dispatch accepted")
 		}
-		if _, err := s.memoryEnvironment("personal"); err == nil {
+		if _, err := s.openMemoryEnvironment("personal", true); err == nil {
 			t.Fatal("disabled environment accepted")
 		}
 		if calls != 0 {
@@ -2555,7 +2557,7 @@ func TestMemoryTeardownPreservesFiles(t *testing.T) {
 			if err != nil || string(got) != "opaque-surviving-67" {
 				t.Fatalf("bytes=%q err=%v", got, err)
 			}
-			if _, err := s.memoryEnvironment("personal"); err == nil {
+			if _, err := s.openMemoryEnvironment("personal", true); err == nil {
 				t.Fatal("closed session reopened memory")
 			}
 		})
@@ -2568,7 +2570,7 @@ func TestMemoryWarningDeliveryRestricted(t *testing.T) {
 	s := newSession(t, withDir(workspace), withConfig(SessionConfig{MemoryStateRoot: root}))
 	local := s.currentEnv().(*execenv.LocalExecutionEnvironment)
 	local.Sandbox = &sandbox.ResolvedPolicy{Mode: sandbox.ModeReadOnly, FileTool: sandbox.AccessScope{Read: sandbox.ReadWorktreeOnly, ReadRoots: []string{workspace}}}
-	env, err := s.memoryEnvironment("personal")
+	env, err := s.openMemoryEnvironment("personal", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2817,6 +2819,140 @@ func TestMemorySessionScopeRootWrites(t *testing.T) {
 	if err != nil || string(got) != "opaque-session-11\n" {
 		t.Fatalf("bytes=%q err=%v", got, err)
 	}
+}
+
+// absentMemoryFileError is what reading or editing MEMORY.md in an absent
+// session scope reports: the requested path, not found.
+var absentMemoryFileError = (&fs.PathError{Op: "open", Path: "MEMORY.md", Err: fs.ErrNotExist}).Error()
+
+func assertNoMemoryDir(t *testing.T, dir, after string) {
+	t.Helper()
+	if _, err := os.Lstat(dir); !os.IsNotExist(err) {
+		t.Fatalf("%s created %s: %v", after, dir, err)
+	}
+}
+
+// Most root sessions never write session memory, so reading the scope (the
+// index refresh at every model boundary, memory_read, memory_search,
+// memory_delete) leaves no directory behind; the first write creates it.
+func TestMemorySessionScopeAbsentUntilFirstWrite(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	var states []string
+	var lastBody string
+	capture := func(req llm.Request) llm.Response {
+		state, body, _ := memoryRequestIndex(t, req, "session")
+		if state == "" {
+			state = "none"
+		}
+		states, lastBody = append(states, state), body
+		return finalResponse("done")
+	}
+	turns := []func(llm.Request) llm.Response{capture, capture}
+	s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: root}), withSteps(turns...))
+	if _, err := s.ProcessInput(context.Background(), "go", nil); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, "memory", "sessions", s.id)
+	assertNoMemoryDir(t, dir, "index refresh")
+	if res := memoryExec(t, s, "memory_read", map[string]any{"scope": "session", "file_path": "MEMORY.md"}); !res.IsError || res.Output != absentMemoryFileError {
+		t.Fatalf("absent scope read=%+v", res)
+	}
+	if res := memoryExec(t, s, "memory_search", map[string]any{"scope": "session", "pattern": "opaque"}); res.IsError || res.Output != "" {
+		t.Fatalf("absent scope search=%+v", res)
+	}
+	if res := memoryExec(t, s, "memory_delete", map[string]any{"scope": "session", "file_path": "page.md"}); res.IsError || res.Output != "Removed or already absent: page.md" {
+		t.Fatalf("absent scope delete=%+v", res)
+	}
+	if res := memoryExec(t, s, "memory_edit", map[string]any{"scope": "session", "file_path": "MEMORY.md", "old_string": "a", "new_string": "b"}); !res.IsError || res.Output != absentMemoryFileError {
+		t.Fatalf("absent scope edit=%+v", res)
+	}
+	assertNoMemoryDir(t, dir, "reading or editing an absent session scope")
+	if res := memoryExec(t, s, "memory_write", map[string]any{"scope": "session", "file_path": "MEMORY.md", "content": "opaque-lazy-session-61\n"}); res.IsError {
+		t.Fatal(res.Output)
+	}
+	if res := memoryExec(t, s, "memory_read", map[string]any{"scope": "session", "file_path": "MEMORY.md"}); res.IsError || !strings.Contains(res.Output, "opaque-lazy-session-61") {
+		t.Fatalf("read after first write=%+v", res)
+	}
+	if _, err := s.ProcessInput(context.Background(), "again", nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(states) != 2 || states[0] != "none" || states[1] != "current" || lastBody != "opaque-lazy-session-61\n" {
+		t.Fatalf("session index states=%v body=%q", states, lastBody)
+	}
+}
+
+// A delegate only reads its root's session memory, so it never creates the
+// root's directory either.
+func TestMemorySessionScopeDelegateLeavesAbsentScopeAbsent(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: root}))
+	s.depth = 1
+	s.delegateRootSessionID = "034aRootFixture0000000"
+	if p := s.readMemoryIndex("session"); p.Status != "missing" {
+		t.Fatalf("delegate index projection=%+v", p)
+	}
+	if res := memoryExec(t, s, "memory_read", map[string]any{"scope": "session", "file_path": "MEMORY.md"}); !res.IsError || res.Output != absentMemoryFileError {
+		t.Fatalf("delegate read=%+v", res)
+	}
+	if res := memoryExec(t, s, "memory_search", map[string]any{"scope": "session", "pattern": "opaque"}); res.IsError || res.Output != "" {
+		t.Fatalf("delegate search=%+v", res)
+	}
+	assertNoMemoryDir(t, filepath.Join(root, "memory", "sessions", s.delegateRootSessionID), "a delegate's read")
+}
+
+// A write that arrives while an index read is still opening the absent
+// session scope waits for that read, finds it absent, and opens the scope
+// again with creation instead of taking the reader's absent result.
+func TestMemorySessionScopeWriteRetriesAfterAbsentRead(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		root := t.TempDir()
+		gate := make(chan struct{})
+		var setups atomic.Int32
+		cfg := SessionConfig{MemoryStateRoot: root}
+		cfg.testOnly.memoryBeforeIO = func(scope, operation string) error {
+			if scope == "session" && operation == "setup" && setups.Add(1) == 1 {
+				<-gate
+			}
+			return nil
+		}
+		s := newSession(t, withConfig(cfg))
+		projection := make(chan memoryProjection, 1)
+		go func() { projection <- s.readMemoryIndex("session") }()
+		synctest.Wait()
+		written := make(chan tool.ExecResult, 1)
+		go func() {
+			written <- memoryExec(t, s, "memory_write", map[string]any{"scope": "session", "file_path": "MEMORY.md", "content": "opaque-race-63\n"})
+		}()
+		synctest.Wait()
+		if got := setups.Load(); got != 1 {
+			t.Fatalf("writer ran setup before the reader's flight settled: %d", got)
+		}
+		close(gate)
+		synctest.Wait()
+		if p := <-projection; p.Status != "missing" {
+			t.Fatalf("reader projection=%+v", p)
+		}
+		if res := <-written; res.IsError {
+			t.Fatalf("writer after an absent read=%+v", res)
+		}
+		if got := setups.Load(); got != 2 {
+			t.Fatalf("setup ran %d times, want 2", got)
+		}
+		got, err := os.ReadFile(filepath.Join(root, "memory", "sessions", s.id, "MEMORY.md"))
+		if err != nil || string(got) != "opaque-race-63\n" {
+			t.Fatalf("bytes=%q err=%v", got, err)
+		}
+		s.Close()
+		s.memoryMu.Lock()
+		users := len(s.memoryEnvUsers)
+		s.memoryMu.Unlock()
+		if users != 0 {
+			t.Fatalf("memory environment leases left after Close: %d", users)
+		}
+	})
 }
 
 func TestMemorySessionScopeDelegateReadsButCannotWrite(t *testing.T) {

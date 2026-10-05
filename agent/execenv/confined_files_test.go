@@ -3,7 +3,9 @@
 package execenv
 
 import (
+	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -26,6 +28,53 @@ func TestConfinedFileOperations(t *testing.T) {
 	data, err := env.ReadFileRaw("data.txt")
 	if err != nil || string(data) != "opaque-data" {
 		t.Fatalf("data=%q err=%v", data, err)
+	}
+}
+
+// OpenExisting reports an absent tail without creating it, refuses a symlink
+// at the tail, and opens the directory once it exists.
+func TestConfinedFileRootOpenExisting(t *testing.T) {
+	t.Parallel()
+	host, outside := t.TempDir(), t.TempDir()
+	root, err := NewConfinedFileRoot(host, "memory/sessions/fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	if env, err := root.OpenExisting(nil); !errors.Is(err, fs.ErrNotExist) || env != nil {
+		t.Fatalf("absent tail env=%v err=%v", env, err)
+	}
+	if _, err := os.Lstat(filepath.Join(host, "memory")); !os.IsNotExist(err) {
+		t.Fatalf("OpenExisting created the tail: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(host, "memory", "sessions"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(host, "memory", "sessions", "fixture")); err != nil {
+		t.Fatal(err)
+	}
+	if env, err := root.OpenExisting(nil); err == nil || errors.Is(err, fs.ErrNotExist) {
+		if env != nil {
+			env.Cleanup()
+		}
+		t.Fatalf("symlinked tail err=%v", err)
+	}
+	if err := os.Remove(filepath.Join(host, "memory", "sessions", "fixture")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(host, "memory", "sessions", "fixture"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	env, err := root.OpenExisting(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer env.Cleanup()
+	if _, err := env.WriteFile("page.md", "opaque-page"); err != nil {
+		t.Fatal(err)
+	}
+	if again, err := root.OpenExisting(env); err != nil || again != env {
+		t.Fatalf("unchanged tail reopened env=%v err=%v", again, err)
 	}
 }
 

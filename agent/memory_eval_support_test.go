@@ -817,7 +817,7 @@ func memoryEvalObserveTools(t *testing.T, s *Session) func() []memoryEvalToolObs
 				}
 			} else {
 				scope, _ := args["scope"].(string)
-				if candidate, err := s.memoryEnvironment(scope); err == nil && filepath.IsLocal(path) {
+				if candidate, err := s.openMemoryEnvironment(scope, true); err == nil && filepath.IsLocal(path) {
 					memoryEnv = candidate
 					if raw, err := memoryEnv.ReadFileRaw(path); err == nil {
 						obs.Before = string(raw)
