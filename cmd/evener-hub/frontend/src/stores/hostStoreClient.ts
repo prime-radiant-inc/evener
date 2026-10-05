@@ -50,8 +50,9 @@ export type HostStoreClient = RequestPort<HostRequestMethod> & Pick<AppwireClien
  * default would otherwise silently run under that default instead. The bound is
  * then the whole forwarded round trip (the SSH hop plus the remote hub's
  * handling), the closest equivalent the wire admits, and a deadline error names
- * evener/host/request rather than the method it forwarded. None of the
- * host-scoped stores pass one today (they call with method and params only). */
+ * evener/host/request rather than the method it forwarded. The plugins store's
+ * checkPluginUpdates relies on it: a remote host's update check waits on every
+ * plugin remote, far past the default. */
 export function remoteHostStoreClient(host: string): HostStoreClient {
   return {
     request: async <M extends HostRequestMethod>(

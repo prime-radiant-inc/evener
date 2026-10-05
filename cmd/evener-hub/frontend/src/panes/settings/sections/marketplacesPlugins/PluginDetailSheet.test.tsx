@@ -209,10 +209,26 @@ test("a failed auto-upgrade toggle toasts 'Toggle auto-upgrade failed'", async (
   );
 });
 
-test("Upgrade calls pluginUpgrade, toasts a checked-for-upgrades success, and is busy in flight", async () => {
+test("Upgrade and its badge show only when the hub found an update", async () => {
+  connectFakeClient();
+  extensionsStore.setState({ plugins: [LINTER], marketplaces: [ACME] });
+  const browseMarketplace = vi.spyOn(extensionsStore.getState(), "browseMarketplace");
+  render(<PluginDetailSheet target={TARGET} onClose={() => {}} />);
+  expect(screen.queryByRole("button", { name: "Upgrade" })).toBeNull();
+  expect(screen.queryByText("update available")).toBeNull();
+
+  act(() => extensionsStore.setState({ plugins: [{ ...LINTER, updateAvailable: true }] }));
+  expect(screen.getByRole("button", { name: "Upgrade" })).toBeTruthy();
+  expect(screen.getByText("update available")).toBeTruthy();
+  const browse = browseMarketplace.mock.results[0];
+  if (browse?.type !== "return") throw new Error("Plugin detail sheet did not start its catalog browse");
+  await act(() => browse.value);
+});
+
+test("Upgrade calls pluginUpgrade, toasts an upgraded success, and is busy in flight", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
-  extensionsStore.setState({ plugins: [LINTER], marketplaces: [ACME] });
+  extensionsStore.setState({ plugins: [{ ...LINTER, updateAvailable: true }], marketplaces: [ACME] });
   let resolveUpgrade: (v: { plugins: PluginEntry[] }) => void = () => {};
   fake.on("evener/plugin/upgrade", (params) => {
     expect(params).toEqual(TARGET);
@@ -229,15 +245,13 @@ test("Upgrade calls pluginUpgrade, toasts a checked-for-upgrades success, and is
   expect(document.activeElement).toBe(upgradeButton);
 
   resolveUpgrade({ plugins: [LINTER] });
-  await waitFor(() =>
-    expect(getToasts().some((t) => t.kind === "success" && t.text === "Checked linter for upgrades")).toBe(true),
-  );
+  await waitFor(() => expect(getToasts().some((t) => t.kind === "success" && t.text === "Upgraded linter")).toBe(true));
 });
 
 test("a failed upgrade toasts failure", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
-  extensionsStore.setState({ plugins: [LINTER], marketplaces: [ACME] });
+  extensionsStore.setState({ plugins: [{ ...LINTER, updateAvailable: true }], marketplaces: [ACME] });
   fake.on("evener/plugin/upgrade", () => {
     throw new Error("boom");
   });

@@ -21,9 +21,9 @@ import { createLaunchLayerStore, LAUNCH_LAYER_REFETCH_DEBOUNCE_MS, type LaunchLa
 import { createListRevision } from "./listRevision";
 import { createMarketplacesStore, MARKETPLACE_REFETCH_DEBOUNCE_MS, type MarketplacesState } from "./marketplaces";
 import { createPluginsStore, PLUGIN_REFETCH_DEBOUNCE_MS, type PluginsState } from "./plugins";
-import { createStoreLifecycle, type StoreLifecycle } from "./storeLifecycle";
+import { createStoreLifecycle, type HostLifecycle } from "./storeLifecycle";
 
-type LifecycleStore<S> = FrameworkFreeStore<S> & Omit<StoreLifecycle<S>, "guard">;
+type LifecycleStore<S> = FrameworkFreeStore<S> & HostLifecycle<S>;
 
 interface LifecycleCase<S> {
   /** A store over a fake of its own, built with `gate` as its write gate
@@ -703,6 +703,38 @@ describe("a lifecycle given a list revision", () => {
     revisions.next();
     lifecycle.reset();
     expect(revisions.hasLive()).toBe(false);
+  });
+});
+
+// epoch() is how a store fences a request no revision covers: it moves on
+// every fence (reset, a replaced client, dispose) and on nothing else.
+describe("a lifecycle's epoch", () => {
+  test("moves on reset, a replaced client and dispose, and not on a flap of the same client", () => {
+    const client = new FakeClient("ready");
+    const lifecycle = createStoreLifecycle<{ marker: number }>(client, {
+      method: "evener/plugin/updated",
+      debounceMs: 250,
+      store: () => store,
+      refetch: () => {},
+      wantsList: () => false,
+    });
+    const store = createFrameworkFreeStore<{ marker: number }>((publish) => {
+      void lifecycle.guard(publish);
+      return { marker: 0 };
+    });
+
+    lifecycle.connectionChanged(client, "ready");
+    const start = lifecycle.epoch();
+    lifecycle.connectionChanged(client, "reconnecting");
+    lifecycle.connectionChanged(client, "ready");
+    expect(lifecycle.epoch()).toBe(start);
+
+    lifecycle.reset();
+    expect(lifecycle.epoch()).toBe(start + 1);
+    lifecycle.connectionChanged(new FakeClient("ready"), "ready");
+    expect(lifecycle.epoch()).toBe(start + 2);
+    lifecycle.dispose();
+    expect(lifecycle.epoch()).toBe(start + 3);
   });
 });
 
