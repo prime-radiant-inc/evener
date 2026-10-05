@@ -140,12 +140,7 @@ describe("checkPluginUpdates", () => {
     fake.on(LIST, () => ({ plugins: [LINTER] }));
     fake.on(CHECK, () => ({ plugins: [LINTER] }));
     expect(await store.getState().checkPluginUpdates()).toBe(true);
-
-    // An older hub refuses the method: that is its answer, not worth asking again.
-    fake.on(CHECK, () => {
-      throw new WireError("method not found", -32601);
-    });
-    expect(await store.getState().checkPluginUpdates()).toBe(true);
+    // An older hub's refusal is an answer too; the test below pins it.
 
     // The request never reached an answer: the connection dropped, or a proxy
     // turned a lost host channel into a wire error.

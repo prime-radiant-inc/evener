@@ -253,16 +253,10 @@ func TestPlugins_CheckUpdatesFlagsOnlyWhatItCouldConfirm(t *testing.T) {
 
 	mktRepo := filepath.Join(t.TempDir(), "mkt")
 	hubTestWritePlugin(t, filepath.Join(mktRepo, "plugins", "relative"), "relative")
-	if err := os.MkdirAll(filepath.Join(mktRepo, ".claude-plugin"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	mj := `{"name":"acme","owner":{"name":"o"},"plugins":[` +
-		`{"name":"moved","source":{"source":"url","url":"` + moved + `"}},` +
-		`{"name":"unreachable","source":{"source":"url","url":"` + unreachable + `"}},` +
-		`{"name":"relative","source":"./plugins/relative"}]}`
-	if err := os.WriteFile(filepath.Join(mktRepo, ".claude-plugin", "marketplace.json"), []byte(mj), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeTestMarketplaceManifest(t, mktRepo, "acme", `[`+
+		`{"name":"moved","source":{"source":"url","url":"`+moved+`"}},`+
+		`{"name":"unreachable","source":{"source":"url","url":"`+unreachable+`"}},`+
+		`{"name":"relative","source":"./plugins/relative"}]`)
 	hubTestMakeGitRepo(t, mktRepo, "README.md", "x")
 
 	mgr := plugins.NewManager(t.TempDir())

@@ -494,11 +494,9 @@ function Plugins({
 	// The first time this store's installed list loads, ask the hub which
 	// plugins have an update (read-on-open: nothing polls). A first read that
 	// failed checks once a later one recovers, and a page closed before its
-	// list landed asks nothing. A check that never reached the hub's answer
-	// (the connection dropped under it, or it timed out) asks again on the
-	// next return to ready or recovery of the list, never while the
-	// connection is down; an answer, including an older hub's refusal, is
-	// final for this store. A hub without the check flags none, so Upgrade
+	// list landed asks nothing. A check that got no answer (see
+	// checkPluginUpdates) asks again on the next return to ready, never while
+	// the connection is down. A hub without the check flags none, so Upgrade
 	// stays hidden.
 	const checkedUpdates = useRef<PluginsStore | null>(null);
 	const listLoaded = state.plugins !== null && state.pluginsError === null;
@@ -627,15 +625,11 @@ function Plugins({
 						<Fragment key={marketplace}>
 							<Group label={marketplace} machineLabel>
 								{plugins.map((item) => {
-									const sub = (
-										item.broken
-											? ["Broken", item.updateAvailable && "Update available"]
-											: [
-													item.version || "Unknown version",
-													item.updateAvailable && "Update available",
-													item.autoUpgrade && "Upgrades automatically",
-												]
-									)
+									const sub = [
+										item.broken ? "Broken" : item.version || "Unknown version",
+										item.updateAvailable && "Update available",
+										!item.broken && item.autoUpgrade && "Upgrades automatically",
+									]
 										.filter(Boolean)
 										.join(" · ");
 									return (
