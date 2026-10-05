@@ -166,6 +166,36 @@ test("a hoverless long press opens the card and swallows the tap that follows", 
   expect(screen.getByRole("tooltip")).toBe(card);
 });
 
+test.each(["scroll", "resize"])("%s cancels a pending long press without swallowing the next click", (event) => {
+  vi.useFakeTimers();
+  installHoverlessMatchMedia();
+  const activate = vi.fn();
+  render(
+    <HoverCard label={<div>Project prime-radiant</div>} longPressEnabled>
+      <button type="button" onClick={activate}>
+        Fix flaky test
+      </button>
+    </HoverCard>,
+  );
+  const trigger = screen.getByRole("button", { name: "Fix flaky test" });
+  fireEvent.pointerDown(trigger, { button: 0 });
+  act(() => vi.advanceTimersByTime(100));
+  // Scroll does not bubble, so exercise the ancestor capture listener.
+  fireEvent(event === "scroll" ? document.body : window, new Event(event));
+  act(() => vi.advanceTimersByTime(LONG_PRESS_MS));
+  expect(screen.queryByRole("tooltip")).toBeNull();
+  fireEvent.pointerUp(trigger);
+  fireEvent.click(trigger);
+  expect(activate).toHaveBeenCalledOnce();
+
+  fireEvent.pointerDown(trigger, { button: 0 });
+  act(() => vi.advanceTimersByTime(LONG_PRESS_MS));
+  expect(screen.getByRole("tooltip")).toBeTruthy();
+  fireEvent.pointerUp(trigger);
+  fireEvent.click(trigger);
+  expect(activate).toHaveBeenCalledOnce();
+});
+
 test("a hoverless press that moves or is cancelled opens no card", () => {
   vi.useFakeTimers();
   installHoverlessMatchMedia();
@@ -457,6 +487,215 @@ test("places the portaled card from the trigger's rect and the card's own box", 
     Element.prototype.getBoundingClientRect = originalRect;
     restoreOwnProperty(HTMLElement.prototype, "offsetWidth", originalOffsetWidth);
     restoreOwnProperty(HTMLElement.prototype, "offsetHeight", originalOffsetHeight);
+  }
+});
+
+test.each([
+  {
+    name: "beside the sidebar, centered on the row",
+    right: 280,
+    top: 300,
+    height: 40,
+    viewportWidth: 1000,
+    viewportHeight: 800,
+    wantLeft: "292px",
+    wantTop: "272px",
+  },
+  {
+    name: "at the top viewport margin",
+    right: 280,
+    top: 0,
+    height: 40,
+    viewportWidth: 1000,
+    viewportHeight: 800,
+    wantLeft: "292px",
+    wantTop: "8px",
+  },
+  {
+    name: "at the bottom viewport margin",
+    right: 360,
+    top: 770,
+    height: 30,
+    viewportWidth: 1000,
+    viewportHeight: 800,
+    wantLeft: "372px",
+    wantTop: "696px",
+  },
+  {
+    name: "above when right does not fit",
+    right: 360,
+    top: 300,
+    height: 40,
+    viewportWidth: 500,
+    viewportHeight: 800,
+    wantLeft: "30px",
+    wantTop: "192px",
+  },
+  {
+    name: "below when above does not fit",
+    right: 360,
+    top: 40,
+    height: 40,
+    viewportWidth: 500,
+    viewportHeight: 800,
+    wantLeft: "30px",
+    wantTop: "92px",
+  },
+  {
+    name: "clamped when neither side fits",
+    right: 360,
+    top: 40,
+    height: 40,
+    viewportWidth: 500,
+    viewportHeight: 150,
+    wantLeft: "30px",
+    wantTop: "8px",
+  },
+  {
+    name: "horizontally clamped fallback",
+    right: 360,
+    top: 300,
+    height: 40,
+    viewportWidth: 270,
+    viewportHeight: 800,
+    wantLeft: "22px",
+    wantTop: "192px",
+  },
+  {
+    name: "right fitting exactly at the viewport margin",
+    right: 280,
+    top: 300,
+    height: 40,
+    viewportWidth: 540,
+    viewportHeight: 800,
+    wantLeft: "292px",
+    wantTop: "272px",
+  },
+])(
+  "places a side-anchored production card $name",
+  ({ right, top, height, viewportWidth, viewportHeight, wantLeft, wantTop }) => {
+    vi.useFakeTimers();
+    vi.stubGlobal("innerWidth", viewportWidth);
+    vi.stubGlobal("innerHeight", viewportHeight);
+    const width = vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(240);
+    const cardHeight = vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(96);
+    try {
+      render(
+        <HoverCard
+          label={<div>Complete context</div>}
+          sideAnchor={() => ({ rowRect: new DOMRect(20, top, 260, height), sideRight: right })}
+        >
+          <button type="button">Short title</button>
+        </HoverCard>,
+      );
+      fireEvent.focus(screen.getByRole("button"));
+      act(() => vi.advanceTimersByTime(300));
+      const card = screen.getByRole("tooltip");
+      expect(card.style.left).toBe(wantLeft);
+      expect(card.style.top).toBe(wantTop);
+      expect(card.parentElement).toBe(document.body);
+      expect(screen.getByRole("button").getAttribute("aria-describedby")).toBe(card.id);
+    } finally {
+      width.mockRestore();
+      cardHeight.mockRestore();
+    }
+  },
+);
+
+test("remeasures a side-anchored card's untransformed size after its content changes", () => {
+  vi.useFakeTimers();
+  vi.stubGlobal("innerWidth", 1000);
+  vi.stubGlobal("innerHeight", 800);
+  let resize: () => void = () => {};
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      constructor(callback: () => void) {
+        resize = callback;
+      }
+      observe() {}
+      disconnect() {}
+    },
+  );
+  const width = vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(240);
+  const height = vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(96);
+  // The transform-distorted box must never drive card collision decisions.
+  const rect = vi.spyOn(Element.prototype, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 1, 1));
+  try {
+    render(
+      <HoverCard
+        label={<div>Complete context</div>}
+        sideAnchor={() => ({ rowRect: new DOMRect(20, 300, 260, 40), sideRight: 280 })}
+      >
+        <button type="button">Short title</button>
+      </HoverCard>,
+    );
+    fireEvent.focus(screen.getByRole("button"));
+    act(() => vi.advanceTimersByTime(300));
+    const card = screen.getByRole("tooltip");
+    expect(card.style.top).toBe("272px");
+    height.mockReturnValue(200);
+    act(() => resize());
+    expect(card.style.top).toBe("220px");
+    width.mockReturnValue(720);
+    act(() => resize());
+    expect(card.style.left).toBe("8px");
+    expect(card.style.top).toBe("88px");
+  } finally {
+    width.mockRestore();
+    height.mockRestore();
+    rect.mockRestore();
+  }
+});
+
+test("keeps an open side-anchored card beside its resized owning row", () => {
+  vi.stubGlobal("innerWidth", 1200);
+  vi.stubGlobal("innerHeight", 800);
+  const resizeCallbacks = new Map<Element, () => void>();
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      private readonly targets = new Set<Element>();
+      constructor(private readonly callback: () => void) {}
+      observe(target: Element) {
+        this.targets.add(target);
+        resizeCallbacks.set(target, this.callback);
+      }
+      disconnect() {
+        for (const target of this.targets) resizeCallbacks.delete(target);
+      }
+    },
+  );
+  let sidebarRight = 280;
+  const width = vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(240);
+  const height = vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(96);
+  try {
+    render(
+      <div role="treeitem" tabIndex={0} data-testid="owning-row">
+        <HoverCard
+          label={<div>Complete context</div>}
+          focusTarget={() => document.querySelector('[data-testid="owning-row"]')}
+          sideAnchor={() => ({ rowRect: new DOMRect(20, 300, sidebarRight - 20, 40), sideRight: sidebarRight })}
+        >
+          <button type="button">Short title</button>
+        </HoverCard>
+      </div>,
+    );
+    const row = screen.getByTestId("owning-row");
+    act(() => row.focus());
+    const card = screen.getByRole("tooltip");
+    expect(card.style.left).toBe("292px");
+    expect(card.style.top).toBe("272px");
+    sidebarRight = 560;
+    act(() => resizeCallbacks.get(row)?.());
+    expect(screen.getByRole("tooltip")).toBe(card);
+    expect(card.style.left).toBe("572px");
+    expect(card.style.top).toBe("272px");
+    expect(document.activeElement).toBe(row);
+    expect(row.getAttribute("aria-describedby")).toBe(card.id);
+  } finally {
+    width.mockRestore();
+    height.mockRestore();
   }
 });
 

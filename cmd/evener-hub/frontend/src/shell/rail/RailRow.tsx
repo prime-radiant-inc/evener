@@ -596,11 +596,18 @@ function SessionTitle({
   notStarted: boolean;
   focusTarget: () => HTMLElement | null;
 }) {
+  const sideAnchor = useCallback(() => {
+    const row = focusTarget();
+    const rail = row?.closest<HTMLElement>("[data-sidebar-rail]");
+    if (!row || !rail) return null;
+    return { rowRect: row.getBoundingClientRect(), sideRight: rail.getBoundingClientRect().right };
+  }, [focusTarget]);
   return (
     <span className={CLASS.sessionTitle}>
       <HoverCard
         label={<SessionContextCard session={session} effectiveState={effectiveState} notStarted={notStarted} />}
         focusTarget={focusTarget}
+        sideAnchor={sideAnchor}
         longPressEnabled
       >
         {({ describedBy }) => (
