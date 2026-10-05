@@ -5,6 +5,8 @@ import { useRef, useState } from "react";
 import { FlatList, Pressable, SafeAreaView, ScrollView, Text, View, useWindowDimensions } from "react-native";
 import { EnrichedMarkdownCodeText, EnrichedMarkdownText } from "react-native-enriched-markdown";
 import { useCodeText } from "../src/reader/ReaderBlock";
+import { ReaderSelectionSurface } from "../src/reader/ReaderSelectionSurface";
+import type { NativeDocumentSelection } from "../src/reader/nativeSelection";
 import { allowFontScaling, useColors } from "../src/ui";
 
 export const RICH_SOURCE =
@@ -74,11 +76,13 @@ function NativeReaderCode({
 	id,
 	snapshotId,
 	blockEnd,
+	blockStart = 0,
 }: {
 	text: string;
 	id: string;
 	snapshotId: string;
 	blockEnd: number;
+	blockStart?: number;
 }) {
 	const { palette } = useColors();
 	const code = useCodeText();
@@ -88,7 +92,7 @@ function NativeReaderCode({
 				<EnrichedMarkdownCodeText
 					text={text}
 					documentSnapshotId={snapshotId}
-					blockSourceRange={{ start: 0, end: blockEnd }}
+					blockSourceRange={{ start: blockStart, end: blockEnd }}
 					testID={id}
 					allowFontScaling={allowFontScaling}
 					selectable
@@ -148,6 +152,7 @@ function CodeComparison() {
 function DocumentAnnotationsProbe() {
 	const [menuEvent, setMenuEvent] = useState("No selection-menu event");
 	const [comparison, setComparison] = useState(false);
+	const [selection, setSelection] = useState<NativeDocumentSelection>();
 	const list = useRef<FlatList>(null);
 	return (
 		<SafeAreaView style={{ flex: 1, backgroundColor: "white" }}>
@@ -155,42 +160,74 @@ function DocumentAnnotationsProbe() {
 			<Text testID="native-probe-menu-event" accessibilityValue={{ text: menuEvent }}>
 				{menuEvent}
 			</Text>
+			<View style={{ height: 60 }}>
+				<Text testID="native-probe-source-range">
+					{selection
+						? `Captured source ${selection.sourceRange.start}:${selection.sourceRange.end}`
+						: "No original selection"}
+				</Text>
+				<Text testID="native-probe-selection-phase">Selection {selection?.phase ?? "cleared"}</Text>
+				<Text
+					testID="native-probe-selection-event"
+					numberOfLines={1}
+					style={{ fontSize: 8 }}
+					accessibilityValue={{ text: JSON.stringify(selection) }}
+				>
+					{JSON.stringify(selection)}
+				</Text>
+			</View>
 			{comparison ? (
 				<CodeComparison />
 			) : (
-				<FlatList
-					ref={list}
-					data={ROWS}
-					keyExtractor={(row) => row.id}
-					contentContainerStyle={{ padding: 24, gap: 24 }}
-					renderItem={({ item }) => (
-						<View testID={`native-probe-${item.id}`} collapsable={false}>
-							{item.id === "code" ? (
-								<ReaderCode text="same()" id="native-probe-reader-code-text" />
-							) : (
-								<EnrichedMarkdownText
-									markdown={RICH_SOURCE.slice(item.start, item.end)}
-									flavor="github"
-									selectable
-									allowFontScaling
-									enableTaskListItemToggle={false}
-									streamingAnimation={false}
-									markdownStyle={{ paragraph: { fontSize: 20, lineHeight: 28, color: "#000000" } }}
-									contextMenuItems={[
-										{
-											text: "Observe selection",
-											onPress: ({ text, selection }) => {
-												// Existing event coordinates are rendered, row-local offsets.
-												// Never label them original source or gesture completion.
-												setMenuEvent(JSON.stringify({ row: item.id, text, renderedRange: selection }));
+				<ReaderSelectionSurface
+					source={RICH_SOURCE}
+					displayedSnapshotId="rich-fixture"
+					ranges={[]}
+					onSelection={setSelection}
+					onRangePress={() => {}}
+				>
+					<FlatList
+						ref={list}
+						data={ROWS}
+						keyExtractor={(row) => row.id}
+						contentContainerStyle={{ padding: 24, gap: 24 }}
+						renderItem={({ item }) => (
+							<View testID={`native-probe-${item.id}`} collapsable={false}>
+								{item.id === "code" ? (
+									<NativeReaderCode
+										text="same()"
+										id="native-probe-reader-code-text"
+										snapshotId="rich-fixture"
+										blockStart={152}
+										blockEnd={172}
+									/>
+								) : (
+									<EnrichedMarkdownText
+										markdown={RICH_SOURCE.slice(item.start, item.end)}
+										documentSnapshotId="rich-fixture"
+										blockSourceRange={{ start: item.start, end: item.end }}
+										flavor="github"
+										selectable
+										allowFontScaling
+										enableTaskListItemToggle={false}
+										streamingAnimation={false}
+										markdownStyle={{ paragraph: { fontSize: 20, lineHeight: 28, color: "#000000" } }}
+										contextMenuItems={[
+											{
+												text: "Observe selection",
+												onPress: ({ text, selection }) => {
+													// Existing event coordinates are rendered, row-local offsets.
+													// Never label them original source or gesture completion.
+													setMenuEvent(JSON.stringify({ row: item.id, text, renderedRange: selection }));
+												},
 											},
-										},
-									]}
-								/>
-							)}
-						</View>
-					)}
-				/>
+										]}
+									/>
+								)}
+							</View>
+						)}
+					/>
+				</ReaderSelectionSurface>
 			)}
 			<View style={{ flexDirection: "row" }}>
 				<ProbeButton

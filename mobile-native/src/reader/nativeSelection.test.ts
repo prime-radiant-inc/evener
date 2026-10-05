@@ -1,6 +1,13 @@
 import { displayedFingerprint, type AcceptedSourceLease, type CapturedEvidence } from "@evener/appwire-client";
-import { describe, expect, it } from "vitest";
+import { createElement, type ReactElement } from "react";
+import { EnrichedMarkdownSelectionSurface } from "react-native-enriched-markdown";
+import { describe, expect, it, vi } from "vitest";
+import { ReaderSelectionSurface, type ReaderSelectionSurfaceProps } from "./ReaderSelectionSurface";
 import { captureNativePassage, type NativeDocumentSelection } from "./nativeSelection";
+
+vi.mock("react-native-enriched-markdown", () => ({
+	EnrichedMarkdownSelectionSurface: vi.fn(),
+}));
 
 const SOURCE = "First occurrence: same\n\nOther context for a second occurrence is nearby: same\n";
 const RICH_SOURCE =
@@ -116,5 +123,44 @@ describe("captureNativePassage", () => {
 		expect(() => captureNativePassage(event({ sourceRange }), RICH_SOURCE, lease, evidence(RICH_SOURCE))).toThrow(
 			RangeError,
 		);
+	});
+});
+
+describe("ReaderSelectionSurface", () => {
+	function surface() {
+		const props: ReaderSelectionSurfaceProps = {
+			source: RICH_SOURCE,
+			displayedSnapshotId: "snapshot-A",
+			ranges: [{ operationId: "note-A", sourceRange: { start: 135, end: 139 } }],
+			onSelection: vi.fn(),
+			onRangePress: vi.fn(),
+			children: createElement("fixture"),
+		};
+		const element = ReaderSelectionSurface(props) as ReactElement<ReaderSelectionSurfaceProps>;
+		return { props, element };
+	}
+	it("uses the public package surface without changing original source, saved anchors or children", () => {
+		const { props, element } = surface();
+		expect(element.type).toBe(EnrichedMarkdownSelectionSurface);
+		expect(element.props.source).toBe(RICH_SOURCE);
+		expect(element.props.displayedSnapshotId).toBe("snapshot-A");
+		expect(element.props.ranges).toBe(props.ranges);
+		expect(element.props.children).toBe(props.children);
+	});
+	it("does not manufacture a completed event when rendering or convert native mapping coordinates", () => {
+		const { props, element } = surface();
+		expect(props.onSelection).not.toHaveBeenCalled();
+		const selection = event({ sourceRange: { start: 159, end: 163 }, phase: "changing" });
+		element.props.onSelection(selection);
+		expect(props.onSelection).toHaveBeenCalledExactlyOnceWith(selection);
+		expect(selection.phase).toBe("changing");
+		expect(element.props.onSelection).toBe(props.onSelection);
+	});
+	it("passes every overlapping operation ID from native hit testing unchanged", () => {
+		const { props, element } = surface();
+		const ids = ["note-A", "note-B"];
+		element.props.onRangePress(ids);
+		expect(props.onRangePress).toHaveBeenCalledExactlyOnceWith(ids);
+		expect(element.props.onRangePress).toBe(props.onRangePress);
 	});
 });
