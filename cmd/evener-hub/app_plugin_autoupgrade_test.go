@@ -3,6 +3,7 @@ package hub
 import (
 	"bytes"
 	"context"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -233,5 +234,68 @@ func TestPlugins_CheckUpdatesFlagsAPluginWhoseRemoteMovedUntilItIsUpgraded(t *te
 	}
 	if flagged(ctl.Upgrade(ctx, ref)) {
 		t.Fatal("upgraded plugin still flagged")
+	}
+}
+
+// A check answers with the best list it can: a plugin whose remote moved is
+// flagged, while one whose remote can't be reached and one with a relative
+// source carry no flag, and neither fails the check.
+func TestPlugins_CheckUpdatesFlagsOnlyWhatItCouldConfirm(t *testing.T) {
+	if !hubTestGitAvailable() {
+		t.Skip("git not available")
+	}
+	moved := filepath.Join(t.TempDir(), "moved")
+	hubTestWritePlugin(t, moved, "moved")
+	hubTestMakeGitRepo(t, moved, "extra.txt", "v1")
+	unreachable := filepath.Join(t.TempDir(), "unreachable")
+	hubTestWritePlugin(t, unreachable, "unreachable")
+	hubTestMakeGitRepo(t, unreachable, "extra.txt", "v1")
+
+	mktRepo := filepath.Join(t.TempDir(), "mkt")
+	hubTestWritePlugin(t, filepath.Join(mktRepo, "plugins", "relative"), "relative")
+	if err := os.MkdirAll(filepath.Join(mktRepo, ".claude-plugin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mj := `{"name":"acme","owner":{"name":"o"},"plugins":[` +
+		`{"name":"moved","source":{"source":"url","url":"` + moved + `"}},` +
+		`{"name":"unreachable","source":{"source":"url","url":"` + unreachable + `"}},` +
+		`{"name":"relative","source":"./plugins/relative"}]}`
+	if err := os.WriteFile(filepath.Join(mktRepo, ".claude-plugin", "marketplace.json"), []byte(mj), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	hubTestMakeGitRepo(t, mktRepo, "README.md", "x")
+
+	mgr := plugins.NewManager(t.TempDir())
+	mgr.Stderr = io.Discard
+	ctx := context.Background()
+	if _, err := mgr.AddMarketplace(ctx, "", plugins.Source{Kind: plugins.SourceURL, URL: mktRepo}); err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	for _, name := range []string{"moved", "unreachable", "relative"} {
+		if _, err := mgr.Install(ctx, name, "acme"); err != nil {
+			t.Fatalf("Install %s: %v", name, err)
+		}
+	}
+	hubTestAdvanceGitRepo(t, moved, "extra.txt", "v2")
+	if err := os.Rename(unreachable, unreachable+".gone"); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := (&hubPluginsController{mgr: mgr}).CheckUpdates(ctx)
+	if err != nil {
+		t.Fatalf("CheckUpdates failed on an unreachable remote: %v", err)
+	}
+	flagged := map[string]bool{}
+	for _, entry := range resp.Plugins {
+		flagged[entry.Plugin] = entry.UpdateAvailable
+	}
+	want := map[string]bool{"moved": true, "unreachable": false, "relative": false}
+	if len(flagged) != len(want) {
+		t.Fatalf("listed %v, want all three plugins", flagged)
+	}
+	for name, w := range want {
+		if flagged[name] != w {
+			t.Errorf("%s updateAvailable = %v, want %v", name, flagged[name], w)
+		}
 	}
 }
