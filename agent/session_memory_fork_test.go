@@ -16,6 +16,13 @@ import (
 
 func forkWithSessionMemory(t *testing.T, seed bool) (root, parentID string, child *Session) {
 	t.Helper()
+	return forkWithSessionMemoryMeta(t, seed, nil)
+}
+
+// forkWithSessionMemoryMeta is forkWithSessionMemory with a hook that edits
+// the fork's persisted meta before it is restored.
+func forkWithSessionMemoryMeta(t *testing.T, seed bool, edit func(*schema.SessionMeta)) (root, parentID string, child *Session) {
+	t.Helper()
 	root, history, workspace := t.TempDir(), t.TempDir(), t.TempDir()
 	p := newSession(t, withDir(workspace), withConfig(SessionConfig{StateDir: history, MemoryStateRoot: root}), withSteps(func(llm.Request) llm.Response { return finalResponse("done") }))
 	if _, err := p.ProcessInput(context.Background(), "parent turn", nil); err != nil {
@@ -32,6 +39,9 @@ func forkWithSessionMemory(t *testing.T, seed bool) (root, parentID string, chil
 	meta, err := schema.LoadSessionMeta(history, childID)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if edit != nil {
+		edit(&meta)
 	}
 	c, err := RestoreSessionFromMetaWithConfig(p.client, p.profile, execenv.NewLocalExecutionEnvironment(workspace), meta, RestoreSessionConfig{StateDir: history, MemoryStateRoot: root})
 	if err != nil {
@@ -103,9 +113,107 @@ func TestMemoryForkIgnoresSymlinkedParentSessionDir(t *testing.T) {
 	if err := os.Symlink(outside, filepath.Join(base, parentID)); err != nil {
 		t.Fatal(err)
 	}
+	seen, stop := captureEvents(c)
 	c.seedForkedSessionMemory()
+	stop()
 	if got, err := os.ReadFile(filepath.Join(base, c.id, "MEMORY.md")); err == nil {
 		t.Fatalf("child copied through the symlink: %q", got)
+	}
+	if !hasWarningContaining(*seen, "could not copy the parent session's memory") {
+		t.Fatal("a symlinked parent scope was not reported")
+	}
+}
+
+func TestMemoryForkWarnsOnParentScopeThatIsAFile(t *testing.T) {
+	t.Parallel()
+	root, parentID, c := forkWithSessionMemory(t, false)
+	base := filepath.Join(root, "memory", "sessions")
+	if err := os.MkdirAll(base, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(base, parentID)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(base, parentID), []byte("opaque-file-43\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	seen, stop := captureEvents(c)
+	c.seedForkedSessionMemory()
+	stop()
+	if _, err := os.Lstat(filepath.Join(base, c.id)); !os.IsNotExist(err) {
+		t.Fatalf("child scope created from a file parent: %v", err)
+	}
+	if !hasWarningContaining(*seen, "could not copy the parent session's memory") {
+		t.Fatal("a parent scope that is a file was not reported")
+	}
+}
+
+// A symlink at memory/sessions must not redirect the copy: the parent read
+// and the child write both stay beneath the memory state root.
+func TestMemoryForkRefusesSymlinkedSessionsDirectory(t *testing.T) {
+	t.Parallel()
+	root, parentID, c := forkWithSessionMemory(t, false)
+	outside := filepath.Join(t.TempDir(), "sessions")
+	if err := os.MkdirAll(filepath.Join(outside, parentID), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, parentID, "MEMORY.md"), []byte("opaque-outside-44\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	base := filepath.Join(root, "memory", "sessions")
+	if err := os.RemoveAll(base); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(base), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, base); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	seen, stop := captureEvents(c)
+	c.seedForkedSessionMemory()
+	stop()
+	if _, err := os.Lstat(filepath.Join(outside, c.id)); !os.IsNotExist(err) {
+		t.Fatalf("child received content through the symlinked sessions directory: %v", err)
+	}
+	if !hasWarningContaining(*seen, "could not copy the parent session's memory") {
+		t.Fatal("a symlinked sessions directory was not reported")
+	}
+}
+
+// The byte limit bounds what the copy reads, so a file that grows after it
+// was listed still cannot exceed the remaining budget.
+func TestMemoryForkReadWithinBudget(t *testing.T) {
+	t.Parallel()
+	if got, err := readWithinBudget(strings.NewReader("opaque"), 6); err != nil || string(got) != "opaque" {
+		t.Fatalf("at budget got=%q err=%v", got, err)
+	}
+	if got, err := readWithinBudget(strings.NewReader("opaque!"), 6); err == nil || !strings.Contains(err.Error(), "fork copy limit") {
+		t.Fatalf("over budget got=%q err=%v", got, err)
+	}
+}
+
+// A delegate resumed on its own restores with depth zero, so only its
+// persisted subagent flag marks it. It must not get a private session scope,
+// session guidance or a fork seed.
+func TestMemoryStandaloneResumedDelegateHasNoSessionScope(t *testing.T) {
+	t.Parallel()
+	root, _, c := forkWithSessionMemoryMeta(t, true, func(meta *schema.SessionMeta) { meta.IsSubagent = true })
+	if c.depth != 0 {
+		t.Fatalf("fixture depth=%d, want a standalone restore", c.depth)
+	}
+	res := memoryExec(t, c, "memory_write", map[string]any{"scope": "session", "file_path": "MEMORY.md", "content": "opaque-delegate-45\n"})
+	if !res.IsError || !strings.Contains(res.Output, "session memory is not bound") {
+		t.Fatalf("standalone delegate session write=%+v", res)
+	}
+	if _, err := os.Lstat(filepath.Join(root, "memory", "sessions", c.id)); !os.IsNotExist(err) {
+		t.Fatalf("standalone delegate got a session scope or fork seed: %v", err)
+	}
+	if guidance := c.memoryGuidance(); strings.Contains(guidance, memorySessionScopeLine) || strings.Contains(guidance, memorySessionSaveTrigger) {
+		t.Fatalf("standalone delegate guidance names session memory: %q", guidance)
+	}
+	if data, _ := c.buildPromptData(c.currentEnv()); data.SessionMemorySaves {
+		t.Fatal("standalone delegate offered session saves")
 	}
 }
 
@@ -144,6 +252,10 @@ func assertForkCopyRefused(t *testing.T, root string, c *Session, leaked string)
 		t.Fatal("copy refusal was not reported")
 	}
 	childDir := filepath.Join(root, "memory", "sessions", c.id)
+	leftovers, _ := filepath.Glob(filepath.Join(root, "memory", "sessions", ".fork-copy-*"))
+	if len(leftovers) != 0 {
+		t.Fatalf("refused copy left its temporary directory: %v", leftovers)
+	}
 	err := filepath.WalkDir(childDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return err

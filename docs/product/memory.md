@@ -27,12 +27,18 @@ memory belongs to its bound project identity.
 
 Session memory holds working notes about the current work (its plan, what was
 tried and found). The root session owns it;
-delegates resolve the scope to their root and can read but not write it. Resume
-keeps it. A fork or `--resume-with` child copies its parent's session memory the
+delegates resolve the scope to their root and can read but not write it. A
+delegate resumed on its own (`serve --resume <delegate-id>`) is still a
+delegate: it has no root to resolve, so it gets no session scope, no session
+guidance and no fork copy. Resume keeps a root's session memory. A fork or
+`--resume-with` child copies its parent's session memory the
 first time it opens the scope, in its own process, normally at its first model
-call; then the two diverge. A missing or empty parent scope means an empty
-start. The copy takes only regular files and directories within a size limit;
-anything else means a warning and an empty start. A copy failure is a session warning and leaves the scope empty; it never
+call; then the two diverge. A missing or empty parent scope means a silent empty
+start. The copy reads the parent and writes the child through the same confined
+layer the memory tools use, so no symlink anywhere on the path is followed. It
+takes only regular files and directories within a size limit (empty directories
+are skipped); anything else, including a parent scope that exists but is a
+symlink or a file, means a warning and an empty start. A copy failure is a session warning and leaves the scope empty; it never
 blocks the session. Deleting a session keeps its session memory. No native
 memory tool reaches another session's session directory, so removing it is
 manual for now (#3748 tracks cleanup).
@@ -86,8 +92,8 @@ turn. Root sessions are told that working notes belong in session memory, not
 project memory (the second half only when project memory is bound). The
 Finishing guidance adds one row telling root sessions to promote anything that
 holds beyond this work out of session memory before they report. Delegates are told session memory is their root's, to read it and
-report what they learn to their parent; a delegate with no root session id is
-told nothing about session memory. A delegate's session index projection
+report what they learn to their parent; a delegate with no root session id,
+including one resumed on its own, is told nothing about session memory. A delegate's session index projection
 says the same in one sentence. Guidance names only tools the session can call, and mentions project
 memory only when a project scope is bound.
 

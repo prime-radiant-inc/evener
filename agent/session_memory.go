@@ -23,11 +23,20 @@ const memorySessionReadOnly = "session memory belongs to the root session; repor
 // memoryScopes lists every memory scope in projection order.
 var memoryScopes = []string{"personal", "project", "session"}
 
+// isMemoryDelegate reports whether this session is a delegate for memory
+// ownership. Depth marks a live spawn; isSubagentSession also catches a
+// delegate resumed on its own, which restores with depth zero.
+func (s *Session) isMemoryDelegate() bool { return s.depth > 0 || s.isSubagentSession() }
+
 // memorySessionID names the session memory this session uses: its own for a
-// root session, its root's for a delegate. A delegate without a root id gets
-// none rather than a private writable scope.
+// root session, its root's for a delegate. A delegate without a root id, or
+// whose recorded root is itself (a delegate resumed on its own owns its
+// delegate state), gets none rather than a private writable scope.
 func (s *Session) memorySessionID() string {
-	if s.depth > 0 {
+	if s.isMemoryDelegate() {
+		if s.delegateRootSessionID == s.id {
+			return ""
+		}
 		return s.delegateRootSessionID
 	}
 	return s.id
@@ -35,7 +44,7 @@ func (s *Session) memorySessionID() string {
 
 // sessionMemoryReadOnly reports whether this session may only read session
 // memory: a delegate reads its root's session memory but never writes it.
-func (s *Session) sessionMemoryReadOnly() bool { return s.depth > 0 }
+func (s *Session) sessionMemoryReadOnly() bool { return s.isMemoryDelegate() }
 
 // memoryScopeBinding resolves scope to its directory under the memory state
 // root and reports whether this session may only read it. An error means the
