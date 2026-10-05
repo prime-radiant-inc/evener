@@ -1,7 +1,23 @@
-import { type ScrollToOptions, useVirtualizer, type Virtualizer } from "@tanstack/react-virtual";
-import { type ReactNode, type Ref, useImperativeHandle, useRef } from "react";
+import {
+  elementScroll,
+  measureElement,
+  observeElementOffset,
+  observeElementRect,
+  type ScrollToOptions,
+  useVirtualizer,
+  type Virtualizer,
+} from "@tanstack/react-virtual";
+import { type ReactNode, type Ref, useImperativeHandle, useLayoutEffect, useReducer, useRef } from "react";
 import { requireClass } from "../internal/requireClass";
 import styles from "./virtuallist.module.css";
+
+export interface CommittedVirtualListLayout {
+  readonly virtualizer: Virtualizer<HTMLDivElement, HTMLDivElement>;
+  isCurrent(): boolean;
+  scrollToOffset(offset: number): void;
+  cancelPendingScroll(): void;
+  syncReaderMovement(beforeOffset: number): void;
+}
 
 export interface VirtualListHandle {
   scrollToIndex: (index: number, options?: ScrollToOptions) => void;
@@ -61,6 +77,8 @@ export interface VirtualListProps {
    * "something changed" ignores both, as before.
    */
   onChange?: (instance: Virtualizer<HTMLDivElement, HTMLDivElement>, sync: boolean) => void;
+  /** Measured geometry after the rows and sizer commit, with live validity checks. */
+  onLayout?: (layout: CommittedVirtualListLayout) => void;
   /**
    * Opt in to end-anchored following (virtual-core 3.17's anchorTo:"end" +
    * followOnAppend - the locked dependency tree already carries it, via
@@ -106,6 +124,35 @@ const DEFAULT_OVERSCAN = 6;
 // widgets, never the reverse.
 const END_ANCHOR_THRESHOLD_PX = 4;
 
+function hasCommittedGeometry(
+  instance: Virtualizer<HTMLDivElement, HTMLDivElement>,
+  measured: WeakMap<Element, number>,
+): boolean {
+  const port = instance.scrollElement;
+  const sizer = port?.firstElementChild;
+  const rect = instance.scrollRect;
+  if (!port || port.clientWidth <= 0 || port.clientHeight <= 0 || !rect || !(sizer instanceof HTMLElement))
+    return false;
+  if (Math.abs(rect.width - port.clientWidth) > 1.5 || Math.abs(rect.height - port.clientHeight) > 1.5) return false;
+  if (Math.abs(sizer.getBoundingClientRect().height - instance.getTotalSize()) > 1.5) return false;
+  return instance.getVirtualItems().every((item) => {
+    const row = sizer.querySelector<HTMLElement>(`:scope > [data-index="${item.index}"]`);
+    if (!row) return false;
+    const observed = measured.get(row);
+    const height = row.getBoundingClientRect().height;
+    const translation = Number.parseFloat(row.style.transform.match(/^translateY\(([-\d.]+)px\)$/)?.[1] ?? "NaN");
+    return (
+      observed !== undefined &&
+      observed > 0 &&
+      height > 0 &&
+      Math.abs(observed - height) <= 1.5 &&
+      Math.abs(height - item.size) <= 1.5 &&
+      Number.isFinite(translation) &&
+      Math.abs(translation - item.start) <= 1.5
+    );
+  });
+}
+
 /**
  * Windows `count` rows down to the visible range via @tanstack/react-virtual
  * (already a dependency): `renderRow(index)` is only called for rows near
@@ -122,27 +169,156 @@ export function VirtualList({
   dynamic,
   getItemKey,
   onChange,
+  onLayout,
   anchorToEnd,
   ref,
 }: VirtualListProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const clampedScrollRef = useRef<{ offset: number; clampedOffset: number } | null>(null);
+  const [, requestGeometryCommit] = useReducer((revision: number) => revision + 1, 0);
+  const measuredHeightsRef = useRef(new WeakMap<Element, number>());
+  const publishOffsetRef = useRef<((offset: number, isScrolling: boolean) => void) | null>(null);
+  const backwardMovementRef = useRef(false);
 
-  const virtualizer = useVirtualizer({
+  // Equal-estimate measurements and same-range rectangles do not notify the
+  // core. Record actual observations and request their missing React commit.
+  const geometryOptions = onLayout
+    ? {
+        measureElement: (
+          node: HTMLDivElement,
+          entry: ResizeObserverEntry | undefined,
+          instance: Virtualizer<HTMLDivElement, HTMLDivElement>,
+        ) => {
+          const height = measureElement(node, entry, instance);
+          const previous = measuredHeightsRef.current.get(node);
+          measuredHeightsRef.current.set(node, height);
+          if (previous !== height) requestGeometryCommit();
+          return height;
+        },
+        observeElementRect: (
+          instance: Virtualizer<HTMLDivElement, HTMLDivElement>,
+          publish: (rect: { width: number; height: number }) => void,
+        ) => {
+          let previous: { width: number; height: number } | undefined;
+          return observeElementRect(instance, (rect) => {
+            const changed = !previous || previous.width !== rect.width || previous.height !== rect.height;
+            previous = rect;
+            publish(rect);
+            if (changed) requestGeometryCommit();
+          });
+        },
+        observeElementOffset: (
+          instance: Virtualizer<HTMLDivElement, HTMLDivElement>,
+          publish: (offset: number, isScrolling: boolean) => void,
+        ) => {
+          publishOffsetRef.current = publish;
+          const dispose = observeElementOffset(instance, publish);
+          return () => {
+            if (publishOffsetRef.current === publish) publishOffsetRef.current = null;
+            backwardMovementRef.current = false;
+            dispose?.();
+          };
+        },
+      }
+    : {};
+
+  const virtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
     count,
     getScrollElement: () => scrollRef.current,
     estimateSize,
     overscan: DEFAULT_OVERSCAN,
     getItemKey,
     onChange,
+    ...geometryOptions,
     ...(anchorToEnd
       ? { anchorTo: "end" as const, followOnAppend: true, scrollEndThreshold: END_ANCHOR_THRESHOLD_PX }
       : {}),
+    ...(dynamic && anchorToEnd
+      ? {
+          scrollToFn: (offset, options, instance) => {
+            elementScroll(offset, options, instance);
+            const port = instance.scrollElement;
+            const target = offset + (options.adjustments ?? 0);
+            clampedScrollRef.current =
+              port && target > Math.max(0, port.scrollHeight - port.clientHeight)
+                ? { offset: target, clampedOffset: port.scrollTop }
+                : null;
+          },
+        }
+      : {}),
   });
+
+  // Measurement writes precede the sizer commit. Complete a clamped write
+  // before its browser read-back, unless newer scrolling superseded it.
+  useLayoutEffect(() => {
+    const pending = clampedScrollRef.current;
+    clampedScrollRef.current = null;
+    const port = scrollRef.current;
+    if (pending && port && port.scrollTop === pending.clampedOffset && virtualizer.scrollOffset === pending.offset) {
+      port.scrollTop = pending.offset;
+    }
+  });
+
+  const cancelPendingScroll = () => {
+    clampedScrollRef.current = null;
+    backwardMovementRef.current = false;
+    const port = scrollRef.current;
+    if (!port) return;
+    virtualizer.scrollToOffset(port.scrollTop, { align: "start", behavior: "auto" });
+    publishOffsetRef.current?.(port.scrollTop, false);
+  };
+  const syncReaderMovement = (beforeOffset: number) => {
+    const port = scrollRef.current;
+    if (!port || !Number.isFinite(beforeOffset) || port.scrollTop === beforeOffset) return;
+    const afterOffset = port.scrollTop;
+    backwardMovementRef.current = afterOffset < beforeOffset;
+    // Observations preserve signed movement without replacing a newer command.
+    publishOffsetRef.current?.(beforeOffset, false);
+    publishOffsetRef.current?.(afterOffset, true);
+  };
+  useLayoutEffect(() => {
+    if (!onLayout) return;
+    const committedPort = scrollRef.current;
+    const committed: CommittedVirtualListLayout = {
+      virtualizer,
+      isCurrent: () =>
+        scrollRef.current === committedPort &&
+        virtualizer.scrollElement === committedPort &&
+        hasCommittedGeometry(virtualizer, measuredHeightsRef.current),
+      scrollToOffset: (offset) => {
+        backwardMovementRef.current = false;
+        virtualizer.scrollToOffset(offset, { align: "start", behavior: "auto" });
+      },
+      cancelPendingScroll,
+      syncReaderMovement,
+    };
+    if (committed.isCurrent()) {
+      backwardMovementRef.current = false;
+      onLayout(committed);
+    }
+  });
+
+  // Width changes can remeasure cached rows during a backward gesture.
+  // Anchor rows fully above the viewport while retaining the upstream
+  // protection against adjustment within a partially visible backward row.
+  virtualizer.shouldAdjustScrollPositionOnItemSizeChange =
+    dynamic && anchorToEnd
+      ? (item, _delta, instance) => {
+          // The intended offset includes earlier adjustments in this batch,
+          // even before the DOM sizer grows enough to accept those writes.
+          const offset = instance.scrollOffset ?? instance.scrollElement?.scrollTop ?? 0;
+          const backward = instance.scrollDirection === "backward" || backwardMovementRef.current;
+          return item.start < offset && (!instance.itemSizeCache.has(item.key) || !backward || item.end <= offset);
+        }
+      : undefined;
 
   useImperativeHandle(
     ref,
     () => ({
-      scrollToIndex: (index, options) => virtualizer.scrollToIndex(index, options),
+      scrollToIndex: (index, options) => {
+        backwardMovementRef.current = false;
+        virtualizer.scrollToIndex(index, options);
+      },
       getScrollElement: () => scrollRef.current,
       getVisibleRange: () => {
         const items = virtualizer.getVirtualItems();

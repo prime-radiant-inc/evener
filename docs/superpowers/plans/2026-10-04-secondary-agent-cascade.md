@@ -933,6 +933,8 @@ git commit -m "fix(web): restore secondary inspection without stealing route foc
 
 ## Task 4: Native production journey and evergreen contracts
 
+The approved [shared-reader reflow plan](2026-10-04-shared-transcript-reader-reflow.md) supplies the remaining reader-preservation substeps under the [scroll amendment](../specs/2026-10-04-shared-transcript-reader-reflow-design.md). Tasks 1–3 above remain complete.
+
 **Files:**
 - Modify: `cmd/evener-hub/frontend/scripts/cascadeguard/run.mjs`.
 - Modify: `cmd/evener-hub/cascade_browser_test.go`, milestone names and additional independent observations only.

@@ -1,9 +1,10 @@
 import type { ItemModel, ThreadCapabilities, ThreadModel, TurnModel } from "@evener/appwire-client";
-import { act, cleanup, renderHook } from "@testing-library/react";
-import { createRef } from "react";
+import { act, cleanup, render, renderHook } from "@testing-library/react";
+import { createElement, createRef } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { resetThreadsStoreForTests } from "../../../../stores/threads";
-import type { VirtualListHandle } from "../../../../widgets/virtuallist";
+import { type CommittedVirtualListLayout, VirtualList, type VirtualListHandle } from "../../../../widgets/virtuallist";
+import { installTranscriptGeometry } from "../transcriptReadingGeometryTestUtils";
 import type { ScrollMetrics } from "./scrollMetrics";
 import { resetTranscriptViewRegistryForTests, transitionTranscriptViews } from "./transcriptViewRegistry";
 import {
@@ -3410,6 +3411,52 @@ describe("view-mode anchor preservation", () => {
   });
 });
 
+function renderRegistrationList() {
+  const external = installTranscriptGeometry(
+    () => ({ width: 500, viewportHeight: 300, rowHeights: [600, 600] }),
+    (element) => {
+      const port = element.closest("[data-test-registration-list]")?.firstElementChild;
+      return port instanceof HTMLElement ? port : undefined;
+    },
+  );
+  const ref = createRef<VirtualListHandle>();
+  let layout: CommittedVirtualListLayout | undefined;
+  const mounted = render(
+    createElement(
+      "section",
+      { "data-test-registration-list": true },
+      createElement(VirtualList, {
+        ref,
+        count: 2,
+        dynamic: true,
+        estimateSize: () => 600,
+        renderRow: (index) => createElement("div", null, `Message ${index}`),
+        onLayout: (next) => {
+          layout = next;
+        },
+      }),
+    ),
+  );
+  const handle = ref.current;
+  const el = handle?.getScrollElement();
+  if (!handle || !el) throw new Error("Real registration list has no scroll port");
+  const scrollToIndex = vi.spyOn(handle, "scrollToIndex");
+  return {
+    ref,
+    el,
+    scrollToIndex,
+    commit(registration: ReturnType<typeof useTranscriptViewRegistration>) {
+      external.notify();
+      if (!layout?.isCurrent()) throw new Error("Real registration list has no committed geometry");
+      registration.restoreAfterLayout(layout);
+    },
+    dispose() {
+      mounted.unmount();
+      external.restore();
+    },
+  };
+}
+
 describe("registered transcript view preservation", () => {
   test("captures the visible anchor, bottom state, and focused entry", () => {
     const el = document.createElement("div");
@@ -3438,124 +3485,134 @@ describe("registered transcript view preservation", () => {
     el.remove();
   });
 
-  test("restores a surviving focused entry and focuses the stable fallback when it disappears", () => {
-    const list = makeListHandle();
-    document.body.append(list.el);
-    const oldAnchor = document.createElement("div");
-    oldAnchor.dataset.viewAnchorId = "tool-old";
-    oldAnchor.dataset.viewAnchorSourceIndex = "4";
-    const oldEntry = document.createElement("button");
-    oldAnchor.append(oldEntry);
-    list.el.append(oldAnchor);
-    const fallback = document.createElement("div");
-    fallback.tabIndex = -1;
-    document.body.append(fallback);
-    oldEntry.focus();
+  test("restores a surviving focused entry and focuses the stable fallback when it disappears", async () => {
+    const list = renderRegistrationList();
+    try {
+      const oldAnchor = document.createElement("div");
+      oldAnchor.dataset.viewAnchorId = "tool-old";
+      oldAnchor.dataset.viewAnchorSourceIndex = "4";
+      const oldEntry = document.createElement("button");
+      oldAnchor.append(oldEntry);
+      list.el.append(oldAnchor);
+      const fallback = document.createElement("div");
+      fallback.tabIndex = -1;
+      document.body.append(fallback);
+      oldEntry.focus();
 
-    let positions: ViewAnchorPosition[] = [
-      { id: "tool-old", sourceIndex: 4, index: 1, offset: 18, height: 40, isMessage: false },
-    ];
-    const anchorEntries = [{ id: "tool-old", sourceIndex: 4, index: 1, isMessage: false }];
-    const { rerender } = renderHook(
-      ({ viewKey, entries }) =>
-        useTranscriptViewRegistration({
-          enabled: true,
-          id: "pane",
-          layout: "desktop",
-          viewKey,
-          listRef: list.ref,
-          measure: () => ({ scrollTop: 300, scrollHeight: 1200, clientHeight: 300 }),
-          measureAnchors: () => positions,
-          anchorEntries: entries,
-          renderedRowCount: 2,
-          focusFallback: () => fallback.focus(),
-        }),
-      { initialProps: { viewKey: "everything", entries: anchorEntries } },
-    );
-
-    positions = [{ id: "tool-old", sourceIndex: 4, index: 0, offset: 2, height: 40, isMessage: false }];
-    act(() => {
-      transitionTranscriptViews(
-        () => rerender({ viewKey: "intent", entries: anchorEntries }),
-        "Transcript display changed",
+      let positions: ViewAnchorPosition[] = [
+        { id: "tool-old", sourceIndex: 4, index: 1, offset: 18, height: 40, isMessage: false },
+      ];
+      const anchorEntries = [{ id: "tool-old", sourceIndex: 4, index: 1, isMessage: false }];
+      const { result, rerender } = renderHook(
+        ({ viewKey, entries }) =>
+          useTranscriptViewRegistration({
+            enabled: true,
+            id: "pane",
+            layout: "desktop",
+            viewKey,
+            listRef: list.ref,
+            measureAnchors: () => positions,
+            anchorEntries: entries,
+            renderedRowCount: 2,
+            focusFallback: () => fallback.focus(),
+          }),
+        { initialProps: { viewKey: "everything", entries: anchorEntries } },
       );
-    });
-    expect(document.activeElement).toBe(oldEntry);
+      await act(async () => list.commit(result.current));
 
-    positions = [{ id: "tool-old", sourceIndex: 4, index: 0, offset: 2, height: 40, isMessage: false }];
-    act(() => {
-      transitionTranscriptViews(() => {
-        oldAnchor.remove();
-        positions = [{ id: "agent-new", sourceIndex: 5, index: 1, offset: 0, height: 96, isMessage: true }];
-        rerender({
-          viewKey: "tools",
-          entries: [{ id: "agent-new", sourceIndex: 5, index: 1, isMessage: true }],
-        });
-      }, "Transcript display changed again");
-    });
-    expect(document.activeElement).toBe(fallback);
-    list.el.remove();
-    fallback.remove();
+      positions = [{ id: "tool-old", sourceIndex: 4, index: 0, offset: 2, height: 40, isMessage: false }];
+      act(() => {
+        transitionTranscriptViews(
+          () => rerender({ viewKey: "intent", entries: anchorEntries }),
+          "Transcript display changed",
+        );
+      });
+      expect(document.activeElement).toBe(oldEntry);
+
+      positions = [{ id: "tool-old", sourceIndex: 4, index: 0, offset: 2, height: 40, isMessage: false }];
+      act(() => {
+        transitionTranscriptViews(() => {
+          oldAnchor.remove();
+          positions = [{ id: "agent-new", sourceIndex: 5, index: 1, offset: 0, height: 96, isMessage: true }];
+          rerender({
+            viewKey: "tools",
+            entries: [{ id: "agent-new", sourceIndex: 5, index: 1, isMessage: true }],
+          });
+        }, "Transcript display changed again");
+      });
+      expect(document.activeElement).toBe(fallback);
+      list.el.remove();
+      fallback.remove();
+    } finally {
+      cleanup();
+      list.dispose();
+    }
   });
 
-  test("waits for a virtualized source alias and restores the same descendant from Intent to Tools", () => {
-    const list = makeListHandle();
-    document.body.append(list.el);
-    const intentAnchor = document.createElement("div");
-    intentAnchor.dataset.viewAnchorId = "intent:tool-1";
-    intentAnchor.dataset.viewAnchorSourceIndex = "4";
-    const intentButton = document.createElement("button");
-    intentAnchor.append(intentButton);
-    list.el.append(intentAnchor);
-    const focusFallback = vi.fn();
-    intentButton.focus();
+  test("waits for a virtualized source alias and restores the same descendant from Intent to Tools", async () => {
+    const list = renderRegistrationList();
+    try {
+      const intentAnchor = document.createElement("div");
+      intentAnchor.dataset.viewAnchorId = "intent:tool-1";
+      intentAnchor.dataset.viewAnchorSourceIndex = "4";
+      const intentButton = document.createElement("button");
+      intentAnchor.append(intentButton);
+      list.el.append(intentAnchor);
+      const focusFallback = vi.fn();
+      intentButton.focus();
 
-    let positions: ViewAnchorPosition[] = [
-      { id: "intent:tool-1", sourceIndex: 4, index: 0, offset: 18, height: 40, isMessage: false },
-    ];
-    const intentEntries = [{ id: "intent:tool-1", sourceIndex: 4, index: 0, isMessage: false }];
-    const { result, rerender } = renderHook(
-      ({ viewKey, entries }) =>
-        useTranscriptViewRegistration({
-          enabled: true,
-          id: "alias-pane",
-          layout: "desktop",
-          viewKey,
-          listRef: list.ref,
-          measure: () => ({ scrollTop: 300, scrollHeight: 1200, clientHeight: 300 }),
-          measureAnchors: () => positions,
-          anchorEntries: entries,
-          renderedRowCount: 2,
-          focusFallback,
-        }),
-      { initialProps: { viewKey: "intent", entries: intentEntries } },
-    );
+      let positions: ViewAnchorPosition[] = [
+        { id: "intent:tool-1", sourceIndex: 4, index: 0, offset: 18, height: 40, isMessage: false },
+      ];
+      const intentEntries = [{ id: "intent:tool-1", sourceIndex: 4, index: 0, isMessage: false }];
+      const { result, rerender } = renderHook(
+        ({ viewKey, entries }) =>
+          useTranscriptViewRegistration({
+            enabled: true,
+            id: "alias-pane",
+            layout: "desktop",
+            viewKey,
+            listRef: list.ref,
+            measureAnchors: () => positions,
+            anchorEntries: entries,
+            renderedRowCount: 2,
+            focusFallback,
+          }),
+        { initialProps: { viewKey: "intent", entries: intentEntries } },
+      );
+      await act(async () => list.commit(result.current));
 
-    act(() => {
-      transitionTranscriptViews(() => {
-        intentAnchor.remove();
-        positions = [];
-        rerender({
-          viewKey: "tools",
-          entries: [{ id: "tool-1", sourceIndex: 4, index: 1, isMessage: false }],
-        });
-      }, "Transcript display changed");
-    });
-    expect(list.scrollToIndex).toHaveBeenCalledWith(1, { align: "start" });
-    expect(focusFallback).not.toHaveBeenCalled();
+      act(() => {
+        transitionTranscriptViews(() => {
+          intentAnchor.remove();
+          positions = [];
+          rerender({
+            viewKey: "tools",
+            entries: [{ id: "tool-1", sourceIndex: 4, index: 1, isMessage: false }],
+          });
+        }, "Transcript display changed");
+      });
+      expect(list.scrollToIndex).toHaveBeenCalledWith(1, { align: "start" });
+      expect(focusFallback).not.toHaveBeenCalled();
+      await act(async () => list.commit(result.current));
+      expect(list.el.scrollTop).toBe(600);
 
-    const toolAnchor = document.createElement("div");
-    toolAnchor.dataset.viewAnchorId = "tool-1";
-    toolAnchor.dataset.viewAnchorSourceIndex = "4";
-    const toolButton = document.createElement("button");
-    toolAnchor.append(toolButton);
-    list.el.append(toolAnchor);
-    positions = [{ id: "tool-1", sourceIndex: 4, index: 1, offset: 18, height: 40, isMessage: false }];
-    act(() => result.current.restoreAfterMeasurement());
+      const toolAnchor = document.createElement("div");
+      toolAnchor.dataset.viewAnchorId = "tool-1";
+      toolAnchor.dataset.viewAnchorSourceIndex = "4";
+      const toolButton = document.createElement("button");
+      toolAnchor.append(toolButton);
+      list.el.append(toolAnchor);
+      positions = [{ id: "tool-1", sourceIndex: 4, index: 1, offset: 18, height: 40, isMessage: false }];
+      act(() => result.current.restoreAfterMeasurement());
 
-    expect(document.activeElement).toBe(toolButton);
-    expect(focusFallback).not.toHaveBeenCalled();
-    list.el.remove();
+      expect(document.activeElement).toBe(toolButton);
+      expect(focusFallback).not.toHaveBeenCalled();
+      list.el.remove();
+    } finally {
+      cleanup();
+      list.dispose();
+    }
   });
 });
 

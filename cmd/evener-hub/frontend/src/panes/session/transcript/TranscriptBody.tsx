@@ -494,6 +494,7 @@ export function TranscriptBody({
             viewRegistration.restoreAfterMeasurement();
           }
         }}
+        onLayout={viewRegistration.restoreAfterLayout}
       />
     </section>
   );

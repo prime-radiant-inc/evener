@@ -35,7 +35,7 @@
 
 import type { ThreadModel, TurnModel } from "@evener/appwire-client";
 import { type RefObject, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { VirtualListHandle } from "../../../../widgets/virtuallist";
+import type { CommittedVirtualListLayout, VirtualListHandle } from "../../../../widgets/virtuallist";
 import { isDormantTranscript } from "../transcriptVisibility";
 import {
   contentGrewBelowViewport,
@@ -196,7 +196,7 @@ export function restoreTopAnchor(
 function readAnchorPositions(el: HTMLElement): ViewAnchorPosition[] {
   const viewportTop = el.getBoundingClientRect().top;
   return Array.from(el.querySelectorAll<HTMLElement>("[data-view-anchor-id]")).map((row, renderedIndex) => {
-    const rect = row.getBoundingClientRect();
+    const rect = (closedGroupSummary(row) ?? row).getBoundingClientRect();
     const sourceIndex = Number(row.dataset.viewAnchorSourceIndex ?? renderedIndex);
     const members = row.dataset.viewAnchorMembers;
     return {
@@ -310,10 +310,32 @@ export function captureTranscriptView(
     normalizedOffset: scrollable > 0 ? metrics.scrollTop / scrollable : 0,
     followingBottom: isAtBottom(metrics),
     focusedEntryId: focusMetadata?.anchorId,
+    ...(firstVisible?.height && firstVisible.height > 0 && el.clientWidth > 0 && el.clientHeight > 0
+      ? {
+          readingPoint: {
+            entryHeight: firstVisible.height,
+            viewportHeight: el.clientHeight,
+            viewportWidth: el.clientWidth,
+          },
+        }
+      : {}),
   };
   if (firstVisible) capturedAnchorMetadata.set(captured, captureTopAnchor(firstVisible));
   if (focusMetadata) capturedFocusMetadata.set(captured, focusMetadata);
   return captured;
+}
+
+export function readingPointOffset(
+  captured: CapturedTranscriptView,
+  entryHeight: number,
+  viewportHeight: number,
+): number {
+  const point = captured.readingPoint;
+  if (!point || captured.anchorOffset > 0) return captured.anchorOffset;
+  const oldDepth = Math.max(0, point.entryHeight - point.viewportHeight);
+  const progress = oldDepth === 0 ? 0 : Math.max(0, Math.min(1, -captured.anchorOffset / oldDepth));
+  const newDepth = Math.max(0, entryHeight - viewportHeight);
+  return progress === 0 || newDepth === 0 ? 0 : -progress * newDepth;
 }
 
 function anchorFromCapture(
@@ -445,6 +467,7 @@ export interface UseTranscriptViewRegistrationOptions {
 
 export interface UseTranscriptViewRegistrationResult {
   restoreAfterMeasurement(): void;
+  restoreAfterLayout(layout: CommittedVirtualListLayout): void;
 }
 
 interface PendingTranscriptViewRestore {
@@ -453,6 +476,7 @@ interface PendingTranscriptViewRestore {
   scrollRequested: boolean;
   anchorRestored: boolean;
   focusScrollRequested: boolean;
+  widthReflow: boolean;
 }
 
 /**
@@ -467,6 +491,8 @@ export function useTranscriptViewRegistration(
   const { enabled, id, layout, viewKey } = options;
   const optionsRef = useRef(options);
   optionsRef.current = options;
+  const latestCaptureRef = useRef<CapturedTranscriptView | undefined>(undefined);
+  const committedLayoutRef = useRef<CommittedVirtualListLayout | undefined>(undefined);
   const pendingRef = useRef<PendingTranscriptViewRestore | null>(
     options.initialViewCapture
       ? {
@@ -474,6 +500,7 @@ export function useTranscriptViewRegistration(
           scrollRequested: false,
           anchorRestored: false,
           focusScrollRequested: false,
+          widthReflow: false,
         }
       : null,
   );
@@ -483,19 +510,34 @@ export function useTranscriptViewRegistration(
     if (!pending) return;
     const currentOptions = optionsRef.current;
     const el = currentOptions.listRef?.current?.getScrollElement();
-    if (!el) return;
+    const committed = committedLayoutRef.current;
+    if (!currentOptions.enabled || !el || !committed?.isCurrent() || committed.virtualizer.scrollElement !== el) return;
 
+    const confirmScrollOffset = () => {
+      if (Math.abs(el.scrollTop - (committed.virtualizer.scrollOffset ?? 0)) > 1.5) {
+        committed.cancelPendingScroll();
+      }
+      return committed.isCurrent() && Math.abs(el.scrollTop - (committed.virtualizer.scrollOffset ?? 0)) <= 1.5;
+    };
     const measure = currentOptions.measure ?? readScrollMetrics;
     const measureAnchors = currentOptions.measureAnchors ?? readAnchorPositions;
     const measured = measureAnchors(el);
     const candidates = currentOptions.anchorEntries?.map((entry) => ({ ...entry, offset: 0 })) ?? measured;
     if (pending.captured.followingBottom) {
       const count = currentOptions.renderedRowCount ?? 0;
-      if (count > 0) currentOptions.listRef?.current?.scrollToIndex(count - 1, { align: "end" });
-      const focusResult = focusCapturedEntry(el, pending.captured, candidates, currentOptions.listRef, pending);
-      if (focusResult === "waiting") return;
-      if (focusResult === "missing") currentOptions.focusFallback?.();
+      if (count > 0 && !pending.scrollRequested) {
+        pending.scrollRequested = true;
+        currentOptions.listRef?.current?.scrollToIndex(count - 1, { align: "end" });
+      }
+      if (!committed.isCurrent() || !isAtBottom(measure(el))) return;
+      if (!confirmScrollOffset()) return;
+      if (!pending.widthReflow) {
+        const focusResult = focusCapturedEntry(el, pending.captured, candidates, currentOptions.listRef, pending);
+        if (focusResult === "waiting") return;
+        if (focusResult === "missing") currentOptions.focusFallback?.();
+      }
       pendingRef.current = null;
+      latestCaptureRef.current = captureTranscriptView(el, measure, measureAnchors);
       return;
     }
 
@@ -511,12 +553,33 @@ export function useTranscriptViewRegistration(
       if (!restored) {
         const metrics = measure(el);
         const scrollable = Math.max(0, metrics.scrollHeight - metrics.clientHeight);
-        el.scrollTop = Math.max(0, Math.min(1, pending.captured.normalizedOffset)) * scrollable;
+        const offset = Math.max(0, Math.min(1, pending.captured.normalizedOffset)) * scrollable;
+        if (Math.abs(el.scrollTop - offset) > 1.5) {
+          committed.scrollToOffset(offset);
+          return;
+        }
+        if (!confirmScrollOffset()) return;
         pending.anchorRestored = true;
       } else {
         const current = measured.find((position) => position.id === restored.id);
         if (current) {
-          el.scrollTop += current.offset - restored.offset;
+          if (!current.height || current.height <= 0) return;
+          const sameSource = anchor && positionForAnchor(anchor, candidates)?.id === restored.id;
+          const desired = pending.widthReflow
+            ? sameSource
+              ? readingPointOffset(pending.captured, current.height, el.clientHeight)
+              : Math.max(restored.offset, -Math.max(0, current.height - el.clientHeight))
+            : restored.offset;
+          const offset = Math.max(
+            0,
+            Math.min(el.scrollTop + current.offset - desired, el.scrollHeight - el.clientHeight),
+          );
+          if (Math.abs(el.scrollTop - offset) > 1.5) {
+            committed.scrollToOffset(offset);
+            return;
+          }
+          if (current.offset >= el.clientHeight || current.offset + current.height <= 0) return;
+          if (!confirmScrollOffset()) return;
           pending.anchorRestored = true;
         } else if (!pending.scrollRequested) {
           pending.target = restored;
@@ -529,24 +592,55 @@ export function useTranscriptViewRegistration(
       }
     }
 
-    const focusResult = focusCapturedEntry(el, pending.captured, candidates, currentOptions.listRef, pending);
-    if (focusResult === "waiting") return;
-    if (focusResult === "missing") currentOptions.focusFallback?.();
+    if (!pending.widthReflow) {
+      const focusResult = focusCapturedEntry(el, pending.captured, candidates, currentOptions.listRef, pending);
+      if (focusResult === "waiting") return;
+      if (focusResult === "missing") currentOptions.focusFallback?.();
+    }
     pendingRef.current = null;
+    latestCaptureRef.current = captureTranscriptView(el, measure, measureAnchors);
   }, []);
 
   const capture = useCallback((): CapturedTranscriptView => {
+    if (pendingRef.current) return pendingRef.current.captured;
     const currentOptions = optionsRef.current;
     const el = currentOptions.listRef?.current?.getScrollElement();
-    if (!el) {
-      return {
-        anchorOffset: 0,
-        normalizedOffset: 0,
-        followingBottom: false,
-      };
-    }
-    return captureTranscriptView(el, currentOptions.measure, currentOptions.measureAnchors);
+    const before = latestCaptureRef.current;
+    const committed = committedLayoutRef.current;
+    const valid = !!el && !!committed?.isCurrent() && committed.virtualizer.scrollElement === el;
+    const changedWidth =
+      !!el && before?.readingPoint !== undefined && before.readingPoint.viewportWidth !== el.clientWidth;
+    if (before && (!valid || changedWidth)) return before;
+    if (!el || !valid) return { anchorOffset: 0, normalizedOffset: 0, followingBottom: false };
+    const next = captureTranscriptView(el, currentOptions.measure, currentOptions.measureAnchors);
+    latestCaptureRef.current = next;
+    return next;
   }, []);
+
+  const restoreAfterLayout = useCallback(
+    (committed: CommittedVirtualListLayout) => {
+      const currentOptions = optionsRef.current;
+      const el = currentOptions.listRef?.current?.getScrollElement();
+      if (!currentOptions.enabled || !el || !committed.isCurrent() || committed.virtualizer.scrollElement !== el)
+        return;
+      committedLayoutRef.current = committed;
+      const before = pendingRef.current?.captured ?? latestCaptureRef.current;
+      if (before?.readingPoint && before.readingPoint.viewportWidth !== el.clientWidth) {
+        if (pendingRef.current) pendingRef.current.widthReflow = true;
+        else
+          pendingRef.current = {
+            captured: before,
+            scrollRequested: false,
+            anchorRestored: false,
+            focusScrollRequested: false,
+            widthReflow: true,
+          };
+      }
+      restoreAfterMeasurement();
+      if (!pendingRef.current) capture();
+    },
+    [capture, restoreAfterMeasurement],
+  );
 
   const restore = useCallback((captured: CapturedTranscriptView): void => {
     pendingRef.current = {
@@ -554,6 +648,7 @@ export function useTranscriptViewRegistration(
       scrollRequested: false,
       anchorRestored: false,
       focusScrollRequested: false,
+      widthReflow: false,
     };
   }, []);
 
@@ -572,12 +667,30 @@ export function useTranscriptViewRegistration(
     });
   }, [announce, capture, enabled, id, layout, restore]);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: id is trigger-only, a reader identity change replaces its port listener
+  useLayoutEffect(() => {
+    if (!enabled) return;
+    const el = optionsRef.current.listRef?.current?.getScrollElement();
+    if (!el) return;
+    const observeStablePosition = () => {
+      const committed = committedLayoutRef.current;
+      if (!committed?.isCurrent() || committed.virtualizer.scrollElement !== el) return;
+      if (pendingRef.current) restoreAfterMeasurement();
+      if (pendingRef.current) return;
+      const previousWidth = latestCaptureRef.current?.readingPoint?.viewportWidth;
+      if (previousWidth !== undefined && el.clientWidth !== previousWidth) return;
+      capture();
+    };
+    el.addEventListener("scroll", observeStablePosition);
+    return () => el.removeEventListener("scroll", observeStablePosition);
+  }, [capture, enabled, id, restoreAfterMeasurement]);
+
   // biome-ignore lint/correctness/useExhaustiveDependencies: viewKey is deliberately trigger-only
   useLayoutEffect(() => {
     restoreAfterMeasurement();
   }, [restoreAfterMeasurement, viewKey]);
 
-  return { restoreAfterMeasurement };
+  return { restoreAfterMeasurement, restoreAfterLayout };
 }
 
 export interface UseTranscriptScrollResult {

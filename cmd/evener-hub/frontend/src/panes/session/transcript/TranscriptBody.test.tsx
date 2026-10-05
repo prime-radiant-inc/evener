@@ -22,6 +22,7 @@ import {
 } from "./flow/transcriptViewRegistry";
 import * as flowModule from "./flow/useTranscriptScroll";
 import { TranscriptBody, transcriptAnchorEntriesForRows, transcriptRowsForProjection } from "./TranscriptBody";
+import { installTranscriptGeometry } from "./transcriptReadingGeometryTestUtils";
 import { threadFingerprintForItem } from "./types";
 
 function preset(level: "chat" | "intent" | "tools" | "activity" | "full") {
@@ -339,94 +340,110 @@ describe("TranscriptBody", () => {
   });
 
   test("moves focus from a Tools row to its Chat intent proxy", async () => {
-    const announce = vi.fn();
-    const listRef = createRef<VirtualListHandle>();
-    let showChat: () => void = () => {
-      throw new Error("focus harness did not mount");
-    };
-    function FocusHarness() {
-      const [config, setConfig] = useState(preset("tools"));
-      showChat = () => setConfig(preset("chat"));
-      return (
-        <TranscriptBody
-          model={fixture}
-          config={config}
-          surface="live"
-          disclosureScope="live:focus-fallback"
-          viewId="focus-fallback"
-          listRef={listRef}
-          onAnnounceViewChange={announce}
-        />
-      );
-    }
-    render(<FocusHarness />);
-    const tool = await screen.findByTestId("tool-row-trigger");
-    tool.focus();
-    expect(document.activeElement).toBe(tool);
-    expect(document.querySelector('[data-view-anchor-id="tool_1"]')?.contains(tool)).toBe(true);
-    const capturedViews = captureTranscriptViews();
-    expect([...capturedViews.keys()]).toEqual(["focus-fallback"]);
-    expect(capturedViews.get("focus-fallback")?.focusedEntryId).toBe("tool_1");
+    const external = installTranscriptGeometry(() => ({ width: 500, viewportHeight: 300, rowHeights: [600] }));
+    try {
+      const announce = vi.fn();
+      const listRef = createRef<VirtualListHandle>();
+      let showChat: () => void = () => {
+        throw new Error("focus harness did not mount");
+      };
+      function FocusHarness() {
+        const [config, setConfig] = useState(preset("tools"));
+        showChat = () => setConfig(preset("chat"));
+        return (
+          <TranscriptBody
+            model={fixture}
+            config={config}
+            surface="live"
+            disclosureScope="live:focus-fallback"
+            viewId="focus-fallback"
+            listRef={listRef}
+            onAnnounceViewChange={announce}
+          />
+        );
+      }
+      render(<FocusHarness />);
+      await act(async () => external.notify());
+      const tool = await screen.findByTestId("tool-row-trigger");
+      tool.focus();
+      expect(document.activeElement).toBe(tool);
+      expect(document.querySelector('[data-view-anchor-id="tool_1"]')?.contains(tool)).toBe(true);
+      const capturedViews = captureTranscriptViews();
+      expect([...capturedViews.keys()]).toEqual(["focus-fallback"]);
+      expect(capturedViews.get("focus-fallback")?.focusedEntryId).toBe("tool_1");
 
-    act(() => {
-      transitionTranscriptViews(showChat, "Chat", {
-        fingerprint: "chat",
+      act(() => {
+        transitionTranscriptViews(showChat, "Chat", {
+          fingerprint: "chat",
+        });
       });
-    });
 
-    const group = await screen.findByTestId("intent-group");
-    const summary = group.querySelector(":scope > summary");
-    if (!(summary instanceof HTMLElement)) throw new Error("Chat intent group summary did not render");
-    await waitFor(() => expect(document.activeElement).toBe(summary));
-    expect(group.hasAttribute("open")).toBe(false);
-    expect(announce).toHaveBeenCalledWith("Chat");
+      const group = await screen.findByTestId("intent-group");
+      const summary = group.querySelector(":scope > summary");
+      if (!(summary instanceof HTMLElement)) throw new Error("Chat intent group summary did not render");
+      await act(async () => external.notify());
+      await waitFor(() => expect(document.activeElement).toBe(summary));
+      expect(group.hasAttribute("open")).toBe(false);
+      expect(announce).toHaveBeenCalledWith("Chat");
+    } finally {
+      cleanup();
+      external.restore();
+    }
   });
 
   test("focuses the Transcript region when a view change removes the focused row", async () => {
-    const announce = vi.fn();
-    const listRef = createRef<VirtualListHandle>();
-    const hiddenTools = makeTranscriptDisplayConfig({
-      kind: "custom",
-      toolIntent: false,
-      toolCalls: false,
-      reasoning: false,
-      expandByDefault: false,
-    });
-    let hideTools: () => void = () => {
-      throw new Error("focus fallback harness did not mount");
-    };
-    function FocusFallbackHarness() {
-      const [config, setConfig] = useState(preset("tools"));
-      hideTools = () => setConfig(hiddenTools);
-      return (
-        <TranscriptBody
-          model={fixture}
-          config={config}
-          surface="live"
-          disclosureScope="live:focus-region-fallback"
-          viewId="focus-region-fallback"
-          listRef={listRef}
-          onAnnounceViewChange={announce}
-        />
-      );
-    }
-    render(<FocusFallbackHarness />);
-    const tool = await screen.findByTestId("tool-row-trigger");
-    tool.focus();
-    expect(document.activeElement).toBe(tool);
-    expect(captureTranscriptViews().get("focus-region-fallback")?.focusedEntryId).toBe("tool_1");
-
-    act(() => {
-      transitionTranscriptViews(hideTools, "Custom content", {
-        fingerprint: "custom-without-tools",
+    const external = installTranscriptGeometry(() => ({ width: 500, viewportHeight: 300, rowHeights: [600] }));
+    try {
+      const announce = vi.fn();
+      const listRef = createRef<VirtualListHandle>();
+      const hiddenTools = makeTranscriptDisplayConfig({
+        kind: "custom",
+        toolIntent: false,
+        toolCalls: false,
+        reasoning: false,
+        expandByDefault: false,
       });
-    });
+      let hideTools: () => void = () => {
+        throw new Error("focus fallback harness did not mount");
+      };
+      function FocusFallbackHarness() {
+        const [config, setConfig] = useState(preset("tools"));
+        hideTools = () => setConfig(hiddenTools);
+        return (
+          <TranscriptBody
+            model={fixture}
+            config={config}
+            surface="live"
+            disclosureScope="live:focus-region-fallback"
+            viewId="focus-region-fallback"
+            listRef={listRef}
+            onAnnounceViewChange={announce}
+          />
+        );
+      }
+      render(<FocusFallbackHarness />);
+      await act(async () => external.notify());
+      const tool = await screen.findByTestId("tool-row-trigger");
+      tool.focus();
+      expect(document.activeElement).toBe(tool);
+      expect(captureTranscriptViews().get("focus-region-fallback")?.focusedEntryId).toBe("tool_1");
 
-    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("region", { name: "Transcript" })));
-    expect(document.body.contains(tool)).toBe(false);
-    expect(screen.queryByTestId("tool-call-item")).toBeNull();
-    expect(screen.queryByTestId("intent-group")).toBeNull();
-    expect(announce).toHaveBeenCalledWith("Custom content");
+      act(() => {
+        transitionTranscriptViews(hideTools, "Custom content", {
+          fingerprint: "custom-without-tools",
+        });
+      });
+
+      await act(async () => external.notify());
+      await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("region", { name: "Transcript" })));
+      expect(document.body.contains(tool)).toBe(false);
+      expect(screen.queryByTestId("tool-call-item")).toBeNull();
+      expect(screen.queryByTestId("intent-group")).toBeNull();
+      expect(announce).toHaveBeenCalledWith("Custom content");
+    } finally {
+      cleanup();
+      external.restore();
+    }
   });
 
   test("uses normal page flow for preview without an inner virtual scroller", () => {
