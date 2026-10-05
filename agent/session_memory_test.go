@@ -2668,3 +2668,30 @@ func TestMemoryIndexQuotesOpaqueBytes(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestMemoryReportReminderOnResultToolOnlyWithMemory(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		cfg  SessionConfig
+		want bool
+	}{
+		{"enabled", SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project"}, true},
+		{"disabled", SessionConfig{MemoryStateRoot: t.TempDir(), DisableMemory: true}, false},
+		{"unbound", SessionConfig{}, false},
+	} {
+		s := newSession(t, withConfig(tc.cfg))
+		found := false
+		for _, def := range s.ToolDefinitions() {
+			if def.Name == s.resultToolName() {
+				found = true
+				if got := strings.Contains(def.Description, memoryReportReminder); got != tc.want {
+					t.Fatalf("%s: reminder present=%v, want %v", tc.name, got, tc.want)
+				}
+			}
+		}
+		if !found {
+			t.Fatalf("%s: result tool %q not advertised", tc.name, s.resultToolName())
+		}
+	}
+}

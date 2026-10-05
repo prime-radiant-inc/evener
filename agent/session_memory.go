@@ -18,6 +18,11 @@ import (
 
 var nativeMemoryToolNames = []string{"memory_read", "memory_write", "memory_edit", "memory_search", "memory_delete"}
 
+// memoryReportReminder rides on the result tool's description because the
+// model reads it at the moment it decides the work is done, which system
+// prompt guidance alone did not reliably reach.
+const memoryReportReminder = "Before a final answer with end_turn=true, save to memory what you learned in this session that a future session would otherwise have to learn or figure out again."
+
 const memoryGuidance = `## Memory
 
 You have a memory that outlasts this session. Personal memory holds what you have learned about how your human partner works, across every project. Project memory holds knowledge about this project. Each scope keeps an index, MEMORY.md, with one line per page; when an index has entries, it appears in the conversation. When an index line bears on what you are doing, read that page with memory_read; use memory_search to look for a topic the index doesn't mention.

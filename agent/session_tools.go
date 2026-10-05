@@ -1502,6 +1502,9 @@ func (s *Session) rebuildToolDefsCache() {
 	for i := range defs {
 		if isResultToolDefinition(defs[i].Name, defs[i].Name, s.resultToolName()) {
 			defs[i] = tool.WithoutIntentParameter(defs[i])
+			if s.reg.Get("memory_write") != nil {
+				defs[i].Description += " " + memoryReportReminder
+			}
 		} else {
 			// Same wire contract as wireToolDef: intent is required in the
 			// advertised schema, optional in the registry's validation schema.
