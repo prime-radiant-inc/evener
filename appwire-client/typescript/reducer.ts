@@ -1503,7 +1503,394 @@ function validTurn(value: unknown): value is CachedSessionTurn {
     typeof value.status === "string" &&
     Array.isArray(value.items) &&
     value.items.every(validItem) &&
-    (value.version === undefined || isFiniteNumber(value.version))
+    (value.startedAt === undefined || typeof value.startedAt === "string") &&
+    (value.completedAt === undefined || typeof value.completedAt === "string") &&
+    (value.durationMs === undefined || (isFiniteNumber(value.durationMs) && value.durationMs >= 0)) &&
+    (value.usage === undefined || value.usage === null || validUsage(value.usage)) &&
+    (value.cost === undefined || value.cost === null || typeof value.cost === "string") &&
+    (value.error === undefined || value.error === null || validTurnError(value.error)) &&
+    (value.version === undefined || isNonNegativeInteger(value.version))
+  );
+}
+
+function validTurnError(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  if (
+    !hasOnlyKeys(value, ["message", "additionalDetails", "codexErrorInfo", "source", "title", "hint", "cause"]) ||
+    typeof value.message !== "string"
+  )
+    return false;
+  return ["additionalDetails", "source", "title", "hint"].every(
+    (key) => value[key] === undefined || typeof value[key] === "string",
+  );
+}
+
+function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
+  return Object.keys(value).every((key) => allowed.includes(key));
+}
+
+function validWireItem(value: unknown): value is ThreadItem {
+  const keys = [
+    "type",
+    "id",
+    "transcriptKey",
+    "position",
+    "turnId",
+    "transcriptEntryIndex",
+    "text",
+    "delta",
+    "images",
+    "toolName",
+    "callId",
+    "argumentsJson",
+    "description",
+    "output",
+    "error",
+    "outputImages",
+    "status",
+    "prevalOnly",
+    "startedAt",
+    "completedAt",
+    "durationMs",
+    "exitCode",
+    "raw",
+    "eventKind",
+    "source",
+    "steeringKind",
+    "clientMutationId",
+    "version",
+    "roundId",
+    "completedAtEntry",
+  ];
+  if (!isRecord(value) || !hasOnlyKeys(value, keys) || typeof value.type !== "string" || typeof value.id !== "string")
+    return false;
+  for (const key of [
+    "transcriptKey",
+    "turnId",
+    "text",
+    "delta",
+    "toolName",
+    "callId",
+    "argumentsJson",
+    "description",
+    "output",
+    "error",
+    "status",
+    "eventKind",
+    "source",
+    "steeringKind",
+    "clientMutationId",
+    "roundId",
+  ]) {
+    if (value[key] !== undefined && typeof value[key] !== "string") return false;
+  }
+  if (value.position !== undefined && !validPosition(value.position)) return false;
+  for (const key of [
+    "transcriptEntryIndex",
+    "startedAt",
+    "completedAt",
+    "durationMs",
+    "exitCode",
+    "version",
+    "completedAtEntry",
+  ]) {
+    if (value[key] !== undefined && !isFiniteNumber(value[key])) return false;
+  }
+  if (value.prevalOnly !== undefined && typeof value.prevalOnly !== "boolean") return false;
+  const validInputImage = (image: unknown): boolean => {
+    if (
+      !isRecord(image) ||
+      !hasOnlyKeys(image, ["type", "text", "mentions", "url", "mediaType", "data", "name", "path", "metadata"])
+    )
+      return false;
+    if (typeof image.type !== "string") return false;
+    for (const key of ["text", "url", "mediaType", "data", "name", "path"]) {
+      if (image[key] !== undefined && typeof image[key] !== "string") return false;
+    }
+    if (
+      image.metadata !== undefined &&
+      (!isRecord(image.metadata) || Object.values(image.metadata).some((entry) => typeof entry !== "string"))
+    )
+      return false;
+    return (
+      image.mentions === undefined ||
+      (Array.isArray(image.mentions) &&
+        image.mentions.every(
+          (mention) =>
+            isRecord(mention) &&
+            hasOnlyKeys(mention, ["kind", "name", "offset"]) &&
+            typeof mention.kind === "string" &&
+            typeof mention.name === "string" &&
+            isNonNegativeInteger(mention.offset),
+        ))
+    );
+  };
+  const validOutputImage = (image: unknown): boolean =>
+    isRecord(image) &&
+    hasOnlyKeys(image, ["source", "name", "mediaType", "size", "url", "sha", "path"]) &&
+    typeof image.source === "string" &&
+    ["name", "mediaType", "url", "sha", "path"].every(
+      (key) => image[key] === undefined || typeof image[key] === "string",
+    ) &&
+    (image.size === undefined || isNonNegativeInteger(image.size));
+  if (value.images !== undefined && (!Array.isArray(value.images) || !value.images.every(validInputImage)))
+    return false;
+  if (
+    value.outputImages !== undefined &&
+    (!Array.isArray(value.outputImages) || !value.outputImages.every(validOutputImage))
+  )
+    return false;
+  return true;
+}
+
+function validQueue(value: unknown): boolean {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, [
+      "depth",
+      "revision",
+      "preview",
+      "ids",
+      "clientMutationIds",
+      "texts",
+      "skillNames",
+      "commandNames",
+      "mentions",
+    ])
+  )
+    return false;
+  if (!isNonNegativeInteger(value.revision)) return false;
+  if (value.depth !== undefined && !isNonNegativeInteger(value.depth)) return false;
+  for (const key of ["preview", "ids", "clientMutationIds", "texts"]) {
+    if (
+      value[key] !== undefined &&
+      (!Array.isArray(value[key]) || value[key].some((entry) => typeof entry !== "string"))
+    )
+      return false;
+  }
+  for (const key of ["skillNames", "commandNames"]) {
+    if (
+      value[key] !== undefined &&
+      (!Array.isArray(value[key]) ||
+        value[key].some((list) => !Array.isArray(list) || list.some((entry) => typeof entry !== "string")))
+    )
+      return false;
+  }
+  if (
+    value.mentions !== undefined &&
+    (!Array.isArray(value.mentions) ||
+      value.mentions.some(
+        (list) =>
+          !Array.isArray(list) ||
+          list.some(
+            (mention) =>
+              !isRecord(mention) ||
+              !hasOnlyKeys(mention, ["kind", "name", "offset"]) ||
+              typeof mention.kind !== "string" ||
+              typeof mention.name !== "string" ||
+              !isNonNegativeInteger(mention.offset),
+          ),
+      ))
+  )
+    return false;
+  return true;
+}
+
+function validUsage(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    hasOnlyKeys(value, ["inputTokens", "outputTokens", "cacheReadTokens", "totalTokens"]) &&
+    Object.values(value).every(isFiniteNumber)
+  );
+}
+
+function validStableDelegate(value: unknown): boolean {
+  const keys = [
+    "runGeneration",
+    "delegateId",
+    "ownerSessionId",
+    "rootSessionId",
+    "childSessionId",
+    "transcriptRef",
+    "parentDelegateId",
+    "type",
+    "lifecycle",
+    "phase",
+    "status",
+    "outcome",
+    "reason",
+    "error",
+    "terminal",
+    "resumable",
+    "needsAttention",
+    "notResumableReason",
+    "projectionRevision",
+    "task",
+    "description",
+    "agentType",
+    "requestedModel",
+    "resolvedProfileId",
+    "resolvedModel",
+    "model",
+    "reasoningEffort",
+    "originTurnId",
+    "originToolCallId",
+    "originItemId",
+    "runStartedAt",
+    "runEndedAt",
+    "latestActivityAt",
+    "runningForMs",
+    "quietForMs",
+    "durationMs",
+    "packetKind",
+    "message",
+    "structuredResult",
+    "structuredResultValid",
+    "structuredResultReason",
+    "warnings",
+    "diagnostics",
+    "exhaustionBudget",
+    "exhaustionLimit",
+    "exhaustionResumable",
+    "delegationAllowance",
+    "parentWatchGranted",
+    "usage",
+    "worktree",
+  ];
+  return (
+    isRecord(value) &&
+    hasOnlyKeys(value, keys) &&
+    isNonNegativeInteger(value.runGeneration) &&
+    isNonNegativeInteger(value.projectionRevision) &&
+    [
+      "delegateId",
+      "ownerSessionId",
+      "rootSessionId",
+      "childSessionId",
+      "transcriptRef",
+      "type",
+      "lifecycle",
+      "phase",
+      "status",
+    ].every((key) => typeof value[key] === "string") &&
+    ["resumable", "needsAttention"].every((key) => typeof value[key] === "boolean") &&
+    (value.usage === undefined || value.usage === null || validUsage(value.usage))
+  );
+}
+
+function validCurrentFieldShapes(value: Record<string, unknown>): boolean {
+  const status = value.status as Record<string, unknown>;
+  if (!hasOnlyKeys(status, ["type", "activeFlags"])) return false;
+  if (
+    status.activeFlags !== undefined &&
+    (!Array.isArray(status.activeFlags) || status.activeFlags.some((flag: unknown) => typeof flag !== "string"))
+  )
+    return false;
+  if (
+    value.tasks !== null &&
+    (!isRecord(value.tasks) ||
+      !hasOnlyKeys(value.tasks, ["total", "done", "cancelled", "remaining", "current"]) ||
+      !isNonNegativeInteger(value.tasks.total) ||
+      !isNonNegativeInteger(value.tasks.done) ||
+      ["cancelled", "remaining"].some(
+        (key) =>
+          value.tasks &&
+          (value.tasks as Record<string, unknown>)[key] !== undefined &&
+          !isNonNegativeInteger((value.tasks as Record<string, unknown>)[key]),
+      ) ||
+      (value.tasks.current !== undefined &&
+        (!isRecord(value.tasks.current) ||
+          !hasOnlyKeys(value.tasks.current, ["id", "description"]) ||
+          !isNonNegativeInteger(value.tasks.current.id) ||
+          typeof value.tasks.current.description !== "string")))
+  )
+    return false;
+  if (value.usage !== null && !validUsage(value.usage)) return false;
+  if (
+    value.access !== undefined &&
+    (!isRecord(value.access) ||
+      !hasOnlyKeys(value.access, ["sandbox", "network"]) ||
+      typeof value.access.sandbox !== "string" ||
+      typeof value.access.network !== "boolean")
+  )
+    return false;
+  if (
+    value.goal !== null &&
+    (!isRecord(value.goal) ||
+      !hasOnlyKeys(value.goal, ["objective", "status", "iterations"]) ||
+      (value.goal.objective !== undefined && typeof value.goal.objective !== "string") ||
+      typeof value.goal.status !== "string" ||
+      !isNonNegativeInteger(value.goal.iterations))
+  )
+    return false;
+  if (value.delegates !== undefined && (!Array.isArray(value.delegates) || !value.delegates.every(validStableDelegate)))
+    return false;
+  if (
+    value.turnSlots !== undefined &&
+    value.turnSlots !== null &&
+    (!isRecord(value.turnSlots) ||
+      !hasOnlyKeys(value.turnSlots, ["inUse", "cap", "jobs", "driveTurns"]) ||
+      ["inUse", "cap", "jobs", "driveTurns"].some(
+        (key) => !isNonNegativeInteger((value.turnSlots as Record<string, unknown>)[key]),
+      ))
+  )
+    return false;
+  return true;
+}
+
+function validDeferredPage(value: unknown): boolean {
+  const keys = ["data", "nextCursor", "bootGeneration", "epoch", "snapshot", "authoritative"];
+  if (!isRecord(value) || !hasOnlyKeys(value, keys) || !Array.isArray(value.data) || !value.data.every(validWireTurn))
+    return false;
+  if (value.nextCursor !== undefined && typeof value.nextCursor !== "string") return false;
+  if (value.bootGeneration !== undefined && typeof value.bootGeneration !== "string") return false;
+  if (value.epoch !== undefined && !isNonNegativeInteger(value.epoch)) return false;
+  if (value.authoritative !== undefined && typeof value.authoritative !== "boolean") return false;
+  return (
+    value.snapshot === undefined ||
+    (isRecord(value.snapshot) &&
+      hasOnlyKeys(value.snapshot, ["incarnation", "length"]) &&
+      typeof value.snapshot.incarnation === "string" &&
+      isNonNegativeInteger(value.snapshot.length))
+  );
+}
+
+function validWireTurn(value: unknown): boolean {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, [
+      "id",
+      "items",
+      "itemsView",
+      "status",
+      "error",
+      "version",
+      "hasEarlierItems",
+      "hasLaterItems",
+      "startedAt",
+      "completedAt",
+      "durationMs",
+      "usage",
+      "cost",
+    ])
+  )
+    return false;
+  if (typeof value.id !== "string" || typeof value.itemsView !== "string" || typeof value.status !== "string")
+    return false;
+  if (value.items !== undefined && (!Array.isArray(value.items) || !value.items.every(validWireItem))) return false;
+  if (value.error !== undefined && !isRecord(value.error)) return false;
+  if (value.version !== undefined && !isNonNegativeInteger(value.version)) return false;
+  if (value.hasEarlierItems !== undefined && typeof value.hasEarlierItems !== "boolean") return false;
+  if (value.hasLaterItems !== undefined && typeof value.hasLaterItems !== "boolean") return false;
+  for (const key of ["startedAt", "completedAt", "durationMs"]) {
+    if (value[key] !== undefined && !isFiniteNumber(value[key])) return false;
+  }
+  if (value.cost !== undefined && typeof value.cost !== "string") return false;
+  return (
+    value.usage === undefined ||
+    (isRecord(value.usage) &&
+      hasOnlyKeys(value.usage, ["inputTokens", "outputTokens", "cacheReadTokens", "totalTokens"]) &&
+      Object.values(value.usage).every(isFiniteNumber))
   );
 }
 
@@ -1517,12 +1904,11 @@ function validOverlayItem(value: unknown): value is OverlayItem {
     !isRecord(value.item)
   )
     return false;
-  const item = value.item;
   return (
-    typeof item.id === "string" &&
-    typeof item.type === "string" &&
-    (item.turnId === undefined || typeof item.turnId === "string") &&
-    (item.text === undefined || typeof item.text === "string") &&
+    ["turnId", "roundId", "streamId", "callId", "historyKey"].every(
+      (key) => value[key] === undefined || typeof value[key] === "string",
+    ) &&
+    validWireItem(value.item) &&
     (value.anchor === undefined || validPosition(value.anchor))
   );
 }
@@ -1547,8 +1933,8 @@ function validCurrentFields(value: unknown): value is CurrentTranscriptFields {
   )
     return false;
   if (value.reasoningEffortLevels.some((item) => typeof item !== "string")) return false;
-  if (value.queue !== null && !isRecord(value.queue)) return false;
-  if (value.tasks !== null && !isRecord(value.tasks)) return false;
+  if (!validCurrentFieldShapes(value)) return false;
+  if (value.queue !== null && !validQueue(value.queue)) return false;
   if (value.jobsUpdatedAt !== null && !isFiniteNumber(value.jobsUpdatedAt)) return false;
   if (value.jobsTreeRevision !== null && !isFiniteNumber(value.jobsTreeRevision)) return false;
   if (value.parentRef !== undefined && typeof value.parentRef !== "string") return false;
@@ -1607,7 +1993,7 @@ function validCurrentHistory(value: unknown): value is CurrentTranscriptState["h
     isNonNegativeInteger(value.appliedGeneration) &&
     isNonNegativeInteger(value.issuedGeneration) &&
     Array.isArray(value.deferredPages) &&
-    value.deferredPages.every((page) => isRecord(page) && Array.isArray(page.data)) &&
+    value.deferredPages.every(validDeferredPage) &&
     Array.isArray(value.turns) &&
     value.turns.every(validTurn) &&
     (value.incarnation === undefined || typeof value.incarnation === "string") &&
