@@ -62,7 +62,8 @@ executable provides the commands that launch these processes. See
 
 S02's Rail owns the sidebar boundary and session-row geometry for navigation
 context cards. HoverCard's shared floating layer owns the body portal,
-measurement and reveal/dismiss lifetime. Session cards float beside the rail
+measurement and reveal/dismiss lifetime. It observes the visible card and its
+side-anchored row so placement follows sidebar resizing. Session cards float beside the rail
 with viewport-aware fallback; other floating descriptions keep their placement.
 Scroll and viewport resize cancel both visible and pending reveals without
 changing navigation state. See the [sidebar placement contract](../web-ui/design-system.md).

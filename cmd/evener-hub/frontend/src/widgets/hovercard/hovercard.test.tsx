@@ -648,6 +648,57 @@ test("remeasures a side-anchored card's untransformed size after its content cha
   }
 });
 
+test("keeps an open side-anchored card beside its resized owning row", () => {
+  vi.stubGlobal("innerWidth", 1200);
+  vi.stubGlobal("innerHeight", 800);
+  const resizeCallbacks = new Map<Element, () => void>();
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      private readonly targets = new Set<Element>();
+      constructor(private readonly callback: () => void) {}
+      observe(target: Element) {
+        this.targets.add(target);
+        resizeCallbacks.set(target, this.callback);
+      }
+      disconnect() {
+        for (const target of this.targets) resizeCallbacks.delete(target);
+      }
+    },
+  );
+  let sidebarRight = 280;
+  const width = vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(240);
+  const height = vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(96);
+  try {
+    render(
+      <div role="treeitem" tabIndex={0} data-testid="owning-row">
+        <HoverCard
+          label={<div>Complete context</div>}
+          focusTarget={() => document.querySelector('[data-testid="owning-row"]')}
+          sideAnchor={() => ({ rowRect: new DOMRect(20, 300, sidebarRight - 20, 40), sideRight: sidebarRight })}
+        >
+          <button type="button">Short title</button>
+        </HoverCard>
+      </div>,
+    );
+    const row = screen.getByTestId("owning-row");
+    act(() => row.focus());
+    const card = screen.getByRole("tooltip");
+    expect(card.style.left).toBe("292px");
+    expect(card.style.top).toBe("272px");
+    sidebarRight = 560;
+    act(() => resizeCallbacks.get(row)?.());
+    expect(screen.getByRole("tooltip")).toBe(card);
+    expect(card.style.left).toBe("572px");
+    expect(card.style.top).toBe("272px");
+    expect(document.activeElement).toBe(row);
+    expect(row.getAttribute("aria-describedby")).toBe(card.id);
+  } finally {
+    width.mockRestore();
+    height.mockRestore();
+  }
+});
+
 // Puts back exactly what was there, including "nothing at all" - a stub left
 // installed on HTMLElement.prototype would follow every later test file in the
 // same worker.

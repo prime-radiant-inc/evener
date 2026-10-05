@@ -92,6 +92,8 @@ export function useFloatingBubble(
     measure,
     observe: bubbleRef,
     focusTarget,
+    // A side anchor follows its owning row as the sidebar is resized in place.
+    observeAnchor: sideAnchor ? focusTarget : undefined,
   });
 
   useLayoutEffect(() => {

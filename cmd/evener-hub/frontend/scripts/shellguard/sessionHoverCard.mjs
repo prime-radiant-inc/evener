@@ -108,6 +108,62 @@ async function saveCard(driver, label) {
   );
 }
 
+async function resizeSidebarWithCard(driver, width) {
+  const before = await measureCard(driver);
+  const handle = await driver.elementBox('[data-testid="rail-resize-handle"]');
+  if (!handle) throw new Error("sidebar resize handle is absent");
+  await driver.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...handle });
+  await driver.send("Input.dispatchMouseEvent", { type: "mousePressed", ...handle, button: "left", clickCount: 1 });
+  await driver.send("Input.dispatchMouseEvent", {
+    type: "mouseMoved",
+    x: width,
+    y: handle.y,
+    button: "left",
+    buttons: 1,
+  });
+  await driver.waitPage(`window.__sessionHoverGuard.rail.getBoundingClientRect().width === ${width}`, {
+    label: "live sidebar drag changes its width",
+  });
+  await driver.waitPage(
+    `(() => {
+    const state = window.__sessionHoverGuard;
+    const card = state.card();
+    return card && Math.abs(card.getBoundingClientRect().left - state.rail.getBoundingClientRect().right - 12) <= 1;
+  })()`,
+    { label: "open keyboard card follows live sidebar drag with 12px gap" },
+  );
+  await evaluate(
+    driver.send,
+    "window.__sessionHoverGuard.before = window.__sessionHoverGuard.box(window.__sessionHoverGuard.row)",
+  );
+  const during = await measureCard(driver);
+  assertCard(during, true);
+  await driver.send("Input.dispatchMouseEvent", {
+    type: "mouseReleased",
+    x: width,
+    y: handle.y,
+    button: "left",
+    clickCount: 1,
+  });
+  await driver.waitPage(
+    `document.querySelector('[data-testid="rail-resize-handle"]').getAttribute('aria-valuenow') === '${width}'`,
+    {
+      label: "sidebar drag commits its width",
+    },
+  );
+  const after = await measureCard(driver);
+  assertCard(after, true);
+  if (
+    during.id !== before.id ||
+    after.id !== before.id ||
+    JSON.stringify(after.panes) !== JSON.stringify(before.panes) ||
+    !(await evaluate(driver.send, "document.activeElement === window.__sessionHoverGuard.row"))
+  ) {
+    throw new Error("sidebar drag replaced the context card, moved row focus or activated a session");
+  }
+  return { before, during, after };
+}
+
 async function desktopJourney(driver, viewport) {
   const beforePanes = await evaluate(driver.send, "window.overviewGuardState().panes");
   await moveToTitle(driver);
@@ -179,6 +235,8 @@ async function desktopJourney(driver, viewport) {
   );
   await settleCard(driver);
   assertCard(await measureCard(driver), true);
+  const resized = await resizeSidebarWithCard(driver, viewport.sidebar === 200 ? 560 : 200);
+  await resizeSidebarWithCard(driver, viewport.sidebar);
   await evaluate(driver.send, "document.activeElement.blur()");
   await driver.waitPage("window.__sessionHoverGuard.card() === null", { label: "keyboard blur dismisses context" });
 
@@ -214,7 +272,7 @@ async function desktopJourney(driver, viewport) {
   if (Math.abs(bottom.card.bottom - bottom.viewport.height + 8) > 1) {
     throw new Error(`bottom collision fixture did not preserve edge clearance: ${JSON.stringify(bottom)}`);
   }
-  return { gap: initial.card.left - initial.sidebar.right, initial, changed, bottom };
+  return { gap: initial.card.left - initial.sidebar.right, initial, changed, resized, bottom };
 }
 
 async function touchJourney(driver) {
@@ -313,7 +371,8 @@ async function onPage(cdpEndpoint, vitePort, viewport) {
       if (!state) return { errors: window.__shellGuardErrors || [] };
       const r = state.title.getBoundingClientRect();
       return { hoverless: matchMedia('(hover: none)').matches,
-        title: state.title.outerHTML, row: state.box(state.row),
+        title: state.title.outerHTML, row: state.box(state.row), sidebar: state.box(state.rail),
+        card: state.card()?.getBoundingClientRect().toJSON(),
         hit: document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)?.outerHTML,
         hovered: state.title.matches(':hover'), errors: window.__shellGuardErrors || [] };
     })()`,
