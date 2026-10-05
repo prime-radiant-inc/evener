@@ -31,7 +31,7 @@ func installURLPlugin(t *testing.T, sourceExtra func(repo, head string) string) 
 	}
 	writePlugin(t, f.pluginRepo, "widget", nil)
 	head := makeGitRepo(t, f.pluginRepo, "extra.txt", "v1")
-	writeURLCatalog(t, f.mktRepo, f.pluginRepo, sourceExtra(f.pluginRepo, head))
+	writeURLCatalog(t, f.mktRepo, "widget", f.pluginRepo, sourceExtra(f.pluginRepo, head))
 	makeGitRepo(t, f.mktRepo, "README.md", "x")
 	f.m.Stderr = &bytes.Buffer{}
 	if _, err := f.m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: f.mktRepo}); err != nil {
@@ -45,13 +45,15 @@ func installURLPlugin(t *testing.T, sourceExtra func(repo, head string) string) 
 
 func unpinned(string, string) string { return "" }
 
-func writeURLCatalog(t *testing.T, mktRepo, pluginRepo, sourceExtra string) {
+// writeURLCatalog writes acme's marketplace.json into mktRepo, listing plugin
+// by a url source at pluginRepo with sourceExtra appended to that source.
+func writeURLCatalog(t *testing.T, mktRepo, plugin, pluginRepo, sourceExtra string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Join(mktRepo, ".claude-plugin"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(mktRepo, ".claude-plugin", "marketplace.json"),
-		[]byte(`{"name":"acme","owner":{"name":"o"},"plugins":[{"name":"widget","source":{"source":"url","url":"`+pluginRepo+`"`+sourceExtra+`}}]}`), 0o644); err != nil {
+		[]byte(`{"name":"acme","owner":{"name":"o"},"plugins":[{"name":"`+plugin+`","source":{"source":"url","url":"`+pluginRepo+`"`+sourceExtra+`}}]}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -173,7 +175,7 @@ func TestCheckUpdates_ShaPinnedSourceAsksNoRemote(t *testing.T) {
 func TestCheckUpdates_FlagsAPinTheCatalogMoved(t *testing.T) {
 	f := installURLPlugin(t, func(_, head string) string { return `,"sha":"` + head + `"` })
 	next := advanceRepo(t, f.pluginRepo)
-	writeURLCatalog(t, f.mktRepo, f.pluginRepo, `,"sha":"`+next+`"`)
+	writeURLCatalog(t, f.mktRepo, "widget", f.pluginRepo, `,"sha":"`+next+`"`)
 	gitIn(t, f.mktRepo, "commit", "-aqm", "pin next")
 	if err := f.m.RefreshMarketplace(context.Background(), "acme"); err != nil {
 		t.Fatalf("RefreshMarketplace: %v", err)
