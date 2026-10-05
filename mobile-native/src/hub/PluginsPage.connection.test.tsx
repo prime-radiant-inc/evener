@@ -487,3 +487,27 @@ it("ignores a replaced client's late upgrade result", async () => {
 	expect(detail).not.toContain("Upgraded to");
 	expect(detail).not.toContain("Already up to date");
 });
+
+it("asks a replacement client's hub for updates once its own list loads", async () => {
+	const first = new FakeClient("ready");
+	first.on("evener/plugin/list", () => ({ plugins: [plugin("kept")] }));
+	first.on("evener/plugin/checkUpdates", () => ({ plugins: [plugin("kept")] }));
+	harness.connection = connection(first, "ready");
+	const tree = render(<PluginsPage {...props} />);
+	await act(async () => {});
+	await act(async () => {});
+	const checks = (client: FakeClient) => client.calls.filter((call) => call.method === "evener/plugin/checkUpdates").length;
+	expect(checks(first)).toBe(1);
+
+	const second = new FakeClient("ready");
+	second.on("evener/plugin/list", () => ({ plugins: [plugin("kept")] }));
+	second.on("evener/plugin/checkUpdates", () => ({ plugins: [plugin("kept")] }));
+	harness.connection = connection(second, "ready");
+	await act(async () => {
+		tree.update(<PluginsPage {...props} />);
+	});
+	await act(async () => {});
+	await act(async () => {});
+	expect(checks(second)).toBe(1);
+	expect(checks(first)).toBe(1);
+});

@@ -2931,6 +2931,52 @@ it("asks for no updates when the page closes before its installed list lands", a
 	expect(hub.calls.some((call) => call.method === "evener/plugin/checkUpdates")).toBe(false);
 });
 
+/** Flaps the page's connection to reconnecting and back to ready. */
+async function flap(tree: ReturnType<typeof render>, props: ComponentProps<typeof PluginsPage>) {
+	harness.connection = { ...harness.connection, state: "reconnecting" };
+	await act(async () => tree.update(<PluginsStack {...props} />));
+	harness.connection = { ...harness.connection, state: "ready" };
+	await act(async () => tree.update(<PluginsStack {...props} />));
+	await act(async () => {});
+}
+
+const checks = (hub: FakeClient) => hub.calls.filter((call) => call.method === "evener/plugin/checkUpdates").length;
+
+it("asks for updates again after a reconnect when the check never reached the hub's answer", async () => {
+	const hub = pageHub([entry("stale")]);
+	hub.on("evener/plugin/checkUpdates", () => {
+		throw new Error("connection closed");
+	});
+	const { tree, props } = await mountPage(hub);
+	await act(async () => {});
+	expect(checks(hub)).toBe(1);
+
+	hub.on("evener/plugin/checkUpdates", () => ({ plugins: [] }));
+	await flap(tree, props);
+	expect(checks(hub)).toBe(2);
+});
+
+it("asks a hub that refused the check, or answered it, only once across reconnects and list failures", async () => {
+	const hub = pageHub([entry("stale")]);
+	hub.on("evener/plugin/checkUpdates", () => {
+		throw new WireError("method not found", -32601);
+	});
+	const { tree, props } = await mountPage(hub);
+	await act(async () => {});
+	expect(checks(hub)).toBe(1);
+	await flap(tree, props);
+	expect(checks(hub)).toBe(1);
+
+	// The list fails on one reconnect and recovers on the next.
+	hub.on("evener/plugin/list", () => {
+		throw new Error("hub busy");
+	});
+	await flap(tree, props);
+	hub.on("evener/plugin/list", () => ({ plugins: [entry("stale")] }));
+	await flap(tree, props);
+	expect(checks(hub)).toBe(1);
+});
+
 it("asks for updates once a failed installed list recovers, not while it is failing", async () => {
 	const hub = pageHub([entry("stale")]);
 	hub.on("evener/plugin/list", () => {
@@ -2942,12 +2988,13 @@ it("asks for updates once a failed installed list recovers, not while it is fail
 
 	// The same client flaps and comes back; the store re-reads its list.
 	hub.on("evener/plugin/list", () => ({ plugins: [entry("stale")] }));
-	harness.connection = { ...harness.connection, state: "reconnecting" };
-	await act(async () => tree.update(<PluginsStack {...props} />));
-	harness.connection = { ...harness.connection, state: "ready" };
-	await act(async () => tree.update(<PluginsStack {...props} />));
-	await act(async () => {});
-	expect(hub.calls.filter((call) => call.method === "evener/plugin/checkUpdates")).toHaveLength(1);
+	await flap(tree, props);
+	expect(checks(hub)).toBe(1);
+});
+
+it("says a broken plugin's row has an update when the hub found one", async () => {
+	const { tree } = await mountPage(pageHub([entry("cracked", { broken: true, updateAvailable: true })]));
+	expect(pluginRow(tree, "cracked").props.accessibilityLabel).toBe("cracked, core, Broken · Update available");
 });
 
 it("offers no Upgrade on a hub without the update check, and tells a broken plugin only to be removed", async () => {

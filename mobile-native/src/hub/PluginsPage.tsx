@@ -494,15 +494,22 @@ function Plugins({
 	// The first time this store's installed list loads, ask the hub which
 	// plugins have an update (read-on-open: nothing polls). A first read that
 	// failed checks once a later one recovers, and a page closed before its
-	// list landed asks nothing. A hub without the check flags none, so Upgrade
-	// stays hidden.
+	// list landed asks nothing. A check that never reached the hub's answer
+	// (the connection dropped under it) asks again once the connection is
+	// ready; an answer, including an older hub's refusal, is final for this
+	// store. A hub without the check flags none, so Upgrade stays hidden.
 	const checkedUpdates = useRef<PluginsStore | null>(null);
 	const listLoaded = state.plugins !== null && state.pluginsError === null;
 	useEffect(() => {
-		if (!listLoaded || checkedUpdates.current === model) return;
+		if (!listLoaded || !ready || checkedUpdates.current === model) return;
 		checkedUpdates.current = model;
-		void model.getState().checkPluginUpdates();
-	}, [model, listLoaded]);
+		void model
+			.getState()
+			.checkPluginUpdates()
+			.then((answered) => {
+				if (!answered && checkedUpdates.current === model) checkedUpdates.current = null;
+			});
+	}, [model, listLoaded, ready]);
 	const close = useCallback(() => {
 		editorVersion.current += 1;
 		setSelected(null);
@@ -618,15 +625,17 @@ function Plugins({
 						<Fragment key={marketplace}>
 							<Group label={marketplace} machineLabel>
 								{plugins.map((item) => {
-									const sub = item.broken
-										? "Broken"
-										: [
-												item.version || "Unknown version",
-												item.updateAvailable && "Update available",
-												item.autoUpgrade && "Upgrades automatically",
-											]
-												.filter(Boolean)
-												.join(" · ");
+									const sub = (
+										item.broken
+											? ["Broken", item.updateAvailable && "Update available"]
+											: [
+													item.version || "Unknown version",
+													item.updateAvailable && "Update available",
+													item.autoUpgrade && "Upgrades automatically",
+												]
+									)
+										.filter(Boolean)
+										.join(" · ");
 									return (
 										<SwitchRow
 											key={item.plugin}
