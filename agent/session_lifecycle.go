@@ -643,11 +643,11 @@ func (s *Session) releaseRuntimeOnce(ctx context.Context, options closeOptions, 
 			}
 		}
 
-		// Retirement removes the parked and abandoned environments' scratch
+		// Retirement ends the parked and abandoned environments' scratch
 		// without signalling any process; the current environment's goes at the
 		// end of close, after MCP shutdown.
 		if retirement {
-			s.disposeRetirementScratch()
+			s.endRetirementScratch()
 		}
 		// 4. Kill any remaining child processes (SIGTERM → wait 2s → SIGKILL).
 		if options.cleanupEnv {
@@ -717,11 +717,13 @@ func (s *Session) releaseRuntimeOnce(ctx context.Context, options closeOptions, 
 		// Scratch goes last: SessionEnd hooks and MCP servers above still run with
 		// TMPDIR inside it, and bubblewrap refuses a missing bind source.
 		if cleanupEnv || retirement {
-			s.disposeOwnedCurrentScratch()
-			// A daemon runs for weeks; sweeping as each root ends reclaims crash
-			// leftovers and detached commands' finished TMPDIRs without a timer.
-			if s.cfg.spawn.parentSessionID == "" {
-				s.sweepStaleScratch()
+			s.endOwnedCurrentScratch()
+			// A one-shot run's scratch has no later archive to wait for: the
+			// root removes its whole tree, its children's included, as it exits.
+			if s.cfg.spawn.parentSessionID == "" && s.cfg.TurnEndsProcess && !retirement {
+				if err := sandbox.RemoveSessionScratchTree(s.scratchTreeRootID()); err != nil {
+					s.emit(events.EventWarning, events.WarningData{Message: "scratch removal at exit incomplete: " + err.Error()})
+				}
 			}
 		}
 
@@ -832,38 +834,14 @@ func (s *Session) disposeParkedWorktreeEnvironmentScratch() {
 	parked := s.worktreeRestoreEnv
 	s.mu.Unlock()
 	if parked != nil {
-		_ = parked.DisposeSessionScratch()
+		_ = parked.EndSessionScratch()
 	}
 }
 
-// sweepsInFlight holds the workspace roots a close-time sweep is running for,
-// so concurrent closes in one daemon start at most one sweep per root.
-var sweepsInFlight sync.Map
-
-// sweepStaleScratch starts the crashed-scratch sweep for this session's
-// workspace, which removes scratch directories older than a day whose lease
-// nobody holds. It runs off the close path: on a large temp base it can take a
-// while, and its findings have no session left to report to, so a failure is
-// left for the next sweep, the way the startup sweep leaves it for the next start.
-func (s *Session) sweepStaleScratch() {
-	root := execenv.SessionScratchWorkspaceRoot(s.currentEnv().WorkingDirectory())
-	if _, running := sweepsInFlight.LoadOrStore(root, struct{}{}); running {
-		return
-	}
-	sweep := sandbox.SweepCrashedSessionScratch
-	if hook := s.cfg.testOnly.scratchSweep; hook != nil {
-		sweep = hook
-	}
-	go func() {
-		defer sweepsInFlight.Delete(root)
-		_ = sweep(root)
-	}()
-}
-
-// disposeOwnedCurrentScratch removes the current environment's scratch when this
-// session owns that environment. A child still holding its live parent's own
-// environment owns none of it; the parent's close removes it.
-func (s *Session) disposeOwnedCurrentScratch() {
+// endOwnedCurrentScratch ends the current environment's scratch when this
+// session owns that environment (EndSessionScratch). A child still holding its
+// live parent's own environment owns none of it; the parent's close ends it.
+func (s *Session) endOwnedCurrentScratch() {
 	s.mu.Lock()
 	current, parentShared := s.env, s.parentSharedEnv
 	s.mu.Unlock()
@@ -871,7 +849,7 @@ func (s *Session) disposeOwnedCurrentScratch() {
 	if !ok || sameEnvironment(current, parentShared) {
 		return
 	}
-	if err := local.DisposeSessionScratch(); err != nil {
+	if err := local.EndSessionScratch(); err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: "session scratch removal incomplete: " + err.Error()})
 	}
 }
@@ -914,7 +892,7 @@ func (s *Session) discardRestoredCandidate() {
 		// A discarded candidate's own scratch goes with it, the same decision the
 		// create-path twin of this abort (disposeUnadoptedSubagentSession) makes.
 		env := s.environmentOwnedAtTeardown()
-		disposeUnadoptedScratch(env)
+		endEnvironmentScratch(env)
 		if s.mcpMgr != nil {
 			s.mcpMgr.Close()
 		}

@@ -161,19 +161,15 @@ type preparedSubagentRun struct {
 	treeSlot *treeReservation
 }
 
-// disposeUnadoptedScratch drops every per-session scratch directory env
-// provisioned — the sandbox-owned one and the one an unsandboxed environment
-// mints on its first command — releasing each lease with its directory. Every
-// caller is a path that provisioned an environment and then failed before any
-// session adopted it: both releases belong to a session's own teardown, so
-// without this nothing ever runs them and each failure leaves a directory and a
-// live lease behind. A no-op for an environment with no scratch to drop,
-// including one that is not local. It must run only on an environment built for
-// the failed thing, never on a shared parent's, whose scratch the parent is
-// still working in.
-func disposeUnadoptedScratch(env execenv.ExecutionEnvironment) {
+// endEnvironmentScratch settles the scratch an environment owns when the
+// session or setup that owned it ends (EndSessionScratch): a session's named
+// scratch is kept for its root's archive, a disposable one is removed, and
+// every lease is released. A no-op for an environment that is not local. It
+// must run only on an environment built for the ending thing, never on a
+// shared parent's, whose scratch the parent is still working in.
+func endEnvironmentScratch(env execenv.ExecutionEnvironment) {
 	if local, ok := env.(*execenv.LocalExecutionEnvironment); ok {
-		_ = local.DisposeSessionScratch()
+		_ = local.EndSessionScratch()
 	}
 }
 
@@ -303,7 +299,7 @@ func releaseOwnedChildEnvironment(env execenv.ExecutionEnvironment) {
 	if env == nil {
 		return
 	}
-	disposeUnadoptedScratch(env)
+	endEnvironmentScratch(env)
 }
 
 // recordEnvironmentOwnership records whether env was built FOR this child
@@ -332,6 +328,14 @@ func disposeUnadoptedSubagentSession(sess *Session) {
 	if sess != nil {
 		if err := removeDelegateArtifacts(sess.stateDir, sess.id); err != nil {
 			sess.emit(events.EventWarning, events.WarningData{Message: "delegate artifacts directory cleanup failed: " + err.Error()})
+		}
+		// The child never became a delegate, so the scratch it was given — named
+		// or not — holds nothing anyone will come back for: remove it rather than
+		// keep it for its root's archive, as a session end would.
+		for _, env := range []execenv.ExecutionEnvironment{sess.environmentOwnedAtTeardown(), sess.ownedParkedWorktreeEnvironment()} {
+			if local, ok := env.(*execenv.LocalExecutionEnvironment); ok {
+				_ = local.DisposeSessionScratch()
+			}
 		}
 	}
 	teardownChildSession(context.Background(), sess)
@@ -1087,7 +1091,7 @@ func (s *Session) prepareSubagentRunFromSelection(
 	ownsFreshEnv := preparedEnv.ownsFresh
 	if !hasPreparedEnv {
 		var err error
-		subEnv, ownsFreshEnv, err = s.prepareSubagentEnvironment(workingDir, reqSandbox)
+		subEnv, ownsFreshEnv, err = s.prepareSubagentEnvironmentFor(workingDir, reqSandbox, subCfg.spawn.sessionID)
 		if err != nil {
 			return nil, err
 		}
@@ -1127,7 +1131,7 @@ func (s *Session) prepareSubagentRunFromSelection(
 		// first command, which the construction above reaches through its own git
 		// snapshot. A prepared environment belongs to whoever prepared it.
 		if ownsFreshEnv && !hasPreparedEnv {
-			disposeUnadoptedScratch(subEnv)
+			endEnvironmentScratch(subEnv)
 		}
 		return nil, err
 	}
@@ -2229,9 +2233,8 @@ type delegateTerminalPacketMetadata struct {
 	// ScratchPath is the delegate's absolute per-session scratch directory
 	// (SessionScratchDir), reported for the same reason Worktree is: it is
 	// partial evidence a parent needs to recover after an externally cancelled
-	// run (kata tpb0). It is deleted when the delegate's runtime is torn down,
-	// which for an idle finished delegate is about 30 seconds after it finishes
-	// (delegateIdleReleaseDelayDefault). Empty when the delegate never
+	// run (kata tpb0). It is kept until the root session is archived or
+	// deleted, or until a one-shot run exits. Empty when the delegate never
 	// provisioned one (unsandboxed and no tool spawned yet).
 	ScratchPath         string                         `json:"scratch_path,omitempty"`
 	ExhaustionBudget    delegatestore.ExhaustionBudget `json:"exhaustion_budget,omitempty"`

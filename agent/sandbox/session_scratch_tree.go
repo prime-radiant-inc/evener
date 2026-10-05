@@ -109,7 +109,40 @@ func RemoveSessionScratchTree(rootID string) error {
 		if owned, ownerErr := scratchEntryOwnedByProcess(tree); ownerErr != nil || !owned {
 			continue
 		}
-		errs = append(errs, removeTree(tree))
+		errs = append(errs, removeReleasedSessionScratch(tree))
+	}
+	return errors.Join(errs...)
+}
+
+// removeReleasedSessionScratch removes each session scratch in tree whose lease
+// it can take, holding the lease through the removal, and then the tree if
+// nothing is left. A session whose lease is held is still running, so its
+// scratch and the tree stay for a later removal.
+func removeReleasedSessionScratch(tree string) error {
+	entries, err := os.ReadDir(tree)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, entry := range entries {
+		dir := filepath.Join(tree, entry.Name())
+		if !entry.IsDir() {
+			errs = append(errs, os.Remove(dir))
+			continue
+		}
+		lease, contended, err := acquireScratchLease(filepath.Join(dir, sessionScratchLeaseName))
+		if contended {
+			continue
+		}
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		errs = append(errs, removeTree(dir))
+		_ = lease.Release()
+	}
+	if rest, err := os.ReadDir(tree); err == nil && len(rest) == 0 {
+		errs = append(errs, os.Remove(tree))
 	}
 	return errors.Join(errs...)
 }

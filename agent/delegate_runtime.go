@@ -2430,7 +2430,7 @@ func (runtime delegateRuntime) prepareIsolation(ctx context.Context, reservation
 			return delegateIsolation{}, fmt.Errorf("delegate isolation path %q does not match reserved path %q", path, workingDir)
 		}
 	}
-	env, ownsFresh, err := s.prepareSubagentEnvironment(workingDir, requestedSandbox)
+	env, ownsFresh, err := s.prepareSubagentEnvironmentFor(workingDir, requestedSandbox, reservation.descriptor.ChildSessionID)
 	if err != nil {
 		rollback()
 		return delegateIsolation{}, err
@@ -2477,7 +2477,7 @@ func (isolation delegateIsolation) cleanup(s *Session, delegateID string) {
 		// belongs to this isolation step), so this is the only rollback for the
 		// scratch the construction's git snapshot minted on an unsandboxed lane,
 		// as well as for a sandboxed lane's owned one.
-		disposeUnadoptedScratch(isolation.env)
+		endEnvironmentScratch(isolation.env)
 	}
 	if isolation.worktreePath != "" {
 		s.rollbackFreshDelegateWorktree(delegateID, isolation.laneBranch, isolation.worktreePath, isolation.worktreeProject)
@@ -2599,7 +2599,7 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 	if shared := s.sharedRestoreEnvironment(descriptor); shared != nil {
 		childEnv = shared
 	} else {
-		childEnv, ownsFresh, err = s.prepareSubagentEnvironment(descriptor.WorkingDir, policy)
+		childEnv, ownsFresh, err = s.prepareSubagentEnvironmentFor(descriptor.WorkingDir, policy, descriptor.ChildSessionID)
 		if err != nil {
 			return nil, false, err
 		}
@@ -2611,7 +2611,7 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 		// point has one to drop as surely as a sandboxed restore has its owned one.
 		// A shared environment belongs to the live parent, which keeps its scratch.
 		if discardEnv && ownsFresh {
-			disposeUnadoptedScratch(childEnv)
+			endEnvironmentScratch(childEnv)
 		}
 	}()
 	if childEnv == nil || childEnv.WorkingDirectory() != descriptor.WorkingDir || localEnvPolicyName(childEnv) != descriptor.LocalEnvPolicy || !frozenStableDelegateSandboxMatches(childEnv, descriptor.Sandbox) {

@@ -68,11 +68,11 @@ func TestRetirementReleaseOfASharedChildKeepsTheParentScratchLease(t *testing.T)
 	}
 }
 
-// TestRetirementRemovesOwnEnvironmentScratch pins the positive direction
+// TestRetirementSettlesOwnEnvironmentScratch pins the positive direction
 // the trap section warns about: a ROOT has parentSharedEnv nil, so the ownership
-// guard must skip nothing and retirement must remove the root's own current and
+// guard must skip nothing and retirement must settle the root's own current and
 // parked scratch.
-func TestRetirementRemovesOwnEnvironmentScratch(t *testing.T) {
+func TestRetirementSettlesOwnEnvironmentScratch(t *testing.T) {
 	dir := t.TempDir()
 	root := newQueuePersistTestSession(t, dir)
 	t.Cleanup(func() { root.Close() })
@@ -101,13 +101,13 @@ func TestRetirementRemovesOwnEnvironmentScratch(t *testing.T) {
 	root.worktreeRestoreEnv = parked
 	root.mu.Unlock()
 
-	root.disposeRetirementScratch()
-	root.disposeOwnedCurrentScratch()
+	root.endRetirementScratch()
+	root.endOwnedCurrentScratch()
 
+	// Retirement is not archive: the root's named scratch is kept with its lease
+	// released, and the disposable parked one is removed.
 	for name, scratch := range map[string]string{"current": currentScratch, "parked": parkedScratch} {
-		if _, err := os.Lstat(scratch); !os.IsNotExist(err) {
-			t.Errorf("retirement left the root's %s scratch %s: %v", name, scratch, err)
-		}
+		assertScratchSettledAtEnd(t, name, scratch)
 	}
 }
 
@@ -150,7 +150,5 @@ func TestRetirementReleaseOfAnOwningChildReleasesItsOwnScratch(t *testing.T) {
 		t.Fatalf("releaseChildRuntimeForRetirement: %v", err)
 	}
 
-	if _, err := os.Lstat(childScratch); !os.IsNotExist(err) {
-		t.Errorf("retirement left the owning child's scratch %s: %v", childScratch, err)
-	}
+	assertScratchSettledAtEnd(t, "owning child", childScratch)
 }

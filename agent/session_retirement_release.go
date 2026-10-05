@@ -234,20 +234,21 @@ func (c *RetirementController) setReleaseFailure() {
 }
 
 // releaseChildRuntimeForRetirement performs a non-terminal release of one
-// resident child runtime: its scratch is removed, its durable records kept.
+// resident child runtime: its scratch is ended, its durable records kept.
 func (s *Session) releaseChildRuntimeForRetirement(ctx context.Context) error {
 	return teardownChildSessionWithPolicy(ctx, s, releaseRetirement)
 }
 
-// disposeRetirementScratch removes the scratch this session's parked and
-// abandoned environments own. The current environment's scratch is removed at
-// the end of close (disposeOwnedCurrentScratch), after MCP servers shut down.
-func (s *Session) disposeRetirementScratch() {
+// endRetirementScratch ends the scratch this session's parked and abandoned
+// environments own (EndSessionScratch: a named scratch is kept with its lease
+// released, a disposable one removed). The current environment's scratch is
+// ended at the end of close (endOwnedCurrentScratch), after MCP servers shut down.
+func (s *Session) endRetirementScratch() {
 	// The parked environment is the parent's own for a child that started on it
 	// and then entered a worktree; ownedParkedWorktreeEnvironment names the
 	// parked object this session owns and returns nil for that shared one.
 	if parked, ok := s.ownedParkedWorktreeEnvironment().(*execenv.LocalExecutionEnvironment); ok {
-		_ = parked.DisposeSessionScratch()
+		_ = parked.EndSessionScratch()
 	}
 	s.disposeAbandonedEnvironmentScratch()
 }

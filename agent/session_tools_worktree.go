@@ -1146,7 +1146,7 @@ func (s *Session) worktreeCreateCore(ctx context.Context, active *execenv.LocalE
 	handedOff := false
 	defer func() {
 		if !handedOff {
-			disposeUnadoptedScratch(controlEnv)
+			endEnvironmentScratch(controlEnv)
 		}
 	}()
 
@@ -1282,7 +1282,7 @@ func (s *Session) worktreeCreateCore(ctx context.Context, active *execenv.LocalE
 		MetaDir:  metaDir,
 		Project:  project,
 		Run:      run,
-		Done:     func() { disposeUnadoptedScratch(controlEnv) },
+		Done:     func() { endEnvironmentScratch(controlEnv) },
 	}, nil
 }
 
@@ -1593,7 +1593,7 @@ func (s *Session) worktreeControlRun(ctx context.Context, mainRepoRoot string) (
 	if err != nil {
 		return nil, nil, err
 	}
-	return s.newWorktreeGitRunner(ctx, controlEnv), func() { disposeUnadoptedScratch(controlEnv) }, nil
+	return s.newWorktreeGitRunner(ctx, controlEnv), func() { endEnvironmentScratch(controlEnv) }, nil
 }
 
 // worktreeCleanupRun is worktreeControlRun on a context of its own, bounded by

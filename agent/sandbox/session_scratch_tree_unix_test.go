@@ -128,3 +128,42 @@ func TestRemoveSessionScratchTreeRemovesRootAndChildren(t *testing.T) {
 		t.Fatalf("removing an absent tree: %v", err)
 	}
 }
+
+// A session whose daemon is still running holds its scratch lease. Removing
+// the tree (on archive) skips that session's scratch and the tree around it,
+// and removes the released sessions' scratch.
+func TestRemoveSessionScratchTreeSkipsALiveSession(t *testing.T) {
+	base := t.TempDir()
+	prev := sessionScratchTempDir
+	sessionScratchTempDir = func() string { return base }
+	t.Cleanup(func() { sessionScratchTempDir = prev })
+	live, err := OpenSessionScratch("", t.TempDir(), "ROOT6", "ROOT6")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = live.Retain() })
+	done, err := OpenSessionScratch("", t.TempDir(), "ROOT6", "CHILD6")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = done.Retain()
+
+	if err := RemoveSessionScratchTree("ROOT6"); err != nil {
+		t.Fatalf("RemoveSessionScratchTree: %v", err)
+	}
+	if _, err := os.Stat(live.Dir); err != nil {
+		t.Errorf("removal took the live session's scratch %s: %v", live.Dir, err)
+	}
+	if _, err := os.Lstat(done.Dir); !os.IsNotExist(err) {
+		t.Errorf("removal left the released session's scratch %s: %v", done.Dir, err)
+	}
+
+	// Once the live session ends, a second removal takes the rest.
+	_ = live.Retain()
+	if err := RemoveSessionScratchTree("ROOT6"); err != nil {
+		t.Fatalf("RemoveSessionScratchTree after the end: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(base, sessionScratchTreePrefix+"ROOT6")); !os.IsNotExist(err) {
+		t.Errorf("the tree survived its last session's end: %v", err)
+	}
+}

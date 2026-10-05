@@ -747,6 +747,14 @@ func (e *LocalExecutionEnvironment) SetScratchIdentity(rootID, sessionID string)
 	e.scratchRoot, e.scratchSession = rootID, sessionID
 }
 
+// ScratchIdentity reports the session this env's scratch belongs to, as set by
+// SetScratchIdentity; both are empty when it was never named.
+func (e *LocalExecutionEnvironment) ScratchIdentity() (rootID, sessionID string) {
+	e.scratchMu.Lock()
+	defer e.scratchMu.Unlock()
+	return e.scratchRoot, e.scratchSession
+}
+
 // EndSessionScratch settles this env's scratch at a session's end — close, idle
 // retirement, a delegate's teardown or idle release. A named scratch
 // (SetScratchIdentity) is kept with its regenerable caches pruned and its lease
@@ -2627,9 +2635,10 @@ func (e *LocalExecutionEnvironment) DetachCommand(ctx context.Context, command, 
 	cmd := e.commands().Shell(command)
 	env := injectLocalVenvPath(e.commandEnvironment(envVars), []string{dir, e.RootDir})
 	// A detached process outlives the session, and the session's scratch is
-	// deleted when it ends, so the process must not be told about the scratch,
-	// and its TMPDIR must be the world-usable container DisposeSessionScratch
-	// keeps for it — never the scratch, which a confined env's TMPDIR names.
+	// deleted when the session is archived, so the process must not be told
+	// about the scratch, and its TMPDIR must be the world-usable container the
+	// session's end keeps for it — never the scratch, which a confined env's
+	// TMPDIR names.
 	// With no container, TMPDIR is left unset rather than pointed at scratch.
 	container := e.unsandboxedTmpDir()
 	env = slices.DeleteFunc(env, func(kv string) bool {

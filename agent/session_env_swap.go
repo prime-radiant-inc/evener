@@ -163,7 +163,7 @@ func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment, rec
 			current.AdoptSessionScratch(next)
 		}
 		if moved || (shared != nil && !sameEnvironment(shared, next)) {
-			_ = next.DisposeSessionScratch()
+			_ = next.EndSessionScratch()
 		}
 		return errSwapWhileClosing
 	}

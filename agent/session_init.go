@@ -326,6 +326,9 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	// exists — the same identifier the rest of this function later mints or
 	// validates into s.id.
 	sessionID := strings.TrimSpace(cfg.spawn.sessionID)
+	if sessionID == "" && cfg.spawn.parentSessionID == "" {
+		sessionID = strings.TrimSpace(cfg.SessionID)
+	}
 	// The listing below may attribute a canonical API-log attempt to
 	// sessionID (when non-empty), which opens and locks
 	// sessions/<sessionID>.api.jsonl in the shared *APILogger. That happens
@@ -403,6 +406,9 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		}
 	} else if err := identifier.ValidateSessionID(sessionID); err != nil {
 		return nil, fmt.Errorf("reserved child session ID: %w", err)
+	}
+	if cfg.spawn.parentSessionID == "" {
+		nameRootScratch(env, sessionID)
 	}
 	jobClock := cfg.spawn.jobActivityClock
 	if cfg.spawn.parentSessionID == "" && jobClock == nil {
@@ -853,6 +859,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	if err := schema.ValidateSessionID(meta.ID); err != nil {
 		return nil, fmt.Errorf("invalid session id: %w", err)
 	}
+	nameRootScratch(env, meta.ID)
 
 	restoreComplete := false
 	ownershipAcquired := false
@@ -1326,7 +1333,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		// manifest references. Settle by the manifest, kind by kind: a
 		// referenced allocation is retained rather than removed, and only a
 		// fresh mint this restore allocated is disposed (round 83).
-		disposeUnadoptedScratch(reenteredEnv)
+		endEnvironmentScratch(reenteredEnv)
 	}()
 
 	promptSources, err := s.initSessionState(cfg.SessionStartKind, !restoreCfg.deferRestoreSideEffects)
@@ -2576,4 +2583,34 @@ func reconnectRecoveryWarning(name string) events.WarningData {
 		Hint:    "The connection was automatically re-established.",
 		Message: fmt.Sprintf("MCP server %q reconnected after a dropped connection", name),
 	}
+}
+
+// nameRootScratch names a top-level session's scratch after the session,
+// unless its launcher already did, so the scratch the environment mints is that
+// session's directory in its own tree: kept across the session's ends, reopened
+// on resume, and removed when the hub archives or deletes the session. A
+// scratch the environment already minted is unaffected.
+func nameRootScratch(env execenv.ExecutionEnvironment, sessionID string) {
+	local, ok := env.(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		return
+	}
+	if root, _ := local.ScratchIdentity(); root == "" {
+		local.SetScratchIdentity(sessionID, sessionID)
+	}
+}
+
+// PickFreshSessionID picks the ID a new top-level session will take, unless cfg
+// already names one, and names env's scratch after it. A launcher calls it
+// before enabling env's sandbox, which mints the scratch before NewSession runs.
+func PickFreshSessionID(env execenv.ExecutionEnvironment, cfg *SessionConfig) error {
+	if strings.TrimSpace(cfg.SessionID) == "" {
+		id, err := identifier.NewSessionID()
+		if err != nil {
+			return fmt.Errorf("generate session ID: %w", err)
+		}
+		cfg.SessionID = id
+	}
+	nameRootScratch(env, cfg.SessionID)
+	return nil
 }

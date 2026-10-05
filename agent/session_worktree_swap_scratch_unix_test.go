@@ -104,8 +104,10 @@ func TestWorktreeSwap_ScratchFollowsTheSessionThroughEnterExitEnter(t *testing.T
 
 	r.s.Close()
 
-	if _, err := os.Lstat(scratch); !os.IsNotExist(err) {
-		t.Errorf("close left the scratch %s: %v", scratch, err)
+	if _, err := os.Stat(scratch); err != nil {
+		t.Errorf("close removed the named scratch %s, which is kept until its root is archived: %v", scratch, err)
+	} else if scratchLeaseHeld(t, scratch) {
+		t.Errorf("the named scratch %s lease is still held after close", scratch)
 	}
 }
 
@@ -230,9 +232,7 @@ func TestParentCloseWhileEnteredRemovesTheParkedEnvironmentScratch(t *testing.T)
 		t.Errorf("shared-env child state after parent close = %q, want %q", got, SessionClosed)
 	}
 	for name, dir := range map[string]string{"parked": parked, "current": current} {
-		if _, err := os.Lstat(dir); !os.IsNotExist(err) {
-			t.Errorf("parent close left the %s environment's scratch %s: %v", name, dir, err)
-		}
+		assertScratchSettledAtEnd(t, name, dir)
 	}
 	if len(cleaned) != 1 || cleaned[0] != execenv.ExecutionEnvironment(entered) {
 		t.Errorf("Cleanup ran on %d environment(s) %v, want exactly once on the current clone %p", len(cleaned), cleaned, entered)
@@ -338,8 +338,10 @@ func TestWorktreeSwap_CloseDuringTheSwapLeavesNoOwnerlessLease(t *testing.T) {
 	if got := currentLocalEnv(t, r.s); got != launch {
 		t.Errorf("the session installed %p during its close, want the launch environment %p kept", got, launch)
 	}
-	if _, statErr := os.Lstat(scratch); !os.IsNotExist(statErr) {
-		t.Errorf("close left the scratch %s: %v", scratch, statErr)
+	if _, statErr := os.Stat(scratch); statErr != nil {
+		t.Errorf("close removed the named scratch %s, which is kept until its root is archived: %v", scratch, statErr)
+	} else if scratchLeaseHeld(t, scratch) {
+		t.Errorf("the named scratch %s lease is still held after close", scratch)
 	}
 }
 
@@ -384,8 +386,10 @@ func TestWorktreeSwap_CloseDuringTheSwapKeepsTheScratchUntilCloseEnds(t *testing
 	if !presentAtCleanup {
 		t.Errorf("the aborted swap removed the session's scratch %s before the close's own cleanup and hooks ran", scratch)
 	}
-	if _, err := os.Lstat(scratch); !os.IsNotExist(err) {
-		t.Errorf("close left the scratch %s: %v", scratch, err)
+	if _, err := os.Stat(scratch); err != nil {
+		t.Errorf("close removed the named scratch %s, which is kept until its root is archived: %v", scratch, err)
+	} else if scratchLeaseHeld(t, scratch) {
+		t.Errorf("the named scratch %s lease is still held after close", scratch)
 	}
 }
 
@@ -466,10 +470,16 @@ func TestWorktreeSwap_CloseAfterTheEnterRemovesTheParkedEnvironmentScratch(t *te
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(second) })
 
-	for name, dir := range map[string]string{"session": first, "parked environment": second} {
-		if _, statErr := os.Lstat(dir); !os.IsNotExist(statErr) {
-			t.Errorf("close left the %s scratch %s: %v", name, dir, statErr)
-		}
+	// The session's own scratch is named and kept for the root's archive; the
+	// parked environment's later mint could not reopen that held name and is a
+	// disposable scratch, which close removes.
+	if _, statErr := os.Stat(first); statErr != nil {
+		t.Errorf("close removed the session's named scratch %s: %v", first, statErr)
+	} else if scratchLeaseHeld(t, first) {
+		t.Errorf("the session's named scratch %s lease is still held after close", first)
+	}
+	if _, statErr := os.Lstat(second); !os.IsNotExist(statErr) {
+		t.Errorf("close left the parked environment's disposable scratch %s: %v", second, statErr)
 	}
 	// The close drained its fence join instead of giving up on it. Both of
 	// these are tripwires for the same regression — a hook that holds the
@@ -527,10 +537,16 @@ func assertMidMoveOutcome(t *testing.T, s *Session, source *execenv.LocalExecuti
 
 	s.Close()
 
-	for name, dir := range map[string]string{"session": carried, "mid-move": midMove} {
-		if _, err := os.Lstat(dir); !os.IsNotExist(err) {
-			t.Errorf("close left the %s scratch %s: %v", name, dir, err)
-		}
+	// The session's own scratch is named, so close keeps it for the root's
+	// archive; the mid-move mint could not reopen that held name and is a
+	// disposable scratch, which close removes.
+	if _, err := os.Stat(carried); err != nil {
+		t.Errorf("close removed the session's named scratch %s: %v", carried, err)
+	} else if scratchLeaseHeld(t, carried) {
+		t.Errorf("the session's named scratch %s lease is still held after close", carried)
+	}
+	if _, err := os.Lstat(midMove); !os.IsNotExist(err) {
+		t.Errorf("close left the disposable mid-move scratch %s: %v", midMove, err)
 	}
 }
 
@@ -795,8 +811,10 @@ func TestParentCloseRemovesScratchOnAnEnvironmentASecondEnterAbandoned(t *testin
 
 	r.s.Close()
 
-	if _, err := os.Lstat(abandoned); !os.IsNotExist(err) {
-		t.Errorf("close left the scratch %s: %v", abandoned, err)
+	if _, err := os.Stat(abandoned); err != nil {
+		t.Errorf("close removed the named scratch %s, which is kept until its root is archived: %v", abandoned, err)
+	} else if scratchLeaseHeld(t, abandoned) {
+		t.Errorf("the named scratch %s lease is still held after close", abandoned)
 	}
 }
 
@@ -850,8 +868,10 @@ func TestParentCloseAfterExitRemovesEachAbandonedEnvironmentAndNotTheLaunchOne(t
 	r.s.Close()
 
 	for name, dir := range scratches {
-		if _, err := os.Lstat(dir); !os.IsNotExist(err) {
-			t.Errorf("close left the %s scratch %s: %v", name, dir, err)
+		if _, err := os.Stat(dir); err != nil {
+			t.Errorf("close removed the %s named scratch %s, which is kept until its root is archived: %v", name, dir, err)
+		} else if scratchLeaseHeld(t, dir) {
+			t.Errorf("the %s named scratch %s lease is still held after close", name, dir)
 		}
 	}
 }
@@ -1018,7 +1038,7 @@ func TestWorktreeSwap_CloseDuringASharedChildEnterDropsTheRefreshScratch(t *test
 	teardownChildSession(context.Background(), control)
 	releasePreparedTreeSlot(controlPrepared)
 
-	before := scratchDirsIn(t, isolated)
+	before := sandboxScratchDirs(t, isolated)
 
 	closeBegun := make(chan struct{})
 	closeDone := make(chan struct{})
@@ -1041,7 +1061,7 @@ func TestWorktreeSwap_CloseDuringASharedChildEnterDropsTheRefreshScratch(t *test
 	if enterErr == nil {
 		t.Error("the enter succeeded while the child's own close began under it, want a refusal")
 	}
-	after := scratchDirsIn(t, isolated)
+	after := sandboxScratchDirs(t, isolated)
 	slices.Sort(before)
 	slices.Sort(after)
 	if !slices.Equal(before, after) {

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -154,8 +155,10 @@ func TestParentCloseRemovesAnOwnedUnsandboxedChildScratch(t *testing.T) {
 	if got := child.State(); got != SessionClosed {
 		t.Errorf("owned child state after parent close = %q, want %q", got, SessionClosed)
 	}
-	if _, err := os.Lstat(scratch); !os.IsNotExist(err) {
-		t.Errorf("close left the scratch %s: %v", scratch, err)
+	if _, err := os.Stat(scratch); err != nil {
+		t.Errorf("close removed the named scratch %s, which is kept until its root is archived: %v", scratch, err)
+	} else if scratchLeaseHeld(t, scratch) {
+		t.Errorf("the named scratch %s lease is still held after close", scratch)
 	}
 }
 
@@ -299,8 +302,10 @@ func TestDisposedLaneChildLeavesTheRootEnvironmentAlone(t *testing.T) {
 	if laneWorktreePresent(lanePath) {
 		t.Errorf("disposal retained the lane %s", lanePath)
 	}
-	if _, err := os.Lstat(childScratch); !os.IsNotExist(err) {
-		t.Errorf("close left the scratch %s: %v", childScratch, err)
+	if _, err := os.Stat(childScratch); err != nil {
+		t.Errorf("close removed the named scratch %s, which is kept until its root is archived: %v", childScratch, err)
+	} else if scratchLeaseHeld(t, childScratch) {
+		t.Errorf("the named scratch %s lease is still held after close", childScratch)
 	}
 	assertInFlightProcessSurvived(t, "lane disposal", pid, done)
 	assertParentScratchUntouched(t, "lane disposal", rootScratch)
@@ -402,8 +407,10 @@ func TestRootCloseRemovesAnUntrackedResidentRuntimeScratch(t *testing.T) {
 	if got := resident.State(); got != SessionClosed {
 		t.Errorf("untracked resident runtime state after the root close = %q, want %q", got, SessionClosed)
 	}
-	if _, err := os.Lstat(scratch); !os.IsNotExist(err) {
-		t.Errorf("close left the scratch %s: %v", scratch, err)
+	if _, err := os.Stat(scratch); err != nil {
+		t.Errorf("close removed the named scratch %s, which is kept until its root is archived: %v", scratch, err)
+	} else if scratchLeaseHeld(t, scratch) {
+		t.Errorf("the named scratch %s lease is still held after close", scratch)
 	}
 	assertInFlightProcessSurvived(t, "the root's delegate tree close", pid, done)
 	assertParentScratchUntouched(t, "the root's delegate tree close", sharedScratch)
@@ -556,8 +563,12 @@ func TestRestoredDelegateRuntimeOwnsItsCloneScratch(t *testing.T) {
 	if got := r.runtime.State(); got != SessionClosed {
 		t.Errorf("restored runtime state after its teardown = %q, want %q", got, SessionClosed)
 	}
-	if _, err := os.Lstat(r.scratch); !os.IsNotExist(err) {
-		t.Errorf("the teardown left the clone's scratch %s: %v", r.scratch, err)
+	// The delegate's scratch is named after it in its root's tree, so it outlives
+	// the teardown (it goes when the root is archived); the lease does not.
+	if _, err := os.Stat(r.scratch); err != nil {
+		t.Errorf("the teardown removed the delegate's scratch %s: %v", r.scratch, err)
+	} else if scratchLeaseHeld(t, r.scratch) {
+		t.Errorf("the delegate's scratch %s lease is still held after its teardown", r.scratch)
 	}
 	assertInFlightProcessSurvived(t, "the restored runtime's teardown", r.pid, r.done)
 	assertParentScratchUntouched(t, "the restored runtime's teardown", r.rootScratch)
@@ -568,18 +579,20 @@ func TestRestoredDelegateRuntimeOwnsItsCloneScratch(t *testing.T) {
 	}
 }
 
-// A discarded restore candidate makes the same ownership decision in the
-// dispose direction: nothing adopted it, so its clone's scratch goes with it
-// rather than being handed off. The record has to be right for that too — a
-// candidate that believed it shared the root's environment would leak the dir
-// and its lease with no owner left to settle either.
-func TestDiscardedRestoreCandidateDisposesItsCloneScratch(t *testing.T) {
+// A discarded restore candidate makes the same ownership decision: the scratch
+// is the delegate's own, named in its root's tree, and holds its earlier work,
+// so the discard keeps it for a later restore and releases its lease. The
+// record has to be right for that too — a candidate that believed it shared the
+// root's environment would leave the lease held with no owner left to settle it.
+func TestDiscardedRestoreCandidateKeepsItsCloneScratch(t *testing.T) {
 	r := restoreDelegateRuntimeOnAClone(t)
 
 	r.runtime.discardRestoredCandidate()
 
-	if _, err := os.Stat(r.scratch); !os.IsNotExist(err) {
-		t.Errorf("the discarded candidate retained its clone's scratch %s: stat err = %v", r.scratch, err)
+	if _, err := os.Stat(r.scratch); err != nil {
+		t.Errorf("the discarded candidate removed the delegate's scratch %s: %v", r.scratch, err)
+	} else if scratchLeaseHeld(t, r.scratch) {
+		t.Errorf("the discarded candidate left the scratch %s lease held", r.scratch)
 	}
 	assertInFlightProcessSurvived(t, "the candidate's discard", r.pid, r.done)
 	assertParentScratchUntouched(t, "the candidate's discard", r.rootScratch)
@@ -672,7 +685,7 @@ func TestSharedEnvChildTeardownReleasesTheEnteredWorktreeScratch(t *testing.T) {
 // child that started on its parent's own object parks THAT environment, and its
 // teardown must leave the live parent's scratch lease alone (the sibling test
 // above pins that half).
-func TestOwnedChildTeardownRemovesTheParkedWorktreeEnvironmentScratch(t *testing.T) {
+func TestOwnedChildTeardownKeepsTheParkedWorktreeEnvironmentScratch(t *testing.T) {
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
 	parent := newSession(t, withClient(client), withDir(t.TempDir()), withoutGitSnapshot())
@@ -726,8 +739,12 @@ func TestOwnedChildTeardownRemovesTheParkedWorktreeEnvironmentScratch(t *testing
 
 	teardownChildSession(context.Background(), child)
 
-	if _, err := os.Lstat(parkedScratch); !os.IsNotExist(err) {
-		t.Errorf("close left the scratch %s: %v", parkedScratch, err)
+	// The parked environment is the child's own and its scratch is named, so the
+	// teardown keeps it for the root's archive and releases the lease.
+	if _, err := os.Stat(parkedScratch); err != nil {
+		t.Errorf("the child's teardown removed its parked environment's scratch %s: %v", parkedScratch, err)
+	} else if scratchLeaseHeld(t, parkedScratch) {
+		t.Errorf("the parked environment's scratch %s lease is still held after the teardown", parkedScratch)
 	}
 }
 
@@ -929,5 +946,23 @@ func TestChildTeardownRemovesAbandonedEnvironmentScratch(t *testing.T) {
 
 	if _, err := os.Stat(scratch); !os.IsNotExist(err) {
 		t.Errorf("a child's abandoned scratch %s survived its teardown (stat: %v), want it removed", scratch, err)
+	}
+}
+
+// assertScratchSettledAtEnd checks what a session end does to one scratch: a
+// named one (in a root's evener-scratch- tree) is kept for the root's archive
+// with its lease released, and a disposable one is removed.
+func assertScratchSettledAtEnd(t *testing.T, name, dir string) {
+	t.Helper()
+	if strings.HasPrefix(filepath.Base(filepath.Dir(dir)), "evener-scratch-") {
+		if _, err := os.Stat(dir); err != nil {
+			t.Errorf("the end removed the %s named scratch %s, which is kept until its root is archived: %v", name, dir, err)
+		} else if scratchLeaseHeld(t, dir) {
+			t.Errorf("the %s named scratch %s lease is still held after the end", name, dir)
+		}
+		return
+	}
+	if _, err := os.Lstat(dir); !os.IsNotExist(err) {
+		t.Errorf("the end left the %s disposable scratch %s: %v", name, dir, err)
 	}
 }

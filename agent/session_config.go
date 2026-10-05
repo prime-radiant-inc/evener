@@ -34,6 +34,12 @@ import (
 // settings, and session persistence. Zero-valued fields are filled in by
 // applyDefaults where defaults apply.
 type SessionConfig struct {
+	// SessionID, when set, is the ID a new top-level session takes. A launcher
+	// picks it with PickFreshSessionID before enabling the environment's
+	// sandbox, so the scratch the sandbox mints is named after the session.
+	// Empty lets NewSession mint one. Not persisted.
+	SessionID string `json:"-"`
+
 	// LifetimeContext owns this session tree: `evener run` supplies its run
 	// context (SIGINT- and --timeout-derived) and `evener serve` its shutdown
 	// context, so cancelling either ends the tree's own context immediately
@@ -672,10 +678,6 @@ type testConfig struct {
 	// context the refresh's git runs under, so a test can also assert that a
 	// close cancels that work. Nil in production.
 	swapEnvAfterAdopt func(refreshCtx context.Context)
-
-	// scratchSweep replaces the crashed-scratch sweep a root's close starts, so
-	// a test can hold it and prove close does not wait. Nil in production.
-	scratchSweep func(workspaceRoot string) error
 
 	// enterWorktreeAfterSwap observes the point in enterWorktree right after
 	// the environment swap returned — the earliest point outside the swap a

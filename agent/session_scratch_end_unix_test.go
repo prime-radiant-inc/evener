@@ -8,19 +8,19 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
 
-// TestRootCloseRemovesItsScratch: a root's own scratch does not outlive close.
-func TestRootCloseRemovesItsScratch(t *testing.T) {
-	root := newQueuePersistTestSession(t, t.TempDir())
-	local, ok := root.currentEnv().(*execenv.LocalExecutionEnvironment)
+// mintRootScratch runs a command on sess's environment so it mints its
+// scratch, writes a file and a cache dir there, and returns the scratch path.
+func mintRootScratch(t *testing.T, sess *Session) string {
+	t.Helper()
+	local, ok := sess.currentEnv().(*execenv.LocalExecutionEnvironment)
 	if !ok {
-		t.Fatalf("root env = %T, want a local environment", root.currentEnv())
+		t.Fatalf("env = %T, want a local environment", sess.currentEnv())
 	}
 	if _, err := local.ExecCommand(context.Background(), "true", 5000, "", nil); err != nil {
 		t.Fatal(err)
@@ -29,71 +29,49 @@ func TestRootCloseRemovesItsScratch(t *testing.T) {
 	if scratch == "" {
 		t.Fatal("no scratch minted")
 	}
+	if err := os.WriteFile(filepath.Join(scratch, "notes.md"), []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(scratch, "gocache", "ab"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return scratch
+}
+
+// TestRootCloseKeepsItsScratchAndPrunesCaches: a daemon session's scratch
+// outlives close — it goes when the hub archives or deletes the session — and
+// only its regenerable caches are pruned.
+func TestRootCloseKeepsItsScratchAndPrunesCaches(t *testing.T) {
+	root := newQueuePersistTestSession(t, t.TempDir())
+	scratch := mintRootScratch(t, root)
+	if want := "evener-scratch-" + root.ID(); filepath.Base(filepath.Dir(scratch)) != want {
+		t.Fatalf("root scratch %s is not in its tree %s", scratch, want)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(scratch)) })
 	root.Close()
-	if _, err := os.Lstat(scratch); !os.IsNotExist(err) {
-		t.Fatalf("root close left its scratch %s: %v", scratch, err)
+	if _, err := os.Stat(filepath.Join(scratch, "notes.md")); err != nil {
+		t.Fatalf("root close removed its scratch's file: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(scratch, "gocache")); !os.IsNotExist(err) {
+		t.Fatalf("root close kept the cache: %v", err)
 	}
 }
 
-// TestRootCloseSweepsOldScratch: a long-running daemon reclaims old scratch as
-// root sessions end, without waiting for a restart.
-func TestRootCloseSweepsOldScratch(t *testing.T) {
-	base := t.TempDir()
-	t.Setenv("TMPDIR", base)
-	old := filepath.Join(base, "evener-sandbox-424242")
-	if err := os.Mkdir(old, 0o700); err != nil {
-		t.Fatal(err)
+// TestOneShotRootCloseRemovesItsTree: a one-shot run has no archive to wait
+// for, so its root removes the whole scratch tree when it exits.
+func TestOneShotRootCloseRemovesItsTree(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	root, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, TurnEndsProcess: true})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
 	}
-	stamp := time.Now().Add(-48 * time.Hour)
-	if err := os.Chtimes(old, stamp, stamp); err != nil {
-		t.Fatal(err)
-	}
-	root := newQueuePersistTestSession(t, t.TempDir())
+	scratch := mintRootScratch(t, root)
+	tree := filepath.Dir(scratch)
 	root.Close()
-	// The sweep runs off the close path, so wait for it rather than expect it
-	// to have finished when Close returns.
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		if _, err := os.Lstat(old); os.IsNotExist(err) {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("root close did not sweep %s within 10s", old)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-}
-
-// TestRootCloseDoesNotWaitForTheSweep: the sweep can take a long time on a big
-// temp base, so close starts it and returns.
-func TestRootCloseDoesNotWaitForTheSweep(t *testing.T) {
-	base := t.TempDir()
-	t.Setenv("TMPDIR", base)
-	release := make(chan struct{})
-	started := make(chan struct{})
-	t.Cleanup(func() { close(release) })
-	root := newQueuePersistTestSession(t, t.TempDir())
-	root.cfg.testOnly.scratchSweep = func(string) error {
-		close(started)
-		<-release
-		return nil
-	}
-	done := make(chan struct{})
-	go func() { root.Close(); close(done) }()
-	select {
-	case <-done:
-	// TRIPWIRE: close returns in well under a second here; the sweep is held
-	// open forever, so a close that waits for it never returns at all, and this
-	// bound only turns that hang into a failure.
-	case <-time.After(10 * time.Second):
-		t.Fatal("root close waited for the scratch sweep")
-	}
-	select {
-	case <-started:
-	// TRIPWIRE: the sweep goroutine starts within milliseconds of close; this
-	// bound only turns a close that never starts it into a failure, not a hang.
-	case <-time.After(10 * time.Second):
-		t.Fatal("root close never started the scratch sweep")
+	if _, err := os.Lstat(tree); !os.IsNotExist(err) {
+		t.Fatalf("a one-shot root left its scratch tree %s: %v", tree, err)
 	}
 }
 
@@ -124,7 +102,7 @@ func sessionEndProbePluginDir(t *testing.T, pathFile, marker string) string {
 }
 
 // TestSessionEndHookRunsBeforeScratchIsRemoved: SessionEnd hooks and MCP servers
-// run with TMPDIR inside the scratch, so close removes it last.
+// run with TMPDIR inside the scratch, so a one-shot run's close removes it last.
 func TestSessionEndHookRunsBeforeScratchIsRemoved(t *testing.T) {
 	work := t.TempDir()
 	pathFile := filepath.Join(work, "scratch-path")
@@ -140,7 +118,7 @@ func TestSessionEndHookRunsBeforeScratchIsRemoved(t *testing.T) {
 	client.Register(&fakeAdapter{name: "openai"})
 	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
 	sess, err := RestoreSessionFromMetaWithConfig(client, NewOpenAIProfile("gpt-5.2"), env, meta,
-		RestoreSessionConfig{StateDir: t.TempDir()})
+		RestoreSessionConfig{StateDir: t.TempDir(), TurnEndsProcess: true})
 	if err != nil {
 		t.Fatalf("restore: %v", err)
 	}
@@ -167,24 +145,15 @@ func TestSessionEndHookRunsBeforeScratchIsRemoved(t *testing.T) {
 	}
 }
 
-// TestResumeAfterCloseGetsAFreshScratch: a session restored after its scratch was
-// removed runs with a new one.
-func TestResumeAfterCloseGetsAFreshScratch(t *testing.T) {
+// TestResumeReopensTheSameScratch: a session's scratch outlives close, and the
+// restored session reopens the same directory, files and all.
+func TestResumeReopensTheSameScratch(t *testing.T) {
 	dir := t.TempDir()
 	root1 := newQueuePersistTestSession(t, dir)
-	env1, ok := root1.currentEnv().(*execenv.LocalExecutionEnvironment)
-	if !ok {
-		t.Fatalf("root env = %T, want a local environment", root1.currentEnv())
-	}
-	if _, err := env1.ExecCommand(context.Background(), "true", 5000, dir, nil); err != nil {
-		t.Fatal(err)
-	}
-	old := env1.SessionScratchDir()
+	scratch := mintRootScratch(t, root1)
+	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(scratch)) })
 	meta := root1.Meta()
 	root1.Close()
-	if _, err := os.Lstat(old); !os.IsNotExist(err) {
-		t.Fatalf("close left the scratch %s: %v", old, err)
-	}
 
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
@@ -201,11 +170,10 @@ func TestResumeAfterCloseGetsAFreshScratch(t *testing.T) {
 	if _, err := env2.ExecCommand(context.Background(), "true", 5000, dir, nil); err != nil {
 		t.Fatalf("restored session cannot run a command: %v", err)
 	}
-	fresh := env2.SessionScratchDir()
-	if fresh == "" || filepath.Clean(fresh) == filepath.Clean(old) {
-		t.Fatalf("restored scratch = %q, want a fresh directory, not %q", fresh, old)
+	if got := env2.SessionScratchDir(); filepath.Clean(got) != filepath.Clean(scratch) {
+		t.Fatalf("restored scratch = %q, want the same %q", got, scratch)
 	}
-	if _, err := os.Stat(fresh); err != nil {
-		t.Fatalf("restored scratch %s missing: %v", fresh, err)
+	if _, err := os.Stat(filepath.Join(scratch, "notes.md")); err != nil {
+		t.Fatalf("the restored session's scratch lost its file: %v", err)
 	}
 }
