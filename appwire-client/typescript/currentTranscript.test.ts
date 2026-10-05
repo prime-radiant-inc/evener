@@ -6,14 +6,21 @@ import {
   decodeCurrentTranscriptState,
   hydrateThread,
   itemTextPresence,
+  markItemIdentityOnly,
   markItemTextOmitted,
+  mergeOlderItemPage,
   threadModelFromCurrentState,
 } from "./reducer";
 import { currentRead, textDelta } from "./testing/currentTranscript";
 import { notificationWireItem } from "./testing/notificationWireFixtures";
 import { subagentCallItems } from "./testing/subagentWireFixtures";
 import { toolWireItems } from "./testing/toolWireFixtures";
-import { type EvenerDelegateInfo, THREAD_ITEM_EVENT_KINDS, type ThreadItem } from "./types.gen";
+import {
+  type EvenerDelegateInfo,
+  THREAD_ITEM_EVENT_KINDS,
+  type ThreadItem,
+  type ThreadTurnsListResponse,
+} from "./types.gen";
 
 function readWithItems(ref: string, items: ThreadItem[]) {
   const read = currentRead(ref);
@@ -57,6 +64,60 @@ describe("current transcript checkpoints", () => {
     expect(diskOnly.pendingMutations).toBeUndefined();
     expect(encoded).not.toHaveProperty("turns");
     expect(encoded?.fields).not.toHaveProperty("pendingMutations");
+  });
+
+  it("keeps current-state disk data from restoring RAM-only admission", () => {
+    const original = hydrateThread(currentRead("local:admission"), "local:admission", 10);
+    original.instanceId = "instance-admission-1";
+    original.capabilitySource = "read";
+    original.resumeRequired = true;
+    original.resumeOnlyFoldable = true;
+    original.capabilities = { ...original.capabilities, send: true };
+    original.pendingMutations = [
+      {
+        clientMutationId: "mutation-admission-1",
+        method: "turn/start",
+        executionState: "queued",
+        projectionState: "pending",
+      },
+    ];
+
+    const encoded = currentTranscriptState(original);
+    if (!encoded) throw new Error("populated current state did not encode");
+    expect(original.instanceId).toBe("instance-admission-1");
+    expect(original.capabilitySource).toBe("read");
+    expect(original.resumeRequired).toBe(true);
+    expect(original.resumeOnlyFoldable).toBe(true);
+    expect(original.pendingMutations).toHaveLength(1);
+    expect(encoded.fields).not.toHaveProperty("instanceId");
+    expect(encoded.fields).not.toHaveProperty("capabilitySource");
+    expect(encoded.fields).not.toHaveProperty("resumeRequired");
+    expect(encoded.fields).not.toHaveProperty("resumeOnlyFoldable");
+    expect(encoded.fields).not.toHaveProperty("pendingMutations");
+    const decoded = decodeCurrentTranscriptState(JSON.parse(JSON.stringify(encoded)));
+    if (!decoded) throw new Error("valid populated current state did not decode");
+
+    const diskOnly = threadModelFromCurrentState(decoded);
+    expect(diskOnly.instanceId).toBeUndefined();
+    expect(diskOnly.capabilitySource).toBeUndefined();
+    expect(diskOnly.resumeRequired).toBeUndefined();
+    expect(diskOnly.resumeOnlyFoldable).toBeUndefined();
+    expect(Object.values(diskOnly.capabilities).every((enabled) => !enabled)).toBe(true);
+    expect(diskOnly.pendingMutations).toBeUndefined();
+
+    const uninterruptedOwner = threadModelFromCurrentState(decoded, {
+      capabilities: original.capabilities,
+      capabilitySource: original.capabilitySource,
+      instanceId: original.instanceId,
+      resumeRequired: original.resumeRequired,
+      resumeOnlyFoldable: original.resumeOnlyFoldable,
+    });
+    expect(uninterruptedOwner.capabilities).toEqual(original.capabilities);
+    expect(uninterruptedOwner.capabilitySource).toBe("read");
+    expect(uninterruptedOwner.instanceId).toBe("instance-admission-1");
+    expect(uninterruptedOwner.resumeRequired).toBe(true);
+    expect(uninterruptedOwner.resumeOnlyFoldable).toBe(true);
+    expect(uninterruptedOwner.pendingMutations).toBeUndefined();
   });
 
   it("retains producer-backed tool and delegate history, omitted text and structured payloads", () => {
@@ -224,6 +285,145 @@ describe("current transcript checkpoints", () => {
     expect(resumed.turns.map((turn) => turn.items[0]?.text)).toEqual(["older one", "older two", "alpha-tail"]);
     expect(resumed.olderCursor).toBe("older-40");
     expect(resumed.history?.incarnation).toBe("inc-1");
+  });
+
+  it("round-trips an identity-only item and adopts its real later page payload", () => {
+    const original = hydrateThread(
+      readWithItems("local:identity-only", [
+        {
+          id: "recovered-tool",
+          turnId: "turn_1",
+          type: "toolCall",
+          text: "",
+          position: { entry: 39, item: 0 },
+        },
+      ]),
+      "local:identity-only",
+      10,
+    );
+    const skeleton = original.history?.turns[0]?.items[0];
+    if (!skeleton) throw new Error("identity-only fixture item missing");
+    markItemIdentityOnly(skeleton);
+
+    const encoded = currentTranscriptState(original);
+    if (!encoded) throw new Error("versioned identity-only history did not encode");
+    expect(encoded.history.turns[0]?.items[0]?.identityOnly).toBe(true);
+    const decoded = decodeCurrentTranscriptState(JSON.parse(JSON.stringify(encoded)));
+    if (!decoded) throw new Error("valid identity-only checkpoint did not decode");
+    const restored = threadModelFromCurrentState(decoded);
+    const restoredCheckpoint = currentTranscriptState(restored);
+    expect(restoredCheckpoint?.history.turns[0]?.items[0]?.identityOnly).toBe(true);
+
+    const page: ThreadTurnsListResponse = {
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-1", length: 40 },
+      data: [
+        {
+          id: "turn_1",
+          status: "completed",
+          itemsView: "full",
+          items: [
+            {
+              id: "recovered-tool",
+              turnId: "turn_1",
+              type: "toolCall",
+              text: "run pwd",
+              toolName: "shell",
+              callId: "call_recovered",
+              argumentsJson: '{"command":"pwd"}',
+              position: { entry: 39, item: 0 },
+            },
+          ],
+        },
+      ],
+      nextCursor: "older-39",
+    };
+    const resumed = mergeOlderItemPage(restored, page);
+    const uninterrupted = mergeOlderItemPage(original, page);
+    const items = resumed.history?.turns.flatMap((turn) => turn.items) ?? [];
+
+    expect(resumed.turns).toEqual(uninterrupted.turns);
+    expect(resumed.history?.turns.map((turn) => turn.id)).toEqual(["turn_1"]);
+    expect(items.map((item) => item.id)).toEqual(["recovered-tool"]);
+    expect(items[0]).toMatchObject({
+      text: "run pwd",
+      toolName: "shell",
+      callId: "call_recovered",
+      argumentsJSON: '{"command":"pwd"}',
+      position: { entry: 39, item: 0 },
+    });
+    expect(resumed.olderCursor).toBe("older-39");
+  });
+
+  it("continues paging after checkpointing two pages loaded by the reducer", () => {
+    const original = hydrateThread(
+      readWithItems("local:page-continuation", [
+        {
+          id: "latest-item",
+          turnId: "turn_1",
+          type: "agentMessage",
+          text: "latest window",
+          position: { entry: 39, item: 0 },
+        },
+      ]),
+      "local:page-continuation",
+      10,
+    );
+    const page = (turnId: string, itemId: string, entry: number, cursor: string): ThreadTurnsListResponse => ({
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-1", length: 40 },
+      data: [
+        {
+          id: turnId,
+          status: "completed",
+          itemsView: "full",
+          items: [
+            {
+              id: itemId,
+              turnId,
+              type: "agentMessage",
+              text: itemId,
+              position: { entry, item: 0 },
+            },
+          ],
+        },
+      ],
+      nextCursor: cursor,
+    });
+    const firstPage = page("turn_old_1", "item_old_1", 10, "older-20");
+    const secondPage = page("turn_old_2", "item_old_2", 20, "older-10");
+    const loadedTwice = mergeOlderItemPage(mergeOlderItemPage(original, firstPage), secondPage);
+    expect(loadedTwice.history?.turns.map((turn) => turn.id)).toEqual(["turn_old_1", "turn_old_2", "turn_1"]);
+    expect(loadedTwice.olderCursor).toBe("older-10");
+
+    const encoded = currentTranscriptState(loadedTwice);
+    if (!encoded) throw new Error("versioned history with loaded pages did not encode");
+    const decoded = decodeCurrentTranscriptState(JSON.parse(JSON.stringify(encoded)));
+    if (!decoded) throw new Error("valid multi-page checkpoint did not decode");
+    const restored = threadModelFromCurrentState(decoded);
+    const thirdPage = page("turn_old_3", "item_old_3", 30, "older-0");
+    const resumed = mergeOlderItemPage(restored, thirdPage);
+    const uninterrupted = mergeOlderItemPage(loadedTwice, thirdPage);
+
+    expect(resumed.turns).toEqual(uninterrupted.turns);
+    expect(resumed.history?.turns.map((turn) => turn.id)).toEqual(["turn_old_1", "turn_old_2", "turn_old_3", "turn_1"]);
+    expect(resumed.history?.turns.flatMap((turn) => turn.items).map((item) => item.id)).toEqual([
+      "item_old_1",
+      "item_old_2",
+      "item_old_3",
+      "latest-item",
+    ]);
+    expect(resumed.olderCursor).toBe("older-0");
+    expect(resumed.history).toMatchObject({
+      bootGeneration: "1",
+      epoch: 1,
+      incarnation: "inc-1",
+      length: 40,
+      appliedGeneration: 1,
+      issuedGeneration: 1,
+    });
   });
 
   it("rejects unknown versions, malformed positions and mismatched overlay keys", () => {
@@ -936,7 +1136,35 @@ describe("current transcript checkpoints", () => {
       },
       11,
     );
-    const encoded = currentTranscriptState(started);
+    const accumulated = applyNotification(
+      applyNotification(
+        started,
+        {
+          method: "overlay/delta",
+          params: {
+            threadId: "thr_local:reasoning-live",
+            ref: "local:reasoning-live",
+            key: "stream:s2:reasoning",
+            field: "text",
+            delta: " chunk-1",
+          },
+        },
+        12,
+      ),
+      {
+        method: "overlay/delta",
+        params: {
+          threadId: "thr_local:reasoning-live",
+          ref: "local:reasoning-live",
+          key: "stream:s2:reasoning",
+          field: "text",
+          delta: " chunk-2",
+        },
+      },
+      13,
+    );
+    expect(accumulated.overlay?.["stream:s2:reasoning"]?.item.text).toBe("first chunk-1 chunk-2");
+    const encoded = currentTranscriptState(accumulated);
     if (!encoded) throw new Error("versioned fixture history did not encode");
     const decoded = decodeCurrentTranscriptState(JSON.parse(JSON.stringify(encoded)));
     if (!decoded) throw new Error("valid reasoning checkpoint did not decode");
@@ -948,17 +1176,17 @@ describe("current transcript checkpoints", () => {
         ref: "local:reasoning-live",
         key: "stream:s2:reasoning",
         field: "text",
-        delta: " chunk",
+        delta: " chunk-3",
       },
     };
 
-    const resumed = applyNotification(restored, next, 12);
-    const uninterrupted = applyNotification(started, next, 12);
+    const resumed = applyNotification(restored, next, 14);
+    const uninterrupted = applyNotification(accumulated, next, 14);
     const reasoning = resumed.turns[0]?.items.find((item) => item.id === "reasoning-live");
 
     expect(resumed.turns).toEqual(uninterrupted.turns);
-    expect(reasoning?.text).toBe("first chunk");
-    expect(reasoning?.reasoningSummaries).toEqual([["first chunk"]]);
+    expect(reasoning?.text).toBe("first chunk-1 chunk-2 chunk-3");
+    expect(reasoning?.reasoningSummaries).toEqual([["first chunk-1 chunk-2 chunk-3"]]);
     expect(resumed.turns[0]?.items.filter((item) => item.id === "reasoning-live")).toHaveLength(1);
   });
 
@@ -1009,40 +1237,64 @@ describe("current transcript checkpoints", () => {
       invalidatedAtGeneration: 2,
       awaited: { bootGeneration: "1", epoch: 2 },
       pendingIncarnation: "inc-2",
+      deferredPages: [],
+    };
+    const deferredPage: ThreadTurnsListResponse = {
+      data: [
+        {
+          id: "turn_old",
+          itemsView: "full",
+          status: "completed",
+          items: [
+            {
+              id: "old-item",
+              turnId: "turn_old",
+              type: "agentMessage",
+              text: "deferred page",
+              position: { entry: 0, item: 0 },
+            },
+          ],
+        },
+      ],
+      nextCursor: "older-20",
+      bootGeneration: "1",
+      epoch: 2,
+      snapshot: { incarnation: "inc-2", length: 42 },
+    };
+    const withDeferredPage = mergeOlderItemPage(original, deferredPage);
+    if (!withDeferredPage.history) throw new Error("deferred page lost versioned history");
+    withDeferredPage.history = { ...withDeferredPage.history, failed: "read failed" };
+    expect(withDeferredPage.history?.deferredPages).toHaveLength(1);
+    expect(withDeferredPage.history?.invalidatedAtGeneration).toBe(2);
+    expect(withDeferredPage.history?.awaited).toEqual({ bootGeneration: "1", epoch: 2 });
+    expect(withDeferredPage.history?.pendingIncarnation).toBe("inc-2");
+    expect(withDeferredPage.history?.failed).toBe("read failed");
+    withDeferredPage.pendingMutations = [
+      { clientMutationId: "local-only", method: "turn/start", executionState: "queued", projectionState: "pending" },
+    ];
+    const encoded = currentTranscriptState(withDeferredPage);
+    if (!encoded) throw new Error("versioned fixture history did not encode");
+    const decoded = decodeCurrentTranscriptState(JSON.parse(JSON.stringify(encoded)));
+    if (!decoded) throw new Error("valid current state did not decode");
+    const restored = threadModelFromCurrentState(decoded);
+    expect(restored.history).toMatchObject({
+      invalidatedAtGeneration: 2,
+      awaited: { bootGeneration: "1", epoch: 2 },
+      pendingIncarnation: "inc-2",
       failed: "read failed",
       deferredPages: [
         {
           data: [
             {
               id: "turn_old",
-              itemsView: "full",
-              status: "completed",
-              items: [
-                {
-                  id: "old-item",
-                  turnId: "turn_old",
-                  type: "agentMessage",
-                  text: "deferred page",
-                  position: { entry: 0, item: 0 },
-                },
-              ],
+              items: [{ id: "old-item", text: "deferred page", position: { entry: 0, item: 0 } }],
             },
           ],
           nextCursor: "older-20",
-          bootGeneration: "1",
-          epoch: 2,
           snapshot: { incarnation: "inc-2", length: 42 },
         },
       ],
-    };
-    original.pendingMutations = [
-      { clientMutationId: "local-only", method: "turn/start", executionState: "queued", projectionState: "pending" },
-    ];
-    const encoded = currentTranscriptState(original);
-    if (!encoded) throw new Error("versioned fixture history did not encode");
-    const decoded = decodeCurrentTranscriptState(JSON.parse(JSON.stringify(encoded)));
-    if (!decoded) throw new Error("valid current state did not decode");
-    const restored = threadModelFromCurrentState(decoded);
+    });
     const latest = currentRead("local:deferred");
     latest.bootGeneration = "1";
     latest.epoch = 2;
@@ -1063,12 +1315,25 @@ describe("current transcript checkpoints", () => {
         ],
       },
     ];
-    const reconciled = applyReadModel(restored, hydrateThread(latest, "local:deferred", 11));
+    const authoritative = hydrateThread(latest, "local:deferred", 11);
+    const reconciled = applyReadModel(restored, authoritative);
+    const uninterrupted = applyReadModel(withDeferredPage, authoritative);
 
+    expect(reconciled.turns).toEqual(uninterrupted.turns);
+    expect(reconciled.history).toEqual(uninterrupted.history);
+    expect(reconciled.olderCursor).toBe(uninterrupted.olderCursor);
     expect(reconciled.history?.deferredPages).toEqual([]);
     expect(reconciled.history?.incarnation).toBe("inc-2");
+    expect(reconciled.history?.invalidatedAtGeneration).toBeUndefined();
+    expect(reconciled.history?.awaited).toBeUndefined();
+    expect(reconciled.history?.pendingIncarnation).toBeUndefined();
+    expect(reconciled.history?.failed).toBeUndefined();
     expect(reconciled.history?.turns.map((turn) => turn.id)).toEqual(["turn_old", "turn_current"]);
     expect(reconciled.history?.turns[0]?.items[0]?.text).toBe("deferred page");
+    expect(reconciled.history?.turns.flatMap((turn) => turn.items).map((item) => item.id)).toEqual([
+      "old-item",
+      "current-item",
+    ]);
     expect(reconciled.olderCursor).toBe("older-40");
     expect(restored.pendingMutations).toBeUndefined();
     expect(Object.values(restored.capabilities).every((enabled) => !enabled)).toBe(true);
