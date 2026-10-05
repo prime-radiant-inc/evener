@@ -1883,6 +1883,11 @@ const (
 	// round collapses into when it ended with streamed content or running
 	// tools that were never recorded.
 	ThreadItemEventKindInterrupted ThreadItemEventKind = "interrupted"
+	// ThreadItemEventKindApprovalDecision marks the systemMessage item a
+	// human's Allow or Deny on a sandbox escalation leaves in history (S16).
+	// Its Raw carries {"approvalDecision": {escalationId, approved, tool,
+	// kind, deniedPath}}; a client draws the approval history row from that.
+	ThreadItemEventKindApprovalDecision ThreadItemEventKind = "approval_decision"
 )
 
 // AllThreadItemEventKinds is every ThreadItem.EventKind value emitted for
@@ -1907,6 +1912,7 @@ var AllThreadItemEventKinds = []string{
 	string(ThreadItemEventKindNotesContext),
 	string(ThreadItemEventKindWarning),
 	string(ThreadItemEventKindInterrupted),
+	string(ThreadItemEventKindApprovalDecision),
 }
 
 type ThreadItem struct {
