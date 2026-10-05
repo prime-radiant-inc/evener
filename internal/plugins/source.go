@@ -123,7 +123,7 @@ func fetchPluginSource(ctx context.Context, src Source, marketplaceRoot, destDir
 	case src.Kind == SourceGitSubdir:
 		clone := destDir + ".clone"
 		defer func() { _ = sourceRemoveAll(clone) }()
-		if err := sourceSparseClone(ctx, src.URL, clone, src.Path, src.Ref, src.Sha); err != nil {
+		if err := sourceSparseClone(ctx, gitRemoteURL(src), clone, src.Path, src.Ref, src.Sha); err != nil {
 			return "", err
 		}
 		if err := copyTree(filepath.Join(clone, src.Path), destDir); err != nil {

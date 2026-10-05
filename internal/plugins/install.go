@@ -77,10 +77,8 @@ func (m *Manager) catalogPlugin(ctx context.Context, marketplace, plugin string)
 	if err != nil {
 		return MarketplaceRef{}, CatalogPlugin{}, m.storeFileFailed(err, "reading marketplace.json for %s", marketplace)
 	}
-	for _, p := range cat.Plugins {
-		if p.Name == plugin {
-			return ref, p, nil
-		}
+	if p, ok := cat.plugin(plugin); ok {
+		return ref, p, nil
 	}
 	return MarketplaceRef{}, CatalogPlugin{}, fmt.Errorf("plugin %q in marketplace %q: %w", plugin, marketplace, ErrPluginNotFound)
 }

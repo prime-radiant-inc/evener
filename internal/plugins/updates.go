@@ -106,12 +106,8 @@ func (m *Manager) upgradeSource(mk Marketplaces, catalogs map[string]Catalog, wa
 		}
 		catalogs[marketplace] = cat
 	}
-	for _, p := range cat.Plugins {
-		if p.Name == plugin {
-			return p.Source, true
-		}
-	}
-	return Source{}, false
+	p, ok := cat.plugin(plugin)
+	return p.Source, ok
 }
 
 func remoteHead(ctx context.Context, src Source) (string, error) {
