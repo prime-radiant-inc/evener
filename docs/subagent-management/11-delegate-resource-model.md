@@ -1521,7 +1521,10 @@ is a normal delegate generation:
    before source acknowledgement replays by ID without appending a second
    steering turn;
 4. the retained runtime requests StartAttention from the tree controller with
-   its exact runtime pointer and one still-pending transcript attention ID;
+   its exact runtime pointer and one still-pending transcript attention ID,
+   revalidated after taking the child's drive claim so a completed intervening
+   generation cannot leave a stale selected ID; an already accepted reservation
+   retries its exact marker and generation across a journal-commit failure;
 5. the controller applies the same owner, ancestor, stop, and capacity checks
    as delegate_send;
 6. the controller starts a private generation with trigger=attention and binds

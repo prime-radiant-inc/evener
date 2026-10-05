@@ -478,6 +478,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		// transcript is seeded from inheritedContext below, so it keeps the raw
 		// text for display.
 		s.history = escapeInheritedHistory(inheritedContext)
+		s.restoreMemoryProjection(s.history)
 		boundary := schema.NewTurn(schema.TurnSteering, llm.User("The conversation above is inherited context from your parent. You are a separate delegate. Use that history as background for the assignment that follows; your own role, tools, permissions, and working directory govern this session."))
 		s.history = append(s.history, boundary)
 		s.pendingTranscriptTurns = append(s.pendingTranscriptTurns, boundary)
@@ -762,7 +763,12 @@ type RestoreSessionConfig struct {
 	// LifetimeContext owns this restored session tree exactly as
 	// SessionConfig.LifetimeContext owns a fresh one: run and serve each supply
 	// their own, and nil is the library/test shape that roots at Background.
-	LifetimeContext         context.Context
+	LifetimeContext context.Context
+	MemoryStateRoot string
+	DisableMemory   bool
+	// A nil ceiling preserves root-session identity. A live parent's empty ID
+	// revokes project access, including after the authoritative metadata reload.
+	memoryProjectCeiling    *string
 	StateDir                string
 	Project                 identifier.Project
 	ResolveProfile          func(ref string) (*provider.Profile, error)
@@ -898,6 +904,11 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	}()
 
 	cfg := configFromSnapshot(meta.Config)
+	cfg.MemoryStateRoot = restoreCfg.MemoryStateRoot
+	cfg.DisableMemory = cfg.DisableMemory || restoreCfg.DisableMemory
+	if ceiling := restoreCfg.memoryProjectCeiling; ceiling != nil && cfg.MemoryProjectID != *ceiling {
+		cfg.MemoryProjectID = ""
+	}
 	// A pre-normalization meta.json may carry a mixed-case level or disable
 	// alias; canonicalize so the loop detector's and request builder's
 	// comparisons hold on restored sessions too. A value outside the
@@ -1277,6 +1288,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// new content still emits, and a still-empty store stays silent.
 	s.notesLastProjected = restoredNotesBlock
 	s.notesEverProjected = notesEverProjected
+	s.restoreMemoryProjection(s.history)
 	if meta.Skills != nil {
 		s.skillLifecycle = meta.Skills.Clone()
 		s.pinnedNoteGen = meta.Skills.PinnedNoteGen
@@ -1792,6 +1804,7 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 		// tool so neither the live registry nor its model-facing cache can widen it.
 		s.reg.RestrictKeepingResultTool(ceiling, s.resultToolName())
 	}
+	s.filterUnavailableMemoryTools()
 
 	// Cache instruction docs once; reused every round for system prompt rebuilds.
 	s.projectDocs, s.projectDocsTruncated = LoadInstructionDocs(s.currentEnv(), personalDocPath(s.cfg.AgentsDocPath), s.profile.ProjectDocFiles()...)

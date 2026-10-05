@@ -76,10 +76,24 @@ const IMAGE_RE = new RegExp(String.raw`!\[([^\]]*)\](?:${INLINE_DESTINATION}|\[[
 
 // A skill's markdown is its author's, and the phone's markdown view loads
 // images from their URLs, so each image, inline (![alt](url)), by reference
-// (![alt][ref]) or shortcut (![alt]), reads as its alt text instead. Taking
-// out an image can complete another (![a ![b](u)](v) leaves a ![b](v)), so this
-// repeats until none is left. Each pass shortens the text, so it ends.
+// (![alt][ref]) or shortcut (![alt]), reads as its alt text instead. An image
+// needs "](" in its paragraph, or a reference definition, which needs "]:", so
+// a paragraph with neither reads as written, keeping code like vec![1, 2, 3].
+// If the markdown holds a "]:", or stripping writes one ([r]![](u): ...), the
+// whole markdown goes through withoutAnyImages.
 function withoutImages(markdown: string): string {
+	if (markdown.includes("]:")) return withoutAnyImages(markdown);
+	const text = markdown
+		.split(/(\n[ \t\r]*\n)/)
+		.map((paragraph) => (paragraph.includes("](") ? withoutAnyImages(paragraph) : paragraph))
+		.join("");
+	return text.includes("]:") ? withoutAnyImages(markdown) : text;
+}
+
+// Taking out an image can complete another (![a ![b](u)](v) leaves a
+// ![b](v)), so this repeats until none is left. Each pass shortens the text,
+// so it ends.
+function withoutAnyImages(markdown: string): string {
 	let text = markdown;
 	let before: string;
 	do {

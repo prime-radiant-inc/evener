@@ -7,6 +7,7 @@ import { DisplayPreferences } from "../display/displayPreferences";
 import { render } from "../renderNative.testkit";
 import { memoryStorage } from "../syncStringStorageTestUtils";
 import type { BoardState, ClassifiedRow } from "./attention";
+import { boardState } from "./attention";
 import { BoardRow, type BoardRowProps, sessionSubagentChip } from "./BoardRow";
 import { PulseMeter } from "./PulseMeter";
 import { StateMark } from "./StateMark";
@@ -215,6 +216,22 @@ describe("a Board row (spec 7.2)", () => {
 		expect(live.root.findAllByType(PulseMeter)).toHaveLength(1);
 		const pinned = mount({ item: item("working", { state: "active" }), moving: false });
 		expect(pinned.root.findAllByType(PulseMeter)).toEqual([]);
+		expect(symbols(pinned)).toContain("circle.fill");
+	});
+
+	it.each(["idle", "warning"])("a %s parent with mixed children keeps Working visuals and the failed chip", (state) => {
+		const parent = row({ state, subagents: { running: 1, failed: 1, done: 0 } });
+		const classified = { row: parent, state: boardState(parent, false, false) };
+		const live = mount({ item: classified, moving: true });
+		expect(pressable(live).props.accessibilityLabel).toContain("Fix Endless Provider Retry Loop, Working,");
+		expect(pressable(live).props.accessibilityLabel).toContain("1 failed");
+		expect(live.root.findAllByType(PulseMeter)).toHaveLength(1);
+		expect(styleOf(textWith(live, "1 failed")[0])).toMatchObject({ color: palette.dangerInk });
+		expect(styleOf(textWith(live, "1 running")[0])).toMatchObject({ color: palette.inkMid });
+		const pinned = mount({ item: classified, moving: false, variant: "quiet" });
+		expect(pressable(pinned).props.accessibilityLabel).toContain("Working, 1 running · 1 failed");
+		expect(pinned.root.findAllByType(PulseMeter)).toEqual([]);
+		expect(pinned.root.findByType(StateMark).props.state).toBe("working");
 		expect(symbols(pinned)).toContain("circle.fill");
 	});
 

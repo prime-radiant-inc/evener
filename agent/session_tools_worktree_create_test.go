@@ -161,6 +161,7 @@ func (p *worktreeMaintenanceProbe) published() {
 }
 
 func TestMain(m *testing.M) {
+	memoryEvalCaptureSources()
 	for _, key := range []string{"GOCACHE", "GOPATH", "GOMODCACHE"} {
 		if out, err := exec.Command("go", "env", key).Output(); err == nil {
 			if v := strings.TrimSpace(string(out)); v != "" {

@@ -251,6 +251,20 @@ type Session struct {
 	// Guarded by mu.
 	notesEverProjected bool
 
+	// Memory environments are independent of workspace policy and cwd.
+	memoryMu            sync.Mutex
+	memoryEnvs          map[string]*execenv.LocalExecutionEnvironment
+	memoryRoots         map[string]*execenv.ConfinedFileRoot
+	memoryEnvUsers      map[*execenv.LocalExecutionEnvironment]int
+	memoryEnvFlights    map[string]*memoryEnvironmentFlight
+	memoryClosed        bool
+	memoryLastProjected map[string]memoryProjection
+	memoryEverProjected map[string]bool
+	memoryIndexFlights  map[string]*memoryIndexFlight
+	// The sole automatic reader per scope owns cleanup until it returns.
+	// Admission and retirement share memoryMu, including the pre-read window.
+	memoryIndexReaders map[string]*execenv.LocalExecutionEnvironment
+
 	// --- Synchronization / lock discipline ---
 	//
 	// The turn loop (ProcessInput → processOneInput) is the primary owner of

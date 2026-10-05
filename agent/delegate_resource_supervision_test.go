@@ -8,8 +8,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1046,7 +1048,7 @@ func TestDelegateResourceSupervision_CompletionGateRecoversEveryCleanExit(t *tes
 		sub := warmStableSupervisionDelegate(t, root, fixture)
 		sub.sess.hookRunner = stableSupervisionStopHook(`{"decision":"block","reason":"address hook feedback"}`)
 		armStableSupervisionAttention(t, sub, "attention:blocked-hook", "run blocked hook")
-		waitForStableSupervisionRun(t, root, fixture.childID)
+		waitForStableSupervisionRun(t, root, fixture.childID, fixture.adapter)
 		assertSingleRecoveryNudge(t, fixture.adapter)
 	})
 
@@ -1061,7 +1063,7 @@ func TestDelegateResourceSupervision_CompletionGateRecoversEveryCleanExit(t *tes
 		sub := warmStableSupervisionDelegate(t, root, fixture)
 		sub.sess.hookRunner = stableSupervisionStopHook(`{"hookSpecificOutput":{"additionalContext":"hook model context"}}`)
 		armStableSupervisionAttention(t, sub, "attention:hook-context", "run context hook")
-		waitForStableSupervisionRun(t, root, fixture.childID)
+		waitForStableSupervisionRun(t, root, fixture.childID, fixture.adapter)
 		assertSingleRecoveryNudge(t, fixture.adapter)
 		requests := fixture.adapter.Requests()
 		if !requestMessagesContainText(requests[len(requests)-1].Messages, "hook model context") {
@@ -1108,6 +1110,122 @@ func TestDelegateResourceSupervision_CompletionGateRecoversEveryCleanExit(t *tes
 			t.Fatalf("post-drain continuation omitted owner steering: %#v", requests[len(requests)-1].Messages)
 		}
 	})
+}
+
+// Unlike the before-announcement control, this holds generation 1 after its
+// inline result has reached the waiter. The caller acknowledges that exact
+// result before arming attention, while only the controller finalizing claim
+// still fences generation 2. A passing run is a control, not a reproduction of
+// the intermittent original blocked/context hook failures.
+func TestDelegateResourceSupervision_PostAcknowledgementAttentionBeforeRelease(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, attentionID, hookOutput string
+		bareContinuations             int
+		wantRequests                  int
+	}{
+		{"blocked_hook", "attention:postack-blocked-hook", `{"decision":"block","reason":"address hook feedback"}`, 4, 7},
+		{"unblocked_hook_context", "attention:postack-hook-context", `{"hookSpecificOutput":{"additionalContext":"hook model context"}}`, 0, 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := newColdStableDelegateFixture(t, "")
+			fixture.adapter.steps = []func(llm.Request) llm.Response{
+				func(llm.Request) llm.Response { return finalResponse("warm result") },
+				func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("attention no action")} },
+			}
+			for range tc.bareContinuations {
+				fixture.adapter.steps = append(fixture.adapter.steps, func(llm.Request) llm.Response {
+					return llm.Response{Message: llm.Assistant("hook continuation without report")}
+				})
+			}
+			fixture.adapter.steps = append(fixture.adapter.steps, func(llm.Request) llm.Response { return finalResponse("recovered after hook") })
+			root := restoreSupervisionRoot(t, fixture, nil)
+			entered := make(chan delegateLease, 1)
+			release := make(chan struct{})
+			var once sync.Once
+			unblock := func() { once.Do(func() { close(release) }) }
+			// Registered after root.Close, so every failure releases the barrier
+			// before cleanup tries to join the real runner.
+			t.Cleanup(unblock)
+			defer unblock()
+			root.cfg.testOnly.subagentBeforeGenerationReleased = func(_ *subagent, lease delegateLease) {
+				if lease.generation == 1 {
+					entered <- lease
+					<-release
+				}
+			}
+			sub := warmStableSupervisionDelegate(t, root, fixture)
+			var warmLease delegateLease
+			select {
+			case warmLease = <-entered:
+			// TRIPWIRE: the in-process warm announcement normally reaches this signal in milliseconds, this only bounds a hung finalizer.
+			case <-time.After(30 * time.Second):
+				t.Fatal("warm announcement never reached the pre-release barrier")
+			}
+			if warmLease != (delegateLease{delegateID: fixture.delegateID, generation: 1}) {
+				t.Fatalf("warm barrier lease = %#v, want exact generation 1", warmLease)
+			}
+			warmFinish := latestDelegateControllerRunFinished(t, root.delegateController, fixture.delegateID)
+			events, err := root.delegateController.store.Load()
+			if err != nil {
+				t.Fatalf("load warm acknowledgement: %v", err)
+			}
+			acknowledged := false
+			for _, event := range events {
+				if event.DelegateID == fixture.delegateID && event.DeliveryAcknowledged != nil && event.DeliveryAcknowledged.DeliveryID == warmFinish.DeliveryID {
+					acknowledged = true
+				}
+			}
+			if warmFinish.Generation != warmLease.generation || warmFinish.DeliveryID == "" || !acknowledged {
+				t.Fatalf("warm exact delivery not durably acknowledged before attention: finish=%#v acknowledged=%t", warmFinish, acknowledged)
+			}
+			c := root.delegateController
+			assertWarmFence := func() {
+				t.Helper()
+				c.mu.Lock()
+				aggregate, live := c.durable[fixture.delegateID], c.live[fixture.delegateID]
+				retained := live != nil && live.finalizing != nil && live.finalizing.generation == warmLease.generation && live.finalizing.runtime == sub.sess
+				closedRun := aggregate != nil && aggregate.Generation == warmLease.generation && !aggregate.CurrentRunOpen && len(aggregate.PendingDeliveries) == 0
+				c.mu.Unlock()
+				sub.mu.Lock()
+				childIdle := !sub.running && !sub.driving && !sub.finalizing
+				warmDoneOpen := sub.done != nil && !supervisionChannelClosed(sub.done)
+				sub.mu.Unlock()
+				if !retained || !closedRun || !childIdle || !warmDoneOpen {
+					t.Fatalf("post-ack fence = retained:%t closedRun:%t childIdle:%t warmDoneOpen:%t", retained, closedRun, childIdle, warmDoneOpen)
+				}
+			}
+			assertWarmFence()
+			sub.sess.hookRunner = stableSupervisionStopHook(tc.hookOutput)
+			armStableSupervisionAttention(t, sub, tc.attentionID, "postack-attention-sentinel")
+			if !root.driveStableDelegateAttention(sub) {
+				t.Fatal("real post-ack drive did not handle pending attention")
+			}
+			assertWarmFence()
+			fold, err := readDelegateAttentionFold(transcriptPath(root.stateDir, fixture.childID), fixture.childID)
+			if err != nil || !reflect.DeepEqual(fold.pendingIDs(), []string{tc.attentionID}) || fold.resumeGenerations[tc.attentionID] != 0 {
+				t.Fatalf("held generation attention identity = pending:%#v generations:%#v err:%v", fold.pendingIDs(), fold.resumeGenerations, err)
+			}
+			unblock()
+			waitForStableSupervisionRun(t, root, fixture.childID, fixture.adapter)
+			assertSingleRecoveryNudge(t, fixture.adapter)
+			finished := latestDelegateControllerRunFinished(t, c, fixture.delegateID)
+			if finished.Generation != 2 || finished.Disposition != delegatestore.DispositionReported || finished.DeliveryID == "" {
+				t.Fatalf("post-ack attention finish = %#v, want reported generation 2", finished)
+			}
+			fold, err = readDelegateAttentionFold(transcriptPath(root.stateDir, fixture.childID), fixture.childID)
+			if err != nil || fold.resolutions[tc.attentionID] != delegateAttentionConsumed || fold.resumeGenerations[tc.attentionID] != 2 {
+				t.Fatalf("post-ack resolution identity = resolutions:%#v generations:%#v err:%v", fold.resolutions, fold.resumeGenerations, err)
+			}
+			requests := fixture.adapter.Requests()
+			if len(requests) != tc.wantRequests || !requestMessagesContainText(requests[1].Messages, "postack-attention-sentinel") {
+				t.Fatalf("post-ack provider requests = %#v, want %d including exact attention payload", requests, tc.wantRequests)
+			}
+			if tc.name == "unblocked_hook_context" && !requestMessagesContainText(requests[len(requests)-1].Messages, "hook model context") {
+				t.Fatalf("recovery request omitted unblocked hook context: %#v", requests[len(requests)-1].Messages)
+			}
+		})
+	}
 }
 
 func TestDelegateResourceSupervision_AutoNudgeOccursOnceForEligibleBuiltin(t *testing.T) {
@@ -3196,6 +3314,46 @@ func restoreSupervisionRoot(t *testing.T, fixture coldStableDelegateFixture, clo
 	return root
 }
 
+// serveSupervisionRootWakes stands in for the server's input loop on the
+// root (serve.go's SetNotifyFunc): a wake is coalesced into a one-slot
+// channel, and each one runs the root's stable delegate attention drive, the
+// first thing the root's notification turn does (acceptNotificationInput).
+// Attention whose child-side drive was refused falls back to that drive
+// through two root wakes: the one releaseFinalizationLocked sends when a
+// finished generation is released with attention still owed, and the root's
+// retry (retryDelegateAttentionLater). A root nothing wakes leaves it undriven
+// (TestSupervisionRootDrivesAttentionTheChildDropped). Tests that call
+// drivePendingStableDelegateAttention or run root turns themselves don't call
+// this. The loop stops before the root closes, since cleanups run
+// last-registered first.
+func serveSupervisionRootWakes(t *testing.T, root *Session) {
+	t.Helper()
+	wakes := make(chan struct{}, 1)
+	stop := make(chan struct{})
+	stopped := make(chan struct{})
+	root.SetNotifyFunc(func() {
+		select {
+		case wakes <- struct{}{}:
+		default:
+		}
+	})
+	go func() {
+		defer close(stopped)
+		for {
+			select {
+			case <-stop:
+				return
+			case <-wakes:
+				root.drivePendingStableDelegateAttention()
+			}
+		}
+	}()
+	t.Cleanup(func() {
+		close(stop)
+		<-stopped
+	})
+}
+
 // waitForStableSupervisionRun blocks until the stable child owes no more
 // supervision work: no run, drive turn, or finalization is live, and no
 // delegate attention is still waiting for a run to be dispatched.
@@ -3209,12 +3367,22 @@ func restoreSupervisionRoot(t *testing.T, fixture coldStableDelegateFixture, clo
 // that stale channel returns while the awaited run is only starting, so a
 // caller that then reads the delegate event log sees the PRIOR generation's
 // run-finished record.
-func waitForStableSupervisionRun(t *testing.T, root *Session, childID string) {
+func waitForStableSupervisionRun(t *testing.T, root *Session, childID string, adapters ...*fakeAdapter) {
 	t.Helper()
 	sub := root.subagents.get(childID)
 	if sub == nil {
 		t.Fatalf("stable child %q was not tracked", childID)
 	}
+	quiesced := false
+	defer func() {
+		if !quiesced {
+			var adapter *fakeAdapter
+			if len(adapters) != 0 {
+				adapter = adapters[0]
+			}
+			t.Logf("failed supervision wait snapshot: %#v", stableSupervisionFailureSnapshot(root, sub, adapter))
+		}
+	}()
 	sub.mu.Lock()
 	hasChannel := sub.done != nil
 	sub.mu.Unlock()
@@ -3222,6 +3390,17 @@ func waitForStableSupervisionRun(t *testing.T, root *Session, childID string) {
 		t.Fatalf("stable child %q has no completion channel", childID)
 	}
 	desc := fmt.Sprintf("stable child %q supervision to quiesce", childID)
+	// why is the last check that refused; a timeout reports it with the state
+	// behind it, since the hang this guards against has only shown on CI.
+	// Only the wait's own timeout reports: a failure from earlier in the test
+	// is not this wait's.
+	var why string
+	failedBefore := t.Failed()
+	defer func() {
+		if !failedBefore && t.Failed() {
+			t.Logf("last refusal: %s; state: %s", why, stableSupervisionState(root, sub))
+		}
+	}()
 	// TRIPWIRE: every supervision run in these tests is served by a scripted
 	// in-process adapter, so quiescence is reached in milliseconds; this bound
 	// only fires on a genuine hang.
@@ -3240,13 +3419,16 @@ func waitForStableSupervisionRun(t *testing.T, root *Session, childID string) {
 		// that races past one read is caught by a later one.
 		if sess != nil && !closed {
 			if sess.hasPendingDelegateAttentionArmRetry() {
+				why = "attention arm retry pending"
 				return false
 			}
 			if pending, err := sess.pendingDelegateAttentionIDs(); err != nil || len(pending) != 0 {
+				why = fmt.Sprintf("pending attention %v (err %v)", pending, err)
 				return false
 			}
 			if controller, delegateID := sess.delegateController, sess.owningDelegateID; controller != nil && delegateID != "" {
 				if controller.reservedAttentionID(sess) != "" {
+					why = "attention reserved"
 					return false
 				}
 				controller.mu.Lock()
@@ -3258,6 +3440,7 @@ func waitForStableSupervisionRun(t *testing.T, root *Session, childID string) {
 				finalizing := live != nil && live.finalizing != nil
 				controller.mu.Unlock()
 				if runOpen || finalizing {
+					why = fmt.Sprintf("controller runOpen=%t finalizing=%t", runOpen, finalizing)
 					return false
 				}
 			}
@@ -3267,8 +3450,10 @@ func waitForStableSupervisionRun(t *testing.T, root *Session, childID string) {
 		live := sub.running || sub.driving || sub.finalizing
 		sub.mu.Unlock()
 		if live || done == nil {
+			why = fmt.Sprintf("child live=%t completion channel=%t", live, done != nil)
 			return false
 		}
+		why = "completion channel open"
 		select {
 		case <-done:
 			return true
@@ -3276,6 +3461,47 @@ func waitForStableSupervisionRun(t *testing.T, root *Session, childID string) {
 			return false
 		}
 	})
+	quiesced = true
+}
+
+// stableSupervisionState renders the controller, root and child state a
+// supervision quiescence wait reads, for its timeout report.
+func stableSupervisionState(root *Session, sub *subagent) string {
+	sub.mu.Lock()
+	sess := sub.sess
+	sub.mu.Unlock()
+	if sess == nil || sess.delegateController == nil {
+		return "child has no session or controller"
+	}
+	c := sess.delegateController
+	c.mu.Lock()
+	var b strings.Builder
+	if agg := c.durable[sess.owningDelegateID]; agg != nil {
+		fmt.Fprintf(&b, "aggregate{gen=%d phase=%v open=%v needs=%v} ", agg.Generation, agg.Phase, agg.CurrentRunOpen, agg.NeedsAttention)
+	}
+	if live := c.live[sess.owningDelegateID]; live != nil {
+		fmt.Fprintf(&b, "live{binding=%v finalizing=%v recovery=%v} ", live.binding != nil, live.finalizing != nil, live.recoveryRequired)
+	}
+	if st := c.attention[sess.owningDelegateID]; st != nil {
+		fmt.Fprintf(&b, "attention{wake=%v parked=%v restoreFailures=%d turn=%d} ", st.wakeIDs, st.parked, st.restoreFailures, st.driveTurn)
+	}
+	fmt.Fprintf(&b, "reservations=%d eligible=%v delivery=%v ", len(c.reservations), c.delegateAttentionWakeEligibleLocked(sess.owningDelegateID), c.hasDeliveryWorkForOwnerLocked(sess.owningDelegateID))
+	c.mu.Unlock()
+	root.attentionMu.Lock()
+	fmt.Fprintf(&b, "rootRetry{active=%v delay=%v} ", root.stableAttentionRetry.active, root.stableAttentionRetry.delay)
+	root.attentionMu.Unlock()
+	sub.mu.Lock()
+	fmt.Fprintf(&b, "sub{running=%v driving=%v finalizing=%v dispose=%v closed=%v fatal=%v status=%v} ", sub.running, sub.driving, sub.finalizing, sub.disposeGated, sub.closed, sub.fatalRunGated, sub.status)
+	sub.mu.Unlock()
+	root.mu.Lock()
+	fmt.Fprintf(&b, "root{state=%v} ", root.state)
+	root.mu.Unlock()
+	sess.mu.Lock()
+	fmt.Fprintf(&b, "child{state=%v} ", sess.state)
+	sess.mu.Unlock()
+	id := sess.id
+	fmt.Fprintf(&b, "childGates{stop=%v fatalRun=%v drainAbandoned=%v drainGrace=%v committedSend=%v}", root.childStopGated(id), root.childFatalRunGated(id), root.childDrainAbandoned(id), root.childDrainGracePending(id), root.childCommittedSendStart(id))
+	return b.String()
 }
 
 // TestWaitForStableSupervisionRunOutlastsDeferredAttentionDrive pins the
@@ -3317,6 +3543,237 @@ func TestWaitForStableSupervisionRunOutlastsDeferredAttentionDrive(t *testing.T)
 	finished := latestDelegateControllerRunFinished(t, root.delegateController, fixture.delegateID)
 	if finished.Generation != 2 || finished.Disposition != delegatestore.DispositionCompletedNoAction || finished.DeliveryID != "" {
 		t.Fatalf("deferred attention finish = %#v, want the attention generation's private no-action", finished)
+	}
+}
+
+// TestSupervisionRootDrivesAttentionTheChildDropped pins the harness root's
+// wake consumer (#3592; the mechanism is on serveSupervisionRootWakes). The
+// child drops an attention drive refused on a send's drive guard, and a send
+// that gives the guard back does not re-drive the child (releaseDriveGuard).
+// The root's retry is the wake this test exercises.
+func TestSupervisionRootDrivesAttentionTheChildDropped(t *testing.T) {
+	fixture := newColdStableDelegateFixture(t, "")
+	fixture.adapter.steps = []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return finalResponse("warm result") },
+		func(llm.Request) llm.Response {
+			return llm.Response{Message: llm.Assistant("attention requires no action")}
+		},
+	}
+	root := restoreSupervisionRoot(t, fixture, nil)
+	sub := warmStableSupervisionDelegate(t, root, fixture)
+	waitForStableSupervisionRun(t, root, fixture.childID)
+
+	if !root.takeSendDriveGuard(sub) {
+		t.Fatal("could not take the quiescent stable child's drive guard")
+	}
+	armStableSupervisionAttention(t, sub, "attention:dropped", "inspect after the dropped drive")
+	root.delegateController.retryDelegateAttentionLater()
+	releaseDriveGuard(sub)
+
+	waitForStableSupervisionRun(t, root, fixture.childID)
+
+	finished := latestDelegateControllerRunFinished(t, root.delegateController, fixture.delegateID)
+	if finished.Generation != 2 || finished.Disposition != delegatestore.DispositionCompletedNoAction || finished.DeliveryID != "" {
+		t.Fatalf("dropped attention finish = %#v, want the attention generation's private no-action", finished)
+	}
+}
+
+// pauseStableTailBeforeRelease starts the stable delegate's next generation
+// and parks that generation's finalize tail just before it announces and
+// releases the generation, so attention armed meanwhile is refused as busy.
+// It returns the tail's completion channel, closed after the tail re-arms
+// the remaining attention, and the func that lets the tail go on.
+func pauseStableTailBeforeRelease(t *testing.T, root *Session, sub *subagent, fixture coldStableDelegateFixture) (<-chan struct{}, func()) {
+	t.Helper()
+	paused, resume := make(chan struct{}), make(chan struct{})
+	var resumeOnce sync.Once
+	resumeTail := func() { resumeOnce.Do(func() { close(resume) }) }
+	t.Cleanup(resumeTail)
+	var tailDone chan struct{}
+	updateSessionTestConfig(sub.sess, func(cfg *testConfig) {
+		cfg.subagentBeforeGenerationAnnounced = func(a *subagent) {
+			if tailDone != nil {
+				return
+			}
+			a.mu.Lock()
+			tailDone = a.done
+			a.mu.Unlock()
+			close(paused)
+			<-resume
+		}
+	})
+	outcome := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "second generation", 0)
+	if outcome.result.Err != nil || outcome.result.Action != "started" {
+		t.Fatalf("second generation send = %#v", outcome.result)
+	}
+	select {
+	case <-paused:
+	case <-time.After(30 * time.Second): // TRIPWIRE: the scripted run finishes in milliseconds.
+		t.Fatal("the second generation's finalize tail never reached its announcement")
+	}
+	return tailDone, resumeTail
+}
+
+// TestDelegateResourceSupervision_AttentionRefusedOnAHeldGuardIsRedriven
+// pins #3723. Attention armed while the previous generation is still
+// finalizing takes the child's drive guard and is refused busy; the finalize
+// tail's re-arm drive then lands while that guard is still held and is
+// refused on it. The guard holder must drive the child again once it lets
+// go. Nothing wakes this root, so only that re-drive can deliver.
+func TestDelegateResourceSupervision_AttentionRefusedOnAHeldGuardIsRedriven(t *testing.T) {
+	fixture := newColdStableDelegateFixture(t, "")
+	fixture.adapter.steps = []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return finalResponse("warm result") },
+		func(llm.Request) llm.Response { return finalResponse("second result") },
+		func(llm.Request) llm.Response {
+			return llm.Response{Message: llm.Assistant("attention requires no action")}
+		},
+	}
+	root := restoreSupervisionRoot(t, fixture, nil)
+	sub := warmStableDelegateUnservedRoot(t, root, fixture)
+	waitForStableSupervisionRun(t, root, fixture.childID)
+	tailDone, resumeTail := pauseStableTailBeforeRelease(t, root, sub, fixture)
+
+	var starts, held atomic.Int32
+	updateSessionTestConfig(root, func(cfg *testConfig) {
+		cfg.delegateAttentionStartCommitted = func(*subagent) { starts.Add(1) }
+		cfg.delegateAttentionBeforeGuardRelease = func(*subagent) {
+			if held.Add(1) != 1 {
+				return
+			}
+			// Hold the busy drive's guard while the tail releases the
+			// generation and its re-arm drive is refused on that guard.
+			resumeTail()
+			<-tailDone
+		}
+	})
+	armStableSupervisionAttention(t, sub, "attention:held-guard", "inspect after the held guard")
+
+	// The re-drive runs on the holder's exit, so it has started the
+	// attention generation by the time the arm's drive returns.
+	if got := starts.Load(); got != 1 {
+		t.Fatalf("attention generations started after the guard holder let go = %d, want 1", got)
+	}
+	waitForStableSupervisionRun(t, root, fixture.childID)
+	finished := latestDelegateControllerRunFinished(t, root.delegateController, fixture.delegateID)
+	if finished.Generation != 3 || finished.Disposition != delegatestore.DispositionCompletedNoAction || finished.DeliveryID != "" {
+		t.Fatalf("re-driven attention finish = %#v, want generation 3's private no-action", finished)
+	}
+	if got := starts.Load(); got != 1 {
+		t.Fatalf("attention generations started = %d, want exactly 1", got)
+	}
+}
+
+// TestDelegateResourceSupervision_AttentionRedriveThatLosesStops pins that
+// the #3723 re-drive cannot loop: a re-drive that is itself refused busy
+// re-drives again only if another drive was refused on its own guard. Here
+// nothing is, so it stops after one try, and the finalize tail's re-arm
+// delivers the attention once, with no second generation.
+func TestDelegateResourceSupervision_AttentionRedriveThatLosesStops(t *testing.T) {
+	fixture := newColdStableDelegateFixture(t, "")
+	fixture.adapter.steps = []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return finalResponse("warm result") },
+		func(llm.Request) llm.Response { return finalResponse("second result") },
+		func(llm.Request) llm.Response {
+			return llm.Response{Message: llm.Assistant("attention requires no action")}
+		},
+	}
+	root := restoreSupervisionRoot(t, fixture, nil)
+	sub := warmStableDelegateUnservedRoot(t, root, fixture)
+	waitForStableSupervisionRun(t, root, fixture.childID)
+	_, resumeTail := pauseStableTailBeforeRelease(t, root, sub, fixture)
+
+	var starts, releases atomic.Int32
+	updateSessionTestConfig(root, func(cfg *testConfig) {
+		cfg.delegateAttentionStartCommitted = func(*subagent) { starts.Add(1) }
+		cfg.delegateAttentionBeforeGuardRelease = func(held *subagent) {
+			n := releases.Add(1)
+			if n > 2 {
+				// A looping re-drive would recurse until the stack overflows.
+				t.Fatalf("attention drive %d let the guard go: the re-drive is looping", n)
+			}
+			if n != 1 {
+				return
+			}
+			// A second drive refused on the busy drive's guard owes the
+			// child one re-drive. The tail is still parked, so that
+			// re-drive is refused busy too.
+			root.driveStableDelegateAttention(held)
+		}
+	})
+	armStableSupervisionAttention(t, sub, "attention:losing-redrive", "inspect after the losing re-drive")
+
+	if got := releases.Load(); got != 2 {
+		t.Fatalf("attention drives that let the guard go without a run = %d, want the busy drive and its one re-drive", got)
+	}
+	if got := starts.Load(); got != 0 {
+		t.Fatalf("attention generations started before the release = %d, want 0", got)
+	}
+	resumeTail()
+	waitForStableSupervisionRun(t, root, fixture.childID)
+	finished := latestDelegateControllerRunFinished(t, root.delegateController, fixture.delegateID)
+	if finished.Generation != 3 || finished.Disposition != delegatestore.DispositionCompletedNoAction || finished.DeliveryID != "" {
+		t.Fatalf("re-armed attention finish = %#v, want generation 3's private no-action", finished)
+	}
+	if got := starts.Load(); got != 1 {
+		t.Fatalf("attention generations started = %d, want exactly 1", got)
+	}
+}
+
+// TestDelegateResourceSupervision_AttentionRefusedOnANotificationTurnIsRedriven
+// pins #3723 for the other drive that holds the guard on an idle child: a
+// notification turn. Attention armed while that turn runs is refused on its
+// guard, and the turn drives the child again when it ends. Nothing wakes this
+// root, so only that re-drive can deliver.
+func TestDelegateResourceSupervision_AttentionRefusedOnANotificationTurnIsRedriven(t *testing.T) {
+	fixture := newColdStableDelegateFixture(t, "")
+	inTurn, endTurn := make(chan struct{}), make(chan struct{})
+	fixture.adapter.steps = []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return finalResponse("warm result") },
+		func(llm.Request) llm.Response {
+			close(inTurn)
+			<-endTurn
+			return llm.Response{Message: llm.Assistant("noted the finished job")}
+		},
+		func(llm.Request) llm.Response {
+			return llm.Response{Message: llm.Assistant("attention requires no action")}
+		},
+	}
+	root := restoreSupervisionRoot(t, fixture, nil)
+	sub := warmStableDelegateUnservedRoot(t, root, fixture)
+	waitForStableSupervisionRun(t, root, fixture.childID)
+
+	var starts atomic.Int32
+	updateSessionTestConfig(root, func(cfg *testConfig) {
+		cfg.delegateAttentionStartCommitted = func(*subagent) { starts.Add(1) }
+	})
+	enqueueCompletedJobNotification(t, sub.sess, "job:finished")
+	if !root.driveSubagentNotificationTurn(sub) {
+		t.Fatal("the child's notification turn did not launch")
+	}
+	select {
+	case <-inTurn:
+	case <-time.After(30 * time.Second): // TRIPWIRE: the turn reaches the scripted provider in milliseconds.
+		t.Fatal("the child's notification turn never reached the provider")
+	}
+	armStableSupervisionAttention(t, sub, "attention:notification-turn", "inspect after the notification turn")
+	if got := starts.Load(); got != 0 {
+		t.Fatalf("attention generations started during the notification turn = %d, want 0", got)
+	}
+	close(endTurn)
+
+	// TRIPWIRE: the re-drive starts the generation as the turn ends; without
+	// it nothing does.
+	waitForCondition(t, 10*time.Second, "the attention refused on the notification turn's guard to start", func() bool {
+		return starts.Load() == 1
+	})
+	waitForStableSupervisionRun(t, root, fixture.childID)
+	finished := latestDelegateControllerRunFinished(t, root.delegateController, fixture.delegateID)
+	if finished.Generation != 2 || finished.Disposition != delegatestore.DispositionCompletedNoAction || finished.DeliveryID != "" {
+		t.Fatalf("re-driven attention finish = %#v, want generation 2's private no-action", finished)
+	}
+	if got := starts.Load(); got != 1 {
+		t.Fatalf("attention generations started = %d, want exactly 1", got)
 	}
 }
 
@@ -3458,7 +3915,18 @@ func TestClearResolvedDelegateAttentionDefersWhenTranscriptMissing(t *testing.T)
 // window is refused as target busy by design. A caller that needs a drivable
 // child must wait for quiescence first; the callers that arm attention
 // deliberately do not, so that the drive they exercise is the deferred one.
+// A deferred drive can end on the root's retry, so the root serves its wakes
+// as a served root does (serveSupervisionRootWakes).
 func warmStableSupervisionDelegate(t *testing.T, root *Session, fixture coldStableDelegateFixture) *subagent {
+	t.Helper()
+	serveSupervisionRootWakes(t, root)
+	return warmStableDelegateUnservedRoot(t, root, fixture)
+}
+
+// warmStableDelegateUnservedRoot is warmStableSupervisionDelegate without the
+// root's wake consumer, for a test that must show the child delivers its own
+// attention: nothing on the root drives it.
+func warmStableDelegateUnservedRoot(t *testing.T, root *Session, fixture coldStableDelegateFixture) *subagent {
 	t.Helper()
 	outcome := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "warm retained runtime", 60_000)
 	if outcome.result.Err != nil || outcome.commit == nil {

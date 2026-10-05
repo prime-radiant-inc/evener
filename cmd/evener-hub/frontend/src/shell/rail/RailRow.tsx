@@ -487,12 +487,12 @@ function RailAge({ updatedAt }: { updatedAt?: string }): ReactNode {
 function effectiveSessionState(session: RailSession): string {
   const presented = displayState(session);
   const tally = isTopLevelSession(session) ? subagentTallyToShow(session) : null;
-  if (presented === "errored" || (tally?.failed ?? 0) > 0) return "errored";
+  if (presented === "errored") return "errored";
   // Only blocked attention outranks work. Plain awaiting ("Your move") and a
   // warning share the amber dot family, but running jobs remain what is happening.
   const attentionOutranksWork =
     session.state === "restartRequired" ||
-    (session.state === "awaiting" && session.ask_pending === true) ||
+    ((session.state === "awaiting" || session.state === "warning") && session.ask_pending === true) ||
     approvalWaiting(session.state, session.approval_pending === true);
   if (attentionOutranksWork) return presented;
   if (session.state === "active" || (session.running_job_count ?? 0) > 0 || (tally?.running ?? 0) > 0) {
@@ -596,11 +596,18 @@ function SessionTitle({
   notStarted: boolean;
   focusTarget: () => HTMLElement | null;
 }) {
+  const sideAnchor = useCallback(() => {
+    const row = focusTarget();
+    const rail = row?.closest<HTMLElement>("[data-sidebar-rail]");
+    if (!row || !rail) return null;
+    return { rowRect: row.getBoundingClientRect(), sideRight: rail.getBoundingClientRect().right };
+  }, [focusTarget]);
   return (
     <span className={CLASS.sessionTitle}>
       <HoverCard
         label={<SessionContextCard session={session} effectiveState={effectiveState} notStarted={notStarted} />}
         focusTarget={focusTarget}
+        sideAnchor={sideAnchor}
         longPressEnabled
       >
         {({ describedBy }) => (

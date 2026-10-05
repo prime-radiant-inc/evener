@@ -27,6 +27,41 @@ func TestPreludeTurnUsesSemanticHeaderOnly(t *testing.T) {
 	}
 }
 
+func TestMemoryContextProjection(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "memory.transcript.jsonl")
+	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "memory-fixture"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg := llm.User("opaque-memory-display-78")
+	msg.Name = "memory_project"
+	if err := w.Append(schema.Turn{Kind: schema.TurnMemoryContext, Message: msg}); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	w, entries, err := transcript.OpenWriterForSession(path, "memory-fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Turn.Message.Role != llm.RoleUser || entries[0].Turn.Message.Name != msg.Name {
+		t.Fatalf("restored=%+v", entries)
+	}
+	items := ProjectTurn("memory-turn", 0, entries[0].Turn, NewToolCallRegistry(), nil, nil)
+	if len(items) != 1 {
+		t.Fatalf("items=%+v", items)
+	}
+	item := items[0]
+	if item.Type != "systemMessage" || item.ID != "item_memory_context_0" || item.TurnID != "memory-turn" || item.Text != msg.Text() || item.Status != appwire.TurnStatusCompleted {
+		t.Fatalf("item=%+v", item)
+	}
+}
+
 // The system prompt is scaffolding a client renders as a collapsed
 // disclosure. It carries a typed EventKind discriminator so the web SPA
 // classifies it by wire type instead of guessing from the item's char count
