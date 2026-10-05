@@ -256,9 +256,13 @@ func TestGitRemoteHead_ResolvesTheCommitACheckoutOfRefLandsOn(t *testing.T) {
 	}
 }
 
+// Run under -race this also guards the two kinds of warning against sharing
+// a slice, but only when the remote check happens to start before the broken
+// catalog is read, which map order makes an occasional event.
 func TestCheckUpdates_WarnsAboutEveryRemoteAndCatalogItCannotRead(t *testing.T) {
 	f := installURLPlugin(t, unpinned)
-	mktRepo, name := makeMarketplaceRepoWithPlugin(t, "other", "gadget"), "other"
+	name := "other"
+	mktRepo := makeMarketplaceRepoWithPlugin(t, name, "gadget")
 	ref, err := f.m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: mktRepo})
 	if err != nil {
 		t.Fatalf("AddMarketplace: %v", err)
