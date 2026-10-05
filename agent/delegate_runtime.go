@@ -701,8 +701,6 @@ func (s *Session) driveStableDelegateAttention(sub *subagent) bool {
 	}
 	if !blocked {
 		sub.driving = true
-		// Only a drive refused during this hold is this drive's to re-drive.
-		sub.attentionDriveRefused = false
 	}
 	sub.mu.Unlock()
 	if blocked {

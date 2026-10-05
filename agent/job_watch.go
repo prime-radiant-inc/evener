@@ -5626,8 +5626,8 @@ func (s *Session) driveChildrenWithUndeliveredAttention() {
 }
 
 // redriveLiveChild re-drives the ONE live direct child whose wake a held
-// claim or guard dropped, once that claim or guard is let go without handing
-// a run over. Two exits use it:
+// claim or guard dropped, once that claim or guard is let go and no run took
+// the dropped wake. Two exits use it:
 //   - a committed-send-start rollback (#940): while the claim was held the
 //     wake edge (driveChildIfNotStopGated) and the attention primitive
 //     (driveStableDelegateAttention) refused every drive for that child, so a
@@ -5638,8 +5638,7 @@ func (s *Session) driveChildrenWithUndeliveredAttention() {
 //     finalize tail's re-arm drive landing while a drive refused busy still
 //     held the guard.
 //
-// The run that would have drained the child's queue never launched, so the
-// exit must re-drive it. Only that child can hold the dropped wake, so this
+// Nothing that ran drains the dropped wake, so the exit must re-drive it. Only that child can hold the dropped wake, so this
 // is scoped to childSessionID: a whole-tree sweep would re-drive unrelated
 // children and read every child's transcript fold.
 //

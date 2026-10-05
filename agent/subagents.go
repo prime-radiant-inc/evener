@@ -122,12 +122,11 @@ type subagent struct {
 	disposeGated bool
 	// attentionDriveRefused records that an attention drive was refused while
 	// another drive held this child's drive guard (driving), dropping its
-	// wake. The holder reads it when it gives the guard back
+	// wake. The holder reads and clears it when it gives the guard back
 	// (releaseDriveGuard): an attention drive that launched no run, or a
 	// notification turn, then re-drives the child. A holder that hands the
-	// guard to a run leaves it set, since that run drains the child, and the
-	// next attention drive clears it when it takes the guard. Guarded by
-	// sub.mu.
+	// guard to a run clears it instead (resetSubagentForRunLocked), since that
+	// run drains the child. Guarded by sub.mu.
 	attentionDriveRefused bool
 }
 
@@ -1703,6 +1702,9 @@ func resetSubagentForRunLocked(sub *subagent, cancel context.CancelFunc, started
 	sub.endedAt = nil
 	sub.closed = false
 	sub.closeTimedOut = false
+	// The run drains the child's attention, so a refusal recorded on the guard
+	// it takes over is no longer owed a re-drive.
+	sub.attentionDriveRefused = false
 }
 
 func (s *Session) launchSubagentRun(runCtx context.Context, sub *subagent, runCancel context.CancelFunc, input string, inputProvenance *provenance.Causal) {

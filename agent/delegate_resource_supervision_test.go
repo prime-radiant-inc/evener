@@ -8,7 +8,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -3565,10 +3564,8 @@ func TestDelegateResourceSupervision_AttentionRedriveThatLosesStops(t *testing.T
 		cfg.delegateAttentionBeforeGuardRelease = func(held *subagent) {
 			n := releases.Add(1)
 			if n > 2 {
-				// A looping re-drive would recurse until the stack overflows;
-				// stop it here so the count below reports it.
-				t.Errorf("attention drive %d let the guard go: the re-drive is looping", n)
-				runtime.Goexit()
+				// A looping re-drive would recurse until the stack overflows.
+				t.Fatalf("attention drive %d let the guard go: the re-drive is looping", n)
 			}
 			if n != 1 {
 				return
