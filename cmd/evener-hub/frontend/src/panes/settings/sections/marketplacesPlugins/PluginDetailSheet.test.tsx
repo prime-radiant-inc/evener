@@ -249,9 +249,8 @@ test("Upgrade calls pluginUpgrade, toasts an upgraded success, and is busy in fl
   // The upgrade answered with the plugin current, so Upgrade is gone; the
   // keyboard stays in the sheet rather than falling to <body>.
   await waitFor(() => expect(screen.queryByRole("button", { name: "Upgrade" })).toBeNull());
-  await waitFor(() =>
-    expect(screen.getByRole("dialog", { name: "linter" }).contains(document.activeElement)).toBe(true),
-  );
+  // The sheet's first control, the same one it focuses when it opens.
+  await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("switch", { name: "Enabled by default" })));
 });
 
 test("an upgrade leaves alone focus the user moved while it ran", async () => {

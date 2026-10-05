@@ -73,13 +73,13 @@ export interface PluginsStore extends FrameworkFreeStore<PluginsState>, HostLife
 
 export const PLUGIN_REFETCH_DEBOUNCE_MS = 250;
 
-/** The check waits on every plugin's remote, a few at a time and each under
- * the hub's own per-remote timeout, so it can run far past a plain read's
- * default timeout. */
 // JSON-RPC's code for a method the server does not serve: how a hub from
 // before evener/plugin/checkUpdates answers it.
 const METHOD_NOT_FOUND = -32601;
 
+/** The check waits on every plugin's remote, a few at a time and each under
+ * the hub's own per-remote timeout, so it can run far past a plain read's
+ * default timeout. */
 export const PLUGIN_UPDATE_CHECK_TIMEOUT_MS = 120_000;
 
 /** The five mutations addressed by a plugin reference alone; setAutoUpgrade

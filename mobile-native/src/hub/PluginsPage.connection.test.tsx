@@ -496,7 +496,6 @@ it("asks a replacement client's hub for updates once its own list loads", async 
 	const tree = render(<PluginsPage {...props} />);
 	await act(async () => {});
 	await act(async () => {});
-	const checks = (client: FakeClient) => client.calls.filter((call) => call.method === "evener/plugin/checkUpdates").length;
 	expect(checks(first)).toBe(1);
 
 	const second = new FakeClient("ready");
@@ -527,7 +526,6 @@ it("keeps a replaced store's late failed check from re-asking the new hub", asyn
 	const tree = render(<PluginsPage {...props} />);
 	await act(async () => {});
 	await act(async () => {});
-	const checks = (client: FakeClient) => client.calls.filter((call) => call.method === "evener/plugin/checkUpdates").length;
 	expect(checks(first)).toBe(1);
 
 	const second = new FakeClient("ready");
@@ -554,3 +552,7 @@ it("keeps a replaced store's late failed check from re-asking the new hub", asyn
 	await act(async () => {});
 	expect(checks(second)).toBe(1);
 });
+
+function checks(client: FakeClient): number {
+	return client.calls.filter((call) => call.method === "evener/plugin/checkUpdates").length;
+}

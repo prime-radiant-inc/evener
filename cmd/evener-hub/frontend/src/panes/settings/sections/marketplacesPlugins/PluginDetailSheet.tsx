@@ -43,10 +43,11 @@ export function PluginDetailSheet({ target, onClose }: PluginDetailSheetProps) {
   const toasts = useToasts();
 
   const [pendingRemove, setPendingRemove] = useState(false);
-  // A successful upgrade answers with the plugin current, which unmounts the
-  // Upgrade button that may hold the keyboard; the shared hook keeps focus in
-  // the sheet instead of letting it fall to <body>, and leaves it alone if the
-  // user had already moved it.
+  // Any commit that takes away the control holding the keyboard - the
+  // Upgrade button a successful upgrade unmounts, or the remove confirm's
+  // buttons disabled while the remove runs - would drop focus to <body>; the
+  // shared hook keeps it in the sheet or confirm (their first control), and
+  // leaves alone focus the user had already moved.
   const focusRoot = useRef<HTMLDivElement>(null);
   useFocusRehome(focusRoot);
 
