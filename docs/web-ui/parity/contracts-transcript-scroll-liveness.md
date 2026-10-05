@@ -118,6 +118,19 @@ from the renderer-side glyph/open-beside contracts already covered here); `test-
 - Re-initializing against a replacement workspace/conversation element removes the old `visualViewport` listeners, binds fresh ones, and synchronously stamps the new workspace's visible height. (test-renderer-viewport-dock.js)
 - A stale viewport-resize callback scheduled before a session swap must not mutate the replacement session's workspace once it fires. (test-renderer-viewport-dock.js)
 
+### Current React web amendment: retained transcript placement
+
+These rules supplement the historical contracts above. They do not restore persisted scroll history or change the fresh-session policy.
+
+- A genuine new session or a closed-and-reopened pane lands at latest. A pane id reused for another session must reject the previous session's pending placement.
+- The same logical view keeps its semantic anchor and offset across desktop/mobile host replacement and temporary model loss, including StrictMode replay before hydration completes. This placement lifetime is not a thread/subscription claim, and does not delay final-consumer cleanup.
+- Responsive CSS may reflow an outgoing row before the viewport transition captures it. If that makes the visible anchor disappear at the same scroll offset, retain the last coherent semantic geometry, but capture current focus ownership.
+- An away-from-bottom restoration remains pending until the actual row measurements and committed DOM sizer agree. An initial zero scroll range with nonempty rows does not consume normalized fallback. A measured empty transcript completes at zero without waiting for nonexistent rows.
+- Retained placement wins over parent first-open initialization. A genuine first-open end request clamped against an initial sizer finishes through the existing measurement callback, unless the reader moves or a retained placement takes over.
+- A restored position is coherent immediately, before its native scroll event, so an immediate subsequent host replacement captures that position rather than a stale estimate.
+
+The real `TranscriptBody.test.tsx` retained-placement integration cases exercise the registry, ordinary scroll coordinator, and TanStack-backed `VirtualList` with controlled external DOM geometry. The unchanged document-file-links Chrome guard also checks the desktop/mobile/desktop return within its original two-pixel tolerance and reaches the final draft assertion.
+
 ## 6. Liveness / stall detection
 
 - Any incoming frame (including reasoning) stamps a `lastFrameAt` clock used to detect staleness. (test-renderer-liveness.js)

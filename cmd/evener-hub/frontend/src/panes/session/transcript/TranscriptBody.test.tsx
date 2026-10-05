@@ -7,17 +7,19 @@ import {
   subagentWireStep,
 } from "@evener/appwire-client/testing/subagentWireFixtures";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { createRef, useState } from "react";
+import { createRef, StrictMode, useRef, useState } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { connectionStore } from "../../../stores/connection";
 import { sessionActivitySnapshot } from "../../../stores/sessionActivity";
 import { activityClient, activitySummary } from "../../../stores/sessionActivityTestUtils";
 import { threadsStore } from "../../../stores/threads";
+import { transcriptDisplayStore } from "../../../stores/transcriptDisplay";
 import type { VirtualListHandle } from "../../../widgets";
 import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
 import {
   captureTranscriptViews,
   resetTranscriptViewRegistryForTests,
+  restoreTranscriptViews,
   transitionTranscriptViews,
 } from "./flow/transcriptViewRegistry";
 import * as flowModule from "./flow/useTranscriptScroll";
@@ -1283,4 +1285,410 @@ test.each([
     cleanup();
     connectionStore.setState({ client: null, state: "idle" });
   }
+});
+
+// Real Body + registry + ordinary parent coordinator + TanStack VirtualList.
+// jsdom supplies no layout: only browser geometry and native resize delivery
+// are controlled here. No Evener component, hook, registry or widget is mocked.
+describe("retained transcript placement", () => {
+  let rowHeight: number;
+  const descriptors = new Map<string, PropertyDescriptor | undefined>();
+  const observers = new Set<GeometryObserver>();
+  class GeometryObserver {
+    readonly elements = new Set<Element>();
+    constructor(readonly callback: ResizeObserverCallback) {
+      observers.add(this);
+    }
+    observe(element: Element) {
+      this.elements.add(element);
+    }
+    unobserve(element: Element) {
+      this.elements.delete(element);
+    }
+    disconnect() {
+      this.elements.clear();
+      observers.delete(this);
+    }
+  }
+  const longModel = {
+    ...fixture,
+    turns: [
+      {
+        id: "long-turn",
+        status: "completed",
+        items: [
+          {
+            id: "long-message",
+            turnId: "long-turn",
+            type: "agentMessage",
+            text: "Long assistant reply",
+            status: "completed",
+          },
+        ],
+      },
+    ],
+  } as ThreadModel;
+
+  function isPort(element: HTMLElement) {
+    return element.parentElement?.dataset.testid === "transcript-virtual-list";
+  }
+  function rect(top: number, height: number): DOMRect {
+    return { x: 0, y: top, top, bottom: top + height, left: 0, right: 490, width: 490, height, toJSON: () => ({}) };
+  }
+  beforeEach(() => {
+    rowHeight = 4368;
+    for (const property of [
+      "offsetHeight",
+      "offsetWidth",
+      "clientHeight",
+      "scrollHeight",
+      "getBoundingClientRect",
+      "scrollTo",
+    ]) {
+      descriptors.set(property, Object.getOwnPropertyDescriptor(HTMLElement.prototype, property));
+    }
+    Object.defineProperties(HTMLElement.prototype, {
+      offsetHeight: {
+        configurable: true,
+        get() {
+          return this.hasAttribute("data-index") ? rowHeight : 656;
+        },
+      },
+      offsetWidth: {
+        configurable: true,
+        get() {
+          return 490;
+        },
+      },
+      clientHeight: {
+        configurable: true,
+        get() {
+          return isPort(this) ? 656 : 0;
+        },
+      },
+      scrollHeight: {
+        configurable: true,
+        get() {
+          return isPort(this) ? Math.max(656, Number.parseFloat(this.firstElementChild?.style.height ?? "0")) : 0;
+        },
+      },
+      getBoundingClientRect: {
+        configurable: true,
+        value: function (this: HTMLElement) {
+          const port = this.closest('[data-testid="transcript-virtual-list"]')?.firstElementChild as HTMLElement | null;
+          return this.hasAttribute("data-view-anchor-id")
+            ? rect(-(port?.scrollTop ?? 0), rowHeight)
+            : rect(0, isPort(this) ? 656 : rowHeight);
+        },
+      },
+      scrollTo: {
+        configurable: true,
+        value: function (this: HTMLElement, options: ScrollToOptions) {
+          this.scrollTop = Math.max(0, Math.min(options.top ?? 0, this.scrollHeight - this.clientHeight));
+        },
+      },
+    });
+    vi.stubGlobal("ResizeObserver", GeometryObserver);
+  });
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+    for (const [property, descriptor] of descriptors) {
+      if (descriptor) Object.defineProperty(HTMLElement.prototype, property, descriptor);
+      else Reflect.deleteProperty(HTMLElement.prototype, property);
+    }
+    descriptors.clear();
+    observers.clear();
+  });
+  function resized() {
+    act(() => {
+      for (const observer of [...observers]) {
+        const entries = [...observer.elements].map((target) => {
+          const size = { blockSize: (target as HTMLElement).offsetHeight, inlineSize: 490 };
+          return {
+            target,
+            borderBoxSize: [size],
+            contentBoxSize: [size],
+            devicePixelContentBoxSize: [size],
+            contentRect: target.getBoundingClientRect(),
+          } satisfies ResizeObserverEntry;
+        });
+        observer.callback(entries, observer as unknown as ResizeObserver);
+      }
+    });
+  }
+  const keepMountedView = () => true;
+  function Harness({
+    loaded = true,
+    session = fixture.ref,
+    keepRemount,
+    viewId = "retained-pane",
+    empty = false,
+  }: {
+    loaded?: boolean;
+    session?: string;
+    keepRemount?: () => boolean;
+    viewId?: string;
+    empty?: boolean;
+  }) {
+    const listRef = useRef<VirtualListHandle>(null);
+    const currentModel = loaded ? { ...longModel, ref: session, turns: empty ? [] : longModel.turns } : undefined;
+    const flow = flowModule.useTranscriptScroll({
+      ref: session,
+      model: currentModel,
+      listRef,
+      loadOlder: async () => {},
+      viewId,
+      keepViewRemount: keepRemount,
+      renderedRowCount: loaded && !empty ? 1 : 0,
+    });
+    return currentModel ? (
+      <TranscriptBody
+        model={currentModel}
+        config={preset("full")}
+        surface="live"
+        disclosureScope="retained"
+        sessionRef={session}
+        viewId={viewId}
+        listRef={listRef}
+        onMeasurementsChange={flow.restoreViewAnchorAfterMeasurement}
+      />
+    ) : (
+      <p>Loading same view</p>
+    );
+  }
+  function port() {
+    return screen.getByTestId("transcript-virtual-list").firstElementChild as HTMLElement;
+  }
+  function readBack(top: number, element = port()) {
+    act(() => {
+      fireEvent.scroll(element);
+      fireEvent.wheel(element, { deltaY: -420 });
+      element.scrollTop = top;
+      fireEvent.scroll(element);
+    });
+  }
+
+  test("keeps the coherent long-row anchor when CSS reflows before viewport capture", () => {
+    render(<Harness />);
+    readBack(3292);
+    expect(captureTranscriptViews().get("retained-pane")).toMatchObject({
+      anchorId: "long-message",
+      anchorOffset: -3292,
+    });
+    // CSS has reflowed the DOM, but ResizeObserver has not yet updated the sizer.
+    rowHeight = 2639;
+    expect(captureTranscriptViews().get("retained-pane")).toMatchObject({
+      anchorId: "long-message",
+      anchorOffset: -3292,
+      followingBottom: false,
+    });
+  });
+
+  test.each([false, true])(
+    "coherent geometry keeps current focus ownership rather than cached focus, focused %s",
+    (focused) => {
+      render(
+        <>
+          <button type="button">Outside transcript</button>
+          <Harness />
+        </>,
+      );
+      readBack(3292);
+      const anchor = port().querySelector<HTMLElement>('[data-view-anchor-id="long-message"]');
+      if (!anchor) throw new Error("long message anchor missing");
+      anchor.tabIndex = -1;
+      anchor.focus();
+      if (!focused) {
+        captureTranscriptViews();
+        screen.getByRole("button", { name: "Outside transcript" }).focus();
+      }
+      rowHeight = 2639;
+      const captured = captureTranscriptViews().get("retained-pane");
+      expect(captured?.anchorOffset).toBe(-3292);
+      expect(captured?.focusedEntryId).toBe(focused ? "long-message" : undefined);
+    },
+  );
+
+  test("does not consume normalized restoration in the initial zero-range measurement", () => {
+    rowHeight = 96;
+    render(<Harness />);
+    act(() =>
+      restoreTranscriptViews(
+        new Map([
+          [
+            "retained-pane",
+            {
+              anchorOffset: 0,
+              normalizedOffset: 0.5,
+              followingBottom: false,
+            },
+          ],
+        ]),
+      ),
+    );
+    resized();
+    expect(port().scrollTop).toBe(0);
+    rowHeight = 4368;
+    resized();
+    expect((port().firstElementChild as HTMLElement).style.height).toBe("4368px");
+    expect(port().scrollTop).toBe(1856);
+  });
+
+  test("an actually empty transcript consumes its normalized fallback without waiting for nonexistent rows", () => {
+    const { rerender } = render(<Harness empty />);
+    act(() =>
+      restoreTranscriptViews(
+        new Map([
+          [
+            "retained-pane",
+            {
+              anchorOffset: 0,
+              normalizedOffset: 0.5,
+              followingBottom: false,
+            },
+          ],
+        ]),
+      ),
+    );
+    // An empty list has no row resize to publish. Its next real Body commit
+    // is the measurement boundary, just as for a view/configuration change.
+    rerender(<Harness empty />);
+    resized();
+    expect(port().scrollTop).toBe(0);
+    expect(captureTranscriptViews().get("retained-pane")?.followingBottom).toBe(true);
+  });
+
+  test.each([false, true])("same exact view rehydrates away from latest, StrictMode %s", (strict) => {
+    const view = (loaded: boolean, session = fixture.ref) =>
+      strict ? (
+        <StrictMode>
+          <Harness loaded={loaded} session={session} />
+        </StrictMode>
+      ) : (
+        <Harness loaded={loaded} session={session} />
+      );
+    const { rerender } = render(view(true));
+    readBack(3292);
+    rerender(view(false));
+    expect(screen.getByText("Loading same view")).toBeTruthy();
+    rerender(view(true));
+    resized();
+    expect(port().scrollTop).toBe(3292);
+  });
+
+  test("a new ref in the same mounted pane rejects the old pending placement and opens at latest", () => {
+    rowHeight = 96;
+    const { rerender } = render(<Harness />);
+    act(() =>
+      restoreTranscriptViews(
+        new Map([
+          [
+            "retained-pane",
+            {
+              anchorOffset: 0,
+              normalizedOffset: 0.5,
+              followingBottom: false,
+            },
+          ],
+        ]),
+      ),
+    );
+    resized();
+    expect(port().scrollTop).toBe(0);
+    rowHeight = 4368;
+    rerender(<Harness session="local:new-session" />);
+    resized();
+    expect(port().scrollTop).toBe(3712);
+  });
+
+  test("closing and reopening the same pane id starts at latest rather than its previous session position", () => {
+    const { rerender } = render(<Harness />);
+    readBack(3292);
+    rerender(<p>Closed pane</p>);
+    rerender(<Harness />);
+    resized();
+    expect(port().scrollTop).toBe(3712);
+  });
+
+  test("two exact views keep distinct positions through same-view content reload", () => {
+    const views = (loaded: boolean) => (
+      <>
+        <Harness loaded={loaded} viewId="view-a" />
+        <Harness loaded={loaded} viewId="view-b" />
+      </>
+    );
+    const { rerender } = render(views(true));
+    const ports = () =>
+      screen.getAllByTestId("transcript-virtual-list").map((list) => list.firstElementChild as HTMLElement);
+    readBack(3292, ports()[0]);
+    readBack(3000, ports()[1]);
+    rerender(views(false));
+    rerender(views(true));
+    resized();
+    expect(ports().map((element) => element.scrollTop)).toEqual([3292, 3000]);
+  });
+
+  test("keeps the pending host placement through StrictMode replay while its model hydrates", () => {
+    transcriptDisplayStore.setState({ viewport: "mobile" });
+    const { rerender } = render(<Harness key="phone" keepRemount={keepMountedView} />);
+    readBack(3292);
+    const desktop = (loaded: boolean) => (
+      <StrictMode>
+        <Harness key="desktop" loaded={loaded} keepRemount={keepMountedView} />
+      </StrictMode>
+    );
+    act(() =>
+      transitionTranscriptViews(
+        () => {
+          transcriptDisplayStore.setState({ viewport: "desktop" });
+          rerender(desktop(false));
+        },
+        "Desktop",
+        { force: true, prepareRemount: true, targetLayout: "desktop" },
+      ),
+    );
+    expect(screen.getByText("Loading same view")).toBeTruthy();
+    rerender(desktop(true));
+    resized();
+    expect(port().scrollTop).toBe(3292);
+  });
+
+  test("captures the restored phone position before its native scroll event and returns to desktop", () => {
+    transcriptDisplayStore.setState({ viewport: "desktop" });
+    const { rerender } = render(<Harness key="desktop" />);
+    readBack(3292);
+    rowHeight = 2639;
+    act(() =>
+      transitionTranscriptViews(
+        () => {
+          rowHeight = 4368;
+          transcriptDisplayStore.setState({ viewport: "mobile" });
+          rerender(<Harness key="phone" />);
+        },
+        "Phone",
+        { force: true, prepareRemount: true, targetLayout: "mobile" },
+      ),
+    );
+    expect(port().scrollTop).toBe(3292);
+    // No fabricated scroll event after restore. The next CSS reflow precedes
+    // viewport publication just as in the unchanged Chrome guard.
+    rowHeight = 2639;
+    expect(captureTranscriptViews().get("retained-pane")).toMatchObject({
+      anchorId: "long-message",
+      anchorOffset: -3292,
+    });
+    act(() =>
+      transitionTranscriptViews(
+        () => {
+          rowHeight = 4368;
+          transcriptDisplayStore.setState({ viewport: "desktop" });
+          rerender(<Harness key="desktop-again" />);
+        },
+        "Desktop",
+        { force: true, prepareRemount: true, targetLayout: "desktop" },
+      ),
+    );
+    expect(port().scrollTop).toBe(3292);
+  });
 });

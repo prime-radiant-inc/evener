@@ -393,6 +393,13 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
   const transcriptContainerRef = useRef<HTMLDivElement>(null);
   const flow = useTranscriptScroll({
     ref,
+    viewId: paneId,
+    keepViewRemount: () =>
+      workspaceStore
+        .getState()
+        .panes.some(
+          (pane) => pane.id === paneId && pane.type === "session" && (pane.params as SessionPaneParams).ref === ref,
+        ),
     model,
     listRef: virtualListRef,
     loadOlder,

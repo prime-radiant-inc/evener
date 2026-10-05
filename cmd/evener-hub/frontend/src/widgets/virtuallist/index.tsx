@@ -1,5 +1,5 @@
 import { type ScrollToOptions, useVirtualizer, type Virtualizer } from "@tanstack/react-virtual";
-import { type ReactNode, type Ref, useImperativeHandle, useRef } from "react";
+import { type ReactNode, type Ref, useImperativeHandle, useLayoutEffect, useRef } from "react";
 import { requireClass } from "../internal/requireClass";
 import styles from "./virtuallist.module.css";
 
@@ -26,6 +26,10 @@ export interface VirtualListHandle {
    * visible" rather than crashing.
    */
   getVisibleRange: () => { startIndex: number; endIndex: number } | null;
+  /** Absolute placement replaces any earlier index reconciliation target. */
+  scrollToOffset?: (offset: number) => void;
+  /** True when rendered dynamic rows and the DOM sizer agree with measurements. */
+  isMeasurementReady?: () => boolean;
 }
 
 export interface VirtualListProps {
@@ -138,12 +142,36 @@ export function VirtualList({
       ? { anchorTo: "end" as const, followOnAppend: true, scrollEndThreshold: END_ANCHOR_THRESHOLD_PX }
       : {}),
   });
+  const items = virtualizer.getVirtualItems();
+  const totalSize = virtualizer.getTotalSize();
+
+  // Upstream onChange runs before React commits the new sizer and row window.
+  // Consumers restoring a measured position also need that committed geometry.
+  useLayoutEffect(() => {
+    onChange?.(virtualizer, false);
+  });
 
   useImperativeHandle(
     ref,
     () => ({
       scrollToIndex: (index, options) => virtualizer.scrollToIndex(index, options),
+      scrollToOffset: (offset) => virtualizer.scrollToOffset(offset),
       getScrollElement: () => scrollRef.current,
+      isMeasurementReady: () => {
+        const el = scrollRef.current;
+        if (!el || el.clientHeight === 0) return false;
+        const sizer = el.firstElementChild as HTMLElement | null;
+        if (Number.parseFloat(sizer?.style.height ?? "") !== virtualizer.getTotalSize()) return false;
+        if (!dynamic || count === 0) return true;
+        const rows = virtualizer.getVirtualItems();
+        return (
+          rows.length > 0 &&
+          rows.every((item) => {
+            const node = virtualizer.elementsCache.get(item.key);
+            return node !== undefined && virtualizer.itemSizeCache.get(item.key) === node.offsetHeight;
+          })
+        );
+      },
       getVisibleRange: () => {
         const items = virtualizer.getVirtualItems();
         const first = items[0];
@@ -152,13 +180,13 @@ export function VirtualList({
         return { startIndex: first.index, endIndex: last.index };
       },
     }),
-    [virtualizer],
+    [count, dynamic, virtualizer],
   );
 
   return (
     <div ref={scrollRef} className={CLASS.root}>
-      <div className={CLASS.sizer} style={{ height: virtualizer.getTotalSize() }}>
-        {virtualizer.getVirtualItems().map((item) => (
+      <div className={CLASS.sizer} style={{ height: totalSize }}>
+        {items.map((item) => (
           <div
             key={item.key}
             data-index={item.index}

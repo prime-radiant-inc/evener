@@ -395,6 +395,7 @@ export function TranscriptBody({
   const viewRegistration = useTranscriptViewRegistration({
     enabled: surface !== "preview",
     id: viewId ?? `${surface}:${sessionRef ?? disclosureScope}`,
+    logicalRef: sessionRef ?? model.ref,
     layout: displayViewport,
     viewKey: configFingerprint(config),
     listRef,
@@ -475,7 +476,7 @@ export function TranscriptBody({
       <VirtualList
         ref={listRef}
         dynamic
-        anchorToEnd
+        anchorToEnd={!viewRegistration.hasRetainedPlacement()}
         count={rows.length + (trailingRow === undefined ? 0 : 1)}
         estimateSize={() => ESTIMATED_TURN_HEIGHT}
         getItemKey={(index) => (isTrailingRowIndex(index) && trailingRow ? trailingRow.id : rowAt(index).id)}
