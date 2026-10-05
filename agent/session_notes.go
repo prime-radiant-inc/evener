@@ -211,10 +211,9 @@ func ReadPersistedHumanNote(stateDir, sessionID string) (note string, present bo
 	return "", false, nil
 }
 
-// normalizeNote is the single-line rule, used for URL labels: it collapses
-// every run of whitespace (including newlines) to one space, strips terminal
-// control characters, and clamps to sessionNoteMaxRunes Unicode characters.
-// The whiteboards keep their lines and use normalizeWhiteboard instead.
+// normalizeLabel normalizes a URL label, which is single-line: it strips
+// terminal control characters, collapses every run of whitespace (newlines
+// included) to one space, and clamps the result with clampNoteRunes.
 //
 // The strip runs before the collapse and leaves the whitespace controls for it:
 // stripping those first would join words ("a\nb" would store "ab"), and
@@ -224,27 +223,30 @@ func ReadPersistedHumanNote(stateDir, sessionID string) (note string, present bo
 // no meaning as note content while stored notes, labels, and URLs are printed by
 // terminals (the TUI details drawer, the transcript's human-note echo, the notes
 // tool output).
-func normalizeNote(text string) string {
+func normalizeLabel(text string) string {
 	text = stripNoteControls(text)
-	collapsed := strings.Join(strings.Fields(text), " ")
-	runes := []rune(collapsed)
+	return clampNoteRunes(strings.Join(strings.Fields(text), " "))
+}
+
+// clampNoteRunes cuts text to at most sessionNoteMaxRunes Unicode characters.
+func clampNoteRunes(text string) string {
+	runes := []rune(text)
 	if len(runes) > sessionNoteMaxRunes {
-		collapsed = string(runes[:sessionNoteMaxRunes])
+		return string(runes[:sessionNoteMaxRunes])
 	}
-	return collapsed
+	return text
 }
 
 // normalizeWhiteboard is the rule for both session whiteboards, which are short
 // texts in lines (the agent's is a paragraph, a "Now:" line and "Next:" lines).
-// It strips terminal controls as normalizeNote does, turns CRLF and CR into LF,
+// It strips terminal controls as normalizeLabel does, turns CRLF and CR into LF,
 // collapses whitespace within each line to single spaces and trims the line,
 // drops leading and trailing blank lines, keeps at most one blank line in a
 // row, and clamps to sessionNoteMaxRunes Unicode characters, trimming a space or
 // line break the clamp leaves at the end. The result normalizes to itself.
 func normalizeWhiteboard(text string) string {
 	text = stripNoteControls(text)
-	text = strings.ReplaceAll(text, "\r\n", "\n")
-	text = strings.ReplaceAll(text, "\r", "\n")
+	text = normalizeLineEndings(text)
 	var lines []string
 	blankPending := false
 	for line := range strings.SplitSeq(text, "\n") {
@@ -261,15 +263,10 @@ func normalizeWhiteboard(text string) string {
 		}
 		lines = append(lines, line)
 	}
-	normalized := strings.Join(lines, "\n")
-	runes := []rune(normalized)
-	if len(runes) > sessionNoteMaxRunes {
-		// A clamp landing on a space or line break must not leave it at the
-		// end, or normalizing the stored value again would change it and an
-		// unchanged re-save would count as an edit.
-		normalized = strings.TrimRight(string(runes[:sessionNoteMaxRunes]), " \n")
-	}
-	return normalized
+	// The joined lines never end in a space or line break, but a clamp can cut
+	// at one; trimming it keeps the stored value normalizing to itself, so an
+	// unchanged re-save does not count as an edit.
+	return strings.TrimRight(clampNoteRunes(strings.Join(lines, "\n")), " \n")
 }
 
 // stripNoteControls removes every non-whitespace control character from text
@@ -432,7 +429,7 @@ func (s *Session) stageSessionURLAdd(rawURL, label string) (schema.SessionURL, e
 	if err != nil {
 		return schema.SessionURL{}, err
 	}
-	clampedLabel := normalizeNote(label)
+	clampedLabel := normalizeLabel(label)
 	if utf8.RuneCountInString(clampedLabel) > sessionLabelMaxLen {
 		return schema.SessionURL{}, fmt.Errorf("urls/add: label exceeds %d characters", sessionLabelMaxLen)
 	}

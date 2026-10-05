@@ -26,14 +26,14 @@ func (s *Session) sessionURLsForTest() []schema.SessionURL {
 	return append([]schema.SessionURL(nil), s.sessionURLs...)
 }
 
-func TestNormalizeNoteCollapsesWhitespaceAndClamps(t *testing.T) {
+func TestNormalizeLabelCollapsesWhitespaceAndClamps(t *testing.T) {
 	t.Parallel()
 	in := "  hello\n\n  world\t\tfoo  "
-	if got := normalizeNote(in); got != "hello world foo" {
-		t.Fatalf("normalizeNote(%q) = %q", in, got)
+	if got := normalizeLabel(in); got != "hello world foo" {
+		t.Fatalf("normalizeLabel(%q) = %q", in, got)
 	}
 	long := strings.Repeat("a", 2000)
-	if got := normalizeNote(long); len([]rune(got)) != 1000 {
+	if got := normalizeLabel(long); len([]rune(got)) != 1000 {
 		t.Fatalf("clamped length = %d, want 1000", len([]rune(got)))
 	}
 }

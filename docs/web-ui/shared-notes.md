@@ -24,8 +24,6 @@ what it is doing, and one or two lines starting `Next:` with what is left. Each
 update replaces the whole note. The agent sets it with `notes_agent_set`
 once it understands the task, updates it when a phase finishes, the plan
 changes, or it is blocked, and brings it up to date before its final report.
-The `notes_agent_set` tool description, the system prompt's Reporting section
-and a row in its Finishing table carry this guidance.
 
 Editing your note changes a shared draft for that session. Multiple open panels show the same draft. Leaving the editor schedules a save **10 seconds later**; focusing any editor for the same session cancels that delay. Saving also notifies the agent and may wake an idle agent.
 
