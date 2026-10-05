@@ -150,13 +150,27 @@ describe("checkPluginUpdates", () => {
     ]);
   });
 
+  test("a check that lands after reset() reads nothing into the reset store", async () => {
+    const { fake, store } = storeWithFake();
+    const release = deferRequest<ListResult>(fake, CHECK);
+    const checking = store.getState().checkPluginUpdates();
+    await Promise.resolve();
+    store.reset();
+    fake.on(LIST, () => ({ plugins: [{ ...LINTER, updateAvailable: true }] }));
+
+    release({ plugins: [{ ...LINTER, updateAvailable: true }] });
+    await checking;
+    expect(fake.calls.some((c) => c.method === LIST)).toBe(false);
+    expect(store.getState().plugins).toBeNull();
+  });
+
   test("a list answer issued during the check does not cost the flags", async () => {
     const { fake, store } = storeWithFake();
     const release = deferRequest<ListResult>(fake, CHECK);
     const checking = store.getState().checkPluginUpdates();
     await Promise.resolve();
-    // A toggle lands while the hub is still asking remotes; the hub already
-    // holds no answer yet, so its list is unflagged.
+    // A toggle lands while the hub is still asking remotes, before it holds
+    // any answer, so the toggle's list is unflagged.
     fake.on("evener/plugin/disable", () => ({ plugins: [{ ...LINTER, enabled: false }] }));
     await store.getState().disablePlugin("linter", "acme");
 
