@@ -2767,6 +2767,10 @@ export interface PluginEntry {
   gitCommitSha?: string;
   installedAt: number;
   lastUpdated: number;
+  /**
+   * UpdateAvailable is true when the last evener/plugin/checkUpdates found a
+   * newer remote commit; absent until a check runs, and for non-git sources.
+   */
   updateAvailable?: boolean;
 }
 

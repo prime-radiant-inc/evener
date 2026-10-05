@@ -4416,22 +4416,20 @@ type MarketplaceBrowseResponse struct {
 }
 
 // PluginEntry is the wire representation of one installed plugin.
-// UpdateAvailable is true when the hub's last evener/plugin/checkUpdates found
-// a newer commit for this git-backed plugin than the installed one; it is
-// absent until a check has run, and never set for a relative or directory
-// source, which has no remote.
 type PluginEntry struct {
-	Plugin          string `json:"plugin"`
-	Marketplace     string `json:"marketplace"`
-	Version         string `json:"version"`
-	Enabled         bool   `json:"enabled"`
-	AutoUpgrade     bool   `json:"autoUpgrade"`
-	Broken          bool   `json:"broken"`
-	InstallPath     string `json:"installPath"`
-	GitCommitSha    string `json:"gitCommitSha,omitempty"`
-	InstalledAt     int64  `json:"installedAt"`
-	LastUpdated     int64  `json:"lastUpdated"`
-	UpdateAvailable bool   `json:"updateAvailable,omitempty"`
+	Plugin       string `json:"plugin"`
+	Marketplace  string `json:"marketplace"`
+	Version      string `json:"version"`
+	Enabled      bool   `json:"enabled"`
+	AutoUpgrade  bool   `json:"autoUpgrade"`
+	Broken       bool   `json:"broken"`
+	InstallPath  string `json:"installPath"`
+	GitCommitSha string `json:"gitCommitSha,omitempty"`
+	InstalledAt  int64  `json:"installedAt"`
+	LastUpdated  int64  `json:"lastUpdated"`
+	// UpdateAvailable is true when the last evener/plugin/checkUpdates found a
+	// newer remote commit; absent until a check runs, and for non-git sources.
+	UpdateAvailable bool `json:"updateAvailable,omitempty"`
 }
 
 // PluginListResponse is the result of evener/plugin/list. Every plugin

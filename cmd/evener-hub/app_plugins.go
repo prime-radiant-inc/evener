@@ -359,11 +359,8 @@ func (c *hubPluginsController) listPlugins(ctx context.Context) (appwire.PluginL
 	return appwire.PluginListResponse{Plugins: entries}, nil
 }
 
-// CheckUpdates asks each git-backed plugin's remote whether it has moved past
-// the installed commit and returns the list carrying the answers, which later
-// lists keep until the next check or a change to that install
-// (plugins.Manager.CheckUpdates). It installs nothing, so it broadcasts
-// nothing.
+// CheckUpdates runs plugins.Manager.CheckUpdates and returns the list carrying
+// its answers. It installs nothing, so it broadcasts nothing.
 func (c *hubPluginsController) CheckUpdates(ctx context.Context) (appwire.PluginListResponse, error) {
 	if err := c.mgr.CheckUpdates(ctx); err != nil {
 		return appwire.PluginListResponse{}, err
