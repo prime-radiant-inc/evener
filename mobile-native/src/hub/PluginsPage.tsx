@@ -484,7 +484,15 @@ function Plugins({
 	}, [model, client, connectionState]);
 	useEffect(() => {
 		model.start();
-		void model.getState().fetchPlugins();
+		// Once the installed list is in, ask the hub which plugins have an
+		// update (read-on-open: nothing polls). A hub without the check
+		// flags none, so Upgrade stays hidden.
+		void model
+			.getState()
+			.fetchPlugins()
+			.then(() => {
+				if (model.getState().pluginsError === null) void model.getState().checkPluginUpdates();
+			});
 		return () => {
 			editorVersion.current += 1;
 			model.dispose();
@@ -607,7 +615,7 @@ function Plugins({
 								{plugins.map((item) => {
 									const sub = item.broken
 										? "Broken"
-										: `${item.version || "Unknown version"}${item.autoUpgrade ? " · Upgrades automatically" : ""}`;
+										: `${item.version || "Unknown version"}${item.updateAvailable ? " · Update available" : ""}${item.autoUpgrade ? " · Upgrades automatically" : ""}`;
 									return (
 										<SwitchRow
 											key={item.plugin}
@@ -670,7 +678,10 @@ function Plugins({
 							/>
 						</Group>
 						<Group>
-							<Row label="Upgrade" tone="accent" disabled={busy || !ready} onPress={() => upgrade(selected, entry)} />
+							{/* Only where the hub's update check found one. */}
+							{entry.updateAvailable ? (
+								<Row label="Upgrade" tone="accent" disabled={busy || !ready} onPress={() => upgrade(selected, entry)} />
+							) : null}
 							<Row
 								label="Remove"
 								accessibilityLabel="Remove plugin"
@@ -681,7 +692,11 @@ function Plugins({
 						</Group>
 						{/* Beneath the actions that fix it. */}
 						{entry.broken ? (
-							<GroupFooter tone="danger">This plugin is broken. Upgrade it or remove it.</GroupFooter>
+							<GroupFooter tone="danger">
+								{entry.updateAvailable
+									? "This plugin is broken. Upgrade it or remove it."
+									: "This plugin is broken. Remove it."}
+							</GroupFooter>
 						) : null}
 						{actionError ? <GroupFooter tone="danger">{actionError}</GroupFooter> : null}
 						{notice ? <GroupFooter>{notice}</GroupFooter> : null}

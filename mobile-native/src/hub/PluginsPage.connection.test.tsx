@@ -159,11 +159,11 @@ it("shows the connection status inside an open plugin detail modal, with no Reco
 
 it("keeps the last action's notice when a disconnected press never runs the action", async () => {
 	const hub = new FakeClient("ready");
-	hub.on("evener/plugin/list", () => ({ plugins: [plugin("kept")] }));
+	hub.on("evener/plugin/list", () => ({ plugins: [{ ...plugin("kept"), updateAvailable: true }] }));
 	let upgrades = 0;
 	hub.on("evener/plugin/upgrade", () => {
 		upgrades += 1;
-		return { plugins: [plugin("kept")] };
+		return { plugins: [{ ...plugin("kept"), updateAvailable: true }] };
 	});
 	harness.connection = connection(hub, "ready");
 	const tree = render(<PluginsPage {...props} />);
@@ -325,7 +325,7 @@ it("treats a route re-keyed to another hub as a fresh screen", async () => {
 
 it("recovers a replacement client's failed first read when it becomes ready", async () => {
 	const first = new FakeClient("ready");
-	first.on("evener/plugin/list", () => ({ plugins: [plugin("kept")] }));
+	first.on("evener/plugin/list", () => ({ plugins: [{ ...plugin("kept"), updateAvailable: true }] }));
 	harness.connection = connection(first, "ready");
 	const tree = render(<PluginsPage {...props} />);
 	await act(async () => {});
@@ -449,7 +449,7 @@ it("holds a plugin write's gate across a flap the write outlives", async () => {
 
 it("ignores a replaced client's late upgrade result", async () => {
 	const first = new FakeClient("ready");
-	first.on("evener/plugin/list", () => ({ plugins: [plugin("kept")] }));
+	first.on("evener/plugin/list", () => ({ plugins: [{ ...plugin("kept"), updateAvailable: true }] }));
 	let release!: () => void;
 	first.on(
 		"evener/plugin/upgrade",
