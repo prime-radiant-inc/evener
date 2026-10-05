@@ -3549,10 +3549,10 @@ index 0000000..8e782d9
 +NS_ASSUME_NONNULL_END
 diff --git a/node_modules/react-native-enriched-markdown/ios/EnrichedMarkdownSelectionSurface.mm b/node_modules/react-native-enriched-markdown/ios/EnrichedMarkdownSelectionSurface.mm
 new file mode 100644
-index 0000000..a64e1fd
+index 0000000..b505e42
 --- /dev/null
 +++ b/node_modules/react-native-enriched-markdown/ios/EnrichedMarkdownSelectionSurface.mm
-@@ -0,0 +1,620 @@
+@@ -0,0 +1,625 @@
 +#import "EnrichedMarkdownSelectionSurface.h"
 +#import <ReactNativeEnrichedMarkdown/ComponentDescriptors.h>
 +#import <ReactNativeEnrichedMarkdown/EventEmitters.h>
@@ -3580,12 +3580,17 @@ index 0000000..a64e1fd
 +// one text field, even when isAccessibilityElement is NO, hiding its rows.
 +// Keep the input object separate, forwarding to the SAME model and mounted
 +// glyph geometry, with the ordinary row container as its textInputView.
-+@interface ENRMDocumentTextInput : NSObject <UITextInput>
++@interface ENRMDocumentTextInput : UIResponder <UITextInput>
 +@property (nonatomic, weak) EnrichedMarkdownSelectionSurface *host;
 +@end
 +@implementation ENRMDocumentTextInput
 +- (BOOL)respondsToSelector:(SEL)selector { return [super respondsToSelector:selector] || [_host respondsToSelector:selector]; }
 +- (id)forwardingTargetForSelector:(SEL)selector { return _host; }
++- (UIResponder *)nextResponder { return _host; }
++- (BOOL)canBecomeFirstResponder { return [_host canBecomeFirstResponder]; }
++- (BOOL)becomeFirstResponder { return [_host becomeFirstResponder]; }
++- (BOOL)isFirstResponder { return [_host isFirstResponder]; }
++- (BOOL)resignFirstResponder { return [_host resignFirstResponder]; }
 +- (BOOL)hasText { return [(id<UITextInput>)_host hasText]; }
 +- (void)insertText:(NSString *)text { [(id<UITextInput>)_host insertText:text]; }
 +- (void)deleteBackward { [(id<UITextInput>)_host deleteBackward]; }
