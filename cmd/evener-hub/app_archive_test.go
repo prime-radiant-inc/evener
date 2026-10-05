@@ -357,6 +357,122 @@ func TestArchiveSetRemovesTheSessionsScratchTree(t *testing.T) {
 	}
 }
 
+// The reconcile removes the scratch of every session the rail files as
+// archived, by any rule: an explicit decision, age, or an archived project.
+// A recent session, an explicitly unarchived old one, and a live archived one
+// keep theirs.
+func TestReconcileArchivedScratchFollowsEveryArchiveRule(t *testing.T) {
+	tmp, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMPDIR", tmp)
+	root := t.TempDir()
+	projectDir := filepath.Join(root, "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	project, err := identifier.ResolveProject(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherDir := filepath.Join(root, "other")
+	if err := os.MkdirAll(otherDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	other, err := identifier.ResolveProject(otherDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	old := now.Add(-30 * 24 * time.Hour)
+	type session struct {
+		project     identifier.Project
+		updated     time.Time
+		decision    *bool
+		live, keeps bool
+	}
+	sessions := map[string]session{
+		"recent":              {project: project, updated: now, keeps: true},
+		"explicitly archived": {project: project, updated: now, decision: new(true)},
+		"aged out":            {project: project, updated: old},
+		"unarchived old":      {project: project, updated: old, decision: new(false), keeps: true},
+		"archived project":    {project: other, updated: now},
+		"live and archived":   {project: project, updated: now, decision: new(true), live: true, keeps: true},
+	}
+	archive := hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db"))
+	if err := archive.Set("", "project", other.ID, true, now); err != nil {
+		t.Fatal(err)
+	}
+	trees := map[string]string{}
+	ids := map[string]string{}
+	runDir := t.TempDir()
+	for name, s := range sessions {
+		id := hubtest.SessionID(t)
+		ids[name] = id
+		stateDir := filepath.Join(root, "projects", s.project.ID)
+		writeSessionUpdatedAt(t, stateDir, id, s.project.CanonicalPath, s.updated)
+		if s.decision != nil {
+			if err := archive.Set("", "session", id, *s.decision, now); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if s.live {
+			daemon := startAliasRecoveryDaemon(t, id, id)
+			writeRendezvous(t, runDir, daemon.entry)
+		}
+		trees[name] = mintEndedScratchTree(t, id, "CHILD1")
+	}
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	roster := hubcore.NewRoster(runDir, &hubcore.StatusProber{})
+	roster.Refresh()
+	if _, ok := roster.Find(ids["live and archived"]); !ok {
+		t.Fatal("the live session was not confirmed into the roster")
+	}
+
+	reconcileArchivedScratch(hubcore.WebConfig{Past: past, Archive: archive, Roster: roster}, now)
+
+	for name, s := range sessions {
+		_, err := os.Lstat(trees[name])
+		if s.keeps && err != nil {
+			t.Errorf("%s: the reconcile removed the scratch tree: %v", name, err)
+		}
+		if !s.keeps && !os.IsNotExist(err) {
+			t.Errorf("%s: the reconcile left the scratch tree %s: %v", name, trees[name], err)
+		}
+	}
+}
+
+// A project archive can archive many sessions at once, so it kicks the
+// reconcile rather than removing anything itself; unarchiving kicks nothing.
+func TestArchiveSetProjectKicksTheScratchReconcile(t *testing.T) {
+	workingDir := t.TempDir()
+	project, err := identifier.ResolveProject(workingDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kicks := 0
+	web := NewWebServer(hubcore.WebConfig{
+		Archive:          hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db")),
+		HubStateRoot:     t.TempDir(),
+		Past:             hubcore.NewPastIndex(""),
+		ScratchReconcile: func() { kicks++ },
+	})
+	for _, archived := range []bool{false, true} {
+		if _, err := dispatchArchiveSet(t, web, appwire.ArchiveParams{
+			Kind: appwire.ArchiveTargetProject, ID: project.ID, WorkingDir: workingDir, Archived: archived,
+		}); err != nil {
+			t.Fatalf("archive project (archived=%t): %v", archived, err)
+		}
+	}
+	if kicks != 1 {
+		t.Errorf("reconcile kicks = %d, want 1 (the archive, not the unarchive)", kicks)
+	}
+}
+
 // A session archived while its daemon was still running keeps its scratch
 // until that daemon exits; the roster seeing it go is what removes the tree.
 // A daemon whose session is not archived leaves its scratch alone.
@@ -383,7 +499,19 @@ func TestDaemonExitRemovesOnlyAnArchivedSessionsScratchTree(t *testing.T) {
 			if err := archive.Set("", "session", sessionID, archived, time.Now()); err != nil {
 				t.Fatal(err)
 			}
-			newHubSourceRegistry(hubcore.WebConfig{Roster: roster, Archive: archive})
+			projects := t.TempDir()
+			project, err := identifier.ResolveProject(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeSessionUpdatedAt(t, filepath.Join(projects, project.ID), sessionID, project.CanonicalPath, time.Now())
+			past := hubcore.NewPastIndex(filepath.Join(projects, "*"))
+			if _, err := past.Rebuild(); err != nil {
+				t.Fatal(err)
+			}
+			cfg := hubcore.WebConfig{Roster: roster, Archive: archive, Past: past}
+			cfg.ScratchReconcile = func() { reconcileArchivedScratch(cfg, time.Now()) }
+			newHubSourceRegistry(cfg)
 			tree := mintEndedScratchTree(t, sessionID, "CHILD1")
 
 			if err := daemon.Kill(); err != nil {

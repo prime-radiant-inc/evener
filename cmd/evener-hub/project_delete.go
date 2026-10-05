@@ -679,13 +679,13 @@ func (s *WebServer) removeProjectDeletionArtifacts(stateDir, sessionID string) e
 	if err := removeProjectSessionDaemonLog(s.cfg.RunDir, sessionID); err != nil {
 		return err
 	}
-	if err := agentsandbox.RemoveSessionScratchTree(sessionID); err != nil {
-		return err
-	}
 	apiLogPath := filepath.Join(sessionsDir, sessionID+".api.jsonl")
 	if err := removeProjectSessionFile(apiLogPath); err != nil && !os.IsNotExist(err) {
 		return err
 	}
+	// Last and best-effort, as on archive: the session is already gone, and an
+	// entry the scratch removal cannot take must not leave it half-deleted.
+	_ = agentsandbox.RemoveSessionScratchTree(sessionID)
 	return nil
 }
 

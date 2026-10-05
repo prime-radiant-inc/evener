@@ -84,9 +84,6 @@ func archiveSet(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.R
 		}
 		if params.Kind == appwire.ArchiveTargetSession {
 			nudgeResidentDaemonIdleTimeout(ctx, cfg, sources, decisionID, params.Archived)
-			if params.Archived {
-				removeArchivedSessionScratch(decisionID)
-			}
 		}
 		return nil
 	}
@@ -109,6 +106,16 @@ func archiveSet(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.R
 		}
 	} else if err := persistNudge(); err != nil {
 		return appwire.ArchiveResponse{}, err
+	}
+	// Outside the session lock: removing a large tree must not hold up that
+	// session's other decisions. A project archive can archive many sessions,
+	// so it hands them to the reconcile.
+	if params.Archived {
+		if params.Kind == appwire.ArchiveTargetSession {
+			removeArchivedSessionScratch(decisionID)
+		} else if cfg.ScratchReconcile != nil {
+			cfg.ScratchReconcile()
+		}
 	}
 
 	// An archive decision can move a session in or out of tier eligibility;
@@ -133,29 +140,16 @@ func archiveSet(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.R
 }
 
 // removeArchivedSessionScratch removes an archived local session's scratch
-// tree. A session whose daemon is still running keeps its scratch until that
-// daemon exits (removeScratchAfterDaemonExit). Best-effort, like the daemon
-// nudge: a remote session's ref is not a local session ID and is skipped, and
-// a failed removal must not fail the archive decision.
+// tree. A session whose daemon is still running keeps the scratch its sessions
+// still lease until that daemon exits and the reconcile runs
+// (reconcileArchivedScratch). Best-effort, like the daemon nudge: a remote
+// session's ref is not a local session ID and is skipped, and a failed removal
+// must not fail the archive decision.
 func removeArchivedSessionScratch(sessionID string) {
 	if identifier.ValidateSessionID(sessionID) != nil {
 		return
 	}
 	_ = agentsandbox.RemoveSessionScratchTree(sessionID)
-}
-
-// removeScratchAfterDaemonExit removes a session's scratch tree once its
-// daemon has exited, if the session is archived. An unarchived session keeps
-// its scratch for its next resume.
-func removeScratchAfterDaemonExit(archive *hubcore.ArchiveStore, sessionID string) {
-	if archive == nil {
-		return
-	}
-	decisions, err := archive.Decisions()
-	if err != nil || !decisions[hubcore.ArchiveKey{Kind: string(appwire.ArchiveTargetSession), ID: sessionID}] {
-		return
-	}
-	removeArchivedSessionScratch(sessionID)
 }
 
 // archivedSessionIdleTimeout is the automatic idle-retirement deadline the Hub

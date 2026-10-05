@@ -91,10 +91,12 @@ func newHubSourceRegistry(cfg hubcore.WebConfig) *appsource.Registry {
 		// The roster's resolved session id is passed along: a legacy entry names
 		// no session of its own, and its relay session is keyed by the resolved one.
 		// An archived session's scratch outlives a daemon still running at
-		// archive time, so the daemon's exit is when that scratch goes.
+		// archive time, so a daemon's exit kicks the reconcile that removes it.
 		roster.SetOnSessionGone(func(gone hubcore.LiveEntry) {
 			local.AnnounceDaemonGone(gone.Entry, gone.SessionID)
-			removeScratchAfterDaemonExit(cfg.Archive, gone.SessionID)
+			if cfg.ScratchReconcile != nil {
+				cfg.ScratchReconcile()
+			}
 		})
 		registry.Add(local)
 	}
