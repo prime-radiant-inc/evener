@@ -13,7 +13,7 @@ func MemoryDefinition(base llm.ToolDefinition, name string) llm.ToolDefinition {
 	props := base.Parameters["properties"].(map[string]any)
 	props["scope"] = map[string]any{"type": "string", "enum": []any{"personal", "project", "session"}}
 	base.Parameters["required"] = append(base.Parameters["required"].([]string), "scope")
-	base.Description = "Operate on a relative path in the bound personal or project memory wiki. " + base.Description
+	base.Description = "Operate on a relative path in the bound personal, project or session memory wiki. " + base.Description
 	return base
 }
 

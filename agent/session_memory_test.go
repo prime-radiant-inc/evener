@@ -211,6 +211,19 @@ func memoryContextCount(s *Session) int {
 	return n
 }
 
+func lastMemoryContextText(t *testing.T, s *Session, name string) string {
+	t.Helper()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, turn := range slices.Backward(s.history) {
+		if turn.Kind == schema.TurnMemoryContext && turn.Message.Name == name {
+			return turn.Message.Text()
+		}
+	}
+	t.Fatalf("no %s memory context turn", name)
+	return ""
+}
+
 func TestMemoryIndexUTF8Boundary(t *testing.T) {
 	t.Parallel()
 	raw := []byte(strings.Repeat("x", 8191) + "界" + "opaque-tail")
@@ -978,7 +991,7 @@ func TestMemoryStorageSharedWaitAndClose(t *testing.T) {
 			memorySeed(t, root, "personal", "opaque-held-personal-501")
 			memorySeed(t, root, "projects/fixture-project", "opaque-held-project-502")
 			clk := agenttest.NewFakeClock()
-			started := make(chan string, 2)
+			started := make(chan string, 3)
 			release := make(chan struct{})
 			var once sync.Once
 			unblock := func() { once.Do(func() { close(release) }) }
@@ -994,14 +1007,16 @@ func TestMemoryStorageSharedWaitAndClose(t *testing.T) {
 				}
 				return nil
 			}}}))
+			memorySeed(t, root, filepath.Join("sessions", s.id), "opaque-held-session-503")
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			done := make(chan struct{})
 			go func() { s.maybeAppendMemoryContext(ctx); close(done) }()
 			<-started
 			<-started
+			<-started
 			s.memoryMu.Lock()
-			personal, project := s.memoryIndexFlights["personal"], s.memoryIndexFlights["project"]
+			personal, project, session := s.memoryIndexFlights["personal"], s.memoryIndexFlights["project"], s.memoryIndexFlights["session"]
 			var heldEnvs []*execenv.LocalExecutionEnvironment
 			if mode == "close-index_read" {
 				for _, env := range s.memoryEnvs {
@@ -1035,7 +1050,7 @@ func TestMemoryStorageSharedWaitAndClose(t *testing.T) {
 				<-done
 				t.Fatal("boundary exceeded shared budget")
 			}
-			want := 2
+			want := 3
 			if strings.HasPrefix(mode, "close-") {
 				want = 0
 			}
@@ -1045,6 +1060,7 @@ func TestMemoryStorageSharedWaitAndClose(t *testing.T) {
 			unblock()
 			<-personal.done
 			<-project.done
+			<-session.done
 			if got := memoryContextCount(s); got != want {
 				t.Fatalf("worker appended late context=%d", got)
 			}
@@ -1057,11 +1073,11 @@ func TestMemoryStorageSharedWaitAndClose(t *testing.T) {
 				}
 			}
 			if mode == "close-index_read" {
-				if personal.projection.Status != "current" || personal.projection.Content != "opaque-held-personal-501" || project.projection.Status != "current" || project.projection.Content != "opaque-held-project-502" {
+				if personal.projection.Status != "current" || personal.projection.Content != "opaque-held-personal-501" || project.projection.Status != "current" || project.projection.Content != "opaque-held-project-502" || session.projection.Status != "current" || session.projection.Content != "opaque-held-session-503" {
 					t.Fatal("Close interrupted an admitted read instead of leaving it responsible for retirement")
 				}
-				if len(heldEnvs) != 2 {
-					t.Fatalf("paused reader environments=%d want=2", len(heldEnvs))
+				if len(heldEnvs) != 3 {
+					t.Fatalf("paused reader environments=%d want=3", len(heldEnvs))
 				}
 				for _, env := range heldEnvs {
 					// After Close and both completion barriers, no operation can
@@ -2772,6 +2788,10 @@ func TestMemorySessionScopeDelegateReadsButCannotWrite(t *testing.T) {
 	if string(got) != "opaque-root-session-12\n" {
 		t.Fatalf("root session memory changed: %q", got)
 	}
+	child.sess.appendMemoryProjection(memoryProjection{Scope: "session", Status: "current", Content: "opaque-root-session-12\n"})
+	if text := lastMemoryContextText(t, child.sess, "memory_session"); !strings.Contains(text, memorySessionProjectionReadOnly) {
+		t.Fatalf("delegate session projection lacks read-only framing: %q", text)
+	}
 }
 
 func TestMemorySessionScopeUnboundDelegateRefuses(t *testing.T) {
@@ -2788,9 +2808,30 @@ func TestMemorySessionScopeUnboundDelegateRefuses(t *testing.T) {
 	}
 }
 
-func TestMemoryScopesListsEveryScopeInProjectionOrder(t *testing.T) {
+func TestMemorySessionIndexProjected(t *testing.T) {
 	t.Parallel()
-	if got := memoryScopes(); !slices.Equal(got, []string{"personal", "project", "session"}) {
-		t.Fatalf("scopes=%v", got)
+	root := t.TempDir()
+	var body string
+	s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: root}), withSteps(func(req llm.Request) llm.Response {
+		_, body, _ = memoryRequestIndex(t, req, "session")
+		return finalResponse("done")
+	}))
+	memorySeed(t, root, filepath.Join("sessions", s.id), "opaque-session-index-21\n")
+	if _, err := s.ProcessInput(context.Background(), "go", nil); err != nil {
+		t.Fatal(err)
+	}
+	if body != "opaque-session-index-21\n" {
+		t.Fatalf("session index body=%q", body)
+	}
+}
+
+func TestMemorySessionRestoreSeedsObservedScope(t *testing.T) {
+	t.Parallel()
+	s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: t.TempDir()}))
+	msg := llm.User("x")
+	msg.Name = "memory_session"
+	s.restoreMemoryProjection([]schema.Turn{{Kind: schema.TurnMemoryContext, Message: msg}})
+	if !s.memoryEverProjected["session"] {
+		t.Fatal("restored session observation not seeded")
 	}
 }
