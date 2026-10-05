@@ -3,7 +3,7 @@
 import { useIsFocused } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { SymbolView } from "expo-symbols";
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { FlatList, Pressable, Text, useWindowDimensions, View } from "react-native";
 import { BandHeader } from "../board/BoardRow";
 import { useConnection } from "../ConnectionProvider";
@@ -18,19 +18,17 @@ import { type ActivityFilter, type ActivityListItem, activityListItems, activity
 import {
 	flattenActivity,
 	SEARCH_AFTER,
-	STATE_ORDER,
 	type ShellJobRow,
 	type SubagentRow,
-	type SubagentState,
 	isSubagentRow,
 	sameModel,
-	subagentStateWord,
 	summaryTally,
 } from "./subagentModel";
 import { stopRequests } from "./nativeStopRequests";
 import { ShellJobRowView } from "./ShellJobRowView";
 import { SubagentRowView } from "./SubagentRowView";
 import { SubagentStrip, stateColors } from "./SubagentStrip";
+import type { SubagentTree } from "./subagentTree";
 import { useFollowedSubagentTree } from "./useSubagentTree";
 import { haptic } from "../haptics";
 
@@ -54,6 +52,7 @@ export function SubagentsScreen({ route, navigation }: NativeStackScreenProps<Ro
 	const [filter, setFilter] = useState<ActivityFilter>("all");
 	const [query, setQuery] = useState("");
 	const [doneOpen, setDoneOpen] = useState(false);
+	const [completedJobsOpen, setCompletedJobsOpen] = useState(false);
 	// The hub's own ref for the coordinator, once a tree carries it, names
 	// the coordinator's branch in what couldn't be listed.
 	const coordinatorRef = snapshot.tree?.root.ref ?? ref;
@@ -63,10 +62,11 @@ export function SubagentsScreen({ route, navigation }: NativeStackScreenProps<Ro
 				filter,
 				query,
 				doneOpen,
+				completedJobsOpen,
 				missing: snapshot.missing,
 				coordinator: { ref: coordinatorRef, title },
 			}),
-		[activity, filter, query, doneOpen, snapshot.missing, coordinatorRef, title],
+		[activity, filter, query, doneOpen, completedJobsOpen, snapshot.missing, coordinatorRef, title],
 	);
 
 	// The stops you asked for, on their rows, and settled against each new
@@ -76,6 +76,22 @@ export function SubagentsScreen({ route, navigation }: NativeStackScreenProps<Ro
 	const requests = stopRequests(hubId);
 	const stopRevision = useSyncExternalStore(requests.subscribe, requests.getRevision);
 	const focused = useIsFocused();
+	const boundaryKeys = JSON.stringify(items.map(activityListKey));
+	const [boundary, setBoundary] = useState<{ tree: SubagentTree; keys: string } | null>(null);
+	const contentSize = useRef<{ width: number; height: number } | null>(null);
+	const delegatePage = snapshot.pages?.delegates;
+	const jobPage = snapshot.pages?.jobs;
+	useEffect(() => {
+		if (!focused || boundary?.tree !== tree || boundary.keys !== boundaryKeys) return;
+		// A closed fold can consume a page without changing the native list's
+		// height. Keep its observed edge demand, not a view-owned retry loop.
+		for (const [resource, page] of [
+			["delegates", delegatePage],
+			["jobs", jobPage],
+		] as const) {
+			if (page?.hasMore && !page.loading && !page.error && !page.permanent) void tree.loadMore(resource);
+		}
+	}, [focused, boundary, boundaryKeys, tree, delegatePage, jobPage]);
 	const toast = useToast();
 	const showToast = toast.show;
 	useEffect(() => {
@@ -143,9 +159,20 @@ export function SubagentsScreen({ route, navigation }: NativeStackScreenProps<Ro
 		({ item }: { item: ActivityListItem }) => {
 			switch (item.kind) {
 				case "section":
-					return <BandHeader text={`${subagentStateWord(item.state).toUpperCase()} · ${item.count}`} />;
+					return <BandHeader text={`${item.state.toUpperCase()} · ${item.count}`} />;
 				case "doneFold":
-					return <DoneFold count={item.count} open={item.open} onToggle={() => setDoneOpen((open) => !open)} />;
+				case "completedJobsFold": {
+					const delegates = item.kind === "doneFold";
+					const setOpen = delegates ? setDoneOpen : setCompletedJobsOpen;
+					return (
+						<HistoryFold
+							label={delegates ? "Done" : "Completed"}
+							count={item.count}
+							open={item.open}
+							onToggle={() => setOpen((open) => !open)}
+						/>
+					);
+				}
 				case "missing":
 					return <MissingLine title={item.title} />;
 				case "row":
@@ -187,16 +214,25 @@ export function SubagentsScreen({ route, navigation }: NativeStackScreenProps<Ro
 						selected={filter === "all"}
 						onPress={() => setFilter("all")}
 					/>
-					{STATE_ORDER.filter((state) => !activityTally || activityTally[state] > 0).map((state) => (
-						<FilterChip
-							key={state}
-							state={state}
-							label={subagentStateWord(state)}
-							count={activityTally?.[state] ?? "…"}
-							selected={filter === state}
-							onPress={() => setFilter(state)}
-						/>
-					))}
+					{[
+						{ id: "running" as const, label: "Running", count: activityTally?.running },
+						{
+							id: "done" as const,
+							label: "Done",
+							count: activityTally ? activityTally.failed + activityTally.done : undefined,
+						},
+					]
+						.filter((state) => state.count === undefined || state.count > 0)
+						.map((state) => (
+							<FilterChip
+								key={state.id}
+								state={state.id}
+								label={state.label}
+								count={state.count ?? "…"}
+								selected={filter === state.id}
+								onPress={() => setFilter(state.id)}
+							/>
+						))}
 				</ChipStrip>
 			) : null}
 			{/* Kept while it has words, so a list that shrinks never stays filtered with no way to clear it. */}
@@ -219,8 +255,14 @@ export function SubagentsScreen({ route, navigation }: NativeStackScreenProps<Ro
 			<FlatList
 				data={items}
 				keyboardDismissMode="on-drag"
-				onEndReached={() => {
-					if (snapshot.hasMore) void tree.loadMore();
+				onEndReached={() => setBoundary({ tree, keys: boundaryKeys })}
+				onScroll={({ nativeEvent: { contentSize, contentOffset, layoutMeasurement } }) => {
+					if (contentSize.height - contentOffset.y - layoutMeasurement.height > 2) setBoundary(null);
+				}}
+				onContentSizeChange={(width, height) => {
+					const previous = contentSize.current;
+					contentSize.current = { width, height };
+					if (previous && (previous.width !== width || previous.height !== height)) setBoundary(null);
 				}}
 				keyExtractor={activityListKey}
 				renderItem={renderItem}
@@ -285,7 +327,7 @@ function FilterChip({
 	selected,
 	onPress,
 }: {
-	state?: SubagentState;
+	state?: "running" | "done";
 	label: string;
 	count: number | string;
 	selected: boolean;
@@ -327,14 +369,24 @@ function FilterChip({
 	);
 }
 
-function DoneFold({ count, open, onToggle }: { count: number; open: boolean; onToggle(): void }) {
+function HistoryFold({
+	label,
+	count,
+	open,
+	onToggle,
+}: {
+	label: "Done" | "Completed";
+	count: number;
+	open: boolean;
+	onToggle(): void;
+}) {
 	const { palette } = useColors();
 	const scale = useTextScale();
-	const label = `Done · ${count}`;
+	const text = `${label} · ${count}`;
 	return (
 		<Pressable
 			accessibilityRole="button"
-			accessibilityLabel={label}
+			accessibilityLabel={text}
 			accessibilityState={{ expanded: open }}
 			onPress={onToggle}
 			style={{ minHeight: 44, flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 16 }}
@@ -343,7 +395,7 @@ function DoneFold({ count, open, onToggle }: { count: number; open: boolean; onT
 				allowFontScaling={allowFontScaling}
 				style={{ fontSize: 15 * scale, lineHeight: 20 * scale, fontWeight: "600", color: palette.inkMid }}
 			>
-				{label}
+				{text}
 			</Text>
 			<SymbolView name={open ? "chevron.down" : "chevron.right"} size={13} tintColor={palette.inkLow} />
 		</Pressable>

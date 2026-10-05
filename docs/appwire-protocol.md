@@ -1627,15 +1627,25 @@ _(no fields)_
 | `dirty` | `bool` |  |  |
 
 
-### `JobOutputTail`
+### `JobOutputPage`
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
-| `tail` | `string` |  |  |
+| `offsetBytes` | `int64` |  |  |
+| `bytesReturned` | `int64` |  |  |
 | `totalBytes` | `int64` |  |  |
-| `retainedStart` | `int64` |  |  |
-| `truncated` | `bool` |  |  |
-| `hasEarlier` | `bool` | yes |  |
+| `retainedStartBytes` | `int64` |  |  |
+| `encoding` | `string` |  |  |
+| `data` | `string` |  |  |
+
+
+### `JobOutputPrunedErrorData`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `evenerErrorInfo` | `appwire.ErrorInfo` |  |  |
+| `retainedStartBytes` | `int64` |  |  |
+| `totalBytes` | `int64` |  |  |
 
 
 ### `JobsGetParams`
@@ -1675,14 +1685,14 @@ _(no fields)_
 | `ref` | `string` | yes |  |
 | `jobId` | `string` |  |  |
 | `maxBytes` | `int64` | yes |  |
-| `beforeBytes` | `int64` | yes |  |
+| `beforeBytes` | `*int64` | yes |  |
 
 
 ### `JobsOutputResponse`
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
-| `data` | `appwire.JobOutputTail` |  |  |
+| `data` | `appwire.JobOutputPage` |  |  |
 
 
 ### `JobsTreeUpdatedParams`

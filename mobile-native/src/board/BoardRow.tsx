@@ -170,17 +170,14 @@ export function BoardRow({
 	const reason = why && why.text !== word ? why.text : undefined;
 	// The row is one accessibility element, so the chip's text reaches
 	// VoiceOver through this label, not a nested one. Speak the tally once: the
-	// why line already states the running count ("Waiting on N subagents"), so
-	// the chip adds only the failure count then (ruling 24 never speaks one).
+	// why line can already state the running count ("Waiting on N subagents").
 	const spoken = waiting ?? reason;
 	// Only a signal row's why line names the running count; a quiet row has no
 	// why line, so the chip must speak it. `waiting` replaces the reason with a
 	// held-change message, so it never names the count either.
 	const runningShown = activity ? activity.runningSubagents : (tally?.running ?? 0);
 	const whyNamesRunning = signal && !waiting && item.state === "working" && runningShown > 0;
-	const chipLabel = tally
-		? subagentChipText({ running: whyNamesRunning ? 0 : tally.running, failed: tally.failed })
-		: "";
+	const chipLabel = tally ? subagentChipText({ running: whyNamesRunning ? 0 : tally.running }) : "";
 	const label = [row.title, word, spoken, chipLabel || undefined, age && spokenAge(age)].filter(Boolean).join(", ");
 	const lineOne = 22 * scale;
 	return (
@@ -289,15 +286,13 @@ export function BoardRow({
 	);
 }
 
-/** The subagent count chip on a live root row (S3). It never takes the Needs
- * you background (D2), and only the failure run reads in the danger ink: the
- * running count stays in the neutral ink, as the web rail's chip does. */
+/** Running subagents on a live root row, in neutral ink. Settled outcomes
+ * remain available in activity history without calling for attention. */
 export function SubagentChip({ session }: { session: NavigationSessionSummary }): ReactElement | null {
 	const { palette } = useColors();
 	const scale = useTextScale();
 	const tally = chipTally(session);
 	if (!tally) return null;
-	const failed = tally.failed > 0;
 	return (
 		<View
 			testID="subagent-chip"
@@ -316,20 +311,21 @@ export function SubagentChip({ session }: { session: NavigationSessionSummary })
 					color: palette.inkMid,
 				}}
 			>
-				{tally.running > 0 ? <Text style={{ color: palette.inkMid }}>{`${tally.running} running`}</Text> : null}
-				{tally.running > 0 && failed ? " · " : null}
-				{failed ? <Text style={{ color: palette.dangerInk }}>{`${tally.failed} failed`}</Text> : null}
+				{subagentChipText(tally)}
 			</Text>
 		</View>
 	);
 }
 
-/** The tally a row's chip shows, or null for a nested row or one with nothing
- * to show (subagentTallyToShow gates on live and non-empty). Only a live root
+/** The tally a row's chip shows, or null for a nested row or one with no
+ * running subagents (subagentTallyToShow gates on live and non-empty). Only a live root
  * carries a subagent tally (S3, D1), and the hub may set one on a nested fork
  * row, so the chip gates on the kind the way the web rail's isTopLevelSession
  * does. */
-const chipTally = (session: NavigationSessionSummary) => (isTopLevel(session) ? subagentTallyToShow(session) : null);
+const chipTally = (session: NavigationSessionSummary) => {
+	const tally = isTopLevel(session) ? subagentTallyToShow(session) : null;
+	return tally && tally.running > 0 ? tally : null;
+};
 
 /** A session row's subagent chip, for the lists that render their own rows
  * (Projects, Project and Pin sections) rather than a BoardRow. Null when the

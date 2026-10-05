@@ -922,7 +922,7 @@ test("job tabs use their own hydrated titles without extra reads or cross-owner 
     data: activityJob({ jobId, ownerRef: ref, description: ref === "owner:a" ? "Release build" : "Release monitor" }),
   }));
   fake.on("evener/jobs/output", () => ({
-    data: { tail: "ready", totalBytes: 5, retainedStart: 0, truncated: false },
+    data: { offsetBytes: 0, bytesReturned: 5, totalBytes: 5, retainedStartBytes: 0, encoding: "utf8", data: "ready" },
   }));
   connectionStore.getState().connect(fake);
   workspaceStore.getState().openPane("doc", { ref: "main" });

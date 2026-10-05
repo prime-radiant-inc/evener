@@ -137,7 +137,7 @@ type serveServer interface {
 	SetThreadJobsListFunc(func(context.Context, appwire.SessionActivityListParams) (appwire.SessionJobsResponse, error))
 	SetThreadWatchesListFunc(func(context.Context, appwire.SessionActivityListParams) (appwire.SessionWatchesResponse, error))
 
-	SetJobOutputFunc(func(string, int64, int64) (appwire.JobOutputTail, bool, error))
+	SetJobOutputFunc(func(string, *int64, int64) (appwire.JobOutputPage, bool, error))
 	SetJobGetFunc(func(string) (appwire.JobActivityJob, bool, error))
 	SetClearFunc(func(context.Context, appwire.ThreadClearParams) error)
 	SetWorkingDir(string)
@@ -1571,8 +1571,8 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		}
 		return sess.JobActivityTree(params)
 	})
-	srv.SetJobOutputFunc(func(jobID string, beforeBytes, maxBytes int64) (appwire.JobOutputTail, bool, error) {
-		return getSession().JobOutputTail(jobID, beforeBytes, maxBytes)
+	srv.SetJobOutputFunc(func(jobID string, beforeBytes *int64, maxBytes int64) (appwire.JobOutputPage, bool, error) {
+		return getSession().JobOutputPage(jobID, beforeBytes, maxBytes)
 	})
 	srv.SetJobGetFunc(func(jobID string) (appwire.JobActivityJob, bool, error) {
 		return getSession().JobGet(jobID)

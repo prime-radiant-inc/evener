@@ -1,12 +1,15 @@
 import { createNavigationStore } from "@evener/appwire-client/state/navigation";
 import { memoryNavigationPersistence } from "@evener/appwire-client/testing/navigationPersistence";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
+import "../../panes/transcript";
 import { connectionStore } from "../../stores/connection";
 import { activityClient, activityContext, activityJob, activityWatch } from "../../stores/sessionActivityTestUtils";
 import { resetDisclosureStoreForTests } from "../../widgets/disclosure/disclosureStore";
 import { deriveScope } from "../statusbar/statusScope";
-import { workspaceStore } from "../workspace";
+import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
+import { ActivityViewport } from "./ActivityViewport";
+import { activitySidebarStore, resetActivitySidebarStoreForTests } from "./activitySidebarStore";
 import { JobsTab } from "./JobsTab";
 import { WatchesTab } from "./WatchesTab";
 
@@ -15,6 +18,8 @@ const scope = () =>
 afterEach(() => {
   cleanup();
   resetDisclosureStoreForTests();
+  resetActivitySidebarStoreForTests();
+  resetWorkspaceStoreForTests();
   vi.restoreAllMocks();
   connectionStore.setState({ client: null, state: "idle" });
 });
@@ -37,7 +42,8 @@ test("jobs show supplied terminal status and have no invented transcript action"
   }));
   connectionStore.getState().connect(client);
   render(<JobsTab scope={scope()} />);
-  expect(await screen.findByText("real status")).toBeTruthy();
+  fireEvent.click(await screen.findByText("1 completed job"));
+  expect(screen.getByText("real status")).toBeTruthy();
   expect(screen.getByText(/Command failed/)).toBeTruthy();
   expect(screen.queryByRole("button", { name: /real status/ })).toBeNull();
 });
@@ -96,7 +102,7 @@ test("watch disclosure reveals its complete condition and keeps equal IDs in dif
   expect(screen.queryByTestId("watch-facts")).toBeNull();
 });
 
-test("only successful terminal jobs fold, and revealed output retains its authoritative identity", async () => {
+test("all terminal jobs fold, and revealed output opens its authoritative owner pane", async () => {
   const client = activityClient();
   client.on("evener/thread/jobs/list", ({ ref, scope }) => ({
     context: activityContext(ref),
@@ -135,19 +141,24 @@ test("only successful terminal jobs fold, and revealed output retains its author
     page: { complete: true, issues: [] },
   }));
   connectionStore.getState().connect(client);
-  const open = vi.spyOn(workspaceStore.getState(), "openPane").mockImplementation(() => "test-pane");
+  resetWorkspaceStoreForTests();
   render(<JobsTab scope={scope()} />);
   await screen.findByText("command running");
   expect(screen.queryByText("successful command")).toBeNull();
   for (const status of ["command_exited_nonzero", "killed", "cancelled", "stopped", "unknown"])
+    expect(screen.queryByText(`command ${status}`)).toBeNull();
+  fireEvent.click(screen.getByText("7 completed jobs"));
+  for (const status of ["command_exited_nonzero", "killed", "cancelled", "stopped", "unknown"])
     expect(screen.getByText(`command ${status}`)).toBeTruthy();
-  fireEvent.click(screen.getByText("2 completed jobs"));
+  for (const text of ["completed", "Command failed", "killed", "cancelled", "stopped", "unknown"])
+    expect(screen.getAllByText(text).length).toBeGreaterThan(0);
   fireEvent.click(screen.getByRole("button", { name: /successful command/ }));
-  expect(open).toHaveBeenCalledWith(
-    "transcript",
-    { ref: "job:raw-output", parentRef: "source:owner" },
-    { slot: "secondary" },
-  );
+  const opened = workspaceStore.getState().panes.find((pane) => pane.type === "transcript");
+  expect(opened).toMatchObject({
+    slot: "secondary",
+    params: { ref: "job:raw-output", parentRef: "source:owner" },
+  });
+  expect(workspaceStore.getState().focusedPaneId).toBe(opened?.id);
   expect(screen.getByText("successful no output")).toBeTruthy();
   expect(screen.queryByRole("button", { name: /successful no output/ })).toBeNull();
   expect(client.calls.filter((call) => call.method === "evener/thread/jobs/list")).toHaveLength(1);
@@ -189,8 +200,9 @@ test("job history disclosure survives remount only for its selected session", as
   expect(screen.queryByText("other:owner")).toBeNull();
 });
 
-test("closed successful history preserves automatic discovery of older active and failed jobs", async () => {
+test("closed terminal history discovers page-three live work and keeps its settled anchor and output", async () => {
   const client = activityClient();
+  let finished = false;
   let intersect: (() => void) | undefined;
   class Observer {
     constructor(callback: IntersectionObserverCallback) {
@@ -204,41 +216,83 @@ test("closed successful history preserves automatic discovery of older active an
   client.on("evener/thread/jobs/list", ({ ref, scope, cursor }) => ({
     context: activityContext(ref),
     scope: scope ?? "session",
-    jobs: cursor
-      ? [
-          activityJob({ description: "", jobId: "older-active", command: "older active" }),
-          activityJob({
-            description: "",
-            jobId: "older-failed",
-            command: "older failure",
-            status: "command_exited_nonzero",
-            terminal: true,
-            outcome: "failed",
-          }),
-        ]
-      : [
-          activityJob({
-            description: "",
-            jobId: "ok",
-            command: "hidden success",
-            status: "completed",
-            terminal: true,
-            outcome: "success",
-          }),
-        ],
-    page: cursor ? { complete: true, issues: [] } : { complete: false, nextCursor: "next", issues: [] },
+    jobs:
+      cursor === "third"
+        ? [
+            activityJob({
+              description: "",
+              jobId: "older-active",
+              command: "older active",
+              ownerRef: "source:owner",
+              transcriptRef: "job:later-output",
+              terminal: finished,
+              status: finished ? "completed" : "running",
+              outcome: finished ? "success" : undefined,
+            }),
+          ]
+        : cursor
+          ? [
+              activityJob({
+                description: "",
+                jobId: "older-failed",
+                command: "older failure",
+                status: "command_exited_nonzero",
+                terminal: true,
+                outcome: "failed",
+              }),
+            ]
+          : [
+              activityJob({
+                description: "",
+                jobId: "ok",
+                command: "hidden success",
+                status: "completed",
+                terminal: true,
+                outcome: "success",
+              }),
+            ],
+    page:
+      cursor === "third"
+        ? { complete: true, issues: [] }
+        : { complete: false, nextCursor: cursor ? "third" : "next", issues: [] },
   }));
   try {
     connectionStore.getState().connect(client);
+    activitySidebarStore.getState().openFor("remote:owner", "jobs");
     await act(async () => {
-      render(<JobsTab scope={scope()} />);
+      render(
+        <ActivityViewport sessionRef="remote:owner" tab="jobs" className="activity-viewport">
+          <JobsTab scope={scope()} />
+        </ActivityViewport>,
+      );
     });
     expect(screen.queryByText("hidden success")).toBeNull();
     await act(async () => intersect?.());
+    expect(screen.queryByText("older active")).toBeNull();
+    expect(screen.queryByText("older failure")).toBeNull();
+    await act(async () => intersect?.());
     expect(screen.getByText("older active")).toBeTruthy();
-    expect(screen.getByText("older failure")).toBeTruthy();
+    expect(screen.queryByText("older failure")).toBeNull();
     expect(screen.queryByText("hidden success")).toBeNull();
-    expect(client.calls.filter((call) => call.method === "evener/thread/jobs/list")).toHaveLength(2);
+    expect(client.calls.filter((call) => call.method === "evener/thread/jobs/list")).toHaveLength(3);
+    finished = true;
+    act(() =>
+      client.emitNotification({
+        method: "evener/thread/activity/changed",
+        params: { ref: "remote:owner", threadId: "owner", sessionId: "owner", resources: ["jobs"] },
+      }),
+    );
+    await screen.findByText("3 completed jobs");
+    await waitFor(() => expect(screen.queryByText("older active")).toBeNull());
+    fireEvent.click(screen.getByText("3 completed jobs"));
+    expect(screen.getByText("older failure")).toBeTruthy();
+    const late = screen.getByRole("button", { name: /older active/ });
+    expect(late.dataset.activityAnchor).toBe('job:["source:owner","older-active"]');
+    expect(document.querySelectorAll('[data-activity-anchor=\'job:["source:owner","older-active"]\']')).toHaveLength(1);
+    fireEvent.click(late);
+    const opened = workspaceStore.getState().panes.find((pane) => pane.type === "transcript");
+    expect(opened).toMatchObject({ slot: "secondary", params: { ref: "job:later-output", parentRef: "source:owner" } });
+    expect(workspaceStore.getState().focusedPaneId).toBe(opened?.id);
   } finally {
     vi.unstubAllGlobals();
   }

@@ -7,7 +7,7 @@ import { expect, it, vi } from "vitest";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { completeSession, wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import { PinnedSectionScreen } from "./PinSectionsScreen";
-import { render, renderedText, screenConnection } from "./renderNative.testkit";
+import { pressable, render, renderedText, screenConnection } from "./renderNative.testkit";
 
 const harness = vi.hoisted(() => ({
 	connection: {} as Record<string, unknown>,
@@ -41,6 +41,54 @@ const props = {
 	route: { params: { hubId: "hub-1", sectionId: "s1", title: "Pins" } },
 	navigation: { navigate: () => {}, setParams: () => {} },
 } as unknown as ComponentProps<typeof PinnedSectionScreen>;
+
+it("keeps settled delegate tallies quiet in Pins without losing session access", async () => {
+	const hub = new FakeClient("ready");
+	hub.on("evener/navigation/read", (params) => {
+		if (params.resource === "pin_catalog")
+			return wireSnapshot(params as never, { pin_sections: [{ id: "s1", name: "Pins", count: 2 }] });
+		return wireSnapshot(params as never, {
+			sessions: [
+				completeSession({
+					ref: "local:a",
+					title: "Alpha",
+					live: true,
+					state: "active",
+					subagents: { running: 2, failed: 3, done: 0 },
+				}),
+				completeSession({
+					ref: "local:b",
+					title: "Beta",
+					live: true,
+					state: "active",
+					subagents: { running: 0, failed: 3, done: 0 },
+				}),
+			],
+		});
+	});
+	harness.focused = true;
+	harness.connection = screenConnection(hub, "ready");
+	const opened: unknown[][] = [];
+	const navigation = { navigate: (...args: unknown[]) => opened.push(args), setParams: () => {} };
+	const tree = render(<PinnedSectionScreen {...props} navigation={navigation as never} />);
+	await act(async () => {});
+	expect(renderedText(tree)).toContain("2 running");
+	expect(renderedText(tree)).not.toContain("3 failed");
+	expect(tree.root.findAll((node) => node.props.testID === "subagent-chip")).toHaveLength(1);
+	const alpha = pressable(tree, "Open Alpha, 2 running");
+	const beta = pressable(tree, "Open Beta");
+	expect(alpha).toBeDefined();
+	expect(beta).toBeDefined();
+	act(() => {
+		alpha?.props.onPress();
+		beta?.props.onPress();
+	});
+	expect(opened).toEqual([
+		["Conversation", { hubId: "hub-1", ref: "local:a", title: "Alpha" }],
+		["Conversation", { hubId: "hub-1", ref: "local:b", title: "Beta" }],
+	]);
+	act(() => tree.unmount());
+});
 
 it("reads a change the hub announced while a conversation covered the section", async () => {
 	const hub = new FakeClient("ready");

@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { WireError } from "./errors";
 import { projectSessionActivity } from "./sessionActivityPresentation";
-import { SessionActivityStore } from "./sessionActivityStore";
+import { type SessionActivitySnapshot, SessionActivityStore } from "./sessionActivityStore";
 import {
   activityChanged,
   activityClient,
@@ -27,9 +27,14 @@ import type {
 } from "./types.gen";
 
 const owners: SessionActivityStore[] = [];
-const owner = (client = activityClient(), scope: "session" | "subtree" = "session") => {
+const owner = (
+  client = activityClient(),
+  scope: "session" | "subtree" = "session",
+  retained?: SessionActivitySnapshot,
+) => {
   const store = new SessionActivityStore(client, activityRef, {
     scope,
+    retained,
     clock: {
       setTimeout: (callback, ms) => setTimeout(callback, ms),
       clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
@@ -995,74 +1000,81 @@ test("alias resync fences delayed pre-clear summary and collection replies", asy
   expect(callsTo(client, "thread/unsubscribe")).toBe(0);
 });
 
-test("replacement identity retires prior rows, cursors and counts atomically before staggered pages", async () => {
-  const client = activityClient(),
-    store = owner(client);
-  client.on("evener/thread/delegates/list", () => ({
-    context: activityContext(),
-    scope: "session",
-    delegates: [{ ...delegateFixture(), type: "delegate" }],
-    page: { complete: true, issues: [] },
-  }));
-  client.on("evener/thread/jobs/list", () => ({
-    ...jobsFixture([jobFixture()], "old-cursor"),
-    page: { complete: false, nextCursor: "old-cursor", issues: [{ ref: activityRef, code: "sourceUnavailable" }] },
-  }));
-  store.start();
-  store.observe("delegates");
-  store.observe("jobs");
-  await activityState(
-    store,
-    () =>
-      store.getSnapshot().delegates.complete &&
-      store.getSnapshot().jobs.hasMore &&
-      store.getSnapshot().summary !== null,
-  );
-  const context = { ...activityContext(), sessionId: "replacement", ref: "remote:new", epoch: "opaque-new" };
-  const pending = deferred<SessionDelegatesResponse>(),
-    jobs = deferred<SessionJobsResponse>();
-  client.on("evener/thread/activity/read", () => ({ ...summaryFixture(), context }));
-  client.on("evener/thread/delegates/list", () => pending.promise);
-  client.on("evener/thread/jobs/list", () => jobs.promise);
-  client.emitNotification({ method: "evener/thread/resync", params: { ref: activityRef, threadId: "replacement" } });
-  await activityState(store, () => store.getSnapshot().context?.sessionId === "replacement");
-  expect(store.getSnapshot().delegates).toMatchObject({
-    rows: [],
-    context: null,
-    complete: false,
-    hasMore: false,
-    issues: [],
-  });
-  expect(store.getSnapshot().jobs).toMatchObject({
-    rows: [],
-    context: null,
-    complete: false,
-    hasMore: false,
-    issues: [],
-  });
-  expect(projectSessionActivity(store.getSnapshot()).tree?.root.entries).toHaveLength(0);
-  const readsBeforeMore = callsTo(client, "evener/thread/jobs/list");
-  await store.loadMore("jobs");
-  expect(callsTo(client, "evener/thread/jobs/list")).toBe(readsBeforeMore);
-  pending.resolve({
-    context,
-    scope: "session",
-    delegates: [{ ...delegateFixture("replacement-delegate"), ownerRef: context.ref, type: "delegate" }],
-    page: { complete: true, issues: [] },
-  });
-  jobs.resolve({
-    ...jobsFixture(),
-    context,
-    jobs: [{ ...jobFixture("replacement-job"), ownerSessionId: context.sessionId, ownerRef: context.ref }],
-  });
-  await activityState(
-    store,
-    () =>
-      store.getSnapshot().delegates.complete && store.getSnapshot().jobs.complete && !store.getSnapshot().jobs.loading,
-  );
-  expect(store.getSnapshot().jobs.rows.map((row) => row.jobId)).toEqual(["replacement-job"]);
-  expect(callsTo(client, "evener/thread/watches/list")).toBe(0);
-});
+test.each(["replacement-job", "shell-1"])(
+  "replacement identity retires prior rows, cursors and counts before %s arrives",
+  async (replacementJobID) => {
+    const client = activityClient(),
+      store = owner(client);
+    client.on("evener/thread/delegates/list", () => ({
+      context: activityContext(),
+      scope: "session",
+      delegates: [{ ...delegateFixture(), type: "delegate" }],
+      page: { complete: true, issues: [] },
+    }));
+    client.on("evener/thread/jobs/list", () => ({
+      ...jobsFixture([jobFixture()], "old-cursor"),
+      page: { complete: false, nextCursor: "old-cursor", issues: [{ ref: activityRef, code: "sourceUnavailable" }] },
+    }));
+    store.start();
+    store.observe("delegates");
+    store.observe("jobs");
+    await activityState(
+      store,
+      () =>
+        store.getSnapshot().delegates.complete &&
+        store.getSnapshot().jobs.hasMore &&
+        store.getSnapshot().summary !== null,
+    );
+    const context = { ...activityContext(), sessionId: "replacement", ref: "remote:new", epoch: "opaque-new" };
+    const pending = deferred<SessionDelegatesResponse>(),
+      jobs = deferred<SessionJobsResponse>();
+    client.on("evener/thread/activity/read", () => ({ ...summaryFixture(), context }));
+    client.on("evener/thread/delegates/list", () => pending.promise);
+    client.on("evener/thread/jobs/list", () => jobs.promise);
+    client.emitNotification({ method: "evener/thread/resync", params: { ref: activityRef, threadId: "replacement" } });
+    await activityState(store, () => store.getSnapshot().context?.sessionId === "replacement");
+    expect(store.getSnapshot().delegates).toMatchObject({
+      rows: [],
+      context: null,
+      complete: false,
+      hasMore: false,
+      issues: [],
+    });
+    expect(store.getSnapshot().jobs).toMatchObject({
+      rows: [],
+      context: null,
+      complete: false,
+      hasMore: false,
+      issues: [],
+    });
+    expect(projectSessionActivity(store.getSnapshot()).tree?.root.entries).toHaveLength(0);
+    const readsBeforeMore = callsTo(client, "evener/thread/jobs/list");
+    await store.loadMore("jobs");
+    expect(callsTo(client, "evener/thread/jobs/list")).toBe(readsBeforeMore);
+    pending.resolve({
+      context,
+      scope: "session",
+      delegates: [{ ...delegateFixture("replacement-delegate"), ownerRef: context.ref, type: "delegate" }],
+      page: { complete: true, issues: [] },
+    });
+    jobs.resolve({
+      ...jobsFixture(),
+      context,
+      jobs: [{ ...jobFixture(replacementJobID), ownerSessionId: context.sessionId, ownerRef: context.ref }],
+    });
+    await activityState(
+      store,
+      () =>
+        store.getSnapshot().delegates.complete &&
+        store.getSnapshot().jobs.complete &&
+        !store.getSnapshot().jobs.loading,
+    );
+    expect(store.getSnapshot().jobs.rows).toEqual([
+      { ...jobFixture(replacementJobID), ownerSessionId: context.sessionId, ownerRef: context.ref },
+    ]);
+    expect(callsTo(client, "evener/thread/watches/list")).toBe(0);
+  },
+);
 
 test("a replacement collection retires the former summary before its replacement arrives", async () => {
   const client = activityClient(),
@@ -1293,6 +1305,162 @@ const retainedWatch = (id: string, state: "armed" | "ended" = "armed"): SessionW
   watch: { id, source: "job", createdAt: "2026-09-30T12:00:00Z", active: state === "armed", deliveries: 0 },
 });
 
+test("background history retains a visible third-page boundary across refresh and reconnect", async () => {
+  const client = activityClient();
+  let version = "before";
+  client.on("evener/thread/jobs/list", ({ cursor }) => {
+    const id = cursor === "third" ? "third" : cursor === "second" ? "second" : "first";
+    const next = id === "first" ? "second" : id === "second" ? "third" : undefined;
+    const status = id === "third" && version === "before" ? "running" : "command_exited_nonzero";
+    return jobsFixture(
+      [
+        {
+          ...jobFixture(id, status),
+          outcome: status === "running" ? undefined : "failure",
+          description: `${id} ${version}`,
+        },
+      ],
+      next,
+    );
+  });
+  const store = owner(client);
+  store.observe("jobs");
+  await activityState(store, () => store.getSnapshot().jobs.hasMore && !store.getSnapshot().jobs.loading);
+  await store.loadMore("jobs");
+  await store.loadMore("jobs");
+  expect(store.getSnapshot().jobs.rows.map((row) => row.jobId)).toEqual(["first", "second", "third"]);
+  expect(store.getSnapshot().jobs.rows[2]).toMatchObject({ background: true, terminal: false, status: "running" });
+  version = "refreshed";
+  const refresh = store.refresh("jobs");
+  await activityState(store, () => store.getSnapshot().jobs.rows[0]?.description === "first refreshed");
+  expect(store.getSnapshot().jobs.rows[2]?.description).toBe("third before");
+  await vi.advanceTimersByTimeAsync(200);
+  await refresh;
+  expect(store.getSnapshot().jobs.rows[2]).toMatchObject({
+    jobId: "third",
+    description: "third refreshed",
+    background: true,
+    terminal: true,
+    status: "command_exited_nonzero",
+    outcome: "failure",
+  });
+  client.emitStateChange("reconnecting");
+  expect(store.getSnapshot().jobs.rows.map((row) => row.jobId)).toEqual(["first", "second", "third"]);
+  version = "reconnected";
+  client.emitReady();
+  await activityState(store, () => store.getSnapshot().jobs.rows[0]?.description === "first reconnected");
+  expect(store.getSnapshot().jobs.rows[2]?.description).toBe("third refreshed");
+  await vi.advanceTimersByTimeAsync(200);
+  await activityState(
+    store,
+    () => store.getSnapshot().jobs.rows[2]?.description === "third reconnected" && !store.getSnapshot().jobs.loading,
+  );
+  expect(store.getSnapshot().jobs.rows.filter((row) => row.jobId === "third")).toHaveLength(1);
+  expect(
+    client.calls
+      .filter((call) => call.method === "evener/thread/jobs/list")
+      .map((call) => (call.params as { cursor?: string }).cursor),
+  ).toEqual([undefined, "second", "third", undefined, "second", "third", undefined, "second", "third"]);
+});
+
+test("reconnect rejects an old third-page reply before replaying terminal history", async () => {
+  const client = activityClient(),
+    late = deferred<SessionJobsResponse>(),
+    entered = deferred<void>();
+  let version = "initial";
+  client.on("evener/thread/jobs/list", ({ cursor }) => {
+    if (cursor === "third" && version === "old") {
+      entered.resolve();
+      return late.promise;
+    }
+    const id = cursor === "third" ? "third" : cursor === "second" ? "second" : "first";
+    const next = id === "first" ? "second" : id === "second" ? "third" : undefined;
+    return jobsFixture([{ ...jobFixture(id, version === "new" ? "stopped" : "running"), description: version }], next);
+  });
+  const store = owner(client);
+  store.observe("jobs");
+  await activityState(store, () => store.getSnapshot().jobs.hasMore && !store.getSnapshot().jobs.loading);
+  await store.loadMore("jobs");
+  await store.loadMore("jobs");
+  version = "old";
+  const oldRefresh = store.refresh("jobs");
+  await vi.advanceTimersByTimeAsync(200);
+  await entered.promise;
+  const visibleDescriptions: string[] = [];
+  const stopObserving = store.subscribe(() => {
+    visibleDescriptions.push(...store.getSnapshot().jobs.rows.map((row) => row.description ?? ""));
+  });
+  client.emitStateChange("reconnecting");
+  version = "new";
+  client.emitReady();
+  late.resolve(jobsFixture([{ ...jobFixture("third"), description: "obsolete" }]));
+  await activityState(store, () => store.getSnapshot().jobs.rows[0]?.description === "new");
+  await vi.advanceTimersByTimeAsync(200);
+  await activityState(
+    store,
+    () => store.getSnapshot().jobs.rows[2]?.description === "new" && !store.getSnapshot().jobs.loading,
+  );
+  await oldRefresh;
+  stopObserving();
+  expect(visibleDescriptions).not.toContain("obsolete");
+  expect(store.getSnapshot().jobs.rows.map((row) => [row.jobId, row.description, row.status])).toEqual([
+    ["first", "new", "stopped"],
+    ["second", "new", "stopped"],
+    ["third", "new", "stopped"],
+  ]);
+});
+
+test("partial subtree background history recovers its owner without inferring known counts from rows", async () => {
+  const client = activityClient();
+  let recovered = false,
+    countsKnown = false;
+  const healthy = jobFixture("same", "completed");
+  const child = {
+    ...jobFixture("same", "command_exited_nonzero"),
+    ownerRef: "remote:child",
+    ownerSessionId: "child",
+    outcome: "failure",
+  };
+  client.on("evener/thread/activity/read", () => ({
+    ...summaryFixture("subtree"),
+    jobs: {
+      known: countsKnown,
+      total: countsKnown ? 2 : 0,
+      active: 0,
+      failed: countsKnown ? 1 : 0,
+      completed: countsKnown ? 1 : 0,
+    },
+  }));
+  client.on("evener/thread/jobs/list", () => ({
+    ...jobsFixture(recovered ? [healthy, child] : [healthy]),
+    scope: "subtree",
+    page: { complete: recovered, issues: recovered ? [] : [{ ref: child.ownerRef, code: "unavailable" }] },
+  }));
+  const store = owner(client, "subtree");
+  store.start();
+  store.observe("jobs");
+  await activityState(
+    store,
+    () =>
+      store.getSnapshot().summary !== null &&
+      store.getSnapshot().jobs.issues.length > 0 &&
+      !store.getSnapshot().jobs.loading,
+  );
+  expect(store.getSnapshot().jobs.rows).toEqual([healthy]);
+  expect(store.getSnapshot().summary?.jobs.known).toBe(false);
+  recovered = true;
+  await store.refresh("jobs");
+  expect(store.getSnapshot().jobs.rows.map((row) => [row.ownerRef, row.jobId])).toEqual([
+    [activityRef, "same"],
+    [child.ownerRef, "same"],
+  ]);
+  expect(store.getSnapshot().jobs).toMatchObject({ complete: true, issues: [] });
+  expect(store.getSnapshot().summary?.jobs.known).toBe(false);
+  countsKnown = true;
+  await store.refresh("summary");
+  expect(store.getSnapshot().summary?.jobs).toEqual({ known: true, total: 2, active: 0, failed: 1, completed: 1 });
+});
+
 // One wire boundary drives the three typed collections through the same owner.
 function retentionPage(ids: number[], cursor?: string, updated = false, epoch = "epoch-1") {
   return {
@@ -1310,6 +1478,194 @@ function retentionPage(ids: number[], cursor?: string, updated = false, epoch = 
     watches: ids.map((id) => retainedWatch(`item-${id}`, updated ? "ended" : "armed")),
   };
 }
+
+test.each(["delegates", "jobs", "watches"] as const)(
+  "%s replacement owner restores retained page-three membership using fresh cursors",
+  async (resource) => {
+    const previousClient = activityClient();
+    const previousPage = ({ cursor }: { cursor?: string }) =>
+      retentionPage(
+        cursor === "old-third" ? [3] : cursor ? [2] : [1],
+        cursor === "old-third" ? undefined : cursor ? "old-third" : "old-second",
+      );
+    previousClient.on("evener/thread/delegates/list", previousPage);
+    previousClient.on("evener/thread/jobs/list", previousPage);
+    previousClient.on("evener/thread/watches/list", previousPage);
+    const previous = owner(previousClient);
+    previous.start();
+    previous.observe(resource);
+    await activityState(
+      previous,
+      () => !previous.getSnapshot()[resource].loading && previous.getSnapshot()[resource].rows.length === 1,
+    );
+    await previous.loadMore(resource);
+    await previous.loadMore(resource);
+    expect(previous.getSnapshot()[resource].rows).toHaveLength(3);
+    expect(previous.getSnapshot().runtime?.threadId).toBe("session");
+    const late = deferred<ReturnType<typeof retentionPage>>(),
+      entered = deferred<void>();
+    const oldPage = () => {
+      entered.resolve();
+      return late.promise;
+    };
+    previousClient.on("evener/thread/delegates/list", oldPage);
+    previousClient.on("evener/thread/jobs/list", oldPage);
+    previousClient.on("evener/thread/watches/list", oldPage);
+    const oldRefresh = previous.refresh(resource);
+    await entered.promise;
+    const retained = previous.getSnapshot();
+    expect(retained[resource].loading).toBe(true);
+    previous.dispose();
+
+    const client = activityClient(),
+      cursors: (string | undefined)[] = [];
+    const freshPage = ({ cursor }: { cursor?: string }) => {
+      cursors.push(cursor);
+      return retentionPage(
+        cursor === "fresh-third" ? [3] : cursor ? [2] : [1],
+        cursor === "fresh-third" ? undefined : cursor ? "fresh-third" : "fresh-second",
+        true,
+        "epoch-2",
+      );
+    };
+    client.on("evener/thread/delegates/list", freshPage);
+    client.on("evener/thread/jobs/list", freshPage);
+    client.on("evener/thread/watches/list", freshPage);
+    const store = owner(client, "session", retained);
+    expect(store.getSnapshot().runtime).toBeNull();
+    expect(store.getSnapshot()[resource]).toMatchObject({
+      rows: retained[resource].rows,
+      complete: false,
+      hasMore: false,
+      loading: false,
+      pending: true,
+    });
+    expect(store.getSnapshot().summaryState).toMatchObject({ loading: false, pending: true });
+    const counts: number[] = [];
+    store.subscribe(() => counts.push(store.getSnapshot()[resource].rows.length));
+    store.observe(resource);
+    await activityState(store, () => store.getSnapshot()[resource].context?.epoch === "epoch-2");
+    expect(store.getSnapshot()[resource].rows).toHaveLength(3);
+    await vi.advanceTimersByTimeAsync(200);
+    await activityState(store, () => !store.getSnapshot()[resource].loading && store.getSnapshot()[resource].complete);
+    late.resolve(retentionPage([99]));
+    await oldRefresh;
+    expect(cursors).toEqual([undefined, "fresh-second", "fresh-third"]);
+    expect(counts.every((count) => count === 3)).toBe(true);
+    const state = store.getSnapshot();
+    if (resource === "delegates")
+      expect(state.delegates.rows.map((row) => [row.delegateId, row.status])).toEqual([
+        ["item-1", "completed"],
+        ["item-2", "completed"],
+        ["item-3", "completed"],
+      ]);
+    if (resource === "jobs")
+      expect(state.jobs.rows.map((row) => [row.ownerRef, row.jobId, row.status])).toEqual([
+        [activityRef, "item-1", "completed"],
+        [activityRef, "item-2", "completed"],
+        [activityRef, "item-3", "completed"],
+      ]);
+    if (resource === "watches")
+      expect(state.watches.rows.map((row) => [row.watch.id, row.state])).toEqual([
+        ["item-1", "ended"],
+        ["item-2", "ended"],
+        ["item-3", "ended"],
+      ]);
+  },
+);
+
+test.each([
+  { ref: "remote:other", scope: "session" as const },
+  { ref: activityRef, scope: "subtree" as const },
+])("replacement owner ignores retained evidence for $ref/$scope", async ({ ref, scope }) => {
+  const previous = owner();
+  previous.start();
+  await previous.load("jobs");
+  const retained = previous.getSnapshot();
+  expect(retained.jobs.rows).toHaveLength(1);
+  expect(retained.summary).not.toBeNull();
+  const store = new SessionActivityStore(activityClient(), ref, { scope, retained });
+  owners.push(store);
+  expect(store.getSnapshot()).toMatchObject({
+    ref,
+    scope,
+    context: null,
+    runtime: null,
+    summary: null,
+    delegates: { rows: [] },
+    jobs: { rows: [] },
+    watches: { rows: [] },
+  });
+});
+
+test("replacement owner retains healthy partial rows without inheriting a read refusal", async () => {
+  const previousClient = activityClient(),
+    previous = owner(previousClient);
+  previous.start();
+  previousClient.on("evener/thread/jobs/list", () => ({
+    ...jobsFixture([jobFixture("healthy")]),
+    page: { complete: false, issues: [{ ref: "remote:child", code: "unavailable" }] },
+  }));
+  await previous.load("jobs");
+  previousClient.on("evener/thread/jobs/list", () => {
+    throw new WireError("unsupported", -32601, { evenerErrorInfo: "methodNotFound" });
+  });
+  await previous.load("jobs");
+  const retained = previous.getSnapshot();
+  expect(retained.jobs).toMatchObject({ permanent: true, unavailable: true });
+  expect(retained.summary?.jobs.known).toBe(true);
+  previous.dispose();
+  const client = activityClient(),
+    store = owner(client, "session", retained);
+  expect(store.getSnapshot().jobs).toMatchObject({
+    rows: [{ jobId: "healthy" }],
+    issues: [{ ref: "remote:child", code: "unavailable" }],
+    error: null,
+    loading: false,
+    pending: true,
+    permanent: false,
+    unavailable: false,
+  });
+  expect(store.getSnapshot().summary?.jobs.known).toBe(true);
+  store.observe("jobs");
+  await activityState(store, () => !store.getSnapshot().jobs.loading && store.getSnapshot().jobs.complete);
+  expect(store.getSnapshot().jobs.rows.map((row) => row.jobId)).toEqual(["shell-1"]);
+  expect(store.getSnapshot().jobs.issues).toEqual([]);
+});
+
+test("replacement resolved session retires retained membership before publishing new evidence", async () => {
+  const previous = owner();
+  previous.start();
+  await previous.load("jobs");
+  const retained = previous.getSnapshot();
+  previous.dispose();
+  const client = activityClient(),
+    context = { ...activityContext("epoch-2"), sessionId: "replacement", ref: "remote:replacement" };
+  client.on("thread/read", () => ({
+    thread: { ...threadFixture().thread, id: "replacement-thread", sessionId: "replacement" },
+  }));
+  client.on("evener/thread/activity/read", () => ({ ...summaryFixture(), context }));
+  client.on("evener/thread/jobs/list", () => ({
+    ...jobsFixture([{ ...jobFixture("new"), ownerRef: "remote:replacement", ownerSessionId: "replacement" }]),
+    context,
+  }));
+  const store = owner(client, "session", retained),
+    replacementRows: string[][] = [];
+  expect(store.getSnapshot().jobs.rows.map((row) => row.jobId)).toEqual(["shell-1"]);
+  store.subscribe(() => {
+    if (store.getSnapshot().context?.sessionId === "replacement")
+      replacementRows.push(store.getSnapshot().jobs.rows.map((row) => row.jobId));
+  });
+  store.start();
+  await store.refresh("summary");
+  expect(store.getSnapshot().jobs.rows).toEqual([]);
+  await store.load("jobs");
+  expect(store.getSnapshot().jobs.rows.map((row) => [row.ownerRef, row.jobId])).toEqual([
+    ["remote:replacement", "new"],
+  ]);
+  expect(replacementRows.flat()).not.toContain("shell-1");
+  expect(store.getSnapshot().runtime?.threadId).toBe("replacement-thread");
+});
 
 test.each(["delegates", "jobs", "watches"] as const)(
   "%s invalidation preserves loaded later-page work throughout a bounded fresh walk",

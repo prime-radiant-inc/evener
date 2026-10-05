@@ -2,24 +2,26 @@
 // legend, read by VoiceOver as one sentence.
 import { expect, it, vi } from "vitest";
 import { render } from "../renderNative.testkit";
-import { stripSegments } from "./subagentModel";
+import { paletteFor } from "../design/tokens";
 import { SubagentStrip } from "./SubagentStrip";
 
 vi.mock("react-native", async () => (await import("../renderNative.testkit")).nativeModuleMock());
 
-const tally = { total: 55, failed: 2, running: 32, done: 21 };
+const tally = { total: 10, failed: 3, running: 2, done: 5 };
 
-it("splits its width by state, and reads as one sentence", () => {
+it("shows running work and neutral terminal history without a failure segment or spoken callout", () => {
 	const tree = render(<SubagentStrip tally={tally} width={361} />);
-	const strip = tree.root.find((node) => node.props.accessibilityLabel === "2 failed, 32 running, 21 done");
+	const strip = tree.root.find((node) => node.props.accessibilityLabel === "2 running, 8 done");
 	expect(strip.props.style.width).toBe(361);
-	const segments = strip.children as unknown as { props: { style: { width: number } } }[];
-	expect(segments.map((segment) => segment.props.style.width)).toEqual(
-		stripSegments(tally, 361, 1).map((segment) => segment.width),
-	);
+	const segments = strip.children as unknown as { props: { style: { width: number; backgroundColor: string } } }[];
+	expect(segments.map((segment) => segment.props.style.width)).toEqual([72, 288]);
+	expect(segments.map((segment) => segment.props.style.backgroundColor)).toEqual([
+		paletteFor("light").alive,
+		paletteFor("light").edge,
+	]);
 });
 
-it("draws nothing when every subagent is done", () => {
-	const tree = render(<SubagentStrip tally={{ total: 3, failed: 0, running: 0, done: 3 }} width={361} />);
+it.each([0, 3])("draws nothing when every subagent is terminal, including %s failures", (failed) => {
+	const tree = render(<SubagentStrip tally={{ total: 3, failed, running: 0, done: 3 - failed }} width={361} />);
 	expect(tree.toJSON()).toBeNull();
 });
