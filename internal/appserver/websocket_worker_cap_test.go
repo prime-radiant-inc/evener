@@ -497,6 +497,12 @@ func TestServeWebSocketConcurrentRequestsTakeTheirOwnSlots(t *testing.T) {
 	if err := waitFor(t, "a released admitted request to answer", listsDone); err != nil {
 		t.Fatalf("released admitted request: %v", err)
 	}
+	// The slot frees just after the response is queued, so the client can
+	// hear the answer a moment before the slot is back; wait for the slot.
+	conn := registeredConnection(t, server)
+	waitUntil(t, "the finished request's slot to free", func() bool {
+		return len(conn.requestSlots) < concurrentRequestCap
+	})
 	go func() {
 		_, err := client.ThreadList(ctx, appwire.ThreadListParams{})
 		listsDone <- err
@@ -535,10 +541,11 @@ func TestServeWebSocketRequestsTheHookRefusesStayInOrder(t *testing.T) {
 	set()
 	waitFor(t, "the first request to run inline", entered)
 	set()
-	waitForQueueDepth(t, conn, 1)
-	select {
-	case <-entered:
+	// Ends either way: the second request either waits in the queue or runs.
+	waitUntil(t, "the second request to queue or run", func() bool {
+		return len(conn.requests) == 1 || len(entered) > 0
+	})
+	if len(entered) > 0 {
 		t.Fatal("a request the hook refused ran beside the inline request ahead of it")
-	default:
 	}
 }
