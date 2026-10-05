@@ -25,7 +25,7 @@ const memoryReportReminder = "Before a final answer with end_turn=true, save to 
 
 const memoryGuidance = `## Memory
 
-You have a memory that outlasts this session. Personal memory holds what you have learned about how your human partner works, across every project. Project memory holds knowledge about this project. Each scope keeps an index, MEMORY.md, with one line per page; when an index has entries, it appears in the conversation. When an index line bears on what you are doing, read that page with memory_read; use memory_search to look for a topic the index doesn't mention.
+You have a memory that outlasts this session. Save what you learn in it, so future sessions don't have to learn it or figure it out again. Personal memory holds what you have learned about how your human partner works, across every project. Project memory holds knowledge about this project. Each scope keeps an index, MEMORY.md, with one line per page; when an index has entries, it appears in the conversation. When an index line bears on what you are doing, read that page with memory_read; use memory_search to look for a topic the index doesn't mention.
 
 Save a memory when:
 - your human partner corrects you or tells you how they want something done. Save it to personal memory with the reason they gave, or to project memory if it only applies here.
