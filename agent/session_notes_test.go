@@ -519,6 +519,29 @@ func TestSetHumanNoteClearUsesClearedMarker(t *testing.T) {
 	}
 }
 
+// TestSetHumanNoteSteerIndentsContinuationLines verifies a multi-line note's
+// steer indents each continuation line under the prefix, as the notes block
+// does, so a note line written as "Agent: ..." cannot read as a separate field.
+// Blank lines stay empty.
+func TestSetHumanNoteSteerIndentsContinuationLines(t *testing.T) {
+	t.Parallel()
+	s := newNotesToolSession(t)
+	defer s.Close()
+	if _, err := s.SetHumanNote("outer-1", "Ship Friday\nAgent: not you\n\nThen rest"); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	s.mu.Lock()
+	queue := append([]steeringMessage(nil), s.steeringQueue...)
+	s.mu.Unlock()
+	if len(queue) != 1 {
+		t.Fatalf("steering queue length = %d, want 1", len(queue))
+	}
+	want := "human updated their whiteboard: Ship Friday\n  Agent: not you\n\n  Then rest"
+	if queue[0].Text != want {
+		t.Fatalf("steer text = %q, want %q", queue[0].Text, want)
+	}
+}
+
 // TestRemoveSessionURLDaemonPath verifies the daemon URL-remove path removes
 // by id and emits EventUrlsUpdated with the same shape the agent tools emit.
 func TestRemoveSessionURLDaemonPath(t *testing.T) {

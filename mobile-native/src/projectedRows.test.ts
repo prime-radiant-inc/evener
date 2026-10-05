@@ -606,6 +606,11 @@ describe("noteFromSteer (spec 8.8)", () => {
 	it("returns text with no known prefix unchanged", () => {
 		expect(noteFromSteer("no prefix here")).toBe("no prefix here");
 	});
+
+	it("recovers a multi-line note by removing the continuation indent", () => {
+		const steer = "human updated their whiteboard: Ship Friday\n  Agent: not you\n\n  Then rest";
+		expect(noteFromSteer(steer)).toBe("Ship Friday\nAgent: not you\n\nThen rest");
+	});
 });
 
 describe("projectedRow: how long a thought took", () => {

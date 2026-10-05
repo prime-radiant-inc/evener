@@ -520,12 +520,17 @@ function criticalReasoningRow(entry: Extract<ProjectedEntry, { kind: "critical" 
 
 // The daemon's shared-notes steer opens with this marker (last-resort
 // provenance; agent/session_notes_rpc.go's humanNoteSteerPrefix), followed by
-// the note itself or "(whiteboard cleared)" for an emptied note.
+// the note itself or "(whiteboard cleared)" for an emptied note. A multi-line
+// note's continuation lines carry a two-space indent under the prefix
+// (formatNotesField); a stored note's lines are trimmed, so removing that
+// indent recovers the note exactly.
 const NOTE_STEER_PREFIX = "human updated their whiteboard: ";
 const NOTE_STEER_CLEARED = "(whiteboard cleared)";
 
 export function noteFromSteer(text: string): string {
-	const stripped = text.startsWith(NOTE_STEER_PREFIX) ? text.slice(NOTE_STEER_PREFIX.length) : text;
+	const stripped = text.startsWith(NOTE_STEER_PREFIX)
+		? text.slice(NOTE_STEER_PREFIX.length).replace(/\n {2}/g, "\n")
+		: text;
 	return stripped === NOTE_STEER_CLEARED ? "" : stripped;
 }
 

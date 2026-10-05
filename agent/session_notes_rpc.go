@@ -59,7 +59,9 @@ func (s *Session) SetHumanNote(clientMutationID, note string) (appwire.NotesHuma
 		if changed {
 			reserveClientMutationTurnID(snapshot, record)
 			record.SteeringKind = events.SteeringKindHumanNote
-			text := humanNoteSteerPrefix + " " + stored
+			// The note's lines indent under the prefix as the notes block
+			// indents them; clients that show the note strip that indent.
+			text := formatNotesField(humanNoteSteerPrefix, stored)
 			if stored == "" {
 				text = humanNoteSteerPrefix + " (whiteboard cleared)"
 			}
