@@ -1121,8 +1121,9 @@ func DefNotesAgentSet() llm.ToolDefinition {
 			`a short paragraph with the mission and what is done so far; ` +
 			`one line starting "Now:" with what you are doing; ` +
 			`one or two lines starting "Next:" with what is left. ` +
+			`Set it once you understand the task, update it when a phase finishes, the plan changes, ` +
+			`or you are blocked, and bring it up to date before your final report. ` +
 			`Each update replaces the whole whiteboard. ` +
-			`Update it when the picture changes: a phase finishes, the plan changes, or you are blocked. ` +
 			`Keep it under 600 characters. Example:` + "\n" +
 			`Fixing the importer's rejected timestamps for the reporting team. ` +
 			`The parser required seconds; I made them optional and added tests, which pass.` + "\n" +
