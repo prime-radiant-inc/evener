@@ -3961,10 +3961,10 @@ index 0000000..5bfadad
 +NS_ASSUME_NONNULL_END
 diff --git a/node_modules/react-native-enriched-markdown/ios/parser/MarkdownSourceParser.mm b/node_modules/react-native-enriched-markdown/ios/parser/MarkdownSourceParser.mm
 new file mode 100644
-index 0000000..6e66975
+index 0000000..beb6a57
 --- /dev/null
 +++ b/node_modules/react-native-enriched-markdown/ios/parser/MarkdownSourceParser.mm
-@@ -0,0 +1,194 @@
+@@ -0,0 +1,204 @@
 +#import "ENRMMarkdownParser.h"
 +#include "MD4CParser.hpp"
 +#import "MarkdownASTNode.h"
@@ -3991,6 +3991,7 @@ index 0000000..6e66975
 +
 +// Convert C++ AST node to Objective-C AST node
 +static MarkdownASTNode *convertCppASTToObjC(std::shared_ptr<Markdown::MarkdownASTNode> cppNode,
++                                          const std::string &source,
 +                                          const std::vector<NSUInteger> &boundaries)
 +{
 +  if (!cppNode) {
@@ -4109,7 +4110,16 @@ index 0000000..6e66975
 +                                           encoding:NSUTF8StringEncoding];
 +    if (!text || fragment.sourceByteEnd >= boundaries.size() || fragment.sourceByteStart > fragment.sourceByteEnd)
 +      continue;
-+    NSUInteger start = boundaries[fragment.sourceByteStart];
++    size_t sourceStart = fragment.sourceByteStart;
++    // NSString's UTF8 decoder consumes a leading BOM. Exclude only those
++    // consumed bytes when they are the actual original input slice, not a
++    // decoded entity or another transformed fragment.
++    if (!fragment.generated && fragment.text.size() >= 3 &&
++        fragment.text.compare(0, 3, "\xef\xbb\xbf") == 0 &&
++        fragment.sourceByteEnd - sourceStart == fragment.text.size() &&
++        source.compare(sourceStart, fragment.text.size(), fragment.text) == 0)
++      sourceStart += 3;
++    NSUInteger start = boundaries[sourceStart];
 +    NSUInteger end = boundaries[fragment.sourceByteEnd];
 +    if (start == NSNotFound || end == NSNotFound)
 +      continue;
@@ -4135,7 +4145,7 @@ index 0000000..6e66975
 +
 +  // Convert children recursively
 +  for (const auto &child : cppNode->children) {
-+    MarkdownASTNode *objcChild = convertCppASTToObjC(child, boundaries);
++    MarkdownASTNode *objcChild = convertCppASTToObjC(child, source, boundaries);
 +    [objcNode addChild:objcChild];
 +  }
 +
@@ -4157,7 +4167,7 @@ index 0000000..6e66975
 +    cppFlags.hardSoftBreaks = flags.hardSoftBreaks;
 +  }
 +  Markdown::MD4CParser parser;
-+  return convertCppASTToObjC(parser.parse(original, cppFlags), sourceUTF16Boundaries(original));
++  return convertCppASTToObjC(parser.parse(original, cppFlags), original, sourceUTF16Boundaries(original));
 +}
 diff --git a/node_modules/react-native-enriched-markdown/ios/renderer/CodeRenderer.m b/node_modules/react-native-enriched-markdown/ios/renderer/CodeRenderer.m
 index 7bc14ae..ebe4069 100644
