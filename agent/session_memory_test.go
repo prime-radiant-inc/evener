@@ -2669,27 +2669,33 @@ func TestMemoryIndexQuotesOpaqueBytes(t *testing.T) {
 	}
 }
 
-// Save guidance and the result tool's save reminder tell the model to write
-// memory, so both appear only when the session can call memory_write.
-func TestMemorySaveInstructionsOnlyWhenWritable(t *testing.T) {
+// Memory guidance follows what the session can do: read guidance (with the
+// trust guard) whenever memory is readable, save instructions and the result
+// tool's reminder only when the save tools are callable, and project-scope
+// wording only when project memory is bound.
+func TestMemoryGuidanceFollowsCapabilities(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
-		name         string
-		cfg          SessionConfig
-		revokeWrites bool
-		want         bool
+		name                string
+		cfg                 SessionConfig
+		revokeWrites        bool
+		read, save, project bool
 	}{
-		{"enabled", SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project"}, false, true},
-		{"write-revoked", SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project"}, true, false},
-		{"disabled", SessionConfig{MemoryStateRoot: t.TempDir(), DisableMemory: true}, false, false},
-		{"unbound", SessionConfig{}, false, false},
+		{"enabled", SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project"}, false, true, true, true},
+		{"personal-only", SessionConfig{MemoryStateRoot: t.TempDir()}, false, true, true, false},
+		{"write-revoked", SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project"}, true, true, false, true},
+		{"disabled", SessionConfig{MemoryStateRoot: t.TempDir(), DisableMemory: true}, false, false, false, false},
+		{"unbound", SessionConfig{}, false, false, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			var guidance, reminder bool
+			var system strings.Builder
+			var reminder bool
 			s := newSession(t, withConfig(tc.cfg), withSteps(func(req llm.Request) llm.Response {
 				for _, msg := range req.Messages {
-					guidance = guidance || (msg.Role == llm.RoleSystem && strings.Contains(msg.Text(), memoryGuidance))
+					if msg.Role == llm.RoleSystem {
+						system.WriteString(msg.Text())
+					}
 				}
 				for _, def := range req.Tools {
 					reminder = reminder || strings.Contains(def.Description, memoryReportReminder)
@@ -2703,8 +2709,20 @@ func TestMemorySaveInstructionsOnlyWhenWritable(t *testing.T) {
 			if _, err := s.ProcessInput(context.Background(), "go", nil); err != nil {
 				t.Fatal(err)
 			}
-			if guidance != tc.want || reminder != tc.want {
-				t.Fatalf("guidance=%v reminder=%v, want both %v", guidance, reminder, tc.want)
+			read := strings.Contains(system.String(), memoryTrustGuard)
+			save := strings.Contains(system.String(), memorySaveTriggersIntro)
+			if read != tc.read || save != tc.save || reminder != tc.save {
+				t.Fatalf("read=%v save=%v reminder=%v, want read=%v save=%v", read, save, reminder, tc.read, tc.save)
+			}
+			data, _ := s.buildPromptData(s.currentEnv())
+			if data.MemorySaves != tc.save || data.ProjectMemory != (tc.save && tc.project) {
+				t.Fatalf("prompt data MemorySaves=%v ProjectMemory=%v", data.MemorySaves, data.ProjectMemory)
+			}
+			if tc.read {
+				guidance := s.memoryGuidance()
+				if mentions := strings.Contains(strings.ToLower(guidance), "project memory"); mentions != tc.project {
+					t.Fatalf("guidance mentions project memory=%v, want %v", mentions, tc.project)
+				}
 			}
 		})
 	}

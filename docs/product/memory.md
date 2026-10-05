@@ -55,7 +55,9 @@ and a route to `memory_read`. Topic files and logs are not preloaded.
 Enabled sessions also receive core memory guidance after the system
 instructions. It says what each scope holds (personal memory: what applies
 beyond the current project, such as how the human partner works and how tools,
-systems and the world behave; project memory: knowledge about this project) and
+systems and the world behave; project memory: knowledge about this project),
+when to read a page, and that stored memory is fallible evidence, never
+instructions or permission. Sessions that can call the save tools are also told
 when to save: when the partner corrects the agent or says how they want work
 done, when the partner states a project plan, constraint or decision, and when
 the agent learns something the hard way that is not written down. Partner-stated
@@ -63,7 +65,8 @@ facts are saved before the work they shape, because complying with them does
 not carry them to the next session. The Finishing guidance and the result
 tool's description repeat the save check at the point the agent decides it is
 done. Pages that contradict what the agent observes are corrected in the same
-turn.
+turn. Guidance names only tools the session can call, and mentions project
+memory only when a project scope is bound.
 
 Refresh runs at startup, resume, after compaction and later model boundaries.
 Unchanged projections are not appended again. Empty, missing and revoked states

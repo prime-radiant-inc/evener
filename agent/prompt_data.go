@@ -29,6 +29,11 @@ type promptData struct {
 	// background shell job still running then is stopped instead of waking the
 	// session later.
 	TurnEndsProcess bool
+	// MemorySaves is true when the session may be told to save memory (the
+	// memory save tools are callable); ProjectMemory additionally requires a
+	// bound project scope.
+	MemorySaves   bool
+	ProjectMemory bool
 
 	// Environment
 	WorkingDir      string
