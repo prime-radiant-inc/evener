@@ -17,7 +17,7 @@ The one-session prompt-eval runner (`tools/tool-fluency/cmd/evener-fluency`) giv
 
 ## Setup
 
-The script is Python 3 with the standard library only. From the repository root:
+The script is Python 3.11 or later, using the standard library only. From the repository root:
 
 ```bash
 cd tools/prompt-eval/memory-lab
