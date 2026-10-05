@@ -4428,7 +4428,9 @@ type PluginEntry struct {
 	InstalledAt  int64  `json:"installedAt"`
 	LastUpdated  int64  `json:"lastUpdated"`
 	// UpdateAvailable is true when the last evener/plugin/checkUpdates found a
-	// newer remote commit; absent until a check runs, and for non-git sources.
+	// newer remote commit. Absent means no known update: no check has run, the
+	// check found the plugin current or could not reach its remote, or the
+	// source is not git-backed. Clients offer Upgrade only when it is true.
 	UpdateAvailable bool `json:"updateAvailable,omitempty"`
 }
 

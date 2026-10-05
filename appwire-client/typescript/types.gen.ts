@@ -2769,7 +2769,9 @@ export interface PluginEntry {
   lastUpdated: number;
   /**
    * UpdateAvailable is true when the last evener/plugin/checkUpdates found a
-   * newer remote commit; absent until a check runs, and for non-git sources.
+   * newer remote commit. Absent means no known update: no check has run, the
+   * check found the plugin current or could not reach its remote, or the
+   * source is not git-backed. Clients offer Upgrade only when it is true.
    */
   updateAvailable?: boolean;
 }
