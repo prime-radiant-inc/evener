@@ -36,7 +36,7 @@ set them by hand.
 | `EVENER_HUB_SPAWNED` | Set by `evener hub` for spawned `evener serve` daemons. |
 | `EVENER_HUB_TOKEN` | Per-hub bearer token passed to spawned `evener serve` daemons. |
 | `EVENER_RUN_DIR` | Rendezvous directory passed by `evener hub` to spawned daemons. |
-| `EVENER_SCRATCH_DIR` | Evener-provided private scratch directory for one live session. It is deleted when the session goes idle or ends (a resumed session gets a fresh one), and Evener reclaims any left by a crash a day later; move durable artifacts into the workspace or another durable location. |
+| `EVENER_SCRATCH_DIR` | Evener-provided private scratch directory for one session, at `<tmp>/evener-scratch-<root session id>/<session id>`. It is kept across the session's ends and reopened on resume, with its Go, npm and cargo caches pruned at each end; it is deleted when the hub archives or deletes the root session, or when a one-shot `evener run` exits. Move durable artifacts into the workspace or another durable location. |
 
 ## Provider Configuration
 

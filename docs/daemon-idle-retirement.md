@@ -10,7 +10,8 @@ The mechanism is daemon-owned. The daemon runs its own idle timer; the Hub
 observes and recovers, and never signals a process to retire it. Detached
 external processes (shell jobs, delegates' worktrees) keep their existing
 independent lifetime — retirement does not sweep them away. Session scratch is
-deleted at retirement; the replacement starts with a fresh one.
+kept across retirement, with its regenerable caches pruned, and the resumed
+session reopens it. It is deleted when the hub archives or deletes the session.
 
 ## Configuration
 
@@ -77,7 +78,7 @@ session has work a person asked for, so it is not idle.
 Idle delegates and worktrees are preserved. An idle, resumable delegate does not
 block retirement once its whole subtree is settled and its descriptor,
 transcript, environment and lane ownership can be preserved; the delegate's
-worktree is kept so a later resume finds it. Its scratch is deleted. A missing runtime
+worktree is kept so a later resume finds it, and so is its scratch. A missing runtime
 pointer is never treated as proof of eligibility — uncertain state blocks.
 
 ## Recovery

@@ -792,11 +792,12 @@ their workspace under it.
 
 Tests clean up after themselves without the runner, too: a direct `go test`
 must leave nothing in the developer's temp dir or in `/tmp`. Sessions make
-that harder than it looks. A closing session removes its own scratch, but a
-session a test kills, and a detached command's world-usable temp container,
-leave theirs for the crashed-scratch sweep's 24h reclaim
-(`sandbox.SweepCrashedSessionScratch`), and the container lives in `/tmp` or
-`/var/tmp`, which no `TMPDIR` moves. So a
+that harder than it looks. A closing session keeps its named scratch
+(`evener-scratch-<root>/<session>`) until its root is archived, a session a
+test kills leaves its disposable scratch for the crashed-scratch sweep's 24h
+reclaim (`sandbox.SweepCrashedSessionScratch`), and a detached command's
+world-usable temp container lives in `/tmp` or `/var/tmp`, which no `TMPDIR`
+moves. So a
 package whose tests run sessions routes its TestMain through
 `agent/sandbox/sandboxtest`: `Run`, or `RedirectHostTemp` and `Discard` in a
 TestMain that does more, point `TMPDIR` and the container bases into one root
@@ -804,8 +805,8 @@ and remove it when the run ends. Self-exec helper children inherit that
 `TMPDIR`, so what they leave when they are killed on purpose goes with it.
 The container bases travel as `EVENER_HOST_TEMP_BASES`, so every `evener` and
 `evener serve` a test starts inherits them too. That matters beyond leftovers:
-each of those processes runs the crashed-scratch sweep at startup, and every
-root session runs it again when it closes, so without the variable a test
+each of those processes runs the crashed-scratch sweep at startup, so without
+the variable a test
 reclaims other sessions' abandoned scratch from the developer's real `/tmp`
 and `/var/tmp`. A TestMain that clears every product
 `EVENER_*` variable after `RedirectHostTemp` keeps that one value
