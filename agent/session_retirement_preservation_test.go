@@ -16,7 +16,6 @@ import (
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/clock"
-	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -306,19 +305,8 @@ func TestRetirementDeferredCloseAfterReleaseIsNoOp(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	owner, ok := root.scratchRetentionOwner()
-	if !ok {
-		t.Fatal("root has no retention owner")
-	}
-	manifestBefore, err := sandbox.LoadScratchRetention(owner)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if manifestBefore.Released {
-		t.Fatal("retirement released the scratch manifest")
-	}
 	// A deferred Close must be a no-op: no terminal transcript evidence, no
-	// phase change, no stop/disposal/unlock (the manifest stays unreleased).
+	// phase change, no stop/disposal/unlock.
 	root.Close()
 	after, err := os.ReadFile(root.TranscriptPath())
 	if err != nil {
@@ -329,13 +317,6 @@ func TestRetirementDeferredCloseAfterReleaseIsNoOp(t *testing.T) {
 	}
 	if snap := c.Snapshot(); snap.Phase != "retiring" {
 		t.Fatalf("phase after deferred Close = %q, want retiring", snap.Phase)
-	}
-	manifestAfter, err := sandbox.LoadScratchRetention(owner)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if manifestAfter.Released {
-		t.Fatal("deferred Close after retirement released the retained scratch manifest")
 	}
 }
 
@@ -364,8 +345,6 @@ type retirementPreservationFixture struct {
 	childIDs       []string
 	childRuntimes  []*Session
 	lanePaths      []string
-	artifactPaths  []string
-	artifactBytes  [][]byte
 	rootTranscript string
 	primaryBefore  retirementPrimaryFiles
 	laneBlocks     map[string]string
@@ -588,21 +567,10 @@ func (f *retirementPreservationFixture) recordIsolatedChild(delegateID, childSes
 		f.t.Fatalf("delegate %q minted no scratch", task)
 	}
 	f.t.Cleanup(func() { _ = os.RemoveAll(scratchDir) })
-	if err := f.root.installChildScratchRetention(childEnv, childSessionID); err != nil {
-		f.t.Fatalf("install delegate %q retention: %v", task, err)
-	}
-	lanePath := childEnv.WorkingDirectory()
-	artifact := filepath.Join(scratchDir, task+".bin")
-	want := []byte("nested-cold-restore-artifact:" + task)
-	if err := os.WriteFile(artifact, want, 0o600); err != nil {
-		f.t.Fatal(err)
-	}
 	f.delegateIDs = append(f.delegateIDs, delegateID)
 	f.childIDs = append(f.childIDs, childSessionID)
 	f.childRuntimes = append(f.childRuntimes, child)
-	f.lanePaths = append(f.lanePaths, lanePath)
-	f.artifactPaths = append(f.artifactPaths, artifact)
-	f.artifactBytes = append(f.artifactBytes, want)
+	f.lanePaths = append(f.lanePaths, childEnv.WorkingDirectory())
 }
 
 // assertLanesUnchanged verifies every original occupancy marker, lane and
@@ -764,15 +732,6 @@ func (f *retirementPreservationFixture) assertRestored() *Session {
 		if got := filepath.Clean(rchildEnv.WorkingDirectory()); got != filepath.Clean(f.lanePaths[i]) {
 			f.t.Fatalf("restored child %s lane = %q, want original %q", delegateID, got, f.lanePaths[i])
 		}
-		// The required artifact was created through the child's environment; it
-		// must remain readable at its original absolute path. (Symbolic
-		// scratch-path adoption across a worktree move is the shared-child
-		// checkpoint's proof; here the lane branch/ownership and the same IDs are
-		// the nested-restore oracle.)
-		got, err := os.ReadFile(f.artifactPaths[i])
-		if err != nil || !bytes.Equal(got, f.artifactBytes[i]) {
-			f.t.Fatalf("required artifact lost at %q: bytes=%q err=%v", f.artifactPaths[i], got, err)
-		}
 	}
 	// The restored tree must re-adopt every recorded lane marker unchanged.
 	f.assertLanesUnchanged("cold restore")
@@ -855,7 +814,7 @@ func (a *nestedSendAdapter) Complete(_ context.Context, req llm.Request) (llm.Re
 // their original lanes and artifacts.
 func TestRetirementPreservationNestedColdRestore(t *testing.T) {
 	f := newRetirementPreservationFixture(t)
-	if len(f.delegateIDs) != 2 || len(f.lanePaths) != 2 || len(f.artifactPaths) != 2 {
+	if len(f.delegateIDs) != 2 || len(f.lanePaths) != 2 {
 		t.Fatalf("fixture depth = %d delegates / %d lanes, want a two-level chain", len(f.delegateIDs), len(f.lanePaths))
 	}
 	if parent := f.root.delegateController.durable[f.delegateIDs[1]].Descriptor.ParentDelegateID; parent != f.delegateIDs[0] {

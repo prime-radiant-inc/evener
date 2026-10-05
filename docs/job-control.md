@@ -1122,7 +1122,10 @@ Return shape:
 (kata tpb0): who requested the stop, whether this exact delegate resource can
 still be resumed (the same classification `job_status` reports), and whatever
 partial scratch/worktree evidence its run loop had already gathered before
-being cancelled. All are omitted for a shell `job_stop`. `requested_by` is
+being cancelled. The scratch directory at `scratch_path` stays after the
+delegate finishes; it is deleted when the root session is archived or deleted.
+All are omitted for a
+shell `job_stop`. `requested_by` is
 reported on every delegate stop, including one that has not completed yet;
 `resumable`, `not_resumable_reason`, `scratch_path`, and `worktree` are read
 from the settled delegate and are omitted until the stop completes

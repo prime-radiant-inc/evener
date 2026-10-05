@@ -105,6 +105,11 @@ func archiveSet(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.R
 	} else if err := persistNudge(); err != nil {
 		return appwire.ArchiveResponse{}, err
 	}
+	// The reconcile removes the newly archived sessions' scratch off the request
+	// path, and leaves a session whose daemon still runs until that daemon exits.
+	if params.Archived && cfg.ScratchReconcile != nil {
+		cfg.ScratchReconcile()
+	}
 
 	// An archive decision can move a session in or out of tier eligibility;
 	// nudge the attention watcher so the badge/notification state does not lag

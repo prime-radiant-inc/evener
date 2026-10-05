@@ -21,9 +21,10 @@ func delegateTestClient(step func(llm.Request) llm.Response) *llm.Client {
 	return client
 }
 
-// sandboxScratchDirs lists the per-session sandbox scratch dirs (evener-sandbox-*)
-// directly under base — the leak surface for a per-delegate sandbox whose spawn
-// fails after EnableSandbox provisioned one.
+// sandboxScratchDirs lists the session scratch dirs under base: disposable ones
+// (evener-sandbox-*) directly under it and named ones (evener-scratch-<root>/<id>)
+// inside a root's tree. It is the leak surface for a per-delegate sandbox whose
+// spawn fails after EnableSandbox provisioned one.
 func sandboxScratchDirs(t *testing.T, base string) []string {
 	t.Helper()
 	entries, err := os.ReadDir(base)
@@ -32,8 +33,20 @@ func sandboxScratchDirs(t *testing.T, base string) []string {
 	}
 	var out []string
 	for _, e := range entries {
-		if e.IsDir() && strings.HasPrefix(e.Name(), "evener-sandbox-") {
+		switch {
+		case !e.IsDir():
+		case strings.HasPrefix(e.Name(), "evener-sandbox-"):
 			out = append(out, e.Name())
+		case strings.HasPrefix(e.Name(), "evener-scratch-"):
+			sessions, err := os.ReadDir(filepath.Join(base, e.Name()))
+			if err != nil {
+				t.Fatalf("read scratch tree %q: %v", e.Name(), err)
+			}
+			for _, sess := range sessions {
+				if sess.IsDir() {
+					out = append(out, filepath.Join(e.Name(), sess.Name()))
+				}
+			}
 		}
 	}
 	return out
@@ -280,13 +293,10 @@ func TestSpawnAgent_PerDelegateSandboxCleansScratchWhenLaunchIsRejected(t *testi
 	}
 }
 
-// TestParentClose_RetainsPerDelegateSandboxScratch: a completed+retained
-// per-delegate-sandbox delegate owns a FRESH env whose EnableSandbox provisioned a
-// scratch dir. At PARENT close, retained children are torn down via close(false),
-// which skips env cleanup (children historically shared the parent env), so the
-// sandboxed child's scratch must be retained and its live lease released. Not
-// parallel: isolates TMPDIR to observe the scratch base.
-func TestParentClose_RetainsPerDelegateSandboxScratch(t *testing.T) {
+// A per-delegate-sandbox delegate owns a fresh env whose EnableSandbox mints its
+// scratch in the root's tree. Closing an unarchived parent keeps that scratch.
+// Not parallel: isolates TMPDIR to observe the scratch base.
+func TestParentCloseKeepsPerDelegateSandboxScratch(t *testing.T) {
 	isolated := t.TempDir()
 	t.Setenv("TMPDIR", isolated)
 
@@ -311,21 +321,23 @@ func TestParentClose_RetainsPerDelegateSandboxScratch(t *testing.T) {
 	if res.Err != nil {
 		t.Fatalf("createDelegate: %v", res.Err)
 	}
-	// The sandboxed child provisioned a scratch dir.
-	if got := sandboxScratchDirs(t, isolated); len(got) == 0 {
+	// The sandboxed child provisioned a scratch dir named in the parent's tree.
+	got := sandboxScratchDirs(t, isolated)
+	if len(got) == 0 {
 		t.Fatalf("expected a per-delegate sandbox scratch dir after spawn, found none in %s", isolated)
 	}
-
-	// Closing the parent must retain the child's owned scratch for the handoff.
-	s.Close()
-	left := sandboxScratchDirs(t, isolated)
-	if len(left) == 0 {
-		t.Errorf("parent close must retain the per-delegate-sandbox scratch for manual cleanup")
-	}
-	for _, name := range left {
-		if err := os.RemoveAll(filepath.Join(isolated, name)); err != nil {
-			t.Errorf("manual cleanup of retained scratch %q: %v", name, err)
+	tree := "evener-scratch-" + s.id + string(filepath.Separator)
+	for _, dir := range got {
+		if !strings.HasPrefix(dir, tree) {
+			t.Errorf("delegate scratch %s is outside the root's tree %s", dir, tree)
 		}
+	}
+
+	// Closing an unarchived parent keeps the child's scratch: only archiving the
+	// root removes the tree.
+	s.Close()
+	if left := sandboxScratchDirs(t, isolated); !slices.Equal(left, got) {
+		t.Errorf("parent close changed the per-delegate scratch: before %v, after %v", got, left)
 	}
 }
 
@@ -411,9 +423,6 @@ func TestSandboxPromptLineReadOnlyDelegateScratchGuidance(t *testing.T) {
 	}
 	if !strings.Contains(got, "Read-only delegates may write only inside this scratch directory; all other writes are denied.") {
 		t.Fatalf("read-only prompt line must explain its write boundary: %q", got)
-	}
-	if !strings.Contains(got, "In your final human-readable handoff, report this absolute scratch path and the absolute paths of any artifacts your parent should retain; cleanup is manual.") {
-		t.Fatalf("sandbox prompt line must explain the handoff contract: %q", got)
 	}
 }
 
