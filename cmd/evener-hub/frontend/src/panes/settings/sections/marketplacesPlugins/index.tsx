@@ -115,10 +115,10 @@ function MarketplacesPluginsBody({ host }: { host: string }) {
   // host changes - or comes BACK after being away, which is what would otherwise
   // leave this pane on the failure its away host answered with.
   //
-  // Once the plugin list is on screen (and only if it loaded), the view asks the hub whether any plugin
-  // has an update (read-on-open; nothing polls). It runs after the list, never
-  // beside it: a check outranks the list read, so the list would wait for every
-  // remote to answer.
+  // Once the plugin list has loaded (and only then), the view asks the hub
+  // once whether any plugin has an update; nothing polls. The check waits on
+  // every plugin's remote, so it starts after the list is on screen and the
+  // load does not wait for it.
   useHostScopedLoad(host, async () => {
     await Promise.all([store.getState().fetchMarketplaces(), store.getState().fetchPlugins()]);
     if (store.getState().pluginsError === null) void store.getState().checkPluginUpdates();
