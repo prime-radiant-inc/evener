@@ -33,6 +33,7 @@ import type {
   Turn,
   WarningParams,
 } from "./types.gen";
+import { THREAD_ITEM_EVENT_KINDS } from "./types.gen";
 import { hasWarningText } from "./warningText";
 
 function cloneStableDelegate(delegate: EvenerDelegateInfo): EvenerDelegateInfo {
@@ -1603,7 +1604,6 @@ function validWireItem(value: unknown): value is ThreadItem {
     "output",
     "error",
     "status",
-    "eventKind",
     "source",
     "steeringKind",
     "clientMutationId",
@@ -1611,6 +1611,11 @@ function validWireItem(value: unknown): value is ThreadItem {
   ]) {
     if (value[key] !== undefined && typeof value[key] !== "string") return false;
   }
+  if (
+    value.eventKind !== undefined &&
+    !THREAD_ITEM_EVENT_KINDS.includes(value.eventKind as (typeof THREAD_ITEM_EVENT_KINDS)[number])
+  )
+    return false;
   if (value.position !== undefined && !validPosition(value.position)) return false;
   for (const key of [
     "transcriptEntryIndex",

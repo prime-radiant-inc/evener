@@ -13,7 +13,7 @@ import { currentRead, textDelta } from "./testing/currentTranscript";
 import { notificationWireItem } from "./testing/notificationWireFixtures";
 import { subagentCallItems } from "./testing/subagentWireFixtures";
 import { toolWireItems } from "./testing/toolWireFixtures";
-import type { EvenerDelegateInfo, ThreadItem } from "./types.gen";
+import { type EvenerDelegateInfo, THREAD_ITEM_EVENT_KINDS, type ThreadItem } from "./types.gen";
 
 function readWithItems(ref: string, items: ThreadItem[]) {
   const read = currentRead(ref);
@@ -572,6 +572,91 @@ describe("current transcript checkpoints", () => {
     ];
 
     expect(decodeCurrentTranscriptState(malformed)).toBeUndefined();
+  });
+
+  it.each(["overlay", "deferred"] as const)("rejects undeclared wire eventKind in %s items", (location) => {
+    const encoded = currentTranscriptState(
+      hydrateThread(currentRead(`local:event-kind-${location}`), `local:event-kind-${location}`, 10),
+    );
+    if (!encoded) throw new Error("versioned fixture history did not encode");
+    const malformed = structuredClone(encoded);
+    if (location === "overlay") {
+      const overlay = malformed.overlay["stream:s1:agentMessage"];
+      if (!overlay) throw new Error("fixture overlay missing");
+      overlay.item.eventKind = "not-a-declared-event-kind" as never;
+    } else {
+      malformed.history.deferredPages = [
+        {
+          data: [
+            {
+              id: "old",
+              itemsView: "full",
+              status: "completed",
+              items: [
+                {
+                  id: "event",
+                  type: "systemMessage",
+                  eventKind: "not-a-declared-event-kind" as never,
+                },
+              ],
+            },
+          ],
+        },
+      ];
+    }
+
+    expect(decodeCurrentTranscriptState(JSON.parse(JSON.stringify(malformed)))).toBeUndefined();
+  });
+
+  it.each(THREAD_ITEM_EVENT_KINDS)("accepts declared wire eventKind %s in overlay and deferred items", (eventKind) => {
+    const encoded = currentTranscriptState(
+      hydrateThread(currentRead("local:event-kind-valid"), "local:event-kind-valid", 10),
+    );
+    if (!encoded) throw new Error("versioned fixture history did not encode");
+    const overlayState = structuredClone(encoded);
+    const overlay = overlayState.overlay["stream:s1:agentMessage"];
+    if (!overlay) throw new Error("fixture overlay missing");
+    overlay.item.eventKind = eventKind;
+    expect(decodeCurrentTranscriptState(JSON.parse(JSON.stringify(overlayState)))).toBeDefined();
+
+    const deferredState = structuredClone(encoded);
+    deferredState.history.deferredPages = [
+      {
+        data: [
+          {
+            id: "old",
+            itemsView: "full",
+            status: "completed",
+            items: [{ id: "event", type: "systemMessage", eventKind }],
+          },
+        ],
+      },
+    ];
+    expect(decodeCurrentTranscriptState(JSON.parse(JSON.stringify(deferredState)))).toBeDefined();
+  });
+
+  it("keeps cached item eventKind open-ended", () => {
+    const encoded = currentTranscriptState(
+      hydrateThread(currentRead("local:cached-event-kind"), "local:cached-event-kind", 10),
+    );
+    if (!encoded) throw new Error("versioned fixture history did not encode");
+    encoded.history.turns = [
+      {
+        id: "turn_cached",
+        status: "completed",
+        items: [
+          {
+            id: "item_cached",
+            turnId: "turn_cached",
+            type: "systemMessage",
+            text: "cached",
+            eventKind: "custom-cached-event-kind",
+          },
+        ],
+      },
+    ];
+
+    expect(decodeCurrentTranscriptState(JSON.parse(JSON.stringify(encoded)))).toBeDefined();
   });
 
   it("round-trips valid optional and empty schemas without restricting opaque payloads", () => {
