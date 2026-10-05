@@ -89,7 +89,7 @@ export function PluginDetailSheet({ target, onClose }: PluginDetailSheetProps) {
     if (target === null) return;
     try {
       await store.getState().upgradePlugin(target.plugin, target.marketplace);
-      toasts.push("success", `Checked ${target.plugin} for upgrades`);
+      toasts.push("success", `Upgraded ${target.plugin}`);
     } catch (err) {
       toasts.push("error", isHubWriteBusy(err) ? HUB_WRITE_BUSY : `Upgrade failed: ${errorText(err)}`);
     }
@@ -127,9 +127,13 @@ export function PluginDetailSheet({ target, onClose }: PluginDetailSheetProps) {
         footer={
           entry !== undefined && (
             <>
-              <Button variant="primary" onClick={() => void handleUpgrade()} aria-disabled={hubWriteBusy}>
-                Upgrade
-              </Button>
+              {/* Offered only when the hub's update check found one; an older hub
+                  without the check offers none. */}
+              {entry.updateAvailable && (
+                <Button variant="primary" onClick={() => void handleUpgrade()} aria-disabled={hubWriteBusy}>
+                  Upgrade
+                </Button>
+              )}
               <Button variant="danger" disabled={hubWriteBusy} onClick={() => setPendingRemove(true)}>
                 Remove
               </Button>
@@ -139,11 +143,12 @@ export function PluginDetailSheet({ target, onClose }: PluginDetailSheetProps) {
       >
         {entry !== undefined && (
           <>
-            {(entry.broken || !entry.enabled || entry.autoUpgrade) && (
+            {(entry.broken || !entry.enabled || entry.autoUpgrade || entry.updateAvailable) && (
               <div className={CLASS.chipRow}>
                 {entry.broken && <Chip tone="danger">broken</Chip>}
                 {!entry.enabled && <Chip tone="neutral">off by default</Chip>}
                 {entry.autoUpgrade && <Chip tone="neutral">auto-upgrade</Chip>}
+                {entry.updateAvailable && <Chip tone="attention">update available</Chip>}
               </div>
             )}
             {description !== undefined && <p className={CLASS.sheetDesc}>{description}</p>}

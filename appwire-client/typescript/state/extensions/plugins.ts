@@ -38,6 +38,12 @@ export interface PluginsState {
    * spawn-time plugin preview) the moment that set is known to have changed. */
   pluginRevision: number;
   fetchPlugins(): Promise<void>;
+  /** Asks the hub whether each git-backed plugin's remote has moved
+   * (evener/plugin/checkUpdates) and takes the flagged list it answers with,
+   * which later lists keep. A host calls it when its plugins view opens. It
+   * never throws and a failure publishes nothing: an older hub without the
+   * method leaves every plugin unflagged, so no Upgrade is offered. */
+  checkPluginUpdates(): Promise<void>;
   installPlugin(plugin: string, marketplace: string): Promise<void>;
   upgradePlugin(plugin: string, marketplace: string): Promise<void>;
   removePlugin(plugin: string, marketplace: string): Promise<void>;
@@ -62,6 +68,10 @@ export interface PluginsStore extends FrameworkFreeStore<PluginsState>, Omit<Sto
 }
 
 export const PLUGIN_REFETCH_DEBOUNCE_MS = 250;
+
+/** The check waits on every plugin's remote (up to 20s each, four at a time),
+ * far past a plain read's default timeout. */
+export const PLUGIN_UPDATE_CHECK_TIMEOUT_MS = 120_000;
 
 /** The five mutations addressed by a plugin reference alone; setAutoUpgrade
  * carries its flag as well. */
@@ -135,6 +145,17 @@ export function createPluginsStore(client: PluginsClient, gate: HubWriteGate): P
           onAnswer: (resp) => () => set({ plugins: resp.plugins, pluginsLoading: false, pluginsError: null }),
           onFailure: (err) => () => set({ pluginsLoading: false, pluginsError: errorText(err) }),
         });
+      },
+
+      async checkPluginUpdates() {
+        // A list answer like any other, fenced the same way; but a failure is
+        // nobody's error, so the request is written as a write whose rejection
+        // gives its revision back rather than as a read that would publish it.
+        await writeRevisioned(
+          listRevision,
+          () => client.request("evener/plugin/checkUpdates", {}, { timeoutMs: PLUGIN_UPDATE_CHECK_TIMEOUT_MS }),
+          (resp) => () => set({ plugins: resp.plugins, pluginsLoading: false, pluginsError: null }),
+        ).catch(() => {});
       },
 
       installPlugin: mutation("evener/plugin/install"),

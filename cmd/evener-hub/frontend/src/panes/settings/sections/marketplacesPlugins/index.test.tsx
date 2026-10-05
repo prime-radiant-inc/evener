@@ -80,6 +80,16 @@ test("fetches both marketplaces and plugins in parallel on mount", async () => {
   expect(fake.calls.some((c) => c.method === "evener/plugin/list")).toBe(true);
 });
 
+test("opening the view asks the hub for plugin updates once the lists load, and marks what it finds", async () => {
+  const fake = connectSeededClient();
+  fake.on("evener/plugin/checkUpdates", () => ({ plugins: [{ ...LINTER, updateAvailable: true }] }));
+  render(<MarketplacesPluginsSection />);
+  expect(await screen.findByText("update available")).toBeTruthy();
+  const methods = fake.calls.map((c) => c.method);
+  expect(methods.filter((m) => m === "evener/plugin/checkUpdates")).toHaveLength(1);
+  expect(methods.indexOf("evener/plugin/checkUpdates")).toBeGreaterThan(methods.indexOf("evener/plugin/list"));
+});
+
 test("shows one failed-to-load message replacing everything when the marketplace list fails to load", async () => {
   const fake = connectFakeClient();
   fake.on("evener/marketplace/list", () => {

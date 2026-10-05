@@ -3,7 +3,12 @@ import { deferRequest, FakeClient, failing } from "../../testing/fakeClient";
 import type { MarketplaceEntry, PluginEntry } from "../../types.gen";
 import { createHubWriteGate, HubWriteBusyError, type HubWriteGate } from "./hubWriteGate";
 import { createMarketplacesStore } from "./marketplaces";
-import { createPluginsStore, PLUGIN_REFETCH_DEBOUNCE_MS, type PluginsStore } from "./plugins";
+import {
+  createPluginsStore,
+  PLUGIN_REFETCH_DEBOUNCE_MS,
+  PLUGIN_UPDATE_CHECK_TIMEOUT_MS,
+  type PluginsStore,
+} from "./plugins";
 
 const LINTER: PluginEntry = {
   plugin: "linter",
@@ -123,6 +128,63 @@ describe("fetches never throw, mutations reject", () => {
       ["evener/plugin/setAutoUpgrade", { ...target, autoUpgrade: true }],
       ["evener/plugin/remove", target],
     ]);
+  });
+});
+
+describe("checkPluginUpdates", () => {
+  const CHECK = "evener/plugin/checkUpdates";
+
+  test("asks the hub with the long timeout and replaces the list with the flagged answer", async () => {
+    const { fake, store } = storeWithFake();
+    fake.on(LIST, () => ({ plugins: [LINTER] }));
+    await store.getState().fetchPlugins();
+    fake.on(CHECK, () => ({ plugins: [{ ...LINTER, updateAvailable: true }] }));
+
+    await store.getState().checkPluginUpdates();
+
+    expect(store.getState().plugins).toEqual([{ ...LINTER, updateAvailable: true }]);
+    expect(fake.calls.at(-1)).toEqual({
+      method: CHECK,
+      params: {},
+      opts: { timeoutMs: PLUGIN_UPDATE_CHECK_TIMEOUT_MS },
+    });
+  });
+
+  test("a failed check (an older hub has no such method) resolves and leaves the list and its error alone", async () => {
+    const { fake, store } = storeWithFake();
+    fake.on(LIST, () => ({ plugins: [LINTER] }));
+    await store.getState().fetchPlugins();
+    fake.on(CHECK, failing("method not found"));
+
+    await expect(store.getState().checkPluginUpdates()).resolves.toBeUndefined();
+
+    expect(store.getState()).toMatchObject({ plugins: [LINTER], pluginsError: null, pluginsLoading: false });
+  });
+
+  test("a failed check does not swallow a list read started before it", async () => {
+    const { fake, store } = storeWithFake();
+    const release = deferRequest<ListResult>(fake, LIST);
+    const fetching = store.getState().fetchPlugins();
+    await Promise.resolve();
+    fake.on(CHECK, failing("method not found"));
+    await store.getState().checkPluginUpdates();
+
+    release({ plugins: [LINTER] });
+    await fetching;
+    expect(store.getState()).toMatchObject({ plugins: [LINTER], pluginsLoading: false });
+  });
+
+  test("a check that resolves after a newer mutation committed does not roll the list back", async () => {
+    const { fake, store } = storeWithFake();
+    const release = deferRequest<ListResult>(fake, CHECK);
+    const checking = store.getState().checkPluginUpdates();
+    await Promise.resolve();
+    fake.on("evener/plugin/upgrade", () => ({ plugins: [{ ...LINTER, version: "1.1.0" }] }));
+    await store.getState().upgradePlugin("linter", "acme");
+
+    release({ plugins: [{ ...LINTER, updateAvailable: true }] });
+    await checking;
+    expect(store.getState().plugins).toEqual([{ ...LINTER, version: "1.1.0" }]);
   });
 });
 

@@ -84,6 +84,7 @@ export function InstalledSection({ onSelect }: InstalledSectionProps) {
                     {p.broken && <Chip tone="danger">broken</Chip>}
                     {!p.enabled && <Chip tone="neutral">off by default</Chip>}
                     {p.autoUpgrade && <Chip tone="neutral">auto-upgrade</Chip>}
+                    {p.updateAvailable && <Chip tone="attention">update available</Chip>}
                   </div>
                   <div className={CLASS.rowMeta}>{`@ ${p.marketplace} · v${p.version || "unknown"}`}</div>
                 </div>
