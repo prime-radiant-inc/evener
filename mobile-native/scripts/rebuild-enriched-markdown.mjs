@@ -11,6 +11,12 @@ const sourceFiles = [
 	"src/types/MarkdownCodeTextProps.ts",
 	"src/native/EnrichedMarkdownCodeText.tsx",
 	"src/EnrichedMarkdownCodeTextNativeComponent.ts",
+	"src/types/MarkdownDocumentSelectionProps.ts",
+	"src/native/EnrichedMarkdownSelectionSurface.tsx",
+	"src/EnrichedMarkdownSelectionSurfaceNativeComponent.ts",
+	"src/types/MarkdownTextProps.ts",
+	"src/native/EnrichedMarkdownText.tsx",
+	"src/EnrichedMarkdownNativeComponent.ts",
 	"src/index.tsx",
 ];
 
