@@ -201,8 +201,8 @@ type SessionMeta struct {
 	// HumanNote is a projection of the canonical client-mutation snapshot.
 	// It is not imported as human-note authority when restoring a session.
 	HumanNote string `json:"human_note,omitempty"`
-	// AgentNote is the agent's one-paragraph session whiteboard, persisted like
-	// HumanNote. Empty means unset.
+	// AgentNote is the agent's session whiteboard (a short capsule in lines),
+	// persisted like HumanNote. Empty means unset.
 	AgentNote string `json:"agent_note,omitempty"`
 	// SessionURLs is the agent-curated session URL list, persisted so it
 	// survives daemon restart and evener resume. Empty/nil means no links.

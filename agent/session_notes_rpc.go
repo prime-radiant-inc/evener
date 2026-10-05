@@ -49,7 +49,7 @@ func (s *Session) SetHumanNote(clientMutationID, note string) (appwire.NotesHuma
 		if snapshot.HumanNote != nil {
 			current = *snapshot.HumanNote
 		}
-		stored := normalizeNote(note)
+		stored := normalizeWhiteboard(note)
 		changed = stored != current
 		if changed && snapshot.InterruptFence != nil {
 			rejectClientMutation(record, appwire.Conflict("turn interrupt is pending"))
@@ -107,9 +107,11 @@ func (s *Session) SetHumanNote(clientMutationID, note string) (appwire.NotesHuma
 	// call, and one that predates the write-path strip can carry controls; the
 	// response is rendered by clients, so the value handed out is stripped while
 	// the journal keeps its historical record. Stripping is deliberately not
-	// normalizeNote: the journaled value is already normalized (the clamp can
-	// leave a trailing space that a second collapse would drop), so re-normalizing
-	// would hand back a different value than the original call returned.
+	// normalizeWhiteboard: the journaled value was already normalized by the
+	// binary that served the call, and an older binary's rule differs (its
+	// clamp could leave a trailing space, and it joined lines), so
+	// re-normalizing could hand back a different value than the original call
+	// returned.
 	response.Note = stripTextControls(response.Note)
 	disposition := appwire.MutationDispositionApplied
 	if lookup.Disposition == clientMutationDispositionReplayed {
@@ -618,10 +620,10 @@ func (s *Session) renderNotesContextBlock() string {
 	var b strings.Builder
 	b.WriteString(notesBlockOpen)
 	if human != "" {
-		b.WriteString("Human: " + human + "\n")
+		b.WriteString(formatNotesField("Human:", human) + "\n")
 	}
 	if agentNote != "" {
-		b.WriteString("Agent: " + agentNote + "\n")
+		b.WriteString(formatNotesField("Agent:", agentNote) + "\n")
 	}
 	for _, u := range urls {
 		b.WriteString(formatNotesLinkLine(u) + "\n")
@@ -648,6 +650,21 @@ const (
 	notesBlockOpen  = "<shared-notes>\n"
 	notesBlockClose = "</shared-notes>"
 )
+
+// formatNotesField renders a whiteboard under its label ("Human:", "Agent:")
+// for the model context block and the notes_read tool output. A whiteboard
+// keeps its lines, so each continuation line is indented under the label: a
+// line the human writes as "Agent: ..." or "Link: ..." then cannot read as a
+// separate field. Blank lines stay empty rather than carrying the indent.
+func formatNotesField(label, note string) string {
+	lines := strings.Split(note, "\n")
+	for i := 1; i < len(lines); i++ {
+		if lines[i] != "" {
+			lines[i] = "  " + lines[i]
+		}
+	}
+	return label + " " + strings.Join(lines, "\n")
+}
 
 // formatNotesLinkLine renders one session URL list entry for the model
 // context block and the notes_read tool output. The entry id rides alongside
