@@ -212,7 +212,11 @@ describe("approval history (spec 8.2)", () => {
 
 	// Each render subscribes to the shared minute clock; unmounting releases
 	// it, so the next test's fake time starts a fresh clock.
-	function atTime(nowMs: number, name: "approval-allowed" | "approval-denied", check: (tree: ReactTestRenderer) => void) {
+	function atTime(
+		nowMs: number,
+		name: "approval-allowed" | "approval-denied",
+		check: (tree: ReactTestRenderer) => void,
+	) {
 		vi.useFakeTimers();
 		vi.setSystemTime(nowMs);
 		const tree = show(name, "chat");
@@ -254,7 +258,9 @@ describe("approval history (spec 8.2)", () => {
 		["ahead of the phone's clock", -30_000],
 	])("says just now for a decision made %s", (_, offsetMs) => {
 		atTime(decidedAt() + offsetMs, "approval-allowed", (tree) => {
-			expect(renderedText(tree).replaceAll("\u200b", "")).toBe("Allowed: write /Users/j/sites/docs/index.md · just now");
+			expect(renderedText(tree).replaceAll("\u200b", "")).toBe(
+				"Allowed: write /Users/j/sites/docs/index.md · just now",
+			);
 			expect(spoken(tree)).toBe("Allowed: write /Users/j/sites/docs/index.md, just now");
 		});
 	});
