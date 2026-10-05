@@ -35,12 +35,17 @@ type checkedHead struct {
 // Upgrade fetches. A source pinned to a sha is answered without a network
 // call, and a relative or directory source is never asked: it has no remote.
 // A remote or catalog that cannot be read is warned about and flags nothing.
-// A cancelled check returns ctx's error and keeps the previous answers.
+// A cancelled check returns ctx's error and keeps the previous answers. Of
+// overlapping checks only the newest publishes, and a marketplace write
+// retires every answer (forgetChecks).
 func (m *Manager) CheckUpdates(ctx context.Context) error {
 	mk, err := m.loadMigratedMarketplaces(ctx, installAcquireLock)
 	if err != nil {
 		return err
 	}
+	// Begun after the load, whose migration may itself write the
+	// marketplaces and so retire any check already begun.
+	gen := m.beginCheck()
 	reg, err := m.loadRegistry()
 	if err != nil {
 		return err
@@ -84,9 +89,7 @@ func (m *Manager) CheckUpdates(ctx context.Context) error {
 	for _, w := range warnings {
 		_, _ = fmt.Fprintf(m.stderr(), "warning: %s\n", w)
 	}
-	m.remoteHeadsMu.Lock()
-	m.remoteHeads = heads
-	m.remoteHeadsMu.Unlock()
+	m.publishCheck(gen, heads)
 	return nil
 }
 
@@ -97,7 +100,9 @@ func (m *Manager) upgradeSource(mk Marketplaces, catalogs map[string]Catalog, wa
 	cat, parsed := catalogs[marketplace]
 	if !parsed {
 		ref, known := mk[marketplace]
-		if !known {
+		// A seeded or re-keyed marketplace can be recorded before its clone
+		// exists; its empty InstallLocation would read a relative path.
+		if !known || ref.InstallLocation == "" {
 			return Source{}, false
 		}
 		var err error
@@ -134,4 +139,35 @@ func (m *Manager) updateAvailable(key, installed string) bool {
 func sameCommit(a, b string) bool {
 	a, b = strings.ToLower(a), strings.ToLower(b)
 	return a != "" && b != "" && (strings.HasPrefix(a, b) || strings.HasPrefix(b, a))
+}
+
+// beginCheck starts a check generation. Only the newest generation may
+// publish, so a slow check that finishes after a newer one cannot replace its
+// answers, and a marketplace change (forgetChecks) retires a check already
+// reading the catalog it replaced.
+func (m *Manager) beginCheck() uint64 {
+	m.remoteHeadsMu.Lock()
+	defer m.remoteHeadsMu.Unlock()
+	m.checkGeneration++
+	return m.checkGeneration
+}
+
+// publishCheck stores heads as the current answers if gen is still the newest
+// check generation, and drops them otherwise.
+func (m *Manager) publishCheck(gen uint64, heads map[string]checkedHead) {
+	m.remoteHeadsMu.Lock()
+	defer m.remoteHeadsMu.Unlock()
+	if gen == m.checkGeneration {
+		m.remoteHeads = heads
+	}
+}
+
+// forgetChecks drops every answer and retires any check in flight. A
+// marketplace write can change a catalog's source, ref or pin, after which an
+// answer checked against the old catalog no longer says what Upgrade would do.
+func (m *Manager) forgetChecks() {
+	m.remoteHeadsMu.Lock()
+	defer m.remoteHeadsMu.Unlock()
+	m.checkGeneration++
+	m.remoteHeads = nil
 }

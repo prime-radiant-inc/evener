@@ -288,3 +288,53 @@ func TestCheckUpdates_WarnsAboutEveryRemoteAndCatalogItCannotRead(t *testing.T) 
 		t.Fatalf("warnings miss the unreachable remote or the unreadable catalog: %q", w)
 	}
 }
+
+func TestCheckUpdates_AnswerGoesStaleWhenItsMarketplaceChanges(t *testing.T) {
+	f := installURLPlugin(t, unpinned)
+	advanceRepo(t, f.pluginRepo)
+	if !checkThenList(t, f.m) {
+		t.Fatal("plugin behind its remote head not listed as having an update")
+	}
+	// A refresh can change the catalog's source, ref or pin, so an answer
+	// checked against the old catalog no longer says what Upgrade would do.
+	if err := f.m.RefreshMarketplace(context.Background(), "acme"); err != nil {
+		t.Fatalf("RefreshMarketplace: %v", err)
+	}
+	if listedUpdateAvailable(t, f.m) {
+		t.Fatal("answer checked against the catalog before a refresh still listed")
+	}
+}
+
+func TestCheckUpdates_AnOlderCheckCannotOverwriteANewerOne(t *testing.T) {
+	m := NewManager(t.TempDir())
+	older := m.beginCheck()
+	newer := m.beginCheck()
+	m.publishCheck(newer, map[string]checkedHead{"widget@acme": {head: "b", installed: "a"}})
+	m.publishCheck(older, map[string]checkedHead{})
+	if !m.updateAvailable("widget@acme", "a") {
+		t.Fatal("an older check's late answer replaced a newer check's")
+	}
+}
+
+func TestCheckUpdates_UnfetchedMarketplaceIsNotReadFromTheWorkingDirectory(t *testing.T) {
+	f := installURLPlugin(t, unpinned)
+	advanceRepo(t, f.pluginRepo)
+	// A catalog in the working directory must never be taken for the
+	// marketplace's: a recorded but unfetched marketplace has no clone.
+	cwd := t.TempDir()
+	writeURLCatalog(t, cwd, "widget", f.pluginRepo, "")
+	t.Chdir(cwd)
+	mk, err := f.m.loadMarketplaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := mk["acme"]
+	ref.InstallLocation = ""
+	mk["acme"] = ref
+	if err := f.m.saveMarketplaces(mk); err != nil {
+		t.Fatal(err)
+	}
+	if checkThenList(t, f.m) {
+		t.Fatal("plugin flagged from a catalog read out of the working directory")
+	}
+}
