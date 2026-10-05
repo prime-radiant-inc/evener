@@ -1,7 +1,6 @@
 // Files & artifacts (spec 10.1): everything the session wrote or linked, one
 // row per file, newest write first, and whether each is new or changed since
-// you last opened it. Artifacts join when the shared-artifacts work reaches
-// main (10.3).
+// you last opened it.
 import type { SessionURL } from "@evener/appwire-client";
 import { fileURLToPath } from "@evener/appwire-client/docContent";
 import type { LastRead } from "./documentMemory";
