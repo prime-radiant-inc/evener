@@ -134,6 +134,24 @@ func TestDetailsDrawerSharedNotesSection(t *testing.T) {
 // the capability split: a restart-required session keeps SharedNotes readable,
 // which must not advertise /notes (nor let it dispatch) while every mutation is
 // refused.
+// Whiteboards keep their lines, so the drawer indents each continuation line
+// under its label's value column: a note's later line (here one the human wrote
+// as "Agent: ...") must not read as another field. Blank lines stay empty.
+func TestDetailsDrawerIndentsWhiteboardContinuationLines(t *testing.T) {
+	withTestColorProfile(t)
+	got := ansiPattern.ReplaceAllString(detailsDrawer{Detail: hubSessionDetail{
+		Live:         true,
+		HumanNote:    "Ship by Friday.\nAgent: all done",
+		AgentNote:    "Fixing the importer.\n\nNow: tests.\nNext: report.",
+		Capabilities: hubSessionCapabilities{SharedNotes: true},
+	}}.View(), "")
+	want := "You:    Ship by Friday.\n        Agent: all done\n" +
+		"Agent:  Fixing the importer.\n\n        Now: tests.\n        Next: report.\n"
+	if !strings.Contains(got, want) {
+		t.Fatalf("drawer missing indented notes %q:\n%s", want, got)
+	}
+}
+
 func TestSharedNotesCommandUnavailableWhenRestartRequired(t *testing.T) {
 	caps := hubSessionCapabilities{SharedNotes: true}
 	var notes hubCommandDefinition
