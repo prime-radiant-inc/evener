@@ -346,8 +346,10 @@ The [pane-owned reader](../../cmd/evener-hub/frontend/src/panes/transcript/jobLo
 retains two contiguous source-byte windows: up to 512 KiB of older reading and
 512 KiB of live output, with at most 1 MiB in their union. This is a retained
 source-byte budget, not a browser-heap limit. The existing `VirtualList` renders
-byte-keyed rows, follows the bottom and preserves the reader's byte/pixel anchor
-when pages arrive or window trimming repairs a row.
+byte-keyed rows and follows the bottom. Away from the bottom, the pane anchors a
+visible complete glyph by its source-byte offset and pixel position within the
+pane body. When pages arrive or window trimming repairs a row, restoration uses
+the existing virtualizer's row measurement and scroll-offset APIs.
 
 Scrolling loads adjacent pages in either direction. Evicted retained text can
 be fetched again. An unloaded interval remains a paging boundary until its

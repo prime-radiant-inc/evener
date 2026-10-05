@@ -4,6 +4,15 @@ import { expect, test } from "vitest";
 import type { AnsiLine } from "./ansi";
 import { AnsiTailBuffer, parseAnsiByteRows, parseAnsiLines } from "./ansi";
 
+test("byte rows map visible UTF16 positions to original bytes across controls and malformed scalars", () => {
+  const parsed = parseAnsiByteRows(
+    new Uint8Array([65, 27, 91, 51, 49, 109, 0xf0, 0x9f, 0x98, 0x80, 0xff, 0xc3, 40, 10]),
+    70,
+  );
+  expect(parsed.rows[0]?.line.map((run) => run.text).join("")).toBe("A😀��(");
+  expect(parsed.rows[0]?.textByteOffsets).toEqual(new Uint16Array([0, 6, 6, 10, 11, 12]));
+});
+
 function plainText(lines: AnsiLine[]): string {
   return lines.map((line) => line.map((run) => run.text).join("")).join("\n");
 }
@@ -372,8 +381,8 @@ test("byte checkpoints carry a split CSI and actual decorations", () => {
 
 test("byte rows retain blank newline rows but do not invent an EOF row", () => {
   expect(parseAnsiByteRows(new Uint8Array([10, 10]), 0).rows).toEqual([
-    { offsetBytes: 0, endBytes: 1, line: [] },
-    { offsetBytes: 1, endBytes: 2, line: [] },
+    { offsetBytes: 0, endBytes: 1, line: [], textByteOffsets: new Uint16Array() },
+    { offsetBytes: 1, endBytes: 2, line: [], textByteOffsets: new Uint16Array() },
   ]);
   expect(parseAnsiByteRows(new Uint8Array(), 2).rows).toEqual([]);
 });

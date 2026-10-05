@@ -1,6 +1,7 @@
 // Job output uses its owning session's byte pages, the workspace pane's
 // retained reader and the same virtual list as session transcripts.
 import { jobCommandLabel, jobStatusDisplay } from "@evener/appwire-client";
+import type { Virtualizer } from "@tanstack/react-virtual";
 import { useEffect, useLayoutEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import { useStore } from "zustand";
 import { conversationPaneLifetime } from "../../shell/paneLifetime";
@@ -26,6 +27,67 @@ type JobLogDisplayRow =
 
 function outputRowContainsByte(item: JobLogDisplayRow, byteOffset: number): boolean {
   return item.kind === "output" && item.row.offsetBytes <= byteOffset && item.row.endBytes > byteOffset;
+}
+
+function glyphRect(element: HTMLElement, textOffset: number): DOMRect {
+  const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+  let node = walker.nextNode();
+  while (node) {
+    const length = node.textContent?.length ?? 0;
+    if (textOffset < length) {
+      const range = document.createRange();
+      range.setStart(node, textOffset);
+      range.setEnd(node, textOffset + 1);
+      return range.getBoundingClientRect();
+    }
+    textOffset -= length;
+    node = walker.nextNode();
+  }
+  return element.getBoundingClientRect();
+}
+
+function sourceGlyphRect(element: HTMLElement, row: JobLogRow, byteOffset: number): DOMRect {
+  let index = 0;
+  for (let next = 0; next < row.textByteOffsets.length; next++) {
+    const offset = row.textByteOffsets[next];
+    if (offset === undefined || row.offsetBytes + offset > byteOffset) break;
+    if (next === 0 || offset !== row.textByteOffsets[next - 1]) index = next;
+  }
+  return glyphRect(element, index);
+}
+
+function visibleGlyphCapture(
+  element: HTMLElement,
+  row: JobLogRow,
+  windows: JobLogWindows,
+  viewport: DOMRect,
+  originTop: number,
+  following: boolean,
+) {
+  let start = 0;
+  let end = row.textByteOffsets.length;
+  while (start < end) {
+    const middle = Math.floor((start + end) / 2);
+    if (glyphRect(element, middle).bottom <= viewport.top) start = middle + 1;
+    else end = middle;
+  }
+  let index = Math.min(start, Math.max(0, row.textByteOffsets.length - 1));
+  const source = [windows.older, windows.live].find((range) => range?.offsetBytes === row.offsetBytes);
+  if (source && source.offsetBytes > 0) {
+    // At most three leading continuation bytes can change when an earlier page repairs UTF8.
+    let partialBytes = 0;
+    while (partialBytes < 3) {
+      const byte = source.bytes[partialBytes];
+      if (byte === undefined || byte < 0x80 || byte > 0xbf) break;
+      partialBytes++;
+    }
+    while (index + 1 < row.textByteOffsets.length && (row.textByteOffsets[index] ?? 0) < partialBytes) index++;
+  }
+  return {
+    byteOffset: row.offsetBytes + (row.textByteOffsets[index] ?? 0),
+    pixelOffset: glyphRect(element, index).top - originTop,
+    following,
+  };
 }
 
 function jobLogDisplayRows(windows: JobLogWindows, jobId: string): JobLogDisplayRow[] {
@@ -92,6 +154,7 @@ function JobLogBody({ reader, jobId, paneId }: { reader: JobLogReader; jobId: st
   const rows = useMemo(() => jobLogDisplayRows(snapshot.windows, jobId), [snapshot.windows, jobId]);
   const gaps = useMemo(() => rows.flatMap((row, index) => (row.kind === "unloaded" ? [{ row, index }] : [])), [rows]);
   const list = useRef<VirtualListHandle>(null);
+  const virtualizer = useRef<Virtualizer<HTMLDivElement, HTMLDivElement> | null>(null);
   const previousRows = useRef<JobLogDisplayRow[] | null>(null);
   const restore = useRef<JobLogScrollCapture | null>(
     snapshot.scrollCapture ?? { byteOffset: 0, pixelOffset: 0, following: true },
@@ -112,15 +175,32 @@ function JobLogBody({ reader, jobId, paneId }: { reader: JobLogReader; jobId: st
   const inspect = () => {
     const scroller = list.current?.getScrollElement();
     if (!scroller || !mounted.current) return;
+    // Byte-count and status notes can move the scroll port inside the pane.
+    const originTop = scroller.closest(`.${CLASS.body}`)?.getBoundingClientRect().top ?? 0;
     const pending = restore.current;
     if (pending !== null) {
+      const item = rows[restorationIndex(pending)];
       const element = scroller.querySelector<HTMLElement>(
         `[data-index="${restorationIndex(pending)}"] [data-joblog-kind]`,
       );
-      if (!element) return;
-      if (!pending.following)
-        scroller.scrollTop +=
-          element.getBoundingClientRect().top - scroller.getBoundingClientRect().top - pending.pixelOffset;
+      const instance = virtualizer.current;
+      if (!instance) return;
+      if (!element) {
+        list.current?.scrollToIndex(restorationIndex(pending), { align: pending.following ? "end" : "start" });
+        return;
+      }
+      const wrapper = element.parentElement;
+      const measured = instance.getVirtualItems().find((row) => row.index === restorationIndex(pending));
+      if (!pending.following && wrapper && measured && measured.size !== wrapper.offsetHeight) {
+        // Moving within an estimated row can unmount it before ResizeObserver measures it.
+        instance.resizeItem(measured.index, wrapper.offsetHeight);
+        return;
+      }
+      const rect =
+        item?.kind === "output"
+          ? sourceGlyphRect(element, item.row, pending.byteOffset)
+          : element.getBoundingClientRect();
+      if (!pending.following) instance.scrollToOffset(scroller.scrollTop + rect.top - originTop - pending.pixelOffset);
       restore.current = null;
     }
     const viewport = scroller.getBoundingClientRect();
@@ -133,6 +213,11 @@ function JobLogBody({ reader, jobId, paneId }: { reader: JobLogReader; jobId: st
     const following = isAtBottom(scroller, 4);
     const previous = reader.getSnapshot().scrollCapture;
     const byte = first ? Number(first.dataset.sourceStart) : undefined;
+    const firstRow = rows.find((item) => item.kind === "output" && item.row.offsetBytes === byte);
+    const capture =
+      first && firstRow?.kind === "output"
+        ? visibleGlyphCapture(first, firstRow.row, snapshot.windows, viewport, originTop, following)
+        : null;
     const marker = elements.find((element) => {
       const rect = element.getBoundingClientRect();
       return element.dataset.joblogKind === "unloaded" && rect.bottom >= viewport.top && rect.top <= viewport.bottom;
@@ -150,16 +235,16 @@ function JobLogBody({ reader, jobId, paneId }: { reader: JobLogReader; jobId: st
     const gap = rows[gapIndex];
     if (gap && gap.kind === "unloaded") {
       const direction = (previous?.byteOffset ?? byte ?? 0) >= gap.endBytes ? "backward" : "forward";
-      if (first && byte !== undefined && (direction === "backward" ? byte >= gap.endBytes : byte < gap.startBytes))
-        reader.capture({
-          byteOffset: byte,
-          pixelOffset: first.getBoundingClientRect().top - viewport.top,
-          following: false,
-        });
+      if (capture && byte !== undefined && (direction === "backward" ? byte >= gap.endBytes : byte < gap.startBytes))
+        reader.capture({ ...capture, following: false });
       else {
         const adjacent = rows[gapIndex + (direction === "backward" ? 1 : -1)];
         if (adjacent?.kind === "output") {
-          const capture = { byteOffset: adjacent.row.offsetBytes, pixelOffset: 0, following: false };
+          const capture = {
+            byteOffset: adjacent.row.offsetBytes,
+            pixelOffset: viewport.top - originTop,
+            following: false,
+          };
           restore.current = capture;
           reader.capture(capture);
           list.current?.scrollToIndex(restorationIndex(capture), { align: "start" });
@@ -176,16 +261,13 @@ function JobLogBody({ reader, jobId, paneId }: { reader: JobLogReader; jobId: st
       // A missing interval is a paging boundary, not a shortcut to its far side.
       if (restore.current === null)
         list.current?.scrollToIndex(gapIndex, { align: direction === "forward" ? "end" : "start" });
-    } else if (first) {
-      reader.capture({
-        byteOffset: Number(first.dataset.sourceStart),
-        pixelOffset: first.getBoundingClientRect().top - viewport.top,
-        following,
-      });
+    } else if (capture) {
+      reader.capture(capture);
     }
   };
   update.current = inspect;
-  const onListChange = () => {
+  const onListChange = (instance: Virtualizer<HTMLDivElement, HTMLDivElement>) => {
+    virtualizer.current = instance;
     if (queued.current) return;
     queued.current = true;
     queueMicrotask(() => {

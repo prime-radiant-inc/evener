@@ -270,7 +270,13 @@ interface TerminalState {
 }
 
 export type AnsiByteState = TerminalState;
-export type AnsiByteRow = { offsetBytes: number; endBytes: number; line: AnsiLine };
+export type AnsiByteRow = {
+  offsetBytes: number;
+  endBytes: number;
+  line: AnsiLine;
+  /** Original byte offsets within this bounded fragment, one per visible UTF16 unit. */
+  textByteOffsets: Uint16Array;
+};
 export type AnsiByteRows = {
   rows: AnsiByteRow[];
   endState: AnsiByteState;
@@ -458,12 +464,15 @@ export function parseAnsiByteRows(bytes: Uint8Array, offsetBytes: number, initia
   let fragmentStart = offsetBytes;
   let prefix = sgrSequence(state.sgr);
   let presentation = "";
+  let textByteOffsets: number[] = [];
   const flush = (endBytes: number, newline: boolean) => {
     const line = parseAnsiLines(prefix + (newline ? presentation.slice(0, -1) : presentation))[0] ?? [];
-    if (newline || line.some((run) => run.text.length !== 0)) rows.push({ offsetBytes: fragmentStart, endBytes, line });
+    if (newline || line.some((run) => run.text.length !== 0))
+      rows.push({ offsetBytes: fragmentStart, endBytes, line, textByteOffsets: Uint16Array.from(textByteOffsets) });
     fragmentStart = endBytes;
     prefix = sgrSequence(state.sgr);
     presentation = "";
+    textByteOffsets = [];
     boundaries.push({ offsetBytes: endBytes, state: cloneTerminalState(state) });
   };
   forEachJobOutputScalar(bytes, (value, start, end) => {
@@ -476,6 +485,8 @@ export function parseAnsiByteRows(bytes: Uint8Array, offsetBytes: number, initia
     scanTerminalText(value, state, (part) => {
       presentation += part;
       if (part.endsWith("\n")) newline = true;
+      else if (!part.startsWith("\u001b["))
+        for (let index = 0; index < part.length; index++) textByteOffsets.push(absoluteStart - fragmentStart);
     });
     if (newline) flush(absoluteEnd, true);
   });

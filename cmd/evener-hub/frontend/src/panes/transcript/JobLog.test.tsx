@@ -8,12 +8,14 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { StubResizeObserver } from "../../resizeObserverTestUtils";
 import { chromeStore, resetChromeStoreForTests } from "../../shell/chromeStore";
 import { DockHost } from "../../shell/DockHost";
+import { conversationPaneLifetime } from "../../shell/paneLifetime";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspace";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { connectionStore } from "../../stores/connection";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
 import virtualStyles from "../../widgets/virtuallist/virtuallist.module.css";
 import { installJobLogGeometry, jobLogOutputText, jobOutputMetadata } from "./JobLogTestUtils";
+import { retainedJobLogReader } from "./jobLogReader";
 import Transcript from "./Transcript";
 
 let client: AppwireClient;
@@ -228,6 +230,32 @@ test("decodes split UTF8 bytes only after contiguous earlier output is joined", 
   expect(outputText()).toBe("😀\n");
 });
 
+test("captures the complete glyph after a leading split UTF8 scalar", async () => {
+  mountJob();
+  const text = new TextEncoder().encode(`MARKER\n${"end\n".repeat(100)}`);
+  const bytes = new Uint8Array(text.length + 2);
+  bytes.set([0x98, 0x80]);
+  bytes.set(text, 2);
+  await respond(
+    {
+      offsetBytes: 2000,
+      bytesReturned: bytes.length,
+      totalBytes: 2000 + bytes.length,
+      retainedStartBytes: 0,
+      encoding: "base64",
+      data: btoa(String.fromCharCode(...bytes)),
+    },
+    jobOutputMetadata({ status: "completed", terminal: true }),
+  );
+  scroll(port(), 0);
+  await peer.request("evener/jobs/output", 1);
+  const pane = workspaceStore.getState().panes[0];
+  if (!pane) throw new Error("job output pane is missing");
+  const reader = retainedJobLogReader(conversationPaneLifetime(pane), "ref_root", "job_x");
+  expect(reader.getSnapshot().scrollCapture?.byteOffset).toBe(2002);
+  expect(outputText()).toContain("��MARKER");
+});
+
 test("scrolling to the unloaded prefix automatically fetches adjacent source bytes", async () => {
   mountJob();
   await respond(textPage(100, "TAIL\n"));
@@ -413,6 +441,34 @@ test("forward gap paging holds the loaded side through a controls-only page", as
   expect(next.params).toEqual({ ref: "ref_root", jobId: "job_x", beforeBytes: 720896, maxBytes: 65536 });
   await act(async () => peer.reply(next, textPage(655360, largePage("FORWARD_ADJACENT"), 1114112, 458752)));
   expect(screen.getAllByText(/^FORWARD_ADJACENT_/).length).toBeGreaterThan(0);
+});
+
+test("scrolling during a measured remount keeps the unread gap reachable", async () => {
+  vi.useFakeTimers();
+  await separatedWindows(false);
+  const pane = workspaceStore.getState().panes[0];
+  if (!pane) throw new Error("job output pane is missing");
+  const reader = retainedJobLogReader(conversationPaneLifetime(pane), "ref_root", "job_x");
+  cleanup();
+  act(() => reader.capture({ byteOffset: 589760, pixelOffset: 0, following: false }));
+  expect(reader.getSnapshot().scrollCapture?.byteOffset).toBe(589760);
+  restoreGeometry();
+  restoreGeometry = installJobLogGeometry(100, 80);
+  render(<Transcript params={{ ref: "job:job_x", parentRef: "ref_root" }} paneId={pane.id} focused />);
+  const scroller = port();
+  scroll(scroller, scroller.scrollHeight - scroller.clientHeight);
+  await act(async () => {});
+  const captured = reader.getSnapshot().scrollCapture;
+  expect(captured?.following).toBe(false);
+  expect(captured?.byteOffset).toBeLessThan(1048576);
+  expect(peer.requests("evener/jobs/output")).toHaveLength(4);
+  const request = await peer.request("evener/jobs/output", 3);
+  expect(request.params).toEqual({ ref: "ref_root", jobId: "job_x", beforeBytes: 655360, maxBytes: 65536 });
+  await act(async () => peer.reply(request, textPage(589824, largePage("FORWARD"), 1114112, 458752)));
+  await act(async () => scroll(scroller, scroller.scrollHeight - scroller.clientHeight));
+  expect(peer.requests("evener/jobs/output")).toHaveLength(5);
+  const next = await peer.request("evener/jobs/output", 4);
+  expect(next.params).toEqual({ ref: "ref_root", jobId: "job_x", beforeBytes: 720896, maxBytes: 65536 });
 });
 
 test("backward gap paging requests the live-adjacent bytes and keeps its independent ANSI range", async () => {

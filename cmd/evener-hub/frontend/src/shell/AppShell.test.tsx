@@ -27,6 +27,7 @@ import { MotionProvider } from "../motion";
 import { initNotifications, resetNotificationsForTests } from "../notifications";
 import * as composerFocus from "../panes/session/composer/composerFocus";
 import { OpenTranscriptButton } from "../panes/session/transcript/openTranscript";
+import { installJobLogRangeGeometry } from "../panes/transcript/JobLogTestUtils";
 import { enterAgentCascade } from "../panes/zoom/actions";
 import { cascadeClient, cascadeContext } from "../panes/zoom/cascadeTestUtils";
 import type { SessionZoomParams } from "../panes/zoom/intent";
@@ -4677,6 +4678,7 @@ test.each([
 ])(
   "desktop Activity drill keeps grandchild focus from $source with retained ref-only observer=$retained",
   async ({ retained, source }) => {
+    onTestFinished(installJobLogRangeGeometry());
     const height = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight");
     Object.defineProperty(HTMLElement.prototype, "offsetHeight", { configurable: true, get: () => 500 });
     onTestFinished(() => {

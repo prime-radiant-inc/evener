@@ -7,12 +7,30 @@ export function jobLogOutputText(root: HTMLElement): string {
     .join("");
 }
 
+/** Project Range geometry through the test's existing element layout seam. */
+export function installJobLogRangeGeometry(): () => void {
+  const rangeRect = Object.getOwnPropertyDescriptor(Range.prototype, "getBoundingClientRect");
+  Object.defineProperty(Range.prototype, "getBoundingClientRect", {
+    configurable: true,
+    value(this: Range) {
+      const element = this.startContainer.parentElement;
+      if (!element) throw new Error("job output range has no rendered parent");
+      return element.getBoundingClientRect();
+    },
+  });
+  return () => {
+    if (rangeRect) Object.defineProperty(Range.prototype, "getBoundingClientRect", rangeRect);
+    else Reflect.deleteProperty(Range.prototype, "getBoundingClientRect");
+  };
+}
+
 /** Supply the browser measurements jsdom lacks, keeping the virtual list real. */
 export function installJobLogGeometry(viewportHeight = 100, rowHeight = 20): () => void {
   const names = ["offsetHeight", "clientHeight", "scrollHeight", "getBoundingClientRect", "scrollTo"] as const;
   const descriptors = names.map(
     (name) => [name, Object.getOwnPropertyDescriptor(HTMLElement.prototype, name)] as const,
   );
+  const restoreRange = installJobLogRangeGeometry();
   Object.defineProperties(HTMLElement.prototype, {
     offsetHeight: {
       configurable: true,
@@ -51,6 +69,7 @@ export function installJobLogGeometry(viewportHeight = 100, rowHeight = 20): () 
     },
   });
   return () => {
+    restoreRange();
     for (const [name, descriptor] of descriptors) {
       if (descriptor) Object.defineProperty(HTMLElement.prototype, name, descriptor);
       else Reflect.deleteProperty(HTMLElement.prototype, name);

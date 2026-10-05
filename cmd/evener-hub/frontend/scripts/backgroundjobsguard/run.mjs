@@ -170,7 +170,7 @@ try {
   await driver.send("Page.addScriptToEvaluateOnNewDocument", { source: `(() => {
     const Native = window.WebSocket;
     window.__backgroundJobsSockets = [];
-    window.__pagingWire = { holdSend: false, holdReply: false, sent: [], replies: [], methods: new Map() };
+    window.__pagingWire = { holdSend: false, holdReply: false, holdRange: null, deliveredOutputs: 0, sent: [], replies: [], methods: new Map() };
     window.WebSocket = class extends Native {
       constructor(...args) {
         super(...args);
@@ -182,7 +182,10 @@ try {
           if (state.holdReply && state.methods.get(message.id) === 'evener/jobs/output') {
             state.holdReply = false;
             state.replies.push({socket: this, event});
-          } else this.callback?.(event);
+          } else {
+            this.callback?.(event);
+            if(state.methods.get(message.id)==='evener/jobs/output') state.deliveredOutputs++;
+          }
         });
       }
       set onmessage(callback) { this.callback = callback; }
@@ -191,8 +194,9 @@ try {
         const state = window.__pagingWire;
         const message = JSON.parse(data);
         state.methods.set(message.id, message.method);
-        if (state.holdSend && message.method === 'evener/jobs/output' && message.params.beforeBytes !== undefined) {
+        if ((state.holdSend || (state.holdRange && message.params?.beforeBytes>state.holdRange.start && message.params.beforeBytes<state.holdRange.end)) && message.method === 'evener/jobs/output' && message.params.beforeBytes !== undefined) {
           state.holdSend = false;
+          state.holdRange = null;
           state.sent.push({socket: this, data, params: message.params});
         } else super.send(data);
       }
@@ -290,6 +294,7 @@ try {
 
 async function runOutputPagingJourney(fixture) {
   const content = '[data-testid="joblog-content"]';
+  const longStart = 9000*126;
   const scrollerExpr = `(() => {
     const content = document.querySelector(${q(content)});
     if (!content) return null;
@@ -375,9 +380,52 @@ async function runOutputPagingJourney(fixture) {
   const assertAnchor = async baseline => {
     await wait(`(() => { const value=${stateExpr}; const row=value?.rows.find(row=>row.kind==='output' && row.start===${baseline.start}); return row?.visible && Math.abs(row.top-(${baseline.top}))<=2; })()`, 'same byte row stays within two pixels');
   };
-  const backward = async () => {
+  const glyphExpr = byte => `(() => {
+    const scroller=${scrollerExpr};
+    const node=[...document.querySelectorAll(${q(content)}+' [data-joblog-kind="output"]')].find(n=>Number(n.dataset.sourceStart)<=${byte} && Number(n.dataset.sourceEnd)>${byte});
+    if (!node || !scroller) return null;
+    let offset=${byte}-Number(node.dataset.sourceStart);
+    const walker=document.createTreeWalker(node,NodeFilter.SHOW_TEXT);
+    for(let text=walker.nextNode();text;text=walker.nextNode()) {
+      if(offset<text.length) {
+        const range=document.createRange(); range.setStart(text,offset); range.setEnd(text,offset+1);
+        const r=range.getBoundingClientRect(),v=scroller.getBoundingClientRect();
+        return {byte:${byte},top:r.top,bottom:r.bottom,viewportTop:v.top,viewportBottom:v.bottom,rowStart:Number(node.dataset.sourceStart)};
+      }
+      offset-=text.length;
+    }
+    return null;
+  })()`;
+  const assertAdjacentHistory = (requests, progress, message) => {
+    for (const request of requests.slice(progress.checked)) {
+      const value = page(request);
+      if (progress.end !== undefined) assert.equal(value.offsetBytes, progress.end, message);
+      progress.end = value.offsetBytes + value.bytesReturned;
+      progress.checked++;
+    }
+  };
+  let wrappedRepair;
+  const backward = async (checkGlyph = false) => {
     const after = frames.length;
-    await wheel(-40000);
+    const delivered=checkGlyph ? await read('window.__pagingWire.deliveredOutputs') : 0;
+    if(!checkGlyph || !(await read('window.__pagingWire.sent.length'))) await wheel(-40000);
+    if(checkGlyph) await wait(`window.__pagingWire.sent.length===1 || window.__pagingWire.deliveredOutputs>${delivered}`,'actual history response or exact held partial-line selector');
+    if(checkGlyph && (await read('window.__pagingWire.sent.length'))) {
+      const held=await read('window.__pagingWire.sent[0].params');
+      const byte=held.beforeBytes;
+      assert.ok(byte>longStart+11 && byte<longStart+65536,'history repair crosses the real long-line beginning');
+      const before=await read(glyphExpr(byte));
+      assert.ok(before && before.bottom>before.viewportTop && before.top<before.viewportBottom,'source glyph is visible before repair');
+      await read('window.__pagingWire.holdReply=true');
+      await read('(() => { const entry=window.__pagingWire.sent.shift(); entry.socket.releasePagingSend(entry.data); })()');
+      await wait('window.__pagingWire.replies.length===1','hold the owner response before renderer publication');
+      await read('(() => { const entry=window.__pagingWire.replies.shift(); entry.socket.callback(entry.event); })()');
+      await wait(`(() => { const glyph=${glyphExpr(byte)}; return glyph && glyph.rowStart<${byte}; })()`,'partial source fragment has been structurally repaired');
+      const afterGlyph=await read(glyphExpr(byte));
+      wrappedRepair={before,after:afterGlyph,shift:afterGlyph.top-before.top,allowedShift:2};
+      save('paging-wrapped-repair-glyph.json',wrappedRepair);
+      assert.ok(Math.abs(wrappedRepair.shift)<=2,`source glyph ${byte} moved ${wrappedRepair.shift}px during wrapped repair, allowed 2px`);
+    }
     await waitFrames(() => outputCalls(after).some(request => request.params.beforeBytes !== undefined && page(request)), 'trusted wheel fetches adjacent retained history, latest-only output cannot satisfy this');
     await bounded();
     return outputCalls(after).find(request => request.params.beforeBytes !== undefined && page(request));
@@ -419,29 +467,29 @@ async function runOutputPagingJourney(fixture) {
   assert.ok((await bounded()).older > 400*1024, 'older window crossed its raw trim threshold');
   const beforeRefetch = frames.length;
   const refetched = () => outputCalls(beforeRefetch).some(request => page(request) && page(request).offsetBytes <= remembered && page(request).offsetBytes+page(request).bytesReturned > remembered);
-  let forwardEnd;
+  const forwardHistory = () => outputCalls(beforeRefetch).filter(request => request.params.beforeBytes !== undefined && page(request));
+  const forwardProgress = { checked: 0, end: undefined };
   for(let index=0;index<16 && !refetched();index++) {
-    const after=frames.length;
+    assertAdjacentHistory(forwardHistory(), forwardProgress, 'forward pages meet at the raw byte boundary');
+    if (refetched()) break;
     save(`refetch-${index}-before.json`,await state());
     await wheel(40000);
-    await waitFrames(()=>outputCalls(after).some(request=>request.params.beforeBytes!==undefined && page(request)), 'forward wheel reads one adjacent retained page');
-    for (const request of outputCalls(after).filter(request => request.params.beforeBytes !== undefined && page(request))) {
-      const value = page(request);
-      if (forwardEnd !== undefined) assert.equal(value.offsetBytes, forwardEnd, 'forward pages meet at the raw byte boundary');
-      forwardEnd = value.offsetBytes + value.bytesReturned;
-    }
+    await waitFrames(()=>forwardHistory().length > forwardProgress.checked, 'forward wheel reads one adjacent retained page');
+    assertAdjacentHistory(forwardHistory(), forwardProgress, 'forward pages meet at the raw byte boundary');
     save(`refetch-${index}-after.json`,await state());
   }
+  assertAdjacentHistory(forwardHistory(), forwardProgress, 'forward pages meet at the raw byte boundary');
   assert.ok(refetched(),'forward wheel refetches the evicted retained row without leaping across unread bytes');
   await captureOutput('paging-refetch');
 
   // Walk the real retained gap in both directions. Independent page-oracle
   // equality below also pins pages that contain only ANSI controls.
-  const longStart = 9000*126;
+  await read(`window.__pagingWire.holdRange={start:${longStart+11},end:${longStart+65536}}`);
   for (let index = 0; index < 80; index++) {
     if (outputCalls().some(request => page(request)?.offsetBytes <= longStart)) break;
-    await backward();
+    await backward(true);
   }
+  assert.ok(wrappedRepair,'real journey observed a wrapped structural repair');
   assert.ok(outputCalls().some(request => {
     const value=page(request);
     return value && value.offsetBytes>=longStart+600*1024+20 && value.offsetBytes+value.bytesReturned<=longStart+600*1024+20+32768*4;
@@ -519,25 +567,19 @@ async function runOutputPagingJourney(fixture) {
   await wait(`${stateExpr}?.live === ${finalLive}`, 'fresh final bytes enter the retained live window');
   const finalHistoryAfter = frames.length;
   const finalHistoryPages = () => outputCalls(finalHistoryAfter).filter(request => request.params.beforeBytes !== undefined && page(request));
-  let finalHistoryEnd;
-  let checkedFinalHistory = 0;
+  const finalProgress = { checked: 0, end: undefined };
   const checkFinalHistory = () => {
-    for (const request of finalHistoryPages().slice(checkedFinalHistory)) {
-      const value = page(request);
-      if (finalHistoryEnd !== undefined) assert.equal(value.offsetBytes, finalHistoryEnd, 'finished-history pages remain adjacent');
-      finalHistoryEnd = value.offsetBytes + value.bytesReturned;
-      checkedFinalHistory++;
-    }
+    assertAdjacentHistory(finalHistoryPages(), finalProgress, 'finished-history pages remain adjacent');
   };
   for (let index = 0; index < 132; index++) {
     checkFinalHistory();
-    if (finalHistoryEnd >= liveStart) break;
+    if (finalProgress.end >= liveStart) break;
     await wheel(40000);
-    await waitFrames(() => finalHistoryPages().length > checkedFinalHistory, 'trusted wheel advances the retained post-rollover gap');
+    await waitFrames(() => finalHistoryPages().length > finalProgress.checked, 'trusted wheel advances the retained post-rollover gap');
     checkFinalHistory();
     await bounded();
   }
-  assert.ok(finalHistoryEnd >= liveStart, 'trusted paging reaches the independently captured live interval');
+  assert.ok(finalProgress.end >= liveStart, 'trusted paging reaches the independently captured live interval');
   await wait(`(() => { const value=${stateExpr}; return value?.rows.every(row => row.kind !== 'unloaded' || row.end !== ${liveStart}); })()`, 'retained gap joins the actual live rows');
   await wheel(40000);
   await wait(`document.querySelector(${q(content)})?.textContent.includes('FINAL_AFTER_PENDING_READ_é_😀')`,'literal final marker renders after drain recovery');

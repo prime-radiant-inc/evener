@@ -39,7 +39,6 @@ and should not be presented as reproduced production incidents.
 | [C06](#c06-rejected-image-message-recovery) | Medium | Rejected image messages cannot be restored intact for correction | S03, S11 |
 | [C07](#c07-model-discovery-and-default-launch) | Medium | Model discovery delays default launch and stays failed in an open form | S02, S03, S16 |
 | [C08](#c08-remote-provider-setup-at-launch) | Medium | Remote setup sends the user away from an otherwise usable setup path | S02, S07, S15 |
-| [C09](#c09-following-shell-job-output) | Medium | Job output stays static until Refresh; older output needs clicks | S02, S10, S12 |
 | [C10](#c10-quiet-task-panels) | Medium | A quiet Tasks panel remains failed until Try again | S02, S03, S05, S12 |
 | [C12](#c12-remote-credential-transfer-outcomes) | Medium | Reconnecting hides a completed credential-transfer report; uncertain transfers require manual investigation | S02, S05, S07, S15 |
 | [C13](#c13-storage-unavailable-send-fallback-ordering-and-stop-fence) | High (deferred) | A storage wedge lets a web send reorder, escape a cross-tab Stop, or duplicate | S02, S11 |
