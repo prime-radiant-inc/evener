@@ -184,23 +184,17 @@ func TestHostRequestForwardedMutationNeverTakesAReadSlot(t *testing.T) {
 			t.Fatal("the pool of admitted requests never filled")
 		}
 		done := hostRequest(client, appwire.MethodEvenerMarketplaceList)
-		refused := false
 		waitFor(t, func() bool {
-			select {
-			case err := <-done:
-				var wireErr appwire.WireError
-				if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeUnavailable {
-					t.Fatalf("read %d answered %v, want it held at the remote or refused Unavailable", i, err)
-				}
-				refused = true
-				return true
-			default:
-				return heldReads() == i
-			}
+			return len(done) > 0 || heldReads() == i
 		}, "a forwarded read to reach the remote or be refused")
-		if refused {
-			break
+		if len(done) == 0 {
+			continue
 		}
+		var wireErr appwire.WireError
+		if err := <-done; !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeUnavailable {
+			t.Fatalf("read %d answered %v, want it held at the remote or refused Unavailable", i, err)
+		}
+		break
 	}
 	if err := answerOf(t, hostRequest(client, appwire.MethodEvenerPluginEnable)); err != nil {
 		t.Fatalf("a forwarded mutation beside a full pool answered %v, want it run on the serial worker", err)
