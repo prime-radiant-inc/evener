@@ -1872,11 +1872,11 @@ function healRecord(ref: string): CachedSessionRecord {
 }
 
 // holdCachePutTransaction parks the singleton adapter's next write
-// transaction over the cache's two stores — the debounced put's own —
+// transaction over the cache's four stores — the debounced put's own —
 // mid-flight: the tree's holdNextWriteTransaction, itself built on
 // holdIndexedDBEvent.
 function holdCachePutTransaction(): ReturnType<typeof holdNextWriteTransaction> {
-  return holdNextWriteTransaction(["records", "meta"]);
+  return holdNextWriteTransaction(["records", "meta", "current", "currentMeta"]);
 }
 
 // The faulted-delete adapter: beforeCommit("deleteRecords") throws until
@@ -2319,7 +2319,7 @@ describe("the clear", () => {
     const fake = connectFakeClient();
     fake.on("thread/read", echoingReadHandler());
     await threadsStore.getState().ensureThread("local:uncertain-clear");
-    const hold = holdNextWriteTransaction(["records", "meta"]);
+    const hold = holdNextWriteTransaction(["records", "meta", "current", "currentMeta"]);
     const clearing = clearCachedSessions();
     try {
       await hold.reached;
@@ -2993,7 +2993,7 @@ describe("cache privacy and history regressions", () => {
     const { adapter } = cacheTestBed();
     await seedCache(adapter, "local:malformed");
     await new Promise<void>((resolve, reject) => {
-      const request = indexedDB.open("evener-session-cache", 1);
+      const request = indexedDB.open("evener-session-cache");
       request.onsuccess = () => {
         const db = request.result;
         const tx = db.transaction("records", "readwrite");

@@ -146,7 +146,7 @@ function readStoreRows(factory: IDBFactory, store: "records" | "meta"): Promise<
 async function poisonRecordBody(factory: IDBFactory, ref: string): Promise<void> {
   const body = { ref }; // no history: structurally invalid, like a truncated write
   await new Promise<void>((resolve, reject) => {
-    const request = factory.open("evener-session-cache", 1);
+    const request = factory.open("evener-session-cache");
     request.addEventListener(
       "success",
       () => {
@@ -175,7 +175,7 @@ async function poisonRecordBody(factory: IDBFactory, ref: string): Promise<void>
 // the reserved epoch row, including one the records keys never name.
 async function seedOrphanMetaRow(factory: IDBFactory, ref: string): Promise<void> {
   await new Promise<void>((resolve, reject) => {
-    const request = factory.open("evener-session-cache", 1);
+    const request = factory.open("evener-session-cache");
     request.addEventListener(
       "success",
       () => {
@@ -389,7 +389,7 @@ describe("SessionCacheIndexedDB get", () => {
       await vi.advanceTimersByTimeAsync(60_000);
       await pending;
       expect(diagnostics).toEqual([
-        { database: "evener-session-cache", version: 1, path: "open-timeout", versionchangeTransaction: false },
+        { database: "evener-session-cache", version: 2, path: "open-timeout", versionchangeTransaction: false },
       ]);
     } finally {
       vi.useRealTimers();
@@ -418,7 +418,7 @@ describe("SessionCacheIndexedDB get", () => {
     await seedRecord(adapter, indexedDB, record());
     await settleProjectionWorkForTests();
     const poison = new Promise<void>((resolve, reject) => {
-      const request = indexedDB.open("evener-session-cache", 1);
+      const request = indexedDB.open("evener-session-cache");
       request.addEventListener(
         "success",
         () => {
@@ -785,7 +785,7 @@ describe("SessionCacheIndexedDB open discipline", () => {
     adapter.close(); // supersede it before its upgrade arrives
     expect(await pending).toBeUndefined();
     expect(diagnostics).toEqual([
-      { database: "evener-session-cache", version: 1, path: "upgrade-abandoned", versionchangeTransaction: true },
+      { database: "evener-session-cache", version: 2, path: "upgrade-abandoned", versionchangeTransaction: true },
     ]);
     // The schema the abandoned attempt committed is durable: the records store
     // a fresh connection reads was already there, with no upgrade to run.
@@ -803,14 +803,14 @@ describe("SessionCacheIndexedDB open discipline", () => {
       const pending = adapter.get("local:thr_1", 1_000);
       await vi.advanceTimersByTimeAsync(10_000); // the watchdog abandons the attempt
       expect(diagnostics).toEqual([
-        { database: "evener-session-cache", version: 1, path: "open-timeout", versionchangeTransaction: false },
+        { database: "evener-session-cache", version: 2, path: "open-timeout", versionchangeTransaction: false },
       ]);
       // The upgrade finally arrives on the abandoned attempt, transaction live.
       request.transaction = { objectStore: () => ({ put: () => undefined }) } as unknown as IDBTransaction;
       request.dispatchEvent(new Event("upgradeneeded"));
       expect(diagnostics).toEqual([
-        { database: "evener-session-cache", version: 1, path: "open-timeout", versionchangeTransaction: false },
-        { database: "evener-session-cache", version: 1, path: "upgrade-abandoned", versionchangeTransaction: true },
+        { database: "evener-session-cache", version: 2, path: "open-timeout", versionchangeTransaction: false },
+        { database: "evener-session-cache", version: 2, path: "upgrade-abandoned", versionchangeTransaction: true },
       ]);
       expect(await pending).toBeUndefined(); // still just a miss
     } finally {
@@ -822,7 +822,11 @@ describe("SessionCacheIndexedDB open discipline", () => {
   it("retires its connection when another tab takes the database to a new version, and the next read re-opens into the fence", async () => {
     const factory = new IDBFactory();
     const diagnostics: SessionCacheOpenDiagnostic[] = [];
-    const adapter = new SessionCacheIndexedDB({ indexedDB: factory, onOpenDiagnostic: (d) => diagnostics.push(d) });
+    const adapter = new SessionCacheIndexedDB({
+      indexedDB: factory,
+      databaseVersion: 1,
+      onOpenDiagnostic: (d) => diagnostics.push(d),
+    });
     expect(await adapter.get("local:absent", 1_000)).toBeUndefined(); // opens and holds the connection
     expect(adapter.isOpen()).toBe(true);
     await openAtVersionTwo(factory); // a sibling tab asks for a higher version
@@ -839,7 +843,11 @@ describe("SessionCacheIndexedDB open discipline", () => {
     const factory = new IDBFactory();
     await openAtVersionTwo(factory);
     const diagnostics: SessionCacheOpenDiagnostic[] = [];
-    const adapter = new SessionCacheIndexedDB({ indexedDB: factory, onOpenDiagnostic: (d) => diagnostics.push(d) });
+    const adapter = new SessionCacheIndexedDB({
+      indexedDB: factory,
+      databaseVersion: 1,
+      onOpenDiagnostic: (d) => diagnostics.push(d),
+    });
     expect(await adapter.get("local:thr_1", 1_000)).toBeUndefined();
     expect(diagnostics).toEqual([
       { database: "evener-session-cache", version: 1, path: "version-fence", versionchangeTransaction: false },

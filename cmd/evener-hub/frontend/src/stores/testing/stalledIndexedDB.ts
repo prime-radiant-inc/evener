@@ -39,7 +39,7 @@ export function deleteIndexedDatabase(name: string): Promise<void> {
 // connection closes once it commits.
 export function bumpCacheEpochRow(indexedDB: IDBFactory, epoch: number): Promise<void> {
   return new Promise<void>((resolve, reject) => {
-    const request = indexedDB.open("evener-session-cache", 1);
+    const request = indexedDB.open("evener-session-cache");
     request.addEventListener(
       "success",
       () => {

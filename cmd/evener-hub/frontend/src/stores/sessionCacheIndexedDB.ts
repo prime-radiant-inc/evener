@@ -1,14 +1,17 @@
-import type { CachedSessionRecord } from "@evener/appwire-client";
+import {
+  type CachedSessionRecord,
+  type CurrentTranscriptState,
+  decodeCurrentTranscriptState,
+} from "@evener/appwire-client";
 import { IDBConnection, requestResult, transactionCompletion, tryAbortTransaction } from "./idbConnection";
 import { trackProjectionWork } from "./projectionWork";
 
 const DATABASE_NAME = "evener-session-cache";
-// Version 1 is a compatibility fence, not a schema migration: a future record
-// shape change bumps this so an old tab fails its opens closed (a cache miss)
-// instead of sharing rows with a shape it cannot decode.
-const DATABASE_VERSION = 1;
+const DATABASE_VERSION = 2;
 const RECORDS_STORE = "records";
 const META_STORE = "meta";
+const CURRENT_STORE = "current";
+const CURRENT_META_STORE = "currentMeta";
 // The meta row holding the durable clear epoch. Not a record's meta row: it
 // carries no savedAt, is exempt from expiry and eviction by construction, and
 // both enumerations skip it by key comparison.
@@ -45,11 +48,11 @@ export interface SessionCacheIndexedDBOptions {
   // (the outbox's beforeCommit): invoked as the last step inside each write
   // transaction's body, where a throw still aborts that transaction before
   // it commits.
-  beforeCommit?: (operation: "put" | "clear" | "deleteRecords") => void;
+  beforeCommit?: (operation: "put" | "putCurrent" | "clear" | "deleteRecords") => void;
   onOpenDiagnostic?: (diagnostic: SessionCacheOpenDiagnostic) => void;
 }
 export type SessionCacheWriteOutcome =
-  | { outcome: "written" }
+  | { outcome: "written"; evictedCurrent?: readonly CurrentSessionKey[] }
   | { outcome: "aborted"; observedEpoch: number }
   | { outcome: "oversize" }
   | { outcome: "failed" };
@@ -63,6 +66,30 @@ interface EpochRow {
   ref: typeof EPOCH_ROW_KEY;
   epoch: number;
 }
+
+export type CurrentSessionKey = readonly [ownerToken: string, ref: string];
+export interface CurrentSessionRecord {
+  ownerToken: string;
+  ref: string;
+  connectionGeneration: number;
+  ownershipGeneration: number;
+  clearEpoch: number;
+  appliedSequence: number;
+  savedAt: number;
+  state: CurrentTranscriptState;
+}
+export interface CurrentSessionLookup {
+  record: CurrentSessionRecord | undefined;
+  epoch: number;
+}
+interface CurrentMetaRow {
+  ownerToken: string;
+  ref: string;
+  bytes: number;
+  savedAt: number;
+}
+
+const CACHE_STORES = [RECORDS_STORE, META_STORE, CURRENT_STORE, CURRENT_META_STORE];
 
 export function warnSessionCacheOpenDiagnostic(diagnostic: SessionCacheOpenDiagnostic): void {
   console.warn("evener session cache:", diagnostic);
@@ -157,7 +184,7 @@ export class SessionCacheIndexedDB {
   #observedEpoch: number | undefined;
   readonly #writeListeners = new Set<() => void>();
   readonly #onOpenDiagnostic: (d: SessionCacheOpenDiagnostic) => void;
-  readonly #beforeCommit: ((operation: "put" | "clear" | "deleteRecords") => void) | undefined;
+  readonly #beforeCommit: ((operation: "put" | "putCurrent" | "clear" | "deleteRecords") => void) | undefined;
 
   constructor(options: SessionCacheIndexedDBOptions = {}) {
     this.#databaseName = options.databaseName ?? DATABASE_NAME;
@@ -172,9 +199,7 @@ export class SessionCacheIndexedDB {
       waitMs: STORAGE_WAIT_MS,
       upgrade: (database) => this.#upgrade(database),
       prepare: (database) =>
-        this.#onDatabaseTransaction(database, [RECORDS_STORE, META_STORE], "readwrite", (tx) =>
-          this.#sweepExpired(tx, Date.now()),
-        ),
+        this.#onDatabaseTransaction(database, CACHE_STORES, "readwrite", (tx) => this.#sweepExpired(tx, Date.now())),
       errors: {
         open: "session cache open failed",
         superseded: "session cache open was superseded",
@@ -228,7 +253,7 @@ export class SessionCacheIndexedDB {
         if (row !== undefined) await this.#deleteRows(tx, ref); // corrupt: a miss, never a throw, never a leftover
         return { record: undefined, epoch };
       }
-      if (meta !== undefined && meta.savedAt + TTL_MS <= now) {
+      if (meta !== undefined && (!isCacheMetaRow(meta) || meta.ref !== ref || meta.savedAt + TTL_MS <= now)) {
         await this.#deleteRows(tx, ref);
         return { record: undefined, epoch };
       }
@@ -237,6 +262,62 @@ export class SessionCacheIndexedDB {
     if (found === undefined) return undefined;
     this.#observedEpoch = Math.max(this.#observedEpoch ?? 0, found.epoch);
     return found.record === undefined ? undefined : { record: found.record, epoch: found.epoch };
+  }
+
+  async getCurrent(key: CurrentSessionKey, now: number): Promise<CurrentSessionLookup | undefined> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const found = await Promise.race([
+      this.#readwrite(async (tx) => {
+        const [epochRow, row, meta] = await Promise.all([
+          requestResult(tx.objectStore(META_STORE).get(EPOCH_ROW_KEY) as IDBRequest<EpochRow | undefined>),
+          requestResult(tx.objectStore(CURRENT_STORE).get([...key])),
+          requestResult(tx.objectStore(CURRENT_META_STORE).get([...key]) as IDBRequest<CurrentMetaRow | undefined>),
+        ]);
+        const epoch = epochRow?.epoch ?? 0;
+        const record = decodeCurrentRecord(row);
+        const validMeta = isCurrentMetaRow(meta) && meta.ownerToken === key[0] && meta.ref === key[1];
+        if (
+          !record ||
+          record.ownerToken !== key[0] ||
+          record.ref !== key[1] ||
+          !validMeta ||
+          meta.savedAt + TTL_MS <= now
+        ) {
+          if (row !== undefined || meta !== undefined) await this.#deleteCurrentRows(tx, key);
+          return { record: undefined, epoch };
+        }
+        return { record, epoch };
+      }, now),
+      new Promise<undefined>((resolve) => {
+        timer = setTimeout(() => resolve(undefined), SESSION_CACHE_LOOKUP_DEADLINE_MS);
+      }),
+    ]).finally(() => clearTimeout(timer));
+    if (found === undefined) return undefined;
+    this.#observedEpoch = Math.max(this.#observedEpoch ?? 0, found.epoch);
+    return found;
+  }
+
+  async readEpoch(): Promise<number | undefined> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        this.#transaction([META_STORE], "readonly", async (tx) => {
+          const row = await requestResult(
+            tx.objectStore(META_STORE).get(EPOCH_ROW_KEY) as IDBRequest<EpochRow | undefined>,
+          );
+          const epoch = row?.epoch ?? 0;
+          this.#observedEpoch = Math.max(this.#observedEpoch ?? 0, epoch);
+          return epoch;
+        }),
+        new Promise<undefined>((resolve) => {
+          timer = setTimeout(() => resolve(undefined), SESSION_CACHE_LOOKUP_DEADLINE_MS);
+        }),
+      ]);
+    } catch {
+      return undefined;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   async put(record: CachedSessionRecord, scheduledEpoch: number, now: number): Promise<SessionCacheWriteOutcome> {
@@ -252,7 +333,10 @@ export class SessionCacheIndexedDB {
         if (observed > scheduledEpoch)
           return { outcome: "aborted", observedEpoch: observed } as SessionCacheWriteOutcome;
 
-        const rows = await requestResult(metaStore.getAll() as IDBRequest<CacheMetaRow[]>);
+        const [rows, currentRows] = await Promise.all([
+          requestResult(metaStore.getAll() as IDBRequest<CacheMetaRow[]>),
+          requestResult(tx.objectStore(CURRENT_META_STORE).getAll() as IDBRequest<CurrentMetaRow[]>),
+        ]);
         // A re-write replaces its own accounting, so its previous meta row is
         // not live; the epoch row is not a record's accounting either. Keys
         // are unique, so the exclusion below is exactly the set of rows the
@@ -264,7 +348,8 @@ export class SessionCacheIndexedDB {
         }
         metaStore.put({ ref: record.ref, bytes, savedAt: record.savedAt } satisfies CacheMetaRow);
         tx.objectStore(RECORDS_STORE).put(JSON.parse(encoded) as CachedSessionRecord);
-        let total = live.reduce((sum, row) => sum + row.bytes, 0) + bytes;
+        let total =
+          live.reduce((sum, row) => sum + row.bytes, 0) + currentRows.reduce((sum, row) => sum + row.bytes, 0) + bytes;
         if (total > this.#maxBytes) {
           live.sort((a, b) => a.savedAt - b.savedAt); // whole-record LRU by last write
           for (const victim of live) {
@@ -273,6 +358,10 @@ export class SessionCacheIndexedDB {
             total -= victim.bytes;
           }
         }
+        if (total > this.#maxBytes) {
+          await this.#deleteRows(tx, record.ref);
+          return { outcome: "oversize" } as SessionCacheWriteOutcome;
+        }
         return { outcome: "written" } as SessionCacheWriteOutcome;
       },
       now,
@@ -280,6 +369,67 @@ export class SessionCacheIndexedDB {
     if (result.outcome === "written") {
       for (const listener of this.#writeListeners) listener();
     }
+    return result;
+  }
+
+  async putCurrent(record: CurrentSessionRecord, now: number): Promise<SessionCacheWriteOutcome> {
+    const key: CurrentSessionKey = [record.ownerToken, record.ref];
+    const encoded = JSON.stringify(record);
+    const bytes = countUtf8Bytes(encoded);
+    const result = await this.#readwriteOutcome(
+      "putCurrent",
+      async (tx) => {
+        const metaStore = tx.objectStore(META_STORE);
+        const currentMetaStore = tx.objectStore(CURRENT_META_STORE);
+        const epochRow = await requestResult(metaStore.get(EPOCH_ROW_KEY) as IDBRequest<EpochRow | undefined>);
+        const observed = epochRow?.epoch ?? 0;
+        if (observed > record.clearEpoch) return { outcome: "aborted", observedEpoch: observed };
+
+        const [historyRows, currentRows] = await Promise.all([
+          requestResult(metaStore.getAll() as IDBRequest<CacheMetaRow[]>),
+          requestResult(currentMetaStore.getAll() as IDBRequest<CurrentMetaRow[]>),
+        ]);
+        const history = historyRows.filter((row) => row.ref !== EPOCH_ROW_KEY);
+        const current = currentRows.filter((row) => row.ownerToken !== record.ownerToken || row.ref !== record.ref);
+        if (bytes > this.#maxBytes) {
+          await this.#deleteCurrentRows(tx, key);
+          return { outcome: "oversize" };
+        }
+        let total =
+          history.reduce((sum, row) => sum + row.bytes, 0) + current.reduce((sum, row) => sum + row.bytes, 0) + bytes;
+        const evictedCurrent: CurrentSessionKey[] = [];
+        history.sort((a, b) => a.savedAt - b.savedAt);
+        for (const victim of history) {
+          if (total <= this.#maxBytes) break;
+          await this.#deleteRows(tx, victim.ref);
+          total -= victim.bytes;
+        }
+        if (total > this.#maxBytes) {
+          current.sort((a, b) => a.savedAt - b.savedAt);
+          for (const victim of current) {
+            if (total <= this.#maxBytes) break;
+            const victimKey: CurrentSessionKey = [victim.ownerToken, victim.ref];
+            await this.#deleteCurrentRows(tx, victimKey);
+            evictedCurrent.push(victimKey);
+            total -= victim.bytes;
+          }
+        }
+        if (total > this.#maxBytes) {
+          await this.#deleteCurrentRows(tx, key);
+          return { outcome: "oversize" };
+        }
+        currentMetaStore.put({
+          ownerToken: record.ownerToken,
+          ref: record.ref,
+          bytes,
+          savedAt: record.savedAt,
+        } satisfies CurrentMetaRow);
+        tx.objectStore(CURRENT_STORE).put(JSON.parse(encoded) as CurrentSessionRecord);
+        return { outcome: "written", ...(evictedCurrent.length > 0 ? { evictedCurrent } : {}) };
+      },
+      now,
+    );
+    if (result.outcome === "written") for (const listener of this.#writeListeners) listener();
     return result;
   }
 
@@ -301,6 +451,8 @@ export class SessionCacheIndexedDB {
       const epochRow = await requestResult(metaStore.get(EPOCH_ROW_KEY) as IDBRequest<EpochRow | undefined>);
       observed = epochRow?.epoch ?? 0;
       recordsStore.clear();
+      tx.objectStore(CURRENT_STORE).clear();
+      tx.objectStore(CURRENT_META_STORE).clear();
       const metaKeys = await requestResult(metaStore.getAllKeys() as IDBRequest<IDBValidKey[]>);
       for (const ref of metaKeys) {
         if (ref === EPOCH_ROW_KEY) continue; // exempt by construction: the reserved epoch row survives every clear
@@ -319,20 +471,30 @@ export class SessionCacheIndexedDB {
   async deleteRecords(refs: string[]): Promise<boolean> {
     const landed = await this.#readwrite(async (tx) => {
       for (const ref of refs) await this.#deleteRows(tx, ref);
+      for (const ref of refs) {
+        const keys = await requestResult(tx.objectStore(CURRENT_STORE).index("ref").getAllKeys(ref));
+        for (const key of keys) await this.#deleteCurrentRows(tx, key as unknown as CurrentSessionKey);
+      }
       this.#beforeCommit?.("deleteRecords");
       return true;
     });
     return landed ?? false;
   }
 
-  // The settings row's reader: the records store's row count, a miss
-  // (undefined) on every failure - a stalled or failed open, a failed
-  // transaction - never a throw.
+  // The settings row's reader: unique refs across recorded history and current
+  // checkpoints, a miss (undefined) on every failure - a stalled or failed
+  // open, a failed transaction - never a throw.
   async count(): Promise<number | undefined> {
     try {
-      return await this.#transaction([RECORDS_STORE], "readonly", async (tx) =>
-        requestResult(tx.objectStore(RECORDS_STORE).count()),
-      );
+      return await this.#transaction([RECORDS_STORE, CURRENT_META_STORE], "readonly", async (tx) => {
+        const [history, current] = await Promise.all([
+          requestResult(tx.objectStore(RECORDS_STORE).getAllKeys() as IDBRequest<IDBValidKey[]>),
+          requestResult(tx.objectStore(CURRENT_META_STORE).getAll() as IDBRequest<CurrentMetaRow[]>),
+        ]);
+        const refs = new Set(history.filter((key) => key !== EPOCH_ROW_KEY).map(String));
+        for (const row of current) refs.add(row.ref);
+        return refs.size;
+      });
     } catch {
       return undefined;
     }
@@ -343,10 +505,27 @@ export class SessionCacheIndexedDB {
     void tx.objectStore(META_STORE).delete(ref);
   }
 
+  async #deleteCurrentRows(tx: IDBTransaction, key: CurrentSessionKey): Promise<void> {
+    void tx.objectStore(CURRENT_STORE).delete([...key]);
+    void tx.objectStore(CURRENT_META_STORE).delete([...key]);
+  }
+
   async #sweepExpired(tx: IDBTransaction, now: number): Promise<void> {
     const rows = await requestResult(tx.objectStore(META_STORE).getAll() as IDBRequest<CacheMetaRow[]>);
     for (const row of rows) {
-      if (row.ref !== EPOCH_ROW_KEY && row.savedAt + TTL_MS <= now) await this.#deleteRows(tx, row.ref);
+      if (row.ref !== EPOCH_ROW_KEY && (!isCacheMetaRow(row) || row.savedAt + TTL_MS <= now)) {
+        if (typeof row.ref === "string") await this.#deleteRows(tx, row.ref);
+      }
+    }
+    const currentRows = await requestResult(
+      tx.objectStore(CURRENT_META_STORE).getAll() as IDBRequest<CurrentMetaRow[]>,
+    );
+    for (const row of currentRows) {
+      if (!isCurrentMetaRow(row) || row.savedAt + TTL_MS <= now) {
+        if (isObject(row) && typeof row.ownerToken === "string" && typeof row.ref === "string") {
+          await this.#deleteCurrentRows(tx, [row.ownerToken, row.ref]);
+        }
+      }
     }
   }
 
@@ -356,7 +535,7 @@ export class SessionCacheIndexedDB {
 
   async #readwrite<T>(body: (tx: IDBTransaction) => Promise<T>, now = Date.now()): Promise<T | undefined> {
     try {
-      return await this.#transaction([RECORDS_STORE, META_STORE], "readwrite", async (tx) => {
+      return await this.#transaction(CACHE_STORES, "readwrite", async (tx) => {
         await this.#sweepExpired(tx, now);
         return body(tx);
       });
@@ -374,7 +553,7 @@ export class SessionCacheIndexedDB {
   // what proves the rollback. The operation argument is the one thing this
   // wrapper threads to the #beforeCommit seam.
   async #readwriteOutcome(
-    operation: "put",
+    operation: "put" | "putCurrent",
     body: (tx: IDBTransaction) => Promise<SessionCacheWriteOutcome>,
     now: number,
   ): Promise<SessionCacheWriteOutcome> {
@@ -454,5 +633,47 @@ export class SessionCacheIndexedDB {
       const meta = database.createObjectStore(META_STORE, { keyPath: "ref" });
       meta.put({ ref: EPOCH_ROW_KEY, epoch: 0 } satisfies EpochRow);
     }
+    if (!database.objectStoreNames.contains(CURRENT_STORE)) {
+      const current = database.createObjectStore(CURRENT_STORE, { keyPath: ["ownerToken", "ref"] });
+      current.createIndex("ref", "ref", { unique: false });
+    }
+    if (!database.objectStoreNames.contains(CURRENT_META_STORE)) {
+      const currentMeta = database.createObjectStore(CURRENT_META_STORE, { keyPath: ["ownerToken", "ref"] });
+      currentMeta.createIndex("ref", "ref", { unique: false });
+    }
   }
+}
+
+function decodeCurrentRecord(value: unknown): CurrentSessionRecord | undefined {
+  if (!isObject(value)) return undefined;
+  if (typeof value.ownerToken !== "string" || typeof value.ref !== "string") return undefined;
+  if (
+    ![
+      value.connectionGeneration,
+      value.ownershipGeneration,
+      value.clearEpoch,
+      value.appliedSequence,
+      value.savedAt,
+    ].every(Number.isFinite)
+  )
+    return undefined;
+  const state = decodeCurrentTranscriptState(value.state);
+  if (state === undefined) return undefined;
+  return { ...value, state } as unknown as CurrentSessionRecord;
+}
+
+function isCurrentMetaRow(value: unknown): value is CurrentMetaRow {
+  return (
+    isObject(value) &&
+    typeof value.ownerToken === "string" &&
+    typeof value.ref === "string" &&
+    Number.isFinite(value.bytes) &&
+    Number.isFinite(value.savedAt)
+  );
+}
+
+function isCacheMetaRow(value: unknown): value is CacheMetaRow {
+  return (
+    isObject(value) && typeof value.ref === "string" && Number.isFinite(value.bytes) && Number.isFinite(value.savedAt)
+  );
 }
