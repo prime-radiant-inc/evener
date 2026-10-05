@@ -325,10 +325,16 @@ export interface ThreadsStoreState {
   // maxBytes > 0 bounds the window (appwire.JobsOutputParams.MaxBytes) - the
   // activity strip's preview uses it to fetch a couple hundred bytes instead
   // of the daemon's default tail.
-  jobOutput(ref: string, jobId: string, beforeBytes?: number, maxBytes?: number): Promise<JobOutputPage>;
+  jobOutput(
+    ref: string,
+    jobId: string,
+    beforeBytes?: number,
+    maxBytes?: number,
+    isCurrent?: () => boolean,
+  ): Promise<JobOutputPage>;
   // Reads one job's metadata (evener/jobs/get): the activity-job shape,
   // including the untruncated command.
-  jobGet(ref: string, jobId: string): Promise<JobActivityJob>;
+  jobGet(ref: string, jobId: string, isCurrent?: () => boolean): Promise<JobActivityJob>;
   // Answers one evener/sandbox/escalation/requested via evener/sandbox/
   // escalation/resolve. On success, removes the escalation from whichever
   // of threads/watchedThreads currently track `ref` (both, if both do -
@@ -5130,11 +5136,12 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     return resp.data;
   },
 
-  async jobOutput(ref, jobId, beforeBytes, maxBytes) {
+  async jobOutput(ref, jobId, beforeBytes, maxBytes, isCurrent) {
     // Read-only, so it waits out a reconnect (issue #195's RCA) instead of
     // failing with AppwireClient's synchronous "cannot call ... while
     // reconnecting" rejection - see requireReadyClient's own comment.
     const client = await requireReadyClient();
+    if (isCurrent !== undefined && !isCurrent()) throw new Error("job read is no longer current");
     const resp = await client.request("evener/jobs/output", {
       ref,
       jobId,
@@ -5144,11 +5151,12 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     return resp.data;
   },
 
-  async jobGet(ref, jobId) {
+  async jobGet(ref, jobId, isCurrent) {
     // Read-only, so it waits out a reconnect (issue #195's RCA) instead of
     // failing with AppwireClient's synchronous "cannot call ... while
     // reconnecting" rejection - see requireReadyClient's own comment.
     const client = await requireReadyClient();
+    if (isCurrent !== undefined && !isCurrent()) throw new Error("job read is no longer current");
     const resp = await client.request("evener/jobs/get", { ref, jobId });
     return resp.data;
   },

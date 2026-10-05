@@ -22,6 +22,7 @@ import type {
   TurnStartResponse,
 } from "@evener/appwire-client";
 import {
+  AppwireClient,
   acquireThreadSubscription,
   applyNotification,
   ClientNotReadyError,
@@ -33,6 +34,7 @@ import {
   WireError,
 } from "@evener/appwire-client";
 import { FakeClient, type RequestHandler } from "@evener/appwire-client/testing/fakeClient";
+import { JobOutputPeer } from "@evener/appwire-client/testing/jobOutputPeer";
 import { nextMacrotask } from "@evener/appwire-client/testing/macrotask";
 import { mulberry32 } from "@evener/appwire-client/testing/tokenFlood";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
@@ -15759,4 +15761,31 @@ describe("pending shared membership acquisition", () => {
     expect(threadsStore.getState().threads.get("ref_a")?.turns[0]?.id).toBe("new");
     threadsStore.getState().releaseThread("ref_a");
   });
+});
+
+test.each(["output", "metadata"] as const)("fences obsolete job %s after readiness returns", async (kind) => {
+  const peer = new JobOutputPeer();
+  const client = new AppwireClient({ url: "ws://job-output.test/rpc", socketFactory: () => peer });
+  connectionStore.getState().connect(client);
+  const connecting = client.connect();
+  let current = true;
+  const pending =
+    kind === "output"
+      ? threadsStore.getState().jobOutput("local:session_output", "job_output", 0, 1, () => current)
+      : threadsStore.getState().jobGet("local:session_output", "job_output", () => current);
+  const method = kind === "output" ? "evener/jobs/output" : "evener/jobs/get";
+  // A wrongly dispatched read gets a real wire response, so RED is a fulfilled
+  // obsolete call rather than a fixture timeout.
+  void peer.request(method).then((request) => peer.reply(request, {}));
+  current = false;
+  try {
+    const result = expect(pending).rejects.toThrow("job read is no longer current");
+    peer.open();
+    await connecting;
+    await result;
+    expect(peer.requests(method)).toEqual([]);
+  } finally {
+    client.close();
+    connectionStore.setState({ client: null, state: "idle" });
+  }
 });
