@@ -433,6 +433,9 @@ export { reconcileBatches } from "./reconcileBatches";
 export type {
   CachedSessionHistory,
   CachedSessionRecord,
+  CurrentTranscriptAdmission,
+  CurrentTranscriptFields,
+  CurrentTranscriptState,
   NotificationRoutingKey,
   OlderItemPageMerge,
   TurnHistoryFoldDetail,
@@ -447,6 +450,8 @@ export {
   collectAuthoritativeMutationIds,
   comparePositions,
   copyItemTextPresence,
+  currentTranscriptState,
+  decodeCurrentTranscriptState,
   foldWarningParams,
   hydrateThread,
   imageSessionRouteForSession,
@@ -472,6 +477,7 @@ export {
   readWindowBounds,
   resolvePendingEscalation,
   threadModelFromCache,
+  threadModelFromCurrentState,
 } from "./reducer";
 export type { SendQueueAvailability, SendQueueAvailabilityInput } from "./sendQueueAvailability";
 export { deriveSendQueueAvailability } from "./sendQueueAvailability";

@@ -1199,6 +1199,9 @@ interface CachedSessionItem extends ItemModel {
   // JSON drops ITEM_TEXT_PRESENCE. Only omitted text needs an enumerable
   // marker; legacy records without it keep their provided-text semantics.
   textOmitted?: true;
+  // Identity-only is a fold input property, not visible item data. Checkpoints
+  // persist it explicitly because a JSON round trip loses the private symbol.
+  identityOnly?: true;
 }
 
 interface CachedSessionTurn extends TurnModel {
@@ -1225,6 +1228,480 @@ export interface CachedSessionRecord {
   olderCursor?: string;
   savedAt: number;
   history: CachedSessionHistory;
+}
+
+export type CurrentTranscriptAdmission = Pick<
+  ThreadModel,
+  "capabilities" | "capabilitySource" | "instanceId" | "resumeRequired" | "resumeOnlyFoldable"
+>;
+
+export type CurrentTranscriptFields = Pick<
+  ThreadModel,
+  | "ref"
+  | "parentRef"
+  | "threadId"
+  | "imageSessionId"
+  | "name"
+  | "status"
+  | "modelProvider"
+  | "model"
+  | "reasoningEffort"
+  | "visionModel"
+  | "askPending"
+  | "pendingEscalations"
+  | "activeTurnId"
+  | "runningTurnId"
+  | "queue"
+  | "tasks"
+  | "diagnostics"
+  | "delegates"
+  | "skills"
+  | "turnSlots"
+  | "jobsUpdatedAt"
+  | "jobsTreeRevision"
+  | "olderCursor"
+  | "lastFrameAt"
+  | "modelRetry"
+  | "goal"
+  | "humanNote"
+  | "agentNote"
+  | "sessionUrls"
+  | "contextUsed"
+  | "contextWindow"
+  | "contextPressure"
+  | "usage"
+  | "cost"
+  | "failedToolCalls"
+  | "access"
+  | "workMillis"
+  | "activeTurnStartedAt"
+  | "lastTurnEndedAt"
+  | "reasoningEffortLevels"
+  | "supportsReasoning"
+  | "cwd"
+  | "gitBranch"
+  | "projectPath"
+  | "createdAt"
+  | "updatedAt"
+>;
+
+export interface CurrentTranscriptState {
+  version: 1;
+  fields: CurrentTranscriptFields;
+  history: Omit<HistoryState, "turns"> & Pick<CachedSessionHistory, "turns">;
+  overlay: Record<string, OverlayItem>;
+}
+
+const CURRENT_TRANSCRIPT_FIELD_KEYS = [
+  "ref",
+  "parentRef",
+  "threadId",
+  "imageSessionId",
+  "name",
+  "status",
+  "modelProvider",
+  "model",
+  "reasoningEffort",
+  "visionModel",
+  "askPending",
+  "pendingEscalations",
+  "activeTurnId",
+  "runningTurnId",
+  "queue",
+  "tasks",
+  "diagnostics",
+  "delegates",
+  "skills",
+  "turnSlots",
+  "jobsUpdatedAt",
+  "jobsTreeRevision",
+  "olderCursor",
+  "lastFrameAt",
+  "modelRetry",
+  "goal",
+  "humanNote",
+  "agentNote",
+  "sessionUrls",
+  "contextUsed",
+  "contextWindow",
+  "contextPressure",
+  "usage",
+  "cost",
+  "failedToolCalls",
+  "access",
+  "workMillis",
+  "activeTurnStartedAt",
+  "lastTurnEndedAt",
+  "reasoningEffortLevels",
+  "supportsReasoning",
+  "cwd",
+  "gitBranch",
+  "projectPath",
+  "createdAt",
+  "updatedAt",
+] as const satisfies readonly (keyof CurrentTranscriptFields)[];
+
+function encodeCachedItem(item: ItemModel, includeIdentityOnly = false): CachedSessionItem {
+  return {
+    ...item,
+    ...(item.pendingText === undefined ? {} : { pendingText: Array.from(item.pendingText) }),
+    ...(item.reasoningSummaries === undefined
+      ? {}
+      : { reasoningSummaries: item.reasoningSummaries.map((chunks) => Array.from(chunks)) }),
+    ...(itemTextPresence(item) === "omitted" ? { textOmitted: true } : {}),
+    ...(includeIdentityOnly && itemIsIdentityOnly(item) ? { identityOnly: true } : {}),
+  };
+}
+
+function decodeCachedItem(cached: CachedSessionItem): ItemModel {
+  const { textOmitted, identityOnly, ...item } = cached;
+  const decoded = textOmitted === true ? markItemTextOmitted(item) : copyItemTextPresence(cached, item);
+  return identityOnly === true ? markItemIdentityOnly(decoded) : decoded;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return isFiniteNumber(value) && value >= 0 && Number.isInteger(value);
+}
+
+function validPosition(value: unknown): value is ThreadItemPosition {
+  return (
+    isRecord(value) &&
+    isNonNegativeInteger(value.entry) &&
+    isNonNegativeInteger(value.item) &&
+    (value.sub === undefined || isNonNegativeInteger(value.sub))
+  );
+}
+
+const ITEM_MODEL_KEYS = new Set([
+  "id",
+  "turnId",
+  "transcriptKey",
+  "position",
+  "transcriptEntryIndex",
+  "clientMutationId",
+  "type",
+  "text",
+  "pendingText",
+  "toolName",
+  "callId",
+  "argumentsJSON",
+  "description",
+  "eventKind",
+  "steeringKind",
+  "raw",
+  "output",
+  "error",
+  "prevalOnly",
+  "exitCode",
+  "images",
+  "outputImages",
+  "status",
+  "source",
+  "reasoningSummaries",
+  "startedAt",
+  "completedAt",
+  "observedStartedAt",
+  "observedCompletedAt",
+  "warning",
+  "version",
+  "roundId",
+  "completedAtEntry",
+  "overlayKey",
+  "textOmitted",
+  "identityOnly",
+]);
+
+function validItem(value: unknown): value is CachedSessionItem {
+  if (!isRecord(value) || Object.keys(value).some((key) => !ITEM_MODEL_KEYS.has(key))) return false;
+  if (
+    typeof value.id !== "string" ||
+    typeof value.turnId !== "string" ||
+    typeof value.type !== "string" ||
+    typeof value.text !== "string"
+  )
+    return false;
+  if (value.position !== undefined && !validPosition(value.position)) return false;
+  for (const key of [
+    "transcriptKey",
+    "clientMutationId",
+    "toolName",
+    "callId",
+    "argumentsJSON",
+    "description",
+    "eventKind",
+    "steeringKind",
+    "output",
+    "error",
+    "status",
+    "source",
+    "startedAt",
+    "completedAt",
+    "observedStartedAt",
+    "observedCompletedAt",
+    "roundId",
+    "overlayKey",
+  ]) {
+    if (value[key] !== undefined && typeof value[key] !== "string") return false;
+  }
+  for (const key of ["transcriptEntryIndex", "exitCode", "version", "completedAtEntry"]) {
+    if (value[key] !== undefined && !isFiniteNumber(value[key])) return false;
+  }
+  if (value.prevalOnly !== undefined && typeof value.prevalOnly !== "boolean") return false;
+  const validImages = (images: unknown): boolean =>
+    Array.isArray(images) &&
+    images.every(
+      (image) =>
+        isRecord(image) &&
+        typeof image.src === "string" &&
+        ["name", "path", "source"].every((key) => image[key] === undefined || typeof image[key] === "string"),
+    );
+  if (value.images !== undefined && !validImages(value.images)) return false;
+  if (value.outputImages !== undefined && !validImages(value.outputImages)) return false;
+  if (
+    value.pendingText !== undefined &&
+    (!Array.isArray(value.pendingText) || !value.pendingText.every((part) => typeof part === "string"))
+  )
+    return false;
+  if (
+    value.reasoningSummaries !== undefined &&
+    (!Array.isArray(value.reasoningSummaries) ||
+      !value.reasoningSummaries.every(
+        (parts) => Array.isArray(parts) && parts.every((part) => typeof part === "string"),
+      ))
+  )
+    return false;
+  if (value.textOmitted !== undefined && value.textOmitted !== true) return false;
+  if (value.identityOnly !== undefined && value.identityOnly !== true) return false;
+  return true;
+}
+
+function validTurn(value: unknown): value is CachedSessionTurn {
+  const keys = new Set([
+    "id",
+    "status",
+    "items",
+    "startedAt",
+    "completedAt",
+    "durationMs",
+    "usage",
+    "cost",
+    "error",
+    "version",
+  ]);
+  return (
+    isRecord(value) &&
+    Object.keys(value).every((key) => keys.has(key)) &&
+    typeof value.id === "string" &&
+    typeof value.status === "string" &&
+    Array.isArray(value.items) &&
+    value.items.every(validItem) &&
+    (value.version === undefined || isFiniteNumber(value.version))
+  );
+}
+
+function validOverlayItem(value: unknown): value is OverlayItem {
+  const keys = new Set(["key", "kind", "turnId", "roundId", "streamId", "callId", "historyKey", "anchor", "item"]);
+  if (
+    !isRecord(value) ||
+    Object.keys(value).some((key) => !keys.has(key)) ||
+    typeof value.key !== "string" ||
+    typeof value.kind !== "string" ||
+    !isRecord(value.item)
+  )
+    return false;
+  const item = value.item;
+  return (
+    typeof item.id === "string" &&
+    typeof item.type === "string" &&
+    (item.turnId === undefined || typeof item.turnId === "string") &&
+    (item.text === undefined || typeof item.text === "string") &&
+    (value.anchor === undefined || validPosition(value.anchor))
+  );
+}
+
+function validCurrentFields(value: unknown): value is CurrentTranscriptFields {
+  if (!isRecord(value)) return false;
+  const strings = ["ref", "threadId", "name", "modelProvider", "model", "visionModel", "humanNote", "agentNote", "cwd"];
+  if (strings.some((key) => typeof value[key] !== "string")) return false;
+  const numbers = ["lastFrameAt", "contextUsed", "contextWindow", "contextPressure", "workMillis"];
+  if (numbers.some((key) => !isFiniteNumber(value[key]))) return false;
+  if (
+    typeof value.askPending !== "boolean" ||
+    typeof value.supportsReasoning !== "boolean" ||
+    !isRecord(value.status) ||
+    typeof value.status.type !== "string"
+  )
+    return false;
+  if (
+    !Array.isArray(value.pendingEscalations) ||
+    !Array.isArray(value.sessionUrls) ||
+    !Array.isArray(value.reasoningEffortLevels)
+  )
+    return false;
+  if (value.reasoningEffortLevels.some((item) => typeof item !== "string")) return false;
+  if (value.queue !== null && !isRecord(value.queue)) return false;
+  if (value.tasks !== null && !isRecord(value.tasks)) return false;
+  if (value.jobsUpdatedAt !== null && !isFiniteNumber(value.jobsUpdatedAt)) return false;
+  if (value.jobsTreeRevision !== null && !isFiniteNumber(value.jobsTreeRevision)) return false;
+  if (value.parentRef !== undefined && typeof value.parentRef !== "string") return false;
+  if (value.imageSessionId !== undefined && typeof value.imageSessionId !== "string") return false;
+  if (value.olderCursor !== undefined && typeof value.olderCursor !== "string") return false;
+  if (value.cost !== undefined && value.cost !== null && typeof value.cost !== "string") return false;
+  if (value.failedToolCalls !== undefined && !isFiniteNumber(value.failedToolCalls)) return false;
+  if (value.activeTurnId !== undefined && typeof value.activeTurnId !== "string") return false;
+  if (value.runningTurnId !== undefined && typeof value.runningTurnId !== "string") return false;
+  for (const key of [
+    "reasoningEffort",
+    "activeTurnStartedAt",
+    "lastTurnEndedAt",
+    "gitBranch",
+    "projectPath",
+    "createdAt",
+    "updatedAt",
+  ]) {
+    if (value[key] !== undefined && typeof value[key] !== "string") return false;
+  }
+  if (
+    value.capabilities !== undefined ||
+    value.pendingMutations !== undefined ||
+    value.instanceId !== undefined ||
+    value.resumeRequired !== undefined ||
+    value.resumeOnlyFoldable !== undefined ||
+    value.turns !== undefined ||
+    value.history !== undefined ||
+    value.overlay !== undefined
+  )
+    return false;
+  return true;
+}
+
+function validCurrentHistory(value: unknown): value is CurrentTranscriptState["history"] {
+  const keys = new Set([
+    "bootGeneration",
+    "epoch",
+    "incarnation",
+    "length",
+    "appliedGeneration",
+    "issuedGeneration",
+    "invalidatedAtGeneration",
+    "awaited",
+    "pendingIncarnation",
+    "deferredPages",
+    "failed",
+    "turns",
+  ]);
+  return (
+    isRecord(value) &&
+    Object.keys(value).every((key) => keys.has(key)) &&
+    typeof value.bootGeneration === "string" &&
+    isNonNegativeInteger(value.epoch) &&
+    isNonNegativeInteger(value.length) &&
+    isNonNegativeInteger(value.appliedGeneration) &&
+    isNonNegativeInteger(value.issuedGeneration) &&
+    Array.isArray(value.deferredPages) &&
+    value.deferredPages.every((page) => isRecord(page) && Array.isArray(page.data)) &&
+    Array.isArray(value.turns) &&
+    value.turns.every(validTurn) &&
+    (value.incarnation === undefined || typeof value.incarnation === "string") &&
+    (value.invalidatedAtGeneration === undefined || isNonNegativeInteger(value.invalidatedAtGeneration)) &&
+    (value.failed === undefined || typeof value.failed === "string") &&
+    (value.pendingIncarnation === undefined || typeof value.pendingIncarnation === "string") &&
+    (value.awaited === undefined ||
+      (isRecord(value.awaited) &&
+        typeof value.awaited.bootGeneration === "string" &&
+        isFiniteNumber(value.awaited.epoch)))
+  );
+}
+
+export function currentTranscriptState(model: ThreadModel): CurrentTranscriptState | undefined {
+  const history = model.history;
+  if (history?.incarnation === undefined) return undefined;
+  const fields = {} as CurrentTranscriptFields;
+  for (const key of CURRENT_TRANSCRIPT_FIELD_KEYS) {
+    if (key in model) (fields as Record<string, unknown>)[key] = model[key];
+  }
+  return {
+    version: 1,
+    fields,
+    history: {
+      ...history,
+      turns: history.turns.map((turn) => ({ ...turn, items: turn.items.map((item) => encodeCachedItem(item, true)) })),
+    },
+    overlay: Object.fromEntries(
+      Object.entries(model.overlay ?? {}).map(([key, item]) => [key, { ...item, item: { ...item.item } }]),
+    ),
+  };
+}
+
+export function decodeCurrentTranscriptState(value: unknown): CurrentTranscriptState | undefined {
+  if (
+    !isRecord(value) ||
+    value.version !== 1 ||
+    !validCurrentFields(value.fields) ||
+    !validCurrentHistory(value.history) ||
+    !isRecord(value.overlay)
+  )
+    return undefined;
+  const overlay: Record<string, OverlayItem> = {};
+  for (const [key, item] of Object.entries(value.overlay)) {
+    if (!validOverlayItem(item) || item.key !== key) return undefined;
+    overlay[key] = { ...item, item: { ...item.item } };
+  }
+  const fields: Record<string, unknown> = {};
+  for (const key of CURRENT_TRANSCRIPT_FIELD_KEYS) {
+    if (key in value.fields) fields[key] = value.fields[key];
+  }
+  const history = value.history;
+  const historyFields: Record<string, unknown> = {};
+  for (const key of [
+    "bootGeneration",
+    "epoch",
+    "incarnation",
+    "length",
+    "appliedGeneration",
+    "issuedGeneration",
+    "invalidatedAtGeneration",
+    "awaited",
+    "pendingIncarnation",
+    "deferredPages",
+    "failed",
+  ]) {
+    if (key in history) historyFields[key] = (history as unknown as Record<string, unknown>)[key];
+  }
+  return {
+    version: 1,
+    fields: fields as CurrentTranscriptFields,
+    history: {
+      ...(historyFields as Omit<HistoryState, "turns">),
+      turns: history.turns.map((turn) => ({ ...turn, items: turn.items.map((item) => encodeCachedItem(item)) })),
+    },
+    overlay,
+  };
+}
+
+export function threadModelFromCurrentState(
+  state: CurrentTranscriptState,
+  admission?: CurrentTranscriptAdmission,
+): ThreadModel {
+  const history: HistoryState = {
+    ...state.history,
+    turns: state.history.turns.map((turn) => ({ ...turn, items: turn.items.map(decodeCachedItem) })),
+  };
+  const model: ThreadModel = {
+    ...state.fields,
+    turns: [],
+    capabilities: { ...EMPTY_CAPABILITIES },
+    ...admission,
+  };
+  return withDisplay(model, history, state.overlay);
 }
 
 // The shell's admission state is new, not an existing one: capabilities are
@@ -1257,13 +1734,7 @@ export function threadModelFromCache(record: CachedSessionRecord, now: number): 
     deferredPages: [],
     turns: record.history.turns.map((turn) => ({
       ...turn,
-      items: turn.items.map((cached) => {
-        // The persisted flag is not model content. Strip it, then restore the
-        // non-enumerable marker without mutating the record or losing an
-        // in-memory caller's existing presence marker on this clone.
-        const { textOmitted, ...item } = cached;
-        return textOmitted === true ? markItemTextOmitted(item) : copyItemTextPresence(cached, item);
-      }),
+      items: turn.items.map(decodeCachedItem),
     })),
   };
   const base: ThreadModel = {
@@ -1323,10 +1794,7 @@ export function cachedSessionRecord(model: ThreadModel, now: number): CachedSess
       issuedGeneration: history.issuedGeneration,
       turns: history.turns.map((turn) => ({
         ...turn,
-        items: turn.items.map<CachedSessionItem>((item) => ({
-          ...item,
-          ...(itemTextPresence(item) === "omitted" ? { textOmitted: true } : {}),
-        })),
+        items: turn.items.map((item) => encodeCachedItem(item)),
       })),
     },
   };
