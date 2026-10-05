@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { WireError } from "../../errors";
 import { deferRequest, FakeClient, failing } from "../../testing/fakeClient";
 import type { MarketplaceEntry, PluginEntry } from "../../types.gen";
 import { createHubWriteGate, HubWriteBusyError, type HubWriteGate } from "./hubWriteGate";
@@ -134,6 +135,23 @@ describe("fetches never throw, mutations reject", () => {
 describe("checkPluginUpdates", () => {
   const CHECK = "evener/plugin/checkUpdates";
 
+  test("says whether the hub gave its answer, so a host knows to ask again after a dropped connection", async () => {
+    const { fake, store } = storeWithFake();
+    fake.on(LIST, () => ({ plugins: [LINTER] }));
+    fake.on(CHECK, () => ({ plugins: [LINTER] }));
+    expect(await store.getState().checkPluginUpdates()).toBe(true);
+
+    // An older hub refuses the method: that is its answer, not worth asking again.
+    fake.on(CHECK, () => {
+      throw new WireError("method not found", -32601);
+    });
+    expect(await store.getState().checkPluginUpdates()).toBe(true);
+
+    // The request never reached an answer (the connection dropped).
+    fake.on(CHECK, failing("connection closed"));
+    expect(await store.getState().checkPluginUpdates()).toBe(false);
+  });
+
   test("asks the hub with the long timeout, then re-reads the list, which carries the flags", async () => {
     const { fake, store } = storeWithFake();
     fake.on(LIST, () => ({ plugins: [LINTER] }));
@@ -184,9 +202,11 @@ describe("checkPluginUpdates", () => {
     const { fake, store } = storeWithFake();
     fake.on(LIST, () => ({ plugins: [LINTER] }));
     await store.getState().fetchPlugins();
-    fake.on(CHECK, failing("method not found"));
+    fake.on(CHECK, () => {
+      throw new WireError("method not found", -32601);
+    });
 
-    await expect(store.getState().checkPluginUpdates()).resolves.toBeUndefined();
+    await expect(store.getState().checkPluginUpdates()).resolves.toBe(true);
 
     expect(store.getState()).toMatchObject({ plugins: [LINTER], pluginsError: null, pluginsLoading: false });
   });

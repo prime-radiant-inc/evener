@@ -17,7 +17,7 @@
 // the current client on each call.
 
 import type { AppwireClientLike, RequestPort } from "../../clientLike";
-import { errorText } from "../../errors";
+import { errorText, WireError } from "../../errors";
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "../../frameworkFreeStore";
 import type { HostRequestMethod, PluginEntry, PluginListResponse } from "../../types.gen";
 import { HubWriteBusyError, type HubWriteGate } from "./hubWriteGate";
@@ -42,8 +42,11 @@ export interface PluginsState {
    * (evener/plugin/checkUpdates), then re-reads the list, which carries the
    * flags the hub now holds. A host calls it when its plugins view opens. It
    * never throws, and a failed check publishes nothing: an older hub without
-   * the method leaves every plugin unflagged, so no Upgrade is offered. */
-  checkPluginUpdates(): Promise<void>;
+   * the method leaves every plugin unflagged, so no Upgrade is offered.
+   * Resolves true once the hub has given its answer (the flags, or a refusal
+   * such as an older hub's), false when the request never reached one (a
+   * dropped connection), which a host may ask again once it reconnects. */
+  checkPluginUpdates(): Promise<boolean>;
   installPlugin(plugin: string, marketplace: string): Promise<void>;
   upgradePlugin(plugin: string, marketplace: string): Promise<void>;
   removePlugin(plugin: string, marketplace: string): Promise<void>;
@@ -158,10 +161,13 @@ export function createPluginsStore(client: PluginsClient, gate: HubWriteGate): P
         const issuedIn = lifecycle.epoch();
         try {
           await client.request("evener/plugin/checkUpdates", {}, { timeoutMs: PLUGIN_UPDATE_CHECK_TIMEOUT_MS });
-        } catch {
-          return;
+        } catch (err) {
+          // A wire error is the hub's own answer (an older hub refusing the
+          // method); anything else never reached one.
+          return err instanceof WireError;
         }
         if (lifecycle.epoch() === issuedIn) await store.getState().fetchPlugins();
+        return true;
       },
 
       installPlugin: mutation("evener/plugin/install"),
