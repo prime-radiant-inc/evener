@@ -2,7 +2,7 @@
 
 import { expect, test } from "vitest";
 import type { AnsiLine } from "./ansi";
-import { AnsiTailBuffer, parseAnsiLines } from "./ansi";
+import { AnsiTailBuffer, parseAnsiByteRows, parseAnsiLines } from "./ansi";
 
 function plainText(lines: AnsiLine[]): string {
   return lines.map((line) => line.map((run) => run.text).join("")).join("\n");
@@ -314,4 +314,66 @@ test("parseAnsiLines with empty string produces one empty line", () => {
 test("parseAnsiLines handles content that is only newlines", () => {
   const lines = parseAnsiLines("\n\n");
   expect(lines).toEqual([[], [], []]);
+});
+
+test("byte rows preserve malformed source spans instead of re-encoding replacements", () => {
+  const parsed = parseAnsiByteRows(new Uint8Array([0xff, 0xc3, 40, 10, 0xc3, 0xa9]), 70);
+  expect(
+    parsed.rows.map(({ offsetBytes, endBytes, line }) => ({ offsetBytes, endBytes, text: plainText([line]) })),
+  ).toEqual([
+    { offsetBytes: 70, endBytes: 74, text: "��(" },
+    { offsetBytes: 74, endBytes: 76, text: "é" },
+  ]);
+});
+
+test("byte fragments stay scalar-safe and keep style across long logical lines", () => {
+  const bytes = new Uint8Array(8200).fill(65);
+  bytes.set([27, 91, 51, 49, 59, 49, 109]);
+  bytes.set([0xf0, 0x9f, 0x98, 0x80], 4095);
+  const parsed = parseAnsiByteRows(bytes, 0);
+  expect(parsed.rows.map((row) => [row.offsetBytes, row.endBytes])).toEqual([
+    [0, 4095],
+    [4095, 8191],
+    [8191, 8200],
+  ]);
+  expect(parsed.rows.flatMap((row) => row.line.map((run) => run.text)).join("")).toBe(
+    `${"A".repeat(4088)}😀${"A".repeat(4101)}`,
+  );
+  for (const row of parsed.rows)
+    expect(row.line).toMatchObject([{ foreground: { kind: "named", name: "red" }, bold: true }]);
+});
+
+test("control-only byte fragments advance checkpoints without adding rows", () => {
+  const bytes = new Uint8Array(8200).fill(120);
+  bytes.set([27, 93]);
+  const parsed = parseAnsiByteRows(bytes, 20);
+  expect(parsed.rows).toEqual([]);
+  expect(parsed.boundaries.map((boundary) => boundary.offsetBytes)).toEqual([20, 4116, 8212, 8220]);
+  expect(parsed.endState.control.kind).toBe("osc");
+});
+
+test("byte checkpoints carry a split OSC and clone state before scanning", () => {
+  const first = parseAnsiByteRows(new Uint8Array([27, 93, 120, 27]), 0);
+  const second = parseAnsiByteRows(new Uint8Array([92, 65, 10]), 4, first.endState);
+  expect(first.endState.control).toEqual({ kind: "osc", escape: true });
+  expect(second.rows.map((row) => plainText([row.line]))).toEqual(["A"]);
+  expect(second.endState.control).toEqual({ kind: "text" });
+});
+
+test("byte checkpoints carry a split CSI and actual decorations", () => {
+  const first = parseAnsiByteRows(new Uint8Array([27, 91, 51, 49, 59, 49]), 0);
+  const second = parseAnsiByteRows(new Uint8Array([109, 65, 10, 66]), 6, first.endState);
+  expect(second.rows).toMatchObject([
+    { offsetBytes: 6, endBytes: 9, line: [{ text: "A", foreground: { kind: "named", name: "red" }, bold: true }] },
+    { offsetBytes: 9, endBytes: 10, line: [{ text: "B", foreground: { kind: "named", name: "red" }, bold: true }] },
+  ]);
+  expect(first.endState.control.kind).toBe("csi");
+});
+
+test("byte rows retain blank newline rows but do not invent an EOF row", () => {
+  expect(parseAnsiByteRows(new Uint8Array([10, 10]), 0).rows).toEqual([
+    { offsetBytes: 0, endBytes: 1, line: [] },
+    { offsetBytes: 1, endBytes: 2, line: [] },
+  ]);
+  expect(parseAnsiByteRows(new Uint8Array(), 2).rows).toEqual([]);
 });
