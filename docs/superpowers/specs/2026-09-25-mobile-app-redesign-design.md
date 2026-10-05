@@ -54,7 +54,7 @@ Success looks like:
 3. Starting a session with the right host, project, model, effort and plugins takes seconds.
 4. The app never loses your place: drafts, reading position, filters and scroll survive reconnects, backgrounding and relaunch.
 
-Non-goals for this version: a decision inbox (a future design; Jesse has not designed it yet), iPad, Android, voice, OS push notifications (designed here as phase 2, not built), a cross-session document library, shared artifacts, the interactive views an agent publishes, which are not planned (Jesse, 2026-10-05), and full administration in the redesign's language (keyboard shortcuts, launch configuration, AGENTS.md editing, MCP server configuration): a later phase (#2539), while today's administration screens stay reachable from the Hub (section 12).
+Non-goals for this version: a decision inbox (a future design; Jesse has not designed it yet), iPad, Android, voice, OS push notifications (designed here as phase 2, not built), a cross-session document library, shared artifacts (the interactive views an agent publishes), which are not planned (Jesse, 2026-10-05), and full administration in the redesign's language (keyboard shortcuts, launch configuration, AGENTS.md editing, MCP server configuration): a later phase (#2539), while today's administration screens stay reachable from the Hub (section 12).
 
 ## 4. Principles
 
