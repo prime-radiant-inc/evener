@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
@@ -152,7 +153,7 @@ func TestLoadSessionJobOutputPagePreservesMultiByteWindow(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("tail: found=%v err=%v", found, err)
 	}
-	if string(rawPageBytes(t, tail)) != string([]byte{0x98, 0x80, 0xf0, 0x9f, 0x98, 0x80}) || tail.TotalBytes != 12 || tail.Encoding != "base64" {
+	if !bytes.Equal(rawPageBytes(t, tail), []byte{0x98, 0x80, 0xf0, 0x9f, 0x98, 0x80}) || tail.TotalBytes != 12 || tail.Encoding != "base64" {
 		t.Errorf("tail: %+v", tail)
 	}
 	if tail.OffsetBytes != 6 || tail.BytesReturned != 6 || tail.RetainedStartBytes != 0 {

@@ -269,11 +269,12 @@ func TestReadOutputSnapshotFromFilePreservesPostReadObservationError(t *testing.
 			fs := &fdPostReadObservationFaultFS{Fs: afero.NewOsFs(), path: path}
 
 			var err error
-			if api == "snapshot" {
+			switch api {
+			case "snapshot":
 				_, err = readOutputSnapshotFromFileOnce(fs, path, f, 1024, false)
-			} else if api == "page" {
+			case "page":
 				_, err = readOutputPageSnapshotFromFileOnce(fs, path, f, nil, 1024)
-			} else {
+			default:
 				_, err = readOutputWindowSnapshotFromFileOnce(fs, path, f, 0, 1024)
 			}
 			if !errors.Is(err, errFDPostReadObservation) || errors.Is(err, errOutputChanged) {

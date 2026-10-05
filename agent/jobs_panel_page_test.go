@@ -133,14 +133,14 @@ func TestJobOutputPageRealShellLiveAndSettled(t *testing.T) {
 	}
 }
 
-func newSavedPageJob(t *testing.T, content []byte, total, cap int64) (dir, sessionID, jobID, path string) {
+func newSavedPageJob(t *testing.T, content []byte, total, retentionCap int64) (dir, sessionID, jobID, path string) {
 	t.Helper()
 	dir, sessionID, jobID = t.TempDir(), identifier.MustNewSessionID(), "job_page"
 	path = filepath.Join(jobsDir(dir, sessionID), "jobs", jobID+".log")
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	output, err := jobstore.CreateOutputNoSync(path, cap)
+	output, err := jobstore.CreateOutputNoSync(path, retentionCap)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +165,7 @@ func newSavedPageJob(t *testing.T, content []byte, total, cap int64) (dir, sessi
 			t.Fatal(err)
 		}
 	}
-	return
+	return dir, sessionID, jobID, path
 }
 
 func rawPageBytes(t *testing.T, page appwire.JobOutputPage) []byte {
@@ -185,4 +185,4 @@ func rawPageBytes(t *testing.T, page appwire.JobOutputPage) []byte {
 	}
 }
 
-func pageBefore(before int64) *int64 { return &before }
+func pageBefore(before int64) *int64 { return new(before) }

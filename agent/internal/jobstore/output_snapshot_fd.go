@@ -170,12 +170,6 @@ func readOutputSnapshotFromFileAttempt(fs afero.Fs, path string, f *os.File, ret
 	}, nil
 }
 
-func readOutputWindowSnapshotFromFileAttempt(fs afero.Fs, path string, f *os.File, retainedBytes int64, offset int64, maxBytes int) (OutputWindowSnapshot, error) {
-	return readOutputRangeSnapshotFromFileAttempt(fs, path, f, retainedBytes, func(totalBytes, retainedStart int64) (int64, int64, error) {
-		return outputWindowBounds(offset, maxBytes, totalBytes, retainedStart)
-	})
-}
-
 func readOutputRangeSnapshotFromFileAttempt(fs afero.Fs, path string, f *os.File, retainedBytes int64, selectRange outputRangeSelector) (OutputWindowSnapshot, error) {
 	if err := checkOutputFileGeneration(path, f); err != nil {
 		return OutputWindowSnapshot{}, err

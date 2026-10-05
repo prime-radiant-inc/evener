@@ -53,9 +53,8 @@ func TestLoadSessionJobOutputPage_TerminalRecordMismatch(t *testing.T) {
 	}
 }
 
-// TestLoadSessionJobOutputPage_OutputIsDirectory covers the error path at
-// lines 109-112: windowOutputFile returns a non-NotExist error because the
-// output path is a directory (read fails).
+// TestLoadSessionJobOutputPage_OutputIsDirectory verifies a non-NotExist
+// read error when the output path is a directory.
 func TestLoadSessionJobOutputPage_OutputIsDirectory(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

@@ -22,8 +22,8 @@ import (
 func TestJobsOutputPageLocalAndRemoteWire(t *testing.T) {
 	cfg, sessionID, stateDir := seedPastSessionWithJobs(t, []persistedJobFixture{{id: "job_page", output: "abécd"}})
 	daemon := daemonserver.NewServer(daemonserver.ServerConfig{})
-	daemon.SetJobOutputFunc(func(jobID string, before *int64, max int64) (appwire.JobOutputPage, bool, error) {
-		return agent.LoadSessionJobOutputPage(stateDir, sessionID, jobID, before, max)
+	daemon.SetJobOutputFunc(func(jobID string, before *int64, maxBytes int64) (appwire.JobOutputPage, bool, error) {
+		return agent.LoadSessionJobOutputPage(stateDir, sessionID, jobID, before, maxBytes)
 	})
 	upstream := httptest.NewServer(http.HandlerFunc(daemon.AppServer().ServeWebSocket))
 	t.Cleanup(upstream.Close)
@@ -128,9 +128,9 @@ func TestJobsOutputPageProtocolV6OwnerPreserved(t *testing.T) {
 	cfg, healthyID, stateDir := seedPastSessionWithJobs(t, []persistedJobFixture{{id: "job_page", output: "healthy"}})
 	var healthyReads atomic.Int32
 	healthyDaemon := daemonserver.NewServer(daemonserver.ServerConfig{})
-	healthyDaemon.SetJobOutputFunc(func(jobID string, before *int64, max int64) (appwire.JobOutputPage, bool, error) {
+	healthyDaemon.SetJobOutputFunc(func(jobID string, before *int64, maxBytes int64) (appwire.JobOutputPage, bool, error) {
 		healthyReads.Add(1)
-		return agent.LoadSessionJobOutputPage(stateDir, healthyID, jobID, before, max)
+		return agent.LoadSessionJobOutputPage(stateDir, healthyID, jobID, before, maxBytes)
 	})
 	healthyPeer := httptest.NewServer(http.HandlerFunc(healthyDaemon.AppServer().ServeWebSocket))
 	t.Cleanup(healthyPeer.Close)

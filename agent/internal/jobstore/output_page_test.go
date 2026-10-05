@@ -32,11 +32,11 @@ func TestOutputPageSelectsLatestAndBackwardRanges(t *testing.T) {
 		read func(*int64, int) (OutputWindowSnapshot, error)
 	}{
 		{"store", output.ReadPage},
-		{"path", func(before *int64, max int) (OutputWindowSnapshot, error) {
-			return ReadOutputPageSnapshot(path, before, max)
+		{"path", func(before *int64, maxBytes int) (OutputWindowSnapshot, error) {
+			return ReadOutputPageSnapshot(path, before, maxBytes)
 		}},
-		{"descriptor", func(before *int64, max int) (OutputWindowSnapshot, error) {
-			return ReadOutputPageSnapshotFromFile(path, f, before, max)
+		{"descriptor", func(before *int64, maxBytes int) (OutputWindowSnapshot, error) {
+			return ReadOutputPageSnapshotFromFile(path, f, before, maxBytes)
 		}},
 	} {
 		t.Run(reader.name, func(t *testing.T) {
@@ -123,11 +123,11 @@ func TestOutputPagePreservesRawUnicodeAndMalformedBytes(t *testing.T) {
 			t.Cleanup(func() { _ = f.Close() })
 			for _, read := range []func(*int64, int) (OutputWindowSnapshot, error){
 				output.ReadPage,
-				func(before *int64, max int) (OutputWindowSnapshot, error) {
-					return ReadOutputPageSnapshot(path, before, max)
+				func(before *int64, maxBytes int) (OutputWindowSnapshot, error) {
+					return ReadOutputPageSnapshot(path, before, maxBytes)
 				},
-				func(before *int64, max int) (OutputWindowSnapshot, error) {
-					return ReadOutputPageSnapshotFromFile(path, f, before, max)
+				func(before *int64, maxBytes int) (OutputWindowSnapshot, error) {
+					return ReadOutputPageSnapshotFromFile(path, f, before, maxBytes)
 				},
 			} {
 				got, err := read(tc.before, tc.max)
@@ -152,11 +152,11 @@ func TestOutputPageEmptyRetainedInterval(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = f.Close() })
 	for _, read := range []func(*int64, int) (OutputWindowSnapshot, error){
-		func(before *int64, max int) (OutputWindowSnapshot, error) {
-			return ReadOutputPageSnapshot(path, before, max)
+		func(before *int64, maxBytes int) (OutputWindowSnapshot, error) {
+			return ReadOutputPageSnapshot(path, before, maxBytes)
 		},
-		func(before *int64, max int) (OutputWindowSnapshot, error) {
-			return ReadOutputPageSnapshotFromFile(path, f, before, max)
+		func(before *int64, maxBytes int) (OutputWindowSnapshot, error) {
+			return ReadOutputPageSnapshotFromFile(path, f, before, maxBytes)
 		},
 	} {
 		got, err := read(nil, 64)
@@ -392,4 +392,4 @@ func awaitPageReadResult(t *testing.T, done <-chan pageReadResult) pageReadResul
 	}
 }
 
-func pageOffset(offset int64) *int64 { return &offset }
+func pageOffset(offset int64) *int64 { return new(offset) }

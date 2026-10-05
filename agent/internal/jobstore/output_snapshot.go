@@ -181,12 +181,6 @@ func readOutputMetaForSnapshot(fs afero.Fs, path string, outputPath string, reta
 	return total, retainedStart, retainedStartPartial, err
 }
 
-func readOutputWindowSnapshotAttempt(fs afero.Fs, path string, retainedBytes int64, offset int64, maxBytes int) (OutputWindowSnapshot, error) {
-	return readOutputRangeSnapshotAttempt(fs, path, retainedBytes, func(totalBytes, retainedStart int64) (int64, int64, error) {
-		return outputWindowBounds(offset, maxBytes, totalBytes, retainedStart)
-	})
-}
-
 func readOutputRangeSnapshotAttempt(fs afero.Fs, path string, retainedBytes int64, selectRange outputRangeSelector) (OutputWindowSnapshot, error) {
 	totalBytes, retainedStart, retainedStartPartial, err := readOutputMetaForSnapshot(fs, outputMetaPath(path), path, retainedBytes)
 	if err != nil {

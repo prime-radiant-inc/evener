@@ -155,7 +155,7 @@ func exerciseResidualCallbacks(t *testing.T, s *residualServeServer, sessionID s
 	}
 	_ = s.tasks()
 	_, _ = s.jobs(appwire.JobsListParams{Ref: "local:" + sessionID})
-	_, _, _ = s.jobOutput("job_1", 0, 1024)
+	_, _, _ = s.jobOutput("job_1", nil, 1024)
 	_, _, _ = s.jobGet("job_1")
 }
 
