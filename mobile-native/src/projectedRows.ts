@@ -39,6 +39,7 @@ import {
 	type AskQuestionRef,
 	attentionWarningNotice,
 	configFingerprint,
+	APPROVAL_DECISION_EVENT_KIND,
 	ERROR_EVENT_KIND,
 	echoesTurnError,
 	hasItemFailure,
@@ -191,6 +192,8 @@ export type NoticeFamily =
 	| "system-prelude"
 	| "lifecycle"
 	| "diagnostic"
+	// A human's Allow or Deny on a sandbox escalation (Approval history).
+	| "approval"
 	| "unknown-system";
 
 // The mobile timeline item union. A pure projection of one thread's turns
@@ -258,6 +261,8 @@ export type MobileTimelineItem =
 				notifications?: SteeringFragment[];
 				// A daemon warning's what-to-do, read as a quiet second line.
 				hint?: string;
+				// When an approval decision was made (ISO), for its "5m ago".
+				decidedAt?: string;
 		  }
 		// The pending ask_user questions of one call, each carrying that call's id
 		// (AskQuestionRef.callId); the composer renders them as interactive cards
@@ -747,6 +752,7 @@ function systemFamily(eventKind: string | undefined): NoticeFamily {
 	if (PRELUDE_EVENT_KINDS.has(eventKind)) return "system-prelude";
 	if (DIAGNOSTIC_EVENT_KINDS.has(eventKind)) return "diagnostic";
 	if (LIFECYCLE_EVENT_KINDS.has(eventKind)) return "lifecycle";
+	if (eventKind === APPROVAL_DECISION_EVENT_KIND) return "approval";
 	return "unknown-system";
 }
 
@@ -805,6 +811,7 @@ function systemNotice(it: ItemModel): Extract<MobileTimelineItem, { kind: "notic
 		...systemEventWords(it),
 		...(it.eventKind ? { eventKind: it.eventKind } : {}),
 		...(it.exitCode !== undefined ? { exitCode: it.exitCode } : {}),
+		...(family === "approval" && it.startedAt ? { decidedAt: it.startedAt } : {}),
 	};
 }
 

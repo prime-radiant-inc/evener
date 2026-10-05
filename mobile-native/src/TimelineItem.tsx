@@ -18,6 +18,7 @@ import { rowDisclosureIds } from "./session/disclosureKeys";
 import type { ErrorAction } from "./session/errorAction";
 import { ErrorRow } from "./session/ErrorRow";
 import { NotificationCards } from "./session/NotificationCards";
+import { ApprovalHistory } from "./session/ApprovalHistory";
 import { QuestionHistory } from "./session/QuestionHistory";
 import { RunRow } from "./session/RunRow";
 import { SubagentRow } from "./session/SubagentRow";
@@ -162,6 +163,10 @@ export function TimelineItem({
 			);
 			break;
 		case "notice": {
+			if (item.family === "approval") {
+				content = <ApprovalHistory text={item.text} decidedAt={item.decidedAt} />;
+				break;
+			}
 			if (item.notifications) {
 				content = (
 					<NotificationCards

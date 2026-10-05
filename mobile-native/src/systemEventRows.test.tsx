@@ -189,6 +189,47 @@ describe("system events (G7, G9)", () => {
 	});
 });
 
+describe("approval history (spec 8.2)", () => {
+	const ATTENTION = "#F59E0B";
+	// The fixture's decisions were made at the daemon's fixture instant.
+	const decidedAt = () => systemEventWireItem("approval-allowed").startedAt ?? 0;
+
+	// A human's Allow or Deny is a decision they made, like a question's
+	// answer: it shows at every level, system events off.
+	it.each(LEVELS)("shows an Allow and a Deny with their words and when, at %s", (level) => {
+		const items = [systemEventWireItem("approval-allowed"), systemEventWireItem("approval-denied")];
+		const { rows } = rowsAt(level, [completedTurn(items)], false);
+		const approvals = rows.filter((row) => row.kind === "notice" && row.family === "approval");
+		expect(approvals).toEqual([
+			expect.objectContaining({ text: "Allowed: write /Users/j/sites/docs/index.md", decidedAt: new Date(decidedAt()).toISOString() }),
+			expect.objectContaining({ text: "Denied: read /etc/hosts", decidedAt: new Date(decidedAt()).toISOString() }),
+		]);
+		for (const approval of approvals) {
+			if (approval.kind !== "notice") throw new Error("not a notice row");
+			expect(isCriticalNotice(approval)).toBe(false);
+		}
+	});
+
+	it("reads like question history: the amber rule, the decision, and how long ago", () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(decidedAt() + 5 * 60_000);
+		try {
+			const tree = show("approval-allowed", "chat");
+			expect(renderedText(tree)).toContain("Allowed: write /Users/j/sites/docs/index.md");
+			expect(renderedText(tree)).toContain("5m ago");
+			expect(inked(tree, ATTENTION)).toBe(true);
+			expect(inked(tree, DANGER_INK)).toBe(false);
+			const labelled = tree.root.findAll(
+				(node) => typeof node.props.accessibilityLabel === "string" && node.props.accessibilityLabel.includes("Allowed"),
+			);
+			expect(labelled[0]?.props.accessibilityLabel).toBe("Allowed: write /Users/j/sites/docs/index.md, 5 minutes ago");
+			act(() => tree.unmount());
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+});
+
 describe("shared-notes snapshots", () => {
 	const text =
 		"<shared-notes>\nHuman: **keep literal**\nAgent: context & <tags>\nURLs: https://example.com/\n</shared-notes>";
