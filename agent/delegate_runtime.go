@@ -696,6 +696,9 @@ func (s *Session) driveStableDelegateAttention(sub *subagent) bool {
 	// through takeSendDriveGuard, so the two busy lists cannot drift. The
 	// attention-only extras are layered on top.
 	blocked := sub.startBlockedLocked() || sub.closed || sub.fatalRunGated || s.childCommittedSendStart(sub.sess.id)
+	if blocked && sub.driving {
+		sub.attentionDriveRefused = true
+	}
 	if !blocked {
 		sub.driving = true
 	}
@@ -708,7 +711,14 @@ func (s *Session) driveStableDelegateAttention(sub *subagent) bool {
 		if launched {
 			return
 		}
-		releaseSendDriveGuard(sub)
+		if observer := s.cfg.testOnly.delegateAttentionBeforeGuardRelease; observer != nil {
+			observer(sub)
+		}
+		// The re-drive re-drives again only if a drive is refused on its own
+		// guard, so one that keeps losing stops (#3723).
+		if releaseDriveGuard(sub) {
+			s.redriveLiveChild(sub.sess.id)
+		}
 	}()
 	s.mu.Lock()
 	closed := s.closingOrClosedLocked()
@@ -1389,12 +1399,19 @@ func (s *Session) takeSendDriveGuard(sub *subagent) bool {
 	return true
 }
 
-// releaseSendDriveGuard gives back a drive guard taken by takeSendDriveGuard or
-// by driveStableDelegateAttention, on a start that didn't hand over to a run.
-func releaseSendDriveGuard(sub *subagent) {
+// releaseDriveGuard gives back a child's drive guard (sub.driving) that no run
+// took over, and reports whether an attention drive was refused on the guard
+// while it was held. An attention drive or notification turn that gets true
+// re-drives the child (#3723). A send ignores the report: a send that fails
+// re-drives the child in its rollback, and one that succeeds hands the child
+// to a run that drains it.
+func releaseDriveGuard(sub *subagent) bool {
 	sub.mu.Lock()
+	defer sub.mu.Unlock()
 	sub.driving = false
-	sub.mu.Unlock()
+	refused := sub.attentionDriveRefused
+	sub.attentionDriveRefused = false
+	return refused
 }
 
 // delegateFinalizationWaitCeiling bounds how long a send waits for a finished
@@ -1581,7 +1598,7 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 			// This runs from the deferred rollback after every failure exit
 			// (aborted reservation, failed commit, failed restore, blocked
 			// hand-off, start-input failure), and send holds no lock here.
-			s.redriveChildAfterSendStartRollback(committedChildID)
+			s.redriveLiveChild(committedChildID)
 		}
 	}()
 	if observer := s.cfg.testOnly.delegateSendStartClaimed; observer != nil {
@@ -1596,7 +1613,7 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	var guarded *subagent
 	defer func() {
 		if guarded != nil {
-			releaseSendDriveGuard(guarded)
+			releaseDriveGuard(guarded)
 		}
 	}()
 	if committedChildID != "" {
@@ -1681,7 +1698,7 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	// recorded as failed.
 	if sub != guarded {
 		if guarded != nil {
-			releaseSendDriveGuard(guarded)
+			releaseDriveGuard(guarded)
 			guarded = nil
 		}
 		if !s.takeSendDriveGuard(sub) {
