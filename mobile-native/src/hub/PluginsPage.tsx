@@ -500,16 +500,29 @@ function Plugins({
 	// stays hidden.
 	const checkedUpdates = useRef<PluginsStore | null>(null);
 	const listLoaded = state.plugins !== null && state.pluginsError === null;
+	// Counts returns to ready, so a check that fails only after the
+	// connection already came back still gets that ready's one re-ask: it
+	// bumps checkAgain, which re-runs the effect. A check that fails with the
+	// connection unchanged waits for the next return to ready instead, so a
+	// hub that keeps failing is never asked in a loop.
+	const readyReturns = useRef(0);
+	useEffect(() => {
+		if (ready) readyReturns.current += 1;
+	}, [ready]);
+	const [checkAgain, setCheckAgain] = useState(0);
 	useEffect(() => {
 		if (!listLoaded || !ready || checkedUpdates.current === model) return;
 		checkedUpdates.current = model;
+		const askedIn = readyReturns.current;
 		void model
 			.getState()
 			.checkPluginUpdates()
 			.then((answered) => {
-				if (!answered && checkedUpdates.current === model) checkedUpdates.current = null;
+				if (answered || checkedUpdates.current !== model) return;
+				checkedUpdates.current = null;
+				if (readyReturns.current !== askedIn) setCheckAgain((n) => n + 1);
 			});
-	}, [model, listLoaded, ready]);
+	}, [model, listLoaded, ready, checkAgain]);
 	const close = useCallback(() => {
 		editorVersion.current += 1;
 		setSelected(null);

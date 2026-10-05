@@ -2956,6 +2956,29 @@ it("asks for updates again after a reconnect when the check never reached the hu
 	expect(checks(hub)).toBe(2);
 });
 
+it("asks again when a check fails only after the connection has already come back", async () => {
+	const hub = pageHub([entry("stale")]);
+	let failCheck!: (err: Error) => void;
+	hub.on(
+		"evener/plugin/checkUpdates",
+		() =>
+			new Promise((_resolve, reject) => {
+				failCheck = reject;
+			}),
+	);
+	const { tree, props } = await mountPage(hub);
+	await act(async () => {});
+	expect(checks(hub)).toBe(1);
+
+	// The connection drops and returns while the check is still pending; only
+	// then does the check fail without an answer.
+	await flap(tree, props);
+	hub.on("evener/plugin/checkUpdates", () => ({ plugins: [] }));
+	await act(async () => failCheck(new Error("connection closed")));
+	await act(async () => {});
+	expect(checks(hub)).toBe(2);
+});
+
 it("waits for the connection to be ready before asking again", async () => {
 	const hub = pageHub([entry("stale")]);
 	hub.on("evener/plugin/checkUpdates", () => {
