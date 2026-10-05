@@ -129,3 +129,34 @@ func gitHeadSHA(ctx context.Context, dir string) (string, error) {
 	}
 	return strings.TrimSpace(out), nil
 }
+
+// gitRemoteHead asks url, without cloning, for the commit a clone that then
+// checks out ref lands on; an empty ref means the remote's HEAD. An annotated
+// tag answers with its peeled commit, and a tag wins over a branch of the same
+// name, the order git checkout resolves a name in.
+func gitRemoteHead(ctx context.Context, url, ref string) (string, error) {
+	for _, g := range []struct{ n, v string }{{"url", url}, {"ref", ref}} {
+		if err := guardGitArg(g.n, g.v); err != nil {
+			return "", err
+		}
+	}
+	if ref == "" {
+		ref = "HEAD"
+	}
+	out, err := gitRun(ctx, "", "ls-remote", "--", url, ref, ref+"^{}")
+	if err != nil {
+		return "", err
+	}
+	shas := map[string]string{}
+	for line := range strings.SplitSeq(out, "\n") {
+		if sha, name, ok := strings.Cut(strings.TrimSpace(line), "\t"); ok {
+			shas[name] = sha
+		}
+	}
+	for _, name := range []string{"refs/tags/" + ref + "^{}", "refs/tags/" + ref, "refs/heads/" + ref, ref} {
+		if sha := shas[name]; sha != "" {
+			return sha, nil
+		}
+	}
+	return "", fmt.Errorf("git ls-remote: %s has no ref %q", url, ref)
+}

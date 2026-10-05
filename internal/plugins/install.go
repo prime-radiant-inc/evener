@@ -242,6 +242,11 @@ func (m *Manager) upgradeLocked(ctx context.Context, plugin, marketplace string,
 	}
 
 	key := registryKey(plugin, marketplace)
+	defer func() {
+		if err == nil && !skipped {
+			m.forgetRemoteHead(key)
+		}
+	}()
 	reg, err := m.loadRegistry()
 	if err != nil {
 		return InstallEntry{}, false, false, err
@@ -386,16 +391,17 @@ func (m *Manager) cacheRemovalFailed(key string, removeErr error) error {
 }
 
 type ListItem struct {
-	Plugin       string    `json:"plugin"`
-	Marketplace  string    `json:"marketplace"`
-	Version      string    `json:"version"`
-	Enabled      bool      `json:"enabled"`
-	AutoUpgrade  bool      `json:"autoUpgrade"` //nolint:tagliatelle // matches Claude Code plugin/marketplace JSON schema
-	Broken       bool      `json:"broken"`
-	InstallPath  string    `json:"installPath"`  //nolint:tagliatelle // matches Claude Code plugin/marketplace JSON schema
-	GitCommitSha string    `json:"gitCommitSha"` //nolint:tagliatelle // matches Claude Code plugin/marketplace JSON schema
-	InstalledAt  time.Time `json:"installedAt"`  //nolint:tagliatelle // matches Claude Code plugin/marketplace JSON schema
-	LastUpdated  time.Time `json:"lastUpdated"`  //nolint:tagliatelle // matches Claude Code plugin/marketplace JSON schema
+	Plugin          string    `json:"plugin"`
+	Marketplace     string    `json:"marketplace"`
+	Version         string    `json:"version"`
+	Enabled         bool      `json:"enabled"`
+	AutoUpgrade     bool      `json:"autoUpgrade"` //nolint:tagliatelle // matches Claude Code plugin/marketplace JSON schema
+	Broken          bool      `json:"broken"`
+	InstallPath     string    `json:"installPath"`               //nolint:tagliatelle // matches Claude Code plugin/marketplace JSON schema
+	GitCommitSha    string    `json:"gitCommitSha"`              //nolint:tagliatelle // matches Claude Code plugin/marketplace JSON schema
+	InstalledAt     time.Time `json:"installedAt"`               //nolint:tagliatelle // matches Claude Code plugin/marketplace JSON schema
+	LastUpdated     time.Time `json:"lastUpdated"`               //nolint:tagliatelle // matches Claude Code plugin/marketplace JSON schema
+	UpdateAvailable bool      `json:"updateAvailable,omitempty"` //nolint:tagliatelle // matches the camelCase keys beside it
 }
 
 func splitKey(key string) (plugin, marketplace string) {
@@ -432,16 +438,17 @@ func (m *Manager) List(ctx context.Context) ([]ListItem, error) {
 		e := entries[0]
 		plugin, marketplace := splitKey(key)
 		out = append(out, ListItem{
-			Plugin:       plugin,
-			Marketplace:  marketplace,
-			Version:      e.Version,
-			Enabled:      e.Enabled,
-			AutoUpgrade:  e.AutoUpgrade,
-			Broken:       installValidateDir(e.InstallPath) != nil,
-			InstallPath:  e.InstallPath,
-			GitCommitSha: e.GitCommitSha,
-			InstalledAt:  e.InstalledAt,
-			LastUpdated:  e.LastUpdated,
+			Plugin:          plugin,
+			Marketplace:     marketplace,
+			Version:         e.Version,
+			Enabled:         e.Enabled,
+			AutoUpgrade:     e.AutoUpgrade,
+			Broken:          installValidateDir(e.InstallPath) != nil,
+			InstallPath:     e.InstallPath,
+			GitCommitSha:    e.GitCommitSha,
+			InstalledAt:     e.InstalledAt,
+			LastUpdated:     e.LastUpdated,
+			UpdateAvailable: m.updateAvailable(key, e.GitCommitSha),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {
