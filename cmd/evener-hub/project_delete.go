@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strings"
 
+	agentsandbox "primeradiant.com/evener/agent/sandbox"
+
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
@@ -675,6 +677,9 @@ func (s *WebServer) removeProjectDeletionArtifacts(stateDir, sessionID string) e
 		return err
 	}
 	if err := removeProjectSessionDaemonLog(s.cfg.RunDir, sessionID); err != nil {
+		return err
+	}
+	if err := agentsandbox.RemoveSessionScratchTree(sessionID); err != nil {
 		return err
 	}
 	apiLogPath := filepath.Join(sessionsDir, sessionID+".api.jsonl")

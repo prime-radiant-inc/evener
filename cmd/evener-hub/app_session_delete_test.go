@@ -237,6 +237,48 @@ func TestSessionDeleteRemovesTheSessionsDaemonLog(t *testing.T) {
 	}
 }
 
+// A deleted session's scratch tree (root and delegates) goes with it; an
+// unrelated session's tree stays.
+func TestSessionDeleteRemovesTheSessionsScratchTree(t *testing.T) {
+	tmp, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMPDIR", tmp)
+	root := t.TempDir()
+	projectDir := filepath.Join(root, "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stateDir := filepath.Join(root, "projects", "session-delete-0123456789")
+	project, err := identifier.ResolveProject(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetID := projectDeleteCanonicalSessionIDs[0]
+	survivorID := projectDeleteCanonicalSessionIDs[1]
+	writeSession(t, stateDir, targetID, project.CanonicalPath)
+	writeSession(t, stateDir, survivorID, project.CanonicalPath)
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	targetTree := mintEndedScratchTree(t, targetID, "CHILD1")
+	survivorTree := mintEndedScratchTree(t, survivorID)
+
+	web := NewWebServer(hubcore.WebConfig{StateDir: root, Past: past, Roster: hubcore.NewRosterWithEntries()})
+	resp := mustDeleteSession(t, web, targetID)
+	if len(resp.Deleted) != 1 || resp.Deleted[0] != targetID {
+		t.Fatalf("session should have been deleted: %+v", resp)
+	}
+	if _, err := os.Lstat(targetTree); !os.IsNotExist(err) {
+		t.Errorf("the deleted session's scratch tree %s is still there: %v", targetTree, err)
+	}
+	if _, err := os.Stat(survivorTree); err != nil {
+		t.Errorf("an unrelated session's scratch tree was removed: %v", err)
+	}
+}
+
 // TestSessionDeleteRemovesCrashedSessionAndRendezvous covers n15j's
 // verification #3, reusing kata 8at6's crash-vs-live predicate: a confirmed
 // crash marker is deletable, and its stale rendezvous records go with it.

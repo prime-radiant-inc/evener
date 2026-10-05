@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -323,6 +324,85 @@ func TestArchiveSetWithoutResidentDaemonPersistsDecision(t *testing.T) {
 		t.Fatalf("archive session with no resident daemon: %v", err)
 	}
 	assertSessionArchived(t, archive, sessionID, true)
+}
+
+// Archiving a session removes its scratch tree; unarchiving removes nothing.
+func TestArchiveSetRemovesTheSessionsScratchTree(t *testing.T) {
+	tmp, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMPDIR", tmp)
+	archive := hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db"))
+	web := NewWebServer(hubcore.WebConfig{Archive: archive, HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")})
+	sessionID := hubtest.SessionID(t)
+
+	tree := mintEndedScratchTree(t, sessionID, "CHILD1")
+	if _, err := dispatchArchiveSet(t, web, appwire.ArchiveParams{
+		Kind: appwire.ArchiveTargetSession, ID: sessionID, Archived: false,
+	}); err != nil {
+		t.Fatalf("unarchive: %v", err)
+	}
+	if _, err := os.Stat(tree); err != nil {
+		t.Fatalf("unarchiving removed the scratch tree: %v", err)
+	}
+
+	if _, err := dispatchArchiveSet(t, web, appwire.ArchiveParams{
+		Kind: appwire.ArchiveTargetSession, ID: "local:" + sessionID, Archived: true,
+	}); err != nil {
+		t.Fatalf("archive: %v", err)
+	}
+	if _, err := os.Lstat(tree); !os.IsNotExist(err) {
+		t.Errorf("archiving left the session's scratch tree %s: %v", tree, err)
+	}
+}
+
+// A session archived while its daemon was still running keeps its scratch
+// until that daemon exits; the roster seeing it go is what removes the tree.
+// A daemon whose session is not archived leaves its scratch alone.
+func TestDaemonExitRemovesOnlyAnArchivedSessionsScratchTree(t *testing.T) {
+	for _, archived := range []bool{true, false} {
+		t.Run(fmt.Sprintf("archived=%t", archived), func(t *testing.T) {
+			tmp, err := filepath.EvalSymlinks(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("TMPDIR", tmp)
+			ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+			defer cancel()
+			sessionID := hubtest.SessionID(t)
+			daemon := startAliasRecoveryDaemon(t, sessionID, sessionID)
+			runDir := t.TempDir()
+			writeRendezvous(t, runDir, daemon.entry)
+			roster := hubcore.NewRoster(runDir, &hubcore.StatusProber{})
+			roster.Refresh()
+			if _, ok := roster.Find(sessionID); !ok {
+				t.Fatalf("the daemon %q was not confirmed into the roster", sessionID)
+			}
+			archive := hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db"))
+			if err := archive.Set("", "session", sessionID, archived, time.Now()); err != nil {
+				t.Fatal(err)
+			}
+			newHubSourceRegistry(hubcore.WebConfig{Roster: roster, Archive: archive})
+			tree := mintEndedScratchTree(t, sessionID, "CHILD1")
+
+			if err := daemon.Kill(); err != nil {
+				t.Fatal(err)
+			}
+			if err := daemon.Wait(ctx); err != nil {
+				t.Fatal(err)
+			}
+			roster.Refresh()
+
+			_, statErr := os.Lstat(tree)
+			if archived && !os.IsNotExist(statErr) {
+				t.Errorf("the archived session's daemon exited and its scratch tree %s stayed: %v", tree, statErr)
+			}
+			if !archived && statErr != nil {
+				t.Errorf("an unarchived session's daemon exit removed its scratch tree: %v", statErr)
+			}
+		})
+	}
 }
 
 // TestArchiveSetSkipsIdleTimeoutForOlderProtocolDaemon proves the nudge never

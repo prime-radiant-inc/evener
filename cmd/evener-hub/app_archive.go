@@ -4,6 +4,8 @@ import (
 	"context"
 	"time"
 
+	agentsandbox "primeradiant.com/evener/agent/sandbox"
+
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
@@ -82,6 +84,9 @@ func archiveSet(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.R
 		}
 		if params.Kind == appwire.ArchiveTargetSession {
 			nudgeResidentDaemonIdleTimeout(ctx, cfg, sources, decisionID, params.Archived)
+			if params.Archived {
+				removeArchivedSessionScratch(decisionID)
+			}
 		}
 		return nil
 	}
@@ -125,6 +130,32 @@ func archiveSet(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.R
 		cfg.PokeAttention()
 	}
 	return appwire.ArchiveResponse{OK: true, Navigation: navigationMutation}, nil
+}
+
+// removeArchivedSessionScratch removes an archived local session's scratch
+// tree. A session whose daemon is still running keeps its scratch until that
+// daemon exits (removeScratchAfterDaemonExit). Best-effort, like the daemon
+// nudge: a remote session's ref is not a local session ID and is skipped, and
+// a failed removal must not fail the archive decision.
+func removeArchivedSessionScratch(sessionID string) {
+	if identifier.ValidateSessionID(sessionID) != nil {
+		return
+	}
+	_ = agentsandbox.RemoveSessionScratchTree(sessionID)
+}
+
+// removeScratchAfterDaemonExit removes a session's scratch tree once its
+// daemon has exited, if the session is archived. An unarchived session keeps
+// its scratch for its next resume.
+func removeScratchAfterDaemonExit(archive *hubcore.ArchiveStore, sessionID string) {
+	if archive == nil {
+		return
+	}
+	decisions, err := archive.Decisions()
+	if err != nil || !decisions[hubcore.ArchiveKey{Kind: string(appwire.ArchiveTargetSession), ID: sessionID}] {
+		return
+	}
+	removeArchivedSessionScratch(sessionID)
 }
 
 // archivedSessionIdleTimeout is the automatic idle-retirement deadline the Hub
