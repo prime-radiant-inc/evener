@@ -521,7 +521,8 @@ func TestServeWebSocketRequestsTheHookRefusesStayInOrder(t *testing.T) {
 		return method == appwire.MethodThreadList
 	}
 	entered := make(chan struct{}, 2)
-	release := make(chan struct{})
+	// One token lets one handler finish; closing it lets the rest.
+	release := make(chan struct{}, 2)
 	t.Cleanup(func() { close(release) })
 	HandleTyped(server.Router(), appwire.MethodThreadModelSet, func(_ context.Context, _ appwire.ThreadModelSetParams) (appwire.EmptyResponse, error) {
 		entered <- struct{}{}
@@ -533,19 +534,33 @@ func TestServeWebSocketRequestsTheHookRefusesStayInOrder(t *testing.T) {
 	conn := registeredConnection(t, server)
 	ctx := context.Background()
 
+	answered := make(chan error, 2)
 	set := func() {
 		go func() {
-			_ = client.ThreadModelSet(ctx, appwire.ThreadModelSetParams{Ref: "local:th_1", ModelProvider: "p", Model: "m"})
+			answered <- client.ThreadModelSet(ctx, appwire.ThreadModelSetParams{Ref: "local:th_1", ModelProvider: "p", Model: "m"})
 		}()
 	}
 	set()
 	waitFor(t, "the first request to run inline", entered)
 	set()
 	// Ends either way: the second request either waits in the queue or runs.
+	// Seen in the queue, it stays there: the worker that would dequeue it is
+	// the one running the first request.
 	waitUntil(t, "the second request to queue or run", func() bool {
 		return len(conn.requests) == 1 || len(entered) > 0
 	})
 	if len(entered) > 0 {
 		t.Fatal("a request the hook refused ran beside the inline request ahead of it")
+	}
+
+	// Queued, not parked: once the first finishes, the second runs.
+	release <- struct{}{}
+	if err := waitFor(t, "the first request to answer", answered); err != nil {
+		t.Fatalf("first request: %v", err)
+	}
+	waitFor(t, "the queued request to run once the first finished", entered)
+	release <- struct{}{}
+	if err := waitFor(t, "the queued request to answer", answered); err != nil {
+		t.Fatalf("queued request: %v", err)
 	}
 }
