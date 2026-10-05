@@ -242,11 +242,6 @@ func (m *Manager) upgradeLocked(ctx context.Context, plugin, marketplace string,
 	}
 
 	key := registryKey(plugin, marketplace)
-	defer func() {
-		if err == nil && !skipped {
-			m.forgetRemoteHead(key)
-		}
-	}()
 	reg, err := m.loadRegistry()
 	if err != nil {
 		return InstallEntry{}, false, false, err

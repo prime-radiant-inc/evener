@@ -4,40 +4,49 @@ import (
 	"bytes"
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 )
 
-// gitIn runs git in dir with a fixed identity, failing the test on error.
-func gitIn(t *testing.T, dir string, args ...string) string {
-	t.Helper()
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("git %v: %v\n%s", args, err, out)
-	}
-	return strings.TrimSpace(string(out))
+// urlPluginFixture is widget@acme installed from a local plugin repo through a
+// local marketplace repo whose catalog names it by a url source.
+type urlPluginFixture struct {
+	pluginRepo, mktRepo string
+	m                   *Manager
 }
 
-// installURLPlugin installs widget@acme from a local plugin repo through a
-// marketplace whose catalog names it by a url source with sourceExtra (for
-// example `,"sha":"..."`) appended. It returns the plugin repo and manager.
-func installURLPlugin(t *testing.T, sourceExtra string) (pluginRepo string, m *Manager) {
+// installURLPlugin builds the fixture. sourceExtra returns extra JSON members
+// for the catalog's url source (for example `,"sha":"..."`), given the plugin
+// repo and its head commit.
+func installURLPlugin(t *testing.T, sourceExtra func(repo, head string) string) urlPluginFixture {
 	t.Helper()
 	if !gitAvailable() {
 		t.Skip("git not available")
 	}
-	pluginRepo = filepath.Join(t.TempDir(), "pluginrepo")
-	writePlugin(t, pluginRepo, "widget", nil)
-	makeGitRepo(t, pluginRepo, "extra.txt", "v1")
-	if strings.Contains(sourceExtra, "SHA") {
-		sourceExtra = strings.ReplaceAll(sourceExtra, "SHA", gitIn(t, pluginRepo, "rev-parse", "HEAD"))
+	f := urlPluginFixture{
+		pluginRepo: filepath.Join(t.TempDir(), "pluginrepo"),
+		mktRepo:    filepath.Join(t.TempDir(), "mkt"),
+		m:          NewManager(t.TempDir()),
 	}
-	mktRepo := filepath.Join(t.TempDir(), "mkt")
+	writePlugin(t, f.pluginRepo, "widget", nil)
+	head := makeGitRepo(t, f.pluginRepo, "extra.txt", "v1")
+	writeURLCatalog(t, f.mktRepo, f.pluginRepo, sourceExtra(f.pluginRepo, head))
+	makeGitRepo(t, f.mktRepo, "README.md", "x")
+	f.m.Stderr = &bytes.Buffer{}
+	if _, err := f.m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: f.mktRepo}); err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	if _, err := f.m.Install(context.Background(), "widget", "acme"); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	return f
+}
+
+func unpinned(string, string) string { return "" }
+
+func writeURLCatalog(t *testing.T, mktRepo, pluginRepo, sourceExtra string) {
+	t.Helper()
 	if err := os.MkdirAll(filepath.Join(mktRepo, ".claude-plugin"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -45,102 +54,165 @@ func installURLPlugin(t *testing.T, sourceExtra string) (pluginRepo string, m *M
 		[]byte(`{"name":"acme","owner":{"name":"o"},"plugins":[{"name":"widget","source":{"source":"url","url":"`+pluginRepo+`"`+sourceExtra+`}}]}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	makeGitRepo(t, mktRepo, "README.md", "x")
-	m = NewManager(t.TempDir())
-	m.Stderr = &bytes.Buffer{}
-	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
-		t.Fatalf("AddMarketplace: %v", err)
-	}
-	if _, err := m.Install(context.Background(), "widget", "acme"); err != nil {
-		t.Fatalf("Install: %v", err)
-	}
-	return pluginRepo, m
 }
 
-func advanceRepo(t *testing.T, repo string) {
+// advanceRepo commits a change to a repo made by makeGitRepo with extra.txt
+// and returns the new head.
+func advanceRepo(t *testing.T, repo string) string {
 	t.Helper()
-	if err := os.WriteFile(filepath.Join(repo, "extra.txt"), []byte("v2"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	gitIn(t, repo, "commit", "-aqm", "v2")
+	gitIn(t, repo, "commit", "--allow-empty", "-qm", "advance")
+	return gitIn(t, repo, "rev-parse", "HEAD")
 }
 
-// updateAvailable runs a check and reports what List says about plugin.
-func updateAvailable(t *testing.T, m *Manager, plugin string) bool {
+func (f urlPluginFixture) warnings() string { return f.m.Stderr.(*bytes.Buffer).String() }
+
+// checkThenList runs a check and reports what List says about widget.
+func checkThenList(t *testing.T, m *Manager) bool {
 	t.Helper()
 	if err := m.CheckUpdates(context.Background()); err != nil {
 		t.Fatalf("CheckUpdates: %v", err)
 	}
-	return listedUpdateAvailable(t, m, plugin)
+	return listedUpdateAvailable(t, m)
 }
 
-func listedUpdateAvailable(t *testing.T, m *Manager, plugin string) bool {
+func listedUpdateAvailable(t *testing.T, m *Manager) bool {
 	t.Helper()
 	items, err := m.List(context.Background())
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
 	for _, it := range items {
-		if it.Plugin == plugin {
+		if it.Plugin == "widget" {
 			return it.UpdateAvailable
 		}
 	}
-	t.Fatalf("%s not listed", plugin)
+	t.Fatal("widget not listed")
 	return false
 }
 
 func TestCheckUpdates_FlagsAGitPluginWhoseRemoteMovedUntilItIsUpgraded(t *testing.T) {
-	pluginRepo, m := installURLPlugin(t, "")
-	if listedUpdateAvailable(t, m, "widget") {
+	f := installURLPlugin(t, unpinned)
+	if listedUpdateAvailable(t, f.m) {
 		t.Fatal("unchecked plugin listed as having an update")
 	}
-	if updateAvailable(t, m, "widget") {
+	if checkThenList(t, f.m) {
 		t.Fatal("plugin at its remote head listed as having an update")
 	}
-	advanceRepo(t, pluginRepo)
-	if !updateAvailable(t, m, "widget") {
+	advanceRepo(t, f.pluginRepo)
+	if !checkThenList(t, f.m) {
 		t.Fatal("plugin behind its remote head not listed as having an update")
 	}
 	// The remote moves again after the check, so the upgrade lands past the
 	// checked head; the check's answer must not outlive the upgrade.
-	gitIn(t, pluginRepo, "commit", "--allow-empty", "-qm", "v3")
-	if _, err := m.Upgrade(context.Background(), "widget", "acme"); err != nil {
+	advanceRepo(t, f.pluginRepo)
+	if _, err := f.m.Upgrade(context.Background(), "widget", "acme"); err != nil {
 		t.Fatalf("Upgrade: %v", err)
 	}
-	if listedUpdateAvailable(t, m, "widget") {
+	if listedUpdateAvailable(t, f.m) {
 		t.Fatal("upgraded plugin still listed as having an update")
 	}
 }
 
+func TestCheckUpdates_AnswerGoesStaleWhenTheInstallChangesAnyOtherWay(t *testing.T) {
+	f := installURLPlugin(t, unpinned)
+	advanceRepo(t, f.pluginRepo)
+	if !checkThenList(t, f.m) {
+		t.Fatal("plugin behind its remote head not listed as having an update")
+	}
+	advanceRepo(t, f.pluginRepo)
+	// A reinstall (or a CLI upgrade, another Manager) changes the installed
+	// commit without this Manager's Upgrade.
+	if err := f.m.Remove(context.Background(), "widget", "acme"); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if _, err := f.m.Install(context.Background(), "widget", "acme"); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	if listedUpdateAvailable(t, f.m) {
+		t.Fatal("reinstalled plugin listed with the update checked before the reinstall")
+	}
+}
+
+func TestCheckUpdates_CancelledCheckKeepsThePreviousAnswer(t *testing.T) {
+	f := installURLPlugin(t, unpinned)
+	advanceRepo(t, f.pluginRepo)
+	if !checkThenList(t, f.m) {
+		t.Fatal("plugin behind its remote head not listed as having an update")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := f.m.CheckUpdates(ctx); err == nil {
+		t.Fatal("cancelled CheckUpdates reported success")
+	}
+	if !listedUpdateAvailable(t, f.m) {
+		t.Fatal("cancelled check discarded the previous answer")
+	}
+}
+
 func TestCheckUpdates_ShaPinnedSourceAsksNoRemote(t *testing.T) {
-	pluginRepo, m := installURLPlugin(t, `,"sha":"SHA"`)
-	advanceRepo(t, pluginRepo)
-	// A check that reached the remote would now fail and warn.
-	if err := os.Rename(pluginRepo, pluginRepo+".gone"); err != nil {
-		t.Fatal(err)
+	for name, pin := range map[string]func(string, string) string{
+		"full":        func(_, head string) string { return `,"sha":"` + head + `"` },
+		"abbreviated": func(_, head string) string { return `,"sha":"` + strings.ToUpper(head[:7]) + `"` },
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := installURLPlugin(t, pin)
+			advanceRepo(t, f.pluginRepo)
+			// A check that reached the remote would now fail and warn.
+			if err := os.Rename(f.pluginRepo, f.pluginRepo+".gone"); err != nil {
+				t.Fatal(err)
+			}
+			if checkThenList(t, f.m) {
+				t.Fatal("plugin at its pinned sha listed as having an update")
+			}
+			if w := f.warnings(); w != "" {
+				t.Fatalf("pinned check reached the remote: %s", w)
+			}
+		})
 	}
-	if updateAvailable(t, m, "widget") {
-		t.Fatal("sha-pinned plugin listed as having an update")
+}
+
+func TestCheckUpdates_FlagsAPinTheCatalogMoved(t *testing.T) {
+	f := installURLPlugin(t, func(_, head string) string { return `,"sha":"` + head + `"` })
+	next := advanceRepo(t, f.pluginRepo)
+	writeURLCatalog(t, f.mktRepo, f.pluginRepo, `,"sha":"`+next+`"`)
+	gitIn(t, f.mktRepo, "commit", "-aqm", "pin next")
+	if err := f.m.RefreshMarketplace(context.Background(), "acme"); err != nil {
+		t.Fatalf("RefreshMarketplace: %v", err)
 	}
-	if warned := m.Stderr.(*bytes.Buffer).String(); warned != "" {
-		t.Fatalf("pinned check reached the remote: %s", warned)
+	if !checkThenList(t, f.m) {
+		t.Fatal("plugin whose catalog pin moved not listed as having an update")
+	}
+}
+
+func TestCheckUpdates_FollowsTheCatalogRef(t *testing.T) {
+	f := installURLPlugin(t, func(repo, _ string) string {
+		gitIn(t, repo, "branch", "stable")
+		return `,"ref":"stable"`
+	})
+	advanceRepo(t, f.pluginRepo)
+	if checkThenList(t, f.m) {
+		t.Fatal("plugin flagged for a commit on a branch its catalog ref doesn't follow")
+	}
+	gitIn(t, f.pluginRepo, "branch", "-f", "stable", "main")
+	if !checkThenList(t, f.m) {
+		t.Fatal("plugin whose ref moved not listed as having an update")
 	}
 }
 
 func TestCheckUpdates_UnreachableRemoteWarnsAndFlagsNothing(t *testing.T) {
-	pluginRepo, m := installURLPlugin(t, "")
-	advanceRepo(t, pluginRepo)
-	if !updateAvailable(t, m, "widget") {
+	f := installURLPlugin(t, unpinned)
+	advanceRepo(t, f.pluginRepo)
+	if !checkThenList(t, f.m) {
 		t.Fatal("plugin behind its remote head not listed as having an update")
 	}
-	if err := os.Rename(pluginRepo, pluginRepo+".gone"); err != nil {
+	if err := os.Rename(f.pluginRepo, f.pluginRepo+".gone"); err != nil {
 		t.Fatal(err)
 	}
-	if updateAvailable(t, m, "widget") {
+	if checkThenList(t, f.m) {
 		t.Fatal("plugin with an unreachable remote listed as having an update")
 	}
-	if warned := m.Stderr.(*bytes.Buffer).String(); !strings.Contains(warned, "widget@acme") {
-		t.Fatalf("no warning names the plugin: %q", warned)
+	if w := f.warnings(); !strings.Contains(w, "widget@acme") {
+		t.Fatalf("no warning names the plugin: %q", w)
 	}
 }
 
@@ -153,8 +225,8 @@ func TestCheckUpdates_RelativeSourcePluginIsNeverFlagged(t *testing.T) {
 	if _, err := m.Install(context.Background(), "widget", name); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
-	gitIn(t, mktRepo, "commit", "--allow-empty", "-qm", "moved")
-	if updateAvailable(t, m, "widget") {
+	advanceRepo(t, mktRepo)
+	if checkThenList(t, m) {
 		t.Fatal("relative-source plugin listed as having an update")
 	}
 }
@@ -164,8 +236,7 @@ func TestGitRemoteHead_ResolvesTheCommitACheckoutOfRefLandsOn(t *testing.T) {
 	first := makeGitRepo(t, repo, "f.txt", "1")
 	gitIn(t, repo, "tag", "-a", "v1", "-m", "release")
 	gitIn(t, repo, "branch", "feature")
-	gitIn(t, repo, "commit", "--allow-empty", "-qm", "later")
-	head := gitIn(t, repo, "rev-parse", "HEAD")
+	head := advanceRepo(t, repo)
 
 	for _, tc := range []struct{ ref, want string }{
 		{"", head},

@@ -132,8 +132,10 @@ func gitHeadSHA(ctx context.Context, dir string) (string, error) {
 
 // gitRemoteHead asks url, without cloning, for the commit a clone that then
 // checks out ref lands on; an empty ref means the remote's HEAD. An annotated
-// tag answers with its peeled commit, and a tag wins over a branch of the same
-// name, the order git checkout resolves a name in.
+// tag answers with its peeled commit. A tag wins over a branch of the same
+// name, as git checkout resolves a name in a fresh clone, except over the
+// remote's default branch, which the clone already has locally; a tag named
+// like the default branch is not worth a second query.
 func gitRemoteHead(ctx context.Context, url, ref string) (string, error) {
 	for _, g := range []struct{ n, v string }{{"url", url}, {"ref", ref}} {
 		if err := guardGitArg(g.n, g.v); err != nil {
