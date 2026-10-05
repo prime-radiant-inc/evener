@@ -59,6 +59,16 @@ type ServerConfig struct {
 	// ConnectionAdmissionContext captures immutable metadata before accepting
 	// any WebSocket frames. It must preserve the supplied context cancellation.
 	ConnectionAdmissionContext func(context.Context) context.Context
+	// ConcurrentRequest names requests beyond the built-in slow reads
+	// (concurrentDispatchMethod) that may leave the connection's serial worker,
+	// judged from the method and its params: the hub uses it for a forwarded
+	// read, whose cost is the remote host's. It must be pure and synchronous,
+	// and answer true only for a request safe to run out of order against
+	// every other request on the connection, and that a client can simply
+	// retry: one beyond a full pool (concurrentRequestCap) is answered
+	// Unavailable without running. It runs on the serial worker, which has no
+	// panic barrier, so it must not panic. Nil adds none.
+	ConcurrentRequest func(method string, params json.RawMessage) bool
 }
 
 type SubscriptionAdmissionIntent uint8
@@ -97,6 +107,20 @@ const requestQueueCap = 64
 // error, no Unavailable — so later requests head-of-line wait for a read to
 // finish; that wait is the design's second deliberate scheduling change.
 const slowReadDispatchCap = 16
+
+// concurrentRequestCap bounds how many requests a server's ConcurrentRequest
+// admits one connection to hold in flight, in a pool apart from the slow
+// reads' so neither kind can take the other's slots: the hub's forwarded
+// reads wait on remote hosts, and a slow host must not cost thread reads
+// their burst room. A full pool refuses the next one as Unavailable rather
+// than parking the worker: these requests wait on something the hub does not
+// bound (a remote host), so parking would wedge every request on the
+// connection behind them, the very stall the pool exists to prevent. The
+// refusal is one a read can simply retry. The pool is per connection, not
+// per host, so it is sized well past a pane's burst (a spawn form opened on a
+// remote host sends about 7): one stalled host's reads must leave room for
+// another host's. The goroutines it bounds are cheap.
+const concurrentRequestCap = 32
 
 // slowReadCapStallAdvisory is how long a single blocked slow-read acquire
 // parks before the worker reports the wedged lane — the same scale as
@@ -291,6 +315,7 @@ func (s *Server) NewConnection(id string) *Connection {
 		send:              make(chan appwire.Message, appwire.NotificationBufferCap),
 		requests:          make(chan admittedRequest, s.requestQueueCapacity),
 		slowReadSlots:     make(chan struct{}, slowReadDispatchCap),
+		requestSlots:      make(chan struct{}, concurrentRequestCap),
 		slowReadInflight:  map[string]int{},
 		workerExited:      make(chan struct{}),
 		pendingAdmissions: map[*subscriptionAdmission]struct{}{},
@@ -598,6 +623,9 @@ type Connection struct {
 	// before spawning a slow read; the slow-read goroutine releases it when
 	// handleAndEnqueue returns.
 	slowReadSlots chan struct{}
+	// requestSlots is the same kind of semaphore for the requests the
+	// server's ConcurrentRequest admits (concurrentRequestCap).
+	requestSlots chan struct{}
 	// capSaturationAdvised makes the cap-saturation advisory one-shot per
 	// connection. Only the worker goroutine touches it.
 	capSaturationAdvised bool
@@ -1791,9 +1819,10 @@ func formatTally(tally map[string]int) string {
 }
 
 // executeOrdered applies the dispatch policy to one dequeued frame: the
-// slow-read methods concurrentDispatchMethod names spawn onto their own
-// goroutine — a full-transcript read cannot head-of-line block the
-// connection — and everything else, initialize and notifications included,
+// slow-read methods concurrentDispatchMethod names, and the requests the
+// server's ConcurrentRequest admits, spawn onto their own goroutine — a
+// full-transcript read or a remote host's answer cannot head-of-line block
+// the connection — and everything else, initialize and notifications included,
 // executes inline in the worker so handlers keep the per-connection ordering
 // they were written against.
 //
@@ -1870,6 +1899,19 @@ func (c *Connection) executeOrdered(ctx context.Context, msg appwire.Message) {
 		go func() {
 			defer c.finishSubscriptionAdmission(admission)
 			defer c.releaseSlowReadSlot(method)
+			c.handleAndEnqueue(ctx, msg)
+		}()
+		return
+	}
+	if concurrent := c.server.cfg.ConcurrentRequest; msg.Request != nil && concurrent != nil && c.isInitialized() && concurrent(msg.Request.Method, msg.Request.Params) {
+		if !c.tryRequestSlot(ctx) {
+			c.recoverPanic(msg, func() {
+				c.enqueueDispatched(ctx, appwire.ErrorMessage(msg.Request.ID, appwire.Unavailable(fmt.Sprintf("this connection already has %d requests waiting on slow answers (a remote host's, for a forwarded read); try again shortly", concurrentRequestCap))))
+			})
+			return
+		}
+		go func() {
+			defer func() { <-c.requestSlots }()
 			c.handleAndEnqueue(ctx, msg)
 		}()
 		return
@@ -1962,6 +2004,25 @@ func (c *Connection) acquireSlowReadSlot(ctx context.Context, method string) boo
 	c.slowReadMu.Lock()
 	c.slowReadInflight[method]++
 	c.slowReadMu.Unlock()
+	return true
+}
+
+// tryRequestSlot takes one requestSlots slot for a request the server's
+// ConcurrentRequest admitted, or reports false at once when the pool is full
+// (concurrentRequestCap says why it never parks).
+func (c *Connection) tryRequestSlot(ctx context.Context) bool {
+	select {
+	case c.requestSlots <- struct{}{}:
+	default:
+		return false
+	}
+	// As the slow-read acquire does: a request dequeued after cancellation
+	// starts nothing. The caller's refusal enqueue then fails on the same
+	// cancellation, which tears the connection down anyway.
+	if ctx.Err() != nil {
+		<-c.requestSlots
+		return false
+	}
 	return true
 }
 
