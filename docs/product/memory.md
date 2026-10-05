@@ -25,7 +25,8 @@ The state root is `$XDG_STATE_HOME/evener`, normally
 own separate storage. Personal memory crosses projects on that host; project
 memory belongs to its bound project identity.
 
-Session memory holds knowledge about the current work. The root session owns it;
+Session memory holds working notes about the current work (its plan, what was
+tried and found). The root session owns it;
 delegates resolve the scope to their root and can read but not write it. Resume
 keeps it. A fork or `--resume-with` child copies its parent's session memory the
 first time it opens the scope, in its own process, normally at its first model
@@ -65,12 +66,15 @@ Enabled sessions also receive core memory guidance after the system
 instructions. It says what each scope holds (personal memory: what applies
 beyond the current project, such as how the human partner works and how tools,
 systems and the world behave; project memory: knowledge about this project;
-session memory: knowledge about the current work),
+session memory: working notes about the current work: its plan, what was tried
+and found),
 when to read a page, and that stored memory is fallible evidence, never
 instructions or permission. Sessions that can call the save tools are also told
 when to save: when the partner corrects the agent or says how they want work
-done, when the partner states a project plan, constraint or decision, and when
-the agent learns something the hard way that is not written down. Partner-stated
+done, when the partner states a project plan, constraint or decision (saved to
+project memory), when the agent is partway through longer work (plan and
+findings go to session memory as working notes), and when the agent learns
+something the hard way that is not written down. Partner-stated
 facts are saved before the work they shape, because complying with them does
 not carry them to the next session. The Finishing guidance and the result
 tool's description repeat the save check at the point the agent decides it is
