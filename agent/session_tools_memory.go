@@ -3,9 +3,9 @@ package agent
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"maps"
 	"path/filepath"
-	"syscall"
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/tool"
@@ -31,12 +31,12 @@ func registerMemoryTools(reg *tool.Registry, s *Session) error {
 }
 
 // memoryFileArgs changes only path authority; shared executors own file semantics.
-// A nil environment with a nil error means the scope's directory does not
-// exist yet and operation must not create it: the caller reports the outcome
-// the operation has on an empty scope.
+// It returns errMemoryScopeAbsent when the scope's directory does not exist
+// yet and operation must not create it; the executor then reports the outcome
+// the operation has on an empty scope, naming the path the model asked for.
 func (s *Session) memoryFileArgs(args map[string]any, key, operation string) (*execenv.LocalExecutionEnvironment, map[string]any, func(), error) {
 	scope := stringArg(args, "scope")
-	relative, readOnly, err := s.memoryScopeBinding(scope)
+	_, readOnly, err := s.memoryScopeBinding(scope)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -50,21 +50,23 @@ func (s *Session) memoryFileArgs(args map[string]any, key, operation string) (*e
 	if !filepath.IsLocal(path) {
 		return nil, nil, nil, errors.New("memory path must be relative and remain in its scope")
 	}
-	forwarded := maps.Clone(args)
 	env, release, err := s.acquireMemoryEnvironment(scope, memoryOperationCreatesScope(scope, operation))
-	if errors.Is(err, errMemoryScopeAbsent) {
-		forwarded[key] = filepath.Join(s.cfg.MemoryStateRoot, relative, path)
-		return nil, forwarded, func() {}, nil
-	}
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	forwarded := maps.Clone(args)
 	forwarded[key] = filepath.Join(env.WorkingDirectory(), path)
 	if err := s.beforeMemoryIO(scope, operation); err != nil {
 		release()
 		return nil, nil, nil, err
 	}
 	return env, forwarded, release, nil
+}
+
+// absentMemoryFile is the not-found error for a file in a scope whose
+// directory does not exist yet, shaped like a missing file's open error.
+func absentMemoryFile(args map[string]any) error {
+	return &fs.PathError{Op: "open", Path: stringArg(args, "file_path"), Err: fs.ErrNotExist}
 }
 
 func (s *Session) execMemoryWrite(ctx context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
@@ -77,48 +79,48 @@ func (s *Session) execMemoryWrite(ctx context.Context, _ execenv.ExecutionEnviro
 }
 
 func (s *Session) execMemoryRead(ctx context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
-	env, args, release, err := s.memoryFileArgs(args, "file_path", "read")
+	env, forwarded, release, err := s.memoryFileArgs(args, "file_path", "read")
+	if errors.Is(err, errMemoryScopeAbsent) {
+		return nil, absentMemoryFile(args)
+	}
 	if err != nil {
 		return nil, err
 	}
 	defer release()
-	if env == nil {
-		return nil, syscall.ENOENT
-	}
-	return execFileRead(ctx, env, args, s.fileReadGuard(env))
+	return execFileRead(ctx, env, forwarded, s.fileReadGuard(env))
 }
 func (s *Session) execMemoryEdit(ctx context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
-	env, args, release, err := s.memoryFileArgs(args, "file_path", "edit")
+	env, forwarded, release, err := s.memoryFileArgs(args, "file_path", "edit")
+	if errors.Is(err, errMemoryScopeAbsent) {
+		return nil, absentMemoryFile(args)
+	}
 	if err != nil {
 		return nil, err
 	}
 	defer release()
-	if env == nil {
-		return nil, syscall.ENOENT
-	}
-	return execFileEdit(ctx, env, args, s.fileReadGuard(env))
+	return execFileEdit(ctx, env, forwarded, s.fileReadGuard(env))
 }
 func (s *Session) execMemorySearch(ctx context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
-	env, args, release, err := s.memoryFileArgs(args, "path", "search")
-	if err != nil {
-		return nil, err
-	}
-	defer release()
-	if env == nil {
+	env, forwarded, release, err := s.memoryFileArgs(args, "path", "search")
+	if errors.Is(err, errMemoryScopeAbsent) {
 		return "", nil
 	}
-	return execFileGrep(ctx, env, args)
-}
-func (s *Session) execMemoryDelete(_ context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
-	env, args, release, err := s.memoryFileArgs(args, "file_path", "delete")
 	if err != nil {
 		return nil, err
 	}
 	defer release()
-	path := stringArg(args, "file_path")
-	if env == nil {
-		return "Removed or already absent: " + path, nil
+	return execFileGrep(ctx, env, forwarded)
+}
+func (s *Session) execMemoryDelete(_ context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
+	env, forwarded, release, err := s.memoryFileArgs(args, "file_path", "delete")
+	if errors.Is(err, errMemoryScopeAbsent) {
+		return "Removed or already absent: " + stringArg(args, "file_path"), nil
 	}
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	path := stringArg(forwarded, "file_path")
 	warn := s.fileReadGuard(env).ReadBeforeWriteWarning(path)
 	if err := env.RemoveConfinedFile(path); err != nil {
 		return nil, err

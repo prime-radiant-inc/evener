@@ -220,11 +220,6 @@ func memoryOperationCreatesScope(scope, operation string) bool {
 	return scope != "session" || operation == "write"
 }
 
-// memoryEnvironment opens scope, creating its directory if needed.
-func (s *Session) memoryEnvironment(scope string) (*execenv.LocalExecutionEnvironment, error) {
-	return s.openMemoryEnvironment(scope, true)
-}
-
 // openMemoryEnvironment opens scope. Without create, an absent directory stays
 // absent and reports errMemoryScopeAbsent; the captured root is still kept, so
 // a later creating open works beneath the same authority.
@@ -268,16 +263,18 @@ func (s *Session) openMemoryEnvironment(scope string, create bool) (*execenv.Loc
 	err = s.beforeMemoryIO(scope, "setup")
 	var env *execenv.LocalExecutionEnvironment
 	if err == nil && root == nil {
-		if scope == "session" {
-			s.seedForkedSessionMemory()
+		if scope == "session" && s.seedForkedSessionMemory() {
+			create = true
 		}
 		root, err = execenv.NewConfinedFileRoot(s.cfg.MemoryStateRoot, relative)
 	}
-	if err == nil && create {
-		env, err = root.Open(previous)
-	} else if err == nil {
-		env, err = root.OpenExisting(previous)
-		if errors.Is(err, os.ErrNotExist) {
+	if err == nil {
+		open := root.OpenExisting
+		if create {
+			open = root.Open
+		}
+		env, err = open(previous)
+		if !create && errors.Is(err, os.ErrNotExist) {
 			err = errMemoryScopeAbsent
 		}
 	}

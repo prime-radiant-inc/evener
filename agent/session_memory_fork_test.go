@@ -23,6 +23,15 @@ func forkWithSessionMemory(t *testing.T, seed bool) (root, parentID string, chil
 // the fork's persisted meta before it is restored.
 func forkWithSessionMemoryMeta(t *testing.T, seed bool, edit func(*schema.SessionMeta)) (root, parentID string, child *Session) {
 	t.Helper()
+	root, parentID, restore := forkWithSessionMemoryRestorer(t, seed, edit)
+	return root, parentID, restore()
+}
+
+// forkWithSessionMemoryRestorer creates the fork and returns a function that
+// restores it from its persisted meta, as a new process would; each call
+// restores it again.
+func forkWithSessionMemoryRestorer(t *testing.T, seed bool, edit func(*schema.SessionMeta)) (root, parentID string, restore func() *Session) {
+	t.Helper()
 	root, history, workspace := t.TempDir(), t.TempDir(), t.TempDir()
 	p := newSession(t, withDir(workspace), withConfig(SessionConfig{StateDir: history, MemoryStateRoot: root}), withSteps(func(llm.Request) llm.Response { return finalResponse("done") }))
 	if _, err := p.ProcessInput(context.Background(), "parent turn", nil); err != nil {
@@ -36,19 +45,22 @@ func forkWithSessionMemoryMeta(t *testing.T, seed bool, edit func(*schema.Sessio
 	if err != nil {
 		t.Fatal(err)
 	}
-	meta, err := schema.LoadSessionMeta(history, childID)
-	if err != nil {
-		t.Fatal(err)
+	return root, p.id, func() *Session {
+		t.Helper()
+		meta, err := schema.LoadSessionMeta(history, childID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if edit != nil {
+			edit(&meta)
+		}
+		c, err := RestoreSessionFromMetaWithConfig(p.client, p.profile, execenv.NewLocalExecutionEnvironment(workspace), meta, RestoreSessionConfig{StateDir: history, MemoryStateRoot: root})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(c.Close)
+		return c
 	}
-	if edit != nil {
-		edit(&meta)
-	}
-	c, err := RestoreSessionFromMetaWithConfig(p.client, p.profile, execenv.NewLocalExecutionEnvironment(workspace), meta, RestoreSessionConfig{StateDir: history, MemoryStateRoot: root})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(c.Close)
-	return root, p.id, c
 }
 
 func hasWarningContaining(evs []events.SessionEvent, substr string) bool {
@@ -142,10 +154,6 @@ func TestMemoryForkWithoutParentMemoryStartsEmpty(t *testing.T) {
 	t.Parallel()
 	root, _, c := forkWithSessionMemory(t, false)
 	seen, stop := captureEvents(c)
-	if res := memoryExec(t, c, "memory_read", map[string]any{"scope": "session", "file_path": "MEMORY.md"}); !res.IsError {
-		t.Fatalf("empty fork read=%+v", res)
-	}
-	assertNoMemoryDir(t, filepath.Join(root, "memory", "sessions", c.id), "a fork's first read with nothing to copy")
 	if res := memoryExec(t, c, "memory_write", map[string]any{"scope": "session", "file_path": "MEMORY.md", "content": "opaque-child-33\n"}); res.IsError {
 		t.Fatal(res.Output)
 	}
@@ -155,6 +163,53 @@ func TestMemoryForkWithoutParentMemoryStartsEmpty(t *testing.T) {
 	}
 	if hasWarningContaining(*seen, "could not copy the parent session's memory") {
 		t.Fatal("a missing parent scope was reported as a copy failure")
+	}
+}
+
+// A fork copies its parent's session memory once, as of its first use. When
+// the parent had none, the fork's scope still exists (empty) after that first
+// use, so the parent's later notes never reach a fork resumed in a new process.
+func TestMemoryForkCopiesOnceWhenParentWasEmpty(t *testing.T) {
+	t.Parallel()
+	root, parentID, restore := forkWithSessionMemoryRestorer(t, false, nil)
+	c := restore()
+	if res := memoryExec(t, c, "memory_read", map[string]any{"scope": "session", "file_path": "MEMORY.md"}); !res.IsError {
+		t.Fatalf("empty fork read=%+v", res)
+	}
+	childDir := filepath.Join(root, "memory", "sessions", c.id)
+	if info, err := os.Lstat(childDir); err != nil || !info.IsDir() {
+		t.Fatalf("fork scope after its first use: info=%v err=%v", info, err)
+	}
+	c.Close()
+	memorySeed(t, root, filepath.Join("sessions", parentID), "opaque-parent-later-62\n")
+	resumed := restore()
+	if res := memoryExec(t, resumed, "memory_read", map[string]any{"scope": "session", "file_path": "MEMORY.md"}); !res.IsError {
+		t.Fatalf("resumed fork copied the parent's later notes: %+v", res)
+	}
+}
+
+// A failed copy is reported once, at the fork's first use, not again by every
+// process that resumes the fork.
+func TestMemoryForkCopyFailureWarnsOnce(t *testing.T) {
+	t.Parallel()
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses permissions")
+	}
+	root, parentID, restore := forkWithSessionMemoryRestorer(t, true, nil)
+	parentDir := filepath.Join(root, "memory", "sessions", parentID)
+	if err := os.Chmod(parentDir, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(parentDir, 0o700) })
+	for i, want := range []bool{true, false} {
+		c := restore()
+		seen, stop := captureEvents(c)
+		memoryExec(t, c, "memory_read", map[string]any{"scope": "session", "file_path": "MEMORY.md"})
+		stop()
+		if got := hasWarningContaining(*seen, "could not copy the parent session's memory"); got != want {
+			t.Fatalf("process %d warned=%t, want %t", i, got, want)
+		}
+		c.Close()
 	}
 }
 

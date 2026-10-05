@@ -23,22 +23,29 @@ const (
 // session memory the first time the scope is opened, for a read or a write.
 // The copy happens only while the child's directory does not exist yet, so the
 // branches diverge after the fork. Reads never create the directory, so a
-// delegate that reads the scope first cannot block the copy. A failure is reported and leaves an empty scope; it never
-// blocks the session.
-func (s *Session) seedForkedSessionMemory() {
+// delegate that reads the scope first cannot block the copy. A failure is
+// reported and leaves an empty scope; it never blocks the session.
+//
+// It reports whether this session is a fork that attempted the copy. Every
+// process that resumes a fork attempts it again, so the caller then creates
+// the child's directory even when nothing was copied: the copy happens once,
+// as of the fork's first use, and later parent notes or a repeated warning
+// never reach a resumed fork.
+func (s *Session) seedForkedSessionMemory() bool {
 	parent, child := s.fork.parentID, s.memorySessionID()
 	if s.fork.divergence == 0 || parent == "" || s.isMemoryDelegate() || schema.ValidateSessionID(parent) != nil || schema.ValidateSessionID(child) != nil {
-		return
+		return false
 	}
 	// A parent that never wrote session memory is the common case. Absence
 	// carries nothing to copy, so it is settled without opening the memory
 	// root; everything that exists goes through the confined copy below.
 	if _, err := os.Lstat(filepath.Join(s.cfg.MemoryStateRoot, "memory", "sessions", parent)); errors.Is(err, os.ErrNotExist) {
-		return
+		return true
 	}
 	if err := copySessionMemory(s.cfg.MemoryStateRoot, parent, child); err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("could not copy the parent session's memory into this fork; session memory starts empty: %v", err)})
 	}
+	return true
 }
 
 // copySessionMemory copies the parent's session scope into the child's
