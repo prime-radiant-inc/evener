@@ -231,8 +231,9 @@ func (s *SessionScratch) Cleanup() error {
 	}
 	dir := filepath.Clean(s.Dir)
 	base := filepath.Clean(s.base)
-	if s.base == "" || filepath.Dir(dir) != base ||
-		!strings.HasPrefix(filepath.Base(dir), sessionScratchPrefix) {
+	inNamespace := strings.HasPrefix(filepath.Base(dir), sessionScratchPrefix) ||
+		strings.HasPrefix(filepath.Base(base), sessionScratchTreePrefix)
+	if s.base == "" || filepath.Dir(dir) != base || !inNamespace {
 		return fmt.Errorf("sandbox: refuse cleanup outside session scratch namespace: %q", s.Dir)
 	}
 	releaseErr := s.Retain()

@@ -1,6 +1,16 @@
 # Remove scratch retention
 
-Date: 2026-10-03. Approved direction: Jesse, 2026-10-03.
+Date: 2026-10-03. Approved direction: Jesse, 2026-10-03. Revised 2026-10-04 (below).
+
+## Revision 2 (2026-10-04)
+
+Jesse, 2026-10-04: scratch is cleaned up only when the top-level session is archived (or deleted). Idle retirement, a session shutting down unarchived, and a delegate going idle keep it. One-shot runs clean up at exit. Scratch stays in the system temp dir. Old scratch directories are not migrated. This replaces "An environment deletes its scratch when it ends" and "The sweep runs at startup and at every root session end" below; everything else in this spec stands (retention removed, read-only removal, detached commands, prompts and docs).
+
+- **Layout.** A per-root tree in the scratch base: `<base>/evener-scratch-<rootSessionID>/<sessionID>/`, one sibling directory per session, the root's and each child's. The path comes from the session ID, so a resumed, re-woken or re-driven session or delegate reopens the same directory. The `evener-scratch-` prefix keeps the 24-hour sweep, which matches only `evener-sandbox-*`, away from it. An environment with no session identity (a test, a caller that never names one) keeps today's random, disposable `evener-sandbox-*` scratch.
+- **Identity before the sandbox.** A sandboxed environment mints its scratch when the sandbox is enabled, which for a new root is before `NewSession` picks an ID. Launchers therefore pick the root's ID first, name the environment's scratch identity, and pass the ID to the session. A delegate's ID is reserved before its environment is prepared, so the environment takes the child's identity before its sandbox is enabled.
+- **Session ends keep scratch.** Close, idle retirement, delegate teardown and idle release prune only the regenerable cache subdirectories the sandbox's env floor puts in scratch (`gocache`, `gomodcache`, `npm`, `cargo`), release the lease, and remove the session's `$TMPDIR` container unless a detached command uses it. The directory stays. A disposable (`evener-sandbox-*`) scratch is still removed.
+- **Removal.** The hub removes the root's whole tree when it archives or deletes a local root session, and when a project deletion purges one. A one-shot run (`TurnEndsProcess`) removes its root's tree as the last step of close.
+- **No sweep at root close.** The startup sweep stays for disposable scratch and crash leftovers.
 
 ## Problem
 
