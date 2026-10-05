@@ -20,9 +20,7 @@ const canonicalRecheckRequired = true
 // normalization — defeating case/normalization-insensitive masking bypasses.
 func canonicalPathOfFd(fd int) (string, error) {
 	var buf [unix.PathMax]byte
-	// x/sys does not expose an F_GETPATH-specific wrapper, but its supported
-	// FcntlInt wrapper accepts the Darwin fcntl pointer argument on arm64.
-	if _, err := unix.FcntlInt(uintptr(fd), unix.F_GETPATH, int(uintptr(unsafe.Pointer(&buf[0])))); err != nil {
+	if err := fcntlGetPath(uintptr(fd), uintptr(unsafe.Pointer(&buf[0]))); err != nil {
 		return "", err
 	}
 	n := 0
@@ -30,6 +28,20 @@ func canonicalPathOfFd(fd int) (string, error) {
 		n++
 	}
 	return string(buf[:n]), nil
+}
+
+// fcntlGetPath runs fcntl(fd, F_GETPATH, buf); x/sys has no wrapper for it, so
+// buf's address goes to FcntlInt as a plain integer. Converted anywhere else, a
+// stack buffer's address goes stale when the goroutine's stack grows and moves
+// during the call: the kernel writes the path into the old stack and the caller
+// reads back an empty buffer (#3744). uintptrescapes makes the compiler move a
+// buffer converted in this call's arguments to the heap, where it stays put.
+//
+//go:uintptrescapes
+//go:noinline
+func fcntlGetPath(fd, buf uintptr) error {
+	_, err := unix.FcntlInt(fd, unix.F_GETPATH, int(buf))
+	return err
 }
 
 // openBeneathRoot opens rel beneath rootFd refusing every symlink and any escape
