@@ -22,7 +22,7 @@ import { createFrameworkFreeStore, type FrameworkFreeStore } from "../../framewo
 import type { HostRequestMethod, PluginEntry, PluginListResponse } from "../../types.gen";
 import { HubWriteBusyError, type HubWriteGate } from "./hubWriteGate";
 import { createListRevision, readRevisioned, writeRevisioned } from "./listRevision";
-import { attachLifecycle, createStoreLifecycle, type StoreLifecycle } from "./storeLifecycle";
+import { attachLifecycle, createStoreLifecycle, type HostLifecycle } from "./storeLifecycle";
 
 export type PluginsClient = RequestPort<HostRequestMethod> & Pick<AppwireClientLike, "onNotification">;
 
@@ -52,7 +52,7 @@ export interface PluginsState {
   setPluginAutoUpgrade(plugin: string, marketplace: string, autoUpgrade: boolean): Promise<void>;
 }
 
-export interface PluginsStore extends FrameworkFreeStore<PluginsState>, Omit<StoreLifecycle<PluginsState>, "guard"> {
+export interface PluginsStore extends FrameworkFreeStore<PluginsState>, HostLifecycle<PluginsState> {
   /** Follows evener/plugin/updated, which the hub broadcasts to every client
    * after any client's successful mutation (and after a marketplace edit,
    * which can re-key installed plugins): pluginRevision moves at once and the
@@ -86,10 +86,6 @@ export function createPluginsStore(client: PluginsClient, gate: HubWriteGate): P
   // Every mutation, and the notification refetch, replaces the whole list from
   // its own response; see listRevision.ts for the fence.
   const listRevision = createListRevision();
-  // How many times the lifecycle has fenced what is in flight (reset, dispose,
-  // a replaced connection). An update check is fenced by no revision of its
-  // own, so it compares this across its request instead.
-  let fences = 0;
 
   const lifecycle = createStoreLifecycle<PluginsState>(client, {
     method: "evener/plugin/updated",
@@ -103,10 +99,7 @@ export function createPluginsStore(client: PluginsClient, gate: HubWriteGate): P
     onNotified: () => store.setState((s) => ({ pluginRevision: s.pluginRevision + 1 })),
     // The lifecycle fences listRevision; nothing is coming to lower the flag a
     // fenced read raised.
-    onFence: (set) => {
-      fences += 1;
-      set({ pluginsLoading: false });
-    },
+    onFence: (set) => set({ pluginsLoading: false }),
     // A mutation issued before any fetchPlugins call touches none of these
     // three fields; the lifecycle ORs listRevision.hasLive() in for that case
     // (see storeLifecycle.ts's revision option).
@@ -159,13 +152,15 @@ export function createPluginsStore(client: PluginsClient, gate: HubWriteGate): P
         // hub was still asking remotes (a toggle, a notification refetch)
         // would outrank it and drop the flags. The list read issued after the
         // check outranks all of those, and the hub's list carries the flags.
-        const fencesAtStart = fences;
+        // No revision fences the check itself, so it compares the lifecycle's
+        // epoch across its request instead.
+        const issuedIn = lifecycle.epoch();
         try {
           await client.request("evener/plugin/checkUpdates", {}, { timeoutMs: PLUGIN_UPDATE_CHECK_TIMEOUT_MS });
         } catch {
           return;
         }
-        if (fences === fencesAtStart) await store.getState().fetchPlugins();
+        if (lifecycle.epoch() === issuedIn) await store.getState().fetchPlugins();
       },
 
       installPlugin: mutation("evener/plugin/install"),
