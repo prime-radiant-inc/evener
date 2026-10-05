@@ -49,9 +49,11 @@ ownership separate from output paging.
 ### Consistency with other reads
 
 Use the existing raw job, artifact and transcript-expansion pages as the common
-contract: exact lifetime byte positions, raw byte counts, lossless `utf8` or
-`base64` encoding, and a continuation at the returned interval's end. Expose the
-actual job retention floor, independently of the returned page's start.
+byte semantics: exact lifetime positions, raw byte counts and lossless `utf8` or
+`base64` encoding. Expose the actual job retention floor, independently of the
+returned page's start. Derive the job page's end from its start and raw count;
+it needs no public continuation. Other raw readers keep their existing selectors
+and continuations.
 
 Consistency concerns byte semantics. Keep tool snake_case and AppWire camelCase,
 their existing wrappers and page sizes, artifact addressing, and transcript
@@ -73,18 +75,17 @@ policy.
 | `ref` | Existing owning-session reference and routing rules. |
 | `jobId` | Existing durable shell-job identity. |
 | `maxBytes` | Existing 4 KiB default and 64 KiB cap, applied to source bytes. Omitted or nonpositive values use the default. Positive values are capped. |
-| `offsetBytes` | Optional inclusive lifetime start for a forward page. |
 | `beforeBytes` | Optional exclusive lifetime end for a backward page. |
 
-Omit both selectors for the latest page. Supply at most one. An explicit zero is
-a real position, never an omitted selector or a latest-page sentinel. Forward
-selectors must survive Go decoding, forwarding and TypeScript request creation
-with their presence intact. Every supplied selector must be a nonnegative
-integer. Conflicting selectors and invalid selectors are invalid-parameter
-errors.
+Omit `beforeBytes` for the latest page. An explicit zero is a real position,
+never an omitted selector or a latest-page sentinel. Its presence must survive
+Go decoding, forwarding and TypeScript request creation. Every supplied
+`beforeBytes` must be a nonnegative integer; invalid values are invalid-parameter
+errors. There is no request `offsetBytes` selector.
 
-The browser requests 64 KiB pages. Small existing previews, including the
-256-byte activity-row preview, retain their selected size.
+The browser uses a 64 KiB page limit; a forward-demand request may use a smaller
+positive size. Small existing previews, including the 256-byte activity-row
+preview, retain their selected size.
 
 ### Selection and coherent bounds
 
@@ -95,28 +96,41 @@ metadata and then perform an unrelated forward read.
 
 | Selection | Returned half-open source-byte interval |
 | --- | --- |
-| Latest, selectors omitted | `[max(F, T - M), T)` |
-| Forward, `offsetBytes = O` | `[O, min(T, O + M))` |
+| Latest, `beforeBytes` omitted | `[max(F, T - M), T)` |
 | Backward, `beforeBytes = B` | `[max(F, B - M), B)` |
 
 A supplied selector below `F` reports pruning. A negative selector or a selector
 above `T` is invalid. Check invalid negative values before classifying pruning.
 Clip a calculated backward start to `F`; its unclipped value is not a supplied
-selector. Avoid arithmetic overflow when calculating interval ends.
+selector. Avoid arithmetic overflow when calculating interval bounds.
+
+Forward scrolling does not require a forward wire operation. For demand starting
+at `A` with an observed gap end `G > A`, choose `B = min(G, A + M)` and
+`N = B - A`. Request `beforeBytes=B, maxBytes=N`. For `F <= B <= T`, this returns
+`[max(F, A), B)`. If retention has passed `A`, the returned floor identifies the
+missing prefix. If `B < F`, the supplied selector reports pruning. Reconcile that
+floor and resume from readable bytes. Keep useful cached output in either case.
+
+Only issue this request while `A < G`, so `N` is positive and at most the page
+limit. A zero `maxBytes` requests the default size, not an empty page. The same
+calculation applies when `G` is an observed total. Appends beyond the selected
+end do not change which interval this request asks for. The server still selects
+and reads within its own coherent snapshot.
 
 These boundary examples are normative:
 
 | Snapshot and request | Result |
 | --- | --- |
 | `F=100, T=200, M=64`, latest | `[136, 200)`, 64 bytes |
-| Same snapshot, `offsetBytes=120` | `[120, 184)`, 64 bytes |
+| Same snapshot, demand `A=120, G=200`, hence `beforeBytes=184, maxBytes=64` | `[120, 184)`, 64 bytes |
 | Same snapshot, `beforeBytes=120` | `[100, 120)`, 20 bytes |
 | Same snapshot, `beforeBytes=100` | Empty `[100, 100)` |
 | Same snapshot, `beforeBytes=99` | Pruned selector |
 | `F=0`, `beforeBytes=0` | Empty `[0, 0)` |
 | `F>0`, `beforeBytes=0` | Pruned selector |
-| `offsetBytes=T` | Empty `[T, T)` |
-| Either selector greater than `T` | Invalid parameters |
+| Same snapshot, `beforeBytes=200` | `[136, 200)`, 64 bytes |
+| `F=T`, latest | Empty `[T, T)` |
+| `beforeBytes` greater than `T` | Invalid parameters |
 
 This distinction incorporates the source-verified Astra clarification: validate
 the supplied backward end, then clip the calculated start. A valid page near the
@@ -136,7 +150,6 @@ and `hasEarlier` contract. Migrate its consumers rather than accept both shapes.
 | `retainedStartBytes` | Actual storage retention floor from this snapshot. |
 | `encoding` | `utf8` or `base64`. |
 | `data` | Text or standard base64 representing exactly the returned bytes. |
-| `continuation` | Optional `{ offsetBytes }` for the next forward read. |
 
 All bounds and counts are explicit, including zeros. The returned interval is
 `[offsetBytes, offsetBytes + bytesReturned)`, with
@@ -144,13 +157,16 @@ All bounds and counts are explicit, including zeros. The returned interval is
 valid boundary, including EOF. `bytesReturned` is neither a JavaScript string
 length nor a base64 string length.
 
-Include `continuation` exactly when the returned end is below the snapshot's
-`totalBytes`; its `offsetBytes` equals that end. This is a forward continuation
-even for a backward-selected page. Request the previous page with
+There is no response `continuation`. The returned end is
+`offsetBytes + bytesReturned`. Request the previous page with
 `beforeBytes=offsetBytes`, only while that start exceeds the observed floor.
+To move forward, use that end as `A` in the demand calculation above. Reconcile
+the current floor before advancing a demand whose bytes have been pruned.
 
-An empty EOF page says that this snapshot has no more bytes. It says nothing
-about whether the job can append later. Job completion comes from metadata.
+A page reaches snapshot EOF when its returned end equals `totalBytes`. A latest
+page is empty when `F=T`; `beforeBytes=F` is also empty, but is not EOF when
+`F<T`. Reaching EOF says nothing about whether the job can append later. Job
+completion comes from metadata.
 
 ### Encoding and display
 
@@ -160,9 +176,9 @@ standard base64. Never trim a page to rune boundaries or repair its bytes before
 transport. Empty data uses `utf8`.
 
 The shared decoder must work in browser and native JavaScript without requiring
-browser-only globals. Validate encoding, decoded raw counts, bounds and
-continuation consistency before accepting a page. Invalid payloads remain read
-failures; they must not fabricate pruning or successful empty output.
+browser-only globals. Validate encoding, decoded raw counts and bounds before
+accepting a page. Invalid payloads remain read failures; they must not fabricate
+pruning or successful empty output.
 
 Keep raw bytes until contiguous ranges can be decoded together. A code point
 split across pages must render correctly after those pages join, whether bytes
@@ -193,6 +209,14 @@ windows overlap. Each window keeps its own 512 KiB limit. This is a source-byte
 budget, not a browser-heap claim. Decoded text, row metadata and parse state must
 also remain bounded; no second unbounded history or decoded cache is allowed.
 
+Represent each window as one contiguous source interval, raw bytes and bounded
+parser state at its known eviction boundary. Merge overlapping byte coordinates
+and derive rows from the bounded contents. Re-decode each changed window's
+contiguous bytes together to repair append and prepend seams, then parse with the
+existing ANSI scanner. Separate windows remain independent across an unread gap.
+Do not retain response-page objects, a sparse page cache or bidirectional
+streaming-decoder machinery.
+
 Open at the latest page and follow new output while the reader is at the bottom.
 Scrolling away preserves the visible byte-based row and its pixel position
 while the live window continues to update. Returning to the live bottom resumes
@@ -205,11 +229,21 @@ byte positions, not mutable array indices. Preserve the visible anchor through
 prepend, page repair, trim and live growth. Handle long lines and control
 sequences within the same storage budget.
 
+Use the list's ordinary anchoring first. For structural replacements or remounts
+that change an anchored fragment, capture its source-byte position and pixel
+offset and restore through the existing list handle and measurement callbacks.
+Do not add a height cache, parallel scroll coordinator or sticky-bottom loop.
+
 Slide the older window with the viewport. Discard offscreen raw bytes as needed
 and refetch them if the user scrolls back and the server still retains them.
 Automatic backward and forward paging must work through the unloaded retained
 interval between older and live windows. A jump to the live end or a manual
 "Load earlier" button is not a substitute for scrolling through that interval.
+
+An unloaded marker remains a demand boundary until adjacent output arrives; it
+must not let scrolling skip the gap. Re-evaluate demand after every response,
+including pages containing only control bytes and no visible text. Progress is
+measured by source-byte bounds, not the number of rendered rows.
 
 Represent these conditions distinctly:
 
@@ -232,17 +266,30 @@ the current parsing logic; this scope adds no terminal emulator.
 subscriptions, hydrate unrelated transcript history, or create another
 subscription-lifetime owner to read a `job:` output pane.
 
+Retain the reader's byte windows, scroll capture, demand and final-drain obligation
+under the existing pane lifetime and read view. Mounting activates the reader;
+unmounting an inactive tab pauses it without losing state. Closing the pane
+disposes it. Component-only buffers cannot provide this preservation.
+
 Allow one output request in flight per pane. While a running job's pane is
 visible and readable, poll at the existing one-second browser cadence. Prioritize
 viewport paging demand over routine live refreshes, while continuing live reads.
 Keep unresolved demand after failures and retry at a paced cadence; an automatic
 read must not be abandoned until a manual Refresh.
 
+Use one paced read loop for pending viewport demand, due live refresh and pending
+final drain. Give live reads bounded service while history demand remains active.
+Recheck pane and connection freshness after a readiness wait, before dispatch and
+before accepting a reply. Fence obsolete replies; do not assume request transport
+supports cancellation. Add no separate live, history or final-drain retry owners.
+
 Best-effort `evener/jobs/get` supplies status and command metadata. A metadata
 failure must not block output reads or clear output. Once terminal metadata is
 observed, perform a fresh successful output drain to EOF before stopping live
-polling. A failed, hidden or disconnected final drain remains pending. History
-paging stays usable after the job finishes.
+polling. A read started before terminal metadata cannot settle that obligation.
+Use returned byte bounds, not a continuation, to track progress and EOF. A failed,
+hidden or disconnected final drain remains pending. History paging stays usable
+after the job finishes.
 
 ```mermaid
 stateDiagram-v2
@@ -288,12 +335,13 @@ wire types and migrate all job-output producers, routes, parsers, fixtures and
 consumers in the same implementation. Keep the `evener/jobs/output` method name.
 Add no compatibility bridge, dual parser or silent tail fallback.
 
-The existing version handshake must reject mismatched peers before they can
-ignore a new selector and answer with an old tail. Older live daemons continue
-running with their work intact. A newer hub reports the existing restart-required
-condition and cannot read them until an explicit restart. Never restart or kill
-a daemon automatically to complete this migration. Healthy compatible owners
-remain usable. Do not introduce separate paging-feature negotiation.
+The existing version handshake must reject mismatched peers before job-output
+dispatch, so a byte-page read cannot receive an old tail response. Older live
+daemons continue running with their work intact. A newer hub reports the existing
+restart-required condition and cannot read them until an explicit restart. Never
+restart or kill a daemon automatically to complete this migration. Healthy
+compatible owners remain usable. Do not introduce separate paging-feature
+negotiation.
 
 The implementation must cover these existing boundaries:
 
@@ -306,7 +354,7 @@ The implementation must cover these existing boundaries:
 | Local and remote hub routing | [app_jobs.go](../../../cmd/evener-hub/app_jobs.go), [source.go](../../../cmd/evener-hub/internal/appsource/source.go), [local_daemon.go](../../../cmd/evener-hub/internal/appsource/local_daemon.go), [remote_hub_mutations.go](../../../cmd/evener-hub/internal/appsource/remote_hub_mutations.go) |
 | Shared page parser and exports | [jobOutput.ts](../../../appwire-client/typescript/jobOutput.ts), [index.ts](../../../appwire-client/typescript/index.ts) |
 | Web output, preview and request adapter | [JobLog.tsx](../../../cmd/evener-hub/frontend/src/panes/transcript/JobLog.tsx), [ActivityRowDetail.tsx](../../../cmd/evener-hub/frontend/src/panes/session/chrome/ActivityRowDetail.tsx), [threads.ts](../../../cmd/evener-hub/frontend/src/stores/threads.ts) |
-| Existing pane and rendering ownership | [Transcript.tsx](../../../cmd/evener-hub/frontend/src/panes/transcript/Transcript.tsx), [paneLifetime.ts](../../../cmd/evener-hub/frontend/src/shell/paneLifetime.ts), [VirtualList](../../../cmd/evener-hub/frontend/src/widgets/virtuallist/index.tsx), [ansi.ts](../../../cmd/evener-hub/frontend/src/widgets/codeblock/ansi.ts) |
+| Existing pane and rendering ownership | [Transcript.tsx](../../../cmd/evener-hub/frontend/src/panes/transcript/Transcript.tsx), [paneLifetime.ts](../../../cmd/evener-hub/frontend/src/shell/paneLifetime.ts), [transcriptReadView.ts](../../../cmd/evener-hub/frontend/src/panes/session/transcript/transcriptReadView.ts), [VirtualList](../../../cmd/evener-hub/frontend/src/widgets/virtuallist/index.tsx), [ansi.ts](../../../cmd/evener-hub/frontend/src/widgets/codeblock/ansi.ts) |
 | Phone's current latest-output view and fixtures | [useShellJobOutput.ts](../../../mobile-native/src/subagents/useShellJobOutput.ts), [ShellJobScreen.tsx](../../../mobile-native/src/subagents/ShellJobScreen.tsx), [demoSubagents.ts](../../../mobile-native/src/dev/demoSubagents.ts) |
 | Real Jobs browser journey | [background_jobs_browser_test.go](../../../cmd/evener-hub/background_jobs_browser_test.go), [backgroundjobsguard/run.mjs](../../../cmd/evener-hub/frontend/scripts/backgroundjobsguard/run.mjs) |
 
@@ -333,18 +381,18 @@ literal producer bytes and real Evener code below scripted external boundaries.
 
 | Proof | Required assertion and evidence |
 | --- | --- |
-| P01 | Real output-store and subprocess bytes match latest, forward and backward pages byte-for-byte, including clipping near the floor and all normative boundary examples. |
-| P02 | Explicit zero survives JSON and every local/remote forwarding path; conflicts, negative selectors and selectors beyond EOF fail as specified. Defaults and the 64 KiB cap use raw counts. |
+| P01 | Real output-store and subprocess bytes match latest and backward pages byte-for-byte, including forward demand expressed as a backward selection, clipping near the floor and all normative boundary examples. |
+| P02 | Explicit `beforeBytes=0` survives JSON and every local/remote forwarding path; negative selectors and selectors beyond EOF fail as specified. Defaults and the 64 KiB cap use raw counts; forward-demand requests use a positive size. |
 | P03 | Concurrent append, retention rollover and output-file replacement cannot mix selected bounds with another snapshot's bytes. Consistency failures are transient, not fabricated pruning. Use synchronized producer or filesystem transitions. |
-| P04 | Partial and malformed UTF-8 round-trip exactly through `utf8`/`base64`. Append, prepend, overlapping pages and eviction repair split characters against literal raw-byte oracles. Empty pages and continuation counts are exact. |
+| P04 | Partial and malformed UTF-8 round-trip exactly through `utf8`/`base64`. Append, prepend, overlapping pages and eviction repair split characters against literal raw-byte oracles. Empty pages, raw counts and derived ends are exact. |
 | P05 | Typed pruning bounds survive real daemon, local hub, remote hub and Go/shared client routing. A live-owner failure never uses stale saved bytes; a dead local session still reads its saved output. |
 | P06 | Shared parser and decoder validate payload invariants and work under web and native test environments. Every consumer and fixture migrates, including the 256-byte preview and phone renderer. No dual tail parser remains. |
 | P07 | The version handshake rejects mismatches before job-output dispatch. Existing restart-required behavior preserves old daemons and work; compatible owners continue serving output. |
-| P08 | Real `JobLog` binding opens latest, follows at bottom, preserves an older visible anchor during growth, resumes following at bottom and preserves history through Refresh. Assert rendered rows and geometry. |
-| P09 | The viewport automatically fetches both directions through an unloaded retained gap. After more than each 512 KiB budget, source-byte storage stays bounded and evicted retained bytes can be refetched. Long lines remain bounded. |
+| P08 | Real `JobLog` binding opens latest, follows at bottom, preserves an older visible anchor during growth, resumes following at bottom and preserves history through Refresh. Assert rendered rows and geometry, including structural trim and partial-line repair. |
+| P09 | The viewport automatically fetches both directions through an unloaded retained gap without skipping it; control-only pages still advance byte demand. After more than each 512 KiB budget, source-byte storage stays bounded and evicted retained bytes can be refetched. Long lines remain bounded. |
 | P10 | Contiguous UTF-8 and ANSI state survives page joins and known eviction. Independent ranges never inherit state across an unread gap. Verify rendered characters and styles, not only parser calls. |
-| P11 | One output read is in flight per pane; viewport demand, live refresh and paced retry coexist. Fake-clock and awaitable-response tests prove hidden/disconnected suspension, automatic resumption and rejection of obsolete replies. |
-| P12 | Metadata failure does not block output. A running job appends after an empty EOF read. Terminal metadata requires a fresh successful final drain; failure, hiding or reconnect cannot drop that drain. Finished history stays readable. |
+| P11 | One output read is in flight per pane; viewport demand, live refresh and paced retry coexist. Fake-clock and awaitable-response tests prove hidden/disconnected suspension, inactive-tab unmount preservation, automatic resumption and rejection of obsolete replies, including after readiness waits. |
+| P12 | Metadata failure does not block output. A running job appends after an empty EOF read. Terminal metadata requires a fresh successful final drain started after that observation; failure, hiding or reconnect cannot drop that drain. Finished history stays readable. |
 | P13 | Multiple loaded pages survive refresh and reconnect with a visible later-page row. New retention bounds distinguish unloaded output, true pruning and useful cached bytes below the floor. |
 | P14 | Extend the existing real-stack Chrome Jobs journey with literal producer bytes: live following, older anchoring, gap scrolling, eviction/refetch beyond both budgets, retention rollover, reconnect and final drain. Preserve its existing milestones and error assertions. |
 | P15 | Affected Go tests and race checks, generated-output freshness, and root `make test-web`, `make test-native`, `make test-api-package` and `make test-web-browser` finish without failures. Record actual execution and remaining platform limits. |
