@@ -32,6 +32,7 @@ import {
 	createPluginsStore,
 	HUB_WRITE_BUSY,
 	type HubWriteGate,
+	type PluginsStore,
 	runGatedMutation,
 } from "@evener/appwire-client/state/extensions";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
@@ -484,20 +485,24 @@ function Plugins({
 	}, [model, client, connectionState]);
 	useEffect(() => {
 		model.start();
-		// Once the installed list is in, ask the hub which plugins have an
-		// update (read-on-open: nothing polls). A hub without the check
-		// flags none, so Upgrade stays hidden.
-		void model
-			.getState()
-			.fetchPlugins()
-			.then(() => {
-				if (model.getState().pluginsError === null) void model.getState().checkPluginUpdates();
-			});
+		void model.getState().fetchPlugins();
 		return () => {
 			editorVersion.current += 1;
 			model.dispose();
 		};
 	}, [model]);
+	// The first time this store's installed list loads, ask the hub which
+	// plugins have an update (read-on-open: nothing polls). A first read that
+	// failed checks once a later one recovers, and a page closed before its
+	// list landed asks nothing. A hub without the check flags none, so Upgrade
+	// stays hidden.
+	const checkedUpdates = useRef<PluginsStore | null>(null);
+	const listLoaded = state.plugins !== null && state.pluginsError === null;
+	useEffect(() => {
+		if (!listLoaded || checkedUpdates.current === model) return;
+		checkedUpdates.current = model;
+		void model.getState().checkPluginUpdates();
+	}, [model, listLoaded]);
 	const close = useCallback(() => {
 		editorVersion.current += 1;
 		setSelected(null);

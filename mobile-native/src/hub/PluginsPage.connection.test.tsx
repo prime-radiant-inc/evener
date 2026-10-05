@@ -325,7 +325,7 @@ it("treats a route re-keyed to another hub as a fresh screen", async () => {
 
 it("recovers a replacement client's failed first read when it becomes ready", async () => {
 	const first = new FakeClient("ready");
-	first.on("evener/plugin/list", () => ({ plugins: [{ ...plugin("kept"), updateAvailable: true }] }));
+	first.on("evener/plugin/list", () => ({ plugins: [plugin("kept")] }));
 	harness.connection = connection(first, "ready");
 	const tree = render(<PluginsPage {...props} />);
 	await act(async () => {});

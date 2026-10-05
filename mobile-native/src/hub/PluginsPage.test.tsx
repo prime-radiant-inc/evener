@@ -2917,6 +2917,36 @@ it("asks the hub for updates once the installed list loads, and offers Upgrade o
 	expect((await openDetail(tree, "current")).findAllByProps({ label: "Upgrade" })).toHaveLength(0);
 });
 
+it("asks for no updates when the page closes before its installed list lands", async () => {
+	const hub = pageHub([entry("stale")]);
+	const releaseList = deferRequest<{ plugins: PluginEntry[] }>(hub, "evener/plugin/list");
+	hub.on("evener/plugin/checkUpdates", () => ({ plugins: [] }));
+	const { tree } = await mountPage(hub);
+	await act(async () => tree.unmount());
+	await act(async () => releaseList({ plugins: [entry("stale")] }));
+	await act(async () => {});
+	expect(hub.calls.some((call) => call.method === "evener/plugin/checkUpdates")).toBe(false);
+});
+
+it("asks for updates once a failed installed list recovers, not while it is failing", async () => {
+	const hub = pageHub([entry("stale")]);
+	hub.on("evener/plugin/list", () => {
+		throw new Error("hub busy");
+	});
+	hub.on("evener/plugin/checkUpdates", () => ({ plugins: [] }));
+	const { tree, props } = await mountPage(hub);
+	expect(hub.calls.some((call) => call.method === "evener/plugin/checkUpdates")).toBe(false);
+
+	// The same client flaps and comes back; the store re-reads its list.
+	hub.on("evener/plugin/list", () => ({ plugins: [entry("stale")] }));
+	harness.connection = { ...harness.connection, state: "reconnecting" };
+	await act(async () => tree.update(<PluginsStack {...props} />));
+	harness.connection = { ...harness.connection, state: "ready" };
+	await act(async () => tree.update(<PluginsStack {...props} />));
+	await act(async () => {});
+	expect(hub.calls.filter((call) => call.method === "evener/plugin/checkUpdates")).toHaveLength(1);
+});
+
 it("offers no Upgrade on a hub without the update check, and tells a broken plugin only to be removed", async () => {
 	const { tree } = await mountPage(pageHub([entry("cracked", { broken: true })]));
 	const detail = await openDetail(tree, "cracked");
