@@ -472,8 +472,9 @@ export function InstanceSheet({
         // issued after this write, but its response arrives AFTER this write's
         // (the write holds the connection's serial worker until it answers, so
         // a list sent after it, local or forwarded, starts only then), so the
-        // listing sampled right now is still the PRE-save one. Settle a read that started after the write
-        // before comparing the listing against the mutation's own captured row.
+        // listing sampled right now is still the PRE-save one. Settle a read
+        // that started after the write before comparing the listing against
+        // the mutation's own captured row.
         // The read is non-fatal - a torn-down connection must not be reported as
         // a failed save - but its RESULT matters: `edit` already scheduled the
         // store's own debounced refetch, and that read can start later and

@@ -35,7 +35,12 @@ func concurrentScriptedRemote(t *testing.T, handle func(method string, params js
 	answer := func(req *appwire.Request) {
 		var result any = appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion, SourceID: "local"}
 		if req.Method != appwire.MethodInitialize {
-			result = handle(req.Method, req.Params).result
+			reply := handle(req.Method, req.Params)
+			if reply.wireErr != nil {
+				send(appwire.ErrorMessage(req.ID, *reply.wireErr))
+				return
+			}
+			result = reply.result
 		}
 		data, _ := json.Marshal(result)
 		send(appwire.ResponseMessage(req.ID, json.RawMessage(data)))
