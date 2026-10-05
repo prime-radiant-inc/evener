@@ -130,10 +130,6 @@ func TestDetailsDrawerSharedNotesSection(t *testing.T) {
 	}
 }
 
-// TestSharedNotesCommandUnavailableWhenRestartRequired pins the write half of
-// the capability split: a restart-required session keeps SharedNotes readable,
-// which must not advertise /notes (nor let it dispatch) while every mutation is
-// refused.
 // Whiteboards keep their lines, so the drawer indents each continuation line
 // under its label's value column: a note's later line (here one the human wrote
 // as "Agent: ...") must not read as another field. Blank lines stay empty.
@@ -152,6 +148,10 @@ func TestDetailsDrawerIndentsWhiteboardContinuationLines(t *testing.T) {
 	}
 }
 
+// TestSharedNotesCommandUnavailableWhenRestartRequired pins the write half of
+// the capability split: a restart-required session keeps SharedNotes readable,
+// which must not advertise /notes (nor let it dispatch) while every mutation is
+// refused.
 func TestSharedNotesCommandUnavailableWhenRestartRequired(t *testing.T) {
 	caps := hubSessionCapabilities{SharedNotes: true}
 	var notes hubCommandDefinition

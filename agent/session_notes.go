@@ -239,7 +239,8 @@ func normalizeNote(text string) string {
 // It strips terminal controls as normalizeNote does, turns CRLF and CR into LF,
 // collapses whitespace within each line to single spaces and trims the line,
 // drops leading and trailing blank lines, keeps at most one blank line in a
-// row, and clamps to sessionNoteMaxRunes Unicode characters.
+// row, and clamps to sessionNoteMaxRunes Unicode characters, trimming a space or
+// line break the clamp leaves at the end. The result normalizes to itself.
 func normalizeWhiteboard(text string) string {
 	text = stripNoteControls(text)
 	text = strings.ReplaceAll(text, "\r\n", "\n")
@@ -263,7 +264,10 @@ func normalizeWhiteboard(text string) string {
 	normalized := strings.Join(lines, "\n")
 	runes := []rune(normalized)
 	if len(runes) > sessionNoteMaxRunes {
-		normalized = string(runes[:sessionNoteMaxRunes])
+		// A clamp landing on a space or line break must not leave it at the
+		// end, or normalizing the stored value again would change it and an
+		// unchanged re-save would count as an edit.
+		normalized = strings.TrimRight(string(runes[:sessionNoteMaxRunes]), " \n")
 	}
 	return normalized
 }

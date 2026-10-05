@@ -107,9 +107,10 @@ func (s *Session) SetHumanNote(clientMutationID, note string) (appwire.NotesHuma
 	// call, and one that predates the write-path strip can carry controls; the
 	// response is rendered by clients, so the value handed out is stripped while
 	// the journal keeps its historical record. Stripping is deliberately not
-	// normalizeWhiteboard: the journaled value is already normalized (the clamp
-	// can leave a trailing space or newline that a second pass would drop), so
-	// re-normalizing would hand back a different value than the original call
+	// normalizeWhiteboard: the journaled value was already normalized by the
+	// binary that served the call, and an older binary's rule differs (its
+	// clamp could leave a trailing space, and it joined lines), so
+	// re-normalizing could hand back a different value than the original call
 	// returned.
 	response.Note = stripTextControls(response.Note)
 	disposition := appwire.MutationDispositionApplied

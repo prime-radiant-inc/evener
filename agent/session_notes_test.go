@@ -61,9 +61,21 @@ func TestNormalizeWhiteboardKeepsLineStructure(t *testing.T) {
 			}
 		})
 	}
-	long := strings.Repeat("a\n", 1500)
+	long := strings.Repeat("a", 2000)
 	if got := normalizeWhiteboard(long); len([]rune(got)) != sessionNoteMaxRunes {
 		t.Fatalf("clamped length = %d, want %d", len([]rune(got)), sessionNoteMaxRunes)
+	}
+	// A clamp that lands on a line break or a space must not leave it at the
+	// end: re-saving the stored value would then normalize to something else and
+	// count as a change (a spurious "human updated their whiteboard" steer).
+	for _, longLines := range []string{strings.Repeat("a\n", 1500), strings.Repeat("a ", 1500), strings.Repeat("a\n\n", 1000)} {
+		once := normalizeWhiteboard(longLines)
+		if n := len([]rune(once)); n > sessionNoteMaxRunes {
+			t.Fatalf("clamped length = %d, want at most %d", n, sessionNoteMaxRunes)
+		}
+		if twice := normalizeWhiteboard(once); twice != once {
+			t.Fatalf("normalizeWhiteboard is not idempotent after the clamp: once ends %q, twice ends %q", once[len(once)-3:], twice[len(twice)-3:])
+		}
 	}
 }
 
