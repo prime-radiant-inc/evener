@@ -82,6 +82,17 @@ final class DocumentAnnotationsUITests: XCTestCase {
         receipt("long-press-selection")
     }
 
+    // Diagnostic only. The pause permits attaching to this exact app PID and
+    // tracing native callbacks without manufacturing selection state or events.
+    func testNativeInteractionReceipt() throws {
+        print("NATIVE_INTERACTION_READY")
+        Thread.sleep(forTimeInterval: 60)
+        try point("FIRST").press(forDuration: 1.2)
+        XCTAssertTrue(copyMenu.waitForExistence(timeout: 5),
+                      "A genuine system selection menu must follow the glyph long press")
+        receipt("native-interaction-selection")
+    }
+
     func testCompletedOriginalSourceSelectionAcrossRows() throws {
         let first = try point("FIRST")
         let handle = try point("HANDLE")
