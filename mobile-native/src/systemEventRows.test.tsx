@@ -211,10 +211,18 @@ describe("approval history (spec 8.2)", () => {
 		}
 	});
 
-	function showAt(name: "approval-allowed" | "approval-denied", nowMs: number) {
+	// Each render subscribes to the shared minute clock; unmounting releases
+	// it, so the next test's fake time starts a fresh clock.
+	function atTime(nowMs: number, name: "approval-allowed" | "approval-denied", check: (tree: ReactTestRenderer) => void) {
 		vi.useFakeTimers();
 		vi.setSystemTime(nowMs);
-		return show(name, "chat");
+		const tree = show(name, "chat");
+		try {
+			check(tree);
+		} finally {
+			act(() => tree.unmount());
+			vi.useRealTimers();
+		}
 	}
 
 	function spoken(tree: ReactTestRenderer): string | undefined {
@@ -227,8 +235,7 @@ describe("approval history (spec 8.2)", () => {
 		["approval-allowed", "Allowed: write /Users/j/sites/docs/index.md"],
 		["approval-denied", "Denied: read /etc/hosts"],
 	] as const)("reads %s in ink-mid with the approval mark and how long ago", (name, words) => {
-		try {
-			const tree = showAt(name, decidedAt() + 5 * 60_000);
+		atTime(decidedAt() + 5 * 60_000, name, (tree) => {
 			expect(renderedText(tree).replaceAll("\u200b", "")).toBe(`${words} · 5m ago`);
 			expect(spoken(tree)).toBe(`${words}, 5 minutes ago`);
 			const mark = tree.root.findAll((node) => String(node.type) === "SymbolView");
@@ -238,10 +245,7 @@ describe("approval history (spec 8.2)", () => {
 			expect(inked(tree, INK_MID)).toBe(true);
 			expect(inked(tree, ATTENTION)).toBe(false);
 			expect(inked(tree, DANGER_INK)).toBe(false);
-			act(() => tree.unmount());
-		} finally {
-			vi.useRealTimers();
-		}
+		});
 	});
 
 	// The minute clock can lag the decision by up to a minute, or a skewed
@@ -250,14 +254,10 @@ describe("approval history (spec 8.2)", () => {
 		["a moment ago", 20_000],
 		["ahead of the phone's clock", -30_000],
 	])("says just now for a decision made %s", (_, offsetMs) => {
-		try {
-			const tree = showAt("approval-allowed", decidedAt() + offsetMs);
+		atTime(decidedAt() + offsetMs, "approval-allowed", (tree) => {
 			expect(renderedText(tree).replaceAll("\u200b", "")).toBe("Allowed: write /Users/j/sites/docs/index.md · just now");
 			expect(spoken(tree)).toBe("Allowed: write /Users/j/sites/docs/index.md, just now");
-			act(() => tree.unmount());
-		} finally {
-			vi.useRealTimers();
-		}
+		});
 	});
 
 	it("leaves the time out when the decision has none", () => {
@@ -267,17 +267,14 @@ describe("approval history (spec 8.2)", () => {
 		const tree = render(<TimelineItem item={row} hubId="hub" sessionRef="approval-untimed" />);
 		expect(renderedText(tree).replaceAll("\u200b", "")).toBe("Denied: read /etc/hosts");
 		expect(spoken(tree)).toBe("Denied: read /etc/hosts");
+		act(() => tree.unmount());
 	});
 
 	// A long path breaks only at its slashes when it wraps, as the dock's does.
 	it("lets the path wrap at its slashes", () => {
-		try {
-			const tree = showAt("approval-allowed", decidedAt() + 5 * 60_000);
+		atTime(decidedAt() + 5 * 60_000, "approval-allowed", (tree) => {
 			expect(renderedText(tree)).toContain("/\u200bUsers/\u200bj/\u200bsites/\u200bdocs/\u200bindex.md");
-			act(() => tree.unmount());
-		} finally {
-			vi.useRealTimers();
-		}
+		});
 	});
 });
 

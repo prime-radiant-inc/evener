@@ -25,7 +25,7 @@ export function ApprovalHistory({ text, decidedAt }: { text: string; decidedAt: 
 	const spoken = age === null ? text : `${text}, ${ago(age, spokenDuration)}`;
 	return (
 		<View accessible accessibilityLabel={spoken} style={{ flexDirection: "row", alignItems: "flex-start", gap: 8 }}>
-			<SymbolView name="hand.raised.circle.fill" tintColor={palette.inkMid} size={17 * scale} />
+			<SymbolView name="hand.raised.circle.fill" tintColor={palette.inkMid} size={20 * scale} />
 			<Text
 				allowFontScaling={allowFontScaling}
 				style={{ flex: 1, fontSize: 15 * scale, lineHeight: 20 * scale, color: palette.inkMid }}
