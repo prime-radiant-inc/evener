@@ -391,11 +391,10 @@ func run(ctx context.Context, cfg runConfig) error {
 			TurnEndsProcess:             baseSessionCfg.TurnEndsProcess,
 		})
 		if err != nil {
-			// A resume provisions this environment's sandbox from the
-			// session's persisted mode inside the restore, and the restore can
-			// fail after that with no session built to own the scratch and the
-			// flock lease it took.
-			_ = env.DisposeSessionScratch()
+			// The restore reopens the session's kept scratch and can fail
+			// after that with no session built to own it. The scratch still
+			// belongs to the session, so only its lease is released.
+			_ = env.EndSessionScratch()
 			return fmt.Errorf("restore session: %w", err)
 		}
 		if resumeWithChildID != "" {

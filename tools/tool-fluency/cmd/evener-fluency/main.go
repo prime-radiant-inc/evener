@@ -1208,6 +1208,13 @@ func runLiveProbe(ctx context.Context, cfg runConfig, probe probeFile, res *prob
 		return err
 	}
 	env := execenv.NewLocalExecutionEnvironment(res.WorkDir)
+	// The session's ID names its scratch tree, so it is picked before the
+	// sandbox mints the scratch. No hub archives a probe, so the probe removes
+	// the tree itself once its session has closed.
+	if err := agent.PickFreshSessionID(env, &sessCfg); err != nil {
+		return err
+	}
+	defer func() { _ = sandbox.RemoveSessionScratchTree(sessCfg.SessionID) }()
 	// Engage enforcement before the session exists so a declared mode the host
 	// cannot serve fails closed here, before any provider call, rather than
 	// silently running the worker native and unsandboxed.

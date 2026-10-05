@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent"
@@ -212,6 +213,72 @@ func TestRunLiveProbeFailsClosedBeforeSession(t *testing.T) {
 	}
 	if sessionCalled {
 		t.Fatal("the session must not be created before the fail-closed refusal")
+	}
+}
+
+type failingLiveAdapter struct{}
+
+func (failingLiveAdapter) Name() string { return "openai" }
+func (failingLiveAdapter) Complete(context.Context, llm.Request) (llm.Response, error) {
+	return llm.Response{}, &llm.ConfigurationError{Message: "no provider in this test"}
+}
+func (failingLiveAdapter) Stream(context.Context, llm.Request) (llm.Stream, error) {
+	return nil, &llm.ConfigurationError{Message: "no provider in this test"}
+}
+
+// A live probe's session is named, so its scratch outlives the session's Close,
+// and no hub ever archives a probe. The harness removes the session's scratch
+// tree itself once the probe ends, as a one-shot run does at exit.
+func TestRunLiveProbeRemovesItsSessionScratch(t *testing.T) {
+	// Resolved, so the scratch path the probe reports matches what os.Stat sees
+	// through macOS's symlinked temp dir.
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(envvars.XDGConfigHome.Name, dir)
+	t.Setenv("TMPDIR", dir)
+
+	oldLoad := runnerLoadClient
+	oldAttach := runnerAttachAPILogger
+	oldNew := runnerNewSession
+	t.Cleanup(func() {
+		runnerLoadClient = oldLoad
+		runnerAttachAPILogger = oldAttach
+		runnerNewSession = oldNew
+	})
+	client := llm.NewClient()
+	client.Register(failingLiveAdapter{})
+	runnerLoadClient = func(string) (*llm.Client, error) { return client, nil }
+	runnerAttachAPILogger = func(*llm.Client, string, io.Writer, ...string) (func() error, error) {
+		return func() error { return nil }, nil
+	}
+	var scratch string
+	runnerNewSession = func(c *llm.Client, p *provider.Profile, env execenv.ExecutionEnvironment, cfg agent.SessionConfig) (*agent.Session, error) {
+		sess, err := agent.NewSession(c, p, env, cfg)
+		if err != nil {
+			return nil, err
+		}
+		local, _ := env.(*execenv.LocalExecutionEnvironment)
+		if _, err := local.ExecCommand(context.Background(), "true", 5000, "", nil); err != nil {
+			t.Errorf("mint the probe session's scratch: %v", err)
+		}
+		scratch = local.SessionScratchDir()
+		return sess, nil
+	}
+
+	res := probeResult{StateDir: filepath.Join(dir, "state"), WorkDir: filepath.Join(dir, "work")}
+	for _, d := range []string{res.StateDir, res.WorkDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = runLiveProbe(context.Background(), runConfig{model: "openai/m", reasoningEffort: "low"}, probeFile{Prompt: "hi"}, &res, &bytes.Buffer{}, &bytes.Buffer{})
+	if !strings.Contains(scratch, "evener-scratch-") {
+		t.Fatalf("probe session scratch = %q, want a named scratch in the session's tree", scratch)
+	}
+	if _, err := os.Stat(filepath.Dir(scratch)); !os.IsNotExist(err) {
+		t.Errorf("the probe left its session scratch tree %s (stat: %v)", filepath.Dir(scratch), err)
 	}
 }
 

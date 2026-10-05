@@ -712,10 +712,10 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			AgentsDocPath:               *agentsDoc,
 		})
 		if err != nil {
-			// A resume provisions this environment's sandbox from the
-			// session's persisted mode inside the restore, and the restore can
-			// fail after that with no session built to own what it took.
-			_ = env.DisposeSessionScratch()
+			// The restore reopens the session's kept scratch and can fail
+			// after that with no session built to own it. The scratch still
+			// belongs to the session, so only its lease is released.
+			_ = env.EndSessionScratch()
 			return fmt.Errorf("restore session: %w", err)
 		}
 		if effort.Set {
@@ -1583,6 +1583,9 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		oldEnv := currentEnv
 		currentMu.RUnlock()
 		clearCfg := sessionCfg
+		// The launch picked the first session's ID into sessionCfg; the cleared
+		// session is a new session and picks its own.
+		clearCfg.SessionID = ""
 		clearCfg.SessionStartKind = plugin.SessionStartKindClear
 		// The cleared session inherits the CURRENT session's ACTUAL sandbox (on resume
 		// the persisted mode, not the launch flag), so its persisted config matches what
