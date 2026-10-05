@@ -202,7 +202,7 @@ PY
     test "$(xcrun simctl ui "$sim_id" content_size)" = extra-extra-large
     printf 'Owned simulator system content size: extra-extra-large\n'
     ;;
-  long-press|origin-receipts|code-preservation|qualify) test -n "$sim_id";;
+  long-press|native-interaction|origin-receipts|code-preservation|qualify) test -n "$sim_id";;
   *) exit 2;;
 esac
 # Source and driver have separate pins. Never compile driver sources from the
@@ -242,7 +242,7 @@ case "$phase" in
   code-preservation|code-preservation-scaled) test_names=(testCodePreservationAndLegacyCopy);;
   font-diagnostic) test_names=(testMixedFontMetadataReceipt);;
   empty-diagnostic) test_names=(testEmptyCodeGeometryReceipt);;
-  long-press|origin-receipts|qualify)
+  long-press|native-interaction|origin-receipts|qualify)
     /usr/bin/python3 - "$run_xctestrun" "$checkout/mobile-native/e2e/measured-geometry.json" <<'PY'
 import json, math, plistlib, sys
 p, receipt = sys.argv[1:]
@@ -260,6 +260,7 @@ run['DocumentAnnotationsUITests'].setdefault('EnvironmentVariables', {}).update(
 with open(p, 'wb') as f: plistlib.dump(run, f)
 PY
     if [[ "$phase" == long-press ]]; then test_names=(testLongPressReceipt)
+    elif [[ "$phase" == native-interaction ]]; then test_names=(testNativeInteractionReceipt)
     elif [[ "$phase" == origin-receipts ]]; then
       test_names=(testTableOriginalSourceSelection testMarkdownCodeOriginalSourceSelection)
     else
@@ -296,7 +297,7 @@ shasum -a 256 "$artifacts/original.xctestrun" "$run_xctestrun" \
   "$runner/DocumentAnnotationsUITests-Runner" \
   "$runner/PlugIns/DocumentAnnotationsUITests.xctest/DocumentAnnotationsUITests"
 if [[ "$test_status" != 0 ]]; then exit "$test_status"; fi
-if [[ "$phase" != qualify && "$phase" != font-diagnostic && "$phase" != empty-diagnostic ]]; then
+if [[ "$phase" != qualify && "$phase" != font-diagnostic && "$phase" != empty-diagnostic && "$phase" != native-interaction ]]; then
   # Keep this exact newly created simulator while the operator measures its
   # screenshot. The next phase or explicit cleanup owns its teardown.
   trap - EXIT
