@@ -3536,7 +3536,7 @@ index 0000000..5f523f1
 +}
 diff --git a/node_modules/react-native-enriched-markdown/ios/EnrichedMarkdownSelectionSurface.h b/node_modules/react-native-enriched-markdown/ios/EnrichedMarkdownSelectionSurface.h
 new file mode 100644
-index 0000000..ab07a1c
+index 0000000..8e782d9
 --- /dev/null
 +++ b/node_modules/react-native-enriched-markdown/ios/EnrichedMarkdownSelectionSurface.h
 @@ -0,0 +1,7 @@
@@ -3544,15 +3544,15 @@ index 0000000..ab07a1c
 +#import "ENRMDocumentTextRegion.h"
 +
 +NS_ASSUME_NONNULL_BEGIN
-+@interface EnrichedMarkdownSelectionSurface : RCTViewComponentView <ENRMDocumentSelectionHost, UITextInput>
++@interface EnrichedMarkdownSelectionSurface : RCTViewComponentView <ENRMDocumentSelectionHost>
 +@end
 +NS_ASSUME_NONNULL_END
 diff --git a/node_modules/react-native-enriched-markdown/ios/EnrichedMarkdownSelectionSurface.mm b/node_modules/react-native-enriched-markdown/ios/EnrichedMarkdownSelectionSurface.mm
 new file mode 100644
-index 0000000..3c1de37
+index 0000000..a64e1fd
 --- /dev/null
 +++ b/node_modules/react-native-enriched-markdown/ios/EnrichedMarkdownSelectionSurface.mm
-@@ -0,0 +1,562 @@
+@@ -0,0 +1,620 @@
 +#import "EnrichedMarkdownSelectionSurface.h"
 +#import <ReactNativeEnrichedMarkdown/ComponentDescriptors.h>
 +#import <ReactNativeEnrichedMarkdown/EventEmitters.h>
@@ -3575,6 +3575,62 @@ index 0000000..3c1de37
 +{
 +  return std::string(value.UTF8String ?: "", [value lengthOfBytesUsingEncoding:NSUTF8StringEncoding]);
 +}
++
++// UIKit's accessibility adapter treats a UIView conforming to UITextInput as
++// one text field, even when isAccessibilityElement is NO, hiding its rows.
++// Keep the input object separate, forwarding to the SAME model and mounted
++// glyph geometry, with the ordinary row container as its textInputView.
++@interface ENRMDocumentTextInput : NSObject <UITextInput>
++@property (nonatomic, weak) EnrichedMarkdownSelectionSurface *host;
++@end
++@implementation ENRMDocumentTextInput
++- (BOOL)respondsToSelector:(SEL)selector { return [super respondsToSelector:selector] || [_host respondsToSelector:selector]; }
++- (id)forwardingTargetForSelector:(SEL)selector { return _host; }
++- (BOOL)hasText { return [(id<UITextInput>)_host hasText]; }
++- (void)insertText:(NSString *)text { [(id<UITextInput>)_host insertText:text]; }
++- (void)deleteBackward { [(id<UITextInput>)_host deleteBackward]; }
++- (NSString *)textInRange:(UITextRange *)range { return [(id<UITextInput>)_host textInRange:range]; }
++- (void)replaceRange:(UITextRange *)range withText:(NSString *)text { [(id<UITextInput>)_host replaceRange:range withText:text]; }
++- (UITextRange *)selectedTextRange { return [(id<UITextInput>)_host selectedTextRange]; }
++- (void)setSelectedTextRange:(UITextRange *)range { [(id<UITextInput>)_host setSelectedTextRange:range]; }
++- (UITextRange *)markedTextRange { return [(id<UITextInput>)_host markedTextRange]; }
++- (NSDictionary *)markedTextStyle { return [(id<UITextInput>)_host markedTextStyle]; }
++- (void)setMarkedTextStyle:(NSDictionary *)style { [(id<UITextInput>)_host setMarkedTextStyle:style]; }
++- (void)setMarkedText:(NSString *)text selectedRange:(NSRange)range { [(id<UITextInput>)_host setMarkedText:text selectedRange:range]; }
++- (void)unmarkText { [(id<UITextInput>)_host unmarkText]; }
++- (UITextPosition *)beginningOfDocument { return [(id<UITextInput>)_host beginningOfDocument]; }
++- (UITextPosition *)endOfDocument { return [(id<UITextInput>)_host endOfDocument]; }
++- (id<UITextInputDelegate>)inputDelegate { return [(id<UITextInput>)_host inputDelegate]; }
++- (void)setInputDelegate:(id<UITextInputDelegate>)delegate { [(id<UITextInput>)_host setInputDelegate:delegate]; }
++- (id<UITextInputTokenizer>)tokenizer { return [(id<UITextInput>)_host tokenizer]; }
++- (UIView *)textInputView { return _host; }
++- (UITextRange *)textRangeFromPosition:(UITextPosition *)from toPosition:(UITextPosition *)to
++{ return [(id<UITextInput>)_host textRangeFromPosition:from toPosition:to]; }
++- (UITextPosition *)positionFromPosition:(UITextPosition *)position offset:(NSInteger)offset
++{ return [(id<UITextInput>)_host positionFromPosition:position offset:offset]; }
++- (UITextPosition *)positionFromPosition:(UITextPosition *)position inDirection:(UITextLayoutDirection)direction offset:(NSInteger)offset
++{ return [(id<UITextInput>)_host positionFromPosition:position inDirection:direction offset:offset]; }
++- (NSComparisonResult)comparePosition:(UITextPosition *)a toPosition:(UITextPosition *)b
++{ return [(id<UITextInput>)_host comparePosition:a toPosition:b]; }
++- (NSInteger)offsetFromPosition:(UITextPosition *)a toPosition:(UITextPosition *)b
++{ return [(id<UITextInput>)_host offsetFromPosition:a toPosition:b]; }
++- (UITextPosition *)positionWithinRange:(UITextRange *)range farthestInDirection:(UITextLayoutDirection)direction
++{ return [(id<UITextInput>)_host positionWithinRange:range farthestInDirection:direction]; }
++- (UITextRange *)characterRangeByExtendingPosition:(UITextPosition *)position inDirection:(UITextLayoutDirection)direction
++{ return [(id<UITextInput>)_host characterRangeByExtendingPosition:position inDirection:direction]; }
++- (NSWritingDirection)baseWritingDirectionForPosition:(UITextPosition *)position inDirection:(UITextStorageDirection)direction
++{ return [(id<UITextInput>)_host baseWritingDirectionForPosition:position inDirection:direction]; }
++- (void)setBaseWritingDirection:(NSWritingDirection)direction forRange:(UITextRange *)range
++{ [(id<UITextInput>)_host setBaseWritingDirection:direction forRange:range]; }
++- (CGRect)firstRectForRange:(UITextRange *)range { return [(id<UITextInput>)_host firstRectForRange:range]; }
++- (CGRect)caretRectForPosition:(UITextPosition *)position { return [(id<UITextInput>)_host caretRectForPosition:position]; }
++- (NSArray<UITextSelectionRect *> *)selectionRectsForRange:(UITextRange *)range
++{ return [(id<UITextInput>)_host selectionRectsForRange:range]; }
++- (UITextPosition *)closestPositionToPoint:(CGPoint)point { return [(id<UITextInput>)_host closestPositionToPoint:point]; }
++- (UITextPosition *)closestPositionToPoint:(CGPoint)point withinRange:(UITextRange *)range
++{ return [(id<UITextInput>)_host closestPositionToPoint:point withinRange:range]; }
++- (UITextRange *)characterRangeAtPoint:(CGPoint)point { return [(id<UITextInput>)_host characterRangeAtPoint:point]; }
++@end
 +
 +@interface ENRMDocumentPosition : UITextPosition
 +@property (nonatomic, readonly) NSUInteger index;
@@ -3625,6 +3681,7 @@ index 0000000..3c1de37
 +@implementation EnrichedMarkdownSelectionSurface {
 +  ENRMOriginalDocumentModel *_model;
 +  NSHashTable<ENRMDocumentTextRegion *> *_regions;
++  ENRMDocumentTextInput *_textInput;
 +  UITextInteraction *_textInteraction;
 +  UITextSelectionDisplayInteraction *_selectionDisplay API_AVAILABLE(ios(17.0));
 +  UIEditMenuInteraction *_menu API_AVAILABLE(ios(16.0));
@@ -3651,12 +3708,13 @@ index 0000000..3c1de37
 +    _props = std::make_shared<const EnrichedMarkdownSelectionSurfaceProps>();
 +    _regions = [NSHashTable weakObjectsHashTable];
 +    _selectedSourceRange = NSMakeRange(NSNotFound, 0);
-+    _tokenizer = [[UITextInputStringTokenizer alloc] initWithTextInput:self];
++    _textInput = [ENRMDocumentTextInput new]; _textInput.host = self;
++    _tokenizer = [[UITextInputStringTokenizer alloc] initWithTextInput:_textInput];
 +    _textInteraction = [UITextInteraction textInteractionForMode:UITextInteractionModeNonEditable];
-+    _textInteraction.textInput = self; _textInteraction.delegate = self;
++    _textInteraction.textInput = _textInput; _textInteraction.delegate = self;
 +    [self addInteraction:_textInteraction];
 +    if (@available(iOS 17.0, *)) {
-+      _selectionDisplay = [[UITextSelectionDisplayInteraction alloc] initWithTextInput:self delegate:self];
++      _selectionDisplay = [[UITextSelectionDisplayInteraction alloc] initWithTextInput:_textInput delegate:self];
 +      [self addInteraction:_selectionDisplay];
 +    }
 +    if (@available(iOS 16.0, *)) {
@@ -3692,11 +3750,11 @@ index 0000000..3c1de37
 +  const auto &next = *std::static_pointer_cast<const EnrichedMarkdownSelectionSurfaceProps>(props);
 +  if (!_model || next.source != previous.source || next.displayedSnapshotId != previous.displayedSnapshotId) {
 +    if (_selectedRange) [self emitSelectionPhase:@"cleared"];
-+    [_inputDelegate textWillChange:self]; [_inputDelegate selectionWillChange:self];
++    [_inputDelegate textWillChange:_textInput]; [_inputDelegate selectionWillChange:_textInput];
 +    _selectedRange = nil; _selectedSourceRange = NSMakeRange(NSNotFound, 0); [_regions removeAllObjects];
 +    _model = [[ENRMOriginalDocumentModel alloc] initWithSource:ENRMDocumentString(next.source)
 +                                                 snapshotId:ENRMDocumentString(next.displayedSnapshotId)];
-+    [_inputDelegate textDidChange:self]; [_inputDelegate selectionDidChange:self];
++    [_inputDelegate textDidChange:_textInput]; [_inputDelegate selectionDidChange:_textInput];
 +  }
 +  [super updateProps:props oldProps:oldProps];
 +  for (UIView *child in self.subviews) [self notifyProjectedRows:child];
@@ -3709,9 +3767,9 @@ index 0000000..3c1de37
 +- (BOOL)adoptDocumentCodeText:(NSString *)text blockRange:(NSRange)range model:(ENRMOriginalDocumentModel *)model
 +{
 +  if (model != _model) return NO;
-+  [_inputDelegate textWillChange:self];
++  [_inputDelegate textWillChange:_textInput];
 +  BOOL accepted = [_model adoptCodeText:text blockRange:range];
-+  [_inputDelegate textDidChange:self];
++  [_inputDelegate textDidChange:_textInput];
 +  if (accepted) [self restoreOriginalSelection];
 +  return accepted;
 +}
@@ -3721,9 +3779,9 @@ index 0000000..3c1de37
 +  NSArray<NSValue *> *runs = [_model renderedRangesForSourceRange:_selectedSourceRange inText:_model.selectionText];
 +  NSUInteger start = NSNotFound, end = 0;
 +  for (NSValue *run in runs) { start = MIN(start, run.rangeValue.location); end = MAX(end, NSMaxRange(run.rangeValue)); }
-+  [_inputDelegate selectionWillChange:self];
++  [_inputDelegate selectionWillChange:_textInput];
 +  _selectedRange = start == NSNotFound ? nil : [ENRMDocumentRange range:NSMakeRange(start, end - start) mappingId:_model.mappingId];
-+  [_inputDelegate selectionDidChange:self];
++  [_inputDelegate selectionDidChange:_textInput];
 +  [self refreshSelectionGeometry];
 +}
 +- (void)registerDocumentRegions:(NSArray<ENRMDocumentTextRegion *> *)regions owner:(UIView *)owner
@@ -3962,10 +4020,10 @@ index 0000000..3c1de37
 +- (void)setSelectedTextRange:(UITextRange *)range
 +{
 +  NSRange value = range ? [self rangeForTextRange:range] : NSMakeRange(NSNotFound,0);
-+  [_inputDelegate selectionWillChange:self];
++  [_inputDelegate selectionWillChange:_textInput];
 +  _selectedRange = value.location == NSNotFound ? nil : [ENRMDocumentRange range:value mappingId:_model.mappingId];
 +  if (value.length == 0) _selectedSourceRange = NSMakeRange(NSNotFound,0);
-+  [_inputDelegate selectionDidChange:self];
++  [_inputDelegate selectionDidChange:_textInput];
 +  [self emitSelectionPhase:value.length ? @"changing" : @"cleared"];
 +  [self refreshSelectionGeometry];
 +  [self updateDisplayLink];
