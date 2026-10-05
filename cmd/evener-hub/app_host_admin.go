@@ -246,10 +246,16 @@ func (c *hubHostAdminController) Request(ctx context.Context, params appwire.Hos
 // (appserver.ServerConfig.ConcurrentRequest). A read's cost is the remote
 // host's: a plugin update check there can take minutes, and inline it would
 // hold every later request on the browser's socket, for every host, behind
-// it. A read is retry-safe, so running out of order against the socket's
-// other requests changes no outcome. A forwarded mutation stays inline so a
-// caller's writes reach the remote in the order it sent them, and a request
-// the proxy will refuse stays inline so its refusal is answered in order.
+// it. Its answer can now arrive after a request sent later; the clients'
+// stores fence such answers (listRevision.ts and its kin). A forwarded
+// mutation stays inline, so a caller's writes reach the remote in the order
+// it sent them and a read sent after one starts only once it has answered.
+// marketplace/refresh counts as a read here (a retry is harmless) though it
+// writes the remote's clone; the web orders it against marketplace writes
+// with its hub write gate. A method outside the allow-list, or params that
+// do not parse, stay inline so the refusal is answered in order; an
+// allow-listed read to an unknown or offline host goes concurrent and is
+// refused out of order, which changes nothing.
 func forwardedHostRead(method string, params json.RawMessage) bool {
 	if method != appwire.MethodEvenerHostRequest {
 		return false

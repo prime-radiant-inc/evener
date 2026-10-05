@@ -64,7 +64,10 @@ type ServerConfig struct {
 	// judged from the method and its params: the hub uses it for a forwarded
 	// read, whose cost is the remote host's. It must be pure and synchronous,
 	// and answer true only for a request safe to run out of order against
-	// every other request on the connection. Nil adds none.
+	// every other request on the connection; it runs on the serial worker,
+	// which has no panic barrier, so it must not panic. The requests it admits
+	// share a pool of concurrentRequestCap slots apart from the slow reads'.
+	// Nil adds none.
 	ConcurrentRequest func(method string, params json.RawMessage) bool
 }
 
@@ -104,6 +107,14 @@ const requestQueueCap = 64
 // error, no Unavailable — so later requests head-of-line wait for a read to
 // finish; that wait is the design's second deliberate scheduling change.
 const slowReadDispatchCap = 16
+
+// concurrentRequestCap bounds how many requests a server's ConcurrentRequest
+// admits one connection to hold in flight, in a pool apart from the slow
+// reads' so neither kind can take the other's slots: the hub's forwarded
+// reads wait on remote hosts, and a slow host must not cost thread reads
+// their burst room. A full pool parks the worker the way a full slow-read cap
+// does.
+const concurrentRequestCap = 8
 
 // slowReadCapStallAdvisory is how long a single blocked slow-read acquire
 // parks before the worker reports the wedged lane — the same scale as
@@ -298,6 +309,7 @@ func (s *Server) NewConnection(id string) *Connection {
 		send:              make(chan appwire.Message, appwire.NotificationBufferCap),
 		requests:          make(chan admittedRequest, s.requestQueueCapacity),
 		slowReadSlots:     make(chan struct{}, slowReadDispatchCap),
+		requestSlots:      make(chan struct{}, concurrentRequestCap),
 		slowReadInflight:  map[string]int{},
 		workerExited:      make(chan struct{}),
 		pendingAdmissions: map[*subscriptionAdmission]struct{}{},
@@ -605,6 +617,9 @@ type Connection struct {
 	// before spawning a slow read; the slow-read goroutine releases it when
 	// handleAndEnqueue returns.
 	slowReadSlots chan struct{}
+	// requestSlots is the same kind of semaphore for the requests the
+	// server's ConcurrentRequest admits (concurrentRequestCap).
+	requestSlots chan struct{}
 	// capSaturationAdvised makes the cap-saturation advisory one-shot per
 	// connection. Only the worker goroutine touches it.
 	capSaturationAdvised bool
@@ -1798,9 +1813,10 @@ func formatTally(tally map[string]int) string {
 }
 
 // executeOrdered applies the dispatch policy to one dequeued frame: the
-// slow-read methods concurrentDispatchMethod names spawn onto their own
-// goroutine — a full-transcript read cannot head-of-line block the
-// connection — and everything else, initialize and notifications included,
+// slow-read methods concurrentDispatchMethod names, and the requests the
+// server's ConcurrentRequest admits, spawn onto their own goroutine — a
+// full-transcript read or a remote host's answer cannot head-of-line block
+// the connection — and everything else, initialize and notifications included,
 // executes inline in the worker so handlers keep the per-connection ordering
 // they were written against.
 //
@@ -1859,7 +1875,7 @@ func (c *Connection) executeOrdered(ctx context.Context, msg appwire.Message) {
 			}
 		}
 	}
-	if msg.Request != nil && c.dispatchesConcurrently(msg.Request) && c.isInitialized() {
+	if slots := c.concurrentSlots(msg.Request); slots != nil && c.isInitialized() {
 		method := msg.Request.Method
 		var admission *subscriptionAdmission
 		if method == appwire.MethodThreadRead {
@@ -1867,7 +1883,7 @@ func (c *Connection) executeOrdered(ctx context.Context, msg appwire.Message) {
 				admission = c.beginSubscriptionAdmission(requestIDKey(msg.Request.ID), resolvedKey)
 			}
 		}
-		if !c.acquireSlowReadSlot(ctx, method) {
+		if !c.acquireSlowReadSlot(ctx, slots, method) {
 			c.finishSubscriptionAdmission(admission)
 			// Canceled while dequeued-awaiting-dispatch-capacity; the worker
 			// loop observes the same cancellation at its next select and
@@ -1876,7 +1892,7 @@ func (c *Connection) executeOrdered(ctx context.Context, msg appwire.Message) {
 		}
 		go func() {
 			defer c.finishSubscriptionAdmission(admission)
-			defer c.releaseSlowReadSlot(method)
+			defer c.releaseSlowReadSlot(slots, method)
 			c.handleAndEnqueue(ctx, msg)
 		}()
 		return
@@ -1884,14 +1900,21 @@ func (c *Connection) executeOrdered(ctx context.Context, msg appwire.Message) {
 	c.handleAndEnqueue(ctx, msg)
 }
 
-// dispatchesConcurrently reports whether req leaves the serial worker: a
-// built-in slow read, or one the server's ConcurrentRequest names.
-func (c *Connection) dispatchesConcurrently(req *appwire.Request) bool {
-	if concurrentDispatchMethod(req.Method) {
-		return true
+// concurrentSlots reports whether req leaves the serial worker, as the
+// semaphore it takes a slot from: slowReadSlots for a built-in slow read,
+// requestSlots for one the server's ConcurrentRequest names. Nil means req
+// runs inline.
+func (c *Connection) concurrentSlots(req *appwire.Request) chan struct{} {
+	if req == nil {
+		return nil
 	}
-	concurrent := c.server.cfg.ConcurrentRequest
-	return concurrent != nil && concurrent(req.Method, req.Params)
+	if concurrentDispatchMethod(req.Method) {
+		return c.slowReadSlots
+	}
+	if concurrent := c.server.cfg.ConcurrentRequest; concurrent != nil && concurrent(req.Method, req.Params) {
+		return c.requestSlots
+	}
+	return nil
 }
 
 func safeResolveAdmission(server *Server, resolve func(appwire.Message) (string, bool), msg appwire.Message) (key string, ok, panicked bool) {
@@ -1923,9 +1946,10 @@ func threadReadAdmissionEligible(raw json.RawMessage) bool {
 	return appwire.ValidateThreadReadParams(params) == nil
 }
 
-// acquireSlowReadSlot takes one slowReadDispatchCap slot on behalf of the
-// worker before it spawns a slow read — the request's third lifecycle state,
-// dequeued awaiting dispatch capacity. A full cap parks the worker here, so
+// acquireSlowReadSlot takes one slot from slots (the slow reads' pool, or
+// the ConcurrentRequest pool) on behalf of the worker before it spawns a slow
+// read — the request's third lifecycle state, dequeued awaiting dispatch
+// capacity. A full cap parks the worker here, so
 // the blocked slow read and every request queued behind it wait for one of
 // the in-flight reads to finish: the design's second deliberate scheduling
 // change (ping bypass is the first), blocking backpressure like the request
@@ -1943,24 +1967,24 @@ func threadReadAdmissionEligible(raw json.RawMessage) bool {
 // heartbeat — a single acquire parked past the stall threshold reports again,
 // naming the wait duration and the in-flight methods, so a wedged lane has an
 // operational signature even though the connection looks healthy.
-func (c *Connection) acquireSlowReadSlot(ctx context.Context, method string) bool {
+func (c *Connection) acquireSlowReadSlot(ctx context.Context, slots chan struct{}, method string) bool {
 	acquired := false
 	select {
-	case c.slowReadSlots <- struct{}{}:
+	case slots <- struct{}{}:
 		acquired = true
 	default:
 	}
 	if !acquired {
 		if !c.capSaturationAdvised {
 			c.capSaturationAdvised = true
-			c.server.logf("appserver: connection %s slow-read dispatch cap is full (%d in flight); holding the next slow read until one finishes", c.id, cap(c.slowReadSlots))
+			c.server.logf("appserver: connection %s slow-read dispatch cap is full (%d in flight); holding the next slow read until one finishes", c.id, cap(slots))
 		}
 		start := time.Now()
 		stall := time.NewTimer(c.server.slowReadStallThreshold)
 		defer stall.Stop()
 		for !acquired {
 			select {
-			case c.slowReadSlots <- struct{}{}:
+			case slots <- struct{}{}:
 				acquired = true
 			case <-stall.C:
 				c.server.logf("appserver: connection %s slow-read acquire for %s has been parked %s behind in-flight reads (%s)", c.id, method, time.Since(start).Round(time.Second), c.inflightSlowReads())
@@ -1973,7 +1997,7 @@ func (c *Connection) acquireSlowReadSlot(ctx context.Context, method string) boo
 		c.server.afterSlowReadAcquire()
 	}
 	if ctx.Err() != nil {
-		<-c.slowReadSlots
+		<-slots
 		return false
 	}
 	c.slowReadMu.Lock()
@@ -1984,14 +2008,14 @@ func (c *Connection) acquireSlowReadSlot(ctx context.Context, method string) boo
 
 // releaseSlowReadSlot frees the cap slot when a slow read's handleAndEnqueue
 // returns — completion, not response delivery, is what drains the cap.
-func (c *Connection) releaseSlowReadSlot(method string) {
+func (c *Connection) releaseSlowReadSlot(slots chan struct{}, method string) {
 	c.slowReadMu.Lock()
 	c.slowReadInflight[method]--
 	if c.slowReadInflight[method] <= 0 {
 		delete(c.slowReadInflight, method)
 	}
 	c.slowReadMu.Unlock()
-	<-c.slowReadSlots
+	<-slots
 }
 
 // inflightSlowReads renders the per-method tally the stall advisory names.

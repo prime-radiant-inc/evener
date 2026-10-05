@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -15,12 +16,71 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
 
+// concurrentScriptedRemote is a remote host that records each request as it
+// arrives and answers each through handle on a goroutine of its own, so a
+// request held in handle never hides a later one: what it records is what the
+// hub actually sent, in the order it sent it.
+func concurrentScriptedRemote(t *testing.T, handle func(method string, params json.RawMessage) hostAdminReply) (*appwire.Client, func() []hostAdminCall) {
+	t.Helper()
+	clientConn, serverConn := net.Pipe()
+	server := appwire.NewStreamTransport(serverConn)
+	ctx, cancel := context.WithCancel(context.Background())
+	var mu, sendMu sync.Mutex
+	var calls []hostAdminCall
+	send := func(msg appwire.Message) {
+		sendMu.Lock()
+		defer sendMu.Unlock()
+		_ = server.Send(ctx, msg)
+	}
+	answer := func(req *appwire.Request) {
+		var result any = appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion, SourceID: "local"}
+		if req.Method != appwire.MethodInitialize {
+			result = handle(req.Method, req.Params).result
+		}
+		data, _ := json.Marshal(result)
+		send(appwire.ResponseMessage(req.ID, json.RawMessage(data)))
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			msg, err := server.Recv(ctx)
+			if err != nil {
+				return
+			}
+			if msg.Request == nil {
+				continue
+			}
+			mu.Lock()
+			calls = append(calls, hostAdminCall{method: msg.Request.Method, params: msg.Request.Params})
+			mu.Unlock()
+			go answer(msg.Request)
+		}
+	}()
+	client := appwire.NewClient(appwire.NewStreamTransport(clientConn))
+	client.Start(ctx)
+	if _, err := client.Initialize(ctx, appwire.InitializeParams{}); err != nil {
+		cancel()
+		t.Fatalf("initialize scripted remote: %v", err)
+	}
+	t.Cleanup(func() {
+		cancel()
+		_ = client.Close()
+		<-done
+	})
+	return client, func() []hostAdminCall {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]hostAdminCall(nil), calls...)
+	}
+}
+
 // hostRequestDispatchHub serves a real hub RPC server whose one remote host,
-// m4, answers through handle, and returns a client on it plus the remote's
-// recorded calls.
+// m4, answers through handle (concurrentScriptedRemote), and returns a client
+// on it plus the remote's recorded calls.
 func hostRequestDispatchHub(t *testing.T, handle func(method string, params json.RawMessage) hostAdminReply) (*appwire.Client, func() []hostAdminCall) {
 	t.Helper()
-	remote, calls, _ := newScriptedAdminClient(t, handle)
+	remote, calls := concurrentScriptedRemote(t, handle)
 	source := appsource.NewRemoteHubSource("m4", nil, func(context.Context, string) (*appwire.Client, error) {
 		return remote, nil
 	})
@@ -109,9 +169,9 @@ func TestHostRequestSlowForwardedReadDoesNotHoldALaterThreadRead(t *testing.T) {
 	}
 }
 
-// A forwarded mutation keeps its place on the serial worker: nothing queued
-// behind it runs until it answers, so two mutations reach the remote in the
-// order they were sent.
+// A forwarded mutation keeps its place on the serial worker: the remote
+// receives nothing sent after it until it answers, so a caller's writes land
+// in the order it sent them.
 func TestHostRequestForwardedMutationsKeepTheirOrder(t *testing.T) {
 	gate := newRemoteGate()
 	client, calls := hostRequestDispatchHub(t, func(method string, _ json.RawMessage) hostAdminReply {
@@ -125,24 +185,24 @@ func TestHostRequestForwardedMutationsKeepTheirOrder(t *testing.T) {
 	forwardedCallSeen(t, calls, appwire.MethodEvenerPluginEnable)
 	second := hostRequest(client, appwire.MethodEvenerPluginDisable)
 
-	ordered := make(chan struct{})
-	go func() {
-		_, _ = client.ThreadList(context.Background(), appwire.ThreadListParams{})
-		close(ordered)
-	}()
-	select {
-	case <-ordered:
-		t.Fatal("an ordered request ran while a forwarded mutation ahead of it was still on the wire")
-	case <-time.After(300 * time.Millisecond):
+	time.Sleep(300 * time.Millisecond)
+	for _, call := range calls() {
+		if call.method == appwire.MethodEvenerPluginDisable {
+			t.Fatal("a second forwarded mutation reached the remote while the first was still unanswered")
+		}
 	}
 
 	gate.open()
 	for _, done := range []<-chan error{first, second} {
-		if err := <-done; err != nil {
-			t.Fatalf("forwarded mutation: %v", err)
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("forwarded mutation: %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("a forwarded mutation never answered")
 		}
 	}
-	<-ordered
 	var forwarded []string
 	for _, call := range calls() {
 		if call.method == appwire.MethodEvenerPluginEnable || call.method == appwire.MethodEvenerPluginDisable {

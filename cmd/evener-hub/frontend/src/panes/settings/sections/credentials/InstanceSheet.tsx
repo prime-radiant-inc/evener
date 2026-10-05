@@ -470,9 +470,9 @@ export function InstanceSheet({
       if (!applied) {
         // The verdict says a newer read won the ordering race. That read was
         // issued after this write, but its response arrives AFTER this write's
-        // (evener/instance/list is not a concurrent method - it runs inline on
-        // the connection's serial worker), so the listing sampled right now is
-        // still the PRE-save one. Settle a read that started after the write
+        // (the write holds the connection's serial worker until it answers, so
+        // a list sent after it, local or forwarded, starts only then), so the
+        // listing sampled right now is still the PRE-save one. Settle a read that started after the write
         // before comparing the listing against the mutation's own captured row.
         // The read is non-fatal - a torn-down connection must not be reported as
         // a failed save - but its RESULT matters: `edit` already scheduled the
