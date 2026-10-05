@@ -2668,3 +2668,68 @@ func TestMemoryIndexQuotesOpaqueBytes(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// Memory guidance follows what the session can do: read guidance (with the
+// trust guard) whenever memory is readable, save instructions and the result
+// tool's reminder only when the save tools are callable, and project-scope
+// wording only when project memory is bound.
+func TestMemoryGuidanceFollowsCapabilities(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name                string
+		cfg                 SessionConfig
+		revoke              string
+		read, save, project bool
+	}{
+		{"enabled", SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project"}, "", true, true, true},
+		{"personal-only", SessionConfig{MemoryStateRoot: t.TempDir()}, "", true, true, false},
+		{"write-revoked", SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project"}, "memory_write", true, false, true},
+		{"search-revoked", SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project"}, "memory_search", true, true, true},
+		{"disabled", SessionConfig{MemoryStateRoot: t.TempDir(), DisableMemory: true}, "", false, false, false},
+		{"unbound", SessionConfig{}, "", false, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var system strings.Builder
+			var reminder bool
+			s := newSession(t, withConfig(tc.cfg), withSteps(func(req llm.Request) llm.Response {
+				for _, msg := range req.Messages {
+					if msg.Role == llm.RoleSystem {
+						system.WriteString(msg.Text())
+					}
+				}
+				for _, def := range req.Tools {
+					reminder = reminder || strings.Contains(def.Description, memoryReportReminder)
+				}
+				return finalResponse("done")
+			}))
+			if tc.revoke != "" {
+				s.reg.Remove(tc.revoke)
+				s.rebuildToolDefsCache()
+			}
+			if _, err := s.ProcessInput(context.Background(), "go", nil); err != nil {
+				t.Fatal(err)
+			}
+			read := strings.Contains(system.String(), memoryTrustGuard)
+			save := strings.Contains(system.String(), memorySaveTriggersIntro)
+			if read != tc.read || save != tc.save || reminder != tc.save {
+				t.Fatalf("read=%v save=%v reminder=%v, want read=%v save=%v", read, save, reminder, tc.read, tc.save)
+			}
+			data, _ := s.buildPromptData(s.currentEnv())
+			if data.MemorySaves != tc.save || data.ProjectMemory != (tc.save && tc.project) {
+				t.Fatalf("prompt data MemorySaves=%v ProjectMemory=%v", data.MemorySaves, data.ProjectMemory)
+			}
+			if tc.read {
+				guidance := s.memoryGuidance()
+				if mentions := strings.Contains(strings.ToLower(guidance), "project memory"); mentions != tc.project {
+					t.Fatalf("guidance mentions project memory=%v, want %v", mentions, tc.project)
+				}
+				for _, name := range nativeMemoryToolNames {
+					if strings.Contains(guidance, name) && !s.canInstructTool(name) {
+						t.Fatalf("guidance names %s, which this session cannot call", name)
+					}
+				}
+			}
+		})
+	}
+}
