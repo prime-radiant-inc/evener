@@ -2757,8 +2757,11 @@ func TestMemoryGuidanceFollowsCapabilities(t *testing.T) {
 				if has := strings.Contains(guidance, memorySessionSaveTrigger); has != tc.session {
 					t.Fatalf("guidance has session save trigger=%v, want %v", has, tc.session)
 				}
-				if has := strings.Contains(guidance, "will outlast this work belongs in project memory"); has != (tc.session && tc.project) {
-					t.Fatalf("guidance routes lasting plans to project memory=%v, want %v", has, tc.session && tc.project)
+				if has := strings.Contains(guidance, "belong in session memory, not project memory"); has != (tc.session && tc.project) {
+					t.Fatalf("guidance keeps working notes out of project memory=%v, want %v", has, tc.session && tc.project)
+				}
+				if strings.Contains(guidance, "will outlast this work") {
+					t.Fatalf("guidance still says \"will outlast this work\": %q", guidance)
 				}
 				if mentions := strings.Contains(strings.ToLower(guidance), "project memory"); mentions != tc.project {
 					t.Fatalf("guidance mentions project memory=%v, want %v", mentions, tc.project)

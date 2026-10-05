@@ -43,7 +43,7 @@ const (
 	memorySaveTriggersIntro = "Save a memory when:"
 
 	memorySessionScopeLine    = "Session memory holds knowledge about the current work: its plan, the constraints and decisions that apply to it, and what you tried and found."
-	memorySessionSaveTrigger  = "you are doing work you would need to pick up again if it were interrupted and resumed after compaction: its plan, decisions and why, and what you tried and ruled out. Save it to session memory; what your partner says about this work goes there too."
+	memorySessionSaveTrigger  = "you are partway through longer work: keep its plan, what you tried and what you ruled out in session memory, so you could pick it up again after compaction or an interruption."
 	memorySessionDelegateLine = "Session memory belongs to your root session. Read it, and report what you learn to your parent."
 )
 
@@ -92,10 +92,7 @@ func (s *Session) memoryGuidance() string {
 	b.WriteString("\n\n" + memorySaveTriggersIntro + "\n- your human partner corrects you or tells you how they want something done. Save it to personal memory with the reason they gave")
 	if project {
 		partnerTold := "a plan, a constraint, a decision, or work that is still unfinished"
-		if s.depth == 0 {
-			partnerTold = "something that will outlast this work: " + partnerTold
-		}
-		b.WriteString(", or to project memory if it only applies here.\n- your human partner tells you about this project " + partnerTold + ". Save it to project memory.")
+		b.WriteString(", or to project memory if it only applies here.\n- your human partner tells you about this project: " + partnerTold + ". Save it to project memory.")
 	} else {
 		b.WriteString(".")
 	}
@@ -108,9 +105,9 @@ func (s *Session) memoryGuidance() string {
 	}
 	skip := "Skip what the repository already says and details only the current task needs. A constraint or plan that shaped this task usually outlives it."
 	if s.depth == 0 {
-		skip = "Skip what the repository already says. Details only this work needs belong in session memory"
+		skip = "Skip what the repository already says. Working notes about the current work, such as its plan and what you tried, belong in session memory"
 		if project {
-			skip += "; a constraint or plan that will outlast this work belongs in project memory"
+			skip += ", not project memory"
 		}
 		skip += "."
 	}
