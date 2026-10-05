@@ -110,14 +110,16 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) (promptData,
 		resourceCapsJSON = renderResourceCapsJSON(resources.CPUs, resources.MemoryMB)
 	}
 
+	saves := s.memorySaveInstructionsEnabled()
 	data := promptData{
 		NonInteractive:           s.cfg.noOneToAsk(),
 		BaseInstructionsOverride: strings.TrimSpace(s.systemPromptOverride),
 		IsSubagent:               s.depth > 0,
 		Surface:                  s.profile.Surface(),
 		TurnEndsProcess:          s.cfg.TurnEndsProcess,
-		MemorySaves:              s.memorySaveInstructionsEnabled(),
-		ProjectMemory:            s.memorySaveInstructionsEnabled() && s.cfg.MemoryProjectID != "",
+		MemorySaves:              saves,
+		ProjectMemory:            saves && s.cfg.MemoryProjectID != "",
+		SessionMemorySaves:       saves && !s.sessionMemoryReadOnly(),
 		WorkingDir:               s.envInfo.WorkingDir,
 		IsGitRepo:                s.envInfo.IsGitRepo,
 		GitBranch:                s.envInfo.GitBranch,
