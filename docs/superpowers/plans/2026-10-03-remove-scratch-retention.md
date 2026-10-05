@@ -1,5 +1,7 @@
 # Remove Scratch Retention Implementation Plan
 
+> **Superseded 2026-10-04** by "Revision 2" of [the design](../specs/2026-10-03-remove-scratch-retention-design.md). This plan deletes scratch at every environment end and sweeps at root close. What shipped keeps a session's named scratch (`<tmp>/evener-scratch-<root>/<session>/`) across every end and removes it only when the hub archives or deletes the session. There is no sweep at root close. The retention removal in this plan did ship.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** A session's scratch directory is deleted when the environment that owns it ends, and the retention system that kept it alive is removed.

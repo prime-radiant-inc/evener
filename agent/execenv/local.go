@@ -698,7 +698,7 @@ func (e *LocalExecutionEnvironment) unsandboxedScratchDir() string {
 		e.scratchMu.Unlock()
 		return ""
 	}
-	tmp, err := e.newSessionScratch()
+	tmp, err := e.newSessionScratch(e.scratchRoot, e.scratchSession)
 	if err != nil {
 		e.unsandboxedScratchFailed = true
 		e.scratchMu.Unlock()
@@ -724,10 +724,13 @@ func (e *LocalExecutionEnvironment) unsandboxedScratchDir() string {
 // cannot answer are ones git's discovery rejects too — it stops at the same
 // first .git entry — so the probe returned "" there anyway and the anchor fell
 // back to RootDir, exactly as it does now.
-func (e *LocalExecutionEnvironment) newSessionScratch() (*sandbox.SessionScratch, error) {
+//
+// root and session are the env's scratch name, read by the caller under
+// scratchMu (ScratchIdentity, or the fields directly while holding it).
+func (e *LocalExecutionEnvironment) newSessionScratch(root, session string) (*sandbox.SessionScratch, error) {
 	workspace := SessionScratchWorkspaceRoot(e.RootDir)
-	if e.scratchRoot != "" && e.scratchSession != "" {
-		if s, err := sandbox.OpenSessionScratch(e.sandboxTmpBase, workspace, e.scratchRoot, e.scratchSession); err == nil {
+	if root != "" && session != "" {
+		if s, err := sandbox.OpenSessionScratch(e.sandboxTmpBase, workspace, root, session); err == nil {
 			return s, nil
 		}
 		// A named scratch that cannot be opened (another process holds it, or a
@@ -887,13 +890,13 @@ func (e *LocalExecutionEnvironment) EnableSandbox(policy *sandbox.ResolvedPolicy
 		// Best-effort: losing the scratch costs the delegate its one writable place,
 		// which denies writes — the fail-closed direction — and must not block a spawn.
 		if policy != nil && policy.FileToolConfined() {
-			if tmp, err := e.newSessionScratch(); err == nil {
+			if tmp, err := e.newSessionScratch(e.ScratchIdentity()); err == nil {
 				e.setOwnedSessionTmp(tmp)
 			}
 		}
 		return nil
 	}
-	tmp, err := e.newSessionScratch()
+	tmp, err := e.newSessionScratch(e.ScratchIdentity())
 	if err != nil {
 		// Leave the env unsandboxed: a half-wired sandbox must never run, and the
 		// prior policy/wrapper (torn down above) must not silently persist.
