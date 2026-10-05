@@ -14,6 +14,63 @@ import (
 	"primeradiant.com/evener/agent/sandbox"
 )
 
+// TestEndSessionScratchKeepsANamedScratchAndPrunesItsCaches: a session's named
+// scratch outlives the session's end (it goes when the hub archives the
+// session), so the end prunes only the regenerable caches.
+func TestEndSessionScratchKeepsANamedScratchAndPrunesItsCaches(t *testing.T) {
+	base := t.TempDir()
+	env := NewLocalExecutionEnvironment(t.TempDir())
+	env.sandboxTmpBase = base
+	env.SetScratchIdentity("ROOTX", "ROOTX")
+	if _, err := env.ExecCommand(context.Background(), "true", 5000, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	scratch := env.SessionScratchDir()
+	if want := filepath.Join(base, "evener-scratch-ROOTX", "ROOTX"); filepath.Clean(scratch) != want {
+		t.Fatalf("named scratch = %q, want %q", scratch, want)
+	}
+	if err := os.MkdirAll(filepath.Join(scratch, "gocache", "ab"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(scratch, "notes.md"), []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.EndSessionScratch(); err != nil {
+		t.Fatalf("EndSessionScratch: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(scratch, "notes.md")); err != nil {
+		t.Errorf("the session end removed the named scratch's file: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(scratch, "gocache")); !os.IsNotExist(err) {
+		t.Errorf("the session end kept the cache: %v", err)
+	}
+	// The next session with the same identity reopens it.
+	next := NewLocalExecutionEnvironment(t.TempDir())
+	next.sandboxTmpBase = base
+	next.SetScratchIdentity("ROOTX", "ROOTX")
+	if _, err := next.ExecCommand(context.Background(), "true", 5000, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := next.SessionScratchDir(); filepath.Clean(got) != filepath.Clean(scratch) {
+		t.Errorf("resumed scratch = %q, want the same %q", got, scratch)
+	}
+	_ = next.EndSessionScratch()
+}
+
+func TestEndSessionScratchRemovesADisposableScratch(t *testing.T) {
+	env := NewLocalExecutionEnvironment(t.TempDir())
+	if _, err := env.ExecCommand(context.Background(), "true", 5000, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	scratch := env.SessionScratchDir()
+	if err := env.EndSessionScratch(); err != nil {
+		t.Fatalf("EndSessionScratch: %v", err)
+	}
+	if _, err := os.Lstat(scratch); !os.IsNotExist(err) {
+		t.Errorf("a scratch with no session identity survived the end: %v", err)
+	}
+}
+
 func TestDisposeSessionScratchRemovesScratchAndTmp(t *testing.T) {
 	env := NewLocalExecutionEnvironment(t.TempDir())
 	if _, err := env.ExecCommand(context.Background(), "true", 5000, "", nil); err != nil {

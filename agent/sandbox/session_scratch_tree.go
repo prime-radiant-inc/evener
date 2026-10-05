@@ -64,6 +64,13 @@ func OpenSessionScratch(base, workspaceRoot, rootID, sessionID string) (*Session
 	return &SessionScratch{Dir: dir, base: tree, lease: lease}, nil
 }
 
+// Named reports whether this scratch lives in a session's tree
+// (OpenSessionScratch) rather than being a disposable one (NewSessionScratch).
+// A named scratch outlives its session's end; a disposable one does not.
+func (s *SessionScratch) Named() bool {
+	return s != nil && strings.HasPrefix(filepath.Base(s.base), sessionScratchTreePrefix)
+}
+
 // PruneCaches removes the regenerable cache directories (SessionCacheDirNames)
 // from the scratch and keeps everything else.
 func (s *SessionScratch) PruneCaches() error {

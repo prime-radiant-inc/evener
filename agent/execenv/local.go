@@ -146,6 +146,14 @@ type LocalExecutionEnvironment struct {
 	// onto it moves ownership there (AdoptSessionScratch).
 	ownedSessionTmp *sandbox.SessionScratch
 
+	// scratchRoot and scratchSession name the session this env's scratch belongs
+	// to (SetScratchIdentity). When set, a scratch this env mints is that
+	// session's directory in its root's tree, which outlives the session's end
+	// and is reopened on resume; when empty it is a disposable one. Guarded by
+	// scratchMu, and deliberately not copied by either clone path: a clone that
+	// mints a scratch of its own must not reopen its original's directory.
+	scratchRoot, scratchSession string
+
 	// sandboxGrant, when non-empty, is a single per-invocation granted path (M7
 	// escalation approve), threaded onto a short-lived clone by
 	// WithSandboxInvocationGrant. The clone's lazily-built sandboxFS widens
@@ -716,7 +724,58 @@ func (e *LocalExecutionEnvironment) unsandboxedScratchDir() string {
 // first .git entry — so the probe returned "" there anyway and the anchor fell
 // back to RootDir, exactly as it does now.
 func (e *LocalExecutionEnvironment) newSessionScratch() (*sandbox.SessionScratch, error) {
-	return sandbox.NewSessionScratch(e.sandboxTmpBase, SessionScratchWorkspaceRoot(e.RootDir))
+	workspace := SessionScratchWorkspaceRoot(e.RootDir)
+	if e.scratchRoot != "" && e.scratchSession != "" {
+		if s, err := sandbox.OpenSessionScratch(e.sandboxTmpBase, workspace, e.scratchRoot, e.scratchSession); err == nil {
+			return s, nil
+		}
+		// A named scratch that cannot be opened (another process holds it, or a
+		// planted path refuses) falls back to a disposable one: the session runs,
+		// it just does not get its old directory back.
+	}
+	return sandbox.NewSessionScratch(e.sandboxTmpBase, workspace)
+}
+
+// SetScratchIdentity names the session this env's scratch belongs to: rootID is
+// the top-level session of the tree, sessionID this session (the root's own ID
+// for the root). Call it before the env mints a scratch — before EnableSandbox
+// for a sandboxed env — so the scratch is that session's directory in its root's
+// tree, kept across the session's ends and reopened on resume.
+func (e *LocalExecutionEnvironment) SetScratchIdentity(rootID, sessionID string) {
+	e.scratchMu.Lock()
+	defer e.scratchMu.Unlock()
+	e.scratchRoot, e.scratchSession = rootID, sessionID
+}
+
+// EndSessionScratch settles this env's scratch at a session's end — close, idle
+// retirement, a delegate's teardown or idle release. A named scratch
+// (SetScratchIdentity) is kept with its regenerable caches pruned and its lease
+// released: it goes when the hub archives or deletes the root, or when a
+// one-shot run exits. A disposable scratch is removed. The TMPDIR container is
+// removed unless a detached command still uses it. Call it only on an env the
+// caller owns.
+func (e *LocalExecutionEnvironment) EndSessionScratch() error {
+	e.invalidateSandboxFS()
+	e.scratchMu.Lock()
+	defer e.scratchMu.Unlock()
+	var errs []error
+	end := func(s *sandbox.SessionScratch) {
+		if s.Named() {
+			errs = append(errs, s.PruneCaches(), s.Retain())
+			return
+		}
+		errs = append(errs, s.Cleanup())
+	}
+	if tmp := e.ownedSessionTmp; tmp != nil {
+		e.ownedSessionTmp = nil
+		end(tmp)
+	}
+	if tmp := e.unsandboxedScratch; tmp != nil {
+		e.unsandboxedScratch = nil
+		end(tmp)
+	}
+	errs = append(errs, e.endTmpContainerLocked())
+	return errors.Join(errs...)
 }
 
 // SessionScratchWorkspaceRoot reports the workspace a session started in dir
@@ -944,15 +1003,23 @@ func (e *LocalExecutionEnvironment) DisposeSessionScratch() error {
 		e.unsandboxedScratch = nil
 		errs = append(errs, tmp.Cleanup())
 	}
+	errs = append(errs, e.endTmpContainerLocked())
+	return errors.Join(errs...)
+}
+
+// endTmpContainerLocked removes the world-usable TMPDIR container, or, when a
+// detached command still uses it, releases its lease and leaves it for the
+// crashed-scratch sweep. The caller holds scratchMu.
+func (e *LocalExecutionEnvironment) endTmpContainerLocked() error {
 	if e.detachedSpawned {
 		if e.unsandboxedTmp != nil {
-			errs = append(errs, e.unsandboxedTmp.Retain())
+			return e.unsandboxedTmp.Retain()
 		}
-	} else if tmp := e.unsandboxedTmp; tmp != nil {
-		e.unsandboxedTmp = nil
-		errs = append(errs, tmp.Remove())
+		return nil
 	}
-	return errors.Join(errs...)
+	tmp := e.unsandboxedTmp
+	e.unsandboxedTmp = nil
+	return tmp.Remove()
 }
 
 // AdoptSessionScratch moves every per-session scratch directory from `from` —
