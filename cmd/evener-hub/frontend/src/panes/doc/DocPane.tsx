@@ -7,7 +7,7 @@ import {
   type FileReference,
   rebindFileReference,
 } from "@evener/appwire-client/docContent";
-import { type ReactNode, useEffect, useLayoutEffect, useState } from "react";
+import { type ReactNode, useEffect, useId, useLayoutEffect, useState } from "react";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { usePaneVisible } from "../../shell/paneVisibility";
 import { documentPaneState, recordDocumentPaneState, useWorkspaceStore } from "../../shell/workspace";
@@ -25,6 +25,7 @@ import {
   ZoomableMedia,
 } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
+import { DocumentMarkdown } from "../../widgets/markdown/DocumentMarkdown";
 import { browserDocPort } from "./browserDocPort";
 import { filenameOf, formatDocBytes, isMarkdownPath } from "./docFile";
 import styles from "./docpane.module.css";
@@ -49,14 +50,11 @@ const ERROR_COPY: Record<DocFileErrorKind, { title: string; hint: string }> = {
   error: { title: "Couldn't load file", hint: "The hub returned an unexpected error." },
 };
 
-// DocFileContent keeps a leading BOM because annotations use the original
-// source's UTF-16 coordinates. Marked does not recognize a heading through it,
-// so remove it only from the legacy display input, never from stored source.
-function markdownDisplaySource(source: string): string {
-  return source.startsWith("\ufeff") ? source.slice(1) : source;
-}
+// Task 5 replaces these display-only identities with accepted source leases.
+const ignoreDocumentMap = () => {};
 
 function DocFileView({ content, path }: { content: DocFileContent; path: string }) {
+  const displayId = useId();
   if (content.binary) {
     return (
       <EmptyState title="Binary file not shown" hint={`${filenameOf(path)} (${formatDocBytes(content.sizeBytes)})`} />
@@ -76,7 +74,11 @@ function DocFileView({ content, path }: { content: DocFileContent; path: string 
       )}
       {isMarkdownPath(path) ? (
         <div className={CLASS.markdown}>
-          <Markdown source={markdownDisplaySource(content.text)} />
+          <DocumentMarkdown
+            source={content.text}
+            identity={{ displayedSnapshotId: displayId, mappingId: displayId }}
+            onMap={ignoreDocumentMap}
+          />
         </div>
       ) : (
         <CodeBlock text={content.text} fold={false} />
