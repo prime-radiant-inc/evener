@@ -1105,23 +1105,36 @@ func DefUpdateGoal() llm.ToolDefinition {
 }
 
 // DefNotesAgentSet returns the tool definition for notes_agent_set.
-// The model calls this to record its one-paragraph session whiteboard.
+// The model calls this to keep its session whiteboard current: a short capsule
+// of the session for a manager (mission and progress, "Now:", "Next:").
 // (Agent tool, not a hub RPC: the daemon handles notes/agent/set in session.
 // Tool names cannot contain slashes — see llm.ValidateToolName — so the agent
 // tool uses snake_case.)
 func DefNotesAgentSet() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name: "notes_agent_set",
-		Description: `Record your one-paragraph session whiteboard. ` +
-			`Whitespace is collapsed and the note is clamped to 1000 characters. ` +
-			`Setting the same text again is a no-op.`,
+		Description: `Keep your session whiteboard current. ` +
+			`It is a capsule a manager checking on this session reads in ten seconds ` +
+			`to learn what the session is for and where it stands. ` +
+			`Use plain words, with no file paths, ids or jargon. ` +
+			`Write three parts, each on its own line: ` +
+			`a short paragraph with the mission and what is done so far; ` +
+			`one line starting "Now:" with what you are doing; ` +
+			`one or two lines starting "Next:" with what is left. ` +
+			`Each update replaces the whole whiteboard. ` +
+			`Update it when the picture changes: a phase finishes, the plan changes, or you are blocked. ` +
+			`Keep it under 600 characters. Example:` + "\n" +
+			`Fixing the importer's rejected timestamps for the reporting team. ` +
+			`The parser required seconds; I made them optional and added tests, which pass.` + "\n" +
+			`Now: checking the exporter, which uses the same parser.` + "\n" +
+			`Next: fix the exporter the same way, then report back.`,
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"note": map[string]any{
 					"type":        "string",
-					"description": "The agent's session note. Empty clears it.",
+					"description": "The whole whiteboard, in the three parts above. Line breaks are kept. Empty clears it.",
 				},
 			},
 			"required": []string{"note"},
