@@ -2912,7 +2912,10 @@ it("asks the hub for updates once the installed list loads, and offers Upgrade o
 
 	expect((await openDetail(tree, "stale")).findAllByProps({ label: "Upgrade" }).length).toBeGreaterThan(0);
 	await act(async () => {
-		tree.root.findByType("Modal" as never).findByProps({ accessibilityLabel: "Done" }).props.onPress();
+		tree.root
+			.findByType("Modal" as never)
+			.findByProps({ accessibilityLabel: "Done" })
+			.props.onPress();
 	});
 	expect((await openDetail(tree, "current")).findAllByProps({ label: "Upgrade" })).toHaveLength(0);
 });
