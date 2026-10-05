@@ -16,7 +16,7 @@ Success means agents keep task-local plans, constraints, decisions and findings 
 |---|---|
 | Who shares a session's memory | The root session owns it. Delegates read it and cannot write it. |
 | Do delegates get their own session memory | No. A delegate reports findings to its parent, and the parent decides what to save. |
-| Fork | The fork gets a copy of the parent's session memory as of the fork, and the two diverge. |
+| Fork | The fork gets a copy of the parent's session memory as of the fork's first use, and the two diverge. |
 | Session deletion | Session memory is kept, like the other scopes, until someone gardens it. |
 | Promotion | Before its final report, the agent copies anything that outlasts the work into project or personal memory. |
 | Mechanism | A third scope in the existing memory machinery. Session notes and the history state directory are not used. |
