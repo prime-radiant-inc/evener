@@ -42,19 +42,20 @@ The lab runs real models with your configured provider credentials, so it is nev
 - `--reps`: 3 repetitions are enough to spot a broken scenario. Plan on 6–10 to compare two prompts. With these weak models, a single prompt has swung from 0/3 to 3/3 between runs with nothing changed.
 - `--jobs`: lunarouter allows 10 concurrent requests on a model's regular pool and 30 on its `-background` pool. Keep the total across parallel runs under that.
 - `--max-rounds` (default 40) caps tool rounds per stage. If the cap is tight, every stage stops on the cap and the results measure the cap, not memory.
-- `--out` must be a fresh directory. The command prints one line per stage, then a pass-rate table per version, scenario, stage and check.
+- `--effort` (default `high`) sets the reasoning effort. `--timeout` (default 1200) is seconds per stage.
+- `--out` must be a fresh directory, relative or absolute. The command prints one line per stage as each trial finishes, then only the pass-rate table per version, scenario, stage and check. `report` prints the per-stage lines too.
 
 ## Reading results
 
 ```bash
-./memory-lab report OUTDIR                       # the pass-rate table again
+./memory-lab report OUTDIR                       # one line per stage, then the pass-rate table
 ./memory-lab show OUTDIR/<version>/on/<scenario>/r1 A            # tool calls, memory files, whiteboard, final message
 ./memory-lab show --reasoning OUTDIR/.../r1 A    # also the model's reasoning summary, with tool calls marked
 ./memory-lab ask --bin bin/evener-try --model MODEL OUTDIR/.../r1 A \
   "Please don't change anything; just answer. You didn't save X to memory. Did you consider it, and what led you not to?"
 ```
 
-`ask` resumes the finished session and asks it a question. Use it whenever a trial does something you didn't want, and ask before you reword a prompt. In past rounds the answers named the actual cause:
+`ask` resumes the finished session and asks it a question. A stage that ran in another workspace needs `--workspace` (for example `--workspace work2` for `sed-quirk` stage B). `--effort` (default `high`) and `--timeout` (default 600 seconds) apply too. Use it whenever a trial does something you didn't want, and ask before you reword a prompt. In past rounds the answers named the actual cause:
 - "I converted the constraint into an action, satisfied it, and checked it off."
 - A skip rule read as a license to skip.
 - A trigger read as a gate that a short task never trips.
