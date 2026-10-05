@@ -317,6 +317,11 @@ metadata is unavailable, while independently readable output remains usable.
 Omitting `beforeBytes` selects the latest page. A supplied value selects a
 backward page ending at that lifetime byte offset; explicit zero stays zero.
 The default page limit is 4 KiB, with positive limits capped at 64 KiB.
+For storage floor `F`, total `T` and limit `M`, latest selects
+`[max(F, T-M), T)` and backward end `B` selects `[max(F, B-M), B)`.
+The supplied end must lie in `[F, T]`; negative ends and ends beyond `T`
+are invalid. `B == F` succeeds with an empty page. Zero therefore succeeds
+empty only while the floor is zero.
 
 Each response contains `offsetBytes`, `bytesReturned`, `totalBytes`,
 `retainedStartBytes`, `encoding` and `data`. These describe one coherent raw
@@ -331,6 +336,41 @@ A selector below the current storage floor returns structured
 changed output generation remains an ordinary read failure. The owning live or
 remote source stays authoritative; only the existing dead-local condition
 permits the hub's saved-output fallback.
+The returned end equals `totalBytes` at the current EOF; an empty floor page
+is EOF only when the floor also equals the total. EOF describes that snapshot,
+so a running job can append after an empty read.
+
+### Browser output reading
+
+The [pane-owned reader](../../cmd/evener-hub/frontend/src/panes/transcript/jobLogReader.ts)
+retains two contiguous source-byte windows: up to 512 KiB of older reading and
+512 KiB of live output, with at most 1 MiB in their union. This is a retained
+source-byte budget, not a browser-heap limit. The existing `VirtualList` renders
+byte-keyed rows, follows the bottom and preserves the reader's byte/pixel anchor
+when pages arrive or window trimming repairs a row.
+
+Scrolling loads adjacent pages in either direction. Evicted retained text can
+be fetched again. An unloaded interval remains a paging boundary until its
+bytes have been read, including pages containing only terminal controls.
+Output no longer retained has a separate notice; useful cached text below the
+new floor remains readable. UTF-8 and ANSI state join only across contiguous
+bytes, with bounded decoder carry across known eviction. A gap starts an
+independent decoding range. Long lines render as bounded source-byte fragments.
+
+Each open pane permits one output read at a time. A visible running pane reads
+the latest output every second while serving visible history demand between
+live reads. Hidden or disconnected panes pause reads and retain their windows,
+anchor and pending demand. Returning to a readable pane resumes them. Read
+failures retry with paced backoff while successful cached output stays visible.
+Closing the pane or replacing its owner/job retires the reader and rejects late
+replies. This reader shares the existing pane lifetime and connection readiness;
+it creates no activity subscription.
+
+Descriptive job metadata is best effort and cannot block independently readable
+output. Observing terminal metadata requires a fresh latest read after that
+observation, even when an earlier read already saw EOF. Disconnecting during
+that drain preserves it for recovery. Finished jobs remain history-pageable.
+Refresh requests current output without discarding older reading or its anchor.
 
 Protocol `evener-appwire-v7` requires the same contract in the hub, daemon and
 clients. Older running daemons keep their work and require an explicit restart

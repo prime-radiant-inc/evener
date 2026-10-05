@@ -308,37 +308,6 @@ substitution. The original composition and settings survive. A pending Start
 continues once on the selected host after readiness is confirmed; cancellation
 prevents it, and a form without a pending Start remains ready for submission.
 
-### C09 Following shell-job output
-
-**Current behavior.** The browser job transcript reads one tail. A running job
-can remain at No output yet or old content until Refresh. Refresh replaces the
-tail and discards earlier pages; older output requires repeated clicks and a
-failed older read is silent. Reconnect does not reset the effect's started flag.
-
-**Evidence.** [JobLog](../../cmd/evener-hub/frontend/src/panes/transcript/JobLog.tsx#L68)
-owns the reads, [loadEarlier](../../cmd/evener-hub/frontend/src/panes/transcript/JobLog.tsx#L149)
-only clears loading on failure, and the
-[controls](../../cmd/evener-hub/frontend/src/panes/transcript/JobLog.tsx#L164)
-require Refresh/Load earlier output. No focused live-view test establishes
-automatic following for this component.
-
-**Decision.** An open job-output viewer stays current automatically. Follow new
-output while the reader is at the bottom; when they scroll into earlier output,
-continue receiving new output without moving their reading position. Returning
-to the live end shows the latest available output. Load retained older output on
-scroll demand, recover temporary read failures automatically, and obtain final
-output when the job finishes. Use bounded memory and fetch activity appropriate
-to the visible viewer; this does not require monitoring every unopened job.
-Subscription or polling mechanics remain an implementation choice.
-Implementation remains pending.
-
-**Acceptance.** Open before first output and observe output through completion
-without clicking. While reading older output, verify new output continues to
-arrive without moving the reading position; returning to the live end shows it.
-Older paging and new output coexist without gaps or duplication, and a failed
-read recovers automatically. A high-volume job does not require unbounded
-client memory.
-
 ### C10 Quiet task panels
 
 **Current behavior.** Web and native task surfaces retain rows on snapshot

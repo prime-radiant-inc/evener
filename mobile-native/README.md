@@ -18,6 +18,8 @@ output through transport failures. The displayed start and byte count come from
 the raw page; the server retention floor is a separate fact. This view requires
 the current AppWire protocol and adds no native history-paging UI. See the
 [job output contract](../docs/product/session-activity.md#job-output-pages).
+Its fixtures use the six raw-page fields: `offsetBytes`, `bytesReturned`,
+`totalBytes`, `retainedStartBytes`, `encoding` and `data`.
 
 The [current status](../docs/design/mobile/status.md), [remaining work](../docs/design/mobile/ios-v1-remaining.md) and [acceptance index](../docs/design/mobile/acceptance.md) distinguish implementation from current-artifact qualification. The full development plan and dated evidence remain on branch `live-concepts-plan2-integrate` at checkpoint `04ae937af`.
 

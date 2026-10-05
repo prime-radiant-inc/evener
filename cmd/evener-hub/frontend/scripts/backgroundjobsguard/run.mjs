@@ -2,7 +2,7 @@
 // Run through TestBackgroundJobsBrowser. JSON stdin supplies an isolated real
 // hub and Go-owned producer barriers, never frontend state or RPC responses.
 import assert from "node:assert/strict";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync, watch } from "node:fs";
 import path from "node:path";
 import { Driver } from "../skillguard/run.mjs";
 import { evaluate, navigateTo } from "../browserGuardCdp.mjs";
@@ -20,7 +20,7 @@ const anchor = (jobId) => `job:${q([fixture.rootRef, jobId])}`;
 const row = (jobId) => `${sidebar} [data-activity-anchor=${q(anchor(jobId))}]`;
 const frames = [], sockets = [], errors = [], consoleEvents = [];
 const requests = new Map();
-const methods = new Set(["evener/thread/jobs/list", "evener/thread/activity/read", "evener/jobs/output", "thread/read"]);
+const methods = new Set(["evener/thread/jobs/list", "evener/thread/activity/read", "evener/jobs/output", "evener/jobs/get", "thread/read"]);
 const read = (source) => evaluate(driver.send, source);
 const wait = (source, label) => {
   new Function(`return (${source})`);
@@ -170,12 +170,40 @@ try {
   await driver.send("Page.addScriptToEvaluateOnNewDocument", { source: `(() => {
     const Native = window.WebSocket;
     window.__backgroundJobsSockets = [];
+    window.__pagingWire = { holdSend: false, holdReply: false, sent: [], replies: [], methods: new Map() };
     window.WebSocket = class extends Native {
-      constructor(...args) { super(...args); window.__backgroundJobsSockets.push(this); }
+      constructor(...args) {
+        super(...args);
+        window.__backgroundJobsSockets.push(this);
+        super.addEventListener('message', event => {
+          const state = window.__pagingWire;
+          let message;
+          try { message = JSON.parse(event.data); } catch { this.callback?.(event); return; }
+          if (state.holdReply && state.methods.get(message.id) === 'evener/jobs/output') {
+            state.holdReply = false;
+            state.replies.push({socket: this, event});
+          } else this.callback?.(event);
+        });
+      }
+      set onmessage(callback) { this.callback = callback; }
+      get onmessage() { return this.callback; }
+      send(data) {
+        const state = window.__pagingWire;
+        const message = JSON.parse(data);
+        state.methods.set(message.id, message.method);
+        if (state.holdSend && message.method === 'evener/jobs/output' && message.params.beforeBytes !== undefined) {
+          state.holdSend = false;
+          state.sent.push({socket: this, data, params: message.params});
+        } else super.send(data);
+      }
+      releasePagingSend(data) { super.send(data); }
     };
   })()` });
   await navigateTo(driver.page, fixture.url);
   await driver.openSession(fixture.rootRef);
+  if (fixture.journey === "output-paging") {
+    await runOutputPagingJourney(fixture);
+  } else {
   await driver.click('[data-testid="statusbar"] button[aria-label^="Jobs,"]');
   await wait(`(() => { const s=document.querySelector(${q(sidebar)}); return s && getComputedStyle(s).transform === 'none'; })()`, "Jobs sidebar entrance settled");
   const initial = await completeWalk(0, "closed history finds live work on the fourth page");
@@ -250,6 +278,7 @@ try {
   driver.milestone("post-journey-errors", { errors, consoleEvents });
   await capture("post-journey-errors");
   console.log("backgroundjobsguard: actual producer, quiet history, later-page recovery and owner output passed");
+  }
 } catch (error) {
   if (driver.page) await capture("failure").catch(captureError => save("capture-error.json", String(captureError)));
   save("failure.json", { message: String(error), stack: error.stack, frames, sockets, errors, consoleEvents });
@@ -257,4 +286,264 @@ try {
   process.exitCode = 1;
 } finally {
   await driver.stop();
+}
+
+async function runOutputPagingJourney(fixture) {
+  const content = '[data-testid="joblog-content"]';
+  const scrollerExpr = `(() => {
+    const content = document.querySelector(${q(content)});
+    if (!content) return null;
+    return [...content.querySelectorAll('*'), content].find(n => ['auto','scroll'].includes(getComputedStyle(n).overflowY));
+  })()`;
+  const stateExpr = `(() => {
+    const content = document.querySelector(${q(content)}), scroller = ${scrollerExpr};
+    if (!content || !scroller) return null;
+    const viewport = scroller.getBoundingClientRect();
+    const rows = [...content.querySelectorAll('[data-joblog-kind]')].map(n => {
+      const r = n.getBoundingClientRect();
+      return {kind:n.dataset.joblogKind,start:Number(n.dataset.sourceStart),end:Number(n.dataset.sourceEnd),text:n.textContent,
+        top:r.top-viewport.top,bottom:r.bottom-viewport.top,visible:r.bottom>viewport.top && r.top<viewport.bottom};
+    });
+    return {rows,first:rows.find(r=>r.kind==='output' && r.visible),
+      older:Number(content.dataset.joblogOlderBytes),live:Number(content.dataset.joblogLiveBytes),union:Number(content.dataset.joblogSourceBytes),
+      top:scroller.scrollTop,height:scroller.clientHeight,totalHeight:scroller.scrollHeight,
+      following:scroller.scrollHeight-scroller.clientHeight-scroller.scrollTop<=4};
+  })()`;
+  const state = () => read(stateExpr);
+  const outputCalls = (after = 0) => sent(after).filter(f => f.method === 'evener/jobs/output' && f.params.ref === fixture.outputOwnerRef && f.params.jobId === fixture.outputJobId);
+  const page = request => response(request)?.result?.data;
+  const bytes = page => page.encoding === 'base64' ? Buffer.from(page.data, 'base64') : Buffer.from(page.data, 'utf8');
+  const checkPages = () => {
+    const oracle = readFileSync(fixture.outputOraclePath);
+    const pages = [];
+    for (const request of outputCalls()) {
+      const value = page(request);
+      if (!value) continue;
+      const raw = bytes(value);
+      assert.equal(raw.length, value.bytesReturned);
+      assert.deepEqual(raw, oracle.subarray(value.offsetBytes, value.offsetBytes + value.bytesReturned));
+      assert.ok(value.retainedStartBytes <= value.offsetBytes);
+      assert.ok(value.offsetBytes + value.bytesReturned <= value.totalBytes);
+      if (request.params.beforeBytes !== undefined) {
+        assert.equal(value.offsetBytes + value.bytesReturned, request.params.beforeBytes);
+        assert.ok(value.bytesReturned <= request.params.maxBytes);
+      } else assert.equal(value.offsetBytes + value.bytesReturned, value.totalBytes);
+      pages.push({request, page:value});
+    }
+    save('raw-pages.json', pages);
+    return pages;
+  };
+  const bounded = async () => {
+    const value = await state();
+    assert.ok(value.older <= 512*1024 && value.live <= 512*1024 && value.union <= 1024*1024, q(value));
+    return value;
+  };
+  const captureOutput = async name => {
+    checkPages();
+    const value = await bounded();
+    save(`${name}-output.json`, {state:value, frames, sockets, errors, consoleEvents});
+    await driver.screenshot(name);
+    driver.milestone(name, value);
+    return value;
+  };
+  const wheel = async deltaY => {
+    const point = await read(`(() => { const scroller=${scrollerExpr}; if (!scroller) return null; const r=scroller.getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2,extent:scroller.scrollHeight+scroller.clientHeight}; })()`);
+    assert.ok(point, 'actual output scroller');
+    const {extent,...position}=point;
+    await driver.send('Input.dispatchMouseEvent', {type:'mouseWheel',...position,deltaX:0,deltaY:Math.abs(deltaY)>=40000 ? Math.sign(deltaY)*extent : deltaY});
+  };
+  const latest = async (marker, after = 0, totalBytes = 0) => {
+    await waitFrames(() => outputCalls(after).some(request => page(request)?.totalBytes >= totalBytes && bytes(page(request)).includes(Buffer.from(marker))), `real latest contains ${marker}`);
+  };
+  let phase = 1;
+  const control = async command => {
+    const ackPath = path.join(fixture.artifactDir, `phase-${String(++phase).padStart(2,'0')}.json`);
+    return new Promise((resolve, reject) => {
+      const watcher = watch(fixture.artifactDir, check);
+      const timer = setTimeout(() => finish(new Error(`producer did not acknowledge ${command}`)), 15000);
+      function finish(error, value) { watcher.close(); clearTimeout(timer); error ? reject(error) : resolve(value); }
+      function check() {
+        let value;
+        try { value = JSON.parse(readFileSync(ackPath,'utf8')); } catch { return; }
+        if (value.command !== command) { finish(new Error(`wrong producer acknowledgement ${q(value)}`)); return; }
+        finish(null,value);
+      }
+      driver.control(`output-${command}`);
+      check();
+    });
+  };
+  const assertAnchor = async baseline => {
+    await wait(`(() => { const value=${stateExpr}; const row=value?.rows.find(row=>row.kind==='output' && row.start===${baseline.start}); return row?.visible && Math.abs(row.top-(${baseline.top}))<=2; })()`, 'same byte row stays within two pixels');
+  };
+  const backward = async () => {
+    const after = frames.length;
+    await wheel(-40000);
+    await waitFrames(() => outputCalls(after).some(request => request.params.beforeBytes !== undefined && page(request)), 'trusted wheel fetches adjacent retained history, latest-only output cannot satisfy this');
+    await bounded();
+    return outputCalls(after).find(request => request.params.beforeBytes !== undefined && page(request));
+  };
+  await driver.click('[data-testid="statusbar"] button[aria-label^="Jobs,"]');
+  await wait(`document.querySelector(${q(row(fixture.outputJobId))}) !== null`, 'separate real output owner is listed');
+  await driver.click(row(fixture.outputJobId));
+  await latest('SPLIT_é_');
+  const initialGeometry = await state();
+  const firstHistory = await backward();
+  assert.ok(page(firstHistory).offsetBytes < page(outputCalls()[0]).offsetBytes);
+  assert.equal(initialGeometry.following,true,'opening latest follows the real bottom');
+  await wheel(40000);
+  await wait(`${stateExpr}?.following === true`, 'trusted wheel returns to the real bottom');
+  await control('grow');
+  await latest('GROW_MARKER_1');
+  await wait(`document.querySelector(${q(content)})?.textContent.includes('SPLIT_é_😀')`, 'split scalar repaired in real rows');
+  assert.equal(await read(`document.querySelector(${q(content)}+' [data-ansi-fg="red"]')?.textContent`),'SGR_RED_é');
+  assert.ok(await read(`document.querySelector(${q(content)})?.textContent.includes('OSC_VISIBLE')`));
+  assert.ok(await read(`document.querySelector(${q(content)})?.textContent.includes('MALFORMED_�')`));
+  checkPages();
+  await driver.screenshot('paging-bottom');
+  driver.milestone('paging-bottom',await state());
+
+  // This is the behavioral RED against latest-only source: a native wheel must
+  // reach history through the owner RPC, not merely move a bounded tail.
+  await backward();
+  for (let index = 0; index < 3; index++) await backward();
+  let baseline = (await state()).first;
+  assert.ok(baseline, 'later loaded page has a visible source-byte row');
+  const historyAfter = frames.length;
+  await control('middle');
+  await latest('MIDDLE_MARKER', historyAfter);
+  await assertAnchor(baseline);
+  await captureOutput('paging-history');
+
+  const remembered = baseline.start;
+  for (let index = 0; index < 10; index++) await backward();
+  assert.ok((await bounded()).older > 400*1024, 'older window crossed its raw trim threshold');
+  const beforeRefetch = frames.length;
+  const refetched = () => outputCalls(beforeRefetch).some(request => page(request) && page(request).offsetBytes <= remembered && page(request).offsetBytes+page(request).bytesReturned > remembered);
+  let forwardEnd;
+  for(let index=0;index<16 && !refetched();index++) {
+    const after=frames.length;
+    save(`refetch-${index}-before.json`,await state());
+    await wheel(40000);
+    await waitFrames(()=>outputCalls(after).some(request=>request.params.beforeBytes!==undefined && page(request)), 'forward wheel reads one adjacent retained page');
+    for (const request of outputCalls(after).filter(request => request.params.beforeBytes !== undefined && page(request))) {
+      const value = page(request);
+      if (forwardEnd !== undefined) assert.equal(value.offsetBytes, forwardEnd, 'forward pages meet at the raw byte boundary');
+      forwardEnd = value.offsetBytes + value.bytesReturned;
+    }
+    save(`refetch-${index}-after.json`,await state());
+  }
+  assert.ok(refetched(),'forward wheel refetches the evicted retained row without leaping across unread bytes');
+  await captureOutput('paging-refetch');
+
+  // Walk the real retained gap in both directions. Independent page-oracle
+  // equality below also pins pages that contain only ANSI controls.
+  const longStart = 9000*126;
+  for (let index = 0; index < 80; index++) {
+    if (outputCalls().some(request => page(request)?.offsetBytes <= longStart)) break;
+    await backward();
+  }
+  assert.ok(outputCalls().some(request => {
+    const value=page(request);
+    return value && value.offsetBytes>=longStart+600*1024+20 && value.offsetBytes+value.bytesReturned<=longStart+600*1024+20+32768*4;
+  }), 'actual controls-only page advances across the unloaded interval');
+  await captureOutput('paging-gap');
+  for (let index = 0; index < 80; index++) {
+    const before = await state();
+    if (before.rows.some(row => row.kind === 'output' && row.visible && row.start <= longStart && row.end > longStart)) break;
+    assert.ok(before.first, 'loaded long-line history has a visible byte row');
+    await wheel(before.first.start > longStart ? -before.height : before.height);
+    await wait(`(() => { const value=${stateExpr}; return value && (value.top!==${before.top} || value.first?.start!==${before.first?.start} || value.first?.top!==${before.first?.top}); })()`, 'trusted wheel advances within loaded long-line history');
+  }
+  await wait(`(() => { const value=${stateExpr}; return value?.rows.some(row=>row.kind==='output' && row.text.includes('LONG_BEGIN_')); })()`, 'long-line beginning can be read after backward paging');
+  assert.ok((await state()).rows.filter(row=>row.kind==='output').every(row=>row.end-row.start<=4096), 'long-line fragments remain bounded');
+  await captureOutput('paging-text');
+
+  baseline = (await state()).first;
+  assert.ok(baseline);
+  const liveBefore = checkPages().at(-1).page.totalBytes;
+  for (let index = 0; index < 17; index++) {
+    const after = frames.length;
+    const ack = await control('grow');
+    await latest('GROW_MARKER_2', after, ack.totalBytes);
+    await assertAnchor(baseline);
+    await bounded();
+  }
+  assert.ok(checkPages().at(-1).page.totalBytes - liveBefore > 512*1024, 'acknowledged contiguous live growth exceeds the live source-byte limit');
+  assert.ok((await bounded()).live > 400*1024, 'real live window accumulates and trims contiguous pages');
+  await captureOutput('paging-live-budget');
+  const refreshAfter = frames.length;
+  const refreshPoint=await read(`(() => { const root=document.querySelector(${q(content)}).closest('[role="tabpanel"]'); const button=[...root.querySelectorAll('[data-testid="pane-actions"] button')].find(n=>n.textContent==='Refresh'); const r=button.getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2}; })()`);
+  await driver.clickAt(refreshPoint.x,refreshPoint.y);
+  await waitFrames(() => outputCalls(refreshAfter).some(request => page(request)), 'Refresh performs real output read');
+  await assertAnchor(baseline);
+  await captureOutput('paging-refresh');
+  let after = frames.length;
+  let socketAfter = sockets.length;
+  await driver.send('Network.emulateNetworkConditions',{offline:true,latency:0,downloadThroughput:-1,uploadThroughput:-1});
+  assert.equal(await read(`(() => { const live=window.__backgroundJobsSockets.filter(s=>s.readyState===WebSocket.OPEN && new URL(s.url).pathname==='/rpc'); for(const s of live) s.close(4000,'paging transport boundary'); return live.length; })()`),1);
+  await waitFrames(()=>sockets.slice(socketAfter).some(s=>s.method==='Network.webSocketClosed'),'real output socket closes');
+  await driver.send('Network.emulateNetworkConditions',{offline:false,latency:0,downloadThroughput:-1,uploadThroughput:-1});
+  await waitFrames(()=>outputCalls(after).some(request=>page(request)),'output resumes after real reconnect');
+  await assertAnchor(baseline);
+  await captureOutput('paging-reconnect');
+
+  await read('window.__pagingWire.holdSend=true');
+  await wheel(-40000);
+  await wait('window.__pagingWire.sent.length===1','hold actual history send before owner dispatch');
+  const held = await read('window.__pagingWire.sent[0].params');
+  assert.ok(held.beforeBytes < (await control('rollover')).totalBytes-8*1024*1024);
+  await read(`(() => { const entry=window.__pagingWire.sent.shift(); entry.socket.releasePagingSend(entry.data); })()`);
+  await waitFrames(()=>outputCalls().some(request=>request.params.beforeBytes===held.beforeBytes && response(request)?.error?.code===-32014 && response(request)?.error?.data?.evenerErrorInfo==='jobOutputPruned'),'owner returns typed pruning for the actual held selector');
+  await latest('ROLLOVER_MARKER');
+  const rolloverPage = outputCalls().find(request => page(request) && bytes(page(request)).includes(Buffer.from('ROLLOVER_MARKER')));
+  const liveStart = page(rolloverPage).offsetBytes;
+  await wait(`(() => { const value=${stateExpr}; return value?.rows.some(row=>row.kind==='pruned') && value.rows.some(row=>row.kind==='output' && row.start<${(await control('grow')).totalBytes-8*1024*1024}); })()`, 'pruned notice preserves useful cached output below the floor');
+  await captureOutput('paging-pruned');
+
+  await read('window.__pagingWire.holdReply=true');
+  await wait('window.__pagingWire.replies.length===1','hold preterminal real output response');
+  const preterminal = outputCalls().at(-1);
+  assert.ok(page(preterminal));
+  await control('finish');
+  await waitFrames(()=>sent().some(request=>request.method==='evener/jobs/get' && request.params.jobId===fixture.outputJobId && response(request)?.result?.data?.terminal),'terminal metadata observed while earlier output remains held');
+  after=frames.length; socketAfter=sockets.length;
+  await driver.send('Network.emulateNetworkConditions',{offline:true,latency:0,downloadThroughput:-1,uploadThroughput:-1});
+  await read(`(() => { for(const s of window.__backgroundJobsSockets.filter(s=>s.readyState===WebSocket.OPEN)) s.close(4000,'fresh terminal drain boundary'); window.__pagingWire.replies.length=0; })()`);
+  await waitFrames(()=>sockets.slice(socketAfter).some(s=>s.method==='Network.webSocketClosed'),'terminal drain connection closes');
+  await driver.send('Network.emulateNetworkConditions',{offline:false,latency:0,downloadThroughput:-1,uploadThroughput:-1});
+  await latest('FINAL_AFTER_PENDING_READ_é_😀',after);
+  const finalPage = outputCalls(after).find(request=>page(request) && bytes(page(request)).includes(Buffer.from('FINAL_AFTER_PENDING_READ_é_😀')));
+  assert.ok(page(finalPage).totalBytes > page(preterminal).totalBytes,'fresh drain reads bytes written after pending request');
+  const finalLive = page(finalPage).totalBytes - liveStart;
+  assert.ok(finalLive <= 512*1024, 'post-rollover contiguous interval fits the live budget');
+  await wait(`${stateExpr}?.live === ${finalLive}`, 'fresh final bytes enter the retained live window');
+  const finalHistoryAfter = frames.length;
+  const finalHistoryPages = () => outputCalls(finalHistoryAfter).filter(request => request.params.beforeBytes !== undefined && page(request));
+  let finalHistoryEnd;
+  let checkedFinalHistory = 0;
+  const checkFinalHistory = () => {
+    for (const request of finalHistoryPages().slice(checkedFinalHistory)) {
+      const value = page(request);
+      if (finalHistoryEnd !== undefined) assert.equal(value.offsetBytes, finalHistoryEnd, 'finished-history pages remain adjacent');
+      finalHistoryEnd = value.offsetBytes + value.bytesReturned;
+      checkedFinalHistory++;
+    }
+  };
+  for (let index = 0; index < 132; index++) {
+    checkFinalHistory();
+    if (finalHistoryEnd >= liveStart) break;
+    await wheel(40000);
+    await waitFrames(() => finalHistoryPages().length > checkedFinalHistory, 'trusted wheel advances the retained post-rollover gap');
+    checkFinalHistory();
+    await bounded();
+  }
+  assert.ok(finalHistoryEnd >= liveStart, 'trusted paging reaches the independently captured live interval');
+  await wait(`(() => { const value=${stateExpr}; return value?.rows.every(row => row.kind !== 'unloaded' || row.end !== ${liveStart}); })()`, 'retained gap joins the actual live rows');
+  await wheel(40000);
+  await wait(`document.querySelector(${q(content)})?.textContent.includes('FINAL_AFTER_PENDING_READ_é_😀')`,'literal final marker renders after drain recovery');
+  await backward();
+  await captureOutput('paging-final-drain');
+  assert.deepEqual(errors.filter(event => event.type !== 'warning'),[],'complete paging journey has no page or console errors');
+  await captureOutput('paging-post-errors');
+  console.log('backgroundjobsguard: literal byte oracle, trusted paging, retention and final drain passed');
 }

@@ -159,18 +159,20 @@ func TestBackgroundJobsBrowser(t *testing.T) {
 	call.RespondToolCall("communicate", communicateArgs("BACKGROUND_JOBS_READY"))
 	// Completion notices may wake the session later. Answer only at the provider
 	// boundary; these replies neither invent a job nor settle the held command.
+	providerCtx, stopNotices := context.WithCancel(ctx)
+	defer stopNotices()
 	providerDone := make(chan struct{})
 	go func() {
 		defer close(providerDone)
 		for {
-			call, err := provider.Next(ctx.Done())
+			call, err := provider.Next(providerCtx.Done())
 			if err != nil {
 				return
 			}
 			call.RespondToolCall("communicate", communicateArgs("BACKGROUND_JOBS_NOTICE"))
 		}
 	}()
-	defer func() { cancel(); <-providerDone }()
+	defer func() { stopNotices(); <-providerDone }()
 	jobs = backgroundJobsAwait(ctx, t, client, rootRef, func(rows []appwire.JobActivityJob) bool {
 		if len(rows) != backgroundJobsBrowserCount {
 			return false
@@ -354,6 +356,9 @@ func TestBackgroundJobsBrowser(t *testing.T) {
 			t.Errorf("missing actual browser milestone %s", want)
 		}
 	}
+	stopNotices()
+	<-providerDone
+	runJobOutputPagingJourney(t, ctx, &stack, provider)
 }
 
 func backgroundJobsAwaitOutput(ctx context.Context, client *appwire.Client, ref, jobID, want string) error {

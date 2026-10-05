@@ -8,6 +8,7 @@ import { workspaceStore } from "../../shell/workspace";
 import { Button, EmptyState, PaneScaffold, VirtualList, type VirtualListHandle } from "../../widgets";
 import { AnsiLineContent } from "../../widgets/codeblock/ansiLine";
 import { requireClass } from "../../widgets/internal/requireClass";
+import { isAtBottom } from "../session/transcript/flow/scrollMetrics";
 import { type JobLogReader, type JobLogScrollCapture, retainedJobLogReader } from "./jobLogReader";
 import { type JobLogRow, type JobLogWindows, jobLogRows, jobLogSourceBytes } from "./jobLogWindow";
 import styles from "./transcript.module.css";
@@ -22,6 +23,10 @@ const CLASS = {
 type JobLogDisplayRow =
   | { kind: "output"; key: string; row: JobLogRow }
   | { kind: "unloaded" | "pruned"; key: string; startBytes: number; endBytes: number };
+
+function outputRowContainsByte(item: JobLogDisplayRow, byteOffset: number): boolean {
+  return item.kind === "output" && item.row.offsetBytes <= byteOffset && item.row.endBytes > byteOffset;
+}
 
 function jobLogDisplayRows(windows: JobLogWindows, jobId: string): JobLogDisplayRow[] {
   const output = jobLogRows(windows);
@@ -85,6 +90,7 @@ export function JobLog({ jobRef, parentRef, paneId }: { jobRef: string; parentRe
 function JobLogBody({ reader, jobId, paneId }: { reader: JobLogReader; jobId: string; paneId?: string }) {
   const snapshot = useSyncExternalStore(reader.subscribe, reader.getSnapshot);
   const rows = useMemo(() => jobLogDisplayRows(snapshot.windows, jobId), [snapshot.windows, jobId]);
+  const gaps = useMemo(() => rows.flatMap((row, index) => (row.kind === "unloaded" ? [{ row, index }] : [])), [rows]);
   const list = useRef<VirtualListHandle>(null);
   const previousRows = useRef<JobLogDisplayRow[] | null>(null);
   const restore = useRef<JobLogScrollCapture | null>(
@@ -97,12 +103,7 @@ function JobLogBody({ reader, jobId, paneId }: { reader: JobLogReader; jobId: st
   const restorationIndex = (capture: JobLogScrollCapture) => {
     let index = capture.following
       ? rows.length - 1
-      : rows.findIndex(
-          (item) =>
-            item.kind === "output" &&
-            item.row.offsetBytes <= capture.byteOffset &&
-            item.row.endBytes > capture.byteOffset,
-        );
+      : rows.findIndex((item) => outputRowContainsByte(item, capture.byteOffset));
     if (index < 0)
       index = rows.findIndex((item) => item.kind === "output" && item.row.offsetBytes >= capture.byteOffset);
     return index < 0 ? rows.length - 1 : index;
@@ -129,23 +130,23 @@ function JobLogBody({ reader, jobId, paneId }: { reader: JobLogReader; jobId: st
       return rect.bottom > viewport.top && rect.top < viewport.bottom;
     });
     const first = visible.find((element) => element.dataset.joblogKind === "output");
-    const following = scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop <= 4;
+    const following = isAtBottom(scroller, 4);
     const previous = reader.getSnapshot().scrollCapture;
     const byte = first ? Number(first.dataset.sourceStart) : undefined;
     const marker = elements.find((element) => {
       const rect = element.getBoundingClientRect();
       return element.dataset.joblogKind === "unloaded" && rect.bottom >= viewport.top && rect.top <= viewport.bottom;
     });
-    const gapIndex = rows.findIndex(
-      (item) =>
-        item.kind === "unloaded" &&
-        (item.startBytes === Number(marker?.dataset.sourceStart) ||
+    const gapIndex =
+      gaps.find(
+        ({ row }) =>
+          row.startBytes === Number(marker?.dataset.sourceStart) ||
           (previous !== null &&
             !(previous.following && following) &&
             byte !== undefined &&
-            ((previous.byteOffset < item.startBytes && byte >= item.endBytes) ||
-              (previous.byteOffset >= item.endBytes && byte < item.startBytes)))),
-    );
+            ((previous.byteOffset < row.startBytes && byte >= row.endBytes) ||
+              (previous.byteOffset >= row.endBytes && byte < row.startBytes))),
+      )?.index ?? -1;
     const gap = rows[gapIndex];
     if (gap && gap.kind === "unloaded") {
       const direction = (previous?.byteOffset ?? byte ?? 0) >= gap.endBytes ? "backward" : "forward";
@@ -155,6 +156,15 @@ function JobLogBody({ reader, jobId, paneId }: { reader: JobLogReader; jobId: st
           pixelOffset: first.getBoundingClientRect().top - viewport.top,
           following: false,
         });
+      else {
+        const adjacent = rows[gapIndex + (direction === "backward" ? 1 : -1)];
+        if (adjacent?.kind === "output") {
+          const capture = { byteOffset: adjacent.row.offsetBytes, pixelOffset: 0, following: false };
+          restore.current = capture;
+          reader.capture(capture);
+          list.current?.scrollToIndex(restorationIndex(capture), { align: "start" });
+        }
+      }
       reader.demand(
         {
           direction,
@@ -164,7 +174,8 @@ function JobLogBody({ reader, jobId, paneId }: { reader: JobLogReader; jobId: st
         direction === "backward" ? "start" : "end",
       );
       // A missing interval is a paging boundary, not a shortcut to its far side.
-      list.current?.scrollToIndex(gapIndex, { align: direction === "forward" ? "end" : "start" });
+      if (restore.current === null)
+        list.current?.scrollToIndex(gapIndex, { align: direction === "forward" ? "end" : "start" });
     } else if (first) {
       reader.capture({
         byteOffset: Number(first.dataset.sourceStart),
@@ -200,12 +211,7 @@ function JobLogBody({ reader, jobId, paneId }: { reader: JobLogReader; jobId: st
     if (!scroller || rows.length === 0) return;
     const capture = reader.getSnapshot().scrollCapture;
     if (previousRows.current !== null && capture && !capture.following) {
-      const old = previousRows.current.find(
-        (item) =>
-          item.kind === "output" &&
-          item.row.offsetBytes <= capture.byteOffset &&
-          item.row.endBytes > capture.byteOffset,
-      );
+      const old = previousRows.current.find((item) => outputRowContainsByte(item, capture.byteOffset));
       if (old && !rows.some((item) => item.key === old.key)) restore.current = capture;
     }
     previousRows.current = rows;

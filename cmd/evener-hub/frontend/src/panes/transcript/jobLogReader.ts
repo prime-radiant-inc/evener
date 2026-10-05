@@ -1,4 +1,5 @@
 import {
+  errorText,
   type JobActivityJob,
   jobOutputPrunedBounds,
   parseActivityJob,
@@ -31,7 +32,7 @@ export type JobLogReaderSnapshot = {
 };
 
 const READ_INTERVAL_MS = 1000;
-const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error));
+const messageOf = (error: unknown) => errorText(error);
 
 export class JobLogReader {
   private snapshot: JobLogReaderSnapshot = {

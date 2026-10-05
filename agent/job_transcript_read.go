@@ -133,28 +133,24 @@ var readLocalJobOutputSnapshot = func(path string, maxBytes int, fromHead bool) 
 }
 
 var readLocalJobOutputWindowSnapshot = func(path string, offset int64, maxBytes int) (jobstore.OutputWindowSnapshot, error) {
-	for attempt := range 2 {
-		f, err := openJobOutputFile(path)
-		if err != nil {
-			return jobstore.OutputWindowSnapshot{}, err
-		}
-		snapshot, readErr := jobstore.ReadOutputWindowSnapshotFromFile(path, f, offset, maxBytes)
-		_ = f.Close()
-		if errors.Is(readErr, jobstore.ErrOutputChangedDuringRead) && attempt == 0 {
-			continue
-		}
-		return snapshot, readErr
-	}
-	panic("unreachable")
+	return readLocalJobOutputRangeSnapshot(path, func(f *os.File) (jobstore.OutputWindowSnapshot, error) {
+		return jobstore.ReadOutputWindowSnapshotFromFile(path, f, offset, maxBytes)
+	})
 }
 
 var readLocalJobOutputPageSnapshot = func(path string, beforeBytes *int64, maxBytes int) (jobstore.OutputWindowSnapshot, error) {
+	return readLocalJobOutputRangeSnapshot(path, func(f *os.File) (jobstore.OutputWindowSnapshot, error) {
+		return jobstore.ReadOutputPageSnapshotFromFile(path, f, beforeBytes, maxBytes)
+	})
+}
+
+func readLocalJobOutputRangeSnapshot(path string, read func(*os.File) (jobstore.OutputWindowSnapshot, error)) (jobstore.OutputWindowSnapshot, error) {
 	for attempt := range 2 {
 		f, err := openJobOutputFile(path)
 		if err != nil {
 			return jobstore.OutputWindowSnapshot{}, err
 		}
-		snapshot, readErr := jobstore.ReadOutputPageSnapshotFromFile(path, f, beforeBytes, maxBytes)
+		snapshot, readErr := read(f)
 		_ = f.Close()
 		if errors.Is(readErr, jobstore.ErrOutputChangedDuringRead) && attempt == 0 {
 			continue
