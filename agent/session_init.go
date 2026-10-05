@@ -408,7 +408,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		return nil, fmt.Errorf("reserved child session ID: %w", err)
 	}
 	if cfg.spawn.parentSessionID == "" {
-		nameRootScratch(env, sessionID)
+		nameRootScratch(env, sessionID, sessionID)
 	}
 	jobClock := cfg.spawn.jobActivityClock
 	if cfg.spawn.parentSessionID == "" && jobClock == nil {
@@ -868,7 +868,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// A delegate's own environment was named when it was prepared, and a shared
 	// delegate is handed its parent's, so only a root restore names env.
 	if restoreCfg.spawn.parentSessionID == "" {
-		nameRootScratch(env, meta.ID)
+		nameRootScratch(env, restoredScratchTreeRoot(meta), meta.ID)
 	}
 
 	restoreComplete := false
@@ -2604,15 +2604,29 @@ func reconnectRecoveryWarning(name string) events.WarningData {
 // unless its launcher already did, so the scratch the environment mints is that
 // session's directory in its own tree: kept across the session's ends, reopened
 // on resume, and removed when the hub archives or deletes the session. A
-// scratch the environment already minted is unaffected.
-func nameRootScratch(env execenv.ExecutionEnvironment, sessionID string) {
+// scratch the environment already minted is unaffected. rootID is the tree the
+// scratch lives in: the session's own ID, except for a delegate resumed as a
+// top-level session (restoredScratchTreeRoot).
+func nameRootScratch(env execenv.ExecutionEnvironment, rootID, sessionID string) {
 	local, ok := env.(*execenv.LocalExecutionEnvironment)
 	if !ok {
 		return
 	}
 	if root, _ := local.ScratchIdentity(); root == "" {
-		local.SetScratchIdentity(sessionID, sessionID)
+		local.SetScratchIdentity(rootID, sessionID)
 	}
+}
+
+// restoredScratchTreeRoot is the root whose scratch tree a restored top-level
+// session's scratch lives in. A delegate resumed on its own (`serve --resume
+// <delegate>`) keeps its directory in the tree of the root that spawned it,
+// which its meta records, so it reopens what it had and goes when that root is
+// archived.
+func restoredScratchTreeRoot(meta schema.SessionMeta) string {
+	if root := strings.TrimSpace(meta.JobTreeRootSessionID); meta.IsSubagent && schema.ValidateSessionID(root) == nil {
+		return root
+	}
+	return meta.ID
 }
 
 // PickFreshSessionID picks the ID a new top-level session will take, unless cfg
@@ -2626,6 +2640,6 @@ func PickFreshSessionID(env execenv.ExecutionEnvironment, cfg *SessionConfig) er
 		}
 		cfg.SessionID = id
 	}
-	nameRootScratch(env, cfg.SessionID)
+	nameRootScratch(env, cfg.SessionID, cfg.SessionID)
 	return nil
 }

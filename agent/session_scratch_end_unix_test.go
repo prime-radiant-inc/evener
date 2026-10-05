@@ -159,6 +159,24 @@ func TestDelegateRestoreLeavesTheHandedEnvironmentUnnamed(t *testing.T) {
 	}
 }
 
+// TestDelegateResumedAsRootReopensItsScratchInItsRootsTree: `serve --resume
+// <delegate>` restores a delegate as a top-level session. Its scratch is still
+// its directory in its root's tree, so it reopens what it had and goes when the
+// root is archived, instead of opening a tree of its own nobody archives.
+func TestDelegateResumedAsRootReopensItsScratchInItsRootsTree(t *testing.T) {
+	meta := artifactRestoreMeta(t)
+	rootID := artifactRestoreMeta(t).ID
+	meta.IsSubagent = true
+	meta.JobTreeRootSessionID = rootID
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	if sess, err := RestoreSessionFromMetaWithConfig(newArtifactTestClient(), NewOpenAIProfile("gpt-5.2"), env, meta, artifactRestoreConfig(t, t.TempDir())); err == nil {
+		t.Cleanup(sess.Close)
+	}
+	if root, session := env.ScratchIdentity(); root != rootID || session != meta.ID {
+		t.Errorf("delegate resumed as a root named its scratch %s/%s, want %s/%s", root, session, rootID, meta.ID)
+	}
+}
+
 // TestResumeReopensTheSameScratch: a session's scratch outlives close, and the
 // restored session reopens the same directory, files and all.
 func TestResumeReopensTheSameScratch(t *testing.T) {
