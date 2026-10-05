@@ -154,6 +154,38 @@ func TestSessionScratchTreeRootIDsListsExistingTrees(t *testing.T) {
 	}
 }
 
+// os.TempDir returns a relative TMPDIR as given. The process's own temp dir is
+// still a base the trees are listed and removed from; only recorded extra
+// bases must be absolute.
+func TestSessionScratchTreeInARelativeTempDirIsRemoved(t *testing.T) {
+	cwd := t.TempDir()
+	t.Chdir(cwd)
+	if err := os.Mkdir(filepath.Join(cwd, "reltmp"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	prev := sessionScratchTempDir
+	sessionScratchTempDir = func() string { return "reltmp" }
+	t.Cleanup(func() { sessionScratchTempDir = prev })
+	s, err := OpenSessionScratch(filepath.Join(cwd, "reltmp"), t.TempDir(), "ROOTL", "ROOTL")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = s.Retain()
+	if want := filepath.Join(cwd, "reltmp", sessionScratchTreePrefix+"ROOTL", "ROOTL"); s.Dir != want {
+		t.Fatalf("scratch opened at %q, want %q under the relative temp dir", s.Dir, want)
+	}
+
+	if got := SessionScratchTreeRootIDs(); !slices.Contains(got, "ROOTL") {
+		t.Errorf("SessionScratchTreeRootIDs = %v, want ROOTL from the relative temp dir", got)
+	}
+	if err := RemoveSessionScratchTree("ROOTL"); err != nil {
+		t.Fatalf("RemoveSessionScratchTree: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(cwd, "reltmp", sessionScratchTreePrefix+"ROOTL")); !os.IsNotExist(err) {
+		t.Errorf("the tree under the relative temp dir survived: %v", err)
+	}
+}
+
 // A daemon started with its own TMPDIR keeps its trees in a temp dir the hub's
 // process does not use. Listing and removal also look in the extra bases the
 // caller names, the temp dirs the sessions' metas record.

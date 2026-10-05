@@ -204,13 +204,25 @@ func removeEmptySessionScratchTree(tree string) {
 // sessionScratchTreeBases are the bases a tree may live in: the temp dir and
 // the user cache dir, the two OpenSessionScratch chooses between, then extra.
 func sessionScratchTreeBases(extra ...string) []string {
-	candidates := []string{sessionScratchTempDir()}
+	// The process's own temp dir may be a relative TMPDIR, which os.TempDir
+	// returns as given; it is resolved against the working directory. A
+	// recorded extra base names another process's dir, so a relative one has
+	// no meaning here and is skipped.
+	var candidates []string
+	if dir, err := filepath.Abs(sessionScratchTempDir()); err == nil {
+		candidates = append(candidates, dir)
+	}
 	if dir, err := sessionScratchUserCacheDir(); err == nil {
 		candidates = append(candidates, dir)
 	}
+	for _, dir := range extra {
+		if filepath.IsAbs(dir) {
+			candidates = append(candidates, dir)
+		}
+	}
 	var bases []string
-	for _, dir := range append(candidates, extra...) {
-		if dir == "" || !filepath.IsAbs(dir) {
+	for _, dir := range candidates {
+		if dir == "" {
 			continue
 		}
 		if resolved, err := filepath.EvalSymlinks(dir); err == nil {
