@@ -6,13 +6,12 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"sync"
 	"testing"
 	"time"
 
 	"primeradiant.com/evener/appwire"
-	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
-	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
 
@@ -25,13 +24,8 @@ func concurrentScriptedRemote(t *testing.T, handle func(method string, params js
 	clientConn, serverConn := net.Pipe()
 	server := appwire.NewStreamTransport(serverConn)
 	ctx, cancel := context.WithCancel(context.Background())
-	var mu, sendMu sync.Mutex
+	var mu sync.Mutex
 	var calls []hostAdminCall
-	send := func(msg appwire.Message) {
-		sendMu.Lock()
-		defer sendMu.Unlock()
-		_ = server.Send(ctx, msg)
-	}
 	answer := func(req *appwire.Request) {
 		var result any = appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion, SourceID: "local"}
 		if req.Method != appwire.MethodInitialize {
@@ -40,13 +34,13 @@ func concurrentScriptedRemote(t *testing.T, handle func(method string, params js
 				t.Errorf("concurrentScriptedRemote cannot close the connection for %s", req.Method)
 			}
 			if reply.wireErr != nil {
-				send(appwire.ErrorMessage(req.ID, *reply.wireErr))
+				_ = server.Send(ctx, appwire.ErrorMessage(req.ID, *reply.wireErr))
 				return
 			}
 			result = reply.result
 		}
 		data, _ := json.Marshal(result)
-		send(appwire.ResponseMessage(req.ID, json.RawMessage(data)))
+		_ = server.Send(ctx, appwire.ResponseMessage(req.ID, json.RawMessage(data)))
 	}
 	done := make(chan struct{})
 	go func() {
@@ -89,16 +83,7 @@ func concurrentScriptedRemote(t *testing.T, handle func(method string, params js
 func hostRequestDispatchHub(t *testing.T, handle func(method string, params json.RawMessage) hostAdminReply) (*appwire.Client, func() []hostAdminCall) {
 	t.Helper()
 	remote, calls := concurrentScriptedRemote(t, handle)
-	source := appsource.NewRemoteHubSource("m4", nil, func(context.Context, string) (*appwire.Client, error) {
-		return remote, nil
-	})
-	source.SetHostOnline(func() bool { return true })
-	sources := appsource.NewRegistry()
-	sources.Add(source)
-	hosts, err := hostreg.New([]hostreg.Host{{Name: "m4", SSH: "m4.example"}})
-	if err != nil {
-		t.Fatalf("hostreg.New: %v", err)
-	}
+	sources, hosts := scriptedRemoteHost(t, remote, true)
 	server := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""), RemoteHostRegistry: hosts}, sources)
 	wire := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
 	t.Cleanup(wire.Close)
@@ -113,29 +98,18 @@ func hostRequestDispatchHub(t *testing.T, handle func(method string, params json
 // forwardedCallSeen waits until the remote has received method.
 func forwardedCallSeen(t *testing.T, calls func() []hostAdminCall, method string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		for _, call := range calls() {
-			if call.method == method {
-				return
-			}
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("the remote never received %s", method)
+	waitFor(t, func() bool {
+		return slices.ContainsFunc(calls(), func(call hostAdminCall) bool { return call.method == method })
+	}, "the remote never received "+method)
 }
 
-// remoteGate holds the scripted remote's answer to one method until opened.
-// Tests defer open: the hub's server shutdown waits for that held call, so a
-// test that fails with it shut would hang its cleanup.
-type remoteGate struct {
-	ch   chan struct{}
-	once sync.Once
+// remoteGate holds the scripted remote's answer to one method until opened,
+// and returns open. Tests defer open: the hub's server shutdown waits for that
+// held call, so a test that fails with it shut would hang its cleanup.
+func remoteGate() (gate chan struct{}, open func()) {
+	gate = make(chan struct{})
+	return gate, sync.OnceFunc(func() { close(gate) })
 }
-
-func newRemoteGate() *remoteGate { return &remoteGate{ch: make(chan struct{})} }
-func (g *remoteGate) wait()      { <-g.ch }
-func (g *remoteGate) open()      { g.once.Do(func() { close(g.ch) }) }
 
 func hostRequest(client *appwire.Client, method string) <-chan error {
 	done := make(chan error, 1)
@@ -149,14 +123,14 @@ func hostRequest(client *appwire.Client, method string) <-chan error {
 // A forwarded read waits on a remote host (a plugin update check can take
 // minutes); it must not hold the browser's later requests behind it.
 func TestHostRequestSlowForwardedReadDoesNotHoldALaterThreadRead(t *testing.T) {
-	gate := newRemoteGate()
+	gate, openGate := remoteGate()
 	client, calls := hostRequestDispatchHub(t, func(method string, _ json.RawMessage) hostAdminReply {
 		if method == appwire.MethodEvenerMarketplaceList {
-			gate.wait()
+			<-gate
 		}
 		return okReply()
 	})
-	defer gate.open()
+	defer openGate()
 	read := hostRequest(client, appwire.MethodEvenerMarketplaceList)
 	forwardedCallSeen(t, calls, appwire.MethodEvenerMarketplaceList)
 
@@ -181,14 +155,14 @@ func TestHostRequestSlowForwardedReadDoesNotHoldALaterThreadRead(t *testing.T) {
 // receives nothing sent after it until it answers, so a caller's writes land
 // in the order it sent them.
 func TestHostRequestForwardedMutationsKeepTheirOrder(t *testing.T) {
-	gate := newRemoteGate()
+	gate, openGate := remoteGate()
 	client, calls := hostRequestDispatchHub(t, func(method string, _ json.RawMessage) hostAdminReply {
 		if method == appwire.MethodEvenerPluginEnable {
-			gate.wait()
+			<-gate
 		}
 		return okReply()
 	})
-	defer gate.open()
+	defer openGate()
 	first := hostRequest(client, appwire.MethodEvenerPluginEnable)
 	forwardedCallSeen(t, calls, appwire.MethodEvenerPluginEnable)
 	second := hostRequest(client, appwire.MethodEvenerPluginDisable)
@@ -200,7 +174,7 @@ func TestHostRequestForwardedMutationsKeepTheirOrder(t *testing.T) {
 		}
 	}
 
-	gate.open()
+	openGate()
 	for _, done := range []<-chan error{first, second} {
 		select {
 		case err := <-done:
