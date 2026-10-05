@@ -222,6 +222,8 @@ describe("TasksTab", () => {
         method: "evener/task/updated",
         params: { threadId: "owner", ref: REF, total: 4, done: 4 },
       });
+      // Badge projection uses independently refreshed navigation counts.
+      // This test exercises task transport, not navigation invalidation.
       installSummary({ total: 4, done: 4 });
     });
     await screen.findByText("4 completed tasks");

@@ -837,10 +837,15 @@ async function measureActivityRowPadding(send, viewport) {
     const rows = await evaluate(send, `Array.from(document.querySelectorAll('[data-row-case]')).map(container => {
       const kind = container.dataset.rowCase;
       const row = kind === 'watch' || kind === 'task' ? container.querySelector('summary') : container.firstElementChild;
-      const glyph = kind === 'task' ? row.querySelector('[data-testid="task-check"]') :
-        kind === 'watch' ? row.querySelector('[data-testid^="sidebar-watch-"]').parentElement : row.firstElementChild;
+      let glyph = row.firstElementChild;
+      let nested = null;
+      if (kind === 'task') {
+        glyph = row.querySelector('[data-testid="task-check"]');
+      } else if (kind === 'watch') {
+        glyph = row.querySelector('[data-testid^="sidebar-watch-"]').parentElement;
+        nested = getComputedStyle(glyph.parentElement);
+      }
       const style = getComputedStyle(row), box = row.getBoundingClientRect();
-      const nested = kind === 'watch' ? getComputedStyle(glyph.parentElement) : null;
       return { kind, inset: glyph.getBoundingClientRect().left - box.left,
         padding: [style.paddingTop, style.paddingRight, style.paddingBottom, style.paddingLeft],
         nestedPadding: nested ? [nested.paddingTop, nested.paddingRight, nested.paddingBottom, nested.paddingLeft] : null,
