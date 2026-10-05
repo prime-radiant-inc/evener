@@ -1,8 +1,8 @@
 // The documents a session's transcript names (spec 8.2, ruling 28): a path the
 // agent writes in a message becomes a document chip under that message, and
-// the session's own write of that file gives the chip its age. Files &
-// artifacts lists the same documents, plus the files the session wrote
-// without naming them (spec 10.1).
+// the session's own write of that file gives the chip its age. Files lists
+// the same documents, plus the files the session wrote without naming them
+// (spec 10.1).
 import type { TurnModel } from "@evener/appwire-client";
 import { cwdRelative, fileURLToPath } from "@evener/appwire-client/docContent";
 import { lexer, type Token, type Tokens } from "marked";
