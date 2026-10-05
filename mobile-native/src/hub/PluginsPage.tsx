@@ -620,7 +620,13 @@ function Plugins({
 								{plugins.map((item) => {
 									const sub = item.broken
 										? "Broken"
-										: `${item.version || "Unknown version"}${item.updateAvailable ? " · Update available" : ""}${item.autoUpgrade ? " · Upgrades automatically" : ""}`;
+										: [
+												item.version || "Unknown version",
+												item.updateAvailable && "Update available",
+												item.autoUpgrade && "Upgrades automatically",
+											]
+												.filter(Boolean)
+												.join(" · ");
 									return (
 										<SwitchRow
 											key={item.plugin}
