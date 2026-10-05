@@ -201,9 +201,7 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 	// grep
 	if err := register(tool.RegisteredTool{
 		Definition: tool.DefGrep(), ReadOnly: true,
-		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
-			return execFileGrep(ctx, env, args)
-		},
+		Exec: execFileGrep,
 	}); err != nil {
 		return err
 	}

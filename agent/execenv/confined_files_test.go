@@ -1,3 +1,5 @@
+//go:build linux || darwin
+
 package execenv
 
 import (
@@ -14,7 +16,7 @@ func TestConfinedFileOperations(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer env.Cleanup()
-	if _, err := os.Stat(filepath.Join(root, "memory/projects/fixture-project")); err != nil {
+	if _, err := os.Stat(filepath.Join(root, "memory", "projects", "fixture-project")); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := env.WriteFile("data.txt", "opaque-data"); err != nil {
@@ -35,7 +37,7 @@ func TestConfinedFileRootSwap(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer env.Cleanup()
-	root := filepath.Join(host, "memory/personal")
+	root := filepath.Join(host, "memory", "personal")
 	if err := os.Rename(root, root+"-original"); err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +83,7 @@ func TestConfinedFileRecoveryCapturedHost(t *testing.T) {
 	if err != nil || same != env {
 		t.Fatalf("unchanged captured root=%p want=%p err=%v", same, env, err)
 	}
-	scope := filepath.Join(host+"-original", "memory/personal")
+	scope := filepath.Join(host+"-original", "memory", "personal")
 	if err := os.Rename(scope, scope+"-old"); err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +133,7 @@ func TestConfinedFileRetirementDrainsAndPreserves(t *testing.T) {
 	if !layer.retired.Load() || layer.closed.Load() {
 		t.Fatal("held layer was not retired safely")
 	}
-	data, err := layer.readFile("read", filepath.Join(host, "memory/personal/data"))
+	data, err := layer.readFile("read", filepath.Join(host, "memory", "personal", "data"))
 	if err != nil || string(data) != "opaque-retained-73" {
 		t.Fatalf("held bytes=%q err=%v", data, err)
 	}
@@ -139,7 +141,7 @@ func TestConfinedFileRetirementDrainsAndPreserves(t *testing.T) {
 	if !layer.closed.Load() || len(layer.rootFds) != 0 {
 		t.Fatal("drained layer kept root fds")
 	}
-	got, err := os.ReadFile(filepath.Join(host, "memory/personal/data"))
+	got, err := os.ReadFile(filepath.Join(host, "memory", "personal", "data"))
 	if err != nil || string(got) != "opaque-retained-73" {
 		t.Fatalf("preserved=%q err=%v", got, err)
 	}
@@ -162,7 +164,7 @@ func TestConfinedFileAuthority(t *testing.T) {
 	if env.Wrapper != nil || env.SessionScratchDir() != "" {
 		t.Fatal("file-only environment has shell/scratch grants")
 	}
-	if _, err := os.Stat(filepath.Join(host, "memory/personal/MEMORY.md")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(host, "memory", "personal", "MEMORY.md")); !os.IsNotExist(err) {
 		t.Fatalf("created automatic index: %v", err)
 	}
 	if _, err := env.WriteFile(filepath.Join(outside, "data"), "bad"); err == nil {

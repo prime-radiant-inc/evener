@@ -53,6 +53,10 @@ func errSandboxUnsupported() error {
 
 func (s *sandboxFS) close() { s.closed.Store(true) }
 
+func (s *sandboxFS) rootFd(root string) (int, error) {
+	return -1, errSandboxUnsupported()
+}
+
 func (s *sandboxFS) readFile(tool, abs string) ([]byte, error) {
 	return nil, errSandboxUnsupported()
 }

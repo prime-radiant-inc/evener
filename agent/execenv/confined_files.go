@@ -1,7 +1,7 @@
 package execenv
 
 import (
-	"fmt"
+	"errors"
 	"os"
 	"path/filepath"
 	"sync"
@@ -26,12 +26,13 @@ type ConfinedFileRoot struct {
 	stateRoot, relativeRoot string
 }
 
+// NewConfinedFileRoot captures the host anchor for later scope requalification.
 func NewConfinedFileRoot(stateRoot, relativeRoot string) (*ConfinedFileRoot, error) {
 	if stateRoot == "" || !filepath.IsAbs(stateRoot) {
-		return nil, fmt.Errorf("memory state root must be absolute")
+		return nil, errors.New("memory state root must be absolute")
 	}
 	if !filepath.IsLocal(relativeRoot) {
-		return nil, fmt.Errorf("file root must remain beneath its host anchor")
+		return nil, errors.New("file root must remain beneath its host anchor")
 	}
 	stateRoot = filepath.Clean(stateRoot)
 	if err := os.MkdirAll(stateRoot, 0o700); err != nil {
@@ -45,6 +46,7 @@ func NewConfinedFileRoot(stateRoot, relativeRoot string) (*ConfinedFileRoot, err
 	return &ConfinedFileRoot{host: host, stateRoot: stateRoot, relativeRoot: filepath.Clean(relativeRoot)}, nil
 }
 
+// Close retires the captured host authority without deleting stored files.
 func (r *ConfinedFileRoot) Close() {
 	r.mu.Lock()
 	host := r.host
@@ -60,7 +62,7 @@ func (r *ConfinedFileRoot) Open(previous *LocalExecutionEnvironment) (*LocalExec
 	host := r.host
 	if host == nil {
 		r.mu.Unlock()
-		return nil, fmt.Errorf("file root is closed")
+		return nil, errors.New("file root is closed")
 	}
 	host.acquire()
 	r.mu.Unlock()
@@ -122,6 +124,6 @@ func confinedDirectoryInfo(fd int) (os.FileInfo, error) {
 		return nil, err
 	}
 	f := os.NewFile(uintptr(dup), "confined-root")
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	return f.Stat()
 }

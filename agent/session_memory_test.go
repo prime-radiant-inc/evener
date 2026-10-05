@@ -173,8 +173,8 @@ func memoryRequestIndex(t *testing.T, req llm.Request, scope string) (string, st
 	var latest *llm.Message
 	for _, msg := range req.Messages {
 		if msg.Name == "memory_"+scope {
-			copy := msg
-			latest = &copy
+			message := msg
+			latest = &message
 		}
 	}
 	if latest == nil {
@@ -274,13 +274,13 @@ func TestMemoryScopeRootRecovery(t *testing.T) {
 				}
 				return finalResponse("ordinary work completed")
 			}
-			s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: root, MemoryProjectID: "fixture-project"}), withSteps(step, step, step, step, func(req llm.Request) llm.Response {
+			s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: root, MemoryProjectID: "fixture-project"}), withSteps(append(slices.Repeat([]func(llm.Request) llm.Response{step}, 4), func(req llm.Request) llm.Response {
 				step(req)
 				return memoryCallResponse("memory_read", map[string]any{"scope": scope, "file_path": "MEMORY.md"})
 			}, func(req llm.Request) llm.Response {
 				memoryRequireResult(t, req, "memory_read", wantBody)
 				return finalResponse("restored native read completed")
-			}))
+			})...))
 			run := func() {
 				t.Helper()
 				if _, err := s.ProcessInput(context.Background(), "opaque-recovery-input-703", nil); err != nil {
@@ -433,6 +433,7 @@ func TestMemoryScopeRootRecoveryRetirement(t *testing.T) {
 			go func() { s.Close(); close(closed) }()
 			select {
 			case <-closed:
+			// TRIPWIRE: Close must return while the I/O latch stays held, three seconds detects a dependency on that latch.
 			case <-time.After(3 * time.Second):
 				unblock()
 				<-closed
@@ -782,7 +783,7 @@ func TestMemoryContextForkInvalidation(t *testing.T) {
 					}
 					return nil
 				}},
-			}), withSteps(step, step))
+			}), withSteps(slices.Repeat([]func(llm.Request) llm.Response{step}, 2)...))
 			if _, err := s.ProcessInput(context.Background(), "parent observes indexes", nil); err != nil {
 				t.Fatal(err)
 			}
@@ -911,8 +912,8 @@ func TestMemoryStorageWaitAndRecovery(t *testing.T) {
 				}
 				return finalResponse("ordinary work finished")
 			}
-			s := newSession(t, withConfig(cfg), withSteps(step, step, step, step))
-			for i := 0; i < 3; i++ {
+			s := newSession(t, withConfig(cfg), withSteps(slices.Repeat([]func(llm.Request) llm.Response{step}, 4)...))
+			for i := range 3 {
 				done := make(chan error, 1)
 				go func() { _, err := s.ProcessInput(context.Background(), "continue", nil); done <- err }()
 				if i == 0 {
@@ -927,6 +928,7 @@ func TestMemoryStorageWaitAndRecovery(t *testing.T) {
 				go func() { clk.BlockUntil(1); close(armed) }()
 				select {
 				case <-armed:
+				// TRIPWIRE: the fake-clock timer arms synchronously, three seconds detects a missing timer rather than advancing time.
 				case <-time.After(3 * time.Second):
 					unblock()
 					<-done
@@ -938,6 +940,7 @@ func TestMemoryStorageWaitAndRecovery(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
+				// TRIPWIRE: the fake deadline has already fired, three seconds detects a stuck completion channel while I/O stays held.
 				case <-time.After(3 * time.Second):
 					unblock()
 					<-done
@@ -1017,6 +1020,7 @@ func TestMemoryStorageSharedWaitAndClose(t *testing.T) {
 				go func() { s.Close(); close(closed) }()
 				select {
 				case <-closed:
+				// TRIPWIRE: Close must return while both filesystem latches stay held, three seconds detects a forbidden join.
 				case <-time.After(3 * time.Second):
 					unblock()
 					<-closed
@@ -1025,6 +1029,7 @@ func TestMemoryStorageSharedWaitAndClose(t *testing.T) {
 			}
 			select {
 			case <-done:
+			// TRIPWIRE: completion follows cancellation or the advanced fake clock, three seconds detects a stuck boundary, not refresh latency.
 			case <-time.After(3 * time.Second):
 				unblock()
 				<-done
@@ -1300,7 +1305,7 @@ func TestMemoryDelegateRestore(t *testing.T) {
 					t.Fatalf("worktree restore identity=%q cwd=%q", restored.sess.cfg.MemoryProjectID, restored.sess.currentEnv().WorkingDirectory())
 				}
 			}
-			bytes, err := os.ReadFile(filepath.Join(host, "memory/projects", project.ID, "child.txt"))
+			bytes, err := os.ReadFile(filepath.Join(host, "memory", "projects", project.ID, "child.txt"))
 			if err != nil || string(bytes) != "opaque-child-57" {
 				t.Fatalf("stored child memory changed=%q err=%v", bytes, err)
 			}
@@ -1463,7 +1468,7 @@ func TestMemoryDisableNoIO(t *testing.T) {
 	if bytes, err := os.ReadFile(filepath.Join(workspace, "ordinary.txt")); err != nil || string(bytes) != "opaque-ordinary-24" {
 		t.Fatalf("ordinary bytes=%q err=%v", bytes, err)
 	}
-	if _, err := os.Stat(filepath.Join(host, "memory/projects")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(host, "memory", "projects")); !os.IsNotExist(err) {
 		t.Fatalf("disabled project setup=%v", err)
 	}
 }
@@ -1701,7 +1706,7 @@ func TestMemoryFreeFormOperations(t *testing.T) {
 			if res.IsError {
 				t.Fatal(res.Output)
 			}
-			got, err := os.ReadFile(filepath.Join(root, "memory/projects/fixture-project", tc.path))
+			got, err := os.ReadFile(filepath.Join(root, "memory", "projects", "fixture-project", tc.path))
 			if err != nil || string(got) != tc.body {
 				t.Fatalf("bytes=%q err=%v", got, err)
 			}
@@ -1712,7 +1717,7 @@ func TestMemoryFreeFormOperations(t *testing.T) {
 	if res.IsError {
 		t.Fatal(res.Output)
 	}
-	got, err := os.ReadFile(filepath.Join(root, "memory/projects/fixture-project/nested/unusual name.txt"))
+	got, err := os.ReadFile(filepath.Join(root, "memory", "projects", "fixture-project", "nested", "unusual name.txt"))
 	if err != nil || string(got) != "opaque-nested-52\n" {
 		t.Fatalf("page=%q err=%v", got, err)
 	}
@@ -1728,7 +1733,7 @@ func TestMemoryFreeFormOperations(t *testing.T) {
 	if !res.IsError {
 		t.Fatal("duplicate edit accepted")
 	}
-	got, err = os.ReadFile(filepath.Join(root, "memory/projects/fixture-project/duplicate.txt"))
+	got, err = os.ReadFile(filepath.Join(root, "memory", "projects", "fixture-project", "duplicate.txt"))
 	if err != nil || string(got) != "before\nToken\nToken\nafter\n" {
 		t.Fatalf("failed edit changed bytes=%q err=%v", got, err)
 	}
@@ -1736,7 +1741,7 @@ func TestMemoryFreeFormOperations(t *testing.T) {
 	if res.IsError {
 		t.Fatal(res.Output)
 	}
-	got, err = os.ReadFile(filepath.Join(root, "memory/projects/fixture-project/duplicate.txt"))
+	got, err = os.ReadFile(filepath.Join(root, "memory", "projects", "fixture-project", "duplicate.txt"))
 	if err != nil || string(got) != "before\nchanged\nchanged\nafter\n" {
 		t.Fatalf("edit bytes=%q err=%v", got, err)
 	}
@@ -1761,10 +1766,10 @@ func TestMemoryFreeFormOperations(t *testing.T) {
 	if res.IsError {
 		t.Fatal(res.Output)
 	}
-	if _, err := os.Stat(filepath.Join(root, "memory/projects/fixture-project/duplicate.txt")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(root, "memory", "projects", "fixture-project", "duplicate.txt")); !os.IsNotExist(err) {
 		t.Fatalf("delete=%v", err)
 	}
-	got, err = os.ReadFile(filepath.Join(root, "memory/projects/fixture-project/MEMORY.md"))
+	got, err = os.ReadFile(filepath.Join(root, "memory", "projects", "fixture-project", "MEMORY.md"))
 	if err != nil || string(got) != "opaque-index-94\n" {
 		t.Fatalf("unrelated=%q err=%v", got, err)
 	}
@@ -1793,7 +1798,7 @@ func TestMemoryPathAuthority(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(env.WorkingDirectory(), "full-dir"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(env.WorkingDirectory(), "full-dir/data"), []byte("opaque-directory-29"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(env.WorkingDirectory(), "full-dir", "data"), []byte("opaque-directory-29"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"memory_read", "memory_write", "memory_edit", "memory_delete", "memory_search"} {
@@ -1916,7 +1921,7 @@ func TestMemoryOutputRecovery(t *testing.T) {
 	for _, name := range []string{"memory_read", "memory_search"} {
 		t.Run(name, func(t *testing.T) {
 			host := t.TempDir()
-			wiki := filepath.Join(host, "memory/personal")
+			wiki := filepath.Join(host, "memory", "personal")
 			if err := os.MkdirAll(wiki, 0o700); err != nil {
 				t.Fatal(err)
 			}
@@ -2174,7 +2179,7 @@ func TestMemoryDisabledAndUnbound(t *testing.T) {
 func TestMemoryIndexProjection(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	wiki := filepath.Join(root, "memory/personal")
+	wiki := filepath.Join(root, "memory", "personal")
 	if err := os.MkdirAll(wiki, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -2242,8 +2247,8 @@ func TestMemoryAutomaticSetupRecovery(t *testing.T) {
 			t.Run(failingScope+"/"+operation, func(t *testing.T) {
 				root := t.TempDir()
 				paths := map[string]string{
-					"personal": filepath.Join(root, "memory/personal/MEMORY.md"),
-					"project":  filepath.Join(root, "memory/projects/fixture-project/MEMORY.md"),
+					"personal": filepath.Join(root, "memory", "personal", "MEMORY.md"),
+					"project":  filepath.Join(root, "memory", "projects", "fixture-project", "MEMORY.md"),
 				}
 				bodies := map[string]string{"personal": "opaque-personal-retry-47\n", "project": "opaque-project-retry-93\n"}
 				for scope, path := range paths {
@@ -2413,7 +2418,7 @@ func TestMemoryTeardownPreservesFiles(t *testing.T) {
 			if remaining != 0 {
 				t.Fatalf("environments=%d", remaining)
 			}
-			got, err := os.ReadFile(filepath.Join(root, "memory/personal/data"))
+			got, err := os.ReadFile(filepath.Join(root, "memory", "personal", "data"))
 			if err != nil || string(got) != "opaque-surviving-67" {
 				t.Fatalf("bytes=%q err=%v", got, err)
 			}
@@ -2509,7 +2514,7 @@ func TestMemorySchemaAndOutputAliases(t *testing.T) {
 func TestMemoryIndexQuotesOpaqueBytes(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	wiki := filepath.Join(root, "memory/personal")
+	wiki := filepath.Join(root, "memory", "personal")
 	if err := os.MkdirAll(wiki, 0o700); err != nil {
 		t.Fatal(err)
 	}

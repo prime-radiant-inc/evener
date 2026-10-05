@@ -77,7 +77,7 @@ func (s *Session) filterUnavailableMemoryTools() {
 
 func (s *Session) memoryEnvironment(scope string) (*execenv.LocalExecutionEnvironment, error) {
 	if s.cfg.DisableMemory || s.cfg.MemoryStateRoot == "" {
-		return nil, fmt.Errorf("memory is disabled or unbound")
+		return nil, errors.New("memory is disabled or unbound")
 	}
 	relative := "memory/personal"
 	switch scope {
@@ -85,7 +85,7 @@ func (s *Session) memoryEnvironment(scope string) (*execenv.LocalExecutionEnviro
 	case "project":
 		id := s.cfg.MemoryProjectID
 		if id == "" || !filepath.IsLocal(id) || strings.ContainsAny(id, `/\\`) || id == "." {
-			return nil, fmt.Errorf("project memory is not bound")
+			return nil, errors.New("project memory is not bound")
 		}
 		relative = filepath.Join("memory", "projects", id)
 	default:
@@ -95,12 +95,12 @@ func (s *Session) memoryEnvironment(scope string) (*execenv.LocalExecutionEnviro
 	closing := s.closing
 	s.mu.Unlock()
 	if closing {
-		return nil, fmt.Errorf("session is closing")
+		return nil, errors.New("session is closing")
 	}
 	s.memoryMu.Lock()
 	if s.memoryClosed {
 		s.memoryMu.Unlock()
-		return nil, fmt.Errorf("session is closing")
+		return nil, errors.New("session is closing")
 	}
 	if flight := s.memoryEnvFlights[scope]; flight != nil {
 		s.memoryMu.Unlock()
@@ -131,7 +131,7 @@ func (s *Session) memoryEnvironment(scope string) (*execenv.LocalExecutionEnviro
 		if env != previous {
 			retire = env
 		}
-		env, err = nil, fmt.Errorf("session is closing")
+		env, err = nil, errors.New("session is closing")
 	} else {
 		if root != nil {
 			if s.memoryRoots == nil {
@@ -177,7 +177,7 @@ func (s *Session) acquireMemoryEnvironment(scope string) (*execenv.LocalExecutio
 		s.memoryMu.Lock()
 		if s.memoryClosed {
 			s.memoryMu.Unlock()
-			return nil, nil, fmt.Errorf("session is closing")
+			return nil, nil, errors.New("session is closing")
 		}
 		if s.memoryEnvs[scope] != env {
 			s.memoryMu.Unlock()

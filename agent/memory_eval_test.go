@@ -34,6 +34,19 @@ type memoryEvalRoundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f memoryEvalRoundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
+func TestMemoryEvalToolchainCapture(t *testing.T) {
+	t.Parallel()
+	if memoryEvalToolchainError != nil {
+		t.Fatal(memoryEvalToolchainError)
+	}
+	cmd := exec.Command(filepath.Join(memoryEvalToolchainRoot, "bin", "go"), "version")
+	cmd.Env = []string{"GOENV=off", "GOTOOLCHAIN=local", "GOPROXY=off", "GOSUMDB=off", "GOWORK=off"}
+	out, err := cmd.CombinedOutput()
+	if err != nil || strings.TrimSpace(string(out)) != "go version "+runtime.Version()+" "+runtime.GOOS+"/"+runtime.GOARCH {
+		t.Fatalf("captured Go version = %q, error = %v", out, err)
+	}
+}
+
 func TestMemoryEvalToolchain(t *testing.T) {
 	// Serial: fixture HOME/XDG isolation is process-global.
 	home := memoryEvalIsolateProcess(t)
@@ -65,7 +78,7 @@ func TestMemoryEvalVerifierInfrastructure(t *testing.T) {
 			} else {
 				memoryEvalWrite(t, filepath.Join(workspace, "go.mod"), "module memoryfixture\ngo 99.0.0\n")
 			}
-			pass, output, err := memoryEvalVerify(t, context.Background(), home, workspace, "A")
+			pass, output, err := memoryEvalVerify(context.Background(), t, home, workspace, "A")
 			if err == nil || pass {
 				t.Fatalf("real Go setup/compiler failure accepted: pass=%t error=%v output=%s", pass, err, output)
 			}
@@ -137,7 +150,7 @@ func join(v []string) string { r:=make([]string,len(v)); for i:=range v { r[i]=s
 func main() {}
 `)
 				}
-				pass, output, err := memoryEvalVerify(t, context.Background(), home, workspace, stage)
+				pass, output, err := memoryEvalVerify(context.Background(), t, home, workspace, stage)
 				if err != nil || pass != wantPass {
 					t.Fatalf("real held-out behavior: pass=%t want=%t error=%v output=%s", pass, wantPass, err, output)
 				}
@@ -194,14 +207,14 @@ func TestMemoryEvalAdmission(t *testing.T) {
 			var reached int
 			base := memoryEvalRoundTripFunc(func(r *http.Request) (*http.Response, error) {
 				reached++
-				return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader("{}")), Header: make(http.Header)}, nil
+				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("{}")), Header: make(http.Header)}, nil
 			})
 			tr := &memoryEvalTransport{budget: b, base: base, endpoint: "http://fixture.invalid/responses"}
 			complete := b.middleware(nil).WrapComplete(func(context.Context, llm.Request) (llm.Response, error) { reached++; return llm.Response{}, nil })
-			for i := 0; i < 97; i++ {
+			for i := range 97 {
 				var err error
 				if httpOnly {
-					req, _ := http.NewRequest("POST", tr.endpoint, nil)
+					req, _ := http.NewRequest(http.MethodPost, tr.endpoint, nil)
 					var resp *http.Response
 					resp, err = tr.RoundTrip(req)
 					if resp != nil {
@@ -229,7 +242,7 @@ func TestMemoryEvalAdmission(t *testing.T) {
 		b := &memoryEvalAdmission{}
 		for _, kind := range []string{"logical", "http", "tool"} {
 			b.beginStage(2, now.Add(time.Minute))
-			for i := 0; i < 3; i++ {
+			for i := range 3 {
 				var err error
 				switch kind {
 				case "logical":
@@ -256,14 +269,12 @@ func TestMemoryEvalAdmission(t *testing.T) {
 		b := &memoryEvalAdmission{stageCap: 100, deadline: now.Add(time.Minute)}
 		var reached atomic.Int32
 		var wg sync.WaitGroup
-		for i := 0; i < 194; i++ {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+		for range 194 {
+			wg.Go(func() {
 				if b.admit(false, now) == nil {
 					reached.Add(1)
 				}
-			}()
+			})
 		}
 		wg.Wait()
 		if reached.Load() != 96 {
@@ -368,18 +379,18 @@ func TestMemoryEvalIsolation(t *testing.T) {
 	decoyRoot := t.TempDir()
 	authPath := filepath.Join(decoyRoot, "auth", "codex-jesse-at-pr.json")
 	verifierPath := filepath.Join(decoyRoot, "verifier", "hidden_test.go")
-	memoryEvalWrite(t, authPath, "opaque-auth-decoy-611")
-	memoryEvalWrite(t, verifierPath, "opaque-verifier-decoy-612")
-	memoryEvalWrite(t, filepath.Join(home, "HOME", ".local", "state", "evener", "memory", "personal", "MEMORY.md"), "opaque-ambient-memory-613")
-	memoryEvalWrite(t, filepath.Join(home, "XDG_CONFIG_HOME", "evener", "AGENTS.md"), "opaque-ambient-config-614")
+	memoryEvalWrite(t, authPath, "fixture auth decoy 611")
+	memoryEvalWrite(t, verifierPath, "fixture verifier decoy 612")
+	memoryEvalWrite(t, filepath.Join(home, "HOME", ".local", "state", "evener", "memory", "personal", "MEMORY.md"), "fixture ambient memory 613")
+	memoryEvalWrite(t, filepath.Join(home, "XDG_CONFIG_HOME", "evener", "AGENTS.md"), "fixture ambient config 614")
 	ambient := []string{
 		filepath.Join(home, "HOME", ".local", "state", "evener", "memory", "personal", "MEMORY.md"),
 		filepath.Join(home, "XDG_CONFIG_HOME", "evener", "AGENTS.md"),
 		filepath.Join(home, "XDG_CONFIG_HOME", "evener", "providers.toml"),
 		filepath.Join(home, "XDG_STATE_HOME", "evener", "projects", "ambient", "sessions", "ambient", "transcript.jsonl"),
 	}
-	memoryEvalWrite(t, ambient[2], "opaque-ambient-provider-674")
-	memoryEvalWrite(t, ambient[3], "opaque-ambient-history-675")
+	memoryEvalWrite(t, ambient[2], "fixture ambient provider 674")
+	memoryEvalWrite(t, ambient[3], "fixture ambient history 675")
 	untouched := memoryEvalTrackAmbientReads(t, ambient)
 	var ordinary []string
 	for _, disabled := range []bool{false, true} {
@@ -408,7 +419,7 @@ func TestMemoryEvalIsolation(t *testing.T) {
 			var n int
 			adapter.complete = func(ctx context.Context, req llm.Request) (llm.Response, error) {
 				for _, msg := range req.Messages {
-					for _, bad := range []string{"opaque-auth-decoy-611", "opaque-verifier-decoy-612", "opaque-ambient-memory-613", "opaque-ambient-config-614", "opaque-ambient-provider-674", "opaque-ambient-history-675"} {
+					for _, bad := range []string{"fixture auth decoy 611", "fixture verifier decoy 612", "fixture ambient memory 613", "fixture ambient config 614", "fixture ambient provider 674", "fixture ambient history 675"} {
 						if strings.Contains(msg.Text(), bad) {
 							t.Errorf("private/ambient data reached provider: %s", bad)
 						}
@@ -477,7 +488,7 @@ func TestMemoryEvalIsolation(t *testing.T) {
 					}
 				}
 				if d.ToolName == "shell" {
-					if strings.Contains(d.Output, "opaque-auth-decoy-611") || strings.Contains(d.Output, "opaque-verifier-decoy-612") {
+					if strings.Contains(d.Output, "fixture auth decoy 611") || strings.Contains(d.Output, "fixture verifier decoy 612") {
 						t.Fatal("shell leaked decoy")
 					}
 					if !strings.Contains(d.Output, "exit 1") && !strings.Contains(d.Output, "exit_code") && d.Error == "" {
@@ -498,9 +509,9 @@ func TestMemoryEvalIsolation(t *testing.T) {
 			if !disabled && ioCount.Load() == 0 {
 				t.Fatal("enabled had no native I/O")
 			}
-			for _, path := range []string{authPath, verifierPath} {
-				got, _ := os.ReadFile(path)
-				if !strings.Contains(string(got), "opaque-") {
+			for _, decoy := range []struct{ path, want string }{{authPath, "fixture auth decoy 611"}, {verifierPath, "fixture verifier decoy 612"}} {
+				got, err := os.ReadFile(decoy.path)
+				if err != nil || string(got) != decoy.want {
 					t.Fatal("decoy changed")
 				}
 			}
@@ -541,7 +552,7 @@ func memoryEvalTransportRetry(t *testing.T) {
 		io.Copy(io.Discard, r.Body)
 		r.Body.Close()
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(400)
+		w.WriteHeader(http.StatusBadRequest)
 		io.WriteString(w, `{"error":{"message":"Unknown parameter: 'store'.","type":"invalid_request_error","param":"store","code":"unknown_parameter"}}`)
 	}))
 	defer srv.Close()
@@ -557,7 +568,7 @@ func memoryEvalTransportRetry(t *testing.T) {
 	}
 	// An unexpected URL fails before even an HTTP admission.
 	tr := responses.DefaultProtocol.Client.Transport
-	req, _ := http.NewRequest("POST", srv.URL+"/not-responses", nil)
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/not-responses", nil)
 	if _, err := tr.RoundTrip(req); err == nil {
 		t.Fatal("uninstrumented route admitted")
 	}
@@ -596,7 +607,7 @@ func memoryEvalCancellation(t *testing.T) {
 	done := make(chan struct{})
 	go func() { defer close(done); s.ProcessInput(ctx, "opaque-held-root", nil) }()
 	// Root's Stream and its real session-name Complete are both admitted.
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		select {
 		case <-arrivals:
 		case <-ctx.Done():
@@ -624,7 +635,7 @@ func memoryEvalCancellation(t *testing.T) {
 	s.Close()
 	<-childDone
 	b.active.Wait()
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		<-settled
 	}
 	if b.logical != 3 || b.httpAttempts != 3 {
@@ -688,9 +699,9 @@ func main() {}
 		n := 0
 		adapter.complete = func(ctx context.Context, req llm.Request) (llm.Response, error) {
 			if n >= len(steps) {
-				return llm.Response{}, fmt.Errorf("unexpected scripted call")
+				return llm.Response{}, errors.New("unexpected scripted call")
 			}
-			if n > 0 && !(stage.name == "A" && n == 1) && !(pair == "correction" && stage.name == "B" && n == 2) { // Successful tool results come from real execution.
+			if n > 0 && (stage.name != "A" || n != 1) && (pair != "correction" || stage.name != "B" || n != 2) { // Successful tool results come from real execution.
 				name := steps[n-1].ToolCalls()[0].Name
 				if name == "exec_command" {
 					name = "shell"
@@ -774,14 +785,14 @@ func TestMemoryEvalChildBoundaries(t *testing.T) {
 		}
 	}}
 	c, p := memoryEvalFixtureClient(t, b, adapter)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	s, err := NewSession(c, p, memoryEvalLocal(t, home, workspace, t.TempDir()), memoryEvalConfig(ctx, root, false, 12))
 	if err != nil {
 		t.Fatal(err)
 	}
 	// Fill the shared round allowance independently of the child's per-input cap.
-	for i := 0; i < 12; i++ {
+	for range 12 {
 		if err := b.admitToolRound(time.Now()); err != nil {
 			t.Fatal(err)
 		}
@@ -853,6 +864,7 @@ func main() {
 }
 `
 	memoryEvalWrite(t, path, source)
+	// TRIPWIRE: readiness and shutdown use the watcher pipe and process exit, two minutes only bounds a wedged offline build or watcher.
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	if memoryEvalToolchainError != nil {
 		cancel()
@@ -996,7 +1008,7 @@ func TestMemoryEvalVerifierIsolation(t *testing.T) {
 	if err := os.Symlink(secret, original); err != nil {
 		t.Fatal(err)
 	}
-	pass, result, err := memoryEvalVerify(t, context.Background(), home, workspace, "A")
+	pass, result, err := memoryEvalVerify(context.Background(), t, home, workspace, "A")
 	if pass || err == nil || strings.Contains(result, "691") || result != "candidate source unavailable" {
 		t.Fatal("verifier followed candidate source symlink")
 	}
@@ -1022,7 +1034,7 @@ func TestMemoryEvalTerminalFailure(t *testing.T) {
 		}
 		var httpCalls int
 		tr := &memoryEvalTransport{budget: b, endpoint: "http://fixture.invalid/responses", base: memoryEvalRoundTripFunc(func(*http.Request) (*http.Response, error) { httpCalls++; return nil, cause })}
-		req, _ := http.NewRequest("POST", tr.endpoint, nil)
+		req, _ := http.NewRequest(http.MethodPost, tr.endpoint, nil)
 		_, _ = tr.RoundTrip(req)
 		if httpCalls != 0 {
 			t.Error("HTTP dispatched after terminal failure")
@@ -1085,6 +1097,7 @@ func TestMemoryEvalTerminalFailure(t *testing.T) {
 		_, _ = failure(context.Background(), llm.Request{})
 		select {
 		case <-settled:
+		// TRIPWIRE: cancellation wakes the admitted sibling directly, five seconds detects a missing wakeup rather than pacing it.
 		case <-time.After(5 * time.Second):
 			t.Fatal("terminal failure did not cancel admitted sibling")
 		}

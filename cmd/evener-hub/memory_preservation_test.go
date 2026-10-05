@@ -75,7 +75,7 @@ func TestMemoryPreservationHistoryCleanup(t *testing.T) {
 	target, survivor := hubtest.SessionID(t), hubtest.SessionID(t)
 	writeSession(t, stateDir, target, project.CanonicalPath)
 	writeSession(t, stateDir, survivor, project.CanonicalPath)
-	paths := []string{filepath.Join(root, "memory/personal/MEMORY.md"), filepath.Join(root, "memory/projects", project.ID, "MEMORY.md")}
+	paths := []string{filepath.Join(root, "memory", "personal", "MEMORY.md"), filepath.Join(root, "memory", "projects", project.ID, "MEMORY.md")}
 	for _, path := range paths {
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 			t.Fatal(err)

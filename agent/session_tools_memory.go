@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"errors"
-	"fmt"
 	"maps"
 	"os"
 	"path/filepath"
@@ -43,7 +42,7 @@ func (s *Session) memoryFileArgs(args map[string]any, key, operation string) (*e
 	}
 	if !filepath.IsLocal(path) {
 		release()
-		return nil, nil, nil, fmt.Errorf("memory path must be relative and remain in its scope")
+		return nil, nil, nil, errors.New("memory path must be relative and remain in its scope")
 	}
 	forwarded := maps.Clone(args)
 	forwarded[key] = filepath.Join(env.WorkingDirectory(), path)
@@ -101,5 +100,5 @@ func (s *Session) execMemoryDelete(_ context.Context, _ execenv.ExecutionEnviron
 	if err := env.RemovePath(path); err != nil {
 		return nil, err
 	}
-	return warn + fmt.Sprintf("Removed %s", path), nil
+	return warn + "Removed " + path, nil
 }

@@ -72,7 +72,8 @@ func TestMemoryRunAndServeLaunch(t *testing.T) {
 					runNewSession = capture
 					t.Cleanup(func() { runNewSession = old })
 					deps := defaultMainDeps()
-					deps.args = append(args, "fixture input")
+					deps.args = args
+					deps.args = append(deps.args, "fixture input")
 					deps.stdin, deps.stdout, deps.stderr = strings.NewReader(""), io.Discard, io.Discard
 					deps.stdinMode = func() (os.FileMode, error) { return os.ModeCharDevice, nil }
 					deps.exit = func(int) {}
@@ -213,7 +214,7 @@ func TestMemoryLaunchBindingFailure(t *testing.T) {
 	if !constructed {
 		t.Fatal("ordinary session not constructed")
 	}
-	for path, want := range map[string]string{filepath.Join(dir, "ordinary.txt"): "opaque-ordinary-46", filepath.Join(cmdutil.DefaultStateRoot(), "memory/personal/topic.txt"): "opaque-personal-58"} {
+	for path, want := range map[string]string{filepath.Join(dir, "ordinary.txt"): "opaque-ordinary-46", filepath.Join(cmdutil.DefaultStateRoot(), "memory", "personal", "topic.txt"): "opaque-personal-58"} {
 		bytes, err := os.ReadFile(path)
 		if err != nil || string(bytes) != want {
 			t.Fatalf("path=%s bytes=%q err=%v", path, bytes, err)

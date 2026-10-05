@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"errors"
 	"io"
 	"net/http"
@@ -191,6 +192,10 @@ func TestMemoryEvalSkipBeforeDiscovery(t *testing.T) {
 
 func TestMemoryEvalPrivateCopies(t *testing.T) {
 	source, private := t.TempDir(), t.TempDir()
+	// A caller may provide an existing directory, not a newly private one.
+	if err := os.Chmod(private, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	config := filepath.Join(source, "providers.toml")
 	auth := filepath.Join(source, "auth", "codex-jesse-at-pr.json")
 	memoryEvalWrite(t, config, "opaque-selected-config-651\n")
@@ -207,7 +212,7 @@ func TestMemoryEvalPrivateCopies(t *testing.T) {
 	for _, pair := range [][2]string{{config, copiedConfig}, {auth, copiedAuth}} {
 		a, _ := os.ReadFile(pair[0])
 		b, _ := os.ReadFile(pair[1])
-		if string(a) != string(b) {
+		if !bytes.Equal(a, b) {
 			t.Fatal("copy differs")
 		}
 		info, err := os.Stat(pair[1])
@@ -248,6 +253,9 @@ func memoryEvalCopySources(private, config, auth string) (string, string, error)
 	authCopy := openai.AuthFilePath(private, "codex-jesse-at-pr")
 	for _, pair := range [][2]string{{config, configCopy}, {auth, authCopy}} {
 		if err := os.MkdirAll(filepath.Dir(pair[1]), 0700); err != nil {
+			return "", "", errors.New("private directory failed")
+		}
+		if err := os.Chmod(filepath.Dir(pair[1]), 0o700); err != nil {
 			return "", "", errors.New("private directory failed")
 		}
 		in, err := os.Open(pair[0])
@@ -381,7 +389,7 @@ func TestMemoryEvalStartupProbe(t *testing.T) {
 	for _, pair := range [][2]string{{config, copyConfig}, {auth, copyAuth}} {
 		a, _ := os.ReadFile(pair[0])
 		b, _ := os.ReadFile(pair[1])
-		if string(a) != string(b) {
+		if !bytes.Equal(a, b) {
 			t.Fatal("startup private copy changed bytes")
 		}
 		if err := os.Remove(pair[0]); err != nil {

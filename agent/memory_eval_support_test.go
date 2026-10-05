@@ -42,10 +42,11 @@ var memoryCorrectionStages = []memoryEvalStage{{"A", 8}, {"B", 12}, {"C", 10}}
 var memoryEvalToolchainRoot, memoryEvalToolchainError = memoryEvalCaptureToolchain()
 
 func memoryEvalCaptureToolchain() (string, error) {
+	// TRIPWIRE: offline go env normally returns immediately, twenty seconds only detects a wedged process.
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	goBinary, selection := "go", runtime.Version()
-	if root := runtime.GOROOT(); root != "" {
+	if root := runtime.GOROOT(); root != "" { //nolint:staticcheck // SA1019: this local verifier intentionally selects its compiling Go installation, not a relocated binary's PATH toolchain.
 		goBinary, selection = filepath.Join(root, "bin", "go"), "local"
 	}
 	cmd := exec.CommandContext(ctx, goBinary, "env", "GOROOT", "GOVERSION")
@@ -160,13 +161,13 @@ func (b *memoryEvalAdmission) admitToolRound(now time.Time) error {
 }
 
 // The caller must cancel, close and join the preceding stage before this reset.
-func (b *memoryEvalAdmission) beginStage(cap int, deadline time.Time) error {
+func (b *memoryEvalAdmission) beginStage(stageCap int, deadline time.Time) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.failure != nil {
 		return b.failure
 	}
-	b.stageLogical, b.stageHTTP, b.toolRounds, b.stageCap, b.deadline = 0, 0, 0, cap, deadline
+	b.stageLogical, b.stageHTTP, b.toolRounds, b.stageCap, b.deadline = 0, 0, 0, stageCap, deadline
 	return nil
 }
 func (b *memoryEvalAdmission) middleware(auth llm.Authenticator) llm.MiddlewareFunc {
@@ -361,8 +362,8 @@ func memoryEvalRequireHost(t *testing.T, live bool, facts sandbox.HostFacts) {
 		t.Fatal("memory eval requires working Linux bwrap, no isolation fallback")
 	}
 }
-func memoryEvalConfig(ctx context.Context, root string, disabled bool, cap int) SessionConfig {
-	return SessionConfig{LifetimeContext: ctx, LLMRetryPolicy: &llm.RetryPolicy{MaxRetries: 0}, MemoryStateRoot: filepath.Join(root, "wiki"), MemoryProjectID: "fixture-project", DisableMemory: disabled, StateDir: filepath.Join(root, "history"), AgentsDocPath: filepath.Join(root, "no-user-AGENTS.md"), ReasoningEffort: "high", NonInteractive: true, MaxToolRoundsPerInput: cap, MaxSubagentDepth: 1, TurnEndsProcess: true, VisionModel: "off", DefaultCommandTimeoutMS: 10000, MaxCommandTimeoutMS: 180000}
+func memoryEvalConfig(ctx context.Context, root string, disabled bool, stageCap int) SessionConfig {
+	return SessionConfig{LifetimeContext: ctx, LLMRetryPolicy: &llm.RetryPolicy{MaxRetries: 0}, MemoryStateRoot: filepath.Join(root, "wiki"), MemoryProjectID: "fixture-project", DisableMemory: disabled, StateDir: filepath.Join(root, "history"), AgentsDocPath: filepath.Join(root, "no-user-AGENTS.md"), ReasoningEffort: "high", NonInteractive: true, MaxToolRoundsPerInput: stageCap, MaxSubagentDepth: 1, TurnEndsProcess: true, VisionModel: "off", DefaultCommandTimeoutMS: 10000, MaxCommandTimeoutMS: 180000}
 }
 func memoryEvalWrite(t *testing.T, path, body string) {
 	t.Helper()
@@ -530,7 +531,7 @@ var _ = reflect.DeepEqual
 	}
 	return s
 }
-func memoryEvalVerify(t *testing.T, ctx context.Context, home, workspace, stage string) (bool, string, error) {
+func memoryEvalVerify(ctx context.Context, t *testing.T, home, workspace, stage string) (bool, string, error) {
 	t.Helper()
 	verifier, scratch := memoryEvalDisposable(t), memoryEvalDisposable(t)
 	// Confined file reads reject candidate symlinks. Copy only production source,
@@ -659,7 +660,7 @@ func memoryEvalCheckerInWiki(wiki map[string]string, current bool) bool {
 	// A supported literal invocation is sufficient evidence, not a mandatory wiki
 	// schema. Unrecognized phrasing remains unproven and needs human review.
 	for _, body := range wiki {
-		for _, line := range strings.Split(body, "\n") {
+		for line := range strings.SplitSeq(body, "\n") {
 			if strings.Contains(line, "repository root") && strings.Contains(line, "sh scripts/check.sh") && strings.Contains(line, "--current") == current {
 				return true
 			}
@@ -865,134 +866,140 @@ func memoryEvalRunPairs(t *testing.T, b *memoryEvalAdmission, c *llm.Client, p *
 			prior := ""
 			episode := memoryEvalEpisode{Pair: pair, Disabled: disabled}
 			for _, stage := range stages {
-				start := time.Now()
-				deadline := memoryEvalDeadline(start, armStart, runStart)
-				stageContext, stopStage := b.bindContext(context.Background())
-				ctx, cancel := context.WithDeadline(stageContext, deadline)
-				defer stopStage()
-				defer cancel()
-				if err := b.beginStage(stage.cap, deadline); err != nil {
-					t.Fatal("memory eval infrastructure failure, next stage refused")
-				}
-				memoryEvalWrite(t, filepath.Join(workspace, "main_test.go"), memoryEvalVisible(stage.name))
-				if pair == "correction" && stage.name == "B" {
+				err := func() error {
+					start := time.Now()
+					deadline := memoryEvalDeadline(start, armStart, runStart)
+					stageContext, stopStage := b.bindContext(context.Background())
+					ctx, cancel := context.WithDeadline(stageContext, deadline)
+					defer stopStage()
+					defer cancel()
+					if err := b.beginStage(stage.cap, deadline); err != nil {
+						t.Fatal("memory eval infrastructure failure, next stage refused")
+					}
+					memoryEvalWrite(t, filepath.Join(workspace, "main_test.go"), memoryEvalVisible(stage.name))
+					if pair == "correction" && stage.name == "B" {
+						script, err := os.ReadFile(filepath.Join(workspace, "scripts", "check.sh"))
+						if err != nil {
+							t.Fatal(err)
+						}
+						revised := strings.Replace(string(script), memoryEvalCheckerCondition(false), memoryEvalCheckerCondition(true), 1)
+						if revised == string(script) {
+							t.Fatal("checker revision source mismatch")
+						}
+						memoryEvalWrite(t, filepath.Join(workspace, "scripts", "check.sh"), revised)
+					}
+					// Inspection before execution verifies this exact script runs Go tests.
 					script, err := os.ReadFile(filepath.Join(workspace, "scripts", "check.sh"))
 					if err != nil {
 						t.Fatal(err)
 					}
-					revised := strings.Replace(string(script), memoryEvalCheckerCondition(false), memoryEvalCheckerCondition(true), 1)
-					if revised == string(script) {
-						t.Fatal("checker revision source mismatch")
+					if !strings.Contains(string(script), "exec go test ./...") || !strings.Contains(string(script), "set -eu") {
+						t.Fatal("fixture checker does not execute tests")
 					}
-					memoryEvalWrite(t, filepath.Join(workspace, "scripts", "check.sh"), revised)
-				}
-				// Inspection before execution verifies this exact script runs Go tests.
-				script, err := os.ReadFile(filepath.Join(workspace, "scripts", "check.sh"))
-				if err != nil {
-					t.Fatal(err)
-				}
-				if !strings.Contains(string(script), "exec go test ./...") || !strings.Contains(string(script), "set -eu") {
-					t.Fatal("fixture checker does not execute tests")
-				}
-				evidence := memoryEvalStageEvidence{Name: stage.name, PriorSessionID: prior, WikiBefore: memoryEvalWiki(t, filepath.Join(root, "wiki")), Files: map[string]string{"workspace": workspace}}
-				if hook != nil {
-					hook(pair, disabled, stage, prior, workspace)
-				}
-				var verifyErr error
-				evidence.BeforeTask, _, verifyErr = memoryEvalVerify(t, ctx, home, workspace, stage.name)
-				if verifyErr != nil {
-					err := fmt.Errorf("memory eval initial verifier infrastructure failure: %w", verifyErr)
-					b.fail(err)
-					cancel()
-					stopStage()
-					return episodes, err
-				}
-				cfg := memoryEvalConfig(ctx, root, disabled, stage.cap)
-				s, err := NewSession(c, p, memoryEvalLocal(t, home, workspace, t.TempDir()), cfg)
-				if err != nil {
-					cancel()
-					t.Fatal("memory eval session infrastructure failure")
-				}
-				defer func() { cancel(); s.Close() }()
-				evidence.SessionID = s.ID()
-				observedTools := memoryEvalObserveTools(t, s)
-				seen, stop := captureEvents(s)
-				goal := "Implement normalize to trim surrounding whitespace."
-				if stage.name == "B" {
-					goal = "Implement split to trim each comma-separated item, preserving normalize."
-				}
-				if stage.name == "C" {
-					goal = "Implement join to trim each input element before joining with commas, preserving normalize and split."
-				}
-				prompt := goal + " Run the fixture checker and finish the task. Shell toolchain prefix: " + memoryEvalGoEnv()
-				if prior != "" {
-					prompt += " Previous actual session transcript: " + prior
-				}
-				_, err = s.ProcessInput(ctx, prompt, nil)
-				cancel()
-				var childDone []<-chan struct{}
-				for _, sub := range s.subagents.directSubagents() {
-					sub.mu.Lock()
-					if sub.done != nil {
-						childDone = append(childDone, sub.done)
+					evidence := memoryEvalStageEvidence{Name: stage.name, PriorSessionID: prior, WikiBefore: memoryEvalWiki(t, filepath.Join(root, "wiki")), Files: map[string]string{"workspace": workspace}}
+					if hook != nil {
+						hook(pair, disabled, stage, prior, workspace)
 					}
-					sub.mu.Unlock()
-				}
-				stop() // Session Close and event drain precede counter/transport reset.
-				for _, done := range childDone {
-					<-done
-				}
-				b.active.Wait()
-				if b.terminalFailure() != nil {
-					t.Fatal("memory eval shared infrastructure failure, run stopped without retry")
-				}
-				if err != nil {
-					if !memoryEvalBudgetError(err) {
-						t.Fatal("memory eval session infrastructure failure, run stopped without retry")
+					var verifyErr error
+					evidence.BeforeTask, _, verifyErr = memoryEvalVerify(ctx, t, home, workspace, stage.name)
+					if verifyErr != nil {
+						err := fmt.Errorf("memory eval initial verifier infrastructure failure: %w", verifyErr)
+						b.fail(err)
+						cancel()
+						stopStage()
+						return err
 					}
-					evidence.Limitation = "stage budget stopped, no retry"
-				}
-				collector := newEvalCollector("memory-pair", memoryEvalModel, pair+"/"+stage.name)
-				for _, ev := range *seen {
-					collector.ProcessEvent(ev)
-				}
-				evidence.Trace = *seen
-				evidence.Observations = observedTools()
-				evidence.Metrics = collector.Metrics()
-				// Verifier keeps the same absolute stage deadline, with no extra time.
-				verifyCtx, verifyCancel := context.WithDeadline(context.Background(), deadline)
-				evidence.Task, evidence.Verifier, verifyErr = memoryEvalVerify(t, verifyCtx, home, workspace, stage.name)
-				verifyCancel()
-				if verifyErr != nil {
-					err := fmt.Errorf("memory eval final verifier infrastructure failure: %w", verifyErr)
-					b.fail(err)
-					stopStage()
-					return episodes, err
-				}
-				evidence.WikiAfter = memoryEvalWiki(t, filepath.Join(root, "wiki"))
-				evidenceEnv := memoryEvalLocal(t, home, workspace, t.TempDir())
-				for _, name := range []string{"main.go", "go.mod", "main_test.go", "scripts/check.sh"} {
-					raw, err := evidenceEnv.ReadFileRaw(name)
+					cfg := memoryEvalConfig(ctx, root, disabled, stage.cap)
+					s, err := NewSession(c, p, memoryEvalLocal(t, home, workspace, t.TempDir()), cfg)
 					if err != nil {
-						evidence.Files[name] = "unavailable through confined read"
-						continue
+						cancel()
+						t.Fatal("memory eval session infrastructure failure")
 					}
-					evidence.Files[name] = string(raw)
-				}
-				evidenceEnv.Cleanup()
-				raw, err := os.ReadFile(transcriptPath(s.stateDir, s.id))
+					defer func() { cancel(); s.Close() }()
+					evidence.SessionID = s.ID()
+					observedTools := memoryEvalObserveTools(t, s)
+					seen, stop := captureEvents(s)
+					goal := "Implement normalize to trim surrounding whitespace."
+					if stage.name == "B" {
+						goal = "Implement split to trim each comma-separated item, preserving normalize."
+					}
+					if stage.name == "C" {
+						goal = "Implement join to trim each input element before joining with commas, preserving normalize and split."
+					}
+					prompt := goal + " Run the fixture checker and finish the task. Shell toolchain prefix: " + memoryEvalGoEnv()
+					if prior != "" {
+						prompt += " Previous actual session transcript: " + prior
+					}
+					_, err = s.ProcessInput(ctx, prompt, nil)
+					cancel()
+					var childDone []<-chan struct{}
+					for _, sub := range s.subagents.directSubagents() {
+						sub.mu.Lock()
+						if sub.done != nil {
+							childDone = append(childDone, sub.done)
+						}
+						sub.mu.Unlock()
+					}
+					stop() // Session Close and event drain precede counter/transport reset.
+					for _, done := range childDone {
+						<-done
+					}
+					b.active.Wait()
+					if b.terminalFailure() != nil {
+						t.Fatal("memory eval shared infrastructure failure, run stopped without retry")
+					}
+					if err != nil {
+						if !memoryEvalBudgetError(err) {
+							t.Fatal("memory eval session infrastructure failure, run stopped without retry")
+						}
+						evidence.Limitation = "stage budget stopped, no retry"
+					}
+					collector := newEvalCollector("memory-pair", memoryEvalModel, pair+"/"+stage.name)
+					for _, ev := range *seen {
+						collector.ProcessEvent(ev)
+					}
+					evidence.Trace = *seen
+					evidence.Observations = observedTools()
+					evidence.Metrics = collector.Metrics()
+					// Verifier keeps the same absolute stage deadline, with no extra time.
+					verifyCtx, verifyCancel := context.WithDeadline(context.Background(), deadline)
+					evidence.Task, evidence.Verifier, verifyErr = memoryEvalVerify(verifyCtx, t, home, workspace, stage.name)
+					verifyCancel()
+					if verifyErr != nil {
+						err := fmt.Errorf("memory eval final verifier infrastructure failure: %w", verifyErr)
+						b.fail(err)
+						stopStage()
+						return err
+					}
+					evidence.WikiAfter = memoryEvalWiki(t, filepath.Join(root, "wiki"))
+					evidenceEnv := memoryEvalLocal(t, home, workspace, t.TempDir())
+					for _, name := range []string{"main.go", "go.mod", "main_test.go", "scripts/check.sh"} {
+						raw, err := evidenceEnv.ReadFileRaw(name)
+						if err != nil {
+							evidence.Files[name] = "unavailable through confined read"
+							continue
+						}
+						evidence.Files[name] = string(raw)
+					}
+					evidenceEnv.Cleanup()
+					raw, err := os.ReadFile(transcriptPath(s.stateDir, s.id))
+					if err != nil {
+						t.Fatal("memory eval transcript evidence unavailable")
+					}
+					evidence.Transcript = string(raw)
+					memoryEvalGrade(&evidence, pair == "correction" && stage.name != "A")
+					evidence.Counters = memoryEvalSnapshot(b)
+					evidence.Elapsed = time.Since(start)
+					episode.Stages = append(episode.Stages, evidence)
+					if b.evidenceRoot != "" {
+						memoryEvalWriteEvidence(t, b, filepath.Join(b.evidenceRoot, fmt.Sprintf("%s-disabled-%t-%s.json", pair, disabled, stage.name)), evidence)
+					}
+					prior = s.ID()
+					return nil
+				}()
 				if err != nil {
-					t.Fatal("memory eval transcript evidence unavailable")
+					return episodes, err
 				}
-				evidence.Transcript = string(raw)
-				memoryEvalGrade(&evidence, pair == "correction" && stage.name != "A")
-				evidence.Counters = memoryEvalSnapshot(b)
-				evidence.Elapsed = time.Since(start)
-				episode.Stages = append(episode.Stages, evidence)
-				if b.evidenceRoot != "" {
-					memoryEvalWriteEvidence(t, b, filepath.Join(b.evidenceRoot, fmt.Sprintf("%s-disabled-%t-%s.json", pair, disabled, stage.name)), evidence)
-				}
-				prior = s.ID()
 			}
 			episode.Elapsed = time.Since(armStart)
 			episodes = append(episodes, episode)
@@ -1042,7 +1049,7 @@ func memoryEvalWriteEvidence(t *testing.T, b *memoryEvalAdmission, path string, 
 	text := memoryEvalJSON(value)
 	for _, value := range b.sensitive {
 		if value != "" {
-			for depth := 0; depth < 4; depth++ {
+			for range 4 {
 				text = strings.ReplaceAll(text, value, "[redacted]")
 				encoded := memoryEvalJSON(value)
 				value = encoded[1 : len(encoded)-1]
