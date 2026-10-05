@@ -2234,7 +2234,7 @@ type delegateTerminalPacketMetadata struct {
 	// (SessionScratchDir), reported for the same reason Worktree is: it is
 	// partial evidence a parent needs to recover after an externally cancelled
 	// run (kata tpb0). It is kept until the root session is archived or
-	// deleted, or until a one-shot run exits. Empty when the delegate never
+	// deleted. Empty when the delegate never
 	// provisioned one (unsandboxed and no tool spawned yet).
 	ScratchPath         string                         `json:"scratch_path,omitempty"`
 	ExhaustionBudget    delegatestore.ExhaustionBudget `json:"exhaustion_budget,omitempty"`

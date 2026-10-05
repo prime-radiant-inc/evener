@@ -859,7 +859,11 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	if err := schema.ValidateSessionID(meta.ID); err != nil {
 		return nil, fmt.Errorf("invalid session id: %w", err)
 	}
-	nameRootScratch(env, meta.ID)
+	// A delegate's own environment was named when it was prepared, and a shared
+	// delegate is handed its parent's, so only a root restore names env.
+	if restoreCfg.spawn.parentSessionID == "" {
+		nameRootScratch(env, meta.ID)
+	}
 
 	restoreComplete := false
 	ownershipAcquired := false
@@ -1328,11 +1332,9 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		if restoreComplete || sameEnvironment(reenteredEnv, env) {
 			return
 		}
-		// Re-entry moved the scratch the caller's environment already owned onto
-		// this clone, and that scratch may be an adopted retained allocation the
-		// manifest references. Settle by the manifest, kind by kind: a
-		// referenced allocation is retained rather than removed, and only a
-		// fresh mint this restore allocated is disposed (round 83).
+		// Re-entry moved the scratch (and its name) the caller's environment
+		// owned onto this clone, so the clone's scratch is ended here like any
+		// session end: a named scratch is kept, a disposable one removed.
 		endEnvironmentScratch(reenteredEnv)
 	}()
 

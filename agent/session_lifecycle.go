@@ -16,7 +16,6 @@ import (
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/provenance"
-	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
@@ -594,7 +593,7 @@ func (s *Session) releaseRuntimeOnce(ctx context.Context, options closeOptions, 
 		// 3. Close subagents before shared environment cleanup; child sessions
 		// can own durable jobs whose process handles live in the parent env. The
 		// parent owns cleanup of that env (step 4), so a child's teardown never
-		// runs it; what a child owns is its scratch, which its teardown removes.
+		// runs it; what a child owns is its scratch, which its teardown ends.
 		if !retirement {
 			for _, sub := range subs {
 				teardownChildSession(budgetCtx, sub.sess)
@@ -718,13 +717,6 @@ func (s *Session) releaseRuntimeOnce(ctx context.Context, options closeOptions, 
 		// TMPDIR inside it, and bubblewrap refuses a missing bind source.
 		if cleanupEnv || retirement {
 			s.endOwnedCurrentScratch()
-			// A one-shot run's scratch has no later archive to wait for: the
-			// root removes its whole tree, its children's included, as it exits.
-			if s.cfg.spawn.parentSessionID == "" && s.cfg.TurnEndsProcess && !retirement {
-				if err := sandbox.RemoveSessionScratchTree(s.scratchTreeRootID()); err != nil {
-					s.emit(events.EventWarning, events.WarningData{Message: "scratch removal at exit incomplete: " + err.Error()})
-				}
-			}
 		}
 
 		if retirement {
@@ -889,8 +881,8 @@ func (s *Session) discardRestoredCandidate() {
 			_ = s.artifactStore.Close()
 		}
 		_ = s.closeOwnedDelegateStore()
-		// A discarded candidate's own scratch goes with it, the same decision the
-		// create-path twin of this abort (disposeUnadoptedSubagentSession) makes.
+		// A discarded candidate is an ordinary end for its scratch: a named one
+		// is kept for the session's next restore, a disposable one removed.
 		env := s.environmentOwnedAtTeardown()
 		endEnvironmentScratch(env)
 		if s.mcpMgr != nil {

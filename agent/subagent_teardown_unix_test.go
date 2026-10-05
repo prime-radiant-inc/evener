@@ -118,7 +118,7 @@ func assertParentScratchUntouched(t *testing.T, what, scratch string) {
 // scratch is the one an env mints lazily on its first command; a teardown that
 // retains only the sandbox-provisioned kind holds this lease for the rest of
 // the daemon's uptime.
-func TestParentCloseRemovesAnOwnedUnsandboxedChildScratch(t *testing.T) {
+func TestParentCloseSettlesAnOwnedUnsandboxedChildScratch(t *testing.T) {
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
 	parent := newSession(t, withClient(client), withDir(t.TempDir()), withoutGitSnapshot())
@@ -365,7 +365,7 @@ func TestControllerCloseRuntimeTreeLeavesTheRootEnvironmentAlone(t *testing.T) {
 // entry names. Such a runtime still owns its clone's scratch, and the root's
 // close of the runtime tree is the only teardown it ever gets: it has to
 // release the lease and keep the directory, like every other child teardown.
-func TestRootCloseRemovesAnUntrackedResidentRuntimeScratch(t *testing.T) {
+func TestRootCloseSettlesAnUntrackedResidentRuntimeScratch(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 8, 4)
 	shared := execenv.NewLocalExecutionEnvironment(t.TempDir())
 	t.Cleanup(shared.Cleanup)
@@ -901,7 +901,7 @@ func TestSharedEnvChildInsideTheParentBoxKeepsTheParentScratchLease(t *testing.T
 // turn, and every teardown that discards fires before the child's run loop
 // starts — so this drives teardownChildSession directly rather than faking a
 // production path into it.
-func TestChildTeardownRemovesAbandonedEnvironmentScratch(t *testing.T) {
+func TestChildTeardownSettlesAbandonedEnvironmentScratch(t *testing.T) {
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
 	parent := newSession(t, withClient(client), withDir(t.TempDir()), withoutGitSnapshot())

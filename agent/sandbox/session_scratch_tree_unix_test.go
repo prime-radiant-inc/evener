@@ -129,6 +129,59 @@ func TestRemoveSessionScratchTreeRemovesRootAndChildren(t *testing.T) {
 	}
 }
 
+// A removal that crashed after renaming a scratch to its tombstone leaves the
+// tombstone; the next removal takes it and the tree.
+func TestRemoveSessionScratchTreeTakesALeftoverTombstone(t *testing.T) {
+	base := t.TempDir()
+	prev := sessionScratchTempDir
+	sessionScratchTempDir = func() string { return base }
+	t.Cleanup(func() { sessionScratchTempDir = prev })
+	tree := filepath.Join(base, sessionScratchTreePrefix+"ROOT9")
+	tombstone := filepath.Join(tree, sessionScratchTombstonePrefix+"ROOT9")
+	if err := os.MkdirAll(tombstone, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	readOnlyModuleTree(t, tombstone)
+	if err := RemoveSessionScratchTree("ROOT9"); err != nil {
+		t.Fatalf("RemoveSessionScratchTree: %v", err)
+	}
+	if _, err := os.Lstat(tree); !os.IsNotExist(err) {
+		t.Errorf("the tree with a leftover tombstone survived: %v", err)
+	}
+}
+
+// A launch that fails disposes the scratch it named; with no other session in
+// the tree, the tree goes too rather than lingering empty forever.
+func TestCleanupOfTheLastNamedScratchRemovesItsTree(t *testing.T) {
+	base := t.TempDir()
+	only, err := OpenSessionScratch(base, t.TempDir(), "ROOT7", "ROOT7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := only.Cleanup(); err != nil {
+		t.Fatalf("Cleanup: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(base, sessionScratchTreePrefix+"ROOT7")); !os.IsNotExist(err) {
+		t.Errorf("the empty tree survived its last scratch's removal: %v", err)
+	}
+
+	kept, err := OpenSessionScratch(base, t.TempDir(), "ROOT8", "ROOT8")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = kept.Retain()
+	gone, err := OpenSessionScratch(base, t.TempDir(), "ROOT8", "CHILD8")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := gone.Cleanup(); err != nil {
+		t.Fatalf("Cleanup: %v", err)
+	}
+	if _, err := os.Stat(kept.Dir); err != nil {
+		t.Errorf("removing one scratch took its sibling %s: %v", kept.Dir, err)
+	}
+}
+
 // A session whose daemon is still running holds its scratch lease. Removing
 // the tree (on archive) skips that session's scratch and the tree around it,
 // and removes the released sessions' scratch.

@@ -57,9 +57,10 @@ func TestRootCloseKeepsItsScratchAndPrunesCaches(t *testing.T) {
 	}
 }
 
-// TestOneShotRootCloseRemovesItsTree: a one-shot run has no archive to wait
-// for, so its root removes the whole scratch tree when it exits.
-func TestOneShotRootCloseRemovesItsTree(t *testing.T) {
+// TestOneShotRootCloseKeepsItsScratch: a one-shot run's exit is an ordinary
+// end. Its scratch is kept, like any session's, until the hub archives or
+// deletes the session.
+func TestOneShotRootCloseKeepsItsScratch(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -68,11 +69,8 @@ func TestOneShotRootCloseRemovesItsTree(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 	scratch := mintRootScratch(t, root)
-	tree := filepath.Dir(scratch)
 	root.Close()
-	if _, err := os.Lstat(tree); !os.IsNotExist(err) {
-		t.Fatalf("a one-shot root left its scratch tree %s: %v", tree, err)
-	}
+	assertScratchSettledAtEnd(t, "one-shot root", scratch)
 }
 
 // sessionEndProbePluginDir writes a plugin whose SessionEnd hook touches marker
@@ -101,9 +99,9 @@ func sessionEndProbePluginDir(t *testing.T, pathFile, marker string) string {
 	return pluginDir
 }
 
-// TestSessionEndHookRunsBeforeScratchIsRemoved: SessionEnd hooks and MCP servers
-// run with TMPDIR inside the scratch, so a one-shot run's close removes it last.
-func TestSessionEndHookRunsBeforeScratchIsRemoved(t *testing.T) {
+// TestSessionEndHookRunsBeforeScratchIsEnded: SessionEnd hooks and MCP servers
+// run with TMPDIR inside the scratch, so close ends it last.
+func TestSessionEndHookRunsBeforeScratchIsEnded(t *testing.T) {
 	work := t.TempDir()
 	pathFile := filepath.Join(work, "scratch-path")
 	marker := filepath.Join(work, "hook-saw-scratch")
@@ -118,7 +116,7 @@ func TestSessionEndHookRunsBeforeScratchIsRemoved(t *testing.T) {
 	client.Register(&fakeAdapter{name: "openai"})
 	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
 	sess, err := RestoreSessionFromMetaWithConfig(client, NewOpenAIProfile("gpt-5.2"), env, meta,
-		RestoreSessionConfig{StateDir: t.TempDir(), TurnEndsProcess: true})
+		RestoreSessionConfig{StateDir: t.TempDir()})
 	if err != nil {
 		t.Fatalf("restore: %v", err)
 	}
@@ -140,8 +138,24 @@ func TestSessionEndHookRunsBeforeScratchIsRemoved(t *testing.T) {
 	if _, err := os.Stat(marker); err != nil {
 		t.Fatalf("the SessionEnd hook did not see the scratch %s still present: %v", scratch, err)
 	}
-	if _, err := os.Lstat(scratch); !os.IsNotExist(err) {
-		t.Fatalf("close left the scratch %s: %v", scratch, err)
+	assertScratchSettledAtEnd(t, "restored root", scratch)
+}
+
+// TestDelegateRestoreLeavesTheHandedEnvironmentUnnamed: a delegate restore can
+// be handed its parent's own environment (a shared delegate), so naming that
+// environment after the delegate would put the parent's next scratch in a tree
+// no archive of the root ever removes. Only a root restore names it.
+func TestDelegateRestoreLeavesTheHandedEnvironmentUnnamed(t *testing.T) {
+	meta := artifactRestoreMeta(t)
+	meta.IsSubagent = true
+	cfg := artifactRestoreConfig(t, t.TempDir())
+	cfg.spawn.parentSessionID = artifactRestoreMeta(t).ID
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	if sess, err := RestoreSessionFromMetaWithConfig(newArtifactTestClient(), NewOpenAIProfile("gpt-5.2"), env, meta, cfg); err == nil {
+		t.Cleanup(sess.Close)
+	}
+	if root, session := env.ScratchIdentity(); root != "" {
+		t.Errorf("a delegate restore named the environment it was handed (%s/%s)", root, session)
 	}
 }
 

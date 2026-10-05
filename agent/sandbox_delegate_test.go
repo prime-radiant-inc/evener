@@ -544,10 +544,10 @@ func TestDelegateIsolationCleanupDisposesEveryScratchItOwns(t *testing.T) {
 
 // Worktree re-entry (a resume of a session that was working in a worktree)
 // REPLACES the session's environment with a clone rooted in that worktree, and
-// initSessionState's snapshot then mints THAT clone's scratch. The caller's own
-// failure path can only dispose the environment it handed in, so a restore that
-// fails after re-entry has to drop what it re-rooted onto itself.
-func TestWorktreeReentryRestoreFailureDisposesTheReenteredScratch(t *testing.T) {
+// initSessionState's snapshot then mints THAT clone's scratch, named after the
+// session. A restore that fails after re-entry keeps that named scratch for the
+// next resume and leaves no disposable scratch behind.
+func TestWorktreeReentryRestoreFailureKeepsOnlyTheNamedScratch(t *testing.T) {
 	lane, _ := sbxLane(t)
 	launchDir := t.TempDir()
 	stateDir := t.TempDir()
@@ -578,8 +578,9 @@ func TestWorktreeReentryRestoreFailureDisposesTheReenteredScratch(t *testing.T) 
 	// the restore's own.
 	_ = launchEnv.DisposeSessionScratch()
 
-	if leaked := sandboxScratchDirs(t, scratchBase); len(leaked) != 0 {
-		t.Errorf("failed worktree re-entry restore left scratch %v, which nothing will ever release", leaked)
+	want := filepath.Join("evener-scratch-"+meta.ID, meta.ID)
+	if left := sandboxScratchDirs(t, scratchBase); !slices.Equal(left, []string{want}) {
+		t.Errorf("failed worktree re-entry restore left scratch %v, want only the session's named %s", left, want)
 	}
 }
 

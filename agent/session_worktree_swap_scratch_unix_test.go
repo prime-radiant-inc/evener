@@ -180,7 +180,7 @@ func TestWorktreeSwap_ExitKeepsTheScratchAChildMintedOnTheSharedEnvironment(t *t
 // current clone only, so the parked environment's scratch has to be retained
 // at the parent's close — without a second process-table cleanup, since the
 // parked environment shares the table the current clone's Cleanup just reaped.
-func TestParentCloseWhileEnteredRemovesTheParkedEnvironmentScratch(t *testing.T) {
+func TestParentCloseWhileEnteredSettlesTheParkedEnvironmentScratch(t *testing.T) {
 	sr := newScriptedLaneRepo(t)
 	r := sr.wt()
 	parent := r.s
@@ -413,7 +413,7 @@ func TestWorktreeSwap_CloseDuringTheSwapKeepsTheScratchUntilCloseEnds(t *testing
 // blocked on the close cannot release it. Only the close budget breaks the tie,
 // thirty seconds later and with a fence warning that means the opposite of what
 // it says here. The assertions below pin both.
-func TestWorktreeSwap_CloseAfterTheEnterRemovesTheParkedEnvironmentScratch(t *testing.T) {
+func TestWorktreeSwap_CloseAfterTheEnterSettlesTheParkedEnvironmentScratch(t *testing.T) {
 	started := time.Now()
 	sr := newScriptedLaneRepo(t)
 	r := sr.wt()
@@ -778,7 +778,7 @@ func enterLaneWithSharedChild(t *testing.T, r *wtRepo, name string) *execenv.Loc
 // own teardown skips, because the environment is not the child's, and one the
 // current clone's Cleanup never reaches. Nothing but the parent's close can
 // release it, so the parent's close has to.
-func TestParentCloseRemovesScratchOnAnEnvironmentASecondEnterAbandoned(t *testing.T) {
+func TestParentCloseSettlesScratchOnAnEnvironmentASecondEnterAbandoned(t *testing.T) {
 	sr := newScriptedLaneRepo(t)
 	r := sr.wt()
 	launch := currentLocalEnv(t, r.s)
@@ -823,7 +823,7 @@ func TestParentCloseRemovesScratchOnAnEnvironmentASecondEnterAbandoned(t *testin
 // launch environment it swapped back ONTO is not: it is current, close cleans
 // it, and recording it as abandoned would have close retain the very
 // environment it is about to tear down.
-func TestParentCloseAfterExitRemovesEachAbandonedEnvironmentAndNotTheLaunchOne(t *testing.T) {
+func TestParentCloseAfterExitSettlesEachAbandonedEnvironmentAndNotTheLaunchOne(t *testing.T) {
 	sr := newScriptedLaneRepo(t)
 	r := sr.wt()
 	launch := currentLocalEnv(t, r.s)
@@ -868,11 +868,7 @@ func TestParentCloseAfterExitRemovesEachAbandonedEnvironmentAndNotTheLaunchOne(t
 	r.s.Close()
 
 	for name, dir := range scratches {
-		if _, err := os.Stat(dir); err != nil {
-			t.Errorf("close removed the %s named scratch %s, which is kept until its root is archived: %v", name, dir, err)
-		} else if scratchLeaseHeld(t, dir) {
-			t.Errorf("the %s named scratch %s lease is still held after close", name, dir)
-		}
+		assertScratchSettledAtEnd(t, name, dir)
 	}
 }
 

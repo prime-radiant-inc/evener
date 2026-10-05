@@ -13,7 +13,7 @@ import (
 // base: <base>/evener-scratch-<rootSessionID>/<sessionID>/ holds the root's and
 // each child's scratch side by side. The crashed-scratch sweep matches only
 // sessionScratchPrefix, so it never touches a tree: a tree goes when the hub
-// archives or deletes its root, or when a one-shot run exits.
+// archives or deletes its root.
 const sessionScratchTreePrefix = "evener-scratch-"
 
 // The cache directories the sandbox's env floor points into a session's
@@ -84,6 +84,16 @@ func (s *SessionScratch) PruneCaches() error {
 	return errors.Join(errs...)
 }
 
+// End settles the scratch at its session's end: a named scratch is kept for the
+// session's next resume with its caches pruned and its lease released, and a
+// disposable one is removed.
+func (s *SessionScratch) End() error {
+	if s.Named() {
+		return errors.Join(s.PruneCaches(), s.Retain())
+	}
+	return s.Cleanup()
+}
+
 // RemoveSessionScratchTree removes rootID's whole scratch tree — the root's and
 // every child's scratch — from every scratch base a session may have used. An
 // absent tree is not an error; one that is a symlink or owned by another user is
@@ -114,10 +124,18 @@ func RemoveSessionScratchTree(rootID string) error {
 	return errors.Join(errs...)
 }
 
+// sessionScratchTombstonePrefix marks a session scratch renamed out of its
+// session's path for removal. Session IDs never start with a dot.
+const sessionScratchTombstonePrefix = ".removing-"
+
 // removeReleasedSessionScratch removes each session scratch in tree whose lease
-// it can take, holding the lease through the removal, and then the tree if
-// nothing is left. A session whose lease is held is still running, so its
-// scratch and the tree stay for a later removal.
+// it can take, and then the tree if nothing is left. A session whose lease is
+// held is still running, so its scratch and the tree stay for a later removal.
+//
+// Under the held lease the scratch is first renamed to a tombstone. A session
+// reopening its scratch at that moment then creates a fresh directory at its
+// path instead of locking a lease file this removal is about to delete. A
+// tombstone left by a removal that crashed is removed on the next one.
 func removeReleasedSessionScratch(tree string) error {
 	entries, err := os.ReadDir(tree)
 	if err != nil {
@@ -126,8 +144,12 @@ func removeReleasedSessionScratch(tree string) error {
 	var errs []error
 	for _, entry := range entries {
 		dir := filepath.Join(tree, entry.Name())
-		if !entry.IsDir() {
+		switch {
+		case !entry.IsDir():
 			errs = append(errs, os.Remove(dir))
+			continue
+		case strings.HasPrefix(entry.Name(), sessionScratchTombstonePrefix):
+			errs = append(errs, removeTree(dir))
 			continue
 		}
 		lease, contended, err := acquireScratchLease(filepath.Join(dir, sessionScratchLeaseName))
@@ -138,13 +160,25 @@ func removeReleasedSessionScratch(tree string) error {
 			errs = append(errs, err)
 			continue
 		}
-		errs = append(errs, removeTree(dir))
+		tombstone := filepath.Join(tree, sessionScratchTombstonePrefix+entry.Name())
+		renameErr := os.Rename(dir, tombstone)
 		_ = lease.Release()
+		if renameErr != nil {
+			errs = append(errs, renameErr)
+			continue
+		}
+		errs = append(errs, removeTree(tombstone))
 	}
-	if rest, err := os.ReadDir(tree); err == nil && len(rest) == 0 {
-		errs = append(errs, os.Remove(tree))
-	}
+	removeEmptySessionScratchTree(tree)
 	return errors.Join(errs...)
+}
+
+// removeEmptySessionScratchTree removes tree when no session scratch is left
+// in it. A tree something was just created in stays.
+func removeEmptySessionScratchTree(tree string) {
+	if rest, err := os.ReadDir(tree); err == nil && len(rest) == 0 {
+		_ = os.Remove(tree)
+	}
 }
 
 // sessionScratchTreeBases are the bases a tree may live in: the temp dir and

@@ -237,7 +237,11 @@ func (s *SessionScratch) Cleanup() error {
 		return fmt.Errorf("sandbox: refuse cleanup outside session scratch namespace: %q", s.Dir)
 	}
 	releaseErr := s.Retain()
-	return errors.Join(releaseErr, removeTree(dir))
+	removeErr := removeTree(dir)
+	if s.Named() {
+		removeEmptySessionScratchTree(base)
+	}
+	return errors.Join(releaseErr, removeErr)
 }
 
 // SweepCrashedSessionScratch reclaims the session scratch directories left in

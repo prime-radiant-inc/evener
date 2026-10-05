@@ -17,8 +17,73 @@ import (
 // TestEndSessionScratchKeepsANamedScratchAndPrunesItsCaches: a session's named
 // scratch outlives the session's end (it goes when the hub archives the
 // session), so the end prunes only the regenerable caches.
+// resolvedTempBase is a test temp dir with its symlinks resolved, so it compares
+// equal to the scratch paths minted under it on macOS (/var -> /private/var).
+func resolvedTempBase(t *testing.T) string {
+	t.Helper()
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return base
+}
+
+// A session that swaps onto a clone of its environment (a worktree enter, exit
+// or re-entry on resume) before minting any scratch must still mint its own
+// named scratch there, not a disposable one.
+func TestAdoptSessionScratchCarriesTheScratchName(t *testing.T) {
+	base := resolvedTempBase(t)
+	original := NewLocalExecutionEnvironment(t.TempDir())
+	original.sandboxTmpBase = base
+	original.SetScratchIdentity("ROOTY", "ROOTY")
+	clone := original.WithWorkingDirectory(t.TempDir())
+	clone.AdoptSessionScratch(original)
+	if _, err := clone.ExecCommand(context.Background(), "true", 5000, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = clone.EndSessionScratch() })
+	if got, want := filepath.Clean(clone.SessionScratchDir()), filepath.Join(base, "evener-scratch-ROOTY", "ROOTY"); got != want {
+		t.Errorf("scratch after the swap = %q, want the session's named %q", got, want)
+	}
+}
+
+// A resume reopens the session's named scratch inside EnableSandbox. When the
+// wrapper then cannot be built, the scratch still belongs to the session: it is
+// released and kept, never removed.
+func TestFailedEnableSandboxKeepsANamedScratch(t *testing.T) {
+	base := resolvedTempBase(t)
+	home, lane := t.TempDir(), t.TempDir()
+	env := NewLocalExecutionEnvironment(lane)
+	env.sandboxTmpBase = base
+	env.SetScratchIdentity("ROOTZ", "ROOTZ")
+	scratch := filepath.Join(base, "evener-scratch-ROOTZ", "ROOTZ")
+	if err := os.MkdirAll(scratch, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(scratch, "notes.md"), []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	net := true
+	noBinary := sandbox.HostFacts{OS: "linux", Home: home, BwrapCapable: true}
+	rp, err := sandbox.Resolve(sandbox.SandboxPolicy{Mode: sandbox.ModeWorkspaceWrite, Network: &net}, noBinary, lane)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if err := env.EnableSandbox(&rp); err == nil {
+		t.Fatal("EnableSandbox with no backend binary must fail")
+	}
+	if _, err := os.Stat(filepath.Join(scratch, "notes.md")); err != nil {
+		t.Errorf("the failed EnableSandbox removed the session's named scratch: %v", err)
+	}
+	reopened, err := sandbox.OpenSessionScratch(base, lane, "ROOTZ", "ROOTZ")
+	if err != nil {
+		t.Fatalf("the failed EnableSandbox left the scratch's lease held: %v", err)
+	}
+	_ = reopened.Retain()
+}
+
 func TestEndSessionScratchKeepsANamedScratchAndPrunesItsCaches(t *testing.T) {
-	base := t.TempDir()
+	base := resolvedTempBase(t)
 	env := NewLocalExecutionEnvironment(t.TempDir())
 	env.sandboxTmpBase = base
 	env.SetScratchIdentity("ROOTX", "ROOTX")

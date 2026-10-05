@@ -235,7 +235,7 @@ func sandboxPromptLine(env execenv.ExecutionEnvironment) string {
 				line += ". Your file tools may write only inside this scratch directory; all other file-tool writes are denied"
 			}
 		}
-		line += ". It is deleted when this session's environment ends; return what your parent needs in your result."
+		line += ". It is deleted when your root session is archived; return what your parent needs in your result."
 	}
 	return line
 }

@@ -151,7 +151,8 @@ type LocalExecutionEnvironment struct {
 	// session's directory in its root's tree, which outlives the session's end
 	// and is reopened on resume; when empty it is a disposable one. Guarded by
 	// scratchMu, and deliberately not copied by either clone path: a clone that
-	// mints a scratch of its own must not reopen its original's directory.
+	// mints a scratch of its own must not reopen its original's directory. A
+	// session swapping onto a clone carries it there with AdoptSessionScratch.
 	scratchRoot, scratchSession string
 
 	// sandboxGrant, when non-empty, is a single per-invocation granted path (M7
@@ -758,8 +759,8 @@ func (e *LocalExecutionEnvironment) ScratchIdentity() (rootID, sessionID string)
 // EndSessionScratch settles this env's scratch at a session's end — close, idle
 // retirement, a delegate's teardown or idle release. A named scratch
 // (SetScratchIdentity) is kept with its regenerable caches pruned and its lease
-// released: it goes when the hub archives or deletes the root, or when a
-// one-shot run exits. A disposable scratch is removed. The TMPDIR container is
+// released: it goes when the hub archives or deletes the root. A disposable
+// scratch is removed. The TMPDIR container is
 // removed unless a detached command still uses it. Call it only on an env the
 // caller owns.
 func (e *LocalExecutionEnvironment) EndSessionScratch() error {
@@ -767,20 +768,13 @@ func (e *LocalExecutionEnvironment) EndSessionScratch() error {
 	e.scratchMu.Lock()
 	defer e.scratchMu.Unlock()
 	var errs []error
-	end := func(s *sandbox.SessionScratch) {
-		if s.Named() {
-			errs = append(errs, s.PruneCaches(), s.Retain())
-			return
-		}
-		errs = append(errs, s.Cleanup())
-	}
 	if tmp := e.ownedSessionTmp; tmp != nil {
 		e.ownedSessionTmp = nil
-		end(tmp)
+		errs = append(errs, tmp.End())
 	}
 	if tmp := e.unsandboxedScratch; tmp != nil {
 		e.unsandboxedScratch = nil
-		end(tmp)
+		errs = append(errs, tmp.End())
 	}
 	errs = append(errs, e.endTmpContainerLocked())
 	return errors.Join(errs...)
@@ -902,7 +896,7 @@ func (e *LocalExecutionEnvironment) EnableSandbox(policy *sandbox.ResolvedPolicy
 	// than run half-wired.
 	binPath := policy.HostBinaryPath()
 	if binPath == "" {
-		_ = tmp.Cleanup()
+		_ = tmp.End()
 		e.Sandbox = nil
 		e.Wrapper = nil
 		return &sandbox.RefusalError{
@@ -912,7 +906,7 @@ func (e *LocalExecutionEnvironment) EnableSandbox(policy *sandbox.ResolvedPolicy
 	}
 	w, werr := sandbox.NewWrapper(*policy, binPath, tmp.Dir)
 	if werr != nil {
-		_ = tmp.Cleanup()
+		_ = tmp.End()
 		e.Sandbox = nil
 		e.Wrapper = nil
 		return werr
@@ -1076,11 +1070,17 @@ func (e *LocalExecutionEnvironment) AdoptSessionScratch(from *LocalExecutionEnvi
 	owned, unsandboxed := from.ownedSessionTmp, from.unsandboxedScratch
 	from.ownedSessionTmp, from.unsandboxedScratch = nil, nil
 	window := from.scratchMovedOut
+	root, session := from.scratchRoot, from.scratchSession
 	from.scratchMu.Unlock()
 	if window != nil {
 		window()
 	}
 	e.scratchMu.Lock()
+	// The session's name moves with it too, so a scratch first minted on this
+	// env is still the session's own directory rather than a disposable one.
+	if e.scratchRoot == "" {
+		e.scratchRoot, e.scratchSession = root, session
+	}
 	if e.ownedSessionTmp == nil {
 		e.ownedSessionTmp, owned = owned, nil
 	}
