@@ -257,10 +257,11 @@ func (c *hubHostAdminController) Request(ctx context.Context, params appwire.Hos
 // stores fence such answers (listRevision.ts and its kin). A forwarded
 // mutation stays inline, so a caller's writes reach the remote in the order
 // it sent them and a read sent after one starts only once it has answered.
-// marketplace/refresh counts as a read here (a retry is harmless) though it
-// writes the remote's clone; the web orders it against marketplace writes
-// with its hub write gate. A method outside the allow-list, or params that
-// do not parse, stay inline so the refusal is answered in order; an
+// marketplace/refresh also stays inline: it is retry-safe, so the proxy
+// maps its errors as a read's, but it writes the remote's clone, so its
+// order against marketplace writes matters to every caller, not only the web
+// (whose hub write gate orders it too). A method outside the allow-list, or
+// params that do not parse, stay inline so the refusal is answered in order; an
 // allow-listed read to an unknown or offline host goes concurrent and is
 // refused out of order, which changes nothing.
 func forwardedHostRead(method string, params json.RawMessage) bool {
@@ -271,7 +272,7 @@ func forwardedHostRead(method string, params json.RawMessage) bool {
 	if json.Unmarshal(params, &forwarded) != nil || !appwire.IsHostRequestMethod(forwarded.Method) {
 		return false
 	}
-	return !isRemoteHostAdminMutation(forwarded.Method)
+	return !isRemoteHostAdminMutation(forwarded.Method) && forwarded.Method != appwire.MethodEvenerMarketplaceRefresh
 }
 
 // remoteSourceFor returns the attached component-05 source for host, or the

@@ -195,3 +195,30 @@ func TestHostRequestForwardedMutationsKeepTheirOrder(t *testing.T) {
 		t.Fatalf("the remote received %v, want enable then disable", forwarded)
 	}
 }
+
+// forwardedHostRead admits only reads that are safe out of order:
+// marketplace/refresh is retry-safe but writes the remote's clone, so it
+// keeps its order against marketplace writes on the worker.
+func TestForwardedHostReadAdmitsOnlyOrderFreeReads(t *testing.T) {
+	forward := func(method string) json.RawMessage {
+		params, _ := json.Marshal(appwire.HostRequestParams{Host: "m4", Method: method})
+		return params
+	}
+	for _, tc := range []struct {
+		method string
+		params json.RawMessage
+		want   bool
+	}{
+		{appwire.MethodEvenerHostRequest, forward(appwire.MethodEvenerPluginList), true},
+		{appwire.MethodEvenerHostRequest, forward(appwire.MethodEvenerMarketplaceList), true},
+		{appwire.MethodEvenerHostRequest, forward(appwire.MethodEvenerMarketplaceRefresh), false},
+		{appwire.MethodEvenerHostRequest, forward(appwire.MethodEvenerPluginEnable), false},
+		{appwire.MethodEvenerHostRequest, forward("evener/not/allowListed"), false},
+		{appwire.MethodEvenerHostRequest, json.RawMessage(`{`), false},
+		{appwire.MethodEvenerPluginList, forward(appwire.MethodEvenerPluginList), false},
+	} {
+		if got := forwardedHostRead(tc.method, tc.params); got != tc.want {
+			t.Errorf("forwardedHostRead(%s, %s) = %v, want %v", tc.method, tc.params, got, tc.want)
+		}
+	}
+}
