@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -127,4 +128,83 @@ func TestMemoryForkCopyFailureDoesNotBlock(t *testing.T) {
 	if !hasWarningContaining(*seen, "could not copy the parent session's memory") {
 		t.Fatal("copy failure was not reported")
 	}
+}
+
+// assertForkCopyRefused opens session scope on the fork and checks the copy
+// was reported as a failure, the scope is usable, and nothing from the parent
+// directory reached it.
+func assertForkCopyRefused(t *testing.T, root string, c *Session, leaked string) {
+	t.Helper()
+	seen, stop := captureEvents(c)
+	if res := memoryExec(t, c, "memory_write", map[string]any{"scope": "session", "file_path": "MEMORY.md", "content": "opaque-child-36\n"}); res.IsError {
+		t.Fatalf("refused copy blocked session memory: %s", res.Output)
+	}
+	stop()
+	if !hasWarningContaining(*seen, "could not copy the parent session's memory") {
+		t.Fatal("copy refusal was not reported")
+	}
+	childDir := filepath.Join(root, "memory", "sessions", c.id)
+	err := filepath.WalkDir(childDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		if got, _ := os.ReadFile(path); strings.Contains(string(got), leaked) {
+			t.Fatalf("child holds parent content at %s", path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(childDir, "MEMORY.md")); string(got) != "opaque-child-36\n" {
+		t.Fatalf("child MEMORY.md=%q", got)
+	}
+}
+
+func TestMemoryForkRefusesSymlinkedFileInParentMemory(t *testing.T) {
+	t.Parallel()
+	root, parentID, c := forkWithSessionMemory(t, true)
+	secret := filepath.Join(t.TempDir(), "secret")
+	if err := os.WriteFile(secret, []byte("opaque-secret-41"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(secret, filepath.Join(root, "memory", "sessions", parentID, "link.md")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	assertForkCopyRefused(t, root, c, "opaque-secret-41")
+}
+
+func TestMemoryForkRefusesSymlinkedDirectoryInParentMemory(t *testing.T) {
+	t.Parallel()
+	root, parentID, c := forkWithSessionMemory(t, true)
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "page.md"), []byte("opaque-secret-42"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "memory", "sessions", parentID, "linked")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	assertForkCopyRefused(t, root, c, "opaque-secret-42")
+}
+
+func TestMemoryForkRefusesParentMemoryOverEntryLimit(t *testing.T) {
+	t.Parallel()
+	root, parentID, c := forkWithSessionMemory(t, true)
+	parentDir := filepath.Join(root, "memory", "sessions", parentID)
+	for i := range maxForkMemoryCopyEntries + 1 {
+		if err := os.WriteFile(filepath.Join(parentDir, fmt.Sprintf("page-%d.md", i)), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	assertForkCopyRefused(t, root, c, "opaque-parent-31")
+}
+
+func TestMemoryForkRefusesParentMemoryOverByteLimit(t *testing.T) {
+	t.Parallel()
+	root, parentID, c := forkWithSessionMemory(t, true)
+	big := make([]byte, maxForkMemoryCopyBytes+1)
+	if err := os.WriteFile(filepath.Join(root, "memory", "sessions", parentID, "big.md"), big, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	assertForkCopyRefused(t, root, c, "opaque-parent-31")
 }

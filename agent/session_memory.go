@@ -105,7 +105,9 @@ func (s *Session) memoryGuidance() string {
 	if project {
 		b.WriteString(" Project memory holds knowledge about this project.")
 	}
-	if s.memorySessionID() != "" {
+	_, _, bindErr := s.memoryScopeBinding("session")
+	sessionBound := bindErr == nil
+	if sessionBound {
 		b.WriteString(" " + memorySessionScopeLine)
 		if s.sessionMemoryReadOnly() {
 			b.WriteString(" " + memorySessionDelegateLine)
@@ -122,7 +124,7 @@ func (s *Session) memoryGuidance() string {
 	b.WriteString("\n\n" + memorySaveTriggersIntro + "\n- your human partner corrects you or tells you how they want something done. Save it to personal memory with the reason they gave")
 	sessionTrigger := ""
 	skip := "Skip what the repository already says and details only the current task needs. A constraint or plan that shaped this task usually outlives it."
-	if !s.sessionMemoryReadOnly() {
+	if sessionBound && !s.sessionMemoryReadOnly() {
 		sessionTrigger = "\n- " + memorySessionSaveTrigger
 		notProject := ""
 		if project {

@@ -2799,6 +2799,11 @@ func TestMemoryGuidanceUnboundDelegateOmitsSessionScope(t *testing.T) {
 	if strings.Contains(guidance, memorySessionScopeLine) || strings.Contains(guidance, memorySessionDelegateLine) {
 		t.Fatalf("guidance names a session scope this delegate cannot use: %q", guidance)
 	}
+	s.delegateRootSessionID = "../escape"
+	guidance = s.memoryGuidance()
+	if strings.Contains(guidance, memorySessionScopeLine) || strings.Contains(guidance, memorySessionDelegateLine) {
+		t.Fatalf("guidance names a session scope for a corrupt root id: %q", guidance)
+	}
 }
 
 func TestMemorySessionScopeRootWrites(t *testing.T) {

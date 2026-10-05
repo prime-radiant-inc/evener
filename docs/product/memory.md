@@ -31,7 +31,8 @@ delegates resolve the scope to their root and can read but not write it. Resume
 keeps it. A fork or `--resume-with` child copies its parent's session memory the
 first time it opens the scope, in its own process, normally at its first model
 call; then the two diverge. A missing or empty parent scope means an empty
-start. A copy failure is a session warning and leaves the scope empty; it never
+start. The copy takes only regular files and directories within a size limit;
+anything else means a warning and an empty start. A copy failure is a session warning and leaves the scope empty; it never
 blocks the session. Deleting a session keeps its session memory. No native
 memory tool reaches another session's session directory, so removing it is
 manual for now (#3748 tracks cleanup).
