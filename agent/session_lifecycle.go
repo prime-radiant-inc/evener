@@ -647,6 +647,7 @@ func (s *Session) releaseRuntimeOnce(ctx context.Context, options closeOptions, 
 		if retirement {
 			s.releaseRetirementScratch()
 		}
+		s.closeMemoryEnvironments()
 		// 4. Kill any remaining child processes (SIGTERM → wait 2s → SIGKILL).
 		if options.cleanupEnv {
 			if observe := s.cfg.testOnly.envCleanupObserved; observe != nil {

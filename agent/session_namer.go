@@ -509,6 +509,7 @@ func (s *Session) handleCompactionTurnEffects(t schema.Turn, writeErr error, sup
 		// change gate must forget the last projected block and re-emit the current
 		// state (see resetNotesProjectionAfterCompaction).
 		s.resetNotesProjectionAfterCompaction()
+		s.resetMemoryProjectionAfterCompaction()
 		s.emit(events.EventCompactionTurn, events.CompactionTurnData{Kind: string(t.Kind), Text: t.Message.Text()})
 	}
 	if superseded {

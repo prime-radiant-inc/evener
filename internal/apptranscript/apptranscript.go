@@ -547,7 +547,7 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 			Status:               appwire.TurnStatusCompleted,
 			EventKind:            appwire.ThreadItemEventKindModelSwitch,
 		}}
-	case schema.TurnEnvironment, schema.TurnNotesContext:
+	case schema.TurnEnvironment, schema.TurnNotesContext, schema.TurnMemoryContext:
 		text := strings.TrimSpace(turn.Message.Text())
 		if text == "" {
 			return nil
@@ -555,6 +555,9 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 		id, description, eventKind := fmt.Sprintf("item_environment_%d", turnIndex), "Environment", appwire.ThreadItemEventKindEnvironment
 		if turn.Kind == schema.TurnNotesContext {
 			id, description, eventKind = fmt.Sprintf("item_notes_context_%d", turnIndex), "Shared notes", appwire.ThreadItemEventKindNotesContext
+		}
+		if turn.Kind == schema.TurnMemoryContext {
+			id, description, eventKind = fmt.Sprintf("item_memory_context_%d", turnIndex), "Memory context", ""
 		}
 		return []appwire.ThreadItem{{
 			Type:                 "systemMessage",

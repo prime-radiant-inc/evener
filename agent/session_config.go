@@ -42,6 +42,13 @@ type SessionConfig struct {
 	LifetimeContext context.Context `json:"-"`
 	artifactStore   artifactStore
 
+	// MemoryStateRoot is the owning runtime host's binding, never persisted.
+	// An empty state root leaves library sessions without memory access.
+	// MemoryProjectID is trusted at launch and persisted, never inferred on resume.
+	MemoryStateRoot string `json:"-"`
+	MemoryProjectID string `json:"memory_project_id,omitempty"`
+	DisableMemory   bool   `json:"disable_memory,omitempty"`
+
 	// Project is the resolved canonical project identity for this launch. It is
 	// separate from the execution environment's active working directory, which
 	// may be a linked worktree.
@@ -289,6 +296,8 @@ type SessionConfig struct {
 // deterministic. Never set by app callers; never persisted (json:"-" on the
 // parent field).
 type testConfig struct {
+	// memoryBeforeIO observes the native scope boundary without providing data.
+	memoryBeforeIO func(scope, operation string) error
 	// visionSideChannelTimeout supplies an explicit owned deadline only for
 	// deterministic package tests. Zero leaves caller deadlines authoritative.
 	visionSideChannelTimeout time.Duration
@@ -413,10 +422,20 @@ type testConfig struct {
 	// subagentBeforeSettlement observes the final unlocked boundary before a
 	// stable generation enters controller settlement.
 	subagentBeforeSettlement func(*subagent)
+	// delegateAttentionBeforeDriveClaim observes the owner's selected attention
+	// before it claims the retained child for a start. The transcript read has
+	// released attentionMu and no child/controller lock is held, so a competing
+	// drive may complete while this observer is paused. Nil in production.
+	delegateAttentionBeforeDriveClaim func(*subagent)
 	// delegateAttentionStartCommitted observes the start hand-off: the attention
 	// generation is committed and its run goroutine does not exist yet. Tests use
 	// it to drive the child from a second goroutine at exactly that point.
 	delegateAttentionStartCommitted func(*subagent)
+	// delegateAttentionBeforeGuardRelease observes an attention drive that
+	// launched no run, while it still holds the child's drive guard. Tests
+	// pause it there so another drive is refused on that guard. Nil in
+	// production.
+	delegateAttentionBeforeGuardRelease func(*subagent)
 	// subagentAfterFinalStatePublish observes the interval after a retained child
 	// publishes terminal state and before it restores its parent notify callback.
 	subagentAfterFinalStatePublish func(*subagent)
@@ -425,6 +444,11 @@ type testConfig struct {
 	// the child has stopped finalizing, the delegate is idle but not yet
 	// released. Nil in production.
 	subagentBeforeGenerationAnnounced func(*subagent)
+	// subagentBeforeGenerationReleased observes the unlocked boundary after
+	// announcement execution, before the exact controller finalizing claim is
+	// released. An inline result can be acknowledged while this seam is held.
+	// Nil in production.
+	subagentBeforeGenerationReleased func(*subagent, delegateLease)
 	// delegateFinalizationWaitCeiling overrides how long a send waits for a
 	// finished generation's finalize tail to release the delegate
 	// (delegateFinalizationWaitCeiling), so a test can exercise a tail that
@@ -1051,6 +1075,8 @@ func (c SessionConfig) noOneToAsk() bool {
 // round-trip test guards against any field being dropped or misrouted.
 func (c SessionConfig) toSnapshot() schema.ConfigSnapshot {
 	return schema.ConfigSnapshot{
+		MemoryProjectID:             c.MemoryProjectID,
+		DisableMemory:               c.DisableMemory,
 		MaxToolRoundsPerInput:       c.MaxToolRoundsPerInput,
 		MaxTurns:                    c.MaxTurns,
 		DefaultCommandTimeoutMS:     c.DefaultCommandTimeoutMS,
@@ -1093,6 +1119,8 @@ func (c SessionConfig) toSnapshot() schema.ConfigSnapshot {
 // after loading a meta.json or snapshot from disk.
 func configFromSnapshot(s schema.ConfigSnapshot) SessionConfig {
 	return SessionConfig{
+		MemoryProjectID:             s.MemoryProjectID,
+		DisableMemory:               s.DisableMemory,
 		MaxToolRoundsPerInput:       s.MaxToolRoundsPerInput,
 		MaxTurns:                    s.MaxTurns,
 		DefaultCommandTimeoutMS:     s.DefaultCommandTimeoutMS,

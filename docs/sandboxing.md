@@ -68,6 +68,26 @@ boundary. The same structured scope and sandbox policy are revalidated before
 a stable delegate is restored, and a write-blocked delegate cannot relax that
 inherited floor for its own descendants.
 
+## Independently confined memory
+
+The five [memory tools](tools/memory.md) use separate confined roots under the
+owning host's state root, not a workspace policy with its permissions widened.
+Their `personal`/`project` scope and relative paths cannot select arbitrary host
+roots or another project. Shared confinement rejects escapes and symlink
+indirection even when the session's workspace sandbox is off.
+
+A read-only role can write its authorized memory without workspace writes.
+Memory permissions do not grant shell or network access. Fresh and restored
+delegates retain their parent's effective memory tool/scope ceilings. Memory
+tool names do not count as workspace-mutation tools for the delegate safety
+floor described above.
+
+`--disable-memory` removes the native capability, automatic guidance and index
+I/O for that session, persistently through resume and compaction. It is not a
+general filesystem ban: an unrestricted shell or file tool keeps whatever
+access it already had. Stored files and earlier conversation remain. See
+[memory ownership and lifetime](product/memory.md).
+
 ## Flags
 
 | Flag | Values | Default | Meaning |

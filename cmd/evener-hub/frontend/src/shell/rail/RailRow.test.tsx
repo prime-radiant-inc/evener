@@ -463,7 +463,7 @@ describe("compact session status", () => {
     expect(within(signal).getByTestId(testID)).toBeTruthy();
   });
 
-  test("broken descendants outrank needs-you and running work", () => {
+  test("failed descendants do not hide running work", () => {
     const session = apiNode({
       state: "awaiting",
       running_job_count: 2,
@@ -471,9 +471,44 @@ describe("compact session status", () => {
     });
     render(<RailRow node={sessionRailNode(session)} info={info()} actions={actions()} />);
 
-    expect(screen.getByRole("img", { name: "Broken" })).toBeTruthy();
+    expect(screen.getByRole("img", { name: "Running" })).toBeTruthy();
+    expect(screen.queryByRole("img", { name: "Broken" })).toBeNull();
     expect(screen.queryByRole("img", { name: "Needs you" })).toBeNull();
+  });
+
+  test.each([
+    ["active", "Running"],
+    ["idle", null],
+    ["awaiting", "Needs you"],
+    ["warning", "Needs you"],
+  ] as const)("failed-only descendants preserve the parent's %s status", (state, expected) => {
+    render(
+      <RailRow
+        node={sessionRailNode(apiNode({ state, subagents: { running: 0, failed: 3, done: 46 } }))}
+        info={info()}
+        actions={actions()}
+      />,
+    );
+
+    expect(screen.queryByRole("img", { name: "Broken" })).toBeNull();
+    if (expected === null) expect(screen.queryByTestId("rail-row-signal")).toBeNull();
+    else expect(screen.getByRole("img", { name: expected })).toBeTruthy();
+    const panel = hoverForTooltip(screen.getByText("Fix flaky test"));
+    expect(within(panel).getByText("3 failed, 46 done")).toBeTruthy();
+  });
+
+  test.each(["awaiting", "warning"])("a %s question stays visible with running and failed children", (state) => {
+    render(
+      <RailRow
+        node={sessionRailNode(apiNode({ state, ask_pending: true, subagents: { running: 1, failed: 1, done: 0 } }))}
+        info={info()}
+        actions={actions()}
+      />,
+    );
+
+    expect(screen.getByRole("img", { name: "Needs you" })).toBeTruthy();
     expect(screen.queryByRole("img", { name: "Running" })).toBeNull();
+    expect(screen.queryByRole("img", { name: "Broken" })).toBeNull();
   });
 
   test("a running descendant gives an otherwise quiet session the spinner", () => {

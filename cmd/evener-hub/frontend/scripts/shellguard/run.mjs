@@ -823,6 +823,59 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
   return { tabStops, status: true, phoneTrap: !!viewport.mobile, childReturn: childGesture, originalPane: pane };
 }
 
+async function measureActivityRowPadding(send, viewport) {
+  const outer = await evaluate(send, `(() => {
+    const aside = document.querySelector(${JSON.stringify(OVERVIEW)});
+    const body = [...aside.querySelectorAll('div')].find(el => getComputedStyle(el).overflowY === 'auto');
+    if (!body) throw new Error('Overview scroll viewport missing');
+    const style = getComputedStyle(body);
+    return [style.paddingTop, style.paddingRight, style.paddingBottom, style.paddingLeft];
+  })()`);
+  await evaluate(send, "window.activityRowFixture(true)");
+  try {
+    await waitForDom(send, `[...document.querySelectorAll('[data-row-case]')].length === 6 && !!document.querySelector('[data-row-case="task"] [data-testid="task-check"]')`, "production activity-row fixtures hydrated");
+    await waitForFonts(send);
+    const rows = await evaluate(send, `Array.from(document.querySelectorAll('[data-row-case]')).map(container => {
+      const kind = container.dataset.rowCase;
+      const row = kind === 'watch' || kind === 'task' ? container.querySelector('summary') : container.firstElementChild;
+      let glyph = row.firstElementChild;
+      let nested = null;
+      if (kind === 'task') {
+        glyph = row.querySelector('[data-testid="task-check"]');
+      } else if (kind === 'watch') {
+        glyph = row.querySelector('[data-testid^="sidebar-watch-"]').parentElement;
+        nested = getComputedStyle(glyph.parentElement);
+      }
+      const style = getComputedStyle(row), box = row.getBoundingClientRect();
+      return { kind, inset: glyph.getBoundingClientRect().left - box.left,
+        padding: [style.paddingTop, style.paddingRight, style.paddingBottom, style.paddingLeft],
+        nestedPadding: nested ? [nested.paddingTop, nested.paddingRight, nested.paddingBottom, nested.paddingLeft] : null,
+        width: box.width, height: box.height };
+    })`);
+    const failures = [];
+    if (JSON.stringify(outer) !== JSON.stringify(["8px", "12px", "12px", "12px"])) failures.push(`Overview outer padding changed: ${JSON.stringify(outer)}`);
+    for (const row of rows) {
+      if (Math.abs(row.inset - 8) > 0.1 || JSON.stringify(row.padding) !== JSON.stringify(["4px", "8px", "4px", "8px"])) {
+        failures.push(`${row.kind} row must have 8px glyph inset and 4px/8px padding: ${JSON.stringify(row)}`);
+      }
+      if (row.nestedPadding && row.nestedPadding.some(padding => padding !== "0px")) failures.push(`watch nested row adds padding: ${JSON.stringify(row.nestedPadding)}`);
+      if (viewport.mobile && !row.kind.endsWith('passive') && (row.width < 44 || row.height < 44)) failures.push(`${row.kind} touch target below 44px: ${JSON.stringify(row)}`);
+    }
+    await clickControl(send, '[data-row-case="agent-clickable"] button');
+    await waitForDom(send, `document.querySelector('[data-activity-row-fixture]').dataset.activated === 'agent'`, "agent drill callback");
+    await evaluate(send, `document.querySelector('[data-row-case="job-clickable"] button').focus()`);
+    await pressKey(send, "Enter", "Enter", 13);
+    await waitForDom(send, `document.querySelector('[data-activity-row-fixture]').dataset.activated === 'job'`, "job keyboard activation");
+    for (const kind of ["watch", "task"]) {
+      await clickControl(send, `[data-row-case="${kind}"] summary`);
+      await waitForDom(send, `!!document.querySelector('[data-row-case="${kind}"] details[open]')`, `${kind} disclosure opens`);
+    }
+    return { result: { outer, rows }, failures };
+  } finally {
+    await evaluate(send, "window.activityRowFixture(false)");
+  }
+}
+
 async function overviewOnPage(cdpEndpoint, vitePort, viewport, theme, childGesture) {
   const target = await openPage(cdpEndpoint, "about:blank");
   const page = await connectPage(cdpEndpoint, target.id);
@@ -847,6 +900,9 @@ async function overviewOnPage(cdpEndpoint, vitePort, viewport, theme, childGestu
       await writeFile(path.join(process.env.EVENER_SCRATCH_DIR, `overview-${viewport.width}-${theme}.png`), Buffer.from(screenshot.result.data, "base64"));
     }
     const failures = assertOverview(result, viewport, theme);
+    const padding = await measureActivityRowPadding(send, viewport);
+    result.rowPadding = padding.result;
+    failures.push(...padding.failures);
     try {
       result.keyboard = await trustedOverviewFlow(send, viewport, childGesture);
     } catch (error) {

@@ -6,6 +6,28 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
+// MemoryDefinition preserves the ordinary tool schema and adds trusted-scope selection.
+func MemoryDefinition(base llm.ToolDefinition, name string) llm.ToolDefinition {
+	base.Name = name
+	base.Parameters = CloneSchemaMap(base.Parameters)
+	props := base.Parameters["properties"].(map[string]any)
+	props["scope"] = map[string]any{"type": "string", "enum": []any{"personal", "project"}}
+	base.Parameters["required"] = append(base.Parameters["required"].([]string), "scope")
+	base.Description = "Operate on a relative path in the bound personal or project memory wiki. " + base.Description
+	return base
+}
+
+func DefMemoryDelete() llm.ToolDefinition {
+	return MemoryDefinition(llm.ToolDefinition{
+		Description: "Remove one memory file, not a directory. Missing files are a no-op. Read first, then repair links separately if needed.",
+		Parameters: map[string]any{
+			"type": "object", "additionalProperties": false,
+			"properties": map[string]any{"file_path": map[string]any{"type": "string"}},
+			"required":   []string{"file_path"},
+		},
+	}, "memory_delete")
+}
+
 func DefReadFile() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "read_file",
