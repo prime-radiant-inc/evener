@@ -264,6 +264,10 @@ type SessionMeta struct {
 	// its own temp dir and from this one, which differs when the daemon was
 	// started with another TMPDIR. Empty on metas written before it existed.
 	ScratchTempDir string `json:"scratch_temp_dir,omitempty"`
+	// ScratchTreeRootID names the root session whose scratch tree this
+	// session's scratch lives in, when that is not the session itself: a
+	// delegate's root, kept when the delegate is resumed on its own.
+	ScratchTreeRootID string `json:"scratch_tree_root_id,omitempty"`
 	// JobTreeRevision is the latest authoritative root-scoped job/activity tree
 	// revision observed by this session's shared lifecycle clock. Persisted so
 	// exited activity-tree responses can report the same authoritative revision

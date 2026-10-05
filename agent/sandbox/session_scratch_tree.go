@@ -201,15 +201,29 @@ func removeEmptySessionScratchTree(tree string) {
 	}
 }
 
+// ProcessScratchTempDir is this process's temp dir as an absolute path, where
+// its sessions' scratch trees live. os.TempDir returns a relative TMPDIR as
+// given; it is resolved against the working directory, so another process
+// (the hub) can find it. Empty when there is none to resolve.
+func ProcessScratchTempDir() string {
+	dir := sessionScratchTempDir()
+	if dir == "" {
+		return ""
+	}
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return ""
+	}
+	return abs
+}
+
 // sessionScratchTreeBases are the bases a tree may live in: the temp dir and
 // the user cache dir, the two OpenSessionScratch chooses between, then extra.
 func sessionScratchTreeBases(extra ...string) []string {
-	// The process's own temp dir may be a relative TMPDIR, which os.TempDir
-	// returns as given; it is resolved against the working directory. A
-	// recorded extra base names another process's dir, so a relative one has
-	// no meaning here and is skipped.
+	// A recorded extra base names another process's dir, so a relative one
+	// has no meaning here and is skipped.
 	var candidates []string
-	if dir, err := filepath.Abs(sessionScratchTempDir()); err == nil {
+	if dir := ProcessScratchTempDir(); dir != "" {
 		candidates = append(candidates, dir)
 	}
 	if dir, err := sessionScratchUserCacheDir(); err == nil {

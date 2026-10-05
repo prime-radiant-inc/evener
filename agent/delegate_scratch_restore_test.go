@@ -53,7 +53,14 @@ func TestDelegateIdleRelease_ColdRestoreReopensItsScratch(t *testing.T) {
 			sandboxProber:            sandbox.FakeProber{Facts: facts},
 			delegateIdleReleaseDelay: &shortGrace,
 			idleTeardownMemberSettled: func(runtime *Session) {
-				close(teardownDoneFor(runtime))
+				done := teardownDoneFor(runtime)
+				teardownMu.Lock()
+				defer teardownMu.Unlock()
+				select {
+				case <-done: // a second settle of the same runtime
+				default:
+					close(done)
+				}
 			},
 		},
 	}))

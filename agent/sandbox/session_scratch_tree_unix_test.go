@@ -186,6 +186,25 @@ func TestSessionScratchTreeInARelativeTempDirIsRemoved(t *testing.T) {
 	}
 }
 
+// filepath.Abs("") is the working directory, so an empty temp dir must not
+// become a base: trees there are not the process's scratch.
+func TestAnEmptyTempDirIsNotAScratchTreeBase(t *testing.T) {
+	cwd := t.TempDir()
+	t.Chdir(cwd)
+	resolved, err := filepath.EvalSymlinks(cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prev := sessionScratchTempDir
+	sessionScratchTempDir = func() string { return "" }
+	t.Cleanup(func() { sessionScratchTempDir = prev })
+	for _, base := range sessionScratchTreeBases() {
+		if base == cwd || base == resolved {
+			t.Errorf("an empty temp dir made the working directory %s a scratch tree base", base)
+		}
+	}
+}
+
 // A daemon started with its own TMPDIR keeps its trees in a temp dir the hub's
 // process does not use. Listing and removal also look in the extra bases the
 // caller names, the temp dirs the sessions' metas record.

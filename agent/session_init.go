@@ -1322,6 +1322,13 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// The spawn parent travels with the flag: Meta() rewrites both on every
 	// autosave, and the hub reads them as a pair.
 	s.restoredMetaParentSessionID = meta.ParentSessionID
+	// A delegate resumed on its own keeps its scratch in its root's tree, and
+	// Meta() keeps recording that root for the next resume.
+	if restoreCfg.spawn.parentSessionID == "" {
+		if root := restoredScratchTreeRoot(meta); root != meta.ID {
+			s.restoredScratchTreeRoot = root
+		}
+	}
 
 	// Re-enter the persisted active worktree BEFORE initSessionState runs, so
 	// the session is rooted in it before the environment snapshot, system
@@ -2623,8 +2630,10 @@ func nameRootScratch(env execenv.ExecutionEnvironment, rootID, sessionID string)
 // which its meta records, so it reopens what it had and goes when that root is
 // archived.
 func restoredScratchTreeRoot(meta schema.SessionMeta) string {
-	if root := strings.TrimSpace(meta.JobTreeRootSessionID); meta.IsSubagent && schema.ValidateSessionID(root) == nil {
-		return root
+	for _, root := range []string{meta.ScratchTreeRootID, meta.JobTreeRootSessionID} {
+		if root = strings.TrimSpace(root); meta.IsSubagent && schema.ValidateSessionID(root) == nil {
+			return root
+		}
 	}
 	return meta.ID
 }

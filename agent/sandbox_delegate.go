@@ -210,6 +210,12 @@ func (s *Session) prepareSubagentEnvironmentFor(workingDir string, requested *sa
 // scratchTreeRootID is the top-level session whose scratch tree this session's
 // and its descendants' scratch live in.
 func (s *Session) scratchTreeRootID() string {
+	// A delegate resumed on its own is a root for its delegate resources
+	// (delegateRootSessionID is its own ID), but its scratch tree is still the
+	// root it was spawned under.
+	if s.restoredScratchTreeRoot != "" {
+		return s.restoredScratchTreeRoot
+	}
 	if s.delegateRootSessionID != "" {
 		return s.delegateRootSessionID
 	}

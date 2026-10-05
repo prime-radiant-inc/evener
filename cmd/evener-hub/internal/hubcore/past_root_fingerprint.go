@@ -42,7 +42,7 @@ var notShownMetaFields = []string{
 	"TurnBudgetWarningEmitted", "LastInputTokens", "NameSource", "NameUpdatedAt",
 	"DivergenceTurn", "Goal", "PinnedNote", "Skills", "HumanNote", "AgentNote",
 	"SessionURLs", "EnvContext", "ReasoningEffortEscalated", "CumulativeUsage",
-	"WorkMillis", "JobTreeRevision", "ScratchTempDir",
+	"WorkMillis", "JobTreeRevision", "ScratchTempDir", "ScratchTreeRootID",
 	"EnvInfo.Platform", "EnvInfo.OSVersion", "EnvInfo.Today", "EnvInfo.KnowledgeCutoff",
 	"EnvInfo.IsGitRepo", "EnvInfo.GitOriginURL", "EnvInfo.GitModifiedFiles",
 	"EnvInfo.GitUntrackedFiles", "EnvInfo.GitRecentCommitTitles", "EnvInfo.Workspace",
