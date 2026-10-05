@@ -2696,13 +2696,14 @@ func TestMemoryGuidanceFollowsCapabilities(t *testing.T) {
 		cfg                 SessionConfig
 		revoke              string
 		read, save, project bool
+		session             bool
 	}{
-		{"enabled", SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project"}, "", true, true, true},
-		{"personal-only", SessionConfig{MemoryStateRoot: t.TempDir()}, "", true, true, false},
-		{"write-revoked", SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project"}, "memory_write", true, false, true},
-		{"search-revoked", SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project"}, "memory_search", true, true, true},
-		{"disabled", SessionConfig{MemoryStateRoot: t.TempDir(), DisableMemory: true}, "", false, false, false},
-		{"unbound", SessionConfig{}, "", false, false, false},
+		{"enabled", SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project"}, "", true, true, true, true},
+		{"personal-only", SessionConfig{MemoryStateRoot: t.TempDir()}, "", true, true, false, true},
+		{"write-revoked", SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project"}, "memory_write", true, false, true, false},
+		{"search-revoked", SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project"}, "memory_search", true, true, true, true},
+		{"disabled", SessionConfig{MemoryStateRoot: t.TempDir(), DisableMemory: true}, "", false, false, false, false},
+		{"unbound", SessionConfig{}, "", false, false, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -2735,8 +2736,14 @@ func TestMemoryGuidanceFollowsCapabilities(t *testing.T) {
 			if data.MemorySaves != tc.save || data.ProjectMemory != (tc.save && tc.project) {
 				t.Fatalf("prompt data MemorySaves=%v ProjectMemory=%v", data.MemorySaves, data.ProjectMemory)
 			}
+			if data.SessionMemorySaves != tc.session {
+				t.Fatalf("SessionMemorySaves=%v, want %v", data.SessionMemorySaves, tc.session)
+			}
 			if tc.read {
 				guidance := s.memoryGuidance()
+				if !strings.Contains(guidance, memorySessionScopeLine) {
+					t.Fatal("read guidance lacks the session scope line")
+				}
 				if mentions := strings.Contains(strings.ToLower(guidance), "project memory"); mentions != tc.project {
 					t.Fatalf("guidance mentions project memory=%v, want %v", mentions, tc.project)
 				}
@@ -2747,6 +2754,20 @@ func TestMemoryGuidanceFollowsCapabilities(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestMemoryGuidanceDelegateSessionReadOnly(t *testing.T) {
+	t.Parallel()
+	s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project"}))
+	s.depth = 1
+	s.delegateRootSessionID = "034aRootFixture0000000"
+	guidance := s.memoryGuidance()
+	if !strings.Contains(guidance, memorySessionDelegateLine) || strings.Contains(guidance, "Save to session memory") {
+		t.Fatalf("delegate guidance: %q", guidance)
+	}
+	if data, _ := s.buildPromptData(s.currentEnv()); data.SessionMemorySaves {
+		t.Fatal("delegate offered session saves")
 	}
 }
 
