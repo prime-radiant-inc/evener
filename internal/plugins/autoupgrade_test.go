@@ -3,7 +3,6 @@ package plugins
 import (
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -17,11 +16,7 @@ func advanceGitRepo(t *testing.T, dir, file, content string) {
 	if err := os.WriteFile(filepath.Join(dir, file), []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("git", "-C", dir, "commit", "-aqm", "advance")
-	cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("git commit: %v\n%s", err, out)
-	}
+	gitIn(t, dir, "commit", "-aqm", "advance")
 }
 
 // makeGitBackedMarketplace builds a marketplace repo whose one named plugin is
@@ -35,13 +30,7 @@ func makeGitBackedMarketplace(t *testing.T, plugin string) (mktRepo, pluginRepo 
 	makeGitRepo(t, pluginRepo, "extra.txt", "v1")
 
 	mktRepo = filepath.Join(t.TempDir(), "mkt")
-	if err := os.MkdirAll(filepath.Join(mktRepo, ".claude-plugin"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	mj := `{"name":"acme","owner":{"name":"o"},"plugins":[{"name":"` + plugin + `","source":{"source":"url","url":"` + pluginRepo + `"}}]}`
-	if err := os.WriteFile(filepath.Join(mktRepo, ".claude-plugin", "marketplace.json"), []byte(mj), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeURLCatalog(t, mktRepo, plugin, pluginRepo, "")
 	makeGitRepo(t, mktRepo, "README.md", "x")
 	return mktRepo, pluginRepo
 }

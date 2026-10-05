@@ -31,7 +31,15 @@ func registerMemoryTools(reg *tool.Registry, s *Session) error {
 
 // memoryFileArgs changes only path authority; shared executors own file semantics.
 func (s *Session) memoryFileArgs(args map[string]any, key, operation string) (*execenv.LocalExecutionEnvironment, map[string]any, func(), error) {
-	env, release, err := s.acquireMemoryEnvironment(stringArg(args, "scope"))
+	scope := stringArg(args, "scope")
+	_, readOnly, err := s.memoryScopeBinding(scope)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if readOnly && operation != "read" && operation != "search" {
+		return nil, nil, nil, errors.New(memorySessionReadOnly)
+	}
+	env, release, err := s.acquireMemoryEnvironment(scope)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -45,7 +53,7 @@ func (s *Session) memoryFileArgs(args map[string]any, key, operation string) (*e
 	}
 	forwarded := maps.Clone(args)
 	forwarded[key] = filepath.Join(env.WorkingDirectory(), path)
-	if err := s.beforeMemoryIO(stringArg(args, "scope"), operation); err != nil {
+	if err := s.beforeMemoryIO(scope, operation); err != nil {
 		release()
 		return nil, nil, nil, err
 	}
