@@ -17,6 +17,8 @@ const sourceFiles = [
 	"src/types/MarkdownTextProps.ts",
 	"src/native/EnrichedMarkdownText.tsx",
 	"src/EnrichedMarkdownNativeComponent.ts",
+	// The rebuilt wrapper imports this unchanged, upstream typed-only spec as JS.
+	"src/EnrichedMarkdownTextNativeComponent.ts",
 	"src/index.tsx",
 ];
 
@@ -133,7 +135,12 @@ function main() {
 	for (const filename of allowedDeclarations) {
 		if (!outputs.has(filename)) throw new Error(`Missing declaration output: ${filename}`);
 	}
-	function relativeModuleExtensions() {
+	const allowedRuntime = new Set(
+		sourceFiles.map((source) =>
+			path.join(packageRoot, "lib/module", source.slice("src/".length).replace(/\.tsx?$/, ".js")),
+		),
+	);
+	function relativeModuleExtensions(output) {
 		const rewrite = (node) => {
 			const specifier = node.source;
 			if (!specifier || !specifier.value.startsWith(".")) return;
@@ -142,6 +149,10 @@ function main() {
 				: /\.[a-z]+$/i.test(specifier.value)
 					? specifier.value
 					: `${specifier.value}.js`;
+			const target = path.resolve(path.dirname(output), specifier.value);
+			if (!allowedRuntime.has(target) && !fs.existsSync(target)) {
+				throw new Error(`Missing runtime dependency: ${specifier.value} from ${output}`);
+			}
 		};
 		return {
 			visitor: {
@@ -160,7 +171,7 @@ function main() {
 			configFile: false,
 			presets: [[typescriptPreset, { allowDeclareFields: true }]],
 			// Native specs need their typed configuration compiled before erasure.
-			plugins: [codegenPlugin, [jsxPlugin, { runtime: "automatic" }], relativeModuleExtensions],
+			plugins: [codegenPlugin, [jsxPlugin, { runtime: "automatic" }], () => relativeModuleExtensions(output)],
 			sourceMaps: true,
 			sourceFileName: path.relative(path.dirname(output), input).split(path.sep).join("/"),
 		});
