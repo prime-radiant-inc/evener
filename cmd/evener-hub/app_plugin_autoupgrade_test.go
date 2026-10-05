@@ -201,3 +201,34 @@ func TestRegisterPluginAutoUpgradeHandlers_CheckNowRunsOneTick(t *testing.T) {
 		t.Fatalf("checkNow Errors = %v, want none", result.Errors)
 	}
 }
+
+func TestPlugins_CheckUpdatesFlagsAPluginWhoseRemoteMovedUntilItIsUpgraded(t *testing.T) {
+	mgr, pluginRepo, _ := autoUpgradeFixture(t)
+	ctl := &hubPluginsController{mgr: mgr}
+	ctx := context.Background()
+	ref := appwire.PluginRefParams{Plugin: "widget", Marketplace: "acme"}
+	flagged := func(resp appwire.PluginListResponse, err error) bool {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(resp.Plugins) != 1 {
+			t.Fatalf("plugins = %+v, want widget alone", resp.Plugins)
+		}
+		return resp.Plugins[0].UpdateAvailable
+	}
+
+	if flagged(ctl.CheckUpdates(ctx)) {
+		t.Fatal("plugin at its remote head flagged")
+	}
+	hubTestAdvanceGitRepo(t, pluginRepo, "extra.txt", "v2")
+	if !flagged(ctl.CheckUpdates(ctx)) {
+		t.Fatal("checkUpdates did not flag a plugin behind its remote")
+	}
+	if !flagged(ctl.ListPlugins(ctx)) {
+		t.Fatal("plugin/list lost the flag checkUpdates found")
+	}
+	if flagged(ctl.Upgrade(ctx, ref)) {
+		t.Fatal("upgraded plugin still flagged")
+	}
+}

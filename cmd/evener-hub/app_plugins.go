@@ -343,19 +343,31 @@ func (c *hubPluginsController) listPlugins(ctx context.Context) (appwire.PluginL
 	entries := make([]appwire.PluginEntry, 0, len(items))
 	for _, it := range items {
 		entries = append(entries, appwire.PluginEntry{
-			Plugin:       it.Plugin,
-			Marketplace:  it.Marketplace,
-			Version:      it.Version,
-			Enabled:      it.Enabled,
-			AutoUpgrade:  it.AutoUpgrade,
-			Broken:       it.Broken,
-			InstallPath:  it.InstallPath,
-			GitCommitSha: it.GitCommitSha,
-			InstalledAt:  hubcore.UnixSeconds(it.InstalledAt),
-			LastUpdated:  hubcore.UnixSeconds(it.LastUpdated),
+			Plugin:          it.Plugin,
+			Marketplace:     it.Marketplace,
+			Version:         it.Version,
+			Enabled:         it.Enabled,
+			AutoUpgrade:     it.AutoUpgrade,
+			Broken:          it.Broken,
+			InstallPath:     it.InstallPath,
+			GitCommitSha:    it.GitCommitSha,
+			InstalledAt:     hubcore.UnixSeconds(it.InstalledAt),
+			LastUpdated:     hubcore.UnixSeconds(it.LastUpdated),
+			UpdateAvailable: it.UpdateAvailable,
 		})
 	}
 	return appwire.PluginListResponse{Plugins: entries}, nil
+}
+
+// CheckUpdates asks each git-backed plugin's remote whether it has moved past
+// the installed commit and returns the list carrying the answers, which later
+// lists keep until the next check (plugins.Manager.CheckUpdates). It installs
+// nothing, so it broadcasts nothing.
+func (c *hubPluginsController) CheckUpdates(ctx context.Context) (appwire.PluginListResponse, error) {
+	if err := c.mgr.CheckUpdates(ctx); err != nil {
+		return appwire.PluginListResponse{}, err
+	}
+	return c.listPlugins(ctx)
 }
 
 // Install installs a plugin from a marketplace's catalog and returns the

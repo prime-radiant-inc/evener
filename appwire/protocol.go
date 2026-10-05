@@ -267,6 +267,7 @@ var Methods = []MethodSpec{
 	{MethodEvenerPluginEnable, PluginRefParams{}, PluginListResponse{}, ScopeHub, "Enables an installed plugin; returns the updated list."},
 	{MethodEvenerPluginDisable, PluginRefParams{}, PluginListResponse{}, ScopeHub, "Disables an installed plugin; returns the updated list."},
 	{MethodEvenerPluginSetAutoUpgrade, PluginSetAutoUpgradeParams{}, PluginListResponse{}, ScopeHub, "Sets an installed plugin's auto-upgrade flag; returns the updated list."},
+	{MethodEvenerPluginCheckUpdates, EmptyParams{}, PluginListResponse{}, ScopeHub, "Asks each git-backed installed plugin's remote whether it has moved past the installed commit, without installing anything; returns the list with updateAvailable set. Clients call it when their plugins view opens; the hub never runs it on a timer."},
 	{MethodEvenerCommandList, EmptyParams{}, CommandListResponse{}, ScopeHub, "Lists loaded slash commands (name, plugin, description, source: plugin, project, or user) for catalog/autocomplete display."},
 	{MethodEvenerSpawnSlashCatalog, SpawnSlashCatalogParams{}, SpawnSlashCatalogResponse{}, ScopeHub, "Pre-session slash catalog for the spawn form: the commands and skills a session started with this cwd, harness, and launch overrides would offer."},
 	{MethodEvenerSettingsOverview, EmptyParams{}, SettingsOverviewResponse{}, ScopeHub, "Returns the settings overview field bag: hub/runtime, storage, agent roster, and probed MCP servers — the five template-only settings sections' data."},
