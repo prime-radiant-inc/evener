@@ -80,6 +80,29 @@ func TestMemoryForkCopiesParentSessionMemory(t *testing.T) {
 	}
 }
 
+// A delegate of the fork reads session memory before the fork's root opens
+// it. The delegate copies nothing and creates nothing, so the root still gets
+// its parent's memory on its own first access.
+func TestMemoryForkSeedsAfterDelegateReadsFirst(t *testing.T) {
+	t.Parallel()
+	root, _, c := forkWithSessionMemory(t, true)
+	d := newSession(t, withConfig(SessionConfig{MemoryStateRoot: root}))
+	d.depth = 1
+	d.delegateRootSessionID = c.id
+	if res := memoryExec(t, d, "memory_read", map[string]any{"scope": "session", "file_path": "MEMORY.md"}); !res.IsError {
+		t.Fatalf("delegate read before the seed=%+v", res)
+	}
+	if p := d.readMemoryIndex("session"); p.Status != "missing" {
+		t.Fatalf("delegate index before the seed=%+v", p)
+	}
+	if res := memoryExec(t, c, "memory_read", map[string]any{"scope": "session", "file_path": "MEMORY.md"}); res.IsError || !strings.Contains(res.Output, "opaque-parent-31") {
+		t.Fatalf("fork read after its delegate=%+v", res)
+	}
+	if res := memoryExec(t, d, "memory_read", map[string]any{"scope": "session", "file_path": "MEMORY.md"}); res.IsError || !strings.Contains(res.Output, "opaque-parent-31") {
+		t.Fatalf("delegate read after the seed=%+v", res)
+	}
+}
+
 // The copy creates its temporary root and nested directories itself, and a
 // directory with several entries is copied whole.
 func TestMemoryForkCopiesNestedParentSessionMemory(t *testing.T) {
@@ -119,6 +142,10 @@ func TestMemoryForkWithoutParentMemoryStartsEmpty(t *testing.T) {
 	t.Parallel()
 	root, _, c := forkWithSessionMemory(t, false)
 	seen, stop := captureEvents(c)
+	if res := memoryExec(t, c, "memory_read", map[string]any{"scope": "session", "file_path": "MEMORY.md"}); !res.IsError {
+		t.Fatalf("empty fork read=%+v", res)
+	}
+	assertNoMemoryDir(t, filepath.Join(root, "memory", "sessions", c.id), "a fork's first read with nothing to copy")
 	if res := memoryExec(t, c, "memory_write", map[string]any{"scope": "session", "file_path": "MEMORY.md", "content": "opaque-child-33\n"}); res.IsError {
 		t.Fatal(res.Output)
 	}

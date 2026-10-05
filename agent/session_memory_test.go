@@ -2819,6 +2819,80 @@ func TestMemorySessionScopeRootWrites(t *testing.T) {
 	}
 }
 
+func assertNoMemoryDir(t *testing.T, dir, after string) {
+	t.Helper()
+	if _, err := os.Lstat(dir); !os.IsNotExist(err) {
+		t.Fatalf("%s created %s: %v", after, dir, err)
+	}
+}
+
+// Most root sessions never write session memory, so reading the scope (the
+// index refresh at every model boundary, memory_read, memory_search,
+// memory_delete) leaves no directory behind; the first write creates it.
+func TestMemorySessionScopeAbsentUntilFirstWrite(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	var states []string
+	var lastBody string
+	capture := func(req llm.Request) llm.Response {
+		state, body, _ := memoryRequestIndex(t, req, "session")
+		if state == "" {
+			state = "none"
+		}
+		states, lastBody = append(states, state), body
+		return finalResponse("done")
+	}
+	turns := []func(llm.Request) llm.Response{capture, capture}
+	s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: root}), withSteps(turns...))
+	if _, err := s.ProcessInput(context.Background(), "go", nil); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, "memory", "sessions", s.id)
+	assertNoMemoryDir(t, dir, "index refresh")
+	if res := memoryExec(t, s, "memory_read", map[string]any{"scope": "session", "file_path": "MEMORY.md"}); !res.IsError || !strings.Contains(res.Output, "no such file or directory") {
+		t.Fatalf("absent scope read=%+v", res)
+	}
+	if res := memoryExec(t, s, "memory_search", map[string]any{"scope": "session", "pattern": "opaque"}); res.IsError || res.Output != "" {
+		t.Fatalf("absent scope search=%+v", res)
+	}
+	if res := memoryExec(t, s, "memory_delete", map[string]any{"scope": "session", "file_path": "page.md"}); res.IsError || res.Output != "Removed or already absent: "+filepath.Join(dir, "page.md") {
+		t.Fatalf("absent scope delete=%+v", res)
+	}
+	assertNoMemoryDir(t, dir, "reading an absent session scope")
+	if res := memoryExec(t, s, "memory_write", map[string]any{"scope": "session", "file_path": "MEMORY.md", "content": "opaque-lazy-session-61\n"}); res.IsError {
+		t.Fatal(res.Output)
+	}
+	if res := memoryExec(t, s, "memory_read", map[string]any{"scope": "session", "file_path": "MEMORY.md"}); res.IsError || !strings.Contains(res.Output, "opaque-lazy-session-61") {
+		t.Fatalf("read after first write=%+v", res)
+	}
+	if _, err := s.ProcessInput(context.Background(), "again", nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(states) != 2 || states[0] != "none" || states[1] != "current" || lastBody != "opaque-lazy-session-61\n" {
+		t.Fatalf("session index states=%v body=%q", states, lastBody)
+	}
+}
+
+// A delegate only reads its root's session memory, so it never creates the
+// root's directory either.
+func TestMemorySessionScopeDelegateLeavesAbsentScopeAbsent(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: root}))
+	s.depth = 1
+	s.delegateRootSessionID = "034aRootFixture0000000"
+	if p := s.readMemoryIndex("session"); p.Status != "missing" {
+		t.Fatalf("delegate index projection=%+v", p)
+	}
+	if res := memoryExec(t, s, "memory_read", map[string]any{"scope": "session", "file_path": "MEMORY.md"}); !res.IsError || !strings.Contains(res.Output, "no such file or directory") {
+		t.Fatalf("delegate read=%+v", res)
+	}
+	if res := memoryExec(t, s, "memory_search", map[string]any{"scope": "session", "pattern": "opaque"}); res.IsError || res.Output != "" {
+		t.Fatalf("delegate search=%+v", res)
+	}
+	assertNoMemoryDir(t, filepath.Join(root, "memory", "sessions", s.delegateRootSessionID), "a delegate's read")
+}
+
 func TestMemorySessionScopeDelegateReadsButCannotWrite(t *testing.T) {
 	t.Parallel()
 	workspace, project := memoryGitFixture(t)

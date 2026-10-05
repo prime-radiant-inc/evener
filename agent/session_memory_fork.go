@@ -20,9 +20,10 @@ const (
 )
 
 // seedForkedSessionMemory gives a forked root session a copy of its parent's
-// session memory the first time the scope is opened. The copy happens only
-// while the child's directory does not exist yet, so the branches diverge
-// after the fork. A failure is reported and leaves an empty scope; it never
+// session memory the first time the scope is opened, for a read or a write.
+// The copy happens only while the child's directory does not exist yet, so the
+// branches diverge after the fork. Reads never create the directory, so a
+// delegate that reads the scope first cannot block the copy. A failure is reported and leaves an empty scope; it never
 // blocks the session.
 func (s *Session) seedForkedSessionMemory() {
 	parent, child := s.fork.parentID, s.memorySessionID()

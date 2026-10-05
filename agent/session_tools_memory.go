@@ -5,6 +5,7 @@ import (
 	"errors"
 	"maps"
 	"path/filepath"
+	"syscall"
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/tool"
@@ -30,28 +31,34 @@ func registerMemoryTools(reg *tool.Registry, s *Session) error {
 }
 
 // memoryFileArgs changes only path authority; shared executors own file semantics.
+// A nil environment with a nil error means the scope's directory does not
+// exist yet and operation must not create it: the caller reports the outcome
+// the operation has on an empty scope.
 func (s *Session) memoryFileArgs(args map[string]any, key, operation string) (*execenv.LocalExecutionEnvironment, map[string]any, func(), error) {
 	scope := stringArg(args, "scope")
-	_, readOnly, err := s.memoryScopeBinding(scope)
+	relative, readOnly, err := s.memoryScopeBinding(scope)
 	if err != nil {
 		return nil, nil, nil, err
 	}
 	if readOnly && operation != "read" && operation != "search" {
 		return nil, nil, nil, errors.New(memorySessionReadOnly)
 	}
-	env, release, err := s.acquireMemoryEnvironment(scope)
-	if err != nil {
-		return nil, nil, nil, err
-	}
 	path := stringArg(args, key)
 	if key == "path" && path == "" {
 		path = "."
 	}
 	if !filepath.IsLocal(path) {
-		release()
 		return nil, nil, nil, errors.New("memory path must be relative and remain in its scope")
 	}
 	forwarded := maps.Clone(args)
+	env, release, err := s.acquireMemoryEnvironment(scope, memoryOperationCreatesScope(scope, operation))
+	if errors.Is(err, errMemoryScopeAbsent) {
+		forwarded[key] = filepath.Join(s.cfg.MemoryStateRoot, relative, path)
+		return nil, forwarded, func() {}, nil
+	}
+	if err != nil {
+		return nil, nil, nil, err
+	}
 	forwarded[key] = filepath.Join(env.WorkingDirectory(), path)
 	if err := s.beforeMemoryIO(scope, operation); err != nil {
 		release()
@@ -75,6 +82,9 @@ func (s *Session) execMemoryRead(ctx context.Context, _ execenv.ExecutionEnviron
 		return nil, err
 	}
 	defer release()
+	if env == nil {
+		return nil, syscall.ENOENT
+	}
 	return execFileRead(ctx, env, args, s.fileReadGuard(env))
 }
 func (s *Session) execMemoryEdit(ctx context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
@@ -91,6 +101,9 @@ func (s *Session) execMemorySearch(ctx context.Context, _ execenv.ExecutionEnvir
 		return nil, err
 	}
 	defer release()
+	if env == nil {
+		return "", nil
+	}
 	return execFileGrep(ctx, env, args)
 }
 func (s *Session) execMemoryDelete(_ context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
@@ -100,6 +113,9 @@ func (s *Session) execMemoryDelete(_ context.Context, _ execenv.ExecutionEnviron
 	}
 	defer release()
 	path := stringArg(args, "file_path")
+	if env == nil {
+		return "Removed or already absent: " + path, nil
+	}
 	warn := s.fileReadGuard(env).ReadBeforeWriteWarning(path)
 	if err := env.RemoveConfinedFile(path); err != nil {
 		return nil, err
