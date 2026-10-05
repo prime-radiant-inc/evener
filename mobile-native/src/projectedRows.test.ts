@@ -402,6 +402,7 @@ describe("projectedRow — item entries", () => {
 		["plugin_loaded", "lifecycle", "system"],
 		["hook_completed", "lifecycle", "system"],
 		["notes-context", "lifecycle", "system"],
+		["approval_decision", "approval", "system"],
 		["unknown_future_kind", "unknown-system", "system"],
 	])("classifies system event %s as family %s / tone %s", (eventKind, family, tone) => {
 		const row = projectedRow(itemEntry(item({ type: "systemMessage", text: "x", eventKind })));

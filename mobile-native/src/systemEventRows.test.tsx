@@ -44,6 +44,7 @@ vi.mock("expo-clipboard", () => ({ setStringAsync: async () => true }));
 vi.mock("./TranscriptImages", () => ({ TranscriptImages: () => null }));
 
 const DANGER_INK = "#C51D23";
+const INK_MID = "#5F5F57";
 const T0 = Date.parse("2026-09-28T20:00:00Z");
 const LEVELS = ["chat", "intent", "tools", "activity", "full"] as const;
 type Level = (typeof LEVELS)[number];
@@ -210,19 +211,69 @@ describe("approval history (spec 8.2)", () => {
 		}
 	});
 
-	it("reads like question history: the amber rule, the decision, and how long ago", () => {
+	function showAt(name: "approval-allowed" | "approval-denied", nowMs: number) {
 		vi.useFakeTimers();
-		vi.setSystemTime(decidedAt() + 5 * 60_000);
+		vi.setSystemTime(nowMs);
+		return show(name, "chat");
+	}
+
+	function spoken(tree: ReactTestRenderer): string | undefined {
+		return tree.root.findAll((node) => typeof node.props.accessibilityLabel === "string")[0]?.props.accessibilityLabel;
+	}
+
+	// Spec 8.2: "Allowed: write …" or "Denied: …" in ink-mid with the
+	// approval mark. Amber is for an approval still waiting on you (the dock).
+	it.each([
+		["approval-allowed", "Allowed: write /Users/j/sites/docs/index.md"],
+		["approval-denied", "Denied: read /etc/hosts"],
+	] as const)("reads %s in ink-mid with the approval mark and how long ago", (name, words) => {
 		try {
-			const tree = show("approval-allowed", "chat");
-			expect(renderedText(tree)).toContain("Allowed: write /Users/j/sites/docs/index.md");
-			expect(renderedText(tree)).toContain("5m ago");
-			expect(inked(tree, ATTENTION)).toBe(true);
+			const tree = showAt(name, decidedAt() + 5 * 60_000);
+			expect(renderedText(tree).replaceAll("\u200b", "")).toBe(`${words} · 5m ago`);
+			expect(spoken(tree)).toBe(`${words}, 5 minutes ago`);
+			const mark = tree.root.findAll((node) => String(node.type) === "SymbolView");
+			expect(mark.map((node) => [node.props.name, node.props.tintColor])).toEqual([
+				["hand.raised.circle.fill", INK_MID],
+			]);
+			expect(inked(tree, INK_MID)).toBe(true);
+			expect(inked(tree, ATTENTION)).toBe(false);
 			expect(inked(tree, DANGER_INK)).toBe(false);
-			const labelled = tree.root.findAll(
-				(node) => typeof node.props.accessibilityLabel === "string" && node.props.accessibilityLabel.includes("Allowed"),
-			);
-			expect(labelled[0]?.props.accessibilityLabel).toBe("Allowed: write /Users/j/sites/docs/index.md, 5 minutes ago");
+			act(() => tree.unmount());
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	// The minute clock can lag the decision by up to a minute, or a skewed
+	// clock put it ahead: either reads as just now, never "0s ago".
+	it.each([
+		["a moment ago", 20_000],
+		["ahead of the phone's clock", -30_000],
+	])("says just now for a decision made %s", (_, offsetMs) => {
+		try {
+			const tree = showAt("approval-allowed", decidedAt() + offsetMs);
+			expect(renderedText(tree).replaceAll("\u200b", "")).toBe("Allowed: write /Users/j/sites/docs/index.md · just now");
+			expect(spoken(tree)).toBe("Allowed: write /Users/j/sites/docs/index.md, just now");
+			act(() => tree.unmount());
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("leaves the time out when the decision has none", () => {
+		const item = { ...systemEventWireItem("approval-denied"), startedAt: undefined };
+		const row = rowsAt("chat", [completedTurn([item])], false).rows.find((candidate) => candidate.id === item.id);
+		if (!row) throw new Error("no approval row");
+		const tree = render(<TimelineItem item={row} hubId="hub" sessionRef="approval-untimed" />);
+		expect(renderedText(tree).replaceAll("\u200b", "")).toBe("Denied: read /etc/hosts");
+		expect(spoken(tree)).toBe("Denied: read /etc/hosts");
+	});
+
+	// A long path breaks only at its slashes when it wraps, as the dock's does.
+	it("lets the path wrap at its slashes", () => {
+		try {
+			const tree = showAt("approval-allowed", decidedAt() + 5 * 60_000);
+			expect(renderedText(tree)).toContain("/\u200bUsers/\u200bj/\u200bsites/\u200bdocs/\u200bindex.md");
 			act(() => tree.unmount());
 		} finally {
 			vi.useRealTimers();

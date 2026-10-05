@@ -1,42 +1,37 @@
 // A sandbox approval you answered earlier (spec 8.2, "Approval (history)"):
-// "Allowed: write /path" or "Denied: read /path", and how long ago, drawn like
-// question history with the amber left rule. While an approval is still open
-// the dock is the approval, so the transcript never shows the live one this
-// way.
+// "Allowed: write /path" or "Denied: read /path" in ink-mid with the approval
+// mark, and how long ago. The mark takes the row's ink, not the dock's amber:
+// amber is for an approval still waiting on you, and while one waits the dock
+// is the approval, so the transcript never shows the live one this way.
+import { SymbolView } from "expo-symbols";
 import { Text, View } from "react-native";
-import { useReadingFace } from "../display/displayContext";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
-import { compactDuration, spokenDuration } from "./format";
+import { compactDuration, spokenDuration, wrapAfterSlashes } from "./format";
 import { useMinuteClock } from "./minuteClock";
+
+// The minute clock can lag a decision by up to a minute, and a skewed clock
+// can put it ahead; either way it was just now.
+function ago(ms: number, words: (ms: number) => string): string {
+	return ms < 60_000 ? "just now" : `${words(ms)} ago`;
+}
 
 export function ApprovalHistory({ text, decidedAt }: { text: string; decidedAt: string | undefined }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
-	const face = useReadingFace();
 	const now = useMinuteClock();
 	const decided = Date.parse(decidedAt ?? "");
-	const age = Number.isNaN(decided) ? null : Math.max(0, now - decided);
-	const label = age === null ? text : `${text}, ${spokenDuration(age)} ago`;
+	const age = Number.isNaN(decided) ? null : now - decided;
+	const shown = age === null ? text : `${text} · ${ago(age, compactDuration)}`;
+	const spoken = age === null ? text : `${text}, ${ago(age, spokenDuration)}`;
 	return (
-		<View
-			accessible
-			accessibilityLabel={label}
-			style={{ borderLeftWidth: 2, borderLeftColor: palette.attention, paddingLeft: 12, gap: 6 }}
-		>
+		<View accessible accessibilityLabel={spoken} style={{ flexDirection: "row", alignItems: "flex-start", gap: 8 }}>
+			<SymbolView name="hand.raised.circle.fill" tintColor={palette.inkMid} size={17 * scale} />
 			<Text
 				allowFontScaling={allowFontScaling}
-				style={{ ...face.regular, fontSize: 15 * scale, lineHeight: 21 * scale, color: palette.prose }}
+				style={{ flex: 1, fontSize: 15 * scale, lineHeight: 20 * scale, color: palette.inkMid }}
 			>
-				{text}
+				{wrapAfterSlashes(shown)}
 			</Text>
-			{age === null ? null : (
-				<Text
-					allowFontScaling={allowFontScaling}
-					style={{ fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkMid }}
-				>
-					{`${compactDuration(age)} ago`}
-				</Text>
-			)}
 		</View>
 	);
 }
