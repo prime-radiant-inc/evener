@@ -2,13 +2,13 @@
 
 ## Intent
 
-Evener memory has two scopes. Personal memory holds what applies beyond any one project. Project memory holds knowledge about the project. Neither has a place for knowledge about the work currently in progress: its plan, the constraints and decisions that apply to it, and what has been tried and found. Today that knowledge either lives only in the transcript, where compaction loses it, or gets written to project memory, where it clutters the project with task-local detail.
+Evener memory has two scopes. Personal memory holds what applies beyond any one project. Project memory holds knowledge about the project. Neither has a place for working notes about the current work: its plan, what has been tried and what has been found. Today that knowledge either lives only in the transcript, where compaction loses it, or gets written to project memory, where it clutters the project with task-local detail.
 
-Add a third scope, **session**, for knowledge about the current work.
+Add a third scope, **session**, for working notes about the current work.
 
 The session whiteboard (`notes_agent_set`) stays a status channel to the human partner. Improving its prompting is a separate item, outside this spec.
 
-Success means agents keep task-local plans, constraints, decisions and findings in session memory. Those notes survive compaction, delegates can read them, and lessons that outlast the work get promoted to project or personal memory. The memory prompt lab measures this (see Verification).
+Success means agents keep working notes (plan, what they tried and ruled out) in session memory during longer work. Those notes survive compaction, delegates can read them, and anything that holds beyond the work gets promoted to project or personal memory. Plans, constraints and decisions the partner states go to project memory. The memory prompt lab measures this (see Verification).
 
 ## Decisions
 
@@ -17,7 +17,7 @@ Success means agents keep task-local plans, constraints, decisions and findings 
 | Who shares a session's memory | The root session owns it. Delegates read it and cannot write it. |
 | Do delegates get their own session memory | No. A delegate reports findings to its parent, and the parent decides what to save. |
 | Fork | The fork gets a copy of the parent's session memory as of the fork's first use, and the two diverge. |
-| Session deletion | Session memory is kept, like the other scopes, until someone gardens it. |
+| Session deletion | Session memory is kept, like the other scopes. Removal is manual for now (see #3748). |
 | Promotion | Before its final report, the agent copies anything that outlasts the work into project or personal memory. |
 | Mechanism | A third scope in the existing memory machinery. Session notes and the history state directory are not used. |
 
@@ -28,7 +28,7 @@ Success means agents keep task-local plans, constraints, decisions and findings 
 - **Resume:** keeps the session id, and with it the memory.
 - **Compaction:** the session index is re-projected afterward, as the other scopes are.
 - **Fork, and `--resume-with`:** the fork gets a copy of the source session's session memory as of the fork's first use (its first session-memory access, normally its first model call). The copy is made in the forked session's own process, because memory belongs to the host that runs the session; after that the two diverge. A missing or empty source directory gives an empty start. A copy failure is reported as a session warning and leaves an empty session scope; it never blocks the fork.
-- **Deletion:** deleting a session leaves its session memory in place. `gardening-memory` can clean it up.
+- **Deletion:** deleting a session leaves its session memory in place. No native memory tool reaches another session's session directory, so removal is manual for now (see #3748, which tracks cleanup and directory accumulation).
 - **Opt-out:** `--disable-memory` disables session memory along with the other scopes. There is no separate switch.
 
 ## Tools, context and enforcement
@@ -40,12 +40,13 @@ Success means agents keep task-local plans, constraints, decisions and findings 
 
 ## Prompting
 
-These changes are added to the existing memory guidance (`memoryGuidance()` and the Finishing rows). Each part is shown only when the session can act on it.
+These changes are added to the existing memory guidance (`memoryGuidance()` and the Finishing rows). Each part is shown only when the session can act on it. A delegate with no root session id gets neither the scope line nor the delegate line, since it has no usable session scope.
 
-- **Scope line:** "Session memory holds knowledge about the current work: its plan, the constraints and decisions that apply to it, and what you tried and found."
-- **Save trigger:** "Save to session memory what you would need if this work were interrupted and resumed after compaction." This replaces part of the current skip rule: details only the current task needs now go to session memory instead of being dropped. Plain step-by-step narration still doesn't belong there.
-- **Partner-told facts split by reach:** what applies to this work goes to session memory. What applies to the project goes to project memory.
-- **Promotion:** a Finishing row. "The work is done and session memory has notes." → "Before you report, copy anything that holds beyond this work into project or personal memory."
+- **Scope line:** "Session memory holds working notes about the current work: its plan, what you tried and what you found."
+- **Save trigger (root sessions):** "you are partway through longer work: keep its plan, what you tried and what you ruled out in session memory, so you could pick it up again after compaction or an interruption."
+- **Partner-told plans, constraints and decisions go to project memory.** Session memory holds working notes during longer work.
+- **Skip rule (root sessions):** working notes about the current work belong in session memory, not project memory (", not project memory" only when project memory is bound).
+- **Promotion:** a Finishing row for root sessions. "The work is done and session memory has notes." → "Before you report, copy anything that holds beyond this work into project or personal memory."
 - **Delegates:** "Session memory belongs to your root session. Read it, and report what you learn to your parent."
 
 ## Verification
@@ -59,7 +60,7 @@ These changes are added to the existing memory guidance (`memoryGuidance()` and 
 - guidance gating for root and delegate sessions
 
 **Memory prompt lab:** the sequential-session harness used for #3740. Each scenario is measured against the current prompt as the baseline, with interviews (resuming the session and asking why) where agents pick the wrong scope.
-1. A task-local constraint lands in session memory, not project memory.
+1. Longer work leaves working notes in session memory.
 2. A project fact first noted in session memory gets promoted before the final report.
 3. A delegate reads the root's session memory, and reports instead of writing.
 
@@ -74,5 +75,5 @@ In the same change:
 ## Out of scope
 
 - Whiteboard prompting.
-- Automatic cleanup of session memory for deleted sessions.
+- Automatic cleanup of session memory for deleted sessions (#3748).
 - Delegate-private session memory.

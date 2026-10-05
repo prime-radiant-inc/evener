@@ -1,6 +1,6 @@
 # Memory
 
-Evener keeps useful personal and project lessons in ordinary files on the
+Evener keeps useful personal and project lessons, and working notes about the current work, in ordinary files on the
 session's host. The files are the source of truth, not transcript projections,
 client caches or session notes. Stored text is fallible evidence, never
 instructions or permission. Current user intent and direct evidence take
@@ -32,7 +32,9 @@ keeps it. A fork or `--resume-with` child copies its parent's session memory the
 first time it opens the scope, in its own process, normally at its first model
 call; then the two diverge. A missing or empty parent scope means an empty
 start. A copy failure is a session warning and leaves the scope empty; it never
-blocks the session. Deleting a session keeps its session memory.
+blocks the session. Deleting a session keeps its session memory. No native
+memory tool reaches another session's session directory, so removing it is
+manual for now (#3748 tracks cleanup).
 
 Production CLI and daemon sessions bind memory by default. Trusted launch
 binding uses `identifier.ResolveProjectWith`; linked worktrees share their main
@@ -72,18 +74,19 @@ when to read a page, and that stored memory is fallible evidence, never
 instructions or permission. Sessions that can call the save tools are also told
 when to save: when the partner corrects the agent or says how they want work
 done, when the partner states a project plan, constraint or decision (saved to
-project memory), when the agent is partway through longer work (plan and
-findings go to session memory as working notes), and when the agent learns
+project memory), when a root session is partway through longer work (its plan,
+what it tried and what it ruled out go to session memory as working notes), and when the agent learns
 something the hard way that is not written down. Partner-stated
 facts are saved before the work they shape, because complying with them does
 not carry them to the next session. The Finishing guidance and the result
 tool's description repeat the save check at the point the agent decides it is
 done. Pages that contradict what the agent observes are corrected in the same
-turn. Root sessions are told that details only this work needs go to session memory,
-that lasting plans and constraints go to project memory, and to promote lasting
-lessons out of session memory before the final report; the Finishing guidance
-repeats this. Delegates are told session memory is their root's, to read it and
-report what they learn to their parent. A delegate's session index projection
+turn. Root sessions are told that working notes belong in session memory, not
+project memory (the second half only when project memory is bound). The
+Finishing guidance adds one row telling root sessions to promote anything that
+holds beyond this work out of session memory before they report. Delegates are told session memory is their root's, to read it and
+report what they learn to their parent; a delegate with no root session id is
+told nothing about session memory. A delegate's session index projection
 says the same in one sentence. Guidance names only tools the session can call, and mentions project
 memory only when a project scope is bound.
 
