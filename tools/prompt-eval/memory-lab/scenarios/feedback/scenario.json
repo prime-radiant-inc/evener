@@ -1,0 +1,18 @@
+{
+  "arms": ["on"],
+  "stages": [
+    {
+      "name": "A",
+      "prompt": "Add a Slugify(s string) string function to textutil: lowercase, runs of spaces and punctuation become a single hyphen, and no leading or trailing hyphens. Add tests. One thing I keep having to repeat: before you tell me you're done, run `go vet ./...` and `gofmt -l .` and fix anything they report. A vet failure slipped through to CI last week and I don't want to say this again.",
+      "checks": [{"name": "tests pass", "run": "go test ./..."}],
+      "trace": [{"name": "ran vet", "tool": "shell", "regex": "go vet"}],
+      "memory": [{"name": "saved vet rule", "regex": "(?i)vet"}]
+    },
+    {
+      "name": "B",
+      "prompt": "Add a Truncate(s string, n int) string function to textutil that keeps the first n runes and appends an ellipsis character when it cut anything. Add tests.",
+      "checks": [{"name": "tests pass", "run": "go test ./..."}],
+      "trace": [{"name": "ran vet", "tool": "shell", "regex": "go vet"}, {"name": "ran gofmt", "tool": "shell", "regex": "gofmt"}]
+    }
+  ]
+}

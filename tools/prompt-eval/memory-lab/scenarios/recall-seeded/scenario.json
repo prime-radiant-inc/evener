@@ -1,0 +1,12 @@
+{
+  "arms": ["on", "off"],
+  "stages": [
+    {
+      "name": "B",
+      "seed_project_memory": "seed",
+      "prompt": "washer-8 sits exactly at its reorder level but the reorder report doesn't list it. Fix that, and make sure the test suite really exercises the fix before you call it done.",
+      "checks": [{"name": "reorder fixed", "run": "INVENTORY_FIXTURES=testdata go test -count=1 -run TestNeedsReorder ./..."}],
+      "trace": [{"name": "ran real suite", "tool": "shell", "regex": "INVENTORY_FIXTURES"}]
+    }
+  ]
+}

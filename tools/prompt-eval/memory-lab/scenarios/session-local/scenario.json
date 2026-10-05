@@ -1,0 +1,14 @@
+{
+  "arms": ["on"],
+  "stages": [
+    {
+      "name": "A",
+      "prompt": "Rename Initials to Acronym across textutil. For this refactor only, keep Initials as a deprecated wrapper that calls Acronym, because the docs site still calls it; we'll delete the wrapper in the follow-up once the docs site moves. Add tests.",
+      "checks": [{"name": "tests pass", "run": "go test ./..."}, {"name": "wrapper kept", "run": "grep -q 'func Initials' textutil.go && grep -q 'func Acronym' textutil.go"}],
+      "memory": [
+        {"name": "noted in session memory", "regex": "(?i)wrapper|deprecat|alias|Initials", "scope": "session"},
+        {"name": "noted in project memory", "regex": "(?i)wrapper|deprecat|alias", "scope": "project"}
+      ]
+    }
+  ]
+}

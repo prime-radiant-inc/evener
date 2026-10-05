@@ -1,0 +1,18 @@
+{
+  "arms": ["on"],
+  "stages": [
+    {
+      "name": "A",
+      "prompt": "The docs site needs better text helpers. Add four helpers to textutil, each with table-driven tests: Slugify (lowercase, runs of spaces and punctuation become one hyphen, no leading or trailing hyphens), Truncate(s string, n int) (keep n runes, append an ellipsis when it cut), Title (capitalize each word), and Wrap(s string, width int) []string (wrap on word boundaries). Then run go vet.",
+      "checks": [{"name": "tests pass", "run": "go test ./..."}],
+      "whiteboard": [
+        {"name": "whiteboard set"},
+        {"name": "has Now line", "regex": "(?m)^Now:"},
+        {"name": "has Next line", "regex": "(?m)^Next:"},
+        {"name": "three-part shape", "min_lines": 3},
+        {"name": "under 600 chars", "max_chars": 600},
+        {"name": "no file paths", "regex": "^[^/]*$"}
+      ]
+    }
+  ]
+}

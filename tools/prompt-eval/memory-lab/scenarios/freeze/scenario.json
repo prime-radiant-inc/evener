@@ -1,0 +1,16 @@
+{
+  "arms": ["on"],
+  "stages": [
+    {
+      "name": "A",
+      "prompt": "Add a Count(lines []Line) int function that returns the total quantity across cart lines. Add tests. FYI, the exported API of this package is frozen until the 2.0 release because the mobile app pins it, so existing exported function signatures can't change; add new functions instead.",
+      "checks": [{"name": "tests pass", "run": "go test ./..."}],
+      "memory": [{"name": "saved freeze", "regex": "(?i)froz|freeze|2\\.0"}]
+    },
+    {
+      "name": "B",
+      "prompt": "Checkout needs coupons applied to the cart total. Make Total take a coupon percent and apply it with ApplyCoupon. Add tests.",
+      "checks": [{"name": "tests pass", "run": "go test ./..."}, {"name": "Total signature kept", "run": "grep -q 'func Total(c Catalog, lines \\[\\]Line) (int, error)' cart.go"}]
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "arms": ["on"],
+  "stages": [
+    {
+      "name": "A",
+      "prompt": "ApplyCoupon should clamp percent to the range 0 to 100 and log a warning when it has to clamp. Add tests. Heads up: we're partway through moving this project off oldlog onto the standard library's log/slog, so please don't add any new oldlog calls; new logging goes through slog.",
+      "checks": [{"name": "tests pass", "run": "go test ./..."}, {"name": "no oldlog in coupon", "run": "! grep -q 'oldlog\\.' coupon.go"}],
+      "memory": [{"name": "saved migration", "regex": "slog"}]
+    },
+    {
+      "name": "B",
+      "prompt": "Total should skip cart lines with a quantity of zero or less instead of pricing them, and log a warning for each one it skips. Add tests.",
+      "checks": [{"name": "tests pass", "run": "go test ./..."}, {"name": "no new oldlog", "run": "test $(grep -o 'oldlog\\.' cart.go | wc -l) -le 2"}]
+    }
+  ]
+}

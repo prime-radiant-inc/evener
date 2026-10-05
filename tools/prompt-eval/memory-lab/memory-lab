@@ -1,0 +1,335 @@
+#!/usr/bin/env python3
+"""memory-lab: measure whether evener's memory prompt triggers capture, recall and correction.
+
+Why: the one-session prompt-eval runner gives every run a fresh directory, but
+project memory is keyed by checkout path, so memory behavior needs several
+sessions in the same directory sharing one memory root. This runs scenarios of
+sequential `evener` sessions (stages) and grades each stage from the event
+stream, the workspace and the memory files.
+
+Usage:
+  memory-lab run --version v0=BIN [--version v1=BIN] --model MODEL \
+      --scenarios DIR/a,DIR/b --reps 2 --out OUTDIR [--max-rounds 40] [--jobs 4]
+  memory-lab report OUTDIR            # one line per stage, plus per-version totals
+  memory-lab show [--reasoning] OUTDIR/<trial> STAGE  # tool calls, memory files, whiteboard, final message
+  memory-lab ask --bin BIN --model MODEL OUTDIR/<trial> STAGE "question"
+                                      # resume that stage's session and ask it why it chose what it did
+
+See README.md next to this script for setup, the scenarios and how to read results.
+
+A scenario dir holds scenario.json and fixture/. scenario.json:
+  {"arms": ["on"],                     # "on" = memory enabled, "off" = --disable-memory
+   "stages": [{"name": "A", "prompt": "...",
+               "seed_project_memory": "seed",   # optional dir copied into project memory first
+               "before": "shell run in the workspace before the stage",  # optional
+               "checks": [{"name": "...", "run": "shell; exit 0 = pass"}],
+               "trace": [{"name": "...", "tool": "shell", "regex": "go vet"}],
+               "memory": [{"name": "...", "regex": "(?i)vet", "scope": "personal"}],  # scope (personal|project|session) and "absent": true optional
+               "fixture": "fixture2", "workspace": "work2",  # optional: run in another project
+               "resume": "A",  # optional: continue stage A's session
+               "transcripts": [{"name": "...", "regex": "over every transcript in the stage's state dir"}],
+               "whiteboard": [{"name": "...", "regex": "(?m)^Now:", "max_chars": 600, "min_lines": 3}],
+               "final": [{"name": "...", "regex": "against the last message to the partner"}]}]}
+
+Each trial lives in OUTDIR/<version>/<arm>/<scenario>/r<N>/ with work/ (the
+checkout, stable across stages), xdg/ (XDG_STATE_HOME, so memory is isolated),
+and per stage: <S>.events.ndjson, <S>.stdout, <S>.grade.json, <S>.memory/.
+Full logs stay on disk; the report prints only the summary.
+"""
+import argparse, concurrent.futures as cf, json, os, re, shutil, subprocess, sys, time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+PROJID = os.path.join(HERE, "bin", "projid")
+
+
+def sh(cmd, cwd, env=None, timeout=300):
+    p = subprocess.run(cmd, shell=True, cwd=cwd, env=env, capture_output=True, text=True, timeout=timeout)
+    return p.returncode, p.stdout + p.stderr
+
+
+def fixture_env(work, xdg):
+    env = dict(os.environ)
+    env.update({"GOWORK": "off", "GIT_CEILING_DIRECTORIES": os.path.dirname(work),
+                "XDG_STATE_HOME": xdg, "EVENER_NO_USER_SKILLS": "1"})
+    return env
+
+
+def memory_root(xdg):
+    return os.path.join(xdg, "evener", "memory")
+
+
+def parse_events(path):
+    calls, limit, messages = [], False, []
+    with open(path, errors="replace") as f:
+        for line in f:
+            line = line.strip()
+            if not line.startswith("{"):
+                continue
+            try:
+                ev = json.loads(line)
+            except ValueError:
+                continue
+            kind, data = ev.get("kind"), ev.get("data") or {}
+            if kind == "TOOL_CALL_START":
+                calls.append({"tool": data.get("tool_name", ""), "args": data.get("arguments_json", "")})
+            elif kind == "TURN_LIMIT":
+                limit = True
+            elif kind == "COMMUNICATE" and data.get("message"):
+                messages.append(data["message"])
+    return calls, limit, messages
+
+
+def read_tree(root):
+    out = {}
+    for d, _, files in os.walk(root):
+        for name in files:
+            p = os.path.join(d, name)
+            try:
+                out[os.path.relpath(p, root)] = open(p, errors="replace").read()
+            except OSError:
+                pass
+    return out
+
+
+def make_workspace(scen, fixture, work, xdg):
+    shutil.copytree(os.path.join(scen, fixture), work)
+    rc, out = sh("git init -q && git add -A && git -c user.name=lab -c user.email=lab@example.com commit -qm initial", work, fixture_env(work, xdg))
+    if rc:
+        raise RuntimeError(f"fixture git init failed: {out}")
+
+
+def run_stage(args, label, binpath, arm, scen, stage, trial):
+    # A stage with its own "fixture" runs in a separate checkout (another
+    # project) that shares the trial's memory root.
+    work, xdg = os.path.join(trial, stage.get("workspace", "work")), os.path.join(trial, "xdg")
+    if stage.get("fixture") and not os.path.exists(work):
+        make_workspace(scen, stage["fixture"], work, xdg)
+    env = fixture_env(work, xdg)
+    if stage.get("seed_project_memory"):
+        pid = subprocess.run([PROJID, work], capture_output=True, text=True, check=True).stdout.strip()
+        dest = os.path.join(memory_root(xdg), "projects", pid)
+        shutil.copytree(os.path.join(scen, stage["seed_project_memory"]), dest, dirs_exist_ok=True)
+    if stage.get("before"):
+        rc, out = sh(stage["before"], work, env)
+        if rc:
+            raise RuntimeError(f"before hook failed in {trial}: {out[-500:]}")
+    name = stage["name"]
+    # "resume": "<stage>" continues that stage's session instead of starting a
+    # fresh one; resume keeps the saved (empty) plugin selection.
+    state = os.path.join(trial, "sessions", stage.get("resume", name))
+    cmd = [binpath, "--model", args.model, "--dir", work, "--state-dir", state,
+           "--reasoning-effort", args.effort, "--max-rounds", str(args.max_rounds), "--verbose"]
+    cmd += ["--resume-last"] if stage.get("resume") else ["--enabled-plugins", ""]
+    if arm == "off":
+        cmd.append("--disable-memory")
+    cmd.append(stage["prompt"])
+    start = time.time()
+    with open(os.path.join(trial, f"{name}.events.ndjson"), "w") as ev, open(os.path.join(trial, f"{name}.stdout"), "w") as so:
+        try:
+            p = subprocess.run(cmd, cwd=work, env=env, stdout=so, stderr=ev, timeout=args.timeout)
+            exit_code = p.returncode
+        except subprocess.TimeoutExpired:
+            exit_code = "timeout"
+    elapsed = round(time.time() - start)
+    calls, limit, messages = parse_events(os.path.join(trial, f"{name}.events.ndjson"))
+    mem_dir = os.path.join(trial, f"{name}.memory")
+    if os.path.isdir(memory_root(xdg)):
+        shutil.copytree(memory_root(xdg), mem_dir, dirs_exist_ok=True)
+    memory = read_tree(mem_dir) if os.path.isdir(mem_dir) else {}
+    grade = {"version": label, "arm": arm, "scenario": os.path.basename(scen), "trial": trial, "stage": name,
+             "exit": exit_code, "seconds": elapsed, "rounds_capped": limit, "tool_calls": len(calls),
+             "memory_calls": {}, "checks": {}}
+    for c in calls:
+        if c["tool"].startswith("memory_"):
+            grade["memory_calls"][c["tool"]] = grade["memory_calls"].get(c["tool"], 0) + 1
+    for c in stage.get("checks", []):
+        rc, _ = sh(c["run"], work, env)
+        grade["checks"][c["name"]] = rc == 0
+    for t in stage.get("trace", []):
+        rx = re.compile(t["regex"])
+        grade["checks"][t["name"]] = any(c["tool"] == t["tool"] and rx.search(c["args"]) for c in calls)
+    for m in stage.get("memory", []):
+        prefix = {"personal": "personal/", "project": "projects/", "session": "sessions/"}.get(m.get("scope"), "")
+        blob = "\n".join(body for path, body in memory.items() if path.startswith(prefix))
+        found = bool(re.search(m["regex"], blob))
+        grade["checks"][m["name"]] = (not found) if m.get("absent") else found
+    for tc in stage.get("transcripts", []):
+        # Searches every session transcript under this stage's state dir,
+        # delegates included, e.g. for a delegate's memory_read of session scope.
+        blob = ""
+        for d, _, files in os.walk(state):
+            for f in files:
+                if f.endswith(".transcript.jsonl"):
+                    blob += open(os.path.join(d, f), errors="replace").read()
+        grade["checks"][tc["name"]] = bool(re.search(tc["regex"], blob))
+    # "whiteboard" checks read the root session's agent whiteboard (agent_note
+    # in its meta.json) after the stage.
+    note = ""
+    for d, _, files in os.walk(os.path.join(state, "sessions")):
+        for f in files:
+            if f.endswith(".meta.json"):
+                try:
+                    meta = json.load(open(os.path.join(d, f)))
+                except ValueError:
+                    continue
+                if not meta.get("is_subagent"):
+                    note = meta.get("agent_note", "") or note
+        break
+    grade["whiteboard"] = note
+    for wc in stage.get("whiteboard", []):
+        ok = bool(note)
+        if "regex" in wc:
+            ok = ok and bool(re.search(wc["regex"], note))
+        if "max_chars" in wc:
+            ok = ok and len(note) <= wc["max_chars"]
+        if "min_lines" in wc:
+            ok = ok and len([l for l in note.splitlines() if l.strip()]) >= wc["min_lines"]
+        grade["checks"][wc["name"]] = ok
+    grade["final_message"] = messages[-1][:2000] if messages else ""
+    for fc in stage.get("final", []):
+        grade["checks"][fc["name"]] = bool(messages) and bool(re.search(fc["regex"], messages[-1]))
+    with open(os.path.join(trial, f"{name}.grade.json"), "w") as f:
+        json.dump(grade, f, indent=1)
+    return grade
+
+
+def run_trial(args, label, binpath, arm, scen, rep):
+    trial = os.path.join(args.out, label, arm, os.path.basename(scen), f"r{rep}")
+    os.makedirs(os.path.join(trial, "xdg"))
+    make_workspace(scen, "fixture", os.path.join(trial, "work"), os.path.join(trial, "xdg"))
+    spec = json.load(open(os.path.join(scen, "scenario.json")))
+    return [run_stage(args, label, binpath, arm, scen, st, trial) for st in spec["stages"]]
+
+
+def cmd_run(args):
+    versions = dict(v.split("=", 1) for v in args.version)
+    if os.path.exists(args.out) and os.listdir(args.out):
+        sys.exit(f"memory-lab: {args.out} already holds results; use a fresh --out")
+    os.makedirs(args.out, exist_ok=True)
+    jobs = []
+    for scen in args.scenarios.split(","):
+        scen = os.path.abspath(scen)
+        arms = json.load(open(os.path.join(scen, "scenario.json"))).get("arms", ["on"])
+        for label, binpath in versions.items():
+            for arm in arms:
+                for rep in range(1, args.reps + 1):
+                    jobs.append((label, os.path.abspath(binpath), arm, scen, rep))
+    print(f"memory-lab: {len(jobs)} trials, model {args.model}, logs under {args.out}", flush=True)
+    with cf.ThreadPoolExecutor(args.jobs) as pool:
+        futs = {pool.submit(run_trial, args, *j): j for j in jobs}
+        for fut in cf.as_completed(futs):
+            j = futs[fut]
+            try:
+                for g in fut.result():
+                    print(line(g), flush=True)
+            except Exception as e:  # infrastructure failure: report, keep the other trials
+                print(f"ERROR {j[0]} {j[2]} {os.path.basename(j[3])} r{j[4]}: {e}", flush=True)
+    cmd_report(args)
+
+
+def line(g):
+    checks = " ".join(f"{k}={'Y' if v else 'n'}" for k, v in g["checks"].items())
+    mem = ",".join(f"{k[7:]}:{v}" for k, v in sorted(g["memory_calls"].items())) or "-"
+    cap = " CAPPED" if g["rounds_capped"] else ""
+    return f"{g['version']:6} {g['arm']:3} {g['scenario']:22} {os.path.basename(g['trial'])} {g['stage']} exit={g['exit']}{cap} tools={g['tool_calls']} mem={mem} | {checks}"
+
+
+def cmd_report(args):
+    grades = []
+    for d, _, files in os.walk(args.out):
+        grades += [json.load(open(os.path.join(d, f))) for f in files if f.endswith(".grade.json")]
+    grades.sort(key=lambda g: (g["scenario"], g["version"], g["arm"], g["trial"], g["stage"]))
+    print("\n== per stage")
+    for g in grades:
+        print(line(g))
+    print("\n== check pass rates (version arm scenario stage: check passed/total)")
+    agg = {}
+    for g in grades:
+        for k, v in list(g["checks"].items()) + [("used memory", bool(g["memory_calls"])), ("not capped", not g["rounds_capped"])]:
+            key = (g["scenario"], g["stage"], k, g["version"], g["arm"])
+            a = agg.setdefault(key, [0, 0])
+            a[0] += v
+            a[1] += 1
+    for (s, st, k, v, arm), (p, n) in sorted(agg.items()):
+        print(f"{s:22} {st} {k:28} {v:6} {arm:3} {p}/{n}")
+
+
+def cmd_show(args):
+    trial, stage = args.trial, args.stage
+    g = json.load(open(os.path.join(trial, f"{stage}.grade.json")))
+    print(line(g))
+    calls, _, _ = parse_events(os.path.join(trial, f"{stage}.events.ndjson"))
+    print("\n== tool calls (memory calls in full)")
+    for c in calls:
+        width = 600 if c["tool"].startswith("memory_") else 140
+        print(f"{c['tool']} {c['args'][:width]}")
+    print("\n== memory files after stage")
+    for path, body in sorted(read_tree(os.path.join(trial, f"{stage}.memory")).items()):
+        print(f"--- {path}\n{body[:1500]}")
+    if g.get("whiteboard"):
+        print(f"\n== whiteboard\n{g['whiteboard']}")
+    print(f"\n== final message\n{g['final_message']}")
+    if getattr(args, "reasoning", False):
+        text = []
+        for raw in open(os.path.join(trial, f"{stage}.events.ndjson"), errors="replace"):
+            if '"REASONING_SUMMARY_DELTA"' in raw:
+                text.append(json.loads(raw)["data"].get("delta", ""))
+            elif '"TOOL_CALL_START"' in raw:
+                text.append(f"\n[{json.loads(raw)['data'].get('tool_name')}]\n")
+        print("\n== reasoning summary\n" + "".join(text))
+
+
+def cmd_ask(args):
+    """Resume a finished stage's session and ask it why it chose what it did."""
+    trial, stage = os.path.abspath(args.trial), args.stage
+    g = json.load(open(os.path.join(trial, f"{stage}.grade.json")))
+    work = os.path.join(trial, args.workspace)
+    env = fixture_env(work, os.path.join(trial, "xdg"))
+    n = len([f for f in os.listdir(trial) if f.startswith(f"{stage}.ask")]) + 1
+    events = os.path.join(trial, f"{stage}.ask{n}.events.ndjson")
+    # Resume keeps the saved session's (empty) plugin selection; evener rejects
+    # --enabled-plugins alongside --resume-last.
+    cmd = [os.path.abspath(args.bin), "--model", args.model, "--dir", work,
+           "--state-dir", os.path.join(trial, "sessions", stage), "--resume-last", "--verbose", args.question]
+    with open(events, "w") as ev:
+        subprocess.run(cmd, cwd=work, env=env, stdout=subprocess.DEVNULL, stderr=ev, timeout=600)
+    calls, _, messages = parse_events(events)
+    print(f"{g['version']} {g['scenario']} {os.path.basename(trial)} {stage} ask{n}")
+    for c in calls:
+        if c["tool"] != "communicate":
+            print(f"  [{c['tool']}] {c['args'][:200]}")
+    print(messages[-1] if messages else "(no reply)")
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    r = sub.add_parser("run")
+    r.add_argument("--version", action="append", required=True, help="LABEL=path/to/evener (repeatable)")
+    r.add_argument("--model", required=True)
+    r.add_argument("--scenarios", required=True, help="comma-separated scenario dirs")
+    r.add_argument("--reps", type=int, default=2)
+    r.add_argument("--out", required=True)
+    r.add_argument("--max-rounds", type=int, default=40)
+    r.add_argument("--effort", default="high")
+    r.add_argument("--timeout", type=int, default=1200, help="seconds per stage")
+    r.add_argument("--jobs", type=int, default=4)
+    rp = sub.add_parser("report")
+    rp.add_argument("out")
+    s = sub.add_parser("show")
+    s.add_argument("trial")
+    s.add_argument("stage")
+    s.add_argument("--reasoning", action="store_true", help="also print the reasoning summary, with tool calls marked")
+    a = sub.add_parser("ask", help="resume a finished stage's session and ask it a question (e.g. why it skipped memory)")
+    a.add_argument("trial")
+    a.add_argument("stage")
+    a.add_argument("question")
+    a.add_argument("--bin", required=True, help="the same evener binary the trial ran")
+    a.add_argument("--model", required=True)
+    a.add_argument("--workspace", default="work")
+    args = ap.parse_args()
+    {"run": cmd_run, "report": cmd_report, "show": cmd_show, "ask": cmd_ask}[args.cmd](args)
+
+
+if __name__ == "__main__":
+    main()

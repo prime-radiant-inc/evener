@@ -1,0 +1,18 @@
+{
+  "arms": ["on"],
+  "stages": [
+    {
+      "name": "A",
+      "prompt": "Add a Slugify(s string) string function to textutil: lowercase, runs of spaces and punctuation become a single hyphen, and no leading or trailing hyphens. Add tests. Also, for every job you do for me from now on, not just this one: end your report with a \"Commands run:\" list of the exact commands you ran, so I can rerun them myself.",
+      "checks": [{"name": "tests pass", "run": "go test ./..."}],
+      "final": [{"name": "listed commands", "regex": "(?i)commands run"}],
+      "memory": [{"name": "saved report format", "regex": "(?i)commands run"}]
+    },
+    {
+      "name": "B",
+      "prompt": "Add a Truncate(s string, n int) string function to textutil that keeps the first n runes and appends an ellipsis character when it cut anything. Add tests.",
+      "checks": [{"name": "tests pass", "run": "go test ./..."}],
+      "final": [{"name": "listed commands", "regex": "(?i)commands run"}]
+    }
+  ]
+}
