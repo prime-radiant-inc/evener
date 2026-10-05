@@ -294,6 +294,29 @@ describe("current session checkpoints", () => {
     }
   });
 
+  it("bounds a current lookup while a database version upgrade is blocked", async () => {
+    const indexedDB = new IDBFactory();
+    const setup = new SessionCacheIndexedDB({ indexedDB });
+    await setup.getCurrent(["tab-a", "local:blocker"], 1);
+    setup.close();
+    const request = indexedDB.open("evener-session-cache");
+    const blocker = await new Promise<IDBDatabase>((resolve, reject) => {
+      request.addEventListener("success", () => resolve(request.result), { once: true });
+      request.addEventListener("error", () => reject(request.error), { once: true });
+    });
+    const blocked = new SessionCacheIndexedDB({ indexedDB, databaseVersion: 3 });
+    vi.useFakeTimers();
+    try {
+      const lookup = blocked.getCurrent(["tab-b", "local:blocked"], 1);
+      await vi.advanceTimersByTimeAsync(250);
+      expect(await lookup).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+      blocked.close();
+      blocker.close();
+    }
+  });
+
   it("upgrades v1 history without changing its committed row", async () => {
     const indexedDB = new IDBFactory();
     const savedAt = Date.now();
