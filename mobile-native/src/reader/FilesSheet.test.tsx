@@ -109,7 +109,7 @@ it("lists each document with its kind, title, path, length and age, in the order
 		{ path: CODE, kind: "Code" },
 	]);
 	const text = renderedText(tree);
-	const header = tree.root.find((node) => String(node.type) === "Text" && node.props.accessibilityRole === "header");
+	const header = tree.root.find((node) => node.props.accessibilityRole === "header");
 	expect(header.props.children).toBe("Files");
 	expect(text).toContain("Fix the settle/drain race");
 	expect(text).toContain(PLAN);
