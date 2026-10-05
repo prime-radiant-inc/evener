@@ -27,7 +27,7 @@ Success means agents keep task-local plans, constraints, decisions and findings 
 - **Owner:** the root session. A delegate resolves `scope: "session"` to its root session's id through the existing `delegateRootSessionID`.
 - **Resume:** keeps the session id, and with it the memory.
 - **Compaction:** the session index is re-projected afterward, as the other scopes are.
-- **Fork, and `--resume-with`:** the new session's directory starts as a copy of the source session's directory at fork time. A missing or empty source directory gives an empty start. The copy happens in the forked session's own process the first time it opens session memory, because memory belongs to the host that runs the session. A copy failure is reported as a session warning and leaves an empty session scope; it never blocks the fork.
+- **Fork, and `--resume-with`:** the fork gets a copy of the source session's session memory as of the fork's first use (its first session-memory access, normally its first model call). The copy is made in the forked session's own process, because memory belongs to the host that runs the session; after that the two diverge. A missing or empty source directory gives an empty start. A copy failure is reported as a session warning and leaves an empty session scope; it never blocks the fork.
 - **Deletion:** deleting a session leaves its session memory in place. `gardening-memory` can clean it up.
 - **Opt-out:** `--disable-memory` disables session memory along with the other scopes. There is no separate switch.
 

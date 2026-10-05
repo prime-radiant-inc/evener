@@ -1345,9 +1345,6 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// The spawn parent travels with the flag: Meta() rewrites both on every
 	// autosave, and the hub reads them as a pair.
 	s.restoredMetaParentSessionID = meta.ParentSessionID
-	if !meta.IsSubagent && meta.DivergenceTurn > 0 {
-		s.forkParentSessionID = meta.ParentSessionID
-	}
 
 	// Re-enter the persisted active worktree BEFORE initSessionState runs, so
 	// the session is rooted in it before the environment snapshot, system

@@ -757,11 +757,6 @@ type Session struct {
 	// it is set once before the session goes live and never mutated after.
 	restoredMetaParentSessionID string
 
-	// forkParentSessionID names the session this one was forked or
-	// resumed-with from, when it was; empty otherwise. Session memory seeds
-	// from that session's directory the first time this session opens it.
-	forkParentSessionID string
-
 	// pendingJobNotifs is the durable per-parent queue of pending job-completion
 	// notifications. It is drop-safe and drained later by a notification turn.
 	// notifyFunc, when set by the server, kicks the drain; it stays nil here and a

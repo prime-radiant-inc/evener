@@ -16,8 +16,8 @@ import (
 // after the fork. A failure is reported and leaves an empty scope; it never
 // blocks the session.
 func (s *Session) seedForkedSessionMemory() {
-	parent, child := s.forkParentSessionID, s.memorySessionID()
-	if parent == "" || s.depth > 0 || schema.ValidateSessionID(parent) != nil || schema.ValidateSessionID(child) != nil {
+	parent, child := s.fork.parentID, s.memorySessionID()
+	if s.fork.divergence == 0 || parent == "" || s.depth > 0 || schema.ValidateSessionID(parent) != nil || schema.ValidateSessionID(child) != nil {
 		return
 	}
 	base := filepath.Join(s.cfg.MemoryStateRoot, "memory", "sessions")
