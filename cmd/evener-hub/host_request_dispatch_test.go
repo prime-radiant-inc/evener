@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -151,48 +152,69 @@ func TestHostRequestSlowForwardedReadDoesNotHoldALaterThreadRead(t *testing.T) {
 	}
 }
 
-// A forwarded mutation keeps its place on the serial worker: the remote
-// receives nothing sent after it until it answers, so a caller's writes land
-// in the order it sent them.
-func TestHostRequestForwardedMutationsKeepTheirOrder(t *testing.T) {
+// A forwarded mutation never leaves the serial worker, checked through a
+// signal that answers either way: with the connection's pool of admitted
+// requests full of reads held at the remote, a request admitted to the pool
+// is refused Unavailable at once, while one kept on the worker runs. So a
+// mutation answering OK beside a full pool was not admitted.
+func TestHostRequestForwardedMutationNeverTakesAReadSlot(t *testing.T) {
 	gate, openGate := remoteGate()
 	client, calls := hostRequestDispatchHub(t, func(method string, _ json.RawMessage) hostAdminReply {
-		if method == appwire.MethodEvenerPluginEnable {
+		if method == appwire.MethodEvenerMarketplaceList {
 			<-gate
 		}
 		return okReply()
 	})
 	defer openGate()
-	first := hostRequest(client, appwire.MethodEvenerPluginEnable)
-	forwardedCallSeen(t, calls, appwire.MethodEvenerPluginEnable)
-	second := hostRequest(client, appwire.MethodEvenerPluginDisable)
-
-	time.Sleep(300 * time.Millisecond)
-	for _, call := range calls() {
-		if call.method == appwire.MethodEvenerPluginDisable {
-			t.Fatal("a second forwarded mutation reached the remote while the first was still unanswered")
-		}
-	}
-
-	openGate()
-	for _, done := range []<-chan error{first, second} {
-		select {
-		case err := <-done:
-			if err != nil {
-				t.Fatalf("forwarded mutation: %v", err)
+	heldReads := func() int {
+		n := 0
+		for _, call := range calls() {
+			if call.method == appwire.MethodEvenerMarketplaceList {
+				n++
 			}
-		case <-time.After(5 * time.Second):
-			t.Fatal("a forwarded mutation never answered")
 		}
+		return n
 	}
-	var forwarded []string
-	for _, call := range calls() {
-		if call.method == appwire.MethodEvenerPluginEnable || call.method == appwire.MethodEvenerPluginDisable {
-			forwarded = append(forwarded, call.method)
+	// Send held reads one at a time until the pool refuses one, so the test
+	// finds the pool's size rather than assuming it. This leans on nothing
+	// between the hub and the remote capping concurrent forwarded calls below
+	// the pool's size; one that did would stall a read here short of refusal.
+	for i := 1; ; i++ {
+		if i > 1000 {
+			t.Fatal("the pool of admitted requests never filled")
 		}
+		done := hostRequest(client, appwire.MethodEvenerMarketplaceList)
+		waitFor(t, func() bool {
+			return len(done) > 0 || heldReads() == i
+		}, "a forwarded read to reach the remote or be refused")
+		if len(done) == 0 {
+			continue
+		}
+		var wireErr appwire.WireError
+		if err := <-done; !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeUnavailable {
+			t.Fatalf("read %d answered %v, want it held at the remote or refused Unavailable", i, err)
+		}
+		break
 	}
-	if len(forwarded) != 2 || forwarded[0] != appwire.MethodEvenerPluginEnable || forwarded[1] != appwire.MethodEvenerPluginDisable {
-		t.Fatalf("the remote received %v, want enable then disable", forwarded)
+	// A refusal with nothing held (an offline host, say) would leave the pool
+	// empty, and the mutation below would run whatever its dispatch.
+	if heldReads() == 0 {
+		t.Fatal("the first forwarded read was refused, so the pool never held any")
+	}
+	if err := answerOf(t, hostRequest(client, appwire.MethodEvenerPluginEnable)); err != nil {
+		t.Fatalf("a forwarded mutation beside a full pool answered %v, want it run on the serial worker", err)
+	}
+}
+
+// answerOf waits for a forwarded request's answer.
+func answerOf(t *testing.T, done <-chan error) error {
+	t.Helper()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(5 * time.Second):
+		t.Fatal("a forwarded request never answered")
+		return nil
 	}
 }
 
