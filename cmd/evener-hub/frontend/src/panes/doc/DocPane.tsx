@@ -6,11 +6,11 @@ import {
   docImageURL,
   readDocFile,
 } from "@evener/appwire-client/docContent";
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { Chip, Dialog, EmptyState, PaneScaffold, Skeleton } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
-import { Markdown } from "../../widgets/markdown";
+import { DocumentMarkdown } from "../../widgets/markdown/DocumentMarkdown";
 import { browserDocPort } from "./browserDocPort";
 import { filenameOf, formatDocBytes, isMarkdownPath } from "./docFile";
 import styles from "./docpane.module.css";
@@ -46,15 +46,12 @@ type FileState =
   | { status: "error"; kind: DocFileErrorKind }
   | { status: "ok"; content: DocFileContent };
 
-// DocFileContent keeps a leading BOM because annotations use the original
-// source's UTF-16 coordinates. Marked does not recognize a heading through it,
-// so remove it only from the legacy display input, never from stored source.
-function markdownDisplaySource(source: string): string {
-  return source.startsWith("\ufeff") ? source.slice(1) : source;
-}
+// Task 5 replaces these display-only identities with accepted source leases.
+const ignoreDocumentMap = () => {};
 
 function DocFileView({ session, path }: { session: string; path: string }) {
   const [state, setState] = useState<FileState>({ status: "loading" });
+  const displayId = useId();
 
   useEffect(() => {
     let cancelled = false;
@@ -99,7 +96,11 @@ function DocFileView({ session, path }: { session: string; path: string }) {
       )}
       {isMarkdownPath(path) ? (
         <div className={CLASS.markdown}>
-          <Markdown source={markdownDisplaySource(content.text)} />
+          <DocumentMarkdown
+            source={content.text}
+            identity={{ displayedSnapshotId: displayId, mappingId: displayId }}
+            onMap={ignoreDocumentMap}
+          />
         </div>
       ) : (
         <pre className={CLASS.pre}>{content.text}</pre>

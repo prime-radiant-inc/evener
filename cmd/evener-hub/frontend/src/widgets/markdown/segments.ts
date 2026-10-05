@@ -38,7 +38,7 @@ export function messageMayContainMermaid(source: string): boolean {
   return MERMAID_FENCE.test(source);
 }
 
-function isMermaidCodeToken(token: Token): boolean {
+export function isMermaidCodeToken(token: Token): boolean {
   return (
     token.type === "code" &&
     // marked passes the info string through as lang; the first word decides,
@@ -52,7 +52,7 @@ function isMermaidCodeToken(token: Token): boolean {
 // from a code token's text at lex, so a non-empty text is missing that final
 // "\n" - the test pins the restored value ("graph TD; A-->B\n"), and mermaid
 // consumes a newline-terminated string unchanged.
-function mermaidText(token: Token): string {
+export function mermaidText(token: Token): string {
   const text = (token as { text?: string }).text ?? "";
   return text.length > 0 ? `${text}\n` : text;
 }
@@ -68,7 +68,7 @@ const FENCE_CLOSE_LINE = /^ {0,3}(`{3,}|~{3,})[ \t]*$/;
 // terminated in the source. Normalized for CRLF (marked normalizes at lex,
 // so raw never contains "\r"; the normalize call is belt-and-suspenders for
 // the lexer's own future changes).
-function fenceTokenTerminated(raw: string): boolean {
+export function fenceTokenTerminated(raw: string): boolean {
   const lines = raw.replace(/\r\n/g, "\n").split("\n");
   const opener = FENCE_OPEN_LINE.exec(lines[0] ?? "");
   if (opener === null) return false;
