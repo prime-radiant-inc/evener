@@ -5625,27 +5625,35 @@ func (s *Session) driveChildrenWithUndeliveredAttention() {
 	s.renderUnreachableChildPendings(live)
 }
 
-// redriveChildAfterSendStartRollback re-drives the ONE child a committed-send-
-// start claim was taken for, after a non-handoff rollback released it (#940).
-// While the claim was held the wake edge (driveChildIfNotStopGated) and the
-// attention primitive (driveStableDelegateAttention) refused every drive for
-// that child, so a child notification, pending watch send or armed stable
-// attention that landed in the window was DROPPED. The run about to launch
-// would have drained the child's queue, but this exit handed no run over, so
-// the rollback must re-drive it. The claim only gated that child, so this is
-// scoped to childSessionID: a whole-tree sweep would re-drive unrelated
-// children and read every child's transcript fold on every failed send.
+// redriveLiveChild re-drives the ONE live direct child whose wake a held
+// claim or guard dropped, once that claim or guard is let go and no run took
+// the dropped wake. Two exits use it:
+//   - a committed-send-start rollback (#940): while the claim was held the
+//     wake edge (driveChildIfNotStopGated) and the attention primitive
+//     (driveStableDelegateAttention) refused every drive for that child, so a
+//     child notification, pending watch send or armed stable attention that
+//     landed in the window was DROPPED;
+//   - an attention drive that launched no run, or a notification turn, after
+//     an attention drive was refused on its drive guard (#3723), such as the
+//     finalize tail's re-arm drive landing while a drive refused busy still
+//     held the guard.
+//
+// Nothing that ran drains the dropped wake, so the exit must re-drive it.
+// Only that child can hold the dropped wake, so this is scoped to
+// childSessionID: a whole-tree sweep would re-drive unrelated children and
+// read every child's transcript fold.
 //
 // It delegates to the shared wake-edge driver driveChildIfNotStopGated so the
-// rollback order cannot drift from the wake edge: stable delegate attention
+// re-drive order cannot drift from the wake edge: stable delegate attention
 // FIRST (its run drains the child's notification queue itself), and only the
 // notification turn when no attention is owed. The previous inline order drove
 // the notification turn first; when both were pending the notification drive
 // set sub.driving synchronously, the attention drive then refused on that flag,
-// and nothing retried it -- the armed attention stayed stranded. The claim is
-// released before this call, so driveChildIfNotStopGated's own childDriveGated
-// check is the same stop/fatal/drain gate every other drive reads.
-func (s *Session) redriveChildAfterSendStartRollback(childSessionID string) {
+// and nothing retried it -- the armed attention stayed stranded. The claim or
+// guard is released before this call, so driveChildIfNotStopGated's own
+// childDriveGated check is the same stop/fatal/drain gate every other drive
+// reads.
+func (s *Session) redriveLiveChild(childSessionID string) {
 	if s == nil || childSessionID == "" {
 		return
 	}

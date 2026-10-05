@@ -16,6 +16,7 @@ import styles from "./activitybar.module.css";
 
 const CLASS = {
   row: requireClass(styles.row, "activitybar.module.css", "row"),
+  rowContent: requireClass(styles.rowContent, "activitybar.module.css", "rowContent"),
   rowGlyph: requireClass(styles.rowGlyph, "activitybar.module.css", "rowGlyph"),
   glyphAlive: requireClass(styles.glyphAlive, "activitybar.module.css", "glyphAlive"),
   glyphAttention: requireClass(styles.glyphAttention, "activitybar.module.css", "glyphAttention"),
@@ -129,7 +130,7 @@ export function WatchRow({ row, now }: { row: ActivityWatchRow; now: number }) {
       <Disclosure
         id={`sidebar-${row.id}`}
         summary={
-          <span className={CLASS.row}>
+          <span className={CLASS.rowContent}>
             <span className={`${CLASS.rowGlyph} ${CLASS.glyphQuiet}`}>
               <WatchGlyph className={CLASS.watchGlyph} testId={`sidebar-watch-${watch.watch.id}`} />
             </span>

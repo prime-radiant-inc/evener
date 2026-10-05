@@ -8,6 +8,7 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"unicode/utf16"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
@@ -49,6 +50,8 @@ func (s *Session) ClientMutationProjection() (appwire.QueueState, []appwire.Pend
 		queue.ClientMutationIDs = make([]string, len(snapshot.InputQueue))
 		queue.Texts = make([]string, len(snapshot.InputQueue))
 		queue.SkillNames = make([][]string, len(snapshot.InputQueue))
+		queue.CommandNames = make([][]string, len(snapshot.InputQueue))
+		queue.Mentions = make([][]appwire.InputMention, len(snapshot.InputQueue))
 	}
 	pendingByID := make(map[string]appwire.PendingMutation, len(snapshot.PendingExecutions)+len(snapshot.InputQueue))
 	for id, pending := range snapshot.PendingExecutions {
@@ -67,6 +70,8 @@ func (s *Session) ClientMutationProjection() (appwire.QueueState, []appwire.Pend
 		queue.ClientMutationIDs[i] = entry.ClientMutationID
 		queue.Texts[i] = queued.Text
 		queue.SkillNames[i] = slices.Clone(queued.SkillNames)
+		queue.CommandNames[i] = slices.Clone(queued.CommandNames)
+		queue.Mentions[i] = slices.Clone(queued.Mentions)
 		if _, exists := pendingByID[entry.ClientMutationID]; exists {
 			continue
 		}
@@ -274,14 +279,14 @@ func (s *Session) ProcessPendingUserInput(ctx context.Context, onRunnable func(s
 	if refusal != nil {
 		return "", false, refusal
 	}
-	if !inputHasContent(queued.Text, queued.Images, queued.SkillNames) && s.steeringParkedNow() {
+	if !inputHasContent(queued.Text, queued.Images, queued.SkillNames, queued.CommandNames) && s.steeringParkedNow() {
 		// A wake the daemon buffered before the last attempt failed -- the
 		// steer's own acceptance wake, held while the input that then ran the
 		// carrier inline was still running. That attempt spent it; the next
 		// wake sender unparks (Session.steeringParked).
 		return "", false, nil
 	}
-	if !inputHasContent(queued.Text, queued.Images, queued.SkillNames) && s.hasPendingUserSteering() {
+	if !inputHasContent(queued.Text, queued.Images, queued.SkillNames, queued.CommandNames) && s.hasPendingUserSteering() {
 		carrier, carrierRefusal := s.claimSteeringCarrierInput()
 		if carrierRefusal != nil {
 			return "", false, carrierRefusal
@@ -300,7 +305,7 @@ func (s *Session) ProcessPendingUserInput(ctx context.Context, onRunnable func(s
 		// closed session before the loop (releaseSteeringCarrierClaim). One
 		// owner, so nothing here releases it a second time.
 	}
-	if inputHasContent(queued.Text, queued.Images, queued.SkillNames) || queued.SteeringCarrier {
+	if inputHasContent(queued.Text, queued.Images, queued.SkillNames, queued.CommandNames) || queued.SteeringCarrier {
 		// The claims above decided their refusals on the generations they
 		// committed against, so a poisoning can still land between a decision and
 		// its commit. The announcement is made under the transcript's write door
@@ -685,6 +690,13 @@ func queuedInputFromClientMutation(entry clientMutationQueueEntry) queuedInput {
 	for _, item := range entry.Input {
 		switch item.Type {
 		case "text":
+			if len(item.Mentions) > 0 {
+				offset := len(utf16.Encode([]rune(queued.Text)))
+				for _, mention := range item.Mentions {
+					mention.Offset += offset
+					queued.Mentions = append(queued.Mentions, mention)
+				}
+			}
 			queued.Text += item.Text
 		case "image":
 			queued.Images = append(queued.Images, ImageAttachment{MediaType: item.MediaType, Data: append([]byte(nil), item.Data...), Name: item.Name})
@@ -692,15 +704,21 @@ func queuedInputFromClientMutation(entry clientMutationQueueEntry) queuedInput {
 			// Canonical identities only: bodies load from the recorded sources
 			// at actual consumption, never from the input wire.
 			queued.SkillNames = append(queued.SkillNames, item.Name)
+		case "command":
+			queued.CommandNames = append(queued.CommandNames, item.Name)
 		}
 	}
 	return queued
 }
 
-func clientMutationInput(text string, images []ImageAttachment, skillNames []string) []appwire.InputItem {
+func clientMutationInput(text string, images []ImageAttachment, skillNames []string, commandNames ...[]string) []appwire.InputItem {
+	return clientMutationInputWithMentions(text, images, skillNames, nil, commandNames...)
+}
+
+func clientMutationInputWithMentions(text string, images []ImageAttachment, skillNames []string, mentions []appwire.InputMention, commandNames ...[]string) []appwire.InputItem {
 	input := make([]appwire.InputItem, 0, 1+len(images)+len(skillNames))
 	if text != "" {
-		input = append(input, appwire.InputItem{Type: "text", Text: text})
+		input = append(input, appwire.InputItem{Type: "text", Text: text, Mentions: slices.Clone(mentions)})
 	}
 	for _, image := range images {
 		input = append(input, appwire.InputItem{
@@ -712,6 +730,11 @@ func clientMutationInput(text string, images []ImageAttachment, skillNames []str
 	}
 	for _, name := range skillNames {
 		input = append(input, appwire.InputItem{Type: "skill", Name: name})
+	}
+	for _, names := range commandNames {
+		for _, name := range names {
+			input = append(input, appwire.InputItem{Type: "command", Name: name})
+		}
 	}
 	return input
 }
@@ -895,6 +918,7 @@ func (s *Session) clientMutationDrain(params appwire.TurnDrainAsSteerParams) (ap
 		// Draining is a user-initiated run, so the parked steer is released too
 		// (issue #174).
 		snapshot.SteeringHeld = false
+		carrySelectedCommandPreparations(snapshot, record, entries)
 		for _, entry := range entries {
 			removeQueuedMutationSource(snapshot, entry, "transformed")
 		}
@@ -954,23 +978,32 @@ func combineClientMutationInputs(entries []clientMutationQueueEntry, extra []app
 	texts := make([]string, 0, len(entries)+1)
 	var images []ImageAttachment
 	var skillNames []string
-	for _, entry := range entries {
-		queued := queuedInputFromClientMutation(entry)
+	var commandNames []string
+	var mentions []appwire.InputMention
+	var textOffset int
+	appendInput := func(queued queuedInput) {
 		if strings.TrimSpace(queued.Text) != "" {
+			if len(texts) > 0 {
+				textOffset += 2 // The retained text entries are joined by "\n\n".
+			}
+			for _, mention := range queued.Mentions {
+				mention.Offset += textOffset
+				mentions = append(mentions, mention)
+			}
 			texts = append(texts, queued.Text)
+			textOffset += len(utf16.Encode([]rune(queued.Text)))
 		}
 		images = append(images, queued.Images...)
 		skillNames = append(skillNames, queued.SkillNames...)
+		commandNames = append(commandNames, queued.CommandNames...)
+	}
+	for _, entry := range entries {
+		appendInput(queuedInputFromClientMutation(entry))
 	}
 	if len(extra) > 0 {
-		queued := queuedInputFromClientMutation(clientMutationQueueEntry{Input: extra})
-		if strings.TrimSpace(queued.Text) != "" {
-			texts = append(texts, queued.Text)
-		}
-		images = append(images, queued.Images...)
-		skillNames = append(skillNames, queued.SkillNames...)
+		appendInput(queuedInputFromClientMutation(clientMutationQueueEntry{Input: extra}))
 	}
-	return clientMutationInput(strings.Join(texts, "\n\n"), images, skillNames)
+	return clientMutationInputWithMentions(strings.Join(texts, "\n\n"), images, skillNames, mentions, commandNames)
 }
 
 func (s *Session) clientMutationPromote(params appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
@@ -1023,6 +1056,7 @@ func (s *Session) clientMutationPromote(params appwire.TurnPromoteQueuedAsSteerP
 		// (issue #174).
 		snapshot.SteeringHeld = false
 		entry := snapshot.InputQueue[index]
+		carrySelectedCommandPreparations(snapshot, record, []clientMutationQueueEntry{entry})
 		snapshot.InputQueue = append(snapshot.InputQueue[:index], snapshot.InputQueue[index+1:]...)
 		snapshot.QueueRevision++
 		removeQueuedMutationSource(snapshot, entry, "transformed")
@@ -1372,10 +1406,11 @@ func clientSteeringFromSnapshot(snapshot clientMutationSnapshot) []steeringMessa
 			// while ordinary steering keeps the bytes the user typed. The record's
 			// method decides a kindless record, so a normal steer whose text
 			// imitates the note prefix is not mistaken for a note update.
-			Text:       rebuiltSteeringText(origin, queued.Text),
-			Images:     queued.Images,
-			SkillNames: queued.SkillNames,
-			Source:     events.SteeringSourceUser,
+			Text:         rebuiltSteeringText(origin, queued.Text),
+			Images:       queued.Images,
+			SkillNames:   queued.SkillNames,
+			CommandNames: queued.CommandNames,
+			Source:       events.SteeringSourceUser,
 			// The kind survives the restart because it rode the durable
 			// journal record (see SteeringKind on clientMutationRecord),
 			// not the reflected in-memory entry. Plain user steering
@@ -1700,6 +1735,7 @@ func (s *Session) recordClientMutationFailure(
 		// bytes rewrites the same path.
 		queued.Images = s.persistInputImages(queued.Images)
 		turn := schema.NewTurn(schema.TurnUserInput, buildSelectedUserInputMessage(queued.Text, queued.Images, queued.SkillNames))
+		turn.CommandInput = commandInputRecordFromQueued(queued)
 		turn.ClientMutationID = clientMutationID
 		turn.StableTurnID = pending.TurnID
 		// The typed selection must ride the persisted failed input before the

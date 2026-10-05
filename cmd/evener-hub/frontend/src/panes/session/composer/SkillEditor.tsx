@@ -9,6 +9,8 @@ import { flushSync } from "react-dom";
 import {
   completeSkillReferenceAt,
   documentPositionToTextOffset,
+  sharedPrefixLength as documentSharedPrefixLength,
+  sharedSuffixLength as documentSharedSuffixLength,
   isSkillTokenCharacter,
   parseSkillDocument,
   type SkillEditorValue,
@@ -30,6 +32,7 @@ export interface SkillEditorHandle {
    * composition), so the caller does not dismiss its own affordance for a skill
    * that never landed. */
   insertSkill(start: number, end: number, name: string): boolean;
+  insertCommand(start: number, end: number, name: string): boolean;
 }
 
 export interface SkillEditorProps {
@@ -53,6 +56,7 @@ export interface SkillEditorProps {
   "aria-controls"?: string;
   "aria-activedescendant"?: string;
   skillDetails?(name: string): string;
+  commandDetails?(name: string): string;
 }
 
 function deleteAtom(direction: -1 | 1): Command {
@@ -60,7 +64,7 @@ function deleteAtom(direction: -1 | 1): Command {
     if (!state.selection.empty) return deleteSelection(state, dispatch);
     const { $from } = state.selection;
     const adjacent = direction === -1 ? $from.nodeBefore : $from.nodeAfter;
-    if (adjacent?.type !== skillSchema.nodes.skill) return false;
+    if (!adjacent || adjacent.isText) return false;
     const from = direction === -1 ? $from.pos - adjacent.nodeSize : $from.pos;
     dispatch?.(closeHistory(state.tr.delete(from, from + adjacent.nodeSize)));
     return true;
@@ -137,18 +141,12 @@ const externalSync = "skillEditorExternalSync";
 
 /** Length of the leading run two serialized values share. */
 function sharedPrefixLength(before: string, after: string): number {
-  const limit = Math.min(before.length, after.length);
-  let index = 0;
-  while (index < limit && before[index] === after[index]) index++;
-  return index;
+  return documentSharedPrefixLength(before, after);
 }
 
 /** Length of the trailing run two serialized values share, past `prefix`. */
 function sharedSuffixLength(before: string, after: string, prefix: number): number {
-  const limit = Math.min(before.length, after.length) - prefix;
-  let count = 0;
-  while (count < limit && before[before.length - 1 - count] === after[after.length - 1 - count]) count++;
-  return count;
+  return documentSharedSuffixLength(before, after, prefix);
 }
 
 function createState(value: SkillEditorValue): EditorState {
@@ -176,9 +174,59 @@ function createState(value: SkillEditorValue): EditorState {
 }
 
 function updateDetails(dom: HTMLElement, name: string, props: SkillEditorProps) {
-  const details = props.skillDetails?.(name) ?? name;
+  const details = (dom.dataset.commandName ? props.commandDetails?.(name) : props.skillDetails?.(name)) ?? name;
   dom.title = details;
   dom.setAttribute("aria-label", `/${name}: ${details}`);
+}
+
+function createAtomView(node: ProseMirrorNode, kind: "skill" | "command", props: SkillEditorProps) {
+  const dom = document.createElement("span");
+  dom.className = styles.skill ?? "";
+  dom.dataset[kind === "skill" ? "skillName" : "commandName"] = node.attrs.name;
+  dom.dataset.testid = `composer-${kind}-chip`;
+  dom.setAttribute("contenteditable", "false");
+  dom.setAttribute("role", "note");
+  dom.textContent = `/${node.attrs.name}`;
+  updateDetails(dom, node.attrs.name, props);
+  return { dom };
+}
+
+function sameEditorValue(a: SkillEditorValue, b: SkillEditorValue): boolean {
+  return (
+    a.text === b.text &&
+    a.skillNames.length === b.skillNames.length &&
+    a.skillNames.every((name, index) => b.skillNames[index] === name) &&
+    JSON.stringify(a.commandNames ?? []) === JSON.stringify(b.commandNames ?? []) &&
+    JSON.stringify(a.mentions ?? []) === JSON.stringify(b.mentions ?? [])
+  );
+}
+
+function insertAtom(
+  view: EditorView | null,
+  start: number,
+  end: number,
+  name: string,
+  kind: "skill" | "command",
+): boolean {
+  if (!view || view.composing) return false;
+  const { doc } = view.state;
+  const from = textOffsetToDocumentPosition(doc, start);
+  const to = textOffsetToDocumentPosition(doc, end, 1);
+  const suffix = doc.textBetween(to, doc.content.size);
+  // Ask the parser's own rule whether the label already reads as a whole
+  // reference with nothing added - punctuation that bounds it needs no
+  // separator (`/review,`, and `/review. ` because a dot before a
+  // non-token character is sentence punctuation). Only text that would
+  // join the reference (or an empty suffix) gets a space.
+  const separator = suffix !== "" && completeSkillReferenceAt(`/${name}${suffix}`, 0, [name]) === name ? "" : " ";
+  const content = [skillSchema.nodes[kind].create({ name })];
+  if (separator) content.push(skillSchema.text(separator));
+  const inserted = content.reduce((size, node) => size + node.nodeSize, 0);
+  const tr = closeHistory(view.state.tr.replaceWith(from, to, content));
+  tr.setSelection(TextSelection.create(tr.doc, from + inserted));
+  view.dispatch(tr);
+  view.focus();
+  return true;
 }
 
 /** A controlled value boundary around a persistent real ProseMirror editor. */
@@ -219,28 +267,8 @@ export const SkillEditor = forwardRef<SkillEditorHandle, SkillEditorProps>(funct
         const to = start === end ? from : textOffsetToDocumentPosition(view.state.doc, end, 1);
         view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, from, to)));
       },
-      insertSkill: (start, end, name) => {
-        const view = viewRef.current;
-        if (!view || view.composing) return false;
-        const { doc } = view.state;
-        const from = textOffsetToDocumentPosition(doc, start);
-        const to = textOffsetToDocumentPosition(doc, end, 1);
-        const suffix = doc.textBetween(to, doc.content.size);
-        // Ask the parser's own rule whether the label already reads as a whole
-        // reference with nothing added - punctuation that bounds it needs no
-        // separator (`/review,`, and `/review. ` because a dot before a
-        // non-token character is sentence punctuation). Only text that would
-        // join the reference (or an empty suffix) gets a space.
-        const separator = suffix !== "" && completeSkillReferenceAt(`/${name}${suffix}`, 0, [name]) === name ? "" : " ";
-        const content = [skillSchema.nodes.skill.create({ name })];
-        if (separator) content.push(skillSchema.text(separator));
-        const inserted = content.reduce((size, node) => size + node.nodeSize, 0);
-        const tr = closeHistory(view.state.tr.replaceWith(from, to, content));
-        tr.setSelection(TextSelection.create(tr.doc, from + inserted));
-        view.dispatch(tr);
-        view.focus();
-        return true;
-      },
+      insertSkill: (start, end, name) => insertAtom(viewRef.current, start, end, name, "skill"),
+      insertCommand: (start, end, name) => insertAtom(viewRef.current, start, end, name, "command"),
     }),
     [],
   );
@@ -265,17 +293,8 @@ export const SkillEditor = forwardRef<SkillEditorHandle, SkillEditorProps>(funct
           }
         },
         nodeViews: {
-          skill: (node) => {
-            const dom = document.createElement("span");
-            dom.className = styles.skill ?? "";
-            dom.dataset.skillName = node.attrs.name;
-            dom.dataset.testid = "composer-skill-chip";
-            dom.setAttribute("contenteditable", "false");
-            dom.setAttribute("role", "note");
-            dom.textContent = `/${node.attrs.name}`;
-            updateDetails(dom, node.attrs.name, latest.current);
-            return { dom };
-          },
+          skill: (node) => createAtomView(node, "skill", latest.current),
+          command: (node) => createAtomView(node, "command", latest.current),
         },
         // Never parse clipboard HTML, even if it contains our data attributes.
         handlePaste: (_view, event) => {
@@ -302,10 +321,7 @@ export const SkillEditor = forwardRef<SkillEditorHandle, SkillEditorProps>(funct
     const current = serializeSkillDocument(view.state.doc);
     // Compare the serialized boundary BEFORE parsing. A plain pasted /name must
     // not become an atom just because an earlier mention selected that name.
-    const echo =
-      current.text === props.value.text &&
-      current.skillNames.length === props.value.skillNames.length &&
-      current.skillNames.every((name, index) => props.value.skillNames[index] === name);
+    const echo = sameEditorValue(current, props.value);
     // Consumed on every pass, even when the value already matches: a restore
     // whose value happens to equal what is on screen is still spent, and leaving
     // it pending would make the next ordinary patch look authoritative.
@@ -346,11 +362,7 @@ export const SkillEditor = forwardRef<SkillEditorHandle, SkillEditorProps>(funct
       // became keeps the composer's text, its draft and the screen saying the
       // same thing.
       const settled = serializeSkillDocument(view.state.doc);
-      if (
-        settled.text !== props.value.text ||
-        settled.skillNames.length !== props.value.skillNames.length ||
-        !settled.skillNames.every((name, index) => props.value.skillNames[index] === name)
-      ) {
+      if (!sameEditorValue(settled, props.value)) {
         latest.current.onChange(settled, documentPositionToTextOffset(view.state.doc, view.state.selection.head));
       }
     }
@@ -368,8 +380,8 @@ export const SkillEditor = forwardRef<SkillEditorHandle, SkillEditorProps>(funct
       },
     });
     view.dom.style.minHeight = `${props.minLines ?? 2}lh`;
-    for (const dom of view.dom.querySelectorAll<HTMLElement>("[data-skill-name]")) {
-      updateDetails(dom, dom.dataset.skillName ?? "", props);
+    for (const dom of view.dom.querySelectorAll<HTMLElement>("[data-skill-name], [data-command-name]")) {
+      updateDetails(dom, dom.dataset.skillName ?? dom.dataset.commandName ?? "", props);
     }
   });
 

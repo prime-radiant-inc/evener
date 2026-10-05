@@ -2122,6 +2122,89 @@ async function layOut(tree: ReactTestRenderer) {
 }
 const writing = session("local:write", { title: "Write tests", state: "active", updated_at: minutesAgo(1) });
 
+it("keeps a later-page parent's Working pulse and failed count through questions, refresh and reconnect", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const parent = session("local:parent", {
+		title: "Coordinate children",
+		state: "awaiting",
+		subagents: { running: 1, failed: 1, done: 0 },
+	});
+	const shape: Fleet = { ...fleet, live: [[working], [parent]], needsYou: [], pins: [], pinned: {} };
+	const fake = hub(shape);
+	connect(id, fake.client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	await layOut(tree);
+	expect(liveReads(fake)).toEqual([0, 1]);
+	const assertWorking = () => {
+		const row = rowTitled(tree, parent.title);
+		expect(stateOf(tree, parent.title)).toBe("Working");
+		expect(row.findAllByType(PulseMeter)).toHaveLength(1);
+		expect(row.props.accessibilityLabel).toContain("1 failed");
+		expect(textsIn(row)).toEqual(expect.arrayContaining(["1 running", "1 failed"]));
+	};
+	assertWorking();
+	const refresh = async (sequence: number) => {
+		act(() =>
+			fake.invalidate(sequence, [
+				{ kind: "section", section: "live" },
+				{ kind: "section", section: "needs_you" },
+			]),
+		);
+		await settle();
+		await layOut(tree);
+	};
+	const question = { ...parent, ask_pending: true };
+	shape.live = [[working], [question]];
+	shape.needsYou = [question];
+	await refresh(1);
+	expect(stateOf(tree, parent.title)).toBe("Question");
+	expect(bandHeaders(tree)).toContain("NEEDS YOU · 1");
+	expect(rowTitled(tree, parent.title).findAllByType(PulseMeter)).toEqual([]);
+	expect(rowTitled(tree, parent.title).props.accessibilityLabel).toContain("1 failed");
+	shape.live = [[working], [parent]];
+	shape.needsYou = [];
+	await refresh(2);
+	assertWorking();
+	// An unchanged refresh must retain the later page's classification too.
+	await refresh(3);
+	assertWorking();
+	const beforeReconnect = fake.requests.length;
+	connect(id, null, "reconnecting");
+	rerender(tree, nav);
+	expect(stateOf(tree, parent.title)).toBe("Working");
+	connect(id, fake.client, "ready");
+	rerender(tree, nav);
+	await settle();
+	await layOut(tree);
+	assertWorking();
+	expect(
+		fake.requests
+			.slice(beforeReconnect)
+			.filter((read) => read.section === "live")
+			.map((read) => read.offset),
+	).toEqual([0, 1]);
+	shape.live = [[working], [{ ...parent, subagents: { running: 0, failed: 1, done: 1 } }]];
+	await refresh(4);
+	expect(stateOf(tree, parent.title)).toBe("Finished");
+	expect(rowTitled(tree, parent.title).findAllByType(PulseMeter)).toEqual([]);
+	expect(rowTitled(tree, parent.title).props.accessibilityLabel).toContain("1 failed");
+	// The retained failure still has the same session and row-menu entry points.
+	act(() => rowTitled(tree, parent.title).props.onLongPress());
+	expect(nav.navigate).toHaveBeenLastCalledWith("RowMenuSheet", { hubId: id, ref: parent.ref, archived: false });
+	const menu = menuHost(id);
+	expect(menu.item(parent.ref, false)?.row.subagents).toEqual({ running: 0, failed: 1, done: 1 });
+	act(() => menu.closed());
+	act(() => rowTitled(tree, parent.title).props.onPress());
+	expect(nav.navigate).toHaveBeenLastCalledWith("Conversation", { hubId: id, ref: parent.ref, title: parent.title });
+	await settle();
+	pressLabel(tree, "Idle, 1 session");
+	expect(stateOf(tree, parent.title)).toBe("Idle");
+	expect(rowTitled(tree, parent.title).props.accessibilityLabel).toContain("1 failed");
+	act(() => tree.unmount());
+});
+
 it("reads a failed later Live page again after the backoff, keeping the loaded rows on screen", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
@@ -2341,6 +2424,7 @@ const screenOverBoard = {
 		{ key: "conversation", name: "Conversation" },
 	],
 };
+const boardAlone = { index: 0, routes: [{ key: "Sessions", name: "Sessions" }] };
 
 it("polls activity while the Board is in front and connected, a sheet over it included, and stops otherwise", async () => {
 	const id = hubId();
@@ -2364,7 +2448,7 @@ it("polls activity while the Board is in front and connected, a sheet over it in
 	await advance(ACTIVITY_POLL_MS * 3);
 	expect(fake.activityReads).toHaveLength(3);
 
-	harness.stack = { index: 0, routes: [{ key: "Sessions", name: "Sessions" }] };
+	harness.stack = boardAlone;
 	setFocused(true);
 	expect(fake.activityReads).toHaveLength(4);
 
@@ -2606,6 +2690,31 @@ it("keeps a row's Working order in step with its label when elapsed time alone c
 	// not up to a poll interval later (the label reads msSinceRead live; the
 	// sort order used to wait for the next successful read).
 	expect(workingTitles(tree)).toEqual(["Migrate schema", "Build docs", "Tidy imports"]);
+	act(() => tree.unmount());
+});
+
+it("keeps a fresh read through leaving front, so coming back shows each row's activity at once", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const shape: Fleet = { ...busyFleet, activity: [migrateRead(4)] };
+	const fake = hub(shape);
+	connect(id, fake.client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	expect(textsIn(rowTitled(tree, "Migrate schema"))).toContain("Quiet 4m");
+
+	harness.stack = screenOverBoard;
+	rerender(tree, nav);
+	await settle();
+	// Back within the read's freshness window, with the first read after the
+	// return failing: the read from before still shows, with no round trip of
+	// fallback lines.
+	shape.activity = null;
+	harness.stack = boardAlone;
+	rerender(tree, nav);
+	await settle();
+	expect(fake.activityReads).toHaveLength(2);
+	expect(textsIn(rowTitled(tree, "Migrate schema"))).toContain("Quiet 4m");
 	act(() => tree.unmount());
 });
 

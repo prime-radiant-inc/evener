@@ -1199,6 +1199,58 @@ describe("row rendering", () => {
     expect(row.textContent).not.toMatch(/\[skill\](\s|$)/);
   });
 
+  test.each([
+    { preview: "[command]", commandNames: ["probe"], display: "[command: probe]" },
+    { preview: "[2 commands]", commandNames: ["a", "b"], display: "[command: a] [command: b]" },
+  ])("a command-only authoritative row replaces $preview with named markers", async (entry) => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a", {
+      evener: {
+        ref: "ref_a",
+        capabilities: { ...CAPABILITIES, commandInput: true },
+        queue: {
+          revision: 0,
+          depth: 1,
+          ids: ["q1"],
+          texts: [""],
+          preview: [entry.preview],
+          commandNames: [entry.commandNames],
+        },
+      },
+    });
+    renderStrip(defaultProps());
+
+    const row = await screen.findByRole("listitem");
+    expect(within(row).getByText(entry.display)).toBeTruthy();
+    expect(row.textContent).not.toContain(entry.preview);
+  });
+
+  test.each([
+    { text: "[command]", commandNames: ["probe"], display: "[command] [command: probe]" },
+    { text: "[command]", commandNames: [], display: "[command]" },
+    { text: "[skill]", commandNames: ["probe"], display: "[skill] [command: probe]" },
+  ])("an authoritative row preserves literal $text prose with $commandNames", async (entry) => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a", {
+      evener: {
+        ref: "ref_a",
+        capabilities: { ...CAPABILITIES, commandInput: true },
+        queue: {
+          revision: 0,
+          depth: 1,
+          ids: ["q1"],
+          texts: [entry.text],
+          preview: [entry.text],
+          commandNames: [entry.commandNames],
+        },
+      },
+    });
+    renderStrip(defaultProps());
+
+    const row = await screen.findByRole("listitem");
+    expect(within(row).getByText(entry.display)).toBeTruthy();
+  });
+
   // Only the generic skill placeholder is redundant with the named markers.
   // An entry that also holds an image must keep its image placeholder: dropping
   // every preview for a no-prose entry would silently hide the attachment.

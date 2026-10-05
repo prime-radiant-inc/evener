@@ -6,7 +6,11 @@ one-line status and title; its title HoverCard exposes the summary's project,
 host, branch, running-job, subagent, watch, pin-section, tier and age context. This remains a
 navigation-domain read. Hovering the title or focusing its tree row reveals that
 context; on a hoverless device, a long press on the title reveals it, and a tap
-activates the session. Reading a session's activity is a separate operation, so
+activates the session. The card floats beside the sidebar, aligned with the row,
+with viewport-aware above/below fallback in the sessions drawer or a narrow
+window. Scroll and resize cancel visible and pending reveals; a fresh gesture
+opens it at the new position. See the [placement contract](../web-ui/design-system.md).
+Reading a session's activity is a separate operation, so
 browsing navigation does not load every session's work tree.
 
 Transcript delegate cards and status indicators use the same
@@ -21,6 +25,41 @@ unknown generations retain revision ordering without inferred settlement. Each
 selected entity remains one whole snapshot, so resumed status is not combined
 with a previous generation's report. These labels reuse the
 transcript's existing activity binding without adding reads or subscriptions.
+
+## Navigation session status
+
+A top-level session's Broken/Failed status comes from its own `errored` state.
+Retained failed subagents remain in the web title context, phone activity history
+and Agents/Subagents detail views without making a healthy parent look broken.
+
+The existing live compact navigation summary supplies running-subagent work.
+The web rail shows its Running spinner; the phone Board classifies the parent
+as Working, using its existing pulse meter in Live and static mark elsewhere.
+This applies to quiet parents and nonblocking warnings, including mixed running
+and failed children. Questions and approvals keep their attention presentation.
+Warnings carrying a question or approval remain attention states. Own failure,
+restart-required and existing unavailable-session presentations remain unchanged.
+
+Question resolution returns to working presentation while children run. Once
+the last running child settles, each client resumes its normal parent-state and
+quiet/completion presentation, even with retained failures. Refresh and reconnect
+apply the same rule to newly delivered summaries without clearing failure history
+or changing session lifecycle state.
+
+The phone's [alert feed](../../mobile-native/src/alerts/alertEvents.ts) follows
+Board bands. A new nonblocking Warning waits while live children run. A warning
+that remains alerts when the last child settles; one that clears first never
+alerts. Warnings carrying a pending question or approval remain immediately
+eligible. First-read and offline rules still apply. Combined banners, Needs you
+counts and Next navigation use the same Board attention membership.
+
+The browser's [`effectiveSessionState`](../../cmd/evener-hub/frontend/src/shell/rail/RailRow.tsx)
+and the phone's [`boardState`](../../mobile-native/src/board/attention.ts) own
+these projections. The browser uses the shared navigation store; the phone keeps
+its existing BoardController/NavigationPages delivery and shared decoding.
+Both reuse the [shared live tally selector](../../appwire-client/typescript/state/navigation/selectors.ts).
+Status does not reconstruct counts from loaded child rows or acquire activity
+collection demand. Hub aggregation and domain activity authority stay independent.
 
 ## APIs and ownership
 
@@ -455,7 +494,8 @@ failures preserve useful history. Transient reads keep the existing hydration
 and activity recovery owners, so a recovered child becomes readable in place.
 
 Return restores the original pane type, ref and live source state: draft,
-selected skills, staged attachments, pending encodes, queued inputs and mutation
+selected skills and commands, text-owned UTF-16 mention locations, staged
+attachments, pending encodes, queued inputs and mutation
 identity. Promotion does not submit or replay input. An explicit Open conversation
 opens or focuses an ordinary independent session pane. Unrelated panes keep
 their identity and placement.
@@ -468,12 +508,13 @@ fenced by ownership of that shared draft.
 
 Closing the source pane or resetting the workspace retires that source lifetime.
 A fresh pane with the same ID and ref owns a new lifetime. Late recovery-write
-or acceptance completion cannot change its draft, skill selections, attachments
+or acceptance completion cannot change its draft, skill/command selections, mention locations, attachments
 or active recovery identity. Already durable input still belongs to the existing
 mutation dispatcher; retiring its editor does not cancel accepted work.
 
 Saved workspace intent contains the selected ref, validated ordered edges and
-return descriptor. Draft text and skill selections use their existing stores.
+return descriptor. Draft text, skill/command selections and mention locations use
+their existing stores through the pane-owned composer source.
 On desktop startup, AppShell recognizes a saved cascade's source as the initial
 route role before route placement completes. A matching source keeps the saved
 edges, pane identities and neighboring panes when the restored workspace meets
@@ -552,6 +593,17 @@ The shared
 starts settled done/cancelled task history folded. Current and Remaining task sections
 remain visible. Task details
 remain an explicit disclosure choice.
+
+The browser Tasks tab keeps its done/total count in the tab label and starts its
+body with the task groups, without aggregate summary lines above them. The
+standalone Tasks pane and Tasks Sheet retain their aggregate headers and trigger
+labels. Loading, unavailable and empty states remain visible; a failed refresh
+retains loaded rows and the existing retry control.
+
+Agents, Jobs, Watches and Tasks use `var(--space-1)` vertical and
+`var(--space-2)` horizontal row padding. Disclosure rows apply that padding once
+at their summary boundary; nested watch content adds no inset. The shared
+viewport padding and About field layout remain independent of row spacing.
 
 The [Activity viewport](../../cmd/evener-hub/frontend/src/shell/activitybar/ActivityViewport.tsx)
 restores the retained row after its collection and disclosures render. A row

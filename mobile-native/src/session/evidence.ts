@@ -25,6 +25,7 @@ import {
 	webFetchResult,
 	worktreeMessage,
 } from "@evener/appwire-client";
+import { INLINE_DESTINATION } from "../markdownLinks";
 import type { ActivityDetail, DetailTask } from "../projectedRows";
 import type { RunStep } from "../timeline";
 
@@ -68,11 +69,38 @@ function rawOutput(text: string): Evidence[] {
 	return text ? [{ kind: "output", text, lines: lineCount(text) }] : [];
 }
 
+// An image: ![alt] and then its (url) or (url "title") (INLINE_DESTINATION),
+// or its [ref]. A URL the pattern can't take whole leaves some of itself as
+// text, but ![alt] is always taken, so the image is gone.
+const IMAGE_RE = new RegExp(String.raw`!\[([^\]]*)\](?:${INLINE_DESTINATION}|\[[^\]]*\])?`, "g");
+
 // A skill's markdown is its author's, and the phone's markdown view loads
 // images from their URLs, so each image, inline (![alt](url)), by reference
-// (![alt][ref]) or shortcut (![alt]), reads as its alt text instead.
+// (![alt][ref]) or shortcut (![alt]), reads as its alt text instead. An image
+// needs "](" in its paragraph, or a reference definition, which needs "]:", so
+// a paragraph with neither reads as written, keeping code like vec![1, 2, 3].
+// If the markdown holds a "]:", or stripping writes one ([r]![](u): ...), the
+// whole markdown goes through withoutAnyImages.
 function withoutImages(markdown: string): string {
-	return markdown.replace(/!\[([^\]]*)\](?:\([^)]*\)|\[[^\]]*\])?/g, "$1");
+	if (markdown.includes("]:")) return withoutAnyImages(markdown);
+	const text = markdown
+		.split(/(\n[ \t\r]*\n)/)
+		.map((paragraph) => (paragraph.includes("](") ? withoutAnyImages(paragraph) : paragraph))
+		.join("");
+	return text.includes("]:") ? withoutAnyImages(markdown) : text;
+}
+
+// Taking out an image can complete another (![a ![b](u)](v) leaves a
+// ![b](v)), so this repeats until none is left. Each pass shortens the text,
+// so it ends.
+function withoutAnyImages(markdown: string): string {
+	let text = markdown;
+	let before: string;
+	do {
+		before = text;
+		text = text.replace(IMAGE_RE, "$1");
+	} while (text !== before);
+	return text;
 }
 
 // What the shell tool's footer says besides the exit.

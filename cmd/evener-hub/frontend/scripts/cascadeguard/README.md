@@ -32,6 +32,12 @@ The guard checks:
 - Original panel identity, draft, a catalog skill and exact processed PNG bytes.
 - Native canvas completion held across promotion, both successful settlement
   and explicit failure, while preserving a newer source draft.
+- Same-spelling project command, skill and inert prose with exact UTF-16 atom
+  offsets and persisted metadata after detached image failure and Return.
+  Two retained PNGs surround the atoms, then a held native IndexedDB receipt
+  strips each submitted marker independently from a newer detached draft.
+  Actual command expansion uses empty arguments, and the provider and public
+  transcript independently verify the original mixed input arrives once.
 - An actual committed IndexedDB transaction with its application acknowledgement
   held, and an actual held provider call with queued input. Promotion and Return
   retain the original recipient and mutation IDs; the provider and public

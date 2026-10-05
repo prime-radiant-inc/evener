@@ -1,4 +1,9 @@
-import type { ActivityTree, EvenerDelegateInfo } from "@evener/appwire-client";
+import {
+	type ActivityTree,
+	type EvenerDelegateInfo,
+	itemIdentityMatches,
+	type TurnModel,
+} from "@evener/appwire-client";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -13,6 +18,7 @@ import { rowDisclosureIds } from "./session/disclosureKeys";
 import type { ErrorAction } from "./session/errorAction";
 import { ErrorRow } from "./session/ErrorRow";
 import { NotificationCards } from "./session/NotificationCards";
+import { ApprovalHistory } from "./session/ApprovalHistory";
 import { QuestionHistory } from "./session/QuestionHistory";
 import { RunRow } from "./session/RunRow";
 import { SubagentRow } from "./session/SubagentRow";
@@ -30,6 +36,7 @@ export function TimelineItem({
 	item,
 	hubId,
 	sessionRef,
+	sourceTurns,
 	activityPresentation,
 	expandByDefault = false,
 	showDuration = true,
@@ -49,6 +56,8 @@ export function TimelineItem({
 	item: TimelineRow;
 	hubId: string;
 	sessionRef: string;
+	/** Retained canonical turns, read only when a shared-notes snapshot opens. */
+	sourceTurns?: readonly TurnModel[];
 	activityPresentation?: ActivityPresentation;
 	expandByDefault?: boolean;
 	showDuration?: boolean;
@@ -96,6 +105,16 @@ export function TimelineItem({
 	const quietThought = item.kind === "failure" && item.thought === true && item.title !== "Thought failed";
 	const textScale = useTextScale();
 	const label = item.kind === "notice" ? noticeLabel(item) : undefined;
+	const noticeText = useMemo(() => {
+		if (item.kind !== "notice") return undefined;
+		if (!expanded || item.origin !== "system" || item.eventKind !== "notes-context" || !sourceTurns) return item.text;
+		// List rows stay bounded. Only an opened notes disclosure reads the
+		// full opaque payload from the canonical model already held by the store.
+		return (
+			sourceTurns.find((turn) => turn.id === item.turnId)?.items.find((source) => itemIdentityMatches(source, item))
+				?.text ?? item.text
+		);
+	}, [expanded, item, sourceTurns]);
 	let content: ReactNode;
 	switch (item.kind) {
 		case "details":
@@ -107,6 +126,7 @@ export function TimelineItem({
 							item={entry}
 							hubId={hubId}
 							sessionRef={sessionRef}
+							sourceTurns={sourceTurns}
 							errorActionFor={errorActionFor}
 							onErrorAction={onErrorAction}
 						/>
@@ -142,7 +162,11 @@ export function TimelineItem({
 				</>
 			);
 			break;
-		case "notice":
+		case "notice": {
+			if (item.family === "approval") {
+				content = <ApprovalHistory text={item.text} decidedAtMs={item.decidedAtMs} />;
+				break;
+			}
 			if (item.notifications) {
 				content = (
 					<NotificationCards
@@ -163,11 +187,12 @@ export function TimelineItem({
 					attention={item.tone === "attention"}
 				/>
 			) : (
-				<SystemEvent label={label} text={item.text} hint={item.hint} expanded={expanded} onToggle={toggle}>
+				<SystemEvent label={label} text={noticeText} hint={item.hint} expanded={expanded} onToggle={toggle}>
 					{item.rendersMarkdown ? <MarkdownResponse markdown={item.text} /> : undefined}
 				</SystemEvent>
 			);
 			break;
+		}
 		case "failure":
 			if (quietThought) {
 				content = (

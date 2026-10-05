@@ -205,7 +205,7 @@ it("asks the outbox flush to look once it lets go of its session, so a message s
 	expect(outbox.flush).toHaveBeenCalledTimes(1);
 });
 
-it("shows a refused message as a ghost above the composer, row-conditional under the #2247 contract", async () => {
+it("shows a refused message as a ghost at the transcript's end, row-conditional under the #2247 contract", async () => {
 	harness.connection = {
 		...screenConnection(pendingClient(), "ready"),
 		error: null,

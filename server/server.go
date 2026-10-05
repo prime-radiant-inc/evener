@@ -172,17 +172,18 @@ type HookEventStatus struct {
 
 // DetailedStatus captures the full session configuration for AppWire diagnostics.
 type DetailedStatus struct {
-	Tools            []ToolInfo              `json:"tools,omitempty"`
-	MCP              []MCPServerInfo         `json:"mcp,omitempty"`
-	Skills           []SkillInfo             `json:"skills,omitempty"`
-	SkillDiagnostics []SkillDiagnosticInfo   `json:"skill_diagnostics,omitempty"`
-	Plugins          []PluginStatusInfo      `json:"plugins,omitempty"`
-	HookEvents       []HookEventStatus       `json:"hook_events,omitempty"`
-	Jobs             []JobStatusInfo         `json:"jobs,omitempty"`
-	Delegates        []DelegateStatusInfo    `json:"delegates,omitempty"`
-	Watches          []agent.WatchStatusInfo `json:"watches,omitempty"`
-	TurnSlots        *TurnSlotStatus         `json:"turn_slots,omitempty"`
-	Agents           []string                `json:"agents,omitempty"`
+	Commands         []appwire.CommandDescriptor `json:"commands,omitzero"`
+	Tools            []ToolInfo                  `json:"tools,omitempty"`
+	MCP              []MCPServerInfo             `json:"mcp,omitempty"`
+	Skills           []SkillInfo                 `json:"skills,omitempty"`
+	SkillDiagnostics []SkillDiagnosticInfo       `json:"skill_diagnostics,omitempty"`
+	Plugins          []PluginStatusInfo          `json:"plugins,omitempty"`
+	HookEvents       []HookEventStatus           `json:"hook_events,omitempty"`
+	Jobs             []JobStatusInfo             `json:"jobs,omitempty"`
+	Delegates        []DelegateStatusInfo        `json:"delegates,omitempty"`
+	Watches          []agent.WatchStatusInfo     `json:"watches,omitempty"`
+	TurnSlots        *TurnSlotStatus             `json:"turn_slots,omitempty"`
+	Agents           []string                    `json:"agents,omitempty"`
 }
 
 // SkillDiagnosticInfo is one Stage 1 skill-discovery diagnostic (collision,

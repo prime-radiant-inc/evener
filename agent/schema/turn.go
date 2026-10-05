@@ -64,6 +64,8 @@ const (
 	// UIs render it as harness chrome, not user speech. The persisted note is
 	// the source of truth; each turn carries a fresh projection of it.
 	TurnNotesContext TurnKind = "NOTES_CONTEXT"
+	// TurnMemoryContext carries a lower-trust, scope-labelled index projection.
+	TurnMemoryContext TurnKind = "MEMORY_CONTEXT"
 	// TurnAttentionResolution records the terminal disposition of one durable
 	// attention item. Provider projection excludes it; generic presentation may
 	// retain the marker while hiding its private metadata.
@@ -157,6 +159,10 @@ const (
 	NoticeGoalEnded      NoticeKind = "goal_ended"
 	NoticeTurnLimit      NoticeKind = "turn_limit"
 	NoticeSkillActivated NoticeKind = "skill_activated"
+	// NoticeApprovalDecision records a human's Allow or Deny on a sandbox
+	// escalation (S16). It has no live notice of its own: the escalation's
+	// card is the live form, and this is its history.
+	NoticeApprovalDecision NoticeKind = "approval_decision"
 )
 
 // NoticeInfo is a persisted presentational notice: its kind and exactly one
@@ -168,6 +174,8 @@ type NoticeInfo struct {
 	GoalEnded      *GoalEndedNotice      `json:"goal_ended,omitempty"`
 	TurnLimit      *TurnLimitNotice      `json:"turn_limit,omitempty"`
 	SkillActivated *SkillActivatedNotice `json:"skill_activated,omitempty"`
+	// ApprovalDecision rides a NoticeApprovalDecision notice.
+	ApprovalDecision *ApprovalDecisionNotice `json:"approval_decision,omitempty"`
 }
 
 // Validate enforces NoticeInfo's own doc contract: exactly one of the payload
@@ -179,10 +187,11 @@ func (n NoticeInfo) Validate() error {
 	matched := false
 	count := 0
 	for kind, present := range map[NoticeKind]bool{
-		NoticeToolRepair:     n.ToolRepair != nil,
-		NoticeGoalEnded:      n.GoalEnded != nil,
-		NoticeTurnLimit:      n.TurnLimit != nil,
-		NoticeSkillActivated: n.SkillActivated != nil,
+		NoticeToolRepair:       n.ToolRepair != nil,
+		NoticeGoalEnded:        n.GoalEnded != nil,
+		NoticeTurnLimit:        n.TurnLimit != nil,
+		NoticeSkillActivated:   n.SkillActivated != nil,
+		NoticeApprovalDecision: n.ApprovalDecision != nil,
 	} {
 		if !present {
 			continue
@@ -221,6 +230,18 @@ type GoalEndedNotice struct {
 type TurnLimitNotice struct {
 	MaxTurns              int `json:"max_turns,omitempty"`
 	MaxToolRoundsPerInput int `json:"max_tool_rounds_per_input,omitempty"`
+}
+
+// ApprovalDecisionNotice is a human's decision on one sandbox escalation: the
+// escalation it answered, whether it was allowed, and what the card asked
+// about (the denied tool, the card's kind and the path). It carries what the
+// card showed and nothing else, never file contents.
+type ApprovalDecisionNotice struct {
+	EscalationID string `json:"escalation_id"`
+	Approved     bool   `json:"approved"`
+	Tool         string `json:"tool"`
+	Kind         string `json:"kind"`
+	DeniedPath   string `json:"denied_path"`
 }
 
 // SkillActivatedNotice mirrors events.SkillActivatedData.
@@ -373,7 +394,8 @@ type Turn struct {
 	// ClientMutationID identifies retry-safe client-authored input. StableTurnID
 	// preserves the logical turn identity across live events and transcript
 	// recovery for both client input and daemon goal continuations.
-	ClientMutationID string `json:"client_mutation_id,omitempty"`
+	ClientMutationID string              `json:"client_mutation_id,omitempty"`
+	CommandInput     *CommandInputRecord `json:"command_input,omitempty"`
 	// Communicate carries a delivered message on TurnCommunicate entries.
 	Communicate *CommunicateInfo `json:"communicate,omitempty"`
 	// Completion carries how an execution ended on TurnCompletion entries.

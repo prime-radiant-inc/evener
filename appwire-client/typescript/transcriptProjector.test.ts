@@ -549,6 +549,28 @@ describe("transcript projector", () => {
     });
   });
 
+  // A human's Allow or Deny is a decision they made, like a question's
+  // answer, so its history row shows at every level, system events off.
+  test("an approval decision shows at every level", () => {
+    const model = threadWith(
+      item("approval", "systemMessage", {
+        eventKind: "approval_decision",
+        text: "Allowed write_file to access /tmp/a",
+        raw: { approvalDecision: { approved: true, tool: "write_file", kind: "file_tool", deniedPath: "/tmp/a" } },
+      }),
+    );
+    const quietest = custom({ toolIntent: false, toolCalls: false, reasoning: false, expandByDefault: false });
+    const configs = [
+      ...(["chat", "intent", "tools", "activity", "full"] as const).map((level) =>
+        preset(level, { systemEvents: false }),
+      ),
+      quietest,
+    ];
+    for (const config of configs) {
+      expect(entriesFor(model, config)).toEqual([expect.objectContaining({ kind: "item", id: "approval" })]);
+    }
+  });
+
   describe("tool-repair notices", () => {
     const repair = () =>
       item("repair", "systemMessage", {
@@ -655,13 +677,42 @@ describe("transcript projector", () => {
     ]);
   });
 
-  test("governs the notes-context event with Advanced systemEvents", () => {
+  test("hides notes-context at Conversation even with System events enabled", () => {
     const model = threadWith(item("notes-context", "systemMessage", { eventKind: "notes-context" }));
 
     expect(entriesFor(model, preset("chat"))).toEqual([]);
-    expect(entriesFor(model, preset("chat", { systemEvents: true }))).toEqual([
-      expect.objectContaining({ kind: "item", id: "notes-context" }),
-    ]);
+    const projection = projectThread(model, preset("chat", { systemEvents: true }));
+    expect(projection.turns[0]?.entries).toEqual([]);
+    expect(projection.turns[0]?.visibleItems).toEqual([]);
+    expect(projection.anchors).toEqual([]);
+  });
+
+  test.each(["intent", "tools", "activity", "full"] as const)(
+    "governs notes-context with System events at %s",
+    (level) => {
+      const model = threadWith(item("notes-context", "systemMessage", { eventKind: "notes-context" }));
+      expect(entriesFor(model, preset(level))).toEqual([]);
+      expect(entriesFor(model, preset(level, { systemEvents: true }))).toEqual([
+        expect.objectContaining({ kind: "item", id: "notes-context" }),
+      ]);
+    },
+  );
+
+  test.each(["failed", "interrupted"] as const)("never resurrects hidden notes in a %s turn", (status) => {
+    for (const error of [undefined, { message: "model call failed" }]) {
+      const model = {
+        ...BASE_THREAD,
+        turns: [
+          { id: "turn-1", status, error, items: [item("notes", "systemMessage", { eventKind: "notes-context" })] },
+        ],
+      } as ThreadModel;
+      for (const level of ["chat", "intent", "tools", "activity", "full"] as const) {
+        expect(entriesFor(model, preset(level))).toEqual([]);
+        expect(entriesFor(model, preset(level, { systemEvents: true }))).toEqual(
+          level === "chat" ? [] : [expect.objectContaining({ id: "notes" })],
+        );
+      }
+    }
   });
 
   test("covers every current event kind with Advanced diagnostics enabled", () => {
@@ -695,17 +746,18 @@ describe("transcript projector", () => {
       ),
     );
 
-    // tool_repair stays in the vocabulary above - the projector must still
-    // know the kind - but it is the one member gated on the full level
-    // rather than the Advanced diagnostics flags, so it does not render at
-    // this chat-level config. The tool-repair notices block pins its own
-    // visibility matrix.
+    // Repairs require Full, and shared-notes snapshots never render at Chat.
+    // Both remain in the vocabulary and have their own visibility matrices.
     expect(
       entriesFor(
         model,
         preset("chat", { systemEvents: true, promptEvents: true, roundTimings: true, hookExits: "all" }),
       ).map((entry) => entry.id),
-    ).toEqual(eventKinds.map((_, index) => `event-${index}`).filter((id) => id !== "event-12"));
+    ).toEqual(
+      eventKinds.flatMap((kind, index) =>
+        kind === "tool_repair" || kind === "notes-context" ? [] : [`event-${index}`],
+      ),
+    );
   });
 
   test("keeps approval vocabulary and recovery events critical without parsing prose", () => {

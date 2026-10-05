@@ -888,7 +888,8 @@ func pastThreadCapabilities() appwire.ThreadCapabilities {
 		// against the live daemon (ensureSkillInputSupported, the relay's
 		// prepareRelay recheck, and thread/start's spawn-read gate), so a daemon
 		// that genuinely lacks the support still refuses each selection.
-		SkillInput: true,
+		SkillInput:   true,
+		CommandInput: true,
 		// The hub pages a saved transcript from a before position itself
 		// (pastEntryPageItems), so the answer is its own (hubPagesBefore).
 		PageBefore: true,

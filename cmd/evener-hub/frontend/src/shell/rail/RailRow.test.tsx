@@ -133,6 +133,52 @@ beforeAll(() => {
   }
 });
 
+test.each([
+  { title: "Short", sidebarRight: 280, rowHeight: 40, left: "292px", top: "272px" },
+  { title: "A much longer nested session title", sidebarRight: 280, rowHeight: 40, left: "292px", top: "272px" },
+  { title: "Short", sidebarRight: 360, rowHeight: 60, left: "372px", top: "282px" },
+  { title: "A much longer nested session title", sidebarRight: 360, rowHeight: 60, left: "372px", top: "282px" },
+])("session card measures sidebar and owning row for $title", ({ title, sidebarRight, rowHeight, left, top }) => {
+  vi.stubGlobal("innerWidth", 1000);
+  vi.stubGlobal("innerHeight", 800);
+  const activate = vi.fn();
+  const rect = vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
+    if (this.hasAttribute("data-sidebar-rail")) return new DOMRect(0, 0, sidebarRight, 800);
+    if (this.getAttribute("role") === "treeitem") return new DOMRect(20, 300, 220, rowHeight);
+    return new DOMRect(80, 310, title.length * 5, 16);
+  });
+  const width = vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(240);
+  const height = vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(96);
+  try {
+    render(
+      <div data-sidebar-rail>
+        <div role="treeitem" tabIndex={0}>
+          <RailRow node={sessionRailNode(apiNode({ title }))} info={info({ activate })} actions={actions()} />
+        </div>
+      </div>,
+    );
+    const row = screen.getByRole("treeitem");
+    const card = hoverForTooltip(screen.getByRole("button", { name: title }));
+    expect(card.style.left).toBe(left);
+    expect(card.style.top).toBe(top);
+    expect(card.parentElement).toBe(document.body);
+    expect(activate).not.toHaveBeenCalled();
+    expect(within(card).getByText("Proj")).toBeTruthy();
+
+    fireEvent.mouseLeave(screen.getByRole("button", { name: title }));
+    act(() => row.focus());
+    expect(screen.getByRole("tooltip").style.left).toBe(left);
+    expect(row.getAttribute("aria-describedby")).toBe(screen.getByRole("tooltip").id);
+    expect(document.activeElement).toBe(row);
+    fireEvent.click(screen.getByRole("button", { name: title }));
+    expect(activate).toHaveBeenCalledOnce();
+  } finally {
+    rect.mockRestore();
+    width.mockRestore();
+    height.mockRestore();
+  }
+});
+
 beforeEach(() => {
   resetWorkspaceStoreForTests();
   resetNavigationStoreForTests();
@@ -417,7 +463,7 @@ describe("compact session status", () => {
     expect(within(signal).getByTestId(testID)).toBeTruthy();
   });
 
-  test("broken descendants outrank needs-you and running work", () => {
+  test("failed descendants do not hide running work", () => {
     const session = apiNode({
       state: "awaiting",
       running_job_count: 2,
@@ -425,9 +471,44 @@ describe("compact session status", () => {
     });
     render(<RailRow node={sessionRailNode(session)} info={info()} actions={actions()} />);
 
-    expect(screen.getByRole("img", { name: "Broken" })).toBeTruthy();
+    expect(screen.getByRole("img", { name: "Running" })).toBeTruthy();
+    expect(screen.queryByRole("img", { name: "Broken" })).toBeNull();
     expect(screen.queryByRole("img", { name: "Needs you" })).toBeNull();
+  });
+
+  test.each([
+    ["active", "Running"],
+    ["idle", null],
+    ["awaiting", "Needs you"],
+    ["warning", "Needs you"],
+  ] as const)("failed-only descendants preserve the parent's %s status", (state, expected) => {
+    render(
+      <RailRow
+        node={sessionRailNode(apiNode({ state, subagents: { running: 0, failed: 3, done: 46 } }))}
+        info={info()}
+        actions={actions()}
+      />,
+    );
+
+    expect(screen.queryByRole("img", { name: "Broken" })).toBeNull();
+    if (expected === null) expect(screen.queryByTestId("rail-row-signal")).toBeNull();
+    else expect(screen.getByRole("img", { name: expected })).toBeTruthy();
+    const panel = hoverForTooltip(screen.getByText("Fix flaky test"));
+    expect(within(panel).getByText("3 failed, 46 done")).toBeTruthy();
+  });
+
+  test.each(["awaiting", "warning"])("a %s question stays visible with running and failed children", (state) => {
+    render(
+      <RailRow
+        node={sessionRailNode(apiNode({ state, ask_pending: true, subagents: { running: 1, failed: 1, done: 0 } }))}
+        info={info()}
+        actions={actions()}
+      />,
+    );
+
+    expect(screen.getByRole("img", { name: "Needs you" })).toBeTruthy();
     expect(screen.queryByRole("img", { name: "Running" })).toBeNull();
+    expect(screen.queryByRole("img", { name: "Broken" })).toBeNull();
   });
 
   test("a running descendant gives an otherwise quiet session the spinner", () => {

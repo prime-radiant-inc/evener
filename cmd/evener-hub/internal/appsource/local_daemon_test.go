@@ -803,13 +803,13 @@ func TestLocalDaemonSourceListFallbackFoldsDaemonStatus(t *testing.T) {
 	wantActive := appwire.ThreadCapabilities{
 		Steer: true, Interrupt: true, Compact: true, Shutdown: true,
 		ChangeModel: true, ChangeVisionModel: true, Queue: true,
-		Goal: true, SharedNotes: true, Rename: true, SkillInput: true,
+		Goal: true, SharedNotes: true, Rename: true, SkillInput: true, CommandInput: true,
 		StopSubagent: true,
 	}
 	wantClearWithheld := appwire.ThreadCapabilities{
 		Send: true, Steer: true, Interrupt: true, Compact: true, Shutdown: true,
 		ChangeModel: true, ChangeVisionModel: true, Queue: true,
-		Goal: true, SharedNotes: true, Rename: true, SkillInput: true,
+		Goal: true, SharedNotes: true, Rename: true, SkillInput: true, CommandInput: true,
 		StopSubagent: true,
 	}
 	if got := capsByID["th_processing"]; got != wantActive {
@@ -821,8 +821,8 @@ func TestLocalDaemonSourceListFallbackFoldsDaemonStatus(t *testing.T) {
 	if got := capsByID["th_escalation"]; got != wantClearWithheld {
 		t.Fatalf("idle row with a blocked escalation = %+v, want Clear folded on the approval work: %+v", got, wantClearWithheld)
 	}
-	if got := capsByID["th_closed"]; got != (appwire.ThreadCapabilities{Shutdown: true, SkillInput: true}) {
-		t.Fatalf("closed row = %+v, want only Shutdown and SkillInput, the bits the daemon does not close-gate", got)
+	if got := capsByID["th_closed"]; got != (appwire.ThreadCapabilities{Shutdown: true, SkillInput: true, CommandInput: true}) {
+		t.Fatalf("closed row = %+v, want only Shutdown, SkillInput and CommandInput, the bits the daemon does not close-gate", got)
 	}
 }
 

@@ -6,6 +6,28 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
+// MemoryDefinition preserves the ordinary tool schema and adds trusted-scope selection.
+func MemoryDefinition(base llm.ToolDefinition, name string) llm.ToolDefinition {
+	base.Name = name
+	base.Parameters = CloneSchemaMap(base.Parameters)
+	props := base.Parameters["properties"].(map[string]any)
+	props["scope"] = map[string]any{"type": "string", "enum": []any{"personal", "project"}}
+	base.Parameters["required"] = append(base.Parameters["required"].([]string), "scope")
+	base.Description = "Operate on a relative path in the bound personal or project memory wiki. " + base.Description
+	return base
+}
+
+func DefMemoryDelete() llm.ToolDefinition {
+	return MemoryDefinition(llm.ToolDefinition{
+		Description: "Remove one memory file, not a directory. Missing files are a no-op. Read first, then repair links separately if needed.",
+		Parameters: map[string]any{
+			"type": "object", "additionalProperties": false,
+			"properties": map[string]any{"file_path": map[string]any{"type": "string"}},
+			"required":   []string{"file_path"},
+		},
+	}, "memory_delete")
+}
+
 func DefReadFile() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "read_file",
@@ -187,7 +209,7 @@ func DefDelegateWithSandbox(agentTypes []string, sandboxSchema DelegateSandboxSc
 			"properties": map[string]any{
 				"prompt": map[string]any{
 					"type":        "string",
-					"description": "The delegate's assignment (task_list adds ordered step prompts). By default the delegate starts a clean session with no parent conversation. State the user's request for this unit (quote it), the facts it needs that you already know (environment, tools present or missing, paths, formats), exactly which files or paths it owns and must not touch, the acceptance check (the exact command(s) and the expected result), and the evidence to report back (paths, diffs, the check's output). With fork_context=true, inherited history supplies background but this prompt must still define the assignment, ownership, acceptance check, and report. For a unit with more than one step, put the steps in task_list rather than here. Each delegation also has its own durable artifacts directory, returned as artifacts_dir on creation — reference it in briefs and later seats, and file a seat's report there yourself, or let a seat with an unconfined shell write to it; a confined (sandboxed) seat can write only inside its workspace and its scratch directory, so have such a seat report its scratch path or return its report in the result instead. Route by role: keep a read-only / non-writing seat scouting rather than mandating changes; when two or more writers would collide in your checkout, give the delegate isolation=\"worktree\"; the default (one writer, no conflict) keeps sharing your tree.",
+					"description": "The delegate's assignment (task_list adds ordered step prompts). By default the delegate starts a clean session with no parent conversation. State the user's request for this unit (quote it), the facts it needs that you already know (environment, tools present or missing, paths, formats), exactly which files or paths it owns and must not touch, the acceptance check (the exact command(s) and the expected result), and the evidence to report back (paths, diffs, the check's output). With fork_context=true, inherited history supplies background but this prompt must still define the assignment, ownership, acceptance check, and report. For a unit with more than one step, put the steps in task_list rather than here. Each delegation also has its own durable artifacts directory, returned as artifacts_dir on creation — reference it in briefs and later seats, and file a seat's report there yourself, or let a seat with an unconfined shell write to it; a confined (sandboxed) seat can write only inside its workspace and its scratch directory, and its scratch is deleted when the session is archived, so have such a seat return its report in the result instead. Route by role: keep a read-only / non-writing seat scouting rather than mandating changes; when two or more writers would collide in your checkout, give the delegate isolation=\"worktree\"; the default (one writer, no conflict) keeps sharing your tree.",
 				},
 				"task_list": map[string]any{
 					"type":        "array",

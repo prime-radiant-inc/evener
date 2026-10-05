@@ -55,7 +55,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.12",
-    "@react-navigation/core": "^7.21.13",
+    "@react-navigation/core": "^7.23.0",
     "@types/node": "^26.4.1",
     "@types/react": "~19.2.2",
     "@types/react-test-renderer": "^19.3.0",

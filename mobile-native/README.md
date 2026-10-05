@@ -89,6 +89,14 @@ npx tsx scripts/check-hub.mts http://127.0.0.1:9180 /path/to/auth-token
 
 No script in the default tests calls a real hub or LLM provider.
 
+## Shared-notes transcript updates
+
+Internal snapshots fold under **Shared notes updated**. Chat hides them even
+with System events enabled; other levels follow that setting. Activity and Full
+keep snapshots folded until tapped. Expansion shows the complete literal text
+and is remembered per hub, session and item. Saved human-note rows remain visible
+at every level. See the [shared-notes guide](../docs/web-ui/shared-notes.md).
+
 The dated 8 September execution checkpoint remains in the development archive. Its simulator and controller results identify earlier artifacts; use the current acceptance index for the joined checkpoint journey.
 
 ## Older-history recovery

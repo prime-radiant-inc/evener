@@ -4,7 +4,7 @@
 // Pure: the row re-renders with the transcript, so no clock of its own.
 import { delegateEndingText, delegateTiming, type EvenerDelegateInfo } from "@evener/appwire-client";
 import { endedInStop, subagentState } from "../subagents/subagentModel";
-import { hubTime } from "../board/attention";
+import { hubTime, quietOrWorking, waitingOnSubagents } from "../board/attention";
 import type { TimelineRow } from "../timeline";
 import { compactDuration } from "./format";
 
@@ -21,10 +21,6 @@ export interface SubagentLine {
 	delegateId?: string;
 	runGeneration?: number;
 }
-
-/** A subagent is quiet once no update came for this long (the web's
- * liveness threshold, ruling 10). */
-const QUIET_AFTER_MS = 20_000;
 
 // The Subagents list's own rule (subagentState), so this row, the list, the
 // Subagents chip and the tray always agree; a subagent a stop ended says
@@ -94,12 +90,7 @@ export function subagentLine(
 		// resumed subagent can still carry its last run's activity time.
 		const quietFor = timing?.quietForMs ?? 0;
 		// An agent waiting on its own subagents is never stuck (ruling 10).
-		line.activity =
-			waitingOn > 0
-				? `Waiting on ${waitingOn} ${waitingOn === 1 ? "subagent" : "subagents"}`
-				: quietFor >= QUIET_AFTER_MS
-					? `Quiet ${compactDuration(quietFor)}`
-					: "Working";
+		line.activity = waitingOn > 0 ? waitingOnSubagents(waitingOn) : quietOrWorking(quietFor);
 	}
 	return line;
 }

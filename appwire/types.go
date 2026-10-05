@@ -1266,6 +1266,12 @@ type QueueState struct {
 	// missing SkillNames as "selections unavailable", never as "no
 	// selections".
 	SkillNames [][]string `json:"skillNames,omitempty"`
+	// CommandNames is FIFO-aligned with Preview and retains exact command
+	// identities independently from skill selections when editing or returning.
+	CommandNames [][]string `json:"commandNames,omitempty"`
+	// Mentions is FIFO-aligned with Texts, retaining each atom's exact kind
+	// and UTF-16 location. It is editing metadata, not activation authority.
+	Mentions [][]InputMention `json:"mentions,omitempty"`
 }
 
 // ThreadQueueChangedParams is the params shape for thread/queueChanged
@@ -1470,6 +1476,9 @@ type ThreadCapabilities struct {
 	// against the live daemon. ValidateSkillInputSupport keeps skill items
 	// rejected wherever this capability is false.
 	SkillInput bool `json:"skillInput,omitempty"`
+	// CommandInput advertises canonical {type:"command", name} consumption
+	// on input-bearing mutations, with empty args and exact catalog identity.
+	CommandInput bool `json:"commandInput,omitempty"`
 	// StopSubagent advertises evener/delegate/stop on a root session (S6):
 	// true while its daemon wires the stop and the session is open. Absent
 	// from an older daemon, from a session with no daemon running (it runs no
@@ -1494,6 +1503,9 @@ type EvenerHookEventStatus struct {
 }
 
 type EvenerDiagnostics struct {
+	// Commands is this owning session's loaded, path-free command inventory.
+	// Nil is unreported, an explicit empty slice is an authoritative empty inventory.
+	Commands   []CommandDescriptor     `json:"commands,omitzero"`
 	Tools      []EvenerToolInfo        `json:"tools,omitempty"`
 	MCP        []EvenerMCPServerInfo   `json:"mcp,omitempty"`
 	Skills     []EvenerSkillInfo       `json:"skills,omitempty"`
@@ -1863,8 +1875,8 @@ const (
 	ThreadItemEventKindEnvironment ThreadItemEventKind = "environment"
 	// ThreadItemEventKindNotesContext marks the systemMessage item a reloaded
 	// transcript renders for a schema.TurnNotesContext turn: the harness's
-	// shared-notes snapshot block. Same visibility contract as environment —
-	// harness chrome, never hidden by a toggle.
+	// shared-notes snapshot block. Web and native hide it at Conversation;
+	// elsewhere System events controls visibility and it starts folded.
 	ThreadItemEventKindNotesContext ThreadItemEventKind = "notes-context"
 	// ThreadItemEventKindWarning marks a live overlay notice for a session
 	// warning. Warnings are never recorded, so only the overlay shows them.
@@ -1873,6 +1885,10 @@ const (
 	// round collapses into when it ended with streamed content or running
 	// tools that were never recorded.
 	ThreadItemEventKindInterrupted ThreadItemEventKind = "interrupted"
+	// ThreadItemEventKindApprovalDecision marks the systemMessage item a
+	// human's Allow or Deny on a sandbox escalation leaves in history (S16).
+	// apptranscript.ApprovalDecisionAnnouncement documents its Raw.
+	ThreadItemEventKindApprovalDecision ThreadItemEventKind = "approval_decision"
 )
 
 // AllThreadItemEventKinds is every ThreadItem.EventKind value emitted for
@@ -1897,6 +1913,7 @@ var AllThreadItemEventKinds = []string{
 	string(ThreadItemEventKindNotesContext),
 	string(ThreadItemEventKindWarning),
 	string(ThreadItemEventKindInterrupted),
+	string(ThreadItemEventKindApprovalDecision),
 }
 
 type ThreadItem struct {
@@ -1993,9 +2010,18 @@ type OutputImage struct {
 	Path      string `json:"path,omitempty"`
 }
 
+// InputMention records one visible selection's UTF-16 offset in a text item.
+// Canonical skill/command items remain the sole activation authority.
+type InputMention struct {
+	Kind   string `json:"kind"`
+	Name   string `json:"name"`
+	Offset int    `json:"offset"`
+}
+
 type InputItem struct {
 	Type      string            `json:"type"`
 	Text      string            `json:"text,omitempty"`
+	Mentions  []InputMention    `json:"mentions,omitempty"`
 	URL       string            `json:"url,omitempty"`
 	MediaType string            `json:"mediaType,omitempty"`
 	Data      []byte            `json:"data,omitempty"`

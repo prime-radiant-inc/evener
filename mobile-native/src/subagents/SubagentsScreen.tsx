@@ -254,6 +254,7 @@ export function SubagentsScreen({ route, navigation }: NativeStackScreenProps<Ro
 		<View style={{ flex: 1, backgroundColor: palette.page }}>
 			<FlatList
 				data={items}
+				keyboardDismissMode="on-drag"
 				onEndReached={() => setBoundary({ tree, keys: boundaryKeys })}
 				onScroll={({ nativeEvent: { contentSize, contentOffset, layoutMeasurement } }) => {
 					if (contentSize.height - contentOffset.y - layoutMeasurement.height > 2) setBoundary(null);

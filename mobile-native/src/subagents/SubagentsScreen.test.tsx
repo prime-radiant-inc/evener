@@ -6,6 +6,7 @@ import type { NativeStackNavigationOptions } from "@react-navigation/native-stac
 import { WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import type { ReactElement } from "react";
+import { FlatList } from "react-native";
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { playedHaptics, pressable, render, renderedText, screenConnection } from "../renderNative.testkit";
@@ -244,6 +245,12 @@ it("keeps a terminal parent's running child and stop identity reachable with his
 	const failedWords = tree.root.findAll((node) => String(node.type) === "Text" && node.props.children === "Failed");
 	expect(failedWords).toHaveLength(2);
 	expect(failedWords.every((node) => node.props.style.color === paletteFor("light").inkMid)).toBe(true);
+});
+
+it("lets a drag of the list put the filter's keyboard away", async () => {
+	const tree = await mount();
+	expect(tree.root.findByProps({ accessibilityLabel: "Filter activity" })).toBeDefined();
+	expect(tree.root.findByType(FlatList).props.keyboardDismissMode).toBe("on-drag");
 });
 
 // Spec 9 draws the filter chips as one row, as the Board's and the Session's

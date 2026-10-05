@@ -1,0 +1,87 @@
+{
+  "note": "Real scripted ProcessInput memory_read and memory_search, each oversized at a configured 1024-character limit, followed by actual read_transcript artifact recovery. ProjectTurn projects recorded session turns. Only random IDs and times are normalized.",
+  "cwd": "/home/jesse/git/evener",
+  "notes": {},
+  "items": [
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_0",
+      "turnId": "turn_1",
+      "toolName": "memory_read",
+      "callId": "call_memory_read",
+      "argumentsJson": "{\"file_path\":\"large.txt\",\"scope\":\"personal\"}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_0",
+      "turnId": "turn_1",
+      "toolName": "memory_read",
+      "callId": "call_memory_read",
+      "output": "   1\topaque-delivery-001-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\n   2\topaque-delivery-002-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\n   3\topaque-delivery-003-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\n   4\topaque-delivery-004-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\n   5\topaque-delivery-005-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\n   6\topaque-delivery-006-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\n   7\topaque-delivery-007-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\n   8\topaque-delivery-008-zzzzzzzzzzzzzzzzzzzzzzzzz\n\n[Output truncated: 1622 characters removed from the middle.]\n\n33-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\n  34\topaque-delivery-034-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\n  35\topaque-delivery-035-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\n  36\topaque-delivery-036-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\n  37\topaque-delivery-037-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\n  38\topaque-delivery-038-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\n  39\topaque-delivery-039-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\n  40\topaque-delivery-040-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\n  41\t\n\n[Tool output was truncated.]\nFull output: artifact:memoryFixture1\nRead with: read_transcript(transcript_ref=\"artifact:memoryFixture1\")",
+      "status": "completed",
+      "completedAt": 1790625601000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_3_0",
+      "turnId": "turn_1",
+      "toolName": "read_transcript",
+      "callId": "call_memory_read_recovery",
+      "argumentsJson": "{\"transcript_ref\":\"artifact:memoryFixture1\"}",
+      "status": "inProgress",
+      "startedAt": 1790625602000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_4_0",
+      "turnId": "turn_1",
+      "toolName": "read_transcript",
+      "callId": "call_memory_read_recovery",
+      "output": "{\n  \"transcript_ref\": \"artifact:memoryFixture1\",\n  \"representation\": \"raw_bytes\",\n  \"content_type\": \"text/plain\",\n  \"page\": {\n    \"offset_bytes\": 0,\n    \"bytes_returned\": 2646,\n    \"total_bytes\": 2646,\n    \"encoding\": \"utf8\",\n    \"data\": \"   1\\topaque-delivery-001-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\n   2\\topaque-delivery-002-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\n   3\\topaque-delivery-003-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\n   4\\topaque-delivery-004-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\n   5\\topaque-delivery-005-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\n   6\\topaque-delivery-006-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\n   7\\topaque-delivery-007-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\n   8\\topaque-delivery-008-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\n   9\\topaque-delivery-009-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\n  10\\topaque-delivery-010-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\n  11\\topaque-delivery-011-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\n  12\\topaque-delivery-012-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\n  13\\topaque-delivery-013-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\n  14\\topaque-delivery-014-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\n  15\\topaque-delivery-015-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\n  16\\topaque-delivery-016-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\n  17\\topaque-delivery-017-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\n  18\\topaque-delivery-018-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\n  19\\topaque-delivery-019-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\n  20\\topaque-delivery-020-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\n  21\\topaque-delivery-021-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\n  22\\topaque-delivery-022-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\n  23\\topaque-delivery-023-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\n  24\\topaque-delivery-024-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\n  25\\topaque-delivery-025-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\n  26\\topaque-delivery-026-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\n  27\\topaque-delivery-027-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\n  28\\topaque-delivery-028-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\n  29\\topaque-delivery-029-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\n  30\\topaque-delivery-030-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\n  31\\topaque-delivery-031-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\n  32\\topaque-delivery-032-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\n  33\\topaque-delivery-033-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\n  34\\topaque-delivery-034-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\n  35\\topaque-delivery-035-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\n  36\\topaque-delivery-036-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\n  37\\topaque-delivery-037-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\n  38\\topaque-delivery-038-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\n  39\\topaque-delivery-039-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\n  40\\topaque-delivery-040-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\n  41\\t\\n\"\n  },\n  \"retained_start_bytes\": 0\n}",
+      "status": "completed",
+      "completedAt": 1790625603000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_5_0",
+      "turnId": "turn_1",
+      "toolName": "memory_search",
+      "callId": "call_memory_search",
+      "argumentsJson": "{\"max_results\":100,\"pattern\":\"opaque-delivery\",\"scope\":\"personal\"}",
+      "status": "inProgress",
+      "startedAt": 1790625604000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_6_0",
+      "turnId": "turn_1",
+      "toolName": "memory_search",
+      "callId": "call_memory_search",
+      "output": "large.txt:1:opaque-delivery-001-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\nlarge.txt:2:opaque-delivery-002-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\nlarge.txt:3:opaque-delivery-003-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\nlarge.txt:4:opaque-delivery-004-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\nlarge.txt:5:opaque-delivery-005-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\nlarge.txt:6:opaque-delivery-006-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\nlarge.txt:7:opaque-delivery-007-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\nl\n\n[Output truncated: 1926 characters removed from the middle.]\n\n.txt:34:opaque-delivery-034-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\nlarge.txt:35:opaque-delivery-035-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\nlarge.txt:36:opaque-delivery-036-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\nlarge.txt:37:opaque-delivery-037-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\nlarge.txt:38:opaque-delivery-038-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\nlarge.txt:39:opaque-delivery-039-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\nlarge.txt:40:opaque-delivery-040-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\n[Tool output was truncated.]\nFull output: artifact:memoryFixture2\nRead with: read_transcript(transcript_ref=\"artifact:memoryFixture2\")",
+      "status": "completed",
+      "completedAt": 1790625605000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_7_0",
+      "turnId": "turn_1",
+      "toolName": "read_transcript",
+      "callId": "call_memory_search_recovery",
+      "argumentsJson": "{\"transcript_ref\":\"artifact:memoryFixture2\"}",
+      "status": "inProgress",
+      "startedAt": 1790625606000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_8_0",
+      "turnId": "turn_1",
+      "toolName": "read_transcript",
+      "callId": "call_memory_search_recovery",
+      "output": "{\n  \"transcript_ref\": \"artifact:memoryFixture2\",\n  \"representation\": \"raw_bytes\",\n  \"content_type\": \"text/plain\",\n  \"page\": {\n    \"offset_bytes\": 0,\n    \"bytes_returned\": 2950,\n    \"total_bytes\": 2950,\n    \"encoding\": \"utf8\",\n    \"data\": \"large.txt:1:opaque-delivery-001-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\nlarge.txt:2:opaque-delivery-002-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\nlarge.txt:3:opaque-delivery-003-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\nlarge.txt:4:opaque-delivery-004-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\nlarge.txt:5:opaque-delivery-005-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\nlarge.txt:6:opaque-delivery-006-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\nlarge.txt:7:opaque-delivery-007-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\nlarge.txt:8:opaque-delivery-008-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\nlarge.txt:9:opaque-delivery-009-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\nlarge.txt:10:opaque-delivery-010-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\nlarge.txt:11:opaque-delivery-011-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\nlarge.txt:12:opaque-delivery-012-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\nlarge.txt:13:opaque-delivery-013-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\nlarge.txt:14:opaque-delivery-014-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\nlarge.txt:15:opaque-delivery-015-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\nlarge.txt:16:opaque-delivery-016-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\nlarge.txt:17:opaque-delivery-017-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\nlarge.txt:18:opaque-delivery-018-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\nlarge.txt:19:opaque-delivery-019-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\nlarge.txt:20:opaque-delivery-020-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\nlarge.txt:21:opaque-delivery-021-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\nlarge.txt:22:opaque-delivery-022-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\nlarge.txt:23:opaque-delivery-023-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\nlarge.txt:24:opaque-delivery-024-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\nlarge.txt:25:opaque-delivery-025-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\nlarge.txt:26:opaque-delivery-026-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\nlarge.txt:27:opaque-delivery-027-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\nlarge.txt:28:opaque-delivery-028-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\nlarge.txt:29:opaque-delivery-029-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\nlarge.txt:30:opaque-delivery-030-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\nlarge.txt:31:opaque-delivery-031-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\nlarge.txt:32:opaque-delivery-032-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\nlarge.txt:33:opaque-delivery-033-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\nlarge.txt:34:opaque-delivery-034-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\nlarge.txt:35:opaque-delivery-035-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\nlarge.txt:36:opaque-delivery-036-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\nlarge.txt:37:opaque-delivery-037-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\nlarge.txt:38:opaque-delivery-038-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\nlarge.txt:39:opaque-delivery-039-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\nlarge.txt:40:opaque-delivery-040-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\"\n  },\n  \"retained_start_bytes\": 0\n}",
+      "status": "completed",
+      "completedAt": 1790625607000
+    }
+  ]
+}

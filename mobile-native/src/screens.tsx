@@ -135,16 +135,21 @@ import { BackButton } from "./session/BackButton";
 import { liveOrder, neighbor, nextNavigation, nextQueue, othersNeedingYou } from "./session/fleetOrder";
 import { NextCapsule } from "./session/NextCapsule";
 import { useFleet } from "./session/useFleet";
-import { QueuedMessages } from "./session/QueuedMessages";
+import { GhostRowContext, type GhostRowHost, GhostRowView } from "./session/GhostRows";
 import { TranscriptSkeleton } from "./session/TranscriptSkeleton";
 import { useReadRetry } from "./session/useReadRetry";
 import {
 	answerTo,
 	hideAnswerMessages,
+	isGhostRow,
 	latestSettledTurn,
 	liveRunId,
 	newRowCount,
+	type SessionListRow,
+	sessionListGap,
+	sessionListKey,
 	sessionRows,
+	withGhostRows,
 } from "./session/transcriptRows";
 import { SessionControls, useControlsState } from "./sessionControls";
 import { useConnectionStatusText } from "./board/connectionStatus";
@@ -196,8 +201,8 @@ import { transcriptTreeTarget, useTranscriptSubagentTree } from "./subagents/use
 import { TimelineItem } from "./TimelineItem";
 import { Toast, type ToastMessage, useToast } from "./Toast";
 import { TranscriptUsage } from "./TranscriptUsage";
-import { groupTimeline, type TimelineRow, timelineGap } from "./timeline";
-import { projectNativeTranscript } from "./transcriptPresentation";
+import { groupTimeline, type TimelineRow } from "./timeline";
+import { hasUsageLines, projectNativeTranscript } from "./transcriptPresentation";
 import { refreshLoadedArchivedLists } from "./archivedLists";
 import { Action, Copy, ErrorMessage, styles, useColors, useTextScale } from "./ui";
 import { haptic } from "./haptics";
@@ -457,9 +462,10 @@ export function ConversationScreen({
 	// watches it land, move and land again as rows measure.
 	const [openingLanded, setOpeningLanded] = useState(false);
 	const openingLandedNow = useRef(false);
-	// This render's rows, for what runs outside a render (the cap's timer and
-	// the list's cells).
+	// This render's rows, for the cap's timer, and the key of the list's last
+	// row, a ghost when one waits, for the list's cells.
 	const rowsNow = useRef<readonly TimelineRow[]>([]);
+	const listEndKey = useRef<string | null>(null);
 	// A fresh cap, once the opening turns to the live end at the first.
 	const [openingCapRound, setOpeningCapRound] = useState(0);
 	function landOpening() {
@@ -630,7 +636,7 @@ export function ConversationScreen({
 		);
 	}
 	// The recovery surface: this exact hub/conversation target's durable
-	// recovery rows, shown as ghosts above the composer. useRecoveryPanel
+	// recovery rows, shown as ghosts at the transcript's end. useRecoveryPanel
 	// acquires the runtime only once the conversation is connected (the
 	// singleton opens the mutations database), so a screen that never reaches a
 	// live conversation never constructs one - what the landed render fence
@@ -969,7 +975,7 @@ export function ConversationScreen({
 	}, [barHeight]);
 	const now = Date.now();
 	const stateLine = conversation ? sessionStateLine(conversation, now, runMs(now)) : null;
-	// Files & artifacts (spec 10.1): what the session wrote or linked, and
+	// Files (spec 10.1): what the session wrote or linked, and
 	// whether any of it is new or changed since you last opened it.
 	const documents = useMemo(() => {
 		const cwd = conversation?.cwd ?? "";
@@ -1259,7 +1265,7 @@ export function ConversationScreen({
 	// The conversation's rows are already level-correct: the store projected
 	// them at displayConfig (D24-6's seam routing), so the presentation layer
 	// only reshapes (member unrolling, attachment adjacency) and computes the
-	// footer's accounting — no second, screen-level projection.
+	// usage lines' accounting — no second, screen-level projection.
 	const presentation = useMemo(
 		() => projectNativeTranscript(conversation, displayConfig, { justTheConversation: display.justTheConversation }),
 		[conversation, displayConfig, display.justTheConversation],
@@ -1391,13 +1397,11 @@ export function ConversationScreen({
 	// and it runs before the opening effect below.
 	useLayoutEffect(() => {
 		rowsNow.current = timelineRows;
+		const last = listRows.at(-1);
+		listEndKey.current = last === undefined ? null : sessionListKey(last);
 	});
-	function lastRowKey() {
-		const rows = rowsNow.current;
-		return rows.length > 0 ? readerKey(rows[rows.length - 1]) : null;
-	}
 	function lastRowMeasured() {
-		const key = lastRowKey();
+		const key = listEndKey.current;
 		return key !== null && readerMeasurements.current.has(key);
 	}
 	// Follows the live end while opening: pins the list there, and lands the
@@ -2459,7 +2463,7 @@ export function ConversationScreen({
 				onPress={controls && canOpenModelSheet(conversation) ? () => openModelSheet("model") : undefined}
 			/>
 		) : null;
-	// Everything waiting to reach the agent, as ghosts above the composer
+	// Everything waiting to reach the agent, as ghosts at the transcript's end
 	// (spec 8.5 and 14). A refused row keeps Edit whenever its record can come
 	// back; whether the composer can take it right now is the bubble's
 	// canEdit, so an occupied composer shows Edit disabled with the reason.
@@ -2481,6 +2485,12 @@ export function ConversationScreen({
 	);
 	const canEditGhost = document.canRestoreRecoveredDraft();
 	const ghostEditHint = document.recoveredRestoreHint();
+	// The transcript list's rows: the conversation's, its usage lines when they
+	// have anything to show, then the ghosts.
+	const ghostsKey = JSON.stringify(allGhosts);
+	const usage = presentation.usage && hasUsageLines(presentation.usage) ? presentation.usage : null;
+	// biome-ignore lint/correctness/useExhaustiveDependencies: ghostsKey stands in for allGhosts, a new array each render
+	const listRows = useMemo(() => withGhostRows(timelineRows, allGhosts, usage), [timelineRows, ghostsKey, usage]);
 	const [ghostBusy, setGhostBusy] = useState(false);
 	const ghostBusyRef = useRef(false);
 	// One ghost action at a time, each reading the live session at the press.
@@ -2662,11 +2672,9 @@ export function ConversationScreen({
 	// something, or you are finding in it (spec 8.3); FloatingStack steps it
 	// aside while you type.
 	const nextTarget = approval === null && questionBatch === null && find === null ? (queue[0] ?? null) : null;
-	// What sits above the composer: failures only you can act on, then
-	// everything waiting to reach the agent. While the composer is hidden
-	// (the dock is open) it sits in the composer's place, so a queued
-	// message never drops out of sight.
-	const waitingForAgent = (
+	// What sits above the composer: failures only you can act on. While the
+	// composer is hidden (the dock is open) it sits in the composer's place.
+	const composerErrors = (
 		<>
 			<ErrorMessage message={actionError} />
 			{draft.error ? (
@@ -2678,28 +2686,24 @@ export function ConversationScreen({
 				</View>
 			) : null}
 			{recovery.failed ? <RecoveryFailure error={recovery.error} onRetry={recovery.retry} /> : null}
-			<QueuedMessages
-				ghosts={allGhosts}
-				disabled={ghostBusy}
-				canEdit={canEditGhost}
-				editHint={ghostEditHint}
-				// Only one of the two places waitingForAgent shows is mounted.
-				backdrop={composerShown ? "surface" : "page"}
-				draftAttachments={<ImageAttachments document={document} selection={imageSelection} uncertain />}
-				composerFocus={composerFocus}
-				onAction={(ghost, action) => {
-					void runGhostAction(ghost, action).then((message) => {
-						if (message) toaster.show(message);
-					});
-				}}
-				onMore={openQueue}
-			/>
 		</>
 	);
+	const ghostRowHost: GhostRowHost = {
+		disabled: ghostBusy,
+		canEdit: canEditGhost,
+		editHint: ghostEditHint,
+		draftAttachments: <ImageAttachments document={document} selection={imageSelection} uncertain />,
+		onAction: (ghost, action) => {
+			void runGhostAction(ghost, action).then((message) => {
+				if (message) toaster.show(message);
+			});
+		},
+		onMore: openQueue,
+	};
 	const readerCellRenderer = useMemo(() => {
-		return class ReaderCell extends Component<CellRendererProps<TimelineRow>> {
+		return class ReaderCell extends Component<CellRendererProps<SessionListRow>> {
 			componentWillUnmount() {
-				readerMeasurements.current.delete(readerKey(this.props.item));
+				readerMeasurements.current.delete(sessionListKey(this.props.item));
 			}
 			render() {
 				const { children, item, onLayout, onFocusCapture, style } = this.props;
@@ -2710,7 +2714,7 @@ export function ConversationScreen({
 						onLayout={(event) => {
 							onLayout?.(event);
 							if (!item) return;
-							const key = readerKey(item);
+							const key = sessionListKey(item);
 							readerMeasurements.current.set(key, {
 								key,
 								y: event.nativeEvent.layout.y,
@@ -2718,7 +2722,7 @@ export function ConversationScreen({
 							});
 							// Opening at the live end lands once its last row has
 							// measured: pin the end, then show the list.
-							if (!openingLandedNow.current && key === lastRowKey() && follow.state.current.following) {
+							if (!openingLandedNow.current && key === listEndKey.current && follow.state.current.following) {
 								pinOpeningToEnd();
 							}
 							restoreAfterLayout();
@@ -2736,57 +2740,69 @@ export function ConversationScreen({
 	// reader keying, a sheet opening), so it does not rebuild every visible
 	// transcript cell for them.
 	const renderItem = useCallback(
-		({ item, index }: { item: TimelineRow; index: number }) => (
-			<View
-				style={{
-					paddingBottom: timelineGap(item, timelineRows[index + 1]),
-				}}
-			>
-				<View
-					style={
-						findKey !== null && readerKey(item) === findKey
-							? {
-									// The current match (ruling 29): blue means selected.
-									backgroundColor: colors.palette.accentBg,
-									borderRadius: 12,
-									marginHorizontal: -8,
-									paddingHorizontal: 8,
-								}
-							: undefined
-					}
-				>
-					<TimelineItem
-						item={item}
-						hubId={route.params.hubId}
-						sessionRef={route.params.ref}
-						activityPresentation={presentation.activityPresentation.get(item.id)}
-						expandByDefault={presentation.expandByDefault}
-						showDuration={presentation.showDuration}
-						fork={snapshot.conversation?.capabilities?.forkFromTurn ? forkMessage : undefined}
-						forkDisabled={!connected || !focused || snapshot.status !== "open"}
-						quote={quote}
-						live={item.id === liveRun}
-						liveRunsOpen={presentation.liveRunsOpen}
-						delegates={conversation?.delegates}
-						subagentTree={subagentTree}
-						openSubagent={openSubagent}
-						answerFor={answerFor}
-						errorActionFor={(row) =>
-							conversation
-								? // Retry shows only when a press would send.
-									errorAction(row, conversation, liveSendKind() !== null)
-								: null
+		({ item, index }: { item: SessionListRow; index: number }) => {
+			const gap = sessionListGap(item, listRows[index + 1]);
+			if (item.kind === "usage")
+				return (
+					<View style={{ paddingBottom: gap }}>
+						<TranscriptUsage {...item.usage} />
+					</View>
+				);
+			if (isGhostRow(item))
+				return (
+					<View style={{ paddingBottom: gap }}>
+						<GhostRowView row={item} />
+					</View>
+				);
+			return (
+				<View style={{ paddingBottom: gap }}>
+					<View
+						style={
+							findKey !== null && readerKey(item) === findKey
+								? {
+										// The current match (ruling 29): blue means selected.
+										backgroundColor: colors.palette.accentBg,
+										borderRadius: 12,
+										marginHorizontal: -8,
+										paddingHorizontal: 8,
+									}
+								: undefined
 						}
-						onErrorAction={runErrorAction}
-						documentChips={documentChips}
-					/>
+					>
+						<TimelineItem
+							item={item}
+							hubId={route.params.hubId}
+							sessionRef={route.params.ref}
+							sourceTurns={conversation?.turns}
+							activityPresentation={presentation.activityPresentation.get(item.id)}
+							expandByDefault={presentation.expandByDefault}
+							showDuration={presentation.showDuration}
+							fork={snapshot.conversation?.capabilities?.forkFromTurn ? forkMessage : undefined}
+							forkDisabled={!connected || !focused || snapshot.status !== "open"}
+							quote={quote}
+							live={item.id === liveRun}
+							liveRunsOpen={presentation.liveRunsOpen}
+							delegates={conversation?.delegates}
+							subagentTree={subagentTree}
+							openSubagent={openSubagent}
+							answerFor={answerFor}
+							errorActionFor={(row) =>
+								conversation
+									? // Retry shows only when a press would send.
+										errorAction(row, conversation, liveSendKind() !== null)
+									: null
+							}
+							onErrorAction={runErrorAction}
+							documentChips={documentChips}
+						/>
+					</View>
 				</View>
-			</View>
-		),
+			);
+		},
 		[
 			findKey,
 			colors.palette.accentBg,
-			timelineRows,
+			listRows,
 			route.params.hubId,
 			route.params.ref,
 			presentation,
@@ -2825,205 +2841,214 @@ export function ConversationScreen({
 			>
 				<View testID="session-bottom-bar-room" style={styles.fill} onLayout={bottomBarRoom.onLayout}>
 					<View style={{ flex: 1 }}>
-						<FlatList
-							ref={timeline}
-							// Where the transcript rests depends on its viewport and the
-							// bar, so it shows once both have laid out and the opening has
-							// landed, and never draws a frame at a place it then leaves.
-							style={{ opacity: listLaidOut && !openingHidden ? 1 : 0 }}
-							onLayout={(event) => {
-								readerViewportHeight.current = event.nativeEvent.layout.height;
-								setLayoutRevision((revision) => revision + 1);
-								// The viewport changed (the keyboard, a dock): while following,
-								// the end stays in view.
-								if (follow.state.current.following)
-									(timeline.current?.getScrollResponder() as ScrollView | null)?.scrollToEnd({ animated: false });
-							}}
-							data={timelineRows}
-							// Cells re-render only for a new renderItem or new rows, and
-							// renderItem changes with everything a row reads (the live run
-							// included): a screen render that changes nothing a row reads
-							// (the bottom bar re-laying out as the keyboard folds the queue)
-							// leaves them alone, where FlatList otherwise rebuilds its
-							// renderer, and so every visible cell, on every render (#3247).
-							strictMode
-							ListFooterComponent={presentation.usage ? <TranscriptUsage {...presentation.usage} /> : null}
-							CellRendererComponent={readerCellRenderer}
-							// A row keeps its reader key when history records it, so the
-							// list keeps its cell (a streamed reply's wire id changes).
-							keyExtractor={readerKey}
-							renderItem={renderItem}
-							// The end keeps a fixed room for what floats over it (spec 8.3),
-							// so Next never sits on the last line and nothing coming or
-							// going there moves the list.
-							contentContainerStyle={{
-								// A short transcript rests just above the composer (spec 8.5):
-								// it fills the viewport above the bar's inset, so at rest it is
-								// at its end with nothing under the bar. The viewport is a ref;
-								// its onLayout bumps layoutRevision, which renders this again.
-								minHeight: listContentMinHeight(readerViewportHeight.current, listUnderBar),
-								justifyContent: "flex-end",
-								padding: 16,
-								paddingTop: 16 + reservedTop,
-								paddingBottom: listUnderBar.endPadding + transcriptEnd,
-							}}
-							contentInset={listUnderBar.contentInset}
-							// Dragging the transcript lowers the keyboard: following the finger
-							// as in Messages on iOS, and at the drag's start on Android, which
-							// has no interactive dismissal.
-							keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
-							scrollIndicatorInsets={listUnderBar.scrollIndicatorInsets}
-							// Older history loading above never moves what you read.
-							maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
-							onContentSizeChange={(_width, height) => {
-								readerContentHeight.current = height;
-								restoreAfterLayout();
-								if (follow.state.current.following)
-									(timeline.current?.getScrollResponder() as ScrollView | null)?.scrollToEnd({ animated: false });
-							}}
-							scrollEventThrottle={100}
-							onScroll={(event) => {
-								const y = event.nativeEvent.contentOffset.y;
-								listOffset.current = y;
-								headerHiding.onScroll(y, follow.state.current.touch !== "none");
-								if (!focused) return;
-								const end = atEnd(event.nativeEvent);
-								if (end) turnsSeen.current = latestSettledTurn(conversation) ?? turnsSeen.current;
-								follow.dispatch({ type: "scroll", atEnd: end, keys: () => new Set(timelineRows.map(readerKey)) });
-								settleAtEnd(end && follow.state.current.touch === "none");
-								if (captureSuppressed.current) return;
-								// Older history loads as you near the top (spec 8.2) once you
-								// move the list. With no finger on it, and the app neither
-								// following the end nor restoring (which returns above), the
-								// list moved for an assistive scroll. The drag and coast events
-								// check too, since a short flick or an overscroll may report no
-								// scroll between them.
-								if (follow.state.current.touch === "none" && !follow.state.current.following)
-									follow.dispatch({ type: "assistiveScroll" });
-								if (!follow.state.current.following) pageOlderNear(y);
-								const visible = readerAnchorRow(timelineRows, readerMeasurements.current, y);
-								if (visible) {
-									readerAnchor.current = captureReaderAnchor(
-										route.params.hubId,
-										route.params.ref,
-										visible,
-										y,
-										[...readerMeasurements.current.values()],
-										Date.now(),
-										bindingInstance,
-										turnsSeen.current,
-									);
-									const anchor = readerAnchor.current;
-									const measurement = readerMeasurements.current.get(readerKey(visible));
-									// Where you scrolled is where the anchor is, so there is nothing
-									// to restore until the anchor changes or its row reflows. The
-									// trade-off: every scroll re-captures the anchor and so arms a
-									// restore only for that exact row; one that reflows (a text-size
-									// change) restores, one whose y merely moves never does.
-									if (anchor && measurement)
-										appliedReaderRestore.current = {
-											key: measurement.key,
-											height: measurement.height,
-											offset: y,
-											clamped: false,
-										};
-								}
-							}}
-							onScrollBeginDrag={(event) => {
-								// A finger on the list while it opens: show it where it is.
-								landOpening();
-								follow.dispatch({ type: "dragBegin" });
-								pageOlderNear(event?.nativeEvent.contentOffset.y);
-								captureSuppressed.current = false;
-								if (restoreFrame.current !== null) cancelAnimationFrame(restoreFrame.current);
-								restoreFrame.current = null;
-							}}
-							// Letting go at the end, or a flick settling there, follows it
-							// again (spec 8.2); a row landing mid-drag never moves the list
-							// under the finger.
-							onScrollEndDrag={(event) => {
-								follow.dispatch({ type: "dragEnd", atEnd: atEnd(event.nativeEvent) });
-								settleAtEnd(atEnd(event.nativeEvent));
-								pageOlderNear(event.nativeEvent.contentOffset.y);
-								readerPositions.save(readerAnchor.current);
-								setLayoutRevision((revision) => revision + 1);
-							}}
-							onMomentumScrollBegin={(event) => {
-								follow.dispatch({ type: "momentumBegin" });
-								pageOlderNear(event?.nativeEvent.contentOffset.y);
-							}}
-							onMomentumScrollEnd={(event) => {
-								follow.dispatch({ type: "momentumEnd", atEnd: atEnd(event.nativeEvent) });
-								settleAtEnd(atEnd(event.nativeEvent));
-								pageOlderNear(event.nativeEvent.contentOffset.y);
-								readerPositions.save(readerAnchor.current);
-								setLayoutRevision((revision) => revision + 1);
-							}}
-							onScrollToIndexFailed={({ index, averageItemLength }) => {
-								// A match beyond the measured rows: move near it, so the
-								// rows on the way render, then try again.
-								if (findJumping.current) {
-									const progress = furthestMeasuredRowBeforeTarget(timelineRows, index, [
-										...readerMeasurements.current.values(),
-									]);
-									if (!findAttempts.current.retryUnmeasured(progress)) return;
-									timeline.current?.scrollToOffset({
-										offset: index * Math.max(1, averageItemLength),
-										animated: false,
-									});
-									findRetryFrame.current = requestAnimationFrame(retryFindMatch);
-									return;
-								}
-								const anchor = readerAnchor.current;
-								const targetIndex = anchor ? resolveReaderAnchor(anchor, timelineRows) : null;
-								if (targetIndex !== null && readerMeasurements.current.has(readerKey(timelineRows[targetIndex])))
-									return;
-								const measurementProgress =
-									targetIndex === null
-										? -1
-										: furthestMeasuredRowBeforeTarget(timelineRows, targetIndex, [
-												...readerMeasurements.current.values(),
-											]);
-								if (!readerRestoreAttempts.current.retryUnmeasured(measurementProgress)) return;
-								appliedReaderRestore.current = null;
-								restoreFrame.current = requestAnimationFrame(() => {
+						{/* The ghost rows read the screen's state and actions here
+						    (GhostRowContext), so the transcript's other cells keep theirs. */}
+						<GhostRowContext.Provider value={ghostRowHost}>
+							<FlatList
+								ref={timeline}
+								// Where the transcript rests depends on its viewport and the
+								// bar, so it shows once both have laid out and the opening has
+								// landed, and never draws a frame at a place it then leaves.
+								style={{ opacity: listLaidOut && !openingHidden ? 1 : 0 }}
+								onLayout={(event) => {
+									readerViewportHeight.current = event.nativeEvent.layout.height;
+									setLayoutRevision((revision) => revision + 1);
+									// The viewport changed (the keyboard, a dock): while following,
+									// the end stays in view.
+									if (follow.state.current.following)
+										(timeline.current?.getScrollResponder() as ScrollView | null)?.scrollToEnd({ animated: false });
+								}}
+								data={listRows}
+								// Cells re-render only for a new renderItem or new rows, and
+								// renderItem changes with everything a row reads (the live run
+								// included): a screen render that changes nothing a row reads
+								// (typing in the composer, which a ghost row reads by context)
+								// leaves them alone, where FlatList otherwise rebuilds its
+								// renderer, and so every visible cell, on every render (#3247).
+								strictMode
+								CellRendererComponent={readerCellRenderer}
+								// A row keeps its reader key when history records it, so the
+								// list keeps its cell (a streamed reply's wire id changes).
+								keyExtractor={sessionListKey}
+								renderItem={renderItem}
+								// The end keeps a fixed room for what floats over it (spec 8.3),
+								// so Next never sits on the last line and nothing coming or
+								// going there moves the list.
+								contentContainerStyle={{
+									// A short transcript rests just above the composer (spec 8.5):
+									// it fills the viewport above the bar's inset, so at rest it is
+									// at its end with nothing under the bar. The viewport is a ref;
+									// its onLayout bumps layoutRevision, which renders this again.
+									minHeight: listContentMinHeight(readerViewportHeight.current, listUnderBar),
+									justifyContent: "flex-end",
+									padding: 16,
+									paddingTop: 16 + reservedTop,
+									paddingBottom: listUnderBar.endPadding + transcriptEnd,
+								}}
+								contentInset={listUnderBar.contentInset}
+								// Dragging the transcript lowers the keyboard: following the finger
+								// as in Messages on iOS, and at the drag's start on Android, which
+								// has no interactive dismissal.
+								keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
+								scrollIndicatorInsets={listUnderBar.scrollIndicatorInsets}
+								// Older history loading above never moves what you read.
+								maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
+								onContentSizeChange={(_width, height) => {
+									readerContentHeight.current = height;
+									restoreAfterLayout();
+									if (follow.state.current.following)
+										(timeline.current?.getScrollResponder() as ScrollView | null)?.scrollToEnd({ animated: false });
+								}}
+								scrollEventThrottle={100}
+								onScroll={(event) => {
+									const y = event.nativeEvent.contentOffset.y;
+									listOffset.current = y;
+									headerHiding.onScroll(y, follow.state.current.touch !== "none");
+									if (!focused) return;
+									const end = atEnd(event.nativeEvent);
+									if (end) turnsSeen.current = latestSettledTurn(conversation) ?? turnsSeen.current;
+									follow.dispatch({ type: "scroll", atEnd: end, keys: () => new Set(timelineRows.map(readerKey)) });
+									settleAtEnd(end && follow.state.current.touch === "none");
+									if (captureSuppressed.current) return;
+									// Older history loads as you near the top (spec 8.2) once you
+									// move the list. With no finger on it, and the app neither
+									// following the end nor restoring (which returns above), the
+									// list moved for an assistive scroll. The drag and coast events
+									// check too, since a short flick or an overscroll may report no
+									// scroll between them.
+									if (follow.state.current.touch === "none" && !follow.state.current.following)
+										follow.dispatch({ type: "assistiveScroll" });
+									if (!follow.state.current.following) pageOlderNear(y);
+									const visible = readerAnchorRow(timelineRows, readerMeasurements.current, y);
+									if (visible) {
+										readerAnchor.current = captureReaderAnchor(
+											route.params.hubId,
+											route.params.ref,
+											visible,
+											y,
+											[...readerMeasurements.current.values()],
+											Date.now(),
+											bindingInstance,
+											turnsSeen.current,
+										);
+										const anchor = readerAnchor.current;
+										const measurement = readerMeasurements.current.get(readerKey(visible));
+										// Where you scrolled is where the anchor is, so there is nothing
+										// to restore until the anchor changes or its row reflows. The
+										// trade-off: every scroll re-captures the anchor and so arms a
+										// restore only for that exact row; one that reflows (a text-size
+										// change) restores, one whose y merely moves never does.
+										if (anchor && measurement)
+											appliedReaderRestore.current = {
+												key: measurement.key,
+												height: measurement.height,
+												offset: y,
+												clamped: false,
+											};
+									}
+								}}
+								onScrollBeginDrag={(event) => {
+									// A finger on the list while it opens: show it where it is.
+									landOpening();
+									follow.dispatch({ type: "dragBegin" });
+									pageOlderNear(event?.nativeEvent.contentOffset.y);
+									captureSuppressed.current = false;
+									if (restoreFrame.current !== null) cancelAnimationFrame(restoreFrame.current);
 									restoreFrame.current = null;
+								}}
+								// Letting go at the end, or a flick settling there, follows it
+								// again (spec 8.2); a row landing mid-drag never moves the list
+								// under the finger.
+								onScrollEndDrag={(event) => {
+									follow.dispatch({ type: "dragEnd", atEnd: atEnd(event.nativeEvent) });
+									settleAtEnd(atEnd(event.nativeEvent));
+									pageOlderNear(event.nativeEvent.contentOffset.y);
+									readerPositions.save(readerAnchor.current);
+									setLayoutRevision((revision) => revision + 1);
+								}}
+								onMomentumScrollBegin={(event) => {
+									follow.dispatch({ type: "momentumBegin" });
+									pageOlderNear(event?.nativeEvent.contentOffset.y);
+								}}
+								onMomentumScrollEnd={(event) => {
+									follow.dispatch({ type: "momentumEnd", atEnd: atEnd(event.nativeEvent) });
+									settleAtEnd(atEnd(event.nativeEvent));
+									pageOlderNear(event.nativeEvent.contentOffset.y);
+									readerPositions.save(readerAnchor.current);
+									setLayoutRevision((revision) => revision + 1);
+								}}
+								onScrollToIndexFailed={({ index, averageItemLength }) => {
+									// A match beyond the measured rows: move near it, so the
+									// rows on the way render, then try again.
+									if (findJumping.current) {
+										const progress = furthestMeasuredRowBeforeTarget(timelineRows, index, [
+											...readerMeasurements.current.values(),
+										]);
+										if (!findAttempts.current.retryUnmeasured(progress)) return;
+										timeline.current?.scrollToOffset({
+											offset: index * Math.max(1, averageItemLength),
+											animated: false,
+										});
+										findRetryFrame.current = requestAnimationFrame(retryFindMatch);
+										return;
+									}
 									const anchor = readerAnchor.current;
-									if (!anchor || follow.state.current.touch !== "none") return;
-									captureSuppressed.current = true;
-									timeline.current?.scrollToOffset({
-										offset: Math.max(0, index * Math.max(1, averageItemLength) + anchor.withinItemOffset),
-										animated: false,
+									const targetIndex = anchor ? resolveReaderAnchor(anchor, timelineRows) : null;
+									if (targetIndex !== null && readerMeasurements.current.has(readerKey(timelineRows[targetIndex])))
+										return;
+									const measurementProgress =
+										targetIndex === null
+											? -1
+											: furthestMeasuredRowBeforeTarget(timelineRows, targetIndex, [
+													...readerMeasurements.current.values(),
+												]);
+									if (!readerRestoreAttempts.current.retryUnmeasured(measurementProgress)) return;
+									appliedReaderRestore.current = null;
+									restoreFrame.current = requestAnimationFrame(() => {
+										restoreFrame.current = null;
+										const anchor = readerAnchor.current;
+										if (!anchor || follow.state.current.touch !== "none") return;
+										captureSuppressed.current = true;
+										timeline.current?.scrollToOffset({
+											offset: Math.max(0, index * Math.max(1, averageItemLength) + anchor.withinItemOffset),
+											animated: false,
+										});
 									});
-								});
-							}}
-							keyboardShouldPersistTaps="handled"
-							ListHeaderComponent={
-								<View style={{ gap: 12, paddingBottom: 16 }}>
-									{readFailures >= 3 ? (
-										<Text
-											style={{
-												fontSize: 13,
-												lineHeight: 18,
-												color: colors.palette.inkLow,
-											}}
-										>
-											Couldn't load this session. Trying again on its own.
-										</Text>
-									) : null}
-									{/* A failed read says so above, once, and retries on its own. */}
-									<ErrorMessage message={snapshot.status === "error" ? null : snapshot.error} />
-									{/* A subagent's bar already says what you can do instead. */}
-									{connected && permitted && !subagentBar && !permitted.send && !permitted.steer && !permitted.queue ? (
-										<Copy muted>Sending is unavailable for this session.</Copy>
-									) : null}
-								</View>
-							}
-							// Until the conversation first loads, three quiet blocks stand
-							// in for it. A loaded conversation with no rows shows nothing:
-							// the composer's placeholder invites.
-							ListEmptyComponent={conversation ? null : <TranscriptSkeleton />}
-						/>
+								}}
+								keyboardShouldPersistTaps="handled"
+								ListHeaderComponent={
+									<View style={{ gap: 12, paddingBottom: 16 }}>
+										{readFailures >= 3 ? (
+											<Text
+												style={{
+													fontSize: 13,
+													lineHeight: 18,
+													color: colors.palette.inkLow,
+												}}
+											>
+												Couldn't load this session. Trying again on its own.
+											</Text>
+										) : null}
+										{/* A failed read says so above, once, and retries on its own. */}
+										<ErrorMessage message={snapshot.status === "error" ? null : snapshot.error} />
+										{/* A subagent's bar already says what you can do instead. */}
+										{connected &&
+										permitted &&
+										!subagentBar &&
+										!permitted.send &&
+										!permitted.steer &&
+										!permitted.queue ? (
+											<Copy muted>Sending is unavailable for this session.</Copy>
+										) : null}
+										{/* Until the conversation first loads, three quiet blocks stand
+										    in for it, above any ghost already waiting. A loaded
+										    conversation with no rows shows nothing: the composer's
+										    placeholder invites. */}
+										{conversation ? null : <TranscriptSkeleton />}
+									</View>
+								}
+							/>
+						</GhostRowContext.Provider>
 						<SessionHeader
 							glassTop={navGlass ? headerHeight : undefined}
 							onLayout={(event) => setSessionHeader({ height: event.nativeEvent.layout.height, onGlass: navGlass })}
@@ -3115,7 +3140,7 @@ export function ConversationScreen({
 							keyboardShouldPersistTaps="handled"
 							nestedScrollEnabled
 						>
-							{composerShown ? null : waitingForAgent}
+							{composerShown ? null : composerErrors}
 							<View style={{ flexDirection: "row", flexWrap: "wrap", gap: 4 }}>
 								{controlsState?.error &&
 								(controlsState.lastAction === "changeModel" ||
@@ -3180,6 +3205,11 @@ export function ConversationScreen({
 							<LiveStatusTray
 								session={conversation}
 								frames={frames}
+								// The hub reports activity only for top-level sessions.
+								client={subagentOf ? null : client}
+								sessionRef={route.params.ref}
+								row={fleetRow}
+								inFront={focused}
 								connected={connected}
 								canStop={!!permitted?.stop}
 								stopping={stopping || pending}
@@ -3237,7 +3267,7 @@ export function ConversationScreen({
 								settings={bottom.modelChip ? composerSettings : null}
 								above={
 									<>
-										{waitingForAgent}
+										{composerErrors}
 										<ImageAttachments document={document} selection={imageSelection} />
 										<ErrorMessage message={imageState.error} />
 									</>

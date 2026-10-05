@@ -1,7 +1,7 @@
 // The systemMessage item renderer: quiet lifecycle/skill notices (model
 // switch, skill activation, plugin loads, hook completions, round timings,
 // ...) plus the scaffolding blocks (the session system prompt and compaction
-// summaries). Scaffolding is classified off the wire's typed
+// summaries and shared-notes snapshots). Scaffolding is classified off the wire's typed
 // ThreadItem.eventKind discriminator (carried onto ItemModel by reducer.ts's
 // wireItemToModel) and rendered as a collapsed-by-default disclosure. One more
 // kind earns an identity of its own: a persisted turn failure ("error"), which
@@ -25,6 +25,7 @@
 
 import type { ItemModel, TranscriptMetadataVisibility, TurnModel } from "@evener/appwire-client";
 import {
+  APPROVAL_DECISION_EVENT_KIND,
   attentionWarningNotice,
   echoesTurnError,
   firstLine,
@@ -40,11 +41,17 @@ import {
   useTranscriptRenderContext,
 } from "../../../../transcriptDisplay/renderContext";
 import { FailureGlyph, Markdown } from "../../../../widgets";
-import { disclosureDefault, isDisclosureOpen, toggleDisclosure } from "../../../../widgets/disclosure/disclosureStore";
+import {
+  disclosureDefault,
+  isDisclosureOpen,
+  setDisclosureOpen,
+  toggleDisclosure,
+} from "../../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { SYSTEM_PROMPT_ITEM_ID } from "../transcriptVisibility";
 import { asTurnError } from "../turnFailure";
 import { type ItemRenderProps, registerItemRenderer } from "../types";
+import { MessageTimestamp } from "./MessageTimestamp";
 import { roundTimingsSummary } from "./roundTimingsView";
 import { type SystemRun, shouldGroup, systemRunFor } from "./systemGrouping";
 import styles from "./systemnoticeitem.module.css";
@@ -60,6 +67,8 @@ const CLASS = {
   scaffold: requireClass(styles.scaffold, "systemnoticeitem.module.css", "scaffold"),
   scaffoldSummary: requireClass(styles.scaffoldSummary, "systemnoticeitem.module.css", "scaffoldSummary"),
   scaffoldBody: requireClass(styles.scaffoldBody, "systemnoticeitem.module.css", "scaffoldBody"),
+  literalBody: requireClass(styles.literalBody, "systemnoticeitem.module.css", "literalBody"),
+  approval: requireClass(styles.approval, "systemnoticeitem.module.css", "approval"),
 };
 
 // SYSTEM_PROMPT_ITEM_ID (imported above) is the narrow fallback signal for a
@@ -73,9 +82,10 @@ const CLASS = {
 // (apptranscript.go's ProjectTurn "Context summary"/"Context checkpoint",
 // each a wall of markdown). Every other kind (model switch, skill activation,
 // the short live context_compaction stats line, ...) stays a plain quiet
-// line. Classification is by this typed wire field, never the item's own char
+// line. Shared-notes snapshots also get a disclosure, with a literal body.
+// Classification is by this typed wire field, never the item's own char
 // count (kata ckgw).
-const SCAFFOLD_EVENT_KINDS = new Set(["system_prompt", "compaction"]);
+const SCAFFOLD_EVENT_KINDS = new Set(["system_prompt", "compaction", "notes-context"]);
 
 function isScaffoldItem(item: ItemModel): boolean {
   if (item.eventKind !== undefined && item.eventKind !== "") return SCAFFOLD_EVENT_KINDS.has(item.eventKind);
@@ -113,8 +123,8 @@ function scaffoldLabel(item: ItemModel): string {
 // prompt and any other long system-injected text (webui-ux-transcript C1):
 // collapsed to one quiet line ("System prompt · 8.2K chars") by default;
 // expanding renders the FULL text through the same Markdown pipeline every
-// other message body uses, since the wire's own text is markdown (## headers
-// etc.) that would otherwise show as literal, unformatted characters.
+// other message body uses. Shared-notes snapshots preserve their literal text
+// and stay folded at every level until explicitly opened.
 function ScaffoldDisclosure({ item, sessionRef }: { item: ItemModel; sessionRef?: string }) {
   const context = useTranscriptRenderContext();
   const { config } = context;
@@ -123,8 +133,14 @@ function ScaffoldDisclosure({ item, sessionRef }: { item: ItemModel; sessionRef?
   // plus item id, so an expanded scaffold survives a remount without colliding
   // with the same item id in another session. Collapsed by default.
   const disclosureKey = scopedDisclosureId(disclosureScope, item.id);
-  const disclosureFallback = expandDetailsByDefault(config) || disclosureDefault(disclosureScope, item.id, false);
-  const open = isDisclosureOpen(disclosureKey, disclosureFallback);
+  const isNotesSnapshot = item.eventKind === "notes-context";
+  const disclosureFallback =
+    !isNotesSnapshot && (expandDetailsByDefault(config) || disclosureDefault(disclosureScope, item.id, false));
+  const open = isDisclosureOpen(
+    disclosureKey,
+    disclosureFallback,
+    isNotesSnapshot ? { ignoreBaseline: true } : undefined,
+  );
   return (
     <details className={CLASS.scaffold} data-testid="system-notice-scaffold" open={open}>
       {/* biome-ignore lint/a11y/noStaticElementInteractions: <summary> is natively keyboard-operable; controlled to keep the store the single source of truth (see ToolCallItem.tsx) */}
@@ -132,13 +148,13 @@ function ScaffoldDisclosure({ item, sessionRef }: { item: ItemModel; sessionRef?
         className={CLASS.scaffoldSummary}
         onClick={(e) => {
           e.preventDefault();
-          toggleDisclosure(disclosureKey, disclosureFallback);
+          setDisclosureOpen(disclosureKey, !open);
         }}
       >
         {scaffoldLabel(item)} · {formatCharCount(item.text.length)}
       </summary>
       <div className={CLASS.scaffoldBody} data-testid="system-notice-scaffold-body">
-        <Markdown source={item.text} />
+        {isNotesSnapshot ? <pre className={CLASS.literalBody}>{item.text}</pre> : <Markdown source={item.text} />}
       </div>
     </details>
   );
@@ -211,6 +227,20 @@ function RoundTimingsLine({ item }: { item: ItemModel }) {
   );
 }
 
+// ApprovalDecisionLine is a human's Allow or Deny on a sandbox escalation, as
+// history: "Allowed: write /path" and when. It is a decision the reader
+// made, like a question's answer, so it reads at the quiet line's size but
+// never folds into a run (systemGrouping's joinsRun).
+function ApprovalDecisionLine({ item }: { item: ItemModel }) {
+  const decidedAt = Date.parse(item.startedAt ?? "");
+  return (
+    <div className={CLASS.approval} data-testid="system-notice-approval">
+      <span data-testid="system-notice-approval-text">{noticeText(item)}</span>
+      {Number.isFinite(decidedAt) && <MessageTimestamp value={decidedAt} />}
+    </div>
+  );
+}
+
 // FAILURE_FALLBACK_LABEL names a failure the wire described with neither a
 // message nor a description. It is the same category-label-over-invisible-row
 // rule FALLBACK_LABEL follows, worded for the one event where the generic
@@ -277,6 +307,7 @@ function SystemLine({
   if (attention) return <WarningBlock title={attention.title} message={attention.message} hint={attention.hint} />;
   if (isScaffoldItem(item)) return <ScaffoldDisclosure item={item} sessionRef={sessionRef} />;
   if (isRoundTimingsItem(item)) return <RoundTimingsLine item={item} />;
+  if (item.eventKind === APPROVAL_DECISION_EVENT_KIND) return <ApprovalDecisionLine item={item} />;
   return (
     <div className={CLASS.line} data-testid="system-notice-line">
       {noticeText(item)}

@@ -57,6 +57,12 @@ export {
   watchName,
   watchRowID,
 } from "./activityRows";
+export {
+  APPROVAL_DECISION_EVENT_KIND,
+  type ApprovalDecision,
+  approvalDecisionOf,
+  approvalDecisionText,
+} from "./approvalDecision";
 export type {
   ArchivedList,
   ArchivedListCatalog,
@@ -127,7 +133,7 @@ export type {
   SessionCommandCatalogState,
 } from "./commandCatalog";
 export { createCommandCatalog, createSessionCommandCatalog, sessionPluginNames } from "./commandCatalog";
-export type { InputAttachment } from "./composerInput";
+export type { ComposerMention, InputAttachment } from "./composerInput";
 export { buildComposerInput, buildInput, canonicalSkillNames, formatQuoteBlock, mergeDraftText } from "./composerInput";
 export type { CredentialLayerView, InstanceProviderGroup } from "./credentialLabels";
 export {
