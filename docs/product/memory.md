@@ -97,6 +97,13 @@ edits, and reread after a conflict or uncertain response before retrying.
 Underlying errors and applicable read-before-write warnings remain visible.
 Oversized output uses existing retained artifacts and `read_transcript` recovery.
 
+Deletion admits only a regular file through captured-parent metadata, without
+reading its body or requiring file read permission. Parent permissions still
+govern removal. Missing files or parents are a no-op, while directories, symlinks
+and special files are refused. A leaf swapped after admission can still lose a
+replacement non-directory entry, but cannot redirect traversal or remove a
+directory. This is not an atomic file-identity check.
+
 ## Forgetting and lifetime
 
 Forgetting means model-directed search and separate edits of active copies,

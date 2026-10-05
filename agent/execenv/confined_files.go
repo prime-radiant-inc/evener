@@ -7,6 +7,17 @@ import (
 	"sync"
 )
 
+// RemoveConfinedFile removes only an admitted regular file, without reading it.
+// It requires captured filesystem authority, never an unrestricted fallback.
+func (e *LocalExecutionEnvironment) RemoveConfinedFile(path string) error {
+	layer := e.sandbox()
+	if layer == nil {
+		return errors.New("file removal requires a confined environment")
+	}
+	defer layer.release()
+	return layer.removeRegularFile("memory_delete", e.resolve(path))
+}
+
 // NewConfinedFileEnvironment grants file operations only beneath relativeRoot.
 // The host anchor is trusted; its relative tail is created by shared confinement.
 func NewConfinedFileEnvironment(stateRoot, relativeRoot string) (*LocalExecutionEnvironment, error) {

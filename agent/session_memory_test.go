@@ -1693,6 +1693,80 @@ func memoryExec(t *testing.T, s *Session, name string, args map[string]any) tool
 	return s.execTool(context.Background(), llm.ToolCallData{ID: "memory-direct", Name: name, Arguments: raw}, "")
 }
 
+// The native tool must not read a page's body merely to delete it.
+func TestMemoryDeleteUnreadable(t *testing.T) {
+	t.Parallel()
+	for _, scope := range []string{"personal", "project"} {
+		t.Run(scope, func(t *testing.T) {
+			s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project"}))
+			env, err := s.memoryEnvironment(scope)
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(env.WorkingDirectory(), "unreadable")
+			if err := os.WriteFile(path, []byte("opaque-unreadable-374"), 0o000); err != nil {
+				t.Fatal(err)
+			}
+			if os.Getuid() != 0 {
+				if _, err := os.ReadFile(path); !errors.Is(err, os.ErrPermission) {
+					t.Fatalf("fixture is not unreadable: %v", err)
+				}
+			}
+			warn := s.fileReadGuard(env).ReadBeforeWriteWarning(path)
+			if warn == "" {
+				t.Fatal("unread file lost read-before-write warning")
+			}
+			result := memoryExec(t, s, "memory_delete", map[string]any{"scope": scope, "file_path": "unreadable"})
+			if result.IsError {
+				t.Fatal(result.Output)
+			}
+			if strings.TrimSuffix(result.Output, "Removed "+path) == "" {
+				t.Fatal("delete did not preserve the applicable shared warning")
+			}
+			if _, err := os.Lstat(path); !os.IsNotExist(err) {
+				t.Fatalf("page not removed: %v", err)
+			}
+		})
+	}
+}
+
+func TestMemoryDeleteReadGuard(t *testing.T) {
+	t.Parallel()
+	for _, scope := range []string{"personal", "project"} {
+		for _, read := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/read=%t", scope, read), func(t *testing.T) {
+				s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project"}))
+				env, err := s.memoryEnvironment(scope)
+				if err != nil {
+					t.Fatal(err)
+				}
+				path := filepath.Join(env.WorkingDirectory(), "page")
+				if err := os.WriteFile(path, []byte("opaque-read-381"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if read {
+					if res := memoryExec(t, s, "memory_read", map[string]any{"scope": scope, "file_path": "page"}); res.IsError {
+						t.Fatal(res.Output)
+					}
+				}
+				if warned := s.fileReadGuard(env).ReadBeforeWriteWarning(path) != ""; warned == read {
+					t.Fatalf("warning present=%t, prior read=%t", warned, read)
+				}
+				res := memoryExec(t, s, "memory_delete", map[string]any{"scope": scope, "file_path": "page"})
+				if res.IsError {
+					t.Fatal(res.Output)
+				}
+				if warned := strings.TrimSuffix(res.Output, "Removed "+path) != ""; warned == read {
+					t.Fatalf("delete warning present=%t, prior read=%t", warned, read)
+				}
+				if _, err := os.Lstat(path); !os.IsNotExist(err) {
+					t.Fatalf("page survived: %v", err)
+				}
+			})
+		}
+	}
+}
+
 func TestMemoryFreeFormOperations(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()

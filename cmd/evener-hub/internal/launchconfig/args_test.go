@@ -6,25 +6,6 @@ import (
 	"testing"
 )
 
-func TestMemoryLaunchArgs(t *testing.T) {
-	t.Parallel()
-	for _, disabled := range []bool{false, true} {
-		count := 0
-		for _, arg := range ToArgs(Resolved{DisableMemory: disabled}) {
-			if arg == "--disable-memory" {
-				count++
-			}
-		}
-		want := 0
-		if disabled {
-			want = 1
-		}
-		if count != want {
-			t.Fatalf("disabled=%t flag count=%d want=%d", disabled, count, want)
-		}
-	}
-}
-
 func checkToArgs_AllFields(t *testing.T) {
 	r := Resolved{Effective: Layer{
 		Model:                       "openai/gpt-5",

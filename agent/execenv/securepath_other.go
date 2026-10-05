@@ -69,6 +69,10 @@ func (s *sandboxFS) remove(tool, abs string) error {
 	return errSandboxUnsupported()
 }
 
+func (s *sandboxFS) removeRegularFile(tool, abs string) error {
+	return errSandboxUnsupported()
+}
+
 func (s *sandboxFS) rename(tool, oldAbs, newAbs string) error {
 	return errSandboxUnsupported()
 }

@@ -28,7 +28,7 @@ All rows below also require `scope`. Unknown arguments are rejected.
 | `memory_write` | `file_path`, `content` | None | Ordinary `WriteFile`: create the file and parent directories if needed, or replace the entire existing file. Content is accepted unchanged. |
 | `memory_edit` | `file_path`, `old_string`, `new_string` | `replace_all` (default false) | Ordinary `EditFile`: replace a unique exact match, or deliberately replace every occurrence when `replace_all` is true. Read first and include enough context for a unique match. |
 | `memory_search` | `pattern` (regex) | `path`, `glob_filter`, `case_insensitive`, `max_results` (default 100), `context_lines` (0–10, default 0), `output_mode` (`content`, `files_with_matches`, `count`, default `content`) | Ordinary `Grep`, with matching lines, filenames or per-file counts. `glob_filter` supports `*`, `?`, `[]`, `**` and bounded brace alternatives. Dotfiles/directories and gitignored paths are excluded. |
-| `memory_delete` | `file_path` | None | Remove one file using the policy-checked `FileMutator.RemovePath`. Missing files are a no-op. Directories are not recursively deleted. Repair links separately. |
+| `memory_delete` | `file_path` | None | Remove one regular file through shared captured-parent confinement, without reading its body or requiring file read permission. Missing files or parents are a no-op. Directories, symlinks and special files are refused. Parent permissions and other removal errors still apply. Repair links separately. |
 
 The underlying definitions are in
 [`agent/internal/tool/definitions.go`](../../agent/internal/tool/definitions.go).
@@ -36,6 +36,11 @@ Dispatch in [`session_tools_memory.go`](../../agent/session_tools_memory.go)
 adds scope/path authority and forwards to the existing shared executors.
 Applicable read-before-write warnings are tracked independently per scope,
 not inherited from a workspace read of a same-named file.
+
+Deletion checks the leaf's type beneath the authorized parent, then unlinks it
+without a directory-removal fallback. A leaf replaced after admission can still
+lose its replacement non-directory entry, but cannot redirect through a symlink
+or remove a directory. There is no atomic file-identity guarantee.
 
 ## Focused correction
 

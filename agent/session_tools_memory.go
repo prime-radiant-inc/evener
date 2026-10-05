@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"maps"
-	"os"
 	"path/filepath"
 
 	"primeradiant.com/evener/agent/execenv"
@@ -93,11 +92,8 @@ func (s *Session) execMemoryDelete(_ context.Context, _ execenv.ExecutionEnviron
 	}
 	defer release()
 	path := stringArg(args, "file_path")
-	if _, err := env.ReadFileRaw(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return nil, err
-	}
 	warn := s.fileReadGuard(env).ReadBeforeWriteWarning(path)
-	if err := env.RemovePath(path); err != nil {
+	if err := env.RemoveConfinedFile(path); err != nil {
 		return nil, err
 	}
 	return warn + "Removed " + path, nil

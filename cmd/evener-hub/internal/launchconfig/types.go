@@ -88,8 +88,6 @@ type Resolved struct {
 	// unconditionally so the child always sees an explicit value — a zero
 	// here means "automatic retirement disabled", never "flag absent".
 	DaemonIdleTimeout time.Duration
-	// DisableMemory is per launch, never a host or project configuration default.
-	DisableMemory bool
 }
 
 // TrustState describes the in-repo .evener/launch.toml trust outcome.
