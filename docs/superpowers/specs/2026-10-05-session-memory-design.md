@@ -1,0 +1,78 @@
+# Session memory
+
+## Intent
+
+Evener memory has two scopes. Personal memory holds what applies beyond any one project. Project memory holds knowledge about the project. Neither has a place for knowledge about the work currently in progress: its plan, the constraints and decisions that apply to it, and what has been tried and found. Today that knowledge either lives only in the transcript, where compaction loses it, or gets written to project memory, where it clutters the project with task-local detail.
+
+Add a third scope, **session**, for knowledge about the current work.
+
+The session whiteboard (`notes_agent_set`) stays a status channel to the human partner. Improving its prompting is a separate item, outside this spec.
+
+Success means agents keep task-local plans, constraints, decisions and findings in session memory. Those notes survive compaction, delegates can read them, and lessons that outlast the work get promoted to project or personal memory. The memory prompt lab measures this (see Verification).
+
+## Decisions
+
+| Question | Decision |
+|---|---|
+| Who shares a session's memory | The root session owns it. Delegates read it and cannot write it. |
+| Do delegates get their own session memory | No. A delegate reports findings to its parent, and the parent decides what to save. |
+| Fork | The fork gets a copy of the parent's session memory as of the fork, and the two diverge. |
+| Session deletion | Session memory is kept, like the other scopes, until someone gardens it. |
+| Promotion | Before its final report, the agent copies anything that outlasts the work into project or personal memory. |
+| Mechanism | A third scope in the existing memory machinery. Session notes and the history state directory are not used. |
+
+## Storage, identity and lifetime
+
+- **Location:** `<state-root>/memory/sessions/<root-session-id>/`, under the same memory root as personal and project memory. History overrides (`--state-dir`, `EVENER_STATE_DIR`) do not move it.
+- **Owner:** the root session. A delegate resolves `scope: "session"` to its root session's id through the existing `delegateRootSessionID`.
+- **Resume:** keeps the session id, and with it the memory.
+- **Compaction:** the session index is re-projected afterward, as the other scopes are.
+- **Fork, and `--resume-with`:** the new session's directory starts as a copy of the source session's directory at fork time. A missing or empty source directory gives an empty start. A copy failure is reported in the fork's result and the fork still proceeds, so session memory never blocks the user's fork.
+- **Deletion:** deleting a session leaves its session memory in place. `gardening-memory` can clean it up.
+- **Opt-out:** `--disable-memory` disables session memory along with the other scopes. There is no separate switch.
+
+## Tools, context and enforcement
+
+- **Tools:** the five native memory tools' `scope` enum becomes `personal | project | session`. There are no new tools. Paths stay relative and confined to the scope root, as today.
+- **Delegate writes:** `memory_write`, `memory_edit` and `memory_delete` with `scope: "session"` return a tool error from a delegate: "session memory belongs to the root session; report this to your parent instead." The error goes back to the model so it can redirect. Nothing else in the delegate's session is affected. Delegates can still call `memory_read` and `memory_search` on session scope.
+- **Index injection:** a third projection, named `memory_session`. It uses the same 8 KiB bound, quoting, currentness framing and refresh points as the other scopes: startup, resume, after compaction, and model boundaries. A delegate receives its root's session index, framed as read-only.
+- **Gating:** the session scope is available whenever memory is enabled. For delegates, the save predicate that gates write-side guidance treats session scope as read-only. Guidance names only tools and scopes the session can use.
+
+## Prompting
+
+These changes are added to the existing memory guidance (`memoryGuidance()` and the Finishing rows). Each part is shown only when the session can act on it.
+
+- **Scope line:** "Session memory holds knowledge about the current work: its plan, the constraints and decisions that apply to it, and what you tried and found."
+- **Save trigger:** "Save to session memory what you would need if this work were interrupted and resumed after compaction." This replaces part of the current skip rule: details only the current task needs now go to session memory instead of being dropped. Plain step-by-step narration still doesn't belong there.
+- **Partner-told facts split by reach:** what applies to this work goes to session memory. What applies to the project goes to project memory.
+- **Promotion:** a Finishing row. "The work is done and session memory has notes." → "Before you report, copy anything that holds beyond this work into project or personal memory."
+- **Delegates:** "Session memory belongs to your root session. Read it, and report what you learn to your parent."
+
+## Verification
+
+**Unit tests:**
+- scope resolution, for root and delegate
+- a delegate's session write refused with the redirect error
+- fork and `--resume-with` copy the directory, and a copy failure doesn't block the fork
+- resume keeps the same memory
+- the session index is projected, and re-projected after compaction
+- guidance gating for root and delegate sessions
+
+**Memory prompt lab:** the sequential-session harness used for #3740. Each scenario is measured against the current prompt as the baseline, with interviews (resuming the session and asking why) where agents pick the wrong scope.
+1. A task-local constraint lands in session memory, not project memory.
+2. A project fact first noted in session memory gets promoted before the final report.
+3. A delegate reads the root's session memory, and reports instead of writing.
+
+## Documentation
+
+In the same change:
+- update `docs/product/memory.md` (storage roots, scopes, lifetime, delegate rule, fork copy)
+- update the tool reference in `docs/tools/memory.md`
+- update the S24 memory row in `docs/product/subsystems.md` if its responsibilities text changes
+- update `internal/bundled/skills/gardening-memory/SKILL.md` so it covers session scope and promoting session notes
+
+## Out of scope
+
+- Whiteboard prompting.
+- Automatic cleanup of session memory for deleted sessions.
+- Delegate-private session memory.
