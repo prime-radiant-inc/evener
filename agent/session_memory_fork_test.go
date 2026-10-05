@@ -80,6 +80,41 @@ func TestMemoryForkCopiesParentSessionMemory(t *testing.T) {
 	}
 }
 
+// The copy creates its temporary root and nested directories itself, and a
+// directory with several entries is copied whole.
+func TestMemoryForkCopiesNestedParentSessionMemory(t *testing.T) {
+	t.Parallel()
+	root, parentID, c := forkWithSessionMemory(t, true)
+	parentDir := filepath.Join(root, "memory", "sessions", parentID)
+	want := map[string]string{
+		"MEMORY.md":                        "opaque-parent-31\n",
+		"notes.md":                         "opaque-parent-notes-46\n",
+		filepath.Join("topics", "page.md"): "opaque-parent-page-47\n",
+	}
+	if err := os.MkdirAll(filepath.Join(parentDir, "topics"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range want {
+		if err := os.WriteFile(filepath.Join(parentDir, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seen, stop := captureEvents(c)
+	if res := memoryExec(t, c, "memory_read", map[string]any{"scope": "session", "file_path": "MEMORY.md"}); res.IsError {
+		t.Fatal(res.Output)
+	}
+	stop()
+	if hasWarningContaining(*seen, "could not copy the parent session's memory") {
+		t.Fatal("a nested parent scope was reported as a copy failure")
+	}
+	for name, content := range want {
+		got, err := os.ReadFile(filepath.Join(root, "memory", "sessions", c.id, name))
+		if err != nil || string(got) != content {
+			t.Fatalf("child %s=%q err=%v, want %q", name, got, err, content)
+		}
+	}
+}
+
 func TestMemoryForkWithoutParentMemoryStartsEmpty(t *testing.T) {
 	t.Parallel()
 	root, _, c := forkWithSessionMemory(t, false)
@@ -145,6 +180,29 @@ func TestMemoryForkWarnsOnParentScopeThatIsAFile(t *testing.T) {
 	}
 	if !hasWarningContaining(*seen, "could not copy the parent session's memory") {
 		t.Fatal("a parent scope that is a file was not reported")
+	}
+}
+
+// Only a readable child directory counts as an existing fork scope. A child
+// path the probe cannot list is reported, and the parent is not copied.
+func TestMemoryForkWarnsOnUnlistableChildScope(t *testing.T) {
+	t.Parallel()
+	root, _, c := forkWithSessionMemory(t, true)
+	childPath := filepath.Join(root, "memory", "sessions", c.id)
+	if err := os.WriteFile(childPath, []byte("opaque-child-file-48\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	seen, stop := captureEvents(c)
+	c.seedForkedSessionMemory()
+	stop()
+	if !hasWarningContaining(*seen, "could not copy the parent session's memory") {
+		t.Fatal("an unlistable child scope was not reported")
+	}
+	if got, err := os.ReadFile(childPath); err != nil || string(got) != "opaque-child-file-48\n" {
+		t.Fatalf("child path changed: %q err=%v", got, err)
+	}
+	if leftovers, _ := filepath.Glob(filepath.Join(root, "memory", "sessions", ".fork-copy-*")); len(leftovers) != 0 {
+		t.Fatalf("copy ran despite the unlistable child: %v", leftovers)
 	}
 }
 

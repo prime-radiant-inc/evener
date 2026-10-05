@@ -53,8 +53,10 @@ func copySessionMemory(stateRoot, parent, child string) error {
 		return err
 	}
 	defer sessions.Cleanup()
-	if _, err := sessions.ListDirectory(child, 1); !errors.Is(err, os.ErrNotExist) {
+	if _, err := sessions.ListDirectory(child, 1); err == nil {
 		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("fork session memory is not a readable directory: %w", err)
 	}
 	entries, err := sessions.ListDirectory(parent, 1)
 	if errors.Is(err, os.ErrNotExist) {
