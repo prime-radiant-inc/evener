@@ -431,6 +431,11 @@ type testConfig struct {
 	// generation is committed and its run goroutine does not exist yet. Tests use
 	// it to drive the child from a second goroutine at exactly that point.
 	delegateAttentionStartCommitted func(*subagent)
+	// delegateAttentionBeforeGuardRelease observes an attention drive that
+	// launched no run, while it still holds the child's drive guard. Tests
+	// pause it there so another drive is refused on that guard. Nil in
+	// production.
+	delegateAttentionBeforeGuardRelease func(*subagent)
 	// subagentAfterFinalStatePublish observes the interval after a retained child
 	// publishes terminal state and before it restores its parent notify callback.
 	subagentAfterFinalStatePublish func(*subagent)

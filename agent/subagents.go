@@ -120,6 +120,14 @@ type subagent struct {
 	// or resume that raced ahead wins and the gate is refused. Reversed on every
 	// pre-eviction dispose refusal/failure exit.
 	disposeGated bool
+	// attentionDriveRefused records that an attention drive was refused while
+	// another drive held this child's drive guard (driving), dropping its
+	// wake. The holder reads and clears it when it gives the guard back
+	// (releaseDriveGuard): an attention drive that launched no run, or a
+	// notification turn, then re-drives the child. A holder that hands the
+	// guard to a run clears it instead (resetSubagentForRunLocked), since that
+	// run drains the child. Guarded by sub.mu.
+	attentionDriveRefused bool
 }
 
 // startBlockedLocked reports whether the child can't take a new generation
@@ -1598,9 +1606,9 @@ func (s *Session) driveSubagentNotificationTurn(sub *subagent) bool {
 		// the release first: the paced re-drive wait below holds no slot, and
 		// the re-drive can claim one even at drive budget 1.
 		defer func() {
-			sub.mu.Lock()
-			sub.driving = false
-			sub.mu.Unlock()
+			if releaseDriveGuard(sub) {
+				s.redriveLiveChild(childSess.id)
+			}
 			s.redriveChildIfAttentionRemains(driveCtx, sub, childSess)
 		}()
 		defer treeSlot.release()
@@ -1703,6 +1711,9 @@ func resetSubagentForRunLocked(sub *subagent, cancel context.CancelFunc, started
 	sub.endedAt = nil
 	sub.closed = false
 	sub.closeTimedOut = false
+	// The run drains the child's attention, so a refusal recorded on the guard
+	// it takes over is no longer owed a re-drive.
+	sub.attentionDriveRefused = false
 }
 
 func (s *Session) launchSubagentRun(runCtx context.Context, sub *subagent, runCancel context.CancelFunc, input string, inputProvenance *provenance.Causal) {
