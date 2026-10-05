@@ -96,6 +96,13 @@ var remoteHostAdminMutationMethods = map[string]struct{}{
 	appwire.MethodEvenerDirsCreate:           {},
 }
 
+// isRemoteHostAdminMutation reports whether a forwarded method changes the
+// remote host (remoteHostAdminMutationMethods).
+func isRemoteHostAdminMutation(method string) bool {
+	_, mutating := remoteHostAdminMutationMethods[method]
+	return mutating
+}
+
 // remoteHostConfigNotifications is the exact set of host-owned config
 // notifications the fan-out re-emits to the controller's browser clients,
 // wrapped in evener/host/notification. Any other remote notification is
@@ -230,7 +237,7 @@ func (c *hubHostAdminController) Request(ctx context.Context, params appwire.Hos
 	// might blind-retry. A read keeps AdminCall's SessionUnavailable mapping.
 	var out json.RawMessage
 	var callErr error
-	if _, mutating := remoteHostAdminMutationMethods[params.Method]; mutating {
+	if isRemoteHostAdminMutation(params.Method) {
 		callErr = remote.AdminMutationCall(ctx, params.Method, params.Params, &out)
 	} else {
 		callErr = remote.AdminCall(ctx, params.Method, params.Params, &out)
@@ -255,9 +262,7 @@ func (c *hubHostAdminController) Request(ctx context.Context, params appwire.Hos
 // with its hub write gate. A method outside the allow-list, or params that
 // do not parse, stay inline so the refusal is answered in order; an
 // allow-listed read to an unknown or offline host goes concurrent and is
-// refused out of order, which changes nothing. A read beyond the server's
-// pool of waiting ones is refused Unavailable at once, as an offline host's
-// would be.
+// refused out of order, which changes nothing.
 func forwardedHostRead(method string, params json.RawMessage) bool {
 	if method != appwire.MethodEvenerHostRequest {
 		return false
@@ -266,8 +271,7 @@ func forwardedHostRead(method string, params json.RawMessage) bool {
 	if json.Unmarshal(params, &forwarded) != nil || !appwire.IsHostRequestMethod(forwarded.Method) {
 		return false
 	}
-	_, mutating := remoteHostAdminMutationMethods[forwarded.Method]
-	return !mutating
+	return !isRemoteHostAdminMutation(forwarded.Method)
 }
 
 // remoteSourceFor returns the attached component-05 source for host, or the
