@@ -8,7 +8,7 @@
 
 import { errorText, marketplaceSourceLabel } from "@evener/appwire-client";
 import { HUB_WRITE_BUSY, isHubWriteBusy } from "@evener/appwire-client/state/extensions";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useIsMobile } from "../../../../shell/useIsMobile";
 import { Button, ConfirmDialog, Sheet, Switch, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
@@ -42,6 +42,17 @@ export function PluginDetailSheet({ target, onClose }: PluginDetailSheetProps) {
   const toasts = useToasts();
 
   const [pendingRemove, setPendingRemove] = useState(false);
+  const upgradeButton = useRef<HTMLButtonElement>(null);
+  const removeButton = useRef<HTMLButtonElement>(null);
+  // Set when a successful upgrade began from a focused Upgrade button: the
+  // upgrade's answer unmounts that button, so once it has rendered, the
+  // keyboard moves to Remove instead of falling to <body>.
+  const [refocusAfterUpgrade, setRefocusAfterUpgrade] = useState(false);
+  useEffect(() => {
+    if (!refocusAfterUpgrade) return;
+    setRefocusAfterUpgrade(false);
+    if (upgradeButton.current === null) removeButton.current?.focus();
+  }, [refocusAfterUpgrade]);
 
   const entry =
     target === null || plugins === null
@@ -89,8 +100,10 @@ export function PluginDetailSheet({ target, onClose }: PluginDetailSheetProps) {
 
   async function handleUpgrade() {
     if (target === null) return;
+    const upgradeFocused = upgradeButton.current !== null && document.activeElement === upgradeButton.current;
     try {
       await store.getState().upgradePlugin(target.plugin, target.marketplace);
+      if (upgradeFocused) setRefocusAfterUpgrade(true);
       toasts.push("success", `Upgraded ${target.plugin}`);
     } catch (err) {
       toasts.push("error", isHubWriteBusy(err) ? HUB_WRITE_BUSY : `Upgrade failed: ${errorText(err)}`);
@@ -132,11 +145,21 @@ export function PluginDetailSheet({ target, onClose }: PluginDetailSheetProps) {
               {/* Offered only when the hub's update check found one; an older hub
                   without the check offers none. */}
               {entry.updateAvailable && (
-                <Button variant="primary" onClick={() => void handleUpgrade()} aria-disabled={hubWriteBusy}>
+                <Button
+                  ref={upgradeButton}
+                  variant="primary"
+                  onClick={() => void handleUpgrade()}
+                  aria-disabled={hubWriteBusy}
+                >
                   Upgrade
                 </Button>
               )}
-              <Button variant="danger" disabled={hubWriteBusy} onClick={() => setPendingRemove(true)}>
+              <Button
+                ref={removeButton}
+                variant="danger"
+                disabled={hubWriteBusy}
+                onClick={() => setPendingRemove(true)}
+              >
                 Remove
               </Button>
             </>

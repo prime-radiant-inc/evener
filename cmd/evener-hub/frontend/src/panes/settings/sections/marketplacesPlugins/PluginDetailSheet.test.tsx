@@ -246,6 +246,10 @@ test("Upgrade calls pluginUpgrade, toasts an upgraded success, and is busy in fl
 
   resolveUpgrade({ plugins: [LINTER] });
   await waitFor(() => expect(getToasts().some((t) => t.kind === "success" && t.text === "Upgraded linter")).toBe(true));
+  // The upgrade answered with the plugin current, so Upgrade is gone; the
+  // keyboard lands on the sheet's remaining action, not on <body>.
+  await waitFor(() => expect(screen.queryByRole("button", { name: "Upgrade" })).toBeNull());
+  expect(document.activeElement).toBe(screen.getByRole("button", { name: "Remove" }));
 });
 
 test("a failed upgrade toasts failure", async () => {
