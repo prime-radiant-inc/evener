@@ -49,6 +49,7 @@ func TranscriptOnlySamples() []schema.Turn {
 		notice("t_sample_gap_goal", schema.NoticeInfo{Kind: schema.NoticeGoalEnded, GoalEnded: &schema.GoalEndedNotice{Status: "complete", Iterations: 1}}),
 		notice("t_sample_gap_limit", schema.NoticeInfo{Kind: schema.NoticeTurnLimit, TurnLimit: &schema.TurnLimitNotice{MaxToolRoundsPerInput: 3}}),
 		notice("t_sample_gap_skill", schema.NoticeInfo{Kind: schema.NoticeSkillActivated, SkillActivated: &schema.SkillActivatedNotice{Name: "sample-skill"}}),
+		notice("t_sample_gap_approval", schema.NoticeInfo{Kind: schema.NoticeApprovalDecision, ApprovalDecision: &schema.ApprovalDecisionNotice{EscalationID: "sample-escalation", Approved: true, Tool: "write_file", Kind: "file_tool", DeniedPath: "/sample/path"}}),
 	}
 }
 

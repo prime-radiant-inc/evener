@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
 )
 
@@ -57,6 +58,28 @@ func TestEscalation_RecordsTheHumansDecision(t *testing.T) {
 				t.Fatalf("recorded %+v, want exactly %+v", got, want)
 			}
 		})
+	}
+}
+
+// A decision the session accepted is history even when the waiting call
+// never reads it: a stop that lands with the human's Allow can win the
+// call's select, and the Allow must still be recorded. The waiter here has no
+// call reading its channel at all, which is that race decided for the stop.
+func TestEscalation_RecordsAnAcceptedDecisionTheStoppedCallNeverRead(t *testing.T) {
+	s := recordingEscalationSession(t)
+	_, denied := deniedResult("/etc/hosts")
+	req := sandbox.NewEscalationRequest("esc_raced", denied)
+	s.mu.Lock()
+	s.pendingEscalations = map[string]*escalationWaiter{
+		req.ID: {ch: make(chan sandbox.EscalationDecision, 1), data: escalationRequestedData(req)},
+	}
+	s.mu.Unlock()
+	if err := s.ResolveSandboxEscalation(req.ID, true); err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	want := schema.ApprovalDecisionNotice{EscalationID: req.ID, Approved: true, Tool: denied.Tool, Kind: "file_tool", DeniedPath: denied.Path}
+	if got := approvalDecisions(t, s); len(got) != 1 || got[0] != want {
+		t.Fatalf("recorded %+v, want exactly %+v", got, want)
 	}
 }
 

@@ -220,15 +220,6 @@ func (s *Session) escalateOnSandboxDenial(ctx context.Context, callName string, 
 			// and no human answered.
 			return res
 		}
-		// A human answered; the answer is history (S16). It is recorded
-		// before the re-run, so it precedes the call's result.
-		s.recordNotice(schema.NoticeInfo{Kind: schema.NoticeApprovalDecision, ApprovalDecision: &schema.ApprovalDecisionNotice{
-			EscalationID: id,
-			Approved:     d.Approve,
-			Tool:         data.Tool,
-			Kind:         data.Kind,
-			DeniedPath:   data.DeniedPath,
-		}})
 		if d.Approve {
 			return rerun(withInvocationGrant(ctx, denied.Path))
 		}
@@ -252,6 +243,17 @@ func (s *Session) ResolveSandboxEscalation(id string, approve bool) error {
 	if !ok {
 		return fmt.Errorf("sandbox escalation %q is not pending (unknown or already resolved)", id)
 	}
+	// The human's answer is history. It is recorded here, where the session
+	// accepts it, rather than by the waiting call: a turn stopped at the same
+	// moment can win that call's select and never read the answer. Recording
+	// before the send also puts it before the re-run's result.
+	s.recordNotice(schema.NoticeInfo{Kind: schema.NoticeApprovalDecision, ApprovalDecision: &schema.ApprovalDecisionNotice{
+		EscalationID: id,
+		Approved:     approve,
+		Tool:         w.data.Tool,
+		Kind:         w.data.Kind,
+		DeniedPath:   w.data.DeniedPath,
+	}})
 	w.ch <- sandbox.EscalationDecision{Approve: approve} // buffered(1); exactly one send
 	return nil
 }
