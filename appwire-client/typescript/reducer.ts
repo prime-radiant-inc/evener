@@ -1374,6 +1374,7 @@ function isNonNegativeInteger(value: unknown): value is number {
 function validPosition(value: unknown): value is ThreadItemPosition {
   return (
     isRecord(value) &&
+    hasOnlyKeys(value, ["entry", "item", "sub"]) &&
     isNonNegativeInteger(value.entry) &&
     isNonNegativeInteger(value.item) &&
     (value.sub === undefined || isNonNegativeInteger(value.sub))
@@ -1455,11 +1456,24 @@ function validItem(value: unknown): value is CachedSessionItem {
     if (value[key] !== undefined && !isFiniteNumber(value[key])) return false;
   }
   if (value.prevalOnly !== undefined && typeof value.prevalOnly !== "boolean") return false;
+  if (
+    value.warning !== undefined &&
+    (!isRecord(value.warning) ||
+      !hasOnlyKeys(value.warning, ["source", "title", "hint", "code"]) ||
+      ["source", "title", "hint", "code"].some(
+        (key) =>
+          value.warning &&
+          (value.warning as Record<string, unknown>)[key] !== undefined &&
+          typeof (value.warning as Record<string, unknown>)[key] !== "string",
+      ))
+  )
+    return false;
   const validImages = (images: unknown): boolean =>
     Array.isArray(images) &&
     images.every(
       (image) =>
         isRecord(image) &&
+        hasOnlyKeys(image, ["src", "name", "path", "source"]) &&
         typeof image.src === "string" &&
         ["name", "path", "source"].every((key) => image[key] === undefined || typeof image[key] === "string"),
     );
@@ -1506,7 +1520,7 @@ function validTurn(value: unknown): value is CachedSessionTurn {
     (value.startedAt === undefined || typeof value.startedAt === "string") &&
     (value.completedAt === undefined || typeof value.completedAt === "string") &&
     (value.durationMs === undefined || (isFiniteNumber(value.durationMs) && value.durationMs >= 0)) &&
-    (value.usage === undefined || value.usage === null || validUsage(value.usage)) &&
+    (value.usage === undefined || validUsage(value.usage)) &&
     (value.cost === undefined || value.cost === null || typeof value.cost === "string") &&
     (value.error === undefined || value.error === null || validTurnError(value.error)) &&
     (value.version === undefined || isNonNegativeInteger(value.version))
@@ -1520,8 +1534,21 @@ function validTurnError(value: unknown): boolean {
     typeof value.message !== "string"
   )
     return false;
-  return ["additionalDetails", "source", "title", "hint"].every(
-    (key) => value[key] === undefined || typeof value[key] === "string",
+  return (
+    ["additionalDetails", "source", "title", "hint"].every(
+      (key) => value[key] === undefined || typeof value[key] === "string",
+    ) &&
+    (value.cause === undefined || validDiagnosticCause(value.cause))
+  );
+}
+
+function validDiagnosticCause(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    hasOnlyKeys(value, ["kind", "provider", "model", "status"]) &&
+    typeof value.kind === "string" &&
+    ["provider", "model"].every((key) => value[key] === undefined || typeof value[key] === "string") &&
+    (value.status === undefined || isFiniteNumber(value.status))
   );
 }
 
@@ -1757,6 +1784,32 @@ function validStableDelegate(value: unknown): boolean {
     "usage",
     "worktree",
   ];
+  const stringFields = [
+    "parentDelegateId",
+    "outcome",
+    "reason",
+    "error",
+    "notResumableReason",
+    "task",
+    "description",
+    "agentType",
+    "requestedModel",
+    "resolvedProfileId",
+    "resolvedModel",
+    "model",
+    "reasoningEffort",
+    "originTurnId",
+    "originToolCallId",
+    "originItemId",
+    "runStartedAt",
+    "runEndedAt",
+    "latestActivityAt",
+    "packetKind",
+    "structuredResultReason",
+    "exhaustionBudget",
+  ];
+  const booleanFields = ["terminal", "structuredResultValid", "exhaustionResumable", "parentWatchGranted"];
+  const numberFields = ["runningForMs", "quietForMs", "durationMs", "exhaustionLimit", "delegationAllowance"];
   return (
     isRecord(value) &&
     hasOnlyKeys(value, keys) &&
@@ -1774,7 +1827,127 @@ function validStableDelegate(value: unknown): boolean {
       "status",
     ].every((key) => typeof value[key] === "string") &&
     ["resumable", "needsAttention"].every((key) => typeof value[key] === "boolean") &&
-    (value.usage === undefined || value.usage === null || validUsage(value.usage))
+    stringFields.every((key) => value[key] === undefined || typeof value[key] === "string") &&
+    booleanFields.every((key) => value[key] === undefined || typeof value[key] === "boolean") &&
+    numberFields.every((key) => value[key] === undefined || isFiniteNumber(value[key])) &&
+    (value.warnings === undefined || validStringArray(value.warnings)) &&
+    (value.diagnostics === undefined || validStringArray(value.diagnostics)) &&
+    (value.usage === undefined || validUsage(value.usage)) &&
+    (value.worktree === undefined || validWorktree(value.worktree))
+  );
+}
+
+function validStringArray(value: unknown): boolean {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+function validWorktree(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    hasOnlyKeys(value, ["path", "branch", "headSha", "ahead", "dirty"]) &&
+    typeof value.path === "string" &&
+    typeof value.branch === "string" &&
+    typeof value.headSha === "string" &&
+    isFiniteNumber(value.ahead) &&
+    typeof value.dirty === "boolean"
+  );
+}
+
+function validDiagnostics(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    hasOnlyKeys(value, ["commands", "plugins"]) &&
+    (value.commands === undefined ||
+      (Array.isArray(value.commands) &&
+        value.commands.every(
+          (command) =>
+            isRecord(command) &&
+            hasOnlyKeys(command, ["name", "pluginName", "description", "argumentHint", "source"]) &&
+            typeof command.name === "string" &&
+            ["pluginName", "description", "argumentHint", "source"].every(
+              (key) => command[key] === undefined || typeof command[key] === "string",
+            ),
+        ))) &&
+    (value.plugins === undefined ||
+      (Array.isArray(value.plugins) &&
+        value.plugins.every(
+          (plugin) => isRecord(plugin) && hasOnlyKeys(plugin, ["name"]) && typeof plugin.name === "string",
+        )))
+  );
+}
+
+function validSkill(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    hasOnlyKeys(value, [
+      "name",
+      "description",
+      "disableModelInvocation",
+      "userInvocable",
+      "available",
+      "allowedTools",
+    ]) &&
+    typeof value.name === "string" &&
+    ["disableModelInvocation", "userInvocable", "available"].every((key) => typeof value[key] === "boolean") &&
+    (value.description === undefined || typeof value.description === "string") &&
+    (value.allowedTools === undefined || validStringArray(value.allowedTools))
+  );
+}
+
+function validEscalation(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    hasOnlyKeys(value, [
+      "threadId",
+      "ref",
+      "escalationId",
+      "mode",
+      "tool",
+      "kind",
+      "deniedPath",
+      "command",
+      "outputSoFar",
+      "partiallyRan",
+    ]) &&
+    ["threadId", "ref", "escalationId", "mode", "tool", "kind", "deniedPath"].every(
+      (key) => typeof value[key] === "string",
+    ) &&
+    ["command", "outputSoFar"].every((key) => value[key] === undefined || typeof value[key] === "string") &&
+    (value.partiallyRan === undefined || typeof value.partiallyRan === "boolean")
+  );
+}
+
+function validSessionURL(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    hasOnlyKeys(value, ["id", "url", "label", "addedBy", "addedAt"]) &&
+    typeof value.id === "string" &&
+    typeof value.url === "string" &&
+    ["label", "addedBy"].every((key) => value[key] === undefined || typeof value[key] === "string") &&
+    (value.addedAt === undefined || isFiniteNumber(value.addedAt))
+  );
+}
+
+function validModelRetry(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    hasOnlyKeys(value, [
+      "attempt",
+      "maxAttempts",
+      "delayMs",
+      "errorClass",
+      "statusCode",
+      "turnId",
+      "model",
+      "groupElapsedMs",
+      "attemptCap",
+      "receivedAt",
+    ]) &&
+    ["attempt", "maxAttempts", "delayMs", "groupElapsedMs", "attemptCap", "receivedAt"].every((key) =>
+      isFiniteNumber(value[key]),
+    ) &&
+    ["statusCode"].every((key) => value[key] === undefined || isFiniteNumber(value[key])) &&
+    ["errorClass", "turnId", "model"].every((key) => value[key] === undefined || typeof value[key] === "string")
   );
 }
 
@@ -1825,6 +1998,11 @@ function validCurrentFieldShapes(value: Record<string, unknown>): boolean {
     return false;
   if (value.delegates !== undefined && (!Array.isArray(value.delegates) || !value.delegates.every(validStableDelegate)))
     return false;
+  if (value.diagnostics !== undefined && !validDiagnostics(value.diagnostics)) return false;
+  if (value.skills !== undefined && (!Array.isArray(value.skills) || !value.skills.every(validSkill))) return false;
+  if (!Array.isArray(value.pendingEscalations) || !value.pendingEscalations.every(validEscalation)) return false;
+  if (!Array.isArray(value.sessionUrls) || !value.sessionUrls.every(validSessionURL)) return false;
+  if (value.modelRetry !== undefined && !validModelRetry(value.modelRetry)) return false;
   if (
     value.turnSlots !== undefined &&
     value.turnSlots !== null &&
@@ -1878,7 +2056,7 @@ function validWireTurn(value: unknown): boolean {
   if (typeof value.id !== "string" || typeof value.itemsView !== "string" || typeof value.status !== "string")
     return false;
   if (value.items !== undefined && (!Array.isArray(value.items) || !value.items.every(validWireItem))) return false;
-  if (value.error !== undefined && !isRecord(value.error)) return false;
+  if (value.error !== undefined && !validTurnError(value.error)) return false;
   if (value.version !== undefined && !isNonNegativeInteger(value.version)) return false;
   if (value.hasEarlierItems !== undefined && typeof value.hasEarlierItems !== "boolean") return false;
   if (value.hasLaterItems !== undefined && typeof value.hasLaterItems !== "boolean") return false;
@@ -2002,8 +2180,9 @@ function validCurrentHistory(value: unknown): value is CurrentTranscriptState["h
     (value.pendingIncarnation === undefined || typeof value.pendingIncarnation === "string") &&
     (value.awaited === undefined ||
       (isRecord(value.awaited) &&
+        hasOnlyKeys(value.awaited, ["bootGeneration", "epoch"]) &&
         typeof value.awaited.bootGeneration === "string" &&
-        isFiniteNumber(value.awaited.epoch)))
+        isNonNegativeInteger(value.awaited.epoch)))
   );
 }
 

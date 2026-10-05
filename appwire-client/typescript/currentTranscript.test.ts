@@ -377,6 +377,317 @@ describe("current transcript checkpoints", () => {
     });
   });
 
+  it.each([
+    [
+      "delegate task object",
+      (state: NonNullable<ReturnType<typeof currentTranscriptState>>) => {
+        state.fields.delegates = [
+          {
+            runGeneration: 1,
+            delegateId: "dlg_schema",
+            ownerSessionId: "root",
+            rootSessionId: "root",
+            childSessionId: "child",
+            transcriptRef: "local:child",
+            type: "delegate",
+            lifecycle: "ended",
+            phase: "ended",
+            status: "completed",
+            resumable: true,
+            needsAttention: false,
+            projectionRevision: 1,
+            task: {},
+          },
+        ] as never;
+      },
+    ],
+    [
+      "skills object",
+      (state: NonNullable<ReturnType<typeof currentTranscriptState>>) => {
+        state.fields.skills = {} as never;
+      },
+    ],
+    [
+      "delegate worktree extra key",
+      (state: NonNullable<ReturnType<typeof currentTranscriptState>>) => {
+        state.fields.delegates = [
+          {
+            runGeneration: 1,
+            delegateId: "dlg_schema",
+            ownerSessionId: "root",
+            rootSessionId: "root",
+            childSessionId: "child",
+            transcriptRef: "local:child",
+            type: "delegate",
+            lifecycle: "ended",
+            phase: "ended",
+            status: "completed",
+            resumable: true,
+            needsAttention: false,
+            projectionRevision: 1,
+            worktree: {
+              path: "/tmp/w",
+              branch: "topic",
+              headSha: "abc",
+              ahead: 0,
+              dirty: false,
+              unexpected: "disk-extra",
+            },
+          },
+        ] as never;
+      },
+    ],
+    [
+      "delegate usage null",
+      (state: NonNullable<ReturnType<typeof currentTranscriptState>>) => {
+        state.fields.delegates = [
+          {
+            runGeneration: 1,
+            delegateId: "dlg_schema",
+            ownerSessionId: "root",
+            rootSessionId: "root",
+            childSessionId: "child",
+            transcriptRef: "local:child",
+            type: "delegate",
+            lifecycle: "ended",
+            phase: "ended",
+            status: "completed",
+            resumable: true,
+            needsAttention: false,
+            projectionRevision: 1,
+            usage: null,
+          },
+        ] as never;
+      },
+    ],
+    [
+      "deferred turn error extra key",
+      (state: NonNullable<ReturnType<typeof currentTranscriptState>>) => {
+        state.history.deferredPages = [
+          {
+            data: [
+              {
+                id: "old",
+                itemsView: "full",
+                status: "failed",
+                items: [],
+                error: { message: "failed", unexpected: "disk-extra" },
+              },
+            ],
+          },
+        ] as never;
+      },
+    ],
+    [
+      "diagnostics command missing required name",
+      (state: NonNullable<ReturnType<typeof currentTranscriptState>>) => {
+        state.fields.diagnostics = { commands: [{}] } as never;
+      },
+    ],
+    [
+      "skill missing required booleans",
+      (state: NonNullable<ReturnType<typeof currentTranscriptState>>) => {
+        state.fields.skills = [{ name: "skill" }] as never;
+      },
+    ],
+    [
+      "escalation missing required identity",
+      (state: NonNullable<ReturnType<typeof currentTranscriptState>>) => {
+        state.fields.pendingEscalations = [{}] as never;
+      },
+    ],
+    [
+      "session URL malformed element",
+      (state: NonNullable<ReturnType<typeof currentTranscriptState>>) => {
+        state.fields.sessionUrls = [null] as never;
+      },
+    ],
+    [
+      "model retry missing required state",
+      (state: NonNullable<ReturnType<typeof currentTranscriptState>>) => {
+        state.fields.modelRetry = {} as never;
+      },
+    ],
+    [
+      "deferred turn error unknown cause field",
+      (state: NonNullable<ReturnType<typeof currentTranscriptState>>) => {
+        state.history.deferredPages = [
+          {
+            data: [
+              {
+                id: "old",
+                itemsView: "full",
+                status: "failed",
+                items: [],
+                error: { message: "failed", cause: { kind: "provider", unexpected: "disk-extra" } },
+              },
+            ],
+          },
+        ] as never;
+      },
+    ],
+    [
+      "cached item warning malformed source",
+      (state: NonNullable<ReturnType<typeof currentTranscriptState>>) => {
+        state.history.turns = [
+          {
+            id: "turn_bad",
+            status: "completed",
+            items: [{ id: "item", turnId: "turn_bad", type: "warning", text: "warning", warning: { source: 7 } }],
+          },
+        ] as never;
+      },
+    ],
+    [
+      "history awaited unknown field",
+      (state: NonNullable<ReturnType<typeof currentTranscriptState>>) => {
+        state.history.awaited = { bootGeneration: "1", epoch: 2, unexpected: "disk-extra" } as never;
+      },
+    ],
+  ])("rejects schema-owned invalid structure: %s", (_name, mutate) => {
+    const encoded = currentTranscriptState(hydrateThread(currentRead("local:schema"), "local:schema", 10));
+    if (!encoded) throw new Error("versioned fixture history did not encode");
+    const malformed = structuredClone(encoded);
+    mutate(malformed);
+
+    expect(decodeCurrentTranscriptState(malformed)).toBeUndefined();
+  });
+
+  it("rejects unknown keys on schema-owned deferred turn errors", () => {
+    const encoded = currentTranscriptState(hydrateThread(currentRead("local:error-key"), "local:error-key", 10));
+    if (!encoded) throw new Error("versioned fixture history did not encode");
+    const malformed = structuredClone(encoded);
+    malformed.history.deferredPages = [
+      {
+        data: [
+          {
+            id: "old",
+            itemsView: "full",
+            status: "failed",
+            items: [],
+            error: { message: "failed", unexpected: "disk-extra" } as never,
+          },
+        ],
+      },
+    ];
+
+    expect(decodeCurrentTranscriptState(malformed)).toBeUndefined();
+  });
+
+  it("round-trips valid optional and empty schemas without restricting opaque payloads", () => {
+    const original = hydrateThread(currentRead("local:valid-schema"), "local:valid-schema", 10);
+    original.diagnostics = { commands: [], plugins: [] };
+    original.delegates = [
+      {
+        runGeneration: 1,
+        delegateId: "dlg_valid",
+        ownerSessionId: "root",
+        rootSessionId: "root",
+        childSessionId: "child",
+        transcriptRef: "local:child",
+        type: "delegate",
+        lifecycle: "ended",
+        phase: "ended",
+        status: "completed",
+        resumable: true,
+        needsAttention: false,
+        projectionRevision: 1,
+        task: "",
+        warnings: [],
+        diagnostics: [],
+        message: { arbitrary: [1, null, { nested: true }] },
+        structuredResult: { arbitrary: { result: "kept" } },
+        usage: {},
+        worktree: { path: "", branch: "", headSha: "", ahead: 0, dirty: false },
+      },
+    ];
+    original.skills = [
+      {
+        name: "",
+        disableModelInvocation: false,
+        userInvocable: false,
+        available: false,
+        allowedTools: [],
+      },
+    ];
+    original.pendingEscalations = [
+      {
+        threadId: original.threadId,
+        ref: original.ref,
+        escalationId: "esc-valid",
+        mode: "read",
+        tool: "Read",
+        kind: "path",
+        deniedPath: "",
+        partiallyRan: false,
+      },
+    ];
+    original.sessionUrls = [{ id: "url-valid", url: "", label: "", addedBy: "", addedAt: 0 }];
+    original.modelRetry = {
+      attempt: 0,
+      maxAttempts: 0,
+      delayMs: 0,
+      groupElapsedMs: 0,
+      attemptCap: 0,
+      receivedAt: 0,
+      errorClass: "",
+      statusCode: 0,
+      turnId: "",
+      model: "",
+    };
+    if (!original.history) throw new Error("versioned fixture history did not hydrate");
+    original.history = {
+      ...original.history,
+      deferredPages: [
+        {
+          data: [
+            {
+              id: "old-error",
+              itemsView: "full",
+              status: "failed",
+              items: [],
+              error: {
+                message: "failed",
+                additionalDetails: "",
+                codexErrorInfo: { arbitrary: [null, { retained: true }] },
+                cause: { kind: "provider", provider: "p", model: "m", status: 0 },
+              },
+            },
+          ],
+        },
+      ],
+    };
+    original.goal = null;
+    original.usage = null;
+    original.cost = null;
+    original.turnSlots = null;
+    original.tasks = null;
+
+    const encoded = currentTranscriptState(original);
+    if (!encoded) throw new Error("valid populated checkpoint did not encode");
+    const decoded = decodeCurrentTranscriptState(JSON.parse(JSON.stringify(encoded)));
+    if (!decoded) throw new Error("valid populated checkpoint did not decode");
+    const restored = threadModelFromCurrentState(decoded);
+
+    expect(restored.diagnostics).toEqual({ commands: [], plugins: [] });
+    expect(restored.skills).toEqual(original.skills);
+    expect(restored.pendingEscalations).toEqual(original.pendingEscalations);
+    expect(restored.sessionUrls).toEqual(original.sessionUrls);
+    expect(restored.modelRetry).toEqual(original.modelRetry);
+    expect(restored.delegates?.[0]?.message).toEqual({ arbitrary: [1, null, { nested: true }] });
+    expect(restored.delegates?.[0]?.structuredResult).toEqual({ arbitrary: { result: "kept" } });
+    expect(restored.delegates?.[0]?.worktree).toEqual({ path: "", branch: "", headSha: "", ahead: 0, dirty: false });
+    expect(restored.history?.deferredPages[0]?.data[0]?.error?.codexErrorInfo).toEqual({
+      arbitrary: [null, { retained: true }],
+    });
+    expect(restored.goal).toBeNull();
+    expect(restored.usage).toBeNull();
+    expect(restored.cost).toBeNull();
+    expect(restored.turnSlots).toBeNull();
+    expect(restored.tasks).toBeNull();
+    expect(restored.history?.deferredPages).toHaveLength(1);
+  });
+
   it("keeps omitted text distinct from explicit empty text", () => {
     const read = readWithItems("local:text", [
       { id: "omitted", turnId: "turn_1", type: "agentMessage" },
