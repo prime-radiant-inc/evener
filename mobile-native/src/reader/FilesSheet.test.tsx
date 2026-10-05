@@ -1,4 +1,4 @@
-// Files & artifacts (spec 10.1, ruling 26): the session's documents, newest
+// Files (spec 10.1, ruling 26): the session's documents, newest
 // write first, each with its kind, title, path, length and age, and a blue dot
 // when it's new or changed since you last opened it.
 import { act, type ReactTestRenderer } from "react-test-renderer";
@@ -109,7 +109,8 @@ it("lists each document with its kind, title, path, length and age, in the order
 		{ path: CODE, kind: "Code" },
 	]);
 	const text = renderedText(tree);
-	expect(text).toContain("Files & artifacts");
+	const header = tree.root.find((node) => String(node.type) === "Text" && node.props.accessibilityRole === "header");
+	expect(header.props.children).toBe("Files");
 	expect(text).toContain("Fix the settle/drain race");
 	expect(text).toContain(PLAN);
 	expect(text).toContain("142 lines");

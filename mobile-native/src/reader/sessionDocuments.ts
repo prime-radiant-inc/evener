@@ -1,4 +1,4 @@
-// Files & artifacts (spec 10.1): everything the session wrote or linked, one
+// Files (spec 10.1): everything the session wrote or linked, one
 // row per file, newest write first, and whether each is new or changed since
 // you last opened it. Artifacts join when the shared-artifacts work reaches
 // main (10.3).
