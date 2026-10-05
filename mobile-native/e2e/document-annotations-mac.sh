@@ -202,7 +202,7 @@ PY
     test "$(xcrun simctl ui "$sim_id" content_size)" = extra-extra-large
     printf 'Owned simulator system content size: extra-extra-large\n'
     ;;
-  long-press|code-preservation|qualify) test -n "$sim_id";;
+  long-press|origin-receipts|code-preservation|qualify) test -n "$sim_id";;
   *) exit 2;;
 esac
 # Source and driver have separate pins. Never compile driver sources from the
@@ -242,7 +242,7 @@ case "$phase" in
   code-preservation|code-preservation-scaled) test_names=(testCodePreservationAndLegacyCopy);;
   font-diagnostic) test_names=(testMixedFontMetadataReceipt);;
   empty-diagnostic) test_names=(testEmptyCodeGeometryReceipt);;
-  long-press|qualify)
+  long-press|origin-receipts|qualify)
     /usr/bin/python3 - "$run_xctestrun" "$checkout/mobile-native/e2e/measured-geometry.json" <<'PY'
 import json, math, plistlib, sys
 p, receipt = sys.argv[1:]
@@ -260,6 +260,8 @@ run['DocumentAnnotationsUITests'].setdefault('EnvironmentVariables', {}).update(
 with open(p, 'wb') as f: plistlib.dump(run, f)
 PY
     if [[ "$phase" == long-press ]]; then test_names=(testLongPressReceipt)
+    elif [[ "$phase" == origin-receipts ]]; then
+      test_names=(testTableOriginalSourceSelection testMarkdownCodeOriginalSourceSelection)
     else
       test_names=(testCompletedOriginalSourceSelectionAcrossRows
         testTableOriginalSourceSelection testMarkdownCodeOriginalSourceSelection
