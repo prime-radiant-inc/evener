@@ -232,7 +232,7 @@ function RoundTimingsLine({ item }: { item: ItemModel }) {
 // made, like a question's answer, so it reads at the quiet line's size but
 // never folds into a run (systemGrouping's joinsRun).
 function ApprovalDecisionLine({ item }: { item: ItemModel }) {
-  const decidedAt = item.startedAt ? Date.parse(item.startedAt) : Number.NaN;
+  const decidedAt = Date.parse(item.startedAt ?? "");
   return (
     <div className={CLASS.approval} data-testid="system-notice-approval">
       <span data-testid="system-notice-approval-text">{noticeText(item)}</span>
