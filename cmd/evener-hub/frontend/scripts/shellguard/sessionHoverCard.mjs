@@ -88,12 +88,14 @@ function assertCard(result, beside) {
       throw new Error(`narrow card is not centered on its row: ${JSON.stringify(result)}`);
     const above = row.top - card.height - 12;
     const below = row.bottom + 12;
-    const expectedTop =
-      above >= 8
-        ? above
-        : below + card.height <= viewport.height - 8
-          ? below
-          : Math.max(8, Math.min(above, viewport.height - card.height - 8));
+    let expectedTop;
+    if (above >= 8) {
+      expectedTop = above;
+    } else if (below + card.height <= viewport.height - 8) {
+      expectedTop = below;
+    } else {
+      expectedTop = Math.max(8, Math.min(above, viewport.height - card.height - 8));
+    }
     if (Math.abs(card.top - expectedTop) > 1)
       throw new Error(`narrow card did not use 12px above/below fallback: ${JSON.stringify(result)}`);
   }
