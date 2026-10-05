@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -151,14 +152,25 @@ func TestHostRequestSlowForwardedReadDoesNotHoldALaterThreadRead(t *testing.T) {
 	}
 }
 
-// A forwarded mutation keeps its place on the serial worker: the remote
-// receives nothing sent after it until it answers, so a caller's writes land
-// in the order it sent them.
+// Two forwarded mutations reach the remote in the order they were sent, the
+// second only after the first has answered: the remote checks that when the
+// second arrives. Proving that the second is held back while the first is
+// on the wire needs an absence check no external signal can end, so it is
+// pinned in two deterministic halves instead:
+// TestForwardedHostReadAdmitsOnlyOrderFreeReads (a mutation is never
+// admitted off the worker) and appserver's
+// TestServeWebSocketRequestsTheHookRefusesStayInOrder (a request the hook
+// does not admit waits in the queue behind a running inline one).
 func TestHostRequestForwardedMutationsKeepTheirOrder(t *testing.T) {
 	gate, openGate := remoteGate()
+	var firstAnswered, secondCameEarly atomic.Bool
 	client, calls := hostRequestDispatchHub(t, func(method string, _ json.RawMessage) hostAdminReply {
-		if method == appwire.MethodEvenerPluginEnable {
+		switch method {
+		case appwire.MethodEvenerPluginEnable:
 			<-gate
+			firstAnswered.Store(true)
+		case appwire.MethodEvenerPluginDisable:
+			secondCameEarly.Store(!firstAnswered.Load())
 		}
 		return okReply()
 	})
@@ -166,15 +178,8 @@ func TestHostRequestForwardedMutationsKeepTheirOrder(t *testing.T) {
 	first := hostRequest(client, appwire.MethodEvenerPluginEnable)
 	forwardedCallSeen(t, calls, appwire.MethodEvenerPluginEnable)
 	second := hostRequest(client, appwire.MethodEvenerPluginDisable)
-
-	time.Sleep(300 * time.Millisecond)
-	for _, call := range calls() {
-		if call.method == appwire.MethodEvenerPluginDisable {
-			t.Fatal("a second forwarded mutation reached the remote while the first was still unanswered")
-		}
-	}
-
 	openGate()
+
 	for _, done := range []<-chan error{first, second} {
 		select {
 		case err := <-done:
@@ -184,6 +189,9 @@ func TestHostRequestForwardedMutationsKeepTheirOrder(t *testing.T) {
 		case <-time.After(5 * time.Second):
 			t.Fatal("a forwarded mutation never answered")
 		}
+	}
+	if secondCameEarly.Load() {
+		t.Fatal("a second forwarded mutation reached the remote before the first had answered")
 	}
 	var forwarded []string
 	for _, call := range calls() {
