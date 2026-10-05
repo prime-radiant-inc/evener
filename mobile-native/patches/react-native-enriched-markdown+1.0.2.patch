@@ -3451,10 +3451,10 @@ index 0000000..b17b011
 +} // namespace facebook::react
 diff --git a/node_modules/react-native-enriched-markdown/ios/parser/ENRMOriginalDocumentModel.h b/node_modules/react-native-enriched-markdown/ios/parser/ENRMOriginalDocumentModel.h
 new file mode 100644
-index 0000000..c246716
+index 0000000..1f3af53
 --- /dev/null
 +++ b/node_modules/react-native-enriched-markdown/ios/parser/ENRMOriginalDocumentModel.h
-@@ -0,0 +1,18 @@
+@@ -0,0 +1,21 @@
 +#import "MarkdownASTNode.h"
 +
 +NS_ASSUME_NONNULL_BEGIN
@@ -3465,9 +3465,12 @@ index 0000000..c246716
 +@property (nonatomic, copy, readonly) NSString *source;
 +@property (nonatomic, copy, readonly) NSString *displayedSnapshotId;
 +@property (nonatomic, copy, readonly) NSString *mappingId;
++// Logical text only, never a drawing/geometry oracle. It outlives mounted rows.
++@property (nonatomic, copy, readonly) NSAttributedString *selectionText;
 +- (nullable instancetype)initWithSource:(NSString *)source snapshotId:(NSString *)snapshotId;
 +- (nullable MarkdownASTNode *)projectBlockRange:(NSRange)range;
 +- (nullable NSArray<ENRMSourceFragment *> *)codeFragmentsForText:(NSString *)text blockRange:(NSRange)range;
++- (BOOL)adoptCodeText:(NSString *)text blockRange:(NSRange)range;
 +- (NSRange)sourceRangeForRenderedRange:(NSRange)range inText:(NSAttributedString *)text;
 +- (NSArray<NSValue *> *)renderedRangesForSourceRange:(NSRange)range inText:(NSAttributedString *)text;
 +@end
@@ -3475,10 +3478,10 @@ index 0000000..c246716
 +NS_ASSUME_NONNULL_END
 diff --git a/node_modules/react-native-enriched-markdown/ios/parser/ENRMOriginalDocumentModel.m b/node_modules/react-native-enriched-markdown/ios/parser/ENRMOriginalDocumentModel.m
 new file mode 100644
-index 0000000..0719b0c
+index 0000000..246da9e
 --- /dev/null
 +++ b/node_modules/react-native-enriched-markdown/ios/parser/ENRMOriginalDocumentModel.m
-@@ -0,0 +1,182 @@
+@@ -0,0 +1,279 @@
 +#import "ENRMOriginalDocumentModel.h"
 +#import "MarkdownSourceParser.h"
 +
@@ -3502,6 +3505,7 @@ index 0000000..0719b0c
 +@implementation ENRMOriginalDocumentModel {
 +  MarkdownASTNode *_original;
 +  NSHashTable<ENRMSourceFragment *> *_ownedFragments;
++  NSMutableDictionary<NSValue *, NSArray<ENRMSourceFragment *> *> *_codePresentations;
 +}
 +
 +- (nullable instancetype)initWithSource:(NSString *)source snapshotId:(NSString *)snapshotId
@@ -3514,8 +3518,99 @@ index 0000000..0719b0c
 +    if (!_original) return nil;
 +    _ownedFragments = [NSHashTable weakObjectsHashTable];
 +    [self registerOriginalFragments:_original];
++    _codePresentations = [NSMutableDictionary new];
++    [self rebuildSelectionText];
 +  }
 +  return self;
++}
++
++- (void)appendSeparator:(NSString *)separator toText:(NSMutableAttributedString *)text
++{
++  [text appendAttributedString:[[NSAttributedString alloc] initWithString:separator
++                     attributes:@{ENRMSourceFragmentAttributeName: NSNull.null}]];
++}
++
++- (void)appendFragments:(NSArray<ENRMSourceFragment *> *)fragments toText:(NSMutableAttributedString *)text
++{
++  for (ENRMSourceFragment *fragment in fragments)
++    [text appendAttributedString:[[NSAttributedString alloc] initWithString:fragment.text
++                       attributes:@{ENRMSourceFragmentAttributeName: fragment}]];
++}
++
++- (void)appendNode:(MarkdownASTNode *)node toSelectionText:(NSMutableAttributedString *)text
++{
++  if (node.type == MarkdownNodeTypeImage || node.type == MarkdownNodeTypeLatexMathInline ||
++      node.type == MarkdownNodeTypeLatexMathDisplay) return;
++  if (node.type == MarkdownNodeTypeCodeBlock) {
++    if ([node.attributes[@"language"].lowercaseString isEqualToString:@"mermaid"]) return;
++    NSValue *key = [NSValue valueWithRange:node.sourceRange];
++    NSArray<ENRMSourceFragment *> *fragments = _codePresentations[key];
++    if (!fragments) {
++      NSMutableArray<ENRMSourceFragment *> *original = [NSMutableArray new];
++      collectFragments(node, original);
++      NSMutableString *literal = [NSMutableString new];
++      for (ENRMSourceFragment *fragment in original)
++        if (!fragment.isGenerated) [literal appendString:[_source substringWithRange:fragment.sourceRange]];
++      NSString *normalized = [literal stringByReplacingOccurrencesOfString:@"\r\n" withString:@"\n"];
++      if ([normalized hasSuffix:@"\n"]) normalized = [normalized substringToIndex:normalized.length - 1];
++      fragments = [self codeFragmentsForText:normalized originalNode:node];
++      if (fragments) _codePresentations[key] = fragments;
++    }
++    if (fragments) [self appendFragments:fragments toText:text];
++    return;
++  }
++  if (node.sourceFragments.count) {
++    if (node.type == MarkdownNodeTypeSoftBreak || node.type == MarkdownNodeTypeLineBreak) {
++      NSString *rendered = node.type == MarkdownNodeTypeSoftBreak ? @" " : @"\u2028";
++      NSMutableAttributedString *piece = [[NSMutableAttributedString alloc] initWithString:rendered];
++      [node applySourceFragmentsToString:piece range:NSMakeRange(0, piece.length)];
++      [text appendAttributedString:piece];
++    } else [self appendFragments:node.sourceFragments toText:text];
++    return;
++  }
++  NSString *separator = @"";
++  switch (node.type) {
++    case MarkdownNodeTypeDocument:
++    case MarkdownNodeTypeListItem:
++    case MarkdownNodeTypeBlockquote: separator = @"\n\n"; break;
++    case MarkdownNodeTypeUnorderedList:
++    case MarkdownNodeTypeOrderedList:
++    case MarkdownNodeTypeTable:
++    case MarkdownNodeTypeTableHead:
++    case MarkdownNodeTypeTableBody: separator = @"\n"; break;
++    case MarkdownNodeTypeTableRow: separator = @"\t"; break;
++    default: break;
++  }
++  BOOL hasChild = NO;
++  for (MarkdownASTNode *child in node.children) {
++    NSMutableAttributedString *piece = [[NSMutableAttributedString alloc] initWithString:@""];
++    [self appendNode:child toSelectionText:piece];
++    if (piece.length == 0) continue;
++    if (hasChild && separator.length) [self appendSeparator:separator toText:text];
++    [text appendAttributedString:piece];
++    hasChild = YES;
++  }
++}
++
++- (void)rebuildSelectionText
++{
++  NSMutableAttributedString *text = [[NSMutableAttributedString alloc] initWithString:@""];
++  [self appendNode:_original toSelectionText:text];
++  _selectionText = [text copy];
++}
++
++- (BOOL)adoptCodeText:(NSString *)text blockRange:(NSRange)range
++{
++  NSArray<ENRMSourceFragment *> *fragments = [self codeFragmentsForText:text blockRange:range];
++  if (!fragments) return NO;
++  MarkdownASTNode *node = [self projectBlockRange:range].children.firstObject;
++  NSValue *key = [NSValue valueWithRange:node.sourceRange];
++  NSMutableString *current = [NSMutableString new];
++  for (ENRMSourceFragment *fragment in _codePresentations[key]) [current appendString:fragment.text];
++  if (_codePresentations[key] && [current isEqualToString:text]) return YES;
++  _codePresentations[key] = fragments;
++  [self rebuildSelectionText];
++  return YES;
 +}
 +
 +- (void)registerOriginalFragments:(MarkdownASTNode *)node
@@ -3557,8 +3652,13 @@ index 0000000..0719b0c
 +{
 +  MarkdownASTNode *projection = [self projectBlockRange:range];
 +  if (projection.children.count != 1 || projection.children.firstObject.type != MarkdownNodeTypeCodeBlock) return nil;
++  return [self codeFragmentsForText:text originalNode:projection.children.firstObject];
++}
++
++- (nullable NSArray<ENRMSourceFragment *> *)codeFragmentsForText:(NSString *)text originalNode:(MarkdownASTNode *)node
++{
 +  NSMutableArray<ENRMSourceFragment *> *original = [NSMutableArray new];
-+  collectFragments(projection.children.firstObject, original);
++  collectFragments(node, original);
 +  // Reader normalizes CRLF, while the public leaf also accepts exact literal
 +  // input. Verify complete candidate strings, never search row Markdown or add
 +  // an offset. Only the known final code separator may be removed.

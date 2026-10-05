@@ -119,6 +119,38 @@ int main(void)
     ENRMOriginalDocumentModel *bom = [[ENRMOriginalDocumentModel alloc] initWithSource:@"\uFEFFsame\r\n" snapshotId:@"bom"];
     NSMutableAttributedString *bomText = renderNode([bom projectBlockRange:NSMakeRange(0,7)]);
     checkRange([bom sourceRangeForRenderedRange:NSMakeRange(0,4) inText:bomText],1,5,"original BOM keeps UTF16 coordinates");
+
+    NSString *logical = @"Note\n\nfirst same link & 😀\n\nsecond same\n\nitem same\n\nCell\tOther\nsame\ttail\n\nsame()";
+    check([model.selectionText.string isEqualToString:logical], "persistent original logical rendered document");
+    checkRange([model sourceRangeForRenderedRange:NSMakeRange(12,4) inText:model.selectionText],18,22,
+               "logical first rendered word uses original endpoints");
+    checkRange([model sourceRangeForRenderedRange:NSMakeRange(12,27) inText:model.selectionText],18,77,
+               "logical selection crosses independent original rows");
+    checkRange([model sourceRangeForRenderedRange:NSMakeRange(63,4) inText:model.selectionText],135,139,
+               "logical table cell uses original endpoints");
+    checkRange([model sourceRangeForRenderedRange:NSMakeRange(74,4) inText:model.selectionText],159,163,
+               "logical code uses original endpoints");
+    check([model sourceRangeForRenderedRange:NSMakeRange(4,2) inText:model.selectionText].location == NSNotFound,
+          "logical generated row separator remains unmapped");
+    NSArray<NSValue *> *logicalHighlights = [model renderedRangesForSourceRange:NSMakeRange(18,4) inText:model.selectionText];
+    check(logicalHighlights.count == 1 && NSEqualRanges(logicalHighlights.firstObject.rangeValue,NSMakeRange(12,4)),
+          "original saved range maps back to logical rendered positions");
+    check([refs.selectionText.string isEqualToString:@"same"],"logical diagram shapes remain excluded");
+    ENRMOriginalDocumentModel *literal = [[ENRMOriginalDocumentModel alloc] initWithSource:@"```text\nsame()\r\n\r\n\n```\n"
+                                                                            snapshotId:@"literal"];
+    NSString *literalMapping = literal.mappingId;
+    NSAttributedString *previous = literal.selectionText;
+    check([literal adoptCodeText:@"same()\r\n\r\n" blockRange:NSMakeRange(0,23)], "verified mounted code literal adopted");
+    check([literal.selectionText.string isEqualToString:@"same()\r\n\r\n"] &&
+          [previous.string isEqualToString:@"same()\n\n"] && [literal.mappingId isEqualToString:literalMapping],
+          "code presentation preserves exact literal, old logical snapshot and mapping identity");
+    checkRange([literal sourceRangeForRenderedRange:NSMakeRange(0,10) inText:literal.selectionText],8,18,
+               "adopted CRLF literal retains independently supplied original span");
+    check(![literal adoptCodeText:@"same() WRONG" blockRange:NSMakeRange(0,23)] &&
+          [literal.selectionText.string isEqualToString:@"same()\r\n\r\n"],"invalid code presentation cannot change model");
+    ENRMOriginalDocumentModel *nested = [[ENRMOriginalDocumentModel alloc] initWithSource:@"> ```text\n> same()\n> ```\n"
+                                                                           snapshotId:@"nested"];
+    check([nested.selectionText.string isEqualToString:@"same()"],"nested original code remains in logical document");
   }
   return 0;
 }
