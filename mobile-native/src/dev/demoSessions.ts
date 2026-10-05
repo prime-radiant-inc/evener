@@ -52,6 +52,7 @@ import {
 	type ProtoState,
 	type RawSubagent,
 } from "./demoFleet";
+import { NOTE_STEER_CLEARED, NOTE_STEER_PREFIX } from "../projectedRows";
 import { demoRunStartedAt } from "./demoSubagents";
 import { recordedToolCwd, recordedToolFamilies } from "./demoToolFamilies";
 
@@ -1227,9 +1228,6 @@ function requireSharedNotes(thread: Thread, expectedInstanceId: string, clientMu
 	if (SHUT_DOWN_STATUSES.has(thread.status.type)) restFleetSession(thread, "idle", now);
 }
 
-// The steering text a changed note opens with (agent/session_notes_rpc.go's
-// humanNoteSteerPrefix).
-const HUMAN_NOTE_STEER_PREFIX = "human updated their whiteboard:";
 // The daemon's cap on a stored note, in runes (agent/session_notes.go).
 const NOTE_MAX_RUNES = 1000;
 
@@ -1269,10 +1267,11 @@ function normalizeWhiteboard(text: string): string {
 
 // The steer text for a changed note, as the daemon renders it
 // (agent/session_notes_rpc.go's formatNotesField): continuation lines indented
-// two spaces under the prefix, blank lines left empty.
-function humanNoteSteerText(note: string): string {
-	if (note === "") return `${HUMAN_NOTE_STEER_PREFIX} (whiteboard cleared)`;
-	return `${HUMAN_NOTE_STEER_PREFIX} ${note.replace(/\n(?=[^\n])/g, "\n  ")}`;
+// two spaces under the prefix, blank lines left empty. noteFromSteer reads it
+// back.
+export function humanNoteSteerText(note: string): string {
+	if (note === "") return `${NOTE_STEER_PREFIX}${NOTE_STEER_CLEARED}`;
+	return `${NOTE_STEER_PREFIX}${note.replace(/\n(?=[^\n])/g, "\n  ")}`;
 }
 
 // notes/human/set: your note replaces the session's. A changed note steers

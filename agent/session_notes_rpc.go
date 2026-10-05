@@ -61,9 +61,11 @@ func (s *Session) SetHumanNote(clientMutationID, note string) (appwire.NotesHuma
 			record.SteeringKind = events.SteeringKindHumanNote
 			// The note's lines indent under the prefix as the notes block
 			// indents them; clients that show the note strip that indent.
-			text := formatNotesField(humanNoteSteerPrefix, stored)
+			var text string
 			if stored == "" {
 				text = humanNoteSteerPrefix + " (whiteboard cleared)"
+			} else {
+				text = formatNotesField(humanNoteSteerPrefix, stored)
 			}
 			addPendingSteering(snapshot, record, []appwire.InputItem{{Type: "text", Text: text}})
 			projection = acceptedClientMutationProjection(record.Method)

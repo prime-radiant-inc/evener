@@ -524,8 +524,8 @@ function criticalReasoningRow(entry: Extract<ProjectedEntry, { kind: "critical" 
 // note's continuation lines carry a two-space indent under the prefix
 // (formatNotesField); a stored note's lines are trimmed, so removing that
 // indent recovers the note exactly.
-const NOTE_STEER_PREFIX = "human updated their whiteboard: ";
-const NOTE_STEER_CLEARED = "(whiteboard cleared)";
+export const NOTE_STEER_PREFIX = "human updated their whiteboard: ";
+export const NOTE_STEER_CLEARED = "(whiteboard cleared)";
 
 export function noteFromSteer(text: string): string {
 	const stripped = text.startsWith(NOTE_STEER_PREFIX)
