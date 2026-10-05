@@ -1,6 +1,7 @@
 // Supplies browser geometry to real transcript components in jsdom, never restoration policy.
 export interface TranscriptTestGeometry {
   width: number;
+  scrollbarWidth?: number;
   viewportHeight: number;
   rowHeights: readonly number[];
   entryBoxes?: Readonly<Record<string, { top: number; height: number }>>;
@@ -32,8 +33,9 @@ export function installTranscriptGeometry(
     if (!port) return nativeRect.call(element);
     const geometry = geometryFor(port);
     if (element === port) return new DOMRect(0, 0, geometry.width, geometry.viewportHeight);
+    const contentWidth = geometry.width - (geometry.scrollbarWidth ?? 0);
     if (element === port.firstElementChild)
-      return new DOMRect(0, -port.scrollTop, geometry.width, Number.parseFloat(element.style.height) || 0);
+      return new DOMRect(0, -port.scrollTop, contentWidth, Number.parseFloat(element.style.height) || 0);
     const closed = element.closest("details:not([open])");
     const summary = closed?.querySelector(":scope > summary");
     if (closed && element !== closed && !summary?.contains(element)) return new DOMRect();
@@ -44,7 +46,7 @@ export function installTranscriptGeometry(
     return new DOMRect(
       0,
       translation + (box?.top ?? 0) - port.scrollTop,
-      geometry.width,
+      contentWidth,
       box?.height ?? rowHeight(element, port),
     );
   };
@@ -56,7 +58,9 @@ export function installTranscriptGeometry(
     replace(key, {
       get(this: HTMLElement) {
         const port = portFor(this);
-        return port ? geometryFor(port).width : 0;
+        if (!port) return 0;
+        const geometry = geometryFor(port);
+        return geometry.width - (key === "offsetWidth" && this === port ? 0 : (geometry.scrollbarWidth ?? 0));
       },
     });
   for (const key of ["offsetHeight", "clientHeight"])

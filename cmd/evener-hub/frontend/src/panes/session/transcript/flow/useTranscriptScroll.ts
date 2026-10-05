@@ -746,7 +746,13 @@ export function useTranscriptViewRegistration(
         committed?.virtualizer.scrollElement === el
       ) {
         committed.syncReaderMovement(beforeOffset);
-        if (committed.isCurrent()) capture();
+        // The reader can choose visible content before its new size is committed.
+        latestCaptureRef.current = captureTranscriptView(
+          el,
+          currentOptions.measure,
+          currentOptions.measureAnchors,
+          readView.positioningRevision,
+        );
       }
     });
   }, [capture, enabled, id, readView]);
@@ -1240,7 +1246,7 @@ export function useTranscriptScroll({
       const port = event.currentTarget;
       if (!(port instanceof HTMLElement)) return;
       if (!verticalInputCanMovePort(port, measure(port), event.target, event.deltaY > 0 ? 1 : -1)) return;
-      markGesture();
+      markGesture(true, lastScrollGeometryRef.current.scrollTop);
     },
     [markGesture, measure],
   );

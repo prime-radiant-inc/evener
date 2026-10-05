@@ -610,8 +610,8 @@ describe("anchorToEnd", () => {
     expect(current().range?.startIndex).toBe(0);
   });
 
-  function installMeasuredGeometry(rowHeights: number[]) {
-    const geometry = { width: 500, viewportHeight: CONTAINER_HEIGHT, rowHeights };
+  function installMeasuredGeometry(rowHeights: number[], scrollbarWidth = 0) {
+    const geometry = { width: 500, scrollbarWidth, viewportHeight: CONTAINER_HEIGHT, rowHeights };
     const external = installTranscriptGeometry(
       () => geometry,
       (element) => element.closest<HTMLElement>(`.${styles.root}`) ?? undefined,
@@ -673,6 +673,57 @@ describe("anchorToEnd", () => {
       expect(observed.at(-1)?.sizer).toBe(2700);
       expect(observed.at(-1)?.secondRow).toBe("translateY(700px)");
       expect(observed.at(-1)?.layout.isCurrent()).toBe(true);
+    } finally {
+      cleanup();
+      external.restore();
+    }
+  });
+
+  test("reader layout keeps fractional-height rows from overlapping", async () => {
+    const external = installMeasuredGeometry([500.171875, 29.3125, 500.171875, 500.171875, 500.171875]);
+    let committed: ReaderLayout | undefined;
+    try {
+      const { root } = renderMeasuredList(true, true, {
+        onLayout: (layout) => {
+          committed = layout;
+        },
+      });
+      await act(async () => external.notify());
+      expect(committed?.isCurrent()).toBe(true);
+      const first = root.querySelector('[data-index="0"]');
+      const second = root.querySelector('[data-index="1"]');
+      if (!first || !second) throw new Error("Real fractional rows are missing");
+      expect(first.getBoundingClientRect().bottom).toBeLessThanOrEqual(second.getBoundingClientRect().top);
+      expect(first.textContent).toBe("row 0");
+      expect(second.textContent).toBe("row 1");
+    } finally {
+      cleanup();
+      external.restore();
+    }
+  });
+
+  test("reader layout accepts a native scrollbar and rejects an unobserved border-width change", async () => {
+    const external = installMeasuredGeometry([500, 500, 500, 500, 500], 15);
+    let committed: ReaderLayout | undefined;
+    try {
+      const { root } = renderMeasuredList(true, true, {
+        onLayout: (layout) => {
+          committed = layout;
+        },
+      });
+      await act(async () => external.notify());
+      expect(root.clientWidth).toBe(485);
+      expect(root.offsetWidth).toBe(500);
+      expect(committed?.isCurrent()).toBe(true);
+      await act(async () => committed?.scrollToOffset(100));
+      expect(root.scrollTop).toBe(100);
+      external.geometry.width = 600;
+      expect(committed?.isCurrent()).toBe(false);
+      await act(async () => external.notify());
+      expect(root.clientWidth).toBe(585);
+      expect(committed?.isCurrent()).toBe(true);
+      expect(root.scrollTop).toBe(100);
+      expect(root.querySelector('[data-index="0"]')?.textContent).toBe("row 0");
     } finally {
       cleanup();
       external.restore();

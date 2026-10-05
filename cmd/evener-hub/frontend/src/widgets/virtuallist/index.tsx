@@ -133,7 +133,8 @@ function hasCommittedGeometry(
   const rect = instance.scrollRect;
   if (!port || port.clientWidth <= 0 || port.clientHeight <= 0 || !rect || !(sizer instanceof HTMLElement))
     return false;
-  if (Math.abs(rect.width - port.clientWidth) > 1.5 || Math.abs(rect.height - port.clientHeight) > 1.5) return false;
+  // Upstream observes the border box, which includes native scrollbar space.
+  if (Math.abs(rect.width - port.offsetWidth) > 1.5 || Math.abs(rect.height - port.offsetHeight) > 1.5) return false;
   if (Math.abs(sizer.getBoundingClientRect().height - instance.getTotalSize()) > 1.5) return false;
   return instance.getVirtualItems().every((item) => {
     const row = sizer.querySelector<HTMLElement>(`:scope > [data-index="${item.index}"]`);
@@ -189,7 +190,9 @@ export function VirtualList({
           entry: ResizeObserverEntry | undefined,
           instance: Virtualizer<HTMLDivElement, HTMLDivElement>,
         ) => {
-          const height = measureElement(node, entry, instance);
+          // Rounding down lets the preceding row overlap the next reading point.
+          const box = entry?.borderBoxSize?.[0];
+          const height = box ? Math.ceil(box.blockSize) : measureElement(node, entry, instance);
           const previous = measuredHeightsRef.current.get(node);
           measuredHeightsRef.current.set(node, height);
           if (previous !== height) requestGeometryCommit();
@@ -293,7 +296,6 @@ export function VirtualList({
       syncReaderMovement,
     };
     if (committed.isCurrent()) {
-      backwardMovementRef.current = false;
       onLayout(committed);
     }
   });

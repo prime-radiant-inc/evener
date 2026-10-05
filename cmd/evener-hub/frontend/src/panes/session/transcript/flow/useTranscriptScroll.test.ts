@@ -230,6 +230,116 @@ test("genuine wheel admission drops queued clamp work without a scroll event", a
   }
 });
 
+test.each(["before", "after"] as const)(
+  "backward wheel delivered %s compositor movement survives idle before partial measurement",
+  async (delivery) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const scene = mountReaderScene(`hook-wheel-${delivery}`, [1600, 500, 500, 500, 500], {
+      estimate: 500,
+      viewportHeight: 400,
+    });
+    try {
+      await scene.start();
+      scene.geometry.rowHeights[0] = 1628;
+      await act(async () => {
+        if (delivery === "after") scene.port().scrollTop = 100;
+        scene.port().dispatchEvent(new WheelEvent("wheel", { deltaY: -800, bubbles: true }));
+        if (delivery === "before") scene.port().scrollTop = 100;
+        scene.port().dispatchEvent(new Event("scroll"));
+      });
+      expect(scene.port().scrollTop).toBe(100);
+      await act(async () => scene.frames.release());
+      await act(async () => vi.advanceTimersByTime(scene.layout().virtualizer.options.isScrollingResetDelay));
+      expect(scene.layout().virtualizer.scrollDirection).toBeNull();
+      await act(async () => scene.external.notify((target) => target.dataset.index === "0"));
+      await act(async () => scene.frames.release());
+      expect(scene.port().scrollTop).toBe(100);
+      expect(scene.layout().virtualizer.scrollOffset).toBe(100);
+      expect(scene.port().querySelector('[data-index="0"]')?.getBoundingClientRect().top).toBe(-100);
+    } finally {
+      scene.dispose();
+      vi.useRealTimers();
+    }
+  },
+);
+
+test("reader transfer retains admitted movement before the final row measurement", async () => {
+  const scene = mountReaderScene("hook-unmeasured-transfer", [1600, 500, 500, 500, 500], {
+    estimate: 500,
+    viewportHeight: 400,
+  });
+  try {
+    await scene.start();
+    scene.geometry.rowHeights[0] = 1628;
+    await act(async () => {
+      scene.port().scrollTop = 100;
+      scene.port().dispatchEvent(new WheelEvent("wheel", { deltaY: -800, bubbles: true }));
+      scene.port().dispatchEvent(new Event("scroll"));
+    });
+    expect(scene.layout().isCurrent()).toBe(false);
+    const transferred = scene.capture();
+    expect(transferred?.anchorId).toBe("current-entry");
+    expect(transferred?.anchorOffset).toBe(-100);
+    scene.remount(transferred);
+    await act(async () => scene.external.notify());
+    await act(async () => scene.frames.release());
+    expect(scene.port().scrollTop).toBe(100);
+    expect(scene.layout().virtualizer.scrollOffset).toBe(100);
+    expect(scene.port().querySelector('[data-index="0"]')?.getBoundingClientRect().top).toBe(-100);
+  } finally {
+    scene.dispose();
+  }
+});
+
+test.each([
+  { direction: "backward", want: 100, top: -100 },
+  { direction: "forward", want: 228, top: -228 },
+  { direction: "index", want: 0, top: 0 },
+])(
+  "real $direction movement arbitration survives a valid commit before later partial measurement",
+  async ({ direction, want, top }) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const scene = mountReaderScene(`hook-committed-${direction}`, [1600, 500, 500, 500, 500], {
+      estimate: 500,
+      viewportHeight: 400,
+    });
+    try {
+      await scene.start();
+      await act(async () => {
+        scene.port().dispatchEvent(new WheelEvent("wheel", { deltaY: -800, bubbles: true }));
+        scene.port().scrollTop = 100;
+        scene.port().dispatchEvent(new Event("scroll"));
+      });
+      await act(async () => scene.frames.release());
+      expect(scene.layout().isCurrent()).toBe(true);
+      if (direction === "forward")
+        await act(async () => {
+          scene.port().dispatchEvent(new WheelEvent("wheel", { deltaY: 100, bubbles: true }));
+          scene.port().scrollTop = 200;
+          scene.port().dispatchEvent(new Event("scroll"));
+        });
+      if (direction === "index")
+        await act(async () =>
+          document.body.dispatchEvent(
+            new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Home", altKey: true }),
+          ),
+        );
+      await act(async () => scene.frames.release());
+      await act(async () => vi.advanceTimersByTime(scene.layout().virtualizer.options.isScrollingResetDelay));
+      expect(scene.layout().virtualizer.scrollDirection).toBeNull();
+      scene.geometry.rowHeights[0] = 1628;
+      await act(async () => scene.external.notify((target) => target.dataset.index === "0"));
+      await act(async () => scene.frames.release());
+      expect(scene.port().scrollTop).toBe(want);
+      expect(scene.layout().virtualizer.scrollOffset).toBe(want);
+      expect(scene.port().querySelector('[data-index="0"]')?.getBoundingClientRect().top).toBe(top);
+    } finally {
+      scene.dispose();
+      vi.useRealTimers();
+    }
+  },
+);
+
 test.each(["backward", "forward", "index"] as const)(
   "real %s key movement arbitration survives core idle before partial measurement",
   async (direction) => {

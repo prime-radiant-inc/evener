@@ -382,57 +382,61 @@ test.each([
   { label: "partial shrink", nextHeight: 700, nextViewport: 400, tailHeight: 1000, want: 225 },
   { label: "same-range unchanged rows", nextHeight: 1600, nextViewport: 500, tailHeight: 1000, want: 825 },
   { label: "equal-estimate overscan", nextHeight: 700, nextViewport: 400, tailHeight: 96, want: 225 },
-])("width-only reflow preserves the current entry, $label", async ({ nextHeight, nextViewport, tailHeight, want }) => {
-  const geometry = { width: 152, viewportHeight: 400, rowHeights: [1600, tailHeight] };
-  const external = installTranscriptGeometry(() => geometry);
-  const listRef = createRef<VirtualListHandle>();
-  const row = (id: string): TurnModel => ({
-    id,
-    status: "completed",
-    items: [{ id: `${id}-entry`, turnId: id, type: "userMessage", text: id, status: "completed" }],
-  });
-  const model = { ...makeTranscriptPreviewModel(), turns: [row("current"), row("tail")] };
-  let mounted: ReturnType<typeof render> | undefined;
-  try {
-    mounted = render(
-      <TranscriptBody
-        model={model}
-        config={makeTranscriptDisplayConfig({ kind: "preset", level: "tools" })}
-        surface="readOnly"
-        disclosureScope="width-only"
-        viewId="width-only"
-        listRef={listRef}
-      />,
-    );
-    const port = listRef.current?.getScrollElement();
-    if (!port) throw new Error("Real TranscriptBody has no scroll port");
-    await act(async () => {
-      external.notify();
-      port.scrollTop = 1000;
-      fireEvent.scroll(port);
+  { label: "native scrollbar", nextHeight: 700, nextViewport: 400, tailHeight: 1000, scrollbarWidth: 15, want: 225 },
+])(
+  "width-only reflow preserves the current entry, $label",
+  async ({ nextHeight, nextViewport, tailHeight, scrollbarWidth = 0, want }) => {
+    const geometry = { width: 152, scrollbarWidth, viewportHeight: 400, rowHeights: [1600, tailHeight] };
+    const external = installTranscriptGeometry(() => geometry);
+    const listRef = createRef<VirtualListHandle>();
+    const row = (id: string): TurnModel => ({
+      id,
+      status: "completed",
+      items: [{ id: `${id}-entry`, turnId: id, type: "userMessage", text: id, status: "completed" }],
     });
-    await act(async () => {
-      port.scrollTop = 900;
-      fireEvent.scroll(port);
-    });
-    const entry = port.querySelector<HTMLElement>('[data-view-anchor-id="current-entry"]');
-    if (!entry) throw new Error("Real TranscriptBody has no current entry");
-    expect(entry.getBoundingClientRect().top - port.getBoundingClientRect().top).toBe(-900);
-    geometry.width = 352;
-    geometry.viewportHeight = nextViewport;
-    geometry.rowHeights = [nextHeight, tailHeight];
-    await act(async () => external.notify());
-    await waitFor(() => expect(port.scrollTop).toBe(want));
-    expect(captureTranscriptView("width-only")).toMatchObject({ anchorId: "current-entry", anchorOffset: -want });
-    expect(port.querySelector('[data-view-anchor-id="current-entry"] [data-testid="user-bubble"]')?.textContent).toBe(
-      "current",
-    );
-  } finally {
-    mounted?.unmount();
-    external.restore();
-    resetTranscriptViewRegistryForTests();
-  }
-});
+    const model = { ...makeTranscriptPreviewModel(), turns: [row("current"), row("tail")] };
+    let mounted: ReturnType<typeof render> | undefined;
+    try {
+      mounted = render(
+        <TranscriptBody
+          model={model}
+          config={makeTranscriptDisplayConfig({ kind: "preset", level: "tools" })}
+          surface="readOnly"
+          disclosureScope="width-only"
+          viewId="width-only"
+          listRef={listRef}
+        />,
+      );
+      const port = listRef.current?.getScrollElement();
+      if (!port) throw new Error("Real TranscriptBody has no scroll port");
+      await act(async () => {
+        external.notify();
+        port.scrollTop = 1000;
+        fireEvent.scroll(port);
+      });
+      await act(async () => {
+        port.scrollTop = 900;
+        fireEvent.scroll(port);
+      });
+      const entry = port.querySelector<HTMLElement>('[data-view-anchor-id="current-entry"]');
+      if (!entry) throw new Error("Real TranscriptBody has no current entry");
+      expect(entry.getBoundingClientRect().top - port.getBoundingClientRect().top).toBe(-900);
+      geometry.width = 352;
+      geometry.viewportHeight = nextViewport;
+      geometry.rowHeights = [nextHeight, tailHeight];
+      await act(async () => external.notify());
+      await waitFor(() => expect(port.scrollTop).toBe(want));
+      expect(captureTranscriptView("width-only")).toMatchObject({ anchorId: "current-entry", anchorOffset: -want });
+      expect(port.querySelector('[data-view-anchor-id="current-entry"] [data-testid="user-bubble"]')?.textContent).toBe(
+        "current",
+      );
+    } finally {
+      mounted?.unmount();
+      external.restore();
+      resetTranscriptViewRegistryForTests();
+    }
+  },
+);
 
 function readingRow(id: string): TurnModel {
   return {
@@ -441,6 +445,54 @@ function readingRow(id: string): TurnModel {
     items: [{ id: `${id}-entry`, turnId: id, type: "userMessage", text: id, status: "completed" }],
   };
 }
+
+test("width-only reflow preserves the first visible row beside a fractional predecessor", async () => {
+  const geometry = { width: 777, viewportHeight: 400, rowHeights: [4156.484375, 29.3125, 4156.484375] };
+  const external = installTranscriptGeometry(() => geometry);
+  const listRef = createRef<VirtualListHandle>();
+  let mounted: ReturnType<typeof render> | undefined;
+  try {
+    mounted = render(
+      <TranscriptBody
+        model={{
+          ...makeTranscriptPreviewModel(),
+          turns: [readingRow("older"), readingRow("current"), readingRow("tail")],
+        }}
+        config={makeTranscriptDisplayConfig({ kind: "preset", level: "tools" })}
+        surface="readOnly"
+        disclosureScope="fractional-reading"
+        viewId="fractional-reading"
+        listRef={listRef}
+      />,
+    );
+    const port = listRef.current?.getScrollElement();
+    const entry = port?.querySelector<HTMLElement>('[data-view-anchor-id="current-entry"]');
+    if (!port || !entry) throw new Error("Real fractional reader has no current entry");
+    const firstVisibleRow = () => {
+      const bounds = port.getBoundingClientRect();
+      return [...port.querySelectorAll<HTMLElement>("[data-row-id]")].find((node) => {
+        const box = node.getBoundingClientRect();
+        return box.bottom > bounds.top && box.top < bounds.bottom;
+      })?.dataset.rowId;
+    };
+    await act(async () => {
+      external.notify();
+      port.scrollTop += entry.getBoundingClientRect().top + 28;
+      fireEvent.scroll(port);
+    });
+    expect(firstVisibleRow()).toBe("current");
+    geometry.width = 364;
+    geometry.rowHeights = [7036.171875, 29.3125, 7036.171875];
+    await act(async () => external.notify());
+    await waitFor(() => expect(firstVisibleRow()).toBe("current"));
+    expect(captureTranscriptView("fractional-reading")).toMatchObject({ anchorId: "current-entry", anchorOffset: 0 });
+    expect(entry.querySelector('[data-testid="user-bubble"]')?.textContent).toBe("current");
+  } finally {
+    mounted?.unmount();
+    external.restore();
+    resetTranscriptViewRegistryForTests();
+  }
+});
 
 async function startReading(port: HTMLElement, notify: () => void): Promise<void> {
   await act(async () => {
