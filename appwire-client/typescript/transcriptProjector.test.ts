@@ -549,6 +549,23 @@ describe("transcript projector", () => {
     });
   });
 
+  // A human's Allow or Deny is a decision they made, like a question's
+  // answer, so its history row shows at every level, system events off.
+  test("an approval decision shows at every level", () => {
+    const model = threadWith(
+      item("approval", "systemMessage", {
+        eventKind: "approval_decision",
+        text: "Allowed write_file to access /tmp/a",
+        raw: { approvalDecision: { approved: true, tool: "write_file", kind: "file_tool", deniedPath: "/tmp/a" } },
+      }),
+    );
+    for (const level of ["chat", "intent", "tools", "activity", "full"] as const) {
+      expect(entriesFor(model, preset(level, { systemEvents: false }))).toEqual([
+        expect.objectContaining({ kind: "item", id: "approval" }),
+      ]);
+    }
+  });
+
   describe("tool-repair notices", () => {
     const repair = () =>
       item("repair", "systemMessage", {

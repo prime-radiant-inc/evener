@@ -57,6 +57,12 @@ export {
   watchName,
   watchRowID,
 } from "./activityRows";
+export {
+  APPROVAL_DECISION_EVENT_KIND,
+  type ApprovalDecision,
+  approvalDecisionOf,
+  approvalDecisionText,
+} from "./approvalDecision";
 export type {
   ArchivedList,
   ArchivedListCatalog,

@@ -8,6 +8,18 @@
   color: var(--ink-low);
 }
 
+/* A human's Allow or Deny: the quiet line's size, its time after it. */
+.approval {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding: var(--space-1) 0;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  color: var(--ink-low);
+}
+
 /* A turn failure is the one system notice that is not churn, so it wears the
  * failed tool row's grammar rather than the quiet line's: glyph, then text at
  * reading contrast. The hue is entirely the FailureGlyph widget's - a

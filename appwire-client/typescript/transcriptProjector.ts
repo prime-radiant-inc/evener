@@ -1,3 +1,4 @@
+import { APPROVAL_DECISION_EVENT_KIND } from "./approvalDecision";
 import {
   hasFailureStatus,
   hasItemFailure,
@@ -141,6 +142,7 @@ const KNOWN_EVENT_KINDS = new Set([
   "notes-context",
   "warning",
   "interrupted",
+  "approval_decision",
 ]);
 
 const PROMPT_EVENT_KINDS = new Set(["system_prompt", "prompt_loaded"]);
@@ -321,6 +323,9 @@ function systemDecision(item: ItemModel, config: TranscriptDisplayConfigV1, vect
   }
 
   if (CRITICAL_SYSTEM_EVENT_KINDS.has(eventKind)) return "critical";
+  // A human's Allow or Deny is a decision they made, like a question's
+  // answer: its history row shows at every level.
+  if (eventKind === APPROVAL_DECISION_EVENT_KIND) return "item";
 
   if (eventKind === HOOK_EVENT_KIND) {
     if (config.advanced.hookExits === "all") return "item";
