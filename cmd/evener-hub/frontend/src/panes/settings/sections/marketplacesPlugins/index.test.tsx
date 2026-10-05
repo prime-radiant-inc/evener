@@ -1,5 +1,5 @@
 import { type MarketplaceEntry, type PluginEntry, WireError } from "@evener/appwire-client";
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { deferRequest, FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -81,13 +81,32 @@ test("fetches both marketplaces and plugins in parallel on mount", async () => {
 });
 
 test("opening the view asks the hub for plugin updates once the lists load, and marks what it finds", async () => {
-  const fake = connectSeededClient();
-  fake.on("evener/plugin/checkUpdates", () => ({ plugins: [{ ...LINTER, updateAvailable: true }] }));
+  const fake = connectFakeClient();
+  fake.on("evener/marketplace/list", () => ({ marketplaces: [ACME] }));
+  const releaseList = deferRequest<{ plugins: PluginEntry[] }>(fake, "evener/plugin/list");
+  fake.on("evener/plugin/checkUpdates", () => {
+    // The hub now holds the answer, so the list read that follows carries it.
+    fake.on("evener/plugin/list", () => ({ plugins: [{ ...LINTER, updateAvailable: true }] }));
+    return { plugins: [{ ...LINTER, updateAvailable: true }] };
+  });
   render(<MarketplacesPluginsSection />);
+  await act(async () => {});
+  expect(fake.calls.some((c) => c.method === "evener/plugin/checkUpdates")).toBe(false);
+
+  await act(async () => releaseList({ plugins: [LINTER] }));
   expect(await screen.findByText("update available")).toBeTruthy();
-  const methods = fake.calls.map((c) => c.method);
-  expect(methods.filter((m) => m === "evener/plugin/checkUpdates")).toHaveLength(1);
-  expect(methods.indexOf("evener/plugin/checkUpdates")).toBeGreaterThan(methods.indexOf("evener/plugin/list"));
+  expect(fake.calls.filter((c) => c.method === "evener/plugin/checkUpdates")).toHaveLength(1);
+});
+
+test("a view whose plugin list failed to load asks the hub for no updates", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/marketplace/list", () => ({ marketplaces: [ACME] }));
+  fake.on("evener/plugin/list", () => {
+    throw new Error("boom");
+  });
+  render(<MarketplacesPluginsSection />);
+  expect(await screen.findByText("Failed to load")).toBeTruthy();
+  expect(fake.calls.some((c) => c.method === "evener/plugin/checkUpdates")).toBe(false);
 });
 
 test("shows one failed-to-load message replacing everything when the marketplace list fails to load", async () => {

@@ -39,10 +39,10 @@ export interface PluginsState {
   pluginRevision: number;
   fetchPlugins(): Promise<void>;
   /** Asks the hub whether each git-backed plugin's remote has moved
-   * (evener/plugin/checkUpdates) and takes the flagged list it answers with,
-   * which later lists keep. A host calls it when its plugins view opens. It
-   * never throws and a failure publishes nothing: an older hub without the
-   * method leaves every plugin unflagged, so no Upgrade is offered. */
+   * (evener/plugin/checkUpdates), then re-reads the list, which carries the
+   * flags the hub now holds. A host calls it when its plugins view opens. It
+   * never throws, and a failed check publishes nothing: an older hub without
+   * the method leaves every plugin unflagged, so no Upgrade is offered. */
   checkPluginUpdates(): Promise<void>;
   installPlugin(plugin: string, marketplace: string): Promise<void>;
   upgradePlugin(plugin: string, marketplace: string): Promise<void>;
@@ -148,14 +148,16 @@ export function createPluginsStore(client: PluginsClient, gate: HubWriteGate): P
       },
 
       async checkPluginUpdates() {
-        // A list answer like any other, fenced the same way; but a failure is
-        // nobody's error, so the request is written as a write whose rejection
-        // gives its revision back rather than as a read that would publish it.
-        await writeRevisioned(
-          listRevision,
-          () => client.request("evener/plugin/checkUpdates", {}, { timeoutMs: PLUGIN_UPDATE_CHECK_TIMEOUT_MS }),
-          (resp) => () => set({ plugins: resp.plugins, pluginsLoading: false, pluginsError: null }),
-        ).catch(() => {});
+        // The check's own answer is not published: a list issued while the
+        // hub was still asking remotes (a toggle, a notification refetch)
+        // would outrank it and drop the flags. The list read issued after the
+        // check outranks all of those, and the hub's list carries the flags.
+        try {
+          await client.request("evener/plugin/checkUpdates", {}, { timeoutMs: PLUGIN_UPDATE_CHECK_TIMEOUT_MS });
+        } catch {
+          return;
+        }
+        await store.getState().fetchPlugins();
       },
 
       installPlugin: mutation("evener/plugin/install"),
