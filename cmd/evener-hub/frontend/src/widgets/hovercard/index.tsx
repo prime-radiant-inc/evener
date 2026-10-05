@@ -1,5 +1,6 @@
 import { type ReactNode, useCallback, useEffect, useRef } from "react";
 import { requireClass } from "../internal/requireClass";
+import type { SideAnchor } from "./computePosition";
 import { describeChild, FloatingBubblePortal, useFloatingBubble } from "./floatingBubble";
 import styles from "./hovercard.module.css";
 import { isHoverless, POINTER_CLICK_WINDOW_MS } from "./useFloatingLabel";
@@ -18,6 +19,8 @@ export interface HoverCardProps {
   children: ReactNode | ((association: HoverCardAssociation) => ReactNode);
   focusTarget?: () => HTMLElement | null;
   longPressEnabled?: boolean;
+  /** Optional side placement, measured by the caller, default placement is unchanged. */
+  sideAnchor?: () => SideAnchor | null;
 }
 
 export interface HoverCardAssociation {
@@ -35,7 +38,7 @@ const CLASS = {
  * nothing (nothing would dismiss it), so `longPressEnabled` turns the trigger
  * into a long press: a plain tap activates the control the trigger wraps, and
  * the one click a lifted long press still sends is swallowed. */
-export function HoverCard({ label, children, focusTarget, longPressEnabled }: HoverCardProps) {
+export function HoverCard({ label, children, focusTarget, longPressEnabled, sideAnchor }: HoverCardProps) {
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const longPressStartRef = useRef<{ x: number; y: number } | null>(null);
   const swallowClickRef = useRef(false);
@@ -50,7 +53,7 @@ export function HoverCard({ label, children, focusTarget, longPressEnabled }: Ho
     describedBy,
     showImmediately,
     dismiss,
-  } = useFloatingBubble(focusTarget);
+  } = useFloatingBubble(focusTarget, sideAnchor);
 
   const cancelLongPress = useCallback(() => {
     clearTimeout(longPressTimerRef.current);
@@ -91,6 +94,18 @@ export function HoverCard({ label, children, focusTarget, longPressEnabled }: Ho
     clearSwallowBackstop();
     swallowClickRef.current = false;
   }, [cancelLongPress, clearSwallowBackstop]);
+
+  // This timer belongs to HoverCard, not the shared hover-delay lifecycle.
+  // Listen while enabled, even when no label is visible or hover is pending.
+  useEffect(() => {
+    if (!longPressEnabled) return;
+    window.addEventListener("scroll", abortPress, true);
+    window.addEventListener("resize", abortPress);
+    return () => {
+      window.removeEventListener("scroll", abortPress, true);
+      window.removeEventListener("resize", abortPress);
+    };
+  }, [abortPress, longPressEnabled]);
 
   useEffect(() => {
     if (!longPressEnabled || !visible || !isHoverless()) return;

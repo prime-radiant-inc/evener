@@ -133,6 +133,52 @@ beforeAll(() => {
   }
 });
 
+test.each([
+  { title: "Short", sidebarRight: 280, rowHeight: 40, left: "292px", top: "272px" },
+  { title: "A much longer nested session title", sidebarRight: 280, rowHeight: 40, left: "292px", top: "272px" },
+  { title: "Short", sidebarRight: 360, rowHeight: 60, left: "372px", top: "282px" },
+  { title: "A much longer nested session title", sidebarRight: 360, rowHeight: 60, left: "372px", top: "282px" },
+])("session card measures sidebar and owning row for $title", ({ title, sidebarRight, rowHeight, left, top }) => {
+  vi.stubGlobal("innerWidth", 1000);
+  vi.stubGlobal("innerHeight", 800);
+  const activate = vi.fn();
+  const rect = vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
+    if (this.hasAttribute("data-sidebar-rail")) return new DOMRect(0, 0, sidebarRight, 800);
+    if (this.getAttribute("role") === "treeitem") return new DOMRect(20, 300, 220, rowHeight);
+    return new DOMRect(80, 310, title.length * 5, 16);
+  });
+  const width = vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(240);
+  const height = vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(96);
+  try {
+    render(
+      <div data-sidebar-rail>
+        <div role="treeitem" tabIndex={0}>
+          <RailRow node={sessionRailNode(apiNode({ title }))} info={info({ activate })} actions={actions()} />
+        </div>
+      </div>,
+    );
+    const row = screen.getByRole("treeitem");
+    const card = hoverForTooltip(screen.getByRole("button", { name: title }));
+    expect(card.style.left).toBe(left);
+    expect(card.style.top).toBe(top);
+    expect(card.parentElement).toBe(document.body);
+    expect(activate).not.toHaveBeenCalled();
+    expect(within(card).getByText("Proj")).toBeTruthy();
+
+    fireEvent.mouseLeave(screen.getByRole("button", { name: title }));
+    act(() => row.focus());
+    expect(screen.getByRole("tooltip").style.left).toBe(left);
+    expect(row.getAttribute("aria-describedby")).toBe(screen.getByRole("tooltip").id);
+    expect(document.activeElement).toBe(row);
+    fireEvent.click(screen.getByRole("button", { name: title }));
+    expect(activate).toHaveBeenCalledOnce();
+  } finally {
+    rect.mockRestore();
+    width.mockRestore();
+    height.mockRestore();
+  }
+});
+
 beforeEach(() => {
   resetWorkspaceStoreForTests();
   resetNavigationStoreForTests();
