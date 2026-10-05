@@ -133,6 +133,17 @@ The leaf flexes with a 440px minimum. Narrow desktop surfaces scroll horizontall
 and reveal the selected leaf instead of squeezing either reader. Parent and
 leaf transcript scrollers remain independent.
 
+Only ancestor spines use the session list's shared
+[SessionStatusIndicator](../../cmd/evener-hub/frontend/src/shell/SessionStatusIndicator.tsx):
+a gray spinning ring for active work, an amber dot for attention and a red diamond
+for failure. Idle and ended states have no glyph. The ring remains static under
+reduced motion. Each spine maps its own raw runtime status through
+`cadenceStateForStatus`: `systemError` means failure and `closed` means ended;
+unknown values remain quiet. Hover and visually hidden text preserve the runtime
+label, including unknown states, rather than replacing it with the indicator's
+family label. Readable parent and leaf columns keep their full status labels.
+Counts, focus and activity ownership remain unchanged.
+
 Ancestor controls open a scoped peek. Keyboard activation of a delegate replaces
 the path after that ancestor. Tasks remains inside the peek. One Escape closes
 only the topmost peek; the path and sidebar survive. Parent text selection never
@@ -206,9 +217,10 @@ danger = failure/destruction; accent = links, focus and selection. No decorative
 hues, invented activity, speculative progress bars or color-only distinctions.
 
 **Motion is evidence.** Default none. Preserve measured cadence and reduced-motion
-behavior. The rail's running ring is the one state-driven navigation exception; it spins only
-while the navigation summary reports running work and becomes static under reduced motion. See §5
-for the exact budgets and exceptions.
+behavior. The shared rail and ancestor-spine running ring is the state-driven
+compact-status exception; it spins only while the owning status authority reports
+active work and becomes static under reduced motion. See §5 for the exact budgets
+and exceptions.
 
 **Signature — the cadence instrument (`<Cadence>` widget):** the full activity treatment used where
 a surface has room and frame evidence: a state dot plus a 64×10px activity
@@ -231,6 +243,13 @@ host, branch, running jobs, subagent tally, watches, tier and age move into a sh
 the title. Hovering the title or focusing the owning tree row exposes it; on a hoverless device a
 long press on the title exposes it and a tap activates the row. Session pin stars
 and textual state lines do not appear on the row.
+
+Ancestor spines share this compact renderer, not the rail's status authority.
+The rail retains navigation-summary arbitration, including running jobs and
+descendants, and maps normalized `errored` and `ended` values through
+`cadenceStateFor`. Spines use runtime metadata from their existing scoped activity
+binding and the separate raw-status mapper. Sharing the glyph adds no activity
+read, subscription or retry owner.
 
 ---
 
@@ -641,11 +660,12 @@ widget with motion of its own respects
 `prefers-reduced-motion: reduce` (currently: Cadence, Dialog, Disclosure, Menu, SegmentedControl,
 SelectionQuote, Sheet, StatusDot, Switch) — collapses to instant, no exceptions.
 
-One navigation exception (2026-10-01): the browser rail's grey running ring rotates while the
-authoritative navigation summary reports active work, including running jobs or descendants. It
-communicates state, not frame throughput or percent complete. Broken and needs-you remain static,
-shape-distinct indicators: a diamond and a solid dot. Under `prefers-reduced-motion: reduce`, the
-ring remains visible but does not rotate.
+One compact-status exception: the shared grey running ring rotates in the browser
+rail while its authoritative navigation summary reports active work, including
+running jobs or descendants, and in ancestor spines while their own runtime status
+is active. It communicates state, not frame throughput or percent complete. Broken
+and needs-you remain static, shape-distinct indicators: a diamond and a solid dot.
+Under `prefers-reduced-motion: reduce`, the ring remains visible but does not rotate.
 
 One approved exception (2026-09-11): the transcript's content-free "Thinking…" placeholder,
 shown for a live reasoning item while the Reasoning content flag is off, uses the catalog
