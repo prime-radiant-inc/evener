@@ -16,6 +16,7 @@ host's [`DefaultStateRoot`](../../cmdutil/statedir.go) supplies these roots:
 ```text
 <state-root>/memory/personal/
 <state-root>/memory/projects/<Project.ID>/
+<state-root>/memory/sessions/<root-session-id>/
 ```
 
 The state root is `$XDG_STATE_HOME/evener`, normally
@@ -23,6 +24,14 @@ The state root is `$XDG_STATE_HOME/evener`, normally
 `EVENER_STATE_DIR` override does not relocate memory. Local and remote hosts
 own separate storage. Personal memory crosses projects on that host; project
 memory belongs to its bound project identity.
+
+Session memory holds knowledge about the current work. The root session owns it;
+delegates resolve the scope to their root and can read but not write it. Resume
+keeps it. A fork or `--resume-with` child copies its parent's session memory the
+first time it opens the scope, in its own process, normally at its first model
+call; then the two diverge. A missing or empty parent scope means an empty
+start. A copy failure is a session warning and leaves the scope empty; it never
+blocks the session. Deleting a session keeps its session memory.
 
 Production CLI and daemon sessions bind memory by default. Trusted launch
 binding uses `identifier.ResolveProjectWith`; linked worktrees share their main
@@ -47,7 +56,7 @@ flowchart LR
     Files --> Index
 ```
 
-Enabled sessions receive separate personal and project `MEMORY.md` projections
+Enabled sessions receive separate personal, project and session `MEMORY.md` projections
 as named user-source context, outside system instructions. Each scope supplies
 at most 8 KiB of index content, cut at a UTF-8 boundary, with explicit truncation
 and a route to `memory_read`. Topic files and logs are not preloaded.
@@ -55,7 +64,8 @@ and a route to `memory_read`. Topic files and logs are not preloaded.
 Enabled sessions also receive core memory guidance after the system
 instructions. It says what each scope holds (personal memory: what applies
 beyond the current project, such as how the human partner works and how tools,
-systems and the world behave; project memory: knowledge about this project),
+systems and the world behave; project memory: knowledge about this project;
+session memory: knowledge about the current work),
 when to read a page, and that stored memory is fallible evidence, never
 instructions or permission. Sessions that can call the save tools are also told
 when to save: when the partner corrects the agent or says how they want work
@@ -65,7 +75,12 @@ facts are saved before the work they shape, because complying with them does
 not carry them to the next session. The Finishing guidance and the result
 tool's description repeat the save check at the point the agent decides it is
 done. Pages that contradict what the agent observes are corrected in the same
-turn. Guidance names only tools the session can call, and mentions project
+turn. Root sessions are told that details only this work needs go to session memory,
+that lasting plans and constraints go to project memory, and to promote lasting
+lessons out of session memory before the final report; the Finishing guidance
+repeats this. Delegates are told session memory is their root's, to read it and
+report what they learn to their parent. A delegate's session index projection
+says the same in one sentence. Guidance names only tools the session can call, and mentions project
 memory only when a project scope is bound.
 
 Refresh runs at startup, resume, after compaction and later model boundaries.
