@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1047,7 +1048,7 @@ func TestDelegateResourceSupervision_CompletionGateRecoversEveryCleanExit(t *tes
 		sub := warmStableSupervisionDelegate(t, root, fixture)
 		sub.sess.hookRunner = stableSupervisionStopHook(`{"decision":"block","reason":"address hook feedback"}`)
 		armStableSupervisionAttention(t, sub, "attention:blocked-hook", "run blocked hook")
-		waitForStableSupervisionRun(t, root, fixture.childID)
+		waitForStableSupervisionRun(t, root, fixture.childID, fixture.adapter)
 		assertSingleRecoveryNudge(t, fixture.adapter)
 	})
 
@@ -1062,7 +1063,7 @@ func TestDelegateResourceSupervision_CompletionGateRecoversEveryCleanExit(t *tes
 		sub := warmStableSupervisionDelegate(t, root, fixture)
 		sub.sess.hookRunner = stableSupervisionStopHook(`{"hookSpecificOutput":{"additionalContext":"hook model context"}}`)
 		armStableSupervisionAttention(t, sub, "attention:hook-context", "run context hook")
-		waitForStableSupervisionRun(t, root, fixture.childID)
+		waitForStableSupervisionRun(t, root, fixture.childID, fixture.adapter)
 		assertSingleRecoveryNudge(t, fixture.adapter)
 		requests := fixture.adapter.Requests()
 		if !requestMessagesContainText(requests[len(requests)-1].Messages, "hook model context") {
@@ -1109,6 +1110,122 @@ func TestDelegateResourceSupervision_CompletionGateRecoversEveryCleanExit(t *tes
 			t.Fatalf("post-drain continuation omitted owner steering: %#v", requests[len(requests)-1].Messages)
 		}
 	})
+}
+
+// Unlike the before-announcement control, this holds generation 1 after its
+// inline result has reached the waiter. The caller acknowledges that exact
+// result before arming attention, while only the controller finalizing claim
+// still fences generation 2. A passing run is a control, not a reproduction of
+// the intermittent original blocked/context hook failures.
+func TestDelegateResourceSupervision_PostAcknowledgementAttentionBeforeRelease(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, attentionID, hookOutput string
+		bareContinuations             int
+		wantRequests                  int
+	}{
+		{"blocked_hook", "attention:postack-blocked-hook", `{"decision":"block","reason":"address hook feedback"}`, 4, 7},
+		{"unblocked_hook_context", "attention:postack-hook-context", `{"hookSpecificOutput":{"additionalContext":"hook model context"}}`, 0, 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := newColdStableDelegateFixture(t, "")
+			fixture.adapter.steps = []func(llm.Request) llm.Response{
+				func(llm.Request) llm.Response { return finalResponse("warm result") },
+				func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("attention no action")} },
+			}
+			for range tc.bareContinuations {
+				fixture.adapter.steps = append(fixture.adapter.steps, func(llm.Request) llm.Response {
+					return llm.Response{Message: llm.Assistant("hook continuation without report")}
+				})
+			}
+			fixture.adapter.steps = append(fixture.adapter.steps, func(llm.Request) llm.Response { return finalResponse("recovered after hook") })
+			root := restoreSupervisionRoot(t, fixture, nil)
+			entered := make(chan delegateLease, 1)
+			release := make(chan struct{})
+			var once sync.Once
+			unblock := func() { once.Do(func() { close(release) }) }
+			// Registered after root.Close, so every failure releases the barrier
+			// before cleanup tries to join the real runner.
+			t.Cleanup(unblock)
+			defer unblock()
+			root.cfg.testOnly.subagentBeforeGenerationReleased = func(_ *subagent, lease delegateLease) {
+				if lease.generation == 1 {
+					entered <- lease
+					<-release
+				}
+			}
+			sub := warmStableSupervisionDelegate(t, root, fixture)
+			var warmLease delegateLease
+			select {
+			case warmLease = <-entered:
+			// TRIPWIRE: the in-process warm announcement normally reaches this signal in milliseconds, this only bounds a hung finalizer.
+			case <-time.After(30 * time.Second):
+				t.Fatal("warm announcement never reached the pre-release barrier")
+			}
+			if warmLease != (delegateLease{delegateID: fixture.delegateID, generation: 1}) {
+				t.Fatalf("warm barrier lease = %#v, want exact generation 1", warmLease)
+			}
+			warmFinish := latestDelegateControllerRunFinished(t, root.delegateController, fixture.delegateID)
+			events, err := root.delegateController.store.Load()
+			if err != nil {
+				t.Fatalf("load warm acknowledgement: %v", err)
+			}
+			acknowledged := false
+			for _, event := range events {
+				if event.DelegateID == fixture.delegateID && event.DeliveryAcknowledged != nil && event.DeliveryAcknowledged.DeliveryID == warmFinish.DeliveryID {
+					acknowledged = true
+				}
+			}
+			if warmFinish.Generation != warmLease.generation || warmFinish.DeliveryID == "" || !acknowledged {
+				t.Fatalf("warm exact delivery not durably acknowledged before attention: finish=%#v acknowledged=%t", warmFinish, acknowledged)
+			}
+			c := root.delegateController
+			assertWarmFence := func() {
+				t.Helper()
+				c.mu.Lock()
+				aggregate, live := c.durable[fixture.delegateID], c.live[fixture.delegateID]
+				retained := live != nil && live.finalizing != nil && live.finalizing.generation == warmLease.generation && live.finalizing.runtime == sub.sess
+				closedRun := aggregate != nil && aggregate.Generation == warmLease.generation && !aggregate.CurrentRunOpen && len(aggregate.PendingDeliveries) == 0
+				c.mu.Unlock()
+				sub.mu.Lock()
+				childIdle := !sub.running && !sub.driving && !sub.finalizing
+				warmDoneOpen := sub.done != nil && !supervisionChannelClosed(sub.done)
+				sub.mu.Unlock()
+				if !retained || !closedRun || !childIdle || !warmDoneOpen {
+					t.Fatalf("post-ack fence = retained:%t closedRun:%t childIdle:%t warmDoneOpen:%t", retained, closedRun, childIdle, warmDoneOpen)
+				}
+			}
+			assertWarmFence()
+			sub.sess.hookRunner = stableSupervisionStopHook(tc.hookOutput)
+			armStableSupervisionAttention(t, sub, tc.attentionID, "postack-attention-sentinel")
+			if !root.driveStableDelegateAttention(sub) {
+				t.Fatal("real post-ack drive did not handle pending attention")
+			}
+			assertWarmFence()
+			fold, err := readDelegateAttentionFold(transcriptPath(root.stateDir, fixture.childID), fixture.childID)
+			if err != nil || !reflect.DeepEqual(fold.pendingIDs(), []string{tc.attentionID}) || fold.resumeGenerations[tc.attentionID] != 0 {
+				t.Fatalf("held generation attention identity = pending:%#v generations:%#v err:%v", fold.pendingIDs(), fold.resumeGenerations, err)
+			}
+			unblock()
+			waitForStableSupervisionRun(t, root, fixture.childID, fixture.adapter)
+			assertSingleRecoveryNudge(t, fixture.adapter)
+			finished := latestDelegateControllerRunFinished(t, c, fixture.delegateID)
+			if finished.Generation != 2 || finished.Disposition != delegatestore.DispositionReported || finished.DeliveryID == "" {
+				t.Fatalf("post-ack attention finish = %#v, want reported generation 2", finished)
+			}
+			fold, err = readDelegateAttentionFold(transcriptPath(root.stateDir, fixture.childID), fixture.childID)
+			if err != nil || fold.resolutions[tc.attentionID] != delegateAttentionConsumed || fold.resumeGenerations[tc.attentionID] != 2 {
+				t.Fatalf("post-ack resolution identity = resolutions:%#v generations:%#v err:%v", fold.resolutions, fold.resumeGenerations, err)
+			}
+			requests := fixture.adapter.Requests()
+			if len(requests) != tc.wantRequests || !requestMessagesContainText(requests[1].Messages, "postack-attention-sentinel") {
+				t.Fatalf("post-ack provider requests = %#v, want %d including exact attention payload", requests, tc.wantRequests)
+			}
+			if tc.name == "unblocked_hook_context" && !requestMessagesContainText(requests[len(requests)-1].Messages, "hook model context") {
+				t.Fatalf("recovery request omitted unblocked hook context: %#v", requests[len(requests)-1].Messages)
+			}
+		})
+	}
 }
 
 func TestDelegateResourceSupervision_AutoNudgeOccursOnceForEligibleBuiltin(t *testing.T) {
@@ -3250,12 +3367,22 @@ func serveSupervisionRootWakes(t *testing.T, root *Session) {
 // that stale channel returns while the awaited run is only starting, so a
 // caller that then reads the delegate event log sees the PRIOR generation's
 // run-finished record.
-func waitForStableSupervisionRun(t *testing.T, root *Session, childID string) {
+func waitForStableSupervisionRun(t *testing.T, root *Session, childID string, adapters ...*fakeAdapter) {
 	t.Helper()
 	sub := root.subagents.get(childID)
 	if sub == nil {
 		t.Fatalf("stable child %q was not tracked", childID)
 	}
+	quiesced := false
+	defer func() {
+		if !quiesced {
+			var adapter *fakeAdapter
+			if len(adapters) != 0 {
+				adapter = adapters[0]
+			}
+			t.Logf("failed supervision wait snapshot: %#v", stableSupervisionFailureSnapshot(root, sub, adapter))
+		}
+	}()
 	sub.mu.Lock()
 	hasChannel := sub.done != nil
 	sub.mu.Unlock()
@@ -3334,6 +3461,7 @@ func waitForStableSupervisionRun(t *testing.T, root *Session, childID string) {
 			return false
 		}
 	})
+	quiesced = true
 }
 
 // stableSupervisionState renders the controller, root and child state a
