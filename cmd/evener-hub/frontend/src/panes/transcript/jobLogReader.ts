@@ -258,6 +258,13 @@ export class JobLogReader {
         if (!current()) return;
         const page = parseJobOutputPage(data);
         if (page === null) throw new Error("malformed output payload");
+        if (
+          selection !== null &&
+          (page.offsetBytes + page.bytesReturned !== selection.beforeBytes ||
+            page.bytesReturned > selection.maxBytes ||
+            (page.bytesReturned === 0 && selection.beforeBytes > page.retainedStartBytes))
+        )
+          throw new Error("output page does not match the requested boundary");
         const windows = applyJobLogPage(this.snapshot.windows, page, kind, keep);
         let pendingDemand = this.snapshot.pendingDemand;
         let drainPending = this.snapshot.drainPending;

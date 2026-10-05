@@ -22,6 +22,7 @@ import {
   activityWatch,
 } from "../../../stores/sessionActivityTestUtils";
 import { resetThreadsStoreForTests } from "../../../stores/threads";
+import { installJobLogGeometry } from "../../transcript/JobLogTestUtils";
 import { installMobileViewport } from "../testing/mobileViewport";
 import { ActivityPanel, ActivityPanelBody } from "./ActivityPanel";
 
@@ -133,6 +134,7 @@ test("mobile recursive Activity folds all settled outcomes with quiet truthful r
 });
 
 test("a folded failed job opens actual output through its authoritative owner, not an equal ID", async () => {
+  const restoreGeometry = installJobLogGeometry();
   const client = activityClient();
   const jobId = "equal-job-id";
   const ownerRef = "source:opaque-owner";
@@ -205,7 +207,8 @@ test("a folded failed job opens actual output through its authoritative owner, n
       parentRef: ownerRef,
     });
     expect(client.calls.filter((call) => call.method === "evener/jobs/output").map((call) => call.params)).toEqual([
-      { ref: ownerRef, jobId },
+      { ref: ownerRef, jobId, maxBytes: 65536 },
+      { ref: ownerRef, jobId, maxBytes: 65536 },
     ]);
     expect(
       client.calls.some(
@@ -213,6 +216,8 @@ test("a folded failed job opens actual output through its authoritative owner, n
       ),
     ).toBe(false);
   } finally {
+    cleanup();
+    restoreGeometry();
     restoreSessionPane();
   }
 });

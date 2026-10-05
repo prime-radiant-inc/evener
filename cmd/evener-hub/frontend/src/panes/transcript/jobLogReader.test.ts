@@ -129,6 +129,27 @@ test("retries unresolved history after one second without losing cache", async (
   await observed((snapshot) => snapshot.windows.older !== null && snapshot.outputError === null);
 });
 
+test("a latest reply to a history request preserves bytes and retries without a tight loop", async () => {
+  const first = await initial();
+  reader.demand({ direction: "backward", boundaryBytes: 100, limitBytes: 105 }, "start");
+  const history = await peer.request(OUTPUT, 1);
+  expect(history.params.beforeBytes).toBe(100);
+  peer.reply(history, page());
+  const rejected = await observed((snapshot) => snapshot.outputError !== null || snapshot.windows.older !== null);
+  expect(rejected.outputError).not.toBeNull();
+  expect(rejected.windows.live).toBe(first.windows.live);
+  expect(rejected.windows.older).toBeNull();
+  expect(rejected.pendingDemand?.boundaryBytes).toBe(100);
+  await vi.advanceTimersByTimeAsync(999);
+  expect(peer.requests(OUTPUT)).toHaveLength(2);
+  await vi.advanceTimersByTimeAsync(1);
+  const retry = await peer.request(OUTPUT, 2);
+  expect(retry.params.beforeBytes).toBe(100);
+  peer.reply(retry, page(90, "OLDER_ROW\n"));
+  const recovered = await observed((snapshot) => snapshot.windows.older !== null && snapshot.outputError === null);
+  expect(recovered.windows.older?.rows[0]?.line[0]?.text).toBe("OLDER_ROW");
+});
+
 test("an empty running EOF still polls and publishes a later append", async () => {
   await initial(page(0, "", 0));
   await vi.advanceTimersByTimeAsync(999);
