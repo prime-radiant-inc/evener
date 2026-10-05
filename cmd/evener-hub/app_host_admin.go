@@ -96,6 +96,13 @@ var remoteHostAdminMutationMethods = map[string]struct{}{
 	appwire.MethodEvenerDirsCreate:           {},
 }
 
+// isRemoteHostAdminMutation reports whether a forwarded method changes the
+// remote host (remoteHostAdminMutationMethods).
+func isRemoteHostAdminMutation(method string) bool {
+	_, mutating := remoteHostAdminMutationMethods[method]
+	return mutating
+}
+
 // remoteHostConfigNotifications is the exact set of host-owned config
 // notifications the fan-out re-emits to the controller's browser clients,
 // wrapped in evener/host/notification. Any other remote notification is
@@ -230,7 +237,7 @@ func (c *hubHostAdminController) Request(ctx context.Context, params appwire.Hos
 	// might blind-retry. A read keeps AdminCall's SessionUnavailable mapping.
 	var out json.RawMessage
 	var callErr error
-	if _, mutating := remoteHostAdminMutationMethods[params.Method]; mutating {
+	if isRemoteHostAdminMutation(params.Method) {
 		callErr = remote.AdminMutationCall(ctx, params.Method, params.Params, &out)
 	} else {
 		callErr = remote.AdminCall(ctx, params.Method, params.Params, &out)
@@ -239,6 +246,33 @@ func (c *hubHostAdminController) Request(ctx context.Context, params appwire.Hos
 		return nil, callErr
 	}
 	return out, nil
+}
+
+// forwardedHostRead reports an evener/host/request that forwards a read, which
+// the RPC server runs off the connection's serial worker
+// (appserver.ServerConfig.ConcurrentRequest). A read's cost is the remote
+// host's: a plugin update check there can take minutes, and inline it would
+// hold every later request on the browser's socket, for every host, behind
+// it. Its answer can now arrive after a request sent later; the clients'
+// stores fence such answers (listRevision.ts and its kin). A forwarded
+// mutation stays inline, so a caller's writes reach the remote in the order
+// it sent them and a read sent after one starts only once it has answered.
+// marketplace/refresh also stays inline: it is retry-safe, so the proxy
+// maps its errors as a read's, but it writes the remote's clone, so its
+// order against marketplace writes matters to every caller, not only the web
+// (whose hub write gate orders it too). A method outside the allow-list, or
+// params that do not parse, stay inline so the refusal is answered in order; an
+// allow-listed read to an unknown or offline host goes concurrent and is
+// refused out of order, which changes nothing.
+func forwardedHostRead(method string, params json.RawMessage) bool {
+	if method != appwire.MethodEvenerHostRequest {
+		return false
+	}
+	var forwarded appwire.HostRequestParams
+	if json.Unmarshal(params, &forwarded) != nil || !appwire.IsHostRequestMethod(forwarded.Method) {
+		return false
+	}
+	return !isRemoteHostAdminMutation(forwarded.Method) && forwarded.Method != appwire.MethodEvenerMarketplaceRefresh
 }
 
 // remoteSourceFor returns the attached component-05 source for host, or the

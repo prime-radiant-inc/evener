@@ -1040,6 +1040,7 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 		RequestAdmissionContext: func(ctx context.Context, message appwire.Message) context.Context {
 			return admitSessionRecovery(ctx, cfg, message)
 		},
+		ConcurrentRequest: forwardedHostRead,
 		SubscriptionAdmissionResolverV2: func(msg appwire.Message) appserver.SubscriptionAdmissionResolution {
 			notSubscribe := appserver.SubscriptionAdmissionResolution{Intent: appserver.SubscriptionAdmissionNotSubscribe}
 			if msg.Request == nil || (msg.Request.Method != appwire.MethodThreadRead && msg.Request.Method != appwire.MethodThreadUnsubscribe) {

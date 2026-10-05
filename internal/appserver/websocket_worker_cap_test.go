@@ -2,6 +2,8 @@ package appserver
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync/atomic"
@@ -427,4 +429,59 @@ func TestServeWebSocketSlowReadCapComposedSaturationRecoversOnRelease(t *testing
 			t.Fatal("keepalive never observed the recovered reader")
 		}
 	}
+}
+
+// TestServeWebSocketConcurrentRequestsTakeTheirOwnSlots pins that a request
+// the server's ConcurrentRequest admits leaves the worker on a pool of its
+// own: a full pool of them (a stalled remote host's forwarded reads) takes
+// none of the slow-read slots thread reads need, and one more is refused at
+// once as Unavailable instead of parking the worker, so the socket's other
+// requests keep answering.
+func TestServeWebSocketConcurrentRequestsTakeTheirOwnSlots(t *testing.T) {
+	server, _, started, _ := parkedSlowReadServer(t)
+	server.cfg.ConcurrentRequest = func(method string, _ json.RawMessage) bool {
+		return method == appwire.MethodThreadList
+	}
+	listsStarted := make(chan struct{}, concurrentRequestCap+1)
+	listReleases := make(chan struct{})
+	t.Cleanup(func() { close(listReleases) })
+	HandleTyped(server.Router(), appwire.MethodThreadList, func(_ context.Context, _ appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+		listsStarted <- struct{}{}
+		<-listReleases
+		return appwire.ThreadListResponse{}, nil
+	})
+	HandleTyped(server.Router(), appwire.MethodThreadModelSet, func(_ context.Context, _ appwire.ThreadModelSetParams) (appwire.EmptyResponse, error) {
+		return appwire.EmptyResponse{}, nil
+	})
+	httpServer := serveWebSocketHTTP(t, server)
+	client := dialAppWireClient(t, httpServer)
+	ctx := context.Background()
+
+	for range concurrentRequestCap {
+		go func() { _, _ = client.ThreadList(ctx, appwire.ThreadListParams{}) }()
+	}
+	for range concurrentRequestCap {
+		waitFor(t, "an admitted request to park in its handler", listsStarted)
+	}
+
+	beyond := make(chan error, 1)
+	go func() {
+		_, err := client.ThreadList(ctx, appwire.ThreadListParams{})
+		beyond <- err
+	}()
+	err := waitFor(t, "a request beyond its full pool to be answered", beyond)
+	var wireErr appwire.WireError
+	if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeUnavailable {
+		t.Fatalf("a request beyond its full pool answered %v, want Unavailable", err)
+	}
+
+	ordered := make(chan error, 1)
+	go func() {
+		ordered <- client.ThreadModelSet(ctx, appwire.ThreadModelSetParams{Ref: "local:th_1", ModelProvider: "p", Model: "m"})
+	}()
+	if err := waitFor(t, "an ordered request to answer beside a full pool", ordered); err != nil {
+		t.Fatalf("ordered request: %v", err)
+	}
+	reads := make(chan error, slowReadDispatchCap)
+	fillSlowReadCap(t, client, started, reads)
 }
