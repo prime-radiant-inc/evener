@@ -232,6 +232,9 @@ func TestPrepareSubagentRun_PerDelegateSandboxCleansScratchOnSpawnFailure(t *tes
 
 	ctx := context.WithValue(context.Background(), ctxDelegationAllowance, 0)
 	ctx = context.WithValue(ctx, ctxDelegateSandboxPolicy, &sandbox.SandboxPolicy{Mode: sandbox.ModeRestricted, Network: new(true)})
+	// The create path reserves the child's ID first, so its scratch is named
+	// in the root's tree; a child that never existed must not keep one there.
+	ctx = context.WithValue(ctx, delegateChildSessionIDContextKey{}, "02wMz5Txv1C3Hut0M8GCeB")
 
 	prepared, err := s.prepareSubagentRun(ctx, "child task", "", lane, 0, "", "", nil, nil)
 	if err == nil {
