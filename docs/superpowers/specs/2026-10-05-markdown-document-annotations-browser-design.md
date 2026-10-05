@@ -27,6 +27,8 @@ sections in the browser base's original design are byte-identical to that versio
 intent, user journey, passage references, expiry/read recovery, composer ownership,
 local storage/recovery/retention, and security/non-goals. Their native-only clauses
 apply when the separate native deliverable resumes.
+Deferred native obligations, including the native code-text amendment and its
+proof obligations, come from that immutable approved version.
 
 The new browser plan replaces the original full-client plan's execution order for
 this release. Approval of the scope choice permits writing this amendment;
@@ -78,11 +80,12 @@ The following original guarantees retain their full meaning:
   Restoration cannot append an applied note again. Keep annotations independent
   of disposable reading/history caches and retain notes across more than 100 files.
   No cross-device, cross-profile or browser/native synchronization is introduced.
-- Preserve delete-on-source-change. A successful comparable read expires saved
-  quote/note/anchor payloads and cancels unapplied handoffs. Whole-file revision
-  changes are authoritative even with an unchanged visible prefix. Missing
-  metadata, changed coverage alone and failed reads do not establish an edit.
-  Keep the detection limit for unseen truncated suffixes explicit.
+- Preserve delete-on-source-change. A successful read that establishes a
+  source change expires saved quote/note/anchor payloads and cancels unapplied
+  handoffs. Whole-file revision changes are authoritative even with an
+  unchanged visible prefix. Missing metadata, changed coverage alone and
+  failed reads do not establish an edit. Keep the detection limit for unseen
+  truncated suffixes explicit.
 - Serialize creation, handoff and versioned expiry. Durable cancellation/deletion
   prevents old tabs, delayed saves, restart or source reversion from resurrecting
   expired notes or deleting newer-version notes. Pending expiry hides highlights,
