@@ -46,9 +46,9 @@ export interface SessionCacheIndexedDBOptions {
   maxBytes?: number;
   // Storage-fault seam used to prove IndexedDB rollback at commit boundaries
   // (the outbox's beforeCommit): invoked as the last step inside each write
-  // transaction's body, where a throw still aborts that transaction before
-  // it commits.
-  beforeCommit?: (operation: "put" | "putCurrent" | "clear" | "deleteRecords") => void;
+  // transaction's body. Tests may use the transaction to inject request-level
+  // failures; these are simulated storage faults, not browser quota errors.
+  beforeCommit?: (operation: "put" | "putCurrent" | "clear" | "deleteRecords", tx: IDBTransaction) => void;
   onOpenDiagnostic?: (diagnostic: SessionCacheOpenDiagnostic) => void;
 }
 export type SessionCacheWriteOutcome =
@@ -184,7 +184,9 @@ export class SessionCacheIndexedDB {
   #observedEpoch: number | undefined;
   readonly #writeListeners = new Set<() => void>();
   readonly #onOpenDiagnostic: (d: SessionCacheOpenDiagnostic) => void;
-  readonly #beforeCommit: ((operation: "put" | "putCurrent" | "clear" | "deleteRecords") => void) | undefined;
+  readonly #beforeCommit:
+    | ((operation: "put" | "putCurrent" | "clear" | "deleteRecords", tx: IDBTransaction) => void)
+    | undefined;
 
   constructor(options: SessionCacheIndexedDBOptions = {}) {
     this.#databaseName = options.databaseName ?? DATABASE_NAME;
@@ -459,7 +461,7 @@ export class SessionCacheIndexedDB {
         metaStore.delete(ref);
       }
       metaStore.put({ ref: EPOCH_ROW_KEY, epoch: observed + 1 } satisfies EpochRow);
-      this.#beforeCommit?.("clear");
+      this.#beforeCommit?.("clear", tx);
       return observed + 1;
     });
     return landed === undefined ? { committed: false, epoch: observed } : { committed: true, epoch: landed };
@@ -475,7 +477,7 @@ export class SessionCacheIndexedDB {
         const keys = await requestResult(tx.objectStore(CURRENT_STORE).index("ref").getAllKeys(ref));
         for (const key of keys) await this.#deleteCurrentRows(tx, key as unknown as CurrentSessionKey);
       }
-      this.#beforeCommit?.("deleteRecords");
+      this.#beforeCommit?.("deleteRecords", tx);
       return true;
     });
     return landed ?? false;
@@ -549,9 +551,8 @@ export class SessionCacheIndexedDB {
   // transaction, and quota errors all drop silently here, never a throw.
   // The beforeCommit seam fires inside this wrapper, after every completed
   // put body's requests are queued - the written, oversize, and stale-epoch
-  // paths alike - while a throw can still abort the transaction, which is
-  // what proves the rollback. The operation argument is the one thing this
-  // wrapper threads to the #beforeCommit seam.
+  // paths alike. A synchronous throw or a request failure injected through the
+  // transaction aborts the real transaction, which proves rollback.
   async #readwriteOutcome(
     operation: "put" | "putCurrent",
     body: (tx: IDBTransaction) => Promise<SessionCacheWriteOutcome>,
@@ -559,7 +560,7 @@ export class SessionCacheIndexedDB {
   ): Promise<SessionCacheWriteOutcome> {
     const outcome = await this.#readwrite(async (tx) => {
       const result = await body(tx);
-      this.#beforeCommit?.(operation);
+      this.#beforeCommit?.(operation, tx);
       return result;
     }, now);
     return outcome ?? { outcome: "failed" };

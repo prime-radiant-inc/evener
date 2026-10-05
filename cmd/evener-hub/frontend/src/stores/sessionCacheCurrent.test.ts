@@ -26,6 +26,54 @@ function encodedBytes(record: CurrentSessionRecord): number {
   return new TextEncoder().encode(JSON.stringify(record)).byteLength;
 }
 
+type CacheRows = { records: unknown[]; meta: unknown[]; current: unknown[]; currentMeta: unknown[] };
+
+async function readCacheRows(indexedDB: IDBFactory): Promise<CacheRows> {
+  const request = indexedDB.open("evener-session-cache");
+  const database = await new Promise<IDBDatabase>((resolve, reject) => {
+    request.addEventListener("success", () => resolve(request.result), { once: true });
+    request.addEventListener("error", () => reject(request.error), { once: true });
+  });
+  const tx = database.transaction(["records", "meta", "current", "currentMeta"], "readonly");
+  const completion = new Promise<void>((resolve, reject) => {
+    tx.addEventListener("complete", () => resolve(), { once: true });
+    tx.addEventListener("abort", () => reject(tx.error), { once: true });
+  });
+  const rows = await Promise.all(
+    ["records", "meta", "current", "currentMeta"].map(
+      (store) =>
+        new Promise<unknown[]>((resolve, reject) => {
+          const get = tx.objectStore(store).getAll();
+          get.addEventListener("success", () => resolve(get.result ?? []), { once: true });
+          get.addEventListener("error", () => reject(get.error), { once: true });
+        }),
+    ),
+  );
+  await completion;
+  database.close();
+  return { records: rows[0] ?? [], meta: rows[1] ?? [], current: rows[2] ?? [], currentMeta: rows[3] ?? [] };
+}
+
+function historyRecord(ref: string, savedAt: number) {
+  return {
+    ref,
+    threadId: `thr_${ref}`,
+    name: "n",
+    modelProvider: "p",
+    model: "m",
+    savedAt,
+    history: {
+      bootGeneration: "bg",
+      epoch: 1,
+      incarnation: "inc",
+      length: 0,
+      appliedGeneration: 1,
+      issuedGeneration: 1,
+      turns: [],
+    },
+  };
+}
+
 describe("current session checkpoints", () => {
   it("creates the owner-scoped current store in the existing database", async () => {
     const indexedDB = new IDBFactory();
@@ -142,36 +190,93 @@ describe("current session checkpoints", () => {
   });
 
   it("deletes every owner's checkpoint for a ref and counts distinct refs once", async () => {
-    const cache = new SessionCacheIndexedDB({ indexedDB: new IDBFactory() });
-    const first = currentRecord("tab-a", "local:shared");
-    const second = currentRecord("tab-b", "local:shared");
-    expect((await cache.putCurrent(first, 1)).outcome).toBe("written");
-    expect((await cache.putCurrent(second, 1)).outcome).toBe("written");
-    const history = {
-      ref: "local:shared",
-      threadId: "thr_shared",
-      name: "n",
-      modelProvider: "p",
-      model: "m",
-      savedAt: 1,
-      history: {
-        bootGeneration: "bg",
-        epoch: 1,
-        incarnation: "inc",
-        length: 0,
-        appliedGeneration: 1,
-        issuedGeneration: 1,
-        turns: [],
-      },
-    };
-    expect((await cache.put(history, 0, 1)).outcome).toBe("written");
-    expect(await cache.count()).toBe(1);
+    const indexedDB = new IDBFactory();
+    const cache = new SessionCacheIndexedDB({ indexedDB });
+    const now = Date.now();
+    const first = currentRecord("tab-a", "local:shared", now);
+    const second = currentRecord("tab-b", "local:shared", now);
+    const unrelated = currentRecord("tab-c", "local:other", now);
+    const history = historyRecord("local:shared", now);
+    const unrelatedHistory = historyRecord("local:other-history", now);
+    expect((await cache.putCurrent(first, now)).outcome).toBe("written");
+    expect((await cache.putCurrent(second, now)).outcome).toBe("written");
+    expect((await cache.putCurrent(unrelated, now)).outcome).toBe("written");
+    expect((await cache.put(history, 0, now)).outcome).toBe("written");
+    expect((await cache.put(unrelatedHistory, 0, now)).outcome).toBe("written");
+    expect(await cache.count()).toBe(3);
     expect(await cache.deleteRecords([first.ref])).toBe(true);
-    expect(await cache.get(first.ref, 2)).toBeUndefined();
-    expect((await cache.getCurrent([first.ownerToken, first.ref], 2))?.record).toBeUndefined();
-    expect((await cache.getCurrent([second.ownerToken, second.ref], 2))?.record).toBeUndefined();
-    expect(await cache.count()).toBe(0);
+    expect(await readCacheRows(indexedDB)).toEqual({
+      records: [unrelatedHistory],
+      meta: [
+        { ref: "__clearEpoch", epoch: 0 },
+        {
+          ref: unrelatedHistory.ref,
+          bytes: new TextEncoder().encode(JSON.stringify(unrelatedHistory)).byteLength,
+          savedAt: now,
+        },
+      ],
+      current: [unrelated],
+      currentMeta: [
+        {
+          ownerToken: unrelated.ownerToken,
+          ref: unrelated.ref,
+          bytes: encodedBytes(unrelated),
+          savedAt: now,
+        },
+      ],
+    });
+    expect(await cache.count()).toBe(2);
     cache.close();
+  });
+
+  it("clears both record classes with the epoch bump and preserves exact rows on abort", async () => {
+    const now = Date.now();
+    const makeSeed = () => ({
+      sharedA: currentRecord("tab-a", "local:shared", now),
+      sharedB: currentRecord("tab-b", "local:shared", now),
+      unrelated: currentRecord("tab-c", "local:other", now),
+      historyShared: historyRecord("local:shared", now),
+      historyOther: historyRecord("local:history-other", now),
+    });
+
+    const indexedDB = new IDBFactory();
+    const cache = new SessionCacheIndexedDB({ indexedDB });
+    const seed = makeSeed();
+    for (const record of [seed.sharedA, seed.sharedB, seed.unrelated]) {
+      expect((await cache.putCurrent(record, now)).outcome).toBe("written");
+    }
+    for (const record of [seed.historyShared, seed.historyOther]) {
+      expect((await cache.put(record, 0, now)).outcome).toBe("written");
+    }
+    const beforeClear = await readCacheRows(indexedDB);
+    expect((await cache.clear()).committed).toBe(true);
+    expect(await readCacheRows(indexedDB)).toEqual({
+      records: [],
+      meta: [{ ref: "__clearEpoch", epoch: 1 }],
+      current: [],
+      currentMeta: [],
+    });
+    cache.close();
+
+    const abortedDB = new IDBFactory();
+    const abortable = new SessionCacheIndexedDB({
+      indexedDB: abortedDB,
+      beforeCommit: (operation) => {
+        if (operation === "clear") throw new Error("abort clear before commit");
+      },
+    });
+    const abortedSeed = makeSeed();
+    for (const record of [abortedSeed.sharedA, abortedSeed.sharedB, abortedSeed.unrelated]) {
+      expect((await abortable.putCurrent(record, now)).outcome).toBe("written");
+    }
+    for (const record of [abortedSeed.historyShared, abortedSeed.historyOther]) {
+      expect((await abortable.put(record, 0, now)).outcome).toBe("written");
+    }
+    const beforeAbort = await readCacheRows(abortedDB);
+    expect(beforeAbort).toEqual(beforeClear);
+    expect(await abortable.clear()).toEqual({ committed: false, epoch: 0 });
+    expect(await readCacheRows(abortedDB)).toEqual(beforeAbort);
+    abortable.close();
   });
 
   it("does not evict a current checkpoint to fit unrelated recorded history", async () => {
@@ -257,6 +362,52 @@ describe("current session checkpoints", () => {
     });
     expect(await cache.putCurrent(record, 1)).toEqual({ outcome: "failed" });
     expect((await cache.getCurrent([record.ownerToken, record.ref], 2))?.record).toBeUndefined();
+    cache.close();
+  });
+
+  it("rolls back an asynchronous request failure after replacement and both eviction classes", async () => {
+    const indexedDB = new IDBFactory();
+    const now = Date.now();
+    const original = currentRecord("tab-a", "local:replace", now);
+    const currentVictim = currentRecord("tab-b", "local:current-victim", now);
+    const historyVictim = historyRecord("local:history-victim", now);
+    const initial = new SessionCacheIndexedDB({ indexedDB, maxBytes: 1_000_000 });
+    expect((await initial.putCurrent(original, now)).outcome).toBe("written");
+    expect((await initial.putCurrent(currentVictim, now)).outcome).toBe("written");
+    expect((await initial.put(historyVictim, 0, now)).outcome).toBe("written");
+    initial.close();
+
+    const replacement = currentRecord(original.ownerToken, original.ref, now + 1);
+    replacement.appliedSequence += 1;
+    replacement.state.fields.name = `replacement-${"x".repeat(2_000)}`;
+    const historyBytes = new TextEncoder().encode(JSON.stringify(historyVictim)).byteLength;
+    const maxBytes = encodedBytes(replacement) + historyBytes;
+    expect(encodedBytes(currentVictim)).toBeGreaterThan(historyBytes);
+    let injectedError: string | undefined;
+    const cache = new SessionCacheIndexedDB({
+      indexedDB,
+      maxBytes,
+      beforeCommit: (operation, tx) => {
+        if (operation !== "putCurrent") return;
+        const duplicate = tx.objectStore("current").add(replacement);
+        duplicate.addEventListener(
+          "error",
+          () => {
+            injectedError = duplicate.error?.name;
+          },
+          { once: true },
+        );
+      },
+    });
+    let writeNotifications = 0;
+    const unsubscribe = cache.subscribeWrites(() => writeNotifications++);
+    const before = await readCacheRows(indexedDB);
+
+    expect(await cache.putCurrent(replacement, now + 1)).toEqual({ outcome: "failed" });
+    expect(injectedError).toBe("ConstraintError");
+    expect(await readCacheRows(indexedDB)).toEqual(before);
+    expect(writeNotifications).toBe(0);
+    unsubscribe();
     cache.close();
   });
 
