@@ -4,6 +4,8 @@ import { afterEach, beforeAll, beforeEach, expect, test } from "vitest";
 import { useStore } from "zustand";
 import { MotionProvider } from "../../motion";
 import type { SessionPaneParams } from "../../panes/session/Session";
+import { replaceEditorText, selectEditorText } from "../../panes/session/testing/editor";
+import { installTranscriptGeometry } from "../../panes/session/transcript/transcriptReadingGeometryTestUtils";
 import { cascadeClient, cascadeContext, cascadeThread } from "../../panes/zoom/cascadeTestUtils";
 import type { SessionZoomParams } from "../../panes/zoom/intent";
 import Zoom from "../../panes/zoom/Zoom";
@@ -36,6 +38,28 @@ beforeEach(() => {
 });
 
 const ref = "remote:owner";
+function JourneyPane({ Session }: { Session: typeof import("../../panes/session/Session").default }) {
+  const state = useStore(workspaceStore);
+  return state.panes.map((pane) => {
+    if (pane.type === "session")
+      return (
+        <div key={pane.id} data-testid={`conversation-${pane.id}`}>
+          <Session
+            paneId={pane.id}
+            params={pane.params as SessionPaneParams}
+            focused={state.focusedPaneId === pane.id}
+          />
+        </div>
+      );
+    if (pane.type === "sessionZoom")
+      return (
+        <div key={pane.id} data-testid={`inspection-${pane.id}`}>
+          <Zoom paneId={pane.id} params={pane.params as SessionZoomParams} focused={state.focusedPaneId === pane.id} />
+        </div>
+      );
+    return null;
+  });
+}
 const mount = (mobile = false) =>
   render(
     <MotionProvider>
@@ -185,6 +209,128 @@ test("Escape dismisses only an unclaimed sidebar gesture", async () => {
   expect(activitySidebarStore.getState().open).toBe(false);
 });
 
+test.each(["wheel", "key"] as const)(
+  "ordinary Session %s input supersedes reflow beside its real inspector",
+  async (input) => {
+    const { default: Session } = await import("../../panes/session/Session");
+    const { holdReaderFrames, readerWireTurns } = await import(
+      "../../panes/session/transcript/transcriptReaderTestUtils"
+    );
+    const context = (ref: string) => cascadeContext(ref, ref === "child" ? ["root"] : []);
+    const client = cascadeClient(context);
+    client.on("thread/read", ({ ref, requestGeneration, includeTurns }) => {
+      if (!ref) throw new Error("Missing real journey ref");
+      const read = cascadeThread(ref, requestGeneration, includeTurns !== false);
+      return { ...read, thread: { ...read.thread, turns: includeTurns === false ? [] : readerWireTurns(ref) } };
+    });
+    client.on("evener/thread/delegates/list", ({ ref, scope }) => ({
+      context: context(ref),
+      scope: scope ?? "session",
+      page: { complete: true, issues: [] },
+      delegates:
+        ref === "root"
+          ? [
+              activityDelegate({
+                ownerRef: "root",
+                childRef: "child",
+                delegateId: "edge-child",
+                description: "Inspect reader child",
+              }),
+            ]
+          : [],
+    }));
+    connectionStore.getState().connect(client);
+    installFocusedScope("root");
+    const source: OpenPaneRecord = { id: "root", type: "session", params: { ref: "root" }, slot: "main" };
+    workspaceStore.setState({ panes: [source], focusedPaneId: source.id });
+    const geometry = { width: 152, viewportHeight: 400, rowHeights: [1600, 1000] };
+    const neighbor = { width: 400, viewportHeight: 400, rowHeights: [1600, 1000] };
+    const external = installTranscriptGeometry((element) =>
+      element.closest('[data-testid="conversation-root"]') ? geometry : neighbor,
+    );
+    const frames = holdReaderFrames();
+    const mounted = render(
+      <ClientProvider client={client}>
+        <MotionProvider>
+          <JourneyPane Session={Session} />
+          <ActivitySidebar />
+        </MotionProvider>
+      </ClientProvider>,
+    );
+    try {
+      const conversation = within(screen.getByTestId("conversation-root"));
+      await conversation.findByText("root current reading content");
+      const editor = await conversation.findByRole("textbox", { name: "Message" });
+      const port = conversation.getByTestId("transcript-virtual-list").firstElementChild;
+      if (!(port instanceof HTMLElement)) throw new Error("Actual Session has no scroll port");
+      const lifetime = conversationPaneLifetime(source);
+      await act(async () => external.notify());
+      await act(async () => frames.release());
+      await act(async () => frames.release());
+      await act(async () => {
+        fireEvent.wheel(port, { deltaY: -100 });
+        port.scrollTop = 1000;
+        fireEvent.scroll(port);
+      });
+      await act(async () => {
+        port.scrollTop = 900;
+        fireEvent.scroll(port);
+      });
+      expect(port.scrollTop).toBe(900);
+      act(() => activitySidebarStore.getState().openWith("agents"));
+      const drill = await within(screen.getByTestId("activity-sidebar")).findByRole("button", {
+        name: /Inspect reader child/,
+      });
+      await act(async () => fireEvent.click(drill));
+      await screen.findByText("child current reading content");
+      expect(conversation.getByRole("textbox", { name: "Message" })).toBe(editor);
+      expect(conversationPaneLifetime(source)).toBe(lifetime);
+      await act(async () => workspaceStore.getState().focusPane(source.id));
+      await act(async () => replaceEditorText(editor, "keep this selection"));
+      selectEditorText(editor, 5, 9);
+      const text = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT).nextNode();
+      if (!text) throw new Error("Actual composer has no typed text node");
+      const selection = window.getSelection();
+      if (input === "key")
+        await act(async () => {
+          port.tabIndex = 0;
+          port.focus();
+        });
+      const focused = document.activeElement;
+      geometry.width = 352;
+      geometry.rowHeights[0] = 700;
+      await act(async () => external.notify((target) => target === port));
+      await act(async () => {
+        if (input === "wheel") {
+          fireEvent.wheel(port, { deltaY: -800 });
+          port.scrollTop = 100;
+          fireEvent.scroll(port);
+        } else {
+          for (let index = 0; index < 2; index += 1)
+            fireEvent.keyDown(port, { key: "ArrowUp", altKey: true, shiftKey: true });
+          for (let index = 0; index < 2; index += 1) fireEvent.keyDown(port, { key: "ArrowUp", altKey: true });
+        }
+      });
+      await act(async () => external.notify());
+      expect(port.scrollTop).toBe(100);
+      expect(document.activeElement).toBe(focused);
+      expect(conversation.getByRole("textbox", { name: "Message" })).toBe(editor);
+      expect(conversationPaneLifetime(source)).toBe(lifetime);
+      if (input === "wheel")
+        expect([selection?.anchorNode, selection?.anchorOffset, selection?.focusNode, selection?.focusOffset]).toEqual([
+          text,
+          5,
+          text,
+          9,
+        ]);
+    } finally {
+      mounted.unmount();
+      external.restore();
+      frames.restore();
+    }
+  },
+);
+
 test("desktop delegate rows build six nested edges beside the mounted center and parent crumbs pop at the unchanged root URL", async () => {
   const { default: Session } = await import("../../panes/session/Session");
   const refs = [
@@ -235,39 +381,13 @@ test("desktop delegate rows build six nested edges beside the mounted center and
   });
   window.history.replaceState({}, "", "/s/remote%3Aroot");
   activitySidebarStore.getState().openWith("agents");
-  function JourneyPane() {
-    const state = useStore(workspaceStore);
-    return state.panes.map((pane) => {
-      if (pane.type === "session")
-        return (
-          <div key={pane.id} data-testid={`conversation-${pane.id}`}>
-            <Session
-              paneId={pane.id}
-              params={pane.params as SessionPaneParams}
-              focused={state.focusedPaneId === pane.id}
-            />
-          </div>
-        );
-      if (pane.type === "sessionZoom")
-        return (
-          <div key={pane.id} data-testid={`inspection-${pane.id}`}>
-            <Zoom
-              paneId={pane.id}
-              params={pane.params as SessionZoomParams}
-              focused={state.focusedPaneId === pane.id}
-            />
-          </div>
-        );
-      return null;
-    });
-  }
   const height = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight");
   Object.defineProperty(HTMLElement.prototype, "offsetHeight", { configurable: true, value: 500 });
   try {
     render(
       <ClientProvider client={client}>
         <MotionProvider>
-          <JourneyPane />
+          <JourneyPane Session={Session} />
           <ActivitySidebar />
         </MotionProvider>
       </ClientProvider>,
@@ -343,6 +463,13 @@ test("desktop delegate rows build six nested edges beside the mounted center and
     expect(activitySidebarStore.getState().tab).toBe("about");
     fireEvent.click(sidebar.getByRole("button", { name: "root work" }));
     await sidebar.findByRole("button", { name: /Open remote:child/ });
+    const returnButton = screen.getByRole("button", { name: "Return to previous view" });
+    returnButton.focus();
+    await act(async () => fireEvent.click(returnButton));
+    expect(workspaceStore.getState().panes).toEqual([source]);
+    expect(workspaceStore.getState().focusedPaneId).toBe(source.id);
+    expect(conversation.getByRole("textbox", { name: "Message" })).toBe(editor);
+    expect(document.activeElement).toBe(editor);
   } finally {
     if (height) Object.defineProperty(HTMLElement.prototype, "offsetHeight", height);
     else Reflect.deleteProperty(HTMLElement.prototype, "offsetHeight");

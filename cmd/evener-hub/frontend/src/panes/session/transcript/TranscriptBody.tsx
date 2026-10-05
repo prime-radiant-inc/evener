@@ -25,6 +25,7 @@ import type { CapturedTranscriptView } from "./flow/transcriptViewRegistry";
 import { useTranscriptViewRegistration } from "./flow/useTranscriptScroll";
 import { ProjectedIntentGroup, TurnBlock } from "./TurnBlock";
 import { foldTurnEntries } from "./toolRuns";
+import type { TranscriptReadView } from "./transcriptReadView";
 import { asTurnError } from "./turnFailure";
 import { useEntityView } from "./useEntityView";
 import "./messages";
@@ -331,6 +332,7 @@ export interface TranscriptBodyProps {
   /** Stable pane identity for host-remount scroll state; optional for callers. */
   viewId?: string;
   initialViewCapture?: CapturedTranscriptView;
+  readView?: TranscriptReadView;
   onAnnounceViewChange?: (summary: string) => void;
 }
 
@@ -350,6 +352,7 @@ export function TranscriptBody({
   trailingRow,
   viewId,
   initialViewCapture,
+  readView,
   onAnnounceViewChange,
 }: TranscriptBodyProps) {
   const focusFallbackRef = useRef<HTMLElement>(null);
@@ -396,6 +399,7 @@ export function TranscriptBody({
     layout: displayViewport,
     viewKey: configFingerprint(config),
     initialViewCapture,
+    readView,
     listRef,
     anchorEntries: preparedView?.anchorEntries ?? transcriptAnchorEntriesForRows(rows),
     // Include the synthetic trailing row: following-bottom view restores

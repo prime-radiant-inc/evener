@@ -9,7 +9,7 @@ export interface TranscriptTestGeometry {
 export function installTranscriptGeometry(
   geometryFor: (element: HTMLElement) => TranscriptTestGeometry,
   findPort?: (element: HTMLElement) => HTMLElement | undefined,
-): { notify(include?: (target: HTMLElement) => boolean): void; restore(): void } {
+): { notify(include?: (target: HTMLElement) => boolean): void; observedTargets(): Element[]; restore(): void } {
   const prototype = HTMLElement.prototype;
   const saved = new Map<string, PropertyDescriptor | undefined>();
   const nativeRect = prototype.getBoundingClientRect;
@@ -129,6 +129,9 @@ export function installTranscriptGeometry(
     value: GeometryResizeObserver,
   });
   return {
+    observedTargets() {
+      return [...observers].flatMap((observer) => [...observer.targets]);
+    },
     notify(include = () => true) {
       for (const observer of [...observers]) {
         const entries: ResizeObserverEntry[] = [...observer.targets].flatMap((target) => {

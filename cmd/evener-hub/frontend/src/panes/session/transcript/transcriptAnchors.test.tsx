@@ -1,10 +1,16 @@
 import type { ItemModel, ProjectedEntry, ProjectedTurn, ThreadModel, TurnModel } from "@evener/appwire-client";
 import { makeTranscriptDisplayConfig } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createRef } from "react";
 import { beforeEach, expect, test } from "vitest";
 import { useStore } from "zustand";
+import { ClientProvider } from "../../../shell/clientContext";
 import { conversationPaneLifetime } from "../../../shell/paneLifetime";
+import { type OpenPaneRecord, resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
+import { connectionStore } from "../../../stores/connection";
+import { activitySummary, activityThread } from "../../../stores/sessionActivityTestUtils";
+import { resetThreadsStoreForTests } from "../../../stores/threads";
 import { resetTranscriptDisplayStoreForTests, transcriptDisplayStore } from "../../../stores/transcriptDisplay";
 import { makeTranscriptPreviewModel } from "../../../transcriptDisplay/previewFixture";
 import type { VirtualListHandle } from "../../../widgets";
@@ -13,6 +19,7 @@ import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclo
 // same way the real session pane does - through TurnBlock's side-effect
 // import of ./tools.
 import "./TurnBlock";
+import { ReadOnlyThreadContent } from "../../transcript/ReadOnlyThreadContent";
 import { captureTranscriptView, resetTranscriptViewRegistryForTests } from "./flow/transcriptViewRegistry";
 import { readingPointOffset } from "./flow/useTranscriptScroll";
 import {
@@ -21,10 +28,231 @@ import {
   transcriptAnchorEntriesForRows,
   transcriptRunDisclosureIdsForRows,
 } from "./TranscriptBody";
+import { holdReaderFrames, mountReaderScene, readerTouch, readerWireTurns } from "./transcriptReaderTestUtils";
 import { installTranscriptGeometry } from "./transcriptReadingGeometryTestUtils";
 import { retainedTranscriptReadView } from "./transcriptReadView";
+import { resetTranscriptPagingForTests } from "./useTranscript";
 
 beforeEach(resetDisclosureStoreForTests);
+
+test.each(["input", "close", "reset", "replacement"] as const)(
+  "real same-ref read-only readers isolate %s with pending measurements",
+  async (action) => {
+    resetWorkspaceStoreForTests();
+    resetThreadsStoreForTests();
+    resetTranscriptPagingForTests();
+    const fake = new FakeClient("ready");
+    fake.on("thread/read", ({ ref, includeTurns, requestGeneration }) => {
+      if (!ref) throw new Error("Actual read-only hydration requires ref");
+      const read = activityThread(ref);
+      return {
+        ...read,
+        requestGeneration,
+        thread: { ...read.thread, turns: includeTurns === false ? [] : readerWireTurns(ref) },
+      };
+    });
+    fake.on("thread/unsubscribe", () => ({}));
+    fake.on("evener/thread/activity/read", ({ ref }) => activitySummary(ref));
+    connectionStore.getState().connect(fake);
+    const a: OpenPaneRecord = { id: "reader-a", type: "transcript", params: { ref: "shared" }, slot: "main" };
+    const b: OpenPaneRecord = { id: "reader-b", type: "transcript", params: { ref: "shared" }, slot: "secondary" };
+    workspaceStore.setState({ panes: [a, b] });
+    const av = retainedTranscriptReadView(conversationPaneLifetime(a), "shared", "transcript");
+    const bv = retainedTranscriptReadView(conversationPaneLifetime(b), "shared", "transcript");
+    const ag = { width: 152, viewportHeight: 400, rowHeights: [1600, 1000] };
+    const bg = { width: 152, viewportHeight: 400, rowHeights: [1600, 1000] };
+    const external = installTranscriptGeometry((element) => (element.closest('[data-reader="reader-a"]') ? ag : bg));
+    const frames = holdReaderFrames();
+    function Readers() {
+      const panes = useStore(workspaceStore, (state) => state.panes);
+      return panes
+        .filter((pane) => pane.type === "transcript")
+        .map((pane) => {
+          const view = retainedTranscriptReadView(conversationPaneLifetime(pane), "shared", "transcript");
+          return (
+            <div key={view.id} data-reader={pane.id}>
+              <ReadOnlyThreadContent ref="shared" view={view} />
+            </div>
+          );
+        });
+    }
+    const mounted = render(
+      <ClientProvider client={fake}>
+        <Readers />
+      </ClientProvider>,
+    );
+    const portFor = (id: string) => {
+      const port = mounted.container.querySelector<HTMLElement>(
+        `[data-reader="${id}"] [data-testid="transcript-virtual-list"] > div`,
+      );
+      if (!port) throw new Error("Real read-only content has no port");
+      return port;
+    };
+    try {
+      await screen.findAllByText("shared current reading content");
+      await act(async () => external.notify());
+      await act(async () => frames.release());
+      await act(async () => frames.release());
+      const ap = portFor(a.id);
+      const bp = portFor(b.id);
+      await act(async () => {
+        fireEvent.wheel(ap, { deltaY: -100 });
+        ap.scrollTop = 1000;
+        fireEvent.scroll(ap);
+        fireEvent.wheel(bp, { deltaY: -100 });
+        bp.scrollTop = 600;
+        fireEvent.scroll(bp);
+      });
+      await act(async () => {
+        ap.scrollTop = 900;
+        fireEvent.scroll(ap);
+        bp.scrollTop = 500;
+        fireEvent.scroll(bp);
+      });
+      expect([ap.scrollTop, bp.scrollTop]).toEqual([900, 500]);
+      ag.width = 352;
+      ag.rowHeights[0] = 700;
+      await act(async () => external.notify((target) => target === ap));
+      if (action === "input") {
+        const neighborRevision = bv.positioningRevision;
+        await act(async () => {
+          fireEvent.wheel(ap, { deltaY: -800 });
+          ap.scrollTop = 100;
+          fireEvent.scroll(ap);
+        });
+        await act(async () => external.notify((target) => !!target.closest('[data-reader="reader-a"]')));
+        expect(bp.scrollTop).toBe(500);
+        expect(bv.positioningRevision).toBe(neighborRevision);
+        expect(ap.scrollTop).toBe(100);
+      } else {
+        av.setReadable(false);
+        expect(av.getCapture()).toMatchObject({ anchorOffset: -900 });
+        const replacement: OpenPaneRecord = { ...a, params: { ref: "shared" } };
+        await act(async () => {
+          if (action === "close") workspaceStore.getState().closePane(a.id);
+          if (action === "reset") resetWorkspaceStoreForTests();
+          if (action === "replacement") workspaceStore.setState({ panes: [replacement, b] });
+        });
+        expect(av.alive).toBe(false);
+        expect(external.observedTargets().filter((target) => target === ap || ap.contains(target))).toEqual([]);
+        expect(av.getCapture()).toBeUndefined();
+        if (action !== "reset") {
+          expect(portFor(b.id)).toBe(bp);
+          expect(bv.alive).toBe(true);
+          expect(bp.scrollTop).toBe(500);
+        }
+        if (action === "replacement") {
+          const fresh = retainedTranscriptReadView(conversationPaneLifetime(replacement), "shared", "transcript");
+          expect(fresh).not.toBe(av);
+          const freshPort = portFor(a.id);
+          expect(freshPort).not.toBe(ap);
+          await act(async () => external.notify());
+          await act(async () => {
+            fireEvent.wheel(freshPort, { deltaY: -1000 });
+            freshPort.scrollTop = 100;
+            fireEvent.scroll(freshPort);
+          });
+          await act(async () => frames.release());
+          await act(async () => external.notify());
+          expect(freshPort.scrollTop).toBe(100);
+          expect(document.activeElement?.getAttribute("data-view-anchor-id")).not.toBe("shared-current-entry");
+        }
+      }
+    } finally {
+      mounted.unmount();
+      resetWorkspaceStoreForTests();
+      connectionStore.setState({ state: "idle", client: null });
+      resetThreadsStoreForTests();
+      resetTranscriptPagingForTests();
+      external.restore();
+      frames.restore();
+      resetTranscriptViewRegistryForTests();
+    }
+  },
+);
+
+// Without retained-view supersession the committed reader replays -900 as -225.
+test.each(["wheel", "touch", "scrollbar", "selection autoscroll", "native key"] as const)(
+  "newer %s movement wins over held width reflow and remount",
+  async (input) => {
+    const scene = mountReaderScene(`newer-${input}`);
+    try {
+      await scene.start();
+      expect(scene.port().scrollTop).toBe(900);
+      await scene.holdReflow();
+      const port = scene.port();
+      await act(async () => {
+        if (input === "wheel") fireEvent.wheel(port, { deltaY: -800 });
+        if (input === "touch") {
+          readerTouch(port, "touchstart", 100);
+          readerTouch(port, "touchmove", 900);
+        }
+        if (input === "scrollbar" || input === "selection autoscroll") {
+          fireEvent.pointerDown(port, { pointerType: "mouse", button: 0, buttons: 1, isPrimary: true });
+          fireEvent.pointerMove(port, { pointerType: "mouse", button: -1, buttons: 1, isPrimary: true });
+        }
+        if (input === "native key") fireEvent.keyDown(port, { key: "PageUp" });
+        port.scrollTop = 100;
+        fireEvent.scroll(port);
+      });
+      await act(async () => scene.external.notify());
+      expect(port.scrollTop).toBe(100);
+      expect(scene.capture()).toMatchObject({ anchorId: "current-entry", anchorOffset: -100 });
+      await act(async () => scene.remount());
+      await act(async () => scene.external.notify());
+      expect(scene.port().scrollTop).toBe(100);
+      expect(scene.port().querySelector('[data-view-anchor-id="current-entry"]')?.textContent).toContain("current");
+    } finally {
+      scene.dispose();
+      resetTranscriptViewRegistryForTests();
+    }
+  },
+);
+
+test.each(["selection", "Tab", "editor", "modifier", "horizontal wheel", "ctrl wheel", "nested wheel"] as const)(
+  "%s without viewport movement preserves pending reflow and outside focus",
+  async (input) => {
+    const scene = mountReaderScene(`non-reader-${input}`);
+    try {
+      await scene.start();
+      const port = scene.port();
+      const editor = screen.getByRole("textbox", { name: "Neighbor editor" }) as HTMLTextAreaElement;
+      editor.focus();
+      editor.setSelectionRange(5, 9);
+      await scene.holdReflow();
+      await act(async () => {
+        if (input === "selection") {
+          fireEvent.pointerDown(port, { pointerType: "mouse", button: 0, buttons: 1, isPrimary: true });
+          fireEvent.pointerMove(port, { pointerType: "mouse", button: -1, buttons: 1, isPrimary: true });
+        }
+        if (input === "Tab") fireEvent.keyDown(port, { key: "Tab" });
+        if (input === "editor") fireEvent.keyDown(editor, { key: "ArrowUp" });
+        if (input === "modifier") fireEvent.keyDown(port, { key: "ArrowUp", ctrlKey: true });
+        if (input === "horizontal wheel") fireEvent.wheel(port, { deltaX: 800, deltaY: 0 });
+        if (input === "ctrl wheel") fireEvent.wheel(port, { deltaY: -800, ctrlKey: true });
+        if (input === "nested wheel") {
+          const inner = document.createElement("div");
+          inner.style.overflowY = "auto";
+          Object.defineProperties(inner, {
+            scrollHeight: { value: 1000 },
+            clientHeight: { value: 100 },
+            scrollTop: { writable: true, value: 500 },
+          });
+          port.appendChild(inner);
+          fireEvent.wheel(inner, { deltaY: -50 });
+          inner.remove();
+        }
+        scene.external.notify();
+      });
+      expect(port.scrollTop).toBe(225);
+      expect(document.activeElement).toBe(editor);
+      expect([editor.selectionStart, editor.selectionEnd]).toEqual([5, 9]);
+    } finally {
+      scene.dispose();
+      resetTranscriptViewRegistryForTests();
+    }
+  },
+);
 
 // description: a call with a stated intent projects as an ordinary item
 // entry at the tool-call levels; an intent-less call projects as a
