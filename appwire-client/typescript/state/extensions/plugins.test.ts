@@ -147,8 +147,13 @@ describe("checkPluginUpdates", () => {
     });
     expect(await store.getState().checkPluginUpdates()).toBe(true);
 
-    // The request never reached an answer (the connection dropped).
+    // The request never reached an answer: the connection dropped, or a proxy
+    // turned a lost host channel into a wire error.
     fake.on(CHECK, failing("connection closed"));
+    expect(await store.getState().checkPluginUpdates()).toBe(false);
+    fake.on(CHECK, () => {
+      throw new WireError("host m4 is not attached", -32014);
+    });
     expect(await store.getState().checkPluginUpdates()).toBe(false);
   });
 

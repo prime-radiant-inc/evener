@@ -43,9 +43,10 @@ export interface PluginsState {
    * flags the hub now holds. A host calls it when its plugins view opens. It
    * never throws, and a failed check publishes nothing: an older hub without
    * the method leaves every plugin unflagged, so no Upgrade is offered.
-   * Resolves true once the hub has given its answer (the flags, or a refusal
-   * such as an older hub's), false when the request never reached one (a
-   * dropped connection), which a host may ask again once it reconnects. */
+   * Resolves true once the hub has given its answer (the flags, or an older
+   * hub's "method not found"), false when the request never reached one (a
+   * dropped connection, a remote host the proxy couldn't reach), which a host
+   * may ask again once it reconnects. */
   checkPluginUpdates(): Promise<boolean>;
   installPlugin(plugin: string, marketplace: string): Promise<void>;
   upgradePlugin(plugin: string, marketplace: string): Promise<void>;
@@ -75,6 +76,10 @@ export const PLUGIN_REFETCH_DEBOUNCE_MS = 250;
 /** The check waits on every plugin's remote, a few at a time and each under
  * the hub's own per-remote timeout, so it can run far past a plain read's
  * default timeout. */
+// JSON-RPC's code for a method the server does not serve: how a hub from
+// before evener/plugin/checkUpdates answers it.
+const METHOD_NOT_FOUND = -32601;
+
 export const PLUGIN_UPDATE_CHECK_TIMEOUT_MS = 120_000;
 
 /** The five mutations addressed by a plugin reference alone; setAutoUpgrade
@@ -162,9 +167,10 @@ export function createPluginsStore(client: PluginsClient, gate: HubWriteGate): P
         try {
           await client.request("evener/plugin/checkUpdates", {}, { timeoutMs: PLUGIN_UPDATE_CHECK_TIMEOUT_MS });
         } catch (err) {
-          // A wire error is the hub's own answer (an older hub refusing the
-          // method); anything else never reached one.
-          return err instanceof WireError;
+          // Only an older hub's "method not found" is a final answer. Any other
+          // failure, a transport error or a wire error a proxy made of one (a
+          // lost host channel, a busy pool), never reached a check.
+          return err instanceof WireError && err.code === METHOD_NOT_FOUND;
         }
         if (lifecycle.epoch() === issuedIn) await store.getState().fetchPlugins();
         return true;

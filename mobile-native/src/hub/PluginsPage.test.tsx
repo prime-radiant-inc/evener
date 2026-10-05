@@ -2956,6 +2956,25 @@ it("asks for updates again after a reconnect when the check never reached the hu
 	expect(checks(hub)).toBe(2);
 });
 
+it("waits for the connection to be ready before asking again", async () => {
+	const hub = pageHub([entry("stale")]);
+	hub.on("evener/plugin/checkUpdates", () => {
+		throw new Error("request timed out");
+	});
+	const { tree, props } = await mountPage(hub);
+	await act(async () => {});
+	expect(checks(hub)).toBe(1);
+
+	hub.on("evener/plugin/checkUpdates", () => ({ plugins: [] }));
+	harness.connection = { ...harness.connection, state: "reconnecting" };
+	await act(async () => tree.update(<PluginsStack {...props} />));
+	expect(checks(hub)).toBe(1);
+	harness.connection = { ...harness.connection, state: "ready" };
+	await act(async () => tree.update(<PluginsStack {...props} />));
+	await act(async () => {});
+	expect(checks(hub)).toBe(2);
+});
+
 it("asks a hub that refused the check, or answered it, only once across reconnects and list failures", async () => {
 	const hub = pageHub([entry("stale")]);
 	hub.on("evener/plugin/checkUpdates", () => {
