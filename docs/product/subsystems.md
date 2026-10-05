@@ -79,6 +79,12 @@ Task rows use the shared `appwire.Task` representation for persistence and proto
 unavailable, while `[]` is an authoritative empty list. SDK generation preserves this
 distinction, and client adapters own validation and display-field normalization.
 
+S02's browser Tasks tab shows aggregate counts in its tab label, with task groups
+directly in the body. Standalone task surfaces retain their aggregate headers.
+Activity resource rows share one padding inset at each row or disclosure summary
+boundary. See [session activity](session-activity.md#client-lifetimes) for the
+presentation and retained-row recovery contracts.
+
 ## Hub, hosts and sessions
 
 | ID and responsibility | Entry points and implementation | State authority and recovery ownership | Owning references |
