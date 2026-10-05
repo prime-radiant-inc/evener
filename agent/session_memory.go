@@ -25,12 +25,12 @@ const memoryReportReminder = "Before a final answer with end_turn=true, save to 
 
 const memoryGuidance = `## Memory
 
-You have a memory that outlasts this session. Save what you learn in it, so future sessions don't have to learn it or figure it out again. Personal memory holds what you have learned about how your human partner works, across every project. Project memory holds knowledge about this project. Each scope keeps an index, MEMORY.md, with one line per page; when an index has entries, it appears in the conversation. When an index line bears on what you are doing, read that page with memory_read; use memory_search to look for a topic the index doesn't mention.
+You have a memory that outlasts this session. Save what you learn in it, so future sessions don't have to learn it or figure it out again. Personal memory holds what you have learned that applies beyond this project: how your human partner works, and how tools, systems and the wider world behave. Project memory holds knowledge about this project. Each scope keeps an index, MEMORY.md, with one line per page; when an index has entries, it appears in the conversation. When an index line bears on what you are doing, read that page with memory_read; use memory_search to look for a topic the index doesn't mention.
 
 Save a memory when:
 - your human partner corrects you or tells you how they want something done. Save it to personal memory with the reason they gave, or to project memory if it only applies here.
 - your human partner tells you about this project: a plan, a constraint, a decision, or work that is still unfinished. Save it to project memory.
-- you learn something about this project the hard way that the repository does not record, such as a setup step, a test suite that silently skips, or a command that only works one way. Save it to project memory before you finish.
+- you learn something the hard way that is not written down where you found it, such as a tool's quirk, how a system behaves, a setup step, or a test suite that silently skips. Save it to personal memory if it holds beyond this project, or to project memory if it is about this project.
 
 Skip what the repository already says and what only matters to the current task. Write one topic per page with memory_write and add a one-line pointer to it in MEMORY.md with memory_edit. Look for an existing page first and update it instead of adding a duplicate. In pages, call your partner "my partner" and use they/them unless they have told you their name and pronouns.
 
