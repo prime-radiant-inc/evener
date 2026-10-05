@@ -2942,7 +2942,7 @@ index 0000000..db0cf20
 +}
 +@end
 diff --git a/node_modules/react-native-enriched-markdown/ios/EnrichedMarkdown.mm b/node_modules/react-native-enriched-markdown/ios/EnrichedMarkdown.mm
-index ed8b53d..2994996 100644
+index ed8b53d..6b53343 100644
 --- a/node_modules/react-native-enriched-markdown/ios/EnrichedMarkdown.mm
 +++ b/node_modules/react-native-enriched-markdown/ios/EnrichedMarkdown.mm
 @@ -10,6 +10,8 @@
@@ -3019,22 +3019,46 @@ index ed8b53d..2994996 100644
 
    // A just-closed block has unchanged content, so the reconciler reuses it
    // without an update; sync pending here to trigger its deferred highlight.
-@@ -745,7 +758,7 @@ static char kENRMSegmentFadeAnimatorKey;
+@@ -745,7 +758,17 @@ static char kENRMSegmentFadeAnimatorKey;
    view.lastElementMarginBottom = segment.lastElementMarginBottom;
    view.accessibilityInfo = segment.accessibilityInfo;
    view.accessibilityLabels = _accessibilityLabels;
 -  view.textView.selectable = _selectable;
 +  view.textView.selectable = _selectable && !_documentSnapshotId.length;
++#if !TARGET_OS_OSX
++  // A descendant UITextView is another UIKit text-input owner. Route projected
++  // row touches through its existing content container, not that local input.
++  // Its mounted storage/layout remain the drawing and geometry authority.
++  view.textView.userInteractionEnabled = !_documentSnapshotId.length;
++  if (view.documentTapRecognizer) {
++    UIView *target = _documentSnapshotId.length ? view : view.textView;
++    [target addGestureRecognizer:view.documentTapRecognizer];
++  }
++#endif
    [view applyAttributedText:segment.attributedText context:segment.context];
 
    const auto &selectionProps = *std::static_pointer_cast<EnrichedMarkdownProps const>(self->_props);
-@@ -899,13 +912,77 @@ static char kENRMSegmentFadeAnimatorKey;
+@@ -758,7 +781,13 @@ static char kENRMSegmentFadeAnimatorKey;
+   [self configureTextView:view withRenderedSegment:segment];
+
+   ENRMTapRecognizer *tapRecognizer = [[ENRMTapRecognizer alloc] initWithTarget:self action:@selector(textTapped:)];
++#if !TARGET_OS_OSX
++  view.documentTapRecognizer = tapRecognizer;
++  UIView *tapTarget = _documentSnapshotId.length ? view : view.textView;
++  [tapTarget addGestureRecognizer:tapRecognizer];
++#else
+   [view.textView addGestureRecognizer:tapRecognizer];
++#endif
+
+ #if !TARGET_OS_OSX
+   view.textView.delegate = self;
+@@ -899,13 +928,77 @@ static char kENRMSegmentFadeAnimatorKey;
  {
    [super layoutSubviews];
    [self computeSegmentLayoutForWidth:self.bounds.size.width applyFrames:YES];
 +  [self refreshDocumentRegions];
- }
-
++}
++
 +- (void)collectDocumentRegionsInView:(UIView *)view regions:(NSMutableArray<ENRMDocumentTextRegion *> *)regions
 +{
 +  if ([view isKindOfClass:UITextView.class]) {
@@ -3081,9 +3105,9 @@ index ed8b53d..2994996 100644
 +  [_segmentViews removeAllObjects]; [_segmentSignatures removeAllObjects];
 +  _dirtyFlags |= ENRMDirtyRecreateSegments | ENRMDirtyForceHeight;
 +  if (model) [self renderMarkdownContent:_cachedMarkdown ?: @""];
-+}
+ }
 +- (void)didMoveToSuperview { [super didMoveToSuperview]; [self documentModelDidChange]; }
-+
+
  - (void)updateProps:(Props::Shared const &)props oldProps:(Props::Shared const &)oldProps
  {
    const auto &oldViewProps = *std::static_pointer_cast<EnrichedMarkdownProps const>(_props);
@@ -3106,7 +3130,7 @@ index ed8b53d..2994996 100644
    BOOL markdownChanged = oldViewProps.markdown != newViewProps.markdown;
    if (markdownChanged) {
      _dirtyFlags |= ENRMDirtyRender;
-@@ -937,8 +1014,9 @@ static char kENRMSegmentFadeAnimatorKey;
+@@ -937,8 +1030,9 @@ static char kENRMSegmentFadeAnimatorKey;
    for (RCTUIView *segment in _segmentViews) {
      if ([segment isKindOfClass:[EnrichedMarkdownInternalText class]]) {
        EnrichedMarkdownInternalText *textSegment = (EnrichedMarkdownInternalText *)segment;
@@ -3118,7 +3142,7 @@ index ed8b53d..2994996 100644
        }
      }
    }
-@@ -1092,6 +1170,7 @@ static char kENRMSegmentFadeAnimatorKey;
+@@ -1092,6 +1186,7 @@ static char kENRMSegmentFadeAnimatorKey;
  - (void)didMoveToWindow
  {
    [super didMoveToWindow];
@@ -3126,7 +3150,7 @@ index ed8b53d..2994996 100644
 
    if (self.window && _renderedMarkdown != nil) {
      for (RCTUIView *segment in _segmentViews) {
-@@ -1110,6 +1189,9 @@ static char kENRMSegmentFadeAnimatorKey;
+@@ -1110,6 +1205,9 @@ static char kENRMSegmentFadeAnimatorKey;
 
  - (void)prepareForRecycle
  {
@@ -3136,6 +3160,17 @@ index ed8b53d..2994996 100644
    const auto resetProps = std::make_shared<const EnrichedMarkdownProps>();
    _props = resetProps;
    [_renderCoordinator invalidate];
+@@ -1274,6 +1372,10 @@ Class<RCTComponentViewProtocol> EnrichedMarkdownCls(void)
+ - (void)textTapped:(ENRMTapRecognizer *)recognizer
+ {
+   ENRMPlatformTextView *textView = (ENRMPlatformTextView *)recognizer.view;
++#if !TARGET_OS_OSX
++  if ([recognizer.view isKindOfClass:EnrichedMarkdownInternalText.class])
++    textView = ((EnrichedMarkdownInternalText *)recognizer.view).textView;
++#endif
+
+   if (_enableTaskListItemToggle &&
+       handleTaskListTapWithSharedLogic(
 diff --git a/node_modules/react-native-enriched-markdown/ios/EnrichedMarkdownCodeText.h b/node_modules/react-native-enriched-markdown/ios/EnrichedMarkdownCodeText.h
 new file mode 100644
 index 0000000..39f253c
@@ -6043,6 +6078,20 @@ index 1384350..d8e02de 100644
    CGFloat rowY, rowH, colX, colW;
    NSAttributedString *text;
    if (![self cellAtPoint:point rowOrigin:&rowY rowHeight:&rowH colOrigin:&colX colWidth:&colW cellText:&text])
+diff --git a/node_modules/react-native-enriched-markdown/ios/views/EnrichedMarkdownInternalText.h b/node_modules/react-native-enriched-markdown/ios/views/EnrichedMarkdownInternalText.h
+index dce09c7..db41f67 100644
+--- a/node_modules/react-native-enriched-markdown/ios/views/EnrichedMarkdownInternalText.h
++++ b/node_modules/react-native-enriched-markdown/ios/views/EnrichedMarkdownInternalText.h
+@@ -25,6 +25,9 @@ NS_ASSUME_NONNULL_BEGIN
+ @property (nonatomic, readonly) ENRMPlatformTextView *textView;
+ @property (nonatomic, readonly) ENRMSpoilerOverlayManager *spoilerManager;
+ @property (nonatomic) ENRMSpoilerOverlay spoilerOverlay;
++#if !TARGET_OS_OSX
++@property (nonatomic, strong, nullable) UIGestureRecognizer *documentTapRecognizer;
++#endif
+
+ @property (nonatomic, strong, nullable) AccessibilityInfo *accessibilityInfo;
+ @property (nonatomic, strong, nullable) ENRMAccessibilityLabels *accessibilityLabels;
 diff --git a/node_modules/react-native-enriched-markdown/lib/module/EnrichedMarkdownCodeTextNativeComponent.js b/node_modules/react-native-enriched-markdown/lib/module/EnrichedMarkdownCodeTextNativeComponent.js
 new file mode 100644
 index 0000000..7161cfa
