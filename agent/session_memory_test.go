@@ -2805,8 +2805,8 @@ func TestMemorySessionScopeRootWrites(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: root, MemoryProjectID: "fixture-project"}))
-	if _, err := s.execMemoryWrite(context.Background(), nil, map[string]any{"scope": "session", "file_path": "MEMORY.md", "content": "opaque-session-11\n"}); err != nil {
-		t.Fatal(err)
+	if res := memoryExec(t, s, "memory_write", map[string]any{"scope": "session", "file_path": "MEMORY.md", "content": "opaque-session-11\n"}); res.IsError {
+		t.Fatal(res.Output)
 	}
 	got, err := os.ReadFile(filepath.Join(root, "memory", "sessions", s.id, "MEMORY.md"))
 	if err != nil || string(got) != "opaque-session-11\n" {
@@ -2825,14 +2825,13 @@ func TestMemorySessionScopeDelegateReadsButCannotWrite(t *testing.T) {
 		t.Fatal(res.Err)
 	}
 	child := memoryWaitChild(t, s, res.ChildSessionID)
-	read, err := child.sess.execMemoryRead(context.Background(), nil, map[string]any{"scope": "session", "file_path": "MEMORY.md"})
-	if err != nil || !strings.Contains(fmt.Sprint(read), "opaque-root-session-12") {
-		t.Fatalf("delegate read=%v err=%v", read, err)
+	if read := memoryExec(t, child.sess, "memory_read", map[string]any{"scope": "session", "file_path": "MEMORY.md"}); read.IsError || !strings.Contains(read.Output, "opaque-root-session-12") {
+		t.Fatalf("delegate read=%+v", read)
 	}
-	for _, call := range []func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error){child.sess.execMemoryWrite, child.sess.execMemoryEdit, child.sess.execMemoryDelete} {
-		_, err := call(context.Background(), nil, map[string]any{"scope": "session", "file_path": "MEMORY.md", "content": "x", "old_string": "opaque", "new_string": "y"})
-		if err == nil || err.Error() != memorySessionReadOnly {
-			t.Fatalf("delegate session write err=%v", err)
+	for _, name := range []string{"memory_write", "memory_edit", "memory_delete"} {
+		res := memoryExec(t, child.sess, name, map[string]any{"scope": "session", "file_path": "MEMORY.md", "content": "x", "old_string": "opaque", "new_string": "y"})
+		if !res.IsError || !strings.Contains(res.Output, memorySessionReadOnly) {
+			t.Fatalf("delegate session %s=%+v", name, res)
 		}
 	}
 	got, _ := os.ReadFile(filepath.Join(root, "memory", "sessions", s.id, "MEMORY.md"))
@@ -2850,12 +2849,12 @@ func TestMemorySessionScopeUnboundDelegateRefuses(t *testing.T) {
 	s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: t.TempDir()}))
 	s.depth = 1
 	s.delegateRootSessionID = ""
-	if _, err := s.execMemoryRead(context.Background(), nil, map[string]any{"scope": "session", "file_path": "MEMORY.md"}); err == nil || !strings.Contains(err.Error(), "session memory is not bound") {
-		t.Fatalf("err=%v", err)
+	if res := memoryExec(t, s, "memory_read", map[string]any{"scope": "session", "file_path": "MEMORY.md"}); !res.IsError || !strings.Contains(res.Output, "session memory is not bound") {
+		t.Fatalf("res=%+v", res)
 	}
 	s.delegateRootSessionID = "../escape"
-	if _, err := s.execMemoryRead(context.Background(), nil, map[string]any{"scope": "session", "file_path": "MEMORY.md"}); err == nil || !strings.Contains(err.Error(), "session memory is not bound") {
-		t.Fatalf("hostile id err=%v", err)
+	if res := memoryExec(t, s, "memory_read", map[string]any{"scope": "session", "file_path": "MEMORY.md"}); !res.IsError || !strings.Contains(res.Output, "session memory is not bound") {
+		t.Fatalf("hostile id res=%+v", res)
 	}
 }
 

@@ -52,8 +52,8 @@ func hasWarningContaining(evs []events.SessionEvent, substr string) bool {
 func TestMemoryForkCopiesParentSessionMemory(t *testing.T) {
 	t.Parallel()
 	root, parentID, c := forkWithSessionMemory(t, true)
-	if _, err := c.execMemoryRead(context.Background(), nil, map[string]any{"scope": "session", "file_path": "MEMORY.md"}); err != nil {
-		t.Fatal(err)
+	if res := memoryExec(t, c, "memory_read", map[string]any{"scope": "session", "file_path": "MEMORY.md"}); res.IsError {
+		t.Fatal(res.Output)
 	}
 	got, err := os.ReadFile(filepath.Join(root, "memory", "sessions", c.id, "MEMORY.md"))
 	if err != nil || string(got) != "opaque-parent-31\n" {
@@ -73,8 +73,8 @@ func TestMemoryForkWithoutParentMemoryStartsEmpty(t *testing.T) {
 	t.Parallel()
 	root, _, c := forkWithSessionMemory(t, false)
 	seen, stop := captureEvents(c)
-	if _, err := c.execMemoryWrite(context.Background(), nil, map[string]any{"scope": "session", "file_path": "MEMORY.md", "content": "opaque-child-33\n"}); err != nil {
-		t.Fatal(err)
+	if res := memoryExec(t, c, "memory_write", map[string]any{"scope": "session", "file_path": "MEMORY.md", "content": "opaque-child-33\n"}); res.IsError {
+		t.Fatal(res.Output)
 	}
 	stop()
 	if _, err := os.Stat(filepath.Join(root, "memory", "sessions", c.id, "MEMORY.md")); err != nil {
@@ -120,8 +120,8 @@ func TestMemoryForkCopyFailureDoesNotBlock(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(parentDir, 0o700) })
 	seen, stop := captureEvents(c)
-	if _, err := c.execMemoryWrite(context.Background(), nil, map[string]any{"scope": "session", "file_path": "MEMORY.md", "content": "opaque-child-34\n"}); err != nil {
-		t.Fatalf("copy failure blocked session memory: %v", err)
+	if res := memoryExec(t, c, "memory_write", map[string]any{"scope": "session", "file_path": "MEMORY.md", "content": "opaque-child-34\n"}); res.IsError {
+		t.Fatalf("copy failure blocked session memory: %s", res.Output)
 	}
 	stop()
 	if !hasWarningContaining(*seen, "could not copy the parent session's memory") {
