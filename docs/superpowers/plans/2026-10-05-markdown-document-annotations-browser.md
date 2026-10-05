@@ -110,6 +110,12 @@ export const REFERENCE =
   'Context before: "First occurrence: "; after: "\\n\\nOther context for a second occurrence is nearby: same\\n".\n' +
   'Verify the quotation and context against current content before relying on these captured coordinates.';
 export const APPENDED = "Existing draft\n\n" + REFERENCE;
+export const JOURNEY_REFERENCE =
+  'A note on `NOTES.md:1:19-1:22` (captured source positions), selecting “same”: "Keep this scope."\n' +
+  'Captured whole-file revision: "4808d04cf747af87429a6d65d3c229bba77e2ce07a9145e520400d9fdebff0a6".\n' +
+  'Context before: "First occurrence: "; after: "".\n' +
+  'Verify the quotation and context against current content before relying on these captured coordinates.';
+export const JOURNEY_APPENDED = "Existing draft\n\n" + JOURNEY_REFERENCE;
 export const RICH_SOURCE =
   '# Note\r\n\r\nfirst **same** [link](https://example.test) &amp; 😀\r\n\r\n' +
   'second same\r\n\r\n- item **same**\r\n\r\n' +
@@ -122,6 +128,8 @@ export const RICH_RANGES = [
 ```
 
 `SOURCE.length` is 78; FIRST is `1:19-1:22`, SECOND `3:50-3:53`. `RICH_SOURCE.length` is 172; its five `same` positions are `3:9-3:12`, `5:8-5:11`, `7:10-7:13`, `11:3-11:6`, `14:1-14:4`. The rich link is `[26,30)`, entity spelling `[54,59)`, emoji `[60,62)` and cross-block range `[18,77)`.
+
+`REFERENCE`/`APPENDED` are intentionally synthetic repository inputs with manually captured `rev-A` and context. Keep them for those tests. `JOURNEY_REFERENCE`/`JOURNEY_APPENDED` are the separate full production golden: the real hub hashes the literal SOURCE bytes to the stated lowercase SHA256, and accepted `contextForRange` bounds FIRST to its paragraph with empty after-context. Tasks5/6 use this production golden for the actual file-card/read/drag path. Copy the literal into the guard's `fixtures.mjs`; never compute expected draft text with the formatter/context helper under test or change the accepted shared helpers to satisfy the synthetic fixture.
 
 Additional literal mapping oracles:
 
@@ -264,15 +272,42 @@ Wire settled Markdown documents through `DocumentMarkdown` with original `conten
 - Modify/Test: `cmd/evener-hub/frontend/src/stores/mutationOutboxIndexedDB.ts`, its conformance/stall/openDiagnostic tests
 - Modify/Test: `cmd/evener-hub/frontend/src/panes/session/composer/draft.ts`, `draft.test.ts`, `sourceState.ts`, `sourceState.test.ts`, `Composer.tsx`, `Composer.test.tsx`, `Composer.integration.test.tsx`
 - Modify/Test: `cmd/evener-hub/frontend/src/panes/session/composer/queue/pendingTurnsStore.ts`, `pendingTurnsStore.test.ts`
+- Modify/Test: `cmd/evener-hub/frontend/src/panes/session/composer/queue/QueueStrip.tsx`, `QueueStrip.test.tsx` only for local supported-draft conflict composition
 - Modify/Test: `cmd/evener-hub/frontend/src/shell/workspace.ts`, `paneLifetime.ts`, `paneLifetime.test.ts`, `paneRestore.test.ts`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/testing/composerSource.ts` to construct genuine source owners for existing tests
 - Modify: `cmd/evener-hub/frontend/src/panes/session/transcript/messages/UserMessageItem.tsx`, `src/dev/surface-sections/composer.tsx`, `src/dev/retirementharness-entry.tsx`
+- Test/adjust direct consumers: `cmd/evener-hub/frontend/src/stores/threads.retirement.test.tsx`, `cmd/evener-hub/frontend/src/panes/zoom/ActivityPeek.test.tsx`, `cmd/evener-hub/frontend/src/panes/session/transcript/messages/UserMessageItem.test.tsx`
 - Modify/Test: `appwire-client/typescript/state/mutation/submission.ts`, `submission.test.ts`, `pendingTurns.ts`, `pendingTurns.test.ts`
-- Modify: `appwire-client/typescript/state/mutation/index.ts` to export the new shared settlement DTO
+- Modify: `appwire-client/typescript/state/mutation/index.ts` to export the new shared settlement DTOs
 - Preserve/regression: `src/panes/session/composer/skillDocument.ts`, `SkillEditor.tsx`, `recovery/recoveryDraft.ts`, `attachments/useAttachments.ts` and their actual tests
 
-The three `src/...` paths in the last two entries are relative to `cmd/evener-hub/frontend`, not repository root.
+Abbreviated `src/...` paths in this file list are relative to `cmd/evener-hub/frontend`, not repository root.
 
-**Interfaces:** Consume the existing `SkillEditorValue`, `TextEditor`, `PaneLifetime`, `ComposerSourceState`, IDBConnection helpers and mutation recovery records. Produce these browser contracts in `browserDraftRepository.ts`:
+**Interfaces:** Consume the existing `SkillEditorValue`, `TextEditor`, `PaneLifetime`, `ComposerSourceState`, IDBConnection helpers and mutation recovery records. Produce the following framework-free DTOs in shared `state/mutation/pendingTurns.ts` and export them from its `index.ts`. Browser imports use `@evener/appwire-client/state/mutation`; shared code imports no frontend types.
+
+```ts
+export interface DraftAuthorityToken {
+  readonly namespaceIncarnation: string;
+  readonly persistentRevision: number;
+  readonly ownerRevision: number;
+}
+export type DraftBackingIdentity =
+  | { readonly kind: "draft" }
+  | { readonly kind: "recovery"; readonly recoveryId: string;
+      readonly writeVersion: number; readonly replacementEpoch: number };
+export interface DraftSettlementGuard {
+  readonly token: DraftAuthorityToken;
+  readonly compositionOwnerId: string;
+  readonly backing: DraftBackingIdentity;
+}
+export interface DraftSettlement {
+  cleared: boolean;
+  draftUnchanged: boolean;
+  persistence: "committed" | "pending";
+}
+```
+
+Produce these browser contracts in `browserDraftRepository.ts`:
 
 ```ts
 export interface BrowserDraftKey {
@@ -284,41 +319,69 @@ export interface BrowserDraftOwner {
   compositionOwnerId: string;
   lifetimeSerial: number;
 }
-export interface DraftToken {
-  namespaceIncarnation: string;
-  persistentRevision: number;
-  ownerRevision: number;
-}
-export interface StoredComposerDraft extends SkillEditorValue {
+export type DraftToken = DraftAuthorityToken;
+export interface StoredDraftValue extends SkillEditorValue {
   key: BrowserDraftKey;
   token: DraftToken;
-  compositionOwnerId: string;
-  backing: { kind: "draft" } | { kind: "recovery"; recoveryId: string };
+  backing: DraftBackingIdentity;
 }
+export interface OwnedComposerDraft extends StoredDraftValue {
+  ownership: "owned";
+  compositionOwnerId: string;
+}
+export type StoredComposerDraft = OwnedComposerDraft |
+  (StoredDraftValue & { ownership: "unclaimed"; compositionOwnerId?: never });
 export type DraftCommit =
   | { state: "committed"; draft: StoredComposerDraft }
   | { state: "conflict"; current: StoredComposerDraft }
   | { state: "unavailable" };
+export interface SupportedDraftConflict {
+  conflictId: string;
+  key: BrowserDraftKey;
+  legacyKey: string;
+  inspectedBytes: string;
+  value: SkillEditorValue;
+}
 export interface BrowserDraftRepository {
   load(key: BrowserDraftKey): Promise<StoredComposerDraft | null>;
+  seedUnclaimed(key: BrowserDraftKey, value: SkillEditorValue): Promise<DraftCommit>;
+  claim(key: BrowserDraftKey, owner: BrowserDraftOwner, expected: DraftToken | null,
+    stillOwnsOwner: () => boolean): Promise<DraftCommit>;
+  adopt(key: BrowserDraftKey, owner: BrowserDraftOwner, expected: DraftToken,
+    expectedOwnerId: string, stillOwnsOwner: () => boolean): Promise<DraftCommit>;
   transferSupportedDrafts(namespace: BrowserDraftKey["namespace"]): Promise<{ state: "committed" | "pending" }>;
+  listConflicts(key: BrowserDraftKey): Promise<readonly SupportedDraftConflict[]>;
+  restoreConflict(key: BrowserDraftKey, owner: BrowserDraftOwner, expected: DraftToken,
+    conflictId: string, stillOwnsEdit: () => boolean): Promise<DraftCommit>;
   commitEdit(key: BrowserDraftKey, owner: BrowserDraftOwner, expected: DraftToken,
     value: SkillEditorValue, stillOwnsEdit: () => boolean): Promise<DraftCommit>;
   clearSubmitted(key: BrowserDraftKey, submitted: SubmittedDraft): Promise<DraftSettlement>;
   subscribe(listener: (key: BrowserDraftKey) => void): () => void;
 }
-export interface DraftSettlement {
-  cleared: boolean;
-  draftUnchanged: boolean;
-  persistence: "committed" | "pending";
-}
+export function captureDraftSettlementGuard(draft: OwnedComposerDraft): DraftSettlementGuard;
+export function createBrowserDraftTransferRuntime(input: {
+  repository: BrowserDraftRepository;
+  namespace: BrowserDraftKey["namespace"];
+  storage: Storage;
+  window: Window;
+  document: Document;
+}): {
+  composerOpened(key: BrowserDraftKey): void;
+  dispose(): void;
+};
 ```
+
+Transfer and pre-open seeding write `ownership: "unclaimed"` with no owner ID. `seedUnclaimed` creates only an absent record; an existing record yields conflict and stays unchanged. `claim` compares the complete token/current namespace in one transaction, claiming only an unclaimed/absent row or acknowledging the same owner. A competing different owner loses without changing the value. `adopt` is an explicit source-owner transition with the expected prior owner/token, never an effect of reading or annotation handoff. Claim/adopt advance durable `ownerRevision`; later callbacks from the previous owner cannot write. Preserve the full value and backing during adoption. A reused pane ID alone never authorizes it.
 
 Extend browser source state with `compositionOwnerId`, `ready(): Promise<void>`, durable-token/dirty projection and an awaited `clearIfUnchanged`. Keep `getSnapshot()` synchronous for React. Persist owner ID on the committed pane record and saved panel metadata, **outside session params used for pane deduplication**; restored current records retain it. Generate a fresh ID for a newly created/replaced owner. Runtime `serial` and `alive` remain independent guards.
 
-Define `DraftSettlement` in `appwire-client/typescript/state/mutation/pendingTurns.ts`, export it from that directory's `index.ts`, and import it in browser code through `@evener/appwire-client/state/mutation`. Its declaration above describes the shared DTO, not a frontend dependency of the package. Define `MutationSubmissionCommitted = DraftSettlement` at the shared submission boundary and update its stale synchronous-return commentary. Shared code must never import a browser repository or frontend type.
+Change the actual browser factory to `createComposerSourceState(ref: string, owner: BrowserDraftOwner, repository?: BrowserDraftRepository): ComposerSourceState`. The optional repository injection is for a real isolated IDB adapter in tests, not a historical caller fallback. `paneLifetime.ts` supplies its committed owner metadata and runtime serial; standalone dev/harness sources create their own actual runtime owner. Update the existing `panes/session/testing/composerSource.ts` helper and every factory caller. Source hydration loads then claims/adopts through the real authority; reading alone does not claim another owner's draft.
 
-Extend `SubmittedDraft` with `persistentRevisionAtStart?: number` and `stillOwnsEdit?: () => boolean`. Extend shared `MutationSubmissionOptions` with `settleDraft?: (ref: string, submitted: SubmittedDraft) => Promise<DraftSettlement>` and expose the settled result's `persistence` to browser listeners. These are capabilities for the current browser async authority, not a historical-schema adapter. Native's present synchronous path remains the default and is not rewritten.
+Define `MutationSubmissionCommitted = DraftSettlement` at the shared submission boundary and update its stale synchronous-return commentary. `captureDraftSettlementGuard` copies and freezes the token and backing as well as the guard object; it must not retain aliases to mutable source state.
+
+Extend `SubmittedDraft` with `settlementGuard?: DraftSettlementGuard`, `persistentRevisionAtStart?: number` and `stillOwnsEdit?: () => boolean`. The revision-only field may remain for reporting; browser clearing requires the full guard and live callback, never the scalar alone. Extend shared `MutationSubmissionOptions` with `settleDraft?: (ref: string, submitted: SubmittedDraft) => Promise<DraftSettlement>` and expose the settled result's `persistence` to browser listeners. These are capabilities for the current browser async authority, not a historical-schema adapter. Native's present synchronous path remains the default and is not rewritten.
+
+**Two independently reviewed gates:** Task2A owns schema/repository/DTOs and Steps1–3. Its RED/GREEN commit and fresh review precede Task2B, which owns source/writer/settlement integration and Steps4–7 with a fresh implementer and review. Do not activate transfer in production or switch any writer until Task2B moves all supported writers together. Task2A adds an inactive tested repository, not a second authority or temporary compatibility bridge. Task3 still waits for the complete Task2B authority gate.
 
 - [ ] **Step 1: RED supported-draft transfer using real IndexedDB.** Use `IDBFactory` from fake-indexeddb with an isolated database name and real production repository. Seed both exact supported localStorage keys for unopened refs, valid v2 with explicit empty mentions, invalid v2 fallback to literal v1, and JSON-looking/slash v1 text. Faults are injected at request/commit/cleanup boundaries, not by mocking repository methods.
 
@@ -333,8 +396,16 @@ it("does not reimport stale supported keys after committed transfer and clear", 
   const draft = await repo.load(key);
   expect(draft?.text).toBe('{"text":"literal /same"}');
   if (!draft) throw new Error("transferred draft missing");
+  expect(draft.ownership).toBe("unclaimed");
+  expect(draft).not.toHaveProperty("compositionOwnerId");
+  const owner = { paneId: "pane-root", compositionOwnerId: "owner-root", lifetimeSerial: 1 };
+  const claimed = await repo.claim(key, owner, draft.token, () => true);
+  if (claimed.state !== "committed" || claimed.draft.ownership !== "owned") {
+    throw new Error("transferred draft was not claimed");
+  }
   await repo.clearSubmitted(key, { text: draft.text, skillNames: [], draftRevisionAtStart: 0,
-    persistentRevisionAtStart: draft.token.persistentRevision });
+    persistentRevisionAtStart: claimed.draft.token.persistentRevision,
+    settlementGuard: captureDraftSettlementGuard(claimed.draft), stillOwnsEdit: () => true });
   const restarted = createBrowserDraftRepository({ indexedDB: factory, databaseName: "transfer-test", storage: localStorage });
   await restarted.transferSupportedDrafts(key.namespace);
   expect((await restarted.load(key))?.text ?? "").toBe("");
@@ -342,12 +413,22 @@ it("does not reimport stale supported keys after committed transfer and clear", 
 ```
 
 Define `createBrowserDraftRepository(options): BrowserDraftRepository` in this task. Options are `indexedDB?: IDBFactory`, `databaseName?: string`, `storage?: Storage`, `beforeCommit?: (operation: string) => void`, `beforeLegacyCleanup?: () => void` and an injected open diagnostic sink following the existing IDB pattern. Expected cleanup faults are caught and asserted; no unvalidated console errors.
+
+Add a real-IDB claim race on an imported unopened value, using two distinct owner DTOs and the same expected token. Assert exactly one committed owner, the loser returns conflict and the complete structured value remains unchanged. Assert the winning guard is a copied immutable snapshot. Task2B repeats this through actual pane/source owners rather than treating literal owner DTOs as lifecycle proof.
 - [ ] **Step 2: Run RED.** From `F`, run `npm test -- src/stores/browserDraftRepository.test.ts src/stores/localCompositionSchema.test.ts src/panes/session/composer/draft.test.ts`. Observe absent durable authority and interrupted-transfer behavior before implementation.
 - [ ] **Step 3: Implement the additive schema and real authority.** Share database name/version/upgrade registration in `localCompositionSchema.ts`; bump the reviewed version from 3 to **4**. Preserve all four existing stores, key paths, indexes and rows. Create `composerDrafts`, `draftTransfers`, `draftConflicts`, `annotationNamespaces`, `annotationHeads`, `annotationEvidence`, `annotationPayloads`, `annotationOperations`, `annotationSequences` and `annotationExpiry`. Key authored rows with serialized namespace/session or document keys, not bare refs. Record the actual upgrade in tests from a populated version-3 DB. Leave cache DB unchanged.
+
+Implement the load-time incarnation refresh and current-namespace write fence in Task2A, preserving complete draft/owner/backing rows. Task3 consumes this capability when it adds actual annotation reset. Early repository/settlement tests advance the real namespace row as an explicit IDB fixture transition and label that evidence as a namespace fence, not a production reset. Task2 must not call the not-yet-implemented Task3 reset API.
 
 Transfer supported keys with the current decoder's semantics. Commit imported drafts and per-key transfer markers/tombstones first. Remove localStorage only if its inspected value still matches; a later change remains work to reconcile. IDB remains authority if cleanup fails. Read faults produce pending transfer, not empty success. Do not invent attachment bytes, historical pane identity or hub identity absent from old records.
 
 Keep the inspected supported-key bytes in the transfer marker so an unchanged leftover cannot resurrect a cleared draft. A changed supported value written by a still-open old tab is new work, not an unchanged leftover: retain it in `draftConflicts` and reconcile without overwriting newer IDB work or manufacturing an owner. Add a test for that late write. Test populated version-3 mutation/recovery rows and versionchange retirement; the schema upgrade must not silently delete or duplicate pending mutations.
+
+Implement `createBrowserDraftTransferRuntime` as the sole production lifecycle owner of supported-key rescans. It performs one initial repository-open attempt, one on composer open/reopen, one when `visibilitychange` returns to visible and one on a storage event for either supported draft-key prefix in the supplied storage. Register/unregister actual listeners; source hydration calls `composerOpened(key)`. Coalesce in-flight requests and at most one follow-up for triggers arriving during the attempt; a fault remains pending until the next declared trigger, never a timer/tight retry loop. Keep these transfer reasons separate from Task3's annotation retry reasons.
+
+Deduplicate conflicts by the exact supported key and incoming bytes already recorded, including repeated foreground/storage notifications. Source subscriptions load `listConflicts(key)` and expose `draftConflicts: readonly SupportedDraftConflict[]` in the synchronous source snapshot. Composer passes them to QueueStrip as local conflict rows, separate from `MutationRecoveryRecord`; never fabricate a transport mutation. Provide a literal preview/copy action and an `onRestoreDraftConflict(conflictId: string): Promise<DraftCommit>` callback to the real source/repository `restoreConflict` path. It compares namespace/owner/token and empty unchanged structured work in a transaction, restores the full incoming value and consumes that conflict atomically. With dirty/nonempty newer work, retain the incoming row and copy action without replacing current work. Automatic restoration is allowed only for demonstrably untouched/empty authoritative work with valid ownership. These local rows must have no Send/resend/steer/queue action.
+
+Do not claim transactional simultaneous editing by an old bundle. In tests bind the production runtime, complete initial transfer, change supported bytes as the old producer would, then drive each declared lifecycle/event entry point without directly calling transfer. Assert one recoverable incoming value and unchanged authoritative work, including a fault followed by the next trigger. Task2B renders the actual Composer/QueueStrip and restores through the real source/IDB path, checking structured values and no mutation enqueue. Actual two-tab qualification follows in Task6.
 
 ```ts
 // In the real readwrite transaction, not a localStorage read/modify/write:
@@ -361,20 +442,57 @@ await requestResult(drafts.put(nextDraft));
 ```
 
 `serializedKey`, `drafts`, `current`, `expected` and `nextDraft` are transaction-local values derived from the declared key/token/value inputs. Check namespace incarnation, durable owner revision and current backing alongside persistent revision. All external editor work precedes the transaction; only IDB requests and synchronous guards run within it. Duplicate edit acknowledgment must not advance revision again.
-- [ ] **Step 4: Move every supported writer and preserve current editor continuity.** Replace localStorage draft writes/clears in `draft.ts`, sourceState, pendingTurnsStore, Composer, UserMessageItem fork seeding and the two named dev consumers. Keep a synchronous projection plus explicit hydration/dirty state; hold a handoff while hydration or unsaved typing is unresolved. A late load never replaces newer typing. On conflict, reread/rebase identified current edits or retain a conflict record; never replay an old whole-value snapshot over committed text. Advance revisions for same-text skill/command/mention-only edits.
+
+**Task2A GREEN/commit/review:** run `npm test -- src/stores/browserDraftRepository.test.ts src/stores/localCompositionSchema.test.ts`, the existing IDB conformance/stall/openDiagnostic tests and root `make test-api-package`/`make test-web`. Stage only the schema/repository and shared DTO/export paths plus the existing IDB schema registration changes and their tests. Commit `feat(composer): define transactional draft ownership and transfer`. The independent review checks unopened-value representation, real CAS, additive upgrade, full guard types and bounded runtime tests. Production source/writer wiring stays unchanged at this gate; Task2B cannot start until it is accepted.
+- [ ] **Step 4: RED then migrate every supported writer and preserve current editor continuity.** Before integration, add failing actual source/pane tests for two owners racing an imported value, explicit owner transition and the real fork's seed-before-open path. Run `npm test -- src/panes/session/composer/sourceState.test.ts src/shell/paneLifetime.test.ts src/panes/session/transcript/messages/UserMessageItem.test.tsx`; retain the observed behavioral RED. The fork must await `seedUnclaimed` before opening, then the actual new pane claims its unchanged original input. Faulted seeding retains the input as pending/recoverable work rather than opening an apparently empty draft. Dev pre-open seeds use the same unclaimed path.
+
+Replace localStorage draft writes/clears in `draft.ts`, sourceState, pendingTurnsStore, Composer, UserMessageItem fork seeding and the two named dev consumers. Activate the production transfer runtime only with this complete writer migration. Keep a synchronous projection plus explicit hydration/dirty state; hold a handoff while hydration or unsaved typing is unresolved. A late load never replaces newer typing. On conflict, reread/rebase identified current edits or retain a conflict record; never replay an old whole-value snapshot over committed text. Advance revisions for same-text skill/command/mention-only edits.
 
 Retain attachment owner bag/generation and exact marker cleanup. Capture existing atom locations through the real editor/skill-document helpers before appending literal text; append does not activate matching `/same` prose. Preserve explicit empty mentions. Keep recovery ID/version/replacement epoch and actual IDB recovery backing; ordinary edits, activation, goal replacement and resend cannot leave a second localStorage authority.
 
+Persist recovery `writeVersion` and `replacementEpoch` in the composer authority sidecar, initialized from its current record during hydration. They fence the backing; `MutationRecoveryRecord.version === 1` is a schema version and cannot be used as an edit counter. All browser recovery updates/discard/activation/replacement paths update the sidecar and real backing in the same transaction. Advance durable owner revision on any owner/backing identity transition, even if text is unchanged. Preserve the current runtime recovery counters as additional local guards and preserve actual attachment bytes/metadata already owned by the backing. Do not add attachment durability unsupported by existing ordinary drafts.
+
 ```ts
-const capturedEditRevision = source.draftEditRevisionRef.current;
+const capturedEditRevision = source.continuity.draftEditRevisionRef.current;
 const stillOwnsEdit = () => source.alive &&
-  source.draftEditRevisionRef.current === capturedEditRevision &&
+  source.continuity.draftEditRevisionRef.current === capturedEditRevision &&
   source.compositionOwnerId === owner.compositionOwnerId;
 // Recheck this guard during commit and before applying the committed projection.
 ```
 
 If typing happens after commit but before acknowledgment, retain those later local edits and reconcile them against the committed snapshot; do not skip them or replace their text. A closed/replaced pane cannot publish late effects.
-- [ ] **Step 5: Await ordinary-submission settlement without resending accepted input.** Update the actual shared runner at the existing settlement site. Keep `perform()` failures in the existing failure path. After input has committed, draft-cleanup storage faults report `persistence: "pending"` and retry cleanup only. Recheck the projection epoch after the await before publishing or releasing a newer submission guard.
+- [ ] **Step 5: RED then await ordinary-submission settlement without resending accepted input.** Capture `settlementGuard` from the claimed current durable snapshot before `perform()`, alongside local revision, text, selections, mention and exact attachment identities. Freeze it once; never reread a newer token into the submitted guard. Add accepted-input tests that pause cleanup outside IDB transactions, change owner, replace recovery backing or advance/re-token the real namespace fixture with identical text, then release cleanup. Task3 repeats the namespace case through its actual reset API. Run actual source/pendingTurnsStore and shared `submission.test.ts` before implementing the async site; record each stale-clear RED. Assert current structured work and backing survive each transition. The unchanged original clears once, retains the empty row/revision tombstone and never resends accepted input.
+
+Inside browser `clearSubmitted`, load the current namespace, authority and actual recovery row in the same readwrite transaction. Compare all three token fields, exact claimed owner, backing kind and recovery ID/writeVersion/replacementEpoch, submitted structured content and live local guard. A missing guard/callback or mismatch is a no-clear result, not permission to use revision-only cleanup. Recheck against the namespace row even when the stored draft has not yet been re-tokened after reset.
+
+```ts
+// Transaction-local namespace/current/backing were read from the real stores.
+const guard = submitted.settlementGuard;
+if (!guard || !submitted.stillOwnsEdit || !namespace || !current || current.ownership !== "owned" ||
+    namespace.incarnation !== guard.token.namespaceIncarnation ||
+    current.token.namespaceIncarnation !== guard.token.namespaceIncarnation ||
+    current.token.persistentRevision !== guard.token.persistentRevision ||
+    current.token.ownerRevision !== guard.token.ownerRevision ||
+    current.compositionOwnerId !== guard.compositionOwnerId ||
+    current.backing.kind !== guard.backing.kind) {
+  return { cleared: false, draftUnchanged: false, persistence: "committed" };
+}
+if (guard.backing.kind === "recovery") {
+  if (current.backing.kind !== "recovery" || !recovery ||
+      recovery.clientMutationId !== guard.backing.recoveryId ||
+      current.backing.recoveryId !== guard.backing.recoveryId ||
+      current.backing.writeVersion !== guard.backing.writeVersion ||
+      current.backing.replacementEpoch !== guard.backing.replacementEpoch) {
+    return { cleared: false, draftUnchanged: false, persistence: "committed" };
+  }
+}
+if (!submitted.stillOwnsEdit()) {
+  return { cleared: false, draftUnchanged: false, persistence: "committed" };
+}
+// Existing structured-value/attachment checks precede the guarded clear put.
+```
+
+`namespace`, `current` and `recovery` are current transaction-local rows for the captured key, not projections supplied by the caller. A missing namespace/backing cannot clear; catch an actual storage fault as pending. Keep the complete captured guard on cleanup retries. Update the actual shared runner at the existing settlement site. Keep `perform()` failures in the existing failure path. After input has committed, draft-cleanup storage faults report `persistence: "pending"` and retry cleanup only. Recheck the projection epoch after the await before publishing or releasing a newer submission guard.
 
 ```ts
 if (epoch === fence.epoch()) {
@@ -396,7 +514,7 @@ expect(saved.mentions).toEqual([
 expect(saved.text).toBe("🙂 /same /same /same\n\n" + REFERENCE);
 ```
 
-Run the new storage tests, `sourceState.test.ts`, `paneLifetime.test.ts`, `paneRestore.test.ts`, both Composer suites, skillDocument/SkillEditor/attachments/recovery tests, pendingTurnsStore tests and shared `state/mutation/pendingTurns.test.ts` and `submission.test.ts`. Then run `make test-api-package` and `make test-web` from root. Report the actual tests and all storage-fault output assertions.
+Run the new storage tests, `sourceState.test.ts`, `paneLifetime.test.ts`, `paneRestore.test.ts`, both Composer suites, skillDocument/SkillEditor/attachments/recovery tests, QueueStrip/pendingTurnsStore tests and shared `state/mutation/pendingTurns.test.ts` and `submission.test.ts`. Also run from `F`: `npm test -- src/stores/threads.retirement.test.tsx src/panes/zoom/ActivityPeek.test.tsx src/panes/session/transcript/messages/UserMessageItem.test.tsx src/panes/session/composer/queue/QueueStrip.test.tsx`. Then run `make test-api-package` and `make test-web` from root. Report the actual tests and all storage-fault output assertions.
 - [ ] **Step 7: Commit and independently review.** Inspect the exact staged diff and commit `feat(composer): make browser draft edits transactional`. The review must reject fire-and-forget clears, stale whole-value overwrite, unsupported legacy adapters or any native behavior change. Task 3 starts only after this authority gate passes.
 
 ### Task 3: Durable annotations, expiry and once-only origin handoff
@@ -507,7 +625,13 @@ expect(await repo.listAnnotations({ ...key, path: "notes-100.md" })).toHaveLengt
 
 Use the production history-clear API, not an annotation-specific mock. Add stale-read, delayed save, delayed handoff, delayed expiry, disposed owner, namespace reset and cross-namespace tests. Reset advances only the owned annotation namespace incarnation and deletes its payloads/pending operations; it does not reset ordinary composer text, outbox or history. Do not invent a global reset UI. Old callbacks cannot recreate reset rows. Verify every one of 101 files, not just endpoints.
 
-Reset must return healthy writing to useful operation. Refresh live draft tokens against the new namespace incarnation without changing their text, selections, attachment ownership or recovery backing; reject previous-incarnation callbacks. Test an ordinary edit and a new annotation after reset in the same live owner and after reload. A permanent token mismatch or reset banner is not recovery.
+Reset must return healthy writing to useful operation for live, closed, unopened and unclaimed drafts. Refresh live sources through the normal guarded authority load. `BrowserDraftRepository.load(key)` lazily re-tokens an old-incarnation ordinary/recovery/unclaimed row in a transaction with the current namespace row. Change only its incarnation, preserving persistent/owner revisions, claimed/unclaimed identity, full structured value, existing attachment ownership and actual recovery backing/version/epoch. Publish only after transaction completion. A read neither fabricates an owner nor restores annotation payloads/operations. Source hydration reconciles dirty local edits under Task2's guard; it cannot replace later typing with the re-tokened snapshot.
+
+Every edit, claim/adopt, ordinary clear and handoff also checks the current namespace row. Thus a pre-reset callback fails even before its closed draft has been lazily re-tokened, and after re-tokening its old token still fails. Load does not erase ordinary work to make tokens match. Preserve native storage and outbox/history rows. A fault retains pending work until the next bounded recovery trigger; a permanent mismatch or reset banner is not recovery.
+
+Before this reset implementation, add RED cases with closed ordinary, closed recovery-backed and unopened unclaimed rows, then reset annotations from a third live session. Save the old guards and compare the full rows after each production load against the original value/backing, with only incarnation changed. Open each through actual source/pane hydration; edit and Send ordinary/recovery drafts and claim/edit the unclaimed seed. Assert exact text, skills/commands/mention locations and the attachments actually supported by that backing survive. Live cursor/attachment owner continuity must survive reset; do not promise new durable cursor or ordinary attachment storage for closed panes. Release old edit/clear/annotation callbacks before and after load and prove they cannot clear work or recreate deleted annotations. Run GREEN with an ordinary edit and a fresh annotation in the live reset owner and after reload.
+
+Repeat Task2's paused accepted-Send namespace test through production `resetOwnedNamespace`, preserving identical current text and backing. Re-token through actual load/source hydration, release the original cleanup and prove it leaves the current draft intact with no second input submission. This is the real reset/settlement integration proof; the earlier IDB fixture transition alone cannot satisfy it.
 - [ ] **Step 6: GREEN and integration gate.** Run all new storage/runtime tests, real sourceState and pendingTurnsStore tests, shared annotation tests and existing IDB conformance/stall/open diagnostics/cache tests. Check recovery-backed appends and metadata/attachments in the real stored rows. Run root `make test-api-package` and `make test-web`. Commit `feat(annotation): persist ordered once-only document notes`; independent review must accept atomicity, expiry and fault limits before UI integration.
 
 ### Task 4: Capture opening provenance through every document producer
@@ -518,9 +642,10 @@ Reset must return healthy writing to useful operation. Refresh live draft tokens
 - Modify/Test: `cmd/evener-hub/frontend/src/panes/session/transcript/fileOpenBeside.tsx`, `fileOpenBeside.test.tsx`
 - Modify/Test: `cmd/evener-hub/frontend/src/panes/session/transcript/messages/AgentMarkdown.tsx`, `agentMarkdownDiagramWalk.test.tsx`
 - Modify: `cmd/evener-hub/frontend/src/panes/session/Session.tsx`, `cmd/evener-hub/frontend/src/panes/transcript/Transcript.tsx`
+- Modify/Test: `cmd/evener-hub/frontend/src/panes/zoom/Zoom.tsx`, `Zoom.test.tsx`
 - Modify/Test: `cmd/evener-hub/frontend/src/shell/paneRestore.test.ts`
 
-**Interfaces:** Consume Task 2 durable owner metadata and actual pane lifetime. Extend `DocParams` only with `origin?: Extract<DestinationProvenance,{kind:"browser-origin"|"browser-readonly-session"}>`. Produce `DocOpeningProvider({origin,children})` and `useDocOpeningOrigin(): DocParams["origin"]`; retain current `fileDocParams(filePath,sessionRef,cwd)` path checks and add captured origin at the opening action. Missing origin maps to `{kind:"browser-restored-session"}`, never current focus.
+**Interfaces:** Consume Task 2 durable owner metadata and actual pane lifetime. Extend `DocParams` only with `origin?: Extract<DestinationProvenance,{kind:"browser-origin"|"browser-readonly-session"}>`. Produce `DocOpeningProvider({origin,children})`, `useDocOpeningOrigin(): DocParams["origin"]` and `docOpeningOriginFor(lifetime: PaneLifetime, displayedSessionRef: string): NonNullable<DocParams["origin"]>` in `docOpeningContext.tsx`. Retain current `fileDocParams(filePath,sessionRef,cwd)` path checks and add captured origin at the opening action. Missing origin maps to `{kind:"browser-restored-session"}`, never current focus.
 
 - [ ] **Step 1: RED both producers and old saved docs.** Render real file controls/AgentMarkdown under the opening provider. Spy only at the existing pane-opening boundary to inspect actual generated params; do not mock the provenance logic or mapper. Add same file/two owners, focus change, read-only, restored missing origin and reused-ID cases.
 
@@ -534,18 +659,26 @@ expect(opened.params).toEqual({ session: "root", path: "NOTES.md", kind: "file",
 ```
 
 `opened` is the value captured from the real existing `paneActions.openBeside` call by the test's boundary observer. The real production-stack guard in Tasks 5/6 verifies actual pane creation.
-- [ ] **Step 2: Run RED.** Run `npm test -- src/panes/doc/openDoc.test.ts src/panes/doc/docOpeningContext.test.tsx src/panes/session/transcript/fileOpenBeside.test.tsx src/panes/session/transcript/messages/agentMarkdownDiagramWalk.test.tsx src/shell/paneRestore.test.ts`.
-- [ ] **Step 3: Propagate exact owner provenance.** Provide context from the actual Session pane lifetime and read-only Transcript source pane. Update both card and prose-link open actions, including Open beside portals. Preserve current bare/local-link routing, cwd confinement, Mermaid exclusions and image kind. Keep owner lifetime object out of serialized params. Add doc `parseParams` that accepts current supported shape and the explicitly approved older shape without origin, rejecting invalid new provenance without inventing another compatibility format.
+
+Extend the real `Zoom.test.tsx` fixture/mount seam to include file cards and local Markdown links in both source and child scopes. Click both controls in each actual rendered column and inspect the document pane records. A session source-column opening carries the retained source owner; a child or transcript-source opening carries explicit `browser-readonly-session` for that displayed session. Return/retype/remount and repeat, including a pending source note that reconciles only with its retained original composer. Assert the child/focused/other source draft never changes. New Zoom openings must not fall into missing-origin restored compatibility.
+- [ ] **Step 2: Run RED.** Run `npm test -- src/panes/doc/openDoc.test.ts src/panes/doc/docOpeningContext.test.tsx src/panes/session/transcript/fileOpenBeside.test.tsx src/panes/session/transcript/messages/agentMarkdownDiagramWalk.test.tsx src/panes/zoom/Zoom.test.tsx src/shell/paneRestore.test.ts`.
+- [ ] **Step 3: Propagate exact owner provenance.** Provide context from the actual Session pane lifetime and read-only Transcript source pane. In Zoom, wrap each admitted `ScopeConversation`'s `ReadOnlyThreadContent` separately, using that column's `scope.requestedRef`; a pane-wide wrapper cannot distinguish children. Use the same helper below at all three producers. Update both card and prose-link open actions, including Open beside portals. Preserve current bare/local-link routing, cwd confinement, Mermaid exclusions and image kind. Keep owner lifetime object out of serialized params. Add doc `parseParams` that accepts current supported shape and the explicitly approved older shape without origin, rejecting invalid new provenance without inventing another compatibility format.
 
 ```ts
-const origin: DestinationProvenance = lifetime.composer
-  ? { kind: "browser-origin", paneId: lifetime.paneId,
-      compositionOwnerId: lifetime.composer.compositionOwnerId }
-  : { kind: "browser-readonly-session", sourcePaneId: lifetime.paneId };
+export function docOpeningOriginFor(lifetime: PaneLifetime,
+  displayedSessionRef: string): NonNullable<DocParams["origin"]> {
+  if (lifetime.alive && lifetime.sourceType === "session" &&
+      lifetime.sourceRef === displayedSessionRef) {
+    const composer = lifetime.composer;
+    if (composer) return { kind: "browser-origin", paneId: lifetime.paneId,
+      compositionOwnerId: composer.compositionOwnerId };
+  }
+  return { kind: "browser-readonly-session", sourcePaneId: lifetime.paneId };
+}
 ```
 
 A stored owner ID alone does not prove current availability; Task 3 resolves it against exact live owner/session/namespace. An old missing-origin document stays readable and session-bound pending. Do not assign an arbitrary same-ref/focused pane. If correct owner identity cannot be established, show saved note and copyable reference.
-- [ ] **Step 4: GREEN preservation.** Run the new/open/restore tests and existing paneLifetime tests. Verify dedupe does not collapse the same file opened from different owners, ordinary Session dedupe remains unchanged and changing focus never changes saved destination. Preserve existing transcript selection/quoting tests. Commit `feat(doc): retain the opening composition owner`; get independent review before Task 5.
+- [ ] **Step 4: GREEN preservation.** Run the new/open/restore tests, actual `Zoom.test.tsx` and existing paneLifetime tests. Verify dedupe does not collapse the same file opened from different owners, ordinary Session dedupe remains unchanged and changing focus never changes saved destination. Preserve existing transcript selection/quoting tests. Commit `feat(doc): retain the opening composition owner`; get independent review before Task 5.
 
 ### Task 5: Retained selection, comment box and exact highlight UI
 
@@ -646,7 +779,7 @@ if (clipped.right > clipped.left && clipped.bottom > clipped.top) {
 ```
 
 Use the existing PaneScaffold scroll owner, `--keyboard-inset`, safe-area padding and shell visual-viewport hook. Keep the comment field and Send/Cancel reachable above the keyboard. Do not introduce a competing keyboard detector. Preserve reading position after Send, further notes and host swaps. Style within existing typography/colors.
-- [ ] **Step 6: Early actual-stack RED/GREEN journey.** Build a minimal guard using the exact real-stack seams specified in Task 6. Before the UI exists, genuine desktop drag must fail the assertion that the comment box opens. After integration, open the actual document from a real session file card, drag the independently named FIRST passage, type the literal note, click annotation Send and inspect exact APPENDED draft text, precise bands/note text and zero mutation calls. This is the first end-to-end working path; do not defer all production-stack work until the final qualification task.
+- [ ] **Step 6: Early actual-stack RED/GREEN journey.** Build a minimal guard using the exact real-stack seams specified in Task 6. Before the UI exists, genuine desktop drag must fail the assertion that the comment box opens. After integration, open the actual document from a real session file card, drag the independently named FIRST passage, type `Keep this scope.`, click annotation Send and inspect exact `JOURNEY_APPENDED` draft text, precise bands/note text and zero mutation calls. Assert the actual read's revision equals the literal fixture SHA256 and FIRST's stored after-context is empty. Do not use synthetic `APPENDED` here. This is the first end-to-end working path; do not defer all production-stack work until the final qualification task.
 - [ ] **Step 7: GREEN and review.** Run every new UI/state test, map/render tests, production repository/source tests and existing DocPane/image/security/transcript/composer guards. Record separately the real drag journey and jsdom state evidence. Commit `feat(doc): annotate finished selections without leaving the reader`; independent task review must accept the whole small journey before expanding qualification.
 
 ### Task 6: Full production browser and genuine-phone qualification
@@ -705,9 +838,19 @@ The test creates `ctx` with `context.WithTimeout(t.Context(), 4*time.Minute)`, a
 
 ```js
 export function assertBandGeometry(actual, expected, clip, tolerance = 1) {
+  if (!Number.isFinite(tolerance) || tolerance < 0) throw new Error("invalid geometry tolerance");
+  const edges = ["left", "top", "right", "bottom"];
+  const measurements = [["clip", clip],
+    ...actual.map((rect, i) => [`actual ${i}`, rect]),
+    ...expected.map((rect, i) => [`expected ${i}`, rect])];
+  for (const [name, rect] of measurements) {
+    if (!rect || edges.some((edge) => !Number.isFinite(rect[edge]))) {
+      throw new Error(`${name} has missing or nonfinite geometry`);
+    }
+  }
   if (actual.length !== expected.length) throw new Error("highlight fragment count differs");
   for (let i = 0; i < expected.length; i += 1) {
-    for (const edge of ["left", "top", "right", "bottom"]) {
+    for (const edge of edges) {
       if (Math.abs(actual[i][edge] - expected[i][edge]) > tolerance) {
         throw new Error(`highlight ${i} ${edge} exceeds ${tolerance} CSS pixel tolerance`);
       }
@@ -717,6 +860,26 @@ export function assertBandGeometry(actual, expected, clip, tolerance = 1) {
 ```
 
 Construct expected intersections from independent Range fragments and clip before calling this assertion. Add Node tests showing a 2-pixel error fails and a within-1-pixel error passes; do not increase tolerance to hide a failure. Test malicious-looking quote/note/path text as literal data through actual renderer and reopened records. Verify no script execution or active unsafe attributes, and preserve safe links/copy controls.
+
+```js
+// assertions.test.mjs uses node:test and node:assert/strict, not production geometry.
+test("rejects invalid measurements without weakening the pixel bound", () => {
+  const expected = { left: 10, top: 20, right: 30, bottom: 40 };
+  const clip = { left: 0, top: 0, right: 100, bottom: 100 };
+  assert.doesNotThrow(() => assertBandGeometry([{ ...expected, left: 11 }], [expected], clip));
+  assert.throws(() => assertBandGeometry([{ ...expected, left: 12 }], [expected], clip));
+  for (const invalid of [NaN, Infinity, undefined]) {
+    assert.throws(() => assertBandGeometry([{ ...expected, left: invalid }], [expected], clip));
+    assert.throws(() => assertBandGeometry([expected], [{ ...expected, top: invalid }], clip));
+    assert.throws(() => assertBandGeometry([expected], [expected], { ...clip, right: invalid }));
+  }
+  for (const tolerance of [-1, NaN, Infinity]) {
+    assert.throws(() => assertBandGeometry([expected], [expected], clip, tolerance));
+  }
+  assert.throws(() => assertBandGeometry([], [expected], clip));
+});
+```
+
 - [ ] **Step 4: Run persistence, owner and real fault journeys.** Through two actual browser tabs and the real SPA, save multiple notes with the origin composer unmounted, focus a child, close/replace origin, restart/reload and reopen. Verify captured destination, creation order, exact current draft/mentions/attachments and one append per ID. Edit/remove inserted text; send/clear ordinarily; reopen and verify no reinsertion. Test restored no-origin/read-only notes as readable/pending/copyable, never guessed to root/focus.
 
 Fault actual IDB request/transaction/ack boundaries, not annotation/draft methods. Resume on reader/composer reopen, foreground and observed authority recovery with no second Send. Replace A with B, delay A callbacks, create B notes, revert to A and reload; inspect actual deleted payload rows and terminal receipts. Cover read failure, same-prefix whole revision changes, missing revision, comparable/mismatched truncated coverage and explicitly report unseen-suffix limits. Save notes in 101 actual files and use real history clear; verify all remain. Exercise namespace reset and stale tab callbacks independently from cache clear.
