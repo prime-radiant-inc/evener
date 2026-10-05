@@ -32,6 +32,7 @@ import {
 	createPluginsStore,
 	HUB_WRITE_BUSY,
 	type HubWriteGate,
+	type PluginsStore,
 	runGatedMutation,
 } from "@evener/appwire-client/state/extensions";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
@@ -490,6 +491,18 @@ function Plugins({
 			model.dispose();
 		};
 	}, [model]);
+	// The first time this store's installed list loads, ask the hub which
+	// plugins have an update (read-on-open: nothing polls). A first read that
+	// failed checks once a later one recovers, and a page closed before its
+	// list landed asks nothing. A hub without the check flags none, so Upgrade
+	// stays hidden.
+	const checkedUpdates = useRef<PluginsStore | null>(null);
+	const listLoaded = state.plugins !== null && state.pluginsError === null;
+	useEffect(() => {
+		if (!listLoaded || checkedUpdates.current === model) return;
+		checkedUpdates.current = model;
+		void model.getState().checkPluginUpdates();
+	}, [model, listLoaded]);
 	const close = useCallback(() => {
 		editorVersion.current += 1;
 		setSelected(null);
@@ -607,7 +620,13 @@ function Plugins({
 								{plugins.map((item) => {
 									const sub = item.broken
 										? "Broken"
-										: `${item.version || "Unknown version"}${item.autoUpgrade ? " · Upgrades automatically" : ""}`;
+										: [
+												item.version || "Unknown version",
+												item.updateAvailable && "Update available",
+												item.autoUpgrade && "Upgrades automatically",
+											]
+												.filter(Boolean)
+												.join(" · ");
 									return (
 										<SwitchRow
 											key={item.plugin}
@@ -670,7 +689,10 @@ function Plugins({
 							/>
 						</Group>
 						<Group>
-							<Row label="Upgrade" tone="accent" disabled={busy || !ready} onPress={() => upgrade(selected, entry)} />
+							{/* Only where the hub's update check found one. */}
+							{entry.updateAvailable ? (
+								<Row label="Upgrade" tone="accent" disabled={busy || !ready} onPress={() => upgrade(selected, entry)} />
+							) : null}
 							<Row
 								label="Remove"
 								accessibilityLabel="Remove plugin"
@@ -681,7 +703,11 @@ function Plugins({
 						</Group>
 						{/* Beneath the actions that fix it. */}
 						{entry.broken ? (
-							<GroupFooter tone="danger">This plugin is broken. Upgrade it or remove it.</GroupFooter>
+							<GroupFooter tone="danger">
+								{entry.updateAvailable
+									? "This plugin is broken. Upgrade it or remove it."
+									: "This plugin is broken. Remove it."}
+							</GroupFooter>
 						) : null}
 						{actionError ? <GroupFooter tone="danger">{actionError}</GroupFooter> : null}
 						{notice ? <GroupFooter>{notice}</GroupFooter> : null}
