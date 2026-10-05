@@ -112,7 +112,11 @@ export function ReviewSheet({ route, navigation }: NativeStackScreenProps<Routes
 	);
 	return (
 		<Sheet title="Review" onCancel={sheet.close} accessory={to}>
-			<ScrollView automaticallyAdjustKeyboardInsets contentContainerStyle={{ padding: 16, gap: 16 }}>
+			<ScrollView
+				automaticallyAdjustKeyboardInsets
+				keyboardDismissMode="on-drag"
+				contentContainerStyle={{ padding: 16, gap: 16 }}
+			>
 				<View style={{ gap: 8 }}>
 					<View style={{ flexDirection: "row", borderRadius: 10, backgroundColor: palette.inset, padding: 2 }}>
 						{VERDICTS.map((choice) => {

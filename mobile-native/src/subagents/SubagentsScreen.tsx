@@ -218,6 +218,7 @@ export function SubagentsScreen({ route, navigation }: NativeStackScreenProps<Ro
 		<View style={{ flex: 1, backgroundColor: palette.page }}>
 			<FlatList
 				data={items}
+				keyboardDismissMode="on-drag"
 				onEndReached={() => {
 					if (snapshot.hasMore) void tree.loadMore();
 				}}

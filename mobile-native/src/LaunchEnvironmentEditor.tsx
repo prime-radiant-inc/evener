@@ -51,6 +51,7 @@ export function LaunchEnvironmentEditor({
 					<ScrollView
 						automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}
 						keyboardShouldPersistTaps="handled"
+						keyboardDismissMode="on-drag"
 						contentContainerStyle={{ padding: 20, gap: 12 }}
 					>
 						<Copy>{option.label}</Copy>

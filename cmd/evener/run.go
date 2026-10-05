@@ -31,6 +31,7 @@ type runConfig struct {
 	visionModel               string // --vision-model override for the image-description side-channel
 	workDir                   string
 	stateDir                  string   // --state-dir override
+	disableMemory             bool     // sticky session-wide native memory opt-out
 	systemPrompt              string   // --system-prompt file path
 	systemPromptAppend        []string // --system-prompt-append file paths
 	maxRounds                 int      // --max-rounds (-1=default, 0=unlimited, >0=limit)
@@ -98,6 +99,17 @@ var (
 		return plugins.NewManager("").ResolveForLaunch(ctx, explicit, enabled)
 	}
 )
+
+// Memory resolution is independent of history storage and never guesses an ID
+// after failure. Personal memory and ordinary work remain available.
+func resolveMemoryProjectID(env execenv.ExecutionEnvironment, warnings io.Writer) string {
+	project, err := identifier.ResolveProjectWith(env.WorkingDirectory(), execenv.NewProjectResolver(env))
+	if err != nil {
+		fmt.Fprintf(warnings, "warning: project memory unavailable: %v\n", err) //nolint:errcheck
+		return ""
+	}
+	return project.ID
+}
 
 func run(ctx context.Context, cfg runConfig) error {
 	if err := rejectPluginSelectionWithResume(cfg.enabledPlugins, cfg.resume, cfg.resumeLast); err != nil {
@@ -312,9 +324,16 @@ func run(ctx context.Context, cfg runConfig) error {
 	if err := startupInterrupted(ctx, "probing the login shell PATH"); err != nil {
 		return err
 	}
+	memoryProjectID := ""
+	if meta == nil {
+		memoryProjectID = resolveMemoryProjectID(env, cfg.stderr)
+	}
 
 	var sess *agent.Session
 	baseSessionCfg := agent.SessionConfig{
+		MemoryStateRoot:             cmdutil.DefaultStateRoot(),
+		MemoryProjectID:             memoryProjectID,
+		DisableMemory:               cfg.disableMemory,
 		LifetimeContext:             ctx,
 		MaxToolRoundsPerInput:       cmdutil.MaxRoundsToConfig(cfg.maxRounds),
 		ShareTasksWithChildren:      cfg.shareTaskStore,
@@ -380,6 +399,8 @@ func run(ctx context.Context, cfg runConfig) error {
 	}
 	if meta != nil {
 		sess, err = runRestoreSession(client, profile, env, *meta, agent.RestoreSessionConfig{
+			MemoryStateRoot:             baseSessionCfg.MemoryStateRoot,
+			DisableMemory:               cfg.disableMemory,
 			LifetimeContext:             ctx,
 			StateDir:                    stateDir,
 			Project:                     project,

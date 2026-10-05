@@ -29,6 +29,15 @@ var testEnv *hubtestenv.Env
 const detachHelperRunDirEnv = "EVENER_HUB_DETACH_HELPER_RUN_DIR"
 
 func TestMain(m *testing.M) {
+	// The remote startup probe must observe its supplied environment before
+	// the suite redirects HOME and XDG roots.
+	if os.Getenv(hostDeployEnvironmentChildEnv) == "1" {
+		if err := runHostDeployEnvironmentProbe(); err != nil {
+			fmt.Fprintf(os.Stderr, "remote startup environment: %v\n", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
 	if os.Getenv(detachHelperRunDirEnv) != "" {
 		runDetachFakeDaemon()
 		os.Exit(0)

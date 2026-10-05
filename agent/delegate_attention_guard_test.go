@@ -12,7 +12,7 @@ import (
 // on a state the other refused. The drive also has attention-only extras
 // (closed, fatalRunGated, the committed-send claim) layered on top, and it used
 // to copy the drive-guard release that delegate_send already owns as
-// releaseSendDriveGuard.
+// releaseDriveGuard.
 //
 // This is a structural invariant, like the emit-lock guards in
 // session_emit_lock_guard_test.go: no behavioral test distinguishes the shared
@@ -42,8 +42,8 @@ func TestDriveStableDelegateAttentionSharesBusyPredicateAndRelease(t *testing.T)
 			t.Errorf("driveStableDelegateAttention's busy guard no longer layers the attention-only %q on top of startBlockedLocked", extra)
 		}
 	}
-	if !callsIdent(attention, "releaseSendDriveGuard") {
-		t.Error("driveStableDelegateAttention no longer releases its drive guard through releaseSendDriveGuard: " +
+	if !callsIdent(attention, "releaseDriveGuard") {
+		t.Error("driveStableDelegateAttention no longer releases its drive guard through releaseDriveGuard: " +
 			"the two release copies can drift")
 	}
 }

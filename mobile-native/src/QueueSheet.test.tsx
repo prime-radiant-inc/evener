@@ -84,7 +84,7 @@ async function flush() {
 	});
 }
 
-it("lists every queued message the session carries, not only the three above the composer", () => {
+it("lists every queued message the session carries, not only the three the transcript shows", () => {
 	const tree = mountSheet(host());
 	const text = renderedText(tree);
 	expect(text).toContain("Queued messages");
