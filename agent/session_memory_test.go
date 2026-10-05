@@ -2790,6 +2790,17 @@ func TestMemoryGuidanceDelegateSessionReadOnly(t *testing.T) {
 	}
 }
 
+func TestMemoryGuidanceUnboundDelegateOmitsSessionScope(t *testing.T) {
+	t.Parallel()
+	s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project"}))
+	s.depth = 1
+	s.delegateRootSessionID = ""
+	guidance := s.memoryGuidance()
+	if strings.Contains(guidance, memorySessionScopeLine) || strings.Contains(guidance, memorySessionDelegateLine) {
+		t.Fatalf("guidance names a session scope this delegate cannot use: %q", guidance)
+	}
+}
+
 func TestMemorySessionScopeRootWrites(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
@@ -2862,6 +2873,70 @@ func TestMemorySessionIndexProjected(t *testing.T) {
 	}
 	if body != "opaque-session-index-21\n" {
 		t.Fatalf("session index body=%q", body)
+	}
+	if text := lastMemoryContextText(t, s, "memory_session"); strings.Contains(text, memorySessionProjectionReadOnly) {
+		t.Fatalf("root session projection has read-only framing: %q", text)
+	}
+}
+
+func TestMemorySessionIndexSurvivesResumeAndCompaction(t *testing.T) {
+	t.Parallel()
+	root, history, workspace := t.TempDir(), t.TempDir(), t.TempDir()
+	s := newScriptedSummaryCompactSession(t, "memory-summary", func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("opaque-fold-59")} }, withDir(workspace), withConfig(SessionConfig{StateDir: history, MemoryStateRoot: root}))
+	sessionPath := memorySeed(t, root, filepath.Join("sessions", s.id), "opaque-session-resume-22\n")
+	observe := func(want string, projections int) func(llm.Request) llm.Response {
+		return func(req llm.Request) llm.Response {
+			state, body, _ := memoryRequestIndex(t, req, "session")
+			if state != "current" || body != want {
+				t.Fatalf("session index=%s %q, want %q", state, body, want)
+			}
+			count := 0
+			for _, msg := range req.Messages {
+				if msg.Name == "memory_session" {
+					count++
+				}
+			}
+			if count != projections {
+				t.Fatalf("session projections in request=%d, want %d", count, projections)
+			}
+			return finalResponse("observed")
+		}
+	}
+	s.client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{observe("opaque-session-resume-22\n", 1), observe("opaque-session-resume-22\n", 1)}})
+	if _, err := s.ProcessInput(context.Background(), "startup", nil); err != nil {
+		t.Fatal(err)
+	}
+	for range 12 {
+		s.appendTurnWithTranscriptMessage(schema.TurnUserInput, llm.User("opaque-old-69"), llm.User("opaque-old-69"))
+	}
+	if err := s.Compact(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.history) >= 14 {
+		t.Fatal("history did not fold")
+	}
+	if _, err := s.ProcessInput(context.Background(), "after fold", nil); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	if err := os.WriteFile(sessionPath, []byte("opaque-session-resumed-23\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	meta, err := schema.LoadSessionMeta(history, s.id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := RestoreSessionFromMetaWithConfig(s.client, s.profile, execenv.NewLocalExecutionEnvironment(workspace), meta, RestoreSessionConfig{StateDir: history, MemoryStateRoot: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	if r.id != s.id {
+		t.Fatalf("resume changed the session id: %s", r.id)
+	}
+	r.client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{observe("opaque-session-resumed-23\n", 2)}})
+	if _, err := r.ProcessInput(context.Background(), "resume", nil); err != nil {
+		t.Fatal(err)
 	}
 }
 

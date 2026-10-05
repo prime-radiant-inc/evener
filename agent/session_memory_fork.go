@@ -26,7 +26,9 @@ func (s *Session) seedForkedSessionMemory() {
 		return
 	}
 	src := filepath.Join(base, parent)
-	if _, err := os.Lstat(src); errors.Is(err, os.ErrNotExist) {
+	// Only a real directory is a session scope. A symlink or file in its place
+	// is never followed, and starts the fork empty without a warning.
+	if info, err := os.Lstat(src); err == nil && !info.IsDir() || errors.Is(err, os.ErrNotExist) {
 		return
 	}
 	if err := copySessionMemory(src, dst); err != nil {

@@ -59,8 +59,8 @@ func TestMemoryForkCopiesParentSessionMemory(t *testing.T) {
 	if err != nil || string(got) != "opaque-parent-31\n" {
 		t.Fatalf("child copy=%q err=%v", got, err)
 	}
-	// Divergence: a later parent change does not reach the child, even after
-	// the child's environment is rebuilt.
+	// Divergence: a later parent change does not reach the child, and seeding
+	// again leaves the existing child directory alone.
 	memorySeed(t, root, filepath.Join("sessions", parentID), "opaque-parent-later-32\n")
 	c.seedForkedSessionMemory()
 	got, _ = os.ReadFile(filepath.Join(root, "memory", "sessions", c.id, "MEMORY.md"))
@@ -72,11 +72,39 @@ func TestMemoryForkCopiesParentSessionMemory(t *testing.T) {
 func TestMemoryForkWithoutParentMemoryStartsEmpty(t *testing.T) {
 	t.Parallel()
 	root, _, c := forkWithSessionMemory(t, false)
+	seen, stop := captureEvents(c)
 	if _, err := c.execMemoryWrite(context.Background(), nil, map[string]any{"scope": "session", "file_path": "MEMORY.md", "content": "opaque-child-33\n"}); err != nil {
 		t.Fatal(err)
 	}
+	stop()
 	if _, err := os.Stat(filepath.Join(root, "memory", "sessions", c.id, "MEMORY.md")); err != nil {
 		t.Fatal(err)
+	}
+	if hasWarningContaining(*seen, "could not copy the parent session's memory") {
+		t.Fatal("a missing parent scope was reported as a copy failure")
+	}
+}
+
+func TestMemoryForkIgnoresSymlinkedParentSessionDir(t *testing.T) {
+	t.Parallel()
+	root, parentID, c := forkWithSessionMemory(t, false)
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "MEMORY.md"), []byte("opaque-outside-35\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	base := filepath.Join(root, "memory", "sessions")
+	if err := os.MkdirAll(base, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(base, parentID)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(base, parentID)); err != nil {
+		t.Fatal(err)
+	}
+	c.seedForkedSessionMemory()
+	if got, err := os.ReadFile(filepath.Join(base, c.id, "MEMORY.md")); err == nil {
+		t.Fatalf("child copied through the symlink: %q", got)
 	}
 }
 

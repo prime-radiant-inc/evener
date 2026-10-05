@@ -77,9 +77,11 @@ func (s *Session) memoryGuidance() string {
 	if project {
 		b.WriteString(" Project memory holds knowledge about this project.")
 	}
-	b.WriteString(" " + memorySessionScopeLine)
-	if s.depth > 0 {
-		b.WriteString(" " + memorySessionDelegateLine)
+	if s.memorySessionID() != "" {
+		b.WriteString(" " + memorySessionScopeLine)
+		if s.depth > 0 {
+			b.WriteString(" " + memorySessionDelegateLine)
+		}
 	}
 	b.WriteString(" Each scope keeps an index, MEMORY.md, with one line per page; when an index has entries, it appears in the conversation. When an index line bears on what you are doing, read that page with memory_read")
 	if s.canInstructTool("memory_search") {
