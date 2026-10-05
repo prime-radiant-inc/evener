@@ -164,7 +164,7 @@ export function TimelineItem({
 			break;
 		case "notice": {
 			if (item.family === "approval") {
-				content = <ApprovalHistory text={item.text} decidedAt={item.decidedAt} />;
+				content = <ApprovalHistory text={item.text} decidedAtMs={item.decidedAtMs} />;
 				break;
 			}
 			if (item.notifications) {

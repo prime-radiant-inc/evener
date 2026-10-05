@@ -15,12 +15,11 @@ function ago(ms: number, words: (ms: number) => string): string {
 	return ms < 60_000 ? "just now" : `${words(ms)} ago`;
 }
 
-export function ApprovalHistory({ text, decidedAt }: { text: string; decidedAt: string | undefined }) {
+export function ApprovalHistory({ text, decidedAtMs }: { text: string; decidedAtMs: number | undefined }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
 	const now = useMinuteClock();
-	const decided = Date.parse(decidedAt ?? "");
-	const age = Number.isNaN(decided) ? null : now - decided;
+	const age = decidedAtMs === undefined ? null : now - decidedAtMs;
 	const shown = age === null ? text : `${text} · ${ago(age, compactDuration)}`;
 	const spoken = age === null ? text : `${text}, ${ago(age, spokenDuration)}`;
 	return (

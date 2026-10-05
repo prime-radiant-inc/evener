@@ -261,8 +261,8 @@ export type MobileTimelineItem =
 				notifications?: SteeringFragment[];
 				// A daemon warning's what-to-do, read as a quiet second line.
 				hint?: string;
-				// When an approval decision was made (ISO), for its "5m ago".
-				decidedAt?: string;
+				// When an approval decision was made (epoch ms), for its "5m ago".
+				decidedAtMs?: number;
 		  }
 		// The pending ask_user questions of one call, each carrying that call's id
 		// (AskQuestionRef.callId); the composer renders them as interactive cards
@@ -801,6 +801,7 @@ function systemNotice(it: ItemModel): Extract<MobileTimelineItem, { kind: "notic
 	// first branch), so the two are derived from one classification.
 	const family = systemFamily(it.eventKind);
 	const tone: NoticeTone = family === "warning" ? "warning" : "system";
+	const decidedAtMs = family === "approval" ? hubTime(it.startedAt) : null;
 	return {
 		kind: "notice",
 		id: it.id,
@@ -811,7 +812,7 @@ function systemNotice(it: ItemModel): Extract<MobileTimelineItem, { kind: "notic
 		...systemEventWords(it),
 		...(it.eventKind ? { eventKind: it.eventKind } : {}),
 		...(it.exitCode !== undefined ? { exitCode: it.exitCode } : {}),
-		...(family === "approval" && it.startedAt ? { decidedAt: it.startedAt } : {}),
+		...(decidedAtMs !== null ? { decidedAtMs } : {}),
 	};
 }
 

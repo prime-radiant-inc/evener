@@ -25,6 +25,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createConversationService } from "../../mobile/src/services/conversation";
 import { createActivityStore } from "../../mobile/src/state/activity";
 import { createConversationStore } from "../../mobile/src/state/conversation";
+import { palettes } from "./design/tokens";
 import { MAX_ITEM_BYTES, projectConversation } from "./projectedRows";
 import { render, renderedText } from "./renderNative.testkit";
 import { displayForLevel } from "./session/detailLevels";
@@ -44,7 +45,6 @@ vi.mock("expo-clipboard", () => ({ setStringAsync: async () => true }));
 vi.mock("./TranscriptImages", () => ({ TranscriptImages: () => null }));
 
 const DANGER_INK = "#C51D23";
-const INK_MID = "#5F5F57";
 const T0 = Date.parse("2026-09-28T20:00:00Z");
 const LEVELS = ["chat", "intent", "tools", "activity", "full"] as const;
 type Level = (typeof LEVELS)[number];
@@ -191,7 +191,6 @@ describe("system events (G7, G9)", () => {
 });
 
 describe("approval history (spec 8.2)", () => {
-	const ATTENTION = "#F59E0B";
 	// The fixture's decisions were made at the daemon's fixture instant.
 	const decidedAt = () => systemEventWireItem("approval-allowed").startedAt ?? 0;
 
@@ -202,8 +201,8 @@ describe("approval history (spec 8.2)", () => {
 		const { rows } = rowsAt(level, [completedTurn(items)], false);
 		const approvals = rows.filter((row) => row.kind === "notice" && row.family === "approval");
 		expect(approvals).toEqual([
-			expect.objectContaining({ text: "Allowed: write /Users/j/sites/docs/index.md", decidedAt: new Date(decidedAt()).toISOString() }),
-			expect.objectContaining({ text: "Denied: read /etc/hosts", decidedAt: new Date(decidedAt()).toISOString() }),
+			expect.objectContaining({ text: "Allowed: write /Users/j/sites/docs/index.md", decidedAtMs: decidedAt() }),
+			expect.objectContaining({ text: "Denied: read /etc/hosts", decidedAtMs: decidedAt() }),
 		]);
 		for (const approval of approvals) {
 			if (approval.kind !== "notice") throw new Error("not a notice row");
@@ -240,10 +239,10 @@ describe("approval history (spec 8.2)", () => {
 			expect(spoken(tree)).toBe(`${words}, 5 minutes ago`);
 			const mark = tree.root.findAll((node) => String(node.type) === "SymbolView");
 			expect(mark.map((node) => [node.props.name, node.props.tintColor])).toEqual([
-				["hand.raised.circle.fill", INK_MID],
+				["hand.raised.circle.fill", palettes.light.inkMid],
 			]);
-			expect(inked(tree, INK_MID)).toBe(true);
-			expect(inked(tree, ATTENTION)).toBe(false);
+			expect(inked(tree, palettes.light.inkMid)).toBe(true);
+			expect(inked(tree, palettes.light.attention)).toBe(false);
 			expect(inked(tree, DANGER_INK)).toBe(false);
 		});
 	});
