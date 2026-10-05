@@ -148,6 +148,9 @@ When you have a scratch directory, named in the environment block or in `$EVENER
 |---|---|
 | "I'll keep this copy or log as evidence." | Put the evidence in your report and delete the file. Keep a file only when your report points the reader to it. |
 | "The work is done, so I'll send my report." | List the scratch directory first, delete what you{{ if .HasTool "delegate" }} and your finished delegates{{ end }} made and no longer need, then send it. |
+{{- if .HasTool "notes_agent_set" }}
+| "The work is done; the whiteboard can wait." | Bring your whiteboard up to date with `notes_agent_set` before you report: what the session did, "Now: done", and anything left. |
+{{- end }}
 {{- if .MemorySaves }}
 | "My partner told me how they want this done, and I did it." | Save it to memory before you report. The next session will not have heard it. |
 {{- if .ProjectMemory }}
