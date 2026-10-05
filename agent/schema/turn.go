@@ -64,6 +64,8 @@ const (
 	// UIs render it as harness chrome, not user speech. The persisted note is
 	// the source of truth; each turn carries a fresh projection of it.
 	TurnNotesContext TurnKind = "NOTES_CONTEXT"
+	// TurnMemoryContext carries a lower-trust, scope-labelled index projection.
+	TurnMemoryContext TurnKind = "MEMORY_CONTEXT"
 	// TurnAttentionResolution records the terminal disposition of one durable
 	// attention item. Provider projection excludes it; generic presentation may
 	// retain the marker while hiding its private metadata.

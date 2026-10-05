@@ -2737,6 +2737,9 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 		}
 	}
 	restoreCfg := RestoreSessionConfig{
+		MemoryStateRoot:         s.cfg.MemoryStateRoot,
+		DisableMemory:           s.cfg.DisableMemory || descriptor.Config.DisableMemory,
+		memoryProjectCeiling:    &s.cfg.MemoryProjectID,
 		LifetimeContext:         s.cfg.LifetimeContext,
 		StateDir:                s.stateDir,
 		Project:                 s.cfg.Project,
@@ -2778,6 +2781,7 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 			activatedSkillBodies:          activatedSkillBodies,
 			frozenSkillMetadata:           append([]schema.FrozenSkillPreload(nil), descriptor.FrozenSkillMetadata...),
 			toolNameCeiling:               append([]string(nil), descriptor.ToolNameCeiling...),
+			deniedToolNames:               s.unavailableMemoryToolNames(),
 			isolation:                     descriptor.Isolation,
 			communicateOutputSchema:       cloneMap(resultSchema),
 			parentWatchGranted:            descriptor.ParentWatchGranted,
