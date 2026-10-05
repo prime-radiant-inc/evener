@@ -89,6 +89,19 @@ func (s Source) MarshalJSON() ([]byte, error) {
 	})
 }
 
+// gitRemoteURL is the clone URL of a git-backed source (github, url or
+// git-subdir), or "" for a directory or relative source, which has no remote.
+func gitRemoteURL(src Source) string {
+	switch {
+	case src.Rel || src.Kind == SourceDirectory:
+		return ""
+	case src.Kind == SourceGitHub:
+		return "https://github.com/" + src.Repo + ".git"
+	default:
+		return src.URL
+	}
+}
+
 // fetchPluginSource materializes a plugin's source into destDir. It returns the
 // resolved commit sha (empty for directory/relative sources).
 func fetchPluginSource(ctx context.Context, src Source, marketplaceRoot, destDir string) (string, error) {
@@ -102,21 +115,15 @@ func fetchPluginSource(ctx context.Context, src Source, marketplaceRoot, destDir
 			return "", err
 		}
 		return "", nil
-	case src.Kind == SourceGitHub:
-		url := "https://github.com/" + src.Repo + ".git"
-		if err := sourceGitClone(ctx, url, destDir, src.Ref, src.Sha); err != nil {
-			return "", err
-		}
-		return sourceGitHeadSHA(ctx, destDir)
-	case src.Kind == SourceURL:
-		if err := sourceGitClone(ctx, src.URL, destDir, src.Ref, src.Sha); err != nil {
+	case src.Kind == SourceGitHub || src.Kind == SourceURL:
+		if err := sourceGitClone(ctx, gitRemoteURL(src), destDir, src.Ref, src.Sha); err != nil {
 			return "", err
 		}
 		return sourceGitHeadSHA(ctx, destDir)
 	case src.Kind == SourceGitSubdir:
 		clone := destDir + ".clone"
 		defer func() { _ = sourceRemoveAll(clone) }()
-		if err := sourceSparseClone(ctx, src.URL, clone, src.Path, src.Ref, src.Sha); err != nil {
+		if err := sourceSparseClone(ctx, gitRemoteURL(src), clone, src.Path, src.Ref, src.Sha); err != nil {
 			return "", err
 		}
 		if err := copyTree(filepath.Join(clone, src.Path), destDir); err != nil {
