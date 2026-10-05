@@ -17,7 +17,7 @@
 // the current client on each call.
 
 import type { AppwireClientLike, RequestPort } from "../../clientLike";
-import { errorText, WireError } from "../../errors";
+import { errorText, isMethodNotFound } from "../../errors";
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "../../frameworkFreeStore";
 import type { HostRequestMethod, PluginEntry, PluginListResponse } from "../../types.gen";
 import { HubWriteBusyError, type HubWriteGate } from "./hubWriteGate";
@@ -72,10 +72,6 @@ export interface PluginsStore extends FrameworkFreeStore<PluginsState>, HostLife
 }
 
 export const PLUGIN_REFETCH_DEBOUNCE_MS = 250;
-
-// JSON-RPC's code for a method the server does not serve: how a hub from
-// before evener/plugin/checkUpdates answers it.
-const METHOD_NOT_FOUND = -32601;
 
 /** The check waits on every plugin's remote, a few at a time and each under
  * the hub's own per-remote timeout, so it can run far past a plain read's
@@ -170,7 +166,7 @@ export function createPluginsStore(client: PluginsClient, gate: HubWriteGate): P
           // Only an older hub's "method not found" is a final answer. Any other
           // failure, a transport error or a wire error a proxy made of one (a
           // lost host channel, a busy pool), never reached a check.
-          return err instanceof WireError && err.code === METHOD_NOT_FOUND;
+          return isMethodNotFound(err);
         }
         if (lifecycle.epoch() === issuedIn) await store.getState().fetchPlugins();
         return true;

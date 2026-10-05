@@ -15,8 +15,7 @@
 // the caller keeps whatever fallback it already shows. Any other rejection
 // just retries at the next tick.
 import type { AppwireClientLike, SessionActivity } from "@evener/appwire-client";
-import { isMethodNotFound } from "../wireErrors";
-import { decodeActivityRead } from "@evener/appwire-client";
+import { decodeActivityRead, isMethodNotFound } from "@evener/appwire-client";
 
 export const ACTIVITY_POLL_MS = 10_000;
 // A read that's aged past two poll intervals is treated as no read at all
