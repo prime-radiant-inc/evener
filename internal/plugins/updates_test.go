@@ -375,3 +375,21 @@ func TestCheckUpdates_AnUpgradeDuringACheckIsNotFlaggedAfterIt(t *testing.T) {
 		t.Fatal("a check that read the remote before an upgrade flagged the upgraded plugin")
 	}
 }
+
+func TestCheckUpdates_WarnsAboutAPluginWhoseMarketplaceIsGone(t *testing.T) {
+	f := installURLPlugin(t, unpinned)
+	reg, err := LoadRegistry(f.m.registryPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg.Plugins["ghost@gone"] = []InstallEntry{{Source: Source{Kind: SourceURL, URL: f.pluginRepo}, GitCommitSha: "abc"}}
+	if err := SaveRegistry(f.m.registryPath(), reg); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.m.CheckUpdates(context.Background()); err != nil {
+		t.Fatalf("CheckUpdates: %v", err)
+	}
+	if w := f.warnings(); strings.Count(w, `marketplace "gone"`) != 1 {
+		t.Fatalf("want one warning naming the missing marketplace, got %q", w)
+	}
+}
