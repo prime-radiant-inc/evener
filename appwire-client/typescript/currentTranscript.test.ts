@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { ItemModel } from "./model";
 import {
   applyNotification,
   applyReadModel,
@@ -13,6 +14,7 @@ import {
 } from "./reducer";
 import { currentRead, textDelta } from "./testing/currentTranscript";
 import { notificationWireItem } from "./testing/notificationWireFixtures";
+import { appendChunk, chunkViewBackingForTests } from "./testing/reducerHooks";
 import { subagentCallItems } from "./testing/subagentWireFixtures";
 import { toolWireItems } from "./testing/toolWireFixtures";
 import {
@@ -392,10 +394,10 @@ describe("current transcript checkpoints", () => {
       ],
       nextCursor: cursor,
     });
-    const firstPage = page("turn_old_1", "item_old_1", 10, "older-20");
+    const firstPage = page("turn_old_1", "item_old_1", 30, "older-20");
     const secondPage = page("turn_old_2", "item_old_2", 20, "older-10");
     const loadedTwice = mergeOlderItemPage(mergeOlderItemPage(original, firstPage), secondPage);
-    expect(loadedTwice.history?.turns.map((turn) => turn.id)).toEqual(["turn_old_1", "turn_old_2", "turn_1"]);
+    expect(loadedTwice.history?.turns.map((turn) => turn.id)).toEqual(["turn_old_2", "turn_old_1", "turn_1"]);
     expect(loadedTwice.olderCursor).toBe("older-10");
 
     const encoded = currentTranscriptState(loadedTwice);
@@ -403,16 +405,16 @@ describe("current transcript checkpoints", () => {
     const decoded = decodeCurrentTranscriptState(JSON.parse(JSON.stringify(encoded)));
     if (!decoded) throw new Error("valid multi-page checkpoint did not decode");
     const restored = threadModelFromCurrentState(decoded);
-    const thirdPage = page("turn_old_3", "item_old_3", 30, "older-0");
+    const thirdPage = page("turn_old_3", "item_old_3", 10, "older-0");
     const resumed = mergeOlderItemPage(restored, thirdPage);
     const uninterrupted = mergeOlderItemPage(loadedTwice, thirdPage);
 
     expect(resumed.turns).toEqual(uninterrupted.turns);
-    expect(resumed.history?.turns.map((turn) => turn.id)).toEqual(["turn_old_1", "turn_old_2", "turn_old_3", "turn_1"]);
+    expect(resumed.history?.turns.map((turn) => turn.id)).toEqual(["turn_old_3", "turn_old_2", "turn_old_1", "turn_1"]);
     expect(resumed.history?.turns.flatMap((turn) => turn.items).map((item) => item.id)).toEqual([
-      "item_old_1",
-      "item_old_2",
       "item_old_3",
+      "item_old_2",
+      "item_old_1",
       "latest-item",
     ]);
     expect(resumed.olderCursor).toBe("older-0");
@@ -1188,6 +1190,104 @@ describe("current transcript checkpoints", () => {
     expect(reasoning?.text).toBe("first chunk-1 chunk-2 chunk-3");
     expect(reasoning?.reasoningSummaries).toEqual([["first chunk-1 chunk-2 chunk-3"]]);
     expect(resumed.turns[0]?.items.filter((item) => item.id === "reasoning-live")).toHaveLength(1);
+  });
+
+  it("materializes an accumulated chunk view in a checkpoint and continues through a read", () => {
+    const ref = "local:reasoning-chunk-view";
+    const original = hydrateThread(
+      readWithItems(ref, [
+        {
+          id: "reasoning-chunks",
+          turnId: "turn_1",
+          type: "reasoning",
+          text: "reasoning chunks",
+          position: { entry: 39, item: 0 },
+        },
+      ]),
+      ref,
+      10,
+    );
+    const chunkedItem: ItemModel | undefined = original.history?.turns
+      .flatMap((turn) => turn.items)
+      .find((item) => item.id === "reasoning-chunks");
+    if (!chunkedItem) throw new Error("typed reasoning history fixture missing");
+    chunkedItem.pendingText = appendChunk(appendChunk(undefined, "reasoning "), "chunks");
+    chunkedItem.reasoningSummaries = [appendChunk(appendChunk(undefined, "summary "), "chunks")];
+    const pendingTextBacking = chunkViewBackingForTests(chunkedItem.pendingText);
+    const summaryChunks = chunkedItem.reasoningSummaries[0];
+    if (!summaryChunks) throw new Error("reasoning summary chunks missing");
+    const summaryBacking = chunkViewBackingForTests(summaryChunks);
+    expect(pendingTextBacking).toBeDefined();
+    expect(pendingTextBacking).toEqual(["reasoning ", "chunks"]);
+    expect(summaryBacking).toBeDefined();
+    expect(summaryBacking).toEqual(["summary ", "chunks"]);
+
+    const beforeCheckpointRead = readWithItems(ref, [
+      {
+        id: "read-before-checkpoint",
+        turnId: "turn_1",
+        type: "agentMessage",
+        text: "read before checkpoint",
+        position: { entry: 40, item: 0 },
+      },
+    ]);
+    beforeCheckpointRead.snapshot = { incarnation: "inc-1", length: 41 };
+    const checkpointSource = applyReadModel(original, hydrateThread(beforeCheckpointRead, ref, 11));
+    const sourceItem = checkpointSource.history?.turns
+      .flatMap((turn) => turn.items)
+      .find((item) => item.id === "reasoning-chunks");
+    expect(sourceItem?.pendingText).toEqual(["reasoning ", "chunks"]);
+    expect(sourceItem?.reasoningSummaries).toEqual([["summary ", "chunks"]]);
+
+    const encoded = currentTranscriptState(checkpointSource);
+    if (!encoded) throw new Error("chunk-view history did not encode");
+    const encodedItem = encoded.history.turns
+      .flatMap((turn) => turn.items)
+      .find((item) => item.id === "reasoning-chunks");
+    if (!encodedItem?.pendingText || !encodedItem.reasoningSummaries?.[0]) {
+      throw new Error("encoded reasoning chunk fields missing");
+    }
+    expect(Array.isArray(encodedItem.pendingText)).toBe(true);
+    expect(encodedItem.pendingText).toEqual(["reasoning ", "chunks"]);
+    expect(Array.isArray(encodedItem.reasoningSummaries[0])).toBe(true);
+    expect(encodedItem.reasoningSummaries).toEqual([["summary ", "chunks"]]);
+    expect(chunkViewBackingForTests(encodedItem.pendingText)).toBeUndefined();
+    expect(chunkViewBackingForTests(encodedItem.reasoningSummaries[0])).toBeUndefined();
+
+    const decoded = decodeCurrentTranscriptState(JSON.parse(JSON.stringify(encoded)));
+    if (!decoded) throw new Error("valid chunk-view checkpoint did not decode");
+    const restored = threadModelFromCurrentState(decoded);
+    const afterCheckpointRead = readWithItems(ref, [
+      {
+        id: "read-after-checkpoint",
+        turnId: "turn_1",
+        type: "agentMessage",
+        text: "read after checkpoint",
+        position: { entry: 41, item: 0 },
+      },
+    ]);
+    afterCheckpointRead.snapshot = { incarnation: "inc-1", length: 42 };
+    const fresh = hydrateThread(afterCheckpointRead, ref, 12);
+    const resumed = applyReadModel(restored, fresh);
+    const uninterrupted = applyReadModel(checkpointSource, fresh);
+    const resumedReasoning = resumed.history?.turns
+      .flatMap((turn) => turn.items)
+      .find((item) => item.id === "reasoning-chunks");
+
+    expect(resumed.turns).toEqual(uninterrupted.turns);
+    expect(resumed.history?.turns.flatMap((turn) => turn.items).map((item) => item.id)).toEqual([
+      "reasoning-chunks",
+      "read-before-checkpoint",
+      "read-after-checkpoint",
+    ]);
+    expect(resumedReasoning?.text).toBe("reasoning chunks");
+    expect(resumedReasoning?.pendingText).toEqual(["reasoning ", "chunks"]);
+    expect(resumedReasoning?.pendingText?.join("")).toBe("reasoning chunks");
+    expect(resumedReasoning?.reasoningSummaries).toEqual([["summary ", "chunks"]]);
+    expect(resumedReasoning?.reasoningSummaries?.[0]?.join("")).toBe("summary chunks");
+    expect(
+      resumed.history?.turns.flatMap((turn) => turn.items).filter((item) => item.id === "reasoning-chunks"),
+    ).toHaveLength(1);
   });
 
   it("keeps delegate projection fencing for newer and stale updates after restoration", () => {
