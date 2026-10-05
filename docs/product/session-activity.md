@@ -441,6 +441,17 @@ starts settled done/cancelled task history folded. Running and unsuccessful jobs
 remain visible, as do the Current and Remaining task sections. Task details
 remain an explicit disclosure choice.
 
+The browser Tasks tab keeps its done/total count in the tab label and starts its
+body with the task groups, without aggregate summary lines above them. The
+standalone Tasks pane and Tasks Sheet retain their aggregate headers and trigger
+labels. Loading, unavailable and empty states remain visible; a failed refresh
+retains loaded rows and the existing retry control.
+
+Agents, Jobs, Watches and Tasks use `var(--space-1)` vertical and
+`var(--space-2)` horizontal row padding. Disclosure rows apply that padding once
+at their summary boundary; nested watch content adds no inset. The shared
+viewport padding and About field layout remain independent of row spacing.
+
 The [Activity viewport](../../cmd/evener-hub/frontend/src/shell/activitybar/ActivityViewport.tsx)
 restores the retained row after its collection and disclosures render. A row
 that is already loaded can still need trailing page extent to reach its saved
