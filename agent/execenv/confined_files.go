@@ -18,6 +18,18 @@ func (e *LocalExecutionEnvironment) RemoveConfinedFile(path string) error {
 	return layer.removeRegularFile("memory_delete", e.resolve(path))
 }
 
+// OpenConfinedFile opens an admitted regular file for reading through the
+// confined layer, so no component of path is followed through a symlink. It
+// lets a caller bound how much it reads, which ReadFileRaw cannot.
+func (e *LocalExecutionEnvironment) OpenConfinedFile(path string) (*os.File, error) {
+	layer := e.sandbox()
+	if layer == nil {
+		return nil, errors.New("confined file open requires a confined environment")
+	}
+	defer layer.release()
+	return layer.openRegularFile("memory_read", e.resolve(path))
+}
+
 // NewConfinedFileEnvironment grants file operations only beneath relativeRoot.
 // The host anchor is trusted; its relative tail is created by shared confinement.
 func NewConfinedFileEnvironment(stateRoot, relativeRoot string) (*LocalExecutionEnvironment, error) {

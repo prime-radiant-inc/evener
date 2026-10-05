@@ -34,6 +34,9 @@ type promptData struct {
 	// bound project scope.
 	MemorySaves   bool
 	ProjectMemory bool
+	// SessionMemorySaves is true for a root session that may save to its
+	// session memory; delegates read their root's and never write it.
+	SessionMemorySaves bool
 
 	// Environment
 	WorkingDir      string
