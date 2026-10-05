@@ -1693,6 +1693,44 @@ func memoryExec(t *testing.T, s *Session, name string, args map[string]any) tool
 	return s.execTool(context.Background(), llm.ToolCallData{ID: "memory-direct", Name: name, Arguments: raw}, "")
 }
 
+func TestMemoryDeleteIdempotentOutcome(t *testing.T) {
+	t.Parallel()
+	for _, scope := range []string{"personal", "project"} {
+		for _, state := range []string{"present", "missing_leaf", "missing_parent"} {
+			t.Run(scope+"/"+state, func(t *testing.T) {
+				s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project"}))
+				env, err := s.memoryEnvironment(scope)
+				if err != nil {
+					t.Fatal(err)
+				}
+				relative := "page"
+				if state == "missing_parent" {
+					relative = "absent-parent/page"
+				}
+				path := filepath.Join(env.WorkingDirectory(), relative)
+				if state == "present" {
+					if err := os.WriteFile(path, []byte("opaque-delete-outcome-3730"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				warn := s.fileReadGuard(env).ReadBeforeWriteWarning(path)
+				res := memoryExec(t, s, "memory_delete", map[string]any{"scope": scope, "file_path": relative})
+				if res.IsError {
+					t.Fatal(res.Output)
+				}
+				// This repair explicitly requires truthful union wording for the
+				// remover's indistinguishable unlink/already-absent outcomes.
+				if res.Output != warn+"Removed or already absent: "+path {
+					t.Fatalf("delete overstates its outcome: %q", res.Output)
+				}
+				if _, err := os.Lstat(path); !os.IsNotExist(err) {
+					t.Fatalf("file remains after delete: %v", err)
+				}
+			})
+		}
+	}
+}
+
 // The native tool must not read a page's body merely to delete it.
 func TestMemoryDeleteUnreadable(t *testing.T) {
 	t.Parallel()
@@ -1720,7 +1758,7 @@ func TestMemoryDeleteUnreadable(t *testing.T) {
 			if result.IsError {
 				t.Fatal(result.Output)
 			}
-			if strings.TrimSuffix(result.Output, "Removed "+path) == "" {
+			if strings.TrimSuffix(result.Output, "Removed or already absent: "+path) == "" {
 				t.Fatal("delete did not preserve the applicable shared warning")
 			}
 			if _, err := os.Lstat(path); !os.IsNotExist(err) {
@@ -1756,7 +1794,7 @@ func TestMemoryDeleteReadGuard(t *testing.T) {
 				if res.IsError {
 					t.Fatal(res.Output)
 				}
-				if warned := strings.TrimSuffix(res.Output, "Removed "+path) != ""; warned == read {
+				if warned := strings.TrimSuffix(res.Output, "Removed or already absent: "+path) != ""; warned == read {
 					t.Fatalf("delete warning present=%t, prior read=%t", warned, read)
 				}
 				if _, err := os.Lstat(path); !os.IsNotExist(err) {

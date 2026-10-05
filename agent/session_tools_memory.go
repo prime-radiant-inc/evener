@@ -96,5 +96,5 @@ func (s *Session) execMemoryDelete(_ context.Context, _ execenv.ExecutionEnviron
 	if err := env.RemoveConfinedFile(path); err != nil {
 		return nil, err
 	}
-	return warn + "Removed " + path, nil
+	return warn + "Removed or already absent: " + path, nil
 }

@@ -59,6 +59,12 @@ freshly read. Historical context remains recorded history. CLI transcripts and
 AppWire clients use the existing dynamic-context and generic tool-result paths,
 not a memory UI or RPC.
 
+Archived memory-context turns reconstruct as user-role evidence, preserving
+their kind, body and order without crossing tool-round boundaries. Text-only
+memory updates can join a Responses continuation delta after a valid active
+anchor. Compaction without a new valid anchor still requires full history;
+unsafe content and the other continuation eligibility checks remain unchanged.
+
 Content has no required schema, frontmatter, filename extension, date grammar
 or link-coverage rule. Empty files, arbitrary text, unusual dates and broken
 links are accepted unchanged. Markdown, short `MEMORY.md` indexes and useful
@@ -100,7 +106,8 @@ Oversized output uses existing retained artifacts and `read_transcript` recovery
 Deletion admits only a regular file through captured-parent metadata, without
 reading its body or requiring file read permission. Parent permissions still
 govern removal. Missing files or parents are a no-op, while directories, symlinks
-and special files are refused. A leaf swapped after admission can still lose a
+and special files are refused. Success reports removed or already absent, not
+whether an unlink occurred. A leaf swapped after admission can still lose a
 replacement non-directory entry, but cannot redirect traversal or remove a
 directory. This is not an atomic file-identity check.
 

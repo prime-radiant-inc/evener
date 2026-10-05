@@ -42,6 +42,10 @@ without a directory-removal fallback. A leaf replaced after admission can still
 lose its replacement non-directory entry, but cannot redirect through a symlink
 or remove a directory. There is no atomic file-identity guarantee.
 
+Successful deletion reports `Removed or already absent: <path>`, with any
+applicable read-before-write warning. It does not distinguish an actual unlink
+from a missing file or parent, and does not count deleted bytes.
+
 ## Focused correction
 
 Read the page, make one exact edit, then read it back:
