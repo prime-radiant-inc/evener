@@ -436,14 +436,16 @@ func TestServeWebSocketSlowReadCapComposedSaturationRecoversOnRelease(t *testing
 // own: a full pool of them (a stalled remote host's forwarded reads) takes
 // none of the slow-read slots thread reads need, and one more is refused at
 // once as Unavailable instead of parking the worker, so the socket's other
-// requests keep answering.
+// requests keep answering. A slot frees when its request finishes, so the
+// pool admits again.
 func TestServeWebSocketConcurrentRequestsTakeTheirOwnSlots(t *testing.T) {
 	server, _, started, _ := parkedSlowReadServer(t)
 	server.cfg.ConcurrentRequest = func(method string, _ json.RawMessage) bool {
 		return method == appwire.MethodThreadList
 	}
 	listsStarted := make(chan struct{}, concurrentRequestCap+1)
-	listReleases := make(chan struct{})
+	// One token releases one parked handler; closing it releases the rest.
+	listReleases := make(chan struct{}, concurrentRequestCap+1)
 	t.Cleanup(func() { close(listReleases) })
 	HandleTyped(server.Router(), appwire.MethodThreadList, func(_ context.Context, _ appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
 		listsStarted <- struct{}{}
@@ -457,8 +459,12 @@ func TestServeWebSocketConcurrentRequestsTakeTheirOwnSlots(t *testing.T) {
 	client := dialAppWireClient(t, httpServer)
 	ctx := context.Background()
 
+	listsDone := make(chan error, concurrentRequestCap+1)
 	for range concurrentRequestCap {
-		go func() { _, _ = client.ThreadList(ctx, appwire.ThreadListParams{}) }()
+		go func() {
+			_, err := client.ThreadList(ctx, appwire.ThreadListParams{})
+			listsDone <- err
+		}()
 	}
 	for range concurrentRequestCap {
 		waitFor(t, "an admitted request to park in its handler", listsStarted)
@@ -484,4 +490,77 @@ func TestServeWebSocketConcurrentRequestsTakeTheirOwnSlots(t *testing.T) {
 	}
 	reads := make(chan error, slowReadDispatchCap)
 	fillSlowReadCap(t, client, started, reads)
+
+	// One admitted request finishing frees its slot: the pool drains and
+	// admits again rather than refusing every later request for good.
+	listReleases <- struct{}{}
+	if err := waitFor(t, "a released admitted request to answer", listsDone); err != nil {
+		t.Fatalf("released admitted request: %v", err)
+	}
+	// The slot frees just after the response is queued, so the client can
+	// hear the answer a moment before the slot is back; wait for the slot.
+	conn := registeredConnection(t, server)
+	waitUntil(t, "the finished request's slot to free", func() bool {
+		return len(conn.requestSlots) < concurrentRequestCap
+	})
+	go func() {
+		_, err := client.ThreadList(ctx, appwire.ThreadListParams{})
+		listsDone <- err
+	}()
+	waitFor(t, "a request to be admitted into the slot a finished one freed", listsStarted)
+}
+
+// TestServeWebSocketRequestsTheHookRefusesStayInOrder pins the other half of
+// the ConcurrentRequest contract deterministically: with a hook installed, a
+// request it does not admit (the hub's forwarded mutations) still waits in
+// the queue behind an inline request that is running, rather than leaving
+// the worker.
+func TestServeWebSocketRequestsTheHookRefusesStayInOrder(t *testing.T) {
+	server := NewServer(ServerConfig{ServerName: "test-server", Version: "test", SourceID: "local"})
+	server.cfg.ConcurrentRequest = func(method string, _ json.RawMessage) bool {
+		return method == appwire.MethodThreadList
+	}
+	entered := make(chan struct{}, 2)
+	// One token lets one handler finish; closing it lets the rest.
+	release := make(chan struct{}, 2)
+	t.Cleanup(func() { close(release) })
+	HandleTyped(server.Router(), appwire.MethodThreadModelSet, func(_ context.Context, _ appwire.ThreadModelSetParams) (appwire.EmptyResponse, error) {
+		entered <- struct{}{}
+		<-release
+		return appwire.EmptyResponse{}, nil
+	})
+	httpServer := serveWebSocketHTTP(t, server)
+	client := dialAppWireClient(t, httpServer)
+	conn := registeredConnection(t, server)
+	ctx := context.Background()
+
+	answered := make(chan error, 2)
+	set := func() {
+		go func() {
+			answered <- client.ThreadModelSet(ctx, appwire.ThreadModelSetParams{Ref: "local:th_1", ModelProvider: "p", Model: "m"})
+		}()
+	}
+	set()
+	waitFor(t, "the first request to run inline", entered)
+	set()
+	// Ends either way: the second request either waits in the queue or runs.
+	// Seen in the queue, it stays there: the worker that would dequeue it is
+	// the one running the first request.
+	waitUntil(t, "the second request to queue or run", func() bool {
+		return len(conn.requests) == 1 || len(entered) > 0
+	})
+	if len(entered) > 0 {
+		t.Fatal("a request the hook refused ran beside the inline request ahead of it")
+	}
+
+	// Queued, not parked: once the first finishes, the second runs.
+	release <- struct{}{}
+	if err := waitFor(t, "the first request to answer", answered); err != nil {
+		t.Fatalf("first request: %v", err)
+	}
+	waitFor(t, "the queued request to run once the first finished", entered)
+	release <- struct{}{}
+	if err := waitFor(t, "the queued request to answer", answered); err != nil {
+		t.Fatalf("queued request: %v", err)
+	}
 }
