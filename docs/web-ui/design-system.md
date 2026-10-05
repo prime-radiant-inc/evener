@@ -52,6 +52,17 @@ losing the conversation that made the evidence relevant.
   investigate without rebuilding their place. See
   [Open routing](../../cmd/evener-hub/frontend/src/panes/session/transcript/openTranscript.tsx)
   and [retained origins](../../cmd/evener-hub/frontend/src/shell/workspace.ts).
+- **Let filename Open own its placement.** On a settled session route, opening
+  or reopening a filename selects its document beside the exact living source
+  promoted to main, including a secondary session or read-only transcript.
+  The canonical document binding retains that source for Back. Reconnect and
+  settled location refresh do not replay the old route over this selection.
+  Route reconciliation waits until the opening stack finishes when document
+  hydration publishes a reference before the exact source owner arrives.
+  New or pending URL intent still takes precedence. Generic documents and
+  stale or mismatched source bindings do not override route placement. See
+  [document Open](../../cmd/evener-hub/frontend/src/panes/doc/openDoc.ts) and
+  [route reconciliation](../../cmd/evener-hub/frontend/src/shell/AppShell.tsx).
 - **Reconstruct the host, not the workspace.** Switching from a living phone
   workspace to desktop, including its first desktop mount, restores dockview
   geometry around the exact living pane records, their current slots and the
