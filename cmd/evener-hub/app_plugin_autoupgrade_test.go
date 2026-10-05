@@ -222,6 +222,9 @@ func TestPlugins_CheckUpdatesFlagsAPluginWhoseRemoteMovedUntilItIsUpgraded(t *te
 		t.Fatal("plugin at its remote head flagged")
 	}
 	hubTestAdvanceGitRepo(t, pluginRepo, "extra.txt", "v2")
+	if flagged(ctl.ListPlugins(ctx)) {
+		t.Fatal("plugin/list flagged a moved remote without a check")
+	}
 	if !flagged(ctl.CheckUpdates(ctx)) {
 		t.Fatal("checkUpdates did not flag a plugin behind its remote")
 	}
