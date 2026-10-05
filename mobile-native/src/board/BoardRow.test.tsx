@@ -219,21 +219,27 @@ describe("a Board row (spec 7.2)", () => {
 		expect(symbols(pinned)).toContain("circle.fill");
 	});
 
-	it.each(["idle", "warning"])("a %s parent with mixed children keeps Working visuals and the failed chip", (state) => {
-		const parent = row({ state, subagents: { running: 1, failed: 1, done: 0 } });
-		const classified = { row: parent, state: boardState(parent, false, false) };
-		const live = mount({ item: classified, moving: true });
-		expect(pressable(live).props.accessibilityLabel).toContain("Fix Endless Provider Retry Loop, Working,");
-		expect(pressable(live).props.accessibilityLabel).toContain("1 failed");
-		expect(live.root.findAllByType(PulseMeter)).toHaveLength(1);
-		expect(styleOf(textWith(live, "1 failed")[0])).toMatchObject({ color: palette.dangerInk });
-		expect(styleOf(textWith(live, "1 running")[0])).toMatchObject({ color: palette.inkMid });
-		const pinned = mount({ item: classified, moving: false, variant: "quiet" });
-		expect(pressable(pinned).props.accessibilityLabel).toContain("Working, 1 running · 1 failed");
-		expect(pinned.root.findAllByType(PulseMeter)).toEqual([]);
-		expect(pinned.root.findByType(StateMark).props.state).toBe("working");
-		expect(symbols(pinned)).toContain("circle.fill");
-	});
+	it.each(["idle", "warning"])(
+		"a %s parent with mixed children keeps Working visuals and quiet failure history",
+		(state) => {
+			const parent = row({ state, subagents: { running: 1, failed: 1, done: 0 } });
+			const classified = { row: parent, state: boardState(parent, false, false) };
+			const live = mount({ item: classified, moving: true });
+			expect(pressable(live).props.accessibilityLabel).toContain("Fix Endless Provider Retry Loop, Working,");
+			expect(pressable(live).props.accessibilityLabel).toContain("Waiting on 1 subagent");
+			expect(pressable(live).props.accessibilityLabel).not.toContain("1 failed");
+			expect(live.root.findAllByType(PulseMeter)).toHaveLength(1);
+			expect(textWith(live, "1 failed")).toHaveLength(0);
+			expect(styleOf(textWith(live, "1 running")[0])).toMatchObject({ color: palette.inkMid });
+			const pinned = mount({ item: classified, moving: false, variant: "quiet" });
+			expect(pressable(pinned).props.accessibilityLabel).toContain("Working, 1 running");
+			expect(pressable(pinned).props.accessibilityLabel).not.toContain("1 failed");
+			expect(textWith(pinned, "1 failed")).toHaveLength(0);
+			expect(pinned.root.findAllByType(PulseMeter)).toEqual([]);
+			expect(pinned.root.findByType(StateMark).props.state).toBe("working");
+			expect(symbols(pinned)).toContain("circle.fill");
+		},
+	);
 
 	it("draws a working row's meter from its activity read, and flat without one", () => {
 		const minutes = [0, 0, 1, 4, 9, 2, 5];
