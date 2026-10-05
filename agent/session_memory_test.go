@@ -2615,7 +2615,7 @@ func TestMemorySchemaAndOutputAliases(t *testing.T) {
 			t.Fatalf("registered %s intent=%v", name, intent)
 		}
 		scope := props["scope"].(map[string]any)
-		if fmt.Sprint(scope["enum"]) != "[personal project]" {
+		if fmt.Sprint(scope["enum"]) != "[personal project session]" {
 			t.Fatalf("scope=%v", scope)
 		}
 		if _, exists := ordinary.Definition.Parameters["properties"].(map[string]any)["scope"]; exists {
@@ -2731,5 +2731,66 @@ func TestMemoryGuidanceFollowsCapabilities(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestMemorySessionScopeRootWrites(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: root, MemoryProjectID: "fixture-project"}))
+	if _, err := s.execMemoryWrite(context.Background(), nil, map[string]any{"scope": "session", "file_path": "MEMORY.md", "content": "opaque-session-11\n"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(root, "memory", "sessions", s.id, "MEMORY.md"))
+	if err != nil || string(got) != "opaque-session-11\n" {
+		t.Fatalf("bytes=%q err=%v", got, err)
+	}
+}
+
+func TestMemorySessionScopeDelegateReadsButCannotWrite(t *testing.T) {
+	t.Parallel()
+	workspace, project := memoryGitFixture(t)
+	root := t.TempDir()
+	s := newSession(t, withDir(workspace), withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root, MemoryProjectID: project.ID, Project: project, testOnly: testConfig{sandboxProber: bwrapCapableProber(workspace), disableDelegateIdleRelease: true}}), withSteps(func(llm.Request) llm.Response { return finalResponse("child finished") }))
+	memorySeed(t, root, filepath.Join("sessions", s.id), "opaque-root-session-12\n")
+	res := s.createDelegate(context.Background(), delegateArgs{Task: "fixture child", AgentType: "explorer", DelegationAllowance: new(0)})
+	if res.Err != nil {
+		t.Fatal(res.Err)
+	}
+	child := memoryWaitChild(t, s, res.ChildSessionID)
+	read, err := child.sess.execMemoryRead(context.Background(), nil, map[string]any{"scope": "session", "file_path": "MEMORY.md"})
+	if err != nil || !strings.Contains(fmt.Sprint(read), "opaque-root-session-12") {
+		t.Fatalf("delegate read=%v err=%v", read, err)
+	}
+	for _, call := range []func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error){child.sess.execMemoryWrite, child.sess.execMemoryEdit, child.sess.execMemoryDelete} {
+		_, err := call(context.Background(), nil, map[string]any{"scope": "session", "file_path": "MEMORY.md", "content": "x", "old_string": "opaque", "new_string": "y"})
+		if err == nil || err.Error() != memorySessionReadOnly {
+			t.Fatalf("delegate session write err=%v", err)
+		}
+	}
+	got, _ := os.ReadFile(filepath.Join(root, "memory", "sessions", s.id, "MEMORY.md"))
+	if string(got) != "opaque-root-session-12\n" {
+		t.Fatalf("root session memory changed: %q", got)
+	}
+}
+
+func TestMemorySessionScopeUnboundDelegateRefuses(t *testing.T) {
+	t.Parallel()
+	s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: t.TempDir()}))
+	s.depth = 1
+	s.delegateRootSessionID = ""
+	if _, err := s.execMemoryRead(context.Background(), nil, map[string]any{"scope": "session", "file_path": "MEMORY.md"}); err == nil || !strings.Contains(err.Error(), "session memory is not bound") {
+		t.Fatalf("err=%v", err)
+	}
+	s.delegateRootSessionID = "../escape"
+	if _, err := s.execMemoryRead(context.Background(), nil, map[string]any{"scope": "session", "file_path": "MEMORY.md"}); err == nil || !strings.Contains(err.Error(), "session memory is not bound") {
+		t.Fatalf("hostile id err=%v", err)
+	}
+}
+
+func TestMemoryScopesListsEveryScopeInProjectionOrder(t *testing.T) {
+	t.Parallel()
+	if got := memoryScopes(); !slices.Equal(got, []string{"personal", "project", "session"}) {
+		t.Fatalf("scopes=%v", got)
 	}
 }

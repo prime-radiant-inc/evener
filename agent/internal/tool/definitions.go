@@ -11,7 +11,7 @@ func MemoryDefinition(base llm.ToolDefinition, name string) llm.ToolDefinition {
 	base.Name = name
 	base.Parameters = CloneSchemaMap(base.Parameters)
 	props := base.Parameters["properties"].(map[string]any)
-	props["scope"] = map[string]any{"type": "string", "enum": []any{"personal", "project"}}
+	props["scope"] = map[string]any{"type": "string", "enum": []any{"personal", "project", "session"}}
 	base.Parameters["required"] = append(base.Parameters["required"].([]string), "scope")
 	base.Description = "Operate on a relative path in the bound personal or project memory wiki. " + base.Description
 	return base

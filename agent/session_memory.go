@@ -18,6 +18,21 @@ import (
 
 var nativeMemoryToolNames = []string{"memory_read", "memory_write", "memory_edit", "memory_search", "memory_delete"}
 
+const memorySessionReadOnly = "session memory belongs to the root session; report this to your parent instead"
+
+// memoryScopes lists every memory scope in projection order.
+func memoryScopes() []string { return []string{"personal", "project", "session"} }
+
+// memorySessionID names the session memory this session uses: its own for a
+// root session, its root's for a delegate. A delegate without a root id gets
+// none rather than a private writable scope.
+func (s *Session) memorySessionID() string {
+	if s.depth > 0 {
+		return s.delegateRootSessionID
+	}
+	return s.id
+}
+
 // memoryReportReminder rides on the result tool's description because the
 // model reads it at the moment it decides the work is done, which system
 // prompt guidance alone did not reliably reach.
@@ -144,6 +159,12 @@ func (s *Session) memoryEnvironment(scope string) (*execenv.LocalExecutionEnviro
 			return nil, errors.New("project memory is not bound")
 		}
 		relative = filepath.Join("memory", "projects", id)
+	case "session":
+		id := s.memorySessionID()
+		if id == "" || schema.ValidateSessionID(id) != nil {
+			return nil, errors.New("session memory is not bound")
+		}
+		relative = filepath.Join("memory", "sessions", id)
 	default:
 		return nil, fmt.Errorf("unknown memory scope %q", scope)
 	}
