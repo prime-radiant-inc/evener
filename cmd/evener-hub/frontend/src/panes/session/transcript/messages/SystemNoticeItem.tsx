@@ -228,7 +228,7 @@ function RoundTimingsLine({ item }: { item: ItemModel }) {
 }
 
 // ApprovalDecisionLine is a human's Allow or Deny on a sandbox escalation, as
-// history (S16): "Allowed: write /path" and when. It is a decision the reader
+// history: "Allowed: write /path" and when. It is a decision the reader
 // made, like a question's answer, so it reads at the quiet line's size but
 // never folds into a run (systemGrouping's joinsRun).
 function ApprovalDecisionLine({ item }: { item: ItemModel }) {

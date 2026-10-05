@@ -37,6 +37,8 @@ test("says what was decided in the tool's short action", () => {
   expect(approvalDecisionText(allowedDecision)).toBe("Allowed: write /Users/j/sites/docs/index.md");
   expect(approvalDecisionText(deniedDecision)).toBe("Denied: read /etc/hosts");
   expect(approvalDecisionText({ ...deniedDecision, tool: "edit_file" })).toBe("Denied: edit /etc/hosts");
-  // A tool the daemon may escalate later reads as its name in words.
+  // Any other tool reads as its name in words.
   expect(approvalDecisionText({ ...deniedDecision, tool: "apply_patch" })).toBe("Denied: apply patch /etc/hosts");
+  // A decision with no path still says what was decided, with no stray space.
+  expect(approvalDecisionText({ ...deniedDecision, deniedPath: "" })).toBe("Denied: read");
 });

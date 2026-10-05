@@ -559,10 +559,15 @@ describe("transcript projector", () => {
         raw: { approvalDecision: { approved: true, tool: "write_file", kind: "file_tool", deniedPath: "/tmp/a" } },
       }),
     );
-    for (const level of ["chat", "intent", "tools", "activity", "full"] as const) {
-      expect(entriesFor(model, preset(level, { systemEvents: false }))).toEqual([
-        expect.objectContaining({ kind: "item", id: "approval" }),
-      ]);
+    const quietest = custom({ toolIntent: false, toolCalls: false, reasoning: false, expandByDefault: false });
+    const configs = [
+      ...(["chat", "intent", "tools", "activity", "full"] as const).map((level) =>
+        preset(level, { systemEvents: false }),
+      ),
+      quietest,
+    ];
+    for (const config of configs) {
+      expect(entriesFor(model, config)).toEqual([expect.objectContaining({ kind: "item", id: "approval" })]);
     }
   });
 

@@ -1,5 +1,5 @@
 // A human's Allow or Deny on a sandbox escalation, as transcript history
-// (S16). The daemon records it as a systemMessage whose eventKind is
+// (approval history). The daemon records it as a systemMessage whose eventKind is
 // "approval_decision" and whose raw.approvalDecision carries the decision
 // (apptranscript's ApprovalDecisionAnnouncement); both clients draw the row
 // from that structure, never from the daemon's sentence.

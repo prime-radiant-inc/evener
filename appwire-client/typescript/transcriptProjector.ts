@@ -142,7 +142,7 @@ const KNOWN_EVENT_KINDS = new Set([
   "notes-context",
   "warning",
   "interrupted",
-  "approval_decision",
+  APPROVAL_DECISION_EVENT_KIND,
 ]);
 
 const PROMPT_EVENT_KINDS = new Set(["system_prompt", "prompt_loaded"]);
