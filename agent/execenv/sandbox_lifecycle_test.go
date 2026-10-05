@@ -561,7 +561,7 @@ func writeBlockedOffEnv(t *testing.T, home, worktree string) *LocalExecutionEnvi
 // out.
 func TestDisposeUnadoptedScratchDropsBothVariantsAndRepeats(t *testing.T) {
 	env := NewLocalExecutionEnvironment(t.TempDir())
-	t.Cleanup(func() { env.Cleanup(); env.DisposeUnadoptedScratch() })
+	t.Cleanup(func() { env.Cleanup(); env.DisposeSessionScratch() })
 
 	// Building the environment for a command is what mints the unsandboxed one.
 	_ = env.commandEnvironment(nil)
@@ -577,8 +577,8 @@ func TestDisposeUnadoptedScratchDropsBothVariantsAndRepeats(t *testing.T) {
 		t.Fatalf("owned scratch = %q, want one of its own beside the unsandboxed %q", owned, unsandboxed)
 	}
 
-	env.DisposeUnadoptedScratch()
-	env.DisposeUnadoptedScratch()
+	_ = env.DisposeSessionScratch()
+	_ = env.DisposeSessionScratch()
 
 	for name, dir := range map[string]string{"unsandboxed": unsandboxed, "owned": owned} {
 		// The lease lives inside the directory, so it goes with it.
@@ -597,14 +597,14 @@ func TestDisposeUnadoptedScratchDropsBothVariantsAndRepeats(t *testing.T) {
 // guarded like the unsandboxed one, or the swap and the render race.
 func TestAdoptSessionScratchDoesNotRaceAReaderOfTheSharedEnvironment(t *testing.T) {
 	env := NewLocalExecutionEnvironment(t.TempDir())
-	t.Cleanup(func() { env.Cleanup(); env.DisposeUnadoptedScratch() })
+	t.Cleanup(func() { env.Cleanup(); env.DisposeSessionScratch() })
 	// Write-blocked off: an owned scratch with no kernel wrapper, so the reader
 	// goes through the owned field rather than the wrapper's copy of the path.
 	if err := env.EnableSandbox(&sandbox.ResolvedPolicy{Mode: sandbox.ModeOff, WriteBlocked: true}); err != nil {
 		t.Fatalf("EnableSandbox: %v", err)
 	}
 	clone := env.WithWorkingDirectory(t.TempDir())
-	t.Cleanup(clone.DisposeUnadoptedScratch)
+	t.Cleanup(func() { _ = clone.DisposeSessionScratch() })
 
 	stop := make(chan struct{})
 	readerDone := make(chan struct{})
@@ -635,7 +635,7 @@ func TestAdoptSessionScratchDoesNotRaceAReaderOfTheSharedEnvironment(t *testing.
 func readConfinedEnvAt(t *testing.T, worktree string) *LocalExecutionEnvironment {
 	t.Helper()
 	env := NewLocalExecutionEnvironment(worktree)
-	t.Cleanup(func() { env.Cleanup(); env.DisposeUnadoptedScratch() })
+	t.Cleanup(func() { env.Cleanup(); env.DisposeSessionScratch() })
 	env.Sandbox = &sandbox.ResolvedPolicy{
 		Mode:         sandbox.ModeOff,
 		WriteBlocked: true,
@@ -660,7 +660,7 @@ func wrapperConfinedEnvAt(t *testing.T, worktree string) *LocalExecutionEnvironm
 		t.Fatalf("Resolve: %v", err)
 	}
 	env := NewLocalExecutionEnvironment(worktree)
-	t.Cleanup(func() { env.Cleanup(); env.DisposeUnadoptedScratch() })
+	t.Cleanup(func() { env.Cleanup(); env.DisposeSessionScratch() })
 	if err := env.EnableSandbox(&rp); err != nil {
 		t.Fatalf("EnableSandbox: %v", err)
 	}
@@ -720,7 +720,7 @@ func TestFileToolLayerFollowsTheScratchAcrossAdoption(t *testing.T) {
 			t.Fatalf("write_file into the owned scratch: %v", err)
 		}
 		to := from.WithWorkingDirectory(t.TempDir())
-		t.Cleanup(to.DisposeUnadoptedScratch)
+		t.Cleanup(func() { _ = to.DisposeSessionScratch() })
 
 		to.AdoptSessionScratch(from)
 
@@ -735,7 +735,7 @@ func TestFileToolLayerFollowsTheScratchAcrossAdoption(t *testing.T) {
 func TestAdoptSessionScratchDoesNotRaceAFileToolOnTheSharedEnvironment(t *testing.T) {
 	from := readConfinedEnvAt(t, t.TempDir())
 	to := from.WithWorkingDirectory(t.TempDir())
-	t.Cleanup(to.DisposeUnadoptedScratch)
+	t.Cleanup(func() { _ = to.DisposeSessionScratch() })
 
 	stop := make(chan struct{})
 	writerDone := make(chan struct{})
@@ -861,7 +861,7 @@ func TestAdoptSessionScratchRetiresTheSourcesFileToolLayers(t *testing.T) {
 	shapes := map[string]func(t *testing.T, worktree string) *LocalExecutionEnvironment{
 		"unsandboxed": func(t *testing.T, worktree string) *LocalExecutionEnvironment {
 			env := NewLocalExecutionEnvironment(worktree)
-			t.Cleanup(func() { env.Cleanup(); env.DisposeUnadoptedScratch() })
+			t.Cleanup(func() { env.Cleanup(); env.DisposeSessionScratch() })
 			if _, err := env.ExecCommand(context.Background(), "true", int(processTripwire.Milliseconds()), "", nil); err != nil {
 				t.Fatalf("ExecCommand: %v", err)
 			}
@@ -913,7 +913,7 @@ func TestScratchSandboxForDoesNotInstallALayerForARootMovedAway(t *testing.T) {
 		t.Skip("the unsandboxed scratch layer is linux/darwin only")
 	}
 	owner := NewLocalExecutionEnvironment(t.TempDir())
-	t.Cleanup(func() { owner.Cleanup(); owner.DisposeUnadoptedScratch() })
+	t.Cleanup(func() { owner.Cleanup(); owner.DisposeSessionScratch() })
 	if _, err := owner.ExecCommand(context.Background(), "true", int(processTripwire.Milliseconds()), "", nil); err != nil {
 		t.Fatalf("ExecCommand: %v", err)
 	}
@@ -922,7 +922,7 @@ func TestScratchSandboxForDoesNotInstallALayerForARootMovedAway(t *testing.T) {
 		t.Fatal("the owner minted no session scratch")
 	}
 	clone := owner.WithWorkingDirectory(t.TempDir())
-	t.Cleanup(clone.DisposeUnadoptedScratch)
+	t.Cleanup(func() { _ = clone.DisposeSessionScratch() })
 	// The move lands between the unlocked root read and the lock.
 	scratchSandboxForAfterRootRead = func() { clone.AdoptSessionScratch(owner) }
 	t.Cleanup(func() { scratchSandboxForAfterRootRead = nil })

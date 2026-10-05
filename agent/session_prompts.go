@@ -239,7 +239,7 @@ func sandboxPromptLine(env execenv.ExecutionEnvironment) string {
 				line += ". Your file tools may write only inside this scratch directory; all other file-tool writes are denied"
 			}
 		}
-		line += ". In your final human-readable handoff, report this absolute scratch path and the absolute paths of any artifacts your parent should retain; cleanup is manual."
+		line += ". It is deleted when your root session is archived; return what your parent needs in your result."
 	}
 	return line
 }

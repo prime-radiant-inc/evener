@@ -1397,8 +1397,6 @@ These are useful patterns and preservation checks, rather than new fix requests.
   corruption has different requirements from a broken projection.
 - [Task-tool loading](../../agent/session_tools_task.go#L340) retries after a
   transient load failure without replacing malformed source with an empty plan.
-  [Retained scratch restoration](../../agent/session_scratch_retention.go#L1594)
-  repairs specific directory/pin problems and validates the ownership graph.
 - [History repair](../../agent/history_repair.go#L127) records interrupted tool
   execution honestly; [lost-job reconciliation](../../agent/jobs.go#L1457) ends
   lost owned runtime with retained output and delivery. Neither blindly restarts
@@ -1445,7 +1443,7 @@ every branch. A gap is not evidence that the subsystem is correct or broken.
 | S10 History | Authoritative transcript versus derived projection, rebuild/quarantine, reader demand and job-log access | Very large histories, rebuild cost, scroll stability and complete read-model corruption matrix |
 | S11 Input queues | Accepted/unknown/failed input, durable native/browser recovery and TUI identity/media gaps | Cross-process/device durability, accepted-but-unacknowledged outcomes and stop barriers under races |
 | S12 Jobs/delegates/watches | Constructor recovery, watch journal/config/delivery, child restore, terminal attention and task snapshots | Missed-tick/cursor policies, long-running monitors and delegate-generation races |
-| S13 Workspace/scratch | Retention repair, ownership graph, missing directory/pin and idle-child interaction; host workspace cleanup seams | Full mount/platform topology and every concurrent workspace allocation/cleanup path |
+| S13 Workspace/scratch | Scratch kept at each end and removed on archive, shared-scratch ownership and idle-child interaction; host workspace cleanup seams | Full mount/platform topology and every concurrent workspace allocation/cleanup path |
 | S14 Tools/sandbox | Dispatch breaker, argument repair, file/shell scope, read-only symlink handling and escalation lifetime | Native sandbox backend matrix, race-resistant traversal and real multi-repository workflows |
 | S15 Providers/credentials | Snapshot lifetime, API-key repair, OAuth process coordination, save failure and malformed configuration | Scripted subprocess rotation and live provider-specific API/authentication behavior |
 | S16 Model catalog | Directory-scoped cache, warmup, stale refresh and client loading gates | Cold project latency and project overrides with slow/live catalog sources |

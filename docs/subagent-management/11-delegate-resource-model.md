@@ -1606,7 +1606,7 @@ are the only runtime-close paths. Reclamation may release process residency and
 worktree occupancy without closing resumability; it is not autonomous unload.
 
 Stable delegates participate in the existing live-work guards, root-close
-cleanup, scratch retention, explicit disposal, lock provenance, dirty/D0
+cleanup, scratch removal, explicit disposal, lock provenance, dirty/D0
 checks, force semantics, cleanup evidence, and idempotency. Isolation is
 resolved before stable create commit so failure is deterministic. Destructive
 teardown requires a durable resumability closure first. If that append fails,

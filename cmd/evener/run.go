@@ -393,7 +393,7 @@ func run(ctx context.Context, cfg runConfig) error {
 		// Provisioning allocates the session scratch and the lease under it,
 		// which nothing releases until a session owns this environment.
 		if err := startupInterrupted(ctx, "provisioning the sandbox"); err != nil {
-			env.DisposeUnadoptedScratch()
+			_ = env.DisposeSessionScratch()
 			return err
 		}
 	}
@@ -412,13 +412,10 @@ func run(ctx context.Context, cfg runConfig) error {
 			TurnEndsProcess:             baseSessionCfg.TurnEndsProcess,
 		})
 		if err != nil {
-			// A resume provisions this environment's sandbox from the
-			// session's persisted mode inside the restore, and the restore can
-			// fail after that with no session built to own the scratch and the
-			// flock lease it took. An allocation the resume adopted from the
-			// root's durable retention manifest is retained rather than
-			// removed; only a fresh mint is disposed.
-			agent.DisposeResumeScratchAfterFailure(stateDir, meta.ID, env)
+			// The restore reopens the session's kept scratch and can fail
+			// after that with no session built to own it. The scratch still
+			// belongs to the session, so only its lease is released.
+			_ = env.EndSessionScratch()
 			return fmt.Errorf("restore session: %w", err)
 		}
 		if resumeWithChildID != "" {
@@ -439,11 +436,8 @@ func run(ctx context.Context, cfg runConfig) error {
 		sess, err = runNewSession(client, profile, env, baseSessionCfg)
 		if err != nil {
 			// The session that would have owned whatever this environment
-			// provisioned was never built. NewSession may already have
-			// published the root's durable scratch retention before it failed,
-			// so the cleanup must retain an allocation the manifest references
-			// rather than remove it out from under a later resume.
-			agent.DisposeRootScratchAfterFailure(stateDir, env)
+			// provisioned was never built, so its scratch goes here.
+			_ = env.DisposeSessionScratch()
 			return fmt.Errorf("session creation: %w", err)
 		}
 	}
