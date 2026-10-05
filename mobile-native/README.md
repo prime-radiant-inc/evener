@@ -80,6 +80,51 @@ npx tsx scripts/check-hub.mts http://127.0.0.1:9180 /path/to/auth-token
 
 No script in the default tests calls a real hub or LLM provider.
 
+## Enriched Markdown patch maintenance
+
+`patches/react-native-enriched-markdown+1.0.2.patch` owns the package changes.
+Edit only this checkout's real installed package, never a shared `node_modules`
+symlink. Keep the pinned package and React Native versions and existing patch hunks.
+
+Rebuild the changed public sources and their shipped ESM/declaration mirrors before
+capturing the patch. The checked builder refuses unrelated outputs and wrong versions.
+Its explicit allowlist also emits the unchanged CommonMark native spec because the
+rebuilt wrapper imports its JS output, while upstream ships that spec only as TS.
+Missing relative runtime dependencies fail generation before any outputs are written.
+Run from `mobile-native`:
+
+```sh
+node scripts/rebuild-enriched-markdown.mjs
+PKG="$(pwd)/node_modules/react-native-enriched-markdown"
+node node_modules/react-native/scripts/generate-codegen-artifacts.js \
+  --path "$PKG" --targetPlatform ios --source library
+npx patch-package react-native-enriched-markdown --exclude '^$'
+```
+
+The package ships generated code, so normal app/pod codegen does not refresh its
+contracts. Inspect the library's `ios/generated/ReactCodegen/EnrichedMarkdownTextSpec/`
+outputs and custom native descriptors/states together. `--exclude '^$'` is required:
+patch-package otherwise omits `package.json` and loses the new component class
+registration. Preserve all existing root exports, and check package-name resolution
+against both the shipped declarations and Metro's source entry.
+
+Repeat generation and compare output bytes. Confine generated whitespace cleanup
+to new component sections, preserving existing generated content. If removing blank
+patch-context spaces for `git diff --check`, compare patch-package's parsed operations
+before and after, excluding only its raw `source` string metadata.
+
+The qualification harness is `../scripts/e2e/e2e-native-document-annotations.sh`.
+Read its help and Mac helper before use. Transfer committed source and harness pins,
+reapply the patch with `npm ci`, and use the unchanged-lock, normally signed Mac build.
+Its `code-preservation` phase runs only the RN/new-leaf text, frame and legacy Copy
+comparison. Neither that partial phase nor compilation/layout proves document-wide
+selection. The full installed gesture, saved-range, reflow and recovery gates remain
+separate from `make test-native`. The probe entry is not production Reader integration.
+
+Document-wide selection remains unqualified. The installed coordinator's first real
+glyph long press fails to show Copy or emit a native selection event. Do not treat
+the passing layout and code-leaf preservation checks as selection acceptance.
+
 ## Shared-notes transcript updates
 
 Internal snapshots fold under **Shared notes updated**. Chat hides them even
