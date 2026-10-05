@@ -14,7 +14,12 @@ import { type DemoFleetOptions, demoSessionId, fleetSessionRef, fleetSessions } 
 import { DEMO_MODEL_LIST } from "./dev/demoSetup.js";
 import { readOrganizationNavigation } from "./organizationNavigation";
 import { ghosts } from "./session/ghosts";
-import { SessionActivityStore, projectSessionActivity, parseJobLogTail } from "@evener/appwire-client";
+import {
+	SessionActivityStore,
+	projectSessionActivity,
+	parseJobOutputPage,
+	decodeJobOutputText,
+} from "@evener/appwire-client";
 import { readDocFile } from "@evener/appwire-client/docContent";
 import { decodeArchivedListSessions } from "@evener/appwire-client/state/navigation";
 import { SETTLE_RACE_PLAN, SETTLE_RACE_PLAN_REVISED } from "./dev/demoSubagents";
@@ -338,9 +343,14 @@ describe("the demo fleet's subagents and documents (phase 4, PR 9)", () => {
 			const failed = listed.jobs.find((job) => job.status === "command_exited_nonzero");
 			if (!failed) throw new Error("no failed job");
 			const response = await client.request("evener/jobs/output", { ref: failed.ownerRef, jobId: failed.jobId });
-			const tail = parseJobLogTail((response as { data: unknown }).data);
-			expect(tail?.tail).toContain("FAIL");
-			expect(tail?.totalBytes).toBe(new TextEncoder().encode(tail?.tail ?? "").length);
+			const page = parseJobOutputPage((response as { data: unknown }).data);
+			const text = page ? decodeJobOutputText(page.bytes) : "";
+			expect(text).toContain("FAIL");
+			expect(page?.totalBytes).toBe(new TextEncoder().encode(text).length);
+			expect(page?.bytesReturned).toBe(page?.totalBytes);
+			expect(page?.offsetBytes).toBe(0);
+			expect(page?.retainedStartBytes).toBe(0);
+			expect(page?.encoding).toBe("utf8");
 			// Only the owning session answers for the job, as on a real hub.
 			await expect(client.request("evener/jobs/output", { ref: PR2138, jobId: failed.jobId })).rejects.toThrow(
 				`job not found: ${failed.jobId}`,

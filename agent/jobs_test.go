@@ -444,40 +444,42 @@ func TestJobManagerReadOutput(t *testing.T) {
 	}
 }
 
-func TestJobManagerReadOutputWindowPagesBackwards(t *testing.T) {
+func TestJobManagerReadOutputPagePagesBackwards(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
 	_, _ = jm.running[rec.JobID].output.Append([]byte("0123456789"))
 
-	// beforeBytes=0 is the tail window.
-	w, err := jm.readOutputWindow(rec.JobID, 0, 4)
-	if err != nil {
+	// An omitted selector reads the latest window.
+	w, found, err := jm.readOutputPage(rec.JobID, nil, 4)
+	if err != nil || !found {
 		t.Fatalf("tail window: %v", err)
 	}
-	if w.content != "6789" || w.start != 6 || w.end != 10 || w.total != 10 || w.earliest != 0 {
+	if string(w.Content) != "6789" || w.Start != 6 || w.End != 10 || w.TotalBytes != 10 || w.RetainedStart != 0 {
 		t.Fatalf("tail window = %+v, want 6789 [6,10) of 10", w)
 	}
 
 	// Each earlier page ends where the previous one began.
-	w, err = jm.readOutputWindow(rec.JobID, 6, 4)
-	if err != nil {
+	before := int64(6)
+	w, found, err = jm.readOutputPage(rec.JobID, &before, 4)
+	if err != nil || !found {
 		t.Fatalf("page: %v", err)
 	}
-	if w.content != "2345" || w.start != 2 || w.end != 6 {
+	if string(w.Content) != "2345" || w.Start != 2 || w.End != 6 {
 		t.Fatalf("page = %+v, want 2345 [2,6)", w)
 	}
 
-	w, err = jm.readOutputWindow(rec.JobID, 2, 4)
-	if err != nil {
+	before = 2
+	w, found, err = jm.readOutputPage(rec.JobID, &before, 4)
+	if err != nil || !found {
 		t.Fatalf("head page: %v", err)
 	}
-	if w.content != "01" || w.start != 0 || w.end != 2 {
+	if string(w.Content) != "01" || w.Start != 0 || w.End != 2 {
 		t.Fatalf("head page = %+v, want 01 [0,2)", w)
 	}
 }
 
-func TestJobManagerReadOutputWindowTerminalLog(t *testing.T) {
+func TestJobManagerReadOutputPageTerminalLog(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
 	rec, err := jm.createShell(createShellOpts{Command: "x"})
@@ -493,15 +495,16 @@ func TestJobManagerReadOutputWindowTerminalLog(t *testing.T) {
 
 	// The terminal path pages through the on-disk log the same way the live
 	// path pages through the output store.
-	w, err := jm.readOutputWindow(rec.JobID, 6, 6)
-	if err != nil {
+	before := int64(6)
+	w, found, err := jm.readOutputPage(rec.JobID, &before, 6)
+	if err != nil || !found {
 		t.Fatalf("page: %v", err)
 	}
-	if w.content != "hello\n" || w.start != 0 || w.end != 6 || w.total != 12 {
+	if string(w.Content) != "hello\n" || w.Start != 0 || w.End != 6 || w.TotalBytes != 12 {
 		t.Fatalf("terminal page = %+v, want hello\\n [0,6) of 12", w)
 	}
-	if _, err := jm.readOutputWindow("job_missing", 0, 4); !isJobNotFoundErr(err) {
-		t.Fatalf("missing job err = %v, want job-not-found", err)
+	if _, found, err := jm.readOutputPage("job_missing", nil, 4); err != nil || found {
+		t.Fatalf("missing job found=%v err=%v, want false nil", found, err)
 	}
 }
 

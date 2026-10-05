@@ -281,8 +281,8 @@ export {
   isNonZeroExit,
   isTurnError,
 } from "./itemFailure";
-export type { JobLogTail } from "./jobOutput";
-export { parseJobLogTail } from "./jobOutput";
+export type { DecodedJobOutputPage } from "./jobOutput";
+export { decodeJobOutputText, forEachJobOutputScalar, jobOutputPrunedBounds, parseJobOutputPage } from "./jobOutput";
 export { type JobStep, jobListSummary, jobStatusSummary, jobStopSummary } from "./jobSteps";
 export {
   endReasonPhrase,

@@ -285,7 +285,14 @@ test("loaded subtree job output uses the supplied owner ref and raw logical job 
     page: { complete: true, issues: [] },
   }));
   client.on("evener/jobs/output", () => ({
-    data: { tail: "supplied output tail", totalBytes: 20, retainedStart: 0, truncated: false },
+    data: {
+      offsetBytes: 0,
+      bytesReturned: 20,
+      totalBytes: 20,
+      retainedStartBytes: 0,
+      encoding: "utf8",
+      data: "supplied output tail",
+    },
   }));
   connectionStore.getState().connect(client);
   render(<ActivityPanelBody sessionRef={ref} model={model()} />);

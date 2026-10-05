@@ -12,6 +12,13 @@ AppWire client and selected services/state modules. The native UI is in this
 directory; the old Tauri UI is not loaded or used as feature authority. Current
 web/server behavior defines scope.
 
+Shell-job output uses the shared lossless byte-page decoder for the existing
+latest-output screen. Its focused two-second rereads preserve prior successful
+output through transport failures. The displayed start and byte count come from
+the raw page; the server retention floor is a separate fact. This view requires
+the current AppWire protocol and adds no native history-paging UI. See the
+[job output contract](../docs/product/session-activity.md#job-output-pages).
+
 The [current status](../docs/design/mobile/status.md), [remaining work](../docs/design/mobile/ios-v1-remaining.md) and [acceptance index](../docs/design/mobile/acceptance.md) distinguish implementation from current-artifact qualification. The full development plan and dated evidence remain on branch `live-concepts-plan2-integrate` at checkpoint `04ae937af`.
 
 Run `make test-native` from the repository root after installing native dependencies.

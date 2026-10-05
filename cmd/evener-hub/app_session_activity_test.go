@@ -187,7 +187,7 @@ func TestSessionActivityBackgroundPublicRoutes(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if output := value.(appwire.JobsOutputResponse).Data; output.Tail != job.output || output.TotalBytes != int64(len(job.output)) {
+			if output := value.(appwire.JobsOutputResponse).Data; output.Data != job.output || output.TotalBytes != int64(len(job.output)) || output.BytesReturned != int64(len(job.output)) || output.OffsetBytes != 0 || output.RetainedStartBytes != 0 || output.Encoding != "utf8" {
 				t.Fatalf("excluded output changed: %+v", output)
 			}
 		}

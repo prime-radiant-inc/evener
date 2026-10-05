@@ -311,6 +311,33 @@ checks that root mutation boundary. Optional usage fields stay absent when unkno
 Job output panes keep the logical job ID as their title when descriptive
 metadata is unavailable, while independently readable output remains usable.
 
+### Job output pages
+
+`evener/jobs/output` reads through the returned job owner ref and raw job ID.
+Omitting `beforeBytes` selects the latest page. A supplied value selects a
+backward page ending at that lifetime byte offset; explicit zero stays zero.
+The default page limit is 4 KiB, with positive limits capped at 64 KiB.
+
+Each response contains `offsetBytes`, `bytesReturned`, `totalBytes`,
+`retainedStartBytes`, `encoding` and `data`. These describe one coherent raw
+snapshot. The storage floor is independent of the displayed page start.
+Invalid UTF-8 spans and split scalars travel losslessly as standard base64;
+valid UTF-8 pages use `utf8`. The shared `parseJobOutputPage` validates bounds
+and counts and supplies raw bytes; `decodeJobOutputText` handles display.
+Contiguous pages must be joined as bytes before decoding their shared boundary.
+
+A selector below the current storage floor returns structured
+`jobOutputPruned` with `retainedStartBytes` and `totalBytes`. A missing file or
+changed output generation remains an ordinary read failure. The owning live or
+remote source stays authoritative; only the existing dead-local condition
+permits the hub's saved-output fallback.
+
+Protocol `evener-appwire-v7` requires the same contract in the hub, daemon and
+clients. Older running daemons keep their work and require an explicit restart
+for current live reads. There is no tail-parser compatibility path. The phone
+uses the same portable decoder for its existing latest-output view, retaining
+focused two-second rereads and prior successful output through read failures.
+
 See the [store tests](../../appwire-client/typescript/sessionActivityStore.test.ts),
 [lease tests](../../appwire-client/typescript/threadSubscription.test.ts) and
 [presentation tests](../../appwire-client/typescript/sessionActivityPresentation.test.ts)
@@ -605,7 +632,7 @@ qualification gates; these contracts do not establish a device or provider run.
 ## Navigation boundary
 
 Navigation uses representation version 3 independently of connection protocol
-`evener-appwire-v6`. Clients request version 3 and the hub advertises that
+`evener-appwire-v7`. Clients request version 3 and the hub advertises that
 representation. There is no version 2 emission or fallback path.
 
 Navigation carries own-session running-job and watch counts plus bounded running

@@ -1880,16 +1880,13 @@ export interface JobActivityWorktree {
   dirty: boolean;
 }
 
-export interface JobOutputTail {
-  tail: string;
+export interface JobOutputPage {
+  offsetBytes: number;
+  bytesReturned: number;
   totalBytes: number;
-  retainedStart: number;
-  truncated: boolean;
-  /**
-   * HasEarlier is true when retained output exists before the window: a
-   * follow-up read with beforeBytes=RetainedStart returns the previous page.
-   */
-  hasEarlier?: boolean;
+  retainedStartBytes: number;
+  encoding: string;
+  data: string;
 }
 
 export interface JobsGetParams {
@@ -1918,7 +1915,7 @@ export interface JobsOutputParams {
 }
 
 export interface JobsOutputResponse {
-  data: JobOutputTail;
+  data: JobOutputPage;
 }
 
 export interface JobsTreeUpdatedParams {

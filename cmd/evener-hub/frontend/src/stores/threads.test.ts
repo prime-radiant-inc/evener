@@ -6628,7 +6628,14 @@ describe("useThreadsStore.listJobs / jobOutput", () => {
       branch: {},
     },
   };
-  const OUTPUT_DATA = { tail: "6789", totalBytes: 10, retainedStart: 6, truncated: true };
+  const OUTPUT_DATA = {
+    offsetBytes: 6,
+    bytesReturned: 4,
+    totalBytes: 10,
+    retainedStartBytes: 0,
+    encoding: "utf8",
+    data: "6789",
+  };
   // The single-job read carries the activity-job shape verbatim (appwire/types.go's
   // JobActivityJob), including the untruncated command.
   const JOB_DATA = {
@@ -6683,7 +6690,7 @@ describe("useThreadsStore.listJobs / jobOutput", () => {
     expect(result).toEqual(OUTPUT_DATA);
   });
 
-  test("jobOutput passes beforeBytes and maxBytes through only when positive", async () => {
+  test("jobOutput preserves an explicit zero selector and omits a default page limit", async () => {
     const fake = connectFakeClient();
     fake.on("evener/jobs/output", () => ({ data: OUTPUT_DATA }));
 
@@ -6693,7 +6700,7 @@ describe("useThreadsStore.listJobs / jobOutput", () => {
     const calls = fake.calls.filter((c) => c.method === "evener/jobs/output");
     expect(calls).toHaveLength(2);
     expect(calls[0]?.params).toEqual({ ref: "ref_a", jobId: "job_1", beforeBytes: 64, maxBytes: 256 });
-    expect(calls[1]?.params).toEqual({ ref: "ref_a", jobId: "job_1" });
+    expect(calls[1]?.params).toEqual({ ref: "ref_a", jobId: "job_1", beforeBytes: 0 });
   });
 
   test("jobGet sends evener/jobs/get with {ref, jobId} and returns the raw data field", async () => {

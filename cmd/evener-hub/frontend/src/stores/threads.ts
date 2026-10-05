@@ -13,7 +13,7 @@ import type {
   CachedSessionRecord,
   GoalSetResponse,
   JobActivityJob,
-  JobOutputTail,
+  JobOutputPage,
   ModelListResponse,
   SnapshotIdentity,
   TaskListResponse,
@@ -320,12 +320,12 @@ export interface ThreadsStoreState {
   // activity views use SessionActivityStore; this method returns the wire's
   // untyped data field unchanged and owns no background refresh or retry.
   listJobs(ref: string, continuation?: string): Promise<unknown>;
-  // beforeBytes > 0 pages backwards: the window ending at that lifetime
-  // output offset instead of the tail (appwire.JobsOutputParams.BeforeBytes).
+  // An explicit beforeBytes pages backwards, ending at that lifetime byte
+  // offset. Omission selects the latest page; explicit zero stays zero.
   // maxBytes > 0 bounds the window (appwire.JobsOutputParams.MaxBytes) - the
   // activity strip's preview uses it to fetch a couple hundred bytes instead
   // of the daemon's default tail.
-  jobOutput(ref: string, jobId: string, beforeBytes?: number, maxBytes?: number): Promise<JobOutputTail>;
+  jobOutput(ref: string, jobId: string, beforeBytes?: number, maxBytes?: number): Promise<JobOutputPage>;
   // Reads one job's metadata (evener/jobs/get): the activity-job shape,
   // including the untruncated command.
   jobGet(ref: string, jobId: string): Promise<JobActivityJob>;
@@ -5138,7 +5138,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     const resp = await client.request("evener/jobs/output", {
       ref,
       jobId,
-      ...(beforeBytes !== undefined && beforeBytes > 0 ? { beforeBytes } : {}),
+      ...(beforeBytes !== undefined ? { beforeBytes } : {}),
       ...(maxBytes !== undefined && maxBytes > 0 ? { maxBytes } : {}),
     });
     return resp.data;

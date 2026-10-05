@@ -9,7 +9,7 @@ import type {
   NavigationSessionSummary,
   ThreadStartResponse,
 } from "@evener/appwire-client";
-import { AppwireClient, type ConnectionState, WireError } from "@evener/appwire-client";
+import { APPWIRE_PROTOCOL_VERSION, AppwireClient, type ConnectionState, WireError } from "@evener/appwire-client";
 import { keyID } from "@evener/appwire-client/state/navigation";
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
@@ -205,7 +205,7 @@ function navClient(initialState: ConnectionState = "ready"): FakeClient {
   client.on("evener/navigation/read", navigationRead);
   client.scriptConnect(() => ({
     serverInfo: { name: "fake", version: "1" },
-    protocolVersion: "evener-appwire-v6",
+    protocolVersion: APPWIRE_PROTOCOL_VERSION,
     sourceId: "fake",
     features: {} as never,
     navigation: { version: 1, generationId: "generation_test", sequence: 0, readVersions: [3] },
@@ -553,7 +553,7 @@ function orderingClient() {
   client.on("evener/navigation/read", navigationRead);
   client.scriptConnect(() => ({
     serverInfo: { name: "fake", version: "1" },
-    protocolVersion: "evener-appwire-v6",
+    protocolVersion: APPWIRE_PROTOCOL_VERSION,
     sourceId: "fake",
     features: ALL_FEATURES_OFF,
     navigation: { version: 1, generationId: "generation_test", sequence: 0, readVersions: [3] },
@@ -4779,7 +4779,14 @@ test.each([
       throw new Error("retained metadata unavailable");
     });
     client.on("evener/jobs/output", () => ({
-      data: { tail: "retained-history-output", totalBytes: 23, retainedStart: 0, truncated: false },
+      data: {
+        offsetBytes: 0,
+        bytesReturned: 23,
+        totalBytes: 23,
+        retainedStartBytes: 0,
+        encoding: "utf8",
+        data: "retained-history-output",
+      },
     }));
     const user = userEvent.setup();
     let historyPane: string | undefined;

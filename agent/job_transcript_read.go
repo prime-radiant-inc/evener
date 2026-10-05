@@ -148,6 +148,22 @@ var readLocalJobOutputWindowSnapshot = func(path string, offset int64, maxBytes 
 	panic("unreachable")
 }
 
+var readLocalJobOutputPageSnapshot = func(path string, beforeBytes *int64, maxBytes int) (jobstore.OutputWindowSnapshot, error) {
+	for attempt := range 2 {
+		f, err := openJobOutputFile(path)
+		if err != nil {
+			return jobstore.OutputWindowSnapshot{}, err
+		}
+		snapshot, readErr := jobstore.ReadOutputPageSnapshotFromFile(path, f, beforeBytes, maxBytes)
+		_ = f.Close()
+		if errors.Is(readErr, jobstore.ErrOutputChangedDuringRead) && attempt == 0 {
+			continue
+		}
+		return snapshot, readErr
+	}
+	panic("unreachable")
+}
+
 func locateLocalJob(currentStateDir, jobID string) (localJobLocation, error) {
 	ownerSessionID, err := identifier.JobOwnerSessionID(jobID)
 	if err != nil {

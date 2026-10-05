@@ -69,6 +69,7 @@ func TestRunShellForegroundRetentionIsNotBackground(t *testing.T) {
 func awaitShellReady(t *testing.T, env execenv.StreamingExecutor) {
 	t.Helper()
 	root := env.(*execenv.LocalExecutionEnvironment).WorkingDirectory()
+	// TRIPWIRE: a local shell writes readiness before blocking on its gate; 30s detects a stalled launch, not readiness timing.
 	waitForCondition(t, 30*time.Second, "real shell readiness file", func() bool {
 		_, err := os.Stat(filepath.Join(root, "ready"))
 		return err == nil

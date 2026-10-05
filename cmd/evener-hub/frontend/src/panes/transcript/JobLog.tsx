@@ -6,15 +6,21 @@
 // pane's parentRef is the owning session, which every producer that opens a
 // job transcript (the activity tree's rows and detail strips) already supplies.
 //
-// The output read starts at the bounded tail; while the server reports
-// hasEarlier, a "Load earlier output" button pages backwards (beforeBytes = the
+// The output read starts at the latest bounded byte page; while earlier
+// bytes remain retained, a "Load earlier output" button pages backwards (beforeBytes = the
 // earliest offset on screen) and prepends, so the whole log is reachable.
 // Refresh re-reads both and drops the paged prefix. The metadata read is
 // best-effort: a job whose command cannot be read (an older daemon, a rejected
 // call, a malformed payload) still renders its log without a command line.
 
-import type { ActivityJob, JobLogTail } from "@evener/appwire-client";
-import { jobCommandLabel, jobStatusDisplay, parseActivityJob, parseJobLogTail } from "@evener/appwire-client";
+import type { ActivityJob, DecodedJobOutputPage } from "@evener/appwire-client";
+import {
+  decodeJobOutputText,
+  jobCommandLabel,
+  jobStatusDisplay,
+  parseActivityJob,
+  parseJobOutputPage,
+} from "@evener/appwire-client";
 import { Fragment, useEffect, useMemo, useState } from "react";
 import { connectionStore } from "../../stores/connection";
 import { threadsStore } from "../../stores/threads";
@@ -32,6 +38,7 @@ const CLASS = {
 };
 
 interface JobLogContent {
+  bytes: Uint8Array;
   content: string;
   totalBytes: number;
   // Lifetime offset of the first byte on screen: the next page's beforeBytes.
@@ -41,12 +48,13 @@ interface JobLogContent {
 
 type JobLogState = { status: "loading" } | { status: "error"; message: string } | ({ status: "ready" } & JobLogContent);
 
-function contentOf(tail: JobLogTail): JobLogContent {
+function contentOf(page: DecodedJobOutputPage): JobLogContent {
   return {
-    content: tail.tail,
-    totalBytes: tail.totalBytes,
-    earliestStart: tail.retainedStart,
-    hasEarlier: tail.hasEarlier,
+    bytes: page.bytes,
+    content: decodeJobOutputText(page.bytes),
+    totalBytes: page.totalBytes,
+    earliestStart: page.offsetBytes,
+    hasEarlier: page.offsetBytes > page.retainedStartBytes,
   };
 }
 
@@ -99,11 +107,11 @@ export function JobLog({ jobRef, parentRef, paneId }: { jobRef: string; parentRe
         .then(
           (data) => {
             if (cancelled) return;
-            const tail = parseJobLogTail(data);
+            const page = parseJobOutputPage(data);
             setState(
-              tail === null
+              page === null
                 ? { status: "error", message: "malformed output payload" }
-                : { status: "ready", ...contentOf(tail) },
+                : { status: "ready", ...contentOf(page) },
             );
           },
           (err) => {
@@ -129,22 +137,29 @@ export function JobLog({ jobRef, parentRef, paneId }: { jobRef: string; parentRe
       .jobOutput(parentRef, jobId, beforeBytes)
       .then(
         (data) => {
-          const page = parseJobLogTail(data);
+          const page = parseJobOutputPage(data);
           setLoadingEarlier(false);
           setState((current) => {
             if (current.status !== "ready") return current;
-            // A page must start strictly before the bytes on screen. One that
-            // doesn't (a daemon that ignored beforeBytes and re-sent the
-            // tail) ends paging rather than duplicating content.
-            if (page === null || page.retainedStart >= current.earliestStart) {
+            // Join only contiguous source bytes. Decode after joining so a
+            // UTF8 scalar split at the page boundary is repaired exactly.
+            if (
+              page === null ||
+              page.offsetBytes >= current.earliestStart ||
+              page.offsetBytes + page.bytesReturned !== current.earliestStart
+            ) {
               return { ...current, hasEarlier: false };
             }
+            const bytes = new Uint8Array(page.bytesReturned + current.bytes.length);
+            bytes.set(page.bytes);
+            bytes.set(current.bytes, page.bytesReturned);
             return {
               ...current,
-              content: page.tail + current.content,
+              bytes,
+              content: decodeJobOutputText(bytes),
               totalBytes: page.totalBytes,
-              earliestStart: page.retainedStart,
-              hasEarlier: page.hasEarlier,
+              earliestStart: page.offsetBytes,
+              hasEarlier: page.offsetBytes > page.retainedStartBytes,
             };
           });
         },
@@ -201,7 +216,7 @@ export function JobLog({ jobRef, parentRef, paneId }: { jobRef: string; parentRe
           <>
             {state.earliestStart > 0 && (
               <span className={CLASS.joblogNote}>
-                {`Output truncated — showing the last ${state.totalBytes - state.earliestStart} of ${state.totalBytes} bytes`}
+                {`Output truncated — showing the last ${state.bytes.length} of ${state.totalBytes} bytes`}
                 {state.hasEarlier && (
                   <>
                     {" · "}

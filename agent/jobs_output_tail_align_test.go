@@ -3,6 +3,8 @@ package agent
 import (
 	"testing"
 	"unicode/utf8"
+
+	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
 // A tail window that lands mid-rune starts on the next rune boundary instead of
@@ -13,13 +15,11 @@ import (
 
 // tailWindowProjection projects a tail read (content ending at total) through
 // the same constructor the production paths use.
-func tailWindowProjection(out string, total int64) JobOutputTail {
-	return jobOutputTailFromWindow(jobOutputWindow{
-		content: out,
-		start:   total - int64(len(out)),
-		end:     total,
-		total:   total,
-	})
+func tailWindowProjection(out string, total int64) JobOutputPage {
+	page, _, _ := jobOutputPageResult(jobstore.OutputWindowSnapshot{
+		Content: []byte(out), Start: total - int64(len(out)), End: total, TotalBytes: total,
+	}, true, nil)
+	return page
 }
 
 func TestTailOutputFileAlignsMidRuneWindowStart(t *testing.T) {
@@ -41,7 +41,7 @@ func TestTailOutputFileAlignsMidRuneWindowStart(t *testing.T) {
 		t.Fatalf("tail = (%q, %d, %v), want (😀, 8, true)", out, total, truncated)
 	}
 	projected := tailWindowProjection(out, total)
-	if projected.RetainedStart != 4 || projected.TotalBytes-projected.RetainedStart != int64(len(out)) {
+	if projected.OffsetBytes != 4 || projected.TotalBytes-projected.OffsetBytes != int64(len(out)) {
 		t.Fatalf("projection = %+v, want retainedStart 4 describing %d returned bytes", projected, len(out))
 	}
 }
@@ -59,7 +59,7 @@ func TestTailOutputFileWindowOnRuneBoundaryUnchanged(t *testing.T) {
 	if out != "😀" || total != 8 || !truncated {
 		t.Fatalf("tail = (%q, %d, %v), want (😀, 8, true)", out, total, truncated)
 	}
-	if got := tailWindowProjection(out, total).RetainedStart; got != 4 {
+	if got := tailWindowProjection(out, total).OffsetBytes; got != 4 {
 		t.Fatalf("retainedStart = %d, want 4", got)
 	}
 }
@@ -101,7 +101,7 @@ func TestTailOutputFileWindowNarrowerThanRuneIsEmpty(t *testing.T) {
 		t.Fatalf("tail = (%q, %d, %v), want (\"\", 4, true)", out, total, truncated)
 	}
 	projected := tailWindowProjection(out, total)
-	if projected.RetainedStart != 4 || projected.TotalBytes-projected.RetainedStart != 0 {
+	if projected.OffsetBytes != 4 || projected.TotalBytes-projected.OffsetBytes != 0 {
 		t.Fatalf("projection = %+v, want retainedStart 4 describing 0 returned bytes", projected)
 	}
 }
@@ -153,7 +153,7 @@ func TestTailOutputFileKeepsInvalidUTF8(t *testing.T) {
 				t.Fatalf("tail = %x, want %x", out, tc.want)
 			}
 			projected := tailWindowProjection(out, gotTotal)
-			if projected.TotalBytes-projected.RetainedStart != int64(len(out)) {
+			if projected.TotalBytes-projected.OffsetBytes != int64(len(out)) {
 				t.Fatalf("projection = %+v, want the caption to count the %d returned bytes", projected, len(out))
 			}
 		})

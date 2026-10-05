@@ -84,7 +84,14 @@ function connectActivity() {
     page: { complete: true, issues: [] },
   }));
   client.on("evener/jobs/output", () => ({
-    data: { tail: "build output", totalBytes: 12, retainedStart: 0, truncated: false },
+    data: {
+      offsetBytes: 0,
+      bytesReturned: 12,
+      totalBytes: 12,
+      retainedStartBytes: 0,
+      encoding: "utf8",
+      data: "build output",
+    },
   }));
   connectionStore.getState().connect(client);
   return client;
@@ -147,7 +154,16 @@ test("a folded failed job opens actual output through its authoritative owner, n
   client.on("evener/jobs/output", ({ ref, jobId: requestedJobId }) => {
     expect(ref).toBe(ownerRef);
     expect(requestedJobId).toBe(jobId);
-    return { data: { tail: "Authoritative failed output", totalBytes: 27, retainedStart: 0, truncated: false } };
+    return {
+      data: {
+        offsetBytes: 0,
+        bytesReturned: 27,
+        totalBytes: 27,
+        retainedStartBytes: 0,
+        encoding: "utf8",
+        data: "Authoritative failed output",
+      },
+    };
   });
   client.on("evener/jobs/get", ({ ref, jobId: requestedJobId }) => {
     expect(ref).toBe(ownerRef);
@@ -298,7 +314,14 @@ test("mobile child Back restores the loaded job extent and expanded older failur
     };
   });
   client.on("evener/jobs/output", () => ({
-    data: { tail: "Older failure output", totalBytes: 20, retainedStart: 0, truncated: false },
+    data: {
+      offsetBytes: 0,
+      bytesReturned: 20,
+      totalBytes: 20,
+      retainedStartBytes: 0,
+      encoding: "utf8",
+      data: "Older failure output",
+    },
   }));
   const restoreSessionPane = registerPaneForTests<{ ref: string }>({
     id: "session",

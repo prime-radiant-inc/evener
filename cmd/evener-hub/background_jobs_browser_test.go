@@ -223,7 +223,7 @@ func TestBackgroundJobsBrowser(t *testing.T) {
 		t.Fatal("retained foreground missing from complete diagnostic history")
 	}
 	output, err := client.JobOutput(ctx, appwire.JobsOutputParams{Ref: rootRef, JobID: excluded, MaxBytes: 20000})
-	if err != nil || !strings.HasPrefix(output.Data.Tail, "FOREGROUND_RETAINED\n") {
+	if err != nil || output.Data.Encoding != "utf8" || !strings.HasPrefix(output.Data.Data, "FOREGROUND_RETAINED\n") {
 		t.Fatalf("excluded output remains readable: %+v, error %v", output, err)
 	}
 	backgroundJobsWriteJSON(t, filepath.Join(artifacts, "producer.json"), map[string]any{
@@ -332,7 +332,7 @@ func TestBackgroundJobsBrowser(t *testing.T) {
 		}
 	}
 	output, err = client.JobOutput(ctx, appwire.JobsOutputParams{Ref: rootRef, JobID: late.JobID})
-	if err != nil || output.Data.Tail != "BACKGROUND_LATE_INITIAL\nBACKGROUND_LATE_REFRESH\nBACKGROUND_LATE_RECONNECT\nBACKGROUND_LATE_FINAL\n" {
+	if err != nil || output.Data.Encoding != "utf8" || output.Data.Data != "BACKGROUND_LATE_INITIAL\nBACKGROUND_LATE_REFRESH\nBACKGROUND_LATE_RECONNECT\nBACKGROUND_LATE_FINAL\n" {
 		t.Fatalf("actual held producer output: %+v, error %v", output, err)
 	}
 	backgroundJobsWriteJSON(t, filepath.Join(artifacts, "final-producer.json"), final)
@@ -364,7 +364,7 @@ func backgroundJobsAwaitOutput(ctx context.Context, client *appwire.Client, ref,
 		if err != nil {
 			return err
 		}
-		if output.Data.Tail == want {
+		if output.Data.Encoding == "utf8" && output.Data.Data == want {
 			return nil
 		}
 		select {

@@ -158,8 +158,8 @@ func TestSessionActivityLegacyForegroundDataRemainReadable(t *testing.T) {
 	if err != nil || len(tree.Root.Entries) != 1 || tree.Root.Entries[0].Job == nil || tree.Root.Entries[0].Job.JobID != jobID {
 		t.Fatalf("diagnostics lost foreground record: %+v, error %v", tree, err)
 	}
-	tail, found, err := LoadSessionJobOutputTail(stateDir, id, jobID, 0, 1024)
-	if err != nil || !found || tail.Tail != output {
+	tail, found, err := LoadSessionJobOutputPage(stateDir, id, jobID, nil, 1024)
+	if err != nil || !found || tail.Data != output {
 		t.Fatalf("direct output = %+v, found %v, error %v", tail, found, err)
 	}
 	transcript, err := readJobTranscript(&toolDeps{stateDir: stateDir}, "job:"+jobID, "", "markdown")
@@ -233,8 +233,8 @@ func TestSessionActivityRealForegroundProducersStayDiagnosticOnly(t *testing.T) 
 			if records := jm.list(listFilter{}); len(records) != 1 || records[0].JobID != result.JobID {
 				t.Fatalf("diagnostics lost foreground handle: %+v", records)
 			}
-			tail, found, err := s.JobOutputTail(result.JobID, 0, 1024)
-			if err != nil || !found || tail.Tail != "actual-foreground-output" {
+			tail, found, err := s.JobOutputPage(result.JobID, nil, 1024)
+			if err != nil || !found || tail.Data != "actual-foreground-output" {
 				t.Fatalf("actual foreground output: %+v, found %v, error %v", tail, found, err)
 			}
 		})

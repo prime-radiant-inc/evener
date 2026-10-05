@@ -1197,7 +1197,7 @@ const DEMO_OUT_OF_DATE_DAEMON_PID = 48213;
 // retry of the same mutation.
 function restartRequiredError(clientMutationId: string): WireError {
 	return new WireError(
-		`Session restart required: daemon pid ${DEMO_OUT_OF_DATE_DAEMON_PID} uses an incompatible protocol; this hub requires evener-appwire-v6. Stop the daemon, then resume this session. Stopping interrupts active work.`,
+		`Session restart required: daemon pid ${DEMO_OUT_OF_DATE_DAEMON_PID} uses an incompatible protocol; this hub requires evener-appwire-v7. Stop the daemon, then resume this session. Stopping interrupts active work.`,
 		-32013,
 		{
 			evenerErrorInfo: "conflict",

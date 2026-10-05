@@ -410,7 +410,14 @@ test("falls back to the raw ref as the pane title when the thread has no name", 
 test("a job: ref renders the shell job's output log via evener/jobs/output, never thread/read", async () => {
   const fake = connectFakeClient();
   fake.on("evener/jobs/output", () => ({
-    data: { tail: "hello from the job", totalBytes: 18, retainedStart: 0, truncated: false },
+    data: {
+      offsetBytes: 0,
+      bytesReturned: 18,
+      totalBytes: 18,
+      retainedStartBytes: 0,
+      encoding: "utf8",
+      data: "hello from the job",
+    },
   }));
 
   render(
@@ -445,7 +452,7 @@ test("a job log shows the job's full command above its output", async () => {
     },
   }));
   fake.on("evener/jobs/output", () => ({
-    data: { tail: "ok\n", totalBytes: 3, retainedStart: 0, truncated: false },
+    data: { offsetBytes: 0, bytesReturned: 3, totalBytes: 3, retainedStartBytes: 0, encoding: "utf8", data: "ok\n" },
   }));
 
   render(
@@ -486,7 +493,14 @@ test.each([
     },
   }));
   fake.on("evener/jobs/output", () => ({
-    data: { tail: "finished\n", totalBytes: 9, retainedStart: 0, truncated: false },
+    data: {
+      offsetBytes: 0,
+      bytesReturned: 9,
+      totalBytes: 9,
+      retainedStartBytes: 0,
+      encoding: "utf8",
+      data: "finished\n",
+    },
   }));
 
   render(
@@ -527,7 +541,9 @@ test("a job log does not borrow metadata from another owner's equal job id", asy
     finishSecond = resolve;
   });
   fake.on("evener/jobs/get", ({ ref }) => (ref === "first-owner" ? metadata(ref, "First owner's job") : second));
-  fake.on("evener/jobs/output", () => ({ data: { tail: "", totalBytes: 0, retainedStart: 0, truncated: false } }));
+  fake.on("evener/jobs/output", () => ({
+    data: { offsetBytes: 0, bytesReturned: 0, totalBytes: 0, retainedStartBytes: 0, encoding: "utf8", data: "" },
+  }));
   const view = (ownerRef: string) => (
     <ClientProvider client={fake}>
       <Transcript params={{ ref: "job:shared-id", parentRef: ownerRef }} paneId="p1" focused={false} />
@@ -549,7 +565,14 @@ test("a job log whose metadata read fails still renders the output", async () =>
   const fake = connectFakeClient();
   fake.on("evener/jobs/get", () => Promise.reject(new Error("job not available")));
   fake.on("evener/jobs/output", () => ({
-    data: { tail: "hello from the job", totalBytes: 18, retainedStart: 0, truncated: false },
+    data: {
+      offsetBytes: 0,
+      bytesReturned: 18,
+      totalBytes: 18,
+      retainedStartBytes: 0,
+      encoding: "utf8",
+      data: "hello from the job",
+    },
   }));
 
   render(
@@ -565,7 +588,14 @@ test("a job log whose metadata read fails still renders the output", async () =>
 test("job output renders ANSI SGR sequences as styled runs, not literal escape text", async () => {
   const fake = connectFakeClient();
   fake.on("evener/jobs/output", () => ({
-    data: { tail: "plain \u001b[32m283 passed\u001b[39m done", totalBytes: 40, retainedStart: 0, truncated: false },
+    data: {
+      offsetBytes: 0,
+      bytesReturned: 31,
+      totalBytes: 31,
+      retainedStartBytes: 0,
+      encoding: "utf8",
+      data: "plain \u001b[32m283 passed\u001b[39m done",
+    },
   }));
 
   render(
@@ -582,7 +612,14 @@ test("job output renders ANSI SGR sequences as styled runs, not literal escape t
 test("a truncated job log says how much of the output is shown", async () => {
   const fake = connectFakeClient();
   fake.on("evener/jobs/output", () => ({
-    data: { tail: "tail end", totalBytes: 70000, retainedStart: 4464, truncated: true },
+    data: {
+      offsetBytes: 4464,
+      bytesReturned: 65536,
+      totalBytes: 70000,
+      retainedStartBytes: 4464,
+      encoding: "utf8",
+      data: `${" ".repeat(65528)}tail end`,
+    },
   }));
 
   render(
@@ -593,8 +630,8 @@ test("a truncated job log says how much of the output is shown", async () => {
 
   await waitFor(() => expect(screen.getByText("tail end")).toBeTruthy());
   expect(screen.getByText(/showing the last 65,?536 of 70,?000 bytes/i)).toBeTruthy();
-  // No hasEarlier field (an older daemon's shape) means no paging affordance:
-  // the note alone carries the truncation, exactly as before paging existed.
+  // The page starts at the storage floor, so earlier bytes are no longer
+  // retained and there is no earlier-page affordance.
   expect(screen.queryByRole("button", { name: /load earlier/i })).toBeNull();
 });
 
@@ -603,13 +640,33 @@ test("load earlier pages backwards through the job log until the head", async ()
   fake.on("evener/jobs/output", (params) => {
     const before = (params as { beforeBytes?: number }).beforeBytes;
     if (before === undefined) {
-      return { data: { tail: "6789", totalBytes: 10, retainedStart: 6, truncated: true, hasEarlier: true } };
+      return {
+        data: {
+          offsetBytes: 6,
+          bytesReturned: 4,
+          totalBytes: 10,
+          retainedStartBytes: 0,
+          encoding: "utf8",
+          data: "6789",
+        },
+      };
     }
     if (before === 6) {
-      return { data: { tail: "2345", totalBytes: 10, retainedStart: 2, truncated: true, hasEarlier: true } };
+      return {
+        data: {
+          offsetBytes: 2,
+          bytesReturned: 4,
+          totalBytes: 10,
+          retainedStartBytes: 0,
+          encoding: "utf8",
+          data: "2345",
+        },
+      };
     }
     if (before === 2) {
-      return { data: { tail: "01", totalBytes: 10, retainedStart: 0, truncated: true, hasEarlier: false } };
+      return {
+        data: { offsetBytes: 0, bytesReturned: 2, totalBytes: 10, retainedStartBytes: 0, encoding: "utf8", data: "01" },
+      };
     }
     throw new Error(`unexpected beforeBytes ${before}`);
   });
@@ -638,10 +695,10 @@ test("load earlier pages backwards through the job log until the head", async ()
 
 test("a daemon that ignores beforeBytes stops paging instead of duplicating the tail", async () => {
   const fake = connectFakeClient();
-  // Every request returns the same tail window, as a daemon that predates
-  // beforeBytes would.
+  // Every request incorrectly returns the same latest page. It cannot be
+  // prepended because it does not end at the requested boundary.
   fake.on("evener/jobs/output", () => ({
-    data: { tail: "6789", totalBytes: 10, retainedStart: 6, truncated: true, hasEarlier: true },
+    data: { offsetBytes: 6, bytesReturned: 4, totalBytes: 10, retainedStartBytes: 0, encoding: "utf8", data: "6789" },
   }));
 
   render(
@@ -659,7 +716,7 @@ test("a daemon that ignores beforeBytes stops paging instead of duplicating the 
 test("a job with no output yet says so instead of rendering an empty log", async () => {
   const fake = connectFakeClient();
   fake.on("evener/jobs/output", () => ({
-    data: { tail: "", totalBytes: 0, retainedStart: 0, truncated: false },
+    data: { offsetBytes: 0, bytesReturned: 0, totalBytes: 0, retainedStartBytes: 0, encoding: "utf8", data: "" },
   }));
 
   render(
@@ -688,7 +745,14 @@ test("the job log's refresh action refetches the tail", async () => {
   const fake = connectFakeClient();
   let calls = 0;
   fake.on("evener/jobs/output", () => ({
-    data: { tail: `tail ${++calls}`, totalBytes: 6, retainedStart: 0, truncated: false },
+    data: {
+      offsetBytes: 0,
+      bytesReturned: 6,
+      totalBytes: 6,
+      retainedStartBytes: 0,
+      encoding: "utf8",
+      data: `tail ${++calls}`,
+    },
   }));
 
   render(

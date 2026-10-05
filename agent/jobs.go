@@ -1306,58 +1306,37 @@ func (jm *jobManager) readOutput(jobID string, tailBytes int) (content string, t
 	return tailOutputFile(path, tailBytes, validatedTotal)
 }
 
-// jobOutputWindow is one paged read of a job's output in lifetime offsets:
-// the content covering [start, end) of total bytes ever written, where
-// earliest is the oldest still-retained offset (the evicted prefix length).
-type jobOutputWindow struct {
-	content  string
-	start    int64
-	end      int64
-	total    int64
-	earliest int64
-}
-
-// readOutputWindow reads up to maxBytes of jobID's output ending at lifetime
-// offset beforeBytes (exclusive); beforeBytes <= 0 reads the tail. It backs
-// evener/jobs/output paging for both the live output store and terminal logs.
-func (jm *jobManager) readOutputWindow(jobID string, beforeBytes, maxBytes int64) (jobOutputWindow, error) {
+// readOutputPage resolves the live owner first and reads one coherent raw page.
+func (jm *jobManager) readOutputPage(jobID string, beforeBytes *int64, maxBytes int) (jobstore.OutputWindowSnapshot, bool, error) {
 	run, rec, err := jm.recordForRead(jobID)
 	if err != nil {
-		return jobOutputWindow{}, err
+		return jobstore.OutputWindowSnapshot{}, false, err
 	}
 	if run != nil {
-		buf, start, end, total, err := run.output.Window(beforeBytes, int(maxBytes))
-		if err != nil {
-			return jobOutputWindow{}, err
-		}
-		return jobOutputWindow{
-			content:  string(buf),
-			start:    start,
-			end:      end,
-			total:    total,
-			earliest: run.output.RetainedStart(),
-		}, nil
+		page, err := run.output.ReadPage(beforeBytes, maxBytes)
+		return page, true, err
 	}
-
 	if rec == nil {
-		return jobOutputWindow{}, errJobNotFound(jobID)
+		return jobstore.OutputWindowSnapshot{}, false, nil
 	}
-	path := jm.outputPathForJob(rec, jobID)
-	total, earliest, err := validatedOutputStatsForRecord(path, rec)
-	if err != nil {
-		return jobOutputWindow{}, err
+	page, err := readJobOutputPageForRecord(jm.outputPathForJob(rec, jobID), rec, beforeBytes, maxBytes)
+	return page, true, err
+}
+
+func readJobOutputPageForRecord(path string, rec *jobstore.JobRecord, beforeBytes *int64, maxBytes int) (jobstore.OutputWindowSnapshot, error) {
+	page, err := readLocalJobOutputPageSnapshot(path, beforeBytes, maxBytes)
+	if err == nil || errors.Is(err, jobstore.ErrOutputPruned) || errors.Is(err, jobstore.ErrInvalidOffset) {
+		if rec != nil && rec.Status.IsTerminal() && rec.OutputBytes != page.TotalBytes {
+			return jobstore.OutputWindowSnapshot{}, fmt.Errorf("jobstore: output metadata total %d does not match job record total %d", page.TotalBytes, rec.OutputBytes)
+		}
 	}
-	content, start, end, err := windowOutputFile(path, beforeBytes, maxBytes, total, earliest)
-	if err != nil {
-		return jobOutputWindow{}, err
-	}
-	return jobOutputWindow{content: content, start: start, end: end, total: total, earliest: earliest}, nil
+	return page, err
 }
 
 // recordForRead resolves jobID's record with the live-first order both
-// readOutputWindow and Session.JobGet depend on: the running record when the
+// readOutputPage and Session.JobGet depend on: the running record when the
 // job is live, else the store's folded record. run is non-nil only when a live
-// job owns jobID (readOutputWindow reads the live output buffer through it);
+// job owns jobID (readOutputPage reads the live output buffer through it);
 // rec is a SNAPSHOT of the live record when the job is running, else the
 // store's already-folded record, and nil when neither holds the job.
 //

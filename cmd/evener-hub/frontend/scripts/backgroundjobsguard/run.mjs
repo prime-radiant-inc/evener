@@ -236,7 +236,7 @@ try {
   await wait(`(() => { const n=document.querySelector(${q(row(fixture.laterJobId))}); return n && n.textContent.includes('Command failed'); })()`, "late job moves into open Completed history with true nonzero outcome");
   await quiet(fixture.laterJobId, "Command failed", false);
   await driver.click(row(fixture.laterJobId));
-  await waitFrames(() => sent(after).some(f => f.method === "evener/jobs/output" && f.params.ref === fixture.rootRef && f.params.jobId === fixture.laterJobId && response(f)?.result?.data?.tail.includes("BACKGROUND_LATE_FINAL")), "real output RPC targets the authoritative job owner");
+  await waitFrames(() => sent(after).some(f => f.method === "evener/jobs/output" && f.params.ref === fixture.rootRef && f.params.jobId === fixture.laterJobId && response(f)?.result?.data?.encoding === "utf8" && response(f)?.result?.data?.data?.includes("BACKGROUND_LATE_FINAL")), "real output RPC targets the authoritative job owner");
   await wait("document.querySelector('[data-testid=joblog-content]')?.textContent === 'BACKGROUND_LATE_INITIAL\\nBACKGROUND_LATE_REFRESH\\nBACKGROUND_LATE_RECONNECT\\nBACKGROUND_LATE_FINAL\\n'", "actual readonly secondary output pane renders exact retained command output");
   await wait(`(() => { const layout=JSON.parse(localStorage.getItem('evener.workspace.layout.v2') ?? 'null');
     const panes=Object.values(layout?.panels ?? {}).map(p => p.params);

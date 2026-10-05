@@ -1,19 +1,21 @@
 package agent
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/identifier"
 )
 
-// TestLoadSessionJobOutputTail_TerminalRecordMismatch covers the error path at
+// TestLoadSessionJobOutputPage_TerminalRecordMismatch covers the error path at
 // line 105: validatedOutputStatsForRecord returns a non-NotExist error because
 // the terminal record's OutputBytes does not match the file's actual size.
-func TestLoadSessionJobOutputTail_TerminalRecordMismatch(t *testing.T) {
+func TestLoadSessionJobOutputPage_TerminalRecordMismatch(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	sessionID := identifier.MustNewSessionID()
@@ -42,7 +44,7 @@ func TestLoadSessionJobOutputTail_TerminalRecordMismatch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, found, err := LoadSessionJobOutputTail(dir, sessionID, "job_mismatch", 0, 4)
+	_, found, err := LoadSessionJobOutputPage(dir, sessionID, "job_mismatch", nil, 4)
 	if err == nil {
 		t.Fatal("expected error for terminal record mismatch")
 	}
@@ -51,10 +53,10 @@ func TestLoadSessionJobOutputTail_TerminalRecordMismatch(t *testing.T) {
 	}
 }
 
-// TestLoadSessionJobOutputTail_OutputIsDirectory covers the error path at
+// TestLoadSessionJobOutputPage_OutputIsDirectory covers the error path at
 // lines 109-112: windowOutputFile returns a non-NotExist error because the
 // output path is a directory (read fails).
-func TestLoadSessionJobOutputTail_OutputIsDirectory(t *testing.T) {
+func TestLoadSessionJobOutputPage_OutputIsDirectory(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	sessionID := identifier.MustNewSessionID()
@@ -82,7 +84,7 @@ func TestLoadSessionJobOutputTail_OutputIsDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, found, err := LoadSessionJobOutputTail(dir, sessionID, "job_dir", 0, 4)
+	_, found, err := LoadSessionJobOutputPage(dir, sessionID, "job_dir", nil, 4)
 	if err == nil {
 		t.Fatal("expected error for directory-as-output")
 	}
@@ -91,10 +93,10 @@ func TestLoadSessionJobOutputTail_OutputIsDirectory(t *testing.T) {
 	}
 }
 
-// TestLoadSessionJobOutputTail_NoOutputFile covers the not-exist path at
+// TestLoadSessionJobOutputPage_NoOutputFile covers the not-exist path at
 // line 102-103: validatedOutputStatsForRecord returns os.ErrNotExist for a
 // running job whose output file does not exist.
-func TestLoadSessionJobOutputTail_NoOutputFile(t *testing.T) {
+func TestLoadSessionJobOutputPage_NoOutputFile(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	sessionID := identifier.MustNewSessionID()
@@ -117,21 +119,22 @@ func TestLoadSessionJobOutputTail_NoOutputFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	tail, found, err := LoadSessionJobOutputTail(dir, sessionID, "job_missing", 0, 4)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	tail, found, err := LoadSessionJobOutputPage(dir, sessionID, "job_missing", nil, 4)
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeUnavailable {
+		t.Fatalf("missing output error = %v, want unavailable", err)
 	}
 	if !found {
 		t.Fatal("expected found=true (job exists)")
 	}
-	if tail.Tail != "" {
-		t.Fatalf("expected empty tail, got %q", tail.Tail)
+	if tail != (appwire.JobOutputPage{}) {
+		t.Fatalf("unavailable output fabricated a page: %+v", tail)
 	}
 }
 
-// TestLoadSessionJobOutputTail_EmptyOutputPath covers the default-path path at
+// TestLoadSessionJobOutputPage_EmptyOutputPath covers the default-path path at
 // line 98: rec.OutputPath is empty, so outPath is built from stateDir/sessionID/jobs.
-func TestLoadSessionJobOutputTail_EmptyOutputPath(t *testing.T) {
+func TestLoadSessionJobOutputPage_EmptyOutputPath(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	sessionID := identifier.MustNewSessionID()
@@ -158,14 +161,14 @@ func TestLoadSessionJobOutputTail_EmptyOutputPath(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	tail, found, err := LoadSessionJobOutputTail(dir, sessionID, "job_default", 0, 5)
+	tail, found, err := LoadSessionJobOutputPage(dir, sessionID, "job_default", nil, 5)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !found {
 		t.Fatal("expected found=true")
 	}
-	if tail.Tail != "hello" {
-		t.Fatalf("tail = %q, want 'hello'", tail.Tail)
+	if tail.Data != "hello" {
+		t.Fatalf("tail = %q, want 'hello'", tail.Data)
 	}
 }
