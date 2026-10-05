@@ -484,6 +484,10 @@ export function useTranscriptViewRegistration(
     // pane must discard the old demand before those children can consume it.
     pendingRef.current = null;
     coherentRef.current = null;
+    // Completed placement is also owned by that identity, not by the reused
+    // DOM port. Keep it for same-view child-to-parent initialization only.
+    const el = options.listRef?.current?.getScrollElement();
+    if (el) retainedPlacements.delete(el);
     placementIdentityRef.current = { id, logicalRef };
   }
 

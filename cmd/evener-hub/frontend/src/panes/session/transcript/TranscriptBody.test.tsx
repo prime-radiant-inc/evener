@@ -7,7 +7,7 @@ import {
   subagentWireStep,
 } from "@evener/appwire-client/testing/subagentWireFixtures";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { createRef, StrictMode, useRef, useState } from "react";
+import { createRef, type RefObject, StrictMode, useRef, useState } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { connectionStore } from "../../../stores/connection";
 import { sessionActivitySnapshot } from "../../../stores/sessionActivity";
@@ -18,6 +18,7 @@ import type { VirtualListHandle } from "../../../widgets";
 import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
 import {
   captureTranscriptViews,
+  prepareTranscriptViewRemount,
   resetTranscriptViewRegistryForTests,
   restoreTranscriptViews,
   transitionTranscriptViews,
@@ -1424,14 +1425,17 @@ describe("retained transcript placement", () => {
     keepRemount,
     viewId = "retained-pane",
     empty = false,
+    listRef: suppliedListRef,
   }: {
     loaded?: boolean;
     session?: string;
     keepRemount?: () => boolean;
     viewId?: string;
     empty?: boolean;
+    listRef?: RefObject<VirtualListHandle | null>;
   }) {
-    const listRef = useRef<VirtualListHandle>(null);
+    const internalListRef = useRef<VirtualListHandle>(null);
+    const listRef = suppliedListRef ?? internalListRef;
     const currentModel = loaded ? { ...longModel, ref: session, turns: empty ? [] : longModel.turns } : undefined;
     const flow = flowModule.useTranscriptScroll({
       ref: session,
@@ -1600,6 +1604,80 @@ describe("retained transcript placement", () => {
     rerender(<Harness session="local:new-session" />);
     resized();
     expect(port().scrollTop).toBe(3712);
+  });
+
+  test.each([false, true])(
+    "a completed A placement cannot suppress latest after same-DOM A→B→A, StrictMode %s",
+    (strict) => {
+      const listRef = createRef<VirtualListHandle>();
+      const view = (session: string) => {
+        const body = <Harness session={session} listRef={listRef} />;
+        return strict ? <StrictMode>{body}</StrictMode> : body;
+      };
+      const { rerender } = render(view(fixture.ref));
+      const scrollingElement = port();
+      resized();
+      expect(listRef.current?.isMeasurementReady?.()).toBe(true);
+      expect(scrollingElement.scrollHeight).toBe(4368);
+      expect(scrollingElement.clientHeight).toBe(656);
+      expect(scrollingElement.scrollTop).toBe(3712);
+
+      readBack(3292);
+      const captured = captureTranscriptViews();
+      expect(captured.get("retained-pane")).toMatchObject({
+        anchorId: "long-message",
+        anchorOffset: -3292,
+        followingBottom: false,
+      });
+      readBack(3000);
+      act(() => restoreTranscriptViews(captured));
+      // Unchanged row size need not notify the virtualizer again. Its real
+      // Body commit also retries placement against the useful measurement.
+      rerender(view(fixture.ref));
+      resized();
+      expect(port()).toBe(scrollingElement);
+      expect(scrollingElement.scrollTop).toBe(3292);
+      // The production restore completed, rather than remaining pending and
+      // being consumed by B. A subsequent measurement respects reader input.
+      readBack(3200);
+      rerender(view(fixture.ref));
+      resized();
+      expect(scrollingElement.scrollTop).toBe(3200);
+
+      rerender(view("local:session-b"));
+      resized();
+      expect(port()).toBe(scrollingElement);
+      expect(listRef.current?.isMeasurementReady?.()).toBe(true);
+      expect(scrollingElement.scrollTop).toBe(3712);
+      readBack(3000);
+      expect(captureTranscriptViews().get("retained-pane")).toMatchObject({
+        anchorOffset: -3000,
+        followingBottom: false,
+      });
+
+      rerender(view(fixture.ref));
+      resized();
+      expect(port()).toBe(scrollingElement);
+      expect(listRef.current?.isMeasurementReady?.()).toBe(true);
+      expect(scrollingElement.scrollTop).toBe(3712);
+    },
+  );
+
+  test("same-A child registration hands measured retained placement to parent initialization", () => {
+    const listRef = createRef<VirtualListHandle>();
+    const { rerender } = render(<Harness key="outgoing" listRef={listRef} />);
+    resized();
+    expect(listRef.current?.isMeasurementReady?.()).toBe(true);
+    expect(port().scrollTop).toBe(3712);
+    readBack(3292);
+    act(() => prepareTranscriptViewRemount(captureTranscriptViews(), "desktop"));
+    // Registration is the only incoming restore. Do not replay a transition's
+    // finally restore after the parent's initialization could overwrite it.
+    rerender(<Harness key="incoming" listRef={listRef} />);
+    expect(port().scrollTop).toBe(3292);
+    resized();
+    expect(listRef.current?.isMeasurementReady?.()).toBe(true);
+    expect(port().scrollTop).toBe(3292);
   });
 
   test("closing and reopening the same pane id starts at latest rather than its previous session position", () => {
