@@ -124,6 +124,25 @@ func RemoveSessionScratchTree(rootID string) error {
 	return errors.Join(errs...)
 }
 
+// SessionScratchTreeRootIDs lists the root sessions whose scratch trees exist
+// in any base a session may have used, each once.
+func SessionScratchTreeRootIDs() []string {
+	var ids []string
+	for _, base := range sessionScratchTreeBases() {
+		entries, err := os.ReadDir(base)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			id, ok := strings.CutPrefix(entry.Name(), sessionScratchTreePrefix)
+			if ok && entry.IsDir() && !slices.Contains(ids, id) {
+				ids = append(ids, id)
+			}
+		}
+	}
+	return ids
+}
+
 // sessionScratchTombstonePrefix marks a session scratch renamed out of its
 // session's path for removal. Session IDs never start with a dot.
 const sessionScratchTombstonePrefix = ".removing-"

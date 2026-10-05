@@ -5,6 +5,7 @@ package sandbox
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 )
 
@@ -126,6 +127,30 @@ func TestRemoveSessionScratchTreeRemovesRootAndChildren(t *testing.T) {
 	}
 	if err := RemoveSessionScratchTree("NEVERMINTED"); err != nil {
 		t.Fatalf("removing an absent tree: %v", err)
+	}
+}
+
+// SessionScratchTreeRootIDs lists the roots whose trees exist, so a reconcile
+// visits only those instead of every session ever recorded.
+func TestSessionScratchTreeRootIDsListsExistingTrees(t *testing.T) {
+	base := t.TempDir()
+	prev := sessionScratchTempDir
+	sessionScratchTempDir = func() string { return base }
+	t.Cleanup(func() { sessionScratchTempDir = prev })
+	for _, root := range []string{"ROOTA", "ROOTB"} {
+		s, err := OpenSessionScratch("", t.TempDir(), root, root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = s.Retain()
+	}
+	if err := os.MkdirAll(filepath.Join(base, "evener-sandbox-123"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	got := SessionScratchTreeRootIDs()
+	slices.Sort(got)
+	if want := []string{"ROOTA", "ROOTB"}; !slices.Equal(got, want) {
+		t.Errorf("SessionScratchTreeRootIDs = %v, want %v", got, want)
 	}
 }
 

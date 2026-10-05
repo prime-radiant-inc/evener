@@ -835,6 +835,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	roster.Refresh()
 	// With live daemons known, catch up on archived sessions' scratch: ones that
 	// aged into the archive and ones whose daemon exited while the hub was down.
+	startBackground(func() { scratchReconcile.Run(ctx) })
 	scratchReconcile.Kick()
 	// Start the resettable navigation scheduler only after the initial roster
 	// seed, so its first capture cannot publish a transient empty generation.

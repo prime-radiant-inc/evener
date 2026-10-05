@@ -493,6 +493,43 @@ func TestArchiveSetKicksTheScratchReconcile(t *testing.T) {
 	}
 }
 
+// The reconciler's own goroutine serves a kick: an archived session's tree
+// goes once Run picks the kick up.
+func TestScratchReconcilerRunServesAKick(t *testing.T) {
+	tmp, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMPDIR", tmp)
+	sessionID := hubtest.SessionID(t)
+	projects := t.TempDir()
+	project, err := identifier.ResolveProject(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeSessionUpdatedAt(t, filepath.Join(projects, project.ID), sessionID, project.CanonicalPath, time.Now())
+	past := hubcore.NewPastIndex(filepath.Join(projects, "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	archive := hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db"))
+	if err := archive.Set("", "session", sessionID, true, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	tree := mintEndedScratchTree(t, sessionID)
+	reconciler := newScratchReconciler(hubcore.WebConfig{Past: past, Archive: archive})
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() { defer close(done); reconciler.Run(ctx) }()
+	t.Cleanup(func() { cancel(); <-done })
+
+	reconciler.Kick()
+	waitFor(t, func() bool {
+		_, err := os.Lstat(tree)
+		return os.IsNotExist(err)
+	}, "the kicked reconcile never removed the archived session's scratch tree")
+}
+
 // A session archived while its daemon was still running keeps its scratch
 // until that daemon exits; the roster seeing it go is what removes the tree.
 // A daemon whose session is not archived leaves its scratch alone.

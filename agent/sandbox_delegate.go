@@ -216,13 +216,16 @@ func (s *Session) scratchTreeRootID() string {
 	return s.id
 }
 
-// CloseDiscardingScratch closes a throwaway session and removes its scratch
-// tree. A session's scratch normally outlives its close until the hub archives
-// it; a session no hub will ever index (a tool catalog, a probe) uses this so
-// it leaves nothing behind.
+// CloseDiscardingScratch closes a throwaway top-level session and removes its
+// scratch tree. A session's scratch normally outlives its close until the hub
+// archives it; a session no hub will ever index (a tool catalog, a probe) uses
+// this so it leaves nothing behind. On a delegate it only closes: the tree is
+// its root's.
 func (s *Session) CloseDiscardingScratch() {
 	s.Close()
-	_ = sandbox.RemoveSessionScratchTree(s.scratchTreeRootID())
+	if s.cfg.spawn.parentSessionID == "" {
+		_ = sandbox.RemoveSessionScratchTree(s.scratchTreeRootID())
+	}
 }
 
 // parentSandboxModeNet reports the session's effective sandbox (mode, network) —

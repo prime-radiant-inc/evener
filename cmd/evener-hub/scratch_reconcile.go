@@ -1,7 +1,7 @@
 package hub
 
 import (
-	"sync"
+	"context"
 	"time"
 
 	agentsandbox "primeradiant.com/evener/agent/sandbox"
@@ -13,7 +13,7 @@ import (
 // project; pastArchived), unless the session's daemon is still running. It runs
 // after every archive and daemon exit and at startup, so it also catches
 // sessions that aged into the archive and daemons that exited while the hub
-// was down.
+// was down. It visits only the trees that exist, not every recorded session.
 func reconcileArchivedScratch(cfg hubcore.WebConfig, now time.Time) {
 	if cfg.Past == nil || cfg.Archive == nil {
 		return
@@ -22,57 +22,52 @@ func reconcileArchivedScratch(cfg hubcore.WebConfig, now time.Time) {
 	if err != nil {
 		return
 	}
-	for _, entry := range cfg.Past.All() {
+	for _, id := range agentsandbox.SessionScratchTreeRootIDs() {
+		entry, known := cfg.Past.FindIndexed(id)
+		if !known {
+			continue
+		}
 		// A daemon that died stays listed, marked Crashed; only a running one
 		// keeps its session's scratch.
 		if cfg.Roster != nil {
-			if live, listed := cfg.Roster.Find(entry.ID); listed && !live.Crashed {
+			if live, listed := cfg.Roster.Find(id); listed && !live.Crashed {
 				continue
 			}
 		}
 		// Best-effort: a tree it cannot take now is retried on the next pass.
 		if pastArchived(entry, decisions, now) {
-			_ = agentsandbox.RemoveSessionScratchTree(entry.ID)
+			_ = agentsandbox.RemoveSessionScratchTree(id)
 		}
 	}
 }
 
-// scratchReconciler runs reconcileArchivedScratch off the caller's path, one
-// pass at a time. A kick that lands during a pass runs one more pass after it,
-// so no archive the kick was for is missed.
+// scratchReconciler runs reconcileArchivedScratch on its own goroutine, one
+// pass at a time. Kicks that land during a pass collapse into one more pass.
 type scratchReconciler struct {
-	cfg hubcore.WebConfig
-
-	mu      sync.Mutex
-	running bool
-	again   bool
+	cfg  hubcore.WebConfig
+	kick chan struct{}
 }
 
 func newScratchReconciler(cfg hubcore.WebConfig) *scratchReconciler {
-	return &scratchReconciler{cfg: cfg}
+	return &scratchReconciler{cfg: cfg, kick: make(chan struct{}, 1)}
 }
 
-// Kick asks for a reconcile pass.
+// Kick asks for a reconcile pass without waiting for it.
 func (r *scratchReconciler) Kick() {
-	r.mu.Lock()
-	if r.running {
-		r.again = true
-		r.mu.Unlock()
-		return
+	select {
+	case r.kick <- struct{}{}:
+	default:
 	}
-	r.running = true
-	r.mu.Unlock()
-	go func() {
-		for {
+}
+
+// Run serves kicks until ctx ends.
+func (r *scratchReconciler) Run(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-r.kick:
 			reconcileArchivedScratch(r.cfg, time.Now())
-			r.mu.Lock()
-			if !r.again {
-				r.running = false
-				r.mu.Unlock()
-				return
-			}
-			r.again = false
-			r.mu.Unlock()
 		}
-	}()
+	}
 }
