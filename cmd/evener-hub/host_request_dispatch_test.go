@@ -196,6 +196,11 @@ func TestHostRequestForwardedMutationNeverTakesAReadSlot(t *testing.T) {
 		}
 		break
 	}
+	// A refusal with nothing held (an offline host, say) would leave the pool
+	// empty, and the mutation below would run whatever its dispatch.
+	if heldReads() == 0 {
+		t.Fatal("the first forwarded read was refused, so the pool never held any")
+	}
 	if err := answerOf(t, hostRequest(client, appwire.MethodEvenerPluginEnable)); err != nil {
 		t.Fatalf("a forwarded mutation beside a full pool answered %v, want it run on the serial worker", err)
 	}
