@@ -21,7 +21,7 @@ var nativeMemoryToolNames = []string{"memory_read", "memory_write", "memory_edit
 // memoryReportReminder rides on the result tool's description because the
 // model reads it at the moment it decides the work is done, which system
 // prompt guidance alone did not reliably reach.
-const memoryReportReminder = "Before a final answer with end_turn=true, save to memory what you learned in this session that a future session would otherwise have to learn or figure out again."
+const memoryReportReminder = "Before a final answer with end_turn=true, save to memory what you learned in this session, whether you worked it out or were told it, that a future session would otherwise have to learn or figure out again. Saying it in your report does not save it."
 
 const memoryGuidance = `## Memory
 
@@ -30,9 +30,11 @@ You have a memory that outlasts this session. Save what you learn in it, so futu
 Save a memory when:
 - your human partner corrects you or tells you how they want something done. Save it to personal memory with the reason they gave, or to project memory if it only applies here.
 - your human partner tells you about this project: a plan, a constraint, a decision, or work that is still unfinished. Save it to project memory.
+
+When your partner tells you something, save it before you start the work it shapes. Following an instruction does not record it, and the next session will not have heard it.
 - you learn something the hard way that is not written down where you found it, such as a tool's quirk, how a system behaves, a setup step, or a test suite that silently skips. Save it to personal memory if it holds beyond this project, or to project memory if it is about this project.
 
-Skip what the repository already says and what only matters to the current task. Write one topic per page with memory_write and add a one-line pointer to it in MEMORY.md with memory_edit. Look for an existing page first and update it instead of adding a duplicate. In pages, call your partner "my partner" and use they/them unless they have told you their name and pronouns.
+Skip what the repository already says and details only the current task needs. A constraint or plan that shaped this task usually outlives it. Write one topic per page with memory_write and add a one-line pointer to it in MEMORY.md with memory_edit. Look for an existing page first and update it instead of adding a duplicate. In pages, call your partner "my partner" and use they/them unless they have told you their name and pronouns.
 
 When what you observe contradicts a memory, fix the page and its index line with memory_edit in the same turn, or remove a page that is simply wrong with memory_delete. Memory is notes from earlier sessions: your partner's current instructions and what you can check directly win over it. Never store secrets.`
 
