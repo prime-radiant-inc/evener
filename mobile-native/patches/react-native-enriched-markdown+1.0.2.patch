@@ -2789,7 +2789,7 @@ index 9570bf5..a3b8a21 100644
 
 diff --git a/node_modules/react-native-enriched-markdown/ios/ENRMDocumentTextRegion.h b/node_modules/react-native-enriched-markdown/ios/ENRMDocumentTextRegion.h
 new file mode 100644
-index 0000000..773e681
+index 0000000..3f21deb
 --- /dev/null
 +++ b/node_modules/react-native-enriched-markdown/ios/ENRMDocumentTextRegion.h
 @@ -0,0 +1,36 @@
@@ -2827,7 +2827,7 @@ index 0000000..773e681
 +- (void)documentModelDidChange;
 +@end
 +
-+FOUNDATION_EXPORT nullable UIView<ENRMDocumentSelectionHost> *ENRMDocumentHostForView(UIView *view);
++FOUNDATION_EXPORT UIView<ENRMDocumentSelectionHost> * _Nullable ENRMDocumentHostForView(UIView *view);
 +NS_ASSUME_NONNULL_END
 diff --git a/node_modules/react-native-enriched-markdown/ios/ENRMDocumentTextRegion.mm b/node_modules/react-native-enriched-markdown/ios/ENRMDocumentTextRegion.mm
 new file mode 100644
@@ -4244,7 +4244,7 @@ index f8c9332..0da340f 100644
   public:
    using ViewEventEmitter::ViewEventEmitter;
 diff --git a/node_modules/react-native-enriched-markdown/ios/generated/ReactCodegen/EnrichedMarkdownTextSpec/Props.cpp b/node_modules/react-native-enriched-markdown/ios/generated/ReactCodegen/EnrichedMarkdownTextSpec/Props.cpp
-index 9042352..771034d 100644
+index 9042352..7390f24 100644
 --- a/node_modules/react-native-enriched-markdown/ios/generated/ReactCodegen/EnrichedMarkdownTextSpec/Props.cpp
 +++ b/node_modules/react-native-enriched-markdown/ios/generated/ReactCodegen/EnrichedMarkdownTextSpec/Props.cpp
 @@ -14,12 +14,93 @@
@@ -4403,7 +4403,7 @@ index 9042352..771034d 100644
      const PropsParserContext &context,
      const EnrichedMarkdownTextInputProps &sourceProps,
 diff --git a/node_modules/react-native-enriched-markdown/ios/generated/ReactCodegen/EnrichedMarkdownTextSpec/Props.h b/node_modules/react-native-enriched-markdown/ios/generated/ReactCodegen/EnrichedMarkdownTextSpec/Props.h
-index 1416540..f3c4718 100644
+index 1416540..07cacc7 100644
 --- a/node_modules/react-native-enriched-markdown/ios/generated/ReactCodegen/EnrichedMarkdownTextSpec/Props.h
 +++ b/node_modules/react-native-enriched-markdown/ios/generated/ReactCodegen/EnrichedMarkdownTextSpec/Props.h
 @@ -18,6 +18,113 @@
@@ -4646,7 +4646,7 @@ index 1416540..f3c4718 100644
 
  struct EnrichedMarkdownTextInputMarkdownStyleStrongStruct {
 diff --git a/node_modules/react-native-enriched-markdown/ios/generated/ReactCodegen/EnrichedMarkdownTextSpec/RCTComponentViewHelpers.h b/node_modules/react-native-enriched-markdown/ios/generated/ReactCodegen/EnrichedMarkdownTextSpec/RCTComponentViewHelpers.h
-index 58b4356..db11b76 100644
+index 58b4356..4cff3b2 100644
 --- a/node_modules/react-native-enriched-markdown/ios/generated/ReactCodegen/EnrichedMarkdownTextSpec/RCTComponentViewHelpers.h
 +++ b/node_modules/react-native-enriched-markdown/ios/generated/ReactCodegen/EnrichedMarkdownTextSpec/RCTComponentViewHelpers.h
 @@ -13,10 +13,18 @@
