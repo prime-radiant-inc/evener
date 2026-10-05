@@ -14,9 +14,6 @@ import (
 	"primeradiant.com/evener/agent/sandbox"
 )
 
-// TestEndSessionScratchKeepsANamedScratchAndPrunesItsCaches: a session's named
-// scratch outlives the session's end (it goes when the hub archives the
-// session), so the end prunes only the regenerable caches.
 // resolvedTempBase is a test temp dir with its symlinks resolved, so it compares
 // equal to the scratch paths minted under it on macOS (/var -> /private/var).
 func resolvedTempBase(t *testing.T) string {
@@ -82,6 +79,9 @@ func TestFailedEnableSandboxKeepsANamedScratch(t *testing.T) {
 	_ = reopened.Retain()
 }
 
+// TestEndSessionScratchKeepsANamedScratchAndPrunesItsCaches: a session's named
+// scratch outlives the session's end (it goes when the hub archives the
+// session), so the end prunes only the regenerable caches.
 func TestEndSessionScratchKeepsANamedScratchAndPrunesItsCaches(t *testing.T) {
 	base := resolvedTempBase(t)
 	env := NewLocalExecutionEnvironment(t.TempDir())
