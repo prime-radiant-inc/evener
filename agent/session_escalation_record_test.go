@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -13,20 +14,18 @@ import (
 // approval history NOTICE has somewhere to land.
 func recordingEscalationSession(t *testing.T) *Session {
 	t.Helper()
-	s := newSession(t, withConfig(SessionConfig{
+	return escalatableSession(t, withConfig(SessionConfig{
 		StateDir: t.TempDir(),
 		testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 	}))
-	s.SetSubscriberCountFunc(func() int { return 1 })
-	return s
 }
 
 // approvalDecisions lists the approval NOTICE entries the transcript holds.
 func approvalDecisions(t *testing.T, s *Session) []schema.ApprovalDecisionNotice {
 	t.Helper()
 	var decisions []schema.ApprovalDecisionNotice
-	for _, entry := range transcriptEntries(t, s) {
-		if notice := entry.Turn.Notice; entry.Turn.Kind == schema.TurnNotice && notice != nil && notice.Kind == schema.NoticeApprovalDecision {
+	for _, turn := range entriesOfKind(transcriptTurnsOf(t, s), schema.TurnNotice) {
+		if notice := turn.Notice; notice != nil && notice.Kind == schema.NoticeApprovalDecision {
 			if notice.ApprovalDecision == nil {
 				t.Fatalf("approval NOTICE without its payload: %+v", notice)
 			}
@@ -41,21 +40,23 @@ func approvalDecisions(t *testing.T, s *Session) []schema.ApprovalDecisionNotice
 // history reads the same after a reload as it did live.
 func TestEscalation_RecordsTheHumansDecision(t *testing.T) {
 	for _, approve := range []bool{true, false} {
-		s := recordingEscalationSession(t)
-		res, denied := deniedResult("/etc/hosts")
-		done := make(chan tool.ExecResult, 1)
-		go func() {
-			done <- s.escalateOnSandboxDenial(context.Background(), "write_file", res, func(context.Context) tool.ExecResult { return succeededResult() })
-		}()
-		ids := awaitPending(t, s, 1)
-		if err := s.ResolveSandboxEscalation(ids[0], approve); err != nil {
-			t.Fatalf("resolve: %v", err)
-		}
-		<-done
-		want := schema.ApprovalDecisionNotice{EscalationID: ids[0], Approved: approve, Tool: denied.Tool, Kind: "file_tool", DeniedPath: denied.Path}
-		if got := approvalDecisions(t, s); len(got) != 1 || got[0] != want {
-			t.Fatalf("approve=%v recorded %+v, want exactly %+v", approve, got, want)
-		}
+		t.Run(fmt.Sprintf("approve=%v", approve), func(t *testing.T) {
+			s := recordingEscalationSession(t)
+			res, denied := deniedResult("/etc/hosts")
+			done := make(chan tool.ExecResult, 1)
+			go func() {
+				done <- s.escalateOnSandboxDenial(context.Background(), "write_file", res, func(context.Context) tool.ExecResult { return succeededResult() })
+			}()
+			ids := awaitPending(t, s, 1)
+			if err := s.ResolveSandboxEscalation(ids[0], approve); err != nil {
+				t.Fatalf("resolve: %v", err)
+			}
+			<-done
+			want := schema.ApprovalDecisionNotice{EscalationID: ids[0], Approved: approve, Tool: denied.Tool, Kind: "file_tool", DeniedPath: denied.Path}
+			if got := approvalDecisions(t, s); len(got) != 1 || got[0] != want {
+				t.Fatalf("recorded %+v, want exactly %+v", got, want)
+			}
+		})
 	}
 }
 

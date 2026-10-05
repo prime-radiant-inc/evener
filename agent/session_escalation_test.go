@@ -39,9 +39,9 @@ func succeededResult() tool.ExecResult {
 
 // escalatableSession returns a root, interactive session with one live subscriber
 // — the only configuration that escalates.
-func escalatableSession(t *testing.T) *Session {
+func escalatableSession(t *testing.T, opts ...sessionOpt) *Session {
 	t.Helper()
-	s := newSession(t)
+	s := newSession(t, opts...)
 	s.SetSubscriberCountFunc(func() int { return 1 })
 	return s
 }

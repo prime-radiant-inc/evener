@@ -1885,8 +1885,7 @@ const (
 	ThreadItemEventKindInterrupted ThreadItemEventKind = "interrupted"
 	// ThreadItemEventKindApprovalDecision marks the systemMessage item a
 	// human's Allow or Deny on a sandbox escalation leaves in history (S16).
-	// Its Raw carries {"approvalDecision": {escalationId, approved, tool,
-	// kind, deniedPath}}; a client draws the approval history row from that.
+	// apptranscript.ApprovalDecisionAnnouncement documents its Raw.
 	ThreadItemEventKindApprovalDecision ThreadItemEventKind = "approval_decision"
 )
 
