@@ -37,11 +37,18 @@ func CommunicateItem(turnID string, entryIndex int, entry schema.Turn) (appwire.
 		CallID: entry.Communicate.CallID,
 		Status: appwire.TurnStatusCompleted,
 	}
-	if !entry.Timestamp.IsZero() {
-		ms := entry.Timestamp.UnixMilli()
-		item.StartedAt = &ms
-	}
+	item.StartedAt = entryStartedAt(entry)
 	return item, true
+}
+
+// entryStartedAt is an entry's recorded instant as a startedAt, or nil when
+// the entry has no timestamp.
+func entryStartedAt(entry schema.Turn) *int64 {
+	if entry.Timestamp.IsZero() {
+		return nil
+	}
+	ms := entry.Timestamp.UnixMilli()
+	return &ms
 }
 
 // NoticeItem projects a NOTICE entry as the systemMessage the live projector
@@ -61,10 +68,7 @@ func NoticeItem(turnID string, entryIndex int, entry schema.Turn) (appwire.Threa
 		return appwire.ThreadItem{}, false
 	}
 	item.TranscriptEntryIndex = entryIndex
-	if !entry.Timestamp.IsZero() {
-		ms := entry.Timestamp.UnixMilli()
-		item.StartedAt = &ms
-	}
+	item.StartedAt = entryStartedAt(entry)
 	return item, true
 }
 
@@ -221,7 +225,8 @@ func ApprovalDecisionAnnouncement(notice schema.ApprovalDecisionNotice) NoticeAn
 	// The conversion keeps the wire's field list tied to
 	// ApprovalDecisionNotice's: Go ignores tags when converting between
 	// struct types with identical fields.
-	raw, err := json.Marshal(map[string]any{
+	// Marshal cannot fail: every field is a string or a bool.
+	raw, _ := json.Marshal(map[string]any{
 		"approvalDecision": struct {
 			EscalationID string `json:"escalationId"` //nolint:tagliatelle // AppWire Raw payload the clients read (camelCase wire).
 			Approved     bool   `json:"approved"`
@@ -230,8 +235,5 @@ func ApprovalDecisionAnnouncement(notice schema.ApprovalDecisionNotice) NoticeAn
 			DeniedPath   string `json:"deniedPath"` //nolint:tagliatelle // AppWire Raw payload the clients read (camelCase wire).
 		}(notice),
 	})
-	if err != nil {
-		raw = nil
-	}
 	return NoticeAnnouncement{EventKind: appwire.ThreadItemEventKindApprovalDecision, Description: "Approval", Text: text, Raw: raw}
 }

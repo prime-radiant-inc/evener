@@ -6,9 +6,9 @@ import (
 	"primeradiant.com/evener/appwire"
 )
 
-// A human's Allow or Deny now leaves a systemMessage of its own kind in
-// history (S16), and every notice item now carries startedAt. The TUI shows
-// it as it shows every system message: its description over its text.
+// A human's Allow or Deny leaves a systemMessage of its own kind in history
+// (S16), carrying startedAt like every notice item. The TUI shows it as it
+// shows every system message: its description over its text.
 func TestApprovalDecisionRendersAsASystemLine(t *testing.T) {
 	r := NewTranscriptReducer(nil, map[string]int{}, map[string]int{})
 	startedAt := int64(1791297000000)
