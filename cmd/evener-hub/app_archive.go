@@ -4,8 +4,6 @@ import (
 	"context"
 	"time"
 
-	agentsandbox "primeradiant.com/evener/agent/sandbox"
-
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
@@ -107,15 +105,10 @@ func archiveSet(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.R
 	} else if err := persistNudge(); err != nil {
 		return appwire.ArchiveResponse{}, err
 	}
-	// Outside the session lock: removing a large tree must not hold up that
-	// session's other decisions. A project archive can archive many sessions,
-	// so it hands them to the reconcile.
-	if params.Archived {
-		if params.Kind == appwire.ArchiveTargetSession {
-			removeArchivedSessionScratch(decisionID)
-		} else if cfg.ScratchReconcile != nil {
-			cfg.ScratchReconcile()
-		}
+	// The reconcile removes the newly archived sessions' scratch off the request
+	// path, and leaves a session whose daemon still runs until that daemon exits.
+	if params.Archived && cfg.ScratchReconcile != nil {
+		cfg.ScratchReconcile()
 	}
 
 	// An archive decision can move a session in or out of tier eligibility;
@@ -137,19 +130,6 @@ func archiveSet(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.R
 		cfg.PokeAttention()
 	}
 	return appwire.ArchiveResponse{OK: true, Navigation: navigationMutation}, nil
-}
-
-// removeArchivedSessionScratch removes an archived local session's scratch
-// tree. A session whose daemon is still running keeps the scratch its sessions
-// still lease until that daemon exits and the reconcile runs
-// (reconcileArchivedScratch). Best-effort, like the daemon nudge: a remote
-// session's ref is not a local session ID and is skipped, and a failed removal
-// must not fail the archive decision.
-func removeArchivedSessionScratch(sessionID string) {
-	if identifier.ValidateSessionID(sessionID) != nil {
-		return
-	}
-	_ = agentsandbox.RemoveSessionScratchTree(sessionID)
 }
 
 // archivedSessionIdleTimeout is the automatic idle-retirement deadline the Hub

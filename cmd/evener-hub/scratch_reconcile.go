@@ -4,15 +4,16 @@ import (
 	"sync"
 	"time"
 
+	agentsandbox "primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
 
 // reconcileArchivedScratch removes the scratch tree of every session the rail
 // files as archived, by any rule (an explicit decision, age, or an archived
-// project; pastArchived), unless the session's daemon is still running. An
-// explicit archive removes its session's tree at once; this pass catches the
-// rest: sessions that aged into the archive, sessions in an archived project,
-// and sessions whose daemon exited while the hub was down.
+// project; pastArchived), unless the session's daemon is still running. It runs
+// after every archive and daemon exit and at startup, so it also catches
+// sessions that aged into the archive and daemons that exited while the hub
+// was down.
 func reconcileArchivedScratch(cfg hubcore.WebConfig, now time.Time) {
 	if cfg.Past == nil || cfg.Archive == nil {
 		return
@@ -29,8 +30,9 @@ func reconcileArchivedScratch(cfg hubcore.WebConfig, now time.Time) {
 				continue
 			}
 		}
+		// Best-effort: a tree it cannot take now is retried on the next pass.
 		if pastArchived(entry, decisions, now) {
-			removeArchivedSessionScratch(entry.ID)
+			_ = agentsandbox.RemoveSessionScratchTree(entry.ID)
 		}
 	}
 }

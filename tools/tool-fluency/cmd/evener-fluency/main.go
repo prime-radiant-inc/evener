@@ -198,7 +198,7 @@ func catalogTools(reg *registry.Registry, modelRef string) ([]catalogTool, error
 	if err != nil {
 		return nil, err
 	}
-	defer sess.Close()
+	defer sess.CloseDiscardingScratch()
 	defs := sess.ToolDefinitions()
 	out := make([]catalogTool, 0, len(defs))
 	for _, def := range defs {
@@ -975,6 +975,9 @@ func runProbe(cfg runConfig, probe probeFile, rep int, available map[string]bool
 	res.CanonicalToolCounts, res.ToolErrors, res.CommunicateMessages = parseEvents(stderr.Bytes())
 	if id, err := rootSessionID(stateDir); err == nil {
 		res.SessionID = id
+		// The probe session's scratch outlives it, and no hub ever archives a
+		// probe, so the harness removes the session's tree once it is done.
+		_ = sandbox.RemoveSessionScratchTree(id)
 	}
 	if counts, err := allTranscriptToolCounts(stateDir); err == nil {
 		res.ModelToolCounts = counts
@@ -1209,12 +1212,10 @@ func runLiveProbe(ctx context.Context, cfg runConfig, probe probeFile, res *prob
 	}
 	env := execenv.NewLocalExecutionEnvironment(res.WorkDir)
 	// The session's ID names its scratch tree, so it is picked before the
-	// sandbox mints the scratch. No hub archives a probe, so the probe removes
-	// the tree itself once its session has closed.
+	// sandbox mints the scratch; runProbe removes the tree after the probe.
 	if err := agent.PickFreshSessionID(env, &sessCfg); err != nil {
 		return err
 	}
-	defer func() { _ = sandbox.RemoveSessionScratchTree(sessCfg.SessionID) }()
 	// Engage enforcement before the session exists so a declared mode the host
 	// cannot serve fails closed here, before any provider call, rather than
 	// silently running the worker native and unsandboxed.

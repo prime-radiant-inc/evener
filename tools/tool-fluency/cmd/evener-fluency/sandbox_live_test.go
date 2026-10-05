@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/agent/execenv"
@@ -267,13 +268,8 @@ func TestRunLiveProbeRemovesItsSessionScratch(t *testing.T) {
 		return sess, nil
 	}
 
-	res := probeResult{StateDir: filepath.Join(dir, "state"), WorkDir: filepath.Join(dir, "work")}
-	for _, d := range []string{res.StateDir, res.WorkDir} {
-		if err := os.MkdirAll(d, 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	_ = runLiveProbe(context.Background(), runConfig{model: "openai/m", reasoningEffort: "low"}, probeFile{Prompt: "hi"}, &res, &bytes.Buffer{}, &bytes.Buffer{})
+	cfg := runConfig{model: "openai/m", reasoningEffort: "low", harness: "live", outDir: filepath.Join(dir, "out"), timeout: time.Minute}
+	_ = runProbe(cfg, probeFile{ID: "live", Prompt: "hi"}, 1, nil, nil)
 	if !strings.Contains(scratch, "evener-scratch-") {
 		t.Fatalf("probe session scratch = %q, want a named scratch in the session's tree", scratch)
 	}
@@ -333,5 +329,22 @@ func TestRunLiveProbeSettlesScratchOnSessionFailure(t *testing.T) {
 		if _, statErr := os.Stat(scratch); !os.IsNotExist(statErr) {
 			t.Fatalf("a failed session leaked the provisioned scratch %q (stat: %v)", scratch, statErr)
 		}
+	}
+}
+
+// The tool catalog stands up a throwaway session no hub will ever archive, so
+// it removes that session's scratch tree rather than leaving one per call.
+func TestCatalogToolsLeavesNoScratchTree(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	if _, err := catalogTools(provider.EmbeddedRegistry(), "openai/gpt-5.4-mini"); err != nil {
+		t.Fatalf("catalogTools: %v", err)
+	}
+	left, err := filepath.Glob(filepath.Join(tmp, "evener-scratch-*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(left) != 0 {
+		t.Errorf("catalogTools left scratch trees %v", left)
 	}
 }

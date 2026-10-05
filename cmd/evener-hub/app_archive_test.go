@@ -326,7 +326,8 @@ func TestArchiveSetWithoutResidentDaemonPersistsDecision(t *testing.T) {
 	assertSessionArchived(t, archive, sessionID, true)
 }
 
-// Archiving a session removes its scratch tree; unarchiving removes nothing.
+// Archiving a session removes its scratch tree, through the reconcile the
+// archive kicks; unarchiving removes nothing.
 func TestArchiveSetRemovesTheSessionsScratchTree(t *testing.T) {
 	tmp, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
@@ -334,8 +335,20 @@ func TestArchiveSetRemovesTheSessionsScratchTree(t *testing.T) {
 	}
 	t.Setenv("TMPDIR", tmp)
 	archive := hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db"))
-	web := NewWebServer(hubcore.WebConfig{Archive: archive, HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")})
 	sessionID := hubtest.SessionID(t)
+	projects := t.TempDir()
+	project, err := identifier.ResolveProject(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeSessionUpdatedAt(t, filepath.Join(projects, project.ID), sessionID, project.CanonicalPath, time.Now())
+	past := hubcore.NewPastIndex(filepath.Join(projects, "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	cfg := hubcore.WebConfig{Archive: archive, HubStateRoot: t.TempDir(), Past: past}
+	cfg.ScratchReconcile = func() { reconcileArchivedScratch(cfg, time.Now()) }
+	web := NewWebServer(cfg)
 
 	tree := mintEndedScratchTree(t, sessionID, "CHILD1")
 	if _, err := dispatchArchiveSet(t, web, appwire.ArchiveParams{
@@ -446,9 +459,10 @@ func TestReconcileArchivedScratchFollowsEveryArchiveRule(t *testing.T) {
 	}
 }
 
-// A project archive can archive many sessions at once, so it kicks the
-// reconcile rather than removing anything itself; unarchiving kicks nothing.
-func TestArchiveSetProjectKicksTheScratchReconcile(t *testing.T) {
+// An archive, of a session or a project, removes nothing on the request path:
+// it kicks the reconcile, which also skips a session whose daemon still runs.
+// Unarchiving kicks nothing.
+func TestArchiveSetKicksTheScratchReconcile(t *testing.T) {
 	workingDir := t.TempDir()
 	project, err := identifier.ResolveProject(workingDir)
 	if err != nil {
@@ -461,15 +475,21 @@ func TestArchiveSetProjectKicksTheScratchReconcile(t *testing.T) {
 		Past:             hubcore.NewPastIndex(""),
 		ScratchReconcile: func() { kicks++ },
 	})
+	sessionID := hubtest.SessionID(t)
 	for _, archived := range []bool{false, true} {
 		if _, err := dispatchArchiveSet(t, web, appwire.ArchiveParams{
 			Kind: appwire.ArchiveTargetProject, ID: project.ID, WorkingDir: workingDir, Archived: archived,
 		}); err != nil {
 			t.Fatalf("archive project (archived=%t): %v", archived, err)
 		}
+		if _, err := dispatchArchiveSet(t, web, appwire.ArchiveParams{
+			Kind: appwire.ArchiveTargetSession, ID: sessionID, Archived: archived,
+		}); err != nil {
+			t.Fatalf("archive session (archived=%t): %v", archived, err)
+		}
 	}
-	if kicks != 1 {
-		t.Errorf("reconcile kicks = %d, want 1 (the archive, not the unarchive)", kicks)
+	if kicks != 2 {
+		t.Errorf("reconcile kicks = %d, want 2 (the two archives, not the unarchives)", kicks)
 	}
 }
 
