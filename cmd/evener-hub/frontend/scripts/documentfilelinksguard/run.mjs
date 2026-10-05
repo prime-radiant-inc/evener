@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { applyViewport, connectPage, evaluate, navigateTo } from "../browserGuardCdp.mjs";
-import { startBrowserGuard } from "../browserGuardProcess.mjs";
+import { startBrowserGuard, waitForBrowserReady } from "../browserGuardProcess.mjs";
 
 const frontend = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const artifacts = process.env.DOCUMENT_FILE_LINKS_ARTIFACT_DIR;
@@ -39,7 +39,7 @@ async function click(send, selector) {
 }
 try {
   guard = await startBrowserGuard({ frontend, profilePrefix: "documentfilelinks-chrome-" });
-  const endpoint = await guard.waitForChrome();
+  const endpoint = await waitForBrowserReady(guard);
   page = await connectPage(endpoint);
   await page.send("Runtime.enable");
   page.ws.addEventListener("message", event => {
