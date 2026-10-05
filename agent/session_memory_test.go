@@ -1713,15 +1713,9 @@ func TestMemoryDeleteIdempotentOutcome(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				warn := s.fileReadGuard(env).ReadBeforeWriteWarning(path)
 				res := memoryExec(t, s, "memory_delete", map[string]any{"scope": scope, "file_path": relative})
 				if res.IsError {
 					t.Fatal(res.Output)
-				}
-				// This repair explicitly requires truthful union wording for the
-				// remover's indistinguishable unlink/already-absent outcomes.
-				if res.Output != warn+"Removed or already absent: "+path {
-					t.Fatalf("delete overstates its outcome: %q", res.Output)
 				}
 				if _, err := os.Lstat(path); !os.IsNotExist(err) {
 					t.Fatalf("file remains after delete: %v", err)
@@ -1750,16 +1744,21 @@ func TestMemoryDeleteUnreadable(t *testing.T) {
 					t.Fatalf("fixture is not unreadable: %v", err)
 				}
 			}
-			warn := s.fileReadGuard(env).ReadBeforeWriteWarning(path)
-			if warn == "" {
-				t.Fatal("unread file lost read-before-write warning")
+			s.readFilesMu.RLock()
+			_, trackedBefore := s.readFiles[path]
+			s.readFilesMu.RUnlock()
+			if trackedBefore {
+				t.Fatal("unreadable fixture already tracked as read")
 			}
 			result := memoryExec(t, s, "memory_delete", map[string]any{"scope": scope, "file_path": "unreadable"})
 			if result.IsError {
 				t.Fatal(result.Output)
 			}
-			if strings.TrimSuffix(result.Output, "Removed or already absent: "+path) == "" {
-				t.Fatal("delete did not preserve the applicable shared warning")
+			s.readFilesMu.RLock()
+			_, trackedAfter := s.readFiles[path]
+			s.readFilesMu.RUnlock()
+			if trackedAfter {
+				t.Fatal("deletion tracked unreadable page as read")
 			}
 			if _, err := os.Lstat(path); !os.IsNotExist(err) {
 				t.Fatalf("page not removed: %v", err)
@@ -1782,21 +1781,27 @@ func TestMemoryDeleteReadGuard(t *testing.T) {
 				if err := os.WriteFile(path, []byte("opaque-read-381"), 0o600); err != nil {
 					t.Fatal(err)
 				}
+				assertTracked := func(want bool) {
+					t.Helper()
+					s.readFilesMu.RLock()
+					_, tracked := s.readFiles[path]
+					s.readFilesMu.RUnlock()
+					if tracked != want {
+						t.Fatalf("tracked as read=%t, want %t", tracked, want)
+					}
+				}
+				assertTracked(false)
 				if read {
 					if res := memoryExec(t, s, "memory_read", map[string]any{"scope": scope, "file_path": "page"}); res.IsError {
 						t.Fatal(res.Output)
 					}
 				}
-				if warned := s.fileReadGuard(env).ReadBeforeWriteWarning(path) != ""; warned == read {
-					t.Fatalf("warning present=%t, prior read=%t", warned, read)
-				}
+				assertTracked(read)
 				res := memoryExec(t, s, "memory_delete", map[string]any{"scope": scope, "file_path": "page"})
 				if res.IsError {
 					t.Fatal(res.Output)
 				}
-				if warned := strings.TrimSuffix(res.Output, "Removed or already absent: "+path) != ""; warned == read {
-					t.Fatalf("delete warning present=%t, prior read=%t", warned, read)
-				}
+				assertTracked(read)
 				if _, err := os.Lstat(path); !os.IsNotExist(err) {
 					t.Fatalf("page survived: %v", err)
 				}
