@@ -56,8 +56,7 @@ func writeURLCatalog(t *testing.T, mktRepo, pluginRepo, sourceExtra string) {
 	}
 }
 
-// advanceRepo commits a change to a repo made by makeGitRepo with extra.txt
-// and returns the new head.
+// advanceRepo adds an empty commit to repo and returns the new head.
 func advanceRepo(t *testing.T, repo string) string {
 	t.Helper()
 	gitIn(t, repo, "commit", "--allow-empty", "-qm", "advance")
@@ -254,5 +253,30 @@ func TestGitRemoteHead_ResolvesTheCommitACheckoutOfRefLandsOn(t *testing.T) {
 	}
 	if _, err := gitRemoteHead(context.Background(), repo, "nope"); err == nil {
 		t.Error("gitRemoteHead of a missing ref succeeded")
+	}
+}
+
+func TestCheckUpdates_WarnsAboutEveryRemoteAndCatalogItCannotRead(t *testing.T) {
+	f := installURLPlugin(t, unpinned)
+	mktRepo, name := makeMarketplaceRepoWithPlugin(t, "other", "gadget"), "other"
+	ref, err := f.m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: mktRepo})
+	if err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	if _, err := f.m.Install(context.Background(), "gadget", name); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(ref.InstallLocation, ".claude-plugin", "marketplace.json"), []byte("{"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(f.pluginRepo, f.pluginRepo+".gone"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.m.CheckUpdates(context.Background()); err != nil {
+		t.Fatalf("CheckUpdates: %v", err)
+	}
+	w := f.warnings()
+	if !strings.Contains(w, "checking widget@acme for updates") || !strings.Contains(w, "reading marketplace.json for "+name) {
+		t.Fatalf("warnings miss the unreachable remote or the unreadable catalog: %q", w)
 	}
 }

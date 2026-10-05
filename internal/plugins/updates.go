@@ -3,7 +3,7 @@ package plugins
 import (
 	"context"
 	"fmt"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -45,7 +45,9 @@ func (m *Manager) CheckUpdates(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	var warnings []string
+	// The loop's catalog warnings and the goroutines' remote warnings are
+	// kept apart, so only the latter need mu.
+	var catalogWarnings, remoteWarnings []string
 	catalogs := map[string]Catalog{}
 	var mu sync.Mutex
 	heads := map[string]checkedHead{}
@@ -57,7 +59,7 @@ func (m *Manager) CheckUpdates(ctx context.Context) error {
 		}
 		installed := entries[0].GitCommitSha
 		plugin, marketplace := splitKey(key)
-		src, ok := m.upgradeSource(mk, catalogs, &warnings, marketplace, plugin)
+		src, ok := m.upgradeSource(mk, catalogs, &catalogWarnings, marketplace, plugin)
 		if !ok || gitRemoteURL(src) == "" {
 			continue
 		}
@@ -66,7 +68,7 @@ func (m *Manager) CheckUpdates(ctx context.Context) error {
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
-				warnings = append(warnings, fmt.Sprintf("checking %s for updates: %v", key, err))
+				remoteWarnings = append(remoteWarnings, fmt.Sprintf("checking %s for updates: %v", key, err))
 			} else {
 				heads[key] = checkedHead{head: head, installed: installed}
 			}
@@ -77,7 +79,8 @@ func (m *Manager) CheckUpdates(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	sort.Strings(warnings)
+	warnings := slices.Concat(catalogWarnings, remoteWarnings)
+	slices.Sort(warnings)
 	for _, w := range warnings {
 		_, _ = fmt.Fprintf(m.stderr(), "warning: %s\n", w)
 	}
