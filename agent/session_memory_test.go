@@ -2739,10 +2739,26 @@ func TestMemoryGuidanceFollowsCapabilities(t *testing.T) {
 			if data.SessionMemorySaves != tc.session {
 				t.Fatalf("SessionMemorySaves=%v, want %v", data.SessionMemorySaves, tc.session)
 			}
+			if tc.save {
+				// The skill catalog's gardening-memory description names project memory whatever is bound.
+				prompt, _, _ := strings.Cut(system.String(), "<skill-catalog>")
+				if has := strings.Contains(strings.ToLower(prompt), "project memory"); has != tc.project {
+					t.Fatalf("rendered prompt mentions project memory=%v, want %v", has, tc.project)
+				}
+				if has := strings.Contains(system.String(), "session memory has notes"); has != tc.session {
+					t.Fatalf("rendered prompt has promotion row=%v, want %v", has, tc.session)
+				}
+			}
 			if tc.read {
 				guidance := s.memoryGuidance()
 				if !strings.Contains(guidance, memorySessionScopeLine) {
 					t.Fatal("read guidance lacks the session scope line")
+				}
+				if has := strings.Contains(guidance, memorySessionSaveTrigger); has != tc.session {
+					t.Fatalf("guidance has session save trigger=%v, want %v", has, tc.session)
+				}
+				if has := strings.Contains(guidance, "will outlast this work belongs in project memory"); has != (tc.session && tc.project) {
+					t.Fatalf("guidance routes lasting plans to project memory=%v, want %v", has, tc.session && tc.project)
 				}
 				if mentions := strings.Contains(strings.ToLower(guidance), "project memory"); mentions != tc.project {
 					t.Fatalf("guidance mentions project memory=%v, want %v", mentions, tc.project)
@@ -2763,7 +2779,7 @@ func TestMemoryGuidanceDelegateSessionReadOnly(t *testing.T) {
 	s.depth = 1
 	s.delegateRootSessionID = "034aRootFixture0000000"
 	guidance := s.memoryGuidance()
-	if !strings.Contains(guidance, memorySessionDelegateLine) || strings.Contains(guidance, "Save to session memory") {
+	if !strings.Contains(guidance, memorySessionDelegateLine) || strings.Contains(guidance, memorySessionSaveTrigger) || !strings.Contains(guidance, "details only the current task needs") || strings.Contains(guidance, "will outlast this work") {
 		t.Fatalf("delegate guidance: %q", guidance)
 	}
 	if data, _ := s.buildPromptData(s.currentEnv()); data.SessionMemorySaves {
