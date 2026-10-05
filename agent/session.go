@@ -934,7 +934,7 @@ type Session struct {
 	pinnedNote    string // note awaiting handoff at the next compaction (agent- or elicitor-authored); injected verbatim then cleared
 	pinnedNoteGen uint64 // bumped on every pinnedNote set/clear/claim; lets a fold's publication claim consume exactly the note it captured, never a newer one pinned mid-fold. Guarded by mu.
 	// shared-notes state (human/agent whiteboards plus URL list)
-	agentNote   string              // agent's one-paragraph session whiteboard; persisted via Meta().AgentNote. Guarded by mu.
+	agentNote   string              // agent's session whiteboard (a short capsule in lines); persisted via Meta().AgentNote. Guarded by mu.
 	sessionURLs []schema.SessionURL // agent-curated session URL list; persisted via Meta().SessionURLs. Guarded by mu.
 	// notesCommitted is the last committed notes cut — human note, agent note,
 	// URL list, and ever-projected flag installed together. Readers (Meta, the

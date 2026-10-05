@@ -49,7 +49,7 @@ func (s *Session) SetHumanNote(clientMutationID, note string) (appwire.NotesHuma
 		if snapshot.HumanNote != nil {
 			current = *snapshot.HumanNote
 		}
-		stored := normalizeNote(note)
+		stored := normalizeWhiteboard(note)
 		changed = stored != current
 		if changed && snapshot.InterruptFence != nil {
 			rejectClientMutation(record, appwire.Conflict("turn interrupt is pending"))
@@ -107,9 +107,10 @@ func (s *Session) SetHumanNote(clientMutationID, note string) (appwire.NotesHuma
 	// call, and one that predates the write-path strip can carry controls; the
 	// response is rendered by clients, so the value handed out is stripped while
 	// the journal keeps its historical record. Stripping is deliberately not
-	// normalizeNote: the journaled value is already normalized (the clamp can
-	// leave a trailing space that a second collapse would drop), so re-normalizing
-	// would hand back a different value than the original call returned.
+	// normalizeWhiteboard: the journaled value is already normalized (the clamp
+	// can leave a trailing space or newline that a second pass would drop), so
+	// re-normalizing would hand back a different value than the original call
+	// returned.
 	response.Note = stripTextControls(response.Note)
 	disposition := appwire.MutationDispositionApplied
 	if lookup.Disposition == clientMutationDispositionReplayed {

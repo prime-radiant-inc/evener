@@ -95,6 +95,24 @@ func TestNotesAgentSetTool(t *testing.T) {
 	}
 }
 
+// The agent whiteboard is a capsule in lines (a paragraph, "Now:", "Next:"), so
+// the tool stores and announces the note with its line breaks.
+func TestNotesAgentSetToolKeepsLineBreaks(t *testing.T) {
+	t.Parallel()
+	s := newNotesToolSession(t)
+	ctx := context.Background()
+	const note = "Fixing the importer.  Tests pass.\r\n\n\nNow: checking the exporter.\nNext: report back.\n"
+	const want = "Fixing the importer. Tests pass.\n\nNow: checking the exporter.\nNext: report back."
+	notesToolExec(ctx, t, s, "n1", "notes_agent_set", map[string]any{"note": note})
+	if got := s.agentNoteForTest(); got != want {
+		t.Fatalf("agent note = %q, want %q", got, want)
+	}
+	data, ok := nextNotesEvent(t, s, events.EventNotesUpdated).(events.NotesUpdatedData)
+	if !ok || data.AgentNote != want {
+		t.Fatalf("NOTES_UPDATED = %+v, want agent note %q", data, want)
+	}
+}
+
 func TestUrlsAddRemoveTool(t *testing.T) {
 	t.Parallel()
 	s := newNotesToolSession(t)

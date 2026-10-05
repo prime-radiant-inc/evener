@@ -210,13 +210,28 @@ func TestNormalizeNoteKeepsSingleSpacesWhenStrippingControls(t *testing.T) {
 			if strings.Contains(got, "  ") {
 				t.Fatalf("normalizeNote(%q) = %q left a double space", in, got)
 			}
+			// The whiteboard rule holds the same invariant inside each line; the
+			// newline is the one control it keeps.
+			board := normalizeWhiteboard(in)
+			for _, r := range board {
+				if unicode.IsControl(r) && r != '\n' {
+					t.Fatalf("normalizeWhiteboard(%q) = %q carries control rune %U", in, board, r)
+				}
+			}
+			if strings.Contains(board, "  ") {
+				t.Fatalf("normalizeWhiteboard(%q) = %q left a double space", in, board)
+			}
 		})
 	}
 	if got := normalizeNote("a \x1b b"); got != "a b" {
 		t.Fatalf("normalizeNote(%q) = %q, want %q", "a \x1b b", got, "a b")
 	}
-	// The collapse still owns the whitespace controls: newlines become spaces.
+	// A label is single-line: its collapse owns the whitespace controls, so
+	// newlines become spaces. A whiteboard keeps them.
 	if got := normalizeNote("a\nb"); got != "a b" {
 		t.Fatalf("normalizeNote(%q) = %q, want %q", "a\nb", got, "a b")
+	}
+	if got := normalizeWhiteboard("a\nb"); got != "a\nb" {
+		t.Fatalf("normalizeWhiteboard(%q) = %q, want %q", "a\nb", got, "a\nb")
 	}
 }

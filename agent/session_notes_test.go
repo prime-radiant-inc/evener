@@ -38,6 +38,35 @@ func TestNormalizeNoteCollapsesWhitespaceAndClamps(t *testing.T) {
 	}
 }
 
+// A whiteboard is a short capsule in lines (a paragraph, a "Now:" line, "Next:"
+// lines), so its normalization keeps the line structure while tidying each line.
+func TestNormalizeWhiteboardKeepsLineStructure(t *testing.T) {
+	t.Parallel()
+	cases := map[string]struct{ in, want string }{
+		"lines kept":                 {"mission\nNow: a\nNext: b", "mission\nNow: a\nNext: b"},
+		"spaces collapse per line":   {"  a \t  b  \n  c   d ", "a b\nc d"},
+		"CRLF and CR become LF":      {"a\r\nb\rc", "a\nb\nc"},
+		"blank-line run collapses":   {"a\n\n\n \t \nb", "a\n\nb"},
+		"single blank line kept":     {"a\n\nb", "a\n\nb"},
+		"outer blank lines dropped":  {"\n \n a \n\n", "a"},
+		"whitespace only clears":     {" \n\t\r\n ", ""},
+		"controls stripped in lines": {"a\x1b[31m\nb\x07", "a[31m\nb"},
+		"control-only line is blank": {"a\n\x1b\nb", "a\n\nb"},
+		"C1 NEL collapses as space":  {"a\u0085b", "a b"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			if got := normalizeWhiteboard(tc.in); got != tc.want {
+				t.Fatalf("normalizeWhiteboard(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+	long := strings.Repeat("a\n", 1500)
+	if got := normalizeWhiteboard(long); len([]rune(got)) != sessionNoteMaxRunes {
+		t.Fatalf("clamped length = %d, want %d", len([]rune(got)), sessionNoteMaxRunes)
+	}
+}
+
 func TestAddSessionURLDedupsCanonically(t *testing.T) {
 	t.Parallel()
 	s := newTestNotesSession(t, "/tmp/proj")
