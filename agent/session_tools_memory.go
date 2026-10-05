@@ -93,6 +93,9 @@ func (s *Session) execMemoryEdit(ctx context.Context, _ execenv.ExecutionEnviron
 		return nil, err
 	}
 	defer release()
+	if env == nil {
+		return nil, syscall.ENOENT
+	}
 	return execFileEdit(ctx, env, args, s.fileReadGuard(env))
 }
 func (s *Session) execMemorySearch(ctx context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {

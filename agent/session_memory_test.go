@@ -2858,7 +2858,10 @@ func TestMemorySessionScopeAbsentUntilFirstWrite(t *testing.T) {
 	if res := memoryExec(t, s, "memory_delete", map[string]any{"scope": "session", "file_path": "page.md"}); res.IsError || res.Output != "Removed or already absent: "+filepath.Join(dir, "page.md") {
 		t.Fatalf("absent scope delete=%+v", res)
 	}
-	assertNoMemoryDir(t, dir, "reading an absent session scope")
+	if res := memoryExec(t, s, "memory_edit", map[string]any{"scope": "session", "file_path": "MEMORY.md", "old_string": "a", "new_string": "b"}); !res.IsError || !strings.Contains(res.Output, "no such file or directory") {
+		t.Fatalf("absent scope edit=%+v", res)
+	}
+	assertNoMemoryDir(t, dir, "reading or editing an absent session scope")
 	if res := memoryExec(t, s, "memory_write", map[string]any{"scope": "session", "file_path": "MEMORY.md", "content": "opaque-lazy-session-61\n"}); res.IsError {
 		t.Fatal(res.Output)
 	}

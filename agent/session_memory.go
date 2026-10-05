@@ -212,11 +212,12 @@ var errMemoryScopeAbsent = errors.New("memory scope does not exist yet")
 
 // memoryOperationCreatesScope reports whether operation may create scope's
 // directory. Session memory appears only when the root session first writes
-// it or a fork copies its parent's, so reading it (the index refresh at every
-// model boundary included) leaves nothing behind in the sessions that never
-// write it, and a delegate that reads first cannot block the fork copy.
+// it or a fork copies its parent's, so reading or editing it (the index
+// refresh at every model boundary included; an edit needs an existing file)
+// leaves nothing behind in the sessions that never write it, and a delegate
+// that reads first cannot block the fork copy.
 func memoryOperationCreatesScope(scope, operation string) bool {
-	return scope != "session" || operation == "write" || operation == "edit"
+	return scope != "session" || operation == "write"
 }
 
 // memoryEnvironment opens scope, creating its directory if needed.
