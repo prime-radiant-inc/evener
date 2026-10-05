@@ -1044,3 +1044,17 @@ share, takes $VARIABLE references with at most one auth scheme word ahead
 of them, and the hub omits from the entry any header that rule refuses —
 the loader itself would accept a hand-written literal) so the form can
 prefill them.
+
+## 2026-10-05 plugin Upgrade only when an update exists
+
+This supersedes the plain "Upgrade" departure in the 2026-08-29 plugins
+entry: the update-detection field that entry found missing now exists.
+`PluginEntry.updateAvailable` is set by `evener/plugin/checkUpdates`, which
+asks each git-backed plugin's remote whether it has moved past the installed
+commit. The Marketplaces & Plugins view runs the check once its lists have
+loaded (on open, never on a timer), marks flagged plugins "update available"
+in the list and the detail sheet, and offers Upgrade only for them. Its
+success toast says "Upgraded {plugin}", since an offered Upgrade now always
+has something to install. A hub too old to answer the check offers no
+Upgrade at all. ls-remote yields a commit, not a version, so the badge
+carries no version number.

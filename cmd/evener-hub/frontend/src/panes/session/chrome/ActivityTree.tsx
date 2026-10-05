@@ -88,7 +88,6 @@ const CLASS = {
   kindDanger: requireClass(styles.kindDanger, "activitypanel.module.css", "kindDanger"),
   denseMeta: requireClass(styles.denseMeta, "activitypanel.module.css", "denseMeta"),
   denseQuiet: requireClass(styles.denseQuiet, "activitypanel.module.css", "denseQuiet"),
-  denseFailed: requireClass(styles.denseFailed, "activitypanel.module.css", "denseFailed"),
   foldRow: requireClass(styles.foldRow, "activitypanel.module.css", "foldRow"),
   rowToggle: requireClass(styles.rowToggle, "activitypanel.module.css", "rowToggle"),
   rowActions: requireClass(styles.rowActions, "activitypanel.module.css", "rowActions"),
@@ -119,8 +118,8 @@ function rowStatusText(row: ActivityJobRow | ActivityDelegateRow): string {
 }
 
 // The kind glyph ($/⌘) carries the status hue the StatusDot used to: working
-// is alive, failed is danger, needs-you is attention, and idle/ended keep the
-// glyph's default low ink. The label preserves the dot's accessible name.
+// is alive, live failure is danger, and needs-you is attention. Settled outcomes
+// keep the glyph's default low ink and truthful accessible name.
 const KIND_STATE_LABEL: Record<string, string> = {
   idle: "Idle",
   working: "Working",
@@ -154,7 +153,7 @@ function transcriptTarget(row: ActivityJobRow | ActivityDelegateRow): string | u
 interface MetaSegment {
   key: string;
   text: string;
-  tone?: "quiet" | "failed";
+  tone?: "quiet";
 }
 
 function parseMillis(value: string | undefined): number | undefined {
@@ -164,11 +163,10 @@ function parseMillis(value: string | undefined): number | undefined {
 }
 
 // terminalSegment renders the duration (quiet-age bucketed) when the row has
-// one, else the status text - colored danger when the outcome is failure, so
-// a failed row with no duration never needs a second "failed" suffix.
-function terminalSegment(durationMs: number | undefined, statusText: string, failed: boolean): MetaSegment {
+// one, else the true status text. Settled outcomes use ordinary ink.
+function terminalSegment(durationMs: number | undefined, statusText: string): MetaSegment {
   if (durationMs !== undefined) return { key: "duration", text: formatQuietAge(durationMs) };
-  return { key: "status", text: statusText, tone: failed ? "failed" : undefined };
+  return { key: "status", text: statusText };
 }
 
 // liveMetaSegments is the one place the live meta grammar is built (#1388): the
@@ -190,11 +188,11 @@ function jobMetaSegments(row: ActivityJobRow, now: number): MetaSegment[] {
   if (row.live) {
     return liveMetaSegments(undefined, rowStatusText(row), now - quietAnchorMillis(job));
   }
-  // No "failed" suffix: the colored kind glyph already carries the outcome.
+  // The row's accessible status preserves the outcome when duration replaces it.
   const start = parseMillis(job.startedAt);
   const end = parseMillis(job.endedAt);
   const durationMs = start !== undefined && end !== undefined ? end - start : undefined;
-  return [terminalSegment(durationMs, rowStatusText(row), jobIsFailed(job))];
+  return [terminalSegment(durationMs, rowStatusText(row))];
 }
 
 function delegateMetaSegments(row: ActivityDelegateRow, now: number): MetaSegment[] {
@@ -208,7 +206,7 @@ function delegateMetaSegments(row: ActivityDelegateRow, now: number): MetaSegmen
   if (row.live) return liveMetaSegments(tokens ?? undefined, rowStatusText(row), timing.quietForMs);
   const segments: MetaSegment[] = [];
   if (tokens) segments.push({ key: "tokens", text: tokens });
-  segments.push(terminalSegment(timing.durationMs, rowStatusText(row), activityDelegateState(delegate).failed));
+  segments.push(terminalSegment(timing.durationMs, rowStatusText(row)));
   return segments;
 }
 
@@ -304,13 +302,7 @@ function RowSegments({ segments }: { segments: MetaSegment[] }): ReactNode {
       {segments.map((segment, index) => (
         <Fragment key={segment.key}>
           {index > 0 ? " · " : null}
-          <span
-            className={
-              segment.tone === "failed" ? CLASS.denseFailed : segment.tone === "quiet" ? CLASS.denseQuiet : undefined
-            }
-          >
-            {segment.text}
-          </span>
+          <span className={segment.tone === "quiet" ? CLASS.denseQuiet : undefined}>{segment.text}</span>
         </Fragment>
       ))}
     </span>
@@ -406,6 +398,7 @@ const FoldRowView = memo(function FoldRowView({
 interface RowShellProps {
   row: DetailRow;
   name: string;
+  description?: string;
   detailOpen: boolean;
   tabIndex: number;
   onSetDetailOpen: (row: DetailRow, open: boolean) => void;
@@ -422,6 +415,7 @@ interface RowShellProps {
 function RowShell({
   row,
   name,
+  description,
   detailOpen,
   tabIndex,
   onSetDetailOpen,
@@ -437,6 +431,7 @@ function RowShell({
       }}
       role="treeitem"
       aria-label={name}
+      aria-description={description}
       aria-level={row.level}
       aria-expanded={detailOpen}
       tabIndex={tabIndex}
@@ -493,16 +488,19 @@ const DenseRowView = memo(function DenseRowView({
   const target = transcriptTarget(row);
   const statusState = jobStatusDotState(statusText, true);
   const failed = row.kind === "job" ? jobIsFailed(row.job) : activityDelegateState(row.delegate).failed;
-  // Work that has ended says so through its outcome, the verdict the fold and
-  // the badge already count; only live work still reads its status.
-  const liveState = statusState !== "needs-you" ? "working" : statusState;
-  const kindState = failed ? "failed" : row.live ? liveState : "ended";
-  const kindClass = kindStateClass(kindState);
+  const terminal = row.kind === "job" ? row.job.terminal : row.delegate.terminal === true;
+  // Active descendants keep settled ancestors live. Their current work and
+  // attention outrank settled failures without rewriting the ancestor's outcome.
+  const liveState =
+    statusState === "needs-you" ? statusState : statusState === "failed" && !terminal ? "failed" : "working";
+  const kindState = row.live ? liveState : failed ? "failed" : "ended";
+  const kindClass = row.live ? kindStateClass(kindState) : undefined;
   return (
     <Fragment>
       <RowShell
         row={row}
         name={name}
+        description={statusText}
         detailOpen={detailOpen}
         tabIndex={tabIndex}
         onSetDetailOpen={onSetDetailOpen}

@@ -22,7 +22,7 @@ import { createFrameworkFreeStore, type FrameworkFreeStore } from "../../framewo
 import type { HostRequestMethod, PluginEntry, PluginListResponse } from "../../types.gen";
 import { HubWriteBusyError, type HubWriteGate } from "./hubWriteGate";
 import { createListRevision, readRevisioned, writeRevisioned } from "./listRevision";
-import { attachLifecycle, createStoreLifecycle, type StoreLifecycle } from "./storeLifecycle";
+import { attachLifecycle, createStoreLifecycle, type HostLifecycle } from "./storeLifecycle";
 
 export type PluginsClient = RequestPort<HostRequestMethod> & Pick<AppwireClientLike, "onNotification">;
 
@@ -38,6 +38,12 @@ export interface PluginsState {
    * spawn-time plugin preview) the moment that set is known to have changed. */
   pluginRevision: number;
   fetchPlugins(): Promise<void>;
+  /** Asks the hub whether each git-backed plugin's remote has moved
+   * (evener/plugin/checkUpdates), then re-reads the list, which carries the
+   * flags the hub now holds. A host calls it when its plugins view opens. It
+   * never throws, and a failed check publishes nothing: an older hub without
+   * the method leaves every plugin unflagged, so no Upgrade is offered. */
+  checkPluginUpdates(): Promise<void>;
   installPlugin(plugin: string, marketplace: string): Promise<void>;
   upgradePlugin(plugin: string, marketplace: string): Promise<void>;
   removePlugin(plugin: string, marketplace: string): Promise<void>;
@@ -46,7 +52,7 @@ export interface PluginsState {
   setPluginAutoUpgrade(plugin: string, marketplace: string, autoUpgrade: boolean): Promise<void>;
 }
 
-export interface PluginsStore extends FrameworkFreeStore<PluginsState>, Omit<StoreLifecycle<PluginsState>, "guard"> {
+export interface PluginsStore extends FrameworkFreeStore<PluginsState>, HostLifecycle<PluginsState> {
   /** Follows evener/plugin/updated, which the hub broadcasts to every client
    * after any client's successful mutation (and after a marketplace edit,
    * which can re-key installed plugins): pluginRevision moves at once and the
@@ -62,6 +68,10 @@ export interface PluginsStore extends FrameworkFreeStore<PluginsState>, Omit<Sto
 }
 
 export const PLUGIN_REFETCH_DEBOUNCE_MS = 250;
+
+/** The check waits on every plugin's remote (up to 20s each, four at a time),
+ * far past a plain read's default timeout. */
+export const PLUGIN_UPDATE_CHECK_TIMEOUT_MS = 120_000;
 
 /** The five mutations addressed by a plugin reference alone; setAutoUpgrade
  * carries its flag as well. */
@@ -135,6 +145,22 @@ export function createPluginsStore(client: PluginsClient, gate: HubWriteGate): P
           onAnswer: (resp) => () => set({ plugins: resp.plugins, pluginsLoading: false, pluginsError: null }),
           onFailure: (err) => () => set({ pluginsLoading: false, pluginsError: errorText(err) }),
         });
+      },
+
+      async checkPluginUpdates() {
+        // The check's own answer is not published: a list issued while the
+        // hub was still asking remotes (a toggle, a notification refetch)
+        // would outrank it and drop the flags. The list read issued after the
+        // check outranks all of those, and the hub's list carries the flags.
+        // No revision fences the check itself, so it compares the lifecycle's
+        // epoch across its request instead.
+        const issuedIn = lifecycle.epoch();
+        try {
+          await client.request("evener/plugin/checkUpdates", {}, { timeoutMs: PLUGIN_UPDATE_CHECK_TIMEOUT_MS });
+        } catch {
+          return;
+        }
+        if (lifecycle.epoch() === issuedIn) await store.getState().fetchPlugins();
       },
 
       installPlugin: mutation("evener/plugin/install"),

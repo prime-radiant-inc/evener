@@ -61,9 +61,7 @@ describe("a shell job's row", () => {
 		expect(label(tree)).toContain(", under a subagent that isn't listed");
 	});
 
-	// An ended job says how it ended in words as well as in its hue, so a
-	// failed, killed, stopped and finished job never read the same.
-	it("says how a finished one ended and how long it ran, its hue carrying the outcome too", () => {
+	it("keeps every terminal outcome truthful in ordinary ink", () => {
 		const ended = (state: ShellJobRow["state"], status: string, outcome: string) =>
 			render(
 				<ShellJobRowView
@@ -75,7 +73,7 @@ describe("a shell job's row", () => {
 		const failed = ended("failed", "command_exited_nonzero", "failure");
 		expect(renderedText(failed)).toContain("Command failed · 3m");
 		expect(label(failed)).toBe("Shell job, Serving the docs, Command failed, 3 minutes, under Fix race in tree settle");
-		expect(glyphColor(failed)).toBe(palette.dangerInk);
+		expect(glyphColor(failed)).toBe(palette.inkLow);
 		expect(label(ended("failed", "command_killed", "failure"))).toContain("Command killed, 3 minutes");
 		expect(label(ended("failed", "exhausted", "failure"))).toContain("exhausted, 3 minutes");
 		expect(label(ended("done", "stopped", "neutral"))).toContain("stopped, 3 minutes");
@@ -84,6 +82,23 @@ describe("a shell job's row", () => {
 		expect(renderedText(done)).not.toContain("Done");
 		expect(label(done)).toBe("Shell job, Serving the docs, completed, 3 minutes, under Fix race in tree settle");
 		expect(glyphColor(done)).toBe(palette.inkLow);
+	});
+
+	it.each([
+		["command_killed", "failure", "", "Command killed"],
+		["stopped", "neutral", "run_timeout", "stopped"],
+		["cancelled", "neutral", "stopped_by_parent", "cancelled"],
+	])("keeps %s outcome words without warning color", (status, outcome, reason, words) => {
+		const shown = row(status === "command_killed" ? "failed" : "done", {
+			terminal: true,
+			status,
+			outcome,
+			reason,
+			endedAt: ago(60_000),
+		});
+		const tree = render(<ShellJobRowView row={shown} now={NOW} onOpen={() => {}} />);
+		expect(label(tree)).toContain(words);
+		expect(glyphColor(tree)).toBe(palette.inkLow);
 	});
 
 	it("opens the job it shows", () => {

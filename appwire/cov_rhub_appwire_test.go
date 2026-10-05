@@ -331,16 +331,16 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 			}
 			return nil
 		}},
-		{"JobOutput", MethodEvenerJobsOutput, `{"ref":"local:th","jobId":"j1","maxBytes":4096}`, JobsOutputResponse{Data: JobOutputTail{
-			Tail: "tail-bytes", TotalBytes: 4096, RetainedStart: 3968, Truncated: true,
+		{"JobOutput", MethodEvenerJobsOutput, `{"ref":"local:th","jobId":"j1","maxBytes":4096}`, JobsOutputResponse{Data: JobOutputPage{
+			OffsetBytes: 4086, BytesReturned: 10, TotalBytes: 4096, RetainedStartBytes: 128, Encoding: "utf8", Data: "tail-bytes",
 		}}, func(ctx context.Context, c *Client) error {
 			out, err := c.JobOutput(ctx, JobsOutputParams{Ref: "local:th", JobID: "j1", MaxBytes: 4096})
 			if err != nil {
 				return err
 			}
 			tail := out.Data
-			if tail.Tail != "tail-bytes" || tail.TotalBytes != 4096 ||
-				tail.RetainedStart != 3968 || !tail.Truncated {
+			if tail.Data != "tail-bytes" || tail.TotalBytes != 4096 || tail.BytesReturned != 10 ||
+				tail.OffsetBytes != 4086 || tail.RetainedStartBytes != 128 || tail.Encoding != "utf8" {
 				return fmt.Errorf("JobOutput data = %#v", out.Data)
 			}
 			return nil

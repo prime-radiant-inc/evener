@@ -151,6 +151,71 @@ test("visible rows and disclosure survive same-session invalidation failures", a
   expect(activityPanelStore.getState().entries.get(ref)?.expandedFoldIDs).toEqual([`session:${ref}:inactive-fold`]);
 });
 
+test("closed failure history does not block later-page current work through refresh and reconnect", async () => {
+  const client = activityClient();
+  let walk = 0;
+  client.on("evener/thread/jobs/list", ({ cursor, ref, scope }) => {
+    if (!cursor) walk += 1;
+    else expect(cursor).toBe(`later-${walk}`);
+    return {
+      context: activityContext(ref),
+      scope: scope ?? "session",
+      jobs: cursor
+        ? [
+            activityJob({ jobId: "current", description: "Later current work", hasOutput: false }),
+            activityJob({
+              jobId: "later-failed",
+              description: "Later failed history",
+              terminal: true,
+              outcome: "failure",
+            }),
+          ]
+        : [activityJob({ jobId: "failed", description: "First failed history", terminal: true, outcome: "failure" })],
+      page: { complete: !!cursor, issues: [], ...(!cursor ? { nextCursor: `later-${walk}` } : {}) },
+    };
+  });
+  connectionStore.getState().connect(client);
+  render(<ActivityPanelBody sessionRef={ref} model={model()} />);
+  await screen.findByRole("treeitem", { name: "1 inactive" });
+  expect(screen.queryByRole("treeitem", { name: "First failed history" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Load more jobs" }));
+  await screen.findByRole("treeitem", { name: "Later current work" });
+  expect(screen.getByRole("treeitem", { name: "2 inactive" }).getAttribute("aria-expanded")).toBe("false");
+  vi.useFakeTimers();
+  for (const recover of [
+    () =>
+      client.emitNotification({
+        method: "evener/thread/activity/changed",
+        params: {
+          ref,
+          threadId: "owner",
+          sessionId: "owner",
+          resources: ["jobs"],
+        },
+      }),
+    () => {
+      client.emitStateChange("reconnecting");
+      client.emitStateChange("ready");
+    },
+  ]) {
+    await act(async () => recover());
+    expect(screen.getByRole("treeitem", { name: "Later current work" })).toBeTruthy();
+    await act(async () => vi.advanceTimersByTimeAsync(100));
+    expect(screen.getByRole("treeitem", { name: "Later current work" })).toBeTruthy();
+    expect(screen.queryByRole("treeitem", { name: "Later failed history" })).toBeNull();
+    expect(screen.getByRole("treeitem", { name: "2 inactive" }).getAttribute("aria-expanded")).toBe("false");
+    expect(sessionActivitySnapshot(client, ref, "subtree")?.jobs.rows).toHaveLength(3);
+  }
+  expect(client.calls.filter((call) => call.method === "evener/thread/jobs/list").map((call) => call.params)).toEqual([
+    { ref, scope: "subtree" },
+    { ref, scope: "subtree", cursor: "later-1" },
+    { ref, scope: "subtree" },
+    { ref, scope: "subtree", cursor: "later-2" },
+    { ref, scope: "subtree" },
+    { ref, scope: "subtree", cursor: "later-3" },
+  ]);
+});
+
 test("a switched routing ref retires old visible demand and fences delayed rows", async () => {
   const client = activityClient(),
     old = deferred<SessionJobsResponse>(),
@@ -220,7 +285,14 @@ test("loaded subtree job output uses the supplied owner ref and raw logical job 
     page: { complete: true, issues: [] },
   }));
   client.on("evener/jobs/output", () => ({
-    data: { tail: "supplied output tail", totalBytes: 20, retainedStart: 0, truncated: false },
+    data: {
+      offsetBytes: 0,
+      bytesReturned: 20,
+      totalBytes: 20,
+      retainedStartBytes: 0,
+      encoding: "utf8",
+      data: "supplied output tail",
+    },
   }));
   connectionStore.getState().connect(client);
   render(<ActivityPanelBody sessionRef={ref} model={model()} />);

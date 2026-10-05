@@ -64,6 +64,8 @@ describe("the nav bar's state line (spec 8.1, 13.1)", () => {
 		[session("active", { pendingEscalations: [escalation] }), "approval", "Asks for approval"],
 		[session("awaiting", { askPending: true, pendingEscalations: [escalation] }), "question", "Asks a question"],
 		[session("systemError"), "failed", "Failed"],
+		[session("systemError", { askPending: true, pendingEscalations: [escalation] }), "failed", "Failed"],
+		[session("active", { askPending: true }), "working", "Working"],
 		[session("restartRequired"), "restartNeeded", "Restart needed"],
 		[session("warning"), "warning", "Warning"],
 		[session("notLoaded"), "shutDown", "Shut down"],
@@ -86,10 +88,7 @@ describe("the context chips (spec 8.1)", () => {
 		expect(contextChips({ delegates: [], tasks: null, goal: null, queue: null }, true, noFiles, counts())).toEqual([]);
 	});
 
-	it("count subagents the way the Subagents list does, with failures in their own part", () => {
-		// A stopped or cancelled delegate finished, not failed; a delegate still
-		// retrying after exhaustion (not terminal) is running. The list says so
-		// (subagentState), and the chip must show the same numbers (issue #2684).
+	it("uses the authoritative total without a failure suffix", () => {
 		const [chip] = contextChips(
 			{
 				delegates: [delegate("running", 1), delegate("idle", 2, "failed")],
@@ -99,14 +98,13 @@ describe("the context chips (spec 8.1)", () => {
 			},
 			true,
 			noFiles,
-			counts(2, 1),
+			counts(5, 3),
 		);
 		expect(chip).toEqual({
 			kind: "subagents",
-			label: "Subagents 2",
-			failed: "1 failed",
+			label: "Subagents 5",
 			attention: false,
-			accessibilityLabel: "Subagents, 2, 1 failed",
+			accessibilityLabel: "Subagents, 5",
 		});
 	});
 
@@ -181,8 +179,8 @@ describe("the Subagents chip", () => {
 	it("counts from the whole-subtree summary, not the transcript's roster", () => {
 		expect(subagentsChip(withSubagents, counts(501, 20))).toMatchObject({
 			label: "Subagents 501",
-			failed: "20 failed",
-			accessibilityLabel: "Subagents, 501, 20 failed",
+			attention: false,
+			accessibilityLabel: "Subagents, 501",
 		});
 		expect(subagentsChip(withSubagents, counts(3))).toEqual({
 			kind: "subagents",

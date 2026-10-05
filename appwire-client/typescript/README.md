@@ -17,7 +17,7 @@ it again, the translation that turns those markers into prose at send and
 the composer input assembly that applies that translation and stages the
 attached images beside the text, the thread view model and
 its notification reducer, the activity tree parser, merge and disclosure
-rules, the job log tail parser, the send/queue availability table, the
+rules, the lossless job-output page codec, the send/queue availability table, the
 send/steer/queue/drain routing decisions a composer makes off it, the stable
 delegate status rule, the delegate timing and model derivations both apps'
 delegate details render from,
@@ -147,6 +147,27 @@ AppWire's explicit host-request allow-list. The hub checks that same catalog
 before forwarding; registering a new RPC never grants forwarding permission.
 Retry classification remains with the hub because session mutations and admin
 mutations have different replay guarantees.
+
+## Job output pages
+
+`evener/jobs/output` returns six raw-page fields: `offsetBytes`,
+`bytesReturned`, `totalBytes`, `retainedStartBytes`, `encoding` and `data`.
+Omit `beforeBytes` for latest output; supply it for a backward page ending at
+that lifetime byte offset. Explicit zero remains zero. The default limit is
+4 KiB and positive `maxBytes` limits are capped at 64 KiB.
+
+The root exports `parseJobOutputPage(data)`, which returns a validated page
+with `bytes: Uint8Array`, or `null` for invalid input. It accepts lossless `utf8`
+and standard base64 without Node globals. `decodeJobOutputText(bytes)` renders
+raw bytes; join contiguous pages before decoding split UTF-8 scalars.
+`forEachJobOutputScalar` supplies source-byte spans for bounded rendering.
+`jobOutputPrunedBounds(error)` extracts the structured `jobOutputPruned`
+floor and total from error code `-32014`.
+
+Fixtures use the same six-field contract. The codec owns validation and
+decoding; each application owns its read cadence, retained windows and recovery.
+The [output guide](../../docs/product/session-activity.md#job-output-pages)
+defines snapshot selection, floor/EOF semantics and the current protocol.
 
 ## Older-history demand
 

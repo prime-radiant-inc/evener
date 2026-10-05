@@ -16,61 +16,64 @@ import (
 // paths need errors.Is.)
 func isOutputNotExistErr(err error) bool { return errors.Is(err, os.ErrNotExist) }
 
-// JobOutputTail is a wire payload, so its definition lives in appwire beside
+// JobOutputPage is a wire payload, so its definition lives in appwire beside
 // the evener/jobs/output shape (and under that package's camelCase tag
 // carve-out). The alias keeps this package's producer named in domain terms.
-type JobOutputTail = appwire.JobOutputTail
+type JobOutputPage = appwire.JobOutputPage
 
 // JobActivityJob is the activity-tree job node, aliased here for the same
-// reason JobOutputTail is: the wire shape lives in appwire, and evener/jobs/get
+// reason JobOutputPage is: the wire shape lives in appwire, and evener/jobs/get
 // returns exactly it.
 type JobActivityJob = appwire.JobActivityJob
 
 const (
-	jobOutputTailDefaultBytes = 4096
-	jobOutputTailMaxBytes     = 65536
+	jobOutputPageDefaultBytes = 4096
+	jobOutputPageMaxBytes     = 65536
 )
 
-func clampJobTailBytes(maxBytes int64) int64 {
+func clampJobPageBytes(maxBytes int64) int {
 	if maxBytes <= 0 {
-		return jobOutputTailDefaultBytes
+		return jobOutputPageDefaultBytes
 	}
-	if maxBytes > jobOutputTailMaxBytes {
-		return jobOutputTailMaxBytes
+	if maxBytes > jobOutputPageMaxBytes {
+		return jobOutputPageMaxBytes
 	}
-	return maxBytes
+	return int(maxBytes)
 }
 
-// JobOutputTail is the live-daemon evener/jobs/output payload. found=false
-// means no job with that id exists; a found job with no output file yet is
-// an empty tail, not an error. beforeBytes > 0 pages backwards: the window of
-// up to maxBytes ending at that lifetime offset, with HasEarlier reporting
-// whether a further page exists.
-func (s *Session) JobOutputTail(jobID string, beforeBytes, maxBytes int64) (JobOutputTail, bool, error) {
+// JobOutputPage reads lossless output from the live owner or its durable log.
+// found=false means the job does not exist; unreadable output is an error.
+func (s *Session) JobOutputPage(jobID string, beforeBytes *int64, maxBytes int64) (JobOutputPage, bool, error) {
 	if s == nil || s.jobManager == nil {
-		return JobOutputTail{}, false, nil
+		return JobOutputPage{}, false, nil
 	}
-	w, err := s.jobManager.readOutputWindow(jobID, beforeBytes, clampJobTailBytes(maxBytes))
-	if err != nil {
-		if isJobNotFoundErr(err) {
-			return JobOutputTail{}, false, nil
-		}
-		if isOutputNotExistErr(err) {
-			return JobOutputTail{}, true, nil
-		}
-		return JobOutputTail{}, true, err
-	}
-	return jobOutputTailFromWindow(w), true, nil
+	page, found, err := s.jobManager.readOutputPage(jobID, beforeBytes, clampJobPageBytes(maxBytes))
+	return jobOutputPageResult(page, found, err)
 }
 
-func jobOutputTailFromWindow(w jobOutputWindow) JobOutputTail {
-	return JobOutputTail{
-		Tail:          w.content,
-		TotalBytes:    w.total,
-		RetainedStart: w.start,
-		Truncated:     w.start > 0 || w.end < w.total,
-		HasEarlier:    w.start > w.earliest,
+func jobOutputPageResult(page jobstore.OutputWindowSnapshot, found bool, err error) (JobOutputPage, bool, error) {
+	if err != nil {
+		switch {
+		case errors.Is(err, jobstore.ErrOutputPruned):
+			return JobOutputPage{}, found, appwire.JobOutputPruned(page.RetainedStart, page.TotalBytes)
+		case errors.Is(err, jobstore.ErrInvalidOffset):
+			return JobOutputPage{}, found, appwire.InvalidParams("invalid job output beforeBytes")
+		default:
+			return JobOutputPage{}, found, appwire.Unavailable(err.Error())
+		}
 	}
+	if !found {
+		return JobOutputPage{}, false, nil
+	}
+	encoding, data := encodeRawOutputBytes(page.Content)
+	return JobOutputPage{
+		OffsetBytes:        page.Start,
+		BytesReturned:      int64(len(page.Content)),
+		TotalBytes:         page.TotalBytes,
+		RetainedStartBytes: page.RetainedStart,
+		Encoding:           encoding,
+		Data:               data,
+	}, true, nil
 }
 
 // loadSessionJobRecord reads one local session's durable jobs.jsonl and folds
@@ -99,44 +102,22 @@ func loadSessionJobRecord(stateDir, sessionID, jobID string) (*jobstore.JobRecor
 	return rec, true, nil
 }
 
-// LoadSessionJobOutputTail reads one local session's durable jobs.jsonl and
-// returns a window of one job's output file, for the hub's past-session
-// fallback. It is read-only. found=false means no job with that id exists;
-// a found job with no output file yet is an empty tail, not an error.
-// beforeBytes has the same paging meaning as Session.JobOutputTail's.
-func LoadSessionJobOutputTail(stateDir, sessionID, jobID string, beforeBytes, maxBytes int64) (JobOutputTail, bool, error) {
+// LoadSessionJobOutputPage reads a coherent page from a local saved job.
+// It is read-only and uses the same selectors and errors as the live producer.
+func LoadSessionJobOutputPage(stateDir, sessionID, jobID string, beforeBytes *int64, maxBytes int64) (JobOutputPage, bool, error) {
 	rec, found, err := loadSessionJobRecord(stateDir, sessionID, jobID)
 	if err != nil {
-		return JobOutputTail{}, false, err
+		return JobOutputPage{}, false, err
 	}
 	if !found {
-		return JobOutputTail{}, false, nil
+		return JobOutputPage{}, false, nil
 	}
 	outPath := rec.OutputPath
 	if outPath == "" {
 		outPath = filepath.Join(jobsDir(stateDir, sessionID), "jobs", jobID+".log")
 	}
-	validatedTotal, earliest, err := validatedOutputStatsForRecord(outPath, rec)
-	if err != nil {
-		if isOutputNotExistErr(err) {
-			return JobOutputTail{}, true, nil
-		}
-		return JobOutputTail{}, true, err
-	}
-	content, start, end, err := windowOutputFile(outPath, beforeBytes, clampJobTailBytes(maxBytes), validatedTotal, earliest)
-	if err != nil {
-		if isOutputNotExistErr(err) {
-			return JobOutputTail{}, true, nil
-		}
-		return JobOutputTail{}, true, err
-	}
-	return jobOutputTailFromWindow(jobOutputWindow{
-		content:  content,
-		start:    start,
-		end:      end,
-		total:    validatedTotal,
-		earliest: earliest,
-	}), true, nil
+	page, err := readJobOutputPageForRecord(outPath, rec, beforeBytes, clampJobPageBytes(maxBytes))
+	return jobOutputPageResult(page, true, err)
 }
 
 // JobGet resolves one job's record — the running record when the job is live,

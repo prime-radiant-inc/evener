@@ -37,6 +37,7 @@ const (
 	ErrorMutationOutcomeUnknown     ErrorInfo = "mutationOutcomeUnknown"
 	ErrorTranscriptItemCursorStale  ErrorInfo = "transcriptItemCursorStale"
 	ErrorSessionActivityCursorStale ErrorInfo = "sessionActivityCursorStale"
+	ErrorJobOutputPruned            ErrorInfo = "jobOutputPruned"
 	ErrorInternal                   ErrorInfo = "internal"
 	// ErrorTranscriptHistoryFailed marks a read of a thread whose history
 	// entered its failed state: its projection or rebuild failed for a reason
@@ -598,6 +599,25 @@ func SessionActivityCursorStale() WireError {
 		Data: ErrorData{
 			EvenerErrorInfo:  ErrorSessionActivityCursorStale,
 			RetryDisposition: RetryDispositionAutomatic,
+		},
+	}
+}
+
+// JobOutputPrunedErrorData names the coherent bounds that rejected a selector.
+type JobOutputPrunedErrorData struct {
+	EvenerErrorInfo    ErrorInfo `json:"evenerErrorInfo"`
+	RetainedStartBytes int64     `json:"retainedStartBytes"`
+	TotalBytes         int64     `json:"totalBytes"`
+}
+
+func JobOutputPruned(retainedStartBytes, totalBytes int64) WireError {
+	return WireError{
+		Code:    CodeUnavailable,
+		Message: "job output is no longer retained",
+		Data: JobOutputPrunedErrorData{
+			EvenerErrorInfo:    ErrorJobOutputPruned,
+			RetainedStartBytes: retainedStartBytes,
+			TotalBytes:         totalBytes,
 		},
 	}
 }

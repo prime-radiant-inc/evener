@@ -170,15 +170,15 @@ func TestReadOutputWindowLivePath(t *testing.T) {
 		t.Fatalf("append: %v", err)
 	}
 	// Live running path — read tail (beforeBytes <= 0 reads tail).
-	win, err := jm.readOutputWindow(rec.JobID, 0, 100)
-	if err != nil {
+	win, found, err := jm.readOutputPage(rec.JobID, nil, 100)
+	if err != nil || !found {
 		t.Fatalf("readOutputWindow live: %v", err)
 	}
-	if win.total != int64(len(output)) {
-		t.Fatalf("total = %d, want %d", win.total, len(output))
+	if win.TotalBytes != int64(len(output)) {
+		t.Fatalf("total = %d, want %d", win.TotalBytes, len(output))
 	}
-	if !strings.Contains(win.content, "line three") {
-		t.Fatalf("content = %q, want last line", win.content)
+	if !strings.Contains(string(win.Content), "line three") {
+		t.Fatalf("content = %q, want last line", win.Content)
 	}
 }
 
@@ -196,15 +196,15 @@ func TestReadOutputWindowStorePath(t *testing.T) {
 	if err := jm.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", &code); err != nil {
 		t.Fatalf("finalize: %v", err)
 	}
-	win, err := jm.readOutputWindow(rec.JobID, 0, 100)
-	if err != nil {
+	win, found, err := jm.readOutputPage(rec.JobID, nil, 100)
+	if err != nil || !found {
 		t.Fatalf("readOutputWindow store: %v", err)
 	}
-	if !strings.Contains(win.content, "stored line two") {
-		t.Fatalf("content = %q", win.content)
+	if !strings.Contains(string(win.Content), "stored line two") {
+		t.Fatalf("content = %q", win.Content)
 	}
-	if win.total != int64(len(output)) {
-		t.Fatalf("total = %d, want %d", win.total, len(output))
+	if win.TotalBytes != int64(len(output)) {
+		t.Fatalf("total = %d, want %d", win.TotalBytes, len(output))
 	}
 }
 
@@ -212,9 +212,9 @@ func TestReadOutputWindowStorePath(t *testing.T) {
 func TestReadOutputWindowNotFound(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
-	_, err := jm.readOutputWindow("job_missing", 0, 100)
-	if err == nil {
-		t.Fatal("missing job should error")
+	_, found, err := jm.readOutputPage("job_missing", nil, 100)
+	if err != nil || found {
+		t.Fatalf("missing job found=%v err=%v, want false nil", found, err)
 	}
 }
 

@@ -7,6 +7,7 @@ import type {
   Turn,
   TurnStartParams,
 } from "@evener/appwire-client";
+import { APPWIRE_PROTOCOL_VERSION } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import { navigationInvalidatedNotification } from "@evener/appwire-client/testing/notifications";
@@ -43,7 +44,7 @@ export function createEditorialClient(): EditorialClient {
   };
   client.scriptConnect(() => ({
     serverInfo: { name: "Editorial fixture — no live hub", version: "fixture" },
-    protocolVersion: "evener-appwire-v6",
+    protocolVersion: APPWIRE_PROTOCOL_VERSION,
     sourceId: "fixture",
     features: {
       threadList: true,

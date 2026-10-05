@@ -144,7 +144,7 @@ export class SessionActivityStore {
   constructor(
     private readonly client: SessionActivityClient,
     private readonly ref: string,
-    options: { scope?: SessionActivityScope; clock?: SessionActivityClock } = {},
+    options: { scope?: SessionActivityScope; clock?: SessionActivityClock; retained?: SessionActivitySnapshot } = {},
   ) {
     if (!ref.trim()) throw new TypeError("Session activity requires a session ref");
     this.scope = options.scope ?? "session";
@@ -161,6 +161,27 @@ export class SessionActivityStore {
       jobs: collectionState(),
       watches: collectionState(),
     };
+    const retained = options.retained;
+    if (retained?.ref === ref && retained.scope === this.scope) {
+      // Membership supplies the displayed boundary for a fresh cursor walk.
+      // Runtime, cursors and read outcomes belong to the new connection.
+      const retain = <Row>(collection: SessionActivityCollectionState<Row>): SessionActivityCollectionState<Row> => ({
+        ...collection,
+        ...readState(),
+        pending: true,
+        complete: false,
+        hasMore: false,
+      });
+      this.state = {
+        ...this.state,
+        context: retained.context,
+        summary: retained.summary,
+        summaryState: { ...readState(), pending: true },
+        delegates: retain(retained.delegates),
+        jobs: retain(retained.jobs),
+        watches: retain(retained.watches),
+      };
+    }
   }
   getSnapshot = (): SessionActivitySnapshot => this.state;
   subscribe = (listener: () => void): (() => void) => {

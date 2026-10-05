@@ -3,7 +3,12 @@ import { deferRequest, FakeClient, failing } from "../../testing/fakeClient";
 import type { MarketplaceEntry, PluginEntry } from "../../types.gen";
 import { createHubWriteGate, HubWriteBusyError, type HubWriteGate } from "./hubWriteGate";
 import { createMarketplacesStore } from "./marketplaces";
-import { createPluginsStore, PLUGIN_REFETCH_DEBOUNCE_MS, type PluginsStore } from "./plugins";
+import {
+  createPluginsStore,
+  PLUGIN_REFETCH_DEBOUNCE_MS,
+  PLUGIN_UPDATE_CHECK_TIMEOUT_MS,
+  type PluginsStore,
+} from "./plugins";
 
 const LINTER: PluginEntry = {
   plugin: "linter",
@@ -123,6 +128,80 @@ describe("fetches never throw, mutations reject", () => {
       ["evener/plugin/setAutoUpgrade", { ...target, autoUpgrade: true }],
       ["evener/plugin/remove", target],
     ]);
+  });
+});
+
+describe("checkPluginUpdates", () => {
+  const CHECK = "evener/plugin/checkUpdates";
+
+  test("asks the hub with the long timeout, then re-reads the list, which carries the flags", async () => {
+    const { fake, store } = storeWithFake();
+    fake.on(LIST, () => ({ plugins: [LINTER] }));
+    await store.getState().fetchPlugins();
+    fake.on(CHECK, () => ({ plugins: [{ ...LINTER, updateAvailable: true }] }));
+    fake.on(LIST, () => ({ plugins: [{ ...LINTER, updateAvailable: true }] }));
+
+    await store.getState().checkPluginUpdates();
+
+    expect(store.getState().plugins).toEqual([{ ...LINTER, updateAvailable: true }]);
+    expect(fake.calls.slice(-2)).toEqual([
+      { method: CHECK, params: {}, opts: { timeoutMs: PLUGIN_UPDATE_CHECK_TIMEOUT_MS } },
+      { method: LIST, params: {} },
+    ]);
+  });
+
+  test("a check that lands after reset() reads nothing into the reset store", async () => {
+    const { fake, store } = storeWithFake();
+    const release = deferRequest<ListResult>(fake, CHECK);
+    const checking = store.getState().checkPluginUpdates();
+    await Promise.resolve();
+    store.reset();
+    fake.on(LIST, () => ({ plugins: [{ ...LINTER, updateAvailable: true }] }));
+
+    release({ plugins: [{ ...LINTER, updateAvailable: true }] });
+    await checking;
+    expect(fake.calls.some((c) => c.method === LIST)).toBe(false);
+    expect(store.getState().plugins).toBeNull();
+  });
+
+  test("a list answer issued during the check does not cost the flags", async () => {
+    const { fake, store } = storeWithFake();
+    const release = deferRequest<ListResult>(fake, CHECK);
+    const checking = store.getState().checkPluginUpdates();
+    await Promise.resolve();
+    // A toggle lands while the hub is still asking remotes, before it holds
+    // any answer, so the toggle's list is unflagged.
+    fake.on("evener/plugin/disable", () => ({ plugins: [{ ...LINTER, enabled: false }] }));
+    await store.getState().disablePlugin("linter", "acme");
+
+    fake.on(LIST, () => ({ plugins: [{ ...LINTER, enabled: false, updateAvailable: true }] }));
+    release({ plugins: [{ ...LINTER, updateAvailable: true }] });
+    await checking;
+    expect(store.getState().plugins).toEqual([{ ...LINTER, enabled: false, updateAvailable: true }]);
+  });
+
+  test("a failed check (an older hub has no such method) resolves and leaves the list and its error alone", async () => {
+    const { fake, store } = storeWithFake();
+    fake.on(LIST, () => ({ plugins: [LINTER] }));
+    await store.getState().fetchPlugins();
+    fake.on(CHECK, failing("method not found"));
+
+    await expect(store.getState().checkPluginUpdates()).resolves.toBeUndefined();
+
+    expect(store.getState()).toMatchObject({ plugins: [LINTER], pluginsError: null, pluginsLoading: false });
+  });
+
+  test("a failed check does not swallow a list read started before it", async () => {
+    const { fake, store } = storeWithFake();
+    const release = deferRequest<ListResult>(fake, LIST);
+    const fetching = store.getState().fetchPlugins();
+    await Promise.resolve();
+    fake.on(CHECK, failing("method not found"));
+    await store.getState().checkPluginUpdates();
+
+    release({ plugins: [LINTER] });
+    await fetching;
+    expect(store.getState()).toMatchObject({ plugins: [LINTER], pluginsLoading: false });
   });
 });
 

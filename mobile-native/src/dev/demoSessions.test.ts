@@ -136,12 +136,12 @@ describe("the demo sessions behind Appendix A's Session frames", () => {
 				true,
 				undefined,
 				createDemoFleet({ now: NOW }).answerActivityRead({ ref: model.ref, scope: "subtree" }).delegates,
-			).map(({ label, failed }) => ({ label, failed })),
+			).map(({ label, accessibilityLabel }) => ({ label, accessibilityLabel })),
 		).toEqual([
-			{ label: "Subagents 55", failed: "2 failed" },
-			{ label: "Tasks 3/7", failed: undefined },
-			{ label: "Goal", failed: undefined },
-			{ label: "Queue 1", failed: undefined },
+			{ label: "Subagents 55", accessibilityLabel: "Subagents, 55" },
+			{ label: "Tasks 3/7", accessibilityLabel: "Tasks, 3 of 7 done" },
+			{ label: "Goal", accessibilityLabel: "Goal" },
+			{ label: "Queue 1", accessibilityLabel: "1 queued message" },
 		]);
 		expect(notesBarPreview(model)).toEqual({
 			glyph: "person",

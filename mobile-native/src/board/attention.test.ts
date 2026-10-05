@@ -64,6 +64,39 @@ describe("a row's Board state (spec 13.1)", () => {
 	});
 
 	it.each([
+		[{ state: "errored", ask_pending: true, approval_pending: true }, "failed"],
+		[{ state: "awaiting", ask_pending: true }, "question"],
+		[{ state: "active", approval_pending: true }, "approval"],
+		[{ state: "errored", offline: true, ask_pending: true, approval_pending: true }, "shutDown"],
+		[{ state: "active", ask_pending: true }, "working"],
+	] as const)("keeps own-session attention %o with failed delegates", (over, expected) => {
+		expect(boardState(row("s", { ...over, subagents: { running: 0, failed: 3, done: 0 } }), false, false)).toBe(
+			expected,
+		);
+	});
+
+	it("keeps own errors ahead of questions and approvals while delegate failures stay outside Needs you", () => {
+		const settled = { running: 0, failed: 3, done: 0 };
+		const bands = liveBands(
+			[
+				row("question", { state: "awaiting", ask_pending: true, updated_at: at(1), subagents: settled }),
+				row("error", { state: "errored", ask_pending: true, updated_at: at(8), subagents: settled }),
+				row("approval", { state: "active", approval_pending: true, updated_at: at(2), subagents: settled }),
+				row("working", { state: "active", ask_pending: true, subagents: settled }),
+				row("offline", { state: "errored", offline: true, ask_pending: true, subagents: settled }),
+			],
+			[],
+			never,
+		);
+		expect(bands.needsYou.map((item) => [item.row.ref, item.state])).toEqual([
+			["error", "failed"],
+			["question", "question"],
+			["approval", "approval"],
+		]);
+		expect(bands.working.map((item) => item.row.ref)).toEqual(["working"]);
+	});
+
+	it.each([
 		[{ state: "idle" }, false, false, "working"],
 		[{ state: "awaiting" }, false, true, "working"],
 		[{ state: "idle", dormant: true }, false, false, "working"],
@@ -380,10 +413,13 @@ describe("why lines on the fallbacks (spec 7.2, 18)", () => {
 		expect(whyLine({ row: running, state: "working" })).toEqual({ text: "Running go test ./agent/..." });
 	});
 
-	it("words the subagent chip from the counts the shared gate shows", () => {
-		expect(subagentChipText({ running: 2, failed: 0 })).toBe("2 running");
-		expect(subagentChipText({ running: 0, failed: 3 })).toBe("3 failed");
-		expect(subagentChipText({ running: 2, failed: 3 })).toBe("2 running · 3 failed");
+	it("words only running subagents in the native chip", () => {
+		const cases: Array<[{ running: number; failed: number }, string]> = [
+			[{ running: 2, failed: 0 }, "2 running"],
+			[{ running: 0, failed: 3 }, ""],
+			[{ running: 2, failed: 3 }, "2 running"],
+		];
+		for (const [tally, expected] of cases) expect(subagentChipText(tally)).toBe(expected);
 	});
 });
 
