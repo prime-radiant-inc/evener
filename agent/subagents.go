@@ -1148,9 +1148,11 @@ func (s *Session) prepareSubagentRunFromSelection(
 		// session cleanup path, so dispose every scratch it provisioned: the
 		// sandbox-owned one AND the one an unsandboxed environment mints on its
 		// first command, which the construction above reaches through its own git
-		// snapshot. A prepared environment belongs to whoever prepared it.
-		if ownsFreshEnv && !hasPreparedEnv {
-			endEnvironmentScratch(subEnv)
+		// snapshot. The child never existed, so its named scratch goes too
+		// rather than waiting for the root's archive. A prepared environment
+		// belongs to whoever prepared it.
+		if local, ok := subEnv.(*execenv.LocalExecutionEnvironment); ok && ownsFreshEnv && !hasPreparedEnv {
+			_ = local.DisposeSessionScratch()
 		}
 		return nil, err
 	}

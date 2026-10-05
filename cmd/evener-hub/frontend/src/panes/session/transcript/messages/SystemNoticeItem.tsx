@@ -25,6 +25,7 @@
 
 import type { ItemModel, TranscriptMetadataVisibility, TurnModel } from "@evener/appwire-client";
 import {
+  APPROVAL_DECISION_EVENT_KIND,
   attentionWarningNotice,
   echoesTurnError,
   firstLine,
@@ -50,6 +51,7 @@ import { requireClass } from "../../../../widgets/internal/requireClass";
 import { SYSTEM_PROMPT_ITEM_ID } from "../transcriptVisibility";
 import { asTurnError } from "../turnFailure";
 import { type ItemRenderProps, registerItemRenderer } from "../types";
+import { MessageTimestamp } from "./MessageTimestamp";
 import { roundTimingsSummary } from "./roundTimingsView";
 import { type SystemRun, shouldGroup, systemRunFor } from "./systemGrouping";
 import styles from "./systemnoticeitem.module.css";
@@ -66,6 +68,7 @@ const CLASS = {
   scaffoldSummary: requireClass(styles.scaffoldSummary, "systemnoticeitem.module.css", "scaffoldSummary"),
   scaffoldBody: requireClass(styles.scaffoldBody, "systemnoticeitem.module.css", "scaffoldBody"),
   literalBody: requireClass(styles.literalBody, "systemnoticeitem.module.css", "literalBody"),
+  approval: requireClass(styles.approval, "systemnoticeitem.module.css", "approval"),
 };
 
 // SYSTEM_PROMPT_ITEM_ID (imported above) is the narrow fallback signal for a
@@ -224,6 +227,20 @@ function RoundTimingsLine({ item }: { item: ItemModel }) {
   );
 }
 
+// ApprovalDecisionLine is a human's Allow or Deny on a sandbox escalation, as
+// history: "Allowed: write /path" and when. It is a decision the reader
+// made, like a question's answer, so it reads at the quiet line's size but
+// never folds into a run (systemGrouping's joinsRun).
+function ApprovalDecisionLine({ item }: { item: ItemModel }) {
+  const decidedAt = Date.parse(item.startedAt ?? "");
+  return (
+    <div className={CLASS.approval} data-testid="system-notice-approval">
+      <span data-testid="system-notice-approval-text">{noticeText(item)}</span>
+      {Number.isFinite(decidedAt) && <MessageTimestamp value={decidedAt} />}
+    </div>
+  );
+}
+
 // FAILURE_FALLBACK_LABEL names a failure the wire described with neither a
 // message nor a description. It is the same category-label-over-invisible-row
 // rule FALLBACK_LABEL follows, worded for the one event where the generic
@@ -290,6 +307,7 @@ function SystemLine({
   if (attention) return <WarningBlock title={attention.title} message={attention.message} hint={attention.hint} />;
   if (isScaffoldItem(item)) return <ScaffoldDisclosure item={item} sessionRef={sessionRef} />;
   if (isRoundTimingsItem(item)) return <RoundTimingsLine item={item} />;
+  if (item.eventKind === APPROVAL_DECISION_EVENT_KIND) return <ApprovalDecisionLine item={item} />;
   return (
     <div className={CLASS.line} data-testid="system-notice-line">
       {noticeText(item)}

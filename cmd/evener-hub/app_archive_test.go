@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
@@ -490,6 +491,47 @@ func TestArchiveSetKicksTheScratchReconcile(t *testing.T) {
 	}
 	if kicks != 2 {
 		t.Errorf("reconcile kicks = %d, want 2 (the two archives, not the unarchives)", kicks)
+	}
+}
+
+// A daemon started with its own TMPDIR keeps its scratch where the hub's temp
+// dir does not reach; the meta records that dir, and the reconcile looks there.
+func TestReconcileFindsAnArchivedTreeInTheDaemonsTempDir(t *testing.T) {
+	hubTmp, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	daemonTmp, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionID := hubtest.SessionID(t)
+	projects := t.TempDir()
+	project, err := identifier.ResolveProject(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta := schema.SessionMeta{ID: sessionID, CreatedAt: time.Now(), UpdatedAt: time.Now(),
+		EnvInfo: schema.EnvironmentInfo{WorkingDir: project.CanonicalPath}, ScratchTempDir: daemonTmp}
+	if err := schema.SaveSessionMeta(filepath.Join(projects, project.ID), meta); err != nil {
+		t.Fatal(err)
+	}
+	past := hubcore.NewPastIndex(filepath.Join(projects, "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	archive := hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db"))
+	if err := archive.Set("", "session", sessionID, true, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMPDIR", daemonTmp)
+	tree := mintEndedScratchTree(t, sessionID)
+	t.Setenv("TMPDIR", hubTmp)
+
+	reconcileArchivedScratch(hubcore.WebConfig{Past: past, Archive: archive}, time.Now())
+
+	if _, err := os.Lstat(tree); !os.IsNotExist(err) {
+		t.Errorf("the reconcile left the archived tree %s in the daemon's temp dir: %v", tree, err)
 	}
 }
 
