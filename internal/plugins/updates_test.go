@@ -244,6 +244,8 @@ func TestGitRemoteHead_ResolvesTheCommitACheckoutOfRefLandsOn(t *testing.T) {
 		{"main", head},
 		{"feature", first},
 		{"v1", first},
+		{"refs/tags/v1", first},
+		{"refs/heads/feature", first},
 	} {
 		got, err := gitRemoteHead(context.Background(), repo, tc.ref)
 		if err != nil {

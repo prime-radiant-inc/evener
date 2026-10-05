@@ -157,7 +157,9 @@ func gitRemoteHead(ctx context.Context, url, ref string) (string, error) {
 			shas[name] = sha
 		}
 	}
-	for _, name := range []string{"refs/tags/" + ref + "^{}", "refs/tags/" + ref, "refs/heads/" + ref, ref} {
+	// A short name is looked up as a tag, then a branch; a full refname (or
+	// HEAD) matches itself. Either way a peeled line beats the tag object.
+	for _, name := range []string{"refs/tags/" + ref + "^{}", "refs/tags/" + ref, "refs/heads/" + ref, ref + "^{}", ref} {
 		if sha := shas[name]; sha != "" {
 			return sha, nil
 		}
