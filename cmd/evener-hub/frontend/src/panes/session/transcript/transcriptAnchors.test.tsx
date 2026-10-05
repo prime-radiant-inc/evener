@@ -446,6 +446,65 @@ function readingRow(id: string): TurnModel {
   };
 }
 
+test("width-only reflow preserves useful content beside a Chat-filtered daemon steer", async () => {
+  const geometry = { width: 152, viewportHeight: 400, rowHeights: [1600, 0, 1000] };
+  const external = installTranscriptGeometry(() => geometry);
+  const listRef = createRef<VirtualListHandle>();
+  let mounted: ReturnType<typeof render> | undefined;
+  try {
+    mounted = render(
+      <TranscriptBody
+        model={{
+          ...makeTranscriptPreviewModel(),
+          turns: [
+            readingRow("current"),
+            {
+              id: "filtered",
+              status: "completed",
+              items: [
+                {
+                  id: "filtered-steer",
+                  turnId: "filtered",
+                  type: "steering",
+                  source: "daemon",
+                  text: "Internal steering",
+                  status: "completed",
+                },
+              ],
+            },
+            readingRow("tail"),
+          ],
+        }}
+        config={makeTranscriptDisplayConfig({ kind: "preset", level: "chat" })}
+        surface="readOnly"
+        disclosureScope="filtered-reading"
+        viewId="filtered-reading"
+        listRef={listRef}
+      />,
+    );
+    const port = listRef.current?.getScrollElement();
+    if (!port) throw new Error("Real Chat reader has no scroll port");
+    await startReading(port, external.notify);
+    const filtered = port.querySelector('[data-row-id="filtered"]');
+    expect(filtered?.textContent).toBe("");
+    expect(filtered?.getBoundingClientRect().height).toBe(0);
+    expect(port.querySelector('[data-view-anchor-id="filtered-steer"]')).toBeNull();
+    expect(port.scrollTop).toBe(900);
+    geometry.width = 352;
+    geometry.rowHeights[0] = 700;
+    await act(async () => external.notify());
+    await waitFor(() => expect(port.scrollTop).toBe(225));
+    expect(captureTranscriptView("filtered-reading")).toMatchObject({ anchorId: "current-entry", anchorOffset: -225 });
+    expect(port.querySelector('[data-view-anchor-id="current-entry"] [data-testid="user-bubble"]')?.textContent).toBe(
+      "current",
+    );
+  } finally {
+    mounted?.unmount();
+    external.restore();
+    resetTranscriptViewRegistryForTests();
+  }
+});
+
 test("width-only reflow preserves the first visible row beside a fractional predecessor", async () => {
   const geometry = { width: 777, viewportHeight: 400, rowHeights: [4156.484375, 29.3125, 4156.484375] };
   const external = installTranscriptGeometry(() => geometry);
@@ -782,9 +841,10 @@ test("width-only reflow retains original intent through a real clamp and later r
     if (!port) throw new Error("Clamped reader has no port");
     await startReading(port, external.notify);
     geometry.width = 352;
-    geometry.rowHeights = [700, 0];
-    await act(async () => external.notify());
+    geometry.rowHeights = [700, 48];
+    await act(async () => external.notify((target) => target === port || target.dataset.index === "0"));
     expect(port.scrollTop).toBeLessThan(900);
+    expect(port.querySelector('[data-index="1"]')?.getBoundingClientRect().height).toBe(48);
     expect(captureTranscriptView("clamp-reflow")).toMatchObject({
       anchorId: "current-entry",
       anchorOffset: -900,

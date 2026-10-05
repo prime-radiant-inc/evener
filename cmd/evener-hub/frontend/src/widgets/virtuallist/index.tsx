@@ -142,10 +142,11 @@ function hasCommittedGeometry(
     const observed = measured.get(row);
     const height = row.getBoundingClientRect().height;
     const translation = Number.parseFloat(row.style.transform.match(/^translateY\(([-\d.]+)px\)$/)?.[1] ?? "NaN");
+    // Filtered turns retain keyed rows with exactly zero measured size.
+    const empty = observed === 0 && height === 0 && item.size === 0;
     return (
       observed !== undefined &&
-      observed > 0 &&
-      height > 0 &&
+      (empty || (observed > 0 && height > 0)) &&
       Math.abs(observed - height) <= 1.5 &&
       Math.abs(height - item.size) <= 1.5 &&
       Number.isFinite(translation) &&

@@ -679,6 +679,32 @@ describe("anchorToEnd", () => {
     }
   });
 
+  test("reader layout accepts measured filtered rows and rejects their unobserved expansion", async () => {
+    const external = installMeasuredGeometry([500, 0, 500, 0, 500]);
+    let committed: ReaderLayout | undefined;
+    try {
+      const { root } = renderMeasuredList(true, true, {
+        onLayout: (layout) => {
+          committed = layout;
+        },
+      });
+      await act(async () => external.notify());
+      expect(root.querySelector('[data-index="1"]')?.getBoundingClientRect().height).toBe(0);
+      expect(committed?.isCurrent()).toBe(true);
+      await act(async () => committed?.scrollToOffset(100));
+      expect(root.scrollTop).toBe(100);
+      external.geometry.rowHeights[1] = 30;
+      expect(committed?.isCurrent()).toBe(false);
+      await act(async () => external.notify());
+      expect(committed?.isCurrent()).toBe(true);
+      expect(root.querySelector('[data-index="2"]')?.getBoundingClientRect().top).toBe(430);
+      expect(root.querySelector('[data-index="2"]')?.textContent).toBe("row 2");
+    } finally {
+      cleanup();
+      external.restore();
+    }
+  });
+
   test("reader layout keeps fractional-height rows from overlapping", async () => {
     const external = installMeasuredGeometry([500.171875, 29.3125, 500.171875, 500.171875, 500.171875]);
     let committed: ReaderLayout | undefined;
