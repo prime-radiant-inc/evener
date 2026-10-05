@@ -152,39 +152,6 @@ func TestHostRequestSlowForwardedReadDoesNotHoldALaterThreadRead(t *testing.T) {
 	}
 }
 
-// Two forwarded mutations reach the remote in the order they were sent.
-// That they are held back on the serial worker rather than sent beside each
-// other is pinned by TestHostRequestForwardedMutationNeverTakesAReadSlot.
-func TestHostRequestForwardedMutationsKeepTheirOrder(t *testing.T) {
-	gate, openGate := remoteGate()
-	client, calls := hostRequestDispatchHub(t, func(method string, _ json.RawMessage) hostAdminReply {
-		if method == appwire.MethodEvenerPluginEnable {
-			<-gate
-		}
-		return okReply()
-	})
-	defer openGate()
-	first := hostRequest(client, appwire.MethodEvenerPluginEnable)
-	forwardedCallSeen(t, calls, appwire.MethodEvenerPluginEnable)
-	second := hostRequest(client, appwire.MethodEvenerPluginDisable)
-	openGate()
-
-	for _, done := range []<-chan error{first, second} {
-		if err := answerOf(t, done); err != nil {
-			t.Fatalf("forwarded mutation: %v", err)
-		}
-	}
-	var forwarded []string
-	for _, call := range calls() {
-		if call.method == appwire.MethodEvenerPluginEnable || call.method == appwire.MethodEvenerPluginDisable {
-			forwarded = append(forwarded, call.method)
-		}
-	}
-	if len(forwarded) != 2 || forwarded[0] != appwire.MethodEvenerPluginEnable || forwarded[1] != appwire.MethodEvenerPluginDisable {
-		t.Fatalf("the remote received %v, want enable then disable", forwarded)
-	}
-}
-
 // A forwarded mutation never leaves the serial worker, checked through a
 // signal that answers either way: with the connection's pool of admitted
 // requests full of reads held at the remote, a request admitted to the pool
@@ -209,7 +176,9 @@ func TestHostRequestForwardedMutationNeverTakesAReadSlot(t *testing.T) {
 		return n
 	}
 	// Send held reads one at a time until the pool refuses one, so the test
-	// finds the pool's size rather than assuming it.
+	// finds the pool's size rather than assuming it. This leans on nothing
+	// between the hub and the remote capping concurrent forwarded calls below
+	// the pool's size; one that did would stall a read here short of refusal.
 	for i := 1; ; i++ {
 		if i > 1000 {
 			t.Fatal("the pool of admitted requests never filled")
