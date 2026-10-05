@@ -1,4 +1,4 @@
-// Files & artifacts (spec 10.1, ruling 26): every document the session wrote
+// Files (spec 10.1, ruling 26): every document the session wrote
 // or linked, newest write first, each with a blue dot while it's new or
 // changed since you last opened it. The list is the one the sheet opened
 // with (its params are plain data), so it needs no host. Tapping a row closes
@@ -32,7 +32,7 @@ export function FilesSheet({ route, navigation }: NativeStackScreenProps<Routes,
 			});
 		});
 	return (
-		<Sheet title="Files & artifacts" done={{ onPress: () => sheet.finish() }}>
+		<Sheet title="Files" done={{ onPress: () => sheet.finish() }}>
 			<FlatList
 				data={documents}
 				keyExtractor={(document) => document.path}
