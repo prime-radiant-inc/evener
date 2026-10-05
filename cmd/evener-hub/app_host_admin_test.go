@@ -189,6 +189,15 @@ func scriptedHostAdmin(
 ) (*hubHostAdminController, *recordingBroadcaster, func() []hostAdminCall) {
 	t.Helper()
 	client, calls, _ := newScriptedAdminClient(t, handle)
+	sources, hosts := scriptedRemoteHost(t, client, online)
+	recorder := newRecordingBroadcaster()
+	return newHubHostAdminController(recorder, hosts, sources), recorder, calls
+}
+
+// scriptedRemoteHost registers client as remote host m4's component-05
+// source; online controls the attachment signal.
+func scriptedRemoteHost(t *testing.T, client *appwire.Client, online bool) (*appsource.Registry, *hostreg.Registry) {
+	t.Helper()
 	source := appsource.NewRemoteHubSource("m4", nil, func(context.Context, string) (*appwire.Client, error) {
 		return client, nil
 	})
@@ -199,8 +208,7 @@ func scriptedHostAdmin(
 	if err != nil {
 		t.Fatalf("hostreg.New: %v", err)
 	}
-	recorder := newRecordingBroadcaster()
-	return newHubHostAdminController(recorder, hosts, sources), recorder, calls
+	return sources, hosts
 }
 
 func okReply() hostAdminReply {
@@ -516,6 +524,7 @@ func TestHostAdminAllowListMatchesCatalog(t *testing.T) {
 		"evener/pin-section/delete":               false,
 		"evener/pin-section/rename":               false,
 		"evener/plugin/checkNow":                  true,
+		"evener/plugin/checkUpdates":              true,
 		"evener/plugin/disable":                   true,
 		"evener/plugin/enable":                    true,
 		"evener/plugin/install":                   true,
@@ -1783,6 +1792,7 @@ func TestHostAdminMutationClassificationMatchesAllowList(t *testing.T) {
 		appwire.MethodEvenerMarketplaceRefresh:   true,
 		appwire.MethodEvenerPluginList:           true,
 		appwire.MethodEvenerPluginPreview:        true,
+		appwire.MethodEvenerPluginCheckUpdates:   true,
 		appwire.MethodEvenerAuthStatus:           true,
 		appwire.MethodEvenerAuthTest:             true,
 		appwire.MethodEvenerAuthList:             true,

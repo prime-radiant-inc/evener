@@ -143,6 +143,7 @@ const (
 	MethodEvenerPluginEnable             = "evener/plugin/enable"
 	MethodEvenerPluginDisable            = "evener/plugin/disable"
 	MethodEvenerPluginSetAutoUpgrade     = "evener/plugin/setAutoUpgrade"
+	MethodEvenerPluginCheckUpdates       = "evener/plugin/checkUpdates"
 	MethodEvenerCommandList              = "evener/command/list"
 	MethodEvenerSpawnSlashCatalog        = "evener/spawn/slashCatalog"
 
@@ -4426,6 +4427,11 @@ type PluginEntry struct {
 	GitCommitSha string `json:"gitCommitSha,omitempty"`
 	InstalledAt  int64  `json:"installedAt"`
 	LastUpdated  int64  `json:"lastUpdated"`
+	// UpdateAvailable is true when the last evener/plugin/checkUpdates found a
+	// newer remote commit. Absent means no known update: no check has run, the
+	// check found the plugin current or could not reach its remote, or the
+	// source is not git-backed. Clients offer Upgrade only when it is true.
+	UpdateAvailable bool `json:"updateAvailable,omitempty"`
 }
 
 // PluginListResponse is the result of evener/plugin/list. Every plugin

@@ -1040,6 +1040,7 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 		RequestAdmissionContext: func(ctx context.Context, message appwire.Message) context.Context {
 			return admitSessionRecovery(ctx, cfg, message)
 		},
+		ConcurrentRequest: forwardedHostRead,
 		SubscriptionAdmissionResolverV2: func(msg appwire.Message) appserver.SubscriptionAdmissionResolution {
 			notSubscribe := appserver.SubscriptionAdmissionResolution{Intent: appserver.SubscriptionAdmissionNotSubscribe}
 			if msg.Request == nil || (msg.Request.Method != appwire.MethodThreadRead && msg.Request.Method != appwire.MethodThreadUnsubscribe) {
@@ -2243,6 +2244,9 @@ func registerPluginHandlers(server *appserver.Server, pluginsController *hubPlug
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginSetAutoUpgrade, func(ctx context.Context, params appwire.PluginSetAutoUpgradeParams) (appwire.PluginListResponse, error) {
 		return pluginsController.SetAutoUpgrade(ctx, params)
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginCheckUpdates, func(ctx context.Context, _ appwire.EmptyParams) (appwire.PluginListResponse, error) {
+		return pluginsController.CheckUpdates(ctx)
 	})
 }
 

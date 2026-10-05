@@ -2767,6 +2767,13 @@ export interface PluginEntry {
   gitCommitSha?: string;
   installedAt: number;
   lastUpdated: number;
+  /**
+   * UpdateAvailable is true when the last evener/plugin/checkUpdates found a
+   * newer remote commit. Absent means no known update: no check has run, the
+   * check found the plugin current or could not reach its remote, or the
+   * source is not git-backed. Clients offer Upgrade only when it is true.
+   */
+  updateAvailable?: boolean;
 }
 
 export interface PluginLaunchCandidate {
@@ -4622,6 +4629,7 @@ export const METHOD_NAMES = [
   "evener/plugin/enable",
   "evener/plugin/disable",
   "evener/plugin/setAutoUpgrade",
+  "evener/plugin/checkUpdates",
   "evener/command/list",
   "evener/spawn/slashCatalog",
   "evener/settings/overview",
@@ -4689,6 +4697,7 @@ export const HOST_REQUEST_METHODS = [
   "evener/path/validate",
   "evener/paths/complete",
   "evener/plugin/checkNow",
+  "evener/plugin/checkUpdates",
   "evener/plugin/disable",
   "evener/plugin/enable",
   "evener/plugin/install",
@@ -4930,6 +4939,7 @@ export interface MethodTypes {
   "evener/plugin/enable": { params: PluginRefParams; result: PluginListResponse };
   "evener/plugin/disable": { params: PluginRefParams; result: PluginListResponse };
   "evener/plugin/setAutoUpgrade": { params: PluginSetAutoUpgradeParams; result: PluginListResponse };
+  "evener/plugin/checkUpdates": { params: EmptyParams; result: PluginListResponse };
   "evener/command/list": { params: EmptyParams; result: CommandListResponse };
   "evener/spawn/slashCatalog": { params: SpawnSlashCatalogParams; result: SpawnSlashCatalogResponse };
   "evener/settings/overview": { params: EmptyParams; result: SettingsOverviewResponse };

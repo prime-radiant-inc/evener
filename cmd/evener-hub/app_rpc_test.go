@@ -12948,6 +12948,7 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		appwire.MethodEvenerPluginEnable,
 		appwire.MethodEvenerPluginDisable,
 		appwire.MethodEvenerPluginSetAutoUpgrade,
+		appwire.MethodEvenerPluginCheckUpdates,
 		appwire.MethodEvenerPluginCheckNow,
 		appwire.MethodEvenerPluginPreview,
 		// Component 07a's remote-admin proxy.

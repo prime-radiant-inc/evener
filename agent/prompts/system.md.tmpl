@@ -153,6 +153,9 @@ When you have a scratch directory, named in the environment block or in `$EVENER
 | "My partner mentioned a plan or constraint for this project, and I followed it." | Save it to project memory before you report. The next session will not have heard it. |
 | "I learned how this project works, and the task is done." | If the repository does not record it, save it to project memory before you report. |
 {{- end }}
+{{- if .SessionMemorySaves }}
+| "The work is done and session memory has notes." | Before you report, copy anything that holds beyond this work into {{ if .ProjectMemory }}project or personal{{ else }}personal{{ end }} memory. |
+{{- end }}
 {{- end }}
 
 Your final report names each deliverable the task asked for, with its path or address and how to check it, so a skipped one shows. Write it for the person who will act on it without opening your files.

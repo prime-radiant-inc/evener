@@ -211,6 +211,19 @@ func memoryContextCount(s *Session) int {
 	return n
 }
 
+func lastMemoryContextText(t *testing.T, s *Session, name string) string {
+	t.Helper()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, turn := range slices.Backward(s.history) {
+		if turn.Kind == schema.TurnMemoryContext && turn.Message.Name == name {
+			return turn.Message.Text()
+		}
+	}
+	t.Fatalf("no %s memory context turn", name)
+	return ""
+}
+
 func TestMemoryIndexUTF8Boundary(t *testing.T) {
 	t.Parallel()
 	raw := []byte(strings.Repeat("x", 8191) + "界" + "opaque-tail")
@@ -978,7 +991,7 @@ func TestMemoryStorageSharedWaitAndClose(t *testing.T) {
 			memorySeed(t, root, "personal", "opaque-held-personal-501")
 			memorySeed(t, root, "projects/fixture-project", "opaque-held-project-502")
 			clk := agenttest.NewFakeClock()
-			started := make(chan string, 2)
+			started := make(chan string, 3)
 			release := make(chan struct{})
 			var once sync.Once
 			unblock := func() { once.Do(func() { close(release) }) }
@@ -994,14 +1007,16 @@ func TestMemoryStorageSharedWaitAndClose(t *testing.T) {
 				}
 				return nil
 			}}}))
+			memorySeed(t, root, filepath.Join("sessions", s.id), "opaque-held-session-503")
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			done := make(chan struct{})
 			go func() { s.maybeAppendMemoryContext(ctx); close(done) }()
 			<-started
 			<-started
+			<-started
 			s.memoryMu.Lock()
-			personal, project := s.memoryIndexFlights["personal"], s.memoryIndexFlights["project"]
+			personal, project, session := s.memoryIndexFlights["personal"], s.memoryIndexFlights["project"], s.memoryIndexFlights["session"]
 			var heldEnvs []*execenv.LocalExecutionEnvironment
 			if mode == "close-index_read" {
 				for _, env := range s.memoryEnvs {
@@ -1035,7 +1050,7 @@ func TestMemoryStorageSharedWaitAndClose(t *testing.T) {
 				<-done
 				t.Fatal("boundary exceeded shared budget")
 			}
-			want := 2
+			want := 3
 			if strings.HasPrefix(mode, "close-") {
 				want = 0
 			}
@@ -1045,6 +1060,7 @@ func TestMemoryStorageSharedWaitAndClose(t *testing.T) {
 			unblock()
 			<-personal.done
 			<-project.done
+			<-session.done
 			if got := memoryContextCount(s); got != want {
 				t.Fatalf("worker appended late context=%d", got)
 			}
@@ -1057,11 +1073,11 @@ func TestMemoryStorageSharedWaitAndClose(t *testing.T) {
 				}
 			}
 			if mode == "close-index_read" {
-				if personal.projection.Status != "current" || personal.projection.Content != "opaque-held-personal-501" || project.projection.Status != "current" || project.projection.Content != "opaque-held-project-502" {
+				if personal.projection.Status != "current" || personal.projection.Content != "opaque-held-personal-501" || project.projection.Status != "current" || project.projection.Content != "opaque-held-project-502" || session.projection.Status != "current" || session.projection.Content != "opaque-held-session-503" {
 					t.Fatal("Close interrupted an admitted read instead of leaving it responsible for retirement")
 				}
-				if len(heldEnvs) != 2 {
-					t.Fatalf("paused reader environments=%d want=2", len(heldEnvs))
+				if len(heldEnvs) != 3 {
+					t.Fatalf("paused reader environments=%d want=3", len(heldEnvs))
 				}
 				for _, env := range heldEnvs {
 					// After Close and both completion barriers, no operation can
@@ -2615,7 +2631,7 @@ func TestMemorySchemaAndOutputAliases(t *testing.T) {
 			t.Fatalf("registered %s intent=%v", name, intent)
 		}
 		scope := props["scope"].(map[string]any)
-		if fmt.Sprint(scope["enum"]) != "[personal project]" {
+		if fmt.Sprint(scope["enum"]) != "[personal project session]" {
 			t.Fatalf("scope=%v", scope)
 		}
 		if _, exists := ordinary.Definition.Parameters["properties"].(map[string]any)["scope"]; exists {
@@ -2680,13 +2696,14 @@ func TestMemoryGuidanceFollowsCapabilities(t *testing.T) {
 		cfg                 SessionConfig
 		revoke              string
 		read, save, project bool
+		session             bool
 	}{
-		{"enabled", SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project"}, "", true, true, true},
-		{"personal-only", SessionConfig{MemoryStateRoot: t.TempDir()}, "", true, true, false},
-		{"write-revoked", SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project"}, "memory_write", true, false, true},
-		{"search-revoked", SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project"}, "memory_search", true, true, true},
-		{"disabled", SessionConfig{MemoryStateRoot: t.TempDir(), DisableMemory: true}, "", false, false, false},
-		{"unbound", SessionConfig{}, "", false, false, false},
+		{"enabled", SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project"}, "", true, true, true, true},
+		{"personal-only", SessionConfig{MemoryStateRoot: t.TempDir()}, "", true, true, false, true},
+		{"write-revoked", SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project"}, "memory_write", true, false, true, false},
+		{"search-revoked", SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project"}, "memory_search", true, true, true, true},
+		{"disabled", SessionConfig{MemoryStateRoot: t.TempDir(), DisableMemory: true}, "", false, false, false, false},
+		{"unbound", SessionConfig{}, "", false, false, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -2719,8 +2736,33 @@ func TestMemoryGuidanceFollowsCapabilities(t *testing.T) {
 			if data.MemorySaves != tc.save || data.ProjectMemory != (tc.save && tc.project) {
 				t.Fatalf("prompt data MemorySaves=%v ProjectMemory=%v", data.MemorySaves, data.ProjectMemory)
 			}
+			if data.SessionMemorySaves != tc.session {
+				t.Fatalf("SessionMemorySaves=%v, want %v", data.SessionMemorySaves, tc.session)
+			}
+			if tc.save {
+				// The skill catalog's gardening-memory description names project memory whatever is bound.
+				prompt, _, _ := strings.Cut(system.String(), "<skill-catalog>")
+				if has := strings.Contains(strings.ToLower(prompt), "project memory"); has != tc.project {
+					t.Fatalf("rendered prompt mentions project memory=%v, want %v", has, tc.project)
+				}
+				if has := strings.Contains(system.String(), "session memory has notes"); has != tc.session {
+					t.Fatalf("rendered prompt has promotion row=%v, want %v", has, tc.session)
+				}
+			}
 			if tc.read {
 				guidance := s.memoryGuidance()
+				if !strings.Contains(guidance, memorySessionScopeLine) {
+					t.Fatal("read guidance lacks the session scope line")
+				}
+				if has := strings.Contains(guidance, memorySessionSaveTrigger); has != tc.session {
+					t.Fatalf("guidance has session save trigger=%v, want %v", has, tc.session)
+				}
+				if has := strings.Contains(guidance, "belong in session memory, not project memory"); has != (tc.session && tc.project) {
+					t.Fatalf("guidance keeps working notes out of project memory=%v, want %v", has, tc.session && tc.project)
+				}
+				if strings.Contains(guidance, "will outlast this work") {
+					t.Fatalf("guidance still says \"will outlast this work\": %q", guidance)
+				}
 				if mentions := strings.Contains(strings.ToLower(guidance), "project memory"); mentions != tc.project {
 					t.Fatalf("guidance mentions project memory=%v, want %v", mentions, tc.project)
 				}
@@ -2731,5 +2773,184 @@ func TestMemoryGuidanceFollowsCapabilities(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestMemoryGuidanceDelegateSessionReadOnly(t *testing.T) {
+	t.Parallel()
+	s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project"}))
+	s.depth = 1
+	s.delegateRootSessionID = "034aRootFixture0000000"
+	guidance := s.memoryGuidance()
+	if !strings.Contains(guidance, memorySessionDelegateLine) || strings.Contains(guidance, memorySessionSaveTrigger) || !strings.Contains(guidance, "details only the current task needs") || strings.Contains(guidance, "will outlast this work") {
+		t.Fatalf("delegate guidance: %q", guidance)
+	}
+	if data, _ := s.buildPromptData(s.currentEnv()); data.SessionMemorySaves {
+		t.Fatal("delegate offered session saves")
+	}
+}
+
+func TestMemoryGuidanceUnboundDelegateOmitsSessionScope(t *testing.T) {
+	t.Parallel()
+	s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project"}))
+	s.depth = 1
+	s.delegateRootSessionID = ""
+	guidance := s.memoryGuidance()
+	if strings.Contains(guidance, memorySessionScopeLine) || strings.Contains(guidance, memorySessionDelegateLine) {
+		t.Fatalf("guidance names a session scope this delegate cannot use: %q", guidance)
+	}
+	s.delegateRootSessionID = "../escape"
+	guidance = s.memoryGuidance()
+	if strings.Contains(guidance, memorySessionScopeLine) || strings.Contains(guidance, memorySessionDelegateLine) {
+		t.Fatalf("guidance names a session scope for a corrupt root id: %q", guidance)
+	}
+}
+
+func TestMemorySessionScopeRootWrites(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: root, MemoryProjectID: "fixture-project"}))
+	if res := memoryExec(t, s, "memory_write", map[string]any{"scope": "session", "file_path": "MEMORY.md", "content": "opaque-session-11\n"}); res.IsError {
+		t.Fatal(res.Output)
+	}
+	got, err := os.ReadFile(filepath.Join(root, "memory", "sessions", s.id, "MEMORY.md"))
+	if err != nil || string(got) != "opaque-session-11\n" {
+		t.Fatalf("bytes=%q err=%v", got, err)
+	}
+}
+
+func TestMemorySessionScopeDelegateReadsButCannotWrite(t *testing.T) {
+	t.Parallel()
+	workspace, project := memoryGitFixture(t)
+	root := t.TempDir()
+	s := newSession(t, withDir(workspace), withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root, MemoryProjectID: project.ID, Project: project, testOnly: testConfig{sandboxProber: bwrapCapableProber(workspace), disableDelegateIdleRelease: true}}), withSteps(func(llm.Request) llm.Response { return finalResponse("child finished") }))
+	memorySeed(t, root, filepath.Join("sessions", s.id), "opaque-root-session-12\n")
+	res := s.createDelegate(context.Background(), delegateArgs{Task: "fixture child", AgentType: "explorer", DelegationAllowance: new(0)})
+	if res.Err != nil {
+		t.Fatal(res.Err)
+	}
+	child := memoryWaitChild(t, s, res.ChildSessionID)
+	if read := memoryExec(t, child.sess, "memory_read", map[string]any{"scope": "session", "file_path": "MEMORY.md"}); read.IsError || !strings.Contains(read.Output, "opaque-root-session-12") {
+		t.Fatalf("delegate read=%+v", read)
+	}
+	for _, name := range []string{"memory_write", "memory_edit", "memory_delete"} {
+		res := memoryExec(t, child.sess, name, map[string]any{"scope": "session", "file_path": "MEMORY.md", "content": "x", "old_string": "opaque", "new_string": "y"})
+		if !res.IsError || !strings.Contains(res.Output, memorySessionReadOnly) {
+			t.Fatalf("delegate session %s=%+v", name, res)
+		}
+	}
+	got, _ := os.ReadFile(filepath.Join(root, "memory", "sessions", s.id, "MEMORY.md"))
+	if string(got) != "opaque-root-session-12\n" {
+		t.Fatalf("root session memory changed: %q", got)
+	}
+	child.sess.appendMemoryProjection(memoryProjection{Scope: "session", Status: "current", Content: "opaque-root-session-12\n"})
+	if text := lastMemoryContextText(t, child.sess, "memory_session"); !strings.Contains(text, memorySessionProjectionReadOnly) {
+		t.Fatalf("delegate session projection lacks read-only framing: %q", text)
+	}
+}
+
+func TestMemorySessionScopeUnboundDelegateRefuses(t *testing.T) {
+	t.Parallel()
+	s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: t.TempDir()}))
+	s.depth = 1
+	s.delegateRootSessionID = ""
+	if res := memoryExec(t, s, "memory_read", map[string]any{"scope": "session", "file_path": "MEMORY.md"}); !res.IsError || !strings.Contains(res.Output, "session memory is not bound") {
+		t.Fatalf("res=%+v", res)
+	}
+	s.delegateRootSessionID = "../escape"
+	if res := memoryExec(t, s, "memory_read", map[string]any{"scope": "session", "file_path": "MEMORY.md"}); !res.IsError || !strings.Contains(res.Output, "session memory is not bound") {
+		t.Fatalf("hostile id res=%+v", res)
+	}
+}
+
+func TestMemorySessionIndexProjected(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	var body string
+	s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: root}), withSteps(func(req llm.Request) llm.Response {
+		_, body, _ = memoryRequestIndex(t, req, "session")
+		return finalResponse("done")
+	}))
+	memorySeed(t, root, filepath.Join("sessions", s.id), "opaque-session-index-21\n")
+	if _, err := s.ProcessInput(context.Background(), "go", nil); err != nil {
+		t.Fatal(err)
+	}
+	if body != "opaque-session-index-21\n" {
+		t.Fatalf("session index body=%q", body)
+	}
+	if text := lastMemoryContextText(t, s, "memory_session"); strings.Contains(text, memorySessionProjectionReadOnly) {
+		t.Fatalf("root session projection has read-only framing: %q", text)
+	}
+}
+
+func TestMemorySessionIndexSurvivesResumeAndCompaction(t *testing.T) {
+	t.Parallel()
+	root, history, workspace := t.TempDir(), t.TempDir(), t.TempDir()
+	s := newScriptedSummaryCompactSession(t, "memory-summary", func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("opaque-fold-59")} }, withDir(workspace), withConfig(SessionConfig{StateDir: history, MemoryStateRoot: root}))
+	sessionPath := memorySeed(t, root, filepath.Join("sessions", s.id), "opaque-session-resume-22\n")
+	observe := func(want string, projections int) func(llm.Request) llm.Response {
+		return func(req llm.Request) llm.Response {
+			state, body, _ := memoryRequestIndex(t, req, "session")
+			if state != "current" || body != want {
+				t.Fatalf("session index=%s %q, want %q", state, body, want)
+			}
+			count := 0
+			for _, msg := range req.Messages {
+				if msg.Name == "memory_session" {
+					count++
+				}
+			}
+			if count != projections {
+				t.Fatalf("session projections in request=%d, want %d", count, projections)
+			}
+			return finalResponse("observed")
+		}
+	}
+	s.client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{observe("opaque-session-resume-22\n", 1), observe("opaque-session-resume-22\n", 1)}})
+	if _, err := s.ProcessInput(context.Background(), "startup", nil); err != nil {
+		t.Fatal(err)
+	}
+	for range 12 {
+		s.appendTurnWithTranscriptMessage(schema.TurnUserInput, llm.User("opaque-old-69"), llm.User("opaque-old-69"))
+	}
+	if err := s.Compact(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.history) >= 14 {
+		t.Fatal("history did not fold")
+	}
+	if _, err := s.ProcessInput(context.Background(), "after fold", nil); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	if err := os.WriteFile(sessionPath, []byte("opaque-session-resumed-23\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	meta, err := schema.LoadSessionMeta(history, s.id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := RestoreSessionFromMetaWithConfig(s.client, s.profile, execenv.NewLocalExecutionEnvironment(workspace), meta, RestoreSessionConfig{StateDir: history, MemoryStateRoot: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	if r.id != s.id {
+		t.Fatalf("resume changed the session id: %s", r.id)
+	}
+	r.client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{observe("opaque-session-resumed-23\n", 2)}})
+	if _, err := r.ProcessInput(context.Background(), "resume", nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMemorySessionRestoreSeedsObservedScope(t *testing.T) {
+	t.Parallel()
+	s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: t.TempDir()}))
+	msg := llm.User("x")
+	msg.Name = "memory_session"
+	s.restoreMemoryProjection([]schema.Turn{{Kind: schema.TurnMemoryContext, Message: msg}})
+	if !s.memoryEverProjected["session"] {
+		t.Fatal("restored session observation not seeded")
 	}
 }

@@ -1,6 +1,6 @@
 # Memory
 
-Evener keeps useful personal and project lessons in ordinary files on the
+Evener keeps useful personal and project lessons, and working notes about the current work, in ordinary files on the
 session's host. The files are the source of truth, not transcript projections,
 client caches or session notes. Stored text is fallible evidence, never
 instructions or permission. Current user intent and direct evidence take
@@ -16,6 +16,7 @@ host's [`DefaultStateRoot`](../../cmdutil/statedir.go) supplies these roots:
 ```text
 <state-root>/memory/personal/
 <state-root>/memory/projects/<Project.ID>/
+<state-root>/memory/sessions/<root-session-id>/
 ```
 
 The state root is `$XDG_STATE_HOME/evener`, normally
@@ -23,6 +24,24 @@ The state root is `$XDG_STATE_HOME/evener`, normally
 `EVENER_STATE_DIR` override does not relocate memory. Local and remote hosts
 own separate storage. Personal memory crosses projects on that host; project
 memory belongs to its bound project identity.
+
+Session memory holds working notes about the current work (its plan, what was
+tried and found). The root session owns it;
+delegates resolve the scope to their root and can read but not write it. A
+delegate resumed on its own (`serve --resume <delegate-id>`) is still a
+delegate: it has no root to resolve, so it gets no session scope, no session
+guidance and no fork copy. Resume keeps a root's session memory. A fork or
+`--resume-with` child copies its parent's session memory the
+first time it opens the scope, in its own process, normally at its first model
+call; then the two diverge. A missing or empty parent scope means a silent empty
+start. The copy reads the parent and writes the child through the same confined
+layer the memory tools use, so no symlink anywhere on the path is followed. It
+takes only regular files and directories within a size limit (empty directories
+are skipped); anything else, including a parent scope that exists but is a
+symlink or a file, means a warning and an empty start. A copy failure is a session warning and leaves the scope empty; it never
+blocks the session. Deleting a session keeps its session memory. No native
+memory tool reaches another session's session directory, so removing it is
+manual for now (#3748 tracks cleanup).
 
 Production CLI and daemon sessions bind memory by default. Trusted launch
 binding uses `identifier.ResolveProjectWith`; linked worktrees share their main
@@ -47,7 +66,7 @@ flowchart LR
     Files --> Index
 ```
 
-Enabled sessions receive separate personal and project `MEMORY.md` projections
+Enabled sessions receive separate personal, project and session `MEMORY.md` projections
 as named user-source context, outside system instructions. Each scope supplies
 at most 8 KiB of index content, cut at a UTF-8 boundary, with explicit truncation
 and a route to `memory_read`. Topic files and logs are not preloaded.
@@ -55,17 +74,27 @@ and a route to `memory_read`. Topic files and logs are not preloaded.
 Enabled sessions also receive core memory guidance after the system
 instructions. It says what each scope holds (personal memory: what applies
 beyond the current project, such as how the human partner works and how tools,
-systems and the world behave; project memory: knowledge about this project),
+systems and the world behave; project memory: knowledge about this project;
+session memory: working notes about the current work: its plan, what was tried
+and found),
 when to read a page, and that stored memory is fallible evidence, never
 instructions or permission. Sessions that can call the save tools are also told
 when to save: when the partner corrects the agent or says how they want work
-done, when the partner states a project plan, constraint or decision, and when
-the agent learns something the hard way that is not written down. Partner-stated
+done, when the partner states a project plan, constraint or decision (saved to
+project memory), when a root session is partway through longer work (its plan,
+what it tried and what it ruled out go to session memory as working notes), and when the agent learns
+something the hard way that is not written down. Partner-stated
 facts are saved before the work they shape, because complying with them does
 not carry them to the next session. The Finishing guidance and the result
 tool's description repeat the save check at the point the agent decides it is
 done. Pages that contradict what the agent observes are corrected in the same
-turn. Guidance names only tools the session can call, and mentions project
+turn. Root sessions are told that working notes belong in session memory, not
+project memory (the second half only when project memory is bound). The
+Finishing guidance adds one row telling root sessions to promote anything that
+holds beyond this work out of session memory before they report. Delegates are told session memory is their root's, to read it and
+report what they learn to their parent; a delegate with no root session id,
+including one resumed on its own, is told nothing about session memory. A delegate's session index projection
+says the same in one sentence. Guidance names only tools the session can call, and mentions project
 memory only when a project scope is bound.
 
 Refresh runs at startup, resume, after compaction and later model boundaries.
