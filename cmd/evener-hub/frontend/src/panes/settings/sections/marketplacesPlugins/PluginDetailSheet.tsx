@@ -10,10 +10,11 @@ import { errorText, marketplaceSourceLabel } from "@evener/appwire-client";
 import { HUB_WRITE_BUSY, isHubWriteBusy } from "@evener/appwire-client/state/extensions";
 import { useEffect, useState } from "react";
 import { useIsMobile } from "../../../../shell/useIsMobile";
-import { Button, Chip, ConfirmDialog, Sheet, Switch, useToasts } from "../../../../widgets";
+import { Button, ConfirmDialog, Sheet, Switch, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { useExtensionsHostState, useExtensionsHostStore } from "./hostStore";
 import styles from "./marketplacesPlugins.module.css";
+import { pluginStatusChips } from "./pluginStatusChips";
 
 const CLASS = {
   sheetDesc: requireClass(styles.sheetDesc, "marketplacesPlugins.module.css", "sheetDesc"),
@@ -46,6 +47,7 @@ export function PluginDetailSheet({ target, onClose }: PluginDetailSheetProps) {
     target === null || plugins === null
       ? undefined
       : plugins.find((p) => p.plugin === target.plugin && p.marketplace === target.marketplace);
+  const chips = entry === undefined ? [] : pluginStatusChips(entry);
 
   // The entry can vanish under an open sheet - a remove completing (this
   // sheet's own or another client's), or a refetch after external change.
@@ -143,14 +145,7 @@ export function PluginDetailSheet({ target, onClose }: PluginDetailSheetProps) {
       >
         {entry !== undefined && (
           <>
-            {(entry.broken || !entry.enabled || entry.autoUpgrade || entry.updateAvailable) && (
-              <div className={CLASS.chipRow}>
-                {entry.broken && <Chip tone="danger">broken</Chip>}
-                {!entry.enabled && <Chip tone="neutral">off by default</Chip>}
-                {entry.autoUpgrade && <Chip tone="neutral">auto-upgrade</Chip>}
-                {entry.updateAvailable && <Chip tone="attention">update available</Chip>}
-              </div>
-            )}
+            {chips.length > 0 && <div className={CLASS.chipRow}>{chips}</div>}
             {description !== undefined && <p className={CLASS.sheetDesc}>{description}</p>}
             <div className={CLASS.metaList}>
               <div className={CLASS.metaRow}>
