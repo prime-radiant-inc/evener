@@ -30,9 +30,9 @@ You have a memory that outlasts this session. Save what you learn in it, so futu
 Save a memory when:
 - your human partner corrects you or tells you how they want something done. Save it to personal memory with the reason they gave, or to project memory if it only applies here.
 - your human partner tells you about this project: a plan, a constraint, a decision, or work that is still unfinished. Save it to project memory.
+- you learn something the hard way that is not written down where you found it, such as a tool's quirk, how a system behaves, a setup step, or a test suite that silently skips. Save it to personal memory if it holds beyond this project, or to project memory if it is about this project.
 
 When your partner tells you something, save it before you start the work it shapes. Following an instruction does not record it, and the next session will not have heard it.
-- you learn something the hard way that is not written down where you found it, such as a tool's quirk, how a system behaves, a setup step, or a test suite that silently skips. Save it to personal memory if it holds beyond this project, or to project memory if it is about this project.
 
 Skip what the repository already says and details only the current task needs. A constraint or plan that shaped this task usually outlives it. Write one topic per page with memory_write and add a one-line pointer to it in MEMORY.md with memory_edit. Look for an existing page first and update it instead of adding a duplicate.
 
@@ -40,6 +40,13 @@ When what you observe contradicts a memory, fix the page and its index line with
 
 func (s *Session) memoryContextEnabled() bool {
 	return !s.cfg.DisableMemory && s.cfg.MemoryStateRoot != "" && s.reg != nil && s.reg.Get("memory_read") != nil
+}
+
+// memorySaveInstructionsEnabled gates text that tells the model to write
+// memory: a session that can read but not write memory still gets its indexes,
+// never instructions it cannot follow.
+func (s *Session) memorySaveInstructionsEnabled() bool {
+	return s.memoryContextEnabled() && s.canInstructTool("memory_write")
 }
 
 type memoryProjection struct {

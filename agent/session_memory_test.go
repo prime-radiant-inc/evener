@@ -2669,29 +2669,43 @@ func TestMemoryIndexQuotesOpaqueBytes(t *testing.T) {
 	}
 }
 
-func TestMemoryReportReminderOnResultToolOnlyWithMemory(t *testing.T) {
+// Save guidance and the result tool's save reminder tell the model to write
+// memory, so both appear only when the session can call memory_write.
+func TestMemorySaveInstructionsOnlyWhenWritable(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
-		name string
-		cfg  SessionConfig
-		want bool
+		name         string
+		cfg          SessionConfig
+		revokeWrites bool
+		want         bool
 	}{
-		{"enabled", SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project"}, true},
-		{"disabled", SessionConfig{MemoryStateRoot: t.TempDir(), DisableMemory: true}, false},
-		{"unbound", SessionConfig{}, false},
+		{"enabled", SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project"}, false, true},
+		{"write-revoked", SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project"}, true, false},
+		{"disabled", SessionConfig{MemoryStateRoot: t.TempDir(), DisableMemory: true}, false, false},
+		{"unbound", SessionConfig{}, false, false},
 	} {
-		s := newSession(t, withConfig(tc.cfg))
-		found := false
-		for _, def := range s.ToolDefinitions() {
-			if def.Name == s.resultToolName() {
-				found = true
-				if got := strings.Contains(def.Description, memoryReportReminder); got != tc.want {
-					t.Fatalf("%s: reminder present=%v, want %v", tc.name, got, tc.want)
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var guidance, reminder bool
+			s := newSession(t, withConfig(tc.cfg), withSteps(func(req llm.Request) llm.Response {
+				for _, msg := range req.Messages {
+					guidance = guidance || (msg.Role == llm.RoleSystem && strings.Contains(msg.Text(), memoryGuidance))
 				}
+				for _, def := range req.Tools {
+					reminder = reminder || strings.Contains(def.Description, memoryReportReminder)
+				}
+				return finalResponse("done")
+			}))
+			if tc.revokeWrites {
+				s.reg.Remove("memory_write")
+				s.rebuildToolDefsCache()
 			}
-		}
-		if !found {
-			t.Fatalf("%s: result tool %q not advertised", tc.name, s.resultToolName())
-		}
+			if _, err := s.ProcessInput(context.Background(), "go", nil); err != nil {
+				t.Fatal(err)
+			}
+			if guidance != tc.want || reminder != tc.want {
+				t.Fatalf("guidance=%v reminder=%v, want both %v", guidance, reminder, tc.want)
+			}
+		})
 	}
 }
