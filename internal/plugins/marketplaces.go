@@ -21,6 +21,7 @@ var (
 	marketplaceGitClone        = gitClone
 	marketplaceGitSparseClone  = gitSparseClone
 	marketplaceGitPull         = gitPull
+	marketplaceGitHeadSHA      = gitHeadSHA
 	marketplaceRemoveAll       = os.RemoveAll
 	marketplaceRemove          = os.Remove
 	marketplaceRename          = os.Rename
@@ -1562,6 +1563,14 @@ func undoCloneSwap(dest, aside string) error {
 }
 
 func (m *Manager) RefreshMarketplace(ctx context.Context, name string) error {
+	return m.refreshMarketplace(ctx, name, false)
+}
+
+// refreshMarketplace is RefreshMarketplace. With keepIfUnchanged, a pull that
+// leaves the clone's HEAD where it was writes nothing: the marketplaces are
+// not saved, so nothing is broadcast and no update check's answers are
+// retired (forgetChecks) for a refresh that changed nothing an answer read.
+func (m *Manager) refreshMarketplace(ctx context.Context, name string, keepIfUnchanged bool) error {
 	release, err := m.lockStore(ctx, marketplaceAcquireLock, 30*time.Second)
 	if err != nil {
 		return err
@@ -1588,18 +1597,32 @@ func (m *Manager) RefreshMarketplace(ctx context.Context, name string) error {
 				return err
 			}
 			ref.InstallLocation = installLoc
-		} else if pullErr := marketplaceGitPull(ctx, ref.InstallLocation); pullErr != nil {
-			// A failed pull can mean the clone is wedged — e.g. a stale
-			// .git/index.lock stranded by a killed git — and a plain retry
-			// would then fail the same way forever. Self-heal with a staged
-			// reclone; on failure it leaves the existing clone untouched.
-			// When the pull failed because the request itself was canceled,
-			// skip the doomed reclone and surface the cancellation directly.
-			if ctx.Err() != nil {
-				return pullErr
+		} else {
+			// The HEAD before the pull, when a caller keeps an unchanged
+			// clone unsaved; "" (unknown) always saves.
+			before := ""
+			if keepIfUnchanged {
+				before, _ = marketplaceGitHeadSHA(ctx, ref.InstallLocation)
 			}
-			if recloneErr := m.recloneMarketplace(ctx, ref); recloneErr != nil {
-				return fmt.Errorf("refreshing marketplace %q: git pull failed (%w); staged reclone failed: %w", name, pullErr, recloneErr)
+			pullErr := marketplaceGitPull(ctx, ref.InstallLocation)
+			if pullErr == nil && before != "" {
+				if after, err := marketplaceGitHeadSHA(ctx, ref.InstallLocation); err == nil && after == before {
+					return nil
+				}
+			}
+			if pullErr != nil {
+				// A failed pull can mean the clone is wedged — e.g. a stale
+				// .git/index.lock stranded by a killed git — and a plain retry
+				// would then fail the same way forever. Self-heal with a staged
+				// reclone; on failure it leaves the existing clone untouched.
+				// When the pull failed because the request itself was canceled,
+				// skip the doomed reclone and surface the cancellation directly.
+				if ctx.Err() != nil {
+					return pullErr
+				}
+				if recloneErr := m.recloneMarketplace(ctx, ref); recloneErr != nil {
+					return fmt.Errorf("refreshing marketplace %q: git pull failed (%w); staged reclone failed: %w", name, pullErr, recloneErr)
+				}
 			}
 		}
 	}

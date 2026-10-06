@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -30,6 +31,13 @@ var updateCheckDeadline = 100 * time.Second
 
 var errUpdateCheckDeadline = errors.New("not answered within the update check's overall time limit")
 
+// updateCheckRefreshBudget bounds the marketplace refreshes that open a check
+// (refreshForCheck), so slow marketplaces leave the remote checks most of
+// updateCheckDeadline. A variable so tests can shorten it.
+var updateCheckRefreshBudget = 40 * time.Second
+
+var errUpdateCheckRefreshBudget = errors.New("not refreshed within the update check's time for refreshing marketplaces")
+
 // checkedHead is one plugin's CheckUpdates answer: the commit an Upgrade would
 // install, and the commit installed when the check read the registry. The
 // answer holds only while that install is still the one in the registry, so
@@ -52,7 +60,8 @@ type checkedHead struct {
 // stands.
 // A remote or catalog that cannot be read, or a remote still unanswered at
 // updateCheckDeadline, is warned about and flags nothing. A cancelled check
-// returns ctx's error and keeps the previous answers. Of
+// returns ctx's error and keeps the previous answers, unless its refresh
+// changed a marketplace, which retires them as any marketplace write does. Of
 // overlapping checks only the newest publishes, and a marketplace write
 // retires every answer (forgetChecks).
 func (m *Manager) CheckUpdates(ctx context.Context) error {
@@ -138,41 +147,42 @@ func (m *Manager) CheckUpdates(ctx context.Context) error {
 	return nil
 }
 
-// refreshForCheck refreshes every fetched marketplace before a check, a few at
-// a time (the store lock still orders their writes), each within
-// updateCheckTimeout and all within ctx, the check's deadline. A directory
-// marketplace is read in place and needs none. It answers the warnings for
-// the marketplaces it could not refresh; a refresh failure never fails the
-// check. It runs before the check begins its generation, since a refresh
-// writes the marketplaces and so retires any check already begun.
+// refreshForCheck refreshes every fetched marketplace before a check, so the
+// catalogs it reads and the clones relative sources are answered from are
+// current. The refreshes run one at a time: a refresh holds the store lock
+// through its network pull, so more at once would only queue on the lock with
+// their timers running. Each gets updateCheckTimeout, all of them together
+// updateCheckRefreshBudget of the check's deadline, so the remote checks keep
+// the rest. A directory marketplace is read in place, and a never-fetched one
+// has no installed plugin to check, so neither is refreshed. A refresh that
+// leaves the clone where it was saves nothing (refreshMarketplace's
+// keepIfUnchanged), so it neither broadcasts nor retires the answers of
+// another check in flight. It answers the warnings for the marketplaces it
+// could not refresh; a refresh failure never fails the check.
 func (m *Manager) refreshForCheck(ctx context.Context) []string {
 	mk, err := m.ListMarketplaces(ctx)
 	if err != nil {
 		return []string{fmt.Sprintf("listing marketplaces to refresh: %v", err)}
 	}
-	var mu sync.Mutex
+	budgetCtx, cancel := context.WithTimeoutCause(ctx, updateCheckRefreshBudget, errUpdateCheckRefreshBudget)
+	defer cancel()
 	var warnings []string
-	var g errgroup.Group
-	g.SetLimit(updateCheckConcurrency)
-	for name, ref := range mk {
-		if ref.Source.Kind == SourceDirectory {
+	for _, name := range slices.Sorted(maps.Keys(mk)) {
+		if ref := mk[name]; ref.Source.Kind == SourceDirectory || ref.InstallLocation == "" {
 			continue
 		}
-		g.Go(func() error {
-			refreshCtx, cancel := context.WithTimeout(ctx, updateCheckTimeout)
-			defer cancel()
-			if err := m.RefreshMarketplace(refreshCtx, name); err != nil {
-				if cause := context.Cause(ctx); errors.Is(cause, errUpdateCheckDeadline) {
+		refreshCtx, cancelRefresh := context.WithTimeout(budgetCtx, updateCheckTimeout)
+		err := m.refreshMarketplace(refreshCtx, name, true)
+		cancelRefresh()
+		if err != nil {
+			for _, limit := range []error{errUpdateCheckDeadline, errUpdateCheckRefreshBudget} {
+				if cause := context.Cause(budgetCtx); errors.Is(cause, limit) {
 					err = cause
 				}
-				mu.Lock()
-				warnings = append(warnings, fmt.Sprintf("refreshing marketplace %q before checking for updates: %v", name, err))
-				mu.Unlock()
 			}
-			return nil
-		})
+			warnings = append(warnings, fmt.Sprintf("refreshing marketplace %q before checking for updates: %v", name, err))
+		}
 	}
-	_ = g.Wait()
 	return warnings
 }
 

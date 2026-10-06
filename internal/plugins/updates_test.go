@@ -431,11 +431,6 @@ func TestCheckUpdates_UnfetchedMarketplaceIsNotReadFromTheWorkingDirectory(t *te
 	if err := f.m.saveMarketplaces(mk); err != nil {
 		t.Fatal(err)
 	}
-	// The check's refresh would fetch it; with its source gone it stays
-	// unfetched.
-	if err := os.Rename(f.mktRepo, f.mktRepo+".gone"); err != nil {
-		t.Fatal(err)
-	}
 	if checkThenList(t, f.m) {
 		t.Fatal("plugin flagged from a catalog read out of the working directory")
 	}
@@ -558,5 +553,55 @@ func TestCheckUpdates_AMarketplaceThatCannotRefreshIsAWarning(t *testing.T) {
 	}
 	if w := f.warnings(); !strings.Contains(w, `refreshing marketplace "acme"`) {
 		t.Fatalf("no warning names the marketplace that could not refresh: %q", w)
+	}
+}
+
+// A check's refresh that leaves a marketplace's clone where it was writes
+// nothing: no save, so no broadcast and no answers retired for another check
+// in flight. One that pulls a change saves it.
+func TestCheckUpdates_ARefreshThatChangesNothingWritesNothing(t *testing.T) {
+	f := installURLPlugin(t, unpinned)
+	lastUpdated := func() time.Time {
+		t.Helper()
+		mk, err := f.m.ListMarketplaces(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return mk["acme"].LastUpdated
+	}
+	before := lastUpdated()
+	f.m.Now = func() time.Time { return before.Add(time.Hour) }
+	checkThenList(t, f.m)
+	if got := lastUpdated(); !got.Equal(before) {
+		t.Fatalf("a refresh that pulled nothing saved the marketplace (LastUpdated %v, was %v)", got, before)
+	}
+	advanceRepo(t, f.mktRepo)
+	checkThenList(t, f.m)
+	if got := lastUpdated(); !got.Equal(before.Add(time.Hour)) {
+		t.Fatalf("a refresh that pulled a change did not save it (LastUpdated %v)", got)
+	}
+}
+
+// Marketplace refreshes that hang are cut off at their own budget, so the
+// remote checks still answer within the check's deadline.
+func TestCheckUpdates_HungRefreshesLeaveTheRemoteChecksTheirTime(t *testing.T) {
+	f := installURLPlugin(t, unpinned)
+	advanceRepo(t, f.pluginRepo)
+	realPull, realBudget := marketplaceGitPull, updateCheckRefreshBudget
+	t.Cleanup(func() { marketplaceGitPull, updateCheckRefreshBudget = realPull, realBudget })
+	updateCheckRefreshBudget = 50 * time.Millisecond
+	marketplaceGitPull = func(ctx context.Context, _ string) error {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	start := time.Now()
+	if !checkThenList(t, f.m) {
+		t.Fatal("plugin behind its remote head not flagged after its marketplace's refresh hung")
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("check took %v; the refresh budget did not cut off the hung refresh", elapsed)
+	}
+	if w := f.warnings(); !strings.Contains(w, errUpdateCheckRefreshBudget.Error()) {
+		t.Fatalf("no warning names the refresh budget: %q", w)
 	}
 }
