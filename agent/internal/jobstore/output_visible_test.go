@@ -303,3 +303,21 @@ func TestPendingCompactionNeverMovesTheVisibleStartBack(t *testing.T) {
 		t.Fatalf("page during the pending compaction = %+v, want only \"cccc\\n\" from 10", page)
 	}
 }
+
+func TestGrepOutputFileRefusesAFileThatChangedAfterItsView(t *testing.T) {
+	path, _ := writeHiddenPrefixOutput(t)
+	// checkTotal runs between the view and the reopen: grow the file there,
+	// the way a compaction replacing it would change its size.
+	_, err := GrepOutputFileLimit(path, regexp.MustCompile("new"), 1024, 0, 1024, func(int64) error {
+		f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		_, err = f.WriteString("later\n")
+		return err
+	})
+	if !errors.Is(err, ErrOutputChangedDuringRead) {
+		t.Fatalf("grep over a file that changed after its view: err = %v, want ErrOutputChangedDuringRead", err)
+	}
+}
