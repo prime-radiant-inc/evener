@@ -45,12 +45,15 @@ export interface BackgroundTranscriptsOwner {
  * non-advancing page already ends a sweep, so this is only a safety net. */
 const MAX_SWEEP_PAGES = 10_000;
 
-// Bounded, paced retry for an incomplete discovery sweep. The navigation
-// revalidator schedules nothing itself, so the owner must retry a failed page
-// without spinning on its own publications.
+// Paced retry for an incomplete discovery sweep. The navigation revalidator
+// schedules nothing itself, so the owner must retry a failed page without
+// spinning on its own publications. The backoff is bounded (the delay is
+// capped), but retries continue while the owner holds demand: a hard attempt
+// cap would strand still-desired Live refs when the host recovers later with
+// no new invalidation.
 const RETRY_BASE_MS = 250;
 const RETRY_MAX_MS = 5_000;
-const RETRY_MAX_ATTEMPTS = 6;
+const RETRY_MAX_SHIFT = 5; // 250 * 2^5 = 8000, capped to RETRY_MAX_MS
 
 export function startBackgroundTranscripts(navigation: NavigationStore): BackgroundTranscriptsOwner {
   let accepting = true;
@@ -150,8 +153,8 @@ export function startBackgroundTranscripts(navigation: NavigationStore): Backgro
   }
 
   function armRetry(): void {
-    if (!accepting || disposed || retryTimer !== null || retryAttempt >= RETRY_MAX_ATTEMPTS) return;
-    const delay = Math.min(RETRY_MAX_MS, RETRY_BASE_MS * 2 ** retryAttempt);
+    if (!accepting || disposed || retryTimer !== null) return;
+    const delay = Math.min(RETRY_MAX_MS, RETRY_BASE_MS * 2 ** Math.min(retryAttempt, RETRY_MAX_SHIFT));
     retryAttempt += 1;
     retryTimer = setTimeout(() => {
       retryTimer = null;

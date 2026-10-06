@@ -178,6 +178,12 @@ function threadUnsubRefs(): string[] {
     .map((call) => (call.params as { ref?: string }).ref ?? "");
 }
 
+function sectionReadCount(): number {
+  return fake.calls.filter(
+    (call) => call.method === "evener/navigation/read" && (call.params as NavigationReadParams).resource === "section",
+  ).length;
+}
+
 // Waits for an OBSERVED boundary, failing loudly if it never arrives: a
 // FakeClient round trip settles within microtasks, so a bounded drain is
 // enough, but silently returning on expiry would let a stalled owner pass.
@@ -768,6 +774,53 @@ describe("startBackgroundTranscripts", () => {
       expect(threadUnsubRefs()).toEqual(["local:a"]);
     } finally {
       await owner.dispose();
+    }
+  });
+  test("bounded backoff keeps retrying past the attempt cap and recovers a later Live ref", async () => {
+    vi.useFakeTimers();
+    try {
+      const RETRY_CAP_MS = 5_000;
+      world.pages = onePage([liveRow("local:a")]);
+      fake = connectFake();
+      const owner = startBackgroundTranscripts(navigationStore);
+      await owner.settled();
+      expect(threadReadRefs()).toEqual(new Set(["local:a"]));
+
+      // The terminal page keeps failing. Existing owners are retained, and
+      // settled() must not wait on the future retry timer.
+      world.pages = failPage();
+      invalidate(2);
+      await owner.settled();
+      expect(threadUnsubRefs()).toEqual([]);
+      expect(threadReadRefs().has("local:a")).toBe(true);
+
+      // Persist the fault well past six backoff attempts: the owner must keep
+      // pacing retries at the capped cadence (not strand discovery, not spin).
+      const readsAtFault = sectionReadCount();
+      await vi.advanceTimersByTimeAsync(RETRY_CAP_MS * 10);
+      const retriesDuringFault = sectionReadCount() - readsAtFault;
+      expect(retriesDuringFault).toBeGreaterThanOrEqual(7);
+      expect(retriesDuringFault).toBeLessThanOrEqual(20);
+      expect(threadUnsubRefs()).toEqual([]);
+
+      // The host recovers with no external loadSection and no new invalidation:
+      // the next paced retry must acquire the newly Live ref.
+      world.pages = onePage([liveRow("local:a"), liveRow("remote:recovered-idle", { host_id: "remote" })]);
+      await vi.advanceTimersByTimeAsync(RETRY_CAP_MS);
+      await owner.settled();
+      expect(threadReadRefs().has("remote:recovered-idle")).toBe(true);
+      expect(threadUnsubRefs()).toEqual([]);
+
+      // dispose cancels the pending retry callback: no later demand.
+      const disposed = owner.dispose();
+      await vi.advanceTimersByTimeAsync(RETRY_CAP_MS);
+      await disposed;
+      const readsAtDispose = sectionReadCount();
+      await vi.advanceTimersByTimeAsync(RETRY_CAP_MS * 3);
+      expect(sectionReadCount()).toBe(readsAtDispose);
+      expect(threadReadRefs().has("remote:recovered-idle")).toBe(true);
+    } finally {
+      vi.useRealTimers();
     }
   });
 });
