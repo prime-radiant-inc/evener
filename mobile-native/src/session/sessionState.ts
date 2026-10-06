@@ -5,7 +5,7 @@
 import { subagentState, summaryTally } from "../subagents/subagentModel";
 import type { EvenerDelegateInfo, ThreadModel, SessionActivityCounts } from "@evener/appwire-client";
 import { type BoardState, hubTime } from "../board/attention";
-import { compactDuration } from "./format";
+import { compactDuration, timeAgo } from "./format";
 
 export interface SessionStateLine {
 	state: BoardState;
@@ -46,7 +46,7 @@ export function sessionStateLine(session: StateSource, now: number, runMs?: numb
 	const finished = lastCompletion(session.turns);
 	return {
 		state: "idle",
-		text: finished === null ? "Finished" : `Finished · ${compactDuration(now - finished)} ago`,
+		text: finished === null ? "Finished" : `Finished · ${timeAgo(now - finished)}`,
 	};
 }
 

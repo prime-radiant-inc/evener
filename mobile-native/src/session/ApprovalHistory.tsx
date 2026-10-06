@@ -6,22 +6,16 @@
 import { SymbolView } from "expo-symbols";
 import { Text, View } from "react-native";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
-import { compactDuration, spokenDuration, wrapAfterSlashes } from "./format";
+import { spokenDuration, timeAgo, wrapAfterSlashes } from "./format";
 import { useMinuteClock } from "./minuteClock";
-
-// The minute clock can lag a decision by up to a minute, and a skewed clock
-// can put it ahead; either way it was just now.
-function ago(ms: number, words: (ms: number) => string): string {
-	return ms < 60_000 ? "just now" : `${words(ms)} ago`;
-}
 
 export function ApprovalHistory({ text, decidedAtMs }: { text: string; decidedAtMs: number | undefined }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
 	const now = useMinuteClock();
 	const age = decidedAtMs === undefined ? null : now - decidedAtMs;
-	const shown = age === null ? text : `${text} · ${ago(age, compactDuration)}`;
-	const spoken = age === null ? text : `${text}, ${ago(age, spokenDuration)}`;
+	const shown = age === null ? text : `${text} · ${timeAgo(age)}`;
+	const spoken = age === null ? text : `${text}, ${timeAgo(age, spokenDuration)}`;
 	return (
 		<View accessible accessibilityLabel={spoken} style={{ flexDirection: "row", alignItems: "flex-start", gap: 8 }}>
 			<SymbolView name="hand.raised.circle.fill" tintColor={palette.inkMid} size={20 * scale} />

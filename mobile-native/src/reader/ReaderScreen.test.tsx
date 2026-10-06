@@ -281,6 +281,16 @@ it("renders a plan's blocks under its caption", async () => {
 	);
 });
 
+// The same age as the document's chip: just now under a minute, even with a
+// hub clock ahead of the phone's.
+it.each([
+	["seconds ago", -10_000],
+	["ahead of the phone's clock", 5_000],
+])("says updated just now for a document written %s", async (_name, offset) => {
+	const { tree } = await mount(PATH, { updatedAt: new Date(Date.now() + offset).toISOString() });
+	expect(renderedText(tree)).toContain("Plan · updated just now");
+});
+
 it("keeps its update time current while it's open", async () => {
 	vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
 	try {

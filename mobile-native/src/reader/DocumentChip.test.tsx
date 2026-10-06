@@ -120,6 +120,17 @@ it("shows the file name once before its summary lands", () => {
 	expect(button(tree)?.props.accessibilityLabel).toBe("Plan, settle-race.md, 3 minutes ago");
 });
 
+// The minute clock can lag a write by up to a minute, and a hub clock ahead
+// of the phone's puts the write in the future; either way it was just now.
+it.each([
+	["seconds ago", -10_000],
+	["ahead of the phone's clock", 5_000],
+])("says just now for a document written %s", (_name, offset) => {
+	const tree = chip({ updatedAt: new Date(Date.now() + offset).toISOString() });
+	expect(renderedText(tree)).toContain("just now");
+	expect(button(tree)?.props.accessibilityLabel).toBe("Plan, settle-race.md, just now");
+});
+
 it("shows no age for a file the session only named", async () => {
 	const tree = chip();
 	await settle();
