@@ -509,13 +509,16 @@ async function reveal(edge, container) {
     // Load more control into view can make the page boundary under it load the
     // next page by itself; when that page lands it removes the boundary and the
     // list shifts, so a press measured before it can land on a neighbouring
-    // delegate row and drill into it (#3804).
+    // delegate row and drill into it (#3804). The click still requires the
+    // control to be the topmost element at its center, as a real press would.
     const step = await wait(`(() => {
       if (document.querySelector(${q(selector)})) return { revealed: true };
       const buttons = [...document.querySelectorAll(${q(`${container} button`)})];
       const b = buttons.find(n => !n.disabled && (${visible} === 0 ? n.textContent.trim().startsWith('Inactive subagents (') : n.textContent.trim().startsWith('Show ') || n.textContent.trim() === 'Load more subagents'));
       if (!b) return null;
       b.scrollIntoView({ block: 'center' });
+      const r = b.getBoundingClientRect();
+      if (!b.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2))) return null;
       const before = document.querySelector(${q(container)}).textContent;
       b.click();
       return { before };
