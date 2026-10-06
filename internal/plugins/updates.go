@@ -87,6 +87,24 @@ func (m *Manager) CheckUpdates(ctx context.Context) error {
 			continue
 		}
 		src, ok := m.upgradeSource(mk, catalogs, &catalogWarnings, marketplace, plugin)
+		if ok && src.Rel {
+			// A plugin in its marketplace's own repo is checked against the
+			// refreshed clone, without a network call: Upgrade copies its
+			// folder again when the clone's last commit touching it moved.
+			// A directory marketplace's plugin is used in place, so never
+			// behind.
+			if ref := mk[marketplace]; ref.Source.Kind != SourceDirectory {
+				head, err := sourcePathCommit(checkCtx, m.catalogRoot(ref), src.Path)
+				if err != nil {
+					catalogWarnings = append(catalogWarnings, fmt.Sprintf("checking %s for updates: %v", key, err))
+				} else if head != "" {
+					mu.Lock()
+					heads[key] = checkedHead{head: head, installed: installed}
+					mu.Unlock()
+				}
+			}
+			continue
+		}
 		if !ok || gitRemoteURL(src) == "" {
 			continue
 		}

@@ -218,7 +218,12 @@ func TestCheckUpdates_UnreachableRemoteWarnsAndFlagsNothing(t *testing.T) {
 	}
 }
 
-func TestCheckUpdates_RelativeSourcePluginIsNeverFlagged(t *testing.T) {
+// A plugin stored in its marketplace's own repo ("./plugins/widget") is
+// upgradable from the refreshed marketplace clone. A check flags it when the
+// clone's last commit touching its folder is not the one installed, so a
+// commit elsewhere in the marketplace flags nothing, and an Upgrade copies the
+// folder's new contents and settles the flag.
+func TestCheckUpdates_RelativeSourcePluginUpgradesFromItsRefreshedMarketplace(t *testing.T) {
 	mktRepo, name := makeInstallableMarketplace(t)
 	m := NewManager(t.TempDir())
 	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
@@ -227,9 +232,36 @@ func TestCheckUpdates_RelativeSourcePluginIsNeverFlagged(t *testing.T) {
 	if _, err := m.Install(context.Background(), "widget", name); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
+	refresh := func() {
+		t.Helper()
+		if err := m.RefreshMarketplace(context.Background(), name); err != nil {
+			t.Fatalf("RefreshMarketplace: %v", err)
+		}
+	}
 	advanceRepo(t, mktRepo)
+	refresh()
 	if checkThenList(t, m) {
-		t.Fatal("relative-source plugin listed as having an update")
+		t.Fatal("plugin flagged by a marketplace commit that did not touch its folder")
+	}
+
+	if err := os.WriteFile(filepath.Join(mktRepo, "plugins", "widget", "extra.txt"), []byte("v2"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, mktRepo, "add", ".")
+	gitIn(t, mktRepo, "commit", "-qm", "change widget")
+	refresh()
+	if !checkThenList(t, m) {
+		t.Fatal("plugin whose folder changed in the refreshed marketplace not flagged")
+	}
+	entry, err := m.Upgrade(context.Background(), "widget", name)
+	if err != nil {
+		t.Fatalf("Upgrade: %v", err)
+	}
+	if b, err := os.ReadFile(filepath.Join(entry.InstallPath, "extra.txt")); err != nil || string(b) != "v2" {
+		t.Fatalf("upgraded plugin's extra.txt = %q (%v), want the marketplace's new contents", b, err)
+	}
+	if checkThenList(t, m) {
+		t.Fatal("upgraded plugin still flagged")
 	}
 }
 

@@ -130,6 +130,16 @@ func gitHeadSHA(ctx context.Context, dir string) (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
+// gitPathCommit returns the last commit of the repository at dir that touched
+// path (relative to dir), or "" when no commit has.
+func gitPathCommit(ctx context.Context, dir, path string) (string, error) {
+	out, err := gitRun(ctx, dir, "log", "-1", "--format=%H", "--", path)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
 // gitRemoteHead asks url, without cloning, for the commit a clone that then
 // checks out ref lands on; an empty ref means the remote's HEAD. An annotated
 // tag answers with its peeled commit. A tag wins over a branch of the same
