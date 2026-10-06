@@ -22,7 +22,7 @@ import {
 	plainQuoteLine,
 	shellJobState,
 } from "@evener/appwire-client";
-import { quietOrWorking, waitingOnSubagents } from "../board/attention";
+import { subagentQuietLine, waitingOnSubagents } from "../board/attention";
 import { compactDuration, spokenDuration } from "../session/format";
 import type { SubagentTally } from "../session/sessionState";
 
@@ -313,6 +313,8 @@ export interface SubagentWhy {
 	/** The actual unsuccessful outcome, displayed beside its cause. */
 	word?: "Failed";
 	text: string;
+	/** The silence that turns this line Quiet (subagentQuietLine). */
+	quietForMs?: number;
 }
 
 function runningCommand(session: ActivitySessionNode | undefined): string | undefined {
@@ -338,7 +340,7 @@ export function subagentWhy(row: SubagentRow, now: number): SubagentWhy {
 		(entry) => entry.kind === "delegate" && delegateHasActiveWork(entry.delegate),
 	).length;
 	if (waiting > 0) return { text: waitingOnSubagents(waiting) };
-	return { text: quietOrWorking(delegateTiming(delegate, now).quietForMs ?? 0) };
+	return subagentQuietLine(delegateTiming(delegate, now));
 }
 
 // Cache the same qualified entity identity used by the shared projection.
