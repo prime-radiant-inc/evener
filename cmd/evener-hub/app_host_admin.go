@@ -276,7 +276,9 @@ func forwardedHostRead(method string, params json.RawMessage) (pool string, ok b
 	if isRemoteHostAdminMutation(forwarded.Method) || forwarded.Method == appwire.MethodEvenerMarketplaceRefresh {
 		return "", false
 	}
-	return forwarded.Host, true
+	// Trimmed as Request trims it, so padding cannot split one host's reads
+	// across pools.
+	return strings.TrimSpace(forwarded.Host), true
 }
 
 // remoteSourceFor returns the attached component-05 source for host, or the

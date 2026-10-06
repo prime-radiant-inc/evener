@@ -634,8 +634,8 @@ type Connection struct {
 	// capSaturationAdvised makes the cap-saturation advisory one-shot per
 	// connection. Only the worker goroutine touches it.
 	capSaturationAdvised bool
-	// requestPoolSaturationAdvised does the same for requestPools. It is
-	// written under requestPoolsMu.
+	// requestPoolSaturationAdvised does the same for requestPools. Only the
+	// worker goroutine touches it.
 	requestPoolSaturationAdvised bool
 	// slowReadMu guards slowReadInflight, the per-method tally of in-flight
 	// slow reads the stall advisory names.
@@ -2038,16 +2038,16 @@ func (c *Connection) tryRequestSlot(ctx context.Context, pool string) bool {
 		return false
 	}
 	c.requestPoolsMu.Lock()
-	defer c.requestPoolsMu.Unlock()
-	if c.requestPools[pool] >= concurrentRequestCap {
-		if !c.requestPoolSaturationAdvised {
-			c.requestPoolSaturationAdvised = true
-			c.server.logf("appserver: connection %s concurrent request pool is full for %q (%d in flight); refusing its further requests as Unavailable until one finishes", c.id, pool, concurrentRequestCap)
-		}
-		return false
+	full := c.requestPools[pool] >= concurrentRequestCap
+	if !full {
+		c.requestPools[pool]++
 	}
-	c.requestPools[pool]++
-	return true
+	c.requestPoolsMu.Unlock()
+	if full && !c.requestPoolSaturationAdvised {
+		c.requestPoolSaturationAdvised = true
+		c.server.logf("appserver: connection %s concurrent request pool is full for %q (%d in flight); refusing its further requests as Unavailable until one finishes", c.id, pool, concurrentRequestCap)
+	}
+	return !full
 }
 
 // releaseRequestSlot frees the pool slot tryRequestSlot took, dropping a pool
