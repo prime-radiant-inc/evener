@@ -1626,4 +1626,166 @@ describe("background transcript recovery", () => {
       cache.close();
     }
   });
+
+  test("a genuinely oversized fresh live read stays unverified, paces its retries, and recovers when the response fits", async () => {
+    // The fresh authoritative RESPONSE is oversized here, unlike the
+    // oversized-history cases that enlarge only the disk record while returning
+    // a small `currentRead`. The wire payload alone is bigger than the 32 MiB
+    // disk-record cap, so this exercises the response path into the oversized
+    // base branch and its paced repair scheduler.
+    const OVERSIZED_TEXT = "h".repeat(33 * 1024 * 1024);
+    const pendingBytes = 64 * 1024 * 1024;
+    const restoreOptions = installBackgroundTranscriptOptionsForTests({ residentBytes: 0, pendingBytes });
+    const cache = new SessionCacheIndexedDB({
+      indexedDB: new IDBFactory(),
+      databaseName: `recovery-${crypto.randomUUID()}`,
+      maxBytes: 32 * 1024 * 1024,
+    });
+    resetThreadsStoreForTests();
+    setSessionCacheAdapterForTests(cache);
+    const scheduled: Array<() => void> = [];
+    const attempts: number[] = [];
+    const restoreScheduler = installHydrationRetrySchedulerForTests((attempt, retry) => {
+      attempts.push(attempt);
+      scheduled.push(retry);
+      return () => {};
+    });
+
+    // Establish the encoded size independently of the admission branch: the
+    // response's own JSON exceeds the disk-record cap with real nonempty content.
+    const sizeProbe = currentRead(ref);
+    if (!sizeProbe.overlay?.[0]) throw new Error("expected a live overlay item");
+    sizeProbe.overlay[0].item.text = `alpha-${OVERSIZED_TEXT}`;
+    const encodedResponseBytes = new TextEncoder().encode(JSON.stringify(sizeProbe)).byteLength;
+    expect(encodedResponseBytes).toBeGreaterThan(32 * 1024 * 1024);
+
+    let oversized = true;
+    let reads = 0;
+    const fake = new FakeClient("ready");
+    fake.on("thread/read", ({ ref: requested, requestGeneration }) => {
+      reads += 1;
+      const response = currentRead(requested ?? ref);
+      response.requestGeneration = requestGeneration ?? response.requestGeneration;
+      if (response.overlay?.[0]) {
+        response.overlay[0].item.text = oversized ? `alpha-${OVERSIZED_TEXT}` : "alpha-recovered";
+      }
+      return response;
+    });
+    fake.on("thread/unsubscribe", () => ({}));
+    connectionStore.getState().connect(fake);
+    const writes: CurrentSessionRecord[] = [];
+    const originalPut = cache.putCurrent.bind(cache);
+    const put = vi.spyOn(cache, "putCurrent").mockImplementation(async (record, now) => {
+      const outcome = await originalPut(record, now);
+      if (outcome.outcome === "written") writes.push(record);
+      return outcome;
+    });
+    const lease = acquireBackgroundThread(ref);
+    let paneHeld = false;
+    try {
+      await lease.ready;
+      await settleBackgroundTranscriptsForTests();
+
+      // The first authoritative background read returned the oversized response.
+      // Its live payload published as stale display state (not a fabricated
+      // current checkpoint), but no disk record can hold it, so the ref stays
+      // unverified and arms exactly one paced repair — no write is attempted.
+      const afterOversized = backgroundTranscriptSnapshotForTests();
+      expect(reads).toBe(1);
+      expect(writes).toHaveLength(0);
+      expect(afterOversized.refs.get(ref)?.persistence).toBe("repairing");
+      expect(afterOversized.refs.get(ref)?.current).toBe(false);
+      expect(afterOversized.pendingBytes).toBeGreaterThan(32 * 1024 * 1024);
+      expect(afterOversized.pendingBytes).toBeLessThanOrEqual(pendingBytes);
+      // The response was admitted to the write handoff and the disk worker then
+      // refused it: the publish-time budget revoke path would have left no
+      // handoff charge, so a nonzero handoff proves the worker's oversized-base
+      // branch was reached.
+      expect(afterOversized.refs.get(ref)?.handoffBytes).toBeGreaterThan(32 * 1024 * 1024);
+      expect(afterOversized.networkHydrations).toBe(0);
+      expect(scheduled).toHaveLength(1);
+      const oversizedPending = afterOversized.pendingBytes;
+
+      // No unpaced retry: the injected scheduler is the only boundary that can
+      // retry. Draining to a settled boundary leaves exactly one armed callback
+      // and no extra read or write, so nothing recreates the load/evict work on
+      // its own.
+      const settledAfterOversized = backgroundTranscriptSnapshotForTests();
+      expect(settledAfterOversized.queuedHydrationRefs).toHaveLength(0);
+      expect(settledAfterOversized.networkHydrations).toBe(0);
+
+      // Drive the controlled scheduler past the first callback with unchanged
+      // oversized replies: each attempt advances exactly one read, coalesces to
+      // exactly one replacement callback, keeps the single response's charge
+      // (no accumulation) and never writes — no self-sustaining read/write loop.
+      for (let iteration = 0; iteration < 2; iteration += 1) {
+        const before = reads;
+        const attemptsBefore = attempts.length;
+        scheduled.shift()?.();
+        await vi.waitFor(() => expect(reads).toBe(before + 1));
+        await settleBackgroundTranscriptsForTests();
+        const retried = backgroundTranscriptSnapshotForTests();
+        expect(retried.refs.get(ref)?.persistence).toBe("repairing");
+        expect(retried.refs.get(ref)?.current).toBe(false);
+        expect(retried.pendingBytes).toBe(oversizedPending);
+        expect(retried.networkHydrations).toBe(0);
+        expect(scheduled).toHaveLength(1);
+        expect(attempts).toHaveLength(attemptsBefore + 1);
+        expect(attempts.at(-1)).toBe(attemptsBefore + 1);
+        expect(writes).toHaveLength(0);
+      }
+
+      // Useful foreground operation while the exception stands: a real pane
+      // acquisition adopts the published oversized model with no new wire read
+      // and no fabricated current checkpoint, showing the literal returned
+      // content. Release the pane and keep the same background demand for the
+      // fitting recovery.
+      const readsBeforePane = reads;
+      await threadsStore.getState().ensureThread(ref);
+      paneHeld = true;
+      await settleBackgroundTranscriptsForTests();
+      expect(reads).toBe(readsBeforePane);
+      expect(threadsStore.getState().threads.has(ref)).toBe(true);
+      expect(threadsStore.getState().threads.get(ref)?.overlay?.["stream:s1:agentMessage"]?.item.text).toContain(
+        "alpha-",
+      );
+      expect(backgroundTranscriptSnapshotForTests().refs.get(ref)?.current).toBe(false);
+      threadsStore.getState().releaseThread(ref);
+      paneHeld = false;
+      await settleBackgroundTranscriptsForTests();
+
+      // The next authoritative state fits. Under the same retained background
+      // demand the ref recovers automatically: a current checkpoint commits,
+      // the model evicts to disk, and a fresh open is served locally with the
+      // literal recovered content and no new activation read.
+      oversized = false;
+      const readsBeforeRecovery = reads;
+      scheduled.shift()?.();
+      await vi.waitFor(() => expect(backgroundTranscriptSnapshotForTests().refs.get(ref)?.current).toBe(true));
+      await settleBackgroundTranscriptsForTests();
+      expect(reads).toBe(readsBeforeRecovery + 1);
+      expect(backgroundTranscriptSnapshotForTests().refs.get(ref)?.persistence).toBe("enabled");
+      const recoveredWrite = writes.at(-1);
+      if (!recoveredWrite) throw new Error("expected a committed recovery checkpoint");
+      expect(JSON.stringify(recoveredWrite.state)).toContain("alpha-recovered");
+      expect(JSON.stringify(recoveredWrite.state)).not.toContain("hhhhhhhhhh");
+      expect(threadsStore.getState().threads.has(ref)).toBe(false);
+      expect(backgroundTranscriptSnapshotForTests().pendingBytes).toBe(0);
+
+      const readsAfterRecovery = reads;
+      await threadsStore.getState().ensureThread(ref);
+      paneHeld = true;
+      expect(reads).toBe(readsAfterRecovery);
+      expect(JSON.stringify(threadsStore.getState().threads.get(ref))).toContain("alpha-recovered");
+    } finally {
+      if (paneHeld) threadsStore.getState().releaseThread(ref);
+      await settleBackgroundTranscriptsForTests();
+      await lease.release();
+      restoreScheduler();
+      put.mockRestore();
+      resetThreadsStoreForTests();
+      restoreOptions();
+      cache.close();
+    }
+  });
 });

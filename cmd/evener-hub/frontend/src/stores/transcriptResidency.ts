@@ -884,8 +884,24 @@ export function createTranscriptResidency(
       if (!residentBudget.reserve(size)) {
         entry.residentBytes = 0;
         if (!held(entry) && entry.owners.background > 0) {
-          if (handoffOwnsModel) entry.handoffBytes = size;
-          else if (pendingBudget.reserve(size)) entry.handoffBytes = size;
+          if (handoffOwnsModel) {
+            // entry.handoffBytes was already reserved, and any consumed
+            // deltas remain reserved in incrementalBytes. Reconcile that
+            // reserved total to the replaced body's actual size instead of
+            // leaving the stale charge counted; a size-only counter reset
+            // would hide a still-retained body, so adjust only the
+            // difference.
+            const reconciledBytes = size - entry.handoffBytes - incrementalBytes;
+            if (reconciledBytes > 0 && !pendingBudget.reserve(reconciledBytes)) {
+              // The grown body cannot be charged: keep the previous body's
+              // ownership intact and let the paced storage recovery
+              // reconcile it.
+              residency.revoke(ref, "storage");
+              return false;
+            }
+            if (reconciledBytes < 0) pendingBudget.release(-reconciledBytes);
+            entry.handoffBytes = size;
+          } else if (pendingBudget.reserve(size)) entry.handoffBytes = size;
           if (entry.handoffBytes > 0) {
             enqueueLeastRecentlyUsedVictims(ref, size);
             queueMicrotask(() => enqueue(ref));
