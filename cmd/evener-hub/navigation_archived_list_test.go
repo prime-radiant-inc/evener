@@ -529,18 +529,22 @@ func TestArchivedForkNodeBudgetAccountsForOmittedOriginals(t *testing.T) {
 	assertArchivedForkAccounting(t, page.Sessions, 1+sourceForks)
 }
 
+// archivedAt dates row i base+i seconds after the epoch.
+func archivedAt(base int) func(int) time.Time {
+	return func(i int) time.Time { return time.Unix(int64(base+i), 0).UTC() }
+}
+
+// archivedTitle titles row i "<prefix> i".
+func archivedTitle(prefix string) func(int) string {
+	return func(i int) string { return fmt.Sprintf("%s %d", prefix, i) }
+}
+
 // archivedCatalogFixture is one project key in each of the three catalogs,
 // each with its own archived rows: 5 archived, 2 active, 3 test runs.
 func archivedCatalogFixture() (whole, active, runs hubcore.TreeProject) {
-	at := func(base int) func(int) time.Time {
-		return func(i int) time.Time { return time.Unix(int64(base+i), 0).UTC() }
-	}
-	named := func(prefix string) func(int) string {
-		return func(i int) string { return fmt.Sprintf("%s %d", prefix, i) }
-	}
-	active = hubcore.TreeProject{Key: "moving", Name: "moving", Archived: archivedRows("active", 2, at(10), named("active"))}
-	whole = hubcore.TreeProject{Key: "moving", Name: "moving", IsArchived: true, Archived: archivedRows("whole", 5, at(20), named("whole"))}
-	runs = hubcore.TreeProject{Key: "moving", Name: "moving", IsTestRun: true, Archived: archivedRows("run", 3, at(30), named("run"))}
+	active = hubcore.TreeProject{Key: "moving", Name: "moving", Archived: archivedRows("active", 2, archivedAt(10), archivedTitle("active"))}
+	whole = hubcore.TreeProject{Key: "moving", Name: "moving", IsArchived: true, Archived: archivedRows("whole", 5, archivedAt(20), archivedTitle("whole"))}
+	runs = hubcore.TreeProject{Key: "moving", Name: "moving", IsTestRun: true, Archived: archivedRows("run", 3, archivedAt(30), archivedTitle("run"))}
 	return whole, active, runs
 }
 
@@ -722,8 +726,8 @@ func TestRenamingAnArchivedSessionInvalidatesItsProject(t *testing.T) {
 // revision it holds is answered unchanged, with no rows, until any row of the
 // list changes.
 func TestArchivedListRevisionAnswersUnchangedUntilTheListChanges(t *testing.T) {
-	at := func(i int) time.Time { return time.Unix(int64(100+i), 0).UTC() }
-	rows := archivedRows("old", 3, at, func(i int) string { return fmt.Sprintf("old %d", i) })
+	at := archivedAt(100)
+	rows := archivedRows("old", 3, at, archivedTitle("old"))
 	p := archivedProjection(t, hubcore.TreeProject{Key: "kept", Name: "kept", Archived: rows})
 	first, err := p.ArchivedList(t.Context(), navigationArchivedListRequest{ProjectKey: "kept", Limit: 2})
 	if err != nil || first.Revision == "" || first.Unchanged {
@@ -787,13 +791,9 @@ func TestHubArchivedListAnswersUnchangedAtTheHeldRevision(t *testing.T) {
 // One projection caches each list's revision under its own catalog and key,
 // and never a key no catalog holds, whatever keys clients send.
 func TestArchivedListRevisionCacheKeepsListsApart(t *testing.T) {
-	at := func(i int) time.Time { return time.Unix(int64(100+i), 0).UTC() }
-	title := func(prefix string) func(int) string {
-		return func(i int) string { return fmt.Sprintf("%s %d", prefix, i) }
-	}
 	p := archivedProjection(t,
-		hubcore.TreeProject{Key: "one", Name: "one", Archived: archivedRows("one", 2, at, title("one"))},
-		hubcore.TreeProject{Key: "two", Name: "two", Archived: archivedRows("two", 2, at, title("two"))},
+		hubcore.TreeProject{Key: "one", Name: "one", Archived: archivedRows("one", 2, archivedAt(100), archivedTitle("one"))},
+		hubcore.TreeProject{Key: "two", Name: "two", Archived: archivedRows("two", 2, archivedAt(100), archivedTitle("two"))},
 	)
 	revisions := map[string]string{}
 	for _, key := range []string{"one", "two"} {
@@ -817,7 +817,7 @@ func TestArchivedListRevisionCacheKeepsListsApart(t *testing.T) {
 	cached := 0
 	p.archivedRevisions.Range(func(key, _ any) bool {
 		cached++
-		if strings.HasSuffix(key.(string), "nowhere") {
+		if key.(archivedRevisionKey).ProjectKey == "nowhere" {
 			t.Errorf("cached a key no catalog holds: %q", key)
 		}
 		return true

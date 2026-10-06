@@ -124,8 +124,10 @@ type navigationProjection struct {
 	offlineSources map[string]bool
 	// archivedRevisions caches archivedListRevision by catalog and project
 	// key: the projection never changes once built, and paging a long list
-	// would otherwise fingerprint the whole list on every page. Nil (a
-	// projection not made by buildNavigationProjectionContext) caches nothing.
+	// would otherwise fingerprint the whole list on every page. It is lazy on
+	// purpose: archived rows stay out of the build-time fingerprint pass, so a
+	// build never hashes every archive. Nil (a projection not made by
+	// buildNavigationProjectionContext) caches nothing.
 	archivedRevisions *sync.Map
 }
 

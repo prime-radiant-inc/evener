@@ -190,6 +190,12 @@ func (p navigationProjection) ArchivedList(ctx context.Context, request navigati
 	return out, nil
 }
 
+// archivedRevisionKey names one archived list in a projection's revision cache.
+type archivedRevisionKey struct {
+	Catalog    navigationResourceKind
+	ProjectKey string
+}
+
 // archivedListRevision fingerprints an archived list: the catalog read, the
 // project key and every row of it as navigation summarizes it, children
 // included, so any change a page could show changes it. It is the navigation
@@ -198,13 +204,10 @@ func (p navigationProjection) ArchivedList(ctx context.Context, request navigati
 // holds (catalog "") is not cached, so the cache holds only real projects
 // whatever keys clients send.
 func (p navigationProjection) archivedListRevision(ctx context.Context, catalog navigationResourceKind, projectKey string, rows []hubcore.TreeNode) (string, error) {
-	cacheKey := string(catalog) + "\x00" + projectKey
-	cache := p.archivedRevisions
-	if catalog == "" {
-		cache = nil
-	}
-	if cache != nil {
-		if revision, ok := cache.Load(cacheKey); ok {
+	cacheKey := archivedRevisionKey{Catalog: catalog, ProjectKey: projectKey}
+	cacheable := catalog != "" && p.archivedRevisions != nil
+	if cacheable {
+		if revision, ok := p.archivedRevisions.Load(cacheKey); ok {
 			return revision.(string), nil
 		}
 	}
@@ -221,8 +224,8 @@ func (p navigationProjection) archivedListRevision(ctx context.Context, catalog 
 		return "", err
 	}
 	revision := hex.EncodeToString(fingerprint[:])
-	if cache != nil {
-		cache.Store(cacheKey, revision)
+	if cacheable {
+		p.archivedRevisions.Store(cacheKey, revision)
 	}
 	return revision, nil
 }
