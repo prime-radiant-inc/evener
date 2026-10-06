@@ -111,7 +111,10 @@ function readingPointExpr(portExpr) {
     };
     const entryBox = box(entry);
     const row = entry.closest('[data-row-id]');
-    const walker = document.createTreeWalker(entry, NodeFilter.SHOW_TEXT);
+    // Useful means the viewport shows real text. The anchoring entry can be a
+    // sub-pixel tail crossing the top (reflow keeps a showing tail in place),
+    // so the text may belong to the entries below it.
+    const walker = document.createTreeWalker(port, NodeFilter.SHOW_TEXT);
     let useful = false;
     let visibleText = null;
     let text;
