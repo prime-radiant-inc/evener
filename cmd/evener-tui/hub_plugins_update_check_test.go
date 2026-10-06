@@ -65,7 +65,9 @@ func TestPluginsPanelOpenChecksForUpdates(t *testing.T) {
 			mu.Lock()
 			defer mu.Unlock()
 			plugin.UpdateAvailable = true
-			return appwire.PluginListResponse{Plugins: []appwire.PluginEntry{plugin}}, nil
+			// An empty answer, so only the panel's re-read of the list can
+			// show the flag.
+			return appwire.PluginListResponse{}, nil
 		})
 	})
 	defer cleanup()
