@@ -93,6 +93,43 @@ func (m *Manager) lockStore(ctx context.Context, acquire lockAcquirer, timeout t
 	return release, nil
 }
 
+// lockClone takes the lock on the marketplace clone at dir and returns its
+// release. A check fetches a clone with the store lock free
+// (fastForwardMarketplace), so whatever else runs git in a clone or removes
+// or renames one takes this too: two gits in one clone collide on its ref
+// locks, and Windows refuses to delete or rename a directory a git is
+// running in. It is a file lock, so it holds against other evener processes
+// as the store lock does, keyed by the clone directory's name (every clone
+// lives in the marketplaces directory). Taken after the store lock, never
+// before it, and held for no store-lock wait. Its error carries the lock
+// file's path only to the log, as lockFailed's does.
+func (m *Manager) lockClone(ctx context.Context, dir string) (func(), error) {
+	path, err := m.storePath(cloneLocksDirName, filepath.Base(dir)+".lock")
+	if err != nil {
+		return nil, err
+	}
+	release, err := acquireLock(ctx, path, 30*time.Second)
+	if err != nil {
+		_, _ = fmt.Fprintf(m.stderr(), "warning: taking the lock on marketplace clone %s: %v\n", dir, err)
+		msg := fmt.Sprintf("the lock on marketplace clone %q could not be taken; see the hub's log for detail", filepath.Base(dir))
+		if cause := editFailureIdentity(err); cause != nil {
+			msg = fmt.Sprintf("%s: %v", msg, cause)
+		}
+		return nil, &lockAcquisitionError{msg: msg, cause: err}
+	}
+	return release, nil
+}
+
+// withClone runs op holding the lock on the clone at dir (lockClone).
+func (m *Manager) withClone(ctx context.Context, dir string, op func() error) error {
+	release, err := m.lockClone(ctx, dir)
+	if err != nil {
+		return err
+	}
+	defer release()
+	return op()
+}
+
 // lockFailed scrubs a failed store-lock acquisition's absolute lock-file path -
 // acquireLock and flockUntil build their errors around the lock path directly -
 // before it reaches an RPC caller, logging the raw error server-side first, the
