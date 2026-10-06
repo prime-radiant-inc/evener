@@ -136,7 +136,9 @@ do not open it. Expansion shows the scope, index state and formatted index throu
 each client's Markdown renderer. Unavailable and revoked states remain visible on
 the collapsed row; truncated indexes retain their truncation label. A separately
 folded **Source** preserves the complete recorded text, including content Markdown
-cannot display. Both clients use the shared payload validator; an observation
+cannot display. Native resolves that original from the retained conversation when
+the row opens, so its display-size limit does not clip Source or the malformed
+fallback. Both clients use the shared payload validator; an observation
 that cannot be decoded opens as its original text without blocking later valid
 observations. Disclosure choices belong to the session and item, with native
 choices also scoped by hub, and survive remounts and detail-level changes. Live
