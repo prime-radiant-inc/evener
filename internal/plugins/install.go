@@ -219,11 +219,11 @@ func (m *Manager) Upgrade(ctx context.Context, plugin, marketplace string) (Inst
 // upgradeAuto both acquire it before calling in).
 //
 // If requireAutoUpgrade is true, the plugin's CURRENT AutoUpgrade flag and
-// git-backed-ness are read fresh from the registry — under the lock the
-// caller is holding, immediately before any fetch — and the upgrade is
+// whether its source can upgrade are read fresh from the registry — under the
+// lock the caller is holding, immediately before any fetch — and the upgrade is
 // skipped (skipped=true, no error) if the plugin is no longer eligible. This
 // is what lets the auto-upgrade daemon honor a SetAutoUpgrade(false) (or a
-// switch to a directory/relative source) that lands after a sweep started
+// switch to a directory source) that lands after a sweep started
 // but before it reached this plugin's turn; requireAutoUpgrade=false (the
 // explicit-consent path) never skips on the flag.
 //
@@ -250,7 +250,7 @@ func (m *Manager) upgradeLocked(ctx context.Context, plugin, marketplace string,
 	}
 	prev := entries[0]
 
-	if requireAutoUpgrade && (!prev.AutoUpgrade || prev.Source.Rel || prev.Source.Kind == SourceDirectory) {
+	if requireAutoUpgrade && (!prev.AutoUpgrade || sourceCannotUpgrade(prev.Source)) {
 		return prev, false, true, nil
 	}
 
@@ -453,9 +453,10 @@ func (m *Manager) List(ctx context.Context) ([]ListItem, error) {
 	return out, nil
 }
 
-// UpdateAll upgrades every installed, git-backed plugin (directory/relative
-// sources are inherently current and skipped). Failures are collected but do
-// not stop the others.
+// UpdateAll upgrades every installed plugin that can upgrade: a git-backed
+// one, or one stored in its marketplace's own repo (a directory source is used
+// in place, so it is skipped). Failures are collected but do not stop the
+// others.
 func (m *Manager) UpdateAll(ctx context.Context) ([]InstallEntry, error) {
 	if err := m.migrateStore(ctx); err != nil {
 		return nil, err
@@ -478,7 +479,7 @@ func (m *Manager) UpdateAll(ctx context.Context) ([]InstallEntry, error) {
 			continue
 		}
 		e := entries[0]
-		if e.Source.Rel || e.Source.Kind == SourceDirectory {
+		if sourceCannotUpgrade(e.Source) {
 			continue
 		}
 		plugin, marketplace := splitKey(key)

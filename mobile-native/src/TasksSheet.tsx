@@ -12,7 +12,8 @@ import { Sheet } from "./sheet/Sheet";
 import { useSheet } from "./sheet/useSheet";
 import { TASK_STATUS_GLYPH, TASK_STATUS_LABEL } from "./taskStatus";
 import { tasksReadThroughCurrentClient } from "./tasksRead";
-import { Action, Copy, ErrorMessage, useColors } from "./ui";
+import { Copy, ErrorMessage, useColors } from "./ui";
+import { Button } from "./sheet/Grouped";
 
 /** The session's Tasks sheet: a formSheet route over the session it lists
  * (sheetRoutes.ts). It reads its hub's connection itself, since a sheet
@@ -160,10 +161,12 @@ export function TaskList({
 						) : null}
 						{task.prompt.trim() ? (
 							<>
-								<Action
+								<Button
+									text
+									label={`Prompt for task #${task.id}`}
 									expanded={prompts.has(task.id)}
 									onPress={() => toggle(task.id, true)}
-								>{`Prompt for task #${task.id}`}</Action>
+								/>
 								{prompts.has(task.id) ? <MarkdownResponse markdown={task.prompt} /> : null}
 							</>
 						) : null}
@@ -189,10 +192,12 @@ export function TaskList({
 			renderItem={({ item }) => taskRow(item)}
 			renderSectionHeader={({ section }) =>
 				section.key === "settled" ? (
-					<Action
+					<Button
+						text
+						label={`${section.title} · ${section.count}`}
 						expanded={settled}
 						onPress={() => setSettled(!settled)}
-					>{`${section.title} · ${section.count}`}</Action>
+					/>
 				) : (
 					<View style={{ paddingTop: 20, paddingBottom: 4 }}>
 						<Copy muted>{`${section.title} · ${section.count}`}</Copy>
@@ -205,11 +210,7 @@ export function TaskList({
 					{state.loading ? <ActivityIndicator accessibilityLabel="Loading tasks" color={colors.accent} /> : null}
 					<ErrorMessage message={error} />
 					{error && state.rows ? <Copy muted>Showing the last list that loaded.</Copy> : null}
-					{error ? (
-						<Action disabled={state.loading || !connected} onPress={refresh}>
-							Try again
-						</Action>
-					) : null}
+					{error ? <Button text label="Try again" disabled={state.loading || !connected} onPress={refresh} /> : null}
 					{state.daemonGone ? (
 						<Copy muted>This session’s daemon has exited. Showing the last available list.</Copy>
 					) : null}

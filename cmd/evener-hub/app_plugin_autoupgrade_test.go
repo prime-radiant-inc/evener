@@ -238,8 +238,8 @@ func TestPlugins_CheckUpdatesFlagsAPluginWhoseRemoteMovedUntilItIsUpgraded(t *te
 }
 
 // A check answers with the best list it can: a plugin whose remote moved is
-// flagged, while one whose remote can't be reached and one with a relative
-// source carry no flag, and neither fails the check.
+// flagged, while one whose remote can't be reached and a relative one whose
+// folder has not changed carry no flag, and neither fails the check.
 func TestPlugins_CheckUpdatesFlagsOnlyWhatItCouldConfirm(t *testing.T) {
 	if !hubTestGitAvailable() {
 		t.Skip("git not available")

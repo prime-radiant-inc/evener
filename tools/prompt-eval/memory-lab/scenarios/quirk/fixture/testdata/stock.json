@@ -1,0 +1,6 @@
+[
+  {"SKU": "bolt-m4", "Qty": 10, "Reorder": 20, "UnitCost": 5},
+  {"SKU": "nut-m4", "Qty": 200, "Reorder": 50, "UnitCost": 3},
+  {"SKU": "washer-8", "Qty": 40, "Reorder": 40, "UnitCost": 100},
+  {"SKU": "spring-2", "Qty": 100, "Reorder": 10, "UnitCost": 0}
+]

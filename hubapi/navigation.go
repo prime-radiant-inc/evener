@@ -142,10 +142,16 @@ type NavigationProjectPage struct {
 // NavigationSessionLocation is the top-level owner and current summary for a
 // session referenced by a deep link.
 type NavigationSessionLocation struct {
-	GenerationID string                    `json:"generation_id"`
-	Revision     uint64                    `json:"revision"`
-	Ref          string                    `json:"ref"`
-	TopLevelRef  string                    `json:"top_level_ref"`
+	GenerationID string `json:"generation_id"`
+	Revision     uint64 `json:"revision"`
+	Ref          string `json:"ref"`
+	TopLevelRef  string `json:"top_level_ref"`
+	// Catalog is the catalog ("projects", "archived_projects" or "test_runs")
+	// whose project ProjectKey names: a key can be in several, and a project
+	// or project_page read naming this catalog returns the project holding
+	// the session. Absent outside a project, and from an older hub, which
+	// also refuses a catalog on those reads.
+	Catalog      string                    `json:"catalog,omitempty"`
 	ProjectKey   string                    `json:"project_key,omitempty"`
 	TopLevel     bool                      `json:"top_level"`
 	Tier         string                    `json:"tier,omitempty"`

@@ -204,8 +204,9 @@ import { TranscriptUsage } from "./TranscriptUsage";
 import { groupTimeline, type TimelineRow } from "./timeline";
 import { hasUsageLines, projectNativeTranscript } from "./transcriptPresentation";
 import { refreshLoadedArchivedLists } from "./archivedLists";
-import { Action, Copy, ErrorMessage, styles, useColors, useTextScale } from "./ui";
+import { Copy, ErrorMessage, styles, useColors, useTextScale } from "./ui";
 import { haptic } from "./haptics";
+import { Button } from "./sheet/Grouped";
 
 const NO_QUESTIONS: AskQuestionRef[] = [];
 const STEER_FAILED = { text: "Couldn't steer with this message now." };
@@ -2687,9 +2688,7 @@ export function ConversationScreen({
 			{draft.error ? (
 				<View style={{ alignItems: "flex-start" }}>
 					<ErrorMessage message={draft.error} />
-					<Action tone="accent" onPress={document.retry}>
-						{draft.loaded ? "Retry saving" : "Retry loading draft"}
-					</Action>
+					<Button text label={draft.loaded ? "Retry saving" : "Retry loading draft"} onPress={document.retry} />
 				</View>
 			) : null}
 			{recovery.failed ? <RecoveryFailure error={recovery.error} onRetry={recovery.retry} /> : null}
@@ -3153,12 +3152,12 @@ export function ConversationScreen({
 								(controlsState.lastAction === "changeModel" ||
 									controlsState.lastAction === "setVisionModel" ||
 									controlsState.lastAction === "setReasoningEffort") ? (
-									<Action
-										tone="quiet"
+									<Button
+										text
+										quiet
+										label="Review settings error"
 										onPress={() => openModelSheet(controlsState.lastAction === "setVisionModel" ? "vision" : "model")}
-									>
-										Review settings error
-									</Action>
+									/>
 								) : null}
 							</View>
 						</ScrollView>

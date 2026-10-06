@@ -38,7 +38,8 @@ export interface PluginsState {
    * spawn-time plugin preview) the moment that set is known to have changed. */
   pluginRevision: number;
   fetchPlugins(): Promise<void>;
-  /** Asks the hub whether each git-backed plugin's remote has moved
+  /** Asks the hub whether each plugin has a newer version: a git-backed one's
+   * remote, or a marketplace-relative one's refreshed marketplace clone
    * (evener/plugin/checkUpdates), then re-reads the list, which carries the
    * flags the hub now holds. A host calls it when its plugins view opens. It
    * never throws, and a failed check publishes nothing: an older hub without

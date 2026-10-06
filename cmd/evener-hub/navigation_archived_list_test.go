@@ -52,7 +52,7 @@ func pageAllArchived(t *testing.T, p navigationProjection, catalog navigationRes
 		if err != nil {
 			t.Fatalf("hint %q, page %d: %v", catalog, pages, err)
 		}
-		page, err := p.ArchivedList(request)
+		page, err := p.ArchivedList(t.Context(), request)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -90,7 +90,7 @@ func TestArchivedListPagesEveryRowOnceAcrossTies(t *testing.T) {
 func TestArchivedListUnknownProjectIsAnEmptyPage(t *testing.T) {
 	p := archivedProjection(t)
 	for _, hint := range []navigationResourceKind{"", navigationResourceProjects, navigationResourceArchivedProjects} {
-		page, err := p.ArchivedList(navigationArchivedListRequest{Hint: hint, ProjectKey: "missing"})
+		page, err := p.ArchivedList(t.Context(), navigationArchivedListRequest{Hint: hint, ProjectKey: "missing"})
 		if err != nil || len(page.Sessions) != 0 || page.Sessions == nil || page.Total != 0 || page.NextCursor != "" || page.Catalog != "" {
 			t.Fatalf("hint %q: page=%#v err=%v", hint, page, err)
 		}
@@ -408,7 +408,7 @@ func TestArchivedForkOriginalsRespectTraversalAndEnvelopeBounds(t *testing.T) {
 	first := hubcore.TreeNode{ID: "continuation", Kind: "session", State: "ended", UpdatedAt: time.Unix(200, 0), Children: children}
 	second := hubcore.TreeNode{ID: "older", Kind: "session", State: "ended", UpdatedAt: time.Unix(100, 0)}
 	p := archivedProjection(t, hubcore.TreeProject{Key: "project", Archived: []hubcore.TreeNode{first, second}})
-	page, err := p.ArchivedList(navigationArchivedListRequest{Hint: navigationResourceProjects, ProjectKey: "project", Limit: 50})
+	page, err := p.ArchivedList(t.Context(), navigationArchivedListRequest{Hint: navigationResourceProjects, ProjectKey: "project", Limit: 50})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -432,7 +432,7 @@ func TestArchivedForkOriginalsRespectTraversalAndEnvelopeBounds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	next, err := p.ArchivedList(navigationArchivedListRequest{Hint: navigationResourceProjects, ProjectKey: "project", Limit: 50, After: &after})
+	next, err := p.ArchivedList(t.Context(), navigationArchivedListRequest{Hint: navigationResourceProjects, ProjectKey: "project", Limit: 50, After: &after})
 	if err != nil || len(next.Sessions) != 1 || next.Sessions[0].Ref != "local:older" || next.NextCursor != "" {
 		t.Fatalf("continuation=%+v err=%v", next, err)
 	}
@@ -500,7 +500,7 @@ func TestArchivedForkDepthCapAccountsForOmittedOriginals(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	page, err := p.ArchivedList(navigationArchivedListRequest{Hint: navigationResourceArchivedProjects, ProjectKey: project.Key, Limit: 50})
+	page, err := p.ArchivedList(t.Context(), navigationArchivedListRequest{Hint: navigationResourceArchivedProjects, ProjectKey: project.Key, Limit: 50})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -520,7 +520,7 @@ func TestArchivedForkNodeBudgetAccountsForOmittedOriginals(t *testing.T) {
 	// omitted fork original.
 	children = append(children, hubcore.TreeNode{ID: "delegate", Kind: "subagent", Children: []hubcore.TreeNode{{ID: "delegate-original", Kind: "fork"}}})
 	p := archivedProjection(t, hubcore.TreeProject{Key: "project", Archived: []hubcore.TreeNode{{ID: "continuation", Kind: "session", State: "ended", Children: children}}})
-	page, err := p.ArchivedList(navigationArchivedListRequest{Hint: navigationResourceProjects, ProjectKey: "project", Limit: 50})
+	page, err := p.ArchivedList(t.Context(), navigationArchivedListRequest{Hint: navigationResourceProjects, ProjectKey: "project", Limit: 50})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -530,18 +530,22 @@ func TestArchivedForkNodeBudgetAccountsForOmittedOriginals(t *testing.T) {
 	assertArchivedForkAccounting(t, page.Sessions, 1+sourceForks)
 }
 
+// archivedAt dates row i base+i seconds after the epoch.
+func archivedAt(base int) func(int) time.Time {
+	return func(i int) time.Time { return time.Unix(int64(base+i), 0).UTC() }
+}
+
+// archivedTitle titles row i "<prefix> i".
+func archivedTitle(prefix string) func(int) string {
+	return func(i int) string { return fmt.Sprintf("%s %d", prefix, i) }
+}
+
 // archivedCatalogFixture is one project key in each of the three catalogs,
 // each with its own archived rows: 5 archived, 2 active, 3 test runs.
 func archivedCatalogFixture() (whole, active, runs hubcore.TreeProject) {
-	at := func(base int) func(int) time.Time {
-		return func(i int) time.Time { return time.Unix(int64(base+i), 0).UTC() }
-	}
-	named := func(prefix string) func(int) string {
-		return func(i int) string { return fmt.Sprintf("%s %d", prefix, i) }
-	}
-	active = hubcore.TreeProject{Key: "moving", Name: "moving", Archived: archivedRows("active", 2, at(10), named("active"))}
-	whole = hubcore.TreeProject{Key: "moving", Name: "moving", IsArchived: true, Archived: archivedRows("whole", 5, at(20), named("whole"))}
-	runs = hubcore.TreeProject{Key: "moving", Name: "moving", IsTestRun: true, Archived: archivedRows("run", 3, at(30), named("run"))}
+	active = hubcore.TreeProject{Key: "moving", Name: "moving", Archived: archivedRows("active", 2, archivedAt(10), archivedTitle("active"))}
+	whole = hubcore.TreeProject{Key: "moving", Name: "moving", IsArchived: true, Archived: archivedRows("whole", 5, archivedAt(20), archivedTitle("whole"))}
+	runs = hubcore.TreeProject{Key: "moving", Name: "moving", IsTestRun: true, Archived: archivedRows("run", 3, archivedAt(30), archivedTitle("run"))}
 	return whole, active, runs
 }
 
@@ -556,7 +560,7 @@ func TestArchivedListReadsTheHintedCatalogWhenItHoldsTheKey(t *testing.T) {
 		catalog navigationResourceKind
 		total   int
 	}{{navigationResourceProjects, 2}, {navigationResourceArchivedProjects, 5}, {navigationResourceTestRuns, 3}} {
-		page, err := p.ArchivedList(navigationArchivedListRequest{Hint: tc.catalog, ProjectKey: "moving"})
+		page, err := p.ArchivedList(t.Context(), navigationArchivedListRequest{Hint: tc.catalog, ProjectKey: "moving"})
 		if err != nil || page.Catalog != tc.catalog || page.Total != tc.total {
 			t.Fatalf("hint %s: read %q total %d, err %v; want total %d", tc.catalog, page.Catalog, page.Total, err, tc.total)
 		}
@@ -574,7 +578,7 @@ func TestArchivedListFollowsAProjectToTheOtherMemberOfThePair(t *testing.T) {
 		{whole, navigationResourceProjects, navigationResourceArchivedProjects, 5},
 		{active, navigationResourceArchivedProjects, navigationResourceProjects, 2},
 	} {
-		page, err := archivedProjection(t, tc.held).ArchivedList(navigationArchivedListRequest{Hint: tc.hint, ProjectKey: "moving"})
+		page, err := archivedProjection(t, tc.held).ArchivedList(t.Context(), navigationArchivedListRequest{Hint: tc.hint, ProjectKey: "moving"})
 		if err != nil || page.Catalog != tc.want || page.Total != tc.wantLen {
 			t.Fatalf("hint %s: read %q total %d, err %v; want %s total %d", tc.hint, page.Catalog, page.Total, err, tc.want, tc.wantLen)
 		}
@@ -594,7 +598,7 @@ func TestArchivedListTestRunsAreNoMemberOfThePair(t *testing.T) {
 		{runs, navigationResourceProjects},
 		{runs, navigationResourceArchivedProjects},
 	} {
-		page, err := archivedProjection(t, tc.held).ArchivedList(navigationArchivedListRequest{Hint: tc.hint, ProjectKey: "moving"})
+		page, err := archivedProjection(t, tc.held).ArchivedList(t.Context(), navigationArchivedListRequest{Hint: tc.hint, ProjectKey: "moving"})
 		if err != nil || page.Catalog != "" || page.Total != 0 {
 			t.Fatalf("hint %s: read %q total %d, err %v", tc.hint, page.Catalog, page.Total, err)
 		}
@@ -611,7 +615,7 @@ func TestArchivedListWithoutAHintReadsTheFirstCatalogHoldingTheKey(t *testing.T)
 		{[]hubcore.TreeProject{whole, runs}, navigationResourceArchivedProjects},
 		{[]hubcore.TreeProject{runs}, navigationResourceTestRuns},
 	} {
-		page, err := archivedProjection(t, tc.projects...).ArchivedList(navigationArchivedListRequest{ProjectKey: "moving"})
+		page, err := archivedProjection(t, tc.projects...).ArchivedList(t.Context(), navigationArchivedListRequest{ProjectKey: "moving"})
 		if err != nil || page.Catalog != tc.want {
 			t.Fatalf("read %q, err %v; want %s", page.Catalog, err, tc.want)
 		}
@@ -634,7 +638,7 @@ func TestArchivedListCursorIsBoundToTheHint(t *testing.T) {
 		}
 	}
 
-	first, err := p.ArchivedList(navigationArchivedListRequest{Hint: navigationResourceProjects, ProjectKey: "moving", Limit: 2})
+	first, err := p.ArchivedList(t.Context(), navigationArchivedListRequest{Hint: navigationResourceProjects, ProjectKey: "moving", Limit: 2})
 	if err != nil || first.NextCursor == "" {
 		t.Fatalf("first page: cursor %q, err %v", first.NextCursor, err)
 	}
@@ -651,7 +655,7 @@ func TestArchivedListCursorIsBoundToTheHint(t *testing.T) {
 func TestArchivedListCursorContinuesAcrossAMoveBetweenPages(t *testing.T) {
 	rows := archivedRows("moving", 4, func(i int) time.Time { return time.Unix(int64(100+i), 0).UTC() }, func(i int) string { return fmt.Sprintf("moving %d", i) })
 	before := archivedProjection(t, hubcore.TreeProject{Key: "moving", Name: "moving", Archived: rows})
-	first, err := before.ArchivedList(navigationArchivedListRequest{Hint: navigationResourceProjects, ProjectKey: "moving", Limit: 2})
+	first, err := before.ArchivedList(t.Context(), navigationArchivedListRequest{Hint: navigationResourceProjects, ProjectKey: "moving", Limit: 2})
 	if err != nil || first.NextCursor == "" {
 		t.Fatalf("first page: cursor %q, err %v", first.NextCursor, err)
 	}
@@ -664,7 +668,7 @@ func TestArchivedListCursorContinuesAcrossAMoveBetweenPages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	next, err := after.ArchivedList(request)
+	next, err := after.ArchivedList(t.Context(), request)
 	if err != nil || next.Catalog != navigationResourceArchivedProjects || len(next.Sessions) != 2 {
 		t.Fatalf("next page: read %q, %d rows, err %v", next.Catalog, len(next.Sessions), err)
 	}
@@ -718,6 +722,112 @@ func TestRenamingAnArchivedSessionInvalidatesItsProject(t *testing.T) {
 	}
 }
 
+// An archived list carries a revision of the whole list it reads, so a client
+// holding a list can ask whether it changed: a first-page read naming the
+// revision it holds is answered unchanged, with no rows, until any row of the
+// list changes.
+func TestArchivedListRevisionAnswersUnchangedUntilTheListChanges(t *testing.T) {
+	at := archivedAt(100)
+	rows := archivedRows("old", 3, at, archivedTitle("old"))
+	p := archivedProjection(t, hubcore.TreeProject{Key: "kept", Name: "kept", Archived: rows})
+	first, err := p.ArchivedList(t.Context(), navigationArchivedListRequest{ProjectKey: "kept", Limit: 2})
+	if err != nil || first.Revision == "" || first.Unchanged {
+		t.Fatalf("first read: revision %q unchanged %v, err %v", first.Revision, first.Unchanged, err)
+	}
+	// A later page shares the list's revision.
+	request, err := parseNavigationArchivedListParams(appwire.ArchivedListParams{ProjectKey: "kept", Cursor: first.NextCursor, Limit: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next, err := p.ArchivedList(t.Context(), request); err != nil || next.Revision != first.Revision {
+		t.Fatalf("next page revision %q (%v), want the list's %q", next.Revision, err, first.Revision)
+	}
+
+	// A cursor read wants its rows, whatever revision it names.
+	request.KnownRevision = first.Revision
+	if next, err := p.ArchivedList(t.Context(), request); err != nil || next.Unchanged || len(next.Sessions) != 1 {
+		t.Fatalf("cursor read naming the held revision = %+v (%v), want its rows", next, err)
+	}
+
+	same, err := p.ArchivedList(t.Context(), navigationArchivedListRequest{ProjectKey: "kept", KnownRevision: first.Revision})
+	if err != nil || !same.Unchanged || len(same.Sessions) != 0 || same.Revision != first.Revision || same.Total != 3 {
+		t.Fatalf("read at the held revision = %+v (%v), want unchanged with no rows", same, err)
+	}
+
+	renamed := append([]hubcore.TreeNode(nil), rows...)
+	renamed[2].Title = "renamed"
+	changed := archivedProjection(t, hubcore.TreeProject{Key: "kept", Name: "kept", Archived: renamed})
+	moved, err := changed.ArchivedList(t.Context(), navigationArchivedListRequest{ProjectKey: "kept", KnownRevision: first.Revision})
+	if err != nil || moved.Unchanged || moved.Revision == first.Revision || len(moved.Sessions) != 3 {
+		t.Fatalf("read after a row changed = %+v (%v), want the rows and a new revision", moved, err)
+	}
+
+	// The same rows read from another catalog are another list.
+	archived := archivedProjection(t, hubcore.TreeProject{Key: "kept", Name: "kept", IsArchived: true, Archived: rows})
+	if other, err := archived.ArchivedList(t.Context(), navigationArchivedListRequest{ProjectKey: "kept", KnownRevision: first.Revision}); err != nil || other.Unchanged || other.Revision == first.Revision {
+		t.Fatalf("read of the same rows in another catalog = %+v (%v), want a new revision", other, err)
+	}
+	// A fork child's change shows on a page, so it changes the revision.
+	forked := append([]hubcore.TreeNode(nil), rows...)
+	forked[0].Children = []hubcore.TreeNode{{ID: "fork-000", Title: "fork", Kind: "fork", State: "ended", UpdatedAt: at(0), CreatedAt: at(0)}}
+	withFork := archivedProjection(t, hubcore.TreeProject{Key: "kept", Name: "kept", Archived: forked})
+	if fork, err := withFork.ArchivedList(t.Context(), navigationArchivedListRequest{ProjectKey: "kept", KnownRevision: first.Revision}); err != nil || fork.Unchanged {
+		t.Fatalf("read after a fork child appeared = %+v (%v), want a new revision", fork, err)
+	}
+}
+
+// The hub's evener/archived/list carries the revision and honours it.
+func TestHubArchivedListAnswersUnchangedAtTheHeldRevision(t *testing.T) {
+	server, key := archivedListServer(t, 3)
+	first, err := dispatchArchivedList(t, server, appwire.ArchivedListParams{ProjectKey: key})
+	if err != nil || first.Revision == "" {
+		t.Fatalf("first read: revision %q, err %v", first.Revision, err)
+	}
+	again, err := dispatchArchivedList(t, server, appwire.ArchivedListParams{ProjectKey: key, Revision: first.Revision})
+	if err != nil || !again.Unchanged || string(again.Sessions) != "[]" || again.Total != 3 {
+		t.Fatalf("read at the held revision = %+v (%v), want unchanged with no rows", again, err)
+	}
+}
+
+// One projection caches each list's revision under its own catalog and key,
+// and never a key no catalog holds, whatever keys clients send.
+func TestArchivedListRevisionCacheKeepsListsApart(t *testing.T) {
+	p := archivedProjection(t,
+		hubcore.TreeProject{Key: "one", Name: "one", Archived: archivedRows("one", 2, archivedAt(100), archivedTitle("one"))},
+		hubcore.TreeProject{Key: "two", Name: "two", Archived: archivedRows("two", 2, archivedAt(100), archivedTitle("two"))},
+	)
+	revisions := map[string]string{}
+	for _, key := range []string{"one", "two"} {
+		page, err := p.ArchivedList(t.Context(), navigationArchivedListRequest{ProjectKey: key})
+		if err != nil {
+			t.Fatal(err)
+		}
+		revisions[key] = page.Revision
+	}
+	if revisions["one"] == revisions["two"] {
+		t.Fatalf("two lists share revision %q", revisions["one"])
+	}
+	for key, revision := range revisions {
+		if again, err := p.ArchivedList(t.Context(), navigationArchivedListRequest{ProjectKey: key, KnownRevision: revision}); err != nil || !again.Unchanged {
+			t.Fatalf("%s at its own revision = %+v (%v), want unchanged", key, again, err)
+		}
+	}
+	if _, err := p.ArchivedList(t.Context(), navigationArchivedListRequest{ProjectKey: "nowhere"}); err != nil {
+		t.Fatal(err)
+	}
+	cached := 0
+	p.archivedRevisions.Range(func(key, _ any) bool {
+		cached++
+		if key.(archivedRevisionKey).ProjectKey == "nowhere" {
+			t.Errorf("cached a key no catalog holds: %q", key)
+		}
+		return true
+	})
+	if cached != 2 {
+		t.Fatalf("cache holds %d lists, want 2", cached)
+	}
+}
+
 // A key in several catalogs resolves to one of them for every read: the first
 // of projects, archived projects and test runs holding it, as an archived list
 // with no hint reads. So every session that catalog's project holds is located
@@ -754,7 +864,7 @@ func TestAKeyInSeveralCatalogsResolvesToOneForEveryRead(t *testing.T) {
 		if !ok {
 			t.Fatalf("%s has no location", row.ID)
 		}
-		archived, err := p.ArchivedList(navigationArchivedListRequest{ProjectKey: location.ProjectKey})
+		archived, err := p.ArchivedList(t.Context(), navigationArchivedListRequest{ProjectKey: location.ProjectKey})
 		if err != nil || !slices.ContainsFunc(archived.Sessions, func(s hubapi.NavigationSessionSummary) bool { return s.SessionID == row.ID }) {
 			t.Fatalf("%s is located in project %q, whose archived list does not hold it: %+v (%v)", row.ID, location.ProjectKey, archived.Sessions, err)
 		}
@@ -768,5 +878,44 @@ func TestArchivedListCandidatesDoNotShareTheCatalogOrder(t *testing.T) {
 	candidates[0] = navigationResourceTestRuns
 	if order := navigationCatalogOrder(); order[0] != navigationResourceProjects {
 		t.Fatalf("changing the candidates changed navigationCatalogOrder: %v", order)
+	}
+}
+
+// A change only to a row's decoration (favorite, pin, its source going
+// offline) shows on a page, so it moves the list's revision too.
+func TestArchivedListRevisionMovesWithARowsDecoration(t *testing.T) {
+	rows := archivedRows("old", 2, archivedAt(100), archivedTitle("old"))
+	project := hubcore.TreeProject{Key: "kept", Name: "kept", Archived: rows}
+	read := func(inputs navigationBuildInputs) string {
+		t.Helper()
+		inputs.GenerationID, inputs.Revision = "generation", 1
+		inputs.Tree = hubcore.Tree{Projects: []hubcore.TreeProject{project}}
+		p, err := buildNavigationProjection(inputs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		page, err := p.ArchivedList(t.Context(), navigationArchivedListRequest{ProjectKey: "kept"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return page.Revision
+	}
+	plain := read(navigationBuildInputs{})
+	favorite := map[string]bool{rows[0].ID: true}
+	favored := read(navigationBuildInputs{SessionFavorite: favorite})
+	if favored == plain {
+		t.Errorf("a favorite left the revision at %q", favored)
+	}
+	// A row shows its pin by no longer showing as a favorite.
+	pinned := read(navigationBuildInputs{
+		SessionFavorite: favorite,
+		PinSections:     []hubcore.PinSection{{ID: "pins", Name: "Pins"}},
+		PinAssignments:  map[hubcore.ArchiveKey]hubcore.SessionPin{hubcore.SessionPinKey("local", rows[0].ID): {Source: "local", SessionID: rows[0].ID, SectionID: "pins"}},
+	})
+	if pinned == favored {
+		t.Errorf("pinning a favorite left the revision at %q", pinned)
+	}
+	if offline := read(navigationBuildInputs{Sources: []hubapi.Source{{ID: "local", Label: "Local", Kind: "local", Online: false}}}); offline == plain {
+		t.Errorf("its source going offline left the revision at %q", offline)
 	}
 }

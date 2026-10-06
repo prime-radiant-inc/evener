@@ -30,14 +30,12 @@ describe("SessionMenu", () => {
 		const tree = render(
 			<SessionMenu title="Session" hubName="Hub" connected deletionAvailable close={() => {}} choose={() => {}} />,
 		);
-		// The legacy Action list drew bare buttons with nothing between them; the
-		// new design groups them, and a Group divides its rows with hairlines
+		// The actions are grouped, and a Group divides its rows with hairlines
 		// (seven rows -> six).
 		expect(tree.root.findAll((node) => node.props.testID === "hairline")).toHaveLength(6);
-		// And each action is a Row, not the legacy Action: Action built its state
-		// as `{ disabled, expanded }`, so `expanded` was a present key (undefined
-		// here) that a Row's `{ disabled }` doesn't carry. toStrictEqual, not
-		// toEqual, is what notices the extra key.
+		// And each action is a Row, whose state carries only `disabled`: a button
+		// that also carried `expanded` would have the key present (undefined
+		// here), which toStrictEqual, not toEqual, notices.
 		const [find] = tree.root.findAll(
 			(node) => String(node.type) === "Pressable" && node.props.accessibilityLabel === "Find in session",
 		);

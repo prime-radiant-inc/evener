@@ -44,7 +44,10 @@ type checkedHead struct {
 // reports UpdateAvailable until the next check or a change to that install.
 // The source asked is the one the marketplace's local catalog names, the one
 // Upgrade fetches. A source pinned to a sha is answered without a network
-// call, and a relative or directory source is never asked: it has no remote.
+// call. A relative source is answered from the marketplace's local clone as
+// its last refresh left it (the hub's auto-upgrade tick, or an explicit
+// refresh, pulls it), also without a network call; a directory source is
+// never asked.
 // A remote or catalog that cannot be read, or a remote still unanswered at
 // updateCheckDeadline, is warned about and flags nothing. A cancelled check
 // returns ctx's error and keeps the previous answers. Of
@@ -87,11 +90,23 @@ func (m *Manager) CheckUpdates(ctx context.Context) error {
 			continue
 		}
 		src, ok := m.upgradeSource(mk, catalogs, &catalogWarnings, marketplace, plugin)
-		if !ok || gitRemoteURL(src) == "" {
+		var lookup func() (string, error)
+		switch ref := mk[marketplace]; {
+		case !ok || usedInPlace(src, ref):
+			continue
+		case src.Rel:
+			// A plugin in its marketplace's own repo is checked against the
+			// refreshed clone, without a network call: Upgrade copies its
+			// folder again when the clone's tree at that folder changed.
+			root := m.catalogRoot(ref)
+			lookup = func() (string, error) { return sourcePathTree(checkCtx, root, src.Path) }
+		case gitRemoteURL(src) != "":
+			lookup = func() (string, error) { return remoteHead(checkCtx, src) }
+		default:
 			continue
 		}
 		g.Go(func() error {
-			head, err := remoteHead(checkCtx, src)
+			head, err := lookup()
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
