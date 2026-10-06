@@ -31,7 +31,7 @@ export interface ActivityScope {
 export function scopeCounts(
   session: ActivityScope["leaf"],
   activity: SessionActivitySnapshot | null,
-  subagents: SessionActivitySummary["delegates"] | null = null,
+  subagents: SessionActivitySummary["delegates"] | null,
 ): ScopeCounts {
   const summary = activity?.summary;
   return {
@@ -49,8 +49,9 @@ export function scopeCounts(
 export function deriveScope(
   navigation: NavigationStoreState,
   ref: string,
-  activity: SessionActivitySnapshot | null = null,
-  subagents: SessionActivitySummary["delegates"] | null = null,
+  activity: SessionActivitySnapshot | null,
+  // Required, so no surface that shows the Agents count can leave it out.
+  subagents: SessionActivitySummary["delegates"] | null,
 ): ActivityScope {
   const row = selectSessionSummary(ref, navigation);
   const leaf = {
