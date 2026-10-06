@@ -624,6 +624,7 @@ export class Driver {
     if (result === "missing") throw new Error(`clickByText: no button labeled ${JSON.stringify(text)}`);
     if (result === "disabled") throw new Error(`clickByText: button ${JSON.stringify(text)} is disabled`);
     if (result === "covered") throw new Error(`clickByText: button ${JSON.stringify(text)} is covered at its center`);
+    if (result !== "clicked") throw new Error(`clickByText: unexpected result ${JSON.stringify(result)} for ${JSON.stringify(text)}`);
   }
 
   // ---- page state (each returns plain JSON values) ----
