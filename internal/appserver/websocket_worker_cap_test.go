@@ -514,8 +514,8 @@ func TestServeWebSocketConcurrentRequestsTakeTheirOwnSlots(t *testing.T) {
 // once. One token on releases frees one parked handler; cleanup frees the rest.
 func parkThreadLists(t *testing.T, server *Server) (started, releases chan struct{}) {
 	t.Helper()
-	started = make(chan struct{}, concurrentRequestCap+1)
-	releases = make(chan struct{}, concurrentRequestCap+1)
+	started = make(chan struct{}, concurrentRequestTotalCap+1)
+	releases = make(chan struct{}, concurrentRequestTotalCap+1)
 	t.Cleanup(func() { close(releases) })
 	HandleTyped(server.Router(), appwire.MethodThreadList, func(_ context.Context, _ appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
 		started <- struct{}{}
@@ -526,6 +526,40 @@ func parkThreadLists(t *testing.T, server *Server) (started, releases chan struc
 		return appwire.EmptyResponse{}, nil
 	})
 	return started, releases
+}
+
+// TestServeWebSocketConcurrentRequestsHaveATotalCap pins the connection-wide
+// bound across pools: pool names come from the request (the hub's are host
+// names a client chose), so without it a client naming a new pool per request
+// could hold any number of goroutines.
+func TestServeWebSocketConcurrentRequestsHaveATotalCap(t *testing.T) {
+	server := NewServer(ServerConfig{ServerName: "test-server", Version: "test", SourceID: "local"})
+	pools := 0
+	server.cfg.ConcurrentRequest = func(method string, _ json.RawMessage) (string, bool) {
+		pools++
+		return fmt.Sprintf("pool-%d", pools), method == appwire.MethodThreadList
+	}
+	listsStarted, _ := parkThreadLists(t, server)
+	httpServer := serveWebSocketHTTP(t, server)
+	client := dialAppWireClient(t, httpServer)
+	ctx := context.Background()
+
+	for range concurrentRequestTotalCap {
+		go func() { _, _ = client.ThreadList(ctx, appwire.ThreadListParams{}) }()
+	}
+	for range concurrentRequestTotalCap {
+		waitFor(t, "a request in a pool of its own to park in its handler", listsStarted)
+	}
+	beyond := make(chan error, 1)
+	go func() {
+		_, err := client.ThreadList(ctx, appwire.ThreadListParams{})
+		beyond <- err
+	}()
+	err := waitFor(t, "a request beyond the connection's total to be answered", beyond)
+	var wireErr appwire.WireError
+	if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeUnavailable {
+		t.Fatalf("a request beyond the connection's total answered %v, want Unavailable", err)
+	}
 }
 
 // TestServeWebSocketConcurrentRequestPoolsAreSeparate pins that each pool
