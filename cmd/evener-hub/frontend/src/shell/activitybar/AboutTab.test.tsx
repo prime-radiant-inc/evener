@@ -208,9 +208,9 @@ test("About accepts a replacement instance at the same public ref", async () => 
 test("About releases prior collection demand through invalidation and reconnect", async () => {
   const client = activityClient();
   let summaries = 0;
-  client.on("evener/thread/activity/read", ({ ref }) => {
+  client.on("evener/thread/activity/read", ({ ref, scope }) => {
     summaries += 1;
-    return activitySummary(ref);
+    return activitySummary(ref, scope);
   });
   client.on("thread/read", ({ ref }) => activityDetailsThread(ref));
   connectionStore.getState().connect(client);

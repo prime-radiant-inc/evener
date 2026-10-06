@@ -31,7 +31,7 @@ describe("typed activity scope", () => {
         { ref: "remote:parent", sessionId: "parent", title: "Parent" },
       ],
     };
-    client.on("evener/thread/activity/read", () => summary);
+    client.on("evener/thread/activity/read", ({ scope }) => summary);
     const store = new SessionActivityStore(client, "remote:deep");
     await store.refresh();
     const scope = deriveScope(navigation(), "remote:deep", store.getSnapshot(), null);

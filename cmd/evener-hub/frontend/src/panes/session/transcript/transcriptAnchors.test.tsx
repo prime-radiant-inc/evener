@@ -9,7 +9,7 @@ import { ClientProvider } from "../../../shell/clientContext";
 import { conversationPaneLifetime } from "../../../shell/paneLifetime";
 import { type OpenPaneRecord, resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { connectionStore } from "../../../stores/connection";
-import { activitySummary, activityThread } from "../../../stores/sessionActivityTestUtils";
+import { activitySummary, activityThread, answerActivityRead } from "../../../stores/sessionActivityTestUtils";
 import { resetThreadsStoreForTests } from "../../../stores/threads";
 import { resetTranscriptDisplayStoreForTests, transcriptDisplayStore } from "../../../stores/transcriptDisplay";
 import { makeTranscriptPreviewModel } from "../../../transcriptDisplay/previewFixture";
@@ -52,7 +52,7 @@ test.each(["input", "close", "reset", "replacement"] as const)(
       };
     });
     fake.on("thread/unsubscribe", () => ({}));
-    fake.on("evener/thread/activity/read", ({ ref }) => activitySummary(ref));
+    fake.on("evener/thread/activity/read", answerActivityRead);
     connectionStore.getState().connect(fake);
     const a: OpenPaneRecord = { id: "reader-a", type: "transcript", params: { ref: "shared" }, slot: "main" };
     const b: OpenPaneRecord = { id: "reader-b", type: "transcript", params: { ref: "shared" }, slot: "secondary" };

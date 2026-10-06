@@ -178,8 +178,7 @@ test("selected child gets authoritative counts before its navigation location ex
   const ref = "remote:deep-child",
     client = activityClient();
   client.on("evener/thread/activity/read", ({ scope }) => ({
-    ...activitySummary(ref),
-    scope: scope ?? "session",
+    ...activitySummary(ref, scope),
     context: {
       ...activityContext(ref),
       sessionId: "child",
@@ -213,8 +212,8 @@ test("selected child gets authoritative counts before its navigation location ex
 test("unknown counts remain unknown and pending ancestry is explicit", async () => {
   const ref = "remote:pending",
     client = activityClient();
-  client.on("evener/thread/activity/read", () => ({
-    ...activitySummary(ref),
+  client.on("evener/thread/activity/read", ({ scope }) => ({
+    ...activitySummary(ref, scope),
     context: { ...activityContext(ref), ancestryKnown: false },
     delegates: { known: false, active: 17, total: 99, completed: 0, failed: 0 },
   }));
@@ -342,8 +341,7 @@ test("the chip, the sidebar and the liveness line count subagents at every depth
   const ref = "remote:nested";
   const client = activityClient();
   client.on("evener/thread/activity/read", ({ ref, scope }) => ({
-    ...activitySummary(ref),
-    scope: scope ?? "session",
+    ...activitySummary(ref, scope),
     delegates:
       scope === "subtree"
         ? { known: true, total: 4, active: 3, failed: 0, completed: 1 }

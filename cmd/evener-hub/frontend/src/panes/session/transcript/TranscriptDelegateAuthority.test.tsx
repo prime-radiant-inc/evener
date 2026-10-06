@@ -62,8 +62,8 @@ test.each([
     model.turns = [{ id: receipt.turnId, status: "completed", items: [receipt] }];
     const client = activityClient();
     client.on("evener/thread/delegates/list", () => ({ ...response, scope: "session" }));
-    client.on("evener/thread/activity/read", () => ({
-      ...activitySummary(model.ref),
+    client.on("evener/thread/activity/read", ({ scope }) => ({
+      ...activitySummary(model.ref, scope),
       context: response.context,
       scope: "session",
     }));

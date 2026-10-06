@@ -194,8 +194,7 @@ test("Activity opened from the mobile drawer supersedes the drawer", async () =>
   const ref = "remote:drawer-activity";
   const client = activityClient();
   client.on("evener/thread/activity/read", ({ ref: requested, scope }) => ({
-    ...activitySummary(requested),
-    scope: scope ?? "session",
+    ...activitySummary(requested, scope),
   }));
   connectionStore.getState().connect(client);
   const user = userEvent.setup();
@@ -231,8 +230,7 @@ test("renders the new activity sidebar over the mobile stack with the selected t
   const ref = "remote:activity";
   const client = activityClient();
   client.on("evener/thread/activity/read", ({ ref: requested, scope }) => ({
-    ...activitySummary(requested),
-    scope: scope ?? "session",
+    ...activitySummary(requested, scope),
   }));
   client.on("evener/thread/jobs/list", ({ ref: requested, scope }) => ({
     context: activityContext(requested),
@@ -269,7 +267,10 @@ test.each(["Close", "Escape"])(
     client.on("thread/read", ({ ref }) =>
       activityDetailsThread(ref, { name: ref === parent ? "Parent work" : "Child work" }),
     );
-    client.on("evener/thread/activity/read", ({ ref }) => ({ ...activitySummary(ref), context: context(ref) }));
+    client.on("evener/thread/activity/read", ({ ref, scope }) => ({
+      ...activitySummary(ref, scope),
+      context: context(ref),
+    }));
     client.on("evener/thread/delegates/list", ({ ref, scope }) => ({
       context: context(ref),
       scope: scope ?? "session",

@@ -53,6 +53,7 @@ import {
   activityDelegate,
   activityDetailsThread,
   activitySummary,
+  answerActivityRead,
 } from "../stores/sessionActivityTestUtils";
 import { resetSettingsHostForTests, settingsHostStore } from "../stores/settingsHost";
 import { resetSettingsOverviewStoreForTests } from "../stores/settingsOverview";
@@ -207,13 +208,6 @@ function navigationRead(params: NavigationReadParams): NavigationReadResponse {
       );
   }
   throw new Error(`unsupported navigation resource: ${params.resource}`);
-}
-
-// Answers the scope asked for, as a hub does: the footer's subagent count
-// reads the subtree, and a reply for another scope is refused and retried in
-// the background.
-function answerActivityRead({ ref, scope }: SessionActivityReadParams): SessionActivitySummary {
-  return { ...activitySummary(ref), scope: scope ?? "session" };
 }
 
 // A FakeClient whose connect() advertises a v2 navigation capability with a

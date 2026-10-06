@@ -34,8 +34,8 @@ test("summary-only hooks share qualified runtime and lose status trust on discon
   client.on("thread/read", () => ({
     thread: { ...activityThread().thread, id: "wire-root", sessionId: "root-session" },
   }));
-  client.on("evener/thread/activity/read", () => ({
-    ...activitySummary(),
+  client.on("evener/thread/activity/read", ({ scope }) => ({
+    ...activitySummary(undefined, scope),
     context: { ...activitySummary().context, sessionId: "root-session" },
   }));
   connectionStore.getState().connect(client);
@@ -96,7 +96,7 @@ test("client/ref/scope switches fence pending results and cleanup/remount keeps 
   const oldClient = activityClient(),
     nextClient = activityClient(),
     pending = deferred<SessionActivitySummary>();
-  oldClient.on("evener/thread/activity/read", () => pending.promise);
+  oldClient.on("evener/thread/activity/read", ({ scope }) => pending.promise);
   connectionStore.getState().connect(oldClient);
   const view = renderHook(
     ({ ref, scope }: { ref: string; scope: "session" | "subtree" }) => useSessionActivity(ref, scope),

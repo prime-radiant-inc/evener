@@ -34,8 +34,7 @@ afterEach(() => {
 test("closed trigger counts subagents at every depth while an open recursive tree owns only visible subtree demand", async () => {
   const client = activityClient();
   client.on("evener/thread/activity/read", ({ ref, scope }) => ({
-    ...activitySummary(ref),
-    scope: scope ?? "session",
+    ...activitySummary(ref, scope),
     delegates: {
       known: true,
       total: scope === "subtree" ? 7 : 1,
