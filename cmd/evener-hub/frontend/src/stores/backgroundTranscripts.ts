@@ -87,10 +87,10 @@ export function startBackgroundTranscripts(navigation: NavigationStore): Backgro
   // lease must not reschedule the owner when the sweep publishes or retires
   // it, or a partial sweep that adds then releases a fresh hidden page would
   // spin at zero elapsed time. A page's external identity is its key,
-  // generation and row count (kept while it is stale or loading with retained
-  // data), not its loaded revision, so the owner's own revalidation cannot
-  // masquerade as external input while a genuinely recovered page (new rows)
-  // still can.
+  // generation and sorted eligible Live refs (kept while it is stale or
+  // loading with retained data), not its loaded revision, so the owner's own
+  // revalidation cannot masquerade as external input while an accepted
+  // recovery that swaps refs at the same row count still can.
   function inputKey(): string {
     const state = navigation.getState();
     const settled: string[] = [];
@@ -98,8 +98,9 @@ export function startBackgroundTranscripts(navigation: NavigationStore): Backgro
       if (resource.key.kind !== "section" || resource.key.section !== "live") continue;
       if (!state.visibleResourceKeys.has(keyID(resource.key))) continue;
       if (resource.data === null) continue;
-      const sessions = (resource.data as { sessions?: readonly unknown[] } | null)?.sessions?.length ?? 0;
-      settled.push(`${resource.key.offset}/${resource.key.limit}:${resource.generationID}:${sessions}`);
+      const rows = (resource.data as { sessions?: readonly NavigationSessionSummary[] } | null)?.sessions ?? [];
+      const refs = [...eligibleLiveRefs(rows)].sort().join(",");
+      settled.push(`${resource.key.offset}/${resource.key.limit}:${resource.generationID}:${refs}`);
     }
     settled.sort();
     return `${state.mode}:${state.clientGenerationID}:${state.lastSequence}|${settled.join(",")}`;

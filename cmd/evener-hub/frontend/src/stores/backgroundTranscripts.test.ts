@@ -1027,4 +1027,35 @@ describe("startBackgroundTranscripts", () => {
       vi.useRealTimers();
     }
   });
+
+  test("an accepted same-count external refresh that replaces the ref restarts discovery", async () => {
+    world.pages = onePage([liveRow("local:a")]);
+    fake = connectFake();
+    const owner = startBackgroundTranscripts(navigationStore);
+    try {
+      await owner.settled();
+      expect(threadReadRefs()).toEqual(new Set(["local:a"]));
+      // The page is foreground-visible, so it counts as external input.
+      await navigationStore.getState().loadSection("live", 0);
+      expect(livePageHas("local:a")).toBe(true);
+
+      // One invalidation; page0 fails, a is retained (incomplete).
+      world.pages = failPage();
+      invalidate(2);
+      await owner.settled();
+      expect(threadUnsubRefs()).toEqual([]);
+
+      // The host recovers under the SAME invalidation with b in a's place, at
+      // the same row count, published by a real foreground read.
+      world.pages = onePage([liveRow("local:b")]);
+      await navigationStore.getState().loadSection("live", 0);
+      expect(livePageHas("local:b")).toBe(true);
+      await owner.settled();
+
+      expect(threadReadRefs().has("local:b")).toBe(true);
+      expect(threadUnsubRefs()).toContain("local:a");
+    } finally {
+      await owner.dispose();
+    }
+  });
 });

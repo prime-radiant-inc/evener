@@ -105,6 +105,63 @@ test("hidden Live page leaves visible rows and page boundary unchanged, then for
   client.close();
 });
 
+test("a lease retired during refresh's force publication cannot start or republish a forced read", async () => {
+  let revision = 1;
+  // The forced response is held so a buggily-issued request can be settled
+  // explicitly; a correct fix never enters it.
+  const responseGate: { release: () => void } = { release: () => {} };
+  let holdResponse = false;
+  let entered = false;
+  const calls: NavigationReadParams[] = [];
+  const { client, store } = makeStore(async (params) => {
+    calls.push(params);
+    if (params.resource === "manifest") return manifestResponse(params);
+    if (holdResponse) {
+      entered = true;
+      await new Promise<void>((resolve) => {
+        responseGate.release = resolve;
+      });
+    }
+    return pageResponse(params, ["live-005", "live-006"], 0, revision);
+  });
+  const key = { kind: "section", section: "live", offset: 4, limit: 2 } as const;
+  const id = keyID(key);
+  const hidden = store.acquireBackgroundLivePages();
+  await hidden.load(4, 2);
+  revision = 2;
+  holdResponse = true;
+
+  let released = false;
+  const unsubscribe = store.subscribe((state) => {
+    if (released) return;
+    if (state.resources.get(id)?.stale) {
+      released = true;
+      hidden.release();
+    }
+  });
+  let enteredObserved = false;
+  let latePublished = false;
+  try {
+    await expect(hidden.refresh(4, 2)).rejects.toThrow("background navigation lease released");
+  } finally {
+    // Settle any request a bug did issue, and restore every owner, the shared
+    // store and the client even when the refresh assertion failed.
+    enteredObserved = entered;
+    responseGate.release();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    latePublished = store.getState().resources.has(id);
+    unsubscribe();
+    hidden.release();
+    store.reset();
+    client.close();
+  }
+  // The sole lease retired synchronously during force's publication, so no
+  // forced read may start afterwards, and none may republish later.
+  expect(released).toBe(true);
+  expect(enteredObserved).toBe(false);
+  expect(latePublished).toBe(false);
+});
+
 test("two background leases deduplicate, and releasing one during a request preserves the other", async () => {
   let releaseRequest!: () => void;
   const blocked = new Promise<void>((resolve) => {
