@@ -378,6 +378,11 @@ describe("the list's revision", () => {
     ...page(refs, total, nextCursor),
     revision,
   });
+  // twoPages serves local:a then, at cursor-1, local:b, each page at its own revision.
+  const twoPages =
+    (first: string, second: string) =>
+    (params: ArchivedListParams): ArchivedListResponse =>
+      params.cursor ? revised(["local:b"], 2, second) : revised(["local:a"], 2, first, "cursor-1");
 
   test("a refresh sends the revision the list holds and keeps its rows when the hub says unchanged", async () => {
     const seen: ArchivedListParams[] = [];
@@ -412,9 +417,7 @@ describe("the list's revision", () => {
   });
 
   test("an unchanged answer overtaken by a newer request changes nothing", async () => {
-    fake.on("evener/archived/list", (params) =>
-      params.cursor ? revised(["local:b"], 2, "r1") : revised(["local:a"], 2, "r1", "cursor-1"),
-    );
+    fake.on("evener/archived/list", twoPages("r1", "r1"));
     await store.refresh("projects", "proj");
     const unchanged = deferred<ArchivedListResponse>();
     const next = deferred<ArchivedListResponse>();
@@ -431,9 +434,7 @@ describe("the list's revision", () => {
   });
 
   test("a page loaded at the held revision keeps it", async () => {
-    fake.on("evener/archived/list", (params) =>
-      params.cursor ? revised(["local:b"], 2, "r1") : revised(["local:a"], 2, "r1", "cursor-1"),
-    );
+    fake.on("evener/archived/list", twoPages("r1", "r1"));
     await store.refresh("projects", "proj");
     await store.loadMore("projects", "proj");
     const seen: ArchivedListParams[] = [];
@@ -446,19 +447,15 @@ describe("the list's revision", () => {
   });
 
   test("a refresh whose own pages came back at different revisions holds none", async () => {
-    fake.on("evener/archived/list", (params) =>
-      params.cursor ? revised(["local:b"], 2, "r1") : revised(["local:a"], 2, "r1", "cursor-1"),
-    );
+    fake.on("evener/archived/list", twoPages("r1", "r1"));
     await store.refresh("projects", "proj");
     await store.loadMore("projects", "proj");
-    fake.on("evener/archived/list", (params) =>
-      params.cursor ? revised(["local:b"], 2, "r2") : revised(["local:a"], 2, "r1", "cursor-1"),
-    );
+    fake.on("evener/archived/list", twoPages("r1", "r2"));
     await store.refresh("projects", "proj");
     const seen: ArchivedListParams[] = [];
     fake.on("evener/archived/list", (params) => {
       seen.push(params);
-      return params.cursor ? revised(["local:b"], 2, "r2") : revised(["local:a"], 2, "r2", "cursor-1");
+      return twoPages("r2", "r2")(params);
     });
     await store.refresh("projects", "proj");
     expect(seen[0]?.revision).toBeUndefined();
@@ -483,15 +480,13 @@ describe("the list's revision", () => {
   });
 
   test("pages read at different revisions hold none, so the next refresh reads in full", async () => {
-    fake.on("evener/archived/list", (params) =>
-      params.cursor ? revised(["local:b"], 2, "r2") : revised(["local:a"], 2, "r1", "cursor-1"),
-    );
+    fake.on("evener/archived/list", twoPages("r1", "r2"));
     await store.refresh("projects", "proj");
     await store.loadMore("projects", "proj");
     const seen: ArchivedListParams[] = [];
     fake.on("evener/archived/list", (params) => {
       seen.push(params);
-      return params.cursor ? revised(["local:b"], 2, "r2") : revised(["local:a"], 2, "r2", "cursor-1");
+      return twoPages("r2", "r2")(params);
     });
     await store.refresh("projects", "proj");
 

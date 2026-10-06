@@ -70,6 +70,12 @@ export function archivedListKey(catalog: ArchivedListCatalog | undefined, projec
 
 const emptyList: ArchivedList = { rows: [], total: 0, loaded: false, loading: false, error: null };
 
+// revisionAcross is the revision a list holds after adding a page: the one it
+// held, only if the page carried it too.
+function revisionAcross(held: string | undefined, page: string | undefined): string | undefined {
+  return held === page ? held : undefined;
+}
+
 export function createArchivedListStore(client: ArchivedListClient): ArchivedListStore {
   // Every request takes a new generation from one counter, and generations
   // holds each list's newest, so an answer from a request that has been
@@ -100,13 +106,13 @@ export function createArchivedListStore(client: ArchivedListClient): ArchivedLis
     catalog: ArchivedListCatalog | undefined,
     projectKey: string,
     cursor: string | undefined,
-    held?: string,
+    revision?: string,
   ) {
     const params: ArchivedListParams = {
       ...(catalog ? { catalog } : {}),
       projectKey,
       ...(cursor ? { cursor } : {}),
-      ...(held ? { revision: held } : {}),
+      ...(revision ? { revision } : {}),
     };
     const response = await client.request("evener/archived/list", params);
     return {
@@ -134,7 +140,7 @@ export function createArchivedListStore(client: ArchivedListClient): ArchivedLis
       while (isNewest() && rows.length < wanted && page.nextCursor) {
         page = await requestPage(catalog, projectKey, page.nextCursor);
         rows.push(...page.rows);
-        if (page.revision !== revision) revision = undefined;
+        revision = revisionAcross(revision, page.revision);
       }
       if (!isNewest()) return;
       patch(key, () => ({
@@ -165,7 +171,7 @@ export function createArchivedListStore(client: ArchivedListClient): ArchivedLis
         total: page.total,
         loaded: true,
         loading: false,
-        revision: page.revision === list.revision ? list.revision : undefined,
+        revision: revisionAcross(list.revision, page.revision),
       }));
     } catch (err) {
       if (!isNewest()) return;
