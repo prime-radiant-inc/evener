@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -121,6 +122,11 @@ type navigationProjection struct {
 	// is down, indexed once per projection so every row can answer "is my
 	// source unreachable?" from the same capture the manifest serves.
 	offlineSources map[string]bool
+	// archivedRevisions caches archivedListRevision by catalog and project
+	// key: the projection never changes once built, and paging a long list
+	// would otherwise fingerprint the whole list on every page. Nil (a
+	// projection not made by buildNavigationProjectionContext) caches nothing.
+	archivedRevisions *sync.Map
 }
 
 type navigationPinSection struct {
@@ -147,7 +153,7 @@ func buildNavigationProjectionContext(ctx context.Context, inputs navigationBuil
 	if err != nil {
 		return navigationProjection{}, err
 	}
-	p := navigationProjection{inputs: cloned, pinSectionIDs: make(map[string]bool), projects: make(map[string]hubcore.TreeProject), catalogs: make(map[navigationResourceKind][]hubcore.TreeProject), locations: make(map[string]hubapi.NavigationSessionLocation), offlineSources: offlineSourceIDs(cloned.Sources)}
+	p := navigationProjection{inputs: cloned, pinSectionIDs: make(map[string]bool), projects: make(map[string]hubcore.TreeProject), catalogs: make(map[navigationResourceKind][]hubcore.TreeProject), locations: make(map[string]hubapi.NavigationSessionLocation), offlineSources: offlineSourceIDs(cloned.Sources), archivedRevisions: &sync.Map{}}
 	p.live = p.inputs.Tree.Live
 	p.needsYou = p.inputs.Tree.NeedsYou
 	p.pinCandidates, err = navigationPinCandidatesContext(ctx, p.inputs.Tree)

@@ -713,7 +713,9 @@ type ArchivedListResponse struct {
 	Catalog    string          `json:"catalog,omitempty"`
 	// Revision fingerprints the whole list read, the same on every page of it;
 	// it changes when any row a page could show changes. An older hub sends
-	// none.
+	// none. It vouches for the rows a client holds only when every page it
+	// holds carried this same revision; a client whose pages carried
+	// different revisions holds none, and reads again.
 	Revision string `json:"revision,omitempty"`
 	// Unchanged is true when the request's Revision is still the list's: the
 	// response then carries no rows, and Total, Catalog and Revision stand.

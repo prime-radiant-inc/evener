@@ -738,6 +738,12 @@ func TestArchivedListRevisionAnswersUnchangedUntilTheListChanges(t *testing.T) {
 		t.Fatalf("next page revision %q (%v), want the list's %q", next.Revision, err, first.Revision)
 	}
 
+	// A cursor read wants its rows, whatever revision it names.
+	request.KnownRevision = first.Revision
+	if next, err := p.ArchivedList(t.Context(), request); err != nil || next.Unchanged || len(next.Sessions) != 1 {
+		t.Fatalf("cursor read naming the held revision = %+v (%v), want its rows", next, err)
+	}
+
 	same, err := p.ArchivedList(t.Context(), navigationArchivedListRequest{ProjectKey: "kept", KnownRevision: first.Revision})
 	if err != nil || !same.Unchanged || len(same.Sessions) != 0 || same.Revision != first.Revision || same.Total != 3 {
 		t.Fatalf("read at the held revision = %+v (%v), want unchanged with no rows", same, err)
@@ -749,6 +755,19 @@ func TestArchivedListRevisionAnswersUnchangedUntilTheListChanges(t *testing.T) {
 	moved, err := changed.ArchivedList(t.Context(), navigationArchivedListRequest{ProjectKey: "kept", KnownRevision: first.Revision})
 	if err != nil || moved.Unchanged || moved.Revision == first.Revision || len(moved.Sessions) != 3 {
 		t.Fatalf("read after a row changed = %+v (%v), want the rows and a new revision", moved, err)
+	}
+
+	// The same rows read from another catalog are another list.
+	archived := archivedProjection(t, hubcore.TreeProject{Key: "kept", Name: "kept", IsArchived: true, Archived: rows})
+	if other, err := archived.ArchivedList(t.Context(), navigationArchivedListRequest{ProjectKey: "kept", KnownRevision: first.Revision}); err != nil || other.Unchanged || other.Revision == first.Revision {
+		t.Fatalf("read of the same rows in another catalog = %+v (%v), want a new revision", other, err)
+	}
+	// A fork child's change shows on a page, so it changes the revision.
+	forked := append([]hubcore.TreeNode(nil), rows...)
+	forked[0].Children = []hubcore.TreeNode{{ID: "fork-000", Title: "fork", Kind: "fork", State: "ended", UpdatedAt: at(0), CreatedAt: at(0)}}
+	withFork := archivedProjection(t, hubcore.TreeProject{Key: "kept", Name: "kept", Archived: forked})
+	if fork, err := withFork.ArchivedList(t.Context(), navigationArchivedListRequest{ProjectKey: "kept", KnownRevision: first.Revision}); err != nil || fork.Unchanged {
+		t.Fatalf("read after a fork child appeared = %+v (%v), want a new revision", fork, err)
 	}
 }
 

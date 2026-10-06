@@ -154,7 +154,7 @@ func archivedListCandidates(hint navigationResourceKind) []navigationResourceKin
 func (p navigationProjection) ArchivedList(ctx context.Context, request navigationArchivedListRequest) (navigationArchivedPage, error) {
 	catalog, project := p.archivedListCatalog(request.Hint, request.ProjectKey)
 	rows, _ := project.TierRows("archived")
-	revision, err := p.archivedListRevision(ctx, catalog, rows)
+	revision, err := p.archivedListRevision(ctx, catalog, request.ProjectKey, rows)
 	if err != nil {
 		return navigationArchivedPage{}, err
 	}
@@ -190,23 +190,41 @@ func (p navigationProjection) ArchivedList(ctx context.Context, request navigati
 	return out, nil
 }
 
-// archivedListRevision fingerprints an archived list: the catalog read and
-// every row of it as navigation summarizes it, children included, so any
-// change a page could show changes it. It is the navigation resources' own
-// logical fingerprint, which is why a client can trust an equal one.
-func (p navigationProjection) archivedListRevision(ctx context.Context, catalog navigationResourceKind, rows []hubcore.TreeNode) (string, error) {
+// archivedListRevision fingerprints an archived list: the catalog read, the
+// project key and every row of it as navigation summarizes it, children
+// included, so any change a page could show changes it. It is the navigation
+// resources' own logical fingerprint, which is why a client can trust an
+// equal one. It is computed once per projection and list; a key no catalog
+// holds (catalog "") is not cached, so the cache holds only real projects
+// whatever keys clients send.
+func (p navigationProjection) archivedListRevision(ctx context.Context, catalog navigationResourceKind, projectKey string, rows []hubcore.TreeNode) (string, error) {
+	cacheKey := string(catalog) + "\x00" + projectKey
+	cache := p.archivedRevisions
+	if catalog == "" {
+		cache = nil
+	}
+	if cache != nil {
+		if revision, ok := cache.Load(cacheKey); ok {
+			return revision.(string), nil
+		}
+	}
 	logical, err := navigationLogicalNodesContext(ctx, p, rows)
 	if err != nil {
 		return "", err
 	}
 	fingerprint, err := navigationLogicalFingerprintContext(ctx, struct {
-		Catalog navigationResourceKind
-		Rows    hubapi.NavigationArray[hubapi.NavigationSessionSummary]
-	}{catalog, logical})
+		Catalog    navigationResourceKind
+		ProjectKey string
+		Rows       hubapi.NavigationArray[hubapi.NavigationSessionSummary]
+	}{catalog, projectKey, logical})
 	if err != nil {
 		return "", err
 	}
-	return hex.EncodeToString(fingerprint[:]), nil
+	revision := hex.EncodeToString(fingerprint[:])
+	if cache != nil {
+		cache.Store(cacheKey, revision)
+	}
+	return revision, nil
 }
 
 // Archived list rows retain fork originals as inline session children. These
