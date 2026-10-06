@@ -50,6 +50,7 @@ and should not be presented as reproduced production incidents.
 | [R06](#r06-read-only-goal-progress) | Medium | Useful research can count as no progress while attempted writes count | S09, S14 |
 | [R07](#r07-restored-goals-without-a-wake) | Medium | An active restored goal can remain idle until another turn arrives | S08, S09 |
 | [R08](#r08-compaction-with-a-pending-question) | Low (deferred) | A pending question prevents explicit compaction | S09, S10 |
+| [R09](#r09-send-resumes-a-recovery-fenced-session) | High | A fenced session demands a separate Resume click before any send | S02, S08, S11 |
 | [H01](#h01-credential-store-failure-scope) | High | A credential-file problem prevents the entire hub from starting | S01, S06, S15 |
 | [H02](#h02-live-daemons-after-api-key-repair) | High | Saving a corrected API key leaves running sessions using the old key | S08, S15 |
 | [H03](#h03-host-journal-failure-scope) | High | Incomplete host-journal quarantine prevents unrelated local work | S06, S07 |
@@ -701,6 +702,45 @@ pending question and the refusal obstructs useful work.
 **Acceptance if revisited.** Compact a large session while a question is pending,
 answer it afterward, and continue once with the same question identity and
 preserved required context.
+
+### R09 Send resumes a recovery-fenced session
+
+**Current behavior.** After a session is stopped under uncertainty (hub
+recovery, a force stop, a Stop drain), the hub fences every automatic action
+until an explicit `thread/resume`, and the web pane replaces Send with a
+"Resume session" button and a notice: "Resume this session before
+continuing. Any uncertain messages will be checked before sending." A send
+attempt is refused outright ("Send is not available for this session"), so
+the user performs the product's reconciliation by hand before their own
+message.
+
+**Evidence.** The resume branch of the session pane's
+RestartRequiredNotice ([Session.tsx](../../cmd/evener-hub/frontend/src/panes/session/Session.tsx))
+and the fenced composer; the hub's fence and fold
+([applyThreadResumeRequirement](../../cmd/evener-hub/app_threadread.go),
+ResumeOnlyFoldable stamped only when a turn/start would be admitted); the
+dispatcher's fence refusals
+([threads.ts](../../cmd/evener-hub/frontend/src/stores/threads.ts)
+RECOVERY_FENCE_REFUSALS); the explicit-resume contract pinned by
+"automatic action escaped durable recovery requirement"
+(cmd/evener-hub/app_recovery_persistence_test.go) and the said-out-loud rule
+(kata 2f41, QueueStrip.test.tsx).
+
+**Decision.** Send is the single action. Pressing Send on a recovery-fenced
+session resumes it (the resume reconciles any delivery-uncertain messages,
+exactly as the standalone button did) and then dispatches the original send
+once. There is no standalone Resume control. A resume failure surfaces
+through the send path with the user's input preserved. The hub's
+turn/start fence refusal itself is unchanged: the sequencing belongs to the
+client, because the uncertain rows live in the client's durable outbox.
+Agreed with Jesse 2026-10-06; implementation remains pending.
+
+**Acceptance.** On a fenced session with delivery-uncertain messages, press
+Send once: the resume runs, the uncertain rows reconcile, exactly one send
+dispatches, and the transcript and any newer draft are preserved. A resume
+that fails reports its reason on the send path without losing the input. No
+Resume button appears anywhere in the pane. The merely-resumable case keeps
+today's silent fold. Implementation remains pending.
 
 ## Hub, hosts and provider setup
 
