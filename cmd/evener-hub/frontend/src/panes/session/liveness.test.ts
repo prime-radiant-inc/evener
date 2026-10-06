@@ -2,12 +2,9 @@
 import { expect, test } from "vitest";
 import { cadenceStateForStatus } from "./liveness";
 
-// cadenceStateForStatus: direct unit tests, mirroring shell/rail/RailRow.tsx's
-// own cadenceStateFor precedent (exported specifically for this). This maps
-// the RAW wire ThreadStatus.type vocabulary (appwire/types.go's constants),
-// not hubcore's already-normalized NormalizeState output RailRow's version
-// consumes - see this file's own comment for why they're deliberately
-// separate functions.
+// cadenceStateForStatus consumes raw ThreadStatus.type values. The mapper in
+// shell/SessionStatusIndicator.tsx consumes normalized navigation summaries;
+// see liveness.ts for why those vocabularies need separate functions.
 
 test("cadenceStateForStatus: active is working", () => {
   expect(cadenceStateForStatus("active")).toBe("working");

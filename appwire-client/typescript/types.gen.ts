@@ -2399,6 +2399,12 @@ export interface NavigationReadParams {
   resource: string;
   section?: string;
   sectionId?: string;
+  /**
+   * Catalog names a catalog read's catalog. On a project or project_page
+   * read it narrows the read to that catalog's project, as a location's
+   * catalog names it; an older hub refuses it there, and sends no location
+   * catalog to take it from.
+   */
   catalog?: string;
   projectKey?: string;
   tier?: string;
@@ -2441,6 +2447,14 @@ export interface NavigationSessionLocation {
   revision: number;
   ref: string;
   top_level_ref: string;
+  /**
+   * Catalog is the catalog ("projects", "archived_projects" or "test_runs")
+   * whose project ProjectKey names: a key can be in several, and a project
+   * or project_page read naming this catalog returns the project holding
+   * the session. Absent outside a project, and from an older hub, which
+   * also refuses a catalog on those reads.
+   */
+  catalog?: string;
   project_key?: string;
   top_level: boolean;
   tier?: string;

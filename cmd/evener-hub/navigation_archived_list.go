@@ -52,13 +52,9 @@ type navigationArchivedListRequest struct {
 // 0..maxNavigationSectionRows (0 or absent means the maximum), and a cursor
 // this hub minted.
 func parseNavigationArchivedListParams(params appwire.ArchivedListParams) (navigationArchivedListRequest, error) {
-	var hint navigationResourceKind
-	if params.Catalog != "" {
-		parsed, err := parseNavigationCatalog(params.Catalog)
-		if err != nil {
-			return navigationArchivedListRequest{}, err
-		}
-		hint = parsed
+	hint, err := parseOptionalNavigationCatalog(params.Catalog)
+	if err != nil {
+		return navigationArchivedListRequest{}, err
 	}
 	if err := validateNavigationIdentity("project key", params.ProjectKey, false); err != nil {
 		return navigationArchivedListRequest{}, err
@@ -123,10 +119,8 @@ func decodeArchivedCursor(cursor string, hint navigationResourceKind, projectKey
 // the key. The zero kind means none of those holds it.
 func (p navigationProjection) archivedListCatalog(hint navigationResourceKind, key string) (navigationResourceKind, hubcore.TreeProject) {
 	for _, catalog := range archivedListCandidates(hint) {
-		for _, project := range p.catalogs[catalog] {
-			if project.Key == key {
-				return catalog, project
-			}
+		if project, ok := p.projectIn(catalog, key); ok {
+			return catalog, project
 		}
 	}
 	return "", hubcore.TreeProject{}
@@ -198,7 +192,9 @@ type archivedRevisionKey struct {
 
 // archivedListRevision fingerprints an archived list: the catalog read, the
 // project key and every row of it as navigation summarizes it, children
-// included, so any change a page could show changes it. It is the navigation
+// included, so any change a page could show changes it. Delegate children are
+// included too, though a page shows only fork children: a change there costs
+// a client one re-read, never a stale page. It is the navigation
 // resources' own logical fingerprint, which is why a client can trust an
 // equal one. It is computed once per projection and list; a key no catalog
 // holds (catalog "") is not cached, so the cache holds only real projects

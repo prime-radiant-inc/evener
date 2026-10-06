@@ -377,17 +377,21 @@ type NavigationCapability struct {
 // and Limit are pointers so an explicit zero remains distinguishable from an
 // omitted page parameter on the wire.
 type NavigationReadParams struct {
-	RepresentationVersion uint8               `json:"representationVersion"`
-	Resource              string              `json:"resource"`
-	Section               string              `json:"section,omitempty"`
-	SectionID             string              `json:"sectionId,omitempty"`
-	Catalog               string              `json:"catalog,omitempty"`
-	ProjectKey            string              `json:"projectKey,omitempty"`
-	Tier                  string              `json:"tier,omitempty"`
-	Ref                   string              `json:"ref,omitempty"`
-	Offset                *uint32             `json:"offset,omitempty"`
-	Limit                 *uint32             `json:"limit,omitempty"`
-	Base                  *NavigationReadBase `json:"base,omitempty"`
+	RepresentationVersion uint8  `json:"representationVersion"`
+	Resource              string `json:"resource"`
+	Section               string `json:"section,omitempty"`
+	SectionID             string `json:"sectionId,omitempty"`
+	// Catalog names a catalog read's catalog. On a project or project_page
+	// read it narrows the read to that catalog's project, as a location's
+	// catalog names it; an older hub refuses it there, and sends no location
+	// catalog to take it from.
+	Catalog    string              `json:"catalog,omitempty"`
+	ProjectKey string              `json:"projectKey,omitempty"`
+	Tier       string              `json:"tier,omitempty"`
+	Ref        string              `json:"ref,omitempty"`
+	Offset     *uint32             `json:"offset,omitempty"`
+	Limit      *uint32             `json:"limit,omitempty"`
+	Base       *NavigationReadBase `json:"base,omitempty"`
 }
 
 func (params *NavigationReadParams) UnmarshalJSON(data []byte) error {
