@@ -70,6 +70,8 @@
     "stableDelegate.ts",
     "delegateDetails.ts",
     "docContent.ts",
+    "documentReadDemand.ts",
+    "fileReferences.ts",
     "submitRouting.ts",
     "displayFormat.ts",
     "toolCallText.ts",

@@ -52,6 +52,42 @@ losing the conversation that made the evidence relevant.
   investigate without rebuilding their place. See
   [Open routing](../../cmd/evener-hub/frontend/src/panes/session/transcript/openTranscript.tsx)
   and [retained origins](../../cmd/evener-hub/frontend/src/shell/workspace.ts).
+- **Let filename Open own its placement.** On a settled session route, opening
+  or reopening a filename selects its document beside the exact living source
+  promoted to main, including a secondary session or read-only transcript.
+  The canonical document binding retains that source for Back. Reconnect and
+  settled location refresh do not replay the old route over this selection.
+  Route reconciliation waits until the opening stack finishes when document
+  hydration publishes a reference before the exact source owner arrives.
+  New or pending URL intent still takes precedence. Generic documents and
+  stale or mismatched source bindings do not override route placement. See
+  [document Open](../../cmd/evener-hub/frontend/src/panes/doc/openDoc.ts) and
+  [route reconciliation](../../cmd/evener-hub/frontend/src/shell/AppShell.tsx).
+- **Return to reading, not a fresh end landing.** The pane-lifetime transcript
+  read view retains the source's measured entry and offset while a document is
+  open. On readonly remount,
+  [ReadOnlyThreadContent](../../cmd/evener-hub/frontend/src/panes/transcript/ReadOnlyThreadContent.tsx)
+  admits that capture through the existing transcript registry before scroll
+  initialization, including when content arrives after hydration. The shared
+  body and VirtualList still own committed measurement and restoration. A
+  retained away reader does not acquire end-follow intent from an unmeasured
+  port. Fresh readers still land at the latest content, and newer reader
+  movement supersedes the retained capture.
+- **Reconstruct the host, not the workspace.** Switching from a living phone
+  workspace to desktop, including its first desktop mount, restores dockview
+  geometry around the exact living pane records, their current slots and the
+  latest selection. Document Back owners, captured
+  file references and reopen generations stay with those records, outside pane
+  params and saved layouts. Phone-created panes survive; closed panes do not
+  return from stale geometry. Cold layout restoration creates fresh records and
+  honors route intent without resurrecting runtime owners. Programmatic slot
+  moves do not count as user selection. DockHost moves only panes whose logical
+  slots change, keeping the promoted main isolated and leaving unchanged-slot
+  panes in their user-chosen groups. Params, document-binding and pane add/remove
+  publications do not collect secondary splits into one group. Cold and live
+  restore retain saved group geometry; live slot changes made on phone reconcile
+  against saved placements without moving unaffected panes. See
+  [desktop recovery](../../cmd/evener-hub/frontend/src/shell/DockHost.tsx).
 - **Quiet the frame, not the controls.** Fine rules and aligned columns replace decorative
   enclosure. Fields still look editable, overlays retain boundaries, focus remains visible,
   and semantic color distinguishes attention, activity, failure and selection with text or

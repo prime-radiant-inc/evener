@@ -1,6 +1,42 @@
+import { once } from "node:events";
+import { createServer } from "node:http";
 import { describe, expect, it } from "vitest";
 import type { DocPort } from "@evener/appwire-client/docContent";
 import { byteSize, documentKind, documentNotice, loadDocument, refHost, truncationNote } from "./documentSource";
+
+it.each([
+	[200, "markdown"],
+	[403, "forbidden"],
+	[404, "missing"],
+	[501, "host-unsupported"],
+	[503, "failed"],
+] as const)("routes remote text through actual HTTP, status %d", async (status, kind) => {
+	const requests: string[] = [];
+	const server = createServer((request, response) => {
+		requests.push(request.url ?? "");
+		response.writeHead(status, { "Content-Type": "text/plain; charset=utf-8" });
+		response.end("# Remote bytes\n\nUseful content.");
+	});
+	server.listen(0, "127.0.0.1");
+	await once(server, "listening");
+	try {
+		const address = server.address();
+		if (!address || typeof address === "string") throw new Error("expected TCP fixture");
+		const port: DocPort = { origin: `http://127.0.0.1:${address.port}`, fetch };
+		const result = await loadDocument(port, "h1:local:02wMz5Txv1C3Hut0M8GCeB", "/work/b/docs/a.md");
+		expect(result.kind).toBe(kind);
+		expect(requests).toHaveLength(1);
+		const url = new URL(requests[0] ?? "", port.origin);
+		expect(url.pathname).toBe("/doc/file");
+		expect(url.searchParams.get("session")).toBe("h1:local:02wMz5Txv1C3Hut0M8GCeB");
+		expect(url.searchParams.get("path")).toBe("/work/b/docs/a.md");
+		if (status === 200)
+			expect(result).toMatchObject({ text: "# Remote bytes\n\nUseful content.", title: "Remote bytes" });
+	} finally {
+		server.closeAllConnections();
+		await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+	}
+});
 
 function hub(respond: (url: string) => Response | Promise<Response>): DocPort & { urls: string[] } {
 	const urls: string[] = [];
@@ -15,6 +51,43 @@ function hub(respond: (url: string) => Response | Promise<Response>): DocPort & 
 }
 const text = (body: string, headers: Record<string, string> = {}) =>
 	new Response(body, { headers: { "Content-Type": "text/plain; charset=utf-8", ...headers } });
+
+it("preserves actual HTTP binary bytes and explicit capped/truncated text without treating an exact cap as truncated", async () => {
+	const server = createServer((request, response) => {
+		const path = new URL(request.url ?? "", "http://fixture.test").searchParams.get("path");
+		if (path === "/work/b/blob.bin") {
+			response.writeHead(200, { "Content-Type": "application/octet-stream" });
+			response.end(Buffer.from([0, 1, 2, 3]));
+			return;
+		}
+		response.writeHead(200, {
+			"Content-Type": "text/plain; charset=utf-8",
+			...(path === "/work/b/truncated.txt" ? { "X-Doc-Truncated": "true", "X-Doc-Total-Size": "1363149" } : {}),
+		});
+		response.end("a".repeat(524288));
+	});
+	server.listen(0, "127.0.0.1");
+	await once(server, "listening");
+	try {
+		const address = server.address();
+		if (!address || typeof address === "string") throw new Error("expected TCP fixture");
+		const port = { origin: `http://127.0.0.1:${address.port}`, fetch };
+		expect(await loadDocument(port, "remote:owner", "/work/b/blob.bin")).toEqual({
+			kind: "binary",
+			title: "blob.bin",
+			sizeBytes: 4,
+		});
+		const truncated = await loadDocument(port, "remote:owner", "/work/b/truncated.txt");
+		expect(truncated).toMatchObject({ kind: "code", truncated: { shownBytes: 524288, totalBytes: 1363149 } });
+		expect(truncated.kind === "code" ? truncated.text.length : 0).toBe(524288);
+		const exact = await loadDocument(port, "remote:owner", "/work/b/exact.txt");
+		expect(exact.kind === "code" ? exact.text.length : 0).toBe(524288);
+		expect(exact.kind === "code" ? exact.truncated : "wrong-kind").toBeUndefined();
+	} finally {
+		server.closeAllConnections();
+		await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+	}
+});
 
 describe("a document's kind (ruling 19)", () => {
 	it.each([
@@ -85,13 +158,12 @@ describe("loading a document (Review Focus 5)", () => {
 		expect(documentNotice(document)).toBe("blob.bin isn't text, so it can't be shown here (10 bytes).");
 	});
 
-	it("doesn't ask for a document in a session on another host (S7)", async () => {
-		const port = hub(() => {
-			throw new Error("not called");
-		});
+	it("asks transport for another host and shows its unsupported-host outcome", async () => {
+		const port = hub(() => new Response("unsupported", { status: 501 }));
 		const document = await loadDocument(port, "paradise-park:abc", "docs/plan.md");
-		expect(port.urls).toEqual([]);
-		expect(documentNotice(document)).toBe("This document is on paradise-park. Open it on the host to read it.");
+		expect(port.urls).toEqual(["https://hub.test/doc/file?format=raw&session=paradise-park%3Aabc&path=docs%2Fplan.md"]);
+		expect(document.kind).toBe("host-unsupported");
+		expect(documentNotice(document)).toContain("does not support document reads");
 	});
 
 	it("shows an image without reading it as text", async () => {

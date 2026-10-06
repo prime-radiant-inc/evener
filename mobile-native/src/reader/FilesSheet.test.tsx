@@ -83,7 +83,7 @@ async function settle() {
 const ago = (minutes: number) => new Date(Date.now() - minutes * MINUTE).toISOString();
 
 async function sheet(documents: SessionDocument[]) {
-	const params = { hubId: "studio", ref: "local:fix", title: "Fix race", documents };
+	const params = { hubId: "studio", ref: "local:fix", title: "Fix race", cwd: "/work/owner", documents };
 	const tree = render(
 		<FilesSheet route={{ key: "files", name: "FilesSheet", params } as never} navigation={sheetNavigation as never} />,
 	);
@@ -151,8 +151,27 @@ it("opens a document in the Reader over the session, after the sheet goes", asyn
 		hubId: "studio",
 		sessionRef: "local:fix",
 		path: PLAN,
+		reference: { path: PLAN, cwd: "/work/owner", readTarget: `/work/owner/${PLAN}`, provenance: "relative" },
 		sessionTitle: "Fix race",
 		updatedAt,
+	});
+});
+
+it("captures literal raw-space artifact paths from this sheet's owning cwd", async () => {
+	const tree = await sheet([{ path: "docs/a raw.md", kind: "Doc" }]);
+	act(() => rows(tree)[0]?.props.onPress());
+	expect(sheetNavigation.navigate).toHaveBeenCalledWith("Reader", {
+		hubId: "studio",
+		sessionRef: "local:fix",
+		path: "docs/a raw.md",
+		reference: {
+			path: "docs/a raw.md",
+			cwd: "/work/owner",
+			readTarget: "/work/owner/docs/a raw.md",
+			provenance: "relative",
+		},
+		sessionTitle: "Fix race",
+		updatedAt: undefined,
 	});
 });
 

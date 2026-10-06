@@ -1,0 +1,66 @@
+{
+  "arms": [
+    "on"
+  ],
+  "fixture_from": "freeze",
+  "stages": [
+    {
+      "name": "A",
+      "prompt": "Add a FormatTotal(cents int) string to shop for the receipt page. Heads up on our receipt convention: prices are US dollars with a leading dollar sign and a dot, like $12.05. Add tests.",
+      "checks": [
+        {
+          "name": "tests pass",
+          "run": "go test ./..."
+        }
+      ],
+      "memory": [
+        {
+          "name": "dollar convention saved",
+          "regex": "(?i)dollar|\\$12\\.05",
+          "scope": "project"
+        }
+      ]
+    },
+    {
+      "name": "B",
+      "prompt": "Receipts are changing: we've switched to euros, written with a comma decimal and a trailing euro sign, like 12,05 €. Update FormatTotal to the new format and fix its tests.",
+      "checks": [
+        {
+          "name": "tests pass",
+          "run": "go test ./..."
+        },
+        {
+          "name": "FormatTotal uses euros",
+          "run": "cat > zz_heldout_test.go <<'EOF'\npackage shop\n\nimport (\n\t\"testing\"\n)\n\nfunc TestHeldoutFormatTotal(t *testing.T) { if got := FormatTotal(1205); got != \"12,05 €\" { t.Fatalf(\"FormatTotal(1205) = %q\", got) } }\nEOF\ngo test -count=1 -run Heldout ./...; rc=$?; rm -f zz_heldout_test.go; exit $rc"
+        }
+      ],
+      "memory": [
+        {
+          "name": "page says euros now",
+          "regex": "(?i)euro|€",
+          "scope": "project"
+        },
+        {
+          "name": "no page still states the dollar format as current",
+          "regex": "(?i)(prices are|receipts use|receipts are in|convention:?)\\s+(US )?dollars",
+          "scope": "project",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "name": "C",
+      "prompt": "Add a FormatSavings(cents int) string to shop for the 'You saved' line on receipts. Add tests.",
+      "checks": [
+        {
+          "name": "tests pass",
+          "run": "go test ./..."
+        },
+        {
+          "name": "FormatSavings follows the current receipt format",
+          "run": "cat > zz_heldout_test.go <<'EOF'\npackage shop\n\nimport (\n\t\"testing\"\n)\n\nfunc TestHeldoutFormatSavings(t *testing.T) { if got := FormatSavings(1205); got != \"12,05 €\" && got != \"You saved 12,05 €\" { t.Fatalf(\"FormatSavings(1205) = %q\", got) } }\nEOF\ngo test -count=1 -run Heldout ./...; rc=$?; rm -f zz_heldout_test.go; exit $rc"
+        }
+      ]
+    }
+  ]
+}

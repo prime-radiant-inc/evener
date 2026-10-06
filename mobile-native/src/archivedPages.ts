@@ -44,8 +44,8 @@ export class ArchivedPages implements PageSource<NavigationSessionSummary> {
 	private owed = false;
 	constructor(
 		private readonly client: ConversationClientLike,
-		/** Undefined reads the catalog holding the project now (a session's
-		 * location names none). */
+		/** Undefined reads the catalog holding the project now (an older
+		 * hub's location names none). */
 		private readonly catalog: ArchivedListCatalog | undefined,
 		private readonly projectKey: string,
 	) {

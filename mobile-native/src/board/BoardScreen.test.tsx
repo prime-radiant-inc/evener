@@ -1,4 +1,9 @@
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { once } from "node:events";
+import { createServer } from "node:http";
+import { setTimeout as wait } from "node:timers/promises";
+import { DocumentMemory } from "../reader/documentMemory";
+import { FlatList } from "react-native";
 // The Board screen mounted with only its native edges mocked: the navigation
 // reads go through the real BoardController to a fake hub that answers by
 // params, and the device memory is the real SeenMarkers over an in-memory
@@ -52,6 +57,7 @@ import { WASH_MS } from "./settledList";
 
 const harness = vi.hoisted(() => ({
 	connection: {} as Record<string, unknown>,
+	readerMemory: null as DocumentMemory | null,
 	kv: new Map<string, string>(),
 	drafts: new Map<string, Set<string>>(),
 	focused: true,
@@ -82,6 +88,7 @@ vi.mock("react-native", async () => {
 			isReduceMotionEnabled: () => Promise.resolve(harness.reduceMotion),
 		},
 		AppState: {
+			currentState: "active",
 			addEventListener: (_type: string, listener: (state: string) => void) => {
 				harness.appState.add(listener);
 				return { remove: () => harness.appState.delete(listener) };
@@ -118,6 +125,23 @@ vi.mock("expo-crypto", () => ({
 	getRandomValues: (array: Uint8Array) => array,
 }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
+vi.mock("react-native-enriched-markdown", () => ({ EnrichedMarkdownText: "EnrichedMarkdownText" }));
+vi.mock("expo-clipboard", () => ({ setStringAsync: async () => {} }));
+vi.mock("expo-secure-store", () => ({
+	getItemAsync: async (key: string) =>
+		JSON.stringify({
+			id: key.replace("evener.hub.", ""),
+			name: "Owner",
+			origin: "https://unused.test",
+			token: "reader-test-token",
+		}),
+}));
+// A process relaunch replaces only the singleton, with real DocumentMemory
+// re-reading unchanged platform storage. No trail or callback result is canned.
+vi.mock("../reader/nativeDocumentMemory", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../reader/nativeDocumentMemory")>();
+	return { ...actual, documentMemory: (id: string) => harness.readerMemory ?? actual.documentMemory(id) };
+});
 vi.mock("react-native-safe-area-context", () => ({
 	useSafeAreaInsets: () => ({ top: 47, bottom: 34, left: 0, right: 0 }),
 }));
@@ -171,6 +195,7 @@ beforeEach(() => {
 	harness.stack = { index: 0, routes: [{ key: "Sessions", name: "Sessions" }] };
 	harness.reduceMotion = false;
 	harness.fontScale = 1;
+	harness.readerMemory = null;
 });
 function setFocused(focused: boolean) {
 	harness.focused = focused;
@@ -5411,6 +5436,162 @@ it("keeps the select bar's actions offline, and holds an archive of what's chose
 });
 
 // The Board's Continue reading row (spec 7.1, ruling 20).
+it("opens the complete literal reference left by a real Reader after a memory restart", async () => {
+	vi.useRealTimers();
+	const { ReaderScreen } = await import("../reader/ReaderScreen");
+	const id = hubId();
+	const disk = {
+		getItemSync: (key: string) => harness.kv.get(key) ?? null,
+		setItemSync: (key: string, value: string) => {
+			harness.kv.set(key, value);
+		},
+		removeItemSync: (key: string) => {
+			harness.kv.delete(key);
+		},
+	};
+	harness.readerMemory = new DocumentMemory(disk, id);
+	const requests: { target: string | null; session: string | null; auth: string | undefined }[] = [];
+	const server = createServer((request, response) => {
+		const url = new URL(request.url ?? "", "http://fixture.test");
+		requests.push({
+			target: url.searchParams.get("path"),
+			session: url.searchParams.get("session"),
+			auth: request.headers.authorization,
+		});
+		response.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
+		response.end("# Literal raw file\n\nUseful saved bytes.");
+	});
+	server.listen(0, "127.0.0.1");
+	await once(server, "listening");
+	try {
+		const address = server.address();
+		if (!address || typeof address === "string") throw new Error("expected TCP fixture");
+		const readerClient = new FakeClient("ready");
+		readerClient.on(
+			"thread/read",
+			() =>
+				({
+					thread: {
+						id: "owner",
+						cwd: "/work/owner",
+						status: { type: "idle" },
+						modelProvider: "glm",
+						evener: { ref: "remote:owner", instanceId: "owner", capabilities: {}, queue: { revision: 1 } },
+					},
+				}) as never,
+		);
+		connect(id, readerClient, "ready", {
+			profiles: [{ id, name: "Owner", origin: `http://127.0.0.1:${address.port}` }],
+		});
+		harness.stack = { index: 0, routes: [{ key: "reader", name: "Reader" }] };
+		const reference = {
+			path: "docs/a raw.md",
+			cwd: "/work/owner",
+			readTarget: "/work/owner/docs/a raw.md",
+			provenance: "relative",
+		};
+		const nav = { ...navigation(), setParams: vi.fn(), pop: vi.fn(), goBack: vi.fn(), getState: () => harness.stack };
+		const reader = render(
+			<ReaderScreen
+				route={
+					{
+						key: "reader",
+						name: "Reader",
+						params: { hubId: id, sessionRef: "remote:owner", path: "docs/a raw.md", reference, sessionTitle: "Owner" },
+					} as never
+				}
+				navigation={nav as never}
+			/>,
+		);
+		mounted.push(reader);
+		const deadline = performance.now() + 3000;
+		while (
+			!reader.root
+				.findAll((node) => String(node.type) === "EnrichedMarkdownText")
+				.some((node) => node.props.markdown === "Useful saved bytes.")
+		) {
+			if (performance.now() > deadline) throw new Error("Reader HTTP bytes did not render");
+			await act(async () => {
+				await wait(1);
+			});
+		}
+		const list = reader.root.findByType(FlatList as never);
+		act(() => {
+			list.props.onViewableItemsChanged({ viewableItems: [{ index: 1 }], changed: [] });
+			list.props.onMomentumScrollEnd({
+				nativeEvent: { contentOffset: { y: 100 }, layoutMeasurement: { height: 400 }, contentSize: { height: 1000 } },
+			});
+		});
+		act(() => reader.unmount());
+		harness.readerMemory = new DocumentMemory(disk, id);
+		expect(harness.readerMemory.continueReading()?.reference).toEqual({
+			path: "docs/a raw.md",
+			cwd: "/work/owner",
+			readTarget: "/work/owner/docs/a raw.md",
+			provenance: "relative",
+		});
+		expect(harness.readerMemory.position({ sessionRef: "remote:owner", path: "docs/a raw.md" })?.progress).toBe(0.5);
+		expect(harness.readerMemory.lastRead({ sessionRef: "remote:owner", path: "docs/a raw.md" })?.blocks).toHaveLength(
+			2,
+		);
+		harness.stack = { index: 0, routes: [{ key: "Sessions", name: "Sessions" }] };
+		connect(id, hub(fleet).client, "ready");
+		const boardNav = { ...navigation(), push: vi.fn() };
+		const board = await mount(boardNav);
+		const row = board.root.find(
+			(node) => node.props.accessibilityLabel === "Continue reading, 50 percent, Literal raw file",
+		);
+		act(() => row.props.onPress());
+		expect(boardNav.push.mock.calls).toEqual([
+			["Conversation", { hubId: id, ref: "remote:owner", title: "Owner" }],
+			[
+				"Reader",
+				{
+					hubId: id,
+					sessionRef: "remote:owner",
+					path: "docs/a raw.md",
+					reference: {
+						path: "docs/a raw.md",
+						cwd: "/work/owner",
+						readTarget: "/work/owner/docs/a raw.md",
+						provenance: "relative",
+					},
+					sessionTitle: "Owner",
+				},
+			],
+		]);
+		expect(requests).toEqual([
+			{ target: "/work/owner/docs/a raw.md", session: "remote:owner", auth: "Bearer reader-test-token" },
+		]);
+		act(() => board.unmount());
+	} finally {
+		server.closeAllConnections();
+		await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+		harness.readerMemory = null;
+	}
+});
+
+it("hides an old unbound Board shortcut without deleting its records or drafts", async () => {
+	const id = hubId();
+	const old = JSON.stringify({
+		sessionRef: "local:fix",
+		path: "docs/old.md",
+		title: "Old",
+		sessionTitle: "Owner",
+		progress: 0.5,
+		leftAt: Date.now(),
+	});
+	harness.kv.set(`evener.native.continue-reading.${id}`, old);
+	harness.kv.set(`evener.native.documents.${id}`, '{"preserved":true}');
+	harness.drafts.set(id, new Set(["local:fix"]));
+	connect(id, hub(fleet).client, "ready");
+	const tree = await mount(navigation());
+	expect(renderedText(tree)).not.toContain("Continue reading");
+	expect(harness.kv.get(`evener.native.continue-reading.${id}`)).toBe(old);
+	expect(harness.kv.get(`evener.native.documents.${id}`)).toBe('{"preserved":true}');
+	expect(harness.drafts.get(id)).toEqual(new Set(["local:fix"]));
+});
+
 /** A document left partway through, the trail DocumentMemory keeps for
  * the Board, written straight to its kv-store key with the time it was left. */
 function leaveDocument(id: string, leftMinutesAgo: number) {
@@ -5419,6 +5600,12 @@ function leaveDocument(id: string, leftMinutesAgo: number) {
 		JSON.stringify({
 			sessionRef: "local:fix",
 			path: "docs/superpowers/plans/settle-race.md",
+			reference: {
+				path: "docs/superpowers/plans/settle-race.md",
+				cwd: "/work/owner",
+				readTarget: "/work/owner/docs/superpowers/plans/settle-race.md",
+				provenance: "relative",
+			},
 			title: "Fix the settle/drain race",
 			sessionTitle: "Fix race",
 			progress: 0.62,
@@ -5452,6 +5639,12 @@ it("offers to continue a document you left in the last two hours, under the noti
 				hubId: id,
 				sessionRef: "local:fix",
 				path: "docs/superpowers/plans/settle-race.md",
+				reference: {
+					path: "docs/superpowers/plans/settle-race.md",
+					cwd: "/work/owner",
+					readTarget: "/work/owner/docs/superpowers/plans/settle-race.md",
+					provenance: "relative",
+				},
 				sessionTitle: "Fix race",
 			},
 		],

@@ -122,6 +122,21 @@ func gitPull(ctx context.Context, dir string) error {
 	return err
 }
 
+// gitFetch downloads what the remote of the clone at dir has, without
+// touching its checked-out files.
+func gitFetch(ctx context.Context, dir string) error {
+	_, err := gitRun(ctx, dir, "fetch", "--quiet")
+	return err
+}
+
+// gitFastForward moves the branch checked out in the clone at dir to its
+// upstream as last fetched. It needs no network, except that a blobless
+// clone downloads the contents of the files it changes.
+func gitFastForward(ctx context.Context, dir string) error {
+	_, err := gitRun(ctx, dir, "merge", "--ff-only", "--quiet", "@{upstream}")
+	return err
+}
+
 func gitHeadSHA(ctx context.Context, dir string) (string, error) {
 	out, err := gitRun(ctx, dir, "rev-parse", "HEAD")
 	if err != nil {

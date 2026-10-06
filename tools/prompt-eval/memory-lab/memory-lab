@@ -10,8 +10,9 @@ stream, the workspace and the memory files.
 Usage:
   memory-lab run --version v0=BIN [--version v1=BIN] --model MODEL \
       --scenarios DIR/a,DIR/b --reps 2 --out OUTDIR [--max-rounds 40] [--jobs 4] \
-      [--effort high] [--timeout 1200]
-                                      # one line per stage as trials finish, then the pass-rate table
+      [--effort high] [--timeout 1200] [--work-root DIR]
+                                      # one line per stage as trials finish, then the pass-rate table;
+                                      # --work-root DIR puts each workspace at DIR/<project>-<random> (see README)
   memory-lab report OUTDIR            # one line per stage, then the pass-rate table
   memory-lab show [--reasoning] OUTDIR/<trial> STAGE  # tool calls, memory files, whiteboard, final message
   memory-lab ask --bin BIN --model MODEL [--workspace work] [--effort high] [--timeout 600] \
@@ -40,16 +41,20 @@ A scenario dir holds scenario.json and fixture/. scenario.json:
                "final": [{"name": "...", "regex": "against the last message to the partner"}]}]}
 
 Each trial lives in OUTDIR/<version>/<arm>/<scenario>/r<N>/ with work/ (the
-checkout, stable across stages), xdg/ (XDG_STATE_HOME, so memory is isolated),
+checkout, stable across stages; a symlink to the real checkout under --work-root), xdg/ (XDG_STATE_HOME, so memory is isolated;
+also a symlink under --work-root),
 and per stage: <S>.events.ndjson, <S>.stdout, <S>.grade.json, <S>.memory/.
 Full logs stay on disk; the report prints only the summary.
 """
-import argparse, concurrent.futures as cf, glob, json, os, re, shutil, signal, subprocess, sys, time
+import argparse, concurrent.futures as cf, glob, json, os, re, shutil, signal, subprocess, sys, tempfile, time
 from datetime import datetime
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PROJID = os.path.join(HERE, "bin", "projid")
 
+
+# The commit author in every trial checkout: an ordinary name, so nothing in git history says "eval".
+GIT_NAME, GIT_EMAIL = "Sam Rivera", "sam@shopco.dev"
 
 # Seconds allowed for a before hook, a shell check or workspace setup.
 COMMAND_TIMEOUT = 300
@@ -87,7 +92,9 @@ def run_bounded(cmd, cwd, env, timeout, stdout=None, stderr=None):
 def fixture_env(work, xdg):
     env = dict(os.environ)
     env.update({"GOWORK": "off", "GIT_CEILING_DIRECTORIES": os.path.dirname(work),
-                "XDG_STATE_HOME": xdg, "EVENER_NO_USER_SKILLS": "1"})
+                "XDG_STATE_HOME": os.path.realpath(xdg), "EVENER_NO_USER_SKILLS": "1",
+                "GIT_AUTHOR_NAME": GIT_NAME, "GIT_AUTHOR_EMAIL": GIT_EMAIL,
+                "GIT_COMMITTER_NAME": GIT_NAME, "GIT_COMMITTER_EMAIL": GIT_EMAIL})
     return env
 
 
@@ -145,9 +152,50 @@ def base_fixture(scen, spec):
     return os.path.join(scen, "fixture")
 
 
+def project_name(fixture):
+    """The last path element of the fixture's go.mod module, or "app"."""
+    try:
+        with open(os.path.join(fixture, "go.mod")) as f:
+            m = re.search(r"(?m)^module\s+(\S+)", f.read())
+    except OSError:
+        m = None
+    if not m:
+        return "app"
+    return re.sub(r"[^A-Za-z0-9._-]", "", m.group(1).rstrip("/").split("/")[-1]) or "app"
+
+
+def new_workdir(args, trial, name, fixture):
+    """Creates the trial's workspace called name (work, work2) and returns its real path:
+    trial/name, or under --work-root a neutral DIR/<project>-<random> that trial/name symlinks to
+    (a path inside the results tree tells the agent it is in an eval and it skips saving memory)."""
+    if not args.work_root:
+        return os.path.join(trial, name)
+    os.makedirs(args.work_root, exist_ok=True)
+    real = tempfile.mkdtemp(prefix=f"{project_name(fixture)}-", dir=os.path.realpath(args.work_root))
+    os.symlink(real, os.path.join(trial, name))
+    return real
+
+
+def workdir(trial, name):
+    """The real path of the trial's workspace called name, through its symlink under --work-root."""
+    return os.path.realpath(os.path.join(trial, name))
+
+
+def make_state_dir(args, trial, work):
+    """Creates trial/xdg, the trial's XDG_STATE_HOME. Under --work-root it is a symlink to
+    DIR/.state/<workspace name>, since memory tool results show its path to the agent."""
+    xdg = os.path.join(trial, "xdg")
+    if not args.work_root:
+        os.makedirs(xdg)
+        return
+    real = os.path.join(os.path.realpath(args.work_root), ".state", os.path.basename(work))
+    os.makedirs(real)
+    os.symlink(real, xdg)
+
+
 def make_workspace(fixture, work, xdg):
-    shutil.copytree(fixture, work)
-    rc, out = run_bounded("git init -q && git add -A && git -c user.name=lab -c user.email=lab@example.com commit -qm initial",
+    shutil.copytree(fixture, work, dirs_exist_ok=True)
+    rc, out = run_bounded("git init -q && git add -A && git commit -qm initial",
                           work, fixture_env(work, xdg), COMMAND_TIMEOUT)
     if rc != 0:
         raise RuntimeError(f"fixture git init failed: {out}")
@@ -179,9 +227,11 @@ def run_session(args, binpath, arm, scen, stage, trial, session_ids):
     """Prepares the stage's workspace, runs its evener session, and returns where things ended up."""
     # A stage with its own "fixture" runs in a separate checkout (another
     # project) that shares the trial's memory root.
-    work, xdg = os.path.join(trial, stage.get("workspace", "work")), os.path.join(trial, "xdg")
-    if stage.get("fixture") and not os.path.exists(work):
-        make_workspace(os.path.join(scen, stage["fixture"]), work, xdg)
+    wname, xdg = stage.get("workspace", "work"), os.path.join(trial, "xdg")
+    if stage.get("fixture") and not os.path.lexists(os.path.join(trial, wname)):
+        fixture = os.path.join(scen, stage["fixture"])
+        make_workspace(fixture, new_workdir(args, trial, wname, fixture), xdg)
+    work = workdir(trial, wname)
     env = fixture_env(work, xdg)
     if stage.get("seed_project_memory"):
         rc, out = run_bounded([PROJID, work], work, env, COMMAND_TIMEOUT)
@@ -230,7 +280,7 @@ def grade_checks(spec, inputs):
             try:
                 os.remove(leftover)
             except OSError as e:
-                inputs.setdefault("cleanup_errors", {})[spec.get("name", "<unnamed>")] = f"held-out cleanup: {e}"
+                inputs.setdefault("cleanup_errors", {})[spec["name"]] = f"held-out cleanup: {e}"
     if rc == "timeout":
         raise TimeoutError(f"check timed out after {COMMAND_TIMEOUT}s")
     return rc == 0
@@ -419,15 +469,27 @@ def grade_stage(label, arm, scen, stage, trial, session):
     if failure:
         grade["error"], grade["checks"] = failure, all_failed(stage)
     else:
+        # A held-out file that could not be removed contaminates the workspace: that check
+        # fails and every later shell check, the only type that runs in the workspace, is
+        # skipped instead of run against it.
+        contaminated = False
         for check_type, grader in GRADERS.items():
             for spec in stage.get(check_type, []):
+                cname = spec["name"]
+                if contaminated and check_type == "checks":
+                    grade["checks"][cname] = False
+                    grade["check_errors"][cname] = "skipped: held-out cleanup failed"
+                    continue
                 try:
-                    grade["checks"][spec["name"]] = bool(grader(spec, inputs))
+                    grade["checks"][cname] = bool(grader(spec, inputs))
                 except Exception as e:
-                    grade["checks"][spec["name"]] = False
-                    grade["check_errors"][spec["name"]] = f"{type(e).__name__}: {e}"
-        for name, why in inputs.get("cleanup_errors", {}).items():
-            grade["check_errors"][name] = "; ".join(filter(None, [grade["check_errors"].get(name), why]))
+                    grade["checks"][cname] = False
+                    grade["check_errors"][cname] = f"{type(e).__name__}: {e}"
+                if cname in inputs.get("cleanup_errors", {}):
+                    contaminated = True
+                    result = grade["check_errors"].get(cname) or ("passed" if grade["checks"][cname] else "failed")
+                    grade["checks"][cname] = False
+                    grade["check_errors"][cname] = f"{inputs['cleanup_errors'][cname]} (check result before cleanup: {result})"
     # ask resumes from here; a resumed stage ran in the earlier stage's state dir.
     grade["state"] = session["state"]
     grade["session_id"] = root_session_id(session["events"], session["state"])
@@ -451,8 +513,11 @@ def run_trial(args, label, binpath, arm, scen, rep):
     spec = load_scenario(scen)
     grades, failure, session_ids = [], None, {}
     try:
-        os.makedirs(os.path.join(trial, "xdg"))
-        make_workspace(base_fixture(scen, spec), os.path.join(trial, "work"), os.path.join(trial, "xdg"))
+        os.makedirs(trial)
+        fixture = base_fixture(scen, spec)
+        work = new_workdir(args, trial, "work", fixture)
+        make_state_dir(args, trial, work)
+        make_workspace(fixture, work, os.path.join(trial, "xdg"))
     except Exception as e:
         failure = f"workspace setup: {type(e).__name__}: {e}"
     for st in spec["stages"]:
@@ -469,32 +534,98 @@ def run_trial(args, label, binpath, arm, scen, rep):
         session_ids[st["name"]] = grades[-1]["session_id"]
         if grades[-1].get("error"):
             failure = f"stage {st['name']} failed: {grades[-1]['error']}"
+        # A held-out file left behind would sit in every later stage's workspace.
+        leftover = contamination(grades[-1])
+        if leftover and not failure:
+            failure = f"stage {st['name']} left its workspace contaminated: {leftover}"
     return grades
 
 
+def contamination(grade):
+    """The held-out cleanup failure a graded stage recorded, or None. A trial with one is an
+    infrastructure failure whichever stage it hit."""
+    return next((e for e in grade.get("check_errors", {}).values() if e.startswith("held-out cleanup")), None)
+
+
+# Check type -> (string fields its grader requires, other fields it reads). Any other key is a typo.
+CHECK_FIELDS = {"checks": (["run"], []), "trace": (["tool", "regex"], []), "memory": (["regex"], ["scope", "absent"]),
+                "transcripts": (["regex"], []), "final": (["regex"], []),
+                "whiteboard": ([], ["regex", "max_chars", "min_lines"]), "delegate_calls": ([], ["tools", "args"])}
+SCENARIO_KEYS = {"arms", "fixture_from", "stages"}
+STAGE_KEYS = {"name", "prompt", "before", "fixture", "workspace", "resume", "seed_project_memory"} | set(CHECK_FIELDS)
+MEMORY_SCOPES = {"personal", "project", "session"}
+
+
 def load_scenario(scen):
-    """Reads scen/scenario.json, exiting with a clear message on a stage that can't run as written."""
-    spec = json.load(open(os.path.join(scen, "scenario.json")))
+    """Reads scen/scenario.json, exiting with a clear message on a scenario or stage that can't run as written."""
+    with open(os.path.join(scen, "scenario.json")) as f:
+        spec = json.load(f)
+    if not isinstance(spec, dict) or not isinstance(spec.get("stages"), list) or not spec["stages"]:
+        sys.exit(f"memory-lab: {scen}: scenario.json must be an object with a non-empty \"stages\" list")
+    arms = spec.get("arms", ["on"])
+    if not (isinstance(arms, list) and arms and all(arm in ("on", "off") for arm in arms) and len(set(arms)) == len(arms)):
+        sys.exit(f"memory-lab: {scen}: \"arms\" must be a non-empty list of \"on\" and \"off\", each at most once")
+    unknown = set(spec) - SCENARIO_KEYS
+    if unknown:
+        sys.exit(f"memory-lab: {scen}: unknown key(s) {sorted(unknown)}; a misspelled key would be silently ignored")
+    if "fixture_from" in spec and not (isinstance(spec["fixture_from"], str) and spec["fixture_from"]):
+        sys.exit(f"memory-lab: {scen}: \"fixture_from\" must name a scenario")
     for i, st in enumerate(spec["stages"]):
-        if st.get("resume") and st["resume"] not in [earlier["name"] for earlier in spec["stages"][:i]]:
-            sys.exit(f"memory-lab: {scen} stage {st['name']}: \"resume\" must name an earlier stage")
+        if not isinstance(st, dict) or not isinstance(st.get("name"), str) or not st["name"]:
+            sys.exit(f"memory-lab: {scen} stage {i + 1}: each stage must be an object with a non-empty string \"name\"")
+        if st["name"] in [earlier["name"] for earlier in spec["stages"][:i]]:
+            sys.exit(f"memory-lab: {scen} stage {i + 1}: two stages are named {st['name']!r}; a stage's name keys its files")
+        if "/" in st["name"] or st["name"] in (".", ".."):
+            sys.exit(f"memory-lab: {scen} stage {i + 1}: \"name\" names the stage's files in the trial, so it can't hold a /")
+        where = f"memory-lab: {scen} stage {st['name']}"
+        unknown = set(st) - STAGE_KEYS
+        if unknown:
+            sys.exit(f"{where}: unknown key(s) {sorted(unknown)}; a misspelled key would be silently ignored")
+        if not (isinstance(st.get("prompt"), str) and st["prompt"]):
+            sys.exit(f"{where}: needs a non-empty string \"prompt\"")
+        for key in ("fixture", "seed_project_memory", "workspace", "resume", "before"):
+            if key in st and not isinstance(st[key], str):
+                sys.exit(f"{where}: \"{key}\" must be a string")
+        if "workspace" in st and (not st["workspace"] or "/" in st["workspace"] or st["workspace"] in (".", "..")):
+            sys.exit(f"{where}: \"workspace\" must name one dir in the trial, like work2")
+        if st.get("resume") and st["resume"] not in [earlier.get("name") for earlier in spec["stages"][:i]]:
+            sys.exit(f"{where}: \"resume\" must name an earlier stage")
         workspace = st.get("workspace")
-        if st.get("fixture") and not (isinstance(workspace, str) and workspace and workspace != "work"):
-            sys.exit(f"memory-lab: {scen} stage {st['name']}: \"fixture\" needs a \"workspace\" naming a dir other than work "
+        if st.get("fixture") and not (workspace and workspace != "work"):
+            sys.exit(f"{where}: \"fixture\" needs a \"workspace\" naming a dir other than work "
                      "(otherwise the stage silently reuses the base work dir)")
-        checks = st.get("delegate_calls", [])
-        if not (isinstance(checks, list) and all(isinstance(check, dict) for check in checks)):
-            sys.exit(f"memory-lab: {scen} stage {st['name']}: \"delegate_calls\" needs a list of check objects")
-        for check in checks:
+        seen = set()  # grades and cleanup errors are keyed by check name across every type
+        for check_type, (required, optional) in CHECK_FIELDS.items():
+            checks = st.get(check_type, [])
+            if not (isinstance(checks, list) and all(isinstance(check, dict) for check in checks)):
+                sys.exit(f"{where}: \"{check_type}\" needs a list of check objects")
+            for check in checks:
+                name = check.get("name")
+                if not (isinstance(name, str) and name):
+                    sys.exit(f"{where}: every {check_type} check needs a non-empty string \"name\"")
+                if name in seen:
+                    sys.exit(f"{where}: two checks are named {name!r}; names must be unique within a stage")
+                seen.add(name)
+                for field in required:
+                    if not (isinstance(check.get(field), str) and check[field]):
+                        sys.exit(f"{where}: {check_type} {name!r} needs a non-empty string \"{field}\"")
+                unknown = set(check) - {"name"} - set(required) - set(optional)
+                if unknown:
+                    sys.exit(f"{where}: {check_type} {name!r} has unknown key(s) {sorted(unknown)}")
+                if check_type == "memory" and "scope" in check and check["scope"] not in MEMORY_SCOPES:
+                    sys.exit(f"{where}: memory {name!r} has scope {check['scope']!r}; use one of {sorted(MEMORY_SCOPES)}")
+        for check in st.get("delegate_calls", []):
             tools, args = check.get("tools"), check.get("args", {})
             if not (isinstance(tools, list) and tools and all(isinstance(t, str) for t in tools)) or not isinstance(args, dict):
-                sys.exit(f"memory-lab: {scen} stage {st['name']}: delegate_calls {check.get('name')!r} needs \"tools\", "
+                sys.exit(f"{where}: delegate_calls {check['name']!r} needs \"tools\", "
                          "a non-empty list of tool names, and an optional \"args\" object")
     return spec
 
 
 def cmd_run(args):
     args.out = os.path.abspath(args.out)
+    if args.work_root:
+        args.work_root = os.path.abspath(os.path.expanduser(args.work_root))
     versions = {}
     for v in args.version:
         label, sep, binpath = v.partition("=")
@@ -526,7 +657,7 @@ def cmd_run(args):
                 grades.append(g)
                 print(line(g), flush=True)
     print_pass_rates(grades)
-    errored = {g["trial"] for g in grades if g.get("error")}
+    errored = {g["trial"] for g in grades if g.get("error") or contamination(g)}
     if errored:
         sys.exit(f"memory-lab: {len(errored)} trial(s) hit infrastructure errors; their stages count as failures above")
 
@@ -559,12 +690,15 @@ def scenario_problems(scen):
     """Why scen can't run as written, or [] when it can: load_scenario must accept it and
     return that scenario's own dict, and every fixture and seed dir it names must exist."""
     try:
-        raw = json.load(open(os.path.join(scen, "scenario.json")))
+        with open(os.path.join(scen, "scenario.json")) as f:
+            raw = json.load(f)
         spec = load_scenario(scen)
     except SystemExit as e:  # load_scenario reports a bad stage by exiting
         return [str(e.code)]
     except (OSError, ValueError) as e:
         return [f"scenario.json: {e}"]
+    except (TypeError, KeyError, AttributeError) as e:  # a shape load_scenario didn't anticipate
+        return [f"scenario.json is malformed: {type(e).__name__}: {e}"]
     if not isinstance(spec, dict) or not isinstance(spec.get("stages"), list) or spec != raw:
         return [f"load_scenario returned {type(spec).__name__} with keys {sorted(spec) if isinstance(spec, dict) else '-'}, "
                 "not the scenario"]
@@ -576,6 +710,8 @@ def scenario_problems(scen):
 
 def cmd_check(args):
     scens = args.scenarios or sorted(os.path.dirname(p) for p in glob.glob(os.path.join(HERE, "scenarios", "*", "scenario.json")))
+    if not scens:
+        sys.exit("memory-lab: check found no scenarios (looked for scenarios/*/scenario.json, or none were given)")
     failed = 0
     for scen in scens:
         problems = scenario_problems(os.path.abspath(scen))
@@ -625,7 +761,7 @@ def cmd_ask(args):
     """Resume a finished stage's session and ask it why it chose what it did."""
     trial, stage = os.path.abspath(args.trial), args.stage
     g = json.load(open(os.path.join(trial, f"{stage}.grade.json")))
-    work = os.path.join(trial, args.workspace)
+    work = workdir(trial, args.workspace)
     env = fixture_env(work, os.path.join(trial, "xdg"))
     n = len([f for f in os.listdir(trial) if f.startswith(f"{stage}.ask")]) + 1
     events = os.path.join(trial, f"{stage}.ask{n}.events.ndjson")
@@ -676,6 +812,8 @@ def main():
     r.add_argument("--effort", default="high")
     r.add_argument("--timeout", type=positive_int, default=1200, help="seconds per stage")
     r.add_argument("--jobs", type=positive_int, default=4)
+    r.add_argument("--work-root", metavar="DIR", help="create each workspace at DIR/<project>-<random> instead of inside the "
+                   "results tree; the trial's work/ is a symlink to it. The dirs are left in place")
     rp = sub.add_parser("report")
     rp.add_argument("out")
     s = sub.add_parser("show")
