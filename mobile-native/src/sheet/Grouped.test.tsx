@@ -709,21 +709,35 @@ describe("Button", () => {
 				const minimum = os === "android" ? 48 : 44;
 				const tree = render(<Button label="Edit" text onPress={() => {}} />);
 				const button = pressable(tree);
-				expect(styleOf(button)).toMatchObject({ minHeight: minimum, minWidth: minimum, paddingHorizontal: 8 });
+				expect(styleOf(button)).toMatchObject({
+					minHeight: minimum,
+					minWidth: minimum,
+					paddingHorizontal: 8,
+					paddingVertical: 8,
+					justifyContent: "center",
+				});
 				expect(styleOf(button).backgroundColor).toBeUndefined();
+				expect(button.props.hitSlop).toBeUndefined();
 				expect(styleOf(button, true).opacity).toBe(0.65);
 				const label = tree.root.find((node) => String(node.type) === "Text");
 				expect(Object.assign({}, ...[label.props.style].flat())).toMatchObject({
 					color: light.accentInk,
 					fontSize: 16,
 					fontWeight: "600",
+					flexShrink: 1,
 				});
 			});
 		},
 	);
 
+	it("dims a disabled text button and holds its press", () => {
+		const button = pressable(render(<Button label="Edit" text disabled onPress={() => {}} />));
+		expect(button.props.disabled).toBe(true);
+		expect(styleOf(button).opacity).toBe(0.4);
+	});
+
 	it("draws a quiet text button in the secondary ink at regular weight", () => {
-		const tree = render(<Button label="Cancel" quiet onPress={() => {}} />);
+		const tree = render(<Button label="Cancel" text quiet onPress={() => {}} />);
 		expect(styleOf(pressable(tree)).backgroundColor).toBeUndefined();
 		const label = tree.root.find((node) => String(node.type) === "Text");
 		expect(Object.assign({}, ...[label.props.style].flat())).toMatchObject({
@@ -738,6 +752,8 @@ describe("Button", () => {
 		expect(open.props.accessibilityState).toEqual({ disabled: false, expanded: true });
 		const closed = pressable(render(<Button label="Details" text expanded={false} onPress={() => {}} />));
 		expect(closed.props.accessibilityState).toEqual({ disabled: false, expanded: false });
+		const plain = pressable(render(<Button label="Details" expanded onPress={() => {}} />));
+		expect(plain.props.accessibilityState).toEqual({ disabled: false, expanded: true });
 	});
 
 	it("names a button for VoiceOver by its accessibilityLabel when given one, else by its label", () => {

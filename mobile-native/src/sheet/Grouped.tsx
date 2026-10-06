@@ -564,9 +564,9 @@ const BUTTON_KINDS = {
  *   dimming when pressed.
  * - `mini`, a row's own control such as Install (.mini-btn): 13pt accent text
  *   with no fill, shaded when pressed.
- * - `text`, the app's older inline action: 16pt accent text with no fill,
- *   drawn at the platform's minimum target; `quiet` is the same in the
- *   secondary ink at regular weight, for an action that steps back.
+ * - `text`, an inline action: 16pt accent text with no fill, drawn at the
+ *   platform's minimum target; with `quiet`, the same in the secondary ink at
+ *   regular weight, for an action that steps back.
  * A plain or text button's touch reaches the 44pt minimum (48 on Android); a
  * mini button's reaches its 44pt row's edges. Its label follows Dynamic Type,
  * so the height is a minimum. `expanded` tells VoiceOver whether the section
@@ -588,6 +588,7 @@ export function Button({
 	primary?: boolean;
 	mini?: boolean;
 	text?: boolean;
+	/** With `text`: the secondary ink at regular weight. */
 	quiet?: boolean;
 	disabled?: boolean;
 	expanded?: boolean;
@@ -597,7 +598,7 @@ export function Button({
 }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
-	if (text || quiet) {
+	if (text) {
 		const target = Platform.OS === "android" ? 48 : 44;
 		return (
 			<Pressable
