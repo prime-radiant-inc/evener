@@ -50,6 +50,7 @@ and should not be presented as reproduced production incidents.
 | [R06](#r06-read-only-goal-progress) | Medium | Useful research can count as no progress while attempted writes count | S09, S14 |
 | [R07](#r07-restored-goals-without-a-wake) | Medium | An active restored goal can remain idle until another turn arrives | S08, S09 |
 | [R08](#r08-compaction-with-a-pending-question) | Low (deferred) | A pending question prevents explicit compaction | S09, S10 |
+| [R09](#r09-send-resumes-a-recovery-fenced-session) | High | A fenced session demands a separate Resume click before any send | S02, S08, S11 |
 | [H01](#h01-credential-store-failure-scope) | High | A credential-file problem prevents the entire hub from starting | S01, S06, S15 |
 | [H02](#h02-live-daemons-after-api-key-repair) | High | Saving a corrected API key leaves running sessions using the old key | S08, S15 |
 | [H03](#h03-host-journal-failure-scope) | High | Incomplete host-journal quarantine prevents unrelated local work | S06, S07 |
@@ -61,6 +62,7 @@ and should not be presented as reproduced production incidents.
 | [H10](#h10-update-outcome-after-the-response) | Medium | An update says restarting before a failure that only reaches logs | S06, S20 |
 | [H11](#h11-remote-bootstrap-diagnostics) | Low | First-start output is discarded when it would explain a failed connection | S07, S20, S21 |
 | [H12](#h12-dormant-host-notices) | Low | An unused disconnected host becomes a recovery notice | S03, S06, S07 |
+| [H13](#h13-wind-down-for-an-incompatible-session-daemon) | Medium | A fenced session's active work can only be moved by an immediate kill | S08 |
 | [T01](#t01-tool-call-parking) | High | Repeated failure parks an operation even after the dependency heals | S14 |
 | [T02](#t02-mcp-initial-discovery-recovery) | High | An initially unavailable MCP server never contributes tools to the session | S18, S19 |
 | [T04](#t04-read-only-directory-symlinks) | Medium (deferred) | A derived read-only delegate cannot browse an allowed target through a symlink | S12, S14 |
@@ -701,6 +703,45 @@ pending question and the refusal obstructs useful work.
 answer it afterward, and continue once with the same question identity and
 preserved required context.
 
+### R09 Send resumes a recovery-fenced session
+
+**Current behavior.** After a session is stopped under uncertainty (hub
+recovery, a force stop, a Stop drain), the hub fences every automatic action
+until an explicit `thread/resume`, and the web pane replaces Send with a
+"Resume session" button and a notice: "Resume this session before
+continuing. Any uncertain messages will be checked before sending." A send
+attempt is refused outright ("Send is not available for this session"), so
+the user performs the product's reconciliation by hand before their own
+message.
+
+**Evidence.** The resume branch of the session pane's
+RestartRequiredNotice ([Session.tsx](../../cmd/evener-hub/frontend/src/panes/session/Session.tsx))
+and the fenced composer; the hub's fence and fold
+([applyThreadResumeRequirement](../../cmd/evener-hub/app_threadread.go),
+ResumeOnlyFoldable stamped only when a turn/start would be admitted); the
+dispatcher's fence refusals
+([threads.ts](../../cmd/evener-hub/frontend/src/stores/threads.ts)
+RECOVERY_FENCE_REFUSALS); the explicit-resume contract pinned by
+"automatic action escaped durable recovery requirement"
+(cmd/evener-hub/app_recovery_persistence_test.go) and the said-out-loud rule
+(kata 2f41, QueueStrip.test.tsx).
+
+**Decision.** Send is the single action. Pressing Send on a recovery-fenced
+session resumes it (the resume reconciles any delivery-uncertain messages,
+exactly as the standalone button did) and then dispatches the original send
+once. There is no standalone Resume control. A resume failure surfaces
+through the send path with the user's input preserved. The hub's
+turn/start fence refusal itself is unchanged: the sequencing belongs to the
+client, because the uncertain rows live in the client's durable outbox.
+Agreed with Jesse 2026-10-06; implementation remains pending.
+
+**Acceptance.** On a fenced session with delivery-uncertain messages, press
+Send once: the resume runs, the uncertain rows reconcile, exactly one send
+dispatches, and the transcript and any newer draft are preserved. A resume
+that fails reports its reason on the send path without losing the input. No
+Resume button appears anywhere in the pane. The merely-resumable case keeps
+today's silent fold. Implementation remains pending.
+
 ## Hub, hosts and provider setup
 
 ### H01 Credential-store failure scope
@@ -1048,6 +1089,40 @@ or awaiting an explicit Connect request, produces relevant recovery status that
 clears on recovery or cancellation. Determine affected work independently of
 which session pages the client has loaded, so an incomplete local view cannot
 suppress a relevant notice. Routine recovery requires no user action.
+
+### H13 Wind-down for an incompatible session daemon
+
+**Current behavior.** A daemon running a different appwire protocol than the
+hub has no wire channel to it: the roster probe classifies its session
+restart-required, the hub refuses every session action, and graceful Shut
+down is disabled for these rows. The only lever that moves the session to the
+hub's version is Force shutdown, which verifies the process and delivers
+SIGKILL, interrupting any turn or job mid-flight. Work in the fenced session
+cannot finish first, and the daemon cannot learn it is obsolete and retire
+itself, because the hub dials daemons and the probe is one-way.
+
+**Evidence.** The prober's mismatch verdict
+([prober.go](../../cmd/evener-hub/internal/hubcore/prober.go)) and
+[daemonRestartRequiredError](../../cmd/evener-hub/app_restart_required.go)
+name the fence. The rail row disables Shut down for restart-required sessions
+([RailRow.tsx](../../cmd/evener-hub/frontend/src/shell/rail/RailRow.tsx#L350))
+and the session menu offers Force shutdown
+([SessionMenu.tsx](../../cmd/evener-hub/frontend/src/shell/sessionMenu/SessionMenu.tsx#L197)).
+Force stop signals SIGKILL and waits at most 10 seconds for the exit
+([app_force_stop.go](../../cmd/evener-hub/app_force_stop.go);
+[process_linux.go](../../cmd/evener-hub/internal/daemonprocess/process_linux.go#L41)).
+The pane presents the fence as a degraded state and recovery stays in the
+session menu; this case concerns only the stop path's destructiveness.
+
+**Discuss.** Whether a fenced daemon can be asked to wind down instead of
+being killed: an OS signal the daemon treats as finish-the-turn-then-exit
+with a bounded grace before a harder signal, and whether a daemon should
+retire itself once it can establish its hub moved on. SIGKILL remains the
+fallback; the question is whether the mid-flight work can be spared.
+
+**When discussed.** Decide the wind-down semantics (graceful signal, bounded
+grace, self-retirement) and record the accepted behavior with its acceptance
+scenario here.
 
 ## Agent capabilities and terminal workflow
 
