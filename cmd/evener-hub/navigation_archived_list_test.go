@@ -880,3 +880,42 @@ func TestArchivedListCandidatesDoNotShareTheCatalogOrder(t *testing.T) {
 		t.Fatalf("changing the candidates changed navigationCatalogOrder: %v", order)
 	}
 }
+
+// A change only to a row's decoration (favorite, pin, its source going
+// offline) shows on a page, so it moves the list's revision too.
+func TestArchivedListRevisionMovesWithARowsDecoration(t *testing.T) {
+	rows := archivedRows("old", 2, archivedAt(100), archivedTitle("old"))
+	project := hubcore.TreeProject{Key: "kept", Name: "kept", Archived: rows}
+	read := func(inputs navigationBuildInputs) string {
+		t.Helper()
+		inputs.GenerationID, inputs.Revision = "generation", 1
+		inputs.Tree = hubcore.Tree{Projects: []hubcore.TreeProject{project}}
+		p, err := buildNavigationProjection(inputs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		page, err := p.ArchivedList(t.Context(), navigationArchivedListRequest{ProjectKey: "kept"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return page.Revision
+	}
+	plain := read(navigationBuildInputs{})
+	favorite := map[string]bool{rows[0].ID: true}
+	favored := read(navigationBuildInputs{SessionFavorite: favorite})
+	if favored == plain {
+		t.Errorf("a favorite left the revision at %q", favored)
+	}
+	// A row shows its pin by no longer showing as a favorite.
+	pinned := read(navigationBuildInputs{
+		SessionFavorite: favorite,
+		PinSections:     []hubcore.PinSection{{ID: "pins", Name: "Pins"}},
+		PinAssignments:  map[hubcore.ArchiveKey]hubcore.SessionPin{hubcore.SessionPinKey("local", rows[0].ID): {Source: "local", SessionID: rows[0].ID, SectionID: "pins"}},
+	})
+	if pinned == favored {
+		t.Errorf("pinning a favorite left the revision at %q", pinned)
+	}
+	if offline := read(navigationBuildInputs{Sources: []hubapi.Source{{ID: "local", Label: "Local", Kind: "local", Online: false}}}); offline == plain {
+		t.Errorf("its source going offline left the revision at %q", offline)
+	}
+}

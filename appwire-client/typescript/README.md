@@ -98,8 +98,9 @@ both apps' hub settings render from. The archived list store,
 `createArchivedListStore(client)`, is the same triple plus store-bound
 actions (`refresh`, `loadMore`, `refreshLoaded`, `reset`) over a
 `request`-only port: each opened project's archived sessions from
-`evener/archived/list`, paged by cursor and refreshed in place; the host
-resets it when its connection is replaced or recovers. The hub's own update
+`evener/archived/list`, paged by cursor and refreshed in place (a refresh
+sends the list's revision and keeps its rows when the hub answers
+unchanged); the host resets it when its connection is replaced or recovers. The hub's own update
 check and apply,
 `createHubUpdateController({ client, awaitRestart })`, is the same triple
 with the restart wait as a port: each app says how it notices the new hub.

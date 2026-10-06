@@ -188,3 +188,51 @@ func TestPluginsPanelReconnectChecksForUpdatesAgain(t *testing.T) {
 		t.Fatalf("panel after reconnect does not show the checked update:\n%s", v)
 	}
 }
+
+// A catalog open on the Browse tab is read again after a reconnect, as a
+// notification refresh reads it: one that changed during the outage would
+// otherwise stay stale until reopened.
+func TestPluginsPanelReconnectRereadsTheOpenCatalog(t *testing.T) {
+	var mu sync.Mutex
+	var browsed []string
+	client, _, cleanup := newTestHubClientWithFeed(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerMarketplaceList, func(context.Context, appwire.EmptyParams) (appwire.MarketplaceListResponse, error) {
+			return appwire.MarketplaceListResponse{Marketplaces: []appwire.MarketplaceEntry{{Name: "acme"}}}, nil
+		})
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerPluginList, func(context.Context, appwire.EmptyParams) (appwire.PluginListResponse, error) {
+			return appwire.PluginListResponse{}, nil
+		})
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerMarketplaceBrowse, func(_ context.Context, params appwire.MarketplaceBrowseParams) (appwire.MarketplaceBrowseResponse, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			browsed = append(browsed, params.Name)
+			return appwire.MarketplaceBrowseResponse{}, nil
+		})
+	})
+	defer cleanup()
+	oldClient, oldFeed, dropOldConnection := newTestHubClientWithFeed(t, nil)
+	var panel tea.Model = launchconfig.NewPluginsPanel()
+	panel, _ = panel.Update(launchconfig.MarketplaceListResultMsg{List: appwire.MarketplaceListResponse{Marketplaces: []appwire.MarketplaceEntry{{Name: "acme"}}}})
+	panel, _ = panel.Update(tea.KeyMsg{Type: tea.KeyRight})
+	panel, _ = panel.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	open := panel.(launchconfig.PluginsPanel)
+	if open.BrowseMarketplace() != "acme" {
+		t.Fatalf("fixture: browsing %q, want acme", open.BrowseMarketplace())
+	}
+	m := hubModel{client: oldClient, pluginsPanel: &open}
+	dropOldConnection()
+
+	cmd := m.applyHubReconnect(hubReconnectMsg{client: client, frames: oldFeed})
+	for _, msg := range openCommandMessages(t, cmd) {
+		if _, ok := msg.(hubNotificationMsg); ok {
+			continue
+		}
+		updated, _ := m.Update(msg)
+		m = updated.(hubModel)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(browsed) != 1 || browsed[0] != "acme" {
+		t.Fatalf("catalog reads after reconnect = %v, want one of acme", browsed)
+	}
+}

@@ -192,7 +192,9 @@ type archivedRevisionKey struct {
 
 // archivedListRevision fingerprints an archived list: the catalog read, the
 // project key and every row of it as navigation summarizes it, children
-// included, so any change a page could show changes it. It is the navigation
+// included, so any change a page could show changes it. Delegate children are
+// included too, though a page shows only fork children: a change there costs
+// a client one re-read, never a stale page. It is the navigation
 // resources' own logical fingerprint, which is why a client can trust an
 // equal one. It is computed once per projection and list; a key no catalog
 // holds (catalog "") is not cached, so the cache holds only real projects

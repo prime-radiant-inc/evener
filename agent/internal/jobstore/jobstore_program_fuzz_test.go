@@ -493,6 +493,12 @@ func jcpOutputErrorPaths(t *testing.T, root string) {
 		{"Tail seek", func(o *OutputStore) error { _, _, _, err := o.Tail(2); return err }, func(fs *jcpHookFS) {
 			fs.wrap = func(f afero.File) afero.File { return &jcpHookFile{File: f, seekErr: jcpInjectedErr} }
 		}},
+		{"Head seek", func(o *OutputStore) error { _, _, _, err := o.Head(2); return err }, func(fs *jcpHookFS) {
+			fs.wrap = func(f afero.File) afero.File { return &jcpHookFile{File: f, seekErr: jcpInjectedErr} }
+		}},
+		{"Grep seek", func(o *OutputStore) error { _, err := o.Grep(regexp.MustCompile(`ready`), 32); return err }, func(fs *jcpHookFS) {
+			fs.wrap = func(f afero.File) afero.File { return &jcpHookFile{File: f, seekErr: jcpInjectedErr} }
+		}},
 		{"Tail read", func(o *OutputStore) error { _, _, _, err := o.Tail(2); return err }, func(fs *jcpHookFS) {
 			fs.wrap = func(f afero.File) afero.File { return &jcpHookFile{File: f, readErr: jcpInjectedErr} }
 		}},
@@ -516,7 +522,7 @@ func jcpOutputErrorPaths(t *testing.T, root string) {
 		jcpRequireError(t, operation.label, operation.call(o))
 	}
 	retainedTail := jcpReadOutput(t, []byte("ready\n"), func(*jcpHookFS) {})
-	retainedTail.retainedStart = 1
+	retainedTail.retainedStart, retainedTail.visibleStart = 1, 1
 	if _, _, truncated, err := retainedTail.Tail(32); err != nil || !truncated {
 		t.Fatalf("retained Tail = %v/%v", truncated, err)
 	}
