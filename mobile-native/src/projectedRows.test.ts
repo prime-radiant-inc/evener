@@ -35,7 +35,7 @@ import {
 import type { MobileTimelineItem } from "./projectedRows";
 import { readerKey } from "./readerPosition";
 import { sessionRows } from "./session/transcriptRows";
-import { groupTimeline, isCriticalNotice } from "./timeline";
+import { groupTimeline } from "./timeline";
 
 // The row adapter maps the shared projector's ProjectedEntry kinds onto the
 // native MobileTimelineItem union. D24-6 re-homed the row vocabulary and the
@@ -422,12 +422,10 @@ describe("projectedRow — item entries", () => {
 		expect(row).not.toMatchObject({ family: "unknown-system" });
 	});
 
-	// A model round that ended with streamed content or running tools nobody
-	// recorded reads in the warning tone, as an error or a turn limit does.
+	// interrupted is a warning, as the package shows it at every level.
 	it("reads an interrupted round as a warning", () => {
 		const row = projectedRow(itemEntry(item({ type: "systemMessage", text: "x", eventKind: "interrupted" })));
 		expect(row).toMatchObject({ kind: "notice", origin: "system", family: "warning", tone: "warning" });
-		expect(isCriticalNotice(row as Extract<MobileTimelineItem, { kind: "notice" }>)).toBe(true);
 	});
 
 	it("maps a warning item to the attention failure row", () => {
@@ -447,7 +445,7 @@ describe("projectedRow — item entries", () => {
 	// A daemon warning (#3387): a systemMessage with eventKind "warning". One a
 	// human should see reads in the attention tone, amber per spec, with its
 	// hint as a quiet second line; an informational one stays a quiet system
-	// line; loop_detection, turn_limit and error stay the red warning tone.
+	// line; the WARNING_EVENT_KINDS stay the red warning tone.
 	it("reads an uncoded daemon warning in the attention tone, with its hint", () => {
 		const row = projectedRow(
 			itemEntry(

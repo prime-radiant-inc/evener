@@ -178,10 +178,10 @@ export interface ActivityMember {
 
 // Tone of a steering/lifecycle notice row. "info" for every daemon steer
 // (a loop-detected or provider-failure steer included: the failure it answers
-// shows as the turn's own error), "warning" for the loop_detection, turn_limit,
-// interrupted and error system events (WARNING_EVENT_KINDS), "attention" for a daemon
-// warning a human should see (attentionWarningNotice: amber, spec 8.2's
-// Warning), and "system" for every other system event.
+// shows as the turn's own error), "warning" for the WARNING_EVENT_KINDS system
+// events, "attention" for a daemon warning a human should see
+// (attentionWarningNotice: amber, spec 8.2's Warning), and "system" for every
+// other system event.
 export type NoticeTone = "info" | "warning" | "attention" | "system";
 
 export type NoticeOrigin = "steering" | "system";
