@@ -7,7 +7,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -139,7 +138,7 @@ func TestPluginsPanelReconnectChecksForUpdatesAgain(t *testing.T) {
 	var mu sync.Mutex
 	checks := 0
 	plugin := appwire.PluginEntry{Plugin: "widget", Marketplace: "acme", Enabled: true}
-	client, feed, cleanup := newTestHubClientWithFeed(t, func(app *appserver.Server) {
+	client, _, cleanup := newTestHubClientWithFeed(t, func(app *appserver.Server) {
 		appserver.HandleTyped(app.Router(), appwire.MethodEvenerMarketplaceList, func(context.Context, appwire.EmptyParams) (appwire.MarketplaceListResponse, error) {
 			return appwire.MarketplaceListResponse{}, nil
 		})
@@ -157,46 +156,27 @@ func TestPluginsPanelReconnectChecksForUpdatesAgain(t *testing.T) {
 		})
 	})
 	defer cleanup()
-	// The model sits on a connection that has dropped, its check with it.
-	oldClient, _, dropOldConnection := newTestHubClientWithFeed(t, nil)
+	// The model sits on a connection that has dropped, its check with it. The
+	// reconnect is handed the dropped feed, as in
+	// TestHubReconnectReissuesTaggedMarketplaceReconciliation, so its frame
+	// pump answers at once and every batched command can be run to the end.
+	oldClient, oldFeed, dropOldConnection := newTestHubClientWithFeed(t, nil)
 	// The panel holds the list read before the drop, without the flag.
 	loaded, _ := launchconfig.NewPluginsPanel().Update(launchconfig.PluginListResultMsg{List: appwire.PluginListResponse{Plugins: []appwire.PluginEntry{plugin}}})
 	panel := loaded.(launchconfig.PluginsPanel)
 	m := hubModel{client: oldClient, pluginsPanel: &panel}
 	dropOldConnection()
 
-	cmd := m.applyHubReconnect(hubReconnectMsg{client: client, frames: feed})
+	cmd := m.applyHubReconnect(hubReconnectMsg{client: client, frames: oldFeed})
 	if cmd == nil {
 		t.Fatal("reconnect should schedule its recovery reads")
 	}
-	// The reconnect batches long-lived listeners (the frame pump) with its
-	// reads, so each batched command runs on its own and only those that
-	// answer promptly are delivered, in the order they finish.
-	answers := make(chan []tea.Msg, 16)
-	batch, ok := cmd().(tea.BatchMsg)
-	if !ok {
-		t.Fatalf("reconnect command = %T, want a batch", cmd)
-	}
-	for _, child := range batch {
-		if child != nil {
-			go func() { answers <- openCommandMessages(t, child) }()
+	for _, msg := range openCommandMessages(t, cmd) {
+		if _, ok := msg.(hubNotificationMsg); ok {
+			continue // the dropped feed's frame pump ending
 		}
-	}
-	deadline := time.After(10 * time.Second)
-collect:
-	for {
-		select {
-		case msgs := <-answers:
-			for _, msg := range msgs {
-				updated, _ := m.Update(msg)
-				m = updated.(hubModel)
-			}
-			if strings.Contains(installedTabView(t, m), "UPDATE AVAILABLE") {
-				break collect
-			}
-		case <-deadline:
-			break collect
-		}
+		updated, _ := m.Update(msg)
+		m = updated.(hubModel)
 	}
 	mu.Lock()
 	ran := checks

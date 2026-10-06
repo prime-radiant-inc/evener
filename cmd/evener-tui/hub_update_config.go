@@ -700,12 +700,10 @@ func (m hubModel) handleMarketplaceListResult(msg launchconfig.MarketplaceListRe
 }
 
 // pluginsPanelReads is everything the plugins panel reads when it opens, and
-// again when the connection comes back while it is open (a check lost with
-// the old connection answered nothing): the marketplace and plugin lists, and
+// again on reconnect while it is open: the marketplace and plugin lists, and
 // the update check. The check starts only once the first plugin list has
 // landed, so that list, read before the check, can never replace the one the
-// check's re-read brings. The reads are separate commands, for the caller to
-// batch with its own.
+// check's re-read brings.
 func (m *hubModel) pluginsPanelReads() []tea.Cmd {
 	return []tea.Cmd{m.marketplaceListRead(), tea.Sequence(launchconfig.CmdPluginList(m.client), launchconfig.CmdPluginCheckUpdates(m.client))}
 }
