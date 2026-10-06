@@ -88,6 +88,8 @@ export function ReadOnlyThreadContent({
     listRef,
     loadOlder,
     cancelOlder,
+    onReaderIntent: view.supersedePositioning,
+    onReaderMovement: view.syncPositioningMovement,
     viewKey: configFingerprint(displayConfig),
     anchorEntries,
     renderedRowCount: rows.length,
@@ -123,6 +125,7 @@ export function ReadOnlyThreadContent({
               sessionRef={ref}
               viewId={view.id}
               initialViewCapture={initialViewCapture}
+              readView={view}
               onAnnounceViewChange={(summary) => {
                 announcementSequence.current += 1;
                 setViewAnnouncement({ text: `Transcript detail: ${summary}`, key: announcementSequence.current });

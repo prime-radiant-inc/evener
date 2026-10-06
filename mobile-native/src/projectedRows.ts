@@ -54,6 +54,7 @@ import {
 	parseAskUserQuestions,
 	parseTaskListData,
 	pendingTextJoined,
+	PROMPT_EVENT_KINDS,
 	projectThread,
 	steeringLabel,
 	steeringNotificationFragments,
@@ -177,10 +178,10 @@ export interface ActivityMember {
 
 // Tone of a steering/lifecycle notice row. "info" for every daemon steer
 // (a loop-detected or provider-failure steer included: the failure it answers
-// shows as the turn's own error), "warning" for the loop_detection, turn_limit
-// and error system events (WARNING_EVENT_KINDS), "attention" for a daemon
-// warning a human should see (attentionWarningNotice: amber, spec 8.2's
-// Warning), and "system" for every other system event.
+// shows as the turn's own error), "warning" for the WARNING_EVENT_KINDS system
+// events, "attention" for a daemon warning a human should see
+// (attentionWarningNotice: amber, spec 8.2's Warning), and "system" for every
+// other system event.
 export type NoticeTone = "info" | "warning" | "attention" | "system";
 
 export type NoticeOrigin = "steering" | "system";
@@ -730,7 +731,6 @@ export function liveAsksFor(model: ThreadModel): ReadonlyMap<string, AskQuestion
 // --- notice rows ------------------------------------------------------------------
 
 const WARNING_EVENT_KINDS = new Set(["loop_detection", "turn_limit", ERROR_EVENT_KIND]);
-const HIDDEN_EVENT_KINDS = new Set(["system_prompt", "prompt_loaded"]);
 const PRELUDE_EVENT_KINDS = new Set(["environment"]);
 const DIAGNOSTIC_EVENT_KINDS = new Set(["round_timings"]);
 const LIFECYCLE_EVENT_KINDS = new Set([
@@ -743,6 +743,10 @@ const LIFECYCLE_EVENT_KINDS = new Set([
 	"fork_summary",
 	"tool_repair",
 	"model_switch",
+	// A model round that ended with streamed content or running tools nobody
+	// recorded. The package shows it at every level; like the web, the phone
+	// draws it as a plain notice line, not a failure.
+	"interrupted",
 	// The deleted family classified this lifecycle (its map read
 	// "notes-context": "lifecycle"); the re-home dropped it and its pin with
 	// the oracle (RoboRev panel) — restored here so the canonical set is not
@@ -753,7 +757,7 @@ const LIFECYCLE_EVENT_KINDS = new Set([
 function systemFamily(eventKind: string | undefined): NoticeFamily {
 	if (!eventKind) return "unknown-system";
 	if (WARNING_EVENT_KINDS.has(eventKind)) return "warning";
-	if (HIDDEN_EVENT_KINDS.has(eventKind)) return "hidden-instruction";
+	if (PROMPT_EVENT_KINDS.has(eventKind)) return "hidden-instruction";
 	if (PRELUDE_EVENT_KINDS.has(eventKind)) return "system-prelude";
 	if (DIAGNOSTIC_EVENT_KINDS.has(eventKind)) return "diagnostic";
 	if (LIFECYCLE_EVENT_KINDS.has(eventKind)) return "lifecycle";

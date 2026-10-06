@@ -922,6 +922,12 @@ func (c *Client) PluginList(ctx context.Context) (PluginListResponse, error) {
 	return out, err
 }
 
+func (c *Client) PluginCheckUpdates(ctx context.Context) (PluginListResponse, error) {
+	var out PluginListResponse
+	err := c.request(ctx, MethodEvenerPluginCheckUpdates, EmptyParams{}, &out)
+	return out, err
+}
+
 func (c *Client) PluginPreview(ctx context.Context, params PluginPreviewParams) (PluginPreviewResponse, error) {
 	var out PluginPreviewResponse
 	err := c.request(ctx, MethodEvenerPluginPreview, params, &out)

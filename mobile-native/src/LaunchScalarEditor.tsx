@@ -7,7 +7,8 @@ import { HoldingModal } from "./alerts/HoldingModal";
 import { HubPathField } from "./HubPathField";
 import { LaunchModelPicker } from "./LaunchModelPicker";
 import { assertLaunchFieldCurrent, launchFieldConflictMessage, parseLaunchScalar } from "./launchScalar";
-import { Action, Choice, Copy, ErrorMessage, styles, useColors } from "./ui";
+import { Choice, Copy, ErrorMessage, styles, useColors } from "./ui";
+import { Button } from "./sheet/Grouped";
 
 export function LaunchScalarEditor({
 	option,
@@ -107,15 +108,15 @@ export function LaunchScalarEditor({
 		<HoldingModal visible presentationStyle="pageSheet" animationType="slide" onRequestClose={close}>
 			<SafeAreaView style={[styles.fill, { backgroundColor: colors.background }]}>
 				<View style={[styles.row, { paddingHorizontal: 16 }]}>
-					<Action onPress={close}>Cancel</Action>
-					<Action
+					<Button text label="Cancel" onPress={close} />
+					<Button
+						text
+						label="Done"
 						disabled={busy}
 						onPress={() => {
 							void done();
 						}}
-					>
-						Done
-					</Action>
+					/>
 				</View>
 				<KeyboardAvoidingView
 					style={styles.fill}

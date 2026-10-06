@@ -148,6 +148,10 @@ func scriptedAdminRemote(
 		return server.Send(ctx, appwire.ResponseMessage(req.ID, json.RawMessage(data))) == nil
 	}
 	done := make(chan struct{})
+	// answers tracks the concurrent answers, so cleanup waits for them and a
+	// late one cannot report into a finished test. A handler a test holds
+	// must be released by a cleanup the test registers, which runs first.
+	var answers sync.WaitGroup
 	go func() {
 		defer close(done)
 		for {
@@ -162,7 +166,7 @@ func scriptedAdminRemote(
 			calls = append(calls, hostAdminCall{method: msg.Request.Method, params: msg.Request.Params})
 			mu.Unlock()
 			if concurrent {
-				go answer(msg.Request)
+				answers.Go(func() { answer(msg.Request) })
 				continue
 			}
 			if !answer(msg.Request) {
@@ -181,6 +185,7 @@ func scriptedAdminRemote(
 		cancel()
 		_ = client.Close()
 		<-done
+		answers.Wait()
 	})
 
 	emit := func(method string, params any) {

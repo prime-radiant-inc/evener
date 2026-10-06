@@ -5,8 +5,7 @@
 // markdown for the renderer, and a hash of it: that hash is how changes and
 // comment anchors recognize a block across versions (S9's fallback).
 import { filenameOf } from "@evener/appwire-client/docContent";
-import { lexer, type Tokens } from "marked";
-import { INLINE_DESTINATION } from "../markdownLinks";
+import { getDefaults, Lexer, lexer, type Token, Tokenizer, type Tokens } from "marked";
 
 export type BlockKind = "heading" | "paragraph" | "listItem" | "code" | "table" | "quote" | "rule" | "html";
 
@@ -27,17 +26,6 @@ export interface DocumentBlock {
 }
 
 const LIST_MARKER = /^\s*(?:[-*+]|\d+[.)])\s+/;
-// A setext heading's underline ("===" or "---" under its words). Only a
-// heading has one: a line of "=" on its own is a paragraph's words.
-const SETEXT_UNDERLINE = /\n[ \t]*(?:=+|-+)[ \t]*$/;
-// An inline code span or an inline HTML tag. It runs over a whole block before
-// the block is split into lines, so a code span may cross lines; the span keeps
-// its contents (group 2), so stripping a tag can't take the angle brackets it
-// holds: `Vec<String>` survives, `<b>` doesn't. A tag stays on one line and its
-// name needs a space, `/` or `>` boundary, so a bare autolink like `<https://x>`
-// isn't mistaken for one, and a quoted attribute may hold a `>`.
-const INLINE_CODE_OR_TAG =
-	/(`+)([^`]|[^`][\s\S]*?[^`])\1(?!`)|<\/?[a-z][a-z0-9-]*(?:[ \t]+(?:[^>"'\n]|"[^"\n]*"|'[^'\n]*')*)?\/?>/gi;
 
 /** cyrb53: a small, stable 53-bit string hash. Collisions don't matter at a
  * document's scale; stability across launches does. */
@@ -70,51 +58,100 @@ function identity(kind: BlockKind, source: string): string {
 	return hashText(`${kind}:${normalized}`);
 }
 
-function isTableRule(line: string): boolean {
-	return /^[\s|:-]+$/.test(line) && line.includes("-");
+// Reads HTML, a block or a tag, as markdown text, as md4c's NOHTML does.
+class TextHtmlTokenizer extends Tokenizer {
+	override html() {
+		return undefined;
+	}
+	override tag() {
+		return undefined;
+	}
 }
 
-// A destination INLINE_DESTINATION can't take whole (unbalanced or deeper
-// parentheses) falls back to ending at its first ")", so the link still reads
-// as its words with at most a little of the URL left, never its whole syntax.
-const DESTINATION = String.raw`(?:${INLINE_DESTINATION}|\([^)]*\))`;
-const INLINE_IMAGE = new RegExp(String.raw`!\[([^\]]*)\]${DESTINATION}`, "g");
-const INLINE_LINK = new RegExp(String.raw`\[([^\]]+)\]${DESTINATION}`, "g");
+// Marks in the words, each a NUL and one character. The source can't hold a NUL:
+// documentBlocks' lexer call reads one as U+FFFD, as CommonMark asks.
+//
+// Where an inline tag dropped. It goes with the spaces around it, leaving one
+// if there were any ("a <br> b" reads "a b"), wherever the tag sat: in
+// emphasis, a link, or at the end of a table cell.
+const DROPPED_TAG = "\u0000t";
+const DROPPED_TAG_RUN = /[ \t]*(?:\u0000t[ \t]*)+/g;
+// Around a code span, so its own spaces don't count as the spaces beside a
+// dropped tag.
+const CODE_START = "\u0000[";
+const CODE_END = "\u0000]";
 
-/** A block's words without markdown syntax: heading marks, quote marks, list
- * markers and task boxes, link and image syntax, and emphasis. Inline HTML tags
- * go too, unless `stripInlineTags` is false (the html block's own words keep
- * theirs). Underscores inside words (snake_case) stay. */
-export function plainText(markdown: string, stripInlineTags = true): string {
-	const stripped = stripInlineTags ? markdown.replace(INLINE_CODE_OR_TAG, "$2") : markdown;
-	return stripped
+// Words without their marks.
+function unmarked(text: string): string {
+	return text
+		.replace(DROPPED_TAG_RUN, (run) => (/[ \t]/.test(run) ? " " : ""))
+		.replaceAll(CODE_START, "")
+		.replaceAll(CODE_END, "");
+}
+
+// A token's words, read from marked's own parse, so a link or image reads as
+// its words however its URL is written (nested parentheses, a reference, an
+// autolink), an escape as the character, and a code span as its contents.
+// Inline HTML tags go, so a comment never quotes a paragraph's <b> or <br>
+// (#2761). A whole html block's tags are its words, so it keeps them, but its
+// markdown goes: the phone's markdown view (md4c with NOHTML) draws an html
+// block as markdown, its tags as text, so it's read again that way.
+function words(token: Token): string {
+	switch (token.type) {
+		case "html":
+			return token.block
+				? new Lexer({ ...getDefaults(), tokenizer: new TextHtmlTokenizer() }).lex(token.text).map(words).join("\n")
+				: DROPPED_TAG;
+		case "codespan":
+			return `${CODE_START}${token.text}${CODE_END}`;
+		case "checkbox":
+		case "def":
+		case "hr":
+			return "";
+		case "br":
+		case "space":
+			return "\n";
+		case "list":
+			return (token as Tokens.List).items.map(words).join("\n");
+		case "list_item":
+		case "blockquote":
+			return (token.tokens ?? []).map(words).join("\n");
+		case "table": {
+			const table = token as Tokens.Table;
+			return [table.header, ...table.rows].map((row) => `| ${row.map(cellWords).join(" | ")} |`).join("\n");
+		}
+		default:
+			if ("tokens" in token && token.tokens) return token.tokens.map(words).join("");
+			return "text" in token && typeof token.text === "string" ? token.text : "";
+	}
+}
+
+// A table cell's words. A pipe in them keeps its escape, so it doesn't read
+// as another column.
+function cellWords(cell: Tokens.TableCell): string {
+	return unmarked(cell.tokens.map(words).join("")).trim().replaceAll("|", "\\|");
+}
+
+// What a comment quotes and Copy copies: a block's words, line by line,
+// each line trimmed and blank ones dropped.
+function blockText(token: Token): string {
+	return unmarked(words(token))
 		.split("\n")
-		.map((line) =>
-			line
-				.replace(/^\s{0,3}#{1,6}\s+/, "")
-				.replace(/^\s*>\s?/, "")
-				.replace(/^\s*(?:[-*+]|\d+[.)])\s+(?:\[[ xX]\]\s+)?/, "")
-				.replace(INLINE_IMAGE, "$1")
-				.replace(INLINE_LINK, "$1")
-				.replace(/\*\*|__|~~|`/g, "")
-				.replace(/(^|[^\w*])\*([^*\n]+)\*(?=[^\w*]|$)/g, "$1$2")
-				.replace(/(^|[^\w_])_([^_\n]+)_(?=[^\w_]|$)/g, "$1$2")
-				.trim(),
-		)
-		.filter((line) => line !== "" && !isTableRule(line))
+		.map((line) => line.trim())
+		.filter((line) => line !== "")
 		.join("\n");
 }
 
 export function documentBlocks(markdown: string): DocumentBlock[] {
 	const blocks: DocumentBlock[] = [];
-	const push = (kind: BlockKind, raw: string, extra: Pick<DocumentBlock, "depth" | "code"> = {}) => {
-		const source = trimBlock(raw);
+	const push = (
+		kind: BlockKind,
+		token: Token,
+		{ markdown = token.raw, ...extra }: Pick<DocumentBlock, "depth" | "code"> & { markdown?: string } = {},
+	) => {
+		const source = trimBlock(markdown);
 		if (source === "") return;
-		let text = extra.code?.text;
-		if (text === undefined) {
-			const heading = kind === "heading" ? source.replace(SETEXT_UNDERLINE, "") : source;
-			text = plainText(heading, kind !== "html");
-		}
+		const text = extra.code?.text ?? blockText(token);
 		blocks.push({
 			index: blocks.length,
 			kind,
@@ -124,41 +161,43 @@ export function documentBlocks(markdown: string): DocumentBlock[] {
 			...extra,
 		});
 	};
-	for (const token of lexer(markdown.replace(/\r\n?/g, "\n"))) {
+	for (const token of lexer(markdown.replace(/\r\n?/g, "\n").replaceAll("\u0000", "\uFFFD"))) {
 		switch (token.type) {
 			case "space":
 			case "def":
 				break;
 			case "heading":
-				push("heading", token.raw, { depth: (token as Tokens.Heading).depth });
+				push("heading", token, { depth: (token as Tokens.Heading).depth });
 				break;
 			case "list": {
 				const list = token as Tokens.List;
 				const start = typeof list.start === "number" ? list.start : 1;
 				list.items.forEach((item, position) => {
-					push("listItem", list.ordered ? item.raw.replace(/^(\s*)\d+([.)])/, `$1${start + position}$2`) : item.raw);
+					push("listItem", item, {
+						markdown: list.ordered ? item.raw.replace(/^(\s*)\d+([.)])/, `$1${start + position}$2`) : item.raw,
+					});
 				});
 				break;
 			}
 			case "code": {
 				const code = token as Tokens.Code;
-				push("code", code.raw, { code: { text: code.text, ...(code.lang ? { lang: code.lang } : {}) } });
+				push("code", code, { code: { text: code.text, ...(code.lang ? { lang: code.lang } : {}) } });
 				break;
 			}
 			case "table":
-				push("table", token.raw);
+				push("table", token);
 				break;
 			case "blockquote":
-				push("quote", token.raw);
+				push("quote", token);
 				break;
 			case "hr":
-				push("rule", token.raw);
+				push("rule", token);
 				break;
 			case "html":
-				push("html", token.raw);
+				push("html", token);
 				break;
 			default:
-				push("paragraph", token.raw);
+				push("paragraph", token);
 		}
 	}
 	return blocks;
