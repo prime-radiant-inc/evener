@@ -95,9 +95,13 @@ appears later arrives in full. When the session itself writes, edits or
 deletes a `MEMORY.md` through the memory tools, the result, cut the same way,
 becomes its baseline, so its own change is never echoed back. A scope with a baseline is read only at the
 first model call of each turn (each input the session processes: a user message
-or a notification wake), never on that turn's later rounds. Another session's
-content change to a known index is not projected mid-session; a compaction or
-resume delivers it with the full index. Missing and revoked states still
+or a notification wake), never on that turn's later rounds. When another
+session changed a known index, that read appends one change block for the
+scope instead of the full index: the quoted lines added and removed since the
+baseline (blank lines ignored), with the same lower-trust framing and route to
+`memory_read`. A change whose block would pass 2 KiB is reported as counts of
+added and removed lines. The new index becomes the baseline, so an unchanged
+turn appends nothing. Missing and revoked states still
 supersede the previous current context, and unavailable storage is not
 presented as freshly read. A read of a known index that misses the refresh's
 wait, or that the session's own write made stale, observes nothing and changes
@@ -113,7 +117,7 @@ folded **Source** preserves the complete recorded text, including content Markdo
 cannot display. Native resolves that original from the retained conversation when
 the row opens, so its display-size limit does not clip Source or the malformed
 fallback. Both clients use the shared payload validator; an observation
-that cannot be decoded opens as its original text without blocking later valid
+that cannot be decoded, including an index change block, opens as its original text without blocking later valid
 observations. Disclosure choices belong to the session and item and survive
 remounts and detail-level changes. Native stores the refresh and Source choices
 independently, also scoped by hub; folding the refresh preserves its Source

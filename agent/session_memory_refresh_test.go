@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -430,5 +431,100 @@ func TestMemoryRefreshOwnWriteDuringStalledReadIsNotEchoed(t *testing.T) {
 	r.boundary()
 	if got := memoryContextCount(r.s); got != 1 {
 		t.Fatalf("own write during a stalled read produced %d more contexts, want none", got-1)
+	}
+}
+
+// latestMemoryContext returns the newest memory-context message for scope in
+// the request, or "" when there is none.
+func latestMemoryContext(req llm.Request, scope string) string {
+	latest := ""
+	for _, msg := range req.Messages {
+		if msg.Name == "memory_"+scope {
+			latest = msg.Text()
+		}
+	}
+	return latest
+}
+
+// Another session's index write reaches the next turn as the changed lines
+// only, never the full index again; the unchanged turn after it carries
+// nothing new.
+func TestMemoryRefreshDeliversIndexDeltaOncePerTurn(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	path := memorySeed(t, root, "personal", "opaque-kept-1\nopaque-dropped-2\n")
+	var delta string
+	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(
+		func(req llm.Request) llm.Response {
+			if got := memoryContextMessages(req); got != 1 {
+				t.Fatalf("first turn carries %d memory contexts, want the full index", got)
+			}
+			return finalResponse("first")
+		},
+		func(req llm.Request) llm.Response {
+			if got := memoryContextMessages(req); got != 2 {
+				t.Fatalf("turn after the change carries %d memory contexts, want 2", got)
+			}
+			delta = latestMemoryContext(req, "personal")
+			return finalResponse("second")
+		},
+		func(req llm.Request) llm.Response {
+			if got := memoryContextMessages(req); got != 2 {
+				t.Fatalf("unchanged turn carries %d memory contexts, want 2", got)
+			}
+			return finalResponse("third")
+		},
+	))
+	turn := func() {
+		t.Helper()
+		if _, err := s.ProcessInput(context.Background(), "go", nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	turn()
+	writeMemoryIndex(t, path, "opaque-kept-1\nopaque-added-3\n")
+	turn()
+	if !strings.Contains(delta, "opaque-added-3") || !strings.Contains(delta, "opaque-dropped-2") {
+		t.Fatalf("delta lacks the added or removed line: %q", delta)
+	}
+	if strings.Contains(delta, "opaque-kept-1") {
+		t.Fatalf("delta repeats the unchanged line: %q", delta)
+	}
+	turn()
+	if got := memoryContextCount(s); got != 2 {
+		t.Fatalf("history contexts=%d, want 2", got)
+	}
+}
+
+// A change too large to list is summarized: the delta stays near its cap and
+// carries none of the changed lines.
+func TestMemoryRefreshCapsLargeIndexDelta(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	path := memorySeed(t, root, "personal", "opaque-small-1\n")
+	var delta string
+	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(
+		func(llm.Request) llm.Response { return finalResponse("first") },
+		func(req llm.Request) llm.Response {
+			if got := memoryContextMessages(req); got != 2 {
+				t.Fatalf("turn after the change carries %d memory contexts, want 2", got)
+			}
+			delta = latestMemoryContext(req, "personal")
+			return finalResponse("second")
+		},
+	))
+	if _, err := s.ProcessInput(context.Background(), "go", nil); err != nil {
+		t.Fatal(err)
+	}
+	var big strings.Builder
+	for i := range 200 {
+		fmt.Fprintf(&big, "opaque-bulk-line-%03d-%s\n", i, strings.Repeat("x", 20))
+	}
+	writeMemoryIndex(t, path, big.String())
+	if _, err := s.ProcessInput(context.Background(), "go", nil); err != nil {
+		t.Fatal(err)
+	}
+	if delta == "" || len(delta) > memoryIndexDeltaCap || strings.Contains(delta, "opaque-bulk-line-") {
+		t.Fatalf("large delta len=%d lists its lines or is missing: %q", len(delta), delta)
 	}
 }
