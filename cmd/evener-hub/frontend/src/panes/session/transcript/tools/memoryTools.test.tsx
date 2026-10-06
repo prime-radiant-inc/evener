@@ -6,7 +6,7 @@ import {
   memorySearchSummary,
   memoryWriteSummary,
 } from "@evener/appwire-client";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import { expect, test } from "vitest";
 import { ToolCallItem } from "../ToolCallItem";
 import { toolRendererFor } from "../toolRenderers";
@@ -181,4 +181,76 @@ test("a rejected session-memory write remains a visible generic failed row with 
   expect(
     screen.getByText("session memory belongs to the root session; report this to your parent instead"),
   ).toBeTruthy();
+});
+
+test("renders a recorded memory write, edit, and search through the transcript row pipeline", () => {
+  const page = [
+    "# Implementation delegation",
+    "",
+    "Delegate a focused change with the exact files and check it needs.",
+    "State the branch and why the change matters.",
+    "List facts already verified and unresolved constraints.",
+    "Name the commands that prove completion.",
+    "Keep the delegated scope narrow and independent.",
+    "Use a worktree when writers could collide.",
+    "Require evidence from the actual test output.",
+    "Review each result before relying on it.",
+    "Save durable project decisions before finishing.",
+  ].join("\n");
+  const oldIndexLine = "- [Implementation delegation](implementation-delegation.md): focused work";
+  const newIndexLine = "- [Implementation delegation](implementation-delegation.md): focused work and evidence";
+  const calls = [
+    item({
+      id: "memory-write",
+      toolName: "memory_write",
+      status: "completed",
+      argumentsJSON: JSON.stringify({
+        scope: "personal",
+        file_path: "implementation-delegation.md",
+        content: page,
+      }),
+    }),
+    item({
+      id: "memory-edit",
+      toolName: "memory_edit",
+      status: "completed",
+      argumentsJSON: JSON.stringify({
+        scope: "project",
+        file_path: "MEMORY.md",
+        old_string: oldIndexLine,
+        new_string: newIndexLine,
+      }),
+    }),
+    item({
+      id: "memory-search",
+      toolName: "memory_search",
+      status: "completed",
+      argumentsJSON: JSON.stringify({ scope: "project", pattern: "delegation", path: "." }),
+      output: "MEMORY.md:1:implementation delegation\npages/implementation-delegation.md:1:delegation",
+    }),
+  ];
+
+  // ./index above is the production side-effect barrel; resolve descriptors
+  // only through ToolCallItem, the transcript's real row renderer.
+  render(calls.map((call) => <ToolCallItem key={call.id} item={call} turn={turn} live={false} />));
+
+  const rows = screen.getAllByTestId("tool-call-item");
+  expect(rows).toHaveLength(3);
+  expect(rows.map((row) => row.querySelector('[data-testid="tool-row-summary"]')?.textContent)).toEqual([
+    "Wrote memory personal/implementation-delegation.md",
+    "Edited memory project/MEMORY.md · +1 -1",
+    'Searched memory for "delegation" in project · 2 hits',
+  ]);
+
+  const [writeRow, editRow] = rows;
+  if (!writeRow || !editRow) throw new Error("missing memory write or edit row");
+  const writeBody = within(writeRow).getByTestId("tool-call-body");
+  expect(within(writeBody).getByRole("heading", { name: "Implementation delegation" }).tagName).toBe("H1");
+  const pageParagraph = within(writeBody).getByText(/Delegate a focused change/);
+  expect(pageParagraph.tagName).toBe("P");
+  expect(pageParagraph.textContent).toContain("Save durable project decisions before finishing.");
+
+  const editBody = within(editRow).getByTestId("tool-call-body");
+  expect(within(editBody).getByText(oldIndexLine)).toBeTruthy();
+  expect(within(editBody).getByText(newIndexLine)).toBeTruthy();
 });

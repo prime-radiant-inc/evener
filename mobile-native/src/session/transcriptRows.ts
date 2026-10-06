@@ -374,6 +374,8 @@ interface Group {
 	changedTasks: boolean;
 	/** Whether a memory step in the part changed a page, not only read it. */
 	changedMemory: boolean;
+	/** Number of calls in the part that attempted a memory mutation. */
+	memoryMutations: number;
 	/** How many questions a part's ask_user calls asked: a call can ask several. */
 	questions: number;
 }
@@ -437,8 +439,11 @@ function partText(group: Group): string {
 			return oneName ? `used skill ${oneName}` : `used ${n} ${plural("skill", "skills")}`;
 		case "tasks":
 			return `${group.changedTasks ? "updated" : "checked"} the task list${n === 1 ? "" : ` ${n} times`}`;
-		case "memory":
-			return `${group.changedMemory ? "updated" : "read"} memory${n === 1 ? "" : ` ${n} times`}`;
+		case "memory": {
+			const count = group.changedMemory ? group.memoryMutations : n;
+			const countText = count === 1 ? "" : group.changedMemory && count === 2 ? " twice" : ` ${count} times`;
+			return `${group.changedMemory ? "updated" : "read"} memory${countText}`;
+		}
 		case "transcript":
 			return n === 1 ? "read a transcript" : `read ${n} transcripts`;
 		case "sessions":
@@ -489,6 +494,7 @@ export function runSummary(steps: readonly RunStep[]): RunSummary {
 				unnamed: 0,
 				changedTasks: false,
 				changedMemory: false,
+				memoryMutations: 0,
 				questions: 0,
 			};
 			groups.set(part.key, group);
@@ -499,8 +505,10 @@ export function runSummary(steps: readonly RunStep[]): RunSummary {
 			failed += 1;
 		}
 		if (part.family === "tasks" && taskListChanges({ argumentsJSON: step.detail.arguments })) group.changedTasks = true;
-		if (part.family === "memory" && ["memory_write", "memory_edit", "memory_delete"].includes(step.label))
+		if (part.family === "memory" && ["memory_write", "memory_edit", "memory_delete"].includes(step.label)) {
 			group.changedMemory = true;
+			group.memoryMutations += 1;
+		}
 		// A call whose questions don't parse still asked one.
 		if (part.family === "ask")
 			group.questions += parseAskUserQuestions({ argumentsJSON: step.detail.arguments })?.length ?? 1;

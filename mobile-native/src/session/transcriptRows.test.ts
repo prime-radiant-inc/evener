@@ -529,7 +529,7 @@ describe("a run's one line", () => {
 			runSummary([memory("a", "memory_read"), memory("b", "memory_edit"), memory("c", "memory_delete")]).parts.map(
 				(part) => part.text,
 			),
-		).toEqual(["updated memory 3 times"]);
+		).toEqual(["updated memory twice"]);
 	});
 });
 

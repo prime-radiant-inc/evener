@@ -32,10 +32,12 @@ import {
 	truncateItem,
 	truncateText,
 } from "./projectedRows";
-import type { MobileTimelineItem } from "./projectedRows";
+import type { MobileConversation, MobileTimelineItem } from "./projectedRows";
 import { readerKey } from "./readerPosition";
-import { sessionRows } from "./session/transcriptRows";
+import { runSummary, runSummaryText, sessionRows } from "./session/transcriptRows";
+import { stepEvidence } from "./session/evidence";
 import { groupTimeline, isCriticalNotice } from "./timeline";
+import { projectNativeTranscript } from "./transcriptPresentation";
 
 // The row adapter maps the shared projector's ProjectedEntry kinds onto the
 // native MobileTimelineItem union. D24-6 re-homed the row vocabulary and the
@@ -691,6 +693,105 @@ describe("projectedRow — item entries", () => {
 	it("returns null for a ProjectedEntry kind outside the known union", () => {
 		expect(projectedRow({ kind: "futureKind" } as unknown as ProjectedEntry)).toBeNull();
 	});
+});
+
+it("renders recorded memory calls and an ordinary file read through the phone timeline and run pipeline", () => {
+	const page = [
+		"# Implementation delegation",
+		"",
+		"Delegate a focused change with the exact files and check it needs.",
+		"State the branch and why the change matters.",
+		"List verified facts and unresolved constraints.",
+		"Name the commands that prove completion.",
+		"Keep the delegated scope narrow and independent.",
+		"Use a worktree when writers could collide.",
+		"Require evidence from the actual test output.",
+		"Review each result before relying on it.",
+		"Save durable project decisions before finishing.",
+	].join("\n");
+	const oldIndexLine = "- [Implementation delegation](implementation-delegation.md): focused work";
+	const newIndexLine = "- [Implementation delegation](implementation-delegation.md): focused work and evidence";
+	const recorded = (id: string, toolName: string, argumentsJSON: string, output?: string) =>
+		item({
+			id,
+			turnId: "t1",
+			type: "commandExecution",
+			toolName,
+			status: "completed",
+			argumentsJSON,
+			...(output === undefined ? {} : { output }),
+		});
+	const model = {
+		turns: [
+			{
+				id: "t1",
+				status: "completed",
+				items: [
+					recorded(
+						"write",
+						"memory_write",
+						JSON.stringify({ scope: "personal", file_path: "implementation-delegation.md", content: page }),
+					),
+					recorded(
+						"edit",
+						"memory_edit",
+						JSON.stringify({
+							scope: "project",
+							file_path: "MEMORY.md",
+							old_string: oldIndexLine,
+							new_string: newIndexLine,
+						}),
+					),
+					recorded(
+						"search",
+						"memory_search",
+						JSON.stringify({ scope: "project", pattern: "delegation", path: "." }),
+						"MEMORY.md:1:implementation delegation\npages/implementation-delegation.md:1:delegation",
+					),
+					recorded(
+						"file-read",
+						"read_file",
+						JSON.stringify({ path: "docs/developing-evener/testing.md" }),
+						"# Testing\n\nDeterministic tests prove behavior.",
+					),
+				],
+			},
+		],
+	} as unknown as ThreadModel;
+
+	const projected = projectTimeline(model, new Map());
+	expect(projected).toHaveLength(1);
+	const conversation: MobileConversation = { ...model, items: projected };
+	const presentation = projectNativeTranscript(conversation, undefined);
+	const transcript = sessionRows(groupTimeline(presentation.items), model.turns);
+	const run = transcript.find((row) => row.kind === "run");
+	if (run?.kind !== "run") throw new Error("expected the four settled calls in one tool run");
+
+	const byTool = new Map(run.steps.map((step) => [step.label, step]));
+	const write = byTool.get("memory_write");
+	const edit = byTool.get("memory_edit");
+	const search = byTool.get("memory_search");
+	const fileRead = byTool.get("read_file");
+	if (!write || !edit || !search || !fileRead) throw new Error("missing one of the recorded journey steps");
+
+	expect(write.detail.summary).toBe("Wrote memory personal/implementation-delegation.md");
+	expect(edit.detail.summary).toBe("Edited memory project/MEMORY.md · +1 -1");
+	expect(search.detail.summary).toBe('Searched memory for "delegation" in project · 2 hits');
+	expect(runSummaryText(runSummary(run.steps))).toBe("4 steps · updated memory twice, read 1 file");
+
+	expect(stepEvidence(write)).toEqual([
+		{ kind: "markdown", title: "personal/implementation-delegation.md", markdown: page },
+	]);
+	const editEvidence = stepEvidence(edit);
+	expect(editEvidence[0]).toMatchObject({ kind: "diff", added: 1, removed: 1 });
+	if (editEvidence[0]?.kind !== "diff") throw new Error("memory edit did not produce diff evidence");
+	expect(editEvidence[0].text).toContain(oldIndexLine);
+	expect(editEvidence[0].text).toContain(newIndexLine);
+	expect(stepEvidence(search).map((evidence) => evidence.kind)).toEqual(["output"]);
+	expect(stepEvidence(fileRead)).toEqual([
+		{ kind: "output", text: "# Testing\n\nDeterministic tests prove behavior.", lines: 3 },
+	]);
+	expect(runSummary(run.steps).parts.map((part) => part.text)).toEqual(["updated memory twice", "read 1 file"]);
 });
 
 describe("noteFromSteer (spec 8.8)", () => {
