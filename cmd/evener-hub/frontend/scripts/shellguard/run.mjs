@@ -520,6 +520,13 @@ async function settleOverview(send) {
     const aside = document.querySelector(${JSON.stringify(OVERVIEW)});
     if (!aside) return true;
     const box = aside.getBoundingClientRect();
+    // A sliding Overview that overflows the page gives Linux Chrome classic
+    // scrollbars, which can outlive the slide and later vanish under a press.
+    const page = document.documentElement;
+    if (page.scrollWidth > innerWidth || page.scrollHeight > innerHeight) {
+      throw new Error('Overview entrance overflows the page: ' + JSON.stringify({
+        scrollWidth: page.scrollWidth, scrollHeight: page.scrollHeight, aside: box.toJSON() }));
+    }
     return box.right <= innerWidth + 1 && box.left >= -1;
   })()`, "Overview finishes its entrance");
 }
