@@ -119,6 +119,14 @@ async function navigationRead(params: NavigationReadParams): Promise<NavigationR
   }
   if (params.resource === "section") {
     const offset = params.offset ?? 0;
+    const spec = world.pages.get(offset);
+    if (spec === "fail") throw new Error(`live page ${offset} unavailable`);
+    // Capture the response at request entry, before any gate: a world change
+    // while the request is held must not alter what the held read returns.
+    const revision = world.revision;
+    const generation = world.generation;
+    const rows = params.section === "live" ? (spec?.rows ?? []) : [];
+    const remaining = spec?.remaining ?? 0;
     if (holdOffset === offset) {
       holdSeen += 1;
       if (holdSeen >= holdAtRead) {
@@ -126,16 +134,12 @@ async function navigationRead(params: NavigationReadParams): Promise<NavigationR
         await holdGate;
       }
     }
-    const spec = world.pages.get(offset);
-    if (spec === "fail") throw new Error(`live page ${offset} unavailable`);
-    const rows = params.section === "live" ? (spec?.rows ?? []) : [];
-    const remaining = spec?.remaining ?? 0;
     return wireSnapshot(
       params,
       { sessions: rows, remaining, truncated: spec?.truncated ?? remaining > 0 },
-      `"live-${offset}-${world.revision}"`,
-      world.revision,
-      world.generation,
+      `"live-${offset}-${revision}"`,
+      revision,
+      generation,
     );
   }
   return wireSnapshot(
@@ -1007,10 +1011,11 @@ describe("startBackgroundTranscripts", () => {
 
   test("control: dispose cancels a retry pending over an incomplete page", async () => {
     vi.useFakeTimers();
+    let owner: BackgroundTranscriptsOwner | undefined;
     try {
       world.pages = onePage([liveRow("local:a")]);
       fake = connectFake();
-      const owner = startBackgroundTranscripts(navigationStore);
+      owner = startBackgroundTranscripts(navigationStore);
       await owner.settled();
       world.pages = new Map([[0, { rows: [], remaining: 0, truncated: true }]]);
       invalidate(2);
@@ -1024,6 +1029,8 @@ describe("startBackgroundTranscripts", () => {
       await vi.advanceTimersByTimeAsync(8_000);
       expect(sectionReadCount()).toBe(readsBefore);
     } finally {
+      // Even a failed setup or settlement must not leave the owner alive.
+      if (owner) await disposeOwner(owner);
       vi.useRealTimers();
     }
   });
@@ -1056,6 +1063,72 @@ describe("startBackgroundTranscripts", () => {
       expect(threadUnsubRefs()).toContain("local:a");
     } finally {
       await owner.dispose();
+    }
+  });
+
+  test("a complete sweep superseded by a same-sequence page refresh schedules paced recovery", async () => {
+    vi.useFakeTimers();
+    let owner: BackgroundTranscriptsOwner | undefined;
+    try {
+      // rev1 coherent two-page roster: page0 = [a] remaining 1; page1 empty
+      // terminal.
+      world.pages = new Map<number, PageSpec | "fail">([
+        [0, { rows: [liveRow("local:a")], remaining: 1 }],
+        [1, { rows: [], remaining: 0 }],
+      ]);
+      fake = connectFake();
+      // Preload page0 foreground so the initial publication is already folded
+      // into lastInput and cannot schedule an extra sweep.
+      await navigationStore.getState().loadSection("live", 0);
+      expect(livePageHas("local:a")).toBe(true);
+      expect(navigationStore.getState().lastSequence).toBe(0);
+
+      // Hold the first page1 read; the transport captured its revision1 body.
+      holdPageAt(1, 1);
+      owner = startBackgroundTranscripts(navigationStore);
+      await waitForHeldPage();
+
+      // Host advances to revision2 while page1 is held: page0 keeps the same
+      // eligible refs and remaining; page1 gains the new ref b.
+      world.revision = 2;
+      world.pages = new Map<number, PageSpec | "fail">([
+        [0, { rows: [liveRow("local:a")], remaining: 1 }],
+        [1, { rows: [liveRow("local:b")], remaining: 0 }],
+      ]);
+
+      // A second REAL claimant refreshes page0 to revision2 under the SAME
+      // sequence with the same refs and remaining.
+      const claimant = navigationStore.acquireBackgroundLivePages();
+      try {
+        const page0 = await claimant.refresh(0);
+        expect(page0.loadedRevision).toBe(2);
+        expect(
+          [
+            ...eligibleLiveRefs((page0.data as { sessions?: NavigationSessionSummary[] } | null)?.sessions ?? []),
+          ].sort(),
+        ).toEqual(["local:a"]);
+      } finally {
+        claimant.release();
+      }
+      expect(navigationStore.getState().lastSequence).toBe(0);
+
+      // Baseline BEFORE releasing: an immediate OR paced recovery both count.
+      const page1ReadsBeforeRelease = pageReadCount(1);
+      releaseHeldPage();
+      await owner.settled();
+      await vi.advanceTimersByTimeAsync(8_000);
+      await owner.settled();
+
+      // The completed sweep lost current authority with no already-guaranteed
+      // replacement; the owner must still reach useful host authority and
+      // acquire the newly available page1 ref.
+      expect(threadReadRefs().has("local:b")).toBe(true);
+      expect(pageReadCount(1)).toBeGreaterThan(page1ReadsBeforeRelease);
+      expect(threadUnsubRefs()).toEqual([]);
+    } finally {
+      releaseHeldPage();
+      if (owner) await disposeOwner(owner);
+      vi.useRealTimers();
     }
   });
 });

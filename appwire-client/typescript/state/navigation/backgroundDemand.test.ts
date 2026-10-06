@@ -700,28 +700,32 @@ test("background refresh re-reads only its fresh hidden page without visible exp
     calls.filter((params) => params.resource === "section" && params.offset === offset).length;
   const foregroundReadsBefore = sectionReads(0);
 
-  await hidden.load(4, 2);
-  expect(sectionReads(4)).toBe(1);
-  // A plain load is served from the fresh cache.
-  await hidden.load(4, 2);
-  expect(sectionReads(4)).toBe(1);
+  try {
+    await hidden.load(4, 2);
+    expect(sectionReads(4)).toBe(1);
+    // A plain load is served from the fresh cache.
+    await hidden.load(4, 2);
+    expect(sectionReads(4)).toBe(1);
 
-  // refresh reaches the wire for only the requested hidden page.
-  revision = 2;
-  const refreshed = await hidden.refresh(4, 2);
-  expect(refreshed.data).toMatchObject({ sessions: [{ ref: "live-005" }, { ref: "live-006" }] });
-  expect(sectionReads(4)).toBe(2);
-  expect(sectionReads(0)).toBe(foregroundReadsBefore);
-  expect(store.getState().visibleResourceKeys.has(hiddenId)).toBe(false);
-  expect(store.getState().visibleResourceKeys.has(keyID(visibleKey))).toBe(true);
-  // Shared foreground resources remain usable after a hidden refresh.
-  expect(selectLiveRows(store.getState()).map((item) => item.ref)).toEqual(["live-001", "live-002"]);
+    // refresh reaches the wire for only the requested hidden page.
+    revision = 2;
+    const refreshed = await hidden.refresh(4, 2);
+    expect(refreshed.data).toMatchObject({ sessions: [{ ref: "live-005" }, { ref: "live-006" }] });
+    expect(sectionReads(4)).toBe(2);
+    expect(sectionReads(0)).toBe(foregroundReadsBefore);
+    expect(store.getState().visibleResourceKeys.has(hiddenId)).toBe(false);
+    expect(store.getState().visibleResourceKeys.has(keyID(visibleKey))).toBe(true);
+    // Shared foreground resources remain usable after a hidden refresh.
+    expect(selectLiveRows(store.getState()).map((item) => item.ref)).toEqual(["live-001", "live-002"]);
 
-  hidden.release();
-  await expect(hidden.refresh(4, 2)).rejects.toThrow("background navigation lease released");
-  await expect(hidden.load(4, 2)).rejects.toThrow("background navigation lease released");
-  store.reset();
-  client.close();
+    hidden.release();
+    await expect(hidden.refresh(4, 2)).rejects.toThrow("background navigation lease released");
+    await expect(hidden.load(4, 2)).rejects.toThrow("background navigation lease released");
+  } finally {
+    hidden.release();
+    store.reset();
+    client.close();
+  }
 });
 
 test("releasing during an in-flight background refresh fences the retired lease", async () => {
@@ -746,16 +750,25 @@ test("releasing during an in-flight background refresh fences the retired lease"
   revision = 2;
 
   holdRequest = true;
-  const refreshed = hidden.refresh(4, 2);
-  await Promise.resolve();
-  expect(store.getState().resources.get(id)?.loading).toBe(true);
-  hidden.release();
-  requestGate.release();
-  await refreshed;
-  expect(store.getState().resources.has(id)).toBe(false);
-  expect(calls.filter((params) => params.resource === "section" && params.offset === 4).length).toBe(readsBefore + 1);
-  store.reset();
-  client.close();
+  let refreshed: Promise<unknown> | undefined;
+  try {
+    refreshed = hidden.refresh(4, 2);
+    await Promise.resolve();
+    expect(store.getState().resources.get(id)?.loading).toBe(true);
+    hidden.release();
+    requestGate.release();
+    await refreshed;
+    expect(store.getState().resources.has(id)).toBe(false);
+    expect(calls.filter((params) => params.resource === "section" && params.offset === 4).length).toBe(readsBefore + 1);
+  } finally {
+    // Release any hold first so a failed assertion cannot leave the transport
+    // blocked, then restore every owner, the store and the client.
+    requestGate.release();
+    await refreshed?.catch(() => undefined);
+    hidden.release();
+    store.reset();
+    client.close();
+  }
 });
 
 test("releasing during refresh's synchronous force publication does not re-register the lease", async () => {
@@ -782,16 +795,20 @@ test("releasing during refresh's synchronous force publication does not re-regis
     }
   });
   try {
-    await expect(hidden.refresh(4, 2)).rejects.toThrow("background navigation lease released");
+    try {
+      await expect(hidden.refresh(4, 2)).rejects.toThrow("background navigation lease released");
+    } finally {
+      unsubscribe();
+    }
+    expect(released).toBe(true);
+    // The continuation must not start a second read for the retired lease: at
+    // most the single read force itself may have started during its publication.
+    expect(calls.filter((params) => params.resource === "section" && params.offset === 4).length).toBeLessThanOrEqual(
+      readsBefore + 1,
+    );
   } finally {
-    unsubscribe();
+    hidden.release();
+    store.reset();
+    client.close();
   }
-  expect(released).toBe(true);
-  // The continuation must not start a second read for the retired lease: at
-  // most the single read force itself may have started during its publication.
-  expect(calls.filter((params) => params.resource === "section" && params.offset === 4).length).toBeLessThanOrEqual(
-    readsBefore + 1,
-  );
-  store.reset();
-  client.close();
 });

@@ -304,9 +304,15 @@ export function startBackgroundTranscripts(navigation: NavigationStore): Backgro
       // Incomplete or superseded: retain previous owners and their page demand.
       if (pageLease === null) pageLease = lease;
       else lease.release();
-      // Pace a bounded retry for genuinely incomplete discovery. A superseded
-      // complete sweep already has a fresh sweep scheduled by its invalidation.
-      if (!complete) armRetry();
+      // Any sweep that did not end coherent-and-complete still owes discovery a
+      // path to current authority. A superseded complete sweep cannot assume a
+      // replacement is already scheduled: another claimant can refresh a page
+      // to a new revision under the same sequence and refs, revoking the
+      // sweep's authority with no notification. The paced retry reuses the
+      // targeted refresh path; a successful replacement sweep clears it, and a
+      // still-unmet obligation keeps retrying without restoring the hidden
+      // self-publication loop.
+      armRetry();
     }
   }
 
