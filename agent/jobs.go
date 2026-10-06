@@ -1299,11 +1299,11 @@ func (jm *jobManager) readOutput(jobID string, tailBytes int) (content string, t
 		return "", 0, false, errJobNotFound(jobID)
 	}
 	path := jm.outputPathForJob(rec, jobID)
-	validatedTotal, _, err := validatedOutputStatsForRecord(path, rec)
+	validatedTotal, visibleStart, err := validatedOutputStatsForRecord(path, rec)
 	if err != nil {
 		return "", 0, false, err
 	}
-	return tailOutputFile(path, tailBytes, validatedTotal)
+	return tailOutputFile(path, tailBytes, validatedTotal, visibleStart)
 }
 
 // readOutputPage resolves the live owner first and reads one coherent raw page.
@@ -1326,8 +1326,8 @@ func (jm *jobManager) readOutputPage(jobID string, beforeBytes *int64, maxBytes 
 func readJobOutputPageForRecord(path string, rec *jobstore.JobRecord, beforeBytes *int64, maxBytes int) (jobstore.OutputWindowSnapshot, error) {
 	page, err := readLocalJobOutputPageSnapshot(path, beforeBytes, maxBytes)
 	if err == nil || errors.Is(err, jobstore.ErrOutputPruned) || errors.Is(err, jobstore.ErrInvalidOffset) {
-		if rec != nil && rec.Status.IsTerminal() && rec.OutputBytes != page.TotalBytes {
-			return jobstore.OutputWindowSnapshot{}, fmt.Errorf("jobstore: output metadata total %d does not match job record total %d", page.TotalBytes, rec.OutputBytes)
+		if err := checkOutputTotalForRecord(rec, page.TotalBytes); err != nil {
+			return jobstore.OutputWindowSnapshot{}, err
 		}
 	}
 	return page, err
@@ -1383,16 +1383,16 @@ func (jm *jobManager) readOutputHead(jobID string, headBytes int) (content strin
 		return "", 0, false, errJobNotFound(jobID)
 	}
 	path := jm.outputPathForJob(rec, jobID)
-	validatedTotal, _, err := validatedOutputStatsForRecord(path, rec)
+	validatedTotal, visibleStart, err := validatedOutputStatsForRecord(path, rec)
 	if err != nil {
 		return "", 0, false, err
 	}
-	return headOutputFile(path, headBytes, validatedTotal)
+	return headOutputFile(path, headBytes, validatedTotal, visibleStart)
 }
 
-// outputDropped returns the number of bytes permanently evicted off the head of
-// jobID's output by the retention cap (0 when nothing has been pruned), for both
-// the live store and the closed-file fallback.
+// outputDropped returns the number of bytes before the first visible byte of
+// jobID's output, which the retention cap keeps from readers (0 when nothing has
+// been pruned), for both the live store and the closed-file fallback.
 //
 //nolint:unused // retained for tagged job-runtime output recovery fuzz owners.
 func (jm *jobManager) outputDropped(jobID string) (int64, error) {
@@ -1411,8 +1411,8 @@ func (jm *jobManager) outputDropped(jobID string) (int64, error) {
 		return 0, errJobNotFound(jobID)
 	}
 	path := jm.outputPathForJob(rec, jobID)
-	_, retainedStart, err := validatedOutputStatsForRecord(path, rec)
-	return retainedStart, err
+	_, visibleStart, err := validatedOutputStatsForRecord(path, rec)
+	return visibleStart, err
 }
 
 func (jm *jobManager) appendJobOutput(jobID string, output *jobstore.OutputStore, b []byte) (int, error) {
@@ -1451,12 +1451,8 @@ func (jm *jobManager) grepOutput(jobID string, re *regexp.Regexp) ([]jobstore.Ma
 		return nil, errJobNotFound(jobID)
 	}
 	path := jm.outputPathForJob(rec, jobID)
-	_, retainedStart, err := validatedOutputStatsForRecord(path, rec)
-	if err != nil {
-		return nil, err
-	}
 	// Full retained scan (same budget rationale as above).
-	return grepOutputFile(path, re, maxJobOutputRetentionBytes, retainedStart)
+	return grepOutputFile(path, re, maxJobOutputRetentionBytes, rec)
 }
 
 func (jm *jobManager) reconcileLostJobs() error {
@@ -2315,19 +2311,37 @@ func stringOutputResult(b []byte, total int64, truncated bool, err error) (strin
 	return string(b), total, truncated, nil
 }
 
-func validatedOutputStatsForRecord(path string, rec *jobstore.JobRecord) (total int64, retainedStart int64, err error) {
-	total, retainedStart, err = jobstore.OutputFileStats(path)
+func validatedOutputStatsForRecord(path string, rec *jobstore.JobRecord) (total int64, visibleStart int64, err error) {
+	total, visibleStart, err = jobstore.OutputFileStats(path)
 	if err != nil {
 		return 0, 0, err
 	}
-	if rec != nil && rec.Status.IsTerminal() && rec.OutputBytes != total {
-		return 0, 0, fmt.Errorf("jobstore: output metadata total %d does not match job record total %d", total, rec.OutputBytes)
+	if err := checkOutputTotalForRecord(rec, total); err != nil {
+		return 0, 0, err
 	}
-	return total, retainedStart, nil
+	return total, visibleStart, nil
 }
 
-func tailOutputFile(path string, tailBytes int, total int64) (output string, totalBytes int64, truncated bool, err error) {
-	return tailOutputFileWithOpen(path, tailBytes, total, func(path string) (jobOutputReadFile, error) { return os.Open(path) })
+// checkOutputTotalForRecord rejects a finished job's output file whose
+// lifetime total disagrees with the job record.
+func checkOutputTotalForRecord(rec *jobstore.JobRecord, total int64) error {
+	if rec != nil && rec.Status.IsTerminal() && rec.OutputBytes != total {
+		return fmt.Errorf("jobstore: output metadata total %d does not match job record total %d", total, rec.OutputBytes)
+	}
+	return nil
+}
+
+// tailOutputFile reads the end of a closed job's output. visibleStart is the
+// first lifetime offset readers may see (OutputFileStats); bytes the file still
+// holds before it are older than the retention cap and stay hidden.
+func tailOutputFile(path string, tailBytes int, total, visibleStart int64) (output string, totalBytes int64, truncated bool, err error) {
+	return tailOutputFileWithOpen(path, tailBytes, total, visibleStart, func(path string) (jobOutputReadFile, error) { return os.Open(path) })
+}
+
+// hiddenOutputBytes is how many of a closed output file's first bytes sit
+// before visibleStart: the file starts at lifetime offset total-size.
+func hiddenOutputBytes(total, size, visibleStart int64) int64 {
+	return min(max(visibleStart-(total-size), 0), size)
 }
 
 type jobOutputReadFile interface {
@@ -2337,7 +2351,7 @@ type jobOutputReadFile interface {
 	Close() error
 }
 
-func tailOutputFileWithOpen(path string, tailBytes int, total int64, open func(string) (jobOutputReadFile, error)) (output string, totalBytes int64, truncated bool, err error) {
+func tailOutputFileWithOpen(path string, tailBytes int, total, visibleStart int64, open func(string) (jobOutputReadFile, error)) (output string, totalBytes int64, truncated bool, err error) {
 	if tailBytes < 0 {
 		return "", 0, false, fmt.Errorf("%w: maxBytes=%d", jobstore.ErrInvalidLimit, tailBytes)
 	}
@@ -2358,12 +2372,13 @@ func tailOutputFileWithOpen(path string, tailBytes int, total int64, open func(s
 	}
 	retained := info.Size()
 	totalBytes = total
-	start := int64(0)
-	if retained > int64(tailBytes) {
+	hidden := hiddenOutputBytes(total, retained, visibleStart)
+	start := hidden
+	if retained-hidden > int64(tailBytes) {
 		start = retained - int64(tailBytes)
 		truncated = true
 	}
-	if totalBytes > retained {
+	if totalBytes > retained-hidden {
 		truncated = true
 	}
 	if _, err := f.Seek(start, 0); err != nil {
@@ -2375,23 +2390,25 @@ func tailOutputFileWithOpen(path string, tailBytes int, total int64, open func(s
 			return "", totalBytes, truncated, fmt.Errorf("jobstore: read output: %w", err)
 		}
 	}
-	if start > 0 {
+	if start > hidden {
 		// The window was cut at a raw byte offset, so it can open mid-rune. Drop the
 		// dangling continuation bytes rather than reading further back: the window
 		// SHRINKS, which keeps retainedStart (total - len(output), computed by
 		// jobOutputTailFrom) naming the first byte actually returned. Only our own cut
-		// is realigned — at start 0 the first byte is the file's own, and binary output
-		// keeps it.
+		// is realigned — at the visible start the first byte is the output's own, and
+		// binary output keeps it.
 		buf = runetrim.TrimLeadingPartial(buf)
 	}
 	return string(buf), totalBytes, truncated, nil
 }
 
-func headOutputFile(path string, headBytes int, total int64) (output string, totalBytes int64, truncated bool, err error) {
-	return headOutputFileWithOpen(path, headBytes, total, func(path string) (jobOutputReadFile, error) { return os.Open(path) })
+// headOutputFile reads the start of a closed job's visible output; see
+// tailOutputFile for visibleStart.
+func headOutputFile(path string, headBytes int, total, visibleStart int64) (output string, totalBytes int64, truncated bool, err error) {
+	return headOutputFileWithOpen(path, headBytes, total, visibleStart, func(path string) (jobOutputReadFile, error) { return os.Open(path) })
 }
 
-func headOutputFileWithOpen(path string, headBytes int, total int64, open func(string) (jobOutputReadFile, error)) (output string, totalBytes int64, truncated bool, err error) {
+func headOutputFileWithOpen(path string, headBytes int, total, visibleStart int64, open func(string) (jobOutputReadFile, error)) (output string, totalBytes int64, truncated bool, err error) {
 	if headBytes < 0 {
 		return "", 0, false, fmt.Errorf("%w: maxBytes=%d", jobstore.ErrInvalidLimit, headBytes)
 	}
@@ -2412,13 +2429,17 @@ func headOutputFileWithOpen(path string, headBytes int, total int64, open func(s
 	}
 	retained := info.Size()
 	totalBytes = total
-	n := retained
+	hidden := hiddenOutputBytes(total, retained, visibleStart)
+	n := retained - hidden
 	if n > int64(headBytes) {
 		n = int64(headBytes)
 		truncated = true
 	}
-	if totalBytes > retained {
+	if totalBytes > retained-hidden {
 		truncated = true
+	}
+	if _, err := f.Seek(hidden, io.SeekStart); err != nil {
+		return "", totalBytes, truncated, err
 	}
 	buf := make([]byte, n)
 	if len(buf) > 0 {
@@ -2426,7 +2447,7 @@ func headOutputFileWithOpen(path string, headBytes int, total int64, open func(s
 			return "", totalBytes, truncated, fmt.Errorf("jobstore: read output: %w", err)
 		}
 	}
-	if n < retained {
+	if hidden+n < retained {
 		// The window was cut at a raw byte offset, so it can end mid-rune. Drop the
 		// dangling partial rune: like the tail's start, the window only ever SHRINKS.
 		// Only our own cut is realigned — when the window reaches the end of the file
@@ -2436,8 +2457,12 @@ func headOutputFileWithOpen(path string, headBytes int, total int64, open func(s
 	return string(buf), totalBytes, truncated, nil
 }
 
-func grepOutputFile(path string, re *regexp.Regexp, limitBytes int, retainedStart int64) (matches []jobstore.Match, err error) {
-	return jobstore.GrepFileLimitAt(path, re, limitBytes, maxJobGrepMatches, maxJobGrepLineBytes, retainedStart)
+// grepOutputFile greps a closed job's visible output, refusing it before any
+// scanning when its metadata total disagrees with rec.
+func grepOutputFile(path string, re *regexp.Regexp, limitBytes int, rec *jobstore.JobRecord) ([]jobstore.Match, error) {
+	return jobstore.GrepOutputFileLimit(path, re, limitBytes, maxJobGrepMatches, maxJobGrepLineBytes, func(total int64) error {
+		return checkOutputTotalForRecord(rec, total)
+	})
 }
 
 func cloneJobRecord(rec *jobstore.JobRecord) *jobstore.JobRecord {

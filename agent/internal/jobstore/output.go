@@ -645,11 +645,8 @@ func GrepFileLimitAt(path string, re *regexp.Regexp, limitBytes int, maxMatches 
 }
 
 func grepFileLimitAtOpen(path string, re *regexp.Regexp, limitBytes int, maxMatches int, maxLineBytes int, retainedStart int64, open func(string) (io.ReadCloser, error)) (matches []Match, err error) {
-	if limitBytes < 0 {
-		return nil, fmt.Errorf("%w: limitBytes=%d", ErrInvalidLimit, limitBytes)
-	}
-	if limitBytes == 0 {
-		return nil, nil
+	if scan, err := grepLimitScans(limitBytes); !scan {
+		return nil, err
 	}
 
 	f, err := open(path)
@@ -669,18 +666,89 @@ func grepFileLimitAtOpen(path string, re *regexp.Regexp, limitBytes int, maxMatc
 	return matches, nil
 }
 
-// OutputFileStats returns durable lifetime output metadata for a closed output
-// file. If no metadata exists, the file is treated as unpruned.
-func OutputFileStats(path string) (total int64, retainedStart int64, err error) {
-	info, err := os.Stat(path)
-	if err != nil {
-		return 0, 0, fmt.Errorf("jobstore: stat output: %w", err)
+// grepLimitScans reports whether a grep with limitBytes scans anything: an
+// empty budget scans nothing, and a negative one is an error.
+func grepLimitScans(limitBytes int) (bool, error) {
+	if limitBytes < 0 {
+		return false, fmt.Errorf("%w: limitBytes=%d", ErrInvalidLimit, limitBytes)
 	}
-	total, retainedStart, _, err = readOutputMetaForFile(afero.NewOsFs(), outputMetaPath(path), path, info.Size())
+	return limitBytes > 0, nil
+}
+
+// OutputFileStats returns durable lifetime output metadata for a closed output
+// file: the total bytes ever written and the first lifetime offset readers may
+// see. If no metadata exists, the file is treated as unpruned.
+func OutputFileStats(path string) (total int64, visibleStart int64, err error) {
+	view, err := readOutputFileView(path)
 	if err != nil {
 		return 0, 0, err
 	}
-	return total, retainedStart, nil
+	return view.total, view.visibleStart, nil
+}
+
+func readOutputFileView(path string) (outputView, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return outputView{}, fmt.Errorf("jobstore: stat output: %w", err)
+	}
+	return readOutputViewForFile(afero.NewOsFs(), outputMetaPath(path), path, info.Size())
+}
+
+// GrepOutputFileLimit greps a closed output file's visible bytes, reporting
+// lifetime offsets, with the same bounded line handling as
+// OutputStore.GrepLimitLineBytes. checkTotal sees the file's lifetime total
+// before any scanning and can refuse it. A file that changes between reading
+// its metadata and scanning it returns ErrOutputChangedDuringRead.
+func GrepOutputFileLimit(path string, re *regexp.Regexp, limitBytes int, maxMatches int, maxLineBytes int, checkTotal func(total int64) error) ([]Match, error) {
+	// Check the budget before opening: grepFileLimitAtOpen closes f only
+	// once it scans.
+	if scan, err := grepLimitScans(limitBytes); !scan {
+		return nil, err
+	}
+	// Open first so the view and the scan describe one file: a compaction
+	// renames a new generation over the path, possibly of the same size.
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("jobstore: open output: %w", err)
+	}
+	view, err := readOpenOutputFileView(f, path, checkTotal)
+	if err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	return grepFileLimitAtOpen(path, re, limitBytes, maxMatches, maxLineBytes, view.visibleStart, func(string) (io.ReadCloser, error) {
+		return f, nil
+	})
+}
+
+// readOpenOutputFileView reads the view of the open output file f, lets
+// checkTotal refuse it, and seeks f to its visible start. It returns
+// ErrOutputChangedDuringRead when path no longer names f, or f's size no
+// longer matches the view.
+func readOpenOutputFileView(f *os.File, path string, checkTotal func(total int64) error) (outputView, error) {
+	opened, err := f.Stat()
+	if err != nil {
+		return outputView{}, fmt.Errorf("jobstore: stat output: %w", err)
+	}
+	view, err := readOutputViewForFile(afero.NewOsFs(), outputMetaPath(path), path, opened.Size())
+	if err != nil {
+		return outputView{}, err
+	}
+	if err := checkTotal(view.total); err != nil {
+		return outputView{}, err
+	}
+	info, err := f.Stat()
+	if err != nil {
+		return outputView{}, fmt.Errorf("jobstore: stat output: %w", err)
+	}
+	current, err := os.Stat(path)
+	if err != nil || !os.SameFile(info, current) || info.Size() != view.total-view.fileStart {
+		return outputView{}, ErrOutputChangedDuringRead
+	}
+	if _, err := f.Seek(view.visibleOffset(), io.SeekStart); err != nil {
+		return outputView{}, fmt.Errorf("jobstore: seek output: %w", err)
+	}
+	return view, nil
 }
 
 // RemoveOutputArtifacts removes an output file and the metadata files that
@@ -932,18 +1000,9 @@ func outputPendingMetaPath(metaPath string) string {
 	return metaPath + ".pending"
 }
 
-// readOutputMetaForFile conservatively treats legacy retained metadata that
-// lacks RetainedStartPartial as a partial prefix whenever it has pruned bytes.
-func readOutputMetaForFile(fs afero.Fs, path string, outputPath string, retained int64) (total int64, retainedStart int64, retainedStartPartial bool, err error) {
-	meta, err := readOutputMetaRecordForFile(fs, path, outputPath, retained)
-	if err != nil {
-		return 0, 0, false, err
-	}
-	return meta.TotalBytes, meta.RetainedStart, outputMetaRetainedStartPartial(meta), nil
-}
-
-// readOutputViewForFile is readOutputMetaForFile for readers: it also says
-// where the visible output begins.
+// readOutputViewForFile reads a closed output file's validated metadata as
+// readers see it: the lifetime total, where the file starts, and where the
+// visible output begins.
 func readOutputViewForFile(fs afero.Fs, path string, outputPath string, retained int64) (outputView, error) {
 	meta, err := readOutputMetaRecordForFile(fs, path, outputPath, retained)
 	if err != nil {
