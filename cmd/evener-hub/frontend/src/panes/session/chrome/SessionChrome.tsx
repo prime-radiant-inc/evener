@@ -14,7 +14,8 @@
 // followed by Rename, the tree-gated Pin/Archive/Delete organization group,
 // and Shut down. The composer placement alone can also lead with the
 // narrow-layout turn verbs (Stop/Steer - SessionMenuProps.turnVerbs). The
-// Overview count comes from useSessionActivity's summary. The hidden
+// Overview count adds the subagents running at every depth
+// (useSubagentCounts) to the session summary's running jobs. The hidden
 // ActivityPanel retains discovery and refresh wiring. Overview opens the
 // shared sidebar at every viewport.
 // Slash-command actions (goal/aside/compact/clear) are deliberately NOT in

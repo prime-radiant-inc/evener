@@ -14,6 +14,7 @@ test("Overview labels retain unknown activity instead of inventing a zero count"
   const subagents = { known: true, total: 4, active: 3, failed: 0, completed: 1 };
   expect(activityActionLabel(undefined, subagents, "Overview")).toBe("Overview");
   expect(activityActionLabel(activitySummary(), null, "Overview")).toBe("Overview");
+  expect(activityActionLabel(activitySummary(), { ...subagents, known: false }, "Overview")).toBe("Overview");
 });
 
 // Subagents count at every depth (the subtree count, useSubagentCounts); jobs

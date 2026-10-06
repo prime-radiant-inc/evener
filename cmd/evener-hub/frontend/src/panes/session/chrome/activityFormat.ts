@@ -29,7 +29,9 @@ export function activityActionLabel(
   subagents: SessionActivitySummary["delegates"] | null,
   label: "Activity" | "Overview" = "Activity",
 ): string {
-  return subagents && summary?.jobs.known ? `${label} · ${subagents.active + summary.jobs.active} active` : label;
+  return subagents?.known && summary?.jobs.known
+    ? `${label} · ${subagents.active + summary.jobs.active} active`
+    : label;
 }
 
 // formatUsagePair renders a delegate row's token cluster ("↑41.2K ↓6.1K"), or null
