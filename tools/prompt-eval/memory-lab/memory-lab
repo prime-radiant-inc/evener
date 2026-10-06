@@ -219,7 +219,13 @@ def session_failure(session, rounds_capped):
 
 
 def grade_checks(spec, inputs):
-    rc, _ = run_bounded(spec["run"], inputs["work"], inputs["env"], COMMAND_TIMEOUT)
+    try:
+        rc, _ = run_bounded(spec["run"], inputs["work"], inputs["env"], COMMAND_TIMEOUT)
+    finally:
+        # A held-out check deletes its own test file, unless it was killed first;
+        # a leftover would join every later check's and stage's build.
+        for leftover in glob.glob(os.path.join(glob.escape(inputs["work"]), "zz_heldout*_test.go")):
+            os.remove(leftover)
     if rc == "timeout":
         raise TimeoutError(f"check timed out after {COMMAND_TIMEOUT}s")
     return rc == 0
