@@ -321,3 +321,19 @@ func TestGrepOutputFileRefusesAFileThatChangedAfterItsView(t *testing.T) {
 		t.Fatalf("grep over a file that changed after its view: err = %v, want ErrOutputChangedDuringRead", err)
 	}
 }
+
+func TestGrepOutputFileRefusesASameSizeReplacementAfterItsView(t *testing.T) {
+	path, _ := writeHiddenPrefixOutput(t)
+	// A compaction can replace the file with another generation of the same
+	// size, which a size check alone cannot tell apart.
+	_, err := GrepOutputFileLimit(path, regexp.MustCompile("new"), 1024, 0, 1024, func(int64) error {
+		next := path + ".next"
+		if err := os.WriteFile(next, []byte("new-x\nnew-y\nnew-z\nnew-w\n"), 0o644); err != nil {
+			return err
+		}
+		return os.Rename(next, path)
+	})
+	if !errors.Is(err, ErrOutputChangedDuringRead) {
+		t.Fatalf("grep over a same-size replacement: err = %v, want ErrOutputChangedDuringRead", err)
+	}
+}

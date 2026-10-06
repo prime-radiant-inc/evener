@@ -682,34 +682,50 @@ func readOutputFileView(path string) (outputView, error) {
 // before any scanning and can refuse it. A file that changes between reading
 // its metadata and scanning it returns ErrOutputChangedDuringRead.
 func GrepOutputFileLimit(path string, re *regexp.Regexp, limitBytes int, maxMatches int, maxLineBytes int, checkTotal func(total int64) error) ([]Match, error) {
-	view, err := readOutputFileView(path)
+	// Open first so the view and the scan describe one file: a compaction
+	// renames a new generation over the path, possibly of the same size.
+	f, err := os.Open(path)
 	if err != nil {
+		return nil, fmt.Errorf("jobstore: open output: %w", err)
+	}
+	view, err := readOpenOutputFileView(f, path, checkTotal)
+	if err != nil {
+		_ = f.Close()
 		return nil, err
 	}
-	if err := checkTotal(view.total); err != nil {
-		return nil, err
-	}
-	return grepFileLimitAtOpen(path, re, limitBytes, maxMatches, maxLineBytes, view.visibleStart, func(path string) (io.ReadCloser, error) {
-		f, err := os.Open(path)
-		if err != nil {
-			return nil, err
-		}
-		// The view came from an earlier stat and metadata read. A file that is
-		// no longer that size (a compaction replaced it) would put the seek
-		// and the lifetime offsets in the wrong place, so refuse it.
-		info, err := f.Stat()
-		if err == nil && info.Size() != view.total-view.fileStart {
-			err = ErrOutputChangedDuringRead
-		}
-		if err == nil {
-			_, err = f.Seek(view.visibleOffset(), io.SeekStart)
-		}
-		if err != nil {
-			_ = f.Close()
-			return nil, err
-		}
+	return grepFileLimitAtOpen(path, re, limitBytes, maxMatches, maxLineBytes, view.visibleStart, func(string) (io.ReadCloser, error) {
 		return f, nil
 	})
+}
+
+// readOpenOutputFileView reads the view of the open output file f, lets
+// checkTotal refuse it, and seeks f to its visible start. It returns
+// ErrOutputChangedDuringRead when path no longer names f, or f's size no
+// longer matches the view.
+func readOpenOutputFileView(f *os.File, path string, checkTotal func(total int64) error) (outputView, error) {
+	opened, err := f.Stat()
+	if err != nil {
+		return outputView{}, fmt.Errorf("jobstore: stat output: %w", err)
+	}
+	view, err := readOutputViewForFile(afero.NewOsFs(), outputMetaPath(path), path, opened.Size())
+	if err != nil {
+		return outputView{}, err
+	}
+	if err := checkTotal(view.total); err != nil {
+		return outputView{}, err
+	}
+	info, err := f.Stat()
+	if err != nil {
+		return outputView{}, fmt.Errorf("jobstore: stat output: %w", err)
+	}
+	current, err := os.Stat(path)
+	if err != nil || !os.SameFile(info, current) || info.Size() != view.total-view.fileStart {
+		return outputView{}, ErrOutputChangedDuringRead
+	}
+	if _, err := f.Seek(view.visibleOffset(), io.SeekStart); err != nil {
+		return outputView{}, fmt.Errorf("jobstore: seek output: %w", err)
+	}
+	return view, nil
 }
 
 // RemoveOutputArtifacts removes an output file and the metadata files that
