@@ -89,14 +89,17 @@ const sourceAnchorRowExpr = `(() => {
 const sourceAnchorExpr = `((${sourceAnchorRowExpr})?.id ?? null)`;
 
 // settledSample waits until sampleExpr returns the same non-null value on two
-// consecutive polls of one settle. key scopes the samples, so a sample left by
+// consecutive polls of one settle; a null poll between them breaks the run. key scopes the samples, so a sample left by
 // an earlier settle never confirms a later one.
 let settles = 0;
 function settledSample(sampleExpr, label) {
   const key = `${++settles}:${label}`;
   return wait(`(() => {
     const sample = ${sampleExpr};
-    if (sample === null || sample === undefined) return null;
+    if (sample === null || sample === undefined) {
+      window.__cascadeSettleSample = null;
+      return null;
+    }
     const stamp = JSON.stringify({ key:${q(key)}, sample });
     const previous = window.__cascadeSettleSample;
     window.__cascadeSettleSample = stamp;
