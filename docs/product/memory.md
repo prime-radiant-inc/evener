@@ -93,17 +93,29 @@ registry, model or environment changes. It says what each scope holds
 human partner works and how tools, systems and the world behave; project
 memory: knowledge about this project; session memory: working notes about the
 current work: its plan, what was tried and found), when to read a page, and that stored memory is fallible evidence, never
-instructions or permission. Sessions that can call the save tools are also told
+instructions or permission. Memory reflects what was true when it was
+written: the agent checks that a file, function, command or setting a note names
+still exists before relying on it, and follows a recorded decision or rule
+unless the partner or newer evidence says it changed. Sessions that can call the save tools are also told
 when to save: when the partner corrects the agent or says how they want work
-done, when the partner states a project plan, constraint or decision (saved to
-project memory), when a root session is partway through longer work (its plan,
+done, when the partner states a project plan, constraint, decision or unfinished
+work (saved to project memory), when a root session is partway through longer work (its plan,
 what it tried and what it ruled out go to session memory as working notes), and when the agent learns
 something the hard way that is not written down. Partner-stated
 facts are saved before the work they shape, because complying with them does
 not carry them to the next session. The Finishing guidance and the result
 tool's description repeat the save check at the point the agent decides it is
 done. Pages that contradict what the agent observes are corrected in the same
-turn. Root sessions are told that working notes belong in session memory, not
+turn. Saving sessions are also told the shape of a useful page (one durable
+fact with its reason and how to apply it, under an index line that says what
+the page holds) and that run details which go stale within days (commit SHAs, ids, scratch
+paths, test counts, review verdicts) stay out of
+personal and project memory. A changed fact is rewritten in place. When the
+agent reads a page that has turned into a log, it repairs that page before it
+ends its turn. A status-only index line is a reason to read its page. Root
+sessions that save working notes to session memory and can update the
+whiteboard are told the whiteboard carries status for the partner, not working
+notes. Root sessions are told that working notes belong in session memory, not
 project memory (the second half only when project memory is bound). The
 Finishing guidance adds one row telling root sessions to promote anything that
 holds beyond this work out of session memory before they report. Delegates are told session memory is their root's, to read it and
