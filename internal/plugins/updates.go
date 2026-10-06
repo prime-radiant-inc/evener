@@ -13,14 +13,19 @@ import (
 
 // Each remote is asked with its own timeout, a few at a time, so one
 // unreachable host costs a check about updateCheckTimeout rather than git's
-// own, much longer, network timeouts. The web client's
-// PLUGIN_UPDATE_CHECK_TIMEOUT_MS (appwire-client/typescript/state/extensions/
-// plugins.ts) must exceed one updateCheckTimeout per batch of
-// updateCheckConcurrency plugins, so change it with these.
+// own, much longer, network timeouts.
 const (
 	updateCheckTimeout     = 20 * time.Second
 	updateCheckConcurrency = 4
 )
+
+// updateCheckDeadline bounds a whole check, however many remotes hang. It
+// stays under the clients' PLUGIN_UPDATE_CHECK_TIMEOUT_MS (120s, in
+// appwire-client/typescript/state/extensions/plugins.ts) with room for git's
+// WaitDelay after the cut-off and the listing that follows, so a client gets
+// the answer instead of giving up on a check the hub is still running. A
+// variable so tests can shorten it.
+var updateCheckDeadline = 100 * time.Second
 
 // checkedHead is one plugin's CheckUpdates answer: the commit an Upgrade would
 // install, and the commit installed when the check read the registry. The
@@ -37,8 +42,9 @@ type checkedHead struct {
 // The source asked is the one the marketplace's local catalog names, the one
 // Upgrade fetches. A source pinned to a sha is answered without a network
 // call, and a relative or directory source is never asked: it has no remote.
-// A remote or catalog that cannot be read is warned about and flags nothing.
-// A cancelled check returns ctx's error and keeps the previous answers. Of
+// A remote or catalog that cannot be read, or a remote still unanswered at
+// updateCheckDeadline, is warned about and flags nothing. A cancelled check
+// returns ctx's error and keeps the previous answers. Of
 // overlapping checks only the newest publishes, and a marketplace write
 // retires every answer (forgetChecks).
 func (m *Manager) CheckUpdates(ctx context.Context) error {
@@ -59,6 +65,8 @@ func (m *Manager) CheckUpdates(ctx context.Context) error {
 	catalogs := map[string]Catalog{}
 	var mu sync.Mutex
 	heads := map[string]checkedHead{}
+	remoteCtx, cancel := context.WithTimeout(ctx, updateCheckDeadline)
+	defer cancel()
 	var g errgroup.Group
 	g.SetLimit(updateCheckConcurrency)
 	for key, entries := range reg.Plugins {
@@ -78,7 +86,7 @@ func (m *Manager) CheckUpdates(ctx context.Context) error {
 			continue
 		}
 		g.Go(func() error {
-			head, err := remoteHead(ctx, src)
+			head, err := remoteHead(remoteCtx, src)
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
