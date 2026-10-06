@@ -342,15 +342,15 @@ def transcript_tool_calls(path):
 def root_session_id(events, state):
     """The root session a stage ran: the session_id on the first SESSION_START in its own
     event stream (delegates start later), else the newest non-subagent meta in its state dir."""
-    try:
-        with open(events, errors="replace") as f:
-            for line in f:
-                if line.startswith("{") and '"SESSION_START"' in line:
-                    ev = json.loads(line)
-                    if ev.get("kind") == "SESSION_START" and ev.get("session_id"):
-                        return ev["session_id"]
-    except (OSError, ValueError):
-        pass
+    for line in read_file(events).splitlines():
+        if not (line.startswith("{") and '"SESSION_START"' in line):
+            continue
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        if ev.get("kind") == "SESSION_START" and ev.get("session_id"):
+            return ev["session_id"]
     roots = []
     for path in find_files(os.path.join(state, "sessions"), ".meta.json"):
         meta = read_meta(path)
@@ -471,8 +471,8 @@ def load_scenario(scen):
     for i, st in enumerate(spec["stages"]):
         if st.get("resume") and st["resume"] not in [earlier["name"] for earlier in spec["stages"][:i]]:
             sys.exit(f"memory-lab: {scen} stage {st['name']}: \"resume\" must name an earlier stage")
-        if st.get("fixture") and not st.get("workspace"):
-            sys.exit(f"memory-lab: {scen} stage {st['name']}: \"fixture\" needs a \"workspace\" "
+        if st.get("fixture") and st.get("workspace", "work") == "work":
+            sys.exit(f"memory-lab: {scen} stage {st['name']}: \"fixture\" needs a \"workspace\" other than work "
                      "(otherwise the stage silently reuses the base work dir)")
     return spec
 
@@ -489,6 +489,8 @@ def cmd_run(args):
         if not (os.path.isfile(binpath) and os.access(binpath, os.X_OK)):
             sys.exit(f"memory-lab: --version {v!r}: {binpath} is not an executable file")
         versions[label] = binpath
+    if os.path.exists(args.out) and not os.path.isdir(args.out):
+        sys.exit(f"memory-lab: --out {args.out} exists and is not a directory; use a fresh directory")
     if os.path.exists(args.out) and os.listdir(args.out):
         sys.exit(f"memory-lab: {args.out} already holds results; use a fresh --out")
     jobs = []
@@ -596,6 +598,16 @@ def cmd_ask(args):
     print(messages[-1] if messages else "(no reply)")
 
 
+def positive_int(value):
+    try:
+        n = int(value)
+    except ValueError:
+        n = 0
+    if n < 1:
+        raise argparse.ArgumentTypeError(f"{value!r} is not a positive integer")
+    return n
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -603,12 +615,12 @@ def main():
     r.add_argument("--version", action="append", required=True, help="LABEL=path/to/evener (repeatable)")
     r.add_argument("--model", required=True)
     r.add_argument("--scenarios", required=True, help="comma-separated scenario dirs")
-    r.add_argument("--reps", type=int, default=2)
+    r.add_argument("--reps", type=positive_int, default=2)
     r.add_argument("--out", required=True)
     r.add_argument("--max-rounds", type=int, default=40)
     r.add_argument("--effort", default="high")
     r.add_argument("--timeout", type=int, default=1200, help="seconds per stage")
-    r.add_argument("--jobs", type=int, default=4)
+    r.add_argument("--jobs", type=positive_int, default=4)
     rp = sub.add_parser("report")
     rp.add_argument("out")
     s = sub.add_parser("show")

@@ -21,6 +21,7 @@ The script is Python 3.11 or later, using the standard library only. From the re
 
 ```bash
 cd tools/prompt-eval/memory-lab
+mkdir -p bin
 go build -o bin/projid ./projid          # computes a checkout's project memory id, for seeded scenarios
 go build -o bin/evener-base ../../../cmd/evener    # build each version you want to compare
 ```
@@ -90,7 +91,7 @@ Every scenario is a directory holding `scenario.json` and `fixture/` (a small Go
 The header of `memory-lab` documents every field. In short:
 - each stage has a prompt
 - a scenario can set `fixture_from` to start from a sibling scenario's `fixture/`
-- stages can carry `before`, `seed_project_memory`, `fixture` with `workspace` (another project; `run` refuses a `fixture` without a `workspace`) and `resume` (continue an earlier stage's session)
+- stages can carry `before`, `seed_project_memory`, `fixture` with `workspace` (another project; `run` refuses a `fixture` without a `workspace` other than `work`) and `resume` (continue an earlier stage's session)
 - checks come in these types:
   - `checks`: shell commands
   - `trace`: tool-call regexes
