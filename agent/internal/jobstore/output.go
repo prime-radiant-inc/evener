@@ -277,6 +277,10 @@ func (o *OutputStore) refreshVisibleLocked() error {
 	if err != nil && !errors.Is(err, io.EOF) {
 		return fmt.Errorf("jobstore: read output visible boundary: %w", err)
 	}
+	if n == 0 {
+		// The file is shorter than total says it should be.
+		return errors.New("jobstore: output visible boundary is past the end of the file")
+	}
 	previous, rest := edge[0], edge[1:n]
 	if dropped := len(rest) - len(runetrim.TrimLeadingPartial(rest)); dropped > 0 {
 		start += int64(dropped)
@@ -541,7 +545,7 @@ func (o *OutputStore) readEdge(maxBytes int, fromHead bool) (buf []byte, total i
 	}
 	retained := info.Size()
 	total = o.total
-	visibleAt := min(o.visibleOffsetLocked(), retained)
+	visibleAt := min(max(o.visibleOffsetLocked(), 0), retained)
 	start, n := outputSnapshotWindow(retained, visibleAt, maxBytes, fromHead)
 	truncated = o.visibleStart > 0 || n < retained-visibleAt
 	f, err := o.fs.Open(o.path)
