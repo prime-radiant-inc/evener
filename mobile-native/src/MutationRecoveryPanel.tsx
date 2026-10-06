@@ -25,7 +25,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { View } from "react-native";
 import { getNativeMutationRuntime, nativeMutationTargetKey } from "./nativeMutationRuntime";
 import { type NativeMutationRecoveryRuntime, useNativeMutationRecovery } from "./useNativeMutationRecovery";
-import { Action, ErrorMessage } from "./ui";
+import { ErrorMessage } from "./ui";
+import { Button } from "./sheet/Grouped";
 
 export type NativeMutationRecoveryStatus = MutationRecoveryKind;
 export type NativeMutationRecoveryAction = "restore" | "discard";
@@ -287,9 +288,7 @@ export function RecoveryFailure({ error, onRetry }: { error: unknown; onRetry: (
 	return (
 		<View style={{ alignItems: "flex-start" }}>
 			<ErrorMessage message={recoveryFailureMessage(error)} />
-			<Action tone="quiet" onPress={onRetry}>
-				Retry
-			</Action>
+			<Button text quiet label="Retry" onPress={onRetry} />
 		</View>
 	);
 }
