@@ -71,6 +71,7 @@ it("renders the Completed line for done rows only, never a stamped cancellation"
 
 	// Both rows are terminal, so both sit behind the settled group's toggle.
 	const settledToggle = pressable(tree, "Done · settled · 2");
+	expect(settledToggle).toBeDefined();
 	await act(async () => {
 		settledToggle?.props.onPress();
 	});
