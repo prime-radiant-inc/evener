@@ -26,7 +26,7 @@ export function openSessionByRef(ref: string): void {
   if (url) navigate(url);
 }
 
-// A cascade retains its original route role: opening the session a cascade
+// A legacy cascade retains its original route role: opening the session a cascade
 // zooms on must preserve the cascade and its neighboring panes, not replace
 // the workspace with a plain pane of the same session. replacePrimary cannot
 // express that - its match is deliberately type-strict (a sessionZoom is not
@@ -40,8 +40,8 @@ export function openSessionByRef(ref: string): void {
 function cascadeMainCoversRef(ref: string): boolean {
   const main = workspaceStore.getState().mainPane();
   if (main?.type !== "sessionZoom") return false;
-  const source = parseZoomParams(main.params)?.source;
-  return source?.type === "session" && source.params.ref === ref;
+  const params = parseZoomParams(main.params);
+  return !params?.inspection && params?.source.type === "session" && params.source.params.ref === ref;
 }
 
 // Reusable session-placement helpers shared by AppShell and contextual callers.

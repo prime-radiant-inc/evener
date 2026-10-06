@@ -58,6 +58,30 @@ its group, preserving the mounted transcript and its native scroll position.
 Selecting a different tab still activates that panel. Transcript scroll and
 history recovery remain owned by the existing reader and virtual viewport.
 
+DockHost retains saved tab labels while an inactive pane's session name is
+unavailable. Loaded navigation or live thread metadata updates the label when
+it recovers. Changing the pane's type or session ref retires the old title hint.
+Hydrated panes can publish their own tab titles without extra resource reads.
+The cascade tab keeps its registered selected-leaf title; its whole-view heading
+does not replace that label on remount.
+
+## Transcript reading position
+
+Browser transcript readers retain the visible entry and approximate progress
+through its usable reading depth across viewport width and height changes,
+including later composer-height settlement after a pane widens. The existing
+[transcript registration](../../cmd/evener-hub/frontend/src/panes/session/transcript/flow/useTranscriptScroll.ts)
+owns that intent; VirtualList owns measurement and committed geometry.
+Restoration waits for useful committed content and scroll read-back. Newer
+viewport scrolling or an explicit positioning command supersedes older work
+through the pane-lifetime [read view](../../cmd/evener-hub/frontend/src/panes/session/transcript/transcriptReadView.ts).
+Reflow preserves editor and neighboring-pane focus. Row-only height changes,
+end following, keyed older-page prepend and history recovery keep their existing
+owners.
+An explicit display change restores focus to the same entry or its visible proxy,
+even when the viewport also changes. If that entry disappears, focus moves to the
+Transcript region.
+
 ## Session Overview
 
 Both session action menus offer **Overview** for inspection. It opens the shared

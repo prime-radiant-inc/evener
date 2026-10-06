@@ -1,11 +1,13 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import type { Virtualizer } from "@tanstack/react-virtual";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { createRef, useState } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { installTranscriptGeometry } from "../../panes/session/transcript/transcriptReadingGeometryTestUtils";
 import { requireClass } from "../internal/requireClass";
-import { VirtualList, type VirtualListHandle } from "./index";
+import { type CommittedVirtualListLayout, VirtualList, type VirtualListHandle } from "./index";
 import rawStyles from "./virtuallist.module.css";
 
 // jsdom performs no real layout: every element's offsetHeight/offsetWidth
@@ -422,6 +424,561 @@ describe("anchorToEnd", () => {
     const resolved = captureResolvedOptions();
     expect(resolved.options.anchorTo).toBe("start");
     expect(resolved.options.followOnAppend).toBe(false);
+  });
+
+  type ReaderLayout = CommittedVirtualListLayout;
+
+  function renderMeasuredList(
+    anchorToEnd: boolean,
+    clampScrollWrites = false,
+    reader?: { onLayout(layout: ReaderLayout): void; count?: number; estimate?: number },
+  ) {
+    const ref = createRef<VirtualListHandle>();
+    let virtualizer: Virtualizer<HTMLDivElement, HTMLDivElement> | undefined;
+    const current = () => {
+      if (!virtualizer) throw new Error("the actual virtualizer did not mount");
+      return virtualizer;
+    };
+    const { container } = render(
+      <VirtualList
+        ref={ref}
+        dynamic
+        anchorToEnd={anchorToEnd}
+        count={reader?.count ?? 5}
+        estimateSize={() => reader?.estimate ?? ROW_HEIGHT}
+        getItemKey={(index) => `row-${index}`}
+        onChange={(instance) => {
+          virtualizer = instance;
+        }}
+        {...(reader ? { onLayout: reader.onLayout } : {})}
+        renderRow={(index) => <div>row {index}</div>}
+      />,
+    );
+    const root = rootOf(container);
+    Object.defineProperty(root, "scrollHeight", { configurable: true, value: 2500 });
+    Object.defineProperty(root, "clientHeight", { configurable: true, value: CONTAINER_HEIGHT });
+    if (clampScrollWrites) {
+      const sizer = root.firstElementChild as HTMLElement;
+      Object.defineProperty(root, "scrollHeight", {
+        configurable: true,
+        get: () => Number.parseFloat(sizer.style.height),
+      });
+    }
+    // Apply the real virtualizer's scroll writes to jsdom's geometry seam.
+    // The native cascade guard checks the corresponding physical resize.
+    root.scrollTo = (optionsOrX: ScrollToOptions | number = {}, y?: number) => {
+      const target = typeof optionsOrX === "number" ? (y ?? root.scrollTop) : (optionsOrX.top ?? root.scrollTop);
+      root.scrollTop = clampScrollWrites
+        ? Math.max(0, Math.min(target, root.scrollHeight - root.clientHeight))
+        : target;
+    };
+    return { root, current, ref };
+  }
+
+  test.each([
+    {
+      name: "backward growth above the viewport",
+      anchorToEnd: true,
+      from: 1200,
+      to: 1000,
+      size: 600,
+      row: 2,
+      wantScroll: 1100,
+      wantStart: 1100,
+    },
+    {
+      name: "backward shrink above the viewport",
+      anchorToEnd: true,
+      from: 1200,
+      to: 1000,
+      size: 400,
+      row: 2,
+      wantScroll: 900,
+      wantStart: 900,
+    },
+    {
+      name: "backward growth within the visible row",
+      anchorToEnd: true,
+      from: 300,
+      to: 250,
+      size: 600,
+      row: 0,
+      wantScroll: 250,
+      wantStart: 0,
+    },
+    {
+      name: "forward growth within the visible row",
+      anchorToEnd: true,
+      from: 200,
+      to: 250,
+      size: 600,
+      row: 0,
+      wantScroll: 350,
+      wantStart: 0,
+    },
+    {
+      name: "growth while following the bottom",
+      anchorToEnd: true,
+      from: 1900,
+      to: 2000,
+      size: 600,
+      row: 4,
+      wantScroll: 2100,
+      wantStart: 2100,
+    },
+    {
+      name: "start-anchored backward growth keeps upstream behavior",
+      anchorToEnd: false,
+      from: 1200,
+      to: 1000,
+      size: 600,
+      row: 2,
+      wantScroll: 1000,
+      wantStart: 1100,
+    },
+  ])("$name", ({ anchorToEnd, from, to, size, row, wantScroll, wantStart }) => {
+    const { root, current } = renderMeasuredList(anchorToEnd);
+    root.scrollTop = from;
+    fireEvent.scroll(root);
+    root.scrollTop = to;
+    fireEvent.scroll(root);
+    expect(current().scrollDirection).toBe(from > to ? "backward" : "forward");
+    expect(root.querySelector(`[data-index="${row}"]`)?.getAttribute("style")).toContain(`translateY(${row * 500}px)`);
+
+    act(() => current().resizeItem(0, size));
+
+    expect(root.scrollTop).toBe(wantScroll);
+    expect(root.querySelector(`[data-index="${row}"]`)?.getAttribute("style")).toContain(`translateY(${wantStart}px)`);
+  });
+
+  test("batched growth above the viewport keeps its logical row when DOM scroll writes clamp", () => {
+    // Native writes can clamp before React commits the new sizer height.
+    // Only this layout boundary is modeled; the virtualizer stays real.
+    const { root, current } = renderMeasuredList(true, true);
+    root.scrollTop = 1700;
+    fireEvent.scroll(root);
+    root.scrollTop = 1500;
+    fireEvent.scroll(root);
+    expect(current().range?.startIndex).toBe(3);
+
+    act(() => {
+      for (const index of [0, 1, 2]) current().resizeItem(index, 1500);
+    });
+
+    expect(current().range?.startIndex).toBe(3);
+    expect(current().scrollOffset).toBe(4500);
+    expect(root.querySelector('[data-index="3"]')?.getAttribute("style")).toContain("translateY(4500px)");
+    expect(root.scrollTop).toBe(4500);
+    fireEvent.scroll(root);
+    expect(current().range?.startIndex).toBe(3);
+    expect(current().scrollOffset).toBe(4500);
+  });
+
+  test("a newer native gesture supersedes a clamped measurement before its sizer commit", () => {
+    const { root, current } = renderMeasuredList(true, true);
+    root.scrollTop = 1700;
+    fireEvent.scroll(root);
+    root.scrollTop = 1500;
+    fireEvent.scroll(root);
+
+    act(() => {
+      current().resizeItem(0, 1500);
+      root.scrollTop = 1000;
+      fireEvent.scroll(root);
+    });
+
+    expect(root.scrollTop).toBe(1000);
+    expect(current().scrollOffset).toBe(1000);
+    expect(current().range?.startIndex).toBe(0);
+  });
+
+  test("a newer explicit offset supersedes a clamped measurement before its sizer commit", () => {
+    const { root, current } = renderMeasuredList(true, true);
+    root.scrollTop = 1700;
+    fireEvent.scroll(root);
+    root.scrollTop = 1500;
+    fireEvent.scroll(root);
+
+    act(() => {
+      current().resizeItem(0, 1500);
+      current().scrollToOffset(1000);
+      fireEvent.scroll(root);
+    });
+
+    expect(root.scrollTop).toBe(1000);
+    expect(current().scrollOffset).toBe(1000);
+    expect(current().range?.startIndex).toBe(0);
+  });
+
+  function installMeasuredGeometry(rowHeights: number[], scrollbarWidth = 0) {
+    const geometry = { width: 500, scrollbarWidth, viewportHeight: CONTAINER_HEIGHT, rowHeights };
+    const external = installTranscriptGeometry(
+      () => geometry,
+      (element) => element.closest<HTMLElement>(`.${styles.root}`) ?? undefined,
+    );
+    return { geometry, ...external };
+  }
+
+  function holdPositioningFrames() {
+    const pending = new Map<number, FrameRequestCallback>();
+    let nextId = 0;
+    const request = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      const id = ++nextId;
+      pending.set(id, callback);
+      return id;
+    });
+    const cancel = vi.spyOn(window, "cancelAnimationFrame").mockImplementation((id) => {
+      pending.delete(id);
+    });
+    return {
+      pending,
+      release() {
+        for (const [id, callback] of [...pending]) {
+          pending.delete(id);
+          callback(performance.now());
+        }
+      },
+      restore() {
+        request.mockRestore();
+        cancel.mockRestore();
+      },
+    };
+  }
+
+  test("reader layout observes committed sizer and rejects later unmeasured DOM", async () => {
+    const external = installMeasuredGeometry([500, 500, 500, 500, 500]);
+    const observed: { layout: ReaderLayout; sizer: number; secondRow: string | undefined }[] = [];
+    try {
+      const { root } = renderMeasuredList(true, true, {
+        onLayout: (layout) => {
+          const port = layout.virtualizer.scrollElement;
+          observed.push({
+            layout,
+            sizer: Number.parseFloat(
+              port?.firstElementChild?.getAttribute("style")?.match(/height:\s*([\d.]+)px/)?.[1] ?? "0",
+            ),
+            secondRow: port?.querySelector<HTMLElement>('[data-index="1"]')?.style.transform,
+          });
+        },
+      });
+      await act(async () => external.notify());
+      expect(observed.at(-1)?.sizer).toBe(2500);
+      expect(observed.at(-1)?.secondRow).toBe("translateY(500px)");
+      const committed = observed.at(-1)?.layout;
+      expect(committed?.isCurrent()).toBe(true);
+      external.geometry.rowHeights[0] = 700;
+      expect(root.querySelector('[data-index="0"]')?.getBoundingClientRect().height).toBe(700);
+      expect(committed?.isCurrent()).toBe(false);
+      await act(async () => external.notify());
+      expect(observed.at(-1)?.sizer).toBe(2700);
+      expect(observed.at(-1)?.secondRow).toBe("translateY(700px)");
+      expect(observed.at(-1)?.layout.isCurrent()).toBe(true);
+    } finally {
+      cleanup();
+      external.restore();
+    }
+  });
+
+  test("reader layout accepts measured filtered rows and rejects their unobserved expansion", async () => {
+    const external = installMeasuredGeometry([500, 0, 500, 0, 500]);
+    let committed: ReaderLayout | undefined;
+    try {
+      const { root } = renderMeasuredList(true, true, {
+        onLayout: (layout) => {
+          committed = layout;
+        },
+      });
+      await act(async () => external.notify());
+      expect(root.querySelector('[data-index="1"]')?.getBoundingClientRect().height).toBe(0);
+      expect(committed?.isCurrent()).toBe(true);
+      await act(async () => committed?.scrollToOffset(100));
+      expect(root.scrollTop).toBe(100);
+      external.geometry.rowHeights[1] = 30;
+      expect(committed?.isCurrent()).toBe(false);
+      await act(async () => external.notify());
+      expect(committed?.isCurrent()).toBe(true);
+      expect(root.querySelector('[data-index="2"]')?.getBoundingClientRect().top).toBe(430);
+      expect(root.querySelector('[data-index="2"]')?.textContent).toBe("row 2");
+    } finally {
+      cleanup();
+      external.restore();
+    }
+  });
+
+  test("reader layout keeps fractional-height rows from overlapping", async () => {
+    const external = installMeasuredGeometry([500.171875, 29.3125, 500.171875, 500.171875, 500.171875]);
+    let committed: ReaderLayout | undefined;
+    try {
+      const { root } = renderMeasuredList(true, true, {
+        onLayout: (layout) => {
+          committed = layout;
+        },
+      });
+      await act(async () => external.notify());
+      expect(committed?.isCurrent()).toBe(true);
+      const first = root.querySelector('[data-index="0"]');
+      const second = root.querySelector('[data-index="1"]');
+      if (!first || !second) throw new Error("Real fractional rows are missing");
+      expect(first.getBoundingClientRect().bottom).toBeLessThanOrEqual(second.getBoundingClientRect().top);
+      expect(first.textContent).toBe("row 0");
+      expect(second.textContent).toBe("row 1");
+    } finally {
+      cleanup();
+      external.restore();
+    }
+  });
+
+  test("reader layout accepts a native scrollbar and rejects an unobserved border-width change", async () => {
+    const external = installMeasuredGeometry([500, 500, 500, 500, 500], 15);
+    let committed: ReaderLayout | undefined;
+    try {
+      const { root } = renderMeasuredList(true, true, {
+        onLayout: (layout) => {
+          committed = layout;
+        },
+      });
+      await act(async () => external.notify());
+      expect(root.clientWidth).toBe(485);
+      expect(root.offsetWidth).toBe(500);
+      expect(committed?.isCurrent()).toBe(true);
+      await act(async () => committed?.scrollToOffset(100));
+      expect(root.scrollTop).toBe(100);
+      external.geometry.width = 600;
+      expect(committed?.isCurrent()).toBe(false);
+      await act(async () => external.notify());
+      expect(root.clientWidth).toBe(585);
+      expect(committed?.isCurrent()).toBe(true);
+      expect(root.scrollTop).toBe(100);
+      expect(root.querySelector('[data-index="0"]')?.textContent).toBe("row 0");
+    } finally {
+      cleanup();
+      external.restore();
+    }
+  });
+
+  test("reader layout wakes on first equal-estimate observer measurement skipped during user scrolling", async () => {
+    const external = installMeasuredGeometry(Array.from({ length: 200 }, () => 96));
+    let release = false;
+    try {
+      const { root, current } = renderMeasuredList(true, true, {
+        count: 200,
+        estimate: 96,
+        onLayout: (layout) => {
+          if (release && layout.isCurrent() && layout.virtualizer.scrollElement?.scrollTop !== 5011)
+            layout.scrollToOffset(5011);
+        },
+      });
+      await act(async () => external.notify());
+      await act(async () => {
+        root.scrollTop = 4992;
+        fireEvent.scroll(root);
+      });
+      expect(root.querySelector('[data-index="46"]')?.textContent).toBe("row 46");
+      expect(current().itemSizeCache.has("row-46")).toBe(false);
+      expect(root.scrollTop).toBe(4992);
+      release = true;
+      await act(async () => external.notify());
+      expect(root.scrollTop).toBe(5011);
+      expect(current().scrollOffset).toBe(5011);
+      expect(current().itemSizeCache.has("row-46")).toBe(false);
+    } finally {
+      cleanup();
+      external.restore();
+    }
+  });
+
+  test("reader cancellation replaces an outstanding actual index reconciliation", async () => {
+    const external = installMeasuredGeometry([500, 500, 500, 500, 500]);
+    const frames = holdPositioningFrames();
+    let layout: ReaderLayout | undefined;
+    try {
+      const { root, current } = renderMeasuredList(true, true, {
+        onLayout: (value) => {
+          layout = value;
+        },
+      });
+      await act(async () => external.notify());
+      await act(async () => current().scrollToIndex(4, { align: "start" }));
+      expect(root.scrollTop).toBe(2000);
+      expect(frames.pending.size).toBeGreaterThan(0);
+      await act(async () => {
+        root.scrollTop = 1000;
+        layout?.cancelPendingScroll();
+      });
+      external.geometry.rowHeights[3] = 1000;
+      await act(async () => external.notify((target) => target.dataset.index === "3"));
+      await act(async () => frames.release());
+      expect(root.scrollTop).toBe(1000);
+      expect(current().scrollOffset).toBe(1000);
+      expect(root.querySelector('[data-index="2"]')?.getBoundingClientRect().top).toBe(0);
+      expect(root.querySelector('[data-index="2"]')?.textContent).toBe("row 2");
+    } finally {
+      cleanup();
+      external.restore();
+      frames.restore();
+    }
+  });
+
+  test("reader cancellation drops queued clamped replay without DOM movement or a native scroll event", async () => {
+    const external = installMeasuredGeometry([300, 300, 300, 300, 300]);
+    const frames = holdPositioningFrames();
+    let layout: ReaderLayout | undefined;
+    try {
+      const { root, current } = renderMeasuredList(true, true, {
+        onLayout: (value) => {
+          layout = value;
+        },
+      });
+      await act(async () => external.notify());
+      await act(async () => {
+        root.scrollTop = 1000;
+        fireEvent.scroll(root);
+      });
+      let scrollEvents = 0;
+      root.addEventListener("scroll", () => {
+        scrollEvents++;
+      });
+      await act(async () => {
+        external.geometry.rowHeights[0] = 1300;
+        external.notify((target) => target.dataset.index === "0");
+        expect(root.scrollTop).toBe(1000);
+        layout?.cancelPendingScroll();
+      });
+      await act(async () => frames.release());
+      expect(root.scrollTop).toBe(1000);
+      expect(current().scrollOffset).toBe(1000);
+      expect(scrollEvents).toBe(0);
+      expect(root.querySelector('[data-index="0"]')?.getBoundingClientRect().top).toBe(-1000);
+      expect(root.querySelector('[data-index="0"]')?.textContent).toBe("row 0");
+    } finally {
+      cleanup();
+      external.restore();
+      frames.restore();
+    }
+  });
+
+  test("reader signed movement protects a backward partial shrink after cancellation and observer idle", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const external = installMeasuredGeometry([1600, 500, 500, 500, 500]);
+    const frames = holdPositioningFrames();
+    let layout: ReaderLayout | undefined;
+    try {
+      const { root, current } = renderMeasuredList(true, true, {
+        onLayout: (value) => {
+          layout = value;
+        },
+      });
+      await act(async () => external.notify());
+      await act(async () => current().scrollToIndex(1, { align: "start" }));
+      expect(root.scrollTop).toBe(1600);
+      expect(frames.pending.size).toBeGreaterThan(0);
+      external.geometry.rowHeights[0] = 700;
+      const beforeOffset = root.scrollTop;
+      await act(async () => {
+        root.scrollTop = 100;
+        layout?.cancelPendingScroll();
+        layout?.syncReaderMovement(beforeOffset);
+      });
+      await act(async () => frames.release());
+      await act(async () => vi.advanceTimersByTime(current().options.isScrollingResetDelay));
+      expect(current().scrollDirection).toBeNull();
+      await act(async () => external.notify((target) => target.dataset.index === "0"));
+      await act(async () => frames.release());
+      expect(root.scrollTop).toBe(100);
+      expect(current().scrollOffset).toBe(100);
+      expect(root.querySelector('[data-index="0"]')?.getBoundingClientRect().top).toBe(-100);
+      expect(root.querySelector('[data-index="0"]')?.textContent).toBe("row 0");
+    } finally {
+      cleanup();
+      external.restore();
+      frames.restore();
+      vi.useRealTimers();
+    }
+  });
+
+  test.each([
+    { command: "absolute", requested: 300, want: 0, wantTop: 0 },
+    { command: "index", requested: 1100, want: 200, wantTop: -200 },
+  ])("reader $command command releases earlier backward protection", async ({ command, requested, want, wantTop }) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const external = installMeasuredGeometry([1600, 500, 500, 500, 500]);
+    const frames = holdPositioningFrames();
+    let layout: ReaderLayout | undefined;
+    try {
+      const { root, current, ref } = renderMeasuredList(true, true, {
+        onLayout: (value) => {
+          layout = value;
+        },
+      });
+      await act(async () => external.notify());
+      await act(async () => {
+        root.scrollTop = 900;
+        fireEvent.scroll(root);
+      });
+      external.geometry.rowHeights[0] = 700;
+      await act(async () => {
+        root.scrollTop = 100;
+        layout?.cancelPendingScroll();
+        layout?.syncReaderMovement(900);
+      });
+      await act(async () => {
+        if (command === "absolute") layout?.scrollToOffset(300);
+        else ref.current?.scrollToIndex(0, { align: "end" });
+      });
+      expect(root.scrollTop).toBe(requested);
+      await act(async () => vi.advanceTimersByTime(current().options.isScrollingResetDelay));
+      expect(current().scrollDirection).toBeNull();
+      await act(async () => external.notify((target) => target.dataset.index === "0"));
+      expect(root.scrollTop).toBe(want);
+      expect(current().scrollOffset).toBe(want);
+      expect(root.querySelector('[data-index="0"]')?.getBoundingClientRect().top).toBe(wantTop);
+    } finally {
+      cleanup();
+      external.restore();
+      frames.restore();
+      vi.useRealTimers();
+    }
+  });
+
+  test("reader observer disposal retires movement and native read-backs with its port", async () => {
+    const external = installMeasuredGeometry([1600, 500, 500, 500, 500]);
+    const frames = holdPositioningFrames();
+    let layout: ReaderLayout | undefined;
+    try {
+      const { root, current } = renderMeasuredList(true, true, {
+        onLayout: (value) => {
+          layout = value;
+        },
+      });
+      await act(async () => external.notify());
+      await act(async () => {
+        root.scrollTop = 900;
+        fireEvent.scroll(root);
+      });
+      external.geometry.rowHeights[0] = 700;
+      await act(async () => {
+        root.scrollTop = 100;
+        layout?.cancelPendingScroll();
+        layout?.syncReaderMovement(900);
+      });
+      expect(current().scrollOffset).toBe(100);
+      cleanup();
+      expect(layout?.isCurrent()).toBe(false);
+      await act(async () => {
+        root.scrollTop = 200;
+        fireEvent.scroll(root);
+        layout?.syncReaderMovement(100);
+        layout?.cancelPendingScroll();
+        external.notify();
+        frames.release();
+      });
+      expect(current().scrollElement).toBeNull();
+      expect(current().scrollOffset).toBe(100);
+    } finally {
+      cleanup();
+      external.restore();
+      frames.restore();
+    }
   });
 });
 

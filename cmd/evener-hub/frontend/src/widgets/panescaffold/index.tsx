@@ -7,7 +7,9 @@ import styles from "./panescaffold.module.css";
 export interface PaneScaffoldProps {
   title: string;
   paneId?: string;
+  publishTabTitle?: boolean;
   focused?: boolean;
+  focusSelector?: string;
   scaffoldMarker?: string;
   mobileTitle?: string;
   cadence?: ReactNode;
@@ -40,7 +42,9 @@ const CLASS = {
 export function PaneScaffold({
   title,
   paneId,
+  publishTabTitle = true,
   focused = true,
+  focusSelector,
   scaffoldMarker,
   mobileTitle,
   cadence,
@@ -63,12 +67,14 @@ export function PaneScaffold({
 
   // A hydrated pane owns its display title. Desktop tabs consume that same
   // title without fetching another copy of the pane's underlying resource.
+  // A different registered tab label keeps its own title owner.
   useEffect(() => {
-    if (paneId === undefined) return;
+    if (paneId === undefined || !publishTabTitle) return;
     chromeStore.getState().setPaneTitleFor(paneId, title);
     return () => chromeStore.getState().setPaneTitleFor(paneId, null);
-  }, [paneId, title]);
+  }, [paneId, title, publishTabTitle]);
 
+  const paneRef = useRef<HTMLDivElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (paneId === undefined) return;
@@ -76,11 +82,14 @@ export function PaneScaffold({
       cancelPaneFocus(paneId);
       return;
     }
-    if (consumePaneFocus(paneId)) bodyRef.current?.focus();
-  }, [focused, paneId]);
+    if (!consumePaneFocus(paneId)) return;
+    const target = focusSelector ? paneRef.current?.querySelector<HTMLElement>(focusSelector) : null;
+    if (target) target.focus({ preventScroll: true });
+    else bodyRef.current?.focus();
+  }, [focused, paneId, focusSelector]);
 
   return (
-    <div className={CLASS.pane}>
+    <div ref={paneRef} className={CLASS.pane}>
       <div className={CLASS.header}>
         <h2 className={CLASS.title}>
           {mobileTitle === undefined ? (

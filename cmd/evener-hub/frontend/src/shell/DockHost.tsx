@@ -12,14 +12,16 @@ import { Suspense, useEffect, useRef, useState } from "react";
 import "dockview-react/dist/styles/dockview.css";
 import "./dockview-theme.css";
 import { navigationSummaryFor, resolveThreadName } from "../panes/session/threadTitle";
+import { parseZoomParams } from "../panes/zoom/intent";
 import { useNavigationStore } from "../stores/navigation/store";
 import { threadsStore, useThreadsStore } from "../stores/threads";
 import { EmptyState } from "../widgets/emptystate";
-import { useChromeStore } from "./chromeStore";
+import { chromeStore, useChromeStore } from "./chromeStore";
 import styles from "./DockHost.module.css";
 import { PaneTab } from "./PaneTab";
 import { PopoutHeaderAction } from "./PopoutHeaderAction";
 import { type PaneTitleCtx, paneFor } from "./paneRegistry";
+import { refParam } from "./routing";
 import { openTopLevelSession } from "./sessionPlacement";
 import {
   cancelPaneFocus,
@@ -334,7 +336,12 @@ export function DockHost() {
         if (pushed?.paneType !== pane.type || pushed.paneParams !== pane.params) {
           // Dockview publishes onDidLayoutChange for parameter updates too,
           // so the existing debounce persists intent as well as geometry.
-          api.getPanel(pane.id)?.api.updateParameters(panelParams);
+          const panel = api.getPanel(pane.id);
+          if (pushed && (pushed.paneType !== pane.type || refParam(pushed.paneParams) !== refParam(pane.params))) {
+            chromeStore.getState().setPaneTitleFor(pane.id, null);
+            panel?.setTitle(paneFor(pane.type).title(pane.params, bootTitleCtx));
+          }
+          panel?.api.updateParameters(panelParams);
           pushedParamsRef.current.set(pane.id, panelParams);
         }
       }
@@ -385,15 +392,25 @@ export function DockHost() {
   // computed title changes - the ONLY place PaneTitleCtx's threadName is
   // wired to a REACTIVE threads subscription, so a session pane's tab
   // tracks a rename without needing a page reload.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: paneTitles triggers live title updates, read from the store after structural reconciliation can clear an old scope's hint
   useEffect(() => {
     if (!api) return;
-    const ctx: PaneTitleCtx = {
-      threadName: (ref) => resolveThreadName(threads, navigationSummaryFor(ref, navigation), ref),
-    };
     for (const pane of panes) {
       const panel = api.getPanel(pane.id);
       if (!panel) continue; // not created yet on this pass - the structural effect (same commit) already gave it the right initial title
-      const title = paneTitles.get(pane.id) ?? paneFor(pane.type).title(pane.params, ctx);
+      let missingName = false;
+      const ctx: PaneTitleCtx = {
+        threadName: (ref) => {
+          const name = resolveThreadName(threads, navigationSummaryFor(ref, navigation), ref);
+          if (name === undefined) missingName = true;
+          return name;
+        },
+      };
+      const registeredTitle = paneFor(pane.type).title(pane.params, ctx);
+      const title = chromeStore.getState().paneTitles.get(pane.id) ?? registeredTitle;
+      // An inactive restored pane has no reader to hydrate its name. Keep its
+      // saved label until live data or bounded navigation supplies a name.
+      if (missingName && title === registeredTitle) continue;
       if (panel.title !== title) panel.setTitle(title);
     }
   }, [api, panes, threads, navigation, paneTitles]);
@@ -467,6 +484,29 @@ export function DockHost() {
       workspaceStore.getState().restoreLayout(stored);
     }
 
+    // Preserve saved inspection focus only when its ordinary route panels
+    // survived. A missing owner or child still needs normal route placement.
+    const restoredWorkspace = workspaceStore.getState();
+    const restoredMain = restoredWorkspace.mainPane();
+    const restoredFocus = restoredWorkspace.panes.find((pane) => pane.id === restoredWorkspace.focusedPaneId);
+    const focusedInspection = restoredFocus?.type === "sessionZoom" ? parseZoomParams(restoredFocus.params) : null;
+    const capturedRoutePresent =
+      routedPrimary?.type === "session" &&
+      restoredMain?.type === "session" &&
+      refParam(restoredMain.params) === refParam(routedPrimary.params) &&
+      routed.every((expected) =>
+        restoredWorkspace.panes.some(
+          (pane) =>
+            pane.type === expected.type &&
+            pane.slot === expected.slot &&
+            JSON.stringify(pane.params) === JSON.stringify(expected.params),
+        ),
+      );
+    const preservedInspection =
+      capturedRoutePresent && restoredFocus?.slot === "secondary" && focusedInspection?.inspection
+        ? restoredFocus
+        : null;
+
     if (routedPrimary?.type === "settings") {
       workspaceStore.getState().replacePrimary("settings", routedPrimary.params);
     } else if (routedPrimary?.type === "spawn") {
@@ -475,14 +515,20 @@ export function DockHost() {
       // A session pane with no ref is not a session to route to; the placement
       // helper would mint a main pane no chrome can render from. The ref it
       // matches on is read out of these same params. openTopLevelSession owns
-      // the cascade-retention rule (a cascade keeps its route role and its
+      // the legacy cascade-retention rule (it keeps its route role and its
       // restored neighbors), so the boot re-apply and every later placement
       // of the same route agree.
       const ref = (routedPrimary.params as { ref?: unknown }).ref;
       if (typeof ref === "string") openTopLevelSession(ref);
     }
     for (const pane of routedSecondary) {
-      workspaceStore.getState().openPane(pane.type, pane.params, { slot: "secondary" });
+      workspaceStore.getState().openPane(pane.type, pane.params, {
+        slot: "secondary",
+        keepExistingFocus: preservedInspection !== null,
+      });
+    }
+    if (preservedInspection && workspaceStore.getState().panes.includes(preservedInspection)) {
+      workspaceStore.getState().focusPane(preservedInspection.id);
     }
 
     // Backstop: a blank main slot with no chrome of its own to open a new pane

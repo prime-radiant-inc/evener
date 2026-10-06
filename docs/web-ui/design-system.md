@@ -127,8 +127,10 @@ rules, not permission to fabricate a summary or rewrite stored evidence.
 
 ## Agent cascade
 
-Desktop Agents rows drill in place. Keep the selected child and immediate parent
-readable; earlier ancestors become live 52px spines. The parent is 400px wide.
+Desktop Agents rows open or reuse a read-only cascade in the secondary pane group.
+Keep the original center conversation mounted with its composer and reading position.
+Keep the selected child and immediate parent readable; earlier ancestors become
+live 52px spines. The parent is 400px wide.
 The leaf flexes with a 440px minimum. Narrow desktop surfaces scroll horizontally
 and reveal the selected leaf instead of squeezing either reader. Parent and
 leaf transcript scrollers remain independent.
@@ -143,10 +145,13 @@ and late ancestry updates preserve geometry and focus. Reduced motion makes
 geometry changes immediate. Unknown ancestry stays visible rather than inventing
 a root or discarding the retained path.
 
-Return restores the original panel and source work. Open conversation opens an
-independent ordinary session pane. Saved intent preserves the selected ref,
-edges and return descriptor without serializing transcript payloads or image
-bytes. At the existing phone breakpoint, a saved cascade shows only its selected
+Return closes only the inspector and focuses its exact surviving source lifetime.
+A session source receives editor focus without moving its reader. A retired source
+is never recreated or replaced by a reused pane ID. Existing saved cascades without
+separated-inspection intent retain their recorded Return behavior. Open conversation
+opens an independent ordinary session pane. Saved intent preserves the selected
+ref, edges, read-only source and origin locator without serializing transcript
+payloads or image bytes. At the existing phone breakpoint, a saved cascade shows only its selected
 read-only content and Return; ordinary Agents activation keeps transcript
 navigation. See the [ownership contract](../product/session-activity.md#automatic-agent-cascade)
 and [real Chrome guard](../../cmd/evener-hub/frontend/scripts/cascadeguard/README.md).

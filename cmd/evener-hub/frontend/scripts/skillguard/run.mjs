@@ -605,16 +605,26 @@ export class Driver {
   }
 
   // clickByText finds a visible button by its accessible text — some controls
-  // (the queue strip's buttons) carry no testid.
+  // (the queue strip's buttons) carry no testid. It finds and clicks the
+  // button in one page turn: a coordinate press measured in an earlier turn
+  // can land on a neighbour if the layout shifts in between (#3804, #3819).
+  // It still refuses a button that something else covers at its center.
   async clickByText(text) {
-    const boxes = await evaluate(
+    const result = await evaluate(
       this.send,
-      `(() => { const matches = [...document.querySelectorAll("button")].filter((b) => b.textContent.trim() === ${JSON.stringify(text)} || (b.getAttribute("aria-label") ?? "").trim() === ${JSON.stringify(text)});
-        return matches.map((b) => { b.scrollIntoView({ block: "center" }); const r = b.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2, disabled: b.disabled }; }); })()`,
+      `(() => { const b = [...document.querySelectorAll("button")].find((n) => n.textContent.trim() === ${JSON.stringify(text)} || (n.getAttribute("aria-label") ?? "").trim() === ${JSON.stringify(text)});
+        if (!b) return "missing";
+        if (b.matches(":disabled")) return "disabled";
+        b.scrollIntoView({ block: "center" });
+        const r = b.getBoundingClientRect();
+        if (!b.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2))) return "covered";
+        b.click();
+        return "clicked"; })()`,
     );
-    if (!boxes || boxes.length === 0) throw new Error(`clickByText: no button labeled ${JSON.stringify(text)}`);
-    if (boxes[0].disabled) throw new Error(`clickByText: button ${JSON.stringify(text)} is disabled`);
-    await this.clickAt(boxes[0].x, boxes[0].y);
+    if (result === "missing") throw new Error(`clickByText: no button labeled ${JSON.stringify(text)}`);
+    if (result === "disabled") throw new Error(`clickByText: button ${JSON.stringify(text)} is disabled`);
+    if (result === "covered") throw new Error(`clickByText: button ${JSON.stringify(text)} is covered at its center`);
+    if (result !== "clicked") throw new Error(`clickByText: unexpected result ${JSON.stringify(result)} for ${JSON.stringify(text)}`);
   }
 
   // ---- page state (each returns plain JSON values) ----

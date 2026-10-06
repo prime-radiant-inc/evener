@@ -429,8 +429,15 @@ func TestCheckUpdates_OverallDeadlineCutsOffAHungRemote(t *testing.T) {
 		}
 		return realGit(ctx, dir, args...)
 	}
+	start := time.Now()
 	if checkThenList(t, f.m) {
 		t.Fatal("plugin whose remote hung listed as having an update")
+	}
+	// The warning names the deadline whichever timeout ended the hang, so
+	// only the time taken shows the overall deadline, not the 20s
+	// per-remote one, cut it off.
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("check took %v; the overall deadline did not cut off the hung remote", elapsed)
 	}
 	if w := f.warnings(); !strings.Contains(w, "checking widget@acme for updates: "+errUpdateCheckDeadline.Error()) {
 		t.Fatalf("no warning names the hung plugin: %q", w)
