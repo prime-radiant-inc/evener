@@ -37,11 +37,9 @@ function intentFor(pane: OpenPaneRecord): SessionZoomParams | null {
   const parsed = parseZoomParams(pane.params);
   // Legacy Return retains the exact source params. Inspection uses the
   // validated read-only descriptor and leaves its separate source untouched.
-  return parsed
-    ? parsed.inspection
-      ? parsed
-      : { ...parsed, source: (pane.params as SessionZoomParams).source }
-    : null;
+  if (!parsed) return null;
+  if (parsed.inspection) return parsed;
+  return { ...parsed, source: (pane.params as SessionZoomParams).source };
 }
 function pathFor(params: SessionZoomParams): CascadePath {
   return deriveCascadePath(params, contextFor(params.ref));

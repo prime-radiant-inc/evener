@@ -38,9 +38,10 @@ The guard checks:
   composer-height change.
 - Width-only reflow in ordinary, read-only cascade and phone-width browser
   readers preserves the same useful entry without opening or closing inspection.
-- Trusted native wheel and current-state pill input during genuine held target
+- Trusted native Shift-Space, wheel and current-state pill input during genuine held target
   measurements, followed by release that retains the newer reading point or
-  live result.
+  live result. The keyboard checkpoint focuses the unchanged source scrollport
+  before trusted input, without injecting a tab index or replacing a handler.
 - Original panel identity, draft, a catalog skill and exact processed PNG bytes,
   with no composer or file picker inside the read-only inspector.
 - Native canvas completion held across inspection, both successful settlement

@@ -35,7 +35,7 @@
 
 import type { ThreadModel, TurnModel } from "@evener/appwire-client";
 import { type RefObject, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { isEditableTarget } from "../../../../keybindings/dispatcher";
+import { isEditableTarget, isIMECompositionKeydown } from "../../../../keybindings/dispatcher";
 import type { CommittedVirtualListLayout, VirtualListHandle } from "../../../../widgets/virtuallist";
 import type { TranscriptReadView } from "../transcriptReadView";
 import { isDormantTranscript } from "../transcriptVisibility";
@@ -617,11 +617,14 @@ export function useTranscriptViewRegistration(
         if (current) {
           if (!current.height || current.height <= 0) return;
           const sameSource = anchor && positionForAnchor(anchor, candidates)?.id === restored.id;
-          const desired = pending.viewportReflow
-            ? sameSource
-              ? readingPointOffset(pending.captured, current.height, el.clientHeight)
-              : Math.max(restored.offset, -Math.max(0, current.height - el.clientHeight))
-            : restored.offset;
+          let desired: number;
+          if (!pending.viewportReflow) {
+            desired = restored.offset;
+          } else if (sameSource) {
+            desired = readingPointOffset(pending.captured, current.height, el.clientHeight);
+          } else {
+            desired = Math.max(restored.offset, -Math.max(0, current.height - el.clientHeight));
+          }
           const offset = Math.max(
             0,
             Math.min(el.scrollTop + current.offset - desired, el.scrollHeight - el.clientHeight),
@@ -1301,22 +1304,26 @@ export function useTranscriptScroll({
   }, []);
   const markNativeKey = useCallback(
     (event: KeyboardEvent) => {
+      const space = event.key === " ";
       if (
         event.defaultPrevented ||
         event.altKey ||
         event.ctrlKey ||
         event.metaKey ||
-        event.shiftKey ||
-        event.isComposing ||
-        isEditableTarget(event.target)
+        (event.shiftKey && !space) ||
+        isIMECompositionKeydown(event) ||
+        isEditableTarget(event.target) ||
+        (space && event.target instanceof Element && event.target.closest("button, summary"))
       )
         return;
-      const direction =
-        event.key === "ArrowUp" || event.key === "PageUp" || event.key === "Home"
-          ? -1
-          : event.key === "ArrowDown" || event.key === "PageDown" || event.key === "End"
-            ? 1
-            : undefined;
+      let direction: -1 | 1 | undefined;
+      if (space) {
+        direction = event.shiftKey ? -1 : 1;
+      } else if (event.key === "ArrowUp" || event.key === "PageUp" || event.key === "Home") {
+        direction = -1;
+      } else if (event.key === "ArrowDown" || event.key === "PageDown" || event.key === "End") {
+        direction = 1;
+      }
       const port = event.currentTarget;
       if (
         direction === undefined ||

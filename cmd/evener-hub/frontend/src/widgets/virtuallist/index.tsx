@@ -138,8 +138,13 @@ function hasCommittedGeometry(
   // Upstream observes the border box, which includes native scrollbar space.
   if (Math.abs(rect.width - port.offsetWidth) > 1.5 || Math.abs(rect.height - port.offsetHeight) > 1.5) return false;
   if (Math.abs(sizer.getBoundingClientRect().height - instance.getTotalSize()) > 1.5) return false;
+  const rows = new Map<string, HTMLElement>();
+  for (const row of sizer.querySelectorAll<HTMLElement>(":scope > [data-index]")) {
+    const index = row.getAttribute("data-index");
+    if (index !== null && !rows.has(index)) rows.set(index, row);
+  }
   return instance.getVirtualItems().every((item) => {
-    const row = sizer.querySelector<HTMLElement>(`:scope > [data-index="${item.index}"]`);
+    const row = rows.get(String(item.index));
     if (!row) return false;
     const observed = measured.get(row);
     const height = row.getBoundingClientRect().height;

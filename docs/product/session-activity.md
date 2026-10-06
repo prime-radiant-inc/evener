@@ -342,6 +342,9 @@ depth. The existing transcript registration owns that intent;
 VirtualList owns measurement and committed geometry. Restoration waits for useful
 committed content and scroll read-back. Newer viewport scrolling or an explicit
 positioning command supersedes older work through the pane-lifetime read view.
+Native Space and Shift-Space paging count as scrolling when the input can move
+that viewport. Button or disclosure activation, editable text, IME composition,
+prevented defaults and input consumed by a nested scroller preserve pending reflow.
 Reflow does not move editor or neighboring-pane focus. An explicit display change
 retains current entry focus even while earlier geometry is pending, then restores
 it to the entry or its visible proxy. Passive scroll events can enable bottom-follow

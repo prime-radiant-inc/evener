@@ -298,7 +298,7 @@ async function clickVerbosityChoice(label, role = "radio") {
 }
 
 async function nativePositioningInterruption(input) {
-  assert.ok(input === "wheel" || input === "pill", "the native interruption uses a real reader input");
+  assert.ok(input === "wheel" || input === "pill" || input === "Shift-Space", "the native interruption uses a real reader input");
   const original = await openSourceVerbosity();
   assert.ok(["Chat", "Tools"].includes(original.selected), "the native interruption starts from a real Chat or Tools preset");
   if (original.selected !== "Chat") {
@@ -343,6 +343,39 @@ async function nativePositioningInterruption(input) {
     await capture(`${input}-interruption-prepared`);
     if (input === "wheel") {
       await nativeReaderWheel(sourcePortExpr, -900);
+    } else if (input === "Shift-Space") {
+      const target = await wait(`(() => {
+        const port = ${sourcePortExpr}, bounds = port?.getBoundingClientRect();
+        if (!bounds || bounds.width <= 0 || bounds.height <= 0) return null;
+        const x = bounds.x + bounds.width / 2, y = bounds.y + bounds.height / 2;
+        const hit = document.elementFromPoint(x, y);
+        if (!port.contains(hit) || hit.closest('button, summary, input, textarea, select, [contenteditable]')) return null;
+        window.__cascadeNativeKeys ??= [];
+        document.addEventListener('keydown', event => window.__cascadeNativeKeys.push({
+          trusted:event.isTrusted, intended:port.contains(event.target), key:event.key, shift:event.shiftKey,
+          tag:event.target.tagName, prevented:event.defaultPrevented
+        }), { once:true });
+        return { x, y, scrollTop:port.scrollTop, eventIndex:window.__cascadeNativeKeys.length };
+      })()`, "native Shift-Space has a real non-activating transcript target");
+      await driver.clickAt(target.x, target.y);
+      observation.keyFocus = await read(`(() => {
+        (${sourcePortExpr}).focus({ preventScroll:true });
+        const active = document.activeElement;
+        return { tag:active.tagName, intended:(${sourcePortExpr}).contains(active), tabIndex:active.tabIndex };
+      })()`);
+      assert.equal(observation.keyFocus.intended, true, "the unchanged native viewport accepts keyboard focus");
+      for (const type of ["keyDown", "keyUp"]) {
+        await driver.send("Input.dispatchKeyEvent", { type, key:" ", code:"Space", modifiers:8,
+          windowsVirtualKeyCode:32, nativeVirtualKeyCode:32,
+          ...(type === "keyDown" ? { text:" ", unmodifiedText:" " } : {}) });
+      }
+      observation.key = await wait(`window.__cascadeNativeKeys[${target.eventIndex}]`, "native Shift-Space reaches its real keyboard target");
+      assert.equal(observation.key.trusted, true, "Shift-Space uses genuine native input");
+      assert.equal(observation.key.intended, true, "Shift-Space targets the actual source reader");
+      assert.equal(observation.key.key, " ", "the native event carries Space");
+      assert.equal(observation.key.shift, true, "the native event carries Shift");
+      assert.equal(observation.key.prevented, false, "the browser receives the native scrolling default");
+      await wait(`(${sourcePortExpr}).scrollTop < ${target.scrollTop}`, "native Shift-Space scrolls the actual reader backward");
     } else {
       const click = await wait(`(() => {
         const pill = ${driver.paneScopeExpr(fixture.rootRef)}?.querySelector('[data-testid="new-content-pill"]');
@@ -1448,6 +1481,7 @@ try {
   await mixedSourceJourney();
   await sourceMutationJourney();
   await sharedWidthJourney();
+  await nativePositioningInterruption("Shift-Space");
   await nativePositioningInterruption("wheel");
   await nativePositioningInterruption("pill");
   await reloadAndMobileJourney();

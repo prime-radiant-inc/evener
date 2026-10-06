@@ -209,6 +209,109 @@ test.each(["wheel", "touch", "scrollbar", "selection autoscroll", "native key"] 
   },
 );
 
+// jsdom supplies no default key scrolling, so movement is explicit and signed.
+test.each([
+  { name: "Space", key: " ", shiftKey: false, before: 100, newer: 250, height: 1600 },
+  { name: "Shift-Space", key: " ", shiftKey: true, before: 900, newer: 100, height: 700 },
+  { name: "PageDown", key: "PageDown", shiftKey: false, before: 100, newer: 250, height: 1600 },
+  { name: "PageUp", key: "PageUp", shiftKey: false, before: 900, newer: 100, height: 700 },
+])(
+  "newer native $name paging wins over held width reflow and remount",
+  async ({ name, key, shiftKey, before, newer, height }) => {
+    const scene = mountReaderScene(`native-paging-${name}`);
+    try {
+      await scene.start(before);
+      // Forward scrolling retains ordinary partial-row measurement compensation.
+      await scene.holdReflow(height);
+      const port = scene.port();
+      const revision = scene.view.positioningRevision;
+      await act(async () => {
+        fireEvent.keyDown(port, { key, code: key === " " ? "Space" : key, shiftKey });
+        expect(scene.view.positioningRevision).toBeGreaterThan(revision);
+        port.scrollTop = newer;
+        fireEvent.scroll(port);
+      });
+      await act(async () => scene.external.notify());
+      expect(port.scrollTop).toBe(newer);
+      expect(scene.capture()).toMatchObject({ anchorId: "current-entry", anchorOffset: -newer });
+      await act(async () => scene.remount());
+      await act(async () => scene.external.notify());
+      expect(scene.port().scrollTop).toBe(newer);
+      expect(scene.port().querySelector('[data-view-anchor-id="current-entry"]')?.textContent).toContain("current");
+    } finally {
+      scene.dispose();
+      resetTranscriptViewRegistryForTests();
+    }
+  },
+);
+
+test.each([
+  ...["button", "summary", "editor", "editable", "prevented", "composing", "ctrl", "alt", "meta", "nested"].map(
+    (input) => ({
+      name: `Space on ${input}`,
+      input,
+      key: " ",
+      keyCode: 32,
+    }),
+  ),
+  { name: "Space IME commit", input: "IME commit", key: " ", keyCode: 229 },
+  { name: "PageUp IME commit", input: "IME commit", key: "PageUp", keyCode: 229 },
+])("$name without viewport movement preserves pending reflow", async ({ input, key, keyCode }) => {
+  const scene = mountReaderScene(`non-scrolling-space-${input}`);
+  try {
+    await scene.start();
+    const port = scene.port();
+    const holder = document.createElement("div");
+    holder.innerHTML =
+      input === "button"
+        ? '<button type="button"><span>Activate</span></button>'
+        : input === "summary"
+          ? "<details><summary><span>Expand</span></summary></details>"
+          : input === "editor"
+            ? "<textarea>keep text</textarea>"
+            : input === "editable"
+              ? '<div contenteditable="true"><span>keep text</span></div>'
+              : "<div>Reader content</div>";
+    port.appendChild(holder);
+    const target = holder.querySelector<HTMLElement>("span, textarea, div");
+    if (!target) throw new Error("Space control target is missing");
+    if (input === "nested") {
+      target.style.overflowY = "auto";
+      Object.defineProperties(target, {
+        scrollHeight: { value: 1000 },
+        clientHeight: { value: 100 },
+        scrollTop: { writable: true, value: 500 },
+      });
+    }
+    if (input === "prevented") target.addEventListener("keydown", (event) => event.preventDefault());
+    const editor = screen.getByRole("textbox", { name: "Neighbor editor" }) as HTMLTextAreaElement;
+    editor.focus();
+    editor.setSelectionRange(5, 9);
+    await scene.holdReflow();
+    const revision = scene.view.positioningRevision;
+    await act(async () => {
+      fireEvent.keyDown(target, {
+        key,
+        code: key === " " ? "Space" : key,
+        keyCode,
+        isComposing: input === "composing",
+        ctrlKey: input === "ctrl",
+        altKey: input === "alt",
+        metaKey: input === "meta",
+      });
+      scene.external.notify();
+    });
+    expect(scene.view.positioningRevision).toBe(revision);
+    expect(port.scrollTop).toBe(225);
+    expect(document.activeElement).toBe(editor);
+    expect([editor.selectionStart, editor.selectionEnd]).toEqual([5, 9]);
+    holder.remove();
+  } finally {
+    scene.dispose();
+    resetTranscriptViewRegistryForTests();
+  }
+});
+
 test.each(["selection", "Tab", "editor", "modifier", "horizontal wheel", "ctrl wheel", "nested wheel"] as const)(
   "%s without viewport movement preserves pending reflow and outside focus",
   async (input) => {
