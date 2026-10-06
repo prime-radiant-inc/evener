@@ -24,7 +24,7 @@ func TestHeadOutputFileAlignsMidRuneWindowEnd(t *testing.T) {
 	// Two 4-byte emoji: a 6-byte window ends 2 bytes into the second one.
 	path := writeOutputFixture(t, "😀😀")
 
-	out, total, truncated, err := headOutputFile(path, 6, 8)
+	out, total, truncated, err := headOutputFile(path, 6, 8, 0)
 	if err != nil {
 		t.Fatalf("headOutputFile: %v", err)
 	}
@@ -43,7 +43,7 @@ func TestHeadOutputFileWindowEdges(t *testing.T) {
 	t.Parallel()
 	path := writeOutputFixture(t, "😀😀")
 
-	out, total, truncated, err := headOutputFile(path, 4, 8)
+	out, total, truncated, err := headOutputFile(path, 4, 8, 0)
 	if err != nil {
 		t.Fatalf("headOutputFile: %v", err)
 	}
@@ -51,7 +51,7 @@ func TestHeadOutputFileWindowEdges(t *testing.T) {
 		t.Fatalf("aligned head = (%q, %d, %v), want (😀, 8, true)", out, total, truncated)
 	}
 
-	out, _, _, err = headOutputFile(writeOutputFixture(t, "😀"), 2, 4)
+	out, _, _, err = headOutputFile(writeOutputFixture(t, "😀"), 2, 4, 0)
 	if err != nil {
 		t.Fatalf("headOutputFile: %v", err)
 	}
@@ -66,7 +66,7 @@ func TestHeadOutputFileWindowEdges(t *testing.T) {
 		if n < len(ascii) {
 			want = ascii[:n]
 		}
-		out, _, _, err := headOutputFile(asciiPath, n, int64(len(ascii)))
+		out, _, _, err := headOutputFile(asciiPath, n, int64(len(ascii)), 0)
 		if err != nil {
 			t.Fatalf("headOutputFile(%d): %v", n, err)
 		}
@@ -84,7 +84,7 @@ func TestHeadOutputFileKeepsWholeFileIntact(t *testing.T) {
 	content := []byte{'a', 'b', 0xF0, 0x9F}
 	path := writeOutputFixture(t, string(content))
 
-	out, total, truncated, err := headOutputFile(path, 10, 4)
+	out, total, truncated, err := headOutputFile(path, 10, 4, 0)
 	if err != nil {
 		t.Fatalf("headOutputFile: %v", err)
 	}

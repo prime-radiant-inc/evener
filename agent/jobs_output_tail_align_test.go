@@ -27,7 +27,7 @@ func TestTailOutputFileAlignsMidRuneWindowStart(t *testing.T) {
 	// Two 4-byte emoji: a 6-byte window starts 2 bytes into the first one.
 	path := writeOutputFixture(t, "😀😀")
 
-	out, total, truncated, err := tailOutputFile(path, 6, 8)
+	out, total, truncated, err := tailOutputFile(path, 6, 8, 0)
 	if err != nil {
 		t.Fatalf("tailOutputFile: %v", err)
 	}
@@ -52,7 +52,7 @@ func TestTailOutputFileWindowOnRuneBoundaryUnchanged(t *testing.T) {
 	t.Parallel()
 	path := writeOutputFixture(t, "😀😀")
 
-	out, total, truncated, err := tailOutputFile(path, 4, 8)
+	out, total, truncated, err := tailOutputFile(path, 4, 8, 0)
 	if err != nil {
 		t.Fatalf("tailOutputFile: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestTailOutputFileASCIIWindowsByteIdentical(t *testing.T) {
 		if n < len(content) {
 			want = content[len(content)-n:]
 		}
-		out, _, _, err := tailOutputFile(path, n, int64(len(content)))
+		out, _, _, err := tailOutputFile(path, n, int64(len(content)), 0)
 		if err != nil {
 			t.Fatalf("tailOutputFile(%d): %v", n, err)
 		}
@@ -93,7 +93,7 @@ func TestTailOutputFileWindowNarrowerThanRuneIsEmpty(t *testing.T) {
 	t.Parallel()
 	path := writeOutputFixture(t, "😀")
 
-	out, total, truncated, err := tailOutputFile(path, 2, 4)
+	out, total, truncated, err := tailOutputFile(path, 2, 4, 0)
 	if err != nil {
 		t.Fatalf("tailOutputFile: %v", err)
 	}
@@ -145,7 +145,7 @@ func TestTailOutputFileKeepsInvalidUTF8(t *testing.T) {
 			path := writeOutputFixture(t, string(tc.content))
 			total := int64(len(tc.content))
 
-			out, gotTotal, _, err := tailOutputFile(path, tc.bytes, total)
+			out, gotTotal, _, err := tailOutputFile(path, tc.bytes, total, 0)
 			if err != nil {
 				t.Fatalf("tailOutputFile: %v", err)
 			}

@@ -654,17 +654,43 @@ func grepFileLimitAtOpen(path string, re *regexp.Regexp, limitBytes int, maxMatc
 }
 
 // OutputFileStats returns durable lifetime output metadata for a closed output
-// file. If no metadata exists, the file is treated as unpruned.
-func OutputFileStats(path string) (total int64, retainedStart int64, err error) {
-	info, err := os.Stat(path)
-	if err != nil {
-		return 0, 0, fmt.Errorf("jobstore: stat output: %w", err)
-	}
-	total, retainedStart, _, err = readOutputMetaForFile(afero.NewOsFs(), outputMetaPath(path), path, info.Size())
+// file: the total bytes ever written and the first lifetime offset readers may
+// see. If no metadata exists, the file is treated as unpruned.
+func OutputFileStats(path string) (total int64, visibleStart int64, err error) {
+	view, err := readOutputFileView(path)
 	if err != nil {
 		return 0, 0, err
 	}
-	return total, retainedStart, nil
+	return view.total, view.visibleStart, nil
+}
+
+func readOutputFileView(path string) (outputView, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return outputView{}, fmt.Errorf("jobstore: stat output: %w", err)
+	}
+	return readOutputViewForFile(afero.NewOsFs(), outputMetaPath(path), path, info.Size())
+}
+
+// GrepOutputFileLimit greps a closed output file's visible bytes, reporting
+// lifetime offsets, with the same bounded line handling as
+// OutputStore.GrepLimitLineBytes.
+func GrepOutputFileLimit(path string, re *regexp.Regexp, limitBytes int, maxMatches int, maxLineBytes int) ([]Match, error) {
+	view, err := readOutputFileView(path)
+	if err != nil {
+		return nil, err
+	}
+	return grepFileLimitAtOpen(path, re, limitBytes, maxMatches, maxLineBytes, view.visibleStart, func(path string) (io.ReadCloser, error) {
+		f, err := os.Open(path)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := f.Seek(view.visibleOffset(), io.SeekStart); err != nil {
+			_ = f.Close()
+			return nil, err
+		}
+		return f, nil
+	})
 }
 
 // RemoveOutputArtifacts removes an output file and the metadata files that

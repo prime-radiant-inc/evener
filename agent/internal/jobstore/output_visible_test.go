@@ -213,3 +213,18 @@ func TestOutputStoreWindowAndForwardReadsStopAtTheVisibleStart(t *testing.T) {
 		t.Fatalf("ReadWindow = %+v, %v; want \"uro\\n\", truncated", forward, err)
 	}
 }
+
+func TestOutputFileStatsAndGrepSeeOnlyTheVisibleBytes(t *testing.T) {
+	path, visibleStart := writeHiddenPrefixOutput(t)
+	total, firstVisible, err := OutputFileStats(path)
+	if err != nil || total != visibleStart+int64(len("new-1\nnew-2\n")) || firstVisible != visibleStart {
+		t.Fatalf("OutputFileStats = %d, %d, %v; want first visible %d", total, firstVisible, err, visibleStart)
+	}
+	matches, err := GrepOutputFileLimit(path, regexp.MustCompile("old|new"), 1024, 0, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 2 || matches[0].ByteOffset != visibleStart || matches[0].Line != "new-1" {
+		t.Fatalf("GrepOutputFileLimit = %+v, want the two visible lines from %d", matches, visibleStart)
+	}
+}

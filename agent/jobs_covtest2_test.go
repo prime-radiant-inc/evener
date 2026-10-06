@@ -500,7 +500,7 @@ func TestCovValidatedOutputStatsForRecord(t *testing.T) {
 func TestCovTailOutputFileWithOpen(t *testing.T) {
 	t.Parallel()
 	// Negative tailBytes.
-	_, _, _, err := tailOutputFileWithOpen("/nonexistent", -1, 0, func(string) (jobOutputReadFile, error) {
+	_, _, _, err := tailOutputFileWithOpen("/nonexistent", -1, 0, 0, func(string) (jobOutputReadFile, error) {
 		t.Fatal("open should not be called for negative tailBytes")
 		return nil, nil
 	})
@@ -509,7 +509,7 @@ func TestCovTailOutputFileWithOpen(t *testing.T) {
 	}
 
 	// Open error.
-	_, _, _, err = tailOutputFileWithOpen("/nonexistent", 100, 0, func(path string) (jobOutputReadFile, error) {
+	_, _, _, err = tailOutputFileWithOpen("/nonexistent", 100, 0, 0, func(path string) (jobOutputReadFile, error) {
 		return nil, errors.New("open failed")
 	})
 	if err == nil || !strings.Contains(err.Error(), "open output") {
@@ -523,7 +523,7 @@ func TestCovTailOutputFileWithOpen(t *testing.T) {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	out, total, truncated, err := tailOutputFileWithOpen(path, 100, int64(len(content)), func(p string) (jobOutputReadFile, error) {
+	out, total, truncated, err := tailOutputFileWithOpen(path, 100, int64(len(content)), 0, func(p string) (jobOutputReadFile, error) {
 		return os.Open(p)
 	})
 	if err != nil {

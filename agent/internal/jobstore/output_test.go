@@ -921,8 +921,9 @@ func TestOutputRecoversPendingMetadataBeforeDestructivePrune(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stats with pending metadata before prune: %v", err)
 	}
-	if total != int64(len("old\nnew\n")) || retainedStart != 0 {
-		t.Fatalf("stats total=%d retainedStart=%d, want full current retained output", total, retainedStart)
+	// The pending compaction keeps only "new\n", so readers already start there.
+	if total != int64(len("old\nnew\n")) || retainedStart != int64(len("old\n")) {
+		t.Fatalf("stats total=%d retainedStart=%d, want the pending compaction's start", total, retainedStart)
 	}
 
 	o, err := OpenOutput(path, int64(len(retained)))
@@ -967,8 +968,8 @@ func TestOutputRecoversPendingMetadataWhenFinalRetainedExceedsDiscardedPrefix(t 
 	if err != nil {
 		t.Fatalf("stats with pending metadata before small prune: %v", err)
 	}
-	if total != int64(len("abcdefg")) || retainedStart != int64(len("a")) {
-		t.Fatalf("stats total=%d retainedStart=%d, want full previous retained output plus append", total, retainedStart)
+	if total != int64(len("abcdefg")) || retainedStart != int64(len("ab")) {
+		t.Fatalf("stats total=%d retainedStart=%d, want the pending compaction's start", total, retainedStart)
 	}
 
 	o, err := OpenOutput(path, int64(len(pendingRetained)))
@@ -1013,8 +1014,8 @@ func TestOutputRecoversPendingMetadataWhenDiscardedPrefixExceedsFinalRetained(t 
 	if err != nil {
 		t.Fatalf("stats with pending metadata after large append: %v", err)
 	}
-	if total != int64(len("abcdefghijkl")) || retainedStart != int64(len("a")) {
-		t.Fatalf("stats total=%d retainedStart=%d, want full previous retained output plus large append", total, retainedStart)
+	if total != int64(len("abcdefghijkl")) || retainedStart != int64(len("abcdefg")) {
+		t.Fatalf("stats total=%d retainedStart=%d, want the pending compaction's start", total, retainedStart)
 	}
 
 	o, err := OpenOutput(path, int64(len(pendingRetained)))
