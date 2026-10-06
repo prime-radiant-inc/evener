@@ -224,8 +224,12 @@ def grade_checks(spec, inputs):
     finally:
         # A held-out check deletes its own test file, unless it was killed first;
         # a leftover would join every later check's and stage's build.
+        # A failed removal is recorded and never replaces the check's own result.
         for leftover in glob.glob(os.path.join(glob.escape(inputs["work"]), "zz_heldout*_test.go")):
-            os.remove(leftover)
+            try:
+                os.remove(leftover)
+            except OSError as e:
+                inputs.setdefault("cleanup_errors", {})[spec["name"]] = f"held-out cleanup: {e}"
     if rc == "timeout":
         raise TimeoutError(f"check timed out after {COMMAND_TIMEOUT}s")
     return rc == 0
@@ -421,6 +425,8 @@ def grade_stage(label, arm, scen, stage, trial, session):
                 except Exception as e:
                     grade["checks"][spec["name"]] = False
                     grade["check_errors"][spec["name"]] = f"{type(e).__name__}: {e}"
+        for name, why in inputs.get("cleanup_errors", {}).items():
+            grade["check_errors"][name] = "; ".join(filter(None, [grade["check_errors"].get(name), why]))
     # ask resumes from here; a resumed stage ran in the earlier stage's state dir.
     grade["state"] = session["state"]
     grade["session_id"] = root_session_id(session["events"], session["state"])
