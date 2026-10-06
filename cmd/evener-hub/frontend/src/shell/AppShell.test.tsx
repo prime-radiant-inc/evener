@@ -50,7 +50,7 @@ import {
   activityContext,
   activityDelegate,
   activityDetailsThread,
-  activitySummary,
+  answerActivityRead,
 } from "../stores/sessionActivityTestUtils";
 import { resetSettingsHostForTests, settingsHostStore } from "../stores/settingsHost";
 import { resetSettingsOverviewStoreForTests } from "../stores/settingsOverview";
@@ -879,10 +879,7 @@ test("a real session URL wins over an Activity-only saved layout", async () => {
   const client = navClient();
   client.on("thread/read", ({ ref }) => activityDetailsThread(ref));
   client.on("thread/unsubscribe", () => ({}));
-  client.on("evener/thread/activity/read", ({ ref, scope }) => ({
-    ...activitySummary(ref),
-    scope: scope ?? "session",
-  }));
+  client.on("evener/thread/activity/read", answerActivityRead);
   connectionStore.getState().connect(client);
   const retired = workspaceStore.getState().openPane("session", { ref: "local:saved" });
   const saved = render(
@@ -3372,7 +3369,7 @@ test.each(["phone", "desktop"])(
     });
     client.on("thread/read", ({ ref }) => activityDetailsThread(ref, { name: ref }));
     client.on("thread/unsubscribe", () => ({}));
-    client.on("evener/thread/activity/read", ({ ref }) => activitySummary(ref));
+    client.on("evener/thread/activity/read", answerActivityRead);
     const user = userEvent.setup();
     render(
       <>
@@ -5445,7 +5442,10 @@ test.each([
         },
       };
     });
-    client.on("evener/thread/activity/read", ({ ref }) => ({ ...activitySummary(ref), context: context(ref) }));
+    client.on("evener/thread/activity/read", (params) => ({
+      ...answerActivityRead(params),
+      context: context(params.ref),
+    }));
     client.on("evener/thread/delegates/list", ({ ref }) => ({
       context: context(ref),
       scope: "session",

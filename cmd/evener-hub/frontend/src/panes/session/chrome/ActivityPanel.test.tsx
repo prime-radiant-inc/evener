@@ -29,11 +29,12 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-test("closed trigger shares session counts while an open recursive tree owns only visible subtree demand", async () => {
+// The closed trigger counts subagents at every depth (the subtree's 7) plus
+// the session's own running jobs (2), from the shared subtree store's summary.
+test("closed trigger counts subagents at every depth while an open recursive tree owns only visible subtree demand", async () => {
   const client = activityClient();
   client.on("evener/thread/activity/read", ({ ref, scope }) => ({
-    ...activitySummary(ref),
-    scope: scope ?? "session",
+    ...activitySummary(ref, scope),
     delegates: {
       known: true,
       total: scope === "subtree" ? 7 : 1,
@@ -55,18 +56,27 @@ test("closed trigger shares session counts while an open recursive tree owns onl
       <JobsTab scope={deriveScope(navigationStore.getState(), ref, null, null)} />
     </>,
   );
-  await screen.findByRole("button", { name: "Activity · 3 active" });
+  await screen.findByRole("button", { name: "Activity · 9 active" });
   await screen.findByRole("button", { name: /exact selected work/ });
   expect(client.calls.filter((c) => c.method === "evener/thread/delegates/list")).toHaveLength(0);
   expect(client.calls.filter((c) => c.method === "evener/thread/watches/list")).toHaveLength(0);
-  fireEvent.click(screen.getByRole("button", { name: "Activity · 3 active" }));
+  fireEvent.click(screen.getByRole("button", { name: "Activity · 9 active" }));
   await screen.findByText("subtree work");
   expect(sessionActivitySnapshot(client, ref, "subtree")?.summary?.delegates.active).toBe(7);
+  // The trigger's count and the open tree share one subtree store: one
+  // subtree summary read, not one each.
+  expect(
+    client.calls.filter(
+      (c) => c.method === "evener/thread/activity/read" && (c.params as { scope?: string }).scope === "subtree",
+    ),
+  ).toHaveLength(1);
   expect(
     client.calls.filter((c) => c.method === "thread/read" && (c.params as { subscribe?: boolean }).subscribe),
   ).toHaveLength(1);
   fireEvent.click(screen.getByRole("button", { name: "Close" }));
-  await waitFor(() => expect(sessionActivitySnapshot(client, ref, "subtree")).toBeNull());
+  // Closing stops the tree's collection demand; the trigger's count keeps
+  // the shared subtree store, and its summary.
+  expect(sessionActivitySnapshot(client, ref, "subtree")?.summary?.delegates.active).toBe(7);
   expect(sessionActivitySnapshot(client, ref, "session")?.jobs.complete).toBe(true);
   const before = client.calls.length;
   act(() =>
@@ -313,7 +323,7 @@ test("recursive activity shows the same proven parent hierarchy above its conten
     rootRef: "remote:root",
     ancestors: [{ ref: "remote:root", sessionId: "root", title: "Parent session" }],
   };
-  client.on("evener/thread/activity/read", () => ({ ...activitySummary(ref), scope: "subtree", context }));
+  client.on("evener/thread/activity/read", () => ({ ...activitySummary(ref, "subtree"), context }));
   client.on("evener/thread/delegates/list", () => ({
     context,
     scope: "subtree",

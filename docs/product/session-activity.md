@@ -594,7 +594,12 @@ subtree summary (for the Agents count) by explicit ref, so side-by-side panes
 retain independent counts while duplicate consumers of one ref and scope share
 the same owner. Agents, Jobs and Watches tabs observe their own
 session-scoped collection. A visible page boundary supplies further demand,
-while the shared store retains and retries an interrupted continuation.
+while the shared store retains and retries an interrupted continuation. When a
+collection's last observer leaves, the store drops that collection's read in
+flight and any demand queued or walking behind it, explicit loads included, so
+a store another holder keeps alive takes in no late page for a view that has
+closed. Its retained rows stay, and the next observer reconciles them with a
+fresh walk, as for any retained store.
 
 About is the last sidebar category and has no count or footer chip. Its
 [adapter](../../cmd/evener-hub/frontend/src/shell/activitybar/AboutTab.tsx)
@@ -695,15 +700,17 @@ cause an activity read for every session in the navigation rail.
 Session chrome and the navigation rail expose Overview through their session
 action menus. On the phone, that action opens the full-screen shared activity
 sidebar, preserving the last selected category for the focused session. Its
-optional active count sums the session's authoritative job and delegate active
-counts only when both are known; watches and completed work are not part of that
-number. The sidebar's Agents, Jobs, Watches and Tasks tabs use session-scoped
+optional active count sums the subagents running at every depth and the
+session's own running jobs, only when both are known; watches and completed work
+are not part of that number. The sidebar's Agents, Jobs, Watches and Tasks tabs use session-scoped
 reads on both viewports; About uses the shared session model. The Agents count
 is the exception: the footer chip, the sidebar's Agents tab label, each
-cascade scope's Agents chip and the transcript's liveness line all count
-subagents at every depth, from the subtree summary
+cascade scope's Agents chip, the Overview and Activity action counts and the
+transcript's liveness line all count subagents at every depth, from the subtree
+summary
 ([`useSubagentCounts`](../../cmd/evener-hub/frontend/src/stores/sessionActivity.ts)),
-while the Agents tab lists the session's own.
+while the Agents tab lists the session's own. The count and an open Activity
+sheet share one subtree store (see [Client lifetimes](#client-lifetimes)).
 The workspace registers only Tasks and Details session panels. Saved Activity
 placements are unknown panes: the existing workspace restore omits them,
 preserves registered panes and selects useful surviving focus. A valid primary

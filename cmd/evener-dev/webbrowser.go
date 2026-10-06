@@ -22,8 +22,12 @@ import (
 	"strings"
 )
 
-// browserGuards is every guard in verdict order.
-var browserGuards = []string{"layoutguard", "overflowguard", "shellguard", "spawnguard", "transcriptscrollguard", "retirementguard", "mermaidguard", "sessioncacheguard", "skillguard", "cascadeguard", "backgroundjobsguard"}
+// browserGuards is every guard in verdict order. The last three
+// (skillguard, cascadeguard, backgroundjobsguard) are the never-signalled
+// checks that also need the built production frontend (needsBuild);
+// retirementguard is never-signalled too, but needs no build. Keep the
+// building three last.
+var browserGuards = []string{"layoutguard", "overflowguard", "shellguard", "spawnguard", "transcriptscrollguard", "retirementguard", "mermaidguard", "memoryguard", "sessioncacheguard", "skillguard", "cascadeguard", "backgroundjobsguard"}
 
 const (
 	skillGuard          = "skillguard"

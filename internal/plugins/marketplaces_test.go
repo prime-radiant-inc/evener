@@ -2889,3 +2889,304 @@ func TestRekeyRegistry_KeepsOwnershipAcrossARenameInTheSamePass(t *testing.T) {
 		t.Fatalf("keys = %v, want the key kept under the name the first rename wrote", after.Plugins)
 	}
 }
+
+// An explicit refresh of a marketplace pinned to a tag or a sha (its clone is
+// on a detached HEAD, which a pull cannot move) neither pulls nor reclones; it
+// confirms the pinned catalog current (#3844).
+func TestRefreshMarketplace_APinnedCloneIsNotRecloned(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	tagRepo := makeMarketplaceRepo(t, "tagged")
+	gitIn(t, tagRepo, "tag", "v1")
+	shaRepo := makeMarketplaceRepo(t, "pinned")
+	head := gitIn(t, shaRepo, "rev-parse", "HEAD")
+	m := NewManager(t.TempDir())
+	for _, src := range []Source{{Kind: SourceURL, URL: tagRepo, Ref: "v1"}, {Kind: SourceURL, URL: shaRepo, Sha: head}} {
+		if _, err := m.AddMarketplace(context.Background(), "", src); err != nil {
+			t.Fatalf("AddMarketplace %s: %v", src.URL, err)
+		}
+	}
+	realClone, realPull := marketplaceGitClone, marketplaceGitPull
+	t.Cleanup(func() { marketplaceGitClone, marketplaceGitPull = realClone, realPull })
+	gits := 0
+	marketplaceGitClone = func(ctx context.Context, url, dir, ref, sha string) error {
+		gits++
+		return realClone(ctx, url, dir, ref, sha)
+	}
+	marketplaceGitPull = func(ctx context.Context, dir string) error {
+		gits++
+		return realPull(ctx, dir)
+	}
+	later := time.Now().Add(time.Hour).UTC()
+	m.Now = func() time.Time { return later }
+	for _, name := range []string{"tagged", "pinned"} {
+		if err := m.RefreshMarketplace(context.Background(), name); err != nil {
+			t.Fatalf("RefreshMarketplace %s: %v", name, err)
+		}
+	}
+	if gits != 0 {
+		t.Fatalf("refreshing pinned marketplaces ran %d pulls or clones, want none", gits)
+	}
+	mk, err := m.ListMarketplaces(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"tagged", "pinned"} {
+		if !mk[name].LastUpdated.Equal(later) {
+			t.Fatalf("%s LastUpdated = %v, want the refresh's time %v", name, mk[name].LastUpdated, later)
+		}
+	}
+}
+
+// A refresh that brings nothing new still confirms the catalog current
+// (LastUpdated, which doctor's staleness warning reads), but reports no store
+// change: nothing is broadcast and no update check's answers are retired.
+// One that pulls a change reports it.
+func TestRefreshMarketplace_ANoOpRefreshReportsNoChange(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	src := makeMarketplaceRepo(t, "acme")
+	m := NewManager(t.TempDir())
+	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: src}); err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	reports := recordStoreChanges(m)
+	later := time.Now().Add(time.Hour).UTC()
+	m.Now = func() time.Time { return later }
+	if err := m.RefreshMarketplace(context.Background(), "acme"); err != nil {
+		t.Fatalf("RefreshMarketplace: %v", err)
+	}
+	if len(*reports) != 0 {
+		t.Fatalf("a refresh that pulled nothing reported %v", *reports)
+	}
+	mk, err := m.ListMarketplaces(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !mk["acme"].LastUpdated.Equal(later) {
+		t.Fatalf("LastUpdated = %v, want the no-op refresh's time %v", mk["acme"].LastUpdated, later)
+	}
+	advanceGitRepo(t, src, "README.md", "new upstream content")
+	if err := m.RefreshMarketplace(context.Background(), "acme"); err != nil {
+		t.Fatalf("RefreshMarketplace: %v", err)
+	}
+	if len(*reports) != 1 || !(*reports)[0].Marketplaces {
+		t.Fatalf("a refresh that pulled a change reported %v, want one marketplaces change", *reports)
+	}
+}
+
+// Removing a marketplace removes its clone's lock file, so the lock
+// directory does not keep one for every name ever removed.
+func TestRemoveMarketplace_RemovesItsCloneLockFile(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	m := NewManager(t.TempDir())
+	ref, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: makeMarketplaceRepo(t, "acme")})
+	if err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	lockFile, err := m.cloneLockPath(ref.InstallLocation)
+	if err != nil {
+		t.Fatalf("cloneLockPath: %v", err)
+	}
+	if _, err := os.Stat(lockFile); err != nil {
+		t.Fatalf("adding a marketplace left no clone lock file to remove: %v", err)
+	}
+	if err := m.RemoveMarketplace(context.Background(), "acme"); err != nil {
+		t.Fatalf("RemoveMarketplace: %v", err)
+	}
+	if _, err := os.Stat(lockFile); !os.IsNotExist(err) {
+		t.Fatalf("clone lock file survived the marketplace's removal: %v", err)
+	}
+}
+
+// A pinned marketplace whose clone is broken is repaired by a refresh, as
+// doctor's remediation says: only an intact pinned clone is left as it is.
+func TestRefreshMarketplace_ABrokenPinnedCloneIsRecloned(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	repo := makeMarketplaceRepo(t, "tagged")
+	gitIn(t, repo, "tag", "v1")
+	m := NewManager(t.TempDir())
+	ref, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: repo, Ref: "v1"})
+	if err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	catalog := filepath.Join(ref.InstallLocation, ".claude-plugin", "marketplace.json")
+	if err := os.Remove(catalog); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.RefreshMarketplace(context.Background(), "tagged"); err != nil {
+		t.Fatalf("RefreshMarketplace: %v", err)
+	}
+	if _, err := os.Stat(catalog); err != nil {
+		t.Fatalf("refreshing a pinned marketplace with no catalog left it broken: %v", err)
+	}
+}
+
+// A marketplace that pins nothing but whose clone was left on a detached
+// HEAD is not taken for pinned: a refresh puts it back on its branch.
+func TestRefreshMarketplace_AnUnpinnedDetachedCloneIsRepaired(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	repo := makeMarketplaceRepo(t, "acme")
+	m := NewManager(t.TempDir())
+	ref, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: repo})
+	if err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	gitIn(t, ref.InstallLocation, "checkout", "--quiet", "--detach")
+	advanceGitRepo(t, repo, "README.md", "new upstream content")
+	if err := m.RefreshMarketplace(context.Background(), "acme"); err != nil {
+		t.Fatalf("RefreshMarketplace: %v", err)
+	}
+	if b, err := os.ReadFile(filepath.Join(ref.InstallLocation, "README.md")); err != nil || string(b) != "new upstream content" {
+		t.Fatalf("a detached unpinned clone was not refreshed: %q, %v", b, err)
+	}
+}
+
+// A refresh that had to reclone a wedged clone reports a change even when the
+// fresh clone lands on the same commit: the files it replaced were not what
+// the commit holds.
+func TestRefreshMarketplace_AHealingRecloneReportsAChange(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	m := NewManager(t.TempDir())
+	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: makeMarketplaceRepo(t, "acme")}); err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	realPull := marketplaceGitPull
+	t.Cleanup(func() { marketplaceGitPull = realPull })
+	marketplaceGitPull = func(context.Context, string) error { return errors.New("wedged") }
+	reports := recordStoreChanges(m)
+	if err := m.RefreshMarketplace(context.Background(), "acme"); err != nil {
+		t.Fatalf("RefreshMarketplace: %v", err)
+	}
+	if len(*reports) != 1 || !(*reports)[0].Marketplaces {
+		t.Fatalf("a healing reclone reported %v, want one marketplaces change", *reports)
+	}
+}
+
+// A pinned clone moved off its pin is put back on it, never pulled along the
+// branch it was moved to: a sha pin checked out on a branch, and a tag pin
+// whose HEAD was moved to a later commit.
+func TestRefreshMarketplace_APinnedCloneMovedOffItsPinIsPutBack(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	shaRepo := makeMarketplaceRepo(t, "pinned")
+	pin := gitIn(t, shaRepo, "rev-parse", "HEAD")
+	advanceGitRepo(t, shaRepo, "README.md", "after the pin")
+	tagRepo := makeMarketplaceRepo(t, "tagged")
+	gitIn(t, tagRepo, "tag", "v1")
+	tagged := gitIn(t, tagRepo, "rev-parse", "HEAD")
+	advanceGitRepo(t, tagRepo, "README.md", "after the tag")
+	later := gitIn(t, tagRepo, "rev-parse", "HEAD")
+	m := NewManager(t.TempDir())
+	shaRef, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: shaRepo, Sha: pin})
+	if err != nil {
+		t.Fatalf("AddMarketplace pinned: %v", err)
+	}
+	tagRef, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: tagRepo, Ref: "v1"})
+	if err != nil {
+		t.Fatalf("AddMarketplace tagged: %v", err)
+	}
+	gitIn(t, shaRef.InstallLocation, "checkout", "--quiet", "-B", "main", "origin/HEAD")
+	gitIn(t, tagRef.InstallLocation, "checkout", "--quiet", "--detach", later)
+	for name, want := range map[string]string{"pinned": pin, "tagged": tagged} {
+		if err := m.RefreshMarketplace(context.Background(), name); err != nil {
+			t.Fatalf("RefreshMarketplace %s: %v", name, err)
+		}
+		loc := shaRef.InstallLocation
+		if name == "tagged" {
+			loc = tagRef.InstallLocation
+		}
+		if got := gitIn(t, loc, "rev-parse", "HEAD"); got != want {
+			t.Fatalf("%s HEAD after refresh = %s, want its pin %s", name, got, want)
+		}
+	}
+}
+
+// A sha pin written in upper case is the same commit as the clone's HEAD, so
+// an intact clone is left as it is.
+func TestRefreshMarketplace_AnUpperCaseShaPinIsIntact(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	repo := makeMarketplaceRepo(t, "pinned")
+	pin := strings.ToUpper(gitIn(t, repo, "rev-parse", "HEAD"))
+	m := NewManager(t.TempDir())
+	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: repo, Sha: pin}); err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	reports := recordStoreChanges(m)
+	if err := m.RefreshMarketplace(context.Background(), "pinned"); err != nil {
+		t.Fatalf("RefreshMarketplace: %v", err)
+	}
+	if len(*reports) != 0 {
+		t.Fatalf("refreshing an intact upper-case sha pin reported %v, want no change", *reports)
+	}
+}
+
+// A ref that names both a tag and a branch other than the default is checked
+// out at the tag, as git checkout resolves it, so it is a pin: an intact
+// clone at the tag is left as it is.
+func TestRefreshMarketplace_ARefNamingATagAndABranchIsTheTagsPin(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	repo := makeMarketplaceRepo(t, "shadowed")
+	gitIn(t, repo, "tag", "rel")
+	tagged := gitIn(t, repo, "rev-parse", "HEAD")
+	gitIn(t, repo, "branch", "rel")
+	gitIn(t, repo, "checkout", "--quiet", "rel")
+	advanceGitRepo(t, repo, "README.md", "on the rel branch")
+	gitIn(t, repo, "checkout", "--quiet", "-")
+	m := NewManager(t.TempDir())
+	ref, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: repo, Ref: "rel"})
+	if err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	if got := gitIn(t, ref.InstallLocation, "rev-parse", "HEAD"); got != tagged {
+		t.Fatalf("the clone checked out %s, want the tag's %s (the fixture assumes checkout prefers the tag)", got, tagged)
+	}
+	reports := recordStoreChanges(m)
+	if err := m.RefreshMarketplace(context.Background(), "shadowed"); err != nil {
+		t.Fatalf("RefreshMarketplace: %v", err)
+	}
+	if len(*reports) != 0 {
+		t.Fatalf("refreshing an intact tag pin reported %v, want no change", *reports)
+	}
+	if got := gitIn(t, ref.InstallLocation, "rev-parse", "HEAD"); got != tagged {
+		t.Fatalf("HEAD after refresh = %s, want the tag's %s", got, tagged)
+	}
+}
+
+// A clone whose branch check fails for a reason other than a missing ref is
+// not taken for pinned: the check refreshes it and warns of the failure.
+func TestCheckUpdates_ABranchCheckThatFailsIsNotAPin(t *testing.T) {
+	f := installURLPlugin(t, unpinned)
+	mk, err := f.m.loadMarketplaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := mk["acme"]
+	ref.Source.Ref = "main"
+	mk["acme"] = ref
+	if err := f.m.writeMarketplaces(mk); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ref.InstallLocation, ".git", "config"), []byte("[broken"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	checkThenList(t, f.m)
+	if w := f.warnings(); !strings.Contains(w, `refreshing marketplace "acme"`) {
+		t.Fatalf("a marketplace whose branch check failed was skipped without a warning: %q", w)
+	}
+}

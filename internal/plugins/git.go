@@ -2,6 +2,7 @@ package plugins
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -135,6 +136,40 @@ func gitFetch(ctx context.Context, dir string) error {
 func gitFastForward(ctx context.Context, dir string) error {
 	_, err := gitRun(ctx, dir, "merge", "--ff-only", "--quiet", "@{upstream}")
 	return err
+}
+
+// gitRefNamesBranch reports whether name, checked out in the clone at dir,
+// names a branch rather than a tag or a commit: whether checkout left a local
+// branch of that name. A fresh clone has one only for its remote's default
+// branch; checkout makes one for any other branch unless a tag of the same
+// name shadows it, and detaches at the tag instead.
+func gitRefNamesBranch(ctx context.Context, dir, name string) (bool, error) {
+	if err := guardGitArg("ref", name); err != nil {
+		return false, err
+	}
+	return gitRefExists(ctx, dir, "refs/heads/"+name)
+}
+
+// gitRefExists reports whether ref exists in the clone at dir. Git's exit
+// status 1 says it does not; any other failure is an error.
+func gitRefExists(ctx context.Context, dir, ref string) (bool, error) {
+	_, err := gitRun(ctx, dir, "rev-parse", "--verify", "--quiet", ref)
+	if exitErr := (*exec.ExitError)(nil); errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+// gitResolveCommit answers the commit rev names in the clone at dir.
+func gitResolveCommit(ctx context.Context, dir, rev string) (string, error) {
+	if err := guardGitArg("ref", rev); err != nil {
+		return "", err
+	}
+	out, err := gitRun(ctx, dir, "rev-parse", "--verify", "--quiet", rev+"^{commit}")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
 }
 
 func gitHeadSHA(ctx context.Context, dir string) (string, error) {

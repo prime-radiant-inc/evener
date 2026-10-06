@@ -7,7 +7,7 @@ import { ClientProvider } from "../../shell/clientContext";
 import { conversationPaneLifetime } from "../../shell/paneLifetime";
 import { type OpenPaneRecord, resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspace";
 import { connectionStore } from "../../stores/connection";
-import { activitySummary } from "../../stores/sessionActivityTestUtils";
+import { answerActivityRead } from "../../stores/sessionActivityTestUtils";
 import { resetThreadsStoreForTests } from "../../stores/threads";
 import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
 import { makeTranscriptPreviewModel } from "../../transcriptDisplay/previewFixture";
@@ -44,7 +44,7 @@ afterEach(() => {
 
 function fixture(long = false) {
   const fake = new FakeClient("ready");
-  fake.on("evener/thread/activity/read", ({ ref }) => activitySummary(ref));
+  fake.on("evener/thread/activity/read", answerActivityRead);
   fake.on("thread/read", ({ ref }) => {
     if (ref === undefined) throw new Error("thread/read requires the requested ref");
     return {

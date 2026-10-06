@@ -2302,3 +2302,101 @@ test("legacy activity events do not duplicate scoped reads or refresh unrelated 
   expect(callsTo(client, "evener/thread/delegates/list")).toBe(1);
   expect(callsTo(client, "evener/thread/watches/list")).toBe(1);
 });
+
+// A page in flight when a collection's last observer leaves is dropped, not
+// merged: the observer that asked for it is gone, and a store kept alive by
+// another holder (a summary count) must not take in a closed view's late page.
+test("a page in flight when the last observer leaves does not land", async () => {
+  const client = activityClient(),
+    late = deferred<SessionJobsResponse>(),
+    entered = deferred<void>();
+  client.on("evener/thread/jobs/list", ({ cursor }) => {
+    if (!cursor) return jobsFixture([jobFixture("shell-1")], "page-2");
+    entered.resolve();
+    return late.promise;
+  });
+  const store = owner(client);
+  store.start();
+  await activityState(store, () => store.getSnapshot().summary !== null);
+  const leave = store.observe("jobs");
+  await activityState(store, () => store.getSnapshot().jobs.hasMore);
+  const more = store.loadMore("jobs");
+  await entered.promise;
+  leave();
+  late.resolve(jobsFixture([jobFixture("late")]));
+  await more;
+  expect(store.getSnapshot().jobs.rows.map(({ jobId }) => jobId)).not.toContain("late");
+});
+
+// Demand queued behind that page by an explicit loadMore is dropped with it,
+// and the collection is left settled, not pending a read nothing will make.
+test("demand queued behind a page when the last observer leaves does not land either", async () => {
+  const client = activityClient(),
+    late = deferred<SessionJobsResponse>(),
+    entered = deferred<void>();
+  client.on("evener/thread/jobs/list", ({ cursor }) => {
+    if (!cursor) return jobsFixture([jobFixture("shell-1")], "page-2");
+    if (callsTo(client, "evener/thread/jobs/list") === 2) {
+      entered.resolve();
+      return late.promise;
+    }
+    return jobsFixture([jobFixture("late-queued")]);
+  });
+  const store = owner(client);
+  store.start();
+  await activityState(store, () => store.getSnapshot().summary !== null);
+  const leave = store.observe("jobs");
+  await activityState(store, () => store.getSnapshot().jobs.hasMore);
+  const first = store.loadMore("jobs");
+  await entered.promise;
+  const second = store.loadMore("jobs");
+  leave();
+  late.resolve(jobsFixture([jobFixture("late")]));
+  await Promise.all([first, second]);
+  expect(store.getSnapshot().jobs.rows.map(({ jobId }) => jobId)).toEqual(["shell-1"]);
+  expect(callsTo(client, "evener/thread/jobs/list")).toBe(2);
+  expect(store.getSnapshot().jobs).toMatchObject({ loading: false, pending: false });
+});
+
+// A view that leaves while a page it asked for is being published (a listener
+// releasing the last observer as the page lands, on either of its publishes)
+// is gone for the rest of that read: an explicit loadMore queues no next page
+// for it.
+test.each([1, 2])("a release during a loaded page's publish %i queues no next page", async (publish) => {
+  const client = activityClient();
+  client.on("evener/thread/jobs/list", ({ cursor }) => {
+    if (!cursor) return jobsFixture([jobFixture("shell-1")], "page-2");
+    if (cursor === "page-2") return jobsFixture([], "page-3");
+    return jobsFixture([jobFixture("late")]);
+  });
+  const store = owner(client);
+  store.start();
+  await activityState(store, () => store.getSnapshot().summary !== null);
+  const leave = store.observe("jobs");
+  await activityState(store, () => store.getSnapshot().jobs.hasMore);
+  let publishes = 0;
+  const stop = store.subscribe(() => {
+    if (callsTo(client, "evener/thread/jobs/list") === 2 && ++publishes === publish) leave();
+  });
+  await store.loadMore("jobs");
+  stop();
+  expect(callsTo(client, "evener/thread/jobs/list")).toBe(2);
+  expect(store.getSnapshot().jobs.rows.map(({ jobId }) => jobId)).not.toContain("late");
+});
+
+// An explicit load admitted before the connection is ready is the leaving
+// observer's too: once the last observer leaves, neither readiness nor a
+// change notification starts a read for the closed collection.
+test("an explicit load waiting for the connection is dropped when the last observer leaves", async () => {
+  const client = activityClient("connecting"),
+    store = owner(client);
+  store.start();
+  const leave = store.observe("jobs");
+  void store.load("jobs");
+  leave();
+  client.emitReady();
+  await activityState(store, () => store.getSnapshot().summary !== null);
+  activityChanged(client, ["jobs"]);
+  await store.refresh("summary");
+  expect(callsTo(client, "evener/thread/jobs/list")).toBe(0);
+});

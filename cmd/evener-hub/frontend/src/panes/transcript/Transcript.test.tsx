@@ -9,7 +9,7 @@ import { registerPaneForTests } from "../../shell/paneRegistry";
 import { registerDockviewApi, resetWorkspaceStoreForTests } from "../../shell/workspace";
 import { connectionStore } from "../../stores/connection";
 import { sessionActivitySnapshot } from "../../stores/sessionActivity";
-import { activityContext, activitySummary } from "../../stores/sessionActivityTestUtils";
+import { activityContext, activitySummary, answerActivityRead } from "../../stores/sessionActivityTestUtils";
 import { resetThreadsStoreForTests } from "../../stores/threads";
 import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
 import virtualStyles from "../../widgets/virtuallist/virtuallist.module.css";
@@ -72,7 +72,7 @@ function readResponse(ref: string, overrides: Partial<Thread> = {}): ThreadReadR
 
 function connectFakeClient(): FakeClient {
   const fake = new FakeClient("ready");
-  fake.on("evener/thread/activity/read", ({ ref }) => activitySummary(ref));
+  fake.on("evener/thread/activity/read", answerActivityRead);
   connectionStore.getState().connect(fake);
   return fake;
 }
@@ -145,8 +145,8 @@ test.each([undefined, "remote:parent"])(
       requestGeneration: params.requestGeneration,
     }));
     fake.on("thread/unsubscribe", () => ({}));
-    fake.on("evener/thread/activity/read", () => ({
-      ...activitySummary(ref),
+    fake.on("evener/thread/activity/read", ({ scope }) => ({
+      ...activitySummary(ref, scope),
       context: {
         ...activityContext(ref),
         sessionId: "child",
@@ -194,8 +194,8 @@ test("a child transcript does not invent ancestry from its Back target", async (
   const ref = "remote:child";
   fake.on("thread/read", () => readResponse(ref, { name: "Chosen child" }));
   fake.on("thread/unsubscribe", () => ({}));
-  fake.on("evener/thread/activity/read", () => ({
-    ...activitySummary(ref),
+  fake.on("evener/thread/activity/read", ({ scope }) => ({
+    ...activitySummary(ref, scope),
     context: {
       ...activityContext(ref),
       ancestryKnown: false,

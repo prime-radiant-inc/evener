@@ -1,0 +1,16 @@
+{
+  "arms": ["on"],
+  "stages": [
+    {
+      "name": "A",
+      "prompt": "Please execute docs/superpowers/plans/2026-10-06-shop-helpers.md, task by task. It's a longer job and I may have to stop you partway.",
+      "checks": [
+        {"name": "four task commits on some branch", "run": "test $(git log --all --format=%s | grep -c '^shop: ') -ge 4"},
+        {"name": "tests pass", "run": "go test ./..."}
+      ],
+      "trace": [
+        {"name": "progress tracked in the task list", "tool": "task_list", "regex": "\"update\""}
+      ]
+    }
+  ]
+}
