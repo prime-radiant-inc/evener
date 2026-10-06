@@ -21,6 +21,21 @@ test.each([
   ],
   [{ kind: "pin_catalog", offset: 6, limit: 0 }, "nav3/pin_catalog/////6/100"],
   [{ kind: "catalog", catalog: "projects", offset: 7, limit: 101 }, "nav3/projects/////7/100"],
+  [
+    { kind: "project", projectKey: "no-project", catalog: "test_runs" },
+    "nav3/project///bm8tcHJvamVjdA//0/0/catalog/test_runs",
+  ],
+  [
+    {
+      kind: "project_page",
+      projectKey: "no-project",
+      catalog: "archived_projects",
+      tier: "current",
+      offset: 1,
+      limit: 2,
+    },
+    "nav3/project_page///bm8tcHJvamVjdA/Y3VycmVudA/1/2/catalog/archived_projects",
+  ],
 ] as const)("navigation view scope matches Go parity vector %#", (key, expected) => {
   expect(navigationViewScope(key as ResourceKey)).toBe(expected);
 });

@@ -42,7 +42,7 @@ The lab runs real models with your configured provider credentials, so it is nev
 
 - `--reps`: 3 repetitions are enough to spot a broken scenario. Plan on 6–10 to compare two prompts. With these weak models, a single prompt has swung from 0/3 to 3/3 between runs with nothing changed.
 - `--jobs`: lunarouter allows 10 concurrent requests on a model's regular pool and 30 on its `-background` pool. Keep the total across parallel runs under that.
-- `--max-rounds` (default 40) caps tool rounds per stage. If the cap is tight, every stage stops on the cap and the results measure the cap, not memory.
+- `--max-rounds` (default 40) caps tool rounds per stage; 0 means no cap. If the cap is tight, every stage stops on the cap and the results measure the cap, not memory.
 - `--effort` (default `high`) sets the reasoning effort. `--timeout` (default 1200) is seconds per stage.
 - An infrastructure failure prints `ERROR` on the stage it hit and on every later stage. That covers failed workspace setup, a failing or timed-out `before` hook, and a session that times out or exits nonzero, except evener's exit 1 on the round cap, which grades as a `CAPPED` stage. Those stages fail every check in the table, the failed session's events and memory snapshot stay on disk, and `run` exits nonzero once all trials finish. A check that times out or errors fails on its own, with the reason in `show`.
 - `--out` must be a fresh directory, relative or absolute. The command prints one line per stage as each trial finishes, then only the pass-rate table per version, scenario, stage and check. `report` prints the per-stage lines too.
@@ -100,6 +100,8 @@ The header of `memory-lab` documents every field. In short:
   - `transcripts`: a regex over every transcript, delegates included
   - `delegate_calls`: a tool call with a given name and arguments, parsed from the transcripts of delegates created during this stage
   - `whiteboard`: shape and length
+
+Run `./memory-lab check` after editing a scenario. It loads every scenario under `scenarios/` (or the dirs you name) the way `run` does, confirms each loads as itself and that its fixture and seed dirs exist, prints one OK or ERROR line per scenario, and exits nonzero on any error. It runs no model.
 
 Write a check that a reasonable outcome can actually fail. Before you trust a scenario, confirm that the baseline prompt doesn't already pass it, and that its regexes don't match comments or prose. The `cents` float check originally failed on comments that said "no floats".
 
