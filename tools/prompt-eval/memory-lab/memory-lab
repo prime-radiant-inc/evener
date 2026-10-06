@@ -560,8 +560,11 @@ def load_scenario(scen):
     """Reads scen/scenario.json, exiting with a clear message on a scenario or stage that can't run as written."""
     with open(os.path.join(scen, "scenario.json")) as f:
         spec = json.load(f)
-    if not isinstance(spec, dict) or not isinstance(spec.get("stages"), list):
-        sys.exit(f"memory-lab: {scen}: scenario.json must be an object with a \"stages\" list")
+    if not isinstance(spec, dict) or not isinstance(spec.get("stages"), list) or not spec["stages"]:
+        sys.exit(f"memory-lab: {scen}: scenario.json must be an object with a non-empty \"stages\" list")
+    arms = spec.get("arms", ["on"])
+    if not (isinstance(arms, list) and arms and all(arm in ("on", "off") for arm in arms)):
+        sys.exit(f"memory-lab: {scen}: \"arms\" must be a non-empty list of \"on\" and \"off\"")
     unknown = set(spec) - SCENARIO_KEYS
     if unknown:
         sys.exit(f"memory-lab: {scen}: unknown key(s) {sorted(unknown)}; a misspelled key would be silently ignored")
