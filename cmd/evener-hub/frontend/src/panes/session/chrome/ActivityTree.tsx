@@ -239,8 +239,8 @@ function subtreeLastRowID(rows: ActivityRow[], delegateRowID: string): string | 
 // row it renders after: the root's strip follows the whole tree, a delegate's
 // strip follows its subtree's last visible row. targetID keeps the old
 // component's semantics (session node id for the root, delegate node id for
-// delegate branches) so the panel store's continuationFailures keys keep
-// matching.
+// delegate branches): it is the key the caller's continuationFailures map
+// and onContinue callback use.
 function collectContinuations(
   tree: ActivityTreeData,
   rows: ActivityRow[],

@@ -333,7 +333,7 @@ describe("ActivityTree", () => {
     expect(screen.queryByRole("button", { name: "Open session" })).toBeNull();
     await user.click(screen.getByRole("button", { name: "Load more" }));
     // The two ids keep their separate jobs: the delegate row owns the strip
-    // and keys the panel's failure map, while the child's token is what the
+    // and keys the caller's failure map, while the child's token is what the
     // request carries.
     expect(onContinue).toHaveBeenCalledWith('delegate:["local:sess_deep_child","dlg_deep"]', "token_child");
   });
