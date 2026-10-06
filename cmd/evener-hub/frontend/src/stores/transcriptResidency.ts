@@ -499,6 +499,10 @@ export function createTranscriptResidency(
         if (entry.inFlight === batch) entry.inFlight = [];
         if (batchBytes > 0) pendingBudget.release(batchBytes);
         if (isClearSuppressed(entry)) await releaseSuppressedPayload(ref, entry);
+        // The batch and cut are discarded, so this ref has no other drain; if it
+        // is still desired, give it fresh recovery authority (deferred while the
+        // Clear is armed, issued now after an abort).
+        recoverRetiredClaim(ref);
         return false;
       }
       if (!found?.record || found.epoch !== found.record.clearEpoch) {
@@ -689,6 +693,22 @@ export function createTranscriptResidency(
 
   function hydrate(ref: string, intent: "background" | "foreground"): Promise<void> {
     return residency.scheduleHydration(ref, intent);
+  }
+
+  // A claim the Clear arm retired — an in-flight hydration task or a suspended
+  // disk worker. While the Clear is still armed, recovery is deferred to
+  // releaseClearClaim; once it has aborted, recovery is issued here. A committed
+  // Clear's suppression stands, so a suppressed ref never recovers writes.
+  function recoverRetiredClaim(ref: string): void {
+    if (disposed || !ready) return;
+    if (clearArmed) {
+      clearClaimRetiredRefs.add(ref);
+      return;
+    }
+    const entry = entries.get(ref);
+    if (!entry || entry.owners.background <= 0 || isClearSuppressed(entry)) return;
+    if (entry.current && !entry.needsRecovery) return;
+    void hydrate(ref, held(entry) ? "foreground" : "background");
   }
 
   // After a successful disk promotion, recheck the durable epoch the lookup
@@ -1024,19 +1044,12 @@ export function createTranscriptResidency(
     },
     releaseClearClaim() {
       clearArmed = false;
-      // An aborted Clear must not strand the demand whose hydration it retired:
-      // re-issue authoritative recovery for still-desired refs that lack a live
-      // checkpoint. A previously committed Clear's suppression stands, because
-      // an authoritative publish on a background-only ref never re-enables writes.
+      // An aborted Clear must not strand the demand whose claim it retired — a
+      // hydration task or a suspended disk worker. Drain through the shared
+      // helper: a previously committed Clear's suppression stands.
       const refs = [...clearClaimRetiredRefs];
       clearClaimRetiredRefs.clear();
-      for (const ref of refs) {
-        if (disposed || !ready) break;
-        const entry = entries.get(ref);
-        if (!entry || entry.owners.background <= 0) continue;
-        if (entry.current && !entry.needsRecovery) continue;
-        void hydrate(ref, held(entry) ? "foreground" : "background");
-      }
+      for (const ref of refs) recoverRetiredClaim(ref);
     },
     clear(epoch) {
       clearArmed = false;

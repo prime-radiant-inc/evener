@@ -1144,6 +1144,7 @@ describe("background transcript recovery", () => {
       return outcome;
     });
     const lease = acquireBackgroundThread(ref);
+    let lookup: ReturnType<typeof holdNextCurrentLookupBeforeRead> | undefined;
     try {
       await lease.ready;
       await settleBackgroundTranscriptsForTests();
@@ -1154,7 +1155,7 @@ describe("background transcript recovery", () => {
       // Park a real background worker at the cache lookup BEFORE its read runs,
       // then commit a real Clear that deletes the current rows and increments
       // the durable epoch.
-      const lookup = holdNextCurrentLookupBeforeRead(cache);
+      lookup = holdNextCurrentLookupBeforeRead(cache);
       fake.emitNotification(textDelta(ref, "-suspended-worker"));
       await lookup.reached;
       expect(await clearCachedSessions()).toEqual({ committed: true });
@@ -1168,6 +1169,7 @@ describe("background transcript recovery", () => {
       expect(writes.length).toBe(writesAfterCheckpoint);
       expect(threadsStore.getState().cacheLifetimes.get(ref)?.suppressed).toBe(true);
     } finally {
+      lookup?.release();
       put.mockRestore();
       await lease.release();
       await settleBackgroundTranscriptsForTests();
@@ -1200,6 +1202,7 @@ describe("background transcript recovery", () => {
       return outcome;
     });
     const lease = acquireBackgroundThread(ref);
+    let lookup: ReturnType<typeof holdNextCurrentLookup> | undefined;
     try {
       await lease.ready;
       await settleBackgroundTranscriptsForTests();
@@ -1218,7 +1221,7 @@ describe("background transcript recovery", () => {
 
       // The held lookup captures the oversized base BEFORE Clear commits, so
       // its completion reaches the oversized-base early return.
-      const lookup = holdNextCurrentLookup(cache);
+      lookup = holdNextCurrentLookup(cache);
       fake.emitNotification(textDelta(ref, "-suspended-oversized"));
       await lookup.reached;
       expect(await clearCachedSessions()).toEqual({ committed: true });
@@ -1231,6 +1234,7 @@ describe("background transcript recovery", () => {
       expect(writes.length).toBe(writesBefore);
       expect(threadsStore.getState().cacheLifetimes.get(ref)?.suppressed).toBe(true);
     } finally {
+      lookup?.release();
       put.mockRestore();
       await lease.release();
       await settleBackgroundTranscriptsForTests();
@@ -1474,6 +1478,149 @@ describe("background transcript recovery", () => {
       put.mockRestore();
       await lease.release();
       await settleBackgroundTranscriptsForTests();
+      resetThreadsStoreForTests();
+      restoreOptions();
+      cache.close();
+    }
+  });
+  test("a worker-only ref whose obsolete completion lands after an aborted Clear recovers automatically", async () => {
+    const restoreOptions = installBackgroundTranscriptOptionsForTests({ residentBytes: 0 });
+    const cache = new SessionCacheIndexedDB({
+      indexedDB: new IDBFactory(),
+      databaseName: `recovery-${crypto.randomUUID()}`,
+      beforeCommit: (operation) => {
+        if (operation === "clear") throw new Error("clear storage fault");
+      },
+    });
+    resetThreadsStoreForTests();
+    setSessionCacheAdapterForTests(cache);
+    let reads = 0;
+    const fake = new FakeClient("ready");
+    fake.on("thread/read", ({ ref: requested, requestGeneration }) => {
+      reads += 1;
+      const response = currentRead(requested ?? ref);
+      response.requestGeneration = requestGeneration ?? response.requestGeneration;
+      if (response.overlay?.[0]) response.overlay[0].item.text = reads === 1 ? "alpha" : "recovered";
+      return response;
+    });
+    fake.on("thread/unsubscribe", () => ({}));
+    connectionStore.getState().connect(fake);
+    const lease = acquireBackgroundThread(ref);
+    let paneHeld = false;
+    let lookup: ReturnType<typeof holdNextCurrentLookupBeforeRead> | undefined;
+    try {
+      await lease.ready;
+      await settleBackgroundTranscriptsForTests();
+      expect(backgroundTranscriptSnapshotForTests().refs.get(ref)?.current).toBe(true);
+      const readsAfterCheckpoint = reads;
+
+      // A healthy, continuously desired, nonresident ref: the disk worker is
+      // the only in-flight claim and it parks at the lookup.
+      lookup = holdNextCurrentLookupBeforeRead(cache);
+      fake.emitNotification(textDelta(ref, "-worker-after-abort"));
+      await lookup.reached;
+      expect(await clearCachedSessions()).toEqual({ committed: false });
+      expect(threadsStore.getState().clearInFlight).toBeUndefined();
+      // The obsolete worker completion lands AFTER the abort.
+      lookup.release();
+      await settleBackgroundTranscriptsForTests();
+
+      // With no new notification the demand must recover to a real checkpoint.
+      await vi.waitFor(() => expect(backgroundTranscriptSnapshotForTests().refs.get(ref)?.current).toBe(true));
+      expect(reads).toBeGreaterThan(readsAfterCheckpoint);
+      expect(backgroundTranscriptSnapshotForTests().refs.get(ref)?.persistence).toBe("enabled");
+
+      // The recovered checkpoint opens locally with no further read.
+      const readsAfterRecovery = reads;
+      await threadsStore.getState().ensureThread(ref);
+      paneHeld = true;
+      expect(reads).toBe(readsAfterRecovery);
+      expect(JSON.stringify(threadsStore.getState().threads.get(ref))).toContain("recovered");
+    } finally {
+      lookup?.release();
+      if (paneHeld) threadsStore.getState().releaseThread(ref);
+      await settleBackgroundTranscriptsForTests();
+      await lease.release();
+      resetThreadsStoreForTests();
+      restoreOptions();
+      cache.close();
+    }
+  });
+
+  test("a worker-only ref whose obsolete completion lands before an aborted Clear recovers automatically", async () => {
+    const restoreOptions = installBackgroundTranscriptOptionsForTests({ residentBytes: 0 });
+    const cache = new SessionCacheIndexedDB({
+      indexedDB: new IDBFactory(),
+      databaseName: `recovery-${crypto.randomUUID()}`,
+      beforeCommit: (operation) => {
+        if (operation === "clear") throw new Error("clear storage fault");
+      },
+    });
+    resetThreadsStoreForTests();
+    setSessionCacheAdapterForTests(cache);
+    let reads = 0;
+    const fake = new FakeClient("ready");
+    fake.on("thread/read", ({ ref: requested, requestGeneration }) => {
+      reads += 1;
+      const response = currentRead(requested ?? ref);
+      response.requestGeneration = requestGeneration ?? response.requestGeneration;
+      if (response.overlay?.[0]) response.overlay[0].item.text = reads === 1 ? "alpha" : "recovered";
+      return response;
+    });
+    fake.on("thread/unsubscribe", () => ({}));
+    connectionStore.getState().connect(fake);
+    const lease = acquireBackgroundThread(ref);
+    let paneHeld = false;
+    let lookup: ReturnType<typeof holdNextCurrentLookupBeforeRead> | undefined;
+    let restoreClearSpy: (() => void) | undefined;
+    let releaseClear: (() => void) | undefined;
+    try {
+      await lease.ready;
+      await settleBackgroundTranscriptsForTests();
+      expect(backgroundTranscriptSnapshotForTests().refs.get(ref)?.current).toBe(true);
+      const readsAfterCheckpoint = reads;
+
+      lookup = holdNextCurrentLookupBeforeRead(cache);
+      fake.emitNotification(textDelta(ref, "-worker-before-abort"));
+      await lookup.reached;
+      // Hold the real Clear before its transaction runs, so the obsolete worker
+      // completion can land while the Clear is armed but not yet aborted.
+      const clearArrived = deferred<void>();
+      const clearGate = deferred<void>();
+      releaseClear = () => clearGate.resolve();
+      const realClear = cache.clear.bind(cache);
+      const clearSpy = vi.spyOn(cache, "clear").mockImplementationOnce(async () => {
+        clearArrived.resolve();
+        await clearGate.promise;
+        return realClear();
+      });
+      restoreClearSpy = () => clearSpy.mockRestore();
+      const clearing = clearCachedSessions();
+      await clearArrived.promise;
+      expect(threadsStore.getState().clearInFlight).toBeDefined();
+
+      lookup.release();
+      await settleBackgroundTranscriptsForTests();
+      releaseClear();
+      expect(await clearing).toEqual({ committed: false });
+      await settleBackgroundTranscriptsForTests();
+
+      await vi.waitFor(() => expect(backgroundTranscriptSnapshotForTests().refs.get(ref)?.current).toBe(true));
+      expect(reads).toBeGreaterThan(readsAfterCheckpoint);
+      expect(backgroundTranscriptSnapshotForTests().refs.get(ref)?.persistence).toBe("enabled");
+
+      const readsAfterRecovery = reads;
+      await threadsStore.getState().ensureThread(ref);
+      paneHeld = true;
+      expect(reads).toBe(readsAfterRecovery);
+      expect(JSON.stringify(threadsStore.getState().threads.get(ref))).toContain("recovered");
+    } finally {
+      releaseClear?.();
+      lookup?.release();
+      restoreClearSpy?.();
+      if (paneHeld) threadsStore.getState().releaseThread(ref);
+      await settleBackgroundTranscriptsForTests();
+      await lease.release();
       resetThreadsStoreForTests();
       restoreOptions();
       cache.close();
