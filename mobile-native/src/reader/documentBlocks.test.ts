@@ -198,6 +198,7 @@ it("keeps a code span's own edge spaces beside a dropped tag", () => {
 	// heading of only a blank code span still leaves the title to the file name.
 	expect(wordsOf("| `  x  ` | y |\n|---|---|\n| 1 | 2 |")).toEqual(["| x | y |\n| 1 | 2 |"]);
 	expect(documentTitle(documentBlocks("# ` `"), "docs/notes.md")).toBe("notes.md");
+	expect(wordsOf("`  a  `")).toEqual(["a"]);
 });
 
 it("reads a NUL in the source as U+FFFD, as CommonMark does, instead of dropping it", () => {

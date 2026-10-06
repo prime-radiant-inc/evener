@@ -69,7 +69,7 @@ class TextHtmlTokenizer extends Tokenizer {
 }
 
 // Marks in the words, each a NUL and a letter. The source can't hold a NUL:
-// documentBlocks' lexer call reads one as U+FFFD, as CommonMark (and md4c) do.
+// documentBlocks' lexer call reads one as U+FFFD, as CommonMark asks.
 //
 // Where an inline tag dropped. It goes with the spaces around it, leaving one
 // if there were any ("a <br> b" reads "a b"), wherever the tag sat: in
