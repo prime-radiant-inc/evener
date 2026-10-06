@@ -2359,9 +2359,10 @@ test("demand queued behind a page when the last observer leaves does not land ei
 });
 
 // A view that leaves while a page it asked for is being published (a listener
-// releasing the last observer as the page lands) is gone for the rest of that
-// read: an explicit loadMore queues no next page for it.
-test("a release during a loaded page's publish queues no next page", async () => {
+// releasing the last observer as the page lands, on either of its publishes)
+// is gone for the rest of that read: an explicit loadMore queues no next page
+// for it.
+test.each([1, 2])("a release during a loaded page's publish %i queues no next page", async (publish) => {
   const client = activityClient();
   client.on("evener/thread/jobs/list", ({ cursor }) => {
     if (!cursor) return jobsFixture([jobFixture("shell-1")], "page-2");
@@ -2373,8 +2374,9 @@ test("a release during a loaded page's publish queues no next page", async () =>
   await activityState(store, () => store.getSnapshot().summary !== null);
   const leave = store.observe("jobs");
   await activityState(store, () => store.getSnapshot().jobs.hasMore);
+  let publishes = 0;
   const stop = store.subscribe(() => {
-    if (callsTo(client, "evener/thread/jobs/list") === 2) leave();
+    if (callsTo(client, "evener/thread/jobs/list") === 2 && ++publishes === publish) leave();
   });
   await store.loadMore("jobs");
   stop();

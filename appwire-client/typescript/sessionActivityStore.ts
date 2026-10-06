@@ -486,6 +486,7 @@ export class SessionActivityStore {
           });
           if (stale()) continue;
           this.publish({ context: page.context, runtime: this.runtimeFor(page.context, statusRevision) });
+          if (stale()) continue;
           // Collection reads can warm retained count indexes without emitting
           // a notification. Refresh an observed unknown count after useful
           // progress, paced and coalesced across pages, without scanning merely
