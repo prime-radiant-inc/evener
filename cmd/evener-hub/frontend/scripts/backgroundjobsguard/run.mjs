@@ -2,7 +2,7 @@
 // Run through TestBackgroundJobsBrowser. JSON stdin supplies an isolated real
 // hub and Go-owned producer barriers, never frontend state or RPC responses.
 import assert from "node:assert/strict";
-import { readFileSync, writeFileSync, watch } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { Driver } from "../skillguard/run.mjs";
 import { evaluate, navigateTo } from "../browserGuardCdp.mjs";
@@ -364,12 +364,12 @@ async function runOutputPagingJourney(fixture) {
   const control = async command => {
     const ackPath = path.join(fixture.artifactDir, `phase-${String(++phase).padStart(2,'0')}.json`);
     return new Promise((resolve, reject) => {
-      const watcher = watch(fixture.artifactDir, check);
-      // A watch event can arrive while the acknowledgement file is still empty
-      // and be the only one delivered (macOS coalesces them), so poll as well.
+      // Poll rather than fs.watch: the producer writes in place with os.WriteFile
+      // and macOS coalesces directory events, so the only event can arrive while
+      // the acknowledgement is still empty.
       const poll = setInterval(check, 100);
       const timer = setTimeout(() => finish(new Error(`producer did not acknowledge ${command}`)), 15000);
-      function finish(error, value) { watcher.close(); clearInterval(poll); clearTimeout(timer); error ? reject(error) : resolve(value); }
+      function finish(error, value) { clearInterval(poll); clearTimeout(timer); error ? reject(error) : resolve(value); }
       function check() {
         let value;
         try { value = JSON.parse(readFileSync(ackPath,'utf8')); } catch { return; }
