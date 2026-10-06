@@ -82,14 +82,15 @@ func TestAgentCascadeBrowser(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// The daemon reports a skill's resolved path; on macOS the temp root is a
-	// /var symlink to /private/var, so compare against the resolved file.
-	overlapSkillFile, err := filepath.EvalSymlinks(overlapSkillDir)
-	if err != nil {
+	overlapSkillFile := filepath.Join(overlapSkillDir, "SKILL.md")
+	if err := os.WriteFile(overlapSkillFile, []byte("---\nname: cascade-overlap\ndescription: Cascade overlap skill fixture\n---\nCASCADE_OVERLAP_SKILL_BODY\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	overlapSkillFile = filepath.Join(overlapSkillFile, "SKILL.md")
-	if err := os.WriteFile(filepath.Join(overlapSkillDir, "SKILL.md"), []byte("---\nname: cascade-overlap\ndescription: Cascade overlap skill fixture\n---\nCASCADE_OVERLAP_SKILL_BODY\n"), 0600); err != nil {
+	// The daemon scans skills under its symlink-resolved cwd; on macOS the
+	// temp root /var is a symlink to /private/var, so compare against the
+	// resolved file.
+	resolvedOverlapSkillFile, err := filepath.EvalSymlinks(overlapSkillFile)
+	if err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(commandDir, "cascade-overlap.md"), []byte("---\ndescription: Cascade overlap command fixture\n---\nCASCADE_OVERLAP_COMMAND_BODY args=[$ARGUMENTS]\n"), 0600); err != nil {
@@ -191,7 +192,7 @@ func TestAgentCascadeBrowser(t *testing.T) {
 					scriptErr <- err
 					return
 				}
-				if err := cascadeValidateMixedInput(role, mixedInput, mixedDocs, overlapSkillFile); err != nil {
+				if err := cascadeValidateMixedInput(role, mixedInput, mixedDocs, resolvedOverlapSkillFile); err != nil {
 					scriptErr <- err
 					return
 				}
