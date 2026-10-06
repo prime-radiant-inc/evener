@@ -170,7 +170,9 @@ async function measureFloatingDock(page) {
   // DockHost is a lazy chunk and settledShell waits only for the rail, so the
   // dock can still be booting here. A pane opened before DockHost's onReady is
   // re-minted under a new id when onReady restores the layout an earlier page
-  // saved, and the id openPane returned then never gets a panel.
+  // saved, and the id openPane returned then never gets a panel. DockHost
+  // registers the api at the top of its synchronous onReady, so a non-null api
+  // means that restore has finished.
   await driver.waitPage("window.shellguardFloat.getDockviewApi() != null", { label: "real Dockview api ready" });
   await evaluate(
     driver.send,
