@@ -420,9 +420,8 @@ async function boot(): Promise<void> {
   });
   fake.on("thread/unsubscribe", () => ({}));
   fake.on("evener/thread/activity/read", ({ ref, scope }) => ({
-    ...activitySummary(ref),
+    ...activitySummary(ref, scope),
     context: overviewActivityContext(ref),
-    scope: scope ?? "session",
     delegates: { ...CROWDED_ACTIVITY_COUNTS },
     jobs: { ...CROWDED_ACTIVITY_COUNTS },
     watches: { ...CROWDED_ACTIVITY_COUNTS },

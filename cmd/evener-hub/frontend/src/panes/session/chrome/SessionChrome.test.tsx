@@ -1115,8 +1115,7 @@ test("triggerless chrome shares summary ownership and refreshes its menu on type
   // The menu counts subagents at every depth: the subtree read, which the
   // subagent count owns apart from the session's discovery read.
   fake.on("evener/thread/activity/read", ({ scope }) => ({
-    ...activitySummary(ref),
-    scope: scope ?? "session",
+    ...activitySummary(ref, scope),
     // The session's own delegate count never moves; only the subtree's
     // does, so the label can only follow the subtree count.
     delegates:
