@@ -109,18 +109,17 @@ func gitRemoteURL(src Source) string {
 // the folder again exactly when it changed; empty for a directory source.
 func fetchPluginSource(ctx context.Context, src Source, marketplaceRoot, destDir string) (string, error) {
 	switch {
-	case src.Rel || src.Kind == SourceDirectory:
-		from := src.Path
-		if src.Rel {
-			from = filepath.Join(marketplaceRoot, src.Path)
-		}
-		if err := copyTree(from, destDir); err != nil {
+	case src.Rel:
+		sha, err := sourcePathCommit(ctx, marketplaceRoot, src.Path)
+		if err != nil {
 			return "", err
 		}
-		if src.Rel {
-			return sourcePathCommit(ctx, marketplaceRoot, src.Path)
+		if err := copyTree(filepath.Join(marketplaceRoot, src.Path), destDir); err != nil {
+			return "", err
 		}
-		return "", nil
+		return sha, nil
+	case src.Kind == SourceDirectory:
+		return "", copyTree(src.Path, destDir)
 	case src.Kind == SourceGitHub || src.Kind == SourceURL:
 		if err := sourceGitClone(ctx, gitRemoteURL(src), destDir, src.Ref, src.Sha); err != nil {
 			return "", err
