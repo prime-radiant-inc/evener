@@ -1117,8 +1117,8 @@ describe("transcript projector", () => {
 // The refresh is a standalone collapsed notification a reader can always
 // reach: visible at every level independently of the system-events gate, and
 // opted out of the expand-everything (Full) disclosure baseline. Both are
-// shared projector rules, so the native client keeps seeing the same generic
-// system notice the web's renderer replaces.
+// shared projector rules; each client renders the typed kind as its own
+// collapsed "Refreshed my memory" disclosure.
 
 describe("memory refresh projection", () => {
   function memoryItem(): ItemModel {

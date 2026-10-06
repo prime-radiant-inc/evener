@@ -431,6 +431,100 @@ describe("explicit choices survive remount, verbosity and stay per hub/session",
 	});
 });
 
+// --- the folded Source keeps its own explicit choice ------------------------
+
+describe("the folded Source keeps its own explicit choice", () => {
+	const hasSource = (tree: ReactTestRenderer) => find(tree, "memory-context-source-text") !== undefined;
+
+	it("keeps an explicit Source open through row remount, outer fold and a verbosity remount", () => {
+		const item = memoryContextWireItem("current-personal");
+		const first = mountItem(item, "tools", true);
+		press(first.tree, MEMORY_CONTEXT_LABEL);
+		press(first.tree, "Source");
+		expect(hasSource(first.tree)).toBe(true);
+		// The nested fold is independent of the outer one: folding the outer
+		// refresh and reopening it leaves the Source as the reader set it.
+		expect(find(first.tree, "memory-context-scope-state")).toBeDefined();
+		press(first.tree, MEMORY_CONTEXT_LABEL);
+		expect(absent(first.tree, "memory-context-scope-state")).toBe(true);
+		press(first.tree, MEMORY_CONTEXT_LABEL);
+		expect(hasSource(first.tree)).toBe(true);
+		unmount(first.tree);
+
+		const remounted = mountItem(item, "tools", true);
+		// The outer choice persisted too, so the remount is already open.
+		expect(find(remounted.tree, "memory-context-scope-state")).toBeDefined();
+		expect(hasSource(remounted.tree)).toBe(true);
+		unmount(remounted.tree);
+
+		const atFull = mountItem(item, "full", true);
+		expect(atFull.expandByDefault).toBe(true);
+		expect(find(atFull.tree, "memory-context-scope-state")).toBeDefined();
+		expect(hasSource(atFull.tree)).toBe(true);
+		unmount(atFull.tree);
+	});
+
+	it("keeps an explicit Source closed by default and through remount and the outer reopening", () => {
+		const item = memoryContextWireItem("current-personal");
+		// A fresh Full mount under its own scope: the Source defaults closed,
+		// independently of the verbosity/expansion baseline.
+		const freshFull = mountItem(item, "full", true, { hubId: "hub", sessionRef: "source-fresh-full" });
+		expect(freshFull.expandByDefault).toBe(true);
+		press(freshFull.tree, MEMORY_CONTEXT_LABEL);
+		expect(hasSource(freshFull.tree)).toBe(false);
+		unmount(freshFull.tree);
+
+		const first = mountItem(item, "tools", true);
+		press(first.tree, MEMORY_CONTEXT_LABEL);
+		expect(hasSource(first.tree)).toBe(false);
+		press(first.tree, "Source");
+		expect(hasSource(first.tree)).toBe(true);
+		press(first.tree, "Source"); // explicit close
+		expect(hasSource(first.tree)).toBe(false);
+		// Folding the outer refresh and reopening it leaves the explicit close
+		// in force.
+		press(first.tree, MEMORY_CONTEXT_LABEL);
+		expect(absent(first.tree, "memory-context-scope-state")).toBe(true);
+		press(first.tree, MEMORY_CONTEXT_LABEL);
+		expect(find(first.tree, "memory-context-scope-state")).toBeDefined();
+		expect(hasSource(first.tree)).toBe(false);
+		unmount(first.tree);
+
+		const remounted = mountItem(item, "full", true);
+		expect(remounted.expandByDefault).toBe(true);
+		// The outer choice persisted open; the Source stays explicitly closed.
+		expect(find(remounted.tree, "memory-context-scope-state")).toBeDefined();
+		expect(hasSource(remounted.tree)).toBe(false);
+		unmount(remounted.tree);
+	});
+
+	it("does not share a Source choice across hub, session or item", () => {
+		const item = memoryContextWireItem("current-personal");
+		const first = mountItem(item, "tools", true, { hubId: "hub", sessionRef: "session-1" });
+		press(first.tree, MEMORY_CONTEXT_LABEL);
+		press(first.tree, "Source");
+		expect(hasSource(first.tree)).toBe(true);
+		unmount(first.tree);
+
+		const otherSession = mountItem(item, "tools", true, { hubId: "hub", sessionRef: "session-2" });
+		press(otherSession.tree, MEMORY_CONTEXT_LABEL);
+		expect(hasSource(otherSession.tree)).toBe(false);
+		unmount(otherSession.tree);
+
+		const otherHub = mountItem(item, "tools", true, { hubId: "hub-2", sessionRef: "session-1" });
+		press(otherHub.tree, MEMORY_CONTEXT_LABEL);
+		expect(hasSource(otherHub.tree)).toBe(false);
+		unmount(otherHub.tree);
+
+		// Fixture items share an id, so give the other item its own.
+		const otherItem = { ...memoryContextWireItem("current-project"), id: "mem-other" } as ThreadItem;
+		const itemTree = mountItem(otherItem, "tools", true, { hubId: "hub", sessionRef: "session-1" });
+		press(itemTree.tree, MEMORY_CONTEXT_LABEL);
+		expect(hasSource(itemTree.tree)).toBe(false);
+		unmount(itemTree.tree);
+	});
+});
+
 // --- live reduction and history hydration reach the same presentation -------
 
 describe("live reduction and history hydration agree", () => {

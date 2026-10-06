@@ -766,11 +766,11 @@ const LIFECYCLE_EVENT_KINDS = new Set([
 	// narrower than the family it replaces.
 	"notes-context",
 	// An automatic memory refresh: a routine context injection like a
-	// shared-notes snapshot. The web renders it as its own "Refreshed my
-	// memory" disclosure; native presentation is unchanged — it stays the same
-	// standalone, tone-system notice line it drew for the pre-typed blank-kind
-	// item (lifecycle is not in groupTimeline's internal set).
-	"memory-context",
+	// shared-notes snapshot. Its lifecycle family keeps it a standalone notice
+	// (lifecycle is not in groupTimeline's internal set), and the native notice
+	// renderer gives the typed kind its own collapsed "Refreshed my memory"
+	// disclosure, as the web renderer does.
+	MEMORY_CONTEXT_EVENT_KIND,
 ]);
 
 function systemFamily(eventKind: string | undefined): NoticeFamily {

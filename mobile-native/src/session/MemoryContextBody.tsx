@@ -12,7 +12,6 @@
 // stays inspectable. That text is the complete original resolved from the
 // retained canonical model the screen passes down (falling back to the row's
 // own display-bounded `text`), independent of the decoded content.
-import { useState } from "react";
 import { Text, View } from "react-native";
 import {
 	type MemoryContextObservation,
@@ -21,14 +20,27 @@ import {
 	memoryContextStateLabel,
 } from "@evener/appwire-client";
 import { MarkdownResponse } from "../MarkdownResponse";
+import { setDisclosureOpenAll, useDisclosureOpen } from "../nativeDisclosure";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { SystemEvent } from "./SystemEvent";
 
 /** The folded Source's label. */
 const SOURCE_LABEL = "Source";
 
-export function MemoryContextBody({ observation, source }: { observation?: MemoryContextObservation; source: string }) {
-	const [sourceOpen, setSourceOpen] = useState(false);
+export function MemoryContextBody({
+	observation,
+	source,
+	sourceDisclosureId,
+}: {
+	observation?: MemoryContextObservation;
+	source: string;
+	/** The scoped id its own explicit open/close choice is stored under, so the
+	 * Source folds independently of the outer refresh and survives a remount. */
+	sourceDisclosureId: string;
+}) {
+	// The Source defaults closed independently of verbosity and of the outer
+	// refresh's own choice; only a reader's own choice opens it.
+	const sourceOpen = useDisclosureOpen(sourceDisclosureId, false);
 	const { palette } = useColors();
 	const scale = useTextScale();
 	const quiet = { fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkLow };
@@ -67,7 +79,11 @@ export function MemoryContextBody({ observation, source }: { observation?: Memor
 					{memoryContextEmptyText(observation.state)}
 				</Text>
 			)}
-			<SystemEvent label={SOURCE_LABEL} expanded={sourceOpen} onToggle={() => setSourceOpen((open) => !open)}>
+			<SystemEvent
+				label={SOURCE_LABEL}
+				expanded={sourceOpen}
+				onToggle={() => setDisclosureOpenAll([sourceDisclosureId], !sourceOpen)}
+			>
 				<Text allowFontScaling={allowFontScaling} selectable style={quiet} testID="memory-context-source-text">
 					{source}
 				</Text>

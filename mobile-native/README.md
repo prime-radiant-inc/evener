@@ -100,10 +100,11 @@ renderer. Unavailable and revoked states stay visible while folded. A separate
 formatted view omits; malformed observations open as that text directly and do
 not block later valid observations.
 
-Explicit open and closed choices survive remounts and detail-level changes,
-scoped by hub, session and item. Live and reloaded history use this same
-presentation. Web and native share payload validation. Memory tools and model
-context retain their separate owners. See the [memory guide](../docs/product/memory.md).
+Explicit open and closed choices for the refresh and Source are independent.
+Both survive remounts and detail-level changes, scoped by hub, session and item;
+folding the refresh preserves its Source choice. Live and reloaded history use
+this same presentation. Web and native share payload validation. Memory tools
+and model context retain their separate owners. See the [memory guide](../docs/product/memory.md).
 The JavaScript tests and iOS Metro bundle check do not establish installed-iPhone
 touch behavior or narrow-layout wrapping; those require a current-source device
 or simulator smoke check.

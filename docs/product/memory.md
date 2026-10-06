@@ -102,10 +102,11 @@ cannot display. Native resolves that original from the retained conversation whe
 the row opens, so its display-size limit does not clip Source or the malformed
 fallback. Both clients use the shared payload validator; an observation
 that cannot be decoded opens as its original text without blocking later valid
-observations. Disclosure choices belong to the session and item, with native
-choices also scoped by hub, and survive remounts and detail-level changes. Live
-and reloaded history use the same projection without changing model context or
-memory files. CLI and TUI context presentation remains unchanged.
+observations. Disclosure choices belong to the session and item and survive
+remounts and detail-level changes. Native stores the refresh and Source choices
+independently, also scoped by hub; folding the refresh preserves its Source
+choice. Live and reloaded history use the same projection without changing model
+context or memory files. CLI and TUI context presentation remains unchanged.
 
 Memory tool calls are separate from these automatic index observations. CLI and
 TUI transcripts still use the generic tool-result path, while AppWire web and

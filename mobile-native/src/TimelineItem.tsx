@@ -17,7 +17,7 @@ import type { MobileTimelineItem } from "./projectedRows";
 import type { NativeFileOpenContext } from "./reader/markdownFileReferences";
 import { useMinuteClock } from "./session/minuteClock";
 import { useNowPastQuiet } from "./session/quietClock";
-import { rowDisclosureIds } from "./session/disclosureKeys";
+import { memoryContextSourceDisclosureId, rowDisclosureIds } from "./session/disclosureKeys";
 import type { ErrorAction } from "./session/errorAction";
 import { ErrorRow } from "./session/ErrorRow";
 import { MemoryContextBody } from "./session/MemoryContextBody";
@@ -201,7 +201,11 @@ export function TimelineItem({
 			) : (
 				<SystemEvent label={label} text={noticeText} hint={item.hint} expanded={expanded} onToggle={toggle}>
 					{item.eventKind === MEMORY_CONTEXT_EVENT_KIND ? (
-						<MemoryContextBody observation={item.memoryContext} source={noticeText ?? item.text} />
+						<MemoryContextBody
+							observation={item.memoryContext}
+							source={noticeText ?? item.text}
+							sourceDisclosureId={memoryContextSourceDisclosureId(hubId, sessionRef, item)}
+						/>
 					) : item.rendersMarkdown ? (
 						<MarkdownResponse markdown={item.text} />
 					) : undefined}
