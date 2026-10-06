@@ -46,7 +46,7 @@ also a symlink under --work-root),
 and per stage: <S>.events.ndjson, <S>.stdout, <S>.grade.json, <S>.memory/.
 Full logs stay on disk; the report prints only the summary.
 """
-import argparse, concurrent.futures as cf, glob, json, os, random, re, shutil, signal, string, subprocess, sys, time
+import argparse, concurrent.futures as cf, glob, json, os, re, shutil, signal, subprocess, sys, tempfile, time
 from datetime import datetime
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -164,28 +164,21 @@ def project_name(fixture):
     return re.sub(r"[^A-Za-z0-9._-]", "", m.group(1).rstrip("/").split("/")[-1]) or "app"
 
 
-def workdir_path(args, trial, name, fixture, workdirs):
-    """Where the trial's workspace called name (work, work2) lives, creating it when it is new:
+def new_workdir(args, trial, name, fixture):
+    """Creates the trial's workspace called name (work, work2) and returns its real path:
     trial/name, or under --work-root a neutral DIR/<project>-<random> that trial/name symlinks to
-    (a path inside the results tree tells the agent it is in an eval and it skips saving memory).
-    Records the real path in workdirs, which the grades keep for every later use."""
-    if name in workdirs:
-        return workdirs[name]
+    (a path inside the results tree tells the agent it is in an eval and it skips saving memory)."""
     if not args.work_root:
         return os.path.join(trial, name)
     os.makedirs(args.work_root, exist_ok=True)
-    project = project_name(fixture)
-    while True:
-        suffix = "".join(random.choices(string.ascii_lowercase + string.digits, k=5))
-        real = os.path.join(os.path.realpath(args.work_root), f"{project}-{suffix}")
-        try:
-            os.mkdir(real)  # claims the name; copytree below fills it
-            break
-        except FileExistsError:
-            continue
+    real = tempfile.mkdtemp(prefix=f"{project_name(fixture)}-", dir=os.path.realpath(args.work_root))
     os.symlink(real, os.path.join(trial, name))
-    workdirs[name] = real
     return real
+
+
+def workdir(trial, name):
+    """The real path of the trial's workspace called name, through its symlink under --work-root."""
+    return os.path.realpath(os.path.join(trial, name))
 
 
 def make_state_dir(args, trial, work):
@@ -230,16 +223,15 @@ def evener_command(binpath, model, work, state, effort, prompt, max_rounds=None,
     return cmd
 
 
-def run_session(args, binpath, arm, scen, stage, trial, session_ids, workdirs):
+def run_session(args, binpath, arm, scen, stage, trial, session_ids):
     """Prepares the stage's workspace, runs its evener session, and returns where things ended up."""
     # A stage with its own "fixture" runs in a separate checkout (another
     # project) that shares the trial's memory root.
     wname, xdg = stage.get("workspace", "work"), os.path.join(trial, "xdg")
-    fixture = os.path.join(scen, stage["fixture"]) if stage.get("fixture") else None
-    if fixture and not os.path.lexists(os.path.join(trial, wname)):
-        work = workdir_path(args, trial, wname, fixture, workdirs)
-        make_workspace(fixture, work, xdg)
-    work = workdir_path(args, trial, wname, fixture, workdirs)
+    if stage.get("fixture") and not os.path.lexists(os.path.join(trial, wname)):
+        fixture = os.path.join(scen, stage["fixture"])
+        make_workspace(fixture, new_workdir(args, trial, wname, fixture), xdg)
+    work = workdir(trial, wname)
     env = fixture_env(work, xdg)
     if stage.get("seed_project_memory"):
         rc, out = run_bounded([PROJID, work], work, env, COMMAND_TIMEOUT)
@@ -263,7 +255,7 @@ def run_session(args, binpath, arm, scen, stage, trial, session_ids, workdirs):
     start = time.time()
     with open(events, "w") as ev, open(os.path.join(trial, f"{name}.stdout"), "w") as so:
         exit_code, _ = run_bounded(cmd, work, env, args.timeout, stdout=so, stderr=ev)
-    return {"work": work, "workdirs": workdirs, "xdg": xdg, "env": env, "state": state, "events": events, "started": start,
+    return {"work": work, "xdg": xdg, "env": env, "state": state, "events": events, "started": start,
             "exit": exit_code, "seconds": round(time.time() - start), "timeout": args.timeout}
 
 
@@ -452,7 +444,7 @@ def grade_stage(label, arm, scen, stage, trial, session):
     name = stage["name"]
     calls, limit, messages, _ = parse_events(session["events"])
     grade = {"version": label, "arm": arm, "scenario": os.path.basename(scen), "trial": trial, "stage": name,
-             "workdirs": dict(session["workdirs"]), "exit": session["exit"], "seconds": session["seconds"], "rounds_capped": limit, "tool_calls": len(calls),
+             "exit": session["exit"], "seconds": session["seconds"], "rounds_capped": limit, "tool_calls": len(calls),
              "memory_calls": {}, "checks": {}, "check_errors": {}}
     for c in calls:
         if c["tool"].startswith("memory_"):
@@ -505,10 +497,10 @@ def grade_stage(label, arm, scen, stage, trial, session):
     return write_grade(trial, grade)
 
 
-def failed_grade(label, arm, scen, stage, trial, error, workdirs):
+def failed_grade(label, arm, scen, stage, trial, error):
     """The grade of a stage that an infrastructure error kept from running: every check fails."""
     return write_grade(trial, {"version": label, "arm": arm, "scenario": os.path.basename(scen), "trial": trial,
-                               "stage": stage["name"], "workdirs": dict(workdirs), "exit": "error", "error": error, "seconds": 0,
+                               "stage": stage["name"], "exit": "error", "error": error, "seconds": 0,
                                "rounds_capped": False, "tool_calls": 0, "memory_calls": {},
                                "checks": all_failed(stage), "whiteboard": "", "final_message": ""})
 
@@ -518,24 +510,24 @@ def run_trial(args, label, binpath, arm, scen, rep):
     infrastructure failure: that stage and every later stage fail."""
     trial = os.path.join(args.out, label, arm, os.path.basename(scen), f"r{rep}")
     spec = load_scenario(scen)
-    grades, failure, session_ids, workdirs = [], None, {}, {}
+    grades, failure, session_ids = [], None, {}
     try:
         os.makedirs(trial)
         fixture = base_fixture(scen, spec)
-        work = workdir_path(args, trial, "work", fixture, workdirs)
+        work = new_workdir(args, trial, "work", fixture)
         make_state_dir(args, trial, work)
         make_workspace(fixture, work, os.path.join(trial, "xdg"))
     except Exception as e:
         failure = f"workspace setup: {type(e).__name__}: {e}"
     for st in spec["stages"]:
         if failure:
-            grades.append(failed_grade(label, arm, scen, st, trial, failure, workdirs))
+            grades.append(failed_grade(label, arm, scen, st, trial, failure))
             continue
         try:
-            session = run_session(args, binpath, arm, scen, st, trial, session_ids, workdirs)
+            session = run_session(args, binpath, arm, scen, st, trial, session_ids)
         except Exception as e:
             failure = f"{type(e).__name__}: {e}"
-            grades.append(failed_grade(label, arm, scen, st, trial, failure, workdirs))
+            grades.append(failed_grade(label, arm, scen, st, trial, failure))
             continue
         grades.append(grade_stage(label, arm, scen, st, trial, session))
         session_ids[st["name"]] = grades[-1]["session_id"]
@@ -726,7 +718,7 @@ def cmd_ask(args):
     """Resume a finished stage's session and ask it why it chose what it did."""
     trial, stage = os.path.abspath(args.trial), args.stage
     g = json.load(open(os.path.join(trial, f"{stage}.grade.json")))
-    work = g.get("workdirs", {}).get(args.workspace) or os.path.join(trial, args.workspace)
+    work = workdir(trial, args.workspace)
     env = fixture_env(work, os.path.join(trial, "xdg"))
     n = len([f for f in os.listdir(trial) if f.startswith(f"{stage}.ask")]) + 1
     events = os.path.join(trial, f"{stage}.ask{n}.events.ndjson")
