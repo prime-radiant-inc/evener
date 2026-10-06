@@ -319,15 +319,16 @@ func (s *Server) NewConnection(id string) *Connection {
 	// (at 32 this side evicted live clients whose send loop napped through a
 	// turn-boundary burst on a loaded machine).
 	return &Connection{
-		id:                id,
-		server:            s,
-		send:              make(chan appwire.Message, appwire.NotificationBufferCap),
-		requests:          make(chan admittedRequest, s.requestQueueCapacity),
-		slowReadSlots:     make(chan struct{}, slowReadDispatchCap),
-		requestPools:      make(map[string]int),
-		slowReadInflight:  map[string]int{},
-		workerExited:      make(chan struct{}),
-		pendingAdmissions: map[*subscriptionAdmission]struct{}{},
+		id:                           id,
+		server:                       s,
+		send:                         make(chan appwire.Message, appwire.NotificationBufferCap),
+		requests:                     make(chan admittedRequest, s.requestQueueCapacity),
+		slowReadSlots:                make(chan struct{}, slowReadDispatchCap),
+		requestPools:                 make(map[string]int),
+		requestPoolSaturationAdvised: make(map[string]bool),
+		slowReadInflight:             map[string]int{},
+		workerExited:                 make(chan struct{}),
+		pendingAdmissions:            map[*subscriptionAdmission]struct{}{},
 	}
 }
 
@@ -643,9 +644,11 @@ type Connection struct {
 	// capSaturationAdvised makes the cap-saturation advisory one-shot per
 	// connection. Only the worker goroutine touches it.
 	capSaturationAdvised bool
-	// requestPoolSaturationAdvised does the same for requestPools. Only the
-	// worker goroutine touches it.
-	requestPoolSaturationAdvised bool
+	// requestPoolSaturationAdvised does the same for requestPools, once per
+	// pool that fills, and requestTotalSaturationAdvised once for the
+	// connection's total. Only the worker goroutine touches them.
+	requestPoolSaturationAdvised  map[string]bool
+	requestTotalSaturationAdvised bool
 	// slowReadMu guards slowReadInflight, the per-method tally of in-flight
 	// slow reads the stall advisory names.
 	slowReadMu       sync.Mutex
@@ -2035,8 +2038,9 @@ func (c *Connection) acquireSlowReadSlot(ctx context.Context, method string) boo
 // tryRequestSlot takes one of pool's slots for a request the server's
 // ConcurrentRequest admitted, or at once returns the refusal to answer it
 // with when that pool or the connection's total is full
-// (concurrentRequestCap says why it never parks). The first full pool per
-// connection reports through Server.logf, as the slow-read cap's does.
+// (concurrentRequestCap says why it never parks). Each pool's first refusal,
+// and the connection total's, reports through Server.logf, as the slow-read
+// cap's does.
 func (c *Connection) tryRequestSlot(ctx context.Context, pool string) (refusal string) {
 	// As the slow-read acquire does: a request dequeued after cancellation
 	// starts nothing. The caller's refusal enqueue then fails on the same
@@ -2045,19 +2049,26 @@ func (c *Connection) tryRequestSlot(ctx context.Context, pool string) (refusal s
 		return err.Error()
 	}
 	c.requestPoolsMu.Lock()
-	switch {
-	case c.requestPools[pool] >= concurrentRequestCap:
-		refusal = fmt.Sprintf("this connection already has %d requests waiting on slow answers from %q; try again shortly", concurrentRequestCap, pool)
-	case c.requestsInFlight >= concurrentRequestTotalCap:
-		refusal = fmt.Sprintf("this connection already has %d requests waiting on slow answers; try again shortly", concurrentRequestTotalCap)
-	default:
+	poolFull := c.requestPools[pool] >= concurrentRequestCap
+	totalFull := !poolFull && c.requestsInFlight >= concurrentRequestTotalCap
+	if !poolFull && !totalFull {
 		c.requestPools[pool]++
 		c.requestsInFlight++
 	}
 	c.requestPoolsMu.Unlock()
-	if refusal != "" && !c.requestPoolSaturationAdvised {
-		c.requestPoolSaturationAdvised = true
-		c.server.logf("appserver: connection %s concurrent request pool is full for %q (%s); refusing such requests as Unavailable until one finishes", c.id, pool, refusal)
+	switch {
+	case poolFull:
+		refusal = fmt.Sprintf("this connection already has %d requests waiting on slow answers from %q; try again shortly", concurrentRequestCap, pool)
+		if !c.requestPoolSaturationAdvised[pool] {
+			c.requestPoolSaturationAdvised[pool] = true
+			c.server.logf("appserver: connection %s concurrent request pool is full for %q (%d in flight); refusing its further requests as Unavailable until one finishes", c.id, pool, concurrentRequestCap)
+		}
+	case totalFull:
+		refusal = fmt.Sprintf("this connection already has %d requests waiting on slow answers; try again shortly", concurrentRequestTotalCap)
+		if !c.requestTotalSaturationAdvised {
+			c.requestTotalSaturationAdvised = true
+			c.server.logf("appserver: connection %s concurrent request pools are full in total (%d in flight); refusing further admitted requests as Unavailable until one finishes", c.id, concurrentRequestTotalCap)
+		}
 	}
 	return refusal
 }
