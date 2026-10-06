@@ -75,9 +75,7 @@ it("fences a late pre-clear alias summary and collection at the resync boundary"
   const nextDelegates = deferred<SessionDelegatesResponse>();
   let summaries = 0,
     delegates = 0;
-  client.on("evener/thread/activity/read", ({ scope }) =>
-    ++summaries === 1 ? oldSummary.promise : nextSummary.promise,
-  );
+  client.on("evener/thread/activity/read", () => (++summaries === 1 ? oldSummary.promise : nextSummary.promise));
   client.on("evener/thread/delegates/list", () => (++delegates === 1 ? oldDelegates.promise : nextDelegates.promise));
   connectionStore.getState().connect(client);
   await threadsStore.getState().ensureThread(ref);
@@ -126,7 +124,7 @@ it("never presents prior-session rows under a replacement alias summary", async 
     epoch: "new-epoch",
   };
   const pending = deferred<SessionDelegatesResponse>();
-  client.on("evener/thread/activity/read", ({ scope }) => replacement);
+  client.on("evener/thread/activity/read", () => replacement);
   client.on("evener/thread/delegates/list", () => pending.promise);
   try {
     client.emitNotification({ method: "evener/thread/resync", params: { ref, threadId: "replacement" } });

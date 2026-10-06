@@ -9,7 +9,7 @@ import { ClientProvider } from "../../../shell/clientContext";
 import { conversationPaneLifetime } from "../../../shell/paneLifetime";
 import { type OpenPaneRecord, resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { connectionStore } from "../../../stores/connection";
-import { activitySummary, activityThread, answerActivityRead } from "../../../stores/sessionActivityTestUtils";
+import { activityThread, answerActivityRead } from "../../../stores/sessionActivityTestUtils";
 import { resetThreadsStoreForTests } from "../../../stores/threads";
 import { resetTranscriptDisplayStoreForTests, transcriptDisplayStore } from "../../../stores/transcriptDisplay";
 import { makeTranscriptPreviewModel } from "../../../transcriptDisplay/previewFixture";

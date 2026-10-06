@@ -257,8 +257,7 @@ test("footer and tabs explain summary counts through paging and activity changes
   let active = 2;
   let total = 6;
   const summary = ({ scope }: { scope?: "session" | "subtree" }) => ({
-    ...activitySummary(ref),
-    scope: scope ?? "session",
+    ...activitySummary(ref, scope),
     delegates: { known: true, active: 0, total: 2, completed: 2, failed: 0 },
     jobs: { known: true, active, total, completed: total - active, failed: 0 },
     watches: { known: true, active: 2, total: 3, completed: 1, failed: 0 },

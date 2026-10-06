@@ -193,9 +193,6 @@ test("opens the mobile panel when nothing is focused", async () => {
 test("Activity opened from the mobile drawer supersedes the drawer", async () => {
   const ref = "remote:drawer-activity";
   const client = activityClient();
-  client.on("evener/thread/activity/read", ({ ref: requested, scope }) => ({
-    ...activitySummary(requested, scope),
-  }));
   connectionStore.getState().connect(client);
   const user = userEvent.setup();
   workspaceStore.getState().openPane("doc", { ref });
@@ -229,9 +226,6 @@ test("Activity opened from the mobile drawer supersedes the drawer", async () =>
 test("renders the new activity sidebar over the mobile stack with the selected tab", async () => {
   const ref = "remote:activity";
   const client = activityClient();
-  client.on("evener/thread/activity/read", ({ ref: requested, scope }) => ({
-    ...activitySummary(requested, scope),
-  }));
   client.on("evener/thread/jobs/list", ({ ref: requested, scope }) => ({
     context: activityContext(requested),
     scope: scope ?? "session",

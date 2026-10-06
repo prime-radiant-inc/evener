@@ -316,7 +316,7 @@ test("recursive activity shows the same proven parent hierarchy above its conten
     rootRef: "remote:root",
     ancestors: [{ ref: "remote:root", sessionId: "root", title: "Parent session" }],
   };
-  client.on("evener/thread/activity/read", () => ({ ...activitySummary(ref), scope: "subtree", context }));
+  client.on("evener/thread/activity/read", () => ({ ...activitySummary(ref, "subtree"), context }));
   client.on("evener/thread/delegates/list", () => ({
     context,
     scope: "subtree",

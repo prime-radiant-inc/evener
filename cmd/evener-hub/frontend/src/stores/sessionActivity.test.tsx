@@ -96,7 +96,7 @@ test("client/ref/scope switches fence pending results and cleanup/remount keeps 
   const oldClient = activityClient(),
     nextClient = activityClient(),
     pending = deferred<SessionActivitySummary>();
-  oldClient.on("evener/thread/activity/read", ({ scope }) => pending.promise);
+  oldClient.on("evener/thread/activity/read", () => pending.promise);
   connectionStore.getState().connect(oldClient);
   const view = renderHook(
     ({ ref, scope }: { ref: string; scope: "session" | "subtree" }) => useSessionActivity(ref, scope),

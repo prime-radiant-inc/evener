@@ -26,7 +26,13 @@ import { MutationOutbox } from "../../stores/mutationOutbox";
 import { MutationOutboxIndexedDB } from "../../stores/mutationOutboxIndexedDB";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { sessionActivitySnapshot } from "../../stores/sessionActivity";
-import { activityContext, activityDelegate, activityJob, activitySummary } from "../../stores/sessionActivityTestUtils";
+import {
+  activityContext,
+  activityDelegate,
+  activityJob,
+  activitySummary,
+  answerActivityRead,
+} from "../../stores/sessionActivityTestUtils";
 import { holdIndexedDBEvent } from "../../stores/testing/stalledIndexedDB";
 import {
   resetThreadsStoreForTests,
@@ -4345,7 +4351,7 @@ test("a fenced notLoaded session keeps force stop reachable in the pane footer",
   fake.on("evener/thread/activity/read", (params) => {
     // Discovery is the session read; the subtree read is the subagent count's own.
     (params.scope === "subtree" ? subtreeRefs : activityRefs).push(params.ref);
-    return activitySummary(params.ref, params.scope);
+    return answerActivityRead(params);
   });
   fake.on("evener/thread/forceStop", () => {
     stopped = true;
@@ -4421,7 +4427,7 @@ test.each([
   fake.on("evener/thread/activity/read", (params) => {
     // Discovery is the session read; the subtree read is the subagent count's own.
     (params.scope === "subtree" ? subtreeRefs : activityRefs).push(params.ref);
-    return activitySummary(params.ref, params.scope);
+    return answerActivityRead(params);
   });
   render(
     <ClientProvider client={fake}>

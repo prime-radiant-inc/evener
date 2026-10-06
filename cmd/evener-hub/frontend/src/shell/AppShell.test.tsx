@@ -8,8 +8,6 @@ import type {
   NavigationSessionLocation,
   NavigationSessionSummary,
   NavigationSnapshot,
-  SessionActivityReadParams,
-  SessionActivitySummary,
   ThreadStartResponse,
 } from "@evener/appwire-client";
 import { APPWIRE_PROTOCOL_VERSION, AppwireClient, type ConnectionState, WireError } from "@evener/appwire-client";
@@ -52,7 +50,6 @@ import {
   activityContext,
   activityDelegate,
   activityDetailsThread,
-  activitySummary,
   answerActivityRead,
 } from "../stores/sessionActivityTestUtils";
 import { resetSettingsHostForTests, settingsHostStore } from "../stores/settingsHost";

@@ -1371,7 +1371,6 @@ test.each([
   client.on("evener/thread/activity/read", ({ scope }) => ({
     ...activitySummary(response.context.ref, scope),
     context: response.context,
-    scope: "session",
   }));
   client.on("evener/thread/jobs/list", () => ({
     context: response.context,
