@@ -326,3 +326,35 @@ test("says the hub's subtree count of running subagents once it is known", async
     ),
   ).toBe(true);
 });
+
+function hubCounting(known: boolean, active: number) {
+  const client = activityClient();
+  client.on("evener/thread/activity/read", ({ ref, scope }) => ({
+    ...activitySummary(ref),
+    scope: scope ?? "session",
+    delegates: { known, total: active, active, failed: 0, completed: 0 },
+  }));
+  connectionStore.getState().connect(client);
+  return client;
+}
+
+// Once known, the hub's count wins over the turn's rows downward too: a row
+// still marked running for a child whose run the hub has seen end explains
+// nothing.
+test("a known hub count of zero overrides a turn row still marked running", async () => {
+  seedRunningChildren(1);
+  const client = hubCounting(true, 0);
+  render(<LivenessLine lastFrameAt={0} now={60_000} active={true} sessionRef="s1" turnId="turn_0" />);
+  await waitFor(() => expect(client.calls.some((call) => call.method === "evener/thread/activity/read")).toBe(true));
+  await waitFor(() => expect(screen.getByTestId("liveness-line").textContent).toBe("Quiet ~1m"));
+});
+
+// Until the hub knows its count (an unindexed journal, an older hub), the
+// active turn's rows stand in.
+test("an unknown hub count falls back to the active turn's rows", async () => {
+  seedRunningChildren(1);
+  const client = hubCounting(false, 0);
+  render(<LivenessLine lastFrameAt={0} now={60_000} active={true} sessionRef="s1" turnId="turn_0" />);
+  await waitFor(() => expect(client.calls.some((call) => call.method === "evener/thread/activity/read")).toBe(true));
+  expect(screen.getByTestId("liveness-line").textContent).toBe("Waiting on 1 subagent");
+});
