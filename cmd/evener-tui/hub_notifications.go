@@ -280,11 +280,7 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 // reality when the Installed list is current, and an auto-upgrade daemon pass
 // or another client's mutation can change either at any time).
 func (m *hubModel) refreshPluginsPanel() tea.Cmd {
-	cmds := []tea.Cmd{m.marketplaceListRead(), launchconfig.CmdPluginList(m.client)}
-	if name := m.pluginsPanel.BrowseMarketplace(); name != "" {
-		cmds = append(cmds, launchconfig.CmdMarketplaceBrowse(m.client, name))
-	}
-	return tea.Batch(cmds...)
+	return tea.Batch(m.marketplaceListRead(), launchconfig.CmdPluginList(m.client), m.openCatalogRead())
 }
 
 // reconcilePendingFromNotification translates an inbound daemon
