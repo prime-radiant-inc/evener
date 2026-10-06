@@ -168,11 +168,20 @@ func buildNavigationProjectionContext(ctx context.Context, inputs navigationBuil
 	p.catalogs[navigationResourceProjects] = append([]hubcore.TreeProject(nil), buckets.active...)
 	p.catalogs[navigationResourceArchivedProjects] = append([]hubcore.TreeProject(nil), buckets.archived...)
 	p.catalogs[navigationResourceTestRuns] = append([]hubcore.TreeProject(nil), buckets.testRuns...)
-	for _, project := range buckets.all() {
-		if err := ctx.Err(); err != nil {
-			return navigationProjection{}, err
+	// A key can be in more than one catalog. It resolves to the first catalog
+	// in navigationCatalogOrder holding it, for project reads as for the
+	// location index (which records a session under the first catalog
+	// holding it) and an archived list with no hint, so a session the first
+	// catalog holds is located in the project its key reads.
+	for _, kind := range navigationCatalogOrder {
+		for _, project := range p.catalogs[kind] {
+			if err := ctx.Err(); err != nil {
+				return navigationProjection{}, err
+			}
+			if _, claimed := p.projects[project.Key]; !claimed {
+				p.projects[project.Key] = project
+			}
 		}
-		p.projects[project.Key] = project
 	}
 	p.pinSections, err = p.buildPinSectionsContext(ctx)
 	if err != nil {
@@ -308,7 +317,7 @@ func cloneNavigationBoolMap(in map[string]bool) map[string]bool {
 // The buckets are not merely a display list, and that is why the duplicate
 // groups must be MERGED rather than discarded: they are the sole source of the
 // catalog slices (:171-179) and manifest counts (:184-199), of the p.projects
-// map built from buckets.all() (:174-179), and of the location index that
+// map built from the catalogs in navigationCatalogOrder, and of the location index that
 // indexLocationsContext walks to mint a hubapi.NavigationSessionLocation per
 // session (:1370-1399). Dropping a duplicate group therefore does not just trim
 // a row: its sessions vanish from the catalog and from their project entry, and
@@ -1448,7 +1457,7 @@ func (p navigationProjection) indexLocationsContext(ctx context.Context) error {
 			_ = p.indexLocationNodeContext(ctx, root, root, projectKey, tier, true)
 		}
 	}
-	for _, kind := range []navigationResourceKind{navigationResourceProjects, navigationResourceArchivedProjects, navigationResourceTestRuns} {
+	for _, kind := range navigationCatalogOrder {
 		if err := ctx.Err(); err != nil {
 			return err
 		}

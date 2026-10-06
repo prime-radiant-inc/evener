@@ -716,3 +716,37 @@ func TestRenamingAnArchivedSessionInvalidatesItsProject(t *testing.T) {
 		t.Fatalf("rename targets = %+v, want project p1", mutation.Targets)
 	}
 }
+
+// A key in several catalogs resolves to one of them for every read: the first
+// of projects, archived projects and test runs holding it, as an archived list
+// with no hint and the location index read it. So a session that catalog
+// holds is located in the project a read of its key returns.
+func TestAKeyInSeveralCatalogsResolvesToOneForEveryRead(t *testing.T) {
+	at := func(base int) func(int) time.Time {
+		return func(i int) time.Time { return time.Unix(int64(base+i), 0).UTC() }
+	}
+	named := func(prefix string) func(int) string {
+		return func(i int) string { return fmt.Sprintf("%s %d", prefix, i) }
+	}
+	active := hubcore.TreeProject{Key: "shared", Name: "shared", Recent: archivedRows("active", 2, at(10), named("active")), Archived: archivedRows("active-old", 1, at(1), named("active old"))}
+	runs := hubcore.TreeProject{Key: "shared", Name: "shared", IsTestRun: true, Recent: archivedRows("run", 2, at(30), named("run")), Archived: archivedRows("run-old", 1, at(2), named("run old"))}
+	p := archivedProjection(t, active, runs)
+
+	project, ok := p.Project("shared")
+	if !ok || len(project.Recent.Sessions) != 2 || project.Recent.Sessions[0].SessionID != active.Recent[0].ID {
+		t.Fatalf("project read = %+v (ok %v), want the projects catalog's recent rows", project.Recent.Sessions, ok)
+	}
+	page, err := p.ProjectPage("shared", "recent", 0, 10)
+	if err != nil || len(page.Sessions) != 2 || page.Sessions[0].SessionID != active.Recent[0].ID {
+		t.Fatalf("project page = %+v (%v), want the projects catalog's recent rows", page.Sessions, err)
+	}
+	archived, err := p.ArchivedList(navigationArchivedListRequest{ProjectKey: "shared"})
+	if err != nil || archived.Catalog != navigationResourceProjects {
+		t.Fatalf("archived list read %q (%v), want projects", archived.Catalog, err)
+	}
+	for _, row := range append(append([]hubcore.TreeNode(nil), active.Recent...), active.Archived...) {
+		if location, ok := p.Location("local:" + row.ID); !ok || location.ProjectKey != "shared" {
+			t.Fatalf("location of %s = %+v (ok %v), want project shared", row.ID, location, ok)
+		}
+	}
+}
