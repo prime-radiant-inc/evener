@@ -82,7 +82,7 @@ interface ResourceRead {
   refresh: RefreshWalk | null;
   pace: { handle: unknown; resume(): void } | null;
   /** Bumped when the last observer leaves; a read begun before it is dropped. */
-  released: number;
+  releases: number;
 }
 const resources: readonly SessionActivityResource[] = ["summary", "delegates", "jobs", "watches"];
 const defaultClock: SessionActivityClock = {
@@ -119,7 +119,7 @@ const resourceRead = (): ResourceRead => ({
   boundary: undefined,
   refresh: null,
   pace: null,
-  released: 0,
+  releases: 0,
 });
 
 /** Owns one session/scope/connection lifetime. Results from a disposed owner
@@ -211,17 +211,17 @@ export class SessionActivityStore {
       if (this.disposed) return;
       read.observers -= 1;
       if (read.observers === 0) {
-        // Whoever asked for a read in flight has gone: its reply is dropped,
-        // so a store another holder keeps alive takes in no closed view's
-        // late page.
-        read.released += 1;
+        // Whoever asked for the collection's reads has gone, explicit loads
+        // included: the read in flight drops its reply, and nothing queued
+        // behind it or walking on after it runs, so a store another holder
+        // keeps alive takes in no closed view's late page.
+        read.releases += 1;
         this.cancelTimer(read);
-        if (!read.oneShot) {
-          this.cancelPace(read);
-          read.rootQueued = false;
-          read.pageQueued = false;
-          if (!read.inFlight) this.change(resource, { pending: false });
-        }
+        this.cancelPace(read);
+        read.rootQueued = false;
+        read.pageQueued = false;
+        if (read.refresh) read.refresh.advance = false;
+        this.change(resource, { pending: false });
       }
       this.releaseIdle();
     };
@@ -386,14 +386,20 @@ export class SessionActivityStore {
       }
       const cursor = root ? undefined : read.cursor;
       let generation = this.generation;
-      const released = read.released;
+      const releases = read.releases;
       const statusRevision = this.statusRevision;
       try {
         this.lease ??= acquireThreadSubscription(this.client, this.ref);
         await this.lease.ensure();
-        if (this.disposed || generation !== this.generation || this.client.state !== "ready") continue;
+        if (
+          this.disposed ||
+          generation !== this.generation ||
+          releases !== read.releases ||
+          this.client.state !== "ready"
+        )
+          continue;
         const result = await this.fetch(resource, cursor);
-        if (this.disposed || generation !== this.generation || released !== read.released) continue;
+        if (this.disposed || generation !== this.generation || releases !== read.releases) continue;
         if (result.scope !== this.scope) throw new Error("Session activity response belongs to another scope");
         generation = this.acceptContext(result.context, resource);
         if (this.disposed || generation !== this.generation) continue;
@@ -515,7 +521,7 @@ export class SessionActivityStore {
           }
         }
       } catch (error) {
-        if (this.disposed || generation !== this.generation || released !== read.released) continue;
+        if (this.disposed || generation !== this.generation || releases !== read.releases) continue;
         if (error instanceof WireError && error.evenerErrorInfo === "sessionActivityCursorStale" && cursor) {
           read.cursor = undefined;
           read.refresh = null;

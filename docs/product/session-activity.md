@@ -595,9 +595,11 @@ retain independent counts while duplicate consumers of one ref and scope share
 the same owner. Agents, Jobs and Watches tabs observe their own
 session-scoped collection. A visible page boundary supplies further demand,
 while the shared store retains and retries an interrupted continuation. When a
-collection's last observer leaves, the store drops that collection's reads
-still in flight, so a store another holder keeps alive takes in no late page
-for a view that has closed.
+collection's last observer leaves, the store drops that collection's read in
+flight and any demand queued or walking behind it, explicit loads included, so
+a store another holder keeps alive takes in no late page for a view that has
+closed. Its retained rows stay, and the next observer reconciles them with a
+fresh walk, as for any retained store.
 
 About is the last sidebar category and has no count or footer chip. Its
 [adapter](../../cmd/evener-hub/frontend/src/shell/activitybar/AboutTab.tsx)
@@ -708,8 +710,7 @@ transcript's liveness line all count subagents at every depth, from the subtree
 summary
 ([`useSubagentCounts`](../../cmd/evener-hub/frontend/src/stores/sessionActivity.ts)),
 while the Agents tab lists the session's own. The count and an open Activity
-sheet share one subtree store; closing the sheet ends its collection demand,
-and the store drops the sheet's pages still in flight.
+sheet share one subtree store (see [Client lifetimes](#client-lifetimes)).
 The workspace registers only Tasks and Details session panels. Saved Activity
 placements are unknown panes: the existing workspace restore omits them,
 preserves registered panes and selects useful surviving focus. A valid primary

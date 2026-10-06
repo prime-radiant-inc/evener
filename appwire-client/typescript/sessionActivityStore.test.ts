@@ -2302,6 +2302,7 @@ test("legacy activity events do not duplicate scoped reads or refresh unrelated 
   expect(callsTo(client, "evener/thread/delegates/list")).toBe(1);
   expect(callsTo(client, "evener/thread/watches/list")).toBe(1);
 });
+
 // A page in flight when a collection's last observer leaves is dropped, not
 // merged: the observer that asked for it is gone, and a store kept alive by
 // another holder (a summary count) must not take in a closed view's late page.
@@ -2325,4 +2326,34 @@ test("a page in flight when the last observer leaves does not land", async () =>
   late.resolve(jobsFixture([jobFixture("late")]));
   await more;
   expect(store.getSnapshot().jobs.rows.map(({ jobId }) => jobId)).not.toContain("late");
+});
+
+// Demand queued behind that page by an explicit loadMore is dropped with it,
+// and the collection is left settled, not pending a read nothing will make.
+test("demand queued behind a page when the last observer leaves does not land either", async () => {
+  const client = activityClient(),
+    late = deferred<SessionJobsResponse>(),
+    entered = deferred<void>();
+  client.on("evener/thread/jobs/list", ({ cursor }) => {
+    if (!cursor) return jobsFixture([jobFixture("shell-1")], "page-2");
+    if (callsTo(client, "evener/thread/jobs/list") === 2) {
+      entered.resolve();
+      return late.promise;
+    }
+    return jobsFixture([jobFixture("late-queued")]);
+  });
+  const store = owner(client);
+  store.start();
+  await activityState(store, () => store.getSnapshot().summary !== null);
+  const leave = store.observe("jobs");
+  await activityState(store, () => store.getSnapshot().jobs.hasMore);
+  const first = store.loadMore("jobs");
+  await entered.promise;
+  const second = store.loadMore("jobs");
+  leave();
+  late.resolve(jobsFixture([jobFixture("late")]));
+  await Promise.all([first, second]);
+  expect(store.getSnapshot().jobs.rows.map(({ jobId }) => jobId)).toEqual(["shell-1"]);
+  expect(callsTo(client, "evener/thread/jobs/list")).toBe(2);
+  expect(store.getSnapshot().jobs).toMatchObject({ loading: false, pending: false });
 });
