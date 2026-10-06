@@ -739,14 +739,15 @@ const callId = (subagentId: string) => `call-${subagentId}`;
 // owns every delegate in a tree by its root (agent/delegate_tree_start.go);
 // parentDelegateId marks the nesting.
 function delegatesOf(session: FleetSession, now: number): EvenerDelegateInfo[] {
+	const rootSessionId = demoSessionId(session.slug);
 	return flatten(session.subagents).map(({ subagent, parent }) => {
 		const running = subagent.state === "running";
 		const lastActive = now - subagent.ago * 1000;
 		return {
 			runGeneration: 1,
 			delegateId: subagent.id,
-			ownerSessionId: demoSessionId(session.slug),
-			rootSessionId: demoSessionId(session.slug),
+			ownerSessionId: rootSessionId,
+			rootSessionId,
 			childSessionId: demoSessionId(subagent.id),
 			transcriptRef: hostSessionRef(session.hostId, subagent.id),
 			...(parent ? { parentDelegateId: parent } : {}),

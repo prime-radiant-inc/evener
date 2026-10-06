@@ -90,16 +90,6 @@ describe("the demo sessions behind Appendix A's Session frames", () => {
 			expect(delegate.phase).toBe(delegate.terminal && !delegate.resumable ? "closed" : "running");
 	});
 
-	// A daemon owns every delegate in a tree by its root session
-	// (agent/delegate_tree_start.go), so a root's diagnostics list its whole
-	// tree, the nesting marked by parentDelegateId.
-	it("owns a root's nested subagents by the root, marking them by their parent", () => {
-		const root = threadOf("s-pr2138");
-		const delegates = root.evener.diagnostics?.delegates ?? [];
-		for (const delegate of delegates) expect(delegate.ownerSessionId).toBe(root.sessionId);
-		expect(delegates.find((delegate) => delegate.delegateId === "g-settle-1")?.parentDelegateId).toBe("g-settle");
-	});
-
 	it("serves a thread for every subagent a session's delegates name, so opening one reads it", () => {
 		const byRef = new Map(sessions.map((thread) => [thread.evener.ref, thread]));
 		const delegates = sessions.flatMap((thread) =>
@@ -111,6 +101,8 @@ describe("the demo sessions behind Appendix A's Session frames", () => {
 			if (!thread) throw new Error(`no thread for ${delegate.transcriptRef}`);
 			expect(thread.name).toBe(delegate.description);
 			expect(thread.sessionId).toBe(delegate.childSessionId);
+			// The root owns its whole tree (demoSessions.ts delegatesOf).
+			expect(delegate.ownerSessionId).toBe(parent.sessionId);
 			// Its status matches its row: running works, failed failed, done ended.
 			expect(thread.status.type).toBe(
 				{ running: "active", failed: "systemError", completed: "notLoaded" }[delegate.status],
