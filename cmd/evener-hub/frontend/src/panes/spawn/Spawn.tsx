@@ -8,6 +8,7 @@ import {
   basename,
   collectAdvancedOverrides,
   effortLabel,
+  errorText,
   filterSlashMenuItems,
   findBuiltinArgument,
   friendlyLaunchErrorMessage,
@@ -1318,7 +1319,16 @@ function SpawnForm({
   // nothing about it is host-derived, so the form stays startable exactly as it
   // was before host routing existed.
   const [hostCatalogPending, setHostCatalogPending] = useState(() => !isLocalHost(submittedSource));
+  // A refused catalog read (a full forwarded-read pool, a host briefly
+  // unreachable) is said, with a Retry: nothing else re-reads the catalogs
+  // until the host changes. Retry bumps catalogAttempt, which re-runs the load
+  // below without the host-change reset, so the draft keeps what it has.
+  const [hostCatalogError, setHostCatalogError] = useState<string | null>(null);
+  const [catalogAttempt, setCatalogAttempt] = useState(0);
+  const retryHostCatalogs = useCallback(() => setCatalogAttempt((attempt) => attempt + 1), []);
   useEffect(() => {
+    // Read by the effect only so a Retry re-runs it.
+    void catalogAttempt;
     let active = true;
     // A changed target retires the previous host's catalogs before the new
     // host's answer lands (and when it fails), so a retained list can never let
@@ -1350,6 +1360,10 @@ function SpawnForm({
       setPluginSelection({ mode: "default" });
       setKnownSelectionIssues([]);
     }
+    setHostCatalogError(null);
+    const refused = (err: unknown) => {
+      if (active) setHostCatalogError(errorText(err));
+    };
     // An answer stamps its OWN catalog as settled for this host, and is the
     // only thing that may reconcile that half of the draft: an empty list read
     // as "this host offers nothing" wiped the draft's harness and every
@@ -1363,22 +1377,16 @@ function SpawnForm({
     // the catalog it DID answer (round six). `active` is false once this host is
     // superseded, so a previous host's late answer never certifies the current
     // one.
-    const harnessesLoad = hostRequest(client, submittedSource, "evener/harnesses/list", {}).then(
-      (r) => {
-        if (!active) return;
-        setHarnesses(r.data);
-        setHarnessesHostSettled(submittedSource);
-      },
-      () => {},
-    );
-    const schemaLoad = hostRequest(client, submittedSource, "evener/launch/schema", {}).then(
-      (r) => {
-        if (!active) return;
-        setSchemaOptions(perLaunchEvenerOptions(r));
-        setSchemaHostSettled(submittedSource);
-      },
-      () => {},
-    );
+    const harnessesLoad = hostRequest(client, submittedSource, "evener/harnesses/list", {}).then((r) => {
+      if (!active) return;
+      setHarnesses(r.data);
+      setHarnessesHostSettled(submittedSource);
+    }, refused);
+    const schemaLoad = hostRequest(client, submittedSource, "evener/launch/schema", {}).then((r) => {
+      if (!active) return;
+      setSchemaOptions(perLaunchEvenerOptions(r));
+      setSchemaHostSettled(submittedSource);
+    }, refused);
     void Promise.all([harnessesLoad, schemaLoad]).then(() => {
       // Settlement alone releases Start, even when one or both loads never
       // answered: the host refuses what it cannot serve at launch rather than
@@ -1390,7 +1398,7 @@ function SpawnForm({
     return () => {
       active = false;
     };
-  }, [client, submittedSource, setPluginSelection, setKnownSelectionIssues]);
+  }, [client, submittedSource, setPluginSelection, setKnownSelectionIssues, catalogAttempt]);
 
   // The draft's launch config is chosen from the SELECTED host's catalogs, and
   // the draft store carries it across a host switch (component 07b review, round
@@ -2767,6 +2775,14 @@ function SpawnForm({
           </p>
         )}
 
+        {hostCatalogError !== null && (
+          <div className={CLASS.notice} role="status" data-testid="spawn-host-catalog-error">
+            <span>Couldn't load this host's harnesses and launch options: {hostCatalogError}</span>
+            <Button variant="quiet" type="button" onClick={retryHostCatalogs}>
+              Retry
+            </Button>
+          </div>
+        )}
         {pluginSelectionSupported && (
           <div className={CLASS.pluginDesktop} data-testid="spawn-plugin-desktop">
             {previewResponse === null && (
