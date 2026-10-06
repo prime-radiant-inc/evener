@@ -84,9 +84,13 @@ export interface TranscriptResidencySnapshot {
     string,
     {
       resident: boolean;
+      residentBytes: number;
+      handoffBytes: number;
       current: boolean;
       appliedSequence: number;
       persistence: "enabled" | "repairing" | "clear-suppressed";
+      pending: readonly ReceivedTranscriptUpdate[];
+      inFlight: readonly ReceivedTranscriptUpdate[];
     }
   >;
 }
@@ -343,6 +347,7 @@ export function createTranscriptResidency(
       if (!found?.record || found.epoch !== found.record.clearEpoch) {
         entry.persistence = "repairing";
         releaseEntryPending(entry);
+        if (entry.inFlight === batch) entry.inFlight = [];
         if (batchBytes > 0) pendingBudget.release(batchBytes);
         void hydrate(ref, held(entry) ? "foreground" : "background");
         return false;
@@ -359,6 +364,7 @@ export function createTranscriptResidency(
     if (!Number.isFinite(bytes) || bytes > 32 * 1024 * 1024) {
       entry.persistence = "repairing";
       releaseEntryPending(entry);
+      if (entry.inFlight === batch) entry.inFlight = [];
       if (batchBytes > 0) pendingBudget.release(batchBytes);
       void hydrate(ref, held(entry) ? "foreground" : "background");
       return false;
@@ -806,9 +812,13 @@ export function createTranscriptResidency(
             ref,
             {
               resident: port.resident(ref) !== undefined,
+              residentBytes: entry.residentBytes,
+              handoffBytes: entry.handoffBytes,
               current: entry.current,
               appliedSequence: entry.appliedSequence,
               persistence: entry.persistence,
+              pending: entry.pending,
+              inFlight: entry.inFlight,
             },
           ]),
         ),

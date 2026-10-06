@@ -57,7 +57,202 @@ function setup(model: ThreadModel, pendingBytes = DEFAULT_BACKGROUND_TRANSCRIPT_
   return { cache, residency, port, getResident: () => resident };
 }
 
+const independentJsonBytes = (value: unknown): number => new TextEncoder().encode(JSON.stringify(value)).byteLength;
+
 describe("transcript residency", () => {
+  test("charges the exact retained body before handing it to the disk worker", async () => {
+    const ref = "local:handoff-accounting";
+    const model = hydrateThread(currentRead(ref), ref, 1);
+    const { residency, port } = setup(model);
+    port.fold = (_ref, current, update) => applyNotification(current, update.notification, update.now);
+    try {
+      residency.published(ref, model, 0);
+      const bodyBytes = new TextEncoder().encode(JSON.stringify(currentTranscriptState(model))).byteLength;
+      const snapshot = residency.snapshot();
+      expect(snapshot.refs.get(ref)?.handoffBytes).toBeGreaterThanOrEqual(bodyBytes);
+      expect(snapshot.pendingBytes).toBeGreaterThanOrEqual(bodyBytes);
+      await residency.settled();
+    } finally {
+      await residency.settled();
+      residency.dispose();
+    }
+  });
+
+  test.each(["cache-miss", "oversized-base"] as const)(
+    "retires captured update references and recovers without replay on the %s early return",
+    async (earlyReturn) => {
+      const ref = "local:early-return";
+      const model = hydrateThread(currentRead(ref), ref, 1);
+      const { cache, residency, port } = setup(model);
+      port.unload(ref);
+      const hydrationStarted = deferred<void>();
+      let hydrationCalls = 0;
+      port.hydrate = async () => {
+        hydrationCalls += 1;
+        hydrationStarted.resolve();
+      };
+      const notification = textDelta(ref, "captured frame");
+      const bytes = encodedPayloadBytes(notification);
+      const get = vi.spyOn(cache, "getCurrent").mockImplementation(async (...args) => {
+        if (earlyReturn === "cache-miss") return undefined;
+        const state = currentTranscriptState(model)!;
+        const overlayKey = Object.keys(state.overlay)[0];
+        const overlayEntry = overlayKey === undefined ? undefined : state.overlay[overlayKey];
+        if (!overlayEntry) throw new Error("expected a cached overlay entry");
+        overlayEntry.item.text = "x".repeat(33 * 1024 * 1024);
+        return {
+          record: {
+            ownerToken: args[0][0],
+            ref,
+            connectionGeneration: 1,
+            ownershipGeneration: 0,
+            clearEpoch: 0,
+            appliedSequence: 0,
+            savedAt: Date.now(),
+            state,
+          },
+          epoch: 0,
+        };
+      });
+      const originalPut = cache.putCurrent.bind(cache);
+      const writes: Array<{ ref: string; state: unknown }> = [];
+      const put = vi.spyOn(cache, "putCurrent").mockImplementation(async (record, now) => {
+        const outcome = await originalPut(record, now);
+        if (outcome.outcome === "written") writes.push(record);
+        return outcome;
+      });
+      try {
+        expect(residency.accept(ref, { sequence: 1, now: 1, notification, bytes })).toBe(true);
+        await residency.settled();
+        const entry = residency.snapshot().refs.get(ref);
+        expect(entry?.inFlight).toEqual([]);
+        expect(entry?.pending).toEqual([]);
+        expect(residency.snapshot().pendingBytes).toBe(0);
+        expect(residency.snapshot().workerBytes).toBe(0);
+        expect(residency.snapshot().refs.get(ref)?.persistence).toBe("repairing");
+
+        // The unreconciled batch is retired, never retried, and recovery is
+        // scheduled without writing the stale frame.
+        await hydrationStarted.promise;
+        expect(hydrationCalls).toBeGreaterThanOrEqual(1);
+        expect(writes).toHaveLength(0);
+
+        // Authoritative recovery charges the repaired body and writes only the
+        // repaired state; the captured sequence-1 frame is not replayed.
+        const repaired = hydrateThread(currentRead(ref), ref, 2);
+        port.publish(ref, repaired);
+        expect(residency.published(ref, repaired, 1, true)).toBe(true);
+        const repairedBytes = independentJsonBytes(currentTranscriptState(repaired) ?? {});
+        const duringRecovery = residency.snapshot();
+        expect(duringRecovery.refs.get(ref)?.handoffBytes).toBeGreaterThanOrEqual(repairedBytes);
+        expect(duringRecovery.pendingBytes).toBeGreaterThanOrEqual(repairedBytes);
+        await residency.settled();
+        expect(residency.snapshot().refs.get(ref)?.current).toBe(true);
+        const lastWrite = writes.at(-1);
+        if (!lastWrite) throw new Error("expected the repaired state to reach the real cache");
+        expect(JSON.stringify(lastWrite.state)).not.toContain("captured frame");
+      } finally {
+        get.mockRestore();
+        put.mockRestore();
+        await residency.settled();
+        residency.dispose();
+      }
+    },
+  );
+
+  test("refuses an oversized candidate while a write boundary is held and recovers to use", async () => {
+    const cache = new SessionCacheIndexedDB({
+      indexedDB: new IDBFactory(),
+      databaseName: `residency-${crypto.randomUUID()}`,
+    });
+    caches.push(cache);
+    const ref = "local:refusal";
+    const base = hydrateThread(currentRead(ref), ref, 1);
+    const baseBytes = independentJsonBytes(currentTranscriptState(base) ?? {});
+    let model: ThreadModel | undefined;
+    const port: TranscriptResidencyPort = {
+      cache,
+      resident: () => model,
+      publish: (_ref, next) => {
+        model = next;
+      },
+      unload: () => {
+        model = undefined;
+      },
+      admission: () => undefined,
+      fold: (_ref, current, update) => applyNotification(current, update.notification, update.now),
+      hydrate: async () => {},
+    };
+    const oversizedText = "x".repeat(64 * 1024);
+    const oversizedFrame = textDelta(ref, oversizedText);
+    const frameBytes = encodedPayloadBytes(oversizedFrame);
+    expect(frameBytes).toBeGreaterThan(baseBytes);
+    const residency = createTranscriptResidency(port, {
+      ...DEFAULT_BACKGROUND_TRANSCRIPT_OPTIONS,
+      residentBytes: baseBytes * 2,
+      pendingBytes: frameBytes,
+    });
+    residency.connection(1, true);
+    residency.owners(ref, { foreground: 0, history: 0, mutationPinned: false, background: 1 });
+    const writes: Array<{ ref: string; state: unknown }> = [];
+    const originalPut = cache.putCurrent.bind(cache);
+    const writeStarted = deferred<void>();
+    let transaction: ReturnType<typeof holdNextWriteTransaction> | undefined;
+    const put = vi.spyOn(cache, "putCurrent").mockImplementation(async (record, now) => {
+      if (!transaction) {
+        transaction = holdNextWriteTransaction(["records", "meta", "current", "currentMeta"]);
+        writeStarted.resolve();
+      }
+      const outcome = await originalPut(record, now);
+      if (outcome.outcome === "written") writes.push(record);
+      return outcome;
+    });
+    try {
+      port.publish(ref, base);
+      expect(residency.published(ref, base, 0, true)).toBe(true);
+      const draining = residency.drain(ref);
+      await writeStarted.promise;
+      await transaction?.reached;
+
+      // While the real base write boundary is held, an oversized candidate that
+      // cannot fit resident or pending budget must be refused and left uncharged.
+      expect(residency.accept(ref, { sequence: 1, now: 1, notification: oversizedFrame, bytes: frameBytes })).toBe(
+        false,
+      );
+      const candidate = applyNotification(base, oversizedFrame, 1);
+      expect(residency.published(ref, candidate, 1)).toBe(false);
+      const refused = residency.snapshot();
+      expect(refused.residentBytes).toBe(baseBytes);
+      expect(refused.pendingBytes).toBe(0);
+      expect(refused.refs.get(ref)?.handoffBytes).toBe(0);
+      expect(model).toBe(base);
+
+      transaction?.release();
+      await draining;
+
+      // Recovery-to-use: an authoritative repaired candidate is admitted,
+      // charged and written.
+      const repairedFrame = textDelta(ref, "-recovered");
+      const repaired = applyNotification(base, repairedFrame, 2);
+      const repairedBytes = independentJsonBytes(currentTranscriptState(repaired) ?? {});
+      port.publish(ref, repaired);
+      expect(residency.published(ref, repaired, 2, true)).toBe(true);
+      await residency.settled();
+      const recovered = residency.snapshot();
+      expect(recovered.refs.get(ref)?.current).toBe(true);
+      expect(recovered.residentBytes).toBeGreaterThanOrEqual(repairedBytes);
+      const lastWrite = writes.at(-1);
+      if (!lastWrite) throw new Error("expected the recovered state to reach the real cache");
+      expect(JSON.stringify(lastWrite.state)).toContain("-recovered");
+      expect(JSON.stringify(writes.map((write) => write.state))).not.toContain(oversizedText);
+    } finally {
+      transaction?.release();
+      put.mockRestore();
+      await residency.settled();
+      residency.dispose();
+    }
+  });
+
   test.each(["uncommitted", "committed", "connection", "clear", "released"] as const)(
     "ownership retry respects the loaded durable cut and invalidation, %s",
     async (boundary) => {
@@ -578,6 +773,113 @@ describe("transcript residency", () => {
     expect(snapshot.refs.get(second.ref)?.resident).toBe(false);
     expect(snapshot.refs.get(third.ref)?.resident).toBe(true);
     expect(hydrateCalls).toBe(0);
+  });
+
+  test("evicts the foreground-least-recently-used victim despite newer live background traffic", async () => {
+    const cache = new SessionCacheIndexedDB({
+      indexedDB: new IDBFactory(),
+      databaseName: `residency-${crypto.randomUUID()}`,
+    });
+    caches.push(cache);
+    const first = hydrateThread(currentRead("local:one"), "local:one", 1);
+    const second = hydrateThread(currentRead("local:two"), "local:two", 1);
+    const third = hydrateThread(currentRead("local:tri"), "local:tri", 1);
+    const fourth = hydrateThread(currentRead("local:alt"), "local:alt", 1);
+    const residents = new Map<string, ThreadModel>();
+    let hydrateCalls = 0;
+    const port: TranscriptResidencyPort = {
+      cache,
+      resident: (ref) => residents.get(ref),
+      publish: (ref, model) => residents.set(ref, model),
+      unload: (ref) => {
+        residents.delete(ref);
+      },
+      admission: () => undefined,
+      fold: (_ref, model, update) => applyNotification(model, update.notification, update.now),
+      hydrate: async () => {
+        hydrateCalls += 1;
+      },
+    };
+    const bytes = encodedPayloadBytes(currentTranscriptState(first));
+    expect(encodedPayloadBytes(currentTranscriptState(second))).toBe(bytes);
+    expect(encodedPayloadBytes(currentTranscriptState(third))).toBe(bytes);
+    expect(encodedPayloadBytes(currentTranscriptState(fourth))).toBe(bytes);
+    const residency = createTranscriptResidency(port, {
+      ...DEFAULT_BACKGROUND_TRANSCRIPT_OPTIONS,
+      residentBytes: bytes * 2,
+    });
+    residency.connection(1, true);
+    for (const ref of [first.ref, second.ref, third.ref, fourth.ref]) {
+      residency.owners(ref, { foreground: 0, history: 0, mutationPinned: false, background: 1 });
+    }
+    const writes: Array<{ ref: string; state: unknown; ownerToken: string }> = [];
+    const originalPut = cache.putCurrent.bind(cache);
+    const put = vi.spyOn(cache, "putCurrent").mockImplementation(async (record, now) => {
+      const outcome = await originalPut(record, now);
+      if (outcome.outcome === "written") writes.push(record);
+      return outcome;
+    });
+    try {
+      port.publish(first.ref, first);
+      residency.published(first.ref, first, 0);
+      await residency.settled();
+      port.publish(second.ref, second);
+      residency.published(second.ref, second, 0);
+      await residency.settled();
+
+      let clock = 0;
+      const now = vi.spyOn(Date, "now").mockImplementation(() => ++clock);
+      residency.owners(first.ref, { foreground: 1, history: 0, mutationPinned: false, background: 1 });
+      residency.owners(first.ref, { foreground: 0, history: 0, mutationPinned: false, background: 1 });
+      residency.owners(second.ref, { foreground: 1, history: 0, mutationPinned: false, background: 1 });
+      residency.owners(second.ref, { foreground: 0, history: 0, mutationPinned: false, background: 1 });
+      now.mockRestore();
+
+      // Live background traffic arrives at the older victim after its last
+      // foreground use and is really folded into its checkpoint.
+      const traffic = textDelta(first.ref, "-live-traffic");
+      expect(
+        residency.accept(first.ref, {
+          notification: traffic,
+          sequence: 1,
+          now: 5,
+          bytes: encodedPayloadBytes(traffic),
+        }),
+      ).toBe(false);
+      await residency.drain(first.ref);
+      const trafficWrite = writes.filter((write) => write.ref === first.ref).at(-1);
+      if (!trafficWrite) throw new Error("expected the live traffic to reach the real cache");
+      expect(JSON.stringify(trafficWrite.state)).toContain("-live-traffic");
+      const onDiskTraffic = await cache.getCurrent([trafficWrite.ownerToken, first.ref], Date.now());
+      expect(JSON.stringify(onDiskTraffic?.record?.state)).toContain("-live-traffic");
+
+      // Admission pressure must still select the foreground-least-recently-used
+      // victim (first), not the victim that received the newest traffic.
+      port.publish(third.ref, third);
+      residency.published(third.ref, third, 0);
+      await residency.settled();
+
+      const snapshot = residency.snapshot();
+      expect(snapshot.residentBytes).toBeLessThanOrEqual(bytes * 2);
+      expect(Object.fromEntries([...snapshot.refs].map(([ref, entry]) => [ref, entry.resident]))).toEqual({
+        [first.ref]: false,
+        [second.ref]: true,
+        [third.ref]: true,
+        [fourth.ref]: false,
+      });
+      expect(snapshot.refs.get(first.ref)?.current).toBe(true);
+
+      // The evicted ref stays out of RAM through unrelated subsequent work,
+      // with no extra hydration.
+      port.publish(fourth.ref, fourth);
+      residency.published(fourth.ref, fourth, 0);
+      await residency.settled();
+      expect(residents.has(first.ref)).toBe(false);
+      expect(hydrateCalls).toBe(0);
+    } finally {
+      put.mockRestore();
+      residency.dispose();
+    }
   });
 
   test("uses a one-second trailing checkpoint delay", async () => {

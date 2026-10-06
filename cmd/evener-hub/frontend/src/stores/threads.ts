@@ -5997,6 +5997,10 @@ export function backgroundTranscriptSnapshotForTests(): TranscriptResidencySnaps
   );
 }
 
+export function pendingThreadHydrationUpdatesForTests(): readonly ReceivedTranscriptUpdate[] {
+  return [...pendingThreadHydrations.values()].flatMap((pending) => pending.notifications);
+}
+
 export function acquireBackgroundThread(ref: string): BackgroundThreadLease {
   beginCanonicalThreadClaim(ref);
   backgroundRefCounts.set(ref, (backgroundRefCounts.get(ref) ?? 0) + 1);
