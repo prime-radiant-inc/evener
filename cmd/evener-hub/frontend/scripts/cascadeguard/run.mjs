@@ -366,7 +366,7 @@ function placement(layout, id) {
 async function clickColumnAction(ref, text) {
   await wait(`(() => {
     const button = [...document.querySelectorAll(${q(`${column(ref)} button`)})].find(node => node.textContent.trim() === ${q(text)});
-    if (!button || button.disabled) return null;
+    if (!button || button.matches(':disabled')) return null;
     button.scrollIntoView({ block: 'center', inline: 'nearest' });
     const r = button.getBoundingClientRect();
     if (!button.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2))) return null;
