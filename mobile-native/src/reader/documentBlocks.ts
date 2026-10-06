@@ -70,9 +70,14 @@ class TextHtmlTokenizer extends Tokenizer {
 
 // Where an inline tag dropped from the words. It goes with the spaces around
 // it, leaving one if there were any ("a <br> b" reads "a b"), wherever the tag
-// sat: in emphasis, a link, or at the end of a table cell.
+// sat: in emphasis, a link, or at the end of a table cell. marked keeps a NUL
+// in the source as it is, so one would go the same way; a document has none.
 const DROPPED_TAG = "\u0000";
 const DROPPED_TAG_RUN = /[ \t]*(?:\u0000[ \t]*)+/g;
+
+function withoutDroppedTags(text: string): string {
+	return text.replace(DROPPED_TAG_RUN, (run) => (/[ \t]/.test(run) ? " " : ""));
+}
 
 // A token's words, read from marked's own parse, so a link or image reads as
 // its words however its URL is written (nested parentheses, a reference, an
@@ -101,10 +106,7 @@ function words(token: Token): string {
 			return (token.tokens ?? []).map(words).join("\n");
 		case "table": {
 			const table = token as Tokens.Table;
-			// A pipe in a cell keeps its escape, so it doesn't read as a column.
-			return [table.header, ...table.rows]
-				.map((row) => `| ${row.map((cell) => cell.tokens.map(words).join("").replaceAll("|", "\\|")).join(" | ")} |`)
-				.join("\n");
+			return [table.header, ...table.rows].map((row) => `| ${row.map(cellWords).join(" | ")} |`).join("\n");
 		}
 		default:
 			if ("tokens" in token && token.tokens) return token.tokens.map(words).join("");
@@ -112,11 +114,16 @@ function words(token: Token): string {
 	}
 }
 
+// A table cell's words. A pipe in them keeps its escape, so it doesn't read
+// as another column.
+function cellWords(cell: Tokens.TableCell): string {
+	return withoutDroppedTags(cell.tokens.map(words).join("")).trim().replaceAll("|", "\\|");
+}
+
 // What a comment quotes and Copy copies: a block's words, line by line,
 // each line trimmed and blank ones dropped.
 function blockText(token: Token): string {
-	return words(token)
-		.replace(DROPPED_TAG_RUN, (run) => (/[ \t]/.test(run) ? " " : ""))
+	return withoutDroppedTags(words(token))
 		.split("\n")
 		.map((line) => line.trim())
 		.filter((line) => line !== "")

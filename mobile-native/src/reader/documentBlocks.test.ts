@@ -185,6 +185,9 @@ it("leaves one space where an inline tag between two words drops", () => {
 	expect(wordsOf("a <br> b and x <span>y</span> z")).toEqual(["a b and x y z"]);
 	expect(wordsOf("**Note <br>** text and [<br>](u) end")).toEqual(["Note text and end"]);
 	expect(wordsOf("| x <br> | y |\n|---|---|\n| 1 | 2 |")).toEqual(["| x | y |\n| 1 | 2 |"]);
+	expect(wordsOf("| <br> | y |\n|---|---|\n|  | 2 |")).toEqual(["|  | y |\n|  | 2 |"]);
+	expect(wordsOf("a <br> <br> b and x `a  b` <br> y")).toEqual(["a b and x a  b y"]);
+	expect(wordsOf("a <br>\nb")).toEqual(["a\nb"]);
 });
 
 it("reads a table cell's escaped pipe as a pipe in the cell, not a column", () => {
