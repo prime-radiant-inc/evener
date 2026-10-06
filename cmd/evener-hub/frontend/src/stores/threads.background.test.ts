@@ -7,14 +7,16 @@ import {
   hydrateThread,
   makeTranscriptDisplayConfig,
   type ThreadModel,
+  type ThreadReadResponse,
   type ThreadTurnsListResponse,
+  type Turn,
   WireError,
 } from "@evener/appwire-client";
 import { currentRead, textDelta } from "@evener/appwire-client/testing/currentTranscript";
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { FakeSocket } from "@evener/appwire-client/testing/fakeSocket";
-import { cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import { IDBDatabase, IDBFactory } from "fake-indexeddb";
 import { createElement } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -132,40 +134,56 @@ async function connectRealClientWithSocket(): Promise<{ client: AppwireClient; s
   return { client, socket };
 }
 
-// A genuine older-history page: one versioned turn carrying the given agent
-// message texts, plus the cursor that names the next page down. `length` is the
-// transcript length at read time; it stays at or above the latest window's own
-// length so the versioned merge accepts the page rather than reading it stale.
+// A positioned versioned turn: its items carry explicit (entry, item) positions
+// so the reducer's position-aware turn weave orders pages as genuinely older.
+function pageTurn(turnId: string, entry: number, startItem: number, itemTexts: readonly string[]): Turn {
+  return {
+    id: turnId,
+    itemsView: "full",
+    status: "completed",
+    version: 1,
+    items: itemTexts.map((text, index) => ({
+      type: "agentMessage",
+      id: `${turnId}-item-${index}`,
+      transcriptKey: `apptranscript-item-v2:${turnId}:0:${index}`,
+      turnId,
+      position: { entry, item: startItem + index },
+      version: 1,
+      text,
+    })),
+  };
+}
+
+// A genuine older-history page: one positioned versioned turn plus the cursor
+// that names the next page down. `length` stays at the latest window's own
+// length so the versioned merge accepts the page rather than reading it stale;
+// the strictly descending (entry, item) boundary is what makes it older.
 function olderPage(
   turnId: string,
+  entry: number,
+  startItem: number,
   itemTexts: readonly string[],
   nextCursor: string | undefined,
-  length = 60,
+  length = 100,
 ): ThreadTurnsListResponse {
   return {
-    data: [
-      {
-        id: turnId,
-        itemsView: "full",
-        status: "completed",
-        version: 1,
-        items: itemTexts.map((text, index) => ({
-          type: "agentMessage",
-          id: `${turnId}-item-${index}`,
-          transcriptKey: `apptranscript-item-v2:${turnId}:0:${index}`,
-          turnId,
-          position: { entry: 1, item: index },
-          version: 1,
-          text,
-        })),
-      },
-    ],
+    data: [pageTurn(turnId, entry, startItem, itemTexts)],
     nextCursor,
     bootGeneration: "1",
     epoch: 1,
     snapshot: { incarnation: "inc-1", length },
     authoritative: false,
   };
+}
+
+// The recorded latest window: a positioned recorded turn in history plus the
+// streaming overlay (from currentRead) and its older cursor.
+function positionedLatestRead(ref: string): ThreadReadResponse {
+  const base = currentRead(ref);
+  base.olderCursor = "cursor_latest";
+  base.snapshot = { incarnation: "inc-1", length: 100 };
+  base.thread.turns = [pageTurn("turn_latest", 2, 0, ["latest-recorded-item"])];
+  return base;
 }
 
 function observeThreadReadSettlements(client: AppwireClient) {
@@ -804,8 +822,11 @@ describe("background thread claims", () => {
       fake.emitNotification(textDelta("local:one", "-disk"));
       expect(backgroundTranscriptSnapshotForTests().pendingBytes).toBeGreaterThan(0);
       const reads = fake.calls.filter((call) => call.method === "thread/read").length;
-      await threadsStore.getState().ensureThread("local:one");
+      // Register release before awaiting: ensureThread claims the pane refcount
+      // synchronously, so a rejection must still release that claim.
+      const pane = threadsStore.getState().ensureThread("local:one");
       releasePane = () => threadsStore.getState().releaseThread("local:one");
+      await pane;
       expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(reads);
       expect(
         threadsStore
@@ -1522,18 +1543,18 @@ describe("background thread claims", () => {
     resetThreadsStoreForTests();
     setSessionCacheAdapterForTests(cache);
     const fake = new FakeClient("ready");
-    fake.on("thread/read", ({ ref }) => ({ ...currentRead(ref ?? "local:one"), olderCursor: "cursor_latest" }));
+    fake.on("thread/read", ({ ref }) => positionedLatestRead(ref ?? "local:one"));
     fake.on("thread/unsubscribe", () => ({}));
     const listCursors: string[] = [];
     fake.on("thread/turns/list", ({ cursor }) => {
       listCursors.push(cursor ?? "");
       switch (cursor) {
         case "cursor_latest":
-          return olderPage("turn_page1", ["page-one-item"], "cursor_p1");
+          return olderPage("turn_page1", 1, 2, ["page-one-item"], "cursor_p1");
         case "cursor_p1":
-          return olderPage("turn_page2", ["page-two-item", "unique-later-item🙂"], "cursor_p2");
+          return olderPage("turn_page2", 1, 0, ["page-two-item", "unique-later-item🙂"], "cursor_p2");
         case "cursor_p2":
-          return olderPage("turn_page3", ["beyond-oldest-item"], undefined);
+          return olderPage("turn_page3", 0, 4, ["beyond-oldest-item"], undefined);
         default:
           throw new Error(`unexpected older-page cursor ${cursor}`);
       }
@@ -1541,6 +1562,13 @@ describe("background thread claims", () => {
     connectionStore.getState().connect(fake);
     const background = acquireBackgroundThread("local:one");
     let paneHeld = false;
+    const historyShape = (model: ThreadModel | undefined) =>
+      (model?.history?.turns ?? []).map((turn) => ({ id: turn.id, texts: turn.items.map((item) => item.text) }));
+    const loadedShape = [
+      { id: "turn_page2", texts: ["page-two-item", "unique-later-item🙂"] },
+      { id: "turn_page1", texts: ["page-one-item"] },
+      { id: "turn_latest", texts: ["latest-recorded-item"] },
+    ];
     try {
       await background.ready;
       await settleBackgroundTranscriptsForTests();
@@ -1553,9 +1581,9 @@ describe("background thread claims", () => {
       await threadsStore.getState().loadOlderTurns("local:one");
       const loaded = threadsStore.getState().threads.get("local:one");
       if (!loaded) throw new Error("expected the paged model");
-      expect(loaded.history?.turns.map((turn) => turn.id)).toEqual(
-        expect.arrayContaining(["turn_page1", "turn_page2"]),
-      );
+      // The strictly descending (entry, item) boundaries place both pages, in
+      // order, ahead of the positioned recorded latest window.
+      expect(historyShape(loaded)).toEqual(loadedShape);
       expect(loaded.turns.flatMap((turn) => turn.items).map((item) => item.text)).toContain("unique-later-item🙂");
       expect(loaded.olderCursor).toBe("cursor_p2");
       const readsBeforeEviction = fake.calls.filter((call) => call.method === "thread/read").length;
@@ -1577,9 +1605,7 @@ describe("background thread claims", () => {
       expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(readsBeforeEviction);
       const reopened = threadsStore.getState().threads.get("local:one");
       if (!reopened) throw new Error("expected the reopened model");
-      expect(reopened.history?.turns.map((turn) => turn.id)).toEqual(
-        expect.arrayContaining(["turn_page1", "turn_page2"]),
-      );
+      expect(historyShape(reopened)).toEqual(loadedShape);
       const reopenedText = reopened.turns.flatMap((turn) => turn.items).map((item) => item.text);
       expect(reopenedText).toContain("unique-later-item🙂");
       expect(reopenedText.join("")).toContain("alpha-live-while-nonresident");
@@ -1588,13 +1614,8 @@ describe("background thread claims", () => {
       // Page further with the preserved cursor and reach below the prior oldest boundary.
       await threadsStore.getState().loadOlderTurns("local:one");
       expect(listCursors).toEqual(["cursor_latest", "cursor_p1", "cursor_p2"]);
-      expect(
-        threadsStore
-          .getState()
-          .threads.get("local:one")
-          ?.turns.flatMap((turn) => turn.items)
-          .map((item) => item.text),
-      ).toContain("beyond-oldest-item");
+      const after = threadsStore.getState().threads.get("local:one");
+      expect(historyShape(after)).toEqual([{ id: "turn_page3", texts: ["beyond-oldest-item"] }, ...loadedShape]);
     } finally {
       if (paneHeld) threadsStore.getState().releaseThread("local:one");
       try {
@@ -1608,33 +1629,57 @@ describe("background thread claims", () => {
 
   test("a pane-held paged model and its Find match survive an oversized background completion, then evict on release", async () => {
     const restoreOptions = installBackgroundTranscriptOptionsForTests({
-      residentBytes: 16 * 1024,
+      residentBytes: 0,
       pendingBytes: 8 * 1024 * 1024,
     });
     resetThreadsStoreForTests();
     setSessionCacheAdapterForTests(cache);
+    const pressureGate = deferred<void>();
+    const pressureStarted = deferred<void>();
     const fake = new FakeClient("ready");
-    fake.on("thread/read", ({ ref }) => {
-      const response = currentRead(ref ?? "local:one");
-      response.olderCursor = "cursor_latest";
-      if (ref === "local:pressure") response.overlay![0]!.item.text = "p".repeat(256 * 1024);
-      return response;
+    fake.on("thread/read", async ({ ref }) => {
+      if (ref === "local:pressure") {
+        pressureStarted.resolve();
+        await pressureGate.promise;
+        const response = currentRead("local:pressure");
+        response.overlay![0]!.item.text = "p".repeat(256 * 1024);
+        return response;
+      }
+      return positionedLatestRead(ref ?? "local:one");
     });
     fake.on("thread/unsubscribe", () => ({}));
-    fake.on("thread/turns/list", () => olderPage("turn_page1", ["page-one-item", "unique-later-item🙂"], "cursor_p1"));
+    fake.on("thread/turns/list", () =>
+      olderPage("turn_page1", 1, 0, ["page-one-item", "unique-later-item🙂"], "cursor_p1"),
+    );
     connectionStore.getState().connect(fake);
     const background = acquireBackgroundThread("local:one");
-    let paneHeld = true;
     const pressure = acquireBackgroundThread("local:pressure");
+    let paneHeld = false;
+    let foregroundHeld = false;
     try {
       await background.ready;
       const pane = threadsStore.getState().ensureThread("local:one");
+      paneHeld = true;
       await pane;
       await threadsStore.getState().loadOlderTurns("local:one");
       const held = threadsStore.getState().threads.get("local:one");
       if (!held) throw new Error("expected the pane-held paged model");
-      const readsBeforePressure = fake.calls.filter((call) => call.method === "thread/read").length;
+      const readsBeforePressure = fake.calls.filter(
+        (call) => call.method === "thread/read" && (call.params as { ref?: string }).ref === "local:one",
+      ).length;
 
+      // The pressure read is admitted, but its oversized response is gated until
+      // the pane hold and its loaded history already exist.
+      await pressureStarted.promise;
+      expect(backgroundTranscriptSnapshotForTests().networkHydrations).toBeGreaterThan(0);
+      // An unrelated foreground pane still hydrates while the protected pane and
+      // the oversized pressure read are both alive.
+      const foreground = threadsStore.getState().ensureThread("local:foreground");
+      foregroundHeld = true;
+      await foreground;
+      expect(threadsStore.getState().threads.has("local:foreground")).toBe(true);
+
+      pressureGate.resolve();
       await pressure.ready;
       await settleBackgroundTranscriptsForTests();
 
@@ -1642,7 +1687,11 @@ describe("background thread claims", () => {
       expect(threadsStore.getState().threads.get("local:one")?.olderCursor).toBe("cursor_p1");
       expect(threadsStore.getState().threads.get("local:one")?.history).toBe(held.history);
       expect(threadsStore.getState().threads.has("local:pressure")).toBe(false);
-      expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(readsBeforePressure);
+      expect(
+        fake.calls.filter(
+          (call) => call.method === "thread/read" && (call.params as { ref?: string }).ref === "local:one",
+        ),
+      ).toHaveLength(readsBeforePressure);
 
       // The palette's in-session Find reads the live pane model, not a lease.
       const matches = findInSessionMatches(focusedModel("local:one")!, "unique-later-item");
@@ -1654,6 +1703,8 @@ describe("background thread claims", () => {
       await settleBackgroundTranscriptsForTests();
       expect(threadsStore.getState().threads.has("local:one")).toBe(false);
     } finally {
+      pressureGate.resolve();
+      if (foregroundHeld) threadsStore.getState().releaseThread("local:foreground");
       if (paneHeld) threadsStore.getState().releaseThread("local:one");
       await Promise.all([background.release(), pressure.release()]);
       resetThreadsStoreForTests();
@@ -1668,32 +1719,43 @@ describe("background thread claims", () => {
     });
     resetThreadsStoreForTests();
     setSessionCacheAdapterForTests(cache);
+    const pressureGate = deferred<void>();
+    const pressureStarted = deferred<void>();
     const fake = new FakeClient("ready");
-    fake.on("thread/read", ({ ref }) => {
-      const response = currentRead(ref ?? "local:one");
-      response.olderCursor = "cursor_latest";
-      if (ref === "local:pressure") response.overlay![0]!.item.text = "p".repeat(256 * 1024);
-      return response;
+    fake.on("thread/read", async ({ ref }) => {
+      if (ref === "local:pressure") {
+        pressureStarted.resolve();
+        await pressureGate.promise;
+        const response = currentRead("local:pressure");
+        response.overlay![0]!.item.text = "p".repeat(256 * 1024);
+        return response;
+      }
+      return positionedLatestRead(ref ?? "local:one");
     });
     fake.on("thread/unsubscribe", () => ({}));
     const pageEntered = deferred<void>();
     const heldPage = deferred<ThreadTurnsListResponse>();
     fake.on("thread/turns/list", ({ cursor }) => {
       if (cursor === "cursor_latest")
-        return olderPage("turn_page1", ["page-one-item", "unique-later-item🙂"], "cursor_p1");
+        return olderPage("turn_page1", 1, 2, ["page-one-item", "unique-later-item🙂"], "cursor_p1");
       pageEntered.resolve();
       return heldPage.promise;
     });
     connectionStore.getState().connect(fake);
-    let paneHeld = true;
+    let paneHeld = false;
+    let foregroundHeld = false;
     const pressure = acquireBackgroundThread("local:pressure");
     let loading: Promise<void> | undefined;
     try {
-      await threadsStore.getState().ensureThread("local:one");
+      const pane = threadsStore.getState().ensureThread("local:one");
+      paneHeld = true;
+      await pane;
       await threadsStore.getState().loadOlderTurns("local:one");
       const held = threadsStore.getState().threads.get("local:one");
       if (!held) throw new Error("expected the paged model");
-      const readsBeforePressure = fake.calls.filter((call) => call.method === "thread/read").length;
+      const readsBeforePressure = fake.calls.filter(
+        (call) => call.method === "thread/read" && (call.params as { ref?: string }).ref === "local:one",
+      ).length;
 
       loading = threadsStore.getState().loadOlderTurns("local:one");
       await pageEntered.promise;
@@ -1703,11 +1765,25 @@ describe("background thread claims", () => {
       paneHeld = false;
       expect(threadsStore.getState().threads.get("local:one")).toBe(held);
 
+      // Establish the history hold before releasing the oversized response.
+      await pressureStarted.promise;
+      // An unrelated foreground pane still hydrates while the history-only hold
+      // and the oversized pressure read are both alive.
+      const foreground = threadsStore.getState().ensureThread("local:foreground");
+      foregroundHeld = true;
+      await foreground;
+      expect(threadsStore.getState().threads.has("local:foreground")).toBe(true);
+      pressureGate.resolve();
       await pressure.ready;
       await settleBackgroundTranscriptsForTests();
       expect(threadsStore.getState().threads.get("local:one")).toBe(held);
       expect(threadsStore.getState().threads.get("local:one")?.olderCursor).toBe("cursor_p1");
-      expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(readsBeforePressure);
+      expect(threadsStore.getState().threads.has("local:pressure")).toBe(false);
+      expect(
+        fake.calls.filter(
+          (call) => call.method === "thread/read" && (call.params as { ref?: string }).ref === "local:one",
+        ),
+      ).toHaveLength(readsBeforePressure);
 
       // Reacquire the pane so the completed page can be observed after the
       // history hold ends; the in-flight page request continues underneath it.
@@ -1715,7 +1791,7 @@ describe("background thread claims", () => {
       paneHeld = true;
       await reacquire;
       expect(threadsStore.getState().threads.get("local:one")).toBe(held);
-      heldPage.resolve(olderPage("turn_page2", ["later-page-two-item"], "cursor_p2"));
+      heldPage.resolve(olderPage("turn_page2", 1, 0, ["later-page-two-item"], "cursor_p2"));
       await loading;
       loading = undefined;
       const merged = threadsStore.getState().threads.get("local:one");
@@ -1727,8 +1803,10 @@ describe("background thread claims", () => {
       await settleBackgroundTranscriptsForTests();
       expect(threadsStore.getState().threads.has("local:one")).toBe(false);
     } finally {
-      heldPage.resolve(olderPage("turn_page2", ["later-page-two-item"], "cursor_p2"));
+      heldPage.resolve(olderPage("turn_page2", 1, 0, ["later-page-two-item"], "cursor_p2"));
+      pressureGate.resolve();
       await loading?.catch(() => undefined);
+      if (foregroundHeld) threadsStore.getState().releaseThread("local:foreground");
       if (paneHeld) threadsStore.getState().releaseThread("local:one");
       await pressure.release();
       resetThreadsStoreForTests();
@@ -1744,15 +1822,23 @@ describe("background thread claims", () => {
     resetThreadsStoreForTests();
     setSessionCacheAdapterForTests(cache);
     const storage = mutationStorage();
+    const pressureGate = deferred<void>();
+    const pressureStarted = deferred<void>();
     const fake = new FakeClient("ready");
-    fake.on("thread/read", ({ ref }) => {
-      const response = currentRead(ref ?? "local:one");
-      response.olderCursor = "cursor_latest";
-      if (ref === "local:pressure") response.overlay![0]!.item.text = "p".repeat(256 * 1024);
-      return response;
+    fake.on("thread/read", async ({ ref }) => {
+      if (ref === "local:pressure") {
+        pressureStarted.resolve();
+        await pressureGate.promise;
+        const response = currentRead("local:pressure");
+        response.overlay![0]!.item.text = "p".repeat(256 * 1024);
+        return response;
+      }
+      return positionedLatestRead(ref ?? "local:one");
     });
     fake.on("thread/unsubscribe", () => ({}));
-    fake.on("thread/turns/list", () => olderPage("turn_page1", ["page-one-item", "unique-later-item🙂"], "cursor_p1"));
+    fake.on("thread/turns/list", () =>
+      olderPage("turn_page1", 1, 0, ["page-one-item", "unique-later-item🙂"], "cursor_p1"),
+    );
     const started = deferred<{ clientMutationId: string }>();
     const response = deferred<{
       turn: { id: string; status: "inProgress"; itemsView: string };
@@ -1763,11 +1849,13 @@ describe("background thread claims", () => {
       return response.promise;
     });
     connectionStore.getState().connect(fake);
-    let paneHeld = true;
+    let paneHeld = false;
     const pressure = acquireBackgroundThread("local:pressure");
     let sending: Promise<void> | undefined;
     try {
-      await threadsStore.getState().ensureThread("local:one");
+      const pane = threadsStore.getState().ensureThread("local:one");
+      paneHeld = true;
+      await pane;
       await threadsStore.getState().loadOlderTurns("local:one");
       const held = threadsStore.getState().threads.get("local:one");
       if (!held) throw new Error("expected the paged model");
@@ -1779,11 +1867,23 @@ describe("background thread claims", () => {
       threadsStore.getState().releaseThread("local:one");
       paneHeld = false;
       expect(threadsStore.getState().threads.get("local:one")).toBe(held);
+      const readsBeforePressure = fake.calls.filter(
+        (call) => call.method === "thread/read" && (call.params as { ref?: string }).ref === "local:one",
+      ).length;
 
+      // Establish the mutation pin before releasing the oversized response.
+      await pressureStarted.promise;
+      pressureGate.resolve();
       await pressure.ready;
       await settleBackgroundTranscriptsForTests();
       expect(threadsStore.getState().threads.get("local:one")).toBe(held);
       expect(threadsStore.getState().threads.get("local:one")?.olderCursor).toBe("cursor_p1");
+      expect(threadsStore.getState().threads.has("local:pressure")).toBe(false);
+      expect(
+        fake.calls.filter(
+          (call) => call.method === "thread/read" && (call.params as { ref?: string }).ref === "local:one",
+        ),
+      ).toHaveLength(readsBeforePressure);
       expect(
         threadsStore
           .getState()
@@ -1829,6 +1929,7 @@ describe("background thread claims", () => {
         },
       });
       await sending?.catch(() => undefined);
+      pressureGate.resolve();
       await pressure.release();
       resetThreadsStoreForTests();
       restoreOptions();
@@ -1843,13 +1944,20 @@ describe("background thread claims", () => {
     resetThreadsStoreForTests();
     setSessionCacheAdapterForTests(cache);
     const fake = new FakeClient("ready");
-    fake.on("thread/read", ({ ref }) => ({ ...currentRead(ref ?? "local:one"), olderCursor: "cursor_latest" }));
+    fake.on("thread/read", ({ ref }) => positionedLatestRead(ref ?? "local:one"));
     fake.on("thread/unsubscribe", () => ({}));
-    fake.on("thread/turns/list", () => olderPage("turn_old", ["older-completed-item"], "cursor_next"));
+    fake.on("thread/turns/list", () => olderPage("turn_old", 1, 0, ["older-completed-item"], "cursor_next"));
     connectionStore.getState().connect(fake);
     const background = acquireBackgroundThread("local:one");
     let paneHeld = false;
     let rendered: ReturnType<typeof render> | undefined;
+    const view = (model: ThreadModel) =>
+      createElement(TranscriptBody, {
+        model,
+        config: makeTranscriptDisplayConfig({ kind: "preset", level: "full" }),
+        surface: "preview",
+        disclosureScope: "completed-copy",
+      });
     try {
       await background.ready;
       await settleBackgroundTranscriptsForTests();
@@ -1892,74 +2000,90 @@ describe("background thread claims", () => {
       } as AnyNotification);
       await settleBackgroundTranscriptsForTests();
 
-      // Promote the disk checkpoint into the pane.
+      // Promote the disk checkpoint into the pane with no thread/read.
+      const readsBeforePromotion = fake.calls.filter((call) => call.method === "thread/read").length;
       const pane = threadsStore.getState().ensureThread("local:one");
       paneHeld = true;
       await pane;
+      expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(readsBeforePromotion);
+      const promoted = threadsStore.getState().threads.get("local:one");
+      if (!promoted) throw new Error("expected the promoted model");
+      // Both streamed overlay entries survive promotion with their accumulated
+      // text and tool output.
+      expect(promoted.overlay?.["stream:s1:agentMessage"]?.item.text).toBe("alpha-streamed");
+      expect(promoted.overlay?.["stream:s1:tool"]?.item.output).toBe("-tool-streamed");
 
-      // Complete the turn: the recorded-history update supersedes the overlay.
-      fake.emitNotification({
-        method: "history/updated",
-        params: {
-          threadId: "thr_local:one",
-          ref: "local:one",
-          bootGeneration: "1",
-          epoch: 1,
-          snapshot: { incarnation: "inc-1", length: 1 },
-          turns: [{ id: "turn_1", status: "completed", itemsView: "full", items: [] }],
-          items: [
-            {
-              type: "agentMessage",
-              id: "a1",
-              turnId: "turn_1",
-              roundId: "r1",
-              transcriptKey: "apptranscript-item-v2:turn_1:0:0",
-              position: { entry: 1, item: 0 },
-              version: 1,
-              text: "alpha-streamed-final",
-              status: "completed",
-            },
-            {
-              type: "commandExecution",
-              id: "tool1",
-              turnId: "turn_1",
-              roundId: "r1",
-              callId: "call_tool",
-              transcriptKey: "apptranscript-item-v2:turn_1:0:1",
-              position: { entry: 1, item: 1 },
-              version: 1,
-              output: "tool-final-output",
-              status: "completed",
-            },
-          ],
-        },
-      } as AnyNotification);
+      await act(async () => {
+        rendered = render(view(promoted));
+      });
+      expect(screen.getAllByText("alpha-streamed").length).toBeGreaterThanOrEqual(1);
+      expect(screen.getAllByText("-tool-streamed").length).toBeGreaterThanOrEqual(1);
+
+      // Complete the turn: recorded history carries the retained stream content
+      // plus later output and retires the live overlay.
+      await act(async () => {
+        fake.emitNotification({
+          method: "history/updated",
+          params: {
+            threadId: "thr_local:one",
+            ref: "local:one",
+            bootGeneration: "1",
+            epoch: 1,
+            snapshot: { incarnation: "inc-1", length: 1 },
+            turns: [{ id: "turn_1", status: "completed", itemsView: "full", items: [] }],
+            items: [
+              {
+                type: "agentMessage",
+                id: "a1",
+                turnId: "turn_1",
+                roundId: "r1",
+                transcriptKey: "apptranscript-item-v2:turn_1:0:0",
+                position: { entry: 1, item: 0 },
+                version: 1,
+                text: "alpha-streamed-later",
+                status: "completed",
+              },
+              {
+                type: "commandExecution",
+                id: "tool1",
+                turnId: "turn_1",
+                roundId: "r1",
+                callId: "call_tool",
+                transcriptKey: "apptranscript-item-v2:turn_1:0:1",
+                position: { entry: 1, item: 1 },
+                version: 1,
+                output: "-tool-streamed-later",
+                status: "completed",
+              },
+            ],
+          },
+        } as AnyNotification);
+      });
 
       const completed = threadsStore.getState().threads.get("local:one");
       if (!completed) throw new Error("expected the completed model");
       expect(completed.overlay).toEqual({});
       expect(completed.olderCursor).toBe("cursor_latest");
 
+      await act(async () => {
+        rendered?.rerender(view(completed));
+      });
+      expect(screen.getAllByText("alpha-streamed-later")).toHaveLength(1);
+      expect(screen.getAllByText("-tool-streamed-later")).toHaveLength(1);
+      // No leftover live overlay copy survives retirement.
+      expect(screen.queryByText("alpha-streamed")).toBeNull();
+      expect(screen.queryByText("-tool-streamed")).toBeNull();
+
+      await act(async () => {
+        rendered?.unmount();
+        rendered = undefined;
+      });
       // The paging boundary continues past the completed turn.
       await threadsStore.getState().loadOlderTurns("local:one");
       const paged = threadsStore.getState().threads.get("local:one");
       if (!paged) throw new Error("expected the paged model");
       expect(paged.olderCursor).toBe("cursor_next");
       expect(paged.turns.flatMap((turn) => turn.items).map((item) => item.text)).toContain("older-completed-item");
-
-      rendered = render(
-        createElement(TranscriptBody, {
-          model: paged,
-          config: makeTranscriptDisplayConfig({ kind: "preset", level: "full" }),
-          surface: "preview",
-          disclosureScope: "completed-copy",
-        }),
-      );
-      expect(screen.getAllByText("alpha-streamed-final")).toHaveLength(1);
-      expect(screen.getAllByText("tool-final-output")).toHaveLength(1);
-      // No leftover overlay copy survives the recorded-history update.
-      expect(screen.queryByText("alpha-streamed")).toBeNull();
-      expect(screen.queryByText("-tool-streamed")).toBeNull();
     } finally {
       rendered?.unmount();
       cleanup();
