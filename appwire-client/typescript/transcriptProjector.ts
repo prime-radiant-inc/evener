@@ -20,6 +20,7 @@ import {
   sharedNotesVisible,
   type TranscriptDisplayConfigV1,
 } from "./transcriptDisplayConfig";
+import { THREAD_ITEM_EVENT_KINDS } from "./types.gen";
 import { isInformationalWarning } from "./warnings";
 import { hasWarningText } from "./warningText";
 
@@ -118,32 +119,13 @@ export interface TranscriptProjection {
 
 const MESSAGE_TYPES = new Set(["userMessage", "agentMessage"]);
 
-// Keep this vocabulary in step with protocol/types.gen.ts. The projector treats
-// a value outside this set as an unknown event and deliberately renders it.
+// The daemon's event-kind vocabulary, generated from appwire's
+// AllThreadItemEventKinds, so a new kind is known (and governed by the
+// system-events gate) the moment it is generated. The projector treats a value
+// outside this set as an unknown event and deliberately renders it.
 // Environment and shared-notes snapshots are routine diagnostics. Notes also
 // stay out of Conversation, even when Advanced.systemEvents is enabled.
-const KNOWN_EVENT_KINDS = new Set([
-  "system_prompt",
-  "plugin_loaded",
-  "skill_activated",
-  "hook_completed",
-  "prompt_loaded",
-  "context_compaction",
-  "compaction",
-  "turn_limit",
-  "loop_detection",
-  "goal_ended",
-  "fork_summary",
-  "round_timings",
-  "tool_repair",
-  "model_switch",
-  "error",
-  "environment",
-  "notes-context",
-  "warning",
-  "interrupted",
-  APPROVAL_DECISION_EVENT_KIND,
-]);
+const KNOWN_EVENT_KINDS: ReadonlySet<string> = new Set(THREAD_ITEM_EVENT_KINDS);
 
 const PROMPT_EVENT_KINDS = new Set(["system_prompt", "prompt_loaded"]);
 const TURN_TIMING_EVENT_KIND = "round_timings";
