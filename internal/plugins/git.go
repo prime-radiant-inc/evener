@@ -154,8 +154,13 @@ func gitRefNamesBranch(ctx context.Context, dir, name string) (bool, error) {
 	if err != nil || !tag {
 		return true, err
 	}
+	// Which of the two checkout took turns on the remote's default branch;
+	// a clone that cannot say leaves the ref unknown, an error.
 	head, err := gitRun(ctx, dir, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD")
-	return err == nil && strings.TrimSpace(head) == "refs/remotes/origin/"+name, nil
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(head) == "refs/remotes/origin/"+name, nil
 }
 
 // gitRefExists reports whether ref exists in the clone at dir. Git's exit

@@ -980,3 +980,32 @@ func TestCheckUpdates_AGitSubdirMarketplaceIsRefreshed(t *testing.T) {
 		t.Fatalf("a change in a git-subdir marketplace was not seen; warnings: %q", m.Stderr.(*bytes.Buffer).String())
 	}
 }
+
+// When a ref names both a tag and a branch and the clone cannot say which
+// branch is its remote's default, the pin is unknown: the branch check fails
+// and the source is not taken for pinned, so a refresh is attempted and warns
+// of what fails rather than being skipped as a pin. (A check's own fetch
+// restores origin/HEAD on current git, so this is tested at the source.)
+func TestSourcePinned_AnUnknownDefaultBranchIsNoPin(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	repo := makeMarketplaceRepoWithPlugin(t, "shadowed", "widget")
+	gitIn(t, repo, "tag", "rel")
+	gitIn(t, repo, "branch", "rel")
+	m := NewManager(t.TempDir())
+	ref, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: repo, Ref: "rel"})
+	if err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	if !sourcePinned(context.Background(), ref) {
+		t.Fatal("a ref naming a tag and a non-default branch is not the tag's pin")
+	}
+	gitIn(t, ref.InstallLocation, "symbolic-ref", "--delete", "refs/remotes/origin/HEAD")
+	if _, err := gitRefNamesBranch(context.Background(), ref.InstallLocation, "rel"); err == nil {
+		t.Fatal("the branch check answered without knowing the remote's default branch")
+	}
+	if sourcePinned(context.Background(), ref) {
+		t.Fatal("a ref whose branch check failed was taken for a pin")
+	}
+}
