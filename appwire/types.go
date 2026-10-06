@@ -4429,8 +4429,8 @@ type PluginEntry struct {
 	LastUpdated  int64  `json:"lastUpdated"`
 	// UpdateAvailable is true when the last evener/plugin/checkUpdates found a
 	// newer version: a newer remote commit for a git-backed plugin, or new
-	// contents in the refreshed marketplace clone for one stored in its
-	// marketplace's own repo. Absent means no known update: no check has run,
+	// contents in the marketplace clone, as its last refresh left it, for one
+	// stored in its marketplace's own repo. Absent means no known update: no check has run,
 	// the check found the plugin current or could not read its source, or the
 	// plugin is used in place from a directory. Clients offer Upgrade only when
 	// it is true.

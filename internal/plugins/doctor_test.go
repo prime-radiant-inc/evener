@@ -927,3 +927,27 @@ func TestDoctor_RelSourceInADirectoryMarketplaceIsUsedInPlace(t *testing.T) {
 		t.Errorf("no auto-upgrade warning for an in-place plugin; findings=%+v", findings)
 	}
 }
+
+// Upgrade all and the auto-upgrade sweep take a relative plugin in a
+// directory marketplace without error: it is served from the marketplace's
+// own folder (stagePlugin returns before any fetch), so its upgrade is a
+// no-op and the sweep reports nothing.
+func TestUpgrade_RelSourceInADirectoryMarketplaceIsANoOp(t *testing.T) {
+	dir := makeDirectoryMarketplace(t, "local", "widget")
+	m := NewManager(t.TempDir())
+	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceDirectory, Path: dir}); err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	if _, err := m.Install(context.Background(), "widget", "local"); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	if err := m.SetAutoUpgrade(context.Background(), "widget", "local", true); err != nil {
+		t.Fatalf("SetAutoUpgrade: %v", err)
+	}
+	if _, err := m.UpdateAll(context.Background()); err != nil {
+		t.Fatalf("UpdateAll: %v", err)
+	}
+	if upgraded, err := m.UpdateAutoUpgrade(context.Background()); err != nil || len(upgraded) != 0 {
+		t.Fatalf("UpdateAutoUpgrade = %+v (%v), want a no-op", upgraded, err)
+	}
+}

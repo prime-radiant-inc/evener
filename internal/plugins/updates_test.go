@@ -249,6 +249,11 @@ func TestCheckUpdates_RelativeSourcePluginUpgradesFromItsRefreshedMarketplace(t 
 	}
 	gitIn(t, mktRepo, "add", ".")
 	gitIn(t, mktRepo, "commit", "-qm", "change widget")
+	// The check reads the local clone: a change not yet pulled by a refresh
+	// is not seen.
+	if checkThenList(t, m) {
+		t.Fatal("plugin flagged by a change its marketplace clone has not pulled")
+	}
 	refresh()
 	if !checkThenList(t, m) {
 		t.Fatal("plugin whose folder changed in the refreshed marketplace not flagged")

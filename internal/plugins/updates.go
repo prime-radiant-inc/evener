@@ -44,8 +44,10 @@ type checkedHead struct {
 // reports UpdateAvailable until the next check or a change to that install.
 // The source asked is the one the marketplace's local catalog names, the one
 // Upgrade fetches. A source pinned to a sha is answered without a network
-// call. A relative source is answered from the refreshed marketplace clone,
-// also without a network call, and a directory source is never asked.
+// call. A relative source is answered from the marketplace's local clone as
+// its last refresh left it (the hub's auto-upgrade tick, or an explicit
+// refresh, pulls it), also without a network call; a directory source is
+// never asked.
 // A remote or catalog that cannot be read, or a remote still unanswered at
 // updateCheckDeadline, is warned about and flags nothing. A cancelled check
 // returns ctx's error and keeps the previous answers. Of
