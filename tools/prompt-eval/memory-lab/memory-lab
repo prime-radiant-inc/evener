@@ -470,12 +470,13 @@ def grade_stage(label, arm, scen, stage, trial, session):
         grade["error"], grade["checks"] = failure, all_failed(stage)
     else:
         # A held-out file that could not be removed contaminates the workspace: that check
-        # fails and every later check in the stage is skipped, never run against it.
+        # fails and every later shell check, the only type that runs in the workspace, is
+        # skipped instead of run against it.
         contaminated = False
         for check_type, grader in GRADERS.items():
             for spec in stage.get(check_type, []):
                 cname = spec["name"]
-                if contaminated:
+                if contaminated and check_type == "checks":
                     grade["checks"][cname] = False
                     grade["check_errors"][cname] = "skipped: held-out cleanup failed"
                     continue
