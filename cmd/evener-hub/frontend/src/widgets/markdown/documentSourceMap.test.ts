@@ -91,6 +91,30 @@ test.each([
   expect(ranges.map((r) => r.toString()).join("")).toBe(text);
 });
 
+test.each([
+  ["> same\nlazy\n", "lazy", 7, 11],
+  ["> same\nlazy\n", "same\nlazy", 2, 11],
+  ["> same\nlazy\n", "\n", 6, 7],
+  ["> same\r\nlazy\r\n", "lazy", 8, 12],
+  ["> same\r\nlazy\r\n", "same\nlazy", 2, 12],
+  ["> same\r\nlazy\r\n", "\n", 6, 8],
+] as const)("maps lazy quote literal %j / %j", (source, text, start, end) => {
+  const { container, map } = documentFor(source);
+  const paragraph = container.querySelector<HTMLParagraphElement>("blockquote p");
+  if (!paragraph) throw new Error("missing quote paragraph");
+  expect(map.capture(selectText(paragraph, text))).toEqual({
+    state: "mapped",
+    sourceRange: { start, end },
+    selectedRenderedText: text,
+  });
+  expect(
+    map
+      .rangesFor({ start, end })
+      .map((range) => range.toString())
+      .join(""),
+  ).toBe(text);
+});
+
 test("keeps both independent SOURCE occurrences", () => {
   const { container, map } = documentFor(SOURCE);
   expect(map.capture(selectText(container, "same"))).toMatchObject({ state: "mapped", sourceRange: FIRST });

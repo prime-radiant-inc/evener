@@ -67,6 +67,74 @@ test("backwards Selection has the same document-ordered endpoints", () => {
   expect(s.focusOffset).toBe(5);
   expect(map.capture(s)).toEqual({ state: "mapped", sourceRange: { start: 5, end: 9 }, selectedRenderedText: "same" });
 });
+test.each([
+  ["remove", "element"],
+  ["remove", "text"],
+  ["empty", "element"],
+  ["empty", "text"],
+  ["replace data", "element"],
+  ["replace data", "text"],
+  ["replace node", "element"],
+  ["replace node", "text"],
+] as const)("rejects %s of an interior run with %s endpoints", (mutation, endpoints) => {
+  const { container, map } = mapped("first **middle** last");
+  const paragraph = container.querySelector("p");
+  const strong = paragraph?.querySelector("strong");
+  const first = paragraph?.firstChild;
+  const middle = strong?.firstChild;
+  const last = paragraph?.lastChild;
+  if (!(first instanceof Text) || !(middle instanceof Text) || !(last instanceof Text) || !paragraph || !strong)
+    throw new Error("missing authored runs");
+  function passage() {
+    if (endpoints === "element") return selectionFor(paragraph as HTMLParagraphElement);
+    const range = document.createRange();
+    range.setStart(first as Text, 0);
+    range.setEnd(last as Text, 5);
+    const selection = window.getSelection();
+    if (!selection) throw new Error("selection unavailable");
+    selection.removeAllRanges();
+    selection.addRange(range);
+    return selection;
+  }
+  expect(map.capture(passage())).toEqual({
+    state: "mapped",
+    sourceRange: { start: 0, end: 21 },
+    selectedRenderedText: "first middle last",
+  });
+  expect(
+    map
+      .rangesFor({ start: 0, end: 21 })
+      .map((range) => range.toString())
+      .join(""),
+  ).toBe("first middle last");
+  if (mutation === "remove") strong.remove();
+  else if (mutation === "empty") middle.data = "";
+  else if (mutation === "replace data") middle.data = "xxxxxx";
+  else strong.replaceChildren(document.createTextNode("middle"));
+  expect(map.capture(passage()).state).toBe("unmapped");
+  expect(map.capture(selectionFor(first, 0, 5))).toEqual({
+    state: "mapped",
+    sourceRange: { start: 0, end: 5 },
+    selectedRenderedText: "first",
+  });
+  expect(map.capture(selectionFor(last, 1, 5))).toEqual({
+    state: "mapped",
+    sourceRange: { start: 17, end: 21 },
+    selectedRenderedText: "last",
+  });
+  expect(
+    map
+      .rangesFor({ start: 0, end: 5 })
+      .map((range) => range.toString())
+      .join(""),
+  ).toBe("first");
+  expect(
+    map
+      .rangesFor({ start: 17, end: 21 })
+      .map((range) => range.toString())
+      .join(""),
+  ).toBe("last");
+});
 test("identity and source replacement invalidate old maps even with identical rendered text", () => {
   let bound: BoundDocumentMap | null = null;
   const onMap = (value: BoundDocumentMap | null) => {
@@ -126,6 +194,24 @@ test("removed image content and code labels have no verified source fragment", (
   const label = container.querySelector("pre")?.previousElementSibling;
   if (!label) throw new Error("missing code label");
   expect(map.capture(selectionFor(label))).toEqual({ state: "unmapped", reason: "chrome" });
+});
+test("captures surviving prose across a sanitizer-omitted image", () => {
+  const { container, map } = mapped("first ![middle](x) last");
+  const paragraph = container.querySelector("p");
+  if (!paragraph) throw new Error("missing paragraph");
+  expect(container.querySelector("img")).toBeNull();
+  expect(map.capture(selectionFor(paragraph))).toEqual({
+    state: "mapped",
+    sourceRange: { start: 0, end: 23 },
+    selectedRenderedText: "first  last",
+  });
+  expect(
+    map
+      .rangesFor({ start: 0, end: 23 })
+      .map((range) => range.toString())
+      .join(""),
+  ).toBe("first  last");
+  expect(map.rangesFor({ start: 8, end: 14 })).toEqual([]);
 });
 test("does not trust an unchanged run marker with altered sanitized node text", () => {
   const rendered = renderDocument("same", { displayedSnapshotId: "s", mappingId: "m" });
@@ -200,6 +286,9 @@ test.each([
   "| L | C | R |\n| :--- | :---: | ---: |\n| a\\|b | **same** | &amp; |",
   "> first\n>\n> - same\n>   - tail\n\n- first\n\n  second\n\n- third",
   "a\n    code\n\n> - same\nlazy\n",
+  "> first\nlazy\n",
+  "> same\nlazy\n",
+  "> same\r\nlazy\r\n",
   "<script>same &amp; <img src=x></script>\n\n<code>same &amp;</code>",
   "- [x] done\n\n- [ ] todo\n",
   "````js\n\nsame\n\n````\n",
