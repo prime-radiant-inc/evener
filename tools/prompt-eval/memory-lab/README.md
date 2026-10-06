@@ -86,6 +86,14 @@ Every scenario is a directory holding `scenario.json` and `fixture/` (a small Go
 | `quirk` | A finds that `go test` silently skips without an env var | The agent usually fixes the root cause in the repository, which makes not saving the correct outcome. Kept as a caution. |
 | `eval-port` | Stage A of the live memory eval fixture, run under the lab | A diagnostic for round caps. The task takes 7–8 rounds without any memory work. |
 | `whiteboard` | A short task. The whiteboard should be set in the three-part shape, under 600 characters, with no file paths | Reads `agent_note` from the session meta. |
+| `long-project` | Four sessions of one cleanup, each asked for commit SHAs and progress. A states a doc-comment team tag, B an error-wrapping convention, C changes the team tag; D adds a function and must apply B and C | The page-hygiene scenario that discriminates most: without the hygiene guidance, project memory grows a progress ledger with SHAs. Durable-memory noise checks run after every stage. |
+| `many-facts` | A is told four facts in passing (API freeze, commit prefix, int cents, run `go vet`). B must apply them | Capture is at the ceiling at neutral paths; run it with `--work-root`. |
+| `progress-notes` | A long job with a keep-notes cue and a durable decision. Notes go to session memory, the decision to project memory, and no SHAs, paths, test counts or status reach durable memory | |
+| `progress-log` | Three commits plus a team-tag rule told in passing. B applies the rule; durable memory stays free of run details | At the ceiling: a short task doesn't provoke logging. |
+| `fact-changes` | A saves a dollar receipt format, B switches to euros, C must follow euros; no page still states dollars as current | C reads the format from the code too, so it is at the ceiling. |
+| `stale-status` | A leaves a rename half done; the partner finishes it before B. B must not report or keep the rename as unfinished | |
+| `polluted-seed` | Seeded project memory: a long, dated progress log with SHAs and worker ids, and a status-only index line, with one durable decision (use `log/slog`) buried inside. B adds a log line | Checks that B uses slog and leaves the decision on a short page with no SHAs (a fresh page, or the log rewritten in place). |
+| `clean-seed` | The same decision seeded as a clean one-fact page | The control for `polluted-seed`. |
 
 ## Scenario format
 
