@@ -82,6 +82,13 @@ func TestAgentCascadeBrowser(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// The daemon reports a skill's resolved path; on macOS the temp root is a
+	// /var symlink to /private/var, so compare against the resolved file.
+	overlapSkillFile, err := filepath.EvalSymlinks(overlapSkillDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	overlapSkillFile = filepath.Join(overlapSkillFile, "SKILL.md")
 	if err := os.WriteFile(filepath.Join(overlapSkillDir, "SKILL.md"), []byte("---\nname: cascade-overlap\ndescription: Cascade overlap skill fixture\n---\nCASCADE_OVERLAP_SKILL_BODY\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -184,7 +191,7 @@ func TestAgentCascadeBrowser(t *testing.T) {
 					scriptErr <- err
 					return
 				}
-				if err := cascadeValidateMixedInput(role, mixedInput, mixedDocs, filepath.Join(overlapSkillDir, "SKILL.md")); err != nil {
+				if err := cascadeValidateMixedInput(role, mixedInput, mixedDocs, overlapSkillFile); err != nil {
 					scriptErr <- err
 					return
 				}
