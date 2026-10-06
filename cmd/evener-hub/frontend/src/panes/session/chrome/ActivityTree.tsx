@@ -5,12 +5,9 @@ import {
   type ActivityFoldRow,
   type ActivityJobRow,
   type ActivityRow,
-  type ActivitySessionNode,
   type ActivityTree as ActivityTreeData,
   type ActivityWatchRow,
-  activityDelegateBranch,
   activityDelegateState,
-  activityNodeID,
   buildActivityRows,
   buildWatchRows,
   delegateTiming,
@@ -35,8 +32,7 @@ import {
 } from "react";
 import { WatchGlyph } from "../../../shell/rail/RailRow";
 import { armedWatchCount } from "../../../shell/rail/railNodes";
-import { openSessionByRef } from "../../../shell/sessionPlacement";
-import { Button, Chevron } from "../../../widgets";
+import { Chevron } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { OpenTranscriptButton } from "../transcript/openTranscript";
 import { ActivityRowDetail, ActivityWatchDetail } from "./ActivityRowDetail";
@@ -63,14 +59,6 @@ export interface ActivityTreeProps {
   watches?: readonly SessionWatch[];
   // Summary counts cover every page; loaded rows cannot establish an unknown total.
   watchCounts?: SessionActivityCounts;
-  continuationFailures?: Record<string, string | undefined>;
-  onContinue?: (targetID: string, continuation: string) => void;
-  loadingContinuationID?: string;
-  // A root refresh in flight is about to replace this tree, every branch's
-  // continuation token included, so no page may be requested against it. A page
-  // already loading blocks the others the same way: the panel carries one
-  // request at a time, so only the branch that asked first can be answered.
-  rootRefreshing?: boolean;
 }
 
 export interface ActivityTreeHandle {
@@ -90,8 +78,6 @@ const CLASS = {
   denseQuiet: requireClass(styles.denseQuiet, "activitypanel.module.css", "denseQuiet"),
   foldRow: requireClass(styles.foldRow, "activitypanel.module.css", "foldRow"),
   rowToggle: requireClass(styles.rowToggle, "activitypanel.module.css", "rowToggle"),
-  rowActions: requireClass(styles.rowActions, "activitypanel.module.css", "rowActions"),
-  rowContinuation: requireClass(styles.rowContinuation, "activitypanel.module.css", "rowContinuation"),
   indentGuide: requireClass(styles.indentGuide, "activitypanel.module.css", "indentGuide"),
   watchGlyph: requireClass(styles.watchGlyph, "activitypanel.module.css", "watchGlyph"),
   srOnly: requireClass(styles.srOnly, "activitypanel.module.css", "srOnly"),
@@ -208,82 +194,6 @@ function delegateMetaSegments(row: ActivityDelegateRow, now: number): MetaSegmen
   if (tokens) segments.push({ key: "tokens", text: tokens });
   segments.push(terminalSegment(timing.durationMs, rowStatusText(row)));
   return segments;
-}
-
-interface ContinuationStrip {
-  targetID: string;
-  afterRowID: string;
-  token?: string;
-  branchError?: string;
-  // openSessionRef is activityDelegateBranch's — the ref that reaches a
-  // child the page stopped short of with nothing to page.
-  openSessionRef?: string;
-}
-
-// subtreeLastRowID finds the last visible row belonging to a delegate's
-// subtree: the contiguous block of deeper-level rows right after its row.
-function subtreeLastRowID(rows: ActivityRow[], delegateRowID: string): string | undefined {
-  const index = rows.findIndex((row) => row.id === delegateRowID);
-  const row = rows[index];
-  if (!row) return undefined;
-  let last = index;
-  for (let cursor = index + 1; cursor < rows.length; cursor++) {
-    const candidate = rows[cursor];
-    if (!candidate || candidate.level <= row.level) break;
-    last = cursor;
-  }
-  return rows[last]?.id;
-}
-
-// collectContinuations maps each session/delegate branch continuation to the
-// row it renders after: the root's strip follows the whole tree, a delegate's
-// strip follows its subtree's last visible row. targetID keeps the old
-// component's semantics (session node id for the root, delegate node id for
-// delegate branches) so the panel store's continuationFailures keys and
-// graftContinuationTree targets keep matching.
-function collectContinuations(
-  tree: ActivityTreeData,
-  rows: ActivityRow[],
-  continuationFailures: Record<string, string | undefined>,
-): ContinuationStrip[] {
-  const strips: ContinuationStrip[] = [];
-  const root = tree.root;
-  const rootID = activityNodeID(root);
-  const lastRowID = rows.at(-1)?.id;
-  if ((root.branch.continuation || continuationFailures[rootID] !== undefined) && lastRowID) {
-    strips.push({
-      targetID: rootID,
-      afterRowID: lastRowID,
-      token: root.branch.continuation,
-      branchError: root.branch.error,
-    });
-  }
-
-  function visitDelegates(session: ActivitySessionNode): void {
-    for (const entry of session.entries) {
-      if (entry.kind !== "delegate") continue;
-      const delegate = entry.delegate;
-      const targetID = activityNodeID(entry);
-      // Both of a delegate's branch states, read the one way the package
-      // defines — see activityDelegateBranch.
-      const branch = activityDelegateBranch(delegate);
-      if (branch.continuation || branch.openSessionRef || continuationFailures[targetID] !== undefined) {
-        const afterRowID = subtreeLastRowID(rows, targetID);
-        if (afterRowID) {
-          strips.push({
-            targetID,
-            afterRowID,
-            token: branch.continuation,
-            branchError: branch.error,
-            openSessionRef: branch.openSessionRef,
-          });
-        }
-      }
-      if (delegate.child) visitDelegates(delegate.child);
-    }
-  }
-  visitDelegates(root);
-  return strips;
 }
 
 function TreeTickProvider({ live, children }: { live: boolean; children: ReactNode }): ReactNode {
@@ -602,62 +512,8 @@ function WatchGroupHeader({ armed }: { armed: number | null }): ReactNode {
   );
 }
 
-interface ContinuationStripViewProps {
-  strip: ContinuationStrip;
-  failure: string | undefined;
-  loadingContinuationID?: string;
-  rootRefreshing?: boolean;
-  onContinue: (targetID: string, continuation: string) => void;
-}
-
-const ContinuationStripView = memo(function ContinuationStripView({
-  strip,
-  failure,
-  loadingContinuationID,
-  rootRefreshing,
-  onContinue,
-}: ContinuationStripViewProps): ReactNode {
-  return (
-    <div className={CLASS.rowActions}>
-      <span className={CLASS.rowContinuation}>
-        {failure ??
-          strip.branchError ??
-          (strip.openSessionRef ? "This branch continues in its own session." : "This branch is partially retained.")}
-      </span>
-      {strip.openSessionRef && (
-        <Button
-          variant="quiet"
-          size="xs"
-          tabIndex={-1}
-          onClick={(event) => {
-            event.stopPropagation();
-            openSessionByRef(strip.openSessionRef ?? "");
-          }}
-        >
-          Open session
-        </Button>
-      )}
-      {strip.token && (
-        <Button
-          variant="quiet"
-          size="xs"
-          tabIndex={-1}
-          disabled={rootRefreshing || loadingContinuationID !== undefined}
-          onClick={(event) => {
-            event.stopPropagation();
-            onContinue(strip.targetID, strip.token ?? "");
-          }}
-        >
-          {loadingContinuationID === strip.targetID ? "Loading…" : "Load more"}
-        </Button>
-      )}
-    </div>
-  );
-});
-
 interface RowBlockProps {
   slice: ActivityRow[];
-  stripsByAfterRowID: Map<string, ContinuationStrip[]>;
   expandedFolds: Set<string>;
   effectiveFocusedID: string | null;
   isDetailOpen: (row: DetailRow) => boolean;
@@ -666,10 +522,6 @@ interface RowBlockProps {
   onFocusRow: (id: string) => void;
   onKeyDown: (event: KeyboardEvent<HTMLDivElement>, row: ActivityRow) => void;
   registerRowRef: (id: string, element: HTMLDivElement | null) => void;
-  continuationFailures: Record<string, string | undefined>;
-  loadingContinuationID?: string;
-  rootRefreshing?: boolean;
-  onContinue?: (targetID: string, continuation: string) => void;
 }
 
 // Rows arrive flat with levels; a delegate's child-session rows are the
@@ -678,7 +530,6 @@ interface RowBlockProps {
 // re-renders it on real data/focus/detail changes - never on a tick.
 function RowBlock({
   slice,
-  stripsByAfterRowID,
   expandedFolds,
   effectiveFocusedID,
   isDetailOpen,
@@ -687,10 +538,6 @@ function RowBlock({
   onFocusRow,
   onKeyDown,
   registerRowRef,
-  continuationFailures,
-  loadingContinuationID,
-  rootRefreshing,
-  onContinue,
 }: RowBlockProps): ReactNode[] {
   const out: ReactNode[] = [];
   let cursor = 0;
@@ -738,20 +585,6 @@ function RowBlock({
         />,
       );
     }
-    for (const strip of stripsByAfterRowID.get(row.id) ?? []) {
-      out.push(
-        onContinue ? (
-          <ContinuationStripView
-            key={`${strip.targetID}-continuation`}
-            strip={strip}
-            failure={continuationFailures[strip.targetID]}
-            loadingContinuationID={loadingContinuationID}
-            rootRefreshing={rootRefreshing}
-            onContinue={onContinue}
-          />
-        ) : null,
-      );
-    }
     let end = cursor + 1;
     while (end < slice.length) {
       const candidate = slice[end];
@@ -765,7 +598,6 @@ function RowBlock({
         <div role="group" className={CLASS.indentGuide} key={`${row.id}-group`}>
           <RowBlock
             slice={slice.slice(cursor + 1, end)}
-            stripsByAfterRowID={stripsByAfterRowID}
             expandedFolds={expandedFolds}
             effectiveFocusedID={effectiveFocusedID}
             isDetailOpen={isDetailOpen}
@@ -774,10 +606,6 @@ function RowBlock({
             onFocusRow={onFocusRow}
             onKeyDown={onKeyDown}
             registerRowRef={registerRowRef}
-            continuationFailures={continuationFailures}
-            loadingContinuationID={loadingContinuationID}
-            rootRefreshing={rootRefreshing}
-            onContinue={onContinue}
           />
         </div>,
       );
@@ -788,19 +616,7 @@ function RowBlock({
 }
 
 export const ActivityTree = forwardRef<ActivityTreeHandle, ActivityTreeProps>(function ActivityTree(
-  {
-    tree,
-    expandedFoldIDs,
-    onToggleFold,
-    compactDetails = false,
-    detailDisclosure,
-    watches,
-    watchCounts,
-    continuationFailures = {},
-    onContinue,
-    loadingContinuationID,
-    rootRefreshing,
-  },
+  { tree, expandedFoldIDs, onToggleFold, compactDetails = false, detailDisclosure, watches, watchCounts },
   ref,
 ) {
   // Detail strips are per-row, not an accordion: each row carries its own
@@ -845,20 +661,6 @@ export const ActivityTree = forwardRef<ActivityTreeHandle, ActivityTreeProps>(fu
   // flag: no live rows, no interval - the old effect's contract, minus the
   // tree-wide setNow that re-rendered every row each second.
   const hasLive = activityRows.some((row) => "live" in row && row.live);
-
-  const strips = useMemo(
-    () => collectContinuations(tree, rows, continuationFailures),
-    [tree, rows, continuationFailures],
-  );
-  const stripsByAfterRowID = useMemo(() => {
-    const map = new Map<string, ContinuationStrip[]>();
-    for (const strip of strips) {
-      const list = map.get(strip.afterRowID);
-      if (list) list.push(strip);
-      else map.set(strip.afterRowID, [strip]);
-    }
-    return map;
-  }, [strips]);
 
   const indexByID = useMemo(() => new Map(rows.map((row, index) => [row.id, index])), [rows]);
   const treeRef = useRef<HTMLDivElement>(null);
@@ -964,8 +766,8 @@ export const ActivityTree = forwardRef<ActivityTreeHandle, ActivityTreeProps>(fu
         case " ":
         case "Spacebar":
         case "Space": {
-          // Enter/Space from a nested control (the chevron button, the Load
-          // more button) is that control's own activation; the row must not
+          // Enter/Space from a nested control (the chevron button, the open
+          // transcript button) is that control's own activation; the row must not
           // fire a second activation for it. Arrows, by contrast, always mean
           // row navigation even when focus sits on a nested control (Firefox
           // and Safari focus buttons on click).
@@ -993,7 +795,6 @@ export const ActivityTree = forwardRef<ActivityTreeHandle, ActivityTreeProps>(fu
       <div ref={treeRef} role="tree" className={CLASS.tree}>
         <RowBlock
           slice={rows}
-          stripsByAfterRowID={stripsByAfterRowID}
           expandedFolds={expandedFolds}
           effectiveFocusedID={effectiveFocusedID}
           isDetailOpen={isDetailOpen}
@@ -1002,10 +803,6 @@ export const ActivityTree = forwardRef<ActivityTreeHandle, ActivityTreeProps>(fu
           onFocusRow={focusRowByID}
           onKeyDown={handleKeyDown}
           registerRowRef={registerRowRef}
-          continuationFailures={continuationFailures}
-          loadingContinuationID={loadingContinuationID}
-          rootRefreshing={rootRefreshing}
-          onContinue={onContinue}
         />
       </div>
     </TreeTickProvider>
