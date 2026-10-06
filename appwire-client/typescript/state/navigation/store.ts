@@ -421,7 +421,6 @@ export function createNavigationStore({ persistence }: NavigationStoreDeps): Nav
   function foregroundKeys(): ReadonlySet<string> {
     return new Set(store.getState().visibleResourceKeys);
   }
-  let convergenceKeySnapshot: ReadonlySet<string> | undefined;
   function clearClientOwnedState(): void {
     clearDemands();
     store.setState({
@@ -643,7 +642,7 @@ export function createNavigationStore({ persistence }: NavigationStoreDeps): Nav
         return revalidator.waitForInvalidation(predicate);
       },
       applyNavigationMutation: (mutation: NavigationMutation) => {
-        return applyMutation(mutation, convergenceKeySnapshot ?? foregroundKeys());
+        return applyMutation(mutation, foregroundKeys());
       },
       setExpanded: (projectKey: string, expanded: boolean) => commitExpansion(projectKey, expanded),
       toggleExpanded: (projectKey: string) =>
@@ -924,15 +923,6 @@ export function createNavigationStore({ persistence }: NavigationStoreDeps): Nav
       return;
     }
     const visibleKeys = foregroundKeys();
-    const applyConvergingMutation = (mutation: NavigationMutation) => {
-      const previous = convergenceKeySnapshot;
-      convergenceKeySnapshot = visibleKeys;
-      try {
-        return store.getState().applyNavigationMutation(mutation);
-      } finally {
-        convergenceKeySnapshot = previous;
-      }
-    };
     const timeoutMs = opts.timeoutMs ?? NAVIGATION_INVALIDATION_TIMEOUT_MS;
     const deadline = Date.now() + timeoutMs;
     try {
@@ -962,7 +952,7 @@ export function createNavigationStore({ persistence }: NavigationStoreDeps): Nav
           if (timer !== undefined) clearTimeout(timer);
         }
         if (payload === undefined) break;
-        await applyConvergingMutation({ generation_id: payload.generationId, targets: payload.targets });
+        await applyMutation({ generation_id: payload.generationId, targets: payload.targets }, visibleKeys);
         if (!opts.settled || !opts.rearm || opts.settled()) return;
         invalidation.cancel();
         invalidation = opts.rearm();
@@ -971,7 +961,7 @@ export function createNavigationStore({ persistence }: NavigationStoreDeps): Nav
       // without an initialized v3 store the fallback has nothing to converge
       // and its rejection would be a false failure for a committed mutation.
       if (store.getState().mode !== "v3") return;
-      await applyConvergingMutation({ generation_id: store.getState().clientGenerationID, targets });
+      await applyMutation({ generation_id: store.getState().clientGenerationID, targets }, visibleKeys);
     } finally {
       invalidation.cancel();
     }

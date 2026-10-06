@@ -2,7 +2,6 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
-  NavigationInvalidatedPayload,
   NavigationManifest,
   NavigationProjectResource,
   NavigationSessionSummary,
@@ -19,6 +18,8 @@ import {
   type ResourceState,
 } from "@evener/appwire-client/state/navigation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { wireSnapshot } from "@evener/appwire-client/testing/navigation";
+import { navigationInvalidatedNotification } from "@evener/appwire-client/testing/notifications";
 import { act, cleanup, fireEvent, render as renderUI, screen, waitFor, within } from "@testing-library/react";
 import type { ReactElement } from "react";
 import { lazy } from "react";
@@ -2263,59 +2264,114 @@ describe("resource-backed Rail", () => {
     resetThreadsStoreForTests();
   });
   test("keeps AppWire shutdown pending through unrelated invalidation and until relevant target authority", async () => {
-    const event = deferred<NavigationInvalidatedPayload>();
     const targetAuthority = deferred<void>();
-    let invalidationPredicate: ((payload: NavigationInvalidatedPayload) => boolean) | undefined;
-    const awaitNavigationInvalidation = vi.fn((predicate?: (payload: NavigationInvalidatedPayload) => boolean) => {
-      invalidationPredicate = predicate;
-      return { promise: event.promise, cancel: vi.fn() };
+    const targetRefreshStarted = deferred<void>();
+    let projectReads = 0;
+    const client = new FakeClient("ready");
+    client.on("evener/navigation/read", async (params) => {
+      if (params.resource === "manifest")
+        return wireSnapshot(
+          params,
+          manifest({
+            generation_id: "g1",
+            sections: { live: { count: 0 }, needs_you: { count: 0 }, pin_sections: { count: 0 } },
+            catalogs: { projects: { count: 1 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
+          }),
+          '"manifest-1"',
+          1,
+          "g1",
+        );
+      if (params.resource === "catalog")
+        return wireSnapshot(
+          params,
+          { projects: [{ key: "p", name: "Project", session_count: 1 }], remaining: 0 },
+          '"catalog-1"',
+          1,
+          "g1",
+        );
+      if (params.resource === "project") {
+        projectReads++;
+        if (projectReads > 1) {
+          targetRefreshStarted.resolve();
+          await targetAuthority.promise;
+          return wireSnapshot(
+            params,
+            {
+              current: { sessions: [], remaining: 0 },
+              recent: { sessions: [], remaining: 0 },
+              archived: { sessions: [], remaining: 0 },
+            },
+            '"project-2"',
+            2,
+            "g1",
+          );
+        }
+        return wireSnapshot(
+          params,
+          {
+            current: { sessions: [summary({ title: "Shutdown me", project: "Project", live: true })], remaining: 0 },
+            recent: { sessions: [], remaining: 0 },
+            archived: { sessions: [], remaining: 0 },
+          },
+          '"project-1"',
+          1,
+          "g1",
+        );
+      }
+      throw new Error(`unexpected navigation read ${JSON.stringify(params)}`);
     });
-    const deliverInvalidation = (payload: NavigationInvalidatedPayload) => {
-      if (invalidationPredicate?.(payload)) event.resolve(payload);
-    };
-    const applyNavigationMutation = vi.fn(() => targetAuthority.promise);
-    const shutdown = vi.fn().mockResolvedValue(undefined);
-    installState([
-      catalogResource([{ key: "p", name: "Project", session_count: 1 }]),
-      projectResource("p", [summary({ title: "Shutdown me", live: true })]),
-    ]);
-    navigationStore.setState({ awaitNavigationInvalidation, applyNavigationMutation });
-    threadsStore.setState({ shutdown });
-    render(<Rail />);
+    client.on("thread/shutdown", () => ({}));
+    connectionStore.setState({ state: "ready", serverInfo: undefined, client });
+    navigationStore.init(client, { version: 1, generationId: "g1", sequence: 1, readVersions: [3] });
+    await act(async () => {
+      await navigationStore.getState().loadCatalog("projects");
+      await navigationStore.getState().loadProject("p");
+    });
+    render(<Rail />, client);
     fireEvent.click(screen.getByText("Project"));
     fireEvent.click(screen.getByRole("button", { name: /actions for shutdown me/i }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Shut down" }));
     fireEvent.click(screen.getByRole("button", { name: "Shut down" }));
     await act(async () => undefined);
-    expect(awaitNavigationInvalidation).toHaveBeenCalledTimes(1);
-    expect(shutdown).toHaveBeenCalledWith("local:a");
-    deliverInvalidation({
-      generationId: "g1",
-      sequence: 2,
-      targets: [{ kind: "pin_section", sectionId: "other", revision: 2 }],
-    });
+    expect(client.calls.filter((call) => call.method === "thread/shutdown")).toEqual([
+      { method: "thread/shutdown", params: { ref: "local:a" } },
+    ]);
+    act(() =>
+      client.emitNotification(
+        navigationInvalidatedNotification({
+          generationId: "g1",
+          sequence: 2,
+          targets: [{ kind: "pin_section", sectionId: "other", revision: 2 }],
+        }),
+      ),
+    );
     await act(async () => undefined);
-    expect(applyNavigationMutation).not.toHaveBeenCalled();
     expect(screen.getByText("Shut down this session?")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Shut down" }).hasAttribute("disabled")).toBe(true);
+    expect(screen.getByRole("button", { name: /actions for shutdown me/i })).toBeTruthy();
 
-    deliverInvalidation({
-      generationId: "g1",
-      sequence: 3,
-      targets: [{ kind: "project", projectKey: "p", revision: 2 }],
-    });
-    await act(async () => undefined);
-    expect(applyNavigationMutation).toHaveBeenCalledWith({
-      generation_id: "g1",
-      targets: [{ kind: "project", projectKey: "p", revision: 2 }],
-    });
+    act(() =>
+      client.emitNotification(
+        navigationInvalidatedNotification({
+          generationId: "g1",
+          sequence: 3,
+          targets: [{ kind: "project", projectKey: "p", revision: 2 }],
+        }),
+      ),
+    );
+    await act(async () => targetRefreshStarted.promise);
     expect(screen.getByText("Shut down this session?")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Shut down" }).hasAttribute("disabled")).toBe(true);
+    expect(screen.getByRole("button", { name: /actions for shutdown me/i })).toBeTruthy();
 
     await act(async () => {
       targetAuthority.resolve(undefined);
       await targetAuthority.promise;
     });
     expect(screen.queryByText("Shut down this session?")).toBeNull();
+    expect(screen.queryByRole("button", { name: /actions for shutdown me/i })).toBeNull();
+    act(() => resetNavigationStoreForTests());
+    client.close();
   });
   test("routes pin-section rename and delete dialogs through receipts and durable member count", async () => {
     const applyNavigationMutation = vi.fn().mockResolvedValue(undefined);
