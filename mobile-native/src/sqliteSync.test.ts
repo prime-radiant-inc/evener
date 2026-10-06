@@ -69,10 +69,7 @@ test("wrapping an existing handle and a spread override share the one double", (
 	expect(port.getAllSync("SELECT * FROM t")).toEqual([]);
 });
 
-// Node 22 warns once per process that node:sqlite is experimental. The double
-// owns that one expected warning: it drops exactly that line while it loads the
-// module, and lets every other warning through, so the gate's output stays
-// clean without hiding warnings nobody expected (#3672).
+// The double owns node:sqlite's one expected warning (withoutSqliteExperimentalWarning).
 test("drops only node:sqlite's experimental warning while the double loads it", () => {
 	const emit = process.emitWarning;
 	const seen: string[] = [];

@@ -28,9 +28,7 @@ export function withoutSqliteExperimentalWarning<T>(load: () => T): T {
 
 // Loaded through the filter rather than a static import, which would load the
 // module (and emit its warning) before any code here runs.
-const { DatabaseSync: Database } = withoutSqliteExperimentalWarning(
-	() => process.getBuiltinModule("node:sqlite") as typeof import("node:sqlite"),
-);
+const { DatabaseSync: Database } = withoutSqliteExperimentalWarning(() => process.getBuiltinModule("node:sqlite"));
 
 /** The node:sqlite handle the double wraps, for suites that assert raw rows. */
 export type SqliteDoubleDatabase = DatabaseSync;
