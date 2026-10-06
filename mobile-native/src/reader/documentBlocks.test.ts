@@ -180,6 +180,20 @@ it("drops inline HTML tags from a block's words, but not inside an inline code s
 	expect(documentBlocks("Code ``a`<b>`` done.")[0]?.text).toBe("Code a`<b> done.");
 });
 
+it("leaves one space where an inline tag between two words drops", () => {
+	expect(wordsOf("text <!-- c --> more")).toEqual(["text more"]);
+	expect(wordsOf("a <br> b and x <span>y</span> z")).toEqual(["a b and x y z"]);
+	expect(wordsOf("**Note <br>** text and [<br>](u) end")).toEqual(["Note text and end"]);
+	expect(wordsOf("| x <br> | y |\n|---|---|\n| 1 | 2 |")).toEqual(["| x | y |\n| 1 | 2 |"]);
+	expect(wordsOf("| <br> | y |\n|---|---|\n|  | 2 |")).toEqual(["|  | y |\n|  | 2 |"]);
+	expect(wordsOf("a <br> <br> b and x `a  b` <br> y")).toEqual(["a b and x a  b y"]);
+	expect(wordsOf("a <br>\nb")).toEqual(["a\nb"]);
+});
+
+it("reads a table cell's escaped pipe as a pipe in the cell, not a column", () => {
+	expect(wordsOf("| a \\| b | c |\n|---|---|\n| `x \\| y` | z |")).toEqual(["| a \\| b | c |\n| x \\| y | z |"]);
+});
+
 it("keeps an html block's markup but still strips its markdown", () => {
 	expect(documentBlocks("<div>\n**bold**\n</div>")[0]?.text).toBe("<div>\nbold\n</div>");
 	expect(documentBlocks("<div>\n# heading\n- item\n> quote\n</div>")[0]?.text).toBe(
