@@ -67,12 +67,8 @@ func (s *Session) execOwnMemoryWrite(args map[string]any, operation string, writ
 	}
 	defer release()
 	out, err := write(env, forwarded)
-	switch {
-	case err != nil:
-	case file == memoryIndexFile:
-		s.noteOwnMemoryIndexWrite(env, scope)
-	default:
-		s.recordMemoryPage(env, scope, file, true)
+	if err == nil {
+		s.recordMemoryFile(env, scope, file, false)
 	}
 	return out, err
 }
@@ -94,7 +90,7 @@ func (s *Session) execMemoryRead(ctx context.Context, _ execenv.ExecutionEnviron
 	// The index has its own baseline and change blocks; every other page
 	// read is tracked for change notices.
 	if err == nil && file != memoryIndexFile {
-		s.recordMemoryPage(env, scope, file, false)
+		s.recordMemoryFile(env, scope, file, true)
 	}
 	return out, err
 }

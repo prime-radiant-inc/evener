@@ -339,7 +339,12 @@ func (s *Session) readMemoryScope(scope string, pages []string) (memoryProjectio
 // readMemoryPageRecord reads page's current record through env. It reports
 // false when the page could not be read, so its last record stands.
 func readMemoryPageRecord(env *execenv.LocalExecutionEnvironment, page string) (memoryPageRecord, bool) {
-	raw, err := env.ReadFileRaw(filepath.Join(env.WorkingDirectory(), page))
+	return memoryPageRecordFrom(env.ReadFileRaw(filepath.Join(env.WorkingDirectory(), page)))
+}
+
+// memoryPageRecordFrom turns a page read into its record, reporting false
+// when the read failed for any reason but absence.
+func memoryPageRecordFrom(raw []byte, err error) (memoryPageRecord, bool) {
 	switch {
 	case errors.Is(err, os.ErrNotExist):
 		return memoryPageRecord{absent: true}, true
@@ -349,29 +354,56 @@ func readMemoryPageRecord(env *execenv.LocalExecutionEnvironment, page string) (
 	return memoryPageRecord{sum: sha256.Sum256(raw)}, true
 }
 
-// recordMemoryPage makes page's current content the session's record of it
-// after the session read it with memory_read, or wrote, edited or deleted it
-// itself. Only a read starts tracking a page (onlyTracked false); the
-// session's own change to a page it read becomes its record, so it is never
-// echoed back. A read already in flight started before this, so its result
-// is discarded.
-func (s *Session) recordMemoryPage(env *execenv.LocalExecutionEnvironment, scope, page string, onlyTracked bool) {
-	if onlyTracked {
+// recordMemoryFile makes file's current content what the session knows of it,
+// after the session wrote, edited or deleted it, or read a page with
+// memory_read (startTracking). For the index that is the scope's baseline;
+// for a page it is the page's record, and only a read starts tracking a page.
+// Either way the session's own change is never echoed back.
+//
+// The file is read back through env because an edit only names its
+// replacement, which keeps the record equal to the file on disk. Another
+// session writing between this session's write and the read-back is folded
+// into the record unseen. Change blocks and page notices are computed from
+// the record, so that folded change is lost until the file changes again or,
+// for the index, a compaction or resume delivers it in full; the race is
+// accepted as rare and cheap. A failed read forgets the file: the index
+// is delivered in full at the next boundary, and the page is untracked. A
+// read already in flight started before this, so its result is discarded.
+func (s *Session) recordMemoryFile(env *execenv.LocalExecutionEnvironment, scope, file string, startTracking bool) {
+	index := file == memoryIndexFile
+	if !index && !startTracking {
 		s.memoryMu.Lock()
-		_, tracked := s.memoryReadPages[scope][page]
+		_, tracked := s.memoryReadPages[scope][file]
 		s.memoryMu.Unlock()
 		if !tracked {
 			return
 		}
 	}
-	record, ok := readMemoryPageRecord(env, page)
+	raw, err := env.ReadFileRaw(filepath.Join(env.WorkingDirectory(), file))
 	s.memoryMu.Lock()
 	defer s.memoryMu.Unlock()
 	if flight := s.memoryIndexFlights[scope]; flight != nil {
 		flight.abandoned = true
 	}
+	if index {
+		switch {
+		case err == nil:
+			// Even an empty index the session wrote itself is its baseline,
+			// so the next boundary does not echo it back.
+			index, _ := boundedMemoryIndex(raw)
+			s.setMemoryBaselineLocked(scope, memoryIndexBaseline{status: "current", index: index})
+		case errors.Is(err, os.ErrNotExist):
+			// Unlike a projected missing index, the session knows it deleted
+			// its own index, so its absence is the baseline.
+			s.setMemoryBaselineLocked(scope, memoryIndexBaseline{status: "missing"})
+		default:
+			delete(s.memoryBaseline, scope)
+		}
+		return
+	}
+	record, ok := memoryPageRecordFrom(raw, err)
 	if !ok {
-		delete(s.memoryReadPages[scope], page)
+		delete(s.memoryReadPages[scope], file)
 		return
 	}
 	if s.memoryReadPages == nil {
@@ -380,7 +412,7 @@ func (s *Session) recordMemoryPage(env *execenv.LocalExecutionEnvironment, scope
 	if s.memoryReadPages[scope] == nil {
 		s.memoryReadPages[scope] = make(map[string]memoryPageRecord)
 	}
-	s.memoryReadPages[scope][page] = record
+	s.memoryReadPages[scope][file] = record
 }
 
 // memoryReadPagesFor lists the pages of scope the session has read.
@@ -605,39 +637,6 @@ func memoryIndexLines(index string) []string {
 		}
 	}
 	return lines
-}
-
-// noteOwnMemoryIndexWrite makes the index the session just wrote, edited or
-// deleted its baseline for scope, so no later boundary echoes the session's
-// own change back to it. The index is read back through env because an edit
-// only names its replacement, which keeps the baseline equal to the file on
-// disk. Another session writing between this session's write and the
-// read-back is folded into the baseline unseen. Change blocks are computed
-// from the baseline, so that folded change is lost until the index changes
-// again or a compaction or resume delivers the full index; the race is
-// accepted as rare and cheap. If the read fails the scope
-// is forgotten and the next boundary delivers the full index. A read already
-// in flight started before this write, so its result is discarded.
-func (s *Session) noteOwnMemoryIndexWrite(env *execenv.LocalExecutionEnvironment, scope string) {
-	raw, err := readMemoryIndexFile(env)
-	s.memoryMu.Lock()
-	defer s.memoryMu.Unlock()
-	if flight := s.memoryIndexFlights[scope]; flight != nil {
-		flight.abandoned = true
-	}
-	switch {
-	case err == nil:
-		// Even an empty index the session wrote itself is its baseline, so
-		// the next boundary does not echo it back.
-		index, _ := boundedMemoryIndex(raw)
-		s.setMemoryBaselineLocked(scope, memoryIndexBaseline{status: "current", index: index})
-	case errors.Is(err, os.ErrNotExist):
-		// Unlike a projected missing index, the session knows it deleted its
-		// own index, so its absence is the baseline.
-		s.setMemoryBaselineLocked(scope, memoryIndexBaseline{status: "missing"})
-	default:
-		delete(s.memoryBaseline, scope)
-	}
 }
 
 func (s *Session) resetMemoryProjectionAfterCompaction() {
