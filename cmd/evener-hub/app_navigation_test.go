@@ -701,7 +701,7 @@ func TestHubNavigationLocatesAShadowedSessionInItsOwnCatalog(t *testing.T) {
 		}
 		return snapshot.Metadata
 	}
-	for _, tc := range []struct{ id, catalog string }{{activeID, "projects"}, {runID, "test_runs"}} {
+	for _, tc := range []struct{ id, other, catalog string }{{activeID, runID, "projects"}, {runID, activeID, "test_runs"}} {
 		location := locate(tc.id)
 		if location["catalog"] != tc.catalog || location["project_key"] != "no-project" {
 			t.Fatalf("location of %s = %v, want project no-project in catalog %s", tc.id, location, tc.catalog)
@@ -710,8 +710,9 @@ func TestHubNavigationLocatesAShadowedSessionInItsOwnCatalog(t *testing.T) {
 			{Resource: "project", ProjectKey: "no-project", Catalog: tc.catalog},
 			{Resource: "project_page", ProjectKey: "no-project", Catalog: tc.catalog, Tier: "current"},
 		} {
-			if response := dispatchNavigationRead(t, server, params); !bytes.Contains(response.Data, []byte(tc.id)) {
-				t.Fatalf("%s read in catalog %s does not hold %s: %s", params.Resource, tc.catalog, tc.id, response.Data)
+			response := dispatchNavigationRead(t, server, params)
+			if !bytes.Contains(response.Data, []byte(tc.id)) || bytes.Contains(response.Data, []byte(tc.other)) {
+				t.Fatalf("%s read in catalog %s does not hold just %s: %s", params.Resource, tc.catalog, tc.id, response.Data)
 			}
 		}
 	}

@@ -598,11 +598,11 @@ func navigationRootChildrenWithinBounds(key navigationResourceKey, count int) bo
 	}
 }
 
-// validLocationCatalog accepts a location's catalog: absent, or one of the
-// catalogs, and present exactly when the location names a project.
+// validLocationCatalog accepts a location's catalog: absent (as an older
+// hub's always is), or one of the catalogs beside a project key.
 func validLocationCatalog(catalog, projectKey string) bool {
 	if catalog == "" {
-		return projectKey == ""
+		return true
 	}
 	_, err := parseNavigationCatalog(catalog)
 	return err == nil && projectKey != ""

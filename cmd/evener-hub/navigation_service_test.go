@@ -2952,8 +2952,13 @@ func TestNavigationServiceProjectKeyInSeveralCatalogsSharesOneRevision(t *testin
 		}
 	}
 
-	result, err := service.readV3(t.Context(), navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "no-project", Catalog: navigationResourceArchivedProjects}, nil)
-	if err != nil || result.Response.Status != "gone" || result.Response.Revision != target {
-		t.Fatalf("read of a catalog without the key = %+v (%v), want gone at revision %d", result.Response, err, target)
+	for _, missing := range []navigationResourceKey{
+		{Kind: navigationResourceProject, ProjectKey: "no-project", Catalog: navigationResourceArchivedProjects},
+		{Kind: navigationResourceProjectPage, ProjectKey: "no-project", Catalog: navigationResourceArchivedProjects, Tier: "current"},
+	} {
+		result, err := service.readV3(t.Context(), missing, nil)
+		if err != nil || result.Response.Status != "gone" || result.Response.Revision != target {
+			t.Fatalf("read %+v of a catalog without the key = %+v (%v), want gone at revision %d", missing, result.Response, err, target)
+		}
 	}
 }
