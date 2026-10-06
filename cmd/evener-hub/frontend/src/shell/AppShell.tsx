@@ -14,6 +14,7 @@ import { initNotifications } from "../notifications";
 import { requestComposerFocus } from "../panes/session/composer/composerFocus";
 import { transcriptContextIncludes } from "../panes/session/transcript/openTranscript";
 import { deriveCascadePath, parseZoomParams } from "../panes/zoom/intent";
+import { startBackgroundTranscripts } from "../stores/backgroundTranscripts";
 import { connectionStore, useConnectionStore } from "../stores/connection";
 import {
   selectLiveRows,
@@ -342,6 +343,13 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
 
   useEffect(() => {
     connectionStore.getState().connect(client);
+    // One background transcript owner per actual client lifetime: it follows
+    // the complete Live roster (across projects and attached remote hosts,
+    // including idle sessions) through the navigation store's own background
+    // page lease, independent of the selected pane, rail expansion, width or
+    // visibility. Navigation initialization is already performed by the app
+    // (notifications/index.ts), so this adds no initialize request.
+    const backgroundTranscripts = startBackgroundTranscripts(navigationStore);
     // jsdom (unlike a real browser-less environment) implements a global
     // WebSocket that would otherwise dial the page's own origin for real.
     // App.test.tsx renders <App/> - and therefore <AppShell/> with its
@@ -370,7 +378,12 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
     // means this component must retire what it dialed. An injected client's
     // lifecycle stays its owner's (the test's) responsibility, so this only
     // ever acts on `owned`, never the interface-typed `client`.
-    return () => owned?.close();
+    return () => {
+      // Stop and release this owner's claims before the shared client is torn
+      // down; dispose never closes the client itself.
+      void backgroundTranscripts.dispose();
+      owned?.close();
+    };
   }, [client, owned]);
 
   // Global chord wiring (floor §2.1 + the UX-fix chords), now driven by the

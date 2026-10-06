@@ -11,6 +11,7 @@ import type {
 } from "@evener/appwire-client";
 import { AppwireClient, type ConnectionState, WireError } from "@evener/appwire-client";
 import { keyID } from "@evener/appwire-client/state/navigation";
+import { currentRead } from "@evener/appwire-client/testing/currentTranscript";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -309,7 +310,9 @@ function installNeedsYouRows(): void {
     error: null,
     generationID: "generation_test",
   });
-  navigationStore.setState({ mode: "v3", resources });
+  const visibleResourceKeys = new Set(navigationStore.getState().visibleResourceKeys);
+  visibleResourceKeys.add(keyID(key));
+  navigationStore.setState({ mode: "v3", resources, visibleResourceKeys });
 }
 
 const appShellCss = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "AppShell.module.css"), "utf8").replace(
@@ -664,6 +667,73 @@ test("a banner retry swaps the client useClient consumers call", async () => {
   expect(stale.calls.some((call) => call.method === "evener/search")).toBe(false);
 });
 
+// --- background Live transcript ownership (Task 7) ---------------------
+
+// The AppShell-owned background roster owner follows the complete Live roster
+// through the real navigation and thread stores. These tests observe its
+// actual wire demand: one additive thread membership read (subscribe:true) per
+// discovered Live ref, released on the owner's lifetime end.
+function currentThreadRead(params: { ref?: string; requestGeneration?: number }) {
+  return { ...currentRead(params.ref ?? "local:s1"), requestGeneration: params.requestGeneration ?? 1 };
+}
+function membershipReads(client: FakeClient): number {
+  return client.calls.filter(
+    (call) => call.method === "thread/read" && (call.params as { subscribe?: boolean }).subscribe === true,
+  ).length;
+}
+function unsubscribedRefs(client: FakeClient): string[] {
+  return client.calls
+    .filter((call) => call.method === "thread/unsubscribe")
+    .map((call) => (call.params as { ref?: string }).ref ?? "");
+}
+function backgroundReadyClient(): FakeClient {
+  const client = navClient();
+  client.on("thread/read", currentThreadRead);
+  client.on("thread/unsubscribe", () => ({}));
+  return client;
+}
+
+test("starts one background transcript owner for the injected client and retires it on unmount", async () => {
+  const client = backgroundReadyClient();
+  const { rerender, unmount } = render(<AppShell client={client} />);
+  await screen.findByText("No session open");
+  // The Live session (local:s1) is discovered and read before any pane opens.
+  await waitFor(() => expect(membershipReads(client)).toBe(1));
+
+  // A rerender with the same client must not start a second owner.
+  rerender(<AppShell client={client} />);
+  await act(async () => {});
+  expect(membershipReads(client)).toBe(1);
+
+  unmount();
+  await waitFor(() => expect(unsubscribedRefs(client)).toEqual(["local:s1"]));
+});
+
+test("a replacement client gets its own background owner and the old demand is retired", async () => {
+  const user = userEvent.setup();
+  const stale = new FakeClient("closed");
+  const fresh = backgroundReadyClient();
+  render(<AppShell client={stale} bannerDelayMs={0} bannerCreateClient={() => fresh} />);
+  await screen.findByText("No session open");
+  // The closed original never became ready, so it owns nothing.
+  expect(membershipReads(stale)).toBe(0);
+
+  await user.click(await screen.findByRole("button", { name: "Retry" }));
+  await waitFor(() => expect(connectionStore.getState().client).toBe(fresh));
+  await waitFor(() => expect(membershipReads(fresh)).toBeGreaterThan(0));
+  expect(unsubscribedRefs(stale)).toEqual([]);
+});
+
+test.each(["desktop", "narrow"])("one background owner per client lifetime in the %s layout", async (layout) => {
+  if (layout === "narrow") {
+    vi.stubGlobal("innerWidth", 390);
+    installMobileViewport();
+  }
+  const client = backgroundReadyClient();
+  render(<AppShell client={client} />);
+  await waitFor(() => expect(membershipReads(client)).toBe(1));
+});
+
 test("banner reflects reconnecting state when injected", async () => {
   const fake = new FakeClient("ready");
   // bannerDelayMs={0} drives the banner synchronously so the test doesn't
@@ -857,7 +927,9 @@ test("v1 Mod+J cold-demand requests page zero once and opens its first ref", asy
       error: null,
       generationID: "generation_test",
     });
-    navigationStore.setState({ resources });
+    const visibleResourceKeys = new Set(navigationStore.getState().visibleResourceKeys);
+    visibleResourceKeys.add(keyID(key));
+    navigationStore.setState({ resources, visibleResourceKeys });
     return navigationStore.getState().resources.get(keyID(key)) as never;
   });
   act(() =>
@@ -962,10 +1034,14 @@ test("v2 Mod+J loads the next needs-you page after the focused last row", async 
       error: null,
       generationID: "generation_test",
     });
-    navigationStore.setState({ resources: loadedResources });
+    const visibleResourceKeys = new Set(navigationStore.getState().visibleResourceKeys);
+    visibleResourceKeys.add(keyID(pageKey));
+    navigationStore.setState({ resources: loadedResources, visibleResourceKeys });
     return navigationStore.getState().resources.get(keyID(pageKey)) as never;
   });
-  act(() => navigationStore.setState({ mode: "v3", resources, loadSection }));
+  const visibleResourceKeys = new Set(navigationStore.getState().visibleResourceKeys);
+  visibleResourceKeys.add(keyID(firstPageKey));
+  act(() => navigationStore.setState({ mode: "v3", resources, visibleResourceKeys, loadSection }));
 
   fireEvent.keyDown(window, { key: "j", metaKey: true });
 
@@ -3327,10 +3403,17 @@ test("desktop boot uses the typed AppWire navigation read seam", async () => {
   // evener/command/list is the command catalog's connection-driven read
   // (stores/commandCatalog.ts): a ready client loads it without waiting for
   // a palette open.
+  // thread/read and thread/unsubscribe are the background Live roster owner's
+  // additive membership reads (it discovers the complete Live section), which
+  // run alongside the typed navigation reads this test guards.
   expect(
     client.calls.every(
       ({ method }) =>
-        method === "evener/navigation/read" || method === "evener/instance/list" || method === "evener/command/list",
+        method === "evener/navigation/read" ||
+        method === "evener/instance/list" ||
+        method === "evener/command/list" ||
+        method === "thread/read" ||
+        method === "thread/unsubscribe",
     ),
   ).toBe(true);
   expect(client.calls).toContainEqual({
@@ -3659,27 +3742,33 @@ test("live-next demand-load retries after the page request fails", async () => {
   const client = navClientWithDeferredLivePageTwo({
     onPageTwo: (params) => {
       pageTwoAttempts++;
-      if (pageTwoAttempts === 1) throw new Error("transient read failure");
+      // The background Live roster owner discovers the complete roster and
+      // spends the first attempt; the chord's first demand spends the second,
+      // and its retry is the third.
+      if (pageTwoAttempts <= 2) throw new Error("transient read failure");
       return wireSnapshot(params, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"');
     },
   });
   const user = userEvent.setup();
   render(<AppShell client={client} />);
   await rail().findByText("Live A");
+  // Page two was already read once (and failed) by background discovery.
+  await waitFor(() => expect(pageTwoAttempts).toBe(1));
 
   await user.click(rail().getByText("Live A"));
   await waitFor(() => {
     expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:live-a" });
   });
 
-  // The first demand fails; the view stays and no navigation happens.
-  await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift}{/Alt}");
-  await waitFor(() => expect(pageTwoAttempts).toBe(1));
+  // The first demand re-requests the failed page and fails again; the view
+  // stays and no navigation happens.
+  await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift>}{/Alt}");
+  await waitFor(() => expect(pageTwoAttempts).toBe(2));
   expect(window.location.pathname).toBe("/s/local%3Alive-a");
 
   // A cached "already demanded" entry must not brick the retry.
-  await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift}{/Alt}");
-  await waitFor(() => expect(pageTwoAttempts).toBe(2));
+  await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift>}{/Alt}");
+  await waitFor(() => expect(pageTwoAttempts).toBe(3));
   await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Alive-b"));
 });
 
@@ -3752,11 +3841,15 @@ test("an in-flight live demand-load goes inert when a newer live-nav press super
 // bootstrap).
 test("live-next with an unloaded live section re-requests page zero when the manifest reports live sessions", async () => {
   let liveReads = 0;
+  let allowLive = false;
   const client = new FakeClient("ready");
   client.on("evener/navigation/read", (params: NavigationReadParams): NavigationReadResponse => {
     if (params.resource === "section" && params.section === "live") {
       liveReads++;
-      if (liveReads === 1) throw new Error("transient initial failure");
+      // Fail every automatic attempt - the manifest hydration's read and the
+      // background roster owner's discovery - so the section stays unloaded
+      // until the chord's own demand can be answered.
+      if (!allowLive) throw new Error("transient initial failure");
       return wireSnapshot(params, { sessions: [LIVE_CYCLE_A], remaining: 0, truncated: false }, '"test"');
     }
     return navigationRead(params);
@@ -3774,9 +3867,11 @@ test("live-next with an unloaded live section re-requests page zero when the man
   // The initial hydration read failed: no live rows, nothing focused.
   await screen.findByText("No session open");
   expect(rail().queryByText("Live A")).toBeNull();
+  const unloadedReads = liveReads;
 
-  await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift}{/Alt}");
-  await waitFor(() => expect(liveReads).toBeGreaterThanOrEqual(2));
+  allowLive = true;
+  await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift>}{/Alt}");
+  await waitFor(() => expect(liveReads).toBeGreaterThan(unloadedReads));
   await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Alive-a"));
 });
 
