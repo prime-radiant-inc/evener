@@ -1,4 +1,5 @@
 {
+  "fixture_from": "freeze",
   "arms": ["on"],
   "stages": [
     {

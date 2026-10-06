@@ -23,13 +23,14 @@ See README.md next to this script for setup, the scenarios and how to read resul
 
 A scenario dir holds scenario.json and fixture/. scenario.json:
   {"arms": ["on"],                     # "on" = memory enabled, "off" = --disable-memory
+   "fixture_from": "feedback",         # optional: use scenarios/feedback/fixture instead of its own fixture/
    "stages": [{"name": "A", "prompt": "...",
                "seed_project_memory": "seed",   # optional dir copied into project memory first
                "before": "shell run in the workspace before the stage",  # optional
                "checks": [{"name": "...", "run": "shell; exit 0 = pass"}],
                "trace": [{"name": "...", "tool": "shell", "regex": "go vet"}],
                "memory": [{"name": "...", "regex": "(?i)vet", "scope": "personal"}],  # scope (personal|project|session) and "absent": true optional
-               "fixture": "fixture2", "workspace": "work2",  # optional: run in another project
+               "fixture": "fixture2", "workspace": "work2",  # optional: run in another project (both required together)
                "resume": "A",  # optional: continue stage A's session
                "transcripts": [{"name": "...", "regex": "over every transcript in the stage's state dir"}],
                "whiteboard": [{"name": "...", "regex": "(?m)^Now:", "max_chars": 600, "min_lines": 3}],
@@ -108,8 +109,15 @@ def read_tree(root):
     return {os.path.relpath(p, root): read_file(p) for p in find_files(root)}
 
 
-def make_workspace(scen, fixture, work, xdg):
-    shutil.copytree(os.path.join(scen, fixture), work)
+def base_fixture(scen, spec):
+    """The scenario's starting checkout: its own fixture/, or a sibling scenario's when "fixture_from" names one."""
+    if spec.get("fixture_from"):
+        return os.path.join(os.path.dirname(scen), spec["fixture_from"], "fixture")
+    return os.path.join(scen, "fixture")
+
+
+def make_workspace(fixture, work, xdg):
+    shutil.copytree(fixture, work)
     rc, out = sh("git init -q && git add -A && git -c user.name=lab -c user.email=lab@example.com commit -qm initial", work, fixture_env(work, xdg))
     if rc:
         raise RuntimeError(f"fixture git init failed: {out}")
@@ -135,7 +143,7 @@ def run_session(args, binpath, arm, scen, stage, trial):
     # project) that shares the trial's memory root.
     work, xdg = os.path.join(trial, stage.get("workspace", "work")), os.path.join(trial, "xdg")
     if stage.get("fixture") and not os.path.exists(work):
-        make_workspace(scen, stage["fixture"], work, xdg)
+        make_workspace(os.path.join(scen, stage["fixture"]), work, xdg)
     env = fixture_env(work, xdg)
     if stage.get("seed_project_memory"):
         pid = subprocess.run([PROJID, work], capture_output=True, text=True, check=True).stdout.strip()
@@ -251,9 +259,19 @@ def grade_stage(label, arm, scen, stage, trial, session):
 def run_trial(args, label, binpath, arm, scen, rep):
     trial = os.path.join(args.out, label, arm, os.path.basename(scen), f"r{rep}")
     os.makedirs(os.path.join(trial, "xdg"))
-    make_workspace(scen, "fixture", os.path.join(trial, "work"), os.path.join(trial, "xdg"))
-    spec = json.load(open(os.path.join(scen, "scenario.json")))
+    spec = load_scenario(scen)
+    make_workspace(base_fixture(scen, spec), os.path.join(trial, "work"), os.path.join(trial, "xdg"))
     return [grade_stage(label, arm, scen, st, trial, run_session(args, binpath, arm, scen, st, trial)) for st in spec["stages"]]
+
+
+def load_scenario(scen):
+    """Reads scen/scenario.json, exiting with a clear message on a stage that can't run as written."""
+    spec = json.load(open(os.path.join(scen, "scenario.json")))
+    for st in spec["stages"]:
+        if st.get("fixture") and not st.get("workspace"):
+            sys.exit(f"memory-lab: {scen} stage {st['name']}: \"fixture\" needs a \"workspace\" "
+                     "(otherwise the stage silently reuses the base work dir)")
+    return spec
 
 
 def cmd_run(args):
@@ -261,15 +279,15 @@ def cmd_run(args):
     versions = dict(v.split("=", 1) for v in args.version)
     if os.path.exists(args.out) and os.listdir(args.out):
         sys.exit(f"memory-lab: {args.out} already holds results; use a fresh --out")
-    os.makedirs(args.out, exist_ok=True)
     jobs = []
     for scen in args.scenarios.split(","):
         scen = os.path.abspath(scen)
-        arms = json.load(open(os.path.join(scen, "scenario.json"))).get("arms", ["on"])
+        arms = load_scenario(scen).get("arms", ["on"])
         for label, binpath in versions.items():
             for arm in arms:
                 for rep in range(1, args.reps + 1):
                     jobs.append((label, os.path.abspath(binpath), arm, scen, rep))
+    os.makedirs(args.out, exist_ok=True)
     print(f"memory-lab: {len(jobs)} trials, model {args.model}, logs under {args.out}", flush=True)
     grades = []
     with cf.ThreadPoolExecutor(args.jobs) as pool:

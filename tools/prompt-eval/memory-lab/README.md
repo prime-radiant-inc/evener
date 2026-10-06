@@ -64,7 +64,7 @@ Every trial keeps its full logs: `<stage>.events.ndjson`, `<stage>.stdout`, `<st
 
 ## Scenarios
 
-Every scenario is a directory holding `scenario.json` and `fixture/` (a small Go module). Several reuse another scenario's fixture through a symlink.
+Every scenario is a directory holding `scenario.json` and `fixture/` (a small Go module). Several reuse another scenario's fixture instead: `"fixture_from": "feedback"` in `scenario.json` starts the trial from `scenarios/feedback/fixture`.
 
 | Scenario | Measures | Notes |
 |---|---|---|
@@ -88,7 +88,8 @@ Every scenario is a directory holding `scenario.json` and `fixture/` (a small Go
 
 The header of `memory-lab` documents every field. In short:
 - each stage has a prompt
-- stages can carry `before`, `seed_project_memory`, `fixture` with `workspace` (another project) and `resume` (continue an earlier stage's session)
+- a scenario can set `fixture_from` to start from a sibling scenario's `fixture/`
+- stages can carry `before`, `seed_project_memory`, `fixture` with `workspace` (another project; `run` refuses a `fixture` without a `workspace`) and `resume` (continue an earlier stage's session)
 - checks come in these types:
   - `checks`: shell commands
   - `trace`: tool-call regexes

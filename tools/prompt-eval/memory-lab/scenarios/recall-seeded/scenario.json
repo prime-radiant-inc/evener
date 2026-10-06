@@ -1,4 +1,5 @@
 {
+  "fixture_from": "quirk",
   "arms": ["on", "off"],
   "stages": [
     {
