@@ -1,3 +1,4 @@
+import { APPWIRE_PROTOCOL_VERSION } from "@evener/appwire-client";
 // Browser-verification harness for the desktop shell's page height.
 //
 // The bug it exists to find: the rail (sidebar) tree's FULL expanded height
@@ -15,6 +16,7 @@
 // answer the fix has to be aimed at.
 
 import type { NavigationReadBase, NavigationReadParams, NavigationReadResponse } from "@evener/appwire-client";
+import { buildWatchRows, hydrateThread } from "@evener/appwire-client";
 import {
   navigationOwnedContainerKey,
   navigationRootContainerKey,
@@ -24,7 +26,10 @@ import {
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { navigationInvalidatedNotification } from "@evener/appwire-client/testing/notifications";
 import { createRoot } from "react-dom/client";
+import { TasksPanelBody } from "../panes/session/chrome/TasksPanel";
 import { RepoLocation } from "../panes/session/composer/RepoLocation";
+import activityStyles from "../shell/activitybar/activitybar.module.css";
+import { AgentRow, JobRow, WatchRow } from "../shell/activitybar/activityRows";
 import { activitySidebarStore } from "../shell/activitybar/activitySidebarStore";
 import { ClientProvider } from "../shell/clientContext";
 import railStyles from "../shell/rail/Rail.module.css";
@@ -36,7 +41,10 @@ import {
   activityContext,
   activityDelegate,
   activityDetailsThread,
+  activityJob,
   activitySummary,
+  activityThread,
+  activityWatch,
 } from "../stores/sessionActivityTestUtils";
 import "../styles/tokens.css";
 import "../styles/global.css";
@@ -90,6 +98,7 @@ const EXPECTED_PANE_ACTIVITY_TABS = ["agents", "jobs", "watches", "tasks"] as co
 const EXPECTED_PANE_ACTIVITY_CONTROLS = EXPECTED_PANE_ACTIVITY_TABS.length;
 const CROWDED_ACTIVITY_COUNTS = { known: true, total: 100, active: 100, failed: 0, completed: 0 };
 const OVERVIEW_CHILD = "local:overview-child";
+const ROW_PADDING_REF = "local:row-padding";
 
 function overviewActivityContext(ref: string) {
   return {
@@ -439,6 +448,12 @@ async function boot(): Promise<void> {
     watches: [],
     page: { complete: true, issues: [] },
   }));
+  fake.on("evener/tasks/list", ({ ref }) => ({
+    data:
+      ref === ROW_PADDING_REF
+        ? [{ id: 1, type: "verify", description: "Measure task row", prompt: "", status: "open" }]
+        : [],
+  }));
   fake.on("evener/git/head", () => ({
     head: "this-is-a-long-feature-branch",
     originUrl: "https://github.com/prime-radiant-inc/evener.git",
@@ -446,7 +461,7 @@ async function boot(): Promise<void> {
   shellClient = fake;
   fake.scriptConnect(() => ({
     serverInfo: { name: "fake-evener-hub", version: "0.0.0" },
-    protocolVersion: "evener-appwire-v6",
+    protocolVersion: APPWIRE_PROTOCOL_VERSION,
     sourceId: "fake",
     features: {
       threadList: true,
@@ -780,6 +795,7 @@ function measureTapTargets() {
 
 const target = window as typeof window & {
   settledShell: Promise<unknown>;
+  activityRowFixture: (open: boolean) => void;
   configureOverview: (theme: ThemePref) => void;
   overviewGuardState: () => unknown;
   overviewPane: (action: "duplicate" | "other" | "focus" | "close", id?: string) => string | undefined;
@@ -787,12 +803,67 @@ const target = window as typeof window & {
   measureMobileSidebar: typeof measureMobileSidebar;
   measureTapTargets: typeof measureTapTargets;
   measurePaneFooters: typeof measurePaneFooters;
-  applyShellNavigationDelta: () => Promise<unknown>;
+  applyShellNavigationDelta: (title?: string) => Promise<unknown>;
   measureRailRenderCounts: () => {
     counts: Record<string, number>;
     changedRowID: string | null;
     visibleRowIDs: string[];
     document: { scrollHeight: number; viewportHeight: number };
+  };
+};
+let stopActivityRowFixture: (() => void) | null = null;
+target.activityRowFixture = (open) => {
+  stopActivityRowFixture?.();
+  stopActivityRowFixture = null;
+  if (!open) return;
+  const fixture = document.createElement("div");
+  fixture.dataset.activityRowFixture = "";
+  fixture.className = activityStyles.body ?? "";
+  Object.assign(fixture.style, {
+    position: "fixed",
+    left: "0",
+    top: "120px",
+    width: "320px",
+    maxWidth: "100vw",
+    maxHeight: "calc(100vh - 120px)",
+    zIndex: "10000",
+    background: "var(--surface-canvas)",
+  });
+  document.body.append(fixture);
+  const fixtureRoot = createRoot(fixture);
+  const activate = (kind: string) => {
+    fixture.dataset.activated = kind;
+  };
+  fixtureRoot.render(
+    <div className={activityStyles.stack}>
+      <div data-row-case="agent-passive">
+        <AgentRow sub={activityDelegate()} />
+      </div>
+      <div data-row-case="agent-clickable">
+        <AgentRow sub={activityDelegate()} onDrill={() => activate("agent")} />
+      </div>
+      <div data-row-case="job-passive">
+        <JobRow job={activityJob()} />
+      </div>
+      <div data-row-case="job-clickable">
+        <JobRow job={activityJob()} onOpen={() => activate("job")} />
+      </div>
+      <div data-row-case="watch">
+        {buildWatchRows([activityWatch()]).map((row) => (
+          <WatchRow key={row.id} row={row} now={Date.parse("2026-10-05T00:00:00Z")} />
+        ))}
+      </div>
+      <div data-row-case="task">
+        <TasksPanelBody
+          sessionRef={ROW_PADDING_REF}
+          model={hydrateThread(activityThread(ROW_PADDING_REF), ROW_PADDING_REF, 0)}
+        />
+      </div>
+    </div>,
+  );
+  stopActivityRowFixture = () => {
+    fixtureRoot.unmount();
+    fixture.remove();
   };
 };
 target.configureOverview = (theme) => {
@@ -828,7 +899,7 @@ target.measureRailRenderCounts = () => ({
   visibleRowIDs,
   document: { scrollHeight: document.documentElement.scrollHeight, viewportHeight: window.innerHeight },
 });
-target.applyShellNavigationDelta = async () => {
+target.applyShellNavigationDelta = async (title = "project-0 session 0 changed") => {
   if (!shellClient) throw new Error("shellguard client is not ready");
   visibleRowIDs = [...renderCounts.keys()];
   const expectedChangedRowID = await navigationEntityKey(
@@ -840,7 +911,7 @@ target.applyShellNavigationDelta = async () => {
   if (changedObserverRowID === null) {
     throw new Error(`shellguard changed row was not observed before delta: ${expectedChangedRowID}`);
   }
-  changedTitle = "project-0 session 0 changed";
+  changedTitle = title;
   mutationRevision = 2;
   // Preserve the visible observer IDs above; clear only invocation counts and
   // do it immediately before publishing the one-entity delta.

@@ -47,7 +47,7 @@ func TestSessionActivityPageBudgetEscapedRowsRemainReachable(t *testing.T) {
 					at := time.Unix(int64(i+1), 0).UTC()
 					if resource == "jobs" {
 						prefix = "job_budget_"
-						batch[i] = jobstore.Event{Kind: jobstore.EventJobStarted, JobID: fmt.Sprintf("%s%03d", prefix, i), TS: at, StartedAt: &at, Type: jobstore.JobShell, OwnerSessionID: root, Description: prose, Command: prose, Task: prose}
+						batch[i] = jobstore.Event{Kind: jobstore.EventJobStarted, JobID: fmt.Sprintf("%s%03d", prefix, i), TS: at, StartedAt: &at, Type: jobstore.JobShell, Background: true, OwnerSessionID: root, Description: prose, Command: prose, Task: prose}
 					} else {
 						prefix = "watch_budget_"
 						batch[i] = jobstore.Event{Kind: jobstore.EventWatchRegistered, WatchID: fmt.Sprintf("%s%03d", prefix, i), TS: at, Watch: &jobstore.WatchEvent{Generation: "g", OwnerSessionID: root, VisibleSessionID: root, Target: "timer", ConfigHash: "hash", Config: &jobstore.WatchConfigSnapshot{Target: "timer", ReceiverSessionID: root, Note: prose, RepeatSeconds: 3}}}

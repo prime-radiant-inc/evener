@@ -2,7 +2,6 @@ export type {
   ActivityBranchState,
   ActivityCounts,
   ActivityDelegate,
-  ActivityDelegateBranch,
   ActivityDelegateEntry,
   ActivityDisclosureState,
   ActivityEntry,
@@ -15,7 +14,6 @@ export type {
   ActivityWorktree,
 } from "./activityData";
 export {
-  activityDelegateBranch,
   activityDelegateDiagnostics,
   activityNodeID,
   defaultExpandedIDs,
@@ -30,7 +28,6 @@ export {
   parseActivityTree,
   reconcileActivityState,
 } from "./activityData";
-export { fenceRootSession, graftContinuationTree } from "./activityMerge";
 export type {
   ActivityDelegateRow,
   ActivityDelegateState,
@@ -57,6 +54,12 @@ export {
   watchName,
   watchRowID,
 } from "./activityRows";
+export {
+  APPROVAL_DECISION_EVENT_KIND,
+  type ApprovalDecision,
+  approvalDecisionOf,
+  approvalDecisionText,
+} from "./approvalDecision";
 export type {
   ArchivedList,
   ArchivedListCatalog,
@@ -224,6 +227,7 @@ export {
   isHubLaunchError,
   isInstanceRemoveApplied,
   isInstanceRenamePersisted,
+  isMethodNotFound,
   isStaleCursorError,
   isTranscriptHistoryFailedError,
   isUpgradeRequiredError,
@@ -281,8 +285,8 @@ export {
   isNonZeroExit,
   isTurnError,
 } from "./itemFailure";
-export type { JobLogTail } from "./jobOutput";
-export { parseJobLogTail } from "./jobOutput";
+export type { DecodedJobOutputPage } from "./jobOutput";
+export { decodeJobOutputText, forEachJobOutputScalar, jobOutputPrunedBounds, parseJobOutputPage } from "./jobOutput";
 export { type JobStep, jobListSummary, jobStatusSummary, jobStopSummary } from "./jobSteps";
 export {
   endReasonPhrase,
@@ -737,7 +741,7 @@ export type {
   TranscriptMetadataVisibility,
   TranscriptProjection,
 } from "./transcriptProjector";
-export { ACTION_SUMMARY_UNAVAILABLE, entryDisplayKey, projectThread } from "./transcriptProjector";
+export { ACTION_SUMMARY_UNAVAILABLE, entryDisplayKey, PROMPT_EVENT_KINDS, projectThread } from "./transcriptProjector";
 export {
   findSessionsSummary,
   readTranscriptEnvelope,

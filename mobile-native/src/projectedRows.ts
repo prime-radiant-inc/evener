@@ -39,6 +39,7 @@ import {
 	type AskQuestionRef,
 	attentionWarningNotice,
 	configFingerprint,
+	APPROVAL_DECISION_EVENT_KIND,
 	ERROR_EVENT_KIND,
 	echoesTurnError,
 	hasItemFailure,
@@ -53,6 +54,7 @@ import {
 	parseAskUserQuestions,
 	parseTaskListData,
 	pendingTextJoined,
+	PROMPT_EVENT_KINDS,
 	projectThread,
 	steeringLabel,
 	steeringNotificationFragments,
@@ -176,10 +178,10 @@ export interface ActivityMember {
 
 // Tone of a steering/lifecycle notice row. "info" for every daemon steer
 // (a loop-detected or provider-failure steer included: the failure it answers
-// shows as the turn's own error), "warning" for the loop_detection, turn_limit
-// and error system events (WARNING_EVENT_KINDS), "attention" for a daemon
-// warning a human should see (attentionWarningNotice: amber, spec 8.2's
-// Warning), and "system" for every other system event.
+// shows as the turn's own error), "warning" for the WARNING_EVENT_KINDS system
+// events, "attention" for a daemon warning a human should see
+// (attentionWarningNotice: amber, spec 8.2's Warning), and "system" for every
+// other system event.
 export type NoticeTone = "info" | "warning" | "attention" | "system";
 
 export type NoticeOrigin = "steering" | "system";
@@ -191,6 +193,8 @@ export type NoticeFamily =
 	| "system-prelude"
 	| "lifecycle"
 	| "diagnostic"
+	// A human's Allow or Deny on a sandbox escalation (Approval history).
+	| "approval"
 	| "unknown-system";
 
 // The mobile timeline item union. A pure projection of one thread's turns
@@ -258,6 +262,8 @@ export type MobileTimelineItem =
 				notifications?: SteeringFragment[];
 				// A daemon warning's what-to-do, read as a quiet second line.
 				hint?: string;
+				// When an approval decision was made (epoch ms), for its "5m ago".
+				decidedAtMs?: number;
 		  }
 		// The pending ask_user questions of one call, each carrying that call's id
 		// (AskQuestionRef.callId); the composer renders them as interactive cards
@@ -515,12 +521,17 @@ function criticalReasoningRow(entry: Extract<ProjectedEntry, { kind: "critical" 
 
 // The daemon's shared-notes steer opens with this marker (last-resort
 // provenance; agent/session_notes_rpc.go's humanNoteSteerPrefix), followed by
-// the note itself or "(whiteboard cleared)" for an emptied note.
-const NOTE_STEER_PREFIX = "human updated their whiteboard: ";
-const NOTE_STEER_CLEARED = "(whiteboard cleared)";
+// the note itself or "(whiteboard cleared)" for an emptied note. A multi-line
+// note's continuation lines carry a two-space indent under the prefix
+// (formatNotesField); a stored note's lines are trimmed, so removing that
+// indent recovers the note exactly.
+export const NOTE_STEER_PREFIX = "human updated their whiteboard: ";
+export const NOTE_STEER_CLEARED = "(whiteboard cleared)";
 
 export function noteFromSteer(text: string): string {
-	const stripped = text.startsWith(NOTE_STEER_PREFIX) ? text.slice(NOTE_STEER_PREFIX.length) : text;
+	const stripped = text.startsWith(NOTE_STEER_PREFIX)
+		? text.slice(NOTE_STEER_PREFIX.length).replace(/\n {2}/g, "\n")
+		: text;
 	return stripped === NOTE_STEER_CLEARED ? "" : stripped;
 }
 
@@ -720,7 +731,6 @@ export function liveAsksFor(model: ThreadModel): ReadonlyMap<string, AskQuestion
 // --- notice rows ------------------------------------------------------------------
 
 const WARNING_EVENT_KINDS = new Set(["loop_detection", "turn_limit", ERROR_EVENT_KIND]);
-const HIDDEN_EVENT_KINDS = new Set(["system_prompt", "prompt_loaded"]);
 const PRELUDE_EVENT_KINDS = new Set(["environment"]);
 const DIAGNOSTIC_EVENT_KINDS = new Set(["round_timings"]);
 const LIFECYCLE_EVENT_KINDS = new Set([
@@ -733,6 +743,10 @@ const LIFECYCLE_EVENT_KINDS = new Set([
 	"fork_summary",
 	"tool_repair",
 	"model_switch",
+	// A model round that ended with streamed content or running tools nobody
+	// recorded. The package shows it at every level; like the web, the phone
+	// draws it as a plain notice line, not a failure.
+	"interrupted",
 	// The deleted family classified this lifecycle (its map read
 	// "notes-context": "lifecycle"); the re-home dropped it and its pin with
 	// the oracle (RoboRev panel) — restored here so the canonical set is not
@@ -743,10 +757,11 @@ const LIFECYCLE_EVENT_KINDS = new Set([
 function systemFamily(eventKind: string | undefined): NoticeFamily {
 	if (!eventKind) return "unknown-system";
 	if (WARNING_EVENT_KINDS.has(eventKind)) return "warning";
-	if (HIDDEN_EVENT_KINDS.has(eventKind)) return "hidden-instruction";
+	if (PROMPT_EVENT_KINDS.has(eventKind)) return "hidden-instruction";
 	if (PRELUDE_EVENT_KINDS.has(eventKind)) return "system-prelude";
 	if (DIAGNOSTIC_EVENT_KINDS.has(eventKind)) return "diagnostic";
 	if (LIFECYCLE_EVENT_KINDS.has(eventKind)) return "lifecycle";
+	if (eventKind === APPROVAL_DECISION_EVENT_KIND) return "approval";
 	return "unknown-system";
 }
 
@@ -795,6 +810,7 @@ function systemNotice(it: ItemModel): Extract<MobileTimelineItem, { kind: "notic
 	// first branch), so the two are derived from one classification.
 	const family = systemFamily(it.eventKind);
 	const tone: NoticeTone = family === "warning" ? "warning" : "system";
+	const decidedAtMs = family === "approval" ? hubTime(it.startedAt) : null;
 	return {
 		kind: "notice",
 		id: it.id,
@@ -805,6 +821,7 @@ function systemNotice(it: ItemModel): Extract<MobileTimelineItem, { kind: "notic
 		...systemEventWords(it),
 		...(it.eventKind ? { eventKind: it.eventKind } : {}),
 		...(it.exitCode !== undefined ? { exitCode: it.exitCode } : {}),
+		...(decidedAtMs !== null ? { decidedAtMs } : {}),
 	};
 }
 

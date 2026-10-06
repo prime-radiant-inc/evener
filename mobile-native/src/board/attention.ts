@@ -9,9 +9,10 @@
 // fallback left when it's given. A subagent failure never puts a Board row in
 // Needs you; the row's subagent chip (subagentChip) counts it, and the
 // session's Subagents list holds the detail.
-import type { NavigationSessionSummary, SessionActivity } from "@evener/appwire-client";
+import type { DelegateTiming, NavigationSessionSummary, SessionActivity } from "@evener/appwire-client";
 import { quietState } from "@evener/appwire-client";
-import { relativeAge } from "@evener/appwire-client/state/navigation";
+import { relativeAge, subagentTallyToShow } from "@evener/appwire-client/state/navigation";
+import { compactDuration } from "../session/format";
 
 export type BoardState =
 	| "failed"
@@ -93,10 +94,15 @@ export function boardState(row: NavigationSessionSummary, approval: boolean, see
 	// reported: it is never Working, Finished or Needs you.
 	if (row.offline) return "shutDown";
 	const decisive = decisiveState(row.state);
-	if (decisive) return decisive;
+	// Only a nonblocking warning yields to live child work. Search keeps its
+	// existing decisiveState rule, and failed children never decide this mark.
+	if (decisive && (decisive !== "warning" || row.ask_pending || approval || row.approval_pending)) return decisive;
 	if (row.state === "awaiting" && row.ask_pending) return "question";
 	if (approval || row.approval_pending === true) return "approval";
 	if (row.state === "active") return "working";
+	const runningSubagents = row.kind === "session" && (subagentTallyToShow(row)?.running ?? 0) > 0;
+	if (runningSubagents) return "working";
+	if (decisive) return decisive;
 	if (row.dormant || seen) return "idle";
 	return "finished";
 }
@@ -274,20 +280,42 @@ function durationLabel(forMs: number): string {
 	return relativeAge(new Date(0).toISOString(), forMs) ?? "0m";
 }
 
-/** The why line of a session waiting on its subagents, on the Board and in
- * the tray alike (spec 13.1). */
+/** The why line of a session or subagent waiting on its subagents: on the
+ * Board, in the tray, in the Activity list and on a subagent's row (spec
+ * 13.1). */
 export function waitingOnSubagents(count: number): string {
 	return `Waiting on ${plural(count, "subagent")}`;
 }
 
-/** whyLine's working-row text once a real activity read exists (S5): the
- * read's own subagent tally is authoritative and wins outright, never mixed
- * with the row's own tally guess (a stale local count must not survive a
- * fresh read of zero). Quiet and stuck read from quietState, which itself
- * withholds both while a subagent runs. Absent either, the row says what the
- * session last set out to do, else the job it is running, else "Working": this
- * never falls back to the row's own tally, because a real read already
- * answered the subagent question, even when the answer is zero. */
+/** No update for this long reads "Quiet" in a session's tray, on a
+ * subagent's row and in the Activity list: the web transcript's threshold
+ * (cmd/evener-hub/frontend/src/panes/session/transcript/flow/liveness.ts).
+ * The tray also waits this long before showing a first model retry. The
+ * Board's rows read the package's quietState instead. */
+export const AGENT_QUIET_AFTER_MS = 20_000;
+
+/** The why line of a running agent with nothing more to say: Quiet once it
+ * has gone AGENT_QUIET_AFTER_MS without an update, else Working. */
+export function quietOrWorking(silentMs: number): string {
+	return silentMs >= AGENT_QUIET_AFTER_MS ? `Quiet ${compactDuration(silentMs)}` : "Working";
+}
+
+/** A running subagent's quietOrWorking line from its timing, with the silence
+ * that turns it Quiet (useNowPastQuiet) only while that silence grows with
+ * the clock; a snapshot silence has nothing to time. */
+export function subagentQuietLine(timing: DelegateTiming): { text: string; quietForMs?: number } {
+	const quietFor = timing.quietForMs ?? 0;
+	const text = quietOrWorking(quietFor);
+	return timing.quietLive ? { text, quietForMs: quietFor } : { text };
+}
+
+/** whyLine's working-row text once an activity read exists (S5). The
+ * read's running-subagent count (the same count as the row's tally)
+ * answers the subagent question outright, even at zero; the row's tally is
+ * never consulted. Quiet and stuck read from quietState, which itself
+ * withholds both while a subagent runs. Absent either, the row says what
+ * the session last set out to do, else the job it is running, else
+ * "Working". */
 function workingWhyLine(row: NavigationSessionSummary, activity: SessionActivity, msSinceReadMs: number): WhyLine {
 	if (activity.runningSubagents > 0) return { text: waitingOnSubagents(activity.runningSubagents) };
 	const quiet = quietState(activity, msSinceReadMs);
@@ -330,17 +358,9 @@ export function workingActivity(row: NavigationSessionSummary): string {
 	return commandOrWorking(row);
 }
 
-/** The subagent chip's text from the counts the shared gate shows
- * (subagentTallyToShow, the same one the web rail reads): "3 running",
- * "2 failed", or "2 running · 3 failed". The chip colors each run on its own,
- * so the running count stays in the neutral ink and only the failure reads in
- * the danger ink (D2): a failed subagent is not something the user must act
- * on, so it must not wear the Needs you attention ink. */
-export function subagentChipText(tally: { running: number; failed: number }): string {
-	const parts: string[] = [];
-	if (tally.running > 0) parts.push(`${tally.running} running`);
-	if (tally.failed > 0) parts.push(`${tally.failed} failed`);
-	return parts.join(" · ");
+/** The native session-list chip names running subagents only. */
+export function subagentChipText(tally: { running: number }): string {
+	return tally.running > 0 ? `${tally.running} running` : "";
 }
 
 export interface Usual {

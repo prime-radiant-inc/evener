@@ -80,6 +80,7 @@ function makeListHandle() {
   (ref as { current: VirtualListHandle }).current = {
     scrollToIndex,
     getScrollElement: () => el,
+    isLayoutCurrent: () => true,
     getVisibleRange: () => visibleRange,
   };
   return { ref, el, scrollToIndex };

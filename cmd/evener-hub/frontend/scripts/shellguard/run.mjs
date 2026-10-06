@@ -28,6 +28,7 @@ import {
 import { describeBrowserStartupFailure, startBrowserGuard, waitForBrowserReady } from "../browserGuardProcess.mjs";
 import { Driver } from "../skillguard/run.mjs";
 import { measureDelayedFloatingDock } from "./startup.mjs";
+import { checkSessionHoverCards } from "./sessionHoverCard.mjs";
 
 const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -51,14 +52,19 @@ const BOOT = {
   bootLabel: "the shellguard entry global window.settledShell",
 };
 
-// One page load, one measurement: opens a fresh page at `viewport`, waits for
-// the harness to settle, and returns the parsed result of `expression`. Every
-// measurement below is one call to this - the per-measure differences are the
-// viewport and the expression or page action, nothing else.
+// One page load, one measurement: loads the harness as a new document in the
+// shared tab, with empty localStorage, at `viewport`, waits for it to settle,
+// and returns the parsed result of `expression`. Every measurement below is
+// one call to this - the per-measure differences are the viewport and the
+// expression or page action, nothing else.
 async function measureOnPage(cdpEndpoint, vitePort, viewport, expression) {
   const page = await connectPage(cdpEndpoint);
   const { send } = page;
   try {
+    // Every measurement shares this tab, and the outgoing document can still
+    // save its layout until the navigation replaces it, so clear storage as each
+    // new document starts. The script ends with this CDP session.
+    await send("Page.addScriptToEvaluateOnNewDocument", { source: "try { localStorage.clear(); } catch {}" });
     await applyViewport(send, viewport);
     await navigateTo(page, `http://127.0.0.1:${vitePort}/shellguard.html`, BOOT);
     await evaluate(send, "window.settledShell");
@@ -171,9 +177,19 @@ async function measureFloatingDock(page) {
     driver.send,
     `(async () => {
       const { workspaceStore, getDockviewApi } = await import('/src/shell/workspace.ts');
-      const paneId = workspaceStore.getState().openPane('settings');
-      window.shellguardFloat = { paneId, workspaceStore, getDockviewApi };
+      window.shellguardFloat = { workspaceStore, getDockviewApi };
     })()`,
+  );
+  // DockHost is a lazy chunk and settledShell waits only for the rail, so the
+  // dock can still be booting here. A pane opened before DockHost's onReady is
+  // re-minted under a new id when onReady restores the layout an earlier page
+  // saved, and the id openPane returned then never gets a panel. DockHost
+  // registers the api at the top of its synchronous onReady, so a non-null api
+  // means that restore has finished.
+  await driver.waitPage("window.shellguardFloat.getDockviewApi() != null", { label: "real Dockview api ready" });
+  await evaluate(
+    driver.send,
+    "window.shellguardFloat.paneId = window.shellguardFloat.workspaceStore.getState().openPane('settings')",
   );
   await driver.waitPage(
     "window.shellguardFloat.getDockviewApi()?.getPanel(window.shellguardFloat.paneId) != null",
@@ -671,7 +687,6 @@ function assertOverview(result, viewport, theme) {
     }
   }
   if (result.document.width > viewport.width + 1 || result.document.height > viewport.height + 1) failures.push(`page overflow ${JSON.stringify(result.document)}`);
-  failures.push(...result.errors.map(error => `page error: ${error}`));
   return failures;
 }
 
@@ -830,7 +845,61 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
   return { tabStops, status: true, phoneTrap: !!viewport.mobile, childReturn: childGesture, originalPane: pane };
 }
 
-async function overviewOnPage(cdpEndpoint, vitePort, viewport, theme, childGesture) {
+async function measureActivityRowPadding(send, viewport) {
+  const outer = await evaluate(send, `(() => {
+    const aside = document.querySelector(${JSON.stringify(OVERVIEW)});
+    const body = [...aside.querySelectorAll('div')].find(el => getComputedStyle(el).overflowY === 'auto');
+    if (!body) throw new Error('Overview scroll viewport missing');
+    const style = getComputedStyle(body);
+    return [style.paddingTop, style.paddingRight, style.paddingBottom, style.paddingLeft];
+  })()`);
+  await evaluate(send, "window.activityRowFixture(true)");
+  try {
+    await waitForDom(send, `[...document.querySelectorAll('[data-row-case]')].length === 6 && !!document.querySelector('[data-row-case="task"] [data-testid="task-check"]')`, "production activity-row fixtures hydrated");
+    await waitForFonts(send);
+    const rows = await evaluate(send, `Array.from(document.querySelectorAll('[data-row-case]')).map(container => {
+      const kind = container.dataset.rowCase;
+      const row = kind === 'watch' || kind === 'task' ? container.querySelector('summary') : container.firstElementChild;
+      let glyph = row.firstElementChild;
+      let nested = null;
+      if (kind === 'task') {
+        glyph = row.querySelector('[data-testid="task-check"]');
+      } else if (kind === 'watch') {
+        glyph = row.querySelector('[data-testid^="sidebar-watch-"]').parentElement;
+        nested = getComputedStyle(glyph.parentElement);
+      }
+      const style = getComputedStyle(row), box = row.getBoundingClientRect();
+      return { kind, inset: glyph.getBoundingClientRect().left - box.left,
+        padding: [style.paddingTop, style.paddingRight, style.paddingBottom, style.paddingLeft],
+        nestedPadding: nested ? [nested.paddingTop, nested.paddingRight, nested.paddingBottom, nested.paddingLeft] : null,
+        width: box.width, height: box.height };
+    })`);
+    const failures = [];
+    if (JSON.stringify(outer) !== JSON.stringify(["8px", "12px", "12px", "12px"])) failures.push(`Overview outer padding changed: ${JSON.stringify(outer)}`);
+    for (const row of rows) {
+      if (Math.abs(row.inset - 8) > 0.1 || JSON.stringify(row.padding) !== JSON.stringify(["4px", "8px", "4px", "8px"])) {
+        failures.push(`${row.kind} row must have 8px glyph inset and 4px/8px padding: ${JSON.stringify(row)}`);
+      }
+      if (row.nestedPadding && row.nestedPadding.some(padding => padding !== "0px")) failures.push(`watch nested row adds padding: ${JSON.stringify(row.nestedPadding)}`);
+      if (viewport.mobile && !row.kind.endsWith('passive') && (row.width < 44 || row.height < 44)) failures.push(`${row.kind} touch target below 44px: ${JSON.stringify(row)}`);
+    }
+    await clickControl(send, '[data-row-case="agent-clickable"] button');
+    await waitForDom(send, `document.querySelector('[data-activity-row-fixture]').dataset.activated === 'agent'`, "agent drill callback");
+    await evaluate(send, `document.querySelector('[data-row-case="job-clickable"] button').focus()`);
+    await pressKey(send, "Enter", "Enter", 13);
+    await waitForDom(send, `document.querySelector('[data-activity-row-fixture]').dataset.activated === 'job'`, "job keyboard activation");
+    for (const kind of ["watch", "task"]) {
+      await clickControl(send, `[data-row-case="${kind}"] summary`);
+      await waitForDom(send, `!!document.querySelector('[data-row-case="${kind}"] details[open]')`, `${kind} disclosure opens`);
+    }
+    return { result: { outer, rows }, failures };
+  } finally {
+    await evaluate(send, "window.activityRowFixture(false)");
+  }
+}
+
+// Browser regressions may prepare real page input without replacing the flow.
+export async function overviewOnPage(cdpEndpoint, vitePort, viewport, theme, childGesture, preparePage) {
   const target = await openPage(cdpEndpoint, "about:blank");
   const page = await connectPage(cdpEndpoint, target.id);
   const { send } = page;
@@ -842,6 +911,7 @@ async function overviewOnPage(cdpEndpoint, vitePort, viewport, theme, childGestu
     await evaluate(send, `window.configureOverview(${JSON.stringify(theme)})`);
     await settleOverview(send);
     await openRailOverview(send);
+    const fixture = preparePage && await preparePage(send);
     const result = await measureOverview(send);
     if (process.env.EVENER_SCRATCH_DIR) {
       await evaluate(send, `(() => {
@@ -854,11 +924,24 @@ async function overviewOnPage(cdpEndpoint, vitePort, viewport, theme, childGestu
       await writeFile(path.join(process.env.EVENER_SCRATCH_DIR, `overview-${viewport.width}-${theme}.png`), Buffer.from(screenshot.result.data, "base64"));
     }
     const failures = assertOverview(result, viewport, theme);
+    const padding = await measureActivityRowPadding(send, viewport);
+    result.rowPadding = padding.result;
+    failures.push(...padding.failures);
     try {
       result.keyboard = await trustedOverviewFlow(send, viewport, childGesture);
     } catch (error) {
-      failures.push(`trusted interaction: ${error.message}`);
+      const witness = await evaluate(send, `(() => {
+        const state = window.overviewGuardState();
+        return { ...state, calls: state.calls.slice(-12), errors: window.__shellGuardErrors || [],
+          mountedOverview: !!document.querySelector(${JSON.stringify(OVERVIEW)}) };
+      })()`);
+      failures.push(`trusted interaction: ${error.message}; child witness: ${JSON.stringify(witness)}`);
     }
+    await fixture?.afterInteraction;
+    // The initial geometry snapshot predates trusted input. Read this same
+    // page again even when an interaction failed, and report each event once.
+    result.errors = await evaluate(send, "window.__shellGuardErrors || []");
+    failures.push(...result.errors.map(error => `page error: ${error}`));
     return { result, failures };
   } finally {
     await clearViewportOverride(send);
@@ -873,6 +956,9 @@ async function main() {
     guard = await startBrowserGuard({
       frontend: FRONTEND,
       profilePrefix: "shellguard-chrome-",
+      // Headless hosts may have no pointer hardware. These Chromium settings
+      // supply a hover-capable mouse, touch emulation still owns phone cases.
+      chromeArgs: ["--blink-settings=availableHoverTypes=2,primaryHoverType=2,availablePointerTypes=4,primaryPointerType=4"],
     });
   } catch (error) {
     throw new Error(describeBrowserStartupFailure({ error, subsystem: "launch" }));
@@ -936,6 +1022,7 @@ async function main() {
     );
     failures.push(...assertFloatingDock(delayedFloatingDock));
     console.log(`shellguard delayed workspace: ${JSON.stringify(delayedFloatingDock)}`);
+    failures.push(...await checkSessionHoverCards(cdpEndpoint, vitePort));
     if (failures.length === 0) {
       console.log(
         `shellguard ok: document ${result.document.scrollHeight}px in a ${result.viewport.height}px viewport, ` +
@@ -984,7 +1071,9 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exitCode = 1;
-});
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((error) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  });
+}

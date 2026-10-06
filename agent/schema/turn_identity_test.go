@@ -59,6 +59,7 @@ func TestNoticePayloadsRoundTrip(t *testing.T) {
 		{Kind: NoticeGoalEnded, GoalEnded: &GoalEndedNotice{Status: "blocked", Reason: "stuck", Iterations: 3}},
 		{Kind: NoticeTurnLimit, TurnLimit: &TurnLimitNotice{MaxTurns: 4, MaxToolRoundsPerInput: 9}},
 		{Kind: NoticeSkillActivated, SkillActivated: &SkillActivatedNotice{Name: "tdd"}},
+		{Kind: NoticeApprovalDecision, ApprovalDecision: &ApprovalDecisionNotice{EscalationID: "esc_1", Approved: true, Tool: "write_file", Kind: "file_tool", DeniedPath: "/etc/hosts"}},
 	} {
 		data, err := json.Marshal(notice)
 		if err != nil {
@@ -83,6 +84,7 @@ func TestNoticeInfoValidate(t *testing.T) {
 		{Kind: NoticeGoalEnded, GoalEnded: &GoalEndedNotice{Status: "complete"}},
 		{Kind: NoticeTurnLimit, TurnLimit: &TurnLimitNotice{MaxTurns: 4}},
 		{Kind: NoticeSkillActivated, SkillActivated: &SkillActivatedNotice{Name: "tdd"}},
+		{Kind: NoticeApprovalDecision, ApprovalDecision: &ApprovalDecisionNotice{EscalationID: "esc_1", Approved: true}},
 	}
 	for _, notice := range valid {
 		if err := notice.Validate(); err != nil {
@@ -96,6 +98,8 @@ func TestNoticeInfoValidate(t *testing.T) {
 		{"zero payloads", NoticeInfo{Kind: NoticeGoalEnded}},
 		{"two payloads", NoticeInfo{Kind: NoticeGoalEnded, GoalEnded: &GoalEndedNotice{Status: "complete"}, TurnLimit: &TurnLimitNotice{MaxTurns: 4}}},
 		{"mismatched kind", NoticeInfo{Kind: NoticeGoalEnded, TurnLimit: &TurnLimitNotice{MaxTurns: 4}}},
+		{"approval without its payload", NoticeInfo{Kind: NoticeApprovalDecision}},
+		{"approval payload under another kind", NoticeInfo{Kind: NoticeGoalEnded, ApprovalDecision: &ApprovalDecisionNotice{EscalationID: "esc_1"}}},
 	}
 	for _, tc := range invalid {
 		if err := tc.notice.Validate(); err == nil {

@@ -34,6 +34,12 @@ import (
 // settings, and session persistence. Zero-valued fields are filled in by
 // applyDefaults where defaults apply.
 type SessionConfig struct {
+	// SessionID, when set, is the ID a new top-level session takes. A launcher
+	// picks it with PickFreshSessionID before enabling the environment's
+	// sandbox, so the scratch the sandbox mints is named after the session.
+	// Empty lets NewSession mint one. Not persisted.
+	SessionID string `json:"-"`
+
 	// LifetimeContext owns this session tree: `evener run` supplies its run
 	// context (SIGINT- and --timeout-derived) and `evener serve` its shutdown
 	// context, so cancelling either ends the tree's own context immediately
@@ -41,6 +47,13 @@ type SessionConfig struct {
 	// the tree roots at Background and only Close can cancel it. Not persisted.
 	LifetimeContext context.Context `json:"-"`
 	artifactStore   artifactStore
+
+	// MemoryStateRoot is the owning runtime host's binding, never persisted.
+	// An empty state root leaves library sessions without memory access.
+	// MemoryProjectID is trusted at launch and persisted, never inferred on resume.
+	MemoryStateRoot string `json:"-"`
+	MemoryProjectID string `json:"memory_project_id,omitempty"`
+	DisableMemory   bool   `json:"disable_memory,omitempty"`
 
 	// Project is the resolved canonical project identity for this launch. It is
 	// separate from the execution environment's active working directory, which
@@ -289,6 +302,8 @@ type SessionConfig struct {
 // deterministic. Never set by app callers; never persisted (json:"-" on the
 // parent field).
 type testConfig struct {
+	// memoryBeforeIO observes the native scope boundary without providing data.
+	memoryBeforeIO func(scope, operation string) error
 	// visionSideChannelTimeout supplies an explicit owned deadline only for
 	// deterministic package tests. Zero leaves caller deadlines authoritative.
 	visionSideChannelTimeout time.Duration
@@ -413,10 +428,20 @@ type testConfig struct {
 	// subagentBeforeSettlement observes the final unlocked boundary before a
 	// stable generation enters controller settlement.
 	subagentBeforeSettlement func(*subagent)
+	// delegateAttentionBeforeDriveClaim observes the owner's selected attention
+	// before it claims the retained child for a start. The transcript read has
+	// released attentionMu and no child/controller lock is held, so a competing
+	// drive may complete while this observer is paused. Nil in production.
+	delegateAttentionBeforeDriveClaim func(*subagent)
 	// delegateAttentionStartCommitted observes the start hand-off: the attention
 	// generation is committed and its run goroutine does not exist yet. Tests use
 	// it to drive the child from a second goroutine at exactly that point.
 	delegateAttentionStartCommitted func(*subagent)
+	// delegateAttentionBeforeGuardRelease observes an attention drive that
+	// launched no run, while it still holds the child's drive guard. Tests
+	// pause it there so another drive is refused on that guard. Nil in
+	// production.
+	delegateAttentionBeforeGuardRelease func(*subagent)
 	// subagentAfterFinalStatePublish observes the interval after a retained child
 	// publishes terminal state and before it restores its parent notify callback.
 	subagentAfterFinalStatePublish func(*subagent)
@@ -425,6 +450,11 @@ type testConfig struct {
 	// the child has stopped finalizing, the delegate is idle but not yet
 	// released. Nil in production.
 	subagentBeforeGenerationAnnounced func(*subagent)
+	// subagentBeforeGenerationReleased observes the unlocked boundary after
+	// announcement execution, before the exact controller finalizing claim is
+	// released. An inline result can be acknowledged while this seam is held.
+	// Nil in production.
+	subagentBeforeGenerationReleased func(*subagent, delegateLease)
 	// delegateFinalizationWaitCeiling overrides how long a send waits for a
 	// finished generation's finalize tail to release the delegate
 	// (delegateFinalizationWaitCeiling), so a test can exercise a tail that
@@ -672,135 +702,6 @@ type testConfig struct {
 	// context the refresh's git runs under, so a test can also assert that a
 	// close cancels that work. Nil in production.
 	swapEnvAfterAdopt func(refreshCtx context.Context)
-
-	// scratchUpsertAttempt runs immediately before each manifest upsert in
-	// installScratchRetentionFor and registerScratchConsumerRoles, after any
-	// lock-contention retry decision, so tests can inject deterministic
-	// contention around exact attempts.
-	scratchUpsertAttempt func()
-
-	// scratchUpsertAfterLoad runs immediately after each install/register
-	// closure reloads the manifest to recompute its rows — the window
-	// between that row derivation and the upsert's own update lock, where a
-	// concurrent writer's commit must be observable. Nil in production.
-	scratchUpsertAfterLoad func()
-
-	// scratchInstallBeforeReset runs in installScratchRetentionFor right
-	// before the released-manifest reset — the window where a concurrent
-	// terminal release can tombstone the manifest between this install's
-	// view of it and the reset's own locked read. Nil in production.
-	scratchInstallBeforeReset func()
-
-	// scratchAdoptionBeforeClaim runs at the top of adoptConsumerScratch,
-	// before the pool load — the window where a terminal detach can sweep the
-	// pool after a dispose-then-adopt replacement's slot read approved the
-	// swap and its disposal already discarded the fresh mint. Nil in
-	// production.
-	scratchAdoptionBeforeClaim func()
-
-	// scratchAdoptionBeforeTransfer runs at the top of adoptRetainedScratchFor,
-	// before its own pool load — the second window where a terminal detach can
-	// sweep the pool after adoptConsumerScratch already read the consumer row
-	// and approved the transfer. Nil in production.
-	scratchAdoptionBeforeTransfer func()
-
-	// scratchBeforeUnsandboxedTail runs in adoptResumedRootScratch after the
-	// sandbox section and right before the unsandboxed tail's slot read —
-	// the window where a concurrent claim's refusal can record the slot's
-	// contention between the adoption pass and the tail's own lookup. Nil in
-	// production.
-	scratchBeforeUnsandboxedTail func()
-
-	// scratchAdoptionAfterClaim runs immediately after adoptRetainedScratchFor
-	// claims a pooled handle and before the environment restore installs it —
-	// the window where a terminal detach must not release the claimed lease.
-	// Nil in production.
-	scratchAdoptionAfterClaim func()
-
-	// scratchClaimResolved runs immediately after a pool claim resolves and
-	// before the adoption switch classifies it — the window where a concurrent
-	// refresh fold must not flip the contention mark between the claim's
-	// snapshot and a second lookup. Nil in production.
-	scratchClaimResolved func()
-
-	// scratchRestoreAfterAdoption runs in the committed-delegate restore right
-	// after the retained-scratch adoption installs (or declines) on the
-	// child's environment and before the construction continues — the window
-	// where a later construction step can leave further scratch on that
-	// environment ahead of a failure. It receives the environment so a test
-	// can provision exactly that. Nil in production.
-	scratchRestoreAfterAdoption func(env *execenv.LocalExecutionEnvironment)
-
-	// scratchAdoptionBeforeBorrow runs in adoptRetainedScratchFor's
-	// wrapper-only branch after the binding snapshot and before the borrow's
-	// revalidation — the window where this session's own terminal release
-	// can seal, detach, and tombstone the allocation the snapshot approved.
-	// Nil in production.
-	scratchAdoptionBeforeBorrow func()
-
-	// scratchBorrowAfterRetainedCheck runs inside
-	// borrowRetainedScratchIfLive after the disk revalidation reads the
-	// directory retained and before the install — the window where a
-	// durable reclamation actor (a terminal release, the manifest reset, or
-	// the sweeper) can invalidate what the check approved. Nil in production.
-	scratchBorrowAfterRetainedCheck func()
-
-	// scratchSwapBeforeUpdate runs inside stageScratchSwapBinding immediately
-	// before each UpdateScratchBindings attempt, so a test can make the first
-	// attempt stale and exercise the rebase-and-retry loop. Nil in production.
-	scratchSwapBeforeUpdate func()
-
-	// scratchRefreshOpenOverride is consulted before each refresh pass's
-	// reacquire: a non-nil error replaces the real open for that reference,
-	// letting a test deterministically fail the Nth reacquire. Nil in
-	// production.
-	scratchRefreshOpenOverride func(ref sandbox.ScratchReference, call int) error
-
-	// scratchRefreshBeforeInstall runs after a refresh pass reacquired its
-	// handles and before it installs them — the window where a concurrent
-	// manifest update or pool publish must be observable, with the refresh's
-	// session id. Nil in production.
-	scratchRefreshBeforeInstall func(sessionID string)
-
-	// scratchRefreshAfterRecheck runs inside the refresh's install hold,
-	// after the revision recheck passes and before the rows land — the exact
-	// window a manifest update must not be able to commit inside, with the
-	// refresh's session id. Nil in production.
-	scratchRefreshAfterRecheck func(sessionID string)
-
-	// scratchTerminalReleaseAfterDetach runs inside the terminal scratch
-	// release after the retained pool is detached and before the Released
-	// tombstone is written — the exact window an in-flight refresh's seed
-	// publish can land in, because the detach takes no manifest lock the
-	// refresh's install hold would serialize on. Nil in production.
-	scratchTerminalReleaseAfterDetach func()
-	// scratchRetirementAfterDetach runs inside releaseRetirementScratch right
-	// after the retained pool detaches, the window a racing refresh's seed
-	// CAS can land in. It is nil in production and test-only.
-	scratchRetirementAfterDetach func()
-
-	// scratchTerminalReleaseAttempt observes each terminal-release attempt
-	// at 1, in the same position as the environment pin probe: inside the
-	// bounded retry, before the tombstone transaction. Nil in production.
-	scratchTerminalReleaseAttempt func(attempt int)
-
-	// scratchRefreshAfterSeedCAS runs inside the refresh's install hold
-	// immediately after a pass's seed pool won its publish CAS and before the
-	// terminal-seal check — the exact window a terminal detach can sweep the
-	// freshly published pool in. Nil in production.
-	scratchRefreshAfterSeedCAS func()
-
-	// scratchDetachRetainHook runs before each lease release in the terminal
-	// pool sweep, so a test can hold the sweep mid-loop — the exact window a
-	// losing seed pass must not release the same handles in. Nil in
-	// production.
-	scratchDetachRetainHook func()
-
-	// scratchLockBackoff replaces the wall-clock sleep that spaces
-	// lock-contention retries in the agent layer (the refresh's re-derive
-	// loop and the swap's rebase loop), so tests can sequence deterministically
-	// against the schedule. Nil in production.
-	scratchLockBackoff func(attempt int)
 
 	// enterWorktreeAfterSwap observes the point in enterWorktree right after
 	// the environment swap returned — the earliest point outside the swap a
@@ -1051,6 +952,8 @@ func (c SessionConfig) noOneToAsk() bool {
 // round-trip test guards against any field being dropped or misrouted.
 func (c SessionConfig) toSnapshot() schema.ConfigSnapshot {
 	return schema.ConfigSnapshot{
+		MemoryProjectID:             c.MemoryProjectID,
+		DisableMemory:               c.DisableMemory,
 		MaxToolRoundsPerInput:       c.MaxToolRoundsPerInput,
 		MaxTurns:                    c.MaxTurns,
 		DefaultCommandTimeoutMS:     c.DefaultCommandTimeoutMS,
@@ -1093,6 +996,8 @@ func (c SessionConfig) toSnapshot() schema.ConfigSnapshot {
 // after loading a meta.json or snapshot from disk.
 func configFromSnapshot(s schema.ConfigSnapshot) SessionConfig {
 	return SessionConfig{
+		MemoryProjectID:             s.MemoryProjectID,
+		DisableMemory:               s.DisableMemory,
 		MaxToolRoundsPerInput:       s.MaxToolRoundsPerInput,
 		MaxTurns:                    s.MaxTurns,
 		DefaultCommandTimeoutMS:     s.DefaultCommandTimeoutMS,

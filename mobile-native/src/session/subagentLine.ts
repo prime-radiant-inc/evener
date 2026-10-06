@@ -3,8 +3,8 @@
 // latest activity beneath, which reads the same as in the Subagents list.
 // Pure: the row re-renders with the transcript, so no clock of its own.
 import { delegateEndingText, delegateTiming, type EvenerDelegateInfo } from "@evener/appwire-client";
-import { endedInStop, subagentState } from "../subagents/subagentModel";
-import { hubTime } from "../board/attention";
+import { endedInStop, runningSubagentCount, subagentState } from "../subagents/subagentModel";
+import { hubTime, subagentQuietLine, waitingOnSubagents } from "../board/attention";
 import type { TimelineRow } from "../timeline";
 import { compactDuration } from "./format";
 
@@ -20,11 +20,9 @@ export interface SubagentLine {
 	/** The subagent's id, for its outcome in the coordinator's tree. */
 	delegateId?: string;
 	runGeneration?: number;
+	/** The silence that turns this line Quiet (subagentQuietLine). */
+	quietForMs?: number;
 }
-
-/** A subagent is quiet once no update came for this long (the web's
- * liveness threshold, ruling 10). */
-const QUIET_AFTER_MS = 20_000;
 
 // The Subagents list's own rule (subagentState), so this row, the list, the
 // Subagents chip and the tray always agree; a subagent a stop ended says
@@ -87,19 +85,16 @@ export function subagentLine(
 		// tree (thread/read's roster drops it), which the row reads when it can.
 		line.activity = state === "done" ? "Finished" : "Stopped";
 	} else if (state === "running") {
-		const waitingOn = all.filter(
-			(child) => child.parentDelegateId === delegate.delegateId && stateOf(child) === "running",
-		).length;
-		// Quiet since the later of its last activity and this run's start: a
-		// resumed subagent can still carry its last run's activity time.
-		const quietFor = timing?.quietForMs ?? 0;
+		const waitingOn = runningSubagentCount(all.filter((child) => child.parentDelegateId === delegate.delegateId));
 		// An agent waiting on its own subagents is never stuck (ruling 10).
-		line.activity =
-			waitingOn > 0
-				? `Waiting on ${waitingOn} ${waitingOn === 1 ? "subagent" : "subagents"}`
-				: quietFor >= QUIET_AFTER_MS
-					? `Quiet ${compactDuration(quietFor)}`
-					: "Working";
+		if (waitingOn > 0) line.activity = waitingOnSubagents(waitingOn);
+		else if (timing) {
+			// Quiet since the later of its last activity and this run's start: a
+			// resumed subagent can still carry its last run's activity time.
+			const quiet = subagentQuietLine(timing);
+			line.activity = quiet.text;
+			if (quiet.quietForMs !== undefined) line.quietForMs = quiet.quietForMs;
+		}
 	}
 	return line;
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -714,5 +715,58 @@ func TestRenamingAnArchivedSessionInvalidatesItsProject(t *testing.T) {
 	}
 	if !hasNavigationTarget(mutation.Targets, appwire.NavigationTargetProject, "p1") {
 		t.Fatalf("rename targets = %+v, want project p1", mutation.Targets)
+	}
+}
+
+// A key in several catalogs resolves to one of them for every read: the first
+// of projects, archived projects and test runs holding it, as an archived list
+// with no hint reads. So every session that catalog's project holds is located
+// in the project a read of its key returns. Only an unresolved directory's
+// "no-project" key can be in several catalogs.
+func TestAKeyInSeveralCatalogsResolvesToOneForEveryRead(t *testing.T) {
+	at := func(base int) func(int) time.Time {
+		return func(i int) time.Time { return time.Unix(int64(base+i), 0).UTC() }
+	}
+	named := func(prefix string) func(int) string {
+		return func(i int) string { return fmt.Sprintf("%s %d", prefix, i) }
+	}
+	const key = "no-project"
+	active := hubcore.TreeProject{Key: key, Name: key, Recent: archivedRows("active", 2, at(10), named("active")), Archived: archivedRows("active-old", 1, at(1), named("active old"))}
+	runs := hubcore.TreeProject{Key: key, Name: key, IsTestRun: true, Recent: archivedRows("run", 2, at(30), named("run")), Archived: archivedRows("run-old", 1, at(2), named("run old"))}
+	p := archivedProjection(t, active, runs)
+
+	for _, row := range active.Recent {
+		location, ok := p.Location("local:" + row.ID)
+		if !ok {
+			t.Fatalf("%s has no location", row.ID)
+		}
+		project, ok := p.Project(location.ProjectKey)
+		if !ok || !slices.ContainsFunc(project.Recent.Sessions, func(s hubapi.NavigationSessionSummary) bool { return s.SessionID == row.ID }) {
+			t.Fatalf("%s is located in project %q, whose read does not hold it: %+v", row.ID, location.ProjectKey, project.Recent.Sessions)
+		}
+		page, err := p.ProjectPage(location.ProjectKey, location.Tier, 0, 10)
+		if err != nil || !slices.ContainsFunc(page.Sessions, func(s hubapi.NavigationSessionSummary) bool { return s.SessionID == row.ID }) {
+			t.Fatalf("%s is located in %s/%s, whose page does not hold it: %+v (%v)", row.ID, location.ProjectKey, location.Tier, page.Sessions, err)
+		}
+	}
+	for _, row := range active.Archived {
+		location, ok := p.Location("local:" + row.ID)
+		if !ok {
+			t.Fatalf("%s has no location", row.ID)
+		}
+		archived, err := p.ArchivedList(navigationArchivedListRequest{ProjectKey: location.ProjectKey})
+		if err != nil || !slices.ContainsFunc(archived.Sessions, func(s hubapi.NavigationSessionSummary) bool { return s.SessionID == row.ID }) {
+			t.Fatalf("%s is located in project %q, whose archived list does not hold it: %+v (%v)", row.ID, location.ProjectKey, archived.Sessions, err)
+		}
+	}
+}
+
+// The unhinted candidates are a copy, so a caller changing them cannot change
+// the order every read of a key resolves in.
+func TestArchivedListCandidatesDoNotShareTheCatalogOrder(t *testing.T) {
+	candidates := archivedListCandidates("")
+	candidates[0] = navigationResourceTestRuns
+	if order := navigationCatalogOrder(); order[0] != navigationResourceProjects {
+		t.Fatalf("changing the candidates changed navigationCatalogOrder: %v", order)
 	}
 }

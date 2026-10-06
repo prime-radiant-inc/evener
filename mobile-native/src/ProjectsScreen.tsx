@@ -34,8 +34,9 @@ import {
 	readOrganizationNavigation,
 } from "./organizationNavigation";
 import type { Routes } from "./screens";
-import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
+import { Copy, ErrorMessage, styles, useColors } from "./ui";
 import { sessionSubagentChip, sessionSubagentChipLabel } from "./board/BoardRow";
+import { Button } from "./sheet/Grouped";
 
 const noSnapshot = () => null;
 const noSubscription = () => () => {};
@@ -262,9 +263,7 @@ export function PageList<T>({
 			{revealError ? (
 				<View style={{ paddingHorizontal: 16, gap: 8 }}>
 					<ErrorMessage message={revealError} />
-					<Action disabled={!ready || state.loading} onPress={refreshList}>
-						Locate again
-					</Action>
+					<Button text label="Locate again" disabled={!ready || state.loading} onPress={refreshList} />
 				</View>
 			) : null}
 			{updating(state) ? (
@@ -275,14 +274,7 @@ export function PageList<T>({
 			{state.error ? (
 				<View style={{ paddingHorizontal: 16, paddingTop: 8 }}>
 					<ErrorMessage message={state.error} />
-					<Action
-						disabled={!ready || state.loading}
-						onPress={() => {
-							refreshList();
-						}}
-					>
-						Try again
-					</Action>
+					<Button text label="Try again" disabled={!ready || state.loading} onPress={refreshList} />
 				</View>
 			) : null}
 			<FlatList
@@ -333,9 +325,12 @@ export function PageList<T>({
 								<Copy muted>Loading more…</Copy>
 							</View>
 						) : state.remaining > 0 ? (
-							<Action disabled={!ready || !focused || state.loading} onPress={state.error ? retryMore : loadMore}>
-								{state.error ? "Retry loading more" : `Load more · ${state.remaining} remaining`}
-							</Action>
+							<Button
+								text
+								label={state.error ? "Retry loading more" : `Load more · ${state.remaining} remaining`}
+								disabled={!ready || !focused || state.loading}
+								onPress={state.error ? retryMore : loadMore}
+							/>
 						) : null}
 					</View>
 				}
@@ -367,9 +362,11 @@ export function PageList<T>({
 							<Copy muted>{detail(item)}</Copy>
 						</Pressable>
 						{actions && organization(item) ? (
-							<Action
-								tone="quiet"
-								label={`More actions for ${title(item)}`}
+							<Button
+								text
+								quiet
+								label="···"
+								accessibilityLabel={`More actions for ${title(item)}`}
 								disabled={
 									!ready ||
 									state.loading ||
@@ -410,9 +407,7 @@ export function PageList<T>({
 										],
 									);
 								}}
-							>
-								···
-							</Action>
+							/>
 						) : null}
 					</View>
 				)}
@@ -462,27 +457,27 @@ function OrganizationStatus({
 			) : null}
 			{state.uncertain ? (
 				<>
-					<Action
+					<Button
+						text
+						label="Check again"
 						disabled={state.pending}
 						onPress={() => {
 							void actions.reconcile();
 						}}
-					>
-						Check again
-					</Action>
+					/>
 					{observation && !observation.settled && review ? (
 						<>
 							<Copy muted>
 								The current state is shown above. Continue to keep it without sending the previous request again.
 							</Copy>
-							<Action
+							<Button
+								text
+								label="Continue with current state"
 								disabled={state.pending}
 								onPress={() => {
 									void actions.keepOrganizationState(review.checkpoint);
 								}}
-							>
-								Continue with current state
-							</Action>
+							/>
 						</>
 					) : null}
 				</>

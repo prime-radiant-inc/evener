@@ -12,6 +12,7 @@ import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { approvalCard } from "./askDockCopy";
 import { DockBody } from "./DockBody";
 import { dockCard } from "./dockCard";
+import { wrapAfterSlashes } from "./format";
 
 export interface ApprovalDockProps {
 	request: SandboxEscalationRequested;
@@ -24,10 +25,6 @@ export interface ApprovalDockProps {
 	 * turn, in the order the hub raised them. */
 	waiting?: number;
 }
-
-// A path wraps only at its slashes: a zero-width space after each one gives
-// the line a break there and nowhere else.
-const breakAtSlashes = (path: string) => path.replaceAll("/", "/\u200b");
 
 const NO_DECISION = { pending: null, refreshing: false, error: null };
 const noDecision = () => NO_DECISION;
@@ -128,7 +125,7 @@ export function ApprovalDock({ request, controls, onDecided, waiting = 0 }: Appr
 					allowFontScaling={allowFontScaling}
 					style={{ fontFamily: fonts.mono, fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkMid }}
 				>
-					{card.target ? `${card.tool}  ${breakAtSlashes(card.target)}` : card.tool}
+					{card.target ? `${card.tool}  ${wrapAfterSlashes(card.target)}` : card.tool}
 				</Text>
 				<Text {...body}>{card.partiallyRan ? `${card.scope} Part of this may already have run.` : card.scope}</Text>
 				{waiting > 0 ? (

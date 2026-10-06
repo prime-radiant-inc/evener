@@ -786,6 +786,17 @@ describe("ghosts as the transcript's last rows", () => {
 		expect(rows.at(-1)).toMatchObject({ kind: "moreQueued", count: 2 });
 	});
 
+	// With token counts or the estimated cost shown, those lines close the
+	// conversation and the ghosts still come last.
+	it("puts the usage lines after the conversation and before the ghosts", () => {
+		const usage = { derived: null, cumulative: null, cost: "$0.12" };
+		const rows = withGhostRows([user("u"), streaming], ghosts(working(["queued"]), [], null, [], true), usage);
+		expect(rows.map((row) => row.kind)).toEqual(["user", "assistant", "usage", "ghost"]);
+		expect(rows.map((row, index) => sessionListGap(row, rows[index + 1]))).toEqual([24, 0, 24, 0]);
+		expect(new Set(rows.map(sessionListKey)).size).toBe(rows.length);
+		expect(withGhostRows([user("u")], [], usage).map((row) => row.kind)).toEqual(["user", "usage"]);
+	});
+
 	it("leaves the rows as they are with nothing waiting", () => {
 		const rows = [user("u"), reply("r")];
 		expect(withGhostRows(rows, [])).toBe(rows);

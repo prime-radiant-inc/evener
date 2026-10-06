@@ -102,8 +102,6 @@ assert.equal(client.projectSessionActivity(new client.SessionActivityStore({ sta
 assert.equal(client.findEntityView(new Map(), "job", "job", "ref"), undefined);
 assert(Array.isArray(client.defaultExpandedIDs(tree)));
 assert.equal(client.isActivityFailure("failure", undefined), true);
-assert.equal(client.fenceRootSession(session, session).sessionId, "thread");
-assert.equal(client.graftContinuationTree(tree, "session:ref", tree).revision, 1);
 assert.equal(client.foldRowID("session:ref"), "session:ref:inactive-fold");
 assert.deepEqual(client.buildActivityRows(tree, new Set()), []);
 assert.equal(client.jobIsFailed({ terminal: true, outcome: "failure" }), true);
@@ -113,7 +111,7 @@ assert.equal(client.hasFailureStatus({ status: "interrupted" }), true);
 assert.equal(client.hasErrorText({ error: "  " }), false);
 assert.equal(client.isNonZeroExit({ exitCode: 0 }), false);
 assert.equal(client.isInProgressStatus("inProgress"), true);
-assert.equal(client.parseJobLogTail(null), null);
+assert.equal(client.parseJobOutputPage(null), null);
 assert.equal(client.SYSTEM_PRELUDE_TURN_ID, "turn_system");
 assert.equal(client.pendingTextJoined(["a", "b"]), "ab");
 assert.equal(client.notificationRoutingKey({ method: "evener/x", params: {} }), null);
@@ -1074,7 +1072,12 @@ ${presenceLoop}${surface.smoke ?? ""}`,
   }
   // Run the shipped program from the installed tarball. Only the remote server
   // is scripted; imports, sockets, handshake, client requests and output are real.
-  const serverProtocolVersion = "evener-appwire-v6";
+  const serverProtocolVersion = run(
+    process.execPath,
+    ["-p", "require('@evener/appwire-client').APPWIRE_PROTOCOL_VERSION"],
+    consumerDir,
+  ).trim();
+  assert.equal(serverProtocolVersion, "evener-appwire-v7");
   const fixtureCwd = "/fixture/project";
   const responses = new Map([
     ["model/list", { params: { cwd: fixtureCwd }, result: { data: [] } }],

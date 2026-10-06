@@ -404,6 +404,8 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
     model,
     listRef: virtualListRef,
     initialViewCapture: readView?.getCapture(),
+    onReaderIntent: readView?.supersedePositioning,
+    onReaderMovement: readView?.syncPositioningMovement,
     loadOlder,
     cancelOlder,
     viewKey: configFingerprint(displayConfig),
@@ -446,6 +448,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
     listRef: virtualListRef,
     jumpToBottom: flow.jumpToBottom,
     markGesture: flow.markGesture,
+    onPositioningCommand: readView?.supersedePositioning,
   });
   const showColdStartSkeleton = useColdStartSkeleton(ref, model);
   // kata g2ez: names the one turn (if any) that starts what's arrived since
@@ -597,6 +600,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
         sessionRef={ref}
         viewId={readView?.id}
         initialViewCapture={readView?.getCapture()}
+        readView={readView ?? undefined}
         onAnnounceViewChange={(summary) => {
           announcementSequence.current += 1;
           setViewAnnouncement({ text: `Transcript detail: ${summary}`, key: announcementSequence.current });
@@ -655,6 +659,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
     <PaneScaffold
       paneId={paneId}
       focused={paneFocused}
+      focusSelector='[data-composer] [role="textbox"]'
       scaffoldMarker={`session:${ref}`}
       title={title}
       cadence={cadence}

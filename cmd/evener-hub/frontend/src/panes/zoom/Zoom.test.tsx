@@ -7,7 +7,13 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { useStore } from "zustand";
 import { ClientProvider } from "../../shell/clientContext";
 import { conversationPaneLifetime } from "../../shell/paneLifetime";
-import { type OpenPaneRecord, resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspace";
+import {
+  consumePaneFocus,
+  type OpenPaneRecord,
+  requestPaneFocus,
+  resetWorkspaceStoreForTests,
+  workspaceStore,
+} from "../../shell/workspace";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { connectionStore } from "../../stores/connection";
 import {
@@ -18,9 +24,12 @@ import {
 } from "../../stores/sessionActivityTestUtils";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
 import { resetTranscriptViewRegistryForTests } from "../session/transcript/flow/transcriptViewRegistry";
+import { holdReaderFrames, readerWireTurns } from "../session/transcript/transcriptReaderTestUtils";
+import { installTranscriptGeometry } from "../session/transcript/transcriptReadingGeometryTestUtils";
 import { retainedTranscriptReadView } from "../session/transcript/transcriptReadView";
 import { resetTranscriptPagingForTests } from "../session/transcript/useTranscript";
 import { enterAgentCascade, popAgentCascade } from "./actions";
+import { recordCascadeOrigin } from "./inspectionOrigin";
 import type { SessionZoomParams } from "./intent";
 import Zoom from "./Zoom";
 import "./index";
@@ -161,6 +170,75 @@ function columnRefs() {
   return screen.queryAllByTestId("cascade-column").map((column) => column.getAttribute("data-scope-ref"));
 }
 
+test("genuine cascade column movement supersedes reflow without Return or neighboring movement", async () => {
+  const { fake, response } = fixture();
+  fake.on("thread/read", ({ ref, requestGeneration, includeTurns }) => {
+    if (!ref) throw new Error("Missing real column ref");
+    const read = response(ref);
+    return {
+      ...read,
+      requestGeneration,
+      thread: { ...read.thread, turns: includeTurns === false ? [] : readerWireTurns(ref) },
+    };
+  });
+  const rootGeometry = { width: 152, viewportHeight: 400, rowHeights: [1600, 1000] };
+  const childGeometry = { width: 400, viewportHeight: 400, rowHeights: [1600, 1000] };
+  const external = installTranscriptGeometry((element) =>
+    element.closest('[data-scope-ref="root"]') ? rootGeometry : childGeometry,
+  );
+  const frames = holdReaderFrames();
+  const mounted = mount(fake);
+  try {
+    await screen.findByText("root current reading content");
+    await screen.findByText("child current reading content");
+    const portFor = (ref: string) => {
+      const port = mounted.container.querySelector<HTMLElement>(
+        `[data-scope-ref="${ref}"] [data-testid="transcript-virtual-list"] > div`,
+      );
+      if (!port) throw new Error("Real cascade column has no scroll port");
+      return port;
+    };
+    const root = portFor("root");
+    const child = portFor("child");
+    await act(async () => external.notify());
+    await act(async () => frames.release());
+    await act(async () => frames.release());
+    await act(async () => {
+      fireEvent.wheel(root, { deltaY: -100 });
+      root.scrollTop = 1000;
+      fireEvent.scroll(root);
+      fireEvent.wheel(child, { deltaY: -100 });
+      child.scrollTop = 600;
+      fireEvent.scroll(child);
+    });
+    await act(async () => {
+      root.scrollTop = 900;
+      fireEvent.scroll(root);
+      child.scrollTop = 500;
+      fireEvent.scroll(child);
+    });
+    const inspect = screen.getByRole("button", { name: "Return to previous view" });
+    inspect.focus();
+    rootGeometry.width = 352;
+    rootGeometry.rowHeights[0] = 700;
+    await act(async () => external.notify((target) => target === root));
+    await act(async () => {
+      fireEvent.wheel(root, { deltaY: -800 });
+      root.scrollTop = 100;
+      fireEvent.scroll(root);
+    });
+    await act(async () => external.notify());
+    expect(child.scrollTop).toBe(500);
+    expect(root.scrollTop).toBe(100);
+    expect(document.activeElement).toBe(inspect);
+    expect(columnRefs()).toEqual(["root", "child"]);
+  } finally {
+    mounted.unmount();
+    external.restore();
+    frames.restore();
+  }
+});
+
 test("root and child render through real read-only readers inside one scaffold", async () => {
   const { fake } = fixture();
   const mounted = mount(fake);
@@ -171,6 +249,39 @@ test("root and child render through real read-only readers inside one scaffold",
   expect(screen.getAllByTestId("transcript-virtual-list")).toHaveLength(2);
   expect(screen.queryByRole("textbox")).toBeNull();
   expect(screen.getByRole("button", { name: "Return to previous view" })).toBeTruthy();
+  expect(fake.calls.filter((call) => /send|resume|steer|interrupt/.test(call.method))).toHaveLength(0);
+});
+
+test("separated read-only Zoom Return closes inspection and focuses its surviving source", async () => {
+  const { fake } = fixture();
+  const source: OpenPaneRecord = { id: "source", type: "session", params: { ref: "root" }, slot: "main" };
+  const inspector: OpenPaneRecord = {
+    ...currentPane(),
+    slot: "secondary",
+    params: {
+      ref: "child",
+      source: { type: "transcript", params: { ref: "root" } },
+      edges: [{ ownerRef: "root", childRef: "child", delegateId: "d1" }],
+      inspection: { origin: { paneId: source.id, type: "session", ref: "root" } },
+    } satisfies SessionZoomParams,
+  };
+  workspaceStore.setState({ panes: [source, inspector], focusedPaneId: inspector.id });
+  recordCascadeOrigin(inspector, source);
+  const sourceLifetime = conversationPaneLifetime(source);
+  const inspectorLifetime = conversationPaneLifetime(inspector);
+  mount(fake);
+  await screen.findByText("root content old-root");
+  await screen.findByText("child content child-id");
+  expect(screen.queryByRole("textbox")).toBeNull();
+  expect(inspectorLifetime.composer).toBeNull();
+  requestPaneFocus(inspector.id);
+  act(() => fireEvent.click(screen.getByRole("button", { name: "Return to previous view" })));
+  expect(workspaceStore.getState().panes).toEqual([source]);
+  expect(workspaceStore.getState().focusedPaneId).toBe(source.id);
+  expect(consumePaneFocus(source.id)).toBe(true);
+  expect(consumePaneFocus(inspector.id)).toBe(false);
+  expect(sourceLifetime.alive).toBe(true);
+  expect(inspectorLifetime.alive).toBe(false);
   expect(fake.calls.filter((call) => /send|resume|steer|interrupt/.test(call.method))).toHaveLength(0);
 });
 

@@ -1521,7 +1521,10 @@ is a normal delegate generation:
    before source acknowledgement replays by ID without appending a second
    steering turn;
 4. the retained runtime requests StartAttention from the tree controller with
-   its exact runtime pointer and one still-pending transcript attention ID;
+   its exact runtime pointer and one still-pending transcript attention ID,
+   revalidated after taking the child's drive claim so a completed intervening
+   generation cannot leave a stale selected ID; an already accepted reservation
+   retries its exact marker and generation across a journal-commit failure;
 5. the controller applies the same owner, ancestor, stop, and capacity checks
    as delegate_send;
 6. the controller starts a private generation with trigger=attention and binds
@@ -1603,7 +1606,7 @@ are the only runtime-close paths. Reclamation may release process residency and
 worktree occupancy without closing resumability; it is not autonomous unload.
 
 Stable delegates participate in the existing live-work guards, root-close
-cleanup, scratch retention, explicit disposal, lock provenance, dirty/D0
+cleanup, scratch removal, explicit disposal, lock provenance, dirty/D0
 checks, force semantics, cleanup evidence, and idempotency. Isolation is
 resolved before stable create commit so failure is deterministic. Destructive
 teardown requires a durable resumability closure first. If that append fails,

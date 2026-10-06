@@ -161,6 +161,30 @@ func TestSessionScratchSweepRemovesOldReleasedLease(t *testing.T) {
 	}
 }
 
+// TestSweepReclaimsAnOldDirectoryThatStillCarriesARetentionPin: scratch from
+// before retention was removed still holds its pin file, and nothing reads pins
+// any more, so an old unleased one is ordinary leftover scratch.
+func TestSweepReclaimsAnOldDirectoryThatStillCarriesARetentionPin(t *testing.T) {
+	base := t.TempDir()
+	dir := filepath.Join(base, sessionScratchPrefix+"pinned")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".evener-retained-session.json"), []byte(`{}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-48 * time.Hour)
+	if err := os.Chtimes(dir, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if err := sweepCrashedSessionScratch(base); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if _, err := os.Lstat(dir); !os.IsNotExist(err) {
+		t.Fatalf("an old pinned directory survived the sweep: %v", err)
+	}
+}
+
 func TestNewSessionScratchDoesNotSweepReleasedDirectories(t *testing.T) {
 	base := t.TempDir()
 	released := filepath.Join(base, sessionScratchPrefix+"released")

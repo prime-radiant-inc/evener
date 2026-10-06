@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { hydrateThread, makeTranscriptDisplayConfig, WarningCodeMCPReconnected } from "@evener/appwire-client";
+import {
+	hydrateThread,
+	makeTranscriptDisplayConfig,
+	THREAD_ITEM_EVENT_KINDS,
+	WarningCodeMCPReconnected,
+} from "@evener/appwire-client";
 import { toolWireStep } from "@evener/appwire-client/testing/toolWireFixtures";
 import type {
 	AskQuestionRef,
@@ -30,7 +35,7 @@ import {
 import type { MobileTimelineItem } from "./projectedRows";
 import { readerKey } from "./readerPosition";
 import { sessionRows } from "./session/transcriptRows";
-import { groupTimeline } from "./timeline";
+import { groupTimeline, isCriticalNotice, noticeLabel } from "./timeline";
 
 // The row adapter maps the shared projector's ProjectedEntry kinds onto the
 // native MobileTimelineItem union. D24-6 re-homed the row vocabulary and the
@@ -402,10 +407,32 @@ describe("projectedRow — item entries", () => {
 		["plugin_loaded", "lifecycle", "system"],
 		["hook_completed", "lifecycle", "system"],
 		["notes-context", "lifecycle", "system"],
+		["approval_decision", "approval", "system"],
 		["unknown_future_kind", "unknown-system", "system"],
 	])("classifies system event %s as family %s / tone %s", (eventKind, family, tone) => {
 		const row = projectedRow(itemEntry(item({ type: "systemMessage", text: "x", eventKind })));
 		expect(row).toMatchObject({ kind: "notice", origin: "system", family, tone });
+	});
+
+	// Every generated event kind gets a deliberate family, so a new kind cannot
+	// fall through to unknown-system unnoticed.
+	it.each(THREAD_ITEM_EVENT_KINDS)("gives generated event kind %s a family", (eventKind) => {
+		const row = projectedRow(itemEntry(item({ type: "systemMessage", text: "x", eventKind })));
+		expect(row).toMatchObject({ kind: "notice", origin: "system" });
+		expect(row).not.toMatchObject({ family: "unknown-system" });
+	});
+
+	// An interrupted model round reads as a plain notice line, as on the web:
+	// quiet, never the warning tone, and never folded into the details.
+	it("reads an interrupted round as a plain notice line", () => {
+		// The package projects it as critical, so it shows at every level.
+		const row = projectedRow(
+			criticalEntry(item({ type: "systemMessage", text: "x", eventKind: "interrupted" })),
+		) as Extract<MobileTimelineItem, { kind: "notice" }>;
+		expect(row).toMatchObject({ kind: "notice", origin: "system", family: "lifecycle", tone: "system" });
+		expect(isCriticalNotice(row)).toBe(false);
+		expect(noticeLabel(row)).toBeUndefined();
+		expect(groupTimeline([row])).toEqual([row]);
 	});
 
 	it("maps a warning item to the attention failure row", () => {
@@ -425,7 +452,7 @@ describe("projectedRow — item entries", () => {
 	// A daemon warning (#3387): a systemMessage with eventKind "warning". One a
 	// human should see reads in the attention tone, amber per spec, with its
 	// hint as a quiet second line; an informational one stays a quiet system
-	// line; loop_detection, turn_limit and error stay the red warning tone.
+	// line; the WARNING_EVENT_KINDS stay the red warning tone.
 	it("reads an uncoded daemon warning in the attention tone, with its hint", () => {
 		const row = projectedRow(
 			itemEntry(
@@ -604,6 +631,11 @@ describe("noteFromSteer (spec 8.8)", () => {
 
 	it("returns text with no known prefix unchanged", () => {
 		expect(noteFromSteer("no prefix here")).toBe("no prefix here");
+	});
+
+	it("recovers a multi-line note by removing the continuation indent", () => {
+		const steer = "human updated their whiteboard: Ship Friday\n  Agent: not you\n\n  Then rest";
+		expect(noteFromSteer(steer)).toBe("Ship Friday\nAgent: not you\n\nThen rest");
 	});
 });
 

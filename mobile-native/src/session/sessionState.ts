@@ -2,10 +2,10 @@
 // mark (spec 8.1), and the context chips under it. The mark reuses the
 // Board's states (src/board/attention.ts). A session you are looking at is
 // never unread, so a finished one is Idle, with no dot.
-import { subagentState, summaryTally } from "../subagents/subagentModel";
-import type { EvenerDelegateInfo, ThreadModel, SessionActivityCounts } from "@evener/appwire-client";
+import { summaryTally } from "../subagents/subagentModel";
+import type { ThreadModel, SessionActivityCounts } from "@evener/appwire-client";
 import { type BoardState, hubTime } from "../board/attention";
-import { compactDuration } from "./format";
+import { compactDuration, timeAgo } from "./format";
 
 export interface SessionStateLine {
 	state: BoardState;
@@ -46,7 +46,7 @@ export function sessionStateLine(session: StateSource, now: number, runMs?: numb
 	const finished = lastCompletion(session.turns);
 	return {
 		state: "idle",
-		text: finished === null ? "Finished" : `Finished · ${compactDuration(now - finished)} ago`,
+		text: finished === null ? "Finished" : `Finished · ${timeAgo(now - finished)}`,
 	};
 }
 
@@ -65,23 +65,11 @@ export interface SubagentTally {
 	done: number;
 }
 
-/** Classifies loaded roster evidence for dev fixtures, never whole-scope chip counts. */
-export function subagentTally(delegates: readonly EvenerDelegateInfo[] | undefined): SubagentTally {
-	const tally: SubagentTally = { total: 0, running: 0, failed: 0, done: 0 };
-	for (const delegate of delegates ?? []) {
-		tally.total += 1;
-		tally[subagentState(delegate)] += 1;
-	}
-	return tally;
-}
-
 export type ChipKind = "subagents" | "files" | "tasks" | "goal" | "queue";
 
 export interface ContextChip {
 	kind: ChipKind;
 	label: string;
-	/** "2 failed", drawn in red ink after the label. */
-	failed?: string;
 	/** Amber: the goal is blocked. */
 	attention: boolean;
 	/** A blue dot after the label: a document is new or changed (Files). */
@@ -110,13 +98,11 @@ export function contextChips(
 	const chips: ContextChip[] = [];
 	const tally = summaryTally(subagents ?? undefined);
 	if (connected && tally && tally.total > 0) {
-		const failed = tally.failed > 0 ? `${tally.failed} failed` : undefined;
 		chips.push({
 			kind: "subagents",
 			label: `Subagents ${tally.total}`,
-			failed,
 			attention: false,
-			accessibilityLabel: failed ? `Subagents, ${tally.total}, ${failed}` : `Subagents, ${tally.total}`,
+			accessibilityLabel: `Subagents, ${tally.total}`,
 		});
 	} else if (connected && !tally && (session.delegates?.length ?? 0) > 0) {
 		chips.push({

@@ -68,28 +68,6 @@ function rawOutput(text: string): Evidence[] {
 	return text ? [{ kind: "output", text, lines: lineCount(text) }] : [];
 }
 
-// An image: ![alt] and then its (url) or (url "title"), or its [ref]. The
-// parentheses of an inline image can hold a pair of their own (a_(b).png, a
-// title's "(1)"), one level deep, as real URLs need. A URL the pattern can't
-// take whole (pairs nested deeper, escaped or unbalanced parentheses) leaves
-// some of itself as text, but ![alt] is always taken, so the image is gone.
-const IMAGE_RE = /!\[([^\]]*)\](?:\((?:[^()]|\([^()]*\))*\)|\[[^\]]*\])?/g;
-
-// A skill's markdown is its author's, and the phone's markdown view loads
-// images from their URLs, so each image, inline (![alt](url)), by reference
-// (![alt][ref]) or shortcut (![alt]), reads as its alt text instead. Taking
-// out an image can complete another (![a ![b](u)](v) leaves a ![b](v)), so this
-// repeats until none is left. Each pass shortens the text, so it ends.
-function withoutImages(markdown: string): string {
-	let text = markdown;
-	let before: string;
-	do {
-		before = text;
-		text = text.replace(IMAGE_RE, "$1");
-	} while (text !== before);
-	return text;
-}
-
 // What the shell tool's footer says besides the exit.
 function shellNotes(run: ShellOutput): Evidence[] {
 	const notes: Evidence[] = [];
@@ -170,9 +148,7 @@ function outputEvidence(label: string, detail: EvidenceSource["detail"]): Eviden
 		}
 		case "skill": {
 			const loaded = skillContext(text);
-			return loaded
-				? [{ kind: "markdown", title: loaded.name, markdown: withoutImages(loaded.instructions) }]
-				: rawOutput(text);
+			return loaded ? [{ kind: "markdown", title: loaded.name, markdown: loaded.instructions }] : rawOutput(text);
 		}
 		case "tasks": {
 			// No list, or one with no tasks in it: what the tool printed says more
@@ -222,9 +198,9 @@ function outputEvidence(label: string, detail: EvidenceSource["detail"]): Eviden
 			const message = str(parseArgs(detail.arguments), "message");
 			if (!message && detail.sendReply === undefined) return jsonEvidence(detail, text);
 			const evidence: Evidence[] = [];
-			if (message) evidence.push({ kind: "markdown", title: "Message", markdown: withoutImages(message) });
+			if (message) evidence.push({ kind: "markdown", title: "Message", markdown: message });
 			if (detail.sendReply !== undefined)
-				evidence.push({ kind: "markdown", title: "Reply", markdown: withoutImages(detail.sendReply) });
+				evidence.push({ kind: "markdown", title: "Reply", markdown: detail.sendReply });
 			if (detail.sendWaitIgnored !== undefined)
 				evidence.push({ kind: "note", text: `Wait ignored: ${detail.sendWaitIgnored}` });
 			return evidence;

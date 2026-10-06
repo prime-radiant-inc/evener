@@ -1089,7 +1089,7 @@ func navigationLogicalFingerprintsWithContext(ctx context.Context, projection na
 	if err := put(navigationResourceKey{Kind: navigationResourcePinCatalog}, pinCatalog, navigationResourceKey{Kind: navigationResourcePinCatalog}); err != nil {
 		return nil, nil, err
 	}
-	for _, kind := range []navigationResourceKind{navigationResourceProjects, navigationResourceArchivedProjects, navigationResourceTestRuns} {
+	for _, kind := range navigationCatalogOrder() {
 		if err := ctx.Err(); err != nil {
 			return nil, nil, err
 		}

@@ -359,6 +359,17 @@ func admitReadFD(fd int, name string, allowDir bool) (*os.File, error) {
 // admitReadFD: a FIFO would otherwise block at open and a never-ending special
 // file would allocate without bound.
 func (s *sandboxFS) readFile(tool, abs string) ([]byte, error) {
+	f, err := s.openRegularFile(tool, abs)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	return io.ReadAll(f)
+}
+
+// openRegularFile opens abs for reading through a race-safe fd admitted by
+// admitReadFD. The caller owns the returned file.
+func (s *sandboxFS) openRegularFile(tool, abs string) (*os.File, error) {
 	fd, err := s.openRead(tool, abs, unix.O_RDONLY|unix.O_NONBLOCK)
 	if err != nil {
 		return nil, err
@@ -367,8 +378,7 @@ func (s *sandboxFS) readFile(tool, abs string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read %q: %w", abs, err)
 	}
-	defer func() { _ = f.Close() }()
-	return io.ReadAll(f)
+	return f, nil
 }
 
 // writeFile atomically writes data to abs: it resolves the parent beneath a
@@ -410,6 +420,17 @@ func (s *sandboxFS) writeFile(tool, abs string, data []byte, perm os.FileMode) e
 // permission, a read-only filesystem, a nonempty directory — is returned, so a
 // delete that did not happen is never reported as success (issue #2376).
 func (s *sandboxFS) remove(tool, abs string) error {
+	return s.removeWithPolicy(tool, abs, false)
+}
+
+// removeRegularFile admits only a regular leaf through the authorized parent fd.
+// A replacement non-directory entry can still be unlinked after admission, but
+// cannot redirect traversal. A replacement directory is never removed.
+func (s *sandboxFS) removeRegularFile(tool, abs string) error {
+	return s.removeWithPolicy(tool, abs, true)
+}
+
+func (s *sandboxFS) removeWithPolicy(tool, abs string, regularOnly bool) error {
 	parentFd, leaf, err := s.openWriteParent(tool, abs, false)
 	if err != nil {
 		// Best-effort delete, matching off-mode RemovePath (which swallows a missing
@@ -424,6 +445,23 @@ func (s *sandboxFS) remove(tool, abs string) error {
 		return err
 	}
 	defer func() { _ = unix.Close(parentFd) }()
+	if regularOnly {
+		var st unix.Stat_t
+		if err := unix.Fstatat(parentFd, leaf, &st, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+			if isAbsentRemove(err) {
+				return nil
+			}
+			return fmt.Errorf("remove %s: %w", abs, err)
+		}
+		switch st.Mode & unix.S_IFMT {
+		case unix.S_IFLNK:
+			return s.deny(tool, abs, denyReasonSymlink)
+		case unix.S_IFREG:
+			// Admission needs metadata only, never read permission or body I/O.
+		default:
+			return fmt.Errorf("remove %s: %w", abs, errNotRegularFile)
+		}
+	}
 	uerr := secureUnlinkat(parentFd, leaf, 0)
 	if uerr == nil {
 		return nil
@@ -432,6 +470,9 @@ func (s *sandboxFS) remove(tool, abs string) error {
 	// gone, so a best-effort delete stays a no-op success.
 	if isAbsentRemove(uerr) {
 		return nil
+	}
+	if regularOnly {
+		return fmt.Errorf("remove %s: %w", abs, uerr)
 	}
 	// The leaf is not a plain file — try removing it as a directory. Linux and
 	// Darwin differ on unlink(dir)'s errno (EISDIR vs EPERM), so the fallback

@@ -6,9 +6,8 @@ import (
 	"time"
 )
 
-// liveShellBackground reads Background off the LIVE running-map record. The
-// field is json:"-", so a record folded from the store always reads false;
-// only the running map can answer what mode the job is executing in.
+// liveShellBackground reads handoff evidence from the running-map record.
+// Journal assertions independently check its durable counterpart.
 func liveShellBackground(t *testing.T, jm *jobManager, jobID string) bool {
 	t.Helper()
 	jm.mu.Lock()
@@ -45,11 +44,21 @@ func TestRunShellPromotionMarksRecordBackground(t *testing.T) {
 	if res.Reason != "foreground_timeout" {
 		t.Fatalf("res = %+v, want a promoted job", res)
 	}
+	t.Cleanup(func() {
+		_, _ = jm.stop(res.JobID)
+		waitForShellDone(t, jm, res.JobID)
+	})
 	if !liveShellBackground(t, jm, res.JobID) {
 		t.Fatal("promoted job's live record has Background=false; the record contradicts RunningInBackground:true")
 	}
+	if !backgroundFromJournal(t, jm, res.JobID) {
+		t.Fatal("promotion acknowledged without durable background evidence")
+	}
 	_, _ = jm.stop(res.JobID)
 	waitForShellDone(t, jm, res.JobID)
+	if !backgroundFromJournal(t, jm, res.JobID) {
+		t.Fatal("promotion lost background evidence after stop")
+	}
 }
 
 // TestRunShellBackgroundModeStillMarksRecord pins the pre-existing half: an
@@ -61,9 +70,19 @@ func TestRunShellBackgroundModeStillMarksRecord(t *testing.T) {
 	if res.JobID == "" {
 		t.Fatalf("res = %+v, want a running background job", res)
 	}
+	t.Cleanup(func() {
+		_, _ = jm.stop(res.JobID)
+		waitForShellDone(t, jm, res.JobID)
+	})
 	if !liveShellBackground(t, jm, res.JobID) {
 		t.Fatal("explicit background job's live record has Background=false")
 	}
+	if !backgroundFromJournal(t, jm, res.JobID) {
+		t.Fatal("background launch acknowledged without durable background evidence")
+	}
 	_, _ = jm.stop(res.JobID)
 	waitForShellDone(t, jm, res.JobID)
+	if !backgroundFromJournal(t, jm, res.JobID) {
+		t.Fatal("background launch lost evidence after stop")
+	}
 }

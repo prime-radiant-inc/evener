@@ -127,8 +127,10 @@ rules, not permission to fabricate a summary or rewrite stored evidence.
 
 ## Agent cascade
 
-Desktop Agents rows drill in place. Keep the selected child and immediate parent
-readable; earlier ancestors become live 52px spines. The parent is 400px wide.
+Desktop Agents rows open or reuse a read-only cascade in the secondary pane group.
+Keep the original center conversation mounted with its composer and reading position.
+Keep the selected child and immediate parent readable; earlier ancestors become
+live 52px spines. The parent is 400px wide.
 The leaf flexes with a 440px minimum. Narrow desktop surfaces scroll horizontally
 and reveal the selected leaf instead of squeezing either reader. Parent and
 leaf transcript scrollers remain independent.
@@ -154,10 +156,13 @@ and late ancestry updates preserve geometry and focus. Reduced motion makes
 geometry changes immediate. Unknown ancestry stays visible rather than inventing
 a root or discarding the retained path.
 
-Return restores the original panel and source work. Open conversation opens an
-independent ordinary session pane. Saved intent preserves the selected ref,
-edges and return descriptor without serializing transcript payloads or image
-bytes. At the existing phone breakpoint, a saved cascade shows only its selected
+Return closes only the inspector and focuses its exact surviving source lifetime.
+A session source receives editor focus without moving its reader. A retired source
+is never recreated or replaced by a reused pane ID. Existing saved cascades without
+separated-inspection intent retain their recorded Return behavior. Open conversation
+opens an independent ordinary session pane. Saved intent preserves the selected
+ref, edges, read-only source and origin locator without serializing transcript
+payloads or image bytes. At the existing phone breakpoint, a saved cascade shows only its selected
 read-only content and Return; ordinary Agents activation keeps transcript
 navigation. See the [ownership contract](../product/session-activity.md#automatic-agent-cascade)
 and [real Chrome guard](../../cmd/evener-hub/frontend/scripts/cascadeguard/README.md).
@@ -250,6 +255,15 @@ descendants, and maps normalized `errored` and `ended` values through
 `cadenceStateFor`. Spines use runtime metadata from their existing scoped activity
 binding and the separate raw-status mapper. Sharing the glyph adds no activity
 read, subscription or retry owner.
+
+Session context cards float 12px beyond the sidebar's right edge, vertically centered on the
+owning row and shifted to keep 8px of viewport clearance. An open card follows the row while
+the sidebar is dragged to a new width. When the card cannot fit beside the
+sidebar, it opens above or below the row with the same 12px gap. The card stays in the body portal
+and does not reflow navigation or take focus. Scroll and viewport resize dismiss it and cancel
+pending reveals, including long presses; a fresh gesture reveals it at the new position.
+Containment applies when the card's dimensions fit the viewport. Other HoverCards and tooltips
+keep their default placement.
 
 ---
 

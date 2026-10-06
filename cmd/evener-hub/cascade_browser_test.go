@@ -367,7 +367,9 @@ func TestAgentCascadeBrowser(t *testing.T) {
 		"reconnect-extent-closed-peek", "pending-image-success", "pending-image-failure",
 		"unresolved-storage-source", "queued-source-single-delivery", "live-status-stable-geometry",
 		"unrelated-pane-reload", "late-ancestry-stable-geometry", "mobile-saved-cascade", "mobile-agents-transcript",
-		"mixed-detached-image-return", "mixed-held-storage-return",
+		"mixed-mounted-image-return", "mixed-held-storage-return",
+		"ordinary-reader-width-reflow", "ordinary-reader-width-return", "cascade-reader-width-reflow", "cascade-reader-width-return",
+		"Shift-Space-interruption-precedence", "wheel-interruption-precedence", "pill-interruption-precedence", "phone-reader-width-reflow", "phone-reader-width-return",
 	} {
 		found := false
 		for _, line := range strings.Split(string(milestones), "\n") {

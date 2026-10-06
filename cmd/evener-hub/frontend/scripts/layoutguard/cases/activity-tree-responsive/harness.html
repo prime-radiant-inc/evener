@@ -47,10 +47,9 @@
 // 2026-08-05 activity-view redesign: the card-based master-detail tree plus
 // inspector pane is gone. The Activity sheet is now a single dense tree
 // column (.panelColumn > .tree) of .denseRow / .foldRow items nested under
-// .indentGuide groups, with inline .detailStrip and continuation .rowActions
-// strips. This harness mirrors THAT markup; the clipping contracts it guards
-// are .denseName (row label) and .detailCommand (detail strip command), both
-// nowrap + ellipsis, and the continuation strip's wrap-without-scrolling.
+// .indentGuide groups, with inline .detailStrip strips. This harness mirrors
+// THAT markup; the clipping contracts it guards are .denseName (row label),
+// nowrap + ellipsis, and .detailCommand (detail strip command), which wraps.
 const LONG_COMMAND = "EVENER_SESSION_MODE=retained /usr/bin/env bash -lc 'python3 tools/trace_activity.py --session 02wMz5Txv1C3Hut0M8GCeB --delegate 8 --emit jsonl --follow --with-ancestor-chain --full-command-width --explain-overflow-contract'";
 
 function chevron(direction) {
@@ -68,7 +67,7 @@ function statusDot(family, label) {
   return `<span role="img" aria-label="${label}" class="dot ${family}"></span>`;
 }
 
-function denseRowMarkup({ label, meta, status, statusFamily, kind = "$", live = false, labelRole = "", withDetail = false, continuation = "" }) {
+function denseRowMarkup({ label, meta, status, statusFamily, kind = "$", live = false, labelRole = "", withDetail = false }) {
   return `
     <div role="treeitem" aria-label="${escapeHtml(label)}" aria-expanded="false" tabIndex="0" class="denseRow">
       <button type="button" tabIndex="-1" class="rowToggle" aria-label="Toggle details">
@@ -83,11 +82,6 @@ function denseRowMarkup({ label, meta, status, statusFamily, kind = "$", live = 
       <div class="detailStrip">
         <code class="detailCommand" data-role="deep-detail-probe">${escapeHtml(LONG_COMMAND)}</code>
         <span class="detailMeta">${escapeHtml(status)} 12s · 512 output bytes</span>
-      </div>` : ""}
-    ${continuation ? `
-      <div class="rowActions">
-        <span class="rowContinuation">${escapeHtml(continuation)}</span>
-        <button type="button" tabIndex="-1" class="button quiet buttonSizeXsHarness">Load more</button>
       </div>` : ""}`;
 }
 
@@ -122,7 +116,6 @@ function deepTreeMarkup(kind) {
       live: depth < 8,
       labelRole: depth === 8 ? `${kind}-deep-label` : "",
       withDetail: depth === 8,
-      continuation: depth === 6 ? "This branch is partially retained. The continuation strip wraps its explanation instead of scrolling the tree sideways." : "",
     });
   }
   markup += foldRowMarkup(12);
@@ -207,11 +200,6 @@ function frameDocument({ bodyMarkup, width }) {
     min-height: 0;
     min-width: 0;
     overflow-x: hidden;
-  }
-  .buttonSizeXsHarness {
-    height: 24px;
-    padding: 0 var(--space-2);
-    font-size: var(--font-size-ui);
   }
 </style>
 </head>
@@ -423,8 +411,6 @@ function measureFrame({ fixture, frame }) {
       sheetBodyWidth: sheetBody ? rect(sheetBody).width : null,
       activityPanelWidth: activityPanel ? rect(activityPanel).width : null,
       treePaneWidth: treePane ? rect(treePane).width : null,
-      rowActionsFlexWrap: doc.querySelector('.rowActions') ? win.getComputedStyle(doc.querySelector('.rowActions')).flexWrap : null,
-      rowActionsPaddingLeft: doc.querySelector('.rowActions') ? win.getComputedStyle(doc.querySelector('.rowActions')).paddingLeft : null,
       treeWidestDescendant: widestDescendant(doc, treePane),
     },
     deepLabel: metrics(doc, deepLabel),

@@ -59,7 +59,7 @@ describe("the Session's ⋯ menu (spec 8.1)", () => {
 		expect(labels(only(menu().items).menu.items)).toEqual([
 			"Detail level · Intent",
 			"Find in session",
-			"Files & artifacts",
+			"Files",
 			"Activity",
 			"Tasks",
 			"Notes & links",
@@ -124,7 +124,7 @@ describe("the Session's ⋯ menu (spec 8.1)", () => {
 	});
 
 	it.each([
-		["hasDocuments", "Files & artifacts"],
+		["hasDocuments", "Files"],
 		["sharedNotes", "Notes & links"],
 		["canAside", "Ask aside…"],
 		["canShutDown", "Shut down"],
@@ -142,9 +142,9 @@ describe("the Session's ⋯ menu (spec 8.1)", () => {
 		expect(entries).toHaveLength(10);
 	});
 
-	it("opens Files & artifacts", () => {
+	it("opens Files", () => {
 		const { items, chosen } = menu();
-		action(only(items).menu.items, "Files & artifacts").onPress();
+		action(only(items).menu.items, "Files").onPress();
 		expect(chosen).toEqual([{ kind: "files" }]);
 	});
 

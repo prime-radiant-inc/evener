@@ -60,9 +60,9 @@ func TestSystemEventWireFixtures(t *testing.T) {
 		}
 		return items[0]
 	}
-	noticed := func(t *testing.T, name string, turn schema.Turn) appwire.ThreadItem {
+	noticed := func(t *testing.T, name string, entryIndex int, turn schema.Turn) appwire.ThreadItem {
 		t.Helper()
-		item, ok := apptranscript.NoticeItem("turn_1", 1, turn)
+		item, ok := apptranscript.NoticeItem("turn_1", entryIndex, turn)
 		if !ok {
 			t.Fatalf("%s: the notice has nothing to show", name)
 		}
@@ -78,9 +78,25 @@ func TestSystemEventWireFixtures(t *testing.T) {
 		{
 			Case: "tool-repair",
 			Note: "A NOTICE entry for a tool call the repair engine corrected before it ran (session_tools.go recordNotice).",
-			Item: noticed(t, "tool-repair", schema.Turn{Kind: schema.TurnNotice, Notice: &schema.NoticeInfo{
+			Item: noticed(t, "tool-repair", 1, schema.Turn{Kind: schema.TurnNotice, Notice: &schema.NoticeInfo{
 				Kind:       schema.NoticeToolRepair,
 				ToolRepair: &schema.ToolRepairNotice{ToolName: "shell", CallID: "call_shell_1", Changes: []string{"drop_unknown:timeout:dropped timeout"}},
+			}}),
+		},
+		{
+			Case: "approval-allowed",
+			Note: "A NOTICE entry for a human's Allow on a sandbox escalation (session_escalation.go recordNotice): raw.approvalDecision carries the decision, startedAt when it was made.",
+			Item: noticed(t, "approval-allowed", 1, schema.Turn{Kind: schema.TurnNotice, Timestamp: wireFixtureStart, Notice: &schema.NoticeInfo{
+				Kind:             schema.NoticeApprovalDecision,
+				ApprovalDecision: &schema.ApprovalDecisionNotice{EscalationID: "esc_1_a", Approved: true, Tool: "write_file", Kind: "file_tool", DeniedPath: "/Users/j/sites/docs/index.md"},
+			}}),
+		},
+		{
+			Case: "approval-denied",
+			Note: "A NOTICE entry for a human's Deny on a sandbox escalation.",
+			Item: noticed(t, "approval-denied", 2, schema.Turn{Kind: schema.TurnNotice, Timestamp: wireFixtureStart, Notice: &schema.NoticeInfo{
+				Kind:             schema.NoticeApprovalDecision,
+				ApprovalDecision: &schema.ApprovalDecisionNotice{EscalationID: "esc_2_b", Approved: false, Tool: "read_file", Kind: "file_tool", DeniedPath: "/etc/hosts"},
 			}}),
 		},
 		{

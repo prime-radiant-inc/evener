@@ -6,6 +6,28 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
+// MemoryDefinition preserves the ordinary tool schema and adds trusted-scope selection.
+func MemoryDefinition(base llm.ToolDefinition, name string) llm.ToolDefinition {
+	base.Name = name
+	base.Parameters = CloneSchemaMap(base.Parameters)
+	props := base.Parameters["properties"].(map[string]any)
+	props["scope"] = map[string]any{"type": "string", "enum": []any{"personal", "project", "session"}}
+	base.Parameters["required"] = append(base.Parameters["required"].([]string), "scope")
+	base.Description = "Operate on a relative path in the bound personal, project or session memory wiki. " + base.Description
+	return base
+}
+
+func DefMemoryDelete() llm.ToolDefinition {
+	return MemoryDefinition(llm.ToolDefinition{
+		Description: "Remove one memory file, not a directory. Missing files are a no-op. Read first, then repair links separately if needed.",
+		Parameters: map[string]any{
+			"type": "object", "additionalProperties": false,
+			"properties": map[string]any{"file_path": map[string]any{"type": "string"}},
+			"required":   []string{"file_path"},
+		},
+	}, "memory_delete")
+}
+
 func DefReadFile() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "read_file",
@@ -187,7 +209,7 @@ func DefDelegateWithSandbox(agentTypes []string, sandboxSchema DelegateSandboxSc
 			"properties": map[string]any{
 				"prompt": map[string]any{
 					"type":        "string",
-					"description": "The delegate's assignment (task_list adds ordered step prompts). By default the delegate starts a clean session with no parent conversation. State the user's request for this unit (quote it), the facts it needs that you already know (environment, tools present or missing, paths, formats), exactly which files or paths it owns and must not touch, the acceptance check (the exact command(s) and the expected result), and the evidence to report back (paths, diffs, the check's output). With fork_context=true, inherited history supplies background but this prompt must still define the assignment, ownership, acceptance check, and report. For a unit with more than one step, put the steps in task_list rather than here. Each delegation also has its own durable artifacts directory, returned as artifacts_dir on creation — reference it in briefs and later seats, and file a seat's report there yourself, or let a seat with an unconfined shell write to it; a confined (sandboxed) seat can write only inside its workspace and its scratch directory, so have such a seat report its scratch path or return its report in the result instead. Route by role: keep a read-only / non-writing seat scouting rather than mandating changes; when two or more writers would collide in your checkout, give the delegate isolation=\"worktree\"; the default (one writer, no conflict) keeps sharing your tree.",
+					"description": "The delegate's assignment (task_list adds ordered step prompts). By default the delegate starts a clean session with no parent conversation. State the user's request for this unit (quote it), the facts it needs that you already know (environment, tools present or missing, paths, formats), exactly which files or paths it owns and must not touch, the acceptance check (the exact command(s) and the expected result), and the evidence to report back (paths, diffs, the check's output). With fork_context=true, inherited history supplies background but this prompt must still define the assignment, ownership, acceptance check, and report. For a unit with more than one step, put the steps in task_list rather than here. Each delegation also has its own durable artifacts directory, returned as artifacts_dir on creation — reference it in briefs and later seats, and file a seat's report there yourself, or let a seat with an unconfined shell write to it; a confined (sandboxed) seat can write only inside its workspace and its scratch directory, and its scratch is deleted when the session is archived, so have such a seat return its report in the result instead. Route by role: keep a read-only / non-writing seat scouting rather than mandating changes; when two or more writers would collide in your checkout, give the delegate isolation=\"worktree\"; the default (one writer, no conflict) keeps sharing your tree.",
 				},
 				"task_list": map[string]any{
 					"type":        "array",
@@ -1083,23 +1105,37 @@ func DefUpdateGoal() llm.ToolDefinition {
 }
 
 // DefNotesAgentSet returns the tool definition for notes_agent_set.
-// The model calls this to record its one-paragraph session whiteboard.
+// The model calls this to keep its session whiteboard current: a short capsule
+// of the session for a manager (mission and progress, "Now:", "Next:").
 // (Agent tool, not a hub RPC: the daemon handles notes/agent/set in session.
 // Tool names cannot contain slashes — see llm.ValidateToolName — so the agent
 // tool uses snake_case.)
 func DefNotesAgentSet() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name: "notes_agent_set",
-		Description: `Record your one-paragraph session whiteboard. ` +
-			`Whitespace is collapsed and the note is clamped to 1000 characters. ` +
-			`Setting the same text again is a no-op.`,
+		Description: `Keep your session whiteboard current. ` +
+			`It is a capsule a manager checking on this session reads in ten seconds ` +
+			`to learn what the session is for and where it stands. ` +
+			`Use plain words, with no file paths, ids or jargon. ` +
+			`Write three parts, each on its own line: ` +
+			`a short paragraph with the mission and what is done so far; ` +
+			`one line starting "Now:" with what you are doing; ` +
+			`one or two lines starting "Next:" with what is left. ` +
+			`Set it once you understand the task, update it when a phase finishes, the plan changes, ` +
+			`or you are blocked, and bring it up to date before your final report. ` +
+			`Each update replaces the whole whiteboard. ` +
+			`Keep it under 600 characters. Example:` + "\n" +
+			`Fixing the importer's rejected timestamps for the reporting team. ` +
+			`The parser required seconds; I made them optional and added tests, which pass.` + "\n" +
+			`Now: checking the exporter, which uses the same parser.` + "\n" +
+			`Next: fix the exporter the same way, then report back.`,
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"note": map[string]any{
 					"type":        "string",
-					"description": "The agent's session note. Empty clears it.",
+					"description": "The whole whiteboard, in the three parts above. Line breaks are kept. Empty clears it.",
 				},
 			},
 			"required": []string{"note"},

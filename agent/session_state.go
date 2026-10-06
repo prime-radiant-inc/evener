@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
@@ -256,6 +257,10 @@ func (s *Session) metaWithNotes(human, agentNote string, urls []schema.SessionUR
 		}
 		jobTreeRevision = s.jobActivityClock.revision.Load()
 	}
+	scratchTreeRootID := ""
+	if root := s.scratchTreeRootID(); root != s.id {
+		scratchTreeRootID = root
+	}
 	skills := s.skillLifecycle.Clone()
 	skills.PinnedNoteGen = s.pinnedNoteGen
 	return schema.SessionMeta{
@@ -296,6 +301,8 @@ func (s *Session) metaWithNotes(human, agentNote string, urls []schema.SessionUR
 		LastMessage:              s.lastMessage,
 		CumulativeUsage:          cumulativeUsageSnapshot(s.contextMgr.CumulativeUsage()),
 		JobTreeRootSessionID:     jobTreeRootSessionID,
+		ScratchTempDir:           sandbox.ProcessScratchTempDir(),
+		ScratchTreeRootID:        scratchTreeRootID,
 		JobTreeRevision:          jobTreeRevision,
 		EnvContext:               s.envContextState,
 	}
