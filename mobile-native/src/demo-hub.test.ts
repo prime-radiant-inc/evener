@@ -1484,15 +1484,19 @@ describe("native demonstration hub's fleet sessions", () => {
 			const ref = fleetSessionRef("s-pr2138");
 			const { thread } = await client.request("thread/read", { ref, includeTurns: false });
 			const expectedInstanceId = thread.evener.instanceId ?? "";
+			const note = "Fix causes,\nand say which.\n\nThen rest.";
 			const saved = await client.request("notes/human/set", {
 				ref,
 				clientMutationId: "note-1",
 				expectedInstanceId,
-				// Saved as the daemon stores it: whitespace runs collapsed.
-				note: "  Fix causes,\n and   say which. ",
+				// Saved as the daemon's normalizeWhiteboard stores it: controls
+				// dropped, CRLF and CR read as line breaks, each line's whitespace
+				// collapsed and trimmed, outer blank lines dropped and a run of
+				// blank lines kept as one.
+				note: "\n \n  Fix causes,\r\n and \x1b  say which. \r\r\t\n\nThen\u00a0rest.\n\n",
 			});
 			expect(saved).toMatchObject({
-				note: "Fix causes, and say which.",
+				note,
 				receipt: {
 					clientMutationId: "note-1",
 					disposition: "applied",
@@ -1505,20 +1509,21 @@ describe("native demonstration hub's fleet sessions", () => {
 				ref,
 				clientMutationId: "note-same",
 				expectedInstanceId,
-				note: "Fix causes, and say which.",
+				note,
 			});
 			expect(unchanged.receipt.projectionState).toBe("removed");
 			expect(unchanged.receipt).not.toHaveProperty("turnId");
 			await client.request("urls/remove", { ref, clientMutationId: "link-1", expectedInstanceId, id: "u-checks" });
 			const after = await client.request("thread/read", { ref, includeTurns: true });
-			expect(after.thread.evener.humanNote).toBe("Fix causes, and say which.");
-			// The changed note steers the agent, as the daemon records it.
+			expect(after.thread.evener.humanNote).toBe(note);
+			// The changed note steers the agent, as the daemon records it:
+			// continuation lines indented under the prefix (formatNotesField).
 			expect(after.thread.turns?.at(-1)?.items).toContainEqual(
 				expect.objectContaining({
 					type: "steering",
 					source: "user",
 					steeringKind: "human-note",
-					text: "human updated their whiteboard: Fix causes, and say which.",
+					text: "human updated their whiteboard: Fix causes,\n  and say which.\n\n  Then rest.",
 					clientMutationId: "note-1",
 				}),
 			);
@@ -1549,6 +1554,22 @@ describe("native demonstration hub's fleet sessions", () => {
 					note: "x",
 				}),
 			).rejects.toThrow("This session doesn't take shared notes");
+		});
+	});
+
+	it("clamps your note to 1000 characters without leaving a line break at the end", async () => {
+		await withHub({}, async (client) => {
+			const ref = fleetSessionRef("s-pr2138");
+			const { thread } = await client.request("thread/read", { ref, includeTurns: false });
+			const firstLine = "a".repeat(999);
+			const saved = await client.request("notes/human/set", {
+				ref,
+				clientMutationId: "note-clamp",
+				expectedInstanceId: thread.evener.instanceId ?? "",
+				// The clamp cuts just after the line break, which is then trimmed.
+				note: `${firstLine}\nb`,
+			});
+			expect(saved.note).toBe(firstLine);
 		});
 	});
 

@@ -15,7 +15,11 @@ single-line, so their line breaks become spaces.
 The model sees both notes in its shared-notes context and in `notes_read`
 output as `Human:` and `Agent:` fields. Continuation lines of a multi-line note
 are indented under their label, so a line written as `Agent: ...` cannot read
-as a separate field. The TUI details drawer indents them the same way.
+as a separate field. The TUI details drawer indents them the same way. The
+message that tells the agent you changed your note starts `human updated their
+whiteboard:` and indents the note's continuation lines the same way. The web
+and TUI transcripts show that message as the agent received it. The phone's
+row for it removes the indent and shows your note as saved.
 
 The agent's note is a capsule of the session for a manager checking in. The
 agent writes it in plain words, in three parts on their own lines: a short
