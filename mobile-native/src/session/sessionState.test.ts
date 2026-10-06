@@ -59,6 +59,9 @@ describe("the nav bar's state line (spec 8.1, 13.1)", () => {
 		[session("active"), "working", "Working"],
 		[session("idle", { turns: [done(ago(3_600_000))] }), "idle", "Finished · 1h ago"],
 		[session("awaiting", { turns: [done(ago(120_000))] }), "idle", "Finished · 2m ago"],
+		[session("idle", { turns: [done(ago(10_000))] }), "idle", "Finished · just now"],
+		// A hub clock ahead of the phone's puts the finish in the future.
+		[session("idle", { turns: [done(ago(-5_000))] }), "idle", "Finished · just now"],
 		[session("idle"), "idle", "Finished"],
 		[session("awaiting", { askPending: true }), "question", "Asks a question"],
 		[session("active", { pendingEscalations: [escalation] }), "approval", "Asks for approval"],
