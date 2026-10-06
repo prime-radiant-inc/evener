@@ -2,6 +2,7 @@ package jobstore
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -84,4 +85,46 @@ func TestOutputRunningChecksumMatchesTheRetainedFile(t *testing.T) {
 		t.Fatalf("checksum after reopen and append does not match the file: %v", err)
 	}
 	_ = reopened.Close()
+}
+
+// shortWriteFile writes only the first half of the next Write and fails it,
+// the way a full disk or an interrupted write leaves an append.
+type shortWriteFile struct {
+	afero.File
+	short bool
+}
+
+func (f *shortWriteFile) Write(p []byte) (int, error) {
+	if !f.short {
+		return f.File.Write(p)
+	}
+	f.short = false
+	n, _ := f.File.Write(p[:len(p)/2])
+	return n, errors.New("short write")
+}
+
+// The running checksum follows the bytes that reached the file, not the bytes
+// an append was asked to write.
+func TestOutputRunningChecksumFollowsAShortWrite(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "job_S.log")
+	store, err := CreateOutputNoSync(path, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	store.f = &shortWriteFile{File: store.f, short: true}
+	if n, err := store.Append([]byte("abcdef")); err == nil || n != 3 {
+		t.Fatalf("short Append = %d, %v; want 3 and an error", n, err)
+	}
+	if _, err := store.Append([]byte("ghi\n")); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta, _, err := readOutputMeta(afero.NewOsFs(), outputMetaPath(path))
+	if err != nil || string(raw) != "abcghi\n" || meta.RetainedSHA256 != outputBytesSHA256(raw) {
+		t.Fatalf("after a short write the file is %q and its checksum matches=%v (%v)", raw, meta.RetainedSHA256 == outputBytesSHA256(raw), err)
+	}
 }
