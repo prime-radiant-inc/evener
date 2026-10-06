@@ -574,7 +574,7 @@ const BUTTON_KINDS = {
  * - `primary` with `compact`: the call to action sized to its label, a 16pt
  *   accent pill at the platform's minimum target, for one that sits beside
  *   other controls rather than across the page.
- * A plain or text button's touch reaches the 44pt minimum (48 on Android); a
+ * A plain, text or compact primary button's touch reaches the 44pt minimum (48 on Android); a
  * mini button's reaches its 44pt row's edges. Its label follows Dynamic Type,
  * so the height is a minimum. `expanded` tells VoiceOver whether the section
  * a disclosure button opens is open.
@@ -610,7 +610,7 @@ export function Button({
 	const scale = useTextScale();
 	if (text || (primary && compact)) {
 		const target = minimumTarget();
-		const pill = !text;
+		const compactPrimary = !text;
 		return (
 			<Pressable
 				accessibilityRole="button"
@@ -622,18 +622,18 @@ export function Button({
 					minWidth: target,
 					minHeight: target,
 					justifyContent: "center",
-					paddingHorizontal: pill ? 18 : 8,
+					paddingHorizontal: compactPrimary ? 18 : 8,
 					paddingVertical: 8,
-					...(pill ? { backgroundColor: palette.accentFill, borderRadius: 24 } : null),
+					...(compactPrimary ? { backgroundColor: palette.accentFill, borderRadius: 24 } : null),
 					opacity: disabled ? 0.4 : pressed ? 0.65 : 1,
 				})}
 			>
 				<Text
 					allowFontScaling={allowFontScaling}
 					style={{
-						color: pill ? palette.onFill : quiet ? palette.inkMid : palette.accentInk,
+						color: compactPrimary ? palette.onFill : quiet ? palette.inkMid : palette.accentInk,
 						fontSize: 16 * scale,
-						fontWeight: quiet ? "400" : "600",
+						fontWeight: quiet && !compactPrimary ? "400" : "600",
 						flexShrink: 1,
 					}}
 				>
