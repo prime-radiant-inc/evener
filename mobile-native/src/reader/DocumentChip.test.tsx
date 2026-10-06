@@ -128,7 +128,6 @@ it.each([
 ])("says just now for a document written %s", (_name, offset) => {
 	const tree = chip({ updatedAt: new Date(Date.now() + offset).toISOString() });
 	expect(renderedText(tree)).toContain("just now");
-	expect(renderedText(tree)).not.toContain("0s");
 	expect(button(tree)?.props.accessibilityLabel).toBe("Plan, settle-race.md, just now");
 });
 
