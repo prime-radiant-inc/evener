@@ -228,3 +228,34 @@ func TestOutputFileStatsAndGrepSeeOnlyTheVisibleBytes(t *testing.T) {
 		t.Fatalf("GrepOutputFileLimit = %+v, want the two visible lines from %d", matches, visibleStart)
 	}
 }
+
+func TestOutputVisibleStartPastTheEndOfTheFileIsAnError(t *testing.T) {
+	o := storeOverRaw(t, "abc\n", 0)
+	// total claims far more output than the file holds.
+	o.total, o.capBytes = 400, 2
+	if err := o.refreshVisibleLocked(); err == nil {
+		t.Fatal("refreshVisibleLocked over a short file: want an error, not a panic or a guess")
+	}
+}
+
+func TestOutputSnapshotWindowStaysInsideTheFile(t *testing.T) {
+	for _, tc := range []struct {
+		name                string
+		retained, visibleAt int64
+		maxBytes            int
+		fromHead            bool
+		wantStart, wantSize int64
+	}{
+		{"visible start past the file", 10, 15, 100, false, 10, 0},
+		{"visible start past the file, from head", 10, 15, 100, true, 10, 0},
+		{"negative visible offset", 10, -3, 100, true, 0, 10},
+		{"tail inside the visible bytes", 10, 4, 3, false, 7, 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			start, size := outputSnapshotWindow(tc.retained, tc.visibleAt, tc.maxBytes, tc.fromHead)
+			if start != tc.wantStart || size != tc.wantSize {
+				t.Fatalf("window = [%d, +%d), want [%d, +%d)", start, size, tc.wantStart, tc.wantSize)
+			}
+		})
+	}
+}

@@ -184,6 +184,10 @@ func readOutputMetaForSnapshot(fs afero.Fs, path string, outputPath string, reta
 // outputSnapshotWindow places a head or tail snapshot of at most maxBytes over
 // the visible bytes [visibleAt, retainedBytes) of the file.
 func outputSnapshotWindow(retainedBytes, visibleAt int64, maxBytes int, fromHead bool) (start, size int64) {
+	// A visible start the file does not reach yet (metadata moved on between a
+	// reader's stat and its metadata read) leaves an empty window; the reader's
+	// after-read check then sees the change.
+	visibleAt = min(max(visibleAt, 0), retainedBytes)
 	size = min(retainedBytes-visibleAt, int64(maxBytes))
 	start = visibleAt
 	if !fromHead {

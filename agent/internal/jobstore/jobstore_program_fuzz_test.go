@@ -516,7 +516,7 @@ func jcpOutputErrorPaths(t *testing.T, root string) {
 		jcpRequireError(t, operation.label, operation.call(o))
 	}
 	retainedTail := jcpReadOutput(t, []byte("ready\n"), func(*jcpHookFS) {})
-	retainedTail.retainedStart = 1
+	retainedTail.retainedStart, retainedTail.visibleStart = 1, 1
 	if _, _, truncated, err := retainedTail.Tail(32); err != nil || !truncated {
 		t.Fatalf("retained Tail = %v/%v", truncated, err)
 	}
