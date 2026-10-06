@@ -238,15 +238,6 @@ func navigationReadResourceIsPaged(resource string) bool {
 }
 
 // parseNavigationCatalog maps a wire catalog name to its resource kind.
-// parseOptionalNavigationCatalog is parseNavigationCatalog for a read that may
-// leave the catalog out (the zero kind).
-func parseOptionalNavigationCatalog(name string) (navigationResourceKind, error) {
-	if name == "" {
-		return "", nil
-	}
-	return parseNavigationCatalog(name)
-}
-
 func parseNavigationCatalog(name string) (navigationResourceKind, error) {
 	switch name {
 	case "projects":
@@ -258,6 +249,15 @@ func parseNavigationCatalog(name string) (navigationResourceKind, error) {
 	default:
 		return "", fmt.Errorf("invalid catalog %q", name)
 	}
+}
+
+// parseOptionalNavigationCatalog is parseNavigationCatalog for a read that may
+// leave the catalog out (the zero kind).
+func parseOptionalNavigationCatalog(name string) (navigationResourceKind, error) {
+	if name == "" {
+		return "", nil
+	}
+	return parseNavigationCatalog(name)
 }
 
 func navigationReadPage(params appwire.NavigationReadParams, maximum uint32) (uint32, uint32, error) {

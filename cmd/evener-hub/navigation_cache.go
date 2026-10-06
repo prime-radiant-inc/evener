@@ -131,6 +131,7 @@ func (key navigationResourceKey) String() string {
 		ID         string                 `json:"id,omitempty"`
 		SectionID  string                 `json:"section_id,omitempty"`
 		ProjectKey string                 `json:"project_key,omitempty"`
+		Catalog    navigationResourceKind `json:"catalog,omitempty"`
 		Tier       string                 `json:"tier,omitempty"`
 		Offset     uint32                 `json:"offset,omitempty"`
 		Limit      uint32                 `json:"limit,omitempty"`
@@ -138,7 +139,7 @@ func (key navigationResourceKey) String() string {
 		Revision   uint64                 `json:"revision"`
 	}{
 		Kind: key.Kind, ID: key.ID, SectionID: key.SectionID,
-		ProjectKey: key.ProjectKey, Tier: key.Tier, Offset: key.Offset,
+		ProjectKey: key.ProjectKey, Catalog: key.Catalog, Tier: key.Tier, Offset: key.Offset,
 		Limit: key.Limit, Generation: key.Generation, Revision: key.Revision,
 	}
 	encoded, _ := json.Marshal(identity)

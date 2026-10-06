@@ -715,6 +715,9 @@ func TestHubNavigationLocatesAShadowedSessionInItsOwnCatalog(t *testing.T) {
 			}
 		}
 	}
+	if _, err := dispatchNavigationReadResult(t, server, appwire.NavigationReadParams{Resource: "project", ProjectKey: "no-project", Catalog: "bogus"}); err == nil {
+		t.Fatal("a project read naming an unknown catalog was accepted")
+	}
 	// By key alone the first catalog's project answers, as before.
 	if response := dispatchNavigationRead(t, server, appwire.NavigationReadParams{Resource: "project", ProjectKey: "no-project"}); !bytes.Contains(response.Data, []byte(activeID)) {
 		t.Fatalf("project read by key alone does not hold the first catalog's session: %s", response.Data)
