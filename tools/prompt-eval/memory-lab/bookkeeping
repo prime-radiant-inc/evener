@@ -6,7 +6,7 @@ For every trial under RUNDIR (<version>/<arm>/<scenario>/r<N>) it reads <STAGE>.
 classifies the root session's tool calls: progress writes per surface (ledger file, other plan
 artifacts, memory by scope, whiteboard, task list), progress read-backs, and everything else.
 Prints one line per trial and a per-version mean. Use it to measure duplicated progress tracking."""
-import glob, importlib.machinery, importlib.util, json, os, statistics, sys
+import glob, importlib.machinery, importlib.util, json, os, re, statistics, sys
 sys.dont_write_bytecode = True
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -16,6 +16,8 @@ lab = importlib.util.module_from_spec(spec)
 loader.exec_module(lab)
 
 WRITE_SURFACES = ["ledger", "plan-artifacts", "mem:session", "mem:project", "mem:personal", "whiteboard", "tasks", "task-notes"]
+# The files an apply_patch changes, from its "*** Add/Update/Delete File:" and "*** Move to:" headers.
+PATCH_FILE = re.compile(r"(?m)^\*\*\* (?:Add File|Update File|Delete File|Move to): (.+?)\s*$")
 PROGRESS_SURFACES = ["ledger", "mem:session", "whiteboard", "tasks", "task-notes"]
 
 
@@ -33,11 +35,12 @@ def classify(call):
     tool, a = call["tool"], args_of(call)
     path = str(a.get("file_path", ""))
     if tool == "apply_patch":
-        # One patch can touch several files; classify it by the progress files it names.
-        text = json.dumps(a)
-        if "progress.md" in text:
+        # One patch can touch several files; classify it by the files its headers say it changes,
+        # never by text in its hunks.
+        paths = PATCH_FILE.findall(str(a.get("patch", "")))
+        if any(p.endswith("progress.md") for p in paths):
             return "write", "ledger"
-        if ".superpowers/" in text:
+        if any(".superpowers/" in p for p in paths):
             return "write", "plan-artifacts"
         return "work", None
     if tool in ("write_file", "edit_file"):
