@@ -392,8 +392,7 @@ test.each(["error", "failed", "exhausted"])(
 // The daemon derives a shell job's or turn's outcome from its status, so a
 // failure reaches the client as "failure"; a stable delegate carries its
 // delegatestore outcome verbatim, so a failure reaches it as "failed" or
-// "exhausted". Neither kind's word means failure in the other's vocabulary,
-// and summarizeSession has always counted them that way.
+// "exhausted". Neither kind's word means failure in the other's vocabulary.
 test("terminal rows read each entry kind's own failure vocabulary", () => {
   const job = shell("job", true, "completed") as ActivityShellEntry;
   job.job.outcome = "failed";
