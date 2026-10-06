@@ -745,14 +745,26 @@ describe("Button", () => {
 					paddingVertical: 8,
 					minHeight: minimum,
 					minWidth: minimum,
+					justifyContent: "center",
 				});
 				expect(styleOf(button).alignSelf).toBeUndefined();
 				expect(styleOf(button, true).opacity).toBe(0.65);
 				const label = tree.root.find((node) => String(node.type) === "Text");
-				expect(merged(label.props.style)).toMatchObject({ color: light.onFill, fontSize: 16, fontWeight: "600" });
+				expect(merged(label.props.style)).toMatchObject({
+					color: light.onFill,
+					fontSize: 16,
+					fontWeight: "600",
+					flexShrink: 1,
+				});
 			});
 		},
 	);
+
+	it("keeps a compact primary's label at its weight under quiet", () => {
+		const tree = render(<Button label="Save" primary compact quiet onPress={() => {}} />);
+		const label = tree.root.find((node) => String(node.type) === "Text");
+		expect(merged(label.props.style)).toMatchObject({ color: light.onFill, fontWeight: "600" });
+	});
 
 	it("dims a disabled text button and holds its press", () => {
 		const button = pressable(render(<Button label="Edit" text disabled onPress={() => {}} />));
