@@ -702,33 +702,32 @@ describe("Button", () => {
 	);
 
 	// The legacy Action's look, kept as Action's sites move to Button (#3310).
-	it.each(["ios", "android"])(
-		"draws a text button as accent text with no fill, 16pt, its touch the %s minimum",
-		(os) => {
-			onOS(os, () => {
-				const minimum = os === "android" ? 48 : 44;
-				const tree = render(<Button label="Edit" text onPress={() => {}} />);
-				const button = pressable(tree);
-				expect(styleOf(button)).toMatchObject({
-					minHeight: minimum,
-					minWidth: minimum,
-					paddingHorizontal: 8,
-					paddingVertical: 8,
-					justifyContent: "center",
-				});
-				expect(styleOf(button).backgroundColor).toBeUndefined();
-				expect(button.props.hitSlop).toBeUndefined();
-				expect(styleOf(button, true).opacity).toBe(0.65);
-				const label = tree.root.find((node) => String(node.type) === "Text");
-				expect(Object.assign({}, ...[label.props.style].flat())).toMatchObject({
-					color: light.accentInk,
-					fontSize: 16,
-					fontWeight: "600",
-					flexShrink: 1,
-				});
+	it.each([
+		["ios", 44],
+		["android", 48],
+	])("draws a text button as accent text with no fill, 16pt, its touch the %s minimum of %ipt", (os, minimum) => {
+		onOS(os, () => {
+			const tree = render(<Button label="Edit" text onPress={() => {}} />);
+			const button = pressable(tree);
+			expect(styleOf(button)).toMatchObject({
+				minHeight: minimum,
+				minWidth: minimum,
+				paddingHorizontal: 8,
+				paddingVertical: 8,
+				justifyContent: "center",
 			});
-		},
-	);
+			expect(styleOf(button).backgroundColor).toBeUndefined();
+			expect(button.props.hitSlop).toBeUndefined();
+			expect(styleOf(button, true).opacity).toBe(0.65);
+			const label = tree.root.find((node) => String(node.type) === "Text");
+			expect(merged(label.props.style)).toMatchObject({
+				color: light.accentInk,
+				fontSize: 16,
+				fontWeight: "600",
+				flexShrink: 1,
+			});
+		});
+	});
 
 	it("dims a disabled text button and holds its press", () => {
 		const button = pressable(render(<Button label="Edit" text disabled onPress={() => {}} />));
@@ -740,7 +739,7 @@ describe("Button", () => {
 		const tree = render(<Button label="Cancel" text quiet onPress={() => {}} />);
 		expect(styleOf(pressable(tree)).backgroundColor).toBeUndefined();
 		const label = tree.root.find((node) => String(node.type) === "Text");
-		expect(Object.assign({}, ...[label.props.style].flat())).toMatchObject({
+		expect(merged(label.props.style)).toMatchObject({
 			color: light.inkMid,
 			fontSize: 16,
 			fontWeight: "400",

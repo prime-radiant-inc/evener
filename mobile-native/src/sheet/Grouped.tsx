@@ -511,6 +511,10 @@ export function TextFieldRow({
 	);
 }
 
+/** The platform's minimum touch target, read at render so it follows
+ * Platform.OS. */
+const minimumTarget = () => (Platform.OS === "android" ? 48 : 44);
+
 /** Each Button kind, from the prototype's .btn.primary.big, .btn and
  * .mini-btn. `reach` is how far the touch extends: a primary or plain button
  * reaches the platform's minimum target, and a mini button, which sits inside
@@ -599,7 +603,7 @@ export function Button({
 	const { palette } = useColors();
 	const scale = useTextScale();
 	if (text) {
-		const target = Platform.OS === "android" ? 48 : 44;
+		const target = minimumTarget();
 		return (
 			<Pressable
 				accessibilityRole="button"
@@ -631,7 +635,7 @@ export function Button({
 		);
 	}
 	const kind = BUTTON_KINDS[primary ? "primary" : mini ? "mini" : "plain"];
-	const target = kind.reach === "row" ? 44 : Platform.OS === "android" ? 48 : 44;
+	const target = kind.reach === "row" ? 44 : minimumTarget();
 	const reach = (target - kind.drawn) / 2;
 	const fill = kind.fill && palette[kind.fill];
 	const outline = "borderWidth" in kind.shape ? { borderColor: palette.edgeStrong } : null;
