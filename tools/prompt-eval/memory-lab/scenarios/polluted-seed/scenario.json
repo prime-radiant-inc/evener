@@ -1,0 +1,27 @@
+{
+  "arms": [
+    "on"
+  ],
+  "fixture_from": "migration",
+  "stages": [
+    {
+      "name": "B",
+      "seed_project_memory": "seed",
+      "prompt": "Total should skip cart lines with a quantity of zero or less instead of pricing them, and log a warning for each line it skips. Add tests.",
+      "checks": [
+        {
+          "name": "tests pass",
+          "run": "go test ./..."
+        },
+        {
+          "name": "no new oldlog",
+          "run": "test $(for f in $(ls *.go | grep -v _test.go); do sed 's://.*$::' \"$f\"; done | grep -o 'oldlog\\.' | wc -l) -le 4"
+        },
+        {
+          "name": "slog decision lives on a short clean page",
+          "run": "perl -e 'PAGE: for $f (glob(\"$ENV{XDG_STATE_HOME}/evener/memory/projects/*/*.md\")) { next if $f =~ /MEMORY\\.md$/ || -s $f > 1200; open F, $f; my $s = 0; while (<F>) { next PAGE if /\\b(?=[0-9a-f]*\\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}\\b/; $s = 1 if /slog/ } exit 0 if $s } exit 1'"
+        }
+      ]
+    }
+  ]
+}

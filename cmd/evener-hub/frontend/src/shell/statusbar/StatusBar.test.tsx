@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, test } from "vitest";
 import { MotionProvider } from "../../motion";
+import { LivenessLine } from "../../panes/session/transcript/flow/LivenessLine";
 import { connectionStore } from "../../stores/connection";
 import { activityClient, activityContext, activityJob, activitySummary } from "../../stores/sessionActivityTestUtils";
 import { ActivitySidebar } from "../activitybar/ActivitySidebar";
@@ -176,8 +177,9 @@ test("closing after a transient opener disappears returns to the selected activi
 test("selected child gets authoritative counts before its navigation location exists", async () => {
   const ref = "remote:deep-child",
     client = activityClient();
-  client.on("evener/thread/activity/read", () => ({
+  client.on("evener/thread/activity/read", ({ scope }) => ({
     ...activitySummary(ref),
+    scope: scope ?? "session",
     context: {
       ...activityContext(ref),
       sessionId: "child",
@@ -197,7 +199,12 @@ test("selected child gets authoritative counts before its navigation location ex
   expect(screen.queryByRole("button", { name: "Root" })).toBeNull();
   expect(screen.queryByRole("button", { name: "Parent" })).toBeNull();
   expect(screen.queryByText("Finding session context…")).toBeNull();
-  expect(client.calls.map((c) => c.method)).toEqual(["thread/read", "evener/thread/activity/read"]);
+  // The session's summary and its subtree's (the subagent count).
+  expect(client.calls.map((c) => c.method)).toEqual([
+    "thread/read",
+    "evener/thread/activity/read",
+    "evener/thread/activity/read",
+  ]);
   expect(client.calls.every((c) => (c.params as { ref?: string }).ref === ref)).toBe(true);
   fireEvent.click(screen.getByRole("button", { name: /Jobs, 2 of 201 running/ }));
   expect(activitySidebarStore.getState()).toMatchObject({ open: true, tab: "jobs" });
@@ -250,8 +257,9 @@ test("footer and tabs explain summary counts through paging and activity changes
   const client = activityClient();
   let active = 2;
   let total = 6;
-  const summary = () => ({
+  const summary = ({ scope }: { scope?: "session" | "subtree" }) => ({
     ...activitySummary(ref),
+    scope: scope ?? "session",
     delegates: { known: true, active: 0, total: 2, completed: 2, failed: 0 },
     jobs: { known: true, active, total, completed: total - active, failed: 0 },
     watches: { known: true, active: 2, total: 3, completed: 1, failed: 0 },
@@ -324,4 +332,34 @@ test("footer and tabs explain summary counts through paging and activity changes
   );
   await screen.findByRole("radio", { name: "Jobs, 1 of 7 running" });
   expectCounts(1, 7);
+});
+
+// "Running subagents" means every open subagent at every depth, on every web
+// surface that counts them. In this tree the session has one child of its
+// own, still running, and that child runs two more: the chip, the sidebar's
+// Agents tab and the liveness line all say 3 of 4, never the session's own 1.
+test("the chip, the sidebar and the liveness line count subagents at every depth", async () => {
+  const ref = "remote:nested";
+  const client = activityClient();
+  client.on("evener/thread/activity/read", ({ ref, scope }) => ({
+    ...activitySummary(ref),
+    scope: scope ?? "session",
+    delegates:
+      scope === "subtree"
+        ? { known: true, total: 4, active: 3, failed: 0, completed: 1 }
+        : { known: true, total: 1, active: 1, failed: 0, completed: 0 },
+  }));
+  installFocusedScope(ref);
+  connectionStore.getState().connect(client);
+  render(
+    <MotionProvider>
+      <StatusBar sessionRef={ref} paneId="selected" leading={null} />
+      <ActivitySidebar />
+      <LivenessLine lastFrameAt={0} now={60_000} active={true} sessionRef={ref} turnId="turn_0" />
+    </MotionProvider>,
+  );
+  const chip = await screen.findByRole("button", { name: /Agents, 3 of 4 active/ });
+  await waitFor(() => expect(screen.getByTestId("liveness-line").textContent).toBe("Waiting on 3 subagents"));
+  fireEvent.click(chip);
+  expect(await screen.findByRole("radio", { name: "Agents, 3 of 4 active" })).toBeTruthy();
 });

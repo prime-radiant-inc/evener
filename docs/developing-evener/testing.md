@@ -1097,7 +1097,10 @@ IndexedDB. The guards in `cmd/evener-hub/frontend` cover different contracts:
 - **`npm run shellguard`** renders the production AppShell (rail + workspace)
   with a scripted tall sidebar tree and asserts the PAGE never grows taller
   than the viewport — the rail's own body is the scroll container, not the
-  document.
+  document. The floating fixture waits for the restored workspace before opening
+  Settings. A held lazy DockHost request verifies that it captures no pane ID
+  before restoration, then proves real placement, overhang, native input and
+  resize after the request resumes. Workspace restoration and Dockview stay real.
 - **`npm run spawnguard`** renders the real Spawn pane through its staging and
   breakpoint path, asserting the responsive form remains usable at three widths.
 - **`npm run transcriptscrollguard`** renders the real transcript through the

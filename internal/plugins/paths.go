@@ -39,6 +39,10 @@ type Manager struct {
 	remoteHeadsMu   sync.Mutex
 	remoteHeads     map[string]checkedHead
 	checkGeneration uint64
+	// checkRefreshResumeAt names the marketplace the last check's refresh
+	// budget left unrefreshed first ("" when it refreshed them all). Guarded
+	// by remoteHeadsMu, like the check state above.
+	checkRefreshResumeAt string
 }
 
 // NewManager returns a Manager rooted at root, or DefaultRoot() when root == "".
@@ -69,6 +73,7 @@ const (
 	bundledDirName          = "bundled"
 	cacheDirName            = "cache"
 	marketplacesDirName     = "marketplaces"
+	cloneLocksDirName       = "clone-locks"
 )
 
 // storePath derives a path inside the store, refusing a root that resolves

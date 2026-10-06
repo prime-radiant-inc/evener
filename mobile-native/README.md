@@ -123,6 +123,21 @@ lasts for the app lifetime and adds no disk persistence.
 
 ## Current scope
 
+Assistant filename actions and document chips share the file-reference grammar.
+Authored HTML tags are literal text, so they do not suppress otherwise eligible
+filenames, including across paragraphs and table cells. Actual Markdown link
+destinations, opaque labels, fenced/indented code and Mermaid keep native Markdown
+rules even inside HTML-shaped blocks; inline-code filenames remain eligible.
+Web may instead display that block's Markdown syntax as literal text.
+Prose filenames use once-resolved Markdown entities: `docs/a&amp;b.md` opens
+`docs/a&b.md`, including in HTML-shaped prose. Backticked filenames stay literal,
+while explicit Markdown destinations keep their once-decoded entity/URI meaning
+and opaque labels. Prose and code never percent-decode filenames. Generated prose
+labels preserve that resolved meaning in the installed native parser.
+Recognition preserves the original response and binds actions to the owning
+conversation's current cwd, without reading files. Automated adapter/parser checks
+do not establish installed-device rendering or touch behavior.
+
 - The recent-session roster is bounded and has server-side search. Project
   navigation has paged catalogs, archived views, favorites and archive actions.
   Complete organization/pinning and management acceptance remain open.

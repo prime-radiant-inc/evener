@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"os"
 	"path/filepath"
@@ -74,7 +75,11 @@ type OutputStore struct {
 	// holds older bytes awaiting compaction.
 	visibleStart   int64
 	visiblePartial bool
-	disableSync    bool
+	// retainedHash is the running SHA-256 of the retained file, fed by each
+	// append and re-seeded at compaction, so writing the metadata checksum
+	// never re-reads the file.
+	retainedHash hash.Hash
+	disableSync  bool
 }
 
 type outputMeta struct {
@@ -188,6 +193,10 @@ func openOutputFsWithSync(fs afero.Fs, path string, capBytes int64, disableSync 
 		view, retainedStartPartial = outputViewOf(meta), outputMetaRetainedStartPartial(meta)
 	}
 	o := &OutputStore{path: path, metaPath: metaPath, fs: fs, f: f, capBytes: capBytes, total: view.total, retainedStart: view.fileStart, retainedStartPartial: retainedStartPartial, visibleStart: view.visibleStart, visiblePartial: view.visiblePartial, disableSync: disableSync}
+	if o.retainedHash, err = outputFileHash(fs, path); err != nil {
+		cleanupCreated()
+		return nil, err
+	}
 	if err := o.pruneLocked(); err != nil {
 		cleanupCreated()
 		return nil, err
@@ -244,6 +253,9 @@ func (o *OutputStore) Append(b []byte) (int, error) {
 	defer o.mu.Unlock()
 	n, err := o.f.Write(b)
 	o.total += int64(n)
+	if o.retainedHash != nil {
+		o.retainedHash.Write(b[:n])
+	}
 	if err != nil {
 		return n, fmt.Errorf("jobstore: append output: %w", err)
 	}
@@ -847,6 +859,8 @@ func (o *OutputStore) pruneLocked() error {
 	o.f = nf
 	o.retainedStart = retainedStart
 	o.retainedStartPartial = retainedStartPartial
+	o.retainedHash = sha256.New()
+	o.retainedHash.Write(tail)
 	if err := oldFile.Close(); err != nil {
 		return fmt.Errorf("jobstore: close replaced output: %w", err)
 	}
@@ -889,11 +903,15 @@ func (o *OutputStore) outputMetaLocked() (outputMeta, error) {
 	if o.visibleStart > o.retainedStart {
 		meta.VisibleStart, meta.VisibleStartPartial = new(o.visibleStart), new(o.visiblePartial)
 	}
-	hash, err := outputFileSHA256(o.fs, o.path)
-	if err != nil {
-		return outputMeta{}, err
+	if o.retainedHash == nil {
+		// Seeded on first use, for a store not built by open.
+		h, err := outputFileHash(o.fs, o.path)
+		if err != nil {
+			return outputMeta{}, err
+		}
+		o.retainedHash = h
 	}
-	meta.RetainedSHA256 = hash
+	meta.RetainedSHA256 = hex.EncodeToString(o.retainedHash.Sum(nil))
 	return meta, nil
 }
 
@@ -1292,18 +1310,27 @@ func outputFileHasSuffixSHA256(fs afero.Fs, path string, start int64, n int64, w
 }
 
 func outputFileSHA256(fs afero.Fs, path string) (string, error) {
+	h, err := outputFileHash(fs, path)
+	if err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// outputFileHash is the SHA-256 state after reading the whole output file.
+func outputFileHash(fs afero.Fs, path string) (hash.Hash, error) {
 	f, err := fs.Open(path)
 	if err != nil {
-		return "", fmt.Errorf("jobstore: open output for metadata hash: %w", err)
+		return nil, fmt.Errorf("jobstore: open output for metadata hash: %w", err)
 	}
 	defer func() {
 		_ = f.Close()
 	}()
 	h := sha256.New()
 	if _, err := io.Copy(h, f); err != nil {
-		return "", fmt.Errorf("jobstore: hash output metadata: %w", err)
+		return nil, fmt.Errorf("jobstore: hash output metadata: %w", err)
 	}
-	return hex.EncodeToString(h.Sum(nil)), nil
+	return h, nil
 }
 
 func outputBytesSHA256(b []byte) string {

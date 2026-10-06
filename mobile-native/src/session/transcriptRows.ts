@@ -12,6 +12,7 @@ import {
 	type AskUserQuestion,
 	housekeepingAction,
 	mcpToolParts,
+	memoryMutation,
 	parseAskUserQuestions,
 	skillName,
 	type ThreadModel,
@@ -372,6 +373,9 @@ interface Group {
 	unnamed: number;
 	/** Whether a task_list step in the part changed the list, not only read it. */
 	changedTasks: boolean;
+	/** How many calls in the part attempted a memory mutation (the package's
+	 * memoryMutation): a part with any changed a page, not only read one. */
+	memoryMutations: number;
 	/** How many questions a part's ask_user calls asked: a call can ask several. */
 	questions: number;
 }
@@ -435,6 +439,12 @@ function partText(group: Group): string {
 			return oneName ? `used skill ${oneName}` : `used ${n} ${plural("skill", "skills")}`;
 		case "tasks":
 			return `${group.changedTasks ? "updated" : "checked"} the task list${n === 1 ? "" : ` ${n} times`}`;
+		case "memory": {
+			const mutated = group.memoryMutations > 0;
+			const count = mutated ? group.memoryMutations : n;
+			const countText = count === 1 ? "" : mutated && count === 2 ? " twice" : ` ${count} times`;
+			return `${mutated ? "updated" : "read"} memory${countText}`;
+		}
 		case "transcript":
 			return n === 1 ? "read a transcript" : `read ${n} transcripts`;
 		case "sessions":
@@ -477,7 +487,16 @@ export function runSummary(steps: readonly RunStep[]): RunSummary {
 		const part = partOf(step);
 		let group = groups.get(part.key);
 		if (!group) {
-			group = { ...part, count: 0, failed: 0, names: new Set(), unnamed: 0, changedTasks: false, questions: 0 };
+			group = {
+				...part,
+				count: 0,
+				failed: 0,
+				names: new Set(),
+				unnamed: 0,
+				changedTasks: false,
+				memoryMutations: 0,
+				questions: 0,
+			};
 			groups.set(part.key, group);
 		}
 		group.count += 1;
@@ -486,6 +505,9 @@ export function runSummary(steps: readonly RunStep[]): RunSummary {
 			failed += 1;
 		}
 		if (part.family === "tasks" && taskListChanges({ argumentsJSON: step.detail.arguments })) group.changedTasks = true;
+		if (part.family === "memory" && memoryMutation(step.label)) {
+			group.memoryMutations += 1;
+		}
 		// A call whose questions don't parse still asked one.
 		if (part.family === "ask")
 			group.questions += parseAskUserQuestions({ argumentsJSON: step.detail.arguments })?.length ?? 1;

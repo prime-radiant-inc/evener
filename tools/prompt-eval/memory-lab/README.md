@@ -45,6 +45,7 @@ The lab runs real models with your configured provider credentials, so it is nev
 - `--max-rounds` (default 40) caps tool rounds per stage; 0 means no cap. If the cap is tight, every stage stops on the cap and the results measure the cap, not memory.
 - `--effort` (default `high`) sets the reasoning effort. `--timeout` (default 1200) is seconds per stage.
 - An infrastructure failure prints `ERROR` on the stage it hit and on every later stage. That covers failed workspace setup, a failing or timed-out `before` hook, and a session that times out or exits nonzero, except evener's exit 1 on the round cap, which grades as a `CAPPED` stage. Those stages fail every check in the table, the failed session's events and memory snapshot stay on disk, and `run` exits nonzero once all trials finish. A check that times out or errors fails on its own, with the reason in `show`.
+- `--work-root DIR` creates each trial workspace (`work`, and a stage's own `workspace` such as `work2`) at `DIR/<project>-<random>` instead of inside the results tree, where `<project>` is the last element of the fixture's `go.mod` module (`shop`, `textutil`), or `app`. The trial's `work/` is then a symlink to it, and every later use (the session's cwd, checks, `before` hooks, `ask`) resolves the symlink to the real path. Use it for capture-sensitive runs, for example `--work-root ~/Developer`. An agent whose cwd reads `.../results/memory-lab/runs/H1c/.../r5/work` infers a throwaway eval fixture and skips saving memory, and the real path removes that tell. The trial's state dir (`xdg/`) moves too, to `DIR/.state/<project>-<random>`, because memory tool results show its path. The dirs are left in place so you can inspect them; clean them up by hand. Without the flag, workspaces stay inside the trial dir.
 - `--out` must be a fresh directory, relative or absolute. The command prints one line per stage as each trial finishes, then only the pass-rate table per version, scenario, stage and check. `report` prints the per-stage lines too.
 
 ## Reading results
@@ -85,6 +86,14 @@ Every scenario is a directory holding `scenario.json` and `fixture/` (a small Go
 | `quirk` | A finds that `go test` silently skips without an env var | The agent usually fixes the root cause in the repository, which makes not saving the correct outcome. Kept as a caution. |
 | `eval-port` | Stage A of the live memory eval fixture, run under the lab | A diagnostic for round caps. The task takes 7–8 rounds without any memory work. |
 | `whiteboard` | A short task. The whiteboard should be set in the three-part shape, under 600 characters, with no file paths | Reads `agent_note` from the session meta. |
+| `long-project` | Four sessions of one cleanup, each asked for commit SHAs and progress. A states a doc-comment team tag, B an error-wrapping convention, C changes the team tag; D adds a function and must apply B and C | The page-hygiene scenario that discriminates most: without the hygiene guidance, project memory grows a progress ledger with SHAs. Durable-memory noise checks run after every stage. |
+| `many-facts` | A is told four facts in passing (API freeze, commit prefix, int cents, run `go vet`). B must apply them | Capture is at the ceiling at neutral paths; run it with `--work-root`. |
+| `progress-notes` | A long job with a keep-notes cue and a durable decision. Notes go to session memory, the decision to project memory, and no SHAs, paths, test counts or status reach durable memory | |
+| `progress-log` | Three commits plus a team-tag rule told in passing. B applies the rule; durable memory stays free of run details | At the ceiling: a short task doesn't provoke logging. |
+| `fact-changes` | A saves a dollar receipt format, B switches to euros, C must follow euros; no page still states dollars as current | C reads the format from the code too, so it is at the ceiling. |
+| `stale-status` | A leaves a rename half done; the partner finishes it before B. B must not report or keep the rename as unfinished | |
+| `polluted-seed` | Seeded project memory: a long, dated progress log with SHAs and worker ids, and a status-only index line, with one durable decision (use `log/slog`) buried inside. B adds a log line | Checks that B uses slog and leaves the decision on a short page with no SHAs (a fresh page, or the log rewritten in place). |
+| `clean-seed` | The same decision seeded as a clean one-fact page | The control for `polluted-seed`. |
 
 ## Scenario format
 

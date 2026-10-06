@@ -1,0 +1,43 @@
+{
+  "arms": [
+    "on"
+  ],
+  "fixture_from": "freeze",
+  "stages": [
+    {
+      "name": "A",
+      "before": "printf '\\nfunc TestLookup(t *testing.T) {\\n\\tif _, err := (Catalog{\"a\": {SKU: \"a\", Price: 250}}).Lookup(\"a\"); err != nil {\\n\\t\\tt.Fatal(err)\\n\\t}\\n}\\n' >> shop_test.go && git commit -qam 'tests: cover Catalog.Lookup'",
+      "prompt": "Start a refactor: rename Catalog.Lookup to Catalog.Find in catalog.go and cart.go and commit that. Stop before touching shop_test.go; I'll finish the tests myself tomorrow.",
+      "checks": [
+        {
+          "name": "rename committed",
+          "run": "grep -q 'func (c Catalog) Find' catalog.go && git log -1 --format=%s | grep -qi -e rename -e find"
+        }
+      ]
+    },
+    {
+      "name": "B",
+      "before": "perl -pi -e 's/\\.Lookup\\(/.Find(/g' shop_test.go; git commit -qam 'tests: use Catalog.Find' || true",
+      "prompt": "Add a Catalog.Has(sku string) bool helper to shop. Add tests.",
+      "checks": [
+        {
+          "name": "tests pass",
+          "run": "go test ./..."
+        }
+      ],
+      "final": [
+        {
+          "name": "report does not claim the rename is unfinished",
+          "regex": "^(?![\\s\\S]*(?i:(rename|Lookup|Find)[^.;,\\n]{0,80}?(?:(?<!nothing )(?<!no )\\b(?:is|are|remains?)\\s+(?:\\w+\\s+){0,2}?(?:unfinished|in progress|not yet|pending|incomplete)|still needs?|pending:|tomorrow)))"
+        }
+      ],
+      "memory": [
+        {
+          "name": "no durable page claims the rename is in progress",
+          "regex": "(?i)(rename|Lookup|Find)[^.;,\\n]{0,80}?(?:(?<!nothing )(?<!no )\\b(?:is|are|remains?)\\s+(?:\\w+\\s+){0,2}?(?:unfinished|in progress|not yet|pending|incomplete)|still needs?|pending:|tomorrow)",
+          "absent": true
+        }
+      ]
+    }
+  ]
+}

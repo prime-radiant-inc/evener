@@ -4,6 +4,7 @@ import {
   type SessionActivityScope,
   type SessionActivitySnapshot,
   SessionActivityStore,
+  type SessionActivitySummary,
 } from "@evener/appwire-client";
 import { useCallback, useEffect, useSyncExternalStore } from "react";
 import { useConnectionStore } from "./connection";
@@ -101,4 +102,14 @@ export function useSessionActivity(
     [client, ref, scope],
   );
   return { snapshot, loadMore };
+}
+
+/** A session's subagents at every depth: how many runs are open and how many
+ * there are, from the hub's subtree activity summary, or null until the hub
+ * knows. This is the web's one count of "running subagents": the status bar's
+ * Agents chip, the activity sidebar's Agents tab and the liveness line all read
+ * it, as the hub's Live tally and the phone count them. */
+export function useSubagentCounts(ref: string | null): SessionActivitySummary["delegates"] | null {
+  const delegates = useSessionActivity(ref, "subtree").snapshot?.summary?.delegates;
+  return delegates?.known ? delegates : null;
 }

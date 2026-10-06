@@ -517,6 +517,20 @@ describe("a run's one line", () => {
 			"updated the task list 2 times",
 		]);
 	});
+
+	it("says whether a run read or updated memory, with mutation taking precedence", () => {
+		const memory = (id: string, label: string) => step(id, label);
+		expect(runSummary([memory("a", "memory_read")]).parts.map((part) => part.text)).toEqual(["read memory"]);
+		expect(
+			runSummary([memory("a", "memory_read"), memory("b", "memory_search")]).parts.map((part) => part.text),
+		).toEqual(["read memory 2 times"]);
+		expect(runSummary([memory("a", "memory_write")]).parts.map((part) => part.text)).toEqual(["updated memory"]);
+		expect(
+			runSummary([memory("a", "memory_read"), memory("b", "memory_edit"), memory("c", "memory_delete")]).parts.map(
+				(part) => part.text,
+			),
+		).toEqual(["updated memory twice"]);
+	});
 });
 
 describe("a run's transcript reads and session searches", () => {

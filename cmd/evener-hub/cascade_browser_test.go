@@ -362,7 +362,7 @@ func TestAgentCascadeBrowser(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, required := range []string{
-		"root-child", "six-edges", "narrow-independent-scroll", "parent-selection-leaf-scope",
+		"root-child", "six-edges", "compact-spine-status", "narrow-independent-scroll", "parent-selection-leaf-scope",
 		"peek-tasks-single-escape", "keyboard-branch-reduced-motion", "return-source",
 		"reconnect-extent-closed-peek", "pending-image-success", "pending-image-failure",
 		"unresolved-storage-source", "queued-source-single-delivery", "live-status-stable-geometry",

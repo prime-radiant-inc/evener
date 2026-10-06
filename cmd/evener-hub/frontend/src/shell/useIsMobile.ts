@@ -6,7 +6,7 @@ type MatchMediaFactory = typeof window.matchMedia;
 
 let sourceFactory: MatchMediaFactory | null = null;
 let source: MediaQueryList | null = null;
-let matches = false;
+let lastNotifiedMatches = false;
 const listeners = new Set<ViewportListener>();
 
 function detachSource(): void {
@@ -18,35 +18,28 @@ function detachSource(): void {
 
 function onSourceChange(event: MediaQueryListEvent): void {
   const next = event.matches;
-  if (next === matches) return;
-  matches = next;
+  if (next === lastNotifiedMatches) return;
+  lastNotifiedMatches = next;
   for (const listener of listeners) listener();
 }
 
 function ensureSource(): MediaQueryList | null {
   if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
     if (source !== null) detachSource();
-    matches = false;
+    lastNotifiedMatches = false;
     return null;
   }
-  if (source !== null && sourceFactory === window.matchMedia) {
-    // A real MediaQueryList is live, so read its current value as well as the
-    // last event. This closes the small render-to-subscribe gap without a
-    // second media-query subscription.
-    matches = source.matches;
-    return source;
-  }
+  if (source !== null && sourceFactory === window.matchMedia) return source;
   detachSource();
   sourceFactory = window.matchMedia;
   source = sourceFactory(MOBILE_QUERY);
-  matches = source.matches;
+  lastNotifiedMatches = source.matches;
   if (typeof source.addEventListener === "function") source.addEventListener("change", onSourceChange);
   return source;
 }
 
 function snapshot(): boolean {
-  ensureSource();
-  return matches;
+  return ensureSource()?.matches ?? false;
 }
 
 function subscribe(listener: ViewportListener): () => void {
@@ -75,6 +68,6 @@ export function useIsMobile(): boolean {
 // Test-only reset keeps a replaced matchMedia stub from retaining a listener.
 export function resetMobileViewportForTests(): void {
   detachSource();
-  matches = false;
+  lastNotifiedMatches = false;
   listeners.clear();
 }

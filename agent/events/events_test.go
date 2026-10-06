@@ -68,6 +68,7 @@ func TestNewDerivesCorrectKind(t *testing.T) {
 		{"SessionStart", events.SessionStartData{Profile: "test", Model: "m"}, events.EventSessionStart},
 		{"SessionEnd", events.SessionEndData{Reason: "done"}, events.EventSessionEnd},
 		{"UserInput", events.UserInputData{Text: "hello"}, events.EventUserInput},
+		{"EnvironmentChanged", events.EnvironmentChangedData{WorkingDir: "/work/tree"}, events.EventEnvironmentChanged},
 		{"AssistantTextStart", events.AssistantTextStartData{Model: "m"}, events.EventAssistantTextStart},
 		{"AssistantTextDelta", events.AssistantTextDeltaData{Delta: "hi"}, events.EventAssistantTextDelta},
 		{"AssistantTextEnd", events.AssistantTextEndData{Text: "done", Model: "m"}, events.EventAssistantTextEnd},
@@ -126,6 +127,7 @@ func TestEventKindWireStrings(t *testing.T) {
 		{events.EventSessionStart, "SESSION_START"},
 		{events.EventSessionEnd, "SESSION_END"},
 		{events.EventUserInput, "USER_INPUT"},
+		{events.EventEnvironmentChanged, "ENVIRONMENT_CHANGED"},
 		{events.EventAssistantTextStart, "ASSISTANT_TEXT_START"},
 		{events.EventAssistantTextDelta, "ASSISTANT_TEXT_DELTA"},
 		{events.EventAssistantTextEnd, "ASSISTANT_TEXT_END"},
@@ -231,6 +233,7 @@ func TestToStreamEvent_Mappings(t *testing.T) {
 func TestToStreamEvent_AgentOnlyEventsReturnNil(t *testing.T) {
 	agentOnly := []events.EventData{
 		events.UserInputData{Text: "hi"},
+		events.EnvironmentChangedData{WorkingDir: "/work/tree"},
 		events.AssistantTextResetData{},
 		events.ReasoningSummaryDeltaData{Delta: "d"},
 		events.ToolCallOutputDeltaData{Delta: "d"},
@@ -263,6 +266,20 @@ func TestToStreamEvent_AgentOnlyEventsReturnNil(t *testing.T) {
 				t.Errorf("ToStreamEvent() = %+v, want nil", got)
 			}
 		})
+	}
+}
+
+func TestEnvironmentChanged_KindAndPayload(t *testing.T) {
+	ev := events.New(events.EnvironmentChangedData{WorkingDir: "/work/tree"})
+	if ev.Kind != events.EventEnvironmentChanged {
+		t.Fatalf("kind = %q, want %q", ev.Kind, events.EventEnvironmentChanged)
+	}
+	b, err := json.Marshal(ev)
+	if err != nil {
+		t.Fatalf("marshal event: %v", err)
+	}
+	if got, want := string(b), `"working_dir":"/work/tree"`; !strings.Contains(got, want) {
+		t.Fatalf("marshaled event missing %s: %s", want, got)
 	}
 }
 

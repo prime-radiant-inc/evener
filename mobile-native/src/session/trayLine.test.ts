@@ -92,6 +92,9 @@ describe("the tray's line (spec 8.3)", () => {
 		expect(text(step("compact_context", { note_to_self: "Next: run the race detector." }))).toBe(
 			"Asking for a context compaction · 5s",
 		);
+		expect(text(step("memory_write", { scope: "session", file_path: "notes.md", content: "page" }))).toBe(
+			"Writing memory session/notes.md · 5s",
+		);
 		expect(text(step("shell", {}))).toBe("Running a command · 5s");
 	});
 

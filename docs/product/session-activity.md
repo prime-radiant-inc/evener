@@ -485,6 +485,16 @@ footer remains bound to its own conversation.
 Columns and spines expose Agents, Jobs, Watches and Tasks peeks, including empty
 Tasks. About is available in Overview and has no cascade chip.
 
+Ancestor spines reuse the session list's compact indicators: a gray spinner for
+active work, an amber dot for attention and a red diamond for failure. Idle and
+ended scopes have no glyph. Each spine uses its own runtime metadata from the
+existing activity binding, while the list retains its navigation-summary
+arbitration. Runtime status uses the wire vocabulary: `systemError` selects failure
+and `closed` selects ended. Navigation summaries normalize those values to
+`errored` and `ended` before selecting the same indicator families. The exact
+runtime label, including unknown states, remains available on hover and to screen
+readers. Readable columns keep their full status labels.
+
 Columns and spines share the existing summary and additive subscription leases
 by client and requested ref. An ancestor peek observes only that ancestor's
 chosen direct collection; Tasks stays inside the peek. Closing it releases its
@@ -579,9 +589,10 @@ describe the executable proof and presentation contract.
 The [browser binding](../../cmd/evener-hub/frontend/src/stores/sessionActivity.ts)
 shares a store by actual client object, requested ref and scope. A committed view
 acquires its holder; an abandoned render starts no read. Every visible desktop
-session pane has a status footer that observes that pane's summary by explicit
-ref, so side-by-side panes retain independent counts while duplicate consumers
-of one ref share the same owner. Agents, Jobs and Watches tabs observe their own
+session pane has a status footer that observes that pane's summary and its
+subtree summary (for the Agents count) by explicit ref, so side-by-side panes
+retain independent counts while duplicate consumers of one ref and scope share
+the same owner. Agents, Jobs and Watches tabs observe their own
 session-scoped collection. A visible page boundary supplies further demand,
 while the shared store retains and retries an interrupted continuation.
 
@@ -687,7 +698,12 @@ sidebar, preserving the last selected category for the focused session. Its
 optional active count sums the session's authoritative job and delegate active
 counts only when both are known; watches and completed work are not part of that
 number. The sidebar's Agents, Jobs, Watches and Tasks tabs use session-scoped
-reads on both viewports; About uses the shared session model.
+reads on both viewports; About uses the shared session model. The Agents count
+is the exception: the footer chip, the sidebar's Agents tab label, each
+cascade scope's Agents chip and the transcript's liveness line all count
+subagents at every depth, from the subtree summary
+([`useSubagentCounts`](../../cmd/evener-hub/frontend/src/stores/sessionActivity.ts)),
+while the Agents tab lists the session's own.
 The workspace registers only Tasks and Details session panels. Saved Activity
 placements are unknown panes: the existing workspace restore omits them,
 preserves registered panes and selects useful surviving focus. A valid primary

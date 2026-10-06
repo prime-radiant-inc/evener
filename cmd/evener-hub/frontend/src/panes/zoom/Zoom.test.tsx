@@ -69,6 +69,7 @@ function CommittedZoom() {
 
 function fixture(ancestryKnown = true) {
   const fake = new FakeClient("ready");
+  const statuses = new Map<string, string>();
   const identities = new Map([
     ["root", "old-root"],
     ["child", "child-id"],
@@ -106,6 +107,7 @@ function fixture(ancestryKnown = true) {
         id: `wire-${identity}`,
         sessionId: identity,
         name: ref,
+        status: { type: statuses.get(ref) ?? "idle" },
         turns: [
           {
             id: `${identity}-turn`,
@@ -148,6 +150,7 @@ function fixture(ancestryKnown = true) {
   workspaceStore.setState({ panes: [pane], focusedPaneId: pane.id });
   return {
     fake,
+    statuses,
     identities,
     response,
     context,
@@ -433,6 +436,107 @@ test("deeper drill retains the root view as a paused spine and pop reuses its so
   expect(screen.queryByTestId("cascade-spine")).toBeNull();
 });
 
+test.each([
+  ["active", "Active", "Running", null],
+  ["awaiting", "Awaiting", "Needs you", "needs-you"],
+  ["warning", "Warning", "Needs you", "needs-you"],
+  ["restartRequired", "RestartRequired", "Needs you", "needs-you"],
+  ["systemError", "SystemError", "Broken", "failed"],
+  ["idle", "Idle", null, null],
+  ["closed", "Closed", null, null],
+  ["notLoaded", "NotLoaded", null, null],
+  ["futureState", "FutureState", null, null],
+] as const)(
+  "a %s ancestor uses the session-list signal and keeps its exact runtime text available",
+  async (state, runtimeText, signalLabel, signalState) => {
+    const { fake, statuses } = fixture();
+    statuses.set("root", state);
+    mount(fake);
+    await screen.findByText("child content child-id");
+    act(() =>
+      enterAgentCascade(activityDelegate({ ownerRef: "child", childRef: "grandchild", delegateId: "d2" }), "cascade"),
+    );
+    await screen.findByText("grandchild content grandchild-id");
+    const spine = screen.getByTestId("cascade-spine");
+    const runtime = within(spine).getByTitle(runtimeText);
+    expect(runtime.getAttribute("data-runtime-state")).toBe(state);
+    expect(within(runtime).getByText(runtimeText).getAttribute("aria-hidden")).not.toBe("true");
+    if (signalLabel) {
+      const signal = within(runtime).getByRole("img", { name: signalLabel });
+      expect(signal.getAttribute("data-status")).toBe(signalState);
+    } else {
+      expect(within(runtime).queryByRole("img")).toBeNull();
+    }
+    expect(columnRefs()).toEqual(["child", "grandchild"]);
+    act(() => fireEvent.click(within(spine).getByRole("button", { name: "Show root" })));
+    await screen.findByText("root content old-root");
+    const column = screen.getByTestId("cascade-column");
+    expect(within(column).getByText(runtimeText).getAttribute("data-runtime-state")).toBe(state);
+    expect(screen.queryByTestId("cascade-spine")).toBeNull();
+  },
+);
+
+test("a paused ancestor updates its signal through runtime changes without replacing the selected branch", async () => {
+  const { fake, statuses } = fixture();
+  statuses.set("root", "active");
+  mount(fake);
+  await screen.findByText("child content child-id");
+  act(() =>
+    enterAgentCascade(activityDelegate({ ownerRef: "child", childRef: "grandchild", delegateId: "d2" }), "cascade"),
+  );
+  await screen.findByText("grandchild content grandchild-id");
+  const spine = screen.getByTestId("cascade-spine");
+  const branch = currentPane();
+  expect(within(spine).getByRole("img", { name: "Running" })).toBeTruthy();
+  for (const [state, text, label] of [
+    ["awaiting", "Awaiting", "Needs you"],
+    ["systemError", "SystemError", "Broken"],
+    ["idle", "Idle", null],
+  ] as const) {
+    act(() =>
+      fake.emitNotification({
+        method: "thread/status/changed",
+        params: { ref: "root", threadId: "wire-old-root", status: { type: state } },
+      }),
+    );
+    const runtime = within(spine).getByTitle(text);
+    if (label) expect(within(runtime).getByRole("img", { name: label })).toBeTruthy();
+    else expect(within(runtime).queryByRole("img")).toBeNull();
+    expect(currentPane()).toBe(branch);
+    expect(columnRefs()).toEqual(["child", "grandchild"]);
+  }
+});
+
+test("an ancestor with pending runtime metadata stays explicitly unknown until its existing read recovers", async () => {
+  const { fake, response } = fixture();
+  const held = deferred<ThreadReadResponse>();
+  fake.on("thread/read", async ({ ref, requestGeneration, includeTurns }) => {
+    if (!ref) throw new Error("thread/read requires ref");
+    const read = ref === "root" ? await held.promise : response(ref);
+    return { ...read, requestGeneration, thread: includeTurns === false ? { ...read.thread, turns: [] } : read.thread };
+  });
+  mount(fake);
+  await screen.findByText("child content child-id");
+  act(() =>
+    enterAgentCascade(activityDelegate({ ownerRef: "child", childRef: "grandchild", delegateId: "d2" }), "cascade"),
+  );
+  await screen.findByText("grandchild content grandchild-id");
+  const spine = screen.getByTestId("cascade-spine");
+  const branch = currentPane();
+  try {
+    const runtime = within(spine).getByTitle("State unknown");
+    expect(runtime.getAttribute("data-runtime-state")).toBe("unknown");
+    expect(within(runtime).getByText("State unknown")).toBeTruthy();
+    expect(within(runtime).queryByRole("img")).toBeNull();
+  } finally {
+    await act(async () => held.resolve(response("root")));
+  }
+  await within(spine).findByTitle("Idle");
+  expect(within(spine).queryByRole("img")).toBeNull();
+  expect(currentPane()).toBe(branch);
+  expect(columnRefs()).toEqual(["child", "grandchild"]);
+});
+
 test("unknown ancestry labels the proven clicked segment without blocking child reading", async () => {
   const { fake } = fixture(false);
   mount(fake);
@@ -482,10 +586,12 @@ test("a new cursor epoch for the same root preserves child branch and retained r
   await screen.findByText("root content old-root");
   await screen.findByText("child content child-id");
   const childView = retainedTranscriptReadView(conversationPaneLifetime(currentPane()), "child", "cascade");
+  // The root's session summary; its subtree summary (the Agents count) re-reads too.
   const rootReads = () =>
-    fake.calls.filter(
-      (call) => call.method === "evener/thread/activity/read" && (call.params as { ref: string }).ref === "root",
-    ).length;
+    fake.calls.filter((call) => {
+      const params = call.params as { ref: string; scope?: string };
+      return call.method === "evener/thread/activity/read" && params.ref === "root" && params.scope !== "subtree";
+    }).length;
   const initialReads = rootReads();
   setEpoch("epoch-2");
   act(() =>
