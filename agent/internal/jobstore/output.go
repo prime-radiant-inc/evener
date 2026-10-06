@@ -512,55 +512,7 @@ func addWindowLimit(offset int64, maxBytes int, total int64) int64 {
 // Tail returns the last maxBytes bytes of the log, the total byte count, and
 // whether the returned slice is a truncated tail of a larger log.
 func (o *OutputStore) Tail(maxBytes int) (buf []byte, total int64, truncated bool, err error) {
-	if maxBytes < 0 {
-		return nil, 0, false, fmt.Errorf("%w: maxBytes=%d", ErrInvalidLimit, maxBytes)
-	}
-
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	info, err := o.fs.Stat(o.path)
-	if err != nil {
-		return nil, 0, false, fmt.Errorf("jobstore: stat output: %w", err)
-	}
-	retained := info.Size()
-	total = o.total
-	visibleAt := min(o.visibleStart-o.retainedStart, retained)
-	start := visibleAt
-	if retained-visibleAt > int64(maxBytes) {
-		start = retained - int64(maxBytes)
-		truncated = true
-	}
-	if o.visibleStart > 0 {
-		truncated = true
-	}
-	f, err := o.fs.Open(o.path)
-	if err != nil {
-		return nil, total, truncated, fmt.Errorf("jobstore: open output: %w", err)
-	}
-	defer func() {
-		if closeErr := f.Close(); err == nil && closeErr != nil {
-			err = fmt.Errorf("jobstore: close output: %w", closeErr)
-		}
-	}()
-	if _, err := f.Seek(start, 0); err != nil {
-		return nil, total, truncated, err
-	}
-	buf = make([]byte, retained-start)
-	if len(buf) > 0 {
-		if _, err := io.ReadFull(f, buf); err != nil {
-			return nil, total, truncated, fmt.Errorf("jobstore: read output: %w", err)
-		}
-	}
-	if start > visibleAt {
-		// The window was cut at a raw byte offset, so it can open mid-rune. Drop the
-		// dangling continuation bytes rather than reading further back: the window
-		// SHRINKS, which keeps the caller's retained-start arithmetic (total minus the
-		// bytes returned) naming the first byte actually handed over. Only our own cut
-		// is realigned — at the visible start the first byte is the output's own, and
-		// binary output keeps it.
-		buf = runetrim.TrimLeadingPartial(buf)
-	}
-	return buf, total, truncated, nil
+	return o.readEdge(maxBytes, false)
 }
 
 // Head returns the first maxBytes bytes of the retained log, the total byte
@@ -568,6 +520,15 @@ func (o *OutputStore) Tail(maxBytes int) (buf []byte, total int64, truncated boo
 // When retention has pruned the lifetime prefix, the returned bytes start at the
 // earliest still-retained byte (the start of the retained tail).
 func (o *OutputStore) Head(maxBytes int) (buf []byte, total int64, truncated bool, err error) {
+	return o.readEdge(maxBytes, true)
+}
+
+// readEdge reads at most maxBytes of the visible output from its head or its
+// tail. The window is cut at a raw byte offset, so it can open or end
+// mid-rune; trimOutputSnapshotWindow drops the dangling bytes, so the window
+// only ever SHRINKS, which keeps the caller's retained-start arithmetic (total
+// minus the bytes returned) naming the first byte actually handed over.
+func (o *OutputStore) readEdge(maxBytes int, fromHead bool) (buf []byte, total int64, truncated bool, err error) {
 	if maxBytes < 0 {
 		return nil, 0, false, fmt.Errorf("%w: maxBytes=%d", ErrInvalidLimit, maxBytes)
 	}
@@ -580,15 +541,9 @@ func (o *OutputStore) Head(maxBytes int) (buf []byte, total int64, truncated boo
 	}
 	retained := info.Size()
 	total = o.total
-	visibleAt := min(o.visibleStart-o.retainedStart, retained)
-	n := retained - visibleAt
-	if n > int64(maxBytes) {
-		n = int64(maxBytes)
-		truncated = true
-	}
-	if o.visibleStart > 0 {
-		truncated = true
-	}
+	visibleAt := min(o.visibleOffsetLocked(), retained)
+	start, n := outputSnapshotWindow(retained, visibleAt, maxBytes, fromHead)
+	truncated = o.visibleStart > 0 || n < retained-visibleAt
 	f, err := o.fs.Open(o.path)
 	if err != nil {
 		return nil, total, truncated, fmt.Errorf("jobstore: open output: %w", err)
@@ -598,7 +553,7 @@ func (o *OutputStore) Head(maxBytes int) (buf []byte, total int64, truncated boo
 			err = fmt.Errorf("jobstore: close output: %w", closeErr)
 		}
 	}()
-	if _, err := f.Seek(visibleAt, io.SeekStart); err != nil {
+	if _, err := f.Seek(start, io.SeekStart); err != nil {
 		return nil, total, truncated, fmt.Errorf("jobstore: seek output: %w", err)
 	}
 	buf = make([]byte, n)
@@ -607,14 +562,12 @@ func (o *OutputStore) Head(maxBytes int) (buf []byte, total int64, truncated boo
 			return nil, total, truncated, fmt.Errorf("jobstore: read output: %w", err)
 		}
 	}
-	if visibleAt+n < retained {
-		// The window was cut at a raw byte offset, so it can end mid-rune. Drop the
-		// dangling partial rune: like the tail's start, the window only ever SHRINKS.
-		// Only our own cut is realigned — when the window reaches the end of the file
-		// the last byte is the file's own, and binary output keeps it.
-		buf = runetrim.TrimTrailingPartial(buf)
-	}
-	return buf, total, truncated, nil
+	return trimOutputSnapshotWindow(buf, retained, visibleAt, start, fromHead), total, truncated, nil
+}
+
+// visibleOffsetLocked is the file offset of the first visible byte.
+func (o *OutputStore) visibleOffsetLocked() int64 {
+	return o.visibleStart - o.retainedStart
 }
 
 // Grep scans the log line by line and returns up to limitBytes worth of lines
@@ -650,7 +603,7 @@ func (o *OutputStore) GrepLimitLineBytes(re *regexp.Regexp, limitBytes int, maxM
 			err = fmt.Errorf("jobstore: close output: %w", closeErr)
 		}
 	}()
-	if _, err := f.Seek(o.visibleStart-o.retainedStart, io.SeekStart); err != nil {
+	if _, err := f.Seek(o.visibleOffsetLocked(), io.SeekStart); err != nil {
 		return nil, fmt.Errorf("jobstore: seek output: %w", err)
 	}
 	// 64 KiB buffer (matching the scanner seed in store.go) cuts read
@@ -1154,9 +1107,9 @@ func pendingOverOldFile(pending, final outputMeta, fileSize int64, hash string) 
 	pending.RetainedStart = pending.TotalBytes - fileSize
 	pending.RetainedStartPartial = new(outputMetaRetainedStartPartial(final))
 	pending.RetainedSHA256 = hash
-	if visibleStart > pending.RetainedStart {
-		pending.VisibleStart, pending.VisibleStartPartial = new(visibleStart), new(visiblePartial)
-	}
+	// Both callers validated that the compaction drops a non-empty prefix, so
+	// the visible start is always past the old file's first byte.
+	pending.VisibleStart, pending.VisibleStartPartial = new(visibleStart), new(visiblePartial)
 	return pending
 }
 

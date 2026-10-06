@@ -179,9 +179,8 @@ func FuzzAcOutputMetaCodec(f *testing.F) {
 			RetainedStart:        0,
 			RetainedStartPartial: new(false),
 			RetainedSHA256:       hex.EncodeToString(sha256sum(output)),
-		}
-		if L-metaR > 0 {
-			wantD.VisibleStart, wantD.VisibleStartPartial = new(L-metaR), new(true)
+			VisibleStart:         new(L - metaR),
+			VisibleStartPartial:  new(true),
 		}
 		if !reflect.DeepEqual(dgot, wantD) {
 			t.Fatalf("grown pending recovery mismatch:\n  got =%+v\n  want=%+v", dgot, wantD)
