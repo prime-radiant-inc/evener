@@ -4867,6 +4867,7 @@ export const THREAD_ITEM_EVENT_KINDS = [
   "warning",
   "interrupted",
   "approval_decision",
+  "memory-context",
 ] as const;
 
 export type ThreadItemEventKind = (typeof THREAD_ITEM_EVENT_KINDS)[number];
