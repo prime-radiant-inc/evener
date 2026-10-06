@@ -17,7 +17,7 @@
 // that activity stops.
 
 import type { ModelRetryState } from "@evener/appwire-client";
-import { useSessionActivity } from "../../../../stores/sessionActivity";
+import { useSubagentCounts } from "../../../../stores/sessionActivity";
 import { useThreadsStore } from "../../../../stores/threads";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { turnScopeKey, useRunningSubagentCount } from "../tools/subagentModuleStore";
@@ -73,9 +73,8 @@ export function LivenessLine({ lastFrameAt, now, active, sessionRef, turnId, ret
   // on why a bare turn id is never enough) stand in only until the hub's
   // count is known (not yet read, or an older hub), so a launch the
   // transcript already shows can explain the wait.
-  const { snapshot } = useSessionActivity(active && sessionRef !== undefined ? sessionRef : null, "subtree");
-  const hubDelegates = snapshot?.summary?.delegates;
-  const runningSubagents = hubDelegates?.known ? hubDelegates.active : turnRunning;
+  const runningSubagents =
+    useSubagentCounts(active && sessionRef !== undefined ? sessionRef : null)?.active ?? turnRunning;
   const retryWait: RetryWait | undefined = retry && {
     attempt: retry.attempt,
     attemptCap: retry.attemptCap,

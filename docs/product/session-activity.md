@@ -697,7 +697,12 @@ sidebar, preserving the last selected category for the focused session. Its
 optional active count sums the session's authoritative job and delegate active
 counts only when both are known; watches and completed work are not part of that
 number. The sidebar's Agents, Jobs, Watches and Tasks tabs use session-scoped
-reads on both viewports; About uses the shared session model.
+reads on both viewports; About uses the shared session model. The Agents count
+is the exception: the footer chip, the sidebar's Agents tab label and the
+transcript's liveness line all count subagents at every depth, from the
+subtree summary
+([`useSubagentCounts`](../../cmd/evener-hub/frontend/src/stores/sessionActivity.ts)),
+while the Agents tab lists the session's own.
 The workspace registers only Tasks and Details session panels. Saved Activity
 placements are unknown panes: the existing workspace restore omits them,
 preserves registered panes and selects useful surviving focus. A valid primary

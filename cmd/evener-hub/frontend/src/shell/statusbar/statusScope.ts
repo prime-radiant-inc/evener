@@ -1,6 +1,6 @@
 // Activity context and summary are authoritative for the selected session.
 // Navigation supplies a title and embedded Tasks when that exact row exists.
-import type { NavigationSessionSummary, SessionActivitySnapshot } from "@evener/appwire-client";
+import type { NavigationSessionSummary, SessionActivitySnapshot, SessionActivitySummary } from "@evener/appwire-client";
 import { type NavigationStoreState, selectSessionSummary } from "../../stores/navigation/selectors";
 
 export type ActivityTab = "agents" | "jobs" | "watches" | "tasks" | "about";
@@ -26,11 +26,17 @@ export interface ActivityScope {
   activity: SessionActivitySnapshot | null;
 }
 
-export function scopeCounts(session: ActivityScope["leaf"], activity: SessionActivitySnapshot | null): ScopeCounts {
+/** Subagents are counted at every depth (useSubagentCounts), the other
+ * kinds for the session itself. */
+export function scopeCounts(
+  session: ActivityScope["leaf"],
+  activity: SessionActivitySnapshot | null,
+  subagents: SessionActivitySummary["delegates"] | null = null,
+): ScopeCounts {
   const summary = activity?.summary;
   return {
-    activeSubagents: summary?.delegates.known ? summary.delegates.active : null,
-    delegatesTotal: summary?.delegates.known ? summary.delegates.total : null,
+    activeSubagents: subagents?.active ?? null,
+    delegatesTotal: subagents?.total ?? null,
     runningJobs: summary?.jobs.known ? summary.jobs.active : null,
     jobsTotal: summary?.jobs.known ? summary.jobs.total : null,
     armedWatches: summary?.watches.known ? summary.watches.active : null,
@@ -44,6 +50,7 @@ export function deriveScope(
   navigation: NavigationStoreState,
   ref: string,
   activity: SessionActivitySnapshot | null = null,
+  subagents: SessionActivitySummary["delegates"] | null = null,
 ): ActivityScope {
   const row = selectSessionSummary(ref, navigation);
   const leaf = {
@@ -62,7 +69,7 @@ export function deriveScope(
       { ref, title: leaf.title },
     ],
     ancestryKnown,
-    counts: scopeCounts(leaf, activity),
+    counts: scopeCounts(leaf, activity, subagents),
     activity,
   };
 }
