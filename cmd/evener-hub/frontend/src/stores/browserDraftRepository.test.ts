@@ -2,6 +2,7 @@ import type { DraftAuthorityToken } from "@evener/appwire-client/state/mutation"
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, expect, expectTypeOf, test, vi } from "vitest";
 import { composerDraftStorageKey, draftStorageKey } from "../panes/session/composer/draft";
+import { parseSkillDocument } from "../panes/session/composer/skillDocument";
 import { MemoryStorage } from "../storageTestUtils";
 import {
   type BrowserDraftKey,
@@ -294,6 +295,261 @@ test("claim, adopt, and edit use the complete token and composition owner as tra
   expect(await repository.adopt(key("cas"), owner("owner-b"), edited.token, "owner-b", () => false)).toEqual({
     state: "unavailable",
   });
+});
+
+test("commitEdit treats omitted and explicit empty mentions as distinct editor values", async () => {
+  const repository = createBrowserDraftRepository({
+    indexedDB: new IDBFactory(),
+    databaseName: "mention-presence",
+    storage: new MemoryStorage(),
+  });
+  const omittedValue = { text: "/same", skillNames: ["same"] };
+  const seeded = await repository.seedUnclaimed(key("mentions"), omittedValue);
+  if (seeded.state !== "committed") throw new Error("seed failed");
+  const claimed = expectOwned(
+    await repository.claim(key("mentions"), owner("owner-a"), seeded.draft.token, () => true),
+  );
+
+  const explicitEmptyValue = { text: "/same", skillNames: ["same"], mentions: [] };
+  const explicitEmpty = expectOwned(
+    await repository.commitEdit(key("mentions"), owner("owner-a"), claimed.token, explicitEmptyValue, () => true),
+  );
+  expect(explicitEmpty.token.persistentRevision).toBe(claimed.token.persistentRevision + 1);
+  expect(explicitEmpty).toEqual({
+    ...explicitEmptyValue,
+    key: key("mentions"),
+    token: explicitEmpty.token,
+    backing: { kind: "draft" },
+    ownership: "owned",
+    compositionOwnerId: "owner-a",
+  });
+  expect(parseSkillDocument(explicitEmpty).toJSON()).toEqual({
+    type: "doc",
+    content: [{ type: "text", text: "/same" }],
+  });
+  expect(await repository.load(key("mentions"))).toEqual(explicitEmpty);
+
+  const duplicateEmpty = expectOwned(
+    await repository.commitEdit(
+      key("mentions"),
+      owner("owner-a"),
+      explicitEmpty.token,
+      { ...explicitEmptyValue, mentions: [] },
+      () => true,
+    ),
+  );
+  expect(duplicateEmpty.token).toEqual(explicitEmpty.token);
+
+  const omittedAgain = expectOwned(
+    await repository.commitEdit(key("mentions"), owner("owner-a"), duplicateEmpty.token, omittedValue, () => true),
+  );
+  expect(omittedAgain.token.persistentRevision).toBe(duplicateEmpty.token.persistentRevision + 1);
+  expect(omittedAgain).not.toHaveProperty("mentions");
+  expect(parseSkillDocument(omittedAgain).toJSON()).toEqual({
+    type: "doc",
+    content: [{ type: "skill", attrs: { name: "same" } }],
+  });
+  expect(await repository.load(key("mentions"))).toEqual(omittedAgain);
+
+  const duplicateOmitted = expectOwned(
+    await repository.commitEdit(key("mentions"), owner("owner-a"), omittedAgain.token, { ...omittedValue }, () => true),
+  );
+  expect(duplicateOmitted.token).toEqual(omittedAgain.token);
+});
+
+test("commitEdit preserves complete nonempty skill and command mention metadata", async () => {
+  const repository = createBrowserDraftRepository({
+    indexedDB: new IDBFactory(),
+    databaseName: "mention-metadata",
+    storage: new MemoryStorage(),
+  });
+  const seeded = await repository.seedUnclaimed(key("mention-metadata"), { text: "", skillNames: [] });
+  if (seeded.state !== "committed") throw new Error("seed failed");
+  const claimed = expectOwned(
+    await repository.claim(key("mention-metadata"), owner("owner-a"), seeded.draft.token, () => true),
+  );
+  const value = {
+    text: "🙂 /same /same",
+    skillNames: ["same"],
+    commandNames: ["same"],
+    mentions: [
+      { kind: "command" as const, name: "same", offset: 3 },
+      { kind: "skill" as const, name: "same", offset: 9 },
+    ],
+  };
+
+  const edited = expectOwned(
+    await repository.commitEdit(key("mention-metadata"), owner("owner-a"), claimed.token, value, () => true),
+  );
+  expect(edited).toEqual({
+    ...value,
+    key: key("mention-metadata"),
+    token: edited.token,
+    backing: { kind: "draft" },
+    ownership: "owned",
+    compositionOwnerId: "owner-a",
+  });
+  expect(await repository.load(key("mention-metadata"))).toEqual(edited);
+  const duplicate = expectOwned(
+    await repository.commitEdit(
+      key("mention-metadata"),
+      owner("owner-a"),
+      edited.token,
+      { ...value, mentions: value.mentions.map((mention) => ({ ...mention })) },
+      () => true,
+    ),
+  );
+  expect(duplicate.token).toEqual(edited.token);
+});
+
+test("clear keeps a durable same-owner fence against stale edits and settlements after recreation", async () => {
+  const indexedDB = new IDBFactory();
+  const databaseName = "clear-recreation-fence";
+  const storage = new MemoryStorage();
+  const original = createBrowserDraftRepository({ indexedDB, databaseName, storage });
+
+  const prepareRecreatedDraft = async (sessionRef: string) => {
+    const draftKey = key(sessionRef);
+    const seeded = await original.seedUnclaimed(draftKey, { text: "before", skillNames: [] });
+    if (seeded.state !== "committed") throw new Error("seed failed");
+    const claimed = expectOwned(
+      await original.claim(draftKey, owner("same-live-owner"), seeded.draft.token, () => true),
+    );
+    const submitted = expectOwned(
+      await original.commitEdit(
+        draftKey,
+        owner("same-live-owner"),
+        claimed.token,
+        { text: "same bytes", skillNames: [] },
+        () => true,
+      ),
+    );
+    const settlementGuard = captureDraftSettlementGuard(submitted);
+    expect(
+      await original.clearSubmitted(draftKey, {
+        text: "same bytes",
+        skillNames: [],
+        draftRevisionAtStart: 0,
+        persistentRevisionAtStart: submitted.token.persistentRevision,
+        settlementGuard,
+        stillOwnsEdit: () => true,
+      }),
+    ).toEqual({ cleared: true, draftUnchanged: true, persistence: "committed" });
+
+    const restarted = createBrowserDraftRepository({ indexedDB, databaseName, storage });
+    const cleared = await restarted.load(draftKey);
+    expect(cleared?.text ?? "").toBe("");
+    const reclaimed = expectOwned(
+      await restarted.claim(draftKey, owner("same-live-owner"), cleared?.token ?? null, () => true),
+    );
+    const newer = expectOwned(
+      await restarted.commitEdit(
+        draftKey,
+        owner("same-live-owner"),
+        reclaimed.token,
+        { text: "same bytes", skillNames: [] },
+        () => true,
+      ),
+    );
+    return { draftKey, restarted, submitted, settlementGuard, reclaimed, newer };
+  };
+
+  const editCase = await prepareRecreatedDraft("stale-edit");
+  const staleEdit = await editCase.restarted.commitEdit(
+    editCase.draftKey,
+    owner("same-live-owner"),
+    editCase.submitted.token,
+    { text: "stale overwrite", skillNames: [] },
+    () => true,
+  );
+  const editAfterStale = await editCase.restarted.load(editCase.draftKey);
+
+  const settlementCase = await prepareRecreatedDraft("stale-settlement");
+  const staleSettlement = await settlementCase.restarted.clearSubmitted(settlementCase.draftKey, {
+    text: "same bytes",
+    skillNames: [],
+    draftRevisionAtStart: 0,
+    persistentRevisionAtStart: settlementCase.submitted.token.persistentRevision,
+    settlementGuard: settlementCase.settlementGuard,
+    stillOwnsEdit: () => true,
+  });
+  const currentEdit = await settlementCase.restarted.commitEdit(
+    settlementCase.draftKey,
+    owner("same-live-owner"),
+    settlementCase.newer.token,
+    { text: "fresh current-token update", skillNames: [] },
+    () => true,
+  );
+  const settlementAfterStale = await settlementCase.restarted.load(settlementCase.draftKey);
+
+  expect.soft(editCase.newer.token).not.toEqual(editCase.submitted.token);
+  expect.soft(editCase.reclaimed.backing).toEqual(editCase.submitted.backing);
+  expect.soft(staleEdit).toMatchObject({ state: "conflict", current: { text: "same bytes" } });
+  expect.soft(editAfterStale).toMatchObject({ text: "same bytes", token: editCase.newer.token });
+  expect.soft(settlementCase.newer.token).not.toEqual(settlementCase.submitted.token);
+  expect.soft(staleSettlement).toEqual({ cleared: false, draftUnchanged: false, persistence: "committed" });
+  expect.soft(currentEdit).toMatchObject({ state: "committed", draft: { text: "fresh current-token update" } });
+  expect.soft(settlementAfterStale).toMatchObject({ text: "fresh current-token update" });
+});
+
+test("listener failures cannot change committed seed edit or clear results or stop later listeners", async () => {
+  type ListenerDiagnostic = { path: "listener-failed"; key: BrowserDraftKey; error: unknown };
+  const listenerFailure = new Error("injected listener failure");
+  const diagnostics: ListenerDiagnostic[] = [];
+  const laterNotifications: BrowserDraftKey[] = [];
+  const repository = createBrowserDraftRepository({
+    indexedDB: new IDBFactory(),
+    databaseName: "listener-isolation",
+    storage: new MemoryStorage(),
+    onListenerDiagnostic: (diagnostic: ListenerDiagnostic) => diagnostics.push(diagnostic),
+  });
+  const subscribeFaultThenListener = () => [
+    repository.subscribe(() => {
+      throw listenerFailure;
+    }),
+    repository.subscribe((changed) => laterNotifications.push(changed)),
+  ];
+
+  let unsubscribers = subscribeFaultThenListener();
+  const seeded = await repository.seedUnclaimed(key("listener"), { text: "seeded", skillNames: [] });
+  for (const unsubscribe of unsubscribers) unsubscribe();
+  const durableSeed = await repository.load(key("listener"));
+  if (!durableSeed) throw new Error("durable seed missing");
+  const claimed = expectOwned(await repository.claim(key("listener"), owner("owner-a"), durableSeed.token, () => true));
+
+  unsubscribers = subscribeFaultThenListener();
+  const edited = await repository.commitEdit(
+    key("listener"),
+    owner("owner-a"),
+    claimed.token,
+    { text: "edited", skillNames: [] },
+    () => true,
+  );
+  const durableEdit = await repository.load(key("listener"));
+  if (durableEdit?.ownership !== "owned") throw new Error("durable edit missing");
+  const cleared = await repository.clearSubmitted(key("listener"), {
+    text: "edited",
+    skillNames: [],
+    draftRevisionAtStart: 0,
+    persistentRevisionAtStart: durableEdit.token.persistentRevision,
+    settlementGuard: captureDraftSettlementGuard(durableEdit),
+    stillOwnsEdit: () => true,
+  });
+  for (const unsubscribe of unsubscribers) unsubscribe();
+  const durableClear = await repository.load(key("listener"));
+
+  expect.soft(seeded).toMatchObject({ state: "committed", draft: { text: "seeded" } });
+  if (seeded.state === "committed") expect.soft(durableSeed).toEqual(seeded.draft);
+  expect.soft(edited).toMatchObject({ state: "committed", draft: { text: "edited" } });
+  if (edited.state === "committed") expect.soft(durableEdit).toEqual(edited.draft);
+  expect.soft(cleared).toEqual({ cleared: true, draftUnchanged: true, persistence: "committed" });
+  expect.soft(durableClear?.text ?? "").toBe("");
+  expect.soft(laterNotifications).toEqual([key("listener"), key("listener"), key("listener")]);
+  expect.soft(diagnostics).toHaveLength(3);
+  for (const diagnostic of diagnostics) {
+    expect.soft(diagnostic).toMatchObject({ path: "listener-failed", key: key("listener") });
+    expect.soft(diagnostic.error).toBe(listenerFailure);
+  }
 });
 
 test("browser clearing requires the copied full guard and a live edit owner, never the scalar revision alone", async () => {

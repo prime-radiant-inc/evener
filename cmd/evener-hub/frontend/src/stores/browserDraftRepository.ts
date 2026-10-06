@@ -122,6 +122,12 @@ export interface BrowserDraftOpenDiagnostic {
   versionchangeTransaction: boolean;
 }
 
+export interface BrowserDraftListenerDiagnostic {
+  path: "listener-failed";
+  key: BrowserDraftKey;
+  error: unknown;
+}
+
 export interface BrowserDraftRepositoryOptions {
   indexedDB?: IDBFactory;
   databaseName?: string;
@@ -129,6 +135,7 @@ export interface BrowserDraftRepositoryOptions {
   beforeCommit?: (operation: BrowserDraftOperation) => void;
   beforeLegacyCleanup?: () => void;
   onOpenDiagnostic?: (diagnostic: BrowserDraftOpenDiagnostic) => void;
+  onListenerDiagnostic?: (diagnostic: BrowserDraftListenerDiagnostic) => void;
 }
 
 interface NamespaceRow {
@@ -247,12 +254,11 @@ function sameBacking(left: DraftBackingIdentity, right: DraftBackingIdentity): b
 }
 
 function sameMentions(left: SkillEditorValue["mentions"], right: SkillEditorValue["mentions"]): boolean {
-  const a = left ?? [];
-  const b = right ?? [];
+  if (left === undefined || right === undefined) return left === right;
   return (
-    a.length === b.length &&
-    a.every((mention, index) => {
-      const other = b[index];
+    left.length === right.length &&
+    left.every((mention, index) => {
+      const other = right[index];
       return (
         other !== undefined &&
         mention.kind === other.kind &&
@@ -342,6 +348,7 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
   readonly #storage: Storage;
   readonly #beforeCommit: ((operation: BrowserDraftOperation) => void) | undefined;
   readonly #beforeLegacyCleanup: (() => void) | undefined;
+  readonly #onListenerDiagnostic: (diagnostic: BrowserDraftListenerDiagnostic) => void;
   readonly #listeners = new Set<(key: BrowserDraftKey) => void>();
 
   constructor(options: BrowserDraftRepositoryOptions) {
@@ -353,6 +360,7 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
     this.#storage = storage;
     this.#beforeCommit = options.beforeCommit;
     this.#beforeLegacyCleanup = options.beforeLegacyCleanup;
+    this.#onListenerDiagnostic = options.onListenerDiagnostic ?? (() => undefined);
     const report = options.onOpenDiagnostic ?? (() => undefined);
     this.#connection = new IDBConnection({
       indexedDB,
@@ -594,7 +602,16 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
         ) {
           return { cleared: false, draftUnchanged, persistence: "committed" } as const;
         }
-        await requestResult(store.delete(serializedDraftKey(key)));
+        if (current.ownership !== "owned") {
+          return { cleared: false, draftUnchanged: false, persistence: "committed" } as const;
+        }
+        const cleared: OwnedComposerDraft = {
+          ...replaceValue(publicDraft(current), { text: "", skillNames: [] }),
+          ownership: "owned",
+          compositionOwnerId: current.compositionOwnerId,
+          token: { ...current.token, persistentRevision: current.token.persistentRevision + 1 },
+        };
+        await requestResult(store.put(storedDraft(cleared)));
         changed.push(key);
         return { cleared: true, draftUnchanged: true, persistence: "committed" } as const;
       });
@@ -863,7 +880,17 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
   #publish(keys: readonly BrowserDraftKey[]): void {
     const unique = new Map(keys.map((key) => [serializedDraftKey(key), key]));
     for (const key of unique.values()) {
-      for (const listener of this.#listeners) listener(cloneKey(key));
+      for (const listener of this.#listeners) {
+        try {
+          listener(cloneKey(key));
+        } catch (error) {
+          try {
+            this.#onListenerDiagnostic({ path: "listener-failed", key: cloneKey(key), error });
+          } catch {
+            // Diagnostics are observational and cannot change storage outcomes.
+          }
+        }
+      }
     }
   }
 }
