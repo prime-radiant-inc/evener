@@ -216,42 +216,6 @@
   margin-left: -12px;
 }
 
-.statusDot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-}
-
-.statusDot[data-status="needs-you"] {
-  background: var(--attention);
-}
-
-.statusDot[data-status="failed"] {
-  background: var(--danger);
-  border-radius: 1px;
-  transform: rotate(45deg);
-}
-
-.statusSpinner {
-  width: 8px;
-  height: 8px;
-  border: 1.5px solid var(--ink-mid);
-  border-top-color: transparent;
-  border-radius: 50%;
-}
-
-@media (prefers-reduced-motion: no-preference) {
-  .statusSpinner {
-    animation: railStatusSpin 800ms linear infinite;
-  }
-}
-
-@keyframes railStatusSpin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
 /* The title line: signal dot (outdented, when present), the label, and the
  * trailing expand/collapse chevron on branch rows - the same inline,
  * after-the-text chevron position the transcript's disclosure rows use.
