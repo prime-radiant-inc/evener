@@ -3,7 +3,13 @@
 // deduplicated document through the real openBeside action.
 import { bindFilePath, type FileReference, isImagePath } from "@evener/appwire-client/docContent";
 import * as paneActions from "../../shell/paneActions";
-import { documentPaneState, type OpenPaneRecord, recordDocumentPaneState, workspaceStore } from "../../shell/workspace";
+import {
+  documentPaneState,
+  type OpenPaneRecord,
+  recordDocumentPaneState,
+  sourcePaneSessionRef,
+  workspaceStore,
+} from "../../shell/workspace";
 // Importing the opener registers the "doc" pane type (side effect of ./index):
 // every producer that can open a doc pane already imports this module, so the
 // pane is guaranteed registered before openDocBeside routes it through dockview.
@@ -23,11 +29,7 @@ export interface DocumentOpenRequest {
 
 function paneOwnsSession(pane: OpenPaneRecord, session: string): boolean {
   if (pane.type !== "session" && pane.type !== "transcript") return false;
-  const params = pane.params as { ref?: unknown; parentRef?: unknown };
-  if (pane.type === "transcript" && typeof params.ref === "string" && params.ref.startsWith("job:")) {
-    return params.parentRef === session;
-  }
-  return params.ref === session;
+  return sourcePaneSessionRef(pane) === session;
 }
 
 function isRequestedDocument(pane: OpenPaneRecord, params: DocParams): boolean {

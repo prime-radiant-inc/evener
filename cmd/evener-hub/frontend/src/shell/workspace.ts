@@ -183,6 +183,17 @@ export function isPaneOpen(state: WorkspaceStoreState, type: PaneTypeId, params:
 // session on its own.
 const JOB_REF_PREFIX = "job:";
 
+// Conversation sources retain raw owner fields, callers decide whether they
+// match a requested session. Job transcripts name that owner in parentRef.
+export function sourcePaneSessionRef(pane: OpenPaneRecord): unknown {
+  if (pane.type !== "session" && pane.type !== "transcript") return undefined;
+  const params = pane.params as { ref?: unknown; parentRef?: unknown };
+  if (pane.type === "transcript" && typeof params.ref === "string" && params.ref.startsWith(JOB_REF_PREFIX)) {
+    return params.parentRef;
+  }
+  return params.ref;
+}
+
 // The session a pane is about, or null when it is about none. The key that
 // names it depends on the pane: the session pane and its companion panels
 // name it `ref`; a transcript names its subject in `ref`, falling to

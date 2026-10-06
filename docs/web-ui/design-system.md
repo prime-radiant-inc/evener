@@ -63,6 +63,16 @@ losing the conversation that made the evidence relevant.
   stale or mismatched source bindings do not override route placement. See
   [document Open](../../cmd/evener-hub/frontend/src/panes/doc/openDoc.ts) and
   [route reconciliation](../../cmd/evener-hub/frontend/src/shell/AppShell.tsx).
+- **Return to reading, not a fresh end landing.** The pane-lifetime transcript
+  read view retains the source's measured entry and offset while a document is
+  open. On readonly remount,
+  [ReadOnlyThreadContent](../../cmd/evener-hub/frontend/src/panes/transcript/ReadOnlyThreadContent.tsx)
+  admits that capture through the existing transcript registry before scroll
+  initialization, including when content arrives after hydration. The shared
+  body and VirtualList still own committed measurement and restoration. A
+  retained away reader does not acquire end-follow intent from an unmeasured
+  port. Fresh readers still land at the latest content, and newer reader
+  movement supersedes the retained capture.
 - **Reconstruct the host, not the workspace.** Switching from a living phone
   workspace to desktop, including its first desktop mount, restores dockview
   geometry around the exact living pane records, their current slots and the

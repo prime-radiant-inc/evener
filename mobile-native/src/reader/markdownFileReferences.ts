@@ -290,6 +290,7 @@ function collectInline(
 	};
 	flatten(tokens, source);
 	const prose = findFileReferences(context, "/");
+	let proseCursor = 0;
 	for (const span of spans) {
 		const { token, source: raw, start, end } = span;
 		const from = raw.offsets[0];
@@ -334,7 +335,10 @@ function collectInline(
 			if (findFileReferences(block, "/").some((ref) => ref.start === start && ref.end === start + probe.length))
 				found.push({ start: from, end: to + 1, surface: "code", value: token.text, label: token.raw });
 		} else if (span.prose) {
-			for (const ref of prose) {
+			while (proseCursor < prose.length && prose[proseCursor].end <= start) proseCursor += 1;
+			while (proseCursor < prose.length && prose[proseCursor].start < end) {
+				const ref = prose[proseCursor];
+				proseCursor += 1;
 				if (ref.start < start || ref.end > end) continue;
 				const left = ref.start - start,
 					right = ref.end - start;
@@ -448,11 +452,11 @@ export function renderMarkdownFileReferences(markdown: string, cwd: string): Mar
 	const replacements = boundCandidates(markdown, cwd).map(({ candidate, reference }, index) => {
 		const id = `evener-file:${generation}-${index}`;
 		references.set(id, reference);
-		const replacement = candidate.referenceSuffix
-			? `(${id})`
-			: candidate.label === undefined
-				? id
-				: `[${candidate.surface === "prose" ? candidate.label : markdown.slice(candidate.start, candidate.end)}](${id})`;
+		let replacement: string;
+		if (candidate.referenceSuffix) replacement = `(${id})`;
+		else if (candidate.label === undefined) replacement = id;
+		else
+			replacement = `[${candidate.surface === "prose" ? candidate.label : markdown.slice(candidate.start, candidate.end)}](${id})`;
 		return { ...candidate, replacement };
 	});
 	let rendered = markdown;

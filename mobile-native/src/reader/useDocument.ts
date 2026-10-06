@@ -114,11 +114,9 @@ export function useDocument(
 					? { ...previous, notice: documentNotice(next) ?? undefined }
 					: { identity: source.identity, document: next },
 			);
-			return next.kind === "failed"
-				? "transient"
-				: ["missing", "forbidden", "host-unsupported"].includes(next.kind)
-					? "terminal"
-					: "success";
+			if (next.kind === "failed") return "transient";
+			if (["missing", "forbidden", "host-unsupported"].includes(next.kind)) return "terminal";
+			return "success";
 		});
 		demand.current = ownedDemand;
 		return () => {

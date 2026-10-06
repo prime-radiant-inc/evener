@@ -286,6 +286,19 @@ function subscribedReads(requests: { method: string; params: unknown }[]) {
 	);
 }
 
+// Keep diagnostics visible and check the entire case, including afterEach teardown.
+beforeEach(({ onTestFinished }) => {
+	const errors = vi.spyOn(console, "error");
+	const warnings = vi.spyOn(console, "warn");
+	onTestFinished(() => {
+		try {
+			expect({ errors: errors.mock.calls, warnings: warnings.mock.calls }).toEqual({ errors: [], warnings: [] });
+		} finally {
+			errors.mockRestore();
+			warnings.mockRestore();
+		}
+	});
+});
 beforeEach(() => {
 	stack.focused = true;
 	stack.state = { index: 0, routes: [session] };
@@ -351,7 +364,7 @@ it("offers Activity from the header menu with no subagents", async () => {
 		threadId: "thread-1",
 		title: "Session",
 	});
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 it("opens Tasks from the header menu as the TasksSheet route", async () => {
@@ -366,7 +379,7 @@ it("opens Tasks from the header menu as the TasksSheet route", async () => {
 		threadId: "thread-1",
 		hasTasks: true,
 	});
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 it("opens Notes & links from the header menu as the NotesSheet route, without focusing the editor", async () => {
@@ -379,7 +392,7 @@ it("opens Notes & links from the header menu as the NotesSheet route, without fo
 		hubId: "hub-1",
 		ref,
 	});
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 it("keeps its session subscribed while its own sheet covers it", async () => {
@@ -392,7 +405,7 @@ it("keeps its session subscribed while its own sheet covers it", async () => {
 	await flush();
 
 	expect(subscribedReads(requests).length).toBeGreaterThan(0);
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 it("follows no session while a screen is pushed over it", async () => {
@@ -405,7 +418,7 @@ it("follows no session while a screen is pushed over it", async () => {
 	await flush();
 
 	expect(requests.filter((request) => request.method === "thread/read")).toEqual([]);
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 it("titles the header with the session's state, and opens its info on a press", async () => {
@@ -422,7 +435,7 @@ it("titles the header with the session's state, and opens its info on a press", 
 	expect(navigation.navigate).toHaveBeenCalledWith("SessionInfoSheet", { hubId: "hub-1", ref });
 	// The sheet reads the session through the host the screen provides.
 	expect(sessionInfoHosts.get(sheetKey("hub-1", ref))?.session).toMatchObject({ ref, threadId: "thread-1" });
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 it("opens New session like this one: its host, folder, model and effort", async () => {
@@ -435,7 +448,7 @@ it("opens New session like this one: its host, folder, model and effort", async 
 		hubName: expect.any(String),
 		like: { host: "local", cwd: "/tmp", model: "scripted", effort: "high" },
 	});
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 it("opens Session info from the header menu as the SessionInfoSheet route", async () => {
@@ -444,7 +457,7 @@ it("opens Session info from the header menu as the SessionInfoSheet route", asyn
 
 	act(() => menuAction("Session info").onPress());
 	expect(navigation.navigate).toHaveBeenCalledWith("SessionInfoSheet", { hubId: "hub-1", ref });
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 /** The Session sheet's host, as the screen provides it now. */
@@ -481,7 +494,7 @@ it("keeps naming the model after a screen pushed over it closes, while the catal
 	act(() => tree.update(screen()));
 	await flush();
 	expect({ reads: modelReads, label: sessionInfoHost().modelLabel }).toEqual({ reads: 2, label: "DeepSeek 4.1 Flash" });
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 // The hub announces a refreshed model list on evener/auth/updated (#3539):
@@ -528,7 +541,7 @@ it("names the hub's own machine for its hub after another hub becomes active", a
 	act(() => tree.update(screen()));
 	await flush();
 	expect(sessionInfoHost().host("local")).toEqual({ label: "Work hub", online: false });
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 // A failed catalog read clears the catalog, so the picker offers no stale
@@ -562,7 +575,7 @@ it("brings no catalog back after a failed read and a screen pushed over it", asy
 	await pushAndReturn();
 	expect(modelReads).toBe(3);
 	expect(sessionInfoHost().controls?.getSnapshot().catalog).toBeNull();
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 it("runs the Session sheet's actions as the menu does, and hands back their toasts (ruling 37)", async () => {
@@ -603,7 +616,7 @@ it("runs the Session sheet's actions as the menu does, and hands back their toas
 	// Its toast shows on the session, once the sheet has gone.
 	act(() => sessionInfoHost().toast({ text: "Session archived" }));
 	expect(renderedText(tree)).toContain("Session archived");
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 it("says so when the hub went away before a Session sheet action could run", async () => {
@@ -623,7 +636,7 @@ it("says so when the hub went away before a Session sheet action could run", asy
 	expect(stopped).toEqual({ text: "Couldn't shut down this session: the hub isn't connected." });
 	expect(compacted).toEqual({ text: "Couldn't compact the context: the hub isn't connected." });
 	expect(requests.map(({ method }) => method)).not.toContain("thread/shutdown");
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 it("opens Pin to category… from the Session sheet as its screen", async () => {
@@ -634,7 +647,7 @@ it("opens Pin to category… from the Session sheet as its screen", async () => 
 		await sessionInfoHost().act("pin");
 	});
 	expect(navigation.navigate).toHaveBeenCalledWith("PinAssignment", { hubId: "hub-1", ref, title: "Session" });
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 it("shows the chosen detail level and confirms it", async () => {
@@ -649,7 +662,7 @@ it("shows the chosen detail level and confirms it", async () => {
 	expect(detailLevels("hub-1").get(ref)).toBe("full");
 	expect(menuItems()[0]).toMatchObject({ label: "Detail level · Full" });
 	expect(renderedText(tree)).toContain("Full: everything, including the agent's reasoning");
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 /** The ⋯ button in the header, as the screen last set it. */
@@ -676,7 +689,7 @@ it("opens Find in session from the Android ⋯ menu", async () => {
 			(node) => String(node.type) === "TextInput" && node.props.accessibilityLabel === "Find in session",
 		),
 	).toHaveLength(1);
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 it("shuts the session down after a confirmation and stays on it (ruling 19)", async () => {
@@ -709,7 +722,7 @@ it("shuts the session down after a confirmation and stays on it (ruling 19)", as
 	expect(navigation.goBack).not.toHaveBeenCalled();
 	expect(renderedText(tree)).toContain("Session shut down");
 	expect(renderedText(tree)).not.toContain("Runtime stop requested.");
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 it("says so when a shut down can't be confirmed (coordinator ruling: silence reads as success)", async () => {
@@ -722,7 +735,7 @@ it("says so when a shut down can't be confirmed (coordinator ruling: silence rea
 	await flush();
 
 	expect(renderedText(tree)).toContain("Couldn't shut down this session.");
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 it("has no Shut down item on an already shut-down session, even if the hub still reports the capability", async () => {
@@ -734,7 +747,7 @@ it("has no Shut down item on an already shut-down session, even if the hub still
 		await flush();
 
 		expect(menuItems().find((item) => item.label === "Shut down")).toBeUndefined();
-		tree.unmount();
+		await act(async () => tree.unmount());
 	}
 });
 
@@ -756,7 +769,7 @@ it("archives the session, with an Undo that restores it", async () => {
 		{ kind: "session", id: ref, archived: true },
 		{ kind: "session", id: ref, archived: false },
 	]);
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 const acceptedArchive = { ok: true, navigation: { generation_id: "g", targets: [] } };
@@ -785,7 +798,7 @@ it("reads the connection's loaded archived lists again once the hub accepts an a
 	await flush();
 
 	expect(archivedReads()).toBe(2);
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 // A refused archive moves nothing, so no archived list reads again.
@@ -797,7 +810,7 @@ it("reads no archived list again when the hub refuses an archive", async () => {
 
 	expect(renderedText(tree)).toContain("Couldn't archive this session.");
 	expect(archivedReads()).toBe(1);
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 // An accepted Undo moves the session back out of the archived tier, so the
@@ -820,7 +833,7 @@ it.each([
 	await flush();
 
 	expect(archivedReads()).toBe(reads);
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 it("says so when Undo can't restore the session (coordinator ruling: silence reads as success)", async () => {
@@ -839,7 +852,7 @@ it("says so when Undo can't restore the session (coordinator ruling: silence rea
 	await flush();
 
 	expect(renderedText(tree)).toContain("Couldn't undo the archive.");
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 it("says so when the hub refuses to archive", async () => {
@@ -850,7 +863,7 @@ it("says so when the hub refuses to archive", async () => {
 	await flush();
 
 	expect(renderedText(tree)).toContain("Couldn't archive this session.");
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 it("opens an aside as its own session", async () => {
@@ -868,7 +881,7 @@ it("opens an aside as its own session", async () => {
 		ref: "local:aside",
 		title: "Side question",
 	});
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 it("says so when an aside cannot start", async () => {
@@ -880,7 +893,7 @@ it("says so when an aside cannot start", async () => {
 
 	expect(navigation.push).not.toHaveBeenCalled();
 	expect(renderedText(tree)).toContain("Couldn't start an aside.");
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 it("projects the transcript at the level chosen for it, from the menu or elsewhere", async () => {
@@ -915,7 +928,7 @@ it("projects the transcript at the level chosen for it, from the menu or elsewhe
 	await flush();
 	expect(renderedText(tree)).toContain("pondering the fix");
 	expect(menuItems()[0]).toMatchObject({ label: "Detail level · Full" });
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 it("opens the live run where tool calls show, and leaves it to its line at Intent", async () => {
@@ -954,7 +967,7 @@ it("opens the live run where tool calls show, and leaves it to its line at Inten
 	act(() => detailLevels("hub-1").set(ref, "tools"));
 	await flush();
 	expect(folds()).toEqual([]);
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 /** A session with a subagent, tasks, a blocked goal and two queued
@@ -999,7 +1012,7 @@ it("names the hub's running-subagent count in the tray, as the Board's row does"
 	const reads = requests.filter((request) => request.method === "evener/activity/read");
 	expect(reads.map((request) => request.params)).toContainEqual({ refs: [ref] });
 	expect(renderedText(tree)).toContain("Waiting on 3 subagents");
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 /** The screen's header block, its list, and scrolling it. */
@@ -1097,7 +1110,7 @@ it("floats the context chips over the list, opens each one's sheet, and hides th
 	expect(session.block().props.hidden).toBe(false);
 	// Hiding never moves the list.
 	expect(session.list().props.contentContainerStyle).toMatchObject({ paddingTop: 64 });
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 it("hides the Subagents and Tasks chips once the connection bar itself would say something, but keeps the cached Goal and Queue chips", async () => {
@@ -1129,7 +1142,7 @@ it("hides the Subagents and Tasks chips once the connection bar itself would say
 	} finally {
 		vi.useRealTimers();
 	}
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 it("a Subagents/Tasks chip tap still works during a blip shorter than the connection bar's own grace period (Calm)", async () => {
@@ -1156,7 +1169,7 @@ it("a Subagents/Tasks chip tap still works during a blip shorter than the connec
 	} finally {
 		vi.useRealTimers();
 	}
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 // While you type in the composer, the chips and the note row step aside so
@@ -1186,7 +1199,7 @@ it("steps the chips and note aside while you type, and brings them back when the
 	expect(slidAway(session.block())).toBe(true);
 	act(() => keyboard.hide());
 	expect(slidAway(session.block())).toBe(false);
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 it("keeps the nav bar while you type", async () => {
@@ -1197,7 +1210,7 @@ it("keeps the nav bar while you type", async () => {
 	const calls = navigation.setOptions.mock.calls as [NativeStackNavigationOptions][];
 	expect(calls.some(([options]) => options.headerShown === false)).toBe(false);
 	act(() => keyboard.hide());
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 it("keeps the find bar in place while you type in it", async () => {
@@ -1209,7 +1222,7 @@ it("keeps the find bar in place while you type in it", async () => {
 	expect(slidAway(session.block())).toBe(false);
 	expect(session.block().props.find).toBeDefined();
 	act(() => keyboard.hide());
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 it("stays hidden after the keyboard lowers when a downward scroll hid the chips", async () => {
@@ -1223,7 +1236,7 @@ it("stays hidden after the keyboard lowers when a downward scroll hid the chips"
 	expect(slidAway(session.block())).toBe(true);
 	act(() => keyboard.hide());
 	expect(slidAway(session.block())).toBe(true);
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 it("hides the chips only for the person's own drag, never for the app moving the list", async () => {
@@ -1249,7 +1262,7 @@ it("hides the chips only for the person's own drag, never for the app moving the
 		}),
 	);
 	expect(session.block().props.hidden).toBe(false);
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 it("keeps the transcript in place when the connection bar comes and goes", async () => {
@@ -1270,7 +1283,7 @@ it("keeps the transcript in place when the connection bar comes and goes", async
 	session.measure(48);
 	expect(session.list().props.contentContainerStyle).toMatchObject({ paddingTop: 64 });
 	expect(listScrolls.at(-1)).toEqual({ offset: 500, animated: false });
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 it("composes two header-height changes correctly even before the list's own onScroll catches up (scrollEventThrottle)", async () => {
@@ -1292,7 +1305,7 @@ it("composes two header-height changes correctly even before the list's own onSc
 		{ offset: 524, animated: false },
 		{ offset: 548, animated: false },
 	]);
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 it("stays at the top when the header changes there", async () => {
@@ -1303,7 +1316,7 @@ it("stays at the top when the header changes there", async () => {
 	session.measure(72);
 	expect(session.list().props.contentContainerStyle).toMatchObject({ paddingTop: 88 });
 	expect(listScrolls).toEqual([]);
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 const OLD_PROTOCOL_ERROR = "This app and hub need compatible versions. Update them together, then reconnect.";
@@ -1319,7 +1332,7 @@ it("says Update needed, with the spec's hint, when no retry can fix the connecti
 		"This app and the hub need compatible versions. Update the app from TestFlight, or update Evener on the hub.",
 	);
 	expect(renderedText(tree)).not.toContain(OLD_PROTOCOL_ERROR);
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 it("says Reconnecting… and then how old the session is while the hub is out of reach", async () => {
@@ -1359,7 +1372,7 @@ it("says Reconnecting… and then how old the session is while the hub is out of
 	} finally {
 		vi.useRealTimers();
 	}
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 it("marks its session seen through the read's turn end once it has loaded in front (S4)", async () => {
@@ -1370,7 +1383,7 @@ it("marks its session seen through the read's turn end once it has loaded in fro
 	expect(requests.filter((request) => request.method === "evener/session/seen/set")).toEqual([
 		{ method: "evener/session/seen/set", params: { sessions: [{ ref, seenThrough: endedAt }] } },
 	]);
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 afterEach(() => vi.useRealTimers());

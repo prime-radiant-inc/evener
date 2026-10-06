@@ -62,6 +62,7 @@ const target = window as typeof window & {
     requests(): Promise<number>;
     state(): unknown;
     route(): unknown;
+    prepareSource(childRef?: string): string;
     qualifyMarkdown: typeof qualifyMarkdown;
   };
 };
@@ -73,5 +74,19 @@ target.fileLinksFixture = {
     panes: workspaceStore.getState().panes.map((pane) => ({ ...pane, document: documentPaneState(pane) })),
   }),
   route: () => ({ pathname: location.pathname, location: selectLocation(fixtureRef)(navigationStore.getState()) }),
+  // Starting-fixture preparation only, never called between filename Open and Back.
+  prepareSource: (childRef) => {
+    const workspace = workspaceStore.getState();
+    const parent = workspace.panes.find((pane) => pane.type === "session");
+    if (!parent) throw new Error("real parent pane missing");
+    for (const pane of workspace.panes) {
+      if (pane !== parent) workspace.closePane(pane.id);
+    }
+    workspace.promotePane(parent.id);
+    workspace.focusPane(parent.id);
+    return childRef
+      ? workspace.openPane("transcript", { ref: childRef, parentRef: fixtureRef }, { slot: "secondary" })
+      : parent.id;
+  },
   qualifyMarkdown,
 };

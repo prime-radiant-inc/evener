@@ -48,7 +48,7 @@ import { openNestedSessionWithOwner, openTopLevelSession } from "./sessionPlacem
 import { isSinglePaneRoute } from "./singlePane";
 import { useIsMobile } from "./useIsMobile";
 import { useKeyboardInset } from "./useKeyboardInset";
-import { documentPaneState, type OpenPaneRecord, workspaceStore } from "./workspace";
+import { documentPaneState, type OpenPaneRecord, sourcePaneSessionRef, workspaceStore } from "./workspace";
 import "../panes/welcome"; // registers the "welcome" pane type
 import "../panes/session"; // registers the "session" pane type
 import "../panes/settings"; // registers the "settings" pane type
@@ -252,11 +252,7 @@ function routePlacementIsApplied(
     documentState?.origin === main &&
     (main.type === "session" || main.type === "transcript")
   ) {
-    const sourceParams = main.params as { ref?: unknown; parentRef?: unknown };
-    const sourceSession =
-      main.type === "transcript" && typeof sourceParams.ref === "string" && sourceParams.ref.startsWith("job:")
-        ? sourceParams.parentRef
-        : sourceParams.ref;
+    const sourceSession = sourcePaneSessionRef(main);
     const docParams = focusedPane?.params as { session?: unknown; path?: unknown };
     // Filename opens promote their exact source before selecting the document.
     // That living binding, not the old URL's placement, owns this settled view.

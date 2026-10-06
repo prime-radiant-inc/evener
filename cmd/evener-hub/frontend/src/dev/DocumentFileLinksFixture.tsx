@@ -3,6 +3,7 @@ import { lazy, StrictMode } from "react";
 import DocPane from "../panes/doc/DocPane";
 import type { DocParams } from "../panes/doc/openDoc";
 import Session, { type SessionPaneParams } from "../panes/session/Session";
+import Transcript, { type TranscriptParams } from "../panes/transcript/Transcript";
 import "../panes/doc/openDoc";
 import { AppShell } from "../shell/AppShell";
 import { type PaneProps, registerPane } from "../shell/paneRegistry";
@@ -24,10 +25,22 @@ function DocumentPane(props: PaneProps<DocParams>) {
     </div>
   );
 }
+function TranscriptPane(props: PaneProps<TranscriptParams>) {
+  return (
+    <div data-file-links-source={props.paneId} style={{ height: "100%" }}>
+      <Transcript {...props} />
+    </div>
+  );
+}
 registerPane<SessionPaneParams>({
   id: "session",
   title: (params) => params.ref,
   component: lazy(async () => ({ default: SourcePane })),
+});
+registerPane<TranscriptParams>({
+  id: "transcript",
+  title: (params) => params.ref,
+  component: lazy(async () => ({ default: TranscriptPane })),
 });
 registerPane<DocParams>({
   id: "doc",

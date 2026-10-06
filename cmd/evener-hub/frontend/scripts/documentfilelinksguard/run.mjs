@@ -1163,6 +1163,202 @@ try {
     beforeDraft: q1BeforeReload.draft, afterDraft: q1After.draft }, null, 2));
   page.ws.removeEventListener("message", q1NetworkListener);
   cases.push("Q1 real authenticated missing404, fixed filesystem create, trusted mounted Reload200 exact current bytes, same source/document identity and draft");
+  // Independent direct journeys, no viewport change or fixture action between
+  // trusted filename Open and the product's trusted top-bar Back.
+  for (const journey of [
+    { name: "primary-return", child: false, ref: process.env.DOCUMENT_FILE_LINKS_REF,
+      cwd: process.env.DOCUMENT_FILE_LINKS_CWD, bytes: "PRIMARY CURRENT CWD FILE\n",
+      draft: "Primary journey unsent editor input" },
+    { name: "delegate-return", child: true, ref: process.env.DOCUMENT_FILE_LINKS_CHILD_REF,
+      cwd: process.env.DOCUMENT_FILE_LINKS_CHILD_CWD, bytes: "DELEGATE CURRENT CWD FILE\n",
+      draft: "Delegate journey parent unsent editor input" },
+  ]) {
+    const save = (name, value) => writeFileSync(path.join(artifacts, `${journey.name}-${name}.json`), JSON.stringify(value, null, 2));
+    const relativePath = "docs/joined-return.md";
+    const target = `${journey.cwd}/${relativePath}`;
+    assert(journey.ref && journey.cwd, "fixture supplies independent owning ref and cwd");
+    writeFileSync(path.join(artifacts, `${journey.name}-expected.md`), journey.bytes);
+    assert.equal(readFileSync(target, "utf8"), journey.bytes, "independent literal current-cwd file control");
+    await applyViewport(page.send, { width: 390, height: 844 });
+    const parentID = await evaluate(page.send, "window.fileLinksFixture.prepareSource()");
+    const parentSelector = `[data-file-links-source="${parentID}"]`;
+    await until(page.send, `!!document.querySelector('${parentSelector} .ProseMirror[contenteditable="true"]')`);
+    await click(page.send, `${parentSelector} .ProseMirror[contenteditable="true"]`);
+    await page.send("Input.dispatchKeyEvent", { type: "keyDown", key: "a", code: "KeyA", windowsVirtualKeyCode: 65, modifiers: 2 });
+    await page.send("Input.dispatchKeyEvent", { type: "keyUp", key: "a", code: "KeyA", windowsVirtualKeyCode: 65, modifiers: 2 });
+    await page.send("Input.insertText", { text: journey.draft });
+    await until(page.send, `JSON.parse(localStorage.getItem('evener.composer.draft.v2.' + ${JSON.stringify(process.env.DOCUMENT_FILE_LINKS_REF)}))?.text === ${JSON.stringify(journey.draft)}`);
+    const parentDraft = await evaluate(page.send, `({ editor: document.querySelector('${parentSelector} .ProseMirror').textContent,
+      stored: JSON.parse(localStorage.getItem('evener.composer.draft.v2.' + ${JSON.stringify(process.env.DOCUMENT_FILE_LINKS_REF)})) })`);
+    save("parent-input", parentDraft);
+    assert.equal(parentDraft.editor, journey.draft, "real writable parent's editor contains actual unsent input");
+    const sourceID = journey.child
+      ? await evaluate(page.send, `window.fileLinksFixture.prepareSource(${JSON.stringify(journey.ref)})`)
+      : parentID;
+    const sourceSelector = `[data-file-links-source="${sourceID}"]`;
+    const anchorSelector = `${sourceSelector} a[href$="joined-return.md"]`;
+    await until(page.send, `!!document.querySelector(${JSON.stringify(anchorSelector)})`);
+    // Observe trusted receipts without substituting input or product behavior.
+    await evaluate(page.send, `(() => {
+      window.fileLinksJourneyReceipts = [];
+      if (window.fileLinksJourneyObserverInstalled) return true;
+      window.fileLinksJourneyObserverInstalled = true;
+      for (const type of ['click', 'wheel']) document.addEventListener(type, event => {
+        const target = event.target.closest?.('a,button') ?? event.target;
+        window.fileLinksJourneyReceipts.push({ type, trusted: event.isTrusted,
+          button: event.button, deltaY: event.deltaY,
+          target: type === 'click' ? target.outerHTML : target.className,
+          text: type === 'click' ? target.textContent : undefined, at: performance.now() });
+      }, { capture: true, once: false });
+      return true;
+    })()`);
+    const sample = `(() => {
+      const source = document.querySelector(${JSON.stringify(sourceSelector)});
+      const anchor = document.querySelector(${JSON.stringify(anchorSelector)});
+      if (!source || !anchor) return null;
+      let port = anchor.parentElement;
+      while (port && port !== source && !(['auto', 'scroll'].includes(getComputedStyle(port).overflowY) && port.scrollHeight > port.clientHeight + 100)) port = port.parentElement;
+      if (!port || port === source) throw new Error('useful real source scroll port missing');
+      const r = port.getBoundingClientRect(); const a = anchor.getClientRects()[0];
+      const x = a.left + a.width / 2; const y = a.top + a.height / 2;
+      return { top: port.scrollTop, height: port.scrollHeight, client: port.clientHeight,
+        port: { tag: port.tagName, className: port.className, role: port.getAttribute('role'),
+          sourcePaneId: source.dataset.fileLinksSource, overflowY: getComputedStyle(port).overflowY },
+        rect: { left: r.left, top: r.top, width: r.width, height: r.height, right: r.right, bottom: r.bottom },
+        usefulText: port.textContent.slice(0, 200), composerCount: source.querySelectorAll('.ProseMirror[contenteditable="true"]').length,
+        anchor: { href: anchor.getAttribute('href'), text: anchor.textContent, html: anchor.outerHTML,
+          rect: { left: a.left, right: a.right, top: a.top, bottom: a.bottom },
+          x, y, visible: a.top >= r.top && a.bottom <= r.bottom && a.left >= 0 && a.right <= innerWidth &&
+            anchor.contains(document.elementFromPoint(x, y)) } };
+    })()`;
+    const started = await evaluate(page.send, sample);
+    save("start-port", started);
+    let positioned = started;
+    for (let n = 0; n < 80 && !positioned.anchor.visible; n++) {
+      const deltaY = Math.max(-200, Math.min(200, positioned.anchor.y - (positioned.rect.top + positioned.rect.height / 2)));
+      await page.send("Input.dispatchMouseEvent", { type: "mouseWheel",
+        x: positioned.rect.left + positioned.rect.width / 2, y: positioned.rect.top + positioned.rect.height / 2,
+        deltaX: 0, deltaY });
+      positioned = await until(page.send, `(() => { const value = ${sample}; return value && value.top !== ${positioned.top} && value; })()`);
+    }
+    // Fresh stable readings, never wait for the desired saved offset.
+    const stableSample = async () => evaluate(page.send, `(async () => {
+      let prior;
+      const deadline = performance.now() + 15000;
+      for (;;) {
+        await new Promise(resolve => requestAnimationFrame(resolve));
+        const value = ${sample};
+        if (value && prior && value.top === prior.top && value.height === prior.height && value.client === prior.client) return value;
+        if (performance.now() > deadline) throw new Error('source geometry did not settle');
+        prior = value;
+      }
+    })()`);
+    const snapshot = async stage => {
+      const value = await evaluate(page.send, `(() => {
+        const state = window.fileLinksFixture.state();
+        const parent = state.panes.find(pane => pane.id === ${JSON.stringify(parentID)});
+        const source = state.panes.find(pane => pane.id === ${JSON.stringify(sourceID)});
+        const doc = state.panes.find(pane => pane.type === 'doc' && pane.params.session === ${JSON.stringify(journey.ref)} && pane.params.path === ${JSON.stringify(relativePath)});
+        return { state, parent, source, doc, position: ${sample},
+          viewport: { width: innerWidth, height: innerHeight, scrollY }, pathname: location.pathname,
+          draft: { editor: document.querySelector('${parentSelector} .ProseMirror')?.textContent ?? null,
+            stored: JSON.parse(localStorage.getItem('evener.composer.draft.v2.' + ${JSON.stringify(process.env.DOCUMENT_FILE_LINKS_REF)})) },
+          viewerText: doc && document.querySelector('[data-file-links-document="' + doc.id + '"]')?.textContent,
+          receipts: window.fileLinksJourneyReceipts };
+      })()`);
+      save(stage, value);
+      writeFileSync(path.join(artifacts, `${journey.name}-${stage}.html`), await evaluate(page.send, "document.documentElement.outerHTML"));
+      const screenshot = await page.send("Page.captureScreenshot");
+      writeFileSync(path.join(artifacts, `${journey.name}-${stage}.png`), Buffer.from(screenshot.result.data, "base64"));
+      return value;
+    };
+    await stableSample();
+    const before = await snapshot("before");
+    assert(before.position.anchor.visible, "actual assistant filename visible and hit-testable before input");
+    assert(before.position.top > 100 && before.position.height - before.position.client - before.position.top > 100,
+      "source reading is away from both ends before Open");
+    assert.notEqual(before.position.top, started.top, "trusted wheel actually moved source reading");
+    assert(before.receipts.some(event => event.type === "wheel" && event.trusted), "trusted wheel receipt");
+    assert(before.position.rect.width > 300 && before.position.rect.height > 300 && before.position.usefulText.length > 100,
+      "source has useful visible real content and scroll geometry");
+    assert.deepEqual(before.source.params, journey.child ? { ref: journey.ref, parentRef: process.env.DOCUMENT_FILE_LINKS_REF } : { ref: journey.ref });
+    assert.equal(before.source.type, journey.child ? "transcript" : "session");
+    assert.equal(before.source.slot, journey.child ? "secondary" : "main");
+    assert.equal(before.position.composerCount, journey.child ? 0 : 1);
+    assert.equal(before.draft.stored.text, journey.draft);
+    assert.deepEqual(before.draft.stored, parentDraft.stored);
+    if (!journey.child) assert.equal(before.draft.editor, journey.draft);
+    const anchorURL = new URL(before.position.anchor.href, url.origin);
+    assert.equal(anchorURL.searchParams.get("session"), journey.ref);
+    assert.equal(anchorURL.searchParams.get("path"), target);
+    const network = [];
+    let completeResponse;
+    let rejectResponse;
+    const responsePromise = new Promise((resolve, reject) => { completeResponse = resolve; rejectResponse = reject; });
+    const listener = event => {
+      const frame = JSON.parse(event.data); const p = frame.params;
+      if (!p) return;
+      if (frame.method === "Network.requestWillBeSent") {
+        const requested = new URL(p.request.url);
+        if (requested.pathname === "/doc/file" && requested.searchParams.get("session") === journey.ref && requested.searchParams.get("path") === target)
+          network.push({ requestId: p.requestId, url: p.request.url, method: p.request.method, initiator: p.initiator.type });
+      }
+      const request = network.find(request => request.requestId === p.requestId);
+      if (!request) return;
+      if (frame.method === "Network.responseReceived") request.response = p.response;
+      if (frame.method === "Network.loadingFinished") page.send("Network.getResponseBody", { requestId: p.requestId }).then(frame => {
+        request.body = frame.result.base64Encoded ? Buffer.from(frame.result.body, "base64").toString("utf8") : frame.result.body;
+        save("network", network);
+        writeFileSync(path.join(artifacts, `${journey.name}-response.md`), request.body);
+        completeResponse(request);
+      }).catch(rejectResponse);
+      save("network", network);
+    };
+    page.ws.addEventListener("message", listener);
+    await click(page.send, anchorSelector);
+    const response = await responsePromise;
+    await until(page.send, `document.querySelector('[data-file-links-document="' + window.fileLinksFixture.state().focusedPaneId + '"]')?.textContent.includes(${JSON.stringify(journey.bytes.trim())})`);
+    const opened = await snapshot("open");
+    assert.equal(response.method, "GET");
+    assert.equal(new URL(response.url).searchParams.get("format"), "raw");
+    assert.equal(response.response.status, 200);
+    assert.equal(response.body, journey.bytes, "actual owning cwd HTTP bytes, not parent's reused response");
+    assert.equal(opened.state.focusedPaneId, opened.doc.id);
+    assert.deepEqual(opened.doc.params, { session: journey.ref, path: relativePath, kind: "file" });
+    assert.deepEqual(opened.doc.document.reference, { path: relativePath, cwd: journey.cwd, readTarget: target, provenance: "relative" });
+    assert.deepEqual(opened.source, { ...before.source, slot: "main" });
+    assert.deepEqual(opened.doc.document.origin, opened.source);
+    assert.deepEqual(opened.parent, { ...before.parent, slot: journey.child ? "secondary" : "main" });
+    assert.deepEqual(opened.draft.stored, before.draft.stored);
+    const backTarget = await evaluate(page.send, `(() => {
+      const button = document.querySelector('[aria-label="Back"]'); const r = button?.getBoundingClientRect();
+      return r && { html: button.outerHTML, x: r.left + r.width / 2, y: r.top + r.height / 2,
+        visible: r.width > 0 && r.height > 0 && r.top >= 0 && r.bottom <= innerHeight &&
+          button.contains(document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)) };
+    })()`);
+    save("back-target", backTarget);
+    assert(backTarget?.visible, "actual product Back control visible and hit-testable");
+    await click(page.send, '[aria-label="Back"]');
+    await until(page.send, `window.fileLinksFixture.state().focusedPaneId === ${JSON.stringify(sourceID)} && !!document.querySelector(${JSON.stringify(anchorSelector)})`);
+    await stableSample();
+    const returned = await snapshot("back");
+    page.ws.removeEventListener("message", listener);
+    assert.deepEqual(returned.viewport, before.viewport, "same viewport throughout direct journey");
+    assert.deepEqual(opened.viewport, before.viewport);
+    assert.deepEqual(returned.source, { ...before.source, slot: "main" }, "exact source pane id, type and ref returned");
+    assert.deepEqual(returned.position.port, before.position.port, "same real source scroll port identity");
+    assert(Math.abs(returned.position.top - before.position.top) <= 2, "fresh independently sampled direct Back reading position within2px");
+    assert(returned.position.top > 100 && returned.position.height - returned.position.client - returned.position.top > 100);
+    assert.deepEqual(returned.draft.stored, before.draft.stored, "parent unsent draft retained exactly");
+    assert.deepEqual(returned.parent, opened.parent, "original parent retained after child promotion and Back");
+    if (!journey.child) assert.equal(returned.draft.editor, journey.draft);
+    const clicks = returned.receipts.filter(event => event.type === "click");
+    assert.equal(clicks.length, 2);
+    assert(clicks.every(event => event.trusted && event.button === 0));
+    assert(clicks[0].target.includes("joined-return.md") && clicks[1].target.includes("Back"), "trusted filename and product Back receipts");
+    save("result", { assertions: "pass", before, opened, returned, response, deltaPx: returned.position.top - before.position.top });
+    cases.push(`${journey.name}, trusted assistant filename Open, owning current-cwd HTTP200 literal bytes, actual Back, same-viewport away position within2px and parent draft`);
+  }
   writeFileSync(path.join(artifacts, "result.json"), JSON.stringify({ assertions: "pass", cases }, null, 2));
 } catch (error) {
   if (page) writeFileSync(path.join(artifacts, "route-after.json"), JSON.stringify(await evaluate(page.send, 'window.fileLinksFixture.route()'), null, 2));

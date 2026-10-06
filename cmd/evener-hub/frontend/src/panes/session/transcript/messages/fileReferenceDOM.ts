@@ -95,21 +95,32 @@ export function enhanceFileReferences(
         .map((span) => ({ ...span, start: span.start - offset.start, end: span.end - offset.start }));
       if (contained.length > 0) wrap(offset.node, contained);
     }
-    for (const code of codeElements) {
-      const reference = parseFileReference(code.element.textContent, "code", context.cwd);
-      if (!reference) continue;
-      // Code is a whole-element surface, not a suffix of a longer token.
-      // Only surrounding delimiters may share its whitespace/quote token.
-      const before =
-        text
-          .slice(0, code.start)
-          .split(/[\s"'“”‘’]/u)
-          .at(-1) ?? "";
-      const after = text.slice(code.end).split(/[\s"'“”‘’]/u)[0] ?? "";
-      if (!/^[([{<]*$/u.test(before) || !/^[)\]}>.,;:!?…]*$/u.test(after)) continue;
-      const child = code.element.firstChild;
-      if (!(child instanceof Text) || code.element.childNodes.length !== 1) continue;
-      wrap(child, [{ start: 0, end: child.data.length, reference }]);
+    if (codeElements.length > 0) {
+      const delimiter = /[\s"'“”‘’]/u;
+      const tokenStarts: number[] = [];
+      let tokenStart = 0;
+      for (let index = 0; index <= text.length; index += 1) {
+        tokenStarts[index] = tokenStart;
+        if (delimiter.test(text[index] ?? "")) tokenStart = index + 1;
+      }
+      const tokenEnds: number[] = [];
+      let tokenEnd = text.length;
+      for (let index = text.length; index >= 0; index -= 1) {
+        if (delimiter.test(text[index] ?? "")) tokenEnd = index;
+        tokenEnds[index] = tokenEnd;
+      }
+      for (const code of codeElements) {
+        const reference = parseFileReference(code.element.textContent, "code", context.cwd);
+        if (!reference) continue;
+        // Code is a whole-element surface, not a suffix of a longer token.
+        // Only surrounding delimiters may share its whitespace/quote token.
+        const before = text.slice(tokenStarts[code.start], code.start);
+        const after = text.slice(code.end, tokenEnds[code.end]);
+        if (!/^[([{<]*$/u.test(before) || !/^[)\]}>.,;:!?…]*$/u.test(after)) continue;
+        const child = code.element.firstChild;
+        if (!(child instanceof Text) || code.element.childNodes.length !== 1) continue;
+        wrap(child, [{ start: 0, end: child.data.length, reference }]);
+      }
     }
     text = "";
     offsets = [];

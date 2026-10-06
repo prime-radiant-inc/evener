@@ -246,11 +246,8 @@ function syncPaneSlots(api: DockviewApi, panes: OpenPaneRecord[]): void {
   if (secondaryPanels.length === 0) return;
 
   const firstPanel = api.panels[0];
-  if (firstPanel?.id !== main.id) {
-    const anchor = firstPanel;
-    if (anchor && anchor.id !== main.id) {
-      mainPanel.api.moveTo({ group: anchor.group, position: "left", skipSetActive: true });
-    }
+  if (firstPanel && firstPanel.id !== main.id) {
+    mainPanel.api.moveTo({ group: firstPanel.group, position: "left", skipSetActive: true });
   }
 
   const secondaryGroup = secondaryPanels[0]?.group;

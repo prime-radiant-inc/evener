@@ -163,13 +163,11 @@ export default function DocPane({ params, paneId, focused }: PaneProps<DocParams
     };
   }, [params.session]);
 
-  const reference = retained
-    ? cwd && cwd !== retained.reference.cwd
-      ? rebindFileReference(retained.reference, cwd)
-      : retained.reference
-    : cwd
-      ? bindFilePath(params.path, cwd)
-      : undefined;
+  let reference: FileReference | undefined;
+  if (retained) {
+    if (cwd && cwd !== retained.reference.cwd) reference = rebindFileReference(retained.reference, cwd);
+    else reference = retained.reference;
+  } else if (cwd) reference = bindFilePath(params.path, cwd);
   useLayoutEffect(() => {
     if (!pane || !reference || retained?.reference === reference) return;
     recordDocumentPaneState(pane, { reference, origin: retained?.origin, reopen: retained?.reopen ?? 0 });
