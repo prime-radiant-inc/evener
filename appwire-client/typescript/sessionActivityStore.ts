@@ -387,22 +387,20 @@ export class SessionActivityStore {
       const cursor = root ? undefined : read.cursor;
       let generation = this.generation;
       const releases = read.releases;
+      // A read is stale once the store is disposed, its context is replaced,
+      // or its collection's last observer leaves (even from a listener during
+      // one of this read's own publishes): from then on nothing it does lands.
+      const stale = () => this.disposed || generation !== this.generation || releases !== read.releases;
       const statusRevision = this.statusRevision;
       try {
         this.lease ??= acquireThreadSubscription(this.client, this.ref);
         await this.lease.ensure();
-        if (
-          this.disposed ||
-          generation !== this.generation ||
-          releases !== read.releases ||
-          this.client.state !== "ready"
-        )
-          continue;
+        if (stale() || this.client.state !== "ready") continue;
         const result = await this.fetch(resource, cursor);
-        if (this.disposed || generation !== this.generation || releases !== read.releases) continue;
+        if (stale()) continue;
         if (result.scope !== this.scope) throw new Error("Session activity response belongs to another scope");
         generation = this.acceptContext(result.context, resource);
-        if (this.disposed || generation !== this.generation) continue;
+        if (stale()) continue;
         if (resource === "summary") {
           const summary = result as SessionActivitySummary;
           const unavailable = (summary.issues?.length ?? 0) > 0;
@@ -419,7 +417,7 @@ export class SessionActivityStore {
               permanent: false,
             },
           });
-          if (this.disposed || generation !== this.generation) continue;
+          if (stale()) continue;
           if (unavailable) {
             read.failures += 1;
             this.retry(resource);
@@ -486,7 +484,7 @@ export class SessionActivityStore {
             unavailable: false,
             permanent: false,
           });
-          if (this.disposed || generation !== this.generation) continue;
+          if (stale()) continue;
           this.publish({ context: page.context, runtime: this.runtimeFor(page.context, statusRevision) });
           // Collection reads can warm retained count indexes without emitting
           // a notification. Refresh an observed unknown count after useful
@@ -521,7 +519,7 @@ export class SessionActivityStore {
           }
         }
       } catch (error) {
-        if (this.disposed || generation !== this.generation || releases !== read.releases) continue;
+        if (stale()) continue;
         if (error instanceof WireError && error.evenerErrorInfo === "sessionActivityCursorStale" && cursor) {
           read.cursor = undefined;
           read.refresh = null;
@@ -538,7 +536,7 @@ export class SessionActivityStore {
         } else {
           this.change(resource, update);
         }
-        if (this.disposed || generation !== this.generation) continue;
+        if (stale()) continue;
         if (!permanent) this.retry(resource, cursor ? "page" : "root");
       }
     }

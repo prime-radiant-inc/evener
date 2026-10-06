@@ -2357,3 +2357,27 @@ test("demand queued behind a page when the last observer leaves does not land ei
   expect(callsTo(client, "evener/thread/jobs/list")).toBe(2);
   expect(store.getSnapshot().jobs).toMatchObject({ loading: false, pending: false });
 });
+
+// A view that leaves while a page it asked for is being published (a listener
+// releasing the last observer as the page lands) is gone for the rest of that
+// read: an explicit loadMore queues no next page for it.
+test("a release during a loaded page's publish queues no next page", async () => {
+  const client = activityClient();
+  client.on("evener/thread/jobs/list", ({ cursor }) => {
+    if (!cursor) return jobsFixture([jobFixture("shell-1")], "page-2");
+    if (cursor === "page-2") return jobsFixture([], "page-3");
+    return jobsFixture([jobFixture("late")]);
+  });
+  const store = owner(client);
+  store.start();
+  await activityState(store, () => store.getSnapshot().summary !== null);
+  const leave = store.observe("jobs");
+  await activityState(store, () => store.getSnapshot().jobs.hasMore);
+  const stop = store.subscribe(() => {
+    if (callsTo(client, "evener/thread/jobs/list") === 2) leave();
+  });
+  await store.loadMore("jobs");
+  stop();
+  expect(callsTo(client, "evener/thread/jobs/list")).toBe(2);
+  expect(store.getSnapshot().jobs.rows.map(({ jobId }) => jobId)).not.toContain("late");
+});
