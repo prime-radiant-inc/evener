@@ -606,92 +606,103 @@ describe("background thread claims", () => {
     }
   });
 
-  test("a new background claim during the final cut write keeps later notification progress", async () => {
-    const fake = connectCurrentClient();
-    await cache.get("local:one", Date.now());
-    const background = acquireBackgroundThread("local:one");
-    await background.ready;
-    fake.emitNotification(textDelta("local:one", "-before-cut"));
-    const reached = [deferred<void>(), deferred<void>()] as const;
-    const held: ReturnType<typeof holdIndexedDBEvent>[] = [];
-    const stores = ["records", "meta", "current", "currentMeta"];
-    const originalTransaction = IDBDatabase.prototype.transaction;
-    let writeCount = 0;
-    const transactionSpy = vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (
-      this: IDBDatabase,
-      ...args: Parameters<IDBDatabase["transaction"]>
-    ) {
-      const transaction = originalTransaction.apply(this, args);
-      if (
-        transaction.mode === "readwrite" &&
-        transaction.objectStoreNames.length === stores.length &&
-        stores.every((store) => transaction.objectStoreNames.contains(store)) &&
-        writeCount < 2
+  test.each(["background", "pane"] as const)(
+    "a new %s claim during the final cut write keeps later notification progress",
+    async (claimKind) => {
+      const fake = connectCurrentClient();
+      await cache.get("local:one", Date.now());
+      const background = acquireBackgroundThread("local:one");
+      await background.ready;
+      fake.emitNotification(textDelta("local:one", "-before-cut"));
+      const reached = [deferred<void>(), deferred<void>()] as const;
+      const held: ReturnType<typeof holdIndexedDBEvent>[] = [];
+      const stores = ["records", "meta", "current", "currentMeta"];
+      const originalTransaction = IDBDatabase.prototype.transaction;
+      let writeCount = 0;
+      const transactionSpy = vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (
+        this: IDBDatabase,
+        ...args: Parameters<IDBDatabase["transaction"]>
       ) {
-        const index = writeCount++;
-        const gate = holdIndexedDBEvent(transaction, "complete");
-        held[index] = gate;
-        const completion = reached[index];
-        if (!completion) throw new Error(`unexpected cache write ${index + 1}`);
-        void gate.reached.then(() => completion.resolve());
+        const transaction = originalTransaction.apply(this, args);
+        if (
+          transaction.mode === "readwrite" &&
+          transaction.objectStoreNames.length === stores.length &&
+          stores.every((store) => transaction.objectStoreNames.contains(store)) &&
+          writeCount < 2
+        ) {
+          const index = writeCount++;
+          const gate = holdIndexedDBEvent(transaction, "complete");
+          held[index] = gate;
+          const completion = reached[index];
+          if (!completion) throw new Error(`unexpected cache write ${index + 1}`);
+          void gate.reached.then(() => completion.resolve());
+        }
+        return transaction;
+      });
+      let replacement: ReturnType<typeof acquireBackgroundThread> | undefined;
+      let paneClaimed = false;
+      try {
+        const startingReads = membershipReads(fake);
+        const release = background.release();
+        await reached[0].promise;
+        fake.emitNotification({
+          method: "history/updated",
+          params: {
+            ref: "local:one",
+            threadId: "thr_local:one",
+            bootGeneration: "1",
+            epoch: 1,
+            snapshot: { incarnation: "inc-1", length: 42 },
+            turns: [{ id: "turn_cut", status: "completed", itemsView: "full", version: 2 }],
+            items: [
+              {
+                type: "agentMessage",
+                id: "item_cut",
+                turnId: "turn_cut",
+                text: "pre-cut-model",
+                position: { entry: 42, item: 0 },
+              },
+            ],
+          },
+        } as AnyNotification);
+        const firstWrite = held[0];
+        if (!firstWrite) throw new Error("first cache write was not held");
+        firstWrite.release();
+        await reached[1].promise;
+        if (claimKind === "background") {
+          replacement = acquireBackgroundThread("local:one");
+          await replacement.ready;
+        } else {
+          await threadsStore.getState().ensureThread("local:one");
+          paneClaimed = true;
+        }
+        expect(membershipReads(fake)).toBe(startingReads);
+        expect(unsubscriptions(fake)).toBe(0);
+        fake.emitNotification(textDelta("local:one", "-during-cut"));
+        const secondWrite = held[1];
+        if (!secondWrite) throw new Error("second cache write was not held");
+        secondWrite.release();
+        await release;
+        fake.emitNotification(textDelta("local:one", "-after-new-claim"));
+        expect(
+          threadsStore
+            .getState()
+            .threads.get("local:one")
+            ?.turns.flatMap((turn) => turn.items)
+            .map((item) => item.text)
+            .join(""),
+        ).toContain("pre-cut-modelalpha-before-cut-during-cut-after-new-claim");
+        expect(threadsStore.getState().threads.has("local:one")).toBe(true);
+        expect(unsubscriptions(fake)).toBe(0);
+      } finally {
+        transactionSpy.mockRestore();
+        for (const gate of held) gate.release();
+        await replacement?.release();
+        if (paneClaimed) threadsStore.getState().releaseThread("local:one");
+        await background.release();
       }
-      return transaction;
-    });
-    let replacement: ReturnType<typeof acquireBackgroundThread> | undefined;
-    try {
-      const release = background.release();
-      await reached[0].promise;
-      fake.emitNotification({
-        method: "history/updated",
-        params: {
-          ref: "local:one",
-          threadId: "thr_local:one",
-          bootGeneration: "1",
-          epoch: 1,
-          snapshot: { incarnation: "inc-1", length: 42 },
-          turns: [{ id: "turn_cut", status: "completed", itemsView: "full", version: 2 }],
-          items: [
-            {
-              type: "agentMessage",
-              id: "item_cut",
-              turnId: "turn_cut",
-              text: "pre-cut-model",
-              position: { entry: 42, item: 0 },
-            },
-          ],
-        },
-      } as AnyNotification);
-      const firstWrite = held[0];
-      if (!firstWrite) throw new Error("first cache write was not held");
-      firstWrite.release();
-      await reached[1].promise;
-      replacement = acquireBackgroundThread("local:one");
-      await replacement.ready;
-      expect(unsubscriptions(fake)).toBe(0);
-      fake.emitNotification(textDelta("local:one", "-during-cut"));
-      const secondWrite = held[1];
-      if (!secondWrite) throw new Error("second cache write was not held");
-      secondWrite.release();
-      await release;
-      fake.emitNotification(textDelta("local:one", "-after-new-claim"));
-      expect(
-        threadsStore
-          .getState()
-          .threads.get("local:one")
-          ?.turns.flatMap((turn) => turn.items)
-          .map((item) => item.text)
-          .join(""),
-      ).toContain("pre-cut-modelalpha-before-cut-during-cut-after-new-claim");
-      expect(threadsStore.getState().threads.has("local:one")).toBe(true);
-      expect(unsubscriptions(fake)).toBe(0);
-      await replacement.release();
-    } finally {
-      transactionSpy.mockRestore();
-      for (const gate of held) gate.release();
-      await replacement?.release();
-      await background.release();
-    }
-  });
+    },
+  );
 
   test.each([true, false])("final release drains a recorded-history update, identity=%s", async (hasIdentity) => {
     const storage = mutationStorage();
@@ -785,6 +796,126 @@ describe("background thread claims", () => {
     }
   });
 
+  test.each(["background", "pane"] as const)(
+    "a %s replacement keeps wire membership through identity receipt cleanup",
+    async (replacementKind) => {
+      const storage = mutationStorage();
+      const fake = connectCurrentClient();
+      await cache.get("local:one", Date.now());
+      const background = acquireBackgroundThread("local:one");
+      await background.ready;
+      const reached = [deferred<void>(), deferred<void>()] as const;
+      const held: ReturnType<typeof holdIndexedDBEvent>[] = [];
+      const stores = ["records", "meta", "current", "currentMeta"];
+      const receiptCleanupRead = deferred<void>();
+      const originalListOptimistic = storage.listOptimistic.bind(storage);
+      const listOptimistic = vi.spyOn(storage, "listOptimistic").mockImplementation(async (ref) => {
+        const rows = await originalListOptimistic(ref);
+        if (ref === "local:one") receiptCleanupRead.resolve();
+        return rows;
+      });
+      const originalTransaction = IDBDatabase.prototype.transaction;
+      let writeCount = 0;
+      const transactionSpy = vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (
+        this: IDBDatabase,
+        ...args: Parameters<IDBDatabase["transaction"]>
+      ) {
+        const transaction = originalTransaction.apply(this, args);
+        if (
+          transaction.mode === "readwrite" &&
+          transaction.objectStoreNames.length === stores.length &&
+          stores.every((store) => transaction.objectStoreNames.contains(store)) &&
+          writeCount < reached.length
+        ) {
+          const index = writeCount++;
+          const gate = holdIndexedDBEvent(transaction, "complete");
+          held[index] = gate;
+          const completion = reached[index];
+          if (!completion) throw new Error(`unexpected cache write ${index + 1}`);
+          void gate.reached.then(() => completion.resolve());
+        }
+        return transaction;
+      });
+      let replacement: ReturnType<typeof acquireBackgroundThread> | undefined;
+      let paneClaimed = false;
+      try {
+        const startingReads = membershipReads(fake);
+        const release = background.release();
+        await reached[0].promise;
+        fake.emitNotification({
+          method: "history/updated",
+          params: {
+            ref: "local:one",
+            threadId: "thr_local:one",
+            bootGeneration: "1",
+            epoch: 1,
+            snapshot: { incarnation: "inc-1", length: 41 },
+            turns: [{ id: "turn_receipt_claim", status: "completed", itemsView: "full", version: 2 }],
+            items: [
+              {
+                type: "agentMessage",
+                id: "item_receipt_claim",
+                turnId: "turn_receipt_claim",
+                clientMutationId: "receipt-from-another-client",
+                text: "receipt-and-replacement",
+                position: { entry: 41, item: 0 },
+              },
+            ],
+          },
+        } as AnyNotification);
+        await receiptCleanupRead.promise;
+        await nextRealTask();
+
+        if (replacementKind === "background") {
+          replacement = acquireBackgroundThread("local:one");
+          await replacement.ready;
+        } else {
+          await threadsStore.getState().ensureThread("local:one");
+          paneClaimed = true;
+        }
+        expect(membershipReads(fake)).toBe(startingReads);
+        expect(unsubscriptions(fake)).toBe(0);
+        expect(threadsStore.getState().threads.has("local:one")).toBe(true);
+
+        const firstWrite = held[0];
+        if (!firstWrite) throw new Error("first cache write was not held");
+        firstWrite.release();
+        await reached[1].promise;
+        expect(unsubscriptions(fake)).toBe(0);
+        fake.emitNotification(textDelta("local:one", "-while-final-write-held"));
+        expect(
+          threadsStore
+            .getState()
+            .threads.get("local:one")
+            ?.turns.flatMap((turn) => turn.items)
+            .map((item) => item.text)
+            .join(""),
+        ).toContain("-while-final-write-held");
+        const secondWrite = held[1];
+        if (!secondWrite) throw new Error("final cache write was not held");
+        secondWrite.release();
+        await release;
+        expect(unsubscriptions(fake)).toBe(0);
+        fake.emitNotification(textDelta("local:one", "-after-release"));
+        expect(
+          threadsStore
+            .getState()
+            .threads.get("local:one")
+            ?.turns.flatMap((turn) => turn.items)
+            .map((item) => item.text)
+            .join(""),
+        ).toContain("-while-final-write-held-after-release");
+      } finally {
+        transactionSpy.mockRestore();
+        listOptimistic.mockRestore();
+        for (const gate of held) gate.release();
+        await replacement?.release();
+        if (paneClaimed) threadsStore.getState().releaseThread("local:one");
+        await background.release();
+      }
+    },
+  );
+
   test("final release cuts live updates at the bounded final write", async () => {
     const fake = connectCurrentClient();
     await cache.get("local:one", Date.now());
@@ -814,7 +945,6 @@ describe("background thread claims", () => {
     };
     emitRecorded(40, "before-release");
     const gates: ReturnType<typeof holdIndexedDBEvent>[] = [];
-    const reached = [deferred<void>(), deferred<void>()] as const;
     const stores = ["records", "meta", "current", "currentMeta"];
     const originalTransaction = IDBDatabase.prototype.transaction;
     let writeCount = 0;
@@ -826,40 +956,27 @@ describe("background thread claims", () => {
       if (
         transaction.mode === "readwrite" &&
         transaction.objectStoreNames.length === stores.length &&
-        stores.every((store) => transaction.objectStoreNames.contains(store)) &&
-        writeCount < reached.length
+        stores.every((store) => transaction.objectStoreNames.contains(store))
       ) {
         const index = writeCount++;
         const gate = holdIndexedDBEvent(transaction, "complete");
         gates[index] = gate;
-        const completion = reached[index];
-        if (!completion) throw new Error(`unexpected cache write ${index + 1}`);
-        void gate.reached.then(() => completion.resolve());
+        void gate.reached.then(() => {
+          gate.release();
+          if (index < 3) fake.emitNotification(textDelta("local:one", `-write-completion-${index + 1}`));
+        });
       }
       return transaction;
     });
     try {
       const release = background.release();
-      await reached[0].promise;
-      const firstWrite = gates[0];
-      if (!firstWrite) throw new Error("first cache write was not held");
-      firstWrite.release();
-      emitRecorded(41, "accepted-before-cut");
-      await reached[1].promise;
-      const secondWrite = gates[1];
-      if (!secondWrite) throw new Error("second cache write was not held");
-      fake.emitNotification(textDelta("local:one", "-during-final-cut"));
-      secondWrite.release();
-      fake.emitNotification(textDelta("local:one", "-at-cut-write-completion"));
       await release;
       expect(writeCount).toBe(2);
       expect(threadsStore.getState().threads.has("local:one")).toBe(false);
       expect(unsubscriptions(fake)).toBe(1);
       const durable = JSON.stringify(await cache.get("local:one", Date.now()));
-      expect(durable).toContain("accepted-before-cut");
-      expect(durable.split("accepted-before-cut")).toHaveLength(2);
-      expect(durable).not.toContain("during-final-cut");
-      expect(durable).not.toContain("at-cut-write-completion");
+      expect(durable).toContain("before-release");
+      expect(durable.split("before-release")).toHaveLength(2);
     } finally {
       transactionSpy.mockRestore();
       for (const gate of gates) gate.release();

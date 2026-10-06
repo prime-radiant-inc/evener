@@ -1062,7 +1062,7 @@ const threadSubscriptions = new Map<string, { client: AppwireClientLike; lease: 
 
 function syncThreadSubscription(ref: string, client = wiredClient): ThreadSubscriptionLease | undefined {
   const previous = threadSubscriptions.get(ref);
-  const held = canonicalThreadOwnerActive(ref) || (watchRefCounts.get(ref) ?? 0) > 0;
+  const held = canonicalThreadOwnerActive(ref) || finalReleaseOwners.has(ref) || (watchRefCounts.get(ref) ?? 0) > 0;
   if (previous && (!held || previous.client !== client)) {
     previous.lease.release();
     threadSubscriptions.delete(ref);
