@@ -2965,7 +2965,7 @@ describe("queued messages at the transcript's end (spec 8.5)", () => {
 			}
 			return answer;
 		};
-		if (label !== "Steer all now") await press(tree, label);
+		if (method === "turn/promoteQueuedAsSteer") await press(tree, label);
 		else
 			await act(async () => {
 				await queueHosts.get(sheetKey("hub-1", ref))?.steerAll?.();

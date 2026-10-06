@@ -1650,6 +1650,12 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 			rawSet(partial);
 		};
 		storeGet = get;
+		// Re-projects the durable rows against the current model and publishes
+		// them only when they changed, so subscribers keep a stable reference.
+		const republishPendingRows = () => {
+			const next = reconcilePendingMutations();
+			if (!samePendingRows(get().pendingMutations, next)) set({ pendingMutations: next });
+		};
 		// What a publish records when its cap trimmed rows from the top. An older
 		// page in flight asked from above rows the trim just dropped: merged, it
 		// would leave those rows a hole nothing pages back, so it is dropped and
@@ -2757,10 +2763,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 								pendingSnapshot !== null &&
 								pendingPort.targetRef === port.targetRef
 							) {
-								const next = reconcilePendingMutations();
-								if (!samePendingRows(get().pendingMutations, next)) {
-									set({ pendingMutations: next });
-								}
+								republishPendingRows();
 							}
 							// A retired binding publishes nothing of its own snapshot.
 							if (generation !== pendingGeneration) return;
@@ -2771,10 +2774,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 							// The same stability check the conversation-write path uses: a
 							// storage read that re-serves identical rows must not churn
 							// subscribers with a fresh array.
-							const next = reconcilePendingMutations();
-							if (!samePendingRows(get().pendingMutations, next)) {
-								set({ pendingMutations: next });
-							}
+							republishPendingRows();
 						},
 						() => {
 							// A failed read leaves the last durable projection standing: the
@@ -2797,8 +2797,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				pendingSubmittedHere.set(clientMutationId, Date.now());
 				// Until the first durable read lands there is no projection to update.
 				if (pendingPort === null || pendingSnapshot === null) return;
-				const next = reconcilePendingMutations();
-				if (!samePendingRows(get().pendingMutations, next)) set({ pendingMutations: next });
+				republishPendingRows();
 			},
 
 			bindPendingMutationsIfUnbound(port) {

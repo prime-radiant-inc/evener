@@ -2574,9 +2574,8 @@ export function ConversationScreen({
 			await rehydrateQuietly(live);
 		}
 	}
-	// A promote or drain goes straight to the hub, outside the outbox, so the
-	// store learns here that the steer the hub now holds is this phone's: it
-	// shows as steering until the agent takes it (spec 8.5).
+	// A promote or drain bypasses the outbox, so claim the hub's steer as this
+	// phone's: it shows as steering until the agent takes it (spec 8.5).
 	function steeredHere(result: { receipt: { clientMutationId: string } }) {
 		store.getState().rememberSubmittedHere(result.receipt.clientMutationId);
 	}
