@@ -538,9 +538,13 @@ func TestMemoryContextTransitions(t *testing.T) {
 	run(7)
 	// Revocation happens on the owner loop between requests, never in a worker.
 	s.cfg.MemoryProjectID = ""
+	// Not asserted here: keeps the prompt consistent with the revoked binding.
+	refreshModelFacingCaches(s)
 	wantProjectState, wantProjectBody = "revoked", ""
 	run(8)
 	s.reg.Remove("memory_read")
+	// Not asserted here: keeps tool definitions and prompt consistent with the revoked tool.
+	refreshModelFacingCaches(s)
 	wantState, wantBody = "revoked", ""
 	run(9)
 	s.Close()
@@ -1269,7 +1273,7 @@ func TestMemoryDelegateRestore(t *testing.T) {
 			if mode == "tool-ceiling" {
 				r.reg.Remove("memory_write")
 				r.reg.Remove("memory_read")
-				r.rebuildToolDefsCache()
+				refreshModelFacingCaches(r)
 			}
 			r.client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{func(req llm.Request) llm.Response { return finalResponse("restored child finished") }}})
 			accesses.Store(0)
@@ -1342,7 +1346,7 @@ func TestMemoryDelegateFreshCeilings(t *testing.T) {
 				for _, name := range nativeMemoryToolNames {
 					s.reg.Remove(name)
 				}
-				s.rebuildToolDefsCache()
+				refreshModelFacingCaches(s)
 			}
 			agentType := "explorer"
 			if mode == "explicit-role" {
@@ -2687,6 +2691,21 @@ func TestMemoryIndexQuotesOpaqueBytes(t *testing.T) {
 	}
 }
 
+// memoryGuidanceHeading identifies the memory guidance section, which the
+// system template renders last.
+const memoryGuidanceHeading = "\n\n## Memory\n\n"
+
+// refreshModelFacingCaches rebuilds the tool definitions and the system
+// prompt after a test changes the registry or memory binding mid-session, as
+// production paths that change the registry (RegisterTool, SetModel) do.
+func refreshModelFacingCaches(s *Session) {
+	s.mu.Lock()
+	s.rebuildToolDefsCache()
+	warning := s.refreshSystemPromptCache(s.env)
+	s.mu.Unlock()
+	s.reportPromptRenderFailure(warning)
+}
+
 // Memory guidance follows what the session can do: read guidance (with the
 // trust guard) whenever memory is readable, save instructions and the result
 // tool's reminder only when the save tools are callable, and project-scope
@@ -2724,54 +2743,31 @@ func TestMemoryGuidanceFollowsCapabilities(t *testing.T) {
 			}))
 			if tc.revoke != "" {
 				s.reg.Remove(tc.revoke)
-				s.rebuildToolDefsCache()
+				refreshModelFacingCaches(s)
 			}
 			if _, err := s.ProcessInput(context.Background(), "go", nil); err != nil {
 				t.Fatal(err)
 			}
-			read := strings.Contains(system.String(), memoryTrustGuard)
-			save := strings.Contains(system.String(), memorySaveTriggersIntro)
-			if read != tc.read || save != tc.save || reminder != tc.save {
-				t.Fatalf("read=%v save=%v reminder=%v, want read=%v save=%v", read, save, reminder, tc.read, tc.save)
-			}
+			_, section, read := strings.Cut(system.String(), memoryGuidanceHeading)
 			data, _ := s.buildPromptData(s.currentEnv())
-			if data.MemorySaves != tc.save || data.ProjectMemory != (tc.save && tc.project) {
-				t.Fatalf("prompt data MemorySaves=%v ProjectMemory=%v", data.MemorySaves, data.ProjectMemory)
+			if read != tc.read || data.MemoryRead != tc.read || data.MemorySaves != tc.save || reminder != tc.save {
+				t.Fatalf("section=%v MemoryRead=%v MemorySaves=%v reminder=%v, want read=%v save=%v", read, data.MemoryRead, data.MemorySaves, reminder, tc.read, tc.save)
+			}
+			if data.ProjectMemory != (tc.read && tc.project) {
+				t.Fatalf("ProjectMemory=%v, want %v", data.ProjectMemory, tc.read && tc.project)
+			}
+			if data.MemorySearch != (tc.read && tc.revoke != "memory_search") {
+				t.Fatalf("MemorySearch=%v", data.MemorySearch)
+			}
+			if data.SessionMemory != tc.read || data.MemoryDelegate {
+				t.Fatalf("root SessionMemory=%v MemoryDelegate=%v, want %v false", data.SessionMemory, data.MemoryDelegate, tc.read)
 			}
 			if data.SessionMemorySaves != tc.session {
 				t.Fatalf("SessionMemorySaves=%v, want %v", data.SessionMemorySaves, tc.session)
 			}
-			if tc.save {
-				// The skill catalog's gardening-memory description names project memory whatever is bound.
-				prompt, _, _ := strings.Cut(system.String(), "<skill-catalog>")
-				if has := strings.Contains(strings.ToLower(prompt), "project memory"); has != tc.project {
-					t.Fatalf("rendered prompt mentions project memory=%v, want %v", has, tc.project)
-				}
-				if has := strings.Contains(system.String(), "session memory has notes"); has != tc.session {
-					t.Fatalf("rendered prompt has promotion row=%v, want %v", has, tc.session)
-				}
-			}
-			if tc.read {
-				guidance := s.memoryGuidance()
-				if !strings.Contains(guidance, memorySessionScopeLine) {
-					t.Fatal("read guidance lacks the session scope line")
-				}
-				if has := strings.Contains(guidance, memorySessionSaveTrigger); has != tc.session {
-					t.Fatalf("guidance has session save trigger=%v, want %v", has, tc.session)
-				}
-				if has := strings.Contains(guidance, "belong in session memory, not project memory"); has != (tc.session && tc.project) {
-					t.Fatalf("guidance keeps working notes out of project memory=%v, want %v", has, tc.session && tc.project)
-				}
-				if strings.Contains(guidance, "will outlast this work") {
-					t.Fatalf("guidance still says \"will outlast this work\": %q", guidance)
-				}
-				if mentions := strings.Contains(strings.ToLower(guidance), "project memory"); mentions != tc.project {
-					t.Fatalf("guidance mentions project memory=%v, want %v", mentions, tc.project)
-				}
-				for _, name := range nativeMemoryToolNames {
-					if strings.Contains(guidance, name) && !s.canInstructTool(name) {
-						t.Fatalf("guidance names %s, which this session cannot call", name)
-					}
+			for _, name := range nativeMemoryToolNames {
+				if strings.Contains(section, name) && !s.canInstructTool(name) {
+					t.Fatalf("memory section names %s, which this session cannot call", name)
 				}
 			}
 		})
@@ -2783,12 +2779,9 @@ func TestMemoryGuidanceDelegateSessionReadOnly(t *testing.T) {
 	s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project"}))
 	s.depth = 1
 	s.delegateRootSessionID = "034aRootFixture0000000"
-	guidance := s.memoryGuidance()
-	if !strings.Contains(guidance, memorySessionDelegateLine) || strings.Contains(guidance, memorySessionSaveTrigger) || !strings.Contains(guidance, "details only the current task needs") || strings.Contains(guidance, "will outlast this work") {
-		t.Fatalf("delegate guidance: %q", guidance)
-	}
-	if data, _ := s.buildPromptData(s.currentEnv()); data.SessionMemorySaves {
-		t.Fatal("delegate offered session saves")
+	data, _ := s.buildPromptData(s.currentEnv())
+	if !data.SessionMemory || !data.MemoryDelegate || data.SessionMemorySaves {
+		t.Fatalf("delegate SessionMemory=%v MemoryDelegate=%v SessionMemorySaves=%v, want true true false", data.SessionMemory, data.MemoryDelegate, data.SessionMemorySaves)
 	}
 }
 
@@ -2797,14 +2790,12 @@ func TestMemoryGuidanceUnboundDelegateOmitsSessionScope(t *testing.T) {
 	s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project"}))
 	s.depth = 1
 	s.delegateRootSessionID = ""
-	guidance := s.memoryGuidance()
-	if strings.Contains(guidance, memorySessionScopeLine) || strings.Contains(guidance, memorySessionDelegateLine) {
-		t.Fatalf("guidance names a session scope this delegate cannot use: %q", guidance)
+	if data, _ := s.buildPromptData(s.currentEnv()); data.SessionMemory || data.SessionMemorySaves {
+		t.Fatal("guidance offers a session scope this delegate cannot use")
 	}
 	s.delegateRootSessionID = "../escape"
-	guidance = s.memoryGuidance()
-	if strings.Contains(guidance, memorySessionScopeLine) || strings.Contains(guidance, memorySessionDelegateLine) {
-		t.Fatalf("guidance names a session scope for a corrupt root id: %q", guidance)
+	if data, _ := s.buildPromptData(s.currentEnv()); data.SessionMemory || data.SessionMemorySaves {
+		t.Fatal("guidance offers a session scope for a corrupt root id")
 	}
 }
 

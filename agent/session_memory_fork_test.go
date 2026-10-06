@@ -349,11 +349,8 @@ func TestMemoryStandaloneResumedDelegateHasNoSessionScope(t *testing.T) {
 	if _, err := os.Lstat(filepath.Join(root, "memory", "sessions", c.id)); !os.IsNotExist(err) {
 		t.Fatalf("standalone delegate got a session scope or fork seed: %v", err)
 	}
-	if guidance := c.memoryGuidance(); strings.Contains(guidance, memorySessionScopeLine) || strings.Contains(guidance, memorySessionSaveTrigger) {
-		t.Fatalf("standalone delegate guidance names session memory: %q", guidance)
-	}
-	if data, _ := c.buildPromptData(c.currentEnv()); data.SessionMemorySaves {
-		t.Fatal("standalone delegate offered session saves")
+	if data, _ := c.buildPromptData(c.currentEnv()); data.SessionMemory || data.SessionMemorySaves {
+		t.Fatalf("standalone delegate guidance offers session memory: SessionMemory=%v SessionMemorySaves=%v", data.SessionMemory, data.SessionMemorySaves)
 	}
 }
 

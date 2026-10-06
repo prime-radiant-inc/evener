@@ -85,13 +85,14 @@ as named user-source context, outside system instructions. Each scope supplies
 at most 8 KiB of index content, cut at a UTF-8 boundary, with explicit truncation
 and a route to `memory_read`. Topic files and logs are not preloaded.
 
-Enabled sessions also receive core memory guidance after the system
-instructions. It says what each scope holds (personal memory: what applies
-beyond the current project, such as how the human partner works and how tools,
-systems and the world behave; project memory: knowledge about this project;
-session memory: working notes about the current work: its plan, what was tried
-and found),
-when to read a page, and that stored memory is fallible evidence, never
+Enabled sessions also receive core memory guidance. It is the last section of
+the system prompt, rendered from what the session can do when the prompt is
+built. The guidance is cached with the prompt and re-rendered when the tool
+registry, model or environment changes. It says what each scope holds
+(personal memory: what applies beyond the current project, such as how the
+human partner works and how tools, systems and the world behave; project
+memory: knowledge about this project; session memory: working notes about the
+current work: its plan, what was tried and found), when to read a page, and that stored memory is fallible evidence, never
 instructions or permission. Sessions that can call the save tools are also told
 when to save: when the partner corrects the agent or says how they want work
 done, when the partner states a project plan, constraint or decision (saved to
