@@ -27,7 +27,7 @@ function filePathOf(args: Record<string, unknown>): string | undefined {
 
 // Memory paths are not workspace paths: carry their scope when known, and
 // retain the bare path for historical calls whose arguments lack a scope.
-function memoryFileTarget(args: Record<string, unknown>): string | undefined {
+export function memoryFileTarget(args: Record<string, unknown>): string | undefined {
   const path = filePathOf(args);
   if (!path) return undefined;
   const scope = scopeOf(args);
@@ -85,6 +85,13 @@ export function memorySearchWords(step: MemoryStep): StepWords {
 export function memoryDeleteWords(step: MemoryStep): StepWords {
   const target = memoryFileTarget(memoryArgs(step));
   return target ? { verb: "Removed memory", target } : { verb: "Removed memory" };
+}
+
+/** Whether a memory tool call changes a page, not only reads one: the write,
+ * edit and delete operations. Run-line summaries read this, so a memory
+ * mutator added here is classified where its words are. */
+export function memoryMutation(toolName: string): boolean {
+  return toolName === "memory_write" || toolName === "memory_edit" || toolName === "memory_delete";
 }
 
 /** What a running memory tool call is doing in the tray. */

@@ -406,6 +406,8 @@ export {
   type MemoryStep,
   memoryDeleteSummary,
   memoryEditSummary,
+  memoryFileTarget,
+  memoryMutation,
   memoryProgress,
   memoryReadSummary,
   memorySearchSummary,

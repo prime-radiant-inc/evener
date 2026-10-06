@@ -5,6 +5,8 @@ import {
   type MemoryStep,
   memoryDeleteSummary,
   memoryEditSummary,
+  memoryFileTarget,
+  memoryMutation,
   memoryProgress,
   memoryReadSummary,
   memorySearchSummary,
@@ -104,4 +106,19 @@ test("uses the bare path when a memory search has no scope", () => {
   const memoryStep = step({ pattern: "needle", path: "guides" });
   expect(memorySearchSummary(memoryStep)).toBe('Searched memory for "needle" in guides');
   expect(memoryProgress("memory_search", memoryStep)).toBe('Searching memory for "needle" in guides');
+});
+
+test("classifies the memory mutators and only them", () => {
+  for (const tool of ["memory_write", "memory_edit", "memory_delete"]) {
+    expect(memoryMutation(tool)).toBe(true);
+  }
+  for (const tool of ["memory_read", "memory_search", "read_file", "grep", "shell"]) {
+    expect(memoryMutation(tool)).toBe(false);
+  }
+});
+
+test("targets a memory step's scope and path from parsed arguments", () => {
+  expect(memoryFileTarget({ scope: "personal", file_path: "page.md" })).toBe("personal/page.md");
+  expect(memoryFileTarget({ file_path: "bare.md" })).toBe("bare.md");
+  expect(memoryFileTarget({ scope: "personal" })).toBeUndefined();
 });

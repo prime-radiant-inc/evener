@@ -12,6 +12,7 @@ import {
 	type AskUserQuestion,
 	housekeepingAction,
 	mcpToolParts,
+	memoryMutation,
 	parseAskUserQuestions,
 	skillName,
 	type ThreadModel,
@@ -372,9 +373,8 @@ interface Group {
 	unnamed: number;
 	/** Whether a task_list step in the part changed the list, not only read it. */
 	changedTasks: boolean;
-	/** Whether a memory step in the part changed a page, not only read it. */
-	changedMemory: boolean;
-	/** Number of calls in the part that attempted a memory mutation. */
+	/** How many calls in the part attempted a memory mutation (the package's
+	 * memoryMutation): a part with any changed a page, not only read one. */
 	memoryMutations: number;
 	/** How many questions a part's ask_user calls asked: a call can ask several. */
 	questions: number;
@@ -440,9 +440,10 @@ function partText(group: Group): string {
 		case "tasks":
 			return `${group.changedTasks ? "updated" : "checked"} the task list${n === 1 ? "" : ` ${n} times`}`;
 		case "memory": {
-			const count = group.changedMemory ? group.memoryMutations : n;
-			const countText = count === 1 ? "" : group.changedMemory && count === 2 ? " twice" : ` ${count} times`;
-			return `${group.changedMemory ? "updated" : "read"} memory${countText}`;
+			const mutated = group.memoryMutations > 0;
+			const count = mutated ? group.memoryMutations : n;
+			const countText = count === 1 ? "" : mutated && count === 2 ? " twice" : ` ${count} times`;
+			return `${mutated ? "updated" : "read"} memory${countText}`;
 		}
 		case "transcript":
 			return n === 1 ? "read a transcript" : `read ${n} transcripts`;
@@ -493,7 +494,6 @@ export function runSummary(steps: readonly RunStep[]): RunSummary {
 				names: new Set(),
 				unnamed: 0,
 				changedTasks: false,
-				changedMemory: false,
 				memoryMutations: 0,
 				questions: 0,
 			};
@@ -505,8 +505,7 @@ export function runSummary(steps: readonly RunStep[]): RunSummary {
 			failed += 1;
 		}
 		if (part.family === "tasks" && taskListChanges({ argumentsJSON: step.detail.arguments })) group.changedTasks = true;
-		if (part.family === "memory" && ["memory_write", "memory_edit", "memory_delete"].includes(step.label)) {
-			group.changedMemory = true;
+		if (part.family === "memory" && memoryMutation(step.label)) {
 			group.memoryMutations += 1;
 		}
 		// A call whose questions don't parse still asked one.

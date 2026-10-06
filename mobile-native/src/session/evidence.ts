@@ -12,6 +12,7 @@ import {
 	jobStatusDisplay,
 	freshNotes,
 	lineCount,
+	memoryFileTarget,
 	parseArgs,
 	prettyJSON,
 	readTranscriptEnvelope,
@@ -21,7 +22,6 @@ import {
 	str,
 	toolFamily,
 	toolJSONResult,
-	toolStepWords,
 	turns,
 	webFetchResult,
 	worktreeMessage,
@@ -232,15 +232,15 @@ function jsonEvidence(detail: ActivityDetail, text: string): Evidence[] {
 // the same file diff as edit_file, and other calls read as printed.
 function memoryEvidence(label: string, detail: ActivityDetail): Evidence[] {
 	const text = detail.output ?? "";
-	const args = parseArgs(detail.arguments);
 	switch (label) {
 		case "memory_write": {
+			const args = parseArgs(detail.arguments);
 			const content = str(args, "content");
 			if (!content) return jsonEvidence(detail, text);
-			const title = toolStepWords({ toolName: label, argumentsJSON: detail.arguments }).target ?? "Memory page";
-			return [{ kind: "markdown", title, markdown: content }];
+			return [{ kind: "markdown", title: memoryFileTarget(args) ?? "Memory page", markdown: content }];
 		}
 		case "memory_edit": {
+			const args = parseArgs(detail.arguments);
 			const oldString = str(args, "old_string");
 			const newString = str(args, "new_string");
 			if (oldString === undefined && newString === undefined) return jsonEvidence(detail, text);

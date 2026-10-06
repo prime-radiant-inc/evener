@@ -1,6 +1,5 @@
 import {
   clip,
-  editDiffText,
   memoryDeleteSummary,
   memoryEditSummary,
   memoryReadSummary,
@@ -9,35 +8,19 @@ import {
   parseArgs,
   str,
 } from "@evener/appwire-client";
-import { DiffBlock, Markdown } from "../../../../widgets";
+import { Markdown } from "../../../../widgets";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
-import { HeadClippedOutputBody, TailFoldedOutputBody } from "./bodies";
+import { EditFileBody, HeadClippedOutputBody, TailFoldedOutputBody, WriteFileBody } from "./bodies";
 
 const MEMORY_CONTENT_MAX_CHARS = 8000;
 
-function MemoryWriteBody({ item }: ToolRenderProps) {
+function MemoryWriteBody({ item, live }: ToolRenderProps) {
   const args = parseArgs(item.argumentsJSON);
   const content = str(args, "content");
   if (content !== undefined) return <Markdown source={clip(content, MEMORY_CONTENT_MAX_CHARS)} />;
 
-  const output = item.output ?? "";
-  if (output === "") return null;
-  return <div>{output}</div>;
-}
-
-function MemoryEditBody({ item }: ToolRenderProps) {
-  const args = parseArgs(item.argumentsJSON);
-  const path = str(args, "file_path") ?? str(args, "path") ?? "";
-  const oldString = str(args, "old_string") ?? "";
-  const newString = str(args, "new_string") ?? "";
-  return <DiffBlock unified={editDiffText(path, oldString, newString)} />;
-}
-
-function MemoryDeleteBody({ item }: ToolRenderProps) {
-  const output = item.output ?? "";
-  if (output === "") return null;
-  return <div>{output}</div>;
+  return <WriteFileBody item={item} live={live} />;
 }
 
 registerToolRenderer({
@@ -53,7 +36,7 @@ registerToolRenderer({
   icon: "memory",
   fold: "consequential",
   summary: memoryEditSummary,
-  body: MemoryEditBody,
+  body: EditFileBody,
 });
 
 registerToolRenderer({
@@ -77,5 +60,5 @@ registerToolRenderer({
   icon: "memory",
   fold: "consequential",
   summary: memoryDeleteSummary,
-  body: MemoryDeleteBody,
+  body: WriteFileBody,
 });
