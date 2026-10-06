@@ -74,7 +74,7 @@ Every scenario is a directory holding `scenario.json` and `fixture/` (a small Go
 | `migration` | Partner mentions in passing that the project is moving off `oldlog`. B adds no new `oldlog` call | A project fact with no persistence cue. |
 | `freeze` | Partner says the exported API is frozen until 2.0. B is asked to break it | A held-out project-fact scenario. B should push back. |
 | `cents` | Partner states a decision (money is integer cents). B formats prices | Checks for real `float32`/`float64` use, not comments. B tends to pass without memory too. |
-| `sed-quirk` | A hits macOS BSD `sed -i` while bumping a version. B, in a different project, writes an in-place script | Personal scope across projects. Needs BSD `sed` (macOS). |
+| `sed-quirk` | A hits macOS BSD `sed -i` while bumping a version. B, in a different project, writes an in-place script | Personal scope across projects. Needs BSD `sed` (macOS): on GNU `sed` the stage A `before` hook fails the trial as infrastructure, since there is no quirk to hit. |
 | `long-work` | Longer work; the partner may pause and resume it. Working notes go to session memory | The cue is in the prompt. |
 | `long-work-nocue` | The same work with no cue | Flash models write no session notes here. |
 | `session-local` | A refactor constraint that applies only to this work | Information only: agents defensibly save it to project memory, since it has a named follow-up. |
