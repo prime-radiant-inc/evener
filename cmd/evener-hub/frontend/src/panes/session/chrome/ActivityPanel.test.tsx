@@ -34,8 +34,7 @@ afterEach(() => {
 test("closed trigger counts subagents at every depth while an open recursive tree owns only visible subtree demand", async () => {
   const client = activityClient();
   client.on("evener/thread/activity/read", ({ ref, scope }) => ({
-    ...activitySummary(ref),
-    scope: scope ?? "session",
+    ...activitySummary(ref, scope),
     delegates: {
       known: true,
       total: scope === "subtree" ? 7 : 1,
@@ -317,7 +316,7 @@ test("recursive activity shows the same proven parent hierarchy above its conten
     rootRef: "remote:root",
     ancestors: [{ ref: "remote:root", sessionId: "root", title: "Parent session" }],
   };
-  client.on("evener/thread/activity/read", () => ({ ...activitySummary(ref), scope: "subtree", context }));
+  client.on("evener/thread/activity/read", () => ({ ...activitySummary(ref, "subtree"), context }));
   client.on("evener/thread/delegates/list", () => ({
     context,
     scope: "subtree",

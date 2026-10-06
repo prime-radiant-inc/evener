@@ -351,8 +351,8 @@ test("desktop delegate rows build six nested edges beside the mounted center and
     if (!ref) throw new Error("Missing thread ref");
     return cascadeThread(ref, requestGeneration, includeTurns !== false, title(ref));
   });
-  client.on("evener/thread/activity/read", ({ ref }) => ({
-    ...activitySummary(ref),
+  client.on("evener/thread/activity/read", ({ ref, scope }) => ({
+    ...activitySummary(ref, scope),
     context: context(ref),
     delegates: { known: true, active: 1, total: 1, failed: 0, completed: 0 },
     jobs: { known: true, active: refs.indexOf(ref) + 1, total: refs.indexOf(ref) + 101, failed: 0, completed: 100 },
@@ -608,7 +608,7 @@ test("pending ancestry becomes useful parent navigation only after the domain pr
     rootRef: "remote:root",
     ancestors: [{ ref: "remote:root", sessionId: "root", title: "Proven root" }],
   });
-  client.on("evener/thread/activity/read", () => ({ ...activitySummary(ref), context: context() }));
+  client.on("evener/thread/activity/read", ({ scope }) => ({ ...activitySummary(ref, scope), context: context() }));
   client.on("evener/thread/delegates/list", () => ({
     context: context(),
     scope: "session",

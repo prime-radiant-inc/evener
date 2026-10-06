@@ -193,10 +193,6 @@ test("opens the mobile panel when nothing is focused", async () => {
 test("Activity opened from the mobile drawer supersedes the drawer", async () => {
   const ref = "remote:drawer-activity";
   const client = activityClient();
-  client.on("evener/thread/activity/read", ({ ref: requested, scope }) => ({
-    ...activitySummary(requested),
-    scope: scope ?? "session",
-  }));
   connectionStore.getState().connect(client);
   const user = userEvent.setup();
   workspaceStore.getState().openPane("doc", { ref });
@@ -230,10 +226,6 @@ test("Activity opened from the mobile drawer supersedes the drawer", async () =>
 test("renders the new activity sidebar over the mobile stack with the selected tab", async () => {
   const ref = "remote:activity";
   const client = activityClient();
-  client.on("evener/thread/activity/read", ({ ref: requested, scope }) => ({
-    ...activitySummary(requested),
-    scope: scope ?? "session",
-  }));
   client.on("evener/thread/jobs/list", ({ ref: requested, scope }) => ({
     context: activityContext(requested),
     scope: scope ?? "session",
@@ -269,7 +261,10 @@ test.each(["Close", "Escape"])(
     client.on("thread/read", ({ ref }) =>
       activityDetailsThread(ref, { name: ref === parent ? "Parent work" : "Child work" }),
     );
-    client.on("evener/thread/activity/read", ({ ref }) => ({ ...activitySummary(ref), context: context(ref) }));
+    client.on("evener/thread/activity/read", ({ ref, scope }) => ({
+      ...activitySummary(ref, scope),
+      context: context(ref),
+    }));
     client.on("evener/thread/delegates/list", ({ ref, scope }) => ({
       context: context(ref),
       scope: scope ?? "session",
