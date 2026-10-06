@@ -1,6 +1,7 @@
 # Native memory refresh notifications
 
-Status: proposed native amendment, awaiting Jesse's approval.
+Status: approved by Jesse on 2026-10-06. Installed-device qualification is
+reported separately and does not block this implementation's merge.
 
 ## Scope
 
