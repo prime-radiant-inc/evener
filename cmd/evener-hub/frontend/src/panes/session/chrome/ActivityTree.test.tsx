@@ -16,7 +16,6 @@ import { act, cleanup, fireEvent, render, screen, within } from "@testing-librar
 import userEvent from "@testing-library/user-event";
 import { createElement, useState } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import * as sessionPlacementModule from "../../../shell/sessionPlacement";
 import { activitySummary } from "../../../stores/sessionActivityTestUtils";
 import * as openTranscriptModule from "../transcript/openTranscript";
 import { ActivityTree } from "./ActivityTree";
@@ -32,16 +31,12 @@ import { detailLineByText } from "./detailLine.testFixture";
 // the real button's icon-only rendering and click behavior are covered in
 // openTranscript.test.tsx, where the workspace harness exists.
 let openTranscript: typeof openTranscriptModule.openTranscript;
-let openSessionByRef: typeof sessionPlacementModule.openSessionByRef;
 let openButtonProps: Array<{
   transcriptRef: string;
   parentRef?: string;
 }>;
 beforeEach(() => {
   openTranscript = vi.spyOn(openTranscriptModule, "openTranscript").mockImplementation(() => {});
-  // Spied the same way as openTranscript, so ActivityTree.tsx and these
-  // assertions share one binding.
-  openSessionByRef = vi.spyOn(sessionPlacementModule, "openSessionByRef").mockImplementation(() => {});
   openButtonProps = [];
   vi.spyOn(openTranscriptModule, "OpenTranscriptButton").mockImplementation((props) => {
     openButtonProps.push(props);
@@ -202,12 +197,9 @@ afterEach(() => {
 });
 
 describe("ActivityTree", () => {
-  // A delegate the page stopped at: the depth or path bound was reached, so the
-  // branch is truncated and carries no token to page with. #1269 settled that
-  // deliberately -- a token there would name the child as a fresh root at
-  // position 0, which is the page a direct request already returns -- which
-  // leaves the child reachable only by asking for it as its own session.
-  function depthTruncatedTree(): ActivityTreeData {
+  // A delegate whose child session is rendered beneath it and carries its own
+  // session-level diagnostics.
+  function childDiagnosticsTree(diagnostics: string[]): ActivityTreeData {
     return {
       revision: 3,
       root: {
@@ -235,8 +227,18 @@ describe("ActivityTree", () => {
               terminal: false,
               resumable: true,
               task: "Deep work",
-              diagnostics: ['depth limit reached; request session "sess_deep_child" directly'],
-              branch: { truncated: true },
+              branch: {},
+              child: {
+                kind: "session",
+                sessionId: "sess_deep_child",
+                ref: "local:sess_deep_child",
+                label: "Deep child",
+                aggregate: "running",
+                counts: { active: 0, failed: 0, completed: 0, complete: false },
+                entries: [],
+                branch: {},
+                diagnostics,
+              },
             },
           },
         ],
@@ -245,111 +247,30 @@ describe("ActivityTree", () => {
     } as unknown as ActivityTreeData;
   }
 
-  test("a truncated delegate with no continuation offers to open the child session", async () => {
-    const user = userEvent.setup();
-    render(
-      <ActivityTree tree={depthTruncatedTree()} expandedFoldIDs={[]} onToggleFold={vi.fn()} onContinue={vi.fn()} />,
-    );
-
-    expect(screen.queryByRole("button", { name: "Load more" })).toBeNull();
-    const open = screen.getByRole("button", { name: "Open session" });
-    await user.click(open);
-    expect(openSessionByRef).toHaveBeenCalledWith("local:sess_deep_child");
-  });
-
-  // The depth bound truncates the delegate's own branch, before the child is
-  // loaded at all. The continuation-path bound and a size trim inside the
-  // child land on the child's branch instead, with the child rendered above
-  // it — the same row, a different branch state.
-  function renderedChildTree(
-    childBranch: Record<string, unknown>,
-    childFields: Record<string, unknown> = {},
-  ): ActivityTreeData {
-    const tree = depthTruncatedTree();
-    const delegate = (tree.root.entries[0] as unknown as { delegate: Record<string, unknown> }).delegate;
-    delegate.branch = {};
-    delegate.diagnostics = undefined;
-    delegate.child = {
-      kind: "session",
-      sessionId: "sess_deep_child",
-      ref: "local:sess_deep_child",
-      label: "Deep child",
-      aggregate: "running",
-      counts: { active: 0, failed: 0, completed: 0, complete: false },
-      entries: [],
-      branch: childBranch,
-      ...childFields,
-    };
-    return tree;
-  }
-
   // The path bound and the journal conditions are the child session's to
   // report (agent/jobs_activity.go stamps them on the session, not the
   // delegate), and the delegate row is the only row that session has, so its
   // detail strip is where the sentence has to appear.
   test("a rendered child's session-level diagnostics show in the delegate's detail strip", () => {
     const pathLimit = 'continuation path limit reached; request session "sess_deep_child" directly';
-    render(
-      <ActivityTree
-        tree={renderedChildTree({ truncated: true }, { diagnostics: [pathLimit] })}
-        expandedFoldIDs={[]}
-        onToggleFold={vi.fn()}
-        onContinue={vi.fn()}
-      />,
-    );
+    render(<ActivityTree tree={childDiagnosticsTree([pathLimit])} expandedFoldIDs={[]} onToggleFold={vi.fn()} />);
 
     expect(screen.getByText(pathLimit)).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Open session" })).toBeTruthy();
   });
 
-  test("a rendered child truncated with no continuation offers to open that session", async () => {
-    const user = userEvent.setup();
-    render(
-      <ActivityTree
-        tree={renderedChildTree({ truncated: true })}
-        expandedFoldIDs={[]}
-        onToggleFold={vi.fn()}
-        onContinue={vi.fn()}
-      />,
-    );
-
-    expect(screen.queryByRole("button", { name: "Load more" })).toBeNull();
-    await user.click(screen.getByRole("button", { name: "Open session" }));
-    expect(openSessionByRef).toHaveBeenCalledWith("local:sess_deep_child");
-  });
-
-  test("a rendered child that can still be paged offers Load more, not an open-session link", async () => {
-    const user = userEvent.setup();
-    const onContinue = vi.fn();
-    render(
-      <ActivityTree
-        tree={renderedChildTree({ truncated: true, continuation: "token_child" })}
-        expandedFoldIDs={[]}
-        onToggleFold={vi.fn()}
-        onContinue={onContinue}
-      />,
-    );
-
-    expect(screen.queryByRole("button", { name: "Open session" })).toBeNull();
-    await user.click(screen.getByRole("button", { name: "Load more" }));
-    // The two ids keep their separate jobs: the delegate row owns the strip
-    // and keys the graft (and the panel's failure map), while the child's
-    // token is what the request carries. A page fetched this way arrives
-    // wrapped in the ancestor chain, and the graft is fenced by projection
-    // revision, so it cannot cost this row its newer parent-side metadata —
-    // see activityMerge.test.ts.
-    expect(onContinue).toHaveBeenCalledWith('delegate:["local:sess_deep_child","dlg_deep"]', "token_child");
-  });
-
-  test("a delegate that can still be paged offers Load more, not an open-session link", () => {
-    const tree = depthTruncatedTree();
-    const delegate = (tree.root.entries[0] as { delegate: { branch: { truncated?: boolean; continuation?: string } } })
-      .delegate;
+  // Paging belongs to the panel's page boundaries, not the tree: a branch that
+  // carries a continuation token or stopped truncated renders its rows and its
+  // diagnostics, with no paging or open-session controls of its own.
+  test("a truncated or token-bearing tree renders its rows with no continuation controls", () => {
+    const tree = childDiagnosticsTree(["depth limit reached"]);
+    const delegate = (tree.root.entries[0] as unknown as { delegate: Record<string, unknown> }).delegate;
     delegate.branch = { truncated: true, continuation: "token_deep" };
+    tree.root.branch = { truncated: true, continuation: "token_root" };
+    render(<ActivityTree tree={tree} expandedFoldIDs={[]} onToggleFold={vi.fn()} />);
 
-    render(<ActivityTree tree={tree} expandedFoldIDs={[]} onToggleFold={vi.fn()} onContinue={vi.fn()} />);
-
-    expect(screen.getByRole("button", { name: "Load more" })).toBeTruthy();
+    expect(screen.getByRole("treeitem", { name: "Deep work" })).toBeTruthy();
+    expect(screen.getByText("depth limit reached")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Load more" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Open session" })).toBeNull();
   });
 
@@ -655,7 +576,7 @@ describe("ActivityTree", () => {
         branch: {},
       },
     };
-    render(<ActivityTree tree={tree} expandedFoldIDs={[FOLD_ID]} onToggleFold={vi.fn()} onContinue={vi.fn()} />);
+    render(<ActivityTree tree={tree} expandedFoldIDs={[FOLD_ID]} onToggleFold={vi.fn()} />);
     const row = screen.getByRole("treeitem", { name: "legacy lint" });
     expect(row.textContent).toContain("Command failed");
   });
@@ -1190,63 +1111,6 @@ describe("ActivityTree", () => {
     const meta = metaText(screen.getByRole("treeitem", { name: "Sole delegate" }));
     expect(meta).toContain("5s");
     expect(meta).not.toContain("1m");
-  });
-
-  test("continuation strip renders after the session's rows and calls onContinue", async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
-    vi.setSystemTime(NOW);
-    const user = setupUser();
-    const onContinue = vi.fn();
-    const continuedTree: ActivityTreeData = {
-      revision: 1,
-      root: { ...TREE.root, branch: { continuation: "tok_root" } },
-    };
-    render(<ActivityTree tree={continuedTree} expandedFoldIDs={[]} onToggleFold={vi.fn()} onContinue={onContinue} />);
-
-    await user.click(screen.getByRole("button", { name: "Load more" }));
-    expect(onContinue).toHaveBeenCalledWith("session:ref_root", "tok_root");
-    expect(openTranscript).not.toHaveBeenCalled();
-  });
-
-  test("every continuation control waits while another branch is loading", () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
-    vi.setSystemTime(NOW);
-    const continuedTree: ActivityTreeData = {
-      revision: 1,
-      root: { ...TREE.root, branch: { continuation: "tok_root" } },
-    };
-    render(
-      <ActivityTree
-        tree={continuedTree}
-        expandedFoldIDs={[]}
-        onToggleFold={vi.fn()}
-        onContinue={vi.fn()}
-        loadingContinuationID='delegate:["ref_other","dlg_other"]'
-      />,
-    );
-    // The panel carries one page at a time, so a branch that is not the one
-    // loading still cannot start a second.
-    expect(screen.getByRole("button", { name: "Load more" }).hasAttribute("disabled")).toBe(true);
-  });
-
-  test("continuation failure message renders when the load failed", () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
-    vi.setSystemTime(NOW);
-    const continuedTree: ActivityTreeData = {
-      revision: 1,
-      root: { ...TREE.root, branch: { continuation: "tok_root" } },
-    };
-    render(
-      <ActivityTree
-        tree={continuedTree}
-        expandedFoldIDs={[]}
-        onToggleFold={vi.fn()}
-        onContinue={vi.fn()}
-        continuationFailures={{ "session:ref_root": "Couldn't load more." }}
-        loadingContinuationID={undefined}
-      />,
-    );
-    expect(screen.getByText("Couldn't load more.")).toBeTruthy();
   });
 });
 

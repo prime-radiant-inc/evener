@@ -25,6 +25,7 @@ import {
 	subagentStateWord,
 	subagentTitle,
 	subagentWhy,
+	runningSubagentCount,
 	stripSegments,
 	subtreeStopped,
 	subtreeStops,
@@ -124,6 +125,14 @@ describe("a subagent's state is its own (spec 9)", () => {
 			"failed",
 		);
 		expect(subagentState(delegate("t", { type: "turns", turns: [job(true, { outcome: "success" })] }))).toBe("done");
+	});
+
+	it("counts the running subagents among any it is given", () => {
+		const turnContainer = delegate("t", { type: "turns", turns: [job(false)] });
+		expect(
+			runningSubagentCount([running("a"), turnContainer, failed("b"), done("c"), done("s", { outcome: "stopped" })]),
+		).toBe(2);
+		expect(runningSubagentCount([])).toBe(0);
 	});
 
 	it("says the state in the spec's words", () => {
@@ -275,6 +284,18 @@ describe("why lines on the fallbacks (ruling 6)", () => {
 		});
 		expect(subagentWhy(rowOf(done("d", { reportPreview: undefined })), NOW)).toEqual({ text: "Finished" });
 		expect(subagentWhy(rowOf(done("s", { outcome: "stopped" })), NOW)).toEqual({ text: "Stopped" });
+	});
+
+	// What a subagent's transcript row and the tray count too: its own
+	// subagents that are themselves running. A finished subagent is not
+	// waited on, even while its own subagent or command still runs.
+	it("waits only on its own subagents that are still running", () => {
+		const finishedWithRunningChild = done("c", { child: session("local:c", [entry(running("g"))]) });
+		const finishedWithLiveJob = done("j", { child: session("local:j", [{ kind: "shell", job: job(false) }]) });
+		const parent = (...children: ActivityDelegate[]) =>
+			running("p", { latestActivityAt: ago(10_000), child: session("local:p", children.map(entry)) });
+		expect(subagentWhy(rowOf(parent(finishedWithRunningChild, finishedWithLiveJob)), NOW).text).toBe("Working");
+		expect(subagentWhy(rowOf(parent(finishedWithRunningChild, running("r"))), NOW).text).toBe("Waiting on 1 subagent");
 	});
 
 	it("says what a running subagent is doing with what the tree carries", () => {

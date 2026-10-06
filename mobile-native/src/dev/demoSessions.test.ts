@@ -101,6 +101,8 @@ describe("the demo sessions behind Appendix A's Session frames", () => {
 			if (!thread) throw new Error(`no thread for ${delegate.transcriptRef}`);
 			expect(thread.name).toBe(delegate.description);
 			expect(thread.sessionId).toBe(delegate.childSessionId);
+			// The root owns its whole tree (demoSessions.ts delegatesOf).
+			expect(delegate.ownerSessionId).toBe(parent.sessionId);
 			// Its status matches its row: running works, failed failed, done ended.
 			expect(thread.status.type).toBe(
 				{ running: "active", failed: "systemError", completed: "notLoaded" }[delegate.status],

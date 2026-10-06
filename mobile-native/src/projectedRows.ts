@@ -54,6 +54,7 @@ import {
 	parseAskUserQuestions,
 	parseTaskListData,
 	pendingTextJoined,
+	PROMPT_EVENT_KINDS,
 	projectThread,
 	steeringLabel,
 	steeringNotificationFragments,
@@ -730,7 +731,6 @@ export function liveAsksFor(model: ThreadModel): ReadonlyMap<string, AskQuestion
 // --- notice rows ------------------------------------------------------------------
 
 const WARNING_EVENT_KINDS = new Set(["loop_detection", "turn_limit", ERROR_EVENT_KIND]);
-const HIDDEN_EVENT_KINDS = new Set(["system_prompt", "prompt_loaded"]);
 const PRELUDE_EVENT_KINDS = new Set(["environment"]);
 const DIAGNOSTIC_EVENT_KINDS = new Set(["round_timings"]);
 const LIFECYCLE_EVENT_KINDS = new Set([
@@ -753,7 +753,7 @@ const LIFECYCLE_EVENT_KINDS = new Set([
 function systemFamily(eventKind: string | undefined): NoticeFamily {
 	if (!eventKind) return "unknown-system";
 	if (WARNING_EVENT_KINDS.has(eventKind)) return "warning";
-	if (HIDDEN_EVENT_KINDS.has(eventKind)) return "hidden-instruction";
+	if (PROMPT_EVENT_KINDS.has(eventKind)) return "hidden-instruction";
 	if (PRELUDE_EVENT_KINDS.has(eventKind)) return "system-prelude";
 	if (DIAGNOSTIC_EVENT_KINDS.has(eventKind)) return "diagnostic";
 	if (LIFECYCLE_EVENT_KINDS.has(eventKind)) return "lifecycle";

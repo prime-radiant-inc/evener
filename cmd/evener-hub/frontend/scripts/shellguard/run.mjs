@@ -51,14 +51,19 @@ const BOOT = {
   bootLabel: "the shellguard entry global window.settledShell",
 };
 
-// One page load, one measurement: opens a fresh page at `viewport`, waits for
-// the harness to settle, and returns the parsed result of `expression`. Every
-// measurement below is one call to this - the per-measure differences are the
-// viewport and the expression or page action, nothing else.
+// One page load, one measurement: loads the harness as a new document in the
+// shared tab, with empty localStorage, at `viewport`, waits for it to settle,
+// and returns the parsed result of `expression`. Every measurement below is
+// one call to this - the per-measure differences are the viewport and the
+// expression or page action, nothing else.
 async function measureOnPage(cdpEndpoint, vitePort, viewport, expression) {
   const page = await connectPage(cdpEndpoint);
   const { send } = page;
   try {
+    // Every measurement shares this tab, and the outgoing document can still
+    // save its layout until the navigation replaces it, so clear storage as each
+    // new document starts. The script ends with this CDP session.
+    await send("Page.addScriptToEvaluateOnNewDocument", { source: "try { localStorage.clear(); } catch {}" });
     await applyViewport(send, viewport);
     await navigateTo(page, `http://127.0.0.1:${vitePort}/shellguard.html`, BOOT);
     await evaluate(send, "window.settledShell");
@@ -164,9 +169,19 @@ async function measureFloatingDock(page) {
     driver.send,
     `(async () => {
       const { workspaceStore, getDockviewApi } = await import('/src/shell/workspace.ts');
-      const paneId = workspaceStore.getState().openPane('settings');
-      window.shellguardFloat = { paneId, workspaceStore, getDockviewApi };
+      window.shellguardFloat = { workspaceStore, getDockviewApi };
     })()`,
+  );
+  // DockHost is a lazy chunk and settledShell waits only for the rail, so the
+  // dock can still be booting here. A pane opened before DockHost's onReady is
+  // re-minted under a new id when onReady restores the layout an earlier page
+  // saved, and the id openPane returned then never gets a panel. DockHost
+  // registers the api at the top of its synchronous onReady, so a non-null api
+  // means that restore has finished.
+  await driver.waitPage("window.shellguardFloat.getDockviewApi() != null", { label: "real Dockview api ready" });
+  await evaluate(
+    driver.send,
+    "window.shellguardFloat.paneId = window.shellguardFloat.workspaceStore.getState().openPane('settings')",
   );
   await driver.waitPage(
     "window.shellguardFloat.getDockviewApi()?.getPanel(window.shellguardFloat.paneId) != null",

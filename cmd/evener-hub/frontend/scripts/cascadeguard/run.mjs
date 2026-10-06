@@ -1070,36 +1070,26 @@ async function reveal(edge, container) {
   for (let boundary = 0; boundary < 10; boundary++) {
     if (await read(`document.querySelector(${q(selector)}) !== null`)) return selector;
     const visible = await read(`document.querySelectorAll(${q(`${container} [data-activity-anchor]`)}).length`);
-    const before = await read(`document.querySelector(${q(container)}).textContent`);
-    const button = await wait(`(() => {
+    // The control is found and activated in one page turn. Scrolling a Show or
+    // Load more control into view can make the page boundary under it load the
+    // next page by itself; when that page lands it removes the boundary and the
+    // list shifts, so a press measured before it can land on a neighbouring
+    // delegate row and drill into it (#3804). The click still requires the
+    // control to be the topmost element at its center, as a real press would.
+    const step = await wait(`(() => {
       if (document.querySelector(${q(selector)})) return { revealed: true };
       const buttons = [...document.querySelectorAll(${q(`${container} button`)})];
       const b = buttons.find(n => !n.disabled && (${visible} === 0 ? n.textContent.trim().startsWith('Inactive subagents (') : n.textContent.trim().startsWith('Show ') || n.textContent.trim() === 'Load more subagents'));
       if (!b) return null;
-      b.scrollIntoView({ block: 'center' }); const r = b.getBoundingClientRect();
-      window.__cascadeRevealEvents ??= [];
-      const sample = phase => {
-        const current = b.getBoundingClientRect();
-        const root = document.querySelector(${q(container)});
-        return { phase, at:performance.now(), container:${q(container)}, button:b.textContent.trim(), connected:b.isConnected,
-          x:current.x + current.width / 2, y:current.y + current.height / 2,
-          anchors:root?.querySelectorAll('[data-activity-anchor]').length,
-          loading:[...root?.querySelectorAll('button') ?? []].some(node => node.disabled && node.textContent.includes('Loading')) };
-      };
-      window.__cascadeRevealEvents.push(sample('measured'));
-      const observer = new MutationObserver(() => window.__cascadeRevealEvents.push(sample('mutation')));
-      observer.observe(document.querySelector(${q(container)}), { childList:true, subtree:true, characterData:true });
-      document.addEventListener('mousedown', event => {
-        window.__cascadeRevealEvents.push({ ...sample('pressed'), intended:b.contains(event.target),
-          actualButton:event.target.closest('button')?.textContent.trim(), actualAnchor:event.target.closest('[data-activity-anchor]')?.dataset.activityAnchor,
-          trusted:event.isTrusted, eventX:event.clientX, eventY:event.clientY });
-        observer.disconnect();
-      }, { capture:true, once:true, passive:true });
-      return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+      b.scrollIntoView({ block: 'center' });
+      const r = b.getBoundingClientRect();
+      if (!b.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2))) return null;
+      const before = document.querySelector(${q(container)}).textContent;
+      b.click();
+      return { before };
     })()`, "real disclosure or direct page boundary");
-    if (button.revealed) return selector;
-    await driver.clickAt(button.x, button.y);
-    await wait(`document.querySelector(${q(selector)}) !== null || document.querySelector(${q(container)}).textContent !== ${q(before)}`, "direct collection progresses");
+    if (step.revealed) return selector;
+    await wait(`document.querySelector(${q(selector)}) !== null || document.querySelector(${q(container)}).textContent !== ${q(step.before)}`, "direct collection progresses");
   }
   throw new Error(`real delegate did not become visible through ten boundaries: ${edge.delegateId}`);
 }

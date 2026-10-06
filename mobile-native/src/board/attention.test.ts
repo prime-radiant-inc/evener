@@ -471,7 +471,7 @@ describe("the working why line reads S5's activity (spec 7.1, 13.1)", () => {
 		expect(whyLine({ row: running, state: "working" }, activity, 0)).toEqual({ text: "Running go test ./agent/..." });
 	});
 
-	it("never lets a stale own-tally subagent guess override an activity read of zero", () => {
+	it("never lets the row's own subagent tally override an activity read of zero", () => {
 		// Without S5 data, this row would read "Waiting on 1 subagent" (its own
 		// tally) - once a real read says zero are running, that must win.
 		const stale = row("s", { state: "active", subagents: { running: 1, failed: 0, done: 0 } });

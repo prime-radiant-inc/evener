@@ -515,7 +515,10 @@ var hubCommandRegistry = []hubCommandDefinition{
 			panel := launchconfig.NewPluginsPanel()
 			m.pluginsPanel = &panel
 			if m.client != nil {
-				return tea.Batch(m.marketplaceListRead(), launchconfig.CmdPluginList(m.client))
+				// The check starts only once the first list has landed, so
+				// that list, read before the check, can never replace the one
+				// the check's re-read brings.
+				return tea.Batch(m.marketplaceListRead(), tea.Sequence(launchconfig.CmdPluginList(m.client), launchconfig.CmdPluginCheckUpdates(m.client)))
 			}
 			return nil
 		},

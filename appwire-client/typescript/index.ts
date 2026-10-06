@@ -2,7 +2,6 @@ export type {
   ActivityBranchState,
   ActivityCounts,
   ActivityDelegate,
-  ActivityDelegateBranch,
   ActivityDelegateEntry,
   ActivityDisclosureState,
   ActivityEntry,
@@ -15,7 +14,6 @@ export type {
   ActivityWorktree,
 } from "./activityData";
 export {
-  activityDelegateBranch,
   activityDelegateDiagnostics,
   activityNodeID,
   defaultExpandedIDs,
@@ -30,7 +28,6 @@ export {
   parseActivityTree,
   reconcileActivityState,
 } from "./activityData";
-export { fenceRootSession, graftContinuationTree } from "./activityMerge";
 export type {
   ActivityDelegateRow,
   ActivityDelegateState,
@@ -744,7 +741,7 @@ export type {
   TranscriptMetadataVisibility,
   TranscriptProjection,
 } from "./transcriptProjector";
-export { ACTION_SUMMARY_UNAVAILABLE, entryDisplayKey, projectThread } from "./transcriptProjector";
+export { ACTION_SUMMARY_UNAVAILABLE, entryDisplayKey, PROMPT_EVENT_KINDS, projectThread } from "./transcriptProjector";
 export {
   findSessionsSummary,
   readTranscriptEnvelope,
