@@ -96,6 +96,33 @@ export interface TranscriptResidencySnapshot {
 }
 
 type Persistence = "enabled" | "repairing" | "clear-suppressed";
+
+// The exact bodies a worker is about to hand to the cache, sampled
+// synchronously immediately before putCurrent: the starting resident body it
+// read, the folded worker model, the record it is writing, and the captured
+// in-flight batch. This is a restorable test-only seam for proving worker
+// checkpoint coverage without a global spare charge; production retains no
+// history and reads nothing from it.
+export interface WorkerCheckpointObservation {
+  ref: string;
+  resident: ThreadModel | undefined;
+  model: ThreadModel;
+  record: CurrentSessionRecord;
+  batch: readonly ReceivedTranscriptUpdate[];
+}
+
+let workerCheckpointObserverForTests: ((observation: WorkerCheckpointObservation) => void) | undefined;
+
+export function observeWorkerCheckpointsForTests(
+  observer: ((observation: WorkerCheckpointObservation) => void) | undefined,
+): () => void {
+  const previous = workerCheckpointObserverForTests;
+  workerCheckpointObserverForTests = observer;
+  return () => {
+    workerCheckpointObserverForTests = previous;
+  };
+}
+
 interface Entry {
   owners: TranscriptOwners;
   ownershipGeneration: number;
@@ -408,6 +435,7 @@ export function createTranscriptResidency(
         entry.current = false;
         return false;
       }
+      workerCheckpointObserverForTests?.({ ref, resident, model, record, batch });
       const outcome = await port.cache.putCurrent(record, Date.now());
       if (outcome.outcome !== "written") {
         residency.revoke(ref, "storage");

@@ -35,6 +35,7 @@ import {
   threadsStore,
 } from "./threads";
 import { encodedPayloadBytes } from "./transcriptPayloadBudget";
+import { observeWorkerCheckpointsForTests } from "./transcriptResidency";
 
 const databaseName = `background-thread-${crypto.randomUUID()}`;
 let cache: SessionCacheIndexedDB;
@@ -169,6 +170,29 @@ function independentJsonBytes(value: unknown): number {
   const encoded = JSON.stringify(value);
   if (encoded === undefined) return Number.POSITIVE_INFINITY;
   return new TextEncoder().encode(encoded).byteLength;
+}
+
+function occurrences(value: string, needle: string): number {
+  return value.split(needle).length - 1;
+}
+
+// Two models share one logical transcript body when they are the same model or
+// carry identical payload fields, turns and overlay, ignoring only the read
+// bookkeeping generation a resync bumps.
+function transcriptBodySignature(model: ThreadModel): string | undefined {
+  const state = currentTranscriptState(model);
+  if (!state) return undefined;
+  return JSON.stringify({
+    fields: state.fields,
+    overlay: state.overlay,
+    history: { ...state.history, issuedGeneration: 0, appliedGeneration: 0 },
+  });
+}
+
+function sharesTranscriptBody(base: ThreadModel, canonical: ThreadModel): boolean {
+  if (base === canonical) return true;
+  const baseSignature = transcriptBodySignature(base);
+  return baseSignature !== undefined && baseSignature === transcriptBodySignature(canonical);
 }
 
 describe("background thread claims", () => {
@@ -1212,10 +1236,16 @@ describe("background thread claims", () => {
     setSessionCacheAdapterForTests(cache);
     const one = deferred<ReturnType<typeof currentRead>>();
     const two = deferred<ReturnType<typeof currentRead>>();
+    const writerResync = deferred<ReturnType<typeof currentRead>>();
+    let writerReads = 0;
     const fake = new FakeClient("ready");
     fake.on("thread/read", ({ ref }) => {
       if (ref === "local:one") return one.promise;
       if (ref === "local:two") return two.promise;
+      if (ref === "local:writer") {
+        writerReads += 1;
+        return writerReads === 1 ? currentRead("local:writer") : writerResync.promise;
+      }
       return currentRead("local:writer");
     });
     fake.on("thread/unsubscribe", () => ({}));
@@ -1226,15 +1256,23 @@ describe("background thread claims", () => {
     let heldWrite: CurrentSessionRecord | undefined;
     const putCurrentStarted = deferred<void>();
     let transaction: ReturnType<typeof holdNextWriteTransaction> | undefined;
+    let secondHoldArmed = false;
+    let secondTransaction: ReturnType<typeof holdNextWriteTransaction> | undefined;
+    const secondWriteStarted = deferred<void>();
+    const writtenRecords: CurrentSessionRecord[] = [];
+    const workerCheckpoints: Array<{ ref: string; batchLength: number }> = [];
     let foregroundPromotion = false;
     const publicationAccounting: Array<{ retainedBytes: number; chargedBytes: number }> = [];
+    const coverageFailures: unknown[] = [];
     // Independent simultaneous inventory of every retained class, with shared
     // identity de-duplication and a paired live reservation per class:
     // - canonical store models -> that ref's resident+handoff charge
     // - coordinator pending/inFlight frames -> pending budget
     // - hydration notification buffers -> pending budget
-    // - hydration base models (model representations) -> total charged
-    // - the held write record (worker checkpoint body) -> worker bytes
+    // - hydration base models -> the canonical body they share, never a global
+    //   spare charge
+    // The worker checkpoint body is covered separately at the call-through
+    // putCurrent boundary, where the folded model and record are both visible.
     // Incoming decoding, JSON serialization temporaries and IndexedDB copies are
     // excluded; a base model shared with the store model is counted once by
     // identity, never as a second body.
@@ -1257,41 +1295,76 @@ describe("background thread claims", () => {
           `canonical model ${ref}`,
         );
       }
+      let queuedBytes = 0;
       for (const entry of snapshot.refs.values()) {
         for (const update of [...entry.pending, ...entry.inFlight]) {
-          expect(independentJsonBytes(update.notification)).toBe(update.bytes);
-          claim(
-            update.notification,
-            independentJsonBytes(update.notification),
-            snapshot.pendingBytes,
-            `coordinator frame ${update.sequence}`,
-          );
+          const bytes = independentJsonBytes(update.notification);
+          expect(bytes, `coordinator frame ${update.sequence}`).toBe(update.bytes);
+          queuedBytes += bytes;
+          claim(update.notification, bytes, snapshot.pendingBytes, `coordinator frame ${update.sequence}`);
         }
       }
+      let hydrationBytes = 0;
       for (const update of pendingThreadHydrationUpdatesForTests()) {
-        expect(independentJsonBytes(update.notification)).toBe(update.bytes);
-        claim(
-          update.notification,
-          independentJsonBytes(update.notification),
-          snapshot.pendingBytes,
-          `hydration frame ${update.sequence}`,
-        );
+        const bytes = independentJsonBytes(update.notification);
+        expect(bytes).toBe(update.bytes);
+        hydrationBytes += bytes;
+        claim(update.notification, bytes, snapshot.pendingBytes, `hydration frame ${update.sequence}`);
       }
+      const handoffTotal = [...snapshot.refs.values()].reduce((sum, entry) => sum + entry.handoffBytes, 0);
+      // A hydration base is the canonical model or shares its body; it is never
+      // a distinct uncharged transcript covered by unrelated spare charges.
       for (const base of pendingThreadHydrationBaseModelsForTests()) {
-        const handoffTotal = [...snapshot.refs.values()].reduce((sum, entry) => sum + entry.handoffBytes, 0);
-        claim(
-          base,
-          independentJsonBytes(currentTranscriptState(base)),
-          snapshot.residentBytes + handoffTotal + snapshot.pendingBytes + snapshot.workerBytes,
-          "hydration base model",
-        );
+        const canonical = state.threads.get(base.ref);
+        expect(
+          canonical !== undefined && sharesTranscriptBody(base, canonical),
+          `hydration base ${base.ref} shares its canonical body`,
+        ).toBe(true);
       }
-      if (heldWrite) claim(heldWrite, independentJsonBytes(heldWrite), snapshot.workerBytes, "held write record");
+      // Bucket sum: the pending budget is exactly the handoff charges plus the
+      // actual queued frames plus the hydration notification bytes.
+      expect(snapshot.pendingBytes, JSON.stringify({ handoffTotal, queuedBytes, hydrationBytes })).toBe(
+        handoffTotal + queuedBytes + hydrationBytes,
+      );
       return { retainedBytes, chargedBytes: snapshot.residentBytes + snapshot.pendingBytes + snapshot.workerBytes };
+    };
+    // The subscriber's own failures are swallowed by the notification emitter,
+    // so record them here and assert them empty at each visible check.
+    const assertCoverage = (label: string) => {
+      const measured = accountRetainedInventory(threadsStore.getState());
+      expect(measured.chargedBytes, label).toBeGreaterThanOrEqual(measured.retainedBytes);
+      expect(coverageFailures, `${label}: subscriber coverage`).toEqual([]);
     };
     const observeAccounting = threadsStore.subscribe((state) => {
       if (foregroundPromotion) return;
-      publicationAccounting.push(accountRetainedInventory(state));
+      try {
+        publicationAccounting.push(accountRetainedInventory(state));
+      } catch (error) {
+        coverageFailures.push(error);
+      }
+    });
+    // The worker-boundary observer sees the folded worker model and the exact
+    // record it is about to write, which the store and cache ports cannot.
+    const restoreWorkerObserver = observeWorkerCheckpointsForTests((observation) => {
+      const snapshot = backgroundTranscriptSnapshotForTests();
+      const modelState = currentTranscriptState(observation.model);
+      expect(modelState, `worker model ${observation.ref} has a recorded state`).toBeDefined();
+      const stateBytes = independentJsonBytes(modelState);
+      const recordBytes = independentJsonBytes(observation.record);
+      expect(stateBytes).toBe(encodedPayloadBytes(modelState));
+      expect(independentJsonBytes(observation.record.state)).toBe(stateBytes);
+      expect(recordBytes).toBe(encodedPayloadBytes(observation.record));
+      expect(recordBytes).toBeGreaterThanOrEqual(stateBytes);
+      // The larger model-state/record encoding is charged exactly once.
+      expect(snapshot.workerBytes).toBe(recordBytes);
+      const ownership = snapshot.refs.get(observation.ref);
+      if (observation.resident && observation.resident !== observation.model) {
+        const residentBytes = independentJsonBytes(currentTranscriptState(observation.resident));
+        expect(ownership?.residentBytes ?? 0, `worker starting body ${observation.ref}`).toBeGreaterThanOrEqual(
+          residentBytes,
+        );
+      }
+      workerCheckpoints.push({ ref: observation.ref, batchLength: observation.batch.length });
     });
     const originalPutCurrent = cache.putCurrent.bind(cache);
     const putCurrent = vi.spyOn(cache, "putCurrent").mockImplementation(async (record, now) => {
@@ -1299,8 +1372,14 @@ describe("background thread claims", () => {
         heldWrite = record;
         transaction = holdNextWriteTransaction(["records", "meta", "current", "currentMeta"]);
         putCurrentStarted.resolve();
+      } else if (secondHoldArmed && !secondTransaction && record.ref === "local:one") {
+        secondHoldArmed = false;
+        secondTransaction = holdNextWriteTransaction(["records", "meta", "current", "currentMeta"]);
+        secondWriteStarted.resolve();
       }
-      return originalPutCurrent(record, now);
+      const outcome = await originalPutCurrent(record, now);
+      if (outcome.outcome === "written") writtenRecords.push(record);
+      return outcome;
     });
     const payload = (ref: string) => {
       const response = currentRead(ref);
@@ -1312,6 +1391,7 @@ describe("background thread claims", () => {
       await putCurrentStarted.promise;
       await transaction?.reached;
       expect(threadsStore.getState().threads.has("local:writer")).toBe(true);
+      assertCoverage("writer hydration published with its write held");
       fake.emitNotification(textDelta("local:one", "buffered-one"));
       fake.emitNotification(textDelta("local:two", "buffered-two"));
       const bufferedUpdates = pendingThreadHydrationUpdatesForTests();
@@ -1329,12 +1409,39 @@ describe("background thread claims", () => {
       await Promise.all([waitForHydration("local:one", 1), waitForHydration("local:two", 1)]);
       expect(threadsStore.getState().threads.has("local:one")).toBe(true);
       expect(threadsStore.getState().threads.has("local:two")).toBe(true);
+      assertCoverage("both hydrations published while the write is held");
+
+      // Phase 1 (still held): one deferred writer resync through the real
+      // notification seam exposes a nonempty hydration base and buffer.
+      fake.emitNotification({
+        method: "evener/thread/resync",
+        params: { ref: "local:writer", threadId: "thr_local:writer" },
+      } as AnyNotification);
+      await vi.waitFor(() => expect(writerReads).toBeGreaterThanOrEqual(2));
+      await vi.waitFor(() => expect(pendingThreadHydrationBaseModelsForTests()).toHaveLength(1));
+      const resyncBase = pendingThreadHydrationBaseModelsForTests()[0]!;
+      expect(resyncBase.ref).toBe("local:writer");
+      const resyncCanonical = threadsStore.getState().threads.get("local:writer");
+      expect(resyncCanonical).toBe(resyncBase);
+      expect(sharesTranscriptBody(resyncBase, resyncCanonical!)).toBe(true);
+      expect(resyncBase.history?.turns).toBe(resyncCanonical!.history?.turns);
+      expect(resyncBase.overlay).toBe(resyncCanonical!.overlay);
+      const baseOwnership = backgroundTranscriptSnapshotForTests().refs.get("local:writer");
+      expect(
+        (baseOwnership?.residentBytes ?? 0) + (baseOwnership?.handoffBytes ?? 0),
+        "resync base covered by its canonical reservation",
+      ).toBeGreaterThanOrEqual(independentJsonBytes(currentTranscriptState(resyncBase)));
+      fake.emitNotification(textDelta("local:writer", "-resync-buffered"));
+      await vi.waitFor(() => expect(pendingThreadHydrationUpdatesForTests()).toHaveLength(1));
+      assertCoverage("nonempty resync base and buffer while the write is held");
+      const resyncResponse = currentRead("local:writer");
+      resyncResponse.requestGeneration = resyncBase.history?.issuedGeneration ?? 1;
+      writerResync.resolve(resyncResponse);
+      await vi.waitFor(() => expect(pendingThreadHydrationBaseModelsForTests()).toHaveLength(0));
+      await vi.waitFor(() => expect(pendingThreadHydrationUpdatesForTests()).toHaveLength(0));
 
       const firstFrame = textDelta("local:one", "🙂".repeat(1024));
       fake.emitNotification(firstFrame);
-      // The first write payload is retained inside the real cache put call while
-      // its four-store IndexedDB transaction is held before either deferred
-      // hydration response completes. Both decoded models remain in the real store.
       const firstWrite = heldWrite;
       expect(firstWrite).toBeDefined();
       const heldSnapshot = backgroundTranscriptSnapshotForTests();
@@ -1352,15 +1459,18 @@ describe("background thread claims", () => {
       expect(secondStateBytes).toBeGreaterThan(1024);
       expect(firstStateBytes).toBeLessThan(32 * 1024 * 1024);
       expect(secondStateBytes).toBeLessThan(32 * 1024 * 1024);
+      // The held checkpoint write is the writer's; its captured batch was empty.
+      expect(
+        workerCheckpoints.some((checkpoint) => checkpoint.ref === "local:writer" && checkpoint.batchLength === 0),
+      ).toBe(true);
       expect(heldSnapshot.workerBytes).toBeGreaterThanOrEqual(firstBodyBytes);
       expect(independentJsonBytes(firstWrite)).toBeGreaterThan(firstBodyBytes);
-      expect(heldSnapshot.residentBytes + heldSnapshot.pendingBytes + heldSnapshot.workerBytes).toBeGreaterThanOrEqual(
-        firstBodyBytes + secondStateBytes,
-      );
+      assertCoverage("first emoji frame accepted");
 
       for (let i = 0; i < 15; i += 1) {
         const frame = textDelta("local:one", "🙂".repeat(1024));
         fake.emitNotification(frame);
+        assertCoverage(`emoji frame ${i}`);
         const snapshot = backgroundTranscriptSnapshotForTests();
         expect(snapshot.residentBytes).toBeLessThanOrEqual(1024);
         expect(snapshot.pendingBytes).toBeLessThanOrEqual(4 * 1024 * 1024);
@@ -1407,46 +1517,17 @@ describe("background thread claims", () => {
       expect(threadsStore.getState().threads.get("local:one")?.overlay?.[toolKey]?.item.output).toContain(
         '"retained":true',
       );
+      assertCoverage("structured tool notification accepted");
       expect(publicationAccounting.length).toBeGreaterThan(0);
       expect(publicationAccounting.every(({ retainedBytes, chargedBytes }) => chargedBytes >= retainedBytes)).toBe(
         true,
-      );
-      const chargedBytes = backgroundTranscriptSnapshotForTests();
-      const retainedIdentities = new Set<object>();
-      let independentlyMeasuredRetained = 0;
-      const retain = (identity: object, bytes: number) => {
-        if (retainedIdentities.has(identity)) return;
-        retainedIdentities.add(identity);
-        independentlyMeasuredRetained += bytes;
-      };
-      for (const [ref, model] of threadsStore.getState().threads) {
-        const bodyBytes = independentJsonBytes(currentTranscriptState(model));
-        retain(model, bodyBytes);
-        const ownership = chargedBytes.refs.get(ref);
-        expect((ownership?.residentBytes ?? 0) + (ownership?.handoffBytes ?? 0)).toBeGreaterThanOrEqual(bodyBytes);
-      }
-      let actualQueuedUpdateBytes = 0;
-      for (const entry of chargedBytes.refs.values()) {
-        for (const update of [...entry.pending, ...entry.inFlight]) {
-          const bodyBytes = independentJsonBytes(update.notification);
-          expect(bodyBytes).toBe(update.bytes);
-          retain(update.notification, bodyBytes);
-          actualQueuedUpdateBytes += bodyBytes;
-        }
-      }
-      const heldRecordBytes = independentJsonBytes(firstWrite);
-      expect(heldRecordBytes).toBeGreaterThan(firstBodyBytes);
-      expect(chargedBytes.workerBytes).toBeGreaterThanOrEqual(heldRecordBytes);
-      retain(firstWrite as object, heldRecordBytes);
-      const handoffBytes = [...chargedBytes.refs.values()].reduce((sum, entry) => sum + entry.handoffBytes, 0);
-      expect(chargedBytes.pendingBytes).toBeGreaterThanOrEqual(handoffBytes + actualQueuedUpdateBytes);
-      expect(chargedBytes.residentBytes + chargedBytes.pendingBytes + chargedBytes.workerBytes).toBeGreaterThanOrEqual(
-        independentlyMeasuredRetained,
       );
       expect(encodedPayloadBytes({ text: "🙂", raw: { output: ["工具", 7] } })).toBe(
         new TextEncoder().encode(JSON.stringify({ text: "🙂", raw: { output: ["工具", 7] } })).byteLength,
       );
       expect(backgroundTranscriptSnapshotForTests().workerBytes).toBeGreaterThan(0);
+      expect(backgroundTranscriptSnapshotForTests().pendingBytes).toBeLessThanOrEqual(4 * 1024 * 1024);
+
       transaction?.release();
       await vi.waitFor(() => expect(backgroundTranscriptSnapshotForTests().diskWorkers).toBe(0), { timeout: 1000 });
       await settleBackgroundTranscriptsForTests();
@@ -1454,12 +1535,51 @@ describe("background thread claims", () => {
       expect(completed.diskWorkers).toBe(0);
       expect(completed.refs.get("local:one")?.current, JSON.stringify(completed.refs.get("local:one"))).toBe(true);
       expect(completed.refs.get("local:two")?.current).toBe(true);
-      // Every hydration buffer, base model and in-flight batch is retired once
-      // both completions commit; only canonical models and disk work remain.
       expect(pendingThreadHydrationUpdatesForTests()).toEqual([]);
       expect(pendingThreadHydrationBaseModelsForTests()).toEqual([]);
       expect([...completed.refs.values()].every((entry) => entry.inFlight.length === 0)).toBe(true);
       expect(completed.workerBytes).toBe(0);
+      assertCoverage("initial draining quiescent");
+      // Initial draining has made local:one disk-only.
+      expect(threadsStore.getState().threads.has("local:one")).toBe(false);
+      expect(completed.refs.get("local:one")?.resident).toBe(false);
+      expect(completed.refs.get("local:one")?.residentBytes).toBe(0);
+      expect(completed.refs.get("local:one")?.handoffBytes).toBe(0);
+
+      // Phase 2: hold local:one's next real write, capture one ordinary batch,
+      // then let a second delta queue behind it as a pending tail.
+      secondHoldArmed = true;
+      const capturedDelta = textDelta("local:one", "-captured-batch");
+      fake.emitNotification(capturedDelta);
+      assertCoverage("nonresident delta reserved");
+      await secondWriteStarted.promise;
+      await secondTransaction?.reached;
+      const heldBatch = backgroundTranscriptSnapshotForTests().refs.get("local:one");
+      expect(heldBatch?.inFlight).toHaveLength(1);
+      expect(heldBatch?.inFlight[0]?.notification).toBe(capturedDelta);
+      expect(heldBatch?.pending).toHaveLength(0);
+      const tailDelta = textDelta("local:one", "-pending-tail");
+      fake.emitNotification(tailDelta);
+      assertCoverage("captured batch plus pending tail");
+      const withTail = backgroundTranscriptSnapshotForTests().refs.get("local:one");
+      expect(withTail?.inFlight).toHaveLength(1);
+      expect(withTail?.inFlight[0]?.notification).toBe(capturedDelta);
+      expect(withTail?.pending).toHaveLength(1);
+      expect(withTail?.pending[0]?.notification).toBe(tailDelta);
+      secondTransaction?.release();
+      await vi.waitFor(() => expect(backgroundTranscriptSnapshotForTests().diskWorkers).toBe(0), { timeout: 1000 });
+      await settleBackgroundTranscriptsForTests();
+      assertCoverage("captured batch and pending tail committed");
+
+      // Both chunks reach the real disk content exactly once.
+      const localOneWrite = writtenRecords.filter((record) => record.ref === "local:one").at(-1);
+      if (!localOneWrite) throw new Error("expected a real local:one checkpoint");
+      const onDisk = await cache.getCurrent([localOneWrite.ownerToken, "local:one"], Date.now());
+      const onDiskText = JSON.stringify(onDisk?.record?.state);
+      expect(occurrences(onDiskText, "-captured-batch")).toBe(1);
+      expect(occurrences(onDiskText, "-pending-tail")).toBe(1);
+
+      // Local reopening serves that same disk content with no further read.
       const readsBeforePromotion = fake.calls.filter((call) => call.method === "thread/read").length;
       foregroundPromotion = true;
       await threadsStore.getState().ensureThread("local:one");
@@ -1470,14 +1590,22 @@ describe("background thread claims", () => {
           .map((item) => item.text)
           .join("") ?? "";
       expect(text.match(/🙂/gu)).toHaveLength(1024 * 16);
+      const reopenedText = JSON.stringify(promoted ? currentTranscriptState(promoted) : undefined);
+      expect(occurrences(reopenedText, "-captured-batch")).toBe(1);
+      expect(occurrences(reopenedText, "-pending-tail")).toBe(1);
       await threadsStore.getState().ensureThread("local:two");
       expect(
         threadsStore.getState().threads.get("local:two")?.overlay?.["stream:s1:agentMessage"]?.item.text,
       ).toContain("x".repeat(1024));
       expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(readsBeforePromotion);
     } finally {
+      one.resolve(currentRead("local:one"));
+      two.resolve(currentRead("local:two"));
+      writerResync.resolve(currentRead("local:writer"));
       transaction?.release();
+      secondTransaction?.release();
       putCurrent.mockRestore();
+      restoreWorkerObserver();
       observeAccounting();
       threadsStore.getState().releaseThread("local:one");
       threadsStore.getState().releaseThread("local:two");
