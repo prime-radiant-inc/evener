@@ -223,7 +223,7 @@ func (m *Manager) refreshForCheck(ctx context.Context) []string {
 // fastForwardMarketplace fetches the clone at dir with the store lock free,
 // so a plugin operation started meanwhile does not wait behind the network,
 // then takes the lock to fast-forward it and stamp its LastUpdated
-// (stampRefreshed: one that moves nothing reports no store change). A fetch
+// (stampRefreshed). A fetch
 // writes only under .git, so nothing reading the clone's files sees it, and
 // it holds the clone's own lock (lockClone), as the fast-forward does too,
 // against other git work in the clone and its removal or move. A blobless

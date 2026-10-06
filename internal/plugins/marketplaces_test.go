@@ -2988,7 +2988,10 @@ func TestRemoveMarketplace_RemovesItsCloneLockFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
-	lockFile := filepath.Join(m.Root, cloneLocksDirName, filepath.Base(ref.InstallLocation)+".lock")
+	lockFile, err := m.cloneLockPath(ref.InstallLocation)
+	if err != nil {
+		t.Fatalf("cloneLockPath: %v", err)
+	}
 	if _, err := os.Stat(lockFile); err != nil {
 		t.Fatalf("adding a marketplace left no clone lock file to remove: %v", err)
 	}

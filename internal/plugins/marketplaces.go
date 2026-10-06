@@ -132,12 +132,11 @@ func (m *Manager) writeMarketplaces(mk Marketplaces) error {
 func (m *Manager) stampRefreshed(mk Marketplaces, name string, ref MarketplaceRef, changed bool) error {
 	ref.LastUpdated = m.now().UTC()
 	mk[name] = ref
-	save := m.saveMarketplaces
-	if !changed {
-		save = m.writeMarketplaces
-	}
-	if err := save(mk); err != nil {
+	if err := m.writeMarketplaces(mk); err != nil {
 		return m.saveFailed(name, marketplacesFileName, err)
+	}
+	if changed {
+		m.markStoreChanged(StoreChanged{Marketplaces: true})
 	}
 	return nil
 }
@@ -1648,26 +1647,31 @@ func (m *Manager) RefreshMarketplace(ctx context.Context, name string) error {
 			// move is the catalog, so there is nothing to fetch, and a failed
 			// pull would reclone it on every refresh (#3844).
 			changed = false
-		} else {
-			// "" (unknown) counts as a change.
-			before, _ := marketplaceGitHeadSHA(ctx, ref.InstallLocation)
-			if pullErr := m.withClone(ctx, ref.InstallLocation, func() error { return marketplaceGitPull(ctx, ref.InstallLocation) }); pullErr != nil {
-				// A failed pull can mean the clone is wedged — e.g. a stale
-				// .git/index.lock stranded by a killed git — and a plain retry
-				// would then fail the same way forever. Self-heal with a staged
-				// reclone; on failure it leaves the existing clone untouched.
-				// When the pull failed because the request itself was canceled,
-				// skip the doomed reclone and surface the cancellation directly.
-				if ctx.Err() != nil {
-					return pullErr
-				}
-				if recloneErr := m.recloneMarketplace(ctx, ref); recloneErr != nil {
-					return fmt.Errorf("refreshing marketplace %q: git pull failed (%w); staged reclone failed: %w", name, pullErr, recloneErr)
-				}
-			}
-			after, err := marketplaceGitHeadSHA(ctx, ref.InstallLocation)
-			changed = before == "" || err != nil || after != before
+		} else if changed, err = m.pullMarketplace(ctx, name, ref); err != nil {
+			return err
 		}
 	}
 	return m.stampRefreshed(mk, name, ref, changed)
+}
+
+// pullMarketplace pulls the clone of name, which is on a branch, and reports
+// whether its HEAD moved; a HEAD it cannot read counts as moved.
+func (m *Manager) pullMarketplace(ctx context.Context, name string, ref MarketplaceRef) (bool, error) {
+	before, _ := marketplaceGitHeadSHA(ctx, ref.InstallLocation)
+	if pullErr := m.withClone(ctx, ref.InstallLocation, func() error { return marketplaceGitPull(ctx, ref.InstallLocation) }); pullErr != nil {
+		// A failed pull can mean the clone is wedged — e.g. a stale
+		// .git/index.lock stranded by a killed git — and a plain retry
+		// would then fail the same way forever. Self-heal with a staged
+		// reclone; on failure it leaves the existing clone untouched.
+		// When the pull failed because the request itself was canceled,
+		// skip the doomed reclone and surface the cancellation directly.
+		if ctx.Err() != nil {
+			return false, pullErr
+		}
+		if recloneErr := m.recloneMarketplace(ctx, ref); recloneErr != nil {
+			return false, fmt.Errorf("refreshing marketplace %q: git pull failed (%w); staged reclone failed: %w", name, pullErr, recloneErr)
+		}
+	}
+	after, err := marketplaceGitHeadSHA(ctx, ref.InstallLocation)
+	return before == "" || err != nil || after != before, nil
 }
