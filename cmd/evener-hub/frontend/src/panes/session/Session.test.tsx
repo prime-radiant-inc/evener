@@ -3102,6 +3102,43 @@ test("picks up a daemon exit automatically on evener/thread/resync", async () =>
   expect(fake.calls.filter((call) => call.method === "thread/resume" || call.method === "turn/start")).toHaveLength(0);
 });
 
+// RoboRev Medium (round 1): recovery must not hinge on the one
+// evener/thread/resync notification arriving. A reconnect swaps the client,
+// and threads.ts re-hydrates every tracked ref on the swap (rewireClient's
+// direct handleReady for a swapped-in client that is already ready), so a
+// pane whose resync was lost still leaves the degraded state on its own.
+// The replacement connection carries no notification here - only its plain
+// thread/read answers - which is the missed-notification case.
+test("a reconnect recovers the degraded pane without any resync notification", async () => {
+  const first = connectFakeClient();
+  first.on("thread/read", () => readResponse("ref_a", { status: { type: "restartRequired" } }));
+  const tree = (client: FakeClient) => (
+    <ClientProvider client={client}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>
+  );
+  const { rerender } = render(tree(first));
+  const notice = await screen.findByRole("alert");
+  expect(notice.textContent).toContain("different Evener version");
+
+  const second = new FakeClient("ready");
+  second.on("thread/read", () => readResponse("ref_a", { status: { type: "idle" } }));
+  await act(async () => {
+    connectionStore.getState().connect(second);
+  });
+  // Production rerenders the provider with the store's client on a swap, so
+  // the pane's context consumers never see the replaced one.
+  rerender(tree(second));
+  await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+  expect(threadsStore.getState().threads.get("ref_a")?.status.type).toBe("idle");
+  // Recovery was the reconnect's own re-hydration: exactly the one
+  // tracked-ref read on the replacement, and no user action anywhere.
+  expect(second.calls.filter((call) => call.method === "thread/read")).toHaveLength(1);
+  expect(second.calls.filter((call) => call.method === "thread/resume" || call.method === "turn/start")).toHaveLength(
+    0,
+  );
+});
+
 // A merely-resumable local session needs no special UI: sending a prompt resumes
 // it (the hub folds the resume into turn/start), so its standalone Resume notice
 // and button are dropped. The two other causes of the obligation keep the
@@ -3815,7 +3852,13 @@ test.each(["notLoaded", "active", "idle"])(
       expect((await mutationStorage.getOutbox(mutationId))?.state).toBe("blockedUnknown");
       expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
       releaseReads();
-      await act(async () => {});
+      // The old empty act left the settle to chance. The held read's storage
+      // chain is tracked projection work, so the flush drains it fully before
+      // the click. (The disabled-true/false pins this test used to carry here
+      // belonged to the removed Refresh button's in-flight state; the
+      // resync-driven read is automatic, so the Resume control has no
+      // disabled window to pin.)
+      await flushPendingTurnsProjectionForTests();
       fireEvent.click(resume);
       await flushPendingTurnsProjectionForTests();
       expect(await mutationStorage.getOutbox(mutationId)).toBeUndefined();
