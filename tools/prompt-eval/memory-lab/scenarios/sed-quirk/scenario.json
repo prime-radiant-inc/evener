@@ -4,8 +4,9 @@
     {
       "name": "A",
       "prompt": "Bump the docs to version 2.4.0 using scripts/set-version.sh, and make sure every page shows the new version.",
+      "before": "if sed --version >/dev/null 2>&1; then echo 'sed-quirk needs BSD sed (macOS): this sed is GNU, where the sed -i in set-version.sh works as written, so there is no quirk to hit'; exit 1; fi",
       "checks": [{"name": "pages bumped", "run": "grep -q '^version: 2.4.0' docs/install.md && grep -q '^version: 2.4.0' docs/usage.md"}],
-      "memory": [{"name": "saved sed quirk (personal)", "regex": "(?i)sed", "scope": "personal"}, {"name": "saved sed quirk (any)", "regex": "(?i)sed"}]
+      "memory": [{"name": "saved sed quirk (personal)", "regex": "(?i)\\bsed\\b", "scope": "personal"}, {"name": "saved sed quirk (any)", "regex": "(?i)\\bsed\\b"}]
     },
     {
       "name": "B",

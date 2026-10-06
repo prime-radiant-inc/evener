@@ -130,6 +130,19 @@ func gitHeadSHA(ctx context.Context, dir string) (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
+// gitPathTree returns the id of the tree path (relative to dir) holds at the
+// checked-out commit of the repository at dir. It changes exactly when the
+// folder's contents do, whatever else the repository's history does: unlike
+// the last commit touching the folder, it does not move when a shallow
+// clone's root does (a reclone), so a reclone flags nothing.
+func gitPathTree(ctx context.Context, dir, path string) (string, error) {
+	out, err := gitRun(ctx, dir, "rev-parse", "--verify", "--end-of-options", "HEAD:./"+strings.TrimPrefix(filepath.ToSlash(path), "./"))
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
 // gitRemoteHead asks url, without cloning, for the commit a clone that then
 // checks out ref lands on; an empty ref means the remote's HEAD. An annotated
 // tag answers with its peeled commit. A tag wins over a branch of the same

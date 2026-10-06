@@ -187,7 +187,7 @@ no router (reserved).
 | `evener/session-pin/unpin` | hub | `SessionPinUnpinParams` | `SessionPinUnpinResponse` | Removes a top-level session's named pin assignment and returns its committed navigation receipt. |
 | `evener/session/seen/set` | hub | `SessionSeenSetParams` | `SessionSeenSetResponse` | Marks sessions seen through a turn end, or unread, on the hub (S4), and returns the committed navigation receipt. Live rows then carry unseen from the hub's marker. |
 | `evener/search` | hub | `SearchParams` | `SearchResponse` | Searches the hub's sessions: live and ended ones whose ID, title or prompt match, each once, and (S14) the sessions whose messages match, with each one's newest hits and snippets. A scope narrows every group; every result says whether it is archived. |
-| `evener/archived/list` | hub | `ArchivedListParams` | `ArchivedListResponse` | Lists one project's archived sessions, newest first, a page at a time: the key names the project and the catalog is a hint (a project that moved between projects and archived projects is read from the one holding it now, and the response says which catalog it read), and the cursor continues from the previous page. The rows are navigation session summaries; the list has no revisions or invalidation. |
+| `evener/archived/list` | hub | `ArchivedListParams` | `ArchivedListResponse` | Lists one project's archived sessions, newest first, a page at a time: the key names the project and the catalog is a hint (a project that moved between projects and archived projects is read from the one holding it now, and the response says which catalog it read), and the cursor continues from the previous page. The rows are navigation session summaries. Each response carries the whole list's revision; a first-page read naming the revision it holds is answered unchanged, with no rows, while the list has not changed. The list has no invalidation of its own. |
 | `evener/activity/read` | hub | `ActivityReadParams` | `ActivityReadResponse` | Reads the pulse meter (seven one-minute activity counts over the whole tree), running subagents, quiet time and the newest tool intent of the hub's live top-level sessions and its attached hosts' (S5). A client polls it while a Board or session is on screen; it is never part of navigation. |
 | `evener/notices/list` | hub | `EmptyParams` | `NoticesListResponse` | Lists the hub's notices (S11): provider instances on this hub that need signing in again, hosts that are offline, and installed plugins that are broken, each with the live sessions it blocks when the hub can count them. evener/notices/changed announces every change. |
 | `evener/harnesses/list` | hub | `HarnessListParams` | `HarnessListResponse` | Lists available harness descriptors. |
@@ -234,7 +234,7 @@ no router (reserved).
 | `evener/plugin/enable` | hub | `PluginRefParams` | `PluginListResponse` | Enables an installed plugin; returns the updated list. |
 | `evener/plugin/disable` | hub | `PluginRefParams` | `PluginListResponse` | Disables an installed plugin; returns the updated list. |
 | `evener/plugin/setAutoUpgrade` | hub | `PluginSetAutoUpgradeParams` | `PluginListResponse` | Sets an installed plugin's auto-upgrade flag; returns the updated list. |
-| `evener/plugin/checkUpdates` | hub | `EmptyParams` | `PluginListResponse` | Asks each git-backed installed plugin's remote whether it has moved past the installed commit, without installing anything; returns the list with updateAvailable set. Clients call it when their plugins view opens; the hub never runs it on a timer. It waits on every plugin's remote, each with its own timeout (internal/plugins updateCheckTimeout) and the whole check within updateCheckDeadline, so a client's timeout for it must exceed that deadline. |
+| `evener/plugin/checkUpdates` | hub | `EmptyParams` | `PluginListResponse` | Asks each git-backed installed plugin's remote whether it has moved past the installed commit, and checks each plugin stored in its marketplace's own repo against the marketplace clone as its last refresh left it, without installing anything; returns the list with updateAvailable set. Clients call it when their plugins view opens; the hub never runs it on a timer. It waits on every plugin's remote, each with its own timeout (internal/plugins updateCheckTimeout) and the whole check within updateCheckDeadline, so a client's timeout for it must exceed that deadline. |
 | `evener/command/list` | hub | `EmptyParams` | `CommandListResponse` | Lists loaded slash commands (name, plugin, description, source: plugin, project, or user) for catalog/autocomplete display. |
 | `evener/spawn/slashCatalog` | hub | `SpawnSlashCatalogParams` | `SpawnSlashCatalogResponse` | Pre-session slash catalog for the spawn form: the commands and skills a session started with this cwd, harness, and launch overrides would offer. |
 | `evener/settings/overview` | hub | `EmptyParams` | `SettingsOverviewResponse` | Returns the settings overview field bag: hub/runtime, storage, agent roster, and probed MCP servers — the five template-only settings sections' data. |
@@ -393,6 +393,7 @@ An embedded type contributes its own fields inline.
 | `projectKey` | `string` |  |  |
 | `cursor` | `string` | yes |  |
 | `limit` | `int` | yes |  |
+| `revision` | `string` | yes |  |
 
 
 ### `ArchivedListResponse`
@@ -403,6 +404,8 @@ An embedded type contributes its own fields inline.
 | `nextCursor` | `string` | yes |  |
 | `total` | `int` |  |  |
 | `catalog` | `string` | yes |  |
+| `revision` | `string` | yes |  |
+| `unchanged` | `bool` | yes |  |
 
 
 ### `AttentionChangedPayload`

@@ -21,6 +21,7 @@ The script is Python 3.11 or later, using the standard library only. From the re
 
 ```bash
 cd tools/prompt-eval/memory-lab
+mkdir -p bin
 go build -o bin/projid ./projid          # computes a checkout's project memory id, for seeded scenarios
 go build -o bin/evener-base ../../../cmd/evener    # build each version you want to compare
 ```
@@ -41,7 +42,7 @@ The lab runs real models with your configured provider credentials, so it is nev
 
 - `--reps`: 3 repetitions are enough to spot a broken scenario. Plan on 6–10 to compare two prompts. With these weak models, a single prompt has swung from 0/3 to 3/3 between runs with nothing changed.
 - `--jobs`: lunarouter allows 10 concurrent requests on a model's regular pool and 30 on its `-background` pool. Keep the total across parallel runs under that.
-- `--max-rounds` (default 40) caps tool rounds per stage. If the cap is tight, every stage stops on the cap and the results measure the cap, not memory.
+- `--max-rounds` (default 40) caps tool rounds per stage; 0 means no cap. If the cap is tight, every stage stops on the cap and the results measure the cap, not memory.
 - `--effort` (default `high`) sets the reasoning effort. `--timeout` (default 1200) is seconds per stage.
 - An infrastructure failure prints `ERROR` on the stage it hit and on every later stage. That covers failed workspace setup, a failing or timed-out `before` hook, and a session that times out or exits nonzero, except evener's exit 1 on the round cap, which grades as a `CAPPED` stage. Those stages fail every check in the table, the failed session's events and memory snapshot stay on disk, and `run` exits nonzero once all trials finish. A check that times out or errors fails on its own, with the reason in `show`.
 - `--out` must be a fresh directory, relative or absolute. The command prints one line per stage as each trial finishes, then only the pass-rate table per version, scenario, stage and check. `report` prints the per-stage lines too.
@@ -74,11 +75,11 @@ Every scenario is a directory holding `scenario.json` and `fixture/` (a small Go
 | `migration` | Partner mentions in passing that the project is moving off `oldlog`. B adds no new `oldlog` call | A project fact with no persistence cue. |
 | `freeze` | Partner says the exported API is frozen until 2.0. B is asked to break it | A held-out project-fact scenario. B should push back. |
 | `cents` | Partner states a decision (money is integer cents). B formats prices | Checks for real `float32`/`float64` use, not comments. B tends to pass without memory too. |
-| `sed-quirk` | A hits macOS BSD `sed -i` while bumping a version. B, in a different project, writes an in-place script | Personal scope across projects. Needs BSD `sed` (macOS). |
+| `sed-quirk` | A hits macOS BSD `sed -i` while bumping a version. B, in a different project, writes an in-place script | Personal scope across projects. Needs BSD `sed` (macOS): on GNU `sed` the stage A `before` hook fails the trial as infrastructure, since there is no quirk to hit. |
 | `long-work` | Longer work; the partner may pause and resume it. Working notes go to session memory | The cue is in the prompt. |
 | `long-work-nocue` | The same work with no cue | Flash models write no session notes here. |
 | `session-local` | A refactor constraint that applies only to this work | Information only: agents defensibly save it to project memory, since it has a named follow-up. |
-| `delegate-reads` | The root records how this work is organized, then has a delegate do a sub-part with a one-sentence brief | B resumes A's session. B's check needs a delegate started during stage B to call `memory_read` or `memory_search` with scope `session`. A bare `memory_(read\|search)` regex would match the tool list in every transcript and pass vacuously. With the current prompt, A tends to put the work rule in project memory, so the delegates have no session note to read and the check grades `n`: it is a target for the session-memory prompting, not yet passing. |
+| `delegate-reads` | The root records how this work is organized, then has a delegate do a sub-part with a one-sentence brief | B resumes A's session. B's check needs a delegate started during stage B to call `memory_read` or `memory_search` with scope `session`. It parses the delegates' transcripts as JSON, since a regex such as `memory_(read\|search)` also matches the tool list in every transcript. With the current prompt, A tends to put the work rule in project memory, so the delegates have no session note to read and the check grades `n`: it is a target for the session-memory prompting, not yet passing. |
 | `recall-seeded` | Seeded project memory (a test-suite quirk). B reads it and acts | `on` and `off` arms. Recall from seeded memory already worked before the guidance work. |
 | `correction-seeded` | A seeded page goes stale (an env var is renamed). B fixes the page | |
 | `quirk` | A finds that `go test` silently skips without an env var | The agent usually fixes the root cause in the repository, which makes not saving the correct outcome. Kept as a caution. |
@@ -90,14 +91,17 @@ Every scenario is a directory holding `scenario.json` and `fixture/` (a small Go
 The header of `memory-lab` documents every field. In short:
 - each stage has a prompt
 - a scenario can set `fixture_from` to start from a sibling scenario's `fixture/`
-- stages can carry `before`, `seed_project_memory`, `fixture` with `workspace` (another project; `run` refuses a `fixture` without a `workspace`) and `resume` (continue an earlier stage's session)
+- stages can carry `before`, `seed_project_memory`, `fixture` with `workspace` (another project; `run` refuses a `fixture` without a `workspace` other than `work`) and `resume` (continue an earlier stage's session)
 - checks come in these types:
   - `checks`: shell commands
   - `trace`: tool-call regexes
   - `memory`: regexes over memory files, optionally per scope or `absent`
   - `final`: a regex over the last message
-  - `transcripts`: a regex over every transcript, delegates included, or with `subagents_only` over the transcripts of delegates created during this stage only
+  - `transcripts`: a regex over every transcript, delegates included
+  - `delegate_calls`: a tool call with a given name and arguments, parsed from the transcripts of delegates created during this stage
   - `whiteboard`: shape and length
+
+Run `./memory-lab check` after editing a scenario. It loads every scenario under `scenarios/` (or the dirs you name) the way `run` does, confirms each loads as itself and that its fixture and seed dirs exist, prints one OK or ERROR line per scenario, and exits nonzero on any error. It runs no model.
 
 Write a check that a reasonable outcome can actually fail. Before you trust a scenario, confirm that the baseline prompt doesn't already pass it, and that its regexes don't match comments or prose. The `cents` float check originally failed on comments that said "no floats".
 
