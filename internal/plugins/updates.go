@@ -13,7 +13,10 @@ import (
 
 // Each remote is asked with its own timeout, a few at a time, so one
 // unreachable host costs a check about updateCheckTimeout rather than git's
-// own, much longer, network timeouts.
+// own, much longer, network timeouts. The web client's
+// PLUGIN_UPDATE_CHECK_TIMEOUT_MS (appwire-client/typescript/state/extensions/
+// plugins.ts) must exceed one updateCheckTimeout per batch of
+// updateCheckConcurrency plugins, so change it with these.
 const (
 	updateCheckTimeout     = 20 * time.Second
 	updateCheckConcurrency = 4
@@ -64,6 +67,12 @@ func (m *Manager) CheckUpdates(ctx context.Context) error {
 		}
 		installed := entries[0].GitCommitSha
 		plugin, marketplace := splitKey(key)
+		if marketplace == "" {
+			// A registry key with no '@' names no marketplace, so no catalog
+			// says where this plugin comes from.
+			catalogWarnings = append(catalogWarnings, fmt.Sprintf("plugin %q is installed with no marketplace; not checking it for updates", plugin))
+			continue
+		}
 		src, ok := m.upgradeSource(mk, catalogs, &catalogWarnings, marketplace, plugin)
 		if !ok || gitRemoteURL(src) == "" {
 			continue
@@ -95,15 +104,8 @@ func (m *Manager) CheckUpdates(ctx context.Context) error {
 
 // upgradeSource is plugin's source in marketplace's local catalog, parsing each
 // catalog once into catalogs. ok is false when the catalog cannot be read or
-// no longer lists the plugin, where an Upgrade would fail too, or when the
-// plugin names no marketplace.
+// no longer lists the plugin, where an Upgrade would fail too.
 func (m *Manager) upgradeSource(mk Marketplaces, catalogs map[string]Catalog, warnings *[]string, marketplace, plugin string) (Source, bool) {
-	if marketplace == "" {
-		// A registry key with no '@' names no marketplace, so no catalog
-		// says where this plugin comes from.
-		*warnings = append(*warnings, fmt.Sprintf("plugin %q is installed with no marketplace; not checking it for updates", plugin))
-		return Source{}, false
-	}
 	cat, parsed := catalogs[marketplace]
 	if !parsed {
 		ref, known := mk[marketplace]
