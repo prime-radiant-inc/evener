@@ -401,7 +401,10 @@ export class SessionActivityStore {
         await this.lease.ensure();
         if (stale() || this.client.state !== "ready") continue;
         const result = await this.fetch(resource, cursor);
-        if (stale()) continue;
+        if (stale()) {
+          this.refreshWarmedCount(resource, generation);
+          continue;
+        }
         if (result.scope !== this.scope) throw new Error("Session activity response belongs to another scope");
         generation = this.acceptContext(result.context, resource);
         if (stale()) continue;
@@ -488,9 +491,15 @@ export class SessionActivityStore {
             unavailable: false,
             permanent: false,
           });
-          if (stale()) continue;
+          if (stale()) {
+            this.refreshWarmedCount(resource, generation);
+            continue;
+          }
           this.publish({ context: page.context, runtime: this.runtimeFor(page.context, statusRevision) });
-          if (stale()) continue;
+          if (stale()) {
+            this.refreshWarmedCount(resource, generation);
+            continue;
+          }
           // Collection reads can warm retained count indexes without emitting
           // a notification. Refresh an observed unknown count after useful
           // progress, paced and coalesced across pages, without scanning merely
@@ -545,6 +554,16 @@ export class SessionActivityStore {
         if (!permanent) this.retry(resource, cursor ? "page" : "root");
       }
     }
+  }
+  /** A collection read the hub served but the store dropped, because the
+   * view that asked for it left, can still have warmed the hub's count for
+   * that collection. Refresh a summary count still unknown, as a page that
+   * landed would, so the count does not stay hidden until the next
+   * notification. A read dropped for a replaced context or a disposed store
+   * refreshes nothing: its count belongs to no current session. */
+  private refreshWarmedCount(resource: SessionActivityResource, generation: number): void {
+    if (resource === "summary" || this.disposed || generation !== this.generation) return;
+    if (this.state.summary && !this.state.summary[resource].known) this.schedule("summary", 100);
   }
   private runtimeFor(context: SessionActivityContext, statusRevision: number): ThreadSubscriptionMetadata | null {
     const metadata = this.lease?.metadata();

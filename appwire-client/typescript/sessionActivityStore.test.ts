@@ -2499,3 +2499,33 @@ test("the last observer leaving resets the collection's backoff", async () => {
   await vi.advanceTimersByTimeAsync(1);
   await failedReads(4);
 });
+
+// Serving a collection read can warm the hub's count for it. A view that
+// leaves right after the fetch drops only the page: the store still refreshes
+// the summary, so a count the read warmed does not stay unknown.
+test("a read dropped because its view left still refreshes an unknown count", async () => {
+  const client = activityClient(),
+    page = deferred<SessionDelegatesResponse>(),
+    entered = deferred<void>();
+  client.on("evener/thread/delegates/list", () => {
+    entered.resolve();
+    return page.promise;
+  });
+  const store = owner(client);
+  store.start();
+  await activityState(store, () => store.getSnapshot().summary !== null);
+  expect(store.getSnapshot().summary?.delegates.known).toBe(false);
+  const leave = store.observe("delegates");
+  await entered.promise;
+  leave();
+  page.resolve({
+    context: activityContext(),
+    scope: "session",
+    page: { complete: true, issues: [] },
+    delegates: [delegateFixture()],
+  });
+  await activityState(store, () => !store.getSnapshot().delegates.loading);
+  await vi.advanceTimersByTimeAsync(100);
+  expect(callsTo(client, "evener/thread/activity/read")).toBe(2);
+  expect(store.getSnapshot().delegates.rows).toEqual([]);
+});
