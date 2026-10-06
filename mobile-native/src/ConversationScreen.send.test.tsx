@@ -2974,6 +2974,7 @@ describe("queued messages at the transcript's end (spec 8.5)", () => {
 		expect(hub.requests.filter((entry) => entry.method === method)).toHaveLength(1);
 		expect(lastRow(tree)).toContain("check the logs");
 		expect(lastRow(tree)).toContain("Steering · arrives at the next step");
+		expect(renderedText(tree)).not.toContain("Couldn't steer");
 	});
 
 	// They take no room from the transcript, so nothing folds while you type.
