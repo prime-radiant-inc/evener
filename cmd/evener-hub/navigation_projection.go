@@ -174,12 +174,8 @@ func buildNavigationProjectionContext(ctx context.Context, inputs navigationBuil
 	p.catalogs[navigationResourceProjects] = append([]hubcore.TreeProject(nil), buckets.active...)
 	p.catalogs[navigationResourceArchivedProjects] = append([]hubcore.TreeProject(nil), buckets.archived...)
 	p.catalogs[navigationResourceTestRuns] = append([]hubcore.TreeProject(nil), buckets.testRuns...)
-	// A key in more than one catalog reads the first catalog in
-	// navigationCatalogOrder holding it, as an archived list with no hint
-	// does, so the sessions of that catalog's project are located in the
-	// project a read of their key returns. A same-key project of a later
-	// catalog is shadowed: its sessions are still located, under the key, but
-	// a read of the key does not return them.
+	// A same-key project of a later catalog is shadowed: its sessions are
+	// still located under the key, but a read of the key does not return them.
 	for _, kind := range navigationCatalogOrder {
 		for _, project := range p.catalogs[kind] {
 			if err := ctx.Err(); err != nil {
