@@ -1,16 +1,15 @@
 // @vitest-environment jsdom
 
-// The guards' click helpers run buttonRefusesClick in the page, as source text
-// interpolated into an evaluated expression. This evaluates that same source
-// against real DOM elements, one per way a button can refuse a click.
+// The guards' click helpers test REFUSED_BUTTON_SELECTOR in the page before
+// clicking. This matches the same selector against real DOM elements, one per
+// way a button can refuse a click.
 
 import { expect, test } from "vitest";
-import { buttonRefusesClick } from "./browserGuardCdp.mjs";
+import { REFUSED_BUTTON_SELECTOR } from "./browserGuardCdp.mjs";
 
 function refuses(markup) {
   document.body.innerHTML = markup;
-  // biome-ignore lint/security/noGlobalEval: the helper is page-side source text by design
-  return (0, eval)(buttonRefusesClick)(document.querySelector("#target"));
+  return document.querySelector("#target").matches(REFUSED_BUTTON_SELECTOR);
 }
 
 test("an enabled button accepts the click", () => {
