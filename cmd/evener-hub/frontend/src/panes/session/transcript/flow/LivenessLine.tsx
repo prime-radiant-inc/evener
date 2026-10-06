@@ -3,15 +3,16 @@
 // when the wait has a known explanation - that explanation instead of either:
 // "rate limited — attempt 9/11 — retrying in 60s — 14m on this call" while the
 // daemon is retrying a model call, or "Waiting on N subagents" while the
-// active turn's own delegated children are still running (design brief
+// session's subagents are still running (design brief
 // principle 6: a wait explained is not a stall). That decision is driven
 // purely by describeLiveness (see liveness.ts); this component's own job is
 // sourcing its live inputs: `now` (Session.tsx's own useNowTick value,
 // already plumbed there for Cadence, so this never starts a second clock -
 // same "no timers, no Date.now()" contract as widgets/cadence's own Cadence),
-// the running-children count, a reactive read of subagentModuleStore scoped
-// by turnScopeKey(sessionRef, turnId) - see that store's own comment on why a
-// bare turn id is never enough (two sessions can share one) - and narrowing
+// the running-subagents count - the hub's subtree activity summary once
+// known, until then a reactive read of subagentModuleStore scoped by
+// turnScopeKey(sessionRef, turnId) (see that store's own comment on why a
+// bare turn id is never enough: two sessions can share one) - and narrowing
 // the raw retry (ThreadModel.modelRetry) into what liveness.ts renders (see
 // retryWait below). Renders nothing while level is "none" (fresh/inactive),
 // and deliberately carries no animation of its own - Cadence's trace already
@@ -19,6 +20,7 @@
 // that activity stops.
 
 import type { ModelRetryState } from "@evener/appwire-client";
+import { useSessionActivity } from "../../../../stores/sessionActivity";
 import { useThreadsStore } from "../../../../stores/threads";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { turnScopeKey, useRunningSubagentCount } from "../tools/subagentModuleStore";
@@ -63,10 +65,18 @@ export function LivenessLine({ lastFrameAt, now, active, sessionRef, turnId, ret
     if (sessionRef === undefined) return undefined;
     return (s.threads.get(sessionRef) ?? s.watchedThreads.get(sessionRef))?.delegates;
   });
-  const runningSubagents = useRunningSubagentCount(
+  const turnRunning = useRunningSubagentCount(
     turnId === undefined ? undefined : turnScopeKey(sessionRef, turnId),
     delegates,
   );
+  // The hub's count is the one rule for a session's running subagents: those
+  // whose run is open, at every depth (the subtree activity summary, as the
+  // Live row's tally and the phone count them). The active turn's own rows
+  // stand in only until the hub's count is known (not yet read, or an older
+  // hub), so a launch the transcript already shows can explain the wait.
+  const { snapshot } = useSessionActivity(active && sessionRef !== undefined ? sessionRef : null, "subtree");
+  const hubDelegates = snapshot?.summary?.delegates;
+  const runningSubagents = hubDelegates?.known ? hubDelegates.active : turnRunning;
   const retryWait: RetryWait | undefined = retry && {
     attempt: retry.attempt,
     attemptCap: retry.attemptCap,

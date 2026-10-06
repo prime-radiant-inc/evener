@@ -1,5 +1,7 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
+import { connectionStore } from "../../../../stores/connection";
+import { activityClient, activitySummary } from "../../../../stores/sessionActivityTestUtils";
 import { resetThreadsStoreForTests, threadsStore } from "../../../../stores/threads";
 import { seedCurrentDelegate } from "../tools/currentDelegate.testFixture";
 import { resetSubagentModuleStoreForTests, turnScopeKey, upsertSubagentRow } from "../tools/subagentModuleStore";
@@ -10,6 +12,7 @@ afterEach(() => {
   vi.useRealTimers();
   resetSubagentModuleStoreForTests();
   resetThreadsStoreForTests();
+  connectionStore.setState({ client: null, state: "idle" });
 });
 
 test("renders nothing while the thread is not active, regardless of gap", () => {
@@ -297,4 +300,29 @@ test("renders 'in progress' once the reported delay has elapsed, even with no ne
   expect(screen.getByTestId("liveness-line").textContent).toBe(
     "rate limited — attempt 9/11 — in progress — 5s on this call",
   );
+});
+
+// --- the hub's count (#3797) ------------------------------------------------
+
+// The hub counts a session's running subagents one way everywhere: those whose
+// run is open, at every depth (the subtree activity summary, the Live row's
+// tally, the phone's Board). Once that count is known it is the one the line
+// says, whatever this pane's transcript rows hold - here two subagents a level
+// down that the active turn's own rows never show.
+test("says the hub's subtree count of running subagents once it is known", async () => {
+  const client = activityClient();
+  client.on("evener/thread/activity/read", ({ ref, scope }) => ({
+    ...activitySummary(ref),
+    scope: scope ?? "session",
+    delegates: { known: scope === "subtree", total: 3, active: 2, failed: 0, completed: 1 },
+  }));
+  connectionStore.getState().connect(client);
+  render(<LivenessLine lastFrameAt={0} now={60_000} active={true} sessionRef="s1" turnId="turn_0" />);
+  await waitFor(() => expect(screen.getByTestId("liveness-line").textContent).toBe("Waiting on 2 subagents"));
+  expect(
+    client.calls.some(
+      (call) =>
+        call.method === "evener/thread/activity/read" && (call.params as { scope?: string }).scope === "subtree",
+    ),
+  ).toBe(true);
 });
