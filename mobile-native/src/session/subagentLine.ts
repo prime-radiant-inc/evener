@@ -3,7 +3,7 @@
 // latest activity beneath, which reads the same as in the Subagents list.
 // Pure: the row re-renders with the transcript, so no clock of its own.
 import { delegateEndingText, delegateTiming, type EvenerDelegateInfo } from "@evener/appwire-client";
-import { endedInStop, subagentState } from "../subagents/subagentModel";
+import { endedInStop, runningSubagentCount, subagentState } from "../subagents/subagentModel";
 import { hubTime, quietOrWorking, waitingOnSubagents } from "../board/attention";
 import type { TimelineRow } from "../timeline";
 import { compactDuration } from "./format";
@@ -83,9 +83,7 @@ export function subagentLine(
 		// tree (thread/read's roster drops it), which the row reads when it can.
 		line.activity = state === "done" ? "Finished" : "Stopped";
 	} else if (state === "running") {
-		const waitingOn = all.filter(
-			(child) => child.parentDelegateId === delegate.delegateId && stateOf(child) === "running",
-		).length;
+		const waitingOn = runningSubagentCount(all.filter((child) => child.parentDelegateId === delegate.delegateId));
 		// Quiet since the later of its last activity and this run's start: a
 		// resumed subagent can still carry its last run's activity time.
 		const quietFor = timing?.quietForMs ?? 0;
