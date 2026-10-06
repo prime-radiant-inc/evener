@@ -6,7 +6,7 @@ For every trial under RUNDIR (<version>/<arm>/<scenario>/r<N>) it reads <STAGE>.
 classifies the root session's tool calls: progress writes per surface (ledger file, other plan
 artifacts, memory by scope, whiteboard, task list), progress read-backs, and everything else.
 Prints one line per trial and a per-version mean. Use it to measure duplicated progress tracking."""
-import glob, importlib.machinery, importlib.util, json, os, re, statistics, sys
+import glob, importlib.machinery, importlib.util, json, os, re, shlex, statistics, sys
 sys.dont_write_bytecode = True
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -33,22 +33,54 @@ def args_of(call):
 
 # A shell command that writes a progress file: a redirect or tee aimed at it, or an in-place edit
 # naming it. A redirect elsewhere (2>&1, > /dev/null) is not a write to the ledger.
-PROGRESS_PATH = r"(?:progress\.md(?![\w.])|\.superpowers/)"
-SHELL_WRITE = re.compile(r"(?:>>?|\btee(?:\s+-a)?)\s*[\"']?[^\s|;&\"']*" + PROGRESS_PATH +
-                         r"|\b(?:sed\s+-i|perl\s+-[a-z]*i)\b[^|;&]*" + PROGRESS_PATH)
-# A shell command that reads a progress file: a reader whose arguments name it.
-SHELL_READ = re.compile(r"\b(?:cat|head|tail|less|more|grep|rg|awk|wc|diff|sed\s+-n)\b[^|;&]*" + PROGRESS_PATH)
-LEDGER_PATH = re.compile(r"progress\.md(?![\w.])")
+# Shell commands that read the files they name, and the statement separators between commands.
+SHELL_READERS = {"cat", "head", "tail", "less", "more", "grep", "rg", "awk", "wc", "diff"}
+SHELL_SEPARATORS = re.compile(r"\n|;|&&|\|\||\|")
 
 
 def file_surface(paths):
-    """The progress surfaces a set of paths belongs to: the ledger, other plan artifacts, or both."""
+    """The progress surfaces a set of paths belongs to: the ledger (a file named progress.md), other
+    plan artifacts under .superpowers/, or both."""
     surfaces = []
-    if any(p.endswith("progress.md") for p in paths):
+    if any(os.path.basename(p) == "progress.md" for p in paths):
         surfaces.append("ledger")
-    if any(".superpowers/" in p and not p.endswith("progress.md") for p in paths):
+    if any(".superpowers/" in p and os.path.basename(p) != "progress.md" for p in paths):
         surfaces.append("plan-artifacts")
     return surfaces
+
+
+def in_place_flag(name, word):
+    """Whether word is an in-place edit flag: sed's -i[SUFFIX], or a perl switch cluster containing i (-pi, -i.bak)."""
+    if name == "sed":
+        return word.startswith("-i")
+    return word.startswith("-") and not word.startswith("--") and "i" in word[1:]
+
+
+def shell_paths(command):
+    """The paths a shell command writes and reads, statement by statement: redirect, tee and in-place
+    edit targets are written; a reader's arguments are read. Anything else names a path without touching it."""
+    written, read = [], []
+    for statement in SHELL_SEPARATORS.split(command):
+        try:
+            words = shlex.split(statement)
+        except ValueError:
+            words = statement.split()
+        if not words:
+            continue
+        for i, word in enumerate(words):
+            if word in (">", ">>") and i + 1 < len(words):
+                written.append(words[i + 1])
+            elif word.startswith(">") and word.lstrip(">") and not word.startswith(">&"):
+                written.append(word.lstrip(">"))
+        args = [w for w in words[1:] if not w.startswith("-") and not w.startswith(">")]
+        name = os.path.basename(words[0])
+        if name == "tee":
+            written += args
+        elif name in ("sed", "perl") and any(in_place_flag(name, w) for w in words[1:]):
+            written += args
+        elif name in SHELL_READERS or (name == "sed" and "-n" in words):
+            read += args
+    return written, read
 
 
 def classify(call):
@@ -65,13 +97,10 @@ def classify(call):
         surfaces = file_surface([path])
         return ("write", surfaces) if surfaces else ("work", [])
     if tool in ("shell", "exec_command"):
-        command = str(a.get("command", a.get("cmd", "")))
-        if "progress.md" not in command and ".superpowers/" not in command:
-            return "work", []
-        surfaces = ["ledger"] if LEDGER_PATH.search(command) else ["plan-artifacts"]
-        if SHELL_WRITE.search(command):
-            return "write", surfaces
-        return ("read", surfaces) if SHELL_READ.search(command) else ("work", [])
+        written, read = shell_paths(str(a.get("command", a.get("cmd", ""))))
+        if file_surface(written):
+            return "write", file_surface(written)
+        return ("read", file_surface(read)) if file_surface(read) else ("work", [])
     if tool in ("memory_write", "memory_edit"):
         return "write", ["mem:" + str(a.get("scope", "?"))]
     if tool == "notes_agent_set":
@@ -82,7 +111,7 @@ def classify(call):
         updates = [u for u in a.get("update") or [] if isinstance(u, dict)]
         surfaces = []
         # Any update field besides id and notes (status, depends_on, reasoning_effort) changes the list.
-        if a.get("add") or any(v for u in updates for k, v in u.items() if k not in ("id", "notes")):
+        if a.get("add") or any(k not in ("id", "notes") for u in updates for k in u):
             surfaces.append("tasks")
         if any(u.get("notes") for u in updates):
             surfaces.append("task-notes")
