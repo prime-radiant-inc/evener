@@ -2383,3 +2383,20 @@ test.each([1, 2])("a release during a loaded page's publish %i queues no next pa
   expect(callsTo(client, "evener/thread/jobs/list")).toBe(2);
   expect(store.getSnapshot().jobs.rows.map(({ jobId }) => jobId)).not.toContain("late");
 });
+
+// An explicit load admitted before the connection is ready is the leaving
+// observer's too: once the last observer leaves, neither readiness nor a
+// change notification starts a read for the closed collection.
+test("an explicit load waiting for the connection is dropped when the last observer leaves", async () => {
+  const client = activityClient("connecting"),
+    store = owner(client);
+  store.start();
+  const leave = store.observe("jobs");
+  void store.load("jobs");
+  leave();
+  client.emitReady();
+  await activityState(store, () => store.getSnapshot().summary !== null);
+  activityChanged(client, ["jobs"]);
+  await store.refresh("summary");
+  expect(callsTo(client, "evener/thread/jobs/list")).toBe(0);
+});
