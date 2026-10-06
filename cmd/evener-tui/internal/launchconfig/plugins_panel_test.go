@@ -7,6 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-tui/internal/tuiprim"
 )
 
 func rightKey() tea.KeyMsg { return tea.KeyMsg{Type: tea.KeyRight} }
@@ -513,12 +514,13 @@ func TestPluginsPanel_InstalledTab_UpgradeOnlyWhenAnUpdateIsAvailable(t *testing
 	if _, cmd := p.Update(runeKey("u")); cmd != nil {
 		t.Errorf("u on a plugin with no update available emitted %+v", cmd())
 	}
-	if v := p.footerFor(200); strings.Contains(strings.ReplaceAll(v, "auto-upgrade", ""), "upgrade") {
+	upgradeHint := tuiprim.KbdHint("u", "upgrade")
+	if v := p.footerFor(200); strings.Contains(v, upgradeHint) {
 		t.Errorf("footer offers upgrade for a plugin with no update available: %q", v)
 	}
 	updated, _ := p.Update(tea.KeyMsg{Type: tea.KeyDown})
 	behind := updated.(PluginsPanel)
-	if v := behind.footerFor(200); !strings.Contains(strings.ReplaceAll(v, "auto-upgrade", ""), "upgrade") {
+	if v := behind.footerFor(200); !strings.Contains(v, upgradeHint) {
 		t.Errorf("footer does not offer upgrade for a plugin with an update available: %q", v)
 	}
 	if v := behind.View(); !strings.Contains(v, "UPDATE AVAILABLE") {
