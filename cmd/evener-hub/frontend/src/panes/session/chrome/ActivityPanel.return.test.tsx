@@ -209,7 +209,9 @@ test.each([false, true])("closing cancels extent restoration and rejects late pa
   expect(screen.getByRole("treeitem", { name: "First page" })).toBeTruthy();
   if (admitted) await act(async () => vi.advanceTimersByTimeAsync(100));
   fireEvent.click(screen.getByRole("button", { name: "Close" }));
-  expect(sessionActivitySnapshot(client, ref, "subtree")).toBeNull();
+  // The trigger's subagent count keeps the shared subtree store; closing ends
+  // the tree's collection demand, so the store drops its late page below.
+  expect(sessionActivitySnapshot(client, ref, "subtree")).not.toBeNull();
   expect(activityPanelStore.getState().entries.get(ref)?.loadedExtent).toEqual({});
   await act(async () => {
     late.resolve({

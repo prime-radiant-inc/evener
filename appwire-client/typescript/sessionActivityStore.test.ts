@@ -2302,3 +2302,27 @@ test("legacy activity events do not duplicate scoped reads or refresh unrelated 
   expect(callsTo(client, "evener/thread/delegates/list")).toBe(1);
   expect(callsTo(client, "evener/thread/watches/list")).toBe(1);
 });
+// A page in flight when a collection's last observer leaves is dropped, not
+// merged: the observer that asked for it is gone, and a store kept alive by
+// another holder (a summary count) must not take in a closed view's late page.
+test("a page in flight when the last observer leaves does not land", async () => {
+  const client = activityClient(),
+    late = deferred<SessionJobsResponse>(),
+    entered = deferred<void>();
+  client.on("evener/thread/jobs/list", ({ cursor }) => {
+    if (!cursor) return jobsFixture([jobFixture("shell-1")], "page-2");
+    entered.resolve();
+    return late.promise;
+  });
+  const store = owner(client);
+  store.start();
+  await activityState(store, () => store.getSnapshot().summary !== null);
+  const leave = store.observe("jobs");
+  await activityState(store, () => store.getSnapshot().jobs.hasMore);
+  const more = store.loadMore("jobs");
+  await entered.promise;
+  leave();
+  late.resolve(jobsFixture([jobFixture("late")]));
+  await more;
+  expect(store.getSnapshot().jobs.rows.map(({ jobId }) => jobId)).not.toContain("late");
+});

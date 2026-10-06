@@ -67,9 +67,9 @@ test("closed trigger counts subagents at every depth while an open recursive tre
     client.calls.filter((c) => c.method === "thread/read" && (c.params as { subscribe?: boolean }).subscribe),
   ).toHaveLength(1);
   fireEvent.click(screen.getByRole("button", { name: "Close" }));
-  // Closing disposes the tree's store; the count keeps its own.
-  await waitFor(() => expect(sessionActivitySnapshot(client, ref, "subtree")).toBeNull());
-  expect(sessionActivitySnapshot(client, ref, "subtree", "count")?.summary?.delegates.active).toBe(7);
+  // Closing stops the tree's collection demand; the trigger's count keeps
+  // the shared subtree store, and its summary.
+  expect(sessionActivitySnapshot(client, ref, "subtree")?.summary?.delegates.active).toBe(7);
   expect(sessionActivitySnapshot(client, ref, "session")?.jobs.complete).toBe(true);
   const before = client.calls.length;
   act(() =>

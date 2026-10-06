@@ -587,15 +587,17 @@ describe the executable proof and presentation contract.
 ## Client lifetimes
 
 The [browser binding](../../cmd/evener-hub/frontend/src/stores/sessionActivity.ts)
-shares a store by actual client object, requested ref, scope and role (a view,
-or the subagent count's own summary-only store). A committed view
+shares a store by actual client object, requested ref and scope. A committed view
 acquires its holder; an abandoned render starts no read. Every visible desktop
 session pane has a status footer that observes that pane's summary and its
 subtree summary (for the Agents count) by explicit ref, so side-by-side panes
 retain independent counts while duplicate consumers of one ref and scope share
 the same owner. Agents, Jobs and Watches tabs observe their own
 session-scoped collection. A visible page boundary supplies further demand,
-while the shared store retains and retries an interrupted continuation.
+while the shared store retains and retries an interrupted continuation. When a
+collection's last observer leaves, the store drops that collection's reads
+still in flight, so a store another holder keeps alive takes in no late page
+for a view that has closed.
 
 About is the last sidebar category and has no count or footer chip. Its
 [adapter](../../cmd/evener-hub/frontend/src/shell/activitybar/AboutTab.tsx)
@@ -705,12 +707,9 @@ cascade scope's Agents chip, the Overview and Activity action counts and the
 transcript's liveness line all count subagents at every depth, from the subtree
 summary
 ([`useSubagentCounts`](../../cmd/evener-hub/frontend/src/stores/sessionActivity.ts)),
-while the Agents tab lists the session's own. That count owns its own
-summary-only subtree store, apart from any view's, so an always-mounted count
-(the footer, the liveness line, a closed Activity trigger) never keeps a closed
-Activity sheet's collection reads alive: closing the sheet still disposes its
-store and fences its late pages. While the sheet is open the subtree summary is
-read twice, once for each store.
+while the Agents tab lists the session's own. The count and an open Activity
+sheet share one subtree store; closing the sheet ends its collection demand,
+and the store drops the sheet's pages still in flight.
 The workspace registers only Tasks and Details session panels. Saved Activity
 placements are unknown panes: the existing workspace restore omits them,
 preserves registered panes and selects useful surviving focus. A valid primary
