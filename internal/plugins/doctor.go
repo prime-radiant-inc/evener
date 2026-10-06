@@ -197,12 +197,12 @@ func (m *Manager) doctorEntry(key string, e InstallEntry) []DoctorFinding {
 	return findings
 }
 
-// sourceCannotUpgrade mirrors UpdateAll's skip condition (install.go): a
-// directory-kind source or a marketplace-relative "./subdir" copy is
-// referenced or copied in place and has no git remote to fetch a new version
-// from, so auto-upgrade can never do anything for it.
+// sourceCannotUpgrade is the skip condition UpdateAll and the auto-upgrade
+// sweep share (install.go): a directory source is referenced in place and has
+// nothing to fetch a new version from. A marketplace-relative "./subdir" copy
+// can upgrade, from its refreshed marketplace clone (fetchPluginSource).
 func sourceCannotUpgrade(src Source) bool {
-	return src.Rel || src.Kind == SourceDirectory
+	return src.Kind == SourceDirectory && !src.Rel
 }
 
 // doctorOrphanCacheDirs walks cache/<marketplace>/<plugin>/<sha> and flags any

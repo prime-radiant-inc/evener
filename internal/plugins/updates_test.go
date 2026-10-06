@@ -265,6 +265,38 @@ func TestCheckUpdates_RelativeSourcePluginUpgradesFromItsRefreshedMarketplace(t 
 	}
 }
 
+// A relative plugin installed before installs recorded its folder commit has
+// none, so the first check flags it: it may be behind its marketplace, and
+// nothing says otherwise. One Upgrade records the commit and settles it.
+func TestCheckUpdates_RelativePluginInstalledWithNoCommitIsFlaggedOnce(t *testing.T) {
+	mktRepo, name := makeInstallableMarketplace(t)
+	m := NewManager(t.TempDir())
+	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	if _, err := m.Install(context.Background(), "widget", name); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	reg, err := m.loadRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := registryKey("widget", name)
+	reg.Plugins[key][0].GitCommitSha = ""
+	if err := m.saveRegistry(reg); err != nil {
+		t.Fatal(err)
+	}
+	if !checkThenList(t, m) {
+		t.Fatal("relative plugin installed with no commit not flagged")
+	}
+	if _, err := m.Upgrade(context.Background(), "widget", name); err != nil {
+		t.Fatalf("Upgrade: %v", err)
+	}
+	if checkThenList(t, m) {
+		t.Fatal("relative plugin still flagged after its upgrade recorded the commit")
+	}
+}
+
 func TestGitRemoteHead_ResolvesTheCommitACheckoutOfRefLandsOn(t *testing.T) {
 	repo := filepath.Join(t.TempDir(), "repo")
 	first := makeGitRepo(t, repo, "f.txt", "1")

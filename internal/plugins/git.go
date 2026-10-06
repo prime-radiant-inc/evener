@@ -131,7 +131,9 @@ func gitHeadSHA(ctx context.Context, dir string) (string, error) {
 }
 
 // gitPathCommit returns the last commit of the repository at dir that touched
-// path (relative to dir), or "" when no commit has.
+// path (relative to dir), or "" when no commit has. In a shallow clone a path
+// untouched since the clone's root answers the root, so a reclone can move it
+// once without the path changing; an Upgrade then recopies the same files.
 func gitPathCommit(ctx context.Context, dir, path string) (string, error) {
 	out, err := gitRun(ctx, dir, "log", "-1", "--format=%H", "--", path)
 	if err != nil {

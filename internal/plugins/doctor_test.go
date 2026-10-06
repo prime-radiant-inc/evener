@@ -430,7 +430,9 @@ func TestDoctor_AutoUpgradeOnDirectorySourceWarns(t *testing.T) {
 	}
 }
 
-func TestDoctor_AutoUpgradeOnRelSourceWarns(t *testing.T) {
+// A relative source upgrades from its marketplace clone, so auto-upgrade on
+// it is no mistake.
+func TestDoctor_AutoUpgradeOnRelSource_NoWarning(t *testing.T) {
 	m := NewManager(t.TempDir())
 	dir := filepath.Join(t.TempDir(), "widget")
 	writePlugin(t, dir, "widget", nil)
@@ -448,8 +450,8 @@ func TestDoctor_AutoUpgradeOnRelSourceWarns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Doctor: %v", err)
 	}
-	if !hasFinding(findings, "auto-upgrade is on") {
-		t.Errorf("expected autoupgrade sanity warning for a Rel source; findings=%+v", findings)
+	if hasFinding(findings, "auto-upgrade is on") {
+		t.Errorf("autoupgrade sanity warning for a Rel source, which can upgrade; findings=%+v", findings)
 	}
 }
 
