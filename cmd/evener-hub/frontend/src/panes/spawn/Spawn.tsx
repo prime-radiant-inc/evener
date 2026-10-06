@@ -1326,9 +1326,8 @@ function SpawnForm({
   const [hostCatalogError, setHostCatalogError] = useState<string | null>(null);
   const [catalogAttempt, setCatalogAttempt] = useState(0);
   const retryHostCatalogs = useCallback(() => setCatalogAttempt((attempt) => attempt + 1), []);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: catalogAttempt is a trigger-only dep - Retry bumps it to read both catalogs again
   useEffect(() => {
-    // Read by the effect only so a Retry re-runs it.
-    void catalogAttempt;
     let active = true;
     // A changed target retires the previous host's catalogs before the new
     // host's answer lands (and when it fails), so a retained list can never let

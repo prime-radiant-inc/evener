@@ -9588,9 +9588,8 @@ test("a failed catalog load leaves the draft's harness and advanced options alon
 });
 
 // A refused catalog read (the hub's forwarded-read pool was full, or the host
-// was briefly unreachable) used to be swallowed: the host's harnesses and
-// Advanced options stayed empty until the host changed. The refusal is said,
-// beside a Retry that reads both catalogs again.
+// was briefly unreachable) is said, beside a Retry that reads both catalogs
+// again: nothing else re-reads them until the host changes.
 test("a refused host catalog read says so and Retry reads it again", async () => {
   const user = setupUser();
   seedSources(REMOTE_SOURCES);
@@ -9623,7 +9622,7 @@ test("a refused host catalog read says so and Retry reads it again", async () =>
   await waitFor(() => expect(screen.queryByTestId("spawn-host-catalog-error")).toBeNull());
   await user.click(screen.getByRole("button", { name: "Advanced options" }));
   const harness = screen.getByLabelText("Harness") as HTMLSelectElement;
-  expect(within(harness).getByRole("option", { name: "external" })).toBeTruthy();
+  await waitFor(() => expect(within(harness).getByRole("option", { name: "external" })).toBeTruthy());
 });
 
 // The other half of the same rule, on a host that has no answers at all: the
