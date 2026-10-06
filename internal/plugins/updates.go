@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -152,14 +154,14 @@ func (m *Manager) CheckUpdates(ctx context.Context) error {
 
 // refreshForCheck refreshes every fetched git marketplace before a check and
 // answers a warning for each it could not refresh; a refresh failure never
-// fails the check. The refreshes run one at a time: a refresh holds the store
-// lock through its network pull, so more at once would only queue on the lock
-// with their timers running. Each gets updateCheckTimeout, all of them
-// together updateCheckRefreshBudget. A directory marketplace is read in place,
-// one pinned to a sha can never change, and a never-fetched one is left to an
-// explicit refresh, so none of those is refreshed. A refresh that changes
-// nothing saves nothing (keepIfUnchanged), so it neither broadcasts nor
-// retires another check's answers.
+// fails the check. The refreshes run one at a time. Each gets
+// updateCheckTimeout, all of them together updateCheckRefreshBudget, and a
+// check whose budget runs out starts the next check's refreshes at the first
+// marketplace it left, so a slow marketplace cannot starve the ones after it
+// on every check. A directory marketplace is read in place, a never-fetched
+// one is left to an explicit refresh, and one pinned to a tag or a commit
+// (its clone has a detached HEAD) cannot be fast-forwarded, so none of those
+// is refreshed.
 func (m *Manager) refreshForCheck(ctx context.Context) []string {
 	mk, err := m.ListMarketplaces(ctx)
 	if err != nil {
@@ -167,19 +169,30 @@ func (m *Manager) refreshForCheck(ctx context.Context) []string {
 	}
 	budgetCtx, cancel := context.WithTimeoutCause(ctx, updateCheckRefreshBudget, errUpdateCheckRefreshBudget)
 	defer cancel()
+	names := slices.Sorted(maps.Keys(mk))
+	m.remoteHeadsMu.Lock()
+	resumeAt := m.checkRefreshResumeAt
+	m.remoteHeadsMu.Unlock()
+	start, _ := slices.BinarySearch(names, resumeAt)
+	names = slices.Concat(names[start:], names[:start])
 	var warnings []string
-	for _, name := range slices.Sorted(maps.Keys(mk)) {
-		if ref := mk[name]; ref.Source.Kind == SourceDirectory || ref.InstallLocation == "" || ref.Source.Sha != "" {
+	resumeAt = ""
+	for _, name := range names {
+		ref := mk[name]
+		if ref.Source.Kind == SourceDirectory || ref.InstallLocation == "" || !cloneOnBranch(ref.InstallLocation) {
 			continue
 		}
 		// Once the budget, the deadline or the caller has ended the phase,
 		// no further refresh starts; each one left is warned about.
 		if cause := context.Cause(budgetCtx); cause != nil {
+			if resumeAt == "" {
+				resumeAt = name
+			}
 			warnings = append(warnings, fmt.Sprintf("refreshing marketplace %q before checking for updates: %v", name, cause))
 			continue
 		}
 		refreshCtx, cancelRefresh := context.WithTimeout(budgetCtx, updateCheckTimeout)
-		err := m.refreshMarketplace(refreshCtx, name, true)
+		err := m.fastForwardMarketplace(refreshCtx, name, ref.InstallLocation)
 		// A refresh cut off by a limit is warned about by that limit, which
 		// says more than the error of the git it killed; any other failure
 		// keeps its own error.
@@ -193,7 +206,63 @@ func (m *Manager) refreshForCheck(ctx context.Context) []string {
 			warnings = append(warnings, fmt.Sprintf("refreshing marketplace %q before checking for updates: %v", name, err))
 		}
 	}
+	m.remoteHeadsMu.Lock()
+	m.checkRefreshResumeAt = resumeAt
+	m.remoteHeadsMu.Unlock()
 	return warnings
+}
+
+// fastForwardMarketplace fetches the clone at dir with the store lock free,
+// so a plugin operation started meanwhile does not wait behind the network,
+// then takes the lock to fast-forward it and save its LastUpdated. A fetch
+// writes only under .git, so nothing reading the clone's files sees it. One
+// that moves nothing saves nothing, so it neither broadcasts nor retires
+// another check's answers (forgetChecks). Unlike RefreshMarketplace, a
+// failure is not repaired by recloning, which would hold the lock across a
+// download; an explicit refresh does that.
+func (m *Manager) fastForwardMarketplace(ctx context.Context, name, dir string) error {
+	if err := marketplaceGitFetch(ctx, dir); err != nil {
+		return err
+	}
+	release, err := m.lockStore(ctx, marketplaceAcquireLock, 30*time.Second)
+	if err != nil {
+		return err
+	}
+	defer release()
+	mk, err := m.loadMarketplaces()
+	if err != nil {
+		return err
+	}
+	ref, ok := mk[name]
+	if !ok || ref.InstallLocation != dir {
+		// Removed or re-sourced while fetching: its clone is gone or new.
+		return nil
+	}
+	before, err := marketplaceGitHeadSHA(ctx, dir)
+	if err != nil {
+		return err
+	}
+	if err := marketplaceGitFastForward(ctx, dir); err != nil {
+		return err
+	}
+	if after, err := marketplaceGitHeadSHA(ctx, dir); err != nil || after == before {
+		return err
+	}
+	ref.LastUpdated = m.now().UTC()
+	mk[name] = ref
+	if err := m.saveMarketplaces(mk); err != nil {
+		return m.saveFailed(name, marketplacesFileName, err)
+	}
+	return nil
+}
+
+// cloneOnBranch reports whether the clone at dir has a branch checked out,
+// reading its HEAD file rather than running git, so it answers after the
+// check's budget has ended too. A clone that cannot be read counts as on a
+// branch, so the refresh tries it and warns of what fails.
+func cloneOnBranch(dir string) bool {
+	head, err := os.ReadFile(filepath.Join(dir, ".git", "HEAD"))
+	return err != nil || strings.HasPrefix(string(head), "ref: ")
 }
 
 // upgradeSource is plugin's source in marketplace's local catalog, parsing each

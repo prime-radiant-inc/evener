@@ -39,6 +39,9 @@ type Manager struct {
 	remoteHeadsMu   sync.Mutex
 	remoteHeads     map[string]checkedHead
 	checkGeneration uint64
+	// checkRefreshResumeAt names the marketplace the last check's refresh
+	// budget left unrefreshed first ("" when it refreshed them all).
+	checkRefreshResumeAt string
 }
 
 // NewManager returns a Manager rooted at root, or DefaultRoot() when root == "".
