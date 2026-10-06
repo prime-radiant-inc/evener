@@ -20,6 +20,13 @@
   // the checked scope is the src trees; package-root files (index.ts, App.tsx,
   // App.test.tsx, metro.config.js, vitest.config.mts, and the JSON configs) are
   // deliberately not run through the formatter.
+  // Generated output is the generator's, not the formatter's: mermaidPage.ts is
+  // a 3.4 MiB bundle (scripts/build-mermaid-page.mts, kept fresh by its own
+  // test) that Biome would otherwise skip with a size warning on every run
+  // (#3672). Only src/generated is left out.
+  "files": {
+    "includes": ["**", "!**/src/generated"]
+  },
   "vcs": {
     "enabled": true,
     "clientKind": "git",
