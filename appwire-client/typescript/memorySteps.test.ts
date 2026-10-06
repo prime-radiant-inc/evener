@@ -131,3 +131,7 @@ test("counts logical lines when a read without a limit returns unterminated outp
     "Read memory personal/page.md · lines 1-2",
   );
 });
+
+test("an edit with neither old nor new string has no diff detail", () => {
+  expect(memoryEditSummary(step({ scope: "project", file_path: "MEMORY.md" }))).toBe("Edited memory project/MEMORY.md");
+});

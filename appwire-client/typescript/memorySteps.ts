@@ -55,8 +55,13 @@ export function memoryEditWords(step: MemoryStep): StepWords {
   const args = memoryArgs(step);
   const target = memoryFileTarget(args);
   if (!target) return { verb: "Edited memory" };
+  const oldString = str(args, "old_string");
+  const newString = str(args, "new_string");
+  // Neither side present is the malformed shape the clients' bodies fall
+  // back on; there is no diff to describe, so no detail rides the summary.
+  if (oldString === undefined && newString === undefined) return { verb: "Edited memory", target };
   const path = filePathOf(args) ?? "";
-  const diff = editDiffText(path, str(args, "old_string") ?? "", str(args, "new_string") ?? "");
+  const diff = editDiffText(path, oldString ?? "", newString ?? "");
   return { verb: "Edited memory", target, detail: diffResultText(diff) };
 }
 
