@@ -86,6 +86,10 @@ CASES = [
     (shell("perl -i -pe 's/a/b/' progress.md"), ("write", ["ledger"])),
     (shell("perl -i -p .superpowers/fix.pl cart.go"), ("read", ["plan-artifacts"])),
     (shell("grep -eTask -- -fprogress.md"), ("work", [])),
+    (shell("sed -es/n/x/ progress.md"), ("work", [])),
+    (shell("sed -e 's/a/b/' -- -n"), ("work", [])),
+    (shell("perl -i -x script.pl progress.md"), ("write", ["ledger"])),
+    (shell("perl -i -x/opt script.pl progress.md"), ("write", ["ledger"])),
     (shell("go test ./..."), ("work", [])),
     # task_list: status, notes, or both; an update counts by the keys it sets.
     (call("task_list", update=[{"id": 1, "status": "done", "notes": "commit abc"}]), ("write", ["tasks", "task-notes"])),
