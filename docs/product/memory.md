@@ -85,8 +85,9 @@ as named user-source context, outside system instructions. Each scope supplies
 at most 8 KiB of index content, cut at a UTF-8 boundary, with explicit truncation
 and a route to `memory_read`. Topic files and logs are not preloaded.
 
-Enabled sessions also receive core memory guidance after the system
-instructions. It says what each scope holds (personal memory: what applies
+Enabled sessions also receive core memory guidance as the last section of the
+system instructions, rendered by the system prompt template with the rest of
+the system prompt from what the session can do. It says what each scope holds (personal memory: what applies
 beyond the current project, such as how the human partner works and how tools,
 systems and the world behave; project memory: knowledge about this project;
 session memory: working notes about the current work: its plan, what was tried
