@@ -505,7 +505,6 @@ async function reveal(edge, container) {
   for (let boundary = 0; boundary < 10; boundary++) {
     if (await read(`document.querySelector(${q(selector)}) !== null`)) return selector;
     const visible = await read(`document.querySelectorAll(${q(`${container} [data-activity-anchor]`)}).length`);
-    const before = await read(`document.querySelector(${q(container)}).textContent`);
     // The control is found and activated in one page turn. Scrolling a Show or
     // Load more control into view can make the page boundary under it load the
     // next page by itself; when that page lands it removes the boundary and the
@@ -517,11 +516,12 @@ async function reveal(edge, container) {
       const b = buttons.find(n => !n.disabled && (${visible} === 0 ? n.textContent.trim().startsWith('Inactive subagents (') : n.textContent.trim().startsWith('Show ') || n.textContent.trim() === 'Load more subagents'));
       if (!b) return null;
       b.scrollIntoView({ block: 'center' });
+      const before = document.querySelector(${q(container)}).textContent;
       b.click();
-      return { clicked: true };
+      return { before };
     })()`, "real disclosure or direct page boundary");
     if (step.revealed) return selector;
-    await wait(`document.querySelector(${q(selector)}) !== null || document.querySelector(${q(container)}).textContent !== ${q(before)}`, "direct collection progresses");
+    await wait(`document.querySelector(${q(selector)}) !== null || document.querySelector(${q(container)}).textContent !== ${q(step.before)}`, "direct collection progresses");
   }
   throw new Error(`real delegate did not become visible through ten boundaries: ${edge.delegateId}`);
 }
