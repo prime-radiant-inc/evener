@@ -153,8 +153,9 @@ func (m *Manager) CheckUpdates(ctx context.Context) error {
 // through its network pull, so more at once would only queue on the lock with
 // their timers running. Each gets updateCheckTimeout, all of them together
 // updateCheckRefreshBudget of the check's deadline, so the remote checks keep
-// the rest. A directory marketplace is read in place, and a never-fetched one
-// has no installed plugin to check, so neither is refreshed. A refresh that
+// the rest. A directory marketplace is read in place, one pinned to a sha can
+// never change, and a never-fetched one is left to an explicit refresh, so
+// none of those is refreshed. A refresh that
 // leaves the clone where it was saves nothing (refreshMarketplace's
 // keepIfUnchanged), so it neither broadcasts nor retires the answers of
 // another check in flight. It answers the warnings for the marketplaces it
@@ -168,17 +169,15 @@ func (m *Manager) refreshForCheck(ctx context.Context) []string {
 	defer cancel()
 	var warnings []string
 	for _, name := range slices.Sorted(maps.Keys(mk)) {
-		if ref := mk[name]; ref.Source.Kind == SourceDirectory || ref.InstallLocation == "" {
+		if ref := mk[name]; ref.Source.Kind == SourceDirectory || ref.InstallLocation == "" || ref.Source.Sha != "" {
 			continue
 		}
 		refreshCtx, cancelRefresh := context.WithTimeout(budgetCtx, updateCheckTimeout)
 		err := m.refreshMarketplace(refreshCtx, name, true)
 		cancelRefresh()
 		if err != nil {
-			for _, limit := range []error{errUpdateCheckDeadline, errUpdateCheckRefreshBudget} {
-				if cause := context.Cause(budgetCtx); errors.Is(cause, limit) {
-					err = cause
-				}
+			if cause := context.Cause(budgetCtx); errors.Is(cause, errUpdateCheckDeadline) || errors.Is(cause, errUpdateCheckRefreshBudget) {
+				err = cause
 			}
 			warnings = append(warnings, fmt.Sprintf("refreshing marketplace %q before checking for updates: %v", name, err))
 		}
