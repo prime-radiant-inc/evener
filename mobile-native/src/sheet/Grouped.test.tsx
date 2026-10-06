@@ -729,6 +729,31 @@ describe("Button", () => {
 		});
 	});
 
+	it.each([
+		["ios", 44],
+		["android", 48],
+	])(
+		"draws a compact primary as an accent pill sized to its label, 16pt, its touch the %s minimum of %ipt",
+		(os, minimum) => {
+			onOS(os, () => {
+				const tree = render(<Button label="Save" primary compact onPress={() => {}} />);
+				const button = pressable(tree);
+				expect(styleOf(button)).toMatchObject({
+					backgroundColor: light.accentFill,
+					borderRadius: 24,
+					paddingHorizontal: 18,
+					paddingVertical: 8,
+					minHeight: minimum,
+					minWidth: minimum,
+				});
+				expect(styleOf(button).alignSelf).toBeUndefined();
+				expect(styleOf(button, true).opacity).toBe(0.65);
+				const label = tree.root.find((node) => String(node.type) === "Text");
+				expect(merged(label.props.style)).toMatchObject({ color: light.onFill, fontSize: 16, fontWeight: "600" });
+			});
+		},
+	);
+
 	it("dims a disabled text button and holds its press", () => {
 		const button = pressable(render(<Button label="Edit" text disabled onPress={() => {}} />));
 		expect(button.props.disabled).toBe(true);

@@ -571,6 +571,9 @@ const BUTTON_KINDS = {
  * - `text`, an inline action: 16pt accent text with no fill, drawn at the
  *   platform's minimum target; with `quiet`, the same in the secondary ink at
  *   regular weight, for an action that steps back.
+ * - `primary` with `compact`: the call to action sized to its label, a 16pt
+ *   accent pill at the platform's minimum target, for one that sits beside
+ *   other controls rather than across the page.
  * A plain or text button's touch reaches the 44pt minimum (48 on Android); a
  * mini button's reaches its 44pt row's edges. Its label follows Dynamic Type,
  * so the height is a minimum. `expanded` tells VoiceOver whether the section
@@ -583,6 +586,7 @@ export function Button({
 	mini = false,
 	text = false,
 	quiet = false,
+	compact = false,
 	disabled = false,
 	expanded,
 	accessibilityLabel,
@@ -594,6 +598,8 @@ export function Button({
 	text?: boolean;
 	/** With `text`: the secondary ink at regular weight. */
 	quiet?: boolean;
+	/** With `primary`: a pill sized to its label instead of full width. */
+	compact?: boolean;
 	disabled?: boolean;
 	expanded?: boolean;
 	/** VoiceOver's name when the label alone doesn't say what it acts on, as
@@ -602,8 +608,9 @@ export function Button({
 }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
-	if (text) {
+	if (text || (primary && compact)) {
 		const target = minimumTarget();
+		const pill = !text;
 		return (
 			<Pressable
 				accessibilityRole="button"
@@ -615,15 +622,16 @@ export function Button({
 					minWidth: target,
 					minHeight: target,
 					justifyContent: "center",
-					paddingHorizontal: 8,
+					paddingHorizontal: pill ? 18 : 8,
 					paddingVertical: 8,
+					...(pill ? { backgroundColor: palette.accentFill, borderRadius: 24 } : null),
 					opacity: disabled ? 0.4 : pressed ? 0.65 : 1,
 				})}
 			>
 				<Text
 					allowFontScaling={allowFontScaling}
 					style={{
-						color: quiet ? palette.inkMid : palette.accentInk,
+						color: pill ? palette.onFill : quiet ? palette.inkMid : palette.accentInk,
 						fontSize: 16 * scale,
 						fontWeight: quiet ? "400" : "600",
 						flexShrink: 1,
