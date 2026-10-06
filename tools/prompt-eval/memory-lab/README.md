@@ -43,6 +43,7 @@ The lab runs real models with your configured provider credentials, so it is nev
 - `--jobs`: lunarouter allows 10 concurrent requests on a model's regular pool and 30 on its `-background` pool. Keep the total across parallel runs under that.
 - `--max-rounds` (default 40) caps tool rounds per stage. If the cap is tight, every stage stops on the cap and the results measure the cap, not memory.
 - `--effort` (default `high`) sets the reasoning effort. `--timeout` (default 1200) is seconds per stage.
+- A trial that hits an infrastructure error, such as a failing `before` hook, prints `ERROR` on the stage it hit and on every later stage. Those stages fail every check in the table, and `run` exits nonzero once all trials finish.
 - `--out` must be a fresh directory, relative or absolute. The command prints one line per stage as each trial finishes, then only the pass-rate table per version, scenario, stage and check. `report` prints the per-stage lines too.
 
 ## Reading results
