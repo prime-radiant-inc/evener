@@ -702,3 +702,109 @@ func TestCheckUpdates_RefreshFetchesWithTheStoreLockFree(t *testing.T) {
 		t.Fatalf("the store lock could not be taken during a check's fetch: %v", lockErr)
 	}
 }
+
+// A marketplace refresh cut off by the budget partway through goes first next
+// time, so one that is always the one in flight is not starved.
+func TestCheckUpdates_RefreshResumesAtOneTheBudgetCutOff(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	m := NewManager(t.TempDir())
+	m.Stderr = &bytes.Buffer{}
+	for _, name := range []string{"first", "second"} {
+		if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: makeMarketplaceRepoWithPlugin(t, name, "widget")}); err != nil {
+			t.Fatalf("AddMarketplace %s: %v", name, err)
+		}
+	}
+	fetched := hangingFetches(t)
+	hang := marketplaceGitFetch
+	marketplaceGitFetch = func(ctx context.Context, dir string) error {
+		if dir == m.marketplaceDir("first") {
+			*fetched = append(*fetched, dir)
+			return nil
+		}
+		return hang(ctx, dir)
+	}
+	for range 2 {
+		if err := m.CheckUpdates(context.Background()); err != nil {
+			t.Fatalf("CheckUpdates: %v", err)
+		}
+	}
+	want := []string{m.marketplaceDir("first"), m.marketplaceDir("second"), m.marketplaceDir("second")}
+	if !slices.Equal(*fetched, want) {
+		t.Fatalf("fetches across two checks = %v, want %v", *fetched, want)
+	}
+}
+
+// A check that cannot fetch a marketplace warns and leaves its clone; it never
+// reclones, which would hold the store lock across a download.
+func TestCheckUpdates_AFailedFetchDoesNotReclone(t *testing.T) {
+	f := installURLPlugin(t, unpinned)
+	realFetch, realClone := marketplaceGitFetch, marketplaceGitClone
+	t.Cleanup(func() { marketplaceGitFetch, marketplaceGitClone = realFetch, realClone })
+	marketplaceGitFetch = func(context.Context, string) error { return errors.New("wedged") }
+	clones := 0
+	marketplaceGitClone = func(ctx context.Context, url, dir, ref, sha string) error {
+		clones++
+		return realClone(ctx, url, dir, ref, sha)
+	}
+	checkThenList(t, f.m)
+	if clones != 0 {
+		t.Fatalf("a check whose fetch failed cloned %d times", clones)
+	}
+	if w := f.warnings(); !strings.Contains(w, "wedged") {
+		t.Fatalf("no warning carries the failed fetch: %q", w)
+	}
+}
+
+// duringCheckFetch runs op in the background while a check fetches the
+// marketplace "acme", and answers whether op had finished by the time the
+// fetch did (it should have waited for the fetch).
+func duringCheckFetch(t *testing.T, f urlPluginFixture, op func()) bool {
+	t.Helper()
+	realFetch := marketplaceGitFetch
+	t.Cleanup(func() { marketplaceGitFetch = realFetch })
+	var finishedDuringFetch bool
+	done := make(chan struct{})
+	marketplaceGitFetch = func(ctx context.Context, dir string) error {
+		go func() {
+			defer close(done)
+			op()
+		}()
+		select {
+		case <-done:
+			finishedDuringFetch = true
+		case <-time.After(300 * time.Millisecond):
+		}
+		return realFetch(ctx, dir)
+	}
+	checkThenList(t, f.m)
+	<-done
+	return finishedDuringFetch
+}
+
+// An explicit refresh of a clone a check is fetching waits for that fetch,
+// so the two gits do not collide on the clone's ref locks.
+func TestCheckUpdates_AnExplicitRefreshWaitsForTheCheckFetch(t *testing.T) {
+	f := installURLPlugin(t, unpinned)
+	if duringCheckFetch(t, f, func() {
+		if err := f.m.RefreshMarketplace(context.Background(), "acme"); err != nil {
+			t.Errorf("RefreshMarketplace: %v", err)
+		}
+	}) {
+		t.Fatal("an explicit refresh ran while a check was fetching the same clone")
+	}
+}
+
+// Removing a marketplace a check is fetching waits for that fetch, so the
+// clone is not deleted under a running git (which Windows refuses).
+func TestCheckUpdates_RemovingAMarketplaceWaitsForTheCheckFetch(t *testing.T) {
+	f := installURLPlugin(t, unpinned)
+	if duringCheckFetch(t, f, func() {
+		if err := f.m.RemoveMarketplace(context.Background(), "acme"); err != nil {
+			t.Errorf("RemoveMarketplace: %v", err)
+		}
+	}) {
+		t.Fatal("a marketplace was removed while a check was fetching its clone")
+	}
+}

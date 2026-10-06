@@ -158,8 +158,8 @@ func (m *Manager) CheckUpdates(ctx context.Context) error {
 // one clear place for the next check to resume from. Each gets
 // updateCheckTimeout, all of them together updateCheckRefreshBudget, and a
 // check whose budget runs out starts the next check's refreshes at the first
-// marketplace it left, so a slow marketplace cannot starve the ones after it
-// on every check. A directory marketplace is read in place, a never-fetched
+// marketplace it cut off or left, so slow marketplaces cannot starve the ones
+// after them on every check. A directory marketplace is read in place, a never-fetched
 // one is left to an explicit refresh, and one pinned to a tag or a commit
 // (its clone has a detached HEAD) cannot be fast-forwarded, so none of those
 // is refreshed.
@@ -177,7 +177,7 @@ func (m *Manager) refreshForCheck(ctx context.Context) []string {
 	start, _ := slices.BinarySearch(names, resumeAt)
 	names = slices.Concat(names[start:], names[:start])
 	var warnings []string
-	firstLeft := ""
+	firstLeft, started := "", 0
 	for _, name := range names {
 		ref := mk[name]
 		if ref.Source.Kind == SourceDirectory || ref.InstallLocation == "" || !cloneOnBranch(ref.InstallLocation) {
@@ -192,6 +192,7 @@ func (m *Manager) refreshForCheck(ctx context.Context) []string {
 			warnings = append(warnings, fmt.Sprintf("refreshing marketplace %q before checking for updates: %v", name, cause))
 			continue
 		}
+		started++
 		refreshCtx, cancelRefresh := context.WithTimeout(budgetCtx, updateCheckTimeout)
 		err := m.fastForwardMarketplace(refreshCtx, name, ref.InstallLocation)
 		// A refresh cut off by a limit is warned about by that limit, which
@@ -200,6 +201,12 @@ func (m *Manager) refreshForCheck(ctx context.Context) []string {
 		if err != nil && refreshCtx.Err() != nil {
 			if cause := context.Cause(budgetCtx); cause != nil {
 				err = cause
+				// Cut off by the phase's end, it goes first next time, unless
+				// it began the phase: it had the whole budget and would only
+				// take it again.
+				if started > 1 && firstLeft == "" {
+					firstLeft = name
+				}
 			}
 		}
 		cancelRefresh()
@@ -216,13 +223,20 @@ func (m *Manager) refreshForCheck(ctx context.Context) []string {
 // fastForwardMarketplace fetches the clone at dir with the store lock free,
 // so a plugin operation started meanwhile does not wait behind the network,
 // then takes the lock to fast-forward it and save its LastUpdated. A fetch
-// writes only under .git, so nothing reading the clone's files sees it. One
+// writes only under .git, so nothing reading the clone's files sees it, and
+// it holds the clone's own lock (lockClone) against other git work in the
+// clone and its removal. A blobless git-subdir clone still downloads the
+// changed files' contents as it fast-forwards, under the store lock, bounded
+// by the refresh's timeout. One
 // that moves nothing saves nothing, so it neither broadcasts nor retires
 // another check's answers (forgetChecks). Unlike RefreshMarketplace, a
 // failure is not repaired by recloning, which would hold the lock across a
 // download; an explicit refresh does that.
 func (m *Manager) fastForwardMarketplace(ctx context.Context, name, dir string) error {
-	if err := marketplaceGitFetch(ctx, dir); err != nil {
+	releaseClone := m.lockClone(dir)
+	err := marketplaceGitFetch(ctx, dir)
+	releaseClone()
+	if err != nil {
 		return err
 	}
 	release, err := m.lockStore(ctx, marketplaceAcquireLock, 30*time.Second)
@@ -235,8 +249,9 @@ func (m *Manager) fastForwardMarketplace(ctx context.Context, name, dir string) 
 		return err
 	}
 	ref, ok := mk[name]
-	if !ok || ref.InstallLocation != dir {
-		// Removed or re-sourced while fetching: its clone is gone or new.
+	if !ok || ref.InstallLocation != dir || !cloneOnBranch(dir) {
+		// Removed, moved or re-sourced to a pin while fetching: there is
+		// nothing to fast-forward.
 		return nil
 	}
 	before, err := marketplaceGitHeadSHA(ctx, dir)

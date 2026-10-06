@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 )
 
@@ -91,6 +92,19 @@ func (m *Manager) lockStore(ctx context.Context, acquire lockAcquirer, timeout t
 		return nil, m.migrationFailedErr(err)
 	}
 	return release, nil
+}
+
+// lockClone takes this process's lock on the marketplace clone at dir and
+// returns its release. A check fetches a clone with the store lock free
+// (fastForwardMarketplace), so whatever else runs git in a clone or removes
+// or renames one takes this too: two gits in one clone collide on its ref
+// locks, and Windows refuses to delete or rename a directory a git is
+// running in. Taken after the store lock, never before it, and held for no
+// store-lock wait.
+func (m *Manager) lockClone(dir string) func() {
+	mu, _ := m.cloneLocks.LoadOrStore(filepath.Clean(dir), &sync.Mutex{})
+	mu.(*sync.Mutex).Lock()
+	return mu.(*sync.Mutex).Unlock
 }
 
 // lockFailed scrubs a failed store-lock acquisition's absolute lock-file path -

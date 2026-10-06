@@ -514,7 +514,10 @@ func (m *Manager) RemoveMarketplace(ctx context.Context, name string) error {
 		return m.saveFailed(name, marketplacesFileName, err)
 	}
 	if present && !protect {
-		if err := marketplaceRemoveAll(clone); err != nil {
+		releaseClone := m.lockClone(clone)
+		err := marketplaceRemoveAll(clone)
+		releaseClone()
+		if err != nil {
 			return m.cloneRemovalFailed(name, err)
 		}
 	}
@@ -1515,6 +1518,8 @@ func (m *Manager) swapInClone(staging, dest string) (string, error) {
 	// the marketplace unable to re-source until someone deleted it by hand.
 	old := m.marketplaceDir(asideCloneName)
 	_ = marketplaceRemoveAll(old)
+	release := m.lockClone(dest)
+	defer release()
 	occupied, err := pathPresent(dest)
 	if err != nil {
 		return "", err
@@ -1564,6 +1569,13 @@ func undoCloneSwap(dest, aside string) error {
 	return restoreRename("old clone", aside, dest)
 }
 
+// pullClone pulls the clone at dir under its clone lock (lockClone).
+func (m *Manager) pullClone(ctx context.Context, dir string) error {
+	release := m.lockClone(dir)
+	defer release()
+	return marketplaceGitPull(ctx, dir)
+}
+
 func (m *Manager) RefreshMarketplace(ctx context.Context, name string) error {
 	release, err := m.lockStore(ctx, marketplaceAcquireLock, 30*time.Second)
 	if err != nil {
@@ -1591,7 +1603,7 @@ func (m *Manager) RefreshMarketplace(ctx context.Context, name string) error {
 				return err
 			}
 			ref.InstallLocation = installLoc
-		} else if pullErr := marketplaceGitPull(ctx, ref.InstallLocation); pullErr != nil {
+		} else if pullErr := m.pullClone(ctx, ref.InstallLocation); pullErr != nil {
 			// A failed pull can mean the clone is wedged — e.g. a stale
 			// .git/index.lock stranded by a killed git — and a plain retry
 			// would then fail the same way forever. Self-heal with a staged

@@ -130,7 +130,8 @@ func gitFetch(ctx context.Context, dir string) error {
 }
 
 // gitFastForward moves the branch checked out in the clone at dir to its
-// upstream as last fetched; it needs no network.
+// upstream as last fetched. It needs no network, except that a blobless
+// clone downloads the contents of the files it changes.
 func gitFastForward(ctx context.Context, dir string) error {
 	_, err := gitRun(ctx, dir, "merge", "--ff-only", "--quiet", "@{upstream}")
 	return err
