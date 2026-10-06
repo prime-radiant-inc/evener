@@ -13,7 +13,7 @@
       "resume": "A",
       "prompt": "Next, have a delegate add FormatQty(q int) string that renders 3 as \"x3\". Keep the delegate's brief to one sentence about the function.",
       "checks": [{"name": "tests pass", "run": "go test ./..."}, {"name": "FormatQty in receipt.go", "run": "grep -q 'func FormatQty' receipt.go"}, {"name": "FormatQty test table-driven in receipt_test.go", "run": "grep -q 'FormatQty' receipt_test.go"}],
-      "transcripts": [{"name": "some session read session memory", "regex": "memory_(read|search)"}]
+      "transcripts": [{"name": "delegate read session memory", "regex": "memory_(read|search)", "subagents_only": true}]
     }
   ]
 }
