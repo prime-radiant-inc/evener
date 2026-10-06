@@ -6,7 +6,7 @@ import { filenameOf } from "@evener/appwire-client/docContent";
 import { useMemo, useSyncExternalStore } from "react";
 import { Pressable, Text, View } from "react-native";
 import { fonts } from "../design/tokens";
-import { compactDuration, spokenDuration } from "../session/format";
+import { spokenDuration, timeAgo } from "../session/format";
 import { useMinuteClock } from "../session/minuteClock";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { useReadingFace } from "../display/displayContext";
@@ -42,8 +42,8 @@ export function useDocumentFacts(hubId: string, sessionRef: string, path: string
 		title: summary?.title || name,
 		name,
 		lines: summary?.lines === undefined ? null : `${summary.lines} ${summary.lines === 1 ? "line" : "lines"}`,
-		age: age === null ? null : `${compactDuration(age)} ago`,
-		spokenAge: age === null ? null : `${spokenDuration(age)} ago`,
+		age: age === null ? null : timeAgo(age),
+		spokenAge: age === null ? null : timeAgo(age, spokenDuration),
 		freshness: documentFreshness(memory.lastRead({ sessionRef, path }), updatedAt),
 	};
 }
