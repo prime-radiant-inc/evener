@@ -160,7 +160,9 @@ func TestUpdateAutoUpgrade_NoOpNotReportedAsUpdated(t *testing.T) {
 	}
 }
 
-func TestUpdateAutoUpgrade_SkipsRelativeAndDirectorySources(t *testing.T) {
+// The sweep upgrades a relative-source plugin from its refreshed marketplace
+// when its folder changed.
+func TestUpdateAutoUpgrade_UpgradesARelativeSourceWhoseFolderChanged(t *testing.T) {
 	if !gitAvailable() {
 		t.Skip("git not available")
 	}
@@ -176,13 +178,21 @@ func TestUpdateAutoUpgrade_SkipsRelativeAndDirectorySources(t *testing.T) {
 	if err := m.SetAutoUpgrade(context.Background(), "widget", name, true); err != nil {
 		t.Fatalf("SetAutoUpgrade: %v", err)
 	}
-
-	updated, err := m.UpdateAutoUpgrade(context.Background())
-	if err != nil {
-		t.Fatalf("UpdateAutoUpgrade: %v", err)
+	if updated, err := m.UpdateAutoUpgrade(context.Background()); err != nil || len(updated) != 0 {
+		t.Fatalf("UpdateAutoUpgrade with the folder unchanged = %+v (%v), want no upgrade", updated, err)
 	}
-	if len(updated) != 0 {
-		t.Fatalf("UpdateAutoUpgrade touched a relative-source plugin: %+v", updated)
+
+	if err := os.WriteFile(filepath.Join(mktRepo, "plugins", "widget", "extra.txt"), []byte("v2"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, mktRepo, "add", ".")
+	gitIn(t, mktRepo, "commit", "-qm", "change widget")
+	if err := m.RefreshMarketplace(context.Background(), name); err != nil {
+		t.Fatalf("RefreshMarketplace: %v", err)
+	}
+	updated, err := m.UpdateAutoUpgrade(context.Background())
+	if err != nil || len(updated) != 1 || updated[0].Plugin != "widget" {
+		t.Fatalf("UpdateAutoUpgrade after the folder changed = %+v (%v), want widget upgraded", updated, err)
 	}
 }
 

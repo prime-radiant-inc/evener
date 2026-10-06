@@ -423,6 +423,20 @@ func (s *NavigationService) selectLocked(key, semantic navigationResourceKey, ch
 			revision:   state.Revision,
 		}
 	}
+	// The key's revision covers every catalog's project with the key, so a
+	// read naming a catalog that has none is answered here: gone at the key's
+	// revision, as a project that moved catalogs is, so a client locates the
+	// session again rather than retrying.
+	if semantic.Kind == navigationResourceProject && versioned.Catalog != "" {
+		if _, found := s.core.projection.projectIn(versioned.Catalog, versioned.ProjectKey); !found {
+			return navigationResourceKey{}, navigationProjection{}, false, navigationNotFoundError{
+				kind:       semantic.Kind,
+				known:      true,
+				generation: s.generation,
+				revision:   state.Revision,
+			}
+		}
+	}
 	versioned.Revision = state.Revision
 	// navigationProjection retains only deep-cloned input and derived maps. A
 	// value copy is enough to bind this request to the exact core selected above.
@@ -1106,27 +1120,41 @@ func navigationLogicalFingerprintsWithContext(ctx context.Context, projection na
 			return nil, nil, err
 		}
 	}
-	for projectKey, project := range projection.projects {
-		if err := ctx.Err(); err != nil {
-			return nil, nil, err
+	// One revision governs a project key across its catalogs, as one governs
+	// every page: a read by key alone and a read naming a catalog are views
+	// of one resource (Semantic drops the catalog), so a client fencing on
+	// an invalidation target's revision sees the revision it reads. Its
+	// fingerprint covers each catalog's project with the key, in catalog
+	// order.
+	type projectLogical struct {
+		Catalog navigationResourceKind
+		Project hubapi.NavigationProjectSummary
+		Current hubapi.NavigationArray[hubapi.NavigationSessionSummary]
+		Recent  hubapi.NavigationArray[hubapi.NavigationSessionSummary]
+	}
+	byKey := make(map[string][]projectLogical, len(projection.projects))
+	for _, catalog := range navigationCatalogOrder() {
+		for _, project := range projection.catalogs[catalog] {
+			if err := ctx.Err(); err != nil {
+				return nil, nil, err
+			}
+			// A project resource serves no archived rows (evener/archived/list does),
+			// so they are not part of its fingerprint; their count is, in the summary.
+			logical := projectLogical{Catalog: catalog, Project: projection.projectSummary(project)}
+			current, _ := project.TierRows("current")
+			recent, _ := project.TierRows("recent")
+			logical.Current, err = navigationLogicalNodesContext(ctx, projection, current)
+			if err != nil {
+				return nil, nil, err
+			}
+			logical.Recent, err = navigationLogicalNodesContext(ctx, projection, recent)
+			if err != nil {
+				return nil, nil, err
+			}
+			byKey[project.Key] = append(byKey[project.Key], logical)
 		}
-		// A project resource serves no archived rows (evener/archived/list does),
-		// so they are not part of its fingerprint; their count is, in the summary.
-		logical := struct {
-			Project hubapi.NavigationProjectSummary
-			Current hubapi.NavigationArray[hubapi.NavigationSessionSummary]
-			Recent  hubapi.NavigationArray[hubapi.NavigationSessionSummary]
-		}{Project: projection.projectSummary(project)}
-		current, _ := project.TierRows("current")
-		recent, _ := project.TierRows("recent")
-		logical.Current, err = navigationLogicalNodesContext(ctx, projection, current)
-		if err != nil {
-			return nil, nil, err
-		}
-		logical.Recent, err = navigationLogicalNodesContext(ctx, projection, recent)
-		if err != nil {
-			return nil, nil, err
-		}
+	}
+	for projectKey, logical := range byKey {
 		key := navigationResourceKey{Kind: navigationResourceProject, ProjectKey: projectKey}
 		if err := put(key, logical, key); err != nil {
 			return nil, nil, err
@@ -1548,8 +1576,10 @@ func (key navigationResourceKey) Semantic() navigationResourceKey {
 	case navigationResourceLive, navigationResourceNeedsYou, navigationResourcePinCatalog, navigationResourcePinSection,
 		navigationResourceProjects, navigationResourceArchivedProjects, navigationResourceTestRuns:
 		key.Offset, key.Limit = 0, 0
+	case navigationResourceProject:
+		key.Catalog = ""
 	case navigationResourceProjectPage:
-		key.Kind, key.Tier, key.Offset, key.Limit = navigationResourceProject, "", 0, 0
+		key.Kind, key.Catalog, key.Tier, key.Offset, key.Limit = navigationResourceProject, "", "", 0, 0
 	}
 	return key
 }

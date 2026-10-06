@@ -125,6 +125,7 @@
     "revision": 1,
     "ref": "local:01FIXTURE",
     "top_level_ref": "local:01FIXTURE",
+    "catalog": "projects",
     "project_key": "evener-0123456789",
     "top_level": true,
     "tier": "current",
