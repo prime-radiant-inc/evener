@@ -3072,3 +3072,64 @@ func TestRefreshMarketplace_AHealingRecloneReportsAChange(t *testing.T) {
 		t.Fatalf("a healing reclone reported %v, want one marketplaces change", *reports)
 	}
 }
+
+// A pinned clone moved off its pin is put back on it, never pulled along the
+// branch it was moved to: a sha pin checked out on a branch, and a tag pin
+// whose HEAD was moved to a later commit.
+func TestRefreshMarketplace_APinnedCloneMovedOffItsPinIsPutBack(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	shaRepo := makeMarketplaceRepo(t, "pinned")
+	pin := gitIn(t, shaRepo, "rev-parse", "HEAD")
+	advanceGitRepo(t, shaRepo, "README.md", "after the pin")
+	tagRepo := makeMarketplaceRepo(t, "tagged")
+	gitIn(t, tagRepo, "tag", "v1")
+	tagged := gitIn(t, tagRepo, "rev-parse", "HEAD")
+	advanceGitRepo(t, tagRepo, "README.md", "after the tag")
+	later := gitIn(t, tagRepo, "rev-parse", "HEAD")
+	m := NewManager(t.TempDir())
+	shaRef, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: shaRepo, Sha: pin})
+	if err != nil {
+		t.Fatalf("AddMarketplace pinned: %v", err)
+	}
+	tagRef, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: tagRepo, Ref: "v1"})
+	if err != nil {
+		t.Fatalf("AddMarketplace tagged: %v", err)
+	}
+	gitIn(t, shaRef.InstallLocation, "checkout", "--quiet", "-B", "main", "origin/HEAD")
+	gitIn(t, tagRef.InstallLocation, "checkout", "--quiet", "--detach", later)
+	for name, want := range map[string]string{"pinned": pin, "tagged": tagged} {
+		if err := m.RefreshMarketplace(context.Background(), name); err != nil {
+			t.Fatalf("RefreshMarketplace %s: %v", name, err)
+		}
+		loc := shaRef.InstallLocation
+		if name == "tagged" {
+			loc = tagRef.InstallLocation
+		}
+		if got := gitIn(t, loc, "rev-parse", "HEAD"); got != want {
+			t.Fatalf("%s HEAD after refresh = %s, want its pin %s", name, got, want)
+		}
+	}
+}
+
+// A sha pin written in upper case is the same commit as the clone's HEAD, so
+// an intact clone is left as it is.
+func TestRefreshMarketplace_AnUpperCaseShaPinIsIntact(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	repo := makeMarketplaceRepo(t, "pinned")
+	pin := strings.ToUpper(gitIn(t, repo, "rev-parse", "HEAD"))
+	m := NewManager(t.TempDir())
+	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: repo, Sha: pin}); err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	reports := recordStoreChanges(m)
+	if err := m.RefreshMarketplace(context.Background(), "pinned"); err != nil {
+		t.Fatalf("RefreshMarketplace: %v", err)
+	}
+	if len(*reports) != 0 {
+		t.Fatalf("refreshing an intact upper-case sha pin reported %v, want no change", *reports)
+	}
+}

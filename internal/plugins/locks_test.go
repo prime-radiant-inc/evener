@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -349,6 +350,19 @@ func TestLockClone_AWaiterOutlivesTheLockFilesRemoval(t *testing.T) {
 	if err != nil {
 		t.Fatalf("lockClone: %v", err)
 	}
+	// The file is removed only once the waiter is contending on it, so the
+	// waiter is granted the lock on the removed file, not on a new one.
+	contending := make(chan struct{})
+	var once sync.Once
+	realFlock := lockFlock
+	t.Cleanup(func() { lockFlock = realFlock })
+	lockFlock = func(fd int, how int) error {
+		err := realFlock(fd, how)
+		if isLockContended(err) {
+			once.Do(func() { close(contending) })
+		}
+		return err
+	}
 	acquired := make(chan func())
 	go func() {
 		next, err := NewManager(m.Root).lockClone(context.Background(), dir)
@@ -359,7 +373,7 @@ func TestLockClone_AWaiterOutlivesTheLockFilesRemoval(t *testing.T) {
 		}
 		acquired <- next
 	}()
-	time.Sleep(100 * time.Millisecond)
+	<-contending
 	m.removeCloneLock(dir)
 	release()
 	next := <-acquired

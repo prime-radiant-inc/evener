@@ -137,6 +137,28 @@ func gitFastForward(ctx context.Context, dir string) error {
 	return err
 }
 
+// gitTracksBranch reports whether the clone at dir tracks a branch of its
+// remote named name; a tag or a commit is not one.
+func gitTracksBranch(ctx context.Context, dir, name string) bool {
+	if guardGitArg("ref", name) != nil {
+		return false
+	}
+	_, err := gitRun(ctx, dir, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/"+name)
+	return err == nil
+}
+
+// gitResolveCommit answers the commit rev names in the clone at dir.
+func gitResolveCommit(ctx context.Context, dir, rev string) (string, error) {
+	if err := guardGitArg("ref", rev); err != nil {
+		return "", err
+	}
+	out, err := gitRun(ctx, dir, "rev-parse", "--verify", "--quiet", rev+"^{commit}")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
 func gitHeadSHA(ctx context.Context, dir string) (string, error) {
 	out, err := gitRun(ctx, dir, "rev-parse", "HEAD")
 	if err != nil {

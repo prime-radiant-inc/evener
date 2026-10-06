@@ -1642,12 +1642,19 @@ func (m *Manager) RefreshMarketplace(ctx context.Context, name string) error {
 				return err
 			}
 			ref.InstallLocation = installLoc
-		} else if m.pinnedCloneIntact(ctx, ref) {
-			// The pinned commit is the catalog, so there is nothing to
-			// fetch, and a pull of its detached HEAD would fail and reclone
-			// it on every refresh (#3844). A pinned clone that is not intact
-			// falls through to the pull, whose failure recloned it whole.
-			changed = false
+		} else if sourcePinned(ctx, ref) {
+			// The pinned commit is the catalog, so an intact clone has
+			// nothing to fetch; a pull of its detached HEAD would fail and
+			// reclone it on every refresh (#3844). One that is not intact is
+			// recloned at its pin, never pulled along a branch it was moved to.
+			if !m.pinnedCloneIntact(ctx, ref) {
+				if err := m.recloneMarketplace(ctx, ref); err != nil {
+					return fmt.Errorf("refreshing marketplace %q: restoring its pinned clone: %w", name, err)
+				}
+				changed = true
+			} else {
+				changed = false
+			}
 		} else if changed, err = m.pullMarketplace(ctx, name, ref); err != nil {
 			return err
 		}
@@ -1655,14 +1662,22 @@ func (m *Manager) RefreshMarketplace(ctx context.Context, name string) error {
 	return m.stampRefreshed(mk, name, ref, changed)
 }
 
-// pinnedCloneIntact reports whether ref is pinned (sourcePinned) and its
-// clone still stands at the pin with a catalog that parses.
+// pinnedCloneIntact reports whether the clone of pinned ref (sourcePinned)
+// stands at its pin, the sha or the commit its ref names, with a catalog that
+// parses. Everything it reads is moved only under the store lock, which the
+// refresh holds; a check's fetch, the one git run without it, writes only
+// objects and remote refs.
 func (m *Manager) pinnedCloneIntact(ctx context.Context, ref MarketplaceRef) bool {
-	if !sourcePinned(ref) {
-		return false
+	want := ref.Source.Sha
+	if want == "" {
+		resolved, err := gitResolveCommit(ctx, ref.InstallLocation, ref.Source.Ref)
+		if err != nil {
+			return false
+		}
+		want = resolved
 	}
 	head, err := marketplaceGitHeadSHA(ctx, ref.InstallLocation)
-	if err != nil || !strings.HasPrefix(head, ref.Source.Sha) {
+	if err != nil || !sameCommit(head, want) {
 		return false
 	}
 	_, err = ParseCatalog(m.catalogRoot(ref))

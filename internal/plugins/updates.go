@@ -5,8 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -179,7 +177,7 @@ func (m *Manager) refreshForCheck(ctx context.Context) []string {
 	firstLeft, started := "", 0
 	for _, name := range names {
 		ref := mk[name]
-		if ref.Source.Kind == SourceDirectory || ref.InstallLocation == "" || sourcePinned(ref) {
+		if ref.Source.Kind == SourceDirectory || ref.InstallLocation == "" || sourcePinned(ctx, ref) {
 			continue
 		}
 		// Once the budget, the deadline or the caller has ended the phase,
@@ -244,7 +242,7 @@ func (m *Manager) fastForwardMarketplace(ctx context.Context, name, dir string) 
 		return err
 	}
 	ref, ok := mk[name]
-	if !ok || ref.InstallLocation != dir || sourcePinned(ref) {
+	if !ok || ref.InstallLocation != dir || sourcePinned(ctx, ref) {
 		// Removed, moved or re-sourced to a pin while fetching: there is
 		// nothing to fast-forward.
 		return nil
@@ -268,23 +266,13 @@ func (m *Manager) fastForwardMarketplace(ctx context.Context, name, dir string) 
 	return m.stampRefreshed(mk, name, ref, after != before)
 }
 
-// sourcePinned reports whether ref's source pins its catalog to a commit: a
-// sha, or a ref its clone checked out as a detached HEAD (a tag or a commit
-// rather than a branch). A pull cannot move such a clone, and nothing
-// upstream changes what it holds. A source that pins nothing is not pinned
-// whatever state its clone is in, so a clone left detached is pulled, and
-// fails, and is repaired by an explicit refresh.
-func sourcePinned(ref MarketplaceRef) bool {
-	return ref.Source.Sha != "" || ref.Source.Ref != "" && !cloneOnBranch(ref.InstallLocation)
-}
-
-// cloneOnBranch reports whether the clone at dir has a branch checked out,
-// reading its HEAD file rather than running git, so it answers after the
-// check's budget has ended too. A clone that cannot be read counts as on a
-// branch, so the refresh tries it and warns of what fails.
-func cloneOnBranch(dir string) bool {
-	head, err := os.ReadFile(filepath.Join(dir, ".git", "HEAD"))
-	return err != nil || strings.HasPrefix(string(head), "ref: ")
+// sourcePinned reports whether ref's source pins its catalog to one commit:
+// a sha, or a ref that names a tag or a commit rather than a branch its clone
+// tracks. That is the source's own, whatever state its clone is in, so a
+// pinned clone moved onto a branch is still pinned and a branch clone left
+// detached is not. Nothing upstream changes what a pinned clone holds.
+func sourcePinned(ctx context.Context, ref MarketplaceRef) bool {
+	return ref.Source.Sha != "" || ref.Source.Ref != "" && !gitTracksBranch(ctx, ref.InstallLocation, ref.Source.Ref)
 }
 
 // upgradeSource is plugin's source in marketplace's local catalog, parsing each

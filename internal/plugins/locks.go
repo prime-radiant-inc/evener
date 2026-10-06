@@ -128,6 +128,9 @@ func (m *Manager) lockClone(ctx context.Context, dir string) (func(), error) {
 // granted, and a lock on any other file is let go and taken again.
 func acquireLockAtPath(ctx context.Context, path string) (func(), error) {
 	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		before, err := os.Stat(path)
 		if err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return nil, err
