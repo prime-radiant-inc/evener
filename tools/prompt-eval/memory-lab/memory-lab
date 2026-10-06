@@ -534,6 +534,10 @@ def run_trial(args, label, binpath, arm, scen, rep):
         session_ids[st["name"]] = grades[-1]["session_id"]
         if grades[-1].get("error"):
             failure = f"stage {st['name']} failed: {grades[-1]['error']}"
+        # A held-out file left behind would sit in every later stage's workspace.
+        leftover = [e for e in grades[-1]["check_errors"].values() if e.startswith("held-out cleanup")]
+        if leftover and not failure:
+            failure = f"stage {st['name']} left its workspace contaminated: {leftover[0]}"
     return grades
 
 
