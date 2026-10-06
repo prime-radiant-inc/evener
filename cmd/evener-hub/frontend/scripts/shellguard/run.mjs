@@ -58,6 +58,13 @@ const BOOT = {
 async function measureOnPage(cdpEndpoint, vitePort, viewport, expression) {
   const page = await connectPage(cdpEndpoint);
   const { send } = page;
+  // Every measurement reuses this one tab, and the previous page's document
+  // can still save its workspace layout to localStorage until the navigation
+  // below replaces it. Clearing storage as each new document starts means no
+  // page restores another page's panes or floating windows.
+  const { result: freshStorage } = await send("Page.addScriptToEvaluateOnNewDocument", {
+    source: "try { localStorage.clear(); } catch {}",
+  });
   try {
     await applyViewport(send, viewport);
     await navigateTo(page, `http://127.0.0.1:${vitePort}/shellguard.html`, BOOT);
@@ -107,6 +114,7 @@ async function measureOnPage(cdpEndpoint, vitePort, viewport, expression) {
     }
     return typeof expression === "function" ? await expression(page) : JSON.parse(await evaluate(send, expression));
   } finally {
+    await send("Page.removeScriptToEvaluateOnNewDocument", { identifier: freshStorage.identifier });
     await clearViewportOverride(send);
     page.close();
   }
