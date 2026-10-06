@@ -360,14 +360,16 @@ function placement(layout, id) {
   return found;
 }
 
+// Found and clicked in one page turn, so a layout shift between measuring and
+// pressing cannot send the press to a neighbour (#3804, #3819).
 async function clickColumnAction(ref, text) {
-  const point = await wait(`(() => {
+  await wait(`(() => {
     const button = [...document.querySelectorAll(${q(`${column(ref)} button`)})].find(node => node.textContent.trim() === ${q(text)});
     if (!button) return null;
     button.scrollIntoView({ block: 'center', inline: 'nearest' });
-    const r = button.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+    button.click();
+    return true;
   })()`, `${text} in actual ${ref} column`);
-  await driver.clickAt(point.x, point.y);
 }
 
 async function installLateAncestryHold() {
