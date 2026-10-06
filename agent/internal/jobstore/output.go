@@ -679,7 +679,8 @@ func readOutputFileView(path string) (outputView, error) {
 // GrepOutputFileLimit greps a closed output file's visible bytes, reporting
 // lifetime offsets, with the same bounded line handling as
 // OutputStore.GrepLimitLineBytes. checkTotal sees the file's lifetime total
-// before any scanning and can refuse it.
+// before any scanning and can refuse it. A file that changes between reading
+// its metadata and scanning it returns ErrOutputChangedDuringRead.
 func GrepOutputFileLimit(path string, re *regexp.Regexp, limitBytes int, maxMatches int, maxLineBytes int, checkTotal func(total int64) error) ([]Match, error) {
 	view, err := readOutputFileView(path)
 	if err != nil {
@@ -693,7 +694,17 @@ func GrepOutputFileLimit(path string, re *regexp.Regexp, limitBytes int, maxMatc
 		if err != nil {
 			return nil, err
 		}
-		if _, err := f.Seek(view.visibleOffset(), io.SeekStart); err != nil {
+		// The view came from an earlier stat and metadata read. A file that is
+		// no longer that size (a compaction replaced it) would put the seek
+		// and the lifetime offsets in the wrong place, so refuse it.
+		info, err := f.Stat()
+		if err == nil && info.Size() != view.total-view.fileStart {
+			err = ErrOutputChangedDuringRead
+		}
+		if err == nil {
+			_, err = f.Seek(view.visibleOffset(), io.SeekStart)
+		}
+		if err != nil {
 			_ = f.Close()
 			return nil, err
 		}
