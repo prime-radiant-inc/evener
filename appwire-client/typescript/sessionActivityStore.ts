@@ -395,13 +395,20 @@ export class SessionActivityStore {
       // or its collection's last observer leaves (even from a listener during
       // one of this read's own publishes): from then on nothing it does lands.
       const stale = () => this.disposed || generation !== this.generation || releases !== read.releases;
+      // A read dropped once the hub served it can still have warmed the hub's
+      // count, so a dropped read refreshes that count before skipping its page.
+      const dropped = () => {
+        if (!stale()) return false;
+        this.refreshWarmedCount(resource, generation);
+        return true;
+      };
       const statusRevision = this.statusRevision;
       try {
         this.lease ??= acquireThreadSubscription(this.client, this.ref);
         await this.lease.ensure();
         if (stale() || this.client.state !== "ready") continue;
         const result = await this.fetch(resource, cursor);
-        if (stale()) continue;
+        if (dropped()) continue;
         if (result.scope !== this.scope) throw new Error("Session activity response belongs to another scope");
         generation = this.acceptContext(result.context, resource);
         if (stale()) continue;
@@ -488,9 +495,9 @@ export class SessionActivityStore {
             unavailable: false,
             permanent: false,
           });
-          if (stale()) continue;
+          if (dropped()) continue;
           this.publish({ context: page.context, runtime: this.runtimeFor(page.context, statusRevision) });
-          if (stale()) continue;
+          if (dropped()) continue;
           // Collection reads can warm retained count indexes without emitting
           // a notification. Refresh an observed unknown count after useful
           // progress, paced and coalesced across pages, without scanning merely
@@ -499,7 +506,7 @@ export class SessionActivityStore {
             page.rows.length > 0 ||
             (read.cursor !== undefined && read.cursor !== cursor) ||
             (page.page.complete && !current.complete);
-          if (progressed && this.state.summary && !this.state.summary[resource].known) this.schedule("summary", 100);
+          if (progressed) this.refreshWarmedCount(resource, generation);
           if (read.refresh && read.cursor && read.cursor !== cursor && (read.observers > 0 || read.oneShot)) {
             read.refresh.advance = true;
             await this.pacePage(read);
@@ -545,6 +552,16 @@ export class SessionActivityStore {
         if (!permanent) this.retry(resource, cursor ? "page" : "root");
       }
     }
+  }
+  /** A collection read the hub served can have warmed the hub's count for
+   * that collection, whether its page landed or was dropped because the view
+   * that asked for it left. Refresh a summary count still unknown, so the
+   * count does not stay hidden until the next notification. A read dropped
+   * for a replaced context or a disposed store refreshes nothing: its count
+   * belongs to no current session. */
+  private refreshWarmedCount(resource: SessionActivityResource, generation: number): void {
+    if (resource === "summary" || this.disposed || generation !== this.generation) return;
+    if (this.state.summary && !this.state.summary[resource].known) this.schedule("summary", 100);
   }
   private runtimeFor(context: SessionActivityContext, statusRevision: number): ThreadSubscriptionMetadata | null {
     const metadata = this.lease?.metadata();
