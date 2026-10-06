@@ -59,7 +59,7 @@ const (
 // navigationCatalogOrder is the order a key held by several catalogs resolves
 // in: a read of the key names the first catalog holding it. Only an
 // unresolved directory's "no-project" key can be in more than one. Callers
-// must not modify it.
+// must not modify it; archivedListCandidates hands out a copy.
 var navigationCatalogOrder = []navigationResourceKind{navigationResourceProjects, navigationResourceArchivedProjects, navigationResourceTestRuns}
 
 // navigationResourceKey describes one immutable navigation representation. It

@@ -760,3 +760,13 @@ func TestAKeyInSeveralCatalogsResolvesToOneForEveryRead(t *testing.T) {
 		}
 	}
 }
+
+// The unhinted candidates are a copy, so a caller changing them cannot change
+// the order every read of a key resolves in.
+func TestArchivedListCandidatesDoNotShareTheCatalogOrder(t *testing.T) {
+	candidates := archivedListCandidates("")
+	candidates[0] = navigationResourceTestRuns
+	if navigationCatalogOrder[0] != navigationResourceProjects {
+		t.Fatalf("changing the candidates changed navigationCatalogOrder: %v", navigationCatalogOrder)
+	}
+}

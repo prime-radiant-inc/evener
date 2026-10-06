@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -127,7 +128,7 @@ func (p navigationProjection) archivedListCatalog(hint navigationResourceKind, k
 func archivedListCandidates(hint navigationResourceKind) []navigationResourceKind {
 	switch hint {
 	case "":
-		return navigationCatalogOrder
+		return slices.Clone(navigationCatalogOrder)
 	case navigationResourceProjects:
 		return []navigationResourceKind{navigationResourceProjects, navigationResourceArchivedProjects}
 	case navigationResourceArchivedProjects:
