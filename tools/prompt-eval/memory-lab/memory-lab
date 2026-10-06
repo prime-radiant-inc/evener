@@ -563,8 +563,8 @@ def load_scenario(scen):
     if not isinstance(spec, dict) or not isinstance(spec.get("stages"), list) or not spec["stages"]:
         sys.exit(f"memory-lab: {scen}: scenario.json must be an object with a non-empty \"stages\" list")
     arms = spec.get("arms", ["on"])
-    if not (isinstance(arms, list) and arms and all(arm in ("on", "off") for arm in arms)):
-        sys.exit(f"memory-lab: {scen}: \"arms\" must be a non-empty list of \"on\" and \"off\"")
+    if not (isinstance(arms, list) and arms and all(arm in ("on", "off") for arm in arms) and len(set(arms)) == len(arms)):
+        sys.exit(f"memory-lab: {scen}: \"arms\" must be a non-empty list of \"on\" and \"off\", each at most once")
     unknown = set(spec) - SCENARIO_KEYS
     if unknown:
         sys.exit(f"memory-lab: {scen}: unknown key(s) {sorted(unknown)}; a misspelled key would be silently ignored")
