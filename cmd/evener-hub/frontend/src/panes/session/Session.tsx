@@ -105,11 +105,16 @@ const EMPTY_THREADS = new Map<string, ThreadModel>();
 //
 // `status.type === "active"` is the wire vocabulary's word for "a turn is
 // running right now" (appwire's ThreadStatus, mapped in ./liveness), which is
-// exactly the mid-first-turn window. An incompatible session needs a restart;
-// other empty sessions invite their first message.
+// exactly the mid-first-turn window. An incompatible session is still on the
+// previous build; other empty sessions invite their first message.
 function EmptyTranscript({ active, restartRequired }: { active: boolean; restartRequired: boolean }) {
   if (restartRequired) {
-    return <EmptyState title="Session unavailable until restart" hint="Stop the daemon, then resume this session." />;
+    return (
+      <EmptyState
+        title="This session is running on the previous build"
+        hint="It keeps working. New messages wait until it moves to the current build."
+      />
+    );
   }
   if (active) {
     return <EmptyState title="Waiting for the first reply" hint="The agent has your message." />;
@@ -187,12 +192,13 @@ function RestartRequiredNotice({
         ? "This session is retained by its owning session. Its uncertain messages cannot be checked here until the owner releases it."
         : resumeRequired
           ? "Resume this session before continuing. Any uncertain messages will be checked before sending."
-          : "Session restart required. Stop the older daemon, then refresh this session. Stopping interrupts active work."}
+          : "This session is still running on the previous build. Its work continues; new messages wait until it moves to the current build. Force shutdown in the session menu moves it now."}
       {ownerRef && <a href={paneToURL("session", { ref: ownerRef }) ?? undefined}>Open owning session</a>}
-      {!resumeRequired && !ownerRef && <SessionForceStopRecovery sessionRef={sessionRef} />}
-      <Button disabled={refreshing} onClick={() => void refresh()}>
-        {resumeRequired ? "Resume session" : "Refresh session"}
-      </Button>
+      {(resumeRequired || ownerRef) && (
+        <Button disabled={refreshing} onClick={() => void refresh()}>
+          {resumeRequired ? "Resume session" : "Refresh session"}
+        </Button>
+      )}
       {error && <span>{error}</span>}
     </div>
   );

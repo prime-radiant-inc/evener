@@ -61,6 +61,7 @@ and should not be presented as reproduced production incidents.
 | [H10](#h10-update-outcome-after-the-response) | Medium | An update says restarting before a failure that only reaches logs | S06, S20 |
 | [H11](#h11-remote-bootstrap-diagnostics) | Low | First-start output is discarded when it would explain a failed connection | S07, S20, S21 |
 | [H12](#h12-dormant-host-notices) | Low | An unused disconnected host becomes a recovery notice | S03, S06, S07 |
+| [H13](#h13-wind-down-for-an-incompatible-session-daemon) | Medium | A fenced session's active work can only be moved by an immediate kill | S08 |
 | [T01](#t01-tool-call-parking) | High | Repeated failure parks an operation even after the dependency heals | S14 |
 | [T02](#t02-mcp-initial-discovery-recovery) | High | An initially unavailable MCP server never contributes tools to the session | S18, S19 |
 | [T04](#t04-read-only-directory-symlinks) | Medium (deferred) | A derived read-only delegate cannot browse an allowed target through a symlink | S12, S14 |
@@ -1048,6 +1049,40 @@ or awaiting an explicit Connect request, produces relevant recovery status that
 clears on recovery or cancellation. Determine affected work independently of
 which session pages the client has loaded, so an incomplete local view cannot
 suppress a relevant notice. Routine recovery requires no user action.
+
+### H13 Wind-down for an incompatible session daemon
+
+**Current behavior.** A daemon running the previous appwire protocol has no
+wire channel to an upgraded hub: the roster probe classifies its session
+restart-required, the hub refuses every session action, and graceful Shut
+down is disabled for these rows. The only lever that moves the session to the
+current build is Force shutdown, which verifies the process and delivers
+SIGKILL, interrupting any turn or job mid-flight. Work in the fenced session
+cannot finish first, and the daemon cannot learn it is obsolete and retire
+itself, because the hub dials daemons and the probe is one-way.
+
+**Evidence.** The prober's mismatch verdict
+([prober.go](../../cmd/evener-hub/internal/hubcore/prober.go)) and
+[daemonRestartRequiredError](../../cmd/evener-hub/app_restart_required.go)
+name the fence. The rail row disables Shut down for restart-required sessions
+([RailRow.tsx](../../cmd/evener-hub/frontend/src/shell/rail/RailRow.tsx#L350))
+and the session menu offers Force shutdown
+([SessionMenu.tsx](../../cmd/evener-hub/frontend/src/shell/sessionMenu/SessionMenu.tsx#L197)).
+Force stop signals SIGKILL and waits at most 10 seconds for the exit
+([app_force_stop.go](../../cmd/evener-hub/app_force_stop.go);
+[process_linux.go](../../cmd/evener-hub/internal/daemonprocess/process_linux.go#L41)).
+The pane presents the fence as a degraded state and recovery stays in the
+session menu; this case concerns only the stop path's destructiveness.
+
+**Discuss.** Whether a fenced daemon can be asked to wind down instead of
+being killed: an OS signal the daemon treats as finish-the-turn-then-exit
+with a bounded grace before a harder signal, and whether a daemon should
+retire itself once it can establish its hub moved on. SIGKILL remains the
+fallback; the question is whether the mid-flight work can be spared.
+
+**When discussed.** Decide the wind-down semantics (graceful signal, bounded
+grace, self-retirement) and record the accepted behavior with its acceptance
+scenario here.
 
 ## Agent capabilities and terminal workflow
 
