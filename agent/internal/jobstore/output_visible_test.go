@@ -244,3 +244,39 @@ func TestOutputSnapshotWindowStaysInsideTheFile(t *testing.T) {
 		})
 	}
 }
+
+// A compaction staged under a larger cap than the one that hid the old file's
+// first bytes must not show them again while it is still pending.
+func TestPendingCompactionNeverMovesTheVisibleStartBack(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "job_P.log")
+	old := []byte("aaaa\nbbbb\ncccc\n")
+	if err := os.WriteFile(path, old, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Final metadata: the file starts at 0 and readers see only "cccc\n".
+	if err := writeOutputMetaFile(outputMetaPath(path), outputMeta{
+		TotalBytes:          int64(len(old)),
+		RetainedStart:       0,
+		RetainedSHA256:      outputBytesSHA256(old),
+		VisibleStart:        new(int64(10)),
+		VisibleStartPartial: new(false),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Pending metadata for a compaction that keeps more: "bbbb\ncccc\n".
+	if err := writeOutputMetaFile(outputPendingMetaPath(outputMetaPath(path)), outputMeta{
+		TotalBytes:           int64(len(old)),
+		RetainedStart:        5,
+		RetainedStartPartial: new(false),
+		RetainedSHA256:       outputBytesSHA256(old[5:]),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	page, err := ReadOutputPageSnapshot(path, nil, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.RetainedStart != 10 || string(page.Content) != "cccc\n" {
+		t.Fatalf("page during the pending compaction = %+v, want only \"cccc\\n\" from 10", page)
+	}
+}
