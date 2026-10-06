@@ -1642,10 +1642,11 @@ func (m *Manager) RefreshMarketplace(ctx context.Context, name string) error {
 				return err
 			}
 			ref.InstallLocation = installLoc
-		} else if !cloneOnBranch(ref.InstallLocation) {
-			// Pinned to a tag or a commit: the detached HEAD a pull cannot
-			// move is the catalog, so there is nothing to fetch, and a failed
-			// pull would reclone it on every refresh (#3844).
+		} else if m.pinnedCloneIntact(ctx, ref) {
+			// The pinned commit is the catalog, so there is nothing to
+			// fetch, and a pull of its detached HEAD would fail and reclone
+			// it on every refresh (#3844). A pinned clone that is not intact
+			// falls through to the pull, whose failure recloned it whole.
 			changed = false
 		} else if changed, err = m.pullMarketplace(ctx, name, ref); err != nil {
 			return err
@@ -1654,8 +1655,23 @@ func (m *Manager) RefreshMarketplace(ctx context.Context, name string) error {
 	return m.stampRefreshed(mk, name, ref, changed)
 }
 
-// pullMarketplace pulls the clone of name, which is on a branch, and reports
-// whether its HEAD moved; a HEAD it cannot read counts as moved.
+// pinnedCloneIntact reports whether ref is pinned (sourcePinned) and its
+// clone still stands at the pin with a catalog that parses.
+func (m *Manager) pinnedCloneIntact(ctx context.Context, ref MarketplaceRef) bool {
+	if !sourcePinned(ref) {
+		return false
+	}
+	head, err := marketplaceGitHeadSHA(ctx, ref.InstallLocation)
+	if err != nil || !strings.HasPrefix(head, ref.Source.Sha) {
+		return false
+	}
+	_, err = ParseCatalog(m.catalogRoot(ref))
+	return err == nil
+}
+
+// pullMarketplace pulls the clone of name and reports whether it changed:
+// its HEAD moved, or a failed pull was healed by a reclone, whose files are
+// fresh whatever commit it lands on. A HEAD it cannot read counts as moved.
 func (m *Manager) pullMarketplace(ctx context.Context, name string, ref MarketplaceRef) (bool, error) {
 	before, _ := marketplaceGitHeadSHA(ctx, ref.InstallLocation)
 	if pullErr := m.withClone(ctx, ref.InstallLocation, func() error { return marketplaceGitPull(ctx, ref.InstallLocation) }); pullErr != nil {
@@ -1671,7 +1687,9 @@ func (m *Manager) pullMarketplace(ctx context.Context, name string, ref Marketpl
 		if recloneErr := m.recloneMarketplace(ctx, ref); recloneErr != nil {
 			return false, fmt.Errorf("refreshing marketplace %q: git pull failed (%w); staged reclone failed: %w", name, pullErr, recloneErr)
 		}
+		return true, nil
 	}
-	after, err := marketplaceGitHeadSHA(ctx, ref.InstallLocation)
-	return before == "" || err != nil || after != before, nil
+	// An unreadable HEAD ("") on either side counts as moved.
+	after, _ := marketplaceGitHeadSHA(ctx, ref.InstallLocation)
+	return before == "" || after == "" || after != before, nil
 }

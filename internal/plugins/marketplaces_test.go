@@ -3002,3 +3002,73 @@ func TestRemoveMarketplace_RemovesItsCloneLockFile(t *testing.T) {
 		t.Fatalf("clone lock file survived the marketplace's removal: %v", err)
 	}
 }
+
+// A pinned marketplace whose clone is broken is repaired by a refresh, as
+// doctor's remediation says: only an intact pinned clone is left as it is.
+func TestRefreshMarketplace_ABrokenPinnedCloneIsRecloned(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	repo := makeMarketplaceRepo(t, "tagged")
+	gitIn(t, repo, "tag", "v1")
+	m := NewManager(t.TempDir())
+	ref, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: repo, Ref: "v1"})
+	if err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	catalog := filepath.Join(ref.InstallLocation, ".claude-plugin", "marketplace.json")
+	if err := os.Remove(catalog); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.RefreshMarketplace(context.Background(), "tagged"); err != nil {
+		t.Fatalf("RefreshMarketplace: %v", err)
+	}
+	if _, err := os.Stat(catalog); err != nil {
+		t.Fatalf("refreshing a pinned marketplace with no catalog left it broken: %v", err)
+	}
+}
+
+// A marketplace that pins nothing but whose clone was left on a detached
+// HEAD is not taken for pinned: a refresh puts it back on its branch.
+func TestRefreshMarketplace_AnUnpinnedDetachedCloneIsRepaired(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	repo := makeMarketplaceRepo(t, "acme")
+	m := NewManager(t.TempDir())
+	ref, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: repo})
+	if err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	gitIn(t, ref.InstallLocation, "checkout", "--quiet", "--detach")
+	advanceGitRepo(t, repo, "README.md", "new upstream content")
+	if err := m.RefreshMarketplace(context.Background(), "acme"); err != nil {
+		t.Fatalf("RefreshMarketplace: %v", err)
+	}
+	if b, err := os.ReadFile(filepath.Join(ref.InstallLocation, "README.md")); err != nil || string(b) != "new upstream content" {
+		t.Fatalf("a detached unpinned clone was not refreshed: %q, %v", b, err)
+	}
+}
+
+// A refresh that had to reclone a wedged clone reports a change even when the
+// fresh clone lands on the same commit: the files it replaced were not what
+// the commit holds.
+func TestRefreshMarketplace_AHealingRecloneReportsAChange(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	m := NewManager(t.TempDir())
+	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: makeMarketplaceRepo(t, "acme")}); err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	realPull := marketplaceGitPull
+	t.Cleanup(func() { marketplaceGitPull = realPull })
+	marketplaceGitPull = func(context.Context, string) error { return errors.New("wedged") }
+	reports := recordStoreChanges(m)
+	if err := m.RefreshMarketplace(context.Background(), "acme"); err != nil {
+		t.Fatalf("RefreshMarketplace: %v", err)
+	}
+	if len(*reports) != 1 || !(*reports)[0].Marketplaces {
+		t.Fatalf("a healing reclone reported %v, want one marketplaces change", *reports)
+	}
+}

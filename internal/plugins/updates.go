@@ -160,9 +160,8 @@ func (m *Manager) CheckUpdates(ctx context.Context) error {
 // check whose budget runs out starts the next check's refreshes at the first
 // marketplace it cut off or left, so slow marketplaces cannot starve the ones
 // after them on every check. A directory marketplace is read in place, a never-fetched
-// one is left to an explicit refresh, and one pinned to a tag or a commit
-// (its clone has a detached HEAD) cannot be fast-forwarded, so none of those
-// is refreshed.
+// one is left to an explicit refresh, and a pinned one (sourcePinned) has
+// nothing to fetch, so none of those is refreshed.
 func (m *Manager) refreshForCheck(ctx context.Context) []string {
 	mk, err := m.ListMarketplaces(ctx)
 	if err != nil {
@@ -180,7 +179,7 @@ func (m *Manager) refreshForCheck(ctx context.Context) []string {
 	firstLeft, started := "", 0
 	for _, name := range names {
 		ref := mk[name]
-		if ref.Source.Kind == SourceDirectory || ref.InstallLocation == "" || !cloneOnBranch(ref.InstallLocation) {
+		if ref.Source.Kind == SourceDirectory || ref.InstallLocation == "" || sourcePinned(ref) {
 			continue
 		}
 		// Once the budget, the deadline or the caller has ended the phase,
@@ -245,7 +244,7 @@ func (m *Manager) fastForwardMarketplace(ctx context.Context, name, dir string) 
 		return err
 	}
 	ref, ok := mk[name]
-	if !ok || ref.InstallLocation != dir || !cloneOnBranch(dir) {
+	if !ok || ref.InstallLocation != dir || sourcePinned(ref) {
 		// Removed, moved or re-sourced to a pin while fetching: there is
 		// nothing to fast-forward.
 		return nil
@@ -267,6 +266,16 @@ func (m *Manager) fastForwardMarketplace(ctx context.Context, name, dir string) 
 		return err
 	}
 	return m.stampRefreshed(mk, name, ref, after != before)
+}
+
+// sourcePinned reports whether ref's source pins its catalog to a commit: a
+// sha, or a ref its clone checked out as a detached HEAD (a tag or a commit
+// rather than a branch). A pull cannot move such a clone, and nothing
+// upstream changes what it holds. A source that pins nothing is not pinned
+// whatever state its clone is in, so a clone left detached is pulled, and
+// fails, and is repaired by an explicit refresh.
+func sourcePinned(ref MarketplaceRef) bool {
+	return ref.Source.Sha != "" || ref.Source.Ref != "" && !cloneOnBranch(ref.InstallLocation)
 }
 
 // cloneOnBranch reports whether the clone at dir has a branch checked out,

@@ -593,16 +593,27 @@ func TestCheckUpdates_ARefreshThatChangesNothingReportsNoChange(t *testing.T) {
 }
 
 // A marketplace re-sourced to a pin while a check fetches its clone is left
-// alone once the fetch is done: its clone is on a detached HEAD by then,
-// which the fast-forward skips rather than fails on. Detaching the clone
-// inside the fetch stands in for the re-source, which waits on the clone lock
-// the fetch holds.
+// alone once the fetch is done: the fast-forward skips it rather than fails
+// on its detached HEAD. Pinning the record and detaching the clone inside
+// the fetch stand in for the re-source, which waits on the clone lock the
+// fetch holds.
 func TestCheckUpdates_AClonePinnedDuringTheFetchIsNotFastForwarded(t *testing.T) {
 	f := installURLPlugin(t, unpinned)
 	realFetch := marketplaceGitFetch
 	t.Cleanup(func() { marketplaceGitFetch = realFetch })
 	marketplaceGitFetch = func(ctx context.Context, dir string) error {
+		head := gitIn(t, dir, "rev-parse", "HEAD")
 		gitIn(t, dir, "checkout", "--quiet", "--detach")
+		mk, err := f.m.loadMarketplaces()
+		if err != nil {
+			t.Fatal(err)
+		}
+		ref := mk["acme"]
+		ref.Source.Sha = head
+		mk["acme"] = ref
+		if err := f.m.writeMarketplaces(mk); err != nil {
+			t.Fatal(err)
+		}
 		return realFetch(ctx, dir)
 	}
 	advanceRepo(t, f.mktRepo)

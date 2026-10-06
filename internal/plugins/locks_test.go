@@ -1,6 +1,7 @@
 package plugins
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -368,8 +369,14 @@ func TestLockClone_AWaiterOutlivesTheLockFilesRemoval(t *testing.T) {
 	defer next()
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
-	if third, err := NewManager(m.Root).lockClone(ctx, dir); err == nil {
-		third()
+	third := NewManager(m.Root)
+	stderr := &bytes.Buffer{}
+	third.Stderr = stderr
+	if release, err := third.lockClone(ctx, dir); err == nil {
+		release()
 		t.Fatal("a third taker got the clone lock while the waiter held it on the removed file")
+	}
+	if !strings.Contains(stderr.String(), "taking the lock on marketplace clone") {
+		t.Fatalf("the third taker's wait was not logged: %q", stderr.String())
 	}
 }
