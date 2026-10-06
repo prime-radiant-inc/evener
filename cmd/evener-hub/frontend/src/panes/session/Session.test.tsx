@@ -3069,7 +3069,14 @@ test("an incompatible session shows a plain degraded notice with no buttons", as
 
 // The hub pushes evener/thread/resync when its roster discovers the old daemon
 // gone; the store re-hydrates on it, so the pane leaves the degraded state on
-// its own with no button press.
+// its own with no button press. emitDaemonGoneResync is the one emission every
+// daemon-exit test here drives; the read-held variant below keeps its own act
+// because it holds the reconciliation read open inside it.
+const emitDaemonGoneResync = (client: FakeClient) =>
+  act(async () => {
+    client.emitNotification({ method: "evener/thread/resync", params: { ref: "ref_a", threadId: "thr_ref_a" } });
+  });
+
 test("picks up a daemon exit automatically on evener/thread/resync", async () => {
   const fake = connectFakeClient();
   let exited = false;
@@ -3083,9 +3090,7 @@ test("picks up a daemon exit automatically on evener/thread/resync", async () =>
   expect(notice.textContent).toContain("different Evener version");
   expect(within(notice).queryByRole("button")).toBeNull();
   exited = true;
-  await act(async () => {
-    fake.emitNotification({ method: "evener/thread/resync", params: { ref: "ref_a", threadId: "thr_ref_a" } });
-  });
+  await emitDaemonGoneResync(fake);
   await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
   expect(threadsStore.getState().threads.get("ref_a")?.status.type).toBe("idle");
   expect(fake.calls.filter((call) => call.method === "thread/resume" || call.method === "turn/start")).toHaveLength(0);
@@ -3147,9 +3152,7 @@ test("a daemon exit clears the notice without closing its pane", async () => {
   );
   await screen.findByRole("alert");
   replaced = true;
-  await act(async () => {
-    fake.emitNotification({ method: "evener/thread/resync", params: { ref: "ref_a", threadId: "thr_ref_a" } });
-  });
+  await emitDaemonGoneResync(fake);
   await waitFor(() => expect(threadsStore.getState().threads.get("ref_a")?.status.type).toBe("idle"));
   await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
   // The pane stays mounted through the automatic pickup.
@@ -3574,9 +3577,7 @@ test("offers explicit resume after restart even without pending messages", async
   );
   await screen.findByRole("alert");
   status = "notLoaded";
-  await act(async () => {
-    fake.emitNotification({ method: "evener/thread/resync", params: { ref: "ref_a", threadId: "thr_ref_a" } });
-  });
+  await emitDaemonGoneResync(fake);
   const resume = await screen.findByRole("button", { name: "Resume session" });
   await waitFor(() => expect((resume as HTMLButtonElement).disabled).toBe(false));
   fireEvent.click(resume);
@@ -3797,10 +3798,9 @@ test.each(["notLoaded", "active", "idle"])(
     };
     try {
       status = recoveryStatus;
-      // The daemon exit re-read is the automatic resync path now; the banner
-      // refresh button whose spinner used to gate the Resume control is gone.
-      // Hold the reconciliation read open and prove the uncertain row stays
-      // blocked (and no resume fires) until it completes, then resume.
+      // The daemon exit re-read arrives as the automatic resync path. Hold the
+      // reconciliation read open and prove the uncertain row stays blocked (and
+      // no resume fires) until it completes, then resume.
       await act(async () => {
         fake.emitNotification({ method: "evener/thread/resync", params: { ref: "ref_a", threadId: "thr_ref_a" } });
         await readHeld;
