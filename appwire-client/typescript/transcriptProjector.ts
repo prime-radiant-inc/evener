@@ -131,11 +131,12 @@ const KNOWN_EVENT_KINDS: ReadonlySet<string> = new Set(THREAD_ITEM_EVENT_KINDS);
 export const PROMPT_EVENT_KINDS: ReadonlySet<string> = new Set(["system_prompt", "prompt_loaded"]);
 const TURN_TIMING_EVENT_KIND = "round_timings";
 const HOOK_EVENT_KIND = "hook_completed";
-// The system events critical at every level: a persisted turn failure, a
-// warning notice, and an interrupted-turn notice are the rows a reader hunts
-// for (SystemNoticeItem's FailureLine renders them; systemGrouping.ts keeps
-// them out of runs). A tool-repair notice left this set for the
-// informationalNotices gate below.
+// The system events shown at every level: a persisted turn failure, a warning
+// notice, and an interrupted-turn notice are the rows a reader hunts for. This
+// decides visibility only. On the web, SystemNoticeItem's FailureLine draws
+// only the error, and systemGrouping.ts keeps the error and an attention
+// warning out of runs; an interrupted notice is a plain notice line. A
+// tool-repair notice left this set for the informationalNotices gate below.
 const CRITICAL_SYSTEM_EVENT_KINDS = new Set(["error", "warning", "interrupted"]);
 const TOOL_REPAIR_EVENT_KIND = "tool_repair";
 
