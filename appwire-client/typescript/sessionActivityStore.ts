@@ -221,6 +221,9 @@ export class SessionActivityStore {
         read.rootQueued = false;
         read.pageQueued = false;
         read.oneShot = false;
+        // The next observer's reads start their backoff afresh, not from the
+        // failures a closed view's reads left behind.
+        read.failures = 0;
         if (read.refresh) read.refresh.advance = false;
         this.change(resource, { pending: false });
       }
