@@ -310,7 +310,7 @@ export function subagentQuietLine(timing: DelegateTiming): { text: string; quiet
 }
 
 /** whyLine's working-row text once an activity read exists (S5). The
- * read's running-subagent count (the same number as the row's tally)
+ * read's running-subagent count (the same count as the row's tally)
  * answers the subagent question outright, even at zero; the row's tally is
  * never consulted. Quiet and stuck read from quietState, which itself
  * withholds both while a subagent runs. Absent either, the row says what
