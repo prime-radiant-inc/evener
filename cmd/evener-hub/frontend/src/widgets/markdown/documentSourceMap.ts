@@ -191,6 +191,7 @@ interface Frame {
   tokens: Token[];
   kind: "block" | "inline";
   clipped: boolean;
+  separator?: Trace;
 }
 interface Invocation {
   name: string;
@@ -206,6 +207,7 @@ class ProvenanceLexer extends Lexer {
   private frames: Frame[] = [];
   private invocation?: Invocation;
   private pending?: Trace;
+  private pendingSeparator?: Trace;
   private pendingToken?: Trace;
   constructor(input: Trace) {
     const tokenizer = new ProvenanceTokenizer();
@@ -245,13 +247,16 @@ class ProvenanceLexer extends Lexer {
       dispatch[name] = (src, ...args) => this.token(name, src, () => method.call(tokenizer, src, ...args));
     }
   }
-  withSource<T>(input: Trace, action: () => T): T {
+  withSource<T>(input: Trace, action: () => T, separator?: Trace): T {
     const previous = this.pending;
+    const previousSeparator = this.pendingSeparator;
     this.pending = input;
+    this.pendingSeparator = separator;
     try {
       return action();
     } finally {
       this.pending = previous;
+      this.pendingSeparator = previousSeparator;
     }
   }
   withTokenSource<T>(input: Trace, action: () => T): T {
@@ -276,9 +281,11 @@ class ProvenanceLexer extends Lexer {
   }
   override blockTokens(src: string, tokens: Token[] = [], lastParagraphClipped = false): TokensList {
     const input = this.pending;
+    const separator = this.pendingSeparator;
     this.pending = undefined;
+    this.pendingSeparator = undefined;
     if (!input || input.text !== src) throw new Error("Unverified nested block input");
-    this.frames.push({ input, tokens, kind: "block", clipped: lastParagraphClipped });
+    this.frames.push({ input, tokens, kind: "block", clipped: lastParagraphClipped, separator });
     try {
       return super.blockTokens(src, tokens, lastParagraphClipped) as TokensList;
     } finally {
@@ -467,12 +474,13 @@ class ProvenanceLexer extends Lexer {
             (name === "text" && previous.type === "text") ||
             (name === "paragraph" && frame.clipped && previous.type === "paragraph");
           if (merge) {
-            const newline = slice(old.raw, -1);
+            const hasNewline = old.raw.text.endsWith("\n");
+            const newline = hasNewline ? slice(old.raw, -1) : (frame.separator ?? empty());
             if (newline.text !== "\n") throw new Error("Unverified block merge newline");
             const added = name === "def" ? raw : text;
             if (!old.text || !added) throw new Error("Unverified block merge text");
             const merged = concat(old.text, newline, added);
-            this.provenance.set(previous, { raw: concat(old.raw, raw), text: merged });
+            this.provenance.set(previous, { raw: concat(old.raw, hasNewline ? empty() : newline, raw), text: merged });
             if ("tokens" in previous && previous.tokens) this.queued.set(previous.tokens, merged);
           }
         }
@@ -538,6 +546,7 @@ class ProvenanceTokenizer extends Tokenizer {
           .replace(this.rules.other.blockquoteSetextReplace2, "");
         rawTrace = raw ? concat(rawTrace, separator, currentRawTrace) : currentRawTrace;
         textTrace = text ? concat(textTrace, separator, currentTextTrace) : currentTextTrace;
+        const continuationSeparator = separator;
         separator = currentMappedLines.at(-1)?.newline ?? empty();
         raw = raw ? `${raw}\n${currentRaw}` : currentRaw;
         text = text ? `${text}\n${currentText}` : currentText;
@@ -546,7 +555,11 @@ class ProvenanceTokenizer extends Tokenizer {
         // merge paragraphs if this is a continuation
         const top = this.lexer.state.top;
         this.lexer.state.top = true;
-        this.mapping.withSource(currentTextTrace, () => this.lexer.blockTokens(currentText, tokens, true));
+        this.mapping.withSource(
+          currentTextTrace,
+          () => this.lexer.blockTokens(currentText, tokens, true),
+          continuationSeparator,
+        );
         this.lexer.state.top = top;
 
         // if there is no continuation then we are done
@@ -1072,6 +1085,13 @@ export function bindDocumentMap(root: HTMLElement, map: DocumentRenderMap): Boun
       }
       if (!first || !last) return { state: "unmapped", reason: "unverified" };
       const sourceRange = { start: first.start, end: last.end };
+      // A live DOM walk misses removed or emptied interior runs. Only runs
+      // actually bound to this rendering count, not sanitizer-omitted content.
+      for (const [node, run] of nodes) {
+        const required = run.sourceSpans.some((span) => span.start < sourceRange.end && span.end > sourceRange.start);
+        if (required && (!verified(node, run) || !selected.intersectsNode(node)))
+          return { state: "unmapped", reason: "unverified" };
+      }
       try {
         validateSourceRange(map.source, sourceRange);
       } catch {
