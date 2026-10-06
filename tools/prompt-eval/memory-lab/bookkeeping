@@ -33,17 +33,22 @@ def args_of(call):
 
 # A shell command that writes a progress file: a redirect or tee aimed at it, or an in-place edit
 # naming it. A redirect elsewhere (2>&1, > /dev/null) is not a write to the ledger.
-SHELL_WRITE = re.compile(r"(?:>>?|\btee(?:\s+-a)?)\s*[\"']?[^\s|;&\"']*(?:progress\.md|\.superpowers/)"
-                         r"|\b(?:sed\s+-i|perl\s+-[a-z]*i)\b[^|;&]*(?:progress\.md|\.superpowers/)")
+PROGRESS_PATH = r"(?:progress\.md(?![\w.])|\.superpowers/)"
+SHELL_WRITE = re.compile(r"(?:>>?|\btee(?:\s+-a)?)\s*[\"']?[^\s|;&\"']*" + PROGRESS_PATH +
+                         r"|\b(?:sed\s+-i|perl\s+-[a-z]*i)\b[^|;&]*" + PROGRESS_PATH)
+# A shell command that reads a progress file: a reader whose arguments name it.
+SHELL_READ = re.compile(r"\b(?:cat|head|tail|less|more|grep|rg|awk|wc|diff|sed\s+-n)\b[^|;&]*" + PROGRESS_PATH)
+LEDGER_PATH = re.compile(r"progress\.md(?![\w.])")
 
 
 def file_surface(paths):
-    """The progress surface a set of written paths belongs to, if any."""
+    """The progress surfaces a set of paths belongs to: the ledger, other plan artifacts, or both."""
+    surfaces = []
     if any(p.endswith("progress.md") for p in paths):
-        return ["ledger"]
-    if any(".superpowers/" in p for p in paths):
-        return ["plan-artifacts"]
-    return []
+        surfaces.append("ledger")
+    if any(".superpowers/" in p and not p.endswith("progress.md") for p in paths):
+        surfaces.append("plan-artifacts")
+    return surfaces
 
 
 def classify(call):
@@ -63,8 +68,10 @@ def classify(call):
         command = str(a.get("command", a.get("cmd", "")))
         if "progress.md" not in command and ".superpowers/" not in command:
             return "work", []
-        surfaces = ["ledger"] if "progress.md" in command else ["plan-artifacts"]
-        return ("write", surfaces) if SHELL_WRITE.search(command) else ("read", ["ledger"])
+        surfaces = ["ledger"] if LEDGER_PATH.search(command) else ["plan-artifacts"]
+        if SHELL_WRITE.search(command):
+            return "write", surfaces
+        return ("read", surfaces) if SHELL_READ.search(command) else ("work", [])
     if tool in ("memory_write", "memory_edit"):
         return "write", ["mem:" + str(a.get("scope", "?"))]
     if tool == "notes_agent_set":
@@ -74,7 +81,8 @@ def classify(call):
         # carrying notes records progress detail, which a skill's ledger already holds.
         updates = [u for u in a.get("update") or [] if isinstance(u, dict)]
         surfaces = []
-        if a.get("add") or any(u.get("status") for u in updates):
+        # Any update field besides id and notes (status, depends_on, reasoning_effort) changes the list.
+        if a.get("add") or any(v for u in updates for k, v in u.items() if k not in ("id", "notes")):
             surfaces.append("tasks")
         if any(u.get("notes") for u in updates):
             surfaces.append("task-notes")
