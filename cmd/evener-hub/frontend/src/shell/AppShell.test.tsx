@@ -8,6 +8,8 @@ import type {
   NavigationSessionLocation,
   NavigationSessionSummary,
   NavigationSnapshot,
+  SessionActivityReadParams,
+  SessionActivitySummary,
   ThreadStartResponse,
 } from "@evener/appwire-client";
 import { APPWIRE_PROTOCOL_VERSION, AppwireClient, type ConnectionState, WireError } from "@evener/appwire-client";
@@ -205,6 +207,13 @@ function navigationRead(params: NavigationReadParams): NavigationReadResponse {
       );
   }
   throw new Error(`unsupported navigation resource: ${params.resource}`);
+}
+
+// Answers the scope asked for, as a hub does: the footer's subagent count
+// reads the subtree, and a reply for another scope is refused and retried in
+// the background.
+function answerActivityRead({ ref, scope }: SessionActivityReadParams): SessionActivitySummary {
+  return { ...activitySummary(ref), scope: scope ?? "session" };
 }
 
 // A FakeClient whose connect() advertises a v2 navigation capability with a
@@ -879,10 +888,7 @@ test("a real session URL wins over an Activity-only saved layout", async () => {
   const client = navClient();
   client.on("thread/read", ({ ref }) => activityDetailsThread(ref));
   client.on("thread/unsubscribe", () => ({}));
-  client.on("evener/thread/activity/read", ({ ref, scope }) => ({
-    ...activitySummary(ref),
-    scope: scope ?? "session",
-  }));
+  client.on("evener/thread/activity/read", answerActivityRead);
   connectionStore.getState().connect(client);
   const retired = workspaceStore.getState().openPane("session", { ref: "local:saved" });
   const saved = render(
@@ -3372,7 +3378,7 @@ test.each(["phone", "desktop"])(
     });
     client.on("thread/read", ({ ref }) => activityDetailsThread(ref, { name: ref }));
     client.on("thread/unsubscribe", () => ({}));
-    client.on("evener/thread/activity/read", ({ ref }) => activitySummary(ref));
+    client.on("evener/thread/activity/read", answerActivityRead);
     const user = userEvent.setup();
     render(
       <>
@@ -5445,7 +5451,10 @@ test.each([
         },
       };
     });
-    client.on("evener/thread/activity/read", ({ ref }) => ({ ...activitySummary(ref), context: context(ref) }));
+    client.on("evener/thread/activity/read", (params) => ({
+      ...answerActivityRead(params),
+      context: context(params.ref),
+    }));
     client.on("evener/thread/delegates/list", ({ ref }) => ({
       context: context(ref),
       scope: "session",

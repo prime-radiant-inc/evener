@@ -394,8 +394,11 @@ func TestCheckUpdates_AnswerGoesStaleWhenItsMarketplaceChanges(t *testing.T) {
 	if !checkThenList(t, f.m) {
 		t.Fatal("plugin behind its remote head not listed as having an update")
 	}
-	// A refresh can change the catalog's source, ref or pin, so an answer
-	// checked against the old catalog no longer says what Upgrade would do.
+	// A refresh that pulls a change to the catalog can change a plugin's
+	// source, ref or pin, so an answer checked against the old catalog no
+	// longer says what Upgrade would do. (One that pulls nothing keeps it:
+	// TestRefreshMarketplace_ANoOpRefreshReportsNoChange.)
+	advanceRepo(t, f.mktRepo)
 	if err := f.m.RefreshMarketplace(context.Background(), "acme"); err != nil {
 		t.Fatalf("RefreshMarketplace: %v", err)
 	}
@@ -558,10 +561,11 @@ func TestCheckUpdates_AMarketplaceThatCannotRefreshIsAWarning(t *testing.T) {
 	}
 }
 
-// A check's refresh that leaves a marketplace's clone where it was writes
-// nothing: no save, so no broadcast and no answers retired for another check
-// in flight. One that pulls a change saves it.
-func TestCheckUpdates_ARefreshThatChangesNothingWritesNothing(t *testing.T) {
+// A check's refresh that leaves a marketplace's clone where it was confirms
+// its catalog current (LastUpdated) but reports no store change: nothing is
+// broadcast and no answers are retired for another check in flight. One that
+// pulls a change reports it.
+func TestCheckUpdates_ARefreshThatChangesNothingReportsNoChange(t *testing.T) {
 	f := installURLPlugin(t, unpinned)
 	lastUpdated := func() time.Time {
 		t.Helper()
@@ -571,16 +575,51 @@ func TestCheckUpdates_ARefreshThatChangesNothingWritesNothing(t *testing.T) {
 		}
 		return mk["acme"].LastUpdated
 	}
-	before := lastUpdated()
-	f.m.Now = func() time.Time { return before.Add(time.Hour) }
+	reports := recordStoreChanges(f.m)
+	later := lastUpdated().Add(time.Hour)
+	f.m.Now = func() time.Time { return later }
 	checkThenList(t, f.m)
-	if got := lastUpdated(); !got.Equal(before) {
-		t.Fatalf("a refresh that pulled nothing saved the marketplace (LastUpdated %v, was %v)", got, before)
+	if got := lastUpdated(); !got.Equal(later) {
+		t.Fatalf("a refresh that pulled nothing left LastUpdated at %v, want %v", got, later)
+	}
+	if len(*reports) != 0 {
+		t.Fatalf("a refresh that pulled nothing reported %v", *reports)
 	}
 	advanceRepo(t, f.mktRepo)
 	checkThenList(t, f.m)
-	if got := lastUpdated(); !got.Equal(before.Add(time.Hour)) {
-		t.Fatalf("a refresh that pulled a change did not save it (LastUpdated %v)", got)
+	if len(*reports) != 1 || !(*reports)[0].Marketplaces {
+		t.Fatalf("a refresh that pulled a change reported %v, want one marketplaces change", *reports)
+	}
+}
+
+// A marketplace re-sourced to a pin while a check fetches its clone is left
+// alone once the fetch is done: the fast-forward skips it rather than fails
+// on its detached HEAD. Pinning the record and detaching the clone inside
+// the fetch stand in for the re-source, which waits on the clone lock the
+// fetch holds.
+func TestCheckUpdates_AClonePinnedDuringTheFetchIsNotFastForwarded(t *testing.T) {
+	f := installURLPlugin(t, unpinned)
+	realFetch := marketplaceGitFetch
+	t.Cleanup(func() { marketplaceGitFetch = realFetch })
+	marketplaceGitFetch = func(ctx context.Context, dir string) error {
+		head := gitIn(t, dir, "rev-parse", "HEAD")
+		gitIn(t, dir, "checkout", "--quiet", "--detach")
+		mk, err := f.m.loadMarketplaces()
+		if err != nil {
+			t.Fatal(err)
+		}
+		ref := mk["acme"]
+		ref.Source.Sha = head
+		mk["acme"] = ref
+		if err := f.m.writeMarketplaces(mk); err != nil {
+			t.Fatal(err)
+		}
+		return realFetch(ctx, dir)
+	}
+	advanceRepo(t, f.mktRepo)
+	checkThenList(t, f.m)
+	if w := f.warnings(); strings.Contains(w, "refreshing marketplace") {
+		t.Fatalf("a clone pinned during the fetch was fast-forwarded: %q", w)
 	}
 }
 
@@ -642,12 +681,15 @@ func TestCheckUpdates_RefreshSkipsPinnedMarketplacesAndStopsAtItsBudget(t *testi
 }
 
 // hangingFetches makes every marketplace fetch hang until its context ends,
-// with a refresh budget of 50ms, and answers the clones fetched, in order.
+// with a refresh budget of 500ms, and answers the clones fetched, in order.
+// The budget leaves a check's first refresh ample time to reach its fetch
+// (taking the clone lock, fast-forwarding a quick one) even under -race, so
+// the hang, not the setup, is what spends it.
 func hangingFetches(t *testing.T) *[]string {
 	t.Helper()
 	realFetch, realBudget := marketplaceGitFetch, updateCheckRefreshBudget
 	t.Cleanup(func() { marketplaceGitFetch, updateCheckRefreshBudget = realFetch, realBudget })
-	updateCheckRefreshBudget = 50 * time.Millisecond
+	updateCheckRefreshBudget = 500 * time.Millisecond
 	var fetched []string
 	marketplaceGitFetch = func(ctx context.Context, dir string) error {
 		fetched = append(fetched, dir)
@@ -937,4 +979,42 @@ func TestCheckUpdates_AGitSubdirMarketplaceIsRefreshed(t *testing.T) {
 	if !checkThenList(t, m) {
 		t.Fatalf("a change in a git-subdir marketplace was not seen; warnings: %q", m.Stderr.(*bytes.Buffer).String())
 	}
+}
+
+// A ref is a branch exactly when checkout left a local branch of that name,
+// so origin/HEAD does not matter: a remote whose HEAD names a missing branch
+// never gives a clone one. A tag shadowing another branch stays a pin, and a
+// tag named like the default branch stays the branch, either way.
+func TestSourcePinned_NeedsNoOriginHEAD(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	repo := makeMarketplaceRepoWithPlugin(t, "shadowed", "widget")
+	gitIn(t, repo, "tag", "rel")
+	gitIn(t, repo, "branch", "rel")
+	def := gitIn(t, repo, "rev-parse", "--abbrev-ref", "HEAD")
+	gitIn(t, repo, "tag", def)
+	m := NewManager(t.TempDir())
+	shadowed, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: repo, Ref: "rel"})
+	if err != nil {
+		t.Fatalf("AddMarketplace rel: %v", err)
+	}
+	onDefault, err := m.AddMarketplace(context.Background(), "default", Source{Kind: SourceURL, URL: repo, Ref: def})
+	if err != nil {
+		t.Fatalf("AddMarketplace %s: %v", def, err)
+	}
+	check := func(when string) {
+		t.Helper()
+		if !sourcePinned(context.Background(), shadowed) {
+			t.Fatalf("%s: a tag shadowing a non-default branch is not a pin", when)
+		}
+		if sourcePinned(context.Background(), onDefault) {
+			t.Fatalf("%s: a tag named like the default branch was taken for a pin", when)
+		}
+	}
+	check("with origin/HEAD")
+	for _, ref := range []MarketplaceRef{shadowed, onDefault} {
+		gitIn(t, ref.InstallLocation, "symbolic-ref", "--delete", "refs/remotes/origin/HEAD")
+	}
+	check("without origin/HEAD")
 }
