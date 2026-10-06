@@ -7,10 +7,12 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-tui/internal/launchconfig"
 	"primeradiant.com/evener/internal/appserver"
 )
 
@@ -127,5 +129,77 @@ func TestPluginsPanelOpenKeepsTheListWhenTheUpdateCheckFails(t *testing.T) {
 	v := installedTabView(t, m)
 	if !strings.Contains(v, "widget") || strings.Contains(v, "Error") || strings.Contains(v, "UPDATE AVAILABLE") {
 		t.Fatalf("a failed update check changed the panel:\n%s", v)
+	}
+}
+
+// A check lost with a dropped connection answers nothing, so an open plugins
+// panel would show no update until it was reopened: the reconnect reads the
+// list and checks for updates again, as opening the panel does.
+func TestPluginsPanelReconnectChecksForUpdatesAgain(t *testing.T) {
+	var mu sync.Mutex
+	checks := 0
+	plugin := appwire.PluginEntry{Plugin: "widget", Marketplace: "acme", Enabled: true}
+	client, feed, cleanup := newTestHubClientWithFeed(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerMarketplaceList, func(context.Context, appwire.EmptyParams) (appwire.MarketplaceListResponse, error) {
+			return appwire.MarketplaceListResponse{}, nil
+		})
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerPluginList, func(context.Context, appwire.EmptyParams) (appwire.PluginListResponse, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			return appwire.PluginListResponse{Plugins: []appwire.PluginEntry{plugin}}, nil
+		})
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerPluginCheckUpdates, func(context.Context, appwire.EmptyParams) (appwire.PluginListResponse, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			checks++
+			plugin.UpdateAvailable = true
+			return appwire.PluginListResponse{}, nil
+		})
+	})
+	defer cleanup()
+	// The model sits on a connection that has dropped, its check with it.
+	oldClient, _, dropOldConnection := newTestHubClientWithFeed(t, nil)
+	panel := launchconfig.NewPluginsPanel()
+	m := hubModel{client: oldClient, pluginsPanel: &panel}
+	dropOldConnection()
+
+	cmd := m.applyHubReconnect(hubReconnectMsg{client: client, frames: feed})
+	if cmd == nil {
+		t.Fatal("reconnect should schedule its recovery reads")
+	}
+	// The reconnect batches long-lived listeners (the frame pump) with its
+	// reads, so each batched command runs on its own and only those that
+	// answer promptly are delivered, in the order they finish.
+	answers := make(chan []tea.Msg, 16)
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("reconnect command = %T, want a batch", cmd)
+	}
+	for _, child := range batch {
+		if child != nil {
+			go func() { answers <- openCommandMessages(t, child) }()
+		}
+	}
+	deadline := time.After(2 * time.Second)
+collect:
+	for {
+		select {
+		case msgs := <-answers:
+			for _, msg := range msgs {
+				updated, _ := m.Update(msg)
+				m = updated.(hubModel)
+			}
+		case <-deadline:
+			break collect
+		}
+	}
+	mu.Lock()
+	ran := checks
+	mu.Unlock()
+	if ran != 1 {
+		t.Fatalf("update checks after reconnect = %d, want 1", ran)
+	}
+	if v := installedTabView(t, m); !strings.Contains(v, "UPDATE AVAILABLE") {
+		t.Fatalf("panel after reconnect does not show the checked update:\n%s", v)
 	}
 }
