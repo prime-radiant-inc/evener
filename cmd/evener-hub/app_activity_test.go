@@ -68,13 +68,14 @@ func TestActivityReadWithholdsQuietWhileASubagentRuns(t *testing.T) {
 // them: the activity read counts what its Live row's subagent tally counts
 // (open runs, at every depth), not the listed children whose own status is
 // active. The case that split them: a running subagent waiting on the user
-// reports "awaiting", and a subagent the daemon has not listed yet has no
-// status at all, but both still have a run open.
+// reports "awaiting", and a listed subagent may have no status reported yet,
+// but both still have a run open. With them counted, the session is waiting
+// on subagents, so its quiet time is withheld rather than read as stuck.
 func TestActivityReadCountsRunningSubagentsAsTheRowTallyDoes(t *testing.T) {
 	root := liveActivityEntry(1, "01ROOT", appwire.ThreadStatusActive, silentFor(15*time.Minute))
-	root.RunningSubagentIDs = []string{"child-working", "child-asking"}
-	root.RunningSubagentStates = map[string]string{"child-working": appwire.ThreadStatusActive, "child-asking": appwire.ThreadStatusAwaiting}
-	root.Subagents = appwire.SubagentTally{Running: 3, Failed: 1}
+	root.RunningSubagentIDs = []string{"child-asking", "child-unreported"}
+	root.RunningSubagentStates = map[string]string{"child-asking": appwire.ThreadStatusAwaiting}
+	root.Subagents = appwire.SubagentTally{Running: 2, Failed: 1}
 	roster := hubcore.NewRosterWithEntries(root)
 
 	got, err := hubActivityRead(t.Context(), hubcore.WebConfig{Roster: roster}, nil, appwire.ActivityReadParams{}, activityReadNow)
@@ -83,6 +84,9 @@ func TestActivityReadCountsRunningSubagentsAsTheRowTallyDoes(t *testing.T) {
 	}
 	if len(got.Sessions) != 1 || got.Sessions[0].RunningSubagents != root.Subagents.Running {
 		t.Fatalf("sessions = %+v, want runningSubagents %d, the row tally's running count", got.Sessions, root.Subagents.Running)
+	}
+	if got.Sessions[0].QuietForMS != nil {
+		t.Fatalf("quietForMS = %d, want none while subagents run", *got.Sessions[0].QuietForMS)
 	}
 }
 
