@@ -506,20 +506,21 @@ async function reveal(edge, container) {
     if (await read(`document.querySelector(${q(selector)}) !== null`)) return selector;
     const visible = await read(`document.querySelectorAll(${q(`${container} [data-activity-anchor]`)}).length`);
     const before = await read(`document.querySelector(${q(container)}).textContent`);
-    const button = await wait(`(() => {
+    // The control is found and activated in one page turn. Scrolling a Show or
+    // Load more control into view can make the page boundary under it load the
+    // next page by itself; when that page lands it removes the boundary and the
+    // list shifts, so a press measured before it can land on a neighbouring
+    // delegate row and drill into it (#3804).
+    const step = await wait(`(() => {
       if (document.querySelector(${q(selector)})) return { revealed: true };
       const buttons = [...document.querySelectorAll(${q(`${container} button`)})];
       const b = buttons.find(n => !n.disabled && (${visible} === 0 ? n.textContent.trim().startsWith('Inactive subagents (') : n.textContent.trim().startsWith('Show ') || n.textContent.trim() === 'Load more subagents'));
       if (!b) return null;
-      b.scrollIntoView({ block: 'center' }); const r = b.getBoundingClientRect();
-      return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+      b.scrollIntoView({ block: 'center' });
+      b.click();
+      return { clicked: true };
     })()`, "real disclosure or direct page boundary");
-    if (button.revealed) return selector;
-    // EXPERIMENT (#3804, reverted by the next commit): widen the gap between
-    // measuring the control and pressing it, so a page the boundary loads on
-    // its own lands first, as it does on a loaded runner.
-    await new Promise((resolve) => setTimeout(resolve, 1500));
-    await driver.clickAt(button.x, button.y);
+    if (step.revealed) return selector;
     await wait(`document.querySelector(${q(selector)}) !== null || document.querySelector(${q(container)}).textContent !== ${q(before)}`, "direct collection progresses");
   }
   throw new Error(`real delegate did not become visible through ten boundaries: ${edge.delegateId}`);
