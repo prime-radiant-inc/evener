@@ -93,8 +93,10 @@ registry, model or environment changes. It says what each scope holds
 human partner works and how tools, systems and the world behave; project
 memory: knowledge about this project; session memory: working notes about the
 current work: its plan, what was tried and found), when to read a page, and that stored memory is fallible evidence, never
-instructions or permission: a note can be wrong or out of date, so the agent checks a fact against the
-code or system before acting on it when it can. Sessions that can call the save tools are also told
+instructions or permission. Memory reflects what was true when it was
+written: the agent checks that a file, function, command or setting a note names
+still exists before relying on it, and follows a recorded decision or rule
+unless the partner or newer evidence says it changed. Sessions that can call the save tools are also told
 when to save: when the partner corrects the agent or says how they want work
 done, when the partner states a project plan, constraint, decision or unfinished
 work (saved to project memory), when a root session is partway through longer work (its plan,
