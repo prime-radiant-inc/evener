@@ -547,13 +547,19 @@ def load_scenario(scen):
         spec = json.load(f)
     if not isinstance(spec, dict) or not isinstance(spec.get("stages"), list):
         sys.exit(f"memory-lab: {scen}: scenario.json must be an object with a \"stages\" list")
+    if "fixture_from" in spec and not (isinstance(spec["fixture_from"], str) and spec["fixture_from"]):
+        sys.exit(f"memory-lab: {scen}: \"fixture_from\" must name a scenario")
     for i, st in enumerate(spec["stages"]):
         if not isinstance(st, dict) or not isinstance(st.get("name"), str) or not st["name"]:
             sys.exit(f"memory-lab: {scen} stage {i + 1}: each stage must be an object with a non-empty string \"name\"")
         where = f"memory-lab: {scen} stage {st['name']}"
-        for key in ("fixture", "seed_project_memory", "workspace", "resume"):
+        if not (isinstance(st.get("prompt"), str) and st["prompt"]):
+            sys.exit(f"{where}: needs a non-empty string \"prompt\"")
+        for key in ("fixture", "seed_project_memory", "workspace", "resume", "before"):
             if key in st and not isinstance(st[key], str):
                 sys.exit(f"{where}: \"{key}\" must be a string")
+        if st.get("workspace") == "":
+            sys.exit(f"{where}: \"workspace\" must name a dir (an empty one runs the session in the trial dir)")
         if st.get("resume") and st["resume"] not in [earlier.get("name") for earlier in spec["stages"][:i]]:
             sys.exit(f"{where}: \"resume\" must name an earlier stage")
         workspace = st.get("workspace")

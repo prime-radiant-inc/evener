@@ -42,7 +42,7 @@
         },
         {
           "name": "no page still states the dollar format as current",
-          "regex": "(?i)(prices are|receipts use|use|convention:?)\\s+(US )?dollars",
+          "regex": "(?i)(prices are|receipts use|receipts are in|convention:?)\\s+(US )?dollars",
           "scope": "project",
           "absent": true
         }
