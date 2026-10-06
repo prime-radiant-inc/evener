@@ -21,8 +21,8 @@ import {
 	type ShellJobRow,
 	type SubagentRow,
 	isSubagentRow,
-	quietSilence,
 	sameModel,
+	subagentWhy,
 	summaryTally,
 } from "./subagentModel";
 import { stopRequests } from "./nativeStopRequests";
@@ -51,7 +51,7 @@ export function SubagentsScreen({ route, navigation }: NativeStackScreenProps<Ro
 	// moves on only when a silent running subagent's row turns Quiet.
 	// biome-ignore lint/correctness/useExhaustiveDependencies: a new snapshot is what moves the clock
 	const treeTime = useMemo(() => Date.now(), [snapshot]);
-	const now = useNowPastQuiet(treeTime, (at) => rows.map((row) => quietSilence(row, at)));
+	const now = useNowPastQuiet(treeTime, (at) => rows.map((row) => subagentWhy(row, at).quietForMs));
 
 	const [filter, setFilter] = useState<ActivityFilter>("all");
 	const [query, setQuery] = useState("");

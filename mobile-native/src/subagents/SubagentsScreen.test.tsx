@@ -483,7 +483,6 @@ it("reads a quiet failure, a nested subagent, another model, a branch and a fini
 	expect(shown).toContain("6m");
 });
 
-// A subagent's screen is its session (ruling 30), over this list.
 // The list runs no clock, but a running subagent's row still turns Quiet
 // when its silence crosses the threshold, with no new tree to re-render it.
 it("turns a silent subagent's row Quiet on its own", async () => {
@@ -503,6 +502,7 @@ it("turns a silent subagent's row Quiet on its own", async () => {
 	expect(text(tree)).toContain("Quiet 20s");
 });
 
+// A subagent's screen is its session (ruling 30), over this list.
 it("opens a subagent's own session over its coordinator", async () => {
 	const tree = await mount();
 	act(() => pressable(tree, "Done · 23")?.props.onPress());

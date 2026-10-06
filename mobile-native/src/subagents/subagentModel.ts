@@ -313,20 +313,15 @@ export interface SubagentWhy {
 	/** The actual unsuccessful outcome, displayed beside its cause. */
 	word?: "Failed";
 	text: string;
+	/** How long a running subagent with nothing else to show has been silent,
+	 * while that silence grows with the clock: when its line turns Quiet. */
+	quietForMs?: number;
 }
 
 function runningCommand(session: ActivitySessionNode | undefined): string | undefined {
 	for (const entry of session?.entries ?? [])
 		if (entry.kind === "shell" && !entry.job.terminal && entry.job.command) return firstLine(entry.job.command, 80);
 	return undefined;
-}
-
-/** How long a running subagent has been silent as of `now`, while that
- * silence grows with the clock: what its why line's Quiet reads. */
-export function quietSilence(row: SubagentRow, now: number): number | undefined {
-	if (row.state !== "running") return undefined;
-	const timing = delegateTiming(row.delegate, now);
-	return timing.quietLive ? timing.quietForMs : undefined;
 }
 
 /** The latest activity or outcome (spec 9) from what the tree carries
@@ -346,7 +341,10 @@ export function subagentWhy(row: SubagentRow, now: number): SubagentWhy {
 		(entry) => entry.kind === "delegate" && delegateHasActiveWork(entry.delegate),
 	).length;
 	if (waiting > 0) return { text: waitingOnSubagents(waiting) };
-	return { text: quietOrWorking(delegateTiming(delegate, now).quietForMs ?? 0) };
+	const timing = delegateTiming(delegate, now);
+	const why: SubagentWhy = { text: quietOrWorking(timing.quietForMs ?? 0) };
+	if (timing.quietLive && timing.quietForMs !== undefined) why.quietForMs = timing.quietForMs;
+	return why;
 }
 
 // Cache the same qualified entity identity used by the shared projection.
