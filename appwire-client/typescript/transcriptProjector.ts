@@ -125,7 +125,10 @@ const MESSAGE_TYPES = new Set(["userMessage", "agentMessage"]);
 // outside this set as an unknown event and deliberately renders it.
 const KNOWN_EVENT_KINDS: ReadonlySet<string> = new Set(THREAD_ITEM_EVENT_KINDS);
 
-const PROMPT_EVENT_KINDS = new Set(["system_prompt", "prompt_loaded"]);
+// The prompt events: system_prompt is the full prompt scaffold, prompt_loaded
+// the quiet "Loaded prompt X (N B)" line naming the same event. Both answer to
+// one "Prompt loaded" setting on every client.
+export const PROMPT_EVENT_KINDS: ReadonlySet<string> = new Set(["system_prompt", "prompt_loaded"]);
 const TURN_TIMING_EVENT_KIND = "round_timings";
 const HOOK_EVENT_KIND = "hook_completed";
 // The system events critical at every level: a persisted turn failure, a

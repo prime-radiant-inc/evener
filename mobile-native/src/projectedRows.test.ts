@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { hydrateThread, makeTranscriptDisplayConfig, WarningCodeMCPReconnected } from "@evener/appwire-client";
+import {
+	hydrateThread,
+	makeTranscriptDisplayConfig,
+	THREAD_ITEM_EVENT_KINDS,
+	WarningCodeMCPReconnected,
+} from "@evener/appwire-client";
 import { toolWireStep } from "@evener/appwire-client/testing/toolWireFixtures";
 import type {
 	AskQuestionRef,
@@ -407,6 +412,23 @@ describe("projectedRow — item entries", () => {
 	])("classifies system event %s as family %s / tone %s", (eventKind, family, tone) => {
 		const row = projectedRow(itemEntry(item({ type: "systemMessage", text: "x", eventKind })));
 		expect(row).toMatchObject({ kind: "notice", origin: "system", family, tone });
+	});
+
+	// Every event kind the daemon can send lands in a family on purpose, so a
+	// newly generated kind cannot fall through to unknown-system unnoticed. An
+	// interrupted-turn notice still does: the phone has no family for it yet.
+	const UNKNOWN_FAMILY_EVENT_KINDS = new Set(["interrupted"]);
+	it.each(THREAD_ITEM_EVENT_KINDS.filter((eventKind) => !UNKNOWN_FAMILY_EVENT_KINDS.has(eventKind)))(
+		"gives generated event kind %s a family",
+		(eventKind) => {
+			const row = projectedRow(itemEntry(item({ type: "systemMessage", text: "x", eventKind })));
+			expect(row).toMatchObject({ kind: "notice", origin: "system" });
+			expect(row).not.toMatchObject({ family: "unknown-system" });
+		},
+	);
+	it.each([...UNKNOWN_FAMILY_EVENT_KINDS])("still reads %s as unknown-system", (eventKind) => {
+		const row = projectedRow(itemEntry(item({ type: "systemMessage", text: "x", eventKind })));
+		expect(row).toMatchObject({ kind: "notice", origin: "system", family: "unknown-system" });
 	});
 
 	it("maps a warning item to the attention failure row", () => {
