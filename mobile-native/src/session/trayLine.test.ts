@@ -8,7 +8,7 @@ import type {
 } from "@evener/appwire-client";
 import { describe, expect, it } from "vitest";
 import { whyLine } from "../board/attention";
-import { subagentTally } from "./sessionState";
+import { runningSubagentCount } from "../subagents/subagentModel";
 import { FrameCounter, type TraySource, trayLine } from "./trayLine";
 
 const NOW = Date.UTC(2026, 8, 26, 14, 0, 0);
@@ -157,7 +157,7 @@ describe("the tray's line (spec 8.3)", () => {
 		const stopped = { ...delegate("stopped", 3), terminal: true, outcome: "stopped" };
 		const failed = { ...delegate("failed", 4), terminal: true, outcome: "failed" };
 		const delegates = [delegate("running", 1), idle, stopped, failed];
-		expect(subagentTally(delegates).running).toBe(2);
+		expect(runningSubagentCount(delegates)).toBe(2);
 		expect(trayLine(session({ delegates }), NOW)?.text).toBe("Waiting on 2 subagents");
 	});
 

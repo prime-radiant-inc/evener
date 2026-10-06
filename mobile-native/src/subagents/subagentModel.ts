@@ -345,7 +345,7 @@ export function subagentWhy(row: SubagentRow, now: number): SubagentWhy {
 	const command = runningCommand(delegate.child);
 	if (command) return { text: `Running ${command}` };
 	const waiting = runningSubagentCount(
-		(delegate.child?.entries ?? []).flatMap((entry) => (entry.kind === "delegate" ? [entry.delegate] : [])),
+		(delegate.child?.entries ?? []).filter((entry) => entry.kind === "delegate").map((entry) => entry.delegate),
 	);
 	if (waiting > 0) return { text: waitingOnSubagents(waiting) };
 	return { text: quietOrWorking(delegateTiming(delegate, now).quietForMs ?? 0) };
