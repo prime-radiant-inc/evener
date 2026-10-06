@@ -68,6 +68,12 @@ class TextHtmlTokenizer extends Tokenizer {
 	}
 }
 
+// Where an inline tag dropped from the words. It goes with the spaces around
+// it, leaving one if there were any ("a <br> b" reads "a b"), wherever the tag
+// sat: in emphasis, a link, or at the end of a table cell.
+const DROPPED_TAG = "\u0000";
+const DROPPED_TAG_RUN = /[ \t]*(?:\u0000[ \t]*)+/g;
+
 // A token's words, read from marked's own parse, so a link or image reads as
 // its words however its URL is written (nested parentheses, a reference, an
 // autolink), an escape as the character, and a code span as its contents.
@@ -80,7 +86,7 @@ function words(token: Token): string {
 		case "html":
 			return token.block
 				? new Lexer({ ...getDefaults(), tokenizer: new TextHtmlTokenizer() }).lex(token.text).map(words).join("\n")
-				: "";
+				: DROPPED_TAG;
 		case "checkbox":
 		case "def":
 		case "hr":
@@ -97,32 +103,20 @@ function words(token: Token): string {
 			const table = token as Tokens.Table;
 			// A pipe in a cell keeps its escape, so it doesn't read as a column.
 			return [table.header, ...table.rows]
-				.map((row) => `| ${row.map((cell) => inlineWords(cell.tokens).replaceAll("|", "\\|")).join(" | ")} |`)
+				.map((row) => `| ${row.map((cell) => cell.tokens.map(words).join("").replaceAll("|", "\\|")).join(" | ")} |`)
 				.join("\n");
 		}
 		default:
-			if ("tokens" in token && token.tokens) return inlineWords(token.tokens);
+			if ("tokens" in token && token.tokens) return token.tokens.map(words).join("");
 			return "text" in token && typeof token.text === "string" ? token.text : "";
 	}
-}
-
-// Inline tokens' words. An inline tag drops, and so does the space after it
-// when one comes before it: "a <br> b" reads "a b", not "a  b".
-function inlineWords(tokens: readonly Token[]): string {
-	let text = "";
-	let afterTag = false;
-	for (const token of tokens) {
-		const next = words(token);
-		text += afterTag && token.type === "text" && /[ \t]$/.test(text) ? next.replace(/^[ \t]+/, "") : next;
-		afterTag = token.type === "html" || (afterTag && next === "");
-	}
-	return text;
 }
 
 // What a comment quotes and Copy copies: a block's words, line by line,
 // each line trimmed and blank ones dropped.
 function blockText(token: Token): string {
 	return words(token)
+		.replace(DROPPED_TAG_RUN, (run) => (/[ \t]/.test(run) ? " " : ""))
 		.split("\n")
 		.map((line) => line.trim())
 		.filter((line) => line !== "")

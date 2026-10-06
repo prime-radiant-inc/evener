@@ -183,6 +183,8 @@ it("drops inline HTML tags from a block's words, but not inside an inline code s
 it("leaves one space where an inline tag between two words drops", () => {
 	expect(wordsOf("text <!-- c --> more")).toEqual(["text more"]);
 	expect(wordsOf("a <br> b and x <span>y</span> z")).toEqual(["a b and x y z"]);
+	expect(wordsOf("**Note <br>** text and [<br>](u) end")).toEqual(["Note text and end"]);
+	expect(wordsOf("| x <br> | y |\n|---|---|\n| 1 | 2 |")).toEqual(["| x | y |\n| 1 | 2 |"]);
 });
 
 it("reads a table cell's escaped pipe as a pipe in the cell, not a column", () => {
