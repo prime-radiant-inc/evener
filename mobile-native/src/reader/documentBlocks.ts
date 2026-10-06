@@ -95,14 +95,28 @@ function words(token: Token): string {
 			return (token.tokens ?? []).map(words).join("\n");
 		case "table": {
 			const table = token as Tokens.Table;
+			// A pipe in a cell keeps its escape, so it doesn't read as a column.
 			return [table.header, ...table.rows]
-				.map((row) => `| ${row.map((cell) => cell.tokens.map(words).join("")).join(" | ")} |`)
+				.map((row) => `| ${row.map((cell) => inlineWords(cell.tokens).replaceAll("|", "\\|")).join(" | ")} |`)
 				.join("\n");
 		}
 		default:
-			if ("tokens" in token && token.tokens) return token.tokens.map(words).join("");
+			if ("tokens" in token && token.tokens) return inlineWords(token.tokens);
 			return "text" in token && typeof token.text === "string" ? token.text : "";
 	}
+}
+
+// Inline tokens' words. An inline tag drops, and so does the space after it
+// when one comes before it: "a <br> b" reads "a b", not "a  b".
+function inlineWords(tokens: readonly Token[]): string {
+	let text = "";
+	let afterTag = false;
+	for (const token of tokens) {
+		const next = words(token);
+		text += afterTag && token.type === "text" && /[ \t]$/.test(text) ? next.replace(/^[ \t]+/, "") : next;
+		afterTag = token.type === "html" || (afterTag && next === "");
+	}
+	return text;
 }
 
 // What a comment quotes and Copy copies: a block's words, line by line,
