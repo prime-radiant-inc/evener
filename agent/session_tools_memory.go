@@ -56,12 +56,23 @@ func (s *Session) memoryFileArgs(args map[string]any, key, operation string) (*e
 }
 
 func (s *Session) execMemoryWrite(ctx context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
+	scope, indexWrite := memoryIndexTarget(args)
 	env, args, release, err := s.memoryFileArgs(args, "file_path", "write")
 	if err != nil {
 		return nil, err
 	}
 	defer release()
-	return execFileWrite(ctx, env, args, s.fileReadGuard(env))
+	out, err := execFileWrite(ctx, env, args, s.fileReadGuard(env))
+	if err == nil && indexWrite {
+		s.noteOwnMemoryIndexWrite(env, scope)
+	}
+	return out, err
+}
+
+// memoryIndexTarget reports the scope a memory file call names and whether
+// its file is the scope's MEMORY.md index.
+func memoryIndexTarget(args map[string]any) (string, bool) {
+	return stringArg(args, "scope"), filepath.Clean(stringArg(args, "file_path")) == "MEMORY.md"
 }
 
 func (s *Session) execMemoryRead(ctx context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
@@ -73,12 +84,17 @@ func (s *Session) execMemoryRead(ctx context.Context, _ execenv.ExecutionEnviron
 	return execFileRead(ctx, env, forwarded, s.fileReadGuard(env))
 }
 func (s *Session) execMemoryEdit(ctx context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
+	scope, indexWrite := memoryIndexTarget(args)
 	env, forwarded, release, err := s.memoryFileArgs(args, "file_path", "edit")
 	if err != nil {
 		return nil, err
 	}
 	defer release()
-	return execFileEdit(ctx, env, forwarded, s.fileReadGuard(env))
+	out, err := execFileEdit(ctx, env, forwarded, s.fileReadGuard(env))
+	if err == nil && indexWrite {
+		s.noteOwnMemoryIndexWrite(env, scope)
+	}
+	return out, err
 }
 func (s *Session) execMemorySearch(ctx context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 	env, forwarded, release, err := s.memoryFileArgs(args, "path", "search")
@@ -89,6 +105,7 @@ func (s *Session) execMemorySearch(ctx context.Context, _ execenv.ExecutionEnvir
 	return execFileGrep(ctx, env, forwarded)
 }
 func (s *Session) execMemoryDelete(_ context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
+	scope, indexWrite := memoryIndexTarget(args)
 	env, forwarded, release, err := s.memoryFileArgs(args, "file_path", "delete")
 	if err != nil {
 		return nil, err
@@ -98,6 +115,9 @@ func (s *Session) execMemoryDelete(_ context.Context, _ execenv.ExecutionEnviron
 	warn := s.fileReadGuard(env).ReadBeforeWriteWarning(path)
 	if err := env.RemoveConfinedFile(path); err != nil {
 		return nil, err
+	}
+	if indexWrite {
+		s.noteOwnMemoryIndexWrite(env, scope)
 	}
 	return warn + "Removed or already absent: " + path, nil
 }

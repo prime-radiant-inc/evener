@@ -340,7 +340,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	s.maybeAppendNotesContext()
 	// Independent scope reads share one finite wait for this boundary. Workers
 	// only return observations, the owner loop appends currentness transitions.
-	s.maybeAppendMemoryContext(ctx)
+	s.maybeAppendMemoryContext(ctx, round == 0)
 	// Re-snapshot so the request expands the refreshed history. The
 	// in-flight boundary is re-captured alongside the final history copy
 	// under the same lock: a concurrent compaction landing between the two

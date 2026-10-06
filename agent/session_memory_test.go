@@ -497,41 +497,41 @@ func TestMemoryContextTransitions(t *testing.T) {
 	}
 	run(2)
 	run(2)
-	wantBody = "opaque-second-28"
-	if err := os.WriteFile(path, []byte(wantBody), 0o600); err != nil {
+	// Another session's content changes, an empty index included, do not
+	// re-deliver the full index the session already has.
+	if err := os.WriteFile(path, []byte("opaque-second-28"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	run(3)
-	wantBody = ""
+	run(2)
 	if err := os.WriteFile(path, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	run(4)
-	wantState = "missing"
+	run(2)
+	wantState, wantBody = "missing", ""
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
-	run(5)
+	run(3)
 	wantState = "unavailable"
 	fault.Store(true)
-	run(6)
+	run(4)
 	fault.Store(false)
 	wantState, wantBody = "current", "opaque-recovered-38"
 	if err := os.WriteFile(path, []byte(wantBody), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	run(7)
+	run(5)
 	// Revocation happens on the owner loop between requests, never in a worker.
 	s.cfg.MemoryProjectID = ""
 	// Not asserted here: keeps the prompt consistent with the revoked binding.
 	refreshModelFacingCaches(s)
 	wantProjectState, wantProjectBody = "revoked", ""
-	run(8)
+	run(6)
 	s.reg.Remove("memory_read")
 	// Not asserted here: keeps tool definitions and prompt consistent with the revoked tool.
 	refreshModelFacingCaches(s)
 	wantState, wantBody = "revoked", ""
-	run(9)
+	run(7)
 	s.Close()
 	writer, entries, err := transcript.OpenWriterForSession(transcriptPath(s.stateDir, s.id), s.id)
 	if err != nil {
@@ -547,7 +547,7 @@ func TestMemoryContextTransitions(t *testing.T) {
 			original = original || strings.Contains(entry.Turn.Message.Text(), "opaque-first-18")
 		}
 	}
-	if contexts != 9 || !original {
+	if contexts != 7 || !original {
 		t.Fatalf("durable contexts=%d original preserved=%t", contexts, original)
 	}
 }
@@ -1001,7 +1001,7 @@ func TestMemoryStorageSharedWaitAndClose(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			done := make(chan struct{})
-			go func() { s.maybeAppendMemoryContext(ctx); close(done) }()
+			go func() { s.maybeAppendMemoryContext(ctx, true); close(done) }()
 			<-started
 			<-started
 			s.memoryMu.Lock()
@@ -1495,7 +1495,7 @@ func TestMemoryDisableResumeAndCompaction(t *testing.T) {
 			for range 12 {
 				s.appendTurnWithTranscriptMessage(schema.TurnUserInput, llm.User("opaque-historical-37"), llm.User("opaque-historical-37"))
 			}
-			s.maybeAppendMemoryContext(context.Background())
+			s.maybeAppendMemoryContext(context.Background(), true)
 			s.Close()
 			meta, err := schema.LoadSessionMeta(history, s.id)
 			if err != nil {
@@ -1597,7 +1597,7 @@ func TestMemoryResumeBindingMetadataReload(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer r.Close()
-			r.maybeAppendMemoryContext(context.Background())
+			r.maybeAppendMemoryContext(context.Background(), true)
 			wantID := ""
 			if parentID == "saved-project" {
 				wantID = parentID
@@ -2329,7 +2329,7 @@ func TestMemoryIndexProjection(t *testing.T) {
 	if _, err := s.ProcessInput(context.Background(), "continue", nil); err != nil {
 		t.Fatal(err)
 	}
-	s.maybeAppendMemoryContext(context.Background())
+	s.maybeAppendMemoryContext(context.Background(), true)
 	count := func() int {
 		s.mu.Lock()
 		defer s.mu.Unlock()
@@ -2344,18 +2344,20 @@ func TestMemoryIndexProjection(t *testing.T) {
 	if n := count(); n != 1 {
 		t.Fatalf("unchanged contexts=%d", n)
 	}
+	// Emptying a known index is a content change, which does not re-deliver
+	// the full index; a missing index is still projected as missing.
 	if err := os.WriteFile(filepath.Join(wiki, "MEMORY.md"), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	s.maybeAppendMemoryContext(context.Background())
-	if n := count(); n != 2 {
+	s.maybeAppendMemoryContext(context.Background(), true)
+	if n := count(); n != 1 {
 		t.Fatalf("empty transition contexts=%d", n)
 	}
 	if err := os.Remove(filepath.Join(wiki, "MEMORY.md")); err != nil {
 		t.Fatal(err)
 	}
-	s.maybeAppendMemoryContext(context.Background())
-	if n := count(); n != 3 {
+	s.maybeAppendMemoryContext(context.Background(), true)
+	if n := count(); n != 2 {
 		t.Fatalf("missing transition contexts=%d", n)
 	}
 }
