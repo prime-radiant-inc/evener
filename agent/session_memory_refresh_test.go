@@ -602,3 +602,98 @@ func TestMemoryRefreshStalledReadDefersIndexDelta(t *testing.T) {
 		t.Fatalf("unchanged boundary appended %d contexts, want none", got-2)
 	}
 }
+
+func writeMemoryPage(t *testing.T, root, name, body string) string {
+	t.Helper()
+	path := filepath.Join(root, "memory", "personal", name)
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// A page the session read and another session then changed or removed gets a
+// notice at the next turn, naming the page but never carrying its contents. A
+// page the session never read is never mentioned, and an unchanged turn after
+// a notice carries nothing.
+func TestMemoryRefreshNoticesChangedReadPages(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	memorySeed(t, root, "personal", "opaque-index-1\n")
+	page := writeMemoryPage(t, root, "opaque-read-page.md", "opaque-page-body-1\n")
+	writeMemoryPage(t, root, "opaque-unread-page.md", "opaque-unread-body-1\n")
+	var notices []string
+	noticeTurn := func(want int) func(llm.Request) llm.Response {
+		return func(req llm.Request) llm.Response {
+			if got := memoryContextMessages(req); got != want {
+				t.Fatalf("turn carries %d memory contexts, want %d", got, want)
+			}
+			notices = append(notices, latestMemoryContext(req, "personal"))
+			return finalResponse("observed")
+		}
+	}
+	changedTurn, removedTurn, unchangedTurn := noticeTurn(2), noticeTurn(3), noticeTurn(3)
+	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(
+		func(llm.Request) llm.Response {
+			return memoryCallResponse("memory_read", map[string]any{"scope": "personal", "file_path": "opaque-read-page.md"})
+		},
+		func(llm.Request) llm.Response { return finalResponse("read") },
+		changedTurn, removedTurn, unchangedTurn,
+	))
+	turn := func() {
+		t.Helper()
+		if _, err := s.ProcessInput(context.Background(), "go", nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	turn()
+	writeMemoryPage(t, root, "opaque-read-page.md", "opaque-page-body-2\n")
+	writeMemoryPage(t, root, "opaque-unread-page.md", "opaque-unread-body-2\n")
+	turn()
+	if err := os.Remove(page); err != nil {
+		t.Fatal(err)
+	}
+	turn()
+	turn()
+	for i, notice := range notices[:2] {
+		if !strings.Contains(notice, "opaque-read-page.md") {
+			t.Fatalf("notice %d does not name the read page: %q", i, notice)
+		}
+		if strings.Contains(notice, "opaque-unread-page.md") || strings.Contains(notice, "opaque-page-body") || strings.Contains(notice, "opaque-unread-body") {
+			t.Fatalf("notice %d names an unread page or carries page contents: %q", i, notice)
+		}
+	}
+}
+
+// A page the session read and then edited itself is its own baseline: the
+// next turn carries no notice for it.
+func TestMemoryRefreshIgnoresOwnPageEdit(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	memorySeed(t, root, "personal", "opaque-index-1\n")
+	page := writeMemoryPage(t, root, "opaque-own-page.md", "opaque-own-body-1\n")
+	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(
+		func(llm.Request) llm.Response {
+			return memoryCallResponse("memory_read", map[string]any{"scope": "personal", "file_path": "opaque-own-page.md"})
+		},
+		func(llm.Request) llm.Response {
+			return memoryCallResponse("memory_edit", map[string]any{"scope": "personal", "file_path": "opaque-own-page.md", "old_string": "opaque-own-body-1", "new_string": "opaque-own-body-2"})
+		},
+		func(llm.Request) llm.Response { return finalResponse("edited") },
+		func(req llm.Request) llm.Response {
+			if got := memoryContextMessages(req); got != 1 {
+				t.Fatalf("next turn carries %d memory contexts, want 1", got)
+			}
+			return finalResponse("next")
+		},
+	))
+	if _, err := s.ProcessInput(context.Background(), "edit", nil); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(page); err != nil || string(got) != "opaque-own-body-2\n" {
+		t.Fatalf("page=%q err=%v, want the edit applied", got, err)
+	}
+	if _, err := s.ProcessInput(context.Background(), "next", nil); err != nil {
+		t.Fatal(err)
+	}
+}

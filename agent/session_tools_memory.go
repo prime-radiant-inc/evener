@@ -57,7 +57,8 @@ func (s *Session) memoryFileArgs(args map[string]any, key, operation string) (*e
 
 // execOwnMemoryWrite runs a write, edit or delete of one memory file and,
 // once it succeeds, records the result as the session's own: a change to the
-// index becomes its baseline, so it is never echoed back.
+// index becomes its baseline and a change to a page it read becomes that
+// page's record, so neither is echoed back.
 func (s *Session) execOwnMemoryWrite(args map[string]any, operation string, write func(env *execenv.LocalExecutionEnvironment, forwarded map[string]any) (any, error)) (any, error) {
 	scope, file := stringArg(args, "scope"), filepath.Clean(stringArg(args, "file_path"))
 	env, forwarded, release, err := s.memoryFileArgs(args, "file_path", operation)
@@ -66,8 +67,12 @@ func (s *Session) execOwnMemoryWrite(args map[string]any, operation string, writ
 	}
 	defer release()
 	out, err := write(env, forwarded)
-	if err == nil && file == memoryIndexFile {
+	switch {
+	case err != nil:
+	case file == memoryIndexFile:
 		s.noteOwnMemoryIndexWrite(env, scope)
+	default:
+		s.recordMemoryPage(env, scope, file, true)
 	}
 	return out, err
 }
@@ -79,12 +84,19 @@ func (s *Session) execMemoryWrite(ctx context.Context, _ execenv.ExecutionEnviro
 }
 
 func (s *Session) execMemoryRead(ctx context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
+	scope, file := stringArg(args, "scope"), filepath.Clean(stringArg(args, "file_path"))
 	env, forwarded, release, err := s.memoryFileArgs(args, "file_path", "read")
 	if err != nil {
 		return nil, err
 	}
 	defer release()
-	return execFileRead(ctx, env, forwarded, s.fileReadGuard(env))
+	out, err := execFileRead(ctx, env, forwarded, s.fileReadGuard(env))
+	// The index has its own baseline and change blocks; every other page
+	// read is tracked for change notices.
+	if err == nil && file != memoryIndexFile {
+		s.recordMemoryPage(env, scope, file, false)
+	}
+	return out, err
 }
 func (s *Session) execMemoryEdit(ctx context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 	return s.execOwnMemoryWrite(args, "edit", func(env *execenv.LocalExecutionEnvironment, forwarded map[string]any) (any, error) {
