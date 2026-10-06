@@ -68,15 +68,25 @@ class TextHtmlTokenizer extends Tokenizer {
 	}
 }
 
-// Where an inline tag dropped from the words. It goes with the spaces around
-// it, leaving one if there were any ("a <br> b" reads "a b"), wherever the tag
-// sat: in emphasis, a link, or at the end of a table cell. marked keeps a NUL
-// in the source as it is, so one would go the same way; a document has none.
-const DROPPED_TAG = "\u0000";
-const DROPPED_TAG_RUN = /[ \t]*(?:\u0000[ \t]*)+/g;
+// Marks in the words, each a NUL and one character. The source can't hold a NUL:
+// documentBlocks' lexer call reads one as U+FFFD, as CommonMark asks.
+//
+// Where an inline tag dropped. It goes with the spaces around it, leaving one
+// if there were any ("a <br> b" reads "a b"), wherever the tag sat: in
+// emphasis, a link, or at the end of a table cell.
+const DROPPED_TAG = "\u0000t";
+const DROPPED_TAG_RUN = /[ \t]*(?:\u0000t[ \t]*)+/g;
+// Around a code span, so its own spaces don't count as the spaces beside a
+// dropped tag.
+const CODE_START = "\u0000[";
+const CODE_END = "\u0000]";
 
-function withoutDroppedTags(text: string): string {
-	return text.replace(DROPPED_TAG_RUN, (run) => (/[ \t]/.test(run) ? " " : ""));
+// Words without their marks.
+function unmarked(text: string): string {
+	return text
+		.replace(DROPPED_TAG_RUN, (run) => (/[ \t]/.test(run) ? " " : ""))
+		.replaceAll(CODE_START, "")
+		.replaceAll(CODE_END, "");
 }
 
 // A token's words, read from marked's own parse, so a link or image reads as
@@ -92,6 +102,8 @@ function words(token: Token): string {
 			return token.block
 				? new Lexer({ ...getDefaults(), tokenizer: new TextHtmlTokenizer() }).lex(token.text).map(words).join("\n")
 				: DROPPED_TAG;
+		case "codespan":
+			return `${CODE_START}${token.text}${CODE_END}`;
 		case "checkbox":
 		case "def":
 		case "hr":
@@ -117,13 +129,13 @@ function words(token: Token): string {
 // A table cell's words. A pipe in them keeps its escape, so it doesn't read
 // as another column.
 function cellWords(cell: Tokens.TableCell): string {
-	return withoutDroppedTags(cell.tokens.map(words).join("")).trim().replaceAll("|", "\\|");
+	return unmarked(cell.tokens.map(words).join("")).trim().replaceAll("|", "\\|");
 }
 
 // What a comment quotes and Copy copies: a block's words, line by line,
 // each line trimmed and blank ones dropped.
 function blockText(token: Token): string {
-	return withoutDroppedTags(words(token))
+	return unmarked(words(token))
 		.split("\n")
 		.map((line) => line.trim())
 		.filter((line) => line !== "")
@@ -149,7 +161,7 @@ export function documentBlocks(markdown: string): DocumentBlock[] {
 			...extra,
 		});
 	};
-	for (const token of lexer(markdown.replace(/\r\n?/g, "\n"))) {
+	for (const token of lexer(markdown.replace(/\r\n?/g, "\n").replaceAll("\u0000", "\uFFFD"))) {
 		switch (token.type) {
 			case "space":
 			case "def":
