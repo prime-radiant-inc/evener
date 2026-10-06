@@ -1325,6 +1325,12 @@ function SpawnForm({
   // load below without the host-change reset, so the draft keeps what it has.
   // Each catalog's failure is kept on its own, so a host refusing both says both.
   const [hostCatalogErrors, setHostCatalogErrors] = useState<{ harnesses?: string; schema?: string }>({});
+  const hostCatalogErrorText = [
+    hostCatalogErrors.harnesses !== undefined && `Couldn't load this host's harnesses: ${hostCatalogErrors.harnesses}.`,
+    hostCatalogErrors.schema !== undefined && `Couldn't load this host's launch options: ${hostCatalogErrors.schema}.`,
+  ]
+    .filter(Boolean)
+    .join(" ");
   const [catalogRetryRevision, setCatalogRetryRevision] = useState(0);
   const retryHostCatalogs = useCallback(() => setCatalogRetryRevision((revision) => revision + 1), []);
   // biome-ignore lint/correctness/useExhaustiveDependencies: catalogRetryRevision is a trigger-only dep - Retry bumps it to read both catalogs again
@@ -1361,7 +1367,7 @@ function SpawnForm({
       setKnownSelectionIssues([]);
     }
     setHostCatalogErrors({});
-    const catalogLoadFailed = (catalog: "harnesses" | "schema") => (err: unknown) => {
+    const catalogLoadFailed = (catalog: keyof typeof hostCatalogErrors) => (err: unknown) => {
       if (active) setHostCatalogErrors((errors) => ({ ...errors, [catalog]: errorText(err) }));
     };
     // An answer stamps its OWN catalog as settled for this host, and is the
@@ -2775,18 +2781,9 @@ function SpawnForm({
           </p>
         )}
 
-        {(hostCatalogErrors.harnesses !== undefined || hostCatalogErrors.schema !== undefined) && (
+        {hostCatalogErrorText !== "" && (
           <div className={CLASS.notice} role="status" data-testid="spawn-host-catalog-error">
-            <span>
-              {[
-                hostCatalogErrors.harnesses !== undefined &&
-                  `Couldn't load this host's harnesses: ${hostCatalogErrors.harnesses}.`,
-                hostCatalogErrors.schema !== undefined &&
-                  `Couldn't load this host's launch options: ${hostCatalogErrors.schema}.`,
-              ]
-                .filter(Boolean)
-                .join(" ")}
-            </span>
+            <span>{hostCatalogErrorText}</span>
             <Button variant="quiet" type="button" onClick={retryHostCatalogs}>
               Retry
             </Button>

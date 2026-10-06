@@ -58,9 +58,11 @@ const (
 
 // navigationCatalogOrder is the order a key held by several catalogs resolves
 // in: a read of the key names the first catalog holding it. Only an
-// unresolved directory's "no-project" key can be in more than one. Callers
-// must not modify it; archivedListCandidates hands out a copy.
-var navigationCatalogOrder = []navigationResourceKind{navigationResourceProjects, navigationResourceArchivedProjects, navigationResourceTestRuns}
+// unresolved directory's "no-project" key can be in more than one. Each call
+// returns a fresh slice, so no caller can change the order for another.
+func navigationCatalogOrder() []navigationResourceKind {
+	return []navigationResourceKind{navigationResourceProjects, navigationResourceArchivedProjects, navigationResourceTestRuns}
+}
 
 // navigationResourceKey describes one immutable navigation representation. It
 // contains decoded, validated values only; HTTP parsing belongs to its handler.
@@ -176,7 +178,7 @@ func buildNavigationProjectionContext(ctx context.Context, inputs navigationBuil
 	p.catalogs[navigationResourceTestRuns] = append([]hubcore.TreeProject(nil), buckets.testRuns...)
 	// A same-key project of a later catalog is shadowed: its sessions are
 	// still located under the key, but a read of the key does not return them.
-	for _, kind := range navigationCatalogOrder {
+	for _, kind := range navigationCatalogOrder() {
 		for _, project := range p.catalogs[kind] {
 			if err := ctx.Err(); err != nil {
 				return navigationProjection{}, err
@@ -1460,7 +1462,7 @@ func (p navigationProjection) indexLocationsContext(ctx context.Context) error {
 			_ = p.indexLocationNodeContext(ctx, root, root, projectKey, tier, true)
 		}
 	}
-	for _, kind := range navigationCatalogOrder {
+	for _, kind := range navigationCatalogOrder() {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
