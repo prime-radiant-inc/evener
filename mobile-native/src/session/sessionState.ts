@@ -2,8 +2,8 @@
 // mark (spec 8.1), and the context chips under it. The mark reuses the
 // Board's states (src/board/attention.ts). A session you are looking at is
 // never unread, so a finished one is Idle, with no dot.
-import { subagentState, summaryTally } from "../subagents/subagentModel";
-import type { EvenerDelegateInfo, ThreadModel, SessionActivityCounts } from "@evener/appwire-client";
+import { summaryTally } from "../subagents/subagentModel";
+import type { ThreadModel, SessionActivityCounts } from "@evener/appwire-client";
 import { type BoardState, hubTime } from "../board/attention";
 import { compactDuration, timeAgo } from "./format";
 
@@ -63,16 +63,6 @@ export interface SubagentTally {
 	running: number;
 	failed: number;
 	done: number;
-}
-
-/** Classifies loaded roster evidence for dev fixtures, never whole-scope chip counts. */
-export function subagentTally(delegates: readonly EvenerDelegateInfo[] | undefined): SubagentTally {
-	const tally: SubagentTally = { total: 0, running: 0, failed: 0, done: 0 };
-	for (const delegate of delegates ?? []) {
-		tally.total += 1;
-		tally[subagentState(delegate)] += 1;
-	}
-	return tally;
 }
 
 export type ChipKind = "subagents" | "files" | "tasks" | "goal" | "queue";

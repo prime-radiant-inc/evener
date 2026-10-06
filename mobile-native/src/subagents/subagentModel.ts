@@ -93,6 +93,16 @@ export function endedInStop(delegate: SubagentStateSource): boolean {
 	return subagentState(delegate) === "done" && isStoppedStatus(delegate.outcome ?? delegate.status);
 }
 
+/** How many of these subagents are running: what an agent waits on. A
+ * subagent's transcript row, its Activity line, and the tray when the hub
+ * gives no count all count by this, so they agree on "Waiting on N
+ * subagents". */
+export function runningSubagentCount(delegates: Iterable<SubagentStateSource>): number {
+	let running = 0;
+	for (const delegate of delegates) if (subagentState(delegate) === "running") running += 1;
+	return running;
+}
+
 export function subagentStateWord(state: SubagentState): string {
 	return STATE_WORDS[state];
 }
@@ -336,9 +346,9 @@ export function subagentWhy(row: SubagentRow, now: number): SubagentWhy {
 	}
 	const command = runningCommand(delegate.child);
 	if (command) return { text: `Running ${command}` };
-	const waiting = (delegate.child?.entries ?? []).filter(
-		(entry) => entry.kind === "delegate" && delegateHasActiveWork(entry.delegate),
-	).length;
+	const waiting = runningSubagentCount(
+		(delegate.child?.entries ?? []).filter((entry) => entry.kind === "delegate").map((entry) => entry.delegate),
+	);
 	if (waiting > 0) return { text: waitingOnSubagents(waiting) };
 	return subagentQuietLine(delegateTiming(delegate, now));
 }

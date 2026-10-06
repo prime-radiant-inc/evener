@@ -2,7 +2,6 @@ export type {
   ActivityBranchState,
   ActivityCounts,
   ActivityDelegate,
-  ActivityDelegateBranch,
   ActivityDelegateEntry,
   ActivityDisclosureState,
   ActivityEntry,
@@ -15,7 +14,6 @@ export type {
   ActivityWorktree,
 } from "./activityData";
 export {
-  activityDelegateBranch,
   activityDelegateDiagnostics,
   activityNodeID,
   defaultExpandedIDs,
