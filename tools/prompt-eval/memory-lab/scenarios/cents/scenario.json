@@ -5,13 +5,13 @@
     {
       "name": "A",
       "prompt": "Add a ShippingCost(weightGrams int) int function: 500 cents base, plus 2 cents for every gram over 1000. Add tests. For context, we decided last month that money in this codebase is always integer cents and never floating point, after a rounding bug cost us a refund run.",
-      "checks": [{"name": "tests pass", "run": "go test ./..."}],
+      "checks": [{"name": "tests pass", "run": "go test ./..."}, {"name": "held-out ShippingCost", "run": "cat > zz_heldout_test.go <<'EOF'\npackage shop\n\nimport \"testing\"\n\nfunc TestHeldoutShippingCost(t *testing.T) {\n\tfor grams, want := range map[int]int{0: 500, 1000: 500, 1001: 502, 2500: 3500} {\n\t\tif got := ShippingCost(grams); got != want {\n\t\t\tt.Errorf(\"ShippingCost(%d) = %d, want %d\", grams, got, want)\n\t\t}\n\t}\n}\nEOF\ngo test -count=1 -run Heldout ./...; rc=$?; rm -f zz_heldout_test.go; exit $rc"}],
       "memory": [{"name": "saved cents decision", "regex": "(?i)float|integer cents"}]
     },
     {
       "name": "B",
       "prompt": "Add a FormatPrice(cents int) string function that renders a price like $12.05 for the receipt page. Add tests.",
-      "checks": [{"name": "tests pass", "run": "go test ./..."}, {"name": "no floats", "run": "! for f in *.go; do case $f in *_test.go) continue;; esac; sed 's://.*$::' \"$f\"; done | grep -E '\\bfloat(32|64)\\b'"}]
+      "checks": [{"name": "tests pass", "run": "go test ./..."}, {"name": "no floats", "run": "! for f in *.go; do case $f in *_test.go) continue;; esac; sed 's://.*$::' \"$f\"; done | grep -E '\\bfloat(32|64)\\b'"}, {"name": "held-out FormatPrice", "run": "cat > zz_heldout_test.go <<'EOF'\npackage shop\n\nimport \"testing\"\n\nfunc TestHeldoutFormatPrice(t *testing.T) {\n\tfor cents, want := range map[int]string{1205: \"$12.05\", 5: \"$0.05\", 0: \"$0.00\", 99999: \"$999.99\"} {\n\t\tif got := FormatPrice(cents); got != want {\n\t\t\tt.Errorf(\"FormatPrice(%d) = %q, want %q\", cents, got, want)\n\t\t}\n\t}\n}\nEOF\ngo test -count=1 -run Heldout ./...; rc=$?; rm -f zz_heldout_test.go; exit $rc"}]
     }
   ]
 }
