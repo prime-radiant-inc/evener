@@ -15,7 +15,9 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { type BackgroundTranscriptsOwner, eligibleLiveRefs, startBackgroundTranscripts } from "./backgroundTranscripts";
 import { connectionStore } from "./connection";
 import { initNavigation, navigationStore, resetNavigationStoreForTests } from "./navigation/store";
-import { SessionCacheIndexedDB, type SessionCacheWriteOutcome } from "./sessionCacheIndexedDB";
+import { SessionCacheIndexedDB } from "./sessionCacheIndexedDB";
+import { holdNextWriteTransaction } from "./testing/stalledIndexedDB";
+import * as threads from "./threads";
 import {
   backgroundTranscriptSnapshotForTests,
   resetThreadsStoreForTests,
@@ -544,7 +546,7 @@ describe("startBackgroundTranscripts", () => {
     await owner.dispose();
   });
 
-  test("a reappearance during a held lease release cancels retirement", async () => {
+  test("a reappearance during a held real release re-acquires the ref before the write settles", async () => {
     world.pages = onePage([liveRow("local:a")]);
     fake = connectFake();
     // Open the cache connection: a background model's release only drains a
@@ -555,40 +557,68 @@ describe("startBackgroundTranscripts", () => {
     fake.on("thread/read", (params) =>
       versionedRead(params.ref ?? "local:a", (params as { requestGeneration?: number }).requestGeneration ?? 1),
     );
-    const owner = startBackgroundTranscripts(navigationStore);
-    await owner.settled();
-    expect(threadReadRefs()).toEqual(new Set(["local:a"]));
-    // A resident model makes release drain a final cache write we can hold.
-    expect(backgroundTranscriptSnapshotForTests().refs.get("local:a")?.resident).toBe(true);
-    expect(threadsStore.getState().threads.get("local:a")?.history?.incarnation).toBeDefined();
 
-    let settleWrite: ((outcome: SessionCacheWriteOutcome) => void) | undefined;
-    const heldWrite = new Promise<SessionCacheWriteOutcome>((resolve) => {
-      settleWrite = resolve;
+    // Observe the real background thread lease acquisitions as a call-through
+    // wrapper: the reappearance below must call acquireBackgroundThread again,
+    // which the roster-publication predicate livePageHas() cannot prove.
+    const realAcquire = threads.acquireBackgroundThread;
+    const acquired: string[] = [];
+    const acquireSpy = vi.spyOn(threads, "acquireBackgroundThread").mockImplementation((ref) => {
+      acquired.push(ref);
+      return realAcquire(ref);
     });
-    const putSpy = vi.spyOn(cache, "put").mockReturnValue(heldWrite);
+    const acquisitionsOf = (ref: string) => acquired.filter((candidate) => candidate === ref).length;
+
+    const owner = startBackgroundTranscripts(navigationStore);
+    // Hold the first real release write through a call-through put spy: the
+    // real IndexedDB readwrite transaction is armed, and the real put runs.
+    let held: ReturnType<typeof holdNextWriteTransaction> | undefined;
+    let signalWriteEntered: (() => void) | undefined;
+    const writeEntered = new Promise<void>((resolve) => {
+      signalWriteEntered = resolve;
+    });
+    const realPut = cache.put.bind(cache);
+    const putSpy = vi.spyOn(cache, "put").mockImplementation(async (record, scheduledEpoch, now) => {
+      if (!held) {
+        held = holdNextWriteTransaction(["records", "meta", "current", "currentMeta"]);
+        signalWriteEntered?.();
+      }
+      return realPut(record, scheduledEpoch, now);
+    });
+
     try {
+      await owner.settled();
+      expect(threadReadRefs()).toEqual(new Set(["local:a"]));
+      // A resident model makes release drain a final cache write we can hold.
+      expect(backgroundTranscriptSnapshotForTests().refs.get("local:a")?.resident).toBe(true);
+      expect(threadsStore.getState().threads.get("local:a")?.history?.incarnation).toBeDefined();
+      const acquisitionsBeforeRelease = acquisitionsOf("local:a");
+
       // a leaves Live; the coherent sweep starts a's final release, which
-      // blocks on the held cache write.
+      // blocks on the real held cache write.
       world.pages = onePage([liveRow("local:b")]);
       invalidate(2);
-      await awaitObserved(() => threadReadRefs().has("local:b"), "b background read");
-      expect(putSpy).toHaveBeenCalled();
+      await writeEntered;
+      if (!held) throw new Error("release never entered a real cache write");
+      // The held transaction's own complete event is the release-entered
+      // boundary: the write is durably done yet still in flight for the
+      // release that awaits it.
+      await held.reached;
       expect(threadUnsubRefs()).toEqual([]);
 
-      // a reappears while the release is still in flight: a fresh coherent
-      // sweep must re-claim it before the held write settles.
-      fake.calls.length = 0;
+      // a reappears while the real write is still held: the fresh coherent
+      // sweep must re-claim it through a real background thread lease
+      // acquisition before the write can settle.
       world.pages = onePage([liveRow("local:a"), liveRow("local:b")]);
       invalidate(3);
-      // The reappearance sweep must observe a back in the roster before the
-      // held write settles. The model is still resident, so re-claiming adopts
-      // it without a second read.
-      await awaitObserved(() => livePageHas("local:a"), "reappearance roster");
-      expect(livePageHas("local:a")).toBe(true);
+      await awaitObserved(
+        () => acquisitionsOf("local:a") > acquisitionsBeforeRelease,
+        "real local:a re-acquisition while the release write is held",
+      );
     } finally {
-      settleWrite?.({ outcome: "written" });
+      held?.release();
       putSpy.mockRestore();
+      acquireSpy.mockRestore();
     }
 
     await owner.settled();
@@ -598,7 +628,9 @@ describe("startBackgroundTranscripts", () => {
     expect(threadUnsubRefs()).toEqual([]);
     const survived = threadsStore.getState().threads.get("local:a");
     expect(survived).toBeDefined();
-    expect(JSON.stringify(survived?.history)).toContain("recorded");
+    const serialized = JSON.stringify(survived?.history);
+    expect(serialized).toContain("recorded");
+    expect(serialized.split("recorded").length - 1).toBe(1);
     await owner.dispose();
   });
 
