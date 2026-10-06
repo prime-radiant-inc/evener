@@ -141,12 +141,12 @@ export function holdIndexedDBEvent(target: EventTarget, type: string) {
   };
 }
 
-// Holds the next readwrite transaction opened over exactly `stores`:
-// fake-indexeddb commits it, but its "complete" event, and with it the
-// storage call that is waiting on that event, stays held until release().
-// `reached` resolves once the held event has arrived, which is when the
-// write is durably done yet still in flight for everything awaiting it.
-export function holdNextWriteTransaction(stores: readonly string[]) {
+// Holds the next transaction in `mode` opened over exactly `stores`:
+// fake-indexeddb commits it, but its "complete" event, and with it the storage
+// call that is waiting on that event, stays held until release(). `reached`
+// resolves once the held event has arrived, which is when the work is durably
+// done yet still in flight for everything awaiting it.
+export function holdNextTransaction(stores: readonly string[], mode: IDBTransactionMode) {
   const transact = IDBDatabase.prototype.transaction;
   let hold: ReturnType<typeof holdIndexedDBEvent> | undefined;
   let markReached: (() => void) | undefined;
@@ -160,7 +160,7 @@ export function holdNextWriteTransaction(stores: readonly string[]) {
     const transaction = transact.apply(this, args);
     if (
       !hold &&
-      transaction.mode === "readwrite" &&
+      transaction.mode === mode &&
       transaction.objectStoreNames.length === stores.length &&
       stores.every((store) => transaction.objectStoreNames.contains(store))
     ) {
@@ -176,6 +176,12 @@ export function holdNextWriteTransaction(stores: readonly string[]) {
       hold?.release();
     },
   };
+}
+
+// Holds the next readwrite transaction opened over exactly `stores` (the
+// session cache's four-store write). See holdNextTransaction.
+export function holdNextWriteTransaction(stores: readonly string[]) {
+  return holdNextTransaction(stores, "readwrite");
 }
 
 // One real macrotask hop, off the faked timers: MessageChannel is a task the

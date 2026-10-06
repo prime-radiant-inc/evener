@@ -159,6 +159,17 @@ interface CacheLifetime {
   suppressed?: true;
   /** The owned ref's captured epoch, including misses and deadline fallbacks. */
   leaseEpoch?: number;
+  /** Marks suppression armed by a cache clear (never a deletion): only this
+   * class may be lifted by a fresh explicit foreground acquisition. */
+  clearSuppressed?: true;
+  /** True while a foreground/history/pin holder that existed when the clear
+   * committed still holds the ref: no acquisition may capture a new epoch until
+   * all of them release. */
+  suppressionHoldsPreClearHolders?: true;
+  /** Set when an explicit foreground acquisition begins only after those
+   * pre-clear holders released; its authoritative hydration may capture the
+   * current epoch and resume cached writes. */
+  freshForegroundLifetime?: true;
 }
 
 export interface ThreadsStoreState {
@@ -395,6 +406,11 @@ const canonicalThreadOwnerGenerations = new Map<string, number>();
 const finalReleaseOwners = new Map<string, number>();
 const finalReleaseCuts = new Map<string, number>();
 const backgroundLeaseSequences = new Map<string, number>();
+// Per-ref "was a foreground/history/pin holder present" across owner changes,
+// so a clear's suppression can tell a pre-clear holder's release from a fresh
+// explicit foreground acquisition. Background membership is deliberately not a
+// holder here: it never lifts suppression.
+const cacheLifetimeHeld = new Map<string, boolean>();
 // A generation changes whenever the last real pane releases and a new pane
 // claims the ref. An ensure that fails after its pane lifecycle was retired
 // must not roll back a replacement lifecycle's claim.
@@ -899,6 +915,7 @@ function removeThreadModel(ref: string): void {
   // a memo that survived the release would skip an eligible session
   // indefinitely.
   clearOversizeMemo(ref);
+  cacheLifetimeHeld.delete(ref);
   const removed = threadsStore.getState().threads.get(ref);
   if (removed) removeThreadModelIndex(threadsIndex, removed);
   // The shell-only cache metadata leaves with the model: the fields' whole
@@ -1280,6 +1297,7 @@ function dropUnpinnedModel(ref: string, flush = true): void {
   // and the memo dies with the model.
   if (flush) flushCacheWrite(ref);
   clearOversizeMemo(ref);
+  cacheLifetimeHeld.delete(ref);
   // Nothing owns this ref any more, so no scheduled retry may outlive it.
   retireOwnedHydration("thread", ref);
   // The model is leaving `threads` here, so its index membership leaves with
@@ -3305,6 +3323,65 @@ function ensureCacheLease(ref: string): void {
   );
 }
 
+// A live foreground/history/pin holder. Background membership is not one: it
+// must never be what lifts a clear's suppression.
+function heldCountsAtStore(ref: string): boolean {
+  return (refCounts.get(ref) ?? 0) > 0 || (historyHoldCounts.get(ref) ?? 0) > 0 || pinnedMutationRefs.has(ref);
+}
+
+// The store-level mirror of the residency's clear lifetime record, driven from
+// the same owner-change call sites (syncTranscriptResidencyOwners). Once the
+// pre-clear holders release, the next explicit foreground acquisition is fresh;
+// background churn and reconnect never make one.
+function syncCacheLifetimeForeground(ref: string): void {
+  const nowHeld = heldCountsAtStore(ref);
+  const wasHeld = cacheLifetimeHeld.get(ref) ?? false;
+  cacheLifetimeHeld.set(ref, nowHeld);
+  if (wasHeld === nowHeld) return;
+  const lifetime = threadsStore.getState().cacheLifetimes.get(ref);
+  if (!lifetime?.clearSuppressed) return;
+  if (wasHeld && !nowHeld) {
+    // The last pre-clear holder released: a later acquisition may be fresh.
+    if (lifetime.suppressionHoldsPreClearHolders) {
+      threadsStore.setState((state) => {
+        const current = state.cacheLifetimes.get(ref);
+        if (!current?.suppressionHoldsPreClearHolders) return state;
+        const cacheLifetimes = new Map(state.cacheLifetimes);
+        cacheLifetimes.set(ref, { ...current, suppressionHoldsPreClearHolders: undefined });
+        return { cacheLifetimes };
+      });
+    }
+  } else if (!lifetime.suppressionHoldsPreClearHolders) {
+    // An explicit foreground acquisition begun after the pre-clear holders
+    // finished; its authoritative hydration may capture the new epoch.
+    threadsStore.setState((state) => {
+      const current = state.cacheLifetimes.get(ref);
+      if (!current?.clearSuppressed || current.suppressionHoldsPreClearHolders) return state;
+      if (current.freshForegroundLifetime) return state;
+      const cacheLifetimes = new Map(state.cacheLifetimes);
+      cacheLifetimes.set(ref, { ...current, freshForegroundLifetime: true });
+      return { cacheLifetimes };
+    });
+  }
+}
+
+// An authoritative hydration ends the cached-shell window. A clear suppression
+// is lifted only for a qualifying fresh explicit foreground lifetime; otherwise
+// the suppression stands (deletion suppression is never lifted here because it
+// carries no clearSuppressed marker).
+function settleCacheLifetimeAfterHydration(ref: string): void {
+  threadsStore.setState((state) => {
+    const lifetime = state.cacheLifetimes.get(ref);
+    if (lifetime?.clearSuppressed && lifetime.freshForegroundLifetime && heldCountsAtStore(ref)) {
+      const cacheLifetimes = new Map(state.cacheLifetimes);
+      cacheLifetimes.set(ref, { leaseEpoch: tabCacheEpoch ?? 0 });
+      return { cacheLifetimes };
+    }
+    const cacheLifetimes = releaseCacheShell(state.cacheLifetimes, ref);
+    return cacheLifetimes === state.cacheLifetimes ? state : { cacheLifetimes };
+  });
+}
+
 // Final release removes every part of the lifetime, but only after the
 // release flush has checked the still-armed shell/suppression gates.
 function releaseCacheLifetime(lifetimes: Map<string, CacheLifetime>, ref: string): Map<string, CacheLifetime> {
@@ -3443,10 +3520,7 @@ function publishThreadHydration(ref: string, pending: PendingThreadHydration, mo
   // read's publish (spec, "The load seam"); the lease outlives
   // the window — until the ref's final release — for the clear's suppression
   // (Task 10).
-  threadsStore.setState((s) => {
-    const cacheLifetimes = releaseCacheShell(s.cacheLifetimes, ref);
-    return cacheLifetimes === s.cacheLifetimes ? s : { cacheLifetimes };
-  });
+  settleCacheLifetimeAfterHydration(ref);
   invalidateGoalResponseFallback(ref);
   invalidateNotesResponseFallback(ref);
   threadsStore.setState((s) => {
@@ -5716,7 +5790,12 @@ function suppressCacheLifetimesBefore(
   const next = new Map(lifetimes);
   for (const [ref, lifetime] of lifetimes) {
     if (lifetime.leaseEpoch !== undefined && lifetime.leaseEpoch < epoch) {
-      next.set(ref, { ...lifetime, suppressed: true });
+      next.set(ref, {
+        ...lifetime,
+        suppressed: true,
+        clearSuppressed: true,
+        suppressionHoldsPreClearHolders: heldCountsAtStore(ref) ? true : undefined,
+      });
     }
   }
   return next;
@@ -5977,6 +6056,7 @@ function syncTranscriptResidencyOwners(ref: string): void {
     mutationPinned: pinnedMutationRefs.has(ref),
     background: backgroundRefCounts.get(ref) ?? 0,
   });
+  syncCacheLifetimeForeground(ref);
 }
 
 export async function settleBackgroundTranscriptsForTests(): Promise<void> {
@@ -6160,6 +6240,7 @@ export function resetThreadsStoreForTests(): void {
   refCounts.clear();
   backgroundRefCounts.clear();
   historyHoldCounts.clear();
+  cacheLifetimeHeld.clear();
   finalReleaseOwners.clear();
   finalReleaseCuts.clear();
   canonicalThreadOwnerGenerations.clear();

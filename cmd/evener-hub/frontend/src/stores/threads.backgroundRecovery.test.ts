@@ -12,7 +12,12 @@ import { describe, expect, test, vi } from "vitest";
 import { installBackgroundTranscriptOptionsForTests } from "./backgroundTranscriptOptions";
 import { connectionStore } from "./connection";
 import { type CurrentSessionRecord, SessionCacheIndexedDB } from "./sessionCacheIndexedDB";
-import { holdNextCurrentLookup, holdNextWriteTransaction } from "./testing/stalledIndexedDB";
+import {
+  holdNextCurrentLookup,
+  holdNextTransaction,
+  holdNextWriteTransaction,
+  nextRealTask,
+} from "./testing/stalledIndexedDB";
 import {
   acquireBackgroundThread,
   backgroundTranscriptSnapshotForTests,
@@ -314,6 +319,297 @@ describe("background transcript recovery", () => {
       await lease.release();
       restoreScheduler();
       holdSpy?.mockRestore();
+      resetThreadsStoreForTests();
+      restoreOptions();
+      cache.close();
+    }
+  });
+
+  test("the post-promotion epoch recheck starts immediately and its held real lookup times out by 250 ms of fake time into an unverified, recoverable state", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const restoreOptions = installBackgroundTranscriptOptionsForTests({ residentBytes: 0 });
+    const cache = new SessionCacheIndexedDB({
+      indexedDB: new IDBFactory(),
+      databaseName: `recovery-${crypto.randomUUID()}`,
+    });
+    resetThreadsStoreForTests();
+    setSessionCacheAdapterForTests(cache);
+    let readCount = 0;
+    const fake = new FakeClient("ready");
+    fake.on("thread/read", ({ ref: requested, requestGeneration }) => {
+      readCount += 1;
+      const response = currentRead(requested ?? ref);
+      response.requestGeneration = requestGeneration ?? response.requestGeneration;
+      if (readCount > 1) {
+        response.snapshot = { incarnation: "inc-1", length: 41 };
+        response.epoch = 2;
+        if (response.overlay?.[0]) response.overlay[0].item.text = "alpha-recovered";
+      }
+      return response;
+    });
+    fake.on("thread/unsubscribe", () => ({}));
+    connectionStore.getState().connect(fake);
+    const scheduled: Array<() => void> = [];
+    const restoreScheduler = installHydrationRetrySchedulerForTests((_attempt, retry) => {
+      scheduled.push(retry);
+      return () => {};
+    });
+    const lease = acquireBackgroundThread(ref);
+    let heldLookup: ReturnType<typeof holdNextCurrentLookup> | undefined;
+    let heldEpoch: ReturnType<typeof holdNextTransaction> | undefined;
+    let paneHeld = false;
+    let opening: Promise<void> | undefined;
+    try {
+      await lease.ready;
+      await settleBackgroundTranscriptsForTests();
+      for (let i = 0; i < 10 && threadsStore.getState().threads.has(ref); i += 1) {
+        await nextRealTask();
+        await settleBackgroundTranscriptsForTests();
+      }
+      expect(threadsStore.getState().threads.has(ref)).toBe(false);
+      heldLookup = holdNextCurrentLookup(cache);
+      heldEpoch = holdNextTransaction(["meta"], "readonly");
+
+      opening = threadsStore.getState().ensureThread(ref);
+      paneHeld = true;
+      await heldLookup.reached;
+      heldLookup.release();
+      await opening;
+      // The recheck starts immediately: its real readEpoch transaction opens and
+      // is held with no clock advance.
+      await heldEpoch.reached;
+      expect(threadsStore.getState().threads.has(ref)).toBe(true);
+      expect(backgroundTranscriptSnapshotForTests().refs.get(ref)?.persistence).toBe("enabled");
+
+      // The held real lookup cannot beat readEpoch's own 250 ms deadline.
+      await vi.advanceTimersByTimeAsync(250);
+      await settleBackgroundTranscriptsForTests();
+      expect(backgroundTranscriptSnapshotForTests().refs.get(ref)?.persistence).toBe("repairing");
+      expect(backgroundTranscriptSnapshotForTests().refs.get(ref)?.current).toBe(false);
+      // The stale publication stays visible; it just carries no authority and
+      // no queued work.
+      expect(threadsStore.getState().threads.has(ref)).toBe(true);
+      expect(backgroundTranscriptSnapshotForTests().refs.get(ref)?.pending).toHaveLength(0);
+
+      // Authoritative recovery follows the paced repair.
+      expect(scheduled.length).toBeGreaterThanOrEqual(1);
+      scheduled.shift()?.();
+      await vi.advanceTimersByTimeAsync(0);
+      await settleBackgroundTranscriptsForTests();
+      for (let i = 0; i < 20 && backgroundTranscriptSnapshotForTests().refs.get(ref)?.persistence !== "enabled"; i += 1)
+        await nextRealTask();
+      expect(threadReads(fake)).toBeGreaterThanOrEqual(2);
+      expect(backgroundTranscriptSnapshotForTests().refs.get(ref)?.persistence).toBe("enabled");
+    } finally {
+      heldEpoch?.release();
+      heldLookup?.release();
+      await opening?.catch(() => undefined);
+      if (paneHeld) threadsStore.getState().releaseThread(ref);
+      await settleBackgroundTranscriptsForTests();
+      await lease.release();
+      restoreScheduler();
+      resetThreadsStoreForTests();
+      restoreOptions();
+      cache.close();
+      vi.useRealTimers();
+    }
+  });
+
+  test("the post-promotion epoch recheck detects a held sibling clear when its real lookup completes, without waiting out the deadline", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const restoreOptions = installBackgroundTranscriptOptionsForTests({ residentBytes: 0 });
+    const factory = new IDBFactory();
+    const databaseName = `recovery-${crypto.randomUUID()}`;
+    const cache = new SessionCacheIndexedDB({ indexedDB: factory, databaseName });
+    const sibling = new SessionCacheIndexedDB({ indexedDB: factory, databaseName });
+    resetThreadsStoreForTests();
+    setSessionCacheAdapterForTests(cache);
+    const fake = connectFakeClient();
+    const lease = acquireBackgroundThread(ref);
+    let heldLookup: ReturnType<typeof holdNextCurrentLookup> | undefined;
+    let heldEpoch: ReturnType<typeof holdNextTransaction> | undefined;
+    let paneHeld = false;
+    let opening: Promise<void> | undefined;
+    try {
+      await lease.ready;
+      await settleBackgroundTranscriptsForTests();
+      for (let i = 0; i < 10 && threadsStore.getState().threads.has(ref); i += 1) {
+        await nextRealTask();
+        await settleBackgroundTranscriptsForTests();
+      }
+      expect(threadsStore.getState().threads.has(ref)).toBe(false);
+      heldLookup = holdNextCurrentLookup(cache);
+      heldEpoch = holdNextTransaction(["meta"], "readonly");
+
+      opening = threadsStore.getState().ensureThread(ref);
+      paneHeld = true;
+      await heldLookup.reached;
+      const cleared = await sibling.clear();
+      expect(cleared.committed).toBe(true);
+      heldLookup.release();
+      await opening;
+      // The recheck starts immediately, its real lookup held with no clock advance.
+      await heldEpoch.reached;
+      expect(threadsStore.getState().threads.has(ref)).toBe(true);
+
+      // Releasing the real lookup completes it well inside the 250 ms deadline.
+      heldEpoch.release();
+      await settleBackgroundTranscriptsForTests();
+      expect(backgroundTranscriptSnapshotForTests().refs.get(ref)?.persistence).toBe("clear-suppressed");
+      // Stale visible state is retained; an authoritative read reconciles.
+      expect(threadsStore.getState().threads.has(ref)).toBe(true);
+      expect(threadReads(fake)).toBeGreaterThan(1);
+    } finally {
+      heldEpoch?.release();
+      heldLookup?.release();
+      await opening?.catch(() => undefined);
+      if (paneHeld) threadsStore.getState().releaseThread(ref);
+      await settleBackgroundTranscriptsForTests();
+      await lease.release();
+      resetThreadsStoreForTests();
+      restoreOptions();
+      cache.close();
+      sibling.close();
+      vi.useRealTimers();
+    }
+  });
+
+  test("an alias rebind keeps the requested subscription, hydrates the new identity and rejects the old id's frame", async () => {
+    const restoreOptions = installBackgroundTranscriptOptionsForTests({ residentBytes: 0 });
+    const cache = new SessionCacheIndexedDB({
+      indexedDB: new IDBFactory(),
+      databaseName: `recovery-${crypto.randomUUID()}`,
+    });
+    resetThreadsStoreForTests();
+    setSessionCacheAdapterForTests(cache);
+    let reads = 0;
+    const fake = new FakeClient("ready");
+    fake.on("thread/read", ({ ref: requested, requestGeneration }) => {
+      reads += 1;
+      const response = currentRead(requested ?? ref);
+      response.requestGeneration = requestGeneration ?? response.requestGeneration;
+      response.thread.id = reads === 1 ? "thr_old" : "thr_new";
+      response.thread.sessionId = reads === 1 ? "sess_old" : "sess_new";
+      if (reads > 1 && response.overlay?.[0]) response.overlay[0].item.text = "new-identity-text";
+      return response;
+    });
+    fake.on("thread/unsubscribe", () => ({}));
+    connectionStore.getState().connect(fake);
+    const lease = acquireBackgroundThread(ref);
+    let paneHeld = false;
+    try {
+      await lease.ready;
+      await settleBackgroundTranscriptsForTests();
+      const pane = threadsStore.getState().ensureThread(ref);
+      paneHeld = true;
+      await pane;
+      expect(threadsStore.getState().threads.get(ref)?.threadId).toBe("thr_old");
+
+      // A resync proves the replacement identity for the same requested ref.
+      fake.emitNotification({
+        method: "evener/thread/resync",
+        params: { ref, threadId: "thr_new" },
+      } as never);
+      await vi.waitFor(() => expect(threadsStore.getState().threads.get(ref)?.threadId).toBe("thr_new"));
+      expect(JSON.stringify(threadsStore.getState().threads.get(ref))).toContain("new-identity-text");
+      // The requested subscription survives the rebind.
+      expect(threadsStore.getState().threads.has(ref)).toBe(true);
+      expect(fake.calls.filter((call) => call.method === "thread/unsubscribe")).toHaveLength(0);
+
+      // A late frame naming the old resolved id (and no requested ref) cannot
+      // re-enter the model: the requested ref is the routing identity, and its
+      // resolved id no longer points at this ref.
+      const before = JSON.stringify(threadsStore.getState().threads.get(ref));
+      fake.emitNotification({
+        method: "thread/status/changed",
+        params: { threadId: "thr_old", status: { type: "active", activeFlags: ["streaming"] } },
+      } as never);
+      await nextRealTask();
+      expect(JSON.stringify(threadsStore.getState().threads.get(ref))).toBe(before);
+    } finally {
+      if (paneHeld) threadsStore.getState().releaseThread(ref);
+      await settleBackgroundTranscriptsForTests();
+      await lease.release();
+      resetThreadsStoreForTests();
+      restoreOptions();
+      cache.close();
+    }
+  });
+
+  test("an oversized background checkpoint is rebuilt as a latest window with the server's new cursor, without retrying the same oversized state", async () => {
+    const maxBytes = 64 * 1024 * 1024;
+    const restoreOptions = installBackgroundTranscriptOptionsForTests({ residentBytes: 0 });
+    const cache = new SessionCacheIndexedDB({
+      indexedDB: new IDBFactory(),
+      databaseName: `recovery-${crypto.randomUUID()}`,
+      maxBytes,
+    });
+    resetThreadsStoreForTests();
+    setSessionCacheAdapterForTests(cache);
+    let reads = 0;
+    const fake = new FakeClient("ready");
+    fake.on("thread/read", ({ ref: requested, requestGeneration }) => {
+      reads += 1;
+      const response = currentRead(requested ?? ref);
+      response.requestGeneration = requestGeneration ?? response.requestGeneration;
+      response.olderCursor = reads === 1 ? "cursor_old" : "cursor_server_new";
+      return response;
+    });
+    fake.on("thread/unsubscribe", () => ({}));
+    connectionStore.getState().connect(fake);
+    const writes: CurrentSessionRecord[] = [];
+    const originalPut = cache.putCurrent.bind(cache);
+    const put = vi.spyOn(cache, "putCurrent").mockImplementation(async (record, now) => {
+      const outcome = await originalPut(record, now);
+      if (outcome.outcome === "written") writes.push(record);
+      return outcome;
+    });
+    const lease = acquireBackgroundThread(ref);
+    let paneHeld = false;
+    try {
+      await lease.ready;
+      await settleBackgroundTranscriptsForTests();
+      expect(threadsStore.getState().threads.has(ref)).toBe(false);
+      const initial = writes.at(-1);
+      if (!initial) throw new Error("expected a real background checkpoint");
+
+      // Rewrite the real checkpoint with an oversized live body, still inside
+      // the injected 64 MiB cache cap so the adapter admits it.
+      const oversizedState = JSON.parse(JSON.stringify(initial.state)) as CurrentSessionRecord["state"];
+      const overlayKey = "stream:s1:agentMessage";
+      if (!oversizedState.overlay[overlayKey]) throw new Error("expected the captured overlay item");
+      oversizedState.overlay[overlayKey] = {
+        ...oversizedState.overlay[overlayKey],
+        item: { ...oversizedState.overlay[overlayKey]!.item, text: "x".repeat(34 * 1024 * 1024) },
+      } as (typeof oversizedState.overlay)[string];
+      expect(
+        await cache.putCurrent({ ...initial, savedAt: Date.now(), state: oversizedState }, Date.now()),
+      ).toMatchObject({ outcome: "written" });
+
+      // The next background update loads the oversized base, refuses it and
+      // rebuilds from an authoritative background latest window.
+      fake.emitNotification(textDelta(ref, "-oversized-trigger"));
+      await settleBackgroundTranscriptsForTests();
+      await vi.waitFor(() => expect(backgroundTranscriptSnapshotForTests().refs.get(ref)?.persistence).toBe("enabled"));
+      const readsAfterRecovery = threadReads(fake);
+      expect(readsAfterRecovery).toBe(2);
+
+      // No continuous retry of the same unchanged oversized state.
+      for (let i = 0; i < 10; i += 1) await nextRealTask();
+      await settleBackgroundTranscriptsForTests();
+      expect(threadReads(fake)).toBe(readsAfterRecovery);
+
+      // The rebuilt checkpoint carries the server's own cursor, and reopening is
+      // local.
+      await threadsStore.getState().ensureThread(ref);
+      paneHeld = true;
+      expect(threadsStore.getState().threads.get(ref)?.olderCursor).toBe("cursor_server_new");
+      expect(threadReads(fake)).toBe(readsAfterRecovery);
+    } finally {
+      if (paneHeld) threadsStore.getState().releaseThread(ref);
+      await settleBackgroundTranscriptsForTests();
+      await lease.release();
+      put.mockRestore();
       resetThreadsStoreForTests();
       restoreOptions();
       cache.close();
