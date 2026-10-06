@@ -293,8 +293,8 @@ describe("each tool's evidence, as the tools print it", () => {
 	});
 
 	// A wait the send couldn't honour says why, from its footer, and a
-	// message's images read as their alt text, as a skill's do.
-	it("says why a send's wait was ignored, and shows its images as words", () => {
+	// message's images stay, as a skill's do.
+	it("says why a send's wait was ignored, and keeps its images", () => {
 		const ignored = {
 			...subagentWireStep("call_send_1"),
 			raw: undefined,
@@ -303,14 +303,14 @@ describe("each tool's evidence, as the tools print it", () => {
 				"[delegate_id dlg_x · steered · running · running in background · wait ignored: delegate is already running]",
 		};
 		expect(stepEvidence({ label: "delegate_send", detail: activityDetail(ignored) })).toEqual([
-			{ kind: "markdown", title: "Message", markdown: "See the plot" },
+			{ kind: "markdown", title: "Message", markdown: "See ![the plot](https://example.com/p.png)" },
 			{ kind: "note", text: "Wait ignored: delegate is already running" },
 		]);
 	});
 
-	// The delegate's reply is its author's markdown too, so its images read
-	// as their alt text.
-	it("shows the images in a delegate's reply as words", () => {
+	// The delegate's reply is markdown like any other, so its images stay
+	// (Jesse's ruling, #3696): the phone shows them as it does an agent's.
+	it("keeps the images in a delegate's reply", () => {
 		const replied = {
 			...subagentWireStep("call_send_2"),
 			raw: undefined,
@@ -318,7 +318,7 @@ describe("each tool's evidence, as the tools print it", () => {
 		};
 		expect(stepEvidence({ label: "delegate_send", detail: activityDetail(replied) })).toEqual([
 			{ kind: "markdown", title: "Message", markdown: "Is drain ordering safe now?" },
-			{ kind: "markdown", title: "Reply", markdown: "Here: the trace" },
+			{ kind: "markdown", title: "Reply", markdown: "Here: ![the trace](https://example.com/t.png)" },
 		]);
 	});
 
@@ -437,95 +437,20 @@ describe("each tool's evidence, as the tools print it", () => {
 		return shown.markdown;
 	};
 
-	// A skill's markdown is the skill author's, so its images never load a
-	// remote URL on the phone: each reads as its alt text.
-	it("shows a skill's images as their alt text, never loading them", () => {
-		expect(
-			skillMarkdown(
-				"# Diagrams\n\n![the flow](https://example.com/flow.png)\n\nThen ![](https://t.test/x.gif) done.\n\n![by ref][logo] and ![short]\n\n[logo]: https://t.test/logo.png",
-			),
-		).toBe("# Diagrams\n\nthe flow\n\nThen  done.\n\nby ref and short\n\n[logo]: https://t.test/logo.png");
-	});
-
-	// An inline image's URL can hold parentheses and be followed by a title;
-	// either way the image reads as exactly its alt text, with nothing of the
-	// URL or title left behind.
+	// A skill's markdown renders like any other markdown, images included
+	// (Jesse's ruling, #3696), so it reaches the markdown view as written:
+	// images by URL and by reference, and code that looks like one.
 	it.each([
-		["a URL with balanced parentheses", "![a](https://x.test/a_(b).png)", "a"],
-		["a URL ending in a pair of parentheses", "![a](https://x.test/a_(b))", "a"],
-		["a title", '![a](https://x.test/a.png "t")', "a"],
-		["a single-quoted title", "![a](https://x.test/a.png 't')", "a"],
-		["a title with balanced parentheses", '![a](https://x.test/a.png "see (1)")', "a"],
-		["balanced parentheses and a title", '![a](https://x.test/a_(b).png "t")', "a"],
-		["an angle-bracketed URL", "![a](<https://x.test/a_(b).png>)", "a"],
-		["an empty alt", "![](https://x.test/a_(b).png)", ""],
-		["an alt across lines", "![a\nb](https://x.test/a.png)", "a\nb"],
-	])("shows an image with %s as its alt text", (_name, image, alt) => {
-		expect(skillMarkdown(image)).toBe(alt);
-	});
-
-	it("leaves the text around an image, and links and parentheses of its own, as they were", () => {
-		expect(
-			skillMarkdown(
-				'Before ![a](https://x.test/a_(b).png) and ![c](https://x.test/c.png "t") after (see [docs](https://x.test/d_(1))).',
-			),
-		).toBe("Before a and c after (see [docs](https://x.test/d_(1))).");
-	});
-
-	// An image inside another's alt text surfaces when the outer one is
-	// stripped, and would load if it were left in the result. However deep
-	// images nest, taking one out never leaves another behind.
-	it.each([
-		["an image nested in another's alt text", "![a ![b](https://x.test/b.png)](https://x.test/a.png)", "a b"],
-		["an image that taking out another completes", "![![](https://x.test/b.png)](https://x.test/a.png)", ""],
-		["a link a stray '!' turns into an image", "!![](https://x.test/b.png)[x](https://x.test/a.png)", "x"],
-		["images nested fifty deep", `${"![".repeat(50)}x${"](https://x.test/u.png)".repeat(50)}`, "x"],
-	])("shows %s as words", (_name, markdown, words) => {
-		expect(skillMarkdown(markdown)).toBe(words);
-	});
-
-	// A URL the pattern doesn't cover (parentheses nested two deep, an escaped
-	// or unbalanced one, a ")" inside angle brackets) can leave some of the
-	// URL as text, but never the image's opener, so none loads.
-	it.each([
-		["a URL no one closes", "![a](https://x.test/a_(b.png"],
-		["a URL with a stray close", "![a](https://x.test/a.png))"],
-		["parentheses nested two deep", "![a](https://x.test/a_(b_(c)).png)"],
-		["an escaped parenthesis", "![a](https://x.test/a\\).png)"],
-		["a close inside angle brackets", "![a](<https://x.test/a).png>)"],
-	])("never leaves an image's opener behind for %s", (_name, markdown) => {
-		expect(skillMarkdown(markdown)).not.toContain("![");
-	});
-
-	// Brackets after a "!" that can't make an image read as written (#3696): an
-	// image needs "](" in its paragraph, or a reference definition ("]:").
-	it.each([
-		["a Rust macro in prose", "let v = vec![1, 2, 3];"],
-		["a shell test in prose", "if ![ -f x ]; then"],
-		["a Rust macro in a fence", "```rust\nlet v = vec![1, 2, 3];\n```"],
-		["a shell test in a fence", "```sh\nif ![ -f x ]; then\n  exit 1\nfi\n```"],
-	])("leaves %s as it was", (_name, markdown) => {
+		[
+			"images",
+			"# Diagrams\n\n![the flow](https://example.com/flow.png)\n\n![by ref][logo]\n\n[logo]: https://t.test/logo.png",
+		],
+		["a Rust macro", "let v = vec![1, 2, 3];"],
+		["a shell test", "if ![ -f x ]; then"],
+		["an image in a code span", "Write `![a](https://x.test/a.png)` for an image."],
+		["an image in a fence", "```md\n![a](https://x.test/a.png)\n```"],
+	])("shows %s in a skill as written", (_name, markdown) => {
 		expect(skillMarkdown(markdown)).toBe(markdown);
-	});
-
-	it.each([
-		["an inline image", "See ![a](https://x.test/a.png).", "See a."],
-		["an image beside a macro in another paragraph", "vec![1, 2]\n\n![a](https://x.test/a.png)", "vec![1, 2]\n\na"],
-		["a reference image with its definition", "![a][r]\n\n[r]: https://x.test/r.png", "a\n\n[r]: https://x.test/r.png"],
-		[
-			"an image whose alt holds a pair of brackets",
-			"![Figure [1]](https://x.test/f.png)",
-			"Figure [1](https://x.test/f.png)",
-		],
-		[
-			"a reference image whose definition only stripping another image makes",
-			"[r]![](https://x.test/a.png): https://x.test/r.png\n\n![r]",
-			"[r]: https://x.test/r.png\n\nr",
-		],
-		["an image after a blank line holding spaces", "vec![1]\n  \n![a](https://x.test/a.png)", "vec![1]\n  \na"],
-		["an image after a CRLF blank line", "vec![1]\r\n\r\n![a](https://x.test/a.png)", "vec![1]\r\n\r\na"],
-	])("takes the image opener off %s", (_name, markdown, words) => {
-		expect(skillMarkdown(markdown)).toBe(words);
 	});
 
 	// -1 is the shell tool's sentinel for a command stopped by a signal or by
