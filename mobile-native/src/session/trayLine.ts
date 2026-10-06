@@ -77,12 +77,12 @@ export function trayLine(
 			? { text: `${retry} · no updates for ${compactDuration(silence)}`, attention: true }
 			: { text: retry, attention: false };
 	}
-	// The hub counts running subagents at every depth, and the Board's row
-	// names that count by this precedence (attention.ts's whyLine): a fresh
-	// activity read wins outright, even at zero; without one, the row's own
-	// tally (S3). The session's own delegates, which list only the subagents it
-	// started itself, are the last resort (a subagent's screen, or a hub with
-	// neither).
+	// The hub's running-subagent count, as the Board's row takes it
+	// (attention.ts's whyLine): a fresh activity read's, else the row's tally
+	// (S3). Both are the same number, the subagents with an open run at every
+	// depth, so the read only wins by being fresher, even at zero. The
+	// session's own delegates are the last resort (a hub with neither): a
+	// root's list its whole tree, and a subagent's list none.
 	const running = activity?.runningSubagents ?? row?.subagents?.running ?? runningSubagents(session);
 	// An agent waiting on subagents is never stuck (Jesse's ruling on S5): a
 	// subagent inside one long model call sends nothing for minutes. Quiet
