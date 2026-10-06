@@ -258,8 +258,8 @@ describe("a Board row (spec 7.2)", () => {
 			state: "active",
 			subagents: { running: 1, failed: 0, done: 0 },
 		});
-		const guessed = mount({ item: busy });
-		expect(textWith(guessed, "Waiting on 1 subagent")).toHaveLength(1);
+		const tallied = mount({ item: busy });
+		expect(textWith(tallied, "Waiting on 1 subagent")).toHaveLength(1);
 		const read = mount({ item: busy, activity: { ref: "local:fix", minutes: [1], runningSubagents: 3 } });
 		expect(textWith(read, "Waiting on 3 subagents")).toHaveLength(1);
 		expect(textWith(read, "Waiting on 1 subagent")).toEqual([]);
