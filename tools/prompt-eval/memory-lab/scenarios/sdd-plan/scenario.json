@@ -1,13 +1,24 @@
 {
-  "arms": ["on"],
+  "arms": [
+    "on"
+  ],
   "stages": [
     {
       "name": "A",
       "prompt": "Please execute docs/superpowers/plans/2026-10-06-shop-helpers.md using subagent-driven development.",
       "checks": [
-        {"name": "four task commits on some branch", "run": "test $(git log --all --format=%s | grep -c '^shop: ') -ge 4"},
-        {"name": "Count, clamp, Has and Subtotal committed on some branch", "run": "for b in $(git for-each-ref --format='%(refname)' refs/heads); do git grep -q 'func Subtotal' $b -- cart.go && git grep -q 'percent > 100' $b -- coupon.go && git grep -q 'func (c Catalog) Has' $b -- catalog.go && git grep -q 'func Count' $b -- cart.go && exit 0; done; exit 1"},
-        {"name": "tests pass", "run": "go test ./..."}
+        {
+          "name": "four task commits on some branch",
+          "run": "test $(git log --all --format=%s | grep -c '^shop: ') -ge 4"
+        },
+        {
+          "name": "tests pass",
+          "run": "go test ./..."
+        },
+        {
+          "name": "held-out behavior test passes on some branch",
+          "run": "t=$(mktemp -d); ok=1; for b in $(git for-each-ref --format='%(refname:short)' refs/heads); do d=\"$t/$(printf %s \"$b\" | tr / _)\"; mkdir -p \"$d\"; git archive \"$b\" | tar -x -C \"$d\"; cat > \"$d/zz_heldout_test.go\" <<'EOF'\npackage shop\n\nimport \"testing\"\n\nfunc TestHeldoutPlanHelpers(t *testing.T) {\n\tif got := Count(nil); got != 0 {\n\t\tt.Errorf(\"Count(nil) = %d\", got)\n\t}\n\tif got := Count([]Line{{\"a\", 2}, {\"b\", 3}}); got != 5 {\n\t\tt.Errorf(\"Count = %d\", got)\n\t}\n\tfor _, c := range []struct{ total, percent, want int }{{1000, -5, 1000}, {1000, 150, 0}, {1000, 15, 850}, {1000, 0, 1000}, {1000, 100, 0}} {\n\t\tif got := ApplyCoupon(c.total, c.percent); got != c.want {\n\t\t\tt.Errorf(\"ApplyCoupon(%d, %d) = %d, want %d\", c.total, c.percent, got, c.want)\n\t\t}\n\t}\n\tcat := Catalog{\"a\": {SKU: \"a\", Price: 250}, \"b\": {SKU: \"b\", Price: 100}}\n\tif !cat.Has(\"a\") || cat.Has(\"z\") {\n\t\tt.Error(\"Catalog.Has is wrong\")\n\t}\n\tif got, err := Subtotal(cat, nil); err != nil || got != 0 {\n\t\tt.Errorf(\"Subtotal(empty) = %d, %v\", got, err)\n\t}\n\tif got, err := Subtotal(cat, []Line{{\"a\", 2}, {\"b\", 1}}); err != nil || got != 600 {\n\t\tt.Errorf(\"Subtotal = %d, %v\", got, err)\n\t}\n\tif _, err := Subtotal(cat, []Line{{\"z\", 1}}); err == nil {\n\t\tt.Error(\"Subtotal with an unknown sku should fail\")\n\t}\n}\nEOF\nif (cd \"$d\" && GOWORK=off go test -count=1 -run Heldout ./... >/dev/null 2>&1); then ok=0; break; fi; done; rm -rf \"$t\"; exit $ok"
+        }
       ]
     }
   ]
