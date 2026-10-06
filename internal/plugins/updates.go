@@ -44,10 +44,12 @@ type checkedHead struct {
 // reports UpdateAvailable until the next check or a change to that install.
 // The source asked is the one the marketplace's local catalog names, the one
 // Upgrade fetches. A source pinned to a sha is answered without a network
-// call. A relative source is answered from the marketplace's local clone as
-// its last refresh left it (the hub's auto-upgrade tick, or an explicit
-// refresh, pulls it), also without a network call; a directory source is
-// never asked.
+// call. A relative source is answered from the marketplace's local clone,
+// also without a network call; a directory source is never asked. Every
+// fetched marketplace is refreshed first (refreshForCheck), so the catalogs
+// the check reads, and the clones relative sources are answered from, are
+// current; one that cannot be refreshed is warned about and checked as it
+// stands.
 // A remote or catalog that cannot be read, or a remote still unanswered at
 // updateCheckDeadline, is warned about and flags nothing. A cancelled check
 // returns ctx's error and keeps the previous answers. Of
@@ -58,6 +60,7 @@ func (m *Manager) CheckUpdates(ctx context.Context) error {
 	// pending migration's lock cannot push the check past it.
 	checkCtx, cancel := context.WithTimeoutCause(ctx, updateCheckDeadline, errUpdateCheckDeadline)
 	defer cancel()
+	refreshWarnings := m.refreshForCheck(checkCtx)
 	mk, err := m.loadMigratedMarketplaces(checkCtx, installAcquireLock)
 	if err != nil {
 		return err
@@ -126,13 +129,51 @@ func (m *Manager) CheckUpdates(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	warnings := slices.Concat(catalogWarnings, remoteWarnings)
+	warnings := slices.Concat(refreshWarnings, catalogWarnings, remoteWarnings)
 	slices.Sort(warnings)
 	for _, w := range warnings {
 		_, _ = fmt.Fprintf(m.stderr(), "warning: %s\n", w)
 	}
 	m.publishCheck(gen, heads)
 	return nil
+}
+
+// refreshForCheck refreshes every fetched marketplace before a check, a few at
+// a time (the store lock still orders their writes), each within
+// updateCheckTimeout and all within ctx, the check's deadline. A directory
+// marketplace is read in place and needs none. It answers the warnings for
+// the marketplaces it could not refresh; a refresh failure never fails the
+// check. It runs before the check begins its generation, since a refresh
+// writes the marketplaces and so retires any check already begun.
+func (m *Manager) refreshForCheck(ctx context.Context) []string {
+	mk, err := m.ListMarketplaces(ctx)
+	if err != nil {
+		return []string{fmt.Sprintf("listing marketplaces to refresh: %v", err)}
+	}
+	var mu sync.Mutex
+	var warnings []string
+	var g errgroup.Group
+	g.SetLimit(updateCheckConcurrency)
+	for name, ref := range mk {
+		if ref.Source.Kind == SourceDirectory {
+			continue
+		}
+		g.Go(func() error {
+			refreshCtx, cancel := context.WithTimeout(ctx, updateCheckTimeout)
+			defer cancel()
+			if err := m.RefreshMarketplace(refreshCtx, name); err != nil {
+				if cause := context.Cause(ctx); errors.Is(cause, errUpdateCheckDeadline) {
+					err = cause
+				}
+				mu.Lock()
+				warnings = append(warnings, fmt.Sprintf("refreshing marketplace %q before checking for updates: %v", name, err))
+				mu.Unlock()
+			}
+			return nil
+		})
+	}
+	_ = g.Wait()
+	return warnings
 }
 
 // upgradeSource is plugin's source in marketplace's local catalog, parsing each

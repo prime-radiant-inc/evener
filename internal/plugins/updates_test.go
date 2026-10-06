@@ -249,14 +249,10 @@ func TestCheckUpdates_RelativeSourcePluginUpgradesFromItsRefreshedMarketplace(t 
 	}
 	gitIn(t, mktRepo, "add", ".")
 	gitIn(t, mktRepo, "commit", "-qm", "change widget")
-	// The check reads the local clone: a change not yet pulled by a refresh
-	// is not seen.
-	if checkThenList(t, m) {
-		t.Fatal("plugin flagged by a change its marketplace clone has not pulled")
-	}
-	refresh()
+	// The check refreshes the marketplace first, so a change pushed since
+	// the last refresh is seen without one.
 	if !checkThenList(t, m) {
-		t.Fatal("plugin whose folder changed in the refreshed marketplace not flagged")
+		t.Fatal("plugin whose folder changed in its marketplace not flagged")
 	}
 	entry, err := m.Upgrade(context.Background(), "widget", name)
 	if err != nil {
@@ -435,6 +431,11 @@ func TestCheckUpdates_UnfetchedMarketplaceIsNotReadFromTheWorkingDirectory(t *te
 	if err := f.m.saveMarketplaces(mk); err != nil {
 		t.Fatal(err)
 	}
+	// The check's refresh would fetch it; with its source gone it stays
+	// unfetched.
+	if err := os.Rename(f.mktRepo, f.mktRepo+".gone"); err != nil {
+		t.Fatal(err)
+	}
 	if checkThenList(t, f.m) {
 		t.Fatal("plugin flagged from a catalog read out of the working directory")
 	}
@@ -541,5 +542,21 @@ func TestCheckUpdates_OverallDeadlineCutsOffAHungRemote(t *testing.T) {
 	}
 	if w := f.warnings(); !strings.Contains(w, "checking widget@acme for updates: "+errUpdateCheckDeadline.Error()) {
 		t.Fatalf("no warning names the hung plugin: %q", w)
+	}
+}
+
+// A marketplace the check cannot refresh is warned about and checked as its
+// clone stands; the check itself still answers.
+func TestCheckUpdates_AMarketplaceThatCannotRefreshIsAWarning(t *testing.T) {
+	f := installURLPlugin(t, unpinned)
+	advanceRepo(t, f.pluginRepo)
+	if err := os.Rename(f.mktRepo, f.mktRepo+".gone"); err != nil {
+		t.Fatal(err)
+	}
+	if !checkThenList(t, f.m) {
+		t.Fatal("plugin behind its remote head not flagged when its marketplace could not refresh")
+	}
+	if w := f.warnings(); !strings.Contains(w, `refreshing marketplace "acme"`) {
+		t.Fatalf("no warning names the marketplace that could not refresh: %q", w)
 	}
 }
