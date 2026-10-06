@@ -1,0 +1,104 @@
+#!/usr/bin/env python3
+"""Count a memory-lab run's root-session bookkeeping by surface.
+
+Usage: bookkeeping RUNDIR [STAGE]   (STAGE defaults to A)
+For every trial under RUNDIR (<version>/<arm>/<scenario>/r<N>) it reads <STAGE>.events.ndjson and
+classifies the root session's tool calls: progress writes per surface (ledger file, other plan
+artifacts, memory by scope, whiteboard, task list), progress read-backs, and everything else.
+Prints one line per trial and a per-version mean. Use it to measure duplicated progress tracking."""
+import glob, importlib.machinery, importlib.util, json, os, re, statistics, sys
+sys.dont_write_bytecode = True
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+loader = importlib.machinery.SourceFileLoader("memorylab", os.path.join(HERE, "memory-lab"))
+spec = importlib.util.spec_from_loader("memorylab", loader)
+lab = importlib.util.module_from_spec(spec)
+loader.exec_module(lab)
+
+WRITE_SURFACES = ["ledger", "plan-artifacts", "mem:session", "mem:project", "mem:personal", "whiteboard", "tasks", "task-notes"]
+# The files an apply_patch changes, from its "*** Add/Update/Delete File:" and "*** Move to:" headers.
+PATCH_FILE = re.compile(r"(?m)^\*\*\* (?:Add File|Update File|Delete File|Move to): (.+?)\s*$")
+PROGRESS_SURFACES = ["ledger", "mem:session", "whiteboard", "tasks", "task-notes"]
+
+
+def args_of(call):
+    a = call.get("args")
+    if isinstance(a, str):
+        try:
+            a = json.loads(a)
+        except ValueError:
+            return {}
+    return a if isinstance(a, dict) else {}
+
+
+def classify(call):
+    tool, a = call["tool"], args_of(call)
+    path = str(a.get("file_path", ""))
+    if tool == "apply_patch":
+        # One patch can touch several files; classify it by the files its headers say it changes,
+        # never by text in its hunks.
+        paths = PATCH_FILE.findall(str(a.get("patch", "")))
+        if any(p.endswith("progress.md") for p in paths):
+            return "write", "ledger"
+        if any(".superpowers/" in p for p in paths):
+            return "write", "plan-artifacts"
+        return "work", None
+    if tool in ("write_file", "edit_file"):
+        if path.endswith("progress.md"):
+            return "write", "ledger"
+        if ".superpowers/" in path:
+            return "write", "plan-artifacts"
+        return "work", None
+    if tool in ("memory_write", "memory_edit"):
+        return "write", "mem:" + str(a.get("scope", "?"))
+    if tool == "notes_agent_set":
+        return "write", "whiteboard"
+    if tool == "task_list":
+        # task_list takes top-level "add" and "update" arrays; a call with neither only lists. An update
+        # carrying notes records progress detail, which a skill's ledger already holds.
+        if any(isinstance(u, dict) and u.get("notes") for u in a.get("update") or []):
+            return "write", "task-notes"
+        return ("write", "tasks") if a.get("add") or a.get("update") else ("read", "tasks")
+    if tool in ("memory_read", "memory_search", "notes_read"):
+        return "read", tool
+    if tool == "read_file" and (".superpowers/" in path or path.endswith("progress.md")):
+        return "read", "ledger"
+    return "work", None
+
+
+def main():
+    if len(sys.argv) < 2:
+        sys.exit(__doc__)
+    run, stage = sys.argv[1], (sys.argv[2] if len(sys.argv) > 2 else "A")
+    per_version = {}
+    for ev in sorted(glob.glob(os.path.join(run, "*", "*", "*", "r*", f"{stage}.events.ndjson"))):
+        trial = os.path.dirname(ev)
+        parts = os.path.relpath(trial, run).split(os.sep)
+        version = f"{parts[0]} {parts[2]}"
+        calls, _, _, _ = lab.parse_events(ev)
+        writes = {s: 0 for s in WRITE_SURFACES}
+        reads = 0
+        for c in calls:
+            kind, surface = classify(c)
+            if kind == "write":
+                writes[surface] = writes.get(surface, 0) + 1
+            elif kind == "read":
+                reads += 1
+        total, nwrite = len(calls), sum(writes.values())
+        # Surfaces that can carry progress; project and personal memory saves are lessons, counted in writes only.
+        surfaces = sum(1 for s in PROGRESS_SURFACES if writes[s])
+        row = {"total": total, "writes": nwrite, "reads": reads, "surfaces": surfaces, "task_notes": writes["task-notes"],
+               "share": (nwrite + reads) / total if total else 0}
+        per_version.setdefault(version, []).append(row)
+        detail = " ".join(f"{s}={writes[s]}" for s in WRITE_SURFACES if writes[s])
+        print(f"{os.path.relpath(trial, run):40} calls={total:3} bookkeeping writes={nwrite:2} reads={reads:2} "
+              f"share={row['share']:.0%} surfaces={surfaces} | {detail}")
+    print()
+    for version, rows in per_version.items():
+        m = lambda k: statistics.mean(r[k] for r in rows)
+        print(f"{version:28} n={len(rows)} mean calls={m('total'):.0f} writes={m('writes'):.1f} reads={m('reads'):.1f} "
+              f"share={m('share'):.0%} surfaces={m('surfaces'):.1f} task-notes={m('task_notes'):.1f}")
+
+
+if __name__ == "__main__":
+    main()

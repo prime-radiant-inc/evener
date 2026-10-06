@@ -75,7 +75,7 @@ async function assertSourceDom() {
   })()`), true, "the exact source DOM survives inspection");
 }
 
-const sourceAnchorExpr = `(() => {
+const sourceAnchorRowExpr = `(() => {
   const port = ${driver.paneScopeExpr(fixture.rootRef)}?.querySelector('[data-testid="transcript-virtual-list"] > div');
   if (!port) return null;
   const bounds = port.getBoundingClientRect();
@@ -84,11 +84,35 @@ const sourceAnchorExpr = `(() => {
     const r = node.getBoundingClientRect();
     return r.bottom > bounds.top && r.top < bounds.bottom;
   });
-  return row?.dataset.rowId ?? null;
+  return row ? { id:row.dataset.rowId, top:row.getBoundingClientRect().top - bounds.top, scrollTop:port.scrollTop } : null;
 })()`;
+const sourceAnchorExpr = `((${sourceAnchorRowExpr})?.id ?? null)`;
 
+// settledSample waits until sampleExpr returns the same non-null value on two
+// consecutive polls of one settle; a null poll between them breaks the run. key scopes the samples, so a sample left by
+// an earlier settle never confirms a later one.
+let settles = 0;
+function settledSample(sampleExpr, label) {
+  const key = `${++settles}:${label}`;
+  return wait(`(() => {
+    const sample = ${sampleExpr};
+    if (sample === null || sample === undefined) {
+      window.__cascadeSettleSample = null;
+      return null;
+    }
+    const stamp = JSON.stringify({ key:${q(key)}, sample });
+    const previous = window.__cascadeSettleSample;
+    window.__cascadeSettleSample = stamp;
+    return previous === stamp ? sample : null;
+  })()`, label);
+}
+
+// A row far above the viewport can still grow, and the virtualizer compensates
+// with a scrollTop write that the rows' positions only follow on the next
+// commit. A single read can land in that frame and see every row shifted, so
+// the anchor is read only once it is stable.
 async function sourceAnchor() {
-  return wait(sourceAnchorExpr, "real center transcript has a visible semantic anchor");
+  return (await settledSample(sourceAnchorRowExpr, "real center transcript has a stable visible semantic anchor")).id;
 }
 
 function readingPointExpr(portExpr) {
@@ -168,14 +192,10 @@ function assertReadingContinuity(before, after, label) {
 }
 
 async function settledReadingPoint(portExpr, label) {
-  return wait(`(() => {
+  return settledSample(`(() => {
     const point = ${readingPointExpr(portExpr)};
     window.__cascadeReadingAttempt = { label:${q(label)}, point };
-    if (!point?.useful) return null;
-    const stamp = JSON.stringify(point);
-    const previous = window.__cascadeReadingSample;
-    window.__cascadeReadingSample = { label:${q(label)}, stamp };
-    return previous?.label === ${q(label)} && previous.stamp === stamp ? point : null;
+    return point?.useful ? point : null;
   })()`, `${label}, useful reading geometry is stable`);
 }
 
@@ -1394,7 +1414,10 @@ try {
     const r = port.getBoundingClientRect();
     const row = [...port.querySelectorAll('[data-row-id]')].find(node => node.dataset.rowId === ${q(bottomAnchor)});
     if (!row) throw new Error('Source anchor disappeared before native scroll');
-    return { x:r.x + r.width / 2, y:r.y + r.height / 2, deltaY:Math.min(-200, row.getBoundingClientRect().top - r.top - 1) };
+    // Park the bottom row's top well inside the viewport, so a row boundary
+    // is unlikely to sit at the top edge. A 1px park left sub-pixel slivers
+    // whose visibility flipped with late row growth.
+    return { x:r.x + r.width / 2, y:r.y + r.height / 2, deltaY:Math.min(-200, row.getBoundingClientRect().top - r.top - 100) };
   })()`);
   await driver.send("Input.dispatchMouseEvent", { type: "mouseWheel", deltaX: 0, ...sourcePoint });
   await wait(`(() => {
