@@ -2402,9 +2402,8 @@ func tailOutputFileWithOpen(path string, tailBytes int, total, visibleStart int6
 		// The window was cut at a raw byte offset, so it can open mid-rune. Drop the
 		// dangling continuation bytes rather than reading further back: the window
 		// SHRINKS, which keeps total - len(output) naming the first byte actually
-		// returned. Only our own cut
-		// is realigned — at the visible start the first byte is the output's own, and
-		// binary output keeps it.
+		// returned. Only our own cut is realigned — at the visible start the first
+		// byte is the output's own, and binary output keeps it.
 		buf = runetrim.TrimLeadingPartial(buf)
 	}
 	return string(buf), totalBytes, truncated, nil
