@@ -564,29 +564,71 @@ const BUTTON_KINDS = {
  *   dimming when pressed.
  * - `mini`, a row's own control such as Install (.mini-btn): 13pt accent text
  *   with no fill, shaded when pressed.
- * A plain button's touch reaches the 44pt minimum (48 on Android, as Action's
- * does); a mini button's reaches its 44pt row's edges. Its label follows
- * Dynamic Type, so the height is a minimum.
+ * - `text`, the app's older inline action: 16pt accent text with no fill,
+ *   drawn at the platform's minimum target; `quiet` is the same in the
+ *   secondary ink at regular weight, for an action that steps back.
+ * A plain or text button's touch reaches the 44pt minimum (48 on Android); a
+ * mini button's reaches its 44pt row's edges. Its label follows Dynamic Type,
+ * so the height is a minimum. `expanded` tells VoiceOver whether the section
+ * a disclosure button opens is open.
  * Most actions are rows; a page's one call to action is `primary`. */
 export function Button({
 	label,
 	onPress,
 	primary = false,
 	mini = false,
+	text = false,
+	quiet = false,
 	disabled = false,
+	expanded,
 	accessibilityLabel,
 }: {
 	label: string;
 	onPress(): void;
 	primary?: boolean;
 	mini?: boolean;
+	text?: boolean;
+	quiet?: boolean;
 	disabled?: boolean;
+	expanded?: boolean;
 	/** VoiceOver's name when the label alone doesn't say what it acts on, as
 	 * for a row's "Install" ("Install tool from acme"). */
 	accessibilityLabel?: string;
 }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
+	if (text || quiet) {
+		const target = Platform.OS === "android" ? 48 : 44;
+		return (
+			<Pressable
+				accessibilityRole="button"
+				accessibilityLabel={accessibilityLabel}
+				accessibilityState={{ disabled, expanded }}
+				disabled={disabled}
+				onPress={onPress}
+				style={({ pressed }) => ({
+					minWidth: target,
+					minHeight: target,
+					justifyContent: "center",
+					paddingHorizontal: 8,
+					paddingVertical: 8,
+					opacity: disabled ? 0.4 : pressed ? 0.65 : 1,
+				})}
+			>
+				<Text
+					allowFontScaling={allowFontScaling}
+					style={{
+						color: quiet ? palette.inkMid : palette.accentInk,
+						fontSize: 16 * scale,
+						fontWeight: quiet ? "400" : "600",
+						flexShrink: 1,
+					}}
+				>
+					{label}
+				</Text>
+			</Pressable>
+		);
+	}
 	const kind = BUTTON_KINDS[primary ? "primary" : mini ? "mini" : "plain"];
 	const target = kind.reach === "row" ? 44 : Platform.OS === "android" ? 48 : 44;
 	const reach = (target - kind.drawn) / 2;
@@ -596,7 +638,7 @@ export function Button({
 		<Pressable
 			accessibilityRole="button"
 			accessibilityLabel={accessibilityLabel}
-			accessibilityState={{ disabled }}
+			accessibilityState={{ disabled, expanded }}
 			disabled={disabled}
 			onPress={onPress}
 			hitSlop={reach > 0 ? { top: reach, bottom: reach } : undefined}

@@ -701,6 +701,45 @@ describe("Button", () => {
 		},
 	);
 
+	// The legacy Action's look, kept as Action's sites move to Button (#3310).
+	it.each(["ios", "android"])(
+		"draws a text button as accent text with no fill, 16pt, its touch the %s minimum",
+		(os) => {
+			onOS(os, () => {
+				const minimum = os === "android" ? 48 : 44;
+				const tree = render(<Button label="Edit" text onPress={() => {}} />);
+				const button = pressable(tree);
+				expect(styleOf(button)).toMatchObject({ minHeight: minimum, minWidth: minimum, paddingHorizontal: 8 });
+				expect(styleOf(button).backgroundColor).toBeUndefined();
+				expect(styleOf(button, true).opacity).toBe(0.65);
+				const label = tree.root.find((node) => String(node.type) === "Text");
+				expect(Object.assign({}, ...[label.props.style].flat())).toMatchObject({
+					color: light.accentInk,
+					fontSize: 16,
+					fontWeight: "600",
+				});
+			});
+		},
+	);
+
+	it("draws a quiet text button in the secondary ink at regular weight", () => {
+		const tree = render(<Button label="Cancel" quiet onPress={() => {}} />);
+		expect(styleOf(pressable(tree)).backgroundColor).toBeUndefined();
+		const label = tree.root.find((node) => String(node.type) === "Text");
+		expect(Object.assign({}, ...[label.props.style].flat())).toMatchObject({
+			color: light.inkMid,
+			fontSize: 16,
+			fontWeight: "400",
+		});
+	});
+
+	it("tells VoiceOver whether a disclosure button's section is open", () => {
+		const open = pressable(render(<Button label="Details" text expanded onPress={() => {}} />));
+		expect(open.props.accessibilityState).toEqual({ disabled: false, expanded: true });
+		const closed = pressable(render(<Button label="Details" text expanded={false} onPress={() => {}} />));
+		expect(closed.props.accessibilityState).toEqual({ disabled: false, expanded: false });
+	});
+
 	it("names a button for VoiceOver by its accessibilityLabel when given one, else by its label", () => {
 		const named = pressable(
 			render(<Button label="Install" mini accessibilityLabel="Install gadget from acme" onPress={() => {}} />),
