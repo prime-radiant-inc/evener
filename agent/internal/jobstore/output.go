@@ -633,11 +633,8 @@ func GrepFileLimitAt(path string, re *regexp.Regexp, limitBytes int, maxMatches 
 }
 
 func grepFileLimitAtOpen(path string, re *regexp.Regexp, limitBytes int, maxMatches int, maxLineBytes int, retainedStart int64, open func(string) (io.ReadCloser, error)) (matches []Match, err error) {
-	if limitBytes < 0 {
-		return nil, fmt.Errorf("%w: limitBytes=%d", ErrInvalidLimit, limitBytes)
-	}
-	if limitBytes == 0 {
-		return nil, nil
+	if scan, err := grepLimitScans(limitBytes); !scan {
+		return nil, err
 	}
 
 	f, err := open(path)
@@ -655,6 +652,15 @@ func grepFileLimitAtOpen(path string, re *regexp.Regexp, limitBytes int, maxMatc
 	}
 	shiftMatches(matches, retainedStart)
 	return matches, nil
+}
+
+// grepLimitScans reports whether a grep with limitBytes scans anything: an
+// empty budget scans nothing, and a negative one is an error.
+func grepLimitScans(limitBytes int) (bool, error) {
+	if limitBytes < 0 {
+		return false, fmt.Errorf("%w: limitBytes=%d", ErrInvalidLimit, limitBytes)
+	}
+	return limitBytes > 0, nil
 }
 
 // OutputFileStats returns durable lifetime output metadata for a closed output
@@ -682,6 +688,11 @@ func readOutputFileView(path string) (outputView, error) {
 // before any scanning and can refuse it. A file that changes between reading
 // its metadata and scanning it returns ErrOutputChangedDuringRead.
 func GrepOutputFileLimit(path string, re *regexp.Regexp, limitBytes int, maxMatches int, maxLineBytes int, checkTotal func(total int64) error) ([]Match, error) {
+	// Check the budget before opening: grepFileLimitAtOpen closes f only
+	// once it scans.
+	if scan, err := grepLimitScans(limitBytes); !scan {
+		return nil, err
+	}
 	// Open first so the view and the scan describe one file: a compaction
 	// renames a new generation over the path, possibly of the same size.
 	f, err := os.Open(path)
