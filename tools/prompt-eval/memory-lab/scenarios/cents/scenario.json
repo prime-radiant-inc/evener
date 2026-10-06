@@ -11,7 +11,7 @@
     {
       "name": "B",
       "prompt": "Add a FormatPrice(cents int) string function that renders a price like $12.05 for the receipt page. Add tests.",
-      "checks": [{"name": "tests pass", "run": "go test ./..."}, {"name": "no floats", "run": "! grep -nE '\\bfloat(32|64)\\b' $(ls *.go | grep -v _test.go)"}]
+      "checks": [{"name": "tests pass", "run": "go test ./..."}, {"name": "no floats", "run": "! for f in *.go; do case $f in *_test.go) continue;; esac; sed 's://.*$::' \"$f\"; done | grep -E '\\bfloat(32|64)\\b'"}]
     }
   ]
 }
