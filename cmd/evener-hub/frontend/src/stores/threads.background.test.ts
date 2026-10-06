@@ -201,13 +201,16 @@ describe("background thread claims", () => {
     const fake = connectCurrentClient();
     const entered = deferred<void>();
     const held = deferred<ReturnType<typeof currentRead>>();
-    const responseDelivered = deferred<void>();
+    const followupRead = deferred<void>();
+    let readCount = 0;
     fake.on("thread/read", () => {
-      entered.resolve();
-      return held.promise.then((response) => {
-        responseDelivered.resolve();
-        return response;
-      });
+      readCount += 1;
+      if (readCount === 1) {
+        entered.resolve();
+        return held.promise;
+      }
+      followupRead.resolve();
+      return currentRead("local:one");
     });
     const background = acquireBackgroundThread("local:one");
     try {
@@ -216,10 +219,11 @@ describe("background thread claims", () => {
       await background.release();
       await background.ready;
       held.resolve(currentRead("local:one"));
-      await responseDelivered.promise;
+      await fake.request("thread/read", { ref: "local:one", includeTurns: true });
+      await followupRead.promise;
       expect(threadsStore.getState().threads.has("local:one")).toBe(false);
       expect(membershipReads(fake)).toBe(readsBeforeRelease);
-      expect(unsubscriptions(fake)).toBe(0);
+      expect(unsubscriptions(fake)).toBe(1);
     } finally {
       held.resolve(currentRead("local:one"));
       await background.release();
@@ -278,13 +282,16 @@ describe("background thread claims", () => {
     const oldClient = connectCurrentClient();
     const oldEntered = deferred<void>();
     const oldResponse = deferred<ReturnType<typeof currentRead>>();
-    const oldResponseDelivered = deferred<void>();
+    const oldFollowupRead = deferred<void>();
+    let oldReadCount = 0;
     oldClient.on("thread/read", () => {
-      oldEntered.resolve();
-      return oldResponse.promise.then((response) => {
-        oldResponseDelivered.resolve();
-        return response;
-      });
+      oldReadCount += 1;
+      if (oldReadCount === 1) {
+        oldEntered.resolve();
+        return oldResponse.promise;
+      }
+      oldFollowupRead.resolve();
+      return currentRead("local:one");
     });
     const background = acquireBackgroundThread("local:one");
     await oldEntered.promise;
@@ -301,7 +308,8 @@ describe("background thread claims", () => {
       const replacementModel = threadsStore.getState().threads.get("local:one");
       expect(replacement.calls.some((call) => call.method === "thread/read")).toBe(true);
       oldResponse.resolve(currentRead("local:one"));
-      await oldResponseDelivered.promise;
+      await oldClient.request("thread/read", { ref: "local:one", includeTurns: true });
+      await oldFollowupRead.promise;
       expect(threadsStore.getState().threads.get("local:one")).toBe(replacementModel);
     } finally {
       oldResponse.resolve(currentRead("local:one"));
