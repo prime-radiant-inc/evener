@@ -43,10 +43,6 @@ type Manager struct {
 	// budget left unrefreshed first ("" when it refreshed them all). Guarded
 	// by remoteHeadsMu, like the check state above.
 	checkRefreshResumeAt string
-
-	// cloneLocks holds a *sync.Mutex per marketplace clone directory
-	// (lockClone).
-	cloneLocks sync.Map
 }
 
 // NewManager returns a Manager rooted at root, or DefaultRoot() when root == "".
@@ -77,6 +73,7 @@ const (
 	bundledDirName          = "bundled"
 	cacheDirName            = "cache"
 	marketplacesDirName     = "marketplaces"
+	cloneLocksDirName       = "clone-locks"
 )
 
 // storePath derives a path inside the store, refusing a root that resolves

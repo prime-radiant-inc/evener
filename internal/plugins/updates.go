@@ -233,10 +233,7 @@ func (m *Manager) refreshForCheck(ctx context.Context) []string {
 // failure is not repaired by recloning, which would hold the lock across a
 // download; an explicit refresh does that.
 func (m *Manager) fastForwardMarketplace(ctx context.Context, name, dir string) error {
-	releaseClone := m.lockClone(dir)
-	err := marketplaceGitFetch(ctx, dir)
-	releaseClone()
-	if err != nil {
+	if err := m.withClone(ctx, dir, func() error { return marketplaceGitFetch(ctx, dir) }); err != nil {
 		return err
 	}
 	release, err := m.lockStore(ctx, marketplaceAcquireLock, 30*time.Second)
@@ -254,7 +251,10 @@ func (m *Manager) fastForwardMarketplace(ctx context.Context, name, dir string) 
 		// nothing to fast-forward.
 		return nil
 	}
-	releaseClone = m.lockClone(dir)
+	releaseClone, err := m.lockClone(ctx, dir)
+	if err != nil {
+		return err
+	}
 	defer releaseClone()
 	before, err := marketplaceGitHeadSHA(ctx, dir)
 	if err != nil {

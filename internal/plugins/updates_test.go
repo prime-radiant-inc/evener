@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 )
@@ -829,20 +828,80 @@ func TestCheckUpdates_TheFastForwardHoldsTheCloneLock(t *testing.T) {
 	f := installURLPlugin(t, unpinned)
 	realFastForward := marketplaceGitFastForward
 	t.Cleanup(func() { marketplaceGitFastForward = realFastForward })
-	var ran, heldByAnother bool
+	var ran bool
+	lockErr := errors.New("not tried")
 	marketplaceGitFastForward = func(ctx context.Context, dir string) error {
 		ran = true
-		mu, _ := f.m.cloneLocks.LoadOrStore(filepath.Clean(dir), &sync.Mutex{})
-		if mu.(*sync.Mutex).TryLock() {
-			mu.(*sync.Mutex).Unlock()
-		} else {
-			heldByAnother = true
+		tryCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+		defer cancel()
+		release, err := NewManager(f.m.Root).lockClone(tryCtx, dir)
+		if lockErr = err; err == nil {
+			release()
 		}
 		return realFastForward(ctx, dir)
 	}
 	checkThenList(t, f.m)
-	if !ran || !heldByAnother {
-		t.Fatalf("fast-forward ran=%v with the clone lock held=%v; want it held", ran, heldByAnother)
+	if !ran || lockErr == nil {
+		t.Fatalf("fast-forward ran=%v and another holder took its clone's lock; want the lock held", ran)
+	}
+}
+
+// A check waiting for a clone's lock gives up when its refresh budget ends,
+// so a long explicit refresh holding the clone cannot stall the check.
+func TestCheckUpdates_AWaitForTheCloneLockEndsWithTheBudget(t *testing.T) {
+	f := installURLPlugin(t, unpinned)
+	realBudget := updateCheckRefreshBudget
+	t.Cleanup(func() { updateCheckRefreshBudget = realBudget })
+	updateCheckRefreshBudget = 50 * time.Millisecond
+	mk, err := f.m.ListMarketplaces(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	release, err := f.m.lockClone(context.Background(), mk["acme"].InstallLocation)
+	if err != nil {
+		t.Fatalf("lockClone: %v", err)
+	}
+	defer release()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		checkThenList(t, f.m)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("a check waited past its refresh budget for a clone's lock")
+	}
+	if w := f.warnings(); !strings.Contains(w, errUpdateCheckRefreshBudget.Error()) {
+		t.Fatalf("no warning names the refresh budget: %q", w)
+	}
+}
+
+// Another evener process removing a marketplace a check is fetching waits for
+// that fetch too: the clone lock is a file lock, not this process's alone.
+func TestCheckUpdates_AnotherProcessRemovingAMarketplaceWaitsForTheCheckFetch(t *testing.T) {
+	f := installURLPlugin(t, unpinned)
+	other := NewManager(f.m.Root)
+	other.Stderr = &bytes.Buffer{}
+	if duringCheckFetch(t, f, func() {
+		if err := other.RemoveMarketplace(context.Background(), "acme"); err != nil {
+			t.Errorf("RemoveMarketplace: %v", err)
+		}
+	}) {
+		t.Fatal("another process removed a marketplace while a check was fetching its clone")
+	}
+}
+
+// Re-sourcing a marketplace to a directory while a check fetches its clone
+// waits for the fetch before removing the old clone.
+func TestCheckUpdates_ReSourcingToADirectoryWaitsForTheCheckFetch(t *testing.T) {
+	f := installURLPlugin(t, unpinned)
+	if duringCheckFetch(t, f, func() {
+		if _, err := f.m.EditMarketplace(context.Background(), "acme", "", &Source{Kind: SourceDirectory, Path: f.mktRepo}); err != nil {
+			t.Errorf("EditMarketplace: %v", err)
+		}
+	}) {
+		t.Fatal("the old clone was removed while a check was fetching it")
 	}
 }
 
