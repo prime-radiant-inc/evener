@@ -6,7 +6,7 @@ For every trial under RUNDIR (<version>/<arm>/<scenario>/r<N>) it reads <STAGE>.
 classifies the root session's tool calls: progress writes per surface (ledger file, other plan
 artifacts, memory by scope, whiteboard, task list), progress read-backs, and everything else.
 Prints one line per trial and a per-version mean. Use it to measure duplicated progress tracking."""
-import glob, importlib.machinery, importlib.util, json, os, re, statistics, sys
+import glob, importlib.machinery, importlib.util, json, os, re, shlex, statistics, sys
 sys.dont_write_bytecode = True
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -31,39 +31,178 @@ def args_of(call):
     return a if isinstance(a, dict) else {}
 
 
+# A shell command that writes a progress file: a redirect or tee aimed at it, or an in-place edit
+# naming it. A redirect elsewhere (2>&1, > /dev/null) is not a write to the ledger.
+# Shell commands that read the files they name; wrappers that run the command after them; the tokens
+# that end a statement; and redirect operators (shlex keeps "2", "&>" and ">>" apart from their target).
+SHELL_READERS = {"cat", "head", "tail", "less", "more", "grep", "rg", "awk", "wc", "diff"}
+SHELL_WRAPPERS = {"sudo", "env", "timeout", "nice", "nohup", "command", "exec", "time"}
+SHELL_SEPARATORS = {"|", "||", "&&", ";", "&", ";;", "|&"}
+SHELL_WRITE_REDIRECT = re.compile(r"^(?:&?>>?|>&)\|?$")
+# Wrapper flags that take the next word as their value (sudo -u USER, nice -n 10, timeout -s KILL).
+SHELL_WRAPPER_FLAG_ARGS = {"sudo": {"-u", "-g", "-C", "-h", "-p"}, "nice": {"-n"},
+                           "timeout": {"-s", "-k", "--signal", "--kill-after"}}
+SED_IN_PLACE = re.compile(r"^-[A-Za-z]*i")
+PERL_IN_PLACE = re.compile(r"^-[a-z]*i[a-z]*(?:\.\w+)?$")
+
+
+def file_surface(paths):
+    """The progress surfaces a set of paths belongs to: the ledger (a file named progress.md), other
+    plan artifacts under .superpowers/, or both."""
+    surfaces = []
+    if any(os.path.basename(p) == "progress.md" for p in paths):
+        surfaces.append("ledger")
+    if any(".superpowers/" in p and os.path.basename(p) != "progress.md" for p in paths):
+        surfaces.append("plan-artifacts")
+    return surfaces
+
+
+def in_place_flag(name, word):
+    """Whether word is an in-place edit flag: for sed, -i anywhere in a switch cluster (-i, -i.bak, -Ei) or
+    --in-place[=SUFFIX]; for perl, a lowercase switch cluster with i (-i, -pi, -i.bak). Perl switches that
+    carry an argument (-MModule, -Ipath) are not."""
+    if name == "sed":
+        return bool(SED_IN_PLACE.match(word)) or word == "--in-place" or word.startswith("--in-place=")
+    return bool(PERL_IN_PLACE.match(word))
+
+
+def strip_wrappers(words):
+    """Drops leading environment assignments and wrapper commands (with their flags, flag values and
+    timeout's duration), so the words start at the command that actually runs."""
+    while words:
+        name = os.path.basename(words[0])
+        if "=" in words[0] and not words[0].startswith("-"):
+            words = words[1:]
+            continue
+        if name not in SHELL_WRAPPERS:
+            break
+        words = words[1:]
+        while words and words[0].startswith("-"):
+            flag, words = words[0], words[1:]
+            if flag in SHELL_WRAPPER_FLAG_ARGS.get(name, ()) and words:
+                words = words[1:]
+        if name == "timeout" and words:
+            words = words[1:]  # the duration
+    return words
+
+
+def search_files(args):
+    """The files grep or rg reads: its file operands, after the pattern. A pattern given with -e/--regexp
+    is not a file; a pattern file given with -f/--file is read."""
+    files, pattern_given, i = [], False, 0
+    while i < len(args):
+        word = args[i]
+        if word in ("-e", "--regexp", "-f", "--file"):
+            pattern_given = True
+            if word in ("-f", "--file") and i + 1 < len(args):
+                files.append(args[i + 1])
+            i += 2
+            continue
+        if not word.startswith("-"):
+            files.append(word)
+        i += 1
+    return files if pattern_given else files[1:]
+
+
+def shell_statements(command):
+    """The command's statements as word lists: lines, split at separator tokens after shlex tokenizing,
+    so quoted pipes stay inside their word."""
+    for line in command.splitlines():
+        lexer = shlex.shlex(line, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        try:
+            tokens = list(lexer)
+        except ValueError:
+            tokens = line.split()
+        statement = []
+        for token in tokens:
+            if token in SHELL_SEPARATORS:
+                if statement:
+                    yield statement
+                statement = []
+            else:
+                statement.append(token)
+        if statement:
+            yield statement
+
+
+def shell_paths(command):
+    """The paths a shell command writes and reads, statement by statement: redirect, tee and in-place
+    edit targets are written; input redirects and a reader's file arguments are read. Anything else names a
+    path without touching it."""
+    written, read = [], []
+    for words in shell_statements(command):
+        rest = []
+        i = 0
+        while i < len(words):
+            word = words[i]
+            target = words[i + 1] if i + 1 < len(words) else None
+            if SHELL_WRITE_REDIRECT.match(word) and target is not None:
+                written.append(target)
+                i += 2
+                continue
+            if word in ("<", "<<<") and target is not None:
+                read.append(target)
+                i += 2
+                continue
+            if word.isdigit() and target is not None and SHELL_WRITE_REDIRECT.match(target):
+                i += 1  # a file descriptor before a redirect
+                continue
+            rest.append(word)
+            i += 1
+        rest = strip_wrappers(rest)
+        if not rest:
+            continue
+        name, args = os.path.basename(rest[0]), [w for w in rest[1:] if not w.startswith("-")]
+        if name == "tee":
+            written += args
+        elif name in ("sed", "perl") and any(in_place_flag(name, w) for w in rest[1:]):
+            written += args
+        elif name in ("grep", "rg"):
+            read += search_files(rest[1:])
+        elif name in SHELL_READERS or (name == "sed" and "-n" in rest):
+            read += args
+    return written, read
+
+
 def classify(call):
+    """Returns (kind, surfaces): kind is "write", "read" or "work"; surfaces lists every progress surface
+    the call writes or reads (a task_list update can set a status and add a note in one call)."""
     tool, a = call["tool"], args_of(call)
     path = str(a.get("file_path", ""))
     if tool == "apply_patch":
         # One patch can touch several files; classify it by the files its headers say it changes,
         # never by text in its hunks.
-        paths = PATCH_FILE.findall(str(a.get("patch", "")))
-        if any(p.endswith("progress.md") for p in paths):
-            return "write", "ledger"
-        if any(".superpowers/" in p for p in paths):
-            return "write", "plan-artifacts"
-        return "work", None
+        surfaces = file_surface(PATCH_FILE.findall(str(a.get("patch", ""))))
+        return ("write", surfaces) if surfaces else ("work", [])
     if tool in ("write_file", "edit_file"):
-        if path.endswith("progress.md"):
-            return "write", "ledger"
-        if ".superpowers/" in path:
-            return "write", "plan-artifacts"
-        return "work", None
+        surfaces = file_surface([path])
+        return ("write", surfaces) if surfaces else ("work", [])
+    if tool in ("shell", "exec_command"):
+        written, read = shell_paths(str(a.get("command", a.get("cmd", ""))))
+        if file_surface(written):
+            return "write", file_surface(written)
+        return ("read", file_surface(read)) if file_surface(read) else ("work", [])
     if tool in ("memory_write", "memory_edit"):
-        return "write", "mem:" + str(a.get("scope", "?"))
+        return "write", ["mem:" + str(a.get("scope", "?"))]
     if tool == "notes_agent_set":
-        return "write", "whiteboard"
+        return "write", ["whiteboard"]
     if tool == "task_list":
         # task_list takes top-level "add" and "update" arrays; a call with neither only lists. An update
         # carrying notes records progress detail, which a skill's ledger already holds.
-        if any(isinstance(u, dict) and u.get("notes") for u in a.get("update") or []):
-            return "write", "task-notes"
-        return ("write", "tasks") if a.get("add") or a.get("update") else ("read", "tasks")
+        updates = [u for u in a.get("update") or [] if isinstance(u, dict)]
+        surfaces = []
+        # Any update field besides id and notes (status, depends_on, reasoning_effort) changes the list.
+        if a.get("add") or any(k not in ("id", "notes") for u in updates for k in u):
+            surfaces.append("tasks")
+        if any(u.get("notes") for u in updates):
+            surfaces.append("task-notes")
+        return ("write", surfaces) if surfaces else ("read", ["tasks"])
     if tool in ("memory_read", "memory_search", "notes_read"):
-        return "read", tool
+        return "read", [tool]
     if tool == "read_file" and (".superpowers/" in path or path.endswith("progress.md")):
-        return "read", "ledger"
-    return "work", None
+        return "read", ["ledger"]
+    return "work", []
 
 
 def main():
@@ -77,14 +216,16 @@ def main():
         version = f"{parts[0]} {parts[2]}"
         calls, _, _, _ = lab.parse_events(ev)
         writes = {s: 0 for s in WRITE_SURFACES}
-        reads = 0
+        reads = nwrite = 0
         for c in calls:
-            kind, surface = classify(c)
+            kind, surfaces = classify(c)
             if kind == "write":
-                writes[surface] = writes.get(surface, 0) + 1
+                nwrite += 1
+                for surface in surfaces:
+                    writes[surface] = writes.get(surface, 0) + 1
             elif kind == "read":
                 reads += 1
-        total, nwrite = len(calls), sum(writes.values())
+        total = len(calls)
         # Surfaces that can carry progress; project and personal memory saves are lessons, counted in writes only.
         surfaces = sum(1 for s in PROGRESS_SURFACES if writes[s])
         row = {"total": total, "writes": nwrite, "reads": reads, "surfaces": surfaces, "task_notes": writes["task-notes"],

@@ -65,7 +65,13 @@ The lab runs real models with your configured provider credentials, so it is nev
 
 Every trial keeps its full logs: `<stage>.events.ndjson`, `<stage>.stdout`, `<stage>.grade.json`, the memory files after each stage in `<stage>.memory/`, and the session state in `sessions/`.
 
-`bookkeeping RUNDIR [STAGE]` counts each trial's root-session bookkeeping by surface: ledger writes (any write or patch to `progress.md`), memory writes by scope, whiteboard updates, task-list status updates and task-list updates carrying notes, plus read-backs. It prints one line per trial and a mean per version and scenario. Use it to measure duplicated progress tracking, for example on `sdd-plan`.
+`bookkeeping RUNDIR [STAGE]` counts each trial's root-session bookkeeping by surface: ledger writes (a file write, an `apply_patch` whose headers name `progress.md`, or a shell redirect, `tee` or in-place edit aimed at it), memory writes by scope, whiteboard updates, task-list status updates and task-list notes (one call can count as both), plus read-backs. It prints one line per trial and a mean per version and scenario. Use it to measure duplicated progress tracking, for example on `sdd-plan`.
+
+Shell commands are classified by a heuristic, not a shell parser. It splits a command into statements (lines, `;`, `&&`, `||`, `|`), tokenizes each with `shlex`, and skips leading `VAR=value` settings and the wrappers `sudo`, `env`, `timeout`, `nice`, `nohup`, `command`, `exec` and `time`. The covered forms are:
+- writes: redirects (`>`, `>>`, `2>`, `&>`, `>&`), `tee`, `sed -i`/`--in-place` and `perl -i`
+- reads: input redirects, and the file arguments of `cat`, `head`, `tail`, `less`, `more`, `awk`, `wc`, `diff`, `sed -n`, `grep` and `rg` (whose pattern operand is not a file)
+
+Any other form counts as ordinary work. In the lab runs so far, shell commands account for about one in nine progress-file writes; the rest go through file tools. `test_bookkeeping.py` holds the classifier's behavior cases (`python3 -B test_bookkeeping.py`).
 
 ## Scenarios
 
@@ -95,8 +101,8 @@ Every scenario is a directory holding `scenario.json` and `fixture/` (a small Go
 | `stale-status` | A leaves a rename half done; the partner finishes it before B. B must not report or keep the rename as unfinished | |
 | `polluted-seed` | Seeded project memory: a long, dated progress log with SHAs and worker ids, and a status-only index line, with one durable decision (use `log/slog`) buried inside. B adds a log line | Checks that B uses slog and leaves the decision on a short page with no SHAs (a fresh page, or the log rewritten in place). |
 | `clean-seed` | The same decision seeded as a clean one-fact page | The control for `polluted-seed`. |
-| `sdd-plan` | A four-task superpowers plan run with the real subagent-driven-development skill (copied into the fixture's `.agents/skills`). Measures bookkeeping: run `bookkeeping` on the results | The skill keeps its own ledger, so progress belongs there with task-list statuses only. Commit checks look at every branch, because the skill works on a worktree branch and leaves the merge to the partner. |
-| `plan-noskill` | The same plan with no skill and a may-stop-you cue. Progress should go in the task list | |
+| `sdd-plan` | A four-task superpowers plan run with the real subagent-driven-development skill (copied into the fixture's `.agents/skills`). Measures bookkeeping: run `bookkeeping` on the results | The skill keeps its own ledger, so progress belongs there with task-list statuses only. Its checks look at every branch, because the skill works on a worktree branch and leaves the merge to the partner: a held-out test of all four helpers (coupon bounds, empty cart, unknown SKU) must pass on some branch. |
+| `plan-noskill` | The same plan with no skill and a may-stop-you cue. Progress should go in the task list | The same held-out behavior check as `sdd-plan`. |
 
 ## Scenario format
 
