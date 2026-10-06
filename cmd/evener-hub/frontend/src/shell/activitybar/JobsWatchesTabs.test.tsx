@@ -14,7 +14,12 @@ import { JobsTab } from "./JobsTab";
 import { WatchesTab } from "./WatchesTab";
 
 const scope = () =>
-  deriveScope(createNavigationStore({ persistence: memoryNavigationPersistence() }).getState(), "remote:owner");
+  deriveScope(
+    createNavigationStore({ persistence: memoryNavigationPersistence() }).getState(),
+    "remote:owner",
+    null,
+    null,
+  );
 afterEach(() => {
   cleanup();
   resetDisclosureStoreForTests();
@@ -95,6 +100,8 @@ test("watch disclosure reveals its complete condition and keeps equal IDs in dif
       scope={deriveScope(
         createNavigationStore({ persistence: memoryNavigationPersistence() }).getState(),
         "other:receiver",
+        null,
+        null,
       )}
     />,
   );
@@ -193,6 +200,8 @@ test("job history disclosure survives remount only for its selected session", as
       scope={deriveScope(
         createNavigationStore({ persistence: memoryNavigationPersistence() }).getState(),
         "other:owner",
+        null,
+        null,
       )}
     />,
   );

@@ -25,6 +25,9 @@ The guard checks:
 
 - Two readable columns and five 52px ancestor spines at depth six, a 400px
   parent and a leaf with a 440px minimum.
+- Compact ancestor status geometry with exact hover and screen-reader text,
+  including a real running-to-idle transition and a still spinner under reduced
+  motion, without changing the selected branch, focus or column geometry.
 - Narrow overflow, selected-leaf visibility, independent transcript scrolling,
   parent selection, ancestor Tasks, one Escape and native keyboard branching.
 - Real cursor paging past the default 50 rows and two actual socket reconnects,
@@ -33,9 +36,10 @@ The guard checks:
   mounted center DOM and visible source row before and after entry and Return.
 - Strict pending-image Return preserves the first intersecting source row,
   resolved entry, feasible within-entry progress and visible nonblank text.
-  Its readiness barrier observes that reading position, since editor focus and
-  saved workspace removal can precede transcript restoration after a late
-  composer-height change.
+  The baseline waits for useful, stable source reading geometry before Return,
+  so a pending composer-height reflow does not become the oracle. After Return,
+  its readiness barrier observes that reading position, since editor focus and
+  saved workspace removal can precede transcript restoration.
 - Width-only reflow in ordinary, read-only cascade and phone-width browser
   readers preserves the same useful entry without opening or closing inspection.
 - Trusted native Shift-Space, wheel and current-state pill input during genuine held target

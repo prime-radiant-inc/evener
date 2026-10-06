@@ -25,7 +25,7 @@ import "./tools/fsTools"; // registers the real "read_file" (openBesidePath) + g
 import "./tools/jobTools"; // registers the real "delegate_send" (openTranscriptRef/openTranscriptInline)
 import "./tools/jobWatch"; // registers the real "job_watch" (hasBody predicate)
 import type { ItemModel, ThreadModel, TurnModel } from "@evener/appwire-client";
-import * as paneActions from "../../../shell/paneActions";
+import { documentPaneState, resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { seedCurrentDelegate } from "./tools/currentDelegate.testFixture";
 import { resetSubagentModuleStoreForTests } from "./tools/subagentModuleStore";
@@ -39,6 +39,7 @@ afterEach(() => {
   resetDisclosureStoreForTests();
   resetSubagentModuleStoreForTests();
   resetThreadsStoreForTests();
+  resetWorkspaceStoreForTests();
 });
 
 const turn: TurnModel = { id: "turn_1", status: "inProgress", items: [] };
@@ -193,23 +194,39 @@ const intentConfig = makeTranscriptDisplayConfig({ kind: "preset", level: "inten
 
 // One provider wrapper for the verbosity-level renders below; the two named
 // renderers keep each test reading in the level it is about.
-function renderAtLevel(config: TranscriptDisplayConfigV1, disclosureScope: string, node: ReactElement) {
+interface SourceFixture {
+  thread: ThreadModel;
+  sourcePaneId: string;
+}
+
+function renderAtLevel(
+  config: TranscriptDisplayConfigV1,
+  disclosureScope: string,
+  node: ReactElement,
+  source?: SourceFixture,
+) {
   return render(
-    <TranscriptRenderProvider config={config} surface="readOnly" disclosureScope={disclosureScope}>
+    <TranscriptRenderProvider
+      config={config}
+      surface="readOnly"
+      disclosureScope={disclosureScope}
+      thread={source?.thread}
+      sourcePaneId={source?.sourcePaneId}
+    >
       {node}
     </TranscriptRenderProvider>,
   );
 }
 
-function renderTools(node: ReactElement) {
-  return renderAtLevel(toolsConfig, "test:tools", node);
+function renderTools(node: ReactElement, source?: SourceFixture) {
+  return renderAtLevel(toolsConfig, "test:tools", node, source);
 }
 
 // Intent level (toolCalls=false) collapses every intent-bearing row's summary
 // line, leaving only the stated rationale - the view in which an open
 // affordance must NOT appear, because there is no tool-call line to ride.
-function renderIntentLevel(node: ReactElement) {
-  return renderAtLevel(intentConfig, "test:intent", node);
+function renderIntentLevel(node: ReactElement, source?: SourceFixture) {
+  return renderAtLevel(intentConfig, "test:intent", node, source);
 }
 
 // The disclosure trigger is a real button[aria-expanded] (see ToolRow.tsx),
@@ -1124,86 +1141,161 @@ test("live -> settled transition applies autoExpand exactly once", () => {
 // openDocBeside with the cwd-relativized path. Non-file tools (grep/ls/glob)
 // opt out; out-of-cwd paths and a missing ref get no control. -------------
 
-function seedThreadCwd(ref: string, cwd: string): void {
-  threadsStore.setState({ threads: new Map([[ref, { ref, cwd, turns: [] } as unknown as ThreadModel]]) });
+function seedThreadCwd(ref: string, cwd: string): ThreadModel {
+  const thread = { ref, cwd, turns: [] } as unknown as ThreadModel;
+  threadsStore.setState({ threads: new Map([[ref, thread]]) });
+  return thread;
+}
+
+function seedSourceThread(ref: string, cwd: string): SourceFixture {
+  const thread = seedThreadCwd(ref, cwd);
+  const sourcePaneId = workspaceStore.getState().openPane("transcript", { ref });
+  return { thread, sourcePaneId };
+}
+
+function expectOpenedDocument(
+  sourcePaneId: string,
+  params: { session: string; path: string; kind: "file" | "image" },
+  reference: { path: string; cwd: string; readTarget: string; provenance: "absolute" },
+): void {
+  const panes = workspaceStore.getState().panes;
+  const source = panes.find((pane) => pane.id === sourcePaneId);
+  const documents = panes.filter((pane) => pane.type === "doc");
+  expect(documents).toHaveLength(1);
+  const document = documents[0];
+  if (!source || !document) throw new Error("actual opening action did not create source and document panes");
+  expect(document.params).toEqual(params);
+  expect(documentPaneState(document)?.origin).toBe(source);
+  expect(documentPaneState(document)?.reference).toEqual(reference);
 }
 
 test("a read_file card in the session cwd shows an Open beside control that opens the doc pane", () => {
   resetThreadsStoreForTests();
-  seedThreadCwd("ref_a", "/home/proj");
-  const spy = vi.spyOn(paneActions, "openBeside").mockImplementation(() => {});
-  render(
+  const source = seedSourceThread("ref_a", "/home/proj");
+  renderAtLevel(
+    makeTranscriptDisplayConfig({ kind: "preset", level: "activity" }),
+    "test:open-beside-file",
     <ToolCallItem
       item={item({ toolName: "read_file", argumentsJSON: JSON.stringify({ file_path: "/home/proj/src/a.ts" }) })}
       turn={turn}
       live={false}
       sessionRef="ref_a"
     />,
+    source,
   );
   fireEvent.click(screen.getByRole("button", { name: /open beside/i }));
-  expect(spy).toHaveBeenCalledWith({ type: "doc", params: { session: "ref_a", path: "src/a.ts", kind: "file" } });
-  spy.mockRestore();
+  expectOpenedDocument(
+    source.sourcePaneId,
+    { session: "ref_a", path: "src/a.ts", kind: "file" },
+    {
+      path: "src/a.ts",
+      cwd: "/home/proj",
+      readTarget: "/home/proj/src/a.ts",
+      provenance: "absolute",
+    },
+  );
 });
 
 test("a read_file card OUTSIDE the session cwd shows no Open beside control", () => {
   resetThreadsStoreForTests();
-  seedThreadCwd("ref_a", "/home/proj");
-  render(
+  const source = seedSourceThread("ref_a", "/home/proj");
+  renderAtLevel(
+    makeTranscriptDisplayConfig({ kind: "preset", level: "activity" }),
+    "test:open-beside-outside",
     <ToolCallItem
       item={item({ toolName: "read_file", argumentsJSON: JSON.stringify({ file_path: "/etc/passwd" }) })}
       turn={turn}
       live={false}
       sessionRef="ref_a"
     />,
+    source,
   );
   expect(screen.queryByRole("button", { name: /open beside/i })).toBe(null);
 });
 
 test("a read_file card outside the session cwd renders no trailing-anchor wrapper", () => {
   resetThreadsStoreForTests();
-  seedThreadCwd("ref_a", "/home/proj");
-  render(
+  const source = seedSourceThread("ref_a", "/home/proj");
+  renderAtLevel(
+    makeTranscriptDisplayConfig({ kind: "preset", level: "activity" }),
+    "test:open-beside-outside-wrapper",
     <ToolCallItem
       item={item({ toolName: "read_file", argumentsJSON: JSON.stringify({ file_path: "/etc/passwd" }) })}
       turn={turn}
       live={false}
       sessionRef="ref_a"
     />,
+    source,
   );
   expect(screen.queryByTestId("tool-row-trailing")).toBe(null);
 });
 
 test("a read_file card with no session ref shows no Open beside control", () => {
   resetThreadsStoreForTests();
-  seedThreadCwd("ref_a", "/home/proj");
+  const source = seedSourceThread("ref_a", "/home/proj");
+  const context = createTranscriptRenderContext({
+    config: makeTranscriptDisplayConfig({ kind: "preset", level: "activity" }),
+    surface: "readOnly",
+    thread: source.thread,
+    sourcePaneId: source.sourcePaneId,
+  });
   render(
-    <ToolCallItem
-      item={item({ toolName: "read_file", argumentsJSON: JSON.stringify({ file_path: "/home/proj/a.ts" }) })}
-      turn={turn}
-      live={false}
-    />,
+    <TranscriptRenderProvider value={context}>
+      <ToolCallItem
+        item={item({ toolName: "read_file", argumentsJSON: JSON.stringify({ file_path: "/home/proj/a.ts" }) })}
+        turn={turn}
+        live={false}
+        thread={source.thread}
+        renderContext={context}
+      />
+    </TranscriptRenderProvider>,
+  );
+  expect(screen.queryByRole("button", { name: /open beside/i })).toBe(null);
+});
+
+test("a read_file card with no owning source pane shows no Open beside control", () => {
+  resetThreadsStoreForTests();
+  const thread = seedThreadCwd("ref_a", "/home/proj");
+  const context = createTranscriptRenderContext({
+    config: makeTranscriptDisplayConfig({ kind: "preset", level: "activity" }),
+    surface: "readOnly",
+    thread,
+  });
+  render(
+    <TranscriptRenderProvider value={context}>
+      <ToolCallItem
+        item={item({ toolName: "read_file", argumentsJSON: JSON.stringify({ file_path: "/home/proj/a.ts" }) })}
+        turn={turn}
+        live={false}
+        sessionRef="ref_a"
+        thread={thread}
+        renderContext={context}
+      />
+    </TranscriptRenderProvider>,
   );
   expect(screen.queryByRole("button", { name: /open beside/i })).toBe(null);
 });
 
 test("a grep card (a directory/pattern tool, not a single file) shows no Open beside control", () => {
   resetThreadsStoreForTests();
-  seedThreadCwd("ref_a", "/home/proj");
-  render(
+  const source = seedSourceThread("ref_a", "/home/proj");
+  renderAtLevel(
+    makeTranscriptDisplayConfig({ kind: "preset", level: "activity" }),
+    "test:open-beside-grep",
     <ToolCallItem
       item={item({ toolName: "grep", argumentsJSON: JSON.stringify({ pattern: "foo", path: "/home/proj/src" }) })}
       turn={turn}
       live={false}
       sessionRef="ref_a"
     />,
+    source,
   );
   expect(screen.queryByRole("button", { name: /open beside/i })).toBe(null);
 });
 
 test("clicking Open beside does not toggle the row open (the summary's own toggle is not fired)", () => {
   resetThreadsStoreForTests();
-  seedThreadCwd("ref_a", "/home/proj");
-  vi.spyOn(paneActions, "openBeside").mockImplementation(() => {});
+  const source = seedSourceThread("ref_a", "/home/proj");
   // At activity level the body auto-expands; use tools level to verify the
   // row starts collapsed and Open beside does not toggle it.
   renderTools(
@@ -1217,32 +1309,44 @@ test("clicking Open beside does not toggle the row open (the summary's own toggl
       live={false}
       sessionRef="ref_a"
     />,
+    source,
   );
   const details = screen.getByTestId("tool-call-item");
   expect(rowIsOpen(details)).toBe(false);
   fireEvent.click(screen.getByRole("button", { name: /open beside/i }));
   expect(rowIsOpen(details)).toBe(false); // still collapsed - the open-beside click did not toggle it
-  vi.restoreAllMocks();
+  expectOpenedDocument(
+    source.sourcePaneId,
+    { session: "ref_a", path: "a.ts", kind: "file" },
+    { path: "a.ts", cwd: "/home/proj", readTarget: "/home/proj/a.ts", provenance: "absolute" },
+  );
 });
 
 test("a read_file card on an image file opens beside as an image (DECISION C: kind:image)", () => {
   resetThreadsStoreForTests();
-  seedThreadCwd("ref_a", "/home/proj");
-  const spy = vi.spyOn(paneActions, "openBeside").mockImplementation(() => {});
-  render(
+  const source = seedSourceThread("ref_a", "/home/proj");
+  renderAtLevel(
+    makeTranscriptDisplayConfig({ kind: "preset", level: "activity" }),
+    "test:open-beside-image",
     <ToolCallItem
       item={item({ toolName: "read_file", argumentsJSON: JSON.stringify({ file_path: "/home/proj/assets/logo.png" }) })}
       turn={turn}
       live={false}
       sessionRef="ref_a"
     />,
+    source,
   );
   fireEvent.click(screen.getByRole("button", { name: /open beside/i }));
-  expect(spy).toHaveBeenCalledWith({
-    type: "doc",
-    params: { session: "ref_a", path: "assets/logo.png", kind: "image" },
-  });
-  spy.mockRestore();
+  expectOpenedDocument(
+    source.sourcePaneId,
+    { session: "ref_a", path: "assets/logo.png", kind: "image" },
+    {
+      path: "assets/logo.png",
+      cwd: "/home/proj",
+      readTarget: "/home/proj/assets/logo.png",
+      provenance: "absolute",
+    },
+  );
 });
 
 // read_file's openBesideInline: the summary quotes the path verbatim between
@@ -1250,7 +1354,7 @@ test("a read_file card on an image file opens beside as an image (DECISION C: ki
 // name and the range it opens - not off at the end of the line.
 test("a read_file card's Open beside control rides inline between the file name and the line range", () => {
   resetThreadsStoreForTests();
-  seedThreadCwd("ref_a", "/home/proj");
+  const source = seedSourceThread("ref_a", "/home/proj");
   // At activity level the body auto-expands (no head/tail split); use tools
   // level to test the collapsed summary's trailingAfter placement.
   renderTools(
@@ -1265,6 +1369,7 @@ test("a read_file card's Open beside control rides inline between the file name 
       live={false}
       sessionRef="ref_a"
     />,
+    source,
   );
   const button = screen.getByRole("button", { name: /open beside/i });
   const meta = screen.getByTestId("tool-row-summary-meta");
@@ -1277,6 +1382,17 @@ test("a read_file card's Open beside control rides inline between the file name 
   // is head+tail together - and the control sits right after it.
   expect((head.textContent ?? "") + (tail.textContent ?? "")).toBe("Read /home/proj/src/widgets/sheet/sheet.test.tsx");
   expect(tail.compareDocumentPosition(button) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  fireEvent.click(button);
+  expectOpenedDocument(
+    source.sourcePaneId,
+    { session: "ref_a", path: "src/widgets/sheet/sheet.test.tsx", kind: "file" },
+    {
+      path: "src/widgets/sheet/sheet.test.tsx",
+      cwd: "/home/proj",
+      readTarget: "/home/proj/src/widgets/sheet/sheet.test.tsx",
+      provenance: "absolute",
+    },
+  );
 });
 
 // The open affordance belongs to the tool-call summary line. When the row
@@ -1292,8 +1408,8 @@ const intentReadFileRow = item({
 
 test("an intent-bearing read_file row at intent level withholds Open beside", () => {
   resetThreadsStoreForTests();
-  seedThreadCwd("ref_a", "/home/proj");
-  renderIntentLevel(<ToolCallItem item={intentReadFileRow} turn={turn} live={false} sessionRef="ref_a" />);
+  const source = seedSourceThread("ref_a", "/home/proj");
+  renderIntentLevel(<ToolCallItem item={intentReadFileRow} turn={turn} live={false} sessionRef="ref_a" />, source);
   // Only the intent line survives at this level: no summary, no affordance.
   expect(screen.getByTestId("tool-row-intent").textContent).toBe("Reading writeAndReload restore path");
   expect(screen.queryByTestId("tool-row-summary")).toBe(null);
@@ -1305,11 +1421,23 @@ test("an intent-bearing read_file row at intent level withholds Open beside", ()
 // its summary line, so the affordance rides it as before.
 test("the same read_file row at tools level still shows Open beside on its summary line", () => {
   resetThreadsStoreForTests();
-  seedThreadCwd("ref_a", "/home/proj");
-  renderTools(<ToolCallItem item={intentReadFileRow} turn={turn} live={false} sessionRef="ref_a" />);
+  const source = seedSourceThread("ref_a", "/home/proj");
+  renderTools(<ToolCallItem item={intentReadFileRow} turn={turn} live={false} sessionRef="ref_a" />, source);
   expect(screen.getByTestId("tool-row-summary").textContent).toContain("Read /home/proj/src/a.ts");
   const trailing = screen.getByTestId("tool-row-trailing");
-  expect(trailing.contains(screen.getByRole("button", { name: /open beside/i }))).toBe(true);
+  const button = screen.getByRole("button", { name: /open beside/i });
+  expect(trailing.contains(button)).toBe(true);
+  fireEvent.click(button);
+  expectOpenedDocument(
+    source.sourcePaneId,
+    { session: "ref_a", path: "src/a.ts", kind: "file" },
+    {
+      path: "src/a.ts",
+      cwd: "/home/proj",
+      readTarget: "/home/proj/src/a.ts",
+      provenance: "absolute",
+    },
+  );
 });
 
 // --- The intent-only density hook (toolcallitem.module.css's
@@ -1410,7 +1538,7 @@ test("a delegate card at intent level keeps its Open transcript control", () => 
 // even with the summary line collapsed: the Open beside control stays.
 test("an auto-expanded image read at intent level keeps Open beside", () => {
   resetThreadsStoreForTests();
-  seedThreadCwd("ref_a", "/home/proj");
+  const source = seedSourceThread("ref_a", "/home/proj");
   renderIntentLevel(
     <ToolCallItem
       item={item({
@@ -1423,9 +1551,20 @@ test("an auto-expanded image read at intent level keeps Open beside", () => {
       live={false}
       sessionRef="ref_a"
     />,
+    source,
   );
   expect(screen.getByTestId("tool-call-body")).toBeTruthy();
-  expect(screen.getByRole("button", { name: /open beside/i })).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: /open beside/i }));
+  expectOpenedDocument(
+    source.sourcePaneId,
+    { session: "ref_a", path: "assets/logo.png", kind: "image" },
+    {
+      path: "assets/logo.png",
+      cwd: "/home/proj",
+      readTarget: "/home/proj/assets/logo.png",
+      provenance: "absolute",
+    },
+  );
 });
 
 // A delegate_send row's Open transcript control rides INLINE between the

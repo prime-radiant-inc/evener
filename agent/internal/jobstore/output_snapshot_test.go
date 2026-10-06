@@ -553,7 +553,7 @@ func TestReadOutputWindowSnapshotUsesProductionPendingPublicationOrder(t *testin
 	}
 	snapshotDone := make(chan snapshotResult, 1)
 	go func() {
-		got, err := readOutputWindowSnapshotFs(fs, path, 0, len("BBBB"))
+		got, err := readOutputWindowSnapshotFs(fs, path, 4, len("BBBB"))
 		snapshotDone <- snapshotResult{got: got, err: err}
 	}()
 	<-fs.initialRetainedSizeCaptured
@@ -571,8 +571,10 @@ func TestReadOutputWindowSnapshotUsesProductionPendingPublicationOrder(t *testin
 		t.Fatalf("snapshot during pending publication: %v", result.err)
 	}
 	got := result.got
-	if string(got.Content) != "AAAA" || got.TotalBytes != 8 || got.RetainedStart != 0 {
-		t.Fatalf("snapshot during pending publication = %+v, want old prefix with successor coordinates", got)
+	// The old file still holds the prefix the pending compaction drops, but a
+	// reader already sees only what the compacted file will keep.
+	if string(got.Content) != "BBBB" || got.TotalBytes != 8 || got.RetainedStart != 4 {
+		t.Fatalf("snapshot during pending publication = %+v, want the successor's bytes and coordinates", got)
 	}
 	// Keep the real writer paused and take a second observation at the captured
 	// Stat boundary. This drives the handoff predicate through the public

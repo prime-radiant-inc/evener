@@ -78,6 +78,12 @@ export interface ArchivedListParams {
   projectKey: string;
   cursor?: string;
   limit?: number;
+  /**
+   * Revision is the revision of the list the caller holds (a response's
+   * Revision). When it is still the list's, the response says Unchanged and
+   * carries no rows. An older hub ignores it and answers the page.
+   */
+  revision?: string;
 }
 
 export interface ArchivedListResponse {
@@ -85,6 +91,19 @@ export interface ArchivedListResponse {
   nextCursor?: string;
   total: number;
   catalog?: string;
+  /**
+   * Revision fingerprints the whole list read, the same on every page of it;
+   * it changes when any row a page could show changes. An older hub sends
+   * none. It vouches for the rows a client holds only when every page it
+   * holds carried this same revision; a client whose pages carried
+   * different revisions holds none, and reads again.
+   */
+  revision?: string;
+  /**
+   * Unchanged is true when the request's Revision is still the list's: the
+   * response then carries no rows, and Total, Catalog and Revision stand.
+   */
+  unchanged?: boolean;
 }
 
 export interface AttentionChanged {
@@ -2380,6 +2399,12 @@ export interface NavigationReadParams {
   resource: string;
   section?: string;
   sectionId?: string;
+  /**
+   * Catalog names a catalog read's catalog. On a project or project_page
+   * read it narrows the read to that catalog's project, as a location's
+   * catalog names it; an older hub refuses it there, and sends no location
+   * catalog to take it from.
+   */
   catalog?: string;
   projectKey?: string;
   tier?: string;
@@ -2422,6 +2447,14 @@ export interface NavigationSessionLocation {
   revision: number;
   ref: string;
   top_level_ref: string;
+  /**
+   * Catalog is the catalog ("projects", "archived_projects" or "test_runs")
+   * whose project ProjectKey names: a key can be in several, and a project
+   * or project_page read naming this catalog returns the project holding
+   * the session. Absent outside a project, and from an older hub, which
+   * also refuses a catalog on those reads.
+   */
+  catalog?: string;
   project_key?: string;
   top_level: boolean;
   tier?: string;
@@ -2766,9 +2799,12 @@ export interface PluginEntry {
   lastUpdated: number;
   /**
    * UpdateAvailable is true when the last evener/plugin/checkUpdates found a
-   * newer remote commit. Absent means no known update: no check has run, the
-   * check found the plugin current or could not reach its remote, or the
-   * source is not git-backed. Clients offer Upgrade only when it is true.
+   * newer version: a newer remote commit for a git-backed plugin, or new
+   * contents in its marketplace, which the check refreshes first, for one
+   * stored in its marketplace's own repo. Absent means no known update: no check has run,
+   * the check found the plugin current or could not read its source, or the
+   * plugin is used in place from a directory. Clients offer Upgrade only when
+   * it is true.
    */
   updateAvailable?: boolean;
 }

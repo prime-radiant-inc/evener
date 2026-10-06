@@ -7,6 +7,7 @@ import {
   DocFileError,
   type DocPort,
   docFileRawURL,
+  docImageReadURL,
   docImageURL,
   filenameOf,
   fileURLToPath,
@@ -51,6 +52,19 @@ test("docImageURL escapes query-hostile characters in both values", () => {
   expect(docImageURL(SAME_ORIGIN, "a b&c", "dir/one two.png")).toBe(
     "/doc/image?session=a%20b%26c&path=dir%2Fone%20two.png",
   );
+});
+
+test("docImageReadURL appends an escaped read generation to the ordinary image URL", () => {
+  expect(docImageReadURL(HUB, "a b&c", "dir/one two.png", "viewer seed/2")).toBe(
+    "https://hub.test/doc/image?session=a%20b%26c&path=dir%2Fone%20two.png&read=viewer%20seed%2F2",
+  );
+});
+
+test("adding read generations does not change ordinary transcript-image preview URLs", () => {
+  const ordinary = docImageURL(SAME_ORIGIN, "sess_1", "out/pic.png");
+  expect(docImageReadURL(SAME_ORIGIN, "sess_1", "out/pic.png", "first")).toBe(`${ordinary}&read=first`);
+  expect(docImageReadURL(SAME_ORIGIN, "sess_1", "out/pic.png", "second")).toBe(`${ordinary}&read=second`);
+  expect(docImageURL(SAME_ORIGIN, "sess_1", "out/pic.png")).toBe("/doc/image?session=sess_1&path=out%2Fpic.png");
 });
 
 test("docFileRawURL builds the raw variant with format=raw and both values escaped", () => {

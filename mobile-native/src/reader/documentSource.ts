@@ -42,22 +42,19 @@ export type LoadedDocument =
 	| { kind: "code"; title: string; text: string; lines: number; truncated?: Truncation }
 	| { kind: "image"; title: string }
 	| { kind: "binary"; title: string; sizeBytes: number }
-	| { kind: "elsewhere"; title: string; host: string }
-	| { kind: "missing" | "forbidden" | "failed"; title: string };
+	| { kind: "host-unsupported" | "missing" | "forbidden" | "failed"; title: string };
 
-/** Reads a document for the Reader. /doc/file serves only the hub's own
- * sessions, so a session on another host isn't asked (S7 lifts this). */
+/** Reads the captured target through the owning hub, including remote sessions. */
 export async function loadDocument(port: DocPort, sessionRef: string, path: string): Promise<LoadedDocument> {
 	const title = filenameOf(path);
 	if (documentKind(path) === "Image") return { kind: "image", title };
-	const host = refHost(sessionRef);
-	if (host !== "" && host !== "local") return { kind: "elsewhere", title, host };
 	let content: DocFileContent;
 	try {
 		content = await readDocFile(sessionRef, path, port);
 	} catch (error) {
 		if (error instanceof DocFileError && error.kind === "not-found") return { kind: "missing", title };
 		if (error instanceof DocFileError && error.kind === "forbidden") return { kind: "forbidden", title };
+		if (error instanceof DocFileError && error.kind === "host-unsupported") return { kind: "host-unsupported", title };
 		return { kind: "failed", title };
 	}
 	if (content.binary) return { kind: "binary", title, sizeBytes: content.totalBytes ?? content.sizeBytes };
@@ -78,8 +75,8 @@ export async function loadDocument(port: DocPort, sessionRef: string, path: stri
 /** The one sentence the Reader says when it can't show a document's text. */
 export function documentNotice(document: LoadedDocument): string | null {
 	switch (document.kind) {
-		case "elsewhere":
-			return `This document is on ${document.host}. Open it on the host to read it.`;
+		case "host-unsupported":
+			return "This host does not support document reads yet.";
 		case "missing":
 			return `${document.title} isn't in this session's folder any more.`;
 		case "forbidden":

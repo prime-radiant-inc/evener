@@ -187,7 +187,7 @@ no router (reserved).
 | `evener/session-pin/unpin` | hub | `SessionPinUnpinParams` | `SessionPinUnpinResponse` | Removes a top-level session's named pin assignment and returns its committed navigation receipt. |
 | `evener/session/seen/set` | hub | `SessionSeenSetParams` | `SessionSeenSetResponse` | Marks sessions seen through a turn end, or unread, on the hub (S4), and returns the committed navigation receipt. Live rows then carry unseen from the hub's marker. |
 | `evener/search` | hub | `SearchParams` | `SearchResponse` | Searches the hub's sessions: live and ended ones whose ID, title or prompt match, each once, and (S14) the sessions whose messages match, with each one's newest hits and snippets. A scope narrows every group; every result says whether it is archived. |
-| `evener/archived/list` | hub | `ArchivedListParams` | `ArchivedListResponse` | Lists one project's archived sessions, newest first, a page at a time: the key names the project and the catalog is a hint (a project that moved between projects and archived projects is read from the one holding it now, and the response says which catalog it read), and the cursor continues from the previous page. The rows are navigation session summaries; the list has no revisions or invalidation. |
+| `evener/archived/list` | hub | `ArchivedListParams` | `ArchivedListResponse` | Lists one project's archived sessions, newest first, a page at a time: the key names the project and the catalog is a hint (a project that moved between projects and archived projects is read from the one holding it now, and the response says which catalog it read), and the cursor continues from the previous page. The rows are navigation session summaries. Each response carries the whole list's revision; a first-page read naming the revision it holds is answered unchanged, with no rows, while the list has not changed. The list has no invalidation of its own. |
 | `evener/activity/read` | hub | `ActivityReadParams` | `ActivityReadResponse` | Reads the pulse meter (seven one-minute activity counts over the whole tree), running subagents, quiet time and the newest tool intent of the hub's live top-level sessions and its attached hosts' (S5). A client polls it while a Board or session is on screen; it is never part of navigation. |
 | `evener/notices/list` | hub | `EmptyParams` | `NoticesListResponse` | Lists the hub's notices (S11): provider instances on this hub that need signing in again, hosts that are offline, and installed plugins that are broken, each with the live sessions it blocks when the hub can count them. evener/notices/changed announces every change. |
 | `evener/harnesses/list` | hub | `HarnessListParams` | `HarnessListResponse` | Lists available harness descriptors. |
@@ -234,7 +234,7 @@ no router (reserved).
 | `evener/plugin/enable` | hub | `PluginRefParams` | `PluginListResponse` | Enables an installed plugin; returns the updated list. |
 | `evener/plugin/disable` | hub | `PluginRefParams` | `PluginListResponse` | Disables an installed plugin; returns the updated list. |
 | `evener/plugin/setAutoUpgrade` | hub | `PluginSetAutoUpgradeParams` | `PluginListResponse` | Sets an installed plugin's auto-upgrade flag; returns the updated list. |
-| `evener/plugin/checkUpdates` | hub | `EmptyParams` | `PluginListResponse` | Asks each git-backed installed plugin's remote whether it has moved past the installed commit, without installing anything; returns the list with updateAvailable set. Clients call it when their plugins view opens; the hub never runs it on a timer. It waits on every plugin's remote, each with its own timeout (internal/plugins updateCheckTimeout) and the whole check within updateCheckDeadline, so a client's timeout for it must exceed that deadline. |
+| `evener/plugin/checkUpdates` | hub | `EmptyParams` | `PluginListResponse` | Refreshes each fetched git marketplace, within a time budget (a refresh it cannot make is a warning), then asks each git-backed installed plugin's remote whether it has moved past the installed commit and checks each plugin stored in its marketplace's own repo against the refreshed clone, without installing anything; returns the list with updateAvailable set. Clients call it when their plugins view opens; the hub never runs it on a timer. It waits on every plugin's remote, each with its own timeout (internal/plugins updateCheckTimeout) and the whole check within updateCheckDeadline, so a client's timeout for it must exceed that deadline. |
 | `evener/command/list` | hub | `EmptyParams` | `CommandListResponse` | Lists loaded slash commands (name, plugin, description, source: plugin, project, or user) for catalog/autocomplete display. |
 | `evener/spawn/slashCatalog` | hub | `SpawnSlashCatalogParams` | `SpawnSlashCatalogResponse` | Pre-session slash catalog for the spawn form: the commands and skills a session started with this cwd, harness, and launch overrides would offer. |
 | `evener/settings/overview` | hub | `EmptyParams` | `SettingsOverviewResponse` | Returns the settings overview field bag: hub/runtime, storage, agent roster, and probed MCP servers — the five template-only settings sections' data. |
@@ -261,7 +261,7 @@ no router (reserved).
 | `evener/host/operations` | hub | `HostOperationsParams` | `HostOperationsResponse` | Reads the operation store's deploy/restart records, one bounded page at a time, ascending by the controller-assigned id and resumed by an opaque cursor: host-pinned pages echo the effective (generation, incarnationId) pair, unfiltered cross-host pages carry the authoritative hostBoundaries map (the triple or the literal "absent" per host in the query), and limit defaults to 50 and caps at 200. Never dials; a remote origin is refused. |
 | `evener/host/running` | hub | `HostRunningParams` | `HostRunningResponse` | Serves one hub's own running build revision and authoritative health to the controller probing it over an attached session, presenting the caller's required fencing epoch: process start time is present exactly when the hub knows it, and healthy reflects the local restart-required predicate, the owner-set minimum-free-space knob, and the state-root write probe. |
 | `evener/host/pushCredentials` | hub | `HostPushCredentialsParams` | `HostPushCredentialsResponse` | Copies the controller's local provider-instance keys to one named remote host (component 07c): each local store key is joined to the host's own instance by name (the lookup folds case), and the HOST's own spelling of the matched entry is what travels as Provider to evener/auth/status and evener/auth/apiKey/conditionalSet, the host classifies and writes its own store, and each entry reports added/updated/skipped/failed. |
-| `evener/session/image` | hub | `SessionImageParams` | `SessionImageResponse` | Fetches one image out of the recipient hub's own local session state for the controller's host-qualified image routes (component 05): SHA addresses a replayed transcript image and Path a session-relative file inside the session's working directory; the sha branch enforces the 8 MiB bound while scanning, and the media type is re-derived from the bytes. Never an HTTP route. |
+| `evener/session/image` | hub | `SessionImageParams` | `SessionImageResponse` | Fetches one image out of the recipient hub's own local session state for the controller's host-qualified image routes (component 05): SHA addresses a replayed transcript image and Path a relative or current-root absolute file inside the session's current working directory; the sha branch enforces the 8 MiB bound while scanning, and the media type is re-derived from the bytes. Never an HTTP route. |
 | `evener/session/document` | hub | `SessionDocumentParams` | `SessionDocumentResponse` | Reads one document out of the recipient hub's own local session state for the controller's host-qualified /doc/file proxy (S7): the path is resolved inside the session's working directory by the local route's rule and refused as pathOutsideSession when it leads out; the answer is the file's first 512 KiB, its true size, the sha256 of the whole file (up to 16 MiB) and its modification time. Never an HTTP route. |
 
 ## Notifications (server → client)
@@ -393,6 +393,7 @@ An embedded type contributes its own fields inline.
 | `projectKey` | `string` |  |  |
 | `cursor` | `string` | yes |  |
 | `limit` | `int` | yes |  |
+| `revision` | `string` | yes |  |
 
 
 ### `ArchivedListResponse`
@@ -403,6 +404,8 @@ An embedded type contributes its own fields inline.
 | `nextCursor` | `string` | yes |  |
 | `total` | `int` |  |  |
 | `catalog` | `string` | yes |  |
+| `revision` | `string` | yes |  |
+| `unchanged` | `bool` | yes |  |
 
 
 ### `AttentionChangedPayload`

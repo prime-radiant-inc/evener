@@ -49,7 +49,8 @@ export const ActivityPanelBody = memo(function ActivityPanelBody({ sessionRef, m
   const resources = useNavigationStore((state) => state.resources);
   // biome-ignore lint/correctness/useExhaustiveDependencies: resources invalidates the navigation title read.
   const scope = useMemo(
-    () => deriveScope(navigationStore.getState(), sessionRef, snapshot),
+    // Only the crumbs are shown here, so no subagent count is read.
+    () => deriveScope(navigationStore.getState(), sessionRef, snapshot, null),
     [sessionRef, snapshot, resources],
   );
   const presentation = useMemo(() => (snapshot ? projectSessionActivity(snapshot) : null), [snapshot]);

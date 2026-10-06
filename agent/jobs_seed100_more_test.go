@@ -325,12 +325,12 @@ func seed100JobsMore(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			open := func(string) (jobOutputReadFile, error) { return tc.file, nil }
-			_, _, _, _ = tailOutputFileWithOpen("x", 2, 3, open)
+			_, _, _, _ = tailOutputFileWithOpen("x", 2, 3, 0, open)
 			tc.file.Reader = bytes.NewReader([]byte("abc"))
 			if tc.name == "read" {
 				tc.file.Reader = bytes.NewReader(nil)
 			}
-			_, _, _, _ = headOutputFileWithOpen("x", 2, 3, open)
+			_, _, _, _ = headOutputFileWithOpen("x", 2, 3, 0, open)
 		})
 	}
 }

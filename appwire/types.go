@@ -377,17 +377,21 @@ type NavigationCapability struct {
 // and Limit are pointers so an explicit zero remains distinguishable from an
 // omitted page parameter on the wire.
 type NavigationReadParams struct {
-	RepresentationVersion uint8               `json:"representationVersion"`
-	Resource              string              `json:"resource"`
-	Section               string              `json:"section,omitempty"`
-	SectionID             string              `json:"sectionId,omitempty"`
-	Catalog               string              `json:"catalog,omitempty"`
-	ProjectKey            string              `json:"projectKey,omitempty"`
-	Tier                  string              `json:"tier,omitempty"`
-	Ref                   string              `json:"ref,omitempty"`
-	Offset                *uint32             `json:"offset,omitempty"`
-	Limit                 *uint32             `json:"limit,omitempty"`
-	Base                  *NavigationReadBase `json:"base,omitempty"`
+	RepresentationVersion uint8  `json:"representationVersion"`
+	Resource              string `json:"resource"`
+	Section               string `json:"section,omitempty"`
+	SectionID             string `json:"sectionId,omitempty"`
+	// Catalog names a catalog read's catalog. On a project or project_page
+	// read it narrows the read to that catalog's project, as a location's
+	// catalog names it; an older hub refuses it there, and sends no location
+	// catalog to take it from.
+	Catalog    string              `json:"catalog,omitempty"`
+	ProjectKey string              `json:"projectKey,omitempty"`
+	Tier       string              `json:"tier,omitempty"`
+	Ref        string              `json:"ref,omitempty"`
+	Offset     *uint32             `json:"offset,omitempty"`
+	Limit      *uint32             `json:"limit,omitempty"`
+	Base       *NavigationReadBase `json:"base,omitempty"`
 }
 
 func (params *NavigationReadParams) UnmarshalJSON(data []byte) error {
@@ -693,6 +697,10 @@ type ArchivedListParams struct {
 	ProjectKey string `json:"projectKey"`
 	Cursor     string `json:"cursor,omitempty"`
 	Limit      int    `json:"limit,omitempty"`
+	// Revision is the revision of the list the caller holds (a response's
+	// Revision). When it is still the list's, the response says Unchanged and
+	// carries no rows. An older hub ignores it and answers the page.
+	Revision string `json:"revision,omitempty"`
 }
 
 // ArchivedListResponse is one page of a project's archived sessions, newest
@@ -707,6 +715,15 @@ type ArchivedListResponse struct {
 	NextCursor string          `json:"nextCursor,omitempty"`
 	Total      int             `json:"total"`
 	Catalog    string          `json:"catalog,omitempty"`
+	// Revision fingerprints the whole list read, the same on every page of it;
+	// it changes when any row a page could show changes. An older hub sends
+	// none. It vouches for the rows a client holds only when every page it
+	// holds carried this same revision; a client whose pages carried
+	// different revisions holds none, and reads again.
+	Revision string `json:"revision,omitempty"`
+	// Unchanged is true when the request's Revision is still the list's: the
+	// response then carries no rows, and Total, Catalog and Revision stand.
+	Unchanged bool `json:"unchanged,omitempty"`
 }
 
 // SearchParams selects matching live and past sessions for the hub command
@@ -2298,9 +2315,10 @@ type ThreadTurnItemsListResponse struct {
 //
 //   - SHA addresses the replayed-input form /s/<session>/images/<sha>, whose
 //     bytes are re-scanned out of the session transcript;
-//   - Path is a session-relative file path for the file-backed form
-//     /doc/image?session=<session>&path=<rel>, resolved inside the session's
-//     working directory.
+//   - Path is a relative or current-root absolute file path for the file-backed
+//     form /doc/image?session=<session>&path=<path>, resolved inside the
+//     session's current working directory. Absolute paths outside that root are
+//     refused.
 //
 // Both set, or neither, is InvalidParams. SessionID names the session in the
 // recipient hub's own namespace; it is never a routing field for another source.
@@ -4428,9 +4446,12 @@ type PluginEntry struct {
 	InstalledAt  int64  `json:"installedAt"`
 	LastUpdated  int64  `json:"lastUpdated"`
 	// UpdateAvailable is true when the last evener/plugin/checkUpdates found a
-	// newer remote commit. Absent means no known update: no check has run, the
-	// check found the plugin current or could not reach its remote, or the
-	// source is not git-backed. Clients offer Upgrade only when it is true.
+	// newer version: a newer remote commit for a git-backed plugin, or new
+	// contents in its marketplace, which the check refreshes first, for one
+	// stored in its marketplace's own repo. Absent means no known update: no check has run,
+	// the check found the plugin current or could not read its source, or the
+	// plugin is used in place from a directory. Clients offer Upgrade only when
+	// it is true.
 	UpdateAvailable bool `json:"updateAvailable,omitempty"`
 }
 

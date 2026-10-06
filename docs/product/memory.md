@@ -115,9 +115,10 @@ memory only when a project scope is bound.
 Refresh runs at startup, resume, after compaction and later model boundaries.
 Unchanged projections are not appended again. Empty, missing and revoked states
 supersede the previous current context; unavailable storage is not presented as
-freshly read. Historical context remains recorded history. CLI transcripts and
-AppWire clients use the existing dynamic-context and generic tool-result paths,
-not a memory UI or RPC.
+freshly read. Historical context remains recorded history. CLI and TUI transcripts
+still use the generic tool-result path, while AppWire web and native clients
+render memory tool calls with dedicated step renderers: the step's words, a saved
+page for a write and a diff for an edit. There is still no memory UI or RPC.
 
 Archived memory-context turns reconstruct as user-role evidence, preserving
 their kind, body and order without crossing tool-round boundaries. Text-only

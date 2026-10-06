@@ -401,6 +401,13 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
   const transcriptContainerRef = useRef<HTMLDivElement>(null);
   const flow = useTranscriptScroll({
     ref,
+    viewId: readView?.id ?? paneId,
+    keepViewRemount: () =>
+      workspaceStore
+        .getState()
+        .panes.some(
+          (pane) => pane.id === paneId && pane.type === "session" && (pane.params as SessionPaneParams).ref === ref,
+        ),
     model,
     listRef: virtualListRef,
     initialViewCapture: readView?.getCapture(),
@@ -598,6 +605,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
         surface="live"
         disclosureScope={readView?.id ?? paneId}
         sessionRef={ref}
+        sourcePaneId={paneId}
         viewId={readView?.id}
         initialViewCapture={readView?.getCapture()}
         readView={readView ?? undefined}
@@ -708,7 +716,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
       edgeFooter={edgeFooter}
     >
       <div className={styles.contentColumn}>
-        <TopNotesPanel sessionRef={ref} model={model} />
+        <TopNotesPanel sessionRef={ref} model={model} sourcePaneId={paneId} />
         <SandboxEscalationRail sessionRef={ref} />
         {/* The held-steer ghosts' ONE live region, same rule as the ask
             dock's: outside the virtual list, announcing only real

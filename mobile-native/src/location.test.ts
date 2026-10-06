@@ -14,6 +14,55 @@ function storage() {
 	};
 }
 describe("last mobile location", () => {
+	it("returns an old unbound Reader to its saved owning conversation without erasing other storage", () => {
+		const disk = storage();
+		disk.setItemSync("evener.draft.other", "keep draft");
+		disk.setItemSync("evener.reader-memory", "keep memory");
+		disk.setItemSync("evener.outbox", "keep queued work");
+		disk.setItemSync(
+			"evener.last-location",
+			JSON.stringify({
+				hubId: "saved-hub",
+				conversation: { ref: "remote:owner", title: "Saved owner" },
+				reader: { sessionRef: "remote:owner", path: "docs/a.md" },
+			}),
+		);
+		const repository = new LocationRepository(disk);
+		const saved = repository.read(["unrelated-hub", "saved-hub"]);
+		expect(restoredStack(saved).routes).toEqual([
+			{ name: "Hubs" },
+			{ name: "Sessions" },
+			{ name: "Conversation", params: { hubId: "saved-hub", ref: "remote:owner", title: "Saved owner" } },
+		]);
+		expect(disk.getItemSync("evener.draft.other")).toBe("keep draft");
+		expect(disk.getItemSync("evener.reader-memory")).toBe("keep memory");
+		expect(disk.getItemSync("evener.outbox")).toBe("keep queued work");
+	});
+	it("round-trips the complete captured Reader reference, not the selected conversation", () => {
+		const disk = storage();
+		const reference = {
+			path: "docs/a raw.md",
+			cwd: "/work/owner",
+			readTarget: "/work/owner/docs/a raw.md",
+			provenance: "relative",
+		};
+		const params = {
+			hubId: "saved-hub",
+			sessionRef: "remote:owner",
+			sessionTitle: "Saved owner",
+			path: "docs/a raw.md",
+			reference,
+		};
+		const repository = new LocationRepository(disk);
+		repository.save(locationForRoute({ name: "Reader", params }, "saved-hub"));
+		const saved = repository.read(["unrelated-hub", "saved-hub"]);
+		expect(saved).toEqual({
+			hubId: "saved-hub",
+			conversation: { ref: "remote:owner", title: "Saved owner" },
+			reader: { sessionRef: "remote:owner", path: "docs/a raw.md", reference },
+		});
+		expect(restoredStack(saved).routes.at(-1)).toEqual({ name: "Reader", params });
+	});
 	it("restores a saved shortcuts location, which is no longer a place, to that hub's Board", () => {
 		const disk = storage();
 		const editor = { actionId: "composer.focus", chord: "Meta+Shift+" };
@@ -407,6 +456,12 @@ describe("last mobile location", () => {
 			hubId: "studio",
 			sessionRef: "local:fix",
 			path: "docs/superpowers/plans/settle.md",
+			reference: {
+				path: "docs/superpowers/plans/settle.md",
+				cwd: "/work/owner",
+				readTarget: "/work/owner/docs/superpowers/plans/settle.md",
+				provenance: "relative",
+			},
 			sessionTitle: "Fix race",
 			updatedAt: "2026-09-26T11:39:00.000Z",
 		};
@@ -418,6 +473,12 @@ describe("last mobile location", () => {
 			reader: {
 				sessionRef: "local:fix",
 				path: "docs/superpowers/plans/settle.md",
+				reference: {
+					path: "docs/superpowers/plans/settle.md",
+					cwd: "/work/owner",
+					readTarget: "/work/owner/docs/superpowers/plans/settle.md",
+					provenance: "relative",
+				},
 				updatedAt: "2026-09-26T11:39:00.000Z",
 			},
 		});

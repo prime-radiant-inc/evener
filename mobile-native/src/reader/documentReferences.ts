@@ -4,8 +4,8 @@
 // sheet lists the same documents, plus the files the session wrote without
 // naming them (spec 10.1).
 import type { TurnModel } from "@evener/appwire-client";
-import { cwdRelative, fileURLToPath } from "@evener/appwire-client/docContent";
-import { lexer, type Token, type Tokens } from "marked";
+import { cwdRelative } from "@evener/appwire-client/docContent";
+import { markdownFileReferences } from "./markdownFileReferences";
 
 /** A document the session named or wrote. */
 export interface DocumentReference {
@@ -20,10 +20,6 @@ export interface DocumentReference {
  * names its files inside its `patch` text instead (patchedFiles). */
 const WRITING_TOOLS = new Set(["write_file", "edit_file"]);
 
-// A file name ends in a dot and a short extension: "plan.md", "retirement.go".
-// A directory ("src/") or a bare word ("README") isn't a document.
-const FILE_NAME = /[^/.\s][^/\s]*\.[A-Za-z0-9]{1,10}$/;
-
 /** The file's path inside the session's folder, "./" dropped so two names for
  * one file agree; undefined outside the folder, where the hub serves nothing. */
 export function documentPath(path: string, cwd: string): string | undefined {
@@ -31,60 +27,7 @@ export function documentPath(path: string, cwd: string): string | undefined {
 	return inFolder || undefined;
 }
 
-// What a code span or a link target names, when it names a file: no spaces,
-// no scheme but file://, and a line suffix ("retirement.go:1977") dropped.
-function namedFile(text: string): string | undefined {
-	const value = text.trim();
-	if (value === "" || /\s/.test(value)) return undefined;
-	if (/^file:\/\//i.test(value)) return fileURLToPath(value) || undefined;
-	if (/^[a-z][a-z0-9+.-]*:/i.test(value)) return undefined;
-	const file = value.replace(/:\d+(?::\d+)?$/, "");
-	return FILE_NAME.test(file) ? file : undefined;
-}
-
-// Inline code and link targets, in reading order. A link's text is read too:
-// "[`docs/plan.md`](https://github.com/…/docs/plan.md)" names the local file.
-function visit(tokens: readonly Token[], found: (text: string) => void): void {
-	for (const token of tokens) {
-		if (token.type === "codespan") found((token as Tokens.Codespan).text);
-		if (token.type === "link") found((token as Tokens.Link).href);
-		if (token.type === "list") for (const item of (token as Tokens.List).items) visit(item.tokens, found);
-		else if (token.type === "table") {
-			const table = token as Tokens.Table;
-			for (const cell of [...table.header, ...table.rows.flat()]) visit(cell.tokens, found);
-		} else if ("tokens" in token && Array.isArray(token.tokens)) visit(token.tokens, found);
-	}
-}
-
-// Every publish hands the screen new turns, so a transcript's settled
-// messages are read again and again. Lexing is the costly part, so the file
-// names each markdown text holds are remembered, for the most recently used
-// texts.
-const NAMES_REMEMBERED = 500;
-const namesByMarkdown = new Map<string, readonly string[]>();
-
-function namedFiles(markdown: string): readonly string[] {
-	const known = namesByMarkdown.get(markdown);
-	if (known) {
-		// Used again: it moves to the newest end, so the oldest unused go first.
-		namesByMarkdown.delete(markdown);
-		namesByMarkdown.set(markdown, known);
-		return known;
-	}
-	const names: string[] = [];
-	visit(lexer(markdown), (text) => {
-		const file = namedFile(text);
-		if (file !== undefined) names.push(file);
-	});
-	namesByMarkdown.set(markdown, names);
-	for (const oldest of namesByMarkdown.keys()) {
-		if (namesByMarkdown.size <= NAMES_REMEMBERED) break;
-		namesByMarkdown.delete(oldest);
-	}
-	return names;
-}
-
-/** The documents one message names, in order, each once: inline code and
+/** The documents one message names, in order, each once: prose, inline code and
  * link targets that name a file inside the session's folder. A name needs a
  * directory ("docs/plan.md") unless the session wrote that file, so a passing
  * "README.md" never becomes a chip for a file that isn't there. Fenced code
@@ -92,10 +35,10 @@ function namedFiles(markdown: string): readonly string[] {
  * their write time. */
 export function messageDocuments(markdown: string, cwd: string, written: ReadonlySet<string>): string[] {
 	const paths: string[] = [];
-	for (const file of namedFiles(markdown)) {
-		const path = documentPath(file, cwd);
-		if (path === undefined || paths.includes(path)) continue;
-		if (file.includes("/") || written.has(path)) paths.push(path);
+	for (const { reference } of markdownFileReferences(markdown, cwd)) {
+		const path = reference.path;
+		if (paths.includes(path)) continue;
+		if (path.includes("/") || written.has(path)) paths.push(path);
 	}
 	return paths;
 }

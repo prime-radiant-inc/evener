@@ -494,3 +494,67 @@ describe("each tool's evidence, as the tools print it", () => {
 		}
 	});
 });
+
+describe("memory step evidence", () => {
+	const memory = (label: string, argumentsJSON: string, output = "saved") =>
+		step(label, {}, { detail: { arguments: argumentsJSON, output } });
+
+	it("shows a written memory page as markdown and keeps its images", () => {
+		const content = "# Memory\n\n![trace](https://example.com/trace.png)";
+		expect(
+			stepEvidence(memory("memory_write", JSON.stringify({ scope: "personal", file_path: "notes.md", content }))),
+		).toEqual([{ kind: "markdown", title: "personal/notes.md", markdown: content }]);
+	});
+
+	it("shows a rejected session-memory write's error", () => {
+		const error = "session memory belongs to the root session; report this to your parent instead";
+		const rejectedWrite = memory(
+			"memory_write",
+			JSON.stringify({ scope: "session", file_path: "notes.md", content: "# Note" }),
+			"",
+		);
+		rejectedWrite.state = "failed";
+		rejectedWrite.detail = { ...rejectedWrite.detail, error };
+
+		expect(stepEvidence(rejectedWrite)).toContainEqual({ kind: "error", text: error });
+	});
+
+	it("falls back from scope/path to the bare path, then Memory page", () => {
+		expect(stepEvidence(memory("memory_write", JSON.stringify({ file_path: "bare.md", content: "page" })))).toEqual([
+			{ kind: "markdown", title: "bare.md", markdown: "page" },
+		]);
+		expect(stepEvidence(memory("memory_write", JSON.stringify({ content: "page" })))).toEqual([
+			{ kind: "markdown", title: "Memory page", markdown: "page" },
+		]);
+	});
+
+	it("shows memory edits as file diffs", () => {
+		expect(
+			stepEvidence(
+				memory(
+					"memory_edit",
+					JSON.stringify({ scope: "project", file_path: "MEMORY.md", old_string: "old", new_string: "new" }),
+				),
+			),
+		).toEqual([{ kind: "diff", text: "--- MEMORY.md\n+++ MEMORY.md\n-old\n+new", added: 1, removed: 1 }]);
+	});
+
+	it.each([
+		["memory_read", "# Memory page\n"],
+		["memory_search", "personal/notes.md: found"],
+		["memory_delete", "Removed personal/notes.md"],
+	])("keeps %s output as printed", (label, output) => {
+		expect(stepEvidence(memory(label, "{}", output))).toEqual([{ kind: "output", text: output, lines: 1 }]);
+	});
+
+	it.each([
+		["unparseable JSON", "{", ["output", "output"]],
+		["non-object JSON", "[]", ["json", "output"]],
+		["content with the wrong type", JSON.stringify({ content: 7 }), ["json", "output"]],
+		["empty content", JSON.stringify({ content: "" }), ["json", "output"]],
+	])("falls back safely for %s write arguments", (_case, argumentsJSON, kinds) => {
+		const evidence = stepEvidence(memory("memory_write", argumentsJSON));
+		expect(evidence.map((entry) => entry.kind)).toEqual(kinds);
+		expect(evidence.at(-1)).toMatchObject({ kind: "output", text: "saved" });
+	});
+});

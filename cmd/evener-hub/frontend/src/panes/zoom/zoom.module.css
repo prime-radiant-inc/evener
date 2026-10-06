@@ -91,6 +91,22 @@
   color: var(--accent-ink);
 }
 
+.stateIndicator {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 8px;
+  height: 8px;
+}
+
+.stateLabel {
+  composes: root from "../../widgets/internal/visuallyHidden.module.css";
+  margin: 0;
+  clip: auto;
+  clip-path: inset(50%);
+}
+
 .content {
   display: flex;
   flex-direction: column;
@@ -189,11 +205,6 @@
 
 .spine .activityLabel {
   display: none;
-}
-
-.spine .state {
-  width: 100%;
-  text-align: center;
 }
 
 .peek {

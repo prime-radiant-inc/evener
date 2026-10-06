@@ -122,8 +122,36 @@ func gitPull(ctx context.Context, dir string) error {
 	return err
 }
 
+// gitFetch downloads what the remote of the clone at dir has, without
+// touching its checked-out files.
+func gitFetch(ctx context.Context, dir string) error {
+	_, err := gitRun(ctx, dir, "fetch", "--quiet")
+	return err
+}
+
+// gitFastForward moves the branch checked out in the clone at dir to its
+// upstream as last fetched. It needs no network, except that a blobless
+// clone downloads the contents of the files it changes.
+func gitFastForward(ctx context.Context, dir string) error {
+	_, err := gitRun(ctx, dir, "merge", "--ff-only", "--quiet", "@{upstream}")
+	return err
+}
+
 func gitHeadSHA(ctx context.Context, dir string) (string, error) {
 	out, err := gitRun(ctx, dir, "rev-parse", "HEAD")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// gitPathTree returns the id of the tree path (relative to dir) holds at the
+// checked-out commit of the repository at dir. It changes exactly when the
+// folder's contents do, whatever else the repository's history does: unlike
+// the last commit touching the folder, it does not move when a shallow
+// clone's root does (a reclone), so a reclone flags nothing.
+func gitPathTree(ctx context.Context, dir, path string) (string, error) {
+	out, err := gitRun(ctx, dir, "rev-parse", "--verify", "--end-of-options", "HEAD:./"+strings.TrimPrefix(filepath.ToSlash(path), "./"))
 	if err != nil {
 		return "", err
 	}
