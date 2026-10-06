@@ -10,6 +10,7 @@ import {
   attentionWarningNotice,
   type ItemModel,
   isErrorEvent,
+  type ThreadItemEventKind,
 } from "@evener/appwire-client";
 
 export interface SystemRun {
@@ -43,14 +44,21 @@ function isSystemMessage(item: ItemModel): boolean {
 // row of quiet at the cost of hiding the row a reader came for - behind a
 // summary that names the run's FIRST member, which need not be the failure at
 // all. So a failure both stays out of its neighbours' run and breaks it, and
-// so does a daemon warning a human should see (attentionWarningNotice).
-// Shared-notes snapshots stay separate under their own folded label. A
-// human's Allow or Deny is a decision, not churn, so it stays in view too.
+// so does a daemon warning a human should see (attentionWarningNotice), and so
+// does an interrupted notice (a model round that ended with output or tool
+// calls never recorded), which stays its own line as on the phone. An
+// informational warning still folds: it is the one critical kind that is not a
+// row a reader hunts for. Shared-notes snapshots stay separate under their own
+// folded label. A human's Allow or Deny is a decision, not churn, so it stays
+// in view too.
+const INTERRUPTED_EVENT_KIND: ThreadItemEventKind = "interrupted";
+
 function joinsRun(item: ItemModel): boolean {
   return (
     isSystemMessage(item) &&
     item.eventKind !== "notes-context" &&
     item.eventKind !== APPROVAL_DECISION_EVENT_KIND &&
+    item.eventKind !== INTERRUPTED_EVENT_KIND &&
     !isErrorEvent(item) &&
     attentionWarningNotice(item) === null
   );

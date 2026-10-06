@@ -126,3 +126,25 @@ test("a run's count excludes the failure that broke it", () => {
   expect(run?.items).toHaveLength(2);
   expect(shouldGroup(run!)).toBe(false);
 });
+
+// An interrupted notice (a model round that ended with output or tool calls
+// never recorded) is a row a reader hunts for, like a failure: it stays its
+// own line and never folds into a group, matching the phone (#3821).
+function interrupted(id: string): ItemModel {
+  return { id, turnId: "turn_1", type: "systemMessage", text: `text-${id}`, eventKind: "interrupted" };
+}
+
+test("an interrupted notice stands alone and breaks the run around it", () => {
+  const items = [
+    item("a", "systemMessage"),
+    item("b", "systemMessage"),
+    interrupted("cut"),
+    item("c", "systemMessage"),
+    item("d", "systemMessage"),
+  ];
+  const own = systemRunFor(items, "cut");
+  expect(own?.items.map((i) => i.id)).toEqual(["cut"]);
+  expect(own?.isFirst).toBe(true);
+  expect(systemRunFor(items, "a")?.items.map((i) => i.id)).toEqual(["a", "b"]);
+  expect(systemRunFor(items, "c")?.items.map((i) => i.id)).toEqual(["c", "d"]);
+});
