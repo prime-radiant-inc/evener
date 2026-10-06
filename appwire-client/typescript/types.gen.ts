@@ -3082,7 +3082,7 @@ export interface SessionActivity {
   minutes: number[];
   /**
    * RunningSubagents counts the session's subagents, at every depth, whose
-   * own turn is running.
+   * run is open: SubagentTally.Running, the count its Live row shows.
    */
   runningSubagents: number;
   /**
