@@ -133,8 +133,7 @@ const TURN_TIMING_EVENT_KIND = "round_timings";
 const HOOK_EVENT_KIND = "hook_completed";
 // The system events shown at every level: a persisted turn failure, a warning
 // notice, and an interrupted-turn notice are the rows a reader hunts for. This
-// decides visibility only; each client chooses how to draw them (on the web
-// an interrupted notice is a plain line that can fold into a run).
+// decides visibility only; each client chooses how to draw them.
 const CRITICAL_SYSTEM_EVENT_KINDS = new Set(["error", "warning", "interrupted"]);
 const TOOL_REPAIR_EVENT_KIND = "tool_repair";
 
