@@ -5,6 +5,7 @@ import {
   acquireThreadSubscription,
   currentTranscriptState,
   hydrateThread,
+  makeTranscriptDisplayConfig,
   type ThreadModel,
   type ThreadTurnsListResponse,
   WireError,
@@ -13,8 +14,13 @@ import { currentRead, textDelta } from "@evener/appwire-client/testing/currentTr
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { FakeSocket } from "@evener/appwire-client/testing/fakeSocket";
+import { cleanup, render, screen } from "@testing-library/react";
 import { IDBDatabase, IDBFactory } from "fake-indexeddb";
+import { createElement } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { TranscriptBody } from "../panes/session/transcript/TranscriptBody";
+import { focusedModel } from "../shell/palette/paletteContext";
+import { findInSessionMatches } from "../shell/palette/search";
 import { installBackgroundTranscriptOptionsForTests } from "./backgroundTranscriptOptions";
 import { connectionStore } from "./connection";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
@@ -124,6 +130,42 @@ async function connectRealClientWithSocket(): Promise<{ client: AppwireClient; s
   await ready;
   connectionStore.getState().connect(client);
   return { client, socket };
+}
+
+// A genuine older-history page: one versioned turn carrying the given agent
+// message texts, plus the cursor that names the next page down. `length` is the
+// transcript length at read time; it stays at or above the latest window's own
+// length so the versioned merge accepts the page rather than reading it stale.
+function olderPage(
+  turnId: string,
+  itemTexts: readonly string[],
+  nextCursor: string | undefined,
+  length = 60,
+): ThreadTurnsListResponse {
+  return {
+    data: [
+      {
+        id: turnId,
+        itemsView: "full",
+        status: "completed",
+        version: 1,
+        items: itemTexts.map((text, index) => ({
+          type: "agentMessage",
+          id: `${turnId}-item-${index}`,
+          transcriptKey: `apptranscript-item-v2:${turnId}:0:${index}`,
+          turnId,
+          position: { entry: 1, item: index },
+          version: 1,
+          text,
+        })),
+      },
+    ],
+    nextCursor,
+    bootGeneration: "1",
+    epoch: 1,
+    snapshot: { incarnation: "inc-1", length },
+    authoritative: false,
+  };
 }
 
 function observeThreadReadSettlements(client: AppwireClient) {
@@ -677,6 +719,7 @@ describe("background thread claims", () => {
         hold?.release();
         client.close();
         await (release ?? lease.release());
+        resetThreadsStoreForTests();
         restoreOptions();
       }
     },
@@ -718,6 +761,7 @@ describe("background thread claims", () => {
       heldWrite?.release();
       client.close();
       await Promise.all([firstRelease ?? firstOwner.release(), replacementRelease ?? replacement?.release()]);
+      resetThreadsStoreForTests();
       restoreOptions();
     }
   });
@@ -776,6 +820,7 @@ describe("background thread claims", () => {
       try {
         await background.release();
       } finally {
+        resetThreadsStoreForTests();
         restoreOptions();
       }
     }
@@ -1382,6 +1427,7 @@ describe("background thread claims", () => {
       threadsStore.getState().releaseThread("local:one");
       await Promise.all([first.release(), second.release()]);
       await settleBackgroundTranscriptsForTests();
+      resetThreadsStoreForTests();
       restoreOptions();
     }
   });
@@ -1445,8 +1491,12 @@ describe("background thread claims", () => {
       await first.ready;
       await settleBackgroundTranscriptsForTests();
       expect(threadsStore.getState().threads.has("local:one")).toBe(false);
-      await threadsStore.getState().ensureThread("local:one");
+      // Register the cleanup before the await resolves: ensureThread claims the
+      // pane refcount synchronously, so a rejection still leaves a claim that
+      // the failure path must release.
+      const pane = threadsStore.getState().ensureThread("local:one");
       paneHeld = true;
+      await pane;
       const held = threadsStore.getState().threads.get("local:one");
       expect(held).toBeDefined();
       const cursor = held?.olderCursor;
@@ -1462,7 +1512,464 @@ describe("background thread claims", () => {
     } finally {
       if (paneHeld) threadsStore.getState().releaseThread("local:one");
       await Promise.all([first.release(), second.release()]);
+      resetThreadsStoreForTests();
       restoreOptions();
+    }
+  });
+
+  test("round-trips multiple older pages, a nonresident update and further paging through disk eviction and reopen", async () => {
+    const restoreOptions = installBackgroundTranscriptOptionsForTests({ residentBytes: 0, pendingBytes: 64 * 1024 });
+    resetThreadsStoreForTests();
+    setSessionCacheAdapterForTests(cache);
+    const fake = new FakeClient("ready");
+    fake.on("thread/read", ({ ref }) => ({ ...currentRead(ref ?? "local:one"), olderCursor: "cursor_latest" }));
+    fake.on("thread/unsubscribe", () => ({}));
+    const listCursors: string[] = [];
+    fake.on("thread/turns/list", ({ cursor }) => {
+      listCursors.push(cursor ?? "");
+      switch (cursor) {
+        case "cursor_latest":
+          return olderPage("turn_page1", ["page-one-item"], "cursor_p1");
+        case "cursor_p1":
+          return olderPage("turn_page2", ["page-two-item", "unique-later-item🙂"], "cursor_p2");
+        case "cursor_p2":
+          return olderPage("turn_page3", ["beyond-oldest-item"], undefined);
+        default:
+          throw new Error(`unexpected older-page cursor ${cursor}`);
+      }
+    });
+    connectionStore.getState().connect(fake);
+    const background = acquireBackgroundThread("local:one");
+    let paneHeld = false;
+    try {
+      await background.ready;
+      await settleBackgroundTranscriptsForTests();
+      expect(threadsStore.getState().threads.has("local:one")).toBe(false);
+
+      const pane = threadsStore.getState().ensureThread("local:one");
+      paneHeld = true;
+      await pane;
+      await threadsStore.getState().loadOlderTurns("local:one");
+      await threadsStore.getState().loadOlderTurns("local:one");
+      const loaded = threadsStore.getState().threads.get("local:one");
+      if (!loaded) throw new Error("expected the paged model");
+      expect(loaded.history?.turns.map((turn) => turn.id)).toEqual(
+        expect.arrayContaining(["turn_page1", "turn_page2"]),
+      );
+      expect(loaded.turns.flatMap((turn) => turn.items).map((item) => item.text)).toContain("unique-later-item🙂");
+      expect(loaded.olderCursor).toBe("cursor_p2");
+      const readsBeforeEviction = fake.calls.filter((call) => call.method === "thread/read").length;
+
+      // Close the last pane while background demand remains; force disk eviction.
+      threadsStore.getState().releaseThread("local:one");
+      paneHeld = false;
+      await settleBackgroundTranscriptsForTests();
+      expect(threadsStore.getState().threads.has("local:one")).toBe(false);
+
+      // Deliver a live update while the model is nonresident.
+      fake.emitNotification(textDelta("local:one", "-live-while-nonresident"));
+      await settleBackgroundTranscriptsForTests();
+
+      // Reopen locally: promotion from disk, no additional thread/read.
+      const reopen = threadsStore.getState().ensureThread("local:one");
+      paneHeld = true;
+      await reopen;
+      expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(readsBeforeEviction);
+      const reopened = threadsStore.getState().threads.get("local:one");
+      if (!reopened) throw new Error("expected the reopened model");
+      expect(reopened.history?.turns.map((turn) => turn.id)).toEqual(
+        expect.arrayContaining(["turn_page1", "turn_page2"]),
+      );
+      const reopenedText = reopened.turns.flatMap((turn) => turn.items).map((item) => item.text);
+      expect(reopenedText).toContain("unique-later-item🙂");
+      expect(reopenedText.join("")).toContain("alpha-live-while-nonresident");
+      expect(reopened.olderCursor).toBe("cursor_p2");
+
+      // Page further with the preserved cursor and reach below the prior oldest boundary.
+      await threadsStore.getState().loadOlderTurns("local:one");
+      expect(listCursors).toEqual(["cursor_latest", "cursor_p1", "cursor_p2"]);
+      expect(
+        threadsStore
+          .getState()
+          .threads.get("local:one")
+          ?.turns.flatMap((turn) => turn.items)
+          .map((item) => item.text),
+      ).toContain("beyond-oldest-item");
+    } finally {
+      if (paneHeld) threadsStore.getState().releaseThread("local:one");
+      try {
+        await background.release();
+      } finally {
+        resetThreadsStoreForTests();
+        restoreOptions();
+      }
+    }
+  });
+
+  test("a pane-held paged model and its Find match survive an oversized background completion, then evict on release", async () => {
+    const restoreOptions = installBackgroundTranscriptOptionsForTests({
+      residentBytes: 16 * 1024,
+      pendingBytes: 8 * 1024 * 1024,
+    });
+    resetThreadsStoreForTests();
+    setSessionCacheAdapterForTests(cache);
+    const fake = new FakeClient("ready");
+    fake.on("thread/read", ({ ref }) => {
+      const response = currentRead(ref ?? "local:one");
+      response.olderCursor = "cursor_latest";
+      if (ref === "local:pressure") response.overlay![0]!.item.text = "p".repeat(256 * 1024);
+      return response;
+    });
+    fake.on("thread/unsubscribe", () => ({}));
+    fake.on("thread/turns/list", () => olderPage("turn_page1", ["page-one-item", "unique-later-item🙂"], "cursor_p1"));
+    connectionStore.getState().connect(fake);
+    const background = acquireBackgroundThread("local:one");
+    let paneHeld = true;
+    const pressure = acquireBackgroundThread("local:pressure");
+    try {
+      await background.ready;
+      const pane = threadsStore.getState().ensureThread("local:one");
+      await pane;
+      await threadsStore.getState().loadOlderTurns("local:one");
+      const held = threadsStore.getState().threads.get("local:one");
+      if (!held) throw new Error("expected the pane-held paged model");
+      const readsBeforePressure = fake.calls.filter((call) => call.method === "thread/read").length;
+
+      await pressure.ready;
+      await settleBackgroundTranscriptsForTests();
+
+      expect(threadsStore.getState().threads.get("local:one")).toBe(held);
+      expect(threadsStore.getState().threads.get("local:one")?.olderCursor).toBe("cursor_p1");
+      expect(threadsStore.getState().threads.get("local:one")?.history).toBe(held.history);
+      expect(threadsStore.getState().threads.has("local:pressure")).toBe(false);
+      expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(readsBeforePressure);
+
+      // The palette's in-session Find reads the live pane model, not a lease.
+      const matches = findInSessionMatches(focusedModel("local:one")!, "unique-later-item");
+      expect(matches.map((match) => match.itemId)).toContain("turn_page1-item-1");
+      expect(focusedModel("local:one")).toBe(held);
+
+      threadsStore.getState().releaseThread("local:one");
+      paneHeld = false;
+      await settleBackgroundTranscriptsForTests();
+      expect(threadsStore.getState().threads.has("local:one")).toBe(false);
+    } finally {
+      if (paneHeld) threadsStore.getState().releaseThread("local:one");
+      await Promise.all([background.release(), pressure.release()]);
+      resetThreadsStoreForTests();
+      restoreOptions();
+    }
+  });
+
+  test("a held older-page request keeps its history and cursor through an oversized background completion", async () => {
+    const restoreOptions = installBackgroundTranscriptOptionsForTests({
+      residentBytes: 16 * 1024,
+      pendingBytes: 8 * 1024 * 1024,
+    });
+    resetThreadsStoreForTests();
+    setSessionCacheAdapterForTests(cache);
+    const fake = new FakeClient("ready");
+    fake.on("thread/read", ({ ref }) => {
+      const response = currentRead(ref ?? "local:one");
+      response.olderCursor = "cursor_latest";
+      if (ref === "local:pressure") response.overlay![0]!.item.text = "p".repeat(256 * 1024);
+      return response;
+    });
+    fake.on("thread/unsubscribe", () => ({}));
+    const pageEntered = deferred<void>();
+    const heldPage = deferred<ThreadTurnsListResponse>();
+    fake.on("thread/turns/list", ({ cursor }) => {
+      if (cursor === "cursor_latest")
+        return olderPage("turn_page1", ["page-one-item", "unique-later-item🙂"], "cursor_p1");
+      pageEntered.resolve();
+      return heldPage.promise;
+    });
+    connectionStore.getState().connect(fake);
+    let paneHeld = true;
+    const pressure = acquireBackgroundThread("local:pressure");
+    let loading: Promise<void> | undefined;
+    try {
+      await threadsStore.getState().ensureThread("local:one");
+      await threadsStore.getState().loadOlderTurns("local:one");
+      const held = threadsStore.getState().threads.get("local:one");
+      if (!held) throw new Error("expected the paged model");
+      const readsBeforePressure = fake.calls.filter((call) => call.method === "thread/read").length;
+
+      loading = threadsStore.getState().loadOlderTurns("local:one");
+      await pageEntered.promise;
+      // Release the pane while the page request is still in flight: the history
+      // hold, not the pane, keeps the model for the duration.
+      threadsStore.getState().releaseThread("local:one");
+      paneHeld = false;
+      expect(threadsStore.getState().threads.get("local:one")).toBe(held);
+
+      await pressure.ready;
+      await settleBackgroundTranscriptsForTests();
+      expect(threadsStore.getState().threads.get("local:one")).toBe(held);
+      expect(threadsStore.getState().threads.get("local:one")?.olderCursor).toBe("cursor_p1");
+      expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(readsBeforePressure);
+
+      // Reacquire the pane so the completed page can be observed after the
+      // history hold ends; the in-flight page request continues underneath it.
+      const reacquire = threadsStore.getState().ensureThread("local:one");
+      paneHeld = true;
+      await reacquire;
+      expect(threadsStore.getState().threads.get("local:one")).toBe(held);
+      heldPage.resolve(olderPage("turn_page2", ["later-page-two-item"], "cursor_p2"));
+      await loading;
+      loading = undefined;
+      const merged = threadsStore.getState().threads.get("local:one");
+      expect(merged?.turns.flatMap((turn) => turn.items).map((item) => item.text)).toContain("later-page-two-item");
+      expect(merged?.olderCursor).toBe("cursor_p2");
+
+      threadsStore.getState().releaseThread("local:one");
+      paneHeld = false;
+      await settleBackgroundTranscriptsForTests();
+      expect(threadsStore.getState().threads.has("local:one")).toBe(false);
+    } finally {
+      heldPage.resolve(olderPage("turn_page2", ["later-page-two-item"], "cursor_p2"));
+      await loading?.catch(() => undefined);
+      if (paneHeld) threadsStore.getState().releaseThread("local:one");
+      await pressure.release();
+      resetThreadsStoreForTests();
+      restoreOptions();
+    }
+  });
+
+  test("a durable mutation pin keeps its paged model through an oversized background completion until the receipt settles", async () => {
+    const restoreOptions = installBackgroundTranscriptOptionsForTests({
+      residentBytes: 16 * 1024,
+      pendingBytes: 8 * 1024 * 1024,
+    });
+    resetThreadsStoreForTests();
+    setSessionCacheAdapterForTests(cache);
+    const storage = mutationStorage();
+    const fake = new FakeClient("ready");
+    fake.on("thread/read", ({ ref }) => {
+      const response = currentRead(ref ?? "local:one");
+      response.olderCursor = "cursor_latest";
+      if (ref === "local:pressure") response.overlay![0]!.item.text = "p".repeat(256 * 1024);
+      return response;
+    });
+    fake.on("thread/unsubscribe", () => ({}));
+    fake.on("thread/turns/list", () => olderPage("turn_page1", ["page-one-item", "unique-later-item🙂"], "cursor_p1"));
+    const started = deferred<{ clientMutationId: string }>();
+    const response = deferred<{
+      turn: { id: string; status: "inProgress"; itemsView: string };
+      receipt: { clientMutationId: string; disposition: "applied"; threadId: string; projectionState: "reflected" };
+    }>();
+    fake.on("turn/start", (params) => {
+      started.resolve(params);
+      return response.promise;
+    });
+    connectionStore.getState().connect(fake);
+    let paneHeld = true;
+    const pressure = acquireBackgroundThread("local:pressure");
+    let sending: Promise<void> | undefined;
+    try {
+      await threadsStore.getState().ensureThread("local:one");
+      await threadsStore.getState().loadOlderTurns("local:one");
+      const held = threadsStore.getState().threads.get("local:one");
+      if (!held) throw new Error("expected the paged model");
+
+      // A durable explicit send pins the ref. Its dispatch response is held, so
+      // the outbox row (and the pin) stays durable across the pane release.
+      sending = threadsStore.getState().send("local:one", "pinned send", [], [], [], []);
+      const params = await started.promise;
+      threadsStore.getState().releaseThread("local:one");
+      paneHeld = false;
+      expect(threadsStore.getState().threads.get("local:one")).toBe(held);
+
+      await pressure.ready;
+      await settleBackgroundTranscriptsForTests();
+      expect(threadsStore.getState().threads.get("local:one")).toBe(held);
+      expect(threadsStore.getState().threads.get("local:one")?.olderCursor).toBe("cursor_p1");
+      expect(
+        threadsStore
+          .getState()
+          .threads.get("local:one")
+          ?.turns.flatMap((turn) => turn.items)
+          .map((item) => item.text),
+      ).toContain("unique-later-item🙂");
+
+      response.resolve({
+        turn: { id: "turn_pinned", status: "inProgress", itemsView: "" },
+        receipt: {
+          clientMutationId: params.clientMutationId,
+          disposition: "applied",
+          threadId: "thr_local:one",
+          projectionState: "reflected",
+        },
+      });
+      await sending;
+      sending = undefined;
+      await expect(storage.getOutbox(params.clientMutationId)).resolves.toBeDefined();
+
+      const retired = deferred<void>();
+      const unsubscribe = threadsStore.subscribe((state) => {
+        if (!state.threads.has("local:one")) retired.resolve();
+      });
+      try {
+        await storage.settleReceipt(params.clientMutationId, "reflected");
+        await retired.promise;
+      } finally {
+        unsubscribe();
+      }
+      await settleBackgroundTranscriptsForTests();
+      expect(threadsStore.getState().threads.has("local:one")).toBe(false);
+    } finally {
+      if (paneHeld) threadsStore.getState().releaseThread("local:one");
+      response.resolve({
+        turn: { id: "turn_pinned", status: "inProgress", itemsView: "" },
+        receipt: {
+          clientMutationId: "background-mutation-cleanup",
+          disposition: "applied",
+          threadId: "thr_local:one",
+          projectionState: "reflected",
+        },
+      });
+      await sending?.catch(() => undefined);
+      await pressure.release();
+      resetThreadsStoreForTests();
+      restoreOptions();
+    }
+  });
+
+  test("renders one completed transcript copy after history retires the live overlay", async () => {
+    const restoreOptions = installBackgroundTranscriptOptionsForTests({
+      residentBytes: 0,
+      pendingBytes: 8 * 1024 * 1024,
+    });
+    resetThreadsStoreForTests();
+    setSessionCacheAdapterForTests(cache);
+    const fake = new FakeClient("ready");
+    fake.on("thread/read", ({ ref }) => ({ ...currentRead(ref ?? "local:one"), olderCursor: "cursor_latest" }));
+    fake.on("thread/unsubscribe", () => ({}));
+    fake.on("thread/turns/list", () => olderPage("turn_old", ["older-completed-item"], "cursor_next"));
+    connectionStore.getState().connect(fake);
+    const background = acquireBackgroundThread("local:one");
+    let paneHeld = false;
+    let rendered: ReturnType<typeof render> | undefined;
+    try {
+      await background.ready;
+      await settleBackgroundTranscriptsForTests();
+      expect(threadsStore.getState().threads.has("local:one")).toBe(false);
+
+      // Stream canonical text and a tool output while the model is disk-resident.
+      fake.emitNotification({
+        method: "overlay/upserted",
+        params: {
+          threadId: "thr_local:one",
+          ref: "local:one",
+          item: {
+            key: "stream:s1:tool",
+            kind: "stream",
+            streamId: "s1",
+            roundId: "r1",
+            turnId: "turn_1",
+            item: {
+              type: "commandExecution",
+              id: "tool1",
+              turnId: "turn_1",
+              roundId: "r1",
+              callId: "call_tool",
+              output: "",
+              status: "inProgress",
+            },
+          },
+        },
+      } as AnyNotification);
+      fake.emitNotification(textDelta("local:one", "-streamed"));
+      fake.emitNotification({
+        method: "overlay/delta",
+        params: {
+          threadId: "thr_local:one",
+          ref: "local:one",
+          key: "stream:s1:tool",
+          field: "output",
+          delta: "-tool-streamed",
+        },
+      } as AnyNotification);
+      await settleBackgroundTranscriptsForTests();
+
+      // Promote the disk checkpoint into the pane.
+      const pane = threadsStore.getState().ensureThread("local:one");
+      paneHeld = true;
+      await pane;
+
+      // Complete the turn: the recorded-history update supersedes the overlay.
+      fake.emitNotification({
+        method: "history/updated",
+        params: {
+          threadId: "thr_local:one",
+          ref: "local:one",
+          bootGeneration: "1",
+          epoch: 1,
+          snapshot: { incarnation: "inc-1", length: 1 },
+          turns: [{ id: "turn_1", status: "completed", itemsView: "full", items: [] }],
+          items: [
+            {
+              type: "agentMessage",
+              id: "a1",
+              turnId: "turn_1",
+              roundId: "r1",
+              transcriptKey: "apptranscript-item-v2:turn_1:0:0",
+              position: { entry: 1, item: 0 },
+              version: 1,
+              text: "alpha-streamed-final",
+              status: "completed",
+            },
+            {
+              type: "commandExecution",
+              id: "tool1",
+              turnId: "turn_1",
+              roundId: "r1",
+              callId: "call_tool",
+              transcriptKey: "apptranscript-item-v2:turn_1:0:1",
+              position: { entry: 1, item: 1 },
+              version: 1,
+              output: "tool-final-output",
+              status: "completed",
+            },
+          ],
+        },
+      } as AnyNotification);
+
+      const completed = threadsStore.getState().threads.get("local:one");
+      if (!completed) throw new Error("expected the completed model");
+      expect(completed.overlay).toEqual({});
+      expect(completed.olderCursor).toBe("cursor_latest");
+
+      // The paging boundary continues past the completed turn.
+      await threadsStore.getState().loadOlderTurns("local:one");
+      const paged = threadsStore.getState().threads.get("local:one");
+      if (!paged) throw new Error("expected the paged model");
+      expect(paged.olderCursor).toBe("cursor_next");
+      expect(paged.turns.flatMap((turn) => turn.items).map((item) => item.text)).toContain("older-completed-item");
+
+      rendered = render(
+        createElement(TranscriptBody, {
+          model: paged,
+          config: makeTranscriptDisplayConfig({ kind: "preset", level: "full" }),
+          surface: "preview",
+          disclosureScope: "completed-copy",
+        }),
+      );
+      expect(screen.getAllByText("alpha-streamed-final")).toHaveLength(1);
+      expect(screen.getAllByText("tool-final-output")).toHaveLength(1);
+      // No leftover overlay copy survives the recorded-history update.
+      expect(screen.queryByText("alpha-streamed")).toBeNull();
+      expect(screen.queryByText("-tool-streamed")).toBeNull();
+    } finally {
+      rendered?.unmount();
+      cleanup();
+      if (paneHeld) threadsStore.getState().releaseThread("local:one");
+      try {
+        await background.release();
+      } finally {
+        resetThreadsStoreForTests();
+        restoreOptions();
+      }
     }
   });
 
