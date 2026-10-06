@@ -18,18 +18,24 @@ import {
 	type Thread,
 	type ThreadItem,
 	type ThreadReadResponse,
+	type TurnModel,
 } from "@evener/appwire-client";
 import {
 	memoryContextWireCases,
 	memoryContextWireItem,
 } from "@evener/appwire-client/testing/memoryContextWireFixtures";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { wireThread } from "@evener/appwire-client/testing/notifications";
 import { act, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createConversationService } from "../../mobile/src/services/conversation";
+import { createActivityStore } from "../../mobile/src/state/activity";
+import { createConversationStore } from "../../mobile/src/state/conversation";
 import { nativeDisclosureStore } from "./nativeDisclosure";
-import { projectConversation } from "./projectedRows";
+import { MAX_ITEM_BYTES, projectConversation } from "./projectedRows";
 import { pressable, render, renderedText, textOf } from "./renderNative.testkit";
 import { displayForLevel } from "./session/detailLevels";
-import { sessionRows } from "./session/transcriptRows";
+import { hideAnswerMessages, sessionRows } from "./session/transcriptRows";
 import { TimelineItem } from "./TimelineItem";
 import type { TimelineRow } from "./timeline";
 import { groupTimeline } from "./timeline";
@@ -129,13 +135,22 @@ interface MountOptions {
 	hubId?: string;
 	sessionRef?: string;
 	expandByDefault?: boolean;
+	sourceTurns?: readonly TurnModel[];
 }
 
 function mountRow(
 	row: TimelineRow,
-	{ hubId = "hub", sessionRef = "session-1", expandByDefault = false }: MountOptions = {},
+	{ hubId = "hub", sessionRef = "session-1", expandByDefault = false, sourceTurns }: MountOptions = {},
 ) {
-	return render(<TimelineItem item={row} hubId={hubId} sessionRef={sessionRef} expandByDefault={expandByDefault} />);
+	return render(
+		<TimelineItem
+			item={row}
+			hubId={hubId}
+			sessionRef={sessionRef}
+			expandByDefault={expandByDefault}
+			sourceTurns={sourceTurns}
+		/>,
+	);
 }
 
 function findRow(rows: TimelineRow[], id: string): TimelineRow {
@@ -461,5 +476,89 @@ describe("ordinary system rows keep their existing treatment", () => {
 		expect(row.label).toBeUndefined();
 		expect(row.memoryContext).toBeUndefined();
 		expect(absent(tree, "memory-context-scope-state")).toBe(true);
+	});
+});
+
+// --- a store-bounded refresh keeps the complete original in Source ----------
+
+describe("a store-bounded refresh keeps the complete original beyond the row bound", () => {
+	const TAIL = "SOURCE_TAIL_SENTINEL";
+	const oversizedText = "x".repeat(MAX_ITEM_BYTES) + TAIL;
+	const oversized = (id: string, raw: unknown): ThreadItem =>
+		({
+			id,
+			turnId: "turn_1",
+			type: "systemMessage",
+			eventKind: "memory-context",
+			status: "completed",
+			text: oversizedText,
+			...(raw ? { raw } : {}),
+		}) as unknown as ThreadItem;
+
+	it("opens the malformed fallback and the later valid Source to the complete original, default closed", async () => {
+		const malformed = oversized("mem-bad", undefined);
+		const valid = oversized("mem-good", {
+			memoryContext: { scope: "personal", state: "current", truncated: false, content: "a note" },
+		});
+		// Malformed first, valid later: the later valid observation still recovers.
+		const input = threadWith([malformed, valid]);
+		input.evener = { ...input.evener, capabilities: wireThread("ref-1").evener.capabilities };
+		const shipped = shippedConfig("mobile");
+		const hub = makeTranscriptDisplayConfig(shipped.content, { ...shipped.advanced, systemEvents: true });
+		const { config } = displayForLevel("full", hub);
+		const client = new FakeClient();
+		client.on("thread/read", () => ({ thread: input }));
+		client.on("thread/unsubscribe", () => ({}));
+		const service = createConversationService(client, { now: () => T0, resolveDisplayConfig: () => config });
+		const store = createConversationStore({ displayConfig: config });
+		const activity = createActivityStore();
+		try {
+			await store.getState().openProjected(service, activity.getState(), "ref-1");
+			const conversation = store.getState().conversation;
+			if (!conversation) throw new Error("no stored conversation");
+			const presentation = projectNativeTranscript(conversation, config);
+			const rows = hideAnswerMessages(sessionRows(groupTimeline(presentation.items), conversation.turns));
+			const byteLen = (text: string) => new TextEncoder().encode(text).length;
+
+			for (const [id, item] of [
+				["mem-bad", malformed],
+				["mem-good", valid],
+			] as const) {
+				const row = findRow(rows, id);
+				if (row.kind !== "notice") throw new Error(`no notice row ${id}`);
+				const original = item.text;
+				if (original === undefined) throw new Error(`no recorded text on ${id}`);
+				// The published display row is bounded; the canonical turn keeps it whole.
+				expect(byteLen(original)).toBeGreaterThan(MAX_ITEM_BYTES);
+				expect(byteLen(row.text)).toBe(MAX_ITEM_BYTES);
+				expect(row.text === original).toBe(false);
+				expect(row.text.endsWith(TAIL)).toBe(false);
+				const canonical = conversation.turns[0]?.items.find((source) => source.id === id);
+				expect(canonical?.text === original).toBe(true);
+
+				const tree = mountRow(row, {
+					sessionRef: `mem-bound-${id}`,
+					expandByDefault: presentation.expandByDefault,
+					sourceTurns: conversation.turns,
+				});
+				// Default closed at the expansion default.
+				expect(absent(tree, "memory-context-scope-state")).toBe(true);
+				expect(absent(tree, "memory-context-fallback")).toBe(true);
+				press(tree, MEMORY_CONTEXT_LABEL);
+				if (id === "mem-bad") {
+					// The malformed fallback opens as the complete original, tail included.
+					expect(textOf(requireFind(tree, "memory-context-fallback"))).toBe(original);
+				} else {
+					expect(textOf(requireFind(tree, "memory-context-scope-state"))).toContain("Personal memory · current");
+					press(tree, "Source");
+					expect(textOf(requireFind(tree, "memory-context-source-text"))).toBe(original);
+				}
+				act(() => tree.unmount());
+			}
+		} finally {
+			store.getState().close();
+			service.close();
+			client.close();
+		}
 	});
 });

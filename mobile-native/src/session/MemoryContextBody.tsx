@@ -9,8 +9,9 @@
 // data. Even when the observation is present, the Source shows the complete
 // recorded text verbatim, so syntax or content the Markdown renderer omits
 // (task checkboxes, images, escaped source, the delegate read-only suffix)
-// stays inspectable. That text is the row's own `text`, independent of the
-// decoded content.
+// stays inspectable. That text is the complete original resolved from the
+// retained canonical model the screen passes down (falling back to the row's
+// own display-bounded `text`), independent of the decoded content.
 import { useState } from "react";
 import { Text, View } from "react-native";
 import {

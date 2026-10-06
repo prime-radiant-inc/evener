@@ -263,9 +263,11 @@ export type MobileTimelineItem =
 				// The decoded automatic memory refresh, present only when the
 				// recorded raw.memoryContext validates. Absent means the payload
 				// could not be decoded, so an opened refresh falls back to its
-				// complete original text. `text` always carries that exact recorded
-				// message, decoded or not, so the literal Source is independent of
-				// the decoded content.
+				// complete original text. `text` carries that recorded message, decoded
+				// or not, but the row is a display-bounded copy: an opened refresh
+				// reads the complete original from the retained canonical model
+				// (TimelineItem's sourceTurns), so the literal Source is independent
+				// of the decoded content.
 				memoryContext?: MemoryContextObservation;
 				// A steer that delivers <delegate-notification> or
 				// <job-notification> blocks, parsed: the transcript reads it as
