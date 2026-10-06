@@ -5,6 +5,7 @@ import {
 } from "@evener/appwire-client";
 import { IDBConnection, requestResult, transactionCompletion, tryAbortTransaction } from "./idbConnection";
 import { trackProjectionWork } from "./projectionWork";
+import { countUtf8Bytes } from "./transcriptPayloadBudget";
 
 const DATABASE_NAME = "evener-session-cache";
 const DATABASE_VERSION = 2;
@@ -147,33 +148,6 @@ function decodeRecord(row: unknown): CachedSessionRecord | undefined {
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-// Exact UTF-8 byte count of `text` without materializing the whole encoding:
-// a cached record can reach the 32 MB cap, and encode() would hold a full
-// Uint8Array copy of it just to read its length. Each code-point-aligned
-// window is encoded into one reused chunk buffer; UTF-8 is a per-code-point
-// encoding, so the per-window written counts sum to exactly the number
-// encode().byteLength would report.
-function countUtf8Bytes(text: string): number {
-  const CHUNK_CODE_UNITS = 4_096;
-  // 3 bytes is the most any UTF-16 code unit contributes to UTF-8, so one
-  // window always fits the chunk in a single encodeInto pass.
-  const chunk = new Uint8Array(3 * CHUNK_CODE_UNITS);
-  const encoder = new TextEncoder();
-  let total = 0;
-  let offset = 0;
-  while (offset < text.length) {
-    let end = Math.min(offset + CHUNK_CODE_UNITS, text.length);
-    // A window must not end inside a surrogate pair: a lone half encodes as
-    // U+FFFD and would inflate the count.
-    const boundary = text.charCodeAt(end - 1);
-    if (end < text.length && boundary >= 0xd800 && boundary <= 0xdbff) end -= 1;
-    const { read, written } = encoder.encodeInto(text.slice(offset, end), chunk);
-    total += written;
-    offset += read;
-  }
-  return total;
 }
 
 export class SessionCacheIndexedDB {

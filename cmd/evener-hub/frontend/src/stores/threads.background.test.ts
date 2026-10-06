@@ -2,6 +2,8 @@ import "fake-indexeddb/auto";
 import {
   type AnyNotification,
   acquireThreadSubscription,
+  currentTranscriptState,
+  type ThreadModel,
   type ThreadTurnsListResponse,
   WireError,
 } from "@evener/appwire-client";
@@ -10,18 +12,22 @@ import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { IDBDatabase, IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { installBackgroundTranscriptOptionsForTests } from "./backgroundTranscriptOptions";
 import { connectionStore } from "./connection";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 import { SessionCacheIndexedDB } from "./sessionCacheIndexedDB";
 import { holdIndexedDBEvent, holdNextWriteTransaction, nextRealTask } from "./testing/stalledIndexedDB";
 import {
   acquireBackgroundThread,
+  backgroundTranscriptSnapshotForTests,
   installHydrationRetrySchedulerForTests,
   resetThreadsStoreForTests,
   setMutationStorageForTests,
   setSessionCacheAdapterForTests,
+  settleBackgroundTranscriptsForTests,
   threadsStore,
 } from "./threads";
+import { encodedPayloadBytes } from "./transcriptPayloadBudget";
 
 const databaseName = `background-thread-${crypto.randomUUID()}`;
 let cache: SessionCacheIndexedDB;
@@ -95,7 +101,327 @@ function unsubscriptions(fake: FakeClient): number {
   return fake.calls.filter((call) => call.method === "thread/unsubscribe").length;
 }
 
+function independentJsonBytes(value: unknown): number {
+  const encoded = JSON.stringify(value);
+  if (encoded === undefined) return Number.POSITIVE_INFINITY;
+  return new TextEncoder().encode(encoded).byteLength;
+}
+
 describe("background thread claims", () => {
+  test("promotes a zero-resident current checkpoint without another thread/read", async () => {
+    const restoreOptions = installBackgroundTranscriptOptionsForTests({ residentBytes: 0, pendingBytes: 4096 });
+    resetThreadsStoreForTests();
+    setSessionCacheAdapterForTests(cache);
+    const fake = connectCurrentClient();
+    const background = acquireBackgroundThread("local:one");
+    let releasePane: (() => void) | undefined;
+    try {
+      await background.ready;
+      await settleBackgroundTranscriptsForTests();
+      expect(threadsStore.getState().threads.has("local:one")).toBe(false);
+      expect(backgroundTranscriptSnapshotForTests().diskWorkers).toBe(0);
+      fake.emitNotification(textDelta("local:one", "-disk"));
+      expect(backgroundTranscriptSnapshotForTests().pendingBytes).toBeGreaterThan(0);
+      const reads = fake.calls.filter((call) => call.method === "thread/read").length;
+      await threadsStore.getState().ensureThread("local:one");
+      releasePane = () => threadsStore.getState().releaseThread("local:one");
+      expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(reads);
+      expect(
+        threadsStore
+          .getState()
+          .threads.get("local:one")
+          ?.turns.flatMap((turn) => turn.items)
+          .map((item) => item.text)
+          .join(""),
+      ).toContain("alpha-disk");
+    } finally {
+      releasePane?.();
+      try {
+        await background.release();
+      } finally {
+        restoreOptions();
+      }
+    }
+  });
+
+  test("promotes once across a held current lookup and applies notifications on both sides", async () => {
+    const restoreOptions = installBackgroundTranscriptOptionsForTests({ residentBytes: 0, pendingBytes: 4096 });
+    resetThreadsStoreForTests();
+    setSessionCacheAdapterForTests(cache);
+    const fake = connectCurrentClient();
+    const background = acquireBackgroundThread("local:one");
+    let paneHeld = false;
+    let heldLookup: ReturnType<typeof holdNextWriteTransaction> | undefined;
+    let promotedAtPublication: ThreadModel | undefined;
+    const observePromotion = threadsStore.subscribe((state) => {
+      const model = state.threads.get("local:one");
+      if (model?.turns.flatMap((turn) => turn.items).some((item) => item.text?.includes("-during-lookup"))) {
+        promotedAtPublication = model;
+      }
+    });
+    try {
+      await background.ready;
+      await settleBackgroundTranscriptsForTests();
+      expect(threadsStore.getState().threads.has("local:one")).toBe(false);
+
+      const readCount = fake.calls.filter((call) => call.method === "thread/read").length;
+      heldLookup = holdNextWriteTransaction(["records", "meta", "current", "currentMeta"]);
+      const promotion = threadsStore.getState().ensureThread("local:one");
+      await heldLookup.reached;
+      const toolKey = "stream:round_tool/0:toolOutput";
+      fake.emitNotification({
+        method: "overlay/upserted",
+        params: {
+          threadId: "thr_local:one",
+          ref: "local:one",
+          item: {
+            key: toolKey,
+            kind: "stream",
+            turnId: "turn_1",
+            roundId: "round_tool",
+            streamId: "round_tool/0",
+            callId: "call_tool",
+            item: {
+              type: "commandExecution",
+              id: "item_tool",
+              turnId: "turn_1",
+              roundId: "round_tool",
+              callId: "call_tool",
+              status: "inProgress",
+            },
+          },
+        },
+      } as AnyNotification);
+      fake.emitNotification({
+        method: "overlay/delta",
+        params: { threadId: "thr_local:one", ref: "local:one", key: toolKey, field: "output", delta: "工具🙂" },
+      } as AnyNotification);
+      fake.emitNotification(textDelta("local:one", "-during-lookup"));
+      expect(backgroundTranscriptSnapshotForTests().pendingBytes).toBeGreaterThan(0);
+      heldLookup.release();
+      await promotion;
+      paneHeld = true;
+
+      const adopted = threadsStore.getState().threads.get("local:one");
+      expect(adopted).toBeDefined();
+      expect(adopted).toBe(promotedAtPublication);
+      fake.emitNotification({
+        method: "overlay/delta",
+        params: { threadId: "thr_local:one", ref: "local:one", key: toolKey, field: "output", delta: ":later" },
+      } as AnyNotification);
+      fake.emitNotification(textDelta("local:one", "-after-publication"));
+      const text =
+        threadsStore
+          .getState()
+          .threads.get("local:one")
+          ?.turns.flatMap((turn) => turn.items)
+          .map((item) => item.text)
+          .join("") ?? "";
+      expect(text).toContain("alpha-during-lookup-after-publication");
+      expect(text.split("-during-lookup")).toHaveLength(2);
+      expect(text.split("-after-publication")).toHaveLength(2);
+      const toolItems = adopted?.turns.flatMap((turn) => turn.items).filter((item) => item.id === "item_tool") ?? [];
+      expect(toolItems).toHaveLength(1);
+      expect(toolItems[0]?.output).toBe("工具🙂");
+      const afterNotifications = threadsStore.getState().threads.get("local:one");
+      expect(afterNotifications?.overlay?.[toolKey]?.item.output).toBe("工具🙂:later");
+      expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(readCount);
+      expect(fake.calls.filter((call) => ["turn/start", "turn/steer", "turn/queue"].includes(call.method))).toEqual([]);
+    } finally {
+      heldLookup?.release();
+      observePromotion();
+      if (paneHeld) threadsStore.getState().releaseThread("local:one");
+      await background.release();
+      resetThreadsStoreForTests();
+      restoreOptions();
+    }
+  });
+
+  test("accounts two completed hydrations and deltas while the real checkpoint transaction is held", async () => {
+    const restoreOptions = installBackgroundTranscriptOptionsForTests({
+      residentBytes: 1024,
+      pendingBytes: 4 * 1024 * 1024,
+    });
+    resetThreadsStoreForTests();
+    setSessionCacheAdapterForTests(cache);
+    const one = deferred<ReturnType<typeof currentRead>>();
+    const two = deferred<ReturnType<typeof currentRead>>();
+    const fake = new FakeClient("ready");
+    fake.on("thread/read", ({ ref }) => (ref === "local:one" ? one.promise : two.promise));
+    fake.on("thread/unsubscribe", () => ({}));
+    connectionStore.getState().connect(fake);
+    const first = acquireBackgroundThread("local:one");
+    const second = acquireBackgroundThread("local:two");
+    const transaction = holdNextWriteTransaction(["records", "meta", "current", "currentMeta"]);
+    const acceptedFrames: AnyNotification[] = [];
+    const writePayloads: Array<{ state: unknown; bytes: number; recordBytes: number }> = [];
+    const originalPutCurrent = cache.putCurrent.bind(cache);
+    const putCurrent = vi.spyOn(cache, "putCurrent").mockImplementation(async (record, now) => {
+      writePayloads.push({
+        state: record.state,
+        bytes: independentJsonBytes(record),
+        recordBytes: independentJsonBytes(record),
+      });
+      return originalPutCurrent(record, now);
+    });
+    const payload = (ref: string) => {
+      const response = currentRead(ref);
+      response.overlay![0]!.item.text = "x".repeat(1024 * 1024);
+      return response;
+    };
+    try {
+      await vi.waitFor(() => expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(2));
+      const firstResponse = payload("local:one");
+      one.resolve(firstResponse);
+      await transaction.reached;
+      const secondResponse = payload("local:two");
+      const secondHydration = waitForHydration("local:two", 1);
+      two.resolve(secondResponse);
+      await secondHydration;
+      expect(threadsStore.getState().threads.has("local:two")).toBe(true);
+
+      // The first write payload is retained inside the real cache put call while
+      // its four-store IndexedDB transaction is held. The second decoded model
+      // remains in the real store. Measure those concrete objects independently.
+      const firstWrite = writePayloads[0];
+      expect(firstWrite).toBeDefined();
+      const heldSnapshot = backgroundTranscriptSnapshotForTests();
+      const firstBodyBytes = independentJsonBytes(firstWrite?.state);
+      const secondModel = threadsStore.getState().threads.get("local:two");
+      expect(secondModel).toBeDefined();
+      const secondStateBytes = independentJsonBytes(currentTranscriptState(secondModel!));
+      expect(firstBodyBytes).toBeGreaterThan(1024);
+      expect(secondStateBytes).toBeGreaterThan(1024);
+      expect(heldSnapshot.workerBytes).toBeGreaterThanOrEqual(firstBodyBytes);
+      expect(firstWrite?.recordBytes).toBeGreaterThan(firstBodyBytes);
+      expect(heldSnapshot.pendingBytes + heldSnapshot.residentBytes).toBeGreaterThanOrEqual(secondStateBytes);
+      expect(firstBodyBytes + secondStateBytes).toBeGreaterThan(heldSnapshot.residentBytes);
+
+      for (let i = 0; i < 16; i += 1) {
+        const frame = textDelta("local:one", "🙂".repeat(1024));
+        acceptedFrames.push(frame);
+        fake.emitNotification(frame);
+        const snapshot = backgroundTranscriptSnapshotForTests();
+        expect(snapshot.residentBytes).toBeLessThanOrEqual(1024);
+        expect(snapshot.pendingBytes).toBeLessThanOrEqual(4 * 1024 * 1024);
+        expect(snapshot.diskWorkers).toBeLessThanOrEqual(1);
+        expect(snapshot.networkHydrations).toBeLessThanOrEqual(2);
+        expect(snapshot.workerBytes).toBeLessThanOrEqual(32 * 1024 * 1024);
+      }
+      expect(acceptedFrames.every((frame) => independentJsonBytes(frame) > 0)).toBe(true);
+      expect(backgroundTranscriptSnapshotForTests().pendingBytes).toBeGreaterThanOrEqual(
+        acceptedFrames.reduce((sum, frame) => sum + independentJsonBytes(frame), 0),
+      );
+      expect(encodedPayloadBytes({ text: "🙂", raw: { output: ["工具", 7] } })).toBe(
+        new TextEncoder().encode(JSON.stringify({ text: "🙂", raw: { output: ["工具", 7] } })).byteLength,
+      );
+      expect(backgroundTranscriptSnapshotForTests().pendingBytes).toBeGreaterThan(0);
+      transaction.release();
+      await settleBackgroundTranscriptsForTests();
+      const completed = backgroundTranscriptSnapshotForTests();
+      expect(completed.diskWorkers).toBe(0);
+      expect(completed.refs.get("local:one")?.current).toBe(true);
+      expect(completed.refs.get("local:two")?.current).toBe(true);
+      const readsBeforePromotion = fake.calls.filter((call) => call.method === "thread/read").length;
+      await threadsStore.getState().ensureThread("local:one");
+      const promoted = threadsStore.getState().threads.get("local:one");
+      const text =
+        promoted?.turns
+          .flatMap((turn) => turn.items)
+          .map((item) => item.text)
+          .join("") ?? "";
+      expect(text.match(/🙂/gu)).toHaveLength(1024 * 16);
+      expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(readsBeforePromotion);
+    } finally {
+      transaction.release();
+      putCurrent.mockRestore();
+      threadsStore.getState().releaseThread("local:one");
+      await Promise.all([first.release(), second.release()]);
+      await settleBackgroundTranscriptsForTests();
+      restoreOptions();
+    }
+  });
+
+  test("sizes each resident text delta without serializing the whole retained transcript", async () => {
+    const fake = new FakeClient("ready");
+    fake.on("thread/read", ({ ref }) => {
+      const response = currentRead(ref ?? "local:one");
+      response.overlay![0]!.item.text = "x".repeat(256 * 1024);
+      return response;
+    });
+    fake.on("thread/unsubscribe", () => ({}));
+    connectionStore.getState().connect(fake);
+    const background = acquireBackgroundThread("local:one");
+    const originalStringify = JSON.stringify.bind(JSON);
+    const stringify = vi.spyOn(JSON, "stringify");
+    try {
+      await background.ready;
+      await settleBackgroundTranscriptsForTests();
+      const model = threadsStore.getState().threads.get("local:one");
+      expect(model).toBeDefined();
+      const retainedStateBytes = new TextEncoder().encode(originalStringify(currentTranscriptState(model!))).byteLength;
+      expect(retainedStateBytes).toBeGreaterThan(128 * 1024);
+      stringify.mockClear();
+
+      for (let index = 0; index < 8; index += 1) {
+        fake.emitNotification(textDelta("local:one", `🙂${index}`));
+      }
+
+      const serializedArguments = stringify.mock.calls.map(([value]) => value);
+      const serializedSizes = serializedArguments.map((value) => {
+        const encoded = originalStringify(value);
+        return encoded === undefined ? Number.POSITIVE_INFINITY : new TextEncoder().encode(encoded).byteLength;
+      });
+      expect(serializedSizes).toHaveLength(8);
+      expect(Math.max(...serializedSizes)).toBeLessThan(retainedStateBytes / 2);
+      expect(threadsStore.getState().threads.get("local:one")).not.toBe(model);
+      expect(
+        threadsStore
+          .getState()
+          .threads.get("local:one")
+          ?.turns.flatMap((turn) => turn.items)
+          .map((item) => item.text)
+          .join(""),
+      ).toContain("🙂0🙂1🙂2🙂3🙂4🙂5🙂6🙂7");
+    } finally {
+      stringify.mockRestore();
+      await background.release();
+    }
+  });
+
+  test("preserves a pane-held history window and cursor while another background ref is under pressure", async () => {
+    const restoreOptions = installBackgroundTranscriptOptionsForTests({ residentBytes: 0, pendingBytes: 4096 });
+    resetThreadsStoreForTests();
+    setSessionCacheAdapterForTests(cache);
+    const fake = connectCurrentClient();
+    const first = acquireBackgroundThread("local:one");
+    const second = acquireBackgroundThread("local:two");
+    let paneHeld = false;
+    try {
+      await first.ready;
+      await settleBackgroundTranscriptsForTests();
+      expect(threadsStore.getState().threads.has("local:one")).toBe(false);
+      await threadsStore.getState().ensureThread("local:one");
+      paneHeld = true;
+      const held = threadsStore.getState().threads.get("local:one");
+      expect(held).toBeDefined();
+      const cursor = held?.olderCursor;
+      const heldHistory = held?.history;
+
+      await second.ready;
+      await settleBackgroundTranscriptsForTests();
+      expect(backgroundTranscriptSnapshotForTests().residentBytes).toBe(0);
+      expect(threadsStore.getState().threads.get("local:one")).toBe(held);
+      expect(threadsStore.getState().threads.get("local:one")?.olderCursor).toBe(cursor);
+      expect(threadsStore.getState().threads.get("local:one")?.history).toBe(heldHistory);
+      expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(2);
+    } finally {
+      if (paneHeld) threadsStore.getState().releaseThread("local:one");
+      await Promise.all([first.release(), second.release()]);
+      restoreOptions();
+    }
+  });
+
   test("background-only hydration leaves durable mutations untouched and sends no mutation RPC", async () => {
     const storage = mutationStorage();
     await storage.enqueueIntent({
