@@ -1,7 +1,7 @@
 // Real production SPA only. Go creates the delegates through actual tools and
 // passes the public identities; this driver never seeds frontend stores or RPCs.
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, watch, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { Driver } from "../skillguard/run.mjs";
 import { evaluate, navigateTo } from "../browserGuardCdp.mjs";
@@ -606,9 +606,11 @@ async function holdStorageAcknowledgement(ref, input) {
 async function providerHeld() {
   await new Promise((resolve, reject) => {
     const file = path.join(fixture.artifactDir, "provider-held.json");
-    const watcher = watch(fixture.artifactDir, () => check());
+    // Polled rather than watched: a watch event can arrive while the file is
+    // still empty and be the only one delivered (macOS coalesces them, #3808).
+    const poll = setInterval(() => check(), 100);
     const timer = setTimeout(() => finish(new Error("real provider never acknowledged its held source input")), 15000);
-    const finish = (error) => { clearTimeout(timer); watcher.close(); error ? reject(error) : resolve(); };
+    const finish = (error) => { clearTimeout(timer); clearInterval(poll); error ? reject(error) : resolve(); };
     const check = () => {
       if (!existsSync(file)) return;
       try {
@@ -617,7 +619,6 @@ async function providerHeld() {
         finish();
       } catch (error) { if (!(error instanceof SyntaxError)) finish(error); }
     };
-    watcher.on("error", finish);
     check();
   });
 }
