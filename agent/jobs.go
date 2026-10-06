@@ -23,7 +23,6 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/clock"
 	"primeradiant.com/evener/agent/internal/jobstore"
-	"primeradiant.com/evener/agent/internal/runetrim"
 	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/identifier"
@@ -1298,12 +1297,7 @@ func (jm *jobManager) readOutput(jobID string, tailBytes int) (content string, t
 	if rec == nil {
 		return "", 0, false, errJobNotFound(jobID)
 	}
-	path := jm.outputPathForJob(rec, jobID)
-	validatedTotal, visibleStart, err := validatedOutputStatsForRecord(path, rec)
-	if err != nil {
-		return "", 0, false, err
-	}
-	return tailOutputFile(path, tailBytes, validatedTotal, visibleStart)
+	return readClosedJobOutput(jm.outputPathForJob(rec, jobID), rec, tailBytes, false)
 }
 
 // readOutputPage resolves the live owner first and reads one coherent raw page.
@@ -1382,12 +1376,7 @@ func (jm *jobManager) readOutputHead(jobID string, headBytes int) (content strin
 	if rec == nil {
 		return "", 0, false, errJobNotFound(jobID)
 	}
-	path := jm.outputPathForJob(rec, jobID)
-	validatedTotal, visibleStart, err := validatedOutputStatsForRecord(path, rec)
-	if err != nil {
-		return "", 0, false, err
-	}
-	return headOutputFile(path, headBytes, validatedTotal, visibleStart)
+	return readClosedJobOutput(jm.outputPathForJob(rec, jobID), rec, headBytes, true)
 }
 
 // outputDropped returns the number of bytes before the first visible byte of
@@ -2331,140 +2320,19 @@ func checkOutputTotalForRecord(rec *jobstore.JobRecord, total int64) error {
 	return nil
 }
 
-// tailOutputFile reads the end of a closed job's output. visibleStart is the
-// first lifetime offset readers may see (OutputFileStats); bytes the file still
-// holds before it are older than the retention cap and stay hidden.
-func tailOutputFile(path string, tailBytes int, total, visibleStart int64) (output string, totalBytes int64, truncated bool, err error) {
-	return tailOutputFileWithOpen(path, tailBytes, total, visibleStart, func(path string) (jobOutputReadFile, error) { return os.Open(path) })
-}
-
-// hiddenOutputBytes is how many of a closed output file's first bytes sit
-// before visibleStart: the file starts at lifetime offset total-size. A file
-// larger than total grew after total was read, so that offset is wrong and
-// the file is refused.
-func hiddenOutputBytes(total, size, visibleStart int64) (int64, error) {
-	if size > total {
-		return 0, fmt.Errorf("%w: output file holds %d bytes, past its lifetime total %d", jobstore.ErrOutputChangedDuringRead, size, total)
-	}
-	return min(max(visibleStart-(total-size), 0), size), nil
-}
-
-type jobOutputReadFile interface {
-	io.Reader
-	io.Seeker
-	Stat() (os.FileInfo, error)
-	Close() error
-}
-
-func tailOutputFileWithOpen(path string, tailBytes int, total, visibleStart int64, open func(string) (jobOutputReadFile, error)) (output string, totalBytes int64, truncated bool, err error) {
-	if tailBytes < 0 {
-		return "", 0, false, fmt.Errorf("%w: maxBytes=%d", jobstore.ErrInvalidLimit, tailBytes)
-	}
-
-	f, err := open(path)
-	if err != nil {
-		return "", 0, false, fmt.Errorf("jobstore: open output: %w", err)
-	}
-	defer func() {
-		if closeErr := f.Close(); err == nil && closeErr != nil {
-			err = fmt.Errorf("jobstore: close output: %w", closeErr)
-		}
-	}()
-
-	info, err := f.Stat()
-	if err != nil {
-		return "", 0, false, fmt.Errorf("jobstore: stat output: %w", err)
-	}
-	retained := info.Size()
-	totalBytes = total
-	hidden, err := hiddenOutputBytes(total, retained, visibleStart)
+// readClosedJobOutput reads a head or tail window of a closed job's visible
+// output. The window and the metadata describing it come from one opened
+// regular file (readLocalJobOutputSnapshot reopens once on a concurrent
+// change), and output whose lifetime total disagrees with rec is refused.
+func readClosedJobOutput(path string, rec *jobstore.JobRecord, maxBytes int, fromHead bool) (output string, totalBytes int64, truncated bool, err error) {
+	snapshot, err := readLocalJobOutputSnapshot(path, maxBytes, fromHead)
 	if err != nil {
 		return "", 0, false, err
 	}
-	start := hidden
-	if retained-hidden > int64(tailBytes) {
-		start = retained - int64(tailBytes)
-		truncated = true
-	}
-	if totalBytes > retained-hidden {
-		truncated = true
-	}
-	if _, err := f.Seek(start, 0); err != nil {
-		return "", totalBytes, truncated, err
-	}
-	buf := make([]byte, retained-start)
-	if len(buf) > 0 {
-		if _, err := io.ReadFull(f, buf); err != nil {
-			return "", totalBytes, truncated, fmt.Errorf("jobstore: read output: %w", err)
-		}
-	}
-	if start > hidden {
-		// The window was cut at a raw byte offset, so it can open mid-rune. Drop the
-		// dangling continuation bytes rather than reading further back: the window
-		// SHRINKS, which keeps total - len(output) naming the first byte actually
-		// returned. Only our own cut is realigned — at the visible start the first
-		// byte is the output's own, and binary output keeps it.
-		buf = runetrim.TrimLeadingPartial(buf)
-	}
-	return string(buf), totalBytes, truncated, nil
-}
-
-// headOutputFile reads the start of a closed job's visible output; see
-// tailOutputFile for visibleStart.
-func headOutputFile(path string, headBytes int, total, visibleStart int64) (output string, totalBytes int64, truncated bool, err error) {
-	return headOutputFileWithOpen(path, headBytes, total, visibleStart, func(path string) (jobOutputReadFile, error) { return os.Open(path) })
-}
-
-func headOutputFileWithOpen(path string, headBytes int, total, visibleStart int64, open func(string) (jobOutputReadFile, error)) (output string, totalBytes int64, truncated bool, err error) {
-	if headBytes < 0 {
-		return "", 0, false, fmt.Errorf("%w: maxBytes=%d", jobstore.ErrInvalidLimit, headBytes)
-	}
-
-	f, err := open(path)
-	if err != nil {
-		return "", 0, false, fmt.Errorf("jobstore: open output: %w", err)
-	}
-	defer func() {
-		if closeErr := f.Close(); err == nil && closeErr != nil {
-			err = fmt.Errorf("jobstore: close output: %w", closeErr)
-		}
-	}()
-
-	info, err := f.Stat()
-	if err != nil {
-		return "", 0, false, fmt.Errorf("jobstore: stat output: %w", err)
-	}
-	retained := info.Size()
-	totalBytes = total
-	hidden, err := hiddenOutputBytes(total, retained, visibleStart)
-	if err != nil {
+	if err := checkOutputTotalForRecord(rec, snapshot.TotalBytes); err != nil {
 		return "", 0, false, err
 	}
-	n := retained - hidden
-	if n > int64(headBytes) {
-		n = int64(headBytes)
-		truncated = true
-	}
-	if totalBytes > retained-hidden {
-		truncated = true
-	}
-	if _, err := f.Seek(hidden, io.SeekStart); err != nil {
-		return "", totalBytes, truncated, err
-	}
-	buf := make([]byte, n)
-	if len(buf) > 0 {
-		if _, err := io.ReadFull(f, buf); err != nil {
-			return "", totalBytes, truncated, fmt.Errorf("jobstore: read output: %w", err)
-		}
-	}
-	if hidden+n < retained {
-		// The window was cut at a raw byte offset, so it can end mid-rune. Drop the
-		// dangling partial rune: like the tail's start, the window only ever SHRINKS.
-		// Only our own cut is realigned — when the window reaches the end of the file
-		// the last byte is the file's own, and binary output keeps it.
-		buf = runetrim.TrimTrailingPartial(buf)
-	}
-	return string(buf), totalBytes, truncated, nil
+	return string(snapshot.Content), snapshot.TotalBytes, snapshot.Truncated, nil
 }
 
 // grepOutputFile greps a closed job's visible output, refusing it before any

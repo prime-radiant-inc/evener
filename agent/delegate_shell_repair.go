@@ -135,11 +135,7 @@ func stableShellNotificationExcerpt(storePath string, record *jobstore.JobRecord
 	if path == "" {
 		path = filepath.Join(filepath.Dir(storePath), "jobs", record.JobID+".log")
 	}
-	validatedTotal, visibleStart, err := validatedOutputStatsForRecord(path, record)
-	if err != nil {
-		return notificationExcerpt{}
-	}
-	excerpt, _, truncated, err := tailOutputFile(path, terminalExcerptBytes, validatedTotal, visibleStart)
+	excerpt, _, truncated, err := readClosedJobOutput(path, record, terminalExcerptBytes, false)
 	if err != nil || excerpt == "" {
 		return notificationExcerpt{}
 	}

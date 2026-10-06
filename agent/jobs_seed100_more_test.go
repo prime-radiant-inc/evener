@@ -3,7 +3,6 @@
 package agent
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -310,51 +309,4 @@ func seed100JobsMore(t *testing.T) {
 	}
 	jm5.appendEvent = func(jobstore.Event) error { return want }
 	_ = jm5.armPendingTerminalNotifications()
-
-	// File faults are driven below os.Open, keeping production defaults unchanged.
-	info := seed100FileInfo{size: 3}
-	cases := []struct {
-		name string
-		file *seed100ReadFile
-	}{
-		{"stat", &seed100ReadFile{Reader: bytes.NewReader([]byte("abc")), info: info, statErr: want}},
-		{"seek", &seed100ReadFile{Reader: bytes.NewReader([]byte("abc")), info: info, seekErr: want}},
-		{"read", &seed100ReadFile{Reader: bytes.NewReader(nil), info: info}},
-		{"close", &seed100ReadFile{Reader: bytes.NewReader([]byte("abc")), info: info, closeErr: want}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			open := func(string) (jobOutputReadFile, error) { return tc.file, nil }
-			_, _, _, _ = tailOutputFileWithOpen("x", 2, 3, 0, open)
-			tc.file.Reader = bytes.NewReader([]byte("abc"))
-			if tc.name == "read" {
-				tc.file.Reader = bytes.NewReader(nil)
-			}
-			_, _, _, _ = headOutputFileWithOpen("x", 2, 3, 0, open)
-		})
-	}
 }
-
-type seed100ReadFile struct {
-	*bytes.Reader
-	info                       seed100FileInfo
-	statErr, seekErr, closeErr error
-}
-
-func (f *seed100ReadFile) Stat() (os.FileInfo, error) { return f.info, f.statErr }
-func (f *seed100ReadFile) Close() error               { return f.closeErr }
-func (f *seed100ReadFile) Seek(offset int64, whence int) (int64, error) {
-	if f.seekErr != nil {
-		return 0, f.seekErr
-	}
-	return f.Reader.Seek(offset, whence)
-}
-
-type seed100FileInfo struct{ size int64 }
-
-func (i seed100FileInfo) Name() string       { return "seed" }
-func (i seed100FileInfo) Size() int64        { return i.size }
-func (i seed100FileInfo) Mode() os.FileMode  { return 0 }
-func (i seed100FileInfo) ModTime() time.Time { return frozenTestTime }
-func (i seed100FileInfo) IsDir() bool        { return false }
-func (i seed100FileInfo) Sys() any           { return nil }

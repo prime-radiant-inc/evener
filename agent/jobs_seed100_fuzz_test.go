@@ -129,19 +129,15 @@ func seed100Jobs(t *testing.T, text string) {
 
 	// File helpers: invalid limits, open/stat failures, truncation, and metadata mismatch.
 	missing := filepath.Join(t.TempDir(), "missing")
-	_, _, _, _ = tailOutputFile(missing, -1, 0, 0)
-	_, _, _, _ = headOutputFile(missing, -1, 0, 0)
-	_, _, _, _ = tailOutputFile(missing, 1, 0, 0)
-	_, _, _, _ = headOutputFile(missing, 1, 0, 0)
+	_, _, _, _ = readClosedJobOutput(missing, nil, -1, false)
+	_, _, _, _ = readClosedJobOutput(missing, nil, 1, true)
 	dir := t.TempDir()
-	_, _, _, _ = tailOutputFile(dir, 1, 0, 0)
-	_, _, _, _ = headOutputFile(dir, 1, 0, 0)
+	_, _, _, _ = readClosedJobOutput(dir, nil, 1, false)
 	path := filepath.Join(t.TempDir(), "output")
 	if err := os.WriteFile(path, []byte("abcdef"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, _, _, _ = tailOutputFile(path, 2, 9, 0)
-	_, _, _, _ = headOutputFile(path, 2, 9, 0)
+	_, _, _, _ = readClosedJobOutput(path, &jobstore.JobRecord{Status: jobstore.StatusCompleted, OutputBytes: 99}, 2, false)
 	_, _, _ = validatedOutputStatsForRecord(path, &jobstore.JobRecord{Status: jobstore.StatusCompleted, OutputBytes: 99})
 	_ = cloneJobRecord(nil)
 
