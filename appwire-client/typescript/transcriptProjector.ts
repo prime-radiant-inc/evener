@@ -136,6 +136,12 @@ const HOOK_EVENT_KIND = "hook_completed";
 // decides visibility only; each client chooses how to draw them.
 const CRITICAL_SYSTEM_EVENT_KINDS = new Set(["error", "warning", "interrupted"]);
 const TOOL_REPAIR_EVENT_KIND = "tool_repair";
+// The automatic memory refresh (agent/session_memory.go's MEMORY_CONTEXT turn).
+// It is a standalone, collapsed notification a reader can always reach, so it
+// stays visible at every level regardless of the system-events gate, and it
+// opts out of the expand-everything baseline (see eligibleDisclosure below and
+// SteeringDivider's ignoreBaseline read).
+const MEMORY_CONTEXT_EVENT_KIND = "memory-context";
 
 // ask_user is the current interaction tool. The other names are protocol/tool
 // vocabulary used by compatible clients; matching exact names keeps this typed
@@ -294,6 +300,11 @@ function systemDecision(item: ItemModel, config: TranscriptDisplayConfigV1, vect
   const eventKind = item.eventKind;
   if (eventKind === undefined || eventKind === "" || !KNOWN_EVENT_KINDS.has(eventKind)) return "item";
 
+  // A memory refresh is inspectable at every level and is never hidden by the
+  // system-events gate: its compact disclosure is how a reader sees recall
+  // happened. See eligibleDisclosure for its baseline opt-out.
+  if (eventKind === MEMORY_CONTEXT_EVENT_KIND) return "item";
+
   // A repair notice, and a coded "no action needed" warning notice (the
   // daemon's context-budget notices arrive this way), show only where
   // informationalNoticesVisible says so, at full. Where a repair does show,
@@ -392,6 +403,10 @@ function decisionFor(
 
 function eligibleDisclosure(item: ItemModel): boolean {
   if (item.type === "commandExecution" || item.type === "reasoning") return true;
+  // A memory refresh ignores every general expansion baseline, including
+  // Full's open-everything baseline; only an explicit reader choice opens it.
+  // Keeping it out of the baseline inventory is that posture's other half.
+  if (item.type === "systemMessage" && item.eventKind === MEMORY_CONTEXT_EVENT_KIND) return false;
   // A visible system item may be a scaffold or a grouped diagnostic row. Keep
   // its source id available to the disclosure layer; grouping happens after
   // this projection and therefore sees only surviving rows.
