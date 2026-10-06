@@ -63,12 +63,9 @@ func RollupRank(state string) int {
 	}
 }
 
-// StateWord returns the unified display word for a normalized attention
-// state — one word, shared verbatim by the web (cmd/evener-hub's stateLabel)
-// and the TUI (displayWord) so the two surfaces can never independently
-// drift on vocabulary (Track A §1). askPending selects between the two
-// needs-you bands (Track A §2 ask-tiering) and is ignored for every other
-// state.
+// StateWord returns the display word for a normalized attention state, used
+// by the TUI (displayWord). askPending selects between the two needs-you bands
+// (Track A §2 ask-tiering) and is ignored for every other state.
 func StateWord(state string, askPending bool) string {
 	switch state {
 	case "errored":

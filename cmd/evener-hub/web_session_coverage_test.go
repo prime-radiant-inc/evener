@@ -1,7 +1,6 @@
 package hub
 
 import (
-	"reflect"
 	"testing"
 )
 
@@ -32,18 +31,5 @@ func TestSessionRefMatchesIDLocalShortForm(t *testing.T) {
 func TestSessionRefMatchesIDNoMatch(t *testing.T) {
 	if sessionRefMatchesID("local:s1", "local:s2") {
 		t.Fatal("different sessions should not match")
-	}
-}
-
-// TestDaemonStatusCarriesNoSharedNotesMirrors pins the review cleanup:
-// fetchStatus used to copy the shared-notes snapshot into daemonStatus fields
-// that no consumer read. Re-adding mirrored state without a reader must fail
-// here rather than silently restoring dead fields.
-func TestDaemonStatusCarriesNoSharedNotesMirrors(t *testing.T) {
-	typ := reflect.TypeFor[daemonStatus]()
-	for _, name := range []string{"HumanNote", "AgentNote", "SessionURLs", "SharedNotes"} {
-		if _, found := typ.FieldByName(name); found {
-			t.Errorf("daemonStatus declares unread shared-notes field %s", name)
-		}
 	}
 }

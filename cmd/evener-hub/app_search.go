@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
@@ -185,6 +186,51 @@ func liveSearchResult(cfg hubcore.WebConfig, le hubcore.LiveEntry, decisions map
 		ApprovalPending: le.PendingEscalation,
 		Archived:        hubcore.LiveSessionArchived(decisions, archiveEntry, lastActivity, now),
 	}
+}
+
+// liveTitle prefers the generated short session name from metadata, but avoids
+// using the full initial prompt as the search result title. If the past index
+// does not have the session yet, fall back to a compact session ID.
+func liveTitle(id string, le hubcore.LiveEntry, past *hubcore.PastIndex) string {
+	if past != nil {
+		if pe, ok := past.Find(id); ok {
+			return pastTitle(pe)
+		}
+	}
+	return hubcore.ShortID(id)
+}
+
+func pastTitle(pe hubcore.PastEntry) string {
+	meta := pe.Meta
+	if fresh, err := schema.LoadSessionMeta(pe.StateDir, pe.Meta.ID); err == nil {
+		meta = fresh
+	}
+	return sessionTitleFromMeta(meta)
+}
+
+func sessionTitleFromMeta(meta schema.SessionMeta) string {
+	if title := strings.TrimSpace(meta.Name); title != "" {
+		return title
+	}
+	if prompt := compactSessionPromptTitle(meta.OriginalPrompt); prompt != "" {
+		return prompt
+	}
+	return hubcore.ShortID(meta.ID)
+}
+
+func compactSessionPromptTitle(prompt string) string {
+	prompt = strings.TrimSpace(strings.ReplaceAll(prompt, "\r", ""))
+	if prompt == "" {
+		return ""
+	}
+	if idx := strings.IndexByte(prompt, '\n'); idx >= 0 {
+		prompt = strings.TrimSpace(prompt[:idx])
+	}
+	const maxLen = 80
+	if len(prompt) <= maxLen {
+		return prompt
+	}
+	return strings.TrimSpace(prompt[:maxLen-1]) + "…"
 }
 
 func pastSearchResult(e hubcore.PastEntry, decisions map[hubcore.ArchiveKey]bool, now time.Time) appwire.SearchResult {
