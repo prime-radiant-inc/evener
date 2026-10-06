@@ -40,7 +40,7 @@ func quietMillis(d time.Duration) *int64 {
 // has been silent.
 func TestActivityReadWithholdsQuietWhileASubagentRuns(t *testing.T) {
 	waiting := liveActivityEntry(2, "01WAITING", appwire.ThreadStatusActive, silentFor(15*time.Minute))
-	waiting.Subagents = appwire.SubagentTally{Running: 1, Done: 2}
+	waiting.Subagents = appwire.SubagentTally{Running: 1}
 	crashed := liveActivityEntry(5, "01CRASHED", "errored", silentFor(time.Minute))
 	crashed.Crashed = true
 	roster := hubcore.NewRosterWithEntries(
