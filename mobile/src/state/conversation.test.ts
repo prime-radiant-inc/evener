@@ -1761,13 +1761,18 @@ describe("ConversationStore", () => {
 			expect(store.getState().pendingMutations?.[0]).toMatchObject({ id: "cmid-promote", fromThisClient: true });
 		});
 
-		it("remembering a mutation before the first durable read lands publishes nothing", async () => {
+		it("remembering a mutation before the first durable read lands waits for that read", async () => {
 			const port = fakePort({});
-			port.read = () => new Promise(() => {});
+			let land: (snapshot: MutationPersistenceSnapshot) => void = () => {};
+			port.read = () => new Promise((resolve) => (land = resolve));
 			const store = await openStore(authoritativeModel("cmid-promote"));
 			store.getState().bindPendingMutations(port);
 			store.getState().rememberSubmittedHere("cmid-promote");
 			expect(store.getState().pendingMutations ?? null).toBeNull();
+
+			land({ outbox: [], optimistic: [], recovery: [] });
+			await yieldMicrotask();
+			expect(store.getState().pendingMutations?.[0]).toMatchObject({ id: "cmid-promote", fromThisClient: true });
 		});
 
 		it("a failed open does not leave the retired target's rows visible", async () => {

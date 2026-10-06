@@ -2931,12 +2931,15 @@ describe("queued messages at the transcript's end (spec 8.5)", () => {
 
 	// Between the press and the agent's next step, the hub holds the steer as
 	// a pending mutation; the phone shows it as its own (spec 8.5).
+	// Send now on a queue a Stop held is a promote too: it starts the turn
+	// that takes it.
 	it.each([
-		["Steer now", "turn/promoteQueuedAsSteer", ["check the logs"]],
-		["Steer all now", "turn/drainAsSteer", ["check the logs", "and the metrics"]],
-	])("shows %s as steering until the agent takes it", async (label, method, queued) => {
-		const ref = `ref-steering-${method}`;
-		const served = thread(ref, "active", false, queued);
+		["Steer now", "active", "turn/promoteQueuedAsSteer", ["check the logs"]],
+		["Send now", "idle", "turn/promoteQueuedAsSteer", ["check the logs"]],
+		["Steer all now", "active", "turn/drainAsSteer", ["check the logs", "and the metrics"]],
+	] as const)("shows %s as steering until the agent takes it", async (label, status, method, queued) => {
+		const ref = `ref-steering-${label}`;
+		const served = thread(ref, status, false, [...queued]);
 		const { tree, hub } = await mount(served);
 		const client = hub.client as { request: (method: string, params: Record<string, unknown>) => Promise<unknown> };
 		const request = client.request;
@@ -2962,7 +2965,7 @@ describe("queued messages at the transcript's end (spec 8.5)", () => {
 			}
 			return answer;
 		};
-		if (label === "Steer now") await press(tree, label);
+		if (label !== "Steer all now") await press(tree, label);
 		else
 			await act(async () => {
 				await queueHosts.get(sheetKey("hub-1", ref))?.steerAll?.();

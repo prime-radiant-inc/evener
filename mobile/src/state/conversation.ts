@@ -438,7 +438,10 @@ export interface LiveConversationState extends ConversationState {
 	bindPendingMutationsIfUnbound(port: ConversationMutationPendingPort): (() => void) | null;
 	// Records a mutation this client sent straight to the hub, outside the
 	// durable outbox (a queue promote or drain), as its own: the hub's pending
-	// row for it then shows as this client's, as a steer in flight does.
+	// row for it then shows as this client's, as a steer in flight does. Its
+	// time is when the hub confirmed it. Unlike a durable read's provenance it
+	// needs no teardown fence: the store is per conversation and ids are unique
+	// per submission, so a late call after close writes an id nothing reports.
 	rememberSubmittedHere(clientMutationId: string): void;
 	openProjected(
 		service: LiveConversationService,
