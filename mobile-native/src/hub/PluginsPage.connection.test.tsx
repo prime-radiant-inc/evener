@@ -487,3 +487,69 @@ it("ignores a replaced client's late upgrade result", async () => {
 	expect(detail).not.toContain("Upgraded to");
 	expect(detail).not.toContain("Already up to date");
 });
+
+it("asks a replacement client's hub for updates once its own list loads", async () => {
+	const first = checkingClient();
+	harness.connection = connection(first, "ready");
+	const tree = render(<PluginsPage {...props} />);
+	await act(async () => {});
+	await act(async () => {});
+	expect(checks(first)).toBe(1);
+
+	const second = checkingClient();
+	await showWith(tree, second, "ready");
+	await act(async () => {});
+	await act(async () => {});
+	expect(checks(second)).toBe(1);
+	expect(checks(first)).toBe(1);
+});
+
+it("keeps a replaced store's late failed check from re-asking the new hub", async () => {
+	const first = checkingClient();
+	let failFirst!: (err: Error) => void;
+	first.on(
+		"evener/plugin/checkUpdates",
+		() =>
+			new Promise((_resolve, reject) => {
+				failFirst = reject;
+			}),
+	);
+	harness.connection = connection(first, "ready");
+	const tree = render(<PluginsPage {...props} />);
+	await act(async () => {});
+	await act(async () => {});
+	expect(checks(first)).toBe(1);
+
+	const second = checkingClient();
+	await showWith(tree, second, "ready");
+	await act(async () => {});
+	await act(async () => {});
+	expect(checks(second)).toBe(1);
+
+	// The replaced store's check now fails; that must not unlatch the new one.
+	await act(async () => failFirst(new Error("connection closed")));
+	await showWith(tree, second, "reconnecting");
+	await showWith(tree, second, "ready");
+	await act(async () => {});
+	expect(checks(second)).toBe(1);
+});
+
+/** A ready hub listing one plugin, whose update check answers. */
+function checkingClient(): FakeClient {
+	const client = new FakeClient("ready");
+	client.on("evener/plugin/list", () => ({ plugins: [plugin("kept")] }));
+	client.on("evener/plugin/checkUpdates", () => ({ plugins: [plugin("kept")] }));
+	return client;
+}
+
+/** Re-renders the page against `client` in `status`. */
+async function showWith(tree: ReturnType<typeof render>, client: FakeClient, status: ConnectionState): Promise<void> {
+	harness.connection = connection(client, status);
+	await act(async () => {
+		tree.update(<PluginsPage {...props} />);
+	});
+}
+
+function checks(client: FakeClient): number {
+	return client.calls.filter((call) => call.method === "evener/plugin/checkUpdates").length;
+}

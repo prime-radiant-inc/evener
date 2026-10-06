@@ -8,9 +8,9 @@
 
 import { errorText, marketplaceSourceLabel } from "@evener/appwire-client";
 import { HUB_WRITE_BUSY, isHubWriteBusy } from "@evener/appwire-client/state/extensions";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useIsMobile } from "../../../../shell/useIsMobile";
-import { Button, ConfirmDialog, Sheet, Switch, useToasts } from "../../../../widgets";
+import { Button, ConfirmDialog, Sheet, Switch, useFocusRehome, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { useExtensionsHostState, useExtensionsHostStore } from "./hostStore";
 import styles from "./marketplacesPlugins.module.css";
@@ -25,6 +25,7 @@ const CLASS = {
   metaValue: requireClass(styles.metaValue, "marketplacesPlugins.module.css", "metaValue"),
   switchRows: requireClass(styles.switchRows, "marketplacesPlugins.module.css", "switchRows"),
   rowMeta: requireClass(styles.rowMeta, "marketplacesPlugins.module.css", "rowMeta"),
+  focusRoot: requireClass(styles.focusRoot, "marketplacesPlugins.module.css", "focusRoot"),
 };
 
 export interface PluginDetailSheetProps {
@@ -42,6 +43,13 @@ export function PluginDetailSheet({ target, onClose }: PluginDetailSheetProps) {
   const toasts = useToasts();
 
   const [pendingRemove, setPendingRemove] = useState(false);
+  // Any commit that takes away the control holding the keyboard - the
+  // Upgrade button a successful upgrade unmounts, or the remove confirm's
+  // buttons disabled while the remove runs - would drop focus to <body>; the
+  // shared hook keeps it in the sheet or confirm (their first control), and
+  // leaves alone focus the user had already moved.
+  const focusRoot = useRef<HTMLDivElement>(null);
+  useFocusRehome(focusRoot);
 
   const entry =
     target === null || plugins === null
@@ -120,7 +128,7 @@ export function PluginDetailSheet({ target, onClose }: PluginDetailSheetProps) {
   const marketplaceEntry = entry === undefined ? undefined : marketplaces.find((m) => m.name === entry.marketplace);
 
   return (
-    <>
+    <div ref={focusRoot} className={CLASS.focusRoot}>
       <Sheet
         open={open}
         onClose={onClose}
@@ -192,6 +200,6 @@ export function PluginDetailSheet({ target, onClose }: PluginDetailSheetProps) {
       >
         {target !== null ? `Remove plugin "${target.plugin}"?` : ""}
       </ConfirmDialog>
-    </>
+    </div>
   );
 }

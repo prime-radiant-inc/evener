@@ -494,15 +494,35 @@ function Plugins({
 	// The first time this store's installed list loads, ask the hub which
 	// plugins have an update (read-on-open: nothing polls). A first read that
 	// failed checks once a later one recovers, and a page closed before its
-	// list landed asks nothing. A hub without the check flags none, so Upgrade
+	// list landed asks nothing. A check that got no answer (see
+	// checkPluginUpdates) asks again on the next return to ready, never while
+	// the connection is down. A hub without the check flags none, so Upgrade
 	// stays hidden.
 	const checkedUpdates = useRef<PluginsStore | null>(null);
 	const listLoaded = state.plugins !== null && state.pluginsError === null;
+	// Counts returns to ready, so a check that fails only after the
+	// connection already came back still gets that ready's one re-ask: it
+	// bumps checkAgain, which re-runs the effect. A check that fails with the
+	// connection unchanged waits for the next return to ready instead, so a
+	// hub that keeps failing is never asked in a loop.
+	const readyReturns = useRef(0);
 	useEffect(() => {
-		if (!listLoaded || checkedUpdates.current === model) return;
+		if (ready) readyReturns.current += 1;
+	}, [ready]);
+	const [checkAgain, setCheckAgain] = useState(0);
+	useEffect(() => {
+		if (!listLoaded || !ready || checkedUpdates.current === model) return;
 		checkedUpdates.current = model;
-		void model.getState().checkPluginUpdates();
-	}, [model, listLoaded]);
+		const askedIn = readyReturns.current;
+		void model
+			.getState()
+			.checkPluginUpdates()
+			.then((answered) => {
+				if (answered || checkedUpdates.current !== model) return;
+				checkedUpdates.current = null;
+				if (readyReturns.current !== askedIn) setCheckAgain((n) => n + 1);
+			});
+	}, [model, listLoaded, ready, checkAgain]);
 	const close = useCallback(() => {
 		editorVersion.current += 1;
 		setSelected(null);
@@ -618,15 +638,13 @@ function Plugins({
 						<Fragment key={marketplace}>
 							<Group label={marketplace} machineLabel>
 								{plugins.map((item) => {
-									const sub = item.broken
-										? "Broken"
-										: [
-												item.version || "Unknown version",
-												item.updateAvailable && "Update available",
-												item.autoUpgrade && "Upgrades automatically",
-											]
-												.filter(Boolean)
-												.join(" · ");
+									const sub = [
+										item.broken ? "Broken" : item.version || "Unknown version",
+										item.updateAvailable && "Update available",
+										!item.broken && item.autoUpgrade && "Upgrades automatically",
+									]
+										.filter(Boolean)
+										.join(" · ");
 									return (
 										<SwitchRow
 											key={item.plugin}

@@ -246,6 +246,33 @@ test("Upgrade calls pluginUpgrade, toasts an upgraded success, and is busy in fl
 
   resolveUpgrade({ plugins: [LINTER] });
   await waitFor(() => expect(getToasts().some((t) => t.kind === "success" && t.text === "Upgraded linter")).toBe(true));
+  // The upgrade answered with the plugin current, so Upgrade is gone; the
+  // keyboard stays in the sheet rather than falling to <body>.
+  await waitFor(() => expect(screen.queryByRole("button", { name: "Upgrade" })).toBeNull());
+  // The sheet's first control, the same one it focuses when it opens.
+  await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("switch", { name: "Enabled by default" })));
+});
+
+test("an upgrade leaves alone focus the user moved while it ran", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  extensionsStore.setState({ plugins: [{ ...LINTER, updateAvailable: true }], marketplaces: [ACME] });
+  let resolveUpgrade: (v: { plugins: PluginEntry[] }) => void = () => {};
+  fake.on(
+    "evener/plugin/upgrade",
+    () =>
+      new Promise((resolve) => {
+        resolveUpgrade = resolve;
+      }),
+  );
+  render(<PluginDetailSheet target={TARGET} onClose={() => {}} />);
+  await user.click(screen.getByRole("button", { name: "Upgrade" }));
+  const autoUpgrade = screen.getByRole("switch", { name: "Auto-upgrade" });
+  act(() => autoUpgrade.focus());
+
+  resolveUpgrade({ plugins: [LINTER] });
+  await waitFor(() => expect(screen.queryByRole("button", { name: "Upgrade" })).toBeNull());
+  expect(document.activeElement).toBe(autoUpgrade);
 });
 
 test("a failed upgrade toasts failure", async () => {

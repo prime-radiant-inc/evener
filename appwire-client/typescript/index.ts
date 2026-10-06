@@ -230,6 +230,7 @@ export {
   isHubLaunchError,
   isInstanceRemoveApplied,
   isInstanceRenamePersisted,
+  isMethodNotFound,
   isStaleCursorError,
   isTranscriptHistoryFailedError,
   isUpgradeRequiredError,
