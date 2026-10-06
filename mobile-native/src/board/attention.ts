@@ -310,13 +310,13 @@ export function subagentQuietLine(timing: DelegateTiming): { text: string; quiet
 }
 
 /** whyLine's working-row text once a real activity read exists (S5): the
- * read's running-subagent count is the same number as the row's own tally,
- * read more recently, so it wins outright, never mixed with the row's (an
- * older count must not survive a fresh read of zero). Quiet and stuck read from quietState, which itself
- * withholds both while a subagent runs. Absent either, the row says what the
- * session last set out to do, else the job it is running, else "Working": this
- * never falls back to the row's own tally, because a real read already
- * answered the subagent question, even when the answer is zero. */
+ * read's running-subagent count (the same number as the row's tally) wins
+ * outright, never mixed with the row's, so a fresh read of zero holds. Quiet
+ * and stuck read from quietState, which itself withholds both while a
+ * subagent runs. Absent either, the row says what the session last set out to
+ * do, else the job it is running, else "Working": this never falls back to the
+ * row's own tally, because a real read already answered the subagent
+ * question, even when the answer is zero. */
 function workingWhyLine(row: NavigationSessionSummary, activity: SessionActivity, msSinceReadMs: number): WhyLine {
 	if (activity.runningSubagents > 0) return { text: waitingOnSubagents(activity.runningSubagents) };
 	const quiet = quietState(activity, msSinceReadMs);
