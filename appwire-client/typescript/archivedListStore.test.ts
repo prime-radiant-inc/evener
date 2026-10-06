@@ -372,3 +372,73 @@ describe("reset", () => {
     expect(store.getState().lists).toEqual({});
   });
 });
+
+describe("the list's revision", () => {
+  const revised = (refs: string[], total: number, revision: string, nextCursor?: string): ArchivedListResponse => ({
+    ...page(refs, total, nextCursor),
+    revision,
+  });
+
+  test("a refresh sends the revision the list holds and keeps its rows when the hub says unchanged", async () => {
+    const seen: ArchivedListParams[] = [];
+    fake.on("evener/archived/list", (params) => {
+      seen.push(params);
+      return seen.length === 1
+        ? revised(["local:a"], 1, "r1")
+        : { sessions: [], total: 1, revision: "r1", unchanged: true };
+    });
+    await store.refresh("projects", "proj");
+    await store.refresh("projects", "proj");
+
+    expect(seen[1]).toEqual({ catalog: "projects", projectKey: "proj", revision: "r1" });
+    const list = entry("projects", "proj");
+    expect(list.rows.map((r) => r.ref)).toEqual(["local:a"]);
+    expect(list.loading).toBe(false);
+    expect(list.error).toBeNull();
+  });
+
+  test("a changed list is read in full and holds its new revision", async () => {
+    let call = 0;
+    fake.on("evener/archived/list", () =>
+      ++call === 1 ? revised(["local:a"], 1, "r1") : revised(["local:b"], 1, "r2"),
+    );
+    await store.refresh("projects", "proj");
+    await store.refresh("projects", "proj");
+    const seen: ArchivedListParams[] = [];
+    fake.on("evener/archived/list", (params) => {
+      seen.push(params);
+      return { sessions: [], total: 1, revision: "r2", unchanged: true };
+    });
+    await store.refresh("projects", "proj");
+
+    expect(seen[0]?.revision).toBe("r2");
+    expect(entry("projects", "proj").rows.map((r) => r.ref)).toEqual(["local:b"]);
+  });
+
+  test("pages read at different revisions hold none, so the next refresh reads in full", async () => {
+    fake.on("evener/archived/list", (params) =>
+      params.cursor ? revised(["local:b"], 2, "r2") : revised(["local:a"], 2, "r1", "cursor-1"),
+    );
+    await store.refresh("projects", "proj");
+    await store.loadMore("projects", "proj");
+    const seen: ArchivedListParams[] = [];
+    fake.on("evener/archived/list", (params) => {
+      seen.push(params);
+      return params.cursor ? revised(["local:b"], 2, "r2") : revised(["local:a"], 2, "r2", "cursor-1");
+    });
+    await store.refresh("projects", "proj");
+
+    expect(seen[0]?.revision).toBeUndefined();
+  });
+
+  test("an older hub sends no revision, and the list sends none back", async () => {
+    const seen: ArchivedListParams[] = [];
+    fake.on("evener/archived/list", (params) => {
+      seen.push(params);
+      return page(["local:a"], 1);
+    });
+    await store.refresh("projects", "proj");
+    await store.refresh("projects", "proj");
+    expect(seen[1]).toEqual({ catalog: "projects", projectKey: "proj" });
+  });
+});

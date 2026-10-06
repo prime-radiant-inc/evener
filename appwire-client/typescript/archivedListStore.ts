@@ -1,8 +1,10 @@
 // The archived sessions of the projects an app opens, each read a page at a
 // time from evener/archived/list. Archived rows are not part of navigation:
-// the list has no revisions or invalidations, so the host refreshes a list
-// when it has reason to think the rows moved (the navigation archived count
-// changed, or an archive, unarchive, pin, unpin or delete ran), and resets
+// the list has no invalidations, so the host refreshes a list when it has
+// reason to think the rows moved (the navigation archived count changed, or
+// an archive, unarchive, pin, unpin or delete ran). A list does carry a
+// revision: a refresh sends the one the store holds, and a list the hub
+// answers unchanged is not read again. The host resets
 // the store when its connection is replaced or recovers, so no list outlives
 // the connection that served it.
 //
@@ -33,6 +35,11 @@ export interface ArchivedList {
   loading: boolean;
   /** Non-null when the most recent request failed. Loaded rows are kept. */
   error: string | null;
+  /** The hub's revision of the whole list, held only while every loaded page
+   * carried it (pages read at different revisions vouch for none); a refresh
+   * sends it and keeps the rows when the hub answers unchanged. Absent from
+   * an older hub. */
+  revision?: string;
 }
 
 export interface ArchivedListState {
@@ -48,8 +55,8 @@ export interface ArchivedListStore extends FrameworkFreeStore<ArchivedListState>
   /** Appends the next page; does nothing on the last page or before the first. */
   loadMore(catalog: ArchivedListCatalog | undefined, projectKey: string): Promise<void>;
   /** Refreshes every loaded list: an archive, unarchive, pin, unpin or delete
-   * can move rows in or out of a project's archived tier, and only the lists
-   * a user has opened are loaded, so refreshing them all is cheap. */
+   * can move rows in or out of a project's archived tier. A list whose
+   * revision the hub says is unchanged costs one empty answer. */
   refreshLoaded(): Promise<void>;
   /** Drops every list; an answer a request still owes lands nowhere. */
   reset(): void;
@@ -89,29 +96,55 @@ export function createArchivedListStore(client: ArchivedListClient): ArchivedLis
     return () => generations.get(key) === generation;
   }
 
-  async function requestPage(catalog: ArchivedListCatalog | undefined, projectKey: string, cursor: string | undefined) {
-    const params: ArchivedListParams = { ...(catalog ? { catalog } : {}), projectKey, ...(cursor ? { cursor } : {}) };
+  async function requestPage(
+    catalog: ArchivedListCatalog | undefined,
+    projectKey: string,
+    cursor: string | undefined,
+    held?: string,
+  ) {
+    const params: ArchivedListParams = {
+      ...(catalog ? { catalog } : {}),
+      projectKey,
+      ...(cursor ? { cursor } : {}),
+      ...(held ? { revision: held } : {}),
+    };
     const response = await client.request("evener/archived/list", params);
     return {
       rows: decodeArchivedListSessions(response.sessions),
       nextCursor: response.nextCursor,
       total: response.total,
+      revision: response.revision,
+      unchanged: response.unchanged === true,
     };
   }
 
   async function refresh(catalog: ArchivedListCatalog | undefined, projectKey: string): Promise<void> {
     const key = archivedListKey(catalog, projectKey);
-    const wanted = store.getState().lists[key]?.rows.length ?? 0;
+    const held = store.getState().lists[key];
+    const wanted = held?.rows.length ?? 0;
     const isNewest = startRequest(key);
     try {
-      let page = await requestPage(catalog, projectKey, undefined);
+      let page = await requestPage(catalog, projectKey, undefined, held?.loaded ? held.revision : undefined);
+      if (page.unchanged) {
+        if (isNewest()) patch(key, () => ({ total: page.total, loading: false }));
+        return;
+      }
+      let revision = page.revision;
       const rows = [...page.rows];
       while (isNewest() && rows.length < wanted && page.nextCursor) {
         page = await requestPage(catalog, projectKey, page.nextCursor);
         rows.push(...page.rows);
+        if (page.revision !== revision) revision = undefined;
       }
       if (!isNewest()) return;
-      patch(key, () => ({ rows, nextCursor: page.nextCursor, total: page.total, loaded: true, loading: false }));
+      patch(key, () => ({
+        rows,
+        nextCursor: page.nextCursor,
+        total: page.total,
+        loaded: true,
+        loading: false,
+        revision,
+      }));
     } catch (err) {
       if (!isNewest()) return;
       patch(key, () => ({ loading: false, error: errorText(err) }));
@@ -132,6 +165,7 @@ export function createArchivedListStore(client: ArchivedListClient): ArchivedLis
         total: page.total,
         loaded: true,
         loading: false,
+        revision: page.revision === list.revision ? list.revision : undefined,
       }));
     } catch (err) {
       if (!isNewest()) return;

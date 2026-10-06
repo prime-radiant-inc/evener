@@ -1,11 +1,13 @@
 // A project's archived sessions as a page source. Navigation v3 serves no
 // archived rows: they come from evener/archived/list through the connection's
-// archived list store (archivedLists.ts). The list has no revisions of its
-// own: it is read when a screen opens it unloaded or starts following the
+// archived list store (archivedLists.ts). The list has no invalidations of
+// its own: it is read when a screen opens it unloaded or starts following the
 // hub with it loaded, again when the hub announces its project changed (once
 // shown, if it was out of view), after any accepted organize change
 // (navigationActions.ts, and the Conversation screen's own Archive and Undo),
-// and from the top once its connection recovers.
+// and from the top once its connection recovers. Each of those re-reads sends
+// the revision the store holds, and a list the hub answers unchanged costs
+// one empty answer.
 import {
 	type ArchivedList,
 	type ArchivedListCatalog,
