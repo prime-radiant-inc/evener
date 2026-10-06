@@ -535,17 +535,24 @@ def run_trial(args, label, binpath, arm, scen, rep):
         if grades[-1].get("error"):
             failure = f"stage {st['name']} failed: {grades[-1]['error']}"
         # A held-out file left behind would sit in every later stage's workspace.
-        leftover = [e for e in grades[-1]["check_errors"].values() if e.startswith("held-out cleanup")]
+        leftover = contamination(grades[-1])
         if leftover and not failure:
-            failure = f"stage {st['name']} left its workspace contaminated: {leftover[0]}"
+            failure = f"stage {st['name']} left its workspace contaminated: {leftover}"
     return grades
 
 
-# Check type -> the string fields its grader reads (and so must be present).
-REQUIRED_CHECK_FIELDS = {"checks": ["run"], "trace": ["tool", "regex"], "memory": ["regex"], "transcripts": ["regex"],
-                         "final": ["regex"], "whiteboard": [], "delegate_calls": []}
+def contamination(grade):
+    """The held-out cleanup failure a graded stage recorded, or None. A trial with one is an
+    infrastructure failure whichever stage it hit."""
+    return next((e for e in grade.get("check_errors", {}).values() if e.startswith("held-out cleanup")), None)
+
+
+# Check type -> (string fields its grader requires, other fields it reads). Any other key is a typo.
+CHECK_FIELDS = {"checks": (["run"], []), "trace": (["tool", "regex"], []), "memory": (["regex"], ["scope", "absent"]),
+                "transcripts": (["regex"], []), "final": (["regex"], []),
+                "whiteboard": ([], ["regex", "max_chars", "min_lines"]), "delegate_calls": ([], ["tools", "args"])}
 SCENARIO_KEYS = {"arms", "fixture_from", "stages"}
-STAGE_KEYS = {"name", "prompt", "before", "fixture", "workspace", "resume", "seed_project_memory"} | set(REQUIRED_CHECK_FIELDS)
+STAGE_KEYS = {"name", "prompt", "before", "fixture", "workspace", "resume", "seed_project_memory"} | set(CHECK_FIELDS)
 MEMORY_SCOPES = {"personal", "project", "session"}
 
 
@@ -563,6 +570,8 @@ def load_scenario(scen):
     for i, st in enumerate(spec["stages"]):
         if not isinstance(st, dict) or not isinstance(st.get("name"), str) or not st["name"]:
             sys.exit(f"memory-lab: {scen} stage {i + 1}: each stage must be an object with a non-empty string \"name\"")
+        if st["name"] in [earlier["name"] for earlier in spec["stages"][:i]]:
+            sys.exit(f"memory-lab: {scen} stage {i + 1}: two stages are named {st['name']!r}; a stage's name keys its files")
         if "/" in st["name"] or st["name"] in (".", ".."):
             sys.exit(f"memory-lab: {scen} stage {i + 1}: \"name\" names the stage's files in the trial, so it can't hold a /")
         where = f"memory-lab: {scen} stage {st['name']}"
@@ -583,7 +592,7 @@ def load_scenario(scen):
             sys.exit(f"{where}: \"fixture\" needs a \"workspace\" naming a dir other than work "
                      "(otherwise the stage silently reuses the base work dir)")
         seen = set()  # grades and cleanup errors are keyed by check name across every type
-        for check_type, required in REQUIRED_CHECK_FIELDS.items():
+        for check_type, (required, optional) in CHECK_FIELDS.items():
             checks = st.get(check_type, [])
             if not (isinstance(checks, list) and all(isinstance(check, dict) for check in checks)):
                 sys.exit(f"{where}: \"{check_type}\" needs a list of check objects")
@@ -595,8 +604,11 @@ def load_scenario(scen):
                     sys.exit(f"{where}: two checks are named {name!r}; names must be unique within a stage")
                 seen.add(name)
                 for field in required:
-                    if not isinstance(check.get(field), str):
-                        sys.exit(f"{where}: {check_type} {name!r} needs a string \"{field}\"")
+                    if not (isinstance(check.get(field), str) and check[field]):
+                        sys.exit(f"{where}: {check_type} {name!r} needs a non-empty string \"{field}\"")
+                unknown = set(check) - {"name"} - set(required) - set(optional)
+                if unknown:
+                    sys.exit(f"{where}: {check_type} {name!r} has unknown key(s) {sorted(unknown)}")
                 if check_type == "memory" and "scope" in check and check["scope"] not in MEMORY_SCOPES:
                     sys.exit(f"{where}: memory {name!r} has scope {check['scope']!r}; use one of {sorted(MEMORY_SCOPES)}")
         for check in st.get("delegate_calls", []):
@@ -642,7 +654,7 @@ def cmd_run(args):
                 grades.append(g)
                 print(line(g), flush=True)
     print_pass_rates(grades)
-    errored = {g["trial"] for g in grades if g.get("error")}
+    errored = {g["trial"] for g in grades if g.get("error") or contamination(g)}
     if errored:
         sys.exit(f"memory-lab: {len(errored)} trial(s) hit infrastructure errors; their stages count as failures above")
 
