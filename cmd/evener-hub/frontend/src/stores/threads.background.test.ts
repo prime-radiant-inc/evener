@@ -25,6 +25,7 @@ import {
   backgroundTranscriptSnapshotForTests,
   installHydrationRetrySchedulerForTests,
   observePendingHydrationRetirementsForTests,
+  pendingThreadHydrationBaseModelsForTests,
   pendingThreadHydrationUpdatesForTests,
   putThreadModel,
   resetThreadsStoreForTests,
@@ -1227,34 +1228,70 @@ describe("background thread claims", () => {
     let transaction: ReturnType<typeof holdNextWriteTransaction> | undefined;
     let foregroundPromotion = false;
     const publicationAccounting: Array<{ retainedBytes: number; chargedBytes: number }> = [];
-    const observeAccounting = threadsStore.subscribe((state) => {
-      if (foregroundPromotion) return;
+    // Independent simultaneous inventory of every retained class, with shared
+    // identity de-duplication and a paired live reservation per class:
+    // - canonical store models -> that ref's resident+handoff charge
+    // - coordinator pending/inFlight frames -> pending budget
+    // - hydration notification buffers -> pending budget
+    // - hydration base models (model representations) -> total charged
+    // - the held write record (worker checkpoint body) -> worker bytes
+    // Incoming decoding, JSON serialization temporaries and IndexedDB copies are
+    // excluded; a base model shared with the store model is counted once by
+    // identity, never as a second body.
+    const accountRetainedInventory = (state: { threads: Map<string, ThreadModel> }) => {
       const snapshot = backgroundTranscriptSnapshotForTests();
-      const identities = new Set<object>();
+      const seen = new Set<object>();
       let retainedBytes = 0;
+      const claim = (identity: object, bytes: number, reservation: number, label: string) => {
+        if (seen.has(identity)) return;
+        seen.add(identity);
+        retainedBytes += bytes;
+        expect(reservation, `${label} covered by its live reservation`).toBeGreaterThanOrEqual(bytes);
+      };
       for (const [ref, model] of state.threads) {
-        const bytes = independentJsonBytes(currentTranscriptState(model));
         const ownership = snapshot.refs.get(ref);
-        if (!foregroundPromotion && ownership)
-          expect(ownership.residentBytes + ownership.handoffBytes).toBeGreaterThanOrEqual(bytes);
-        if (!identities.has(model)) {
-          identities.add(model);
-          retainedBytes += bytes;
-        }
+        claim(
+          model,
+          independentJsonBytes(currentTranscriptState(model)),
+          (ownership?.residentBytes ?? 0) + (ownership?.handoffBytes ?? 0),
+          `canonical model ${ref}`,
+        );
       }
       for (const entry of snapshot.refs.values()) {
         for (const update of [...entry.pending, ...entry.inFlight]) {
-          if (identities.has(update.notification)) continue;
-          identities.add(update.notification);
-          const bytes = independentJsonBytes(update.notification);
-          expect(bytes).toBe(update.bytes);
-          retainedBytes += bytes;
+          expect(independentJsonBytes(update.notification)).toBe(update.bytes);
+          claim(
+            update.notification,
+            independentJsonBytes(update.notification),
+            snapshot.pendingBytes,
+            `coordinator frame ${update.sequence}`,
+          );
         }
       }
-      publicationAccounting.push({
-        retainedBytes,
-        chargedBytes: snapshot.residentBytes + snapshot.pendingBytes + snapshot.workerBytes,
-      });
+      for (const update of pendingThreadHydrationUpdatesForTests()) {
+        expect(independentJsonBytes(update.notification)).toBe(update.bytes);
+        claim(
+          update.notification,
+          independentJsonBytes(update.notification),
+          snapshot.pendingBytes,
+          `hydration frame ${update.sequence}`,
+        );
+      }
+      for (const base of pendingThreadHydrationBaseModelsForTests()) {
+        const handoffTotal = [...snapshot.refs.values()].reduce((sum, entry) => sum + entry.handoffBytes, 0);
+        claim(
+          base,
+          independentJsonBytes(currentTranscriptState(base)),
+          snapshot.residentBytes + handoffTotal + snapshot.pendingBytes + snapshot.workerBytes,
+          "hydration base model",
+        );
+      }
+      if (heldWrite) claim(heldWrite, independentJsonBytes(heldWrite), snapshot.workerBytes, "held write record");
+      return { retainedBytes, chargedBytes: snapshot.residentBytes + snapshot.pendingBytes + snapshot.workerBytes };
+    };
+    const observeAccounting = threadsStore.subscribe((state) => {
+      if (foregroundPromotion) return;
+      publicationAccounting.push(accountRetainedInventory(state));
     });
     const originalPutCurrent = cache.putCurrent.bind(cache);
     const putCurrent = vi.spyOn(cache, "putCurrent").mockImplementation(async (record, now) => {
@@ -1417,6 +1454,12 @@ describe("background thread claims", () => {
       expect(completed.diskWorkers).toBe(0);
       expect(completed.refs.get("local:one")?.current, JSON.stringify(completed.refs.get("local:one"))).toBe(true);
       expect(completed.refs.get("local:two")?.current).toBe(true);
+      // Every hydration buffer, base model and in-flight batch is retired once
+      // both completions commit; only canonical models and disk work remain.
+      expect(pendingThreadHydrationUpdatesForTests()).toEqual([]);
+      expect(pendingThreadHydrationBaseModelsForTests()).toEqual([]);
+      expect([...completed.refs.values()].every((entry) => entry.inFlight.length === 0)).toBe(true);
+      expect(completed.workerBytes).toBe(0);
       const readsBeforePromotion = fake.calls.filter((call) => call.method === "thread/read").length;
       foregroundPromotion = true;
       await threadsStore.getState().ensureThread("local:one");
@@ -1440,6 +1483,137 @@ describe("background thread claims", () => {
       threadsStore.getState().releaseThread("local:two");
       await Promise.all([writer.release(), first.release(), second.release()]);
       await settleBackgroundTranscriptsForTests();
+      resetThreadsStoreForTests();
+      restoreOptions();
+    }
+  });
+
+  test("refuses an oversized resident notification at the real publication gate while the write is held, then recovers", async () => {
+    const ref = "local:refuse";
+    const base = hydrateThread(currentRead(ref), ref, 1);
+    const baseBytes = encodedPayloadBytes(currentTranscriptState(base));
+    const marker = "-oversized-candidate";
+    const oversizedFrame = textDelta(ref, marker.repeat(6000));
+    const frameBytes = encodedPayloadBytes(oversizedFrame);
+    const restoreOptions = installBackgroundTranscriptOptionsForTests({
+      // The real hydrated store body is a few bytes larger than the fixture
+      // model measured above, so allow that slack while still refusing the
+      // 120 KiB candidate.
+      residentBytes: baseBytes + 64,
+      pendingBytes: frameBytes,
+    });
+    resetThreadsStoreForTests();
+    setSessionCacheAdapterForTests(cache);
+    const fake = new FakeClient("ready");
+    fake.on("thread/read", ({ ref: requested }) => currentRead(requested ?? ref));
+    fake.on("thread/unsubscribe", () => ({}));
+    connectionStore.getState().connect(fake);
+    let transaction: ReturnType<typeof holdNextWriteTransaction> | undefined;
+    const writeStarted = deferred<void>();
+    const originalPut = cache.putCurrent.bind(cache);
+    const put = vi.spyOn(cache, "putCurrent").mockImplementation(async (record, now) => {
+      if (!transaction && record.ref === ref) {
+        transaction = holdNextWriteTransaction(["records", "meta", "current", "currentMeta"]);
+        writeStarted.resolve();
+      }
+      return originalPut(record, now);
+    });
+    const lease = acquireBackgroundThread(ref);
+    let reacquired: ReturnType<typeof acquireBackgroundThread> | undefined;
+    try {
+      await lease.ready;
+      await writeStarted.promise;
+      await transaction?.reached;
+      expect(threadsStore.getState().threads.has(ref)).toBe(true);
+      const preFrame = backgroundTranscriptSnapshotForTests();
+      const baseCharged = preFrame.refs.get(ref)?.residentBytes;
+      if (!baseCharged) throw new Error("expected the real base model to be admitted");
+      expect(preFrame.refs.get(ref)?.handoffBytes).toBe(0);
+
+      // The store folds the notification into the resident, asks the real
+      // publication gate to admit it, and must revert when admission refuses.
+      fake.emitNotification(oversizedFrame);
+      const refusedModel = threadsStore.getState().threads.get(ref);
+      if (!refusedModel) throw new Error("expected the base model to remain published");
+      expect(JSON.stringify(currentTranscriptState(refusedModel))).not.toContain(marker);
+      const refused = backgroundTranscriptSnapshotForTests();
+      expect(refused.refs.get(ref)?.residentBytes).toBe(baseCharged);
+      expect(refused.refs.get(ref)?.handoffBytes).toBe(0);
+      expect(refused.pendingBytes).toBe(0);
+      expect(refused.refs.get(ref)?.persistence).toBe("repairing");
+
+      // Releasing the held write and the lease, then re-acquiring, forces a
+      // fresh real background hydration through the authoritative publication
+      // gate; the refused candidate never appears and the ref returns to
+      // useful, current state.
+      transaction?.release();
+      await settleBackgroundTranscriptsForTests();
+      await lease.release();
+      reacquired = acquireBackgroundThread(ref);
+      await reacquired.ready;
+      await settleBackgroundTranscriptsForTests();
+      const recovered = threadsStore.getState().threads.get(ref);
+      if (!recovered) throw new Error("expected the ref to recover through the real publication gate");
+      expect(JSON.stringify(currentTranscriptState(recovered))).not.toContain(marker);
+      const recoveredEntry = backgroundTranscriptSnapshotForTests().refs.get(ref);
+      expect(recoveredEntry?.persistence).toBe("enabled");
+      expect(recoveredEntry?.current).toBe(true);
+    } finally {
+      transaction?.release();
+      put.mockRestore();
+      await settleBackgroundTranscriptsForTests();
+      await lease.release();
+      await reacquired?.release();
+      resetThreadsStoreForTests();
+      restoreOptions();
+    }
+  });
+
+  test("recovers a background ref through a real cache miss without replaying the dropped frame", async () => {
+    const ref = "local:miss";
+    const restoreOptions = installBackgroundTranscriptOptionsForTests({
+      residentBytes: encodedPayloadBytes(currentTranscriptState(hydrateThread(currentRead(ref), ref, 1))),
+    });
+    resetThreadsStoreForTests();
+    setSessionCacheAdapterForTests(cache);
+    const fake = new FakeClient("ready");
+    fake.on("thread/read", ({ ref: requested }) => currentRead(requested ?? ref));
+    fake.on("thread/unsubscribe", () => ({}));
+    connectionStore.getState().connect(fake);
+    const writes: Array<{ ref: string; state: unknown; ownerToken: string }> = [];
+    const originalPut = cache.putCurrent.bind(cache);
+    const put = vi.spyOn(cache, "putCurrent").mockImplementation(async (record, now) => {
+      const outcome = await originalPut(record, now);
+      if (outcome.outcome === "written") writes.push(record);
+      return outcome;
+    });
+    const lease = acquireBackgroundThread(ref);
+    const other = acquireBackgroundThread("local:other");
+    try {
+      await Promise.all([lease.ready, other.ready]);
+      await settleBackgroundTranscriptsForTests();
+      // The second resident evicted the target while keeping its background
+      // ownership; deleting the real checkpoint makes the next write look up a
+      // genuinely missing record.
+      expect(threadsStore.getState().threads.has(ref)).toBe(false);
+      expect(await cache.deleteRecords([ref])).toBe(true);
+
+      const stale = textDelta(ref, "-stale-frame");
+      fake.emitNotification(stale);
+      await waitForHydration(ref, 2);
+      await settleBackgroundTranscriptsForTests();
+      const recoveredEntry = backgroundTranscriptSnapshotForTests().refs.get(ref);
+      expect(recoveredEntry?.persistence).toBe("enabled");
+      expect(recoveredEntry?.current).toBe(true);
+      const recoveredWrite = writes.filter((write) => write.ref === ref).at(-1);
+      if (!recoveredWrite) throw new Error("expected the recovered ref to reach the real cache");
+      const onDisk = await cache.getCurrent([recoveredWrite.ownerToken, ref], Date.now());
+      expect(JSON.stringify(onDisk?.record?.state)).not.toContain("-stale-frame");
+      expect(JSON.stringify(onDisk?.record?.state)).toContain("alpha");
+    } finally {
+      await settleBackgroundTranscriptsForTests();
+      put.mockRestore();
+      await Promise.all([lease.release(), other.release()]);
       resetThreadsStoreForTests();
       restoreOptions();
     }

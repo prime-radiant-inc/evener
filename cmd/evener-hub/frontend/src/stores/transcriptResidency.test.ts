@@ -786,11 +786,15 @@ describe("transcript residency", () => {
     const third = hydrateThread(currentRead("local:tri"), "local:tri", 1);
     const fourth = hydrateThread(currentRead("local:alt"), "local:alt", 1);
     const residents = new Map<string, ThreadModel>();
+    const publishedBodies: Array<{ ref: string; bytes: number }> = [];
     let hydrateCalls = 0;
     const port: TranscriptResidencyPort = {
       cache,
       resident: (ref) => residents.get(ref),
-      publish: (ref, model) => residents.set(ref, model),
+      publish: (ref, model) => {
+        residents.set(ref, model);
+        publishedBodies.push({ ref, bytes: independentJsonBytes(currentTranscriptState(model)) });
+      },
       unload: (ref) => {
         residents.delete(ref);
       },
@@ -804,9 +808,11 @@ describe("transcript residency", () => {
     expect(encodedPayloadBytes(currentTranscriptState(second))).toBe(bytes);
     expect(encodedPayloadBytes(currentTranscriptState(third))).toBe(bytes);
     expect(encodedPayloadBytes(currentTranscriptState(fourth))).toBe(bytes);
+    const traffic = textDelta(first.ref, "-live-traffic");
+    const trafficBytes = encodedPayloadBytes(traffic);
     const residency = createTranscriptResidency(port, {
       ...DEFAULT_BACKGROUND_TRANSCRIPT_OPTIONS,
-      residentBytes: bytes * 2,
+      residentBytes: bytes * 2 + trafficBytes,
     });
     residency.connection(1, true);
     for (const ref of [first.ref, second.ref, third.ref, fourth.ref]) {
@@ -836,8 +842,9 @@ describe("transcript residency", () => {
       now.mockRestore();
 
       // Live background traffic arrives at the older victim after its last
-      // foreground use and is really folded into its checkpoint.
-      const traffic = textDelta(first.ref, "-live-traffic");
+      // foreground use. The canonical caller reduces the notification, admits
+      // the reduced model and publishes it, so the resident really holds it
+      // before any admission pressure.
       expect(
         residency.accept(first.ref, {
           notification: traffic,
@@ -846,21 +853,27 @@ describe("transcript residency", () => {
           bytes: encodedPayloadBytes(traffic),
         }),
       ).toBe(false);
-      await residency.drain(first.ref);
-      const trafficWrite = writes.filter((write) => write.ref === first.ref).at(-1);
-      if (!trafficWrite) throw new Error("expected the live traffic to reach the real cache");
-      expect(JSON.stringify(trafficWrite.state)).toContain("-live-traffic");
-      const onDiskTraffic = await cache.getCurrent([trafficWrite.ownerToken, first.ref], Date.now());
-      expect(JSON.stringify(onDiskTraffic?.record?.state)).toContain("-live-traffic");
+      const reduced = applyNotification(first, traffic, 5);
+      port.publish(first.ref, reduced);
+      expect(residency.published(first.ref, reduced, 1)).toBe(true);
+      await residency.settled();
+      const residentFirst = residents.get(first.ref);
+      if (!residentFirst) throw new Error("expected the reduced victim to stay resident");
+      expect(JSON.stringify(currentTranscriptState(residentFirst))).toContain("-live-traffic");
+
+      const ownerToken = writes.find((write) => write.ref === first.ref)?.ownerToken;
+      if (!ownerToken) throw new Error("expected the victim checkpoint to reach the real cache");
+      const checkpoint = () => cache.getCurrent([ownerToken, first.ref], Date.now());
 
       // Admission pressure must still select the foreground-least-recently-used
-      // victim (first), not the victim that received the newest traffic.
+      // victim (first), not the victim that received the newest traffic, and the
+      // evicted victim's checkpoint must keep the traffic.
       port.publish(third.ref, third);
       residency.published(third.ref, third, 0);
       await residency.settled();
 
       const snapshot = residency.snapshot();
-      expect(snapshot.residentBytes).toBeLessThanOrEqual(bytes * 2);
+      expect(snapshot.residentBytes).toBeLessThanOrEqual(bytes * 2 + trafficBytes);
       expect(Object.fromEntries([...snapshot.refs].map(([ref, entry]) => [ref, entry.resident]))).toEqual({
         [first.ref]: false,
         [second.ref]: true,
@@ -868,14 +881,25 @@ describe("transcript residency", () => {
         [fourth.ref]: false,
       });
       expect(snapshot.refs.get(first.ref)?.current).toBe(true);
+      expect(JSON.stringify((await checkpoint())?.record?.state)).toContain("-live-traffic");
+      // Every model admitted at a port boundary is covered by that ref's live
+      // resident charge, measured independently of the coordinator's sizing.
+      for (const { ref, bytes: bodyBytes } of publishedBodies) {
+        const entry = snapshot.refs.get(ref);
+        if (entry?.resident) expect(entry.residentBytes).toBeGreaterThanOrEqual(bodyBytes);
+      }
 
-      // The evicted ref stays out of RAM through unrelated subsequent work,
-      // with no extra hydration.
+      // A fourth useful admission keeps the evicted ref disk-only with no
+      // hydration, produces a real resident result, and still leaves the
+      // victim's checkpoint holding the traffic.
       port.publish(fourth.ref, fourth);
       residency.published(fourth.ref, fourth, 0);
       await residency.settled();
       expect(residents.has(first.ref)).toBe(false);
       expect(hydrateCalls).toBe(0);
+      expect(residents.get(fourth.ref)).toBeDefined();
+      expect(residency.snapshot().refs.get(fourth.ref)?.current).toBe(true);
+      expect(JSON.stringify((await checkpoint())?.record?.state)).toContain("-live-traffic");
     } finally {
       put.mockRestore();
       residency.dispose();

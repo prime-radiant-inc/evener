@@ -6001,6 +6001,10 @@ export function pendingThreadHydrationUpdatesForTests(): readonly ReceivedTransc
   return [...pendingThreadHydrations.values()].flatMap((pending) => pending.notifications);
 }
 
+export function pendingThreadHydrationBaseModelsForTests(): readonly ThreadModel[] {
+  return [...pendingThreadHydrations.values()].flatMap((pending) => (pending.baseModel ? [pending.baseModel] : []));
+}
+
 export function acquireBackgroundThread(ref: string): BackgroundThreadLease {
   beginCanonicalThreadClaim(ref);
   backgroundRefCounts.set(ref, (backgroundRefCounts.get(ref) ?? 0) + 1);
