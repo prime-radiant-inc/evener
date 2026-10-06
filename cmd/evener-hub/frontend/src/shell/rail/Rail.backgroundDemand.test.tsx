@@ -1,8 +1,17 @@
+import "fake-indexeddb/auto";
+import type { NavigationReadParams, NavigationReadResponse, NavigationSessionSummary } from "@evener/appwire-client";
 import { keyID, type ResourceKey, type ResourceState } from "@evener/appwire-client/state/navigation";
+import { currentRead } from "@evener/appwire-client/testing/currentTranscript";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { cleanup, render, screen } from "@testing-library/react";
+import { wireSnapshot } from "@evener/appwire-client/testing/navigation";
+import { act, cleanup, render, screen } from "@testing-library/react";
+import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, expect, test } from "vitest";
-import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
+import { startBackgroundTranscripts } from "../../stores/backgroundTranscripts";
+import { connectionStore } from "../../stores/connection";
+import { initNavigation, navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
+import { SessionCacheIndexedDB } from "../../stores/sessionCacheIndexedDB";
+import { resetThreadsStoreForTests, setSessionCacheAdapterForTests } from "../../stores/threads";
 import { ClientProvider } from "../clientContext";
 import { Rail } from "./Rail";
 
@@ -32,10 +41,21 @@ function resource(key: ResourceKey, refs: string[], remaining: number): Resource
   };
 }
 
-beforeEach(() => resetNavigationStoreForTests());
+let cache: SessionCacheIndexedDB | undefined;
+
+beforeEach(() => {
+  resetNavigationStoreForTests();
+  resetThreadsStoreForTests();
+  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  cache = undefined;
+});
 afterEach(() => {
   cleanup();
   resetNavigationStoreForTests();
+  resetThreadsStoreForTests();
+  setSessionCacheAdapterForTests(undefined);
+  cache?.close();
+  cache = undefined;
 });
 
 test("Rail shows only foreground Live pages and keeps the visible Load more boundary", () => {
@@ -79,4 +99,118 @@ test("Rail shows only foreground Live pages and keeps the visible Load more boun
   expect(screen.queryByText("live-005")).toBeNull();
   expect(screen.queryByText("live-006")).toBeNull();
   expect(screen.getByText("+4 older")).toBeTruthy();
+});
+
+test("Rail keeps a previously loaded later visible page and Load more through background discovery and reconnect", async () => {
+  const world = { generation: "generation_test", revision: 1 };
+  const pages = new Map<number, NavigationSessionSummary[]>([
+    [0, [row("live-001"), row("live-002")]],
+    [2, [row("live-003"), row("live-004")]],
+    [4, [row("live-005"), row("live-006")]],
+    [6, [row("live-007"), row("live-008")]],
+  ]);
+  const remainingFor = (offset: number) => (offset === 6 ? 0 : 4);
+
+  function navigationRead(params: NavigationReadParams): NavigationReadResponse {
+    if (params.resource === "manifest") {
+      return wireSnapshot(
+        params,
+        {
+          generation_id: world.generation,
+          revision: world.revision,
+          sources: [],
+          attentionSummary: { needsYou: 0, error: 0, working: 0 },
+          sections: { live: { count: 8 }, needs_you: { count: 0 }, pin_sections: { count: 0 } },
+          catalogs: { projects: { count: 0 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
+        },
+        `"manifest-${world.revision}"`,
+        world.revision,
+        world.generation,
+      );
+    }
+    if (params.resource === "section" && params.section === "live") {
+      const offset = params.offset ?? 0;
+      const remaining = remainingFor(offset);
+      return wireSnapshot(
+        params,
+        { sessions: pages.get(offset) ?? [], remaining, truncated: remaining > 0 },
+        `"live-${offset}-${world.revision}"`,
+        world.revision,
+        world.generation,
+      );
+    }
+    return wireSnapshot(
+      params,
+      { sessions: [], remaining: 0, truncated: false },
+      `"${params.resource}"`,
+      1,
+      world.generation,
+    );
+  }
+
+  cache = new SessionCacheIndexedDB({
+    indexedDB: new IDBFactory(),
+    databaseName: `rail-bg-${crypto.randomUUID()}`,
+  });
+  setSessionCacheAdapterForTests(cache);
+
+  const client = new FakeClient("ready");
+  client.on("evener/navigation/read", navigationRead);
+  client.on("thread/read", (params) => ({
+    ...currentRead(params.ref ?? "live-001"),
+    requestGeneration: (params as { requestGeneration?: number }).requestGeneration ?? 1,
+  }));
+  client.on("thread/unsubscribe", () => ({}));
+  connectionStore.getState().connect(client);
+  initNavigation(client, {
+    version: 1,
+    generationId: world.generation,
+    sequence: 0,
+    readVersions: [3],
+  });
+
+  // Foreground-load page zero and a LATER page, as a user's Load more would:
+  // offset 4 becomes a visible loaded later page.
+  await navigationStore.getState().loadSection("live", 0);
+  await navigationStore.getState().loadSection("live", 4);
+
+  const owner = startBackgroundTranscripts(navigationStore);
+  await owner.settled();
+
+  render(<Rail />, {
+    wrapper: ({ children }) => <ClientProvider client={client}>{children}</ClientProvider>,
+  });
+
+  // Background discovery loaded the hidden middle page (offset 2) without
+  // expanding the rail, and the previously loaded later visible page and its
+  // Load more boundary remain rendered.
+  expect(screen.getByText("live-005")).toBeTruthy();
+  expect(screen.getByText("live-006")).toBeTruthy();
+  expect(screen.queryByText("live-003")).toBeNull();
+  expect(screen.queryByText("live-004")).toBeNull();
+  expect(screen.getByText("+4 older")).toBeTruthy();
+
+  // Reconnect: a fresh generation re-boots navigation and the owner rediscovers.
+  world.generation = "generation_replacement";
+  world.revision = 1;
+  await act(async () => {
+    client.emitStateChange("reconnecting");
+    client.emitReady({
+      serverInfo: { name: "fake", version: "1" },
+      protocolVersion: "evener-appwire-v6",
+      sourceId: "fake",
+      features: {} as never,
+      navigation: { version: 1, generationId: world.generation, sequence: 0, readVersions: [3] },
+    });
+    await owner.settled();
+  });
+
+  expect(screen.getByText("live-005")).toBeTruthy();
+  expect(screen.getByText("live-006")).toBeTruthy();
+  expect(screen.queryByText("live-003")).toBeNull();
+  expect(screen.getByText("+4 older")).toBeTruthy();
+
+  await act(async () => {
+    await owner.dispose();
+  });
 });

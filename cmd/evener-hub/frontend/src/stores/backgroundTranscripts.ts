@@ -10,8 +10,10 @@
 import type { NavigationSectionResource, NavigationSessionSummary } from "@evener/appwire-client";
 import {
   type BackgroundLivePages,
+  keyID,
   type NavigationStore,
   nextNavigationOffset,
+  type ResourceKey,
   type ResourceState,
 } from "@evener/appwire-client/state/navigation";
 import { acquireBackgroundThread, type BackgroundThreadLease } from "./threads";
@@ -43,13 +45,21 @@ export interface BackgroundTranscriptsOwner {
  * non-advancing page already ends a sweep, so this is only a safety net. */
 const MAX_SWEEP_PAGES = 10_000;
 
+// Bounded, paced retry for an incomplete discovery sweep. The navigation
+// revalidator schedules nothing itself, so the owner must retry a failed page
+// without spinning on its own publications.
+const RETRY_BASE_MS = 250;
+const RETRY_MAX_MS = 5_000;
+const RETRY_MAX_ATTEMPTS = 6;
+
 export function startBackgroundTranscripts(navigation: NavigationStore): BackgroundTranscriptsOwner {
   let accepting = true;
   let disposed = false;
   let disposePromise: Promise<void> | undefined;
   // The lease covering the current/last coherent sweep's page demand. A
   // coherent sweep replaces it and retires any trailing page it no longer
-  // needs; an incomplete sweep leaves the previous lease in place.
+  // needs; an incomplete or superseded sweep leaves the previous lease in
+  // place.
   let pageLease: BackgroundLivePages | null = null;
   const threadLeases = new Map<string, BackgroundThreadLease>();
   const acquisitionWork = new Set<Promise<void>>();
@@ -58,19 +68,36 @@ export function startBackgroundTranscripts(navigation: NavigationStore): Backgro
   let sweeping = false;
   let pending = false;
   let scheduledSoon = false;
-  // The external navigation input a sweep acts on. It excludes the owner's own
-  // resource publications, so an incomplete sweep (a failed or stale page)
-  // cannot reschedule itself into an endless loop; only a generation change,
-  // capability/mode change or invalidation sequence advance schedules a new
-  // sweep.
   let lastInput = "";
+  let retryTimer: ReturnType<typeof setTimeout> | null = null;
+  let retryAttempt = 0;
+
+  // The external navigation input a sweep acts on, plus the identity of every
+  // settled Live page. The settled-page part is what lets a successful
+  // same-invalidation recovery (a fresh page published by any owner) restart
+  // discovery, while failed/loading pages never appear there and so can never
+  // reschedule the owner into a publication loop.
+  function inputKey(): string {
+    const state = navigation.getState();
+    const settled: string[] = [];
+    for (const resource of state.resources.values()) {
+      if (resource.key.kind !== "section" || resource.key.section !== "live") continue;
+      if (resource.stale || resource.loading || resource.error !== null || resource.data === null) continue;
+      const sessions = (resource.data as { sessions?: readonly unknown[] } | null)?.sessions?.length ?? 0;
+      settled.push(
+        `${resource.key.offset}/${resource.key.limit}:${resource.generationID}:${resource.loadedRevision}:${sessions}`,
+      );
+    }
+    settled.sort();
+    return `${state.mode}:${state.clientGenerationID}:${state.lastSequence}|${settled.join(",")}`;
+  }
 
   const unsubscribe = navigation.subscribe(() => {
     if (!accepting || disposed) return;
-    const state = navigation.getState();
-    const input = `${state.mode}:${state.clientGenerationID}:${state.lastSequence}`;
+    const input = inputKey();
     if (input === lastInput) return;
     lastInput = input;
+    clearRetry();
     scheduleSoon();
   });
 
@@ -112,6 +139,24 @@ export function startBackgroundTranscripts(navigation: NavigationStore): Backgro
       pending = false;
       await runSweep();
     }
+  }
+
+  function clearRetry(): void {
+    if (retryTimer !== null) {
+      clearTimeout(retryTimer);
+      retryTimer = null;
+    }
+    retryAttempt = 0;
+  }
+
+  function armRetry(): void {
+    if (!accepting || disposed || retryTimer !== null || retryAttempt >= RETRY_MAX_ATTEMPTS) return;
+    const delay = Math.min(RETRY_MAX_MS, RETRY_BASE_MS * 2 ** retryAttempt);
+    retryAttempt += 1;
+    retryTimer = setTimeout(() => {
+      retryTimer = null;
+      scheduleSoon();
+    }, delay);
   }
 
   function acquireDiscovered(discovered: ReadonlySet<string>): void {
@@ -157,8 +202,13 @@ export function startBackgroundTranscripts(navigation: NavigationStore): Backgro
     const initial = navigation.getState();
     if (initial.mode !== "v3") return;
     const generation = initial.clientGenerationID;
+    // The invalidation identity this sweep is authorized to act on. A newer
+    // same-generation invalidation during the sweep revokes its authority to
+    // remove refs or adopt its page set.
+    const capturedSequence = initial.lastSequence;
     const lease = navigation.acquireBackgroundLivePages();
     const discovered = new Set<string>();
+    const loadedPages: Array<{ key: ResourceKey; loadedRevision: number | null }> = [];
     let revision: number | null = null;
     let complete = false;
 
@@ -178,15 +228,19 @@ export function startBackgroundTranscripts(navigation: NavigationStore): Backgro
         else if (page.loadedRevision !== revision) break;
         if (navigation.getState().clientGenerationID !== generation) break;
 
+        loadedPages.push({ key: page.key, loadedRevision: page.loadedRevision });
         for (const ref of eligibleLiveRefs(page.data.sessions)) discovered.add(ref);
 
         const rows = page.data.sessions.length;
         if (page.data.remaining === 0) {
+          // A truncated page cannot prove the roster is complete, even when it
+          // claims no remaining rows: the codec accepts that combination.
+          if (page.data.truncated) break;
           complete = true;
           break;
         }
-        // A truncated page that returns no new top-level rows cannot advance
-        // the offset; the roster cannot be proven complete.
+        // A page that returns no new top-level rows cannot advance the offset;
+        // the roster cannot be proven complete.
         if (rows === 0) break;
         offset = nextNavigationOffset(offset, rows);
       }
@@ -200,21 +254,39 @@ export function startBackgroundTranscripts(navigation: NavigationStore): Backgro
     // Fresh-page additions may be acquired even from an incomplete sweep.
     acquireDiscovered(discovered);
 
-    const coherent =
-      complete &&
-      !disposed &&
-      accepting &&
-      navigation.getState().mode === "v3" &&
-      navigation.getState().clientGenerationID === generation;
+    // Fence removal and adoption against the sweep's captured invalidation
+    // identity AND the current freshness of every page it read. A superseded or
+    // mixed-revision sweep must retain existing owners while its replacement
+    // settles.
+    const now = navigation.getState();
+    const sameAuthority =
+      now.mode === "v3" &&
+      now.clientGenerationID === generation &&
+      now.lastSequence === capturedSequence &&
+      loadedPages.length > 0 &&
+      loadedPages.every(({ key, loadedRevision }) => {
+        const resource = now.resources.get(keyID(key));
+        return (
+          resource !== undefined &&
+          !resource.stale &&
+          !resource.loading &&
+          resource.error === null &&
+          resource.generationID === generation &&
+          resource.loadedRevision === loadedRevision
+        );
+      });
 
-    if (coherent) {
+    if (complete && sameAuthority) {
+      clearRetry();
       releaseAbsent(discovered);
       adoptPageLease(lease);
-    } else if (pageLease === null) {
-      // Keep the first partial lease's page demand so a retry can reuse it.
-      pageLease = lease;
     } else {
-      lease.release();
+      // Incomplete or superseded: retain previous owners and their page demand.
+      if (pageLease === null) pageLease = lease;
+      else lease.release();
+      // Pace a bounded retry for genuinely incomplete discovery. A superseded
+      // complete sweep already has a fresh sweep scheduled by its invalidation.
+      if (!complete) armRetry();
     }
   }
 
@@ -223,6 +295,7 @@ export function startBackgroundTranscripts(navigation: NavigationStore): Backgro
     accepting = false;
     disposed = true;
     unsubscribe();
+    clearRetry();
     pageLease?.release();
     pageLease = null;
     const work: Promise<void>[] = [];
@@ -254,9 +327,7 @@ export function startBackgroundTranscripts(navigation: NavigationStore): Backgro
 
   // Begin the first sweep without waiting for a navigation change: the app
   // may already hold a settled Live roster by the time the owner starts.
-  lastInput = `${navigation.getState().mode}:${navigation.getState().clientGenerationID}:${
-    navigation.getState().lastSequence
-  }`;
+  lastInput = inputKey();
   scheduleSoon();
 
   return { dispose, settled };

@@ -1,6 +1,7 @@
 import "fake-indexeddb/auto";
 import type { NavigationReadParams, NavigationReadResponse, NavigationSessionSummary } from "@evener/appwire-client";
 import {
+  type BackgroundLivePages,
   NAVIGATION_SECTION_LIMIT,
   selectLiveRows,
   selectNextSectionOffset,
@@ -44,6 +45,7 @@ function liveRow(ref: string, fields: Partial<NavigationSessionSummary> = {}): N
 interface PageSpec {
   rows: NavigationSessionSummary[];
   remaining: number;
+  truncated?: boolean;
 }
 interface World {
   generation: string;
@@ -118,7 +120,7 @@ async function navigationRead(params: NavigationReadParams): Promise<NavigationR
     const remaining = spec?.remaining ?? 0;
     return wireSnapshot(
       params,
-      { sessions: rows, remaining, truncated: remaining > 0 },
+      { sessions: rows, remaining, truncated: spec?.truncated ?? remaining > 0 },
       `"live-${offset}-${world.revision}"`,
       world.revision,
       world.generation,
@@ -176,11 +178,20 @@ function threadUnsubRefs(): string[] {
     .map((call) => (call.params as { ref?: string }).ref ?? "");
 }
 
-// Drains microtask turns until `done()` or a bounded count, mirroring
-// threads.test.ts's helper: enough for a FakeClient round trip to settle
-// without reaching the task queue (where fake-indexeddb flushes live).
-async function flushUntil(done: () => boolean, maxTurns = 50): Promise<void> {
-  for (let turn = 0; turn < maxTurns && !done(); turn += 1) await Promise.resolve();
+// Waits for an OBSERVED boundary, failing loudly if it never arrives: a
+// FakeClient round trip settles within microtasks, so a bounded drain is
+// enough, but silently returning on expiry would let a stalled owner pass.
+async function awaitObserved(done: () => boolean, what: string, maxTurns = 400): Promise<void> {
+  for (let turn = 0; turn < maxTurns; turn += 1) {
+    if (done()) return;
+    await Promise.resolve();
+  }
+  throw new Error(`observed boundary not reached: ${what}`);
+}
+
+// A single terminal page whose read fails.
+function failPage(): Map<number, PageSpec | "fail"> {
+  return new Map([[0, "fail"]]);
 }
 
 // True when any loaded Live section page currently materializes `ref`.
@@ -333,8 +344,9 @@ describe("startBackgroundTranscripts", () => {
       [1, { rows: [], remaining: 0 }],
     ]);
     invalidate(2);
+    // The sweep is blocked on the held terminal page and cannot have decided
+    // yet, so no release may have been issued.
     await waitForHeldPage();
-    await flushUntil(() => false, 20);
     expect(threadUnsubRefs()).toEqual([]);
 
     releaseHeldPage();
@@ -364,7 +376,6 @@ describe("startBackgroundTranscripts", () => {
     invalidate(2);
     await waitForHeldPage();
     invalidate(3);
-    await flushUntil(() => false, 20);
     releaseHeldPage();
     await owner.settled();
 
@@ -518,7 +529,7 @@ describe("startBackgroundTranscripts", () => {
       // blocks on the held cache write.
       world.pages = onePage([liveRow("local:b")]);
       invalidate(2);
-      await flushUntil(() => threadReadRefs().has("local:b"), 50);
+      await awaitObserved(() => threadReadRefs().has("local:b"), "b background read");
       expect(putSpy).toHaveBeenCalled();
       expect(threadUnsubRefs()).toEqual([]);
 
@@ -530,7 +541,7 @@ describe("startBackgroundTranscripts", () => {
       // The reappearance sweep must observe a back in the roster before the
       // held write settles. The model is still resident, so re-claiming adopts
       // it without a second read.
-      await flushUntil(() => livePageHas("local:a"), 50);
+      await awaitObserved(() => livePageHas("local:a"), "reappearance roster");
       expect(livePageHas("local:a")).toBe(true);
     } finally {
       settleWrite?.({ outcome: "written" });
@@ -590,5 +601,173 @@ describe("startBackgroundTranscripts", () => {
     expect(sectionReads).toEqual([]);
     expect(threadReadRefs()).toEqual(new Set());
     await owner.dispose();
+  });
+
+  // --- review-fix regression tests (I1/I2/I3) ---------------------------
+
+  test("a superseded empty sweep does not retire a ref a newer held revision still lists", async () => {
+    world.pages = onePage([liveRow("local:a")]);
+    fake = connectFake();
+
+    // Call-through wrapper around the real background page lease: a real rev3
+    // invalidation lands after the rev2 empty read resolves but before that
+    // stale page returns to the owner, and the rev3 transport read is held.
+    let armed = false;
+    let injected = false;
+    let signalPostInjectionLoad: (() => void) | null = null;
+    const postInjectionLoadEntered = new Promise<void>((resolve) => {
+      signalPostInjectionLoad = resolve;
+    });
+    const originalAcquire = navigationStore.acquireBackgroundLivePages;
+    const realAcquire = originalAcquire.bind(navigationStore);
+    const patched = navigationStore as unknown as { acquireBackgroundLivePages: () => BackgroundLivePages };
+    patched.acquireBackgroundLivePages = () => {
+      const real = realAcquire();
+      return {
+        load: async (offset, limit) => {
+          if (injected) signalPostInjectionLoad?.();
+          const page = await real.load(offset, limit);
+          if (armed && !injected && offset === 0) {
+            injected = true;
+            world.pages = onePage([liveRow("local:a")]);
+            holdNextPage(0);
+            invalidate(3);
+          }
+          return page;
+        },
+        release: () => real.release(),
+      };
+    };
+
+    const owner = startBackgroundTranscripts(navigationStore);
+    try {
+      await owner.settled();
+      expect(threadReadRefs()).toEqual(new Set(["local:a"]));
+
+      world.pages = onePage([]);
+      armed = true;
+      invalidate(2);
+
+      // Boundary: the held rev3 transport read is in flight, and the owner's
+      // post-injection sweep has begun (so the stale rev2 sweep already made
+      // its decision).
+      await waitForHeldPage();
+      await postInjectionLoadEntered;
+      expect(threadUnsubRefs()).not.toContain("local:a");
+    } finally {
+      patched.acquireBackgroundLivePages = originalAcquire;
+      releaseHeldPage();
+      await owner.dispose();
+    }
+  });
+
+  test("control: a truly coherent empty terminal sweep retires a ref normally", async () => {
+    world.pages = onePage([liveRow("local:a")]);
+    fake = connectFake();
+    const owner = startBackgroundTranscripts(navigationStore);
+    try {
+      await owner.settled();
+      expect(threadReadRefs()).toEqual(new Set(["local:a"]));
+
+      world.pages = onePage([]);
+      invalidate(2);
+      await owner.settled();
+
+      expect(threadUnsubRefs()).toEqual(["local:a"]);
+    } finally {
+      await owner.dispose();
+    }
+  });
+
+  test("a successful same-invalidation page recovery restarts discovery", async () => {
+    world.pages = onePage([liveRow("local:a")]);
+    fake = connectFake();
+    const owner = startBackgroundTranscripts(navigationStore);
+    try {
+      await owner.settled();
+      expect(threadReadRefs()).toEqual(new Set(["local:a"]));
+
+      // rev2 invalidates live while the page fails: incomplete, retain a. The
+      // invalidation sequence advances once.
+      world.pages = failPage();
+      invalidate(2);
+      await owner.settled();
+      expect(threadUnsubRefs()).toEqual([]);
+
+      // Fault removed. A foreground read republishes a fresh page under the
+      // SAME invalidation (no new sequence) carrying a new Live ref.
+      world.pages = onePage([liveRow("local:a"), liveRow("remote:recovered-idle", { host_id: "remote" })]);
+      await navigationStore.getState().loadSection("live", 0);
+      expect(navigationStore.getState().lastSequence).toBe(1);
+      expect(livePageHas("remote:recovered-idle")).toBe(true);
+
+      await owner.settled();
+      expect(threadReadRefs().has("remote:recovered-idle")).toBe(true);
+      expect(threadUnsubRefs()).toEqual([]);
+    } finally {
+      await owner.dispose();
+    }
+  });
+
+  test("control: a fresh invalidation after the recovery also discovers the new ref", async () => {
+    world.pages = onePage([liveRow("local:a")]);
+    fake = connectFake();
+    const owner = startBackgroundTranscripts(navigationStore);
+    try {
+      await owner.settled();
+
+      world.pages = failPage();
+      invalidate(2);
+      await owner.settled();
+      expect(threadUnsubRefs()).toEqual([]);
+
+      world.pages = onePage([liveRow("local:a"), liveRow("remote:recovered-idle", { host_id: "remote" })]);
+      await navigationStore.getState().loadSection("live", 0);
+      expect(livePageHas("remote:recovered-idle")).toBe(true);
+
+      invalidate(3);
+      await owner.settled();
+      expect(threadReadRefs().has("remote:recovered-idle")).toBe(true);
+    } finally {
+      await owner.dispose();
+    }
+  });
+
+  test("a truncated terminal page cannot prove the roster complete", async () => {
+    world.pages = onePage([liveRow("local:a")]);
+    fake = connectFake();
+    const owner = startBackgroundTranscripts(navigationStore);
+    try {
+      await owner.settled();
+      expect(threadReadRefs()).toEqual(new Set(["local:a"]));
+
+      // Empty, no remaining data, yet still claims truncation: accepted on the
+      // wire, but not a trustworthy terminal proof.
+      world.pages = new Map([[0, { rows: [], remaining: 0, truncated: true }]]);
+      invalidate(2);
+      await owner.settled();
+
+      expect(threadUnsubRefs()).not.toContain("local:a");
+    } finally {
+      await owner.dispose();
+    }
+  });
+
+  test("control: a genuinely terminal empty page retires a ref normally", async () => {
+    world.pages = onePage([liveRow("local:a")]);
+    fake = connectFake();
+    const owner = startBackgroundTranscripts(navigationStore);
+    try {
+      await owner.settled();
+      expect(threadReadRefs()).toEqual(new Set(["local:a"]));
+
+      world.pages = new Map([[0, { rows: [], remaining: 0, truncated: false }]]);
+      invalidate(2);
+      await owner.settled();
+
+      expect(threadUnsubRefs()).toEqual(["local:a"]);
+    } finally {
+      await owner.dispose();
+    }
   });
 });

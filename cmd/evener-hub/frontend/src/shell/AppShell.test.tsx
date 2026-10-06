@@ -14,8 +14,10 @@ import { keyID } from "@evener/appwire-client/state/navigation";
 import { currentRead } from "@evener/appwire-client/testing/currentTranscript";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { wireSnapshot } from "@evener/appwire-client/testing/navigation";
+import { navigationInvalidatedNotification } from "@evener/appwire-client/testing/notifications";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { StrictMode } from "react";
 
 // Session-title queries in this file target navigation, so keep them scoped to
 // the rail rather than matching the same session in workspace content.
@@ -732,6 +734,84 @@ test.each(["desktop", "narrow"])("one background owner per client lifetime in th
   const client = backgroundReadyClient();
   render(<AppShell client={client} />);
   await waitFor(() => expect(membershipReads(client)).toBe(1));
+});
+
+test("a client replacement fences an active predecessor's held sweep", async () => {
+  const user = userEvent.setup();
+  const predecessor = backgroundReadyClient();
+  const fresh = backgroundReadyClient();
+  render(<AppShell client={predecessor} bannerDelayMs={0} bannerCreateClient={() => fresh} />);
+  await screen.findByText("No session open");
+  // The predecessor owner is active: it discovered and read the Live session.
+  await waitFor(() => expect(membershipReads(predecessor)).toBe(1));
+
+  // Hold the predecessor owner's next live-section read, then invalidate so its
+  // sweep is mid-load when the client is replaced.
+  const hold = { release: null as null | (() => void), entered: null as null | (() => void) };
+  const entered = new Promise<void>((resolve) => {
+    hold.entered = resolve;
+  });
+  const held = new Promise<void>((resolve) => {
+    hold.release = resolve;
+  });
+  predecessor.on("evener/navigation/read", async (params) => {
+    if (params.resource === "section" && params.section === "live") {
+      hold.entered?.();
+      await held;
+    }
+    return navigationRead(params);
+  });
+  await act(async () => {
+    predecessor.emitNotification(
+      navigationInvalidatedNotification({
+        generationId: "generation_test",
+        sequence: 1,
+        targets: [{ kind: "section", section: "live", revision: 2 }],
+      }),
+    );
+    await entered;
+  });
+
+  // Replace the client while the predecessor's sweep is held.
+  await act(async () => {
+    predecessor.emitStateChange("closed");
+  });
+  await user.click(await screen.findByRole("button", { name: "Retry" }));
+  await waitFor(() => expect(connectionStore.getState().client).toBe(fresh));
+  await waitFor(() => expect(membershipReads(fresh)).toBeGreaterThanOrEqual(1));
+
+  const freshReadsAfterReplacement = membershipReads(fresh);
+  const freshUnsubsAfterReplacement = unsubscribedRefs(fresh);
+  const predecessorCallsAfterReplacement = predecessor.calls.length;
+  hold.release?.();
+  await act(async () => {});
+
+  // The disposed predecessor's held sweep is fenced: it issues no further
+  // demand, and does not disturb the successor owner (whose lifecycle churn
+  // from the handoff is already finished).
+  expect(predecessor.calls.length).toBe(predecessorCallsAfterReplacement);
+  expect(membershipReads(fresh)).toBe(freshReadsAfterReplacement);
+  expect(unsubscribedRefs(fresh)).toEqual(freshUnsubsAfterReplacement);
+  expect(membershipReads(fresh)).toBeGreaterThanOrEqual(1);
+});
+
+test("StrictMode mount and cleanup/remount leak no background owner", async () => {
+  const client = backgroundReadyClient();
+  const strict = render(
+    <StrictMode>
+      <AppShell client={client} />
+    </StrictMode>,
+  );
+  await waitFor(() => expect(membershipReads(client)).toBeGreaterThan(0));
+  strict.unmount();
+  // Every acquired membership is retired: a leaked owner would leave one open.
+  await waitFor(() => expect(unsubscribedRefs(client).length).toBe(membershipReads(client)));
+
+  // A clean remount of the same client: one owner at a time, none leaked.
+  const again = render(<AppShell client={client} />);
+  await waitFor(() => expect(membershipReads(client)).toBeGreaterThan(unsubscribedRefs(client).length));
+  again.unmount();
+  await waitFor(() => expect(unsubscribedRefs(client).length).toBe(membershipReads(client)));
 });
 
 test("banner reflects reconnecting state when injected", async () => {
