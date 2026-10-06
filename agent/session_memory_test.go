@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,7 +17,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"testing/synctest"
 	"time"
 	"unicode/utf8"
 
@@ -211,19 +209,6 @@ func memoryContextCount(s *Session) int {
 		}
 	}
 	return n
-}
-
-func lastMemoryContextText(t *testing.T, s *Session, name string) string {
-	t.Helper()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, turn := range slices.Backward(s.history) {
-		if turn.Kind == schema.TurnMemoryContext && turn.Message.Name == name {
-			return turn.Message.Text()
-		}
-	}
-	t.Fatalf("no %s memory context turn", name)
-	return ""
 }
 
 func TestMemoryIndexUTF8Boundary(t *testing.T) {
@@ -997,7 +982,7 @@ func TestMemoryStorageSharedWaitAndClose(t *testing.T) {
 			memorySeed(t, root, "personal", "opaque-held-personal-501")
 			memorySeed(t, root, "projects/fixture-project", "opaque-held-project-502")
 			clk := agenttest.NewFakeClock()
-			started := make(chan string, 3)
+			started := make(chan string, 2)
 			release := make(chan struct{})
 			var once sync.Once
 			unblock := func() { once.Do(func() { close(release) }) }
@@ -1013,16 +998,14 @@ func TestMemoryStorageSharedWaitAndClose(t *testing.T) {
 				}
 				return nil
 			}}}))
-			memorySeed(t, root, filepath.Join("sessions", s.id), "opaque-held-session-503")
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			done := make(chan struct{})
 			go func() { s.maybeAppendMemoryContext(ctx); close(done) }()
 			<-started
 			<-started
-			<-started
 			s.memoryMu.Lock()
-			personal, project, session := s.memoryIndexFlights["personal"], s.memoryIndexFlights["project"], s.memoryIndexFlights["session"]
+			personal, project := s.memoryIndexFlights["personal"], s.memoryIndexFlights["project"]
 			var heldEnvs []*execenv.LocalExecutionEnvironment
 			if mode == "close-index_read" {
 				for _, env := range s.memoryEnvs {
@@ -1056,7 +1039,7 @@ func TestMemoryStorageSharedWaitAndClose(t *testing.T) {
 				<-done
 				t.Fatal("boundary exceeded shared budget")
 			}
-			want := 3
+			want := 2
 			if strings.HasPrefix(mode, "close-") {
 				want = 0
 			}
@@ -1066,7 +1049,6 @@ func TestMemoryStorageSharedWaitAndClose(t *testing.T) {
 			unblock()
 			<-personal.done
 			<-project.done
-			<-session.done
 			if got := memoryContextCount(s); got != want {
 				t.Fatalf("worker appended late context=%d", got)
 			}
@@ -1079,11 +1061,11 @@ func TestMemoryStorageSharedWaitAndClose(t *testing.T) {
 				}
 			}
 			if mode == "close-index_read" {
-				if personal.projection.Status != "current" || personal.projection.Content != "opaque-held-personal-501" || project.projection.Status != "current" || project.projection.Content != "opaque-held-project-502" || session.projection.Status != "current" || session.projection.Content != "opaque-held-session-503" {
+				if personal.projection.Status != "current" || personal.projection.Content != "opaque-held-personal-501" || project.projection.Status != "current" || project.projection.Content != "opaque-held-project-502" {
 					t.Fatal("Close interrupted an admitted read instead of leaving it responsible for retirement")
 				}
-				if len(heldEnvs) != 3 {
-					t.Fatalf("paused reader environments=%d want=3", len(heldEnvs))
+				if len(heldEnvs) != 2 {
+					t.Fatalf("paused reader environments=%d want=2", len(heldEnvs))
 				}
 				for _, env := range heldEnvs {
 					// After Close and both completion barriers, no operation can
@@ -2637,7 +2619,7 @@ func TestMemorySchemaAndOutputAliases(t *testing.T) {
 			t.Fatalf("registered %s intent=%v", name, intent)
 		}
 		scope := props["scope"].(map[string]any)
-		if fmt.Sprint(scope["enum"]) != "[personal project session]" {
+		if fmt.Sprint(scope["enum"]) != "[personal project]" {
 			t.Fatalf("scope=%v", scope)
 		}
 		if _, exists := ordinary.Definition.Parameters["properties"].(map[string]any)["scope"]; exists {
@@ -2767,288 +2749,5 @@ func TestMemoryGuidanceFollowsCapabilities(t *testing.T) {
 				t.Fatalf("memory section mentions project memory, but no project scope is bound")
 			}
 		})
-	}
-}
-
-func TestMemorySessionScopeRootWrites(t *testing.T) {
-	t.Parallel()
-	root := t.TempDir()
-	s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: root, MemoryProjectID: "fixture-project"}))
-	if res := memoryExec(t, s, "memory_write", map[string]any{"scope": "session", "file_path": "MEMORY.md", "content": "opaque-session-11\n"}); res.IsError {
-		t.Fatal(res.Output)
-	}
-	got, err := os.ReadFile(filepath.Join(root, "memory", "sessions", s.id, "MEMORY.md"))
-	if err != nil || string(got) != "opaque-session-11\n" {
-		t.Fatalf("bytes=%q err=%v", got, err)
-	}
-}
-
-// absentMemoryFileError is what reading or editing MEMORY.md in an absent
-// session scope reports: the requested path, not found.
-var absentMemoryFileError = (&fs.PathError{Op: "open", Path: "MEMORY.md", Err: fs.ErrNotExist}).Error()
-
-func assertNoMemoryDir(t *testing.T, dir, after string) {
-	t.Helper()
-	if _, err := os.Lstat(dir); !os.IsNotExist(err) {
-		t.Fatalf("%s created %s: %v", after, dir, err)
-	}
-}
-
-// Most root sessions never write session memory, so reading the scope (the
-// index refresh at every model boundary, memory_read, memory_search,
-// memory_delete) leaves no directory behind; the first write creates it.
-func TestMemorySessionScopeAbsentUntilFirstWrite(t *testing.T) {
-	t.Parallel()
-	root := t.TempDir()
-	var states []string
-	var lastBody string
-	capture := func(req llm.Request) llm.Response {
-		state, body, _ := memoryRequestIndex(t, req, "session")
-		if state == "" {
-			state = "none"
-		}
-		states, lastBody = append(states, state), body
-		return finalResponse("done")
-	}
-	turns := []func(llm.Request) llm.Response{capture, capture}
-	s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: root}), withSteps(turns...))
-	if _, err := s.ProcessInput(context.Background(), "go", nil); err != nil {
-		t.Fatal(err)
-	}
-	dir := filepath.Join(root, "memory", "sessions", s.id)
-	assertNoMemoryDir(t, dir, "index refresh")
-	if res := memoryExec(t, s, "memory_read", map[string]any{"scope": "session", "file_path": "MEMORY.md"}); !res.IsError || res.Output != absentMemoryFileError {
-		t.Fatalf("absent scope read=%+v", res)
-	}
-	if res := memoryExec(t, s, "memory_search", map[string]any{"scope": "session", "pattern": "opaque"}); res.IsError || res.Output != "" {
-		t.Fatalf("absent scope search=%+v", res)
-	}
-	if res := memoryExec(t, s, "memory_delete", map[string]any{"scope": "session", "file_path": "page.md"}); res.IsError || res.Output != "Removed or already absent: page.md" {
-		t.Fatalf("absent scope delete=%+v", res)
-	}
-	if res := memoryExec(t, s, "memory_edit", map[string]any{"scope": "session", "file_path": "MEMORY.md", "old_string": "a", "new_string": "b"}); !res.IsError || res.Output != absentMemoryFileError {
-		t.Fatalf("absent scope edit=%+v", res)
-	}
-	assertNoMemoryDir(t, dir, "reading or editing an absent session scope")
-	if res := memoryExec(t, s, "memory_write", map[string]any{"scope": "session", "file_path": "MEMORY.md", "content": "opaque-lazy-session-61\n"}); res.IsError {
-		t.Fatal(res.Output)
-	}
-	if res := memoryExec(t, s, "memory_read", map[string]any{"scope": "session", "file_path": "MEMORY.md"}); res.IsError || !strings.Contains(res.Output, "opaque-lazy-session-61") {
-		t.Fatalf("read after first write=%+v", res)
-	}
-	if _, err := s.ProcessInput(context.Background(), "again", nil); err != nil {
-		t.Fatal(err)
-	}
-	if len(states) != 2 || states[0] != "none" || states[1] != "current" || lastBody != "opaque-lazy-session-61\n" {
-		t.Fatalf("session index states=%v body=%q", states, lastBody)
-	}
-}
-
-// A delegate only reads its root's session memory, so it never creates the
-// root's directory either.
-func TestMemorySessionScopeDelegateLeavesAbsentScopeAbsent(t *testing.T) {
-	t.Parallel()
-	root := t.TempDir()
-	s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: root}))
-	s.depth = 1
-	s.delegateRootSessionID = "034aRootFixture0000000"
-	if p := s.readMemoryIndex("session"); p.Status != "missing" {
-		t.Fatalf("delegate index projection=%+v", p)
-	}
-	if res := memoryExec(t, s, "memory_read", map[string]any{"scope": "session", "file_path": "MEMORY.md"}); !res.IsError || res.Output != absentMemoryFileError {
-		t.Fatalf("delegate read=%+v", res)
-	}
-	if res := memoryExec(t, s, "memory_search", map[string]any{"scope": "session", "pattern": "opaque"}); res.IsError || res.Output != "" {
-		t.Fatalf("delegate search=%+v", res)
-	}
-	assertNoMemoryDir(t, filepath.Join(root, "memory", "sessions", s.delegateRootSessionID), "a delegate's read")
-}
-
-// A write that arrives while an index read is still opening the absent
-// session scope waits for that read, finds it absent, and opens the scope
-// again with creation instead of taking the reader's absent result.
-func TestMemorySessionScopeWriteRetriesAfterAbsentRead(t *testing.T) {
-	t.Parallel()
-	synctest.Test(t, func(t *testing.T) {
-		root := t.TempDir()
-		gate := make(chan struct{})
-		var setups atomic.Int32
-		cfg := SessionConfig{MemoryStateRoot: root}
-		cfg.testOnly.memoryBeforeIO = func(scope, operation string) error {
-			if scope == "session" && operation == "setup" && setups.Add(1) == 1 {
-				<-gate
-			}
-			return nil
-		}
-		s := newSession(t, withConfig(cfg))
-		projection := make(chan memoryProjection, 1)
-		go func() { projection <- s.readMemoryIndex("session") }()
-		synctest.Wait()
-		written := make(chan tool.ExecResult, 1)
-		go func() {
-			written <- memoryExec(t, s, "memory_write", map[string]any{"scope": "session", "file_path": "MEMORY.md", "content": "opaque-race-63\n"})
-		}()
-		synctest.Wait()
-		if got := setups.Load(); got != 1 {
-			t.Fatalf("writer ran setup before the reader's flight settled: %d", got)
-		}
-		close(gate)
-		synctest.Wait()
-		if p := <-projection; p.Status != "missing" {
-			t.Fatalf("reader projection=%+v", p)
-		}
-		if res := <-written; res.IsError {
-			t.Fatalf("writer after an absent read=%+v", res)
-		}
-		if got := setups.Load(); got != 2 {
-			t.Fatalf("setup ran %d times, want 2", got)
-		}
-		got, err := os.ReadFile(filepath.Join(root, "memory", "sessions", s.id, "MEMORY.md"))
-		if err != nil || string(got) != "opaque-race-63\n" {
-			t.Fatalf("bytes=%q err=%v", got, err)
-		}
-		s.Close()
-		s.memoryMu.Lock()
-		users := len(s.memoryEnvUsers)
-		s.memoryMu.Unlock()
-		if users != 0 {
-			t.Fatalf("memory environment leases left after Close: %d", users)
-		}
-	})
-}
-
-func TestMemorySessionScopeDelegateReadsButCannotWrite(t *testing.T) {
-	t.Parallel()
-	workspace, project := memoryGitFixture(t)
-	root := t.TempDir()
-	s := newSession(t, withDir(workspace), withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root, MemoryProjectID: project.ID, Project: project, testOnly: testConfig{sandboxProber: bwrapCapableProber(workspace), disableDelegateIdleRelease: true}}), withSteps(func(llm.Request) llm.Response { return finalResponse("child finished") }))
-	memorySeed(t, root, filepath.Join("sessions", s.id), "opaque-root-session-12\n")
-	res := s.createDelegate(context.Background(), delegateArgs{Task: "fixture child", AgentType: "explorer", DelegationAllowance: new(0)})
-	if res.Err != nil {
-		t.Fatal(res.Err)
-	}
-	child := memoryWaitChild(t, s, res.ChildSessionID)
-	if read := memoryExec(t, child.sess, "memory_read", map[string]any{"scope": "session", "file_path": "MEMORY.md"}); read.IsError || !strings.Contains(read.Output, "opaque-root-session-12") {
-		t.Fatalf("delegate read=%+v", read)
-	}
-	for _, name := range []string{"memory_write", "memory_edit", "memory_delete"} {
-		res := memoryExec(t, child.sess, name, map[string]any{"scope": "session", "file_path": "MEMORY.md", "content": "x", "old_string": "opaque", "new_string": "y"})
-		if !res.IsError || !strings.Contains(res.Output, memorySessionReadOnly) {
-			t.Fatalf("delegate session %s=%+v", name, res)
-		}
-	}
-	got, _ := os.ReadFile(filepath.Join(root, "memory", "sessions", s.id, "MEMORY.md"))
-	if string(got) != "opaque-root-session-12\n" {
-		t.Fatalf("root session memory changed: %q", got)
-	}
-	child.sess.appendMemoryProjection(memoryProjection{Scope: "session", Status: "current", Content: "opaque-root-session-12\n"})
-	if text := lastMemoryContextText(t, child.sess, "memory_session"); !strings.Contains(text, memorySessionProjectionReadOnly) {
-		t.Fatalf("delegate session projection lacks read-only framing: %q", text)
-	}
-}
-
-func TestMemorySessionScopeUnboundDelegateRefuses(t *testing.T) {
-	t.Parallel()
-	s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: t.TempDir()}))
-	s.depth = 1
-	s.delegateRootSessionID = ""
-	if res := memoryExec(t, s, "memory_read", map[string]any{"scope": "session", "file_path": "MEMORY.md"}); !res.IsError || !strings.Contains(res.Output, "session memory is not bound") {
-		t.Fatalf("res=%+v", res)
-	}
-	s.delegateRootSessionID = "../escape"
-	if res := memoryExec(t, s, "memory_read", map[string]any{"scope": "session", "file_path": "MEMORY.md"}); !res.IsError || !strings.Contains(res.Output, "session memory is not bound") {
-		t.Fatalf("hostile id res=%+v", res)
-	}
-}
-
-func TestMemorySessionIndexProjected(t *testing.T) {
-	t.Parallel()
-	root := t.TempDir()
-	var body string
-	s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: root}), withSteps(func(req llm.Request) llm.Response {
-		_, body, _ = memoryRequestIndex(t, req, "session")
-		return finalResponse("done")
-	}))
-	memorySeed(t, root, filepath.Join("sessions", s.id), "opaque-session-index-21\n")
-	if _, err := s.ProcessInput(context.Background(), "go", nil); err != nil {
-		t.Fatal(err)
-	}
-	if body != "opaque-session-index-21\n" {
-		t.Fatalf("session index body=%q", body)
-	}
-	if text := lastMemoryContextText(t, s, "memory_session"); strings.Contains(text, memorySessionProjectionReadOnly) {
-		t.Fatalf("root session projection has read-only framing: %q", text)
-	}
-}
-
-func TestMemorySessionIndexSurvivesResumeAndCompaction(t *testing.T) {
-	t.Parallel()
-	root, history, workspace := t.TempDir(), t.TempDir(), t.TempDir()
-	s := newScriptedSummaryCompactSession(t, "memory-summary", func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("opaque-fold-59")} }, withDir(workspace), withConfig(SessionConfig{StateDir: history, MemoryStateRoot: root}))
-	sessionPath := memorySeed(t, root, filepath.Join("sessions", s.id), "opaque-session-resume-22\n")
-	observe := func(want string, projections int) func(llm.Request) llm.Response {
-		return func(req llm.Request) llm.Response {
-			state, body, _ := memoryRequestIndex(t, req, "session")
-			if state != "current" || body != want {
-				t.Fatalf("session index=%s %q, want %q", state, body, want)
-			}
-			count := 0
-			for _, msg := range req.Messages {
-				if msg.Name == "memory_session" {
-					count++
-				}
-			}
-			if count != projections {
-				t.Fatalf("session projections in request=%d, want %d", count, projections)
-			}
-			return finalResponse("observed")
-		}
-	}
-	s.client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{observe("opaque-session-resume-22\n", 1), observe("opaque-session-resume-22\n", 1)}})
-	if _, err := s.ProcessInput(context.Background(), "startup", nil); err != nil {
-		t.Fatal(err)
-	}
-	for range 12 {
-		s.appendTurnWithTranscriptMessage(schema.TurnUserInput, llm.User("opaque-old-69"), llm.User("opaque-old-69"))
-	}
-	if err := s.Compact(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if len(s.history) >= 14 {
-		t.Fatal("history did not fold")
-	}
-	if _, err := s.ProcessInput(context.Background(), "after fold", nil); err != nil {
-		t.Fatal(err)
-	}
-	s.Close()
-	if err := os.WriteFile(sessionPath, []byte("opaque-session-resumed-23\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	meta, err := schema.LoadSessionMeta(history, s.id)
-	if err != nil {
-		t.Fatal(err)
-	}
-	r, err := RestoreSessionFromMetaWithConfig(s.client, s.profile, execenv.NewLocalExecutionEnvironment(workspace), meta, RestoreSessionConfig{StateDir: history, MemoryStateRoot: root})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer r.Close()
-	if r.id != s.id {
-		t.Fatalf("resume changed the session id: %s", r.id)
-	}
-	r.client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{observe("opaque-session-resumed-23\n", 2)}})
-	if _, err := r.ProcessInput(context.Background(), "resume", nil); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestMemorySessionRestoreSeedsObservedScope(t *testing.T) {
-	t.Parallel()
-	s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: t.TempDir()}))
-	msg := llm.User("x")
-	msg.Name = "memory_session"
-	s.restoreMemoryProjection([]schema.Turn{{Kind: schema.TurnMemoryContext, Message: msg}})
-	if !s.memoryEverProjected["session"] {
-		t.Fatal("restored session observation not seeded")
 	}
 }

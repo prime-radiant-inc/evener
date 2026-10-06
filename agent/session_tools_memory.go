@@ -36,12 +36,8 @@ func registerMemoryTools(reg *tool.Registry, s *Session) error {
 // the operation has on an empty scope, naming the path the model asked for.
 func (s *Session) memoryFileArgs(args map[string]any, key, operation string) (*execenv.LocalExecutionEnvironment, map[string]any, func(), error) {
 	scope := stringArg(args, "scope")
-	_, readOnly, err := s.memoryScopeBinding(scope)
-	if err != nil {
+	if _, err := s.memoryScopeBinding(scope); err != nil {
 		return nil, nil, nil, err
-	}
-	if readOnly && operation != "read" && operation != "search" {
-		return nil, nil, nil, errors.New(memorySessionReadOnly)
 	}
 	path := stringArg(args, key)
 	if key == "path" && path == "" {
