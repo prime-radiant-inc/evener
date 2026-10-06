@@ -743,7 +743,7 @@ export type {
   TranscriptMetadataVisibility,
   TranscriptProjection,
 } from "./transcriptProjector";
-export { ACTION_SUMMARY_UNAVAILABLE, entryDisplayKey, projectThread } from "./transcriptProjector";
+export { ACTION_SUMMARY_UNAVAILABLE, entryDisplayKey, PROMPT_EVENT_KINDS, projectThread } from "./transcriptProjector";
 export {
   findSessionsSummary,
   readTranscriptEnvelope,
