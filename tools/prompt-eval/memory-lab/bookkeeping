@@ -86,22 +86,68 @@ def strip_wrappers(words):
     return words
 
 
+def option_value(word, short, long):
+    """For an option that takes a value, how word gives it: ("next", None) when the value is the next word
+    (-e, --regexp), ("attached", value) when it is in the same word (-eTask, --regexp=Task), or None when
+    word is not that option."""
+    if word == short or word == long:
+        return "next", None
+    if word.startswith(short) and len(word) > len(short) and not word.startswith("--"):
+        return "attached", word[len(short):]
+    if word.startswith(long + "="):
+        return "attached", word[len(long) + 1:]
+    return None
+
+
 def search_files(args):
     """The files grep or rg reads: its file operands, after the pattern. A pattern given with -e/--regexp
-    is not a file; a pattern file given with -f/--file is read."""
+    (separate or attached) is not a file; a pattern file given with -f/--file is read."""
     files, pattern_given, i = [], False, 0
     while i < len(args):
         word = args[i]
-        if word in ("-e", "--regexp", "-f", "--file"):
+        pattern, pattern_file = option_value(word, "-e", "--regexp"), option_value(word, "-f", "--file")
+        if pattern or pattern_file:
             pattern_given = True
-            if word in ("-f", "--file") and i + 1 < len(args):
-                files.append(args[i + 1])
-            i += 2
-            continue
-        if not word.startswith("-"):
+            form, value = pattern or pattern_file
+            if form == "next":
+                value = args[i + 1] if i + 1 < len(args) else None
+                i += 1
+            if pattern_file and value:
+                files.append(value)
+        elif not word.startswith("-"):
             files.append(word)
         i += 1
     return files if pattern_given else files[1:]
+
+
+def edit_operands(name, args):
+    """For sed or perl: (script files read, input files). Expressions given with -e/--expression are
+    skipped; sed's -f/--file script is read, not edited; without -e or -f, sed's first operand is the script."""
+    scripts, files, expression_given, i = [], [], False, 0
+    while i < len(args):
+        word = args[i]
+        expression = option_value(word, "-e", "--expression")
+        script = option_value(word, "-f", "--file") if name == "sed" else None
+        if expression or script:
+            expression_given = True
+            form, value = expression or script
+            if form == "next":
+                value = args[i + 1] if i + 1 < len(args) else None
+                i += 1
+            if script and value:
+                scripts.append(value)
+        elif not word.startswith("-"):
+            files.append(word)
+        i += 1
+    if name == "sed" and not expression_given:
+        files = files[1:]
+    return scripts, files
+
+
+def sed_quiet(args):
+    """Whether sed runs with -n (alone or in a short-switch cluster) or --quiet/--silent: it only prints."""
+    return any(w in ("--quiet", "--silent") or (w.startswith("-") and not w.startswith("--") and "n" in w[1:])
+               for w in args)
 
 
 def shell_statements(command):
@@ -141,9 +187,12 @@ def shell_paths(command):
                 written.append(target)
                 i += 2
                 continue
-            if word in ("<", "<<<") and target is not None:
+            if word == "<" and target is not None:
                 read.append(target)
                 i += 2
+                continue
+            if word in ("<<", "<<<", "<<-") and target is not None:
+                i += 2  # a heredoc delimiter or here-string is text, not a file
                 continue
             if word.isdigit() and target is not None and SHELL_WRITE_REDIRECT.match(target):
                 i += 1  # a file descriptor before a redirect
@@ -157,10 +206,15 @@ def shell_paths(command):
         if name == "tee":
             written += args
         elif name in ("sed", "perl") and any(in_place_flag(name, w) for w in rest[1:]):
-            written += args
+            scripts, files = edit_operands(name, rest[1:])
+            written += files
+            read += scripts
         elif name in ("grep", "rg"):
             read += search_files(rest[1:])
-        elif name in SHELL_READERS or (name == "sed" and "-n" in rest):
+        elif name == "sed" and sed_quiet(rest[1:]):
+            scripts, files = edit_operands(name, rest[1:])
+            read += scripts + files
+        elif name in SHELL_READERS:
             read += args
     return written, read
 
