@@ -195,11 +195,23 @@ def run_session(args, binpath, arm, scen, stage, trial):
     with open(events, "w") as ev, open(os.path.join(trial, f"{name}.stdout"), "w") as so:
         exit_code, _ = run_bounded(cmd, work, env, args.timeout, stdout=so, stderr=ev)
     return {"work": work, "xdg": xdg, "env": env, "state": state, "events": events, "started": start,
-            "exit": exit_code, "seconds": round(time.time() - start)}
+            "exit": exit_code, "seconds": round(time.time() - start), "timeout": args.timeout}
+
+
+def session_failure(session, rounds_capped):
+    """Why the stage's session failed as infrastructure, or None. Evener exits 1 when it
+    stops on the round cap; that is a capped stage, graded like any other."""
+    if session["exit"] == "timeout":
+        return f"session timed out after {session['timeout']}s"
+    if session["exit"] != 0 and not rounds_capped:
+        return f"session exited {session['exit']}"
+    return None
 
 
 def grade_checks(spec, inputs):
     rc, _ = run_bounded(spec["run"], inputs["work"], inputs["env"], COMMAND_TIMEOUT)
+    if rc == "timeout":
+        raise TimeoutError(f"check timed out after {COMMAND_TIMEOUT}s")
     return rc == 0
 
 
@@ -283,13 +295,37 @@ def whiteboard_note(state):
     return note
 
 
+def write_grade(trial, grade):
+    try:
+        with open(os.path.join(trial, f"{grade['stage']}.grade.json"), "w") as f:
+            json.dump(grade, f, indent=1)
+    except OSError:
+        pass  # no trial dir to write into; the run's own table still counts the grade
+    return grade
+
+
+def all_failed(stage):
+    return {spec["name"]: False for check_type in GRADERS for spec in stage.get(check_type, [])}
+
+
 def grade_stage(label, arm, scen, stage, trial, session):
-    """Builds the stage's grading inputs once, grades every check, and writes <stage>.grade.json."""
+    """Keeps the stage's evidence, grades every check, and writes <stage>.grade.json. Never raises:
+    a check that errors or times out fails with its reason in check_errors, and a failed session
+    fails every check with the reason in error."""
     name = stage["name"]
     calls, limit, messages, _ = parse_events(session["events"])
+    grade = {"version": label, "arm": arm, "scenario": os.path.basename(scen), "trial": trial, "stage": name,
+             "exit": session["exit"], "seconds": session["seconds"], "rounds_capped": limit, "tool_calls": len(calls),
+             "memory_calls": {}, "checks": {}, "check_errors": {}}
+    for c in calls:
+        if c["tool"].startswith("memory_"):
+            grade["memory_calls"][c["tool"]] = grade["memory_calls"].get(c["tool"], 0) + 1
     mem_dir = os.path.join(trial, f"{name}.memory")
-    if os.path.isdir(memory_root(session["xdg"])):
-        shutil.copytree(memory_root(session["xdg"]), mem_dir, dirs_exist_ok=True)
+    try:
+        if os.path.isdir(memory_root(session["xdg"])):
+            shutil.copytree(memory_root(session["xdg"]), mem_dir, dirs_exist_ok=True)
+    except OSError as e:
+        grade["evidence_error"] = f"memory snapshot: {e}"
     inputs = {"work": session["work"], "env": session["env"], "calls": calls, "messages": messages,
               "memory": read_tree(mem_dir) if os.path.isdir(mem_dir) else {},
               "note": whiteboard_note(session["state"])}
@@ -298,51 +334,56 @@ def grade_stage(label, arm, scen, stage, trial, session):
         # included, e.g. for a delegate's memory_read of session scope.
         inputs["transcripts"] = "".join(read_file(p) for p in find_files(session["state"], ".transcript.jsonl"))
         inputs["delegate_transcripts"] = stage_delegate_transcripts(session["state"], session["started"])
-    grade = {"version": label, "arm": arm, "scenario": os.path.basename(scen), "trial": trial, "stage": name,
-             "exit": session["exit"], "seconds": session["seconds"], "rounds_capped": limit, "tool_calls": len(calls),
-             "memory_calls": {}, "checks": {}}
-    for c in calls:
-        if c["tool"].startswith("memory_"):
-            grade["memory_calls"][c["tool"]] = grade["memory_calls"].get(c["tool"], 0) + 1
-    for check_type, grader in GRADERS.items():
-        for spec in stage.get(check_type, []):
-            grade["checks"][spec["name"]] = grader(spec, inputs)
+    failure = session_failure(session, limit)
+    if failure:
+        grade["error"], grade["checks"] = failure, all_failed(stage)
+    else:
+        for check_type, grader in GRADERS.items():
+            for spec in stage.get(check_type, []):
+                try:
+                    grade["checks"][spec["name"]] = bool(grader(spec, inputs))
+                except Exception as e:
+                    grade["checks"][spec["name"]] = False
+                    grade["check_errors"][spec["name"]] = f"{type(e).__name__}: {e}"
     # ask resumes from here; a resumed stage ran in the earlier stage's state dir.
     grade["state"] = session["state"]
     grade["whiteboard"] = inputs["note"]
     grade["final_message"] = messages[-1][:2000] if messages else ""
-    with open(os.path.join(trial, f"{name}.grade.json"), "w") as f:
-        json.dump(grade, f, indent=1)
-    return grade
+    return write_grade(trial, grade)
 
 
 def failed_grade(label, arm, scen, stage, trial, error):
-    """The grade of a stage an infrastructure error kept from finishing: every check fails."""
-    grade = {"version": label, "arm": arm, "scenario": os.path.basename(scen), "trial": trial, "stage": stage["name"],
-             "exit": "error", "error": error, "seconds": 0, "rounds_capped": False, "tool_calls": 0, "memory_calls": {},
-             "checks": {spec["name"]: False for check_type in GRADERS for spec in stage.get(check_type, [])},
-             "whiteboard": "", "final_message": ""}
-    try:
-        with open(os.path.join(trial, f"{stage['name']}.grade.json"), "w") as f:
-            json.dump(grade, f, indent=1)
-    except OSError:
-        pass  # no trial dir to write into; the run's own table still counts the grade
-    return grade
+    """The grade of a stage that an infrastructure error kept from running: every check fails."""
+    return write_grade(trial, {"version": label, "arm": arm, "scenario": os.path.basename(scen), "trial": trial,
+                               "stage": stage["name"], "exit": "error", "error": error, "seconds": 0,
+                               "rounds_capped": False, "tool_calls": 0, "memory_calls": {},
+                               "checks": all_failed(stage), "whiteboard": "", "final_message": ""})
 
 
 def run_trial(args, label, binpath, arm, scen, rep):
-    """Runs and grades every stage. An infrastructure error fails the stage it hit and every later stage."""
+    """Runs and grades every stage. Workspace setup or a stage's session failing is an
+    infrastructure failure: that stage and every later stage fail."""
     trial = os.path.join(args.out, label, arm, os.path.basename(scen), f"r{rep}")
     spec = load_scenario(scen)
-    grades = []
+    grades, failure = [], None
     try:
         os.makedirs(os.path.join(trial, "xdg"))
         make_workspace(base_fixture(scen, spec), os.path.join(trial, "work"), os.path.join(trial, "xdg"))
-        for st in spec["stages"]:
-            grades.append(grade_stage(label, arm, scen, st, trial, run_session(args, binpath, arm, scen, st, trial)))
     except Exception as e:
-        error = f"{type(e).__name__}: {e}"
-        grades += [failed_grade(label, arm, scen, st, trial, error) for st in spec["stages"][len(grades):]]
+        failure = f"workspace setup: {type(e).__name__}: {e}"
+    for st in spec["stages"]:
+        if failure:
+            grades.append(failed_grade(label, arm, scen, st, trial, failure))
+            continue
+        try:
+            session = run_session(args, binpath, arm, scen, st, trial)
+        except Exception as e:
+            failure = f"{type(e).__name__}: {e}"
+            grades.append(failed_grade(label, arm, scen, st, trial, failure))
+            continue
+        grades.append(grade_stage(label, arm, scen, st, trial, session))
+        if grades[-1].get("error"):
+            failure = f"stage {st['name']} failed: {grades[-1]['error']}"
     return grades
 
 
@@ -388,6 +429,8 @@ def line(g):
     mem = ",".join(f"{k[7:]}:{v}" for k, v in sorted(g["memory_calls"].items())) or "-"
     cap = " CAPPED" if g["rounds_capped"] else ""
     error = f" ERROR {' '.join(g['error'].split())[:300]}" if g.get("error") else ""
+    if g.get("check_errors"):
+        error += f" CHECK-ERRORS {','.join(g['check_errors'])} (see show)"
     return f"{g['version']:6} {g['arm']:3} {g['scenario']:22} {os.path.basename(g['trial'])} {g['stage']} exit={g['exit']}{cap} tools={g['tool_calls']} mem={mem} | {checks}{error}"
 
 
@@ -420,8 +463,12 @@ def cmd_show(args):
     print(line(g))
     if g.get("error"):
         print(f"\n== infrastructure error\n{g['error']}")
-        return
-    calls, _, _, reasoning = parse_events(os.path.join(trial, f"{stage}.events.ndjson"))
+    for name, why in g.get("check_errors", {}).items():
+        print(f"\n== check error: {name}\n{why}")
+    events = os.path.join(trial, f"{stage}.events.ndjson")
+    if not os.path.exists(events):
+        return  # the stage never started a session
+    calls, _, _, reasoning = parse_events(events)
     print("\n== tool calls (memory calls in full)")
     for c in calls:
         width = 600 if c["tool"].startswith("memory_") else 140
