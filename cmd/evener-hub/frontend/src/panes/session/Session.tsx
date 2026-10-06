@@ -105,14 +105,14 @@ const EMPTY_THREADS = new Map<string, ThreadModel>();
 //
 // `status.type === "active"` is the wire vocabulary's word for "a turn is
 // running right now" (appwire's ThreadStatus, mapped in ./liveness), which is
-// exactly the mid-first-turn window. An incompatible session is still on the
-// previous build; other empty sessions invite their first message.
+// exactly the mid-first-turn window. An incompatible session is on a different
+// Evener version; other empty sessions invite their first message.
 function EmptyTranscript({ active, restartRequired }: { active: boolean; restartRequired: boolean }) {
   if (restartRequired) {
     return (
       <EmptyState
-        title="This session is running on the previous build"
-        hint="It keeps working. New messages wait until it moves to the current build."
+        title="This session is on a different Evener version"
+        hint="To use it, stop it with Force shutdown in the session menu, then send a message to start it."
       />
     );
   }
@@ -192,7 +192,7 @@ function RestartRequiredNotice({
         ? "This session is retained by its owning session. Its uncertain messages cannot be checked here until the owner releases it."
         : resumeRequired
           ? "Resume this session before continuing. Any uncertain messages will be checked before sending."
-          : "This session is still running on the previous build. Its work continues; new messages wait until it moves to the current build. Force shutdown in the session menu moves it now."}
+          : "This session is still working, and everything already saved is kept. It's running a different Evener version than this app, so it can't receive new messages. To use it again, use Force shutdown in the session menu to stop it (interrupting anything still in progress), then send your next message to start it."}
       {ownerRef && <a href={paneToURL("session", { ref: ownerRef }) ?? undefined}>Open owning session</a>}
       {(resumeRequired || ownerRef) && (
         <Button disabled={refreshing} onClick={() => void refresh()}>

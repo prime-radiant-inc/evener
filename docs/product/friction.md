@@ -1052,11 +1052,11 @@ suppress a relevant notice. Routine recovery requires no user action.
 
 ### H13 Wind-down for an incompatible session daemon
 
-**Current behavior.** A daemon running the previous appwire protocol has no
-wire channel to an upgraded hub: the roster probe classifies its session
+**Current behavior.** A daemon running a different appwire protocol than the
+hub has no wire channel to it: the roster probe classifies its session
 restart-required, the hub refuses every session action, and graceful Shut
 down is disabled for these rows. The only lever that moves the session to the
-current build is Force shutdown, which verifies the process and delivers
+hub's version is Force shutdown, which verifies the process and delivers
 SIGKILL, interrupting any turn or job mid-flight. Work in the fenced session
 cannot finish first, and the daemon cannot learn it is obsolete and retire
 itself, because the hub dials daemons and the probe is one-way.

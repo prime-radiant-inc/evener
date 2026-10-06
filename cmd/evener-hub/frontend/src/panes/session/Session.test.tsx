@@ -3055,7 +3055,9 @@ test("an incompatible session shows a plain degraded notice with no buttons", as
     </ClientProvider>,
   );
   const notice = await screen.findByRole("alert");
-  expect(notice.textContent).toContain("still running on the previous build");
+  expect(notice.textContent).toContain("still working");
+  expect(notice.textContent).toContain("different Evener version");
+  expect(notice.textContent).toContain("everything already saved is kept");
   // The notice is informational now: force shutdown lives in the session menu,
   // and the pane re-hydrates itself on the hub's evener/thread/resync, so the
   // banner offers no control at all.
@@ -3078,7 +3080,7 @@ test("picks up a daemon exit automatically on evener/thread/resync", async () =>
     </ClientProvider>,
   );
   const notice = await screen.findByRole("alert");
-  expect(notice.textContent).toContain("still running on the previous build");
+  expect(notice.textContent).toContain("different Evener version");
   expect(within(notice).queryByRole("button")).toBeNull();
   exited = true;
   await act(async () => {
@@ -3188,7 +3190,7 @@ test.each([false, true])("restart-required empty transcript suppresses first-sen
   if (pending) await act(async () => seedPendingSend());
   expect(screen.queryByText(/send the first message/i)).toBeNull();
   expect(screen.queryByTestId("cold-start-skeleton")).toBeNull();
-  expect(screen.getByText("This session is running on the previous build")).toBeTruthy();
+  expect(screen.getByText("This session is on a different Evener version")).toBeTruthy();
 });
 
 test("explicit Resume follows the returned identity through transcript and new sends", async ({ onTestFinished }) => {
