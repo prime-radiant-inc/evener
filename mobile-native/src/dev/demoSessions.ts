@@ -735,7 +735,9 @@ const iso = (ms: number) => new Date(ms).toISOString();
 const callId = (subagentId: string) => `call-${subagentId}`;
 
 // The session's whole subagent tree as the delegates its diagnostics carry,
-// each tied to the transcript's delegate call by its tool call id.
+// each tied to the transcript's delegate call by its tool call id. A daemon
+// owns every delegate in a tree by its root (agent/delegate_tree_start.go);
+// parentDelegateId marks the nesting.
 function delegatesOf(session: FleetSession, now: number): EvenerDelegateInfo[] {
 	return flatten(session.subagents).map(({ subagent, parent }) => {
 		const running = subagent.state === "running";
@@ -743,7 +745,7 @@ function delegatesOf(session: FleetSession, now: number): EvenerDelegateInfo[] {
 		return {
 			runGeneration: 1,
 			delegateId: subagent.id,
-			ownerSessionId: demoSessionId(parent ?? session.slug),
+			ownerSessionId: demoSessionId(session.slug),
 			rootSessionId: demoSessionId(session.slug),
 			childSessionId: demoSessionId(subagent.id),
 			transcriptRef: hostSessionRef(session.hostId, subagent.id),
