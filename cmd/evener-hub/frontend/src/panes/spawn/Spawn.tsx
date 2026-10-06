@@ -2777,12 +2777,16 @@ function SpawnForm({
 
         {(hostCatalogErrors.harnesses !== undefined || hostCatalogErrors.schema !== undefined) && (
           <div className={CLASS.notice} role="status" data-testid="spawn-host-catalog-error">
-            {hostCatalogErrors.harnesses !== undefined && (
-              <span>Couldn't load this host's harnesses: {hostCatalogErrors.harnesses}</span>
-            )}
-            {hostCatalogErrors.schema !== undefined && (
-              <span>Couldn't load this host's launch options: {hostCatalogErrors.schema}</span>
-            )}
+            <span>
+              {[
+                hostCatalogErrors.harnesses !== undefined &&
+                  `Couldn't load this host's harnesses: ${hostCatalogErrors.harnesses}.`,
+                hostCatalogErrors.schema !== undefined &&
+                  `Couldn't load this host's launch options: ${hostCatalogErrors.schema}.`,
+              ]
+                .filter(Boolean)
+                .join(" ")}
+            </span>
             <Button variant="quiet" type="button" onClick={retryHostCatalogs}>
               Retry
             </Button>

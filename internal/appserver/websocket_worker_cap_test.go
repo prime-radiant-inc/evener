@@ -460,8 +460,8 @@ func TestServeWebSocketConcurrentRequestsTakeTheirOwnSlots(t *testing.T) {
 	}
 
 	// Two requests beyond the full pool are both refused, and the pool's
-	// saturation advisory reaches Logf once per connection, as the slow-read
-	// cap's does.
+	// saturation advisory reaches Logf once for the pool, as the slow-read
+	// cap's does once per connection.
 	for range 2 {
 		beyond := make(chan error, 1)
 		go func() {
@@ -533,7 +533,7 @@ func parkThreadLists(t *testing.T, server *Server) (started, releases chan struc
 // names a client chose), so without it a client naming a new pool per request
 // could hold any number of goroutines.
 func TestServeWebSocketConcurrentRequestsHaveATotalCap(t *testing.T) {
-	server := NewServer(ServerConfig{ServerName: "test-server", Version: "test", SourceID: "local"})
+	server, logged := captureLogfServer()
 	pools := 0
 	server.cfg.ConcurrentRequest = func(method string, _ json.RawMessage) (string, bool) {
 		pools++
@@ -550,15 +550,22 @@ func TestServeWebSocketConcurrentRequestsHaveATotalCap(t *testing.T) {
 	for range concurrentRequestTotalCap {
 		waitFor(t, "a request in a pool of its own to park in its handler", listsStarted)
 	}
-	beyond := make(chan error, 1)
-	go func() {
-		_, err := client.ThreadList(ctx, appwire.ThreadListParams{})
-		beyond <- err
-	}()
-	err := waitFor(t, "a request beyond the connection's total to be answered", beyond)
-	var wireErr appwire.WireError
-	if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeUnavailable {
-		t.Fatalf("a request beyond the connection's total answered %v, want Unavailable", err)
+	// Two requests beyond the total are both refused, and the total's
+	// advisory reaches Logf once.
+	for range 2 {
+		beyond := make(chan error, 1)
+		go func() {
+			_, err := client.ThreadList(ctx, appwire.ThreadListParams{})
+			beyond <- err
+		}()
+		err := waitFor(t, "a request beyond the connection's total to be answered", beyond)
+		var wireErr appwire.WireError
+		if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeUnavailable {
+			t.Fatalf("a request beyond the connection's total answered %v, want Unavailable", err)
+		}
+	}
+	if n := strings.Count(logged(), "pools are full in total"); n != 1 {
+		t.Fatalf("total advisories = %d, want 1 in:\n%s", n, logged())
 	}
 }
 
