@@ -2,6 +2,8 @@ package tui
 
 import (
 	"context"
+	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -13,7 +15,8 @@ import (
 )
 
 // runPluginsOpen opens /plugins on m and feeds every message its initial
-// reads produce back through the model, as the program would.
+// reads produce back through the model, delivering them in the worst order
+// the program allows (openCommandMessages).
 func runPluginsOpen(t *testing.T, m hubModel) hubModel {
 	t.Helper()
 	plugins, ok := hubCommandByName("plugins")
@@ -24,13 +27,41 @@ func runPluginsOpen(t *testing.T, m hubModel) hubModel {
 	if run == nil {
 		t.Fatal("/plugins should issue its initial reads")
 	}
-	for _, c := range run().(tea.BatchMsg) {
-		if msg := c(); msg != nil {
-			updated, _ := m.Update(msg)
-			m = updated.(hubModel)
-		}
+	for _, msg := range openCommandMessages(t, run) {
+		updated, _ := m.Update(msg)
+		m = updated.(hubModel)
 	}
 	return m
+}
+
+// openCommandMessages runs cmd and returns the messages it produces in an
+// order the program could deliver them. A batch's commands run in the order
+// given, but nothing orders their answers, so they are delivered last first: an
+// answer read early can land after one read later. A sequence's commands run
+// and deliver in order. tea.Sequence's message type is unexported, so it is
+// read as a slice of commands (as TestQuitClearsWindowTitleBeforeQuitting does).
+func openCommandMessages(t *testing.T, cmd tea.Cmd) []tea.Msg {
+	t.Helper()
+	msg := cmd()
+	if msg == nil {
+		return nil
+	}
+	children := reflect.ValueOf(msg)
+	if children.Kind() != reflect.Slice {
+		return []tea.Msg{msg}
+	}
+	var parts [][]tea.Msg
+	for i := range children.Len() {
+		child, ok := reflect.TypeAssert[tea.Cmd](children.Index(i))
+		if !ok {
+			return []tea.Msg{msg}
+		}
+		parts = append(parts, openCommandMessages(t, child))
+	}
+	if _, batch := msg.(tea.BatchMsg); batch {
+		slices.Reverse(parts)
+	}
+	return slices.Concat(parts...)
 }
 
 // installedTabView renders m's plugins panel on its Installed tab.
