@@ -436,7 +436,7 @@ func TestCheckUpdates_OverallDeadlineCutsOffAHungRemote(t *testing.T) {
 	if elapsed := time.Since(start); elapsed >= updateCheckTimeout/2 {
 		t.Fatalf("check took %v; the overall deadline did not cut off the hung remote", elapsed)
 	}
-	if w := f.warnings(); !strings.Contains(w, "checking widget@acme for updates") {
+	if w := f.warnings(); !strings.Contains(w, "checking widget@acme for updates: "+errUpdateCheckDeadline.Error()) {
 		t.Fatalf("no warning names the hung plugin: %q", w)
 	}
 }

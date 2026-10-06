@@ -2,6 +2,7 @@ package plugins
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -27,6 +28,8 @@ const (
 // variable so tests can shorten it.
 var updateCheckDeadline = 100 * time.Second
 
+var errUpdateCheckDeadline = errors.New("not answered within the update check's overall time limit")
+
 // checkedHead is one plugin's CheckUpdates answer: the commit an Upgrade would
 // install, and the commit installed when the check read the registry. The
 // answer holds only while that install is still the one in the registry, so
@@ -48,7 +51,11 @@ type checkedHead struct {
 // overlapping checks only the newest publishes, and a marketplace write
 // retires every answer (forgetChecks).
 func (m *Manager) CheckUpdates(ctx context.Context) error {
-	mk, err := m.loadMigratedMarketplaces(ctx, installAcquireLock)
+	// The deadline covers the store lock wait as well as the remotes, so a
+	// pending migration's lock cannot push the check past it.
+	checkCtx, cancel := context.WithTimeoutCause(ctx, updateCheckDeadline, errUpdateCheckDeadline)
+	defer cancel()
+	mk, err := m.loadMigratedMarketplaces(checkCtx, installAcquireLock)
 	if err != nil {
 		return err
 	}
@@ -65,8 +72,6 @@ func (m *Manager) CheckUpdates(ctx context.Context) error {
 	catalogs := map[string]Catalog{}
 	var mu sync.Mutex
 	heads := map[string]checkedHead{}
-	remoteCtx, cancel := context.WithTimeout(ctx, updateCheckDeadline)
-	defer cancel()
 	var g errgroup.Group
 	g.SetLimit(updateCheckConcurrency)
 	for key, entries := range reg.Plugins {
@@ -86,10 +91,15 @@ func (m *Manager) CheckUpdates(ctx context.Context) error {
 			continue
 		}
 		g.Go(func() error {
-			head, err := remoteHead(remoteCtx, src)
+			head, err := remoteHead(checkCtx, src)
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
+				// Past the deadline git's own error (a kill, or a git that
+				// never started) says less than the deadline does.
+				if cause := context.Cause(checkCtx); errors.Is(cause, errUpdateCheckDeadline) {
+					err = cause
+				}
 				remoteWarnings = append(remoteWarnings, fmt.Sprintf("checking %s for updates: %v", key, err))
 			} else {
 				heads[key] = checkedHead{head: head, installed: installed}
