@@ -1142,3 +1142,13 @@ export async function assertGuardOrigin(send, expectedHost) {
     throw new Error(`refusing: expected origin http://${expectedHost}, got ${origin}`);
   }
 }
+
+/**
+ * Selector for a button that would refuse a click: natively disabled, itself
+ * or through an enclosing disabled fieldset (both are `:disabled`), or refused
+ * by the Button widget, which sets aria-disabled="true" and drops onClick
+ * while keeping the control hit-testable. Click helpers test it in the page
+ * before clicking: `button.matches(${JSON.stringify(REFUSED_BUTTON_SELECTOR)})`.
+ * State reports and assertions keep reading native `.disabled`.
+ */
+export const REFUSED_BUTTON_SELECTOR = ':disabled, [aria-disabled="true"]';

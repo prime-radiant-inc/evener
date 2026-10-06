@@ -421,9 +421,8 @@ fake.on("thread/turns/list", (request: ThreadTurnsListParams): ThreadTurnsListRe
 });
 fake.on("thread/unsubscribe", () => ({}));
 fake.on("evener/thread/activity/read", ({ ref, scope }) => ({
-  ...activitySummary(ref),
+  ...activitySummary(ref, scope),
   context: { ...activityContext(ref), sessionId: activeSnapshot.thread.sessionId },
-  scope: scope ?? "session",
   delegates: { known: true, total: 0, active: 0, failed: 0, completed: 0 },
   jobs: { known: true, total: 0, active: 0, failed: 0, completed: 0 },
 }));

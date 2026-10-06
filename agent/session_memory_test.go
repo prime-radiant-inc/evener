@@ -2770,6 +2770,9 @@ func TestMemoryGuidanceFollowsCapabilities(t *testing.T) {
 					t.Fatalf("memory section names %s, which this session cannot call", name)
 				}
 			}
+			if !tc.project && strings.Contains(strings.ToLower(section), "project memory") {
+				t.Fatalf("memory section mentions project memory, but no project scope is bound")
+			}
 		})
 	}
 }

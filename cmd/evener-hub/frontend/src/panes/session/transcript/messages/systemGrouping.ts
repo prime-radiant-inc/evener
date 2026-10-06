@@ -12,6 +12,7 @@ import {
   isErrorEvent,
   type ThreadItemEventKind,
 } from "@evener/appwire-client";
+import { MEMORY_CONTEXT_EVENT_KIND } from "./memoryContext";
 
 export interface SystemRun {
   items: ItemModel[];
@@ -53,11 +54,14 @@ function isSystemMessage(item: ItemModel): boolean {
 // recorded), which stays its own line as on the phone. An informational
 // warning still folds. Shared-notes snapshots stay separate under their own
 // folded label. A human's Allow or Deny is a decision, not churn, so it stays
-// in view too.
+// in view too. A memory refresh is a standalone notification (its own
+// collapsed "Refreshed my memory" disclosure), so it neither joins a run nor
+// lets one straddle it.
 function joinsRun(item: ItemModel): boolean {
   return (
     isSystemMessage(item) &&
     item.eventKind !== "notes-context" &&
+    item.eventKind !== MEMORY_CONTEXT_EVENT_KIND &&
     item.eventKind !== APPROVAL_DECISION_EVENT_KIND &&
     item.eventKind !== INTERRUPTED_EVENT_KIND &&
     !isErrorEvent(item) &&

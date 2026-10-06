@@ -34,6 +34,7 @@ import {
   devtoolsHttpURL,
   evaluate,
   navigateTo,
+  REFUSED_BUTTON_SELECTOR,
   waitForFonts,
   waitForHttp,
 } from "../browserGuardCdp.mjs";
@@ -476,10 +477,10 @@ async function main() {
                 // actually click, rather than clicking a disabled control and
                 // calling the missing turn a failure.
                 const enabledBy = performance.now() + 15000;
-                while (sendBtn.disabled && performance.now() < enabledBy) {
+                while (sendBtn.matches(${JSON.stringify(REFUSED_BUTTON_SELECTOR)}) && performance.now() < enabledBy) {
                   await new Promise((r) => setTimeout(r, 50));
                 }
-                if (sendBtn.disabled) return { ok: false, error: 'Send stayed disabled after replacement' };
+                if (sendBtn.matches(${JSON.stringify(REFUSED_BUTTON_SELECTOR)})) return { ok: false, error: 'Send stayed disabled after replacement' };
                 let submitted = false;
                 document.addEventListener('submit', () => { submitted = true; }, { capture: true, once: true });
                 const preClick = { disabled: sendBtn.disabled, connected: sendBtn.isConnected };

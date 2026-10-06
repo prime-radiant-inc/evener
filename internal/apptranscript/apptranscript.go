@@ -547,7 +547,7 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 			Status:               appwire.TurnStatusCompleted,
 			EventKind:            appwire.ThreadItemEventKindModelSwitch,
 		}}
-	case schema.TurnEnvironment, schema.TurnNotesContext, schema.TurnMemoryContext:
+	case schema.TurnEnvironment, schema.TurnNotesContext:
 		text := strings.TrimSpace(turn.Message.Text())
 		if text == "" {
 			return nil
@@ -555,9 +555,6 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 		id, description, eventKind := fmt.Sprintf("item_environment_%d", turnIndex), "Environment", appwire.ThreadItemEventKindEnvironment
 		if turn.Kind == schema.TurnNotesContext {
 			id, description, eventKind = fmt.Sprintf("item_notes_context_%d", turnIndex), "Shared notes", appwire.ThreadItemEventKindNotesContext
-		}
-		if turn.Kind == schema.TurnMemoryContext {
-			id, description, eventKind = fmt.Sprintf("item_memory_context_%d", turnIndex), "Memory context", ""
 		}
 		return []appwire.ThreadItem{{
 			Type:                 "systemMessage",
@@ -569,6 +566,17 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 			Status:               appwire.TurnStatusCompleted,
 			EventKind:            eventKind,
 		}}
+	case schema.TurnMemoryContext:
+		// Unlike the other context kinds, a memory-context body is preserved
+		// exactly as recorded — boundary whitespace included — because the
+		// client shows the complete original text when the index cannot be
+		// decoded (spec: no content loss). An entirely empty body records
+		// nothing and projects nothing.
+		text := turn.Message.Text()
+		if text == "" {
+			return nil
+		}
+		return []appwire.ThreadItem{memoryContextItem(turnID, turnIndex, text, turn.Message.Name)}
 	case schema.TurnFailure:
 		// Unlike the marker kinds above, a failure with no text still renders:
 		// the whole point of persisting it is that a returning reader can tell

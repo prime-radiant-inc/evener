@@ -26,7 +26,7 @@ import type { MutationOutboxRecord } from "../../../stores/mutationOutbox";
 import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
 import { prefsStore, resetPrefsStoreForTests } from "../../../stores/prefs";
 import { sessionActivitySnapshot } from "../../../stores/sessionActivity";
-import { activitySummary } from "../../../stores/sessionActivityTestUtils";
+import { answerActivityRead } from "../../../stores/sessionActivityTestUtils";
 import { holdNextWriteTransaction } from "../../../stores/testing/stalledIndexedDB";
 import {
   readMutationPersistence,
@@ -915,11 +915,7 @@ test.each([false, true])("repeated composer /status targets its ref, phone=%s", 
     {},
     {
       focused: true,
-      prepare: (fake) =>
-        fake.on("evener/thread/activity/read", (params) => ({
-          ...activitySummary(params.ref),
-          scope: params.scope ?? "session",
-        })),
+      prepare: (fake) => fake.on("evener/thread/activity/read", answerActivityRead),
     },
   );
   act(() => {
@@ -1036,10 +1032,12 @@ test("the real live Composer mount discovers initial activity without a test-sup
   const ref = "ref_activity_live";
   const fake = connectFakeClient();
   const activityRefs: unknown[] = [];
+  const subtreeRefs: unknown[] = [];
   fake.on("thread/read", () => readResponse(ref));
   fake.on("evener/thread/activity/read", (params) => {
-    activityRefs.push(params.ref);
-    return activitySummary(params.ref);
+    // Discovery is the session read; the subtree read is the subagent count's own.
+    (params.scope === "subtree" ? subtreeRefs : activityRefs).push(params.ref);
+    return answerActivityRead(params);
   });
   await threadsStore.getState().ensureThread(ref);
   expect(activityPanelStore.getState().entries.has(ref)).toBe(false);
@@ -1052,6 +1050,10 @@ test("the real live Composer mount discovers initial activity without a test-sup
   );
 
   await waitFor(() => expect(activityRefs).toEqual([ref]));
+
+  // One shared subagent count read, however many surfaces show it.
+
+  await waitFor(() => expect(subtreeRefs).toEqual([ref]));
   expect(sessionActivitySnapshot(fake, ref, "session")?.summary).not.toBeNull();
   expect(sessionActivitySnapshot(fake, ref, "session")?.summaryState.loading).toBe(false);
 });
@@ -1061,6 +1063,7 @@ test("a saved notLoaded session with sending enabled discovers activity while it
   const ref = "ref_activity_saved";
   const fake = connectFakeClient();
   const activityRefs: unknown[] = [];
+  const subtreeRefs: unknown[] = [];
   fake.on("thread/read", () =>
     readResponse(ref, {
       status: { type: "notLoaded" },
@@ -1068,8 +1071,9 @@ test("a saved notLoaded session with sending enabled discovers activity while it
     }),
   );
   fake.on("evener/thread/activity/read", (params) => {
-    activityRefs.push(params.ref);
-    return activitySummary(params.ref);
+    // Discovery is the session read; the subtree read is the subagent count's own.
+    (params.scope === "subtree" ? subtreeRefs : activityRefs).push(params.ref);
+    return answerActivityRead(params);
   });
   await threadsStore.getState().ensureThread(ref);
 
@@ -1082,6 +1086,8 @@ test("a saved notLoaded session with sending enabled discovers activity while it
   expect(textarea().style.minHeight).toBe("1lh");
   expect(screen.getByTestId("session-chrome-inline")).toBeTruthy();
   await waitFor(() => expect(activityRefs).toEqual([ref]));
+  // One shared subagent count read, however many surfaces show it.
+  await waitFor(() => expect(subtreeRefs).toEqual([ref]));
   expect(sessionActivitySnapshot(fake, ref, "session")?.summary).not.toBeNull();
   expect(sessionActivitySnapshot(fake, ref, "session")?.summaryState.loading).toBe(false);
 });
@@ -3565,6 +3571,7 @@ test("a saved local notLoaded session keeps controls and one discovery owner at 
   const user = userEvent.setup();
   const ref = "local:saved-unfenced";
   const activityRefs: unknown[] = [];
+  const subtreeRefs: unknown[] = [];
   const { fake } = await mountComposerWithHandle(
     ref,
     {
@@ -3574,8 +3581,9 @@ test("a saved local notLoaded session keeps controls and one discovery owner at 
     {
       prepare: (fake) => {
         fake.on("evener/thread/activity/read", (params) => {
-          activityRefs.push(params.ref);
-          return activitySummary(params.ref);
+          // Discovery is the session read; the subtree read is the subagent count's own.
+          (params.scope === "subtree" ? subtreeRefs : activityRefs).push(params.ref);
+          return answerActivityRead(params);
         });
       },
     },
@@ -3587,6 +3595,8 @@ test("a saved local notLoaded session keeps controls and one discovery owner at 
   const chrome = screen.getByTestId("session-chrome-inline");
   expect(submitButton().disabled).toBe(true);
   await waitFor(() => expect(activityRefs).toEqual([ref]));
+  // One shared subagent count read, however many surfaces show it.
+  await waitFor(() => expect(subtreeRefs).toEqual([ref]));
   expect(sessionActivitySnapshot(fake, ref, "session")?.summary).not.toBeNull();
 
   // Focus changes the editor height without replacing the discovery owner.
@@ -3596,6 +3606,7 @@ test("a saved local notLoaded session keeps controls and one discovery owner at 
   expect(screen.getByTestId("session-chrome-inline")).toBe(chrome);
   expect(textarea().style.minHeight).toBe("3lh");
   expect(activityRefs).toEqual([ref]);
+  expect(subtreeRefs).toEqual([ref]);
 });
 
 // Blur preserves a draft and its expanded writing space.

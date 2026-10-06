@@ -220,8 +220,8 @@ test("only a user drill animates a new scope while late ancestry commits immedia
     ref === "fourth" ? fourthContext : ref === "earlier" ? cascadeContext(ref, []) : undefined,
   );
   const authority = deferred<SessionActivitySummary>();
-  client.on("evener/thread/activity/read", ({ ref }) =>
-    ref === "fourth" ? authority.promise : { ...activitySummary(ref), context: context(ref) },
+  client.on("evener/thread/activity/read", ({ ref, scope }) =>
+    ref === "fourth" ? authority.promise : { ...activitySummary(ref, scope), context: context(ref) },
   );
   mount();
   await scope("child").findByRole("button", { name: "Open conversation" });
@@ -418,9 +418,8 @@ test("spine pop and counts are separate keyboard targets and Escape closes the p
 test("a cascade scope's Agents chip counts its subagents at every depth", async () => {
   const { client, mount } = fixture();
   client.on("evener/thread/activity/read", ({ ref, scope }) => ({
-    ...activitySummary(ref),
+    ...activitySummary(ref, scope),
     context: cascadeContext(ref, ref === "grandchild" ? ["root", "child"] : ref === "root" ? [] : ["root"]),
-    scope: scope ?? "session",
     delegates:
       scope === "subtree"
         ? { known: true, total: 4, active: 3, failed: 0, completed: 1 }

@@ -51,7 +51,9 @@ import { requireClass } from "../../../../widgets/internal/requireClass";
 import { SYSTEM_PROMPT_ITEM_ID } from "../transcriptVisibility";
 import { asTurnError } from "../turnFailure";
 import { type ItemRenderProps, registerItemRenderer } from "../types";
+import { MemoryContextDisclosure } from "./MemoryContextItem";
 import { MessageTimestamp } from "./MessageTimestamp";
+import { MEMORY_CONTEXT_EVENT_KIND } from "./memoryContext";
 import { roundTimingsSummary } from "./roundTimingsView";
 import { type SystemRun, shouldGroup, systemRunFor } from "./systemGrouping";
 import styles from "./systemnoticeitem.module.css";
@@ -305,6 +307,12 @@ function SystemLine({
   // warning block a type:"warning" item gets, not the quiet line (#3387).
   const attention = attentionWarningNotice(item);
   if (attention) return <WarningBlock title={attention.title} message={attention.message} hint={attention.hint} />;
+  // A memory refresh is its own notification, never read as a generic system
+  // line: the steering-style "Refreshed my memory" disclosure with a formatted
+  // body and a folded literal source.
+  if (item.eventKind === MEMORY_CONTEXT_EVENT_KIND) {
+    return <MemoryContextDisclosure item={item} sessionRef={sessionRef} />;
+  }
   if (isScaffoldItem(item)) return <ScaffoldDisclosure item={item} sessionRef={sessionRef} />;
   if (isRoundTimingsItem(item)) return <RoundTimingsLine item={item} />;
   if (item.eventKind === APPROVAL_DECISION_EVENT_KIND) return <ApprovalDecisionLine item={item} />;

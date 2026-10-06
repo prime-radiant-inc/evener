@@ -5,8 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -160,9 +158,8 @@ func (m *Manager) CheckUpdates(ctx context.Context) error {
 // check whose budget runs out starts the next check's refreshes at the first
 // marketplace it cut off or left, so slow marketplaces cannot starve the ones
 // after them on every check. A directory marketplace is read in place, a never-fetched
-// one is left to an explicit refresh, and one pinned to a tag or a commit
-// (its clone has a detached HEAD) cannot be fast-forwarded, so none of those
-// is refreshed.
+// one is left to an explicit refresh, and a pinned one (sourcePinned) has
+// nothing to fetch, so none of those is refreshed.
 func (m *Manager) refreshForCheck(ctx context.Context) []string {
 	mk, err := m.ListMarketplaces(ctx)
 	if err != nil {
@@ -180,7 +177,7 @@ func (m *Manager) refreshForCheck(ctx context.Context) []string {
 	firstLeft, started := "", 0
 	for _, name := range names {
 		ref := mk[name]
-		if ref.Source.Kind == SourceDirectory || ref.InstallLocation == "" || !cloneOnBranch(ref.InstallLocation) {
+		if ref.Source.Kind == SourceDirectory || ref.InstallLocation == "" || sourcePinned(ctx, ref) {
 			continue
 		}
 		// Once the budget, the deadline or the caller has ended the phase,
@@ -222,16 +219,15 @@ func (m *Manager) refreshForCheck(ctx context.Context) []string {
 
 // fastForwardMarketplace fetches the clone at dir with the store lock free,
 // so a plugin operation started meanwhile does not wait behind the network,
-// then takes the lock to fast-forward it and save its LastUpdated. A fetch
+// then takes the lock to fast-forward it and stamp its LastUpdated
+// (stampRefreshed). A fetch
 // writes only under .git, so nothing reading the clone's files sees it, and
 // it holds the clone's own lock (lockClone), as the fast-forward does too,
-// against other git work in the clone and its removal or move. A blobless git-subdir clone still downloads the
-// changed files' contents as it fast-forwards, under the store lock, bounded
-// by the refresh's timeout. One
-// that moves nothing saves nothing, so it neither broadcasts nor retires
-// another check's answers (forgetChecks). Unlike RefreshMarketplace, a
-// failure is not repaired by recloning, which would hold the lock across a
-// download; an explicit refresh does that.
+// against other git work in the clone and its removal or move. A blobless
+// git-subdir clone still downloads the changed files' contents as it
+// fast-forwards, under the store lock, bounded by the refresh's timeout.
+// Unlike RefreshMarketplace, a failure is not repaired by recloning, which
+// would hold the lock across a download; an explicit refresh does that.
 func (m *Manager) fastForwardMarketplace(ctx context.Context, name, dir string) error {
 	if err := m.withClone(ctx, dir, func() error { return marketplaceGitFetch(ctx, dir) }); err != nil {
 		return err
@@ -246,7 +242,7 @@ func (m *Manager) fastForwardMarketplace(ctx context.Context, name, dir string) 
 		return err
 	}
 	ref, ok := mk[name]
-	if !ok || ref.InstallLocation != dir || !cloneOnBranch(dir) {
+	if !ok || ref.InstallLocation != dir || sourcePinned(ctx, ref) {
 		// Removed, moved or re-sourced to a pin while fetching: there is
 		// nothing to fast-forward.
 		return nil
@@ -263,24 +259,30 @@ func (m *Manager) fastForwardMarketplace(ctx context.Context, name, dir string) 
 	if err := marketplaceGitFastForward(ctx, dir); err != nil {
 		return err
 	}
-	if after, err := marketplaceGitHeadSHA(ctx, dir); err != nil || after == before {
+	after, err := marketplaceGitHeadSHA(ctx, dir)
+	if err != nil {
 		return err
 	}
-	ref.LastUpdated = m.now().UTC()
-	mk[name] = ref
-	if err := m.saveMarketplaces(mk); err != nil {
-		return m.saveFailed(name, marketplacesFileName, err)
-	}
-	return nil
+	return m.stampRefreshed(mk, name, ref, after != before)
 }
 
-// cloneOnBranch reports whether the clone at dir has a branch checked out,
-// reading its HEAD file rather than running git, so it answers after the
-// check's budget has ended too. A clone that cannot be read counts as on a
-// branch, so the refresh tries it and warns of what fails.
-func cloneOnBranch(dir string) bool {
-	head, err := os.ReadFile(filepath.Join(dir, ".git", "HEAD"))
-	return err != nil || strings.HasPrefix(string(head), "ref: ")
+// sourcePinned reports whether ref's source pins its catalog to one commit:
+// a sha, or a ref that names a tag or a commit rather than a branch. A ref is
+// told by the local branch checkout made for it (gitRefNamesBranch), so where
+// HEAD has moved since does not matter: a branch clone left detached is still
+// a branch, and a tag clone moved off its tag is still a pin. Nothing upstream
+// changes what a pinned clone holds.
+func sourcePinned(ctx context.Context, ref MarketplaceRef) bool {
+	if ref.Source.Sha != "" {
+		return true
+	}
+	if ref.Source.Ref == "" {
+		return false
+	}
+	// A branch check that fails (a broken clone, a cancelled check) is no
+	// pin: the refresh is attempted and warns of what fails.
+	branch, err := gitRefNamesBranch(ctx, ref.InstallLocation, ref.Source.Ref)
+	return err == nil && !branch
 }
 
 // upgradeSource is plugin's source in marketplace's local catalog, parsing each

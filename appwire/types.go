@@ -1907,6 +1907,13 @@ const (
 	// human's Allow or Deny on a sandbox escalation leaves in history (S16).
 	// apptranscript.ApprovalDecisionAnnouncement documents its Raw.
 	ThreadItemEventKindApprovalDecision ThreadItemEventKind = "approval_decision"
+	// ThreadItemEventKindMemoryContext marks the systemMessage item a reloaded
+	// transcript renders for a schema.TurnMemoryContext turn: an automatic
+	// memory index refresh. apptranscript owns extracting the display metadata
+	// into the item's Raw ({"memoryContext": {...}}) and preserving the exact
+	// recorded text; the web renderer owns presenting it as a collapsed
+	// steering-style notification.
+	ThreadItemEventKindMemoryContext ThreadItemEventKind = "memory-context"
 )
 
 // AllThreadItemEventKinds is every ThreadItem.EventKind value emitted for
@@ -1932,6 +1939,7 @@ var AllThreadItemEventKinds = []string{
 	string(ThreadItemEventKindWarning),
 	string(ThreadItemEventKindInterrupted),
 	string(ThreadItemEventKindApprovalDecision),
+	string(ThreadItemEventKindMemoryContext),
 }
 
 type ThreadItem struct {
