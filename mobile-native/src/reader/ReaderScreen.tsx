@@ -268,9 +268,9 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 	useProvideSheetHost(readerHosts, sheetKey(hubId, sessionRef, path), host);
 
 	const updated = updatedAt === undefined ? Number.NaN : Date.parse(updatedAt);
-	const about = [documentKind(path), ...(Number.isNaN(updated) ? [] : [`updated ${timeAgo(now - updated)}`])].join(
-		" · ",
-	);
+	const about = Number.isNaN(updated)
+		? documentKind(path)
+		: `${documentKind(path)} · updated ${timeAgo(now - updated)}`;
 	const changeNote = lastRead ? changesCaption(changed.length, lastRead.readAt, now) : null;
 	const title = document?.title ?? "";
 	const text = document?.kind === "markdown" || document?.kind === "code" ? document.text : null;

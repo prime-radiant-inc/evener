@@ -38,7 +38,7 @@ export function spokenDuration(ms: number): string {
  * under a minute: the minute clock can lag it by up to a minute, and a hub
  * clock ahead of this phone's can put it in the future. */
 export function timeAgo(ms: number, words: (ms: number) => string = compactDuration): string {
-	return ms < 60_000 ? "just now" : `${words(ms)} ago`;
+	return ms < DURATION_UNIT_MS.minute ? "just now" : `${words(ms)} ago`;
 }
 
 /** A path or URL may wrap only after a slash: a zero-width space follows each
