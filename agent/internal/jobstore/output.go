@@ -724,7 +724,11 @@ func (o *OutputStore) pruneLocked() error {
 	if err != nil {
 		return fmt.Errorf("jobstore: stat output: %w", err)
 	}
-	if info.Size() <= o.capBytes {
+	// Compaction rewrites and fsyncs the whole retained tail, so it waits until
+	// the file holds twice the cap and then drops back to the cap: one rewrite
+	// per capBytes written rather than one per append (#3808). Until then the
+	// file keeps older bytes, and refreshVisibleLocked hides them from readers.
+	if info.Size() <= 2*o.capBytes {
 		o.retainedStart = o.total - info.Size()
 		return nil
 	}
