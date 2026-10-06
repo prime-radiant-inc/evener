@@ -2790,12 +2790,25 @@ func TestMemoryGuidanceUnboundDelegateOmitsSessionScope(t *testing.T) {
 	s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project"}))
 	s.depth = 1
 	s.delegateRootSessionID = ""
-	if data, _ := s.buildPromptData(s.currentEnv()); data.SessionMemory || data.SessionMemorySaves {
+	if data, _ := s.buildPromptData(s.currentEnv()); data.SessionMemory || data.SessionMemorySaves || data.MemoryDelegate {
 		t.Fatal("guidance offers a session scope this delegate cannot use")
 	}
 	s.delegateRootSessionID = "../escape"
-	if data, _ := s.buildPromptData(s.currentEnv()); data.SessionMemory || data.SessionMemorySaves {
+	if data, _ := s.buildPromptData(s.currentEnv()); data.SessionMemory || data.SessionMemorySaves || data.MemoryDelegate {
 		t.Fatal("guidance offers a session scope for a corrupt root id")
+	}
+}
+
+// A delegate whose root id is valid but whose memory is not readable has no
+// session scope to describe, so it is not flagged as reading its root's.
+func TestMemoryGuidanceUnreadableDelegateIsNotSessionDelegate(t *testing.T) {
+	t.Parallel()
+	s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project"}))
+	s.depth = 1
+	s.delegateRootSessionID = newSession(t).id
+	s.reg.Remove("memory_read")
+	if data, _ := s.buildPromptData(s.currentEnv()); data.SessionMemory || data.MemoryDelegate {
+		t.Fatalf("SessionMemory=%v MemoryDelegate=%v, want both false", data.SessionMemory, data.MemoryDelegate)
 	}
 }
 
