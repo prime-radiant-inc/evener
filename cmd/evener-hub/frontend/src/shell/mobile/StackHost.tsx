@@ -43,9 +43,17 @@ import { ActivitySidebar } from "../activitybar/ActivitySidebar";
 import { useActivitySidebarStore } from "../activitybar/activitySidebarStore";
 import { useChromeStore } from "../chromeStore";
 import { paneFor } from "../paneRegistry";
+import { PaneVisibilityContext } from "../paneVisibility";
 import { navigate, paneToURL, urlToPane } from "../routing";
+import { openSessionByRef } from "../sessionPlacement";
 import { isSinglePaneRoute } from "../singlePane";
-import { type OpenPaneRecord, transcriptOpenOrigin, useWorkspaceStore, workspaceStore } from "../workspace";
+import {
+  documentPaneState,
+  type OpenPaneRecord,
+  transcriptOpenOrigin,
+  useWorkspaceStore,
+  workspaceStore,
+} from "../workspace";
 import { MobilePanel } from "./MobilePanel";
 import styles from "./StackHost.module.css";
 import { TreeDrawer } from "./TreeDrawer";
@@ -58,9 +66,11 @@ import { TreeDrawer } from "./TreeDrawer";
 function StackedPane({ pane }: { pane: OpenPaneRecord }) {
   const Component = paneFor(pane.type).component;
   return (
-    <Suspense fallback={null}>
-      <Component params={pane.params} paneId={pane.id} focused />
-    </Suspense>
+    <PaneVisibilityContext.Provider value>
+      <Suspense fallback={null}>
+        <Component params={pane.params} paneId={pane.id} focused />
+      </Suspense>
+    </PaneVisibilityContext.Provider>
   );
 }
 
@@ -311,6 +321,20 @@ export function StackHost({ railSlot, routeDeferred = false }: StackHostProps = 
   }, [activityOpen]);
 
   function handleBack(): void {
+    if (focusedPane?.type === "doc") {
+      const retained = documentPaneState(focusedPane);
+      if (retained) {
+        wentBackRef.current = true;
+        if (retained.origin && panes.includes(retained.origin)) {
+          workspaceStore.getState().focusPane(retained.origin.id);
+        } else {
+          const session = (focusedPane.params as { session?: unknown }).session;
+          if (typeof session === "string" && session !== "") openSessionByRef(session);
+          else workspaceStore.getState().openPane("welcome");
+        }
+        return;
+      }
+    }
     let target = popValidBackTarget(backStackRef.current, panes, focusedPaneId);
     if (!target && focusedPane?.type === "transcript") {
       const params = focusedPane.params as { ref?: unknown; parentRef?: unknown };

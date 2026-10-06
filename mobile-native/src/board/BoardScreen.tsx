@@ -1264,6 +1264,7 @@ function Board({
 											hubId,
 											sessionRef: trail.sessionRef,
 											path: trail.path,
+											reference: trail.reference,
 											sessionTitle: trail.sessionTitle,
 											...(trail.updatedAt === undefined ? {} : { updatedAt: trail.updatedAt }),
 										})

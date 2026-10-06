@@ -64,3 +64,27 @@ catalog. A project deletion uses `evener/project/delete`, which validates its
 working directory, reports per-session outcomes, and returns a navigation
 receipt. Clients reconcile the returned invalidation targets through AppWire.
 - Rename uses `evener/thread/name/set` for both live and ended sessions.
+
+## Session document reads
+
+The [document server](../cmd/evener-hub/doc_serve.go) resolves a file against its
+owning session's current directory for each read. Live reads obtain the current
+daemon descriptor. Archived reads reload session metadata from disk rather than
+using the navigation index's cached directory. Remote text reads route through
+the owning host with the captured absolute file target.
+
+A missing archived metadata file returns `ResourceNotFound` (HTTP 404). Other
+metadata read or decode failures return `SessionUnavailable` (HTTP 503), so the
+shared document read owner keeps its paced retry demand instead of treating a
+temporary metadata fault as a missing file. Raw HTTP, image HTTP and AppWire
+document reads share this classification. Once metadata is readable again, the
+next read uses its fresh directory without rebuilding the navigation index.
+
+The browser DocPane and native Reader retain the document's captured target and
+owning session during recovery. The shared
+[document read demand](../appwire-client/typescript/documentReadDemand.ts)
+paces retries while the reader is visible and connected. Hidden or disconnected
+readers preserve demand for re-entry. A text HTTP 404 ends the current paced
+retry series. Reload, reopen, visibility or connection re-entry, and reader
+refresh triggers start a new series. Image load callbacks do not expose HTTP
+status, so failed image loads keep paced retries.

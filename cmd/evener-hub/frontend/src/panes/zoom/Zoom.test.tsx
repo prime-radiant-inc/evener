@@ -586,10 +586,12 @@ test("a new cursor epoch for the same root preserves child branch and retained r
   await screen.findByText("root content old-root");
   await screen.findByText("child content child-id");
   const childView = retainedTranscriptReadView(conversationPaneLifetime(currentPane()), "child", "cascade");
+  // The root's session summary; its subtree summary (the Agents count) re-reads too.
   const rootReads = () =>
-    fake.calls.filter(
-      (call) => call.method === "evener/thread/activity/read" && (call.params as { ref: string }).ref === "root",
-    ).length;
+    fake.calls.filter((call) => {
+      const params = call.params as { ref: string; scope?: string };
+      return call.method === "evener/thread/activity/read" && params.ref === "root" && params.scope !== "subtree";
+    }).length;
   const initialReads = rootReads();
   setEpoch("epoch-2");
   act(() =>

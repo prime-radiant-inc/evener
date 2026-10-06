@@ -351,6 +351,19 @@ const READ_HISTORY_IDENTITY = {
 } as const;
 // Whether model/list refuses, as a hub mid-restart does.
 const catalogHub = { fails: false };
+// Keep diagnostics visible and check the entire case, including afterEach teardown.
+beforeEach(({ onTestFinished }) => {
+	const errors = vi.spyOn(console, "error");
+	const warnings = vi.spyOn(console, "warn");
+	onTestFinished(() => {
+		try {
+			expect({ errors: errors.mock.calls, warnings: warnings.mock.calls }).toEqual({ errors: [], warnings: [] });
+		} finally {
+			errors.mockRestore();
+			warnings.mockRestore();
+		}
+	});
+});
 afterEach(() => {
 	displayPrefs.hubId = null;
 	displayPrefs.config = null;
@@ -514,7 +527,12 @@ async function mount(
 		params: { hubId: "hub-1", ref, title: "Session", ...(openedBy ? { openedBy } : {}) },
 	} as unknown as ConversationScreenProps["route"];
 	navigationState.state = { index: 0, routes: [route] };
-	const tree = render(<ConversationScreen route={route} navigation={navigation} />);
+	// Await mount-time accessibility and navigation reads, not the session
+	// read's clock, before handing the live renderer back to the case.
+	let tree!: ReactTestRenderer;
+	await act(async () => {
+		tree = render(<ConversationScreen route={route} navigation={navigation} />);
+	});
 	mountedScreens.push(tree);
 	if (barLaysOut) {
 		const bar = tree.root.findAll(
@@ -994,7 +1012,7 @@ it("keeps the session open when /shutdown is typed and completed (ruling 19)", a
 	expect(navigation.pop).not.toHaveBeenCalled();
 	expect(navigation.goBack).not.toHaveBeenCalled();
 	expect(field(tree)).toBeDefined();
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 it("does nothing when a Stop lands after the turn already ended", async () => {
@@ -1682,11 +1700,12 @@ describe("following the live end (spec 8.2)", () => {
 	});
 	const list = (tree: ReactTestRenderer) => transcriptList(tree);
 	// A drag the way a finger makes one: it begins, the list scrolls through
-	// each offset, and it ends at the last.
-	function drag(tree: ReactTestRenderer, ...offsets: number[]) {
+	// each offset, and it ends at the last. Await its deferred history read's
+	// publication before the case continues or starts teardown.
+	async function drag(tree: ReactTestRenderer, ...offsets: number[]) {
 		act(() => list(tree).props.onScrollBeginDrag(at(offsets[0] ?? 0)));
 		for (const y of offsets) scrollTo(tree, y);
-		act(() => list(tree).props.onScrollEndDrag(at(offsets.at(-1) ?? 0)));
+		await act(async () => list(tree).props.onScrollEndDrag(at(offsets.at(-1) ?? 0)));
 	}
 	// A reply streaming into the session: a new row below whatever you read.
 	function stream(hub: { notify(notification: AnyNotification): void }, served: Thread, id: string) {
@@ -1765,7 +1784,7 @@ describe("following the live end (spec 8.2)", () => {
 		stream(hub, served, "s1");
 		const keyOf = (row: unknown) => list(tree).props.keyExtractor(row) as string;
 		const streamed = keyOf((list(tree).props.data as unknown[]).at(-1));
-		drag(tree, 100);
+		await drag(tree, 100);
 		act(() =>
 			hub.notify({
 				method: "history/updated",
@@ -1814,7 +1833,7 @@ describe("following the live end (spec 8.2)", () => {
 		evener.capabilities = { ...evener.capabilities, pageBefore: true };
 		const { tree, hub } = await mount(served);
 		const rows = () => (list(tree).props.data as unknown[]).length;
-		drag(tree, 100);
+		await drag(tree, 100);
 		// A reply lands below while you read above: nothing is trimmed, so the
 		// session's rows past the cap are all there.
 		stream(hub, served, "s-trim");
@@ -1831,7 +1850,7 @@ describe("following the live end (spec 8.2)", () => {
 	it("stops following when you drag up, and says what landed below", async () => {
 		const served = working("ref-follow-away");
 		const { tree, hub } = await mount(served);
-		drag(tree, 100);
+		await drag(tree, 100);
 		stream(hub, served, "s1");
 		expect(pill(tree)?.props.accessibilityLabel).toBe("1 new below, scroll to the end");
 		expect(contentGrows(tree, 4_200)).toBe(false);
@@ -1840,13 +1859,13 @@ describe("following the live end (spec 8.2)", () => {
 	it("follows again once a drag ends at the end, and not while the finger is still down", async () => {
 		const served = working("ref-follow-again");
 		const { tree, hub } = await mount(served);
-		drag(tree, 100);
+		await drag(tree, 100);
 		act(() => list(tree).props.onScrollBeginDrag(at(100)));
 		scrollTo(tree, END);
 		stream(hub, served, "s2");
 		// A row landing mid-drag doesn't pull the list from under the finger.
 		expect(contentGrows(tree, 4_200)).toBe(false);
-		act(() => list(tree).props.onScrollEndDrag(at(END)));
+		await act(async () => list(tree).props.onScrollEndDrag(at(END)));
 		expect(pill(tree)).toBeUndefined();
 		stream(hub, served, "s2b");
 		expect(contentGrows(tree, 4_400)).toBe(true);
@@ -1855,15 +1874,15 @@ describe("following the live end (spec 8.2)", () => {
 	it("doesn't follow after a drag that reached the end and came back up", async () => {
 		const served = working("ref-follow-back-up");
 		const { tree } = await mount(served);
-		drag(tree, 100, END, 1_000);
+		await drag(tree, 100, END, 1_000);
 		expect(contentGrows(tree, 4_200)).toBe(false);
 	});
 
 	it("follows again when a flick's momentum carries you to the end", async () => {
 		const served = working("ref-follow-flick");
 		const { tree, hub } = await mount(served);
-		drag(tree, 100);
-		drag(tree, 1_000);
+		await drag(tree, 100);
+		await drag(tree, 1_000);
 		act(() => list(tree).props.onMomentumScrollBegin());
 		scrollTo(tree, END);
 		act(() => list(tree).props.onMomentumScrollEnd(at(END)));
@@ -1874,7 +1893,7 @@ describe("following the live end (spec 8.2)", () => {
 	it("doesn't scroll to the end while a flick released at the end coasts away", async () => {
 		const served = working("ref-follow-coast");
 		const { tree, hub } = await mount(served);
-		drag(tree, 100, END);
+		await drag(tree, 100, END);
 		act(() => list(tree).props.onMomentumScrollBegin());
 		scrollTo(tree, 2_000);
 		stream(hub, served, "m1");
@@ -1887,14 +1906,14 @@ describe("following the live end (spec 8.2)", () => {
 		const served = working("ref-follow-short");
 		const { tree } = await mount(served);
 		act(() => list(tree).props.onScrollBeginDrag(at(0, 300)));
-		act(() => list(tree).props.onScrollEndDrag(at(0, 300)));
+		await act(async () => list(tree).props.onScrollEndDrag(at(0, 300)));
 		expect(contentGrows(tree, 320)).toBe(true);
 	});
 
 	it("stays unfollowed when the app itself scrolls to the end", async () => {
 		const served = working("ref-follow-app-scroll");
 		const { tree } = await mount(served);
-		drag(tree, 100);
+		await drag(tree, 100);
 		// No finger: a restore or the list settling lands at the end.
 		scrollTo(tree, END);
 		expect(contentGrows(tree, 4_200)).toBe(false);
@@ -1903,12 +1922,12 @@ describe("following the live end (spec 8.2)", () => {
 	it("counts what landed since you last left the end", async () => {
 		const served = working("ref-follow-counts");
 		const { tree, hub } = await mount(served);
-		drag(tree, 100);
+		await drag(tree, 100);
 		stream(hub, served, "c1");
 		expect(pill(tree)?.props.accessibilityLabel).toBe("1 new below, scroll to the end");
-		drag(tree, END);
+		await drag(tree, END);
 		expect(pill(tree)).toBeUndefined();
-		drag(tree, 100);
+		await drag(tree, 100);
 		stream(hub, served, "c2");
 		stream(hub, served, "c3");
 		expect(pill(tree)?.props.accessibilityLabel).toBe("2 new below, scroll to the end");
@@ -1917,7 +1936,7 @@ describe("following the live end (spec 8.2)", () => {
 	it("follows again from the pill, which then goes", async () => {
 		const served = working("ref-follow-pill");
 		const { tree, hub } = await mount(served);
-		drag(tree, 100);
+		await drag(tree, 100);
 		stream(hub, served, "p1");
 		flatListCalls.length = 0;
 		act(() => pill(tree)?.props.onPress());
@@ -1949,7 +1968,7 @@ describe("following the live end (spec 8.2)", () => {
 	it("never moves the list or counts as new when a ghost comes or goes while you read above", async () => {
 		const served = working("ref-follow-ghost-away");
 		const { tree, hub } = await mount(served);
-		drag(tree, 100);
+		await drag(tree, 100);
 		flatListCalls.length = 0;
 		queueNow(hub, served, ["check the logs"]);
 		expect(textOf(transcriptList(tree))).toContain("check the logs");
@@ -1969,7 +1988,7 @@ describe("following the live end (spec 8.2)", () => {
 		flatListCalls.length = 0;
 		act(() => list(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 300 } } }));
 		expect(flatListCalls.some((call) => call.method === "scrollToEnd")).toBe(true);
-		drag(tree, 100);
+		await drag(tree, 100);
 		flatListCalls.length = 0;
 		act(() => list(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 600 } } }));
 		expect(flatListCalls.some((call) => call.method === "scrollToEnd")).toBe(false);
@@ -3817,6 +3836,12 @@ describe("document chips under the agent's messages (spec 8.2)", () => {
 			hubId: "hub-1",
 			sessionRef: "ref-chips",
 			path: PLAN_PATH,
+			reference: {
+				cwd: "/home/jesse/git/evener",
+				path: "docs/superpowers/plans/settle-race.md",
+				provenance: "relative",
+				readTarget: "/home/jesse/git/evener/docs/superpowers/plans/settle-race.md",
+			},
 			sessionTitle: "Session",
 			updatedAt: WROTE_AT,
 		});
@@ -3833,6 +3858,7 @@ describe("document chips under the agent's messages (spec 8.2)", () => {
 			hubId: "hub-1",
 			ref: "ref-files",
 			title: "Session",
+			cwd: "/home/jesse/git/evener",
 			documents: [{ path: PLAN_PATH, kind: "Plan", updatedAt: WROTE_AT }],
 		});
 	});
@@ -4695,6 +4721,12 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 			hubId: "hub-1",
 			sessionRef: "local:fix",
 			path: "docs/superpowers/plans/settle-race.md",
+			reference: {
+				cwd: "/home/jesse/git/evener",
+				path: "docs/superpowers/plans/settle-race.md",
+				provenance: "relative",
+				readTarget: "/home/jesse/git/evener/docs/superpowers/plans/settle-race.md",
+			},
 			sessionTitle: "Fix race in tree settle",
 		});
 	});

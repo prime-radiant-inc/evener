@@ -18,6 +18,7 @@ import { wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useEffect } from "react";
+import { flushSync } from "react-dom";
 
 // Session-title queries in this file target navigation, so keep them scoped to
 // the rail rather than matching the same session in workspace content.
@@ -26,6 +27,7 @@ const rail = () => within(screen.getByTestId("rail"));
 import { afterEach, beforeAll, beforeEach, expect, onTestFinished, test, vi } from "vitest";
 import { MotionProvider } from "../motion";
 import { initNotifications, resetNotificationsForTests } from "../notifications";
+import { openDocBeside } from "../panes/doc/openDoc";
 import * as composerFocus from "../panes/session/composer/composerFocus";
 import { OpenTranscriptButton } from "../panes/session/transcript/openTranscript";
 import { installJobLogRangeGeometry } from "../panes/transcript/JobLogTestUtils";
@@ -61,7 +63,14 @@ import { resetDockChunkForTests } from "./DockRegion";
 import { paletteStore } from "./palette/paletteController";
 import { conversationPaneLifetime } from "./paneLifetime";
 import { navigate, refParam } from "./routing";
-import { getDockviewApi, resetWorkspaceStoreForTests, workspaceStore } from "./workspace";
+import {
+  documentPaneState,
+  getDockviewApi,
+  type OpenPaneRecord,
+  recordDocumentPaneState,
+  resetWorkspaceStoreForTests,
+  workspaceStore,
+} from "./workspace";
 
 // Matches DockHost.tsx's own LAYOUT_STORAGE_KEY exactly (not exported - a
 // deliberately internal implementation detail; duplicated here the same
@@ -2524,6 +2533,380 @@ test("a focused non-panel pane is re-focused to the routed nested session", asyn
   });
 
   await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(childId));
+});
+
+const focusFileReference = {
+  path: "docs/focus.md",
+  cwd: "/tmp/project",
+  readTarget: "/tmp/project/docs/focus.md",
+  provenance: "relative",
+} as const;
+
+async function settledDocumentRoute(ref: string): Promise<void> {
+  // Script only the HTTP boundary. AppShell, DockHost, opener and workspace
+  // remain real, including the route effect's post-open publications.
+  vi.stubGlobal("fetch", async () => new Response("# Focus document", { headers: { "Content-Type": "text/plain" } }));
+  window.history.pushState({}, "", `/s/${ref}`);
+  installLocationForRoute(ref);
+  await act(async () => render(<AppShell client={new FakeClient("ready")} />));
+  await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(paneFor(ref)?.id));
+}
+
+test("filename open retains focus after a cold location resolves for an already placed source", async () => {
+  const ref = "local:session-a";
+  vi.stubGlobal("fetch", async () => new Response("# Focus document", { headers: { "Content-Type": "text/plain" } }));
+  window.history.pushState({}, "", `/s/${encodeURIComponent(ref)}`);
+  // The browser fixture opens its source before mounting AppShell, then the
+  // real location request resolves after the shell has armed its pending route.
+  const sourceId = workspaceStore.getState().openPane("session", { ref });
+  const source = workspaceStore.getState().mainPane();
+  if (!source) throw new Error("source missing");
+  await act(async () => render(<AppShell client={navClient()} />));
+  await waitFor(() =>
+    expect(
+      [...navigationStore.getState().resources.values()].find(
+        (resource) => resource.key.kind === "location" && resource.key.ref === ref,
+      )?.data,
+    ).toMatchObject({ ref, top_level: true }),
+  );
+  expect(workspaceStore.getState().focusedPaneId).toBe(sourceId);
+  expect(workspaceStore.getState().mainPane()).toBe(source);
+
+  await act(async () => openDocBeside({ session: ref, reference: focusFileReference, sourcePaneId: source.id }));
+
+  const doc = workspaceStore.getState().panes.find((pane) => pane.type === "doc");
+  expect(doc).toBeDefined();
+  expect(workspaceStore.getState().focusedPaneId).toBe(doc?.id);
+  expect(workspaceStore.getState().mainPane()).toBe(source);
+  if (!doc) throw new Error("document missing");
+  expect(documentPaneState(doc)).toEqual({ reference: focusFileReference, origin: source, reopen: 0 });
+  expect(window.location.pathname).toBe(`/s/${encodeURIComponent(ref)}`);
+});
+
+test.each(["local:session-a", "local:child"])(
+  "filename open retains document focus and exact promoted source on settled %s route",
+  async (ref) => {
+    await settledDocumentRoute(ref);
+    const source = paneFor(ref);
+    if (!source) throw new Error("routed source missing");
+    const retainedPanes = [...workspaceStore.getState().panes];
+
+    await act(async () => openDocBeside({ session: ref, reference: focusFileReference, sourcePaneId: source.id }));
+
+    const doc = workspaceStore.getState().panes.find((pane) => pane.type === "doc");
+    expect(doc).toBeDefined();
+    expect(workspaceStore.getState().focusedPaneId).toBe(doc?.id);
+    expect(workspaceStore.getState().mainPane()).toBe(source);
+    expect(source.slot).toBe("main");
+    expect(doc?.slot).toBe("secondary");
+    expect(doc?.params).toEqual({ session: ref, path: "docs/focus.md", kind: "file" });
+    if (!doc) throw new Error("document missing");
+    expect(documentPaneState(doc)).toEqual({ reference: focusFileReference, origin: source, reopen: 0 });
+    for (const pane of retainedPanes) expect(workspaceStore.getState().panes).toContain(pane);
+    expect(window.location.pathname).toBe(`/s/${ref}`);
+  },
+);
+
+test("initial filename open survives a synchronous workspace commit before its binding is published", async () => {
+  await settledDocumentRoute("local:session-a");
+  const source = workspaceStore.getState().mainPane();
+  if (!source) throw new Error("source missing");
+  // A native filename listener can trigger an external-store consumer commit
+  // during openPane, before openDocBeside records the new document's binding.
+  // Force that real React commit rather than batching both publications in act.
+  const unsubscribe = workspaceStore.subscribe((state) => {
+    const focused = state.panes.find((pane) => pane.id === state.focusedPaneId);
+    if (focused?.type === "doc" && !documentPaneState(focused)) flushSync(() => {});
+  });
+  onTestFinished(unsubscribe);
+
+  await act(async () =>
+    openDocBeside({ session: "local:session-a", reference: focusFileReference, sourcePaneId: source.id }),
+  );
+
+  const doc = workspaceStore.getState().panes.find((pane) => pane.type === "doc");
+  expect(doc).toBeDefined();
+  expect(workspaceStore.getState().focusedPaneId).toBe(doc?.id);
+  expect(workspaceStore.getState().mainPane()).toBe(source);
+  if (!doc) throw new Error("document missing");
+  expect(documentPaneState(doc)?.origin).toBe(source);
+});
+
+test("initial filename open retains focus through a reference-only document binding publication", async () => {
+  const ref = "local:session-a";
+  await settledDocumentRoute(ref);
+  const source = workspaceStore.getState().mainPane();
+  if (!source) throw new Error("source missing");
+  // DocPane's layout hydration can publish a reference before the opener's
+  // exact owner is available. Exercise that canonical workspace publication
+  // during the real opener, with a real synchronous AppShell commit.
+  const unsubscribe = workspaceStore.subscribe((state) => {
+    const focused = state.panes.find((pane) => pane.id === state.focusedPaneId);
+    if (focused?.type === "doc" && !documentPaneState(focused)) {
+      recordDocumentPaneState(focused, { reference: focusFileReference, origin: undefined, reopen: 0 });
+      flushSync(() => {});
+    }
+  });
+  onTestFinished(unsubscribe);
+
+  await act(async () => openDocBeside({ session: ref, reference: focusFileReference, sourcePaneId: source.id }));
+
+  const doc = workspaceStore.getState().panes.find((pane) => pane.type === "doc");
+  expect(doc).toBeDefined();
+  expect(workspaceStore.getState().focusedPaneId).toBe(doc?.id);
+  expect(workspaceStore.getState().mainPane()).toBe(source);
+  if (!doc) throw new Error("document missing");
+  expect(documentPaneState(doc)).toEqual({ reference: focusFileReference, origin: source, reopen: 0 });
+});
+
+test.each([
+  { name: "nested session", route: "local:child", session: "local:child" },
+  { name: "secondary delegate transcript", route: "local:session-a", session: "local:sub1" },
+])("reference-only publication retains the promoted $name before its exact owner arrives", async (fixture) => {
+  await settledDocumentRoute(fixture.route);
+  let source = paneFor(fixture.session);
+  if (fixture.session === "local:sub1") {
+    let sourceId = "";
+    act(() => {
+      sourceId = workspaceStore
+        .getState()
+        .openPane("transcript", { ref: fixture.session, parentRef: fixture.route }, { slot: "secondary" });
+    });
+    source = workspaceStore.getState().panes.find((pane) => pane.id === sourceId);
+  }
+  if (!source) throw new Error("source missing");
+  const exactSource = source;
+  let intermediateDocument: OpenPaneRecord | undefined;
+  const unsubscribe = workspaceStore.subscribe((state) => {
+    const focused = state.panes.find((pane) => pane.id === state.focusedPaneId);
+    if (focused?.type !== "doc" || documentPaneState(focused)) return;
+    intermediateDocument = focused;
+    recordDocumentPaneState(focused, { reference: focusFileReference, origin: undefined, reopen: 0 });
+    flushSync(() => {});
+    expect(workspaceStore.getState().focusedPaneId).toBe(focused.id);
+    expect(workspaceStore.getState().mainPane()).toBe(exactSource);
+    expect(documentPaneState(focused)?.origin).toBeUndefined();
+  });
+  onTestFinished(unsubscribe);
+
+  await act(async () =>
+    openDocBeside({ session: fixture.session, reference: focusFileReference, sourcePaneId: exactSource.id }),
+  );
+
+  expect(intermediateDocument).toBeDefined();
+  if (!intermediateDocument) throw new Error("intermediate document missing");
+  expect(workspaceStore.getState().focusedPaneId).toBe(intermediateDocument.id);
+  expect(workspaceStore.getState().mainPane()).toBe(exactSource);
+  expect(documentPaneState(intermediateDocument)).toEqual({
+    reference: focusFileReference,
+    origin: exactSource,
+    reopen: 0,
+  });
+});
+
+test.each(["local:session-a", "local:child"])(
+  "a reference-only generic document still yields focus to the settled %s route",
+  async (ref) => {
+    await settledDocumentRoute(ref);
+    const source = paneFor(ref);
+    if (!source) throw new Error("source missing");
+    let doc: OpenPaneRecord | undefined;
+    await act(async () => {
+      const id = workspaceStore.getState().openPane("doc", {
+        session: ref,
+        path: focusFileReference.path,
+        kind: "file",
+      });
+      doc = workspaceStore.getState().panes.find((pane) => pane.id === id);
+      if (!doc) throw new Error("document missing");
+      recordDocumentPaneState(doc, { reference: focusFileReference, origin: undefined, reopen: 0 });
+      flushSync(() => {});
+    });
+
+    await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(source.id));
+    if (!doc) throw new Error("document missing");
+    expect(documentPaneState(doc)?.origin).toBeUndefined();
+  },
+);
+
+test("same-pane filename reopen keeps document selection and increments its retained read generation", async () => {
+  await settledDocumentRoute("local:session-a");
+  const source = workspaceStore.getState().mainPane();
+  if (!source) throw new Error("source missing");
+  await act(async () =>
+    openDocBeside({ session: "local:session-a", reference: focusFileReference, sourcePaneId: source.id }),
+  );
+  const doc = workspaceStore.getState().panes.find((pane) => pane.type === "doc");
+  if (!doc) throw new Error("document missing");
+  act(() => workspaceStore.getState().focusPane(source.id));
+
+  await act(async () =>
+    openDocBeside({ session: "local:session-a", reference: focusFileReference, sourcePaneId: source.id }),
+  );
+
+  expect(workspaceStore.getState().focusedPaneId).toBe(doc.id);
+  expect(workspaceStore.getState().panes.filter((pane) => pane.type === "doc")).toEqual([doc]);
+  expect(documentPaneState(doc)).toEqual({ reference: focusFileReference, origin: source, reopen: 1 });
+  expect(workspaceStore.getState().mainPane()).toBe(source);
+});
+
+test.each([
+  { name: "secondary delegate session", type: "session", params: { ref: "local:sub1" }, session: "local:sub1" },
+  {
+    name: "same-ref read-only transcript",
+    type: "transcript",
+    params: { ref: "local:session-a", parentRef: "local:session-a" },
+    session: "local:session-a",
+  },
+  {
+    name: "delegate transcript",
+    type: "transcript",
+    params: { ref: "local:sub1", parentRef: "local:session-a" },
+    session: "local:sub1",
+  },
+  {
+    name: "job transcript",
+    type: "transcript",
+    params: { ref: "job:job_focus", parentRef: "local:session-a" },
+    session: "local:session-a",
+  },
+] as const)("filename open from $name keeps that exact source main and the document selected", async (fixture) => {
+  await settledDocumentRoute("local:session-a");
+  const routedSource = workspaceStore.getState().mainPane();
+  let sourceId = "";
+  act(() => {
+    sourceId = workspaceStore.getState().openPane(fixture.type, fixture.params, { slot: "secondary" });
+  });
+  const source = workspaceStore.getState().panes.find((pane) => pane.id === sourceId);
+  if (!source) throw new Error("secondary source missing");
+
+  await act(async () =>
+    openDocBeside({ session: fixture.session, reference: focusFileReference, sourcePaneId: sourceId }),
+  );
+
+  const doc = workspaceStore.getState().panes.find((pane) => pane.type === "doc");
+  expect(workspaceStore.getState().mainPane()).toBe(source);
+  expect(workspaceStore.getState().focusedPaneId).toBe(doc?.id);
+  expect(routedSource?.slot).toBe("secondary");
+  expect(workspaceStore.getState().panes).toContain(routedSource);
+  if (!doc) throw new Error("document missing");
+  expect(documentPaneState(doc)?.origin).toBe(source);
+  expect(doc.params).toEqual({ session: fixture.session, path: "docs/focus.md", kind: "file" });
+});
+
+test("settled location refresh and reconnect retain filename document focus and owner", async () => {
+  await settledDocumentRoute("local:child");
+  const source = paneFor("local:child");
+  if (!source) throw new Error("child source missing");
+  await act(async () =>
+    openDocBeside({ session: "local:child", reference: focusFileReference, sourcePaneId: source.id }),
+  );
+  const doc = workspaceStore.getState().panes.find((pane) => pane.type === "doc");
+
+  await act(async () => {
+    connectionStore.setState({ state: "reconnecting" });
+    installLocationForRoute("local:child");
+  });
+  await act(async () => {
+    connectionStore.setState({ state: "ready" });
+    installLocationForRoute("local:child");
+  });
+
+  expect(workspaceStore.getState().focusedPaneId).toBe(doc?.id);
+  expect(workspaceStore.getState().mainPane()).toBe(source);
+  if (!doc) throw new Error("document missing");
+  expect(documentPaneState(doc)?.origin).toBe(source);
+});
+
+test.each(["missing origin", "replaced origin", "session mismatch", "path mismatch", "unpromoted origin"])(
+  "settled route rejects a filename document with %s",
+  async (invalidBinding) => {
+    await settledDocumentRoute("local:session-a");
+    const source = workspaceStore.getState().mainPane();
+    if (!source) throw new Error("source missing");
+    await act(async () => {
+      openDocBeside({ session: "local:session-a", reference: focusFileReference, sourcePaneId: source.id });
+      const doc = workspaceStore.getState().panes.find((pane) => pane.type === "doc");
+      if (!doc) throw new Error("document missing");
+      if (invalidBinding === "missing origin") workspaceStore.getState().closePane(source.id);
+      if (invalidBinding === "replaced origin") {
+        workspaceStore.setState({
+          panes: workspaceStore.getState().panes.map((pane) => (pane === source ? { ...pane } : pane)),
+        });
+      }
+      if (invalidBinding === "session mismatch" || invalidBinding === "path mismatch") {
+        doc.params = {
+          session: invalidBinding === "session mismatch" ? "local:other" : "local:session-a",
+          path: invalidBinding === "path mismatch" ? "docs/other.md" : "docs/focus.md",
+          kind: "file",
+        };
+        workspaceStore.setState({ panes: [...workspaceStore.getState().panes] });
+      }
+      if (invalidBinding === "unpromoted origin") {
+        const otherId = workspaceStore.getState().openPane("session", { ref: "local:other" });
+        workspaceStore.getState().promotePane(otherId);
+        workspaceStore.getState().focusPane(doc.id);
+      }
+    });
+
+    await waitFor(() => {
+      expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:session-a" });
+      expect(workspaceStore.getState().focusedPaneId).toBe(workspaceStore.getState().mainPane()?.id);
+    });
+  },
+);
+
+test.each(["/thread/local:child", "/s/local:next", "/settings/general"])(
+  "explicit popstate navigation to %s overrides filename source promotion",
+  async (pathname) => {
+    await settledDocumentRoute("local:child");
+    const source = paneFor("local:child");
+    if (!source) throw new Error("source missing");
+    await act(async () => {
+      openDocBeside({ session: "local:child", reference: focusFileReference, sourcePaneId: source.id });
+      window.history.pushState({}, "", pathname);
+      if (pathname === "/s/local:next") installLocationForRoute("local:next");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+
+    await waitFor(() => {
+      if (pathname === "/thread/local:child") {
+        expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:owner" });
+        expect(workspaceStore.getState().focusedPaneId).toBe(paneFor("local:child")?.id);
+      } else {
+        expect(workspaceStore.getState().mainPane()?.type).toBe(
+          pathname.startsWith("/settings") ? "settings" : "session",
+        );
+        expect(workspaceStore.getState().focusedPaneId).toBe(workspaceStore.getState().mainPane()?.id);
+      }
+    });
+  },
+);
+
+test("cold route placement overrides a previously bound filename document", async () => {
+  const sourceId = workspaceStore.getState().openPane("session", { ref: "local:child" });
+  openDocBeside({ session: "local:child", reference: focusFileReference, sourcePaneId: sourceId });
+  await settledDocumentRoute("local:child");
+
+  expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:owner" });
+  expect(workspaceStore.getState().focusedPaneId).toBe(paneFor("local:child")?.id);
+});
+
+test("reset with reused pane IDs does not resurrect a filename document's runtime owner", async () => {
+  await settledDocumentRoute("local:session-a");
+  const source = workspaceStore.getState().mainPane();
+  if (!source) throw new Error("source missing");
+  await act(async () => {
+    openDocBeside({ session: "local:session-a", reference: focusFileReference, sourcePaneId: source.id });
+    resetWorkspaceStoreForTests();
+    workspaceStore.getState().openPane("session", { ref: "local:session-a" });
+    workspaceStore.getState().openPane("doc", { session: "local:session-a", path: "docs/focus.md", kind: "file" });
+  });
+
+  await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(workspaceStore.getState().mainPane()?.id));
+  const doc = workspaceStore.getState().panes.find((pane) => pane.type === "doc");
+  if (!doc) throw new Error("restored document missing");
+  expect(documentPaneState(doc)?.origin).toBeUndefined();
 });
 
 test("successful Spawn navigation replaces Spawn with the created session and clears old secondary panes", async () => {

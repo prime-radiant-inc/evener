@@ -29,6 +29,7 @@ import { describeBrowserStartupFailure, startBrowserGuard, waitForBrowserReady }
 import { Driver } from "../skillguard/run.mjs";
 import { measureDelayedFloatingDock } from "./startup.mjs";
 import { checkSessionHoverCards } from "./sessionHoverCard.mjs";
+import { checkMovingControls } from "./click-regression.mjs";
 
 const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -483,13 +484,19 @@ const LONG_VALUES = [
 ];
 
 async function waitForDom(send, expression, label) {
+  // Presence predicates can return DOM nodes, which must not cross CDP by value.
+  return waitForValue(send, `Boolean(${expression})`, label);
+}
+
+async function waitForValue(send, expression, label) {
   return evaluate(send, `(async () => {
     const deadline = performance.now() + 15000;
-    while (!(${expression})) {
+    let value;
+    while (!(value = (${expression}))) {
       if (performance.now() > deadline) throw new Error(${JSON.stringify(label)} + ': ' + document.body.innerText.slice(-1500));
       await new Promise(resolve => requestAnimationFrame(resolve));
     }
-    return true;
+    return value;
   })()`);
 }
 
@@ -517,9 +524,9 @@ async function settleOverview(send) {
   })()`, "Overview finishes its entrance");
 }
 
-async function clickControl(send, selector) {
+export async function clickControl(send, selector) {
   await waitForDom(send, `document.querySelector(${JSON.stringify(selector)})`, `mounted control ${selector}`);
-  const point = await evaluate(send, `(async () => {
+  let point = await evaluate(send, `(async () => {
     const marker = document.querySelector(${JSON.stringify(selector)});
     const element = marker?.closest('button') ?? marker;
     if (!element) throw new Error('missing control: ' + ${JSON.stringify(selector)} + ' ' + JSON.stringify({
@@ -534,10 +541,13 @@ async function clickControl(send, selector) {
   })()`);
   await send("Input.dispatchMouseEvent", { type: "mouseMoved", ...point });
   try {
-    await waitForDom(send, `(() => {
+    point = await waitForValue(send, `(() => {
       const marker = document.querySelector(${JSON.stringify(selector)});
       const element = marker?.closest('button') ?? marker;
-      return element && getComputedStyle(element).visibility === 'visible' && element.contains(document.elementFromPoint(${point.x}, ${point.y}));
+      if (!element || getComputedStyle(element).visibility !== 'visible') return false;
+      const box = element.getBoundingClientRect();
+      const current = { x: box.left + box.width / 2, y: box.top + box.height / 2 };
+      return box.width && box.height && element.contains(document.elementFromPoint(current.x, current.y)) && current;
     })()`, `hit-testable control ${selector}`);
   } catch (error) {
     const witness = await evaluate(send, `(() => {
@@ -978,6 +988,7 @@ async function main() {
       viteDeadline.clear();
     }
     cdpEndpoint = await waitForBrowserReady(guard);
+    console.log(`shellguard click geometry: ${JSON.stringify(await checkMovingControls(cdpEndpoint, clickControl))}`);
     const result = await measureOnPage(
       cdpEndpoint,
       vitePort,

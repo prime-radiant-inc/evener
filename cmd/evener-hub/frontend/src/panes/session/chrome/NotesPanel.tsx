@@ -34,6 +34,7 @@ export function hasNoteText(text: string): boolean {
 export interface NotesPanelBodyProps {
   sessionRef: string;
   model: ThreadModel;
+  sourcePaneId?: string;
   editorRef?: React.Ref<HTMLTextAreaElement>;
 }
 
@@ -118,7 +119,7 @@ function isMissingURLEntryError(err: unknown): boolean {
   );
 }
 
-export function NotesPanelBody({ sessionRef, model, editorRef }: NotesPanelBodyProps) {
+export function NotesPanelBody({ sessionRef, model, sourcePaneId, editorRef }: NotesPanelBodyProps) {
   const toasts = useToasts();
   const owner = useRef(Symbol("notes editor"));
   const state = useHumanNoteDraft(sessionRef);
@@ -243,7 +244,12 @@ export function NotesPanelBody({ sessionRef, model, editorRef }: NotesPanelBodyP
                     // text but no affordance.
                     <span>
                       {url.label || url.url} <span className={CLASS.linkUrl}>{url.url}</span>{" "}
-                      <FileOpenBesideButton absPath={fileURLToPath(url.url)} sessionRef={sessionRef} cwd={model.cwd} />
+                      <FileOpenBesideButton
+                        absPath={fileURLToPath(url.url)}
+                        sessionRef={sessionRef}
+                        cwd={model.cwd}
+                        sourcePaneId={sourcePaneId}
+                      />
                     </span>
                   ) : (
                     <span>

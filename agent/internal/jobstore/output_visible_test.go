@@ -214,6 +214,29 @@ func TestOutputStoreWindowAndForwardReadsStopAtTheVisibleStart(t *testing.T) {
 	}
 }
 
+func TestOutputFileStatsAndGrepSeeOnlyTheVisibleBytes(t *testing.T) {
+	path, visibleStart := writeHiddenPrefixOutput(t)
+	total, firstVisible, err := OutputFileStats(path)
+	if err != nil || total != visibleStart+int64(len("new-1\nnew-2\n")) || firstVisible != visibleStart {
+		t.Fatalf("OutputFileStats = %d, %d, %v; want first visible %d", total, firstVisible, err, visibleStart)
+	}
+	var checkedTotal int64
+	matches, err := GrepOutputFileLimit(path, regexp.MustCompile("old|new"), 1024, 0, 1024, func(total int64) error {
+		checkedTotal = total
+		return nil
+	})
+	if err != nil || checkedTotal != total {
+		t.Fatalf("GrepOutputFileLimit checked total %d, %v; want %d", checkedTotal, err, total)
+	}
+	refused := errors.New("refused")
+	if _, err := GrepOutputFileLimit(path, nil, 1024, 0, 1024, func(int64) error { return refused }); !errors.Is(err, refused) {
+		t.Fatalf("GrepOutputFileLimit with a refused total: err = %v, want the refusal before any scanning", err)
+	}
+	if len(matches) != 2 || matches[0].ByteOffset != visibleStart || matches[0].Line != "new-1" {
+		t.Fatalf("GrepOutputFileLimit = %+v, want the two visible lines from %d", matches, visibleStart)
+	}
+}
+
 func TestOutputVisibleStartPastTheEndOfTheFileIsAnError(t *testing.T) {
 	o := storeOverRaw(t, "abc\n", 0)
 	// total claims far more output than the file holds.
@@ -278,5 +301,52 @@ func TestPendingCompactionNeverMovesTheVisibleStartBack(t *testing.T) {
 	}
 	if page.RetainedStart != 10 || string(page.Content) != "cccc\n" {
 		t.Fatalf("page during the pending compaction = %+v, want only \"cccc\\n\" from 10", page)
+	}
+}
+
+func TestGrepOutputFileRefusesAFileThatChangedAfterItsView(t *testing.T) {
+	path, _ := writeHiddenPrefixOutput(t)
+	// checkTotal runs between the view and the reopen: grow the file there,
+	// the way a compaction replacing it would change its size.
+	_, err := GrepOutputFileLimit(path, regexp.MustCompile("new"), 1024, 0, 1024, func(int64) error {
+		f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		_, err = f.WriteString("later\n")
+		return err
+	})
+	if !errors.Is(err, ErrOutputChangedDuringRead) {
+		t.Fatalf("grep over a file that changed after its view: err = %v, want ErrOutputChangedDuringRead", err)
+	}
+}
+
+func TestGrepOutputFileRefusesASameSizeReplacementAfterItsView(t *testing.T) {
+	path, _ := writeHiddenPrefixOutput(t)
+	// A compaction can replace the file with another generation of the same
+	// size, which a size check alone cannot tell apart.
+	_, err := GrepOutputFileLimit(path, regexp.MustCompile("new"), 1024, 0, 1024, func(int64) error {
+		next := path + ".next"
+		if err := os.WriteFile(next, []byte("new-x\nnew-y\nnew-z\nnew-w\n"), 0o644); err != nil {
+			return err
+		}
+		return os.Rename(next, path)
+	})
+	if !errors.Is(err, ErrOutputChangedDuringRead) {
+		t.Fatalf("grep over a same-size replacement: err = %v, want ErrOutputChangedDuringRead", err)
+	}
+}
+
+func TestGrepOutputFileChecksItsLimitBeforeOpening(t *testing.T) {
+	// The limit is checked before the file is opened, so an empty or invalid
+	// budget neither touches the file nor leaves a descriptor open.
+	missing := filepath.Join(t.TempDir(), "job_missing.log")
+	refuse := func(int64) error { t.Fatal("checkTotal ran for a grep with no budget"); return nil }
+	if matches, err := GrepOutputFileLimit(missing, regexp.MustCompile("x"), 0, 0, 1024, refuse); err != nil || matches != nil {
+		t.Fatalf("zero budget = %v, %v; want nil, nil", matches, err)
+	}
+	if _, err := GrepOutputFileLimit(missing, regexp.MustCompile("x"), -1, 0, 1024, refuse); !errors.Is(err, ErrInvalidLimit) {
+		t.Fatalf("negative budget err = %v, want ErrInvalidLimit", err)
 	}
 }

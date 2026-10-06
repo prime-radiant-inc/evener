@@ -44,6 +44,10 @@ export interface VirtualListHandle {
    * visible" rather than crashing.
    */
   getVisibleRange: () => { startIndex: number; endIndex: number } | null;
+  /** Absolute placement replaces any earlier index reconciliation target. */
+  scrollToOffset?: (offset: number) => void;
+  /** True when rendered dynamic rows and the DOM sizer agree with measurements. */
+  isMeasurementReady?: () => boolean;
 }
 
 export interface VirtualListProps {
@@ -258,6 +262,14 @@ export function VirtualList({
         }
       : {}),
   });
+  const items = virtualizer.getVirtualItems();
+  const totalSize = virtualizer.getTotalSize();
+
+  // Upstream onChange runs before React commits the new sizer and row window.
+  // Consumers restoring a measured position also need that committed geometry.
+  useLayoutEffect(() => {
+    onChange?.(virtualizer, false);
+  });
 
   // Measurement writes precede the sizer commit. Complete a clamped write
   // before its browser read-back, unless newer scrolling superseded it.
@@ -329,7 +341,23 @@ export function VirtualList({
         backwardMovementRef.current = false;
         virtualizer.scrollToIndex(index, options);
       },
+      scrollToOffset: (offset) => virtualizer.scrollToOffset(offset),
       getScrollElement: () => scrollRef.current,
+      isMeasurementReady: () => {
+        const el = scrollRef.current;
+        if (!el || el.clientHeight === 0) return false;
+        const sizer = el.firstElementChild as HTMLElement | null;
+        if (Number.parseFloat(sizer?.style.height ?? "") !== virtualizer.getTotalSize()) return false;
+        if (!dynamic || count === 0) return true;
+        const rows = virtualizer.getVirtualItems();
+        return (
+          rows.length > 0 &&
+          rows.every((item) => {
+            const node = virtualizer.elementsCache.get(item.key);
+            return node !== undefined && virtualizer.itemSizeCache.get(item.key) === node.offsetHeight;
+          })
+        );
+      },
       isLayoutCurrent: () => hasCommittedGeometry(virtualizer, measuredHeightsRef.current),
       getVisibleRange: () => {
         const items = virtualizer.getVirtualItems();
@@ -339,13 +367,13 @@ export function VirtualList({
         return { startIndex: first.index, endIndex: last.index };
       },
     }),
-    [virtualizer],
+    [count, dynamic, virtualizer],
   );
 
   return (
     <div ref={scrollRef} className={CLASS.root}>
-      <div className={CLASS.sizer} style={{ height: virtualizer.getTotalSize() }}>
-        {virtualizer.getVirtualItems().map((item) => (
+      <div className={CLASS.sizer} style={{ height: totalSize }}>
+        {items.map((item) => (
           <div
             key={item.key}
             data-index={item.index}

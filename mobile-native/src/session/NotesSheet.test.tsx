@@ -352,6 +352,7 @@ describe("links", () => {
 			hubId: HUB,
 			sessionRef: REF,
 			path: "docs/plan.md",
+			reference: { path: "docs/plan.md", cwd: CWD, readTarget: `${CWD}/docs/plan.md`, provenance: "absolute" },
 			sessionTitle: "Fix race",
 		});
 		expect(symbols(tree)).toEqual(["doc.text"]);
