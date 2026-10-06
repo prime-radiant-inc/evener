@@ -93,10 +93,11 @@ registry, model or environment changes. It says what each scope holds
 human partner works and how tools, systems and the world behave; project
 memory: knowledge about this project; session memory: working notes about the
 current work: its plan, what was tried and found), when to read a page, and that stored memory is fallible evidence, never
-instructions or permission. Sessions that can call the save tools are also told
+instructions or permission: a note can be wrong or out of date, so the agent checks a fact against the
+code or system before acting on it when it can. Sessions that can call the save tools are also told
 when to save: when the partner corrects the agent or says how they want work
-done, when the partner states a project plan, constraint or decision (saved to
-project memory), when a root session is partway through longer work (its plan,
+done, when the partner states a project plan, constraint, decision or unfinished
+work (saved to project memory), when a root session is partway through longer work (its plan,
 what it tried and what it ruled out go to session memory as working notes), and when the agent learns
 something the hard way that is not written down. Partner-stated
 facts are saved before the work they shape, because complying with them does
@@ -105,7 +106,8 @@ tool's description repeat the save check at the point the agent decides it is
 done. Pages that contradict what the agent observes are corrected in the same
 turn. Saving sessions are also told the shape of a useful page (one durable
 fact with its reason and how to apply it, under an index line that says what
-the page holds) and that run details which go stale within days stay out of
+the page holds) and that run details which go stale within days (commit SHAs, ids, scratch
+paths, test counts, review verdicts) stay out of
 personal and project memory. A changed fact is rewritten in place. When the
 agent reads a page that has turned into a log, it repairs that page before it
 ends its turn. A status-only index line is a reason to read its page. Root
