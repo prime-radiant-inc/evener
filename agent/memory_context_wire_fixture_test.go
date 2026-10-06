@@ -207,7 +207,7 @@ func decodeWireMemoryContext(t *testing.T, item appwire.ThreadItem) (scope, stat
 			State     string `json:"state"`
 			Truncated bool   `json:"truncated"`
 			Content   string `json:"content"`
-		} `json:"memoryContext"`
+		} `json:"memoryContext"` //nolint:tagliatelle // AppWire Raw fixture asserts the public camelCase wire contract.
 	}
 	if err := json.Unmarshal(item.Raw, &payload); err != nil {
 		t.Fatalf("raw %s does not decode: %v", item.Raw, err)

@@ -30,7 +30,7 @@ type MemoryContextDisplay struct {
 // pointer: a successful extraction always sends scope/state/truncated/content,
 // truncated false included.
 type memoryContextRawEnvelope struct {
-	MemoryContext MemoryContextDisplay `json:"memoryContext"`
+	MemoryContext MemoryContextDisplay `json:"memoryContext"` //nolint:tagliatelle // AppWire Raw payload the clients read (camelCase wire).
 }
 
 // memorySessionProjectionReadOnlySuffix mirrors agent's
