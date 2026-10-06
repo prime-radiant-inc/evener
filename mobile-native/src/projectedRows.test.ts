@@ -6,6 +6,10 @@ import {
 	WarningCodeMCPReconnected,
 } from "@evener/appwire-client";
 import { toolWireStep } from "@evener/appwire-client/testing/toolWireFixtures";
+import {
+	memoryContextWireItem,
+	memoryContextWireItems,
+} from "@evener/appwire-client/testing/memoryContextWireFixtures";
 import type {
 	AskQuestionRef,
 	ContentLevel,
@@ -2234,5 +2238,103 @@ describe("a streamed reply's key once history records its round", () => {
 		expect(after).toContain(streamed);
 		expect(after.indexOf(streamed ?? "")).toBeLessThan(after.indexOf("t1:1:1"));
 		expect(after).toContain("t1:1:2");
+	});
+
+	// The web renders an automatic memory refresh as a "Refreshed my memory"
+	// disclosure, but native presentation must not change: the shared projector
+	// keeps the typed memory-context event visible at every level, and native maps
+	// it to the same generic system notice it drew for the old blank-kind item -
+	// the exact recorded Text, never a decoded body. These run the real producer
+	// fixture (agent/testdata/memorycontextwire) through hydrateThread ->
+	// projectTimeline / projectNativeTranscript, with no mocks.
+	describe("memory-context native preservation", () => {
+		it("keeps every recorded refresh a generic system notice with its exact Text at every level", () => {
+			for (const wire of memoryContextWireItems()) {
+				const thread = {
+					id: "thread-1",
+					sessionId: "session-1",
+					preview: "",
+					ephemeral: false,
+					modelProvider: "anthropic",
+					createdAt: 0,
+					updatedAt: 0,
+					status: { type: "ready" },
+					cwd: "/tmp",
+					cliVersion: "1.0.0",
+					source: "local",
+					turns: [{ id: "turn_1", itemsView: "full", status: "completed", items: [wire] }],
+					evener: { ref: "ref-1", queue: { revision: 0 } },
+				} as unknown as Thread;
+				const model = hydrateThread({ thread }, "ref-1", 0);
+				for (const level of ["chat", "intent", "tools", "activity", "full"] as const) {
+					// The refresh is never hidden by the Advanced.system-events
+					// gate: the shared projector decides memory-context before
+					// that gate (transcriptProjector.ts), so native keeps the
+					// notice with the gate off as well as on.
+					for (const systemEvents of [false, true]) {
+						const rows = projectTimeline(
+							model,
+							new Map(),
+							makeTranscriptDisplayConfig({ kind: "preset", level }, { systemEvents }),
+						);
+						const row = rows.find((candidate) => candidate.id === wire.id);
+						expect(row).toMatchObject({
+							kind: "notice",
+							origin: "system",
+							// Native classifies the typed kind deliberately (lifecycle, the
+							// same deliberate family the generated-kind invariant requires),
+							// which keeps it a standalone tone-system notice - not one of
+							// groupTimeline's internal families.
+							family: "lifecycle",
+							tone: "system",
+							eventKind: "memory-context",
+							text: wire.text,
+						});
+						// Standalone, never folded into the internal details group.
+						const grouped = groupTimeline(row ? [row] : []);
+						expect(grouped).toHaveLength(1);
+						expect(grouped[0]).toMatchObject({ kind: "notice", id: wire.id });
+						// Native never decodes raw into the web heading; the row's words
+						// are the exact recorded Text.
+						if (row?.kind === "notice") expect(row.text).not.toBe("Refreshed my memory");
+					}
+				}
+			}
+		});
+
+		it("keeps a malformed refresh's exact Text as a notice through projectNativeTranscript", () => {
+			const wire = memoryContextWireItem("malformed-project");
+			expect(wire.raw).toBeFalsy();
+			const thread = {
+				id: "thread-1",
+				sessionId: "session-1",
+				preview: "",
+				ephemeral: false,
+				modelProvider: "anthropic",
+				createdAt: 0,
+				updatedAt: 0,
+				status: { type: "ready" },
+				cwd: "/tmp",
+				cliVersion: "1.0.0",
+				source: "local",
+				turns: [{ id: "turn_1", itemsView: "full", status: "completed", items: [wire] }],
+				evener: { ref: "ref-1", queue: { revision: 0 } },
+			} as unknown as Thread;
+			const model = hydrateThread({ thread }, "ref-1", 0);
+			const conversation: MobileConversation = {
+				...model,
+				items: projectTimeline(
+					model,
+					new Map(),
+					makeTranscriptDisplayConfig({ kind: "preset", level: "full" }, { systemEvents: true }),
+				),
+			};
+			const presentation = projectNativeTranscript(
+				conversation,
+				makeTranscriptDisplayConfig({ kind: "preset", level: "full" }, { systemEvents: true }),
+			);
+			const row = presentation.items.find((candidate) => candidate.id === wire.id);
+			expect(row).toMatchObject({ kind: "notice", text: wire.text });
+		});
 	});
 });

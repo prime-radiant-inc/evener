@@ -317,6 +317,8 @@ async function clickVerbosityChoice(label, role = "radio") {
   await driver.clickAt(point.x, point.y);
 }
 
+const LATE_MEASUREMENT_DELAY_MS = 400;
+
 async function nativePositioningInterruption(input) {
   assert.ok(input === "wheel" || input === "pill" || input === "Shift-Space", "the native interruption uses a real reader input");
   const original = await openSourceVerbosity();
@@ -426,6 +428,13 @@ async function nativePositioningInterruption(input) {
       "the actual native input distinguishes the newer reading point from the pre-trigger point");
     assert.ok(observation.newer.entry !== observation.prepared.point.entry || Math.abs(observation.newer.offset - observation.prepared.point.offset) >= 100,
       "the admitted input meaningfully moves the prepared reader");
+    // Late measurements can land any time after the reader's input. Release
+    // them well past TanStack's 150ms isScrollingResetDelay, when the
+    // virtualizer no longer reports a backward scroll, so the reader's own
+    // movement record alone has to protect the newer reading point (#3871).
+    // Shift-Space doesn't record that movement yet (#3880), so it keeps the
+    // prompt release until that is fixed.
+    if (input !== "Shift-Space") await new Promise(resolve => setTimeout(resolve, LATE_MEASUREMENT_DELAY_MS));
   } finally {
     await read('window.__cascadeMeasurements.release()');
     observation.released = await read(`(() => {

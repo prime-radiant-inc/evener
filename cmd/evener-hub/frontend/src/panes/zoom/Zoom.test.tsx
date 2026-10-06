@@ -133,7 +133,10 @@ function fixture(ancestryKnown = true) {
     return { ...read, requestGeneration, thread: includeTurns === false ? { ...read.thread, turns: [] } : read.thread };
   });
   fake.on("thread/unsubscribe", () => ({}));
-  fake.on("evener/thread/activity/read", ({ ref }) => ({ ...activitySummary(ref), context: context(ref) }));
+  fake.on("evener/thread/activity/read", ({ ref, scope }) => ({
+    ...activitySummary(ref, scope),
+    context: context(ref),
+  }));
   fake.on("evener/thread/delegates/list", ({ ref }) => ({
     context: context(ref),
     scope: "session",
@@ -307,9 +310,9 @@ test.each(["deleted", "missing"] as const)(
         thread: includeTurns === false ? { ...read.thread, turns: [] } : read.thread,
       };
     });
-    fake.on("evener/thread/activity/read", ({ ref }) => {
+    fake.on("evener/thread/activity/read", ({ ref, scope }) => {
       if (ref === "child" && failure === "missing") throw error;
-      return { ...activitySummary(ref), context: context(ref) };
+      return { ...activitySummary(ref, scope), context: context(ref) };
     });
     mount(fake);
     await screen.findByText("root content old-root");
@@ -369,9 +372,9 @@ test("a deleted child hides its retained transcript without hiding the parent", 
 
 test("unsupported child activity does not hide its healthy transcript", async () => {
   const { fake, context } = fixture();
-  fake.on("evener/thread/activity/read", ({ ref }) => {
+  fake.on("evener/thread/activity/read", ({ ref, scope }) => {
     if (ref === "child") throw new WireError("activity unavailable", -32601, { evenerErrorInfo: "methodNotFound" });
-    return { ...activitySummary(ref), context: context(ref) };
+    return { ...activitySummary(ref, scope), context: context(ref) };
   });
   mount(fake);
   await screen.findByText("child content child-id");
@@ -393,10 +396,10 @@ test("a transient child read failure recovers through the existing owner without
     const read = response(ref);
     return { ...read, requestGeneration, thread: includeTurns === false ? { ...read.thread, turns: [] } : read.thread };
   });
-  fake.on("evener/thread/activity/read", ({ ref }) => {
+  fake.on("evener/thread/activity/read", ({ ref, scope }) => {
     if (ref === "child" && !healed)
       throw new WireError("connection reset", -32001, { evenerErrorInfo: "sessionUnavailable" });
-    return { ...activitySummary(ref), context: context(ref) };
+    return { ...activitySummary(ref, scope), context: context(ref) };
   });
   mount(fake);
   await act(async () => failed.promise);

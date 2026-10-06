@@ -26,7 +26,13 @@ import { MutationOutbox } from "../../stores/mutationOutbox";
 import { MutationOutboxIndexedDB } from "../../stores/mutationOutboxIndexedDB";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { sessionActivitySnapshot } from "../../stores/sessionActivity";
-import { activityContext, activityDelegate, activityJob, activitySummary } from "../../stores/sessionActivityTestUtils";
+import {
+  activityContext,
+  activityDelegate,
+  activityJob,
+  activitySummary,
+  answerActivityRead,
+} from "../../stores/sessionActivityTestUtils";
 import { holdIndexedDBEvent } from "../../stores/testing/stalledIndexedDB";
 import {
   resetThreadsStoreForTests,
@@ -297,8 +303,8 @@ test("desktop session panes own separate location and activity footers", async (
     head: cwd.endsWith("local:one") ? "branch-one" : "branch-two",
     originUrl: "git@github.com:owner/repo.git",
   }));
-  fake.on("evener/thread/activity/read", ({ ref }) => ({
-    ...activitySummary(ref),
+  fake.on("evener/thread/activity/read", ({ ref, scope }) => ({
+    ...activitySummary(ref, scope),
     jobs: {
       known: true,
       active: ref === "local:one" ? 1 : 2,
@@ -344,7 +350,7 @@ test("same-session pane menus open Overview from their own instance", async ({ o
   const ref = "local:duplicate-overview";
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse(ref));
-  fake.on("evener/thread/activity/read", () => activitySummary(ref));
+  fake.on("evener/thread/activity/read", ({ scope }) => activitySummary(ref, scope));
   fake.on("evener/git/head", () => ({ head: "main" }));
   workspaceStore.setState({
     panes: [
@@ -413,7 +419,7 @@ test.each(["closed", "ended", "notLoaded"] as const)(
     const ref = "local:stop-focus";
     const fake = connectFakeClient();
     fake.on("thread/read", () => readResponse(ref, { status: { type: "active" } }));
-    fake.on("evener/thread/activity/read", () => activitySummary(ref));
+    fake.on("evener/thread/activity/read", ({ scope }) => activitySummary(ref, scope));
     render(
       <ClientProvider client={fake}>
         <Session params={{ ref }} paneId="stop-focus-pane" focused={false} />
@@ -4345,7 +4351,7 @@ test("a fenced notLoaded session keeps force stop reachable in the pane footer",
   fake.on("evener/thread/activity/read", (params) => {
     // Discovery is the session read; the subtree read is the subagent count's own.
     (params.scope === "subtree" ? subtreeRefs : activityRefs).push(params.ref);
-    return { ...activitySummary(params.ref), scope: params.scope ?? "session" };
+    return answerActivityRead(params);
   });
   fake.on("evener/thread/forceStop", () => {
     stopped = true;
@@ -4421,7 +4427,7 @@ test.each([
   fake.on("evener/thread/activity/read", (params) => {
     // Discovery is the session read; the subtree read is the subagent count's own.
     (params.scope === "subtree" ? subtreeRefs : activityRefs).push(params.ref);
-    return { ...activitySummary(params.ref), scope: params.scope ?? "session" };
+    return answerActivityRead(params);
   });
   render(
     <ClientProvider client={fake}>
@@ -4450,7 +4456,7 @@ test("visible retained transcript resolves qualified job and stable delegate row
     otherJob = `job_${owner}_000000000456`;
   const fake = connectFakeClient();
   fake.on("thread/read", () => readOnlyEntityThread(ref, `Own ${jobId} and ${delegateId}. Other ${otherJob}.`));
-  fake.on("evener/thread/activity/read", () => activitySummary(ref));
+  fake.on("evener/thread/activity/read", ({ scope }) => activitySummary(ref, scope));
   fake.on("evener/thread/jobs/list", ({ scope }) => ({
     context: activityContext(ref),
     scope: scope ?? "session",
