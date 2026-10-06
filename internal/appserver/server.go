@@ -114,11 +114,11 @@ const slowReadDispatchCap = 16
 // flight in each pool a server's ConcurrentRequest names, apart from the slow
 // reads' slots so neither kind can take the other's: the hub's forwarded
 // reads wait on remote hosts, and a slow host must not cost thread reads
-// their burst room. Each pool is one remote host, so a stalled host fills only
-// its own. A full pool refuses the next one as Unavailable rather than
-// parking the worker: these requests wait on something the hub does not
-// bound (a remote host), so parking would wedge every request on the
-// connection behind them, the very stall the pool exists to prevent. The
+// their burst room. A stalled pool fills only its own slots. A full pool
+// refuses the next one as Unavailable rather than parking the worker: these
+// requests wait on something the hub does not bound (a remote host), so
+// parking would wedge every request on the connection behind them, the very
+// stall the pool exists to prevent. The
 // refusal is one a read can simply retry. It is sized well past a pane's
 // burst (a spawn form opened on a remote host sends about 7). The goroutines
 // it bounds are cheap.
@@ -1918,22 +1918,19 @@ func (c *Connection) executeOrdered(ctx context.Context, msg appwire.Message) {
 		return
 	}
 	if concurrent := c.server.cfg.ConcurrentRequest; msg.Request != nil && concurrent != nil && c.isInitialized() {
-		pool, ok := concurrent(msg.Request.Method, msg.Request.Params)
-		if !ok {
-			c.handleAndEnqueue(ctx, msg)
+		if pool, ok := concurrent(msg.Request.Method, msg.Request.Params); ok {
+			if !c.tryRequestSlot(ctx, pool) {
+				c.recoverPanic(msg, func() {
+					c.enqueueDispatched(ctx, appwire.ErrorMessage(msg.Request.ID, appwire.Unavailable(fmt.Sprintf("this connection already has %d requests waiting on slow answers from %q; try again shortly", concurrentRequestCap, pool))))
+				})
+				return
+			}
+			go func() {
+				defer c.releaseRequestSlot(pool)
+				c.handleAndEnqueue(ctx, msg)
+			}()
 			return
 		}
-		if !c.tryRequestSlot(ctx, pool) {
-			c.recoverPanic(msg, func() {
-				c.enqueueDispatched(ctx, appwire.ErrorMessage(msg.Request.ID, appwire.Unavailable(fmt.Sprintf("this connection already has %d requests waiting on slow answers from %q; try again shortly", concurrentRequestCap, pool))))
-			})
-			return
-		}
-		go func() {
-			defer c.releaseRequestSlot(pool)
-			c.handleAndEnqueue(ctx, msg)
-		}()
-		return
 	}
 	c.handleAndEnqueue(ctx, msg)
 }
@@ -2055,7 +2052,8 @@ func (c *Connection) tryRequestSlot(ctx context.Context, pool string) bool {
 func (c *Connection) releaseRequestSlot(pool string) {
 	c.requestPoolsMu.Lock()
 	defer c.requestPoolsMu.Unlock()
-	if c.requestPools[pool]--; c.requestPools[pool] == 0 {
+	c.requestPools[pool]--
+	if c.requestPools[pool] <= 0 {
 		delete(c.requestPools, pool)
 	}
 }

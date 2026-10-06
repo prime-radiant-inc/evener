@@ -443,18 +443,7 @@ func TestServeWebSocketConcurrentRequestsTakeTheirOwnSlots(t *testing.T) {
 	server.cfg.ConcurrentRequest = func(method string, _ json.RawMessage) (string, bool) {
 		return "lists", method == appwire.MethodThreadList
 	}
-	listsStarted := make(chan struct{}, concurrentRequestCap+1)
-	// One token releases one parked handler; closing it releases the rest.
-	listReleases := make(chan struct{}, concurrentRequestCap+1)
-	t.Cleanup(func() { close(listReleases) })
-	HandleTyped(server.Router(), appwire.MethodThreadList, func(_ context.Context, _ appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
-		listsStarted <- struct{}{}
-		<-listReleases
-		return appwire.ThreadListResponse{}, nil
-	})
-	HandleTyped(server.Router(), appwire.MethodThreadModelSet, func(_ context.Context, _ appwire.ThreadModelSetParams) (appwire.EmptyResponse, error) {
-		return appwire.EmptyResponse{}, nil
-	})
+	listsStarted, listReleases := parkThreadLists(t, server)
 	httpServer := serveWebSocketHTTP(t, server)
 	client := dialAppWireClient(t, httpServer)
 	ctx := context.Background()
@@ -520,6 +509,25 @@ func TestServeWebSocketConcurrentRequestsTakeTheirOwnSlots(t *testing.T) {
 	waitFor(t, "a request to be admitted into the slot a finished one freed", listsStarted)
 }
 
+// parkThreadLists registers a thread/list handler that signals started and
+// then parks until released, plus a thread/model/set handler that answers at
+// once. One token on releases frees one parked handler; cleanup frees the rest.
+func parkThreadLists(t *testing.T, server *Server) (started, releases chan struct{}) {
+	t.Helper()
+	started = make(chan struct{}, concurrentRequestCap+1)
+	releases = make(chan struct{}, concurrentRequestCap+1)
+	t.Cleanup(func() { close(releases) })
+	HandleTyped(server.Router(), appwire.MethodThreadList, func(_ context.Context, _ appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+		started <- struct{}{}
+		<-releases
+		return appwire.ThreadListResponse{}, nil
+	})
+	HandleTyped(server.Router(), appwire.MethodThreadModelSet, func(_ context.Context, _ appwire.ThreadModelSetParams) (appwire.EmptyResponse, error) {
+		return appwire.EmptyResponse{}, nil
+	})
+	return started, releases
+}
+
 // TestServeWebSocketConcurrentRequestPoolsAreSeparate pins that each pool
 // ConcurrentRequest names has its own slots: with one pool full (one slow
 // remote host's forwarded reads), a request for another pool (another host)
@@ -535,17 +543,7 @@ func TestServeWebSocketConcurrentRequestPoolsAreSeparate(t *testing.T) {
 		}
 		return "", false
 	}
-	listsStarted := make(chan struct{}, concurrentRequestCap)
-	listReleases := make(chan struct{})
-	t.Cleanup(func() { close(listReleases) })
-	HandleTyped(server.Router(), appwire.MethodThreadList, func(_ context.Context, _ appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
-		listsStarted <- struct{}{}
-		<-listReleases
-		return appwire.ThreadListResponse{}, nil
-	})
-	HandleTyped(server.Router(), appwire.MethodThreadModelSet, func(_ context.Context, _ appwire.ThreadModelSetParams) (appwire.EmptyResponse, error) {
-		return appwire.EmptyResponse{}, nil
-	})
+	listsStarted, _ := parkThreadLists(t, server)
 	httpServer := serveWebSocketHTTP(t, server)
 	client := dialAppWireClient(t, httpServer)
 	ctx := context.Background()
