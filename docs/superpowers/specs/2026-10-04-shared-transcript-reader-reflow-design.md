@@ -93,12 +93,17 @@ capturing already-reflowed boxes is too late.
 For a non-bottom reader during width reflow, retain that entry and proportional
 progress through its usable reading depth. Usable depth is the entry's measured
 height minus viewport height, bounded at zero. Progress is the distance from the
-entry's top to the viewport top divided by that depth, bounded between zero and
-one; a zero depth uses zero progress. Restore the same fraction of the new usable
+entry's top to the viewport top divided by that depth, between zero and one; a
+zero depth uses zero progress. Restore the same fraction of the new usable
 depth. An entry no taller than the viewport lands at its start. An entry whose
 top was already below the viewport top retains that alignment where feasible.
-This preserves approximate progress within the entry; exact-word continuity
-across different line wrapping is outside the contract.
+An entry whose bottom was already inside the viewport (the reader is past its
+usable depth, reading its tail and what follows) keeps its bottom where it was:
+the same height of its tail stays visible, bounded so the entry's top never
+moves below the viewport top. A 1px tail stays 1px; it never grows to fill the
+viewport. This preserves approximate progress within the entry and keeps the
+reader's current reading line in place; exact-word continuity across different
+line wrapping is outside the contract.
 
 This policy keeps useful content from the same entry visible. It never replays an
 old pixel offset beyond the entry's new readable extent. Browser scroll bounds

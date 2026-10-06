@@ -467,6 +467,11 @@ test.each([
   { oldHeight: 1600, oldOffset: -900, nextHeight: 300, want: 0 },
   { oldHeight: 200, oldOffset: -20, nextHeight: 1000, want: 0 },
   { oldHeight: 1600, oldOffset: 30, nextHeight: 700, want: 30 },
+  // An entry whose tail is showing keeps that tail where it was: a 1px tail
+  // stays 1px rather than growing to fill the pane.
+  { oldHeight: 1600, oldOffset: -1599, nextHeight: 2400, want: -2399 },
+  { oldHeight: 1600, oldOffset: -1500, nextHeight: 1000, want: -900 },
+  { oldHeight: 1600, oldOffset: -1500, nextHeight: 50, want: 0 },
 ])("width-only bounded reading point $oldOffset at $nextHeight", ({ oldHeight, oldOffset, nextHeight, want }) => {
   const captured = {
     anchorOffset: oldOffset,
@@ -551,7 +556,8 @@ function readingRow(id: string): TurnModel {
 
 test.each([
   { start: 900, intermediate: 225, want: 198 },
-  { start: 1250, intermediate: 300, want: 264 },
+  // Scrolled into the entry's last 350px: that tail stays where it was.
+  { start: 1250, intermediate: 350, want: 350 },
 ])(
   "width reflow retains usable progress through a later viewport resize at $start",
   async ({ start, intermediate, want }) => {
