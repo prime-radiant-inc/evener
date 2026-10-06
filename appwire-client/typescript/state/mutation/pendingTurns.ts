@@ -136,6 +136,33 @@ export interface PendingTurnsState<A extends MutationAttachmentRef = MutationAtt
   submittedHere: ReadonlyMap<string, number>;
 }
 
+export interface DraftAuthorityToken {
+  readonly namespaceIncarnation: string;
+  readonly persistentRevision: number;
+  readonly ownerRevision: number;
+}
+
+export type DraftBackingIdentity =
+  | { readonly kind: "draft" }
+  | {
+      readonly kind: "recovery";
+      readonly recoveryId: string;
+      readonly writeVersion: number;
+      readonly replacementEpoch: number;
+    };
+
+export interface DraftSettlementGuard {
+  readonly token: DraftAuthorityToken;
+  readonly compositionOwnerId: string;
+  readonly backing: DraftBackingIdentity;
+}
+
+export interface DraftSettlement {
+  cleared: boolean;
+  draftUnchanged: boolean;
+  persistence: "committed" | "pending";
+}
+
 // The submitted values `settleSubmittedDraft` compares the current draft
 // against: what the composer sent, and the draft revision counter it read
 // just before starting - "unchanged" means neither a later edit (the
@@ -146,6 +173,9 @@ export interface SubmittedDraft {
   text: string;
   skillNames: readonly string[];
   commandNames?: readonly string[];
+  settlementGuard?: DraftSettlementGuard;
+  persistentRevisionAtStart?: number;
+  stillOwnsEdit?: () => boolean;
 }
 
 export interface PendingTurnsStore<A extends MutationAttachmentRef = MutationAttachmentRef>

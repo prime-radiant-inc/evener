@@ -1,5 +1,14 @@
 import type { ComposerMention, InputItem } from "@evener/appwire-client";
 import { IDBConnection, requestResult, transactionCompletion, tryAbortTransaction } from "./idbConnection";
+import {
+  LOCAL_COMPOSITION_DATABASE_NAME,
+  LOCAL_COMPOSITION_DATABASE_VERSION,
+  MUTATION_OPTIMISTIC_STORE,
+  MUTATION_OUTBOX_STORE,
+  MUTATION_RECOVERY_STORE,
+  MUTATION_SEQUENCES_STORE,
+  registerLocalCompositionSchema,
+} from "./localCompositionSchema";
 import { ownClientId } from "./mutationClientIdentity";
 import type {
   MutationAttachment,
@@ -54,23 +63,23 @@ export interface MutationOutboxIndexedDBOptions {
   onOpenDiagnostic?: (diagnostic: MutationOutboxOpenDiagnostic) => void;
 }
 
-const DATABASE_NAME = "evener-mutation-outbox";
-// Version 4 is a compatibility fence, not a schema migration: the upgrade
-// handler below is unchanged and purely additive. The deployed version-3 code
-// shares attempt evidence through the `attempted` flag alone, so its dispatch
-// never counts unresolved attempts and a refusal rollback in this build could
-// erase evidence the older tab's concurrent attempt still needs - this build
-// must not share a database with it. A version-3 open against this database
-// fails with VersionError, and the old tab fails closed (storage-unavailable
-// errors) instead of silently erasing attempt evidence: the safe
-// mixed-version state is a reload, never a silent share
-// (docs/design/stop-cancellation-outbox.md §8).
-const DATABASE_VERSION = 4;
-const OUTBOX_STORE = "outbox";
-const OPTIMISTIC_STORE = "optimistic";
-const RECOVERY_STORE = "recovery";
-const SEQUENCE_STORE = "sequences";
-const TARGET_SEQUENCE_INDEX = "byTargetSequence";
+const DATABASE_NAME = LOCAL_COMPOSITION_DATABASE_NAME;
+// The outbox rides the shared local composition database, so the schema file
+// owns the version fence and every store name below. Deployed outbox-only
+// builds still open this same database name at their own older versions, so
+// the fence reasons stack: the version-2 build reads a canceled row as a
+// non-submitting FIFO head and stalls the ref's queue, and the version-3
+// build shares attempt evidence through the `attempted` flag alone, so its
+// dispatch never counts unresolved attempts and a refusal rollback in this
+// build could erase evidence the older tab's concurrent attempt still needs.
+// A stale tab fails closed on the schema's VersionError instead of silently
+// stalling or erasing evidence - the safe mixed-version state is a reload,
+// never a silent share
+const DATABASE_VERSION = LOCAL_COMPOSITION_DATABASE_VERSION;
+const OUTBOX_STORE = MUTATION_OUTBOX_STORE;
+const OPTIMISTIC_STORE = MUTATION_OPTIMISTIC_STORE;
+const RECOVERY_STORE = MUTATION_RECOVERY_STORE;
+const SEQUENCE_STORE = MUTATION_SEQUENCES_STORE;
 const STORAGE_WAIT_MS = 10_000;
 
 // The unresolved-attempt baseline a record's own metadata proves. A missing
@@ -997,21 +1006,7 @@ export class MutationOutboxIndexedDB {
   }
 
   #upgrade(database: IDBDatabase): void {
-    if (!database.objectStoreNames.contains(OUTBOX_STORE)) {
-      const outbox = database.createObjectStore(OUTBOX_STORE, { keyPath: "clientMutationId" });
-      outbox.createIndex(TARGET_SEQUENCE_INDEX, ["targetRef", "intentSequence"], { unique: true });
-    }
-    if (!database.objectStoreNames.contains(OPTIMISTIC_STORE)) {
-      const optimistic = database.createObjectStore(OPTIMISTIC_STORE, { keyPath: "clientMutationId" });
-      optimistic.createIndex(TARGET_SEQUENCE_INDEX, ["targetRef", "intentSequence"], { unique: true });
-    }
-    if (!database.objectStoreNames.contains(RECOVERY_STORE)) {
-      const recovery = database.createObjectStore(RECOVERY_STORE, { keyPath: "clientMutationId" });
-      recovery.createIndex(TARGET_SEQUENCE_INDEX, ["targetRef", "intentSequence"]);
-    }
-    if (!database.objectStoreNames.contains(SEQUENCE_STORE)) {
-      database.createObjectStore(SEQUENCE_STORE, { keyPath: "targetRef" });
-    }
+    registerLocalCompositionSchema(database);
   }
 
   // Record one open failure path. The try/catch is the whole contract: a
