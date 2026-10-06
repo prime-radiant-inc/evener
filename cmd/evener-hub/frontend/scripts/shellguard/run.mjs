@@ -51,19 +51,18 @@ const BOOT = {
   bootLabel: "the shellguard entry global window.settledShell",
 };
 
-// One page load, one measurement: opens a fresh page at `viewport`, waits for
-// the harness to settle, and returns the parsed result of `expression`. Every
-// measurement below is one call to this - the per-measure differences are the
-// viewport and the expression or page action, nothing else.
+// One page load, one measurement: loads the harness as a new document in the
+// shared tab, with empty localStorage, at `viewport`, waits for it to settle,
+// and returns the parsed result of `expression`. Every measurement below is
+// one call to this - the per-measure differences are the viewport and the
+// expression or page action, nothing else.
 async function measureOnPage(cdpEndpoint, vitePort, viewport, expression) {
   const page = await connectPage(cdpEndpoint);
   const { send } = page;
   try {
-    // Every measurement reuses this one tab, and the previous page's document
-    // can still save to localStorage until the navigation below replaces it.
-    // Clearing storage as each new document starts means no page restores
-    // another page's panes or floating windows. The script belongs to this CDP
-    // session and goes away when page.close() detaches it.
+    // Every measurement shares this tab, and the outgoing document can still
+    // save its layout until the navigation replaces it, so clear storage as each
+    // new document starts. The script ends with this CDP session.
     await send("Page.addScriptToEvaluateOnNewDocument", { source: "try { localStorage.clear(); } catch {}" });
     await applyViewport(send, viewport);
     await navigateTo(page, `http://127.0.0.1:${vitePort}/shellguard.html`, BOOT);
