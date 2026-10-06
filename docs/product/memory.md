@@ -103,7 +103,19 @@ facts are saved before the work they shape, because complying with them does
 not carry them to the next session. The Finishing guidance and the result
 tool's description repeat the save check at the point the agent decides it is
 done. Pages that contradict what the agent observes are corrected in the same
-turn. Root sessions are told that working notes belong in session memory, not
+turn. Saving sessions are also told what a useful page looks like: one durable
+fact, led by the fact or rule, with one-line Why and How-to-apply lines and
+absolute dates, and an index line that says what the page holds, never its
+status. Commit SHAs, branch, session and worker ids, scratch paths, test counts,
+review verdicts and work-in-progress status stay out of personal and project
+memory (into session memory when the session can save there). A changed fact
+is rewritten in place. A page the agent reads that has turned into a log is
+the agent's to fix before it finishes: durable facts move to their own pages,
+the rest is deleted, and the index line is repaired, because durable memory is
+not where work is coordinated. An index line that gives only a status or an id
+is a reason to read its page. When the session can update the whiteboard, the
+session-notes guidance adds that the whiteboard only carries status for the
+partner. Root sessions are told that working notes belong in session memory, not
 project memory (the second half only when project memory is bound). The
 Finishing guidance adds one row telling root sessions to promote anything that
 holds beyond this work out of session memory before they report. Delegates are told session memory is their root's, to read it and
