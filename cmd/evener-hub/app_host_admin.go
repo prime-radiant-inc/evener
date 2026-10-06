@@ -263,16 +263,20 @@ func (c *hubHostAdminController) Request(ctx context.Context, params appwire.Hos
 // (whose hub write gate orders it too). A method outside the allow-list, or
 // params that do not parse, stay inline so the refusal is answered in order; an
 // allow-listed read to an unknown or offline host goes concurrent and is
-// refused out of order, which changes nothing.
-func forwardedHostRead(method string, params json.RawMessage) bool {
+// refused out of order, which changes nothing. The pool is the target host,
+// so one slow host's reads never refuse reads to another.
+func forwardedHostRead(method string, params json.RawMessage) (pool string, ok bool) {
 	if method != appwire.MethodEvenerHostRequest {
-		return false
+		return "", false
 	}
 	var forwarded appwire.HostRequestParams
 	if json.Unmarshal(params, &forwarded) != nil || !appwire.IsHostRequestMethod(forwarded.Method) {
-		return false
+		return "", false
 	}
-	return !isRemoteHostAdminMutation(forwarded.Method) && forwarded.Method != appwire.MethodEvenerMarketplaceRefresh
+	if isRemoteHostAdminMutation(forwarded.Method) || forwarded.Method == appwire.MethodEvenerMarketplaceRefresh {
+		return "", false
+	}
+	return forwarded.Host, true
 }
 
 // remoteSourceFor returns the attached component-05 source for host, or the

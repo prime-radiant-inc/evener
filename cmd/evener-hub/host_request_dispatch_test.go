@@ -176,8 +176,13 @@ func TestForwardedHostReadAdmitsOnlyOrderFreeReads(t *testing.T) {
 		{appwire.MethodEvenerHostRequest, json.RawMessage(`{`), false},
 		{appwire.MethodEvenerPluginList, forward(appwire.MethodEvenerPluginList), false},
 	} {
-		if got := forwardedHostRead(tc.method, tc.params); got != tc.want {
+		pool, got := forwardedHostRead(tc.method, tc.params)
+		if got != tc.want {
 			t.Errorf("forwardedHostRead(%s, %s) = %v, want %v", tc.method, tc.params, got, tc.want)
+		}
+		// An admitted read waits in its target host's pool.
+		if got && pool != "m4" {
+			t.Errorf("forwardedHostRead(%s, %s) pool = %q, want the target host m4", tc.method, tc.params, pool)
 		}
 	}
 }
