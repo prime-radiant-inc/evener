@@ -93,9 +93,10 @@ export function endedInStop(delegate: SubagentStateSource): boolean {
 	return subagentState(delegate) === "done" && isStoppedStatus(delegate.outcome ?? delegate.status);
 }
 
-/** How many of these subagents are running: what an agent waits on. The tray,
- * a subagent's transcript row and its Activity line all count by this, so
- * they agree on "Waiting on N subagents". */
+/** How many of these subagents are running: what an agent waits on. A
+ * subagent's transcript row, its Activity line, and the tray when the hub
+ * gives no count all count by this, so they agree on "Waiting on N
+ * subagents". */
 export function runningSubagentCount(delegates: Iterable<SubagentStateSource>): number {
 	let running = 0;
 	for (const delegate of delegates) if (subagentState(delegate) === "running") running += 1;
