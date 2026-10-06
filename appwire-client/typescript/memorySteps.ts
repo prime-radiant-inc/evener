@@ -1,6 +1,7 @@
 import { editDiffText } from "./editDiff";
 import type { ItemModel } from "./model";
 import {
+  BINARY_PAYLOAD_HEADER,
   diffResultText,
   outputCount,
   quotedSearchPattern,
@@ -69,6 +70,10 @@ export function memoryReadWords(step: MemoryStep): StepWords {
   const args = memoryArgs(step);
   const target = memoryFileTarget(args);
   if (!target) return { verb: "Read memory" };
+  // A binary read's output is only the "[image: ...]" / "[document: ...]"
+  // header - one metadata line, not page content - so the summary omits the
+  // range exactly as readFileWords does for the same bytes.
+  if (BINARY_PAYLOAD_HEADER.test(step.output ?? "")) return { verb: "Read memory", target };
   return withDetail({ verb: "Read memory", target }, readLineRange(args, step.output ?? ""));
 }
 

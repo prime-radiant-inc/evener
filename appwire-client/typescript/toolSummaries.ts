@@ -23,6 +23,7 @@ import {
 } from "./memorySteps";
 import type { ItemModel } from "./model";
 import {
+  BINARY_PAYLOAD_HEADER,
   composeStepWords,
   diffResultText,
   outputCount,
@@ -75,9 +76,6 @@ export type ToolFamily =
 const QUERY_CLIP = 120;
 
 // --- files ------------------------------------------------------------------
-
-/** The header read_file puts before an image or a document's base64 data. */
-export const BINARY_PAYLOAD_HEADER = /^\[(image|document): [^\]]+, base64 data follows\]/;
 
 /** The file parsed arguments name: file_path, or the older path alias. */
 export function filePathOf(args: Record<string, unknown>): string | undefined {

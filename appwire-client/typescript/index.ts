@@ -555,7 +555,7 @@ export {
   steeringNotificationFragments,
   stripSystemReminder,
 } from "./steeringNotifications";
-export { composeStepWords, type StepWords } from "./stepWords";
+export { BINARY_PAYLOAD_HEADER, composeStepWords, type StepWords } from "./stepWords";
 export type { SteerRoute, SubmitRoute } from "./submitRouting";
 export {
   canDrainQueue,
@@ -646,7 +646,6 @@ export {
 export {
   applyPatchSummary,
   askUserSummary,
-  BINARY_PAYLOAD_HEADER,
   delegateSummary,
   editFileSummary,
   fallbackToolSummary,

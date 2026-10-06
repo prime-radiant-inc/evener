@@ -135,3 +135,11 @@ test("counts logical lines when a read without a limit returns unterminated outp
 test("an edit with neither old nor new string has no diff detail", () => {
   expect(memoryEditSummary(step({ scope: "project", file_path: "MEMORY.md" }))).toBe("Edited memory project/MEMORY.md");
 });
+
+test("a binary memory read omits the line range, like a read_file of the same bytes", () => {
+  const memoryStep = step(
+    { scope: "personal", file_path: "pic.png" },
+    "[image: png, 12345 bytes, base64 data follows]",
+  );
+  expect(memoryReadSummary(memoryStep)).toBe("Read memory personal/pic.png");
+});
