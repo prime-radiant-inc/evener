@@ -436,6 +436,13 @@ export interface LiveConversationState extends ConversationState {
 	// suspend/rehydrate generation bump that did not retire the seam leaves the
 	// live subscription untouched. Returns null when a seam is already bound.
 	bindPendingMutationsIfUnbound(port: ConversationMutationPendingPort): (() => void) | null;
+	// Records a mutation this client sent straight to the hub, outside the
+	// durable outbox (a queue promote or drain), as its own: the hub's pending
+	// row for it then shows as this client's, as a steer in flight does. Its
+	// time is when the hub confirmed it. Unlike a durable read's provenance it
+	// needs no teardown fence: the store is per conversation and ids are unique
+	// per submission, so a late call after close writes an id nothing reports.
+	rememberSubmittedHere(clientMutationId: string): void;
 	openProjected(
 		service: LiveConversationService,
 		activitySink: LiveActivitySink,
@@ -1643,6 +1650,12 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 			rawSet(partial);
 		};
 		storeGet = get;
+		// Re-projects the durable rows against the current model and publishes
+		// them only when they changed, so subscribers keep a stable reference.
+		const republishPendingRows = () => {
+			const next = reconcilePendingMutations();
+			if (!samePendingRows(get().pendingMutations, next)) set({ pendingMutations: next });
+		};
 		// What a publish records when its cap trimmed rows from the top. An older
 		// page in flight asked from above rows the trim just dropped: merged, it
 		// would leave those rows a hole nothing pages back, so it is dropped and
@@ -2750,10 +2763,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 								pendingSnapshot !== null &&
 								pendingPort.targetRef === port.targetRef
 							) {
-								const next = reconcilePendingMutations();
-								if (!samePendingRows(get().pendingMutations, next)) {
-									set({ pendingMutations: next });
-								}
+								republishPendingRows();
 							}
 							// A retired binding publishes nothing of its own snapshot.
 							if (generation !== pendingGeneration) return;
@@ -2764,10 +2774,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 							// The same stability check the conversation-write path uses: a
 							// storage read that re-serves identical rows must not churn
 							// subscribers with a fresh array.
-							const next = reconcilePendingMutations();
-							if (!samePendingRows(get().pendingMutations, next)) {
-								set({ pendingMutations: next });
-							}
+							republishPendingRows();
 						},
 						() => {
 							// A failed read leaves the last durable projection standing: the
@@ -2784,6 +2791,13 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					detachPendingRows();
 					set({ pendingMutations: null });
 				};
+			},
+
+			rememberSubmittedHere(clientMutationId) {
+				pendingSubmittedHere.set(clientMutationId, Date.now());
+				// Until the first durable read lands there is no projection to update.
+				if (pendingPort === null || pendingSnapshot === null) return;
+				republishPendingRows();
 			},
 
 			bindPendingMutationsIfUnbound(port) {
