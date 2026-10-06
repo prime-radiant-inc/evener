@@ -73,24 +73,25 @@ function isStoredComposerDraft(value: unknown): value is ComposerDraft {
   );
 }
 
-export function decodeSupportedComposerDraft(structured: string | null, legacy: string | null): ComposerDraft {
-  if (structured !== null) {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(structured);
-    } catch {
-      parsed = null;
-    }
-    if (isStoredComposerDraft(parsed)) {
-      return {
-        text: parsed.text,
-        skillNames: canonicalSkillNames(parsed.skillNames),
-        ...(parsed.commandNames ? { commandNames: canonicalSkillNames(parsed.commandNames) } : {}),
-        ...(parsed.mentions ? { mentions: parsed.mentions } : {}),
-      };
-    }
+function decodeStructuredComposerDraft(structured: string | null): ComposerDraft | null {
+  if (structured === null) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(structured);
+  } catch {
+    return null;
   }
-  return { text: legacy ?? "", skillNames: [] };
+  if (!isStoredComposerDraft(parsed)) return null;
+  return {
+    text: parsed.text,
+    skillNames: canonicalSkillNames(parsed.skillNames),
+    ...(parsed.commandNames ? { commandNames: canonicalSkillNames(parsed.commandNames) } : {}),
+    ...(parsed.mentions ? { mentions: parsed.mentions } : {}),
+  };
+}
+
+export function decodeSupportedComposerDraft(structured: string | null, legacy: string | null): ComposerDraft {
+  return decodeStructuredComposerDraft(structured) ?? { text: legacy ?? "", skillNames: [] };
 }
 
 // Every localStorage access is guarded: private-mode/disabled/full storage
@@ -104,7 +105,9 @@ export function decodeSupportedComposerDraft(structured: string | null, legacy: 
 export function readComposerDraft(ref: string): ComposerDraft {
   try {
     const structured = localStorage.getItem(composerDraftStorageKey(ref));
-    return decodeSupportedComposerDraft(structured, localStorage.getItem(draftStorageKey(ref)));
+    const decoded = decodeStructuredComposerDraft(structured);
+    if (decoded !== null) return decoded;
+    return decodeSupportedComposerDraft(null, localStorage.getItem(draftStorageKey(ref)));
   } catch {
     return { text: "", skillNames: [] };
   }

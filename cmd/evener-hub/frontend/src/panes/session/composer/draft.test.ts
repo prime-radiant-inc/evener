@@ -122,6 +122,24 @@ test("decodeSupportedComposerDraft preserves a valid structured draft including 
   });
 });
 
+test("readComposerDraft returns valid v2 without reading a failing legacy key", () => {
+  const ref = "local:short-circuit";
+  const structuredKey = composerDraftStorageKey(ref);
+  const legacyKey = draftStorageKey(ref);
+  const accesses: string[] = [];
+  vi.spyOn(localStorage, "getItem").mockImplementation((storageKey) => {
+    accesses.push(storageKey);
+    if (storageKey === structuredKey) {
+      return JSON.stringify({ text: "valid v2", skillNames: ["skill"], mentions: [] });
+    }
+    if (storageKey === legacyKey) throw new Error("legacy key is unreadable");
+    return null;
+  });
+
+  expect(readComposerDraft(ref)).toEqual({ text: "valid v2", skillNames: ["skill"], mentions: [] });
+  expect(accesses).toEqual([structuredKey]);
+});
+
 test.each([
   ["invalid JSON", "not-json", '{"text":"literal /same"}'],
   ["invalid structured shape", '{"text":4,"skillNames":[]}', "/same remains prose"],
