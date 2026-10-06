@@ -446,6 +446,61 @@ function readingRow(id: string): TurnModel {
   };
 }
 
+test.each([
+  { start: 900, intermediate: 225, want: 198 },
+  { start: 1250, intermediate: 300, want: 264 },
+])(
+  "width reflow retains usable progress through a later viewport resize at $start",
+  async ({ start, intermediate, want }) => {
+    const geometry = { width: 152, viewportHeight: 400, rowHeights: [1600, 1000] };
+    const external = installTranscriptGeometry(() => geometry);
+    const listRef = createRef<VirtualListHandle>();
+    let mounted: ReturnType<typeof render> | undefined;
+    try {
+      mounted = render(
+        <TranscriptBody
+          model={{ ...makeTranscriptPreviewModel(), turns: [readingRow("current"), readingRow("tail")] }}
+          config={makeTranscriptDisplayConfig({ kind: "preset", level: "tools" })}
+          surface="readOnly"
+          disclosureScope="viewport-reading"
+          viewId="viewport-reading"
+          listRef={listRef}
+        />,
+      );
+      const port = listRef.current?.getScrollElement();
+      if (!port) throw new Error("Real viewport reader has no scroll port");
+      await act(async () => {
+        external.notify();
+        port.scrollTop = start + 100;
+        fireEvent.scroll(port);
+      });
+      await act(async () => {
+        port.scrollTop = start;
+        fireEvent.scroll(port);
+      });
+      geometry.width = 352;
+      geometry.rowHeights[0] = 700;
+      await act(async () => external.notify());
+      expect(port.scrollTop).toBe(intermediate);
+      geometry.viewportHeight = 436;
+      await act(async () => external.notify((target) => target === port));
+      expect(port.scrollTop).toBe(want);
+      expect(captureTranscriptView("viewport-reading")).toMatchObject({
+        anchorId: "current-entry",
+        anchorOffset: -want,
+        followingBottom: false,
+      });
+      expect(port.querySelector('[data-view-anchor-id="current-entry"] [data-testid="user-bubble"]')?.textContent).toBe(
+        "current",
+      );
+    } finally {
+      mounted?.unmount();
+      external.restore();
+      resetTranscriptViewRegistryForTests();
+    }
+  },
+);
+
 test("width-only reflow preserves useful content beside a Chat-filtered daemon steer", async () => {
   const geometry = { width: 152, viewportHeight: 400, rowHeights: [1600, 0, 1000] };
   const external = installTranscriptGeometry(() => geometry);

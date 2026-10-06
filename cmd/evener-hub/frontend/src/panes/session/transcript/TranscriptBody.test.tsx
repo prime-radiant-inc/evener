@@ -391,6 +391,119 @@ describe("TranscriptBody", () => {
     }
   });
 
+  test("keeps newly focused Tools content through Chat while the prior display restore is pending", async () => {
+    const geometry = { width: 500, viewportHeight: 300, rowHeights: [600] };
+    const external = installTranscriptGeometry(() => geometry);
+    try {
+      const listRef = createRef<VirtualListHandle>();
+      let show: (level: "full" | "tools" | "chat") => void = () => {
+        throw new Error("pending focus harness did not mount");
+      };
+      function PendingFocusHarness() {
+        const [config, setConfig] = useState(preset("full"));
+        show = (level) => setConfig(preset(level));
+        return (
+          <TranscriptBody
+            model={fixture}
+            config={config}
+            surface="live"
+            disclosureScope="live:pending-focus"
+            viewId="pending-focus"
+            listRef={listRef}
+          />
+        );
+      }
+      render(<PendingFocusHarness />);
+      await act(async () => external.notify());
+      const before = captureTranscriptViews().get("pending-focus");
+      expect(before?.readingPoint?.viewportWidth).toBe(500);
+
+      act(() => {
+        transitionTranscriptViews(
+          () => {
+            geometry.width = 480;
+            show("tools");
+          },
+          "Tools",
+          { fingerprint: "tools" },
+        );
+      });
+      const tool = screen.getByTestId("tool-row-trigger");
+      tool.focus();
+      expect(document.activeElement).toBe(tool);
+      const during = captureTranscriptViews().get("pending-focus");
+      expect(during?.readingPoint).toEqual(before?.readingPoint);
+      expect(during?.focusedEntryId).toBe("tool_1");
+
+      act(() => transitionTranscriptViews(() => show("chat"), "Chat", { fingerprint: "chat" }));
+      const group = screen.getByTestId("intent-group");
+      const summary = group.querySelector(":scope > summary");
+      if (!(summary instanceof HTMLElement)) throw new Error("Chat intent group summary did not render");
+      await act(async () => external.notify());
+      await waitFor(() => expect(document.activeElement).toBe(summary));
+      expect(group.hasAttribute("open")).toBe(false);
+      expect(document.body.contains(tool)).toBe(false);
+    } finally {
+      cleanup();
+      external.restore();
+    }
+  });
+
+  test.each(["width", "viewportHeight"] as const)(
+    "moves focus to the Chat intent proxy when the display change also changes %s",
+    async (dimension) => {
+      const geometry = { width: 500, viewportHeight: 300, rowHeights: [600] };
+      const external = installTranscriptGeometry(() => geometry);
+      try {
+        const listRef = createRef<VirtualListHandle>();
+        let showChat: () => void = () => {
+          throw new Error("focus reflow harness did not mount");
+        };
+        function FocusReflowHarness() {
+          const [config, setConfig] = useState(preset("tools"));
+          showChat = () => setConfig(preset("chat"));
+          return (
+            <TranscriptBody
+              model={fixture}
+              config={config}
+              surface="live"
+              disclosureScope={`live:focus-reflow-${dimension}`}
+              viewId={`focus-reflow-${dimension}`}
+              listRef={listRef}
+            />
+          );
+        }
+        render(<FocusReflowHarness />);
+        await act(async () => external.notify());
+        const tool = await screen.findByTestId("tool-row-trigger");
+        tool.focus();
+        expect(document.activeElement).toBe(tool);
+
+        act(() => {
+          transitionTranscriptViews(
+            () => {
+              geometry[dimension] += 36;
+              showChat();
+            },
+            "Chat",
+            { fingerprint: "chat" },
+          );
+        });
+
+        const group = await screen.findByTestId("intent-group");
+        const summary = group.querySelector(":scope > summary");
+        if (!(summary instanceof HTMLElement)) throw new Error("Chat intent group summary did not render");
+        await act(async () => external.notify());
+        await waitFor(() => expect(document.activeElement).toBe(summary));
+        expect(group.hasAttribute("open")).toBe(false);
+        expect(document.body.contains(tool)).toBe(false);
+      } finally {
+        cleanup();
+        external.restore();
+      }
+    },
+  );
+
   test("focuses the Transcript region when a view change removes the focused row", async () => {
     const external = installTranscriptGeometry(() => ({ width: 500, viewportHeight: 300, rowHeights: [600] }));
     try {

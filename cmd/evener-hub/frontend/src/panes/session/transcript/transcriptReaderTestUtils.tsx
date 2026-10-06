@@ -77,6 +77,7 @@ export function mountReaderScene(
     isMessage: true,
   }));
   let layout: CommittedVirtualListLayout | undefined;
+  let scrollFlow: ReturnType<typeof useTranscriptScroll> | undefined;
   const tools = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
   function Reader({ initial }: { initial?: CapturedTranscriptView }) {
     const config = useStore(transcriptDisplayStore, (state) => state.local.desktop ?? tools);
@@ -91,6 +92,7 @@ export function mountReaderScene(
       onReaderIntent: view.supersedePositioning,
       onReaderMovement: view.syncPositioningMovement,
     });
+    scrollFlow = flow;
     useTranscriptScrollKeys({
       paneId: id,
       listRef,
@@ -173,6 +175,10 @@ export function mountReaderScene(
     frames,
     listRef,
     port,
+    flow() {
+      if (!scrollFlow) throw new Error("Actual shared scroll hook has not rendered");
+      return scrollFlow;
+    },
     layout() {
       if (!layout) throw new Error("Actual committed widget payload has not published");
       return layout;
@@ -198,6 +204,18 @@ export function mountReaderScene(
     },
     capture() {
       return captureTranscriptView(view.id);
+    },
+    appendRow(height: number) {
+      const index = rowHeights.length;
+      const name = `tail-${index}`;
+      rowHeights.push(height);
+      model.turns.push({
+        id: name,
+        status: "completed",
+        items: [{ id: `${name}-entry`, turnId: name, type: "userMessage", text: name, status: "completed" }],
+      });
+      anchorEntries.push({ id: `${name}-entry`, index, sourceIndex: index, isMessage: true });
+      mounted.rerender(<Reader />);
     },
     remount(initial = view.getCapture()) {
       view.setReadable(false);

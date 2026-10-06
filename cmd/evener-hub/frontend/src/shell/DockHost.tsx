@@ -16,7 +16,7 @@ import { parseZoomParams } from "../panes/zoom/intent";
 import { useNavigationStore } from "../stores/navigation/store";
 import { threadsStore, useThreadsStore } from "../stores/threads";
 import { EmptyState } from "../widgets/emptystate";
-import { useChromeStore } from "./chromeStore";
+import { chromeStore, useChromeStore } from "./chromeStore";
 import styles from "./DockHost.module.css";
 import { PaneTab } from "./PaneTab";
 import { PopoutHeaderAction } from "./PopoutHeaderAction";
@@ -336,7 +336,12 @@ export function DockHost() {
         if (pushed?.paneType !== pane.type || pushed.paneParams !== pane.params) {
           // Dockview publishes onDidLayoutChange for parameter updates too,
           // so the existing debounce persists intent as well as geometry.
-          api.getPanel(pane.id)?.api.updateParameters(panelParams);
+          const panel = api.getPanel(pane.id);
+          if (pushed && (pushed.paneType !== pane.type || refParam(pushed.paneParams) !== refParam(pane.params))) {
+            chromeStore.getState().setPaneTitleFor(pane.id, null);
+            panel?.setTitle(paneFor(pane.type).title(pane.params, bootTitleCtx));
+          }
+          panel?.api.updateParameters(panelParams);
           pushedParamsRef.current.set(pane.id, panelParams);
         }
       }
@@ -387,15 +392,25 @@ export function DockHost() {
   // computed title changes - the ONLY place PaneTitleCtx's threadName is
   // wired to a REACTIVE threads subscription, so a session pane's tab
   // tracks a rename without needing a page reload.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: paneTitles triggers live title updates, read from the store after structural reconciliation can clear an old scope's hint
   useEffect(() => {
     if (!api) return;
-    const ctx: PaneTitleCtx = {
-      threadName: (ref) => resolveThreadName(threads, navigationSummaryFor(ref, navigation), ref),
-    };
     for (const pane of panes) {
       const panel = api.getPanel(pane.id);
       if (!panel) continue; // not created yet on this pass - the structural effect (same commit) already gave it the right initial title
-      const title = paneTitles.get(pane.id) ?? paneFor(pane.type).title(pane.params, ctx);
+      let missingName = false;
+      const ctx: PaneTitleCtx = {
+        threadName: (ref) => {
+          const name = resolveThreadName(threads, navigationSummaryFor(ref, navigation), ref);
+          if (name === undefined) missingName = true;
+          return name;
+        },
+      };
+      const registeredTitle = paneFor(pane.type).title(pane.params, ctx);
+      const title = chromeStore.getState().paneTitles.get(pane.id) ?? registeredTitle;
+      // An inactive restored pane has no reader to hydrate its name. Keep its
+      // saved label until live data or bounded navigation supplies a name.
+      if (missingName && title === registeredTitle) continue;
       if (panel.title !== title) panel.setTitle(title);
     }
   }, [api, panes, threads, navigation, paneTitles]);

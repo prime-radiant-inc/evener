@@ -331,6 +331,17 @@ export function captureTranscriptView(
   return captured;
 }
 
+function captureTranscriptFocus(el: HTMLElement, captured: CapturedTranscriptView): CapturedTranscriptView {
+  const focusMetadata = focusMetadataFor(el);
+  if (!focusMetadata) return captured;
+  // Pending geometry preserves the reading point, but focus can move in the rendered view.
+  const next = { ...captured, focusedEntryId: focusMetadata.anchorId };
+  const anchorMetadata = capturedAnchorMetadata.get(captured);
+  if (anchorMetadata) capturedAnchorMetadata.set(next, anchorMetadata);
+  capturedFocusMetadata.set(next, focusMetadata);
+  return next;
+}
+
 export function readingPointOffset(
   captured: CapturedTranscriptView,
   entryHeight: number,
@@ -481,11 +492,12 @@ interface PendingTranscriptViewRestore {
   readonly captured: CapturedTranscriptView;
   readonly readView?: TranscriptReadView;
   readonly positioningRevision?: number;
+  readonly restoreFocus: boolean;
   target?: RestoredViewAnchor;
   scrollRequested: boolean;
   anchorRestored: boolean;
   focusScrollRequested: boolean;
-  widthReflow: boolean;
+  viewportReflow: boolean;
 }
 
 function captureIsCurrent(captured: CapturedTranscriptView, readView?: TranscriptReadView): boolean {
@@ -494,6 +506,11 @@ function captureIsCurrent(captured: CapturedTranscriptView, readView?: Transcrip
     (readView.alive &&
       (captured.positioningRevision === undefined || captured.positioningRevision === readView.positioningRevision))
   );
+}
+
+function viewportChanged(captured: CapturedTranscriptView | undefined, el: HTMLElement): boolean {
+  const point = captured?.readingPoint;
+  return !!point && (point.viewportWidth !== el.clientWidth || point.viewportHeight !== el.clientHeight);
 }
 
 /**
@@ -516,10 +533,11 @@ export function useTranscriptViewRegistration(
           captured: options.initialViewCapture,
           readView,
           positioningRevision: readView?.positioningRevision,
+          restoreFocus: true,
           scrollRequested: false,
           anchorRestored: false,
           focusScrollRequested: false,
-          widthReflow: false,
+          viewportReflow: false,
         }
       : null,
   );
@@ -560,7 +578,7 @@ export function useTranscriptViewRegistration(
       }
       if (!committed.isCurrent() || !isAtBottom(measure(el))) return;
       if (!confirmScrollOffset()) return;
-      if (!pending.widthReflow) {
+      if (pending.restoreFocus) {
         const focusResult = focusCapturedEntry(el, pending.captured, candidates, currentOptions.listRef, pending);
         if (focusResult === "waiting") return;
         if (focusResult === "missing") currentOptions.focusFallback?.();
@@ -599,7 +617,7 @@ export function useTranscriptViewRegistration(
         if (current) {
           if (!current.height || current.height <= 0) return;
           const sameSource = anchor && positionForAnchor(anchor, candidates)?.id === restored.id;
-          const desired = pending.widthReflow
+          const desired = pending.viewportReflow
             ? sameSource
               ? readingPointOffset(pending.captured, current.height, el.clientHeight)
               : Math.max(restored.offset, -Math.max(0, current.height - el.clientHeight))
@@ -626,7 +644,7 @@ export function useTranscriptViewRegistration(
       }
     }
 
-    if (!pending.widthReflow) {
+    if (pending.restoreFocus) {
       const focusResult = focusCapturedEntry(el, pending.captured, candidates, currentOptions.listRef, pending);
       if (focusResult === "waiting") return;
       if (focusResult === "missing") currentOptions.focusFallback?.();
@@ -641,15 +659,14 @@ export function useTranscriptViewRegistration(
   }, []);
 
   const capture = useCallback((): CapturedTranscriptView => {
-    if (pendingRef.current) return pendingRef.current.captured;
     const currentOptions = optionsRef.current;
     const el = currentOptions.listRef?.current?.getScrollElement();
+    if (pendingRef.current)
+      return el ? captureTranscriptFocus(el, pendingRef.current.captured) : pendingRef.current.captured;
     const before = latestCaptureRef.current;
     const committed = committedLayoutRef.current;
     const valid = !!el && !!committed?.isCurrent() && committed.virtualizer.scrollElement === el;
-    const changedWidth =
-      !!el && before?.readingPoint !== undefined && before.readingPoint.viewportWidth !== el.clientWidth;
-    if (before && (!valid || changedWidth)) return before;
+    if (before && (!valid || viewportChanged(before, el))) return el ? captureTranscriptFocus(el, before) : before;
     if (!el || !valid) return { anchorOffset: 0, normalizedOffset: 0, followingBottom: false };
     const next = captureTranscriptView(
       el,
@@ -675,17 +692,18 @@ export function useTranscriptViewRegistration(
         return;
       committedLayoutRef.current = committed;
       const before = pendingRef.current?.captured ?? latestCaptureRef.current;
-      if (before?.readingPoint && before.readingPoint.viewportWidth !== el.clientWidth) {
-        if (pendingRef.current) pendingRef.current.widthReflow = true;
+      if (before && viewportChanged(before, el)) {
+        if (pendingRef.current) pendingRef.current.viewportReflow = true;
         else
           pendingRef.current = {
             captured: before,
             readView: currentOptions.readView,
             positioningRevision: currentOptions.readView?.positioningRevision,
+            restoreFocus: false,
             scrollRequested: false,
             anchorRestored: false,
             focusScrollRequested: false,
-            widthReflow: true,
+            viewportReflow: true,
           };
       }
       restoreAfterMeasurement();
@@ -701,10 +719,11 @@ export function useTranscriptViewRegistration(
       captured,
       readView,
       positioningRevision: readView?.positioningRevision,
+      restoreFocus: true,
       scrollRequested: false,
       anchorRestored: false,
       focusScrollRequested: false,
-      widthReflow: false,
+      viewportReflow: false,
     };
   }, []);
 
@@ -767,8 +786,7 @@ export function useTranscriptViewRegistration(
       if (!committed?.isCurrent() || committed.virtualizer.scrollElement !== el) return;
       if (pendingRef.current) restoreAfterMeasurement();
       if (pendingRef.current) return;
-      const previousWidth = latestCaptureRef.current?.readingPoint?.viewportWidth;
-      if (previousWidth !== undefined && el.clientWidth !== previousWidth) return;
+      if (viewportChanged(latestCaptureRef.current, el)) return;
       capture();
     };
     el.addEventListener("scroll", observeStablePosition);
@@ -1057,6 +1075,11 @@ export function useTranscriptScroll({
   const middleButtonHeldRef = useRef(false);
   const lastTouchYRef = useRef<number | null>(null);
   const readerGestureRef = useRef<{ beforeOffset: number; admitted: boolean } | undefined>(undefined);
+  const pendingBottomJumpRef = useRef<{
+    element: HTMLElement;
+    scrollHeight: number;
+    clientHeight: number;
+  } | null>(null);
   const readerCallbacksRef = useRef({ onReaderIntent, onReaderMovement });
   readerCallbacksRef.current = { onReaderIntent, onReaderMovement };
   // The geometry the previous measurement saw. Read only to classify the NEXT
@@ -1087,6 +1110,7 @@ export function useTranscriptScroll({
       const el = listRef.current?.getScrollElement();
       if (readerIntent && el) {
         pendingViewAnchorRef.current = null;
+        pendingBottomJumpRef.current = null;
         readerCallbacksRef.current.onReaderIntent?.();
         if (beforeOffset !== undefined && Number.isFinite(beforeOffset) && el.scrollTop !== beforeOffset)
           readerCallbacksRef.current.onReaderMovement?.(beforeOffset);
@@ -1447,6 +1471,7 @@ export function useTranscriptScroll({
 
   const jumpToBottom = useCallback(() => {
     pendingViewAnchorRef.current = null;
+    pendingBottomJumpRef.current = null;
     readerGestureRef.current = undefined;
     readerCallbacksRef.current.onReaderIntent?.();
     const anchor = errorAnchorIndexRef.current;
@@ -1519,6 +1544,11 @@ export function useTranscriptScroll({
           // DOM maximum, and a pin computed from the stale value could land
           // short.
           const live = measure(el);
+          pendingBottomJumpRef.current = {
+            element: el,
+            scrollHeight: live.scrollHeight,
+            clientHeight: live.clientHeight,
+          };
           el.scrollTop = Math.max(0, live.scrollHeight - live.clientHeight);
         }
       }
@@ -1606,6 +1636,7 @@ export function useTranscriptScroll({
       firstTurnIdRef.current = undefined;
       baselineItemCountRef.current = 0;
       pendingViewAnchorRef.current = null;
+      pendingBottomJumpRef.current = null;
       resolvedFailedTurnIdsRef.current = new Set();
       setErrorAnchorIndex(null);
       errorAnchorIndexRef.current = null;
@@ -1662,6 +1693,10 @@ export function useTranscriptScroll({
       // possibility.
       if (!el) return;
       const m = measure(el);
+      const jump = pendingBottomJumpRef.current;
+      pendingBottomJumpRef.current = null;
+      const jumpLanded =
+        jump?.element === el && jump.scrollHeight === m.scrollHeight && jump.clientHeight === m.clientHeight;
       // Consumed here, not merely read: see markGesture on why the frame
       // boundary alone cannot be trusted to clear it. A held middle button is
       // read rather than consumed - native autoscroll scrolls the port for as
@@ -1732,7 +1767,21 @@ export function useTranscriptScroll({
         el.scrollTop = Math.max(0, m.scrollHeight - m.clientHeight);
         return;
       }
-      wasAtBottomRef.current = isAtBottom(m);
+      // A measurement write can reach the old sizer's end before it commits.
+      // Passive admission needs committed geometry. An explicit jump instead
+      // confirms its first landing against the live geometry it pinned.
+      const layoutCurrent = listRef.current?.isLayoutCurrent() === true;
+      // A backward measurement can also leave the old sizer's end before
+      // commit. Keep established end-follow intent through that passive gap,
+      // but let the reader leave immediately, including during reflow.
+      const preserveEndFollow =
+        wasAtBottomRef.current &&
+        !gestured &&
+        !pointerDraggingRef.current &&
+        m.clientHeight === previous.clientHeight &&
+        !layoutCurrent;
+      wasAtBottomRef.current =
+        preserveEndFollow || (isAtBottom(m) && (wasAtBottomRef.current || jumpLanded || layoutCurrent));
       setAwayFromBottom(!wasAtBottomRef.current);
       if (wasAtBottomRef.current) clearPill();
       // The error anchor also clears on its own once its failed turn

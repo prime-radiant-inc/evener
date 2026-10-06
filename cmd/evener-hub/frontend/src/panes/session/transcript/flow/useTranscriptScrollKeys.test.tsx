@@ -38,6 +38,7 @@ function renderPaneKeys(paneId: string, { mounted = true }: { mounted?: boolean 
     current: {
       scrollToIndex,
       getScrollElement: () => (mounted ? el : null),
+      isLayoutCurrent: () => mounted,
       getVisibleRange: () => null,
     } as VirtualListHandle,
   };

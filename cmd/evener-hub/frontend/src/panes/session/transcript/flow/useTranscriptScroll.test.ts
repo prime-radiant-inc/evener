@@ -1,5 +1,5 @@
 import type { ItemModel, ThreadCapabilities, ThreadModel, TurnModel } from "@evener/appwire-client";
-import { act, cleanup, render, renderHook } from "@testing-library/react";
+import { act, cleanup, render, renderHook, screen } from "@testing-library/react";
 import { createElement, createRef } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { resetThreadsStoreForTests } from "../../../../stores/threads";
@@ -105,6 +105,7 @@ function makeListHandle(): {
   (ref as { current: VirtualListHandle }).current = {
     scrollToIndex,
     getScrollElement: () => el,
+    isLayoutCurrent: () => true,
     getVisibleRange: () => visibleRange,
   };
   return {
@@ -184,6 +185,91 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+test("fresh end-follow survives a passive backward row measurement", async () => {
+  const scene = mountReaderScene("hook-initial-end-shrink", [6508], { estimate: 6508, viewportHeight: 665 });
+  try {
+    await act(async () => scene.external.notify());
+    await act(async () => scene.frames.release());
+    expect(scene.port().scrollTop).toBe(5843);
+    expect(scene.capture()?.followingBottom).toBe(true);
+    scene.geometry.rowHeights[0] = 6490;
+    await act(async () => scene.external.notify((target) => target.dataset.index === "0"));
+    await act(async () => scene.frames.release());
+    expect(scene.port().scrollTop).toBe(5825);
+    expect(scene.capture()?.followingBottom).toBe(true);
+    scene.geometry.rowHeights[0] = 7000;
+    await act(async () => scene.external.notify());
+    await act(async () => scene.frames.release());
+    expect(scene.port().scrollTop).toBe(6335);
+    expect(scene.capture()?.followingBottom).toBe(true);
+  } finally {
+    scene.dispose();
+  }
+});
+
+test.each([
+  { input: "passive", expected: 9957, following: true },
+  { input: "wheel", expected: 5725, following: false },
+])(
+  "fresh end-follow respects $input movement before a backward measurement commits",
+  async ({ input, expected, following }) => {
+    const scene = mountReaderScene(`hook-initial-end-before-commit-${input}`, [6508], {
+      estimate: 96,
+      viewportHeight: 665,
+    });
+    try {
+      await act(async () => scene.external.notify());
+      await act(async () => scene.frames.release());
+      expect(scene.port().scrollTop).toBe(5843);
+      expect(scene.capture()?.followingBottom).toBe(true);
+      act(() => {
+        scene.geometry.rowHeights[0] = 6490;
+        scene.external.notify((target) => target.dataset.index === "0");
+        expect(scene.port().scrollTop).toBe(5825);
+        expect(scene.port().scrollHeight).toBe(6508);
+        expect(scene.listRef.current?.isLayoutCurrent()).toBe(false);
+        scene.port().dispatchEvent(new Event("scroll"));
+        if (input === "wheel") {
+          scene.port().dispatchEvent(new WheelEvent("wheel", { deltaY: -100, bubbles: true }));
+          scene.port().scrollTop = 5725;
+          scene.port().dispatchEvent(new Event("scroll"));
+        }
+        scene.appendRow(4132);
+      });
+      await act(async () => scene.external.notify());
+      await act(async () => scene.frames.release());
+      expect(scene.port().scrollTop).toBe(expected);
+      expect(scene.capture()?.followingBottom).toBe(following);
+      expect(scene.flow().pillVisible).toBe(!following);
+    } finally {
+      scene.dispose();
+    }
+  },
+);
+
+test("fresh end-follow survives streaming append during a backward row measurement", async () => {
+  const scene = mountReaderScene("hook-initial-end-append", [6508], { estimate: 6508, viewportHeight: 665 });
+  try {
+    await act(async () => scene.external.notify());
+    await act(async () => scene.frames.release());
+    expect(scene.port().scrollTop).toBe(5843);
+    expect(scene.capture()?.followingBottom).toBe(true);
+    scene.geometry.rowHeights[0] = 6490;
+    await act(async () => scene.appendRow(4132));
+    await act(async () => scene.external.notify());
+    await act(async () => scene.frames.release());
+    expect(scene.port().scrollTop).toBe(9957);
+    expect(scene.capture()?.followingBottom).toBe(true);
+    await act(async () => scene.appendRow(4132));
+    await act(async () => scene.external.notify());
+    await act(async () => scene.frames.release());
+    expect(scene.port().scrollTop).toBe(14089);
+    expect(scene.capture()?.followingBottom).toBe(true);
+  } finally {
+    scene.dispose();
+  }
+});
+
 test("genuine wheel admission retires the actual outstanding index writer", async () => {
   const scene = mountReaderScene("hook-index", [500, 500, 500, 500, 500], { estimate: 500, viewportHeight: 500 });
   try {
@@ -225,6 +311,84 @@ test("genuine wheel admission drops queued clamp work without a scroll event", a
     expect(scene.port().scrollTop).toBe(1000);
     expect(scene.layout().virtualizer.scrollOffset).toBe(1000);
     expect(scrollEvents).toBe(0);
+  } finally {
+    scene.dispose();
+  }
+});
+
+test("temporary end clamping during reflow does not replace the restored reading point with bottom-follow", async () => {
+  const scene = mountReaderScene("hook-transient-end", [500, 1600, 1000]);
+  try {
+    await scene.start(1400);
+    expect(scene.capture()).toMatchObject({
+      anchorId: "tail-1-entry",
+      anchorOffset: -900,
+      followingBottom: false,
+    });
+    act(() => {
+      scene.geometry.width = 352;
+      scene.geometry.rowHeights[0] = 2000;
+      scene.external.notify((target) => target.dataset.index === "0");
+      expect(scene.port().scrollTop).toBe(2700);
+      scene.port().dispatchEvent(new Event("scroll"));
+    });
+    act(() => scene.external.notify((target) => target === scene.port()));
+    expect(scene.port().scrollTop).toBe(2900);
+    expect(scene.port().querySelector('[data-index="1"]')?.getBoundingClientRect().top).toBe(-900);
+    act(() => scene.external.notify((target) => target === scene.port().firstElementChild));
+    expect(scene.port().scrollTop).toBe(2900);
+    expect(scene.port().querySelector('[data-index="1"]')?.getBoundingClientRect().top).toBe(-900);
+    await act(async () => scene.frames.release());
+    expect(scene.capture()).toMatchObject({ anchorId: "tail-1-entry", followingBottom: false });
+  } finally {
+    scene.dispose();
+  }
+});
+
+test.each(["wheel", "Jump to live"] as const)(
+  "%s reaches the true end and keeps following later row growth",
+  async (input) => {
+    const scene = mountReaderScene(`hook-real-end-${input}`, [500, 1600, 1000]);
+    try {
+      await scene.start(1400);
+      expect(scene.capture()?.followingBottom).toBe(false);
+      await act(async () => {
+        if (input === "wheel") {
+          scene.port().dispatchEvent(new WheelEvent("wheel", { deltaY: 1300, bubbles: true }));
+          scene.port().scrollTop = 2700;
+          scene.port().dispatchEvent(new Event("scroll"));
+        } else {
+          screen.getByRole("button", { name: "Jump to live" }).click();
+        }
+      });
+      expect(scene.port().scrollTop).toBe(2700);
+      expect(scene.capture()?.followingBottom).toBe(true);
+      scene.geometry.rowHeights[2] = 1400;
+      await act(async () => scene.external.notify());
+      await act(async () => scene.frames.release());
+      expect(scene.port().scrollTop).toBe(3100);
+      expect(scene.capture()?.followingBottom).toBe(true);
+    } finally {
+      scene.dispose();
+    }
+  },
+);
+
+test("Jump to live confirms its landing while viewport measurement is pending and follows the committed end", async () => {
+  const scene = mountReaderScene("hook-pending-end-jump", [500, 1600, 1000]);
+  try {
+    await scene.start(1400);
+    expect(scene.flow().pillVisible).toBe(true);
+    scene.geometry.viewportHeight = 300;
+    expect(scene.listRef.current?.isLayoutCurrent()).toBe(false);
+    await act(async () => screen.getByRole("button", { name: "Jump to live" }).click());
+    expect(scene.port().scrollTop).toBe(2800);
+    expect(scene.flow().pillVisible).toBe(false);
+    scene.geometry.rowHeights[2] = 1400;
+    await act(async () => scene.external.notify());
+    await act(async () => scene.frames.release());
+    expect(scene.port().scrollTop).toBe(3200);
+    expect(scene.capture()?.followingBottom).toBe(true);
   } finally {
     scene.dispose();
   }

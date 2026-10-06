@@ -144,6 +144,7 @@ export default function Zoom({ paneId, focused }: PaneProps<SessionZoomParams>) 
       paneId={paneId}
       focused={focused}
       title="Agent cascade"
+      publishTabTitle={false}
       scaffoldMarker="cascade"
       actions={mobile ? undefined : returnAction}
       edgeFooter={

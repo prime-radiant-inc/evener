@@ -30,6 +30,8 @@ export interface VirtualListHandle {
    * before mount, same as any ref.
    */
   getScrollElement: () => HTMLDivElement | null;
+  /** Whether the measured rows, sizer and viewport agree with the current layout. */
+  isLayoutCurrent: () => boolean;
   /**
    * The index range currently rendered (including overscan - the same
    * window `renderRow` is called over, per this widget's own top-of-file
@@ -323,6 +325,7 @@ export function VirtualList({
         virtualizer.scrollToIndex(index, options);
       },
       getScrollElement: () => scrollRef.current,
+      isLayoutCurrent: () => hasCommittedGeometry(virtualizer, measuredHeightsRef.current),
       getVisibleRange: () => {
         const items = virtualizer.getVirtualItems();
         const first = items[0];

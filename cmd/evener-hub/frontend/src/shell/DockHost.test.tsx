@@ -7,7 +7,7 @@ import type { SerializedDockview } from "dockview-core";
 import { lazy } from "react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { MotionProvider } from "../motion";
-import { enterAgentCascade, returnFromAgentCascade } from "../panes/zoom/actions";
+import { enterAgentCascade, popAgentCascade, returnFromAgentCascade } from "../panes/zoom/actions";
 import { cascadeClient, cascadeContext } from "../panes/zoom/cascadeTestUtils";
 import { associatedCascade, cascadeOrigin } from "../panes/zoom/inspectionOrigin";
 import { parseZoomParams, type SessionZoomParams } from "../panes/zoom/intent";
@@ -1120,6 +1120,121 @@ function inspectorPanel(layout: SerializedDockview, id: string) {
   if (!panel?.params) throw new Error(`Missing serialized inspector ${id}`);
   return panel;
 }
+
+test("cascade tabs keep the selected leaf title across pop, drill and native reactivation", async () => {
+  const fixture = await mountedSecondaryInspector();
+  try {
+    const { api, mainId, neighborId, inspectorId } = fixture;
+    expect(api.getPanel(inspectorId)?.title).toBe("child");
+    await act(async () => popAgentCascade(inspectorId, "root"));
+    expect(api.getPanel(inspectorId)?.title).toBe("root");
+    await act(async () =>
+      enterAgentCascade(
+        activityDelegate({ ownerRef: "root", childRef: "child", delegateId: "edge-child" }),
+        inspectorId,
+      ),
+    );
+    expect(api.getPanel(inspectorId)?.title).toBe("child");
+    const intent = inspectionRecord(inspectorId).params;
+    const savedTitle = api.getPanel(inspectorId)?.title;
+    await userEvent.click(screen.getByRole("tab", { name: "Doc neighbor" }));
+    expect(api.activePanel?.id).toBe(neighborId);
+    await userEvent.click(screen.getByRole("tab", { name: savedTitle }));
+    expect(api.activePanel?.id).toBe(inspectorId);
+    expect(workspaceStore.getState().focusedPaneId).toBe(inspectorId);
+    expect(inspectionRecord(inspectorId).params).toBe(intent);
+    expect(cascadeOrigin(inspectionRecord(inspectorId))).toBe(inspectionRecord(mainId));
+    expect(screen.getAllByTestId("cascade-column").map((column) => column.dataset.scopeRef)).toEqual(["root", "child"]);
+    expect(api.getPanel(inspectorId)?.title).toBe(savedTitle);
+  } finally {
+    fixture.dispose();
+  }
+});
+
+test.each([
+  {
+    type: "session",
+    savedTitle: "Saved neighbor",
+    recoveredTitle: "Recovered name",
+    unnamedTitle: "",
+    changedTitle: "ref_changed",
+  },
+  {
+    type: "transcript",
+    savedTitle: "Saved neighbor",
+    recoveredTitle: "Recovered name",
+    unnamedTitle: "",
+    changedTitle: "ref_changed",
+  },
+  {
+    type: "sessionTasks",
+    savedTitle: "Tasks · Saved neighbor",
+    recoveredTitle: "Tasks · Recovered name",
+    unnamedTitle: "Tasks · ref_saved_neighbor",
+    changedTitle: "Tasks · ref_changed",
+  },
+  {
+    type: "sessionDetails",
+    savedTitle: "Details · Saved neighbor",
+    recoveredTitle: "Details · Recovered name",
+    unnamedTitle: "Details · ref_saved_neighbor",
+    changedTitle: "Details · ref_changed",
+  },
+] as const)(
+  "restored inactive $type keeps its saved title until authoritative name recovery",
+  async ({ type, savedTitle, recoveredTitle, unnamedTitle, changedTitle }) => {
+    const ref = "ref_saved_neighbor";
+    const client = new FakeClient("ready");
+    const mount = () =>
+      render(
+        <ClientProvider client={client}>
+          <DockHost />
+        </ClientProvider>,
+      );
+    threadsStore.setState({ threads: new Map([[ref, fixtureThread(ref, { name: "Saved neighbor" })]]) });
+    workspaceStore.getState().openPane("doc", { ref: "main" });
+    const neighborId = workspaceStore.getState().openPane(type, { ref });
+    const activeId = workspaceStore.getState().openPane("settings", { section: "general" });
+    const view = await act(async () => mount());
+    const api = getDockviewApi();
+    if (!api) throw new Error("Missing actual Dockview API");
+    const saved = api.toJSON();
+    expect(api.activePanel?.id).toBe(activeId);
+    expect(saved.panels[neighborId]?.title).toBe(savedTitle);
+    expect(document.querySelector(`[data-pane-scaffold="session:${ref}"]`)).toBeNull();
+
+    view.unmount();
+    resetWorkspaceStoreForTests();
+    resetThreadsStoreForTests();
+    resetNavigationStoreForTests();
+    localStorage.setItem(LAYOUT_KEY, JSON.stringify(saved));
+    await act(async () => mount());
+    const restored = getDockviewApi();
+    if (!restored) throw new Error("Missing restored Dockview API");
+    expect(threadsStore.getState().threads.has(ref)).toBe(false);
+    expect(restored.activePanel?.id).toBe(activeId);
+    expect(restored.toJSON().panels[neighborId]).toEqual(saved.panels[neighborId]);
+    expect(document.querySelector(`[data-pane-scaffold="session:${ref}"]`)).toBeNull();
+
+    await act(async () => {
+      threadsStore.setState({ threads: new Map([[ref, fixtureThread(ref, { name: "Recovered name" })]]) });
+    });
+    expect(restored.getPanel(neighborId)?.title).toBe(recoveredTitle);
+    await act(async () => {
+      threadsStore.setState({ threads: new Map([[ref, fixtureThread(ref, { name: "" })]]) });
+    });
+    expect(restored.getPanel(neighborId)?.title).toBe(unnamedTitle);
+    expect(restored.getPanel(neighborId)?.params).toEqual(saved.panels[neighborId]?.params);
+    expect(restored.activePanel?.id).toBe(activeId);
+    await act(async () => {
+      expect(workspaceStore.getState().retypePane(inspectionRecord(neighborId), type, { ref: "ref_changed" })).toBe(
+        true,
+      );
+    });
+    expect(restored.getPanel(neighborId)?.title).toBe(changedTitle);
+    expect(restored.activePanel?.id).toBe(activeId);
+  },
+);
 
 test.each([false, true])(
   "secondary inspector restores distinct panels and saved focus with captured route=%s",
