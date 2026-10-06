@@ -21,6 +21,7 @@ import {
 	str,
 	toolFamily,
 	toolJSONResult,
+	toolStepWords,
 	turns,
 	webFetchResult,
 	worktreeMessage,
@@ -227,6 +228,33 @@ function jsonEvidence(detail: ActivityDetail, text: string): Evidence[] {
 	return evidence;
 }
 
+// A memory write's content is the page the person asked to save; an edit is
+// the same file diff as edit_file, and other calls read as printed.
+function memoryEvidence(label: string, detail: ActivityDetail): Evidence[] {
+	const text = detail.output ?? "";
+	const args = parseArgs(detail.arguments);
+	switch (label) {
+		case "memory_write": {
+			const content = str(args, "content");
+			if (!content) return jsonEvidence(detail, text);
+			const title = toolStepWords({ toolName: label, argumentsJSON: detail.arguments }).target ?? "Memory page";
+			return [{ kind: "markdown", title, markdown: content }];
+		}
+		case "memory_edit": {
+			const oldString = str(args, "old_string");
+			const newString = str(args, "new_string");
+			if (oldString === undefined && newString === undefined) return jsonEvidence(detail, text);
+			return [diff(editDiffText(filePathOf(args) ?? "", oldString ?? "", newString ?? ""))];
+		}
+		case "memory_read":
+		case "memory_search":
+		case "memory_delete":
+			return rawOutput(text);
+		default:
+			return jsonEvidence(detail, text);
+	}
+}
+
 /** The parts of a step its evidence comes from. */
 export type EvidenceSource = Pick<RunStep, "label" | "summaryOnly"> & {
 	detail: ActivityDetail;
@@ -237,7 +265,9 @@ export function stepEvidence(step: EvidenceSource): Evidence[] {
 	if (step.summaryOnly) return [];
 	const { detail } = step;
 	const evidence: Evidence[] = [];
-	if (isFileTool(step.label)) {
+	if (toolFamily(step.label) === "memory") {
+		evidence.push(...memoryEvidence(step.label, detail));
+	} else if (isFileTool(step.label)) {
 		const args = parseArgs(detail.arguments);
 		const path = filePathOf(args);
 		if (step.label === "edit_file") {

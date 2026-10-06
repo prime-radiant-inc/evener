@@ -271,6 +271,44 @@ describe("projectedRow — item entries", () => {
 		});
 	});
 
+	it("clusters a completed memory step with tools and keeps its package words", () => {
+		const memoryWrite = item({
+			id: "memory-write",
+			turnId: "t1",
+			type: "commandExecution",
+			toolName: "memory_write",
+			status: "completed",
+			argumentsJSON: JSON.stringify({ scope: "personal", file_path: "page.md", content: "# Page" }),
+		});
+		const shell = item({
+			id: "shell",
+			turnId: "t1",
+			type: "commandExecution",
+			toolName: "shell",
+			status: "completed",
+			argumentsJSON: JSON.stringify({ command: "echo done" }),
+		});
+		const rows = projectTimeline(
+			{ turns: [{ id: "t1", status: "completed", items: [memoryWrite, shell] }] } as unknown as ThreadModel,
+			new Map(),
+		);
+
+		expect(rows).toHaveLength(1);
+		expect(rows[0]).toMatchObject({
+			kind: "activity",
+			family: "tool",
+			state: "completed",
+			detail: {
+				summary: "Wrote memory personal/page.md",
+				words: { verb: "Wrote memory", target: "personal/page.md" },
+			},
+			members: [
+				{ id: "memory-write", family: "tool", detail: { summary: "Wrote memory personal/page.md" } },
+				{ id: "shell", family: "tool" },
+			],
+		});
+	});
+
 	// Only what the checklist draws: a task's prompt, notes and times would ride
 	// every retained task_list row, past the row's text bound.
 	it("carries a task_list call's returned tasks on its detail, only what the checklist draws", () => {

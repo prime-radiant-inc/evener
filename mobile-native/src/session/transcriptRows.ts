@@ -372,6 +372,8 @@ interface Group {
 	unnamed: number;
 	/** Whether a task_list step in the part changed the list, not only read it. */
 	changedTasks: boolean;
+	/** Whether a memory step in the part changed a page, not only read it. */
+	changedMemory: boolean;
 	/** How many questions a part's ask_user calls asked: a call can ask several. */
 	questions: number;
 }
@@ -435,6 +437,8 @@ function partText(group: Group): string {
 			return oneName ? `used skill ${oneName}` : `used ${n} ${plural("skill", "skills")}`;
 		case "tasks":
 			return `${group.changedTasks ? "updated" : "checked"} the task list${n === 1 ? "" : ` ${n} times`}`;
+		case "memory":
+			return `${group.changedMemory ? "updated" : "read"} memory${n === 1 ? "" : ` ${n} times`}`;
 		case "transcript":
 			return n === 1 ? "read a transcript" : `read ${n} transcripts`;
 		case "sessions":
@@ -477,7 +481,16 @@ export function runSummary(steps: readonly RunStep[]): RunSummary {
 		const part = partOf(step);
 		let group = groups.get(part.key);
 		if (!group) {
-			group = { ...part, count: 0, failed: 0, names: new Set(), unnamed: 0, changedTasks: false, questions: 0 };
+			group = {
+				...part,
+				count: 0,
+				failed: 0,
+				names: new Set(),
+				unnamed: 0,
+				changedTasks: false,
+				changedMemory: false,
+				questions: 0,
+			};
 			groups.set(part.key, group);
 		}
 		group.count += 1;
@@ -486,6 +499,8 @@ export function runSummary(steps: readonly RunStep[]): RunSummary {
 			failed += 1;
 		}
 		if (part.family === "tasks" && taskListChanges({ argumentsJSON: step.detail.arguments })) group.changedTasks = true;
+		if (part.family === "memory" && ["memory_write", "memory_edit", "memory_delete"].includes(step.label))
+			group.changedMemory = true;
 		// A call whose questions don't parse still asked one.
 		if (part.family === "ask")
 			group.questions += parseAskUserQuestions({ argumentsJSON: step.detail.arguments })?.length ?? 1;
