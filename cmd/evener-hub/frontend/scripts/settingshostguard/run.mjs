@@ -33,7 +33,7 @@ import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } f
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { connectPage, devtoolsHttpURL, evaluate, navigateTo, waitForHttp } from "../browserGuardCdp.mjs";
+import { buttonRefusesClick, connectPage, devtoolsHttpURL, evaluate, navigateTo, waitForHttp } from "../browserGuardCdp.mjs";
 import {
   chromeProfileEnvironment,
   chromeProfileIsolationArgs,
@@ -453,7 +453,7 @@ class Driver {
         if (root === null) return null;
         const b = [...root.querySelectorAll("button")].find((btn) => {
           const label = (btn.getAttribute("aria-label") ?? "").trim() || btn.textContent.trim();
-          return label === ${JSON.stringify(text)} && !btn.disabled;
+          return label === ${JSON.stringify(text)} && !${buttonRefusesClick}(btn);
         });
         if (b === undefined) return null;
         b.scrollIntoView({ block: "center" });
@@ -478,7 +478,7 @@ class Driver {
         if (root === null) return null;
         const b = [...root.querySelectorAll("button[role='radio']")].find((btn) => {
           const label = (btn.getAttribute("aria-label") ?? "").trim() || btn.textContent.trim();
-          return label.startsWith(${JSON.stringify(labelPrefix)}) && !btn.disabled;
+          return label.startsWith(${JSON.stringify(labelPrefix)}) && !${buttonRefusesClick}(btn);
         });
         if (b === undefined) return null;
         b.scrollIntoView({ block: "center" });
