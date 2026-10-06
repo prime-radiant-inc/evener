@@ -72,6 +72,9 @@ type navigationResourceKey struct {
 	ID         string
 	SectionID  string
 	ProjectKey string
+	// Catalog narrows a project or project page read to one catalog's
+	// project; empty reads the first catalog holding the key.
+	Catalog    navigationResourceKind
 	Tier       string
 	Offset     uint32
 	Limit      uint32
@@ -893,7 +896,29 @@ func navigationCatalogRowsThatFit[T any](rows []T, emptyPage func(kept int) any)
 }
 
 func (p navigationProjection) Project(key string) (hubapi.NavigationProjectResource, bool) {
-	project, ok := p.projects[key]
+	return p.ProjectIn("", key)
+}
+
+// projectIn finds key's project in catalog, or, with no catalog, in the first
+// catalog holding it (p.projects). A key can be in several catalogs, and a
+// session's location names the one whose project holds it.
+func (p navigationProjection) projectIn(catalog navigationResourceKind, key string) (hubcore.TreeProject, bool) {
+	if catalog == "" {
+		project, ok := p.projects[key]
+		return project, ok
+	}
+	for _, project := range p.catalogs[catalog] {
+		if project.Key == key {
+			return project, true
+		}
+	}
+	return hubcore.TreeProject{}, false
+}
+
+// ProjectIn is the project resource for key in catalog, or in the first
+// catalog holding it when catalog is empty.
+func (p navigationProjection) ProjectIn(catalog navigationResourceKind, key string) (hubapi.NavigationProjectResource, bool) {
+	project, ok := p.projectIn(catalog, key)
 	if !ok {
 		return hubapi.NavigationProjectResource{}, false
 	}
@@ -906,7 +931,13 @@ func (p navigationProjection) Project(key string) (hubapi.NavigationProjectResou
 }
 
 func (p navigationProjection) ProjectPage(key, tier string, offset uint32, limit int) (hubapi.NavigationProjectPage, error) {
-	project, ok := p.projects[key]
+	return p.ProjectPageIn("", key, tier, offset, limit)
+}
+
+// ProjectPageIn is one tier page of key's project in catalog, or in the
+// first catalog holding it when catalog is empty.
+func (p navigationProjection) ProjectPageIn(catalog navigationResourceKind, key, tier string, offset uint32, limit int) (hubapi.NavigationProjectPage, error) {
+	project, ok := p.projectIn(catalog, key)
 	if !ok {
 		return hubapi.NavigationProjectPage{}, fmt.Errorf("navigation project %q not found", key)
 	}
@@ -1200,6 +1231,7 @@ func navigationAliasLocation(id, kind string, root hubapi.NavigationSessionLocat
 		Revision:     root.Revision,
 		Ref:          ref.String(),
 		TopLevelRef:  root.TopLevelRef,
+		Catalog:      root.Catalog,
 		ProjectKey:   root.ProjectKey,
 		Tier:         root.Tier,
 		Session:      &summary,
@@ -1301,12 +1333,12 @@ func (p navigationProjection) Resource(key navigationResourceKey) (any, navigati
 		resource, err = p.CatalogPage(key.Kind, key.Offset, int(key.Limit))
 	case navigationResourceProject:
 		var ok bool
-		resource, ok = p.Project(key.ProjectKey)
+		resource, ok = p.ProjectIn(key.Catalog, key.ProjectKey)
 		if !ok {
 			err = fmt.Errorf("navigation project %q not found", key.ProjectKey)
 		}
 	case navigationResourceProjectPage:
-		resource, err = p.ProjectPage(key.ProjectKey, key.Tier, key.Offset, int(key.Limit))
+		resource, err = p.ProjectPageIn(key.Catalog, key.ProjectKey, key.Tier, key.Offset, int(key.Limit))
 	case navigationResourceLocation:
 		var ok bool
 		resource, ok = p.Location(key.ID)
@@ -1462,12 +1494,12 @@ func (p navigationProjection) buildPinSectionsContext(ctx context.Context) ([]na
 }
 
 func (p navigationProjection) indexLocationsContext(ctx context.Context) error {
-	indexRows := func(rows []hubcore.TreeNode, projectKey, tier string) {
+	indexRows := func(rows []hubcore.TreeNode, catalog navigationResourceKind, projectKey, tier string) {
 		for _, root := range rows {
 			if ctx.Err() != nil {
 				return
 			}
-			_ = p.indexLocationNodeContext(ctx, root, root, projectKey, tier, true)
+			_ = p.indexLocationNodeContext(ctx, root, root, navigationLocationAt{catalog: catalog, projectKey: projectKey, tier: tier}, true)
 		}
 	}
 	for _, kind := range navigationCatalogOrder() {
@@ -1480,19 +1512,27 @@ func (p navigationProjection) indexLocationsContext(ctx context.Context) error {
 			}
 			for _, tier := range []string{"current", "recent", "archived"} {
 				rows, _ := project.TierRows(tier)
-				indexRows(rows, project.Key, tier)
+				indexRows(rows, kind, project.Key, tier)
 			}
 		}
 	}
-	indexRows(p.live, "", "live")
+	indexRows(p.live, "", "", "live")
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	indexRows(p.needsYou, "", "needs_you")
+	indexRows(p.needsYou, "", "", "needs_you")
 	return ctx.Err()
 }
 
-func (p navigationProjection) indexLocationNodeContext(ctx context.Context, node, root hubcore.TreeNode, projectKey, tier string, topLevel bool) error {
+// navigationLocationAt is where indexLocationsContext found a top-level row: its catalog
+// and project key (both empty outside a project) and its tier.
+type navigationLocationAt struct {
+	catalog    navigationResourceKind
+	projectKey string
+	tier       string
+}
+
+func (p navigationProjection) indexLocationNodeContext(ctx context.Context, node, root hubcore.TreeNode, at navigationLocationAt, topLevel bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -1507,10 +1547,10 @@ func (p navigationProjection) indexLocationNodeContext(ctx context.Context, node
 	if _, exists := p.locations[ref.String()]; !exists {
 		// Deep links carry only the selected session's compact summary.
 		summary := navigationProjector{projection: p}.projectShallow(node)
-		p.locations[ref.String()] = hubapi.NavigationSessionLocation{GenerationID: p.inputs.GenerationID, Revision: p.inputs.Revision, Ref: ref.String(), TopLevelRef: rootRef.String(), ProjectKey: projectKey, TopLevel: topLevel, Tier: tier, PinSectionID: p.pinSectionIDFor(ref), Session: &summary}
+		p.locations[ref.String()] = hubapi.NavigationSessionLocation{GenerationID: p.inputs.GenerationID, Revision: p.inputs.Revision, Ref: ref.String(), TopLevelRef: rootRef.String(), Catalog: string(at.catalog), ProjectKey: at.projectKey, TopLevel: topLevel, Tier: at.tier, PinSectionID: p.pinSectionIDFor(ref), Session: &summary}
 	}
 	for _, child := range node.Children {
-		if err := p.indexLocationNodeContext(ctx, child, root, projectKey, tier, false); err != nil {
+		if err := p.indexLocationNodeContext(ctx, child, root, at, false); err != nil {
 			return err
 		}
 	}
