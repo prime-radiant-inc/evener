@@ -10,7 +10,7 @@ import { deriveScope } from "../../shell/statusbar/statusScope";
 import { useIsMobile } from "../../shell/useIsMobile";
 import { type OpenPaneRecord, workspaceStore } from "../../shell/workspace";
 import { navigationStore, useNavigationStore } from "../../stores/navigation/store";
-import { useSessionActivity } from "../../stores/sessionActivity";
+import { useSessionActivity, useSubagentCounts } from "../../stores/sessionActivity";
 import { useThreadsStore } from "../../stores/threads";
 import { Button, EmptyState, PaneScaffold } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
@@ -56,6 +56,7 @@ function ScopeConversation({
 }) {
   // Spines retain summary demand, not transcript or collection demand.
   const { snapshot } = useSessionActivity(scope.requestedRef);
+  const subagents = useSubagentCounts(scope.requestedRef);
   useNavigationStore((state) => state.resources);
   const model = useThreadsStore(
     useShallow((state) => {
@@ -83,7 +84,7 @@ function ScopeConversation({
     return () => view.setReadable(false);
   }, [view, readable, admitted]);
 
-  const activity = deriveScope(navigationStore.getState(), scope.requestedRef, snapshot);
+  const activity = deriveScope(navigationStore.getState(), scope.requestedRef, snapshot, subagents);
   activity.leaf.title = (imageMatches && model?.name) || scope.title;
   const readableWidth = leaf ? 440 : 400;
   const desktopWidth = readable ? readableWidth : 52;

@@ -52,7 +52,7 @@ test("closed trigger shares session counts while an open recursive tree owns onl
   const mounted = render(
     <>
       <ActivityPanel sessionRef={ref} model={model()} />
-      <JobsTab scope={deriveScope(navigationStore.getState(), ref)} />
+      <JobsTab scope={deriveScope(navigationStore.getState(), ref, null, null)} />
     </>,
   );
   await screen.findByRole("button", { name: "Activity · 3 active" });
