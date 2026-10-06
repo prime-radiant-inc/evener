@@ -43,8 +43,10 @@ func (key navigationResourceKey) canonical() navigationResourceKey {
 		canonical.Limit = canonicalNavigationLimit(key.Limit, maxNavigationCatalogRows)
 	case navigationResourceProject:
 		canonical.ProjectKey = key.ProjectKey
+		canonical.Catalog = key.Catalog
 	case navigationResourceProjectPage:
 		canonical.ProjectKey = key.ProjectKey
+		canonical.Catalog = key.Catalog
 		canonical.Tier = key.Tier
 		canonical.Offset = key.Offset
 		canonical.Limit = canonicalNavigationLimit(key.Limit, maxNavigationSectionRows)
@@ -68,7 +70,7 @@ func (key navigationResourceKey) View() navigationResourceKey {
 func navigationViewScope(key navigationResourceKey) string {
 	view := key.View()
 	encode := base64.RawURLEncoding.EncodeToString
-	return fmt.Sprintf(
+	scope := fmt.Sprintf(
 		"nav3/%s/%s/%s/%s/%s/%d/%d",
 		view.Kind,
 		encode([]byte(view.ID)),
@@ -78,6 +80,12 @@ func navigationViewScope(key navigationResourceKey) string {
 		view.Offset,
 		view.Limit,
 	)
+	// Only a catalog-narrowed read carries its catalog, so every other view
+	// keeps the scope it always had.
+	if view.Catalog != "" {
+		scope += "/catalog/" + string(view.Catalog)
+	}
+	return scope
 }
 
 func navigationEntityKey(key navigationResourceKey, kind, identity string) string {

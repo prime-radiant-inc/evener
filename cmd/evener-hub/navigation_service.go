@@ -1106,30 +1106,43 @@ func navigationLogicalFingerprintsWithContext(ctx context.Context, projection na
 			return nil, nil, err
 		}
 	}
-	for projectKey, project := range projection.projects {
-		if err := ctx.Err(); err != nil {
-			return nil, nil, err
-		}
-		// A project resource serves no archived rows (evener/archived/list does),
-		// so they are not part of its fingerprint; their count is, in the summary.
-		logical := struct {
-			Project hubapi.NavigationProjectSummary
-			Current hubapi.NavigationArray[hubapi.NavigationSessionSummary]
-			Recent  hubapi.NavigationArray[hubapi.NavigationSessionSummary]
-		}{Project: projection.projectSummary(project)}
-		current, _ := project.TierRows("current")
-		recent, _ := project.TierRows("recent")
-		logical.Current, err = navigationLogicalNodesContext(ctx, projection, current)
-		if err != nil {
-			return nil, nil, err
-		}
-		logical.Recent, err = navigationLogicalNodesContext(ctx, projection, recent)
-		if err != nil {
-			return nil, nil, err
-		}
-		key := navigationResourceKey{Kind: navigationResourceProject, ProjectKey: projectKey}
-		if err := put(key, logical, key); err != nil {
-			return nil, nil, err
+	// Each catalog's project is a resource of its own (a read naming the
+	// catalog), and the first catalog's is also the one a read by key alone
+	// returns (projection.projects).
+	keyRead := make(map[string]bool, len(projection.projects))
+	for _, catalog := range navigationCatalogOrder {
+		for _, project := range projection.catalogs[catalog] {
+			if err := ctx.Err(); err != nil {
+				return nil, nil, err
+			}
+			// A project resource serves no archived rows (evener/archived/list does),
+			// so they are not part of its fingerprint; their count is, in the summary.
+			logical := struct {
+				Project hubapi.NavigationProjectSummary
+				Current hubapi.NavigationArray[hubapi.NavigationSessionSummary]
+				Recent  hubapi.NavigationArray[hubapi.NavigationSessionSummary]
+			}{Project: projection.projectSummary(project)}
+			current, _ := project.TierRows("current")
+			recent, _ := project.TierRows("recent")
+			logical.Current, err = navigationLogicalNodesContext(ctx, projection, current)
+			if err != nil {
+				return nil, nil, err
+			}
+			logical.Recent, err = navigationLogicalNodesContext(ctx, projection, recent)
+			if err != nil {
+				return nil, nil, err
+			}
+			key := navigationResourceKey{Kind: navigationResourceProject, ProjectKey: project.Key, Catalog: catalog}
+			if err := put(key, logical, key); err != nil {
+				return nil, nil, err
+			}
+			if !keyRead[project.Key] {
+				keyRead[project.Key] = true
+				key := navigationResourceKey{Kind: navigationResourceProject, ProjectKey: project.Key}
+				if err := put(key, logical, key); err != nil {
+					return nil, nil, err
+				}
+			}
 		}
 	}
 	for ref, location := range projection.locations {
@@ -1139,7 +1152,7 @@ func navigationLogicalFingerprintsWithContext(ctx context.Context, projection na
 		key := navigationResourceKey{Kind: navigationResourceLocation, ID: ref}
 		var dep navigationResourceKey
 		if location.ProjectKey != "" {
-			dep = navigationResourceKey{Kind: navigationResourceProject, ProjectKey: location.ProjectKey}
+			dep = navigationResourceKey{Kind: navigationResourceProject, ProjectKey: location.ProjectKey, Catalog: navigationResourceKind(location.Catalog)}
 		} else if location.Tier == "live" || location.Tier == "needs_you" {
 			dep = navigationResourceKey{Kind: navigationResourceKind(location.Tier)}
 		}
