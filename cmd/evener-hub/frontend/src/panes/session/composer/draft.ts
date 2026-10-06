@@ -73,6 +73,26 @@ function isStoredComposerDraft(value: unknown): value is ComposerDraft {
   );
 }
 
+export function decodeSupportedComposerDraft(structured: string | null, legacy: string | null): ComposerDraft {
+  if (structured !== null) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(structured);
+    } catch {
+      parsed = null;
+    }
+    if (isStoredComposerDraft(parsed)) {
+      return {
+        text: parsed.text,
+        skillNames: canonicalSkillNames(parsed.skillNames),
+        ...(parsed.commandNames ? { commandNames: canonicalSkillNames(parsed.commandNames) } : {}),
+        ...(parsed.mentions ? { mentions: parsed.mentions } : {}),
+      };
+    }
+  }
+  return { text: legacy ?? "", skillNames: [] };
+}
+
 // Every localStorage access is guarded: private-mode/disabled/full storage
 // degrades silently to "no draft" rather than ever breaking the composer,
 // same convention as shell/rail/Rail.tsx's own collapsed-state persistence.
@@ -84,27 +104,7 @@ function isStoredComposerDraft(value: unknown): value is ComposerDraft {
 export function readComposerDraft(ref: string): ComposerDraft {
   try {
     const structured = localStorage.getItem(composerDraftStorageKey(ref));
-    if (structured !== null) {
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(structured);
-      } catch {
-        parsed = null;
-      }
-      // The draft is the one selection source the composer reads verbatim, so
-      // it is also the one place a corrupted or hand-edited v2 record could
-      // hand padded, empty or repeated names straight to the chips. Canonical
-      // names are the contract everywhere else; enforce it here too.
-      if (isStoredComposerDraft(parsed)) {
-        return {
-          text: parsed.text,
-          skillNames: canonicalSkillNames(parsed.skillNames),
-          ...(parsed.commandNames ? { commandNames: canonicalSkillNames(parsed.commandNames) } : {}),
-          ...(parsed.mentions ? { mentions: parsed.mentions } : {}),
-        };
-      }
-    }
-    return { text: localStorage.getItem(draftStorageKey(ref)) ?? "", skillNames: [] };
+    return decodeSupportedComposerDraft(structured, localStorage.getItem(draftStorageKey(ref)));
   } catch {
     return { text: "", skillNames: [] };
   }

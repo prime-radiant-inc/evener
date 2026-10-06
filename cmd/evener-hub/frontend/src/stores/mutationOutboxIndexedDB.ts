@@ -1,5 +1,14 @@
 import type { ComposerMention, InputItem } from "@evener/appwire-client";
 import { IDBConnection, requestResult, transactionCompletion, tryAbortTransaction } from "./idbConnection";
+import {
+  LOCAL_COMPOSITION_DATABASE_NAME,
+  LOCAL_COMPOSITION_DATABASE_VERSION,
+  MUTATION_OPTIMISTIC_STORE,
+  MUTATION_OUTBOX_STORE,
+  MUTATION_RECOVERY_STORE,
+  MUTATION_SEQUENCES_STORE,
+  registerLocalCompositionSchema,
+} from "./localCompositionSchema";
 import { ownClientId } from "./mutationClientIdentity";
 import type {
   MutationAttachment,
@@ -43,20 +52,19 @@ export interface MutationOutboxIndexedDBOptions {
   onOpenDiagnostic?: (diagnostic: MutationOutboxOpenDiagnostic) => void;
 }
 
-const DATABASE_NAME = "evener-mutation-outbox";
-// Version 3 is a compatibility fence, not a schema migration: the upgrade
-// handler below is unchanged and purely additive. The deployed version-2 code
+const DATABASE_NAME = LOCAL_COMPOSITION_DATABASE_NAME;
+// Version 4 adds the inactive browser composition stores. The deployed
+// version-2 code
 // reads a canceled row as a non-submitting FIFO head and stalls the ref's
 // queue, so this build must not share a database with it - a version-2 open
 // against this database fails with VersionError, and the old tab fails closed
 // (storage-unavailable errors) instead of silently stalling
 // (docs/design/stop-cancellation-outbox.md §8).
-const DATABASE_VERSION = 3;
-const OUTBOX_STORE = "outbox";
-const OPTIMISTIC_STORE = "optimistic";
-const RECOVERY_STORE = "recovery";
-const SEQUENCE_STORE = "sequences";
-const TARGET_SEQUENCE_INDEX = "byTargetSequence";
+const DATABASE_VERSION = LOCAL_COMPOSITION_DATABASE_VERSION;
+const OUTBOX_STORE = MUTATION_OUTBOX_STORE;
+const OPTIMISTIC_STORE = MUTATION_OPTIMISTIC_STORE;
+const RECOVERY_STORE = MUTATION_RECOVERY_STORE;
+const SEQUENCE_STORE = MUTATION_SEQUENCES_STORE;
 const STORAGE_WAIT_MS = 10_000;
 // The store scope every enqueue transaction opens: the three active record
 // stores plus the sequence store. All three record stores are locked so the
@@ -768,21 +776,7 @@ export class MutationOutboxIndexedDB {
   }
 
   #upgrade(database: IDBDatabase): void {
-    if (!database.objectStoreNames.contains(OUTBOX_STORE)) {
-      const outbox = database.createObjectStore(OUTBOX_STORE, { keyPath: "clientMutationId" });
-      outbox.createIndex(TARGET_SEQUENCE_INDEX, ["targetRef", "intentSequence"], { unique: true });
-    }
-    if (!database.objectStoreNames.contains(OPTIMISTIC_STORE)) {
-      const optimistic = database.createObjectStore(OPTIMISTIC_STORE, { keyPath: "clientMutationId" });
-      optimistic.createIndex(TARGET_SEQUENCE_INDEX, ["targetRef", "intentSequence"], { unique: true });
-    }
-    if (!database.objectStoreNames.contains(RECOVERY_STORE)) {
-      const recovery = database.createObjectStore(RECOVERY_STORE, { keyPath: "clientMutationId" });
-      recovery.createIndex(TARGET_SEQUENCE_INDEX, ["targetRef", "intentSequence"]);
-    }
-    if (!database.objectStoreNames.contains(SEQUENCE_STORE)) {
-      database.createObjectStore(SEQUENCE_STORE, { keyPath: "targetRef" });
-    }
+    registerLocalCompositionSchema(database);
   }
 
   // Record one open failure path. The try/catch is the whole contract: a

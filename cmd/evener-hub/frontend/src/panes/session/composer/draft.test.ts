@@ -4,6 +4,7 @@ import {
   type ComposerDraft,
   clearDraft,
   composerDraftStorageKey,
+  decodeSupportedComposerDraft,
   draftStorageKey,
   readComposerDraft,
   readDraft,
@@ -100,6 +101,33 @@ test("readComposerDraft returns an empty draft when nothing is stored for this r
 
 test("composerDraftStorageKey namespaces the structured draft under the v2 key convention", () => {
   expect(composerDraftStorageKey("local:01AAA")).toBe("evener.composer.draft.v2.local:01AAA");
+});
+
+test("decodeSupportedComposerDraft preserves a valid structured draft including explicit empty mentions", () => {
+  expect(
+    decodeSupportedComposerDraft(
+      JSON.stringify({
+        text: "hello /same",
+        skillNames: [" same ", "same"],
+        commandNames: ["command"],
+        mentions: [],
+      }),
+      "ignored legacy",
+    ),
+  ).toEqual({
+    text: "hello /same",
+    skillNames: ["same"],
+    commandNames: ["command"],
+    mentions: [],
+  });
+});
+
+test.each([
+  ["invalid JSON", "not-json", '{"text":"literal /same"}'],
+  ["invalid structured shape", '{"text":4,"skillNames":[]}', "/same remains prose"],
+  ["absent structured bytes", null, '{"text":"JSON-looking v1"} /slash'],
+] as const)("decodeSupportedComposerDraft uses literal v1 bytes for %s", (_name, structured, legacy) => {
+  expect(decodeSupportedComposerDraft(structured, legacy)).toEqual({ text: legacy, skillNames: [] });
 });
 
 test("writeComposerDraft round-trips text and canonical skill selections", () => {

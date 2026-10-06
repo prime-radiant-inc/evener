@@ -1,8 +1,16 @@
 // @vitest-environment node
 
-import { describe, expect, test } from "vitest";
+import { describe, expect, expectTypeOf, test } from "vitest";
 import type { ItemModel, ThreadModel } from "../../model";
-import type { PendingTurnsDraftPort, PendingTurnsThreadsPort } from "./pendingTurns";
+import type {
+  DraftAuthorityToken,
+  DraftBackingIdentity,
+  DraftSettlement,
+  DraftSettlementGuard,
+  PendingTurnsDraftPort,
+  PendingTurnsThreadsPort,
+  SubmittedDraft,
+} from "./pendingTurns";
 import { awaitingFirstFrameSend, blockedEntries, createPendingTurnsStore, recoveryEntries } from "./pendingTurns";
 import type { ClientIdentity, MutationOptimisticRecord } from "./records";
 import { outboxRecord, recoveryRecord, threadModel } from "./testing";
@@ -63,6 +71,42 @@ function fakeDraftPort(initial: Partial<FakeDraftState> = {}): PendingTurnsDraft
     },
   };
 }
+
+test("browser draft authority DTOs remain framework-free complete value contracts", () => {
+  expectTypeOf<DraftAuthorityToken>().toEqualTypeOf<{
+    readonly namespaceIncarnation: string;
+    readonly persistentRevision: number;
+    readonly ownerRevision: number;
+  }>();
+  expectTypeOf<DraftBackingIdentity>().toEqualTypeOf<
+    | { readonly kind: "draft" }
+    | {
+        readonly kind: "recovery";
+        readonly recoveryId: string;
+        readonly writeVersion: number;
+        readonly replacementEpoch: number;
+      }
+  >();
+  expectTypeOf<DraftSettlementGuard>().toEqualTypeOf<{
+    readonly token: DraftAuthorityToken;
+    readonly compositionOwnerId: string;
+    readonly backing: DraftBackingIdentity;
+  }>();
+  expectTypeOf<DraftSettlement>().toEqualTypeOf<{
+    cleared: boolean;
+    draftUnchanged: boolean;
+    persistence: "committed" | "pending";
+  }>();
+  expectTypeOf<SubmittedDraft>().toMatchTypeOf<{
+    draftRevisionAtStart: number;
+    text: string;
+    skillNames: readonly string[];
+    commandNames?: readonly string[];
+    settlementGuard?: DraftSettlementGuard;
+    persistentRevisionAtStart?: number;
+    stillOwnsEdit?: () => boolean;
+  }>();
+});
 
 describe("createPendingTurnsStore", () => {
   test("settling a send retains a draft whose command selection changed but text and skills match", () => {
