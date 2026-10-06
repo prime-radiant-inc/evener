@@ -446,15 +446,15 @@ func TestCovValidatedOutputStatsForRecord(t *testing.T) {
 	}
 
 	// Nil record — should return stats without mismatch check.
-	total, retainedStart, err := validatedOutputStatsForRecord(path, nil)
+	total, visibleStart, err := validatedOutputStatsForRecord(path, nil)
 	if err != nil {
 		t.Fatalf("nil rec: %v", err)
 	}
 	if total != 12 { // "hello world\n" = 12 bytes
 		t.Fatalf("total = %d, want 12", total)
 	}
-	if retainedStart != 0 {
-		t.Fatalf("retainedStart = %d, want 0", retainedStart)
+	if visibleStart != 0 {
+		t.Fatalf("visibleStart = %d, want 0", visibleStart)
 	}
 
 	// Terminal record with matching output bytes — OK.

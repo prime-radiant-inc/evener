@@ -220,9 +220,9 @@ func TestOutputFileStatsAndGrepSeeOnlyTheVisibleBytes(t *testing.T) {
 	if err != nil || total != visibleStart+int64(len("new-1\nnew-2\n")) || firstVisible != visibleStart {
 		t.Fatalf("OutputFileStats = %d, %d, %v; want first visible %d", total, firstVisible, err, visibleStart)
 	}
-	matches, err := GrepOutputFileLimit(path, regexp.MustCompile("old|new"), 1024, 0, 1024)
-	if err != nil {
-		t.Fatal(err)
+	matches, grepTotal, err := GrepOutputFileLimit(path, regexp.MustCompile("old|new"), 1024, 0, 1024)
+	if err != nil || grepTotal != total {
+		t.Fatalf("GrepOutputFileLimit total = %d, %v; want %d", grepTotal, err, total)
 	}
 	if len(matches) != 2 || matches[0].ByteOffset != visibleStart || matches[0].Line != "new-1" {
 		t.Fatalf("GrepOutputFileLimit = %+v, want the two visible lines from %d", matches, visibleStart)

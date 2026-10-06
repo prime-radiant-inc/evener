@@ -674,13 +674,15 @@ func readOutputFileView(path string) (outputView, error) {
 
 // GrepOutputFileLimit greps a closed output file's visible bytes, reporting
 // lifetime offsets, with the same bounded line handling as
-// OutputStore.GrepLimitLineBytes.
-func GrepOutputFileLimit(path string, re *regexp.Regexp, limitBytes int, maxMatches int, maxLineBytes int) ([]Match, error) {
+// OutputStore.GrepLimitLineBytes. It also returns the output's lifetime total,
+// so a caller can check it against the job record without reading the
+// metadata a second time.
+func GrepOutputFileLimit(path string, re *regexp.Regexp, limitBytes int, maxMatches int, maxLineBytes int) (matches []Match, total int64, err error) {
 	view, err := readOutputFileView(path)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	return grepFileLimitAtOpen(path, re, limitBytes, maxMatches, maxLineBytes, view.visibleStart, func(path string) (io.ReadCloser, error) {
+	matches, err = grepFileLimitAtOpen(path, re, limitBytes, maxMatches, maxLineBytes, view.visibleStart, func(path string) (io.ReadCloser, error) {
 		f, err := os.Open(path)
 		if err != nil {
 			return nil, err
@@ -691,6 +693,7 @@ func GrepOutputFileLimit(path string, re *regexp.Regexp, limitBytes int, maxMatc
 		}
 		return f, nil
 	})
+	return matches, view.total, err
 }
 
 // RemoveOutputArtifacts removes an output file and the metadata files that
@@ -936,18 +939,9 @@ func outputPendingMetaPath(metaPath string) string {
 	return metaPath + ".pending"
 }
 
-// readOutputMetaForFile conservatively treats legacy retained metadata that
-// lacks RetainedStartPartial as a partial prefix whenever it has pruned bytes.
-func readOutputMetaForFile(fs afero.Fs, path string, outputPath string, retained int64) (total int64, retainedStart int64, retainedStartPartial bool, err error) {
-	meta, err := readOutputMetaRecordForFile(fs, path, outputPath, retained)
-	if err != nil {
-		return 0, 0, false, err
-	}
-	return meta.TotalBytes, meta.RetainedStart, outputMetaRetainedStartPartial(meta), nil
-}
-
-// readOutputViewForFile is readOutputMetaForFile for readers: it also says
-// where the visible output begins.
+// readOutputViewForFile reads a closed output file's validated metadata as
+// readers see it: the lifetime total, where the file starts, and where the
+// visible output begins.
 func readOutputViewForFile(fs afero.Fs, path string, outputPath string, retained int64) (outputView, error) {
 	meta, err := readOutputMetaRecordForFile(fs, path, outputPath, retained)
 	if err != nil {
