@@ -54,6 +54,20 @@ func (s *Session) memorySaveInstructionsEnabled() bool {
 	return s.memoryContextEnabled() && s.canInstructTool("memory_write") && s.canInstructTool("memory_edit") && s.canInstructTool("memory_delete")
 }
 
+// memoryIndexFile is the scope's index, the one file the refresh reads.
+const memoryIndexFile = "MEMORY.md"
+
+// readMemoryIndexFile reads scope's index through env.
+func readMemoryIndexFile(env *execenv.LocalExecutionEnvironment) ([]byte, error) {
+	return env.ReadFileRaw(filepath.Join(env.WorkingDirectory(), memoryIndexFile))
+}
+
+// memoryIndexBaseline is the index the session already knows for a scope:
+// a current index's bytes, or that the session deleted its own index.
+type memoryIndexBaseline struct {
+	status, index string
+}
+
 type memoryProjection struct {
 	Scope, Status, Content string
 	Truncated              bool
@@ -288,7 +302,7 @@ func (s *Session) readMemoryIndex(scope string) memoryProjection {
 	if err := s.beforeMemoryIO(scope, "index_read"); err != nil {
 		return p
 	}
-	raw, err := env.ReadFileRaw(filepath.Join(env.WorkingDirectory(), "MEMORY.md"))
+	raw, err := readMemoryIndexFile(env)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
 		p.Status = "missing"
@@ -347,7 +361,15 @@ func (s *Session) appendMemoryProjection(p memoryProjection) {
 	if s.memoryEverProjected == nil {
 		s.memoryEverProjected = make(map[string]bool)
 	}
-	s.setMemoryBaselineLocked(p)
+	// A current index, appended or already in context, becomes the baseline.
+	// Any other state forgets the scope, so the next current read delivers
+	// the full index again: the model was last told there is no index, or
+	// that it could not be read.
+	if p.Status == "current" {
+		s.setMemoryBaselineLocked(p.Scope, memoryIndexBaseline{status: p.Status, index: p.Index})
+	} else {
+		delete(s.memoryBaseline, p.Scope)
+	}
 	prior, exists := s.memoryLastProjected[p.Scope]
 	if (exists && prior == p) || (!s.memoryEverProjected[p.Scope] && (p.Status == "missing" || p.Status == "revoked" || (p.Status == "current" && p.Content == ""))) {
 		s.memoryMu.Unlock()
@@ -362,24 +384,17 @@ func (s *Session) appendMemoryProjection(p memoryProjection) {
 	s.appendTurnWithTranscriptMessage(schema.TurnMemoryContext, msg, msg)
 }
 
-// setMemoryBaselineLocked records what a projected observation tells the
-// session about its scope. A current index, appended or already in context,
-// becomes the baseline. Any other state forgets the scope, so the next current
-// read delivers the full index again: the model was last told there is no
-// index, or that it could not be read. Callers hold memoryMu.
-func (s *Session) setMemoryBaselineLocked(p memoryProjection) {
-	if p.Status != "current" {
-		delete(s.memoryBaseline, p.Scope)
-		return
-	}
+// setMemoryBaselineLocked records baseline as the index the session knows for
+// scope. Callers hold memoryMu.
+func (s *Session) setMemoryBaselineLocked(scope string, baseline memoryIndexBaseline) {
 	if s.memoryBaseline == nil {
-		s.memoryBaseline = make(map[string]memoryProjection)
+		s.memoryBaseline = make(map[string]memoryIndexBaseline)
 	}
-	s.memoryBaseline[p.Scope] = memoryProjection{Scope: p.Scope, Status: p.Status, Index: p.Index}
+	s.memoryBaseline[scope] = baseline
 }
 
 // memoryBaselineFor returns the index the session already knows for scope.
-func (s *Session) memoryBaselineFor(scope string) (memoryProjection, bool) {
+func (s *Session) memoryBaselineFor(scope string) (memoryIndexBaseline, bool) {
 	s.memoryMu.Lock()
 	defer s.memoryMu.Unlock()
 	baseline, known := s.memoryBaseline[scope]
@@ -391,9 +406,9 @@ func (s *Session) memoryBaselineFor(scope string) (memoryProjection, bool) {
 // session's edit or an index it created where the session had deleted its
 // own, is not delivered mid-session. An index that went missing or could not
 // be read is projected as that state, as at any boundary.
-func (s *Session) publishKnownMemoryIndex(baseline, p memoryProjection) {
+func (s *Session) publishKnownMemoryIndex(baseline memoryIndexBaseline, p memoryProjection) {
 	switch {
-	case p.Status == baseline.Status && p.Index == baseline.Index:
+	case p.Status == baseline.status && p.Index == baseline.index:
 	case p.Status == "current":
 	default:
 		s.appendMemoryProjection(p)
@@ -403,11 +418,14 @@ func (s *Session) publishKnownMemoryIndex(baseline, p memoryProjection) {
 // noteOwnMemoryIndexWrite makes the index the session just wrote, edited or
 // deleted its baseline for scope, so no later boundary echoes the session's
 // own change back to it. The index is read back through env because an edit
-// only names its replacement. If the read fails the scope is forgotten and the
-// next boundary delivers the full index. A read already in flight started
-// before this write, so its result is discarded.
+// only names its replacement, which keeps the baseline equal to the file on
+// disk. Another session writing between this session's write and the
+// read-back is folded into the baseline unseen; that race is accepted because
+// any later change still arrives at the next turn. If the read fails the scope
+// is forgotten and the next boundary delivers the full index. A read already
+// in flight started before this write, so its result is discarded.
 func (s *Session) noteOwnMemoryIndexWrite(env *execenv.LocalExecutionEnvironment, scope string) {
-	raw, err := env.ReadFileRaw(filepath.Join(env.WorkingDirectory(), "MEMORY.md"))
+	raw, err := readMemoryIndexFile(env)
 	s.memoryMu.Lock()
 	defer s.memoryMu.Unlock()
 	if flight := s.memoryIndexFlights[scope]; flight != nil {
@@ -415,14 +433,11 @@ func (s *Session) noteOwnMemoryIndexWrite(env *execenv.LocalExecutionEnvironment
 	}
 	switch {
 	case err == nil:
-		s.setMemoryBaselineLocked(memoryProjection{Scope: scope, Status: "current", Index: string(raw)})
+		s.setMemoryBaselineLocked(scope, memoryIndexBaseline{status: "current", index: string(raw)})
 	case errors.Is(err, os.ErrNotExist):
 		// Unlike a projected missing index, the session knows it deleted its
 		// own index, so its absence is the baseline.
-		if s.memoryBaseline == nil {
-			s.memoryBaseline = make(map[string]memoryProjection)
-		}
-		s.memoryBaseline[scope] = memoryProjection{Scope: scope, Status: "missing"}
+		s.setMemoryBaselineLocked(scope, memoryIndexBaseline{status: "missing"})
 	default:
 		delete(s.memoryBaseline, scope)
 	}
