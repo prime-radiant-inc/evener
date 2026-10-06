@@ -56,7 +56,7 @@ The lab runs real models with your configured provider credentials, so it is nev
   "Please don't change anything; just answer. You didn't save X to memory. Did you consider it, and what led you not to?"
 ```
 
-`ask` resumes the session the stage ran in and asks it a question. For a stage that resumed an earlier one (for example `delegate-reads` stage B), that is the earlier stage's session. A stage that ran in another workspace needs `--workspace` (for example `--workspace work2` for `sed-quirk` stage B). `--effort` (default `high`) and `--timeout` (default 600 seconds) apply too. Use it whenever a trial does something you didn't want, and ask before you reword a prompt. In past rounds the answers named the actual cause:
+`ask` resumes the stage's root session, by the id recorded in its `grade.json`, and asks it a question. For a stage that resumed an earlier one (for example `delegate-reads` stage B), that is the earlier stage's session. A stage that ran in another workspace needs `--workspace` (for example `--workspace work2` for `sed-quirk` stage B). `--effort` (default `high`) and `--timeout` (default 600 seconds) apply too. Use it whenever a trial does something you didn't want, and ask before you reword a prompt. In past rounds the answers named the actual cause:
 - "I converted the constraint into an action, satisfied it, and checked it off."
 - A skip rule read as a license to skip.
 - A trigger read as a gate that a short task never trips.

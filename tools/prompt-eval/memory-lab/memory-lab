@@ -31,7 +31,7 @@ A scenario dir holds scenario.json and fixture/. scenario.json:
                "trace": [{"name": "...", "tool": "shell", "regex": "go vet"}],
                "memory": [{"name": "...", "regex": "(?i)vet", "scope": "personal"}],  # scope (personal|project|session) and "absent": true optional
                "fixture": "fixture2", "workspace": "work2",  # optional: run in another project (both required together)
-               "resume": "A",  # optional: continue stage A's session
+               "resume": "A",  # optional: continue stage A's root session (by the id in A.grade.json)
                "transcripts": [{"name": "...", "regex": "over every transcript in the stage's state dir",
                                 "subagents_only": true}],  # optional: only delegates this stage started
                "whiteboard": [{"name": "...", "regex": "(?m)^Now:", "max_chars": 600, "min_lines": 3}],
@@ -151,21 +151,29 @@ def make_workspace(fixture, work, xdg):
         raise RuntimeError(f"fixture git init failed: {out}")
 
 
-def evener_command(binpath, model, work, state, effort, prompt, max_rounds=None, resume=False, disable_memory=False):
+def evener_command(binpath, model, work, state, effort, prompt, max_rounds=None, session_id=None, resume_last=False,
+                   disable_memory=False):
+    """The evener argv for a fresh session, or one resuming session_id (or, for a grade
+    file that predates recorded ids, the state dir's most recent session)."""
     cmd = [binpath, "--model", model, "--dir", work, "--state-dir", state, "--reasoning-effort", effort]
     if max_rounds is not None:
         cmd += ["--max-rounds", str(max_rounds)]
     cmd.append("--verbose")
     # Resume keeps the saved session's (empty) plugin selection; evener rejects
-    # --enabled-plugins alongside --resume-last.
-    cmd += ["--resume-last"] if resume else ["--enabled-plugins", ""]
+    # --enabled-plugins alongside --resume and --resume-last.
+    if session_id:
+        cmd += ["--resume", session_id]
+    elif resume_last:
+        cmd.append("--resume-last")
+    else:
+        cmd += ["--enabled-plugins", ""]
     if disable_memory:
         cmd.append("--disable-memory")
     cmd.append(prompt)
     return cmd
 
 
-def run_session(args, binpath, arm, scen, stage, trial):
+def run_session(args, binpath, arm, scen, stage, trial, session_ids):
     """Prepares the stage's workspace, runs its evener session, and returns where things ended up."""
     # A stage with its own "fixture" runs in a separate checkout (another
     # project) that shares the trial's memory root.
@@ -186,10 +194,11 @@ def run_session(args, binpath, arm, scen, stage, trial):
             how = f"timed out after {COMMAND_TIMEOUT}s" if rc == "timeout" else f"exited {rc}"
             raise RuntimeError(f"before hook {how} in {trial}: {out[-500:]}")
     name = stage["name"]
-    # "resume": "<stage>" continues that stage's session instead of starting a fresh one.
+    # "resume": "<stage>" continues that stage's root session instead of starting a fresh one.
     state = os.path.join(trial, "sessions", stage.get("resume", name))
-    cmd = evener_command(binpath, args.model, work, state, args.effort, stage["prompt"],
-                         max_rounds=args.max_rounds, resume=bool(stage.get("resume")), disable_memory=arm == "off")
+    cmd = evener_command(binpath, args.model, work, state, args.effort, stage["prompt"], max_rounds=args.max_rounds,
+                         session_id=session_ids.get(stage.get("resume")), resume_last=bool(stage.get("resume")),
+                         disable_memory=arm == "off")
     events = os.path.join(trial, f"{name}.events.ndjson")
     start = time.time()
     with open(events, "w") as ev, open(os.path.join(trial, f"{name}.stdout"), "w") as so:
@@ -285,6 +294,26 @@ def stage_delegate_transcripts(state, started):
     return "".join(out)
 
 
+def root_session_id(events, state):
+    """The root session a stage ran: the session_id on the first SESSION_START in its own
+    event stream (delegates start later), else the newest non-subagent meta in its state dir."""
+    try:
+        with open(events, errors="replace") as f:
+            for line in f:
+                if line.startswith("{") and '"SESSION_START"' in line:
+                    ev = json.loads(line)
+                    if ev.get("kind") == "SESSION_START" and ev.get("session_id"):
+                        return ev["session_id"]
+    except (OSError, ValueError):
+        pass
+    roots = []
+    for path in find_files(os.path.join(state, "sessions"), ".meta.json"):
+        meta = read_meta(path)
+        if meta and not meta.get("is_subagent"):
+            roots.append((meta.get("created_at", ""), os.path.basename(path).removesuffix(".meta.json")))
+    return max(roots)[1] if roots else None
+
+
 def whiteboard_note(state):
     """The root session's agent whiteboard (agent_note in its meta.json)."""
     note = ""
@@ -347,6 +376,7 @@ def grade_stage(label, arm, scen, stage, trial, session):
                     grade["check_errors"][spec["name"]] = f"{type(e).__name__}: {e}"
     # ask resumes from here; a resumed stage ran in the earlier stage's state dir.
     grade["state"] = session["state"]
+    grade["session_id"] = root_session_id(session["events"], session["state"])
     grade["whiteboard"] = inputs["note"]
     grade["final_message"] = messages[-1][:2000] if messages else ""
     return write_grade(trial, grade)
@@ -365,7 +395,7 @@ def run_trial(args, label, binpath, arm, scen, rep):
     infrastructure failure: that stage and every later stage fail."""
     trial = os.path.join(args.out, label, arm, os.path.basename(scen), f"r{rep}")
     spec = load_scenario(scen)
-    grades, failure = [], None
+    grades, failure, session_ids = [], None, {}
     try:
         os.makedirs(os.path.join(trial, "xdg"))
         make_workspace(base_fixture(scen, spec), os.path.join(trial, "work"), os.path.join(trial, "xdg"))
@@ -376,12 +406,13 @@ def run_trial(args, label, binpath, arm, scen, rep):
             grades.append(failed_grade(label, arm, scen, st, trial, failure))
             continue
         try:
-            session = run_session(args, binpath, arm, scen, st, trial)
+            session = run_session(args, binpath, arm, scen, st, trial, session_ids)
         except Exception as e:
             failure = f"{type(e).__name__}: {e}"
             grades.append(failed_grade(label, arm, scen, st, trial, failure))
             continue
         grades.append(grade_stage(label, arm, scen, st, trial, session))
+        session_ids[st["name"]] = grades[-1]["session_id"]
         if grades[-1].get("error"):
             failure = f"stage {st['name']} failed: {grades[-1]['error']}"
     return grades
@@ -390,7 +421,9 @@ def run_trial(args, label, binpath, arm, scen, rep):
 def load_scenario(scen):
     """Reads scen/scenario.json, exiting with a clear message on a stage that can't run as written."""
     spec = json.load(open(os.path.join(scen, "scenario.json")))
-    for st in spec["stages"]:
+    for i, st in enumerate(spec["stages"]):
+        if st.get("resume") and st["resume"] not in [earlier["name"] for earlier in spec["stages"][:i]]:
+            sys.exit(f"memory-lab: {scen} stage {st['name']}: \"resume\" must name an earlier stage")
         if st.get("fixture") and not st.get("workspace"):
             sys.exit(f"memory-lab: {scen} stage {st['name']}: \"fixture\" needs a \"workspace\" "
                      "(otherwise the stage silently reuses the base work dir)")
@@ -493,7 +526,9 @@ def cmd_ask(args):
     events = os.path.join(trial, f"{stage}.ask{n}.events.ndjson")
     # A grade file without "state" means the stage ran in sessions/<stage>.
     state = g.get("state") or os.path.join(trial, "sessions", stage)
-    cmd = evener_command(os.path.abspath(args.bin), args.model, work, state, args.effort, args.question, resume=True)
+    # A grade file without "session_id" can only fall back to the state dir's most recent session.
+    cmd = evener_command(os.path.abspath(args.bin), args.model, work, state, args.effort, args.question,
+                         session_id=g.get("session_id"), resume_last=not g.get("session_id"))
     with open(events, "w") as ev:
         if run_bounded(cmd, work, env, args.timeout, stdout=subprocess.DEVNULL, stderr=ev)[0] == "timeout":
             print(f"memory-lab: ask timed out after {args.timeout}s")
