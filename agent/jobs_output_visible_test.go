@@ -1,50 +1,74 @@
 package agent
 
 import (
-	"errors"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
 // A closed output file can still hold bytes older than the retention cap;
-// the closed-file readers take the first visible lifetime offset and must
-// never return anything before it.
+// the closed-file reader starts at the first visible lifetime offset and
+// never returns anything before it.
 func TestClosedOutputFileReadersStartAtTheVisibleStart(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "job.log")
-	if err := os.WriteFile(path, []byte("old-a\nold-b\nnew-1\nnew-2\n"), 0o644); err != nil {
+	// Two caps of output stay in the file before compaction; readers see only
+	// the last cap.
+	out, err := jobstore.OpenOutput(path, int64(len("new-1\nnew-2\n")))
+	if err != nil {
 		t.Fatal(err)
 	}
-	// The file starts at lifetime offset 100; readers see from "new-1".
-	total := int64(100 + len("old-a\nold-b\nnew-1\nnew-2\n"))
-	visibleStart := int64(100 + len("old-a\nold-b\n"))
+	for _, chunk := range []string{"old-a\nold-b\n", "new-1\nnew-2\n"} {
+		if _, err := out.Append([]byte(chunk)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := out.Close(); err != nil {
+		t.Fatal(err)
+	}
+	total := int64(len("old-a\nold-b\nnew-1\nnew-2\n"))
 
-	tail, gotTotal, truncated, err := tailOutputFile(path, 1024, total, visibleStart)
+	tail, gotTotal, truncated, err := readClosedJobOutput(path, nil, 1024, false)
 	if err != nil || tail != "new-1\nnew-2\n" || gotTotal != total || !truncated {
 		t.Fatalf("tail = %q, %d, %v, %v; want the visible bytes, truncated", tail, gotTotal, truncated, err)
 	}
-	head, _, truncated, err := headOutputFile(path, 6, total, visibleStart)
+	head, _, truncated, err := readClosedJobOutput(path, nil, 6, true)
 	if err != nil || head != "new-1\n" || !truncated {
 		t.Fatalf("head = %q, %v, %v; want the first visible line, truncated", head, truncated, err)
 	}
 }
 
-// A file holding more bytes than its lifetime total grew after its stats were
-// read, so total-size no longer names its first byte. The readers refuse it
-// rather than hide a prefix computed from the stale total.
-func TestClosedOutputFileReadersRefuseAFileLargerThanItsTotal(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "job.log")
-	if err := os.WriteFile(path, []byte("new-1\nnew-2\nlater\n"), 0o644); err != nil {
+// Closed job output is read through one opened regular file, never through a
+// symlink planted at the output path.
+func TestReadOutputRefusesASymlinkedOutputFile(t *testing.T) {
+	jm := newTestJM(t)
+	t.Cleanup(func() { _ = jm.close() })
+	const jobID = "job_symlinked_output"
+	target := filepath.Join(t.TempDir(), "elsewhere.log")
+	if err := os.WriteFile(target, []byte("not this job's output\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	total := int64(len("new-1\nnew-2\n"))
-
-	if tail, _, _, err := tailOutputFile(path, 1024, total, 0); !errors.Is(err, jobstore.ErrOutputChangedDuringRead) {
-		t.Fatalf("tail = %q, %v; want ErrOutputChangedDuringRead", tail, err)
+	outputPath := filepath.Join(jm.dir, "jobs", jobID+".log")
+	if err := os.MkdirAll(filepath.Dir(outputPath), 0o700); err != nil {
+		t.Fatal(err)
 	}
-	if head, _, _, err := headOutputFile(path, 1024, total, 0); !errors.Is(err, jobstore.ErrOutputChangedDuringRead) {
-		t.Fatalf("head = %q, %v; want ErrOutputChangedDuringRead", head, err)
+	if err := os.Symlink(target, outputPath); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Unix(1, 0).UTC()
+	if err := jm.store.Append(jobstore.Event{
+		Kind: jobstore.EventJobStarted, JobID: jobID, Type: jobstore.JobShell, Status: jobstore.StatusRunning,
+		OwnerSessionID: testOwnerSessionID, VisibleToSession: testOwnerSessionID, StartedAt: &start, OutputPath: outputPath,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if content, _, _, err := jm.readOutput(jobID, 1024); err == nil {
+		t.Fatalf("readOutput through a symlink = %q, nil; want an error", content)
+	}
+	if content, _, _, err := jm.readOutputHead(jobID, 1024); err == nil {
+		t.Fatalf("readOutputHead through a symlink = %q, nil; want an error", content)
 	}
 }

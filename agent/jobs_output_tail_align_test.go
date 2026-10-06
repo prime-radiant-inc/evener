@@ -22,14 +22,14 @@ func tailWindowProjection(out string, total int64) JobOutputPage {
 	return page
 }
 
-func TestTailOutputFileAlignsMidRuneWindowStart(t *testing.T) {
+func TestReadClosedJobOutputTailAlignsMidRuneWindowStart(t *testing.T) {
 	t.Parallel()
 	// Two 4-byte emoji: a 6-byte window starts 2 bytes into the first one.
 	path := writeOutputFixture(t, "😀😀")
 
-	out, total, truncated, err := tailOutputFile(path, 6, 8, 0)
+	out, total, truncated, err := readClosedJobOutput(path, nil, 6, false)
 	if err != nil {
-		t.Fatalf("tailOutputFile: %v", err)
+		t.Fatalf("readClosedJobOutput: %v", err)
 	}
 	if !utf8.ValidString(out) {
 		t.Fatalf("tail is not valid UTF-8: %x", out)
@@ -48,13 +48,13 @@ func TestTailOutputFileAlignsMidRuneWindowStart(t *testing.T) {
 
 // A window that already begins on a rune boundary is returned whole: alignment
 // costs a window nothing when there is nothing to align.
-func TestTailOutputFileWindowOnRuneBoundaryUnchanged(t *testing.T) {
+func TestReadClosedJobOutputTailWindowOnRuneBoundaryUnchanged(t *testing.T) {
 	t.Parallel()
 	path := writeOutputFixture(t, "😀😀")
 
-	out, total, truncated, err := tailOutputFile(path, 4, 8, 0)
+	out, total, truncated, err := readClosedJobOutput(path, nil, 4, false)
 	if err != nil {
-		t.Fatalf("tailOutputFile: %v", err)
+		t.Fatalf("readClosedJobOutput: %v", err)
 	}
 	if out != "😀" || total != 8 || !truncated {
 		t.Fatalf("tail = (%q, %d, %v), want (😀, 8, true)", out, total, truncated)
@@ -66,7 +66,7 @@ func TestTailOutputFileWindowOnRuneBoundaryUnchanged(t *testing.T) {
 
 // Pure ASCII output is byte-identical at every window size: every byte is a rune
 // start, so no window can lose one.
-func TestTailOutputFileASCIIWindowsByteIdentical(t *testing.T) {
+func TestReadClosedJobOutputTailASCIIWindowsByteIdentical(t *testing.T) {
 	t.Parallel()
 	const content = "abcdefghij"
 	path := writeOutputFixture(t, content)
@@ -76,9 +76,9 @@ func TestTailOutputFileASCIIWindowsByteIdentical(t *testing.T) {
 		if n < len(content) {
 			want = content[len(content)-n:]
 		}
-		out, _, _, err := tailOutputFile(path, n, int64(len(content)), 0)
+		out, _, _, err := readClosedJobOutput(path, nil, n, false)
 		if err != nil {
-			t.Fatalf("tailOutputFile(%d): %v", n, err)
+			t.Fatalf("readClosedJobOutput(%d): %v", n, err)
 		}
 		if out != want {
 			t.Fatalf("tail(%d) = %q, want %q", n, out, want)
@@ -89,13 +89,13 @@ func TestTailOutputFileASCIIWindowsByteIdentical(t *testing.T) {
 // A window narrower than the rune it lands in yields an EMPTY tail with honest
 // offsets, rather than a lone replacement character: retainedStart equals the
 // total, so the caption reads "0 of 4 bytes" and the content agrees.
-func TestTailOutputFileWindowNarrowerThanRuneIsEmpty(t *testing.T) {
+func TestReadClosedJobOutputTailWindowNarrowerThanRuneIsEmpty(t *testing.T) {
 	t.Parallel()
 	path := writeOutputFixture(t, "😀")
 
-	out, total, truncated, err := tailOutputFile(path, 2, 4, 0)
+	out, total, truncated, err := readClosedJobOutput(path, nil, 2, false)
 	if err != nil {
-		t.Fatalf("tailOutputFile: %v", err)
+		t.Fatalf("readClosedJobOutput: %v", err)
 	}
 	if out != "" || total != 4 || !truncated {
 		t.Fatalf("tail = (%q, %d, %v), want (\"\", 4, true)", out, total, truncated)
@@ -112,7 +112,7 @@ func TestTailOutputFileWindowNarrowerThanRuneIsEmpty(t *testing.T) {
 // whole retained file that happens to start with continuation bytes is never
 // cut (we did not make that cut), and a run of continuation bytes longer than
 // any rune could leave loses only the three a 4-byte rune could account for.
-func TestTailOutputFileKeepsInvalidUTF8(t *testing.T) {
+func TestReadClosedJobOutputTailKeepsInvalidUTF8(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name    string
@@ -145,9 +145,9 @@ func TestTailOutputFileKeepsInvalidUTF8(t *testing.T) {
 			path := writeOutputFixture(t, string(tc.content))
 			total := int64(len(tc.content))
 
-			out, gotTotal, _, err := tailOutputFile(path, tc.bytes, total, 0)
-			if err != nil {
-				t.Fatalf("tailOutputFile: %v", err)
+			out, gotTotal, _, err := readClosedJobOutput(path, nil, tc.bytes, false)
+			if err != nil || gotTotal != total {
+				t.Fatalf("readClosedJobOutput: total %d, %v; want total %d", gotTotal, err, total)
 			}
 			if out != string(tc.want) {
 				t.Fatalf("tail = %x, want %x", out, tc.want)

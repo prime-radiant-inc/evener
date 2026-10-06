@@ -40,7 +40,7 @@ func TestStableShellNotificationExcerpt_OutputPathError(t *testing.T) {
 		OutputBytes: 0,
 	}
 	got := stableShellNotificationExcerpt("/some/store/jobs.jsonl", rec)
-	// validatedOutputStatsForRecord will fail to stat the nonexistent path.
+	// readClosedJobOutput fails to open the nonexistent path.
 	if got.text != "" {
 		t.Fatalf("expected empty excerpt for stat error, got %#v", got)
 	}

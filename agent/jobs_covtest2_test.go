@@ -435,108 +435,29 @@ func TestCovArmPendingTerminalNotifications(t *testing.T) {
 	})
 }
 
-// TestCovValidatedOutputStatsForRecord covers validatedOutputStatsForRecord
-// (jobs.go lines 2175-2184): the mismatch path and the nil-record path.
-func TestCovValidatedOutputStatsForRecord(t *testing.T) {
+// TestCovReadClosedJobOutput covers readClosedJobOutput: an invalid limit, a
+// missing file, a total that disagrees with the record, and a whole read.
+func TestCovReadClosedJobOutput(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "test.log")
-	if err := os.WriteFile(path, []byte("hello world\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Nil record — should return stats without mismatch check.
-	total, visibleStart, err := validatedOutputStatsForRecord(path, nil)
-	if err != nil {
-		t.Fatalf("nil rec: %v", err)
-	}
-	if total != 12 { // "hello world\n" = 12 bytes
-		t.Fatalf("total = %d, want 12", total)
-	}
-	if visibleStart != 0 {
-		t.Fatalf("visibleStart = %d, want 0", visibleStart)
-	}
-
-	// Terminal record with matching output bytes — OK.
-	rec := &jobstore.JobRecord{Status: jobstore.StatusCompleted, OutputBytes: 12}
-	total, _, err = validatedOutputStatsForRecord(path, rec)
-	if err != nil {
-		t.Fatalf("matching bytes: %v", err)
-	}
-	if total != 12 {
-		t.Fatalf("total = %d, want 12", total)
-	}
-
-	// Terminal record with mismatched output bytes — error.
-	rec.OutputBytes = 99
-	_, _, err = validatedOutputStatsForRecord(path, rec)
-	if err == nil {
-		t.Fatal("mismatched bytes should return error")
-	}
-	if !strings.Contains(err.Error(), "does not match") {
-		t.Fatalf("error should mention mismatch: %v", err)
-	}
-
-	// Non-existent file — error.
-	_, _, err = validatedOutputStatsForRecord(filepath.Join(dir, "nonexistent.log"), nil)
-	if err == nil {
-		t.Fatal("non-existent file should return error")
-	}
-
-	// Non-terminal record — no mismatch check (only terminal records are checked).
-	rec.Status = jobstore.StatusRunning
-	rec.OutputBytes = 99
-	total, _, err = validatedOutputStatsForRecord(path, rec)
-	if err != nil {
-		t.Fatalf("non-terminal rec should not check mismatch: %v", err)
-	}
-	if total != 12 {
-		t.Fatalf("total = %d, want 12", total)
-	}
-}
-
-// TestCovTailOutputFileWithOpen covers tailOutputFileWithOpen
-// (jobs.go lines 2252+): negative tailBytes error and open error.
-func TestCovTailOutputFileWithOpen(t *testing.T) {
-	t.Parallel()
-	// Negative tailBytes.
-	_, _, _, err := tailOutputFileWithOpen("/nonexistent", -1, 0, 0, func(string) (jobOutputReadFile, error) {
-		t.Fatal("open should not be called for negative tailBytes")
-		return nil, nil
-	})
-	if err == nil {
-		t.Fatal("negative tailBytes should return error")
-	}
-
-	// Open error.
-	_, _, _, err = tailOutputFileWithOpen("/nonexistent", 100, 0, 0, func(path string) (jobOutputReadFile, error) {
-		return nil, errors.New("open failed")
-	})
-	if err == nil || !strings.Contains(err.Error(), "open output") {
-		t.Fatalf("open error should wrap: %v", err)
-	}
-
-	// Successful read.
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.log")
 	content := "line1\nline2\nline3\n"
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	out, total, truncated, err := tailOutputFileWithOpen(path, 100, int64(len(content)), 0, func(p string) (jobOutputReadFile, error) {
-		return os.Open(p)
-	})
-	if err != nil {
-		t.Fatalf("successful read: %v", err)
+	if _, _, _, err := readClosedJobOutput(path, nil, -1, false); !errors.Is(err, jobstore.ErrInvalidLimit) {
+		t.Fatalf("negative limit: %v, want ErrInvalidLimit", err)
 	}
-	if total != int64(len(content)) {
-		t.Fatalf("total = %d, want %d", total, len(content))
+	if _, _, _, err := readClosedJobOutput(filepath.Join(dir, "missing.log"), nil, 100, false); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing file: %v, want ErrNotExist", err)
 	}
-	if truncated {
-		t.Fatal("should not be truncated")
+	rec := &jobstore.JobRecord{Status: jobstore.StatusCompleted, OutputBytes: 99}
+	if _, _, _, err := readClosedJobOutput(path, rec, 100, false); err == nil {
+		t.Fatal("a total that disagrees with the record should be refused")
 	}
-	if out != content {
-		t.Fatalf("output = %q, want complete content %q", out, content)
+	out, total, truncated, err := readClosedJobOutput(path, nil, 100, false)
+	if err != nil || out != content || total != int64(len(content)) || truncated {
+		t.Fatalf("whole read = %q, %d, %v, %v; want the complete content", out, total, truncated, err)
 	}
 }
 
