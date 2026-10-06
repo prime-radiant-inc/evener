@@ -79,6 +79,7 @@ import {
   resumeStopBaseline,
   resumeStopFence,
   retryBlockedMutation,
+  sendResumesLocalModel,
   setMutationStorageForTests,
   setSessionCacheAdapterForTests,
   subscribeMutationPersistence,
@@ -11302,7 +11303,7 @@ test("a Stop in flight arms the recovery fence for the drain window", async () =
 // failed turn's Retry - reaches enqueueMutationIntent with no such read, so a
 // blockedUnknown row must keep turn/start refused there exactly as the surfaces
 // render it (the fence-refusal test above).
-test("a merely-resumable local session's send refuses while a blockedUnknown row stands", async () => {
+test("a local session with a blockedUnknown row takes the Send-resumes face and parks the send", async () => {
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);
   const fake = connectMutationClient();
@@ -11336,10 +11337,320 @@ test("a merely-resumable local session's send refuses while a blockedUnknown row
   });
   await storage.markUnknown(uncertain.clientMutationId, "blockedUnknown");
   await refreshPendingTurnsProjection(ref);
+  // R09: the delivery-uncertain row no longer keeps Send refused - this shape
+  // is the Send-resumes face. The send is admitted and PARKS (dispatch stays
+  // closed while the obligation stands); the store drives the resume, and while
+  // it is in flight nothing reaches the wire.
+  fake.on("thread/resume", () => new Promise<never>(() => {}));
+  await threadsStore.getState().send(ref, "text");
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+  const parked = await storage.listOutbox(ref);
+  expect(parked.map((record) => record.method)).toContain("turn/start");
+  // Only turn/start is carved out: every other fenced verb still refuses with
+  // its own message on the new face.
+  await expect(threadsStore.getState().steer(ref, "steer text")).rejects.toThrow(
+    "Steer isn't available until this session is resumed",
+  );
+  await expect(threadsStore.getState().queue(ref, "queue text")).rejects.toThrow(
+    "Queue isn't available until this session is resumed",
+  );
+});
+
+// Reviewer B finding 3: the recovery-resend branch (a failed turn's Retry,
+// QueueStrip's retry) bypasses the send funnel and would otherwise park on the
+// Send-resumes face with no driver. The resend now runs resumeFencedForSend
+// after its durable write, exactly as the send funnel does.
+test("a recovery resend on a Send-resumes ref parks and drives the resume", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  const ref = "local:resend-fenced";
+  fake.on("thread/read", () =>
+    readResponse(ref, {
+      status: { type: "notLoaded" },
+      evener: {
+        ref,
+        capabilities: { ...CAPABILITIES, send: false },
+        mutationStateAuthoritative: false,
+        resumeRequired: true,
+        queue: { revision: 0 },
+      },
+    }),
+  );
+  await threadsStore.getState().ensureThread(ref);
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
+  const outbox = await storage.enqueueIntent({
+    targetRef: ref,
+    threadId: `thr_${ref}`,
+    method: "turn/start",
+    payload: { ref, input: [{ type: "text", text: "retry me" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "retry me" }] },
+  });
+  const recovery = await storage.transferToRecovery(outbox.clientMutationId, "rejected");
+  expect(recovery).toBeDefined();
+  if (!recovery) throw new Error("expected the recovery row to be durable");
+  await refreshPendingTurnsProjection(ref);
+  fake.on("thread/resume", () => new Promise<never>(() => {}));
+  await resendRecoveryMutation(recovery.clientMutationId, ref, "send", "retry me", []);
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+});
+
+// The drive is idempotent per ref: a second send landing while the first
+// resume is in flight parks its row and rides the first drive's reconciliation
+// rather than starting a second thread/resume (which AppwireClient would reject
+// anyway). Both rows stay parked while the obligation stands.
+test("a second send while the Send-resumes drive is in flight parks and rides the first resume", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  const ref = "local:drive-idempotent";
+  fake.on("thread/read", () =>
+    readResponse(ref, {
+      status: { type: "notLoaded" },
+      evener: {
+        ref,
+        capabilities: { ...CAPABILITIES, send: false },
+        mutationStateAuthoritative: false,
+        resumeRequired: true,
+        queue: { revision: 0 },
+      },
+    }),
+  );
+  await threadsStore.getState().ensureThread(ref);
+  await refreshPendingTurnsProjection(ref);
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
+  fake.on("thread/resume", () => new Promise<never>(() => {}));
+  await Promise.all([threadsStore.getState().send(ref, "one"), threadsStore.getState().send(ref, "two")]);
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+  const parked = await storage.listOutbox(ref);
+  expect(parked.filter((record) => record.method === "turn/start")).toHaveLength(2);
+});
+
+// The parked rows keep their FIFO order when the resume drains them: the ref's
+// sequence allocations are re-used in the order they were made, so the first
+// pressed message is the first turn/start on the wire.
+test("the parked Send-resumes rows drain in FIFO order after the resume", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectFakeClient("connecting");
+  const ref = "local:fifo-rows";
+  let resumed = false;
+  const fenced = () =>
+    readResponse(ref, {
+      status: { type: "notLoaded" },
+      evener: {
+        ref,
+        capabilities: { ...CAPABILITIES, send: false },
+        mutationStateAuthoritative: false,
+        resumeRequired: true,
+        queue: { revision: 0 },
+      },
+    });
+  const idle = () =>
+    readResponse(ref, {
+      status: { type: "idle" },
+      evener: { ref, capabilities: CAPABILITIES, mutationStateAuthoritative: true, queue: { revision: 1 } },
+    });
+  fake.on("thread/read", () => (resumed ? idle() : fenced()));
+  let releaseResume!: () => void;
+  const heldResume = new Promise<ReturnType<typeof idle>>((resolve) => {
+    releaseResume = () => {
+      resumed = true;
+      resolve(idle());
+    };
+  });
+  fake.on("thread/resume", () => heldResume);
+  const texts: string[] = [];
+  fake.on("turn/start", (params) => {
+    const input = params.input as Array<{ text?: string }> | undefined;
+    texts.push(input?.[0]?.text ?? "");
+    return {
+      receipt: mutationReceipt(params.clientMutationId),
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+    };
+  });
+  fake.emitReady();
+  await threadsStore.getState().ensureThread(ref);
+  await threadsStore.getState().send(ref, "one");
+  await threadsStore.getState().send(ref, "two");
+  await flushIndexedDBUntil(() => false);
+  expect(texts).toEqual([]);
+  releaseResume();
+  await flushIndexedDBUntil(() => texts.length >= 2);
+  expect(texts).toEqual(["one", "two"]);
+});
+
+// The admission carve-out is turn/start for the Send-resumes face only. A
+// restartRequired daemon still refuses: Send cannot start it at all, so the
+// pressed row must not park.
+test("a restartRequired local ref still refuses the Send-resumes admission", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  const ref = "local:restart-required";
+  fake.on("thread/read", () =>
+    readResponse(ref, {
+      status: { type: "restartRequired" },
+      evener: {
+        ref,
+        capabilities: { ...CAPABILITIES, send: false },
+        mutationStateAuthoritative: false,
+        queue: { revision: 0 },
+      },
+    }),
+  );
+  await threadsStore.getState().ensureThread(ref);
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
   await expect(threadsStore.getState().send(ref, "text")).rejects.toThrow(
     "Send isn't available until this session is resumed",
   );
+  expect(await storage.listOutbox(ref)).toEqual([]);
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+});
+
+// The parked Send-resumes row is drained by whichever dispatch trigger releases
+// last: the resume path's own refresh tail, the outbox's resync scan, or a ready
+// discovery. Every trigger re-reads the outbox and re-arms the ref, so the row
+// must reach the wire exactly once: one turn/start total, no matter how many
+// triggers fire around it, and nothing once it is gone.
+test("the parked Send-resumes row drains exactly once across the resume tail, a resync, and a ready discovery", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectFakeClient("connecting");
+  const ref = "local:exactly-once-tails";
+  let resumed = false;
+  const fenced = () =>
+    readResponse(ref, {
+      status: { type: "notLoaded" },
+      evener: {
+        ref,
+        capabilities: { ...CAPABILITIES, send: false },
+        mutationStateAuthoritative: false,
+        resumeRequired: true,
+        queue: { revision: 0 },
+      },
+    });
+  const idle = () =>
+    readResponse(ref, {
+      status: { type: "idle" },
+      evener: { ref, capabilities: CAPABILITIES, mutationStateAuthoritative: true, queue: { revision: 1 } },
+    });
+  fake.on("thread/read", () => (resumed ? idle() : fenced()));
+  // The resume is held so the parked window is the one under test.
+  let releaseResume!: () => void;
+  const heldResume = new Promise<ReturnType<typeof idle>>((resolve) => {
+    releaseResume = () => {
+      resumed = true;
+      resolve(idle());
+    };
+  });
+  fake.on("thread/resume", () => heldResume);
+  let sends = 0;
+  fake.on("turn/start", (params) => {
+    sends += 1;
+    return {
+      receipt: mutationReceipt(params.clientMutationId),
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+    };
+  });
+  fake.emitReady();
+  await threadsStore.getState().ensureThread(ref);
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
+  await threadsStore.getState().send(ref, "hello");
+  // The row parks while the resume is held: nothing has dispatched.
+  await flushIndexedDBUntil(() => false);
+  expect(sends).toBe(0);
+  // Two more triggers fire while the row is parked: neither may send it.
+  fake.emitNotification({ method: "evener/thread/resync", params: { ref, threadId: `thr_${ref}` } });
+  notifyReadyForMutationDispatch([ref]);
+  await flushIndexedDBUntil(() => false);
+  expect(sends).toBe(0);
+  // Release the resume: its refresh tail reconciles the ref and dispatches once.
+  releaseResume();
+  await flushIndexedDBUntil(() => sends >= 1);
+  expect(sends).toBe(1);
+  // Fire both other triggers again: the row is gone, so neither dispatches a
+  // second send.
+  fake.emitNotification({ method: "evener/thread/resync", params: { ref, threadId: `thr_${ref}` } });
+  notifyReadyForMutationDispatch([ref]);
+  await flushIndexedDBUntil(() => false);
+  expect(sends).toBe(1);
+});
+
+// The harder order of the same property: the resume's OWN post-resume hydration
+// is held open, and the resync tail and a ready discovery each run first. Either
+// may send the parked row; releasing the held refresh afterwards must not send a
+// second. One turn/start total, whatever order the three triggers release in.
+test("the parked Send-resumes row dispatches exactly once when the resync and ready tails release before the resume's own refresh", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectFakeClient("connecting");
+  const ref = "local:exactly-once-held-refresh";
+  let resumed = false;
+  let holdRefreshRead = false;
+  let refreshReadHeld = false;
+  let releaseRefreshRead!: () => void;
+  const fenced = () =>
+    readResponse(ref, {
+      status: { type: "notLoaded" },
+      evener: {
+        ref,
+        capabilities: { ...CAPABILITIES, send: false },
+        mutationStateAuthoritative: false,
+        resumeRequired: true,
+        queue: { revision: 0 },
+      },
+    });
+  const idle = () =>
+    readResponse(ref, {
+      status: { type: "idle" },
+      evener: { ref, capabilities: CAPABILITIES, mutationStateAuthoritative: true, queue: { revision: 1 } },
+    });
+  fake.on("thread/read", () => {
+    if (holdRefreshRead) {
+      holdRefreshRead = false;
+      refreshReadHeld = true;
+      return new Promise<ReturnType<typeof idle>>((resolve) => {
+        releaseRefreshRead = () => resolve(resumed ? idle() : fenced());
+      });
+    }
+    return resumed ? idle() : fenced();
+  });
+  fake.on("thread/resume", () => {
+    resumed = true;
+    // The resume's own refresh hydration is the read the driver issues next;
+    // hold exactly that one.
+    holdRefreshRead = true;
+    return idle();
+  });
+  let sends = 0;
+  fake.on("turn/start", (params) => {
+    sends += 1;
+    return {
+      receipt: mutationReceipt(params.clientMutationId),
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+    };
+  });
+  fake.emitReady();
+  await threadsStore.getState().ensureThread(ref);
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
+  await threadsStore.getState().send(ref, "hello");
+  await flushIndexedDBUntil(() => refreshReadHeld);
+  // The parked row cannot dispatch while the resume's refresh is held.
+  expect(sends).toBe(0);
+  // The other two tails release first; each may clear the obligation and send.
+  fake.emitNotification({ method: "evener/thread/resync", params: { ref, threadId: `thr_${ref}` } });
+  notifyReadyForMutationDispatch([ref]);
+  await flushIndexedDBUntil(() => sends >= 1);
+  expect(sends).toBe(1);
+  // Release the held refresh: its reconciliation must not send a second.
+  releaseRefreshRead();
+  await flushIndexedDBUntil(() => false);
+  expect(sends).toBe(1);
 });
 
 // RoboRev Medium: the dispatch gate exempted EVERY queued mutation once the
@@ -11461,9 +11772,13 @@ test("a merely-resumable local session's head turn/start dispatches ahead of a q
   expect(hasQueuedNonSend(ref)).toBe(true);
   expect(resumeOnlyLocalModel(ref)).toBe(false);
   expect(resumeOnlyLocalDispatchable(ref)).toBe(true);
-  await expect(threadsStore.getState().send(ref, "another")).rejects.toThrow(
-    "Send isn't available until this session is resumed",
-  );
+  // R09: a NEW send minted behind the queued non-send row is still not the fold,
+  // but it is the Send-resumes face: admitted and parked while the store drives
+  // the resume. Before R09 this admission refused it outright.
+  expect(sendResumesLocalModel(ref)).toBe(true);
+  fake.on("thread/resume", () => new Promise<never>(() => {}));
+  await threadsStore.getState().send(ref, "another");
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
 });
 
 // Part 2's predicate: a queued, not-yet-attempted NON-turn/start row parks at

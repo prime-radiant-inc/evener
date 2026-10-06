@@ -26,7 +26,8 @@ type MutationOutboxOperation =
   | "transferToRecovery"
   | "updateRecoveryInput"
   | "discardRecovery"
-  | "resendRecovery";
+  | "resendRecovery"
+  | "retargetOutbox";
 
 export interface MutationOutboxIndexedDBOptions {
   indexedDB?: IDBFactory;
@@ -423,6 +424,61 @@ export class MutationOutboxIndexedDB {
   async listTargetRefs(): Promise<string[]> {
     const [outbox, optimistic] = await Promise.all([this.listOutbox(), this.listOptimistic()]);
     return [...new Set([...outbox, ...optimistic].map((record) => record.targetRef))].sort();
+  }
+
+  // R09: a store-driven resume can return a different identity, and the rows
+  // parked under the superseded ref can never dispatch again (nothing names that
+  // ref), so they follow the pane to the resumed ref. targetRef and payload.ref
+  // are rewritten and a fresh sequence is allocated under the new ref (keeping
+  // their relative order), while the clientMutationId is PRESERVED: the resumed
+  // hydration's reconciliation and every settle lookup key on it. Their matching
+  // optimistic copies move too so the new ref's queue strip still shows them.
+  // Canceled rows stay behind - a Stop canceled them, and only an explicit Retry
+  // on the identity that owns them revives one. Callers re-target only while the
+  // old ref's dispatch is held closed by the recovery obligation, so no row here
+  // is mid-dispatch.
+  async retargetOutbox(fromRef: string, toRef: string): Promise<MutationOutboxRecord[]> {
+    if (fromRef === toRef) return [];
+    return this.#write([OUTBOX_STORE, OPTIMISTIC_STORE, SEQUENCE_STORE], "retargetOutbox", async (transaction) => {
+      const outboxStore = transaction.objectStore(OUTBOX_STORE);
+      const optimisticStore = transaction.objectStore(OPTIMISTIC_STORE);
+      const sequenceStore = transaction.objectStore(SEQUENCE_STORE);
+      // One read of the new ref's sequence row, then consecutive numbering for
+      // the whole batch, then one put - the lists are sorted, so order is kept.
+      const sequence = await requestResult<TargetSequence | undefined>(sequenceStore.get(toRef));
+      let lastSequence = sequence?.lastSequence ?? 0;
+      // The single rewrite both loops share: a fresh sequence, the new target
+      // ref, and payload.ref. The clientMutationId is deliberately untouched.
+      const move = async (store: IDBObjectStore, record: MutationRecord): Promise<MutationRecord> => {
+        lastSequence += 1;
+        const retargeted: MutationRecord = {
+          ...record,
+          targetRef: toRef,
+          payload: { ...record.payload, ref: toRef },
+          intentSequence: lastSequence,
+        };
+        await requestResult(store.put(retargeted));
+        return retargeted;
+      };
+      const rows = await requestResult<MutationOutboxRecord[]>(outboxStore.getAll());
+      const eligible = rows
+        .filter((record) => record.targetRef === fromRef && record.state !== "canceled")
+        .sort((left, right) => left.intentSequence - right.intentSequence);
+      // The accepted-but-unreflected copies follow too, whether or not their
+      // outbox row is still present: the resumed ref's reconciliation settles
+      // them by clientMutationId, and the new ref's strip renders them.
+      const optimisticRows = await requestResult<MutationOptimisticRecord[]>(optimisticStore.getAll());
+      const optimisticEligible = optimisticRows
+        .filter((record) => record.targetRef === fromRef)
+        .sort((left, right) => left.intentSequence - right.intentSequence);
+      const moved: MutationOutboxRecord[] = [];
+      for (const record of eligible) moved.push((await move(outboxStore, record)) as MutationOutboxRecord);
+      for (const record of optimisticEligible) await move(optimisticStore, record);
+      if (lastSequence !== (sequence?.lastSequence ?? 0)) {
+        await requestResult(sequenceStore.put({ ...sequence, targetRef: toRef, lastSequence }));
+      }
+      return moved;
+    });
   }
 
   async getOptimistic(clientMutationId: string): Promise<MutationOptimisticRecord | undefined> {

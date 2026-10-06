@@ -110,6 +110,13 @@ export function readComposerDraft(ref: string): ComposerDraft {
   }
 }
 
+// A draft with nothing to send: no prose and no selections. The one predicate
+// the writer and the carry share, so an empty draft is never persisted and a
+// blank source never moves.
+function isBlankDraft(value: ComposerDraft): boolean {
+  return value.text.trim() === "" && value.skillNames.length === 0 && !value.commandNames?.length;
+}
+
 // The text half of the structured draft, for callers that only compose prose
 // (the dev harness's seeded panes, and tests reading back what they typed).
 export function readDraft(ref: string): string {
@@ -127,7 +134,7 @@ export function readDraft(ref: string): string {
 export function writeComposerDraft(ref: string, value: ComposerDraft): void {
   markDraftEdited(ref);
   try {
-    if (value.text.trim() === "" && value.skillNames.length === 0 && !value.commandNames?.length) {
+    if (isBlankDraft(value)) {
       localStorage.removeItem(composerDraftStorageKey(ref));
       localStorage.removeItem(draftStorageKey(ref));
     } else {
@@ -153,6 +160,22 @@ export function writeDraft(ref: string, value: string): void {
 export function clearDraft(ref: string): void {
   markDraftEdited(ref);
   clearPersistedDraft(ref);
+}
+
+// A store-driven resume can return a different identity, and the pane follows
+// it. The draft a user typed while that resume was in flight is stored under
+// the OLD ref (persistDraft keys by ref), while the incoming pane's composer
+// starts on the NEW ref's own draft - so without this the newer draft would be
+// dropped at the ref change. Move it across, never clobbering: a draft the new
+// ref already holds wins, and an empty outgoing draft is a no-op. The old ref's
+// copy is left in place (returning to that identity still finds it).
+export function carryComposerDraft(fromRef: string, toRef: string): void {
+  if (fromRef === toRef) return;
+  const from = readComposerDraft(fromRef);
+  if (isBlankDraft(from)) return;
+  const to = readComposerDraft(toRef);
+  if (!isBlankDraft(to)) return;
+  writeComposerDraft(toRef, from);
 }
 
 // Recovery persistence owns the text in IndexedDB. Removing its redundant
