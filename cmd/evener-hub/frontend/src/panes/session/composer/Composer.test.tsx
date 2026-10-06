@@ -26,7 +26,7 @@ import type { MutationOutboxRecord } from "../../../stores/mutationOutbox";
 import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
 import { prefsStore, resetPrefsStoreForTests } from "../../../stores/prefs";
 import { sessionActivitySnapshot } from "../../../stores/sessionActivity";
-import { activitySummary } from "../../../stores/sessionActivityTestUtils";
+import { answerActivityRead } from "../../../stores/sessionActivityTestUtils";
 import { holdNextWriteTransaction } from "../../../stores/testing/stalledIndexedDB";
 import {
   readMutationPersistence,
@@ -915,11 +915,7 @@ test.each([false, true])("repeated composer /status targets its ref, phone=%s", 
     {},
     {
       focused: true,
-      prepare: (fake) =>
-        fake.on("evener/thread/activity/read", (params) => ({
-          ...activitySummary(params.ref),
-          scope: params.scope ?? "session",
-        })),
+      prepare: (fake) => fake.on("evener/thread/activity/read", answerActivityRead),
     },
   );
   act(() => {
@@ -1041,7 +1037,7 @@ test("the real live Composer mount discovers initial activity without a test-sup
   fake.on("evener/thread/activity/read", (params) => {
     // Discovery is the session read; the subtree read is the subagent count's own.
     (params.scope === "subtree" ? subtreeRefs : activityRefs).push(params.ref);
-    return { ...activitySummary(params.ref), scope: params.scope ?? "session" };
+    return answerActivityRead(params);
   });
   await threadsStore.getState().ensureThread(ref);
   expect(activityPanelStore.getState().entries.has(ref)).toBe(false);
@@ -1077,7 +1073,7 @@ test("a saved notLoaded session with sending enabled discovers activity while it
   fake.on("evener/thread/activity/read", (params) => {
     // Discovery is the session read; the subtree read is the subagent count's own.
     (params.scope === "subtree" ? subtreeRefs : activityRefs).push(params.ref);
-    return { ...activitySummary(params.ref), scope: params.scope ?? "session" };
+    return answerActivityRead(params);
   });
   await threadsStore.getState().ensureThread(ref);
 
@@ -3587,7 +3583,7 @@ test("a saved local notLoaded session keeps controls and one discovery owner at 
         fake.on("evener/thread/activity/read", (params) => {
           // Discovery is the session read; the subtree read is the subagent count's own.
           (params.scope === "subtree" ? subtreeRefs : activityRefs).push(params.ref);
-          return { ...activitySummary(params.ref), scope: params.scope ?? "session" };
+          return answerActivityRead(params);
         });
       },
     },

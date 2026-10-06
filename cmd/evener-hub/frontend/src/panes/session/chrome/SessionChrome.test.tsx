@@ -1115,8 +1115,7 @@ test("triggerless chrome shares summary ownership and refreshes its menu on type
   // The menu counts subagents at every depth: the subtree read, which the
   // subagent count owns apart from the session's discovery read.
   fake.on("evener/thread/activity/read", ({ scope }) => ({
-    ...activitySummary(ref),
-    scope: scope ?? "session",
+    ...activitySummary(ref, scope),
     // The session's own delegate count never moves; only the subtree's
     // does, so the label can only follow the subtree count.
     delegates:
@@ -1153,9 +1152,7 @@ test("triggerless chrome shares summary ownership and refreshes its menu on type
   await waitFor(() => expect(sessionReads()).toHaveLength(2));
   await waitFor(() => expect(subtreeReads()).toHaveLength(2));
   await settleActivityDiscovery(ref);
-  await waitFor(() =>
-    expect(sessionActivitySnapshot(fake, ref, "subtree", "count")?.summary?.delegates.active).toBe(3),
-  );
+  await waitFor(() => expect(sessionActivitySnapshot(fake, ref, "subtree")?.summary?.delegates.active).toBe(3));
   await user.click(screen.getByRole("button", { name: /session actions/i }));
   expect(await screen.findByRole("menuitem", { name: "Overview · 3 active" })).toBeTruthy();
   expect(

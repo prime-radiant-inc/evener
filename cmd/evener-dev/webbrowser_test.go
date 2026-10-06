@@ -231,7 +231,32 @@ func TestBrowserGateSuccessIsConcise(t *testing.T) {
 		want.WriteString("PASS  web-" + guard + " (0.0s)\n")
 	}
 	if tg.stdout.String() != want.String() || tg.stderr.Len() != 0 {
-		t.Fatalf("stdout = %q, stderr = %q; want only the eight verdicts", tg.stdout.String(), tg.stderr.String())
+		t.Fatalf("stdout = %q, stderr = %q; want one verdict per guard", tg.stdout.String(), tg.stderr.String())
+	}
+}
+
+// The memory-refresh guard is part of the canonical browser gate: registered
+// in verdict order before the never-signalled tail, and launched as the
+// standard node guard so its own Vite dev server boots inside the gate's
+// scratch. This is the registry pin the gate's own spec has no other test for.
+func TestBrowserGuardIncludesMemoryGuard(t *testing.T) {
+	if !slices.Contains(browserGuards, "memoryguard") {
+		t.Fatalf("memoryguard missing from browserGuards: %q", browserGuards)
+	}
+	for i, guard := range browserGuards {
+		if guard == "memoryguard" && i >= len(browserGuards)-3 {
+			t.Fatalf("memoryguard must precede the never-signalled tail: %q", browserGuards)
+		}
+	}
+	spec := browserGuardSpec("memoryguard", filepath.Join(t.TempDir(), "root"))
+	if spec.name != "memoryguard" || !slices.Equal(spec.argv, []string{"node", "scripts/memoryguard/run.mjs"}) {
+		t.Fatalf("memoryguard spec = %+v", spec)
+	}
+	if spec.dir != frontendDir {
+		t.Fatalf("memoryguard dir = %q, want %q", spec.dir, frontendDir)
+	}
+	if spec.needsBuild {
+		t.Fatalf("memoryguard needsBuild = true; it is a node guard like its sibling guards")
 	}
 }
 

@@ -120,7 +120,7 @@ test("raw-only watch summary enrichment rebuilds the derived map", () => {
 test("transcript retains its shared collection demand after tab disposal and publishes retained recovery metadata", async () => {
   const client = activityClient();
   const context = { ...activityContext(SESSION_REF), availability: "retained" as const };
-  client.on("evener/thread/activity/read", () => ({ ...activitySummary(SESSION_REF), context }));
+  client.on("evener/thread/activity/read", ({ scope }) => ({ ...activitySummary(SESSION_REF, scope), context }));
   client.on("evener/thread/jobs/list", () => ({
     context,
     scope: "session",
