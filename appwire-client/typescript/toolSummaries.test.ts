@@ -3,7 +3,15 @@
 import { expect, test } from "vitest";
 import { housekeepingAction } from "./housekeepingSteps";
 import { type ToolWireCall, toolWireCwd, toolWireStep } from "./testing/toolWireFixtures";
-import { mcpToolParts, type ToolStep, toolFamily, toolStepProgress, toolStepSummary, words } from "./toolSummaries";
+import {
+  mcpToolParts,
+  type ToolStep,
+  toolFamily,
+  toolStepProgress,
+  toolStepSummary,
+  toolStepWords,
+  words,
+} from "./toolSummaries";
 
 // Every case reads a settled step the daemon actually sends
 // (agent/testdata/toolwire), merged as a client holds it. The core tools'
@@ -59,6 +67,73 @@ test.each<[ToolWireCall, string]>([
   ["call_worktree_adopt", "Adopted worktree lane"],
 ])("says %s as %s", (call, summary) => {
   expect(toolStepSummary(toolWireStep(call), { cwd: toolWireCwd() })).toBe(summary);
+});
+
+test("routes memory tool words, summaries, progress and family through the shared table", () => {
+  const cases: [
+    string,
+    Record<string, unknown>,
+    string | undefined,
+    string,
+    string,
+    ReturnType<typeof toolStepWords>,
+  ][] = [
+    [
+      "memory_write",
+      { scope: "personal", file_path: "implementation-delegation.md" },
+      undefined,
+      "Wrote memory personal/implementation-delegation.md",
+      "Writing memory personal/implementation-delegation.md",
+      { verb: "Wrote memory", target: "personal/implementation-delegation.md" },
+    ],
+    [
+      "memory_edit",
+      { scope: "project", file_path: "MEMORY.md", old_string: "old", new_string: "new" },
+      undefined,
+      "Edited memory project/MEMORY.md · +1 -1",
+      "Editing memory project/MEMORY.md",
+      { verb: "Edited memory", target: "project/MEMORY.md", detail: "+1 -1" },
+    ],
+    [
+      "memory_read",
+      { scope: "session", file_path: "notes.md", offset: 1, limit: 40 },
+      "line 1\nline 2",
+      "Read memory session/notes.md · lines 1-40",
+      "Reading memory session/notes.md",
+      { verb: "Read memory", target: "session/notes.md", detail: "lines 1-40" },
+    ],
+    [
+      "memory_search",
+      { scope: "personal", pattern: "pattern", path: "guides" },
+      "one\ntwo\nthree\n",
+      'Searched memory for "pattern" in personal/guides · 3 hits',
+      'Searching memory for "pattern" in personal/guides',
+      { verb: "Searched memory for", target: '"pattern"', after: "in personal/guides", detail: "3 hits" },
+    ],
+    [
+      "memory_delete",
+      { scope: "project", file_path: "old.md" },
+      undefined,
+      "Removed memory project/old.md",
+      "Removing memory project/old.md",
+      { verb: "Removed memory", target: "project/old.md" },
+    ],
+  ];
+  for (const [toolName, args, output, settled, progress, structuredWords] of cases) {
+    const step = { toolName, argumentsJSON: JSON.stringify(args), output };
+    expect(toolFamily(toolName)).toBe("memory");
+    expect(toolStepWords(step)).toEqual(structuredWords);
+    expect(toolStepSummary(step)).toBe(settled);
+    expect(toolStepProgress(step)).toBe(progress);
+  }
+  expect(toolFamily("memory_write")).toBe("memory");
+  expect(
+    toolStepWords({
+      toolName: "memory_search",
+      argumentsJSON: JSON.stringify({ scope: "personal", pattern: "pattern", path: "." }),
+      output: "one\ntwo\nthree\n",
+    }),
+  ).toEqual({ verb: "Searched memory for", target: '"pattern"', after: "in personal", detail: "3 hits" });
 });
 
 // A tool no summary covers, an MCP tool among them, never shows its raw name.

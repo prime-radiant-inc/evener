@@ -23,6 +23,7 @@ import "./webTools";
 import "./useSkillTool";
 import "./jobTools";
 import "./jobWatch";
+import "./memoryTools";
 import "./subagentModule";
 import "./askUser";
 import "./taskCard";

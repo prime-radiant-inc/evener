@@ -402,6 +402,17 @@ export {
   schemaPathKind,
 } from "./launchSchema";
 export { marketplaceSourceLabel } from "./marketplaceSourceLabel";
+export {
+  type MemoryStep,
+  memoryDeleteSummary,
+  memoryEditSummary,
+  memoryFileTarget,
+  memoryMutation,
+  memoryProgress,
+  memoryReadSummary,
+  memorySearchSummary,
+  memoryWriteSummary,
+} from "./memorySteps";
 export type {
   CapabilitySource,
   HistoryState,
@@ -544,7 +555,7 @@ export {
   steeringNotificationFragments,
   stripSystemReminder,
 } from "./steeringNotifications";
-export { composeStepWords, type StepWords } from "./stepWords";
+export { BINARY_PAYLOAD_HEADER, composeStepWords, type StepWords } from "./stepWords";
 export type { SteerRoute, SubmitRoute } from "./submitRouting";
 export {
   canDrainQueue,
@@ -635,7 +646,6 @@ export {
 export {
   applyPatchSummary,
   askUserSummary,
-  BINARY_PAYLOAD_HEADER,
   delegateSummary,
   editFileSummary,
   fallbackToolSummary,
