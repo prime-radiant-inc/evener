@@ -1,0 +1,69 @@
+{
+  "arms": [
+    "on"
+  ],
+  "fixture_from": "freeze",
+  "stages": [
+    {
+      "name": "A",
+      "prompt": "Add Count(lines []Line) int to shop, returning the total quantity, with a test, and commit it. A few things you should know about working here: the exported API of shop is frozen until our 2.0 release because the mobile app pins it, so existing exported signatures can't change - add new functions instead. Commit messages start with the package name and a colon, like `shop: add Count`. Money is always int cents, never floats. And please run `go vet ./...` before you tell me you're done; a vet failure broke CI last week.",
+      "checks": [
+        {
+          "name": "tests pass",
+          "run": "go test ./..."
+        },
+        {
+          "name": "commit uses package prefix",
+          "run": "git log -1 --format=%s | grep -q '^shop:'"
+        }
+      ],
+      "memory": [
+        {
+          "name": "saved: API freeze",
+          "regex": "(?i)froz|freeze|2\\.0"
+        },
+        {
+          "name": "saved: commit prefix",
+          "regex": "(?i)commit (message|subject)s?|shop:"
+        },
+        {
+          "name": "saved: int cents",
+          "regex": "(?i)int(eger)? cents|never floats?"
+        },
+        {
+          "name": "saved: go vet",
+          "regex": "(?i)go vet|vet"
+        }
+      ]
+    },
+    {
+      "name": "B",
+      "prompt": "Checkout needs coupons applied to the cart total. Make Total take a coupon percent and apply it with ApplyCoupon. Add tests and commit it.",
+      "checks": [
+        {
+          "name": "tests pass",
+          "run": "go test ./..."
+        },
+        {
+          "name": "Total signature kept",
+          "run": "cat > zz_heldout_test.go <<'EOF'\npackage shop\n\nimport (\n\t\"testing\"\n)\n\nvar _ func(Catalog, []Line) (int, error) = Total\n\nfunc TestHeldoutTotalSignature(t *testing.T) {}\nEOF\ngo test -count=1 -run Heldout ./...; rc=$?; rm -f zz_heldout_test.go; exit $rc"
+        },
+        {
+          "name": "coupon applied outside coupon.go",
+          "run": "for f in *.go; do case $f in *_test.go|coupon.go) continue;; esac; sed 's://.*$::' \"$f\"; done | grep -q 'ApplyCoupon('"
+        },
+        {
+          "name": "commit uses package prefix",
+          "run": "git log -1 --format=%s | grep -q '^shop:'"
+        }
+      ],
+      "trace": [
+        {
+          "name": "ran go vet",
+          "tool": "shell",
+          "regex": "go vet"
+        }
+      ]
+    }
+  ]
+}
