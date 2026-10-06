@@ -553,7 +553,7 @@ func TestReadOutputWindowSnapshotUsesProductionPendingPublicationOrder(t *testin
 	}
 	snapshotDone := make(chan snapshotResult, 1)
 	go func() {
-		got, err := readOutputWindowSnapshotFs(fs, path, 4, len("BBBB"))
+		got, err := readOutputWindowSnapshotFs(fs, path, 5, len("BBBB"))
 		snapshotDone <- snapshotResult{got: got, err: err}
 	}()
 	<-fs.initialRetainedSizeCaptured
@@ -561,7 +561,8 @@ func TestReadOutputWindowSnapshotUsesProductionPendingPublicationOrder(t *testin
 	appendDone = make(chan error, 1)
 	appendStarted = true
 	go func() {
-		_, appendErrValue := store.Append([]byte("BBBB"))
+		// Five bytes take the file past twice the cap, so this append compacts.
+		_, appendErrValue := store.Append([]byte("BBBBB"))
 		appendDone <- appendErrValue
 	}()
 	<-fs.pendingPublished
@@ -573,7 +574,7 @@ func TestReadOutputWindowSnapshotUsesProductionPendingPublicationOrder(t *testin
 	got := result.got
 	// The old file still holds the prefix the pending compaction drops, but a
 	// reader already sees only what the compacted file will keep.
-	if string(got.Content) != "BBBB" || got.TotalBytes != 8 || got.RetainedStart != 4 {
+	if string(got.Content) != "BBBB" || got.TotalBytes != 9 || got.RetainedStart != 5 {
 		t.Fatalf("snapshot during pending publication = %+v, want the successor's bytes and coordinates", got)
 	}
 	// Keep the real writer paused and take a second observation at the captured
@@ -1121,12 +1122,13 @@ func TestReadOutputWindowSnapshotDetectsReplacementDuringHash(t *testing.T) {
 	}
 	snapshotDone := make(chan result, 1)
 	go func() {
-		snapshot, err := readOutputWindowSnapshotFs(fs, path, 4, 4)
+		snapshot, err := readOutputWindowSnapshotFs(fs, path, 5, 4)
 		snapshotDone <- result{snapshot, err}
 	}()
 	<-fs.initialRetainedSizeCaptured
 	appendDone := make(chan error, 1)
-	go func() { _, err := store.Append([]byte("BBBB")); appendDone <- err }()
+	// Five bytes take the file past twice the cap, so this append compacts.
+	go func() { _, err := store.Append([]byte("BBBBB")); appendDone <- err }()
 	defer func() {
 		fs.releaseInitialMetadataValidation()
 		fs.releaseOutputReplacement()
@@ -1145,7 +1147,7 @@ func TestReadOutputWindowSnapshotDetectsReplacementDuringHash(t *testing.T) {
 	if got.err != nil {
 		t.Fatalf("snapshot across replacement: %v", got.err)
 	}
-	if string(got.snapshot.Content) != "BBBB" || got.snapshot.Start != 4 || got.snapshot.TotalBytes != 8 {
+	if string(got.snapshot.Content) != "BBBB" || got.snapshot.Start != 5 || got.snapshot.TotalBytes != 9 {
 		t.Fatalf("snapshot=%+v", got.snapshot)
 	}
 }

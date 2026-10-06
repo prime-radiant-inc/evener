@@ -34,7 +34,15 @@ import {
   parseChromeDevToolsAnnouncement,
   requestBrowserClose,
 } from "../browserGuardProcess.mjs";
-import { connectPage, createStartupDeadline, devtoolsHttpURL, evaluate, navigateTo, waitForHttp } from "../browserGuardCdp.mjs";
+import {
+  connectPage,
+  createStartupDeadline,
+  devtoolsHttpURL,
+  evaluate,
+  navigateTo,
+  REFUSED_BUTTON_SELECTOR,
+  waitForHttp,
+} from "../browserGuardCdp.mjs";
 import { ReactionBudget } from "./budgets.mjs";
 
 const FRONTEND = path.resolve(path.dirname(import.meta.url), "..", "..");
@@ -614,7 +622,7 @@ export class Driver {
       this.send,
       `(() => { const b = [...document.querySelectorAll("button")].find((n) => n.textContent.trim() === ${JSON.stringify(text)} || (n.getAttribute("aria-label") ?? "").trim() === ${JSON.stringify(text)});
         if (!b) return "missing";
-        if (b.matches(":disabled")) return "disabled";
+        if (b.matches(${JSON.stringify(REFUSED_BUTTON_SELECTOR)})) return "disabled";
         b.scrollIntoView({ block: "center" });
         const r = b.getBoundingClientRect();
         if (!b.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2))) return "covered";

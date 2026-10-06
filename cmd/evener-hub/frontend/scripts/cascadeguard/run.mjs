@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { Driver } from "../skillguard/run.mjs";
-import { evaluate, navigateTo } from "../browserGuardCdp.mjs";
+import { evaluate, navigateTo, REFUSED_BUTTON_SELECTOR } from "../browserGuardCdp.mjs";
 
 const fixture = JSON.parse(readFileSync(0, "utf8"));
 const driver = new Driver(fixture);
@@ -912,7 +912,7 @@ function placement(layout, id) {
 async function clickColumnAction(ref, text) {
   await wait(`(() => {
     const button = [...document.querySelectorAll(${q(`${column(ref)} button`)})].find(node => node.textContent.trim() === ${q(text)});
-    if (!button || button.matches(':disabled')) return null;
+    if (!button || button.matches(${q(REFUSED_BUTTON_SELECTOR)})) return null;
     button.scrollIntoView({ block: 'center', inline: 'nearest' });
     const r = button.getBoundingClientRect();
     if (!button.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2))) return null;
@@ -1159,7 +1159,7 @@ async function reveal(edge, container) {
     const step = await wait(`(() => {
       if (document.querySelector(${q(selector)})) return { revealed: true };
       const buttons = [...document.querySelectorAll(${q(`${container} button`)})];
-      const b = buttons.find(n => !n.disabled && (${visible} === 0 ? n.textContent.trim().startsWith('Inactive subagents (') : n.textContent.trim().startsWith('Show ') || n.textContent.trim() === 'Load more subagents'));
+      const b = buttons.find(n => !n.matches(${q(REFUSED_BUTTON_SELECTOR)}) && (${visible} === 0 ? n.textContent.trim().startsWith('Inactive subagents (') : n.textContent.trim().startsWith('Show ') || n.textContent.trim() === 'Load more subagents'));
       if (!b) return null;
       b.scrollIntoView({ block: 'center' });
       const r = b.getBoundingClientRect();
