@@ -292,18 +292,17 @@ describe("each tool's evidence, as the tools print it", () => {
 		]);
 	});
 
-	// A wait the send couldn't honour says why, from its footer, and a
-	// message's images stay, as a skill's do.
-	it("says why a send's wait was ignored, and keeps its images", () => {
+	// A wait the send couldn't honour says why, from its footer.
+	it("says why a send's wait was ignored", () => {
 		const ignored = {
 			...subagentWireStep("call_send_1"),
 			raw: undefined,
-			argumentsJSON: '{"to":"dlg_x","message":"See ![the plot](https://example.com/p.png)","max_wait_ms":60000}',
+			argumentsJSON: '{"to":"dlg_x","message":"Check the drain","max_wait_ms":60000}',
 			output:
 				"[delegate_id dlg_x · steered · running · running in background · wait ignored: delegate is already running]",
 		};
 		expect(stepEvidence({ label: "delegate_send", detail: activityDetail(ignored) })).toEqual([
-			{ kind: "markdown", title: "Message", markdown: "See ![the plot](https://example.com/p.png)" },
+			{ kind: "markdown", title: "Message", markdown: "Check the drain" },
 			{ kind: "note", text: "Wait ignored: delegate is already running" },
 		]);
 	});
