@@ -781,247 +781,425 @@ describe("background thread claims", () => {
     }
   });
 
-  test("promotes once across a held current lookup and applies notifications on both sides", async () => {
-    const restoreOptions = installBackgroundTranscriptOptionsForTests({ residentBytes: 0, pendingBytes: 4096 });
-    resetThreadsStoreForTests();
-    setSessionCacheAdapterForTests(cache);
-    const storage = mutationStorage();
-    const targetScans = deferred<void>();
-    const originalListTargetRefs = storage.listTargetRefs.bind(storage);
-    let targetScanCount = 0;
-    vi.spyOn(storage, "listTargetRefs").mockImplementation(async () => {
-      const refs = await originalListTargetRefs();
-      targetScanCount += 1;
-      if (targetScanCount >= 3) targetScans.resolve();
-      return refs;
-    });
-    const fake = connectCurrentClient();
-    fake.on("thread/read", ({ ref }) => {
-      const response = currentRead(ref ?? "local:one");
-      response.thread.evener = { ...response.thread.evener, instanceId: "instance-canonical" };
-      return response;
-    });
-    const background = acquireBackgroundThread("local:one");
-    const completionSource = acquireBackgroundThread("local:completion-source");
-    let paneHeld = false;
-    let heldLookup: ReturnType<typeof holdNextWriteTransaction> | undefined;
-    const promotionLookupReached = deferred<void>();
-    const releasePromotionLookup = deferred<void>();
-    const lookupTransactionReached = deferred<void>();
-    const releaseLookupTransaction = deferred<void>();
-    const lookupWorkCommitted = deferred<void>();
-    let armPromotionLookup = false;
-    let getCurrentSpy: ReturnType<typeof vi.spyOn> | undefined;
-    let promotedAtPublication: ThreadModel | undefined;
-    let promotion: Promise<void> | undefined;
-    let firstWriteReached: ReturnType<typeof deferred<void>> | undefined;
-    let releaseFirstWrite: ReturnType<typeof deferred<void>> | undefined;
-    let laterWriteReached: ReturnType<typeof deferred<void>> | undefined;
-    let releaseLaterWrite: ReturnType<typeof deferred<void>> | undefined;
-    let putCurrentSpy: ReturnType<typeof vi.spyOn> | undefined;
-    const observePromotion = threadsStore.subscribe((state) => {
-      const model = state.threads.get("local:one");
-      if (model?.turns.flatMap((turn) => turn.items).some((item) => item.text?.includes("-during-lookup"))) {
-        promotedAtPublication = model;
-      }
-    });
-    try {
-      await targetScans.promise;
-      await background.ready;
-      await completionSource.ready;
-      await settleBackgroundTranscriptsForTests();
-      expect(threadsStore.getState().threads.has("local:one")).toBe(false);
+  test.each(["settled checkpoint", "unfinished captured work"])(
+    "promotes once across a held current lookup and applies notifications on both sides, %s",
+    async (phase) => {
+      const overlapCapturedWork = phase === "unfinished captured work";
+      const restoreOptions = installBackgroundTranscriptOptionsForTests({ residentBytes: 0, pendingBytes: 4096 });
+      resetThreadsStoreForTests();
+      setSessionCacheAdapterForTests(cache);
+      const storage = mutationStorage();
+      const targetScans = deferred<void>();
+      const originalListTargetRefs = storage.listTargetRefs.bind(storage);
+      let targetScanCount = 0;
+      const targetScanSpy = vi.spyOn(storage, "listTargetRefs").mockImplementation(async () => {
+        const refs = await originalListTargetRefs();
+        targetScanCount += 1;
+        if (targetScanCount >= 3) targetScans.resolve();
+        return refs;
+      });
+      const fake = connectCurrentClient();
+      fake.on("thread/read", ({ ref }) => {
+        const response = currentRead(ref ?? "local:one");
+        response.thread.evener = { ...response.thread.evener, instanceId: "instance-canonical" };
+        response.overlay?.push({
+          key: "stream:pre-cut/toolOutput",
+          kind: "stream",
+          streamId: "pre-cut",
+          roundId: "pre-cut-round",
+          turnId: "turn_1",
+          item: {
+            id: "pre-cut-tool",
+            turnId: "turn_1",
+            type: "commandExecution",
+            output: "pre-cut-tool🙂",
+            status: "inProgress",
+          },
+        });
+        return response;
+      });
+      const background = acquireBackgroundThread("local:one");
+      const completionSource = acquireBackgroundThread("local:completion-source");
+      let paneHeld = false;
+      let heldLookup: ReturnType<typeof holdNextWriteTransaction> | undefined;
+      let heldCapturedWrite: ReturnType<typeof holdNextWriteTransaction> | undefined;
+      let capturedWriteCompleted = false;
+      let lookupStarted = false;
+      const phases: string[] = [];
+      const promotionLookupReached = deferred<void>();
+      const releasePromotionLookup = deferred<void>();
+      const lookupTransactionReached = deferred<void>();
+      const releaseLookupTransaction = deferred<void>();
+      const lookupWorkCommitted = deferred<void>();
+      const sourceWriteReached = deferred<void>();
+      const releaseSourceWrite = deferred<void>();
+      const postCutWriteReached = deferred<void>();
+      const releasePostCutWrite = deferred<void>();
+      let postCutWriteCompleted = false;
+      let postCutWriteText: string | undefined;
+      let armPromotionLookup = false;
+      let getCurrentSpy: ReturnType<typeof vi.spyOn> | undefined;
+      let promotedAtPublication: ThreadModel | undefined;
+      let promotion: Promise<void> | undefined;
+      let firstWriteReached: ReturnType<typeof deferred<void>> | undefined;
+      let releaseFirstWrite: ReturnType<typeof deferred<void>> | undefined;
+      let laterWriteReached: ReturnType<typeof deferred<void>> | undefined;
+      let releaseLaterWrite: ReturnType<typeof deferred<void>> | undefined;
+      let putCurrentSpy: ReturnType<typeof vi.spyOn> | undefined;
+      const observePromotion = threadsStore.subscribe((state) => {
+        const model = state.threads.get("local:one");
+        if (model?.turns.flatMap((turn) => turn.items).some((item) => item.text?.includes("-during-lookup"))) {
+          promotedAtPublication = model;
+        }
+      });
+      try {
+        await targetScans.promise;
+        await background.ready;
+        await completionSource.ready;
+        await settleBackgroundTranscriptsForTests();
+        expect(threadsStore.getState().threads.has("local:one")).toBe(false);
 
-      const pending = await blockedOutboxRow(storage, "local:one");
-      expect(pending?.state).toBe("blockedUnknown");
-      expect(threadsStore.getState().mutationAuthorityRefs.has("local:one")).toBe(false);
-      const outboxBeforePromotion = await storage.listOutbox("local:one");
-      expect(outboxBeforePromotion).toEqual([pending]);
+        const pending = await blockedOutboxRow(storage, "local:one");
+        expect(pending?.state).toBe("blockedUnknown");
+        expect(threadsStore.getState().mutationAuthorityRefs.has("local:one")).toBe(false);
+        const outboxBeforePromotion = await storage.listOutbox("local:one");
+        expect(outboxBeforePromotion).toEqual([pending]);
 
-      const readCount = fake.calls.filter((call) => call.method === "thread/read").length;
-      const originalPutCurrent = cache.putCurrent.bind(cache);
-      firstWriteReached = deferred<void>();
-      releaseFirstWrite = deferred<void>();
-      laterWriteReached = deferred<void>();
-      releaseLaterWrite = deferred<void>();
-      let completionUpdates = 0;
-      putCurrentSpy = vi.spyOn(cache, "putCurrent").mockImplementation(async (record, now) => {
-        if (record.ref === "local:one" && record.appliedSequence === 1) {
-          firstWriteReached?.resolve();
-          await releaseFirstWrite?.promise;
-          const result = await originalPutCurrent(record, now);
-          for (const sequence of [2, 3, 4, 5]) {
-            if (sequence === 2) {
-              fake.emitNotification({
-                method: "overlay/upserted",
-                params: {
-                  threadId: "thr_local:one",
-                  ref: "local:one",
-                  item: {
-                    key: "stream:round_tool/0:toolOutput",
-                    kind: "stream",
-                    turnId: "turn_1",
-                    roundId: "round_tool",
-                    streamId: "round_tool/0",
-                    callId: "call_tool",
+        const readCount = fake.calls.filter((call) => call.method === "thread/read").length;
+        const originalPutCurrent = cache.putCurrent.bind(cache);
+        firstWriteReached = deferred<void>();
+        releaseFirstWrite = deferred<void>();
+        laterWriteReached = deferred<void>();
+        releaseLaterWrite = deferred<void>();
+        let completionUpdates = 0;
+        putCurrentSpy = vi.spyOn(cache, "putCurrent").mockImplementation(async (record, now) => {
+          if (record.ref === "local:one" && record.appliedSequence === 1) {
+            // The transaction commits, but its completion callback remains held.
+            // The real adapter and coordinator still await that operation.
+            heldCapturedWrite = holdNextWriteTransaction(["records", "meta", "current", "currentMeta"]);
+            const write = originalPutCurrent(record, now);
+            await heldCapturedWrite.reached;
+            phases.push("captured callback held");
+            firstWriteReached?.resolve();
+            await releaseFirstWrite?.promise;
+            heldCapturedWrite.release();
+            const result = await write;
+            capturedWriteCompleted = true;
+            phases.push("captured write returned");
+            for (const sequence of [2, 3, 4, 5]) {
+              if (sequence === 2) {
+                fake.emitNotification({
+                  method: "overlay/upserted",
+                  params: {
+                    threadId: "thr_local:one",
+                    ref: "local:one",
                     item: {
-                      type: "commandExecution",
-                      id: "item_tool",
+                      key: "stream:round_tool/0:toolOutput",
+                      kind: "stream",
                       turnId: "turn_1",
                       roundId: "round_tool",
+                      streamId: "round_tool/0",
                       callId: "call_tool",
-                      status: "inProgress",
+                      item: {
+                        type: "commandExecution",
+                        id: "item_tool",
+                        turnId: "turn_1",
+                        roundId: "round_tool",
+                        callId: "call_tool",
+                        status: "inProgress",
+                      },
                     },
                   },
-                },
-              } as AnyNotification);
-            } else if (sequence === 3) {
-              fake.emitNotification({
-                method: "overlay/delta",
-                params: {
-                  threadId: "thr_local:one",
-                  ref: "local:one",
-                  key: "stream:round_tool/0:toolOutput",
-                  field: "output",
-                  delta: "工具🙂",
-                },
-              } as AnyNotification);
-            } else {
-              fake.emitNotification(textDelta("local:one", `-completion-${sequence}`));
+                } as AnyNotification);
+              } else if (sequence === 3) {
+                fake.emitNotification({
+                  method: "overlay/delta",
+                  params: {
+                    threadId: "thr_local:one",
+                    ref: "local:one",
+                    key: "stream:round_tool/0:toolOutput",
+                    field: "output",
+                    delta: "工具🙂",
+                  },
+                } as AnyNotification);
+              } else {
+                fake.emitNotification(textDelta("local:one", `-completion-${sequence}`));
+              }
+              completionUpdates += 1;
             }
-            completionUpdates += 1;
+            phases.push("completion updates emitted");
+            return result;
+          }
+          if (record.ref === "local:one" && record.appliedSequence === 5) {
+            laterWriteReached?.resolve();
+            await releaseLaterWrite?.promise;
+          }
+          if (overlapCapturedWork && record.ref === "local:one" && record.appliedSequence > 5) {
+            phases.push("later target write held");
+            postCutWriteReached.resolve();
+            await releasePostCutWrite.promise;
+          }
+          if (overlapCapturedWork && record.ref === "local:completion-source" && record.appliedSequence === 1) {
+            sourceWriteReached.resolve();
+            await releaseSourceWrite.promise;
+          }
+          const result = await originalPutCurrent(record, now);
+          if (overlapCapturedWork && record.ref === "local:one" && record.appliedSequence === 5) {
+            // The ownership retry completes the captured cut. Replenish target
+            // work at this actual completion too, not just during local lookup.
+            fake.emitNotification(textDelta("local:one", "-post-cut"));
+            fake.emitNotification({
+              method: "overlay/delta",
+              params: {
+                threadId: "thr_local:one",
+                ref: "local:one",
+                key: "stream:round_tool/0:toolOutput",
+                field: "output",
+                delta: ":post-cut",
+              },
+            } as AnyNotification);
+            phases.push("cut retry returned and replenished target");
+          }
+          if (overlapCapturedWork && record.ref === "local:one" && record.appliedSequence > 5) {
+            expect(result.outcome).toBe("written");
+            postCutWriteCompleted = true;
+            postCutWriteText = JSON.stringify(record.state);
+          }
+          if (record.ref === "local:completion-source" && record.appliedSequence === 1) {
+            fake.emitNotification(textDelta("local:one", "-completion-in-lookup"));
+            lookupWorkCommitted.resolve();
           }
           return result;
+        });
+        const originalGetCurrent = cache.getCurrent.bind(cache);
+        let targetLookupCount = 0;
+        getCurrentSpy = vi.spyOn(cache, "getCurrent").mockImplementation(async (...args) => {
+          if (args[0][1] === "local:one") targetLookupCount += 1;
+          if (armPromotionLookup && args[0][1] === "local:one") {
+            armPromotionLookup = false;
+            lookupStarted = true;
+            phases.push("promotion lookup reached");
+            promotionLookupReached.resolve();
+            await releasePromotionLookup.promise;
+            heldLookup = holdNextWriteTransaction(["records", "meta", "current", "currentMeta"]);
+            const lookup = originalGetCurrent(...args);
+            await heldLookup.reached;
+            lookupTransactionReached.resolve();
+            await releaseLookupTransaction.promise;
+            return lookup;
+          }
+          return originalGetCurrent(...args);
+        });
+        fake.emitNotification(textDelta("local:one", "-captured"));
+        await firstWriteReached.promise;
+        if (overlapCapturedWork) {
+          expect(capturedWriteCompleted, "ensure must start before the captured completion").toBe(false);
+          expect(backgroundTranscriptSnapshotForTests().diskWorkers).toBe(1);
+          expect(threadsStore.getState().threads.has("local:one")).toBe(false);
+          const lookupsBeforeEnsure = targetLookupCount;
+          phases.push("ensure started with captured work unfinished");
+          promotion = threadsStore.getState().ensureThread("local:one");
+          paneHeld = true;
+          // ensureThread synchronously acquires the pane and enters promote's
+          // cut wait. Complete an independent durable outbox read while the
+          // target completion remains held, not a sleep or microtask flush.
+          expect(await storage.listOutbox("local:one")).toEqual(outboxBeforePromotion);
+          expect(targetLookupCount).toBe(lookupsBeforeEnsure);
+          expect(capturedWriteCompleted).toBe(false);
+          expect(lookupStarted).toBe(false);
+          expect(promotedAtPublication).toBeUndefined();
+          expect(threadsStore.getState().threads.has("local:one")).toBe(false);
+          expect(threadsStore.getState().mutationAuthorityRefs.has("local:one")).toBe(false);
+          expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(readCount);
+          expect(
+            fake.calls.filter((call) =>
+              ["thread/resume", "turn/start", "turn/steer", "turn/queue", "turn/interrupt"].includes(call.method),
+            ),
+          ).toEqual([]);
         }
-        if (record.ref === "local:one" && record.appliedSequence >= 2) {
-          laterWriteReached?.resolve();
-          await releaseLaterWrite?.promise;
+        releaseFirstWrite.resolve();
+        await laterWriteReached.promise;
+        // Foreground acquisition can require the already-issued write's real
+        // ownership retry. Do not mistake that worker load for promotion lookup.
+        if (overlapCapturedWork) {
+          // Queue this ref before the retry completes. It occupies the single
+          // worker while promotion starts its target lookup, without preemption
+          // or an internal lookup-call ordinal deciding which read to gate.
+          fake.emitNotification(textDelta("local:completion-source", "-source-write"));
         }
-        const result = await originalPutCurrent(record, now);
-        if (record.ref === "local:completion-source" && record.appliedSequence === 1) {
-          fake.emitNotification(textDelta("local:one", "-completion-in-lookup"));
-          lookupWorkCommitted.resolve();
+        armPromotionLookup = overlapCapturedWork;
+        releaseLaterWrite.resolve();
+        if (!overlapCapturedWork) {
+          await settleBackgroundTranscriptsForTests();
+          armPromotionLookup = true;
+          promotion = threadsStore.getState().ensureThread("local:one");
+          paneHeld = true;
         }
-        return result;
-      });
-      const originalGetCurrent = cache.getCurrent.bind(cache);
-      getCurrentSpy = vi.spyOn(cache, "getCurrent").mockImplementation(async (...args) => {
-        if (armPromotionLookup) {
-          armPromotionLookup = false;
-          promotionLookupReached.resolve();
-          await releasePromotionLookup.promise;
-          heldLookup = holdNextWriteTransaction(["records", "meta", "current", "currentMeta"]);
-          const lookup = originalGetCurrent(...args);
-          await heldLookup.reached;
-          lookupTransactionReached.resolve();
-          await releaseLookupTransaction.promise;
-          return lookup;
+        await promotionLookupReached.promise;
+        if (overlapCapturedWork) {
+          expect(phases).toEqual([
+            "captured callback held",
+            "ensure started with captured work unfinished",
+            "captured write returned",
+            "completion updates emitted",
+            "cut retry returned and replenished target",
+            "promotion lookup reached",
+          ]);
+          await sourceWriteReached.promise;
+          releaseSourceWrite.resolve();
+        } else {
+          fake.emitNotification(textDelta("local:completion-source", "-source-write"));
         }
-        return originalGetCurrent(...args);
-      });
-      fake.emitNotification(textDelta("local:one", "-captured"));
-      await firstWriteReached.promise;
-      releaseFirstWrite.resolve();
-      await laterWriteReached.promise;
-      releaseLaterWrite.resolve();
-      await settleBackgroundTranscriptsForTests();
+        await lookupWorkCommitted.promise;
+        if (overlapCapturedWork) await postCutWriteReached.promise;
+        else await settleBackgroundTranscriptsForTests();
+        releasePromotionLookup.resolve();
+        await lookupTransactionReached.promise;
+        const toolKey = "stream:round_tool/0:toolOutput";
+        fake.emitNotification({
+          method: "overlay/delta",
+          params: {
+            threadId: "thr_local:one",
+            ref: "local:one",
+            key: toolKey,
+            field: "output",
+            delta: ":during-lookup",
+          },
+        } as AnyNotification);
+        fake.emitNotification(textDelta("local:one", "-during-lookup"));
+        expect(backgroundTranscriptSnapshotForTests().pendingBytes).toBeGreaterThan(0);
+        if (!heldLookup) throw new Error("promotion lookup transaction was not held");
+        heldLookup.release();
+        releaseLookupTransaction.resolve();
+        await promotion;
+        paneHeld = true;
+        if (overlapCapturedWork) {
+          phases.push("published with later target write unfinished");
+          expect(postCutWriteCompleted).toBe(false);
+          expect(backgroundTranscriptSnapshotForTests().diskWorkers).toBe(1);
+          expect(phases.slice(-2)).toEqual(["later target write held", "published with later target write unfinished"]);
+        }
 
-      armPromotionLookup = true;
-      promotion = threadsStore.getState().ensureThread("local:one");
-      await promotionLookupReached.promise;
-      fake.emitNotification(textDelta("local:completion-source", "-source-write"));
-      await lookupWorkCommitted.promise;
-      await settleBackgroundTranscriptsForTests();
-      releasePromotionLookup.resolve();
-      await lookupTransactionReached.promise;
-      const toolKey = "stream:round_tool/0:toolOutput";
-      fake.emitNotification({
-        method: "overlay/delta",
-        params: { threadId: "thr_local:one", ref: "local:one", key: toolKey, field: "output", delta: ":during-lookup" },
-      } as AnyNotification);
-      fake.emitNotification(textDelta("local:one", "-during-lookup"));
-      expect(backgroundTranscriptSnapshotForTests().pendingBytes).toBeGreaterThan(0);
-      if (!heldLookup) throw new Error("promotion lookup transaction was not held");
-      heldLookup.release();
-      releaseLookupTransaction.resolve();
-      await promotion;
-      paneHeld = true;
-
-      const adopted = threadsStore.getState().threads.get("local:one");
-      expect(adopted).toBeDefined();
-      expect(adopted).toBe(promotedAtPublication);
-      expect(adopted?.capabilities.send).toBe(true);
-      expect(adopted?.capabilities.queue).toBe(true);
-      expect(adopted?.capabilitySource).toBe("read");
-      expect(adopted?.instanceId).toBe("instance-canonical");
-      expect(threadsStore.getState().mutationAuthorityRefs.has("local:one")).toBe(false);
-      fake.emitNotification({
-        method: "overlay/delta",
-        params: {
-          threadId: "thr_local:one",
-          ref: "local:one",
-          key: toolKey,
-          field: "output",
-          delta: ":after-publication",
-        },
-      } as AnyNotification);
-      fake.emitNotification(textDelta("local:one", "-after-publication"));
-      const text =
-        threadsStore
-          .getState()
-          .threads.get("local:one")
-          ?.turns.flatMap((turn) => turn.items)
-          .map((item) => item.text)
-          .join("") ?? "";
-      expect(text).toContain(
-        "alpha-captured-completion-4-completion-5-completion-in-lookup-during-lookup-after-publication",
-      );
-      let previousIndex = text.indexOf("-captured");
-      for (const marker of [
-        "-completion-4",
-        "-completion-5",
-        "-completion-in-lookup",
-        "-during-lookup",
-        "-after-publication",
-      ]) {
-        expect(text.split(marker), marker).toHaveLength(2);
-        const index = text.indexOf(marker);
-        expect(index).toBeGreaterThan(previousIndex);
-        previousIndex = index;
+        const adopted = threadsStore.getState().threads.get("local:one");
+        expect(adopted).toBeDefined();
+        expect(adopted).toBe(promotedAtPublication);
+        expect(adopted?.capabilities.send).toBe(true);
+        expect(adopted?.capabilities.queue).toBe(true);
+        expect(adopted?.capabilitySource).toBe("read");
+        expect(adopted?.instanceId).toBe("instance-canonical");
+        expect(adopted?.turns.flatMap((turn) => turn.items).find((item) => item.id === "pre-cut-tool")?.output).toBe(
+          "pre-cut-tool🙂",
+        );
+        expect(threadsStore.getState().mutationAuthorityRefs.has("local:one")).toBe(false);
+        fake.emitNotification({
+          method: "overlay/delta",
+          params: {
+            threadId: "thr_local:one",
+            ref: "local:one",
+            key: toolKey,
+            field: "output",
+            delta: ":after-publication",
+          },
+        } as AnyNotification);
+        fake.emitNotification(textDelta("local:one", "-after-publication"));
+        const text =
+          threadsStore
+            .getState()
+            .threads.get("local:one")
+            ?.turns.flatMap((turn) => turn.items)
+            .map((item) => item.text)
+            .join("") ?? "";
+        expect(text).toContain(
+          `alpha-captured-completion-4-completion-5${overlapCapturedWork ? "-post-cut" : ""}-completion-in-lookup-during-lookup-after-publication`,
+        );
+        expect(text.split("-captured"), "pre-cut update must be applied exactly once").toHaveLength(2);
+        let previousIndex = text.indexOf("-captured");
+        for (const marker of [
+          "-completion-4",
+          "-completion-5",
+          ...(overlapCapturedWork ? ["-post-cut"] : []),
+          "-completion-in-lookup",
+          "-during-lookup",
+          "-after-publication",
+        ]) {
+          expect(text.split(marker), marker).toHaveLength(2);
+          const index = text.indexOf(marker);
+          expect(index).toBeGreaterThan(previousIndex);
+          previousIndex = index;
+        }
+        expect(completionUpdates).toBe(4);
+        const toolItems = adopted?.turns.flatMap((turn) => turn.items).filter((item) => item.id === "item_tool") ?? [];
+        expect(toolItems).toHaveLength(1);
+        const completionToolOutput = `工具🙂${overlapCapturedWork ? ":post-cut" : ""}:during-lookup`;
+        expect(toolItems[0]?.output).toBe(completionToolOutput);
+        const afterNotifications = threadsStore.getState().threads.get("local:one");
+        expect(
+          afterNotifications?.turns.flatMap((turn) => turn.items).find((item) => item.id === "item_tool")?.output,
+        ).toBe(`${completionToolOutput}:after-publication`);
+        expect(afterNotifications?.overlay?.[toolKey]?.item.output).toBe(`${completionToolOutput}:after-publication`);
+        expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(readCount);
+        expect(await storage.listOutbox("local:one")).toEqual(outboxBeforePromotion);
+        expect(
+          fake.calls.filter((call) =>
+            ["thread/resume", "turn/start", "turn/steer", "turn/queue", "turn/interrupt"].includes(call.method),
+          ),
+        ).toEqual([]);
+        releasePostCutWrite.resolve();
+        await settleBackgroundTranscriptsForTests();
+        if (overlapCapturedWork) {
+          expect(postCutWriteCompleted).toBe(true);
+          expect(postCutWriteText).toContain("alpha-captured-completion-4-completion-5-post-cut-completion-in-lookup");
+          expect(postCutWriteText?.split("-captured")).toHaveLength(2);
+          expect(backgroundTranscriptSnapshotForTests().diskWorkers).toBe(0);
+        }
+        fake.emitNotification(textDelta("local:one", "-after-drain"));
+        fake.emitNotification({
+          method: "overlay/delta",
+          params: { threadId: "thr_local:one", ref: "local:one", key: toolKey, field: "output", delta: ":after-drain" },
+        } as AnyNotification);
+        const afterDrain = threadsStore.getState().threads.get("local:one");
+        expect(afterDrain?.turns.flatMap((turn) => turn.items).find((item) => item.id === "a1")?.text).toBe(
+          `${text}-after-drain`,
+        );
+        expect(afterDrain?.turns.flatMap((turn) => turn.items).find((item) => item.id === "pre-cut-tool")?.output).toBe(
+          "pre-cut-tool🙂",
+        );
+        expect(afterDrain?.turns.flatMap((turn) => turn.items).find((item) => item.id === "item_tool")?.output).toBe(
+          `${completionToolOutput}:after-publication:after-drain`,
+        );
+        expect(afterDrain?.overlay?.[toolKey]?.item.output).toBe(
+          `${completionToolOutput}:after-publication:after-drain`,
+        );
+        expect(await storage.listOutbox("local:one")).toEqual(outboxBeforePromotion);
+        expect(threadsStore.getState().mutationAuthorityRefs.has("local:one")).toBe(false);
+        expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(readCount);
+        expect(
+          fake.calls.filter((call) =>
+            ["thread/resume", "turn/start", "turn/steer", "turn/queue", "turn/interrupt"].includes(call.method),
+          ),
+        ).toEqual([]);
+      } finally {
+        heldCapturedWrite?.release();
+        heldLookup?.release();
+        releaseLookupTransaction.resolve();
+        releasePromotionLookup.resolve();
+        releaseFirstWrite?.resolve();
+        releaseLaterWrite?.resolve();
+        releaseSourceWrite.resolve();
+        releasePostCutWrite.resolve();
+        getCurrentSpy?.mockRestore();
+        putCurrentSpy?.mockRestore();
+        targetScanSpy.mockRestore();
+        await promotion?.catch(() => undefined);
+        observePromotion();
+        if (paneHeld) threadsStore.getState().releaseThread("local:one");
+        await completionSource.release();
+        await background.release();
+        resetThreadsStoreForTests();
+        restoreOptions();
       }
-      expect(completionUpdates).toBe(4);
-      const toolItems = adopted?.turns.flatMap((turn) => turn.items).filter((item) => item.id === "item_tool") ?? [];
-      expect(toolItems).toHaveLength(1);
-      expect(toolItems[0]?.output).toBe("工具🙂:during-lookup");
-      const afterNotifications = threadsStore.getState().threads.get("local:one");
-      expect(
-        afterNotifications?.turns.flatMap((turn) => turn.items).find((item) => item.id === "item_tool")?.output,
-      ).toBe("工具🙂:during-lookup:after-publication");
-      expect(afterNotifications?.overlay?.[toolKey]?.item.output).toBe("工具🙂:during-lookup:after-publication");
-      expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(readCount);
-      expect(await storage.listOutbox("local:one")).toEqual(outboxBeforePromotion);
-      expect(
-        fake.calls.filter((call) =>
-          ["thread/resume", "turn/start", "turn/steer", "turn/queue", "turn/interrupt"].includes(call.method),
-        ),
-      ).toEqual([]);
-    } finally {
-      heldLookup?.release();
-      releaseLookupTransaction.resolve();
-      releasePromotionLookup.resolve();
-      releaseFirstWrite?.resolve();
-      releaseLaterWrite?.resolve();
-      getCurrentSpy?.mockRestore();
-      putCurrentSpy?.mockRestore();
-      await promotion?.catch(() => undefined);
-      observePromotion();
-      if (paneHeld) threadsStore.getState().releaseThread("local:one");
-      await completionSource.release();
-      await background.release();
-      resetThreadsStoreForTests();
-      restoreOptions();
-    }
-  });
+    },
+  );
 
   test("accounts two completed hydrations and deltas while the real checkpoint transaction is held", async () => {
     const restoreOptions = installBackgroundTranscriptOptionsForTests({

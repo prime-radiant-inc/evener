@@ -327,6 +327,7 @@ export function createTranscriptResidency(
     const resident = port.resident(ref);
     entry.residentPostCutBytes = 0;
     let model = resident;
+    let loadedSequence = 0;
     let batchBytes = 0;
     const batch: ReceivedTranscriptUpdate[] = [];
     while (entry.pending[0] && (batch.length === 0 || batchBytes + entry.pending[0].bytes <= 256 * 1024)) {
@@ -347,6 +348,12 @@ export function createTranscriptResidency(
         return false;
       }
       model = threadModelFromCurrentState(found.record.state, port.admission(ref));
+      // A write can commit before an ownership change rejects its completion.
+      // The retry still needs a fresh certificate, but must not replay updates
+      // already represented by the checkpoint it actually loaded.
+      if (found.record.connectionGeneration === writeGeneration && found.record.clearEpoch === writeEpoch) {
+        loadedSequence = found.record.appliedSequence;
+      }
     }
     const bytes = encodedPayloadBytes(currentTranscriptState(model));
     if (!Number.isFinite(bytes) || bytes > 32 * 1024 * 1024) {
@@ -359,7 +366,9 @@ export function createTranscriptResidency(
     workerBytes = bytes;
     let committed = false;
     try {
-      for (const update of batch) model = port.fold(ref, model, update);
+      for (const update of batch) {
+        if (update.sequence > loadedSequence) model = port.fold(ref, model, update);
+      }
       const state = currentTranscriptState(model);
       if (!state) {
         entry.persistence = "repairing";
@@ -371,7 +380,7 @@ export function createTranscriptResidency(
         connectionGeneration,
         ownershipGeneration: entry.ownershipGeneration,
         clearEpoch,
-        appliedSequence: batch.at(-1)?.sequence ?? entry.appliedSequence,
+        appliedSequence: Math.max(loadedSequence, batch.at(-1)?.sequence ?? entry.appliedSequence),
         savedAt: Date.now(),
         state,
       };

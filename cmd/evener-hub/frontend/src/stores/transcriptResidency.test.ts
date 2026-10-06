@@ -18,6 +18,7 @@ import {
   installBackgroundTranscriptOptionsForTests,
 } from "./backgroundTranscriptOptions";
 import { SessionCacheIndexedDB } from "./sessionCacheIndexedDB";
+import { holdNextWriteTransaction } from "./testing/stalledIndexedDB";
 import { encodedPayloadBytes } from "./transcriptPayloadBudget";
 import { createTranscriptResidency, type TranscriptResidencyPort } from "./transcriptResidency";
 
@@ -57,6 +58,101 @@ function setup(model: ThreadModel, pendingBytes = DEFAULT_BACKGROUND_TRANSCRIPT_
 }
 
 describe("transcript residency", () => {
+  test.each(["uncommitted", "committed", "connection", "clear", "released"] as const)(
+    "ownership retry respects the loaded durable cut and invalidation, %s",
+    async (boundary) => {
+      const ref = "local:ownership-replay";
+      const initial = hydrateThread(currentRead(ref), ref, 1);
+      const { cache, residency, port, getResident } = setup(initial);
+      port.fold = (_ref, model, update) => applyNotification(model, update.notification, update.now);
+      port.hydrate = async () => {
+        throw new Error("ownership replay must not need hydration");
+      };
+      residency.published(ref, initial, 0, true);
+      await residency.settled();
+      expect(getResident()).toBeUndefined();
+
+      const reached = deferred<void>();
+      const release = deferred<void>();
+      let held: ReturnType<typeof holdNextWriteTransaction> | undefined;
+      const originalGet = cache.getCurrent.bind(cache);
+      const originalPut = cache.putCurrent.bind(cache);
+      let holdUncommittedLoad = boundary === "uncommitted";
+      const writes: number[] = [];
+      const get = vi.spyOn(cache, "getCurrent").mockImplementation(async (...args) => {
+        const found = await originalGet(...args);
+        if (holdUncommittedLoad && args[0][1] === ref) {
+          holdUncommittedLoad = false;
+          reached.resolve();
+          await release.promise;
+        }
+        return found;
+      });
+      const put = vi.spyOn(cache, "putCurrent").mockImplementation(async (record, now) => {
+        if (boundary !== "uncommitted" && record.ref === ref && record.appliedSequence === 1) {
+          held = holdNextWriteTransaction(["records", "meta", "current", "currentMeta"]);
+          const writing = originalPut(record, now);
+          await held.reached;
+          reached.resolve();
+          await release.promise;
+          held.release();
+          const result = await writing;
+          if (result.outcome === "written") writes.push(record.appliedSequence);
+          return result;
+        }
+        const result = await originalPut(record, now);
+        if (result.outcome === "written") writes.push(record.appliedSequence);
+        return result;
+      });
+      const accept = (sequence: number, delta: string) => {
+        const notification = textDelta(ref, delta);
+        expect(
+          residency.accept(ref, { sequence, notification, now: sequence, bytes: encodedPayloadBytes(notification) }),
+        ).toBe(true);
+      };
+      try {
+        accept(1, "-captured");
+        await reached.promise;
+        residency.owners(ref, { foreground: 1, history: 0, mutationPinned: false, background: 1 });
+        accept(2, "-later");
+        if (boundary === "connection") {
+          residency.connection(2, false);
+        } else if (boundary === "clear") {
+          const cleared = await cache.clear();
+          expect(cleared.committed).toBe(true);
+          residency.clear(cleared.epoch);
+        } else if (boundary === "released") {
+          residency.owners(ref, { foreground: 0, history: 0, mutationPinned: false, background: 0 });
+        }
+        release.resolve();
+        await residency.settled();
+        const promoted = await residency.promote(ref);
+        if (boundary === "committed" || boundary === "uncommitted") {
+          expect(promoted).toBe(getResident());
+          expect(promoted?.turns.flatMap((turn) => turn.items).find((item) => item.id === "a1")?.text).toBe(
+            "alpha-captured-later",
+          );
+          // A pre-write ownership change never wrote sequence1. A committed
+          // old-owner write did, but only the sequence2 retry certifies current.
+          expect(writes).toEqual(boundary === "committed" ? [1, 2] : [2]);
+          expect(residency.snapshot().refs.get(ref)?.current).toBe(true);
+        } else {
+          expect(promoted).toBeUndefined();
+          expect(getResident()).toBeUndefined();
+          expect(residency.snapshot().refs.get(ref)?.current).toBe(false);
+          expect(writes).toEqual([1]);
+        }
+      } finally {
+        release.resolve();
+        held?.release();
+        get.mockRestore();
+        put.mockRestore();
+        await residency.settled();
+        residency.dispose();
+      }
+    },
+  );
+
   test("accepts zero resident budget and restores options while rejecting invalid limits", () => {
     const original = backgroundTranscriptOptions();
     const restore = installBackgroundTranscriptOptionsForTests({ residentBytes: 0 });
