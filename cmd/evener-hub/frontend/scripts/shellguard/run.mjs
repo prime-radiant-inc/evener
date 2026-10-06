@@ -62,8 +62,8 @@ async function measureOnPage(cdpEndpoint, vitePort, viewport, expression) {
     // Every measurement reuses this one tab, and the previous page's document
     // can still save to localStorage until the navigation below replaces it.
     // Clearing storage as each new document starts means no page restores
-    // another page's panes or floating windows. Every caller here wants that,
-    // so a script left registered on the tab is harmless.
+    // another page's panes or floating windows. The script belongs to this CDP
+    // session and goes away when page.close() detaches it.
     await send("Page.addScriptToEvaluateOnNewDocument", { source: "try { localStorage.clear(); } catch {}" });
     await applyViewport(send, viewport);
     await navigateTo(page, `http://127.0.0.1:${vitePort}/shellguard.html`, BOOT);
