@@ -465,7 +465,8 @@ test.each([
   { oldHeight: 1600, oldOffset: -900, nextHeight: 1000, want: -450 },
   { oldHeight: 1600, oldOffset: -900, nextHeight: 700, want: -225 },
   { oldHeight: 1600, oldOffset: -900, nextHeight: 300, want: 0 },
-  { oldHeight: 200, oldOffset: -20, nextHeight: 1000, want: 0 },
+  // A short entry partly above the top keeps its 180px tail too.
+  { oldHeight: 200, oldOffset: -20, nextHeight: 1000, want: -820 },
   { oldHeight: 1600, oldOffset: 30, nextHeight: 700, want: 30 },
   // An entry whose tail is showing keeps that tail where it was: a 1px tail
   // stays 1px rather than growing to fill the pane.
@@ -559,7 +560,7 @@ test.each([
   // Scrolled into the entry's last 350px: that tail stays where it was.
   { start: 1250, intermediate: 350, want: 350 },
 ])(
-  "width reflow retains usable progress through a later viewport resize at $start",
+  "width reflow retains the reading point through a later viewport resize at $start",
   async ({ start, intermediate, want }) => {
     const geometry = { width: 152, viewportHeight: 400, rowHeights: [1600, 1000] };
     const external = installTranscriptGeometry(() => geometry);
@@ -764,11 +765,18 @@ test("width-only reflow preserves the first visible row beside a fractional pred
       fireEvent.scroll(port);
     });
     expect(firstVisibleRow()).toBe("current");
+    const before = captureTranscriptView("fractional-reading");
+    expect(before).toMatchObject({ anchorId: "current-entry" });
     geometry.width = 364;
     geometry.rowHeights = [7036.171875, 29.3125, 7036.171875];
     await act(async () => external.notify());
     await waitFor(() => expect(firstVisibleRow()).toBe("current"));
-    expect(captureTranscriptView("fractional-reading")).toMatchObject({ anchorId: "current-entry", anchorOffset: 0 });
+    // The separator's 1.3px tail stays where it was: its height is unchanged,
+    // so its offset is too.
+    expect(captureTranscriptView("fractional-reading")).toMatchObject({
+      anchorId: "current-entry",
+      anchorOffset: before?.anchorOffset,
+    });
     expect(entry.querySelector('[data-testid="user-bubble"]')?.textContent).toBe("current");
   } finally {
     mounted?.unmount();

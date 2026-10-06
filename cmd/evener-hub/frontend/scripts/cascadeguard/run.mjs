@@ -144,8 +144,8 @@ const sourceReadingPointExpr = readingPointExpr(sourcePortExpr);
 function wantedReadingOffset(before, after) {
   if (before.offset >= 0) return before.offset;
   const oldDepth = Math.max(0, before.height - before.viewport);
-  if (oldDepth > 0 && -before.offset > oldDepth) return Math.min(0, before.height + before.offset - after.height);
-  const progress = oldDepth > 0 ? Math.min(1, -before.offset / oldDepth) : 0;
+  if (-before.offset > oldDepth) return Math.min(0, before.height + before.offset - after.height);
+  const progress = oldDepth > 0 ? -before.offset / oldDepth : 0;
   return -progress * Math.max(0, after.height - after.viewport);
 }
 
