@@ -169,9 +169,19 @@ async function measureFloatingDock(page) {
     driver.send,
     `(async () => {
       const { workspaceStore, getDockviewApi } = await import('/src/shell/workspace.ts');
-      const paneId = workspaceStore.getState().openPane('settings');
-      window.shellguardFloat = { paneId, workspaceStore, getDockviewApi };
+      window.shellguardFloat = { workspaceStore, getDockviewApi };
     })()`,
+  );
+  // DockHost is a lazy chunk and settledShell waits only for the rail, so the
+  // dock can still be booting here. A pane opened before DockHost's onReady is
+  // re-minted under a new id when onReady restores the layout an earlier page
+  // saved, and the id openPane returned then never gets a panel. DockHost
+  // registers the api at the top of its synchronous onReady, so a non-null api
+  // means that restore has finished.
+  await driver.waitPage("window.shellguardFloat.getDockviewApi() != null", { label: "real Dockview api ready" });
+  await evaluate(
+    driver.send,
+    "window.shellguardFloat.paneId = window.shellguardFloat.workspaceStore.getState().openPane('settings')",
   );
   await driver.waitPage(
     "window.shellguardFloat.getDockviewApi()?.getPanel(window.shellguardFloat.paneId) != null",
