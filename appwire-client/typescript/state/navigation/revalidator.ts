@@ -39,6 +39,11 @@ export interface NavigationInvalidationWaiter {
   cancel(): void;
 }
 const protocolError = (message: string) => new Error(`navigation protocol: ${message}`);
+// Mutation and invalidation convergence forces every loaded location read as
+// well as the explicitly named targets, so foreground locations participate in
+// the same wait even though the wire target vocabulary has no location kind.
+const matchesConvergenceTarget = (key: ResourceKey, target: NavigationInvalidationTarget) =>
+  key.kind === "location" || matchesTarget(key, target);
 
 /** True when error is a generation-mismatch rejection from this revalidator
  * (stale waiters after resetGeneration, waiter calls against a new
@@ -397,8 +402,8 @@ export class NavigationRevalidator {
     return targets.every((target) => {
       return [...this.entries.values()].every((entry) => {
         if (keys && !keys.has(keyID(entry.state.key))) return true;
-        if (!matchesTarget(entry.state.key, target)) return true;
-        const revision = target.revision;
+        if (!matchesConvergenceTarget(entry.state.key, target)) return true;
+        const revision = entry.state.key.kind === "location" ? undefined : target.revision;
         return (
           !entry.state.loading &&
           !entry.state.stale &&
@@ -428,7 +433,7 @@ export class NavigationRevalidator {
       [...this.entries.values()].some(
         (entry) =>
           (!keys || keys.has(keyID(entry.state.key))) &&
-          matchesTarget(entry.state.key, target) &&
+          matchesConvergenceTarget(entry.state.key, target) &&
           entry.state.error !== null &&
           !entry.rerun,
       ),

@@ -1707,6 +1707,45 @@ test("shutdown convergence follows the invalidation receipt when one arrives", a
   expect(store.getState().lastSequence).toBe(1);
 });
 
+test("shutdown convergence keeps its entry foreground snapshot across receipts", async () => {
+  let revision = 1;
+  const client = await init((params) => {
+    if (params.resource === "manifest") return wireSnapshot(params, emptyManifest());
+    if (params.offset === 2) throw new Error("newly foreground page unavailable");
+    return wireSnapshot(params, { sessions: [], remaining: 0, truncated: false }, `"section-${revision}"`, revision);
+  });
+  await store.getState().loadSection("live", 0, 2);
+
+  const firstWaiter = store.getState().awaitNavigationInvalidation(() => true);
+  const firstConvergence = store.awaitConvergence(firstWaiter, [{ kind: "section", section: "live" }], {
+    timeoutMs: 10_000,
+  });
+  const newlyForeground = await store.getState().loadSection("live", 2, 2);
+  expect((newlyForeground.error as Error | null)?.message).toBe("newly foreground page unavailable");
+  revision = 2;
+  client.emitNotification(
+    navigationInvalidatedNotification({
+      generationId: generation,
+      sequence: 1,
+      targets: [{ kind: "section", section: "live", revision: 2 }],
+    }),
+  );
+  await expect(firstConvergence).resolves.toBeUndefined();
+
+  const nextWaiter = store.getState().awaitNavigationInvalidation(() => true);
+  const nextConvergence = store.awaitConvergence(nextWaiter, [{ kind: "section", section: "live" }], {
+    timeoutMs: 10_000,
+  });
+  client.emitNotification(
+    navigationInvalidatedNotification({
+      generationId: generation,
+      sequence: 2,
+      targets: [{ kind: "section", section: "live", revision: 2 }],
+    }),
+  );
+  await expect(nextConvergence).rejects.toThrow("target convergence failed");
+});
+
 test("shutdown convergence re-arms past unrelated receipts until its session settles", async () => {
   let revision = 1;
   let listed = true;

@@ -132,6 +132,193 @@ test("two background leases deduplicate, and releasing one during a request pres
   client.close();
 });
 
+test("final background lease release removes settled data before foreground reacquisition", async () => {
+  const calls: NavigationReadParams[] = [];
+  const { client, store } = makeStore((params) => {
+    calls.push(params);
+    return params.resource === "manifest"
+      ? manifestResponse(params)
+      : pageResponse(
+          params,
+          [
+            calls.filter((call) => call.resource === "section" && call.offset === 4).length === 1
+              ? "retired-background-row"
+              : "fresh-background-row",
+          ],
+          0,
+        );
+  });
+  const resourceKey = { kind: "section", section: "live", offset: 4, limit: 2 } as const;
+  const id = keyID(resourceKey);
+  const background = store.acquireBackgroundLivePages();
+  await background.load(4, 2);
+  expect(store.getState().resources.get(id)?.data).not.toBeNull();
+
+  background.release();
+  expect(store.getState().resources.has(id)).toBe(false);
+
+  const visibleSnapshots: Array<string[] | null> = [];
+  const unsubscribe = store.subscribe((state) => {
+    if (state.visibleResourceKeys.has(id)) {
+      const data = state.resources.get(id)?.data as { sessions?: Array<{ ref: string }> } | null | undefined;
+      visibleSnapshots.push(data?.sessions?.map((session) => session.ref) ?? null);
+    }
+  });
+  await store.getState().loadSection("live", 4, 2);
+  unsubscribe();
+  expect(visibleSnapshots.length).toBeGreaterThan(0);
+  expect(visibleSnapshots.flat()).not.toContain("retired-background-row");
+  expect(calls.filter((params) => params.resource === "section" && params.offset === 4)).toHaveLength(2);
+  const shared = store.acquireBackgroundLivePages();
+  await shared.load(4, 2);
+  shared.release();
+  expect(store.getState().resources.has(id)).toBe(true);
+  store.reset();
+  client.close();
+});
+
+test("final background lease release removes an in-flight page and fences its late response", async () => {
+  let finishRequest!: () => void;
+  const pending = new Promise<void>((resolve) => {
+    finishRequest = resolve;
+  });
+  const { client, store } = makeStore(async (params) => {
+    if (params.resource === "manifest") return manifestResponse(params);
+    await pending;
+    return pageResponse(params, ["late-background-row"], 0);
+  });
+  const resourceKey = { kind: "section", section: "live", offset: 4, limit: 2 } as const;
+  const id = keyID(resourceKey);
+  const background = store.acquireBackgroundLivePages();
+  const request = background.load(4, 2);
+  await Promise.resolve();
+  expect(store.getState().resources.get(id)?.loading).toBe(true);
+
+  background.release();
+  expect(store.getState().resources.has(id)).toBe(false);
+  finishRequest();
+  await request;
+  expect(store.getState().resources.has(id)).toBe(false);
+  expect(selectLiveRows(store.getState())).toEqual([]);
+  store.reset();
+  client.close();
+});
+
+test("foreground adopts a failed hidden in-flight page and the next wait rejects without a duplicate read", async () => {
+  let finishRequest!: () => void;
+  const pending = new Promise<void>((resolve) => {
+    finishRequest = resolve;
+  });
+  const calls: NavigationReadParams[] = [];
+  const { client, store } = makeStore(async (params) => {
+    calls.push(params);
+    if (params.resource === "manifest") return manifestResponse(params);
+    if (params.offset === 4) {
+      await pending;
+      throw new Error("hidden page unavailable");
+    }
+    return pageResponse(params, ["live-001", "live-002"], 4);
+  });
+  const background = store.acquireBackgroundLivePages();
+  const hiddenRead = background.load(4, 2);
+  await Promise.resolve();
+  const foregroundRead = store.getState().loadSection("live", 4, 2);
+  expect(calls.filter((params) => params.resource === "section" && params.offset === 4)).toHaveLength(1);
+
+  finishRequest();
+  const [hiddenResult, foregroundResult] = await Promise.all([hiddenRead, foregroundRead]);
+  expect((hiddenResult.error as Error | null)?.message).toBe("hidden page unavailable");
+  expect((foregroundResult.error as Error | null)?.message).toBe("hidden page unavailable");
+  await expect(
+    store.getState().awaitNavigationTargets([{ kind: "section", section: "live", revision: 2 }], generation),
+  ).rejects.toThrow("target convergence failed");
+  expect(calls.filter((params) => params.resource === "section" && params.offset === 4)).toHaveLength(1);
+  background.release();
+  store.reset();
+  client.close();
+});
+
+test("a matching project resource holds foreground target convergence until its read settles", async () => {
+  let finishProject!: () => void;
+  const pending = new Promise<void>((resolve) => {
+    finishProject = resolve;
+  });
+  const { client, store } = makeStore(async (params) => {
+    if (params.resource === "manifest") return manifestResponse(params);
+    if (params.resource === "project") {
+      await pending;
+      return wireSnapshot(
+        params,
+        {
+          current: { sessions: [row("project-session")], remaining: 0 },
+          recent: { sessions: [], remaining: 0 },
+          archived: { sessions: [], remaining: 0 },
+        },
+        '"project-2"',
+        2,
+      );
+    }
+    throw new Error(`unexpected navigation read ${JSON.stringify(params)}`);
+  });
+  const projectLoad = store.getState().loadProject("project-key");
+  await Promise.resolve();
+  let settled = false;
+  const convergence = store
+    .getState()
+    .awaitNavigationTargets([{ kind: "project", projectKey: "project-key", revision: 2 }], generation)
+    .then(() => {
+      settled = true;
+    });
+  await Promise.resolve();
+  expect(settled).toBe(false);
+
+  finishProject();
+  await projectLoad;
+  await convergence;
+  expect(settled).toBe(true);
+  store.reset();
+  client.close();
+});
+
+test("a mutation waits for its forced foreground location refresh", async () => {
+  let finishLocation!: () => void;
+  const pending = new Promise<void>((resolve) => {
+    finishLocation = resolve;
+  });
+  let holdLocation = false;
+  let locationReads = 0;
+  const { client, store } = makeStore(async (params) => {
+    if (params.resource === "manifest") return manifestResponse(params);
+    if (params.resource === "location") {
+      locationReads++;
+      if (holdLocation) await pending;
+      return wireSnapshot(params, { session: row("live-001") }, '"location-1"', 1);
+    }
+    throw new Error(`unexpected navigation read ${JSON.stringify(params)}`);
+  });
+  await store.getState().lookupLocation("live-001");
+  holdLocation = true;
+  let settled = false;
+  const convergence = store
+    .getState()
+    .applyNavigationMutation({
+      generation_id: generation,
+      targets: [{ kind: "section", section: "live", revision: 2 }],
+    })
+    .then(() => {
+      settled = true;
+    });
+  await Promise.resolve();
+  expect(locationReads).toBe(2);
+  expect(settled).toBe(false);
+
+  finishLocation();
+  await convergence;
+  expect(settled).toBe(true);
+  store.reset();
+  client.close();
+});
+
 test("reset retires background leases and clears foreground visible keys", async () => {
   const { client, store } = makeStore((params) =>
     params.resource === "manifest" ? manifestResponse(params) : pageResponse(params, ["live-001", "live-002"], 4),
