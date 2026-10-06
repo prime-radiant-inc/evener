@@ -336,7 +336,9 @@ func TestReadLocalJobOutputSnapshotsRetryWithFreshDescriptor(t *testing.T) {
 			if err != nil {
 				t.Fatalf("open pre-prune output: %v", err)
 			}
-			if _, err := output.Append([]byte("BBBB")); err != nil {
+			// Five bytes take the file past twice the cap, so this append
+			// compacts and replaces the file the stale descriptor holds.
+			if _, err := output.Append([]byte("BBBBB")); err != nil {
 				_ = stale.Close()
 				t.Fatalf("append replacement: %v", err)
 			}
