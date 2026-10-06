@@ -27,7 +27,7 @@ import {
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { wireThread } from "@evener/appwire-client/testing/notifications";
 import { act, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createConversationService } from "../../mobile/src/services/conversation";
 import { createActivityStore } from "../../mobile/src/state/activity";
 import { createConversationStore } from "../../mobile/src/state/conversation";
@@ -142,7 +142,7 @@ function mountRow(
 	row: TimelineRow,
 	{ hubId = "hub", sessionRef = "session-1", expandByDefault = false, sourceTurns }: MountOptions = {},
 ) {
-	return render(
+	const tree = render(
 		<TimelineItem
 			item={row}
 			hubId={hubId}
@@ -151,6 +151,8 @@ function mountRow(
 			sourceTurns={sourceTurns}
 		/>,
 	);
+	mountedTrees.add(tree);
+	return tree;
 }
 
 function findRow(rows: TimelineRow[], id: string): TimelineRow {
@@ -199,8 +201,22 @@ function resetDisclosure(): void {
 	act(() => nativeDisclosureStore.setState(nativeDisclosureStore.getInitialState()));
 }
 
+// Every tree mountRow renders, so a fixture is unmounted promptly and a test
+// that throws partway cannot leave a root subscribed to the shared disclosure
+// store for the rest of the file.
+const mountedTrees = new Set<ReactTestRenderer>();
+
+function unmount(tree: ReactTestRenderer): void {
+	if (!mountedTrees.delete(tree)) return; // already unmounted
+	act(() => tree.unmount());
+}
+
 beforeEach(() => {
 	resetDisclosure();
+});
+
+afterEach(() => {
+	for (const tree of [...mountedTrees]) unmount(tree);
 });
 
 // --- collapsed at every level, both System events settings ------------------
@@ -217,6 +233,7 @@ describe("collapsed 'Refreshed my memory' at every level and gate", () => {
 			expect(absent(tree, "memory-context-scope-state")).toBe(true);
 			expect(renderedText(tree)).not.toContain("Quoted index data:");
 			expect(renderedText(tree)).not.toContain("Memory scope");
+			unmount(tree);
 		}
 	});
 
@@ -225,6 +242,7 @@ describe("collapsed 'Refreshed my memory' at every level and gate", () => {
 			resetDisclosure();
 			const { tree } = mountItem(memoryContextWireItem(name), level, true);
 			expect(absent(tree, "memory-context-scope-state")).toBe(true);
+			unmount(tree);
 		}
 	});
 
@@ -235,6 +253,7 @@ describe("collapsed 'Refreshed my memory' at every level and gate", () => {
 			// Activity and Full set the general expand-everything baseline.
 			expect(expandByDefault).toBe(true);
 			expect(absent(tree, "memory-context-scope-state")).toBe(true);
+			unmount(tree);
 		}
 	});
 });
@@ -252,6 +271,7 @@ describe("an explicit tap reveals the decoded refresh", () => {
 		expect(absent(tree, "memory-context-source-text")).toBe(true);
 		press(tree, "Source");
 		expect(textOf(requireFind(tree, "memory-context-source-text"))).toBe(item.text);
+		unmount(tree);
 	});
 
 	it("names every scope truthfully", () => {
@@ -263,6 +283,7 @@ describe("an explicit tap reveals the decoded refresh", () => {
 			const { tree } = mountItem(memoryContextWireItem(name), "tools", true);
 			press(tree, MEMORY_CONTEXT_LABEL);
 			expect(textOf(requireFind(tree, "memory-context-scope-state"))).toContain(expected);
+			unmount(tree);
 		}
 	});
 
@@ -277,6 +298,7 @@ describe("an explicit tap reveals the decoded refresh", () => {
 			press(tree, row.label ?? MEMORY_CONTEXT_LABEL);
 			press(tree, "Source");
 			expect(textOf(requireFind(tree, "memory-context-source-text"))).toBe(item.text);
+			unmount(tree);
 		}
 	});
 });
@@ -295,6 +317,7 @@ describe("states and truncation stay honest", () => {
 			if (row.kind !== "notice") throw new Error("not a notice row");
 			expect(row.label).toContain(state);
 			expect(pressable(tree, `${MEMORY_CONTEXT_LABEL} · ${state}`)).toBeDefined();
+			unmount(tree);
 		}
 	});
 
@@ -304,16 +327,19 @@ describe("states and truncation stay honest", () => {
 		press(tree, MEMORY_CONTEXT_LABEL);
 		expect(textOf(requireFind(tree, "memory-context-empty"))).toBe("Empty index");
 		expect(absent(tree, "memory-context-content")).toBe(true);
+		unmount(tree);
 
 		resetDisclosure();
 		({ tree } = mountItem(memoryContextWireItem("missing-project"), "tools", true));
 		press(tree, MEMORY_CONTEXT_LABEL);
 		expect(textOf(requireFind(tree, "memory-context-scope-state"))).toContain("missing");
+		unmount(tree);
 
 		resetDisclosure();
 		({ tree } = mountItem(memoryContextWireItem("truncated-project"), "tools", true));
 		press(tree, MEMORY_CONTEXT_LABEL);
 		expect(textOf(requireFind(tree, "memory-context-truncated"))).toBe("truncated");
+		unmount(tree);
 	});
 });
 
@@ -328,6 +354,7 @@ describe("an invalid payload falls back, a later valid one still renders", () =>
 		expect(textOf(requireFind(tree, "memory-context-fallback"))).toBe(item.text);
 		expect(absent(tree, "memory-context-scope-state")).toBe(true);
 		expect(absent(tree, "memory-context-content")).toBe(true);
+		unmount(tree);
 	});
 
 	it("opens both a malformed fallback and a later valid observation beside it", () => {
@@ -345,6 +372,8 @@ describe("an invalid payload falls back, a later valid one still renders", () =>
 		const goodTree = mountRow(findRow(rows, "mem-good"), { expandByDefault });
 		press(goodTree, MEMORY_CONTEXT_LABEL);
 		expect(textOf(requireFind(goodTree, "memory-context-scope-state"))).toContain("Project memory · current");
+		unmount(badTree);
+		unmount(goodTree);
 	});
 });
 
@@ -357,17 +386,18 @@ describe("explicit choices survive remount, verbosity and stay per hub/session",
 		expect(first.expandByDefault).toBe(false);
 		press(first.tree, MEMORY_CONTEXT_LABEL);
 		expect(find(first.tree, "memory-context-scope-state")).toBeDefined();
-		act(() => first.tree.unmount());
+		unmount(first.tree);
 
 		const remounted = mountItem(item, "tools", true);
 		expect(find(remounted.tree, "memory-context-scope-state")).toBeDefined();
-		act(() => remounted.tree.unmount());
+		unmount(remounted.tree);
 
 		// Activity/Full turn the general expansion default on; the explicit open
 		// is unaffected.
 		const atFull = mountItem(item, "full", true);
 		expect(atFull.expandByDefault).toBe(true);
 		expect(find(atFull.tree, "memory-context-scope-state")).toBeDefined();
+		unmount(atFull.tree);
 	});
 
 	it("keeps an explicit close through the expansion default switching on", () => {
@@ -376,11 +406,12 @@ describe("explicit choices survive remount, verbosity and stay per hub/session",
 		press(tree.tree, MEMORY_CONTEXT_LABEL);
 		press(tree.tree, MEMORY_CONTEXT_LABEL);
 		expect(absent(tree.tree, "memory-context-scope-state")).toBe(true);
-		act(() => tree.tree.unmount());
+		unmount(tree.tree);
 
 		const atFull = mountItem(item, "full", true);
 		expect(atFull.expandByDefault).toBe(true);
 		expect(absent(atFull.tree, "memory-context-scope-state")).toBe(true);
+		unmount(atFull.tree);
 	});
 
 	it("does not open the same item id in another session or hub", () => {
@@ -388,14 +419,15 @@ describe("explicit choices survive remount, verbosity and stay per hub/session",
 		const tree = mountItem(item, "tools", true, { hubId: "hub", sessionRef: "session-1" });
 		press(tree.tree, MEMORY_CONTEXT_LABEL);
 		expect(find(tree.tree, "memory-context-scope-state")).toBeDefined();
-		act(() => tree.tree.unmount());
+		unmount(tree.tree);
 
 		const otherSession = mountItem(item, "tools", true, { hubId: "hub", sessionRef: "session-2" });
 		expect(absent(otherSession.tree, "memory-context-scope-state")).toBe(true);
-		act(() => otherSession.tree.unmount());
+		unmount(otherSession.tree);
 
 		const otherHub = mountItem(item, "tools", true, { hubId: "hub-2", sessionRef: "session-1" });
 		expect(absent(otherHub.tree, "memory-context-scope-state")).toBe(true);
+		unmount(otherHub.tree);
 	});
 });
 
@@ -455,6 +487,8 @@ describe("live reduction and history hydration agree", () => {
 		press(historyTree, "Source");
 		expect(textOf(requireFind(historyTree, "memory-context-source-text"))).toBe(liveSource);
 		expect(liveSource).toBe(item.text);
+		unmount(liveTree);
+		unmount(historyTree);
 	});
 });
 
@@ -476,6 +510,7 @@ describe("ordinary system rows keep their existing treatment", () => {
 		expect(row.label).toBeUndefined();
 		expect(row.memoryContext).toBeUndefined();
 		expect(absent(tree, "memory-context-scope-state")).toBe(true);
+		unmount(tree);
 	});
 });
 
@@ -553,7 +588,7 @@ describe("a store-bounded refresh keeps the complete original beyond the row bou
 					press(tree, "Source");
 					expect(textOf(requireFind(tree, "memory-context-source-text"))).toBe(original);
 				}
-				act(() => tree.unmount());
+				unmount(tree);
 			}
 		} finally {
 			store.getState().close();
