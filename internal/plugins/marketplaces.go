@@ -96,6 +96,18 @@ func (m *Manager) loadMarketplaces() (Marketplaces, error) {
 // storeChangeRollbackFailed) wrap this already-scrubbed error with it; no
 // path can reach the wire either way.
 func (m *Manager) saveMarketplaces(mk Marketplaces) error {
+	if err := m.writeMarketplaces(mk); err != nil {
+		return err
+	}
+	m.markStoreChanged(StoreChanged{Marketplaces: true})
+	return nil
+}
+
+// writeMarketplaces writes known_marketplaces.json, scrubbed as
+// saveMarketplaces says, without marking the store changed: for a write that
+// changes nothing a client or an update check reads beyond LastUpdated
+// (stampRefreshed).
+func (m *Manager) writeMarketplaces(mk Marketplaces) error {
 	path, err := m.storePath(marketplacesFileName)
 	if err != nil {
 		return err
@@ -108,7 +120,25 @@ func (m *Manager) saveMarketplaces(mk Marketplaces) error {
 		_, _ = fmt.Fprintf(m.stderr(), "warning: saving %s failed: %v\n", marketplacesFileName, err)
 		return fmt.Errorf("saving %s failed; see the hub's log for detail", marketplacesFileName)
 	}
-	m.markStoreChanged(StoreChanged{Marketplaces: true})
+	return nil
+}
+
+// stampRefreshed records that a refresh confirmed name's catalog current
+// now (LastUpdated, which doctor's staleness warning reads). A refresh that
+// changed the clone saves as any marketplace write does, broadcasting the
+// change and retiring update-check answers; one that changed nothing only
+// writes the time, so the hub's auto-upgrade tick and every check do not
+// retire answers or broadcast to every client for nothing.
+func (m *Manager) stampRefreshed(mk Marketplaces, name string, ref MarketplaceRef, changed bool) error {
+	ref.LastUpdated = m.now().UTC()
+	mk[name] = ref
+	save := m.saveMarketplaces
+	if !changed {
+		save = m.writeMarketplaces
+	}
+	if err := save(mk); err != nil {
+		return m.saveFailed(name, marketplacesFileName, err)
+	}
 	return nil
 }
 
@@ -514,7 +544,14 @@ func (m *Manager) RemoveMarketplace(ctx context.Context, name string) error {
 		return m.saveFailed(name, marketplacesFileName, err)
 	}
 	if present && !protect {
-		if err := m.withClone(ctx, clone, func() error { return marketplaceRemoveAll(clone) }); err != nil {
+		removeClone := func() error {
+			if err := marketplaceRemoveAll(clone); err != nil {
+				return err
+			}
+			m.removeCloneLock(clone)
+			return nil
+		}
+		if err := m.withClone(ctx, clone, removeClone); err != nil {
 			return m.cloneRemovalFailed(name, err)
 		}
 	}
@@ -1590,6 +1627,9 @@ func (m *Manager) RefreshMarketplace(ctx context.Context, name string) error {
 	if !ok {
 		return fmt.Errorf("marketplace %q: %w", name, ErrMarketplaceNotFound)
 	}
+	// A directory catalog can change on disk without anything to compare, so
+	// its refresh always counts as a change.
+	changed := true
 	if ref.Source.Kind != SourceDirectory {
 		if ref.InstallLocation == "" {
 			// Never fetched (seeded pointer): clone now — that is the refresh.
@@ -1603,25 +1643,31 @@ func (m *Manager) RefreshMarketplace(ctx context.Context, name string) error {
 				return err
 			}
 			ref.InstallLocation = installLoc
-		} else if pullErr := m.withClone(ctx, ref.InstallLocation, func() error { return marketplaceGitPull(ctx, ref.InstallLocation) }); pullErr != nil {
-			// A failed pull can mean the clone is wedged — e.g. a stale
-			// .git/index.lock stranded by a killed git — and a plain retry
-			// would then fail the same way forever. Self-heal with a staged
-			// reclone; on failure it leaves the existing clone untouched.
-			// When the pull failed because the request itself was canceled,
-			// skip the doomed reclone and surface the cancellation directly.
-			if ctx.Err() != nil {
-				return pullErr
+		} else if !cloneOnBranch(ref.InstallLocation) {
+			// Pinned to a tag or a commit: the detached HEAD a pull cannot
+			// move is the catalog, so there is nothing to fetch, and a failed
+			// pull would reclone it on every refresh (#3844).
+			changed = false
+		} else {
+			// "" (unknown) counts as a change.
+			before, _ := marketplaceGitHeadSHA(ctx, ref.InstallLocation)
+			if pullErr := m.withClone(ctx, ref.InstallLocation, func() error { return marketplaceGitPull(ctx, ref.InstallLocation) }); pullErr != nil {
+				// A failed pull can mean the clone is wedged — e.g. a stale
+				// .git/index.lock stranded by a killed git — and a plain retry
+				// would then fail the same way forever. Self-heal with a staged
+				// reclone; on failure it leaves the existing clone untouched.
+				// When the pull failed because the request itself was canceled,
+				// skip the doomed reclone and surface the cancellation directly.
+				if ctx.Err() != nil {
+					return pullErr
+				}
+				if recloneErr := m.recloneMarketplace(ctx, ref); recloneErr != nil {
+					return fmt.Errorf("refreshing marketplace %q: git pull failed (%w); staged reclone failed: %w", name, pullErr, recloneErr)
+				}
 			}
-			if recloneErr := m.recloneMarketplace(ctx, ref); recloneErr != nil {
-				return fmt.Errorf("refreshing marketplace %q: git pull failed (%w); staged reclone failed: %w", name, pullErr, recloneErr)
-			}
+			after, err := marketplaceGitHeadSHA(ctx, ref.InstallLocation)
+			changed = before == "" || err != nil || after != before
 		}
 	}
-	ref.LastUpdated = m.now().UTC()
-	mk[name] = ref
-	if err := m.saveMarketplaces(mk); err != nil {
-		return m.saveFailed(name, marketplacesFileName, err)
-	}
-	return nil
+	return m.stampRefreshed(mk, name, ref, changed)
 }

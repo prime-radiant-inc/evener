@@ -104,11 +104,11 @@ func (m *Manager) lockStore(ctx context.Context, acquire lockAcquirer, timeout t
 // before it, and held for no store-lock wait. Its error carries the lock
 // file's path only to the log, as lockFailed's does.
 func (m *Manager) lockClone(ctx context.Context, dir string) (func(), error) {
-	path, err := m.storePath(cloneLocksDirName, filepath.Base(dir)+".lock")
+	path, err := m.cloneLockPath(dir)
 	if err != nil {
 		return nil, err
 	}
-	release, err := acquireLock(ctx, path, 30*time.Second)
+	release, err := acquireLockAtPath(ctx, path)
 	if err != nil {
 		_, _ = fmt.Fprintf(m.stderr(), "warning: taking the lock on marketplace clone %s: %v\n", dir, err)
 		msg := fmt.Sprintf("the lock on marketplace clone %q could not be taken; see the hub's log for detail", filepath.Base(dir))
@@ -118,6 +118,44 @@ func (m *Manager) lockClone(ctx context.Context, dir string) (func(), error) {
 		return nil, &lockAcquisitionError{msg: msg, cause: err}
 	}
 	return release, nil
+}
+
+// acquireLockAtPath takes the lock on the file at path, as it is when the
+// lock is granted. removeCloneLock deletes a clone's lock file while holding
+// it, so a waiter can be granted the lock on the deleted file while a later
+// taker creates and locks a new one; each would think it held the lock. So
+// the file at path is looked up before the wait and again once the lock is
+// granted, and a lock on any other file is let go and taken again.
+func acquireLockAtPath(ctx context.Context, path string) (func(), error) {
+	for {
+		before, err := os.Stat(path)
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return nil, err
+		}
+		release, err := acquireLock(ctx, path, 30*time.Second)
+		if err != nil {
+			return nil, err
+		}
+		// A lock that found no file created the one it holds, which another
+		// taker can have deleted and replaced since; the next pass compares.
+		if after, err := os.Stat(path); before != nil && err == nil && os.SameFile(before, after) {
+			return release, nil
+		}
+		release()
+	}
+}
+
+func (m *Manager) cloneLockPath(dir string) (string, error) {
+	return m.storePath(cloneLocksDirName, filepath.Base(dir)+".lock")
+}
+
+// removeCloneLock removes the lock file of the clone at dir, whose lock the
+// caller holds, once the clone itself is gone. Best effort: a file left
+// behind is reused if the name comes back.
+func (m *Manager) removeCloneLock(dir string) {
+	if path, err := m.cloneLockPath(dir); err == nil {
+		_ = os.Remove(path)
+	}
 }
 
 // withClone runs op holding the lock on the clone at dir (lockClone).

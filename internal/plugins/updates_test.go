@@ -394,8 +394,11 @@ func TestCheckUpdates_AnswerGoesStaleWhenItsMarketplaceChanges(t *testing.T) {
 	if !checkThenList(t, f.m) {
 		t.Fatal("plugin behind its remote head not listed as having an update")
 	}
-	// A refresh can change the catalog's source, ref or pin, so an answer
-	// checked against the old catalog no longer says what Upgrade would do.
+	// A refresh that pulls a change to the catalog can change a plugin's
+	// source, ref or pin, so an answer checked against the old catalog no
+	// longer says what Upgrade would do. (One that pulls nothing keeps it:
+	// TestRefreshMarketplace_ANoOpRefreshReportsNoChange.)
+	advanceRepo(t, f.mktRepo)
 	if err := f.m.RefreshMarketplace(context.Background(), "acme"); err != nil {
 		t.Fatalf("RefreshMarketplace: %v", err)
 	}
@@ -558,10 +561,11 @@ func TestCheckUpdates_AMarketplaceThatCannotRefreshIsAWarning(t *testing.T) {
 	}
 }
 
-// A check's refresh that leaves a marketplace's clone where it was writes
-// nothing: no save, so no broadcast and no answers retired for another check
-// in flight. One that pulls a change saves it.
-func TestCheckUpdates_ARefreshThatChangesNothingWritesNothing(t *testing.T) {
+// A check's refresh that leaves a marketplace's clone where it was confirms
+// its catalog current (LastUpdated) but reports no store change: nothing is
+// broadcast and no answers are retired for another check in flight. One that
+// pulls a change reports it.
+func TestCheckUpdates_ARefreshThatChangesNothingReportsNoChange(t *testing.T) {
 	f := installURLPlugin(t, unpinned)
 	lastUpdated := func() time.Time {
 		t.Helper()
@@ -571,16 +575,40 @@ func TestCheckUpdates_ARefreshThatChangesNothingWritesNothing(t *testing.T) {
 		}
 		return mk["acme"].LastUpdated
 	}
-	before := lastUpdated()
-	f.m.Now = func() time.Time { return before.Add(time.Hour) }
+	reports := recordStoreChanges(f.m)
+	later := lastUpdated().Add(time.Hour)
+	f.m.Now = func() time.Time { return later }
 	checkThenList(t, f.m)
-	if got := lastUpdated(); !got.Equal(before) {
-		t.Fatalf("a refresh that pulled nothing saved the marketplace (LastUpdated %v, was %v)", got, before)
+	if got := lastUpdated(); !got.Equal(later) {
+		t.Fatalf("a refresh that pulled nothing left LastUpdated at %v, want %v", got, later)
+	}
+	if len(*reports) != 0 {
+		t.Fatalf("a refresh that pulled nothing reported %v", *reports)
 	}
 	advanceRepo(t, f.mktRepo)
 	checkThenList(t, f.m)
-	if got := lastUpdated(); !got.Equal(before.Add(time.Hour)) {
-		t.Fatalf("a refresh that pulled a change did not save it (LastUpdated %v)", got)
+	if len(*reports) != 1 || !(*reports)[0].Marketplaces {
+		t.Fatalf("a refresh that pulled a change reported %v, want one marketplaces change", *reports)
+	}
+}
+
+// A marketplace re-sourced to a pin while a check fetches its clone is left
+// alone once the fetch is done: its clone is on a detached HEAD by then,
+// which the fast-forward skips rather than fails on. Detaching the clone
+// inside the fetch stands in for the re-source, which waits on the clone lock
+// the fetch holds.
+func TestCheckUpdates_AClonePinnedDuringTheFetchIsNotFastForwarded(t *testing.T) {
+	f := installURLPlugin(t, unpinned)
+	realFetch := marketplaceGitFetch
+	t.Cleanup(func() { marketplaceGitFetch = realFetch })
+	marketplaceGitFetch = func(ctx context.Context, dir string) error {
+		gitIn(t, dir, "checkout", "--quiet", "--detach")
+		return realFetch(ctx, dir)
+	}
+	advanceRepo(t, f.mktRepo)
+	checkThenList(t, f.m)
+	if w := f.warnings(); strings.Contains(w, "refreshing marketplace") {
+		t.Fatalf("a clone pinned during the fetch was fast-forwarded: %q", w)
 	}
 }
 
@@ -642,12 +670,15 @@ func TestCheckUpdates_RefreshSkipsPinnedMarketplacesAndStopsAtItsBudget(t *testi
 }
 
 // hangingFetches makes every marketplace fetch hang until its context ends,
-// with a refresh budget of 50ms, and answers the clones fetched, in order.
+// with a refresh budget of 500ms, and answers the clones fetched, in order.
+// The budget leaves a check's first refresh ample time to reach its fetch
+// (taking the clone lock, fast-forwarding a quick one) even under -race, so
+// the hang, not the setup, is what spends it.
 func hangingFetches(t *testing.T) *[]string {
 	t.Helper()
 	realFetch, realBudget := marketplaceGitFetch, updateCheckRefreshBudget
 	t.Cleanup(func() { marketplaceGitFetch, updateCheckRefreshBudget = realFetch, realBudget })
-	updateCheckRefreshBudget = 50 * time.Millisecond
+	updateCheckRefreshBudget = 500 * time.Millisecond
 	var fetched []string
 	marketplaceGitFetch = func(ctx context.Context, dir string) error {
 		fetched = append(fetched, dir)

@@ -2889,3 +2889,113 @@ func TestRekeyRegistry_KeepsOwnershipAcrossARenameInTheSamePass(t *testing.T) {
 		t.Fatalf("keys = %v, want the key kept under the name the first rename wrote", after.Plugins)
 	}
 }
+
+// An explicit refresh of a marketplace pinned to a tag or a sha (its clone is
+// on a detached HEAD, which a pull cannot move) neither pulls nor reclones; it
+// confirms the pinned catalog current (#3844).
+func TestRefreshMarketplace_APinnedCloneIsNotRecloned(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	tagRepo := makeMarketplaceRepo(t, "tagged")
+	gitIn(t, tagRepo, "tag", "v1")
+	shaRepo := makeMarketplaceRepo(t, "pinned")
+	head := gitIn(t, shaRepo, "rev-parse", "HEAD")
+	m := NewManager(t.TempDir())
+	for _, src := range []Source{{Kind: SourceURL, URL: tagRepo, Ref: "v1"}, {Kind: SourceURL, URL: shaRepo, Sha: head}} {
+		if _, err := m.AddMarketplace(context.Background(), "", src); err != nil {
+			t.Fatalf("AddMarketplace %s: %v", src.URL, err)
+		}
+	}
+	realClone, realPull := marketplaceGitClone, marketplaceGitPull
+	t.Cleanup(func() { marketplaceGitClone, marketplaceGitPull = realClone, realPull })
+	gits := 0
+	marketplaceGitClone = func(ctx context.Context, url, dir, ref, sha string) error {
+		gits++
+		return realClone(ctx, url, dir, ref, sha)
+	}
+	marketplaceGitPull = func(ctx context.Context, dir string) error {
+		gits++
+		return realPull(ctx, dir)
+	}
+	later := time.Now().Add(time.Hour).UTC()
+	m.Now = func() time.Time { return later }
+	for _, name := range []string{"tagged", "pinned"} {
+		if err := m.RefreshMarketplace(context.Background(), name); err != nil {
+			t.Fatalf("RefreshMarketplace %s: %v", name, err)
+		}
+	}
+	if gits != 0 {
+		t.Fatalf("refreshing pinned marketplaces ran %d pulls or clones, want none", gits)
+	}
+	mk, err := m.ListMarketplaces(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"tagged", "pinned"} {
+		if !mk[name].LastUpdated.Equal(later) {
+			t.Fatalf("%s LastUpdated = %v, want the refresh's time %v", name, mk[name].LastUpdated, later)
+		}
+	}
+}
+
+// A refresh that brings nothing new still confirms the catalog current
+// (LastUpdated, which doctor's staleness warning reads), but reports no store
+// change: nothing is broadcast and no update check's answers are retired.
+// One that pulls a change reports it.
+func TestRefreshMarketplace_ANoOpRefreshReportsNoChange(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	src := makeMarketplaceRepo(t, "acme")
+	m := NewManager(t.TempDir())
+	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: src}); err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	reports := recordStoreChanges(m)
+	later := time.Now().Add(time.Hour).UTC()
+	m.Now = func() time.Time { return later }
+	if err := m.RefreshMarketplace(context.Background(), "acme"); err != nil {
+		t.Fatalf("RefreshMarketplace: %v", err)
+	}
+	if len(*reports) != 0 {
+		t.Fatalf("a refresh that pulled nothing reported %v", *reports)
+	}
+	mk, err := m.ListMarketplaces(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !mk["acme"].LastUpdated.Equal(later) {
+		t.Fatalf("LastUpdated = %v, want the no-op refresh's time %v", mk["acme"].LastUpdated, later)
+	}
+	advanceGitRepo(t, src, "README.md", "new upstream content")
+	if err := m.RefreshMarketplace(context.Background(), "acme"); err != nil {
+		t.Fatalf("RefreshMarketplace: %v", err)
+	}
+	if len(*reports) != 1 || !(*reports)[0].Marketplaces {
+		t.Fatalf("a refresh that pulled a change reported %v, want one marketplaces change", *reports)
+	}
+}
+
+// Removing a marketplace removes its clone's lock file, so the lock
+// directory does not keep one for every name ever removed.
+func TestRemoveMarketplace_RemovesItsCloneLockFile(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	m := NewManager(t.TempDir())
+	ref, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: makeMarketplaceRepo(t, "acme")})
+	if err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	lockFile := filepath.Join(m.Root, cloneLocksDirName, filepath.Base(ref.InstallLocation)+".lock")
+	if _, err := os.Stat(lockFile); err != nil {
+		t.Fatalf("adding a marketplace left no clone lock file to remove: %v", err)
+	}
+	if err := m.RemoveMarketplace(context.Background(), "acme"); err != nil {
+		t.Fatalf("RemoveMarketplace: %v", err)
+	}
+	if _, err := os.Stat(lockFile); !os.IsNotExist(err) {
+		t.Fatalf("clone lock file survived the marketplace's removal: %v", err)
+	}
+}

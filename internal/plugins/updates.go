@@ -222,16 +222,15 @@ func (m *Manager) refreshForCheck(ctx context.Context) []string {
 
 // fastForwardMarketplace fetches the clone at dir with the store lock free,
 // so a plugin operation started meanwhile does not wait behind the network,
-// then takes the lock to fast-forward it and save its LastUpdated. A fetch
+// then takes the lock to fast-forward it and stamp its LastUpdated
+// (stampRefreshed: one that moves nothing reports no store change). A fetch
 // writes only under .git, so nothing reading the clone's files sees it, and
 // it holds the clone's own lock (lockClone), as the fast-forward does too,
-// against other git work in the clone and its removal or move. A blobless git-subdir clone still downloads the
-// changed files' contents as it fast-forwards, under the store lock, bounded
-// by the refresh's timeout. One
-// that moves nothing saves nothing, so it neither broadcasts nor retires
-// another check's answers (forgetChecks). Unlike RefreshMarketplace, a
-// failure is not repaired by recloning, which would hold the lock across a
-// download; an explicit refresh does that.
+// against other git work in the clone and its removal or move. A blobless
+// git-subdir clone still downloads the changed files' contents as it
+// fast-forwards, under the store lock, bounded by the refresh's timeout.
+// Unlike RefreshMarketplace, a failure is not repaired by recloning, which
+// would hold the lock across a download; an explicit refresh does that.
 func (m *Manager) fastForwardMarketplace(ctx context.Context, name, dir string) error {
 	if err := m.withClone(ctx, dir, func() error { return marketplaceGitFetch(ctx, dir) }); err != nil {
 		return err
@@ -263,15 +262,11 @@ func (m *Manager) fastForwardMarketplace(ctx context.Context, name, dir string) 
 	if err := marketplaceGitFastForward(ctx, dir); err != nil {
 		return err
 	}
-	if after, err := marketplaceGitHeadSHA(ctx, dir); err != nil || after == before {
+	after, err := marketplaceGitHeadSHA(ctx, dir)
+	if err != nil {
 		return err
 	}
-	ref.LastUpdated = m.now().UTC()
-	mk[name] = ref
-	if err := m.saveMarketplaces(mk); err != nil {
-		return m.saveFailed(name, marketplacesFileName, err)
-	}
-	return nil
+	return m.stampRefreshed(mk, name, ref, after != before)
 }
 
 // cloneOnBranch reports whether the clone at dir has a branch checked out,

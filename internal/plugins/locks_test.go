@@ -337,3 +337,39 @@ func TestResolveForLaunch_RefusesAnUnresolvedRootWithoutTakingTheLock(t *testing
 		t.Errorf("the refused launch wrote %v into the working directory", entries)
 	}
 }
+
+// A clone lock taken while its holder removes the lock file (as removing a
+// marketplace does) is taken on the file at the path, not on the removed one,
+// so a later taker still waits for it.
+func TestLockClone_AWaiterOutlivesTheLockFilesRemoval(t *testing.T) {
+	m := NewManager(t.TempDir())
+	dir := m.marketplaceDir("acme")
+	release, err := m.lockClone(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("lockClone: %v", err)
+	}
+	acquired := make(chan func())
+	go func() {
+		next, err := NewManager(m.Root).lockClone(context.Background(), dir)
+		if err != nil {
+			t.Errorf("waiting lockClone: %v", err)
+			close(acquired)
+			return
+		}
+		acquired <- next
+	}()
+	time.Sleep(100 * time.Millisecond)
+	m.removeCloneLock(dir)
+	release()
+	next := <-acquired
+	if next == nil {
+		return
+	}
+	defer next()
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	if third, err := NewManager(m.Root).lockClone(ctx, dir); err == nil {
+		third()
+		t.Fatal("a third taker got the clone lock while the waiter held it on the removed file")
+	}
+}
