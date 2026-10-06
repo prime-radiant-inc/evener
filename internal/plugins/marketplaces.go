@@ -1618,7 +1618,10 @@ func (m *Manager) refreshMarketplace(ctx context.Context, name string, keepIfUnc
 				if recloneErr := m.recloneMarketplace(ctx, ref); recloneErr != nil {
 					return fmt.Errorf("refreshing marketplace %q: git pull failed (%w); staged reclone failed: %w", name, pullErr, recloneErr)
 				}
-			} else if before != "" {
+			}
+			// Pulled or recloned, a clone whose HEAD is where it was
+			// changed nothing an answer read.
+			if before != "" {
 				if after, err := marketplaceGitHeadSHA(ctx, ref.InstallLocation); err == nil && after == before {
 					return nil
 				}

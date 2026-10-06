@@ -70,6 +70,9 @@ func (m *Manager) CheckUpdates(ctx context.Context) error {
 	checkCtx, cancel := context.WithTimeoutCause(ctx, updateCheckDeadline, errUpdateCheckDeadline)
 	defer cancel()
 	refreshWarnings := m.refreshForCheck(checkCtx)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	mk, err := m.loadMigratedMarketplaces(checkCtx, installAcquireLock)
 	if err != nil {
 		return err
@@ -169,15 +172,24 @@ func (m *Manager) refreshForCheck(ctx context.Context) []string {
 		if ref := mk[name]; ref.Source.Kind == SourceDirectory || ref.InstallLocation == "" || ref.Source.Sha != "" {
 			continue
 		}
+		// Once the budget, the deadline or the caller has ended the phase,
+		// no further refresh starts; each one left is warned about.
+		if cause := context.Cause(budgetCtx); cause != nil {
+			warnings = append(warnings, fmt.Sprintf("refreshing marketplace %q before checking for updates: %v", name, cause))
+			continue
+		}
 		refreshCtx, cancelRefresh := context.WithTimeout(budgetCtx, updateCheckTimeout)
 		err := m.refreshMarketplace(refreshCtx, name, true)
-		cancelRefresh()
-		if err != nil {
-			// Past the budget or the deadline git's own error says less
-			// than the limit that cut the refresh off.
+		// A refresh cut off by a limit is warned about by that limit, which
+		// says more than the error of the git it killed; any other failure
+		// keeps its own error.
+		if err != nil && refreshCtx.Err() != nil {
 			if cause := context.Cause(budgetCtx); cause != nil {
 				err = cause
 			}
+		}
+		cancelRefresh()
+		if err != nil {
 			warnings = append(warnings, fmt.Sprintf("refreshing marketplace %q before checking for updates: %v", name, err))
 		}
 	}

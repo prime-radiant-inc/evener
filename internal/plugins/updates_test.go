@@ -3,6 +3,7 @@ package plugins
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -575,6 +576,16 @@ func TestCheckUpdates_ARefreshThatChangesNothingWritesNothing(t *testing.T) {
 	if got := lastUpdated(); !got.Equal(before) {
 		t.Fatalf("a refresh that pulled nothing saved the marketplace (LastUpdated %v, was %v)", got, before)
 	}
+	// A wedged clone is recloned; a reclone that lands on the same HEAD
+	// changed nothing either.
+	realPull := marketplaceGitPull
+	t.Cleanup(func() { marketplaceGitPull = realPull })
+	marketplaceGitPull = func(context.Context, string) error { return errors.New("wedged") }
+	checkThenList(t, f.m)
+	marketplaceGitPull = realPull
+	if got := lastUpdated(); !got.Equal(before) {
+		t.Fatalf("a reclone onto the same HEAD saved the marketplace (LastUpdated %v, was %v)", got, before)
+	}
 	advanceRepo(t, f.mktRepo)
 	checkThenList(t, f.m)
 	if got := lastUpdated(); !got.Equal(before.Add(time.Hour)) {
@@ -603,5 +614,48 @@ func TestCheckUpdates_HungRefreshesLeaveTheRemoteChecksTheirTime(t *testing.T) {
 	}
 	if w := f.warnings(); !strings.Contains(w, errUpdateCheckRefreshBudget.Error()) {
 		t.Fatalf("no warning names the refresh budget: %q", w)
+	}
+}
+
+// A check refreshes no marketplace pinned to a sha (its clone can never
+// change; a pull on its detached HEAD would fail and reclone every time),
+// and once its refresh budget is spent it starts no more refreshes.
+func TestCheckUpdates_RefreshSkipsPinnedMarketplacesAndStopsAtItsBudget(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	m := NewManager(t.TempDir())
+	m.Stderr = &bytes.Buffer{}
+	pinnedRepo := makeMarketplaceRepoWithPlugin(t, "pinned", "gadget")
+	head := gitIn(t, pinnedRepo, "rev-parse", "HEAD")
+	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: pinnedRepo, Sha: head}); err != nil {
+		t.Fatalf("AddMarketplace pinned: %v", err)
+	}
+	for _, name := range []string{"first", "second"} {
+		if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: makeMarketplaceRepoWithPlugin(t, name, "widget")}); err != nil {
+			t.Fatalf("AddMarketplace %s: %v", name, err)
+		}
+	}
+	realPull, realBudget := marketplaceGitPull, updateCheckRefreshBudget
+	t.Cleanup(func() { marketplaceGitPull, updateCheckRefreshBudget = realPull, realBudget })
+	updateCheckRefreshBudget = 50 * time.Millisecond
+	var pulled []string
+	marketplaceGitPull = func(ctx context.Context, dir string) error {
+		pulled = append(pulled, dir)
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	if err := m.CheckUpdates(context.Background()); err != nil {
+		t.Fatalf("CheckUpdates: %v", err)
+	}
+	if len(pulled) != 1 {
+		t.Fatalf("pulls = %v, want only the first unpinned marketplace's before the budget ran out", pulled)
+	}
+	w := m.Stderr.(*bytes.Buffer).String()
+	if strings.Contains(w, `"pinned"`) {
+		t.Fatalf("a sha-pinned marketplace was refreshed: %q", w)
+	}
+	if !strings.Contains(w, `"second"`) {
+		t.Fatalf("no warning names the marketplace left unrefreshed: %q", w)
 	}
 }
