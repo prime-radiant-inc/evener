@@ -179,6 +179,17 @@ test("the malformed envelope keeps the exact Text on open, with no manufactured 
   expect(screen.queryByTestId("memory-context-meta")).toBeNull();
 });
 
+test("an index change block opens to its exact Text, never a decoded index", () => {
+  const item = memoryContextWireItem("index-change-project");
+  expect(item.raw).toBeFalsy();
+  renderItem(item, preset("tools"));
+  expect(screen.getByTestId("memory-context-label").textContent).toBe("Refreshed my memory");
+  open();
+  expect(screen.getByTestId("memory-context-fallback").textContent).toBe(item.text);
+  expect(screen.queryByTestId("memory-context-content")).toBeNull();
+  expect(screen.queryByTestId("memory-context-meta")).toBeNull();
+});
+
 test("Full does not auto-open a producer-backed refresh", () => {
   renderItem(memoryContextWireItem("current-project"), preset("full"));
   expect((screen.getByTestId("memory-context-item") as HTMLDetailsElement).open).toBe(false);
