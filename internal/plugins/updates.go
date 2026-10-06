@@ -95,8 +95,15 @@ func (m *Manager) CheckUpdates(ctx context.Context) error {
 
 // upgradeSource is plugin's source in marketplace's local catalog, parsing each
 // catalog once into catalogs. ok is false when the catalog cannot be read or
-// no longer lists the plugin, where an Upgrade would fail too.
+// no longer lists the plugin, where an Upgrade would fail too, or when the
+// plugin names no marketplace.
 func (m *Manager) upgradeSource(mk Marketplaces, catalogs map[string]Catalog, warnings *[]string, marketplace, plugin string) (Source, bool) {
+	if marketplace == "" {
+		// A registry key with no '@' names no marketplace, so no catalog
+		// says where this plugin comes from.
+		*warnings = append(*warnings, fmt.Sprintf("plugin %q is installed with no marketplace; not checking it for updates", plugin))
+		return Source{}, false
+	}
 	cat, parsed := catalogs[marketplace]
 	if !parsed {
 		ref, known := mk[marketplace]

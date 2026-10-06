@@ -393,3 +393,21 @@ func TestCheckUpdates_WarnsAboutAPluginWhoseMarketplaceIsGone(t *testing.T) {
 		t.Fatalf("want one warning naming the missing marketplace, got %q", w)
 	}
 }
+
+func TestCheckUpdates_WarnsAboutAPluginKeyWithNoMarketplace(t *testing.T) {
+	f := installURLPlugin(t, unpinned)
+	reg, err := LoadRegistry(f.m.registryPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg.Plugins["ghost"] = []InstallEntry{{Source: Source{Kind: SourceURL, URL: f.pluginRepo}, GitCommitSha: "abc"}}
+	if err := SaveRegistry(f.m.registryPath(), reg); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.m.CheckUpdates(context.Background()); err != nil {
+		t.Fatalf("CheckUpdates: %v", err)
+	}
+	if w := f.warnings(); w != "warning: plugin \"ghost\" is installed with no marketplace; not checking it for updates\n" {
+		t.Fatalf("want one warning naming the plugin with no marketplace, got %q", w)
+	}
+}
