@@ -2339,9 +2339,14 @@ func tailOutputFile(path string, tailBytes int, total, visibleStart int64) (outp
 }
 
 // hiddenOutputBytes is how many of a closed output file's first bytes sit
-// before visibleStart: the file starts at lifetime offset total-size.
-func hiddenOutputBytes(total, size, visibleStart int64) int64 {
-	return min(max(visibleStart-(total-size), 0), size)
+// before visibleStart: the file starts at lifetime offset total-size. A file
+// larger than total grew after total was read, so that offset is wrong and
+// the file is refused.
+func hiddenOutputBytes(total, size, visibleStart int64) (int64, error) {
+	if size > total {
+		return 0, fmt.Errorf("%w: output file holds %d bytes, past its lifetime total %d", jobstore.ErrOutputChangedDuringRead, size, total)
+	}
+	return min(max(visibleStart-(total-size), 0), size), nil
 }
 
 type jobOutputReadFile interface {
@@ -2372,7 +2377,10 @@ func tailOutputFileWithOpen(path string, tailBytes int, total, visibleStart int6
 	}
 	retained := info.Size()
 	totalBytes = total
-	hidden := hiddenOutputBytes(total, retained, visibleStart)
+	hidden, err := hiddenOutputBytes(total, retained, visibleStart)
+	if err != nil {
+		return "", 0, false, err
+	}
 	start := hidden
 	if retained-hidden > int64(tailBytes) {
 		start = retained - int64(tailBytes)
@@ -2393,8 +2401,8 @@ func tailOutputFileWithOpen(path string, tailBytes int, total, visibleStart int6
 	if start > hidden {
 		// The window was cut at a raw byte offset, so it can open mid-rune. Drop the
 		// dangling continuation bytes rather than reading further back: the window
-		// SHRINKS, which keeps retainedStart (total - len(output), computed by
-		// jobOutputTailFrom) naming the first byte actually returned. Only our own cut
+		// SHRINKS, which keeps total - len(output) naming the first byte actually
+		// returned. Only our own cut
 		// is realigned — at the visible start the first byte is the output's own, and
 		// binary output keeps it.
 		buf = runetrim.TrimLeadingPartial(buf)
@@ -2429,7 +2437,10 @@ func headOutputFileWithOpen(path string, headBytes int, total, visibleStart int6
 	}
 	retained := info.Size()
 	totalBytes = total
-	hidden := hiddenOutputBytes(total, retained, visibleStart)
+	hidden, err := hiddenOutputBytes(total, retained, visibleStart)
+	if err != nil {
+		return "", 0, false, err
+	}
 	n := retained - hidden
 	if n > int64(headBytes) {
 		n = int64(headBytes)
