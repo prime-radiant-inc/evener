@@ -285,6 +285,40 @@ test("the same memory item id has independent state in another session", () => {
   expect(items[1]?.open).toBe(false);
 });
 
+// An explicit choice is authoritative across verbosity changes. Memory ignores
+// the general expansion baseline and Full's open-everything baseline, but a
+// reader's own toggle must hold: opening at Tools then moving through Full to
+// Conversation stays open, and a close stays closed through every level.
+test("an explicit open survives Tools -> Full -> Conversation, and an explicit close stays closed", () => {
+  function harness(level: "chat" | "intent" | "tools" | "activity" | "full") {
+    const config = preset(level);
+    return (
+      <TranscriptRenderProvider
+        config={config}
+        surface="readOnly"
+        disclosureScope="mem:session-1"
+        sessionRef="session-1"
+      >
+        <TurnBlock turn={project([wireItem()], config)} sessionRef="session-1" />
+      </TranscriptRenderProvider>
+    );
+  }
+  const isOpen = () => (screen.getByTestId("memory-context-item") as HTMLDetailsElement).open;
+  const { rerender } = render(harness("tools"));
+  fireEvent.click(screen.getByTestId("memory-context-item").querySelector("summary")!);
+  expect(isOpen()).toBe(true);
+  for (const level of ["full", "chat", "tools"] as const) {
+    rerender(harness(level));
+    expect(isOpen()).toBe(true);
+  }
+  fireEvent.click(screen.getByTestId("memory-context-item").querySelector("summary")!);
+  expect(isOpen()).toBe(false);
+  for (const level of ["full", "tools", "full", "chat"] as const) {
+    rerender(harness(level));
+    expect(isOpen()).toBe(false);
+  }
+});
+
 // jsdom does not run the browser's native <summary> keyboard activation, so
 // this pins what jsdom can: the summary is a natively focusable control and an
 // activation toggles the shared store. The real Space activation path is

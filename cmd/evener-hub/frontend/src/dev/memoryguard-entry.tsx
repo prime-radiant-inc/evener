@@ -1,11 +1,11 @@
 // Browser-verification harness for the automatic memory refresh renderer.
 //
 // WHAT THIS PROVES THAT jsdom CANNOT: jsdom runs no cascade and reports zero
-// for every box, and it does not run the browser's native <summary> Enter/Space
+// for every box, and it does not run the browser's native <summary> keyboard
 // activation. This guard mounts the REAL production path - hydrateThread (the
 // reducer) -> projectThread (the shared projector) -> TurnBlock -> the memory
 // renderer - in a real headless Chrome and measures real geometry at desktop
-// and phone widths, drives a real pointer click and a real trusted Enter key,
+// and phone widths, drives a trusted pointer click and a trusted Space key,
 // and reads the formatted body and the folded literal Source.
 //
 // The fixture is the frozen wire contract: type systemMessage, eventKind
