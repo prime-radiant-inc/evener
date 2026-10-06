@@ -698,3 +698,54 @@ func TestServeWebSocketPoolFullAdvisoryIsPerPool(t *testing.T) {
 		}
 	}
 }
+
+// TestServeWebSocketPoolFullAdvisoryForgetsADrainedPool pins that the
+// advisory's memory is bounded by the pools in use: pool names come from
+// requests, so a drained pool's entry goes with it, and the pool reports
+// again if it fills again.
+func TestServeWebSocketPoolFullAdvisoryForgetsADrainedPool(t *testing.T) {
+	server, logged := captureLogfServer()
+	server.cfg.ConcurrentRequest = func(method string, _ json.RawMessage) (string, bool) {
+		return "host-a", method == appwire.MethodThreadList
+	}
+	listsStarted, releases := parkThreadLists(t, server)
+	httpServer := serveWebSocketHTTP(t, server)
+	client := dialAppWireClient(t, httpServer)
+	conn := registeredConnection(t, server)
+	ctx := context.Background()
+
+	fillAndRefuse := func() {
+		t.Helper()
+		done := make(chan error, concurrentRequestCap)
+		for range concurrentRequestCap {
+			go func() {
+				_, err := client.ThreadList(ctx, appwire.ThreadListParams{})
+				done <- err
+			}()
+		}
+		for range concurrentRequestCap {
+			waitFor(t, "a request to park in the pool", listsStarted)
+		}
+		if _, err := client.ThreadList(ctx, appwire.ThreadListParams{}); err == nil {
+			t.Fatal("a request beyond the full pool was admitted")
+		}
+		for range concurrentRequestCap {
+			releases <- struct{}{}
+		}
+		for range concurrentRequestCap {
+			if err := waitFor(t, "a released request to answer", done); err != nil {
+				t.Fatalf("released request: %v", err)
+			}
+		}
+		waitUntil(t, "the drained pool to be forgotten", func() bool {
+			conn.requestPoolsMu.Lock()
+			defer conn.requestPoolsMu.Unlock()
+			return len(conn.requestPools) == 0 && len(conn.requestPoolSaturationAdvised) == 0
+		})
+	}
+	fillAndRefuse()
+	fillAndRefuse()
+	if n := strings.Count(logged(), `pool is full for "host-a"`); n != 2 {
+		t.Fatalf("advisories = %d, want one per time the pool filled in:\n%s", n, logged())
+	}
+}
