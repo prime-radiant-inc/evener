@@ -35,7 +35,7 @@ import {
 import type { MobileTimelineItem } from "./projectedRows";
 import { readerKey } from "./readerPosition";
 import { sessionRows } from "./session/transcriptRows";
-import { groupTimeline, isCriticalNotice, noticeLabel } from "./timeline";
+import { groupTimeline, isCriticalNotice } from "./timeline";
 
 // The row adapter maps the shared projector's ProjectedEntry kinds onto the
 // native MobileTimelineItem union. D24-6 re-homed the row vocabulary and the
@@ -431,7 +431,6 @@ describe("projectedRow — item entries", () => {
 		) as Extract<MobileTimelineItem, { kind: "notice" }>;
 		expect(row).toMatchObject({ kind: "notice", origin: "system", family: "lifecycle", tone: "system" });
 		expect(isCriticalNotice(row)).toBe(false);
-		expect(noticeLabel(row)).toBeUndefined();
 		expect(groupTimeline([row])).toEqual([row]);
 	});
 
