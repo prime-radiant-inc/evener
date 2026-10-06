@@ -75,7 +75,7 @@ async function assertSourceDom() {
   })()`), true, "the exact source DOM survives inspection");
 }
 
-const sourceAnchorExpr = `(() => {
+const sourceAnchorRowExpr = `(() => {
   const port = ${driver.paneScopeExpr(fixture.rootRef)}?.querySelector('[data-testid="transcript-virtual-list"] > div');
   if (!port) return null;
   const bounds = port.getBoundingClientRect();
@@ -84,11 +84,26 @@ const sourceAnchorExpr = `(() => {
     const r = node.getBoundingClientRect();
     return r.bottom > bounds.top && r.top < bounds.bottom;
   });
-  return row?.dataset.rowId ?? null;
+  return row ? { id:row.dataset.rowId, top:row.getBoundingClientRect().top - bounds.top, scrollTop:port.scrollTop } : null;
 })()`;
+const sourceAnchorExpr = `((${sourceAnchorRowExpr})?.id ?? null)`;
 
+// A row far above the viewport can still grow, and the virtualizer compensates
+// with a scrollTop write that the rows' positions only follow on the next
+// commit. A single read can land in that frame and see every row shifted, so
+// the anchor is read only once two consecutive samples agree.
+let sourceAnchorReads = 0;
 async function sourceAnchor() {
-  return wait(sourceAnchorExpr, "real center transcript has a visible semantic anchor");
+  const call = ++sourceAnchorReads;
+  const sample = await wait(`(() => {
+    const row = ${sourceAnchorRowExpr};
+    if (!row) return null;
+    const stamp = JSON.stringify({ call:${call}, row });
+    const previous = window.__cascadeSourceAnchorSample;
+    window.__cascadeSourceAnchorSample = stamp;
+    return previous === stamp ? row : null;
+  })()`, "real center transcript has a stable visible semantic anchor");
+  return sample.id;
 }
 
 function readingPointExpr(portExpr) {
@@ -1376,7 +1391,10 @@ try {
     const r = port.getBoundingClientRect();
     const row = [...port.querySelectorAll('[data-row-id]')].find(node => node.dataset.rowId === ${q(bottomAnchor)});
     if (!row) throw new Error('Source anchor disappeared before native scroll');
-    return { x:r.x + r.width / 2, y:r.y + r.height / 2, deltaY:Math.min(-200, row.getBoundingClientRect().top - r.top - 1) };
+    // Park the bottom row's top well inside the viewport, so the older row
+    // crossing the top keeps a wide visible tail. A 1px park left sub-pixel
+    // slivers whose visibility flipped with late row growth.
+    return { x:r.x + r.width / 2, y:r.y + r.height / 2, deltaY:Math.min(-200, row.getBoundingClientRect().top - r.top - 100) };
   })()`);
   await driver.send("Input.dispatchMouseEvent", { type: "mouseWheel", deltaX: 0, ...sourcePoint });
   await wait(`(() => {
