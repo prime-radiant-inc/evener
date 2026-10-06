@@ -139,6 +139,22 @@ test("memory_write falls back to the tool output when args have no content", () 
   expect(screen.getByText("Saved page text")).toBeTruthy();
 });
 
+test("memory_write with empty content renders the tool's output, not an empty page", () => {
+  const Body = toolRendererFor("memory_write").body!;
+  render(
+    <Body
+      item={item({
+        toolName: "memory_write",
+        argumentsJSON: JSON.stringify({ scope: "personal", file_path: "page.md", content: "" }),
+        output: "wrote 0 bytes to page.md",
+      })}
+      live={false}
+    />,
+  );
+
+  expect(screen.getByText("wrote 0 bytes to page.md")).toBeTruthy();
+});
+
 test("memory_edit renders a diff from the old and new strings", () => {
   const Body = toolRendererFor("memory_edit").body!;
   render(
@@ -153,6 +169,22 @@ test("memory_edit renders a diff from the old and new strings", () => {
 
   expect(screen.getByText("before")).toBeTruthy();
   expect(screen.getByText("after")).toBeTruthy();
+});
+
+test("a memory_edit with neither old nor new string renders the arguments and result, not an empty diff", () => {
+  const Body = toolRendererFor("memory_edit").body!;
+  render(
+    <Body
+      item={item({
+        toolName: "memory_edit",
+        argumentsJSON: JSON.stringify({ scope: "project", file_path: "MEMORY.md" }),
+        output: "edited MEMORY.md: 1 replacement(s)",
+      })}
+      live={false}
+    />,
+  );
+
+  expect(screen.getByText("edited MEMORY.md: 1 replacement(s)")).toBeTruthy();
 });
 
 test("memory_delete renders its output text", () => {

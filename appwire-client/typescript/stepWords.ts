@@ -44,7 +44,7 @@ export function readLineRange(args: Record<string, unknown>, output: string): st
   const offsetArg = args.offset;
   const offset = typeof offsetArg === "number" && offsetArg > 0 ? offsetArg : 1;
   const limitArg = args.limit;
-  const count = typeof limitArg === "number" && limitArg > 0 ? limitArg : (output.match(/\n/g) ?? []).length;
+  const count = typeof limitArg === "number" && limitArg > 0 ? limitArg : lineCount(output);
   if (count > 0) return `lines ${offset}-${offset + count - 1}`;
   return output === "" ? undefined : `lines ${offset}`;
 }

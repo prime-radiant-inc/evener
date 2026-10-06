@@ -122,3 +122,12 @@ test("targets a memory step's scope and path from parsed arguments", () => {
   expect(memoryFileTarget({ file_path: "bare.md" })).toBe("bare.md");
   expect(memoryFileTarget({ scope: "personal" })).toBeUndefined();
 });
+
+test("counts logical lines when a read without a limit returns unterminated output", () => {
+  expect(memoryReadSummary(step({ scope: "personal", file_path: "page.md" }, "line 1\nline 2"))).toBe(
+    "Read memory personal/page.md · lines 1-2",
+  );
+  expect(memoryReadSummary(step({ scope: "personal", file_path: "page.md" }, "line 1\nline 2\n"))).toBe(
+    "Read memory personal/page.md · lines 1-2",
+  );
+});
