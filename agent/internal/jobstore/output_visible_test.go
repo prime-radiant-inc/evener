@@ -337,3 +337,16 @@ func TestGrepOutputFileRefusesASameSizeReplacementAfterItsView(t *testing.T) {
 		t.Fatalf("grep over a same-size replacement: err = %v, want ErrOutputChangedDuringRead", err)
 	}
 }
+
+func TestGrepOutputFileChecksItsLimitBeforeOpening(t *testing.T) {
+	// The limit is checked before the file is opened, so an empty or invalid
+	// budget neither touches the file nor leaves a descriptor open.
+	missing := filepath.Join(t.TempDir(), "job_missing.log")
+	refuse := func(int64) error { t.Fatal("checkTotal ran for a grep with no budget"); return nil }
+	if matches, err := GrepOutputFileLimit(missing, regexp.MustCompile("x"), 0, 0, 1024, refuse); err != nil || matches != nil {
+		t.Fatalf("zero budget = %v, %v; want nil, nil", matches, err)
+	}
+	if _, err := GrepOutputFileLimit(missing, regexp.MustCompile("x"), -1, 0, 1024, refuse); !errors.Is(err, ErrInvalidLimit) {
+		t.Fatalf("negative budget err = %v, want ErrInvalidLimit", err)
+	}
+}
