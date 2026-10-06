@@ -815,7 +815,7 @@ type SessionActivity struct {
 	// transcript items that finished and the tool output events in each.
 	Minutes []int `json:"minutes"`
 	// RunningSubagents counts the session's subagents, at every depth, whose
-	// own turn is running.
+	// run is open: SubagentTally.Running, the count its Live row shows.
 	RunningSubagents int `json:"runningSubagents"`
 	// QuietForMS is how long the session's whole tree has gone without
 	// transcript motion, as of this read. It is present only while the session
