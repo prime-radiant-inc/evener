@@ -414,12 +414,8 @@ describe("projectedRow — item entries", () => {
 		expect(row).toMatchObject({ kind: "notice", origin: "system", family, tone });
 	});
 
-	// Every event kind the daemon can send lands in a family on purpose, so a
-	// newly generated kind cannot fall through to unknown-system unnoticed. A
-	// warning a human should see takes its family from the attention path; its
-	// informational form stays a quiet unknown-system line on purpose ("keeps an
-	// informational daemon warning a quiet system line"). An interrupted notice
-	// still falls through: the phone has no family for it yet.
+	// Every generated event kind gets a deliberate family, so a new kind cannot
+	// fall through to unknown-system unnoticed. interrupted has no phone family yet.
 	const UNKNOWN_FAMILY_EVENT_KINDS = new Set(["interrupted"]);
 	it.each(THREAD_ITEM_EVENT_KINDS.filter((eventKind) => !UNKNOWN_FAMILY_EVENT_KINDS.has(eventKind)))(
 		"gives generated event kind %s a family",
