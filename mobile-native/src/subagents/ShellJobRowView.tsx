@@ -22,7 +22,7 @@ export const ShellJobRowView = memo(function ShellJobRowView({
 	const scale = useTextScale();
 	const meta = shellJobMeta(row, now);
 	const owner = shellJobOwner(row);
-	const hue = row.state === "running" ? palette.aliveInk : row.state === "failed" ? palette.dangerInk : palette.inkLow;
+	const hue = row.state === "running" ? palette.aliveInk : palette.inkLow;
 	const small = { fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkLow };
 	return (
 		<Pressable

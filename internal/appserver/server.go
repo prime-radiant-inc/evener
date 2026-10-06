@@ -1567,10 +1567,10 @@ func concurrentDispatchMethod(method string) bool {
 		// another revision, so answer order does not matter.
 		appwire.MethodEvenerJobsList,
 		// evener/plugin/checkUpdates waits on every installed plugin's git
-		// remote (up to 20s each, four at a time) when a plugins view opens.
-		// It changes nothing installed (the answers it keeps are guarded by
-		// the plugins manager's own mutex), and each answer replaces the
-		// last, so order does not matter.
+		// remote (each under its own timeout, a few at a time) when a
+		// plugins view opens. It changes nothing installed (the answers it
+		// keeps are guarded by the plugins manager's own mutex), and each
+		// answer replaces the last, so order does not matter.
 		appwire.MethodEvenerPluginCheckUpdates,
 		// Session activity reads may reconstruct retained journals. They are
 		// read-only and carry request cancellation into bounded reconstruction.

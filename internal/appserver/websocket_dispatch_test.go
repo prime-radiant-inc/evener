@@ -381,9 +381,9 @@ func TestConcurrentDispatchMethodsAreExactlyTheSlowReads(t *testing.T) {
 		// megabytes for a delegate-heavy session
 		// (TestServeWebSocketSlowJobsListDoesNotHoldOrderedRequests).
 		appwire.MethodEvenerJobsList: true,
-		// evener/plugin/checkUpdates waits on every plugin's git remote (up
-		// to 20s each); it changes nothing installed, and each answer
-		// replaces the last.
+		// evener/plugin/checkUpdates waits on every plugin's git remote,
+		// each under its own timeout; it changes nothing installed, and each
+		// answer replaces the last.
 		appwire.MethodEvenerPluginCheckUpdates: true,
 	}
 	for _, spec := range appwire.Methods {

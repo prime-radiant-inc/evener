@@ -282,3 +282,64 @@ test("final release and same-client remount fence an admitted obsolete follow re
 	releaseRemount();
 	forgetSubagentTrees("remount-hub");
 });
+
+test("client replacement restores the loaded third-page Jobs boundary without new visible demand", async () => {
+	const makeClient = (description: string) => {
+		const client = hub();
+		client.on("evener/thread/jobs/list", ({ scope, cursor }) => {
+			const index = cursor === "third" ? 2 : cursor === "second" ? 1 : 0;
+			return {
+				context,
+				scope: scope ?? "session",
+				jobs: [
+					{
+						jobId: `job-${index}`,
+						ownerSessionId: "root",
+						ownerRef: "remote:root",
+						type: "shell",
+						status: "completed",
+						terminal: true,
+						background: true,
+						hasOutput: true,
+						description: index === 2 ? description : `page ${index}`,
+						startedAt: "2026-10-03T12:00:00Z",
+						outputBytes: 10,
+					},
+				],
+				page: {
+					complete: index === 2,
+					issues: [],
+					...(index < 2 ? { nextCursor: index === 0 ? "second" : "third" } : {}),
+				},
+			};
+		});
+		return client;
+	};
+	const tree = new SubagentTree(context.ref, "root");
+	const release = tree.observeActivity();
+	try {
+		await tree.setClient(makeClient("original later row"));
+		await tree.loadMore();
+		await tree.loadMore();
+		await tree.setClient(null);
+		expect(
+			tree
+				.getSnapshot()
+				.tree?.root.entries.filter((entry) => entry.kind === "shell")
+				.map((entry) => entry.job.jobId),
+		).toEqual(["job-0", "job-1", "job-2"]);
+		const next = makeClient("updated later row");
+		await tree.setClient(next);
+		expect(
+			next.calls
+				.filter((call) => call.method === "evener/thread/jobs/list")
+				.map((call) => (call.params as { cursor?: string }).cursor),
+		).toEqual([undefined, "second", "third"]);
+		expect(
+			tree.getSnapshot().tree?.root.entries.find((entry) => entry.kind === "shell" && entry.job.jobId === "job-2"),
+		).toMatchObject({ kind: "shell", job: { description: "updated later row", ownerRef: "remote:root" } });
+	} finally {
+		release();
+		await tree.setClient(null);
+	}
+});

@@ -100,14 +100,20 @@ func (m *Manager) upgradeSource(mk Marketplaces, catalogs map[string]Catalog, wa
 	cat, parsed := catalogs[marketplace]
 	if !parsed {
 		ref, known := mk[marketplace]
-		// A seeded or re-keyed marketplace can be recorded before its clone
-		// exists; its empty InstallLocation would read a relative path.
-		if !known || ref.InstallLocation == "" {
-			return Source{}, false
-		}
-		var err error
-		if cat, err = ParseCatalog(m.catalogRoot(ref)); err != nil {
-			*warnings = append(*warnings, fmt.Sprintf("reading marketplace.json for %s: %v", marketplace, err))
+		switch {
+		case !known:
+			// Installed from a marketplace no longer registered: there is no
+			// catalog to ask, and Upgrade would fail the same way.
+			*warnings = append(*warnings, fmt.Sprintf("plugins from marketplace %q are installed but it is not registered; not checking them for updates", marketplace))
+		case ref.InstallLocation == "":
+			// A seeded or re-keyed marketplace can be recorded before its
+			// clone exists; its empty InstallLocation would read a relative
+			// path.
+		default:
+			var err error
+			if cat, err = ParseCatalog(m.catalogRoot(ref)); err != nil {
+				*warnings = append(*warnings, fmt.Sprintf("reading marketplace.json for %s: %v", marketplace, err))
+			}
 		}
 		catalogs[marketplace] = cat
 	}

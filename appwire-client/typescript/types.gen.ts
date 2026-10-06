@@ -763,15 +763,15 @@ export interface EvenerThread {
    */
   goal?: GoalState;
   /**
-   * HumanNote carries the human's one-paragraph session whiteboard when set,
-   * else empty. It powers the shared-notes display without a bespoke
+   * HumanNote carries the human's session whiteboard, line breaks kept, when
+   * set, else empty. It powers the shared-notes display without a bespoke
    * transport — like Goal, it is structured per-session state read from the
    * already-fetched thread snapshot.
    */
   humanNote?: string;
   /**
-   * AgentNote carries the agent's one-paragraph session whiteboard when set,
-   * else empty. It is read from the already-fetched thread snapshot like
+   * AgentNote carries the agent's session whiteboard, line breaks kept, when
+   * set, else empty. It is read from the already-fetched thread snapshot like
    * HumanNote.
    */
   agentNote?: string;
@@ -1892,16 +1892,13 @@ export interface JobActivityWorktree {
   dirty: boolean;
 }
 
-export interface JobOutputTail {
-  tail: string;
+export interface JobOutputPage {
+  offsetBytes: number;
+  bytesReturned: number;
   totalBytes: number;
-  retainedStart: number;
-  truncated: boolean;
-  /**
-   * HasEarlier is true when retained output exists before the window: a
-   * follow-up read with beforeBytes=RetainedStart returns the previous page.
-   */
-  hasEarlier?: boolean;
+  retainedStartBytes: number;
+  encoding: string;
+  data: string;
 }
 
 export interface JobsGetParams {
@@ -1930,7 +1927,7 @@ export interface JobsOutputParams {
 }
 
 export interface JobsOutputResponse {
-  data: JobOutputTail;
+  data: JobOutputPage;
 }
 
 export interface JobsTreeUpdatedParams {

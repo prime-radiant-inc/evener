@@ -16,19 +16,20 @@ Success means agents keep working notes (plan, what they tried and ruled out) in
 |---|---|
 | Who shares a session's memory | The root session owns it. Delegates read it and cannot write it. |
 | Do delegates get their own session memory | No. A delegate reports findings to its parent, and the parent decides what to save. |
-| Fork | The fork gets a copy of the parent's session memory as of the fork's first use, and the two diverge. |
-| Session deletion | Session memory is kept, like the other scopes. Removal is manual for now (see #3748). |
+| Fork | The fork gets a copy of the parent's session memory once, as of the fork's first use, and the two diverge. |
+| Session deletion | Session memory that was written is kept, like the other scopes, and removed by hand. |
 | Promotion | Before its final report, the agent copies anything that outlasts the work into project or personal memory. |
 | Mechanism | A third scope in the existing memory machinery. Session notes and the history state directory are not used. |
 
 ## Storage, identity and lifetime
 
 - **Location:** `<state-root>/memory/sessions/<root-session-id>/`, under the same memory root as personal and project memory. History overrides (`--state-dir`, `EVENER_STATE_DIR`) do not move it.
+- **Creation:** the directory appears only on the root session's first session-memory write (`memory_write`), or at a fork's first use. Reading or editing an absent scope (the index refresh, `memory_read`, `memory_search`, `memory_edit`, `memory_delete`) creates nothing, and delegates never create it, so the many sessions that never write session memory leave no directory behind.
 - **Owner:** the root session. A delegate resolves `scope: "session"` to its root session's id through the existing `delegateRootSessionID`. A delegate is a session with a spawn depth or a persisted subagent flag; a delegate resumed on its own has no root to resolve, so it gets no session scope.
 - **Resume:** keeps the session id, and with it the memory.
 - **Compaction:** the session index is re-projected afterward, as the other scopes are.
-- **Fork, and `--resume-with`:** the fork gets a copy of the source session's session memory as of the fork's first use (its first session-memory access, normally its first model call). The copy is made in the forked session's own process, because memory belongs to the host that runs the session; after that the two diverge. A missing or empty source directory gives a silent empty start. The copy reads and writes through the same confined layer as the memory tools, so no symlink on the path is followed. It takes only regular files and directories within a size limit (empty directories are skipped); anything else, including a source scope that exists but is a symlink or a file, means a warning and an empty start. A copy failure is reported as a session warning and leaves an empty session scope; it never blocks the fork.
-- **Deletion:** deleting a session leaves its session memory in place. No native memory tool reaches another session's session directory, so removal is manual for now (see #3748, which tracks cleanup and directory accumulation).
+- **Fork, and `--resume-with`:** the fork gets a copy of the source session's session memory as of the fork's first use (its first session-memory read or write, normally its first model call). After that first use the fork's scope exists, holding the parent's copy or empty, so the copy happens once: a resumed fork never copies the parent's later notes, and a failed copy is reported only once. A delegate of the fork that reads first creates nothing, so it cannot block the copy. The copy is made in the forked session's own process, because memory belongs to the host that runs the session; after that the two diverge. A missing or empty source directory gives a silent empty start. The copy reads and writes through the same confined layer as the memory tools, so no symlink on the path is followed. It takes only regular files and directories within a size limit (empty directories are skipped); anything else, including a source scope that exists but is a symlink or a file, means a warning and an empty start. A copy failure is reported as a session warning and leaves an empty session scope; it never blocks the fork.
+- **Deletion:** deleting a session leaves its session memory in place. No native memory tool reaches another session's session directory, so written session memory stays until someone removes its directory by hand.
 - **Opt-out:** `--disable-memory` disables session memory along with the other scopes. There is no separate switch.
 
 ## Tools, context and enforcement
@@ -75,5 +76,5 @@ In the same change:
 ## Out of scope
 
 - Whiteboard prompting.
-- Automatic cleanup of session memory for deleted sessions (#3748).
+- Automatic cleanup of session memory for deleted sessions: written session memory is removed by hand.
 - Delegate-private session memory.

@@ -657,7 +657,9 @@ all defined in `assets/plugins.js:8-23` as thin wrappers over `EvenerAppwire.req
       `templates/partials/settings/plugins-manager.html:304,540-549`
 - [ ] "Upgrade" calls `pluginUpgrade`, refreshes, toasts "Checked {plugin} for upgrades" on
       success — the toast confirms only that an upgrade check ran, not that a new version actually
-      installed — `templates/partials/settings/plugins-manager.html:305,550-559`
+      installed — `templates/partials/settings/plugins-manager.html:305,550-559`. Superseded
+      (2026-10-05, `docs/web-ui/decisions.md`): Upgrade shows only for a plugin the hub's update
+      check flagged, and its success toast says "Upgraded {plugin}"
 - [ ] "Remove" requires `confirm('Remove plugin "{plugin}"?')`; on confirm calls `pluginRemove`,
       refreshes, toasts "Removed {plugin}"; failure toasts "Remove failed" —
       `templates/partials/settings/plugins-manager.html:306,561-572`

@@ -1,3 +1,4 @@
+import { APPWIRE_PROTOCOL_VERSION } from "@evener/appwire-client";
 // Browser-verification harness for the desktop shell's page height.
 //
 // The bug it exists to find: the rail (sidebar) tree's FULL expanded height
@@ -460,7 +461,7 @@ async function boot(): Promise<void> {
   shellClient = fake;
   fake.scriptConnect(() => ({
     serverInfo: { name: "fake-evener-hub", version: "0.0.0" },
-    protocolVersion: "evener-appwire-v6",
+    protocolVersion: APPWIRE_PROTOCOL_VERSION,
     sourceId: "fake",
     features: {
       threadList: true,

@@ -15,6 +15,8 @@ import (
 // mutation state: a client cannot safely release uncertain sends from a peer
 // that does not supply that evidence.
 //
+// v7 serves job output as lossless byte pages, with explicit retention bounds
+// and an optional exclusive end selector that preserves zero.
 // v6 serves history only as history/updated from recorded entries and live
 // unrecorded state only as overlay/* notifications: turn/started,
 // turn/completed, item/* and evener/steering/injected are gone, and a client
@@ -27,7 +29,7 @@ import (
 // "Steer and Stop are broken again" instead of as a version skew. The pair is
 // reachable in ordinary operation because daemons outlive the hub that spawned
 // them, so an operator who rebuilds and restarts the hub has one.
-const ProtocolVersion = "evener-appwire-v6"
+const ProtocolVersion = "evener-appwire-v7"
 
 // ThreadStatusRestartRequired identifies a live daemon that cannot serve this
 // hub's protocol. Its current activity is unavailable until explicitly restarted.
@@ -1008,13 +1010,13 @@ type EvenerThread struct {
 	// bespoke transport — like Queue, it is structured per-session state read
 	// from the already-fetched thread snapshot.
 	Goal *GoalState `json:"goal,omitempty"`
-	// HumanNote carries the human's one-paragraph session whiteboard when set,
-	// else empty. It powers the shared-notes display without a bespoke
+	// HumanNote carries the human's session whiteboard, line breaks kept, when
+	// set, else empty. It powers the shared-notes display without a bespoke
 	// transport — like Goal, it is structured per-session state read from the
 	// already-fetched thread snapshot.
 	HumanNote string `json:"humanNote,omitempty"`
-	// AgentNote carries the agent's one-paragraph session whiteboard when set,
-	// else empty. It is read from the already-fetched thread snapshot like
+	// AgentNote carries the agent's session whiteboard, line breaks kept, when
+	// set, else empty. It is read from the already-fetched thread snapshot like
 	// HumanNote.
 	AgentNote string `json:"agentNote,omitempty"`
 	// SessionURLs carries the session's shared-notes URL list when set, else
@@ -2901,32 +2903,30 @@ var AllJobActivityTypes = []any{
 	JobActivityBranchState{},
 }
 
-// JobOutputTail is the evener/jobs/output payload: one window of a job's
-// durable output plus the bookkeeping a client needs to say "showing last N
-// of M bytes" and to page backwards through the log.
-type JobOutputTail struct {
-	Tail          string `json:"tail"`
-	TotalBytes    int64  `json:"totalBytes"`
-	RetainedStart int64  `json:"retainedStart"`
-	Truncated     bool   `json:"truncated"`
-	// HasEarlier is true when retained output exists before the window: a
-	// follow-up read with beforeBytes=RetainedStart returns the previous page.
-	HasEarlier bool `json:"hasEarlier,omitempty"`
+// JobOutputPage describes exact lifetime bytes [OffsetBytes,
+// OffsetBytes+BytesReturned). Data is lossless utf8 or standard base64.
+type JobOutputPage struct {
+	OffsetBytes        int64  `json:"offsetBytes"`
+	BytesReturned      int64  `json:"bytesReturned"`
+	TotalBytes         int64  `json:"totalBytes"`
+	RetainedStartBytes int64  `json:"retainedStartBytes"`
+	Encoding           string `json:"encoding"`
+	Data               string `json:"data"`
 }
 
-// JobsOutputParams reads a byte window of one job's durable output. MaxBytes
-// defaults server-side (4 KiB) and is capped (64 KiB). BeforeBytes > 0 pages
-// backwards: the window ends at that lifetime output offset (exclusive)
-// instead of at the end of the log.
+// JobsOutputParams reads up to MaxBytes ending at BeforeBytes, exclusively.
+// An omitted BeforeBytes selects the latest page. Explicit zero selects the
+// empty page at zero when zero is retained. MaxBytes defaults to 4 KiB and is
+// capped at 64 KiB; a calculated page start is clipped to the retention floor.
 type JobsOutputParams struct {
 	Ref         string `json:"ref,omitempty"`
 	JobID       string `json:"jobId"`
 	MaxBytes    int64  `json:"maxBytes,omitempty"`
-	BeforeBytes int64  `json:"beforeBytes,omitempty"`
+	BeforeBytes *int64 `json:"beforeBytes,omitempty"`
 }
 
 type JobsOutputResponse struct {
-	Data JobOutputTail `json:"data"`
+	Data JobOutputPage `json:"data"`
 }
 
 // JobsGetParams reads ONE job's metadata (the activity-tree job shape),

@@ -80,8 +80,6 @@ export type ChipKind = "subagents" | "files" | "tasks" | "goal" | "queue";
 export interface ContextChip {
 	kind: ChipKind;
 	label: string;
-	/** "2 failed", drawn in red ink after the label. */
-	failed?: string;
 	/** Amber: the goal is blocked. */
 	attention: boolean;
 	/** A blue dot after the label: a document is new or changed (Files). */
@@ -110,13 +108,11 @@ export function contextChips(
 	const chips: ContextChip[] = [];
 	const tally = summaryTally(subagents ?? undefined);
 	if (connected && tally && tally.total > 0) {
-		const failed = tally.failed > 0 ? `${tally.failed} failed` : undefined;
 		chips.push({
 			kind: "subagents",
 			label: `Subagents ${tally.total}`,
-			failed,
 			attention: false,
-			accessibilityLabel: failed ? `Subagents, ${tally.total}, ${failed}` : `Subagents, ${tally.total}`,
+			accessibilityLabel: `Subagents, ${tally.total}`,
 		});
 	} else if (connected && !tally && (session.delegates?.length ?? 0) > 0) {
 		chips.push({

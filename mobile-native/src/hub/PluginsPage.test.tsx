@@ -26,7 +26,7 @@ import {
 	HubWriteBusyError,
 	MARKETPLACE_REFETCH_DEBOUNCE_MS,
 } from "@evener/appwire-client/state/extensions";
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { deferRequest, FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 import { AddMarketplace } from "../MarketplaceBrowser";
 import { PluginsPage } from "./PluginsPage";
@@ -2549,6 +2549,8 @@ function pluginsClient(plugins: PluginEntry[]) {
 		request: async (method: string) => {
 			methods.push(method);
 			if (method === "evener/marketplace/list") return { marketplaces: [] };
+			// A hub from before the update check.
+			if (method === "evener/plugin/checkUpdates") throw new Error("method not found");
 			return { plugins };
 		},
 		onNotification: () => () => {},
@@ -2892,6 +2894,159 @@ async function openDetail(tree: ReturnType<typeof render>, name: string) {
 	return tree.root.findByType("Modal" as never);
 }
 
+it("asks the hub for updates once the installed list loads, and offers Upgrade only where it found one", async () => {
+	const hub = pageHub([entry("stale"), entry("current")]);
+	const releaseList = deferRequest<{ plugins: PluginEntry[] }>(hub, "evener/plugin/list");
+	hub.on("evener/plugin/checkUpdates", () => {
+		// The hub now holds the answer, so the list read that follows carries it.
+		hub.on("evener/plugin/list", () => ({ plugins: [entry("stale", { updateAvailable: true }), entry("current")] }));
+		return { plugins: [] };
+	});
+	const { tree } = await mountPage(hub);
+	expect(hub.calls.some((call) => call.method === "evener/plugin/checkUpdates")).toBe(false);
+	await act(async () => releaseList({ plugins: [entry("stale"), entry("current")] }));
+	await act(async () => {});
+	expect(hub.calls.filter((call) => call.method === "evener/plugin/checkUpdates")).toHaveLength(1);
+	expect(pluginRow(tree, "stale").props.accessibilityLabel).toBe("stale, core, 1.0.0 · Update available");
+	expect(pluginRow(tree, "current").props.accessibilityLabel).toBe("current, core, 1.0.0");
+
+	expect((await openDetail(tree, "stale")).findAllByProps({ label: "Upgrade" }).length).toBeGreaterThan(0);
+	await act(async () => {
+		tree.root
+			.findByType("Modal" as never)
+			.findByProps({ accessibilityLabel: "Done" })
+			.props.onPress();
+	});
+	expect((await openDetail(tree, "current")).findAllByProps({ label: "Upgrade" })).toHaveLength(0);
+});
+
+it("asks for no updates when the page closes before its installed list lands", async () => {
+	const hub = pageHub([entry("stale")]);
+	const releaseList = deferRequest<{ plugins: PluginEntry[] }>(hub, "evener/plugin/list");
+	hub.on("evener/plugin/checkUpdates", () => ({ plugins: [] }));
+	const { tree } = await mountPage(hub);
+	await act(async () => tree.unmount());
+	await act(async () => releaseList({ plugins: [entry("stale")] }));
+	await act(async () => {});
+	expect(hub.calls.some((call) => call.method === "evener/plugin/checkUpdates")).toBe(false);
+});
+
+/** Flaps the page's connection to reconnecting and back to ready. */
+async function flap(tree: ReturnType<typeof render>, props: ComponentProps<typeof PluginsPage>) {
+	harness.connection = { ...harness.connection, state: "reconnecting" };
+	await act(async () => tree.update(<PluginsStack {...props} />));
+	harness.connection = { ...harness.connection, state: "ready" };
+	await act(async () => tree.update(<PluginsStack {...props} />));
+	await act(async () => {});
+}
+
+const checks = (hub: FakeClient) => hub.calls.filter((call) => call.method === "evener/plugin/checkUpdates").length;
+
+it("asks for updates again after a reconnect when the check never reached the hub's answer", async () => {
+	const hub = pageHub([entry("stale")]);
+	hub.on("evener/plugin/checkUpdates", () => {
+		throw new Error("connection closed");
+	});
+	const { tree, props } = await mountPage(hub);
+	await act(async () => {});
+	expect(checks(hub)).toBe(1);
+
+	hub.on("evener/plugin/checkUpdates", () => ({ plugins: [] }));
+	await flap(tree, props);
+	expect(checks(hub)).toBe(2);
+});
+
+it("asks again when a check fails only after the connection has already come back", async () => {
+	const hub = pageHub([entry("stale")]);
+	let failCheck!: (err: Error) => void;
+	hub.on(
+		"evener/plugin/checkUpdates",
+		() =>
+			new Promise((_resolve, reject) => {
+				failCheck = reject;
+			}),
+	);
+	const { tree, props } = await mountPage(hub);
+	await act(async () => {});
+	expect(checks(hub)).toBe(1);
+
+	// The connection drops and returns while the check is still pending; only
+	// then does the check fail without an answer.
+	await flap(tree, props);
+	hub.on("evener/plugin/checkUpdates", () => ({ plugins: [] }));
+	await act(async () => failCheck(new Error("connection closed")));
+	await act(async () => {});
+	expect(checks(hub)).toBe(2);
+});
+
+it("waits for the connection to be ready before asking again", async () => {
+	const hub = pageHub([entry("stale")]);
+	hub.on("evener/plugin/checkUpdates", () => {
+		throw new Error("request timed out");
+	});
+	const { tree, props } = await mountPage(hub);
+	await act(async () => {});
+	expect(checks(hub)).toBe(1);
+
+	hub.on("evener/plugin/checkUpdates", () => ({ plugins: [] }));
+	harness.connection = { ...harness.connection, state: "reconnecting" };
+	await act(async () => tree.update(<PluginsStack {...props} />));
+	expect(checks(hub)).toBe(1);
+	harness.connection = { ...harness.connection, state: "ready" };
+	await act(async () => tree.update(<PluginsStack {...props} />));
+	await act(async () => {});
+	expect(checks(hub)).toBe(2);
+});
+
+it("asks a hub that refused the check, or answered it, only once across reconnects and list failures", async () => {
+	const hub = pageHub([entry("stale")]);
+	hub.on("evener/plugin/checkUpdates", () => {
+		throw new WireError("method not found", -32601);
+	});
+	const { tree, props } = await mountPage(hub);
+	await act(async () => {});
+	expect(checks(hub)).toBe(1);
+	await flap(tree, props);
+	expect(checks(hub)).toBe(1);
+
+	// The list fails on one reconnect and recovers on the next.
+	hub.on("evener/plugin/list", () => {
+		throw new Error("hub busy");
+	});
+	await flap(tree, props);
+	hub.on("evener/plugin/list", () => ({ plugins: [entry("stale")] }));
+	await flap(tree, props);
+	expect(checks(hub)).toBe(1);
+});
+
+it("asks for updates once a failed installed list recovers, not while it is failing", async () => {
+	const hub = pageHub([entry("stale")]);
+	hub.on("evener/plugin/list", () => {
+		throw new Error("hub busy");
+	});
+	hub.on("evener/plugin/checkUpdates", () => ({ plugins: [] }));
+	const { tree, props } = await mountPage(hub);
+	expect(hub.calls.some((call) => call.method === "evener/plugin/checkUpdates")).toBe(false);
+
+	// The same client flaps and comes back; the store re-reads its list.
+	hub.on("evener/plugin/list", () => ({ plugins: [entry("stale")] }));
+	await flap(tree, props);
+	expect(checks(hub)).toBe(1);
+});
+
+it("says a broken plugin's row has an update when the hub found one", async () => {
+	const { tree } = await mountPage(pageHub([entry("cracked", { broken: true, updateAvailable: true })]));
+	expect(pluginRow(tree, "cracked").props.accessibilityLabel).toBe("cracked, core, Broken · Update available");
+});
+
+it("offers no Upgrade on a hub without the update check, and tells a broken plugin only to be removed", async () => {
+	const { tree } = await mountPage(pageHub([entry("cracked", { broken: true })]));
+	const detail = await openDetail(tree, "cracked");
+	expect(detail.findAllByProps({ label: "Upgrade" })).toHaveLength(0);
+	expect(renderedText(tree)).toContain("This plugin is broken. Remove it.");
+	expect(renderedText(tree)).not.toContain("Upgrade it or remove it.");
+});
+
 it("shows Installed, Marketplaces and Browse, with Installed first", async () => {
 	const { tree } = await mountPage(pageHub([entry("demo-plugin")]));
 	const segments = tree.root.findAllByProps({ accessibilityRole: "radio" });
@@ -2961,7 +3116,7 @@ it("turns a plugin on and off by default from its row's switch", async () => {
 });
 
 it("says Already up to date when an upgrade changes neither version nor commit", async () => {
-	const hub = pageHub([entry("demo-plugin", { gitCommitSha: "abc" })]);
+	const hub = pageHub([entry("demo-plugin", { gitCommitSha: "abc", updateAvailable: true })]);
 	hub.on("evener/plugin/upgrade", () => ({ plugins: [entry("demo-plugin", { gitCommitSha: "abc" })] }));
 	const { tree } = await mountPage(hub);
 	const detail = await openDetail(tree, "demo-plugin");
@@ -2976,7 +3131,7 @@ it("says Already up to date when an upgrade changes neither version nor commit",
 it("shows no upgrade result for a plugin the answering list no longer carries", async () => {
 	// The detail shows only a listed plugin, so an upgrade whose answer drops
 	// it closes the detail; "Already up to date" is never said for it.
-	const hub = pageHub([entry("demo-plugin", { gitCommitSha: "abc" })]);
+	const hub = pageHub([entry("demo-plugin", { gitCommitSha: "abc", updateAvailable: true })]);
 	hub.on("evener/plugin/upgrade", () => ({ plugins: [] }));
 	const { tree } = await mountPage(hub);
 	const detail = await openDetail(tree, "demo-plugin");
@@ -3052,7 +3207,7 @@ it("reads the installed list again on coming back to the page after a read faile
 });
 
 it("says Upgraded to the new version when the upgrade's list carries one", async () => {
-	const hub = pageHub([entry("demo-plugin", { gitCommitSha: "abc" })]);
+	const hub = pageHub([entry("demo-plugin", { gitCommitSha: "abc", updateAvailable: true })]);
 	hub.on("evener/plugin/upgrade", () => ({
 		plugins: [entry("demo-plugin", { version: "1.2.0", gitCommitSha: "def" })],
 	}));
@@ -3067,7 +3222,7 @@ it("says Upgraded to the new version when the upgrade's list carries one", async
 });
 
 it("holds the detail's switches, Upgrade and Remove, and says a broken plugin is broken", async () => {
-	const hub = pageHub([entry("cracked", { broken: true })]);
+	const hub = pageHub([entry("cracked", { broken: true, updateAvailable: true })]);
 	hub.on("evener/plugin/setAutoUpgrade", () => ({ plugins: [entry("cracked", { broken: true, autoUpgrade: true })] }));
 	const { tree } = await mountPage(hub);
 	const detail = await openDetail(tree, "cracked");
@@ -3127,7 +3282,7 @@ it("opens a plugin again when a later link names it again", async () => {
 });
 
 it("opens the plugin a notice named once, then clears the focus", async () => {
-	const hub = pageHub([entry("demo-plugin"), entry("cracked", { broken: true })]);
+	const hub = pageHub([entry("demo-plugin"), entry("cracked", { broken: true, updateAvailable: true })]);
 	const { tree, navigation } = await mountPage(hub, { focus: { plugin: "cracked", marketplace: "core" } });
 	const detail = tree.root.findByType("Modal" as never);
 	expect(detail.findAllByProps({ accessibilityLabel: "Remove plugin" }).length).toBeGreaterThan(0);
@@ -3136,7 +3291,7 @@ it("opens the plugin a notice named once, then clears the focus", async () => {
 });
 
 it("leaves an open plugin's late result behind when a link opens another plugin", async () => {
-	const hub = pageHub([entry("demo-plugin"), entry("other")]);
+	const hub = pageHub([entry("demo-plugin", { updateAvailable: true }), entry("other", { updateAvailable: true })]);
 	let fail: (reason: Error) => void = () => {};
 	hub.on(
 		"evener/plugin/upgrade",
@@ -3406,7 +3561,7 @@ it("describes an installed plugin from its marketplace's catalog, as the web doe
 });
 
 it("says a broken plugin is broken under the actions that fix it, not floating above them (audit M9)", async () => {
-	const hub = pageHub([entry("cracked", { broken: true })]);
+	const hub = pageHub([entry("cracked", { broken: true, updateAvailable: true })]);
 	const { tree } = await mountPage(hub);
 	const detail = await openDetail(tree, "cracked");
 	const nodes = detail.findAll(() => true);
@@ -3456,7 +3611,7 @@ it.each([
 		() => ({ name: "acme", plugins: [{ name: "other", description: "Another" }] }),
 	],
 ])("leaves out About when %s, and shows the rest", async (_name, browse) => {
-	const hub = pageHub([entry("tool", { marketplace: "acme" })]);
+	const hub = pageHub([entry("tool", { marketplace: "acme", updateAvailable: true })]);
 	hub.on("evener/marketplace/browse", browse);
 	const { tree } = await mountPage(hub);
 	const detail = await openDetail(tree, "tool");

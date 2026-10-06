@@ -52,6 +52,7 @@ import {
 	type ProtoState,
 	type RawSubagent,
 } from "./demoFleet";
+import { NOTE_STEER_CLEARED, NOTE_STEER_PREFIX } from "../projectedRows";
 import { demoRunStartedAt } from "./demoSubagents";
 import { recordedToolCwd, recordedToolFamilies } from "./demoToolFamilies";
 
@@ -1197,7 +1198,7 @@ const DEMO_OUT_OF_DATE_DAEMON_PID = 48213;
 // retry of the same mutation.
 function restartRequiredError(clientMutationId: string): WireError {
 	return new WireError(
-		`Session restart required: daemon pid ${DEMO_OUT_OF_DATE_DAEMON_PID} uses an incompatible protocol; this hub requires evener-appwire-v6. Stop the daemon, then resume this session. Stopping interrupts active work.`,
+		`Session restart required: daemon pid ${DEMO_OUT_OF_DATE_DAEMON_PID} uses an incompatible protocol; this hub requires evener-appwire-v7. Stop the daemon, then resume this session. Stopping interrupts active work.`,
 		-32013,
 		{
 			evenerErrorInfo: "conflict",
@@ -1227,22 +1228,50 @@ function requireSharedNotes(thread: Thread, expectedInstanceId: string, clientMu
 	if (SHUT_DOWN_STATUSES.has(thread.status.type)) restFleetSession(thread, "idle", now);
 }
 
-// The steering text a changed note opens with (agent/session_notes_rpc.go's
-// humanNoteSteerPrefix).
-const HUMAN_NOTE_STEER_PREFIX = "human updated their whiteboard:";
 // The daemon's cap on a stored note, in runes (agent/session_notes.go).
 const NOTE_MAX_RUNES = 1000;
 
-// A note as the daemon stores it (agent/session_notes.go's normalizeNote):
-// control characters other than whitespace dropped, whitespace runs collapsed
-// to one space, and the whole cut to NOTE_MAX_RUNES.
-function normalizeNote(text: string): string {
-	const collapsed = text
-		.replace(/[^\P{Cc}\s]/gu, "")
-		.split(/\s+/)
-		.filter(Boolean)
-		.join(" ");
-	return [...collapsed].slice(0, NOTE_MAX_RUNES).join("");
+// Go's unicode.IsSpace set, which the daemon's strings.Fields splits on; JS's \s
+// differs (it adds U+FEFF and omits U+0085). Line feeds are split on first.
+const NOTE_LINE_WHITESPACE = /[\t\v\f\r \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+/u;
+// A control character Go's unicode.IsSpace does not also call whitespace.
+const NOTE_CONTROL = /[^\P{Cc}\t\n\v\f\r\u0085]/gu;
+
+// A note as the daemon stores it (agent/session_notes.go's normalizeWhiteboard):
+// control characters other than whitespace dropped, CRLF and CR turned into LF,
+// each line's whitespace runs collapsed to one space and the line trimmed,
+// blank lines at the start and end dropped and a run of blank lines kept as
+// one, and the whole cut to NOTE_MAX_RUNES without a trailing space or line
+// break.
+function normalizeWhiteboard(text: string): string {
+	const lines: string[] = [];
+	let blankPending = false;
+	for (const raw of text.replace(NOTE_CONTROL, "").replace(/\r\n?/g, "\n").split("\n")) {
+		const line = raw.split(NOTE_LINE_WHITESPACE).filter(Boolean).join(" ");
+		if (line === "") {
+			// Only a blank line between two text lines survives.
+			blankPending = lines.length > 0;
+			continue;
+		}
+		if (blankPending) {
+			lines.push("");
+			blankPending = false;
+		}
+		lines.push(line);
+	}
+	return [...lines.join("\n")]
+		.slice(0, NOTE_MAX_RUNES)
+		.join("")
+		.replace(/[ \n]+$/, "");
+}
+
+// The steer text for a changed note, as the daemon renders it
+// (agent/session_notes_rpc.go's formatNotesField): continuation lines indented
+// two spaces under the prefix, blank lines left empty. noteFromSteer reads it
+// back.
+export function humanNoteSteerText(note: string): string {
+	if (note === "") return `${NOTE_STEER_PREFIX}${NOTE_STEER_CLEARED}`;
+	return `${NOTE_STEER_PREFIX}${note.replace(/\n(?=[^\n])/g, "\n  ")}`;
 }
 
 // notes/human/set: your note replaces the session's. A changed note steers
@@ -1251,7 +1280,7 @@ function normalizeNote(text: string): string {
 // (agent/session_notes_rpc.go).
 export function setHumanNote(thread: Thread, params: NotesHumanSetParams, now: number): NotesHumanSetResponse {
 	requireSharedNotes(thread, params.expectedInstanceId, params.clientMutationId, now);
-	const note = normalizeNote(params.note ?? "");
+	const note = normalizeWhiteboard(params.note ?? "");
 	const changed = note !== (thread.evener.humanNote ?? "");
 	thread.evener.humanNote = note;
 	let turnId: string | undefined;
@@ -1263,7 +1292,7 @@ export function setHumanNote(thread: Thread, params: NotesHumanSetParams, now: n
 			type: "steering",
 			source: "user",
 			steeringKind: "human-note",
-			text: `${HUMAN_NOTE_STEER_PREFIX} ${note || "(whiteboard cleared)"}`,
+			text: humanNoteSteerText(note),
 			clientMutationId: params.clientMutationId,
 			status: "completed",
 		};

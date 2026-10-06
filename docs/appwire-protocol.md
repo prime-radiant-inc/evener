@@ -234,7 +234,7 @@ no router (reserved).
 | `evener/plugin/enable` | hub | `PluginRefParams` | `PluginListResponse` | Enables an installed plugin; returns the updated list. |
 | `evener/plugin/disable` | hub | `PluginRefParams` | `PluginListResponse` | Disables an installed plugin; returns the updated list. |
 | `evener/plugin/setAutoUpgrade` | hub | `PluginSetAutoUpgradeParams` | `PluginListResponse` | Sets an installed plugin's auto-upgrade flag; returns the updated list. |
-| `evener/plugin/checkUpdates` | hub | `EmptyParams` | `PluginListResponse` | Asks each git-backed installed plugin's remote whether it has moved past the installed commit, without installing anything; returns the list with updateAvailable set. Clients call it when their plugins view opens; the hub never runs it on a timer. It waits on every remote (up to 20s each, four at a time), so a client gives it a longer timeout than a plain read. |
+| `evener/plugin/checkUpdates` | hub | `EmptyParams` | `PluginListResponse` | Asks each git-backed installed plugin's remote whether it has moved past the installed commit, without installing anything; returns the list with updateAvailable set. Clients call it when their plugins view opens; the hub never runs it on a timer. It waits on every plugin's remote, each with its own timeout (internal/plugins updateCheckTimeout), so a client gives it a longer timeout than a plain read. |
 | `evener/command/list` | hub | `EmptyParams` | `CommandListResponse` | Lists loaded slash commands (name, plugin, description, source: plugin, project, or user) for catalog/autocomplete display. |
 | `evener/spawn/slashCatalog` | hub | `SpawnSlashCatalogParams` | `SpawnSlashCatalogResponse` | Pre-session slash catalog for the spawn form: the commands and skills a session started with this cwd, harness, and launch overrides would offer. |
 | `evener/settings/overview` | hub | `EmptyParams` | `SettingsOverviewResponse` | Returns the settings overview field bag: hub/runtime, storage, agent roster, and probed MCP servers — the five template-only settings sections' data. |
@@ -1627,15 +1627,25 @@ _(no fields)_
 | `dirty` | `bool` |  |  |
 
 
-### `JobOutputTail`
+### `JobOutputPage`
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
-| `tail` | `string` |  |  |
+| `offsetBytes` | `int64` |  |  |
+| `bytesReturned` | `int64` |  |  |
 | `totalBytes` | `int64` |  |  |
-| `retainedStart` | `int64` |  |  |
-| `truncated` | `bool` |  |  |
-| `hasEarlier` | `bool` | yes |  |
+| `retainedStartBytes` | `int64` |  |  |
+| `encoding` | `string` |  |  |
+| `data` | `string` |  |  |
+
+
+### `JobOutputPrunedErrorData`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `evenerErrorInfo` | `appwire.ErrorInfo` |  |  |
+| `retainedStartBytes` | `int64` |  |  |
+| `totalBytes` | `int64` |  |  |
 
 
 ### `JobsGetParams`
@@ -1675,14 +1685,14 @@ _(no fields)_
 | `ref` | `string` | yes |  |
 | `jobId` | `string` |  |  |
 | `maxBytes` | `int64` | yes |  |
-| `beforeBytes` | `int64` | yes |  |
+| `beforeBytes` | `*int64` | yes |  |
 
 
 ### `JobsOutputResponse`
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
-| `data` | `appwire.JobOutputTail` |  |  |
+| `data` | `appwire.JobOutputPage` |  |  |
 
 
 ### `JobsTreeUpdatedParams`

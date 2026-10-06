@@ -35,6 +35,14 @@ The default model-facing posture is:
 > Read shell bytes with `job:<job_id>` and delegate history with its session
 > `transcript_ref`. Do not poll.
 
+Shell start registration records background evidence for explicit background
+launches and foreground promotion before acknowledging the handoff. That evidence
+survives terminal outcomes, forwarding and journal reconstruction. Retained inline
+foreground output and a foreground runtime limit do not establish background
+eligibility. Detached processes have no managed job record. Older unmarked
+records retain their diagnostic history and output without claiming background
+execution.
+
 The shipped model intentionally does **not** expose:
 
 - `job_kill`

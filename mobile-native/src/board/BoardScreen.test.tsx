@@ -627,6 +627,53 @@ const chipLabels = (tree: ReactTestRenderer) =>
 		.map((node) => node.props.accessibilityLabel);
 const headerOptions = (nav: Navigation) => nav.setOptions.mock.calls.at(-1)?.[0];
 
+it("keeps own errors and live attention while settled delegate chips stay quiet", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const settled = { running: 0, failed: 3, done: 0 };
+	const rows = [
+		session("local:error", { title: "Own error", state: "errored", ask_pending: true, subagents: settled }),
+		session("local:question", {
+			title: "Question",
+			state: "awaiting",
+			ask_pending: true,
+			updated_at: minutesAgo(6),
+			subagents: settled,
+		}),
+		session("local:approval", { title: "Approval", state: "active", approval_pending: true, subagents: settled }),
+		session("local:mixed", { title: "Mixed work", state: "active", subagents: { running: 2, failed: 3, done: 0 } }),
+		session("local:stale", { title: "Stale question", state: "active", ask_pending: true, subagents: settled }),
+		session("local:offline", {
+			title: "Offline error",
+			state: "errored",
+			offline: true,
+			ask_pending: true,
+			subagents: settled,
+		}),
+	];
+	connect(id, hub({ ...fleet, live: [rows], needsYou: rows.slice(0, 3), pins: [], pinned: {} }).client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	expect(tree.root.findAllByType(BoardRow).map((node) => [node.props.item.row.title, node.props.item.state])).toEqual([
+		["Own error", "failed"],
+		["Question", "question"],
+		["Approval", "approval"],
+		["Mixed work", "working"],
+		["Stale question", "working"],
+	]);
+	expect(renderedText(tree)).not.toContain("3 failed");
+	expect(tree.root.findAll((node) => node.props.testID === "subagent-chip")).toHaveLength(1);
+	expect(renderedText(tree)).toContain("2 running");
+	for (const title of ["Own error", "Question", "Approval", "Mixed work", "Stale question"])
+		expect(rowTitled(tree, title).props.accessibilityLabel).not.toContain("3 failed");
+	expect(rowTitled(tree, "Own error").props.accessibilityLabel).toContain("Failed");
+	expect(rowTitled(tree, "Question").props.accessibilityLabel).toContain("waiting for your answer");
+	expect(rowTitled(tree, "Approval").props.accessibilityLabel).toContain("waiting for your permission");
+	expect(hasRow(tree, "Offline error")).toBe(false);
+	act(() => rowTitled(tree, "Mixed work").props.onPress());
+	expect(nav.navigate).toHaveBeenCalledWith("Conversation", { hubId: id, ref: "local:mixed", title: "Mixed work" });
+});
+
 it("renders the fleet's bands in order with their counts, and Idle starts folded", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
@@ -2075,7 +2122,7 @@ async function layOut(tree: ReactTestRenderer) {
 }
 const writing = session("local:write", { title: "Write tests", state: "active", updated_at: minutesAgo(1) });
 
-it("keeps a later-page parent's Working pulse and failed count through questions, refresh and reconnect", async () => {
+it("keeps a later-page parent's Working pulse and quiet failure history through questions, refresh and reconnect", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
 	const parent = session("local:parent", {
@@ -2090,12 +2137,22 @@ it("keeps a later-page parent's Working pulse and failed count through questions
 	const tree = await mount(nav);
 	await layOut(tree);
 	expect(liveReads(fake)).toEqual([0, 1]);
+	const assertQuietFailure = () => {
+		const row = rowTitled(tree, parent.title);
+		expect(row.props.accessibilityLabel).not.toContain("1 failed");
+		expect(textsIn(row)).not.toContain("1 failed");
+	};
 	const assertWorking = () => {
 		const row = rowTitled(tree, parent.title);
 		expect(stateOf(tree, parent.title)).toBe("Working");
 		expect(row.findAllByType(PulseMeter)).toHaveLength(1);
-		expect(row.props.accessibilityLabel).toContain("1 failed");
-		expect(textsIn(row)).toEqual(expect.arrayContaining(["1 running", "1 failed"]));
+		expect(row.props.accessibilityLabel).toContain("Waiting on 1 subagent");
+		expect(textsIn(row)).toContain("1 running");
+		expect(
+			tree.root.findAllByType(BoardRow).find((node) => node.props.item.row.ref === parent.ref)?.props.item.row
+				.subagents,
+		).toEqual({ running: 1, failed: 1, done: 0 });
+		assertQuietFailure();
 	};
 	assertWorking();
 	const refresh = async (sequence: number) => {
@@ -2115,7 +2172,9 @@ it("keeps a later-page parent's Working pulse and failed count through questions
 	expect(stateOf(tree, parent.title)).toBe("Question");
 	expect(bandHeaders(tree)).toContain("NEEDS YOU · 1");
 	expect(rowTitled(tree, parent.title).findAllByType(PulseMeter)).toEqual([]);
-	expect(rowTitled(tree, parent.title).props.accessibilityLabel).toContain("1 failed");
+	expect(rowTitled(tree, parent.title).props.accessibilityLabel).toContain("waiting for your answer");
+	expect(textsIn(rowTitled(tree, parent.title))).toContain("1 running");
+	assertQuietFailure();
 	shape.live = [[working], [parent]];
 	shape.needsYou = [];
 	await refresh(2);
@@ -2142,7 +2201,8 @@ it("keeps a later-page parent's Working pulse and failed count through questions
 	await refresh(4);
 	expect(stateOf(tree, parent.title)).toBe("Finished");
 	expect(rowTitled(tree, parent.title).findAllByType(PulseMeter)).toEqual([]);
-	expect(rowTitled(tree, parent.title).props.accessibilityLabel).toContain("1 failed");
+	expect(rowTitled(tree, parent.title).findAll((node) => node.props.testID === "subagent-chip")).toHaveLength(0);
+	assertQuietFailure();
 	// The retained failure still has the same session and row-menu entry points.
 	act(() => rowTitled(tree, parent.title).props.onLongPress());
 	expect(nav.navigate).toHaveBeenLastCalledWith("RowMenuSheet", { hubId: id, ref: parent.ref, archived: false });
@@ -2154,7 +2214,8 @@ it("keeps a later-page parent's Working pulse and failed count through questions
 	await settle();
 	pressLabel(tree, "Idle, 1 session");
 	expect(stateOf(tree, parent.title)).toBe("Idle");
-	expect(rowTitled(tree, parent.title).props.accessibilityLabel).toContain("1 failed");
+	expect(rowTitled(tree, parent.title).findAll((node) => node.props.testID === "subagent-chip")).toHaveLength(0);
+	assertQuietFailure();
 	act(() => tree.unmount());
 });
 

@@ -341,6 +341,57 @@ func (o *OutputStore) ReadWindow(offset int64, maxBytes int) (snapshot OutputWin
 	}
 
 	end := addWindowLimit(offset, maxBytes, o.total)
+	return o.readRangeLocked(offset, end)
+}
+
+// ReadPage returns the raw page ending at beforeBytes, or at the current total
+// when beforeBytes is nil. Selection and reading share the store mutex.
+func (o *OutputStore) ReadPage(beforeBytes *int64, maxBytes int) (OutputWindowSnapshot, error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	start, end, err := outputPageBounds(beforeBytes, maxBytes, o.total, o.retainedStart)
+	if err != nil {
+		return OutputWindowSnapshot{TotalBytes: o.total, RetainedStart: o.retainedStart, RetainedStartPartial: o.retainedStartPartial}, err
+	}
+	return o.readRangeLocked(start, end)
+}
+
+func outputPageBounds(beforeBytes *int64, maxBytes int, totalBytes, retainedStart int64) (start, end int64, err error) {
+	if maxBytes <= 0 {
+		return 0, 0, fmt.Errorf("%w: maxBytes=%d", ErrInvalidOffset, maxBytes)
+	}
+	end = totalBytes
+	if beforeBytes != nil {
+		end = *beforeBytes
+	}
+	if end < 0 || end > totalBytes {
+		return 0, 0, fmt.Errorf("%w: beforeBytes=%d total=%d", ErrInvalidOffset, end, totalBytes)
+	}
+	if end < retainedStart {
+		return 0, 0, fmt.Errorf("%w: beforeBytes=%d first_available=%d", ErrOutputPruned, end, retainedStart)
+	}
+	start = retainedStart
+	if end-retainedStart > int64(maxBytes) {
+		start = end - int64(maxBytes)
+	}
+	return start, end, nil
+}
+
+func outputWindowBounds(offset int64, maxBytes int, totalBytes, retainedStart int64) (start, end int64, err error) {
+	if offset < retainedStart {
+		return offset, offset, fmt.Errorf("%w: offset=%d first_available=%d", ErrOutputPruned, offset, retainedStart)
+	}
+	if offset > totalBytes {
+		return offset, offset, fmt.Errorf("%w: offset=%d total=%d", ErrInvalidOffset, offset, totalBytes)
+	}
+	return offset, addWindowLimit(offset, maxBytes, totalBytes), nil
+}
+
+func (o *OutputStore) readRangeLocked(offset, end int64) (snapshot OutputWindowSnapshot, err error) {
+	snapshot.TotalBytes = o.total
+	snapshot.RetainedStart = o.retainedStart
+	snapshot.RetainedStartPartial = o.retainedStartPartial
+	snapshot.Start = offset
 	snapshot.End = end
 	snapshot.Truncated = o.retainedStart > 0 || offset > o.retainedStart || end < o.total
 	if end == offset {

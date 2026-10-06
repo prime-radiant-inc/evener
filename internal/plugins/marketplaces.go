@@ -115,19 +115,13 @@ func (m *Manager) fetchMarketplaceContainer(ctx context.Context, src Source, des
 	switch src.Kind {
 	case SourceDirectory:
 		return src.Path, nil // referenced in place
-	case SourceGitHub:
-		url := "https://github.com/" + src.Repo + ".git"
-		if err := marketplaceGitClone(ctx, url, destDir, src.Ref, src.Sha); err != nil {
-			return "", err
-		}
-		return destDir, nil
-	case SourceURL:
-		if err := marketplaceGitClone(ctx, src.URL, destDir, src.Ref, src.Sha); err != nil {
+	case SourceGitHub, SourceURL:
+		if err := marketplaceGitClone(ctx, gitRemoteURL(src), destDir, src.Ref, src.Sha); err != nil {
 			return "", err
 		}
 		return destDir, nil
 	case SourceGitSubdir:
-		if err := marketplaceGitSparseClone(ctx, src.URL, destDir, src.Path, src.Ref, src.Sha); err != nil {
+		if err := marketplaceGitSparseClone(ctx, gitRemoteURL(src), destDir, src.Path, src.Ref, src.Sha); err != nil {
 			return "", err
 		}
 		return filepath.Join(destDir, src.Path), nil

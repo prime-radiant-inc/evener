@@ -462,7 +462,7 @@ func (read *sessionActivityRead) summary(ctx context.Context) (appwire.SessionAc
 			break
 		}
 		for _, job := range index.Jobs {
-			if string(job.Type) != "shell" {
+			if !activityJobEligible(job) {
 				continue
 			}
 			terminal, outcome := activityOutcome(job.Status)

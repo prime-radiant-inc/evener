@@ -39,8 +39,9 @@ const TONE_CLASS: Record<Tone, string> = {
   quiet: CLASS.glyphQuiet,
 };
 
-function jobTone(status: string): Tone {
-  switch (jobStatusDotState(status, status !== "running")) {
+function jobTone(job: JobActivityJob): Tone {
+  if (job.terminal) return "quiet";
+  switch (jobStatusDotState(job.status, job.terminal)) {
     case "working":
       return "alive";
     case "needs-you":
@@ -53,7 +54,7 @@ function jobTone(status: string): Tone {
 }
 
 function agentTone(sub: SessionDelegate): Tone {
-  if (sub.terminal) return sub.outcome === "failed" || sub.error ? "danger" : "quiet";
+  if (sub.terminal) return "quiet";
   if (["awaiting_approval", "awaiting_input", "needs-you"].includes(sub.phase)) return "attention";
   return "alive";
 }
@@ -98,7 +99,7 @@ export function JobRow({ job, onOpen }: { job: JobActivityJob; onOpen?: () => vo
   const label = description || job.command?.trim() || job.jobId;
   const body = (
     <>
-      <span className={`${CLASS.rowGlyph} ${TONE_CLASS[jobTone(job.status)]}`} aria-hidden="true">
+      <span className={`${CLASS.rowGlyph} ${TONE_CLASS[jobTone(job)]}`} aria-hidden="true">
         $
       </span>
       <span className={CLASS.rowBody}>
