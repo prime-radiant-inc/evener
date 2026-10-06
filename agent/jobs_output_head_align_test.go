@@ -19,7 +19,7 @@ func writeOutputFixture(t *testing.T, content string) string {
 // A head window that ends mid-rune stops at the last whole rune instead of
 // trailing orphaned continuation bytes, so a digest built from the head never
 // closes on a replacement character.
-func TestHeadOutputFileAlignsMidRuneWindowEnd(t *testing.T) {
+func TestReadClosedJobOutputHeadAlignsMidRuneWindowEnd(t *testing.T) {
 	t.Parallel()
 	// Two 4-byte emoji: a 6-byte window ends 2 bytes into the second one.
 	path := writeOutputFixture(t, "😀😀")
@@ -39,7 +39,7 @@ func TestHeadOutputFileAlignsMidRuneWindowEnd(t *testing.T) {
 // A window already on a rune boundary is returned whole, ASCII is byte-identical
 // at every window size, and a window narrower than the rune it lands in is EMPTY
 // rather than a lone replacement character.
-func TestHeadOutputFileWindowEdges(t *testing.T) {
+func TestReadClosedJobOutputHeadWindowEdges(t *testing.T) {
 	t.Parallel()
 	path := writeOutputFixture(t, "😀😀")
 
@@ -79,7 +79,7 @@ func TestHeadOutputFileWindowEdges(t *testing.T) {
 // Job output is not required to be UTF-8, and only the window's own cut is
 // realigned: a whole retained file comes back byte for byte even when its last
 // bytes are an incomplete sequence, because we never cut there.
-func TestHeadOutputFileKeepsWholeFileIntact(t *testing.T) {
+func TestReadClosedJobOutputHeadKeepsWholeFileIntact(t *testing.T) {
 	t.Parallel()
 	content := []byte{'a', 'b', 0xF0, 0x9F}
 	path := writeOutputFixture(t, string(content))

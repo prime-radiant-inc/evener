@@ -278,7 +278,6 @@ func seed100JobsMore(t *testing.T) {
 	_, _, _, _ = tailOutput(closed, 1)
 	_, _, _, _ = headOutput(closed, 1)
 	_, _, _, _ = stringOutputResult([]byte("partial"), 7, true, want)
-	_, _, _ = validatedOutputStatsForRecord(filepath.Join(t.TempDir(), "missing"), nil)
 
 	// Restore ordering uses both the equal-time ID tiebreak and descending start time.
 	jm4 := newTestJM(t)

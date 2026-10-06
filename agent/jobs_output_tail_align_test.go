@@ -22,7 +22,7 @@ func tailWindowProjection(out string, total int64) JobOutputPage {
 	return page
 }
 
-func TestTailOutputFileAlignsMidRuneWindowStart(t *testing.T) {
+func TestReadClosedJobOutputTailAlignsMidRuneWindowStart(t *testing.T) {
 	t.Parallel()
 	// Two 4-byte emoji: a 6-byte window starts 2 bytes into the first one.
 	path := writeOutputFixture(t, "😀😀")
@@ -48,7 +48,7 @@ func TestTailOutputFileAlignsMidRuneWindowStart(t *testing.T) {
 
 // A window that already begins on a rune boundary is returned whole: alignment
 // costs a window nothing when there is nothing to align.
-func TestTailOutputFileWindowOnRuneBoundaryUnchanged(t *testing.T) {
+func TestReadClosedJobOutputTailWindowOnRuneBoundaryUnchanged(t *testing.T) {
 	t.Parallel()
 	path := writeOutputFixture(t, "😀😀")
 
@@ -66,7 +66,7 @@ func TestTailOutputFileWindowOnRuneBoundaryUnchanged(t *testing.T) {
 
 // Pure ASCII output is byte-identical at every window size: every byte is a rune
 // start, so no window can lose one.
-func TestTailOutputFileASCIIWindowsByteIdentical(t *testing.T) {
+func TestReadClosedJobOutputTailASCIIWindowsByteIdentical(t *testing.T) {
 	t.Parallel()
 	const content = "abcdefghij"
 	path := writeOutputFixture(t, content)
@@ -89,7 +89,7 @@ func TestTailOutputFileASCIIWindowsByteIdentical(t *testing.T) {
 // A window narrower than the rune it lands in yields an EMPTY tail with honest
 // offsets, rather than a lone replacement character: retainedStart equals the
 // total, so the caption reads "0 of 4 bytes" and the content agrees.
-func TestTailOutputFileWindowNarrowerThanRuneIsEmpty(t *testing.T) {
+func TestReadClosedJobOutputTailWindowNarrowerThanRuneIsEmpty(t *testing.T) {
 	t.Parallel()
 	path := writeOutputFixture(t, "😀")
 
@@ -112,7 +112,7 @@ func TestTailOutputFileWindowNarrowerThanRuneIsEmpty(t *testing.T) {
 // whole retained file that happens to start with continuation bytes is never
 // cut (we did not make that cut), and a run of continuation bytes longer than
 // any rune could leave loses only the three a 4-byte rune could account for.
-func TestTailOutputFileKeepsInvalidUTF8(t *testing.T) {
+func TestReadClosedJobOutputTailKeepsInvalidUTF8(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name    string

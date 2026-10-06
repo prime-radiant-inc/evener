@@ -1399,9 +1399,14 @@ func (jm *jobManager) outputDropped(jobID string) (int64, error) {
 	if rec == nil {
 		return 0, errJobNotFound(jobID)
 	}
-	path := jm.outputPathForJob(rec, jobID)
-	_, visibleStart, err := validatedOutputStatsForRecord(path, rec)
-	return visibleStart, err
+	snapshot, err := readLocalJobOutputSnapshot(jm.outputPathForJob(rec, jobID), 0, true)
+	if err != nil {
+		return 0, err
+	}
+	if err := checkOutputTotalForRecord(rec, snapshot.TotalBytes); err != nil {
+		return 0, err
+	}
+	return snapshot.RetainedStart, nil
 }
 
 func (jm *jobManager) appendJobOutput(jobID string, output *jobstore.OutputStore, b []byte) (int, error) {
@@ -2298,17 +2303,6 @@ func stringOutputResult(b []byte, total int64, truncated bool, err error) (strin
 		return "", total, truncated, err
 	}
 	return string(b), total, truncated, nil
-}
-
-func validatedOutputStatsForRecord(path string, rec *jobstore.JobRecord) (total int64, visibleStart int64, err error) {
-	total, visibleStart, err = jobstore.OutputFileStats(path)
-	if err != nil {
-		return 0, 0, err
-	}
-	if err := checkOutputTotalForRecord(rec, total); err != nil {
-		return 0, 0, err
-	}
-	return total, visibleStart, nil
 }
 
 // checkOutputTotalForRecord rejects a finished job's output file whose

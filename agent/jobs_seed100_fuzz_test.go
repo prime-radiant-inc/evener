@@ -138,7 +138,6 @@ func seed100Jobs(t *testing.T, text string) {
 		t.Fatal(err)
 	}
 	_, _, _, _ = readClosedJobOutput(path, &jobstore.JobRecord{Status: jobstore.StatusCompleted, OutputBytes: 99}, 2, false)
-	_, _, _ = validatedOutputStatsForRecord(path, &jobstore.JobRecord{Status: jobstore.StatusCompleted, OutputBytes: 99})
 	_ = cloneJobRecord(nil)
 
 	jm.abandonRunningJob("missing")
