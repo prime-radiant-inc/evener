@@ -220,6 +220,7 @@ export class SessionActivityStore {
         this.cancelPace(read);
         read.rootQueued = false;
         read.pageQueued = false;
+        read.oneShot = false;
         if (read.refresh) read.refresh.advance = false;
         this.change(resource, { pending: false });
       }
