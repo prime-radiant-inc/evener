@@ -483,6 +483,19 @@ test.each([
   expect(readingPointOffset(captured, nextHeight, 400)).toBe(want);
 });
 
+// A kept tail stays put when the viewport shrinks below it: the text at the
+// viewport top doesn't move, and only content past the new fold is cut. Clamping
+// the entry's bottom into the smaller viewport would move the reading line.
+test("a kept tail stays in place when the viewport shrinks below it", () => {
+  const captured = {
+    anchorOffset: -1250,
+    normalizedOffset: 0,
+    followingBottom: false,
+    readingPoint: { entryHeight: 1600, viewportHeight: 400, viewportWidth: 152 },
+  };
+  expect(readingPointOffset(captured, 1600, 300)).toBe(-1250);
+});
+
 test("width-only policy preserves an ordinary display offset without a measured point", () => {
   expect(readingPointOffset({ anchorOffset: -900, normalizedOffset: 0, followingBottom: false }, 700, 400)).toBe(-900);
 });
