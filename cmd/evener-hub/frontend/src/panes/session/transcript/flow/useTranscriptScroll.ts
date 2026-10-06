@@ -860,12 +860,9 @@ function totalItemCount(model: ThreadModel | undefined): number {
   return total;
 }
 
-// Mirrors Session.tsx's own cadenceStateForStatus mapping (awaiting/warning/restartRequired
-// -> needs-you) rather than importing it: flow/ is composed BY Session.tsx,
-// not the other way around (same "deliberately separate, parallel small
-// mapping function" precedent Session.tsx itself follows relative to
-// shell/rail/RailRow.tsx's cadenceStateFor - see its own comment). askPending
-// is checked independently since it need not always coincide with status.type.
+// Attention follows liveness.ts's raw-status mapping to needs-you.
+// shell/SessionStatusIndicator.tsx maps normalized navigation summaries.
+// askPending is independent because it need not coincide with status.type.
 function isAttentionWorthy(model: ThreadModel | undefined): boolean {
   if (!model) return false;
   return (

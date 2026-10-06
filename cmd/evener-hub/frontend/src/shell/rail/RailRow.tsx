@@ -48,13 +48,14 @@ import {
   selectSources,
 } from "../../stores/navigation/selectors";
 import { useNavigationStore } from "../../stores/navigation/store";
-import { Badge, type CadenceState, Chevron, IconButton } from "../../widgets";
+import { Badge, Chevron, IconButton } from "../../widgets";
 import { HoverCard } from "../../widgets/hovercard";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { Menu, type MenuItem } from "../../widgets/menu";
 import type { TreeRowInfo } from "../../widgets/tree";
 import { useActivitySidebarOpenFor } from "../activitybar/activitySidebarStore";
 import { navigate } from "../routing";
+import { CADENCE_LABEL, cadenceStateFor, SessionStatusIndicator, SIGNAL_STATES } from "../SessionStatusIndicator";
 import { type PinTarget, SessionMenu } from "../sessionMenu/SessionMenu";
 import styles from "./RailRow.module.css";
 import {
@@ -85,8 +86,6 @@ const CLASS = {
   titleLine: requireClass(styles.titleLine, "RailRow.module.css", "titleLine"),
   label: requireClass(styles.label, "RailRow.module.css", "label"),
   sessionTitle: requireClass(styles.sessionTitle, "RailRow.module.css", "sessionTitle"),
-  statusDot: requireClass(styles.statusDot, "RailRow.module.css", "statusDot"),
-  statusSpinner: requireClass(styles.statusSpinner, "RailRow.module.css", "statusSpinner"),
   contextCard: requireClass(styles.contextCard, "RailRow.module.css", "contextCard"),
   contextHead: requireClass(styles.contextHead, "RailRow.module.css", "contextHead"),
   contextKind: requireClass(styles.contextKind, "RailRow.module.css", "contextKind"),
@@ -106,51 +105,6 @@ const CLASS = {
   loadingRow: requireClass(styles.loadingRow, "RailRow.module.css", "loadingRow"),
   overflow: requireClass(styles.overflow, "RailRow.module.css", "overflow"),
   srOnly: requireClass(styles.srOnly, "RailRow.module.css", "srOnly"),
-};
-
-// Maps hubcore's normalized session state (cmd/evener-hub/internal/hubcore/
-// tree.go's NormalizeState / the State field's own doc comment: "errored" |
-// "awaiting" | "active" | "warning" | "idle" | "ended", plus a "notLoaded"
-// fallback) onto Cadence's four-family state space. "awaiting" is exactly
-// what makes a row NeedsYou-eligible server-side, so it maps to
-// "needs-you"; "warning" has no dedicated Cadence family (attention/alive/
-// danger/neutral) and is the next rung down from "active" in
-// hubapi.AttentionRank, so it shares "needs-you" rather than downgrading to
-// neutral. Exported for direct testing - this mapping is exactly the kind
-// of one-to-many judgment call worth pinning down explicitly.
-export function cadenceStateFor(wireState: string): CadenceState {
-  switch (wireState) {
-    case "errored":
-      return "failed";
-    case "awaiting":
-    case "warning":
-    case "restartRequired":
-      return "needs-you";
-    case "active":
-      return "working";
-    case "ended":
-      return "ended";
-    default: // "idle", "notLoaded", "", and any future/unknown value
-      return "idle";
-  }
-}
-
-// The Cadence states worth spending a dot on: a row is working, a human is
-// needed, or something failed. idle/ended are deliberately absent - a sidebar
-// full of identical grey dots trains the eye to ignore the one dot that
-// matters, and an EMPTY gutter beside a grey age already reads as "nothing
-// happening here" without a glyph asserting it. This is the RAIL asking for
-// less, not the widget changing: every other Cadence surface still renders all
-// five states.
-//
-const SIGNAL_STATES: ReadonlySet<CadenceState> = new Set<CadenceState>(["working", "needs-you", "failed"]);
-
-const CADENCE_LABEL: Record<CadenceState, string> = {
-  working: "Running",
-  "needs-you": "Needs you",
-  failed: "Broken",
-  ended: "Ended",
-  idle: "Idle",
 };
 
 // RowGutter is the wrapper the row's signal dot renders inside. The dot is
@@ -178,13 +132,7 @@ function Signal({ wireState }: { wireState: string }) {
   if (!SIGNAL_STATES.has(state)) return null;
   return (
     <RowGutter className={CLASS.signal} testId="rail-row-signal">
-      <span
-        role="img"
-        aria-label={CADENCE_LABEL[state]}
-        data-testid={state === "working" ? "rail-status-spinner" : "rail-status-dot"}
-        data-status={state === "working" ? undefined : state}
-        className={state === "working" ? CLASS.statusSpinner : CLASS.statusDot}
-      />
+      <SessionStatusIndicator state={state} testIdPrefix="rail" />
     </RowGutter>
   );
 }

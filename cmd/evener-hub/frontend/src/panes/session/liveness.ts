@@ -23,13 +23,10 @@ export function useSessionNow(): number {
 // (appwire/types.go's constants: idle/active/awaiting/warning/closed/
 // notLoaded/systemError - ThreadModel.status.type carries this straight
 // through, see reducer.ts) onto Cadence's four-family state space.
-// Deliberately a SEPARATE function from shell/rail/RailRow.tsx's own
-// cadenceStateFor: that one consumes hubcore.NormalizeState's ALREADY-
-// remapped output (closed->ended, systemError->errored folded in) from the
-// navigation session summary, not the raw wire vocabulary a live ThreadModel
-// carries - collapsing the raw wire vocabulary straight to CadenceState in
-// one hop here mirrors NormalizeState's own remapping without making
-// either caller depend on shell/rail's module for it.
+// Separate from shell/SessionStatusIndicator.tsx's cadenceStateFor, which
+// consumes hubcore.NormalizeState's navigation summary (closed->ended,
+// systemError->errored). A live ThreadModel carries raw wire values, so this
+// mapper mirrors that normalization without depending on the shell renderer.
 export function cadenceStateForStatus(type: string): CadenceState {
   switch (type) {
     case "systemError":

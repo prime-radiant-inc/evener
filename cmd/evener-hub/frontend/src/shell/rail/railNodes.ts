@@ -368,10 +368,8 @@ export function pinSectionDisclosureID(sectionID: string): string {
   return `pinsection:${sectionID}`;
 }
 
-// Inlined rather than imported from RailRow's cadenceStateFor: importing it
-// here would cycle railNodes.ts <-> RailRow.tsx (RailRow already imports
-// railNodes for its node types). Same two wire states RailRow's own
-// cadenceStateFor maps to Cadence's "needs-you" family.
+// The data projection uses the same needs-you family as
+// shell/SessionStatusIndicator.tsx without importing the UI renderer.
 function stateNeedsYou(state: string): boolean {
   return state === "awaiting" || state === "warning" || state === "restartRequired";
 }

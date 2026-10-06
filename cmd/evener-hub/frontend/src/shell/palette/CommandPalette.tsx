@@ -24,9 +24,9 @@ import { requireClass } from "../../widgets/internal/requireClass";
 import { useClient } from "../clientContext";
 import { openInNewTab } from "../openInNewTab";
 import { openNeedsYouSession } from "../rail/needsYouCycle";
-import { cadenceStateFor } from "../rail/RailRow";
 import { displayState } from "../rail/railNodes";
 import { navigate } from "../routing";
+import { cadenceStateFor } from "../SessionStatusIndicator";
 import { isBlocked } from "./blocked";
 import styles from "./commandpalette.module.css";
 import {
@@ -128,8 +128,7 @@ const HELP_ROWS: HelpRow[] = [
 
 // Live-row status dot: the search API's normalized state (hubcore.
 // NormalizeState) mapped onto the StatusDot widget's CadenceState via the
-// canonical mapping (shell/rail/RailRow.tsx's own cadenceStateFor - this
-// used to be a second, hand-duplicated copy of the exact same switch).
+// shared SessionStatusIndicator's cadenceStateFor mapping.
 // Pulsing alive/attention/danger dots read as "live" for
 // active/awaiting/errored, the exact set the legacy pulsed
 // (search.js:1007-1009); past rows are always "ended" (neutral). The state
