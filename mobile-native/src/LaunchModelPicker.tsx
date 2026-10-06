@@ -3,7 +3,8 @@ import { ActivityIndicator, FlatList, Platform, Pressable, TextInput, View } fro
 import { buildPickerRows } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { HubModels } from "./hubModels";
-import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
+import { Copy, ErrorMessage, styles, useColors } from "./ui";
+import { Button } from "./sheet/Grouped";
 
 export function LaunchModelPicker({
 	client,
@@ -52,14 +53,14 @@ export function LaunchModelPicker({
 					<ErrorMessage message={state.error} />
 					{state.loading && <ActivityIndicator accessibilityLabel="Loading launch models" />}
 					{state.error && (
-						<Action
+						<Button
+							text
+							label="Retry model list"
 							disabled={!client || state.loading}
 							onPress={() => {
 								void model.refresh();
 							}}
-						>
-							Retry model list
-						</Action>
+						/>
 					)}
 				</View>
 			}
