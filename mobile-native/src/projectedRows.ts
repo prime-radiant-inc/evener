@@ -178,8 +178,8 @@ export interface ActivityMember {
 
 // Tone of a steering/lifecycle notice row. "info" for every daemon steer
 // (a loop-detected or provider-failure steer included: the failure it answers
-// shows as the turn's own error), "warning" for the loop_detection, turn_limit
-// and error system events (WARNING_EVENT_KINDS), "attention" for a daemon
+// shows as the turn's own error), "warning" for the loop_detection, turn_limit,
+// interrupted and error system events (WARNING_EVENT_KINDS), "attention" for a daemon
 // warning a human should see (attentionWarningNotice: amber, spec 8.2's
 // Warning), and "system" for every other system event.
 export type NoticeTone = "info" | "warning" | "attention" | "system";
@@ -730,7 +730,9 @@ export function liveAsksFor(model: ThreadModel): ReadonlyMap<string, AskQuestion
 
 // --- notice rows ------------------------------------------------------------------
 
-const WARNING_EVENT_KINDS = new Set(["loop_detection", "turn_limit", ERROR_EVENT_KIND]);
+// interrupted: a model round that ended with streamed content or running
+// tools nobody recorded, which the web draws as a failure.
+const WARNING_EVENT_KINDS = new Set(["loop_detection", "turn_limit", "interrupted", ERROR_EVENT_KIND]);
 const PRELUDE_EVENT_KINDS = new Set(["environment"]);
 const DIAGNOSTIC_EVENT_KINDS = new Set(["round_timings"]);
 const LIFECYCLE_EVENT_KINDS = new Set([

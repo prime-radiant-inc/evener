@@ -35,7 +35,7 @@ import {
 import type { MobileTimelineItem } from "./projectedRows";
 import { readerKey } from "./readerPosition";
 import { sessionRows } from "./session/transcriptRows";
-import { groupTimeline } from "./timeline";
+import { groupTimeline, isCriticalNotice } from "./timeline";
 
 // The row adapter maps the shared projector's ProjectedEntry kinds onto the
 // native MobileTimelineItem union. D24-6 re-homed the row vocabulary and the
@@ -415,19 +415,20 @@ describe("projectedRow — item entries", () => {
 	});
 
 	// Every generated event kind gets a deliberate family, so a new kind cannot
-	// fall through to unknown-system unnoticed. interrupted has no phone family yet.
-	const UNKNOWN_FAMILY_EVENT_KINDS = new Set(["interrupted"]);
-	it.each(THREAD_ITEM_EVENT_KINDS.filter((eventKind) => !UNKNOWN_FAMILY_EVENT_KINDS.has(eventKind)))(
-		"gives generated event kind %s a family",
-		(eventKind) => {
-			const row = projectedRow(itemEntry(item({ type: "systemMessage", text: "x", eventKind })));
-			expect(row).toMatchObject({ kind: "notice", origin: "system" });
-			expect(row).not.toMatchObject({ family: "unknown-system" });
-		},
-	);
-	it.each([...UNKNOWN_FAMILY_EVENT_KINDS])("still reads %s as unknown-system", (eventKind) => {
+	// fall through to unknown-system unnoticed.
+	it.each(THREAD_ITEM_EVENT_KINDS)("gives generated event kind %s a family", (eventKind) => {
 		const row = projectedRow(itemEntry(item({ type: "systemMessage", text: "x", eventKind })));
-		expect(row).toMatchObject({ kind: "notice", origin: "system", family: "unknown-system" });
+		expect(row).toMatchObject({ kind: "notice", origin: "system" });
+		expect(row).not.toMatchObject({ family: "unknown-system" });
+	});
+
+	// A model round that ended with streamed content or running tools nobody
+	// recorded: the web draws it as a failure (CRITICAL_SYSTEM_EVENT_KINDS), so
+	// the phone reads it in the warning tone, as an error or a turn limit.
+	it("reads an interrupted round as a warning", () => {
+		const row = projectedRow(itemEntry(item({ type: "systemMessage", text: "x", eventKind: "interrupted" })));
+		expect(row).toMatchObject({ kind: "notice", origin: "system", family: "warning", tone: "warning" });
+		expect(isCriticalNotice(row as Extract<MobileTimelineItem, { kind: "notice" }>)).toBe(true);
 	});
 
 	it("maps a warning item to the attention failure row", () => {
