@@ -53,9 +53,13 @@ export async function locateSession(
 			ref,
 			revealRef,
 			title: location.session.project || "Project",
+			// A key held by several catalogs reads the first by key alone, so
+			// the read names the catalog whose project holds the session. An
+			// older hub names none, and refuses a catalog on this read.
 			params: {
 				resource: "project_page",
 				projectKey: location.project_key,
+				...(location.catalog ? { catalog: location.catalog } : {}),
 				tier: location.tier,
 			},
 		};
