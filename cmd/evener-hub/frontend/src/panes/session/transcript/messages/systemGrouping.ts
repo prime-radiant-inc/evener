@@ -28,6 +28,10 @@ export interface SystemRun {
 // lifecycle events do not coalesce").
 const MIN_GROUP_SIZE = 3;
 
+// ItemModel.eventKind is a plain string; typing the constant keeps the
+// comparison in joinsRun checked against the wire's kinds.
+const INTERRUPTED_EVENT_KIND: ThreadItemEventKind = "interrupted";
+
 // A persisted turn failure arrives as a systemMessage item carrying the wire's
 // typed "error" eventKind (appwire.ThreadItemEventKindError; the package's
 // isErrorEvent). It is the one system item that is not lifecycle churn, and
@@ -44,15 +48,12 @@ function isSystemMessage(item: ItemModel): boolean {
 // row of quiet at the cost of hiding the row a reader came for - behind a
 // summary that names the run's FIRST member, which need not be the failure at
 // all. So a failure both stays out of its neighbours' run and breaks it, and
-// so does a daemon warning a human should see (attentionWarningNotice), and so
-// does an interrupted notice (a model round that ended with output or tool
-// calls never recorded), which stays its own line as on the phone. An
-// informational warning still folds: it is the one critical kind that is not a
-// row a reader hunts for. Shared-notes snapshots stay separate under their own
+// so do a daemon warning a human should see (attentionWarningNotice) and an
+// interrupted notice (a model round whose output or tool calls were never
+// recorded), which stays its own line as on the phone. An informational
+// warning still folds. Shared-notes snapshots stay separate under their own
 // folded label. A human's Allow or Deny is a decision, not churn, so it stays
 // in view too.
-const INTERRUPTED_EVENT_KIND: ThreadItemEventKind = "interrupted";
-
 function joinsRun(item: ItemModel): boolean {
   return (
     isSystemMessage(item) &&
