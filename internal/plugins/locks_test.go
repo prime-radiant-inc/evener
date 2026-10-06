@@ -394,3 +394,27 @@ func TestLockClone_AWaiterOutlivesTheLockFilesRemoval(t *testing.T) {
 		t.Fatalf("the third taker's wait was not logged: %q", stderr.String())
 	}
 }
+
+// A clone lock taken for the first time is taken once: the lock file is made
+// before the wait, so the first grant is on the file at the path.
+func TestLockClone_AFirstLockIsTakenOnce(t *testing.T) {
+	m := NewManager(t.TempDir())
+	realFlock := lockFlock
+	t.Cleanup(func() { lockFlock = realFlock })
+	grants := 0
+	lockFlock = func(fd int, how int) error {
+		err := realFlock(fd, how)
+		if err == nil && how == lockOpExclusiveNB {
+			grants++
+		}
+		return err
+	}
+	release, err := m.lockClone(context.Background(), m.marketplaceDir("acme"))
+	if err != nil {
+		t.Fatalf("lockClone: %v", err)
+	}
+	release()
+	if grants != 1 {
+		t.Fatalf("a first clone lock was granted %d times, want once", grants)
+	}
+}

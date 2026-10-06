@@ -267,12 +267,21 @@ func (m *Manager) fastForwardMarketplace(ctx context.Context, name, dir string) 
 }
 
 // sourcePinned reports whether ref's source pins its catalog to one commit:
-// a sha, or a ref that names a tag or a commit rather than a branch its clone
-// tracks. That is the source's own, whatever state its clone is in, so a
+// a sha, or a ref that names a tag or a commit rather than a branch
+// (gitRefNamesBranch). That is the source's own, whatever state its clone is in, so a
 // pinned clone moved onto a branch is still pinned and a branch clone left
 // detached is not. Nothing upstream changes what a pinned clone holds.
 func sourcePinned(ctx context.Context, ref MarketplaceRef) bool {
-	return ref.Source.Sha != "" || ref.Source.Ref != "" && !gitTracksBranch(ctx, ref.InstallLocation, ref.Source.Ref)
+	if ref.Source.Sha != "" {
+		return true
+	}
+	if ref.Source.Ref == "" {
+		return false
+	}
+	// A branch check that fails (a broken clone, a cancelled check) is no
+	// pin: the refresh is attempted and warns of what fails.
+	branch, err := gitRefNamesBranch(ctx, ref.InstallLocation, ref.Source.Ref)
+	return err == nil && !branch
 }
 
 // upgradeSource is plugin's source in marketplace's local catalog, parsing each

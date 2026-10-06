@@ -3133,3 +3133,60 @@ func TestRefreshMarketplace_AnUpperCaseShaPinIsIntact(t *testing.T) {
 		t.Fatalf("refreshing an intact upper-case sha pin reported %v, want no change", *reports)
 	}
 }
+
+// A ref that names both a tag and a branch other than the default is checked
+// out at the tag, as git checkout resolves it, so it is a pin: an intact
+// clone at the tag is left as it is.
+func TestRefreshMarketplace_ARefNamingATagAndABranchIsTheTagsPin(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	repo := makeMarketplaceRepo(t, "shadowed")
+	gitIn(t, repo, "tag", "rel")
+	tagged := gitIn(t, repo, "rev-parse", "HEAD")
+	gitIn(t, repo, "branch", "rel")
+	gitIn(t, repo, "checkout", "--quiet", "rel")
+	advanceGitRepo(t, repo, "README.md", "on the rel branch")
+	gitIn(t, repo, "checkout", "--quiet", "-")
+	m := NewManager(t.TempDir())
+	ref, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: repo, Ref: "rel"})
+	if err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	if got := gitIn(t, ref.InstallLocation, "rev-parse", "HEAD"); got != tagged {
+		t.Fatalf("the clone checked out %s, want the tag's %s (the fixture assumes checkout prefers the tag)", got, tagged)
+	}
+	reports := recordStoreChanges(m)
+	if err := m.RefreshMarketplace(context.Background(), "shadowed"); err != nil {
+		t.Fatalf("RefreshMarketplace: %v", err)
+	}
+	if len(*reports) != 0 {
+		t.Fatalf("refreshing an intact tag pin reported %v, want no change", *reports)
+	}
+	if got := gitIn(t, ref.InstallLocation, "rev-parse", "HEAD"); got != tagged {
+		t.Fatalf("HEAD after refresh = %s, want the tag's %s", got, tagged)
+	}
+}
+
+// A clone whose branch check fails for a reason other than a missing ref is
+// not taken for pinned: the check refreshes it and warns of the failure.
+func TestCheckUpdates_ABranchCheckThatFailsIsNotAPin(t *testing.T) {
+	f := installURLPlugin(t, unpinned)
+	mk, err := f.m.loadMarketplaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := mk["acme"]
+	ref.Source.Ref = "main"
+	mk["acme"] = ref
+	if err := f.m.writeMarketplaces(mk); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ref.InstallLocation, ".git", "config"), []byte("[broken"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	checkThenList(t, f.m)
+	if w := f.warnings(); !strings.Contains(w, `refreshing marketplace "acme"`) {
+		t.Fatalf("a marketplace whose branch check failed was skipped without a warning: %q", w)
+	}
+}

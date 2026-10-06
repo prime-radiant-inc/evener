@@ -2,6 +2,7 @@ package plugins
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -137,14 +138,34 @@ func gitFastForward(ctx context.Context, dir string) error {
 	return err
 }
 
-// gitTracksBranch reports whether the clone at dir tracks a branch of its
-// remote named name; a tag or a commit is not one.
-func gitTracksBranch(ctx context.Context, dir, name string) bool {
-	if guardGitArg("ref", name) != nil {
-		return false
+// gitRefNamesBranch reports whether name, checked out in the clone at dir,
+// names a branch of its remote rather than a tag or a commit. It resolves as
+// git checkout does in a fresh clone: a tag wins over a branch of the same
+// name, except the remote's default branch, which the clone already has.
+func gitRefNamesBranch(ctx context.Context, dir, name string) (bool, error) {
+	if err := guardGitArg("ref", name); err != nil {
+		return false, err
 	}
-	_, err := gitRun(ctx, dir, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/"+name)
-	return err == nil
+	branch, err := gitRefExists(ctx, dir, "refs/remotes/origin/"+name)
+	if err != nil || !branch {
+		return false, err
+	}
+	tag, err := gitRefExists(ctx, dir, "refs/tags/"+name)
+	if err != nil || !tag {
+		return true, err
+	}
+	head, err := gitRun(ctx, dir, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD")
+	return err == nil && strings.TrimSpace(head) == "refs/remotes/origin/"+name, nil
+}
+
+// gitRefExists reports whether ref exists in the clone at dir. Git's exit
+// status 1 says it does not; any other failure is an error.
+func gitRefExists(ctx context.Context, dir, ref string) (bool, error) {
+	_, err := gitRun(ctx, dir, "rev-parse", "--verify", "--quiet", ref)
+	if exitErr := (*exec.ExitError)(nil); errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		return false, nil
+	}
+	return err == nil, err
 }
 
 // gitResolveCommit answers the commit rev names in the clone at dir.

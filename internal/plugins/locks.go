@@ -125,8 +125,19 @@ func (m *Manager) lockClone(ctx context.Context, dir string) (func(), error) {
 // it, so a waiter can be granted the lock on the deleted file while a later
 // taker creates and locks a new one; each would think it held the lock. So
 // the file at path is looked up before the wait and again once the lock is
-// granted, and a lock on any other file is let go and taken again.
+// granted, and a lock on any other file is let go and taken again. The file
+// is made first, so a first lock has one to compare and is taken once, and
+// the passes share one 30s wait.
 func acquireLockAtPath(ctx context.Context, path string) (func(), error) {
+	deadline := lockNow().Add(30 * time.Second)
+	if err := lockMkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, fmt.Errorf("creating lock parent: %w", err)
+	}
+	f, err := lockOpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, fmt.Errorf("opening lock %s: %w", path, err)
+	}
+	_ = f.Close()
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -135,12 +146,16 @@ func acquireLockAtPath(ctx context.Context, path string) (func(), error) {
 		if err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return nil, err
 		}
-		release, err := acquireLock(ctx, path, 30*time.Second)
+		remaining := deadline.Sub(lockNow())
+		if remaining <= 0 {
+			return nil, fmt.Errorf("%w (locked: %s)", errLockContention, path)
+		}
+		release, err := acquireLock(ctx, path, remaining)
 		if err != nil {
 			return nil, err
 		}
-		// A lock that found no file created the one it holds, which another
-		// taker can have deleted and replaced since; the next pass compares.
+		// A file removed and made again since the first look is another
+		// taker's; the next pass compares afresh.
 		if after, err := os.Stat(path); before != nil && err == nil && os.SameFile(before, after) {
 			return release, nil
 		}
