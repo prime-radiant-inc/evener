@@ -89,12 +89,8 @@ func TestMemoryContextWireFixtures(t *testing.T) {
 	sessionTurn, sessionItem := capture(s, "session")
 
 	// A delegate session's read-only suffix: the producer appends it only when
-	// sessionMemoryReadOnly() is true, so the fixture builds a real delegate
-	// through cfg.spawn.depth (NewSession copies it into s.depth) rather than
-	// mutating a live session's depth after construction. Production reads
-	// depth without a lock because it "is set once before the session goes live
-	// and never mutated after" (session.go), so the write this replaces was the
-	// one shape the race detector rightly watches for.
+	// sessionMemoryReadOnly() is true, so construct a delegate through
+	// cfg.spawn.depth, which NewSession copies into the immutable s.depth.
 	delegateCfg := SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: t.TempDir()}
 	delegateCfg.spawn.depth = 1
 	delegateCfg.spawn.parentSessionID = "memory-context-fixture-parent"
