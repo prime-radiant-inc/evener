@@ -1452,14 +1452,7 @@ func (jm *jobManager) grepOutput(jobID string, re *regexp.Regexp) ([]jobstore.Ma
 	}
 	path := jm.outputPathForJob(rec, jobID)
 	// Full retained scan (same budget rationale as above).
-	matches, total, err := grepOutputFile(path, re, maxJobOutputRetentionBytes)
-	if err != nil {
-		return nil, err
-	}
-	if err := checkOutputTotalForRecord(rec, total); err != nil {
-		return nil, err
-	}
-	return matches, nil
+	return grepOutputFile(path, re, maxJobOutputRetentionBytes, rec)
 }
 
 func (jm *jobManager) reconcileLostJobs() error {
@@ -2464,8 +2457,12 @@ func headOutputFileWithOpen(path string, headBytes int, total, visibleStart int6
 	return string(buf), totalBytes, truncated, nil
 }
 
-func grepOutputFile(path string, re *regexp.Regexp, limitBytes int) (matches []jobstore.Match, total int64, err error) {
-	return jobstore.GrepOutputFileLimit(path, re, limitBytes, maxJobGrepMatches, maxJobGrepLineBytes)
+// grepOutputFile greps a closed job's visible output, refusing it before any
+// scanning when its metadata total disagrees with rec.
+func grepOutputFile(path string, re *regexp.Regexp, limitBytes int, rec *jobstore.JobRecord) ([]jobstore.Match, error) {
+	return jobstore.GrepOutputFileLimit(path, re, limitBytes, maxJobGrepMatches, maxJobGrepLineBytes, func(total int64) error {
+		return checkOutputTotalForRecord(rec, total)
+	})
 }
 
 func cloneJobRecord(rec *jobstore.JobRecord) *jobstore.JobRecord {

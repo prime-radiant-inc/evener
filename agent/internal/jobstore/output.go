@@ -678,15 +678,17 @@ func readOutputFileView(path string) (outputView, error) {
 
 // GrepOutputFileLimit greps a closed output file's visible bytes, reporting
 // lifetime offsets, with the same bounded line handling as
-// OutputStore.GrepLimitLineBytes. It also returns the output's lifetime total,
-// so a caller can check it against the job record without reading the
-// metadata a second time.
-func GrepOutputFileLimit(path string, re *regexp.Regexp, limitBytes int, maxMatches int, maxLineBytes int) (matches []Match, total int64, err error) {
+// OutputStore.GrepLimitLineBytes. checkTotal sees the file's lifetime total
+// before any scanning and can refuse it.
+func GrepOutputFileLimit(path string, re *regexp.Regexp, limitBytes int, maxMatches int, maxLineBytes int, checkTotal func(total int64) error) ([]Match, error) {
 	view, err := readOutputFileView(path)
 	if err != nil {
-		return nil, 0, err
+		return nil, err
 	}
-	matches, err = grepFileLimitAtOpen(path, re, limitBytes, maxMatches, maxLineBytes, view.visibleStart, func(path string) (io.ReadCloser, error) {
+	if err := checkTotal(view.total); err != nil {
+		return nil, err
+	}
+	return grepFileLimitAtOpen(path, re, limitBytes, maxMatches, maxLineBytes, view.visibleStart, func(path string) (io.ReadCloser, error) {
 		f, err := os.Open(path)
 		if err != nil {
 			return nil, err
@@ -697,7 +699,6 @@ func GrepOutputFileLimit(path string, re *regexp.Regexp, limitBytes int, maxMatc
 		}
 		return f, nil
 	})
-	return matches, view.total, err
 }
 
 // RemoveOutputArtifacts removes an output file and the metadata files that
