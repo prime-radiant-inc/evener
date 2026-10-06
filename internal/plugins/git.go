@@ -139,23 +139,15 @@ func gitFastForward(ctx context.Context, dir string) error {
 }
 
 // gitRefNamesBranch reports whether name, checked out in the clone at dir,
-// names a branch of its remote rather than a tag or a commit. It resolves as
-// git checkout does in a fresh clone: a tag wins over a branch of the same
-// name, except the remote's default branch, which the clone already has.
+// names a branch rather than a tag or a commit: whether checkout left a local
+// branch of that name. A fresh clone has one only for its remote's default
+// branch; checkout makes one for any other branch unless a tag of the same
+// name shadows it, and detaches at the tag instead.
 func gitRefNamesBranch(ctx context.Context, dir, name string) (bool, error) {
 	if err := guardGitArg("ref", name); err != nil {
 		return false, err
 	}
-	branch, err := gitRefExists(ctx, dir, "refs/remotes/origin/"+name)
-	if err != nil || !branch {
-		return false, err
-	}
-	tag, err := gitRefExists(ctx, dir, "refs/tags/"+name)
-	if err != nil || !tag {
-		return true, err
-	}
-	head, err := gitRun(ctx, dir, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD")
-	return err == nil && strings.TrimSpace(head) == "refs/remotes/origin/"+name, nil
+	return gitRefExists(ctx, dir, "refs/heads/"+name)
 }
 
 // gitRefExists reports whether ref exists in the clone at dir. Git's exit
