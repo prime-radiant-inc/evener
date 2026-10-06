@@ -20,6 +20,7 @@
     "spawnguard": "node scripts/spawnguard/run.mjs",
     "transcriptscrollguard": "node scripts/transcriptscrollguard/run.mjs",
     "mermaidguard": "node scripts/mermaidguard/run.mjs",
+    "memoryguard": "node scripts/memoryguard/run.mjs",
     "retirementguard": "cd ../../.. && go test ./cmd/evener-hub -run '^TestRetirementBrowser$' -count=1 -args -retirement-browser",
     "generate:mermaid-fixtures": "node scripts/gen-mermaid-fixtures.mjs"
   },

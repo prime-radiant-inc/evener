@@ -113,8 +113,9 @@ export default defineConfig({
       // file outside the allow list. The daemon's recorded notification frames
       // (agent/testdata/notificationwire), its system events and steers
       // (agent/testdata/systemeventwire), its tool calls
-      // (agent/testdata/toolwire) and its subagent calls
-      // (agent/testdata/subagentwire) reach the same suites the same way,
+      // (agent/testdata/toolwire), its subagent calls
+      // (agent/testdata/subagentwire) and its automatic memory refreshes
+      // (agent/testdata/memorycontextwire) reach the same suites the same way,
       // through the package's testing/*WireFixtures.ts loaders.
       allow: [
         searchForWorkspaceRoot(__dirname),
@@ -125,6 +126,7 @@ export default defineConfig({
         path.join(__dirname, "..", "..", "..", "agent", "testdata", "systemeventwire"),
         path.join(__dirname, "..", "..", "..", "agent", "testdata", "toolwire"),
         path.join(__dirname, "..", "..", "..", "agent", "testdata", "subagentwire"),
+        path.join(__dirname, "..", "..", "..", "agent", "testdata", "memorycontextwire"),
       ],
     },
     proxy: {

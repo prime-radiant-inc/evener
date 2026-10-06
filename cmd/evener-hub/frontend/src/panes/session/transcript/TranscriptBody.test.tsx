@@ -1368,10 +1368,9 @@ test.each([
     context: { ...response.context, availability: "retained" },
     scope: "session",
   }));
-  client.on("evener/thread/activity/read", () => ({
-    ...activitySummary(response.context.ref),
+  client.on("evener/thread/activity/read", ({ scope }) => ({
+    ...activitySummary(response.context.ref, scope),
     context: response.context,
-    scope: "session",
   }));
   client.on("evener/thread/jobs/list", () => ({
     context: response.context,

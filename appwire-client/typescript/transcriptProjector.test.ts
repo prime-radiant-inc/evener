@@ -1112,3 +1112,32 @@ describe("transcript projector", () => {
     ]);
   });
 });
+
+// --- automatic memory refresh (eventKind "memory-context") ------------------
+// The refresh is a standalone collapsed notification a reader can always
+// reach: visible at every level independently of the system-events gate, and
+// opted out of the expand-everything (Full) disclosure baseline. Both are
+// shared projector rules, so the native client keeps seeing the same generic
+// system notice the web's renderer replaces.
+
+describe("memory refresh projection", () => {
+  function memoryItem(): ItemModel {
+    return item("item_memory_context_0", "systemMessage", {
+      eventKind: "memory-context",
+      description: "Memory context",
+      text: "Memory scope personal, current index state current",
+    });
+  }
+
+  test("stays a visible item entry at every preset, even with system events off", () => {
+    for (const level of ["chat", "intent", "tools", "activity", "full"] as const) {
+      const entries = entriesFor(threadWith(memoryItem()), preset(level));
+      expect(entries).toEqual([expect.objectContaining({ kind: "item", id: "item_memory_context_0" })]);
+    }
+  });
+
+  test("is not an eligible-disclosure id, so no general baseline can open it", () => {
+    const projection = projectThread(threadWith(memoryItem()), preset("full"));
+    expect(projection.eligibleDisclosureIds).not.toContain("item_memory_context_0");
+  });
+});

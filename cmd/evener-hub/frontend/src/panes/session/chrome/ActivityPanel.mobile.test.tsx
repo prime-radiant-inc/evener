@@ -53,8 +53,7 @@ afterEach(() => {
 function connectActivity() {
   const client = activityClient();
   client.on("evener/thread/activity/read", ({ ref, scope }) => ({
-    ...activitySummary(ref),
-    scope: scope ?? "session",
+    ...activitySummary(ref, scope),
     delegates: { known: true, total: 1, active: 0, failed: 0, completed: 1 },
     jobs: { known: true, total: 4, active: 2, failed: 1, completed: 1 },
     watches: { known: true, total: 3, active: 3, failed: 0, completed: 0 },

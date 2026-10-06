@@ -81,6 +81,8 @@ interface ResourceRead {
   boundary: string | undefined;
   refresh: RefreshWalk | null;
   pace: { handle: unknown; resume(): void } | null;
+  /** Bumped when the last observer leaves; a read begun before it is dropped. */
+  releases: number;
 }
 const resources: readonly SessionActivityResource[] = ["summary", "delegates", "jobs", "watches"];
 const defaultClock: SessionActivityClock = {
@@ -117,6 +119,7 @@ const resourceRead = (): ResourceRead => ({
   boundary: undefined,
   refresh: null,
   pace: null,
+  releases: 0,
 });
 
 /** Owns one session/scope/connection lifetime. Results from a disposed owner
@@ -208,13 +211,18 @@ export class SessionActivityStore {
       if (this.disposed) return;
       read.observers -= 1;
       if (read.observers === 0) {
+        // Whoever asked for the collection's reads has gone, explicit loads
+        // included: the read in flight drops its reply, and nothing queued
+        // behind it or walking on after it runs, so a store another holder
+        // keeps alive takes in no closed view's late page.
+        read.releases += 1;
         this.cancelTimer(read);
-        if (!read.oneShot) {
-          this.cancelPace(read);
-          read.rootQueued = false;
-          read.pageQueued = false;
-          if (!read.inFlight) this.change(resource, { pending: false });
-        }
+        this.cancelPace(read);
+        read.rootQueued = false;
+        read.pageQueued = false;
+        read.oneShot = false;
+        if (read.refresh) read.refresh.advance = false;
+        this.change(resource, { pending: false });
       }
       this.releaseIdle();
     };
@@ -379,16 +387,21 @@ export class SessionActivityStore {
       }
       const cursor = root ? undefined : read.cursor;
       let generation = this.generation;
+      const releases = read.releases;
+      // A read is stale once the store is disposed, its context is replaced,
+      // or its collection's last observer leaves (even from a listener during
+      // one of this read's own publishes): from then on nothing it does lands.
+      const stale = () => this.disposed || generation !== this.generation || releases !== read.releases;
       const statusRevision = this.statusRevision;
       try {
         this.lease ??= acquireThreadSubscription(this.client, this.ref);
         await this.lease.ensure();
-        if (this.disposed || generation !== this.generation || this.client.state !== "ready") continue;
+        if (stale() || this.client.state !== "ready") continue;
         const result = await this.fetch(resource, cursor);
-        if (this.disposed || generation !== this.generation) continue;
+        if (stale()) continue;
         if (result.scope !== this.scope) throw new Error("Session activity response belongs to another scope");
         generation = this.acceptContext(result.context, resource);
-        if (this.disposed || generation !== this.generation) continue;
+        if (stale()) continue;
         if (resource === "summary") {
           const summary = result as SessionActivitySummary;
           const unavailable = (summary.issues?.length ?? 0) > 0;
@@ -405,7 +418,7 @@ export class SessionActivityStore {
               permanent: false,
             },
           });
-          if (this.disposed || generation !== this.generation) continue;
+          if (stale()) continue;
           if (unavailable) {
             read.failures += 1;
             this.retry(resource);
@@ -472,8 +485,9 @@ export class SessionActivityStore {
             unavailable: false,
             permanent: false,
           });
-          if (this.disposed || generation !== this.generation) continue;
+          if (stale()) continue;
           this.publish({ context: page.context, runtime: this.runtimeFor(page.context, statusRevision) });
+          if (stale()) continue;
           // Collection reads can warm retained count indexes without emitting
           // a notification. Refresh an observed unknown count after useful
           // progress, paced and coalesced across pages, without scanning merely
@@ -507,7 +521,7 @@ export class SessionActivityStore {
           }
         }
       } catch (error) {
-        if (this.disposed || generation !== this.generation) continue;
+        if (stale()) continue;
         if (error instanceof WireError && error.evenerErrorInfo === "sessionActivityCursorStale" && cursor) {
           read.cursor = undefined;
           read.refresh = null;
@@ -524,7 +538,7 @@ export class SessionActivityStore {
         } else {
           this.change(resource, update);
         }
-        if (this.disposed || generation !== this.generation) continue;
+        if (stale()) continue;
         if (!permanent) this.retry(resource, cursor ? "page" : "root");
       }
     }
