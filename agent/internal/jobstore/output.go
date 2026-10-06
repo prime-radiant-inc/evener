@@ -1129,6 +1129,11 @@ func readExpandedPendingOutputMeta(fs afero.Fs, finalMetaPath string, outputPath
 // from there, and readers see only from where the compacted file will start.
 func pendingOverOldFile(pending, final outputMeta, fileSize int64, hash string) outputMeta {
 	visibleStart, visiblePartial := pending.RetainedStart, outputMetaRetainedStartPartial(pending)
+	// The visible start never moves back: a compaction under a larger cap than
+	// hid the old file's bytes keeps more than readers were already shown.
+	if previous := outputViewOf(final); previous.visibleStart > visibleStart {
+		visibleStart, visiblePartial = previous.visibleStart, previous.visiblePartial
+	}
 	pending.RetainedStart = pending.TotalBytes - fileSize
 	pending.RetainedStartPartial = new(outputMetaRetainedStartPartial(final))
 	pending.RetainedSHA256 = hash
