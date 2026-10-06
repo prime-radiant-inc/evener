@@ -427,8 +427,7 @@ describe("each tool's evidence, as the tools print it", () => {
 		]);
 	});
 
-	// A skill's instructions as the phone shows them, so a test reads what its
-	// markdown turns into.
+	// A skill's instructions as the phone shows them.
 	const skillMarkdown = (instructions: string) => {
 		const loaded = `<skill-context>\n${JSON.stringify({ name: "diagrams", instructions })}\n</skill-context>`;
 		const [shown] = stepEvidence({ label: "use_skill", detail: { output: loaded } });
