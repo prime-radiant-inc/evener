@@ -2,6 +2,7 @@ import {
 	type ActivityTree,
 	type EvenerDelegateInfo,
 	itemIdentityMatches,
+	MEMORY_CONTEXT_EVENT_KIND,
 	type TurnModel,
 } from "@evener/appwire-client";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
@@ -16,9 +17,10 @@ import type { MobileTimelineItem } from "./projectedRows";
 import type { NativeFileOpenContext } from "./reader/markdownFileReferences";
 import { useMinuteClock } from "./session/minuteClock";
 import { useNowPastQuiet } from "./session/quietClock";
-import { rowDisclosureIds } from "./session/disclosureKeys";
+import { memoryContextSourceDisclosureId, rowDisclosureIds } from "./session/disclosureKeys";
 import type { ErrorAction } from "./session/errorAction";
 import { ErrorRow } from "./session/ErrorRow";
+import { MemoryContextBody } from "./session/MemoryContextBody";
 import { NotificationCards } from "./session/NotificationCards";
 import { ApprovalHistory } from "./session/ApprovalHistory";
 import { QuestionHistory } from "./session/QuestionHistory";
@@ -112,9 +114,14 @@ export function TimelineItem({
 	const label = item.kind === "notice" ? noticeLabel(item) : undefined;
 	const noticeText = useMemo(() => {
 		if (item.kind !== "notice") return undefined;
-		if (!expanded || item.origin !== "system" || item.eventKind !== "notes-context" || !sourceTurns) return item.text;
-		// List rows stay bounded. Only an opened notes disclosure reads the
-		// full opaque payload from the canonical model already held by the store.
+		// List rows stay bounded. An opened disclosure whose recorded text can
+		// exceed that bound - a shared-notes snapshot or an automatic memory
+		// refresh - reads the full original from the canonical model the store
+		// already holds: the row's own text is a truncated display copy, so the
+		// literal Source (and a malformed refresh's fallback) stays complete.
+		const readsRetainedOriginal =
+			item.origin === "system" && (item.eventKind === "notes-context" || item.eventKind === MEMORY_CONTEXT_EVENT_KIND);
+		if (!expanded || !readsRetainedOriginal || !sourceTurns) return item.text;
 		return (
 			sourceTurns.find((turn) => turn.id === item.turnId)?.items.find((source) => itemIdentityMatches(source, item))
 				?.text ?? item.text
@@ -193,7 +200,15 @@ export function TimelineItem({
 				/>
 			) : (
 				<SystemEvent label={label} text={noticeText} hint={item.hint} expanded={expanded} onToggle={toggle}>
-					{item.rendersMarkdown ? <MarkdownResponse markdown={item.text} /> : undefined}
+					{item.eventKind === MEMORY_CONTEXT_EVENT_KIND ? (
+						<MemoryContextBody
+							observation={item.memoryContext}
+							source={noticeText ?? item.text}
+							sourceDisclosureId={memoryContextSourceDisclosureId(hubId, sessionRef, item)}
+						/>
+					) : item.rendersMarkdown ? (
+						<MarkdownResponse markdown={item.text} />
+					) : undefined}
 				</SystemEvent>
 			);
 			break;

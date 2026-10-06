@@ -50,6 +50,7 @@
     "housekeepingSteps.ts",
     "jobSteps.ts",
     "jobWatchSteps.ts",
+    "memoryContext.ts",
     "memorySteps.ts",
     "toolSummaries.ts",
     "transcriptSteps.ts",

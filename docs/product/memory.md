@@ -91,16 +91,22 @@ Unchanged projections are not appended again. Empty, missing and revoked states
 supersede the previous current context; unavailable storage is not presented as
 freshly read. Historical context remains recorded history.
 
-The web transcript shows each index observation as a steering-style **Refreshed
-my memory** notification. It starts collapsed at every detail level, including
-Full, and opens only through the reader's explicit choice. Expansion shows the
-scope, index state and formatted index. Unavailable and revoked states remain
-visible on the collapsed row; truncated indexes retain their truncation label.
-Source access preserves the complete recorded text, including content Markdown
-cannot display. An observation that cannot be decoded opens as its original text.
-Disclosure choices belong to the session and item and survive remounts. Live and
-reloaded history use the same projection without changing model context or memory
-files. Native, CLI and TUI context presentation remains unchanged.
+Web and native transcripts show each index observation as a standalone
+**Refreshed my memory** notification. It starts collapsed at every detail level,
+including Full, with System events either on or off. General expansion defaults
+do not open it. Expansion shows the scope, index state and formatted index through
+each client's Markdown renderer. Unavailable and revoked states remain visible on
+the collapsed row; truncated indexes retain their truncation label. A separately
+folded **Source** preserves the complete recorded text, including content Markdown
+cannot display. Native resolves that original from the retained conversation when
+the row opens, so its display-size limit does not clip Source or the malformed
+fallback. Both clients use the shared payload validator; an observation
+that cannot be decoded opens as its original text without blocking later valid
+observations. Disclosure choices belong to the session and item and survive
+remounts and detail-level changes. Native stores the refresh and Source choices
+independently, also scoped by hub; folding the refresh preserves its Source
+choice. Live and reloaded history use the same projection without changing model
+context or memory files. CLI and TUI context presentation remains unchanged.
 
 Memory tool calls are separate from these automatic index observations. CLI and
 TUI transcripts still use the generic tool-result path, while AppWire web and

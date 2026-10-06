@@ -13,17 +13,17 @@
 // place checked/unchecked markers, image alt/title, escaped source and the
 // delegate read-only suffix stay inspectable.
 
-import type { ItemModel } from "@evener/appwire-client";
-import { Markdown } from "../../../../widgets";
-import { requireClass } from "../../../../widgets/internal/requireClass";
 import {
-  MEMORY_CONTEXT_EVENT_KIND,
+  type ItemModel,
+  MEMORY_CONTEXT_LABEL,
   type MemoryContextObservation,
-  type MemoryContextState,
+  memoryContextEmptyText,
   memoryContextScopeLabel,
   memoryContextStateLabel,
   parseMemoryContext,
-} from "./memoryContext";
+} from "@evener/appwire-client";
+import { Markdown } from "../../../../widgets";
+import { requireClass } from "../../../../widgets/internal/requireClass";
 import styles from "./memorycontextitem.module.css";
 import { SteeringDivider } from "./SteeringDivider";
 
@@ -39,23 +39,6 @@ const CLASS = {
   sourceSummary: requireClass(styles.sourceSummary, "memorycontextitem.module.css", "sourceSummary"),
   sourceText: requireClass(styles.sourceText, "memorycontextitem.module.css", "sourceText"),
 };
-
-export const MEMORY_CONTEXT_LABEL = "Refreshed my memory";
-
-// The empty-content note distinguishes the states without inventing data: an
-// empty current index is a real, successful read of nothing.
-function memoryContextEmptyText(state: MemoryContextState): string {
-  switch (state) {
-    case "current":
-      return "Empty index";
-    case "missing":
-      return "No memory index";
-    case "revoked":
-      return "Memory access revoked";
-    case "unavailable":
-      return "Memory index unavailable";
-  }
-}
 
 // The folded literal source: the complete recorded Text, verbatim. Native
 // <details>, collapsed by default, independent of the shared disclosure store.
@@ -137,5 +120,3 @@ export function MemoryContextDisclosure({ item, sessionRef }: { item: ItemModel;
     />
   );
 }
-
-export { MEMORY_CONTEXT_EVENT_KIND };

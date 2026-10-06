@@ -61,6 +61,12 @@ const askItem = {
 const askModel = { turns: [{ items: [askItem] }], askPending: true };
 assert.equal(client.parseAskUserQuestions(askItem)?.[0].question, "Which store?");
 assert.equal(client.parseAskUserQuestions({ argumentsJSON: "not json" }), undefined);
+assert.deepEqual(
+  client.parseMemoryContext({ memoryContext: { scope: "personal", state: "current", truncated: false, content: "x" } }),
+  { scope: "personal", state: "current", truncated: false, content: "x" },
+);
+assert.equal(client.parseMemoryContext({ memoryContext: { scope: "team" } }), undefined);
+assert.equal(client.MEMORY_CONTEXT_LABEL, "Refreshed my memory");
 assert.equal(client.liveAskQuestions(askModel)[0].key, "ask1:0");
 const counter = client.createFrameworkFreeStore((set) => ({ n: 0, bump: () => set((s) => ({ n: s.n + 1 })) })); counter.getState().bump(); assert.equal(counter.getState().n, 1);
 const disclosureStore = client.createDisclosureStore(); disclosureStore.toggle(client.scopedDisclosureId("live", "tool"), false); assert.equal(client.isDisclosureOpenIn(disclosureStore.getState(), client.scopedDisclosureId("live", "tool"), false), true);
