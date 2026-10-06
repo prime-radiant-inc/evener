@@ -606,7 +606,95 @@ describe("background thread claims", () => {
     }
   });
 
-  test("final release waits for a recorded-history update accepted during its first write", async () => {
+  test("a new background claim during the final cut write keeps later notification progress", async () => {
+    const fake = connectCurrentClient();
+    await cache.get("local:one", Date.now());
+    const background = acquireBackgroundThread("local:one");
+    await background.ready;
+    fake.emitNotification(textDelta("local:one", "-before-cut"));
+    const reached = [deferred<void>(), deferred<void>()] as const;
+    const held: ReturnType<typeof holdIndexedDBEvent>[] = [];
+    const stores = ["records", "meta", "current", "currentMeta"];
+    const originalTransaction = IDBDatabase.prototype.transaction;
+    let writeCount = 0;
+    const transactionSpy = vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (
+      this: IDBDatabase,
+      ...args: Parameters<IDBDatabase["transaction"]>
+    ) {
+      const transaction = originalTransaction.apply(this, args);
+      if (
+        transaction.mode === "readwrite" &&
+        transaction.objectStoreNames.length === stores.length &&
+        stores.every((store) => transaction.objectStoreNames.contains(store)) &&
+        writeCount < 2
+      ) {
+        const index = writeCount++;
+        const gate = holdIndexedDBEvent(transaction, "complete");
+        held[index] = gate;
+        const completion = reached[index];
+        if (!completion) throw new Error(`unexpected cache write ${index + 1}`);
+        void gate.reached.then(() => completion.resolve());
+      }
+      return transaction;
+    });
+    let replacement: ReturnType<typeof acquireBackgroundThread> | undefined;
+    try {
+      const release = background.release();
+      await reached[0].promise;
+      fake.emitNotification({
+        method: "history/updated",
+        params: {
+          ref: "local:one",
+          threadId: "thr_local:one",
+          bootGeneration: "1",
+          epoch: 1,
+          snapshot: { incarnation: "inc-1", length: 42 },
+          turns: [{ id: "turn_cut", status: "completed", itemsView: "full", version: 2 }],
+          items: [
+            {
+              type: "agentMessage",
+              id: "item_cut",
+              turnId: "turn_cut",
+              text: "pre-cut-model",
+              position: { entry: 42, item: 0 },
+            },
+          ],
+        },
+      } as AnyNotification);
+      const firstWrite = held[0];
+      if (!firstWrite) throw new Error("first cache write was not held");
+      firstWrite.release();
+      await reached[1].promise;
+      replacement = acquireBackgroundThread("local:one");
+      await replacement.ready;
+      expect(unsubscriptions(fake)).toBe(0);
+      fake.emitNotification(textDelta("local:one", "-during-cut"));
+      const secondWrite = held[1];
+      if (!secondWrite) throw new Error("second cache write was not held");
+      secondWrite.release();
+      await release;
+      fake.emitNotification(textDelta("local:one", "-after-new-claim"));
+      expect(
+        threadsStore
+          .getState()
+          .threads.get("local:one")
+          ?.turns.flatMap((turn) => turn.items)
+          .map((item) => item.text)
+          .join(""),
+      ).toContain("pre-cut-modelalpha-before-cut-during-cut-after-new-claim");
+      expect(threadsStore.getState().threads.has("local:one")).toBe(true);
+      expect(unsubscriptions(fake)).toBe(0);
+      await replacement.release();
+    } finally {
+      transactionSpy.mockRestore();
+      for (const gate of held) gate.release();
+      await replacement?.release();
+      await background.release();
+    }
+  });
+
+  test.each([true, false])("final release drains a recorded-history update, identity=%s", async (hasIdentity) => {
+    const storage = mutationStorage();
     const fake = connectCurrentClient();
     await cache.get("local:one", Date.now());
     const background = acquireBackgroundThread("local:one");
@@ -614,6 +702,13 @@ describe("background thread claims", () => {
     const reached = [deferred<void>(), deferred<void>()] as const;
     const held: ReturnType<typeof holdIndexedDBEvent>[] = [];
     const stores = ["records", "meta", "current", "currentMeta"];
+    const receiptCleanupRead = deferred<void>();
+    const originalListOptimistic = storage.listOptimistic.bind(storage);
+    const listOptimistic = vi.spyOn(storage, "listOptimistic").mockImplementation(async (ref) => {
+      const rows = await originalListOptimistic(ref);
+      if (ref === "local:one") receiptCleanupRead.resolve();
+      return rows;
+    });
     const originalTransaction = IDBDatabase.prototype.transaction;
     let writeCount = 0;
     const transactionSpy = vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (
@@ -656,12 +751,18 @@ describe("background thread claims", () => {
               type: "agentMessage",
               id: "item_final",
               turnId: "turn_final",
+              ...(hasIdentity ? { clientMutationId: "receipt-from-another-client" } : {}),
               text: "accepted-during-final-write",
               position: { entry: 41, item: 0 },
             },
           ],
         },
       } as AnyNotification);
+      if (hasIdentity) {
+        await receiptCleanupRead.promise;
+        await nextRealTask();
+      }
+      expect(threadsStore.getState().threads.has("local:one")).toBe(true);
       const firstWrite = held[0];
       if (!firstWrite) throw new Error("first cache write was not held");
       firstWrite.release();
@@ -671,12 +772,155 @@ describe("background thread claims", () => {
       if (!secondWrite) throw new Error("second cache write was not held");
       secondWrite.release();
       await release;
-      expect(JSON.stringify(await cache.get("local:one", Date.now()))).toContain("accepted-during-final-write");
+      expect(threadsStore.getState().threads.has("local:one")).toBe(false);
+      expect(unsubscriptions(fake)).toBe(1);
+      const durable = JSON.stringify(await cache.get("local:one", Date.now()));
+      expect(durable).toContain("accepted-during-final-write");
+      expect(durable.split("accepted-during-final-write")).toHaveLength(2);
     } finally {
       transactionSpy.mockRestore();
+      listOptimistic.mockRestore();
       for (const gate of held) gate.release();
       await background.release();
     }
+  });
+
+  test("final release cuts live updates at the bounded final write", async () => {
+    const fake = connectCurrentClient();
+    await cache.get("local:one", Date.now());
+    const background = acquireBackgroundThread("local:one");
+    await background.ready;
+    const emitRecorded = (length: number, text: string) => {
+      fake.emitNotification({
+        method: "history/updated",
+        params: {
+          ref: "local:one",
+          threadId: "thr_local:one",
+          bootGeneration: "1",
+          epoch: 1,
+          snapshot: { incarnation: "inc-1", length },
+          turns: [{ id: "turn_bounded", status: "completed", itemsView: "full", version: 2 }],
+          items: [
+            {
+              type: "agentMessage",
+              id: `item_bounded_${length}`,
+              turnId: "turn_bounded",
+              text,
+              position: { entry: length, item: 0 },
+            },
+          ],
+        },
+      } as AnyNotification);
+    };
+    emitRecorded(40, "before-release");
+    const gates: ReturnType<typeof holdIndexedDBEvent>[] = [];
+    const reached = [deferred<void>(), deferred<void>()] as const;
+    const stores = ["records", "meta", "current", "currentMeta"];
+    const originalTransaction = IDBDatabase.prototype.transaction;
+    let writeCount = 0;
+    const transactionSpy = vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (
+      this: IDBDatabase,
+      ...args: Parameters<IDBDatabase["transaction"]>
+    ) {
+      const transaction = originalTransaction.apply(this, args);
+      if (
+        transaction.mode === "readwrite" &&
+        transaction.objectStoreNames.length === stores.length &&
+        stores.every((store) => transaction.objectStoreNames.contains(store)) &&
+        writeCount < reached.length
+      ) {
+        const index = writeCount++;
+        const gate = holdIndexedDBEvent(transaction, "complete");
+        gates[index] = gate;
+        const completion = reached[index];
+        if (!completion) throw new Error(`unexpected cache write ${index + 1}`);
+        void gate.reached.then(() => completion.resolve());
+      }
+      return transaction;
+    });
+    try {
+      const release = background.release();
+      await reached[0].promise;
+      const firstWrite = gates[0];
+      if (!firstWrite) throw new Error("first cache write was not held");
+      firstWrite.release();
+      emitRecorded(41, "accepted-before-cut");
+      await reached[1].promise;
+      const secondWrite = gates[1];
+      if (!secondWrite) throw new Error("second cache write was not held");
+      fake.emitNotification(textDelta("local:one", "-during-final-cut"));
+      secondWrite.release();
+      fake.emitNotification(textDelta("local:one", "-at-cut-write-completion"));
+      await release;
+      expect(writeCount).toBe(2);
+      expect(threadsStore.getState().threads.has("local:one")).toBe(false);
+      expect(unsubscriptions(fake)).toBe(1);
+      const durable = JSON.stringify(await cache.get("local:one", Date.now()));
+      expect(durable).toContain("accepted-before-cut");
+      expect(durable.split("accepted-before-cut")).toHaveLength(2);
+      expect(durable).not.toContain("during-final-cut");
+      expect(durable).not.toContain("at-cut-write-completion");
+    } finally {
+      transactionSpy.mockRestore();
+      for (const gate of gates) gate.release();
+      await background.release();
+    }
+  });
+
+  test("a bounded final cache failure does not block another ref release or claim a save", async () => {
+    cache.close();
+    let failNextPut = true;
+    cache = new SessionCacheIndexedDB({
+      indexedDB: new IDBFactory(),
+      databaseName: `background-thread-failure-${crypto.randomUUID()}`,
+      beforeCommit(operation) {
+        if (operation === "put" && failNextPut) {
+          failNextPut = false;
+          throw new Error("injected final cache failure");
+        }
+      },
+    });
+    setSessionCacheAdapterForTests(cache);
+    await Promise.all([cache.get("local:one", Date.now()), cache.get("local:two", Date.now())]);
+    const fake = connectCurrentClient();
+    const first = acquireBackgroundThread("local:one");
+    const second = acquireBackgroundThread("local:two");
+    await Promise.all([first.ready, second.ready]);
+    for (const [ref, threadId, itemId] of [
+      ["local:one", "thr_local:one", "item_failure_one"],
+      ["local:two", "thr_local:two", "item_failure_two"],
+    ]) {
+      fake.emitNotification({
+        method: "history/updated",
+        params: {
+          ref,
+          threadId,
+          bootGeneration: "1",
+          epoch: 1,
+          snapshot: { incarnation: "inc-1", length: 41 },
+          turns: [{ id: `turn_${itemId}`, status: "completed", itemsView: "full", version: 2 }],
+          items: [
+            {
+              type: "agentMessage",
+              id: itemId,
+              turnId: `turn_${itemId}`,
+              text: itemId,
+              position: { entry: 41, item: 0 },
+            },
+          ],
+        },
+      } as AnyNotification);
+    }
+
+    await first.release();
+    expect(failNextPut).toBe(false);
+    expect(await cache.get("local:one", Date.now())).toBeUndefined();
+    expect(threadsStore.getState().threads.has("local:one")).toBe(false);
+
+    await second.release();
+    expect(threadsStore.getState().threads.has("local:two")).toBe(false);
+    expect(await cache.get("local:two", Date.now())).toBeDefined();
+    expect(unsubscriptions(fake)).toBe(2);
   });
 
   test("keeps the model owned until an in-flight history page finishes", async () => {

@@ -380,6 +380,11 @@ const refCounts = new Map<string, number>();
 const backgroundRefCounts = new Map<string, number>();
 const historyHoldCounts = new Map<string, number>();
 const canonicalThreadOwnerGenerations = new Map<string, number>();
+// The last background lease owns removal while its bounded final cache drain
+// is in flight. Receipt/pin cleanup may still reconcile mutations, but cannot
+// remove the model out from under that awaited drain.
+const finalReleaseOwners = new Map<string, number>();
+const finalReleaseCuts = new Map<string, number>();
 const backgroundLeaseSequences = new Map<string, number>();
 // A generation changes whenever the last real pane releases and a new pane
 // claims the ref. An ensure that fails after its pane lifecycle was retired
@@ -409,6 +414,10 @@ function canonicalThreadOwnerActive(ref: string): boolean {
 }
 
 function beginCanonicalThreadClaim(ref: string, supersedePinnedOnly = false): void {
+  if (finalReleaseCuts.delete(ref)) {
+    const model = threadsStore.getState().threads.get(ref);
+    if (model) scheduleCacheWrite(ref);
+  }
   const pinnedOnly =
     (refCounts.get(ref) ?? 0) === 0 && (backgroundRefCounts.get(ref) ?? 0) === 0 && pinnedMutationRefs.has(ref);
   if (canonicalThreadOwnerActive(ref) && !(supersedePinnedOnly && pinnedOnly)) return;
@@ -1224,7 +1233,7 @@ function currentDispatchClient(targetRef?: string, method?: string, requireArmed
 }
 
 function dropUnpinnedModel(ref: string, flush = true): void {
-  if (canonicalThreadOwnerActive(ref)) return;
+  if (canonicalThreadOwnerActive(ref) || finalReleaseOwners.has(ref)) return;
   // The pinned drain is the path a pinned ref's model finally leaves through
   // (releaseThread returns early while pinned), so the flush runs here too —
   // ordered before the model leaves the map, on the pre-removal snapshot —
@@ -5399,6 +5408,7 @@ function cancelCacheWrite(ref: string): void {
 }
 
 function scheduleCacheWrite(ref: string): void {
+  if (finalReleaseCuts.has(ref)) return;
   const existing = cacheWriteSchedules.get(ref);
   if (existing) clearTimeout(existing.trailing); // trailing debounce: reschedule
   // Whichever timer fires, it ends the burst by cancelling the schedule the
@@ -5734,6 +5744,7 @@ export function acquireBackgroundThread(ref: string): BackgroundThreadLease {
       backgroundRefCounts.delete(ref);
       const releaseGeneration = (backgroundLeaseSequences.get(ref) ?? 0) + 1;
       backgroundLeaseSequences.set(ref, releaseGeneration);
+      finalReleaseOwners.set(ref, releaseGeneration);
       if (!canonicalThreadOwnerActive(ref)) {
         // A held attempt cannot certify a released owner's final state. Retire
         // it synchronously so its late response cannot publish into a new life.
@@ -5745,16 +5756,28 @@ export function acquireBackgroundThread(ref: string): BackgroundThreadLease {
         trackedHydrationCompletions.delete(ref);
       }
       releasePromise = (async () => {
-        while (backgroundLeaseSequences.get(ref) === releaseGeneration && !canonicalThreadOwnerActive(ref)) {
-          const persistedModel = threadsStore.getState().threads.get(ref);
-          if (!persistedModel) break;
-          await flushCacheWrite(ref);
+        try {
+          const firstModel = threadsStore.getState().threads.get(ref);
+          if (firstModel) await flushCacheWrite(ref);
           if (backgroundLeaseSequences.get(ref) !== releaseGeneration || canonicalThreadOwnerActive(ref)) return;
-          if (threadsStore.getState().threads.get(ref) === persistedModel) break;
+          const acceptedThroughFirstWrite = threadsStore.getState().threads.get(ref);
+          if (firstModel && acceptedThroughFirstWrite && acceptedThroughFirstWrite !== firstModel) {
+            // Updates routed while the first bounded write was pending are on
+            // the far side of that write and belong to this final cut. This
+            // second write is the cut: later publications cannot make release
+            // chase a quiet interval, and writeCacheRecord snapshots exactly
+            // this model rather than whatever a later update produces.
+            finalReleaseCuts.set(ref, releaseGeneration);
+            await flushCacheWrite(ref);
+          }
+          if (backgroundLeaseSequences.get(ref) !== releaseGeneration || canonicalThreadOwnerActive(ref)) return;
+          if (finalReleaseOwners.get(ref) === releaseGeneration) finalReleaseOwners.delete(ref);
+          dropUnpinnedModel(ref, false);
+          syncThreadSubscription(ref);
+        } finally {
+          if (finalReleaseCuts.get(ref) === releaseGeneration) finalReleaseCuts.delete(ref);
+          if (finalReleaseOwners.get(ref) === releaseGeneration) finalReleaseOwners.delete(ref);
         }
-        if (backgroundLeaseSequences.get(ref) !== releaseGeneration || canonicalThreadOwnerActive(ref)) return;
-        dropUnpinnedModel(ref, false);
-        syncThreadSubscription(ref);
       })();
       return releasePromise;
     },
@@ -5812,6 +5835,8 @@ export function resetThreadsStoreForTests(): void {
   refCounts.clear();
   backgroundRefCounts.clear();
   historyHoldCounts.clear();
+  finalReleaseOwners.clear();
+  finalReleaseCuts.clear();
   canonicalThreadOwnerGenerations.clear();
   backgroundLeaseSequences.clear();
   ensureGenerations.clear();
