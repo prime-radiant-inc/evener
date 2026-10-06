@@ -766,6 +766,19 @@ describe("Button", () => {
 		expect(merged(label.props.style)).toMatchObject({ color: light.onFill, fontWeight: "600" });
 	});
 
+	// As the legacy Action did, so VoiceOver and the screens' tests find a text
+	// or compact primary button by its words.
+	it("names a text or compact primary button by its label unless given an accessibilityLabel", () => {
+		expect(pressable(render(<Button label="Edit" text onPress={() => {}} />)).props.accessibilityLabel).toBe("Edit");
+		expect(pressable(render(<Button label="Save" primary compact onPress={() => {}} />)).props.accessibilityLabel).toBe(
+			"Save",
+		);
+		expect(
+			pressable(render(<Button label="Edit" text accessibilityLabel="Edit Undo" onPress={() => {}} />)).props
+				.accessibilityLabel,
+		).toBe("Edit Undo");
+	});
+
 	it("dims a disabled text button and holds its press", () => {
 		const button = pressable(render(<Button label="Edit" text disabled onPress={() => {}} />));
 		expect(button.props.disabled).toBe(true);

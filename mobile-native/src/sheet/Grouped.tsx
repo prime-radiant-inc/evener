@@ -614,7 +614,7 @@ export function Button({
 		return (
 			<Pressable
 				accessibilityRole="button"
-				accessibilityLabel={accessibilityLabel}
+				accessibilityLabel={accessibilityLabel ?? label}
 				accessibilityState={{ disabled, expanded }}
 				disabled={disabled}
 				onPress={onPress}
