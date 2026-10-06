@@ -93,10 +93,8 @@ func assertOneBroadcast(t *testing.T, b *recordingBroadcaster, method string) {
 	}
 }
 
-// newScriptedAdminClient builds an initialized AppWire client backed by an
-// in-memory stream pair whose peer answers canned responses, records every
-// request, and can push notifications on demand. No SSH, no network, no host —
-// the component-05 test harness's shape, local to this package.
+// newScriptedAdminClient is a scriptedAdminRemote that answers one request
+// at a time, in order.
 func newScriptedAdminClient(
 	t *testing.T,
 	handle func(method string, params json.RawMessage) hostAdminReply,
@@ -105,11 +103,14 @@ func newScriptedAdminClient(
 	return scriptedAdminRemote(t, handle, false)
 }
 
-// scriptedAdminRemote is newScriptedAdminClient's remote. With concurrent set
-// it answers each request through handle on a goroutine of its own, so a
-// request held in handle never hides a later one and the recorded calls are
-// what the client sent, in the order it sent them; otherwise it answers one
-// request at a time, in order.
+// scriptedAdminRemote builds an initialized AppWire client backed by an
+// in-memory stream pair whose peer answers canned responses, records every
+// request, and can push notifications on demand. No SSH, no network, no host —
+// the component-05 test harness's shape, local to this package. With
+// concurrent set it answers each request through handle on a goroutine of its
+// own, so a request held in handle never hides a later one and the recorded
+// calls are what the client sent, in the order it sent them; otherwise it
+// answers one request at a time, in order.
 func scriptedAdminRemote(
 	t *testing.T,
 	handle func(method string, params json.RawMessage) hostAdminReply,
