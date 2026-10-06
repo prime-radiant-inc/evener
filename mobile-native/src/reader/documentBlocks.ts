@@ -61,8 +61,10 @@ function identity(kind: BlockKind, source: string): string {
 // A token's words, read from marked's own parse, so a link or image reads as
 // its words however its URL is written (nested parentheses, a reference, an
 // autolink), an escape as the character, and a code span as its contents.
-// Inline HTML tags go; the phone's markdown view draws an html block as text
-// (md4c's NOHTML), so an html block keeps its tags and loses its markdown.
+// Inline HTML tags go, so a comment never quotes a paragraph's <b> or <br>
+// (#2761). A whole html block's tags are its words, so it keeps them, but its
+// markdown goes: the phone's markdown view (md4c with NOHTML) draws that
+// markdown as markdown.
 function words(token: Token): string {
 	switch (token.type) {
 		case "html":
