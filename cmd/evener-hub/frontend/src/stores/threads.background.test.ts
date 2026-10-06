@@ -176,26 +176,49 @@ function occurrences(value: string, needle: string): number {
   return value.split(needle).length - 1;
 }
 
-// Two models share one logical transcript body when they are the same model or
-// carry identical payload fields, turns and overlay, ignoring only the read
-// bookkeeping generation a resync bumps.
-function transcriptBodySignature(model: ThreadModel): string | undefined {
+// A payload-field signature compares only a model's non-transcript fields by
+// value: a read may rebuild them. It is never evidence that two transcripts
+// share a body.
+function transcriptPayloadFieldsSignature(model: ThreadModel): string | undefined {
   const state = currentTranscriptState(model);
   if (!state) return undefined;
-  return JSON.stringify({
-    fields: state.fields,
-    overlay: state.overlay,
-    history: { ...state.history, issuedGeneration: 0, appliedGeneration: 0 },
-  });
+  return JSON.stringify(state.fields);
 }
 
+// Two models share one logical transcript body only when they are the same
+// model, or carry the SAME turns array and overlay object (structural sharing)
+// with unchanged payload fields. Equal serialized content alone is not sharing:
+// independently retained equal-text bodies must not be deduplicated.
 function sharesTranscriptBody(base: ThreadModel, canonical: ThreadModel): boolean {
   if (base === canonical) return true;
-  const baseSignature = transcriptBodySignature(base);
-  return baseSignature !== undefined && baseSignature === transcriptBodySignature(canonical);
+  if (base.history === undefined || canonical.history === undefined) return false;
+  if (base.history.turns !== canonical.history.turns) return false;
+  if (base.overlay !== canonical.overlay) return false;
+  const baseFields = transcriptPayloadFieldsSignature(base);
+  return baseFields !== undefined && baseFields === transcriptPayloadFieldsSignature(canonical);
 }
 
 describe("background thread claims", () => {
+  test("sharesTranscriptBody requires shared identity, not equal serialized content", () => {
+    const model = hydrateThread(currentRead("local:identity"), "local:identity", 1);
+    const history = model.history;
+    if (!history) throw new Error("expected the fixture to carry a recorded history");
+    const sameContentClone: ThreadModel = {
+      ...model,
+      history: { ...history, turns: [...history.turns] },
+      overlay: { ...model.overlay },
+    };
+    // Identical serialized content, but independent turns/overlay containers.
+    expect(currentTranscriptState(sameContentClone)).toEqual(currentTranscriptState(model));
+    expect(sameContentClone).not.toBe(model);
+    expect(sameContentClone.history?.turns).not.toBe(history.turns);
+    expect(sameContentClone.overlay).not.toBe(model.overlay);
+    // Only the same model, or a genuinely shared turns array and overlay, share.
+    expect(sharesTranscriptBody(model, model)).toBe(true);
+    expect(sharesTranscriptBody({ ...model, history }, model)).toBe(true);
+    expect(sharesTranscriptBody(sameContentClone, model)).toBe(false);
+  });
+
   test("last owner release cancels a queued real-client read before it can issue", async () => {
     vi.useFakeTimers();
     const socket = new FakeSocket({ autoInitialize: true });
@@ -1334,6 +1357,7 @@ describe("background thread claims", () => {
       const measured = accountRetainedInventory(threadsStore.getState());
       expect(measured.chargedBytes, label).toBeGreaterThanOrEqual(measured.retainedBytes);
       expect(coverageFailures, `${label}: subscriber coverage`).toEqual([]);
+      expect(workerObserverFailures, `${label}: worker observer coverage`).toEqual([]);
     };
     const observeAccounting = threadsStore.subscribe((state) => {
       if (foregroundPromotion) return;
@@ -1344,25 +1368,35 @@ describe("background thread claims", () => {
       }
     });
     // The worker-boundary observer sees the folded worker model and the exact
-    // record it is about to write, which the store and cache ports cannot.
+    // record it is about to write, which the store and cache ports cannot. Its
+    // checks must not throw: the callback runs inside persist, whose rejection
+    // runWorker converts into a storage revoke, so a thrown failure would be
+    // swallowed. Record failures out of band and assert them at the test
+    // boundary, exactly as the subscriber does, and always record the
+    // checkpoint so batch-shape checks still run.
+    const workerObserverFailures: unknown[] = [];
     const restoreWorkerObserver = observeWorkerCheckpointsForTests((observation) => {
       const snapshot = backgroundTranscriptSnapshotForTests();
-      const modelState = currentTranscriptState(observation.model);
-      expect(modelState, `worker model ${observation.ref} has a recorded state`).toBeDefined();
-      const stateBytes = independentJsonBytes(modelState);
-      const recordBytes = independentJsonBytes(observation.record);
-      expect(stateBytes).toBe(encodedPayloadBytes(modelState));
-      expect(independentJsonBytes(observation.record.state)).toBe(stateBytes);
-      expect(recordBytes).toBe(encodedPayloadBytes(observation.record));
-      expect(recordBytes).toBeGreaterThanOrEqual(stateBytes);
-      // The larger model-state/record encoding is charged exactly once.
-      expect(snapshot.workerBytes).toBe(recordBytes);
-      const ownership = snapshot.refs.get(observation.ref);
-      if (observation.resident && observation.resident !== observation.model) {
-        const residentBytes = independentJsonBytes(currentTranscriptState(observation.resident));
-        expect(ownership?.residentBytes ?? 0, `worker starting body ${observation.ref}`).toBeGreaterThanOrEqual(
-          residentBytes,
-        );
+      try {
+        const modelState = currentTranscriptState(observation.model);
+        expect(modelState, `worker model ${observation.ref} has a recorded state`).toBeDefined();
+        const stateBytes = independentJsonBytes(modelState);
+        const recordBytes = independentJsonBytes(observation.record);
+        expect(stateBytes).toBe(encodedPayloadBytes(modelState));
+        expect(independentJsonBytes(observation.record.state)).toBe(stateBytes);
+        expect(recordBytes).toBe(encodedPayloadBytes(observation.record));
+        expect(recordBytes).toBeGreaterThanOrEqual(stateBytes);
+        // The larger model-state/record encoding is charged exactly once.
+        expect(snapshot.workerBytes).toBe(recordBytes);
+        const ownership = snapshot.refs.get(observation.ref);
+        if (observation.resident && observation.resident !== observation.model) {
+          const residentBytes = independentJsonBytes(currentTranscriptState(observation.resident));
+          expect(ownership?.residentBytes ?? 0, `worker starting body ${observation.ref}`).toBeGreaterThanOrEqual(
+            residentBytes,
+          );
+        }
+      } catch (error) {
+        workerObserverFailures.push(error);
       }
       workerCheckpoints.push({ ref: observation.ref, batchLength: observation.batch.length });
     });
@@ -1598,6 +1632,8 @@ describe("background thread claims", () => {
         threadsStore.getState().threads.get("local:two")?.overlay?.["stream:s1:agentMessage"]?.item.text,
       ).toContain("x".repeat(1024));
       expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(readsBeforePromotion);
+      expect(coverageFailures, "subscriber coverage").toEqual([]);
+      expect(workerObserverFailures, "worker observer coverage").toEqual([]);
     } finally {
       one.resolve(currentRead("local:one"));
       two.resolve(currentRead("local:two"));
