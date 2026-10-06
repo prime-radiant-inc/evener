@@ -41,7 +41,8 @@ A scenario dir holds scenario.json and fixture/. scenario.json:
                "final": [{"name": "...", "regex": "against the last message to the partner"}]}]}
 
 Each trial lives in OUTDIR/<version>/<arm>/<scenario>/r<N>/ with work/ (the
-checkout, stable across stages; a symlink to the real checkout under --work-root), xdg/ (XDG_STATE_HOME, so memory is isolated),
+checkout, stable across stages; a symlink to the real checkout under --work-root), xdg/ (XDG_STATE_HOME, so memory is isolated;
+also a symlink under --work-root),
 and per stage: <S>.events.ndjson, <S>.stdout, <S>.grade.json, <S>.memory/.
 Full logs stay on disk; the report prints only the summary.
 """
@@ -91,7 +92,7 @@ def run_bounded(cmd, cwd, env, timeout, stdout=None, stderr=None):
 def fixture_env(work, xdg):
     env = dict(os.environ)
     env.update({"GOWORK": "off", "GIT_CEILING_DIRECTORIES": os.path.dirname(work),
-                "XDG_STATE_HOME": xdg, "EVENER_NO_USER_SKILLS": "1",
+                "XDG_STATE_HOME": os.path.realpath(xdg), "EVENER_NO_USER_SKILLS": "1",
                 "GIT_AUTHOR_NAME": GIT_NAME, "GIT_AUTHOR_EMAIL": GIT_EMAIL,
                 "GIT_COMMITTER_NAME": GIT_NAME, "GIT_COMMITTER_EMAIL": GIT_EMAIL})
     return env
@@ -185,6 +186,18 @@ def workdir_path(args, trial, name, fixture, workdirs):
     os.symlink(real, os.path.join(trial, name))
     workdirs[name] = real
     return real
+
+
+def make_state_dir(args, trial, work):
+    """Creates trial/xdg, the trial's XDG_STATE_HOME. Under --work-root it is a symlink to
+    DIR/.state/<workspace name>, since memory tool results show its path to the agent."""
+    xdg = os.path.join(trial, "xdg")
+    if not args.work_root:
+        os.makedirs(xdg)
+        return
+    real = os.path.join(os.path.realpath(args.work_root), ".state", os.path.basename(work))
+    os.makedirs(real)
+    os.symlink(real, xdg)
 
 
 def make_workspace(fixture, work, xdg):
@@ -507,9 +520,11 @@ def run_trial(args, label, binpath, arm, scen, rep):
     spec = load_scenario(scen)
     grades, failure, session_ids, workdirs = [], None, {}, {}
     try:
-        os.makedirs(os.path.join(trial, "xdg"))
+        os.makedirs(trial)
         fixture = base_fixture(scen, spec)
-        make_workspace(fixture, workdir_path(args, trial, "work", fixture, workdirs), os.path.join(trial, "xdg"))
+        work = workdir_path(args, trial, "work", fixture, workdirs)
+        make_state_dir(args, trial, work)
+        make_workspace(fixture, work, os.path.join(trial, "xdg"))
     except Exception as e:
         failure = f"workspace setup: {type(e).__name__}: {e}"
     for st in spec["stages"]:
