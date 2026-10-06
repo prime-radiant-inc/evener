@@ -9,7 +9,7 @@
 // fallback left when it's given. A subagent failure never puts a Board row in
 // Needs you; the row's subagent chip (subagentChip) counts it, and the
 // session's Subagents list holds the detail.
-import type { NavigationSessionSummary, SessionActivity } from "@evener/appwire-client";
+import type { DelegateTiming, NavigationSessionSummary, SessionActivity } from "@evener/appwire-client";
 import { quietState } from "@evener/appwire-client";
 import { relativeAge, subagentTallyToShow } from "@evener/appwire-client/state/navigation";
 import { compactDuration } from "../session/format";
@@ -298,6 +298,15 @@ export const AGENT_QUIET_AFTER_MS = 20_000;
  * has gone AGENT_QUIET_AFTER_MS without an update, else Working. */
 export function quietOrWorking(silentMs: number): string {
 	return silentMs >= AGENT_QUIET_AFTER_MS ? `Quiet ${compactDuration(silentMs)}` : "Working";
+}
+
+/** A running subagent's quietOrWorking line from its timing, with the silence
+ * that turns it Quiet (useNowPastQuiet) only while that silence grows with
+ * the clock; a snapshot silence has nothing to time. */
+export function subagentQuietLine(timing: DelegateTiming): { text: string; quietForMs?: number } {
+	const quietFor = timing.quietForMs ?? 0;
+	const text = quietOrWorking(quietFor);
+	return timing.quietLive ? { text, quietForMs: quietFor } : { text };
 }
 
 /** whyLine's working-row text once a real activity read exists (S5): the

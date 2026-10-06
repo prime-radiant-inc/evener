@@ -4,7 +4,7 @@
 // Pure: the row re-renders with the transcript, so no clock of its own.
 import { delegateEndingText, delegateTiming, type EvenerDelegateInfo } from "@evener/appwire-client";
 import { endedInStop, runningSubagentCount, subagentState } from "../subagents/subagentModel";
-import { hubTime, quietOrWorking, waitingOnSubagents } from "../board/attention";
+import { hubTime, subagentQuietLine, waitingOnSubagents } from "../board/attention";
 import type { TimelineRow } from "../timeline";
 import { compactDuration } from "./format";
 
@@ -20,6 +20,8 @@ export interface SubagentLine {
 	/** The subagent's id, for its outcome in the coordinator's tree. */
 	delegateId?: string;
 	runGeneration?: number;
+	/** The silence that turns this line Quiet (subagentQuietLine). */
+	quietForMs?: number;
 }
 
 // The Subagents list's own rule (subagentState), so this row, the list, the
@@ -84,11 +86,15 @@ export function subagentLine(
 		line.activity = state === "done" ? "Finished" : "Stopped";
 	} else if (state === "running") {
 		const waitingOn = runningSubagentCount(all.filter((child) => child.parentDelegateId === delegate.delegateId));
-		// Quiet since the later of its last activity and this run's start: a
-		// resumed subagent can still carry its last run's activity time.
-		const quietFor = timing?.quietForMs ?? 0;
 		// An agent waiting on its own subagents is never stuck (ruling 10).
-		line.activity = waitingOn > 0 ? waitingOnSubagents(waitingOn) : quietOrWorking(quietFor);
+		if (waitingOn > 0) line.activity = waitingOnSubagents(waitingOn);
+		else if (timing) {
+			// Quiet since the later of its last activity and this run's start: a
+			// resumed subagent can still carry its last run's activity time.
+			const quiet = subagentQuietLine(timing);
+			line.activity = quiet.text;
+			if (quiet.quietForMs !== undefined) line.quietForMs = quiet.quietForMs;
+		}
 	}
 	return line;
 }

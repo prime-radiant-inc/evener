@@ -54,7 +54,6 @@
     "transcriptSteps.ts",
     "worktreeSteps.ts",
     "steeringNotifications.ts",
-    "activityMerge.ts",
     "itemFailure.ts",
     "jobOutput.ts",
     "hostMutations.ts",

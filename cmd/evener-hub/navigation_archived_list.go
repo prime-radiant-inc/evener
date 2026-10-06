@@ -110,8 +110,8 @@ func decodeArchivedCursor(cursor string, hint navigationResourceKind, projectKey
 // that holds it wins. A project moves between Projects and Archived projects
 // as its sessions are archived and unarchived (hubcore's Tree), so a hint to
 // one member of that pair falls back to the other; a test-runs hint has no
-// fallback. With no hint, the first of projects, archived projects and test
-// runs holding the key. The zero kind means none of those holds it.
+// fallback. With no hint, the first catalog in navigationCatalogOrder holding
+// the key. The zero kind means none of those holds it.
 func (p navigationProjection) archivedListCatalog(hint navigationResourceKind, key string) (navigationResourceKind, hubcore.TreeProject) {
 	for _, catalog := range archivedListCandidates(hint) {
 		for _, project := range p.catalogs[catalog] {
@@ -127,7 +127,7 @@ func (p navigationProjection) archivedListCatalog(hint navigationResourceKind, k
 func archivedListCandidates(hint navigationResourceKind) []navigationResourceKind {
 	switch hint {
 	case "":
-		return []navigationResourceKind{navigationResourceProjects, navigationResourceArchivedProjects, navigationResourceTestRuns}
+		return navigationCatalogOrder
 	case navigationResourceProjects:
 		return []navigationResourceKind{navigationResourceProjects, navigationResourceArchivedProjects}
 	case navigationResourceArchivedProjects:

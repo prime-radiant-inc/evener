@@ -309,10 +309,35 @@ describe("why lines on the fallbacks (ruling 6)", () => {
 		expect(subagentWhy(rowOf(waiting), NOW)).toEqual({ text: "Waiting on 2 subagents" });
 		const waitingOnOne = running("o", { child: session("local:o", [entry(running("a")), entry(done("c"))]) });
 		expect(subagentWhy(rowOf(waitingOnOne), NOW)).toEqual({ text: "Waiting on 1 subagent" });
-		expect(subagentWhy(rowOf(running("q", { latestActivityAt: ago(4 * MIN) })), NOW)).toEqual({ text: "Quiet 4m" });
+		expect(subagentWhy(rowOf(running("q", { latestActivityAt: ago(4 * MIN) })), NOW)).toEqual({
+			text: "Quiet 4m",
+			quietForMs: 4 * MIN,
+		});
 		// The tray's and a subagent row's threshold: 20 seconds without an update.
-		expect(subagentWhy(rowOf(running("s", { latestActivityAt: ago(30_000) })), NOW)).toEqual({ text: "Quiet 30s" });
-		expect(subagentWhy(rowOf(running("n", { latestActivityAt: ago(10_000) })), NOW)).toEqual({ text: "Working" });
+		expect(subagentWhy(rowOf(running("s", { latestActivityAt: ago(30_000) })), NOW)).toEqual({
+			text: "Quiet 30s",
+			quietForMs: 30_000,
+		});
+		expect(subagentWhy(rowOf(running("n", { latestActivityAt: ago(10_000) })), NOW)).toEqual({
+			text: "Working",
+			quietForMs: 10_000,
+		});
+	});
+
+	// The silence the list times to turn a row Quiet (useNowPastQuiet): only
+	// a line that would say Quiet, and only while the silence grows with the
+	// clock, or the list would wake again and again for nothing.
+	it("times the silence only of a line that would say Quiet", () => {
+		const commanding = running("r", {
+			latestActivityAt: ago(10_000),
+			child: session("local:r", [{ kind: "shell", job: job(false, { command: "go test ./agent/..." }) }]),
+		});
+		const waiting = running("w", { latestActivityAt: ago(10_000), child: session("local:w", [entry(running("a"))]) });
+		// Only a snapshot of its silence, with no time it can grow from.
+		const snapshotOnly = delegate("p", { quietForMs: 10_000 });
+		for (const subject of [commanding, waiting, snapshotOnly, done("d"), failed("f")]) {
+			expect(subagentWhy(rowOf(subject), NOW).quietForMs).toBeUndefined();
+		}
 	});
 });
 

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // urlPluginFixture is widget@acme installed from a local plugin repo through a
@@ -409,5 +410,29 @@ func TestCheckUpdates_WarnsAboutAPluginKeyWithNoMarketplace(t *testing.T) {
 	}
 	if w := f.warnings(); w != "warning: plugin \"ghost\" is installed with no marketplace; not checking it for updates\n" {
 		t.Fatalf("want one warning naming the plugin with no marketplace, got %q", w)
+	}
+}
+
+// A remote that never answers is cut off by the check's overall deadline, not
+// only by its own updateCheckTimeout, so the check answers before a client
+// waiting on it gives up. The hung remote is warned about like any other
+// remote that cannot be read.
+func TestCheckUpdates_OverallDeadlineCutsOffAHungRemote(t *testing.T) {
+	f := installURLPlugin(t, unpinned)
+	realGit, realDeadline := gitRun, updateCheckDeadline
+	t.Cleanup(func() { gitRun, updateCheckDeadline = realGit, realDeadline })
+	updateCheckDeadline = 50 * time.Millisecond
+	gitRun = func(ctx context.Context, dir string, args ...string) (string, error) {
+		if len(args) > 0 && args[0] == "ls-remote" {
+			<-ctx.Done()
+			return "", ctx.Err()
+		}
+		return realGit(ctx, dir, args...)
+	}
+	if checkThenList(t, f.m) {
+		t.Fatal("plugin whose remote hung listed as having an update")
+	}
+	if w := f.warnings(); !strings.Contains(w, "checking widget@acme for updates: "+errUpdateCheckDeadline.Error()) {
+		t.Fatalf("no warning names the hung plugin: %q", w)
 	}
 }

@@ -14,6 +14,7 @@ import { MarkdownResponse } from "./MarkdownResponse";
 import { setDisclosureOpenAll, useDisclosureOpenAmong } from "./nativeDisclosure";
 import type { MobileTimelineItem } from "./projectedRows";
 import { useMinuteClock } from "./session/minuteClock";
+import { useNowPastQuiet } from "./session/quietClock";
 import { rowDisclosureIds } from "./session/disclosureKeys";
 import type { ErrorAction } from "./session/errorAction";
 import { ErrorRow } from "./session/ErrorRow";
@@ -449,8 +450,9 @@ function Subagent({
 	tree: ActivityTree | null | undefined;
 	openSubagent: ((ref: string, title: string) => void) | undefined;
 }) {
-	// The state's time ("failed · 6m") moves on with the minute clock.
-	const now = useMinuteClock();
+	// The state's time ("failed · 6m") moves on with the minute clock, and
+	// its line turns Quiet the moment a silent subagent crosses into it.
+	const now = useNowPastQuiet(useMinuteClock(), (at) => [subagentLine(row, delegates, at).quietForMs]);
 	const line = subagentLine(row, delegates, now);
 	// A finished subagent's outcome, as the Subagents list gives it, once the
 	// tree shows it done; until then the line says what the roster knows.

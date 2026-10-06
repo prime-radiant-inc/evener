@@ -9587,6 +9587,44 @@ test("a failed catalog load leaves the draft's harness and advanced options alon
   expect(draft.fields.getState().advancedValues).toEqual({ agent: { value: "controller-agent" } });
 });
 
+// A refused catalog read (the hub's forwarded-read pool was full, or the host
+// was briefly unreachable) is said, beside a Retry that reads both catalogs
+// again: nothing else re-reads them until the host changes.
+test("a refused host catalog read says so and Retry reads it again", async () => {
+  const user = setupUser();
+  seedSources(REMOTE_SOURCES);
+  let refuse = true;
+  const fake = readyClient((f) =>
+    f.on("evener/host/request", (params) => {
+      const forwarded = params as HostRequestParams;
+      if (refuse && forwarded.method === "evener/harnesses/list") {
+        throw new WireError(
+          "this connection already has 32 requests waiting on slow answers; try again shortly",
+          -32014,
+        );
+      }
+      return routedDiscoveryDefault(forwarded.method);
+    }),
+  );
+  connectionStore.getState().connect(fake);
+  const draft = selectSpawnDirectory("/srv/catalog-refused");
+  setDraftField(draft, "source", "buildbox");
+  window.history.pushState({}, "", "/new?dir=/srv/catalog-refused");
+  renderSpawn(fake);
+  await settled();
+
+  const notice = await screen.findByTestId("spawn-host-catalog-error");
+  expect(notice.textContent).toContain("try again shortly");
+
+  refuse = false;
+  await user.click(within(notice).getByRole("button", { name: "Retry" }));
+  await waitFor(() => expect(routedHostCalls(fake, "evener/harnesses/list")).toHaveLength(2));
+  await waitFor(() => expect(screen.queryByTestId("spawn-host-catalog-error")).toBeNull());
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  const harness = screen.getByLabelText("Harness") as HTMLSelectElement;
+  await waitFor(() => expect(within(harness).getByRole("option", { name: "external" })).toBeTruthy());
+});
+
 // The other half of the same rule, on a host that has no answers at all: the
 // request SETTLED, so the submit gate opens - the host refuses what it cannot
 // serve at start rather than leaving Start disabled forever.
