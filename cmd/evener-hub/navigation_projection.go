@@ -905,7 +905,8 @@ func (p navigationProjection) projectIn(catalog navigationResourceKind, key stri
 	return hubcore.TreeProject{}, false
 }
 
-// ProjectIn is Project read from catalog (projectIn).
+// ProjectIn is the project resource for key in catalog, or in the first
+// catalog holding it when catalog is empty.
 func (p navigationProjection) ProjectIn(catalog navigationResourceKind, key string) (hubapi.NavigationProjectResource, bool) {
 	project, ok := p.projectIn(catalog, key)
 	if !ok {
@@ -923,7 +924,8 @@ func (p navigationProjection) ProjectPage(key, tier string, offset uint32, limit
 	return p.ProjectPageIn("", key, tier, offset, limit)
 }
 
-// ProjectPageIn is ProjectPage read from catalog (projectIn).
+// ProjectPageIn is one tier page of key's project in catalog, or in the
+// first catalog holding it when catalog is empty.
 func (p navigationProjection) ProjectPageIn(catalog navigationResourceKind, key, tier string, offset uint32, limit int) (hubapi.NavigationProjectPage, error) {
 	project, ok := p.projectIn(catalog, key)
 	if !ok {

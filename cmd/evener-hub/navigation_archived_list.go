@@ -43,13 +43,9 @@ type navigationArchivedListRequest struct {
 // 0..maxNavigationSectionRows (0 or absent means the maximum), and a cursor
 // this hub minted.
 func parseNavigationArchivedListParams(params appwire.ArchivedListParams) (navigationArchivedListRequest, error) {
-	var hint navigationResourceKind
-	if params.Catalog != "" {
-		parsed, err := parseNavigationCatalog(params.Catalog)
-		if err != nil {
-			return navigationArchivedListRequest{}, err
-		}
-		hint = parsed
+	hint, err := parseOptionalNavigationCatalog(params.Catalog)
+	if err != nil {
+		return navigationArchivedListRequest{}, err
 	}
 	if err := validateNavigationIdentity("project key", params.ProjectKey, false); err != nil {
 		return navigationArchivedListRequest{}, err
@@ -114,10 +110,8 @@ func decodeArchivedCursor(cursor string, hint navigationResourceKind, projectKey
 // the key. The zero kind means none of those holds it.
 func (p navigationProjection) archivedListCatalog(hint navigationResourceKind, key string) (navigationResourceKind, hubcore.TreeProject) {
 	for _, catalog := range archivedListCandidates(hint) {
-		for _, project := range p.catalogs[catalog] {
-			if project.Key == key {
-				return catalog, project
-			}
+		if project, ok := p.projectIn(catalog, key); ok {
+			return catalog, project
 		}
 	}
 	return "", hubcore.TreeProject{}
