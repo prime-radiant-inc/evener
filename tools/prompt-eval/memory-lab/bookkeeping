@@ -38,7 +38,11 @@ def args_of(call):
 SHELL_READERS = {"cat", "head", "tail", "less", "more", "grep", "rg", "awk", "wc", "diff"}
 SHELL_WRAPPERS = {"sudo", "env", "timeout", "nice", "nohup", "command", "exec", "time"}
 SHELL_SEPARATORS = {"|", "||", "&&", ";", "&", ";;", "|&"}
-SHELL_WRITE_REDIRECT = re.compile(r"^&?>>?\|?$")
+SHELL_WRITE_REDIRECT = re.compile(r"^(?:&?>>?|>&)\|?$")
+# Wrapper flags that take the next word as their value (sudo -u USER, nice -n 10, timeout -s KILL).
+SHELL_WRAPPER_FLAG_ARGS = {"sudo": {"-u", "-g", "-C", "-h", "-p"}, "nice": {"-n"},
+                           "timeout": {"-s", "-k", "--signal", "--kill-after"}}
+SED_IN_PLACE = re.compile(r"^-[A-Za-z]*i")
 PERL_IN_PLACE = re.compile(r"^-[a-z]*i[a-z]*(?:\.\w+)?$")
 
 
@@ -54,11 +58,50 @@ def file_surface(paths):
 
 
 def in_place_flag(name, word):
-    """Whether word is an in-place edit flag: sed's -i[SUFFIX], or a perl lowercase switch cluster with i
-    (-i, -pi, -i.bak). Perl switches that carry an argument (-MModule, -Ipath) are not."""
+    """Whether word is an in-place edit flag: for sed, -i anywhere in a switch cluster (-i, -i.bak, -Ei) or
+    --in-place[=SUFFIX]; for perl, a lowercase switch cluster with i (-i, -pi, -i.bak). Perl switches that
+    carry an argument (-MModule, -Ipath) are not."""
     if name == "sed":
-        return word.startswith("-i")
+        return bool(SED_IN_PLACE.match(word)) or word == "--in-place" or word.startswith("--in-place=")
     return bool(PERL_IN_PLACE.match(word))
+
+
+def strip_wrappers(words):
+    """Drops leading environment assignments and wrapper commands (with their flags, flag values and
+    timeout's duration), so the words start at the command that actually runs."""
+    while words:
+        name = os.path.basename(words[0])
+        if "=" in words[0] and not words[0].startswith("-"):
+            words = words[1:]
+            continue
+        if name not in SHELL_WRAPPERS:
+            break
+        words = words[1:]
+        while words and words[0].startswith("-"):
+            flag, words = words[0], words[1:]
+            if flag in SHELL_WRAPPER_FLAG_ARGS.get(name, ()) and words:
+                words = words[1:]
+        if name == "timeout" and words:
+            words = words[1:]  # the duration
+    return words
+
+
+def search_files(args):
+    """The files grep or rg reads: its file operands, after the pattern. A pattern given with -e/--regexp
+    is not a file; a pattern file given with -f/--file is read."""
+    files, pattern_given, i = [], False, 0
+    while i < len(args):
+        word = args[i]
+        if word in ("-e", "--regexp", "-f", "--file"):
+            pattern_given = True
+            if word in ("-f", "--file") and i + 1 < len(args):
+                files.append(args[i + 1])
+            i += 2
+            continue
+        if not word.startswith("-"):
+            files.append(word)
+        i += 1
+    return files if pattern_given else files[1:]
 
 
 def shell_statements(command):
@@ -107,9 +150,7 @@ def shell_paths(command):
                 continue
             rest.append(word)
             i += 1
-        while rest and ("=" in rest[0] and not rest[0].startswith("-") or os.path.basename(rest[0]) in SHELL_WRAPPERS
-                        or (rest[0].startswith("-") and len(rest) > 1)):
-            rest = rest[1:]  # environment assignments, wrappers and their flags
+        rest = strip_wrappers(rest)
         if not rest:
             continue
         name, args = os.path.basename(rest[0]), [w for w in rest[1:] if not w.startswith("-")]
@@ -118,9 +159,7 @@ def shell_paths(command):
         elif name in ("sed", "perl") and any(in_place_flag(name, w) for w in rest[1:]):
             written += args
         elif name in ("grep", "rg"):
-            # The first operand is the pattern unless one was given with -e/-f.
-            explicit = any(w in ("-e", "-f", "--regexp", "--file") for w in rest[1:])
-            read += args if explicit else args[1:]
+            read += search_files(rest[1:])
         elif name in SHELL_READERS or (name == "sed" and "-n" in rest):
             read += args
     return written, read
