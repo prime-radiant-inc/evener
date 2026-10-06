@@ -365,8 +365,11 @@ async function runOutputPagingJourney(fixture) {
     const ackPath = path.join(fixture.artifactDir, `phase-${String(++phase).padStart(2,'0')}.json`);
     return new Promise((resolve, reject) => {
       const watcher = watch(fixture.artifactDir, check);
+      // A watch event can arrive while the acknowledgement file is still empty
+      // and be the only one delivered (macOS coalesces them), so poll as well.
+      const poll = setInterval(check, 100);
       const timer = setTimeout(() => finish(new Error(`producer did not acknowledge ${command}`)), 15000);
-      function finish(error, value) { watcher.close(); clearTimeout(timer); error ? reject(error) : resolve(value); }
+      function finish(error, value) { watcher.close(); clearInterval(poll); clearTimeout(timer); error ? reject(error) : resolve(value); }
       function check() {
         let value;
         try { value = JSON.parse(readFileSync(ackPath,'utf8')); } catch { return; }
