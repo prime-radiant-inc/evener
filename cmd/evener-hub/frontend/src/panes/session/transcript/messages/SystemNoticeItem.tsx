@@ -32,6 +32,7 @@ import {
   formatCharCount,
   formatDurationMs,
   isErrorEvent,
+  MEMORY_CONTEXT_EVENT_KIND,
   scopedDisclosureId,
   systemEventWords,
 } from "@evener/appwire-client";
@@ -53,7 +54,6 @@ import { asTurnError } from "../turnFailure";
 import { type ItemRenderProps, registerItemRenderer } from "../types";
 import { MemoryContextDisclosure } from "./MemoryContextItem";
 import { MessageTimestamp } from "./MessageTimestamp";
-import { MEMORY_CONTEXT_EVENT_KIND } from "./memoryContext";
 import { roundTimingsSummary } from "./roundTimingsView";
 import { type SystemRun, shouldGroup, systemRunFor } from "./systemGrouping";
 import styles from "./systemnoticeitem.module.css";

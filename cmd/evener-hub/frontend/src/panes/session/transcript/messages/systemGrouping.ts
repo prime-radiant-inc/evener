@@ -10,9 +10,9 @@ import {
   attentionWarningNotice,
   type ItemModel,
   isErrorEvent,
+  MEMORY_CONTEXT_EVENT_KIND,
   type ThreadItemEventKind,
 } from "@evener/appwire-client";
-import { MEMORY_CONTEXT_EVENT_KIND } from "./memoryContext";
 
 export interface SystemRun {
   items: ItemModel[];

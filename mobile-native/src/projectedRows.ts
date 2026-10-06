@@ -51,6 +51,10 @@ import {
 	joinWarningParts,
 	liveAskQuestions,
 	makeTranscriptDisplayConfig,
+	MEMORY_CONTEXT_EVENT_KIND,
+	MEMORY_CONTEXT_LABEL,
+	type MemoryContextObservation,
+	parseMemoryContext,
 	parseAskUserQuestions,
 	parseTaskListData,
 	pendingTextJoined,
@@ -256,6 +260,13 @@ export type MobileTimelineItem =
 				label?: string;
 				// The text is markdown, and opens rendered as markdown.
 				rendersMarkdown?: boolean;
+				// The decoded automatic memory refresh, present only when the
+				// recorded raw.memoryContext validates. Absent means the payload
+				// could not be decoded, so an opened refresh falls back to its
+				// complete original text. `text` always carries that exact recorded
+				// message, decoded or not, so the literal Source is independent of
+				// the decoded content.
+				memoryContext?: MemoryContextObservation;
 				// A steer that delivers <delegate-notification> or
 				// <job-notification> blocks, parsed: the transcript reads it as
 				// the notifications it carries (spec 8.2, 9), never as the markup.
@@ -812,6 +823,13 @@ function systemNotice(it: ItemModel): Extract<MobileTimelineItem, { kind: "notic
 			...(attention.hint ? { hint: attention.hint } : {}),
 		};
 	}
+	// An automatic memory refresh is its own collapsed "Refreshed my memory"
+	// disclosure, never a generic lifecycle line. The decoded observation rides
+	// the row only when raw.memoryContext validates; either way `text` is the
+	// complete recorded message, which an opened refresh shows as its literal
+	// Source. It keeps the lifecycle family, so groupTimeline leaves it a
+	// standalone row rather than folding it into the internal details group.
+	if (it.eventKind === MEMORY_CONTEXT_EVENT_KIND) return memoryContextNotice(it);
 	// A system family of "warning" IS the warning tone (systemFamily's own
 	// first branch), so the two are derived from one classification.
 	const family = systemFamily(it.eventKind);
@@ -828,6 +846,29 @@ function systemNotice(it: ItemModel): Extract<MobileTimelineItem, { kind: "notic
 		...(it.eventKind ? { eventKind: it.eventKind } : {}),
 		...(it.exitCode !== undefined ? { exitCode: it.exitCode } : {}),
 		...(decidedAtMs !== null ? { decidedAtMs } : {}),
+	};
+}
+
+// The row for a recorded automatic memory refresh. Unavailable and revoked
+// carry their state on the collapsed row too, so the heading never implies a
+// successful read; missing is not a broken access, so like current it reads
+// only in the opened meta line, as on the web. The exact recorded Text is kept
+// on the row unchanged, independent of whatever the decoded observation holds.
+function memoryContextNotice(it: ItemModel): Extract<MobileTimelineItem, { kind: "notice" }> {
+	const observation = parseMemoryContext(it.raw);
+	const state = observation?.state;
+	const label =
+		state === "unavailable" || state === "revoked" ? `${MEMORY_CONTEXT_LABEL} · ${state}` : MEMORY_CONTEXT_LABEL;
+	return {
+		kind: "notice",
+		id: it.id,
+		origin: "system",
+		family: "lifecycle",
+		tone: "system",
+		text: it.text,
+		label,
+		...(observation ? { memoryContext: observation } : {}),
+		...(it.eventKind ? { eventKind: it.eventKind } : {}),
 	};
 }
 

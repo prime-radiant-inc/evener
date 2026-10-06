@@ -403,6 +403,19 @@ export {
 } from "./launchSchema";
 export { marketplaceSourceLabel } from "./marketplaceSourceLabel";
 export {
+  MEMORY_CONTEXT_EVENT_KIND,
+  MEMORY_CONTEXT_LABEL,
+  MEMORY_CONTEXT_SCOPES,
+  MEMORY_CONTEXT_STATES,
+  type MemoryContextObservation,
+  type MemoryContextScope,
+  type MemoryContextState,
+  memoryContextEmptyText,
+  memoryContextScopeLabel,
+  memoryContextStateLabel,
+  parseMemoryContext,
+} from "./memoryContext";
+export {
   type MemoryStep,
   memoryDeleteSummary,
   memoryEditSummary,

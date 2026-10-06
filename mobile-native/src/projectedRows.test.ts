@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
 	hydrateThread,
 	makeTranscriptDisplayConfig,
+	parseMemoryContext,
 	THREAD_ITEM_EVENT_KINDS,
 	WarningCodeMCPReconnected,
 } from "@evener/appwire-client";
@@ -2241,14 +2242,14 @@ describe("a streamed reply's key once history records its round", () => {
 	});
 
 	// The web renders an automatic memory refresh as a "Refreshed my memory"
-	// disclosure, but native presentation must not change: the shared projector
-	// keeps the typed memory-context event visible at every level, and native maps
-	// it to the same generic system notice it drew for the old blank-kind item -
-	// the exact recorded Text, never a decoded body. These run the real producer
-	// fixture (agent/testdata/memorycontextwire) through hydrateThread ->
+	// disclosure, and native now matches: the shared projector keeps the typed
+	// memory-context event visible at every level, and native maps it to a
+	// standalone "Refreshed my memory" notice carrying the decoded observation
+	// beside the exact recorded Text. These run the real producer fixture
+	// (agent/testdata/memorycontextwire) through hydrateThread ->
 	// projectTimeline / projectNativeTranscript, with no mocks.
-	describe("memory-context native preservation", () => {
-		it("keeps every recorded refresh a generic system notice with its exact Text at every level", () => {
+	describe("memory-context native presentation", () => {
+		it("maps every recorded refresh to a standalone 'Refreshed my memory' notice with its exact Text at every level", () => {
 			for (const wire of memoryContextWireItems()) {
 				const thread = {
 					id: "thread-1",
@@ -2266,6 +2267,8 @@ describe("a streamed reply's key once history records its round", () => {
 					evener: { ref: "ref-1", queue: { revision: 0 } },
 				} as unknown as Thread;
 				const model = hydrateThread({ thread }, "ref-1", 0);
+				// The exact recorded Text is preserved on every case, decoded or not.
+				const expectedObservation = parseMemoryContext(wire.raw);
 				for (const level of ["chat", "intent", "tools", "activity", "full"] as const) {
 					// The refresh is never hidden by the Advanced.system-events
 					// gate: the shared projector decides memory-context before
@@ -2281,28 +2284,29 @@ describe("a streamed reply's key once history records its round", () => {
 						expect(row).toMatchObject({
 							kind: "notice",
 							origin: "system",
-							// Native classifies the typed kind deliberately (lifecycle, the
-							// same deliberate family the generated-kind invariant requires),
-							// which keeps it a standalone tone-system notice - not one of
+							// The typed kind keeps its family, so it stays a
+							// standalone tone-system notice rather than folding into
 							// groupTimeline's internal families.
 							family: "lifecycle",
 							tone: "system",
 							eventKind: "memory-context",
 							text: wire.text,
 						});
+						if (row?.kind !== "notice") throw new Error("no memory-context notice row");
+						expect(row.label ?? "").toContain("Refreshed my memory");
+						// The decoded observation rides the row only when the payload
+						// validates; the record is never manufactured.
+						expect(row.memoryContext).toEqual(expectedObservation);
 						// Standalone, never folded into the internal details group.
 						const grouped = groupTimeline(row ? [row] : []);
 						expect(grouped).toHaveLength(1);
 						expect(grouped[0]).toMatchObject({ kind: "notice", id: wire.id });
-						// Native never decodes raw into the web heading; the row's words
-						// are the exact recorded Text.
-						if (row?.kind === "notice") expect(row.text).not.toBe("Refreshed my memory");
 					}
 				}
 			}
 		});
 
-		it("keeps a malformed refresh's exact Text as a notice through projectNativeTranscript", () => {
+		it("keeps a malformed refresh's exact Text and no decoded observation through projectNativeTranscript", () => {
 			const wire = memoryContextWireItem("malformed-project");
 			expect(wire.raw).toBeFalsy();
 			const thread = {
@@ -2334,7 +2338,8 @@ describe("a streamed reply's key once history records its round", () => {
 				makeTranscriptDisplayConfig({ kind: "preset", level: "full" }, { systemEvents: true }),
 			);
 			const row = presentation.items.find((candidate) => candidate.id === wire.id);
-			expect(row).toMatchObject({ kind: "notice", text: wire.text });
+			expect(row).toMatchObject({ kind: "notice", text: wire.text, label: "Refreshed my memory" });
+			if (row?.kind === "notice") expect(row.memoryContext).toBeUndefined();
 		});
 	});
 });

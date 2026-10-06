@@ -2,6 +2,7 @@ import {
 	type ActivityTree,
 	type EvenerDelegateInfo,
 	itemIdentityMatches,
+	MEMORY_CONTEXT_EVENT_KIND,
 	type TurnModel,
 } from "@evener/appwire-client";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
@@ -19,6 +20,7 @@ import { useNowPastQuiet } from "./session/quietClock";
 import { rowDisclosureIds } from "./session/disclosureKeys";
 import type { ErrorAction } from "./session/errorAction";
 import { ErrorRow } from "./session/ErrorRow";
+import { MemoryContextBody } from "./session/MemoryContextBody";
 import { NotificationCards } from "./session/NotificationCards";
 import { ApprovalHistory } from "./session/ApprovalHistory";
 import { QuestionHistory } from "./session/QuestionHistory";
@@ -193,7 +195,11 @@ export function TimelineItem({
 				/>
 			) : (
 				<SystemEvent label={label} text={noticeText} hint={item.hint} expanded={expanded} onToggle={toggle}>
-					{item.rendersMarkdown ? <MarkdownResponse markdown={item.text} /> : undefined}
+					{item.eventKind === MEMORY_CONTEXT_EVENT_KIND ? (
+						<MemoryContextBody observation={item.memoryContext} source={item.text} />
+					) : item.rendersMarkdown ? (
+						<MarkdownResponse markdown={item.text} />
+					) : undefined}
 				</SystemEvent>
 			);
 			break;
