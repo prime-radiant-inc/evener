@@ -32,16 +32,36 @@ export interface TranscriptResidencyPort {
   admission(ref: string): CurrentTranscriptAdmission | undefined;
   fold(ref: string, model: ThreadModel, update: ReceivedTranscriptUpdate): ThreadModel;
   hydrate(ref: string, intent: "background" | "foreground" | "final", signal: AbortSignal): Promise<void>;
+  writeTimers?(): { debounceMs: number; maxWaitMs: number };
+}
+
+interface HydrationTask {
+  ref: string;
+  intent: "background" | "foreground";
+  controller: AbortController;
+  run(signal: AbortSignal): Promise<void>;
+  promise: Promise<void>;
+  resolve(): void;
+  reject(error: unknown): void;
+  queued: boolean;
+  started: boolean;
+  settled: boolean;
 }
 
 export interface TranscriptResidency {
   owners(ref: string, owners: TranscriptOwners): void;
+  removed(ref: string): void;
   connection(generation: number, ready: boolean): void;
   accept(ref: string, update: ReceivedTranscriptUpdate): boolean;
-  published(ref: string, model: ThreadModel, appliedSequence: number): void;
+  published(ref: string, model: ThreadModel, appliedSequence: number, authoritative?: boolean): boolean;
   reservePending(ref: string, bytes: number): boolean;
   releasePending(ref: string, bytes: number): void;
   promote(ref: string): Promise<ThreadModel | undefined>;
+  scheduleHydration(
+    ref: string,
+    intent: "background" | "foreground",
+    run?: (signal: AbortSignal) => Promise<void>,
+  ): Promise<void>;
   drain(ref: string): Promise<void>;
   revoke(ref: string, reason: "gap" | "storage" | "alias" | "deleted"): void;
   clear(epoch: number): void;
@@ -76,14 +96,17 @@ interface Entry {
   appliedSequence: number;
   checkpointSequence: number;
   residentBytes: number;
+  residentPostCutBytes: number;
   handoffBytes: number;
   pending: ReceivedTranscriptUpdate[];
   current: boolean;
+  needsRecovery: boolean;
   evictAfterCommit: boolean;
   persistence: Persistence;
   lastForegroundUse: number;
   promoting: boolean;
   flushTimer?: ReturnType<typeof setTimeout>;
+  maxWaitTimer?: ReturnType<typeof setTimeout>;
   work?: Promise<boolean>;
   waiters: Array<() => void>;
 }
@@ -98,7 +121,8 @@ export function createTranscriptResidency(
   const residentBudget = new TranscriptPayloadBudget(options.residentBytes);
   const workQueue: string[] = [];
   const urgentQueue: string[] = [];
-  const hydrationQueue: Array<{ ref: string; intent: "background" | "foreground"; run: () => Promise<void> }> = [];
+  const hydrationQueue: HydrationTask[] = [];
+  const hydrationByRef = new Map<string, HydrationTask>();
   const controllers = new Map<string, AbortController>();
   let connectionGeneration = 0;
   let ready = false;
@@ -120,9 +144,11 @@ export function createTranscriptResidency(
       appliedSequence: 0,
       checkpointSequence: 0,
       residentBytes: 0,
+      residentPostCutBytes: 0,
       handoffBytes: 0,
       pending: [],
       current: false,
+      needsRecovery: false,
       evictAfterCommit: false,
       persistence: "enabled",
       lastForegroundUse: 0,
@@ -149,6 +175,10 @@ export function createTranscriptResidency(
       clearTimeout(entry.flushTimer);
       entry.flushTimer = undefined;
     }
+    if (entry?.maxWaitTimer) {
+      clearTimeout(entry.maxWaitTimer);
+      entry.maxWaitTimer = undefined;
+    }
     if (entry?.work) return;
     if (urgent) {
       const normalIndex = workQueue.indexOf(ref);
@@ -163,11 +193,34 @@ export function createTranscriptResidency(
   }
 
   function scheduleResidentWrite(ref: string, entry: Entry): void {
-    if (entry.flushTimer || entry.work) return;
+    if (entry.work) return;
+    const timers = port.writeTimers?.() ?? { debounceMs: 1_000, maxWaitMs: 5_000 };
+    if (entry.flushTimer) clearTimeout(entry.flushTimer);
+    else entry.maxWaitTimer = setTimeout(() => fireResidentWrite(ref, entry), timers.maxWaitMs);
     entry.flushTimer = setTimeout(() => {
-      entry.flushTimer = undefined;
-      enqueue(ref);
-    }, 100);
+      fireResidentWrite(ref, entry);
+    }, timers.debounceMs);
+  }
+
+  function fireResidentWrite(ref: string, entry: Entry): void {
+    if (entry.flushTimer) clearTimeout(entry.flushTimer);
+    if (entry.maxWaitTimer) clearTimeout(entry.maxWaitTimer);
+    entry.flushTimer = undefined;
+    entry.maxWaitTimer = undefined;
+    enqueue(ref);
+  }
+
+  async function waitForEntryCut(ref: string, entry: Entry, sequence: number): Promise<boolean> {
+    while (entry.checkpointSequence < sequence || entry.work) {
+      if (entry.persistence !== "enabled") return false;
+      if (!entry.work && !workQueue.includes(ref) && !urgentQueue.includes(ref)) enqueue(ref, true);
+      if (entry.work) {
+        await entry.work.catch(() => false);
+      } else {
+        await new Promise<void>((resolve) => entry.waiters.push(resolve));
+      }
+    }
+    return entry.persistence === "enabled" && entry.checkpointSequence >= sequence;
   }
 
   function enqueueLeastRecentlyUsedVictims(exceptRef: string, incomingBytes: number): void {
@@ -196,11 +249,32 @@ export function createTranscriptResidency(
     for (const resolve of entry.waiters.splice(0)) resolve();
   }
 
+  function settleHydration(task: HydrationTask, error?: unknown): void {
+    if (task.settled) return;
+    task.settled = true;
+    if (task.started) networkHydrations -= 1;
+    controllers.delete(task.ref);
+    if (hydrationByRef.get(task.ref) === task) hydrationByRef.delete(task.ref);
+    const queuedIndex = hydrationQueue.indexOf(task);
+    if (queuedIndex >= 0) hydrationQueue.splice(queuedIndex, 1);
+    if (error === undefined) task.resolve();
+    else task.reject(error);
+    while (ready && !disposed && networkHydrations < options.networkHydrations && hydrationQueue.length > 0) {
+      const next = hydrationQueue.shift();
+      if (next) startHydration(next);
+    }
+  }
+
   async function persist(ref: string, entry: Entry): Promise<boolean> {
+    if (entry.needsRecovery) {
+      releaseEntryPending(entry);
+      return false;
+    }
     const writeGeneration = connectionGeneration;
     const ownerGeneration = entry.ownershipGeneration;
     const writeEpoch = clearEpoch;
     const resident = port.resident(ref);
+    entry.residentPostCutBytes = 0;
     let model = resident;
     let batchBytes = 0;
     const batch: ReceivedTranscriptUpdate[] = [];
@@ -256,6 +330,7 @@ export function createTranscriptResidency(
       workerBytes = recordBytes;
       if (
         !ready ||
+        entry.needsRecovery ||
         writeGeneration !== connectionGeneration ||
         ownerGeneration !== entry.ownershipGeneration ||
         writeEpoch !== clearEpoch ||
@@ -273,6 +348,7 @@ export function createTranscriptResidency(
       committedWrites += 1;
       if (
         !ready ||
+        entry.needsRecovery ||
         writeGeneration !== connectionGeneration ||
         ownerGeneration !== entry.ownershipGeneration ||
         writeEpoch !== clearEpoch ||
@@ -281,10 +357,17 @@ export function createTranscriptResidency(
         entry.current = false;
         return false;
       }
+      if (entry.residentBytes > 0 && port.resident(ref)) {
+        const exactWithLaterDeltas = bytes + entry.residentPostCutBytes;
+        residentBudget.release(entry.residentBytes);
+        if (residentBudget.reserve(exactWithLaterDeltas)) entry.residentBytes = exactWithLaterDeltas;
+        else residentBudget.reserve(entry.residentBytes);
+      }
+      entry.residentPostCutBytes = 0;
       entry.checkpointSequence = record.appliedSequence;
-      entry.current = record.appliedSequence >= entry.appliedSequence;
+      entry.current = !entry.needsRecovery && record.appliedSequence >= entry.appliedSequence;
       entry.checkpointOwnershipGeneration = ownerGeneration;
-      entry.persistence = "enabled";
+      if (!entry.needsRecovery) entry.persistence = "enabled";
       if (
         entry.current &&
         (entry.evictAfterCommit || (entry.residentBytes === 0 && entry.handoffBytes > 0)) &&
@@ -354,41 +437,23 @@ export function createTranscriptResidency(
     return drainPromise;
   }
 
-  async function hydrate(ref: string, intent: "background" | "foreground"): Promise<void> {
-    if (!ready || disposed) return;
-    const controller = new AbortController();
-    controllers.set(ref, controller);
-    const run = async (): Promise<void> => {
-      networkHydrations += 1;
-      try {
-        await port.hydrate(ref, intent, controller.signal);
-      } finally {
-        networkHydrations -= 1;
-        controllers.delete(ref);
-      }
-    };
-    if (networkHydrations < options.networkHydrations) await run();
-    else {
-      await new Promise<void>((resolve, reject) => {
-        hydrationQueue.push({
-          ref,
-          intent,
-          run: async () => {
-            try {
-              await run();
-              resolve();
-            } catch (error) {
-              reject(error);
-            }
-          },
-        });
-        hydrationQueue.sort((a, b) => Number(b.intent === "foreground") - Number(a.intent === "foreground"));
-      });
+  function startHydration(task: HydrationTask): void {
+    if (task.settled) return;
+    if (task.controller.signal.aborted || disposed || !ready) {
+      settleHydration(task);
+      return;
     }
-    while (networkHydrations < options.networkHydrations && hydrationQueue.length > 0) {
-      const queued = hydrationQueue.shift();
-      if (queued) void queued.run();
-    }
+    task.queued = false;
+    task.started = true;
+    networkHydrations += 1;
+    void task.run(task.controller.signal).then(
+      () => settleHydration(task),
+      (error: unknown) => settleHydration(task, error),
+    );
+  }
+
+  function hydrate(ref: string, intent: "background" | "foreground"): Promise<void> {
+    return residency.scheduleHydration(ref, intent);
   }
 
   const residency: TranscriptResidency = {
@@ -407,18 +472,36 @@ export function createTranscriptResidency(
         if (!owned(entry)) entry.current = false;
         else if (!previouslyOwned) entry.current = false;
       }
+      if (held(entry)) {
+        if (entry.residentBytes > 0) residentBudget.release(entry.residentBytes);
+        if (entry.handoffBytes > 0) pendingBudget.release(entry.handoffBytes);
+        entry.residentBytes = 0;
+        entry.handoffBytes = 0;
+      }
       if (owners.foreground > 0) entry.lastForegroundUse = Date.now();
       if (previouslyHeld && !held(entry) && owners.background > 0) {
         const model = port.resident(ref);
         if (model) residency.published(ref, model, entry.appliedSequence);
       } else if (!held(entry) && owners.background > 0 && port.resident(ref)) enqueue(ref);
     },
+    removed(ref) {
+      const entry = entries.get(ref);
+      if (!entry) return;
+      if (entry.residentBytes > 0) residentBudget.release(entry.residentBytes);
+      if (entry.handoffBytes > 0) pendingBudget.release(entry.handoffBytes);
+      entry.residentBytes = 0;
+      entry.handoffBytes = 0;
+      entry.current = false;
+    },
     connection(generation, connected) {
       if (generation !== connectionGeneration || connected !== ready) {
         connectionGeneration = generation;
         ready = connected;
         if (!connected) {
-          for (const controller of controllers.values()) controller.abort();
+          for (const task of hydrationByRef.values()) {
+            task.controller.abort();
+            settleHydration(task);
+          }
           for (const entry of entries.values()) entry.current = false;
         }
       }
@@ -426,6 +509,7 @@ export function createTranscriptResidency(
     accept(ref, update) {
       const entry = entryFor(ref);
       if (entry.owners.background <= 0) return false;
+      if (entry.needsRecovery) return true;
       if (!pendingBudget.reserve(update.bytes)) {
         residency.revoke(ref, "gap");
         return true;
@@ -434,11 +518,16 @@ export function createTranscriptResidency(
       if (!port.resident(ref) && !entry.promoting) enqueue(ref);
       return !port.resident(ref);
     },
-    published(ref, model, appliedSequence) {
+    published(ref, model, appliedSequence, authoritative = false) {
       const entry = entryFor(ref);
+      if (authoritative) {
+        entry.needsRecovery = false;
+        entry.persistence = "enabled";
+      }
       const previouslyApplied = entry.appliedSequence;
       const consumed = entry.pending.filter((update) => update.sequence <= appliedSequence);
       const incrementalBytes = consumed.reduce((sum, update) => sum + update.bytes, 0);
+      if (entry.work && appliedSequence > entry.checkpointSequence) entry.residentPostCutBytes += incrementalBytes;
       const handoffOwnsModel = entry.residentBytes === 0 && entry.handoffBytes > 0;
       entry.appliedSequence = Math.max(entry.appliedSequence, appliedSequence);
       if (entry.appliedSequence > entry.checkpointSequence) entry.current = false;
@@ -446,14 +535,14 @@ export function createTranscriptResidency(
         if (!handoffOwnsModel) pendingBudget.release(incrementalBytes);
         entry.pending = entry.pending.filter((update) => update.sequence > appliedSequence);
       }
-      if (held(entry) || entry.owners.background <= 0) return;
+      if (held(entry) || entry.owners.background <= 0) return true;
       const size =
         (entry.residentBytes > 0 || handoffOwnsModel) && appliedSequence > previouslyApplied
           ? entry.residentBytes + entry.handoffBytes + incrementalBytes
           : encodedPayloadBytes(currentTranscriptState(model));
       if (!Number.isFinite(size)) {
         residency.revoke(ref, "storage");
-        return;
+        return false;
       }
       const old = entry.residentBytes;
       if (old > 0) residentBudget.release(old);
@@ -464,17 +553,18 @@ export function createTranscriptResidency(
           else if (pendingBudget.reserve(size)) entry.handoffBytes = size;
           if (entry.handoffBytes > 0) {
             enqueueLeastRecentlyUsedVictims(ref, size);
-            enqueue(ref);
+            queueMicrotask(() => enqueue(ref));
           } else {
-            entry.current = false;
-            entry.persistence = "repairing";
-            port.unload(ref);
+            if (old > 0 && residentBudget.reserve(old)) entry.residentBytes = old;
+            residency.revoke(ref, "storage");
+            return false;
           }
-        }
-        return;
+        } else return false;
+        return true;
       }
       entry.residentBytes = size;
-      if (!held(entry) && entry.owners.background > 0) scheduleResidentWrite(ref, entry);
+      if (!entry.needsRecovery && !held(entry) && entry.owners.background > 0) scheduleResidentWrite(ref, entry);
+      return true;
     },
     reservePending(_ref, bytes) {
       return pendingBudget.reserve(bytes);
@@ -488,13 +578,11 @@ export function createTranscriptResidency(
       if (resident) return resident;
       if (!entry.current && entry.pending.length === 0 && !entry.work) return undefined;
       entry.promoting = true;
-      while (entry.pending.length > 0 || entry.work) {
-        if (!entry.work) enqueue(ref, true);
-        await runWorker();
-      }
-      const activeGeneration = connectionGeneration;
-      const ownershipGeneration = entry.ownershipGeneration;
       try {
+        const promotionCut = entry.pending.at(-1)?.sequence ?? entry.appliedSequence;
+        if (!(await waitForEntryCut(ref, entry, promotionCut))) return undefined;
+        const activeGeneration = connectionGeneration;
+        const ownershipGeneration = entry.ownershipGeneration;
         const found = await port.cache.getCurrent([ownerToken, ref], Date.now());
         if (
           found?.record &&
@@ -520,6 +608,45 @@ export function createTranscriptResidency(
         entry.promoting = false;
       }
     },
+    scheduleHydration(ref, intent, run) {
+      if (!ready || disposed) return Promise.resolve();
+      const existing = hydrationByRef.get(ref);
+      if (existing) {
+        if (existing.queued && intent === "foreground") {
+          existing.intent = "foreground";
+          hydrationQueue.sort((a, b) => Number(b.intent === "foreground") - Number(a.intent === "foreground"));
+        }
+        return existing.promise;
+      }
+      let resolve!: () => void;
+      let reject!: (error: unknown) => void;
+      const promise = new Promise<void>((complete, fail) => {
+        resolve = complete;
+        reject = fail;
+      });
+      const controller = new AbortController();
+      const task: HydrationTask = {
+        ref,
+        intent,
+        controller,
+        run: run ?? ((signal) => port.hydrate(ref, intent, signal)),
+        promise,
+        resolve,
+        reject,
+        queued: false,
+        started: false,
+        settled: false,
+      };
+      hydrationByRef.set(ref, task);
+      controllers.set(ref, controller);
+      if (networkHydrations < options.networkHydrations) startHydration(task);
+      else {
+        task.queued = true;
+        hydrationQueue.push(task);
+        hydrationQueue.sort((a, b) => Number(b.intent === "foreground") - Number(a.intent === "foreground"));
+      }
+      return promise;
+    },
     async drain(ref) {
       const entry = entries.get(ref);
       if (!entry) return;
@@ -530,6 +657,7 @@ export function createTranscriptResidency(
       const entry = entryFor(ref);
       releaseEntryPending(entry);
       entry.current = false;
+      entry.needsRecovery = _reason !== "deleted";
       entry.persistence = "repairing";
       if (_reason !== "deleted" && entry.owners.background > 0 && ready) {
         void hydrate(ref, held(entry) ? "foreground" : "background");
@@ -541,22 +669,27 @@ export function createTranscriptResidency(
         entry.current = false;
         entry.persistence = "clear-suppressed";
         if (entry.flushTimer) clearTimeout(entry.flushTimer);
+        if (entry.maxWaitTimer) clearTimeout(entry.maxWaitTimer);
         entry.flushTimer = undefined;
+        entry.maxWaitTimer = undefined;
         releaseEntryPending(entry);
       }
       for (const controller of controllers.values()) controller.abort();
     },
     dispose() {
       disposed = true;
-      for (const controller of controllers.values()) controller.abort();
+      for (const task of hydrationByRef.values()) {
+        task.controller.abort();
+        settleHydration(task);
+      }
       for (const entry of entries.values()) {
         if (entry.flushTimer) clearTimeout(entry.flushTimer);
+        if (entry.maxWaitTimer) clearTimeout(entry.maxWaitTimer);
         releaseEntryPending(entry);
       }
       entries.clear();
       workQueue.length = 0;
       urgentQueue.length = 0;
-      hydrationQueue.length = 0;
     },
     async settled() {
       while (true) {

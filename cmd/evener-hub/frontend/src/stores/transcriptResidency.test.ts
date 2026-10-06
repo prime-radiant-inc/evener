@@ -1,6 +1,6 @@
 import "fake-indexeddb/auto";
-import { currentTranscriptState, hydrateThread, type ThreadModel } from "@evener/appwire-client";
-import { currentRead } from "@evener/appwire-client/testing/currentTranscript";
+import { applyNotification, currentTranscriptState, hydrateThread, type ThreadModel } from "@evener/appwire-client";
+import { currentRead, textDelta } from "@evener/appwire-client/testing/currentTranscript";
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, describe, expect, test, vi } from "vitest";
@@ -245,5 +245,216 @@ describe("transcript residency", () => {
     expect(snapshot.refs.get(second.ref)?.resident).toBe(false);
     expect(snapshot.refs.get(third.ref)?.resident).toBe(true);
     expect(hydrateCalls).toBe(0);
+  });
+
+  test("uses a one-second trailing checkpoint delay", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const cache = new SessionCacheIndexedDB({
+      indexedDB: new IDBFactory(),
+      databaseName: `residency-${crypto.randomUUID()}`,
+    });
+    caches.push(cache);
+    const ref = "local:timed";
+    let model: ThreadModel | undefined = hydrateThread(currentRead(ref), ref, 1);
+    const port: TranscriptResidencyPort = {
+      cache,
+      resident: () => model,
+      publish: (_ref, next) => {
+        model = next;
+      },
+      unload: () => {
+        model = undefined;
+      },
+      admission: () => undefined,
+      fold: (_ref, current, update) => applyNotification(current, update.notification, update.now),
+      hydrate: async () => {},
+    };
+    const residency = createTranscriptResidency(port, DEFAULT_BACKGROUND_TRANSCRIPT_OPTIONS);
+    const originalPut = cache.putCurrent.bind(cache);
+    const put = vi.spyOn(cache, "putCurrent").mockImplementation((record, now) => originalPut(record, now));
+    try {
+      residency.connection(1, true);
+      residency.owners(ref, { foreground: 0, history: 0, mutationPinned: false, background: 1 });
+      residency.published(ref, model!, 0);
+      await residency.settled();
+      put.mockClear();
+
+      const notification = textDelta(ref, "🙂0");
+      model = applyNotification(model!, notification, Date.now());
+      residency.published(ref, model!, 1);
+      await vi.advanceTimersByTimeAsync(999);
+      expect(put).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      await vi.waitFor(() => expect(put).toHaveBeenCalledTimes(1));
+      await residency.settled();
+    } finally {
+      residency.dispose();
+      put.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  test("caps a streaming checkpoint burst at five seconds", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const cache = new SessionCacheIndexedDB({
+      indexedDB: new IDBFactory(),
+      databaseName: `residency-${crypto.randomUUID()}`,
+    });
+    caches.push(cache);
+    const ref = "local:maximum";
+    let model: ThreadModel | undefined = hydrateThread(currentRead(ref), ref, 1);
+    const port: TranscriptResidencyPort = {
+      cache,
+      resident: () => model,
+      publish: (_ref, next) => {
+        model = next;
+      },
+      unload: () => {
+        model = undefined;
+      },
+      admission: () => undefined,
+      fold: (_ref, current, update) => applyNotification(current, update.notification, update.now),
+      hydrate: async () => {},
+    };
+    const residency = createTranscriptResidency(port, DEFAULT_BACKGROUND_TRANSCRIPT_OPTIONS);
+    const originalPut = cache.putCurrent.bind(cache);
+    const put = vi.spyOn(cache, "putCurrent").mockImplementation((record, now) => originalPut(record, now));
+    try {
+      residency.connection(1, true);
+      residency.owners(ref, { foreground: 0, history: 0, mutationPinned: false, background: 1 });
+      residency.published(ref, model!, 0);
+      await residency.settled();
+      put.mockClear();
+      for (let index = 0; index < 7; index += 1) {
+        const notification = textDelta(ref, `🙂${index}`);
+        model = applyNotification(model!, notification, Date.now());
+        residency.published(ref, model!, index + 1);
+        if (index < 6) await vi.advanceTimersByTimeAsync(800);
+      }
+      await vi.advanceTimersByTimeAsync(199);
+      expect(put).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      await vi.waitFor(() => expect(put).toHaveBeenCalledTimes(1));
+    } finally {
+      residency.dispose();
+      put.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  test("foreground promotion settles its ref after a bounded cut, not the global drain", async () => {
+    const cache = new SessionCacheIndexedDB({
+      indexedDB: new IDBFactory(),
+      databaseName: `residency-${crypto.randomUUID()}`,
+    });
+    caches.push(cache);
+    const target = hydrateThread(currentRead("local:target"), "local:target", 1);
+    const unrelated = hydrateThread(currentRead("local:unrelated"), "local:unrelated", 1);
+    const residents = new Map<string, ThreadModel>([
+      [target.ref, target],
+      [unrelated.ref, unrelated],
+    ]);
+    const port: TranscriptResidencyPort = {
+      cache,
+      resident: (ref) => residents.get(ref),
+      publish: (ref, model) => {
+        residents.set(ref, model);
+      },
+      unload: (ref) => {
+        residents.delete(ref);
+      },
+      admission: () => undefined,
+      fold: (_ref, model, update) => applyNotification(model, update.notification, update.now),
+      hydrate: async () => {},
+    };
+    const residency = createTranscriptResidency(port, {
+      ...DEFAULT_BACKGROUND_TRANSCRIPT_OPTIONS,
+      residentBytes: 0,
+    });
+    residency.connection(1, true);
+    for (const model of [target, unrelated]) {
+      residency.owners(model.ref, { foreground: 0, history: 0, mutationPinned: false, background: 1 });
+      residency.published(model.ref, model, 0);
+    }
+    await residency.settled();
+
+    const targetWrite = deferred<void>();
+    const targetWriteReached = deferred<void>();
+    const unrelatedWrite = deferred<void>();
+    const unrelatedWriteReached = deferred<void>();
+    const promotionLookup = deferred<void>();
+    const releasePromotionLookup = deferred<void>();
+    let holdPromotionLookup = false;
+    let promotionLookupStarted = false;
+    let targetWriteStarted = false;
+    let unrelatedWriteStarted = false;
+    const originalPut = cache.putCurrent.bind(cache);
+    const put = vi.spyOn(cache, "putCurrent").mockImplementation(async (record, now) => {
+      if (record.ref === target.ref && !targetWriteStarted) {
+        targetWriteStarted = true;
+        targetWriteReached.resolve();
+        await targetWrite.promise;
+      } else if (record.ref === unrelated.ref && !unrelatedWriteStarted) {
+        unrelatedWriteStarted = true;
+        unrelatedWriteReached.resolve();
+        await unrelatedWrite.promise;
+      }
+      return originalPut(record, now);
+    });
+    const originalGet = cache.getCurrent.bind(cache);
+    const get = vi.spyOn(cache, "getCurrent").mockImplementation(async (...args) => {
+      if (holdPromotionLookup && args[0][1] === target.ref) {
+        promotionLookupStarted = true;
+        promotionLookup.resolve();
+        await releasePromotionLookup.promise;
+      }
+      return originalGet(...args);
+    });
+    let promotion: Promise<ThreadModel | undefined> | undefined;
+    try {
+      const throughCut = textDelta(target.ref, "-through-cut");
+      residency.accept(target.ref, {
+        notification: throughCut,
+        sequence: 1,
+        now: 2,
+        bytes: encodedPayloadBytes(throughCut),
+      });
+      await targetWriteReached.promise;
+      holdPromotionLookup = true;
+      promotion = residency.promote(target.ref);
+      const unrelatedFrame = textDelta(unrelated.ref, "-unrelated");
+      residency.accept(unrelated.ref, {
+        notification: unrelatedFrame,
+        sequence: 1,
+        now: 3,
+        bytes: encodedPayloadBytes(unrelatedFrame),
+      });
+      targetWrite.resolve();
+      await unrelatedWriteReached.promise;
+      await vi.waitFor(() => expect(promotionLookupStarted).toBe(true), { timeout: 500 });
+
+      const later = textDelta(target.ref, "-later");
+      residency.accept(target.ref, {
+        notification: later,
+        sequence: 2,
+        now: 4,
+        bytes: encodedPayloadBytes(later),
+      });
+      releasePromotionLookup.resolve();
+      const promoted = await promotion;
+      expect(promoted).toBeDefined();
+      const text = JSON.stringify(currentTranscriptState(promoted!));
+      expect(text).toContain("-through-cut");
+      expect(text).toContain("-later");
+      expect(put).toHaveBeenCalledTimes(2);
+    } finally {
+      targetWrite.resolve();
+      unrelatedWrite.resolve();
+      releasePromotionLookup.resolve();
+      await promotion?.catch(() => undefined);
+      get.mockRestore();
+      put.mockRestore();
+      residency.dispose();
+    }
   });
 });

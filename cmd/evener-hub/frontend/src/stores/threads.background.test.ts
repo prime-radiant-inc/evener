@@ -239,7 +239,7 @@ describe("background thread claims", () => {
 
   test("accounts two completed hydrations and deltas while the real checkpoint transaction is held", async () => {
     const restoreOptions = installBackgroundTranscriptOptionsForTests({
-      residentBytes: 1024,
+      residentBytes: 1024 * 1024,
       pendingBytes: 4 * 1024 * 1024,
     });
     resetThreadsStoreForTests();
@@ -252,33 +252,60 @@ describe("background thread claims", () => {
     connectionStore.getState().connect(fake);
     const first = acquireBackgroundThread("local:one");
     const second = acquireBackgroundThread("local:two");
-    const transaction = holdNextWriteTransaction(["records", "meta", "current", "currentMeta"]);
     const acceptedFrames: AnyNotification[] = [];
     const writePayloads: Array<{ state: unknown; bytes: number; recordBytes: number }> = [];
+    const putCurrentStarted = deferred<void>();
+    let transaction: ReturnType<typeof holdNextWriteTransaction> | undefined;
+    const publicationAccounting: Array<{ retainedBytes: number; chargedBytes: number }> = [];
+    const observeAccounting = threadsStore.subscribe((state) => {
+      const retainedBytes = [...state.threads.values()].reduce(
+        (sum, model) => sum + independentJsonBytes(currentTranscriptState(model)),
+        0,
+      );
+      const snapshot = backgroundTranscriptSnapshotForTests();
+      publicationAccounting.push({
+        retainedBytes,
+        chargedBytes: snapshot.residentBytes + snapshot.pendingBytes + snapshot.workerBytes,
+      });
+    });
     const originalPutCurrent = cache.putCurrent.bind(cache);
     const putCurrent = vi.spyOn(cache, "putCurrent").mockImplementation(async (record, now) => {
-      writePayloads.push({
-        state: record.state,
-        bytes: independentJsonBytes(record),
-        recordBytes: independentJsonBytes(record),
-      });
+      if (!transaction) {
+        writePayloads.push({
+          state: record.state,
+          bytes: independentJsonBytes(record),
+          recordBytes: independentJsonBytes(record),
+        });
+        transaction = holdNextWriteTransaction(["records", "meta", "current", "currentMeta"]);
+        putCurrentStarted.resolve();
+      }
       return originalPutCurrent(record, now);
     });
     const payload = (ref: string) => {
       const response = currentRead(ref);
-      response.overlay![0]!.item.text = "x".repeat(1024 * 1024);
+      response.overlay![0]!.item.text = "x".repeat(256 * 1024);
       return response;
     };
     try {
       await vi.waitFor(() => expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(2));
       const firstResponse = payload("local:one");
       one.resolve(firstResponse);
-      await transaction.reached;
+      await vi.waitFor(() => expect(threadsStore.getState().hydrations.get("local:one")).toBeGreaterThan(0), {
+        timeout: 1500,
+      });
       const secondResponse = payload("local:two");
-      const secondHydration = waitForHydration("local:two", 1);
       two.resolve(secondResponse);
-      await secondHydration;
+      await vi.waitFor(() => expect(threadsStore.getState().hydrations.get("local:two")).toBeGreaterThan(0), {
+        timeout: 1500,
+      });
       expect(threadsStore.getState().threads.has("local:two")).toBe(true);
+
+      const firstFrame = textDelta("local:one", "🙂".repeat(1024));
+      acceptedFrames.push(firstFrame);
+      fake.emitNotification(firstFrame);
+      await vi.waitFor(() => expect(writePayloads.length).toBeGreaterThan(0), { timeout: 1500 });
+      await putCurrentStarted.promise;
+      await transaction?.reached;
 
       // The first write payload is retained inside the real cache put call while
       // its four-store IndexedDB transaction is held. The second decoded model
@@ -294,33 +321,85 @@ describe("background thread claims", () => {
       expect(secondStateBytes).toBeGreaterThan(1024);
       expect(heldSnapshot.workerBytes).toBeGreaterThanOrEqual(firstBodyBytes);
       expect(firstWrite?.recordBytes).toBeGreaterThan(firstBodyBytes);
-      expect(heldSnapshot.pendingBytes + heldSnapshot.residentBytes).toBeGreaterThanOrEqual(secondStateBytes);
-      expect(firstBodyBytes + secondStateBytes).toBeGreaterThan(heldSnapshot.residentBytes);
+      expect(heldSnapshot.residentBytes + heldSnapshot.pendingBytes + heldSnapshot.workerBytes).toBeGreaterThanOrEqual(
+        firstBodyBytes + secondStateBytes,
+      );
 
-      for (let i = 0; i < 16; i += 1) {
+      for (let i = 0; i < 15; i += 1) {
         const frame = textDelta("local:one", "🙂".repeat(1024));
         acceptedFrames.push(frame);
         fake.emitNotification(frame);
         const snapshot = backgroundTranscriptSnapshotForTests();
-        expect(snapshot.residentBytes).toBeLessThanOrEqual(1024);
+        expect(snapshot.residentBytes).toBeLessThanOrEqual(1024 * 1024);
         expect(snapshot.pendingBytes).toBeLessThanOrEqual(4 * 1024 * 1024);
         expect(snapshot.diskWorkers).toBeLessThanOrEqual(1);
         expect(snapshot.networkHydrations).toBeLessThanOrEqual(2);
         expect(snapshot.workerBytes).toBeLessThanOrEqual(32 * 1024 * 1024);
       }
+      const toolKey = "stream:accounting/0:toolOutput";
+      const toolUpsert = {
+        method: "overlay/upserted",
+        params: {
+          threadId: "thr_local:one",
+          ref: "local:one",
+          item: {
+            key: toolKey,
+            kind: "stream",
+            turnId: "turn_1",
+            roundId: "accounting",
+            streamId: "accounting/0",
+            callId: "call_accounting",
+            item: {
+              type: "commandExecution",
+              id: "item_accounting_tool",
+              turnId: "turn_1",
+              roundId: "accounting",
+              callId: "call_accounting",
+              status: "inProgress",
+            },
+          },
+        },
+      } as AnyNotification;
+      const toolOutput = {
+        method: "overlay/delta",
+        params: {
+          threadId: "thr_local:one",
+          ref: "local:one",
+          key: toolKey,
+          field: "output",
+          delta: JSON.stringify({ structured: { output: ["工具", 7, { retained: true }] } }),
+        },
+      } as AnyNotification;
+      acceptedFrames.push(toolUpsert, toolOutput);
+      fake.emitNotification(toolUpsert);
+      fake.emitNotification(toolOutput);
+      expect(threadsStore.getState().threads.get("local:one")?.overlay?.[toolKey]?.item.output).toContain(
+        '"retained":true',
+      );
+      expect(publicationAccounting.length).toBeGreaterThan(0);
+      expect(publicationAccounting.every(({ retainedBytes, chargedBytes }) => chargedBytes >= retainedBytes)).toBe(
+        true,
+      );
       expect(acceptedFrames.every((frame) => independentJsonBytes(frame) > 0)).toBe(true);
-      expect(backgroundTranscriptSnapshotForTests().pendingBytes).toBeGreaterThanOrEqual(
-        acceptedFrames.reduce((sum, frame) => sum + independentJsonBytes(frame), 0),
+      const retainedBytes = [...threadsStore.getState().threads.values()].reduce(
+        (sum, model) => sum + independentJsonBytes(currentTranscriptState(model)),
+        0,
+      );
+      const acceptedFrameBytes = acceptedFrames.reduce((sum, frame) => sum + independentJsonBytes(frame), 0);
+      const chargedBytes = backgroundTranscriptSnapshotForTests();
+      expect(chargedBytes.residentBytes + chargedBytes.pendingBytes + chargedBytes.workerBytes).toBeGreaterThanOrEqual(
+        retainedBytes + acceptedFrameBytes,
       );
       expect(encodedPayloadBytes({ text: "🙂", raw: { output: ["工具", 7] } })).toBe(
         new TextEncoder().encode(JSON.stringify({ text: "🙂", raw: { output: ["工具", 7] } })).byteLength,
       );
-      expect(backgroundTranscriptSnapshotForTests().pendingBytes).toBeGreaterThan(0);
-      transaction.release();
+      expect(backgroundTranscriptSnapshotForTests().workerBytes).toBeGreaterThan(0);
+      transaction?.release();
+      await vi.waitFor(() => expect(backgroundTranscriptSnapshotForTests().diskWorkers).toBe(0), { timeout: 1000 });
       await settleBackgroundTranscriptsForTests();
       const completed = backgroundTranscriptSnapshotForTests();
       expect(completed.diskWorkers).toBe(0);
-      expect(completed.refs.get("local:one")?.current).toBe(true);
+      expect(completed.refs.get("local:one")?.current, JSON.stringify(completed.refs.get("local:one"))).toBe(true);
       expect(completed.refs.get("local:two")?.current).toBe(true);
       const readsBeforePromotion = fake.calls.filter((call) => call.method === "thread/read").length;
       await threadsStore.getState().ensureThread("local:one");
@@ -333,8 +412,9 @@ describe("background thread claims", () => {
       expect(text.match(/🙂/gu)).toHaveLength(1024 * 16);
       expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(readsBeforePromotion);
     } finally {
-      transaction.release();
+      transaction?.release();
       putCurrent.mockRestore();
+      observeAccounting();
       threadsStore.getState().releaseThread("local:one");
       await Promise.all([first.release(), second.release()]);
       await settleBackgroundTranscriptsForTests();

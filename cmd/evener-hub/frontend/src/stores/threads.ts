@@ -1308,6 +1308,7 @@ function dropUnpinnedModel(ref: string, flush = true): void {
     const cacheLifetimes = releaseCacheLifetime(state.cacheLifetimes, ref);
     return { threads, frameTimes, hydrations, cacheLifetimes };
   });
+  residencyIfCreated?.removed(ref);
 }
 
 async function refreshMutationPins(runtime: MutationRuntime, targetRefs: Iterable<string>): Promise<void> {
@@ -3374,7 +3375,6 @@ function publishThreadHydration(ref: string, pending: PendingThreadHydration, mo
   releasePendingHydrationBytes(ref, pending);
 
   pendingThreadHydrations.delete(ref);
-  putThreadModel(ref, hydrated);
   currentAdmissions.set(ref, {
     capabilities: hydrated.capabilities,
     capabilitySource: hydrated.capabilitySource,
@@ -3382,9 +3382,11 @@ function publishThreadHydration(ref: string, pending: PendingThreadHydration, mo
     resumeRequired: hydrated.resumeRequired,
     resumeOnlyFoldable: hydrated.resumeOnlyFoldable,
   });
-  setCurrentThreadId(ref, hydrated.threadId);
   currentAppliedSequences.set(ref, currentAppliedSequences.get(ref) ?? 0);
-  residencyIfCreated?.published(ref, hydrated, currentAppliedSequences.get(ref) ?? 0);
+  if (residencyIfCreated && !residencyIfCreated.published(ref, hydrated, currentAppliedSequences.get(ref) ?? 0, true))
+    return null;
+  putThreadModel(ref, hydrated);
+  setCurrentThreadId(ref, hydrated.threadId);
   // The first authoritative publish ends the cached-shell window: the flag
   // and the gap rule's anchor live only from the shell's arming until this
   // read's publish (spec, "The load seam"); the lease outlives
@@ -3795,6 +3797,28 @@ function handleNotification(n: AnyNotification): void {
     acceptedRefs: acceptedWatchedThreads,
     endedResumeOnlyRefs: endedWatchedResumeOnly,
   } = applyToMap(watchedThreads, watchedThreadsIndex, n, now, pendingWatchedRefs);
+  let publishableThreads = nextThreads;
+  let publishableChangedThreads = changedThreads;
+  let publishableEndedResumeOnly = endedThreadsResumeOnly;
+  if (nextThreads && residencyIfCreated) {
+    const refused = new Set<string>();
+    for (const ref of acceptedThreads) {
+      const model = nextThreads.get(ref);
+      if (model && !residencyIfCreated.published(ref, model, currentAppliedSequences.get(ref) ?? 0)) {
+        refused.add(ref);
+      }
+    }
+    if (refused.size > 0) {
+      publishableThreads = new Map(nextThreads);
+      for (const ref of refused) {
+        const previous = threads.get(ref);
+        if (previous) publishableThreads.set(ref, previous);
+        else publishableThreads.delete(ref);
+      }
+      publishableChangedThreads = changedThreads.filter((ref) => !refused.has(ref));
+      publishableEndedResumeOnly = endedThreadsResumeOnly.filter((ref) => !refused.has(ref));
+    }
+  }
   if (n.method === "evener/goal/updated") {
     for (const ref of acceptedThreads) acceptedGoalRefs.add(ref);
     for (const ref of acceptedWatchedThreads) acceptedGoalRefs.add(ref);
@@ -3815,24 +3839,22 @@ function handleNotification(n: AnyNotification): void {
   // (reducer.ts's classifySignal): the reducer marks the thread invalid,
   // whatever notification carried the signal, and this is the one place that
   // reacts to it, so a re-read is never missed nor duplicated per method.
-  const invalidatedThreadRefs = newlyInvalidatedHistoryRefs(threads, nextThreads, changedThreads);
+  const invalidatedThreadRefs = newlyInvalidatedHistoryRefs(threads, publishableThreads, publishableChangedThreads);
   const invalidatedWatchedRefs = newlyInvalidatedHistoryRefs(watchedThreads, nextWatchedThreads, changedWatchedThreads);
 
   const patch: Partial<ThreadsStoreState> = {};
-  if (nextThreads) {
-    patch.threads = nextThreads;
+  if (publishableThreads) {
+    patch.threads = publishableThreads;
     const nextFrameTimes = new Map(frameTimes);
-    for (const ref of changedThreads) nextFrameTimes.set(ref, appendFrameTime(frameTimes.get(ref) ?? [], now));
+    for (const ref of publishableChangedThreads)
+      nextFrameTimes.set(ref, appendFrameTime(frameTimes.get(ref) ?? [], now));
     patch.frameTimes = nextFrameTimes;
   }
   if (nextWatchedThreads) {
     patch.watchedThreads = nextWatchedThreads;
   }
   threadsStore.setState(patch);
-  for (const ref of acceptedThreads) {
-    const model = threadsStore.getState().threads.get(ref);
-    if (model) residencyIfCreated?.published(ref, model, currentAppliedSequences.get(ref) ?? 0);
-  }
+  // Every accepted model was accounted before the synchronous subscriber call.
 
   // A status frame that moved a ref off the shut-down set ends the
   // merely-resumable window: the recovery obligation the same shut-down
@@ -3842,8 +3864,8 @@ function handleNotification(n: AnyNotification): void {
   // resumeOnlyFoldable bit was cleared, so the composer routes normally. The
   // fold withholds a ref a Stop this page started still owns (see
   // settleResumeOnlyOffShutdown), so every reported ref is this clear's to make.
-  if (endedThreadsResumeOnly.length > 0 || endedWatchedResumeOnly.length > 0) {
-    const endedRefs = new Set([...endedThreadsResumeOnly, ...endedWatchedResumeOnly]);
+  if (publishableEndedResumeOnly.length > 0 || endedWatchedResumeOnly.length > 0) {
+    const endedRefs = new Set([...publishableEndedResumeOnly, ...endedWatchedResumeOnly]);
     threadsStore.setState((state) => {
       const restartBlockingObligations = new Map(state.restartBlockingObligations);
       for (const ref of endedRefs) restartBlockingObligations.delete(ref);
@@ -4068,6 +4090,43 @@ function unwindStopCanceledRefresh(ref: string, attempt?: number): void {
 // for notifications the old relay missed. A rejection keeps the last published
 // model and leaves the next read to this ref's owned retry lifecycle.
 async function refreshTrackedThread(
+  client: AppwireClientLike,
+  epoch: number,
+  ref: string,
+  targetedResync: boolean,
+  reportFailure = false,
+  beforePublish?: () => void,
+  reopenOnlyClientMutationId?: string,
+  intent: HydrationIntent = "foreground",
+): Promise<number | undefined> {
+  if (intent !== "background")
+    return refreshTrackedThreadNow(
+      client,
+      epoch,
+      ref,
+      targetedResync,
+      reportFailure,
+      beforePublish,
+      reopenOnlyClientMutationId,
+      intent,
+    );
+  let attempt: number | undefined;
+  await transcriptResidency().scheduleHydration(ref, intent, async () => {
+    attempt = await refreshTrackedThreadNow(
+      client,
+      epoch,
+      ref,
+      targetedResync,
+      reportFailure,
+      beforePublish,
+      reopenOnlyClientMutationId,
+      intent,
+    );
+  });
+  return attempt;
+}
+
+async function refreshTrackedThreadNow(
   client: AppwireClientLike,
   epoch: number,
   ref: string,
@@ -5852,11 +5911,12 @@ function transcriptResidency(): TranscriptResidency {
       },
       admission: (ref) => currentAdmissions.get(ref),
       fold: (_ref, model, update) => foldCanonicalNotification(model, update.notification, update.now).model,
+      writeTimers: () => cacheWriteTimers,
       hydrate: async (ref, intent, signal) => {
         if (signal.aborted) return;
         const client = await requireReadyClient();
         const epoch = readyEpoch;
-        await refreshTrackedThread(client, epoch, ref, false, false, undefined, undefined, intent);
+        await refreshTrackedThreadNow(client, epoch, ref, false, false, undefined, undefined, intent);
       },
     },
     backgroundTranscriptOptions(),
