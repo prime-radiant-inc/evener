@@ -140,6 +140,9 @@ func scriptedAdminRemote(
 		}
 		data, err := json.Marshal(result)
 		if err != nil {
+			// A reply the script cannot encode is a broken test, not a
+			// dropped answer the client would only see as a timeout.
+			t.Errorf("encode scripted reply to %s: %v", req.Method, err)
 			return false
 		}
 		return server.Send(ctx, appwire.ResponseMessage(req.ID, json.RawMessage(data))) == nil
