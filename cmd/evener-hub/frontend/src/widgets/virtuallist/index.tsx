@@ -323,9 +323,9 @@ export function VirtualList({
   // Width changes can remeasure cached rows during a backward gesture.
   // Anchor rows fully above the viewport while retaining the upstream
   // protection against adjustment within a partially visible backward row.
-  // A reader (onLayout) keeps this rule while anchorToEnd is off: its movement
-  // record outlives the core's scroll direction, which resets 150ms after the
-  // last scroll event.
+  // A reader keeps this rule while anchorToEnd is off: onLayout is what feeds
+  // its movement record, which outlives the core's scroll direction (reset
+  // 150ms after the last scroll event).
   virtualizer.shouldAdjustScrollPositionOnItemSizeChange =
     dynamic && (anchorToEnd || onLayout)
       ? (item, _delta, instance) => {
