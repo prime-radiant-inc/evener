@@ -1038,8 +1038,9 @@ test("the real live Composer mount discovers initial activity without a test-sup
   const activityRefs: unknown[] = [];
   fake.on("thread/read", () => readResponse(ref));
   fake.on("evener/thread/activity/read", (params) => {
-    activityRefs.push(params.ref);
-    return activitySummary(params.ref);
+    // Discovery is the session read; the subtree read is the subagent count's own.
+    if (params.scope !== "subtree") activityRefs.push(params.ref);
+    return { ...activitySummary(params.ref), scope: params.scope ?? "session" };
   });
   await threadsStore.getState().ensureThread(ref);
   expect(activityPanelStore.getState().entries.has(ref)).toBe(false);
@@ -1068,8 +1069,9 @@ test("a saved notLoaded session with sending enabled discovers activity while it
     }),
   );
   fake.on("evener/thread/activity/read", (params) => {
-    activityRefs.push(params.ref);
-    return activitySummary(params.ref);
+    // Discovery is the session read; the subtree read is the subagent count's own.
+    if (params.scope !== "subtree") activityRefs.push(params.ref);
+    return { ...activitySummary(params.ref), scope: params.scope ?? "session" };
   });
   await threadsStore.getState().ensureThread(ref);
 
@@ -3574,8 +3576,9 @@ test("a saved local notLoaded session keeps controls and one discovery owner at 
     {
       prepare: (fake) => {
         fake.on("evener/thread/activity/read", (params) => {
-          activityRefs.push(params.ref);
-          return activitySummary(params.ref);
+          // Discovery is the session read; the subtree read is the subagent count's own.
+          if (params.scope !== "subtree") activityRefs.push(params.ref);
+          return { ...activitySummary(params.ref), scope: params.scope ?? "session" };
         });
       },
     },

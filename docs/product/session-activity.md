@@ -695,15 +695,19 @@ cause an activity read for every session in the navigation rail.
 Session chrome and the navigation rail expose Overview through their session
 action menus. On the phone, that action opens the full-screen shared activity
 sidebar, preserving the last selected category for the focused session. Its
-optional active count sums the session's authoritative job and delegate active
-counts only when both are known; watches and completed work are not part of that
-number. The sidebar's Agents, Jobs, Watches and Tasks tabs use session-scoped
+optional active count sums the subagents running at every depth and the
+session's own running jobs, only when both are known; watches and completed work
+are not part of that number. The sidebar's Agents, Jobs, Watches and Tasks tabs use session-scoped
 reads on both viewports; About uses the shared session model. The Agents count
 is the exception: the footer chip, the sidebar's Agents tab label, each
-cascade scope's Agents chip and the transcript's liveness line all count
-subagents at every depth, from the subtree summary
+cascade scope's Agents chip, the Overview and Activity action counts and the
+transcript's liveness line all count subagents at every depth, from the subtree
+summary
 ([`useSubagentCounts`](../../cmd/evener-hub/frontend/src/stores/sessionActivity.ts)),
-while the Agents tab lists the session's own.
+while the Agents tab lists the session's own. That count owns its own
+summary-only subtree store, apart from any view's, so an always-mounted count
+never keeps a closed Activity sheet's collection reads alive: closing the sheet
+still disposes its store and fences its late pages.
 The workspace registers only Tasks and Details session panels. Saved Activity
 placements are unknown panes: the existing workspace restore omits them,
 preserves registered panes and selects useful surviving focus. A valid primary

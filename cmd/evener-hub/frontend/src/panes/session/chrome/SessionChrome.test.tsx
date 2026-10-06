@@ -1111,15 +1111,22 @@ test("triggerless chrome shares summary ownership and refreshes its menu on type
     ref = "ref_activity_bg";
   let active = 1;
   fake.on("thread/read", () => readResponse(ref));
-  fake.on("evener/thread/activity/read", () => ({
+  // The menu counts subagents at every depth: the subtree read, which the
+  // subagent count owns apart from the session's discovery read.
+  fake.on("evener/thread/activity/read", ({ scope }) => ({
     ...activitySummary(ref),
+    scope: scope ?? "session",
     delegates: { known: true, total: active, active, completed: 0, failed: 0 },
     jobs: { known: true, total: 0, active: 0, completed: 0, failed: 0 },
   }));
+  const sessionReads = () =>
+    fake.calls.filter(
+      (c) => c.method === "evener/thread/activity/read" && (c.params as { scope?: string }).scope !== "subtree",
+    );
   await threadsStore.getState().ensureThread(ref);
   render(<SessionChrome ref={ref} />);
   await settleActivityDiscovery(ref);
-  expect(fake.calls.filter((c) => c.method === "evener/thread/activity/read")).toHaveLength(1);
+  expect(sessionReads()).toHaveLength(1);
   const user = userEvent.setup();
   await user.click(screen.getByRole("button", { name: /session actions/i }));
   expect(screen.getByRole("menuitem", { name: "Overview · 1 active" })).toBeTruthy();
@@ -1131,7 +1138,7 @@ test("triggerless chrome shares summary ownership and refreshes its menu on type
       params: { ref, threadId: "owner", sessionId: "owner", resources: ["summary"] },
     }),
   );
-  await waitFor(() => expect(fake.calls.filter((c) => c.method === "evener/thread/activity/read")).toHaveLength(2));
+  await waitFor(() => expect(sessionReads()).toHaveLength(2));
   await settleActivityDiscovery(ref);
   await user.click(screen.getByRole("button", { name: /session actions/i }));
   expect(screen.getByRole("menuitem", { name: "Overview · 3 active" })).toBeTruthy();

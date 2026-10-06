@@ -29,7 +29,9 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-test("closed trigger shares session counts while an open recursive tree owns only visible subtree demand", async () => {
+// The closed trigger counts subagents at every depth (the subtree's 7) plus
+// the session's own running jobs (2), from the count's own summary-only owner.
+test("closed trigger counts subagents at every depth while an open recursive tree owns only visible subtree demand", async () => {
   const client = activityClient();
   client.on("evener/thread/activity/read", ({ ref, scope }) => ({
     ...activitySummary(ref),
@@ -55,18 +57,20 @@ test("closed trigger shares session counts while an open recursive tree owns onl
       <JobsTab scope={deriveScope(navigationStore.getState(), ref, null, null)} />
     </>,
   );
-  await screen.findByRole("button", { name: "Activity · 3 active" });
+  await screen.findByRole("button", { name: "Activity · 9 active" });
   await screen.findByRole("button", { name: /exact selected work/ });
   expect(client.calls.filter((c) => c.method === "evener/thread/delegates/list")).toHaveLength(0);
   expect(client.calls.filter((c) => c.method === "evener/thread/watches/list")).toHaveLength(0);
-  fireEvent.click(screen.getByRole("button", { name: "Activity · 3 active" }));
+  fireEvent.click(screen.getByRole("button", { name: "Activity · 9 active" }));
   await screen.findByText("subtree work");
   expect(sessionActivitySnapshot(client, ref, "subtree")?.summary?.delegates.active).toBe(7);
   expect(
     client.calls.filter((c) => c.method === "thread/read" && (c.params as { subscribe?: boolean }).subscribe),
   ).toHaveLength(1);
   fireEvent.click(screen.getByRole("button", { name: "Close" }));
+  // Closing disposes the tree's store; the count keeps its own.
   await waitFor(() => expect(sessionActivitySnapshot(client, ref, "subtree")).toBeNull());
+  expect(sessionActivitySnapshot(client, ref, "subtree", "count")?.summary?.delegates.active).toBe(7);
   expect(sessionActivitySnapshot(client, ref, "session")?.jobs.complete).toBe(true);
   const before = client.calls.length;
   act(() =>

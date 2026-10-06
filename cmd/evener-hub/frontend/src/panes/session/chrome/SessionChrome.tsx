@@ -50,7 +50,7 @@ import { useWorkspaceStore, workspaceStore } from "../../../shell/workspace";
 import { selectLocation } from "../../../stores/navigation/selectors";
 import { buildShutdownConvergence } from "../../../stores/navigation/shutdownConvergence";
 import { navigationStore, useNavigationStore } from "../../../stores/navigation/store";
-import { useSessionActivity } from "../../../stores/sessionActivity";
+import { useSessionActivity, useSubagentCounts } from "../../../stores/sessionActivity";
 import { threadsStore, useThreadsStore } from "../../../stores/threads";
 import { Cadence, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
@@ -124,6 +124,7 @@ export function SessionChrome({
   // scope, so rail and session menus agree at every viewport.
   const sidebarOpenHere = useActivitySidebarOpenFor(sessionRef);
   const { snapshot: activitySnapshot } = useSessionActivity(sessionRef);
+  const subagents = useSubagentCounts(sessionRef);
   const activitySummary = activitySnapshot?.summary;
   const mutationStateAuthoritative = useThreadsStore((s) => s.mutationAuthorityRefs.has(sessionRef));
   // Route-demanded locations carry the authoritative owner/tier/pin metadata;
@@ -215,7 +216,7 @@ export function SessionChrome({
       activitySidebarStore.getState().openFor(sessionRef);
     }
   };
-  const overviewLabel = activityActionLabel(activitySummary, "Overview");
+  const overviewLabel = activityActionLabel(activitySummary, subagents, "Overview");
 
   // The menu's action adapters, shared by the composer and menu-only
   // placements so the failure convention (SessionMenu.tsx's header comment:
