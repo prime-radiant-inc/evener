@@ -25,9 +25,9 @@ import { hoverForTooltip } from "../../widgets/tooltip/tooltipTestUtils";
 import { Tree, type TreeRowInfo } from "../../widgets/tree";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../activitybar/activitySidebarStore";
 import { registerPaneForTests } from "../paneRegistry";
+import { cadenceStateFor } from "../SessionStatusIndicator";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import {
-  cadenceStateFor,
   watchGloss as domainWatchGloss,
   RailRow,
   type RailRowActions,
@@ -48,6 +48,10 @@ import { RailTickProvider } from "./railNow";
 import { RailRenderObserver } from "./railRenderObserver";
 
 const RAIL_CSS = readModuleCss(import.meta.url, "RailRow.module.css").replace(/\/\*[\s\S]*?\*\//g, " ");
+const STATUS_CSS = readModuleCss(import.meta.url, "../SessionStatusIndicator.module.css").replace(
+  /\/\*[\s\S]*?\*\//g,
+  " ",
+);
 
 function nestedRuleBlock(css: string, selector: string): string {
   const selectorStart = css.indexOf(selector);
@@ -929,14 +933,14 @@ describe("row alignment", () => {
   });
 
   test("status colors are semantic, broken has distinct geometry, and the running ring respects reduced motion", () => {
-    expect(topRuleBlock(RAIL_CSS, '.statusDot[data-status="needs-you"]')).toContain("var(--attention)");
-    expect(topRuleBlock(RAIL_CSS, '.statusDot[data-status="failed"]')).toContain("var(--danger)");
-    expect(topRuleBlock(RAIL_CSS, '.statusDot[data-status="failed"]')).toMatch(
+    expect(topRuleBlock(STATUS_CSS, '.statusDot[data-status="needs-you"]')).toContain("var(--attention)");
+    expect(topRuleBlock(STATUS_CSS, '.statusDot[data-status="failed"]')).toContain("var(--danger)");
+    expect(topRuleBlock(STATUS_CSS, '.statusDot[data-status="failed"]')).toMatch(
       /border-radius:\s*1px;[^}]*rotate\(45deg\)/,
     );
-    const motionRules = mediaBlock(RAIL_CSS, "prefers-reduced-motion: no-preference");
+    const motionRules = mediaBlock(STATUS_CSS, "prefers-reduced-motion: no-preference");
     expect(nestedRuleBlock(motionRules, ".statusSpinner")).toMatch(/animation:/);
-    const baseSpinner = topRuleBlock(RAIL_CSS, ".statusSpinner");
+    const baseSpinner = topRuleBlock(STATUS_CSS, ".statusSpinner");
     expect(baseSpinner).not.toContain("animation:");
   });
 
