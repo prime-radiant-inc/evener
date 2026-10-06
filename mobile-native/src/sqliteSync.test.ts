@@ -5,7 +5,7 @@
 // asserted once against the shared implementation instead of per adapter.
 import { afterEach, expect, test } from "vitest";
 import { type SqliteSync, withSavepoint } from "./sqliteSync";
-import { openSqliteSyncDouble, sqliteSyncDouble } from "./sqliteSync.testkit";
+import { openSqliteSyncDouble, sqliteSyncDouble, withoutSqliteExperimentalWarning } from "./sqliteSync.testkit";
 
 const close: (() => void)[] = [];
 afterEach(() => {
@@ -67,4 +67,41 @@ test("wrapping an existing handle and a spread override share the one double", (
 	};
 	expect(() => overridden.runSync("INSERT INTO t (label) VALUES (?)", "nope")).toThrow("refused");
 	expect(port.getAllSync("SELECT * FROM t")).toEqual([]);
+});
+
+// Node 22 warns once per process that node:sqlite is experimental. The double
+// owns that one expected warning: it drops exactly that line while it loads the
+// module, and lets every other warning through, so the gate's output stays
+// clean without hiding warnings nobody expected (#3672).
+test("drops only node:sqlite's experimental warning while the double loads it", () => {
+	const emit = process.emitWarning;
+	const seen: string[] = [];
+	process.emitWarning = ((warning: string | Error) => {
+		seen.push(typeof warning === "string" ? warning : warning.message);
+	}) as typeof process.emitWarning;
+	try {
+		const loaded = withoutSqliteExperimentalWarning(() => {
+			process.emitWarning("SQLite is an experimental feature and might change at any time", "ExperimentalWarning");
+			process.emitWarning("Some other feature is experimental", "ExperimentalWarning");
+			process.emitWarning(new Error("an unrelated warning"));
+			return "module";
+		});
+		expect(loaded).toBe("module");
+		expect(seen).toEqual(["Some other feature is experimental", "an unrelated warning"]);
+		// Once the module has loaded, the filter is gone.
+		process.emitWarning("SQLite is an experimental feature and might change at any time", "ExperimentalWarning");
+		expect(seen).toHaveLength(3);
+	} finally {
+		process.emitWarning = emit;
+	}
+});
+
+test("puts the warning hook back even when loading the module throws", () => {
+	const emit = process.emitWarning;
+	expect(() =>
+		withoutSqliteExperimentalWarning(() => {
+			throw new Error("no sqlite here");
+		}),
+	).toThrow("no sqlite here");
+	expect(process.emitWarning).toBe(emit);
 });
