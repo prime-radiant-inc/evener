@@ -112,7 +112,7 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) (promptData,
 
 	read := s.memoryContextEnabled()
 	saves := s.memorySaveInstructionsEnabled()
-	_, _, sessionBindErr := s.memoryScopeBinding("session")
+	_, sessionReadOnly, sessionBindErr := s.memoryScopeBinding("session")
 	sessionMemory := read && sessionBindErr == nil
 	data := promptData{
 		NonInteractive:           s.cfg.noOneToAsk(),
@@ -125,8 +125,8 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) (promptData,
 		MemorySaves:              saves,
 		ProjectMemory:            read && s.cfg.MemoryProjectID != "",
 		SessionMemory:            sessionMemory,
-		MemoryDelegate:           s.sessionMemoryReadOnly(),
-		SessionMemorySaves:       saves && sessionMemory && !s.sessionMemoryReadOnly(),
+		MemoryDelegate:           sessionReadOnly,
+		SessionMemorySaves:       saves && sessionMemory && !sessionReadOnly,
 		WorkingDir:               s.envInfo.WorkingDir,
 		IsGitRepo:                s.envInfo.IsGitRepo,
 		GitBranch:                s.envInfo.GitBranch,

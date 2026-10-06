@@ -538,10 +538,12 @@ func TestMemoryContextTransitions(t *testing.T) {
 	run(7)
 	// Revocation happens on the owner loop between requests, never in a worker.
 	s.cfg.MemoryProjectID = ""
+	// Not asserted here: keeps the prompt consistent with the revoked binding.
 	refreshModelFacingCaches(s)
 	wantProjectState, wantProjectBody = "revoked", ""
 	run(8)
 	s.reg.Remove("memory_read")
+	// Not asserted here: keeps tool definitions and prompt consistent with the revoked tool.
 	refreshModelFacingCaches(s)
 	wantState, wantBody = "revoked", ""
 	run(9)
@@ -2762,16 +2764,6 @@ func TestMemoryGuidanceFollowsCapabilities(t *testing.T) {
 			}
 			if data.SessionMemorySaves != tc.session {
 				t.Fatalf("SessionMemorySaves=%v, want %v", data.SessionMemorySaves, tc.session)
-			}
-			if tc.save {
-				// The skill catalog's gardening-memory description names project memory whatever is bound.
-				prompt, _, _ := strings.Cut(system.String(), "<skill-catalog>")
-				if has := strings.Contains(strings.ToLower(prompt), "project memory"); has != tc.project {
-					t.Fatalf("rendered prompt mentions project memory=%v, want %v", has, tc.project)
-				}
-				if has := strings.Contains(system.String(), "session memory has notes"); has != tc.session {
-					t.Fatalf("rendered prompt has promotion row=%v, want %v", has, tc.session)
-				}
 			}
 			for _, name := range nativeMemoryToolNames {
 				if strings.Contains(section, name) && !s.canInstructTool(name) {

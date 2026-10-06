@@ -37,8 +37,7 @@ type promptData struct {
 	// MemorySaves is true when the session may be told to save memory (the
 	// memory save tools are callable).
 	MemorySaves bool
-	// ProjectMemory is true when memory is readable and a project scope is
-	// bound.
+	// ProjectMemory is true when memory is readable and a project id is set.
 	ProjectMemory bool
 	// SessionMemory is true when memory is readable and this session has a
 	// session memory scope: its own for a root session, its root's for a

@@ -288,9 +288,9 @@ You have a memory that outlasts this session.{{ if .MemorySaves }} Save what you
 {{- if .MemorySaves }}
 
 Save a memory when:
-- your human partner corrects you or tells you how they want something done. Save it to personal memory with the reason they gave{{ if .ProjectMemory }}, or to project memory if it only applies here.
+- your human partner corrects you or tells you how they want something done. Save it to personal memory with the reason they gave{{ if .ProjectMemory }}{{/* This branch spans two bullets: it finishes this one and adds the project bullet; the else branch supplies this bullet's period. */}}, or to project memory if it only applies here.
 - your human partner tells you about this project: a plan, a constraint, a decision, or work that is still unfinished. Save it to project memory.{{ else }}.{{ end }}
-{{- if .SessionMemorySaves }}
+{{- if .SessionMemorySaves }}{{/* Only a root session with a bound session scope saves working notes there; delegates read their root's. */}}
 - you are partway through longer work: keep its plan, what you tried and what you ruled out in session memory, so you could pick it up again after compaction or an interruption.
 {{- end }}
 - you learn something the hard way that is not written down where you found it, such as a tool's quirk, how a system behaves, a setup step, or a test suite that silently skips. Save it to personal memory if it holds beyond this project{{ if .ProjectMemory }}, or to project memory if it is about this project{{ end }}.
