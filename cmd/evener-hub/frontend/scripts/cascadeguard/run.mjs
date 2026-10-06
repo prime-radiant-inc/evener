@@ -515,6 +515,10 @@ async function reveal(edge, container) {
       return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
     })()`, "real disclosure or direct page boundary");
     if (button.revealed) return selector;
+    // EXPERIMENT (#3804, reverted by the next commit): widen the gap between
+    // measuring the control and pressing it, so a page the boundary loads on
+    // its own lands first, as it does on a loaded runner.
+    await new Promise((resolve) => setTimeout(resolve, 1500));
     await driver.clickAt(button.x, button.y);
     await wait(`document.querySelector(${q(selector)}) !== null || document.querySelector(${q(container)}).textContent !== ${q(before)}`, "direct collection progresses");
   }
