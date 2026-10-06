@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -48,18 +49,23 @@ func installedTabView(t *testing.T, m hubModel) string {
 // Opening the plugins panel asks the hub which plugins have updates, as the
 // web and phone plugins views do, so the panel can offer Upgrade only there.
 func TestPluginsPanelOpenChecksForUpdates(t *testing.T) {
+	// Like the hub, plugin/list reports what the last check found.
+	var mu sync.Mutex
 	plugin := appwire.PluginEntry{Plugin: "widget", Marketplace: "acme", Enabled: true}
-	checked := plugin
-	checked.UpdateAvailable = true
 	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
 		appserver.HandleTyped(app.Router(), appwire.MethodEvenerMarketplaceList, func(context.Context, appwire.EmptyParams) (appwire.MarketplaceListResponse, error) {
 			return appwire.MarketplaceListResponse{}, nil
 		})
 		appserver.HandleTyped(app.Router(), appwire.MethodEvenerPluginList, func(context.Context, appwire.EmptyParams) (appwire.PluginListResponse, error) {
+			mu.Lock()
+			defer mu.Unlock()
 			return appwire.PluginListResponse{Plugins: []appwire.PluginEntry{plugin}}, nil
 		})
 		appserver.HandleTyped(app.Router(), appwire.MethodEvenerPluginCheckUpdates, func(context.Context, appwire.EmptyParams) (appwire.PluginListResponse, error) {
-			return appwire.PluginListResponse{Plugins: []appwire.PluginEntry{checked}}, nil
+			mu.Lock()
+			defer mu.Unlock()
+			plugin.UpdateAvailable = true
+			return appwire.PluginListResponse{Plugins: []appwire.PluginEntry{plugin}}, nil
 		})
 	})
 	defer cleanup()
