@@ -219,8 +219,8 @@ func (m *Manager) Upgrade(ctx context.Context, plugin, marketplace string) (Inst
 // upgradeAuto both acquire it before calling in).
 //
 // If requireAutoUpgrade is true, the plugin's CURRENT AutoUpgrade flag and
-// whether its source can upgrade are read fresh from the registry — under the lock the
-// caller is holding, immediately before any fetch — and the upgrade is
+// whether its source can upgrade are read fresh from the registry — under the
+// lock the caller is holding, immediately before any fetch — and the upgrade is
 // skipped (skipped=true, no error) if the plugin is no longer eligible. This
 // is what lets the auto-upgrade daemon honor a SetAutoUpgrade(false) (or a
 // switch to a directory source) that lands after a sweep started

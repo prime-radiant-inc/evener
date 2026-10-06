@@ -19,9 +19,10 @@ type UpgradedPlugin struct {
 
 // upgradeAuto acquires the manager lock and, while holding it, upgrades
 // plugin only if it is (still) eligible for unattended upgrade: AutoUpgrade
-// enabled, a source that can upgrade (sourceCannotUpgrade). See upgradeLocked for why the eligibility check and
-// the change-detection both happen fresh, under this same lock acquisition,
-// rather than against a snapshot taken before the lock was acquired.
+// enabled, and a source that can upgrade (sourceCannotUpgrade). See
+// upgradeLocked for why the eligibility check and the change-detection both
+// happen fresh, under this same lock acquisition, rather than against a
+// snapshot taken before the lock was acquired.
 func (m *Manager) upgradeAuto(ctx context.Context, plugin, marketplace string) (entry InstallEntry, changed, skipped bool, err error) {
 	release, err := m.lockStore(ctx, installAcquireLock, 30*time.Second)
 	if err != nil {
@@ -40,7 +41,7 @@ func (m *Manager) upgradeAuto(ctx context.Context, plugin, marketplace string) (
 // regardless of the opt-in flag — an explicit user request overrides the
 // gate. UpdateAutoUpgrade powers the background auto-upgrade daemon (design
 // doc §9.1), which must only touch plugins a user has opted into: enabling
-// autoUpgrade on an already-installed, git-backed plugin is the standing
+// autoUpgrade on an already-installed plugin that can upgrade is the standing
 // consent for the daemon to act on it unattended.
 //
 // The initial registry read below only enumerates WHICH plugins exist; it is

@@ -305,10 +305,10 @@ func TestDoctor_VersionMatch_NoWarning(t *testing.T) {
 }
 
 // TestDoctor_VersionMismatch_DirectorySource_HonestRemediation reproduces the
-// Important finding where a directory (or Rel) source's version-mismatch WARN
-// pointed at `evener plugin upgrade`, which Manager.Upgrade always no-ops for
-// such a source (sourceCannotUpgrade): following the remediation could never
-// clear the warning. The remediation must instead be honest about that.
+// Important finding where an in-place install's (usedInPlace) version-mismatch
+// WARN pointed at `evener plugin upgrade`, which Manager.Upgrade always no-ops
+// for it: following the remediation could never clear the warning. The
+// remediation must instead be honest about that.
 func TestDoctor_VersionMismatch_DirectorySource_HonestRemediation(t *testing.T) {
 	m := NewManager(t.TempDir())
 	dir := filepath.Join(t.TempDir(), "widget")
