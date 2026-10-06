@@ -1133,7 +1133,7 @@ func navigationLogicalFingerprintsWithContext(ctx context.Context, projection na
 		Recent  hubapi.NavigationArray[hubapi.NavigationSessionSummary]
 	}
 	byKey := make(map[string][]projectLogical, len(projection.projects))
-	for _, catalog := range navigationCatalogOrder {
+	for _, catalog := range navigationCatalogOrder() {
 		for _, project := range projection.catalogs[catalog] {
 			if err := ctx.Err(); err != nil {
 				return nil, nil, err
