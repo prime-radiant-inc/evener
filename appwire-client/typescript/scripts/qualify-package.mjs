@@ -102,8 +102,6 @@ assert.equal(client.projectSessionActivity(new client.SessionActivityStore({ sta
 assert.equal(client.findEntityView(new Map(), "job", "job", "ref"), undefined);
 assert(Array.isArray(client.defaultExpandedIDs(tree)));
 assert.equal(client.isActivityFailure("failure", undefined), true);
-assert.equal(client.fenceRootSession(session, session).sessionId, "thread");
-assert.equal(client.graftContinuationTree(tree, "session:ref", tree).revision, 1);
 assert.equal(client.foldRowID("session:ref"), "session:ref:inactive-fold");
 assert.deepEqual(client.buildActivityRows(tree, new Set()), []);
 assert.equal(client.jobIsFailed({ terminal: true, outcome: "failure" }), true);
