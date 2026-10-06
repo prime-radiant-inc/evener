@@ -39,10 +39,10 @@ export function withDetail(words: StepWords, detail: string | undefined): StepWo
   return detail === undefined ? words : { ...words, detail };
 }
 
-/** A read's line range from its requested bounds or the output it returned. */
 /** The header read_file puts before an image or a document's base64 data. */
 export const BINARY_PAYLOAD_HEADER = /^\[(image|document): [^\]]+, base64 data follows\]/;
 
+/** A read's line range from its requested bounds or the output it returned. */
 export function readLineRange(args: Record<string, unknown>, output: string): string | undefined {
   const offsetArg = args.offset;
   const offset = typeof offsetArg === "number" && offsetArg > 0 ? offsetArg : 1;
