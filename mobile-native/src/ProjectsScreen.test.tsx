@@ -52,7 +52,7 @@ const props = {
 	navigation: { navigate: () => {}, setParams: () => {} },
 } as unknown as ComponentProps<typeof ProjectsScreen>;
 /** A project page located for `revealRef`, as locating a session opens it. */
-const locationProps = (revealRef = "local:a", tier = "current", ref = revealRef) =>
+const locationProps = (revealRef = "local:a", tier = "current", ref = revealRef, catalog?: string) =>
 	({
 		route: {
 			params: {
@@ -61,7 +61,7 @@ const locationProps = (revealRef = "local:a", tier = "current", ref = revealRef)
 					ref,
 					revealRef,
 					title: "Project",
-					params: { resource: "project_page", projectKey: "p", tier },
+					params: { resource: "project_page", projectKey: "p", ...(catalog ? { catalog } : {}), tier },
 				},
 			},
 		},
@@ -227,9 +227,9 @@ it("pages a page the hub cut short through Load more, with no partial-tree notic
 	tree.unmount();
 });
 
-// Navigation serves a project's archived tier empty, and a location names no
-// catalog: an archived session is revealed from the project's archived list,
-// read from whichever catalog holds the project now.
+// Navigation serves a project's archived tier empty, and an older hub's
+// location names no catalog: an archived session is revealed from the
+// project's archived list, read from whichever catalog holds the project now.
 it("reveals a located archived session from the project's archived list", async () => {
 	const { hub, archivedReads } = twoPageArchivedHub();
 	harness.connection = screenConnection(hub, "ready");
@@ -244,6 +244,23 @@ it("reveals a located archived session from the project's archived list", async 
 	});
 	expect(pressable(tree, "Open Beta")?.props.accessibilityState).toEqual({ selected: true });
 	expect(renderedText(tree)).not.toContain("not in the returned list");
+	tree.unmount();
+});
+
+// A location names the catalog whose project holds the session, and the
+// archived list is read from that catalog: a project key in several catalogs
+// would otherwise read the first catalog's list (#3799).
+it("reveals a located archived session from the catalog its location names", async () => {
+	const { hub, archivedReads } = twoPageArchivedHub();
+	harness.connection = screenConnection(hub, "ready");
+	flatListCalls.length = 0;
+	const tree = render(<SessionLocationScreen {...locationProps("local:b", "archived", "local:b", "test_runs")} />);
+	await act(async () => {});
+	expect(archivedReads).toEqual([
+		{ catalog: "test_runs", projectKey: "p" },
+		{ catalog: "test_runs", projectKey: "p", cursor: "c1" },
+	]);
+	expect(pressable(tree, "Open Beta")?.props.accessibilityState).toEqual({ selected: true });
 	tree.unmount();
 });
 

@@ -488,16 +488,15 @@ function OrganizationStatus({
 const projectKey = (row: NavigationProjectSummary) => row.key;
 const sessionRef = (row: NavigationSessionSummary) => row.ref;
 // Navigation serves a project's archived tier empty, so its sessions come from
-// the project's archived list, from the catalog the caller or the read names
-// (a session's location names its project's catalog). With none (an older
-// hub's location), the hub reads the one holding the project now.
+// the project's archived list. With no catalog (an older hub's location names
+// none), the hub reads the one holding the project now.
 function sessionPages(
 	client: ConversationClientLike,
 	params: Omit<NavigationReadParams, "representationVersion">,
 	catalog?: ArchivedListCatalog,
 ): PageSource<NavigationSessionSummary> {
 	if (params.tier === "archived" && params.projectKey !== undefined)
-		return new ArchivedPages(client, catalog ?? (params.catalog as ArchivedListCatalog | undefined), params.projectKey);
+		return new ArchivedPages(client, catalog, params.projectKey);
 	return new NavigationPages<NavigationSessionSummary>(client, params, "sessions", sessionRef);
 }
 
@@ -645,7 +644,10 @@ export function SessionLocationScreen({ route, navigation }: NativeStackScreenPr
 	const belongs = activeProfile?.id === route.params.hubId;
 	const { location } = route.params;
 	const pages = useMemo(
-		() => (client && belongs ? sessionPages(client, location.params) : null),
+		() =>
+			client && belongs
+				? sessionPages(client, location.params, location.params.catalog as ArchivedListCatalog | undefined)
+				: null,
 		[client, belongs, location],
 	);
 	return (

@@ -62,8 +62,8 @@ it("reads the project's archived list from its catalog, and pages on with the cu
 	]);
 });
 
-// A session's location names its project but no catalog: the hub reads the
-// catalog holding the project now.
+// An older hub's location names its project but no catalog: the hub reads
+// the catalog holding the project now.
 it("reads with no catalog when given none", async () => {
 	const { client, seen } = hub({ "": { refs: ["local:a"], total: 1 } });
 	const pages = new ArchivedPages(client, undefined, "p");

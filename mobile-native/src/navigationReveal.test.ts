@@ -45,11 +45,9 @@ it.each([
 			};
 		},
 	} as Omit<ConversationClientLike, "state" | "onReady" | "onStateChange">) as ConversationClientLike;
-	expect(await locateSession(client, "child")).toMatchObject({
-		params,
-		ref: "child",
-		revealRef: "child",
-	});
+	const located = await locateSession(client, "child");
+	expect(located).toMatchObject({ ref: "child", revealRef: "child" });
+	expect(located.params).toEqual(params);
 });
 /** A hub answering one location, for a session of the given kind. */
 const locationClient = (fields: Record<string, unknown>, kind = "session") =>

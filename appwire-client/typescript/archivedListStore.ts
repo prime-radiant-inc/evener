@@ -7,9 +7,9 @@
 // the connection that served it.
 //
 // Lists are keyed by catalog and project key, because one project key can
-// exist in two catalogs. A caller that knows only the project key (a
-// session's location) names no catalog, and the hub reads the catalog that
-// holds the project now; that is a list of its own. A framework-free store
+// exist in two catalogs. A caller that knows only the project key (an older
+// hub's location, which names no catalog) names none, and the hub reads the
+// catalog that holds the project now; that is a list of its own. A framework-free store
 // over a request-only client port; each app wraps one for its own view layer.
 
 import type { AppwireClient } from "./client";
