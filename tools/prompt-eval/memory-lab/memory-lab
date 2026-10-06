@@ -1,0 +1,585 @@
+#!/usr/bin/env python3
+"""memory-lab: measure whether evener's memory prompt triggers capture, recall and correction.
+
+Why: the one-session prompt-eval runner gives every run a fresh directory, but
+project memory is keyed by checkout path, so memory behavior needs several
+sessions in the same directory sharing one memory root. This runs scenarios of
+sequential `evener` sessions (stages) and grades each stage from the event
+stream, the workspace and the memory files.
+
+Usage:
+  memory-lab run --version v0=BIN [--version v1=BIN] --model MODEL \
+      --scenarios DIR/a,DIR/b --reps 2 --out OUTDIR [--max-rounds 40] [--jobs 4] \
+      [--effort high] [--timeout 1200]
+                                      # one line per stage as trials finish, then the pass-rate table
+  memory-lab report OUTDIR            # one line per stage, then the pass-rate table
+  memory-lab show [--reasoning] OUTDIR/<trial> STAGE  # tool calls, memory files, whiteboard, final message
+  memory-lab ask --bin BIN --model MODEL [--workspace work] [--effort high] [--timeout 600] \
+      OUTDIR/<trial> STAGE "question"
+                                      # resume the session that stage ran in and ask it why it chose what it did;
+                                      # --workspace names the stage's workspace when it isn't work (e.g. work2)
+
+See README.md next to this script for setup, the scenarios and how to read results.
+
+A scenario dir holds scenario.json and fixture/. scenario.json:
+  {"arms": ["on"],                     # "on" = memory enabled, "off" = --disable-memory
+   "fixture_from": "feedback",         # optional: use scenarios/feedback/fixture instead of its own fixture/
+   "stages": [{"name": "A", "prompt": "...",
+               "seed_project_memory": "seed",   # optional dir copied into project memory first
+               "before": "shell run in the workspace before the stage",  # optional
+               "checks": [{"name": "...", "run": "shell; exit 0 = pass"}],
+               "trace": [{"name": "...", "tool": "shell", "regex": "go vet"}],
+               "memory": [{"name": "...", "regex": "(?i)vet", "scope": "personal"}],  # scope (personal|project|session) and "absent": true optional
+               "fixture": "fixture2", "workspace": "work2",  # optional: run in another project (both required together)
+               "resume": "A",  # optional: continue stage A's root session (by the id in A.grade.json)
+               "transcripts": [{"name": "...", "regex": "over every transcript in the stage's state dir",
+                                "subagents_only": true}],  # optional: only delegates this stage started
+               "whiteboard": [{"name": "...", "regex": "(?m)^Now:", "max_chars": 600, "min_lines": 3}],
+               "final": [{"name": "...", "regex": "against the last message to the partner"}]}]}
+
+Each trial lives in OUTDIR/<version>/<arm>/<scenario>/r<N>/ with work/ (the
+checkout, stable across stages), xdg/ (XDG_STATE_HOME, so memory is isolated),
+and per stage: <S>.events.ndjson, <S>.stdout, <S>.grade.json, <S>.memory/.
+Full logs stay on disk; the report prints only the summary.
+"""
+import argparse, concurrent.futures as cf, glob, json, os, re, shutil, signal, subprocess, sys, time
+from datetime import datetime
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+PROJID = os.path.join(HERE, "bin", "projid")
+
+
+# Seconds allowed for a before hook, a shell check or workspace setup.
+COMMAND_TIMEOUT = 300
+
+
+def run_bounded(cmd, cwd, env, timeout, stdout=None, stderr=None):
+    """Runs every external command the lab starts. cmd is an argv list, or a
+    string for /bin/sh. It runs in its own process group with no stdin; on
+    timeout the whole group is killed, so go test binaries and shells it started
+    die too. Returns (exit code or "timeout", output): with stdout and stderr
+    left unset, output is the combined text; otherwise they name files and
+    output is "".
+    """
+    capture = stdout is None and stderr is None
+    if capture:
+        stdout, stderr = subprocess.PIPE, subprocess.STDOUT
+    p = subprocess.Popen(cmd, shell=isinstance(cmd, str), cwd=cwd, env=env, stdin=subprocess.DEVNULL,
+                         stdout=stdout, stderr=stderr, text=True, start_new_session=True)
+    try:
+        out, _ = p.communicate(timeout=timeout)
+        return p.returncode, out or ""
+    except subprocess.TimeoutExpired:
+        os.killpg(p.pid, signal.SIGKILL)
+        try:
+            out, _ = p.communicate(timeout=5)
+        except subprocess.TimeoutExpired:  # a descendant that left the group still holds the pipe
+            p.wait()
+            out = ""
+        return "timeout", out or ""
+
+
+# Keep this hermetic setup in sync with fixtureEnv / configureHermeticRunEnv in
+# tools/tool-fluency/cmd/evener-fluency/main.go, which does the same for the
+# one-session runner.
+def fixture_env(work, xdg):
+    env = dict(os.environ)
+    env.update({"GOWORK": "off", "GIT_CEILING_DIRECTORIES": os.path.dirname(work),
+                "XDG_STATE_HOME": xdg, "EVENER_NO_USER_SKILLS": "1"})
+    return env
+
+
+def memory_root(xdg):
+    return os.path.join(xdg, "evener", "memory")
+
+
+def find_files(root, suffix=""):
+    """Every file under root (hidden ones included) whose name ends with suffix, sorted."""
+    paths = glob.glob(os.path.join(glob.escape(root), "**", "*" + suffix), recursive=True, include_hidden=True)
+    return sorted(p for p in paths if os.path.isfile(p))
+
+
+def read_file(path):
+    try:
+        with open(path, errors="replace") as f:
+            return f.read()
+    except OSError:
+        return ""
+
+
+def parse_events(path):
+    """Returns (tool calls, whether the round cap was hit, communicate messages, reasoning summary text)."""
+    calls, limit, messages, reasoning = [], False, [], []
+    with open(path, errors="replace") as f:
+        for line in f:
+            line = line.strip()
+            if not line.startswith("{"):
+                continue
+            try:
+                ev = json.loads(line)
+            except ValueError:
+                continue
+            kind, data = ev.get("kind"), ev.get("data") or {}
+            if kind == "TOOL_CALL_START":
+                calls.append({"tool": data.get("tool_name", ""), "args": data.get("arguments_json", "")})
+                reasoning.append(f"\n[{data.get('tool_name')}]\n")
+            elif kind == "REASONING_SUMMARY_DELTA":
+                reasoning.append(data.get("delta", ""))
+            elif kind == "TURN_LIMIT":
+                limit = True
+            elif kind == "COMMUNICATE" and data.get("message"):
+                messages.append(data["message"])
+    return calls, limit, messages, "".join(reasoning)
+
+
+def read_tree(root):
+    return {os.path.relpath(p, root): read_file(p) for p in find_files(root)}
+
+
+def base_fixture(scen, spec):
+    """The scenario's starting checkout: its own fixture/, or a sibling scenario's when "fixture_from" names one."""
+    if spec.get("fixture_from"):
+        return os.path.join(os.path.dirname(scen), spec["fixture_from"], "fixture")
+    return os.path.join(scen, "fixture")
+
+
+def make_workspace(fixture, work, xdg):
+    shutil.copytree(fixture, work)
+    rc, out = run_bounded("git init -q && git add -A && git -c user.name=lab -c user.email=lab@example.com commit -qm initial",
+                          work, fixture_env(work, xdg), COMMAND_TIMEOUT)
+    if rc != 0:
+        raise RuntimeError(f"fixture git init failed: {out}")
+
+
+def evener_command(binpath, model, work, state, effort, prompt, max_rounds=None, session_id=None, resume_last=False,
+                   disable_memory=False):
+    """The evener argv for a fresh session, or one resuming session_id (or, for a grade
+    file that predates recorded ids, the state dir's most recent session)."""
+    cmd = [binpath, "--model", model, "--dir", work, "--state-dir", state, "--reasoning-effort", effort]
+    if max_rounds is not None:
+        cmd += ["--max-rounds", str(max_rounds)]
+    cmd.append("--verbose")
+    # Resume keeps the saved session's (empty) plugin selection; evener rejects
+    # --enabled-plugins alongside --resume and --resume-last.
+    if session_id:
+        cmd += ["--resume", session_id]
+    elif resume_last:
+        cmd.append("--resume-last")
+    else:
+        cmd += ["--enabled-plugins", ""]
+    if disable_memory:
+        cmd.append("--disable-memory")
+    cmd.append(prompt)
+    return cmd
+
+
+def run_session(args, binpath, arm, scen, stage, trial, session_ids):
+    """Prepares the stage's workspace, runs its evener session, and returns where things ended up."""
+    # A stage with its own "fixture" runs in a separate checkout (another
+    # project) that shares the trial's memory root.
+    work, xdg = os.path.join(trial, stage.get("workspace", "work")), os.path.join(trial, "xdg")
+    if stage.get("fixture") and not os.path.exists(work):
+        make_workspace(os.path.join(scen, stage["fixture"]), work, xdg)
+    env = fixture_env(work, xdg)
+    if stage.get("seed_project_memory"):
+        rc, out = run_bounded([PROJID, work], work, env, COMMAND_TIMEOUT)
+        if rc != 0:
+            raise RuntimeError(f"projid failed: {out}")
+        pid = out.strip()
+        dest = os.path.join(memory_root(xdg), "projects", pid)
+        shutil.copytree(os.path.join(scen, stage["seed_project_memory"]), dest, dirs_exist_ok=True)
+    if stage.get("before"):
+        rc, out = run_bounded(stage["before"], work, env, COMMAND_TIMEOUT)
+        if rc != 0:
+            how = f"timed out after {COMMAND_TIMEOUT}s" if rc == "timeout" else f"exited {rc}"
+            raise RuntimeError(f"before hook {how} in {trial}: {out[-500:]}")
+    name = stage["name"]
+    # "resume": "<stage>" continues that stage's root session instead of starting a fresh one.
+    state = os.path.join(trial, "sessions", stage.get("resume", name))
+    cmd = evener_command(binpath, args.model, work, state, args.effort, stage["prompt"], max_rounds=args.max_rounds,
+                         session_id=session_ids.get(stage.get("resume")), resume_last=bool(stage.get("resume")),
+                         disable_memory=arm == "off")
+    events = os.path.join(trial, f"{name}.events.ndjson")
+    start = time.time()
+    with open(events, "w") as ev, open(os.path.join(trial, f"{name}.stdout"), "w") as so:
+        exit_code, _ = run_bounded(cmd, work, env, args.timeout, stdout=so, stderr=ev)
+    return {"work": work, "xdg": xdg, "env": env, "state": state, "events": events, "started": start,
+            "exit": exit_code, "seconds": round(time.time() - start), "timeout": args.timeout}
+
+
+def session_failure(session, rounds_capped):
+    """Why the stage's session failed as infrastructure, or None. Evener exits 1 when it
+    stops on the round cap; that is a capped stage, graded like any other."""
+    if session["exit"] == "timeout":
+        return f"session timed out after {session['timeout']}s"
+    if session["exit"] != 0 and not rounds_capped:
+        return f"session exited {session['exit']}"
+    return None
+
+
+def grade_checks(spec, inputs):
+    rc, _ = run_bounded(spec["run"], inputs["work"], inputs["env"], COMMAND_TIMEOUT)
+    if rc == "timeout":
+        raise TimeoutError(f"check timed out after {COMMAND_TIMEOUT}s")
+    return rc == 0
+
+
+def grade_trace(spec, inputs):
+    rx = re.compile(spec["regex"])
+    return any(c["tool"] == spec["tool"] and rx.search(c["args"]) for c in inputs["calls"])
+
+
+def grade_memory(spec, inputs):
+    prefix = {"personal": "personal/", "project": "projects/", "session": "sessions/"}.get(spec.get("scope"), "")
+    blob = "\n".join(body for path, body in inputs["memory"].items() if path.startswith(prefix))
+    found = bool(re.search(spec["regex"], blob))
+    return (not found) if spec.get("absent") else found
+
+
+def grade_final(spec, inputs):
+    messages = inputs["messages"]
+    return bool(messages) and bool(re.search(spec["regex"], messages[-1]))
+
+
+def grade_transcripts(spec, inputs):
+    key = "delegate_transcripts" if spec.get("subagents_only") else "transcripts"
+    return bool(re.search(spec["regex"], inputs[key]))
+
+
+def grade_whiteboard(spec, inputs):
+    note = inputs["note"]
+    ok = bool(note)
+    if "regex" in spec:
+        ok = ok and bool(re.search(spec["regex"], note))
+    if "max_chars" in spec:
+        ok = ok and len(note) <= spec["max_chars"]
+    if "min_lines" in spec:
+        ok = ok and len([l for l in note.splitlines() if l.strip()]) >= spec["min_lines"]
+    return ok
+
+
+# Check type (the key in a stage) -> grader. Each takes (check spec, inputs) and
+# returns whether the check passed.
+GRADERS = {"checks": grade_checks, "trace": grade_trace, "memory": grade_memory,
+           "transcripts": grade_transcripts, "whiteboard": grade_whiteboard, "final": grade_final}
+
+
+def read_meta(path):
+    """A session's meta.json, or {} when it is missing or unreadable."""
+    try:
+        return json.loads(read_file(path))
+    except ValueError:
+        return {}
+
+
+def stage_delegate_transcripts(state, started):
+    """The transcripts of delegate sessions created at or after started (epoch seconds).
+
+    A resumed stage shares the earlier stage's state dir, so this keeps out the
+    earlier stage's delegates. Creation time is the meta's created_at, which
+    evener sets once when it creates the session; the transcript's mtime is the
+    fallback for a meta without it.
+    """
+    out = []
+    for path in find_files(state, ".transcript.jsonl"):
+        meta = read_meta(path.removesuffix(".transcript.jsonl") + ".meta.json")
+        if not meta.get("is_subagent"):
+            continue
+        try:
+            created = datetime.fromisoformat(meta["created_at"]).timestamp()
+        except (KeyError, TypeError, ValueError):
+            created = os.path.getmtime(path)
+        if created >= started:
+            out.append(read_file(path))
+    return "".join(out)
+
+
+def root_session_id(events, state):
+    """The root session a stage ran: the session_id on the first SESSION_START in its own
+    event stream (delegates start later), else the newest non-subagent meta in its state dir."""
+    try:
+        with open(events, errors="replace") as f:
+            for line in f:
+                if line.startswith("{") and '"SESSION_START"' in line:
+                    ev = json.loads(line)
+                    if ev.get("kind") == "SESSION_START" and ev.get("session_id"):
+                        return ev["session_id"]
+    except (OSError, ValueError):
+        pass
+    roots = []
+    for path in find_files(os.path.join(state, "sessions"), ".meta.json"):
+        meta = read_meta(path)
+        if meta and not meta.get("is_subagent"):
+            roots.append((meta.get("created_at", ""), os.path.basename(path).removesuffix(".meta.json")))
+    return max(roots)[1] if roots else None
+
+
+def whiteboard_note(state):
+    """The root session's agent whiteboard (agent_note in its meta.json)."""
+    note = ""
+    for path in find_files(os.path.join(state, "sessions"), ".meta.json"):
+        meta = read_meta(path)
+        if meta and not meta.get("is_subagent"):
+            note = meta.get("agent_note", "") or note
+    return note
+
+
+def write_grade(trial, grade):
+    try:
+        with open(os.path.join(trial, f"{grade['stage']}.grade.json"), "w") as f:
+            json.dump(grade, f, indent=1)
+    except OSError:
+        pass  # no trial dir to write into; the run's own table still counts the grade
+    return grade
+
+
+def all_failed(stage):
+    return {spec["name"]: False for check_type in GRADERS for spec in stage.get(check_type, [])}
+
+
+def grade_stage(label, arm, scen, stage, trial, session):
+    """Keeps the stage's evidence, grades every check, and writes <stage>.grade.json. Never raises:
+    a check that errors or times out fails with its reason in check_errors, and a failed session
+    fails every check with the reason in error."""
+    name = stage["name"]
+    calls, limit, messages, _ = parse_events(session["events"])
+    grade = {"version": label, "arm": arm, "scenario": os.path.basename(scen), "trial": trial, "stage": name,
+             "exit": session["exit"], "seconds": session["seconds"], "rounds_capped": limit, "tool_calls": len(calls),
+             "memory_calls": {}, "checks": {}, "check_errors": {}}
+    for c in calls:
+        if c["tool"].startswith("memory_"):
+            grade["memory_calls"][c["tool"]] = grade["memory_calls"].get(c["tool"], 0) + 1
+    mem_dir = os.path.join(trial, f"{name}.memory")
+    try:
+        if os.path.isdir(memory_root(session["xdg"])):
+            shutil.copytree(memory_root(session["xdg"]), mem_dir, dirs_exist_ok=True)
+    except OSError as e:
+        grade["evidence_error"] = f"memory snapshot: {e}"
+    inputs = {"work": session["work"], "env": session["env"], "calls": calls, "messages": messages,
+              "memory": read_tree(mem_dir) if os.path.isdir(mem_dir) else {},
+              "note": whiteboard_note(session["state"])}
+    if stage.get("transcripts"):
+        # Every session transcript under this stage's state dir, delegates
+        # included, e.g. for a delegate's memory_read of session scope.
+        inputs["transcripts"] = "".join(read_file(p) for p in find_files(session["state"], ".transcript.jsonl"))
+        inputs["delegate_transcripts"] = stage_delegate_transcripts(session["state"], session["started"])
+    failure = session_failure(session, limit)
+    if failure:
+        grade["error"], grade["checks"] = failure, all_failed(stage)
+    else:
+        for check_type, grader in GRADERS.items():
+            for spec in stage.get(check_type, []):
+                try:
+                    grade["checks"][spec["name"]] = bool(grader(spec, inputs))
+                except Exception as e:
+                    grade["checks"][spec["name"]] = False
+                    grade["check_errors"][spec["name"]] = f"{type(e).__name__}: {e}"
+    # ask resumes from here; a resumed stage ran in the earlier stage's state dir.
+    grade["state"] = session["state"]
+    grade["session_id"] = root_session_id(session["events"], session["state"])
+    grade["whiteboard"] = inputs["note"]
+    grade["final_message"] = messages[-1][:2000] if messages else ""
+    return write_grade(trial, grade)
+
+
+def failed_grade(label, arm, scen, stage, trial, error):
+    """The grade of a stage that an infrastructure error kept from running: every check fails."""
+    return write_grade(trial, {"version": label, "arm": arm, "scenario": os.path.basename(scen), "trial": trial,
+                               "stage": stage["name"], "exit": "error", "error": error, "seconds": 0,
+                               "rounds_capped": False, "tool_calls": 0, "memory_calls": {},
+                               "checks": all_failed(stage), "whiteboard": "", "final_message": ""})
+
+
+def run_trial(args, label, binpath, arm, scen, rep):
+    """Runs and grades every stage. Workspace setup or a stage's session failing is an
+    infrastructure failure: that stage and every later stage fail."""
+    trial = os.path.join(args.out, label, arm, os.path.basename(scen), f"r{rep}")
+    spec = load_scenario(scen)
+    grades, failure, session_ids = [], None, {}
+    try:
+        os.makedirs(os.path.join(trial, "xdg"))
+        make_workspace(base_fixture(scen, spec), os.path.join(trial, "work"), os.path.join(trial, "xdg"))
+    except Exception as e:
+        failure = f"workspace setup: {type(e).__name__}: {e}"
+    for st in spec["stages"]:
+        if failure:
+            grades.append(failed_grade(label, arm, scen, st, trial, failure))
+            continue
+        try:
+            session = run_session(args, binpath, arm, scen, st, trial, session_ids)
+        except Exception as e:
+            failure = f"{type(e).__name__}: {e}"
+            grades.append(failed_grade(label, arm, scen, st, trial, failure))
+            continue
+        grades.append(grade_stage(label, arm, scen, st, trial, session))
+        session_ids[st["name"]] = grades[-1]["session_id"]
+        if grades[-1].get("error"):
+            failure = f"stage {st['name']} failed: {grades[-1]['error']}"
+    return grades
+
+
+def load_scenario(scen):
+    """Reads scen/scenario.json, exiting with a clear message on a stage that can't run as written."""
+    spec = json.load(open(os.path.join(scen, "scenario.json")))
+    for i, st in enumerate(spec["stages"]):
+        if st.get("resume") and st["resume"] not in [earlier["name"] for earlier in spec["stages"][:i]]:
+            sys.exit(f"memory-lab: {scen} stage {st['name']}: \"resume\" must name an earlier stage")
+        if st.get("fixture") and not st.get("workspace"):
+            sys.exit(f"memory-lab: {scen} stage {st['name']}: \"fixture\" needs a \"workspace\" "
+                     "(otherwise the stage silently reuses the base work dir)")
+    return spec
+
+
+def cmd_run(args):
+    args.out = os.path.abspath(args.out)
+    versions = {}
+    for v in args.version:
+        label, sep, binpath = v.partition("=")
+        if not (sep and label and binpath):
+            sys.exit(f"memory-lab: --version {v!r}: expected LABEL=path/to/evener, e.g. --version base=bin/evener-base")
+        if label in versions:
+            sys.exit(f"memory-lab: --version label {label!r} given twice")
+        if not (os.path.isfile(binpath) and os.access(binpath, os.X_OK)):
+            sys.exit(f"memory-lab: --version {v!r}: {binpath} is not an executable file")
+        versions[label] = binpath
+    if os.path.exists(args.out) and os.listdir(args.out):
+        sys.exit(f"memory-lab: {args.out} already holds results; use a fresh --out")
+    jobs = []
+    for scen in args.scenarios.split(","):
+        scen = os.path.abspath(scen)
+        arms = load_scenario(scen).get("arms", ["on"])
+        for label, binpath in versions.items():
+            for arm in arms:
+                for rep in range(1, args.reps + 1):
+                    jobs.append((label, os.path.abspath(binpath), arm, scen, rep))
+    os.makedirs(args.out, exist_ok=True)
+    print(f"memory-lab: {len(jobs)} trials, model {args.model}, logs under {args.out}", flush=True)
+    grades = []
+    with cf.ThreadPoolExecutor(args.jobs) as pool:
+        for fut in cf.as_completed([pool.submit(run_trial, args, *j) for j in jobs]):
+            for g in fut.result():
+                grades.append(g)
+                print(line(g), flush=True)
+    print_pass_rates(grades)
+    errored = {g["trial"] for g in grades if g.get("error")}
+    if errored:
+        sys.exit(f"memory-lab: {len(errored)} trial(s) hit infrastructure errors; their stages count as failures above")
+
+
+def line(g):
+    checks = " ".join(f"{k}={'Y' if v else 'n'}" for k, v in g["checks"].items())
+    mem = ",".join(f"{k[7:]}:{v}" for k, v in sorted(g["memory_calls"].items())) or "-"
+    cap = " CAPPED" if g["rounds_capped"] else ""
+    error = f" ERROR {' '.join(g['error'].split())[:300]}" if g.get("error") else ""
+    if g.get("check_errors"):
+        error += f" CHECK-ERRORS {','.join(g['check_errors'])} (see show)"
+    return f"{g['version']:6} {g['arm']:3} {g['scenario']:22} {os.path.basename(g['trial'])} {g['stage']} exit={g['exit']}{cap} tools={g['tool_calls']} mem={mem} | {checks}{error}"
+
+
+def print_pass_rates(grades):
+    print("\n== check pass rates (version arm scenario stage: check passed/total)")
+    agg = {}
+    for g in grades:
+        ran = not g.get("error")
+        for k, v in list(g["checks"].items()) + [("used memory", bool(g["memory_calls"])), ("not capped", ran and not g["rounds_capped"])]:
+            key = (g["scenario"], g["stage"], k, g["version"], g["arm"])
+            a = agg.setdefault(key, [0, 0])
+            a[0] += v
+            a[1] += 1
+    for (s, st, k, v, arm), (p, n) in sorted(agg.items()):
+        print(f"{s:22} {st} {k:28} {v:6} {arm:3} {p}/{n}")
+
+
+def cmd_report(args):
+    grades = [json.loads(read_file(p)) for p in find_files(os.path.abspath(args.out), ".grade.json")]
+    grades.sort(key=lambda g: (g["scenario"], g["version"], g["arm"], g["trial"], g["stage"]))
+    print("\n== per stage")
+    for g in grades:
+        print(line(g))
+    print_pass_rates(grades)
+
+
+def cmd_show(args):
+    trial, stage = os.path.abspath(args.trial), args.stage
+    g = json.load(open(os.path.join(trial, f"{stage}.grade.json")))
+    print(line(g))
+    if g.get("error"):
+        print(f"\n== infrastructure error\n{g['error']}")
+    for name, why in g.get("check_errors", {}).items():
+        print(f"\n== check error: {name}\n{why}")
+    events = os.path.join(trial, f"{stage}.events.ndjson")
+    if not os.path.exists(events):
+        return  # the stage never started a session
+    calls, _, _, reasoning = parse_events(events)
+    print("\n== tool calls (memory calls in full)")
+    for c in calls:
+        width = 600 if c["tool"].startswith("memory_") else 140
+        print(f"{c['tool']} {c['args'][:width]}")
+    print("\n== memory files after stage")
+    for path, body in sorted(read_tree(os.path.join(trial, f"{stage}.memory")).items()):
+        print(f"--- {path}\n{body[:1500]}")
+    if g.get("whiteboard"):
+        print(f"\n== whiteboard\n{g['whiteboard']}")
+    print(f"\n== final message\n{g['final_message']}")
+    if args.reasoning:
+        print("\n== reasoning summary\n" + reasoning)
+
+
+def cmd_ask(args):
+    """Resume a finished stage's session and ask it why it chose what it did."""
+    trial, stage = os.path.abspath(args.trial), args.stage
+    g = json.load(open(os.path.join(trial, f"{stage}.grade.json")))
+    work = os.path.join(trial, args.workspace)
+    env = fixture_env(work, os.path.join(trial, "xdg"))
+    n = len([f for f in os.listdir(trial) if f.startswith(f"{stage}.ask")]) + 1
+    events = os.path.join(trial, f"{stage}.ask{n}.events.ndjson")
+    # A grade file without "state" means the stage ran in sessions/<stage>.
+    state = g.get("state") or os.path.join(trial, "sessions", stage)
+    # A grade file without "session_id" can only fall back to the state dir's most recent session.
+    cmd = evener_command(os.path.abspath(args.bin), args.model, work, state, args.effort, args.question,
+                         session_id=g.get("session_id"), resume_last=not g.get("session_id"))
+    with open(events, "w") as ev:
+        if run_bounded(cmd, work, env, args.timeout, stdout=subprocess.DEVNULL, stderr=ev)[0] == "timeout":
+            print(f"memory-lab: ask timed out after {args.timeout}s")
+    calls, _, messages, _ = parse_events(events)
+    print(f"{g['version']} {g['scenario']} {os.path.basename(trial)} {stage} ask{n}")
+    for c in calls:
+        if c["tool"] != "communicate":
+            print(f"  [{c['tool']}] {c['args'][:200]}")
+    print(messages[-1] if messages else "(no reply)")
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    r = sub.add_parser("run")
+    r.add_argument("--version", action="append", required=True, help="LABEL=path/to/evener (repeatable)")
+    r.add_argument("--model", required=True)
+    r.add_argument("--scenarios", required=True, help="comma-separated scenario dirs")
+    r.add_argument("--reps", type=int, default=2)
+    r.add_argument("--out", required=True)
+    r.add_argument("--max-rounds", type=int, default=40)
+    r.add_argument("--effort", default="high")
+    r.add_argument("--timeout", type=int, default=1200, help="seconds per stage")
+    r.add_argument("--jobs", type=int, default=4)
+    rp = sub.add_parser("report")
+    rp.add_argument("out")
+    s = sub.add_parser("show")
+    s.add_argument("trial")
+    s.add_argument("stage")
+    s.add_argument("--reasoning", action="store_true", help="also print the reasoning summary, with tool calls marked")
+    a = sub.add_parser("ask", help="resume a finished stage's session and ask it a question (e.g. why it skipped memory)")
+    a.add_argument("trial")
+    a.add_argument("stage")
+    a.add_argument("question")
+    a.add_argument("--bin", required=True, help="the same evener binary the trial ran")
+    a.add_argument("--model", required=True)
+    a.add_argument("--workspace", default="work", help="the stage's workspace dir in the trial (e.g. work2)")
+    a.add_argument("--effort", default="high")
+    a.add_argument("--timeout", type=int, default=600, help="seconds")
+    args = ap.parse_args()
+    {"run": cmd_run, "report": cmd_report, "show": cmd_show, "ask": cmd_ask}[args.cmd](args)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,18 @@
+{
+  "arms": ["on"],
+  "stages": [
+    {
+      "name": "A",
+      "prompt": "Bump the docs to version 2.4.0 using scripts/set-version.sh, and make sure every page shows the new version.",
+      "checks": [{"name": "pages bumped", "run": "grep -q '^version: 2.4.0' docs/install.md && grep -q '^version: 2.4.0' docs/usage.md"}],
+      "memory": [{"name": "saved sed quirk (personal)", "regex": "(?i)sed", "scope": "personal"}, {"name": "saved sed quirk (any)", "regex": "(?i)sed"}]
+    },
+    {
+      "name": "B",
+      "fixture": "fixture2",
+      "workspace": "work2",
+      "prompt": "Write scripts/rename-tag.sh OLD NEW that renames a tag in place across notes/*.txt, then use it to rename the draft tag to review.",
+      "checks": [{"name": "renamed", "run": "grep -q 'review' notes/api.txt && grep -q 'review' notes/launch.txt && ! grep -q draft notes/*.txt"}, {"name": "script reusable", "run": "sh scripts/rename-tag.sh review final && grep -q final notes/api.txt"}]
+    }
+  ]
+}

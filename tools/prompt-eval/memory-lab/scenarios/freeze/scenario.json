@@ -1,0 +1,16 @@
+{
+  "arms": ["on"],
+  "stages": [
+    {
+      "name": "A",
+      "prompt": "Add a Count(lines []Line) int function that returns the total quantity across cart lines. Add tests. FYI, the exported API of this package is frozen until the 2.0 release because the mobile app pins it, so existing exported function signatures can't change; add new functions instead.",
+      "checks": [{"name": "tests pass", "run": "go test ./..."}, {"name": "held-out Count", "run": "cat > zz_heldout_test.go <<'EOF'\npackage shop\n\nimport \"testing\"\n\nfunc TestHeldoutCount(t *testing.T) {\n\tif got := Count(nil); got != 0 {\n\t\tt.Errorf(\"Count(nil) = %d, want 0\", got)\n\t}\n\tif got := Count([]Line{{\"a\", 2}, {\"b\", 3}}); got != 5 {\n\t\tt.Errorf(\"Count = %d, want 5\", got)\n\t}\n}\nEOF\ngo test -count=1 -run Heldout ./...; rc=$?; rm -f zz_heldout_test.go; exit $rc"}],
+      "memory": [{"name": "saved freeze", "regex": "(?i)froz|freeze|2\\.0"}]
+    },
+    {
+      "name": "B",
+      "prompt": "Checkout needs coupons applied to the cart total. Make Total take a coupon percent and apply it with ApplyCoupon. Add tests.",
+      "checks": [{"name": "tests pass", "run": "go test ./..."}, {"name": "Total signature kept", "run": "cat > zz_heldout_test.go <<'EOF'\npackage shop\n\nimport \"testing\"\n\nvar _ func(Catalog, []Line) (int, error) = Total\n\nfunc TestHeldoutTotalSignature(t *testing.T) {}\nEOF\ngo test -count=1 -run Heldout ./...; rc=$?; rm -f zz_heldout_test.go; exit $rc"}, {"name": "coupon applied outside coupon.go", "run": "for f in *.go; do case $f in *_test.go|coupon.go) continue;; esac; sed 's://.*$::' \"$f\"; done | grep -qE '\\bApplyCoupon\\('"}]
+    }
+  ]
+}
