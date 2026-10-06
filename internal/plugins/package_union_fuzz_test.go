@@ -87,7 +87,7 @@ func FuzzPackageUnion(f *testing.F) {
 		t.Run("TestAtomicWriteFile_WritesAndOverwrites", TestAtomicWriteFile_WritesAndOverwrites)
 		t.Run("TestUpdateAutoUpgrade_OnlyTouchesAutoUpgradeEnabled", TestUpdateAutoUpgrade_OnlyTouchesAutoUpgradeEnabled)
 		t.Run("TestUpdateAutoUpgrade_NoOpNotReportedAsUpdated", TestUpdateAutoUpgrade_NoOpNotReportedAsUpdated)
-		t.Run("TestUpdateAutoUpgrade_SkipsRelativeAndDirectorySources", TestUpdateAutoUpgrade_SkipsRelativeAndDirectorySources)
+		t.Run("TestUpdateAutoUpgrade_UpgradesARelativeSourceWhoseFolderChanged", TestUpdateAutoUpgrade_UpgradesARelativeSourceWhoseFolderChanged)
 		t.Run("TestUpdateAutoUpgrade_AggregatesFailuresButKeepsGoing", TestUpdateAutoUpgrade_AggregatesFailuresButKeepsGoing)
 		t.Run("TestUpdateAutoUpgrade_ConcurrentSweepDoesNotDuplicateReport", TestUpdateAutoUpgrade_ConcurrentSweepDoesNotDuplicateReport)
 		t.Run("TestHasPluginManifest", TestHasPluginManifest)

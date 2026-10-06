@@ -9,8 +9,8 @@ import (
 )
 
 // UpgradedPlugin is one installed plugin whose sha actually changed during an
-// UpdateAutoUpgrade pass. No-ops (sha unchanged, or a directory/relative
-// source that can never change) are omitted.
+// UpdateAutoUpgrade pass. No-ops (sha unchanged, or a directory source that
+// can never change) are omitted.
 type UpgradedPlugin struct {
 	Plugin      string
 	Marketplace string
@@ -19,7 +19,7 @@ type UpgradedPlugin struct {
 
 // upgradeAuto acquires the manager lock and, while holding it, upgrades
 // plugin only if it is (still) eligible for unattended upgrade: AutoUpgrade
-// enabled, git-backed. See upgradeLocked for why the eligibility check and
+// enabled, a source that can upgrade (sourceCannotUpgrade). See upgradeLocked for why the eligibility check and
 // the change-detection both happen fresh, under this same lock acquisition,
 // rather than against a snapshot taken before the lock was acquired.
 func (m *Manager) upgradeAuto(ctx context.Context, plugin, marketplace string) (entry InstallEntry, changed, skipped bool, err error) {
@@ -31,9 +31,9 @@ func (m *Manager) upgradeAuto(ctx context.Context, plugin, marketplace string) (
 	return m.upgradeLocked(ctx, plugin, marketplace, true)
 }
 
-// UpdateAutoUpgrade upgrades every installed, git-backed plugin that has
-// autoUpgrade enabled (SetAutoUpgrade). Directory and relative sources are
-// inherently current and are always skipped, exactly like UpdateAll.
+// UpdateAutoUpgrade upgrades every installed plugin that has autoUpgrade
+// enabled (SetAutoUpgrade) and can upgrade: a directory source is used in
+// place and always skipped, exactly like UpdateAll (sourceCannotUpgrade).
 //
 // This is the filtered sibling of UpdateAll: UpdateAll powers the explicit
 // `evener plugin upgrade --all`, which upgrades every installed plugin

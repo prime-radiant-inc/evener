@@ -895,3 +895,35 @@ func TestDoctor_ASingleNameNoFilesystemCanHoldIsAPendingRename(t *testing.T) {
 		t.Fatalf("findings = %+v, want the pending rename for a name no filesystem can hold", findings)
 	}
 }
+
+// A relative plugin in a directory marketplace is used from the marketplace's
+// own folder, so like a directory source it can never upgrade: doctor's
+// version-mismatch advice must not point at upgrade, and auto-upgrade on it is
+// still warned about.
+func TestDoctor_RelSourceInADirectoryMarketplaceIsUsedInPlace(t *testing.T) {
+	dir := makeDirectoryMarketplace(t, "local", "widget")
+	m := NewManager(t.TempDir())
+	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceDirectory, Path: dir}); err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	if _, err := m.Install(context.Background(), "widget", "local"); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	if err := m.SetAutoUpgrade(context.Background(), "widget", "local", true); err != nil {
+		t.Fatalf("SetAutoUpgrade: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "plugins", "widget", ".claude-plugin", "plugin.json"), []byte(`{"name":"widget","version":"2.0.0"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	findings, err := m.Doctor()
+	if err != nil {
+		t.Fatalf("Doctor: %v", err)
+	}
+	if f := findFinding(t, findings, "does not match"); strings.Contains(f.Remediation, "evener plugin upgrade") {
+		t.Errorf("an in-place plugin's version mismatch points at the no-op upgrade: %q", f.Remediation)
+	}
+	if !hasFinding(findings, "auto-upgrade is on") {
+		t.Errorf("no auto-upgrade warning for an in-place plugin; findings=%+v", findings)
+	}
+}
