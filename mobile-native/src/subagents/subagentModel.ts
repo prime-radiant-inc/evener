@@ -22,7 +22,7 @@ import {
 	plainQuoteLine,
 	shellJobState,
 } from "@evener/appwire-client";
-import { quietOrWorking, waitingOnSubagents } from "../board/attention";
+import { subagentQuietLine, waitingOnSubagents } from "../board/attention";
 import { compactDuration, spokenDuration } from "../session/format";
 import type { SubagentTally } from "../session/sessionState";
 
@@ -252,7 +252,7 @@ export interface SubagentSections<Row extends ActivityListRow = SubagentRow> {
 	done: Row[];
 }
 
-function newestFirst(a: ActivityListRow, b: ActivityListRow): number {
+export function newestFirst(a: ActivityListRow, b: ActivityListRow): number {
 	const difference = (enteredAt(b) ?? Number.NEGATIVE_INFINITY) - (enteredAt(a) ?? Number.NEGATIVE_INFINITY);
 	return (Number.isNaN(difference) ? 0 : difference) || a.order - b.order;
 }
@@ -281,40 +281,40 @@ export function countLabel(count: number, partial: boolean): string {
 }
 
 export interface StripSegment {
-	state: SubagentState;
+	state: "running" | "done";
 	width: number;
 }
 
-/** The order states take everywhere: the strip, the list and the chips. */
-export const STATE_ORDER: readonly SubagentState[] = ["failed", "running", "done"];
-const STRIP_MIN: Record<SubagentState, number> = { failed: 3, running: 1, done: 0 };
+const STRIP_ORDER: readonly StripSegment["state"][] = ["running", "done"];
+const STRIP_MIN: Record<StripSegment["state"], number> = { running: 1, done: 0 };
 
-/** The strip's segments in the list's own order, sized by count (spec 9):
- * failures never thinner than 3pt, so 2 of 55 still shows; running never
- * thinner than 1pt; done takes the rest. No strip once nothing is running or
- * failed. `gap` is the space between segments. */
+/** Active work and quiet terminal history, sized by count. Running keeps
+ * its 1pt minimum. No strip once nothing is running. */
 export function stripSegments(
 	tally: Pick<SubagentTally, "failed" | "running" | "done">,
 	width: number,
 	gap = 1,
 ): StripSegment[] {
-	if (tally.failed === 0 && tally.running === 0) return [];
-	const present = STATE_ORDER.filter((state) => tally[state] > 0);
+	if (tally.running === 0) return [];
+	const counts = { running: tally.running, done: tally.failed + tally.done };
+	const present = STRIP_ORDER.filter((state) => counts[state] > 0);
 	const available = Math.max(0, width - gap * (present.length - 1));
-	const total = present.reduce((sum, state) => sum + tally[state], 0);
-	const floored = new Set(present.filter((state) => (available * tally[state]) / total < STRIP_MIN[state]));
+	const total = present.reduce((sum, state) => sum + counts[state], 0);
+	const floored = new Set(present.filter((state) => (available * counts[state]) / total < STRIP_MIN[state]));
 	const reserved = [...floored].reduce((sum, state) => sum + STRIP_MIN[state], 0);
-	const rest = present.filter((state) => !floored.has(state)).reduce((sum, state) => sum + tally[state], 0);
+	const rest = present.filter((state) => !floored.has(state)).reduce((sum, state) => sum + counts[state], 0);
 	return present.map((state) => ({
 		state,
-		width: floored.has(state) ? STRIP_MIN[state] : ((available - reserved) * tally[state]) / rest,
+		width: floored.has(state) ? STRIP_MIN[state] : ((available - reserved) * counts[state]) / rest,
 	}));
 }
 
 export interface SubagentWhy {
-	/** "Failed", semibold in the danger ink; only the word takes the hue. */
+	/** The actual unsuccessful outcome, displayed beside its cause. */
 	word?: "Failed";
 	text: string;
+	/** The silence that turns this line Quiet (subagentQuietLine). */
+	quietForMs?: number;
 }
 
 function runningCommand(session: ActivitySessionNode | undefined): string | undefined {
@@ -340,7 +340,7 @@ export function subagentWhy(row: SubagentRow, now: number): SubagentWhy {
 		(entry) => entry.kind === "delegate" && delegateHasActiveWork(entry.delegate),
 	).length;
 	if (waiting > 0) return { text: waitingOnSubagents(waiting) };
-	return { text: quietOrWorking(delegateTiming(delegate, now).quietForMs ?? 0) };
+	return subagentQuietLine(delegateTiming(delegate, now));
 }
 
 // Cache the same qualified entity identity used by the shared projection.

@@ -9,9 +9,9 @@
 // fallback left when it's given. A subagent failure never puts a Board row in
 // Needs you; the row's subagent chip (subagentChip) counts it, and the
 // session's Subagents list holds the detail.
-import type { NavigationSessionSummary, SessionActivity } from "@evener/appwire-client";
+import type { DelegateTiming, NavigationSessionSummary, SessionActivity } from "@evener/appwire-client";
 import { quietState } from "@evener/appwire-client";
-import { relativeAge } from "@evener/appwire-client/state/navigation";
+import { relativeAge, subagentTallyToShow } from "@evener/appwire-client/state/navigation";
 import { compactDuration } from "../session/format";
 
 export type BoardState =
@@ -94,10 +94,15 @@ export function boardState(row: NavigationSessionSummary, approval: boolean, see
 	// reported: it is never Working, Finished or Needs you.
 	if (row.offline) return "shutDown";
 	const decisive = decisiveState(row.state);
-	if (decisive) return decisive;
+	// Only a nonblocking warning yields to live child work. Search keeps its
+	// existing decisiveState rule, and failed children never decide this mark.
+	if (decisive && (decisive !== "warning" || row.ask_pending || approval || row.approval_pending)) return decisive;
 	if (row.state === "awaiting" && row.ask_pending) return "question";
 	if (approval || row.approval_pending === true) return "approval";
 	if (row.state === "active") return "working";
+	const runningSubagents = row.kind === "session" && (subagentTallyToShow(row)?.running ?? 0) > 0;
+	if (runningSubagents) return "working";
+	if (decisive) return decisive;
 	if (row.dormant || seen) return "idle";
 	return "finished";
 }
@@ -295,6 +300,15 @@ export function quietOrWorking(silentMs: number): string {
 	return silentMs >= AGENT_QUIET_AFTER_MS ? `Quiet ${compactDuration(silentMs)}` : "Working";
 }
 
+/** A running subagent's quietOrWorking line from its timing, with the silence
+ * that turns it Quiet (useNowPastQuiet) only while that silence grows with
+ * the clock; a snapshot silence has nothing to time. */
+export function subagentQuietLine(timing: DelegateTiming): { text: string; quietForMs?: number } {
+	const quietFor = timing.quietForMs ?? 0;
+	const text = quietOrWorking(quietFor);
+	return timing.quietLive ? { text, quietForMs: quietFor } : { text };
+}
+
 /** whyLine's working-row text once a real activity read exists (S5): the
  * read's own subagent tally is authoritative and wins outright, never mixed
  * with the row's own tally guess (a stale local count must not survive a
@@ -345,17 +359,9 @@ export function workingActivity(row: NavigationSessionSummary): string {
 	return commandOrWorking(row);
 }
 
-/** The subagent chip's text from the counts the shared gate shows
- * (subagentTallyToShow, the same one the web rail reads): "3 running",
- * "2 failed", or "2 running · 3 failed". The chip colors each run on its own,
- * so the running count stays in the neutral ink and only the failure reads in
- * the danger ink (D2): a failed subagent is not something the user must act
- * on, so it must not wear the Needs you attention ink. */
-export function subagentChipText(tally: { running: number; failed: number }): string {
-	const parts: string[] = [];
-	if (tally.running > 0) parts.push(`${tally.running} running`);
-	if (tally.failed > 0) parts.push(`${tally.failed} failed`);
-	return parts.join(" · ");
+/** The native session-list chip names running subagents only. */
+export function subagentChipText(tally: { running: number }): string {
+	return tally.running > 0 ? `${tally.running} running` : "";
 }
 
 export interface Usual {

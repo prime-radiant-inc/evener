@@ -3,9 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
-	"fmt"
 
-	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 )
 
@@ -108,14 +106,6 @@ func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment, rec
 	defer s.endEnvWork(admission)
 	moved := current != nil && !sameEnvironment(shared, current) && !sameEnvironment(shared, next)
 	if moved {
-		// Persist the allocation-ownership transition BEFORE the handles move.
-		// An occupied target keeps what it already owns and retains the incoming
-		// allocation (AdoptSessionScratch releases that lease), so a source's
-		// owning slot must never be durably dropped before the target's
-		// replacement slot and the consumer's new current binding are committed.
-		if err := s.stageScratchSwapBinding(next, current, s.id); err != nil {
-			return err
-		}
 		next.AdoptSessionScratch(current)
 	}
 	// Step 0b — the context step 1's git runs under. Every command below forks
@@ -154,8 +144,10 @@ func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment, rec
 	s.mu.Lock()
 	if s.closing {
 		s.mu.Unlock()
-		// Roll back exactly what step 0 moved: the session's own scratch, whose
-		// directory is kept for the handoff its close would have made.
+		// Roll back exactly what step 0 moved: the session's own scratch goes back
+		// to the environment the session still holds, so the close removes it
+		// last, after the SessionEnd hooks and MCP servers that still use it.
+		// What next minted for itself is disposed with next below.
 		//
 		// A swap exempt from the move has no adopted lease to release, and what
 		// it must do instead depends on what next is. On a shared child's exit
@@ -167,11 +159,11 @@ func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment, rec
 		// reference. It goes with the clone, the decision every other discarded
 		// clone's scratch takes (the re-entry probes, the worktree control env,
 		// a spawn that failed before adoption).
-		switch {
-		case moved:
-			next.RetainSessionScratch()
-		case shared != nil && !sameEnvironment(shared, next):
-			next.DisposeUnadoptedScratch()
+		if moved {
+			current.AdoptSessionScratch(next)
+		}
+		if moved || (shared != nil && !sameEnvironment(shared, next)) {
+			_ = next.EndSessionScratch()
 		}
 		return errSwapWhileClosing
 	}
@@ -191,23 +183,5 @@ func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment, rec
 	promptWarning := s.refreshSystemPromptCache(next)
 	s.mu.Unlock()
 	s.reportPromptRenderFailure(promptWarning)
-	// Publish the swapped-in environment's binding and its current/parked
-	// consumer roles outside any Session lock, so retention tracks the same
-	// environment the session now works in. The swap is already committed here
-	// (s.env is next and the caller's rollback must not run), so a publication
-	// failure is reported as a warning rather than returned: the "error ⇒ no
-	// swap" contract stays true. Publishing BEFORE the install is not the
-	// smaller correct option — the roles derive from worktreeRestoreEnv and the
-	// abandoned set, both decided by record() under the same s.mu hold that
-	// installs next, so an early publish would record pre-swap roles.
-	if err := s.registerScratchConsumerRoles(next); err != nil {
-		// The swap is already committed (s.env is next and the caller's rollback
-		// must not run), so the failure is a warning for the op — but the manifest
-		// may now diverge from the environment, so it is recorded sticky for the
-		// preparation readiness check to fail closed with a persistence error.
-		s.recordScratchRetentionError(err)
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf(
-			"scratch retention publication after environment swap failed: %v", err)})
-	}
 	return nil
 }

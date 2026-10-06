@@ -35,6 +35,14 @@ The default model-facing posture is:
 > Read shell bytes with `job:<job_id>` and delegate history with its session
 > `transcript_ref`. Do not poll.
 
+Shell start registration records background evidence for explicit background
+launches and foreground promotion before acknowledging the handoff. That evidence
+survives terminal outcomes, forwarding and journal reconstruction. Retained inline
+foreground output and a foreground runtime limit do not establish background
+eligibility. Detached processes have no managed job record. Older unmarked
+records retain their diagnostic history and output without claiming background
+execution.
+
 The shipped model intentionally does **not** expose:
 
 - `job_kill`
@@ -1122,7 +1130,10 @@ Return shape:
 (kata tpb0): who requested the stop, whether this exact delegate resource can
 still be resumed (the same classification `job_status` reports), and whatever
 partial scratch/worktree evidence its run loop had already gathered before
-being cancelled. All are omitted for a shell `job_stop`. `requested_by` is
+being cancelled. The scratch directory at `scratch_path` stays after the
+delegate finishes; it is deleted when the root session is archived or deleted.
+All are omitted for a
+shell `job_stop`. `requested_by` is
 reported on every delegate stop, including one that has not completed yet;
 `resumable`, `not_resumable_reason`, `scratch_path`, and `worktree` are read
 from the settled delegate and are omitted until the stop completes

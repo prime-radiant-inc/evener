@@ -53,7 +53,7 @@ func TestTranscriptOnlySamplesCoverEveryKindAndCarryNothingCountable(t *testing.
 			t.Errorf("no sample of %s", kind)
 		}
 	}
-	for _, kind := range []schema.NoticeKind{schema.NoticeToolRepair, schema.NoticeGoalEnded, schema.NoticeTurnLimit, schema.NoticeSkillActivated} {
+	for _, kind := range []schema.NoticeKind{schema.NoticeToolRepair, schema.NoticeGoalEnded, schema.NoticeTurnLimit, schema.NoticeSkillActivated, schema.NoticeApprovalDecision} {
 		if !notices[kind] {
 			t.Errorf("no notice sample of %s", kind)
 		}

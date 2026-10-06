@@ -40,8 +40,7 @@ func quietMillis(d time.Duration) *int64 {
 // has been silent.
 func TestActivityReadWithholdsQuietWhileASubagentRuns(t *testing.T) {
 	waiting := liveActivityEntry(2, "01WAITING", appwire.ThreadStatusActive, silentFor(15*time.Minute))
-	waiting.RunningSubagentIDs = []string{"child-running", "child-settled", "child-unknown"}
-	waiting.RunningSubagentStates = map[string]string{"child-running": appwire.ThreadStatusActive, "child-settled": appwire.ThreadStatusIdle}
+	waiting.Subagents = appwire.SubagentTally{Running: 1}
 	crashed := liveActivityEntry(5, "01CRASHED", "errored", silentFor(time.Minute))
 	crashed.Crashed = true
 	roster := hubcore.NewRosterWithEntries(
@@ -62,6 +61,32 @@ func TestActivityReadWithholdsQuietWhileASubagentRuns(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got.Sessions, want) {
 		t.Fatalf("sessions = %+v, want %+v", got.Sessions, want)
+	}
+}
+
+// One session's running subagents are one number wherever the hub reports
+// them: the activity read counts what its Live row's subagent tally counts
+// (open runs, at every depth), not the listed children whose own status is
+// active. The case that split them: a running subagent waiting on the user
+// reports "awaiting", and a listed subagent may have no status reported yet,
+// but both still have a run open. With them counted, the session is waiting
+// on subagents, so its quiet time is withheld rather than read as stuck.
+func TestActivityReadCountsRunningSubagentsAsTheRowTallyDoes(t *testing.T) {
+	root := liveActivityEntry(1, "01ROOT", appwire.ThreadStatusActive, silentFor(15*time.Minute))
+	root.RunningSubagentIDs = []string{"child-asking", "child-unreported"}
+	root.RunningSubagentStates = map[string]string{"child-asking": appwire.ThreadStatusAwaiting}
+	root.Subagents = appwire.SubagentTally{Running: 2, Failed: 1}
+	roster := hubcore.NewRosterWithEntries(root)
+
+	got, err := hubActivityRead(t.Context(), hubcore.WebConfig{Roster: roster}, nil, appwire.ActivityReadParams{}, activityReadNow)
+	if err != nil {
+		t.Fatalf("activity read: %v", err)
+	}
+	if len(got.Sessions) != 1 || got.Sessions[0].RunningSubagents != root.Subagents.Running {
+		t.Fatalf("sessions = %+v, want runningSubagents %d, the row tally's running count", got.Sessions, root.Subagents.Running)
+	}
+	if got.Sessions[0].QuietForMS != nil {
+		t.Fatalf("quietForMS = %d, want none while subagents run", *got.Sessions[0].QuietForMS)
 	}
 }
 

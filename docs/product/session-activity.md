@@ -6,7 +6,11 @@ one-line status and title; its title HoverCard exposes the summary's project,
 host, branch, running-job, subagent, watch, pin-section, tier and age context. This remains a
 navigation-domain read. Hovering the title or focusing its tree row reveals that
 context; on a hoverless device, a long press on the title reveals it, and a tap
-activates the session. Reading a session's activity is a separate operation, so
+activates the session. The card floats beside the sidebar, aligned with the row,
+with viewport-aware above/below fallback in the sessions drawer or a narrow
+window. Scroll and resize cancel visible and pending reveals; a fresh gesture
+opens it at the new position. See the [placement contract](../web-ui/design-system.md).
+Reading a session's activity is a separate operation, so
 browsing navigation does not load every session's work tree.
 
 Transcript delegate cards and status indicators use the same
@@ -22,6 +26,41 @@ selected entity remains one whole snapshot, so resumed status is not combined
 with a previous generation's report. These labels reuse the
 transcript's existing activity binding without adding reads or subscriptions.
 
+## Navigation session status
+
+A top-level session's Broken/Failed status comes from its own `errored` state.
+Retained failed subagents remain in the web title context, phone activity history
+and Agents/Subagents detail views without making a healthy parent look broken.
+
+The existing live compact navigation summary supplies running-subagent work.
+The web rail shows its Running spinner; the phone Board classifies the parent
+as Working, using its existing pulse meter in Live and static mark elsewhere.
+This applies to quiet parents and nonblocking warnings, including mixed running
+and failed children. Questions and approvals keep their attention presentation.
+Warnings carrying a question or approval remain attention states. Own failure,
+restart-required and existing unavailable-session presentations remain unchanged.
+
+Question resolution returns to working presentation while children run. Once
+the last running child settles, each client resumes its normal parent-state and
+quiet/completion presentation, even with retained failures. Refresh and reconnect
+apply the same rule to newly delivered summaries without clearing failure history
+or changing session lifecycle state.
+
+The phone's [alert feed](../../mobile-native/src/alerts/alertEvents.ts) follows
+Board bands. A new nonblocking Warning waits while live children run. A warning
+that remains alerts when the last child settles; one that clears first never
+alerts. Warnings carrying a pending question or approval remain immediately
+eligible. First-read and offline rules still apply. Combined banners, Needs you
+counts and Next navigation use the same Board attention membership.
+
+The browser's [`effectiveSessionState`](../../cmd/evener-hub/frontend/src/shell/rail/RailRow.tsx)
+and the phone's [`boardState`](../../mobile-native/src/board/attention.ts) own
+these projections. The browser uses the shared navigation store; the phone keeps
+its existing BoardController/NavigationPages delivery and shared decoding.
+Both reuse the [shared live tally selector](../../appwire-client/typescript/state/navigation/selectors.ts).
+Status does not reconstruct counts from loaded child rows or acquire activity
+collection demand. Hub aggregation and domain activity authority stay independent.
+
 ## APIs and ownership
 
 Daemon and hub AppWire expose four typed reads:
@@ -30,7 +69,7 @@ Daemon and hub AppWire expose four typed reads:
 | --- | --- |
 | `evener/thread/activity/read` | Session context and independent counts for delegates, jobs and watches |
 | `evener/thread/delegates/list` | Compact stable delegates, including children without a live runtime |
-| `evener/thread/jobs/list` | Shell-job metadata; output remains behind the existing output API |
+| `evener/thread/jobs/list` | Background shell-job metadata; output remains behind the existing output API |
 | `evener/thread/watches/list` | Receiver-owned watches and bounded retained watch history |
 
 Every request names an explicit public session `ref`. The default `session`
@@ -58,6 +97,25 @@ existing delegate controller and journals. The
 [source adapters](../../cmd/evener-hub/internal/appsource/session_activity.go)
 carry that contract across local and remote boundaries. A remote reference
 cannot borrow a coincidentally named local session when its source is unavailable.
+Remote adapters qualify structural session refs and preserve opaque job transcript
+anchors such as `job:<id>`. A job's qualified `ownerRef` scopes its output actions;
+the anchor is not a session routing ref.
+
+Jobs pages and summary job counts share one domain-owned eligibility rule:
+a shell job must have durable background evidence in its start journal event.
+Explicit background launches and foreground jobs handed back while still running
+remain eligible through terminal settlement, forwarding and restart. Retained
+inline foreground output, foreground runtime-limit settlement and unclassified
+historical jobs are excluded. Detached commands create no job record. Live
+overlays can update an admitted row's status or output length, but cannot establish
+eligibility. The clients consume the same filtered pages and counts without
+reconstructing eligibility from notifications or navigation.
+
+Complete diagnostic job history and direct saved output and job transcript reads
+remain available. Activity reads neither change historical journals nor infer
+background evidence from transcripts. Filtering precedes page admission; excluded
+records still consume bounded scan work and advance the cursor. A long excluded
+gap can yield a valid empty continuation without claiming completed empty history.
 
 These are read APIs. They do not resume a session, start a provider, repair a
 journal or change lifecycle state. Shell managers, delegate controllers and watch
@@ -94,6 +152,16 @@ counts and retained registrations with unproved armed state do not set it.
 Footer and sidebar badges show a dash for unknown counts and name that state
 explicitly for assistive technology. Unknown evidence does not imply that a read
 is pending; collection views show their own loading progress.
+
+Native Board, project/location and pinned session rows use a native-only
+running-delegate chip gate over navigation tallies. Settled delegate failures
+have no visual or spoken count there; shared navigation selectors and web rail
+presentation retain their existing contract. The native session header's neutral
+Subagents chip uses the authoritative activity total without a failure suffix.
+Unknown counts with an existing delegate roster keep access and announce
+“count unknown”; disconnected headers omit the chip. A session's own errors,
+current questions and approvals retain their attention and priority, including
+the existing offline and stale-input rules.
 
 List arrays are always present. An empty array establishes emptiness only when
 the page is complete and has no issues. An incomplete page can contain no rows
@@ -215,6 +283,14 @@ removes absent rows. Explicit paging during recovery extends the displayed
 boundary; provisional refresh rows do not. Source issues remain pending across
 clean continuation pages until a fresh root walk reconciles them.
 
+When a binding replaces its client object, it can pass its already loaded
+`SessionActivitySnapshot` through the store's `retained` constructor option.
+Only matching requested refs and scopes retain evidence. Rows, context, issues
+and summary survive in memory while the new owner recovers; read flags reset to
+pending, and runtime metadata, cursors and in-flight requests never transfer.
+The existing fresh walk restores the displayed boundary with new cursors.
+Resolved-session replacement still retires the former evidence together.
+
 Refresh continuations yield for 100 ms between pages and stop when their view
 releases demand or the connection goes offline. The usual refresh rereads the
 displayed extent plus new rows and the final page's overhang. If the old boundary
@@ -274,10 +350,108 @@ checks that root mutation boundary. Optional usage fields stay absent when unkno
 Job output panes keep the logical job ID as their title when descriptive
 metadata is unavailable, while independently readable output remains usable.
 
+### Job output pages
+
+`evener/jobs/output` reads through the returned job owner ref and raw job ID.
+Omitting `beforeBytes` selects the latest page. A supplied value selects a
+backward page ending at that lifetime byte offset; explicit zero stays zero.
+The default page limit is 4 KiB, with positive limits capped at 64 KiB.
+For storage floor `F`, total `T` and limit `M`, latest selects
+`[max(F, T-M), T)` and backward end `B` selects `[max(F, B-M), B)`.
+The supplied end must lie in `[F, T]`; negative ends and ends beyond `T`
+are invalid. `B == F` succeeds with an empty page. Zero therefore succeeds
+empty only while the floor is zero.
+
+Each response contains `offsetBytes`, `bytesReturned`, `totalBytes`,
+`retainedStartBytes`, `encoding` and `data`. These describe one coherent raw
+snapshot. The storage floor is independent of the displayed page start.
+Invalid UTF-8 spans and split scalars travel losslessly as standard base64;
+valid UTF-8 pages use `utf8`. The shared `parseJobOutputPage` validates bounds
+and counts and supplies raw bytes; `decodeJobOutputText` handles display.
+Contiguous pages must be joined as bytes before decoding their shared boundary.
+
+A selector below the current storage floor returns structured
+`jobOutputPruned` with `retainedStartBytes` and `totalBytes`. A missing file or
+changed output generation remains an ordinary read failure. The owning live or
+remote source stays authoritative; only the existing dead-local condition
+permits the hub's saved-output fallback.
+The returned end equals `totalBytes` at the current EOF; an empty floor page
+is EOF only when the floor also equals the total. EOF describes that snapshot,
+so a running job can append after an empty read.
+
+### Browser output reading
+
+The [pane-owned reader](../../cmd/evener-hub/frontend/src/panes/transcript/jobLogReader.ts)
+retains two contiguous source-byte windows: up to 512 KiB of older reading and
+512 KiB of live output, with at most 1 MiB in their union. This is a retained
+source-byte budget, not a browser-heap limit. The existing `VirtualList` renders
+byte-keyed rows and follows the bottom. Away from the bottom, the pane anchors a
+visible complete glyph by its source-byte offset and pixel position within the
+pane body. When pages arrive or window trimming repairs a row, restoration uses
+the existing virtualizer's row measurement and scroll-offset APIs.
+
+Scrolling loads adjacent pages in either direction. Evicted retained text can
+be fetched again. An unloaded interval remains a paging boundary until its
+bytes have been read, including pages containing only terminal controls.
+Output no longer retained has a separate notice; useful cached text below the
+new floor remains readable. UTF-8 and ANSI state join only across contiguous
+bytes, with bounded decoder carry across known eviction. A gap starts an
+independent decoding range. Long lines render as bounded source-byte fragments.
+
+Each open pane permits one output read at a time. A visible running pane reads
+the latest output every second while serving visible history demand between
+live reads. Hidden or disconnected panes pause reads and retain their windows,
+anchor and pending demand. Returning to a readable pane resumes them. Read
+failures retry with paced backoff while successful cached output stays visible.
+Closing the pane or replacing its owner/job retires the reader and rejects late
+replies. This reader shares the existing pane lifetime and connection readiness;
+it creates no activity subscription.
+
+Descriptive job metadata is best effort and cannot block independently readable
+output. Observing terminal metadata requires a fresh latest read after that
+observation, even when an earlier read already saw EOF. Disconnecting during
+that drain preserves it for recovery. Finished jobs remain history-pageable.
+Refresh requests current output without discarding older reading or its anchor.
+
+Protocol `evener-appwire-v7` requires the same contract in the hub, daemon and
+clients. Older running daemons keep their work and require an explicit restart
+for current live reads. There is no tail-parser compatibility path. The phone
+uses the same portable decoder for its existing latest-output view, retaining
+focused two-second rereads and prior successful output through read failures.
+
 See the [store tests](../../appwire-client/typescript/sessionActivityStore.test.ts),
 [lease tests](../../appwire-client/typescript/threadSubscription.test.ts) and
 [presentation tests](../../appwire-client/typescript/sessionActivityPresentation.test.ts)
 for these shared ownership contracts.
+
+## Native activity histories
+
+The phone's Activity screen shows current work outside two independent history
+folds: Done for terminal delegates and Completed for terminal background jobs.
+Both start closed under All. Opening one leaves the other unchanged. The Done
+filter reveals both terminal histories without an extra disclosure and includes
+failed outcomes in its count. Summary counts remain independent of loaded rows;
+search narrows loaded labels without changing those counts.
+
+Terminal rows keep their true failure, stop and report evidence in ordinary ink.
+Running descendants remain visible even when a terminal parent is folded, with
+their original navigation and stop identities. Live questions and approvals keep
+their attention treatment. The active strip combines all terminal outcomes in
+its quiet Done segment and disappears when no work is running.
+
+The native binding retains shared membership across disconnection and client
+replacement. Its shared store owns paging, retries and later-page replay; the
+screen owns filter, search, independent disclosures and visible page demand.
+A successful page that only changes a closed fold's count keeps the observed
+end demand, because the native list emits its end callback once per content
+length. Each resource's shared loading/error state gates that demand. New visible
+rows, changed content geometry or scrolling away require a fresh native edge
+observation; an unfocused screen supplies no new demand. Errors recover through
+the shared backoff, and disposal rejects delayed pages. Renderer tests exercise
+the installed native edge latch, stable qualified row identity and preserved
+view intent through recovery.
+Physical-device scroll geometry, safe areas, keyboard and VoiceOver behavior
+require separate qualification.
 
 ## Automatic agent cascade
 
@@ -383,6 +557,12 @@ the browser route's ordinary conversation is already satisfied. A fresh pathname
 still selects its requested ordinary conversation. Draft text, skill/command
 selections and mention locations use their existing stores through the pane-owned
 composer source.
+On desktop startup, AppShell recognizes a saved legacy cascade's source as the initial
+route role before route placement completes. A matching source keeps the saved
+edges, pane identities and neighboring panes when the restored workspace meets
+the route's existing focus and placement rules. Location and DockHost restoration
+may finish in either order. A different route takes precedence; later pathname
+changes retain the ordinary route-placement and companion-focus rules.
 Processed image bytes and pending encodes belong to the original pane lifetime;
 they are excluded from layout JSON and localStorage and are not restored by a
 page reload. Phones keep the ordinary Agents transcript action. A saved cascade
@@ -443,11 +623,30 @@ save, so a reload does not make that session an older eviction candidate. Focus
 changes while the sidebar is unmounted do not persist inherited view intent.
 
 Without a retained choice, the desktop [Jobs tab](../../cmd/evener-hub/frontend/src/shell/activitybar/JobsTab.tsx)
-starts successful completed job history folded, and the shared
+folds every terminal background job under Completed, including failed,
+cancelled, stopped, killed and unknown outcomes. Current jobs remain outside
+the fold. Terminal Jobs and Agents glyphs use ordinary quiet color while their
+status text retains the actual outcome; live input and approval requests retain
+attention color. Closing history leaves the existing visible page boundary active,
+so current work on later pages remains discoverable. Opening output uses the
+returned job owner and transcript ref in a secondary pane.
+
+The shared
 [task panel](../../cmd/evener-hub/frontend/src/panes/session/chrome/TasksPanel.tsx)
-starts settled done/cancelled task history folded. Running and unsuccessful jobs
-remain visible, as do the Current and Remaining task sections. Task details
+starts settled done/cancelled task history folded. Current and Remaining task sections
+remain visible. Task details
 remain an explicit disclosure choice.
+
+The browser Tasks tab keeps its done/total count in the tab label and starts its
+body with the task groups, without aggregate summary lines above them. The
+standalone Tasks pane and Tasks Sheet retain their aggregate headers and trigger
+labels. Loading, unavailable and empty states remain visible; a failed refresh
+retains loaded rows and the existing retry control.
+
+Agents, Jobs, Watches and Tasks use `var(--space-1)` vertical and
+`var(--space-2)` horizontal row padding. Disclosure rows apply that padding once
+at their summary boundary; nested watch content adds no inset. The shared
+viewport padding and About field layout remain independent of row spacing.
 
 The [Activity viewport](../../cmd/evener-hub/frontend/src/shell/activitybar/ActivityViewport.tsx)
 restores the retained row after its collection and disclosures render. A row
@@ -504,9 +703,19 @@ non-crashed errors keep Delete hidden; Force shutdown remains the recovery actio
 for eligible live sessions.
 Expanded watch details reveal the full user note as wrapped text, regardless of
 how much fits in the compact collapsed row.
-Failed entries remain visible outside the inactive fold, including parent rows
-needed to expose failed descendants. The fold count covers only the other
-inactive entries grouped beneath it.
+The recursive Activity Sheet groups every settled job and delegate, including
+failures, under its existing per-session Inactive folds. Counts include every
+entry grouped there. Opening a fold reveals rows in their original order with
+details collapsed by default. Active descendants and the ancestors needed to
+reach them remain outside the folds, regardless of an ancestor's settled outcome.
+Settled row glyphs and status text use ordinary quiet ink. True outcomes remain
+available to assistive technology even when duration replaces visible status;
+live questions, approvals and current errors retain their attention treatment.
+Detail, action and read failures remain recovery information, not settled outcomes.
+The shared entity index includes every loaded entry regardless of disclosure and
+keeps its fold origin truthful. Folding does not change owner-qualified output or
+child transcript actions, watches, paging or shared reconnect recovery. Overview
+and native retain their separate history groups and own-session error priority.
 The [panel view store](../../cmd/evener-hub/frontend/src/stores/activityPanel.ts)
 retains sheet visibility, disclosure choices and each collection's last loaded
 row identity by session ref for the lifetime of its retained workspace panes.
@@ -560,7 +769,7 @@ qualification gates; these contracts do not establish a device or provider run.
 ## Navigation boundary
 
 Navigation uses representation version 3 independently of connection protocol
-`evener-appwire-v6`. Clients request version 3 and the hub advertises that
+`evener-appwire-v7`. Clients request version 3 and the hub advertises that
 representation. There is no version 2 emission or fallback path.
 
 Navigation carries own-session running-job and watch counts plus bounded running

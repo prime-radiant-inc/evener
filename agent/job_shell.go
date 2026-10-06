@@ -309,6 +309,9 @@ func runShell(ctx context.Context, jm *jobManager, se execenv.StreamingExecutor,
 			wait := <-waitCh
 			return jm.finishForegroundRuntimeTimeout(run, wait)
 		}
+		jm.mu.Lock()
+		run.rec.Background = true
+		jm.mu.Unlock()
 		if err := jm.commitDelayedShell(run); err != nil {
 			handle.Signal()
 			if errors.Is(err, errDelayedShellStartForwardTerminalFailed) {
@@ -318,13 +321,6 @@ func runShell(ctx context.Context, jm *jobManager, se execenv.StreamingExecutor,
 			}
 			return shellResult{Type: string(jobstore.JobShell), Status: string(jobstore.StatusFailed), Reason: "start_failed"}
 		}
-		// The command now runs in the background, whatever mode launched it.
-		// Background is live-only (json:"-"), so this is the one place the
-		// promotion can be recorded; under jm.mu because drain-side readers
-		// take the live record under that lock.
-		jm.mu.Lock()
-		run.rec.Background = true
-		jm.mu.Unlock()
 		output, total, truncated, _ := tailOutput(run.output, shellDefaultTailBytes)
 		go jm.finalizeShellWhenDone(run, waitCh, &runtimeTimedOut)
 		return shellResult{
@@ -622,6 +618,7 @@ func (jm *jobManager) commitDelayedShell(run *runningJob) error {
 		JobID:            rec.JobID,
 		Type:             rec.Type,
 		Command:          rec.Command,
+		Background:       rec.Background,
 		Intent:           rec.Intent,
 		Description:      rec.Description,
 		OwnerSessionID:   rec.OwnerSessionID,

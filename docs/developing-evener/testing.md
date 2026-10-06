@@ -348,14 +348,43 @@ for a write. It needs `EVENER_SSH_E2E=1` and `EVENER_SSH_E2E_HOST` as well, and
 skips under `-short`. `EVENER_SSH_E2E_USER` sets the entry's ssh user, as in the
 sibling check.
 
-What it writes, and where: under the host's `HOME` it creates its own
-`evener-deploy-e2e-{source,binary}` directory, deploys the binary to
-`<dir>/bin/evener` (the basename `checkRunTarget` requires), and writes a private
-`hub.toml` and state root beside it so the host hub it starts uses its own
-loopback port (`127.0.0.1:19180` / `:19181`) and its own lock. It removes that
-directory when it finishes. It never addresses the host's real install
-(`~/.local/bin/evener`); the check hashes that file before and after and fails if
-it changed.
+What it writes, and where: under the host's `/tmp` it creates its own
+`evener-deploy-e2e-{source,binary}-<run-id>` directory with an atomic claim that
+refuses existing paths. Both machines need a writable `/tmp` ancestor for catalog
+previews, while the run-unique project paths exist only on the host. It deploys
+the binary to `<dir>/bin/evener` (the basename `checkRunTarget` requires), and
+writes a private `hub.toml` beside it. The config explicitly sets the hub state root, daemon
+directory, project-state glob and history database under `<dir>/state`, alongside
+its loopback port (`127.0.0.1:19180` / `:19181`) and private lock. Setting only
+`hub_state_root` leaves the other runtime paths on their normal defaults.
+The controller's fixture-only SSH wrapper executes the real OpenSSH client and
+sets the remote command's `HOME` to `<dir>/home`, with config, state and cache XDG
+roots beneath that home. It unsets inherited `EVENER_PROVIDERS_CONFIG`,
+`EVENER_CREDENTIALS_CONFIG` and `EVENER_STATE_DIR` overrides before bootstrap or
+attach. Startup extension directories and child processes therefore use private
+roots too. The host's login environment and SSH server configuration are unchanged.
+Cleanup signals only
+a listener whose command line names that private config. It removes the directory
+only after proving shutdown; an unproved shutdown fails the check and leaves the
+directory in place. It never writes the host's real install (`~/.local/bin/evener`);
+the check hashes that file before and after and fails if it changed. A failed or
+unrecognized hash probe cannot establish absence.
+
+Each case creates two private remote projects with distinct command and skill
+descriptors. Forwarded slash catalogs must follow an alpha → beta → alpha
+directory switch without leaking the other project's or controller's entries.
+Direct controller calls for the same host-only paths must exclude those remote
+entries. A separate controller project supplies the local positive control.
+
+Use an unmanaged host for this fixture and inspect its supervisor listings before
+running it. The current bootstrap selects evener hub launchd/systemd units by
+name, without matching the private config or port; a matching loaded unit can
+start or restart the regular hub. These private paths do not establish isolation
+on a managed host.
+
+The SSH target must provide a separate filesystem for its private catalog
+projects. Localhost on the controller's filesystem cannot satisfy the host-only
+path checks or the direct-controller negative control.
 
 Prerequisites: a disposable host reachable over non-interactive ssh, with a
 supported target (`linux/amd64` or `darwin/arm64`); the Go toolchain and this
@@ -792,10 +821,12 @@ their workspace under it.
 
 Tests clean up after themselves without the runner, too: a direct `go test`
 must leave nothing in the developer's temp dir or in `/tmp`. Sessions make
-that harder than it looks. A closing session retains its scratch directory and
-its world-usable temp container for the crashed-scratch sweep's 24h reclaim
-(`sandbox.SweepCrashedSessionScratch`), which a test binary never runs, and
-the container lives in `/tmp` or `/var/tmp`, which no `TMPDIR` moves. So a
+that harder than it looks. A closing session keeps its named scratch
+(`evener-scratch-<root>/<session>`) until its root is archived, a session a
+test kills leaves its disposable scratch for the crashed-scratch sweep's 24h
+reclaim (`sandbox.SweepCrashedSessionScratch`), and a detached command's
+world-usable temp container lives in `/tmp` or `/var/tmp`, which no `TMPDIR`
+moves. So a
 package whose tests run sessions routes its TestMain through
 `agent/sandbox/sandboxtest`: `Run`, or `RedirectHostTemp` and `Discard` in a
 TestMain that does more, point `TMPDIR` and the container bases into one root
@@ -803,9 +834,10 @@ and remove it when the run ends. Self-exec helper children inherit that
 `TMPDIR`, so what they leave when they are killed on purpose goes with it.
 The container bases travel as `EVENER_HOST_TEMP_BASES`, so every `evener` and
 `evener serve` a test starts inherits them too. That matters beyond leftovers:
-each of those processes runs the crashed-scratch sweep at startup, and without
-the variable it reclaims other sessions' abandoned scratch from the
-developer's real `/tmp` and `/var/tmp`. A TestMain that clears every product
+each of those processes runs the crashed-scratch sweep at startup, so without
+the variable a test
+reclaims other sessions' abandoned scratch from the developer's real `/tmp`
+and `/var/tmp`. A TestMain that clears every product
 `EVENER_*` variable after `RedirectHostTemp` keeps that one value
 (`sandboxtest.Redirected`), and a test that builds a child environment from
 scratch must pass it on. A test that sets the bases itself has to prove they
@@ -813,9 +845,9 @@ are in force before it mints or sweeps anything, so a regression fails the
 test instead of reaching `/tmp`.
 
 A test that drives the crashed-scratch sweep itself confines it to scratch it
-owns (its own `TMPDIR` and user cache dir, no container bases; see
-`confineSessionScratchSweep` in agent), because the sweep deletes any aged,
-unleased scratch it can see, including another process's.
+owns (its own `TMPDIR` and user cache dir, no container bases), because the
+sweep deletes any aged, unleased scratch it can see, including another
+process's.
 
 A fixture built once and cached for the whole package run (a `sync.Once`
 repo, a built binary) belongs in the package's own fixture root, never in
@@ -835,6 +867,14 @@ frontend dependencies are installed. Establishing that install may require
 npm/network access or an existing compatible worktree install, so an
 unavailable setup is a reported prerequisite failure rather than a
 deterministic test pass.
+
+The production editorial-preview config still refuses a symlinked
+`node_modules`: its server boundary must not serve dependencies that concurrent
+lanes can write. Its Node isolation tests do not skip in a worktree that uses
+the lockfile-matched shared install. They copy the real frontend, AppWire
+sources, and dependency tree into a private repository-shaped fixture, then run
+the config, HTTP routes, and wrapper there. Never run `npm ci` through the
+shared symlink to make those tests pass.
 
 The frontend unit gate sizes Vitest from the machine's spare capacity through
 `scripts/lib/load-aware-workers.sh`: worker count is the CPUs the process may

@@ -54,6 +54,25 @@ func ReadOutputWindowSnapshotFromFile(path string, f *os.File, offset int64, max
 	return snapshot, err
 }
 
+// ReadOutputPageSnapshotFromFile selects and reads a raw page from f. The
+// caller owns f, and must reopen it before retrying a concurrent change.
+func ReadOutputPageSnapshotFromFile(path string, f *os.File, beforeBytes *int64, maxBytes int) (OutputWindowSnapshot, error) {
+	if f == nil {
+		return OutputWindowSnapshot{}, errors.New("jobstore: output file is nil")
+	}
+	snapshot, err := readOutputPageSnapshotFromFileOnce(afero.NewOsFs(), path, f, beforeBytes, maxBytes)
+	if errors.Is(err, errOutputChanged) {
+		return OutputWindowSnapshot{}, ErrOutputChangedDuringRead
+	}
+	return snapshot, err
+}
+
+func readOutputPageSnapshotFromFileOnce(fs afero.Fs, path string, f *os.File, beforeBytes *int64, maxBytes int) (OutputWindowSnapshot, error) {
+	return readOutputRangeSnapshotFromFileOnce(fs, path, f, func(totalBytes, retainedStart int64) (int64, int64, error) {
+		return outputPageBounds(beforeBytes, maxBytes, totalBytes, retainedStart)
+	})
+}
+
 // KEEP IN SYNC with the path-backed attempt protocol in output_snapshot.go.
 // These implementations intentionally remain separate: frozen path-reader
 // seams require afero path access, while descriptor reads must fence path/file
@@ -82,12 +101,18 @@ func readOutputSnapshotFromFileOnce(fs afero.Fs, path string, f *os.File, maxByt
 }
 
 func readOutputWindowSnapshotFromFileOnce(fs afero.Fs, path string, f *os.File, offset int64, maxBytes int) (OutputWindowSnapshot, error) {
+	return readOutputRangeSnapshotFromFileOnce(fs, path, f, func(totalBytes, retainedStart int64) (int64, int64, error) {
+		return outputWindowBounds(offset, maxBytes, totalBytes, retainedStart)
+	})
+}
+
+func readOutputRangeSnapshotFromFileOnce(fs afero.Fs, path string, f *os.File, selectRange outputRangeSelector) (OutputWindowSnapshot, error) {
 	before, err := observeOutputSnapshotFromFile(fs, path, f)
 	if err != nil {
 		return OutputWindowSnapshot{}, err
 	}
 
-	snapshot, readErr := readOutputWindowSnapshotFromFileAttempt(fs, path, f, before.retainedBytes, offset, maxBytes)
+	snapshot, readErr := readOutputRangeSnapshotFromFileAttempt(fs, path, f, before.retainedBytes, selectRange)
 	after, observeErr := observeOutputSnapshotFromFile(fs, path, f)
 	if observeErr != nil {
 		return OutputWindowSnapshot{}, observeErr
@@ -97,6 +122,9 @@ func readOutputWindowSnapshotFromFileOnce(fs afero.Fs, path string, f *os.File, 
 	}
 	if after.changedFrom(before) {
 		return OutputWindowSnapshot{}, errOutputChanged
+	}
+	if err := checkOutputFileGeneration(path, f); err != nil {
+		return OutputWindowSnapshot{}, err
 	}
 	if readErr != nil {
 		return snapshot, readErr
@@ -142,7 +170,7 @@ func readOutputSnapshotFromFileAttempt(fs afero.Fs, path string, f *os.File, ret
 	}, nil
 }
 
-func readOutputWindowSnapshotFromFileAttempt(fs afero.Fs, path string, f *os.File, retainedBytes int64, offset int64, maxBytes int) (OutputWindowSnapshot, error) {
+func readOutputRangeSnapshotFromFileAttempt(fs afero.Fs, path string, f *os.File, retainedBytes int64, selectRange outputRangeSelector) (OutputWindowSnapshot, error) {
 	if err := checkOutputFileGeneration(path, f); err != nil {
 		return OutputWindowSnapshot{}, err
 	}
@@ -151,24 +179,21 @@ func readOutputWindowSnapshotFromFileAttempt(fs afero.Fs, path string, f *os.Fil
 	if err != nil {
 		return OutputWindowSnapshot{}, err
 	}
+	offset, end, rangeErr := selectRange(totalBytes, retainedStart)
 	snapshot := OutputWindowSnapshot{
 		Start:                offset,
-		End:                  offset,
+		End:                  end,
 		TotalBytes:           totalBytes,
 		RetainedStart:        retainedStart,
 		RetainedStartPartial: retainedStartPartial,
 	}
-	if offset < retainedStart {
-		return snapshot, fmt.Errorf("%w: offset=%d first_available=%d", ErrOutputPruned, offset, retainedStart)
-	}
-	if offset > totalBytes {
-		return snapshot, fmt.Errorf("%w: offset=%d total=%d", ErrInvalidOffset, offset, totalBytes)
+	if rangeErr != nil {
+		return snapshot, rangeErr
 	}
 	if totalBytes-retainedStart != retainedBytes {
 		return OutputWindowSnapshot{}, errOutputChanged
 	}
 
-	end := addWindowLimit(offset, maxBytes, totalBytes)
 	content, err := readOutputRawSnapshotWindowFromFile(f, offset-retainedStart, end-offset)
 	if err != nil {
 		return OutputWindowSnapshot{}, err

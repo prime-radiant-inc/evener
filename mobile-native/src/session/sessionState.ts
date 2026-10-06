@@ -5,7 +5,7 @@
 import { subagentState, summaryTally } from "../subagents/subagentModel";
 import type { EvenerDelegateInfo, ThreadModel, SessionActivityCounts } from "@evener/appwire-client";
 import { type BoardState, hubTime } from "../board/attention";
-import { compactDuration } from "./format";
+import { compactDuration, timeAgo } from "./format";
 
 export interface SessionStateLine {
 	state: BoardState;
@@ -46,7 +46,7 @@ export function sessionStateLine(session: StateSource, now: number, runMs?: numb
 	const finished = lastCompletion(session.turns);
 	return {
 		state: "idle",
-		text: finished === null ? "Finished" : `Finished · ${compactDuration(now - finished)} ago`,
+		text: finished === null ? "Finished" : `Finished · ${timeAgo(now - finished)}`,
 	};
 }
 
@@ -80,8 +80,6 @@ export type ChipKind = "subagents" | "files" | "tasks" | "goal" | "queue";
 export interface ContextChip {
 	kind: ChipKind;
 	label: string;
-	/** "2 failed", drawn in red ink after the label. */
-	failed?: string;
 	/** Amber: the goal is blocked. */
 	attention: boolean;
 	/** A blue dot after the label: a document is new or changed (Files). */
@@ -110,13 +108,11 @@ export function contextChips(
 	const chips: ContextChip[] = [];
 	const tally = summaryTally(subagents ?? undefined);
 	if (connected && tally && tally.total > 0) {
-		const failed = tally.failed > 0 ? `${tally.failed} failed` : undefined;
 		chips.push({
 			kind: "subagents",
 			label: `Subagents ${tally.total}`,
-			failed,
 			attention: false,
-			accessibilityLabel: failed ? `Subagents, ${tally.total}, ${failed}` : `Subagents, ${tally.total}`,
+			accessibilityLabel: `Subagents, ${tally.total}`,
 		});
 	} else if (connected && !tally && (session.delegates?.length ?? 0) > 0) {
 		chips.push({

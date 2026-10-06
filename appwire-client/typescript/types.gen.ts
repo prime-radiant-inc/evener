@@ -763,15 +763,15 @@ export interface EvenerThread {
    */
   goal?: GoalState;
   /**
-   * HumanNote carries the human's one-paragraph session whiteboard when set,
-   * else empty. It powers the shared-notes display without a bespoke
+   * HumanNote carries the human's session whiteboard, line breaks kept, when
+   * set, else empty. It powers the shared-notes display without a bespoke
    * transport — like Goal, it is structured per-session state read from the
    * already-fetched thread snapshot.
    */
   humanNote?: string;
   /**
-   * AgentNote carries the agent's one-paragraph session whiteboard when set,
-   * else empty. It is read from the already-fetched thread snapshot like
+   * AgentNote carries the agent's session whiteboard, line breaks kept, when
+   * set, else empty. It is read from the already-fetched thread snapshot like
    * HumanNote.
    */
   agentNote?: string;
@@ -1892,16 +1892,13 @@ export interface JobActivityWorktree {
   dirty: boolean;
 }
 
-export interface JobOutputTail {
-  tail: string;
+export interface JobOutputPage {
+  offsetBytes: number;
+  bytesReturned: number;
   totalBytes: number;
-  retainedStart: number;
-  truncated: boolean;
-  /**
-   * HasEarlier is true when retained output exists before the window: a
-   * follow-up read with beforeBytes=RetainedStart returns the previous page.
-   */
-  hasEarlier?: boolean;
+  retainedStartBytes: number;
+  encoding: string;
+  data: string;
 }
 
 export interface JobsGetParams {
@@ -1930,7 +1927,7 @@ export interface JobsOutputParams {
 }
 
 export interface JobsOutputResponse {
-  data: JobOutputTail;
+  data: JobOutputPage;
 }
 
 export interface JobsTreeUpdatedParams {
@@ -2767,6 +2764,13 @@ export interface PluginEntry {
   gitCommitSha?: string;
   installedAt: number;
   lastUpdated: number;
+  /**
+   * UpdateAvailable is true when the last evener/plugin/checkUpdates found a
+   * newer remote commit. Absent means no known update: no check has run, the
+   * check found the plugin current or could not reach its remote, or the
+   * source is not git-backed. Clients offer Upgrade only when it is true.
+   */
+  updateAvailable?: boolean;
 }
 
 export interface PluginLaunchCandidate {
@@ -3078,7 +3082,7 @@ export interface SessionActivity {
   minutes: number[];
   /**
    * RunningSubagents counts the session's subagents, at every depth, whose
-   * own turn is running.
+   * run is open: SubagentTally.Running, the count its Live row shows.
    */
   runningSubagents: number;
   /**
@@ -3171,6 +3175,12 @@ export interface SessionActivitySummary {
   refreshPending?: boolean;
   context: SessionActivityContext;
   scope: SessionActivityScope;
+  /**
+   * Delegates counts a delegate as active while its run is open. For a root
+   * read at scope subtree, Active is the Live row's SubagentTally.Running
+   * and evener/activity/read's runningSubagents; scope session counts only
+   * direct children.
+   */
   delegates: SessionActivityCounts;
   jobs: SessionActivityCounts;
   watches: SessionActivityCounts;
@@ -4622,6 +4632,7 @@ export const METHOD_NAMES = [
   "evener/plugin/enable",
   "evener/plugin/disable",
   "evener/plugin/setAutoUpgrade",
+  "evener/plugin/checkUpdates",
   "evener/command/list",
   "evener/spawn/slashCatalog",
   "evener/settings/overview",
@@ -4689,6 +4700,7 @@ export const HOST_REQUEST_METHODS = [
   "evener/path/validate",
   "evener/paths/complete",
   "evener/plugin/checkNow",
+  "evener/plugin/checkUpdates",
   "evener/plugin/disable",
   "evener/plugin/enable",
   "evener/plugin/install",
@@ -4818,6 +4830,7 @@ export const THREAD_ITEM_EVENT_KINDS = [
   "notes-context",
   "warning",
   "interrupted",
+  "approval_decision",
 ] as const;
 
 export type ThreadItemEventKind = (typeof THREAD_ITEM_EVENT_KINDS)[number];
@@ -4929,6 +4942,7 @@ export interface MethodTypes {
   "evener/plugin/enable": { params: PluginRefParams; result: PluginListResponse };
   "evener/plugin/disable": { params: PluginRefParams; result: PluginListResponse };
   "evener/plugin/setAutoUpgrade": { params: PluginSetAutoUpgradeParams; result: PluginListResponse };
+  "evener/plugin/checkUpdates": { params: EmptyParams; result: PluginListResponse };
   "evener/command/list": { params: EmptyParams; result: CommandListResponse };
   "evener/spawn/slashCatalog": { params: SpawnSlashCatalogParams; result: SpawnSlashCatalogResponse };
   "evener/settings/overview": { params: EmptyParams; result: SettingsOverviewResponse };

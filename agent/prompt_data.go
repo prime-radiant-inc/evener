@@ -29,6 +29,25 @@ type promptData struct {
 	// background shell job still running then is stopped instead of waking the
 	// session later.
 	TurnEndsProcess bool
+	// MemoryRead gates the memory guidance section: memory is enabled, bound,
+	// and memory_read is callable. MemorySearch additionally requires
+	// memory_search.
+	MemoryRead   bool
+	MemorySearch bool
+	// MemorySaves is true when the session may be told to save memory (the
+	// memory save tools are callable).
+	MemorySaves bool
+	// ProjectMemory is true when memory is readable and a project id is set.
+	ProjectMemory bool
+	// SessionMemory is true when memory is readable and this session has a
+	// session memory scope: its own for a root session, its root's for a
+	// delegate. MemoryDelegate marks a delegate, which reads its root's
+	// session memory and never writes it.
+	SessionMemory  bool
+	MemoryDelegate bool
+	// SessionMemorySaves is true for a root session that may save to its
+	// session memory.
+	SessionMemorySaves bool
 
 	// Environment
 	WorkingDir      string

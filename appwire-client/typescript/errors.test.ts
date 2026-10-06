@@ -21,6 +21,7 @@ import {
   hostFieldError,
   isHubLaunchError,
   isInstanceRemoveApplied,
+  isMethodNotFound,
   isTranscriptHistoryFailedError,
   isUpgradeRequiredError,
   refusedBeforeRunning,
@@ -436,13 +437,14 @@ test("friendlyLaunchErrorMessage gives an unknown rejection the same generic sen
   expect(friendlyLaunchErrorMessage(new Error("switch boom"))).toBe("Something went wrong.");
 });
 
+// The codes are Go ints, which goConstantValue (strings only) doesn't read.
+function code(name: string): number {
+  const value = appwireErrorsGo.match(new RegExp(`\\n\\s*${name}\\s*=\\s*(-?\\d+)`))?.[1];
+  if (value === undefined) throw new Error(`appwire/errors.go has no ${name} constant`);
+  return Number(value);
+}
+
 describe("a refusal before running is bound to appwire/errors.go's codes", () => {
-  // The codes are Go ints, which goConstantValue (strings only) doesn't read.
-  const code = (name: string) => {
-    const value = appwireErrorsGo.match(new RegExp(`\\n\\s*${name}\\s*=\\s*(-?\\d+)`))?.[1];
-    if (value === undefined) throw new Error(`appwire/errors.go has no ${name} constant`);
-    return Number(value);
-  };
   test("a validation refusal or a malformed request ran nothing", () => {
     expect(refusedBeforeRunning(new WireError("cwd is required", code("CodeInvalidParams")))).toBe(true);
     expect(refusedBeforeRunning(new WireError("bad request", code("CodeInvalidRequest")))).toBe(true);
@@ -451,5 +453,17 @@ describe("a refusal before running is bound to appwire/errors.go's codes", () =>
     expect(refusedBeforeRunning(new WireError("internal", code("CodeInternalError")))).toBe(false);
     expect(refusedBeforeRunning(new WireError("unavailable", code("CodeUnavailable")))).toBe(false);
     expect(refusedBeforeRunning(new Error("socket closed"))).toBe(false);
+  });
+});
+
+describe("method-not-found is bound to appwire/errors.go", () => {
+  test("an older hub's refusal of a method it lacks, by code or by discriminator", () => {
+    expect(isMethodNotFound(new WireError("method not found", code("CodeMethodNotFound")))).toBe(true);
+    const info = goErrorInfo("ErrorMethodNotFound");
+    expect(isMethodNotFound(new WireError("method not found", -32000, { evenerErrorInfo: info }))).toBe(true);
+  });
+  test("any other failure is not", () => {
+    expect(isMethodNotFound(new WireError("internal", code("CodeInternalError")))).toBe(false);
+    expect(isMethodNotFound(new Error("socket closed"))).toBe(false);
   });
 });

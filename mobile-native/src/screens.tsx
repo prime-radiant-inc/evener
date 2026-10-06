@@ -975,7 +975,7 @@ export function ConversationScreen({
 	}, [barHeight]);
 	const now = Date.now();
 	const stateLine = conversation ? sessionStateLine(conversation, now, runMs(now)) : null;
-	// Files & artifacts (spec 10.1): what the session wrote or linked, and
+	// Files (spec 10.1): what the session wrote or linked, and
 	// whether any of it is new or changed since you last opened it.
 	const documents = useMemo(() => {
 		const cwd = conversation?.cwd ?? "";
@@ -2574,6 +2574,11 @@ export function ConversationScreen({
 			await rehydrateQuietly(live);
 		}
 	}
+	// A promote or drain bypasses the outbox, so claim the hub's steer as this
+	// phone's: it shows as steering until the agent takes it (spec 8.5).
+	function steeredHere(result: { receipt: { clientMutationId: string } }) {
+		store.getState().rememberSubmittedHere(result.receipt.clientMutationId);
+	}
 	// Check: read the session again, then show its live end, where the
 	// message is if it arrived.
 	async function checkDelivery() {
@@ -2591,8 +2596,8 @@ export function ConversationScreen({
 		const cancel = () => queueChange(service, () => service.cancelQueued(target.index, target.id, instanceId));
 		if (action === "steerNow" || action === "sendNow") {
 			if (queueActionRefusal(live, "promote") !== null) return STEER_FAILED;
-			const promoted = await queueChange(service, () =>
-				service.promoteQueuedAsSteer(target.index, target.id, instanceId),
+			const promoted = await queueChange(service, async () =>
+				steeredHere(await service.promoteQueuedAsSteer(target.index, target.id, instanceId)),
 			);
 			return promoted ? null : STEER_FAILED;
 		}
@@ -2617,7 +2622,9 @@ export function ConversationScreen({
 		if (!service || !connectionReady.current || !live?.queue || !instanceId) return null;
 		if (queueActionRefusal(live, "drainAll") !== null) return STEER_ALL_FAILED;
 		const revision = live.queue.revision;
-		const drained = await queueChange(service, () => service.drainAsSteer(revision, instanceId));
+		const drained = await queueChange(service, async () =>
+			steeredHere(await service.drainAsSteer(revision, instanceId)),
+		);
 		return drained ? null : STEER_ALL_FAILED;
 	}
 	// The Queue sheet's host is memoized on what it shows, so its actions

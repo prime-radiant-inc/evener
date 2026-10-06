@@ -10,22 +10,28 @@ import type {
   NavigationSnapshot,
   ThreadStartResponse,
 } from "@evener/appwire-client";
-import { AppwireClient, type ConnectionState, WireError } from "@evener/appwire-client";
+import { APPWIRE_PROTOCOL_VERSION, AppwireClient, type ConnectionState, WireError } from "@evener/appwire-client";
 import { keyID } from "@evener/appwire-client/state/navigation";
+import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useEffect } from "react";
 
 // Session-title queries in this file target navigation, so keep them scoped to
 // the rail rather than matching the same session in workspace content.
 const rail = () => within(screen.getByTestId("rail"));
 
 import { afterEach, beforeAll, beforeEach, expect, onTestFinished, test, vi } from "vitest";
+import { MotionProvider } from "../motion";
 import { initNotifications, resetNotificationsForTests } from "../notifications";
 import * as composerFocus from "../panes/session/composer/composerFocus";
 import { OpenTranscriptButton } from "../panes/session/transcript/openTranscript";
+import { installJobLogRangeGeometry } from "../panes/transcript/JobLogTestUtils";
 import { enterAgentCascade, openCascadeConversation, returnFromAgentCascade } from "../panes/zoom/actions";
+import { cascadeClient, cascadeContext } from "../panes/zoom/cascadeTestUtils";
+import type { SessionZoomParams } from "../panes/zoom/intent";
 import { StubResizeObserver } from "../resizeObserverTestUtils";
 import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
 import { resetAuthStatusesStoreForTests } from "../stores/authStatuses";
@@ -51,6 +57,7 @@ import { AppShell } from "./AppShell";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "./activitybar/activitySidebarStore";
 import { ClientProvider } from "./clientContext";
 import { DockHost } from "./DockHost";
+import { resetDockChunkForTests } from "./DockRegion";
 import { paletteStore } from "./palette/paletteController";
 import { conversationPaneLifetime } from "./paneLifetime";
 import { navigate, refParam } from "./routing";
@@ -201,7 +208,7 @@ function navClient(initialState: ConnectionState = "ready"): FakeClient {
   client.on("evener/navigation/read", navigationRead);
   client.scriptConnect(() => ({
     serverInfo: { name: "fake", version: "1" },
-    protocolVersion: "evener-appwire-v6",
+    protocolVersion: APPWIRE_PROTOCOL_VERSION,
     sourceId: "fake",
     features: {} as never,
     navigation: { version: 1, generationId: "generation_test", sequence: 0, readVersions: [3] },
@@ -629,6 +636,235 @@ async function saveLegacyNestedMainLayout(): Promise<void> {
   expect(localStorage.getItem(LAYOUT_KEY)).not.toBeNull();
   resetWorkspaceStoreForTests();
 }
+
+// Literal route/restore oracle, not parseZoomParams/deriveCascadePath or a
+// comparison solely against whatever saveLayout happened to serialize.
+const ORDERING_CASCADE: SessionZoomParams = {
+  ref: "local:step-6",
+  source: { type: "session", params: { ref: "local:root" } },
+  edges: [
+    { ownerRef: "local:root", childRef: "local:step-1", delegateId: "edge-local:step-1" },
+    { ownerRef: "local:step-1", childRef: "local:step-2", delegateId: "edge-local:step-2" },
+    { ownerRef: "local:step-2", childRef: "local:step-3", delegateId: "edge-local:step-3" },
+    { ownerRef: "local:step-3", childRef: "local:step-4", delegateId: "edge-local:step-4" },
+    { ownerRef: "local:step-4", childRef: "local:step-5", delegateId: "edge-local:step-5" },
+    { ownerRef: "local:step-5", childRef: "local:step-6", delegateId: "edge-local:step-6" },
+  ],
+};
+const ORDERING_SAVED_PANES = [
+  { id: "pane_session_1", type: "sessionZoom", params: ORDERING_CASCADE, slot: "main" },
+  { id: "pane_session_2", type: "session", params: { ref: "local:neighbor" }, slot: "secondary" },
+];
+
+function orderingClient() {
+  const ancestry = ["local:root", "local:step-1", "local:step-2", "local:step-3", "local:step-4", "local:step-5"];
+  const client = cascadeClient((ref) => {
+    const index = ref === "local:step-6" ? 6 : ancestry.indexOf(ref);
+    return cascadeContext(ref, index > 0 ? ancestry.slice(0, index) : []);
+  });
+  client.on("evener/navigation/read", navigationRead);
+  client.scriptConnect(() => ({
+    serverInfo: { name: "fake", version: "1" },
+    protocolVersion: APPWIRE_PROTOCOL_VERSION,
+    sourceId: "fake",
+    features: ALL_FEATURES_OFF,
+    navigation: { version: 1, generationId: "generation_test", sequence: 0, readVersions: [3] },
+  }));
+  return client;
+}
+
+// Prepare legacy in-place intent using real retype, pane registration,
+// Dockview, and DockHost's synchronous final-save flush. No fabricated layout.
+async function saveOrderingCascade(): Promise<void> {
+  const client = orderingClient();
+  connectionStore.getState().connect(client);
+  const sourceId = workspaceStore.getState().openPane("session", { ref: "local:root" });
+  const view = await act(async () =>
+    render(
+      <ClientProvider client={client}>
+        <MotionProvider>
+          <DockHost />
+        </MotionProvider>
+      </ClientProvider>,
+    ),
+  );
+  await screen.findByRole("heading", { name: "local:root" });
+  await act(async () => {
+    workspaceStore.getState().openPane("session", { ref: "local:neighbor" }, { slot: "secondary" });
+    workspaceStore.getState().focusPane(sourceId);
+  });
+  await act(async () => {
+    const source = workspaceStore.getState().panes.find((pane) => pane.id === sourceId);
+    if (!source) throw new Error("Missing legacy cascade source pane");
+    expect(workspaceStore.getState().retypePane(source, "sessionZoom", ORDERING_CASCADE)).toBe(true);
+  });
+  await screen.findByRole("button", { name: "Return to previous view" });
+  expect(workspaceStore.getState().panes).toEqual(ORDERING_SAVED_PANES);
+  expect(workspaceStore.getState().focusedPaneId).toBe("pane_session_1");
+  view.unmount();
+  const raw = localStorage.getItem(LAYOUT_KEY);
+  if (raw === null) throw new Error("Missing real six-edge saved layout");
+  expect(JSON.parse(raw).panels.pane_session_1.params).toEqual({
+    paneType: "sessionZoom",
+    paneParams: ORDERING_CASCADE,
+  });
+  resetWorkspaceStoreForTests();
+  resetThreadsStoreForTests();
+  resetNavigationStoreForTests();
+  connectionStore.setState({ client: null, state: "idle" });
+}
+
+test.each([
+  { order: "completed-placement-before-restoration", routeRef: "local:root" },
+  { order: "restoration-before-location", routeRef: "local:root" },
+  { order: "cached-location-with-warm-host", routeRef: "local:root" },
+  { order: "completed-placement-before-restoration", routeRef: "local:different-root" },
+  { order: "restoration-before-location", routeRef: "local:different-root" },
+  { order: "cached-location-with-warm-host", routeRef: "local:different-root" },
+] as const)("startup $order respects route $routeRef against a saved six-edge cascade", async ({ order, routeRef }) => {
+  await saveOrderingCascade();
+  const client = orderingClient();
+  const reply = deferred<void>();
+  const requested = deferred<void>();
+  const restored = deferred<void>();
+  const witnesses: { event: string; panes?: unknown; focusedPaneId?: string | null }[] = [];
+  const unsubscribeWorkspace = workspaceStore.subscribe((state, previous) => {
+    if (state.panes === previous.panes) return;
+    witnesses.push({ event: "workspace", panes: state.panes, focusedPaneId: state.focusedPaneId });
+    if (state.mainPane()?.type === "sessionZoom") {
+      witnesses.push({ event: "restored" });
+      restored.resolve();
+    }
+  });
+  const unsubscribeNavigation = navigationStore.subscribe((state) => {
+    const location = state.resources.get(keyID({ kind: "location", ref: routeRef }));
+    if (location?.data && !location.loading && !location.stale && !witnesses.some((w) => w.event === "location-ready"))
+      witnesses.push({ event: "location-ready" });
+  });
+  class StartupStorage extends MemoryStorage {
+    override getItem(key: string): string | null {
+      if (key === LAYOUT_KEY) {
+        witnesses.push({ event: "layout-read", panes: workspaceStore.getState().panes });
+      }
+      return super.getItem(key);
+    }
+  }
+  // Copy the exact saved bytes into the observed external storage root.
+  const saved = localStorage.getItem(LAYOUT_KEY);
+  if (saved === null) throw new Error("Missing saved startup fixture");
+  const storage = new StartupStorage();
+  storage.setItem(LAYOUT_KEY, saved);
+  installLocalStorage(storage);
+  client.on("evener/navigation/read", async (params) => {
+    if (params.resource === "location" && params.ref === routeRef) {
+      requested.resolve();
+      await reply.promise;
+    }
+    return navigationRead(params);
+  });
+  function PlacementCommitWitness() {
+    // Child passive effects precede this parent effect. With the real fresh
+    // lazy payload still suspended, AppShell has completed its route effect,
+    // while DockHost has not yet mounted or read storage. This observes only.
+    useEffect(() => {
+      if (order !== "completed-placement-before-restoration") return;
+      const location = navigationStore.getState().resources.get(keyID({ kind: "location", ref: routeRef }));
+      expect(location?.data).toMatchObject({ ref: routeRef, top_level_ref: routeRef, top_level: true });
+      expect(location?.loading).toBe(false);
+      expect(location?.stale).toBe(false);
+      expect(workspaceStore.getState().panes).toEqual([
+        { id: "pane_session_1", type: "session", params: { ref: routeRef }, slot: "main" },
+      ]);
+      expect(workspaceStore.getState().focusedPaneId).toBe("pane_session_1");
+      expect(getDockviewApi()).toBeNull();
+      expect(witnesses.some((w) => w.event === "layout-read" || w.event === "restored")).toBe(false);
+      witnesses.push({ event: "placement-commit" });
+    }, []);
+    return <AppShell client={client} />;
+  }
+  try {
+    const initialized = await client.connect();
+    initNavigation(client, initialized);
+    window.history.pushState({}, "", `/s/${encodeURIComponent(routeRef)}`);
+    if (order !== "restoration-before-location") {
+      reply.resolve();
+      // A real cached server location, not installLocation or a workspace seed.
+      await navigationStore.getState().lookupLocation(routeRef);
+    }
+    if (order === "completed-placement-before-restoration") resetDockChunkForTests();
+    await act(async () => render(<PlacementCommitWitness />));
+    await restored.promise;
+    if (order === "restoration-before-location") {
+      await requested.promise;
+      expect(workspaceStore.getState().panes).toEqual(ORDERING_SAVED_PANES);
+      expect(workspaceStore.getState().focusedPaneId).toBe("pane_session_1");
+      expect(getDockviewApi()?.activePanel?.id).toBe("pane_session_1");
+      await act(async () => {
+        reply.resolve();
+        // Joins the actual in-flight server read and its store publication.
+        await navigationStore.getState().lookupLocation(routeRef);
+      });
+    }
+    const events = witnesses.map((witness) => witness.event);
+    expect(events.indexOf("location-ready")).toBeGreaterThanOrEqual(0);
+    expect(events.indexOf("layout-read")).toBeGreaterThanOrEqual(0);
+    expect(events.indexOf("restored")).toBeGreaterThan(events.indexOf("layout-read"));
+    if (order !== "restoration-before-location") {
+      expect(events.indexOf("location-ready")).toBeLessThan(events.indexOf("layout-read"));
+      expect(witnesses.find((w) => w.event === "layout-read")?.panes).toEqual([
+        { id: "pane_session_1", type: "session", params: { ref: routeRef }, slot: "main" },
+      ]);
+      if (order === "completed-placement-before-restoration") {
+        expect(events.indexOf("placement-commit")).toBeGreaterThan(events.indexOf("location-ready"));
+        expect(events.indexOf("placement-commit")).toBeLessThan(events.indexOf("layout-read"));
+      } else {
+        expect(events).not.toContain("placement-commit");
+      }
+    } else {
+      expect(events.indexOf("restored")).toBeLessThan(events.indexOf("location-ready"));
+      expect(witnesses.find((w) => w.event === "layout-read")?.panes).toEqual([]);
+    }
+    if (routeRef === "local:different-root") {
+      expect(workspaceStore.getState().panes).toEqual([
+        { id: "pane_session_3", type: "session", params: { ref: "local:different-root" }, slot: "main" },
+      ]);
+      expect(workspaceStore.getState().focusedPaneId).toBe("pane_session_3");
+      expect(getDockviewApi()?.activePanel?.id).toBe("pane_session_3");
+      expect(screen.queryByRole("button", { name: "Return to previous view" })).toBeNull();
+      expect(await screen.findByRole("heading", { name: "local:different-root" })).toBeTruthy();
+      expect(window.location.pathname).toBe("/s/local%3Adifferent-root");
+    } else {
+      expect(workspaceStore.getState().panes, `Startup witnesses: ${JSON.stringify(witnesses)}`).toEqual(
+        ORDERING_SAVED_PANES,
+      );
+      expect(workspaceStore.getState().focusedPaneId).toBe("pane_session_1");
+      expect(getDockviewApi()?.activePanel?.id).toBe("pane_session_1");
+      expect(await screen.findByRole("button", { name: "Return to previous view" })).toBeTruthy();
+      expect(screen.getAllByTestId("cascade-column").map((column) => column.getAttribute("data-scope-ref"))).toEqual([
+        "local:step-5",
+        "local:step-6",
+      ]);
+      expect(screen.getAllByTestId("cascade-spine").map((spine) => spine.getAttribute("data-scope-ref"))).toEqual([
+        "local:root",
+        "local:step-1",
+        "local:step-2",
+        "local:step-3",
+        "local:step-4",
+      ]);
+      expect(screen.getByRole("heading", { name: "local:neighbor" })).toBeTruthy();
+      expect(window.location.pathname).toBe("/s/local%3Aroot");
+    }
+  } finally {
+    reply.resolve();
+    unsubscribeWorkspace();
+    unsubscribeNavigation();
+    cleanup();
+    resetActivitySidebarStoreForTests();
+    resetNavigationStoreForTests();
+    resetThreadsStoreForTests();
+    connectionStore.setState({ client: null, state: "idle" });
+  }
+});
 
 test("a real session URL wins over an Activity-only saved layout", async () => {
   const client = navClient();
@@ -4754,6 +4990,7 @@ test.each([
 ])(
   "desktop Activity drill keeps grandchild focus from $source with retained ref-only observer=$retained",
   async ({ retained, source }) => {
+    onTestFinished(installJobLogRangeGeometry());
     const height = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight");
     Object.defineProperty(HTMLElement.prototype, "offsetHeight", { configurable: true, get: () => 500 });
     onTestFinished(() => {
@@ -4856,7 +5093,14 @@ test.each([
       throw new Error("retained metadata unavailable");
     });
     client.on("evener/jobs/output", () => ({
-      data: { tail: "retained-history-output", totalBytes: 23, retainedStart: 0, truncated: false },
+      data: {
+        offsetBytes: 0,
+        bytesReturned: 23,
+        totalBytes: 23,
+        retainedStartBytes: 0,
+        encoding: "utf8",
+        data: "retained-history-output",
+      },
     }));
     const user = userEvent.setup();
     let historyPane: string | undefined;

@@ -190,8 +190,6 @@ function Chip({ chip, onPress }: { chip: ContextChip; onPress: () => void }) {
 				style={{ fontSize: 15 * scale, lineHeight: 20 * scale, color: ink, fontVariant: ["tabular-nums"] }}
 			>
 				{chip.label}
-				{chip.failed ? " · " : null}
-				{chip.failed ? <Text style={{ color: palette.dangerInk }}>{chip.failed}</Text> : null}
 			</Text>
 			{chip.dot ? <FreshDot /> : null}
 		</Pressable>

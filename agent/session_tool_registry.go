@@ -191,6 +191,13 @@ func (g readGuard) ReadBeforeWriteWarning(path string) string {
 	return g.readBeforeWriteWarning(path)
 }
 
+func (s *Session) fileReadGuard(env execenv.ExecutionEnvironment) readGuard {
+	return readGuard{
+		trackRead:              s.trackReadFile,
+		readBeforeWriteWarning: func(path string) string { return s.readBeforeWriteWarningIn(env, path) },
+	}
+}
+
 // taskGuard is a thin facade over Session-owned task state. It uses the same
 // s.mu as the rest of the session — it does NOT introduce a second mutex.
 type taskGuard struct {
@@ -427,6 +434,9 @@ func registerMinimalWorktreeTools(reg *tool.Registry, s *Session) error {
 func registerCoreTools(reg *tool.Registry, s *Session) error {
 	deps := newToolDeps(s)
 	if err := registerFileTools(reg, deps); err != nil {
+		return err
+	}
+	if err := registerMemoryTools(reg, s); err != nil {
 		return err
 	}
 	if err := registerShellTools(reg, s, deps); err != nil {

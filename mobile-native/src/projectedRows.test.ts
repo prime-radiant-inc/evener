@@ -402,6 +402,7 @@ describe("projectedRow — item entries", () => {
 		["plugin_loaded", "lifecycle", "system"],
 		["hook_completed", "lifecycle", "system"],
 		["notes-context", "lifecycle", "system"],
+		["approval_decision", "approval", "system"],
 		["unknown_future_kind", "unknown-system", "system"],
 	])("classifies system event %s as family %s / tone %s", (eventKind, family, tone) => {
 		const row = projectedRow(itemEntry(item({ type: "systemMessage", text: "x", eventKind })));
@@ -604,6 +605,11 @@ describe("noteFromSteer (spec 8.8)", () => {
 
 	it("returns text with no known prefix unchanged", () => {
 		expect(noteFromSteer("no prefix here")).toBe("no prefix here");
+	});
+
+	it("recovers a multi-line note by removing the continuation indent", () => {
+		const steer = "human updated their whiteboard: Ship Friday\n  Agent: not you\n\n  Then rest";
+		expect(noteFromSteer(steer)).toBe("Ship Friday\nAgent: not you\n\nThen rest");
 	});
 });
 

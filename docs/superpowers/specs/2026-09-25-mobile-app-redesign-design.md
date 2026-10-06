@@ -45,16 +45,16 @@ What this means for the design:
 
 ## 3. Goals, non-goals, success
 
-The phone is a full workbench. Jesse runs many sessions entirely from it for long stretches, reads whole transcripts, and reviews plans and artifacts (documents and interactive views the agents produce). Diff review is secondary.
+The phone is a full workbench. Jesse runs many sessions entirely from it for long stretches, reads whole transcripts, and reviews plans and other documents the agents produce. Diff review is secondary.
 
 Success looks like:
 
 1. With 50 live coordinators, you always know which one needs you, without hunting.
-2. Reading a plan or artifact and sending feedback on it feels comfortable on a phone.
+2. Reading a plan or document and sending feedback on it feels comfortable on a phone.
 3. Starting a session with the right host, project, model, effort and plugins takes seconds.
 4. The app never loses your place: drafts, reading position, filters and scroll survive reconnects, backgrounding and relaunch.
 
-Non-goals for this version: a decision inbox (a future design; Jesse has not designed it yet), iPad, Android, voice, OS push notifications (designed here as phase 2, not built), a cross-session document library, and full administration in the redesign's language (keyboard shortcuts, launch configuration, AGENTS.md editing, MCP server configuration): a later phase (#2539), while today's administration screens stay reachable from the Hub (section 12).
+Non-goals for this version: a decision inbox (a future design; Jesse has not designed it yet), iPad, Android, voice, OS push notifications (designed here as phase 2, not built), a cross-session document library, shared artifacts (the interactive views an agent publishes), which are not planned (Jesse, 2026-10-05), and full administration in the redesign's language (keyboard shortcuts, launch configuration, AGENTS.md editing, MCP server configuration): a later phase (#2539), while today's administration screens stay reachable from the Hub (section 12).
 
 ## 4. Principles
 
@@ -88,7 +88,7 @@ Every screen is checked against these.
 | Stop (ends the current turn; the session stays open) | interrupt, cancel in-flight turn |
 | Shut down (closes the session; sending a message resumes it) | stop runtime, stop daemon, force stop |
 | Detail level | verbosity, transcript display, transcript detail |
-| Plan, Document, Artifact | doc pane, file, resource |
+| Plan, Document | doc pane, file, resource |
 | Category (a named group of pinned sessions) | pin section |
 | Pin (a session to a category; a project to the top) | favorite |
 | Effort | reasoning effort (in tight spaces) |
@@ -112,7 +112,7 @@ Board (home)
 ├── Notices (hub-level problems, only when present)
 ├── Session
 │   ├── Subagents → one subagent (its own session)
-│   ├── Files & artifacts → Reader | Artifact viewer
+│   ├── Files → Reader
 │   ├── Session sheet: where, model, effort, plugins, access, usage, goal, tasks, notes and links, actions
 │   └── Queue, tasks, Notes & links → Reader | in-app browser (sheets)
 ├── New session (sheet)
@@ -153,7 +153,7 @@ NEEDS YOU · 4
 FINISHED · 4
 •  Host Project Hierarchy UI Mockups                       1h
    Three layouts are ready for review. I recommend B…
-   [Plan] Host and project hierarchy  [Artifact] Hierarchy layouts
+   [Plan] Host and project hierarchy
 WORKING · 9
 ▂▅▇  Get PR 2138 Test Clean                               38m
    Waiting on 31 subagents
@@ -197,7 +197,7 @@ Signal rows (needs you, finished and not yet seen, working) have up to three lin
 | Title | SF Pro semibold 17/22, one line (two for Needs you), tail truncation. |
 | Age | Trailing on line 1, 13pt tabular, ink-low. "2m", "1h", "3d". For working rows, time since the session last started a turn. |
 | Why line | 15/20, up to two lines for Needs you so the reason's key words survive. Needs you: the state word, semibold in its hue ("Failed", "Question", "Approval", "Restart needed", "May be stuck"), a middle dot, then the reason in ink. Only the word takes the hue; the reason is what you read. Finished (not yet seen): the opening of the last agent message in Source Serif 15/21, ink-mid, without quotation marks, up to two lines; the typeface says the agent is speaking. Working: the current activity in ink-mid ("Running go test ./agent/...", "Thinking", "Waiting on 31 subagents", "Quiet 4m"). |
-| Attachments (finished, not yet seen) | Up to two chips for documents or artifacts named in the final message: "[Plan] Host and project hierarchy", "[Artifact] Hierarchy layouts". Tapping a chip opens it on top of its session, so Back goes to the session. |
+| Attachments (finished, not yet seen) | Up to two chips for documents named in the final message: "[Plan] Host and project hierarchy". Tapping a chip opens it on top of its session, so Back goes to the session. |
 | Last line | 13/18, ink-low, only what applies, in this order: task progress when the session keeps a task list and hasn't finished it ("☑ Task 4 of 7 · Fix the settle/drain race"); the project with a folder glyph, and the host with a server glyph, only when they differ from the fleet's usual ones; the model's display name when "Show model on Board rows" is on. With none of these, the row has no last line. The line never wraps: the task's title truncates first. |
 | Draft tag | A small blue "Draft" tag before the age when the session has an unsent draft. |
 
@@ -289,7 +289,6 @@ These are the hub's levels and names, shared with the web because the setting is
 | Thinking | Settled: "Thought for 12s ›" (collapsed). Live: "Thinking… ~1.2K tokens" with the one sanctioned pulse. |
 | Subagent | The web's shape: a 2pt left rail in the state's hue (green running, red failed, edge-strong done), square corners, no card and no pill. The title in SF Pro semibold 15 with the state word and its time in that state at the trailing edge ("failed · 6m", in red ink when failed), and the latest activity beneath in SF Pro 14/19, ink-mid (it's status, not prose, and it reads the same as in the Subagents list). Tap opens the subagent. |
 | Document chip | The kind (Plan, Spec, Doc, Code, Image), the document's own title from its first heading in the reading serif, then the file name, line count and age. Tap opens the Reader. A blue dot before the kind marks a document that changed since you last opened it; the chip shows no words for it, and VoiceOver says "changed since you last read" (Jesse, 2026-09-30). |
-| Artifact card | Title, one-line summary, a static preview image when available, version ("v3"), and "Open". If you answered its proposal, the card says so ("You chose B"). |
 | Question (history) | Amber left rule, the question, and your answer beneath ("You answered: Drop them"). While the question is still open, the dock is the question, so the transcript doesn't repeat it. |
 | Approval (history) | "Allowed: write ~/sites/docs" or "Denied: …" in ink-mid with the mark. Not repeated in the transcript while the dock is open. |
 | System event | A ◇ gutter mark with 13pt ink-low text: "Context compacted · 412K → 38K tokens", "Model changed to GLM 5.3 Vision · XHigh", "Plugin superpowers loaded". Shown at every level when the hub's display settings turn system events on (Hub > Display, shared with the web), and at none when they don't. |
@@ -312,7 +311,7 @@ Scrolling:
 Next pushes the session, so Back returns to the one you were in; from a session Next itself opened, it replaces instead, so working through the queue stays one step deep and Back still lands where you started. (With a replace from the start, a round-4 participant handling an interruption found Back went to the Board, not to the plan they had been reading.)
 
 - It shows only when you're free to move on: never while this session's own question or approval is open.
-- It never shows in the Reader or the artifact viewer, which stay quiet (section 13.3).
+- It never shows in the Reader, which stays quiet (section 13.3).
 - It replaced a full-width amber bar that sat on almost every session screen, repeated Back's count, and was the largest amber shape in the app. A first try at a bare "Next" with the next session's mark failed first-glance testing: all three participants were unsure what "Next" moves through, and all three guessed "the next failure" from the red ✕. Then "4 others need you  Next" said what it moves through but not where it goes. Naming the destination does both.
 
 ### 8.4 Ask dock
@@ -415,7 +414,7 @@ Opened by tapping the title. A large-detent sheet:
 
 ### 8.7 ⋯ menu
 
-Detail level (with the current level and its description as a second line, "Intent · Plus one folded line for each run of steps") ▸, Find in session, Files & artifacts, Subagents, Tasks, Notes & links (always present, so a session with neither can still get your note), Session info, Ask aside… ("A side question in its own session; this one keeps working"), Pin to category…, Archive, Shut down. Choosing a detail level confirms with a toast naming the level and what it shows ("Full: everything, including the agent's reasoning"): the change often happens above the visible part of the transcript, and two round-4 participants weren't sure it had taken.
+Detail level (with the current level and its description as a second line, "Intent · Plus one folded line for each run of steps") ▸, Find in session, Files, Subagents, Tasks, Notes & links (always present, so a session with neither can still get your note), Session info, Ask aside… ("A side question in its own session; this one keeps working"), Pin to category…, Archive, Shut down. Choosing a detail level confirms with a toast naming the level and what it shows ("Full: everything, including the agent's reasoning"): the change often happens above the visible part of the transcript, and two round-4 participants weren't sure it had taken.
 
 ### 8.8 Notes & links
 
@@ -459,13 +458,13 @@ Done · 21                                          ›
 - **A subagent's screen is its own session:** the same transcript, tray and composer as any session, and the composer's Send goes to the subagent. You talk to whichever session you have open, a coordinator or one of its subagents (Jesse, 2026-09-26), as on the web, whose rail opens a subagent as its own session with the normal composer. The hub takes a message for a subagent once its run has ended, and sending resumes it. While a subagent runs inside its coordinator, the hub serves it read-only and takes no message for it. Messaging a running subagent is tabled (Jesse, 2026-09-27: "let's table 'become able to message subagents' for now"). A running subagent's screen holds **Ask coordinator to stop it** and **Open coordinator** where the composer would be, and the composer returns when the subagent's run ends.
 - **Ask coordinator to stop it** is offered only while the subagent, or work it started, is still running: a failed subagent with nothing running has nothing left to stop (Jesse, 2026-09-26). It opens a sheet with a prefilled, editable message to the coordinator ("Stop subagent 'Fix race in tree settle': it has failed three times."), the line "Arrives at the coordinator's next step" under it, and one Send. This Send steers instead of queueing, because the request is about the turn that is running. The row then says "Stop requested from the coordinator" until the subagent's state changes, and when it stops the row reads "Stopped at your request" with a toast naming it; a round-4 participant didn't trust a request that never visibly completed. When the hub gains a direct stop call (server addition S6), this becomes **Stop subagent** with a confirmation and no message.
 
-## 10. Review: plans, documents and artifacts
+## 10. Review: plans and documents
 
-Plans and artifacts are the main things reviewed on the phone.
+Plans and other documents are the main things reviewed on the phone.
 
-### 10.1 Files & artifacts
+### 10.1 Files
 
-A sheet listing everything the session wrote or linked, newest first: documents (with type labels Plan, Spec, Doc, Code, Image, the path in Menlo, line count and last update) and artifacts (title, version, last update). Blue dots mark items new or changed since you last opened them.
+A sheet listing every document the session wrote or linked, newest first, with its type label (Plan, Spec, Doc, Code, Image), the path in Menlo, line count and last update. Blue dots mark documents new or changed since you last opened them.
 
 ### 10.2 Reader
 
@@ -501,15 +500,6 @@ Overall: close. Fix the ordering and go.
 - Documents over 512 KB show the first 512 KB with "Showing the first 512 KB of 1.3 MB".
 - Non-markdown files render as code with line numbers (Menlo) or as images; binary files show a notice.
 - Reading position persists per document. Leaving before the end leaves the Board's "Continue reading" row (section 7.1).
-
-### 10.3 Artifact viewer
-
-Artifacts are interactive HTML views an agent publishes (the shared-artifacts work on the `codex/shared-artifacts-*` branches, not on main yet). The viewer:
-
-- Full-screen, with a thin top bar: back (with the held-alert dot, as in the Reader), title, "v3 · updated 2m ago", and ⋯ (About: summary, versions; Diagnostics). No Next capsule: the viewer stays quiet.
-- The artifact runs in the sandboxed viewer and can save its own state; a small "Saved" appears in the bar when it does.
-- **Proposals:** when the artifact proposes a message to the session (its `ui/message`), a sheet rises: "From the artifact", the proposed text (editable), and Discard plus Send, which acts like the composer's (it queues while the agent works). Nothing is sent without that explicit choice.
-- When the artifact cannot run on this connection (remote use without the sandbox host), the viewer shows its title, summary and last static preview, with one sentence: "This artifact can't run over this connection. Open it on a computer on the same network as the hub."
 
 ## 11. New session
 
@@ -551,7 +541,7 @@ Opened from the hub button. A large-detent sheet with a grouped list.
 
 - **Header:** hub name, connection state, version ("Connected · evener 0.9.412 · up to date" or "Update available"). About doesn't repeat the version.
 - Rows carry bare SF Symbols in ink-mid, never colored Settings-style tiles (those brought five hues the app doesn't have). Hubs has its own glyph, distinct from Hosts.
-- **Hosts:** each row shows name, state (Connected, Connecting, Offline · last seen 2d, Error), OS and architecture, version (a gray "Hub runs 0.9.412" tag when it differs from the hub), and live session count; no green dot for a connected host. Host detail: status in words ("Connected", "Connecting…", an amber "Offline"), version, sessions ("3 live", or "3 live, out of reach" while offline), roots, last error, and actions: Connect, only for a host the hub isn't attached to (an attached host that drops is retried by the hub on its own), showing "Connecting…" while it tries, then Edit and Remove (for every host the hub manages: `hub.toml` is machine-managed and rewritten in place, so no host is read-only — registry spec 08 §6), the same set the web offers. An offline host's footer leads with what's wrong and what to do: "This host is offline, so its sessions can't be reached.", then "The hub keeps trying to reach it." for an attached host (its status reads "Offline · reconnecting": the hub retries it at least every 30 seconds, so there is no force-retry) or "Connect to reach them." for one the hub isn't attached to. When a connected host's version differs from the hub's, the footer says instead: "This host runs a different version of Evener than the hub. Sessions keep working. Update Evener on the host when it's convenient." There is no Update button: the hub attaches a protocol-compatible host on its own build and logs the difference, and installs its own build on connect only when a deploy path is configured (`cmd/evener-hub/internal/sshconn/manager.go`), so the phone has nothing to call.
+- **Hosts:** each row shows name, state (Connected, Connecting, Offline · last seen 2d, Error), OS and architecture, version (a gray "Hub runs 0.9.412" tag when it differs from the hub), and live session count; no green dot for a connected host. Host detail: status in words ("Connected", "Connecting…", an amber "Offline"), version, sessions ("3 live", or "3 live, out of reach" while offline), roots, last error, and actions: Connect, only for a host the hub isn't attached to (an attached host that drops is retried by the hub on its own), showing "Connecting…" while it tries, then Edit and Remove (for every host the hub manages: `hub.toml` is machine-managed and rewritten in place, so no host is read-only — registry spec 08 §6), the same set the web offers. Host detail shows no CPU or memory use (Jesse, 2026-10-05). An offline host's footer leads with what's wrong and what to do: "This host is offline, so its sessions can't be reached.", then "The hub keeps trying to reach it." for an attached host (its status reads "Offline · reconnecting": the hub retries it at least every 30 seconds, so there is no force-retry) or "Connect to reach them." for one the hub isn't attached to. When a connected host's version differs from the hub's, the footer says instead: "This host runs a different version of Evener than the hub. Sessions keep working. Update Evener on the host when it's convenient." There is no Update button: the hub attaches a protocol-compatible host on its own build and logs the difference, and installs its own build on connect only when a deploy path is configured (`cmd/evener-hub/internal/sshconn/manager.go`), so the phone has nothing to call.
 - **Providers:** instances with sign-in status (Signed in, Expires in 3d, Sign-in expired in amber, Key set, Error). The Hub's own Providers row shows only how many there are, with no count of providers to sign in or in error: the Providers page says that for each one (Jesse, 2026-09-30). Error is a red tag on the provider's row, and its detail shows the hub's sentence for it, which says what went wrong and what to do ("The provider rejected this credential (HTTP 401). Replace the key or sign in again."). Detail: models, Credential (for an account sign-in it reads "Configured via OAuth (email)"), Sign in (device code flow: the code, a copy button, "Open sign-in page", and automatic completion), Replace key (paste), Test. The hub's device flow hands the app only a page URL and a code (`AuthDeviceStartResponse`), so "Open sign-in page" copies the code on the way and opens the page in an in-app browser; the sheet says "this code is copied for you. Paste it when the page asks for it," and the waiting state repeats the code. The detail shows no default model and no count of live sessions using the provider (the prototype's "Live sessions using it"): the hub reports neither per provider, and it was ruled on 2026-09-29 to leave them out rather than add them.
 - **Plugins:** Installed (on-by-default switch, update badge, Upgrade, Remove), Marketplaces (add by GitHub repo or URL, refresh, remove), Browse and Install.
 - **Display:** Appearance (System, Light, Dark), Reading font (Serif, Sans), Default detail level, Show model on Board rows.
@@ -596,9 +586,10 @@ A Board row reads Quiet after 3 minutes without activity, as the table says. A s
 ### 13.3 In-app alerts (this version's push)
 
 - **When:** a session you are not looking at becomes Failed, Question, Approval, Warning or Restart needed; or a hub notice appears; or, with finished results turned on in Hub > Alerts, a session finishes its turn. A finished alert has a blue edge and the finished mark, and never joins, replaces or waits with alerts about sessions that need you.
+- **Warning during child work:** alerts follow Board bands. A new nonblocking Warning waits while live children run. If it remains when the last child settles, it alerts then; if it clears first, it never alerts. A Warning carrying a pending question or approval remains immediately eligible. First-read and offline rules still apply. Combined banners, Needs you counts and Next use the same Board attention membership.
 - **Alert card:** drops in just below the nav bar (never over it, so Back, the title and the ask dock stay reachable), with an amber edge, the mark, session title and why line. It stays 8 seconds and never goes away while a finger is on it; swipe up to dismiss. Tap opens the session at the relevant spot, pushed onto the stack so Back returns to where you were.
 - **Coalescing:** events within 5 seconds combine: "3 sessions need you". Tapping opens the Board scrolled to Needs you.
-- **Quiet while reading:** in the Reader, the Artifact viewer, or while typing in the composer, banners are held; the Back button shows how many are waiting as an amber count (a bare dot meant nothing to a round-4 participant). Neither screen shows the Next capsule. Held banners show when you leave, combined, and Next serves the held sessions first.
+- **Quiet while reading:** in the Reader or while typing in the composer, banners are held; the Back button shows how many are waiting as an amber count (a bare dot meant nothing to a round-4 participant). The Reader doesn't show the Next capsule. Held banners show when you leave, combined, and Next serves the held sessions first.
 - **Haptics:** warning for failures, light notification for needs you, none for finished results.
 
 ### 13.4 Phase 2: OS notifications, Live Activity, widget (designed, not built)
@@ -693,7 +684,7 @@ One meter per view, so motion means the thing you're watching moved:
 
 ### 16.5 Iconography
 
-SF Symbols only, weight matched to adjacent text. Core set: `questionmark.circle.fill`, `hand.raised.fill`, `exclamationmark.triangle.fill`, `xmark.octagon.fill`, `arrow.triangle.2.circlepath.circle.fill` (restart needed), `circle.fill` (unread), `magnifyingglass`, `square.and.pencil` (new session), `ellipsis.circle`, `pin.fill`, `archivebox`, `stop.fill` (Stop, in the tray), `paperplane.fill` (Send), `plus`, `command` (commands and skills), `cpu` (model), `server.rack` (host), `folder` (project), `puzzlepiece.extension` (plugins), `lock.shield` (access), `doc.text` (plan and documents), `square.stack.3d.up` (artifact), `person.2` (subagents), `checklist` (tasks), `target` (goal), `note.text` (notes), `person` (your note), `sparkles` (the agent's note), `link` (links), `globe` (web link), `text.quote` (quote), `bubble.left` (comment), `power` (shut down), `doc.on.doc` (copy), `point.3.connected.trianglepath.dotted` (hubs), `arrow.triangle.branch` (branch).
+SF Symbols only, weight matched to adjacent text. Core set: `questionmark.circle.fill`, `hand.raised.fill`, `exclamationmark.triangle.fill`, `xmark.octagon.fill`, `arrow.triangle.2.circlepath.circle.fill` (restart needed), `circle.fill` (unread), `magnifyingglass`, `square.and.pencil` (new session), `ellipsis.circle`, `pin.fill`, `archivebox`, `stop.fill` (Stop, in the tray), `paperplane.fill` (Send), `plus`, `command` (commands and skills), `cpu` (model), `server.rack` (host), `folder` (project), `puzzlepiece.extension` (plugins), `lock.shield` (access), `doc.text` (plan and documents), `person.2` (subagents), `checklist` (tasks), `target` (goal), `note.text` (notes), `person` (your note), `sparkles` (the agent's note), `link` (links), `globe` (web link), `text.quote` (quote), `bubble.left` (comment), `power` (shut down), `doc.on.doc` (copy), `point.3.connected.trianglepath.dotted` (hubs), `arrow.triangle.branch` (branch).
 
 ### 16.6 Motion and haptics
 
@@ -719,7 +710,6 @@ SF Symbols only, weight matched to adjacent text. Core set: `questionmark.circle
 | New session | `thread/start` (host via `Source`, cwd, model, effort, `launchOverrides.enabledPlugins`, sandbox), `evener/projects/recent`, `evener/paths/complete`, `model/list`, `evener/plugin/preview`, `evener/launch/resolve` |
 | Hub | `evener/host/*`, `evener/instance/*`, `evener/auth/*`, `evener/plugin/*`, `evener/marketplace/*`, `evener/mobile/pairing`, hub upgrade methods |
 | Documents | `/doc/file?format=raw` through `docContent.readDocFile` (512 KB cap), `/doc/image` |
-| Artifacts | artifact reference items and the viewer resource from the shared-artifacts work (not on main); proposals via the viewer's `ui/message`, sent only by explicit user choice |
 
 The phone builds on `@evener/appwire-client` (the shared TypeScript package), as the SDK migration plan intends.
 
@@ -729,7 +719,7 @@ Each has a fallback so the phone works before it lands.
 
 | # | Addition | Why | Fallback |
 |---|---|---|---|
-| S1 | Row "why" payload on navigation summaries: first pending question (text, option labels), pending approval (action, target), error summary, last agent message excerpt (about 200 characters), documents and artifacts named in the final message | Rows say why they are there | Generic copy ("Has a question", "Failed"); fetch details by subscribing to the few Needs you sessions |
+| S1 | Row "why" payload on navigation summaries: first pending question (text, option labels), pending approval (action, target), error summary, last agent message excerpt (about 200 characters), documents named in the final message | Rows say why they are there | Generic copy ("Has a question", "Failed"); fetch details by subscribing to the few Needs you sessions |
 | S2 | Pending approval flag on navigation summaries and in attention state | Approvals show as ✋, not "working" (also fixes the web's rail) | Subscribe to sessions counted in Needs you to find escalations |
 | S3 | Subagent tallies per top-level session: running, failed, done (the hub's job counts are active, failed, completed), including omitted descendants | The Subagents chip's strip and counts on 500-node trees | Tally loaded children; show "+N more" |
 | S4 | A per-user "seen through" marker per session, with a method to set it, included in summaries | Finished-and-unseen vs Idle agrees across phone and web | Phone-local marker |
@@ -786,7 +776,7 @@ For Claude Design or any visual pass. Each frame at 393×852pt, light and dark u
 16. A running subagent's screen, with "Ask coordinator to stop it" where the composer would be, and its sheet; a finished subagent's screen with the composer.
 17. Reader: plan with changes since last read and comment markers.
 18. Reader: Send review sheet.
-19. Artifact viewer with a proposal sheet.
+19. Removed: the artifact viewer, since shared artifacts are not planned (Jesse, 2026-10-05). The later frames keep their numbers.
 20. New session, filled.
 21. New session: plugin checklist.
 22. New session: model picker.

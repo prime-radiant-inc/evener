@@ -57,6 +57,12 @@ export {
   watchName,
   watchRowID,
 } from "./activityRows";
+export {
+  APPROVAL_DECISION_EVENT_KIND,
+  type ApprovalDecision,
+  approvalDecisionOf,
+  approvalDecisionText,
+} from "./approvalDecision";
 export type {
   ArchivedList,
   ArchivedListCatalog,
@@ -224,6 +230,7 @@ export {
   isHubLaunchError,
   isInstanceRemoveApplied,
   isInstanceRenamePersisted,
+  isMethodNotFound,
   isStaleCursorError,
   isTranscriptHistoryFailedError,
   isUpgradeRequiredError,
@@ -281,8 +288,8 @@ export {
   isNonZeroExit,
   isTurnError,
 } from "./itemFailure";
-export type { JobLogTail } from "./jobOutput";
-export { parseJobLogTail } from "./jobOutput";
+export type { DecodedJobOutputPage } from "./jobOutput";
+export { decodeJobOutputText, forEachJobOutputScalar, jobOutputPrunedBounds, parseJobOutputPage } from "./jobOutput";
 export { type JobStep, jobListSummary, jobStatusSummary, jobStopSummary } from "./jobSteps";
 export {
   endReasonPhrase,

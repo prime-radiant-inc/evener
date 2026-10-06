@@ -161,6 +161,45 @@ it("renders a live tally's chip in the shared list and none without one", async 
 	tree.unmount();
 });
 
+it.each(["project", "location"] as const)("keeps settled delegate tallies quiet in the %s list", async (screen) => {
+	const hub = new FakeClient("ready");
+	hub.on("evener/navigation/read", (params) =>
+		wireSnapshot(params as never, {
+			sessions: [
+				{ ref: "local:a", title: "Alpha", live: true, state: "active", subagents: { running: 2, failed: 3, done: 0 } },
+				{ ref: "local:b", title: "Beta", live: true, state: "active", subagents: { running: 0, failed: 3, done: 0 } },
+			],
+		}),
+	);
+	harness.connection = screenConnection(hub, "ready");
+	const opened: unknown[][] = [];
+	const navigation = { navigate: (...args: unknown[]) => opened.push(args), setParams: () => {} };
+	const tree = render(
+		screen === "project" ? (
+			<ProjectScreen {...projectProps({})} navigation={navigation as never} />
+		) : (
+			<SessionLocationScreen {...locationProps()} navigation={navigation as never} />
+		),
+	);
+	await act(async () => {});
+	expect(renderedText(tree)).toContain("2 running");
+	expect(renderedText(tree)).not.toContain("3 failed");
+	expect(tree.root.findAll((node) => node.props.testID === "subagent-chip")).toHaveLength(1);
+	const alpha = pressable(tree, "Open Alpha, 2 running");
+	const beta = pressable(tree, "Open Beta");
+	expect(alpha).toBeDefined();
+	expect(beta).toBeDefined();
+	act(() => {
+		alpha?.props.onPress();
+		beta?.props.onPress();
+	});
+	expect(opened).toEqual([
+		["Conversation", { hubId: "hub-1", ref: "local:a", title: "Alpha" }],
+		["Conversation", { hubId: "hub-1", ref: "local:b", title: "Beta" }],
+	]);
+	act(() => tree.unmount());
+});
+
 // A v3 page the hub cut short by its node or byte budget is only paged: the
 // rows it dropped count in `remaining` and arrive through Load more. The list
 // says nothing about a partial tree or missing related sessions (a v3 row

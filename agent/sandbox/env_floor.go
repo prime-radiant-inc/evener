@@ -73,10 +73,10 @@ func ApplyEnvFloor(env []string, policy ResolvedPolicy, sessionScratch string) [
 	if sessionScratch != "" {
 		if policy.CacheStrategy == CacheSessionPrivate {
 			out = append(out,
-				"GOCACHE="+filepath.Join(sessionScratch, "gocache"),
-				envvars.GoModCache.Assignment(filepath.Join(sessionScratch, "gomodcache")),
-				"npm_config_cache="+filepath.Join(sessionScratch, "npm"),
-				envvars.CargoHome.Assignment(filepath.Join(sessionScratch, "cargo")),
+				"GOCACHE="+filepath.Join(sessionScratch, goCacheDirName),
+				envvars.GoModCache.Assignment(filepath.Join(sessionScratch, goModCacheDirName)),
+				"npm_config_cache="+filepath.Join(sessionScratch, npmCacheDirName),
+				envvars.CargoHome.Assignment(filepath.Join(sessionScratch, cargoHomeDirName)),
 			)
 		}
 	}

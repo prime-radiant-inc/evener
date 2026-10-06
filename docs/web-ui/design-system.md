@@ -237,6 +237,15 @@ the title. Hovering the title or focusing the owning tree row exposes it; on a h
 long press on the title exposes it and a tap activates the row. Session pin stars
 and textual state lines do not appear on the row.
 
+Session context cards float 12px beyond the sidebar's right edge, vertically centered on the
+owning row and shifted to keep 8px of viewport clearance. An open card follows the row while
+the sidebar is dragged to a new width. When the card cannot fit beside the
+sidebar, it opens above or below the row with the same 12px gap. The card stays in the body portal
+and does not reflow navigation or take focus. Scroll and viewport resize dismiss it and cancel
+pending reveals, including long presses; a fresh gesture reveals it at the new position.
+Containment applies when the card's dimensions fit the viewport. Other HoverCards and tooltips
+keep their default placement.
+
 ---
 
 ## 2. Tokens as shipped

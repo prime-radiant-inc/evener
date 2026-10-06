@@ -7,7 +7,7 @@ import { composerFocusedAs, keyboard, render, renderedText, renderHook } from ".
 import type { ComposerFocus } from "./composerFocus";
 import { NotesBar } from "./NotesBar";
 import { type HeaderHiding, nextHeaderHiding, SessionHeader, useHeaderHiding } from "./SessionHeader";
-import type { ChipKind, ContextChip } from "./sessionState";
+import { contextChips, type ChipKind, type ContextChip } from "./sessionState";
 
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
@@ -25,13 +25,13 @@ afterEach(() => {
 	vi.restoreAllMocks();
 });
 
-const subagents: ContextChip = {
-	kind: "subagents",
-	label: "Subagents 3",
-	failed: "1 failed",
-	attention: false,
-	accessibilityLabel: "Subagents, 3, 1 failed",
-};
+const subagents = contextChips(
+	{ delegates: [], tasks: null, goal: null, queue: null },
+	true,
+	{ count: 0, fresh: false },
+	{ known: true, total: 5, active: 2, failed: 3, completed: 0 },
+)[0];
+if (!subagents) throw new Error("missing authoritative Subagents chip");
 const tasks: ContextChip = {
 	kind: "tasks",
 	label: "Tasks 2/5",
@@ -137,16 +137,16 @@ describe("the connection bar (spec 8.1, 14)", () => {
 });
 
 describe("the chips row (spec 8.1)", () => {
-	it("renders each chip's label with its symbol, and a failure count in danger ink", () => {
+	it("renders the authoritative Subagents total with a quiet label and symbol", () => {
 		const tree = render(header({ chips: [subagents, tasks, goal, queue] }));
-		expect(renderedText(tree)).toBe("Subagents 3  ·  1 failed Tasks 2/5 Goal Queue 2");
+		expect(renderedText(tree)).toBe("Subagents 5 Tasks 2/5 Goal Queue 2");
 		expect(tree.root.findAllByType("SymbolView" as never).map((node) => node.props.name)).toEqual([
 			"person.2",
 			"checklist",
 			"target",
 			"tray",
 		]);
-		expect(textNode(tree, "1 failed").props.style).toMatchObject({ color: palette.dangerInk });
+		expect(textNode(tree, "Subagents 5").props.style).toMatchObject({ color: palette.inkHi });
 		expect(textNode(tree, "Tasks 2/5").props.style).toMatchObject({
 			fontSize: 15,
 			lineHeight: 20,
@@ -199,7 +199,7 @@ describe("the chips row (spec 8.1)", () => {
 		const tree = render(header({ chips: [subagents, tasks, goal, queue], onChip }));
 		const chips = chipButtons(tree);
 		expect(chips.map((chip) => chip.props.accessibilityLabel)).toEqual([
-			"Subagents, 3, 1 failed",
+			"Subagents, 5",
 			"Tasks, 2 of 5 done",
 			"Goal",
 			"2 queued messages",
@@ -207,6 +207,43 @@ describe("the chips row (spec 8.1)", () => {
 		expect(chips.map((chip) => chip.props.accessibilityRole)).toEqual(["button", "button", "button", "button"]);
 		for (const chip of chips) act(() => chip.props.onPress());
 		expect(onChip.mock.calls.map(([kind]) => kind)).toEqual(["subagents", "tasks", "goal", "queue"]);
+	});
+
+	it("keeps unknown-count Subagents access and hides it while disconnected", () => {
+		const source = {
+			delegates: [
+				{
+					delegateId: "d1",
+					ownerSessionId: "root",
+					rootSessionId: "root",
+					childSessionId: "child",
+					transcriptRef: "local:child",
+					type: "delegate",
+					lifecycle: "idle",
+					phase: "completed",
+					status: "idle",
+					resumable: false,
+					terminal: true,
+					outcome: "failed",
+					needsAttention: false,
+					runGeneration: 1,
+					projectionRevision: 1,
+				},
+			],
+			tasks: null,
+			goal: null,
+			queue: null,
+		};
+		const unknown = { known: false, total: 5, active: 2, failed: 3, completed: 0 };
+		const opened: ChipKind[] = [];
+		const chips = contextChips(source, true, { count: 0, fresh: false }, unknown);
+		const tree = render(header({ chips, onChip: (kind) => opened.push(kind) }));
+		expect(renderedText(tree)).toBe("Subagents");
+		expect(chipButtons(tree).map((chip) => chip.props.accessibilityLabel)).toEqual(["Subagents, count unknown"]);
+		act(() => chipButtons(tree)[0]?.props.onPress());
+		expect(opened).toEqual(["subagents"]);
+		act(() => tree.update(header({ chips: contextChips(source, false, { count: 0, fresh: false }, unknown) })));
+		expect(chipButtons(tree)).toEqual([]);
 	});
 
 	it("scrolls sideways with 16pt sides and an 8pt gap, fading its trailing edge only when it overflows", () => {

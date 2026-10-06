@@ -5,6 +5,10 @@
 // the package's summary (the web's words), and neither a step nor a run's
 // line ever shows a raw tool name or "N other steps".
 import { toolWireModel } from "@evener/appwire-client/testing/toolWireFixtures";
+import { hydrateThread } from "@evener/appwire-client";
+import { wireThread } from "@evener/appwire-client/testing/notifications";
+import type { ThreadItem } from "@evener/appwire-client";
+import memoryCalls from "../../agent/testdata/toolwire/memory.json?raw";
 import { describe, expect, it, vi } from "vitest";
 import { projectConversation } from "./projectedRows";
 import { render, renderedText, textOf } from "./renderNative.testkit";
@@ -43,6 +47,39 @@ function rowsAt(level: Level): TimelineRow[] {
 }
 
 const runsAt = (level: Level) => rowsAt(level).filter((row): row is Run => row.kind === "run");
+
+it.each(["memory_read", "memory_search"])(
+	"carries real %s output and artifact recovery through generic native rows",
+	async (name) => {
+		const fixture = JSON.parse(memoryCalls) as { cwd: string; items: ThreadItem[] };
+		const model = hydrateThread(
+			{
+				thread: wireThread("ref-memory", {
+					cwd: fixture.cwd,
+					turns: [{ id: "turn_1", itemsView: "full", status: "completed", items: fixture.items }],
+				}),
+			},
+			"ref-memory",
+			0,
+		);
+		const { config, justTheConversation } = displayForLevel("full", null);
+		const conversation = projectConversation(model, undefined, config ?? undefined);
+		const presentation = projectNativeTranscript(conversation, config, { justTheConversation });
+		const rows = hideAnswerMessages(sessionRows(groupTimeline(presentation.items), conversation.turns));
+		const steps = rows.filter((row): row is Run => row.kind === "run").flatMap((run) => run.steps);
+		const step = steps.find((entry) => entry.label === name);
+		if (!step) throw new Error(`missing recorded ${name} native step`);
+		const ref = step.detail.output?.match(/artifact:[a-zA-Z0-9]+/)?.[0];
+		expect(ref).toBeDefined();
+		const evidence = stepEvidence(step);
+		const { StepEvidence } = await vi.importActual<typeof import("./session/StepEvidence")>("./session/StepEvidence");
+		const text = renderedText(render(<StepEvidence step={step} evidence={evidence} hubId="hub-memory" />));
+		expect(text).toContain("opaque-delivery-001-");
+		expect(text).toContain(ref);
+		const recovery = steps.find((entry) => JSON.parse(entry.detail.arguments ?? "{}").transcript_ref === ref);
+		expect(recovery?.detail.output).toContain("opaque-delivery-020-");
+	},
+);
 
 // What a run's expanded steps say, one line per step.
 // Each Text's own words, its nested runs (a Menlo target) joined as drawn.
