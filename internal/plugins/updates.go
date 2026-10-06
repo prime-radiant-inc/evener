@@ -147,19 +147,16 @@ func (m *Manager) CheckUpdates(ctx context.Context) error {
 	return nil
 }
 
-// refreshForCheck refreshes every fetched marketplace before a check, so the
-// catalogs it reads and the clones relative sources are answered from are
-// current. The refreshes run one at a time: a refresh holds the store lock
-// through its network pull, so more at once would only queue on the lock with
-// their timers running. Each gets updateCheckTimeout, all of them together
-// updateCheckRefreshBudget of the check's deadline, so the remote checks keep
-// the rest. A directory marketplace is read in place, one pinned to a sha can
-// never change, and a never-fetched one is left to an explicit refresh, so
-// none of those is refreshed. A refresh that
-// leaves the clone where it was saves nothing (refreshMarketplace's
-// keepIfUnchanged), so it neither broadcasts nor retires the answers of
-// another check in flight. It answers the warnings for the marketplaces it
-// could not refresh; a refresh failure never fails the check.
+// refreshForCheck refreshes every fetched git marketplace before a check and
+// answers a warning for each it could not refresh; a refresh failure never
+// fails the check. The refreshes run one at a time: a refresh holds the store
+// lock through its network pull, so more at once would only queue on the lock
+// with their timers running. Each gets updateCheckTimeout, all of them
+// together updateCheckRefreshBudget. A directory marketplace is read in place,
+// one pinned to a sha can never change, and a never-fetched one is left to an
+// explicit refresh, so none of those is refreshed. A refresh that changes
+// nothing saves nothing (keepIfUnchanged), so it neither broadcasts nor
+// retires another check's answers.
 func (m *Manager) refreshForCheck(ctx context.Context) []string {
 	mk, err := m.ListMarketplaces(ctx)
 	if err != nil {
@@ -176,7 +173,9 @@ func (m *Manager) refreshForCheck(ctx context.Context) []string {
 		err := m.refreshMarketplace(refreshCtx, name, true)
 		cancelRefresh()
 		if err != nil {
-			if cause := context.Cause(budgetCtx); errors.Is(cause, errUpdateCheckDeadline) || errors.Is(cause, errUpdateCheckRefreshBudget) {
+			// Past the budget or the deadline git's own error says less
+			// than the limit that cut the refresh off.
+			if cause := context.Cause(budgetCtx); cause != nil {
 				err = cause
 			}
 			warnings = append(warnings, fmt.Sprintf("refreshing marketplace %q before checking for updates: %v", name, err))

@@ -1566,7 +1566,8 @@ func (m *Manager) RefreshMarketplace(ctx context.Context, name string) error {
 	return m.refreshMarketplace(ctx, name, false)
 }
 
-// refreshMarketplace is RefreshMarketplace. With keepIfUnchanged, a pull that
+// refreshMarketplace pulls (or first fetches) a marketplace's clone and saves
+// its LastUpdated. With keepIfUnchanged, a pull that
 // leaves the clone's HEAD where it was writes nothing: the marketplaces are
 // not saved, so nothing is broadcast and no update check's answers are
 // retired (forgetChecks) for a refresh that changed nothing an answer read.
@@ -1604,13 +1605,7 @@ func (m *Manager) refreshMarketplace(ctx context.Context, name string, keepIfUnc
 			if keepIfUnchanged {
 				before, _ = marketplaceGitHeadSHA(ctx, ref.InstallLocation)
 			}
-			pullErr := marketplaceGitPull(ctx, ref.InstallLocation)
-			if pullErr == nil && before != "" {
-				if after, err := marketplaceGitHeadSHA(ctx, ref.InstallLocation); err == nil && after == before {
-					return nil
-				}
-			}
-			if pullErr != nil {
+			if pullErr := marketplaceGitPull(ctx, ref.InstallLocation); pullErr != nil {
 				// A failed pull can mean the clone is wedged — e.g. a stale
 				// .git/index.lock stranded by a killed git — and a plain retry
 				// would then fail the same way forever. Self-heal with a staged
@@ -1622,6 +1617,10 @@ func (m *Manager) refreshMarketplace(ctx context.Context, name string, keepIfUnc
 				}
 				if recloneErr := m.recloneMarketplace(ctx, ref); recloneErr != nil {
 					return fmt.Errorf("refreshing marketplace %q: git pull failed (%w); staged reclone failed: %w", name, pullErr, recloneErr)
+				}
+			} else if before != "" {
+				if after, err := marketplaceGitHeadSHA(ctx, ref.InstallLocation); err == nil && after == before {
+					return nil
 				}
 			}
 		}
