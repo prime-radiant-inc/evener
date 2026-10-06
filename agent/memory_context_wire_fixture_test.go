@@ -48,9 +48,9 @@ func TestMemoryContextWireFixtures(t *testing.T) {
 		withDir(t.TempDir()),
 		withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: t.TempDir()}),
 	)
-	capture := func(name string) (schema.Turn, appwire.ThreadItem) {
+	capture := func(sess *Session, name string) (schema.Turn, appwire.ThreadItem) {
 		t.Helper()
-		turn := memoryContextWireTurn(t, s, name)
+		turn := memoryContextWireTurn(t, sess, name)
 		turn.Timestamp = wireFixtureStart
 		items := apptranscript.ProjectTurn("turn_1", 1, turn, nil, nil, nil)
 		if len(items) != 1 {
@@ -60,40 +60,47 @@ func TestMemoryContextWireFixtures(t *testing.T) {
 	}
 
 	s.appendMemoryProjection(memoryProjection{Scope: "personal", Status: "current", Content: "# Personal memory\n\n- a note\n"})
-	personalTurn, personalItem := capture("personal")
+	personalTurn, personalItem := capture(s, "personal")
 
 	s.appendMemoryProjection(memoryProjection{Scope: "project", Status: "current", Content: "opaque-project-index-1\n"})
-	projectTurn, projectItem := capture("project")
+	projectTurn, projectItem := capture(s, "project")
 
 	// An empty current index differs from the seed above, so the transition
 	// emits where a first, empty observation would be suppressed.
 	s.appendMemoryProjection(memoryProjection{Scope: "project", Status: "current", Content: ""})
-	emptyTurn, emptyItem := capture("project")
+	emptyTurn, emptyItem := capture(s, "project")
 
 	s.appendMemoryProjection(memoryProjection{Scope: "project", Status: "missing"})
-	missingTurn, missingItem := capture("project")
+	missingTurn, missingItem := capture(s, "project")
 
 	s.appendMemoryProjection(memoryProjection{Scope: "project", Status: "revoked"})
-	revokedTurn, revokedItem := capture("project")
+	revokedTurn, revokedItem := capture(s, "project")
 
 	s.appendMemoryProjection(memoryProjection{Scope: "project", Status: "unavailable"})
-	unavailableTurn, unavailableItem := capture("project")
+	unavailableTurn, unavailableItem := capture(s, "project")
 
 	s.appendMemoryProjection(memoryProjection{Scope: "project", Status: "current", Truncated: true, Content: strings.Repeat("x", 8192) + "..."})
-	truncatedTurn, truncatedItem := capture("project")
+	truncatedTurn, truncatedItem := capture(s, "project")
 
 	s.appendMemoryProjection(memoryProjection{Scope: "project", Status: "current", Content: "Line one\nLine \"two\" \u2014 caf\u00e9\tend"})
-	quotedTurn, quotedItem := capture("project")
+	quotedTurn, quotedItem := capture(s, "project")
 
 	s.appendMemoryProjection(memoryProjection{Scope: "session", Status: "current", Content: "opaque-session-index\n"})
-	sessionTurn, sessionItem := capture("session")
+	sessionTurn, sessionItem := capture(s, "session")
 
 	// A delegate session's read-only suffix: the producer appends it only when
-	// sessionMemoryReadOnly() is true, so the fixture drives a delegate.
-	s.depth = 1
-	s.appendMemoryProjection(memoryProjection{Scope: "session", Status: "current", Content: "opaque-root-session\n"})
-	suffixedTurn, suffixedItem := capture("session")
-	s.depth = 0
+	// sessionMemoryReadOnly() is true, so the fixture builds a real delegate
+	// through cfg.spawn.depth (NewSession copies it into s.depth) rather than
+	// mutating a live session's depth after construction. Production reads
+	// depth without a lock because it "is set once before the session goes live
+	// and never mutated after" (session.go), so the write this replaces was the
+	// one shape the race detector rightly watches for.
+	delegateCfg := SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: t.TempDir()}
+	delegateCfg.spawn.depth = 1
+	delegateCfg.spawn.parentSessionID = "memory-context-fixture-parent"
+	delegate := newSession(t, withDir(t.TempDir()), withConfig(delegateCfg))
+	delegate.appendMemoryProjection(memoryProjection{Scope: "session", Status: "current", Content: "opaque-root-session\n"})
+	suffixedTurn, suffixedItem := capture(delegate, "session")
 
 	// Malformed: the producer's own valid bytes, corrupted so extraction must
 	// fail. The recorded text is preserved and no raw is fabricated.
