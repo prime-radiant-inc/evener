@@ -86,62 +86,78 @@ def strip_wrappers(words):
     return words
 
 
-def option_value(word, short, long):
-    """For an option that takes a value, how word gives it: ("next", None) when the value is the next word
-    (-e, --regexp), ("attached", value) when it is in the same word (-eTask, --regexp=Task), or None when
-    word is not that option."""
-    if word == short or word == long:
-        return "next", None
-    if word.startswith(short) and len(word) > len(short) and not word.startswith("--"):
-        return "attached", word[len(short):]
-    if word.startswith(long + "="):
-        return "attached", word[len(long) + 1:]
-    return None
+# Per command, the options whose value is the next word or the rest of a short cluster, keyed by what they
+# mean to the classifier: "pattern" (a search pattern), "expression" (inline program text), "file" (a file the
+# command reads), "other" (any other value, skipped). Long options take "--name=value" or "--name value".
+COMMAND_OPTIONS = {
+    "grep": {"e": "pattern", "f": "file", "A": "other", "B": "other", "C": "other", "m": "other",
+             "--regexp": "pattern", "--file": "file"},
+    "rg": {"e": "pattern", "f": "file", "A": "other", "B": "other", "C": "other", "m": "other", "g": "other",
+           "t": "other", "--regexp": "pattern", "--file": "file"},
+    "sed": {"e": "expression", "f": "file", "l": "other", "--expression": "expression", "--file": "file"},
+    "perl": {"e": "expression", "E": "expression", "M": "other", "m": "other", "I": "other", "x": "other"},
+}
 
 
-def search_files(args):
-    """The files grep or rg reads: its file operands, after the pattern. A pattern given with -e/--regexp
-    (separate or attached) is not a file; a pattern file given with -f/--file is read."""
-    files, pattern_given, i = [], False, 0
+def parse_options(name, args):
+    """Splits a command's arguments getopt-style into (options, operands): options is a list of
+    (meaning, value) for the value-taking options in COMMAND_OPTIONS; operands are the remaining words.
+    Short clusters are scanned left to right (-Ef FILE, -neTask, -pe EXPR); "--" ends the options."""
+    table = COMMAND_OPTIONS.get(name, {})
+    options, operands, i = [], [], 0
     while i < len(args):
         word = args[i]
-        pattern, pattern_file = option_value(word, "-e", "--regexp"), option_value(word, "-f", "--file")
-        if pattern or pattern_file:
-            pattern_given = True
-            form, value = pattern or pattern_file
-            if form == "next":
-                value = args[i + 1] if i + 1 < len(args) else None
-                i += 1
-            if pattern_file and value:
-                files.append(value)
-        elif not word.startswith("-"):
-            files.append(word)
+        if word == "--":
+            operands += args[i + 1:]
+            break
+        if word.startswith("--"):
+            long, _, attached = word.partition("=")
+            meaning = table.get(long)
+            if meaning:
+                value = attached if "=" in word else (args[i + 1] if i + 1 < len(args) else None)
+                options.append((meaning, value))
+                i += 1 if "=" in word else 2
+                continue
+        elif word.startswith("-") and len(word) > 1:
+            consumed_next = False
+            for j, ch in enumerate(word[1:], start=1):
+                meaning = table.get(ch)
+                if meaning:
+                    rest = word[j + 1:]
+                    if rest:
+                        options.append((meaning, rest))
+                    else:
+                        options.append((meaning, args[i + 1] if i + 1 < len(args) else None))
+                        consumed_next = True
+                    break
+            i += 2 if consumed_next else 1
+            continue
+        else:
+            operands.append(word)
         i += 1
-    return files if pattern_given else files[1:]
+    return options, operands
+
+
+def search_files(args, name="grep"):
+    """The files grep or rg reads: its file operands after the pattern, plus any -f/--file pattern file. A
+    pattern given with -e/--regexp means every operand is a file."""
+    options, operands = parse_options(name, args)
+    pattern_given = any(meaning in ("pattern", "file") for meaning, _ in options)
+    files = [value for meaning, value in options if meaning == "file" and value]
+    return files + (operands if pattern_given else operands[1:])
 
 
 def edit_operands(name, args):
-    """For sed or perl: (script files read, input files). Expressions given with -e/--expression are
-    skipped; sed's -f/--file script is read, not edited; without -e or -f, sed's first operand is the script."""
-    scripts, files, expression_given, i = [], [], False, 0
-    while i < len(args):
-        word = args[i]
-        expression = option_value(word, "-e", "--expression")
-        script = option_value(word, "-f", "--file") if name == "sed" else None
-        if expression or script:
-            expression_given = True
-            form, value = expression or script
-            if form == "next":
-                value = args[i + 1] if i + 1 < len(args) else None
-                i += 1
-            if script and value:
-                scripts.append(value)
-        elif not word.startswith("-"):
-            files.append(word)
-        i += 1
-    if name == "sed" and not expression_given:
-        files = files[1:]
-    return scripts, files
+    """For sed or perl: (program files read, input files). Inline -e/--expression text is skipped. Without
+    an inline expression or a sed -f script, the first operand is the program: text for sed, a script file
+    for perl."""
+    options, operands = parse_options(name, args)
+    scripts = [value for meaning, value in options if meaning == "file" and value]
+    if not any(meaning in ("expression", "file") for meaning, _ in options) and operands:
+        if name == "perl":
+            scripts.append(operands[0])
+        operands = operands[1:]
+    return scripts, operands
 
 
 def sed_quiet(args):
@@ -210,7 +226,7 @@ def shell_paths(command):
             written += files
             read += scripts
         elif name in ("grep", "rg"):
-            read += search_files(rest[1:])
+            read += search_files(rest[1:], name)
         elif name == "sed" and sed_quiet(rest[1:]):
             scripts, files = edit_operands(name, rest[1:])
             read += scripts + files

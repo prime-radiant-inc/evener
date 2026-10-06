@@ -79,6 +79,13 @@ CASES = [
     (shell("sed -i -e 's/a/b/' progress.md"), ("write", ["ledger"])),
     (shell("sed -ne '1,5p' progress.md"), ("read", ["ledger"])),
     (shell("sed --quiet '1p' progress.md"), ("read", ["ledger"])),
+    # Short-option clusters, perl script files, and the end-of-options marker.
+    (shell("grep -Ef progress.md notes.txt"), ("read", ["ledger"])),
+    (shell("grep -neTask progress.md"), ("read", ["ledger"])),
+    (shell("sed -nf .superpowers/script.sed cart.go"), ("read", ["plan-artifacts"])),
+    (shell("perl -i -pe 's/a/b/' progress.md"), ("write", ["ledger"])),
+    (shell("perl -i -p .superpowers/fix.pl cart.go"), ("read", ["plan-artifacts"])),
+    (shell("grep -eTask -- -fprogress.md"), ("work", [])),
     (shell("go test ./..."), ("work", [])),
     # task_list: status, notes, or both; an update counts by the keys it sets.
     (call("task_list", update=[{"id": 1, "status": "done", "notes": "commit abc"}]), ("write", ["tasks", "task-notes"])),
