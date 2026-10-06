@@ -1323,7 +1323,8 @@ function SpawnForm({
   // unreachable) is said, with a Retry: nothing else re-reads the catalogs
   // until the host changes. Retry bumps catalogRetryRevision, which re-runs the
   // load below without the host-change reset, so the draft keeps what it has.
-  const [hostCatalogError, setHostCatalogError] = useState<string | null>(null);
+  // Each catalog's failure is kept on its own, so a host refusing both says both.
+  const [hostCatalogErrors, setHostCatalogErrors] = useState<{ harnesses?: string; schema?: string }>({});
   const [catalogRetryRevision, setCatalogRetryRevision] = useState(0);
   const retryHostCatalogs = useCallback(() => setCatalogRetryRevision((revision) => revision + 1), []);
   // biome-ignore lint/correctness/useExhaustiveDependencies: catalogRetryRevision is a trigger-only dep - Retry bumps it to read both catalogs again
@@ -1359,9 +1360,9 @@ function SpawnForm({
       setPluginSelection({ mode: "default" });
       setKnownSelectionIssues([]);
     }
-    setHostCatalogError(null);
-    const catalogLoadFailed = (err: unknown) => {
-      if (active) setHostCatalogError(errorText(err));
+    setHostCatalogErrors({});
+    const catalogLoadFailed = (catalog: "harnesses" | "schema") => (err: unknown) => {
+      if (active) setHostCatalogErrors((errors) => ({ ...errors, [catalog]: errorText(err) }));
     };
     // An answer stamps its OWN catalog as settled for this host, and is the
     // only thing that may reconcile that half of the draft: an empty list read
@@ -1380,12 +1381,12 @@ function SpawnForm({
       if (!active) return;
       setHarnesses(r.data);
       setHarnessesHostSettled(submittedSource);
-    }, catalogLoadFailed);
+    }, catalogLoadFailed("harnesses"));
     const schemaLoad = hostRequest(client, submittedSource, "evener/launch/schema", {}).then((r) => {
       if (!active) return;
       setSchemaOptions(perLaunchEvenerOptions(r));
       setSchemaHostSettled(submittedSource);
-    }, catalogLoadFailed);
+    }, catalogLoadFailed("schema"));
     void Promise.all([harnessesLoad, schemaLoad]).then(() => {
       // Settlement alone releases Start, even when one or both loads never
       // answered: the host refuses what it cannot serve at launch rather than
@@ -2774,9 +2775,14 @@ function SpawnForm({
           </p>
         )}
 
-        {hostCatalogError !== null && (
+        {(hostCatalogErrors.harnesses !== undefined || hostCatalogErrors.schema !== undefined) && (
           <div className={CLASS.notice} role="status" data-testid="spawn-host-catalog-error">
-            <span>Couldn't load this host's harnesses and launch options: {hostCatalogError}</span>
+            {hostCatalogErrors.harnesses !== undefined && (
+              <span>Couldn't load this host's harnesses: {hostCatalogErrors.harnesses}</span>
+            )}
+            {hostCatalogErrors.schema !== undefined && (
+              <span>Couldn't load this host's launch options: {hostCatalogErrors.schema}</span>
+            )}
             <Button variant="quiet" type="button" onClick={retryHostCatalogs}>
               Retry
             </Button>

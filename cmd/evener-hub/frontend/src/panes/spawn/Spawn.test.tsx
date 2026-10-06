@@ -9625,6 +9625,103 @@ test("a refused host catalog read says so and Retry reads it again", async () =>
   await waitFor(() => expect(within(harness).getByRole("option", { name: "external" })).toBeTruthy());
 });
 
+// Each catalog's failure is said on its own, so a host refusing both shows
+// both reasons.
+test("both refused host catalog reads are said", async () => {
+  seedSources(REMOTE_SOURCES);
+  const fake = readyClient((f) =>
+    f.on("evener/host/request", (params) => {
+      const forwarded = params as HostRequestParams;
+      if (forwarded.method === "evener/harnesses/list") throw new WireError("harness list down", -32014);
+      if (forwarded.method === "evener/launch/schema") throw new WireError("schema down", -32014);
+      return routedDiscoveryDefault(forwarded.method);
+    }),
+  );
+  connectionStore.getState().connect(fake);
+  const draft = selectSpawnDirectory("/srv/catalog-both-refused");
+  setDraftField(draft, "source", "buildbox");
+  window.history.pushState({}, "", "/new?dir=/srv/catalog-both-refused");
+  renderSpawn(fake);
+  await settled();
+
+  const notice = await screen.findByTestId("spawn-host-catalog-error");
+  await waitFor(() => {
+    expect(notice.textContent).toContain("harness list down");
+    expect(notice.textContent).toContain("schema down");
+  });
+});
+
+// Retry reads the launch schema again too, and keeps what the host already
+// answered: it is no host change, so the harness list it holds stays offered
+// while the retried reads are out.
+test("Retry re-reads the launch schema and keeps the answered harness list", async () => {
+  const user = setupUser();
+  seedSources(REMOTE_SOURCES);
+  let refuseSchema = true;
+  let harnessReads = 0;
+  const fake = readyClient((f) =>
+    f.on("evener/host/request", (params) => {
+      const forwarded = params as HostRequestParams;
+      if (forwarded.method === "evener/launch/schema" && refuseSchema) throw new WireError("schema down", -32014);
+      if (forwarded.method === "evener/harnesses/list" && ++harnessReads > 1) {
+        return new Promise<HostForwardedResult>(() => {});
+      }
+      return routedDiscoveryDefault(forwarded.method);
+    }),
+  );
+  connectionStore.getState().connect(fake);
+  const draft = selectSpawnDirectory("/srv/catalog-schema-refused");
+  setDraftField(draft, "source", "buildbox");
+  window.history.pushState({}, "", "/new?dir=/srv/catalog-schema-refused");
+  renderSpawn(fake);
+  await settled();
+
+  const notice = await screen.findByTestId("spawn-host-catalog-error");
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  const harness = screen.getByLabelText("Harness") as HTMLSelectElement;
+  await waitFor(() => expect(within(harness).getByRole("option", { name: "external" })).toBeTruthy());
+
+  refuseSchema = false;
+  await user.click(within(notice).getByRole("button", { name: "Retry" }));
+  await waitFor(() => expect(routedHostCalls(fake, "evener/launch/schema")).toHaveLength(2));
+  await waitFor(() => expect(routedHostCalls(fake, "evener/harnesses/list")).toHaveLength(2));
+  await act(async () => {});
+  expect(within(harness).getByRole("option", { name: "external" })).toBeTruthy();
+  expect(screen.queryByTestId("spawn-host-catalog-error")).toBeNull();
+});
+
+// A previous host's catalog read that fails after the host changed says
+// nothing about the host now selected.
+test("a previous host's late catalog failure shows no notice", async () => {
+  const user = setupUser();
+  seedSources(REMOTE_SOURCES);
+  let failHarnesses!: (err: Error) => void;
+  const fake = readyClient((f) =>
+    f.on("evener/host/request", (params) => {
+      const forwarded = params as HostRequestParams;
+      if (forwarded.method === "evener/harnesses/list") {
+        return new Promise<HostForwardedResult>((_, reject) => {
+          failHarnesses = reject;
+        });
+      }
+      return routedDiscoveryDefault(forwarded.method);
+    }),
+  );
+  connectionStore.getState().connect(fake);
+  const draft = selectSpawnDirectory("/srv/catalog-late-failure");
+  setDraftField(draft, "source", "buildbox");
+  window.history.pushState({}, "", "/new?dir=/srv/catalog-late-failure");
+  renderSpawn(fake);
+  await settled();
+  await waitFor(() => expect(routedHostCalls(fake, "evener/harnesses/list")).toHaveLength(1));
+
+  await user.selectOptions(screen.getByLabelText("Host"), "local");
+  await act(async () => {
+    failHarnesses(new WireError("buildbox went away", -32014));
+  });
+  expect(screen.queryByTestId("spawn-host-catalog-error")).toBeNull();
+});
+
 // The other half of the same rule, on a host that has no answers at all: the
 // request SETTLED, so the submit gate opens - the host refuses what it cannot
 // serve at start rather than leaving Start disabled forever.
