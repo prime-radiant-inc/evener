@@ -16,7 +16,7 @@ Usage:
   memory-lab show [--reasoning] OUTDIR/<trial> STAGE  # tool calls, memory files, whiteboard, final message
   memory-lab ask --bin BIN --model MODEL [--workspace work] [--effort high] [--timeout 600] \
       OUTDIR/<trial> STAGE "question"
-                                      # resume that stage's session and ask it why it chose what it did;
+                                      # resume the session that stage ran in and ask it why it chose what it did;
                                       # --workspace names the stage's workspace when it isn't work (e.g. work2)
 
 See README.md next to this script for setup, the scenarios and how to read results.
@@ -249,6 +249,8 @@ def grade_stage(label, arm, scen, stage, trial, session):
     for check_type, grader in GRADERS.items():
         for spec in stage.get(check_type, []):
             grade["checks"][spec["name"]] = grader(spec, inputs)
+    # ask resumes from here; a resumed stage ran in the earlier stage's state dir.
+    grade["state"] = session["state"]
     grade["whiteboard"] = inputs["note"]
     grade["final_message"] = messages[-1][:2000] if messages else ""
     with open(os.path.join(trial, f"{name}.grade.json"), "w") as f:
@@ -359,8 +361,9 @@ def cmd_ask(args):
     env = fixture_env(work, os.path.join(trial, "xdg"))
     n = len([f for f in os.listdir(trial) if f.startswith(f"{stage}.ask")]) + 1
     events = os.path.join(trial, f"{stage}.ask{n}.events.ndjson")
-    cmd = evener_command(os.path.abspath(args.bin), args.model, work, os.path.join(trial, "sessions", stage),
-                         args.effort, args.question, resume=True)
+    # A grade file without "state" means the stage ran in sessions/<stage>.
+    state = g.get("state") or os.path.join(trial, "sessions", stage)
+    cmd = evener_command(os.path.abspath(args.bin), args.model, work, state, args.effort, args.question, resume=True)
     with open(events, "w") as ev:
         subprocess.run(cmd, cwd=work, env=env, stdout=subprocess.DEVNULL, stderr=ev, timeout=args.timeout)
     calls, _, messages, _ = parse_events(events)
