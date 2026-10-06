@@ -1,16 +1,18 @@
 // Automatic memory refreshes on the phone, driven from what the daemon
 // actually sends (agent/testdata/memorycontextwire) through the same pipeline a
-// session screen runs: hydrate -> project -> group -> fold into session rows ->
-// TimelineItem. The refresh must render as a standalone "Refreshed my memory"
-// disclosure, closed at every verbosity level with System events on or off,
-// opening on an explicit tap to the scope/state, the decoded Markdown index and
-// a separately folded literal Source that keeps the complete recorded text.
-// These tests pin the behavior the native amendment requires; the old
-// generic-notice pins live in projectedRows.test.ts.
+// session screen runs: hydrate / live history-updated -> project -> group ->
+// fold into session rows -> TimelineItem, mounted with the real presentation's
+// expansion default. The refresh must render as a standalone "Refreshed my
+// memory" disclosure, closed at every verbosity level with System events on or
+// off and even where the general expansion default is on, opening on an
+// explicit tap to the scope/state, the decoded Markdown index and a separately
+// folded literal Source that keeps the complete recorded text. Only external /
+// native-platform seams are mocked; the product pipeline runs for real.
 import {
 	applyNotification,
 	hydrateThread,
 	makeTranscriptDisplayConfig,
+	MEMORY_CONTEXT_LABEL,
 	shippedConfig,
 	type AnyNotification,
 	type Thread,
@@ -29,8 +31,17 @@ import { pressable, render, renderedText, textOf } from "./renderNative.testkit"
 import { displayForLevel } from "./session/detailLevels";
 import { sessionRows } from "./session/transcriptRows";
 import { TimelineItem } from "./TimelineItem";
+import type { TimelineRow } from "./timeline";
 import { groupTimeline } from "./timeline";
 import { projectNativeTranscript } from "./transcriptPresentation";
+
+// The real product graph reaches Expo's dev-only async-require setup, which
+// reads the bundler's `__DEV__` global. Define it before any import evaluates
+// (vi.hoisted runs above the module's imports), so the product modules load for
+// real instead of being mocked away.
+vi.hoisted(() => {
+	(globalThis as { __DEV__?: boolean }).__DEV__ = false;
+});
 
 vi.mock("react-native", async () => ({
 	...(await import("./renderNative.testkit")).nativeModuleMock(),
@@ -39,7 +50,27 @@ vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
 vi.mock("react-native-enriched-markdown", () => ({ EnrichedMarkdownText: "EnrichedMarkdownText" }));
 vi.mock("expo-clipboard", () => ({ setStringAsync: async () => true }));
-vi.mock("./TranscriptImages", () => ({ TranscriptImages: () => null }));
+// An external native seam: the real TranscriptImages module reaches SecureStore
+// at import time, so it is faked here rather than mocking the product module.
+vi.mock("expo-secure-store", () => ({
+	getItemAsync: async () => null,
+	setItemAsync: async () => undefined,
+	deleteItemAsync: async () => undefined,
+}));
+vi.mock("expo-crypto", () => ({
+	randomUUID: () => "test-uuid",
+	getRandomValues: (array: Uint8Array) => array,
+}));
+vi.mock("expo-sqlite", () => ({ openDatabaseSync: vi.fn() }));
+vi.mock("expo-sqlite/kv-store", () => {
+	const values = new Map<string, string>();
+	const Storage = {
+		getItemSync: (key: string) => values.get(key) ?? null,
+		setItemSync: (key: string, value: string) => void values.set(key, value),
+		removeItemSync: (key: string) => void values.delete(key),
+	};
+	return { default: Storage, Storage };
+});
 
 const LEVELS = ["chat", "intent", "tools", "activity", "full"] as const;
 type Level = (typeof LEVELS)[number];
@@ -72,8 +103,17 @@ function threadWith(items: ThreadItem[]): Thread {
 	} as unknown as Thread;
 }
 
-function rowsFor(level: Level, items: ThreadItem[], systemEvents: boolean) {
+interface Projected {
+	rows: TimelineRow[];
+	expandByDefault: boolean;
+}
+
+function projectRows(level: Level, items: ThreadItem[], systemEvents: boolean): Projected {
 	const model = hydrateThread({ thread: threadWith(items) }, "ref-1", 0);
+	return projectModel(level, model, systemEvents);
+}
+
+function projectModel(level: Level, model: ReturnType<typeof hydrateThread>, systemEvents: boolean): Projected {
 	const shipped = shippedConfig("mobile");
 	const hub = makeTranscriptDisplayConfig(shipped.content, { ...shipped.advanced, systemEvents });
 	const { config, justTheConversation } = displayForLevel(level, hub);
@@ -81,18 +121,51 @@ function rowsFor(level: Level, items: ThreadItem[], systemEvents: boolean) {
 	const presentation = projectNativeTranscript(conversation, config, { justTheConversation });
 	return {
 		rows: sessionRows(groupTimeline(presentation.items), conversation.turns),
-		conversation,
-		config,
+		expandByDefault: presentation.expandByDefault,
 	};
 }
 
-function rowFor(item: ThreadItem, level: Level, systemEvents: boolean) {
-	return rowsFor(level, [item], systemEvents).rows.find((row) => row.id === item.id);
+interface MountOptions {
+	hubId?: string;
+	sessionRef?: string;
+	expandByDefault?: boolean;
 }
 
-function show(row: ReturnType<typeof rowFor>, hubId = "hub", sessionRef = "session-1"): ReactTestRenderer {
-	if (!row) throw new Error("no row to render");
-	return render(<TimelineItem item={row} hubId={hubId} sessionRef={sessionRef} />);
+function mountRow(
+	row: TimelineRow,
+	{ hubId = "hub", sessionRef = "session-1", expandByDefault = false }: MountOptions = {},
+) {
+	return render(<TimelineItem item={row} hubId={hubId} sessionRef={sessionRef} expandByDefault={expandByDefault} />);
+}
+
+function findRow(rows: TimelineRow[], id: string): TimelineRow {
+	const row = rows.find((candidate) => candidate.id === id);
+	if (!row) throw new Error(`no row ${id}`);
+	return row;
+}
+
+function mountItem(item: ThreadItem, level: Level, systemEvents: boolean, options: MountOptions = {}) {
+	const { rows, expandByDefault } = projectRows(level, [item], systemEvents);
+	const row = findRow(rows, item.id);
+	return {
+		tree: mountRow(row, { ...options, expandByDefault: options.expandByDefault ?? expandByDefault }),
+		row,
+		expandByDefault,
+	};
+}
+
+function find(tree: ReactTestRenderer, testID: string): ReactTestInstance | undefined {
+	return tree.root.findAllByProps({ testID })[0];
+}
+
+function requireFind(tree: ReactTestRenderer, testID: string): ReactTestInstance {
+	const node = find(tree, testID);
+	if (!node) throw new Error(`no node ${testID}`);
+	return node;
+}
+
+function absent(tree: ReactTestRenderer, testID: string): boolean {
+	return tree.root.findAllByProps({ testID }).length === 0;
 }
 
 function press(tree: ReactTestRenderer, label: string): void {
@@ -101,12 +174,18 @@ function press(tree: ReactTestRenderer, label: string): void {
 	act(() => target.props.onPress());
 }
 
-function find(tree: ReactTestRenderer, testID: string): ReactTestInstance | undefined {
-	return tree.root.findAllByProps({ testID })[0];
+function markdownSource(tree: ReactTestRenderer): string {
+	const markdown = tree.root.findAll((node) => String(node.type) === "EnrichedMarkdownText")[0];
+	if (!markdown) throw new Error("no Markdown node");
+	return String(markdown.props.markdown);
+}
+
+function resetDisclosure(): void {
+	act(() => nativeDisclosureStore.setState(nativeDisclosureStore.getInitialState()));
 }
 
 beforeEach(() => {
-	nativeDisclosureStore.setState(nativeDisclosureStore.getInitialState());
+	resetDisclosure();
 });
 
 // --- collapsed at every level, both System events settings ------------------
@@ -114,13 +193,13 @@ beforeEach(() => {
 describe("collapsed 'Refreshed my memory' at every level and gate", () => {
 	it.each(LEVELS)("stays closed with System events off at %s", (level) => {
 		for (const name of memoryContextWireCases()) {
-			nativeDisclosureStore.setState(nativeDisclosureStore.getInitialState());
+			resetDisclosure();
 			const item = memoryContextWireItem(name);
-			const tree = show(rowFor(item, level, false));
-			const row = rowFor(item, level, false);
+			const { tree, row } = mountItem(item, level, false);
 			expect(row).toMatchObject({ kind: "notice", eventKind: "memory-context" });
-			if (row?.kind === "notice") expect(row.label ?? "").toContain("Refreshed my memory");
-			expect(find(tree, "memory-context-scope-state")).toBeUndefined();
+			if (row.kind !== "notice") throw new Error("not a notice row");
+			expect(row.label ?? "").toContain(MEMORY_CONTEXT_LABEL);
+			expect(absent(tree, "memory-context-scope-state")).toBe(true);
 			expect(renderedText(tree)).not.toContain("Quoted index data:");
 			expect(renderedText(tree)).not.toContain("Memory scope");
 		}
@@ -128,10 +207,19 @@ describe("collapsed 'Refreshed my memory' at every level and gate", () => {
 
 	it.each(LEVELS)("stays closed with System events on at %s", (level) => {
 		for (const name of memoryContextWireCases()) {
-			nativeDisclosureStore.setState(nativeDisclosureStore.getInitialState());
-			const item = memoryContextWireItem(name);
-			const tree = show(rowFor(item, level, true));
-			expect(find(tree, "memory-context-scope-state")).toBeUndefined();
+			resetDisclosure();
+			const { tree } = mountItem(memoryContextWireItem(name), level, true);
+			expect(absent(tree, "memory-context-scope-state")).toBe(true);
+		}
+	});
+
+	it("stays closed at Activity and Full where the general expansion default is on", () => {
+		for (const level of ["activity", "full"] as const) {
+			resetDisclosure();
+			const { tree, expandByDefault } = mountItem(memoryContextWireItem("current-project"), level, true);
+			// Activity and Full set the general expand-everything baseline.
+			expect(expandByDefault).toBe(true);
+			expect(absent(tree, "memory-context-scope-state")).toBe(true);
 		}
 	});
 });
@@ -141,17 +229,14 @@ describe("collapsed 'Refreshed my memory' at every level and gate", () => {
 describe("an explicit tap reveals the decoded refresh", () => {
 	it("shows scope/state, the formatted index and the exact Source for a valid payload", () => {
 		const item = memoryContextWireItem("current-personal");
-		const tree = show(rowFor(item, "tools", true));
-		press(tree, "Refreshed my memory");
-		expect(textOf(find(tree, "memory-context-scope-state")!)).toContain("Personal memory · current");
-		expect(find(tree, "memory-context-content")).toBeDefined();
-		// The decoded index goes through the native Markdown renderer.
-		const markdown = tree.root.findAll((node) => String(node.type) === "EnrichedMarkdownText")[0];
-		expect(markdown?.props.markdown).toContain("a note");
+		const { tree } = mountItem(item, "tools", true);
+		press(tree, MEMORY_CONTEXT_LABEL);
+		expect(textOf(requireFind(tree, "memory-context-scope-state"))).toContain("Personal memory · current");
+		expect(markdownSource(tree)).toContain("a note");
 		// The Source is separately folded: hidden until its own tap.
-		expect(find(tree, "memory-context-source-text")).toBeUndefined();
+		expect(absent(tree, "memory-context-source-text")).toBe(true);
 		press(tree, "Source");
-		expect(textOf(find(tree, "memory-context-source-text")!)).toBe(item.text);
+		expect(textOf(requireFind(tree, "memory-context-source-text"))).toBe(item.text);
 	});
 
 	it("names every scope truthfully", () => {
@@ -159,10 +244,24 @@ describe("an explicit tap reveals the decoded refresh", () => {
 			["current-project", "Project memory · current"],
 			["current-session", "Session memory · current"],
 		] as const) {
-			nativeDisclosureStore.setState(nativeDisclosureStore.getInitialState());
-			const tree = show(rowFor(memoryContextWireItem(name), "tools", true));
-			press(tree, "Refreshed my memory");
-			expect(textOf(find(tree, "memory-context-scope-state")!)).toContain(expected);
+			resetDisclosure();
+			const { tree } = mountItem(memoryContextWireItem(name), "tools", true);
+			press(tree, MEMORY_CONTEXT_LABEL);
+			expect(textOf(requireFind(tree, "memory-context-scope-state"))).toContain(expected);
+		}
+	});
+
+	it("keeps the complete recorded Source for every decodable case, including the delegate suffix and a truncation", () => {
+		for (const name of memoryContextWireCases()) {
+			const item = memoryContextWireItem(name);
+			if (!item.raw) continue; // the malformed case has its own fallback test
+			resetDisclosure();
+			const { tree, row } = mountItem(item, "tools", true);
+			if (row.kind !== "notice") throw new Error("not a notice row");
+			// Unavailable/revoked carry their state on the collapsed label.
+			press(tree, row.label ?? MEMORY_CONTEXT_LABEL);
+			press(tree, "Source");
+			expect(textOf(requireFind(tree, "memory-context-source-text"))).toBe(item.text);
 		}
 	});
 });
@@ -175,32 +274,31 @@ describe("states and truncation stay honest", () => {
 			["revoked-project", "revoked"],
 			["unavailable-project", "unavailable"],
 		] as const) {
-			nativeDisclosureStore.setState(nativeDisclosureStore.getInitialState());
+			resetDisclosure();
 			const item = memoryContextWireItem(name);
-			const row = rowFor(item, "tools", true);
-			if (row?.kind === "notice") expect(row.label).toContain(state);
-			const tree = show(row);
-			const collapsed = pressable(tree, `Refreshed my memory · ${state}`);
-			expect(collapsed).toBeDefined();
+			const { tree, row } = mountItem(item, "tools", true);
+			if (row.kind !== "notice") throw new Error("not a notice row");
+			expect(row.label).toContain(state);
+			expect(pressable(tree, `${MEMORY_CONTEXT_LABEL} · ${state}`)).toBeDefined();
 		}
 	});
 
 	it("distinguishes empty, missing and a truncated current index", () => {
-		nativeDisclosureStore.setState(nativeDisclosureStore.getInitialState());
-		let tree = show(rowFor(memoryContextWireItem("empty-project"), "tools", true));
-		press(tree, "Refreshed my memory");
-		expect(textOf(find(tree, "memory-context-empty")!)).toBe("Empty index");
-		expect(find(tree, "memory-context-content")).toBeUndefined();
+		resetDisclosure();
+		let { tree } = mountItem(memoryContextWireItem("empty-project"), "tools", true);
+		press(tree, MEMORY_CONTEXT_LABEL);
+		expect(textOf(requireFind(tree, "memory-context-empty"))).toBe("Empty index");
+		expect(absent(tree, "memory-context-content")).toBe(true);
 
-		nativeDisclosureStore.setState(nativeDisclosureStore.getInitialState());
-		tree = show(rowFor(memoryContextWireItem("missing-project"), "tools", true));
-		press(tree, "Refreshed my memory");
-		expect(textOf(find(tree, "memory-context-scope-state")!)).toContain("missing");
+		resetDisclosure();
+		({ tree } = mountItem(memoryContextWireItem("missing-project"), "tools", true));
+		press(tree, MEMORY_CONTEXT_LABEL);
+		expect(textOf(requireFind(tree, "memory-context-scope-state"))).toContain("missing");
 
-		nativeDisclosureStore.setState(nativeDisclosureStore.getInitialState());
-		tree = show(rowFor(memoryContextWireItem("truncated-project"), "tools", true));
-		press(tree, "Refreshed my memory");
-		expect(textOf(find(tree, "memory-context-truncated")!)).toBe("truncated");
+		resetDisclosure();
+		({ tree } = mountItem(memoryContextWireItem("truncated-project"), "tools", true));
+		press(tree, MEMORY_CONTEXT_LABEL);
+		expect(textOf(requireFind(tree, "memory-context-truncated"))).toBe("truncated");
 	});
 });
 
@@ -210,77 +308,87 @@ describe("an invalid payload falls back, a later valid one still renders", () =>
 	it("opens a malformed refresh as its complete recorded text, with no invented index", () => {
 		const item = memoryContextWireItem("malformed-project");
 		expect(item.raw).toBeFalsy();
-		const tree = show(rowFor(item, "tools", true));
-		press(tree, "Refreshed my memory");
-		expect(textOf(find(tree, "memory-context-fallback")!)).toBe(item.text);
-		expect(find(tree, "memory-context-scope-state")).toBeUndefined();
-		expect(find(tree, "memory-context-content")).toBeUndefined();
+		const { tree } = mountItem(item, "tools", true);
+		press(tree, MEMORY_CONTEXT_LABEL);
+		expect(textOf(requireFind(tree, "memory-context-fallback"))).toBe(item.text);
+		expect(absent(tree, "memory-context-scope-state")).toBe(true);
+		expect(absent(tree, "memory-context-content")).toBe(true);
 	});
 
-	it("keeps a later valid observation working beside a malformed one", () => {
+	it("opens both a malformed fallback and a later valid observation beside it", () => {
 		const malformed = { ...memoryContextWireItem("malformed-project"), id: "mem-bad" } as ThreadItem;
 		const valid = { ...memoryContextWireItem("current-project"), id: "mem-good" } as ThreadItem;
-		const rows = rowsFor("tools", [malformed, valid], true).rows;
-		const malformedRow = rows.find((row) => row.id === malformed.id);
-		const validRow = rows.find((row) => row.id === valid.id);
-		expect(malformedRow).toBeDefined();
-		expect(validRow).toBeDefined();
-		const tree = show(validRow);
-		press(tree, "Refreshed my memory");
-		expect(textOf(find(tree, "memory-context-scope-state")!)).toContain("Project memory · current");
+		const { rows, expandByDefault } = projectRows("tools", [malformed, valid], true);
+		// Both are standalone notices in recorded order, never folded together.
+		const noticeRows = rows.filter((row) => row.kind === "notice" && row.eventKind === "memory-context");
+		expect(noticeRows.map((row) => row.id)).toEqual(["mem-bad", "mem-good"]);
+
+		const badTree = mountRow(findRow(rows, "mem-bad"), { expandByDefault });
+		press(badTree, MEMORY_CONTEXT_LABEL);
+		expect(textOf(requireFind(badTree, "memory-context-fallback"))).toBe(malformed.text);
+
+		const goodTree = mountRow(findRow(rows, "mem-good"), { expandByDefault });
+		press(goodTree, MEMORY_CONTEXT_LABEL);
+		expect(textOf(requireFind(goodTree, "memory-context-scope-state"))).toContain("Project memory · current");
 	});
 });
 
 // --- disclosure persistence -------------------------------------------------
 
 describe("explicit choices survive remount, verbosity and stay per hub/session", () => {
-	it("keeps an explicit open through a remount and a verbosity change", () => {
+	it("keeps an explicit open through a remount and across the expansion default", () => {
 		const item = memoryContextWireItem("current-personal");
-		const first = show(rowFor(item, "tools", true));
-		press(first, "Refreshed my memory");
-		expect(find(first, "memory-context-scope-state")).toBeDefined();
-		act(() => first.unmount());
+		const first = mountItem(item, "tools", true);
+		expect(first.expandByDefault).toBe(false);
+		press(first.tree, MEMORY_CONTEXT_LABEL);
+		expect(find(first.tree, "memory-context-scope-state")).toBeDefined();
+		act(() => first.tree.unmount());
 
-		const remounted = show(rowFor(item, "tools", true));
-		expect(find(remounted, "memory-context-scope-state")).toBeDefined();
-		act(() => remounted.unmount());
+		const remounted = mountItem(item, "tools", true);
+		expect(find(remounted.tree, "memory-context-scope-state")).toBeDefined();
+		act(() => remounted.tree.unmount());
 
-		const atFull = show(rowFor(item, "full", true));
-		expect(find(atFull, "memory-context-scope-state")).toBeDefined();
+		// Activity/Full turn the general expansion default on; the explicit open
+		// is unaffected.
+		const atFull = mountItem(item, "full", true);
+		expect(atFull.expandByDefault).toBe(true);
+		expect(find(atFull.tree, "memory-context-scope-state")).toBeDefined();
 	});
 
-	it("keeps an explicit close through a verbosity change", () => {
+	it("keeps an explicit close through the expansion default switching on", () => {
 		const item = memoryContextWireItem("current-personal");
-		const tree = show(rowFor(item, "tools", true));
-		press(tree, "Refreshed my memory");
-		press(tree, "Refreshed my memory");
-		expect(find(tree, "memory-context-scope-state")).toBeUndefined();
-		act(() => tree.unmount());
+		const tree = mountItem(item, "tools", true);
+		press(tree.tree, MEMORY_CONTEXT_LABEL);
+		press(tree.tree, MEMORY_CONTEXT_LABEL);
+		expect(absent(tree.tree, "memory-context-scope-state")).toBe(true);
+		act(() => tree.tree.unmount());
 
-		const atFull = show(rowFor(item, "full", true));
-		expect(find(atFull, "memory-context-scope-state")).toBeUndefined();
+		const atFull = mountItem(item, "full", true);
+		expect(atFull.expandByDefault).toBe(true);
+		expect(absent(atFull.tree, "memory-context-scope-state")).toBe(true);
 	});
 
 	it("does not open the same item id in another session or hub", () => {
 		const item = memoryContextWireItem("current-personal");
-		const tree = show(rowFor(item, "tools", true), "hub", "session-1");
-		press(tree, "Refreshed my memory");
-		expect(find(tree, "memory-context-scope-state")).toBeDefined();
-		act(() => tree.unmount());
+		const tree = mountItem(item, "tools", true, { hubId: "hub", sessionRef: "session-1" });
+		press(tree.tree, MEMORY_CONTEXT_LABEL);
+		expect(find(tree.tree, "memory-context-scope-state")).toBeDefined();
+		act(() => tree.tree.unmount());
 
-		const otherSession = show(rowFor(item, "tools", true), "hub", "session-2");
-		expect(find(otherSession, "memory-context-scope-state")).toBeUndefined();
-		act(() => otherSession.unmount());
+		const otherSession = mountItem(item, "tools", true, { hubId: "hub", sessionRef: "session-2" });
+		expect(absent(otherSession.tree, "memory-context-scope-state")).toBe(true);
+		act(() => otherSession.tree.unmount());
 
-		const otherHub = show(rowFor(item, "tools", true), "hub-2", "session-1");
-		expect(find(otherHub, "memory-context-scope-state")).toBeUndefined();
+		const otherHub = mountItem(item, "tools", true, { hubId: "hub-2", sessionRef: "session-1" });
+		expect(absent(otherHub.tree, "memory-context-scope-state")).toBe(true);
 	});
 });
 
 // --- live reduction and history hydration reach the same presentation -------
 
 describe("live reduction and history hydration agree", () => {
-	it("renders the same disclosure from a live history/updated notification", () => {
+	it("mounts the same opened disclosure from a live history/updated notification", () => {
+		const item = memoryContextWireItem("current-personal");
 		const model = hydrateThread(
 			{
 				thread: threadWith([]),
@@ -304,20 +412,34 @@ describe("live reduction and history hydration agree", () => {
 					epoch: 0,
 					snapshot: { incarnation: "inc_a", length: 1 },
 					turns: [{ id: "turn_1", itemsView: "full", status: "completed", version: 1, startedAt: T0, completedAt: T0 }],
-					items: [memoryContextWireItem("current-personal")],
+					items: [item],
 				},
 			} as unknown as AnyNotification,
 			0,
 		);
-		const shipped = shippedConfig("mobile");
-		const hub = makeTranscriptDisplayConfig(shipped.content, { ...shipped.advanced, systemEvents: true });
-		const { config, justTheConversation } = displayForLevel("tools", hub);
-		const conversation = projectConversation(live, undefined, config ?? undefined);
-		const presentation = projectNativeTranscript(conversation, config, { justTheConversation });
-		const rows = sessionRows(groupTimeline(presentation.items), conversation.turns);
-		const row = rows.find((candidate) => candidate.id === "item_memory_context_1");
-		expect(row).toMatchObject({ kind: "notice", eventKind: "memory-context" });
-		if (row?.kind === "notice") expect(row.label ?? "").toContain("Refreshed my memory");
+
+		// Live reduction reaches the mounted renderer, not just the projected row.
+		const liveProjected = projectModel("tools", live, true);
+		const liveTree = mountRow(findRow(liveProjected.rows, item.id), { expandByDefault: liveProjected.expandByDefault });
+		press(liveTree, MEMORY_CONTEXT_LABEL);
+		expect(textOf(requireFind(liveTree, "memory-context-scope-state"))).toContain("Personal memory · current");
+		expect(markdownSource(liveTree)).toContain("a note");
+		press(liveTree, "Source");
+		const liveSource = textOf(requireFind(liveTree, "memory-context-source-text"));
+
+		// History hydration of the same recorded item produces the same disclosure.
+		resetDisclosure();
+		const historyProjected = projectRows("tools", [item], true);
+		const historyTree = mountRow(findRow(historyProjected.rows, item.id), {
+			expandByDefault: historyProjected.expandByDefault,
+		});
+		press(historyTree, MEMORY_CONTEXT_LABEL);
+		expect(textOf(requireFind(historyTree, "memory-context-scope-state"))).toBe(
+			textOf(requireFind(liveTree, "memory-context-scope-state")),
+		);
+		press(historyTree, "Source");
+		expect(textOf(requireFind(historyTree, "memory-context-source-text"))).toBe(liveSource);
+		expect(liveSource).toBe(item.text);
 	});
 });
 
@@ -333,11 +455,11 @@ describe("ordinary system rows keep their existing treatment", () => {
 			status: "completed",
 			eventKind: "plugin_loaded",
 		} as unknown as ThreadItem;
-		const row = rowFor(plain, "tools", true);
+		const { tree, row } = mountItem(plain, "tools", true);
 		expect(row).toMatchObject({ kind: "notice" });
-		if (row?.kind === "notice") {
-			expect(row.label).toBeUndefined();
-			expect((row as { memoryContext?: unknown }).memoryContext).toBeUndefined();
-		}
+		if (row.kind !== "notice") throw new Error("not a notice row");
+		expect(row.label).toBeUndefined();
+		expect(row.memoryContext).toBeUndefined();
+		expect(absent(tree, "memory-context-scope-state")).toBe(true);
 	});
 });
