@@ -102,6 +102,7 @@ func ParseMemoryContext(text, messageName string) (MemoryContextDisplay, bool) {
 		return zero, false
 	}
 	switch scope {
+	// "session" stays so transcripts from earlier builds keep their scope label.
 	case "personal", "project", "session":
 	default:
 		return zero, false

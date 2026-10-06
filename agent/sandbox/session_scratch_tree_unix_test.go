@@ -10,7 +10,11 @@ import (
 )
 
 func TestOpenSessionScratchIsPerSessionAndReopensTheSamePath(t *testing.T) {
-	base := t.TempDir()
+	// The scratch base is canonicalized (on macOS /var is a symlink to /private/var).
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	root, err := OpenSessionScratch(base, t.TempDir(), "ROOT1", "ROOT1")
 	if err != nil {
 		t.Fatalf("open root scratch: %v", err)
@@ -158,7 +162,11 @@ func TestSessionScratchTreeRootIDsListsExistingTrees(t *testing.T) {
 // still a base the trees are listed and removed from; only recorded extra
 // bases must be absolute.
 func TestSessionScratchTreeInARelativeTempDirIsRemoved(t *testing.T) {
-	cwd := t.TempDir()
+	// The scratch base is canonicalized (on macOS /var is a symlink to /private/var).
+	cwd, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	t.Chdir(cwd)
 	if err := os.Mkdir(filepath.Join(cwd, "reltmp"), 0o700); err != nil {
 		t.Fatal(err)

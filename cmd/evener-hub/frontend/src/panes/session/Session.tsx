@@ -103,13 +103,24 @@ const EMPTY_THREADS = new Map<string, ThreadModel>();
 // user to send would ask them to redo what they just did, so that window
 // reports the wait instead and confirms the message arrived.
 //
+// Copy for the version-mismatch (degraded) state. The footer notice and the
+// empty transcript co-render for a fenced session with no saved messages, so
+// they must stay in step. Their one deliberate difference: the notice carries
+// the saved-work and interruption guarantees, which an empty session has no
+// saved work to promise about.
+const DEGRADED_VERSION_NOTICE =
+  "This session is still working, and everything already saved is kept. It's running a different Evener version than this app, so it can't receive new messages. To use it again, use Force shutdown in the session menu to stop it (interrupting anything still in progress), then send your next message to start it.";
+const DEGRADED_VERSION_EMPTY_TITLE = "This session is on a different Evener version";
+const DEGRADED_VERSION_EMPTY_HINT =
+  "To use it, stop it with Force shutdown in the session menu, then send a message to start it.";
+
 // `status.type === "active"` is the wire vocabulary's word for "a turn is
 // running right now" (appwire's ThreadStatus, mapped in ./liveness), which is
-// exactly the mid-first-turn window. An incompatible session needs a restart;
-// other empty sessions invite their first message.
+// exactly the mid-first-turn window. An incompatible session is on a different
+// Evener version; other empty sessions invite their first message.
 function EmptyTranscript({ active, restartRequired }: { active: boolean; restartRequired: boolean }) {
   if (restartRequired) {
-    return <EmptyState title="Session unavailable until restart" hint="Stop the daemon, then resume this session." />;
+    return <EmptyState title={DEGRADED_VERSION_EMPTY_TITLE} hint={DEGRADED_VERSION_EMPTY_HINT} />;
   }
   if (active) {
     return <EmptyState title="Waiting for the first reply" hint="The agent has your message." />;
@@ -187,12 +198,13 @@ function RestartRequiredNotice({
         ? "This session is retained by its owning session. Its uncertain messages cannot be checked here until the owner releases it."
         : resumeRequired
           ? "Resume this session before continuing. Any uncertain messages will be checked before sending."
-          : "Session restart required. Stop the older daemon, then refresh this session. Stopping interrupts active work."}
+          : DEGRADED_VERSION_NOTICE}
       {ownerRef && <a href={paneToURL("session", { ref: ownerRef }) ?? undefined}>Open owning session</a>}
-      {!resumeRequired && !ownerRef && <SessionForceStopRecovery sessionRef={sessionRef} />}
-      <Button disabled={refreshing} onClick={() => void refresh()}>
-        {resumeRequired ? "Resume session" : "Refresh session"}
-      </Button>
+      {(resumeRequired || ownerRef) && (
+        <Button disabled={refreshing} onClick={() => void refresh()}>
+          {resumeRequired ? "Resume session" : "Refresh session"}
+        </Button>
+      )}
       {error && <span>{error}</span>}
     </div>
   );

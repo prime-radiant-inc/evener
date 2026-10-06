@@ -3052,7 +3052,7 @@ test("the held-steer announcements region lives outside the virtual list", async
   expect(list.contains(announcements)).toBe(false);
 });
 
-test("explains that an incompatible daemon needs an explicit restart", async () => {
+test("an incompatible session shows a plain degraded notice with no buttons", async () => {
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_a", { status: { type: "restartRequired" } }));
   render(
@@ -3060,12 +3060,83 @@ test("explains that an incompatible daemon needs an explicit restart", async () 
       <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
     </ClientProvider>,
   );
-  expect((await screen.findByRole("alert")).textContent).toContain("Session restart required");
-  // The notice tells the operator to stop the older daemon, so the control that
-  // does it must be present: the Refresh button only re-reads and can never
-  // clear an incompatible daemon on its own.
-  expect(screen.getByRole("button", { name: "Force shutdown…" })).toBeTruthy();
+  const notice = await screen.findByRole("alert");
+  expect(notice.textContent).toContain("still working");
+  expect(notice.textContent).toContain("different Evener version");
+  expect(notice.textContent).toContain("everything already saved is kept");
+  // The notice is informational now: force shutdown lives in the session menu,
+  // and the pane re-hydrates itself on the hub's evener/thread/resync, so the
+  // banner offers no control at all.
+  expect(within(notice).queryByRole("button")).toBeNull();
+  expect(within(notice).queryByText("Force shutdown…")).toBeNull();
+  expect(within(notice).queryByText("Refresh session")).toBeNull();
   expect(fake.calls.filter((call) => call.method === "thread/resume" || call.method === "turn/start")).toHaveLength(0);
+});
+
+// The hub pushes evener/thread/resync when its roster discovers the old daemon
+// gone; the store re-hydrates on it, so the pane leaves the degraded state on
+// its own with no button press. emitDaemonGoneResync is the one emission every
+// daemon-exit test here drives; the read-held variant below keeps its own act
+// because it holds the reconciliation read open inside it.
+const emitDaemonGoneResync = (client: FakeClient) =>
+  act(async () => {
+    client.emitNotification({ method: "evener/thread/resync", params: { ref: "ref_a", threadId: "thr_ref_a" } });
+  });
+
+test("picks up a daemon exit automatically on evener/thread/resync", async () => {
+  const fake = connectFakeClient();
+  let exited = false;
+  fake.on("thread/read", () => readResponse("ref_a", { status: { type: exited ? "idle" : "restartRequired" } }));
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  const notice = await screen.findByRole("alert");
+  expect(notice.textContent).toContain("different Evener version");
+  expect(within(notice).queryByRole("button")).toBeNull();
+  exited = true;
+  await emitDaemonGoneResync(fake);
+  await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+  expect(threadsStore.getState().threads.get("ref_a")?.status.type).toBe("idle");
+  expect(fake.calls.filter((call) => call.method === "thread/resume" || call.method === "turn/start")).toHaveLength(0);
+});
+
+// RoboRev Medium (round 1): recovery must not hinge on the one
+// evener/thread/resync notification arriving. A reconnect swaps the client,
+// and threads.ts re-hydrates every tracked ref on the swap (rewireClient's
+// direct handleReady for a swapped-in client that is already ready), so a
+// pane whose resync was lost still leaves the degraded state on its own.
+// The replacement connection carries no notification here - only its plain
+// thread/read answers - which is the missed-notification case.
+test("a reconnect recovers the degraded pane without any resync notification", async () => {
+  const first = connectFakeClient();
+  first.on("thread/read", () => readResponse("ref_a", { status: { type: "restartRequired" } }));
+  const tree = (client: FakeClient) => (
+    <ClientProvider client={client}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>
+  );
+  const { rerender } = render(tree(first));
+  const notice = await screen.findByRole("alert");
+  expect(notice.textContent).toContain("different Evener version");
+
+  const second = new FakeClient("ready");
+  second.on("thread/read", () => readResponse("ref_a", { status: { type: "idle" } }));
+  await act(async () => {
+    connectionStore.getState().connect(second);
+  });
+  // Production rerenders the provider with the store's client on a swap, so
+  // the pane's context consumers never see the replaced one.
+  rerender(tree(second));
+  await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+  expect(threadsStore.getState().threads.get("ref_a")?.status.type).toBe("idle");
+  // Recovery was the reconnect's own re-hydration: exactly the one
+  // tracked-ref read on the replacement, and no user action anywhere.
+  expect(second.calls.filter((call) => call.method === "thread/read")).toHaveLength(1);
+  expect(second.calls.filter((call) => call.method === "thread/resume" || call.method === "turn/start")).toHaveLength(
+    0,
+  );
 });
 
 // A merely-resumable local session needs no special UI: sending a prompt resumes
@@ -3113,7 +3184,7 @@ test("a merely-resumable local session shows no standalone Resume notice", async
   expect(screen.queryByRole("alert")).toBeNull();
 });
 
-test("refreshes a restarted session without closing its pane", async () => {
+test("a daemon exit clears the notice without closing its pane", async () => {
   const fake = connectFakeClient();
   let replaced = false;
   fake.on("thread/read", () => readResponse("ref_a", { status: { type: replaced ? "idle" : "restartRequired" } }));
@@ -3123,35 +3194,34 @@ test("refreshes a restarted session without closing its pane", async () => {
     </ClientProvider>,
   );
   await screen.findByRole("alert");
-  const refresh = vi.spyOn(threadsStore.getState(), "refreshThread");
   replaced = true;
-  fireEvent.click(screen.getByRole("button", { name: "Refresh session" }));
-  expect(refresh).toHaveBeenCalledOnce();
-  await act(async () => {
-    await refresh.mock.results[0]?.value;
-  });
-  expect(threadsStore.getState().threads.get("ref_a")?.status.type).toBe("idle");
-  expect(screen.queryByRole("alert")).toBeNull();
+  await emitDaemonGoneResync(fake);
+  await waitFor(() => expect(threadsStore.getState().threads.get("ref_a")?.status.type).toBe("idle"));
+  await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+  // The pane stays mounted through the automatic pickup.
+  expect(document.querySelector('[data-pane-scaffold="session:ref_a"]')).not.toBeNull();
   expect(fake.calls.filter((call) => call.method === "thread/resume" || call.method === "turn/start")).toHaveLength(0);
 });
 
-test("shows an explicit session refresh failure", async () => {
+test("shows an explicit resume failure on the fence notice", async () => {
   const fake = connectFakeClient();
-  let failRefresh = false;
   fake.on("thread/read", () => {
-    if (failRefresh) throw new Error("refresh rejected");
-    return readResponse("ref_a", { status: { type: "restartRequired" } });
+    const response = readResponse("ref_a", { status: { type: "notLoaded" } });
+    response.thread.evener.resumeRequired = true;
+    return response;
+  });
+  fake.on("thread/resume", () => {
+    throw new Error("resume rejected");
   });
   render(
     <ClientProvider client={fake}>
       <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
     </ClientProvider>,
   );
-  await screen.findByRole("alert");
-  failRefresh = true;
-  fireEvent.click(screen.getByRole("button", { name: "Refresh session" }));
-  expect(await screen.findByText("refresh rejected")).toBeTruthy();
-  expect(threadsStore.getState().threads.get("ref_a")?.status.type).toBe("restartRequired");
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("button", { name: "Resume session" }));
+  expect(await screen.findByText("resume rejected")).toBeTruthy();
+  expect(threadsStore.getState().threads.get("ref_a")?.status.type).toBe("notLoaded");
 });
 
 test.each([false, true])("restart-required empty transcript suppresses first-send UI (pending=%s)", async (pending) => {
@@ -3166,7 +3236,7 @@ test.each([false, true])("restart-required empty transcript suppresses first-sen
   if (pending) await act(async () => seedPendingSend());
   expect(screen.queryByText(/send the first message/i)).toBeNull();
   expect(screen.queryByTestId("cold-start-skeleton")).toBeNull();
-  expect(screen.getByText("Session unavailable until restart")).toBeTruthy();
+  expect(screen.getByText("This session is on a different Evener version")).toBeTruthy();
 });
 
 test("explicit Resume follows the returned identity through transcript and new sends", async ({ onTestFinished }) => {
@@ -3548,9 +3618,9 @@ test("offers explicit resume after restart even without pending messages", async
       <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
     </ClientProvider>,
   );
-  const refresh = await screen.findByRole("button", { name: "Refresh session" });
+  await screen.findByRole("alert");
   status = "notLoaded";
-  fireEvent.click(refresh);
+  await emitDaemonGoneResync(fake);
   const resume = await screen.findByRole("button", { name: "Resume session" });
   await waitFor(() => expect((resume as HTMLButtonElement).disabled).toBe(false));
   fireEvent.click(resume);
@@ -3632,7 +3702,7 @@ test.each(["success", "refused"])("hydrated restart recovery works without navig
       <Toast />
     </ClientProvider>,
   );
-  await screen.findByRole("button", { name: "Refresh session" });
+  await screen.findByRole("alert");
   const refresh = vi.spyOn(threadsStore.getState(), "refreshThread");
   const user = userEvent.setup();
   await user.click(screen.getByRole("button", { name: /session actions/i }));
@@ -3771,16 +3841,24 @@ test.each(["notLoaded", "active", "idle"])(
     };
     try {
       status = recoveryStatus;
+      // The daemon exit re-read arrives as the automatic resync path. Hold the
+      // reconciliation read open and prove the uncertain row stays blocked (and
+      // no resume fires) until it completes, then resume.
       await act(async () => {
-        fireEvent.click(screen.getByRole("button", { name: "Refresh session" }));
+        fake.emitNotification({ method: "evener/thread/resync", params: { ref: "ref_a", threadId: "thr_ref_a" } });
         await readHeld;
       });
       const resume = await screen.findByRole("button", { name: "Resume session" });
       expect((await mutationStorage.getOutbox(mutationId))?.state).toBe("blockedUnknown");
       expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
-      expect((resume as HTMLButtonElement).disabled).toBe(true);
       releaseReads();
-      await waitFor(() => expect((resume as HTMLButtonElement).disabled).toBe(false));
+      // The old empty act left the settle to chance. The held read's storage
+      // chain is tracked projection work, so the flush drains it fully before
+      // the click. (The disabled-true/false pins this test used to carry here
+      // belonged to the removed Refresh button's in-flight state; the
+      // resync-driven read is automatic, so the Resume control has no
+      // disabled window to pin.)
+      await flushPendingTurnsProjectionForTests();
       fireEvent.click(resume);
       await flushPendingTurnsProjectionForTests();
       expect(await mutationStorage.getOutbox(mutationId)).toBeUndefined();

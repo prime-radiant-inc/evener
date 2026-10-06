@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"errors"
-	"io/fs"
 	"maps"
 	"path/filepath"
 
@@ -31,17 +30,10 @@ func registerMemoryTools(reg *tool.Registry, s *Session) error {
 }
 
 // memoryFileArgs changes only path authority; shared executors own file semantics.
-// It returns errMemoryScopeAbsent when the scope's directory does not exist
-// yet and operation must not create it; the executor then reports the outcome
-// the operation has on an empty scope, naming the path the model asked for.
 func (s *Session) memoryFileArgs(args map[string]any, key, operation string) (*execenv.LocalExecutionEnvironment, map[string]any, func(), error) {
 	scope := stringArg(args, "scope")
-	_, readOnly, err := s.memoryScopeBinding(scope)
-	if err != nil {
+	if _, err := s.memoryScopeBinding(scope); err != nil {
 		return nil, nil, nil, err
-	}
-	if readOnly && operation != "read" && operation != "search" {
-		return nil, nil, nil, errors.New(memorySessionReadOnly)
 	}
 	path := stringArg(args, key)
 	if key == "path" && path == "" {
@@ -50,7 +42,7 @@ func (s *Session) memoryFileArgs(args map[string]any, key, operation string) (*e
 	if !filepath.IsLocal(path) {
 		return nil, nil, nil, errors.New("memory path must be relative and remain in its scope")
 	}
-	env, release, err := s.acquireMemoryEnvironment(scope, memoryOperationCreatesScope(scope, operation))
+	env, release, err := s.acquireMemoryEnvironment(scope)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -61,12 +53,6 @@ func (s *Session) memoryFileArgs(args map[string]any, key, operation string) (*e
 		return nil, nil, nil, err
 	}
 	return env, forwarded, release, nil
-}
-
-// absentMemoryFile is the not-found error for a file in a scope whose
-// directory does not exist yet, shaped like a missing file's open error.
-func absentMemoryFile(args map[string]any) error {
-	return &fs.PathError{Op: "open", Path: stringArg(args, "file_path"), Err: fs.ErrNotExist}
 }
 
 func (s *Session) execMemoryWrite(ctx context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
@@ -80,9 +66,6 @@ func (s *Session) execMemoryWrite(ctx context.Context, _ execenv.ExecutionEnviro
 
 func (s *Session) execMemoryRead(ctx context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 	env, forwarded, release, err := s.memoryFileArgs(args, "file_path", "read")
-	if errors.Is(err, errMemoryScopeAbsent) {
-		return nil, absentMemoryFile(args)
-	}
 	if err != nil {
 		return nil, err
 	}
@@ -91,9 +74,6 @@ func (s *Session) execMemoryRead(ctx context.Context, _ execenv.ExecutionEnviron
 }
 func (s *Session) execMemoryEdit(ctx context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 	env, forwarded, release, err := s.memoryFileArgs(args, "file_path", "edit")
-	if errors.Is(err, errMemoryScopeAbsent) {
-		return nil, absentMemoryFile(args)
-	}
 	if err != nil {
 		return nil, err
 	}
@@ -102,9 +82,6 @@ func (s *Session) execMemoryEdit(ctx context.Context, _ execenv.ExecutionEnviron
 }
 func (s *Session) execMemorySearch(ctx context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 	env, forwarded, release, err := s.memoryFileArgs(args, "path", "search")
-	if errors.Is(err, errMemoryScopeAbsent) {
-		return "", nil
-	}
 	if err != nil {
 		return nil, err
 	}
@@ -113,9 +90,6 @@ func (s *Session) execMemorySearch(ctx context.Context, _ execenv.ExecutionEnvir
 }
 func (s *Session) execMemoryDelete(_ context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 	env, forwarded, release, err := s.memoryFileArgs(args, "file_path", "delete")
-	if errors.Is(err, errMemoryScopeAbsent) {
-		return "Removed or already absent: " + stringArg(args, "file_path"), nil
-	}
 	if err != nil {
 		return nil, err
 	}

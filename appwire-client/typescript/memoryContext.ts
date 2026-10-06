@@ -21,6 +21,7 @@ export const MEMORY_CONTEXT_EVENT_KIND = "memory-context";
 /** The collapsed heading both clients show for a refresh. */
 export const MEMORY_CONTEXT_LABEL = "Refreshed my memory";
 
+// "session" stays so transcripts from earlier builds keep their scope label.
 export const MEMORY_CONTEXT_SCOPES = ["personal", "project", "session"] as const;
 export type MemoryContextScope = (typeof MEMORY_CONTEXT_SCOPES)[number];
 

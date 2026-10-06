@@ -359,17 +359,6 @@ func admitReadFD(fd int, name string, allowDir bool) (*os.File, error) {
 // admitReadFD: a FIFO would otherwise block at open and a never-ending special
 // file would allocate without bound.
 func (s *sandboxFS) readFile(tool, abs string) ([]byte, error) {
-	f, err := s.openRegularFile(tool, abs)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = f.Close() }()
-	return io.ReadAll(f)
-}
-
-// openRegularFile opens abs for reading through a race-safe fd admitted by
-// admitReadFD. The caller owns the returned file.
-func (s *sandboxFS) openRegularFile(tool, abs string) (*os.File, error) {
 	fd, err := s.openRead(tool, abs, unix.O_RDONLY|unix.O_NONBLOCK)
 	if err != nil {
 		return nil, err
@@ -378,7 +367,8 @@ func (s *sandboxFS) openRegularFile(tool, abs string) (*os.File, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read %q: %w", abs, err)
 	}
-	return f, nil
+	defer func() { _ = f.Close() }()
+	return io.ReadAll(f)
 }
 
 // writeFile atomically writes data to abs: it resolves the parent beneath a

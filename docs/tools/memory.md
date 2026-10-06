@@ -1,24 +1,17 @@
 # Memory tools
 
-The native tools operate on one bound personal, project or session memory scope. They
+The native tools operate on one bound personal or project memory scope. They
 reuse ordinary file/search operations, argument validation, warnings, errors
 and output recovery. See [memory ownership and lifetime](../product/memory.md).
 
 ## Scope and paths
 
-Every call requires `scope`, exactly `personal`, `project` or `session`. Scope selects the
+Every call requires `scope`, exactly `personal` or `project`. Scope selects the
 trusted session binding, not a root supplied by the model. Read/write/edit/delete
 require `file_path`; search takes optional `path`, with blank meaning the scope
 root. Paths are relative to that scope and may include subdirectories. Absolute
 paths, escapes and symlink indirection are rejected by shared confinement.
 There is no `root` or `project_id` argument.
-
-Session scope is stored at `<state-root>/memory/sessions/<root-session-id>/`.
-A root session uses its own id; a delegate resolves to its root's id, so the
-whole delegate tree shares one session scope. Delegates can use `memory_read`
-and `memory_search` on it. `memory_write`, `memory_edit` and `memory_delete`
-with `scope: "session"` from a delegate fail with
-`session memory belongs to the root session; report this to your parent instead`.
 
 Disabled or unbound sessions expose none of these tools. An unavailable project
 binding does not authorize another project's storage. Stored text cannot grant
