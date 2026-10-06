@@ -1,6 +1,7 @@
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 import { connectionStore } from "../../../../stores/connection";
+import { sessionActivitySnapshot } from "../../../../stores/sessionActivity";
 import { activityClient, activitySummary } from "../../../../stores/sessionActivityTestUtils";
 import { resetThreadsStoreForTests, threadsStore } from "../../../../stores/threads";
 import { seedCurrentDelegate } from "../tools/currentDelegate.testFixture";
@@ -304,48 +305,37 @@ test("renders 'in progress' once the reported delay has elapsed, even with no ne
 
 // --- the hub's count (#3797) ------------------------------------------------
 
+// The hub's count of running subagents, known only from the subtree activity
+// summary, so a line that says it proves the subtree read was the source.
+function hubCounting(known: boolean, active: number) {
+  const client = activityClient();
+  client.on("evener/thread/activity/read", ({ ref, scope }) => ({
+    ...activitySummary(ref),
+    scope: scope ?? "session",
+    delegates: { known: known && scope === "subtree", total: active, active, failed: 0, completed: 0 },
+  }));
+  connectionStore.getState().connect(client);
+  return client;
+}
+
 // The hub counts a session's running subagents one way everywhere: those whose
 // run is open, at every depth (the subtree activity summary, the Live row's
 // tally, the phone's Board). Once that count is known it is the one the line
 // says, whatever this pane's transcript rows hold - here two subagents a level
 // down that the active turn's own rows never show.
 test("says the hub's subtree count of running subagents once it is known", async () => {
-  const client = activityClient();
-  client.on("evener/thread/activity/read", ({ ref, scope }) => ({
-    ...activitySummary(ref),
-    scope: scope ?? "session",
-    delegates: { known: scope === "subtree", total: 3, active: 2, failed: 0, completed: 1 },
-  }));
-  connectionStore.getState().connect(client);
+  hubCounting(true, 2);
   render(<LivenessLine lastFrameAt={0} now={60_000} active={true} sessionRef="s1" turnId="turn_0" />);
   await waitFor(() => expect(screen.getByTestId("liveness-line").textContent).toBe("Waiting on 2 subagents"));
-  expect(
-    client.calls.some(
-      (call) =>
-        call.method === "evener/thread/activity/read" && (call.params as { scope?: string }).scope === "subtree",
-    ),
-  ).toBe(true);
 });
-
-function hubCounting(known: boolean, active: number) {
-  const client = activityClient();
-  client.on("evener/thread/activity/read", ({ ref, scope }) => ({
-    ...activitySummary(ref),
-    scope: scope ?? "session",
-    delegates: { known, total: active, active, failed: 0, completed: 0 },
-  }));
-  connectionStore.getState().connect(client);
-  return client;
-}
 
 // Once known, the hub's count wins over the turn's rows downward too: a row
 // still marked running for a child whose run the hub has seen end explains
 // nothing.
 test("a known hub count of zero overrides a turn row still marked running", async () => {
   seedRunningChildren(1);
-  const client = hubCounting(true, 0);
+  hubCounting(true, 0);
   render(<LivenessLine lastFrameAt={0} now={60_000} active={true} sessionRef="s1" turnId="turn_0" />);
-  await waitFor(() => expect(client.calls.some((call) => call.method === "evener/thread/activity/read")).toBe(true));
   await waitFor(() => expect(screen.getByTestId("liveness-line").textContent).toBe("Quiet ~1m"));
 });
 
@@ -355,6 +345,6 @@ test("an unknown hub count falls back to the active turn's rows", async () => {
   seedRunningChildren(1);
   const client = hubCounting(false, 0);
   render(<LivenessLine lastFrameAt={0} now={60_000} active={true} sessionRef="s1" turnId="turn_0" />);
-  await waitFor(() => expect(client.calls.some((call) => call.method === "evener/thread/activity/read")).toBe(true));
+  await waitFor(() => expect(sessionActivitySnapshot(client, "s1", "subtree")?.summary).toBeTruthy());
   expect(screen.getByTestId("liveness-line").textContent).toBe("Waiting on 1 subagent");
 });
