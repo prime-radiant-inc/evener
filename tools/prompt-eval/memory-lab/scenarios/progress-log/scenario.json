@@ -1,0 +1,83 @@
+{
+  "arms": [
+    "on"
+  ],
+  "fixture_from": "freeze",
+  "stages": [
+    {
+      "name": "A",
+      "prompt": "Three small changes to shop, each as its own git commit: (1) add Count(lines []Line) int returning the total quantity; (2) make ApplyCoupon clamp percent to 0..100; (3) make Total skip lines whose quantity is zero or less. Run the tests after each change and tell me each commit's SHA. For context: we decided this week that every exported function's doc comment ends with the owning team tag, like `// Count returns the total quantity. (team: checkout)` - CI starts enforcing it next sprint.",
+      "checks": [
+        {
+          "name": "three commits made",
+          "run": "test $(git rev-list --count HEAD) -ge 4"
+        },
+        {
+          "name": "tests pass",
+          "run": "go test ./..."
+        },
+        {
+          "name": "no commit SHAs in durable memory",
+          "run": "perl -e 'for $f (glob(\"$ENV{XDG_STATE_HOME}/evener/memory/{personal,projects/*}/{*.md,*/*.md}\")) { open F, $f; while (<F>) { exit 1 if /\\b(?=[0-9a-f]*\\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}\\b/ } }'"
+        },
+        {
+          "name": "no scratch or temp paths in durable memory",
+          "run": "perl -e 'for $f (glob(\"$ENV{XDG_STATE_HOME}/evener/memory/{personal,projects/*}/{*.md,*/*.md}\")) { open F, $f; while (<F>) { exit 1 if /\\/tmp\\/|EVENER_SCRATCH|evener-sandbox|\\/var\\/folders/ } }'"
+        },
+        {
+          "name": "no test counts in durable memory",
+          "run": "perl -e 'for $f (glob(\"$ENV{XDG_STATE_HOME}/evener/memory/{personal,projects/*}/{*.md,*/*.md}\")) { open F, $f; while (<F>) { exit 1 if /\\b\\d+\\s*(tests?|passed|passing|subtests)\\b/i } }'"
+        },
+        {
+          "name": "durable pages under 2500 bytes",
+          "run": "perl -e 'for (glob(\"$ENV{XDG_STATE_HOME}/evener/memory/{personal,projects/*}/{*.md,*/*.md}\")) { exit 1 if -s $_ > 2500 }'"
+        },
+        {
+          "name": "index lines under 200 chars",
+          "run": "perl -e 'for $f (glob(\"$ENV{XDG_STATE_HOME}/evener/memory/{personal,projects/*}/MEMORY.md\")) { open F, $f; while (<F>) { chomp; exit 1 if length > 200 } }'"
+        }
+      ],
+      "memory": [
+        {
+          "name": "team-tag rule saved to project memory",
+          "regex": "(?i)team: ?checkout",
+          "scope": "project"
+        }
+      ]
+    },
+    {
+      "name": "B",
+      "prompt": "Add a Subtotal(c Catalog, lines []Line) (int, error) to shop that prices the lines like Total but without logging. Add tests.",
+      "checks": [
+        {
+          "name": "tests pass",
+          "run": "go test ./..."
+        },
+        {
+          "name": "Subtotal doc comment carries the team tag",
+          "run": "grep -B3 'func Subtotal' *.go | grep -q '(team: checkout)'"
+        },
+        {
+          "name": "no commit SHAs in durable memory",
+          "run": "perl -e 'for $f (glob(\"$ENV{XDG_STATE_HOME}/evener/memory/{personal,projects/*}/{*.md,*/*.md}\")) { open F, $f; while (<F>) { exit 1 if /\\b(?=[0-9a-f]*\\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}\\b/ } }'"
+        },
+        {
+          "name": "no scratch or temp paths in durable memory",
+          "run": "perl -e 'for $f (glob(\"$ENV{XDG_STATE_HOME}/evener/memory/{personal,projects/*}/{*.md,*/*.md}\")) { open F, $f; while (<F>) { exit 1 if /\\/tmp\\/|EVENER_SCRATCH|evener-sandbox|\\/var\\/folders/ } }'"
+        },
+        {
+          "name": "no test counts in durable memory",
+          "run": "perl -e 'for $f (glob(\"$ENV{XDG_STATE_HOME}/evener/memory/{personal,projects/*}/{*.md,*/*.md}\")) { open F, $f; while (<F>) { exit 1 if /\\b\\d+\\s*(tests?|passed|passing|subtests)\\b/i } }'"
+        },
+        {
+          "name": "durable pages under 2500 bytes",
+          "run": "perl -e 'for (glob(\"$ENV{XDG_STATE_HOME}/evener/memory/{personal,projects/*}/{*.md,*/*.md}\")) { exit 1 if -s $_ > 2500 }'"
+        },
+        {
+          "name": "index lines under 200 chars",
+          "run": "perl -e 'for $f (glob(\"$ENV{XDG_STATE_HOME}/evener/memory/{personal,projects/*}/MEMORY.md\")) { open F, $f; while (<F>) { chomp; exit 1 if length > 200 } }'"
+        }
+      ]
+    }
+  ]
+}

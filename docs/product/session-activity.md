@@ -485,6 +485,16 @@ footer remains bound to its own conversation.
 Columns and spines expose Agents, Jobs, Watches and Tasks peeks, including empty
 Tasks. About is available in Overview and has no cascade chip.
 
+Ancestor spines reuse the session list's compact indicators: a gray spinner for
+active work, an amber dot for attention and a red diamond for failure. Idle and
+ended scopes have no glyph. Each spine uses its own runtime metadata from the
+existing activity binding, while the list retains its navigation-summary
+arbitration. Runtime status uses the wire vocabulary: `systemError` selects failure
+and `closed` selects ended. Navigation summaries normalize those values to
+`errored` and `ended` before selecting the same indicator families. The exact
+runtime label, including unknown states, remains available on hover and to screen
+readers. Readable columns keep their full status labels.
+
 Columns and spines share the existing summary and additive subscription leases
 by client and requested ref. An ancestor peek observes only that ancestor's
 chosen direct collection; Tasks stays inside the peek. Closing it releases its

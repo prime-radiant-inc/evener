@@ -1,0 +1,23 @@
+{
+  "arms": [
+    "on"
+  ],
+  "fixture_from": "migration",
+  "stages": [
+    {
+      "name": "B",
+      "seed_project_memory": "seed",
+      "prompt": "Total should skip cart lines with a quantity of zero or less instead of pricing them, and log a warning for each line it skips. Add tests.",
+      "checks": [
+        {
+          "name": "tests pass",
+          "run": "go test ./..."
+        },
+        {
+          "name": "no new oldlog",
+          "run": "test $(for f in $(ls *.go | grep -v _test.go); do sed 's://.*$::' \"$f\"; done | grep -o 'oldlog\\.' | wc -l) -le 4"
+        }
+      ]
+    }
+  ]
+}
