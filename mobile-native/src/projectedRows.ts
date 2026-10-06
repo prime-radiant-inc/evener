@@ -731,7 +731,8 @@ export function liveAsksFor(model: ThreadModel): ReadonlyMap<string, AskQuestion
 // --- notice rows ------------------------------------------------------------------
 
 // interrupted: a model round that ended with streamed content or running
-// tools nobody recorded, which the web draws as a failure.
+// tools nobody recorded. The package shows it at every level (critical);
+// the phone reads it in the warning tone, as it does a turn limit.
 const WARNING_EVENT_KINDS = new Set(["loop_detection", "turn_limit", "interrupted", ERROR_EVENT_KIND]);
 const PRELUDE_EVENT_KINDS = new Set(["environment"]);
 const DIAGNOSTIC_EVENT_KINDS = new Set(["round_timings"]);

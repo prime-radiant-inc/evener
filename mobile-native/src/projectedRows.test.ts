@@ -423,8 +423,7 @@ describe("projectedRow — item entries", () => {
 	});
 
 	// A model round that ended with streamed content or running tools nobody
-	// recorded: the web draws it as a failure (CRITICAL_SYSTEM_EVENT_KINDS), so
-	// the phone reads it in the warning tone, as an error or a turn limit.
+	// recorded reads in the warning tone, as an error or a turn limit does.
 	it("reads an interrupted round as a warning", () => {
 		const row = projectedRow(itemEntry(item({ type: "systemMessage", text: "x", eventKind: "interrupted" })));
 		expect(row).toMatchObject({ kind: "notice", origin: "system", family: "warning", tone: "warning" });
