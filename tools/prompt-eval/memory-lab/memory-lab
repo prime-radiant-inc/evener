@@ -563,14 +563,15 @@ def load_scenario(scen):
         for key in ("fixture", "seed_project_memory", "workspace", "resume", "before"):
             if key in st and not isinstance(st[key], str):
                 sys.exit(f"{where}: \"{key}\" must be a string")
-        if st.get("workspace") == "":
-            sys.exit(f"{where}: \"workspace\" must name a dir (an empty one runs the session in the trial dir)")
+        if "workspace" in st and (not st["workspace"] or "/" in st["workspace"] or st["workspace"] in (".", "..")):
+            sys.exit(f"{where}: \"workspace\" must name one dir in the trial, like work2")
         if st.get("resume") and st["resume"] not in [earlier.get("name") for earlier in spec["stages"][:i]]:
             sys.exit(f"{where}: \"resume\" must name an earlier stage")
         workspace = st.get("workspace")
         if st.get("fixture") and not (workspace and workspace != "work"):
             sys.exit(f"{where}: \"fixture\" needs a \"workspace\" naming a dir other than work "
                      "(otherwise the stage silently reuses the base work dir)")
+        seen = set()  # grades and cleanup errors are keyed by check name across every type
         for check_type, required in REQUIRED_CHECK_FIELDS.items():
             checks = st.get(check_type, [])
             if not (isinstance(checks, list) and all(isinstance(check, dict) for check in checks)):
@@ -579,6 +580,9 @@ def load_scenario(scen):
                 name = check.get("name")
                 if not (isinstance(name, str) and name):
                     sys.exit(f"{where}: every {check_type} check needs a non-empty string \"name\"")
+                if name in seen:
+                    sys.exit(f"{where}: two checks are named {name!r}; names must be unique within a stage")
+                seen.add(name)
                 for field in required:
                     if not isinstance(check.get(field), str):
                         sys.exit(f"{where}: {check_type} {name!r} needs a string \"{field}\"")

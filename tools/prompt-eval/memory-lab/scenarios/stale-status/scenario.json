@@ -28,13 +28,13 @@
       "final": [
         {
           "name": "report does not claim the rename is unfinished",
-          "regex": "^(?![\\s\\S]*(?i:(rename|Lookup|Find)[^.]{0,80}(unfinished|in progress|not yet|still need|pending|incomplete)))"
+          "regex": "^(?![\\s\\S]*(?i:(rename|Lookup|Find)[^.;,\\n]{0,80}?(?:(?<!nothing )(?<!no )\\b(?:is|are|remains?)\\s+(?:\\w+\\s+){0,2}?(?:unfinished|in progress|not yet|pending|incomplete)|still needs?|pending:|tomorrow)))"
         }
       ],
       "memory": [
         {
           "name": "no durable page claims the rename is in progress",
-          "regex": "(?i)(rename|Lookup)[^\\n]{0,120}(in progress|unfinished|not yet|still need|pending|incomplete|tomorrow)",
+          "regex": "(?i)(rename|Lookup|Find)[^.;,\\n]{0,80}?(?:(?<!nothing )(?<!no )\\b(?:is|are|remains?)\\s+(?:\\w+\\s+){0,2}?(?:unfinished|in progress|not yet|pending|incomplete)|still needs?|pending:|tomorrow)",
           "absent": true
         }
       ]
