@@ -110,16 +110,23 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) (promptData,
 		resourceCapsJSON = renderResourceCapsJSON(resources.CPUs, resources.MemoryMB)
 	}
 
+	read := s.memoryContextEnabled()
 	saves := s.memorySaveInstructionsEnabled()
+	_, _, sessionBindErr := s.memoryScopeBinding("session")
+	sessionMemory := read && sessionBindErr == nil
 	data := promptData{
 		NonInteractive:           s.cfg.noOneToAsk(),
 		BaseInstructionsOverride: strings.TrimSpace(s.systemPromptOverride),
 		IsSubagent:               s.depth > 0,
 		Surface:                  s.profile.Surface(),
 		TurnEndsProcess:          s.cfg.TurnEndsProcess,
+		MemoryRead:               read,
+		MemorySearch:             read && s.canInstructTool("memory_search"),
 		MemorySaves:              saves,
-		ProjectMemory:            saves && s.cfg.MemoryProjectID != "",
-		SessionMemorySaves:       saves && !s.sessionMemoryReadOnly(),
+		ProjectMemory:            read && s.cfg.MemoryProjectID != "",
+		SessionMemory:            sessionMemory,
+		MemoryDelegate:           s.sessionMemoryReadOnly(),
+		SessionMemorySaves:       saves && sessionMemory && !s.sessionMemoryReadOnly(),
 		WorkingDir:               s.envInfo.WorkingDir,
 		IsGitRepo:                s.envInfo.IsGitRepo,
 		GitBranch:                s.envInfo.GitBranch,
