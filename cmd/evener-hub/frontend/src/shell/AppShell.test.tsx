@@ -3372,7 +3372,13 @@ test.each(["phone", "desktop"])(
     });
     client.on("thread/read", ({ ref }) => activityDetailsThread(ref, { name: ref }));
     client.on("thread/unsubscribe", () => ({}));
-    client.on("evener/thread/activity/read", ({ ref }) => activitySummary(ref));
+    // Answers the scope asked for, as a hub does: the footer's subagent
+    // count reads the subtree, and a reply for another scope is refused and
+    // retried in the background.
+    client.on("evener/thread/activity/read", ({ ref, scope }) => ({
+      ...activitySummary(ref),
+      scope: scope ?? "session",
+    }));
     const user = userEvent.setup();
     render(
       <>
@@ -5445,7 +5451,12 @@ test.each([
         },
       };
     });
-    client.on("evener/thread/activity/read", ({ ref }) => ({ ...activitySummary(ref), context: context(ref) }));
+    // Answers the scope asked for, as a hub does (see above).
+    client.on("evener/thread/activity/read", ({ ref, scope }) => ({
+      ...activitySummary(ref),
+      scope: scope ?? "session",
+      context: context(ref),
+    }));
     client.on("evener/thread/delegates/list", ({ ref }) => ({
       context: context(ref),
       scope: "session",
