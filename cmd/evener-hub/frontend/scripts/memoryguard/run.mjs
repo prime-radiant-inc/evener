@@ -9,8 +9,8 @@
 //
 //   1. the refresh is collapsed at both widths, with the exact heading
 //      "Refreshed my memory" and no model-facing envelope in the collapsed row;
-//   2. a real pointer click opens it to the scope/state line and the decoded,
-//      formatted index (never the escaped envelope);
+//   2. a trusted CDP pointer click opens it to the scope/state line and the
+//      decoded, formatted index (never the escaped envelope);
 //   3. the folded Source keeps the complete original Text verbatim, including
 //      the task-list markers the Markdown sanitizer strips;
 //   4. a real trusted keyboard activation (Space on the native summary) opens
@@ -43,9 +43,9 @@ const BOOT = {
   bootLabel: "the memoryguard entry global window.memoryGuard",
 };
 
-// The keyboard activation key for a native <summary> in Chrome is Space (Enter
-// scrolls a focused summary rather than toggling it); this is the key a reader
-// actually uses, dispatched as a trusted input event.
+// Drive Space as a trusted input event on the focused native <summary>: it is
+// the activation key this guard exercises (jsdom runs no native activation at
+// all).
 async function dispatchActivationKey(send) {
   for (const type of ["keyDown", "keyUp"]) {
     await send("Input.dispatchKeyEvent", {
@@ -57,6 +57,36 @@ async function dispatchActivationKey(send) {
     });
   }
   await evaluate(send, "new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+}
+
+// A trusted pointer activation: real Input.dispatchMouseEvent press/release at
+// the summary's own painted center, not a scripted element.click().
+async function trustedClick(send) {
+  const point = JSON.parse(await evaluate(send, "JSON.stringify(window.memoryGuard.summaryPoint())"));
+  await send("Input.dispatchMouseEvent", {
+    type: "mousePressed",
+    button: "left",
+    clickCount: 1,
+    x: point.x,
+    y: point.y,
+  });
+  await send("Input.dispatchMouseEvent", {
+    type: "mouseReleased",
+    button: "left",
+    clickCount: 1,
+    x: point.x,
+    y: point.y,
+  });
+  await evaluate(send, "new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+}
+
+// The open disclosure's chevron transition paints a rotated box mid-flight;
+// measure at rest or the row reports a transient escape that no reader sees.
+async function settleAnimations(send) {
+  await evaluate(
+    send,
+    "Promise.all(document.getAnimations().filter((a) => a.effect?.getTiming().iterations !== Number.POSITIVE_INFINITY).map((a) => a.finished.catch(() => undefined))).then(() => true)",
+  );
 }
 
 async function probe(send) {
@@ -97,8 +127,9 @@ async function assertAt(cdpEndpoint, vitePort, width) {
 
     assertClosed(await probe(send), `${label} closed`, failures);
 
-    // Pointer activation opens the decoded, formatted body.
-    await evaluate(send, "window.memoryGuard.clickSummary()");
+    // A trusted pointer click opens the decoded, formatted body.
+    await trustedClick(send);
+    await settleAnimations(send);
     const opened = await probe(send);
     if (!opened.open) failures.push(`${label}: a pointer click did not open the refresh`);
     if (!(opened.meta ?? "").includes("Personal memory · current")) {
@@ -125,8 +156,8 @@ async function assertAt(cdpEndpoint, vitePort, width) {
       );
     }
 
-    // A second click closes it again.
-    await evaluate(send, "window.memoryGuard.clickSummary()");
+    // A second trusted click closes it again.
+    await trustedClick(send);
     if (await evaluate(send, "window.memoryGuard.isOpen()")) failures.push(`${label}: a second click did not close`);
 
     // Real trusted keyboard activation: focus the native summary, press Space.

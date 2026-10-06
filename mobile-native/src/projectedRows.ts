@@ -752,6 +752,12 @@ const LIFECYCLE_EVENT_KINDS = new Set([
 	// the oracle (RoboRev panel) — restored here so the canonical set is not
 	// narrower than the family it replaces.
 	"notes-context",
+	// An automatic memory refresh: a routine context injection like a
+	// shared-notes snapshot. The web renders it as its own "Refreshed my
+	// memory" disclosure; native presentation is unchanged — it stays the same
+	// standalone, tone-system notice line it drew for the pre-typed blank-kind
+	// item (lifecycle is not in groupTimeline's internal set).
+	"memory-context",
 ]);
 
 function systemFamily(eventKind: string | undefined): NoticeFamily {

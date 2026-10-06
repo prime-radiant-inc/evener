@@ -110,8 +110,8 @@ declare global {
     memoryGuard: {
       settled: Promise<true>;
       probe: typeof probe;
-      clickSummary: () => void;
       focusSummary: () => boolean;
+      summaryPoint: () => { x: number; y: number };
       isOpen: () => boolean;
       sourceOpen: () => boolean;
     };
@@ -147,11 +147,14 @@ const settled = new Promise<true>((resolve) => {
 window.memoryGuard = {
   settled,
   probe,
-  clickSummary: () => summaryEl().click(),
   focusSummary: () => {
     const summary = summaryEl();
     summary.focus();
     return document.activeElement === summary;
+  },
+  summaryPoint: () => {
+    const box = summaryEl().getBoundingClientRect();
+    return { x: box.left + box.width / 2, y: box.top + box.height / 2 };
   },
   isOpen: () => detailsEl().open,
   sourceOpen: () => Boolean(document.querySelector<HTMLDetailsElement>('[data-testid="memory-context-source"]')?.open),

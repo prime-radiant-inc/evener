@@ -285,10 +285,10 @@ test("the same memory item id has independent state in another session", () => {
   expect(items[1]?.open).toBe(false);
 });
 
-// jsdom does not run the browser's native <summary> Enter/Space activation, so
+// jsdom does not run the browser's native <summary> keyboard activation, so
 // this pins what jsdom can: the summary is a natively focusable control and an
-// activation toggles the shared store. The real Enter/Space path is proven in
-// the memoryguard browser harness against production.
+// activation toggles the shared store. The real Space activation path is
+// proven in the memoryguard browser harness against production.
 test("the summary is natively focusable and activation toggles the disclosure", () => {
   const config = preset("tools");
   renderProjected(project([wireItem()], config), config);
