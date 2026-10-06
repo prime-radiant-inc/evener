@@ -140,8 +140,7 @@ test("a replacement resolved session cannot inherit the old extent or disclosure
   const client = activityClient();
   let sessionId = "owner";
   client.on("evener/thread/activity/read", ({ scope }) => ({
-    ...activitySummary(),
-    scope: scope ?? "session",
+    ...activitySummary(undefined, scope),
     context: { ...activityContext(), sessionId },
   }));
   client.on("evener/thread/jobs/list", () => ({
