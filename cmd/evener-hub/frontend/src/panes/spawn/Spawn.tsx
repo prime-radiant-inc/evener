@@ -1319,14 +1319,14 @@ function SpawnForm({
   // nothing about it is host-derived, so the form stays startable exactly as it
   // was before host routing existed.
   const [hostCatalogPending, setHostCatalogPending] = useState(() => !isLocalHost(submittedSource));
-  // A refused catalog read (a full forwarded-read pool, a host briefly
+  // A failed catalog read (a full forwarded-read pool, a host briefly
   // unreachable) is said, with a Retry: nothing else re-reads the catalogs
-  // until the host changes. Retry bumps catalogAttempt, which re-runs the load
-  // below without the host-change reset, so the draft keeps what it has.
+  // until the host changes. Retry bumps catalogRetryRevision, which re-runs the
+  // load below without the host-change reset, so the draft keeps what it has.
   const [hostCatalogError, setHostCatalogError] = useState<string | null>(null);
-  const [catalogAttempt, setCatalogAttempt] = useState(0);
-  const retryHostCatalogs = useCallback(() => setCatalogAttempt((attempt) => attempt + 1), []);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: catalogAttempt is a trigger-only dep - Retry bumps it to read both catalogs again
+  const [catalogRetryRevision, setCatalogRetryRevision] = useState(0);
+  const retryHostCatalogs = useCallback(() => setCatalogRetryRevision((revision) => revision + 1), []);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: catalogRetryRevision is a trigger-only dep - Retry bumps it to read both catalogs again
   useEffect(() => {
     let active = true;
     // A changed target retires the previous host's catalogs before the new
@@ -1360,7 +1360,7 @@ function SpawnForm({
       setKnownSelectionIssues([]);
     }
     setHostCatalogError(null);
-    const refused = (err: unknown) => {
+    const catalogLoadFailed = (err: unknown) => {
       if (active) setHostCatalogError(errorText(err));
     };
     // An answer stamps its OWN catalog as settled for this host, and is the
@@ -1380,12 +1380,12 @@ function SpawnForm({
       if (!active) return;
       setHarnesses(r.data);
       setHarnessesHostSettled(submittedSource);
-    }, refused);
+    }, catalogLoadFailed);
     const schemaLoad = hostRequest(client, submittedSource, "evener/launch/schema", {}).then((r) => {
       if (!active) return;
       setSchemaOptions(perLaunchEvenerOptions(r));
       setSchemaHostSettled(submittedSource);
-    }, refused);
+    }, catalogLoadFailed);
     void Promise.all([harnessesLoad, schemaLoad]).then(() => {
       // Settlement alone releases Start, even when one or both loads never
       // answered: the host refuses what it cannot serve at launch rather than
@@ -1397,7 +1397,7 @@ function SpawnForm({
     return () => {
       active = false;
     };
-  }, [client, submittedSource, setPluginSelection, setKnownSelectionIssues, catalogAttempt]);
+  }, [client, submittedSource, setPluginSelection, setKnownSelectionIssues, catalogRetryRevision]);
 
   // The draft's launch config is chosen from the SELECTED host's catalogs, and
   // the draft store carries it across a host switch (component 07b review, round
