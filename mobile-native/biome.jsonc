@@ -23,9 +23,9 @@
   // Generated output is the generator's, not the formatter's: mermaidPage.ts is
   // a 3.4 MiB bundle (scripts/build-mermaid-page.mts, kept fresh by its own
   // test) that Biome would otherwise skip with a size warning on every run
-  // (#3672). Only src/generated is left out.
+  // (#3672). Only that file is left out.
   "files": {
-    "includes": ["**", "!**/src/generated"]
+    "includes": ["**", "!**/src/generated/mermaidPage.ts"]
   },
   "vcs": {
     "enabled": true,
