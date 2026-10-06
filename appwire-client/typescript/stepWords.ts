@@ -3,6 +3,9 @@
 // Menlo (spec § Activity run: "intent sentence, target in Menlo, and a status
 // mark"), and the web draws the parts composed into its one line.
 
+import { diffStats } from "./editDiff";
+import { clip, lineCount } from "./toolCallText";
+
 /** A step's words: what it did, what it acted on, the rest of the sentence,
  * and what it found ("Read" "agent/tree.go" · "lines 1-4"). */
 export interface StepWords {
@@ -34,4 +37,30 @@ export function summaryOf<Step, Ctx = undefined>(
 /** The words with a detail added, when there is one. */
 export function withDetail(words: StepWords, detail: string | undefined): StepWords {
   return detail === undefined ? words : { ...words, detail };
+}
+
+/** A read's line range from its requested bounds or the output it returned. */
+export function readLineRange(args: Record<string, unknown>, output: string): string | undefined {
+  const offsetArg = args.offset;
+  const offset = typeof offsetArg === "number" && offsetArg > 0 ? offsetArg : 1;
+  const limitArg = args.limit;
+  const count = typeof limitArg === "number" && limitArg > 0 ? limitArg : (output.match(/\n/g) ?? []).length;
+  if (count > 0) return `lines ${offset}-${offset + count - 1}`;
+  return output === "" ? undefined : `lines ${offset}`;
+}
+
+/** Count an output only once there is text to count. */
+export function outputCount(output: string | undefined, noun: string): string | undefined {
+  return output ? `${lineCount(output)} ${noun}` : undefined;
+}
+
+/** The quoted, bounded pattern shared by grep-like summaries. */
+export function quotedSearchPattern(pattern: string): string {
+  return `"${clip(pattern, 50)}"`;
+}
+
+/** An edit's result: its diff's added and removed lines, or "ok" for none. */
+export function diffResultText(text: string): string {
+  const { added, removed } = diffStats(text);
+  return added === 0 && removed === 0 ? "ok" : `+${added} -${removed}`;
 }

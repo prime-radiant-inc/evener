@@ -9,12 +9,29 @@
 
 import { parseAskUserQuestions } from "./askShared";
 import { delegateSendTarget, delegateSendWords } from "./delegateSteps";
-import { diffStats, editDiffText } from "./editDiff";
+import { editDiffText } from "./editDiff";
 import { housekeepingProgress, housekeepingWords } from "./housekeepingSteps";
 import { jobListWords, jobProgress, jobStatusWords, jobStopWords } from "./jobSteps";
 import { jobWatchWords } from "./jobWatchSteps";
+import {
+  memoryDeleteWords,
+  memoryEditWords,
+  memoryProgress,
+  memoryReadWords,
+  memorySearchWords,
+  memoryWriteWords,
+} from "./memorySteps";
 import type { ItemModel } from "./model";
-import { composeStepWords, type StepWords, summaryOf, withDetail } from "./stepWords";
+import {
+  composeStepWords,
+  diffResultText,
+  outputCount,
+  quotedSearchPattern,
+  readLineRange,
+  type StepWords,
+  summaryOf,
+  withDetail,
+} from "./stepWords";
 import { taskMutationSummary } from "./taskListStep";
 import { clip, formatByteCount, lineCount, parseArgs, str } from "./toolCallText";
 import { lastLine, outputTails, webFetchResult } from "./toolEvidence";
@@ -50,31 +67,14 @@ export type ToolFamily =
   | "worktree"
   | "ask"
   | "jobs"
+  | "memory"
   | "message"
   | "mcp"
   | "tool";
 
-const GREP_PATTERN_CLIP = 50;
 const QUERY_CLIP = 120;
 
 // --- files ------------------------------------------------------------------
-
-// The line range a read covered: its offset and limit, or else as many lines
-// as the output holds. Undefined when neither says: a read whose output hasn't
-// arrived, with no limit of its own.
-function readLineRange(args: Record<string, unknown>, output: string): string | undefined {
-  const offsetArg = args.offset;
-  const offset = typeof offsetArg === "number" && offsetArg > 0 ? offsetArg : 1;
-  const limitArg = args.limit;
-  const count = typeof limitArg === "number" && limitArg > 0 ? limitArg : (output.match(/\n/g) ?? []).length;
-  if (count > 0) return `lines ${offset}-${offset + count - 1}`;
-  return output === "" ? undefined : `lines ${offset}`;
-}
-
-// What an output counts ("2 hits"), only once there is output to count.
-function outputCount(output: string | undefined, noun: string): string | undefined {
-  return output ? `${lineCount(output)} ${noun}` : undefined;
-}
 
 /** The header read_file puts before an image or a document's base64 data. */
 export const BINARY_PAYLOAD_HEADER = /^\[(image|document): [^\]]+, base64 data follows\]/;
@@ -105,7 +105,7 @@ function grepTarget(args: Record<string, unknown>): { pattern: string; where: st
   const path = str(args, "path") ?? ".";
   const globFilter = str(args, "glob_filter");
   return {
-    pattern: `"${clip(pattern, GREP_PATTERN_CLIP)}"`,
+    pattern: quotedSearchPattern(pattern),
     where: `in ${path}${globFilter ? ` (${globFilter})` : ""}`,
   };
 }
@@ -172,12 +172,6 @@ function globWords(step: ToolStep): StepWords {
   const pattern = globPattern(parseArgs(step.argumentsJSON));
   if (!pattern) return { verb: "Searched files" };
   return withDetail({ verb: "Matched", target: pattern }, outputCount(step.output, "matches"));
-}
-
-// An edit's result: its diff's added and removed lines, or "ok" for none.
-function diffResultText(text: string): string {
-  const { added, removed } = diffStats(text);
-  return added === 0 && removed === 0 ? "ok" : `+${added} -${removed}`;
 }
 
 /** "Edited agent/tree.go · +3 -2", or "Edited a file". */
@@ -440,6 +434,8 @@ function progressFor(
       return "Asking a question";
     case "jobs":
       return jobProgress(name, step) ?? `Using ${toolInWords(name)}`;
+    case "memory":
+      return memoryProgress(name, step) ?? `Using ${toolInWords(name)}`;
     case "message": {
       const target = delegateSendTarget(step);
       return target ? `Sending a message to delegate ${target}` : "Sending a message to a delegate";
@@ -489,6 +485,11 @@ const TOOLS: Record<string, ToolEntry> = {
   job_list: { family: "jobs", words: jobListWords },
   job_stop: { family: "jobs", words: jobStopWords },
   job_watch: { family: "jobs", words: jobWatchWords },
+  memory_write: { family: "memory", words: memoryWriteWords },
+  memory_edit: { family: "memory", words: memoryEditWords },
+  memory_read: { family: "memory", words: memoryReadWords },
+  memory_search: { family: "memory", words: memorySearchWords },
+  memory_delete: { family: "memory", words: memoryDeleteWords },
   delegate: { family: "tool", words: delegateWords },
   delegate_send: { family: "message", words: delegateSendWords },
   // The retired name for sending a delegate a message; old transcripts still

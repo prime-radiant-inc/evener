@@ -61,6 +61,53 @@ test.each<[ToolWireCall, string]>([
   expect(toolStepSummary(toolWireStep(call), { cwd: toolWireCwd() })).toBe(summary);
 });
 
+test("routes memory tool summaries, progress and family through the shared table", () => {
+  const cases: [string, Record<string, unknown>, string | undefined, string, string][] = [
+    [
+      "memory_write",
+      { scope: "personal", file_path: "implementation-delegation.md" },
+      undefined,
+      "Wrote memory personal/implementation-delegation.md",
+      "Writing memory personal/implementation-delegation.md",
+    ],
+    [
+      "memory_edit",
+      { scope: "project", file_path: "MEMORY.md", old_string: "old", new_string: "new" },
+      undefined,
+      "Edited memory project/MEMORY.md · +1 -1",
+      "Editing memory project/MEMORY.md",
+    ],
+    [
+      "memory_read",
+      { scope: "session", file_path: "notes.md", offset: 1, limit: 40 },
+      "line 1\nline 2",
+      "Read memory session/notes.md · lines 1-40",
+      "Reading memory session/notes.md",
+    ],
+    [
+      "memory_search",
+      { scope: "personal", pattern: "pattern", path: "guides" },
+      "one\ntwo\nthree\n",
+      'Searched memory for "pattern" in personal/guides · 3 hits',
+      'Searching memory for "pattern" in personal/guides',
+    ],
+    [
+      "memory_delete",
+      { scope: "project", file_path: "old.md" },
+      undefined,
+      "Removed memory project/old.md",
+      "Removing memory project/old.md",
+    ],
+  ];
+  for (const [toolName, args, output, settled, progress] of cases) {
+    const step = { toolName, argumentsJSON: JSON.stringify(args), output };
+    expect(toolFamily(toolName)).toBe("memory");
+    expect(toolStepSummary(step)).toBe(settled);
+    expect(toolStepProgress(step)).toBe(progress);
+  }
+  expect(toolFamily("memory_write")).toBe("memory");
+});
+
 // A tool no summary covers, an MCP tool among them, never shows its raw name.
 test.each<[ToolWireCall, string]>([
   ["call_mcp", "Used github: create issue"],
