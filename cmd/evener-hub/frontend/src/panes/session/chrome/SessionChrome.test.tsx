@@ -1117,7 +1117,12 @@ test("triggerless chrome shares summary ownership and refreshes its menu on type
   fake.on("evener/thread/activity/read", ({ scope }) => ({
     ...activitySummary(ref),
     scope: scope ?? "session",
-    delegates: { known: true, total: active, active, completed: 0, failed: 0 },
+    // The session's own delegate count never moves; only the subtree's
+    // does, so the label can only follow the subtree count.
+    delegates:
+      scope === "subtree"
+        ? { known: true, total: active, active, completed: 0, failed: 0 }
+        : { known: true, total: 9, active: 9, completed: 0, failed: 0 },
     jobs: { known: true, total: 0, active: 0, completed: 0, failed: 0 },
   }));
   const reads = (subtree: boolean) =>
