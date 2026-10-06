@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -806,5 +807,75 @@ func TestCheckUpdates_RemovingAMarketplaceWaitsForTheCheckFetch(t *testing.T) {
 		}
 	}) {
 		t.Fatal("a marketplace was removed while a check was fetching its clone")
+	}
+}
+
+// Renaming a marketplace a check is fetching waits for that fetch, so its
+// clone is not moved under a running git.
+func TestCheckUpdates_RenamingAMarketplaceWaitsForTheCheckFetch(t *testing.T) {
+	f := installURLPlugin(t, unpinned)
+	if duringCheckFetch(t, f, func() {
+		if _, err := f.m.EditMarketplace(context.Background(), "acme", "renamed", nil); err != nil {
+			t.Errorf("EditMarketplace: %v", err)
+		}
+	}) {
+		t.Fatal("a marketplace was renamed while a check was fetching its clone")
+	}
+}
+
+// A check's fast-forward holds the clone's lock too, so another check's
+// fetch of the same clone does not run beside it.
+func TestCheckUpdates_TheFastForwardHoldsTheCloneLock(t *testing.T) {
+	f := installURLPlugin(t, unpinned)
+	realFastForward := marketplaceGitFastForward
+	t.Cleanup(func() { marketplaceGitFastForward = realFastForward })
+	var ran, heldByAnother bool
+	marketplaceGitFastForward = func(ctx context.Context, dir string) error {
+		ran = true
+		mu, _ := f.m.cloneLocks.LoadOrStore(filepath.Clean(dir), &sync.Mutex{})
+		if mu.(*sync.Mutex).TryLock() {
+			mu.(*sync.Mutex).Unlock()
+		} else {
+			heldByAnother = true
+		}
+		return realFastForward(ctx, dir)
+	}
+	checkThenList(t, f.m)
+	if !ran || !heldByAnother {
+		t.Fatalf("fast-forward ran=%v with the clone lock held=%v; want it held", ran, heldByAnother)
+	}
+}
+
+// An unpinned git-subdir marketplace's sparse clone stays on its branch, so a
+// check refreshes it and sees a change pushed to a relative-source plugin.
+func TestCheckUpdates_AGitSubdirMarketplaceIsRefreshed(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	repo := filepath.Join(t.TempDir(), "monorepo")
+	if err := os.MkdirAll(filepath.Join(repo, "mkt", ".claude-plugin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "mkt", ".claude-plugin", "marketplace.json"),
+		[]byte(`{"name":"acme","owner":{"name":"o"},"plugins":[{"name":"widget","source":"./plugins/widget"}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writePlugin(t, filepath.Join(repo, "mkt", "plugins", "widget"), "widget", nil)
+	makeGitRepo(t, repo, "README.md", "root")
+	m := NewManager(t.TempDir())
+	m.Stderr = &bytes.Buffer{}
+	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceGitSubdir, URL: repo, Path: "mkt"}); err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	if _, err := m.Install(context.Background(), "widget", "acme"); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "mkt", "plugins", "widget", "extra.txt"), []byte("v2"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, repo, "add", ".")
+	gitIn(t, repo, "commit", "-qm", "change widget")
+	if !checkThenList(t, m) {
+		t.Fatalf("a change in a git-subdir marketplace was not seen; warnings: %q", m.Stderr.(*bytes.Buffer).String())
 	}
 }

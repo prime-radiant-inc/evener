@@ -257,7 +257,7 @@ func (m *Manager) AddMarketplace(ctx context.Context, name string, src Source) (
 	mk[name] = ref
 	if err := m.saveMarketplaces(mk); err != nil {
 		if src.Kind != SourceDirectory {
-			if rollbackErr := undoCloneSwap(installLoc, aside); rollbackErr != nil {
+			if rollbackErr := m.undoCloneSwap(installLoc, aside); rollbackErr != nil {
 				return MarketplaceRef{}, m.storeChangeRollbackFailed(name, err, rollbackErr)
 			}
 		}
@@ -881,7 +881,7 @@ func (m *Manager) EditMarketplace(ctx context.Context, name, newName string, src
 		if swappedIn == "" {
 			return nil
 		}
-		if err := undoCloneSwap(swappedIn, asideClone); err != nil {
+		if err := m.undoCloneSwap(swappedIn, asideClone); err != nil {
 			return errors.Join(err, errRenameRollbackIncomplete)
 		}
 		return nil
@@ -1101,7 +1101,10 @@ func (m *Manager) moveMarketplace(name, newName string, ref MarketplaceRef, mk M
 			if displaced {
 				return fail(fmt.Errorf("renaming marketplace clone %s would move a directory source another marketplace records", oldDir))
 			}
-			if err := marketplaceRename(oldDir, newDir); err != nil {
+			releaseClone := m.lockClone(oldDir)
+			err := marketplaceRename(oldDir, newDir)
+			releaseClone()
+			if err != nil {
 				return fail(fmt.Errorf("renaming marketplace clone: %w", err))
 			}
 			undo = append(undo, m.renameUndo("marketplace clone", newDir, oldDir, StoreChanged{Marketplaces: true}))
@@ -1134,7 +1137,10 @@ func (m *Manager) moveMarketplace(name, newName string, ref MarketplaceRef, mk M
 		// than deleted ahead of a commit that can still fail.
 		present, protect := m.sweepDestroysSource(marketplaceProtectionPaths(mk), oldDir)
 		if present && !protect {
-			if err := marketplaceRemoveAll(oldDir); err != nil {
+			releaseClone := m.lockClone(oldDir)
+			err := marketplaceRemoveAll(oldDir)
+			releaseClone()
+			if err != nil {
 				return fail(fmt.Errorf("removing stale marketplace clone %s: %w", oldDir, err))
 			}
 		}
@@ -1559,7 +1565,9 @@ func (m *Manager) swapInClone(staging, dest string) (string, error) {
 // into dest. A caller whose work might still fail keeps the aside path for
 // exactly this, so the store keeps pointing at the clone the surviving store
 // file records instead of at the source the failed step had already fetched.
-func undoCloneSwap(dest, aside string) error {
+func (m *Manager) undoCloneSwap(dest, aside string) error {
+	release := m.lockClone(dest)
+	defer release()
 	if err := marketplaceRemoveAll(dest); err != nil {
 		return fmt.Errorf("removing the swapped-in clone %s: %w", dest, err)
 	}

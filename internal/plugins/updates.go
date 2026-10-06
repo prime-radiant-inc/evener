@@ -224,8 +224,8 @@ func (m *Manager) refreshForCheck(ctx context.Context) []string {
 // so a plugin operation started meanwhile does not wait behind the network,
 // then takes the lock to fast-forward it and save its LastUpdated. A fetch
 // writes only under .git, so nothing reading the clone's files sees it, and
-// it holds the clone's own lock (lockClone) against other git work in the
-// clone and its removal. A blobless git-subdir clone still downloads the
+// it holds the clone's own lock (lockClone), as the fast-forward does too,
+// against other git work in the clone and its removal or move. A blobless git-subdir clone still downloads the
 // changed files' contents as it fast-forwards, under the store lock, bounded
 // by the refresh's timeout. One
 // that moves nothing saves nothing, so it neither broadcasts nor retires
@@ -254,6 +254,8 @@ func (m *Manager) fastForwardMarketplace(ctx context.Context, name, dir string) 
 		// nothing to fast-forward.
 		return nil
 	}
+	releaseClone = m.lockClone(dir)
+	defer releaseClone()
 	before, err := marketplaceGitHeadSHA(ctx, dir)
 	if err != nil {
 		return err
