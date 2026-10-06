@@ -182,6 +182,9 @@ it("drops inline HTML tags from a block's words, but not inside an inline code s
 
 it("keeps an html block's markup but still strips its markdown", () => {
 	expect(documentBlocks("<div>\n**bold**\n</div>")[0]?.text).toBe("<div>\nbold\n</div>");
+	expect(documentBlocks("<div>\n# heading\n- item\n> quote\n</div>")[0]?.text).toBe(
+		"<div>\nheading\nitem\nquote\n</div>",
+	);
 });
 
 it("reads a code span that runs across lines on one line, as it's drawn, keeping its tags", () => {

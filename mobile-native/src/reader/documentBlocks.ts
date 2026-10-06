@@ -5,7 +5,7 @@
 // markdown for the renderer, and a hash of it: that hash is how changes and
 // comment anchors recognize a block across versions (S9's fallback).
 import { filenameOf } from "@evener/appwire-client/docContent";
-import { Lexer, lexer, type Token, type Tokens } from "marked";
+import { getDefaults, Lexer, lexer, type Token, Tokenizer, type Tokens } from "marked";
 
 export type BlockKind = "heading" | "paragraph" | "listItem" | "code" | "table" | "quote" | "rule" | "html";
 
@@ -58,20 +58,28 @@ function identity(kind: BlockKind, source: string): string {
 	return hashText(`${kind}:${normalized}`);
 }
 
+// Reads HTML, a block or a tag, as markdown text, as md4c's NOHTML does.
+class TextHtmlTokenizer extends Tokenizer {
+	override html() {
+		return undefined;
+	}
+	override tag() {
+		return undefined;
+	}
+}
+
 // A token's words, read from marked's own parse, so a link or image reads as
 // its words however its URL is written (nested parentheses, a reference, an
 // autolink), an escape as the character, and a code span as its contents.
 // Inline HTML tags go, so a comment never quotes a paragraph's <b> or <br>
 // (#2761). A whole html block's tags are its words, so it keeps them, but its
-// markdown goes: the phone's markdown view (md4c with NOHTML) draws that
-// markdown as markdown.
+// markdown goes: the phone's markdown view (md4c with NOHTML) draws an html
+// block as markdown, its tags as text, so it's read again that way.
 function words(token: Token): string {
 	switch (token.type) {
 		case "html":
 			return token.block
-				? Lexer.lexInline(token.text)
-						.map((inline) => (inline.type === "html" ? inline.text : words(inline)))
-						.join("")
+				? new Lexer({ ...getDefaults(), tokenizer: new TextHtmlTokenizer() }).lex(token.text).map(words).join("\n")
 				: "";
 		case "checkbox":
 		case "def":
