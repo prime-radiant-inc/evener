@@ -127,10 +127,24 @@ memory only when a project scope is bound.
 Refresh runs at startup, resume, after compaction and later model boundaries.
 Unchanged projections are not appended again. Empty, missing and revoked states
 supersede the previous current context; unavailable storage is not presented as
-freshly read. Historical context remains recorded history. CLI and TUI transcripts
-still use the generic tool-result path, while AppWire web and native clients
-render memory tool calls with dedicated step renderers: the step's words, a saved
-page for a write and a diff for an edit. There is still no memory UI or RPC.
+freshly read. Historical context remains recorded history.
+
+The web transcript shows each index observation as a steering-style **Refreshed
+my memory** notification. It starts collapsed at every detail level, including
+Full, and opens only through the reader's explicit choice. Expansion shows the
+scope, index state and formatted index. Unavailable and revoked states remain
+visible on the collapsed row; truncated indexes retain their truncation label.
+Source access preserves the complete recorded text, including content Markdown
+cannot display. An observation that cannot be decoded opens as its original text.
+Disclosure choices belong to the session and item and survive remounts. Live and
+reloaded history use the same projection without changing model context or memory
+files. Native, CLI and TUI context presentation remains unchanged.
+
+Memory tool calls are separate from these automatic index observations. CLI and
+TUI transcripts still use the generic tool-result path, while AppWire web and
+native clients render memory tool calls with dedicated step renderers: the step's
+words, a saved page for a write and a diff for an edit. There is still no memory
+management UI or RPC.
 
 Archived memory-context turns reconstruct as user-role evidence, preserving
 their kind, body and order without crossing tool-round boundaries. Text-only
