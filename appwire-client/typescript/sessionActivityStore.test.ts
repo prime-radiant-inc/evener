@@ -2440,13 +2440,17 @@ test("a collection whose late page was dropped recovers for its next observer", 
 // replacement: the collection stays reset, and no read follows for it.
 test("a release during a session replacement leaves the collection reset", async () => {
   const client = activityClient();
-  client.on("evener/thread/jobs/list", ({ cursor }) =>
-    cursor
-      ? jobsFixture([jobFixture("late")])
-      : {
-          ...jobsFixture([jobFixture("replaced")], "page-2"),
-          context: { ...activityContext(), sessionId: "replacement" },
-        },
+  // Once the hub has replaced the session, every read answers for the
+  // replacement, the summary the replacement queues included.
+  let replaced = false;
+  const replacement = { ...activityContext(), sessionId: "replacement" };
+  client.on("evener/thread/jobs/list", ({ cursor }) => {
+    if (cursor) return jobsFixture([jobFixture("late")]);
+    replaced = true;
+    return { ...jobsFixture([jobFixture("replaced")], "page-2"), context: replacement };
+  });
+  client.on("evener/thread/activity/read", ({ scope }) =>
+    replaced ? { ...summaryFixture(scope), context: replacement } : summaryFixture(scope),
   );
   const store = owner(client);
   store.start();
@@ -2457,7 +2461,10 @@ test("a release during a session replacement leaves the collection reset", async
   });
   await activityState(
     store,
-    () => store.getSnapshot().context?.sessionId === "replacement" && !store.getSnapshot().jobs.loading,
+    () =>
+      store.getSnapshot().summary?.context.sessionId === "replacement" &&
+      !store.getSnapshot().jobs.loading &&
+      !store.getSnapshot().summaryState.loading,
   );
   stop();
   expect(store.getSnapshot().jobs.rows).toEqual([]);
@@ -2473,24 +2480,22 @@ test("the last observer leaving resets the collection's backoff", async () => {
     throw new Error("unreachable");
   });
   const store = owner(client);
+  const failedReads = (count: number) =>
+    activityState(
+      store,
+      () => callsTo(client, "evener/thread/jobs/list") === count && !store.getSnapshot().jobs.loading,
+    );
   store.start();
   await activityState(store, () => store.getSnapshot().summary !== null);
   const leave = store.observe("jobs");
-  await activityState(
-    store,
-    () => callsTo(client, "evener/thread/jobs/list") === 1 && !store.getSnapshot().jobs.loading,
-  );
+  await failedReads(1);
   await vi.advanceTimersByTimeAsync(1000);
-  await activityState(
-    store,
-    () => callsTo(client, "evener/thread/jobs/list") === 2 && !store.getSnapshot().jobs.loading,
-  );
+  await failedReads(2);
   leave();
   store.observe("jobs");
-  await activityState(
-    store,
-    () => callsTo(client, "evener/thread/jobs/list") === 3 && !store.getSnapshot().jobs.loading,
-  );
-  await vi.advanceTimersByTimeAsync(1000);
-  expect(callsTo(client, "evener/thread/jobs/list")).toBe(4);
+  await failedReads(3);
+  await vi.advanceTimersByTimeAsync(999);
+  expect(callsTo(client, "evener/thread/jobs/list")).toBe(3);
+  await vi.advanceTimersByTimeAsync(1);
+  await failedReads(4);
 });
