@@ -56,6 +56,12 @@ const (
 	navigationResourceLocation         navigationResourceKind = "location"
 )
 
+// navigationCatalogOrder is the order a key held by several catalogs resolves
+// in: a read of the key names the first catalog holding it. Only an
+// unresolved directory's "no-project" key can be in more than one. Callers
+// must not modify it.
+var navigationCatalogOrder = []navigationResourceKind{navigationResourceProjects, navigationResourceArchivedProjects, navigationResourceTestRuns}
+
 // navigationResourceKey describes one immutable navigation representation. It
 // contains decoded, validated values only; HTTP parsing belongs to its handler.
 type navigationResourceKey struct {
@@ -168,11 +174,12 @@ func buildNavigationProjectionContext(ctx context.Context, inputs navigationBuil
 	p.catalogs[navigationResourceProjects] = append([]hubcore.TreeProject(nil), buckets.active...)
 	p.catalogs[navigationResourceArchivedProjects] = append([]hubcore.TreeProject(nil), buckets.archived...)
 	p.catalogs[navigationResourceTestRuns] = append([]hubcore.TreeProject(nil), buckets.testRuns...)
-	// A key can be in more than one catalog. It resolves to the first catalog
-	// in navigationCatalogOrder holding it, for project reads as for the
-	// location index (which records a session under the first catalog
-	// holding it) and an archived list with no hint, so a session the first
-	// catalog holds is located in the project its key reads.
+	// A key in more than one catalog reads the first catalog in
+	// navigationCatalogOrder holding it, as an archived list with no hint
+	// does, so the sessions of that catalog's project are located in the
+	// project a read of their key returns. A same-key project of a later
+	// catalog is shadowed: its sessions are still located, under the key, but
+	// a read of the key does not return them.
 	for _, kind := range navigationCatalogOrder {
 		for _, project := range p.catalogs[kind] {
 			if err := ctx.Err(); err != nil {
@@ -316,10 +323,10 @@ func cloneNavigationBoolMap(in map[string]bool) map[string]bool {
 //
 // The buckets are not merely a display list, and that is why the duplicate
 // groups must be MERGED rather than discarded: they are the sole source of the
-// catalog slices (:171-179) and manifest counts (:184-199), of the p.projects
-// map built from the catalogs in navigationCatalogOrder, and of the location index that
+// catalog slices and manifest counts, of the p.projects map (all built in
+// buildNavigationProjectionContext), and of the location index that
 // indexLocationsContext walks to mint a hubapi.NavigationSessionLocation per
-// session (:1370-1399). Dropping a duplicate group therefore does not just trim
+// session. Dropping a duplicate group therefore does not just trim
 // a row: its sessions vanish from the catalog and from their project entry, and
 // a location lookup for one of them answers "not found" - a silent session loss
 // that is worse than the visible error it replaces.

@@ -123,10 +123,6 @@ func (p navigationProjection) archivedListCatalog(hint navigationResourceKind, k
 	return "", hubcore.TreeProject{}
 }
 
-// navigationCatalogOrder is the order a key held by several catalogs
-// resolves in: the first holding it is the one every read of the key names.
-var navigationCatalogOrder = []navigationResourceKind{navigationResourceProjects, navigationResourceArchivedProjects, navigationResourceTestRuns}
-
 // archivedListCandidates is the order archivedListCatalog reads catalogs in.
 func archivedListCandidates(hint navigationResourceKind) []navigationResourceKind {
 	switch hint {

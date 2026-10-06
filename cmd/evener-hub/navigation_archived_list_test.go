@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -719,8 +720,9 @@ func TestRenamingAnArchivedSessionInvalidatesItsProject(t *testing.T) {
 
 // A key in several catalogs resolves to one of them for every read: the first
 // of projects, archived projects and test runs holding it, as an archived list
-// with no hint and the location index read it. So a session that catalog
-// holds is located in the project a read of its key returns.
+// with no hint reads. So every session that catalog's project holds is located
+// in the project a read of its key returns. Only an unresolved directory's
+// "no-project" key can be in several catalogs.
 func TestAKeyInSeveralCatalogsResolvesToOneForEveryRead(t *testing.T) {
 	at := func(base int) func(int) time.Time {
 		return func(i int) time.Time { return time.Unix(int64(base+i), 0).UTC() }
@@ -728,25 +730,33 @@ func TestAKeyInSeveralCatalogsResolvesToOneForEveryRead(t *testing.T) {
 	named := func(prefix string) func(int) string {
 		return func(i int) string { return fmt.Sprintf("%s %d", prefix, i) }
 	}
-	active := hubcore.TreeProject{Key: "shared", Name: "shared", Recent: archivedRows("active", 2, at(10), named("active")), Archived: archivedRows("active-old", 1, at(1), named("active old"))}
-	runs := hubcore.TreeProject{Key: "shared", Name: "shared", IsTestRun: true, Recent: archivedRows("run", 2, at(30), named("run")), Archived: archivedRows("run-old", 1, at(2), named("run old"))}
+	const key = "no-project"
+	active := hubcore.TreeProject{Key: key, Name: key, Recent: archivedRows("active", 2, at(10), named("active")), Archived: archivedRows("active-old", 1, at(1), named("active old"))}
+	runs := hubcore.TreeProject{Key: key, Name: key, IsTestRun: true, Recent: archivedRows("run", 2, at(30), named("run")), Archived: archivedRows("run-old", 1, at(2), named("run old"))}
 	p := archivedProjection(t, active, runs)
 
-	project, ok := p.Project("shared")
-	if !ok || len(project.Recent.Sessions) != 2 || project.Recent.Sessions[0].SessionID != active.Recent[0].ID {
-		t.Fatalf("project read = %+v (ok %v), want the projects catalog's recent rows", project.Recent.Sessions, ok)
+	for _, row := range active.Recent {
+		location, ok := p.Location("local:" + row.ID)
+		if !ok {
+			t.Fatalf("%s has no location", row.ID)
+		}
+		project, ok := p.Project(location.ProjectKey)
+		if !ok || !slices.ContainsFunc(project.Recent.Sessions, func(s hubapi.NavigationSessionSummary) bool { return s.SessionID == row.ID }) {
+			t.Fatalf("%s is located in project %q, whose read does not hold it: %+v", row.ID, location.ProjectKey, project.Recent.Sessions)
+		}
+		page, err := p.ProjectPage(location.ProjectKey, location.Tier, 0, 10)
+		if err != nil || !slices.ContainsFunc(page.Sessions, func(s hubapi.NavigationSessionSummary) bool { return s.SessionID == row.ID }) {
+			t.Fatalf("%s is located in %s/%s, whose page does not hold it: %+v (%v)", row.ID, location.ProjectKey, location.Tier, page.Sessions, err)
+		}
 	}
-	page, err := p.ProjectPage("shared", "recent", 0, 10)
-	if err != nil || len(page.Sessions) != 2 || page.Sessions[0].SessionID != active.Recent[0].ID {
-		t.Fatalf("project page = %+v (%v), want the projects catalog's recent rows", page.Sessions, err)
-	}
-	archived, err := p.ArchivedList(navigationArchivedListRequest{ProjectKey: "shared"})
-	if err != nil || archived.Catalog != navigationResourceProjects {
-		t.Fatalf("archived list read %q (%v), want projects", archived.Catalog, err)
-	}
-	for _, row := range append(append([]hubcore.TreeNode(nil), active.Recent...), active.Archived...) {
-		if location, ok := p.Location("local:" + row.ID); !ok || location.ProjectKey != "shared" {
-			t.Fatalf("location of %s = %+v (ok %v), want project shared", row.ID, location, ok)
+	for _, row := range active.Archived {
+		location, ok := p.Location("local:" + row.ID)
+		if !ok {
+			t.Fatalf("%s has no location", row.ID)
+		}
+		archived, err := p.ArchivedList(navigationArchivedListRequest{ProjectKey: location.ProjectKey})
+		if err != nil || !slices.ContainsFunc(archived.Sessions, func(s hubapi.NavigationSessionSummary) bool { return s.SessionID == row.ID }) {
+			t.Fatalf("%s is located in project %q, whose archived list does not hold it: %+v (%v)", row.ID, location.ProjectKey, archived.Sessions, err)
 		}
 	}
 }
