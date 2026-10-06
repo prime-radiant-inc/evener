@@ -1747,6 +1747,147 @@ describe("background thread claims", () => {
     }
   });
 
+  test("recovers a real oversized cache hit through the base guard and a same-lease authoritative repair", async () => {
+    const ref = "local:oversized-base";
+    const maxBytes = 64 * 1024 * 1024;
+    const restoreOptions = installBackgroundTranscriptOptionsForTests({ residentBytes: 0 });
+    const localCache = new SessionCacheIndexedDB({
+      indexedDB: new IDBFactory(),
+      databaseName: `background-oversized-${crypto.randomUUID()}`,
+      maxBytes,
+    });
+    resetThreadsStoreForTests();
+    setSessionCacheAdapterForTests(localCache);
+    const fake = new FakeClient("ready");
+    const readIssued = deferred<void>();
+    const releaseRead = deferred<void>();
+    let holdReads = false;
+    fake.on("thread/read", async ({ ref: requested }) => {
+      if (holdReads) {
+        readIssued.resolve();
+        await releaseRead.promise;
+      }
+      return currentRead(requested ?? ref);
+    });
+    fake.on("thread/unsubscribe", () => ({}));
+    connectionStore.getState().connect(fake);
+
+    // Call-through observers over the real test-local adapter: capture the
+    // initial successful checkpoint's key/certificate, and record every real
+    // getCurrent so an oversized hit is told apart from a cache miss.
+    const writes: CurrentSessionRecord[] = [];
+    const lookups: CurrentSessionRecord[] = [];
+    const originalPut = localCache.putCurrent.bind(localCache);
+    const put = vi.spyOn(localCache, "putCurrent").mockImplementation(async (record, now) => {
+      const outcome = await originalPut(record, now);
+      if (outcome.outcome === "written") writes.push(record);
+      return outcome;
+    });
+    const originalGet = localCache.getCurrent.bind(localCache);
+    const get = vi.spyOn(localCache, "getCurrent").mockImplementation(async (key, now) => {
+      const found = await originalGet(key, now);
+      if (found?.record) lookups.push(found.record);
+      return found;
+    });
+
+    const lease = acquireBackgroundThread(ref);
+    let paneHeld = false;
+    try {
+      await lease.ready;
+      await settleBackgroundTranscriptsForTests();
+      // residentBytes 0 settles the hydrated base to disk-only, so the next
+      // real delta has to load whatever checkpoint the worker finds.
+      expect(threadsStore.getState().threads.has(ref)).toBe(false);
+      const initial = writes.filter((write) => write.ref === ref).at(-1);
+      if (!initial) throw new Error("expected the real background hydration to write an initial checkpoint");
+      expect(independentJsonBytes(initial.state)).toBeLessThan(32 * 1024 * 1024);
+
+      // Replace the checkpoint's body through the real adapter, keeping its
+      // captured key/certificate. The valid body independently measures over
+      // the product's 32 MiB base bound while the whole record still fits the
+      // injected 64 MiB cache cap, so the adapter admits the write itself.
+      const oversizedState = JSON.parse(JSON.stringify(initial.state)) as CurrentSessionRecord["state"];
+      const overlayKey = "stream:s1:agentMessage";
+      const overlayEntry = oversizedState.overlay[overlayKey];
+      if (!overlayEntry) throw new Error(`expected the captured overlay item ${overlayKey}`);
+      oversizedState.overlay[overlayKey] = {
+        ...overlayEntry,
+        item: { ...overlayEntry.item, text: "z".repeat(34 * 1024 * 1024 + 4) } as typeof overlayEntry.item,
+      };
+      const oversizedRecord: CurrentSessionRecord = { ...initial, savedAt: Date.now(), state: oversizedState };
+      expect(independentJsonBytes(oversizedState)).toBeGreaterThan(32 * 1024 * 1024);
+      expect(independentJsonBytes(oversizedRecord)).toBeLessThan(maxBytes);
+      const oversizedWrite = await localCache.putCurrent(oversizedRecord, Date.now());
+      expect(oversizedWrite.outcome).toBe("written");
+
+      // The uniquely marked stale delta sends the worker to the real cache hit
+      // and parks the ensuing authoritative read in its handler. At the hold
+      // the oversized base was rejected before folding: the retired frame's
+      // queue entry and charge are gone, the ref stays repairing, and nothing
+      // oversized or stale published.
+      const staleMarker = "-stale-oversized";
+      const readsBeforeStale = fake.calls.filter((call) => call.method === "thread/read").length;
+      const hydrationsBeforeStale = threadsStore.getState().hydrations.get(ref) ?? 0;
+      holdReads = true;
+      fake.emitNotification(textDelta(ref, staleMarker));
+      await readIssued.promise;
+      expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(readsBeforeStale + 1);
+      expect(lookups.some((record) => independentJsonBytes(record.state) > 32 * 1024 * 1024)).toBe(true);
+      const held = backgroundTranscriptSnapshotForTests();
+      const heldEntry = held.refs.get(ref);
+      expect(heldEntry?.persistence).toBe("repairing");
+      expect(held.pendingBytes).toBe(0);
+      expect(heldEntry?.residentBytes).toBe(0);
+      expect(heldEntry?.pending).toHaveLength(0);
+      expect(heldEntry?.inFlight).toHaveLength(0);
+      expect(threadsStore.getState().threads.has(ref)).toBe(false);
+      expect(JSON.stringify(threadsStore.getState().threads.get(ref) ?? null)).not.toContain(staleMarker);
+
+      // A small authoritative response, without releasing or reacquiring the
+      // lease, republishes current state and restores a usable checkpoint.
+      releaseRead.resolve();
+      await waitForHydration(ref, hydrationsBeforeStale + 1);
+      await settleBackgroundTranscriptsForTests();
+      const recoveredEntry = backgroundTranscriptSnapshotForTests().refs.get(ref);
+      expect(recoveredEntry?.persistence).toBe("enabled");
+      expect(recoveredEntry?.current).toBe(true);
+      const recovered = await localCache.getCurrent([initial.ownerToken, ref], Date.now());
+      if (!recovered?.record) throw new Error("expected the repaired ref to have a current checkpoint");
+      expect(independentJsonBytes(recovered.record.state)).toBeLessThan(32 * 1024 * 1024);
+      expect(JSON.stringify(recovered.record.state)).toContain("alpha");
+      expect(JSON.stringify(recovered.record.state)).not.toContain(staleMarker);
+
+      // A fresh delta settles exactly once, and reopening locally repaints it
+      // from the checkpoint with no activation read.
+      const freshMarker = "-fresh-oversized";
+      fake.emitNotification(textDelta(ref, freshMarker));
+      await settleBackgroundTranscriptsForTests();
+      const readsBeforeOpen = fake.calls.filter((call) => call.method === "thread/read").length;
+      await threadsStore.getState().ensureThread(ref);
+      paneHeld = true;
+      const opened = threadsStore.getState().threads.get(ref);
+      if (!opened) throw new Error("expected the recovered ref to reopen from its local checkpoint");
+      const displayText = opened.turns
+        .flatMap((turn) => turn.items)
+        .map((item) => item.text ?? "")
+        .join("");
+      expect(displayText).toContain(freshMarker);
+      expect(displayText.split(freshMarker)).toHaveLength(2);
+      expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(readsBeforeOpen);
+    } finally {
+      releaseRead.resolve();
+      holdReads = false;
+      put.mockRestore();
+      get.mockRestore();
+      if (paneHeld) threadsStore.getState().releaseThread(ref);
+      await settleBackgroundTranscriptsForTests();
+      await lease.release();
+      resetThreadsStoreForTests();
+      restoreOptions();
+      localCache.close();
+    }
+  });
+
   test("sizes each resident text delta without serializing the whole retained transcript", async () => {
     const fake = new FakeClient("ready");
     fake.on("thread/read", ({ ref }) => {
