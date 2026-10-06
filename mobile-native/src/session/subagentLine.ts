@@ -20,6 +20,9 @@ export interface SubagentLine {
 	/** The subagent's id, for its outcome in the coordinator's tree. */
 	delegateId?: string;
 	runGeneration?: number;
+	/** How long a running subagent with nothing else to show has been silent,
+	 * while that silence grows with the clock: when its line turns Quiet. */
+	quietForMs?: number;
 }
 
 // The Subagents list's own rule (subagentState), so this row, the list, the
@@ -91,6 +94,7 @@ export function subagentLine(
 		const quietFor = timing?.quietForMs ?? 0;
 		// An agent waiting on its own subagents is never stuck (ruling 10).
 		line.activity = waitingOn > 0 ? waitingOnSubagents(waitingOn) : quietOrWorking(quietFor);
+		if (waitingOn === 0 && timing?.quietLive) line.quietForMs = quietFor;
 	}
 	return line;
 }

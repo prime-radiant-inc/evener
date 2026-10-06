@@ -321,6 +321,14 @@ function runningCommand(session: ActivitySessionNode | undefined): string | unde
 	return undefined;
 }
 
+/** How long a running subagent has been silent as of `now`, while that
+ * silence grows with the clock: what its why line's Quiet reads. */
+export function quietSilence(row: SubagentRow, now: number): number | undefined {
+	if (row.state !== "running") return undefined;
+	const timing = delegateTiming(row.delegate, now);
+	return timing.quietLive ? timing.quietForMs : undefined;
+}
+
 /** The latest activity or outcome (spec 9) from what the tree carries
  * (ruling 6). */
 export function subagentWhy(row: SubagentRow, now: number): SubagentWhy {

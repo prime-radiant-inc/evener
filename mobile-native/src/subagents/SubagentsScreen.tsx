@@ -21,6 +21,7 @@ import {
 	type ShellJobRow,
 	type SubagentRow,
 	isSubagentRow,
+	quietSilence,
 	sameModel,
 	summaryTally,
 } from "./subagentModel";
@@ -30,6 +31,7 @@ import { SubagentRowView } from "./SubagentRowView";
 import { SubagentStrip, stateColors } from "./SubagentStrip";
 import type { SubagentTree } from "./subagentTree";
 import { useFollowedSubagentTree } from "./useSubagentTree";
+import { useNowPastQuiet } from "../session/quietClock";
 import { haptic } from "../haptics";
 
 export function SubagentsScreen({ route, navigation }: NativeStackScreenProps<Routes, "Subagents">) {
@@ -45,9 +47,11 @@ export function SubagentsScreen({ route, navigation }: NativeStackScreenProps<Ro
 	const rows = useMemo(() => activity.filter(isSubagentRow), [activity]);
 	const subagentTally = summaryTally(snapshot.summary?.delegates);
 	const activityTally = summaryTally(snapshot.summary?.delegates, snapshot.summary?.jobs);
-	// Taken when the tree changes, so the list runs no clock (ruling 7).
+	// Taken when the tree changes, so the list runs no clock (ruling 7); it
+	// moves on only when a silent running subagent's row turns Quiet.
 	// biome-ignore lint/correctness/useExhaustiveDependencies: a new snapshot is what moves the clock
-	const now = useMemo(() => Date.now(), [snapshot]);
+	const treeTime = useMemo(() => Date.now(), [snapshot]);
+	const now = useNowPastQuiet(treeTime, (at) => rows.map((row) => quietSilence(row, at)));
 
 	const [filter, setFilter] = useState<ActivityFilter>("all");
 	const [query, setQuery] = useState("");
