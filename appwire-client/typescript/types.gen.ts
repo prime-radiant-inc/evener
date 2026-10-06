@@ -3082,7 +3082,7 @@ export interface SessionActivity {
   minutes: number[];
   /**
    * RunningSubagents counts the session's subagents, at every depth, whose
-   * own turn is running.
+   * run is open: SubagentTally.Running, the count its Live row shows.
    */
   runningSubagents: number;
   /**
@@ -3175,6 +3175,12 @@ export interface SessionActivitySummary {
   refreshPending?: boolean;
   context: SessionActivityContext;
   scope: SessionActivityScope;
+  /**
+   * Delegates counts a delegate as active while its run is open. For a root
+   * read at scope subtree, Active is the Live row's SubagentTally.Running
+   * and evener/activity/read's runningSubagents; scope session counts only
+   * direct children.
+   */
   delegates: SessionActivityCounts;
   jobs: SessionActivityCounts;
   watches: SessionActivityCounts;
