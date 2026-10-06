@@ -944,6 +944,28 @@ export function installHydrationRetrySchedulerForTests(scheduler: HydrationRetry
 
 let wiredClient: AppwireClientLike | null = null;
 let readyEpoch = 0;
+const readyGenerationRetirementWaiters = new Map<number, Set<() => void>>();
+
+function watchReadyGenerationRetirement(epoch: number, waiter: () => void): () => void {
+  let waiters = readyGenerationRetirementWaiters.get(epoch);
+  if (!waiters) {
+    waiters = new Set();
+    readyGenerationRetirementWaiters.set(epoch, waiters);
+  }
+  waiters.add(waiter);
+  return () => {
+    waiters?.delete(waiter);
+    if (waiters?.size === 0) readyGenerationRetirementWaiters.delete(epoch);
+  };
+}
+
+function retireReadyGeneration(epoch: number): void {
+  const waiters = readyGenerationRetirementWaiters.get(epoch);
+  if (!waiters) return;
+  readyGenerationRetirementWaiters.delete(epoch);
+  for (const waiter of waiters) waiter();
+}
+
 let unwireNotification: (() => void) | null = null;
 let unwireReady: (() => void) | null = null;
 
@@ -1201,13 +1223,13 @@ function currentDispatchClient(targetRef?: string, method?: string, requireArmed
   return wiredClient?.state === "ready" ? wiredClient : null;
 }
 
-function dropUnpinnedModel(ref: string): void {
+function dropUnpinnedModel(ref: string, flush = true): void {
   if (canonicalThreadOwnerActive(ref)) return;
   // The pinned drain is the path a pinned ref's model finally leaves through
   // (releaseThread returns early while pinned), so the flush runs here too —
   // ordered before the model leaves the map, on the pre-removal snapshot —
   // and the memo dies with the model.
-  flushCacheWrite(ref);
+  if (flush) flushCacheWrite(ref);
   clearOversizeMemo(ref);
   // Nothing owns this ref any more, so no scheduled retry may outlive it.
   retireOwnedHydration("thread", ref);
@@ -3728,7 +3750,8 @@ function handleNotification(n: AnyNotification): void {
       // refreshTrackedThread/refreshWatchedThread own their own currency
       // checks (client/epoch/refCount), so a race with a release or a
       // reconnect that lands before this read resolves is already handled.
-      for (const ref of invalidatedThreadRefs) void refreshTrackedThread(client, epoch, ref, true);
+      for (const ref of invalidatedThreadRefs)
+        void refreshTrackedThread(client, epoch, ref, true, false, undefined, undefined, hydrationIntentFor(ref));
       for (const ref of invalidatedWatchedRefs) void refreshWatchedThread(client, epoch, ref, true);
     }
   }
@@ -3896,7 +3919,7 @@ function scheduleOwnedHydrationRetry(kind: HydrationOwnerKind, ref: string, pend
 // replay stays closed until an authoritative read actually succeeds.
 async function retryTrackedHydration(client: AppwireClientLike, epoch: number, ref: string): Promise<void> {
   dispatchableMutationRefs.delete(ref);
-  await refreshTrackedThread(client, epoch, ref, true);
+  await refreshTrackedThread(client, epoch, ref, true, false, undefined, undefined, hydrationIntentFor(ref));
   const runtime = getMutationRuntime();
   if (!runtime || wiredClient !== client || readyEpoch !== epoch || client.state !== "ready") return;
   if (dispatchableMutationRefs.has(ref)) scheduleMutationDispatch(runtime, [ref]);
@@ -4012,7 +4035,7 @@ async function refreshTrackedThread(
   }
   try {
     const model = await hydration;
-    if (model && pinnedMutationRefs.has(ref)) dispatchableMutationRefs.add(ref);
+    if (model && intent === "foreground" && pinnedMutationRefs.has(ref)) dispatchableMutationRefs.add(ref);
   } catch (error) {
     if (reportFailure) throw error;
     // The stale model stays published. Convergence is the owned hydration
@@ -4190,6 +4213,7 @@ async function handleReady(
 // updated by the caller, so a stale firing between the two calls still sees
 // the outgoing client's identity (never a half-swapped one).
 function teardownWiring(): void {
+  retireReadyGeneration(readyEpoch);
   readyEpoch += 1;
   threadsStore.setState({ mutationAuthorityRefs: new Set() });
   // Old leases belong to the outgoing client. The next hydration joins the
@@ -4215,6 +4239,7 @@ function rewireClient(client: AppwireClientLike): void {
       client,
       () => wiredClient,
       () => {
+        retireReadyGeneration(readyEpoch);
         readyEpoch += 1;
         threadsStore.setState({ mutationAuthorityRefs: new Set() });
         // onReady is the SAME client reconnecting: its old connection's
@@ -5664,6 +5689,7 @@ export function acquireBackgroundThread(ref: string): BackgroundThreadLease {
   syncThreadSubscription(ref);
 
   let settleRetired: (() => void) | undefined;
+  let stopWatchingReadyGeneration: (() => void) | undefined;
   const retired = new Promise<void>((resolve) => {
     settleRetired = resolve;
   });
@@ -5671,6 +5697,9 @@ export function acquireBackgroundThread(ref: string): BackgroundThreadLease {
     if (threadsStore.getState().deletedRefs.has(ref) || threadsStore.getState().threads.has(ref)) return;
     try {
       const client = await requireReadyClient();
+      const epoch = readyEpoch;
+      if (client !== wiredClient) return;
+      stopWatchingReadyGeneration = watchReadyGenerationRetirement(epoch, () => settleRetired?.());
       if (canonicalThreadOwnerGenerations.get(ref) !== ownerGeneration || !canonicalThreadOwnerActive(ref)) return;
       const completion = trackedHydrationCompletions.get(ref);
       if (completion) {
@@ -5682,13 +5711,13 @@ export function acquireBackgroundThread(ref: string): BackgroundThreadLease {
         await inflight.catch(() => null);
         return;
       }
-      await refreshTrackedThread(client, readyEpoch, ref, false, false, undefined, undefined, "background");
+      await refreshTrackedThread(client, epoch, ref, false, false, undefined, undefined, "background");
     } catch {
       // `ready` settles after its first bounded attempt, not as a currentness
       // certificate. The existing owner-scoped retry scheduler owns recovery.
     }
   })();
-  const ready = Promise.race([acquisition, retired]);
+  const ready = Promise.race([acquisition, retired]).finally(() => stopWatchingReadyGeneration?.());
 
   let releasePromise: Promise<void> | undefined;
   return {
@@ -5715,12 +5744,18 @@ export function acquireBackgroundThread(ref: string): BackgroundThreadLease {
         inflightHydrateEpochs.delete(ref);
         trackedHydrationCompletions.delete(ref);
       }
-      syncThreadSubscription(ref);
-      const persistence = canonicalThreadOwnerActive(ref) ? Promise.resolve() : flushCacheWrite(ref);
-      releasePromise = persistence.then(() => {
+      releasePromise = (async () => {
+        while (backgroundLeaseSequences.get(ref) === releaseGeneration && !canonicalThreadOwnerActive(ref)) {
+          const persistedModel = threadsStore.getState().threads.get(ref);
+          if (!persistedModel) break;
+          await flushCacheWrite(ref);
+          if (backgroundLeaseSequences.get(ref) !== releaseGeneration || canonicalThreadOwnerActive(ref)) return;
+          if (threadsStore.getState().threads.get(ref) === persistedModel) break;
+        }
         if (backgroundLeaseSequences.get(ref) !== releaseGeneration || canonicalThreadOwnerActive(ref)) return;
-        dropUnpinnedModel(ref);
-      });
+        dropUnpinnedModel(ref, false);
+        syncThreadSubscription(ref);
+      })();
       return releasePromise;
     },
   };

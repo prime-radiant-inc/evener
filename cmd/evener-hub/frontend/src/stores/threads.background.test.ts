@@ -8,12 +8,12 @@ import {
 import { currentRead, textDelta } from "@evener/appwire-client/testing/currentTranscript";
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { IDBFactory } from "fake-indexeddb";
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { IDBDatabase, IDBFactory } from "fake-indexeddb";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { connectionStore } from "./connection";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 import { SessionCacheIndexedDB } from "./sessionCacheIndexedDB";
-import { holdNextWriteTransaction } from "./testing/stalledIndexedDB";
+import { holdIndexedDBEvent, holdNextWriteTransaction, nextRealTask } from "./testing/stalledIndexedDB";
 import {
   acquireBackgroundThread,
   installHydrationRetrySchedulerForTests,
@@ -51,6 +51,30 @@ function mutationStorage(): MutationOutboxIndexedDB {
   mutationStorages.push(storage);
   setMutationStorageForTests(storage);
   return storage;
+}
+
+async function blockedOutboxRow(storage: MutationOutboxIndexedDB, ref: string) {
+  const queued = await storage.enqueueIntent({
+    targetRef: ref,
+    method: "turn/queue",
+    payload: { ref, expectedTurnId: "", input: [{ type: "text", text: "blocked queue" }] },
+    attachments: [],
+    optimisticDisplay: { text: "blocked queue" },
+  });
+  await storage.markAttempted(queued.clientMutationId);
+  await storage.markUnknown(queued.clientMutationId, "blockedUnknown", { onlyAttempted: true });
+  return storage.getOutbox(queued.clientMutationId);
+}
+
+function waitForHydration(ref: string, count: number): Promise<void> {
+  if ((threadsStore.getState().hydrations.get(ref) ?? 0) >= count) return Promise.resolve();
+  return new Promise((resolve) => {
+    const unsubscribe = threadsStore.subscribe((state) => {
+      if ((state.hydrations.get(ref) ?? 0) < count) return;
+      unsubscribe();
+      resolve();
+    });
+  });
 }
 
 function connectCurrentClient(): FakeClient {
@@ -201,7 +225,6 @@ describe("background thread claims", () => {
     const fake = connectCurrentClient();
     const entered = deferred<void>();
     const held = deferred<ReturnType<typeof currentRead>>();
-    const followupRead = deferred<void>();
     let readCount = 0;
     fake.on("thread/read", () => {
       readCount += 1;
@@ -209,7 +232,6 @@ describe("background thread claims", () => {
         entered.resolve();
         return held.promise;
       }
-      followupRead.resolve();
       return currentRead("local:one");
     });
     const background = acquireBackgroundThread("local:one");
@@ -219,8 +241,7 @@ describe("background thread claims", () => {
       await background.release();
       await background.ready;
       held.resolve(currentRead("local:one"));
-      await fake.request("thread/read", { ref: "local:one", includeTurns: true });
-      await followupRead.promise;
+      await nextRealTask();
       expect(threadsStore.getState().threads.has("local:one")).toBe(false);
       expect(membershipReads(fake)).toBe(readsBeforeRelease);
       expect(unsubscriptions(fake)).toBe(1);
@@ -266,6 +287,127 @@ describe("background thread claims", () => {
     }
   });
 
+  test("background retry does not reconcile or dispatch an uncertain durable row", async () => {
+    const storage = mutationStorage();
+    const retryScheduled = deferred<() => void>();
+    const restore = installHydrationRetrySchedulerForTests((_attempt, retry) => {
+      retryScheduled.resolve(retry);
+      return () => {};
+    });
+    const restoreSpy = vi.spyOn(storage, "restoreProvenAbsent");
+    const initialScans = deferred<void>();
+    const listTargetRefs = storage.listTargetRefs.bind(storage);
+    let scanCount = 0;
+    const scanSpy = vi.spyOn(storage, "listTargetRefs").mockImplementation(async () => {
+      const refs = await listTargetRefs();
+      scanCount += 1;
+      if (scanCount === 3) initialScans.resolve();
+      return refs;
+    });
+    try {
+      const fake = connectCurrentClient();
+      await initialScans.promise;
+      await nextRealTask();
+      const blocked = await blockedOutboxRow(storage, "local:one");
+      let reads = 0;
+      fake.on("thread/read", () => {
+        reads += 1;
+        if (reads === 1) throw new Error("temporary read failure");
+        const response = currentRead("local:one");
+        return {
+          ...response,
+          thread: {
+            ...response.thread,
+            evener: { ...response.thread.evener, mutationStateAuthoritative: true },
+          },
+        };
+      });
+      const background = acquireBackgroundThread("local:one");
+      try {
+        await background.ready;
+        const hydration = waitForHydration("local:one", 1);
+        const retry = await retryScheduled.promise;
+        retry();
+        await hydration;
+        await nextRealTask();
+        expect(restoreSpy).not.toHaveBeenCalled();
+        await expect(storage.getOutbox(blocked?.clientMutationId ?? "missing")).resolves.toEqual(blocked);
+        expect(fake.calls.filter((call) => call.method.startsWith("turn/") || call.method === "thread/resume")).toEqual(
+          [],
+        );
+      } finally {
+        await background.release();
+      }
+    } finally {
+      scanSpy.mockRestore();
+      restoreSpy.mockRestore();
+      restore();
+    }
+  });
+
+  test("background history invalidation does not reconcile an uncertain durable row", async () => {
+    const storage = mutationStorage();
+    const restoreSpy = vi.spyOn(storage, "restoreProvenAbsent");
+    const initialScans = deferred<void>();
+    const listTargetRefs = storage.listTargetRefs.bind(storage);
+    let scanCount = 0;
+    const scanSpy = vi.spyOn(storage, "listTargetRefs").mockImplementation(async () => {
+      const refs = await listTargetRefs();
+      scanCount += 1;
+      if (scanCount === 3) initialScans.resolve();
+      return refs;
+    });
+    try {
+      const fake = connectCurrentClient();
+      await initialScans.promise;
+      await nextRealTask();
+      const blocked = await blockedOutboxRow(storage, "local:one");
+      let reads = 0;
+      fake.on("thread/read", (params) => {
+        reads += 1;
+        const response = currentRead("local:one");
+        return {
+          ...response,
+          epoch: reads === 1 ? 2 : 3,
+          requestGeneration: params.requestGeneration ?? response.requestGeneration,
+          thread: {
+            ...response.thread,
+            evener: { ...response.thread.evener, mutationStateAuthoritative: true },
+          },
+        };
+      });
+      const background = acquireBackgroundThread("local:one");
+      try {
+        await background.ready;
+        const invalidatedHydration = waitForHydration("local:one", 2);
+        fake.emitNotification({
+          method: "history/updated",
+          params: {
+            ref: "local:one",
+            threadId: "thr_local:one",
+            bootGeneration: "1",
+            epoch: 3,
+            snapshot: { incarnation: "inc-1", length: 41 },
+            items: [],
+          },
+        } as AnyNotification);
+        expect(threadsStore.getState().threads.get("local:one")?.history?.invalidatedAtGeneration).toBeDefined();
+        await invalidatedHydration;
+        await nextRealTask();
+        expect(restoreSpy).not.toHaveBeenCalled();
+        await expect(storage.getOutbox(blocked?.clientMutationId ?? "missing")).resolves.toEqual(blocked);
+        expect(fake.calls.filter((call) => call.method.startsWith("turn/") || call.method === "thread/resume")).toEqual(
+          [],
+        );
+      } finally {
+        await background.release();
+      }
+    } finally {
+      scanSpy.mockRestore();
+      restoreSpy.mockRestore();
+    }
+  });
+
   test("repeated background release shares one final drain", async () => {
     const fake = connectCurrentClient();
     const background = acquireBackgroundThread("local:one");
@@ -282,7 +424,6 @@ describe("background thread claims", () => {
     const oldClient = connectCurrentClient();
     const oldEntered = deferred<void>();
     const oldResponse = deferred<ReturnType<typeof currentRead>>();
-    const oldFollowupRead = deferred<void>();
     let oldReadCount = 0;
     oldClient.on("thread/read", () => {
       oldReadCount += 1;
@@ -290,7 +431,6 @@ describe("background thread claims", () => {
         oldEntered.resolve();
         return oldResponse.promise;
       }
-      oldFollowupRead.resolve();
       return currentRead("local:one");
     });
     const background = acquireBackgroundThread("local:one");
@@ -298,18 +438,23 @@ describe("background thread claims", () => {
     const replacement = new FakeClient("ready");
     replacement.on("thread/read", ({ ref }) => currentRead(ref ?? "local:one"));
     replacement.on("thread/unsubscribe", () => ({}));
-    connectionStore.getState().connect(replacement);
     const hydrated = deferred<void>();
     const unsubscribe = threadsStore.subscribe((state) => {
       if (state.threads.get("local:one")?.turns.length) hydrated.resolve();
     });
+    let readySettled = false;
+    void background.ready.then(() => {
+      readySettled = true;
+    });
     try {
+      connectionStore.getState().connect(replacement);
       await hydrated.promise;
       const replacementModel = threadsStore.getState().threads.get("local:one");
       expect(replacement.calls.some((call) => call.method === "thread/read")).toBe(true);
+      await nextRealTask();
+      expect(readySettled).toBe(true);
       oldResponse.resolve(currentRead("local:one"));
-      await oldClient.request("thread/read", { ref: "local:one", includeTurns: true });
-      await oldFollowupRead.promise;
+      await nextRealTask();
       expect(threadsStore.getState().threads.get("local:one")).toBe(replacementModel);
     } finally {
       oldResponse.resolve(currentRead("local:one"));
@@ -421,6 +566,7 @@ describe("background thread claims", () => {
       await transaction.reached;
       const replacement = acquireBackgroundThread("local:one");
       await replacement.ready;
+      expect(unsubscriptions(fake)).toBe(0);
       transaction.release();
       await release;
       expect(threadsStore.getState().threads.has("local:one")).toBe(true);
@@ -436,6 +582,100 @@ describe("background thread claims", () => {
       await replacement.release();
     } finally {
       transaction.release();
+    }
+  });
+
+  test("a pane claim during held final persistence keeps actual wire membership", async () => {
+    const fake = connectCurrentClient();
+    await cache.get("local:one", Date.now());
+    const background = acquireBackgroundThread("local:one");
+    await background.ready;
+    const transaction = holdNextWriteTransaction(["records", "meta", "current", "currentMeta"]);
+    try {
+      const release = background.release();
+      await transaction.reached;
+      await threadsStore.getState().ensureThread("local:one");
+      expect(unsubscriptions(fake)).toBe(0);
+      transaction.release();
+      await release;
+      expect(unsubscriptions(fake)).toBe(0);
+    } finally {
+      transaction.release();
+      await background.release();
+      threadsStore.getState().releaseThread("local:one");
+    }
+  });
+
+  test("final release waits for a recorded-history update accepted during its first write", async () => {
+    const fake = connectCurrentClient();
+    await cache.get("local:one", Date.now());
+    const background = acquireBackgroundThread("local:one");
+    await background.ready;
+    const reached = [deferred<void>(), deferred<void>()] as const;
+    const held: ReturnType<typeof holdIndexedDBEvent>[] = [];
+    const stores = ["records", "meta", "current", "currentMeta"];
+    const originalTransaction = IDBDatabase.prototype.transaction;
+    let writeCount = 0;
+    const transactionSpy = vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (
+      this: IDBDatabase,
+      ...args: Parameters<IDBDatabase["transaction"]>
+    ) {
+      const transaction = originalTransaction.apply(this, args);
+      if (
+        transaction.mode === "readwrite" &&
+        transaction.objectStoreNames.length === stores.length &&
+        stores.every((store) => transaction.objectStoreNames.contains(store)) &&
+        writeCount < 2
+      ) {
+        const index = writeCount++;
+        const gate = holdIndexedDBEvent(transaction, "complete");
+        held[index] = gate;
+        if (index === 0) void gate.reached.then(() => reached[0].resolve());
+        else void gate.reached.then(() => reached[1].resolve());
+      }
+      return transaction;
+    });
+    try {
+      const release = background.release();
+      let releaseSettled = false;
+      void release.then(() => {
+        releaseSettled = true;
+      });
+      await reached[0].promise;
+      fake.emitNotification({
+        method: "history/updated",
+        params: {
+          ref: "local:one",
+          threadId: "thr_local:one",
+          bootGeneration: "1",
+          epoch: 1,
+          snapshot: { incarnation: "inc-1", length: 41 },
+          turns: [{ id: "turn_final", status: "completed", itemsView: "full", version: 2 }],
+          items: [
+            {
+              type: "agentMessage",
+              id: "item_final",
+              turnId: "turn_final",
+              text: "accepted-during-final-write",
+              position: { entry: 41, item: 0 },
+            },
+          ],
+        },
+      } as AnyNotification);
+      const firstWrite = held[0];
+      if (!firstWrite) throw new Error("first cache write was not held");
+      firstWrite.release();
+      await reached[1].promise;
+      expect(releaseSettled).toBe(false);
+      const secondWrite = held[1];
+      if (!secondWrite) throw new Error("second cache write was not held");
+      secondWrite.release();
+      await release;
+      expect(JSON.stringify(await cache.get("local:one", Date.now()))).toContain("accepted-during-final-write");
+    } finally {
+      transactionSpy.mockRestore();
+      for (const gate of held) gate.release();
+      await background.release();
     }
   });
 
