@@ -78,6 +78,12 @@ export interface ArchivedListParams {
   projectKey: string;
   cursor?: string;
   limit?: number;
+  /**
+   * Revision is the revision of the list the caller holds (a response's
+   * Revision). When it is still the list's, the response says Unchanged and
+   * carries no rows. An older hub ignores it and answers the page.
+   */
+  revision?: string;
 }
 
 export interface ArchivedListResponse {
@@ -85,6 +91,17 @@ export interface ArchivedListResponse {
   nextCursor?: string;
   total: number;
   catalog?: string;
+  /**
+   * Revision fingerprints the whole list read, the same on every page of it;
+   * it changes when any row a page could show changes. An older hub sends
+   * none.
+   */
+  revision?: string;
+  /**
+   * Unchanged is true when the request's Revision is still the list's: the
+   * response then carries no rows, and Total, Catalog and Revision stand.
+   */
+  unchanged?: boolean;
 }
 
 export interface AttentionChanged {

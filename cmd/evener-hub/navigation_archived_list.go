@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,16 +26,24 @@ type navigationArchivedPage struct {
 	// Catalog is the catalog read; the zero kind when none of the catalogs the
 	// hint allows holds the key.
 	Catalog navigationResourceKind
+	// Revision fingerprints the whole list read (archivedListRevision), the
+	// same on every page of it.
+	Revision string
+	// Unchanged is true, with no rows, when the request's KnownRevision is the
+	// list's Revision.
+	Unchanged bool
 }
 
 // navigationArchivedListRequest is a validated evener/archived/list request.
 // Hint is the catalog the caller named, the zero kind when it named none.
 // After is the key of the last row the caller holds; nil starts at the top.
+// KnownRevision is the revision of the list the caller holds, "" for none.
 type navigationArchivedListRequest struct {
-	Hint       navigationResourceKind
-	ProjectKey string
-	After      *hubcore.SessionOrderKey
-	Limit      int
+	Hint          navigationResourceKind
+	ProjectKey    string
+	After         *hubcore.SessionOrderKey
+	Limit         int
+	KnownRevision string
 }
 
 // parseNavigationArchivedListParams validates the wire params the way a
@@ -57,7 +66,7 @@ func parseNavigationArchivedListParams(params appwire.ArchivedListParams) (navig
 	if params.Limit < 0 || params.Limit > maxNavigationSectionRows {
 		return navigationArchivedListRequest{}, fmt.Errorf("limit must be between 0 and %d (0 or absent means %d)", maxNavigationSectionRows, maxNavigationSectionRows)
 	}
-	request := navigationArchivedListRequest{Hint: hint, ProjectKey: params.ProjectKey, Limit: params.Limit}
+	request := navigationArchivedListRequest{Hint: hint, ProjectKey: params.ProjectKey, Limit: params.Limit, KnownRevision: params.Revision}
 	if params.Cursor != "" {
 		after, err := decodeArchivedCursor(params.Cursor, hint, params.ProjectKey)
 		if err != nil {
@@ -142,9 +151,16 @@ func archivedListCandidates(hint navigationResourceKind) []navigationResourceKin
 // project now (archivedListCatalog). A project none of the catalogs it may be
 // read from holds answers an empty page: it was deleted, or became or stopped
 // being a test run, since the rail listed it.
-func (p navigationProjection) ArchivedList(request navigationArchivedListRequest) (navigationArchivedPage, error) {
+func (p navigationProjection) ArchivedList(ctx context.Context, request navigationArchivedListRequest) (navigationArchivedPage, error) {
 	catalog, project := p.archivedListCatalog(request.Hint, request.ProjectKey)
 	rows, _ := project.TierRows("archived")
+	revision, err := p.archivedListRevision(ctx, catalog, rows)
+	if err != nil {
+		return navigationArchivedPage{}, err
+	}
+	if request.After == nil && request.KnownRevision == revision {
+		return navigationArchivedPage{Sessions: hubapi.NavigationArray[hubapi.NavigationSessionSummary]{}, Total: len(rows), Catalog: catalog, Revision: revision, Unchanged: true}, nil
+	}
 	start := 0
 	if request.After != nil {
 		start = sort.Search(len(rows), func(i int) bool {
@@ -167,11 +183,30 @@ func (p navigationProjection) ArchivedList(request navigationArchivedListRequest
 	if len(page.Sessions) == 0 && page.Remaining > 0 {
 		return navigationArchivedPage{}, navigationPageProgressInvariantError{kind: navigationResourceProjectPage}
 	}
-	out := navigationArchivedPage{Sessions: page.Sessions, Total: len(rows), Catalog: catalog}
+	out := navigationArchivedPage{Sessions: page.Sessions, Total: len(rows), Catalog: catalog, Revision: revision}
 	if page.Remaining > 0 {
 		out.NextCursor = encodeArchivedCursor(request.Hint, request.ProjectKey, hubcore.TreeNodeOrderKey(rows[start+len(page.Sessions)-1]))
 	}
 	return out, nil
+}
+
+// archivedListRevision fingerprints an archived list: the catalog read and
+// every row of it as navigation summarizes it, children included, so any
+// change a page could show changes it. It is the navigation resources' own
+// logical fingerprint, which is why a client can trust an equal one.
+func (p navigationProjection) archivedListRevision(ctx context.Context, catalog navigationResourceKind, rows []hubcore.TreeNode) (string, error) {
+	logical, err := navigationLogicalNodesContext(ctx, p, rows)
+	if err != nil {
+		return "", err
+	}
+	fingerprint, err := navigationLogicalFingerprintContext(ctx, struct {
+		Catalog navigationResourceKind
+		Rows    hubapi.NavigationArray[hubapi.NavigationSessionSummary]
+	}{catalog, logical})
+	if err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(fingerprint[:]), nil
 }
 
 // Archived list rows retain fork originals as inline session children. These
@@ -231,7 +266,7 @@ func (s *NavigationService) ArchivedList(ctx context.Context, request navigation
 	if core == nil {
 		return appwire.ArchivedListResponse{}, navigationUnavailable(errors.New("navigation core unavailable"))
 	}
-	page, err := core.projection.ArchivedList(request)
+	page, err := core.projection.ArchivedList(ctx, request)
 	if err != nil {
 		return appwire.ArchivedListResponse{}, err
 	}
@@ -239,7 +274,7 @@ func (s *NavigationService) ArchivedList(ctx context.Context, request navigation
 	if err != nil {
 		return appwire.ArchivedListResponse{}, err
 	}
-	return appwire.ArchivedListResponse{Sessions: sessions, NextCursor: page.NextCursor, Total: page.Total, Catalog: string(page.Catalog)}, nil
+	return appwire.ArchivedListResponse{Sessions: sessions, NextCursor: page.NextCursor, Total: page.Total, Catalog: string(page.Catalog), Revision: page.Revision, Unchanged: page.Unchanged}, nil
 }
 
 // archivedCount is the number of archived sessions in a catalog's project: the
