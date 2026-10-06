@@ -2,6 +2,7 @@ package plugins
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -13,14 +14,21 @@ import (
 
 // Each remote is asked with its own timeout, a few at a time, so one
 // unreachable host costs a check about updateCheckTimeout rather than git's
-// own, much longer, network timeouts. The web client's
-// PLUGIN_UPDATE_CHECK_TIMEOUT_MS (appwire-client/typescript/state/extensions/
-// plugins.ts) must exceed one updateCheckTimeout per batch of
-// updateCheckConcurrency plugins, so change it with these.
+// own, much longer, network timeouts.
 const (
 	updateCheckTimeout     = 20 * time.Second
 	updateCheckConcurrency = 4
 )
+
+// updateCheckDeadline bounds a whole check, however many remotes hang. It
+// stays under the clients' PLUGIN_UPDATE_CHECK_TIMEOUT_MS (in
+// appwire-client/typescript/state/extensions/plugins.ts) with room for git's
+// WaitDelay after the cut-off and the listing that follows, so a client gets
+// the answer instead of giving up on a check the hub is still running. A
+// variable so tests can shorten it.
+var updateCheckDeadline = 100 * time.Second
+
+var errUpdateCheckDeadline = errors.New("not answered within the update check's overall time limit")
 
 // checkedHead is one plugin's CheckUpdates answer: the commit an Upgrade would
 // install, and the commit installed when the check read the registry. The
@@ -37,12 +45,17 @@ type checkedHead struct {
 // The source asked is the one the marketplace's local catalog names, the one
 // Upgrade fetches. A source pinned to a sha is answered without a network
 // call, and a relative or directory source is never asked: it has no remote.
-// A remote or catalog that cannot be read is warned about and flags nothing.
-// A cancelled check returns ctx's error and keeps the previous answers. Of
+// A remote or catalog that cannot be read, or a remote still unanswered at
+// updateCheckDeadline, is warned about and flags nothing. A cancelled check
+// returns ctx's error and keeps the previous answers. Of
 // overlapping checks only the newest publishes, and a marketplace write
 // retires every answer (forgetChecks).
 func (m *Manager) CheckUpdates(ctx context.Context) error {
-	mk, err := m.loadMigratedMarketplaces(ctx, installAcquireLock)
+	// The deadline covers the store lock wait as well as the remotes, so a
+	// pending migration's lock cannot push the check past it.
+	checkCtx, cancel := context.WithTimeoutCause(ctx, updateCheckDeadline, errUpdateCheckDeadline)
+	defer cancel()
+	mk, err := m.loadMigratedMarketplaces(checkCtx, installAcquireLock)
 	if err != nil {
 		return err
 	}
@@ -78,10 +91,15 @@ func (m *Manager) CheckUpdates(ctx context.Context) error {
 			continue
 		}
 		g.Go(func() error {
-			head, err := remoteHead(ctx, src)
+			head, err := remoteHead(checkCtx, src)
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
+				// Past the deadline git's own error (a kill, or a git that
+				// never started) says less than the deadline does.
+				if cause := context.Cause(checkCtx); errors.Is(cause, errUpdateCheckDeadline) {
+					err = cause
+				}
 				remoteWarnings = append(remoteWarnings, fmt.Sprintf("checking %s for updates: %v", key, err))
 			} else {
 				heads[key] = checkedHead{head: head, installed: installed}
