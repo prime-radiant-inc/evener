@@ -652,15 +652,20 @@ describe("a subagent", () => {
 
 	// It re-renders when its silence crosses the Quiet threshold, not only
 	// on the minute clock's next tick.
-	it("turns Quiet on its own when a running subagent goes silent", async () => {
-		const at = (ms: number) => new Date(Date.now() - ms).toISOString();
-		const silent = { ...delegate, runStartedAt: at(60_000), latestActivityAt: at(19_900) };
-		const tree = render(<TimelineItem item={row("running")} hubId="hub" sessionRef="s" delegates={[silent]} />);
-		expect(renderedText(tree)).toContain("Working");
-		await act(async () => {
-			await new Promise((resolve) => setTimeout(resolve, 300));
-		});
-		expect(renderedText(tree)).toContain("Quiet 20s");
+	it("turns Quiet on its own when a running subagent goes silent", () => {
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+		try {
+			const at = (ms: number) => new Date(Date.now() - ms).toISOString();
+			const silent = { ...delegate, runStartedAt: at(60_000), latestActivityAt: at(19_900) };
+			const tree = render(<TimelineItem item={row("running")} hubId="hub" sessionRef="s" delegates={[silent]} />);
+			expect(renderedText(tree)).toContain("Working");
+			act(() => {
+				vi.advanceTimersByTime(100);
+			});
+			expect(renderedText(tree)).toContain("Quiet 20s");
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("opens the subagent's own transcript when pressed", () => {
