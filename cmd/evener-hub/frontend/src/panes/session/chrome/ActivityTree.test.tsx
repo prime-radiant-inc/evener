@@ -236,7 +236,7 @@ describe("ActivityTree", () => {
                 aggregate: "running",
                 counts: { active: 0, failed: 0, completed: 0, complete: false },
                 entries: [],
-                branch: { truncated: true },
+                branch: {},
                 diagnostics,
               },
             },
