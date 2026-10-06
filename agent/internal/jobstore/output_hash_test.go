@@ -5,64 +5,35 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync/atomic"
 	"testing"
 
 	"github.com/spf13/afero"
 )
 
-// outputReadCountingFS counts the bytes read back from the output file through
-// handles opened by path: the store's own append handle is not one of them, so
-// these are re-reads (hashing the file for its metadata checksum).
-type outputReadCountingFS struct {
-	afero.Fs
-	output string
-	read   atomic.Int64
-}
-
-func (fs *outputReadCountingFS) LstatIfPossible(name string) (os.FileInfo, bool, error) {
-	return fs.Fs.(afero.Lstater).LstatIfPossible(name)
-}
-
-func (fs *outputReadCountingFS) Open(name string) (afero.File, error) {
-	f, err := fs.Fs.Open(name)
-	if err != nil || name != fs.output {
-		return f, err
-	}
-	return &countingReadFile{File: f, read: &fs.read}, nil
-}
-
-type countingReadFile struct {
-	afero.File
-	read *atomic.Int64
-}
-
-func (f *countingReadFile) Read(p []byte) (int, error) {
-	n, err := f.File.Read(p)
-	f.read.Add(int64(n))
-	return n, err
-}
-
-// #3851: every append hashed the whole retained file for its metadata
-// checksum, so a job's cost per append grew with its output (up to twice the
-// cap). The checksum now follows the appended bytes, and an append re-reads
-// nothing.
+// An append re-reads nothing of the output file: the metadata checksum
+// follows the bytes the append writes, so an append's cost stays flat as the
+// job's output grows (#3851). countingFs wraps handles opened by path; the
+// store's own append handle is not one of them.
 func TestOutputAppendHashesOnlyTheBytesItWrites(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "job_H.log")
-	fs := &outputReadCountingFS{Fs: afero.NewOsFs(), output: path}
-	store, err := createOutputFsWithSync(fs, path, 0, true)
+	const path = "/job_H.log"
+	var bytesRead int64
+	fs := countingFs{Fs: afero.NewMemMapFs(), bytesRead: &bytesRead}
+	if err := afero.WriteFile(fs, path, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store, err := openOutputFsNoSync(fs, path, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer store.Close()
 	chunk := []byte(strings.Repeat("x", 99) + "\n")
-	before := fs.read.Load()
+	before := bytesRead
 	for range 50 {
 		if _, err := store.Append(chunk); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if got := fs.read.Load() - before; got != 0 {
+	if got := bytesRead - before; got != 0 {
 		t.Fatalf("50 appends re-read %d bytes of the output file, want 0", got)
 	}
 }
