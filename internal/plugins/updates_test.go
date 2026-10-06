@@ -589,13 +589,7 @@ func TestCheckUpdates_ARefreshThatChangesNothingWritesNothing(t *testing.T) {
 func TestCheckUpdates_HungRefreshesLeaveTheRemoteChecksTheirTime(t *testing.T) {
 	f := installURLPlugin(t, unpinned)
 	advanceRepo(t, f.pluginRepo)
-	realFetch, realBudget := marketplaceGitFetch, updateCheckRefreshBudget
-	t.Cleanup(func() { marketplaceGitFetch, updateCheckRefreshBudget = realFetch, realBudget })
-	updateCheckRefreshBudget = 50 * time.Millisecond
-	marketplaceGitFetch = func(ctx context.Context, _ string) error {
-		<-ctx.Done()
-		return ctx.Err()
-	}
+	hangingFetches(t)
 	start := time.Now()
 	if !checkThenList(t, f.m) {
 		t.Fatal("plugin behind its remote head not flagged after its marketplace's refresh hung")

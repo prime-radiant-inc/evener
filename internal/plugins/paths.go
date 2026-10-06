@@ -40,7 +40,8 @@ type Manager struct {
 	remoteHeads     map[string]checkedHead
 	checkGeneration uint64
 	// checkRefreshResumeAt names the marketplace the last check's refresh
-	// budget left unrefreshed first ("" when it refreshed them all).
+	// budget left unrefreshed first ("" when it refreshed them all). Guarded
+	// by remoteHeadsMu, like the check state above.
 	checkRefreshResumeAt string
 }
 

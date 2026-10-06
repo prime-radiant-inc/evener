@@ -154,7 +154,8 @@ func (m *Manager) CheckUpdates(ctx context.Context) error {
 
 // refreshForCheck refreshes every fetched git marketplace before a check and
 // answers a warning for each it could not refresh; a refresh failure never
-// fails the check. The refreshes run one at a time. Each gets
+// fails the check. The refreshes run one at a time, so the budget ends at
+// one clear place for the next check to resume from. Each gets
 // updateCheckTimeout, all of them together updateCheckRefreshBudget, and a
 // check whose budget runs out starts the next check's refreshes at the first
 // marketplace it left, so a slow marketplace cannot starve the ones after it
@@ -176,7 +177,7 @@ func (m *Manager) refreshForCheck(ctx context.Context) []string {
 	start, _ := slices.BinarySearch(names, resumeAt)
 	names = slices.Concat(names[start:], names[:start])
 	var warnings []string
-	resumeAt = ""
+	firstLeft := ""
 	for _, name := range names {
 		ref := mk[name]
 		if ref.Source.Kind == SourceDirectory || ref.InstallLocation == "" || !cloneOnBranch(ref.InstallLocation) {
@@ -185,8 +186,8 @@ func (m *Manager) refreshForCheck(ctx context.Context) []string {
 		// Once the budget, the deadline or the caller has ended the phase,
 		// no further refresh starts; each one left is warned about.
 		if cause := context.Cause(budgetCtx); cause != nil {
-			if resumeAt == "" {
-				resumeAt = name
+			if firstLeft == "" {
+				firstLeft = name
 			}
 			warnings = append(warnings, fmt.Sprintf("refreshing marketplace %q before checking for updates: %v", name, cause))
 			continue
@@ -207,7 +208,7 @@ func (m *Manager) refreshForCheck(ctx context.Context) []string {
 		}
 	}
 	m.remoteHeadsMu.Lock()
-	m.checkRefreshResumeAt = resumeAt
+	m.checkRefreshResumeAt = firstLeft
 	m.remoteHeadsMu.Unlock()
 	return warnings
 }
