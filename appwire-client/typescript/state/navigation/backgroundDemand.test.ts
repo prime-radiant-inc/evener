@@ -177,6 +177,94 @@ test("final background lease release removes settled data before foreground reac
   client.close();
 });
 
+for (const held of [false, true]) {
+  for (const reacquireAs of ["foreground", "background"] as const) {
+    test(`final release retires before synchronous ${reacquireAs} reacquisition (${held ? "held" : "settled"} old request)`, async () => {
+      let finishOldRequest!: () => void;
+      const oldRequestGate = new Promise<void>((resolve) => {
+        finishOldRequest = resolve;
+      });
+      const calls: NavigationReadParams[] = [];
+      const { client, store } = makeStore(async (params) => {
+        calls.push(params);
+        if (params.resource === "manifest") return manifestResponse(params);
+        const pageRead = calls.filter((call) => call.resource === "section" && call.offset === 4).length;
+        if (pageRead === 1) {
+          if (held) await oldRequestGate;
+          return pageResponse(params, ["retired-old-row"], 0, 1);
+        }
+        return pageResponse(params, ["owned-new-row"], 0, pageRead === 3 ? 2 : 1);
+      });
+      const resourceKey = { kind: "section", section: "live", offset: 4, limit: 2 } as const;
+      const id = keyID(resourceKey);
+      const background = store.acquireBackgroundLivePages();
+      let loadingSeen!: () => void;
+      const oldLoading = new Promise<void>((resolve) => {
+        loadingSeen = resolve;
+      });
+      const unsubscribeLoading = store.subscribe((state) => {
+        if (state.resources.get(id)?.loading) loadingSeen();
+      });
+      const oldRead = background.load(4, 2);
+      if (held) {
+        await oldLoading;
+      } else {
+        await oldRead;
+      }
+      unsubscribeLoading();
+
+      let replacement: ReturnType<typeof store.acquireBackgroundLivePages> | undefined;
+      let replacementRead: Promise<unknown> | undefined;
+      let reacquired = false;
+      const unsubscribeReacquire = store.subscribe((state) => {
+        if (reacquired || state.resources.has(id)) return;
+        reacquired = true;
+        if (reacquireAs === "foreground") {
+          replacementRead = store.getState().loadSection("live", 4, 2);
+        } else {
+          replacement = store.acquireBackgroundLivePages();
+          replacementRead = replacement.load(4, 2);
+        }
+      });
+
+      background.release();
+      expect(reacquired).toBe(true);
+      if (held) {
+        finishOldRequest();
+        await oldRead;
+      }
+      await replacementRead;
+      unsubscribeReacquire();
+
+      expect(store.getState().resources.get(id)?.data).toMatchObject({ sessions: [{ ref: "owned-new-row" }] });
+      expect(store.getState().resources.get(id)?.loading).toBe(false);
+      if (reacquireAs === "foreground") {
+        expect(store.getState().visibleResourceKeys.has(id)).toBe(true);
+        expect(selectLiveRows(store.getState()).map((item) => item.ref)).toContain("owned-new-row");
+      } else {
+        expect(store.getState().visibleResourceKeys.has(id)).toBe(false);
+        expect(store.getState().resources.has(id)).toBe(true);
+      }
+
+      client.emitNotification(
+        navigationInvalidatedNotification({
+          generationId: generation,
+          sequence: 1,
+          targets: [{ kind: "section", section: "live", revision: 2 }],
+        }),
+      );
+      const refreshed =
+        reacquireAs === "foreground" ? await store.getState().loadSection("live", 4, 2) : await replacement!.load(4, 2);
+      expect(refreshed.data).toMatchObject({ sessions: [{ ref: "owned-new-row" }] });
+      expect(calls.filter((params) => params.resource === "section" && params.offset === 4)).toHaveLength(3);
+      expect(store.getState().resources.get(id)?.data).toMatchObject({ sessions: [{ ref: "owned-new-row" }] });
+      replacement?.release();
+      store.reset();
+      client.close();
+    });
+  }
+}
+
 test("final background lease release removes an in-flight page and fences its late response", async () => {
   let finishRequest!: () => void;
   const pending = new Promise<void>((resolve) => {

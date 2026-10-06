@@ -395,9 +395,9 @@ export function createNavigationStore({ persistence }: NavigationStoreDeps): Nav
       demand.background.delete(token);
       if (!demand.foreground && demand.background.size === 0) {
         demands.delete(id);
+        revalidator?.release(demand.key);
         const resources = new Map(store.getState().resources);
         if (resources.delete(id)) store.setState({ resources });
-        revalidator?.release(demand.key);
       }
     }
   }
