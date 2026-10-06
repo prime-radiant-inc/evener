@@ -37,6 +37,7 @@ test.each<[string, string, (step: MemoryStep) => string, MemoryStep, string]>([
     "read",
     "Reading memory session/notes.md",
     memoryReadSummary,
+    // A legacy scope: transcripts from earlier builds still record "session".
     step({ scope: "session", file_path: "notes.md", offset: 1, limit: 40 }, "line 1\nline 2"),
     "Read memory session/notes.md · lines 1-40",
   ],
@@ -62,6 +63,7 @@ test.each<[string, string, (step: MemoryStep) => string, MemoryStep, string]>([
 test.each<[string, (step: MemoryStep) => string, string]>([
   ["personal", memoryWriteSummary, "Wrote memory personal/page.md"],
   ["project", memoryWriteSummary, "Wrote memory project/page.md"],
+  // A legacy scope: transcripts from earlier builds still record "session".
   ["session", memoryWriteSummary, "Wrote memory session/page.md"],
 ])("writes a memory page in the %s scope", (scope, summary, settled) => {
   expect(summary(step({ scope, file_path: "page.md" }))).toBe(settled);

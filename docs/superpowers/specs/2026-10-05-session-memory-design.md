@@ -1,5 +1,7 @@
 # Session memory
 
+> Superseded: the session memory scope was removed (2026-10-06); see docs/product/memory.md.
+
 ## Intent
 
 Evener memory has two scopes. Personal memory holds what applies beyond any one project. Project memory holds knowledge about the project. Neither has a place for working notes about the current work: its plan, what has been tried and what has been found. Today that knowledge either lives only in the transcript, where compaction loses it, or gets written to project memory, where it clutters the project with task-local detail.

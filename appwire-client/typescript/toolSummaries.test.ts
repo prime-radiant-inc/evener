@@ -96,6 +96,7 @@ test("routes memory tool words, summaries, progress and family through the share
     ],
     [
       "memory_read",
+      // A legacy scope: transcripts from earlier builds still record "session".
       { scope: "session", file_path: "notes.md", offset: 1, limit: 40 },
       "line 1\nline 2",
       "Read memory session/notes.md · lines 1-40",

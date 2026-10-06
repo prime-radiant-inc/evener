@@ -70,10 +70,6 @@ func (r *ConfinedFileRoot) Close() {
 // still names the same directory. The caller owns previous's lifetime,
 // including admitted operations on it.
 func (r *ConfinedFileRoot) Open(previous *LocalExecutionEnvironment) (*LocalExecutionEnvironment, error) {
-	return r.open(previous, true)
-}
-
-func (r *ConfinedFileRoot) open(previous *LocalExecutionEnvironment, create bool) (*LocalExecutionEnvironment, error) {
 	r.mu.Lock()
 	host := r.host
 	if host == nil {
@@ -84,10 +80,8 @@ func (r *ConfinedFileRoot) open(previous *LocalExecutionEnvironment, create bool
 	r.mu.Unlock()
 	defer host.release()
 	root := filepath.Join(r.stateRoot, r.relativeRoot)
-	if create {
-		if err := host.mkdirAll("memory", root); err != nil {
-			return nil, err
-		}
+	if err := host.mkdirAll("memory", root); err != nil {
+		return nil, err
 	}
 	fd, err := openBeneathRoot(host.rootFds[r.stateRoot], filepath.ToSlash(r.relativeRoot), os.O_RDONLY, 0)
 	if err != nil {
