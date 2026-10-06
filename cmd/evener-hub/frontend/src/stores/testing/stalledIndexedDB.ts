@@ -33,6 +33,36 @@ export function holdNextCurrentLookup(cache: SessionCacheIndexedDB) {
   };
 }
 
+// Holds the next real getCurrent call BEFORE its read runs: reach resolves as
+// the call is entered, and release lets the real read execute. Unlike
+// holdNextCurrentLookup (which captures the storage result first and only then
+// delays its return), this lets the durable store change underneath a suspended
+// worker, so a post-Clear lookup observes a genuine miss rather than a stale
+// hit. The spy delegates to the real adapter; it fabricates no result.
+export function holdNextCurrentLookupBeforeRead(cache: SessionCacheIndexedDB) {
+  const read = cache.getCurrent.bind(cache);
+  let reached!: () => void;
+  let release!: () => void;
+  const arrived = new Promise<void>((resolve) => {
+    reached = resolve;
+  });
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const spy = vi.spyOn(cache, "getCurrent").mockImplementationOnce(async (...args) => {
+    reached();
+    await gate;
+    return read(...args);
+  });
+  return {
+    reached: arrived,
+    release: () => {
+      release();
+      spy.mockRestore();
+    },
+  };
+}
+
 // A request that never fires success, error, or blocked: the wedged
 // connection-coordinator shape, where open()/deleteDatabase() return and then
 // no event ever arrives.

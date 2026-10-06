@@ -15,6 +15,7 @@ import { connectionStore } from "./connection";
 import { type CurrentSessionRecord, SessionCacheIndexedDB } from "./sessionCacheIndexedDB";
 import {
   holdNextCurrentLookup,
+  holdNextCurrentLookupBeforeRead,
   holdNextTransaction,
   holdNextWriteTransaction,
   nextRealTask,
@@ -1121,6 +1122,358 @@ describe("background transcript recovery", () => {
       await lease.release();
       restoreScheduler();
       put.mockRestore();
+      resetThreadsStoreForTests();
+      restoreOptions();
+      cache.close();
+    }
+  });
+  test("a background worker suspended at its lookup across a committed Clear cannot restore persistence or start a recovery read", async () => {
+    const restoreOptions = installBackgroundTranscriptOptionsForTests({ residentBytes: 0 });
+    const cache = new SessionCacheIndexedDB({
+      indexedDB: new IDBFactory(),
+      databaseName: `recovery-${crypto.randomUUID()}`,
+    });
+    resetThreadsStoreForTests();
+    setSessionCacheAdapterForTests(cache);
+    const fake = connectFakeClient();
+    const writes: CurrentSessionRecord[] = [];
+    const originalPut = cache.putCurrent.bind(cache);
+    const put = vi.spyOn(cache, "putCurrent").mockImplementation(async (record, now) => {
+      const outcome = await originalPut(record, now);
+      if (outcome.outcome === "written") writes.push(record);
+      return outcome;
+    });
+    const lease = acquireBackgroundThread(ref);
+    try {
+      await lease.ready;
+      await settleBackgroundTranscriptsForTests();
+      expect(backgroundTranscriptSnapshotForTests().refs.get(ref)?.current).toBe(true);
+      const readsAfterCheckpoint = threadReads(fake);
+      const writesAfterCheckpoint = writes.length;
+
+      // Park a real background worker at the cache lookup BEFORE its read runs,
+      // then commit a real Clear that deletes the current rows and increments
+      // the durable epoch.
+      const lookup = holdNextCurrentLookupBeforeRead(cache);
+      fake.emitNotification(textDelta(ref, "-suspended-worker"));
+      await lookup.reached;
+      expect(await clearCachedSessions()).toEqual({ committed: true });
+      lookup.release();
+      await settleBackgroundTranscriptsForTests();
+
+      // The obsolete completion observes a real miss; it must not overwrite
+      // clear-suppressed with repairing, schedule a hydration, or write.
+      expect(backgroundTranscriptSnapshotForTests().refs.get(ref)?.persistence).toBe("clear-suppressed");
+      expect(threadReads(fake)).toBe(readsAfterCheckpoint);
+      expect(writes.length).toBe(writesAfterCheckpoint);
+      expect(threadsStore.getState().cacheLifetimes.get(ref)?.suppressed).toBe(true);
+    } finally {
+      put.mockRestore();
+      await lease.release();
+      await settleBackgroundTranscriptsForTests();
+      resetThreadsStoreForTests();
+      restoreOptions();
+      cache.close();
+    }
+  });
+
+  test("a background worker suspended at its lookup across a committed Clear cannot arm a repair from an obsolete oversized base", async () => {
+    const restoreOptions = installBackgroundTranscriptOptionsForTests({ residentBytes: 0 });
+    const cache = new SessionCacheIndexedDB({
+      indexedDB: new IDBFactory(),
+      databaseName: `recovery-${crypto.randomUUID()}`,
+      maxBytes: 64 * 1024 * 1024,
+    });
+    resetThreadsStoreForTests();
+    setSessionCacheAdapterForTests(cache);
+    const scheduled: Array<() => void> = [];
+    const restoreScheduler = installHydrationRetrySchedulerForTests((_attempt, retry) => {
+      scheduled.push(retry);
+      return () => {};
+    });
+    const fake = connectFakeClient();
+    const writes: CurrentSessionRecord[] = [];
+    const originalPut = cache.putCurrent.bind(cache);
+    const put = vi.spyOn(cache, "putCurrent").mockImplementation(async (record, now) => {
+      const outcome = await originalPut(record, now);
+      if (outcome.outcome === "written") writes.push(record);
+      return outcome;
+    });
+    const lease = acquireBackgroundThread(ref);
+    try {
+      await lease.ready;
+      await settleBackgroundTranscriptsForTests();
+      const initial = writes.at(-1);
+      if (!initial) throw new Error("expected a real background checkpoint");
+      // Enlarge the checkpoint's own encoded live content (its "alpha" item) so
+      // the model rebuilt from this record trips the 32 MiB base check.
+      const oversizedJson = JSON.stringify(initial.state).replace(
+        '"alpha"',
+        JSON.stringify("h".repeat(34 * 1024 * 1024)),
+      );
+      const oversized = JSON.parse(oversizedJson) as CurrentSessionRecord["state"];
+      await cache.putCurrent({ ...initial, savedAt: Date.now(), state: oversized }, Date.now());
+      const readsBefore = threadReads(fake);
+      const writesBefore = writes.length;
+
+      // The held lookup captures the oversized base BEFORE Clear commits, so
+      // its completion reaches the oversized-base early return.
+      const lookup = holdNextCurrentLookup(cache);
+      fake.emitNotification(textDelta(ref, "-suspended-oversized"));
+      await lookup.reached;
+      expect(await clearCachedSessions()).toEqual({ committed: true });
+      lookup.release();
+      await settleBackgroundTranscriptsForTests();
+
+      expect(backgroundTranscriptSnapshotForTests().refs.get(ref)?.persistence).toBe("clear-suppressed");
+      expect(scheduled).toHaveLength(0);
+      expect(threadReads(fake)).toBe(readsBefore);
+      expect(writes.length).toBe(writesBefore);
+      expect(threadsStore.getState().cacheLifetimes.get(ref)?.suppressed).toBe(true);
+    } finally {
+      put.mockRestore();
+      await lease.release();
+      await settleBackgroundTranscriptsForTests();
+      restoreScheduler();
+      resetThreadsStoreForTests();
+      restoreOptions();
+      cache.close();
+    }
+  });
+
+  test("a promotion suspended at its lookup cannot publish its captured model during a same-tab Clear", async () => {
+    const restoreOptions = installBackgroundTranscriptOptionsForTests({ residentBytes: 0 });
+    const cache = new SessionCacheIndexedDB({
+      indexedDB: new IDBFactory(),
+      databaseName: `recovery-${crypto.randomUUID()}`,
+    });
+    resetThreadsStoreForTests();
+    setSessionCacheAdapterForTests(cache);
+    let reads = 0;
+    const fake = new FakeClient("ready");
+    fake.on("thread/read", ({ ref: requested, requestGeneration }) => {
+      reads += 1;
+      const response = currentRead(requested ?? ref);
+      response.requestGeneration = requestGeneration ?? response.requestGeneration;
+      const marker = reads === 1 ? "alpha" : "reopened";
+      if (response.overlay?.[0]) response.overlay[0].item.text = marker;
+      return response;
+    });
+    fake.on("thread/unsubscribe", () => ({}));
+    connectionStore.getState().connect(fake);
+    const lease = acquireBackgroundThread(ref);
+    let paneHeld = false;
+    let opening: Promise<void> | undefined;
+    let lookup: ReturnType<typeof holdNextCurrentLookup> | undefined;
+    let clearHold: ReturnType<typeof holdNextWriteTransaction> | undefined;
+    let clearing: Promise<{ committed: boolean }> | undefined;
+    try {
+      await lease.ready;
+      await settleBackgroundTranscriptsForTests();
+      expect(backgroundTranscriptSnapshotForTests().refs.get(ref)?.current).toBe(true);
+      expect(reads).toBe(1);
+
+      // Park the promotion at its real lookup, then arm and hold a same-tab
+      // Clear. Release the lookup while the Clear is armed but not committed.
+      lookup = holdNextCurrentLookup(cache);
+      opening = threadsStore.getState().ensureThread(ref);
+      paneHeld = true;
+      await lookup.reached;
+      clearHold = holdNextWriteTransaction(["records", "meta", "current", "currentMeta"]);
+      clearing = clearCachedSessions();
+      await clearHold.reached;
+      expect(threadsStore.getState().clearInFlight).toBeDefined();
+
+      lookup.release();
+      await opening;
+      await settleBackgroundTranscriptsForTests();
+
+      // The obsolete promotion captured the pre-Clear "alpha" model; it must not
+      // publish it. The pane's fresh read published the new wire marker instead,
+      // so a stale capture cannot be mistaken for a legitimate recovery.
+      expect(reads).toBeGreaterThan(1);
+      const published = JSON.stringify(threadsStore.getState().threads.get(ref) ?? {});
+      expect(published).toContain("reopened");
+      expect(published).not.toContain("alpha");
+
+      clearHold.release();
+      expect(await clearing).toEqual({ committed: true });
+    } finally {
+      lookup?.release();
+      clearHold?.release();
+      await clearing?.catch(() => undefined);
+      await opening?.catch(() => undefined);
+      if (paneHeld) threadsStore.getState().releaseThread(ref);
+      await settleBackgroundTranscriptsForTests();
+      await lease.release();
+      resetThreadsStoreForTests();
+      restoreOptions();
+      cache.close();
+    }
+  });
+
+  test("a promotion suspended at its lookup cannot publish after a same-tab Clear aborts, and a fresh open recovers", async () => {
+    const restoreOptions = installBackgroundTranscriptOptionsForTests({ residentBytes: 0 });
+    const faulted = true;
+    const cache = new SessionCacheIndexedDB({
+      indexedDB: new IDBFactory(),
+      databaseName: `recovery-${crypto.randomUUID()}`,
+      beforeCommit: (operation) => {
+        if (operation === "clear" && faulted) throw new Error("clear storage fault");
+      },
+    });
+    resetThreadsStoreForTests();
+    setSessionCacheAdapterForTests(cache);
+    let reads = 0;
+    const fake = new FakeClient("ready");
+    fake.on("thread/read", ({ ref: requested, requestGeneration }) => {
+      reads += 1;
+      const response = currentRead(requested ?? ref);
+      response.requestGeneration = requestGeneration ?? response.requestGeneration;
+      if (response.overlay?.[0]) response.overlay[0].item.text = reads === 1 ? "alpha" : "recovered";
+      return response;
+    });
+    fake.on("thread/unsubscribe", () => ({}));
+    connectionStore.getState().connect(fake);
+    const lease = acquireBackgroundThread(ref);
+    let paneHeld = false;
+    let opening: Promise<void> | undefined;
+    let lookup: ReturnType<typeof holdNextCurrentLookup> | undefined;
+    try {
+      await lease.ready;
+      await settleBackgroundTranscriptsForTests();
+      expect(backgroundTranscriptSnapshotForTests().refs.get(ref)?.current).toBe(true);
+      expect(reads).toBe(1);
+
+      lookup = holdNextCurrentLookup(cache);
+      opening = threadsStore.getState().ensureThread(ref);
+      paneHeld = true;
+      await lookup.reached;
+      // The same-tab Clear aborts: the boolean fence clears, but the obsolete
+      // promotion claim must stay retired.
+      expect(await clearCachedSessions()).toEqual({ committed: false });
+      expect(threadsStore.getState().clearInFlight).toBeUndefined();
+      lookup.release();
+      await opening;
+      await settleBackgroundTranscriptsForTests();
+
+      // The obsolete pre-clear promotion published nothing; the pane's
+      // legitimate continuation read published the fresh marker instead.
+      expect(reads).toBeGreaterThan(1);
+      const published = JSON.stringify(threadsStore.getState().threads.get(ref) ?? {});
+      expect(published).toContain("recovered");
+      expect(published).not.toContain('"alpha"');
+      expect(backgroundTranscriptSnapshotForTests().refs.get(ref)?.persistence).toBe("enabled");
+    } finally {
+      lookup?.release();
+      await opening?.catch(() => undefined);
+      if (paneHeld) threadsStore.getState().releaseThread(ref);
+      await settleBackgroundTranscriptsForTests();
+      await lease.release();
+      resetThreadsStoreForTests();
+      restoreOptions();
+      cache.close();
+    }
+  });
+
+  test("an aborted same-tab Clear re-issues authoritative recovery for a retained background ref without freeing its issued read", async () => {
+    const restoreOptions = installBackgroundTranscriptOptionsForTests({ residentBytes: 0 });
+    const faulted = true;
+    const cache = new SessionCacheIndexedDB({
+      indexedDB: new IDBFactory(),
+      databaseName: `recovery-${crypto.randomUUID()}`,
+      beforeCommit: (operation) => {
+        if (operation === "clear" && faulted) throw new Error("clear storage fault");
+      },
+    });
+    resetThreadsStoreForTests();
+    setSessionCacheAdapterForTests(cache);
+    const firstRead = deferred<ReturnType<typeof currentRead>>();
+    let reads = 0;
+    const fake = new FakeClient("ready");
+    fake.on("thread/read", ({ ref: requested, requestGeneration }) => {
+      reads += 1;
+      if (reads === 1) return firstRead.promise;
+      const response = currentRead(requested ?? ref);
+      response.requestGeneration = requestGeneration ?? response.requestGeneration;
+      if (response.overlay?.[0]) response.overlay[0].item.text = "recovered";
+      return response;
+    });
+    fake.on("thread/unsubscribe", () => ({}));
+    connectionStore.getState().connect(fake);
+    const lease = acquireBackgroundThread(ref);
+    let paneHeld = false;
+    try {
+      await vi.waitFor(() => expect(reads).toBe(1));
+      // The issued read is capacity-charged while the same-tab Clear arms.
+      expect(backgroundTranscriptSnapshotForTests().networkHydrations).toBe(1);
+      expect(await clearCachedSessions()).toEqual({ committed: false });
+      expect(threadsStore.getState().clearInFlight).toBeUndefined();
+      // Retirement kept the old read's slot; the abort re-issued a fresh one.
+      expect(backgroundTranscriptSnapshotForTests().networkHydrations).toBe(2);
+
+      firstRead.resolve(currentRead(ref));
+      await vi.waitFor(() => expect(backgroundTranscriptSnapshotForTests().refs.get(ref)?.current).toBe(true));
+      expect(reads).toBeGreaterThanOrEqual(2);
+      expect(backgroundTranscriptSnapshotForTests().refs.get(ref)?.persistence).toBe("enabled");
+
+      // A local open adopts the recovered checkpoint with no further read.
+      const readsAfterRecovery = reads;
+      await threadsStore.getState().ensureThread(ref);
+      paneHeld = true;
+      expect(reads).toBe(readsAfterRecovery);
+      expect(JSON.stringify(threadsStore.getState().threads.get(ref))).toContain("recovered");
+    } finally {
+      firstRead.resolve(currentRead(ref));
+      if (paneHeld) threadsStore.getState().releaseThread(ref);
+      await settleBackgroundTranscriptsForTests();
+      await lease.release();
+      resetThreadsStoreForTests();
+      restoreOptions();
+      cache.close();
+    }
+  });
+
+  test("an aborted same-tab Clear does not undo a previously committed Clear's residency suppression", async () => {
+    const restoreOptions = installBackgroundTranscriptOptionsForTests({ residentBytes: 0 });
+    let faulted = false;
+    const cache = new SessionCacheIndexedDB({
+      indexedDB: new IDBFactory(),
+      databaseName: `recovery-${crypto.randomUUID()}`,
+      beforeCommit: (operation) => {
+        if (operation === "clear" && faulted) throw new Error("clear storage fault");
+      },
+    });
+    resetThreadsStoreForTests();
+    setSessionCacheAdapterForTests(cache);
+    const fake = connectFakeClient();
+    const writes: CurrentSessionRecord[] = [];
+    const originalPut = cache.putCurrent.bind(cache);
+    const put = vi.spyOn(cache, "putCurrent").mockImplementation(async (record, now) => {
+      const outcome = await originalPut(record, now);
+      if (outcome.outcome === "written") writes.push(record);
+      return outcome;
+    });
+    const lease = acquireBackgroundThread(ref);
+    try {
+      await lease.ready;
+      await settleBackgroundTranscriptsForTests();
+      expect(await clearCachedSessions()).toEqual({ committed: true });
+      expect(backgroundTranscriptSnapshotForTests().refs.get(ref)?.persistence).toBe("clear-suppressed");
+      const readsAfterCommitted = threadReads(fake);
+      const writesAfterCommitted = writes.length;
+
+      faulted = true;
+      expect(await clearCachedSessions()).toEqual({ committed: false });
+      await settleBackgroundTranscriptsForTests();
+      expect(backgroundTranscriptSnapshotForTests().refs.get(ref)?.persistence).toBe("clear-suppressed");
+      expect(threadsStore.getState().cacheLifetimes.get(ref)?.suppressed).toBe(true);
+      expect(threadReads(fake)).toBe(readsAfterCommitted);
+      expect(writes.length).toBe(writesAfterCommitted);
+    } finally {
+      put.mockRestore();
+      await lease.release();
+      await settleBackgroundTranscriptsForTests();
       resetThreadsStoreForTests();
       restoreOptions();
       cache.close();
