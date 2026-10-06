@@ -103,7 +103,11 @@ export function selectNeedsYouCount(state: NavigationStoreState): number {
 }
 export function selectSectionRemaining(section: "live" | "needs_you", state: NavigationStoreState): number {
   const pages = [...state.resources.values()].filter(
-    (resource) => resource.key.kind === "section" && resource.key.section === section && resource.data !== null,
+    (resource) =>
+      resource.key.kind === "section" &&
+      resource.key.section === section &&
+      resource.data !== null &&
+      state.visibleResourceKeys.has(keyID(resource.key)),
   );
   const last = pages
     .sort((a, b) =>
@@ -116,7 +120,10 @@ export function selectSectionRemaining(section: "live" | "needs_you", state: Nav
 }
 export function selectNextSectionOffset(section: "live" | "needs_you", state: NavigationStoreState): number {
   const pages = [...state.resources.values()].filter(
-    (resource) => resource.key.kind === "section" && resource.key.section === section,
+    (resource) =>
+      resource.key.kind === "section" &&
+      resource.key.section === section &&
+      state.visibleResourceKeys.has(keyID(resource.key)),
   );
   const last = pages
     .sort((a, b) =>
@@ -144,6 +151,7 @@ function loadedSectionRows(
     if (
       (resource.key.kind !== "section" && resource.key.kind !== "pin_section") ||
       !predicate(resource.key) ||
+      !state.visibleResourceKeys.has(keyID(resource.key)) ||
       resource.data === null
     )
       continue;

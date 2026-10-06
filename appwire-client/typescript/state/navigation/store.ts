@@ -104,6 +104,7 @@ export interface NavigationStoreState {
   lastSequence: number;
   manifest: ResourceState<NavigationManifest> | null;
   resources: ResourceMap;
+  visibleResourceKeys: ReadonlySet<string>;
   expanded: ReadonlyMap<string, boolean>;
   attention: { changed: AttentionChanged[]; summary: AttentionSummary | null };
   mode: "unknown" | "v3" | "error";
@@ -289,6 +290,7 @@ export interface NavigationStore extends FrameworkFreeStore<NavigationStoreState
   /** Wires a client and starts boot; returns that wiring's teardown. Called
    * again with the same client and no `initialize`, it is a no-op. */
   init(client: NavigationClient, initialize?: InitializeResponse | NavigationCapability | null): () => void;
+  acquireBackgroundLivePages(): BackgroundLivePages;
   /** Await a matching invalidation, but fall back to converging `targets`
    * directly when none arrives within the timeout. A receipt only ends the
    * wait once `settled` confirms the caller's own change is reflected: the
@@ -317,6 +319,11 @@ export interface NavigationStore extends FrameworkFreeStore<NavigationStoreState
   reset(): void;
 }
 
+export interface BackgroundLivePages {
+  load(offset: number, limit?: number): Promise<ResourceState<NavigationSectionResource>>;
+  release(): void;
+}
+
 export interface NavigationStoreDeps {
   /** Where this host keeps rail expansion between visits. */
   persistence: NavigationPersistence;
@@ -331,6 +338,7 @@ export function createNavigationStore({ persistence }: NavigationStoreDeps): Nav
     lastSequence: 0,
     manifest: null,
     resources: new Map(),
+    visibleResourceKeys: new Set(),
     expanded: persistence.readExpansion(),
     attention: initialAttention,
     protocolError: null,
@@ -353,13 +361,73 @@ export function createNavigationStore({ persistence }: NavigationStoreDeps): Nav
   let bootEpoch = 0;
   let bootStartedEpoch = -1;
   let manifestFanout: { key: string; promise: Promise<void> } | null = null;
+  const demands = new Map<string, { key: ResourceKey; foreground: boolean; background: Set<symbol> }>();
+  const backgroundLeases = new Map<symbol, Set<string>>();
+  function clearDemands(): void {
+    demands.clear();
+    backgroundLeases.clear();
+  }
+  function registerForeground(resourceKey: ResourceKey): void {
+    const id = keyID(resourceKey);
+    const demand = demands.get(id) ?? { key: resourceKey, foreground: false, background: new Set<symbol>() };
+    demand.foreground = true;
+    demands.set(id, demand);
+    if (!store.getState().visibleResourceKeys.has(id)) {
+      const visibleResourceKeys = new Set(store.getState().visibleResourceKeys);
+      visibleResourceKeys.add(id);
+      store.setState({ visibleResourceKeys });
+    }
+  }
+  function registerBackground(resourceKey: ResourceKey, token: symbol): void {
+    const id = keyID(resourceKey);
+    const demand = demands.get(id) ?? { key: resourceKey, foreground: false, background: new Set<symbol>() };
+    demand.background.add(token);
+    demands.set(id, demand);
+    backgroundLeases.get(token)?.add(id);
+  }
+  function releaseBackground(token: symbol): void {
+    const ids = backgroundLeases.get(token);
+    if (!ids) return;
+    backgroundLeases.delete(token);
+    for (const id of ids) {
+      const demand = demands.get(id);
+      if (!demand) continue;
+      demand.background.delete(token);
+      if (!demand.foreground && demand.background.size === 0) {
+        demands.delete(id);
+        revalidator?.release(demand.key);
+      }
+    }
+  }
+  function acquireBackgroundLivePages(): BackgroundLivePages {
+    const token = Symbol("background-live-pages");
+    backgroundLeases.set(token, new Set());
+    let released = false;
+    return {
+      load: (offset, limit = PAGE_LIMIT) => {
+        if (released || !backgroundLeases.has(token))
+          return Promise.reject(new Error("background navigation lease released"));
+        return load<NavigationSectionResource>({ kind: "section", section: "live", offset, limit }, token);
+      },
+      release: () => {
+        if (released) return;
+        released = true;
+        releaseBackground(token);
+      },
+    };
+  }
+  function foregroundKeys(): ReadonlySet<string> {
+    return new Set(store.getState().visibleResourceKeys);
+  }
   function clearClientOwnedState(): void {
+    clearDemands();
     store.setState({
       capability: null,
       clientGenerationID: "",
       lastSequence: 0,
       manifest: null,
       resources: new Map(),
+      visibleResourceKeys: new Set(),
       attention: initialAttention,
       mode: "unknown",
       protocolError: null,
@@ -442,12 +510,14 @@ export function createNavigationStore({ persistence }: NavigationStoreDeps): Nav
       };
     };
   }
-  function load<T>(k: ResourceKey): Promise<ResourceState<T>> {
+  function load<T>(k: ResourceKey, backgroundToken?: symbol): Promise<ResourceState<T>> {
     if (!revalidator) return Promise.reject(new Error("navigation is not initialized"));
     const requestRevalidator = revalidator;
     const requestClient = activeClient;
     if (!requestClient) return Promise.reject(new Error("navigation is not initialized"));
     const resourceKey = key(k);
+    if (backgroundToken) registerBackground(resourceKey, backgroundToken);
+    else registerForeground(resourceKey);
     return requestRevalidator.load<T>(resourceKey, requestFor<T>(resourceKey, requestClient));
   }
   async function withProjectRecovery(projectKey: string): Promise<ResourceState<NavigationProjectResource>> {
@@ -540,6 +610,7 @@ export function createNavigationStore({ persistence }: NavigationStoreDeps): Nav
       trackPinSection: (sectionId: string) => {
         if (!revalidator || !activeClient) return;
         const resourceKey = key({ kind: "pin_section", sectionId, offset: 0, limit: PAGE_LIMIT });
+        registerForeground(resourceKey);
         revalidator.track(resourceKey, requestFor(resourceKey, activeClient));
       },
       loadProject: (projectKey: string) => withProjectRecovery(projectKey),
@@ -548,7 +619,7 @@ export function createNavigationStore({ persistence }: NavigationStoreDeps): Nav
       lookupLocation: (ref: string) => load<NavigationSessionLocation>({ kind: "location", ref }),
       awaitNavigationTargets: (targets: NavigationInvalidationTarget[], generationID?: string) => {
         if (!revalidator) return Promise.reject(new Error("navigation is not initialized"));
-        return revalidator.waitForTargets(targets, generationID);
+        return revalidator.waitForTargets(targets, generationID, foregroundKeys());
       },
       awaitNavigationInvalidation: (predicate?: (payload: NavigationInvalidatedPayload) => boolean) => {
         if (!revalidator)
@@ -566,7 +637,7 @@ export function createNavigationStore({ persistence }: NavigationStoreDeps): Nav
         }
         for (const target of mutation.targets) revalidator.invalidate(target);
         revalidator.forceLocations();
-        return revalidator.waitForTargets(mutation.targets, mutation.generation_id);
+        return revalidator.waitForTargets(mutation.targets, mutation.generation_id, foregroundKeys());
       },
       setExpanded: (projectKey: string, expanded: boolean) => commitExpansion(projectKey, expanded),
       toggleExpanded: (projectKey: string) =>
@@ -906,8 +977,9 @@ export function createNavigationStore({ persistence }: NavigationStoreDeps): Nav
     activeClient = null;
     bootStartedEpoch = -1;
     manifestFanout = null;
+    clearDemands();
     store.setState(navigationState());
   }
 
-  return { ...store, init, awaitConvergence, reset };
+  return { ...store, init, acquireBackgroundLivePages, awaitConvergence, reset };
 }

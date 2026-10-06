@@ -114,6 +114,7 @@ function installState(resources: ResourceState[] = [], m = manifest()) {
     clientGenerationID: "g1",
     manifest: resource({ kind: "manifest" }, m) as ResourceState<NavigationManifest>,
     resources: new Map(resources.map((entry) => [keyID(entry.key), entry])),
+    visibleResourceKeys: new Set(resources.map((entry) => keyID(entry.key))),
     expanded: new Map(),
     attention: { changed: [], summary: m.attentionSummary },
     loadManifest: vi.fn(),
@@ -1283,7 +1284,7 @@ describe("resource-backed Rail", () => {
           { generation_id: "g1", revision: 2, sessions: [row], remaining: 0, truncated: false },
         );
         resources.set(keyID(loaded.key), loaded);
-        return { resources };
+        return { resources, visibleResourceKeys: new Set([...state.visibleResourceKeys, keyID(loaded.key)]) };
       });
     });
     installState([
@@ -1522,7 +1523,7 @@ describe("resource-backed Rail", () => {
         [keyID(live.key), live],
       ]);
       await act(async () => {
-        navigationStore.setState({ resources: nextResources });
+        navigationStore.setState({ resources: nextResources, visibleResourceKeys: new Set([...nextResources.keys()]) });
       });
       await act(async () => {
         navigationStore.setState({ attention: { changed: [], summary: { needsYou: 0, error: 0, working: 0 } } });

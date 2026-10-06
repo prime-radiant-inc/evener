@@ -312,6 +312,7 @@ test("needs-you selectors keep manifest count, first-occurrence order, short-pag
       generationID: generation,
     },
     resources,
+    visibleResourceKeys: new Set(resources.keys()),
   });
   const state = store.getState();
   expect(selectNeedsYouCount(state)).toBe(75);
@@ -369,6 +370,7 @@ test("needs-you cursor uses limit as the same-offset canonical tie-break", () =>
         },
       ],
     ]),
+    visibleResourceKeys: new Set([keyID(narrow), keyID(wide)]),
   });
   const state = store.getState();
   expect(selectSectionRemaining("needs_you", state)).toBe(2);

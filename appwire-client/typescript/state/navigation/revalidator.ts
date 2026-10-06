@@ -30,6 +30,7 @@ interface Entry {
 interface TargetWaiter {
   targets: NavigationInvalidationTarget[];
   generationID: string;
+  keys?: ReadonlySet<string>;
   resolve: () => void;
   reject: (reason?: unknown) => void;
 }
@@ -126,11 +127,16 @@ export class NavigationRevalidator {
   loadedKeys(): ResourceKey[] {
     return [...this.entries.values()].map((entry) => entry.state.key);
   }
-  waitForTargets(targets: NavigationInvalidationTarget[], generationID = this.generationIDValue): Promise<void> {
+  waitForTargets(
+    targets: NavigationInvalidationTarget[],
+    generationID = this.generationIDValue,
+    keys?: ReadonlySet<string>,
+  ): Promise<void> {
     if (generationID !== this.generationIDValue) return Promise.reject(protocolError("generation mismatch"));
-    if (this.targetsSatisfied(targets, generationID)) return Promise.resolve();
+    const snapshot = keys === undefined ? undefined : new Set(keys);
+    if (this.targetsSatisfied(targets, generationID, snapshot)) return Promise.resolve();
     return new Promise<void>((resolve, reject) => {
-      this.targetWaiters.add({ targets, generationID, resolve, reject });
+      this.targetWaiters.add({ targets, generationID, keys: snapshot, resolve, reject });
       this.resolveTargetWaiters();
     });
   }
@@ -233,6 +239,18 @@ export class NavigationRevalidator {
   track<T = unknown>(key: ResourceKey, request: NavigationRequest<T>): void {
     if (this.disposed) return;
     this.entry(key).request = request as NavigationRequest;
+  }
+  /** Retires an unowned entry. A running request is aborted and fenced so a
+   * transport that ignores AbortSignal cannot publish into the shared store. */
+  release(key: ResourceKey): void {
+    if (this.disposed) return;
+    const id = keyID(key);
+    const entry = this.entries.get(id);
+    if (!entry) return;
+    entry.epoch = this.epoch + 1;
+    entry.controller?.abort();
+    this.entries.delete(id);
+    this.resolveTargetWaiters();
   }
   private entry(key: ResourceKey): Entry {
     const id = keyID(key);
@@ -370,10 +388,15 @@ export class NavigationRevalidator {
       }
     this.resolveTargetWaiters();
   }
-  private targetsSatisfied(targets: NavigationInvalidationTarget[], generationID: string): boolean {
+  private targetsSatisfied(
+    targets: NavigationInvalidationTarget[],
+    generationID: string,
+    keys?: ReadonlySet<string>,
+  ): boolean {
     if (generationID !== this.generationIDValue) return false;
     return targets.every((target) => {
       return [...this.entries.values()].every((entry) => {
+        if (keys && !keys.has(keyID(entry.state.key))) return true;
         if (!matchesTarget(entry.state.key, target)) return true;
         const revision = target.revision;
         return (
@@ -391,19 +414,23 @@ export class NavigationRevalidator {
       if (waiter.generationID !== this.generationIDValue) {
         waiter.reject(protocolError("generation mismatch"));
         this.targetWaiters.delete(waiter);
-      } else if (this.targetFailed(waiter.targets)) {
+      } else if (this.targetFailed(waiter.targets, waiter.keys)) {
         waiter.reject(protocolError("target convergence failed"));
         this.targetWaiters.delete(waiter);
-      } else if (this.targetsSatisfied(waiter.targets, waiter.generationID)) {
+      } else if (this.targetsSatisfied(waiter.targets, waiter.generationID, waiter.keys)) {
         waiter.resolve();
         this.targetWaiters.delete(waiter);
       }
     }
   }
-  private targetFailed(targets: NavigationInvalidationTarget[]): boolean {
+  private targetFailed(targets: NavigationInvalidationTarget[], keys?: ReadonlySet<string>): boolean {
     return targets.some((target) =>
       [...this.entries.values()].some(
-        (entry) => matchesTarget(entry.state.key, target) && entry.state.error !== null && !entry.rerun,
+        (entry) =>
+          (!keys || keys.has(keyID(entry.state.key))) &&
+          matchesTarget(entry.state.key, target) &&
+          entry.state.error !== null &&
+          !entry.rerun,
       ),
     );
   }
