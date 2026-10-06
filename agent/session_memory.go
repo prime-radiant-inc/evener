@@ -194,9 +194,6 @@ func (s *Session) openMemoryEnvironment(scope string, create bool) (*execenv.Loc
 	err = s.beforeMemoryIO(scope, "setup")
 	var env *execenv.LocalExecutionEnvironment
 	if err == nil && root == nil {
-		if scope == "session" && s.seedForkedSessionMemory() {
-			create = true
-		}
 		root, err = execenv.NewConfinedFileRoot(s.cfg.MemoryStateRoot, relative)
 	}
 	if err == nil {
