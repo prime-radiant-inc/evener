@@ -108,6 +108,8 @@ interface Entry {
   persistence: Persistence;
   lastForegroundUse: number;
   promoting: boolean;
+  workSequence: number;
+  inFlight: ReceivedTranscriptUpdate[];
   flushTimer?: ReturnType<typeof setTimeout>;
   maxWaitTimer?: ReturnType<typeof setTimeout>;
   work?: Promise<boolean>;
@@ -157,6 +159,8 @@ export function createTranscriptResidency(
       persistence: "enabled",
       lastForegroundUse: 0,
       promoting: false,
+      workSequence: 0,
+      inFlight: [],
       waiters: [],
     };
     entries.set(ref, created);
@@ -215,9 +219,9 @@ export function createTranscriptResidency(
   }
 
   async function waitForEntryCut(ref: string, entry: Entry, sequence: number): Promise<boolean> {
-    while (entry.checkpointSequence < sequence || entry.work) {
+    while (entry.checkpointSequence < sequence) {
       if (entry.persistence !== "enabled") return false;
-      if (!entry.work && !workQueue.includes(ref) && !urgentQueue.includes(ref)) enqueue(ref, true);
+      if (!entry.work && (!urgentQueue.includes(ref) || workQueue.includes(ref))) enqueue(ref, true);
       if (entry.work) {
         await entry.work.catch(() => false);
       } else {
@@ -331,6 +335,8 @@ export function createTranscriptResidency(
       batch.push(update);
       batchBytes += update.bytes;
     }
+    entry.inFlight = batch;
+    entry.workSequence = Math.max(entry.workSequence, batch.at(-1)?.sequence ?? entry.checkpointSequence);
     if (!model) {
       const found = await port.cache.getCurrent([ownerToken, ref], Date.now());
       if (!found?.record || found.epoch !== found.record.clearEpoch) {
@@ -389,7 +395,7 @@ export function createTranscriptResidency(
       }
       const outcome = await port.cache.putCurrent(record, Date.now());
       if (outcome.outcome !== "written") {
-        entry.persistence = "repairing";
+        residency.revoke(ref, "storage");
         return false;
       }
       committedWrites += 1;
@@ -436,6 +442,7 @@ export function createTranscriptResidency(
       return true;
     } finally {
       workerBytes = 0;
+      if (entry.inFlight === batch) entry.inFlight = [];
       const retryForOwnerChange =
         !committed &&
         ready &&
@@ -467,9 +474,10 @@ export function createTranscriptResidency(
         try {
           await work;
         } catch {
-          entry.persistence = "repairing";
+          residency.revoke(ref, "storage");
         } finally {
           if (entry.work === work) entry.work = undefined;
+          entry.workSequence = entry.checkpointSequence;
           diskWorkers = 0;
           resolveWaiters(entry);
         }
@@ -629,26 +637,45 @@ export function createTranscriptResidency(
       if (!entry.current && entry.pending.length === 0 && !entry.work) return undefined;
       entry.promoting = true;
       try {
-        const promotionCut = entry.pending.at(-1)?.sequence ?? entry.appliedSequence;
+        const promotionCut = Math.max(entry.pending.at(-1)?.sequence ?? 0, entry.workSequence, entry.appliedSequence);
         if (!(await waitForEntryCut(ref, entry, promotionCut))) return undefined;
         const activeGeneration = connectionGeneration;
         const ownershipGeneration = entry.ownershipGeneration;
+        const activeClearEpoch = clearEpoch;
         const found = await port.cache.getCurrent([ownerToken, ref], Date.now());
+        const record = found?.record;
         if (
-          found?.record &&
-          found.epoch === clearEpoch &&
-          found.record.clearEpoch === clearEpoch &&
-          found.record.connectionGeneration === activeGeneration &&
-          found.record.ownershipGeneration === entry.checkpointOwnershipGeneration &&
+          record &&
+          found.epoch === activeClearEpoch &&
+          record.clearEpoch === activeClearEpoch &&
+          record.connectionGeneration === activeGeneration &&
+          record.ownershipGeneration === entry.checkpointOwnershipGeneration &&
           ready &&
-          activeGeneration === connectionGeneration
+          activeGeneration === connectionGeneration &&
+          activeClearEpoch === clearEpoch &&
+          entry.current &&
+          !entry.needsRecovery &&
+          entry.persistence === "enabled" &&
+          owned(entry)
         ) {
-          let model = threadModelFromCurrentState(found.record.state, port.admission(ref));
-          for (const update of entry.pending) model = port.fold(ref, model, update);
-          if (!ready || activeGeneration !== connectionGeneration || entry.ownershipGeneration !== ownershipGeneration)
+          let model = threadModelFromCurrentState(record.state, port.admission(ref));
+          const uncheckpointed = [...entry.inFlight, ...entry.pending]
+            .filter((update) => update.sequence > record.appliedSequence)
+            .sort((left, right) => left.sequence - right.sequence);
+          for (const update of uncheckpointed) model = port.fold(ref, model, update);
+          if (
+            !ready ||
+            activeGeneration !== connectionGeneration ||
+            activeClearEpoch !== clearEpoch ||
+            entry.ownershipGeneration !== ownershipGeneration ||
+            !entry.current ||
+            entry.needsRecovery ||
+            entry.persistence !== "enabled" ||
+            !owned(entry)
+          )
             return undefined;
           port.publish(ref, model);
-          entry.appliedSequence = entry.pending.at(-1)?.sequence ?? found.record.appliedSequence;
+          entry.appliedSequence = uncheckpointed.at(-1)?.sequence ?? record.appliedSequence;
           releaseEntryPending(entry);
           entry.current = true;
           return model;
@@ -656,6 +683,7 @@ export function createTranscriptResidency(
         return undefined;
       } finally {
         entry.promoting = false;
+        if (entry.pending.length > 0 && entry.persistence === "enabled") enqueue(ref, held(entry));
       }
     },
     scheduleHydration(ref, intent, run) {

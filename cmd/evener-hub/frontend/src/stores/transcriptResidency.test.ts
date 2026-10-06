@@ -26,7 +26,7 @@ afterEach(() => {
   for (const cache of caches.splice(0)) cache.close();
 });
 
-function setup(model: ThreadModel) {
+function setup(model: ThreadModel, pendingBytes = DEFAULT_BACKGROUND_TRANSCRIPT_OPTIONS.pendingBytes) {
   const cache = new SessionCacheIndexedDB({
     indexedDB: new IDBFactory(),
     databaseName: `residency-${crypto.randomUUID()}`,
@@ -46,7 +46,11 @@ function setup(model: ThreadModel) {
     fold: (_ref, current) => current,
     hydrate: async () => {},
   };
-  const residency = createTranscriptResidency(port, { ...DEFAULT_BACKGROUND_TRANSCRIPT_OPTIONS, residentBytes: 0 });
+  const residency = createTranscriptResidency(port, {
+    ...DEFAULT_BACKGROUND_TRANSCRIPT_OPTIONS,
+    pendingBytes,
+    residentBytes: 0,
+  });
   residency.connection(1, true);
   residency.owners(model.ref, { foreground: 0, history: 0, mutationPinned: false, background: 1 });
   return { cache, residency, port, getResident: () => resident };
@@ -79,16 +83,33 @@ describe("transcript residency", () => {
 
   test("commits an owner-scoped checkpoint before unloading and promotes it without hydration", async () => {
     const model = hydrateThread(currentRead("local:one"), "local:one", 1);
-    const { residency, getResident } = setup(model);
+    const { cache, residency, getResident } = setup(model);
     residency.published(model.ref, model, 0);
     await residency.settled();
 
     expect(getResident()).toBeUndefined();
     expect(residency.snapshot().committedWrites).toBe(1);
-    const promoted = await residency.promote(model.ref);
-    expect(promoted?.ref).toBe(model.ref);
-    expect(getResident()).toBe(promoted);
-    expect(residency.snapshot().networkHydrations).toBe(0);
+    const lookupReached = deferred<void>();
+    const releaseLookup = deferred<void>();
+    const originalGet = cache.getCurrent.bind(cache);
+    const get = vi.spyOn(cache, "getCurrent").mockImplementation(async (...args) => {
+      lookupReached.resolve();
+      await releaseLookup.promise;
+      return originalGet(...args);
+    });
+    try {
+      const promotion = residency.promote(model.ref);
+      await lookupReached.promise;
+      expect(residency.snapshot().refs.get(model.ref)?.current).toBe(true);
+      releaseLookup.resolve();
+      const promoted = await promotion;
+      expect(promoted?.ref).toBe(model.ref);
+      expect(getResident()).toBe(promoted);
+      expect(residency.snapshot().networkHydrations).toBe(0);
+    } finally {
+      releaseLookup.resolve();
+      get.mockRestore();
+    }
   });
 
   test("limits background hydration to two slots and starts queued foreground work first", async () => {
@@ -202,14 +223,23 @@ describe("transcript residency", () => {
   });
 
   test("continues FIFO disk work after one real-cache boundary fails", async () => {
+    let failFirst = true;
     const cache = new SessionCacheIndexedDB({
       indexedDB: new IDBFactory(),
       databaseName: `residency-${crypto.randomUUID()}`,
+      beforeCommit: (operation, transaction) => {
+        if (operation === "putCurrent" && failFirst) {
+          failFirst = false;
+          transaction.abort();
+        }
+      },
     });
     caches.push(cache);
     const first = hydrateThread(currentRead("local:one"), "local:one", 1);
     const second = hydrateThread(currentRead("local:two"), "local:two", 1);
     const residents = new Map<string, ThreadModel>();
+    const recoveryStarted = deferred<void>();
+    const releaseRecovery = deferred<void>();
     const port: TranscriptResidencyPort = {
       cache,
       resident: (ref) => residents.get(ref),
@@ -219,7 +249,10 @@ describe("transcript residency", () => {
       },
       admission: () => undefined,
       fold: (_ref, model) => model,
-      hydrate: async () => {},
+      hydrate: async () => {
+        recoveryStarted.resolve();
+        await releaseRecovery.promise;
+      },
     };
     const residency = createTranscriptResidency(port, DEFAULT_BACKGROUND_TRANSCRIPT_OPTIONS);
     residency.connection(1, true);
@@ -229,15 +262,11 @@ describe("transcript residency", () => {
     const originalPut = cache.putCurrent.bind(cache);
     const order: string[] = [];
     const committed: Array<{ ownerToken: string; ref: string }> = [];
-    let failFirst = true;
     const put = vi.spyOn(cache, "putCurrent").mockImplementation(async (record, now) => {
       order.push(record.ref);
-      if (record.ref === first.ref && failFirst) {
-        failFirst = false;
-        throw new Error("injected cache write failure");
-      }
-      committed.push({ ownerToken: record.ownerToken, ref: record.ref });
-      return originalPut(record, now);
+      const outcome = await originalPut(record, now);
+      if (outcome.outcome === "written") committed.push({ ownerToken: record.ownerToken, ref: record.ref });
+      return outcome;
     });
     try {
       port.publish(first.ref, first);
@@ -246,16 +275,143 @@ describe("transcript residency", () => {
       residency.published(first.ref, first, 1);
       residency.published(second.ref, second, 0);
       await residency.settled();
+      await recoveryStarted.promise;
 
       expect(order).toEqual([first.ref, second.ref]);
       expect(residency.snapshot().diskWorkers).toBe(0);
       expect(residency.snapshot().refs.get(first.ref)?.persistence).toBe("repairing");
+      expect(residency.snapshot().networkHydrations).toBe(1);
       const secondWrite = committed.find((record) => record.ref === second.ref);
       expect(secondWrite).toBeDefined();
       await expect(cache.getCurrent([secondWrite!.ownerToken, second.ref], Date.now())).resolves.toMatchObject({
         record: { ref: second.ref },
       });
     } finally {
+      releaseRecovery.resolve();
+      await residency.settled();
+      put.mockRestore();
+      residency.dispose();
+    }
+  });
+
+  test("serves unrelated disk work while a ref is replenished at each commit boundary", async () => {
+    const cache = new SessionCacheIndexedDB({
+      indexedDB: new IDBFactory(),
+      databaseName: `residency-${crypto.randomUUID()}`,
+    });
+    caches.push(cache);
+    const busy = hydrateThread(currentRead("local:busy"), "local:busy", 1);
+    const unrelated = hydrateThread(currentRead("local:unrelated"), "local:unrelated", 1);
+    const residents = new Map<string, ThreadModel>([
+      [busy.ref, busy],
+      [unrelated.ref, unrelated],
+    ]);
+    const port: TranscriptResidencyPort = {
+      cache,
+      resident: (ref) => residents.get(ref),
+      publish: (ref, model) => residents.set(ref, model),
+      unload: (ref) => {
+        residents.delete(ref);
+      },
+      admission: () => undefined,
+      fold: (_ref, model, update) => applyNotification(model, update.notification, update.now),
+      hydrate: async () => {},
+    };
+    const residency = createTranscriptResidency(port, {
+      ...DEFAULT_BACKGROUND_TRANSCRIPT_OPTIONS,
+      residentBytes: 0,
+    });
+    residency.connection(1, true);
+    for (const model of [busy, unrelated]) {
+      residency.owners(model.ref, { foreground: 0, history: 0, mutationPinned: false, background: 1 });
+      residency.published(model.ref, model, 0, true);
+    }
+    await residency.settled();
+
+    const firstBusyWriteStarted = deferred<void>();
+    const releaseFirstBusyWrite = deferred<void>();
+    const unrelatedWriteStarted = deferred<void>();
+    const starts: Array<{ ref: string; sequence: number }> = [];
+    const commits: Array<{ ref: string; sequence: number; ownerToken: string }> = [];
+    let replenishedNotifications = 0;
+    const originalPut = cache.putCurrent.bind(cache);
+    const put = vi.spyOn(cache, "putCurrent").mockImplementation(async (record, now) => {
+      starts.push({ ref: record.ref, sequence: record.appliedSequence });
+      if (record.ref === busy.ref && record.appliedSequence === 1) {
+        firstBusyWriteStarted.resolve();
+        await releaseFirstBusyWrite.promise;
+      }
+      if (record.ref === unrelated.ref) unrelatedWriteStarted.resolve();
+      const outcome = await originalPut(record, now);
+      if (outcome.outcome === "written") {
+        commits.push({ ref: record.ref, sequence: record.appliedSequence, ownerToken: record.ownerToken });
+        if (record.ref === busy.ref && record.appliedSequence < 4) {
+          const sequence = record.appliedSequence + 1;
+          const replenished = textDelta(busy.ref, `-busy-follow-up-${sequence}`);
+          residency.accept(busy.ref, {
+            notification: replenished,
+            sequence,
+            now: sequence + 2,
+            bytes: encodedPayloadBytes(replenished),
+          });
+          replenishedNotifications += 1;
+        }
+      }
+      return outcome;
+    });
+    try {
+      const busyFrame = textDelta(busy.ref, "-busy-first");
+      residency.accept(busy.ref, {
+        notification: busyFrame,
+        sequence: 1,
+        now: 2,
+        bytes: encodedPayloadBytes(busyFrame),
+      });
+      await firstBusyWriteStarted.promise;
+      const unrelatedFrame = textDelta(unrelated.ref, "-unrelated-ready");
+      residency.accept(unrelated.ref, {
+        notification: unrelatedFrame,
+        sequence: 1,
+        now: 3,
+        bytes: encodedPayloadBytes(unrelatedFrame),
+      });
+      releaseFirstBusyWrite.resolve();
+      await unrelatedWriteStarted.promise;
+      expect(starts).toEqual([
+        { ref: busy.ref, sequence: 1 },
+        { ref: unrelated.ref, sequence: 1 },
+      ]);
+      expect(residency.snapshot().pendingBytes).toBeGreaterThan(0);
+      await residency.settled();
+
+      expect(starts).toEqual([
+        { ref: busy.ref, sequence: 1 },
+        { ref: unrelated.ref, sequence: 1 },
+        { ref: busy.ref, sequence: 2 },
+        { ref: busy.ref, sequence: 3 },
+        { ref: busy.ref, sequence: 4 },
+      ]);
+      expect(replenishedNotifications).toBe(3);
+      expect(commits.map(({ ref, sequence }) => [ref, sequence])).toEqual([
+        [busy.ref, 1],
+        [unrelated.ref, 1],
+        [busy.ref, 2],
+        [busy.ref, 3],
+        [busy.ref, 4],
+      ]);
+      const busyWrite = commits.find(({ ref, sequence }) => ref === busy.ref && sequence === 4);
+      const unrelatedWrite = commits.find(({ ref }) => ref === unrelated.ref);
+      if (!busyWrite || !unrelatedWrite) throw new Error("expected both fairness checkpoints to commit");
+      const busyState = await cache.getCurrent([busyWrite.ownerToken, busy.ref], Date.now());
+      const unrelatedState = await cache.getCurrent([unrelatedWrite.ownerToken, unrelated.ref], Date.now());
+      if (!busyState?.record || !unrelatedState?.record) throw new Error("expected committed checkpoints in IndexedDB");
+      for (let sequence = 2; sequence <= 4; sequence += 1) {
+        expect(JSON.stringify(busyState.record.state)).toContain(`-busy-follow-up-${sequence}`);
+      }
+      expect(JSON.stringify(unrelatedState.record.state)).toContain("-unrelated-ready");
+    } finally {
+      releaseFirstBusyWrite.resolve();
+      await residency.settled();
       put.mockRestore();
       residency.dispose();
     }
@@ -532,6 +688,316 @@ describe("transcript residency", () => {
       targetWrite.resolve();
       unrelatedWrite.resolve();
       releasePromotionLookup.resolve();
+      await promotion?.catch(() => undefined);
+      get.mockRestore();
+      put.mockRestore();
+      residency.dispose();
+    }
+  });
+
+  test("promotion does not restore a revoked current certificate after a held lookup", async () => {
+    const ref = "local:revoked-certificate";
+    const model = hydrateThread(currentRead(ref), ref, 1);
+    const { cache, residency, port, getResident } = setup(model, 4_096);
+    const recovery = deferred<void>();
+    const recoveryPublished = deferred<void>();
+    const lookupReached = deferred<void>();
+    const releaseLookup = deferred<void>();
+    port.hydrate = async () => {
+      await recovery.promise;
+      const repaired = hydrateThread(currentRead(ref), ref, 3);
+      port.publish(ref, repaired);
+      residency.published(ref, repaired, 1, true);
+      recoveryPublished.resolve();
+    };
+    residency.published(ref, model, 0, true);
+    let promotion: Promise<ThreadModel | undefined> | undefined;
+    const originalGet = cache.getCurrent.bind(cache);
+    const get = vi.spyOn(cache, "getCurrent").mockImplementation(async (...args) => {
+      lookupReached.resolve();
+      await releaseLookup.promise;
+      return originalGet(...args);
+    });
+    try {
+      await residency.settled();
+      expect(getResident()).toBeUndefined();
+      expect(residency.snapshot().refs.get(ref)?.current).toBe(true);
+
+      promotion = residency.promote(ref);
+      await lookupReached.promise;
+      const rejected = textDelta(ref, "x".repeat(5_000));
+      expect(
+        residency.accept(ref, {
+          notification: rejected,
+          sequence: 1,
+          now: 2,
+          bytes: encodedPayloadBytes(rejected),
+        }),
+      ).toBe(true);
+      expect(residency.snapshot().refs.get(ref)).toMatchObject({ current: false, persistence: "repairing" });
+
+      releaseLookup.resolve();
+      const promoted = await promotion;
+      expect({
+        published: promoted !== undefined,
+        current: residency.snapshot().refs.get(ref)?.current,
+        persistence: residency.snapshot().refs.get(ref)?.persistence,
+      }).toEqual({ published: false, current: false, persistence: "repairing" });
+      expect(getResident()).toBeUndefined();
+
+      recovery.resolve();
+      await recoveryPublished.promise;
+      await residency.settled();
+      expect(residency.snapshot().refs.get(ref)?.current).toBe(true);
+      expect(getResident()).toBeUndefined();
+      const repairedPromotion = await residency.promote(ref);
+      expect(repairedPromotion).toBeDefined();
+      expect(JSON.stringify(currentTranscriptState(repairedPromotion!))).not.toContain("xxxxx");
+      const useful = textDelta(ref, "-after-repair");
+      expect(
+        residency.accept(ref, { notification: useful, sequence: 2, now: 4, bytes: encodedPayloadBytes(useful) }),
+      ).toBe(false);
+      const continued = applyNotification(repairedPromotion!, useful, 4);
+      port.publish(ref, continued);
+      residency.published(ref, continued, 2);
+      expect(JSON.stringify(currentTranscriptState(continued))).toContain("-after-repair");
+    } finally {
+      releaseLookup.resolve();
+      recovery.resolve();
+      await promotion?.catch(() => undefined);
+      get.mockRestore();
+      residency.dispose();
+    }
+  });
+
+  test("promotion moves an already queued target ahead of unrelated disk work", async () => {
+    const refs: [string, string, string] = ["local:blocker", "local:unrelated", "local:target"];
+    const cache = new SessionCacheIndexedDB({
+      indexedDB: new IDBFactory(),
+      databaseName: `residency-${crypto.randomUUID()}`,
+    });
+    caches.push(cache);
+    const models = new Map(refs.map((ref) => [ref, hydrateThread(currentRead(ref), ref, 1)]));
+    const port: TranscriptResidencyPort = {
+      cache,
+      resident: (ref) => models.get(ref),
+      publish: (ref, model) => models.set(ref, model),
+      unload: (ref) => {
+        models.delete(ref);
+      },
+      admission: () => undefined,
+      fold: (_ref, model, update) => applyNotification(model, update.notification, update.now),
+      hydrate: async () => {},
+    };
+    const residency = createTranscriptResidency(port, {
+      ...DEFAULT_BACKGROUND_TRANSCRIPT_OPTIONS,
+      residentBytes: 0,
+    });
+    residency.connection(1, true);
+    for (const ref of refs) {
+      residency.owners(ref, { foreground: 0, history: 0, mutationPinned: false, background: 1 });
+      residency.published(ref, models.get(ref)!, 0, true);
+    }
+    await residency.settled();
+
+    const blockerReached = deferred<void>();
+    const releaseBlocker = deferred<void>();
+    const targetReached = deferred<void>();
+    const releaseTarget = deferred<void>();
+    const unrelatedReached = deferred<void>();
+    const releaseUnrelated = deferred<void>();
+    const operationOrder: string[] = [];
+    const commits: Array<{ ref: string; ownerToken: string }> = [];
+    const originalPut = cache.putCurrent.bind(cache);
+    const put = vi.spyOn(cache, "putCurrent").mockImplementation(async (record, now) => {
+      operationOrder.push(record.ref);
+      if (record.ref === refs[0]) {
+        blockerReached.resolve();
+        await releaseBlocker.promise;
+      } else if (record.ref === refs[2]) {
+        targetReached.resolve();
+        await releaseTarget.promise;
+      } else {
+        unrelatedReached.resolve();
+        await releaseUnrelated.promise;
+      }
+      const outcome = await originalPut(record, now);
+      if (outcome.outcome === "written") commits.push({ ref: record.ref, ownerToken: record.ownerToken });
+      return outcome;
+    });
+    let promotion: Promise<ThreadModel | undefined> | undefined;
+    try {
+      const blockerFrame = textDelta(refs[0]!, "-blocker");
+      residency.accept(refs[0]!, {
+        notification: blockerFrame,
+        sequence: 1,
+        now: 2,
+        bytes: encodedPayloadBytes(blockerFrame),
+      });
+      await blockerReached.promise;
+
+      for (const ref of refs.slice(1)) {
+        const frame = textDelta(ref, `-${ref}`);
+        residency.accept(ref, { notification: frame, sequence: 1, now: 3, bytes: encodedPayloadBytes(frame) });
+      }
+      promotion = residency.promote(refs[2]!);
+      releaseBlocker.resolve();
+      await targetReached.promise;
+      expect(operationOrder).toEqual([refs[0], refs[2]]);
+      releaseTarget.resolve();
+      await unrelatedReached.promise;
+      const promoted = await promotion;
+      expect(promoted?.ref).toBe(refs[2]);
+      expect(JSON.stringify(currentTranscriptState(promoted!))).toContain(`-${refs[2]}`);
+      expect(residency.snapshot().diskWorkers).toBe(1);
+      expect(operationOrder).toEqual([refs[0], refs[2], refs[1]]);
+      expect(commits.map(({ ref }) => ref)).toEqual([refs[0], refs[2]]);
+      releaseUnrelated.resolve();
+      await residency.settled();
+      expect(commits.map(({ ref }) => ref)).toEqual([refs[0], refs[2], refs[1]]);
+      const unrelatedCommit = commits.find(({ ref }) => ref === refs[1]);
+      if (!unrelatedCommit) throw new Error("expected unrelated checkpoint to commit");
+      const unrelatedRecord = await cache.getCurrent([unrelatedCommit.ownerToken, refs[1]], Date.now());
+      if (!unrelatedRecord?.record) throw new Error("expected unrelated checkpoint in IndexedDB");
+      expect(JSON.stringify(unrelatedRecord.record.state)).toContain(`-${refs[1]}`);
+    } finally {
+      releaseBlocker.resolve();
+      releaseTarget.resolve();
+      releaseUnrelated.resolve();
+      await promotion?.catch(() => undefined);
+      await residency.settled();
+      put.mockRestore();
+      residency.dispose();
+    }
+  });
+
+  test("promotion publishes its captured cut while completion-driven later writes remain held", async () => {
+    const ref = "local:finite-cut";
+    const cache = new SessionCacheIndexedDB({
+      indexedDB: new IDBFactory(),
+      databaseName: `residency-${crypto.randomUUID()}`,
+    });
+    caches.push(cache);
+    let model: ThreadModel | undefined = hydrateThread(currentRead(ref), ref, 1);
+    let hydrations = 0;
+    const port: TranscriptResidencyPort = {
+      cache,
+      resident: () => model,
+      publish: (_ref, next) => {
+        model = next;
+      },
+      unload: () => {
+        model = undefined;
+      },
+      admission: () => undefined,
+      fold: (_ref, current, update) => applyNotification(current, update.notification, update.now),
+      hydrate: async () => {
+        hydrations += 1;
+      },
+    };
+    const residency = createTranscriptResidency(port, {
+      ...DEFAULT_BACKGROUND_TRANSCRIPT_OPTIONS,
+      residentBytes: 0,
+    });
+    residency.connection(1, true);
+    residency.owners(ref, { foreground: 0, history: 0, mutationPinned: false, background: 1 });
+    residency.published(ref, model!, 0, true);
+    await residency.settled();
+    expect(model).toBeUndefined();
+
+    const firstWriteReached = deferred<void>();
+    const releaseFirstWrite = deferred<void>();
+    const laterWriteReached = deferred<void>();
+    const releaseLaterWrite = deferred<void>();
+    const lookupReached = deferred<void>();
+    const releaseLookup = deferred<void>();
+    const originalPut = cache.putCurrent.bind(cache);
+    let completionNotifications = 0;
+    const put = vi.spyOn(cache, "putCurrent").mockImplementation(async (record, now) => {
+      if (record.appliedSequence === 1) {
+        firstWriteReached.resolve();
+        await releaseFirstWrite.promise;
+      } else if (record.appliedSequence > 1) {
+        laterWriteReached.resolve();
+        await releaseLaterWrite.promise;
+      }
+      const result = await originalPut(record, now);
+      if (record.appliedSequence === 1) {
+        for (let sequence = 2; sequence <= 5; sequence += 1) {
+          const frame = textDelta(ref, `-completion-${sequence}`);
+          const accepted = residency.accept(ref, {
+            notification: frame,
+            sequence,
+            now: sequence + 2,
+            bytes: encodedPayloadBytes(frame),
+          });
+          expect(accepted).toBe(true);
+          completionNotifications += 1;
+        }
+      }
+      return result;
+    });
+    const originalGet = cache.getCurrent.bind(cache);
+    let getCalls = 0;
+    const get = vi.spyOn(cache, "getCurrent").mockImplementation(async (...args) => {
+      getCalls += 1;
+      if (getCalls === 3) {
+        lookupReached.resolve();
+        await releaseLookup.promise;
+      }
+      return originalGet(...args);
+    });
+    let promotion: Promise<ThreadModel | undefined> | undefined;
+    try {
+      const first = textDelta(ref, "-captured");
+      residency.accept(ref, { notification: first, sequence: 1, now: 2, bytes: encodedPayloadBytes(first) });
+      await firstWriteReached.promise;
+      promotion = residency.promote(ref);
+      releaseFirstWrite.resolve();
+      await laterWriteReached.promise;
+      await lookupReached.promise;
+
+      const duringLookup = textDelta(ref, "-lookup");
+      residency.accept(ref, {
+        notification: duringLookup,
+        sequence: 6,
+        now: 8,
+        bytes: encodedPayloadBytes(duringLookup),
+      });
+      releaseLookup.resolve();
+      const promoted = await promotion;
+      expect(promoted).toBeDefined();
+      expect(model).toBe(promoted);
+      const text = JSON.stringify(currentTranscriptState(promoted!));
+      expect(text).toContain("-captured");
+      expect(completionNotifications).toBe(4);
+      let precedingIndex = text.indexOf("-captured");
+      expect(precedingIndex).toBeGreaterThanOrEqual(0);
+      for (let sequence = 2; sequence <= 5; sequence += 1) {
+        const marker = `-completion-${sequence}`;
+        expect(text.split(marker)).toHaveLength(2);
+        const nextIndex = text.indexOf(marker);
+        expect(nextIndex).toBeGreaterThan(precedingIndex);
+        precedingIndex = nextIndex;
+      }
+      expect(text).toContain("-lookup");
+      expect(text.indexOf("-lookup")).toBeGreaterThan(precedingIndex);
+      expect(hydrations).toBe(0);
+
+      const after = textDelta(ref, "-after-publication");
+      expect(
+        residency.accept(ref, { notification: after, sequence: 7, now: 9, bytes: encodedPayloadBytes(after) }),
+      ).toBe(false);
+      const folded = applyNotification(promoted!, after, 9);
+      residency.published(ref, folded, 7);
+      model = folded;
+      const finalText = JSON.stringify(currentTranscriptState(model));
+      expect(finalText.split("-after-publication")).toHaveLength(2);
+      expect(finalText.indexOf("-lookup")).toBeLessThan(finalText.indexOf("-after-publication"));
+    } finally {
+      releaseFirstWrite.resolve();
+      releaseLaterWrite.resolve();
+      releaseLookup.resolve();
       await promotion?.catch(() => undefined);
       get.mockRestore();
       put.mockRestore();
