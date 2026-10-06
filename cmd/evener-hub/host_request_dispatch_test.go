@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -16,74 +15,12 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
 
-// concurrentScriptedRemote is a remote host that records each request as it
-// arrives and answers each through handle on a goroutine of its own, so a
-// request held in handle never hides a later one: what it records is what the
-// hub actually sent, in the order it sent it.
-func concurrentScriptedRemote(t *testing.T, handle func(method string, params json.RawMessage) hostAdminReply) (*appwire.Client, func() []hostAdminCall) {
-	t.Helper()
-	clientConn, serverConn := net.Pipe()
-	server := appwire.NewStreamTransport(serverConn)
-	ctx, cancel := context.WithCancel(context.Background())
-	var mu sync.Mutex
-	var calls []hostAdminCall
-	answer := func(req *appwire.Request) {
-		var result any = appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion, SourceID: "local"}
-		if req.Method != appwire.MethodInitialize {
-			reply := handle(req.Method, req.Params)
-			if reply.closeConn {
-				t.Errorf("concurrentScriptedRemote cannot close the connection for %s", req.Method)
-			}
-			if reply.wireErr != nil {
-				_ = server.Send(ctx, appwire.ErrorMessage(req.ID, *reply.wireErr))
-				return
-			}
-			result = reply.result
-		}
-		data, _ := json.Marshal(result)
-		_ = server.Send(ctx, appwire.ResponseMessage(req.ID, json.RawMessage(data)))
-	}
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		for {
-			msg, err := server.Recv(ctx)
-			if err != nil {
-				return
-			}
-			if msg.Request == nil {
-				continue
-			}
-			mu.Lock()
-			calls = append(calls, hostAdminCall{method: msg.Request.Method, params: msg.Request.Params})
-			mu.Unlock()
-			go answer(msg.Request)
-		}
-	}()
-	client := appwire.NewClient(appwire.NewStreamTransport(clientConn))
-	client.Start(ctx)
-	if _, err := client.Initialize(ctx, appwire.InitializeParams{}); err != nil {
-		cancel()
-		t.Fatalf("initialize scripted remote: %v", err)
-	}
-	t.Cleanup(func() {
-		cancel()
-		_ = client.Close()
-		<-done
-	})
-	return client, func() []hostAdminCall {
-		mu.Lock()
-		defer mu.Unlock()
-		return append([]hostAdminCall(nil), calls...)
-	}
-}
-
 // hostRequestDispatchHub serves a real hub RPC server whose one remote host,
-// m4, answers through handle (concurrentScriptedRemote), and returns a client
-// on it plus the remote's recorded calls.
+// m4, answers through handle on a concurrent scriptedAdminRemote, and returns
+// a client on it plus the remote's recorded calls.
 func hostRequestDispatchHub(t *testing.T, handle func(method string, params json.RawMessage) hostAdminReply) (*appwire.Client, func() []hostAdminCall) {
 	t.Helper()
-	remote, calls := concurrentScriptedRemote(t, handle)
+	remote, calls, _ := scriptedAdminRemote(t, handle, true)
 	sources, hosts := scriptedRemoteHost(t, remote, true)
 	server := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""), RemoteHostRegistry: hosts}, sources)
 	wire := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
