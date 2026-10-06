@@ -432,7 +432,16 @@ def load_scenario(scen):
 
 def cmd_run(args):
     args.out = os.path.abspath(args.out)
-    versions = dict(v.split("=", 1) for v in args.version)
+    versions = {}
+    for v in args.version:
+        label, sep, binpath = v.partition("=")
+        if not (sep and label and binpath):
+            sys.exit(f"memory-lab: --version {v!r}: expected LABEL=path/to/evener, e.g. --version base=bin/evener-base")
+        if label in versions:
+            sys.exit(f"memory-lab: --version label {label!r} given twice")
+        if not (os.path.isfile(binpath) and os.access(binpath, os.X_OK)):
+            sys.exit(f"memory-lab: --version {v!r}: {binpath} is not an executable file")
+        versions[label] = binpath
     if os.path.exists(args.out) and os.listdir(args.out):
         sys.exit(f"memory-lab: {args.out} already holds results; use a fresh --out")
     jobs = []
