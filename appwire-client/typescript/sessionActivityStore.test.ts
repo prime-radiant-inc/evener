@@ -2400,3 +2400,155 @@ test("an explicit load waiting for the connection is dropped when the last obser
   await store.refresh("summary");
   expect(callsTo(client, "evener/thread/jobs/list")).toBe(0);
 });
+
+// After the last observer leaves and its late page is dropped, the
+// collection still works: a new observer's loadMore issues a fresh read
+// whose rows land, and the collection settles.
+test("a collection whose late page was dropped recovers for its next observer", async () => {
+  const client = activityClient(),
+    late = deferred<SessionJobsResponse>(),
+    entered = deferred<void>();
+  client.on("evener/thread/jobs/list", ({ cursor }) => {
+    if (!cursor) return jobsFixture([jobFixture("shell-1")], "page-2");
+    if (callsTo(client, "evener/thread/jobs/list") === 2) {
+      entered.resolve();
+      return late.promise;
+    }
+    return jobsFixture([jobFixture("fresh")]);
+  });
+  const store = owner(client);
+  store.start();
+  await activityState(store, () => store.getSnapshot().summary !== null);
+  const leave = store.observe("jobs");
+  await activityState(store, () => store.getSnapshot().jobs.hasMore);
+  const dropped = store.loadMore("jobs");
+  await entered.promise;
+  leave();
+  late.resolve(jobsFixture([jobFixture("late")]));
+  await dropped;
+  store.observe("jobs");
+  await activityState(store, () => store.getSnapshot().jobs.hasMore && !store.getSnapshot().jobs.loading);
+  await store.loadMore("jobs");
+  const rows = store.getSnapshot().jobs.rows.map(({ jobId }) => jobId);
+  expect(rows).toContain("fresh");
+  expect(rows).not.toContain("late");
+  expect(store.getSnapshot().jobs).toMatchObject({ loading: false, pending: false });
+});
+
+// A view that leaves while the session is replaced (a listener releasing the
+// last observer as the replacement resets the store) takes nothing from the
+// replacement: the collection stays reset, and no read follows for it.
+test("a release during a session replacement leaves the collection reset", async () => {
+  const client = activityClient();
+  // Once the hub has replaced the session, every read answers for the
+  // replacement, the summary the replacement queues included.
+  let replaced = false;
+  const replacement = { ...activityContext(), sessionId: "replacement" };
+  client.on("evener/thread/jobs/list", ({ cursor }) => {
+    if (cursor) return jobsFixture([jobFixture("late")]);
+    replaced = true;
+    return { ...jobsFixture([jobFixture("replaced")], "page-2"), context: replacement };
+  });
+  client.on("evener/thread/activity/read", ({ scope }) =>
+    replaced ? { ...summaryFixture(scope), context: replacement } : summaryFixture(scope),
+  );
+  const store = owner(client);
+  store.start();
+  await activityState(store, () => store.getSnapshot().summary !== null);
+  const leave = store.observe("jobs");
+  const stop = store.subscribe(() => {
+    if (store.getSnapshot().context?.sessionId === "replacement") leave();
+  });
+  await activityState(
+    store,
+    () =>
+      store.getSnapshot().summary?.context.sessionId === "replacement" &&
+      !store.getSnapshot().jobs.loading &&
+      !store.getSnapshot().summaryState.loading,
+  );
+  stop();
+  expect(store.getSnapshot().jobs.rows).toEqual([]);
+  expect(callsTo(client, "evener/thread/jobs/list")).toBe(1);
+});
+
+// A view that leaves resets its collection's failure count: the next
+// observer's first failed read backs off from the start (1s), not from the
+// count a closed view's failures left behind.
+test("the last observer leaving resets the collection's backoff", async () => {
+  const client = activityClient();
+  client.on("evener/thread/jobs/list", () => {
+    throw new Error("unreachable");
+  });
+  const store = owner(client);
+  const failedReads = (count: number) =>
+    activityState(
+      store,
+      () => callsTo(client, "evener/thread/jobs/list") === count && !store.getSnapshot().jobs.loading,
+    );
+  store.start();
+  await activityState(store, () => store.getSnapshot().summary !== null);
+  const leave = store.observe("jobs");
+  await failedReads(1);
+  await vi.advanceTimersByTimeAsync(1000);
+  await failedReads(2);
+  leave();
+  store.observe("jobs");
+  await failedReads(3);
+  await vi.advanceTimersByTimeAsync(999);
+  expect(callsTo(client, "evener/thread/jobs/list")).toBe(3);
+  await vi.advanceTimersByTimeAsync(1);
+  await failedReads(4);
+});
+
+// Serving a collection read can warm the hub's count for it. A view that
+// leaves right after the fetch drops only the page: the store still refreshes
+// the summary, so a count the read warmed does not stay unknown.
+test("a read dropped because its view left still refreshes an unknown count", async () => {
+  const client = activityClient(),
+    page = deferred<SessionDelegatesResponse>(),
+    entered = deferred<void>();
+  client.on("evener/thread/delegates/list", () => {
+    entered.resolve();
+    return page.promise;
+  });
+  const store = owner(client);
+  store.start();
+  await activityState(store, () => store.getSnapshot().summary !== null);
+  expect(store.getSnapshot().summary?.delegates.known).toBe(false);
+  const leave = store.observe("delegates");
+  await entered.promise;
+  leave();
+  page.resolve({
+    context: activityContext(),
+    scope: "session",
+    page: { complete: true, issues: [] },
+    delegates: [delegateFixture()],
+  });
+  await activityState(store, () => !store.getSnapshot().delegates.loading);
+  await vi.advanceTimersByTimeAsync(100);
+  expect(callsTo(client, "evener/thread/activity/read")).toBe(2);
+  expect(store.getSnapshot().delegates.rows).toEqual([]);
+});
+
+// The same holds when the view leaves while the page publishes (a listener
+// releasing the last observer on either of its publishes): the page's read
+// ends, and the count it may have warmed is still refreshed.
+test.each([1, 2])("a read dropped during its page's publish %i still refreshes an unknown count", async (publish) => {
+  const client = activityClient();
+  const store = owner(client);
+  store.start();
+  await activityState(store, () => store.getSnapshot().summary !== null);
+  expect(store.getSnapshot().summary?.delegates.known).toBe(false);
+  const leave = store.observe("delegates");
+  let publishes = 0;
+  const stop = store.subscribe(() => {
+    if (callsTo(client, "evener/thread/delegates/list") === 1 && ++publishes === publish) leave();
+  });
+  await activityState(
+    store,
+    () => callsTo(client, "evener/thread/delegates/list") === 1 && !store.getSnapshot().delegates.loading,
+  );
+  stop();
+  await vi.advanceTimersByTimeAsync(100);
+  expect(callsTo(client, "evener/thread/activity/read")).toBe(2);
+});
