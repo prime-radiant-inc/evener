@@ -309,6 +309,42 @@ describe("projectedRow — item entries", () => {
 		});
 	});
 
+	it("keeps a rejected session-memory write as a failed row beside completed tools", () => {
+		const error = "session memory belongs to the root session; report this to your parent instead";
+		const memoryWrite = item({
+			id: "memory-write",
+			turnId: "t1",
+			type: "commandExecution",
+			toolName: "memory_write",
+			status: "failed",
+			error,
+			argumentsJSON: JSON.stringify({ scope: "session", file_path: "notes.md", content: "# Note" }),
+		});
+		const shell = item({
+			id: "shell",
+			turnId: "t1",
+			type: "commandExecution",
+			toolName: "shell",
+			status: "completed",
+			argumentsJSON: JSON.stringify({ command: "echo done" }),
+		});
+		const rows = projectTimeline(
+			{ turns: [{ id: "t1", status: "completed", items: [memoryWrite, shell] }] } as unknown as ThreadModel,
+			new Map(),
+		);
+
+		expect(rows).toHaveLength(2);
+		expect(rows[0]).toMatchObject({
+			kind: "activity",
+			id: "memory-write",
+			family: "tool",
+			state: "failed",
+			detail: { error },
+		});
+		expect(rows[0]).not.toHaveProperty("members");
+		expect(rows[1]).toMatchObject({ kind: "activity", id: "shell", state: "completed" });
+	});
+
 	// Only what the checklist draws: a task's prompt, notes and times would ride
 	// every retained task_list row, past the row's text bound.
 	it("carries a task_list call's returned tasks on its detail, only what the checklist draws", () => {

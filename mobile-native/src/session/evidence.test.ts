@@ -506,6 +506,19 @@ describe("memory step evidence", () => {
 		).toEqual([{ kind: "markdown", title: "personal/notes.md", markdown: content }]);
 	});
 
+	it("shows a rejected session-memory write's error", () => {
+		const error = "session memory belongs to the root session; report this to your parent instead";
+		const rejectedWrite = memory(
+			"memory_write",
+			JSON.stringify({ scope: "session", file_path: "notes.md", content: "# Note" }),
+			"",
+		);
+		rejectedWrite.state = "failed";
+		rejectedWrite.detail = { ...rejectedWrite.detail, error };
+
+		expect(stepEvidence(rejectedWrite)).toContainEqual({ kind: "error", text: error });
+	});
+
 	it("falls back from scope/path to the bare path, then Memory page", () => {
 		expect(stepEvidence(memory("memory_write", JSON.stringify({ file_path: "bare.md", content: "page" })))).toEqual([
 			{ kind: "markdown", title: "bare.md", markdown: "page" },
