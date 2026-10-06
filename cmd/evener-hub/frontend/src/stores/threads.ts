@@ -3382,6 +3382,15 @@ function settleCacheLifetimeAfterHydration(ref: string): void {
   });
 }
 
+// A clear-suppressed ref whose pre-clear holders have released and whose new
+// explicit foreground lifetime has begun: it must reconcile authoritatively
+// even if a resident display model still exists. The ordinary healthy resident
+// path is untouched (no clear suppression, no fresh lifetime).
+function needsClearLifetimeReconciliation(ref: string): boolean {
+  const lifetime = threadsStore.getState().cacheLifetimes.get(ref);
+  return lifetime?.clearSuppressed === true && lifetime.freshForegroundLifetime === true && heldCountsAtStore(ref);
+}
+
 // Final release removes every part of the lifetime, but only after the
 // release flush has checked the still-armed shell/suppression gates.
 function releaseCacheLifetime(lifetimes: Map<string, CacheLifetime>, ref: string): Map<string, CacheLifetime> {
@@ -4782,7 +4791,10 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     refCounts.set(ref, count + 1);
     syncTranscriptResidencyOwners(ref);
     syncThreadSubscription(ref, client);
-    if (threadsStore.getState().threads.has(ref)) return; // already hydrated: no re-read
+    // Already hydrated: no re-read. The exception is a clear-suppressed ref
+    // whose new explicit foreground lifetime owes an authoritative hydration
+    // even while its stale display model is still resident.
+    if (threadsStore.getState().threads.has(ref) && !needsClearLifetimeReconciliation(ref)) return;
 
     const claimEpoch = readyEpoch;
     const promoted = await transcriptResidency().promote(ref);
@@ -5908,11 +5920,22 @@ export async function clearCachedSessions(): Promise<{ committed: boolean }> {
   const armed = Math.max(tabCacheEpoch ?? 0, threadsStore.getState().clearInFlight ?? 0) + 1;
   threadsStore.setState({ clearInFlight: armed });
   for (const ref of [...cacheWriteSchedules.keys()]) cancelCacheWrite(ref);
+  // Synchronous logical retirement, before the transaction resolves: a
+  // pre-Clear hydration must not publish into the same-tab clear window. Issued
+  // reads keep their capacity charge; only their claim to publish is retired.
+  for (const [ref, pending] of [...pendingThreadHydrations]) {
+    retirePendingHydration(ref, pending, pendingThreadHydrations);
+  }
+  for (const [ref, pending] of [...pendingWatchedHydrations]) {
+    retirePendingHydration(ref, pending, pendingWatchedHydrations);
+  }
+  residencyIfCreated?.retireClaims();
   const result = await currentSessionCache().clear();
   if (!result.committed) {
     // The abort drops only its own marker — lifetime suppression is never touched,
     // so another source's mid-flight arming stands. Durable observations
     // never need reverting: optimistic arming did not change their epoch.
+    residencyIfCreated?.releaseClearClaim();
     threadsStore.setState((s) => (s.clearInFlight === armed ? { clearInFlight: undefined } : s));
     return { committed: false };
   }
@@ -6034,6 +6057,7 @@ function transcriptResidency(): TranscriptResidency {
       fold: (_ref, model, update) => foldCanonicalNotification(model, update.notification, update.now).model,
       writeTimers: () => cacheWriteTimers,
       retryScheduler: () => hydrationRetryScheduler,
+      observedClearEpoch: (epoch) => onCacheEpochObserved(epoch),
       hydrate: async (ref, intent, signal) => {
         if (signal.aborted) return;
         const client = await requireReadyClient();

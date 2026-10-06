@@ -37,6 +37,10 @@ export interface TranscriptResidencyPort {
    * (the reducer-level tests' behavior); the store wires it so real repairs use
    * one coalesced bounded-backoff timer per ref. */
   retryScheduler?(): ((attempt: number, retry: () => void) => () => void) | undefined;
+  /** One guarded observation of a newer durable clear epoch. The store advances
+   * its shared clear-lifetime authority (tab epoch + recorded-history
+   * suppression) before the residency reconciles, so both record classes agree. */
+  observedClearEpoch?(epoch: number): void;
 }
 
 interface HydrationTask {
@@ -70,6 +74,12 @@ export interface TranscriptResidency {
   ): Promise<void>;
   drain(ref: string): Promise<void>;
   revoke(ref: string, reason: "gap" | "storage" | "alias" | "deleted"): void;
+  /** Synchronously retire in-flight hydration/promotion publication claims for
+   * a same-tab clear before its transaction resolves. Issued reads keep their
+   * capacity slot; only the logical claim to publish is retired. */
+  retireClaims(): void;
+  /** Release the synchronous claim fence after an aborted clear. */
+  releaseClearClaim(): void;
   clear(epoch: number): void;
   dispose(): void;
   settled(): Promise<void>;
@@ -186,6 +196,7 @@ export function createTranscriptResidency(
   let committedWrites = 0;
   let disposed = false;
   let retiringHydrations = false;
+  let clearArmed = false;
   let drainPromise: Promise<void> | undefined;
   // Post-promotion durable-epoch rechecks: each is tracked asynchronous work
   // of the promotion that scheduled it, not a global lock. settled() joins
@@ -230,6 +241,28 @@ export function createTranscriptResidency(
     const bytes = entry.pending.reduce((sum, update) => sum + update.bytes, 0);
     if (bytes > 0) pendingBudget.release(bytes);
     entry.pending = [];
+  }
+
+  // A function boundary keeps TypeScript from narrowing `persistence` across
+  // the awaits below: a concurrent clear can move it to clear-suppressed while a
+  // persist is suspended at a cache lookup or an unload.
+  const isClearSuppressed = (entry: Entry): boolean => entry.persistence === "clear-suppressed";
+
+  // Clear suppression is intentional and never writes. On a suppressed ref,
+  // release the excess background payload instead of holding an unwritable
+  // model; the entry's metadata stays (unverified) so an explicit open recovers
+  // through the ordinary cache-seeded authoritative path.
+  async function releaseSuppressedPayload(ref: string, entry: Entry): Promise<void> {
+    releaseEntryPending(entry);
+    if (!held(entry) && entry.owners.background > 0 && port.resident(ref)) {
+      await port.unload(ref);
+      if (!port.resident(ref)) {
+        if (entry.residentBytes > 0) residentBudget.release(entry.residentBytes);
+        if (entry.handoffBytes > 0) pendingBudget.release(entry.handoffBytes);
+        entry.residentBytes = 0;
+        entry.handoffBytes = 0;
+      }
+    }
   }
 
   function enqueue(ref: string, urgent = false): void {
@@ -312,10 +345,14 @@ export function createTranscriptResidency(
     for (const resolve of entry.waiters.splice(0)) resolve();
   }
 
-  function cancelRepair(entry: Entry): void {
+  // Cancelling a pending callback is not storage recovery. `reset` is true only
+  // at a committed checkpoint or a terminal owner/connection retirement; a mere
+  // authoritative network read cancels the callback without resetting the
+  // failure streak, so repeated storage aborts still advance the backoff.
+  function cancelRepair(entry: Entry, reset = true): void {
     const record = entry.repair;
     entry.repair = undefined;
-    entry.repairAttempt = 0;
+    if (reset) entry.repairAttempt = 0;
     record?.cancel();
   }
 
@@ -417,6 +454,14 @@ export function createTranscriptResidency(
       releaseEntryPending(entry);
       return false;
     }
+    // Suppression survives every recovery entry: an ordinary background update
+    // must not turn clear-suppressed into repairing or start a hydration that
+    // would re-enable persistence without a fresh explicit foreground lifetime.
+    if (isClearSuppressed(entry)) {
+      entry.current = false;
+      await releaseSuppressedPayload(ref, entry);
+      return false;
+    }
     const writeGeneration = connectionGeneration;
     const ownerGeneration = entry.ownershipGeneration;
     const writeEpoch = clearEpoch;
@@ -458,7 +503,10 @@ export function createTranscriptResidency(
       releaseEntryPending(entry);
       if (entry.inFlight === batch) entry.inFlight = [];
       if (batchBytes > 0) pendingBudget.release(batchBytes);
-      void hydrate(ref, held(entry) ? "foreground" : "background");
+      // An oversized base (older history or live state) is rebuilt by an
+      // authoritative latest window through the paced repair timer, never an
+      // immediate hydrate: a fresh state that still cannot fit must not spin.
+      armRepair(ref, entry);
       return false;
     }
     workerBytes = bytes;
@@ -495,28 +543,10 @@ export function createTranscriptResidency(
         ownerGeneration !== entry.ownershipGeneration ||
         writeEpoch !== clearEpoch ||
         !owned(entry) ||
-        entry.persistence === "clear-suppressed"
+        isClearSuppressed(entry)
       ) {
         entry.current = false;
-        // Suppression is intentional: it never writes. When it prevents the
-        // checkpoint and only background demand remains, release the excess
-        // resident payload instead of holding an unwritable model. The entry's
-        // metadata stays (unverified), so an explicit open recovers through the
-        // ordinary cache-seeded authoritative path.
-        if (
-          entry.persistence === "clear-suppressed" &&
-          !held(entry) &&
-          entry.owners.background > 0 &&
-          port.resident(ref)
-        ) {
-          await port.unload(ref);
-          if (!port.resident(ref)) {
-            if (entry.residentBytes > 0) residentBudget.release(entry.residentBytes);
-            if (entry.handoffBytes > 0) pendingBudget.release(entry.handoffBytes);
-            entry.residentBytes = 0;
-            entry.handoffBytes = 0;
-          }
-        }
+        if (isClearSuppressed(entry)) await releaseSuppressedPayload(ref, entry);
         return false;
       }
       workerCheckpointObserverForTests?.({ ref, resident, model, record, batch });
@@ -670,6 +700,10 @@ export function createTranscriptResidency(
         residency.revoke(ref, "storage");
         return;
       }
+      // One shared authority: advance the store's tab epoch and recorded-history
+      // suppression before the residency reconciles, so both record classes see
+      // the same observed clear.
+      port.observedClearEpoch?.(observed);
       residency.clear(observed);
       for (const [ownedRef, ownedEntry] of entries) {
         if (!owned(ownedEntry) || !ready || disposed) continue;
@@ -767,7 +801,9 @@ export function createTranscriptResidency(
     published(ref, model, appliedSequence, authoritative = false) {
       const entry = entryFor(ref);
       if (authoritative) {
-        cancelRepair(entry);
+        // A successful read is not a successful checkpoint: keep the storage
+        // failure streak so a still-unwritable disk keeps backing off.
+        cancelRepair(entry, false);
         entry.needsRecovery = false;
         if (entry.persistence !== "clear-suppressed") {
           entry.persistence = "enabled";
@@ -831,8 +867,11 @@ export function createTranscriptResidency(
     },
     async promote(ref) {
       const entry = entryFor(ref);
+      if (clearArmed) return undefined;
       const resident = port.resident(ref);
-      if (resident) return resident;
+      // A clear-suppressed resident is a stale display seed: adoption must not
+      // skip the authoritative hydration a fresh foreground lifetime requires.
+      if (resident && entry.persistence !== "clear-suppressed") return resident;
       if (!entry.current && entry.pending.length === 0 && !entry.work) return undefined;
       entry.promoting = true;
       try {
@@ -942,14 +981,25 @@ export function createTranscriptResidency(
     },
     revoke(ref, _reason) {
       const entry = entryFor(ref);
+      const wasClearSuppressed = entry.persistence === "clear-suppressed";
       releaseEntryPending(entry);
       entry.current = false;
       entry.needsRecovery = _reason !== "deleted";
-      entry.persistence = "repairing";
-      if (_reason === "deleted") cancelRepair(entry);
+      // revoke must not erase Clear's lifetime: a suppressed ref stays
+      // suppressed until a qualifying fresh foreground lifetime hydrates.
+      if (!wasClearSuppressed) entry.persistence = "repairing";
+      if (_reason === "deleted" || wasClearSuppressed) cancelRepair(entry);
       else armRepair(ref, entry);
     },
+    retireClaims() {
+      clearArmed = true;
+      retireHydrations();
+    },
+    releaseClearClaim() {
+      clearArmed = false;
+    },
     clear(epoch) {
+      clearArmed = false;
       clearEpoch = epoch;
       for (const entry of entries.values()) {
         cancelRepair(entry);

@@ -3817,4 +3817,197 @@ describe("background thread claims", () => {
       restoreOptions();
     }
   });
+
+  test("same-tab Clear synchronously fences a pending background hydration before its outcome returns", async () => {
+    const ref = "local:one";
+    const restoreOptions = installBackgroundTranscriptOptionsForTests({ residentBytes: 16 * 1024 * 1024 });
+    resetThreadsStoreForTests();
+    setSessionCacheAdapterForTests(cache);
+    await cache.readEpoch();
+    const entered = deferred<void>();
+    const response = deferred<ThreadReadResponse>();
+    const fake = new FakeClient("ready");
+    fake.on("thread/read", () => {
+      entered.resolve();
+      return response.promise;
+    });
+    fake.on("thread/unsubscribe", () => ({}));
+    connectionStore.getState().connect(fake);
+    const lease = acquireBackgroundThread(ref);
+    const hold = holdNextWriteTransaction(["records", "meta", "current", "currentMeta"]);
+    let published: ThreadModel | undefined;
+    try {
+      await entered.promise;
+      const clearing = clearCachedSessions();
+      await hold.reached;
+      expect(threadsStore.getState().clearInFlight).toBeDefined();
+      // The pre-Clear read returns while the clear arm is up.
+      response.resolve(currentRead(ref));
+      await lease.ready;
+      published = threadsStore.getState().threads.get(ref);
+      hold.release();
+      expect(await clearing).toEqual({ committed: true });
+      expect(published).toBeUndefined();
+    } finally {
+      response.resolve(currentRead(ref));
+      hold.release();
+      await lease.release();
+      resetThreadsStoreForTests();
+      restoreOptions();
+    }
+  });
+
+  test("two pre-Clear panes keep both cache classes suppressed until a later fresh pane", async () => {
+    const ref = "local:one";
+    const restoreOptions = installBackgroundTranscriptOptionsForTests({ residentBytes: 16 * 1024 * 1024 });
+    resetThreadsStoreForTests();
+    setSessionCacheAdapterForTests(cache);
+    const fake = connectCurrentClient();
+    const lease = acquireBackgroundThread(ref);
+    let panesHeld = 0;
+    try {
+      await lease.ready;
+      await settleBackgroundTranscriptsForTests();
+      await threadsStore.getState().ensureThread(ref);
+      panesHeld += 1;
+      await threadsStore.getState().ensureThread(ref);
+      panesHeld += 1;
+
+      expect(await clearCachedSessions()).toEqual({ committed: true });
+      expect(backgroundTranscriptSnapshotForTests().refs.get(ref)?.persistence).toBe("clear-suppressed");
+      expect(threadsStore.getState().cacheLifetimes.get(ref)?.suppressed).toBe(true);
+
+      // Release one pre-Clear pane and open a new one while the other pre-Clear
+      // pane still holds: neither class may be restored.
+      const readsBefore = fake.calls.filter((call) => call.method === "thread/read").length;
+      threadsStore.getState().releaseThread(ref);
+      panesHeld -= 1;
+      await threadsStore.getState().ensureThread(ref);
+      panesHeld += 1;
+      await settleBackgroundTranscriptsForTests();
+      expect(threadsStore.getState().cacheLifetimes.get(ref)?.suppressed).toBe(true);
+      expect(backgroundTranscriptSnapshotForTests().refs.get(ref)?.persistence).toBe("clear-suppressed");
+      expect(fake.calls.filter((call) => call.method === "thread/read").length).toBe(readsBefore);
+
+      // Release the remaining pre-Clear panes, then a fresh pane restores both.
+      threadsStore.getState().releaseThread(ref);
+      panesHeld -= 1;
+      threadsStore.getState().releaseThread(ref);
+      panesHeld -= 1;
+      await settleBackgroundTranscriptsForTests();
+      const beforeFresh = fake.calls.filter((call) => call.method === "thread/read").length;
+      await threadsStore.getState().ensureThread(ref);
+      panesHeld += 1;
+      expect(fake.calls.filter((call) => call.method === "thread/read").length).toBeGreaterThan(beforeFresh);
+      expect(backgroundTranscriptSnapshotForTests().refs.get(ref)?.persistence).toBe("enabled");
+      expect(threadsStore.getState().cacheLifetimes.get(ref)?.suppressed).toBeUndefined();
+    } finally {
+      for (let i = 0; i < panesHeld; i += 1) threadsStore.getState().releaseThread(ref);
+      await settleBackgroundTranscriptsForTests();
+      await lease.release();
+      resetThreadsStoreForTests();
+      restoreOptions();
+    }
+  });
+
+  test("a durable mutation pin keeps both cache classes suppressed through Clear until it releases and a fresh pane opens", async () => {
+    const ref = "local:one";
+    const restoreOptions = installBackgroundTranscriptOptionsForTests({ residentBytes: 16 * 1024 * 1024 });
+    resetThreadsStoreForTests();
+    setSessionCacheAdapterForTests(cache);
+    const storage = mutationStorage();
+    const started = deferred<{ clientMutationId: string }>();
+    const response = deferred<{
+      turn: { id: string; status: "inProgress"; itemsView: string };
+      receipt: {
+        clientMutationId: string;
+        disposition: "applied";
+        threadId: string;
+        projectionState: "reflected";
+      };
+    }>();
+    const fake = new FakeClient("ready");
+    fake.on("thread/read", ({ ref: requested }) => currentRead(requested ?? ref));
+    fake.on("thread/unsubscribe", () => ({}));
+    fake.on("turn/start", (params) => {
+      started.resolve(params);
+      return response.promise;
+    });
+    connectionStore.getState().connect(fake);
+    const lease = acquireBackgroundThread(ref);
+    let paneHeld = false;
+    let sending: Promise<void> | undefined;
+    try {
+      await lease.ready;
+      await settleBackgroundTranscriptsForTests();
+      await threadsStore.getState().ensureThread(ref);
+      paneHeld = true;
+      // A durable explicit send pins the ref; its dispatch response is held.
+      sending = threadsStore.getState().send(ref, "pinned send", [], [], [], []);
+      const params = await started.promise;
+      threadsStore.getState().releaseThread(ref);
+      paneHeld = false;
+      expect(threadsStore.getState().threads.has(ref)).toBe(true);
+
+      expect(await clearCachedSessions()).toEqual({ committed: true });
+      expect(backgroundTranscriptSnapshotForTests().refs.get(ref)?.persistence).toBe("clear-suppressed");
+      expect(threadsStore.getState().cacheLifetimes.get(ref)?.suppressed).toBe(true);
+
+      // A new pane while the pre-Clear pin still holds cannot restore either
+      // class: the pin is a pre-Clear holder.
+      const readsBefore = fake.calls.filter((call) => call.method === "thread/read").length;
+      await threadsStore.getState().ensureThread(ref);
+      paneHeld = true;
+      await settleBackgroundTranscriptsForTests();
+      expect(backgroundTranscriptSnapshotForTests().refs.get(ref)?.persistence).toBe("clear-suppressed");
+      expect(threadsStore.getState().cacheLifetimes.get(ref)?.suppressed).toBe(true);
+      expect(fake.calls.filter((call) => call.method === "thread/read").length).toBe(readsBefore);
+
+      // Settle the receipt: the pin releases.
+      response.resolve({
+        turn: { id: "turn_pinned", status: "inProgress", itemsView: "" },
+        receipt: {
+          clientMutationId: params.clientMutationId,
+          disposition: "applied",
+          threadId: "thr_local:one",
+          projectionState: "reflected",
+        },
+      });
+      await sending;
+      sending = undefined;
+      await storage.settleReceipt(params.clientMutationId, "reflected");
+      await settleBackgroundTranscriptsForTests();
+      for (let i = 0; i < 10; i += 1) {
+        await nextRealTask();
+        await settleBackgroundTranscriptsForTests();
+      }
+
+      // Release the pane, then a fresh explicit pane restores both classes.
+      threadsStore.getState().releaseThread(ref);
+      paneHeld = false;
+      await settleBackgroundTranscriptsForTests();
+      const beforeFresh = fake.calls.filter((call) => call.method === "thread/read").length;
+      await threadsStore.getState().ensureThread(ref);
+      paneHeld = true;
+      expect(fake.calls.filter((call) => call.method === "thread/read").length).toBeGreaterThan(beforeFresh);
+      expect(backgroundTranscriptSnapshotForTests().refs.get(ref)?.persistence).toBe("enabled");
+      expect(threadsStore.getState().cacheLifetimes.get(ref)?.suppressed).toBeUndefined();
+    } finally {
+      response.resolve({
+        turn: { id: "turn_pinned", status: "inProgress", itemsView: "" },
+        receipt: {
+          clientMutationId: "background-pin-cleanup",
+          disposition: "applied",
+          threadId: "thr_local:one",
+          projectionState: "reflected",
+        },
+      });
+      await sending?.catch(() => undefined);
+      if (paneHeld) threadsStore.getState().releaseThread(ref);
+      await settleBackgroundTranscriptsForTests();
+      await lease.release();
+      resetThreadsStoreForTests();
+      restoreOptions();
+    }
+  });
 });
