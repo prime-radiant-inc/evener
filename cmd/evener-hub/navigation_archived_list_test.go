@@ -783,3 +783,46 @@ func TestHubArchivedListAnswersUnchangedAtTheHeldRevision(t *testing.T) {
 		t.Fatalf("read at the held revision = %+v (%v), want unchanged with no rows", again, err)
 	}
 }
+
+// One projection caches each list's revision under its own catalog and key,
+// and never a key no catalog holds, whatever keys clients send.
+func TestArchivedListRevisionCacheKeepsListsApart(t *testing.T) {
+	at := func(i int) time.Time { return time.Unix(int64(100+i), 0).UTC() }
+	title := func(prefix string) func(int) string {
+		return func(i int) string { return fmt.Sprintf("%s %d", prefix, i) }
+	}
+	p := archivedProjection(t,
+		hubcore.TreeProject{Key: "one", Name: "one", Archived: archivedRows("one", 2, at, title("one"))},
+		hubcore.TreeProject{Key: "two", Name: "two", Archived: archivedRows("two", 2, at, title("two"))},
+	)
+	revisions := map[string]string{}
+	for _, key := range []string{"one", "two"} {
+		page, err := p.ArchivedList(t.Context(), navigationArchivedListRequest{ProjectKey: key})
+		if err != nil {
+			t.Fatal(err)
+		}
+		revisions[key] = page.Revision
+	}
+	if revisions["one"] == revisions["two"] {
+		t.Fatalf("two lists share revision %q", revisions["one"])
+	}
+	for key, revision := range revisions {
+		if again, err := p.ArchivedList(t.Context(), navigationArchivedListRequest{ProjectKey: key, KnownRevision: revision}); err != nil || !again.Unchanged {
+			t.Fatalf("%s at its own revision = %+v (%v), want unchanged", key, again, err)
+		}
+	}
+	if _, err := p.ArchivedList(t.Context(), navigationArchivedListRequest{ProjectKey: "nowhere"}); err != nil {
+		t.Fatal(err)
+	}
+	cached := 0
+	p.archivedRevisions.Range(func(key, _ any) bool {
+		cached++
+		if strings.HasSuffix(key.(string), "nowhere") {
+			t.Errorf("cached a key no catalog holds: %q", key)
+		}
+		return true
+	})
+	if cached != 2 {
+		t.Fatalf("cache holds %d lists, want 2", cached)
+	}
+}
