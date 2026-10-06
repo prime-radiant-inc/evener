@@ -197,12 +197,9 @@ afterEach(() => {
 });
 
 describe("ActivityTree", () => {
-  // A delegate the page stopped at: the depth or path bound was reached, so the
-  // branch is truncated and carries no token to page with. #1269 settled that
-  // deliberately -- a token there would name the child as a fresh root at
-  // position 0, which is the page a direct request already returns -- which
-  // leaves the child reachable only by asking for it as its own session.
-  function depthTruncatedTree(): ActivityTreeData {
+  // A delegate whose child session is rendered beneath it and carries its own
+  // session-level diagnostics.
+  function childDiagnosticsTree(diagnostics: string[]): ActivityTreeData {
     return {
       revision: 3,
       root: {
@@ -230,8 +227,18 @@ describe("ActivityTree", () => {
               terminal: false,
               resumable: true,
               task: "Deep work",
-              diagnostics: ['depth limit reached; request session "sess_deep_child" directly'],
-              branch: { truncated: true },
+              branch: {},
+              child: {
+                kind: "session",
+                sessionId: "sess_deep_child",
+                ref: "local:sess_deep_child",
+                label: "Deep child",
+                aggregate: "running",
+                counts: { active: 0, failed: 0, completed: 0, complete: false },
+                entries: [],
+                branch: { truncated: true },
+                diagnostics,
+              },
             },
           },
         ],
@@ -240,45 +247,13 @@ describe("ActivityTree", () => {
     } as unknown as ActivityTreeData;
   }
 
-  // The depth bound truncates the delegate's own branch, before the child is
-  // loaded at all. The continuation-path bound and a size trim inside the
-  // child land on the child's branch instead, with the child rendered above
-  // it — the same row, a different branch state.
-  function renderedChildTree(
-    childBranch: Record<string, unknown>,
-    childFields: Record<string, unknown> = {},
-  ): ActivityTreeData {
-    const tree = depthTruncatedTree();
-    const delegate = (tree.root.entries[0] as unknown as { delegate: Record<string, unknown> }).delegate;
-    delegate.branch = {};
-    delegate.diagnostics = undefined;
-    delegate.child = {
-      kind: "session",
-      sessionId: "sess_deep_child",
-      ref: "local:sess_deep_child",
-      label: "Deep child",
-      aggregate: "running",
-      counts: { active: 0, failed: 0, completed: 0, complete: false },
-      entries: [],
-      branch: childBranch,
-      ...childFields,
-    };
-    return tree;
-  }
-
   // The path bound and the journal conditions are the child session's to
   // report (agent/jobs_activity.go stamps them on the session, not the
   // delegate), and the delegate row is the only row that session has, so its
   // detail strip is where the sentence has to appear.
   test("a rendered child's session-level diagnostics show in the delegate's detail strip", () => {
     const pathLimit = 'continuation path limit reached; request session "sess_deep_child" directly';
-    render(
-      <ActivityTree
-        tree={renderedChildTree({ truncated: true }, { diagnostics: [pathLimit] })}
-        expandedFoldIDs={[]}
-        onToggleFold={vi.fn()}
-      />,
-    );
+    render(<ActivityTree tree={childDiagnosticsTree([pathLimit])} expandedFoldIDs={[]} onToggleFold={vi.fn()} />);
 
     expect(screen.getByText(pathLimit)).toBeTruthy();
   });

@@ -648,11 +648,11 @@ export function parseActivityTree(data: unknown): ActivityTree | null {
 }
 
 // activityDelegateDiagnostics reads the two places a delegate row's
-// diagnostics land: the depth bound is stamped on the delegate before its child is
-// loaded, while the continuation-path bound and the journal conditions are
-// stamped on the child session itself, and that session has no row of its
-// own to say so. The delegate's own sentences come first, then the child's,
-// each said once.
+// diagnostics land: the depth bound is stamped on the delegate before its
+// child is loaded, while the continuation-path bound and the journal
+// conditions are stamped on the child session itself, and that session has
+// no row of its own to say so. The delegate's own sentences come first, then
+// the child's, each said once.
 export function activityDelegateDiagnostics(delegate: ActivityDelegate): string[] {
   return [...new Set([...(delegate.diagnostics ?? []), ...(delegate.child?.diagnostics ?? [])])];
 }
