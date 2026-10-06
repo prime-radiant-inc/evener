@@ -352,7 +352,7 @@ func TestMemoryScopeRootRecoveryDeleteLease(t *testing.T) {
 	root := t.TempDir()
 	path := memorySeed(t, root, "personal", "opaque-delete-713")
 	s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: root}))
-	env, err := s.openMemoryEnvironment("personal", true)
+	env, err := s.openMemoryEnvironment("personal")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -392,7 +392,7 @@ func TestMemoryScopeRootRecoveryRetirement(t *testing.T) {
 				}
 				return nil
 			}}}))
-			old, err := s.openMemoryEnvironment("personal", true)
+			old, err := s.openMemoryEnvironment("personal")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1463,7 +1463,7 @@ func TestMemoryDisableNoIO(t *testing.T) {
 	if res := memoryExec(t, s, "memory_read", map[string]any{"scope": "personal", "file_path": "MEMORY.md"}); !res.IsError {
 		t.Fatal("disabled native dispatch accepted")
 	}
-	if _, err := s.openMemoryEnvironment("personal", true); err == nil {
+	if _, err := s.openMemoryEnvironment("personal"); err == nil {
 		t.Fatal("disabled environment accepted")
 	}
 	if calls.Load() != 0 {
@@ -1703,7 +1703,7 @@ func TestMemoryDeleteIdempotentOutcome(t *testing.T) {
 		for _, state := range []string{"present", "missing_leaf", "missing_parent"} {
 			t.Run(scope+"/"+state, func(t *testing.T) {
 				s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project"}))
-				env, err := s.openMemoryEnvironment(scope, true)
+				env, err := s.openMemoryEnvironment(scope)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -1735,7 +1735,7 @@ func TestMemoryDeleteUnreadable(t *testing.T) {
 	for _, scope := range []string{"personal", "project"} {
 		t.Run(scope, func(t *testing.T) {
 			s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project"}))
-			env, err := s.openMemoryEnvironment(scope, true)
+			env, err := s.openMemoryEnvironment(scope)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1777,7 +1777,7 @@ func TestMemoryDeleteReadGuard(t *testing.T) {
 		for _, read := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/read=%t", scope, read), func(t *testing.T) {
 				s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project"}))
-				env, err := s.openMemoryEnvironment(scope, true)
+				env, err := s.openMemoryEnvironment(scope)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -1900,7 +1900,7 @@ func TestMemoryPathAuthority(t *testing.T) {
 	t.Parallel()
 	root, workspace, outside := t.TempDir(), t.TempDir(), t.TempDir()
 	s := newSession(t, withDir(workspace), withConfig(SessionConfig{MemoryStateRoot: root, MemoryProjectID: "fixture-project"}))
-	env, err := s.openMemoryEnvironment("project", true)
+	env, err := s.openMemoryEnvironment("project")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1992,7 +1992,7 @@ func TestMemoryReadGuardIsolation(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, scope := range []string{"personal", "project"} {
-		env, err := s.openMemoryEnvironment(scope, true)
+		env, err := s.openMemoryEnvironment(scope)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2004,7 +2004,7 @@ func TestMemoryReadGuardIsolation(t *testing.T) {
 		t.Fatal(res.Output)
 	}
 	for _, scope := range []string{"personal", "project"} {
-		env, err := s.openMemoryEnvironment(scope, true)
+		env, err := s.openMemoryEnvironment(scope)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2022,7 +2022,7 @@ func TestMemoryReadGuardIsolation(t *testing.T) {
 			t.Fatalf("%s actual read not tracked", scope)
 		}
 		if scope == "personal" {
-			project, _ := s.openMemoryEnvironment("project", true)
+			project, _ := s.openMemoryEnvironment("project")
 			if s.fileReadGuard(project).ReadBeforeWriteWarning(filepath.Join(project.WorkingDirectory(), "same.txt")) == "" {
 				t.Fatal("project inherited personal read")
 			}
@@ -2283,7 +2283,7 @@ func TestMemoryDisabledAndUnbound(t *testing.T) {
 		if res := memoryExec(t, s, "memory_write", map[string]any{"scope": "personal", "file_path": "data", "content": "bad"}); !res.IsError {
 			t.Fatal("disabled dispatch accepted")
 		}
-		if _, err := s.openMemoryEnvironment("personal", true); err == nil {
+		if _, err := s.openMemoryEnvironment("personal"); err == nil {
 			t.Fatal("disabled environment accepted")
 		}
 		if calls != 0 {
@@ -2543,7 +2543,7 @@ func TestMemoryTeardownPreservesFiles(t *testing.T) {
 			if err != nil || string(got) != "opaque-surviving-67" {
 				t.Fatalf("bytes=%q err=%v", got, err)
 			}
-			if _, err := s.openMemoryEnvironment("personal", true); err == nil {
+			if _, err := s.openMemoryEnvironment("personal"); err == nil {
 				t.Fatal("closed session reopened memory")
 			}
 		})
@@ -2556,7 +2556,7 @@ func TestMemoryWarningDeliveryRestricted(t *testing.T) {
 	s := newSession(t, withDir(workspace), withConfig(SessionConfig{MemoryStateRoot: root}))
 	local := s.currentEnv().(*execenv.LocalExecutionEnvironment)
 	local.Sandbox = &sandbox.ResolvedPolicy{Mode: sandbox.ModeReadOnly, FileTool: sandbox.AccessScope{Read: sandbox.ReadWorktreeOnly, ReadRoots: []string{workspace}}}
-	env, err := s.openMemoryEnvironment("personal", true)
+	env, err := s.openMemoryEnvironment("personal")
 	if err != nil {
 		t.Fatal(err)
 	}

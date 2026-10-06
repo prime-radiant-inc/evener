@@ -105,24 +105,8 @@ func (s *Session) filterUnavailableMemoryTools() {
 	}
 }
 
-// errMemoryScopeAbsent reports that a scope's directory does not exist yet and
-// the operation asking for it must not create it.
-var errMemoryScopeAbsent = errors.New("memory scope does not exist yet")
-
-// memoryOperationCreatesScope reports whether operation may create scope's
-// directory. Session memory appears only when the root session first writes
-// it or a fork copies its parent's, so reading or editing it (the index
-// refresh at every model boundary included; an edit needs an existing file)
-// leaves nothing behind in the sessions that never write it, and a delegate
-// that reads first cannot block the fork copy.
-func memoryOperationCreatesScope(scope, operation string) bool {
-	return scope != "session" || operation == "write"
-}
-
-// openMemoryEnvironment opens scope. Without create, an absent directory stays
-// absent and reports errMemoryScopeAbsent; the captured root is still kept, so
-// a later creating open works beneath the same authority.
-func (s *Session) openMemoryEnvironment(scope string, create bool) (*execenv.LocalExecutionEnvironment, error) {
+// openMemoryEnvironment opens scope, creating its directory if it is absent.
+func (s *Session) openMemoryEnvironment(scope string) (*execenv.LocalExecutionEnvironment, error) {
 	if s.cfg.DisableMemory || s.cfg.MemoryStateRoot == "" {
 		return nil, errors.New("memory is disabled or unbound")
 	}
@@ -144,10 +128,6 @@ func (s *Session) openMemoryEnvironment(scope string, create bool) (*execenv.Loc
 	if flight := s.memoryEnvFlights[scope]; flight != nil {
 		s.memoryMu.Unlock()
 		<-flight.done
-		if create && errors.Is(flight.err, errMemoryScopeAbsent) {
-			// A reader's flight found nothing; this caller must create it.
-			return s.openMemoryEnvironment(scope, create)
-		}
 		return flight.env, flight.err
 	}
 	flight := &memoryEnvironmentFlight{done: make(chan struct{})}
@@ -165,14 +145,7 @@ func (s *Session) openMemoryEnvironment(scope string, create bool) (*execenv.Loc
 		root, err = execenv.NewConfinedFileRoot(s.cfg.MemoryStateRoot, relative)
 	}
 	if err == nil {
-		open := root.OpenExisting
-		if create {
-			open = root.Open
-		}
-		env, err = open(previous)
-		if !create && errors.Is(err, os.ErrNotExist) {
-			err = errMemoryScopeAbsent
-		}
+		env, err = root.Open(previous)
 	}
 	s.memoryMu.Lock()
 	delete(s.memoryEnvFlights, scope)
@@ -218,9 +191,9 @@ func (s *Session) openMemoryEnvironment(scope string, create bool) (*execenv.Loc
 
 // Lease the environment before the external pre-I/O boundary. Requalification
 // and Close stop admitting it, but cannot retire it until this operation ends.
-func (s *Session) acquireMemoryEnvironment(scope string, create bool) (*execenv.LocalExecutionEnvironment, func(), error) {
+func (s *Session) acquireMemoryEnvironment(scope string) (*execenv.LocalExecutionEnvironment, func(), error) {
 	for {
-		env, err := s.openMemoryEnvironment(scope, create)
+		env, err := s.openMemoryEnvironment(scope)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -286,11 +259,7 @@ func (s *Session) closeMemoryEnvironments() {
 
 func (s *Session) readMemoryIndex(scope string) memoryProjection {
 	p := memoryProjection{Scope: scope, Status: "unavailable"}
-	env, release, err := s.acquireMemoryEnvironment(scope, memoryOperationCreatesScope(scope, "index_read"))
-	if errors.Is(err, errMemoryScopeAbsent) {
-		p.Status = "missing"
-		return p
-	}
+	env, release, err := s.acquireMemoryEnvironment(scope)
 	if err != nil {
 		return p
 	}
