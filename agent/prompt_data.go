@@ -39,15 +39,6 @@ type promptData struct {
 	MemorySaves bool
 	// ProjectMemory is true when memory is readable and a project id is set.
 	ProjectMemory bool
-	// SessionMemory is true when memory is readable and this session has a
-	// session memory scope: its own for a root session, its root's for a
-	// delegate. MemoryDelegate marks a delegate, which reads its root's
-	// session memory and never writes it.
-	SessionMemory  bool
-	MemoryDelegate bool
-	// SessionMemorySaves is true for a root session that may save to its
-	// session memory.
-	SessionMemorySaves bool
 
 	// Environment
 	WorkingDir      string
