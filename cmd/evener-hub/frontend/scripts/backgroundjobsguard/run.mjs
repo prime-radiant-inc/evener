@@ -434,6 +434,10 @@ async function runOutputPagingJourney(fixture) {
     return outputCalls(after).find(request => request.params.beforeBytes !== undefined && page(request));
   };
   await driver.click('[data-testid="statusbar"] button[aria-label^="Jobs,"]');
+  // A row clicked mid-slide is measured where it is still moving; the press
+  // then misses it (#3897 clips the slide's overhang, so nothing scrolls the
+  // row back into view).
+  await wait(`(() => { const s=document.querySelector(${q(sidebar)}); return s && getComputedStyle(s).transform === 'none'; })()`, 'Jobs sidebar entrance settled');
   await wait(`document.querySelector(${q(row(fixture.outputJobId))}) !== null`, 'separate real output owner is listed');
   await driver.click(row(fixture.outputJobId));
   await latest('SPLIT_é_');
