@@ -76,7 +76,7 @@ export const PLUGIN_REFETCH_DEBOUNCE_MS = 250;
 /** The check waits on every plugin's remote, a few at a time and each under
  * the hub's own per-remote timeout, so it can run far past a plain read's
  * default timeout. The hub cuts off the whole check at its overall deadline
- * (internal/plugins updateCheckDeadline, 100s), which is not on the wire, so
+ * (internal/plugins updateCheckDeadline), which is not on the wire, so
  * this number is set by hand: it must exceed that deadline with room for the
  * hub's own overhead, or the client gives up on a check the hub is still
  * finishing. */

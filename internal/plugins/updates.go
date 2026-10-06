@@ -21,7 +21,7 @@ const (
 )
 
 // updateCheckDeadline bounds a whole check, however many remotes hang. It
-// stays under the clients' PLUGIN_UPDATE_CHECK_TIMEOUT_MS (120s, in
+// stays under the clients' PLUGIN_UPDATE_CHECK_TIMEOUT_MS (in
 // appwire-client/typescript/state/extensions/plugins.ts) with room for git's
 // WaitDelay after the cut-off and the listing that follows, so a client gets
 // the answer instead of giving up on a check the hub is still running. A
