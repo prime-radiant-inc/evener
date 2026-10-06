@@ -298,7 +298,9 @@ func TestReadOutputSnapshotFromFileDetectsPrunedGeneration(t *testing.T) {
 		t.Fatalf("open pre-prune output: %v", err)
 	}
 	t.Cleanup(func() { _ = stale.Close() })
-	appendOutput(t, o, "BBBB")
+	// Five bytes take the file past twice the cap, so this append compacts
+	// and replaces the file the stale descriptor still holds.
+	appendOutput(t, o, "BBBBB")
 
 	if _, err := ReadOutputSnapshotFromFile(path, stale, 4, false); !errors.Is(err, ErrOutputChangedDuringRead) {
 		t.Fatalf("stale snapshot error = %v, want ErrOutputChangedDuringRead", err)
