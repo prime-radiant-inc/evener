@@ -28,7 +28,6 @@ export {
   parseActivityTree,
   reconcileActivityState,
 } from "./activityData";
-export { fenceRootSession, graftContinuationTree } from "./activityMerge";
 export type {
   ActivityDelegateRow,
   ActivityDelegateState,

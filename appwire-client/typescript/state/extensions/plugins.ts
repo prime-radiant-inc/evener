@@ -75,12 +75,11 @@ export const PLUGIN_REFETCH_DEBOUNCE_MS = 250;
 
 /** The check waits on every plugin's remote, a few at a time and each under
  * the hub's own per-remote timeout, so it can run far past a plain read's
- * default timeout. The hub's limits (internal/plugins updateCheckTimeout,
- * 20s, and updateCheckConcurrency, 4) are not on the wire, so this number is
- * set by hand: it must exceed the hub's worst case of one per-remote timeout
- * per batch of four plugins, or the client gives up on a check the hub is
- * still finishing. At 120s that is 24 plugins whose remotes all hang with
- * no margin, so about 20 with room for the hub's own overhead. */
+ * default timeout. The hub cuts off the whole check at its overall deadline
+ * (internal/plugins updateCheckDeadline), which is not on the wire, so
+ * this number is set by hand: it must exceed that deadline with room for the
+ * hub's own overhead, or the client gives up on a check the hub is still
+ * finishing. */
 export const PLUGIN_UPDATE_CHECK_TIMEOUT_MS = 120_000;
 
 /** The five mutations addressed by a plugin reference alone; setAutoUpgrade

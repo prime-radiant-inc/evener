@@ -99,7 +99,7 @@ export function entrySurface(entryFile, readFile = (file) => readFileSync(file, 
 // specifiers, as a Map of specifier to the EXPORTED names it names (the left
 // half of `X as Y`, since that is what the package has to provide).
 //
-// Re-exports count: `export { graftContinuationTree } from "@evener/appwire-client"`
+// Re-exports count: `export { activityNodeID } from "@evener/appwire-client"`
 // is a consumer taking a value, exactly like an import. Type-only statements
 // and inline `type` members do not: they are erased before anything runs.
 //
