@@ -738,7 +738,7 @@ func DefTaskList(effortLevels []string) llm.ToolDefinition {
 						"properties": map[string]any{
 							"id":     map[string]any{"type": "integer", "description": "ID of the existing task to change."},
 							"status": map[string]any{"type": "string", "enum": []string{"open", "in_progress", "done", "cancelled"}, "description": "New status; omit to leave unchanged. Marking done auto-starts the next task."},
-							"notes":  map[string]any{"type": "string", "description": "Document what you tried and why it failed or succeeded. Appended to the task's notes log."},
+							"notes":  map[string]any{"type": "string", "description": "Only when something happened that a later step needs: a failure and why, a decision, a surprise. Leave it out when you only change status. Appended to the task's notes log."},
 							"depends_on": map[string]any{
 								"type":        "array",
 								"items":       map[string]any{"type": "integer"},
@@ -1122,7 +1122,8 @@ func DefNotesAgentSet() llm.ToolDefinition {
 			`one line starting "Now:" with what you are doing; ` +
 			`one or two lines starting "Next:" with what is left. ` +
 			`Set it once you understand the task, update it when a phase finishes, the plan changes, ` +
-			`or you are blocked, and bring it up to date before your final report. ` +
+			`or you are blocked, and bring it up to date before your final report; ` +
+			`for a job you finish in one go, one update before the report is enough. ` +
 			`Each update replaces the whole whiteboard. ` +
 			`Keep it under 600 characters. Example:` + "\n" +
 			`Fixing the importer's rejected timestamps for the reporting team. ` +
