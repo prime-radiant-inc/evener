@@ -361,12 +361,15 @@ function placement(layout, id) {
 }
 
 // Found and clicked in one page turn, so a layout shift between measuring and
-// pressing cannot send the press to a neighbour (#3804, #3819).
+// pressing cannot send the press to a neighbour (#3804, #3819). A button that
+// something else covers at its center is not clicked; the wait keeps polling.
 async function clickColumnAction(ref, text) {
   await wait(`(() => {
     const button = [...document.querySelectorAll(${q(`${column(ref)} button`)})].find(node => node.textContent.trim() === ${q(text)});
     if (!button) return null;
     button.scrollIntoView({ block: 'center', inline: 'nearest' });
+    const r = button.getBoundingClientRect();
+    if (!button.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2))) return null;
     button.click();
     return true;
   })()`, `${text} in actual ${ref} column`);

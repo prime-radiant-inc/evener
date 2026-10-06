@@ -608,6 +608,7 @@ export class Driver {
   // (the queue strip's buttons) carry no testid. It finds and clicks the
   // button in one page turn: a coordinate press measured in an earlier turn
   // can land on a neighbour if the layout shifts in between (#3804, #3819).
+  // It still refuses a button that something else covers at its center.
   async clickByText(text) {
     const result = await evaluate(
       this.send,
@@ -615,11 +616,14 @@ export class Driver {
         if (!b) return "missing";
         if (b.disabled) return "disabled";
         b.scrollIntoView({ block: "center" });
+        const r = b.getBoundingClientRect();
+        if (!b.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2))) return "covered";
         b.click();
         return "clicked"; })()`,
     );
     if (result === "missing") throw new Error(`clickByText: no button labeled ${JSON.stringify(text)}`);
     if (result === "disabled") throw new Error(`clickByText: button ${JSON.stringify(text)} is disabled`);
+    if (result === "covered") throw new Error(`clickByText: button ${JSON.stringify(text)} is covered at its center`);
   }
 
   // ---- page state (each returns plain JSON values) ----
