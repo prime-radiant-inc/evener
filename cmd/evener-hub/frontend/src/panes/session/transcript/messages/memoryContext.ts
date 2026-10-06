@@ -16,6 +16,7 @@
 /** The systemMessage event kind of an automatic memory refresh. */
 export const MEMORY_CONTEXT_EVENT_KIND = "memory-context";
 
+// "session" stays so transcripts from earlier builds keep their scope label.
 export const MEMORY_CONTEXT_SCOPES = ["personal", "project", "session"] as const;
 export type MemoryContextScope = (typeof MEMORY_CONTEXT_SCOPES)[number];
 

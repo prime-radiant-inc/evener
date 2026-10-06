@@ -61,10 +61,6 @@ func (s *sandboxFS) readFile(tool, abs string) ([]byte, error) {
 	return nil, errSandboxUnsupported()
 }
 
-func (s *sandboxFS) openRegularFile(tool, abs string) (*os.File, error) {
-	return nil, errSandboxUnsupported()
-}
-
 func (s *sandboxFS) writeFile(tool, abs string, data []byte, perm os.FileMode) error {
 	return errSandboxUnsupported()
 }

@@ -5,8 +5,7 @@
     {
       "name": "A",
       "prompt": "Add four helpers to textutil, each with table-driven tests: Slugify (lowercase, runs of spaces and punctuation become one hyphen, no leading or trailing hyphens), Truncate(s string, n int) (keep n runes, append an ellipsis when it cut), Title (capitalize each word), and Wrap(s string, width int) []string (wrap on word boundaries).",
-      "checks": [{"name": "tests pass", "run": "go test ./..."}, {"name": "all four exist", "run": "grep -q 'func Slugify' textutil.go && grep -q 'func Truncate' textutil.go && grep -q 'func Title' textutil.go && grep -q 'func Wrap' textutil.go"}],
-      "memory": [{"name": "working notes in session memory", "regex": "(?i)slugify|truncate|title|wrap", "scope": "session"}]
+      "checks": [{"name": "tests pass", "run": "go test ./..."}, {"name": "all four exist", "run": "grep -q 'func Slugify' textutil.go && grep -q 'func Truncate' textutil.go && grep -q 'func Title' textutil.go && grep -q 'func Wrap' textutil.go"}]
     }
   ]
 }

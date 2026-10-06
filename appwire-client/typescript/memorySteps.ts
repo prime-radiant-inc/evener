@@ -15,6 +15,7 @@ import { parseArgs, str } from "./toolCallText";
 /** The parts of a memory step its words read. */
 export type MemoryStep = Pick<ItemModel, "argumentsJSON" | "output">;
 
+// "session" stays so transcripts from earlier builds keep their scope label.
 const MEMORY_SCOPES = new Set(["personal", "project", "session"]);
 
 function scopeOf(args: Record<string, unknown>): string | undefined {
