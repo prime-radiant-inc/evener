@@ -267,10 +267,11 @@ func (m *Manager) fastForwardMarketplace(ctx context.Context, name, dir string) 
 }
 
 // sourcePinned reports whether ref's source pins its catalog to one commit:
-// a sha, or a ref that names a tag or a commit rather than a branch
-// (gitRefNamesBranch). That is the source's own, whatever state its clone is in, so a
-// pinned clone moved onto a branch is still pinned and a branch clone left
-// detached is not. Nothing upstream changes what a pinned clone holds.
+// a sha, or a ref that names a tag or a commit rather than a branch. A ref is
+// told by the local branch checkout made for it (gitRefNamesBranch), so where
+// HEAD has moved since does not matter: a branch clone left detached is still
+// a branch, and a tag clone moved off its tag is still a pin. Nothing upstream
+// changes what a pinned clone holds.
 func sourcePinned(ctx context.Context, ref MarketplaceRef) bool {
 	if ref.Source.Sha != "" {
 		return true

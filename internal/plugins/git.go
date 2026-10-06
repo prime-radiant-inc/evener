@@ -139,12 +139,10 @@ func gitFastForward(ctx context.Context, dir string) error {
 }
 
 // gitRefNamesBranch reports whether name, checked out in the clone at dir,
-// names a branch rather than a tag or a commit: whether checkout left the
-// clone on a local branch of that name. A fresh clone has a local branch only
-// for its remote's default; checkout makes one for any other branch unless a
-// tag of the same name shadows it, which it detaches at instead. So this
-// needs no origin/HEAD, which a remote whose HEAD names a missing branch
-// never gives a clone.
+// names a branch rather than a tag or a commit: whether checkout left a local
+// branch of that name. A fresh clone has one only for its remote's default
+// branch; checkout makes one for any other branch unless a tag of the same
+// name shadows it, and detaches at the tag instead.
 func gitRefNamesBranch(ctx context.Context, dir, name string) (bool, error) {
 	if err := guardGitArg("ref", name); err != nil {
 		return false, err

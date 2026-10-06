@@ -981,11 +981,10 @@ func TestCheckUpdates_AGitSubdirMarketplaceIsRefreshed(t *testing.T) {
 	}
 }
 
-// A ref is a branch exactly when checkout left the clone on a local branch
-// of that name, which needs no origin/HEAD: a remote whose HEAD names a
-// missing branch never gets one, and a fetch does not make it. A tag
-// shadowing another branch stays a pin, and a tag named like the default
-// branch stays the branch, with or without origin/HEAD.
+// A ref is a branch exactly when checkout left a local branch of that name,
+// so origin/HEAD does not matter: a remote whose HEAD names a missing branch
+// never gives a clone one. A tag shadowing another branch stays a pin, and a
+// tag named like the default branch stays the branch, either way.
 func TestSourcePinned_NeedsNoOriginHEAD(t *testing.T) {
 	if !gitAvailable() {
 		t.Skip("git not available")
@@ -1004,17 +1003,18 @@ func TestSourcePinned_NeedsNoOriginHEAD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AddMarketplace %s: %v", def, err)
 	}
-	for _, withHEAD := range []bool{true, false} {
-		if !withHEAD {
-			for _, ref := range []MarketplaceRef{shadowed, onDefault} {
-				gitIn(t, ref.InstallLocation, "symbolic-ref", "--delete", "refs/remotes/origin/HEAD")
-			}
-		}
+	check := func(when string) {
+		t.Helper()
 		if !sourcePinned(context.Background(), shadowed) {
-			t.Fatalf("origin/HEAD present=%v: a tag shadowing a non-default branch is not a pin", withHEAD)
+			t.Fatalf("%s: a tag shadowing a non-default branch is not a pin", when)
 		}
 		if sourcePinned(context.Background(), onDefault) {
-			t.Fatalf("origin/HEAD present=%v: a tag named like the default branch was taken for a pin", withHEAD)
+			t.Fatalf("%s: a tag named like the default branch was taken for a pin", when)
 		}
 	}
+	check("with origin/HEAD")
+	for _, ref := range []MarketplaceRef{shadowed, onDefault} {
+		gitIn(t, ref.InstallLocation, "symbolic-ref", "--delete", "refs/remotes/origin/HEAD")
+	}
+	check("without origin/HEAD")
 }
