@@ -486,20 +486,34 @@ it("reads a quiet failure, a nested subagent, another model, a branch and a fini
 // The list runs no clock, but a running subagent's row still turns Quiet
 // when its silence crosses the threshold, with no new tree to re-render it.
 it("turns a silent subagent's row Quiet on its own", async () => {
-	const at = (ms: number) => new Date(Date.now() - ms).toISOString();
-	client = hub(() => ({
-		revision: 1,
-		root: session("local:coord", COORDINATOR.title, [
-			runningOne("hush", "Wait for the build", { latestActivityAt: at(19_900) }),
-		]),
-	}));
-	harness.connection = screenConnection(client, "ready");
-	const tree = await mount();
-	expect(text(tree)).toContain("Working");
-	await act(async () => {
-		await new Promise((resolve) => setTimeout(resolve, 300));
-	});
-	expect(text(tree)).toContain("Quiet 20s");
+	// On fake timers, so the first read can take as long as it takes without
+	// crossing the threshold before the list shows the row.
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+	try {
+		const at = (ms: number) => new Date(Date.now() - ms).toISOString();
+		client = hub(() => ({
+			revision: 1,
+			root: session("local:coord", COORDINATOR.title, [
+				runningOne("hush", "Wait for the build", { latestActivityAt: at(19_900) }),
+			]),
+		}));
+		harness.connection = screenConnection(client, "ready");
+		const tree = await mount(false);
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(0);
+		});
+		expect(text(tree)).toContain("Working");
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(99);
+		});
+		expect(text(tree)).toContain("Working");
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(1);
+		});
+		expect(text(tree)).toContain("Quiet 20s");
+	} finally {
+		vi.useRealTimers();
+	}
 });
 
 // A subagent's screen is its session (ruling 30), over this list.
