@@ -2953,8 +2953,7 @@ func TestNavigationServiceProjectKeyInSeveralCatalogsSharesOneRevision(t *testin
 	}
 
 	_, err = service.readV3(t.Context(), navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "no-project", Catalog: navigationResourceArchivedProjects}, nil)
-	var notFound navigationNotFoundError
-	if !errors.As(err, &notFound) {
+	if _, ok := errors.AsType[navigationNotFoundError](err); !ok {
 		t.Fatalf("read of a catalog without the key = %v, want not found", err)
 	}
 }
