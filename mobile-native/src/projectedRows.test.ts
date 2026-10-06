@@ -35,7 +35,7 @@ import {
 import type { MobileTimelineItem } from "./projectedRows";
 import { readerKey } from "./readerPosition";
 import { sessionRows } from "./session/transcriptRows";
-import { groupTimeline } from "./timeline";
+import { groupTimeline, isCriticalNotice } from "./timeline";
 
 // The row adapter maps the shared projector's ProjectedEntry kinds onto the
 // native MobileTimelineItem union. D24-6 re-homed the row vocabulary and the
@@ -422,10 +422,15 @@ describe("projectedRow — item entries", () => {
 		expect(row).not.toMatchObject({ family: "unknown-system" });
 	});
 
-	// interrupted is a warning, as the package shows it at every level.
-	it("reads an interrupted round as a warning", () => {
-		const row = projectedRow(itemEntry(item({ type: "systemMessage", text: "x", eventKind: "interrupted" })));
-		expect(row).toMatchObject({ kind: "notice", origin: "system", family: "warning", tone: "warning" });
+	// An interrupted model round reads as a plain notice line, as on the web:
+	// quiet, never the warning tone, and never folded into the details.
+	it("reads an interrupted round as a plain notice line", () => {
+		const row = projectedRow(
+			itemEntry(item({ type: "systemMessage", text: "x", eventKind: "interrupted" })),
+		) as Extract<MobileTimelineItem, { kind: "notice" }>;
+		expect(row).toMatchObject({ kind: "notice", origin: "system", family: "lifecycle", tone: "system" });
+		expect(isCriticalNotice(row)).toBe(false);
+		expect(groupTimeline([row])).toEqual([row]);
 	});
 
 	it("maps a warning item to the attention failure row", () => {

@@ -730,10 +730,7 @@ export function liveAsksFor(model: ThreadModel): ReadonlyMap<string, AskQuestion
 
 // --- notice rows ------------------------------------------------------------------
 
-// interrupted: a model round that ended with streamed content or running
-// tools nobody recorded. The package shows it at every level (critical);
-// the phone reads it in the warning tone, as it does a turn limit.
-const WARNING_EVENT_KINDS = new Set(["loop_detection", "turn_limit", "interrupted", ERROR_EVENT_KIND]);
+const WARNING_EVENT_KINDS = new Set(["loop_detection", "turn_limit", ERROR_EVENT_KIND]);
 const PRELUDE_EVENT_KINDS = new Set(["environment"]);
 const DIAGNOSTIC_EVENT_KINDS = new Set(["round_timings"]);
 const LIFECYCLE_EVENT_KINDS = new Set([
@@ -746,6 +743,10 @@ const LIFECYCLE_EVENT_KINDS = new Set([
 	"fork_summary",
 	"tool_repair",
 	"model_switch",
+	// A model round that ended with streamed content or running tools nobody
+	// recorded. The package shows it at every level; like the web, the phone
+	// draws it as a plain notice line, not a failure.
+	"interrupted",
 	// The deleted family classified this lifecycle (its map read
 	// "notes-context": "lifecycle"); the re-home dropped it and its pin with
 	// the oracle (RoboRev panel) — restored here so the canonical set is not
