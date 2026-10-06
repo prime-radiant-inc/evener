@@ -2267,31 +2267,37 @@ describe("a streamed reply's key once history records its round", () => {
 				} as unknown as Thread;
 				const model = hydrateThread({ thread }, "ref-1", 0);
 				for (const level of ["chat", "intent", "tools", "activity", "full"] as const) {
-					const rows = projectTimeline(
-						model,
-						new Map(),
-						makeTranscriptDisplayConfig({ kind: "preset", level }, { systemEvents: true }),
-					);
-					const row = rows.find((candidate) => candidate.id === wire.id);
-					expect(row).toMatchObject({
-						kind: "notice",
-						origin: "system",
-						// Native classifies the typed kind deliberately (lifecycle, the
-						// same deliberate family the generated-kind invariant requires),
-						// which keeps it a standalone tone-system notice - not one of
-						// groupTimeline's internal families.
-						family: "lifecycle",
-						tone: "system",
-						eventKind: "memory-context",
-						text: wire.text,
-					});
-					// Standalone, never folded into the internal details group.
-					const grouped = groupTimeline(row ? [row] : []);
-					expect(grouped).toHaveLength(1);
-					expect(grouped[0]).toMatchObject({ kind: "notice", id: wire.id });
-					// Native never decodes raw into the web heading; the row's words
-					// are the exact recorded Text.
-					if (row?.kind === "notice") expect(row.text).not.toBe("Refreshed my memory");
+					// The refresh is never hidden by the Advanced.system-events
+					// gate: the shared projector decides memory-context before
+					// that gate (transcriptProjector.ts), so native keeps the
+					// notice with the gate off as well as on.
+					for (const systemEvents of [false, true]) {
+						const rows = projectTimeline(
+							model,
+							new Map(),
+							makeTranscriptDisplayConfig({ kind: "preset", level }, { systemEvents }),
+						);
+						const row = rows.find((candidate) => candidate.id === wire.id);
+						expect(row).toMatchObject({
+							kind: "notice",
+							origin: "system",
+							// Native classifies the typed kind deliberately (lifecycle, the
+							// same deliberate family the generated-kind invariant requires),
+							// which keeps it a standalone tone-system notice - not one of
+							// groupTimeline's internal families.
+							family: "lifecycle",
+							tone: "system",
+							eventKind: "memory-context",
+							text: wire.text,
+						});
+						// Standalone, never folded into the internal details group.
+						const grouped = groupTimeline(row ? [row] : []);
+						expect(grouped).toHaveLength(1);
+						expect(grouped[0]).toMatchObject({ kind: "notice", id: wire.id });
+						// Native never decodes raw into the web heading; the row's words
+						// are the exact recorded Text.
+						if (row?.kind === "notice") expect(row.text).not.toBe("Refreshed my memory");
+					}
 				}
 			}
 		});
