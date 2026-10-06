@@ -258,6 +258,22 @@ describe("ActivityTree", () => {
     expect(screen.getByText(pathLimit)).toBeTruthy();
   });
 
+  // Paging belongs to the panel's page boundaries, not the tree: a branch that
+  // carries a continuation token or stopped truncated renders its rows and its
+  // diagnostics, with no paging or open-session controls of its own.
+  test("a truncated or token-bearing tree renders its rows with no continuation controls", () => {
+    const tree = childDiagnosticsTree(["depth limit reached"]);
+    const delegate = (tree.root.entries[0] as unknown as { delegate: Record<string, unknown> }).delegate;
+    delegate.branch = { truncated: true, continuation: "token_deep" };
+    tree.root.branch = { truncated: true, continuation: "token_root" };
+    render(<ActivityTree tree={tree} expandedFoldIDs={[]} onToggleFold={vi.fn()} />);
+
+    expect(screen.getByRole("treeitem", { name: "Deep work" })).toBeTruthy();
+    expect(screen.getByText("depth limit reached")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Load more" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Open session" })).toBeNull();
+  });
+
   test("stable delegate rows keep navigation and control evidence without activation cards", async () => {
     const user = userEvent.setup();
     const stableTree = {
