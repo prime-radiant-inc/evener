@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 import { connectionStore } from "../../../../stores/connection";
 import { sessionActivitySnapshot } from "../../../../stores/sessionActivity";
@@ -356,8 +356,7 @@ test("a turn's first words are the hub's count, read before the turn started", a
   seedRunningChildren(1);
   const client = hubCounting(true, 2);
   const view = render(<LivenessLine lastFrameAt={0} now={60_000} active={false} sessionRef="s1" turnId="turn_0" />);
-  await waitFor(() => expect(client.calls.some((call) => call.method === "evener/thread/activity/read")).toBe(true));
-  await act(async () => {});
+  await waitFor(() => expect(sessionActivitySnapshot(client, "s1", "subtree", "count")?.summary).toBeTruthy());
   view.rerender(<LivenessLine lastFrameAt={0} now={60_000} active={true} sessionRef="s1" turnId="turn_0" />);
   expect(screen.getByTestId("liveness-line").textContent).toBe("Waiting on 2 subagents");
 });
