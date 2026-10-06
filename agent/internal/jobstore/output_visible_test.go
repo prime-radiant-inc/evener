@@ -115,3 +115,101 @@ func TestOutputStoreOpenedOverAHiddenPrefixReadsOnlyTheVisibleBytes(t *testing.T
 		t.Fatalf("Grep = %+v, want only the two visible lines from %d", matches, visibleStart)
 	}
 }
+
+// storeOverRaw opens an uncapped store over content, then sets the cap the
+// way a store sees it once compaction is deferred: the file can hold more
+// than capBytes, and refreshVisibleLocked has to hide the excess.
+func storeOverRaw(t *testing.T, content string, capBytes int64) *OutputStore {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "job_R.log")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	o, err := OpenOutputNoSync(path, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = o.Close() })
+	o.capBytes = capBytes
+	if err := o.refreshVisibleLocked(); err != nil {
+		t.Fatal(err)
+	}
+	return o
+}
+
+func TestOutputVisibleStartSkipsACutRuneAndReadsTheLineBoundary(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		content     string
+		capBytes    int64
+		wantStart   int64
+		wantPartial bool
+	}{
+		{"after a newline", "aaaa\nbbbb\n", 5, 5, false},
+		{"mid line", "aaaa\nbbbb\n", 4, 6, true},
+		{"inside a 2-byte rune", "x\né!\n", 3, 4, true},
+		{"inside a 3-byte rune", "x\n€!\n", 3, 5, true},
+		{"inside a 4-byte rune", "x\n😀!\n", 4, 6, true},
+		{"a rune right after a newline", "x\n😀!\n", 6, 2, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			o := storeOverRaw(t, tc.content, tc.capBytes)
+			if o.visibleStart != tc.wantStart || o.visiblePartial != tc.wantPartial {
+				t.Fatalf("visible = %d partial=%v, want %d partial=%v", o.visibleStart, o.visiblePartial, tc.wantStart, tc.wantPartial)
+			}
+			tail, _, _, err := o.Tail(1024)
+			if err != nil || string(tail) != tc.content[tc.wantStart:] {
+				t.Fatalf("Tail = %q, %v; want %q", tail, err, tc.content[tc.wantStart:])
+			}
+		})
+	}
+}
+
+func TestOutputVisibleStartOnlyMovesForwardAndIsRecordedForReaders(t *testing.T) {
+	// A cap of 5 cuts "three" after its "t", mid line.
+	o := storeOverRaw(t, "one\ntwo\nthree\n", 5)
+	if o.visibleStart != 9 || !o.visiblePartial {
+		t.Fatalf("visible = %d partial=%v, want 9 partial", o.visibleStart, o.visiblePartial)
+	}
+	o.capBytes = 100
+	if err := o.refreshVisibleLocked(); err != nil {
+		t.Fatal(err)
+	}
+	if o.visibleStart != 9 {
+		t.Fatalf("a larger cap moved the visible start back to %d", o.visibleStart)
+	}
+	if err := o.persistMetaLocked(); err != nil {
+		t.Fatal(err)
+	}
+	page, err := ReadOutputPageSnapshot(o.path, nil, 1024)
+	if err != nil || page.RetainedStart != 9 || !page.RetainedStartPartial || string(page.Content) != "hree\n" {
+		t.Fatalf("path page = %+v, %v; want \"hree\\n\" from 9, partial", page, err)
+	}
+	reopened, err := OpenOutputNoSync(o.path, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if reopened.RetainedStart() != 9 || !reopened.RetainedStartPartial() {
+		t.Fatalf("reopened visible = %d partial=%v, want 9 partial", reopened.RetainedStart(), reopened.RetainedStartPartial())
+	}
+}
+
+func TestOutputStoreWindowAndForwardReadsStopAtTheVisibleStart(t *testing.T) {
+	o := storeOverRaw(t, "old\n€uro\n", 6)
+	// The cap cuts inside "€", so the visible start skips to "uro".
+	if o.visibleStart != 7 {
+		t.Fatalf("visible = %d, want 7", o.visibleStart)
+	}
+	buf, start, _, _, err := o.Window(0, 1024)
+	if err != nil || start != 7 || string(buf) != "uro\n" {
+		t.Fatalf("Window = %q from %d, %v; want \"uro\\n\" from 7", buf, start, err)
+	}
+	if _, err := o.ReadWindow(6, 10); !errors.Is(err, ErrOutputPruned) {
+		t.Fatalf("ReadWindow below the visible start: err = %v, want ErrOutputPruned", err)
+	}
+	forward, err := o.ReadWindow(7, 10)
+	if err != nil || string(forward.Content) != "uro\n" || !forward.Truncated {
+		t.Fatalf("ReadWindow = %+v, %v; want \"uro\\n\", truncated", forward, err)
+	}
+}

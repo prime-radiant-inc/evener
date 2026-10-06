@@ -296,17 +296,17 @@ func (o *OutputStore) Len() int64 {
 	return o.total
 }
 
-// RetainedStart returns the lifetime offset of byte 0 in the retained file:
-// the number of bytes permanently evicted off the head by the retention cap
-// (0 when nothing has been pruned).
+// RetainedStart returns the first lifetime offset readers may see: the number
+// of bytes the retention cap hides off the head (0 when nothing has been
+// dropped).
 func (o *OutputStore) RetainedStart() int64 {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	return o.visibleStart
 }
 
-// RetainedStartPartial reports whether the retained file starts with a
-// fragment of a line that began before RetainedStart.
+// RetainedStartPartial reports whether the first visible byte continues a
+// line that began before RetainedStart.
 func (o *OutputStore) RetainedStartPartial() bool {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -1061,9 +1061,7 @@ func readValidPendingOutputMeta(fs afero.Fs, path string, finalMetaPath string, 
 		if err != nil {
 			return outputMeta{}, false, err
 		}
-		meta.RetainedStart = meta.TotalBytes - retained
-		meta.RetainedSHA256 = hash
-		return meta, true, nil
+		return pendingOverOldFile(meta, finalMeta, retained, hash), true, nil
 	}
 	// The tail rewrite replaces the output atomically, so the file is never
 	// shorter than the pending metadata's retained tail; a shortfall here is
@@ -1144,9 +1142,22 @@ func readExpandedPendingOutputMeta(fs afero.Fs, finalMetaPath string, outputPath
 	if err != nil {
 		return outputMeta{}, false, err
 	}
-	pendingMeta.RetainedStart = pendingMeta.TotalBytes - expandedSize
-	pendingMeta.RetainedSHA256 = hash
-	return pendingMeta, true, nil
+	return pendingOverOldFile(pendingMeta, finalMeta, expandedSize, hash), true, nil
+}
+
+// pendingOverOldFile describes the file a compaction has not yet replaced,
+// using the pending metadata for its successor: the old file still starts
+// where its final metadata says, so its first byte and line-partial flag come
+// from there, and readers see only from where the compacted file will start.
+func pendingOverOldFile(pending, final outputMeta, fileSize int64, hash string) outputMeta {
+	visibleStart, visiblePartial := pending.RetainedStart, outputMetaRetainedStartPartial(pending)
+	pending.RetainedStart = pending.TotalBytes - fileSize
+	pending.RetainedStartPartial = new(outputMetaRetainedStartPartial(final))
+	pending.RetainedSHA256 = hash
+	if visibleStart > pending.RetainedStart {
+		pending.VisibleStart, pending.VisibleStartPartial = new(visibleStart), new(visiblePartial)
+	}
+	return pending
 }
 
 // readValidOutputMeta validates final output metadata on the OS filesystem.
