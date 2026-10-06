@@ -52,7 +52,7 @@ import type { Routes } from "../screens";
 import { sheetKey, useProvideSheetHost } from "../sheet/sheetHosts";
 import { useScreenInFront } from "../sheet/useScreenInFront";
 import { Toast, type ToastController, useToast } from "../Toast";
-import { Action, allowFontScaling, useColors, useTextScale } from "../ui";
+import { allowFontScaling, useColors, useTextScale } from "../ui";
 import {
 	type Band,
 	boardState,
@@ -139,6 +139,7 @@ import { PROJECT_SECTIONS, showExpanded, useProjectSections } from "./useProject
 import { useSettledList } from "./useSettledList";
 import { FLOAT_GAP, underBar, useBarHeight } from "../design/underBar";
 import { destructiveButton, haptic } from "../haptics";
+import { Button } from "../sheet/Grouped";
 
 type Props = NativeStackScreenProps<Routes, "Sessions">;
 type Navigation = Props["navigation"];
@@ -1771,9 +1772,12 @@ function useHeader(
 			],
 			headerLeft: () => hubButton,
 			headerRight: () => (
-				<Action label="Search sessions" onPress={revealSearch}>
-					{fontScale > 1.4 ? "Find" : "Search"}
-				</Action>
+				<Button
+					text
+					label={fontScale > 1.4 ? "Find" : "Search"}
+					accessibilityLabel="Search sessions"
+					onPress={revealSearch}
+				/>
 			),
 		});
 	}, [navigation, hubId, hubName, revealSearch, fontScale, glass, page]);
@@ -2054,9 +2058,7 @@ function EmptyBoard({ disabled, onNewSession }: { disabled: boolean; onNewSessio
 			>
 				Nothing's running. Start a session to put an agent to work.
 			</Text>
-			<Action tone="primary" disabled={disabled} onPress={onNewSession}>
-				New session
-			</Action>
+			<Button primary compact label="New session" disabled={disabled} onPress={onNewSession} />
 		</View>
 	);
 }
