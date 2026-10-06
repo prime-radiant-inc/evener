@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
 import { searchForWorkspaceRoot } from "vite";
-import { defineConfig, type Plugin } from "vitest/config";
+import { configDefaults, defineConfig, type Plugin } from "vitest/config";
 
 // The dev server proxies every hub-owned route to a locally running evener-hub.
 // Cookies are port-agnostic on localhost, so the /auth/<token> capability flow
@@ -155,6 +155,11 @@ export default defineConfig({
       "**/*.{test,spec}.?(c|m)[jt]s?(x)",
       "../../../appwire-client/typescript/**/*.{test,spec}.?(c|m)[jt]s?(x)",
     ],
+    // The top-level scripts/*.test.mjs files are node:test suites that `npm test`
+    // runs with `node --test`. Vitest finds no suite in them, but loading one
+    // still starts its node:test run, and the worker teardown that follows skips
+    // its after hooks, so a bare `vitest run` leaked the processes they start.
+    exclude: [...configDefaults.exclude, "scripts/*.test.mjs"],
     // Node 26's experimental Web Storage global shadows jsdom's working
     // localStorage unless it is disabled in each Vitest worker.
     execArgv: ["--no-experimental-webstorage"],

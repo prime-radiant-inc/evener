@@ -66,21 +66,36 @@ function readPgid(pid) {
   }
 }
 
+// Every process this test starts reads its stdin from a pipe only the test
+// process holds open, and exits when that pipe reaches end of file. The after
+// hook stops each one; if the test process dies before its hooks run (a runner
+// timeout, a killed worker, or a bare `vitest run` that loads this node:test
+// file and tears its worker down), the pipe closes and every stand-in exits by
+// itself instead of running forever.
+const EXIT_WHEN_TEST_PROCESS_GOES = `
+process.stdin.on("end", () => process.exit(0));
+process.stdin.resume();
+`;
+
 // The "chrome" stand-in reproduces Crashpad's double-spawn: it spawns an
 // INTERMEDIATE (detached: true -> new group leader), the intermediate spawns
-// the "helper" (/bin/sleep) WITHOUT detaching (so the helper inherits the
-// intermediate's group), records both pids, and exits immediately. The helper
-// survives with pgid == the dead intermediate's pid — the real handler's
-// shape. "chrome" itself stays alive until signaled, like the browser.
+// the "helper" WITHOUT detaching (so the helper inherits the intermediate's
+// group), records both pids, and exits immediately. The helper survives with
+// pgid == the dead intermediate's pid — the real handler's shape. "chrome"
+// itself stays alive until signaled, like the browser. Each hands its stdin
+// pipe down so the whole chain shares the test process's lifetime.
 const CHROME_STAND_IN = `
 import { spawn } from "node:child_process";
 
-const intermediate = spawn(process.execPath, [process.argv[2]], { detached: true, stdio: "ignore" });
+const intermediate = spawn(process.execPath, [process.argv[2], process.argv[3]], {
+  detached: true,
+  stdio: ["inherit", "ignore", "ignore"],
+});
 intermediate.unref();
 
 process.on("SIGTERM", () => process.exit(0));
 process.on("SIGINT", () => process.exit(0));
-setInterval(() => {}, 1000);
+${EXIT_WHEN_TEST_PROCESS_GOES}
 `;
 
 const INTERMEDIATE_STAND_IN = `
@@ -89,7 +104,7 @@ import { writeFileSync } from "node:fs";
 
 // NOT detached: the helper inherits THIS process's group, and this process
 // (the group leader) exits immediately — the Crashpad double-spawn.
-const helper = spawn("/bin/sleep", ["300"], { stdio: "ignore" });
+const helper = spawn(process.execPath, [process.argv[2]], { stdio: ["inherit", "ignore", "ignore"] });
 helper.unref();
 writeFileSync(process.env.HELPER_PID_FILE, JSON.stringify({ helperPid: helper.pid, intermediatePid: process.pid }));
 process.exit(0);
@@ -126,51 +141,54 @@ test("cleanup reaps a Crashpad helper with the real double-spawn topology (issue
 
   const chromeStandInPath = path.join(workDir, "chrome-stand-in.mjs");
   const intermediateStandInPath = path.join(workDir, "intermediate-stand-in.mjs");
+  const parkedStandInPath = path.join(workDir, "parked-stand-in.mjs");
   const helperPidFile = path.join(workDir, "helper.pid");
   writeFileSync(chromeStandInPath, CHROME_STAND_IN);
   writeFileSync(intermediateStandInPath, INTERMEDIATE_STAND_IN);
+  writeFileSync(parkedStandInPath, EXIT_WHEN_TEST_PROCESS_GOES);
+
+  // Every process this test starts, so teardown can stop each one and then
+  // prove none survived, whether the body passed, failed or timed out.
+  const started = [];
+  context.after(async () => {
+    for (const { pid, stdin } of started) {
+      stdin?.destroy();
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        // already gone
+      }
+    }
+    const survivors = [];
+    for (const entry of started) {
+      if (!(await waitForExit(entry.pid))) survivors.push(`${entry.name} ${entry.pid}`);
+    }
+    assert.deepEqual(survivors, [], "every stand-in this test started must be gone after teardown");
+  });
 
   // A decoy in its own process group, outside the profileDir scope: cleanup
   // must not signal it. It stands in for "whatever else is running on the
   // machine" — the reason the kill must target only the pgid captured for
   // this run's discovered helper.
-  const decoy = spawn("/bin/sleep", ["300"], { detached: true, stdio: "ignore" });
+  const decoy = spawn(process.execPath, [parkedStandInPath], { detached: true, stdio: ["pipe", "ignore", "ignore"] });
   decoy.unref();
-  context.after(() => {
-    try {
-      process.kill(-decoy.pid, "SIGKILL");
-    } catch {
-      // already gone
-    }
-  });
+  started.push({ name: "decoy", pid: decoy.pid, stdin: decoy.stdin });
 
   // Spawn "chrome" as its own process group (matches startBrowserGuard's
   // useProcessGroups on non-win32: detached: true -> chrome.pid == chrome.pgid).
-  const chrome = spawn(process.execPath, [chromeStandInPath, intermediateStandInPath], {
+  const chrome = spawn(process.execPath, [chromeStandInPath, intermediateStandInPath, parkedStandInPath], {
     detached: true,
-    stdio: "ignore",
+    stdio: ["pipe", "ignore", "ignore"],
     env: { ...process.env, HELPER_PID_FILE: helperPidFile },
   });
   chrome.unref();
-  context.after(() => {
-    try {
-      process.kill(-chrome.pid, "SIGKILL");
-    } catch {
-      // already gone
-    }
-  });
+  started.push({ name: "chrome", pid: chrome.pid, stdin: chrome.stdin });
 
   const chromePgid = chrome.pid;
   const spawned = await waitForFile(helperPidFile);
   assert.ok(spawned, "chrome stand-in never spawned the crashpad helper");
   const { helperPid, intermediatePid } = spawned;
-  context.after(() => {
-    try {
-      process.kill(helperPid, "SIGKILL");
-    } catch {
-      // already gone
-    }
-  });
+  started.push({ name: "intermediate", pid: intermediatePid }, { name: "helper", pid: helperPid });
 
   // Sanity: this is the measured Crashpad topology. The helper is alive, its
   // group leader (the intermediate) is dead, and its pgid is neither its own
