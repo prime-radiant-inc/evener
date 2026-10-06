@@ -96,7 +96,7 @@ The header of `memory-lab` documents every field. In short:
   - `trace`: tool-call regexes
   - `memory`: regexes over memory files, optionally per scope or `absent`
   - `final`: a regex over the last message
-  - `transcripts`: a regex over every transcript, delegates included, or with `subagents_only` over delegates' transcripts only
+  - `transcripts`: a regex over every transcript, delegates included, or with `subagents_only` over the transcripts of delegates created during this stage only
   - `whiteboard`: shape and length
 
 Write a check that a reasonable outcome can actually fail. Before you trust a scenario, confirm that the baseline prompt doesn't already pass it, and that its regexes don't match comments or prose. The `cents` float check originally failed on comments that said "no floats".

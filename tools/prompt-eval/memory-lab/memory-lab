@@ -33,7 +33,7 @@ A scenario dir holds scenario.json and fixture/. scenario.json:
                "fixture": "fixture2", "workspace": "work2",  # optional: run in another project (both required together)
                "resume": "A",  # optional: continue stage A's session
                "transcripts": [{"name": "...", "regex": "over every transcript in the stage's state dir",
-                                "subagents_only": true}],  # optional: only delegate sessions' transcripts
+                                "subagents_only": true}],  # optional: only delegates this stage started
                "whiteboard": [{"name": "...", "regex": "(?m)^Now:", "max_chars": 600, "min_lines": 3}],
                "final": [{"name": "...", "regex": "against the last message to the partner"}]}]}
 
@@ -43,6 +43,7 @@ and per stage: <S>.events.ndjson, <S>.stdout, <S>.grade.json, <S>.memory/.
 Full logs stay on disk; the report prints only the summary.
 """
 import argparse, concurrent.futures as cf, glob, json, os, re, shutil, signal, subprocess, sys, time
+from datetime import datetime
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PROJID = os.path.join(HERE, "bin", "projid")
@@ -175,7 +176,7 @@ def run_session(args, binpath, arm, scen, stage, trial):
     start = time.time()
     with open(events, "w") as ev, open(os.path.join(trial, f"{name}.stdout"), "w") as so:
         exit_code = run_bounded(cmd, work, env, so, ev, args.timeout)
-    return {"work": work, "xdg": xdg, "env": env, "state": state, "events": events,
+    return {"work": work, "xdg": xdg, "env": env, "state": state, "events": events, "started": start,
             "exit": exit_code, "seconds": round(time.time() - start)}
 
 
@@ -232,8 +233,26 @@ def read_meta(path):
         return {}
 
 
-def is_subagent(meta_path):
-    return bool(read_meta(meta_path).get("is_subagent"))
+def stage_delegate_transcripts(state, started):
+    """The transcripts of delegate sessions created at or after started (epoch seconds).
+
+    A resumed stage shares the earlier stage's state dir, so this keeps out the
+    earlier stage's delegates. Creation time is the meta's created_at, which
+    evener sets once when it creates the session; the transcript's mtime is the
+    fallback for a meta without it.
+    """
+    out = []
+    for path in find_files(state, ".transcript.jsonl"):
+        meta = read_meta(path.removesuffix(".transcript.jsonl") + ".meta.json")
+        if not meta.get("is_subagent"):
+            continue
+        try:
+            created = datetime.fromisoformat(meta["created_at"]).timestamp()
+        except (KeyError, TypeError, ValueError):
+            created = os.path.getmtime(path)
+        if created >= started:
+            out.append(read_file(path))
+    return "".join(out)
 
 
 def whiteboard_note(state):
@@ -259,11 +278,8 @@ def grade_stage(label, arm, scen, stage, trial, session):
     if stage.get("transcripts"):
         # Every session transcript under this stage's state dir, delegates
         # included, e.g. for a delegate's memory_read of session scope.
-        paths = find_files(session["state"], ".transcript.jsonl")
-        inputs["transcripts"] = "".join(read_file(p) for p in paths)
-        # Each session's meta sits next to its transcript and marks delegates is_subagent.
-        inputs["delegate_transcripts"] = "".join(
-            read_file(p) for p in paths if is_subagent(p.removesuffix(".transcript.jsonl") + ".meta.json"))
+        inputs["transcripts"] = "".join(read_file(p) for p in find_files(session["state"], ".transcript.jsonl"))
+        inputs["delegate_transcripts"] = stage_delegate_transcripts(session["state"], session["started"])
     grade = {"version": label, "arm": arm, "scenario": os.path.basename(scen), "trial": trial, "stage": name,
              "exit": session["exit"], "seconds": session["seconds"], "rounds_capped": limit, "tool_calls": len(calls),
              "memory_calls": {}, "checks": {}}
