@@ -229,7 +229,7 @@ def grade_checks(spec, inputs):
             try:
                 os.remove(leftover)
             except OSError as e:
-                inputs.setdefault("cleanup_errors", {})[spec["name"]] = f"held-out cleanup: {e}"
+                inputs.setdefault("cleanup_errors", {})[spec.get("name", "<unnamed>")] = f"held-out cleanup: {e}"
     if rc == "timeout":
         raise TimeoutError(f"check timed out after {COMMAND_TIMEOUT}s")
     return rc == 0
@@ -481,10 +481,13 @@ def load_scenario(scen):
         if st.get("fixture") and not (isinstance(workspace, str) and workspace and workspace != "work"):
             sys.exit(f"memory-lab: {scen} stage {st['name']}: \"fixture\" needs a \"workspace\" naming a dir other than work "
                      "(otherwise the stage silently reuses the base work dir)")
-        for spec in st.get("delegate_calls", []):
-            tools, args = spec.get("tools"), spec.get("args", {})
+        checks = st.get("delegate_calls", [])
+        if not (isinstance(checks, list) and all(isinstance(check, dict) for check in checks)):
+            sys.exit(f"memory-lab: {scen} stage {st['name']}: \"delegate_calls\" needs a list of check objects")
+        for check in checks:
+            tools, args = check.get("tools"), check.get("args", {})
             if not (isinstance(tools, list) and tools and all(isinstance(t, str) for t in tools)) or not isinstance(args, dict):
-                sys.exit(f"memory-lab: {scen} stage {st['name']}: delegate_calls {spec.get('name')!r} needs \"tools\", "
+                sys.exit(f"memory-lab: {scen} stage {st['name']}: delegate_calls {check.get('name')!r} needs \"tools\", "
                          "a non-empty list of tool names, and an optional \"args\" object")
     return spec
 
@@ -610,14 +613,22 @@ def cmd_ask(args):
     print(messages[-1] if messages else "(no reply)")
 
 
-def positive_int(value):
-    try:
-        n = int(value)
-    except ValueError:
-        n = 0
-    if n < 1:
-        raise argparse.ArgumentTypeError(f"{value!r} is not a positive integer")
-    return n
+def int_at_least(minimum, kind):
+    """An argparse type: an integer no smaller than minimum, described as kind in the error."""
+    def parse(value):
+        try:
+            n = int(value)
+        except ValueError:
+            n = minimum - 1
+        if n < minimum:
+            raise argparse.ArgumentTypeError(f"{value!r} is not a {kind} integer")
+        return n
+    return parse
+
+
+positive_int = int_at_least(1, "positive")
+# evener's --max-rounds takes 0 for unlimited.
+non_negative_int = int_at_least(0, "non-negative")
 
 
 def main():
@@ -629,7 +640,7 @@ def main():
     r.add_argument("--scenarios", required=True, help="comma-separated scenario dirs")
     r.add_argument("--reps", type=positive_int, default=2)
     r.add_argument("--out", required=True)
-    r.add_argument("--max-rounds", type=positive_int, default=40)
+    r.add_argument("--max-rounds", type=non_negative_int, default=40, help="tool rounds per stage; 0 = unlimited")
     r.add_argument("--effort", default="high")
     r.add_argument("--timeout", type=positive_int, default=1200, help="seconds per stage")
     r.add_argument("--jobs", type=positive_int, default=4)
