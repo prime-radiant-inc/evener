@@ -33,9 +33,13 @@ def args_of(call):
 
 # A shell command that writes a progress file: a redirect or tee aimed at it, or an in-place edit
 # naming it. A redirect elsewhere (2>&1, > /dev/null) is not a write to the ledger.
-# Shell commands that read the files they name, and the statement separators between commands.
+# Shell commands that read the files they name; wrappers that run the command after them; the tokens
+# that end a statement; and redirect operators (shlex keeps "2", "&>" and ">>" apart from their target).
 SHELL_READERS = {"cat", "head", "tail", "less", "more", "grep", "rg", "awk", "wc", "diff"}
-SHELL_SEPARATORS = re.compile(r"\n|;|&&|\|\||\|")
+SHELL_WRAPPERS = {"sudo", "env", "timeout", "nice", "nohup", "command", "exec", "time"}
+SHELL_SEPARATORS = {"|", "||", "&&", ";", "&", ";;", "|&"}
+SHELL_WRITE_REDIRECT = re.compile(r"^&?>>?\|?$")
+PERL_IN_PLACE = re.compile(r"^-[a-z]*i[a-z]*(?:\.\w+)?$")
 
 
 def file_surface(paths):
@@ -50,35 +54,74 @@ def file_surface(paths):
 
 
 def in_place_flag(name, word):
-    """Whether word is an in-place edit flag: sed's -i[SUFFIX], or a perl switch cluster containing i (-pi, -i.bak)."""
+    """Whether word is an in-place edit flag: sed's -i[SUFFIX], or a perl lowercase switch cluster with i
+    (-i, -pi, -i.bak). Perl switches that carry an argument (-MModule, -Ipath) are not."""
     if name == "sed":
         return word.startswith("-i")
-    return word.startswith("-") and not word.startswith("--") and "i" in word[1:]
+    return bool(PERL_IN_PLACE.match(word))
+
+
+def shell_statements(command):
+    """The command's statements as word lists: lines, split at separator tokens after shlex tokenizing,
+    so quoted pipes stay inside their word."""
+    for line in command.splitlines():
+        lexer = shlex.shlex(line, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        try:
+            tokens = list(lexer)
+        except ValueError:
+            tokens = line.split()
+        statement = []
+        for token in tokens:
+            if token in SHELL_SEPARATORS:
+                if statement:
+                    yield statement
+                statement = []
+            else:
+                statement.append(token)
+        if statement:
+            yield statement
 
 
 def shell_paths(command):
     """The paths a shell command writes and reads, statement by statement: redirect, tee and in-place
-    edit targets are written; a reader's arguments are read. Anything else names a path without touching it."""
+    edit targets are written; input redirects and a reader's file arguments are read. Anything else names a
+    path without touching it."""
     written, read = [], []
-    for statement in SHELL_SEPARATORS.split(command):
-        try:
-            words = shlex.split(statement)
-        except ValueError:
-            words = statement.split()
-        if not words:
+    for words in shell_statements(command):
+        rest = []
+        i = 0
+        while i < len(words):
+            word = words[i]
+            target = words[i + 1] if i + 1 < len(words) else None
+            if SHELL_WRITE_REDIRECT.match(word) and target is not None:
+                written.append(target)
+                i += 2
+                continue
+            if word in ("<", "<<<") and target is not None:
+                read.append(target)
+                i += 2
+                continue
+            if word.isdigit() and target is not None and SHELL_WRITE_REDIRECT.match(target):
+                i += 1  # a file descriptor before a redirect
+                continue
+            rest.append(word)
+            i += 1
+        while rest and ("=" in rest[0] and not rest[0].startswith("-") or os.path.basename(rest[0]) in SHELL_WRAPPERS
+                        or (rest[0].startswith("-") and len(rest) > 1)):
+            rest = rest[1:]  # environment assignments, wrappers and their flags
+        if not rest:
             continue
-        for i, word in enumerate(words):
-            if word in (">", ">>") and i + 1 < len(words):
-                written.append(words[i + 1])
-            elif word.startswith(">") and word.lstrip(">") and not word.startswith(">&"):
-                written.append(word.lstrip(">"))
-        args = [w for w in words[1:] if not w.startswith("-") and not w.startswith(">")]
-        name = os.path.basename(words[0])
+        name, args = os.path.basename(rest[0]), [w for w in rest[1:] if not w.startswith("-")]
         if name == "tee":
             written += args
-        elif name in ("sed", "perl") and any(in_place_flag(name, w) for w in words[1:]):
+        elif name in ("sed", "perl") and any(in_place_flag(name, w) for w in rest[1:]):
             written += args
-        elif name in SHELL_READERS or (name == "sed" and "-n" in words):
+        elif name in ("grep", "rg"):
+            # The first operand is the pattern unless one was given with -e/-f.
+            explicit = any(w in ("-e", "-f", "--regexp", "--file") for w in rest[1:])
+            read += args if explicit else args[1:]
+        elif name in SHELL_READERS or (name == "sed" and "-n" in rest):
             read += args
     return written, read
 
