@@ -262,6 +262,9 @@ func (p PluginsPanel) handleRune(s string) (tea.Model, tea.Cmd) {
 				return PluginSetAutoUpgradeMsg{Plugin: entry.Plugin, Marketplace: entry.Marketplace, AutoUpgrade: !entry.AutoUpgrade}
 			}
 		case "u":
+			if !entry.UpdateAvailable {
+				return p, nil
+			}
 			return p, func() tea.Msg {
 				return PluginActionMsg{Action: "upgrade", Plugin: entry.Plugin, Marketplace: entry.Marketplace}
 			}
@@ -526,6 +529,9 @@ func (p PluginsPanel) renderInstalledTab() string {
 		if e.AutoUpgrade {
 			badges = append(badges, tuiprim.StatusBadge(th.StateIdle, "auto-upgrade"))
 		}
+		if e.UpdateAvailable {
+			badges = append(badges, tuiprim.StatusBadge(th.Accent, "update available"))
+		}
 		line := fmt.Sprintf("%s%s @ %s  v%s", cursor, e.Plugin, e.Marketplace, versionOrUnknown(e.Version))
 		if len(badges) > 0 {
 			line += "  " + strings.Join(badges, " ")
@@ -613,14 +619,18 @@ func (p PluginsPanel) footerFor(width int) string {
 			tuiprim.KbdHint("esc", "back"),
 		)
 	default: // pluginsTabInstalled
-		return tuiprim.ActionBarForWidth(width,
+		hints := []string{
 			tuiprim.KbdHint("←→", "tab"),
 			tuiprim.KbdHint("↑↓", "select"),
 			tuiprim.KbdHint("enter", "enable/disable"),
 			tuiprim.KbdHint("a", "auto-upgrade"),
-			tuiprim.KbdHint("u", "upgrade"),
-			tuiprim.KbdHint("x", "remove"),
-			tuiprim.KbdHint("esc", "close"),
-		)
+		}
+		// Upgrade is offered only where the last update check found one, as
+		// the web and the phone offer it.
+		if entry, ok := p.selectedPlugin(); ok && entry.UpdateAvailable {
+			hints = append(hints, tuiprim.KbdHint("u", "upgrade"))
+		}
+		hints = append(hints, tuiprim.KbdHint("x", "remove"), tuiprim.KbdHint("esc", "close"))
+		return tuiprim.ActionBarForWidth(width, hints...)
 	}
 }

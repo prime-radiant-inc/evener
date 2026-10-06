@@ -17,6 +17,11 @@ const (
 	// even start their own git clone/pull, so this must clear that floor with
 	// headroom for real network I/O.
 	pluginsSlowTimeout = 60 * time.Second
+	// pluginsCheckUpdatesTimeout bounds evener/plugin/checkUpdates, which asks
+	// every plugin's remote. It exceeds the hub's overall check deadline
+	// (internal/plugins updateCheckDeadline), as the web's
+	// PLUGIN_UPDATE_CHECK_TIMEOUT_MS does.
+	pluginsCheckUpdatesTimeout = 120 * time.Second
 )
 
 // MarketplaceListResultMsg carries the result of a passive evener/marketplace/list
@@ -193,6 +198,22 @@ func CmdPluginList(client *appwire.Client) tea.Cmd {
 		defer cancel()
 		resp, err := client.PluginList(ctx)
 		return PluginListResultMsg{List: resp, Err: err}
+	}
+}
+
+// CmdPluginCheckUpdates asks the hub which installed plugins have updates and
+// answers with the list it returns, carrying updateAvailable. A failed check
+// (an older hub without the method, or a timeout) answers nothing, so the
+// panel keeps the list it has and flags nothing.
+func CmdPluginCheckUpdates(client *appwire.Client) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), pluginsCheckUpdatesTimeout)
+		defer cancel()
+		resp, err := client.PluginCheckUpdates(ctx)
+		if err != nil {
+			return nil
+		}
+		return PluginListResultMsg{List: resp}
 	}
 }
 
