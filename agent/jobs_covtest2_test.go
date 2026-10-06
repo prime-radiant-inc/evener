@@ -446,15 +446,15 @@ func TestCovValidatedOutputStatsForRecord(t *testing.T) {
 	}
 
 	// Nil record — should return stats without mismatch check.
-	total, retainedStart, err := validatedOutputStatsForRecord(path, nil)
+	total, visibleStart, err := validatedOutputStatsForRecord(path, nil)
 	if err != nil {
 		t.Fatalf("nil rec: %v", err)
 	}
 	if total != 12 { // "hello world\n" = 12 bytes
 		t.Fatalf("total = %d, want 12", total)
 	}
-	if retainedStart != 0 {
-		t.Fatalf("retainedStart = %d, want 0", retainedStart)
+	if visibleStart != 0 {
+		t.Fatalf("visibleStart = %d, want 0", visibleStart)
 	}
 
 	// Terminal record with matching output bytes — OK.
@@ -500,7 +500,7 @@ func TestCovValidatedOutputStatsForRecord(t *testing.T) {
 func TestCovTailOutputFileWithOpen(t *testing.T) {
 	t.Parallel()
 	// Negative tailBytes.
-	_, _, _, err := tailOutputFileWithOpen("/nonexistent", -1, 0, func(string) (jobOutputReadFile, error) {
+	_, _, _, err := tailOutputFileWithOpen("/nonexistent", -1, 0, 0, func(string) (jobOutputReadFile, error) {
 		t.Fatal("open should not be called for negative tailBytes")
 		return nil, nil
 	})
@@ -509,7 +509,7 @@ func TestCovTailOutputFileWithOpen(t *testing.T) {
 	}
 
 	// Open error.
-	_, _, _, err = tailOutputFileWithOpen("/nonexistent", 100, 0, func(path string) (jobOutputReadFile, error) {
+	_, _, _, err = tailOutputFileWithOpen("/nonexistent", 100, 0, 0, func(path string) (jobOutputReadFile, error) {
 		return nil, errors.New("open failed")
 	})
 	if err == nil || !strings.Contains(err.Error(), "open output") {
@@ -523,7 +523,7 @@ func TestCovTailOutputFileWithOpen(t *testing.T) {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	out, total, truncated, err := tailOutputFileWithOpen(path, 100, int64(len(content)), func(p string) (jobOutputReadFile, error) {
+	out, total, truncated, err := tailOutputFileWithOpen(path, 100, int64(len(content)), 0, func(p string) (jobOutputReadFile, error) {
 		return os.Open(p)
 	})
 	if err != nil {

@@ -846,7 +846,7 @@ func TestGrepOutputFileSkipsOverlongLine(t *testing.T) {
 		t.Fatalf("write output: %v", err)
 	}
 
-	matches, err := grepOutputFile(path, regexp.MustCompile(`ready`), 4096, 0)
+	matches, err := grepOutputFile(path, regexp.MustCompile(`ready`), 4096, nil)
 	if err != nil {
 		t.Fatalf("grepOutputFile: %v", err)
 	}
