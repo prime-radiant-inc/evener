@@ -424,10 +424,17 @@ func (s *NavigationService) selectLocked(key, semantic navigationResourceKey, ch
 		}
 	}
 	// The key's revision covers every catalog's project with the key, so a
-	// read naming a catalog that has none is answered here.
+	// read naming a catalog that has none is answered here: gone at the key's
+	// revision, as a project that moved catalogs is, so a client locates the
+	// session again rather than retrying.
 	if versioned.Catalog != "" {
 		if _, found := s.core.projection.projectIn(versioned.Catalog, versioned.ProjectKey); !found {
-			return navigationResourceKey{}, navigationProjection{}, false, navigationNotFoundError{kind: semantic.Kind}
+			return navigationResourceKey{}, navigationProjection{}, false, navigationNotFoundError{
+				kind:       semantic.Kind,
+				known:      true,
+				generation: s.generation,
+				revision:   state.Revision,
+			}
 		}
 	}
 	versioned.Revision = state.Revision

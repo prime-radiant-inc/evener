@@ -2925,7 +2925,7 @@ func TestNavigationServiceProjectKeyInSeveralCatalogsSharesOneRevision(t *testin
 		return out
 	}
 	before := read()
-	if before[0].ETag == before[1].ETag || before[1].ETag == before[2].ETag {
+	if before[0].ETag == before[1].ETag || before[1].ETag == before[2].ETag || before[0].ETag == before[2].ETag {
 		t.Fatalf("catalog views share an ETag: %q %q %q", before[0].ETag, before[1].ETag, before[2].ETag)
 	}
 
@@ -2953,7 +2953,7 @@ func TestNavigationServiceProjectKeyInSeveralCatalogsSharesOneRevision(t *testin
 	}
 
 	_, err = service.readV3(t.Context(), navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "no-project", Catalog: navigationResourceArchivedProjects}, nil)
-	if _, ok := errors.AsType[navigationNotFoundError](err); !ok {
-		t.Fatalf("read of a catalog without the key = %v, want not found", err)
+	if gone, ok := errors.AsType[navigationNotFoundError](err); !ok || !gone.known || gone.revision != target {
+		t.Fatalf("read of a catalog without the key = %+v, want gone at revision %d", err, target)
 	}
 }
