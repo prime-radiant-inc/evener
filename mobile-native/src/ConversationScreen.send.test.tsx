@@ -2929,6 +2929,50 @@ describe("queued messages at the transcript's end (spec 8.5)", () => {
 		expect(renderedText(tree)).not.toContain("Couldn't steer");
 	});
 
+	// Between the press and the agent's next step, the hub holds the steer as
+	// a pending mutation; the phone shows it as its own (spec 8.5).
+	it.each([
+		["Steer now", "turn/promoteQueuedAsSteer", ["check the logs"]],
+		["Steer all now", "turn/drainAsSteer", ["check the logs", "and the metrics"]],
+	])("shows %s as steering until the agent takes it", async (label, method, queued) => {
+		const ref = `ref-steering-${method}`;
+		const served = thread(ref, "active", false, queued);
+		const { tree, hub } = await mount(served);
+		const client = hub.client as { request: (method: string, params: Record<string, unknown>) => Promise<unknown> };
+		const request = client.request;
+		client.request = async (requested, params) => {
+			const answer = await request(requested, params);
+			if (requested === method) {
+				// The read after the press: the queue is empty, and the hub holds
+				// the steer for the agent's next step.
+				const evener = (served as unknown as { evener: Record<string, unknown> }).evener;
+				evener.queue = queueState([], 1);
+				evener.pendingMutations = [
+					{
+						clientMutationId: params.clientMutationId,
+						method,
+						input: queued.map((text) => ({ type: "text", text })),
+						executionState: "accepted",
+						projectionState: "pending",
+					},
+				];
+				// A drain's receipt names every entry it took.
+				const { receipt } = answer as { receipt: Record<string, unknown> };
+				return { receipt: { queueEntryIds: queued.map((_, index) => `queue_${index + 1}`), ...receipt } };
+			}
+			return answer;
+		};
+		if (label === "Steer now") await press(tree, label);
+		else
+			await act(async () => {
+				await queueHosts.get(sheetKey("hub-1", ref))?.steerAll?.();
+			});
+		await settle();
+		expect(hub.requests.filter((entry) => entry.method === method)).toHaveLength(1);
+		expect(lastRow(tree)).toContain("check the logs");
+		expect(lastRow(tree)).toContain("Steering · arrives at the next step");
+	});
+
 	// They take no room from the transcript, so nothing folds while you type.
 	it("keeps a queued message and its Steer now while you type", async () => {
 		const { tree, hub } = await mount(thread("ref-steer-typing", "active", false, ["check the logs"]));

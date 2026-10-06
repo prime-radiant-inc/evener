@@ -1751,6 +1751,25 @@ describe("ConversationStore", () => {
 			});
 		});
 
+		it("a mutation sent outside the outbox shows as this client's once remembered", async () => {
+			const store = await openStore(authoritativeModel("cmid-promote"));
+			store.getState().bindPendingMutations(fakePort({}));
+			await yieldMicrotask();
+			expect(store.getState().pendingMutations?.[0]).toMatchObject({ id: "cmid-promote", fromThisClient: false });
+
+			store.getState().rememberSubmittedHere("cmid-promote");
+			expect(store.getState().pendingMutations?.[0]).toMatchObject({ id: "cmid-promote", fromThisClient: true });
+		});
+
+		it("remembering a mutation before the first durable read lands publishes nothing", async () => {
+			const port = fakePort({});
+			port.read = () => new Promise(() => {});
+			const store = await openStore(authoritativeModel("cmid-promote"));
+			store.getState().bindPendingMutations(port);
+			store.getState().rememberSubmittedHere("cmid-promote");
+			expect(store.getState().pendingMutations ?? null).toBeNull();
+		});
+
 		it("a failed open does not leave the retired target's rows visible", async () => {
 			const port = fakePort({ outbox: [outbox()] });
 			const store = await openStore();

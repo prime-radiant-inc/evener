@@ -436,6 +436,10 @@ export interface LiveConversationState extends ConversationState {
 	// suspend/rehydrate generation bump that did not retire the seam leaves the
 	// live subscription untouched. Returns null when a seam is already bound.
 	bindPendingMutationsIfUnbound(port: ConversationMutationPendingPort): (() => void) | null;
+	// Records a mutation this client sent straight to the hub, outside the
+	// durable outbox (a queue promote or drain), as its own: the hub's pending
+	// row for it then shows as this client's, as a steer in flight does.
+	rememberSubmittedHere(clientMutationId: string): void;
 	openProjected(
 		service: LiveConversationService,
 		activitySink: LiveActivitySink,
@@ -2784,6 +2788,14 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					detachPendingRows();
 					set({ pendingMutations: null });
 				};
+			},
+
+			rememberSubmittedHere(clientMutationId) {
+				pendingSubmittedHere.set(clientMutationId, Date.now());
+				// Until the first durable read lands there is no projection to update.
+				if (pendingPort === null || pendingSnapshot === null) return;
+				const next = reconcilePendingMutations();
+				if (!samePendingRows(get().pendingMutations, next)) set({ pendingMutations: next });
 			},
 
 			bindPendingMutationsIfUnbound(port) {
