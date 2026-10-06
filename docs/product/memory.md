@@ -106,11 +106,12 @@ done. Pages that contradict what the agent observes are corrected in the same
 turn. Saving sessions are also told the shape of a useful page (one durable
 fact with its reason and how to apply it, under an index line that says what
 the page holds) and that run details which go stale within days stay out of
-personal and project memory. A changed fact is rewritten in place, and a page
-the agent reads that has turned into a log is its to repair before it
-finishes. A status-only index line is a reason to read its page. Root sessions
-that can update the whiteboard are told it carries status for the partner, not
-working notes. Root sessions are told that working notes belong in session memory, not
+personal and project memory. A changed fact is rewritten in place. When the
+agent reads a page that has turned into a log, it repairs that page before it
+ends its turn. A status-only index line is a reason to read its page. Root
+sessions that save working notes to session memory and can update the
+whiteboard are told the whiteboard carries status for the partner, not working
+notes. Root sessions are told that working notes belong in session memory, not
 project memory (the second half only when project memory is bound). The
 Finishing guidance adds one row telling root sessions to promote anything that
 holds beyond this work out of session memory before they report. Delegates are told session memory is their root's, to read it and
