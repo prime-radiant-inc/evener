@@ -75,7 +75,8 @@ function ThreadTranscript({ params, paneId }: { params: TranscriptParams; paneId
   const view = pane ? retainedTranscriptReadView(conversationPaneLifetime(pane), ref, "transcript") : undefined;
   const model = useThreadsStore((state) => state.threads.get(ref));
   const { snapshot: activity } = useSessionActivity(ref);
-  const scope = deriveScope(navigationStore.getState(), ref, activity);
+  // Only the crumbs are shown here, so no subagent count is read.
+  const scope = deriveScope(navigationStore.getState(), ref, activity, null);
   return (
     <PaneScaffold title={model?.name || ref}>
       <div className={CLASS.body}>

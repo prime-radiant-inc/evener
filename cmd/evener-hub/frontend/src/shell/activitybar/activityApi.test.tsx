@@ -31,7 +31,12 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 const scope = () =>
-  deriveScope(createNavigationStore({ persistence: memoryNavigationPersistence() }).getState(), "remote:owner", null);
+  deriveScope(
+    createNavigationStore({ persistence: memoryNavigationPersistence() }).getState(),
+    "remote:owner",
+    null,
+    null,
+  );
 it("shows incomplete empty as progress then drills the exact stable delegate child", async () => {
   const client = activityClient();
   let finish: (() => void) | undefined;

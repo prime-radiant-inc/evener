@@ -411,3 +411,21 @@ test("spine pop and counts are separate keyboard targets and Escape closes the p
   expect(activitySidebarStore.getState().open).toBe(false);
   expect(leaf()).toBe("grandchild");
 });
+
+// A cascade scope's Agents chip counts that scope's subagents at every depth,
+// as the footer does: here each scope runs one child of its own and three in
+// all, finished one of four.
+test("a cascade scope's Agents chip counts its subagents at every depth", async () => {
+  const { client, mount } = fixture();
+  client.on("evener/thread/activity/read", ({ ref, scope }) => ({
+    ...activitySummary(ref),
+    context: cascadeContext(ref, ref === "grandchild" ? ["root", "child"] : ref === "root" ? [] : ["root"]),
+    scope: scope ?? "session",
+    delegates:
+      scope === "subtree"
+        ? { known: true, total: 4, active: 3, failed: 0, completed: 1 }
+        : { known: true, total: 1, active: 1, failed: 0, completed: 0 },
+  }));
+  mount();
+  expect(await scope("root").findByRole("button", { name: "Agents, 3 of 4 active - peek at root" })).toBeTruthy();
+});
