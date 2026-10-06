@@ -32,8 +32,9 @@ A scenario dir holds scenario.json and fixture/. scenario.json:
                "memory": [{"name": "...", "regex": "(?i)vet", "scope": "personal"}],  # scope (personal|project|session) and "absent": true optional
                "fixture": "fixture2", "workspace": "work2",  # optional: run in another project (both required together)
                "resume": "A",  # optional: continue stage A's root session (by the id in A.grade.json)
-               "transcripts": [{"name": "...", "regex": "over every transcript in the stage's state dir",
-                                "subagents_only": true}],  # optional: only delegates this stage started
+               "transcripts": [{"name": "...", "regex": "over every transcript in the stage's state dir"}],
+               "delegate_calls": [{"name": "...", "tools": ["memory_read", "memory_search"],
+                                   "args": {"scope": "session"}}],  # a tool call by a delegate this stage started
                "whiteboard": [{"name": "...", "regex": "(?m)^Now:", "max_chars": 600, "min_lines": 3}],
                "final": [{"name": "...", "regex": "against the last message to the partner"}]}]}
 
@@ -218,7 +219,13 @@ def session_failure(session, rounds_capped):
 
 
 def grade_checks(spec, inputs):
-    rc, _ = run_bounded(spec["run"], inputs["work"], inputs["env"], COMMAND_TIMEOUT)
+    try:
+        rc, _ = run_bounded(spec["run"], inputs["work"], inputs["env"], COMMAND_TIMEOUT)
+    finally:
+        # A held-out check deletes its own test file, unless it was killed first;
+        # a leftover would join every later check's and stage's build.
+        for leftover in glob.glob(os.path.join(glob.escape(inputs["work"]), "zz_heldout*_test.go")):
+            os.remove(leftover)
     if rc == "timeout":
         raise TimeoutError(f"check timed out after {COMMAND_TIMEOUT}s")
     return rc == 0
@@ -242,8 +249,15 @@ def grade_final(spec, inputs):
 
 
 def grade_transcripts(spec, inputs):
-    key = "delegate_transcripts" if spec.get("subagents_only") else "transcripts"
-    return bool(re.search(spec["regex"], inputs[key]))
+    return bool(re.search(spec["regex"], inputs["transcripts"]))
+
+
+def grade_delegate_calls(spec, inputs):
+    """Whether a delegate this stage started called one of spec["tools"] with every
+    argument in spec["args"] (e.g. {"scope": "session"})."""
+    want = spec.get("args", {})
+    return any(name in spec["tools"] and all(args.get(k) == v for k, v in want.items())
+               for name, args in inputs["delegate_calls"])
 
 
 def grade_whiteboard(spec, inputs):
@@ -261,7 +275,8 @@ def grade_whiteboard(spec, inputs):
 # Check type (the key in a stage) -> grader. Each takes (check spec, inputs) and
 # returns whether the check passed.
 GRADERS = {"checks": grade_checks, "trace": grade_trace, "memory": grade_memory,
-           "transcripts": grade_transcripts, "whiteboard": grade_whiteboard, "final": grade_final}
+           "transcripts": grade_transcripts, "delegate_calls": grade_delegate_calls,
+           "whiteboard": grade_whiteboard, "final": grade_final}
 
 
 def read_meta(path):
@@ -273,7 +288,7 @@ def read_meta(path):
 
 
 def stage_delegate_transcripts(state, started):
-    """The transcripts of delegate sessions created at or after started (epoch seconds).
+    """The transcript paths of delegate sessions created at or after started (epoch seconds).
 
     A resumed stage shares the earlier stage's state dir, so this keeps out the
     earlier stage's delegates. Creation time is the meta's created_at, which
@@ -290,22 +305,52 @@ def stage_delegate_transcripts(state, started):
         except (KeyError, TypeError, ValueError):
             created = os.path.getmtime(path)
         if created >= started:
-            out.append(read_file(path))
-    return "".join(out)
+            out.append(path)
+    return out
+
+
+def transcript_tool_calls(path):
+    """(tool name, arguments dict) for every tool call in a transcript: each line is a JSON
+    entry, and a call is any nested {"kind": "tool_call", "tool_call": {"name", "arguments"}}."""
+    calls = []
+
+    def walk(node):
+        if isinstance(node, dict):
+            call = node.get("tool_call")
+            if node.get("kind") == "tool_call" and isinstance(call, dict):
+                args = call.get("arguments")
+                if isinstance(args, str):  # some providers carry arguments as a JSON string
+                    try:
+                        args = json.loads(args)
+                    except ValueError:
+                        args = {}
+                calls.append((call.get("name", ""), args if isinstance(args, dict) else {}))
+            for v in node.values():
+                walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                walk(v)
+
+    for line in read_file(path).splitlines():
+        try:
+            walk(json.loads(line))
+        except ValueError:
+            continue
+    return calls
 
 
 def root_session_id(events, state):
     """The root session a stage ran: the session_id on the first SESSION_START in its own
     event stream (delegates start later), else the newest non-subagent meta in its state dir."""
-    try:
-        with open(events, errors="replace") as f:
-            for line in f:
-                if line.startswith("{") and '"SESSION_START"' in line:
-                    ev = json.loads(line)
-                    if ev.get("kind") == "SESSION_START" and ev.get("session_id"):
-                        return ev["session_id"]
-    except (OSError, ValueError):
-        pass
+    for line in read_file(events).splitlines():
+        if not (line.startswith("{") and '"SESSION_START"' in line):
+            continue
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        if ev.get("kind") == "SESSION_START" and ev.get("session_id"):
+            return ev["session_id"]
     roots = []
     for path in find_files(os.path.join(state, "sessions"), ".meta.json"):
         meta = read_meta(path)
@@ -362,7 +407,9 @@ def grade_stage(label, arm, scen, stage, trial, session):
         # Every session transcript under this stage's state dir, delegates
         # included, e.g. for a delegate's memory_read of session scope.
         inputs["transcripts"] = "".join(read_file(p) for p in find_files(session["state"], ".transcript.jsonl"))
-        inputs["delegate_transcripts"] = stage_delegate_transcripts(session["state"], session["started"])
+    if stage.get("delegate_calls"):
+        inputs["delegate_calls"] = [c for p in stage_delegate_transcripts(session["state"], session["started"])
+                                    for c in transcript_tool_calls(p)]
     failure = session_failure(session, limit)
     if failure:
         grade["error"], grade["checks"] = failure, all_failed(stage)
@@ -424,8 +471,8 @@ def load_scenario(scen):
     for i, st in enumerate(spec["stages"]):
         if st.get("resume") and st["resume"] not in [earlier["name"] for earlier in spec["stages"][:i]]:
             sys.exit(f"memory-lab: {scen} stage {st['name']}: \"resume\" must name an earlier stage")
-        if st.get("fixture") and not st.get("workspace"):
-            sys.exit(f"memory-lab: {scen} stage {st['name']}: \"fixture\" needs a \"workspace\" "
+        if st.get("fixture") and st.get("workspace", "work") == "work":
+            sys.exit(f"memory-lab: {scen} stage {st['name']}: \"fixture\" needs a \"workspace\" other than work "
                      "(otherwise the stage silently reuses the base work dir)")
     return spec
 
@@ -442,6 +489,8 @@ def cmd_run(args):
         if not (os.path.isfile(binpath) and os.access(binpath, os.X_OK)):
             sys.exit(f"memory-lab: --version {v!r}: {binpath} is not an executable file")
         versions[label] = binpath
+    if os.path.exists(args.out) and not os.path.isdir(args.out):
+        sys.exit(f"memory-lab: --out {args.out} exists and is not a directory; use a fresh directory")
     if os.path.exists(args.out) and os.listdir(args.out):
         sys.exit(f"memory-lab: {args.out} already holds results; use a fresh --out")
     jobs = []
@@ -549,6 +598,16 @@ def cmd_ask(args):
     print(messages[-1] if messages else "(no reply)")
 
 
+def positive_int(value):
+    try:
+        n = int(value)
+    except ValueError:
+        n = 0
+    if n < 1:
+        raise argparse.ArgumentTypeError(f"{value!r} is not a positive integer")
+    return n
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -556,12 +615,12 @@ def main():
     r.add_argument("--version", action="append", required=True, help="LABEL=path/to/evener (repeatable)")
     r.add_argument("--model", required=True)
     r.add_argument("--scenarios", required=True, help="comma-separated scenario dirs")
-    r.add_argument("--reps", type=int, default=2)
+    r.add_argument("--reps", type=positive_int, default=2)
     r.add_argument("--out", required=True)
     r.add_argument("--max-rounds", type=int, default=40)
     r.add_argument("--effort", default="high")
     r.add_argument("--timeout", type=int, default=1200, help="seconds per stage")
-    r.add_argument("--jobs", type=int, default=4)
+    r.add_argument("--jobs", type=positive_int, default=4)
     rp = sub.add_parser("report")
     rp.add_argument("out")
     s = sub.add_parser("show")
