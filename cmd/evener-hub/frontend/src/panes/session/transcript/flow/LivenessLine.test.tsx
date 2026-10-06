@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 import { connectionStore } from "../../../../stores/connection";
 import { sessionActivitySnapshot } from "../../../../stores/sessionActivity";
@@ -347,4 +347,17 @@ test("an unknown hub count falls back to the active turn's rows", async () => {
   render(<LivenessLine lastFrameAt={0} now={60_000} active={true} sessionRef="s1" turnId="turn_0" />);
   await waitFor(() => expect(sessionActivitySnapshot(client, "s1", "subtree", "count")?.summary).toBeTruthy());
   expect(screen.getByTestId("liveness-line").textContent).toBe("Waiting on 1 subagent");
+});
+
+// The line holds the hub's count for its session whether or not a turn is
+// running, so when a turn starts the count is already there: its first
+// words are the hub's, never a flash of the turn's own rows first.
+test("a turn's first words are the hub's count, read before the turn started", async () => {
+  seedRunningChildren(1);
+  const client = hubCounting(true, 2);
+  const view = render(<LivenessLine lastFrameAt={0} now={60_000} active={false} sessionRef="s1" turnId="turn_0" />);
+  await waitFor(() => expect(client.calls.some((call) => call.method === "evener/thread/activity/read")).toBe(true));
+  await act(async () => {});
+  view.rerender(<LivenessLine lastFrameAt={0} now={60_000} active={true} sessionRef="s1" turnId="turn_0" />);
+  expect(screen.getByTestId("liveness-line").textContent).toBe("Waiting on 2 subagents");
 });

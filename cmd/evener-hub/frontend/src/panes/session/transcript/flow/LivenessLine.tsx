@@ -71,10 +71,11 @@ export function LivenessLine({ lastFrameAt, now, active, sessionRef, turnId, ret
   // Live row's tally and the phone count them). The active turn's own rows
   // (subagentModuleStore, scoped by turnScopeKey - see that store's comment
   // on why a bare turn id is never enough) stand in only until the hub's
-  // count is known (not yet read, or an older hub), so a launch the
-  // transcript already shows can explain the wait.
-  const runningSubagents =
-    useSubagentCounts(active && sessionRef !== undefined ? sessionRef : null)?.active ?? turnRunning;
+  // count is known (an older hub, or a session the hub has not counted), so
+  // a launch the transcript already shows can explain the wait. The count is
+  // held whether or not a turn runs, so a turn's first words are the hub's,
+  // not a flash of the turn's rows while a fresh read lands.
+  const runningSubagents = useSubagentCounts(sessionRef ?? null)?.active ?? turnRunning;
   const retryWait: RetryWait | undefined = retry && {
     attempt: retry.attempt,
     attemptCap: retry.attemptCap,
