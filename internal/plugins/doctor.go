@@ -114,7 +114,8 @@ func (m *Manager) Doctor() ([]DoctorFinding, error) {
 		if len(entries) == 0 {
 			continue
 		}
-		findings = append(findings, m.doctorEntry(key, entries[0])...)
+		_, marketplace := splitKey(key)
+		findings = append(findings, m.doctorEntry(key, entries[0], usedInPlace(entries[0].Source, mk[marketplace]))...)
 	}
 
 	findings = append(findings, m.doctorOrphanCacheDirs()...)
@@ -136,7 +137,9 @@ func (m *Manager) Doctor() ([]DoctorFinding, error) {
 // drift, component validity (enabled entries only), and auto-upgrade sanity.
 // A missing or non-directory install path is the one blocking problem — it
 // short-circuits the rest, since there is nothing left at that path to check.
-func (m *Manager) doctorEntry(key string, e InstallEntry) []DoctorFinding {
+// inPlace says the entry is used where it lies (usedInPlace), so an upgrade
+// can never change it.
+func (m *Manager) doctorEntry(key string, e InstallEntry, inPlace bool) []DoctorFinding {
 	info, err := doctorStat(e.InstallPath)
 	if err != nil {
 		return []DoctorFinding{{
@@ -161,8 +164,8 @@ func (m *Manager) doctorEntry(key string, e InstallEntry) []DoctorFinding {
 		// gets an honest alternative instead of a remediation that can never
 		// clear the warning.
 		remediation := fmt.Sprintf("run `evener plugin upgrade %s` to resync the registry", key)
-		if sourceCannotUpgrade(e.Source) {
-			remediation = fmt.Sprintf("%s's plugin.json was edited in place, which is expected for a directory source; run `evener plugin remove %s` then `evener plugin install %s` to resync the recorded version", key, key, key)
+		if inPlace {
+			remediation = fmt.Sprintf("%s's plugin.json was edited in place, which is expected for a plugin used in place from a directory; run `evener plugin remove %s` then `evener plugin install %s` to resync the recorded version", key, key, key)
 		}
 		findings = append(findings, DoctorFinding{
 			Level: LevelWarn, Category: catRegistry,
@@ -186,23 +189,32 @@ func (m *Manager) doctorEntry(key string, e InstallEntry) []DoctorFinding {
 		}
 	}
 
-	if e.AutoUpgrade && sourceCannotUpgrade(e.Source) {
+	if e.AutoUpgrade && inPlace {
 		findings = append(findings, DoctorFinding{
 			Level: LevelWarn, Category: catAutoUpgrade,
-			Message:     key + ": auto-upgrade is on but the source is a directory reference, which can never produce a new version",
-			Remediation: fmt.Sprintf("turn off auto-upgrade for %s; it has no effect on an in-place directory source", key),
+			Message:     key + ": auto-upgrade is on but the plugin is used in place from a directory, which can never produce a new version",
+			Remediation: fmt.Sprintf("turn off auto-upgrade for %s; it has no effect on a plugin used in place", key),
 		})
 	}
 
 	return findings
 }
 
-// sourceCannotUpgrade mirrors UpdateAll's skip condition (install.go): a
-// directory-kind source or a marketplace-relative "./subdir" copy is
-// referenced or copied in place and has no git remote to fetch a new version
-// from, so auto-upgrade can never do anything for it.
+// sourceCannotUpgrade is the skip condition UpdateAll and the auto-upgrade
+// sweep share (install.go): a directory source is referenced in place and has
+// nothing to fetch a new version from. A marketplace-relative "./subdir" copy
+// can upgrade, from its refreshed marketplace clone (fetchPluginSource).
 func sourceCannotUpgrade(src Source) bool {
-	return src.Rel || src.Kind == SourceDirectory
+	return src.Kind == SourceDirectory && !src.Rel
+}
+
+// usedInPlace reports an install an upgrade can never change: a directory
+// source, or a relative one in a directory marketplace, which stagePlugin
+// serves from the marketplace's own folder. UpdateAll and the sweep need not
+// tell the second apart (its upgrade is a harmless no-op), but doctor's
+// advice must.
+func usedInPlace(src Source, marketplace MarketplaceRef) bool {
+	return sourceCannotUpgrade(src) || (src.Rel && marketplace.Source.Kind == SourceDirectory)
 }
 
 // doctorOrphanCacheDirs walks cache/<marketplace>/<plugin>/<sha> and flags any

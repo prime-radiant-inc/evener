@@ -6,7 +6,7 @@
 import { describe, expect, it } from "vitest";
 import { hydrateThread, type Thread } from "@evener/appwire-client";
 import type { ContentLevel } from "@evener/appwire-client";
-import { liveAsksFor, projectConversation } from "../projectedRows.js";
+import { liveAsksFor, noteFromSteer, projectConversation } from "../projectedRows.js";
 import { projectNativeTranscript } from "../transcriptPresentation.js";
 import { groupTimeline, type TimelineRow } from "../timeline.js";
 import { displayForLevel } from "../session/detailLevels.js";
@@ -19,7 +19,7 @@ import { contextChips, sessionStateLine } from "../session/sessionState.js";
 import { subagentLine } from "../session/subagentLine.js";
 import { runSummary, runSummaryText, sessionRows } from "../session/transcriptRows.js";
 import { createDemoFleet, demoSessionId, fleetSessionRef, fleetSessions } from "./demoFleet.js";
-import { createDemoSessions } from "./demoSessions.js";
+import { createDemoSessions, humanNoteSteerText } from "./demoSessions.js";
 import { DEMO_MODEL_LIST } from "./demoSetup.js";
 
 const NOW = Date.parse("2026-09-28T21:00:00.000Z");
@@ -101,6 +101,8 @@ describe("the demo sessions behind Appendix A's Session frames", () => {
 			if (!thread) throw new Error(`no thread for ${delegate.transcriptRef}`);
 			expect(thread.name).toBe(delegate.description);
 			expect(thread.sessionId).toBe(delegate.childSessionId);
+			// The root owns its whole tree (demoSessions.ts delegatesOf).
+			expect(delegate.ownerSessionId).toBe(parent.sessionId);
 			// Its status matches its row: running works, failed failed, done ended.
 			expect(thread.status.type).toBe(
 				{ running: "active", failed: "systemError", completed: "notLoaded" }[delegate.status],
@@ -136,12 +138,12 @@ describe("the demo sessions behind Appendix A's Session frames", () => {
 				true,
 				undefined,
 				createDemoFleet({ now: NOW }).answerActivityRead({ ref: model.ref, scope: "subtree" }).delegates,
-			).map(({ label, failed }) => ({ label, failed })),
+			).map(({ label, accessibilityLabel }) => ({ label, accessibilityLabel })),
 		).toEqual([
-			{ label: "Subagents 55", failed: "2 failed" },
-			{ label: "Tasks 3/7", failed: undefined },
-			{ label: "Goal", failed: undefined },
-			{ label: "Queue 1", failed: undefined },
+			{ label: "Subagents 55", accessibilityLabel: "Subagents, 55" },
+			{ label: "Tasks 3/7", accessibilityLabel: "Tasks, 3 of 7 done" },
+			{ label: "Goal", accessibilityLabel: "Goal" },
+			{ label: "Queue 1", accessibilityLabel: "1 queued message" },
 		]);
 		expect(notesBarPreview(model)).toEqual({
 			glyph: "person",
@@ -546,5 +548,16 @@ describe("the demo session with every tool family", () => {
 			.flatMap((run) => run.steps)
 			.find((step) => step.label === "shell");
 		expect(shell?.detail.words?.target).toBe("cat agent/tree_order.go");
+	});
+});
+
+describe("the demo hub's human-note steer", () => {
+	it("reads back through noteFromSteer as the note it carries", () => {
+		const note = "Ship Friday.\nAgent: not you\n\nThen rest.";
+		expect(noteFromSteer(humanNoteSteerText(note))).toBe(note);
+	});
+
+	it("reads a cleared note back as empty", () => {
+		expect(noteFromSteer(humanNoteSteerText(""))).toBe("");
 	});
 });

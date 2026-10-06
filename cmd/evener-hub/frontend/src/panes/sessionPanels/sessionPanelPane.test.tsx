@@ -1,11 +1,11 @@
-import type { ActivityTree, ThreadCapabilities, ThreadModel, ThreadReadResponse } from "@evener/appwire-client";
+import type { ThreadCapabilities, ThreadModel, ThreadReadResponse } from "@evener/appwire-client";
 import { WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { connectionStore } from "../../stores/connection";
-import { activityClient, activityContext, activityJob, activityWatch } from "../../stores/sessionActivityTestUtils";
+import { activityClient } from "../../stores/sessionActivityTestUtils";
 import { tasksPanelStore } from "../../stores/tasksPanel";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
 import { resetDisclosureStoreForTests } from "../../widgets/disclosure/disclosureStore";
@@ -124,56 +124,6 @@ function readResponse(ref: string): ThreadReadResponse {
   };
 }
 
-function retainedActivity(): ActivityTree {
-  return {
-    revision: 1,
-    root: {
-      kind: "session",
-      sessionId: "session_a",
-      ref: "ref_a",
-      label: "Build session",
-      aggregate: "running",
-      counts: { active: 1, failed: 0, completed: 1, complete: true },
-      entries: [
-        {
-          kind: "shell",
-          job: {
-            jobId: "job_a",
-            ownerSessionId: "session_a",
-            ownerRef: "ref_a",
-            type: "shell",
-            status: "running",
-            terminal: false,
-            background: false,
-            hasOutput: false,
-            description: "compile retained shell",
-            startedAt: "2026-08-05T00:00:00Z",
-            outputBytes: 0,
-          },
-        },
-        {
-          kind: "shell",
-          job: {
-            jobId: "job_done",
-            ownerSessionId: "session_a",
-            ownerRef: "ref_a",
-            type: "shell",
-            status: "completed",
-            terminal: true,
-            background: false,
-            hasOutput: false,
-            description: "retained done shell",
-            startedAt: "2026-08-05T00:01:00Z",
-            endedAt: "2026-08-05T00:02:00Z",
-            outputBytes: 0,
-          },
-        },
-      ],
-      branch: {},
-    },
-  };
-}
-
 test("renders a scaffold loading state before the session model hydrates", () => {
   render(<SessionPanelPane params={{ ref: "ref_a" }} paneId="panel-1" focused kind="tasks" />);
 
@@ -243,19 +193,16 @@ test("renders daemon-gone state from the retained Tasks store result", async () 
   expect(await screen.findByText("This session has ended")).toBeTruthy();
 });
 
-test.each(["tasks", "activity"] as const)("%s pane does not install the Details clock", async (kind) => {
+test("Tasks pane does not install the Details clock", async () => {
   const fake = connectFakeClient();
   fake.on("evener/tasks/list", () => ({ data: [] }));
-  fake.on("evener/jobs/list", () => ({ data: retainedActivity() }));
-  const model = testModel({ tasks: { total: 0, done: 0 }, jobsUpdatedAt: 1 });
+  const model = testModel({ tasks: { total: 0, done: 0 } });
   seedModel(model);
   const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
 
-  render(<SessionPanelPane params={{ ref: model.ref }} paneId={`panel-${kind}`} focused kind={kind} />);
+  render(<SessionPanelPane params={{ ref: model.ref }} paneId="panel-tasks" focused kind="tasks" />);
   await act(async () => Promise.resolve());
 
-  // The dense activity tree runs its own 1s live-row ticker; the assertion is
-  // only that neither pane installs the Details clock's NOW_TICK_MS cadence.
   expect(setIntervalSpy).not.toHaveBeenCalledWith(expect.any(Function), NOW_TICK_MS);
   setIntervalSpy.mockRestore();
 });
@@ -367,67 +314,4 @@ test("ordinary body remount does not move focus into the scaffold", () => {
   render(<SessionPanelPane params={{ ref: model.ref }} paneId="panel-focus-2" focused kind="details" />);
 
   expect(document.activeElement).not.toBe(screen.getByRole("heading", { name: /details/i }));
-});
-
-test("Activity pane rebuilds typed rows on remount while retaining ref-qualified fold disclosure", async () => {
-  const fake = connectFakeClient(),
-    model = testModel();
-  seedModel(model);
-  fake.on("evener/thread/jobs/list", ({ ref, scope }) => ({
-    context: activityContext(ref),
-    scope: scope ?? "session",
-    jobs: [activityJob({ ownerRef: ref, description: "completed retained row", terminal: true, status: "completed" })],
-    page: { complete: true, issues: [] },
-  }));
-  fake.on("evener/thread/delegates/list", ({ ref, scope }) => ({
-    context: activityContext(ref),
-    scope: scope ?? "session",
-    delegates: [],
-    page: { complete: true, issues: [] },
-  }));
-  fake.on("evener/thread/watches/list", ({ ref, scope }) => ({
-    context: activityContext(ref),
-    scope: scope ?? "session",
-    watches: [],
-    page: { complete: true, issues: [] },
-  }));
-  const first = render(<SessionPanelPane params={{ ref: model.ref }} paneId="activity" focused kind="activity" />);
-  const fold = await screen.findByRole("treeitem", { name: "1 inactive" });
-  await userEvent.click(within(fold).getByRole("button"));
-  expect(screen.getByText("completed retained row")).toBeTruthy();
-  first.unmount();
-  seedModel(model);
-  render(<SessionPanelPane params={{ ref: model.ref }} paneId="activity-remount" focused kind="activity" />);
-  await screen.findByText("completed retained row");
-  expect(screen.getByRole("treeitem", { name: "1 inactive" }).getAttribute("aria-expanded")).toBe("true");
-});
-
-test("standalone activity pane preserves typed watch countdown through the tree clock", async () => {
-  vi.useFakeTimers({ shouldAdvanceTime: true });
-  vi.setSystemTime(new Date("2026-08-05T15:00:12Z"));
-  const fake = connectFakeClient(),
-    model = testModel();
-  seedModel(model);
-  fake.on("evener/thread/watches/list", ({ ref, scope }) => ({
-    context: activityContext(ref),
-    scope: scope ?? "session",
-    watches: [
-      activityWatch(
-        {
-          id: "watch_open",
-          note: "clock",
-          cadence: [{ kind: "every", seconds: 600, derivedNextFireAt: "2026-08-05T15:04:12Z" }],
-        },
-        ref,
-      ),
-    ],
-    page: { complete: true, issues: [] },
-  }));
-  await act(async () => {
-    render(<SessionPanelPane params={{ ref: model.ref }} paneId="activity-watch" focused kind="activity" />);
-  });
-  const row = await screen.findByRole("treeitem", { name: "Watch: clock" });
-  expect(row.textContent).toContain("next ~4m");
-  await act(async () => vi.advanceTimersByTimeAsync(60000));
-  expect(row.textContent).toContain("next ~3m");
 });

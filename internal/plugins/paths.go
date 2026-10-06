@@ -33,6 +33,12 @@ type Manager struct {
 	storeChangedMu      sync.Mutex
 	pendingStoreChanged StoreChanged
 	onStoreChanged      func(StoreChanged)
+
+	// remoteHeads holds, by registry key, what the last CheckUpdates found
+	// for each git-backed plugin (updates.go).
+	remoteHeadsMu   sync.Mutex
+	remoteHeads     map[string]checkedHead
+	checkGeneration uint64
 }
 
 // NewManager returns a Manager rooted at root, or DefaultRoot() when root == "".

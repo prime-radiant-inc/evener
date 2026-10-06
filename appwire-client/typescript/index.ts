@@ -2,7 +2,6 @@ export type {
   ActivityBranchState,
   ActivityCounts,
   ActivityDelegate,
-  ActivityDelegateBranch,
   ActivityDelegateEntry,
   ActivityDisclosureState,
   ActivityEntry,
@@ -15,7 +14,6 @@ export type {
   ActivityWorktree,
 } from "./activityData";
 export {
-  activityDelegateBranch,
   activityDelegateDiagnostics,
   activityNodeID,
   defaultExpandedIDs,
@@ -30,7 +28,6 @@ export {
   parseActivityTree,
   reconcileActivityState,
 } from "./activityData";
-export { fenceRootSession, graftContinuationTree } from "./activityMerge";
 export type {
   ActivityDelegateRow,
   ActivityDelegateState,
@@ -57,6 +54,12 @@ export {
   watchName,
   watchRowID,
 } from "./activityRows";
+export {
+  APPROVAL_DECISION_EVENT_KIND,
+  type ApprovalDecision,
+  approvalDecisionOf,
+  approvalDecisionText,
+} from "./approvalDecision";
 export type {
   ArchivedList,
   ArchivedListCatalog,
@@ -118,7 +121,7 @@ export type {
   TerminalReason,
 } from "./client";
 export { APPWIRE_PROTOCOL_VERSION, AppwireClient } from "./client";
-export type { AppwireClientLike } from "./clientLike";
+export type { AppwireClientLike, RequestPort } from "./clientLike";
 export type {
   CommandCatalog,
   CommandCatalogClient,
@@ -127,7 +130,7 @@ export type {
   SessionCommandCatalogState,
 } from "./commandCatalog";
 export { createCommandCatalog, createSessionCommandCatalog, sessionPluginNames } from "./commandCatalog";
-export type { InputAttachment } from "./composerInput";
+export type { ComposerMention, InputAttachment } from "./composerInput";
 export { buildComposerInput, buildInput, canonicalSkillNames, formatQuoteBlock, mergeDraftText } from "./composerInput";
 export type { CredentialLayerView, InstanceProviderGroup } from "./credentialLabels";
 export {
@@ -224,6 +227,7 @@ export {
   isHubLaunchError,
   isInstanceRemoveApplied,
   isInstanceRenamePersisted,
+  isMethodNotFound,
   isStaleCursorError,
   isTranscriptHistoryFailedError,
   isUpgradeRequiredError,
@@ -257,6 +261,8 @@ export {
   rootsFromText,
   rootsToText,
 } from "./hostMutations";
+export type { HostDependentDiscoveryMethod } from "./hostRouting";
+export { HOST_DEPENDENT_DISCOVERY_METHODS, hostRequest, isLocalHost, LOCAL_HOST, normalizeHost } from "./hostRouting";
 export { housekeepingAction } from "./housekeepingSteps";
 export type { HubOverviewClient, HubOverviewListener, HubOverviewState, HubOverviewStore } from "./hubOverview";
 export { createHubOverviewStore } from "./hubOverview";
@@ -279,8 +285,8 @@ export {
   isNonZeroExit,
   isTurnError,
 } from "./itemFailure";
-export type { JobLogTail } from "./jobOutput";
-export { parseJobLogTail } from "./jobOutput";
+export type { DecodedJobOutputPage } from "./jobOutput";
+export { decodeJobOutputText, forEachJobOutputScalar, jobOutputPrunedBounds, parseJobOutputPage } from "./jobOutput";
 export { type JobStep, jobListSummary, jobStatusSummary, jobStopSummary } from "./jobSteps";
 export {
   endReasonPhrase,
@@ -599,6 +605,7 @@ export { insertMarker, markerPattern, markerText, stripMarker } from "./textarea
 export type {
   ThreadSubscriptionClient,
   ThreadSubscriptionLease,
+  ThreadSubscriptionMetadata,
   ThreadSubscriptionReadParams,
 } from "./threadSubscription";
 export { acquireThreadSubscription } from "./threadSubscription";
@@ -734,7 +741,7 @@ export type {
   TranscriptMetadataVisibility,
   TranscriptProjection,
 } from "./transcriptProjector";
-export { ACTION_SUMMARY_UNAVAILABLE, entryDisplayKey, projectThread } from "./transcriptProjector";
+export { ACTION_SUMMARY_UNAVAILABLE, entryDisplayKey, PROMPT_EVENT_KINDS, projectThread } from "./transcriptProjector";
 export {
   findSessionsSummary,
   readTranscriptEnvelope,
@@ -747,7 +754,13 @@ export type { WebSocketLike } from "./transport";
 export { rpcURLFromLocation } from "./transport";
 
 export type * from "./types.gen";
-export { METHOD_NAMES, NOTIFICATION_NAMES, STEERING_KINDS, THREAD_ITEM_EVENT_KINDS } from "./types.gen";
+export {
+  HOST_REQUEST_METHODS,
+  METHOD_NAMES,
+  NOTIFICATION_NAMES,
+  STEERING_KINDS,
+  THREAD_ITEM_EVENT_KINDS,
+} from "./types.gen";
 export type { WarningWords } from "./warnings";
 export {
   attentionWarningNotice,

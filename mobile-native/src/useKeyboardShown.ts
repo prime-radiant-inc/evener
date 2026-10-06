@@ -25,8 +25,8 @@ export function useKeyboardShown(): boolean {
 /** Whether you're typing in the composer: the keyboard is up and the
  * composer's field has focus (`focus`, which the Composer reports), whatever
  * else is open, such as the find bar. While you type, what crowds the
- * transcript folds or steps aside: the queue, Next, the header's chips and
- * note, a question's options.
+ * transcript folds or steps aside: Next, the header's chips and note, a
+ * question's options.
  *
  * Each of those calls this itself, so the keyboard and the focus coming and
  * going re-render only them. A screen-wide render as the keyboard starts to

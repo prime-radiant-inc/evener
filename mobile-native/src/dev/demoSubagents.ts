@@ -246,7 +246,16 @@ export function demoJobOutput(job: { status: string; terminal: boolean; exitCode
 						"",
 					].join("\n");
 	const totalBytes = new TextEncoder().encode(tail).length;
-	return { data: { tail, totalBytes, retainedStart: 0 } };
+	return {
+		data: {
+			offsetBytes: 0,
+			bytesReturned: totalBytes,
+			totalBytes,
+			retainedStartBytes: 0,
+			encoding: "utf8",
+			data: tail,
+		},
+	};
 }
 
 /** A shell job in the tree, owned by the session it names. */

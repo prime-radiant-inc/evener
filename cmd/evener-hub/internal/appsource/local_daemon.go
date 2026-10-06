@@ -867,7 +867,7 @@ func (s *LocalDaemonSource) withMutationClient(
 // the target advertises skill input support.
 func hasSkillInputItem(items []appwire.InputItem) bool {
 	for _, item := range items {
-		if item.Type == "skill" {
+		if item.Type == "skill" || item.Type == "command" {
 			return true
 		}
 	}
@@ -896,6 +896,9 @@ func gateSkillInputOnClient(ctx context.Context, client *appwire.Client, ref, th
 		return err
 	}
 	if err := appwire.ValidateSkillInputSupport(input, response.Thread.Evener.Capabilities.SkillInput); err != nil {
+		return appwire.InvalidParams(err.Error())
+	}
+	if err := appwire.ValidateCommandInputSupport(input, response.Thread.Evener.Capabilities.CommandInput); err != nil {
 		return appwire.InvalidParams(err.Error())
 	}
 	return nil
@@ -1024,13 +1027,15 @@ func localDaemonCallError(err error) error {
 }
 
 func localDaemonMutationCallError(clientMutationID string, err error) error {
-	mapped := localDaemonCallError(err)
-	var wire appwire.WireError
-	if !errors.As(mapped, &wire) {
-		return mapped
+	// A delivered WireError is an application verdict regardless of its data
+	// shape. Retain that provenance before mapping a transport failure to an
+	// ordinary SessionUnavailable WireError.
+	if _, delivered := errors.AsType[appwire.WireError](err); delivered && !appwire.IsTransportFailure(err) {
+		return err
 	}
-	data, ok := wire.Data.(appwire.ErrorData)
-	if wire.Code != appwire.CodeUnavailable || !ok || data.EvenerErrorInfo != appwire.ErrorSessionUnavailable {
+	mapped := localDaemonCallError(err)
+	wire, ok := errors.AsType[appwire.WireError](mapped)
+	if !ok || wire.Code != appwire.CodeUnavailable {
 		return mapped
 	}
 	return appwire.WireError{
@@ -1326,7 +1331,8 @@ func listRowCapabilities(item LocalDaemonEntry, status string) appwire.ThreadCap
 		// gates re-verify against the live daemon, so a daemon that
 		// genuinely lacks the support still refuses each selection
 		// honestly.
-		SkillInput: true,
+		SkillInput:   true,
+		CommandInput: true,
 		// Open sessions get the subagent stop, the way Interrupt gates on
 		// !closed. A descendant alias never does: the stop targets the root
 		// that owns the tree.

@@ -74,6 +74,49 @@ Errors use JSON-RPC codes in `error.code` with a human `error.message`.
 when present. Common cases: method-not-found, invalid-params (params failed to
 unmarshal), invalid-request (e.g. a request before `initialize`).
 
+## Explicit skill and command input
+
+Input-bearing requests accept canonical selections alongside text and images:
+`{"type":"skill","name":"pkg:review"}` and
+`{"type":"command","name":"pkg:review"}` request different behavior even when
+their names match. These items admit only `type` and `name`; bodies, paths,
+arguments and other raw keys are rejected. The target's advertised `skillInput`
+or `commandInput` capability authorizes that kind, never a client assumption.
+
+Command selections resolve exact catalog identity at consumption and expand
+once per canonical name with empty arguments under their source's existing
+expansion rules. Original user text is retained separately from expanded bodies.
+Generated output cannot select or recursively invoke commands. Existing leading
+typed `/command args` retains its arguments; unselected inline slash prose is
+not an explicit selection. Queue, return and recovery input keeps both kinds.
+
+Text items may carry `mentions: [{kind, name, offset}]` as editing metadata.
+Offsets count UTF-16 code units in that text item and locate ordered,
+non-overlapping visible labels for separately selected canonical identities.
+They never authorize activation or carry command bodies, paths or arguments.
+Accepted input persists these locations; queue reads and `thread/queueChanged`
+project FIFO-aligned `mentions` beside full text and canonical name lists, so a
+fresh client's edit restores the chosen kind without selecting duplicate prose.
+Attachment marker translation shifts locations at the submission boundary.
+Automatic transcript-refusal recovery uses `returnClaimedQueuedMutation` to
+clone the original `pending.Input`, retaining text items and their locations.
+The separate `pushQueueHead` helper has no production callers; explicit use of
+it retains locations in the flattened returned text. Public `turn/drainAsSteer`
+preserves each retained entry's raw text and shifts its locations by the
+preceding UTF-16 text length plus the two-unit `\n\n` separator, including any
+extra drain input. Image-only entries add no text separator. Direct promotion
+retains the original text items and their item-relative locations. These
+locations survive durable recovery and mutation replay without changing
+canonical activation identities.
+
+Live completion reads `thread.evener.diagnostics.commands` from the owning
+session's `thread/read` response. It contains path-free descriptors for that
+session's loaded plugin, project and user commands, resolved for its cwd, host
+and harness. An absent field means unreported inventory; `[]` means an
+authoritative empty inventory. Neither permits controller catalog fallback.
+`evener/command/list` remains controller-wide discovery for the separate palette;
+`evener/spawn/slashCatalog` supplies target-scoped pre-session discovery.
+
 ## Request methods
 
 `Scope` is which binaries expose the method: **both** (hub and daemon), **hub**
@@ -144,7 +187,7 @@ no router (reserved).
 | `evener/session-pin/unpin` | hub | `SessionPinUnpinParams` | `SessionPinUnpinResponse` | Removes a top-level session's named pin assignment and returns its committed navigation receipt. |
 | `evener/session/seen/set` | hub | `SessionSeenSetParams` | `SessionSeenSetResponse` | Marks sessions seen through a turn end, or unread, on the hub (S4), and returns the committed navigation receipt. Live rows then carry unseen from the hub's marker. |
 | `evener/search` | hub | `SearchParams` | `SearchResponse` | Searches the hub's sessions: live and ended ones whose ID, title or prompt match, each once, and (S14) the sessions whose messages match, with each one's newest hits and snippets. A scope narrows every group; every result says whether it is archived. |
-| `evener/archived/list` | hub | `ArchivedListParams` | `ArchivedListResponse` | Lists one project's archived sessions, newest first, a page at a time: the key names the project and the catalog is a hint (a project that moved between projects and archived projects is read from the one holding it now, and the response says which catalog it read), and the cursor continues from the previous page. The rows are navigation session summaries; the list has no revisions or invalidation. |
+| `evener/archived/list` | hub | `ArchivedListParams` | `ArchivedListResponse` | Lists one project's archived sessions, newest first, a page at a time: the key names the project and the catalog is a hint (a project that moved between projects and archived projects is read from the one holding it now, and the response says which catalog it read), and the cursor continues from the previous page. The rows are navigation session summaries. Each response carries the whole list's revision; a first-page read naming the revision it holds is answered unchanged, with no rows, while the list has not changed. The list has no invalidation of its own. |
 | `evener/activity/read` | hub | `ActivityReadParams` | `ActivityReadResponse` | Reads the pulse meter (seven one-minute activity counts over the whole tree), running subagents, quiet time and the newest tool intent of the hub's live top-level sessions and its attached hosts' (S5). A client polls it while a Board or session is on screen; it is never part of navigation. |
 | `evener/notices/list` | hub | `EmptyParams` | `NoticesListResponse` | Lists the hub's notices (S11): provider instances on this hub that need signing in again, hosts that are offline, and installed plugins that are broken, each with the live sessions it blocks when the hub can count them. evener/notices/changed announces every change. |
 | `evener/harnesses/list` | hub | `HarnessListParams` | `HarnessListResponse` | Lists available harness descriptors. |
@@ -191,6 +234,7 @@ no router (reserved).
 | `evener/plugin/enable` | hub | `PluginRefParams` | `PluginListResponse` | Enables an installed plugin; returns the updated list. |
 | `evener/plugin/disable` | hub | `PluginRefParams` | `PluginListResponse` | Disables an installed plugin; returns the updated list. |
 | `evener/plugin/setAutoUpgrade` | hub | `PluginSetAutoUpgradeParams` | `PluginListResponse` | Sets an installed plugin's auto-upgrade flag; returns the updated list. |
+| `evener/plugin/checkUpdates` | hub | `EmptyParams` | `PluginListResponse` | Asks each git-backed installed plugin's remote whether it has moved past the installed commit, and checks each plugin stored in its marketplace's own repo against the marketplace clone as its last refresh left it, without installing anything; returns the list with updateAvailable set. Clients call it when their plugins view opens; the hub never runs it on a timer. It waits on every plugin's remote, each with its own timeout (internal/plugins updateCheckTimeout) and the whole check within updateCheckDeadline, so a client's timeout for it must exceed that deadline. |
 | `evener/command/list` | hub | `EmptyParams` | `CommandListResponse` | Lists loaded slash commands (name, plugin, description, source: plugin, project, or user) for catalog/autocomplete display. |
 | `evener/spawn/slashCatalog` | hub | `SpawnSlashCatalogParams` | `SpawnSlashCatalogResponse` | Pre-session slash catalog for the spawn form: the commands and skills a session started with this cwd, harness, and launch overrides would offer. |
 | `evener/settings/overview` | hub | `EmptyParams` | `SettingsOverviewResponse` | Returns the settings overview field bag: hub/runtime, storage, agent roster, and probed MCP servers — the five template-only settings sections' data. |
@@ -204,11 +248,11 @@ no router (reserved).
 | `evener/delegate/stop` | both | `DelegateStopParams` | `DelegateStopResponse` | Ends one subagent's current run at the user's request (S6): that subagent alone, while the subagents it started keep running; the root's daemon serves it, the hub relays. Answers stopping or notRunning. |
 | `evener/host/request` | hub | `HostRequestParams` | `HostForwardedResult` | Forwards one hub-scoped admin RPC to a named remote host's hub through the allow-listed proxy (component 07a); the result is the forwarded method's own result, verbatim — an opaque JSON object, not a wrapper, so a typed client must treat the result as unknown and cast it to the forwarded method's own result type (see HostForwardedResult). |
 | `evener/host/attach` | hub | `HostAttachParams` | `HostAttachResponse` | Explicitly attaches one configured remote host by name through the Ensure-backed dialing seam (component 06's Connect action); a mutation and the only browser-reachable attach trigger, idempotent while attached, returning the host's post-attach state. |
-| `evener/host/add` | hub | `HostAddParams` | `HostMutationCommitted \| HostMutationCommittedRemoved \| HostMutationTeardownFailure \| HostMutationTeardownFailureRemoved \| HostMutationCollisionDropped \| HostMutationAmbiguous` | Registers one host entry (its full entry: name, ssh address, user, key path, and the host's paths and roots) into the machine-managed hub.toml; validates like hub.toml loading and refuses a name the live set already holds. Result is the mutation-result union: committed, committed-with-teardown-failure, collision-dropped, or the keyless-add ambiguous arm. |
+| `evener/host/add` | hub | `HostAddParams` | `HostMutationCommitted \| HostMutationTeardownFailure \| HostMutationCollisionDropped \| HostMutationAmbiguous` | Registers one host entry (its full entry: name, ssh address, user, key path, and the host's paths and roots) into the machine-managed hub.toml; validates like hub.toml loading and refuses a name the live set already holds. Result is the mutation-result union: committed, committed-with-teardown-failure, collision-dropped, or the keyless-add ambiguous arm. |
 | `evener/host/list` | hub | `EmptyParams` | `HostListResponse` | Lists every known host with truthful online state; never dials — attached rows read the live channel, offline rows render last-known state. |
 | `evener/host/status` | hub | `HostStatusParams` | `HostStatusResponse` | Returns one host's list row for a single named host; never dials. |
-| `evener/host/remove` | hub | `HostRemoveParams` | `HostMutationCommitted \| HostMutationCommittedRemoved \| HostMutationTeardownFailure \| HostMutationTeardownFailureRemoved \| HostMutationCollisionDropped \| HostMutationAmbiguous` | Deregisters one live host entry, stopping its supervisor and dropping its channel; every live host is removable here. Result is the mutation-result union, whose committed and teardown-failure arms carry the dedicated removed row. |
-| `evener/host/update` | hub | `HostUpdateParams` | `HostMutationCommitted \| HostMutationCommittedRemoved \| HostMutationTeardownFailure \| HostMutationTeardownFailureRemoved \| HostMutationCollisionDropped \| HostMutationAmbiguous` | Edits one live host entry in place (every field but the name; the name is the target) and retires the host's channel with the identity it replaced; the edit is written into the machine-managed hub.toml. Result is the mutation-result union. |
+| `evener/host/remove` | hub | `HostRemoveParams` | `HostMutationCommittedRemoved \| HostMutationTeardownFailureRemoved \| HostMutationCollisionDropped` | Deregisters one live host entry, stopping its supervisor and dropping its channel; every live host is removable here. Result is the mutation-result union, whose committed and teardown-failure arms carry the dedicated removed row. |
+| `evener/host/update` | hub | `HostUpdateParams` | `HostMutationCommitted \| HostMutationTeardownFailure \| HostMutationCollisionDropped` | Edits one live host entry in place (every field but the name; the name is the target) and retires the host's channel with the identity it replaced; the edit is written into the machine-managed hub.toml. Result is the mutation-result union. |
 | `evener/host/teardown-retry` | hub | `HostTeardownRetryParams` | `HostTeardownRetryCompleteLive \| HostTeardownRetryCompleteRemoved \| HostTeardownRetryClearedLive \| HostTeardownRetryClearedRemoved \| HostTeardownRetryFailedLive \| HostTeardownRetryFailedRemoved` | Resumes one named teardown remnant by its opaque id: gate first, claim under the mutation lock, the pinned teardown run to completion with a bounded deadline, then finalization from the observed result. Result is the six-arm outcome x hostKind union; an unknown or purged id is the typed teardown-unknown-key refusal. |
 | `evener/host/teardown-recover` | hub | `HostTeardownRecoverParams` | `HostTeardownRecoverResult` | Clears an open remnant whose pinned target is unresolvable, on an authenticated operator's audited teardown-verified-absent attestation: gate first, the safety checks immediately before the clearing write, the attestation recorded on the original receipt beside remnantResolvedAt, and a typed resolved-remnant record persisted in the same atomic write. |
 | `evener/host/plan` | hub | `HostPlanParams` | `HostPlanPlanned \| HostPlanNoToken` | Plans one deploy against a named host and mints the single-use confirmation token evener/host/deploy consumes: refreshes the host's preflight facts without a gate, probes its running state, and answers with either the plan plus token (HostPlanPlanned) or the no-token arm (HostPlanNoToken) naming why nothing was minted and whether the refusal is terminal. |
@@ -349,6 +393,7 @@ An embedded type contributes its own fields inline.
 | `projectKey` | `string` |  |  |
 | `cursor` | `string` | yes |  |
 | `limit` | `int` | yes |  |
+| `revision` | `string` | yes |  |
 
 
 ### `ArchivedListResponse`
@@ -359,6 +404,8 @@ An embedded type contributes its own fields inline.
 | `nextCursor` | `string` | yes |  |
 | `total` | `int` |  |  |
 | `catalog` | `string` | yes |  |
+| `revision` | `string` | yes |  |
+| `unchanged` | `bool` | yes |  |
 
 
 ### `AttentionChangedPayload`
@@ -921,7 +968,7 @@ _(no fields)_
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
-| `outcome` | `string` |  |  |
+| `outcome` | `appwire.HostMutationOutcome` |  |  |
 | `observedRow` | `appwire.HostRow` |  |  |
 
 
@@ -929,7 +976,7 @@ _(no fields)_
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
-| `outcome` | `string` |  |  |
+| `outcome` | `appwire.HostMutationOutcome` |  |  |
 | `droppedEntry` | `appwire.HostRow` |  |  |
 | `winningFingerprint` | `string` |  |  |
 | `host` | `*appwire.HostRow` | yes |  |
@@ -940,7 +987,7 @@ _(no fields)_
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
-| `outcome` | `string` |  |  |
+| `outcome` | `appwire.HostMutationOutcome` |  |  |
 | `host` | `appwire.HostRow` |  |  |
 
 
@@ -948,7 +995,7 @@ _(no fields)_
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
-| `outcome` | `string` |  |  |
+| `outcome` | `appwire.HostMutationOutcome` |  |  |
 | `host` | `appwire.RemovedRow` |  |  |
 
 
@@ -956,7 +1003,7 @@ _(no fields)_
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
-| `outcome` | `string` |  |  |
+| `outcome` | `appwire.HostMutationOutcome` |  |  |
 | `seam` | `string` |  |  |
 | `remnantId` | `string` |  |  |
 | `host` | `appwire.HostRow` |  |  |
@@ -966,7 +1013,7 @@ _(no fields)_
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
-| `outcome` | `string` |  |  |
+| `outcome` | `appwire.HostMutationOutcome` |  |  |
 | `seam` | `string` |  |  |
 | `remnantId` | `string` |  |  |
 | `host` | `appwire.RemovedRow` |  |  |
@@ -1583,6 +1630,27 @@ _(no fields)_
 | `dirty` | `bool` |  |  |
 
 
+### `JobOutputPage`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `offsetBytes` | `int64` |  |  |
+| `bytesReturned` | `int64` |  |  |
+| `totalBytes` | `int64` |  |  |
+| `retainedStartBytes` | `int64` |  |  |
+| `encoding` | `string` |  |  |
+| `data` | `string` |  |  |
+
+
+### `JobOutputPrunedErrorData`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `evenerErrorInfo` | `appwire.ErrorInfo` |  |  |
+| `retainedStartBytes` | `int64` |  |  |
+| `totalBytes` | `int64` |  |  |
+
+
 ### `JobsGetParams`
 
 | Field | Go type | Omitempty | Embedded |
@@ -1595,7 +1663,7 @@ _(no fields)_
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
-| `data` | `interface {}` |  |  |
+| `data` | `appwire.JobActivityJob` |  |  |
 
 
 ### `JobsListParams`
@@ -1620,14 +1688,14 @@ _(no fields)_
 | `ref` | `string` | yes |  |
 | `jobId` | `string` |  |  |
 | `maxBytes` | `int64` | yes |  |
-| `beforeBytes` | `int64` | yes |  |
+| `beforeBytes` | `*int64` | yes |  |
 
 
 ### `JobsOutputResponse`
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
-| `data` | `interface {}` |  |  |
+| `data` | `appwire.JobOutputPage` |  |  |
 
 
 ### `JobsTreeUpdatedParams`
@@ -2521,6 +2589,24 @@ _(no fields)_
 | `skills` | `[]appwire.EvenerSkillInfo` | yes |  |
 
 
+### `Task`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `id` | `int` |  |  |
+| `type` | `appwire.TaskType` |  |  |
+| `description` | `string` |  |  |
+| `prompt` | `string` |  |  |
+| `status` | `appwire.TaskStatus` |  |  |
+| `depends_on` | `[]int` | yes |  |
+| `notes` | `[]string` | yes |  |
+| `reasoning_effort` | `string` | yes |  |
+| `insert` | `string` | yes |  |
+| `created_at` | `*time.Time` | yes |  |
+| `updated_at` | `*time.Time` | yes |  |
+| `completed_at` | `*time.Time` | yes |  |
+
+
 ### `TaskListParams`
 
 | Field | Go type | Omitempty | Embedded |
@@ -2532,7 +2618,7 @@ _(no fields)_
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
-| `data` | `interface {}` |  |  |
+| `data` | `[]appwire.Task` |  |  |
 
 
 ### `TaskUpdatedParams`

@@ -5,7 +5,12 @@
 // ensureSystemRun/coalesceSystemRun "adjacency-only" run continuation
 // (parity-m4-transcript.md #9: any other item type in between forces a new
 // run) without needing a stateful accumulator.
-import { attentionWarningNotice, type ItemModel, isErrorEvent } from "@evener/appwire-client";
+import {
+  APPROVAL_DECISION_EVENT_KIND,
+  attentionWarningNotice,
+  type ItemModel,
+  isErrorEvent,
+} from "@evener/appwire-client";
 
 export interface SystemRun {
   items: ItemModel[];
@@ -39,8 +44,16 @@ function isSystemMessage(item: ItemModel): boolean {
 // summary that names the run's FIRST member, which need not be the failure at
 // all. So a failure both stays out of its neighbours' run and breaks it, and
 // so does a daemon warning a human should see (attentionWarningNotice).
+// Shared-notes snapshots stay separate under their own folded label. A
+// human's Allow or Deny is a decision, not churn, so it stays in view too.
 function joinsRun(item: ItemModel): boolean {
-  return isSystemMessage(item) && !isErrorEvent(item) && attentionWarningNotice(item) === null;
+  return (
+    isSystemMessage(item) &&
+    item.eventKind !== "notes-context" &&
+    item.eventKind !== APPROVAL_DECISION_EVENT_KIND &&
+    !isErrorEvent(item) &&
+    attentionWarningNotice(item) === null
+  );
 }
 
 // systemRunFor finds the contiguous run of systemMessage items in

@@ -515,7 +515,7 @@ var hubCommandRegistry = []hubCommandDefinition{
 			panel := launchconfig.NewPluginsPanel()
 			m.pluginsPanel = &panel
 			if m.client != nil {
-				return tea.Batch(m.marketplaceListRead(), launchconfig.CmdPluginList(m.client))
+				return tea.Batch(m.pluginsPanelReads()...)
 			}
 			return nil
 		},

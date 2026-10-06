@@ -117,5 +117,5 @@ export type { TooltipProps } from "./tooltip";
 export { Tooltip } from "./tooltip";
 export type { TreeNode, TreeProps, TreeRowInfo } from "./tree";
 export { Tree } from "./tree";
-export type { VirtualListHandle, VirtualListProps } from "./virtuallist";
+export type { CommittedVirtualListLayout, VirtualListHandle, VirtualListProps } from "./virtuallist";
 export { VirtualList } from "./virtuallist";

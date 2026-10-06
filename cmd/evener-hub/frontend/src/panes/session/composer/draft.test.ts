@@ -1,6 +1,7 @@
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
 import {
+  type ComposerDraft,
   clearDraft,
   composerDraftStorageKey,
   draftStorageKey,
@@ -10,6 +11,7 @@ import {
   writeComposerDraft,
   writeDraft,
 } from "./draft";
+import { parseSkillDocument, serializeSkillDocument } from "./skillDocument";
 
 beforeAll(() => {
   installLocalStorage(new MemoryStorage());
@@ -136,6 +138,129 @@ test("text edits retain the draft's skill selections", () => {
   writeComposerDraft("local:01AAA", { text: "first", skillNames: ["pkg:probe"] });
   writeDraft("local:01AAA", "second");
   expect(readComposerDraft("local:01AAA")).toEqual({ text: "second", skillNames: ["pkg:probe"] });
+});
+
+test("text edits shift explicit atom locations without selecting same-spelling prose", () => {
+  const ref = "local:01AAA";
+  writeComposerDraft(ref, {
+    text: "🙂 /same /same /same",
+    skillNames: ["same"],
+    commandNames: ["same"],
+    mentions: [
+      { kind: "command", name: "same", offset: 3 },
+      { kind: "skill", name: "same", offset: 9 },
+    ],
+  });
+
+  writeDraft(ref, "prefix 🙂 /same /same /same");
+
+  const stored = readComposerDraft(ref);
+  const expected = {
+    text: "prefix 🙂 /same /same /same",
+    skillNames: ["same"],
+    commandNames: ["same"],
+    mentions: [
+      { kind: "command", name: "same", offset: 10 },
+      { kind: "skill", name: "same", offset: 16 },
+    ],
+  };
+  expect(stored).toEqual(expected);
+  expect(serializeSkillDocument(parseSkillDocument(stored))).toEqual(expected);
+});
+
+test.each<{ name: string; text: string; expected: ComposerDraft }>([
+  {
+    name: "removing an emoji prefix",
+    text: "/same then /same quote /same",
+    expected: {
+      text: "/same then /same quote /same",
+      skillNames: ["same"],
+      commandNames: ["same"],
+      mentions: [
+        { kind: "command", name: "same", offset: 0 },
+        { kind: "skill", name: "same", offset: 11 },
+      ],
+    },
+  },
+  {
+    name: "inserting prose between atoms",
+    text: "🙂 /same then extra /same quote /same",
+    expected: {
+      text: "🙂 /same then extra /same quote /same",
+      skillNames: ["same"],
+      commandNames: ["same"],
+      mentions: [
+        { kind: "command", name: "same", offset: 3 },
+        { kind: "skill", name: "same", offset: 20 },
+      ],
+    },
+  },
+  {
+    name: "removing the command label",
+    text: "🙂 then /same quote /same",
+    expected: {
+      text: "🙂 then /same quote /same",
+      skillNames: ["same"],
+      mentions: [{ kind: "skill", name: "same", offset: 8 }],
+    },
+  },
+  {
+    name: "removing the skill label",
+    text: "🙂 /same then quote /same",
+    expected: {
+      text: "🙂 /same then quote /same",
+      skillNames: [],
+      commandNames: ["same"],
+      mentions: [{ kind: "command", name: "same", offset: 3 }],
+    },
+  },
+  {
+    name: "replacing the text with literal slash prose",
+    text: "replacement /same words",
+    expected: { text: "replacement /same words", skillNames: [] },
+  },
+  {
+    name: "clearing the text",
+    text: "",
+    expected: { text: "", skillNames: [] },
+  },
+  {
+    name: "rewriting identical text",
+    text: "🙂 /same then /same quote /same",
+    expected: {
+      text: "🙂 /same then /same quote /same",
+      skillNames: ["same"],
+      commandNames: ["same"],
+      mentions: [
+        { kind: "command", name: "same", offset: 3 },
+        { kind: "skill", name: "same", offset: 14 },
+      ],
+    },
+  },
+])("text edits preserve exact atom intent when $name", ({ text, expected }) => {
+  const ref = "local:01AAA";
+  const original: ComposerDraft = {
+    text: "🙂 /same then /same quote /same",
+    skillNames: ["same"],
+    commandNames: ["same"],
+    mentions: [
+      { kind: "command", name: "same", offset: 3 },
+      { kind: "skill", name: "same", offset: 14 },
+    ],
+  };
+  writeComposerDraft(ref, original);
+  writeComposerDraft("local:01BBB", original);
+  const revision = readDraftRevision(ref);
+
+  writeDraft(ref, text);
+
+  const stored = readComposerDraft(ref);
+  expect(stored).toEqual(expected);
+  expect(serializeSkillDocument(parseSkillDocument(stored))).toEqual(expected);
+  expect(readDraftRevision(ref)).toBe(revision + 1);
+  expect(readComposerDraft("local:01BBB")).toEqual(original);
+  expect(localStorage.getItem(draftStorageKey(ref))).toBeNull();
+  if (text === "") expect(localStorage.getItem(composerDraftStorageKey(ref))).toBeNull();
 });
 
 test("removing a selection persists the same text without inserting anything", () => {

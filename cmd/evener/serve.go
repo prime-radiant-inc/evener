@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -129,15 +130,15 @@ type serveServer interface {
 	// SetCostLookupFunc is the one place a dollar figure enters the daemon:
 	// the live session's registry resolution of an instance/model reference.
 	SetCostLookupFunc(func(string) *registry.Cost)
-	SetTasksFunc(func() any)
+	SetTasksFunc(func() []appwire.Task)
 	SetJobsFunc(func(appwire.JobsListParams) (any, error))
 	SetThreadActivityReadFunc(func(context.Context, appwire.SessionActivityReadParams) (appwire.SessionActivitySummary, error))
 	SetThreadDelegatesListFunc(func(context.Context, appwire.SessionActivityListParams) (appwire.SessionDelegatesResponse, error))
 	SetThreadJobsListFunc(func(context.Context, appwire.SessionActivityListParams) (appwire.SessionJobsResponse, error))
 	SetThreadWatchesListFunc(func(context.Context, appwire.SessionActivityListParams) (appwire.SessionWatchesResponse, error))
 
-	SetJobOutputFunc(func(string, int64, int64) (any, bool, error))
-	SetJobGetFunc(func(string) (any, bool, error))
+	SetJobOutputFunc(func(string, *int64, int64) (appwire.JobOutputPage, bool, error))
+	SetJobGetFunc(func(string) (appwire.JobActivityJob, bool, error))
 	SetClearFunc(func(context.Context, appwire.ThreadClearParams) error)
 	SetWorkingDir(string)
 	SetShutdownFunc(func())
@@ -385,6 +386,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	visionModel := fs.String("vision-model", "", "vision side-channel model: 'off' disables image description, 'provider/model' or bare 'model' routes it (default: the session model)")
 	workDir := fs.String("dir", "", "working directory")
 	stateDir := fs.String("state-dir", "", "override runtime state directory")
+	disableMemory := fs.Bool("disable-memory", false, "disable native memory for this session, including on resume")
 	runDirFlag := fs.String("run-dir", "", "override rendezvous run directory")
 	resume := fs.String("resume", "", "resume a previous session by ID")
 	resumeLast := fs.Bool("resume-last", false, "resume the most recent session")
@@ -628,7 +630,14 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	if err := startupInterrupted(ctx, "probing the login shell PATH"); err != nil {
 		return err
 	}
+	memoryProjectID := ""
+	if !resuming {
+		memoryProjectID = resolveMemoryProjectID(env, os.Stderr)
+	}
 	sessionCfg := agent.SessionConfig{
+		MemoryStateRoot: cmdutil.DefaultStateRoot(),
+		MemoryProjectID: memoryProjectID,
+		DisableMemory:   *disableMemory,
 		// The session tree lives exactly as long as this daemon does. Shutdown
 		// waits for the input loop before it closes the session, so work that
 		// runs synchronously on that loop -- a Notification hook, which runs
@@ -691,7 +700,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		// out between here and that hand-off has to dispose of them, or an
 		// interrupted startup leaks a directory and a lease per attempt.
 		if err := startupInterrupted(ctx, "provisioning the sandbox"); err != nil {
-			env.DisposeUnadoptedScratch()
+			_ = env.DisposeSessionScratch()
 			return err
 		}
 	}
@@ -699,6 +708,8 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	var sess *agent.Session
 	if resuming {
 		sess, err = deps.restoreSession(client, profile, env, resumedMeta, agent.RestoreSessionConfig{
+			MemoryStateRoot:             sessionCfg.MemoryStateRoot,
+			DisableMemory:               *disableMemory,
 			LifetimeContext:             ctx,
 			StateDir:                    sd,
 			Project:                     project,
@@ -711,13 +722,10 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			AgentsDocPath:               *agentsDoc,
 		})
 		if err != nil {
-			// A resume provisions this environment's sandbox from the
-			// session's persisted mode inside the restore, and the restore can
-			// fail after that with no session built to own what it took. An
-			// allocation the resume adopted from the root's durable retention
-			// manifest is retained rather than removed; only a fresh mint is
-			// disposed.
-			agent.DisposeResumeScratchAfterFailure(sd, resumedMeta.ID, env)
+			// The restore reopens the session's kept scratch and can fail
+			// after that with no session built to own it. The scratch still
+			// belongs to the session, so only its lease is released.
+			_ = env.EndSessionScratch()
 			return fmt.Errorf("restore session: %w", err)
 		}
 		if effort.Set {
@@ -731,11 +739,8 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		sess, err = deps.newSession(client, profile, env, sessionCfg)
 		if err != nil {
 			// The session that would have owned whatever this environment
-			// provisioned was never built. NewSession may already have
-			// published the root's durable scratch retention before it failed,
-			// so the cleanup must retain an allocation the manifest references
-			// rather than remove it out from under a later resume.
-			agent.DisposeRootScratchAfterFailure(sd, env)
+			// provisioned was never built, so its scratch goes here.
+			_ = env.DisposeSessionScratch()
 			return fmt.Errorf("session creation: %w", err)
 		}
 	}
@@ -1519,7 +1524,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// Resolved per call like the model hook above: the replacement session a
 	// thread/clear installs resolves on its own registry.
 	srv.SetCostLookupFunc(func(ref string) *registry.Cost { return getSession().CostFor(ref) })
-	srv.SetTasksFunc(func() any { return getSession().Tasks() })
+	srv.SetTasksFunc(func() []appwire.Task { return getSession().Tasks() })
 	srv.SetThreadActivityReadFunc(func(ctx context.Context, params appwire.SessionActivityReadParams) (appwire.SessionActivitySummary, error) {
 		sess := getSession()
 		if params.Ref == workspaceRef {
@@ -1566,10 +1571,10 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		}
 		return sess.JobActivityTree(params)
 	})
-	srv.SetJobOutputFunc(func(jobID string, beforeBytes, maxBytes int64) (any, bool, error) {
-		return getSession().JobOutputTail(jobID, beforeBytes, maxBytes)
+	srv.SetJobOutputFunc(func(jobID string, beforeBytes *int64, maxBytes int64) (appwire.JobOutputPage, bool, error) {
+		return getSession().JobOutputPage(jobID, beforeBytes, maxBytes)
 	})
-	srv.SetJobGetFunc(func(jobID string) (any, bool, error) {
+	srv.SetJobGetFunc(func(jobID string) (appwire.JobActivityJob, bool, error) {
 		return getSession().JobGet(jobID)
 	})
 	srv.SetClearFunc(func(ctx context.Context, _ appwire.ThreadClearParams) error {
@@ -1588,6 +1593,9 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		oldEnv := currentEnv
 		currentMu.RUnlock()
 		clearCfg := sessionCfg
+		// The launch picked the first session's ID into sessionCfg; the cleared
+		// session is a new session and picks its own.
+		clearCfg.SessionID = ""
 		clearCfg.SessionStartKind = plugin.SessionStartKindClear
 		// The cleared session inherits the CURRENT session's ACTUAL sandbox (on resume
 		// the persisted mode, not the launch flag), so its persisted config matches what
@@ -1605,16 +1613,10 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		}
 		newSess, err := deps.newClearSession(client, profile, clearEnv, clearCfg)
 		if err != nil {
-			// Cleanup stops whatever the failed construction left running and
-			// retains the session scratch. NewSession may already have
-			// published the root's durable scratch retention before it failed,
-			// so the scratch is settled the way the fresh-session path settles
-			// it: an allocation the manifest references is kept (references are
-			// append-only, so removing it would refuse the root's retirement
-			// forever and break a cold resume the same way), and only this
-			// clear's own fresh mint is disposed, with its flock lease.
+			// Cleanup stops whatever the failed construction left running; the
+			// scratch it provisioned then goes, as on the fresh-session path.
 			clearEnv.Cleanup()
-			agent.DisposeRootScratchAfterFailure(sd, clearEnv)
+			_ = clearEnv.DisposeSessionScratch()
 			return fmt.Errorf("new session: %w", err)
 		}
 		// Everything that can fail happens before anything shared moves, so the
@@ -2158,6 +2160,7 @@ func evenerUsageFromLLM(u llm.Usage) *appwire.EvenerUsage {
 
 func agentToServerDetailedStatus(ds agent.DetailedStatus) server.DetailedStatus {
 	var out server.DetailedStatus
+	out.Commands = slices.Clone(ds.Commands)
 	if ds.Plugins != nil {
 		out.Plugins = make([]server.PluginStatusInfo, 0, len(ds.Plugins))
 	}

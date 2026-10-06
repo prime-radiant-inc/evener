@@ -461,12 +461,12 @@ func fuzzScenarioLocalDaemonSourceJobsOverAppWire(t *testing.T) {
 	var outputParams appwire.JobsOutputParams
 	appserver.HandleTyped(app.Router(), appwire.MethodEvenerJobsOutput, func(_ context.Context, params appwire.JobsOutputParams) (appwire.JobsOutputResponse, error) {
 		outputParams = params
-		return appwire.JobsOutputResponse{Data: map[string]any{"jobId": params.JobID, "output": "hello"}}, nil
+		return appwire.JobsOutputResponse{Data: appwire.JobOutputPage{BytesReturned: 5, TotalBytes: 5, Encoding: "utf8", Data: "hello"}}, nil
 	})
 	var getParams appwire.JobsGetParams
 	appserver.HandleTyped(app.Router(), appwire.MethodEvenerJobsGet, func(_ context.Context, params appwire.JobsGetParams) (appwire.JobsGetResponse, error) {
 		getParams = params
-		return appwire.JobsGetResponse{Data: map[string]any{"jobId": params.JobID, "command": "make build"}}, nil
+		return appwire.JobsGetResponse{Data: appwire.JobActivityJob{JobID: params.JobID, Command: "make build"}}, nil
 	})
 	httpServer := httptest.NewServer(http.HandlerFunc(app.ServeWebSocket))
 	defer httpServer.Close()
@@ -502,9 +502,9 @@ func fuzzScenarioLocalDaemonSourceJobsOverAppWire(t *testing.T) {
 	if err != nil {
 		t.Fatalf("JobOutput: %v", err)
 	}
-	tail, ok := out.Data.(map[string]any)
-	if !ok || tail["jobId"] != "job_1" || tail["output"] != "hello" {
-		t.Fatalf("JobOutput data = %#v, want the daemon's own tail payload", out.Data)
+	tail := out.Data
+	if tail.Data != "hello" || tail.TotalBytes != 5 || tail.BytesReturned != 5 || tail.OffsetBytes != 0 || tail.RetainedStartBytes != 0 || tail.Encoding != "utf8" {
+		t.Fatalf("JobOutput data = %#v, want the daemon's own page payload", out.Data)
 	}
 	if outputParams.JobID != "job_1" || outputParams.MaxBytes != 1024 {
 		t.Fatalf("params forwarded = %+v", outputParams)
@@ -514,8 +514,8 @@ func fuzzScenarioLocalDaemonSourceJobsOverAppWire(t *testing.T) {
 	if err != nil {
 		t.Fatalf("JobGet: %v", err)
 	}
-	job, ok := get.Data.(map[string]any)
-	if !ok || job["jobId"] != "job_1" || job["command"] != "make build" {
+	job := get.Data
+	if job.JobID != "job_1" || job.Command != "make build" {
 		t.Fatalf("JobGet data = %#v, want the daemon's own job payload", get.Data)
 	}
 	if getParams.Ref != "local:th_1" || getParams.JobID != "job_1" {
@@ -803,13 +803,13 @@ func TestLocalDaemonSourceListFallbackFoldsDaemonStatus(t *testing.T) {
 	wantActive := appwire.ThreadCapabilities{
 		Steer: true, Interrupt: true, Compact: true, Shutdown: true,
 		ChangeModel: true, ChangeVisionModel: true, Queue: true,
-		Goal: true, SharedNotes: true, Rename: true, SkillInput: true,
+		Goal: true, SharedNotes: true, Rename: true, SkillInput: true, CommandInput: true,
 		StopSubagent: true,
 	}
 	wantClearWithheld := appwire.ThreadCapabilities{
 		Send: true, Steer: true, Interrupt: true, Compact: true, Shutdown: true,
 		ChangeModel: true, ChangeVisionModel: true, Queue: true,
-		Goal: true, SharedNotes: true, Rename: true, SkillInput: true,
+		Goal: true, SharedNotes: true, Rename: true, SkillInput: true, CommandInput: true,
 		StopSubagent: true,
 	}
 	if got := capsByID["th_processing"]; got != wantActive {
@@ -821,8 +821,8 @@ func TestLocalDaemonSourceListFallbackFoldsDaemonStatus(t *testing.T) {
 	if got := capsByID["th_escalation"]; got != wantClearWithheld {
 		t.Fatalf("idle row with a blocked escalation = %+v, want Clear folded on the approval work: %+v", got, wantClearWithheld)
 	}
-	if got := capsByID["th_closed"]; got != (appwire.ThreadCapabilities{Shutdown: true, SkillInput: true}) {
-		t.Fatalf("closed row = %+v, want only Shutdown and SkillInput, the bits the daemon does not close-gate", got)
+	if got := capsByID["th_closed"]; got != (appwire.ThreadCapabilities{Shutdown: true, SkillInput: true, CommandInput: true}) {
+		t.Fatalf("closed row = %+v, want only Shutdown, SkillInput and CommandInput, the bits the daemon does not close-gate", got)
 	}
 }
 

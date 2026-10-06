@@ -64,6 +64,7 @@ type persistedJobFixture struct {
 	description string
 	command     string
 	output      string
+	background  bool
 }
 
 // seedPastSessionWithJobs builds a past-indexed session (project state dir +
@@ -136,6 +137,7 @@ func writePersistedJobsLog(t *testing.T, stateDir, sessionID string, now time.Ti
 			"owner_session_id":      sessionID,
 			"visible_to_session_id": sessionID,
 			"started_at":            started,
+			"background":            job.background,
 		})
 		finished := map[string]any{
 			"kind":     "job_finished",
@@ -195,6 +197,7 @@ func seedPastSessionWithActivity(t *testing.T, childJobs int) (hubcore.WebConfig
 			"ts":                    now.Add(3 * time.Second).Format(time.RFC3339Nano),
 			"job_id":                "job_root_shell",
 			"type":                  "shell",
+			"background":            true,
 			"status":                "running",
 			"description":           "root shell",
 			"command":               "make root",
@@ -224,6 +227,7 @@ func seedPastSessionWithActivity(t *testing.T, childJobs int) (hubcore.WebConfig
 				"ts":                    startedText,
 				"job_id":                jobID,
 				"type":                  "shell",
+				"background":            true,
 				"status":                "running",
 				"description":           fmt.Sprintf("child shell %d", i),
 				"command":               fmt.Sprintf("echo child-%d", i),
@@ -546,7 +550,7 @@ func TestHubJobsOutputLiveDaemon(t *testing.T) {
 	cfg, sessionID, _ := seedPastSessionWithJobs(t, []persistedJobFixture{
 		{id: "job_x", description: "stale past job", command: "make stale", output: "0123456789"},
 	})
-	liveTail := agent.JobOutputTail{Tail: "live", TotalBytes: 44, RetainedStart: 40, Truncated: true}
+	liveTail := agent.JobOutputPage{OffsetBytes: 40, BytesReturned: 4, TotalBytes: 44, RetainedStartBytes: 20, Encoding: "utf8", Data: "live"}
 	sources := appsource.NewRegistry()
 	sources.Add(&jobsListSource{id: "local", outResp: appwire.JobsOutputResponse{Data: liveTail}})
 
@@ -554,10 +558,7 @@ func TestHubJobsOutputLiveDaemon(t *testing.T) {
 	if err != nil {
 		t.Fatalf("hubJobsOutput: %v", err)
 	}
-	tail, ok := resp.Data.(agent.JobOutputTail)
-	if !ok {
-		t.Fatalf("resp.Data = %#v (%T), want agent.JobOutputTail", resp.Data, resp.Data)
-	}
+	tail := resp.Data
 	if tail != liveTail {
 		t.Fatalf("tail = %+v, want the live tail %+v (past must not be consulted)", tail, liveTail)
 	}
@@ -590,7 +591,7 @@ func TestHubJobsOutputLiveErrorPropagates(t *testing.T) {
 
 // TestHubJobsOutputDeadSessionFallsBackToPast proves the exited-session
 // fallback reads the persisted job's output tail through
-// agent.LoadSessionJobOutputTail: the last MaxBytes of the durable output
+// agent.LoadSessionJobOutputPage: the last MaxBytes of the durable output
 // file, with the total/truncation bookkeeping intact.
 func TestHubJobsOutputDeadSessionFallsBackToPast(t *testing.T) {
 	cfg, sessionID, _ := seedPastSessionWithJobs(t, []persistedJobFixture{
@@ -602,12 +603,9 @@ func TestHubJobsOutputDeadSessionFallsBackToPast(t *testing.T) {
 	if err != nil {
 		t.Fatalf("hubJobsOutput: %v", err)
 	}
-	tail, ok := resp.Data.(agent.JobOutputTail)
-	if !ok {
-		t.Fatalf("resp.Data = %#v (%T), want agent.JobOutputTail", resp.Data, resp.Data)
-	}
-	if tail.Tail != "6789" || tail.TotalBytes != 10 || !tail.Truncated {
-		t.Fatalf("tail = %+v, want the last 4 of 10 bytes, truncated", tail)
+	tail := resp.Data
+	if tail.Data != "6789" || tail.TotalBytes != 10 || tail.OffsetBytes != 6 || tail.BytesReturned != 4 || tail.RetainedStartBytes != 0 || tail.Encoding != "utf8" {
+		t.Fatalf("page = %+v, want the last 4 of 10 bytes, floor 0", tail)
 	}
 }
 
@@ -706,8 +704,8 @@ func TestHubJobsGetLiveDaemon(t *testing.T) {
 	if err != nil {
 		t.Fatalf("hubJobsGet: %v", err)
 	}
-	job, ok := resp.Data.(agent.JobActivityJob)
-	if !ok || job != liveJob {
+	job := resp.Data
+	if job != liveJob {
 		t.Fatalf("resp.Data = %#v (%T), want the live job %+v (past must not be consulted)", resp.Data, resp.Data, liveJob)
 	}
 	if source.getParams.JobID != "job_x" || source.getParams.Ref != "local:"+sessionID {
@@ -728,10 +726,7 @@ func TestHubJobsGetDeadSessionFallsBackToPast(t *testing.T) {
 	if err != nil {
 		t.Fatalf("hubJobsGet: %v", err)
 	}
-	job, ok := resp.Data.(agent.JobActivityJob)
-	if !ok {
-		t.Fatalf("resp.Data = %#v (%T), want agent.JobActivityJob", resp.Data, resp.Data)
-	}
+	job := resp.Data
 	if job.JobID != "job_x" || job.Command != "make noisy --verbose" {
 		t.Fatalf("job = %+v, want job_x with its persisted command", job)
 	}
@@ -775,10 +770,7 @@ func TestEvenerJobsGetRouteDecodesJobID(t *testing.T) {
 	if !ok {
 		t.Fatalf("response = %#v (%T), want appwire.JobsGetResponse", raw, raw)
 	}
-	job, ok := resp.Data.(agent.JobActivityJob)
-	if !ok {
-		t.Fatalf("resp.Data = %#v (%T), want agent.JobActivityJob", resp.Data, resp.Data)
-	}
+	job := resp.Data
 	if job.JobID != "job_x" || job.Command != "make noisy --jobs 8" {
 		t.Fatalf("job = %+v, want the decoded job_x with its untruncated command", job)
 	}
@@ -874,12 +866,9 @@ func TestEvenerJobsOutputRouteDecodesJobIDAndMaxBytes(t *testing.T) {
 	if !ok {
 		t.Fatalf("response = %#v (%T), want appwire.JobsOutputResponse", raw, raw)
 	}
-	tail, ok := resp.Data.(agent.JobOutputTail)
-	if !ok {
-		t.Fatalf("resp.Data = %#v (%T), want agent.JobOutputTail", resp.Data, resp.Data)
-	}
-	if tail.Tail != "6789" || tail.TotalBytes != 10 || !tail.Truncated {
-		t.Fatalf("tail = %+v, want the last 4 of job_x's 10 bytes, truncated", tail)
+	tail := resp.Data
+	if tail.Data != "6789" || tail.TotalBytes != 10 || tail.OffsetBytes != 6 || tail.BytesReturned != 4 || tail.RetainedStartBytes != 0 || tail.Encoding != "utf8" {
+		t.Fatalf("page = %+v, want the last 4 of job_x's 10 bytes, floor 0", tail)
 	}
 }
 

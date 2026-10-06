@@ -88,6 +88,22 @@ export function transcriptOpenOrigin(pane: OpenPaneRecord): OpenPaneRecord | und
   return transcriptOpenOrigins.get(pane);
 }
 
+const paneRetypeListeners = new Set<(previous: OpenPaneRecord, replacement: OpenPaneRecord) => void>();
+
+// Runtime owners transfer before removal observers see the replacement. Keep
+// the dependency one-way so workspace never imports recovery-backed owners.
+export function onPaneRetype(listener: (previous: OpenPaneRecord, replacement: OpenPaneRecord) => void): () => void {
+  paneRetypeListeners.add(listener);
+  return () => paneRetypeListeners.delete(listener);
+}
+
+const workspaceRestoreListeners = new Set<(panes: readonly OpenPaneRecord[]) => void>();
+
+export function onWorkspaceRestore(listener: (panes: readonly OpenPaneRecord[]) => void): () => void {
+  workspaceRestoreListeners.add(listener);
+  return () => workspaceRestoreListeners.delete(listener);
+}
+
 export interface WorkspaceStoreState {
   panes: OpenPaneRecord[];
   focusedPaneId: string | null;
@@ -121,6 +137,7 @@ export interface WorkspaceStoreState {
   // why the identity is derived here rather than named by the caller.
   replacePrimary(type: PrimaryPaneType, params: unknown): string;
   promotePane(paneId: string): void;
+  retypePane(expected: OpenPaneRecord, type: PaneTypeId, params: unknown): boolean;
   closePane(paneId: string): void;
   // The pane occupying the main slot, or null when it is empty (the state
   // DockHost relaunches welcome into). Exposed because "is the main slot
@@ -299,7 +316,10 @@ function isRegistered(type: unknown): type is PaneTypeId {
 function readPanelParams(panel: IDockviewPanel): PanePanelParams | null {
   const raw = panel.params;
   if (!raw || !isRegistered(raw.paneType)) return null;
-  return { paneType: raw.paneType, paneParams: raw.paneParams };
+  const parse = paneFor(raw.paneType).parseParams;
+  const params = parse ? parse(raw.paneParams) : raw.paneParams;
+  if (parse && params === null) return null;
+  return { paneType: raw.paneType, paneParams: params };
 }
 
 // Restored panel ids came from a PREVIOUS page load's own independently-
@@ -435,6 +455,22 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
     set({ panes: [...panes] });
   },
 
+  retypePane(expected, type, params) {
+    const state = get();
+    if (!state.panes.includes(expected)) return false;
+    paneFor(type);
+    if (expected.type === type && expected.params === params) return true;
+    const replacement = { ...expected, type, params };
+    for (const listener of paneRetypeListeners) listener(expected, replacement);
+    const origins = [...transcriptOpenOrigins];
+    transcriptOpenOrigins.clear();
+    for (const [pane, origin] of origins) {
+      transcriptOpenOrigins.set(pane === expected ? replacement : pane, origin === expected ? replacement : origin);
+    }
+    set({ panes: state.panes.map((pane) => (pane === expected ? replacement : pane)) });
+    return true;
+  },
+
   closePane(paneId) {
     const state = get();
     if (!state.panes.some((p) => p.id === paneId)) return; // already closed: no-op
@@ -452,7 +488,13 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
   },
 
   layoutJSON() {
-    return dockviewApi ? dockviewApi.toJSON() : null;
+    if (!dockviewApi) return null;
+    const layout = dockviewApi.toJSON();
+    for (const pane of get().panes) {
+      const panel = layout.panels?.[pane.id];
+      if (panel) panel.params = { ...panel.params, paneType: pane.type, paneParams: pane.params };
+    }
+    return layout;
   },
 
   restoreLayout(json, opts) {
@@ -497,6 +539,7 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
         params: entry.params.paneParams,
         slot: index === 0 ? "main" : "secondary",
       }));
+      for (const listener of workspaceRestoreListeners) listener(panes);
       bumpPastRestoredIds(panes);
       // The api's active panel may be one the skip dropped; focus only an id
       // that actually survived, else the first survivor.
@@ -507,12 +550,10 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
       });
       return true;
     } catch {
-      // fromJSON's own structural failures leave dockview already cleared
-      // (see dockview-core's source), and nothing else throws anymore:
-      // readPanelParams skips unloadable panels instead of raising, so this
-      // catch now covers only a layout dockview itself rejects.
+      // Dockview may have partially rebuilt its grid. Clear that failed grid,
+      // but keep the committed records so reconciliation can remount their
+      // original views without discarding runtime source work.
       dockviewApi?.clear();
-      if (!opts?.preserveLivePanes) set({ panes: [], focusedPaneId: null });
       return false;
     }
   },

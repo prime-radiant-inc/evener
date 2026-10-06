@@ -21,10 +21,13 @@ export function delegateName(delegate: ActivityDelegate): string {
   );
 }
 
-export function activityActionLabel(summary: SessionActivitySummary | null | undefined): string {
+export function activityActionLabel(
+  summary: SessionActivitySummary | null | undefined,
+  label: "Activity" | "Overview" = "Activity",
+): string {
   return summary?.delegates.known && summary.jobs.known
-    ? `Activity · ${summary.delegates.active + summary.jobs.active} active`
-    : "Activity";
+    ? `${label} · ${summary.delegates.active + summary.jobs.active} active`
+    : label;
 }
 
 // formatUsagePair renders a delegate row's token cluster ("↑41.2K ↓6.1K"), or null

@@ -58,6 +58,67 @@ its group, preserving the mounted transcript and its native scroll position.
 Selecting a different tab still activates that panel. Transcript scroll and
 history recovery remain owned by the existing reader and virtual viewport.
 
+DockHost retains saved tab labels while an inactive pane's session name is
+unavailable. Loaded navigation or live thread metadata updates the label when
+it recovers. Changing the pane's type or session ref retires the old title hint.
+Hydrated panes can publish their own tab titles without extra resource reads.
+The cascade tab keeps its registered selected-leaf title; its whole-view heading
+does not replace that label on remount.
+
+## Transcript reading position
+
+Browser transcript readers retain the visible entry and approximate progress
+through its usable reading depth across viewport width and height changes,
+including later composer-height settlement after a pane widens. The existing
+[transcript registration](../../cmd/evener-hub/frontend/src/panes/session/transcript/flow/useTranscriptScroll.ts)
+owns that intent; VirtualList owns measurement and committed geometry.
+Restoration waits for useful committed content and scroll read-back. Newer
+viewport scrolling or an explicit positioning command supersedes older work
+through the pane-lifetime [read view](../../cmd/evener-hub/frontend/src/panes/session/transcript/transcriptReadView.ts).
+Reflow preserves editor and neighboring-pane focus. Row-only height changes,
+end following, keyed older-page prepend and history recovery keep their existing
+owners.
+An explicit display change restores focus to the same entry or its visible proxy,
+even when the viewport also changes. If that entry disappears, focus moves to the
+Transcript region.
+
+## Session Overview
+
+Both session action menus offer **Overview** for inspection. It opens the shared
+sidebar on the intended session, retaining that session's category choice.
+The categories are Agents, Jobs, Watches, Tasks and About. About shows session
+details through the shared Details renderer and adds no footer counter.
+
+`/status` opens About and keeps it open on repeated use. Its completion reads
+“Show session details in Overview” and remains searchable by details and info.
+Saved standalone Details panes remain available. `/tasks` retains its existing
+standalone pane toggle. Desktop footer counters still focus their owning pane
+before selecting their category. A checked desktop session-menu Overview action
+closes that session's sidebar; the rail action opens the requested session.
+
+Phones use the same sidebar as a full-screen surface. Opening transfers focus
+inside after the menu closes, and Tab stays inside until dismissal. Closing
+returns to a visible opener or a visible session-actions control for the intended
+session, preferring the originating pane. Existing footer categories retain
+their owning-pane fallback. If child drilling replaces those controls, focus
+returns to the intended parent's visible breadcrumb outside Overview without
+navigating or creating a pane. Desktop Overview remains nonmodal.
+
+Once a navigation location confirms the already open parent, the shell ends
+route deferral. Opening a read-only child keeps that child focused while the
+address bar retains the parent URL on both phone and desktop.
+
+## Workspace geometry
+
+[DockHost](../../cmd/evener-hub/frontend/src/shell/DockHost.tsx) owns the desktop
+Dockview integration. Its empty floating overlay host stays out of layout so
+cached grid dimensions cannot enlarge the document during a native window resize.
+Dockview still owns layout and resize observation. Populated floating windows
+keep their placement, permitted overhang and native pointer input, including
+input outside the workspace bounds. The integration does not clip those windows.
+The [shell guard](../../cmd/evener-hub/frontend/scripts/shellguard/run.mjs)
+checks native resize and real floating-window preservation in Chrome.
+
 ## Exited-session controls
 
 An exited session's follow-up keeps its model selector, session actions and Send

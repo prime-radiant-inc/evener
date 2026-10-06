@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -114,8 +115,8 @@ func TestServerAppWireThreadList(t *testing.T) {
 func TestServerAppWireTasksList(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
-	srv.SetTasksFunc(func() any {
-		return []map[string]any{{"id": "1"}}
+	srv.SetTasksFunc(func() []appwire.Task {
+		return []appwire.Task{{ID: 1}}
 	})
 
 	conn := srv.AppServer().NewConnection("test")
@@ -131,15 +132,40 @@ func TestServerAppWireTasksList(t *testing.T) {
 	if !ok {
 		t.Fatalf("evener/tasks/list result=%T (%+v)", resp.Response.Result, resp)
 	}
-	tasks, ok := out.Data.([]map[string]any)
-	if !ok {
-		t.Fatalf("task data type=%T, want []map[string]any", out.Data)
-	}
+	tasks := out.Data
 	if len(tasks) != 1 {
 		t.Fatalf("task data: got %d tasks, want 1", len(tasks))
 	}
-	if tasks[0]["id"] != "1" {
-		t.Errorf("task id: got %v, want 1", tasks[0]["id"])
+	if tasks[0].ID != 1 {
+		t.Errorf("task id: got %v, want 1", tasks[0].ID)
+	}
+}
+
+func TestServerAppWireTasksListAvailability(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		read func() []appwire.Task
+		want string
+	}{
+		{name: "no reader", want: "null"},
+		{name: "unavailable", read: func() []appwire.Task { return nil }, want: "null"},
+		{name: "empty authoritative list", read: func() []appwire.Task { return []appwire.Task{} }, want: "[]"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := NewServer(ServerConfig{})
+			srv.SetTasksFunc(tc.read)
+			response, err := srv.handleAppTasksList(context.Background(), appwire.TaskListParams{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, err := json.Marshal(response.Data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(data) != tc.want {
+				t.Fatalf("task data = %s, want %s", data, tc.want)
+			}
+		})
 	}
 }
 
@@ -249,7 +275,9 @@ func TestHandleAppJobsOutputNilFunc(t *testing.T) {
 func TestHandleAppJobsOutputNotFound(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
-	srv.SetJobOutputFunc(func(string, int64, int64) (any, bool, error) { return nil, false, nil })
+	srv.SetJobOutputFunc(func(string, *int64, int64) (appwire.JobOutputPage, bool, error) {
+		return appwire.JobOutputPage{}, false, nil
+	})
 
 	conn := srv.AppServer().NewConnection("test")
 	init := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
@@ -271,17 +299,17 @@ func TestHandleAppJobsOutputNotFound(t *testing.T) {
 func TestHandleAppJobsOutput(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
-	srv.SetJobOutputFunc(func(jobID string, beforeBytes, maxBytes int64) (any, bool, error) {
+	srv.SetJobOutputFunc(func(jobID string, beforeBytes *int64, maxBytes int64) (appwire.JobOutputPage, bool, error) {
 		if jobID != "job_1" {
 			t.Errorf("jobID = %q, want job_1", jobID)
 		}
-		if beforeBytes != 7 {
-			t.Errorf("beforeBytes = %d, want 7", beforeBytes)
+		if beforeBytes == nil || *beforeBytes != 7 {
+			t.Errorf("beforeBytes = %v, want 7", beforeBytes)
 		}
 		if maxBytes != 99 {
 			t.Errorf("maxBytes = %d, want 99", maxBytes)
 		}
-		return agent.JobOutputTail{Tail: "hi", TotalBytes: 2}, true, nil
+		return agent.JobOutputPage{OffsetBytes: 5, BytesReturned: 2, TotalBytes: 7, Encoding: "utf8", Data: "hi"}, true, nil
 	})
 
 	conn := srv.AppServer().NewConnection("test")
@@ -289,7 +317,8 @@ func TestHandleAppJobsOutput(t *testing.T) {
 	if init.Kind() != appwire.MessageResponse {
 		t.Fatalf("init=%v", init.Kind())
 	}
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodEvenerJobsOutput, appwire.JobsOutputParams{JobID: "job_1", BeforeBytes: 7, MaxBytes: 99}))
+	before := int64(7)
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodEvenerJobsOutput, appwire.JobsOutputParams{JobID: "job_1", BeforeBytes: &before, MaxBytes: 99}))
 	if resp.Kind() != appwire.MessageResponse {
 		t.Fatalf("resp=%v (%+v)", resp.Kind(), resp.Error)
 	}
@@ -297,12 +326,9 @@ func TestHandleAppJobsOutput(t *testing.T) {
 	if !ok {
 		t.Fatalf("evener/jobs/output result=%T (%+v)", resp.Response.Result, resp)
 	}
-	tail, ok := out.Data.(agent.JobOutputTail)
-	if !ok {
-		t.Fatalf("output data type=%T, want agent.JobOutputTail", out.Data)
-	}
-	if tail.Tail != "hi" {
-		t.Errorf("tail: got %q, want hi", tail.Tail)
+	tail := out.Data
+	if tail.Data != "hi" || tail.OffsetBytes != 5 || tail.BytesReturned != 2 || tail.TotalBytes != 7 || tail.RetainedStartBytes != 0 || tail.Encoding != "utf8" {
+		t.Errorf("output page: got %+v, want hi at [5,7), floor 0", tail)
 	}
 }
 
@@ -334,7 +360,7 @@ func TestHandleAppJobsGetNilFunc(t *testing.T) {
 func TestHandleAppJobsGetNotFound(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
-	srv.SetJobGetFunc(func(string) (any, bool, error) { return nil, false, nil })
+	srv.SetJobGetFunc(func(string) (appwire.JobActivityJob, bool, error) { return appwire.JobActivityJob{}, false, nil })
 
 	conn := srv.AppServer().NewConnection("test")
 	init := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
@@ -356,7 +382,7 @@ func TestHandleAppJobsGetNotFound(t *testing.T) {
 func TestHandleAppJobsGet(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
-	srv.SetJobGetFunc(func(jobID string) (any, bool, error) {
+	srv.SetJobGetFunc(func(jobID string) (appwire.JobActivityJob, bool, error) {
 		if jobID != "job_1" {
 			t.Errorf("jobID = %q, want job_1", jobID)
 		}
@@ -376,10 +402,7 @@ func TestHandleAppJobsGet(t *testing.T) {
 	if !ok {
 		t.Fatalf("evener/jobs/get result=%T (%+v)", resp.Response.Result, resp)
 	}
-	job, ok := out.Data.(agent.JobActivityJob)
-	if !ok {
-		t.Fatalf("get data type=%T, want agent.JobActivityJob", out.Data)
-	}
+	job := out.Data
 	if job.JobID != "job_1" || job.Command != "go test ./..." {
 		t.Errorf("job = %+v", job)
 	}

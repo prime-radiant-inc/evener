@@ -647,47 +647,12 @@ export function parseActivityTree(data: unknown): ActivityTree | null {
   return { revision, root: root.value };
 }
 
-/** What a delegate row's branch says, once both of its branches are read. */
-export interface ActivityDelegateBranch extends ActivityBranchState {
-  // openSessionRef is set when the branch stopped with nothing to page: the
-  // depth or continuation-path bound was reached, so the daemon truncated it
-  // and deliberately minted no token, because a token there would name this
-  // child as a fresh root at position 0 -- the page a direct request already
-  // returns. The child is still addressable as its own session, and this is
-  // the ref that reaches it.
-  openSessionRef?: string;
-}
-
-// activityDelegateBranch reads the two branch states a delegate row has. Its
-// own is truncated by the depth bound, which stops before the child is
-// loaded at all; the child's is where a continuation-path truncation and any
-// size trim inside that child land. A reader that looks at one of them
-// answers correctly for half the cases and silently wrongly for the rest,
-// which is why this is one function rather than a rule each surface
-// remembers: the child's token wins where it has one, and either branch
-// being truncated truncates the row.
-export function activityDelegateBranch(delegate: ActivityDelegate): ActivityDelegateBranch {
-  const own = delegate.branch;
-  const child = delegate.child?.branch;
-  const continuation = child?.continuation ?? own.continuation;
-  const truncated = Boolean(child?.truncated || own.truncated);
-  const error = child?.error ?? own.error;
-  const childRef = delegate.childRef.trim();
-  const merged: ActivityDelegateBranch = {};
-  if (continuation !== undefined) merged.continuation = continuation;
-  if (truncated) merged.truncated = true;
-  if (error !== undefined) merged.error = error;
-  if (!continuation && truncated && childRef) merged.openSessionRef = childRef;
-  return merged;
-}
-
 // activityDelegateDiagnostics reads the two places a delegate row's
-// diagnostics land, for the same reason activityDelegateBranch reads two
-// branches: the depth bound is stamped on the delegate before its child is
-// loaded, while the continuation-path bound and the journal conditions are
-// stamped on the child session itself, and that session has no row of its
-// own to say so. The delegate's own sentences come first, then the child's,
-// each said once.
+// diagnostics land: the depth bound is stamped on the delegate before its
+// child is loaded, while the continuation-path bound and the journal
+// conditions are stamped on the child session itself, and that session has
+// no row of its own to say so. The delegate's own sentences come first, then
+// the child's, each said once.
 export function activityDelegateDiagnostics(delegate: ActivityDelegate): string[] {
   return [...new Set([...(delegate.diagnostics ?? []), ...(delegate.child?.diagnostics ?? [])])];
 }

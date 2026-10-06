@@ -2,6 +2,7 @@ import { bindFilePath, parseFileReference } from "@evener/appwire-client/docCont
 import type { DockviewApi } from "dockview-core";
 import { lazy } from "react";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
+import { conversationPaneLifetime } from "./paneLifetime";
 import { type PaneDescriptor, type PaneProps, type PaneTypeId, registerPaneForTests } from "./paneRegistry";
 import {
   cancelPaneFocus,
@@ -47,6 +48,31 @@ beforeAll(() => {
 
 beforeEach(() => {
   resetWorkspaceStoreForTests();
+});
+
+test("a reset and same-ID restored cascade replace source ownership and fence old callbacks", () => {
+  const params = {
+    ref: "child",
+    source: { type: "session", params: { ref: "root" } },
+    edges: [{ ownerRef: "root", childRef: "child", delegateId: "edge" }],
+  };
+  const old: OpenPaneRecord = { id: "restored-cascade", type: "sessionZoom", slot: "main", params };
+  workspaceStore.setState({ panes: [old], focusedPaneId: old.id });
+  const lifetime = conversationPaneLifetime(old);
+  const source = lifetime.composer;
+  if (!source) throw new Error("Missing original source composer");
+  const oldCallback = () => source.editor.write("late old source", 15);
+  resetWorkspaceStoreForTests();
+  const restored: OpenPaneRecord = { ...old, params: { ...params } };
+  workspaceStore.setState({ panes: [restored], focusedPaneId: restored.id });
+  const replacement = conversationPaneLifetime(restored);
+  replacement.composer?.editText("new original work");
+  oldCallback();
+  expect(lifetime.alive).toBe(false);
+  expect(replacement.serial).not.toBe(lifetime.serial);
+  expect(replacement.sourceRef).toBe("root");
+  expect(replacement.composer?.getSnapshot().text).toBe("new original work");
+  expect(workspaceStore.getState().panes[0]).toBe(restored);
 });
 
 describe("openPane", () => {
@@ -901,9 +927,10 @@ describe("exact Open origin lifetime", () => {
   });
 
   test.each(["same identities", "reused identities", "invalid layout"])(
-    "layout restoration with %s clears non-persisted origin edges",
+    "layout restoration with %s replaces origins only after successful restore",
     async (shape) => {
       const { workspace, owner, leaf, transcriptOpenOrigin } = await retainedOriginPair();
+      const before = workspaceStore.getState();
       const fake = new FakeDockviewApi();
       fake.fromJSONBehavior = () => {
         if (shape === "invalid layout") throw new Error("invalid layout");
@@ -917,11 +944,34 @@ describe("exact Open origin lifetime", () => {
       };
       registerDockviewApi(asDockviewApi(fake));
       expect(workspace.restoreLayout({})).toBe(shape !== "invalid layout");
-      expect(transcriptOpenOrigin(leaf)).toBeUndefined();
-      for (const pane of workspaceStore.getState().panes) expect(transcriptOpenOrigin(pane)).toBeUndefined();
-      expect(workspaceStore.getState().panes).toHaveLength(shape === "invalid layout" ? 0 : 2);
+      if (shape === "invalid layout") {
+        expect(workspaceStore.getState().panes).toBe(before.panes);
+        expect(workspaceStore.getState().focusedPaneId).toBe(before.focusedPaneId);
+        expect(transcriptOpenOrigin(leaf)).toBe(owner);
+      } else {
+        expect(transcriptOpenOrigin(leaf)).toBeUndefined();
+        for (const pane of workspaceStore.getState().panes) expect(transcriptOpenOrigin(pane)).toBeUndefined();
+      }
+      expect(workspaceStore.getState().panes).toHaveLength(2);
     },
   );
+
+  test("failed layout restoration preserves exact pane identities and their Open origin", async () => {
+    const { workspace, owner, leaf, transcriptOpenOrigin } = await retainedOriginPair();
+    const before = workspaceStore.getState();
+    const fake = new FakeDockviewApi();
+    fake.fromJSONBehavior = () => {
+      throw new Error("invalid layout");
+    };
+    registerDockviewApi(asDockviewApi(fake));
+
+    expect(workspace.restoreLayout({})).toBe(false);
+    expect(workspaceStore.getState().panes).toBe(before.panes);
+    expect(workspaceStore.getState().panes[0]).toBe(owner);
+    expect(workspaceStore.getState().panes[1]).toBe(leaf);
+    expect(workspaceStore.getState().focusedPaneId).toBe(before.focusedPaneId);
+    expect(transcriptOpenOrigin(leaf)).toBe(owner);
+  });
 });
 
 describe("currentSessionRef", () => {

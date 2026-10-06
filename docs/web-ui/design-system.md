@@ -85,11 +85,28 @@ losing the conversation that made the evidence relevant.
 - **Keep session status inside its pane.** Every visible desktop session pane ends with its own
   flush status footer, never one strip spanning sibling panes. The footer leads with that
   session's working directory and repository/branch, then its Agents, Jobs, Watches and Tasks
-  counts. A count click focuses the owning pane before opening the shared activity sidebar.
-  The sidebar retains its scope breadcrumb and an accessible, visually hidden “Activity kind”
-  label. Phones omit the activity footer and the working-directory/repository row. The
+  counts. A count click focuses the owning pane before opening the matching Overview category.
+  The shared sidebar retains its scope breadcrumb and an accessible, visually hidden
+  “Overview kind” label. About is the fifth category and has no footer counter.
+  Phones omit the activity footer and the working-directory/repository row. The
   composer ends at the pane's bottom edge with only required safe-area clearance, which
   yields when the on-screen keyboard covers that area.
+- **Keep session inspection together.** Both session action menus offer Overview, retaining
+  the intended session's category choice. `/status` selects About without toggling a
+  standalone Details pane. About reuses the shared Details renderer and its accounting.
+  Phones move focus into the full-screen Overview after menu dismissal and contain Tab
+  until close. Return to a visible, connected opener, then a visible control for the
+  intended session, preferring the originating pane. Desktop remains nonmodal. Existing
+  standalone Details views and the `/tasks` pane toggle retain their behavior.
+- **Keep inspection readable at larger text sizes.** Desktop Overview stays 320px wide.
+  Its category strip wraps without shortening labels or counts at narrow widths and XL
+  text. About's model, session ID, branch and paths wrap as selectable text. Its body
+  scrolls vertically while the page stays fixed. Phone controls retain the tap floor.
+- **Preserve useful saved placements.** Workspace restore omits retired Activity
+  panes through its unknown-pane handling. Registered panes keep their bodies and
+  reachable tabs; valid session routes win before Welcome. Overview restores its
+  own open/category choice independently. The retained recursive Activity Sheet
+  and inline discovery keep their existing scope and renderer.
 
 The provenance corrections and nested navigation/focus repairs change behavior. Folding,
 disclosure persistence, keyboard rules, preferences and semantic hue roles are retained
@@ -128,6 +145,37 @@ do not establish current lifecycle. Expanded activity shows the five most recent
 items, with full history behind Open transcript. Omit unavailable counts and timing;
 distinguish unavailable activity from an empty loaded transcript. These are provenance
 rules, not permission to fabricate a summary or rewrite stored evidence.
+
+## Agent cascade
+
+Desktop Agents rows open or reuse a read-only cascade in the secondary pane group.
+Keep the original center conversation mounted with its composer and reading position.
+Keep the selected child and immediate parent readable; earlier ancestors become
+live 52px spines. The parent is 400px wide.
+The leaf flexes with a 440px minimum. Narrow desktop surfaces scroll horizontally
+and reveal the selected leaf instead of squeezing either reader. Parent and
+leaf transcript scrollers remain independent.
+
+Ancestor controls open a scoped peek. Keyboard activation of a delegate replaces
+the path after that ancestor. Tasks remains inside the peek. One Escape closes
+only the topmost peek; the path and sidebar survive. Parent text selection never
+retargets the selected-leaf footer or sidebar.
+
+Only explicit drill, pop or return gestures animate geometry. Reconnect, status
+and late ancestry updates preserve geometry and focus. Reduced motion makes
+geometry changes immediate. Unknown ancestry stays visible rather than inventing
+a root or discarding the retained path.
+
+Return closes only the inspector and focuses its exact surviving source lifetime.
+A session source receives editor focus without moving its reader. A retired source
+is never recreated or replaced by a reused pane ID. Existing saved cascades without
+separated-inspection intent retain their recorded Return behavior. Open conversation
+opens an independent ordinary session pane. Saved intent preserves the selected
+ref, edges, read-only source and origin locator without serializing transcript
+payloads or image bytes. At the existing phone breakpoint, a saved cascade shows only its selected
+read-only content and Return; ordinary Agents activation keeps transcript
+navigation. See the [ownership contract](../product/session-activity.md#automatic-agent-cascade)
+and [real Chrome guard](../../cmd/evener-hub/frontend/scripts/cascadeguard/README.md).
 
 ## Editorial source coverage
 
@@ -209,6 +257,15 @@ host, branch, running jobs, subagent tally, watches, tier and age move into a sh
 the title. Hovering the title or focusing the owning tree row exposes it; on a hoverless device a
 long press on the title exposes it and a tap activates the row. Session pin stars
 and textual state lines do not appear on the row.
+
+Session context cards float 12px beyond the sidebar's right edge, vertically centered on the
+owning row and shifted to keep 8px of viewport clearance. An open card follows the row while
+the sidebar is dragged to a new width. When the card cannot fit beside the
+sidebar, it opens above or below the row with the same 12px gap. The card stays in the body portal
+and does not reflow navigation or take focus. Scroll and viewport resize dismiss it and cancel
+pending reveals, including long presses; a fresh gesture reveals it at the new position.
+Containment applies when the card's dimensions fit the viewport. Other HoverCards and tooltips
+keep their default placement.
 
 ---
 

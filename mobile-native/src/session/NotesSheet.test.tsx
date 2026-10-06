@@ -197,6 +197,12 @@ describe("your note (spec 8.8)", () => {
 		expect(editor(tree)?.props.value).toBe("keep the tests green");
 	});
 
+	it("lets a drag of the sheet put the keyboard away", () => {
+		provide(session());
+		const tree = sheet();
+		expect(tree.root.findAllByType("ScrollView" as never)[0]?.props.keyboardDismissMode).toBe("on-drag");
+	});
+
 	it("draws the focus ring while focused, and leaving it schedules the save", () => {
 		const { notes } = provide(session());
 		const tree = sheet();

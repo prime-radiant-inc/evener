@@ -1,5 +1,5 @@
 // The Queue sheet (ruling 37): every queued message, when more are waiting
-// than the three above the composer show (ruling 18). It is a formSheet route
+// than the three at the transcript's end show (ruling 18). It is a formSheet route
 // over the session, so it reads the session's queue through the host the
 // screen provides, and follows it live.
 import { useNavigation } from "@react-navigation/native";
@@ -13,7 +13,7 @@ import { Sheet } from "./sheet/Sheet";
 import { useSheet } from "./sheet/useSheet";
 import { sheetHosts, sheetKey, useSheetHost } from "./sheet/sheetHosts";
 import { Toast, type ToastMessage, useToast } from "./Toast";
-import { Action } from "./ui";
+import { Button } from "./sheet/Grouped";
 
 export interface QueueHost {
 	/** The session's queued messages, every one of them. */
@@ -78,16 +78,16 @@ export function QueueSheet({ route }: NativeStackScreenProps<Routes, "QueueSheet
 					/>
 				))}
 				{steerAll ? (
-					<Action
+					<Button
+						text
+						label="Steer all now"
 						disabled={host.disabled}
 						onPress={() => {
 							void steerAll().then((message) => {
 								if (message) toast.show(message);
 							});
 						}}
-					>
-						Steer all now
-					</Action>
+					/>
 				) : null}
 			</ScrollView>
 		</Sheet>

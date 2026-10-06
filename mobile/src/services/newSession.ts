@@ -22,7 +22,7 @@ import type {
 	ThreadStartResponse,
 	Turn,
 } from "@evener/appwire-client";
-import { hostRequest, isLocalHost } from "../../../cmd/evener-hub/frontend/src/stores/hostRouting";
+import { hostRequest, isLocalHost } from "@evener/appwire-client";
 import type { ConversationClientLike } from "./conversation";
 
 export interface NewSessionParams {

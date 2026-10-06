@@ -2,32 +2,57 @@ import type { ThreadCapabilities, ThreadModel } from "@evener/appwire-client";
 import { bindFilePath } from "@evener/appwire-client/docContent";
 import { keyID } from "@evener/appwire-client/state/navigation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { act, cleanup, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { SerializedDockview } from "dockview-core";
 import { lazy } from "react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { MotionProvider } from "../motion";
 import { openDocBeside } from "../panes/doc/openDoc";
+import { replaceEditorText } from "../panes/session/testing/editor";
+import { enterAgentCascade, popAgentCascade, returnFromAgentCascade } from "../panes/zoom/actions";
+import { cascadeClient, cascadeContext } from "../panes/zoom/cascadeTestUtils";
+import { associatedCascade, cascadeOrigin } from "../panes/zoom/inspectionOrigin";
+import { parseZoomParams, type SessionZoomParams } from "../panes/zoom/intent";
+import "../panes/zoom";
 import { StubResizeObserver } from "../resizeObserverTestUtils";
 import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
 import { connectionStore } from "../stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "../stores/navigation/store";
-import { activityJob } from "../stores/sessionActivityTestUtils";
+import {
+  activityClient,
+  activityDelegate,
+  activityDetailsThread,
+  activityJob,
+} from "../stores/sessionActivityTestUtils";
 import { resetThreadsStoreForTests, threadsStore } from "../stores/threads";
 import { PaneScaffold } from "../widgets/panescaffold";
+import { ActivitySidebar } from "./activitybar/ActivitySidebar";
+import { activitySidebarStore, resetActivitySidebarStoreForTests } from "./activitybar/activitySidebarStore";
 import { ClientProvider } from "./clientContext";
 import { DockHost } from "./DockHost";
 import { StackHost } from "./mobile/StackHost";
+import { conversationPaneLifetime } from "./paneLifetime";
 import { type PaneDescriptor, type PaneProps, paneFor, registerPane, registerPaneForTests } from "./paneRegistry";
 import { usePaneVisible } from "./paneVisibility";
+import { openTopLevelSession } from "./sessionPlacement";
 import { resetMobileViewportForTests } from "./useIsMobile";
-import { consumePaneFocus, documentPaneState, resetWorkspaceStoreForTests, workspaceStore } from "./workspace";
+import {
+  consumePaneFocus,
+  documentPaneState,
+  getDockviewApi,
+  type OpenPaneRecord,
+  resetWorkspaceStoreForTests,
+  workspaceStore,
+} from "./workspace";
 
 // Fixture pane components, simple enough to assert on directly - "doc" is
 // this file's non-singleton fixture, "settings" its singleton one (same
 // scheme workspace.test.ts uses).
-function DocFixture({ params, focused }: PaneProps<{ ref?: string; path?: string }>) {
+function DocFixture({ params, focused }: PaneProps) {
   const visible = usePaneVisible();
-  const label = params.ref ?? params.path ?? "unknown";
+  const fixtureParams = params as { ref?: string; path?: string };
+  const label = fixtureParams.ref ?? fixtureParams.path ?? "unknown";
   return (
     <div>
       <span data-testid={`doc-visibility-${label}`} data-pane-visible={String(visible)}>
@@ -125,6 +150,9 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+  for (const restore of geometryRestores.splice(0)) restore();
 });
 
 test("applies the dockview-theme-evener class dockview-theme.css targets", async () => {
@@ -384,7 +412,142 @@ test("publishes panel visibility independently from global dockview focus and in
   await vi.waitFor(() => expect(secondaryProbe.getAttribute("data-pane-visible")).toBe("false"));
 });
 
-test("promoting a real delegate conversation keeps both conversation instances, the parent draft, and scroll", async () => {
+const geometryRestores: Array<() => void> = [];
+function transcriptGeometry() {
+  const isPort = (element: HTMLElement) => element.parentElement?.dataset.testid === "transcript-virtual-list";
+  vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (this: HTMLElement) {
+    return this.hasAttribute("data-index") ? 96 : 300;
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(400);
+  vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(300);
+  vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(400);
+  vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockImplementation(function (this: HTMLElement) {
+    return isPort(this)
+      ? Math.max(300, Number.parseFloat((this.firstElementChild as HTMLElement)?.style.height ?? "0"))
+      : 300;
+  });
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    const port = this.closest('[data-testid="transcript-virtual-list"]')?.firstElementChild as HTMLElement | null;
+    const sizer = this.parentElement && isPort(this.parentElement);
+    const height = isPort(this) ? 300 : sizer ? Number.parseFloat(this.style.height) : 96;
+    const row = this.closest<HTMLElement>("[data-index]");
+    const start = Number.parseFloat(row?.style.transform.match(/translateY\(([-\d.]+)px\)/)?.[1] ?? "0");
+    const top = isPort(this) ? 0 : start - (port?.scrollTop ?? 0);
+    return { x: 0, y: top, top, bottom: top + height, left: 0, right: 400, width: 400, height, toJSON: () => ({}) };
+  });
+  const scrollToDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTo");
+  Object.defineProperty(HTMLElement.prototype, "scrollTo", {
+    configurable: true,
+    value: function (this: HTMLElement, options: ScrollToOptions) {
+      this.scrollTop = Math.max(0, Math.min(options.top ?? 0, this.scrollHeight - this.clientHeight));
+    },
+  });
+  geometryRestores.push(() => {
+    if (scrollToDescriptor) Object.defineProperty(HTMLElement.prototype, "scrollTo", scrollToDescriptor);
+    else Reflect.deleteProperty(HTMLElement.prototype, "scrollTo");
+  });
+  const observers = new Set<GeometryObserver>();
+  class GeometryObserver {
+    readonly elements = new Set<Element>();
+    constructor(readonly callback: ResizeObserverCallback) {
+      observers.add(this);
+    }
+    observe(element: Element) {
+      this.elements.add(element);
+    }
+    unobserve(element: Element) {
+      this.elements.delete(element);
+    }
+    disconnect() {
+      this.elements.clear();
+      observers.delete(this);
+    }
+  }
+  vi.stubGlobal("ResizeObserver", GeometryObserver);
+  return () =>
+    act(() => {
+      for (const observer of [...observers])
+        observer.callback(
+          [...observer.elements].map((target) => ({
+            target,
+            borderBoxSize: [{ blockSize: (target as HTMLElement).offsetHeight, inlineSize: 400 }],
+            contentBoxSize: [],
+            devicePixelContentBoxSize: [],
+            contentRect: target.getBoundingClientRect(),
+          })),
+          observer as unknown as ResizeObserver,
+        );
+    });
+}
+
+test("a real read-only Transcript filename opens from its exact pane, session and cwd", async () => {
+  const resized = transcriptGeometry();
+  const ref = "local:02wMz5TxvEMoJEDTDGOTil";
+  const cwd = "/work/read-only-source";
+  threadsStore.setState({
+    threads: new Map([
+      [
+        ref,
+        fixtureThread(ref, {
+          cwd,
+          turns: [
+            {
+              id: "filename-turn",
+              status: "completed",
+              items: [
+                {
+                  id: "filename-item",
+                  turnId: "filename-turn",
+                  type: "agentMessage",
+                  text: "Read `docs/source.md:12`",
+                  status: "completed",
+                },
+              ],
+            },
+          ],
+        }),
+      ],
+    ]),
+  });
+  const workspace = workspaceStore.getState();
+  const sessionId = workspace.openPane("session", { ref });
+  const sourceId = workspace.openPane("transcript", { ref }, { slot: "secondary" });
+  const source = workspaceStore.getState().panes.find((pane) => pane.id === sourceId);
+  if (!source) throw new Error("source transcript missing");
+  render(
+    <ClientProvider client={new FakeClient("ready")}>
+      <DockHost />
+    </ClientProvider>,
+  );
+  await screen.findAllByRole("heading", { name: `Thread ${ref}` });
+  resized();
+  await screen.findAllByRole("link", { name: "docs/source.md:12" });
+  const sourceGroup = getDockviewApi()?.getPanel(sourceId)?.group.element;
+  if (!sourceGroup) throw new Error("source group missing");
+  act(() => workspaceStore.getState().focusPane(sessionId));
+  const link = within(sourceGroup).getByRole("link", { name: "docs/source.md:12" });
+  await userEvent.setup().click(link);
+  await screen.findByText(/doc pane: docs\/source.md/);
+  const documentPane = workspaceStore.getState().panes.find((pane) => pane.type === "doc");
+  if (!documentPane) throw new Error("filename did not open document");
+  expect(documentPane.params).toMatchObject({ session: ref, path: "docs/source.md" });
+  expect(documentPaneState(documentPane)).toEqual({
+    origin: source,
+    reference: {
+      path: "docs/source.md",
+      readTarget: "/work/read-only-source/docs/source.md",
+      cwd,
+      provenance: "relative",
+    },
+    reopen: 0,
+  });
+  expect(workspaceStore.getState().mainPane()).toBe(source);
+  expect(workspaceStore.getState().focusedPaneId).toBe(documentPane.id);
+  expect(workspaceStore.getState().panes.some((pane) => pane.id === sessionId)).toBe(true);
+});
+
+test("promoting a real delegate conversation keeps both conversation lifetimes, the parent draft, and scroll", async () => {
+  const resized = transcriptGeometry();
   const parentRef = "local:034MXwo6BpPH0QQCgdICSf";
   const childRef = "local:02wMz5TxvEMoJEDTDGOTil";
   const turn = (id: string, text: string) => ({
@@ -395,13 +558,28 @@ test("promoting a real delegate conversation keeps both conversation instances, 
   });
   threadsStore.setState({
     threads: new Map([
-      [parentRef, fixtureThread(parentRef, { turns: [turn("parent-turn", "parent retained turn")] })],
-      [childRef, fixtureThread(childRef, { turns: [turn("child-turn", "delegate retained turn")] })],
+      [
+        parentRef,
+        fixtureThread(parentRef, {
+          turns: Array.from({ length: 10 }, (_, index) => turn(`parent-turn-${index}`, "parent retained turn")),
+        }),
+      ],
+      [
+        childRef,
+        fixtureThread(childRef, {
+          turns: Array.from({ length: 10 }, (_, index) => turn(`child-turn-${index}`, "delegate retained turn")),
+        }),
+      ],
     ]),
   });
   const workspace = workspaceStore.getState();
-  workspace.openPane("session", { ref: parentRef });
+  const parentId = workspace.openPane("session", { ref: parentRef });
   const sourceId = workspace.openPane("transcript", { ref: childRef, parentRef }, { slot: "secondary" });
+  const parentPane = workspaceStore.getState().panes.find((pane) => pane.id === parentId);
+  const childPane = workspaceStore.getState().panes.find((pane) => pane.id === sourceId);
+  if (!parentPane || !childPane) throw new Error("conversation pane missing");
+  const parentLifetime = conversationPaneLifetime(parentPane);
+  const childLifetime = conversationPaneLifetime(childPane);
   const fake = new FakeClient("ready");
   render(
     <ClientProvider client={fake}>
@@ -410,6 +588,12 @@ test("promoting a real delegate conversation keeps both conversation instances, 
   );
   const parentHeading = await screen.findByRole("heading", { name: `Thread ${parentRef}` });
   const childHeading = await screen.findByRole("heading", { name: `Thread ${childRef}` });
+  resized();
+  const parentComposer = parentLifetime.composer;
+  const parentViews = [...parentLifetime.readViews.values()];
+  const childViews = [...childLifetime.readViews.values()];
+  expect(parentViews).toHaveLength(1);
+  expect(childViews).toHaveLength(1);
   const conversationRoot = (heading: HTMLElement): HTMLElement | null => {
     let candidate = heading.parentElement;
     while (candidate && candidate.querySelectorAll('[data-testid="transcript-virtual-list"]').length !== 1) {
@@ -426,9 +610,12 @@ test("promoting a real delegate conversation keeps both conversation instances, 
   const childScroll = within(childPanel).getByTestId("transcript-virtual-list").firstElementChild;
   if (!(parentScroll instanceof HTMLElement) || !(childScroll instanceof HTMLElement))
     throw new Error("real transcript scroll roots were not mounted");
-  draft.textContent = "retained parent draft";
+  replaceEditorText(draft, "retained parent draft");
+  expect(parentComposer?.getSnapshot().text).toBe("retained parent draft");
   parentScroll.scrollTop = 137;
   childScroll.scrollTop = 211;
+  fireEvent.scroll(parentScroll);
+  fireEvent.scroll(childScroll);
   act(() => workspace.focusPane(sourceId));
 
   const reference = bindFilePath("docs/a.md", "/work/child");
@@ -437,13 +624,29 @@ test("promoting a real delegate conversation keeps both conversation instances, 
 
   await screen.findByText(/doc pane: docs\/a.md/);
   expect(document.querySelectorAll(".dv-groupview")).toHaveLength(2);
-  expect(parentHeading.isConnected).toBe(true);
   expect(screen.getByRole("heading", { name: `Thread ${childRef}` })).toBe(childHeading);
-  expect(parentPanel.querySelector('[role="textbox"]')).toBe(draft);
-  expect(draft.textContent).toContain("retained parent draft");
-  expect(within(parentPanel).getByTestId("transcript-virtual-list").firstElementChild).toBe(parentScroll);
   expect(within(childPanel).getByTestId("transcript-virtual-list").firstElementChild).toBe(childScroll);
-  expect(parentScroll.scrollTop).toBe(137);
+  expect(childScroll.scrollTop).toBe(211);
+  expect(workspaceStore.getState().panes.find((pane) => pane.id === parentId)).toBe(parentPane);
+  expect(workspaceStore.getState().panes.find((pane) => pane.id === sourceId)).toBe(childPane);
+  expect(conversationPaneLifetime(parentPane)).toBe(parentLifetime);
+  expect(conversationPaneLifetime(childPane)).toBe(childLifetime);
+  expect(parentLifetime.composer).toBe(parentComposer);
+  expect([...parentLifetime.readViews.values()]).toEqual(parentViews);
+  expect([...childLifetime.readViews.values()]).toEqual(childViews);
+  expect(parentLifetime.readViews.values().next().value).toBe(parentViews[0]);
+  expect(childLifetime.readViews.values().next().value).toBe(childViews[0]);
+  act(() => workspaceStore.getState().focusPane(parentId));
+  const restoredHeading = await screen.findByRole("heading", { name: `Thread ${parentRef}` });
+  resized();
+  const restoredPanel = conversationRoot(restoredHeading);
+  if (!restoredPanel) throw new Error("parent conversation did not remount");
+  expect(within(restoredPanel).getByRole("textbox", { name: /^message$/i }).textContent).toContain(
+    "retained parent draft",
+  );
+  expect(parentLifetime.composer).toBe(parentComposer);
+  expect(parentComposer?.getSnapshot().text).toBe("retained parent draft");
+  expect(within(restoredPanel).getByTestId("transcript-virtual-list").firstElementChild?.scrollTop).toBe(137);
   expect(childScroll.scrollTop).toBe(211);
 });
 
@@ -656,6 +859,31 @@ test("reopening a singleton pane with different params updates the existing tab'
 
   expect(await screen.findByText(/settings pane: credentials/)).toBeTruthy();
   expect(workspaceStore.getState().panes).toHaveLength(1);
+});
+
+test("retyping with the same params changes the content in the same Dockview tab and group", async () => {
+  const id = workspaceStore.getState().openPane("doc", { ref: "retype_source" });
+  workspaceStore.getState().openPane("doc", { ref: "retype_other" });
+  render(<DockHost />);
+  await screen.findByText(/doc pane: retype_source/);
+  await screen.findByText(/doc pane: retype_other/);
+  const source = workspaceStore.getState().panes.find((pane) => pane.id === id);
+  if (!source) throw new Error("Missing source record");
+  const tab = Array.from(document.querySelectorAll(".dv-tab")).find((node) => node.textContent === "Doc retype_source");
+  if (!tab) throw new Error("Missing source tab");
+  const group = tab.closest(".dv-groupview");
+  const before = workspaceStore.getState().layoutJSON() as { grid: unknown };
+  const focus = workspaceStore.getState().focusedPaneId;
+  act(() => {
+    expect(workspaceStore.getState().retypePane(source, "settings", source.params)).toBe(true);
+  });
+  expect(await screen.findByText("settings pane: none")).toBeTruthy();
+  expect(screen.queryByText(/doc pane: retype_source/)).toBeNull();
+  expect(tab.isConnected).toBe(true);
+  expect(tab.closest(".dv-groupview")).toBe(group);
+  expect((workspaceStore.getState().layoutJSON() as { grid: unknown }).grid).toEqual(before.grid);
+  expect(workspaceStore.getState().focusedPaneId).toBe(focus);
+  expect(screen.getByText(/doc pane: retype_other/)).toBeTruthy();
 });
 
 // DockHost must reconcile the real dockview panels with a primary replacement,
@@ -976,7 +1204,7 @@ test("job tabs use their own hydrated titles without extra reads or cross-owner 
     data: activityJob({ jobId, ownerRef: ref, description: ref === "owner:a" ? "Release build" : "Release monitor" }),
   }));
   fake.on("evener/jobs/output", () => ({
-    data: { tail: "ready", totalBytes: 5, retainedStart: 0, truncated: false },
+    data: { offsetBytes: 0, bytesReturned: 5, totalBytes: 5, retainedStartBytes: 0, encoding: "utf8", data: "ready" },
   }));
   connectionStore.getState().connect(fake);
   workspaceStore.getState().openPane("doc", { ref: "main" });
@@ -1113,6 +1341,513 @@ function savedActiveViews(): string[] {
   return out;
 }
 
+function inspectionRecord(id: string): OpenPaneRecord {
+  const pane = workspaceStore.getState().panes.find((candidate) => candidate.id === id);
+  if (!pane) throw new Error(`Missing committed inspection fixture pane ${id}`);
+  return pane;
+}
+
+async function mountedSecondaryInspector() {
+  const client = cascadeClient((ref) => cascadeContext(ref, ref === "child" ? ["root"] : []));
+  connectionStore.getState().connect(client);
+  window.history.replaceState({}, "", "/s/root");
+  const mainId = workspaceStore.getState().openPane("session", { ref: "root" });
+  const mount = () =>
+    render(
+      <ClientProvider client={client}>
+        <MotionProvider>
+          <DockHost />
+        </MotionProvider>
+      </ClientProvider>,
+    );
+  const view = await act(async () => mount());
+  await screen.findByRole("heading", { name: "root" });
+  const neighborId = await act(async () => workspaceStore.getState().openPane("doc", { ref: "neighbor" }));
+  await screen.findByText(/doc pane: neighbor/);
+  const inspectorId = await act(async () =>
+    enterAgentCascade(activityDelegate({ ownerRef: "root", childRef: "child", delegateId: "edge-child" }), mainId),
+  );
+  await screen.findByRole("button", { name: "Return to previous view" });
+  const api = getDockviewApi();
+  if (!api) throw new Error("Missing actual mounted Dockview API");
+  act(() => api.layout(1200, 700));
+  expect(api.panels.map((panel) => panel.id)).toEqual([mainId, neighborId, inspectorId]);
+  expect(cascadeOrigin(inspectionRecord(inspectorId))).toBe(inspectionRecord(mainId));
+  return {
+    mainId,
+    neighborId,
+    inspectorId,
+    api,
+    view,
+    mount,
+    dispose() {
+      cleanup();
+      connectionStore.setState({ client: null, state: "idle" });
+    },
+  };
+}
+
+function inspectorPanel(layout: SerializedDockview, id: string) {
+  const panel = layout.panels[id];
+  if (!panel?.params) throw new Error(`Missing serialized inspector ${id}`);
+  return panel;
+}
+
+test("cascade tabs keep the selected leaf title across pop, drill and native reactivation", async () => {
+  const fixture = await mountedSecondaryInspector();
+  try {
+    const { api, mainId, neighborId, inspectorId } = fixture;
+    expect(api.getPanel(inspectorId)?.title).toBe("child");
+    await act(async () => popAgentCascade(inspectorId, "root"));
+    expect(api.getPanel(inspectorId)?.title).toBe("root");
+    await act(async () =>
+      enterAgentCascade(
+        activityDelegate({ ownerRef: "root", childRef: "child", delegateId: "edge-child" }),
+        inspectorId,
+      ),
+    );
+    expect(api.getPanel(inspectorId)?.title).toBe("child");
+    const intent = inspectionRecord(inspectorId).params;
+    const savedTitle = api.getPanel(inspectorId)?.title;
+    await userEvent.click(screen.getByRole("tab", { name: "Doc neighbor" }));
+    expect(api.activePanel?.id).toBe(neighborId);
+    await userEvent.click(screen.getByRole("tab", { name: savedTitle }));
+    expect(api.activePanel?.id).toBe(inspectorId);
+    expect(workspaceStore.getState().focusedPaneId).toBe(inspectorId);
+    expect(inspectionRecord(inspectorId).params).toBe(intent);
+    expect(cascadeOrigin(inspectionRecord(inspectorId))).toBe(inspectionRecord(mainId));
+    expect(screen.getAllByTestId("cascade-column").map((column) => column.dataset.scopeRef)).toEqual(["root", "child"]);
+    expect(api.getPanel(inspectorId)?.title).toBe(savedTitle);
+  } finally {
+    fixture.dispose();
+  }
+});
+
+test.each([
+  {
+    type: "session",
+    savedTitle: "Saved neighbor",
+    recoveredTitle: "Recovered name",
+    unnamedTitle: "",
+    changedTitle: "ref_changed",
+  },
+  {
+    type: "transcript",
+    savedTitle: "Saved neighbor",
+    recoveredTitle: "Recovered name",
+    unnamedTitle: "",
+    changedTitle: "ref_changed",
+  },
+  {
+    type: "sessionTasks",
+    savedTitle: "Tasks · Saved neighbor",
+    recoveredTitle: "Tasks · Recovered name",
+    unnamedTitle: "Tasks · ref_saved_neighbor",
+    changedTitle: "Tasks · ref_changed",
+  },
+  {
+    type: "sessionDetails",
+    savedTitle: "Details · Saved neighbor",
+    recoveredTitle: "Details · Recovered name",
+    unnamedTitle: "Details · ref_saved_neighbor",
+    changedTitle: "Details · ref_changed",
+  },
+] as const)(
+  "restored inactive $type keeps its saved title until authoritative name recovery",
+  async ({ type, savedTitle, recoveredTitle, unnamedTitle, changedTitle }) => {
+    const ref = "ref_saved_neighbor";
+    const client = new FakeClient("ready");
+    const mount = () =>
+      render(
+        <ClientProvider client={client}>
+          <DockHost />
+        </ClientProvider>,
+      );
+    threadsStore.setState({ threads: new Map([[ref, fixtureThread(ref, { name: "Saved neighbor" })]]) });
+    workspaceStore.getState().openPane("doc", { ref: "main" });
+    const neighborId = workspaceStore.getState().openPane(type, { ref });
+    const activeId = workspaceStore.getState().openPane("settings", { section: "general" });
+    const view = await act(async () => mount());
+    const api = getDockviewApi();
+    if (!api) throw new Error("Missing actual Dockview API");
+    const saved = api.toJSON();
+    expect(api.activePanel?.id).toBe(activeId);
+    expect(saved.panels[neighborId]?.title).toBe(savedTitle);
+    expect(document.querySelector(`[data-pane-scaffold="session:${ref}"]`)).toBeNull();
+
+    view.unmount();
+    resetWorkspaceStoreForTests();
+    resetThreadsStoreForTests();
+    resetNavigationStoreForTests();
+    localStorage.setItem(LAYOUT_KEY, JSON.stringify(saved));
+    await act(async () => mount());
+    const restored = getDockviewApi();
+    if (!restored) throw new Error("Missing restored Dockview API");
+    expect(threadsStore.getState().threads.has(ref)).toBe(false);
+    expect(restored.activePanel?.id).toBe(activeId);
+    expect(restored.toJSON().panels[neighborId]).toEqual(saved.panels[neighborId]);
+    expect(document.querySelector(`[data-pane-scaffold="session:${ref}"]`)).toBeNull();
+
+    await act(async () => {
+      threadsStore.setState({ threads: new Map([[ref, fixtureThread(ref, { name: "Recovered name" })]]) });
+    });
+    expect(restored.getPanel(neighborId)?.title).toBe(recoveredTitle);
+    await act(async () => {
+      threadsStore.setState({ threads: new Map([[ref, fixtureThread(ref, { name: "" })]]) });
+    });
+    expect(restored.getPanel(neighborId)?.title).toBe(unnamedTitle);
+    expect(restored.getPanel(neighborId)?.params).toEqual(saved.panels[neighborId]?.params);
+    expect(restored.activePanel?.id).toBe(activeId);
+    await act(async () => {
+      expect(workspaceStore.getState().retypePane(inspectionRecord(neighborId), type, { ref: "ref_changed" })).toBe(
+        true,
+      );
+    });
+    expect(restored.getPanel(neighborId)?.title).toBe(changedTitle);
+    expect(restored.activePanel?.id).toBe(activeId);
+  },
+);
+
+test.each([false, true])(
+  "secondary inspector restores distinct panels and saved focus with captured route=%s",
+  async (routed) => {
+    const fixture = await mountedSecondaryInspector();
+    try {
+      const { mainId, neighborId, inspectorId } = fixture;
+      const saved = workspaceStore.getState().layoutJSON() as SerializedDockview;
+      const intent = inspectorPanel(saved, inspectorId).params?.paneParams;
+      expect(parseZoomParams(intent)).toMatchObject({
+        ref: "child",
+        source: { type: "transcript", params: { ref: "root" } },
+        edges: [{ ownerRef: "root", childRef: "child", delegateId: "edge-child" }],
+        inspection: { origin: { paneId: mainId, type: "session", ref: "root" } },
+      });
+      expect(saved.activeGroup).toBe(fixture.api.getPanel(inspectorId)?.group.id);
+      fixture.view.unmount();
+      resetWorkspaceStoreForTests();
+      localStorage.setItem(LAYOUT_KEY, JSON.stringify(saved));
+      if (routed) openTopLevelSession("root");
+      await act(async () => fixture.mount());
+      const api = getDockviewApi();
+      if (!api) throw new Error("Missing restored Dockview API");
+      act(() => api.layout(1200, 700));
+      const main = inspectionRecord(mainId);
+      const inspector = inspectionRecord(inspectorId);
+      expect(workspaceStore.getState().panes.map((pane) => [pane.id, pane.type, pane.slot])).toEqual([
+        [mainId, "session", "main"],
+        [neighborId, "doc", "secondary"],
+        [inspectorId, "sessionZoom", "secondary"],
+      ]);
+      expect(api.getPanel(inspectorId)?.group).toBe(api.getPanel(neighborId)?.group);
+      expect(api.getPanel(inspectorId)?.group).not.toBe(api.getPanel(mainId)?.group);
+      expect(api.toJSON().grid).toEqual(saved.grid);
+      expect(inspector.params).toEqual(intent);
+      expect(cascadeOrigin(inspector)).toBe(main);
+      expect(associatedCascade(main)).toBe(inspector);
+      expect(workspaceStore.getState().focusedPaneId).toBe(inspectorId);
+      expect(api.activePanel?.id).toBe(inspectorId);
+      expect(window.location.pathname).toBe("/s/root");
+      expect(screen.getAllByTestId("cascade-column").map((column) => column.getAttribute("data-scope-ref"))).toEqual([
+        "root",
+        "child",
+      ]);
+      await act(async () => returnFromAgentCascade(inspectorId));
+      expect(workspaceStore.getState().panes.map((pane) => pane.id)).toEqual([mainId, neighborId]);
+      expect(inspectionRecord(mainId)).toBe(main);
+      expect(workspaceStore.getState().focusedPaneId).toBe(mainId);
+      expect(api.activePanel?.id).toBe(mainId);
+    } finally {
+      fixture.dispose();
+    }
+  },
+);
+
+test.each(["different root", "missing child"] as const)(
+  "secondary inspector cannot retain boot focus over a captured %s conversation",
+  async (routeKind) => {
+    const fixture = await mountedSecondaryInspector();
+    try {
+      const saved = workspaceStore.getState().layoutJSON() as SerializedDockview;
+      fixture.view.unmount();
+      resetWorkspaceStoreForTests();
+      localStorage.setItem(LAYOUT_KEY, JSON.stringify(saved));
+      const routedRef = routeKind === "different root" ? "fresh-root" : "child";
+      openTopLevelSession(routeKind === "different root" ? routedRef : "root");
+      if (routeKind === "missing child") {
+        workspaceStore.getState().openPane("session", { ref: routedRef }, { slot: "secondary" });
+      }
+      await act(async () => fixture.mount());
+      const conversations = workspaceStore
+        .getState()
+        .panes.filter((pane) => pane.type === "session" && (pane.params as { ref: string }).ref === routedRef);
+      expect(conversations).toHaveLength(1);
+      expect(conversations[0]?.slot).toBe(routeKind === "different root" ? "main" : "secondary");
+      expect(workspaceStore.getState().focusedPaneId).toBe(conversations[0]?.id);
+      expect(getDockviewApi()?.activePanel?.id).toBe(conversations[0]?.id);
+      expect(workspaceStore.getState().focusedPaneId).not.toBe(fixture.inspectorId);
+      if (routeKind === "missing child") {
+        expect(workspaceStore.getState().mainPane()).toMatchObject({
+          id: fixture.mainId,
+          type: "session",
+          params: { ref: "root" },
+        });
+        expect(cascadeOrigin(inspectionRecord(fixture.inspectorId))).toBe(inspectionRecord(fixture.mainId));
+      }
+    } finally {
+      fixture.dispose();
+    }
+  },
+);
+
+test("secondary inspector saves a retired locator before host reconciliation and cannot adopt a restored same-ID origin", async () => {
+  const fixture = await mountedSecondaryInspector();
+  try {
+    const { mainId, neighborId, inspectorId, api } = fixture;
+    const original = inspectionRecord(mainId);
+    const originalLifetime = conversationPaneLifetime(original);
+    const replacement: OpenPaneRecord = { ...original, params: { ref: "root" } };
+    let saved: SerializedDockview | null = null;
+    act(() => {
+      workspaceStore.getState().closePane(mainId);
+      workspaceStore.setState({
+        panes: [replacement, ...workspaceStore.getState().panes],
+        focusedPaneId: inspectorId,
+      });
+      expect(parseZoomParams(api.getPanel(inspectorId)?.params?.paneParams)?.inspection?.origin).toEqual({
+        paneId: mainId,
+        type: "session",
+        ref: "root",
+      });
+      saved = workspaceStore.getState().layoutJSON() as SerializedDockview;
+      expect(parseZoomParams(inspectorPanel(saved, inspectorId).params?.paneParams)?.inspection).toEqual({
+        origin: null,
+      });
+    });
+    expect(originalLifetime.alive).toBe(false);
+    expect(conversationPaneLifetime(replacement)).not.toBe(originalLifetime);
+    fixture.view.unmount();
+    resetWorkspaceStoreForTests();
+    localStorage.setItem(LAYOUT_KEY, JSON.stringify(saved));
+    await act(async () => fixture.mount());
+    const restored = inspectionRecord(mainId);
+    const inspector = inspectionRecord(inspectorId);
+    expect(cascadeOrigin(inspector)).toBeNull();
+    expect(associatedCascade(restored)).toBeNull();
+    expect(parseZoomParams(inspector.params)?.inspection).toEqual({ origin: null });
+    await act(async () => returnFromAgentCascade(inspectorId));
+    expect(workspaceStore.getState().panes.map((pane) => pane.id)).toEqual([mainId, neighborId]);
+    expect(inspectionRecord(mainId)).toBe(restored);
+    expect(workspaceStore.getState().focusedPaneId).not.toBe(mainId);
+    expect(consumePaneFocus(mainId)).toBe(false);
+    expect(window.location.pathname).toBe("/s/root");
+  } finally {
+    fixture.dispose();
+  }
+});
+
+test.each([
+  { name: "missing target", locator: { paneId: "absent-pane", type: "session", ref: "root" } },
+  { name: "wrong type", locator: { paneId: "pane_session_1", type: "transcript", ref: "root" } },
+  { name: "empty ID", locator: { paneId: "", type: "session", ref: "root" } },
+  { name: "invalid type", locator: { paneId: "pane_session_1", type: "doc", ref: "root" } },
+  { name: "invalid ref", locator: { paneId: "pane_session_1", type: "session", ref: 42 } },
+])("secondary inspector recovers a $name locator without binding the surviving source", async ({ locator }) => {
+  const fixture = await mountedSecondaryInspector();
+  try {
+    const { mainId, neighborId, inspectorId } = fixture;
+    const saved = workspaceStore.getState().layoutJSON() as SerializedDockview;
+    const panel = inspectorPanel(saved, inspectorId);
+    panel.params = { ...panel.params, paneParams: { ...panel.params?.paneParams, inspection: { origin: locator } } };
+    fixture.view.unmount();
+    resetWorkspaceStoreForTests();
+    localStorage.setItem(LAYOUT_KEY, JSON.stringify(saved));
+    await act(async () => fixture.mount());
+    const main = inspectionRecord(mainId);
+    const inspector = inspectionRecord(inspectorId);
+    expect(workspaceStore.getState().panes.map((pane) => pane.id)).toEqual([mainId, neighborId, inspectorId]);
+    expect(parseZoomParams(inspector.params)?.inspection).toEqual({ origin: null });
+    expect(cascadeOrigin(inspector)).toBeNull();
+    expect(associatedCascade(main)).toBeNull();
+    expect(conversationPaneLifetime(inspector).composer).toBeNull();
+    await act(async () => returnFromAgentCascade(inspectorId));
+    expect(inspectionRecord(mainId)).toBe(main);
+    expect(workspaceStore.getState().focusedPaneId).not.toBe(mainId);
+    expect(consumePaneFocus(mainId)).toBe(false);
+  } finally {
+    fixture.dispose();
+  }
+});
+
+test("secondary inspector and real source survive an unloadable unrelated saved panel", async () => {
+  const fixture = await mountedSecondaryInspector();
+  try {
+    const { mainId, neighborId, inspectorId } = fixture;
+    const saved = workspaceStore.getState().layoutJSON() as SerializedDockview;
+    const neighbor = inspectorPanel(saved, neighborId);
+    neighbor.params = { paneType: "sessionNotes", paneParams: { ref: "retired-neighbor" } };
+    fixture.view.unmount();
+    resetWorkspaceStoreForTests();
+    localStorage.setItem(LAYOUT_KEY, JSON.stringify(saved));
+    await act(async () => fixture.mount());
+    const main = inspectionRecord(mainId);
+    const inspector = inspectionRecord(inspectorId);
+    expect(workspaceStore.getState().panes.map((pane) => pane.id)).toEqual([mainId, inspectorId]);
+    expect(getDockviewApi()?.panels.map((panel) => panel.id)).toEqual([mainId, inspectorId]);
+    expect(workspaceStore.getState().focusedPaneId).toBe(inspectorId);
+    expect(cascadeOrigin(inspector)).toBe(main);
+    expect(main).toMatchObject({ type: "session", slot: "main", params: { ref: "root" } });
+    expect(screen.queryByText("Couldn't load the workspace")).toBeNull();
+    await act(async () => returnFromAgentCascade(inspectorId));
+    expect(workspaceStore.getState().panes).toEqual([main]);
+    expect(workspaceStore.getState().focusedPaneId).toBe(mainId);
+  } finally {
+    fixture.dispose();
+  }
+});
+
+test("secondary inspector boot with failed real fromJSON preserves live records, lifetimes and source draft", async () => {
+  const mainId = workspaceStore.getState().openPane("session", { ref: "root" });
+  const main = inspectionRecord(mainId);
+  const lifetime = conversationPaneLifetime(main);
+  const composer = lifetime.composer;
+  if (!composer) throw new Error("Missing real source composer owner");
+  composer.editText("keep the live source draft");
+  const neighborId = workspaceStore.getState().openPane("doc", { ref: "neighbor" });
+  const inspectorId = enterAgentCascade(
+    activityDelegate({ ownerRef: "root", childRef: "child", delegateId: "edge-child" }),
+    mainId,
+  );
+  const inspector = inspectionRecord(inspectorId);
+  const inspectionLifetime = conversationPaneLifetime(inspector);
+  localStorage.setItem(LAYOUT_KEY, JSON.stringify({ nonsense: true }));
+  const client = cascadeClient((ref) => cascadeContext(ref, ref === "child" ? ["root"] : []));
+  connectionStore.getState().connect(client);
+  try {
+    await act(async () =>
+      render(
+        <ClientProvider client={client}>
+          <MotionProvider>
+            <DockHost />
+          </MotionProvider>
+        </ClientProvider>,
+      ),
+    );
+    await screen.findByRole("button", { name: "Return to previous view" });
+    expect(inspectionRecord(mainId)).toBe(main);
+    expect(inspectionRecord(inspectorId)).toBe(inspector);
+    expect(workspaceStore.getState().panes.map((pane) => pane.id)).toEqual([mainId, neighborId, inspectorId]);
+    expect(conversationPaneLifetime(main)).toBe(lifetime);
+    expect(lifetime.alive).toBe(true);
+    expect(lifetime.composer).toBe(composer);
+    expect(composer.getSnapshot().text).toBe("keep the live source draft");
+    expect(conversationPaneLifetime(inspector)).toBe(inspectionLifetime);
+    expect(inspectionLifetime.alive).toBe(true);
+    expect(cascadeOrigin(inspector)).toBe(main);
+    expect(getDockviewApi()?.panels.map((panel) => panel.id)).toEqual([mainId, neighborId, inspectorId]);
+    expect(screen.queryByText("Couldn't load the workspace")).toBeNull();
+    await act(async () => returnFromAgentCascade(inspectorId));
+    expect(inspectionRecord(mainId)).toBe(main);
+    expect(lifetime.composer).toBe(composer);
+    expect(composer.getSnapshot().text).toBe("keep the live source draft");
+  } finally {
+    cleanup();
+    connectionStore.setState({ client: null, state: "idle" });
+  }
+});
+
+test.each([
+  { sourceType: "transcript", routedRef: null },
+  { sourceType: "session", routedRef: "root" },
+  { sourceType: "session", routedRef: "other-root" },
+] as const)(
+  "a real promoted $sourceType restores saved intent against route $routedRef",
+  async ({ sourceType, routedRef }) => {
+    const context = (ref: string) =>
+      cascadeContext(ref, ref === "grandchild" ? ["root", "child"] : ref === "child" ? ["root"] : []);
+    const client = cascadeClient(context);
+    connectionStore.getState().connect(client);
+    const id = workspaceStore.getState().openPane(sourceType, { ref: "root" });
+    const mount = () =>
+      render(
+        <ClientProvider client={client}>
+          <MotionProvider>
+            <DockHost />
+          </MotionProvider>
+        </ClientProvider>,
+      );
+    try {
+      const view = await act(async () => mount());
+      await screen.findByRole("heading", { name: "root" });
+      const tab = document.querySelector(".dv-tab");
+      if (!tab) throw new Error("Missing real transcript tab");
+      const group = tab.closest(".dv-groupview");
+      act(() => workspaceStore.getState().openPane("doc", { ref: "kept-secondary" }));
+      await screen.findByText(/doc pane: kept-secondary/);
+      act(() => workspaceStore.getState().focusPane(id));
+      const before = workspaceStore.getState().layoutJSON() as { grid: unknown };
+      const sourceRecord = workspaceStore.getState().panes.find((pane) => pane.id === id);
+      if (!sourceRecord) throw new Error("Missing legacy source fixture");
+      await act(async () => {
+        workspaceStore.getState().retypePane(sourceRecord, "sessionZoom", {
+          ref: "grandchild",
+          source: { type: sourceType, params: sourceRecord.params },
+          edges: [
+            { ownerRef: "root", childRef: "child", delegateId: "edge-child" },
+            { ownerRef: "child", childRef: "grandchild", delegateId: "edge-grandchild" },
+          ],
+        });
+      });
+      expect(tab.isConnected).toBe(true);
+      expect(tab.closest(".dv-groupview")).toBe(group);
+      expect((workspaceStore.getState().layoutJSON() as { grid: unknown }).grid).toEqual(before.grid);
+      const intent = workspaceStore.getState().panes.find((pane) => pane.id === id)?.params as SessionZoomParams;
+      vi.useFakeTimers();
+      const current = workspaceStore.getState().panes.find((pane) => pane.id === id);
+      if (!current) throw new Error("Missing promoted record");
+      await act(async () => workspaceStore.getState().retypePane(current, "sessionZoom", { ...intent }));
+      advance(400);
+      const saved = localStorage.getItem(LAYOUT_KEY);
+      if (!saved) throw new Error("Missing real cascade save");
+      const layout = JSON.parse(saved) as {
+        grid: unknown;
+        panels: Record<string, { params: { paneType: string; paneParams: SessionZoomParams } }>;
+      };
+      expect(layout.panels[id]?.params).toEqual({ paneType: "sessionZoom", paneParams: intent });
+      expect(layout.grid).toEqual(before.grid);
+      expect(saved).not.toContain("data:image");
+      expect(saved).not.toContain("olderCursor");
+      vi.useRealTimers();
+      view.unmount();
+      resetWorkspaceStoreForTests();
+      if (routedRef) workspaceStore.getState().openPane("session", { ref: routedRef });
+      await act(async () => mount());
+      if (routedRef === "other-root") {
+        expect(workspaceStore.getState().panes).toHaveLength(1);
+        expect(workspaceStore.getState().mainPane()).toMatchObject({
+          type: "session",
+          params: { ref: "other-root" },
+        });
+        expect(screen.queryByRole("button", { name: "Return to previous view" })).toBeNull();
+        expect(screen.queryByText(/doc pane: kept-secondary/)).toBeNull();
+        return;
+      }
+      await screen.findByRole("button", { name: "Return to previous view" });
+      expect(workspaceStore.getState().panes.find((pane) => pane.id === id)?.params).toEqual(intent);
+      expect((workspaceStore.getState().layoutJSON() as { grid: unknown }).grid).toEqual(before.grid);
+      expect(screen.getAllByTestId("cascade-column").map((column) => column.getAttribute("data-scope-ref"))).toEqual([
+        "child",
+        "grandchild",
+      ]);
+      const footer = screen.getByTestId("statusbar");
+      expect(within(footer).getByText("grandchild").getAttribute("aria-current")).toBe("page");
+      expect(screen.getByText(/doc pane: kept-secondary/)).toBeTruthy();
+    } finally {
+      cleanup();
+      connectionStore.setState({ client: null, state: "idle" });
+    }
+  },
+);
+
 test("debounces saving the layout to localStorage after a change", async () => {
   // Real timers for the initial mount (findByText's own polling), fake
   // timers only from here on - this sidesteps any question of whether
@@ -1149,6 +1884,45 @@ test("debounces saving the layout to localStorage after a change", async () => {
   const parsed = JSON.parse(saved!) as { panels: Record<string, unknown> };
   expect(Object.keys(parsed.panels)).toEqual(["pane_doc_1", "pane_doc_2"]);
 });
+
+test.each(["debounce", "teardown"] as const)(
+  "a parameter-only retype persists through %s without a native layout change",
+  async (settlement) => {
+    const id = workspaceStore.getState().openPane("doc", { ref: "params_source" });
+    const view = render(<DockHost />);
+    await screen.findByText(/doc pane: params_source/);
+    vi.useFakeTimers();
+    act(() => {
+      workspaceStore.getState().openPane("doc", { ref: "params_other" });
+    });
+    await Promise.resolve();
+    advance(450);
+    const baseline = localStorage.getItem(LAYOUT_KEY);
+    if (!baseline) throw new Error("Missing initial saved layout");
+    const source = workspaceStore.getState().panes.find((pane) => pane.id === id);
+    if (!source) throw new Error("Missing source record");
+    const params = { ref: "params_source", detail: "retained-intent" };
+    act(() => {
+      workspaceStore.getState().retypePane(source, "doc", params);
+    });
+    await Promise.resolve();
+    advance(200);
+    expect(localStorage.getItem(LAYOUT_KEY)).toBe(baseline);
+    if (settlement === "teardown") view.unmount();
+    else advance(200);
+    const saved = localStorage.getItem(LAYOUT_KEY);
+    if (!saved) throw new Error("Missing parameter-only save");
+    const layout = JSON.parse(saved) as {
+      panels: Record<string, { params: { paneType: string; paneParams: unknown } }>;
+    };
+    expect(layout.panels[id]?.params).toEqual({ paneType: "doc", paneParams: params });
+    if (settlement === "teardown") {
+      localStorage.removeItem(LAYOUT_KEY);
+      advance(1000);
+      expect(localStorage.getItem(LAYOUT_KEY)).toBeNull();
+    }
+  },
+);
 
 test("unmounting flushes a pending debounced save rather than writing after teardown", async () => {
   workspaceStore.getState().openPane("doc", { ref: "ref_a" });
@@ -1539,6 +2313,152 @@ test("a saved layout with a retired pane type restores the surviving panes witho
   expect(workspaceStore.getState().panes.map((p) => p.id)).toEqual(["pane_doc_2", "pane_doc_3"]);
   expect(screen.queryByText("Couldn't load the workspace")).toBeNull();
 });
+
+function retireSavedActivityPane(paneId: string): void {
+  const raw = localStorage.getItem(LAYOUT_KEY);
+  if (raw === null) throw new Error("Expected a real saved Dockview layout");
+  const layout = JSON.parse(raw) as { panels: Record<string, { params?: unknown }> };
+  const pane = layout.panels[paneId];
+  if (!pane) throw new Error(`Missing saved pane ${paneId}`);
+  pane.params = { paneType: "sessionActivity", paneParams: { ref: "remote:a" } };
+  localStorage.setItem(LAYOUT_KEY, JSON.stringify(layout));
+}
+
+function expectReadOnlyRestore(client: FakeClient): void {
+  const methods = client.calls.map((call) => call.method);
+  expect(methods).toContain("thread/read");
+  expect(methods.every((method) => /\/(read|list|subscribe|unsubscribe)$/.test(method))).toBe(true);
+  for (const mutation of [
+    "evener/session/delete",
+    "evener/project/delete",
+    "evener/archive/set",
+    "thread/shutdown",
+    "evener/thread/forceStop",
+    "thread/start",
+    "turn/start",
+  ]) {
+    expect(methods).not.toContain(mutation);
+  }
+}
+
+test.each([
+  ["secondary", false],
+  ["main", false],
+  ["focused", false],
+  ["secondary", true],
+  ["main", true],
+  ["focused", true],
+] as const)(
+  "saved Activity %s is omitted while Overview open=%s restores independently",
+  async (placement, overviewOpen) => {
+    resetActivitySidebarStoreForTests();
+    const client = activityClient();
+    client.on("thread/read", ({ ref }) => activityDetailsThread(ref, { preview: "Restored session" }));
+    connectionStore.getState().connect(client);
+    try {
+      const workspace = workspaceStore.getState();
+      let retired: string | undefined;
+      if (placement === "main") retired = workspace.openPane("doc", { ref: "retired" });
+      const session = workspace.openPane("session", { ref: "remote:a" });
+      const details = workspace.openPane("sessionDetails", { ref: "remote:a" }, { slot: "secondary" });
+      const doc = workspace.openPane("doc", { ref: "survivor" });
+      if (placement !== "main") retired = workspace.openPane("doc", { ref: "retired" });
+      if (retired === undefined) throw new Error("Retired placement was not created");
+      const retiredId = retired;
+      const saved = render(
+        <ClientProvider client={client}>
+          <DockHost />
+        </ClientProvider>,
+      );
+      await screen.findByText(/doc pane: retired/);
+      act(() => workspaceStore.getState().focusPane(placement === "focused" ? retiredId : session));
+      saved.unmount();
+      retireSavedActivityPane(retiredId);
+      resetWorkspaceStoreForTests();
+      resetThreadsStoreForTests();
+      activitySidebarStore.getState().retarget("remote:a");
+      activitySidebarStore.getState().openWith("about");
+      if (!overviewOpen) activitySidebarStore.getState().close();
+      resetActivitySidebarStoreForTests({ preserveStorage: true });
+      await act(async () => {
+        render(
+          <ClientProvider client={client}>
+            <MotionProvider>
+              <DockHost />
+              <ActivitySidebar />
+            </MotionProvider>
+          </ClientProvider>,
+        );
+      });
+      const panes = workspaceStore.getState().panes;
+      expect(panes.map((pane) => pane.id)).toEqual([session, details, doc]);
+      expect(panes.some((pane) => (pane.type as string) === "sessionActivity")).toBe(false);
+      expect(panes.find((pane) => pane.slot === "main")?.id).toBe(session);
+      expect(panes.some((pane) => pane.id === workspaceStore.getState().focusedPaneId)).toBe(true);
+      expect(document.querySelector('[data-pane-scaffold="session:remote:a"]')).toBeTruthy();
+      const user = userEvent.setup();
+      await user.click(screen.getByRole("tab", { name: "Doc survivor" }));
+      expect(await screen.findByText(/doc pane: survivor/)).toBeTruthy();
+      await user.click(screen.getByRole("tab", { name: /^Details ·/ }));
+      const detailsBody = document.querySelector(`[data-pane-id="${details}"]`);
+      if (!(detailsBody instanceof HTMLElement)) throw new Error("Restored Details body missing");
+      const body = within(detailsBody);
+      expect((await body.findByTestId("session-details-cost")).textContent).toContain("~$1.00");
+      expect(body.getByTestId("session-details-context").textContent).toContain("42K / 100K");
+      expect(body.getByText("/work/session")).toBeTruthy();
+      expect(activitySidebarStore.getState()).toMatchObject({ open: overviewOpen, tab: "about", ref: "remote:a" });
+      if (overviewOpen) {
+        const sidebar = within(await screen.findByTestId("activity-sidebar"));
+        expect(sidebar.getByRole("radio", { name: "About" }).getAttribute("aria-checked")).toBe("true");
+        expect(await sidebar.findByText("about-owner")).toBeTruthy();
+      } else expect(screen.queryByTestId("activity-sidebar")).toBeNull();
+      expect(screen.queryByText("Couldn't load the workspace")).toBeNull();
+      expect(document.querySelector('[data-pane-scaffold="session-panel:activity:remote:a"]')).toBeNull();
+      expect(visibleTabTexts()).toContain("Doc survivor");
+      expect(visibleTabTexts()).toHaveLength(placement === "main" ? 3 : 2);
+      expect(visibleCloseControlCount()).toBe(placement === "main" ? 3 : 2);
+      expectReadOnlyRestore(client);
+    } finally {
+      cleanup();
+      resetActivitySidebarStoreForTests();
+      connectionStore.setState({ client: null, state: "idle" });
+    }
+  },
+);
+
+test.each([false, true])(
+  "an Activity-only saved layout applies a valid primary route=%s before Welcome",
+  async (routed) => {
+    const retired = workspaceStore.getState().openPane("doc", { ref: "retired" });
+    const saved = render(<DockHost />);
+    await screen.findByText(/doc pane: retired/);
+    saved.unmount();
+    retireSavedActivityPane(retired);
+    resetWorkspaceStoreForTests();
+    const client = activityClient();
+    connectionStore.getState().connect(client);
+    try {
+      if (routed) workspaceStore.getState().openPane("session", { ref: "remote:routed" });
+      await act(async () => {
+        render(
+          <ClientProvider client={client}>
+            <DockHost />
+          </ClientProvider>,
+        );
+      });
+      expect(workspaceStore.getState().panes.map((pane) => pane.type)).toEqual([routed ? "session" : "welcome"]);
+      if (routed) {
+        expect(document.querySelector('[data-pane-scaffold="session:remote:routed"]')).toBeTruthy();
+        expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "remote:routed" });
+        expect(screen.queryByText("No session open")).toBeNull();
+        expectReadOnlyRestore(client);
+      } else expect(await screen.findByText("No session open")).toBeTruthy();
+    } finally {
+      cleanup();
+      connectionStore.setState({ client: null, state: "idle" });
+    }
+  },
+);
 
 test("restores a routed primary through replacement before reopening captured secondary routes", async () => {
   workspaceStore.getState().openPane("doc", { ref: "saved_main" });

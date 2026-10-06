@@ -211,9 +211,9 @@ func ReadPersistedHumanNote(stateDir, sessionID string) (note string, present bo
 	return "", false, nil
 }
 
-// normalizeNote collapses every run of whitespace (including newlines) to one
-// space, strips terminal control characters, and clamps to sessionNoteMaxRunes
-// Unicode characters.
+// normalizeLabel normalizes a URL label, which is single-line: it strips
+// terminal control characters, collapses every run of whitespace (newlines
+// included) to one space, and clamps the result with clampNoteRunes.
 //
 // The strip runs before the collapse and leaves the whitespace controls for it:
 // stripping those first would join words ("a\nb" would store "ab"), and
@@ -223,14 +223,50 @@ func ReadPersistedHumanNote(stateDir, sessionID string) (note string, present bo
 // no meaning as note content while stored notes, labels, and URLs are printed by
 // terminals (the TUI details drawer, the transcript's human-note echo, the notes
 // tool output).
-func normalizeNote(text string) string {
+func normalizeLabel(text string) string {
 	text = stripNoteControls(text)
-	collapsed := strings.Join(strings.Fields(text), " ")
-	runes := []rune(collapsed)
+	return clampNoteRunes(strings.Join(strings.Fields(text), " "))
+}
+
+// clampNoteRunes cuts text to at most sessionNoteMaxRunes Unicode characters.
+func clampNoteRunes(text string) string {
+	runes := []rune(text)
 	if len(runes) > sessionNoteMaxRunes {
-		collapsed = string(runes[:sessionNoteMaxRunes])
+		return string(runes[:sessionNoteMaxRunes])
 	}
-	return collapsed
+	return text
+}
+
+// normalizeWhiteboard is the rule for both session whiteboards, which are short
+// texts in lines (the agent's is a paragraph, a "Now:" line and "Next:" lines).
+// It strips terminal controls as normalizeLabel does, turns CRLF and CR into LF,
+// collapses whitespace within each line to single spaces and trims the line,
+// drops leading and trailing blank lines, keeps at most one blank line in a
+// row, and clamps to sessionNoteMaxRunes Unicode characters, trimming a space or
+// line break the clamp leaves at the end. The result normalizes to itself.
+func normalizeWhiteboard(text string) string {
+	text = stripNoteControls(text)
+	text = normalizeLineEndings(text)
+	var lines []string
+	blankPending := false
+	for line := range strings.SplitSeq(text, "\n") {
+		line = strings.Join(strings.Fields(line), " ")
+		if line == "" {
+			// Only a blank line between two text lines survives, so one at the
+			// start is never pending and one at the end is never written.
+			blankPending = len(lines) > 0
+			continue
+		}
+		if blankPending {
+			lines = append(lines, "")
+			blankPending = false
+		}
+		lines = append(lines, line)
+	}
+	// The joined lines never end in a space or line break, but a clamp can cut
+	// at one; trimming it keeps the stored value normalizing to itself, so an
+	// unchanged re-save does not count as an edit.
+	return strings.TrimRight(clampNoteRunes(strings.Join(lines, "\n")), " \n")
 }
 
 // stripNoteControls removes every non-whitespace control character from text
@@ -345,10 +381,10 @@ func isNoteControl(r rune) bool {
 	return unicode.IsControl(r) && !unicode.IsSpace(r)
 }
 
-// setAgentNote normalizes and clamps the agent whiteboard and publishes the
-// resulting committed notes cut. It is the direct-commit entry point; the
-// serialized notes mutators write through stageAgentNote instead, because their
-// value is not committed until their metadata save lands.
+// setAgentNote normalizes (keeping lines) and clamps the agent whiteboard and
+// publishes the resulting committed notes cut. It is the direct-commit entry
+// point; the serialized notes mutators write through stageAgentNote instead,
+// because their value is not committed until their metadata save lands.
 func (s *Session) setAgentNote(note string) (stored string, changed bool) {
 	stored, changed = s.stageAgentNote(note)
 	s.publishStandaloneNotesCommit()
@@ -358,7 +394,7 @@ func (s *Session) setAgentNote(note string) (stored string, changed bool) {
 // stageAgentNote is setAgentNote's live-store write alone: no publication, for
 // a mutator that owns the commit point and already holds notesUpdateMu.
 func (s *Session) stageAgentNote(note string) (stored string, changed bool) {
-	normalized := normalizeNote(note)
+	normalized := normalizeWhiteboard(note)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.agentNote == normalized {
@@ -393,7 +429,7 @@ func (s *Session) stageSessionURLAdd(rawURL, label string) (schema.SessionURL, e
 	if err != nil {
 		return schema.SessionURL{}, err
 	}
-	clampedLabel := normalizeNote(label)
+	clampedLabel := normalizeLabel(label)
 	if utf8.RuneCountInString(clampedLabel) > sessionLabelMaxLen {
 		return schema.SessionURL{}, fmt.Errorf("urls/add: label exceeds %d characters", sessionLabelMaxLen)
 	}

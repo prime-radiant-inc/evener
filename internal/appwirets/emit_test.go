@@ -81,6 +81,19 @@ func TestEmitInterface_PointerNullVsOptional(t *testing.T) {
 	}
 }
 
+// A nil slice can mean unavailable, distinct from an authoritative empty list.
+func TestEmitInterface_NullableSlice(t *testing.T) {
+	type Sample struct {
+		Data     []string `json:"data" appwire:"nullable"`
+		Optional []string `json:"optional,omitempty" appwire:"nullable"`
+	}
+	got := emitInterface("Sample", reflect.TypeFor[Sample]())
+	want := "export interface Sample {\n  data: string[] | null;\n  optional?: string[];\n}\n"
+	if got != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
 func TestEmitInterface_NumericKinds(t *testing.T) {
 	type Sample struct {
 		I   int     `json:"i"`
@@ -1025,5 +1038,86 @@ func TestSessionActivityEnumTypes(t *testing.T) {
 		if got := typeExpr(tc.typ); got != tc.name {
 			t.Errorf("typeExpr(%s) = %q, want named union %q", tc.typ, got, tc.name)
 		}
+	}
+}
+
+func TestHostMutationDiscriminatorLiterals(t *testing.T) {
+	for _, tc := range []struct {
+		arm     any
+		outcome appwire.HostMutationOutcome
+	}{
+		{appwire.HostMutationCommitted{}, appwire.HostMutationOutcomeCommitted},
+		{appwire.HostMutationCommittedRemoved{}, appwire.HostMutationOutcomeCommitted},
+		{appwire.HostMutationTeardownFailure{}, appwire.HostMutationOutcomeTeardownFailure},
+		{appwire.HostMutationTeardownFailureRemoved{}, appwire.HostMutationOutcomeTeardownFailure},
+		{appwire.HostMutationCollisionDropped{}, appwire.HostMutationOutcomeCollisionDropped},
+		{appwire.HostMutationAmbiguous{}, appwire.HostMutationOutcomeAmbiguous},
+	} {
+		typ := reflect.TypeOf(tc.arm)
+		t.Run(typ.Name(), func(t *testing.T) {
+			got := emitInterface(typ.Name(), typ)
+			want := fmt.Sprintf("outcome: %q;", tc.outcome)
+			if !strings.Contains(got, want) {
+				t.Fatalf("generated arm lacks %s:\n%s", want, got)
+			}
+		})
+	}
+}
+
+func TestHostPlanAndTeardownDiscriminatorLiterals(t *testing.T) {
+	for _, tc := range []struct {
+		arm      any
+		outcome  string
+		hostKind string
+	}{
+		{appwire.HostPlanPlanned{}, appwire.HostPlanOutcomePlanned, ""},
+		{appwire.HostPlanNoToken{}, appwire.HostPlanOutcomeNoToken, ""},
+		{appwire.HostTeardownRetryCompleteLive{}, appwire.HostTeardownOutcomeComplete, appwire.HostKindLive},
+		{appwire.HostTeardownRetryCompleteRemoved{}, appwire.HostTeardownOutcomeComplete, appwire.HostKindRemoved},
+		{appwire.HostTeardownRetryClearedLive{}, appwire.HostTeardownOutcomeCleared, appwire.HostKindLive},
+		{appwire.HostTeardownRetryClearedRemoved{}, appwire.HostTeardownOutcomeCleared, appwire.HostKindRemoved},
+		{appwire.HostTeardownRetryFailedLive{}, appwire.HostTeardownOutcomeFailed, appwire.HostKindLive},
+		{appwire.HostTeardownRetryFailedRemoved{}, appwire.HostTeardownOutcomeFailed, appwire.HostKindRemoved},
+		{appwire.HostTeardownRecoverResult{}, appwire.HostTeardownOutcomeRecovered, ""},
+	} {
+		typ := reflect.TypeOf(tc.arm)
+		t.Run(typ.Name(), func(t *testing.T) {
+			got := emitInterface(typ.Name(), typ)
+			want := fmt.Sprintf("outcome: %q;", tc.outcome)
+			if !strings.Contains(got, want) {
+				t.Fatalf("generated arm lacks %s:\n%s", want, got)
+			}
+			if tc.hostKind != "" {
+				want := fmt.Sprintf("hostKind: %q;", tc.hostKind)
+				if !strings.Contains(got, want) {
+					t.Fatalf("generated arm lacks %s:\n%s", want, got)
+				}
+			}
+		})
+	}
+}
+
+func TestEmitHostRequestMethodCatalog(t *testing.T) {
+	out := EmitCatalog()
+	names := runtimeNameList(t, out, "HOST_REQUEST_METHODS")
+	if want := appwire.HostRequestMethodNames(); !reflect.DeepEqual(names, want) {
+		t.Fatalf("SDK forwarding methods = %v, want Go catalog %v", names, want)
+	}
+	allowed := map[string]bool{}
+	for _, name := range names {
+		allowed[name] = true
+	}
+	for _, name := range []string{appwire.MethodModelList, appwire.MethodEvenerLaunchResolve, appwire.MethodEvenerAuthApiKeyConditionalSet} {
+		if !allowed[name] {
+			t.Errorf("forwarded method %q missing from SDK catalog", name)
+		}
+	}
+	for _, name := range []string{appwire.MethodEvenerHostAdd, appwire.MethodEvenerHostAttach, appwire.MethodEvenerInstanceSetModelDisabled, "evener/instance/deleteAll"} {
+		if allowed[name] {
+			t.Errorf("controller-only or unsupported method %q included in SDK catalog", name)
+		}
+	}
+	if !strings.Contains(out, "export type HostRequestMethod = (typeof HOST_REQUEST_METHODS)[number];\n") {
+		t.Error("HostRequestMethod is not derived from the runtime catalog")
 	}
 }

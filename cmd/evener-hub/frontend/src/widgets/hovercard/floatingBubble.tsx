@@ -14,6 +14,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { computeTooltipPosition, type TooltipPosition, TRIGGER_GAP } from "../tooltip/computePosition";
+import { computeSideAnchorPosition, type SideAnchor } from "./computePosition";
 import { useFloatingLabel } from "./useFloatingLabel";
 
 // The scaffold both floating labels sit on: the tooltip and the hover card
@@ -57,7 +58,10 @@ export interface FloatingBubble {
 }
 
 /** The lifecycle, placement and association of one floating label. */
-export function useFloatingBubble(focusTarget?: () => HTMLElement | null): FloatingBubble {
+export function useFloatingBubble(
+  focusTarget?: () => HTMLElement | null,
+  sideAnchor?: () => SideAnchor | null,
+): FloatingBubble {
   const bubbleRef = useRef<HTMLElement | null>(null);
   const [position, setPosition] = useState<TooltipPosition | null>(null);
   const bubbleID = useId();
@@ -74,19 +78,22 @@ export function useFloatingBubble(focusTarget?: () => HTMLElement | null): Float
     const wrapperEl = wrapperRef.current;
     const bubbleEl = bubbleRef.current;
     if (!wrapperEl || !bubbleEl) return;
+    const anchor = sideAnchor?.();
+    const size = { width: bubbleEl.offsetWidth, height: bubbleEl.offsetHeight };
+    const viewport = { width: window.innerWidth, height: window.innerHeight };
     setPosition(
-      computeTooltipPosition(
-        wrapperEl.getBoundingClientRect(),
-        { width: bubbleEl.offsetWidth, height: bubbleEl.offsetHeight },
-        { width: window.innerWidth, height: window.innerHeight },
-      ),
+      anchor
+        ? computeSideAnchorPosition(anchor, size, viewport)
+        : computeTooltipPosition(wrapperEl.getBoundingClientRect(), size, viewport),
     );
-  }, []);
+  }, [sideAnchor]);
 
   const { visible, wrapperRef, triggerProps, showImmediately, dismiss } = useFloatingLabel({
     measure,
     observe: bubbleRef,
     focusTarget,
+    // A side anchor follows its owning row as the sidebar is resized in place.
+    observeAnchor: sideAnchor ? focusTarget : undefined,
   });
 
   useLayoutEffect(() => {

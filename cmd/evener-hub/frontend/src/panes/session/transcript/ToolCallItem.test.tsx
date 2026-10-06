@@ -1,9 +1,12 @@
 // @vitest-environment jsdom
 
-import { makeTranscriptDisplayConfig, type TranscriptDisplayConfigV1 } from "@evener/appwire-client";
+import type { ThreadItem } from "@evener/appwire-client";
+import { hydrateThread, makeTranscriptDisplayConfig, type TranscriptDisplayConfigV1 } from "@evener/appwire-client";
+import { wireThread } from "@evener/appwire-client/testing/notifications";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import type { ReactElement } from "react";
 import { afterEach, expect, test, vi } from "vitest";
+import memoryCalls from "../../../../../../../agent/testdata/toolwire/memory.json?raw";
 import { makeTranscriptPreviewModel } from "../../../transcriptDisplay/previewFixture";
 import {
   createTranscriptRenderContext,
@@ -44,6 +47,38 @@ const turn: TurnModel = { id: "turn_1", status: "inProgress", items: [] };
 function item(overrides: Partial<ItemModel> = {}): ItemModel {
   return { id: "item_1", turnId: "turn_1", type: "commandExecution", text: "", ...overrides };
 }
+
+test.each(["memory_read", "memory_search"])(
+  "renders real %s output and its artifact route through the generic body",
+  (name) => {
+    const fixture = JSON.parse(memoryCalls) as { cwd: string; items: ThreadItem[] };
+    const model = hydrateThread(
+      {
+        thread: wireThread("ref-memory", {
+          cwd: fixture.cwd,
+          turns: [{ id: "turn_1", itemsView: "full", status: "completed", items: fixture.items }],
+        }),
+      },
+      "ref-memory",
+      0,
+    );
+    const recordedTurn = model.turns[0];
+    const step = recordedTurn?.items.find((entry) => entry.callId === `call_${name}`);
+    if (!step || !recordedTurn) throw new Error(`missing recorded ${name}`);
+    const ref = step.output?.match(/artifact:[a-zA-Z0-9]+/)?.[0];
+    expect(ref).toBeDefined();
+    renderAtLevel(
+      makeTranscriptDisplayConfig({ kind: "preset", level: "full" }),
+      "test:memory",
+      <ToolCallItem item={step} turn={recordedTurn} live={false} />,
+    );
+    const body = screen.getByTestId("tool-call-body");
+    expect(body.textContent).toContain("opaque-delivery-040-");
+    expect(body.textContent).toContain(ref);
+    fireEvent.click(within(body).getByRole("button", { name: /Show \d+ earlier lines/ }));
+    expect(body.textContent).toContain("opaque-delivery-001-");
+  },
+);
 
 test.each(["running", "completed"])(
   "a historical %s receipt is not current lifecycle without an owner projection",

@@ -107,27 +107,8 @@ func (s *Session) nextJobTreeRevision(kind events.EventKind) (string, uint64, bo
 // history, registered tools, context-management state, subagents, plugins, MCP
 // connections, and persistence settings.
 type Session struct {
-	id  string
-	cfg SessionConfig
-	// retainedScratch, when non-nil, is the root-owned pool of scratch handles
-	// reacquired by prepareRetainedScratch before root/child initialization
-	// launches work. It holds historical or not-yet-reconstructed handles until
-	// adoption or release. It is an atomic pointer (a single swapped reference,
-	// never held across work), so it is not a sampling-relevant mutex.
-	retainedScratch atomic.Pointer[retainedScratchPool]
-	// retainedScratchSealed is set once the terminal scratch release begins,
-	// before the pool is detached: a refresh pass still mid-install at that
-	// point must decline its seed publish and hand its reacquired leases back
-	// rather than leave a pool nothing will ever sweep. It only ever
-	// transitions false→true (a session is sealed at most once) and is read
-	// after the publish CAS, so a plain atomic Bool is sufficient.
-	retainedScratchSealed atomic.Bool
-	// scratchRetentionErr records the first sticky scratch-retention
-	// publication failure this session observed after an environment swap: the
-	// durable manifest diverged from the live environment and no later swap
-	// repaired it, so preparation must fail closed rather than trust the
-	// manifest. Guarded by mu.
-	scratchRetentionErr    error
+	id                     string
+	cfg                    SessionConfig
 	delegateController     *delegateTreeController
 	delegateRootSessionID  string
 	owningDelegateID       string
@@ -269,6 +250,20 @@ type Session struct {
 	// from restored history on resume alongside notesLastProjected.
 	// Guarded by mu.
 	notesEverProjected bool
+
+	// Memory environments are independent of workspace policy and cwd.
+	memoryMu            sync.Mutex
+	memoryEnvs          map[string]*execenv.LocalExecutionEnvironment
+	memoryRoots         map[string]*execenv.ConfinedFileRoot
+	memoryEnvUsers      map[*execenv.LocalExecutionEnvironment]int
+	memoryEnvFlights    map[string]*memoryEnvironmentFlight
+	memoryClosed        bool
+	memoryLastProjected map[string]memoryProjection
+	memoryEverProjected map[string]bool
+	memoryIndexFlights  map[string]*memoryIndexFlight
+	// The sole automatic reader per scope owns cleanup until it returns.
+	// Admission and retirement share memoryMu, including the pre-read window.
+	memoryIndexReaders map[string]*execenv.LocalExecutionEnvironment
 
 	// --- Synchronization / lock discipline ---
 	//
@@ -742,6 +737,11 @@ type Session struct {
 	// in s.fork. Empty on the fresh-session path. Read without a lock, like cfg —
 	// it is set once before the session goes live and never mutated after.
 	restoredMetaParentSessionID string
+	// restoredScratchTreeRoot is the root whose scratch tree a delegate resumed
+	// on its own keeps its scratch in (restoredScratchTreeRoot in
+	// session_init.go). Set once during restore and read like cfg; empty
+	// otherwise.
+	restoredScratchTreeRoot string
 
 	// pendingJobNotifs is the durable per-parent queue of pending job-completion
 	// notifications. It is drop-safe and drained later by a notification turn.
@@ -939,7 +939,7 @@ type Session struct {
 	pinnedNote    string // note awaiting handoff at the next compaction (agent- or elicitor-authored); injected verbatim then cleared
 	pinnedNoteGen uint64 // bumped on every pinnedNote set/clear/claim; lets a fold's publication claim consume exactly the note it captured, never a newer one pinned mid-fold. Guarded by mu.
 	// shared-notes state (human/agent whiteboards plus URL list)
-	agentNote   string              // agent's one-paragraph session whiteboard; persisted via Meta().AgentNote. Guarded by mu.
+	agentNote   string              // agent's session whiteboard (a short capsule in lines); persisted via Meta().AgentNote. Guarded by mu.
 	sessionURLs []schema.SessionURL // agent-curated session URL list; persisted via Meta().SessionURLs. Guarded by mu.
 	// notesCommitted is the last committed notes cut — human note, agent note,
 	// URL list, and ever-projected flag installed together. Readers (Meta, the

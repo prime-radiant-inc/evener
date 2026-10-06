@@ -22,6 +22,7 @@ import type {
   TurnStartResponse,
 } from "@evener/appwire-client";
 import {
+  AppwireClient,
   acquireThreadSubscription,
   applyNotification,
   ClientNotReadyError,
@@ -33,6 +34,7 @@ import {
   WireError,
 } from "@evener/appwire-client";
 import { FakeClient, type RequestHandler } from "@evener/appwire-client/testing/fakeClient";
+import { JobOutputPeer } from "@evener/appwire-client/testing/jobOutputPeer";
 import { nextMacrotask } from "@evener/appwire-client/testing/macrotask";
 import { mulberry32 } from "@evener/appwire-client/testing/tokenFlood";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
@@ -6495,11 +6497,7 @@ test("reset retires a ready scan before it can pin refs in the next runtime", as
 });
 
 describe("useThreadsStore.listTasks", () => {
-  // Wire-true shape: TaskListResponse.Data is `any` on the catalog
-  // (appwire/types.go:896-898) - server/server.go's SetTasksFunc doc
-  // comment says the registered function "should return a JSON-serializable
-  // slice (typically []task.Task)"; agent/task/task_store.go:54-74 is that
-  // struct. This fixture mirrors its real JSON field names verbatim.
+  // Fixtures use the task row's persisted snake_case wire fields.
   const TASKS_DATA = [
     { id: 1, type: "implement", description: "Wire up listModels/listTasks", prompt: "…", status: "done" },
     {
@@ -6573,9 +6571,8 @@ describe("useThreadsStore.listTasks", () => {
 });
 
 describe("useThreadsStore.listJobs / jobOutput", () => {
-  // Wire-true shape: JobsListResponse.Data / JobsOutputResponse.Data are both
-  // `any` in appwire/types.go. The replacement jobs-list payload is the
-  // recursive activity tree, while job output stays JobOutputTail. These
+  // JobsListResponse.Data is the legacy untyped recursive activity tree;
+  // JobsOutputResponse.Data is the concrete JobOutputTail. These
   // fixtures mirror the current wire JSON field names verbatim.
   const JOBS_DATA = {
     revision: 5,
@@ -6633,7 +6630,14 @@ describe("useThreadsStore.listJobs / jobOutput", () => {
       branch: {},
     },
   };
-  const OUTPUT_DATA = { tail: "6789", totalBytes: 10, retainedStart: 6, truncated: true };
+  const OUTPUT_DATA = {
+    offsetBytes: 6,
+    bytesReturned: 4,
+    totalBytes: 10,
+    retainedStartBytes: 0,
+    encoding: "utf8",
+    data: "6789",
+  };
   // The single-job read carries the activity-job shape verbatim (appwire/types.go's
   // JobActivityJob), including the untruncated command.
   const JOB_DATA = {
@@ -6688,7 +6692,7 @@ describe("useThreadsStore.listJobs / jobOutput", () => {
     expect(result).toEqual(OUTPUT_DATA);
   });
 
-  test("jobOutput passes beforeBytes and maxBytes through only when positive", async () => {
+  test("jobOutput preserves an explicit zero selector and omits a default page limit", async () => {
     const fake = connectFakeClient();
     fake.on("evener/jobs/output", () => ({ data: OUTPUT_DATA }));
 
@@ -6698,7 +6702,7 @@ describe("useThreadsStore.listJobs / jobOutput", () => {
     const calls = fake.calls.filter((c) => c.method === "evener/jobs/output");
     expect(calls).toHaveLength(2);
     expect(calls[0]?.params).toEqual({ ref: "ref_a", jobId: "job_1", beforeBytes: 64, maxBytes: 256 });
-    expect(calls[1]?.params).toEqual({ ref: "ref_a", jobId: "job_1" });
+    expect(calls[1]?.params).toEqual({ ref: "ref_a", jobId: "job_1", beforeBytes: 0 });
   });
 
   test("jobGet sends evener/jobs/get with {ref, jobId} and returns the raw data field", async () => {
@@ -15757,4 +15761,31 @@ describe("pending shared membership acquisition", () => {
     expect(threadsStore.getState().threads.get("ref_a")?.turns[0]?.id).toBe("new");
     threadsStore.getState().releaseThread("ref_a");
   });
+});
+
+test.each(["output", "metadata"] as const)("fences obsolete job %s after readiness returns", async (kind) => {
+  const peer = new JobOutputPeer();
+  const client = new AppwireClient({ url: "ws://job-output.test/rpc", socketFactory: () => peer });
+  connectionStore.getState().connect(client);
+  const connecting = client.connect();
+  let current = true;
+  const pending =
+    kind === "output"
+      ? threadsStore.getState().jobOutput("local:session_output", "job_output", 0, 1, () => current)
+      : threadsStore.getState().jobGet("local:session_output", "job_output", () => current);
+  const method = kind === "output" ? "evener/jobs/output" : "evener/jobs/get";
+  // A wrongly dispatched read gets a real wire response, so RED is a fulfilled
+  // obsolete call rather than a fixture timeout.
+  void peer.request(method).then((request) => peer.reply(request, {}));
+  current = false;
+  try {
+    const result = expect(pending).rejects.toThrow("job read is no longer current");
+    peer.open();
+    await connecting;
+    await result;
+    expect(peer.requests(method)).toEqual([]);
+  } finally {
+    client.close();
+    connectionStore.setState({ client: null, state: "idle" });
+  }
 });

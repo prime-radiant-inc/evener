@@ -2751,6 +2751,18 @@ func TestInstances_EndpointFingerprintRotatesAKeyOthersCanRead(t *testing.T) {
 	if err := os.WriteFile(keyPath, []byte(exposed), 0o644); err != nil {
 		t.Fatalf("WriteFile(%s): %v", endpointFingerprintKeyFile, err)
 	}
+	// Create already wrote this file 0600. WriteFile preserves an existing
+	// file's permissions, so expose it explicitly before testing rotation.
+	if err := os.Chmod(keyPath, 0o644); err != nil {
+		t.Fatalf("Chmod(%s): %v", endpointFingerprintKeyFile, err)
+	}
+	exposedInfo, err := os.Stat(keyPath)
+	if err != nil {
+		t.Fatalf("Stat exposed %s: %v", endpointFingerprintKeyFile, err)
+	}
+	if got := exposedInfo.Mode().Perm(); got != 0o644 {
+		t.Fatalf("fixture key mode = %o, want exposed 0644 before the read", got)
+	}
 
 	if got := entry(t, f.ctl.List(), "work").EndpointFingerprint; got == "" {
 		t.Fatal("a key file the hub rotates should leave it serving fingerprints")

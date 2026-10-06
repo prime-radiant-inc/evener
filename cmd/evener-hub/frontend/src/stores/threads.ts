@@ -1,3 +1,4 @@
+import type { ComposerMention } from "@evener/appwire-client";
 // threads.ts tracks the ThreadModel for every ref currently open in a pane,
 // refcounted across panes sharing the same ref, and routes live wire
 // notifications into the reducer for whichever tracked model(s) they target.
@@ -12,8 +13,11 @@ import type {
   AppwireClientLike,
   CachedSessionRecord,
   GoalSetResponse,
+  JobActivityJob,
+  JobOutputPage,
   ModelListResponse,
   SnapshotIdentity,
+  TaskListResponse,
   ThreadClearResponse,
   ThreadForkResponse,
   ThreadItemPosition,
@@ -133,6 +137,7 @@ export class ConflictError extends Error {
 export interface PromoteDisplayInput {
   text: string;
   skillNames?: readonly string[];
+  commandNames?: readonly string[];
 }
 
 interface CacheLifetime {
@@ -226,9 +231,30 @@ export interface ThreadsStoreState {
   // request. It is gated: a non-empty selection requires the target's
   // advertised capabilities.skillInput to be true, and a refusal throws
   // before anything durable is written (composerMutationIntent's own gate).
-  send(ref: string, text: string, attachments?: InputAttachment[], skillNames?: readonly string[]): Promise<void>;
-  steer(ref: string, text: string, attachments?: InputAttachment[], skillNames?: readonly string[]): Promise<void>;
-  queue(ref: string, text: string, attachments?: InputAttachment[], skillNames?: readonly string[]): Promise<void>;
+  send(
+    ref: string,
+    text: string,
+    attachments?: InputAttachment[],
+    skillNames?: readonly string[],
+    commandNames?: readonly string[],
+    mentions?: readonly ComposerMention[],
+  ): Promise<void>;
+  steer(
+    ref: string,
+    text: string,
+    attachments?: InputAttachment[],
+    skillNames?: readonly string[],
+    commandNames?: readonly string[],
+    mentions?: readonly ComposerMention[],
+  ): Promise<void>;
+  queue(
+    ref: string,
+    text: string,
+    attachments?: InputAttachment[],
+    skillNames?: readonly string[],
+    commandNames?: readonly string[],
+    mentions?: readonly ComposerMention[],
+  ): Promise<void>;
   interrupt(ref: string): Promise<void>;
   // drainAsSteer atomically appends the composer's current text/attachments
   // (if any) to the input queue, then drains the whole queue into the
@@ -241,6 +267,8 @@ export interface ThreadsStoreState {
     text: string,
     attachments?: InputAttachment[],
     skillNames?: readonly string[],
+    commandNames?: readonly string[],
+    mentions?: readonly ComposerMention[],
   ): Promise<void>;
   // Removes one queued message by index and injects it as steering into the
   // in-flight turn (issue #22). expectedEntryId, when non-empty, must match
@@ -310,30 +338,28 @@ export interface ThreadsStoreState {
   // force a fresh request. A failed request never poisons the cache with a
   // rejected promise - the next call (with or without refresh) retries.
   listModels(refresh?: boolean): Promise<ModelListResponse>;
-  // Lists the session's tasks (evener/tasks/list). TaskListResponse.Data is
-  // `any` on the wire catalog (appwire/types.go:896-898) - this returns
-  // that raw field verbatim, never wrapped, so the store stays shape-
-  // agnostic; the caller owns interpreting it (the chrome stream's own
-  // parseTaskListData). A source that omits the capability rejects this call
-  // (appwire.Unavailable, "actionUnavailable") - that typed error
-  // propagates unchanged, same as every other read-only action here; the
-  // caller renders the empty/unsupported state for it.
-  listTasks(ref: string): Promise<unknown>;
+  // Lists the session's task rows. Null is unavailable; [] is an authoritative
+  // empty list. The caller adapts the wire fields with parseTaskListData.
+  listTasks(ref: string): Promise<TaskListResponse["data"]>;
   // Explicit retained tree reader for callers of evener/jobs/list. Browser
   // activity views use SessionActivityStore; this method returns the wire's
   // untyped data field unchanged and owns no background refresh or retry.
   listJobs(ref: string, continuation?: string): Promise<unknown>;
-  // beforeBytes > 0 pages backwards: the window ending at that lifetime
-  // output offset instead of the tail (appwire.JobsOutputParams.BeforeBytes).
+  // An explicit beforeBytes pages backwards, ending at that lifetime byte
+  // offset. Omission selects the latest page; explicit zero stays zero.
   // maxBytes > 0 bounds the window (appwire.JobsOutputParams.MaxBytes) - the
   // activity strip's preview uses it to fetch a couple hundred bytes instead
   // of the daemon's default tail.
-  jobOutput(ref: string, jobId: string, beforeBytes?: number, maxBytes?: number): Promise<unknown>;
+  jobOutput(
+    ref: string,
+    jobId: string,
+    beforeBytes?: number,
+    maxBytes?: number,
+    isCurrent?: () => boolean,
+  ): Promise<JobOutputPage>;
   // Reads one job's metadata (evener/jobs/get): the activity-job shape,
-  // including the untruncated command. Its Data field is likewise `any` on the
-  // wire catalog and returned raw; the caller validates it with the package's
-  // parseActivityJob.
-  jobGet(ref: string, jobId: string): Promise<unknown>;
+  // including the untruncated command.
+  jobGet(ref: string, jobId: string, isCurrent?: () => boolean): Promise<JobActivityJob>;
   // Answers one evener/sandbox/escalation/requested via evener/sandbox/
   // escalation/resolve. On success, removes the escalation from whichever
   // of threads/watchedThreads currently track `ref` (both, if both do -
@@ -1754,14 +1780,17 @@ export async function updateRecoveryMutation(
   text: string,
   attachments: InputAttachment[],
   skillNames?: readonly string[],
+  commandNames?: readonly string[],
+  mentions?: readonly ComposerMention[],
 ): Promise<boolean> {
   const runtime = requireMutationRuntime();
   await runtime.start;
   const record = await runtime.storage.updateRecoveryInput(
     clientMutationId,
-    buildInput(text, attachments, skillNames),
+    buildInput(text, attachments, skillNames, commandNames, mentions),
     durableAttachments(attachments),
     text,
+    mentions,
   );
   if (!record) return false;
   notifyMutationPersistence([targetRef]);
@@ -1794,10 +1823,12 @@ export async function resendRecoveryMutation(
   text: string,
   attachments: InputAttachment[],
   skillNames?: readonly string[],
+  commandNames?: readonly string[],
+  mentions?: readonly ComposerMention[],
 ): Promise<MutationOutboxRecord | undefined> {
   const runtime = requireMutationRuntime();
   await runtime.start;
-  const intent = composerMutationIntent(targetRef, route, text, attachments, skillNames);
+  const intent = composerMutationIntent(targetRef, route, text, attachments, skillNames, commandNames, mentions);
   // Registered around the write: the resent row is undelivered work, and a
   // fallback send must see it before the async refresh can.
   const record = await trackOutboxWrite(
@@ -2186,6 +2217,8 @@ function composerMutationIntent(
   text: string,
   attachments?: InputAttachment[],
   skillNames?: readonly string[],
+  commandNames?: readonly string[],
+  mentions?: readonly ComposerMention[],
 ): MutationIntent {
   const model = trackedThreadModel(ref);
   // The store-side half of the skillInput gate (Task 12 gates the hub's
@@ -2199,11 +2232,14 @@ function composerMutationIntent(
   if (canonicalSkillNames(skillNames).length > 0 && model?.capabilities?.skillInput !== true) {
     throw new Error("skill selections are not supported on this target");
   }
+  if (canonicalSkillNames(commandNames).length > 0 && model?.capabilities?.commandInput !== true) {
+    throw new Error("command selections are not supported on this target");
+  }
   // Translated HERE, not inside buildInput: this is the submit boundary. The
   // untranslated text rides along as composerText so a record that fails and
   // lands in recovery can be restored into a composer with its marker anchors
   // intact - the tiles remove those anchors, and prose is not one.
-  const input = buildComposerInput(text, attachments, skillNames);
+  const input = buildComposerInput(text, attachments, skillNames, commandNames, mentions);
   const expectedInstanceId = threadInstanceID(model);
   const base = {
     targetRef: ref,
@@ -2214,6 +2250,7 @@ function composerMutationIntent(
     instanceId: model?.instanceId,
     attachments: durableAttachments(attachments),
     composerText: text,
+    composerMentions: mentions,
   };
   if (route === "send") {
     return {
@@ -4810,21 +4847,27 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     putThreadModel(ref, mergeOlderItemPage(current, resp));
   },
 
-  async send(ref, text, attachments, skillNames) {
+  async send(ref, text, attachments, skillNames, commandNames, mentions) {
     // The recovery fence is enforced at the shared admission every durable
     // action funnels through (enqueueMutationIntent's central check), so the
     // alternate send paths - the palette's slash fallthrough, the ask dock's
     // batch send, a failed turn's Retry - hear the same refusal the surfaces
     // render, with nothing parked behind it.
-    await enqueueMutationIntent(composerMutationIntent(ref, "send", text, attachments, skillNames));
+    await enqueueMutationIntent(
+      composerMutationIntent(ref, "send", text, attachments, skillNames, commandNames, mentions),
+    );
   },
 
-  async steer(ref, text, attachments, skillNames) {
-    await enqueueMutationIntent(composerMutationIntent(ref, "steer", text, attachments, skillNames));
+  async steer(ref, text, attachments, skillNames, commandNames, mentions) {
+    await enqueueMutationIntent(
+      composerMutationIntent(ref, "steer", text, attachments, skillNames, commandNames, mentions),
+    );
   },
 
-  async queue(ref, text, attachments, skillNames) {
-    await enqueueMutationIntent(composerMutationIntent(ref, "queue", text, attachments, skillNames));
+  async queue(ref, text, attachments, skillNames, commandNames, mentions) {
+    await enqueueMutationIntent(
+      composerMutationIntent(ref, "queue", text, attachments, skillNames, commandNames, mentions),
+    );
   },
 
   async interrupt(ref) {
@@ -4848,8 +4891,10 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     );
   },
 
-  async drainAsSteer(ref, text, attachments, skillNames) {
-    await enqueueMutationIntent(composerMutationIntent(ref, "drain", text, attachments, skillNames));
+  async drainAsSteer(ref, text, attachments, skillNames, commandNames, mentions) {
+    await enqueueMutationIntent(
+      composerMutationIntent(ref, "drain", text, attachments, skillNames, commandNames, mentions),
+    );
   },
 
   async promoteQueuedAsSteer(ref, index, expectedEntryId, display) {
@@ -4865,6 +4910,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
         input: [
           ...(display.text !== "" ? [{ type: "text", text: display.text }] : []),
           ...(display.skillNames ?? []).map((name) => ({ type: "skill", name })),
+          ...(display.commandNames ?? []).map((name) => ({ type: "command", name })),
         ],
       },
     );
@@ -5135,25 +5181,27 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     return resp.data;
   },
 
-  async jobOutput(ref, jobId, beforeBytes, maxBytes) {
+  async jobOutput(ref, jobId, beforeBytes, maxBytes, isCurrent) {
     // Read-only, so it waits out a reconnect (issue #195's RCA) instead of
     // failing with AppwireClient's synchronous "cannot call ... while
     // reconnecting" rejection - see requireReadyClient's own comment.
     const client = await requireReadyClient();
+    if (isCurrent !== undefined && !isCurrent()) throw new Error("job read is no longer current");
     const resp = await client.request("evener/jobs/output", {
       ref,
       jobId,
-      ...(beforeBytes !== undefined && beforeBytes > 0 ? { beforeBytes } : {}),
+      ...(beforeBytes !== undefined ? { beforeBytes } : {}),
       ...(maxBytes !== undefined && maxBytes > 0 ? { maxBytes } : {}),
     });
     return resp.data;
   },
 
-  async jobGet(ref, jobId) {
+  async jobGet(ref, jobId, isCurrent) {
     // Read-only, so it waits out a reconnect (issue #195's RCA) instead of
     // failing with AppwireClient's synchronous "cannot call ... while
     // reconnecting" rejection - see requireReadyClient's own comment.
     const client = await requireReadyClient();
+    if (isCurrent !== undefined && !isCurrent()) throw new Error("job read is no longer current");
     const resp = await client.request("evener/jobs/get", { ref, jobId });
     return resp.data;
   },

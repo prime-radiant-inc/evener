@@ -312,6 +312,7 @@ const LOCATION_KEYS = valueRecordKeys<Omit<NavigationSessionLocation, "session">
   ref: "required",
   top_level_ref: "required",
   top_level: "required",
+  catalog: "optional",
   project_key: "optional",
   tier: "optional",
   pin_section_id: "optional",
@@ -662,6 +663,7 @@ function validateResourceMetadata(metadata: unknown, key: ResourceKey, versionVa
       metadata.ref === key.ref &&
       identity(metadata.top_level_ref) &&
       bool(metadata.top_level) &&
+      optional(metadata.catalog, (item) => identity(item)) &&
       optional(metadata.project_key, (item) => identity(item)) &&
       optional(metadata.tier, (item) => identity(item)) &&
       optional(metadata.pin_section_id, (item) => identity(item));

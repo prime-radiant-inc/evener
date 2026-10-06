@@ -61,7 +61,7 @@ export function ShellJobScreen({ route }: NativeStackScreenProps<Routes, "ShellJ
 	return (
 		<View style={{ flex: 1, backgroundColor: palette.page }}>
 			<AnsiOutputList
-				text={output.status === "read" ? output.tail.tail : ""}
+				text={output.status === "read" ? output.text : ""}
 				header={header}
 				contentContainerStyle={{ padding: 16, paddingBottom: 24 }}
 			/>
@@ -108,9 +108,9 @@ function OutputNote({ output }: { output: ShellJobOutput }) {
 	const note =
 		output.status === "failed"
 			? "The output couldn't be read right now."
-			: output.status === "read" && output.tail.tail === ""
+			: output.status === "read" && output.text === ""
 				? "No output."
-				: output.status === "read" && output.tail.retainedStart > 0
+				: output.status === "read" && output.page.offsetBytes > 0
 					? "Showing the end of the output."
 					: null;
 	if (note === null) return null;

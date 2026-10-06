@@ -6,7 +6,7 @@
 // the scratch is kept and named; a clean run removes it.
 //
 // Interrupts (HUP/INT/TERM, exiting 129/130/143): the gate TERMs every running
-// check, except those a gate names as never signalled, and waits for each, so an
+// check, except those whose launch contract requires waiting, and waits for each, so an
 // interruption waits for the cleanup each check owns. A second signal exits at
 // once, with that signal's status, without waiting any further; the scratch is
 // then kept and named for whatever the unfinished checks left.
@@ -21,7 +21,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -50,6 +49,10 @@ type guardSpec struct {
 	// killed. For a check run through npm, which exits on TERM without
 	// stopping its script's children.
 	group bool
+	// needsBuild fences this check when the production frontend build fails.
+	needsBuild bool
+	// waitOnInterrupt lets the check finish its own cleanup without a signal.
+	waitOnInterrupt bool
 }
 
 // guardDirs are the private roots every guard's scratch directory holds.
@@ -87,12 +90,6 @@ type webGate struct {
 	// under its private root.
 	checks []string
 	spec   func(check, root string) guardSpec
-	// needsBuild is the check that needs the production frontend build,
-	// which runs first when buildFrontend is set; a failed build fails only
-	// that check. Empty for a gate with no build.
-	needsBuild string
-	// unsignalled are the checks an interrupt waits for but never signals.
-	unsignalled []string
 
 	launcher guardLauncher
 	// now is the clock each check's wall time is read from; nil is time.Now.
@@ -124,13 +121,20 @@ func (g *webGate) run() (int, bool) {
 	if g.now == nil {
 		g.now = time.Now
 	}
+	specs := make([]guardSpec, len(g.checks))
+	for i, check := range g.checks {
+		specs[i] = g.spec(check, filepath.Join(g.scratch, check))
+	}
 	buildStatus := 0
-	buildLog := filepath.Join(g.scratch, g.needsBuild+"-build.log")
+	buildLog := filepath.Join(g.scratch, "frontend-build.log")
 	if g.buildFrontend {
-		// The skill guard serves the embedded dist, so a missing dist is built
-		// before any guard starts. A failed build fails only the skill guard:
-		// the other guards serve the frontend through their own Vite.
-		_, _ = fmt.Fprintf(g.stdout, "building the production frontend for web-%s…\n", g.needsBuild)
+		var needsBuild []string
+		for i, spec := range specs {
+			if spec.needsBuild {
+				needsBuild = append(needsBuild, g.checks[i])
+			}
+		}
+		_, _ = fmt.Fprintf(g.stdout, "building the production frontend for web-%s…\n", strings.Join(needsBuild, ", web-"))
 		built := make(chan int, 1)
 		ctx, stopBuild := context.WithCancel(context.Background())
 		defer stopBuild()
@@ -175,12 +179,12 @@ func (g *webGate) run() (int, bool) {
 		for running < g.slots && next < n {
 			index := next
 			next++
-			if g.checks[index] == g.needsBuild && buildStatus != 0 {
+			if specs[index].needsBuild && buildStatus != 0 {
 				statuses[index] = buildStatus
 				done++
 				continue
 			}
-			spec, log, err := g.prepare(index)
+			spec, log, err := g.prepare(index, specs[index])
 			// A signal that arrived while this guard was being prepared (the
 			// retirement guard's private Go home can take a moment) is handled
 			// before it starts: no guard starts after an interrupt.
@@ -189,7 +193,7 @@ func (g *webGate) run() (int, bool) {
 				if log != nil {
 					_ = log.Close()
 				}
-				return g.stop(sig, live, exits), true
+				return g.stop(sig, specs, live, exits), true
 			default:
 			}
 			var proc guardProcess
@@ -223,7 +227,7 @@ func (g *webGate) run() (int, bool) {
 			running--
 			done++
 		case sig := <-g.signals:
-			return g.stop(sig, live, exits), true
+			return g.stop(sig, specs, live, exits), true
 		}
 	}
 
@@ -233,7 +237,7 @@ func (g *webGate) run() (int, bool) {
 		case statuses[i] == 0:
 			_, _ = fmt.Fprintf(g.stdout, "PASS  web-%s (%.1fs)\n", guard, elapsed[i].Seconds())
 			continue
-		case guard == g.needsBuild && buildStatus != 0:
+		case specs[i].needsBuild && buildStatus != 0:
 			_, _ = fmt.Fprintf(g.stderr, "FAIL  web-%s (frontend build, exit %d)\n", guard, buildStatus)
 			g.replay(buildLog)
 		default:
@@ -263,7 +267,7 @@ func (g *webGate) run() (int, bool) {
 // home if it needs one, and returns how to start it. The log is returned
 // whenever it was created, error or not: a failed setup's diagnostics are in
 // it, for the verdict to replay.
-func (g *webGate) prepare(index int) (guardSpec, *os.File, error) {
+func (g *webGate) prepare(index int, spec guardSpec) (guardSpec, *os.File, error) {
 	guard := g.checks[index]
 	root := filepath.Join(g.scratch, guard)
 	for _, dir := range guardDirs {
@@ -275,7 +279,6 @@ func (g *webGate) prepare(index int) (guardSpec, *os.File, error) {
 	if err != nil {
 		return guardSpec{}, nil, err
 	}
-	spec := g.spec(guard, root)
 	if spec.privateGoHome {
 		env, err := g.launcher.PrivateGoHome(root, log)
 		if err != nil {
@@ -286,17 +289,17 @@ func (g *webGate) prepare(index int) (guardSpec, *os.File, error) {
 	return spec, log, nil
 }
 
-// stop handles an interrupt: TERM every running check the gate does not name
-// in unsignalled, then wait for them all, unless a second signal says to stop
+// stop handles an interrupt: TERM every running check whose launch contract
+// allows it, then wait for them all, unless a second signal says to stop
 // waiting; the gate then exits with that signal's status.
-func (g *webGate) stop(sig os.Signal, live []guardProcess, exits <-chan guardExit) int {
+func (g *webGate) stop(sig os.Signal, specs []guardSpec, live []guardProcess, exits <-chan guardExit) int {
 	waiting := 0
 	for i, proc := range live {
 		if proc == nil {
 			continue
 		}
 		waiting++
-		if !slices.Contains(g.unsignalled, g.checks[i]) {
+		if !specs[i].waitOnInterrupt {
 			proc.Terminate()
 		}
 	}

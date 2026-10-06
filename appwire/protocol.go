@@ -3,6 +3,7 @@ package appwire
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 )
 
@@ -105,25 +106,17 @@ type MethodSpec struct {
 // pipeline 08b §10). A name absent here has an ordinary single-struct result.
 var MethodResultArms = map[string][]any{
 	MethodEvenerHostPlan: {HostPlanPlanned{}, HostPlanNoToken{}},
-	// The mutation-result union (registry spec 08 §11): the four arms, each
-	// carried by its own named Go struct, with remove's arms spelled in the
-	// dedicated RemovedRow shape. add and update never return the removed
-	// variants and remove never returns the HostRow ones, but the union is one
-	// registration because the wire discriminates by `outcome` alone.
+	// Each method advertises only the arms it can return. Ambiguous belongs
+	// to a keyless add; remove's committed arms carry RemovedRow.
 	MethodEvenerHostAdd: {
-		HostMutationCommitted{}, HostMutationCommittedRemoved{},
-		HostMutationTeardownFailure{}, HostMutationTeardownFailureRemoved{},
+		HostMutationCommitted{}, HostMutationTeardownFailure{},
 		HostMutationCollisionDropped{}, HostMutationAmbiguous{},
 	},
 	MethodEvenerHostUpdate: {
-		HostMutationCommitted{}, HostMutationCommittedRemoved{},
-		HostMutationTeardownFailure{}, HostMutationTeardownFailureRemoved{},
-		HostMutationCollisionDropped{}, HostMutationAmbiguous{},
+		HostMutationCommitted{}, HostMutationTeardownFailure{}, HostMutationCollisionDropped{},
 	},
 	MethodEvenerHostRemove: {
-		HostMutationCommitted{}, HostMutationCommittedRemoved{},
-		HostMutationTeardownFailure{}, HostMutationTeardownFailureRemoved{},
-		HostMutationCollisionDropped{}, HostMutationAmbiguous{},
+		HostMutationCommittedRemoved{}, HostMutationTeardownFailureRemoved{}, HostMutationCollisionDropped{},
 	},
 	// teardown-retry's six declared arms: three outcomes crossed with both host
 	// shapes (registry spec 08 §11).
@@ -132,6 +125,27 @@ var MethodResultArms = map[string][]any{
 		HostTeardownRetryClearedLive{}, HostTeardownRetryClearedRemoved{},
 		HostTeardownRetryFailedLive{}, HostTeardownRetryFailedRemoved{},
 	},
+}
+
+// StringDiscriminators declares fixed JSON string fields on named result arms.
+// SDK generators use these literals for narrowing, while producers use the same
+// Go constants. Keys are JSON field names, not Go field names.
+var StringDiscriminators = map[reflect.Type]map[string]string{
+	reflect.TypeFor[HostPlanPlanned]():                    {"outcome": HostPlanOutcomePlanned},
+	reflect.TypeFor[HostPlanNoToken]():                    {"outcome": HostPlanOutcomeNoToken},
+	reflect.TypeFor[HostMutationCommitted]():              {"outcome": string(HostMutationOutcomeCommitted)},
+	reflect.TypeFor[HostMutationCommittedRemoved]():       {"outcome": string(HostMutationOutcomeCommitted)},
+	reflect.TypeFor[HostMutationTeardownFailure]():        {"outcome": string(HostMutationOutcomeTeardownFailure)},
+	reflect.TypeFor[HostMutationTeardownFailureRemoved](): {"outcome": string(HostMutationOutcomeTeardownFailure)},
+	reflect.TypeFor[HostMutationCollisionDropped]():       {"outcome": string(HostMutationOutcomeCollisionDropped)},
+	reflect.TypeFor[HostMutationAmbiguous]():              {"outcome": string(HostMutationOutcomeAmbiguous)},
+	reflect.TypeFor[HostTeardownRetryCompleteLive]():      {"outcome": HostTeardownOutcomeComplete, "hostKind": HostKindLive},
+	reflect.TypeFor[HostTeardownRetryCompleteRemoved]():   {"outcome": HostTeardownOutcomeComplete, "hostKind": HostKindRemoved},
+	reflect.TypeFor[HostTeardownRetryClearedLive]():       {"outcome": HostTeardownOutcomeCleared, "hostKind": HostKindLive},
+	reflect.TypeFor[HostTeardownRetryClearedRemoved]():    {"outcome": HostTeardownOutcomeCleared, "hostKind": HostKindRemoved},
+	reflect.TypeFor[HostTeardownRetryFailedLive]():        {"outcome": HostTeardownOutcomeFailed, "hostKind": HostKindLive},
+	reflect.TypeFor[HostTeardownRetryFailedRemoved]():     {"outcome": HostTeardownOutcomeFailed, "hostKind": HostKindRemoved},
+	reflect.TypeFor[HostTeardownRecoverResult]():          {"outcome": HostTeardownOutcomeRecovered},
 }
 
 // NotificationSpec is one server→client notification: the wire name, the Go
@@ -206,7 +220,7 @@ var Methods = []MethodSpec{
 	{MethodEvenerSessionPinUnpin, SessionPinUnpinParams{}, SessionPinUnpinResponse{}, ScopeHub, "Removes a top-level session's named pin assignment and returns its committed navigation receipt."},
 	{MethodEvenerSessionSeenSet, SessionSeenSetParams{}, SessionSeenSetResponse{}, ScopeHub, "Marks sessions seen through a turn end, or unread, on the hub (S4), and returns the committed navigation receipt. Live rows then carry unseen from the hub's marker."},
 	{MethodEvenerSearch, SearchParams{}, SearchResponse{}, ScopeHub, "Searches the hub's sessions: live and ended ones whose ID, title or prompt match, each once, and (S14) the sessions whose messages match, with each one's newest hits and snippets. A scope narrows every group; every result says whether it is archived."},
-	{MethodEvenerArchivedList, ArchivedListParams{}, ArchivedListResponse{}, ScopeHub, "Lists one project's archived sessions, newest first, a page at a time: the key names the project and the catalog is a hint (a project that moved between projects and archived projects is read from the one holding it now, and the response says which catalog it read), and the cursor continues from the previous page. The rows are navigation session summaries; the list has no revisions or invalidation."},
+	{MethodEvenerArchivedList, ArchivedListParams{}, ArchivedListResponse{}, ScopeHub, "Lists one project's archived sessions, newest first, a page at a time: the key names the project and the catalog is a hint (a project that moved between projects and archived projects is read from the one holding it now, and the response says which catalog it read), and the cursor continues from the previous page. The rows are navigation session summaries. Each response carries the whole list's revision; a first-page read naming the revision it holds is answered unchanged, with no rows, while the list has not changed. The list has no invalidation of its own."},
 	{MethodEvenerActivityRead, ActivityReadParams{}, ActivityReadResponse{}, ScopeHub, "Reads the pulse meter (seven one-minute activity counts over the whole tree), running subagents, quiet time and the newest tool intent of the hub's live top-level sessions and its attached hosts' (S5). A client polls it while a Board or session is on screen; it is never part of navigation."},
 	{MethodEvenerNoticesList, EmptyParams{}, NoticesListResponse{}, ScopeHub, "Lists the hub's notices (S11): provider instances on this hub that need signing in again, hosts that are offline, and installed plugins that are broken, each with the live sessions it blocks when the hub can count them. evener/notices/changed announces every change."},
 	{MethodEvenerHarnessesList, HarnessListParams{}, HarnessListResponse{}, ScopeHub, "Lists available harness descriptors."},
@@ -253,6 +267,7 @@ var Methods = []MethodSpec{
 	{MethodEvenerPluginEnable, PluginRefParams{}, PluginListResponse{}, ScopeHub, "Enables an installed plugin; returns the updated list."},
 	{MethodEvenerPluginDisable, PluginRefParams{}, PluginListResponse{}, ScopeHub, "Disables an installed plugin; returns the updated list."},
 	{MethodEvenerPluginSetAutoUpgrade, PluginSetAutoUpgradeParams{}, PluginListResponse{}, ScopeHub, "Sets an installed plugin's auto-upgrade flag; returns the updated list."},
+	{MethodEvenerPluginCheckUpdates, EmptyParams{}, PluginListResponse{}, ScopeHub, "Asks each git-backed installed plugin's remote whether it has moved past the installed commit, and checks each plugin stored in its marketplace's own repo against the marketplace clone as its last refresh left it, without installing anything; returns the list with updateAvailable set. Clients call it when their plugins view opens; the hub never runs it on a timer. It waits on every plugin's remote, each with its own timeout (internal/plugins updateCheckTimeout) and the whole check within updateCheckDeadline, so a client's timeout for it must exceed that deadline."},
 	{MethodEvenerCommandList, EmptyParams{}, CommandListResponse{}, ScopeHub, "Lists loaded slash commands (name, plugin, description, source: plugin, project, or user) for catalog/autocomplete display."},
 	{MethodEvenerSpawnSlashCatalog, SpawnSlashCatalogParams{}, SpawnSlashCatalogResponse{}, ScopeHub, "Pre-session slash catalog for the spawn form: the commands and skills a session started with this cwd, harness, and launch overrides would offer."},
 	{MethodEvenerSettingsOverview, EmptyParams{}, SettingsOverviewResponse{}, ScopeHub, "Returns the settings overview field bag: hub/runtime, storage, agent roster, and probed MCP servers — the five template-only settings sections' data."},

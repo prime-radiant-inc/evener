@@ -1,3 +1,4 @@
+import { APPROVAL_DECISION_EVENT_KIND } from "./approvalDecision";
 import {
   hasFailureStatus,
   hasItemFailure,
@@ -13,10 +14,13 @@ import {
   type ContentVector,
   contentVectorForConfig,
   type HookExitDetail,
+  hidesDaemonSteering,
   informationalNoticesVisible,
   normalizeConfig,
+  sharedNotesVisible,
   type TranscriptDisplayConfigV1,
 } from "./transcriptDisplayConfig";
+import { THREAD_ITEM_EVENT_KINDS } from "./types.gen";
 import { isInformationalWarning } from "./warnings";
 import { hasWarningText } from "./warningText";
 
@@ -115,41 +119,21 @@ export interface TranscriptProjection {
 
 const MESSAGE_TYPES = new Set(["userMessage", "agentMessage"]);
 
-// Keep this vocabulary in step with protocol/types.gen.ts. The projector treats
-// a value outside this set as an unknown event and deliberately renders it.
-// `environment` and `notes-context` are intentionally routine low-level system
-// events: their visibility is governed by Advanced.systemEvents, just like the
-// other known diagnostic announcements.
-const KNOWN_EVENT_KINDS = new Set([
-  "system_prompt",
-  "plugin_loaded",
-  "skill_activated",
-  "hook_completed",
-  "prompt_loaded",
-  "context_compaction",
-  "compaction",
-  "turn_limit",
-  "loop_detection",
-  "goal_ended",
-  "fork_summary",
-  "round_timings",
-  "tool_repair",
-  "model_switch",
-  "error",
-  "environment",
-  "notes-context",
-  "warning",
-  "interrupted",
-]);
+// The daemon's event-kind vocabulary, generated from appwire's
+// AllThreadItemEventKinds, so a new kind is known (and governed by the
+// system-events gate) the moment it is generated. The projector treats a value
+// outside this set as an unknown event and deliberately renders it.
+const KNOWN_EVENT_KINDS: ReadonlySet<string> = new Set(THREAD_ITEM_EVENT_KINDS);
 
-const PROMPT_EVENT_KINDS = new Set(["system_prompt", "prompt_loaded"]);
+// The prompt events: system_prompt is the full prompt scaffold, prompt_loaded
+// the quiet "Loaded prompt X (N B)" line naming the same event. Both answer to
+// one "Prompt loaded" setting on every client.
+export const PROMPT_EVENT_KINDS: ReadonlySet<string> = new Set(["system_prompt", "prompt_loaded"]);
 const TURN_TIMING_EVENT_KIND = "round_timings";
 const HOOK_EVENT_KIND = "hook_completed";
-// The system events critical at every level: a persisted turn failure, a
-// warning notice, and an interrupted-turn notice are the rows a reader hunts
-// for (SystemNoticeItem's FailureLine renders them; systemGrouping.ts keeps
-// them out of runs). A tool-repair notice left this set for the
-// informationalNotices gate below.
+// The system events shown at every level: a persisted turn failure, a warning
+// notice, and an interrupted-turn notice are the rows a reader hunts for. This
+// decides visibility only; each client chooses how to draw them.
 const CRITICAL_SYSTEM_EVENT_KINDS = new Set(["error", "warning", "interrupted"]);
 const TOOL_REPAIR_EVENT_KIND = "tool_repair";
 
@@ -300,6 +284,12 @@ function isToolRepairNotice(item: ItemModel): boolean {
   return item.type === "systemMessage" && item.eventKind === TOOL_REPAIR_EVENT_KIND;
 }
 
+// A daemon steer: instructions the daemon sent the agent, never a steer the
+// human wrote (source "user", the human-note kind included).
+function isDaemonSteer(item: ItemModel): boolean {
+  return item.type === "steering" && item.source !== "user";
+}
+
 function systemDecision(item: ItemModel, config: TranscriptDisplayConfigV1, vector: ContentVector): Decision {
   const eventKind = item.eventKind;
   if (eventKind === undefined || eventKind === "" || !KNOWN_EVENT_KINDS.has(eventKind)) return "item";
@@ -314,6 +304,9 @@ function systemDecision(item: ItemModel, config: TranscriptDisplayConfigV1, vect
   }
 
   if (CRITICAL_SYSTEM_EVENT_KINDS.has(eventKind)) return "critical";
+  // A human's Allow or Deny is a decision they made, like a question's
+  // answer: its history row shows at every level.
+  if (eventKind === APPROVAL_DECISION_EVENT_KIND) return "item";
 
   if (eventKind === HOOK_EVENT_KIND) {
     if (config.advanced.hookExits === "all") return "item";
@@ -324,6 +317,10 @@ function systemDecision(item: ItemModel, config: TranscriptDisplayConfigV1, vect
 
   if (PROMPT_EVENT_KINDS.has(eventKind)) return config.advanced.promptEvents ? "item" : "hidden";
   if (eventKind === TURN_TIMING_EVENT_KIND) return config.advanced.roundTimings ? "item" : "hidden";
+  // Shared-notes snapshots are internal: they stay out of the chat preset even
+  // when Advanced.systemEvents is enabled (sharedNotesVisible).
+  if (eventKind === "notes-context") return sharedNotesVisible(config) ? "item" : "hidden";
+  // Everything else, environment snapshots included, is a routine diagnostic.
   return config.advanced.systemEvents ? "item" : "hidden";
 }
 
@@ -381,7 +378,13 @@ function decisionFor(
     if (isInformationalWarning(item)) return informationalNoticesVisible(vector) ? "critical" : "hidden";
     return "critical";
   }
-  if (item.type === "steering") return "critical";
+  // Daemon steering hides at the chat preset; see hidesDaemonSteering for the
+  // one rule. A steer the human wrote is the human's own words and stays
+  // critical at every level.
+  if (item.type === "steering") {
+    if (!isDaemonSteer(item)) return "critical";
+    return hidesDaemonSteering(config.content) ? "hidden" : "critical";
+  }
 
   // Future item types render through the raw renderer instead of disappearing.
   return "item";
@@ -416,6 +419,7 @@ function terminalFallbackEntry(
   turn: TurnModel,
   sourceIndexByItem: ReadonlyMap<ItemModel, number>,
   vector: ContentVector,
+  config: TranscriptDisplayConfigV1,
 ): ProjectedCriticalEntry | undefined {
   if (!isTerminalTurn(turn)) return undefined;
   const sourceItem = turn.items.at(-1);
@@ -433,6 +437,18 @@ function terminalFallbackEntry(
   const hiddenInformationalNotice =
     (isInformationalWarning(sourceItem) || isToolRepairNotice(sourceItem)) && !informationalNoticesVisible(vector);
   if (hiddenInformationalNotice && isTurnError(turn.error)) {
+    return undefined;
+  }
+  // A daemon steer the chat preset hid never comes back, not even as the
+  // fallback of an errorless terminal turn: such a turn renders empty at
+  // chat, exactly as the phone renders it (Jesse, 2026-10-03). The
+  // informational-notice trade above keeps its narrower shape, trading only
+  // where the error end cap renders.
+  if (isDaemonSteer(sourceItem) && hidesDaemonSteering(config.content)) {
+    return undefined;
+  }
+  // A hidden snapshot cannot explain a failure and must not defeat filtering.
+  if (sourceItem.type === "systemMessage" && sourceItem.eventKind === "notes-context" && !sharedNotesVisible(config)) {
     return undefined;
   }
   return criticalEntry(sourceItem, turn.id, sourceIndex, redactsReasoning(sourceItem, vector));
@@ -504,7 +520,7 @@ export function projectThread(model: ThreadModel, config: TranscriptDisplayConfi
       }
     }
     if (entries.length === 0) {
-      const fallback = terminalFallbackEntry(turn, sourceIndexByItem, vector);
+      const fallback = terminalFallbackEntry(turn, sourceIndexByItem, vector, normalized);
       if (fallback) {
         visibleItems.push(fallback.item);
         entries.push(fallback);

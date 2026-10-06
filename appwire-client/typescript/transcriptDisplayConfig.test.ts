@@ -278,12 +278,31 @@ describe("transcript display config", () => {
         "criticalRows",
         "toolIntent",
         "toolCalls",
+        "daemonSteering",
         "roundTimings",
         "tokenCounts",
         "hookExits",
       ],
-      hidden: ["reasoning", "expandedDetails", "informationalNotices", "estimatedCost", "systemEvents", "promptEvents"],
+      hidden: [
+        "reasoning",
+        "expandedDetails",
+        "informationalNotices",
+        "sharedNotes",
+        "estimatedCost",
+        "systemEvents",
+        "promptEvents",
+      ],
     });
+  });
+
+  test.each(LEVELS)("inventory reports shared-notes visibility at %s", (level) => {
+    for (const systemEvents of [false, true]) {
+      const inventory = visibleCategoryInventory(
+        makeTranscriptDisplayConfig({ kind: "preset", level }, { systemEvents }),
+      );
+      expect(level !== "chat" && systemEvents ? inventory.visible : inventory.hidden).toContain("sharedNotes");
+      expect(level !== "chat" && systemEvents ? inventory.hidden : inventory.visible).not.toContain("sharedNotes");
+    }
   });
 
   test("inventory shows informational notices at full only, and for a custom vector that is full's", () => {
@@ -317,6 +336,28 @@ describe("transcript display config", () => {
         }),
       ).hidden,
     ).toContain("informationalNotices");
+  });
+
+  test("inventory shows daemon steering at every level but the chat preset", () => {
+    expect(visibleCategoryInventory(makeTranscriptDisplayConfig({ kind: "preset", level: "chat" })).hidden).toContain(
+      "daemonSteering",
+    );
+    for (const level of ["intent", "tools", "activity", "full"] as const) {
+      expect(visibleCategoryInventory(makeTranscriptDisplayConfig({ kind: "preset", level })).visible).toContain(
+        "daemonSteering",
+      );
+    }
+    expect(
+      visibleCategoryInventory(
+        makeTranscriptDisplayConfig({
+          kind: "custom",
+          toolIntent: false,
+          toolCalls: false,
+          reasoning: false,
+          expandByDefault: false,
+        }),
+      ).visible,
+    ).toContain("daemonSteering");
   });
 
   test("maps legacy values with exact fallbacks and hook precedence", () => {

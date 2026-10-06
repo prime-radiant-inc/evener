@@ -6,7 +6,7 @@ import type { MobileTimelineItem } from "./projectedRows";
 import { errorAction } from "./session/errorAction";
 import { TimelineItem } from "./TimelineItem";
 import { Platform, Text } from "react-native";
-import { alertRequests, render, renderedText, textOf } from "./renderNative.testkit";
+import { alertRequests, pressable, render, renderedText, textOf } from "./renderNative.testkit";
 import type { TimelineRow } from "./timeline";
 
 const mode = vi.hoisted(() => ({ scheme: "light" as "light" | "dark" }));
@@ -424,6 +424,30 @@ describe("a time marker", () => {
 	});
 });
 
+describe("a tool step", () => {
+	const step: TimelineRow = {
+		kind: "activity",
+		id: "step-1",
+		label: "read_file",
+		family: "tool",
+		state: "completed",
+		detail: { arguments: '{"file_path":"agent/session.go"}', summary: "Read agent/session.go" },
+	};
+
+	// Its toggle shows the step's words and state; VoiceOver hears what a
+	// press does, and whether the step is open.
+	it("opens from a toggle VoiceOver names Expand, then Collapse", () => {
+		const tree = render(<TimelineItem item={step} hubId="hub" sessionRef="step-toggle" />);
+		const closed = pressable(tree, "Expand Read agent/session.go");
+		expect(closed && textOf(closed)).toBe("▸ Read agent/session.go · completed");
+		expect(closed?.props.accessibilityState).toMatchObject({ expanded: false });
+		act(() => closed?.props.onPress());
+		const open = pressable(tree, "Collapse Read agent/session.go");
+		expect(open && textOf(open)).toBe("▾ Read agent/session.go · completed");
+		expect(open?.props.accessibilityState).toMatchObject({ expanded: true });
+	});
+});
+
 describe("a run in the transcript", () => {
 	const run: TimelineRow = {
 		kind: "run",
@@ -648,6 +672,24 @@ describe("a subagent", () => {
 		expect(tree.root.findAll((node) => node.props.accessibilityRole === "button")[0].props.style).toMatchObject({
 			minHeight: 44,
 		});
+	});
+
+	// It re-renders when its silence crosses the Quiet threshold, not only
+	// on the minute clock's next tick.
+	it("turns Quiet on its own when a running subagent goes silent", () => {
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+		try {
+			const at = (ms: number) => new Date(Date.now() - ms).toISOString();
+			const silent = { ...delegate, runStartedAt: at(60_000), latestActivityAt: at(19_900) };
+			const tree = render(<TimelineItem item={row("running")} hubId="hub" sessionRef="s" delegates={[silent]} />);
+			expect(renderedText(tree)).toContain("Working");
+			act(() => {
+				vi.advanceTimersByTime(100);
+			});
+			expect(renderedText(tree)).toContain("Quiet 20s");
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("opens the subagent's own transcript when pressed", () => {

@@ -12,9 +12,11 @@ import { sessionActivitySnapshot } from "../../stores/sessionActivity";
 import { activityContext, activitySummary } from "../../stores/sessionActivityTestUtils";
 import { resetThreadsStoreForTests } from "../../stores/threads";
 import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
+import virtualStyles from "../../widgets/virtuallist/virtuallist.module.css";
 import { resetSubagentModuleStoreForTests } from "../session/transcript/tools/subagentModuleStore";
 import { resetTranscriptPagingForTests } from "../session/transcript/useTranscript";
-import Transcript from "./Transcript";
+import { installJobLogGeometry, jobLogOutputText } from "./JobLogTestUtils";
+import Transcript from "./testing/CommittedTranscript";
 
 // A minimal, test-only "session" pane registration - mirrors
 // subagentModule.test.tsx's own precedent: real registerPane/paneFor/openPane
@@ -75,11 +77,7 @@ function connectFakeClient(): FakeClient {
   return fake;
 }
 
-// jsdom performs no real layout (offsetHeight is 0, no ResizeObserver), so
-// @tanstack/react-virtual sees a 0px viewport and renders no rows - the same
-// stub Session.test.tsx / the VirtualList suite use to exercise real rows.
-const CONTAINER_HEIGHT = 500;
-let offsetHeightDescriptor: PropertyDescriptor | undefined;
+let restoreGeometry: () => void;
 
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
@@ -87,17 +85,15 @@ beforeEach(() => {
   resetTranscriptPagingForTests();
   resetSubagentModuleStoreForTests();
   resetWorkspaceStoreForTests();
-  offsetHeightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight");
-  Object.defineProperty(HTMLElement.prototype, "offsetHeight", { configurable: true, value: CONTAINER_HEIGHT });
+  restoreGeometry = installJobLogGeometry(500);
 });
 
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
   registerDockviewApi(null); // never leak a fake dockview host to another test
-  if (offsetHeightDescriptor) {
-    Object.defineProperty(HTMLElement.prototype, "offsetHeight", offsetHeightDescriptor);
-  }
+  resetWorkspaceStoreForTests();
+  restoreGeometry();
 });
 
 test("shows a loading placeholder before the thread hydrates", async () => {
@@ -407,10 +403,27 @@ test("falls back to the raw ref as the pane title when the thread has no name", 
 // job's output log, not a thread. The pane serves it through evener/jobs/output
 // against the owning session (parentRef), never through thread/read. --------
 
+function jobOutputText() {
+  return jobLogOutputText(screen.getByTestId("joblog-content"));
+}
+
+function scrollJobToHead() {
+  const port = screen.getByTestId("joblog-content").querySelector<HTMLElement>(`.${virtualStyles.root}`);
+  if (!port) throw new Error("job output scroll port is missing");
+  fireEvent.scroll(port, { target: { scrollTop: 0 } });
+}
+
 test("a job: ref renders the shell job's output log via evener/jobs/output, never thread/read", async () => {
   const fake = connectFakeClient();
   fake.on("evener/jobs/output", () => ({
-    data: { tail: "hello from the job", totalBytes: 18, retainedStart: 0, truncated: false },
+    data: {
+      offsetBytes: 0,
+      bytesReturned: 18,
+      totalBytes: 18,
+      retainedStartBytes: 0,
+      encoding: "utf8",
+      data: "hello from the job",
+    },
   }));
 
   render(
@@ -422,7 +435,7 @@ test("a job: ref renders the shell job's output log via evener/jobs/output, neve
   await waitFor(() => expect(screen.getByText("hello from the job")).toBeTruthy());
   const outputCalls = fake.calls.filter((call) => call.method === "evener/jobs/output");
   expect(outputCalls).toHaveLength(1);
-  expect(outputCalls[0]?.params).toEqual({ ref: "ref_parent", jobId: "job_x" });
+  expect(outputCalls[0]?.params).toEqual({ ref: "ref_parent", jobId: "job_x", maxBytes: 65536 });
   expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(0);
 });
 
@@ -445,7 +458,7 @@ test("a job log shows the job's full command above its output", async () => {
     },
   }));
   fake.on("evener/jobs/output", () => ({
-    data: { tail: "ok\n", totalBytes: 3, retainedStart: 0, truncated: false },
+    data: { offsetBytes: 0, bytesReturned: 3, totalBytes: 3, retainedStartBytes: 0, encoding: "utf8", data: "ok\n" },
   }));
 
   render(
@@ -486,7 +499,14 @@ test.each([
     },
   }));
   fake.on("evener/jobs/output", () => ({
-    data: { tail: "finished\n", totalBytes: 9, retainedStart: 0, truncated: false },
+    data: {
+      offsetBytes: 0,
+      bytesReturned: 9,
+      totalBytes: 9,
+      retainedStartBytes: 0,
+      encoding: "utf8",
+      data: "finished\n",
+    },
   }));
 
   render(
@@ -527,7 +547,9 @@ test("a job log does not borrow metadata from another owner's equal job id", asy
     finishSecond = resolve;
   });
   fake.on("evener/jobs/get", ({ ref }) => (ref === "first-owner" ? metadata(ref, "First owner's job") : second));
-  fake.on("evener/jobs/output", () => ({ data: { tail: "", totalBytes: 0, retainedStart: 0 } }));
+  fake.on("evener/jobs/output", () => ({
+    data: { offsetBytes: 0, bytesReturned: 0, totalBytes: 0, retainedStartBytes: 0, encoding: "utf8", data: "" },
+  }));
   const view = (ownerRef: string) => (
     <ClientProvider client={fake}>
       <Transcript params={{ ref: "job:shared-id", parentRef: ownerRef }} paneId="p1" focused={false} />
@@ -549,7 +571,14 @@ test("a job log whose metadata read fails still renders the output", async () =>
   const fake = connectFakeClient();
   fake.on("evener/jobs/get", () => Promise.reject(new Error("job not available")));
   fake.on("evener/jobs/output", () => ({
-    data: { tail: "hello from the job", totalBytes: 18, retainedStart: 0, truncated: false },
+    data: {
+      offsetBytes: 0,
+      bytesReturned: 18,
+      totalBytes: 18,
+      retainedStartBytes: 0,
+      encoding: "utf8",
+      data: "hello from the job",
+    },
   }));
 
   render(
@@ -565,7 +594,14 @@ test("a job log whose metadata read fails still renders the output", async () =>
 test("job output renders ANSI SGR sequences as styled runs, not literal escape text", async () => {
   const fake = connectFakeClient();
   fake.on("evener/jobs/output", () => ({
-    data: { tail: "plain \u001b[32m283 passed\u001b[39m done", totalBytes: 40, retainedStart: 0, truncated: false },
+    data: {
+      offsetBytes: 0,
+      bytesReturned: 31,
+      totalBytes: 31,
+      retainedStartBytes: 0,
+      encoding: "utf8",
+      data: "plain \u001b[32m283 passed\u001b[39m done",
+    },
   }));
 
   render(
@@ -579,10 +615,17 @@ test("job output renders ANSI SGR sequences as styled runs, not literal escape t
   expect(screen.getByTestId("joblog-content").textContent).toBe("plain 283 passed done");
 });
 
-test("a truncated job log says how much of the output is shown", async () => {
+test("a truncated job log identifies the shown source bytes and true pruned prefix", async () => {
   const fake = connectFakeClient();
   fake.on("evener/jobs/output", () => ({
-    data: { tail: "tail end", totalBytes: 70000, retainedStart: 4464, truncated: true },
+    data: {
+      offsetBytes: 4464,
+      bytesReturned: 65536,
+      totalBytes: 70000,
+      retainedStartBytes: 4464,
+      encoding: "utf8",
+      data: `${" ".repeat(65528)}tail end`,
+    },
   }));
 
   render(
@@ -592,24 +635,59 @@ test("a truncated job log says how much of the output is shown", async () => {
   );
 
   await waitFor(() => expect(screen.getByText("tail end")).toBeTruthy());
-  expect(screen.getByText(/showing the last 65,?536 of 70,?000 bytes/i)).toBeTruthy();
-  // No hasEarlier field (an older daemon's shape) means no paging affordance:
-  // the note alone carries the truncation, exactly as before paging existed.
+  expect(screen.getByText(/loaded 65,?536 of 70,?000 output bytes/i)).toBeTruthy();
+  expect(screen.getByTestId("joblog-content").getAttribute("data-joblog-source-bytes")).toBe("65536");
+  const pruned = screen.getByText("Output no longer retained");
+  expect(pruned.getAttribute("data-source-start")).toBe("0");
+  expect(pruned.getAttribute("data-source-end")).toBe("4464");
+  expect(screen.queryByText("Output not loaded")).toBeNull();
+  // The page starts at the storage floor, so earlier bytes are no longer
+  // retained and there is no earlier-page affordance.
   expect(screen.queryByRole("button", { name: /load earlier/i })).toBeNull();
 });
 
-test("load earlier pages backwards through the job log until the head", async () => {
+test("scroll pages backwards through the job log until the head", async () => {
   const fake = connectFakeClient();
-  fake.on("evener/jobs/output", (params) => {
+  let releaseFirst: () => void = () => {};
+  const first = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+  let releaseSecond: () => void = () => {};
+  const second = new Promise<void>((resolve) => {
+    releaseSecond = resolve;
+  });
+  fake.on("evener/jobs/output", async (params) => {
     const before = (params as { beforeBytes?: number }).beforeBytes;
     if (before === undefined) {
-      return { data: { tail: "6789", totalBytes: 10, retainedStart: 6, truncated: true, hasEarlier: true } };
+      return {
+        data: {
+          offsetBytes: 6,
+          bytesReturned: 4,
+          totalBytes: 10,
+          retainedStartBytes: 0,
+          encoding: "utf8",
+          data: "6789",
+        },
+      };
     }
     if (before === 6) {
-      return { data: { tail: "2345", totalBytes: 10, retainedStart: 2, truncated: true, hasEarlier: true } };
+      await first;
+      return {
+        data: {
+          offsetBytes: 2,
+          bytesReturned: 4,
+          totalBytes: 10,
+          retainedStartBytes: 0,
+          encoding: "utf8",
+          data: "2345",
+        },
+      };
     }
     if (before === 2) {
-      return { data: { tail: "01", totalBytes: 10, retainedStart: 0, truncated: true, hasEarlier: false } };
+      await second;
+      return {
+        data: { offsetBytes: 0, bytesReturned: 2, totalBytes: 10, retainedStartBytes: 0, encoding: "utf8", data: "01" },
+      };
     }
     throw new Error(`unexpected beforeBytes ${before}`);
   });
@@ -620,28 +698,35 @@ test("load earlier pages backwards through the job log until the head", async ()
     </ClientProvider>,
   );
 
-  await waitFor(() => expect(screen.getByTestId("joblog-content").textContent).toBe("6789"));
+  await waitFor(() => expect(jobOutputText()).toBe("6789"));
 
-  fireEvent.click(screen.getByRole("button", { name: /load earlier/i }));
-  await waitFor(() => expect(screen.getByTestId("joblog-content").textContent).toBe("23456789"));
-  expect(screen.getByText(/showing the last 8 of 10 bytes/i)).toBeTruthy();
+  scrollJobToHead();
+  await act(async () => releaseFirst());
+  await waitFor(() => expect(jobOutputText()).toBe("23456789"));
+  expect(screen.getByText(/loaded 8 of 10 output bytes/i)).toBeTruthy();
+  expect(screen.getByTestId("joblog-content").getAttribute("data-joblog-source-bytes")).toBe("8");
+  expect(screen.getByText("Output not loaded").getAttribute("data-source-end")).toBe("2");
 
-  fireEvent.click(screen.getByRole("button", { name: /load earlier/i }));
-  await waitFor(() => expect(screen.getByTestId("joblog-content").textContent).toBe("0123456789"));
-  // The whole log is on screen: the button and the truncation note both go away.
+  scrollJobToHead();
+  await act(async () => releaseSecond());
+  await waitFor(() => expect(jobOutputText()).toBe("0123456789"));
+  // The whole log is on screen, with no missing interval.
   expect(screen.queryByRole("button", { name: /load earlier/i })).toBeNull();
-  expect(screen.queryByText(/showing the last/i)).toBeNull();
+  expect(screen.queryByText("Output not loaded")).toBeNull();
+  expect(screen.queryByText("Output no longer retained")).toBeNull();
+  expect(screen.queryByText(/loaded .* output bytes/i)).toBeNull();
+  expect(screen.getByTestId("joblog-content").getAttribute("data-joblog-source-bytes")).toBe("10");
 
   const calls = fake.calls.filter((call) => call.method === "evener/jobs/output");
   expect(calls.map((call) => (call.params as { beforeBytes?: number }).beforeBytes)).toEqual([undefined, 6, 2]);
 });
 
-test("a daemon that ignores beforeBytes stops paging instead of duplicating the tail", async () => {
+test("a daemon that ignores beforeBytes preserves the output and surfaces the boundary error", async () => {
   const fake = connectFakeClient();
-  // Every request returns the same tail window, as a daemon that predates
-  // beforeBytes would.
+  // Every request incorrectly returns the same latest page. It cannot be
+  // prepended because it does not end at the requested boundary.
   fake.on("evener/jobs/output", () => ({
-    data: { tail: "6789", totalBytes: 10, retainedStart: 6, truncated: true, hasEarlier: true },
+    data: { offsetBytes: 6, bytesReturned: 4, totalBytes: 10, retainedStartBytes: 0, encoding: "utf8", data: "6789" },
   }));
 
   render(
@@ -650,16 +735,21 @@ test("a daemon that ignores beforeBytes stops paging instead of duplicating the 
     </ClientProvider>,
   );
 
-  await waitFor(() => expect(screen.getByTestId("joblog-content").textContent).toBe("6789"));
-  fireEvent.click(screen.getByRole("button", { name: /load earlier/i }));
-  await waitFor(() => expect(screen.queryByRole("button", { name: /load earlier/i })).toBeNull());
-  expect(screen.getByTestId("joblog-content").textContent).toBe("6789");
+  await waitFor(() => expect(jobOutputText()).toBe("6789"));
+  scrollJobToHead();
+  expect(await screen.findByRole("status")).toHaveProperty(
+    "textContent",
+    "output page does not match the requested boundary",
+  );
+  expect(jobOutputText()).toBe("6789");
+  expect(screen.getByText("Output not loaded").getAttribute("data-source-end")).toBe("6");
+  expect(fake.calls.filter((call) => call.method === "evener/jobs/output")).toHaveLength(2);
 });
 
 test("a job with no output yet says so instead of rendering an empty log", async () => {
   const fake = connectFakeClient();
   fake.on("evener/jobs/output", () => ({
-    data: { tail: "", totalBytes: 0, retainedStart: 0, truncated: false },
+    data: { offsetBytes: 0, bytesReturned: 0, totalBytes: 0, retainedStartBytes: 0, encoding: "utf8", data: "" },
   }));
 
   render(
@@ -688,7 +778,14 @@ test("the job log's refresh action refetches the tail", async () => {
   const fake = connectFakeClient();
   let calls = 0;
   fake.on("evener/jobs/output", () => ({
-    data: { tail: `tail ${++calls}`, totalBytes: 6, retainedStart: 0, truncated: false },
+    data: {
+      offsetBytes: 0,
+      bytesReturned: ++calls * 7,
+      totalBytes: calls * 7,
+      retainedStartBytes: 0,
+      encoding: "utf8",
+      data: Array.from({ length: calls }, (_, index) => `tail ${index + 1}\n`).join(""),
+    },
   }));
 
   render(

@@ -362,7 +362,7 @@ func (p *hubHostCredentialsPusher) forward(ctx context.Context, remote *appsourc
 	if err != nil {
 		return appwire.InternalError(fmt.Sprintf("encode %s params: %v", method, err))
 	}
-	if _, mutating := remoteHostAdminMutationMethods[method]; mutating {
+	if isRemoteHostAdminMutation(method) {
 		return remote.AdminMutationCall(ctx, method, raw, out)
 	}
 	return remote.AdminCall(ctx, method, raw, out)

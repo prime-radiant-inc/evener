@@ -15,10 +15,11 @@
 // be replaced (the web's connection store) hands in an object that resolves
 // the current client on each call.
 
-import type { AppwireClient } from "../../client";
+import type { AppwireClientLike, RequestPort } from "../../clientLike";
 import { ErrorMarketplaceRemoveApplied, errorText, WireError } from "../../errors";
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "../../frameworkFreeStore";
 import type {
+  HostRequestMethod,
   MarketplaceAddParams,
   MarketplaceCatalogPlugin,
   MarketplaceEditParams,
@@ -27,9 +28,9 @@ import type {
 import { HubWriteBusyError, type HubWriteGate } from "./hubWriteGate";
 import { createKeyedRevision } from "./keyedRevision";
 import { createListRevision, readRevisioned, writeRevisioned } from "./listRevision";
-import { attachLifecycle, createStoreLifecycle, type StoreLifecycle } from "./storeLifecycle";
+import { attachLifecycle, createStoreLifecycle, type HostLifecycle } from "./storeLifecycle";
 
-export type MarketplacesClient = Pick<AppwireClient, "request" | "onNotification">;
+export type MarketplacesClient = RequestPort<HostRequestMethod> & Pick<AppwireClientLike, "onNotification">;
 
 // One cached browse result per marketplace name - permanent until an explicit
 // refreshMarketplace/removeMarketplace/editMarketplace/reloadCatalog retires
@@ -70,9 +71,7 @@ export interface MarketplacesState {
   reloadCatalog(name: string): Promise<void>;
 }
 
-export interface MarketplacesStore
-  extends FrameworkFreeStore<MarketplacesState>,
-    Omit<StoreLifecycle<MarketplacesState>, "guard"> {
+export interface MarketplacesStore extends FrameworkFreeStore<MarketplacesState>, HostLifecycle<MarketplacesState> {
   /** Follows evener/marketplace/updated, which the hub broadcasts to every
    * client after any client's successful mutation: every cached catalog is
    * retired (the notification names nothing) and the list is refetched after
@@ -189,8 +188,8 @@ export function createMarketplacesStore(client: MarketplacesClient, gate: HubWri
   // monotonic and a catalog stale under the older list is stale under the
   // newer one too. That holds only WITHIN a generation - after a reset the
   // store has forgotten what it read, and a browse since then is about the
-  // state the reset left behind, not the one an older reply belongs to.
-  let generation = 0;
+  // state the reset left behind, not the one an older reply belongs to. The
+  // lifecycle's epoch() counts those generations.
   let nextMarketplacesPublicationVersion = 0;
 
   /** Drops these names' cached catalogs and retires their keys, returning
@@ -248,10 +247,9 @@ export function createMarketplacesStore(client: MarketplacesClient, gate: HubWri
       store.setState((s) => ({ browseCatalogs: retireBrowseCatalogs(s.browseCatalogs, [...s.browseCatalogs.keys()]) })),
     // Every browse still on the wire is fenced alongside the list revision:
     // reset and dispose both want a reply that started before them to land
-    // nothing - its catalogs included, which is what the generation below
-    // counts.
+    // nothing - its catalogs included. (The lifecycle bumps its epoch() on
+    // every fence, which ends the generation a write was issued in.)
     onFence: (set) => {
-      generation += 1;
       const fenced = browses.retireInFlight();
       // A fenced browse's catalog entry is "loading" - nothing else was going
       // to answer it - and left behind it reads as settled: browseMarketplace
@@ -288,14 +286,14 @@ export function createMarketplacesStore(client: MarketplacesClient, gate: HubWri
       onFailure?: (error: unknown) => MarketplaceEntry[] | undefined,
     ): Promise<void> {
       const ran = await gate.run(() => {
-        const issuedIn = generation;
+        const issuedIn = lifecycle.epoch();
         return writeRevisioned(
           listRevision,
           request,
           (resp) => {
             // A reset or a dispose ended the generation this write was issued in:
             // its answer is about a store that has forgotten everything it read.
-            if (issuedIn !== generation) return null;
+            if (issuedIn !== lifecycle.epoch()) return null;
             // The catalogs this write names are retired whether or not its list is
             // the live answer: retiring is monotonic within the generation, so a
             // catalog stale under an older list is stale under a newer one too.
@@ -311,9 +309,9 @@ export function createMarketplacesStore(client: MarketplacesClient, gate: HubWri
           onFailure
             ? (error) => {
                 const applied = onFailure(error);
-                if (applied === undefined || issuedIn !== generation) return null;
+                if (applied === undefined || issuedIn !== lifecycle.epoch()) return null;
                 return () => {
-                  if (issuedIn !== generation) return;
+                  if (issuedIn !== lifecycle.epoch()) return;
                   set((s) => ({
                     ...publishMarketplaceSnapshot(applied),
                     browseCatalogs: retireCatalogsAbsentFrom(

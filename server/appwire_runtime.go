@@ -11,6 +11,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -1569,6 +1570,9 @@ func (s *Server) handleAppTurnStart(_ context.Context, params appwire.TurnStartP
 	if err := appwire.ValidateSkillInputSupport(input.Items, fn != nil); err != nil {
 		return appwire.TurnStartResponse{}, appwire.InvalidParams(err.Error())
 	}
+	if err := appwire.ValidateCommandInputSupport(input.Items, fn != nil); err != nil {
+		return appwire.TurnStartResponse{}, appwire.InvalidParams(err.Error())
+	}
 	if !input.HasContent() {
 		return appwire.TurnStartResponse{}, appwire.InvalidParams("input is required")
 	}
@@ -1610,6 +1614,9 @@ func (s *Server) handleAppTurnSteer(_ context.Context, params appwire.TurnSteerP
 	// Skill selections are consumed at the steering's actual delivery: the
 	// support verdict is this endpoint's own wiring. See the turn/start gate.
 	if err := appwire.ValidateSkillInputSupport(input.Items, fn != nil); err != nil {
+		return appwire.TurnSteerResponse{}, appwire.InvalidParams(err.Error())
+	}
+	if err := appwire.ValidateCommandInputSupport(input.Items, fn != nil); err != nil {
 		return appwire.TurnSteerResponse{}, appwire.InvalidParams(err.Error())
 	}
 	if !input.HasContent() {
@@ -1715,6 +1722,9 @@ func (s *Server) handleAppTurnQueue(_ context.Context, params appwire.TurnQueueP
 	if err := appwire.ValidateSkillInputSupport(input.Items, fn != nil); err != nil {
 		return appwire.TurnQueueResponse{}, appwire.InvalidParams(err.Error())
 	}
+	if err := appwire.ValidateCommandInputSupport(input.Items, fn != nil); err != nil {
+		return appwire.TurnQueueResponse{}, appwire.InvalidParams(err.Error())
+	}
 	if !input.HasContent() {
 		return appwire.TurnQueueResponse{}, appwire.InvalidParams("input required")
 	}
@@ -1747,6 +1757,10 @@ func (s *Server) handleAppTurnDrainAsSteer(_ context.Context, params appwire.Tur
 	// own wiring. See the turn/start gate.
 	if err := appwire.ValidateSkillInputSupport(input.Items, fn != nil); err != nil {
 		return appwire.TurnDrainAsSteerResponse{}, appwire.InvalidParams(err.Error())
+	}
+	if err := appwire.ValidateCommandInputSupport(input.Items, fn != nil); err != nil {
+		return appwire.TurnDrainAsSteerResponse{}, appwire.InvalidParams(err.Error())
+
 	}
 	params.Input = input.Items
 	if fn == nil {
@@ -2529,6 +2543,7 @@ func (s *Server) appThreadWithDiagnosticsLocked(diagnostics func(DetailedStatus)
 
 func appDiagnosticsFromDetailedStatus(ds DetailedStatus) *appwire.EvenerDiagnostics {
 	out := &appwire.EvenerDiagnostics{}
+	out.Commands = slices.Clone(ds.Commands)
 	if ds.Plugins != nil {
 		out.Plugins = make([]appwire.EvenerPluginInfo, 0, len(ds.Plugins))
 	}
@@ -2917,7 +2932,8 @@ func (s *Server) appCapabilitiesLocked(state string, processing bool) appwire.Th
 		// own answers; this is the live daemon-sourced projection only. Every
 		// handler's skill-input gate enforces its own seam's wiring, so an
 		// advertised true means every endpoint really consumes selections.
-		SkillInput: s.skillInputSupportedLocked(),
+		SkillInput:   s.skillInputSupportedLocked(),
+		CommandInput: s.skillInputSupportedLocked(),
 	}
 }
 

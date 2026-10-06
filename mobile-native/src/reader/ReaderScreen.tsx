@@ -27,7 +27,7 @@ import { copyText } from "../clipboard";
 import { useConnection } from "../ConnectionProvider";
 import { HubProfiles } from "../connection";
 import type { Routes } from "../screens";
-import { compactDuration } from "../session/format";
+import { timeAgo } from "../session/format";
 import { useMinuteClock } from "../session/minuteClock";
 import { holdQuote } from "../session/pendingQuote";
 import { BackButton } from "../session/BackButton";
@@ -284,10 +284,9 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 	useProvideSheetHost(readerHosts, sheetKey(hubId, sessionRef, path), host);
 
 	const updated = updatedAt === undefined ? Number.NaN : Date.parse(updatedAt);
-	const about = [
-		documentKind(path),
-		...(Number.isNaN(updated) ? [] : [`updated ${compactDuration(now - updated)} ago`]),
-	].join(" · ");
+	const about = Number.isNaN(updated)
+		? documentKind(path)
+		: `${documentKind(path)} · updated ${timeAgo(now - updated)}`;
 	const changeNote = lastRead ? changesCaption(changed.length, lastRead.readAt, now) : null;
 	const title = document?.title ?? "";
 	const text = document?.kind === "markdown" || document?.kind === "code" ? document.text : null;

@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -56,6 +57,14 @@ const (
 	navigationResourceLocation         navigationResourceKind = "location"
 )
 
+// navigationCatalogOrder is the order a key held by several catalogs resolves
+// in: a read of the key names the first catalog holding it. Only an
+// unresolved directory's "no-project" key can be in more than one. Each call
+// returns a fresh slice, so no caller can change the order for another.
+func navigationCatalogOrder() []navigationResourceKind {
+	return []navigationResourceKind{navigationResourceProjects, navigationResourceArchivedProjects, navigationResourceTestRuns}
+}
+
 // navigationResourceKey describes one immutable navigation representation. It
 // contains decoded, validated values only; HTTP parsing belongs to its handler.
 type navigationResourceKey struct {
@@ -63,6 +72,9 @@ type navigationResourceKey struct {
 	ID         string
 	SectionID  string
 	ProjectKey string
+	// Catalog narrows a project or project page read to one catalog's
+	// project; empty reads the first catalog holding the key.
+	Catalog    navigationResourceKind
 	Tier       string
 	Offset     uint32
 	Limit      uint32
@@ -121,6 +133,13 @@ type navigationProjection struct {
 	// is down, indexed once per projection so every row can answer "is my
 	// source unreachable?" from the same capture the manifest serves.
 	offlineSources map[string]bool
+	// archivedRevisions caches archivedListRevision by catalog and project
+	// key: the projection never changes once built, and paging a long list
+	// would otherwise fingerprint the whole list on every page. It is lazy on
+	// purpose: archived rows stay out of the build-time fingerprint pass, so a
+	// build never hashes every archive. Nil (a projection not made by
+	// buildNavigationProjectionContext) caches nothing.
+	archivedRevisions *sync.Map
 }
 
 type navigationPinSection struct {
@@ -147,7 +166,7 @@ func buildNavigationProjectionContext(ctx context.Context, inputs navigationBuil
 	if err != nil {
 		return navigationProjection{}, err
 	}
-	p := navigationProjection{inputs: cloned, pinSectionIDs: make(map[string]bool), projects: make(map[string]hubcore.TreeProject), catalogs: make(map[navigationResourceKind][]hubcore.TreeProject), locations: make(map[string]hubapi.NavigationSessionLocation), offlineSources: offlineSourceIDs(cloned.Sources)}
+	p := navigationProjection{inputs: cloned, pinSectionIDs: make(map[string]bool), projects: make(map[string]hubcore.TreeProject), catalogs: make(map[navigationResourceKind][]hubcore.TreeProject), locations: make(map[string]hubapi.NavigationSessionLocation), offlineSources: offlineSourceIDs(cloned.Sources), archivedRevisions: &sync.Map{}}
 	p.live = p.inputs.Tree.Live
 	p.needsYou = p.inputs.Tree.NeedsYou
 	p.pinCandidates, err = navigationPinCandidatesContext(ctx, p.inputs.Tree)
@@ -168,11 +187,17 @@ func buildNavigationProjectionContext(ctx context.Context, inputs navigationBuil
 	p.catalogs[navigationResourceProjects] = append([]hubcore.TreeProject(nil), buckets.active...)
 	p.catalogs[navigationResourceArchivedProjects] = append([]hubcore.TreeProject(nil), buckets.archived...)
 	p.catalogs[navigationResourceTestRuns] = append([]hubcore.TreeProject(nil), buckets.testRuns...)
-	for _, project := range buckets.all() {
-		if err := ctx.Err(); err != nil {
-			return navigationProjection{}, err
+	// A same-key project of a later catalog is shadowed: its sessions are
+	// still located under the key, but a read of the key does not return them.
+	for _, kind := range navigationCatalogOrder() {
+		for _, project := range p.catalogs[kind] {
+			if err := ctx.Err(); err != nil {
+				return navigationProjection{}, err
+			}
+			if _, claimed := p.projects[project.Key]; !claimed {
+				p.projects[project.Key] = project
+			}
 		}
-		p.projects[project.Key] = project
 	}
 	p.pinSections, err = p.buildPinSectionsContext(ctx)
 	if err != nil {
@@ -307,10 +332,10 @@ func cloneNavigationBoolMap(in map[string]bool) map[string]bool {
 //
 // The buckets are not merely a display list, and that is why the duplicate
 // groups must be MERGED rather than discarded: they are the sole source of the
-// catalog slices (:171-179) and manifest counts (:184-199), of the p.projects
-// map built from buckets.all() (:174-179), and of the location index that
+// catalog slices and manifest counts, of the p.projects map (all built in
+// buildNavigationProjectionContext), and of the location index that
 // indexLocationsContext walks to mint a hubapi.NavigationSessionLocation per
-// session (:1370-1399). Dropping a duplicate group therefore does not just trim
+// session. Dropping a duplicate group therefore does not just trim
 // a row: its sessions vanish from the catalog and from their project entry, and
 // a location lookup for one of them answers "not found" - a silent session loss
 // that is worse than the visible error it replaces.
@@ -871,7 +896,29 @@ func navigationCatalogRowsThatFit[T any](rows []T, emptyPage func(kept int) any)
 }
 
 func (p navigationProjection) Project(key string) (hubapi.NavigationProjectResource, bool) {
-	project, ok := p.projects[key]
+	return p.ProjectIn("", key)
+}
+
+// projectIn finds key's project in catalog, or, with no catalog, in the first
+// catalog holding it (p.projects). A key can be in several catalogs, and a
+// session's location names the one whose project holds it.
+func (p navigationProjection) projectIn(catalog navigationResourceKind, key string) (hubcore.TreeProject, bool) {
+	if catalog == "" {
+		project, ok := p.projects[key]
+		return project, ok
+	}
+	for _, project := range p.catalogs[catalog] {
+		if project.Key == key {
+			return project, true
+		}
+	}
+	return hubcore.TreeProject{}, false
+}
+
+// ProjectIn is the project resource for key in catalog, or in the first
+// catalog holding it when catalog is empty.
+func (p navigationProjection) ProjectIn(catalog navigationResourceKind, key string) (hubapi.NavigationProjectResource, bool) {
+	project, ok := p.projectIn(catalog, key)
 	if !ok {
 		return hubapi.NavigationProjectResource{}, false
 	}
@@ -884,7 +931,13 @@ func (p navigationProjection) Project(key string) (hubapi.NavigationProjectResou
 }
 
 func (p navigationProjection) ProjectPage(key, tier string, offset uint32, limit int) (hubapi.NavigationProjectPage, error) {
-	project, ok := p.projects[key]
+	return p.ProjectPageIn("", key, tier, offset, limit)
+}
+
+// ProjectPageIn is one tier page of key's project in catalog, or in the
+// first catalog holding it when catalog is empty.
+func (p navigationProjection) ProjectPageIn(catalog navigationResourceKind, key, tier string, offset uint32, limit int) (hubapi.NavigationProjectPage, error) {
+	project, ok := p.projectIn(catalog, key)
 	if !ok {
 		return hubapi.NavigationProjectPage{}, fmt.Errorf("navigation project %q not found", key)
 	}
@@ -1178,6 +1231,7 @@ func navigationAliasLocation(id, kind string, root hubapi.NavigationSessionLocat
 		Revision:     root.Revision,
 		Ref:          ref.String(),
 		TopLevelRef:  root.TopLevelRef,
+		Catalog:      root.Catalog,
 		ProjectKey:   root.ProjectKey,
 		Tier:         root.Tier,
 		Session:      &summary,
@@ -1279,12 +1333,12 @@ func (p navigationProjection) Resource(key navigationResourceKey) (any, navigati
 		resource, err = p.CatalogPage(key.Kind, key.Offset, int(key.Limit))
 	case navigationResourceProject:
 		var ok bool
-		resource, ok = p.Project(key.ProjectKey)
+		resource, ok = p.ProjectIn(key.Catalog, key.ProjectKey)
 		if !ok {
 			err = fmt.Errorf("navigation project %q not found", key.ProjectKey)
 		}
 	case navigationResourceProjectPage:
-		resource, err = p.ProjectPage(key.ProjectKey, key.Tier, key.Offset, int(key.Limit))
+		resource, err = p.ProjectPageIn(key.Catalog, key.ProjectKey, key.Tier, key.Offset, int(key.Limit))
 	case navigationResourceLocation:
 		var ok bool
 		resource, ok = p.Location(key.ID)
@@ -1440,15 +1494,15 @@ func (p navigationProjection) buildPinSectionsContext(ctx context.Context) ([]na
 }
 
 func (p navigationProjection) indexLocationsContext(ctx context.Context) error {
-	indexRows := func(rows []hubcore.TreeNode, projectKey, tier string) {
+	indexRows := func(rows []hubcore.TreeNode, catalog navigationResourceKind, projectKey, tier string) {
 		for _, root := range rows {
 			if ctx.Err() != nil {
 				return
 			}
-			_ = p.indexLocationNodeContext(ctx, root, root, projectKey, tier, true)
+			_ = p.indexLocationNodeContext(ctx, root, root, navigationLocationAt{catalog: catalog, projectKey: projectKey, tier: tier}, true)
 		}
 	}
-	for _, kind := range []navigationResourceKind{navigationResourceProjects, navigationResourceArchivedProjects, navigationResourceTestRuns} {
+	for _, kind := range navigationCatalogOrder() {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -1458,19 +1512,27 @@ func (p navigationProjection) indexLocationsContext(ctx context.Context) error {
 			}
 			for _, tier := range []string{"current", "recent", "archived"} {
 				rows, _ := project.TierRows(tier)
-				indexRows(rows, project.Key, tier)
+				indexRows(rows, kind, project.Key, tier)
 			}
 		}
 	}
-	indexRows(p.live, "", "live")
+	indexRows(p.live, "", "", "live")
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	indexRows(p.needsYou, "", "needs_you")
+	indexRows(p.needsYou, "", "", "needs_you")
 	return ctx.Err()
 }
 
-func (p navigationProjection) indexLocationNodeContext(ctx context.Context, node, root hubcore.TreeNode, projectKey, tier string, topLevel bool) error {
+// navigationLocationAt is where indexLocationsContext found a top-level row: its catalog
+// and project key (both empty outside a project) and its tier.
+type navigationLocationAt struct {
+	catalog    navigationResourceKind
+	projectKey string
+	tier       string
+}
+
+func (p navigationProjection) indexLocationNodeContext(ctx context.Context, node, root hubcore.TreeNode, at navigationLocationAt, topLevel bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -1485,10 +1547,10 @@ func (p navigationProjection) indexLocationNodeContext(ctx context.Context, node
 	if _, exists := p.locations[ref.String()]; !exists {
 		// Deep links carry only the selected session's compact summary.
 		summary := navigationProjector{projection: p}.projectShallow(node)
-		p.locations[ref.String()] = hubapi.NavigationSessionLocation{GenerationID: p.inputs.GenerationID, Revision: p.inputs.Revision, Ref: ref.String(), TopLevelRef: rootRef.String(), ProjectKey: projectKey, TopLevel: topLevel, Tier: tier, PinSectionID: p.pinSectionIDFor(ref), Session: &summary}
+		p.locations[ref.String()] = hubapi.NavigationSessionLocation{GenerationID: p.inputs.GenerationID, Revision: p.inputs.Revision, Ref: ref.String(), TopLevelRef: rootRef.String(), Catalog: string(at.catalog), ProjectKey: at.projectKey, TopLevel: topLevel, Tier: at.tier, PinSectionID: p.pinSectionIDFor(ref), Session: &summary}
 	}
 	for _, child := range node.Children {
-		if err := p.indexLocationNodeContext(ctx, child, root, projectKey, tier, false); err != nil {
+		if err := p.indexLocationNodeContext(ctx, child, root, at, false); err != nil {
 			return err
 		}
 	}

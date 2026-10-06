@@ -78,6 +78,12 @@ export interface ArchivedListParams {
   projectKey: string;
   cursor?: string;
   limit?: number;
+  /**
+   * Revision is the revision of the list the caller holds (a response's
+   * Revision). When it is still the list's, the response says Unchanged and
+   * carries no rows. An older hub ignores it and answers the page.
+   */
+  revision?: string;
 }
 
 export interface ArchivedListResponse {
@@ -85,6 +91,19 @@ export interface ArchivedListResponse {
   nextCursor?: string;
   total: number;
   catalog?: string;
+  /**
+   * Revision fingerprints the whole list read, the same on every page of it;
+   * it changes when any row a page could show changes. An older hub sends
+   * none. It vouches for the rows a client holds only when every page it
+   * holds carried this same revision; a client whose pages carried
+   * different revisions holds none, and reads again.
+   */
+  revision?: string;
+  /**
+   * Unchanged is true when the request's Revision is still the list's: the
+   * response then carries no rows, and Total, Catalog and Revision stand.
+   */
+  unchanged?: boolean;
 }
 
 export interface AttentionChanged {
@@ -564,6 +583,11 @@ export interface EvenerDelegateParams {
 }
 
 export interface EvenerDiagnostics {
+  /**
+   * Commands is this owning session's loaded, path-free command inventory.
+   * Nil is unreported, an explicit empty slice is an authoritative empty inventory.
+   */
+  commands?: CommandDescriptor[];
   tools?: EvenerToolInfo[];
   mcp?: EvenerMCPServerInfo[];
   skills?: EvenerSkillInfo[];
@@ -758,15 +782,15 @@ export interface EvenerThread {
    */
   goal?: GoalState;
   /**
-   * HumanNote carries the human's one-paragraph session whiteboard when set,
-   * else empty. It powers the shared-notes display without a bespoke
+   * HumanNote carries the human's session whiteboard, line breaks kept, when
+   * set, else empty. It powers the shared-notes display without a bespoke
    * transport — like Goal, it is structured per-session state read from the
    * already-fetched thread snapshot.
    */
   humanNote?: string;
   /**
-   * AgentNote carries the agent's one-paragraph session whiteboard when set,
-   * else empty. It is read from the already-fetched thread snapshot like
+   * AgentNote carries the agent's session whiteboard, line breaks kept, when
+   * set, else empty. It is read from the already-fetched thread snapshot like
    * HumanNote.
    */
   agentNote?: string;
@@ -1182,12 +1206,12 @@ export interface HostListResponse {
 }
 
 export interface HostMutationAmbiguous {
-  outcome: string;
+  outcome: "ambiguous";
   observedRow: HostRow;
 }
 
 export interface HostMutationCollisionDropped {
-  outcome: string;
+  outcome: "collision-dropped";
   droppedEntry: HostRow;
   winningFingerprint: string;
   host?: HostRow;
@@ -1195,24 +1219,24 @@ export interface HostMutationCollisionDropped {
 }
 
 export interface HostMutationCommitted {
-  outcome: string;
+  outcome: "committed";
   host: HostRow;
 }
 
 export interface HostMutationCommittedRemoved {
-  outcome: string;
+  outcome: "committed";
   host: RemovedRow;
 }
 
 export interface HostMutationTeardownFailure {
-  outcome: string;
+  outcome: "committed-with-teardown-failure";
   seam: string;
   remnantId: string;
   host: HostRow;
 }
 
 export interface HostMutationTeardownFailureRemoved {
-  outcome: string;
+  outcome: "committed-with-teardown-failure";
   seam: string;
   remnantId: string;
   host: RemovedRow;
@@ -1259,7 +1283,7 @@ export interface HostPlan {
 }
 
 export interface HostPlanNoToken {
-  outcome: string;
+  outcome: "no-token";
   staleFacts: HostPlanStaleFacts;
   terminal: boolean;
   remnantId?: string;
@@ -1270,7 +1294,7 @@ export interface HostPlanParams {
 }
 
 export interface HostPlanPlanned {
-  outcome: string;
+  outcome: "planned";
   plan: HostPlan;
   token: string;
 }
@@ -1402,7 +1426,7 @@ export interface HostTeardownRecoverParams {
 }
 
 export interface HostTeardownRecoverResult {
-  outcome: string;
+  outcome: "recovered-cleared";
   remnantId: string;
   clearedName: string;
   clearedAt: string;
@@ -1410,40 +1434,40 @@ export interface HostTeardownRecoverResult {
 }
 
 export interface HostTeardownRetryClearedLive {
-  outcome: string;
-  hostKind: string;
+  outcome: "already-cleared";
+  hostKind: "live";
   host: HostRow;
   remnantId: string;
   escalationAgeSec?: number;
 }
 
 export interface HostTeardownRetryClearedRemoved {
-  outcome: string;
-  hostKind: string;
+  outcome: "already-cleared";
+  hostKind: "removed";
   host: RemovedRow;
   remnantId: string;
   escalationAgeSec?: number;
 }
 
 export interface HostTeardownRetryCompleteLive {
-  outcome: string;
-  hostKind: string;
+  outcome: "teardown-complete";
+  hostKind: "live";
   host: HostRow;
   remnantId: string;
   escalationAgeSec?: number;
 }
 
 export interface HostTeardownRetryCompleteRemoved {
-  outcome: string;
-  hostKind: string;
+  outcome: "teardown-complete";
+  hostKind: "removed";
   host: RemovedRow;
   remnantId: string;
   escalationAgeSec?: number;
 }
 
 export interface HostTeardownRetryFailedLive {
-  outcome: string;
-  hostKind: string;
+  outcome: "committed-with-teardown-failure";
+  hostKind: "live";
   host: HostRow;
   remnantId: string;
   seam: string;
@@ -1451,8 +1475,8 @@ export interface HostTeardownRetryFailedLive {
 }
 
 export interface HostTeardownRetryFailedRemoved {
-  outcome: string;
-  hostKind: string;
+  outcome: "committed-with-teardown-failure";
+  hostKind: "removed";
   host: RemovedRow;
   remnantId: string;
   seam: string;
@@ -1516,12 +1540,19 @@ export interface InitializeResponse {
 export interface InputItem {
   type: string;
   text?: string;
+  mentions?: InputMention[];
   url?: string;
   mediaType?: string;
   data?: string;
   name?: string;
   path?: string;
   metadata?: Record<string, string>;
+}
+
+export interface InputMention {
+  kind: string;
+  name: string;
+  offset: number;
 }
 
 export interface InstanceCreateParams {
@@ -1880,13 +1911,22 @@ export interface JobActivityWorktree {
   dirty: boolean;
 }
 
+export interface JobOutputPage {
+  offsetBytes: number;
+  bytesReturned: number;
+  totalBytes: number;
+  retainedStartBytes: number;
+  encoding: string;
+  data: string;
+}
+
 export interface JobsGetParams {
   ref?: string;
   jobId: string;
 }
 
 export interface JobsGetResponse {
-  data: unknown;
+  data: JobActivityJob;
 }
 
 export interface JobsListParams {
@@ -1906,7 +1946,7 @@ export interface JobsOutputParams {
 }
 
 export interface JobsOutputResponse {
-  data: unknown;
+  data: JobOutputPage;
 }
 
 export interface JobsTreeUpdatedParams {
@@ -2359,6 +2399,12 @@ export interface NavigationReadParams {
   resource: string;
   section?: string;
   sectionId?: string;
+  /**
+   * Catalog names a catalog read's catalog. On a project or project_page
+   * read it narrows the read to that catalog's project, as a location's
+   * catalog names it; an older hub refuses it there, and sends no location
+   * catalog to take it from.
+   */
   catalog?: string;
   projectKey?: string;
   tier?: string;
@@ -2401,6 +2447,14 @@ export interface NavigationSessionLocation {
   revision: number;
   ref: string;
   top_level_ref: string;
+  /**
+   * Catalog is the catalog ("projects", "archived_projects" or "test_runs")
+   * whose project ProjectKey names: a key can be in several, and a project
+   * or project_page read naming this catalog returns the project holding
+   * the session. Absent outside a project, and from an older hub, which
+   * also refuses a catalog on those reads.
+   */
+  catalog?: string;
   project_key?: string;
   top_level: boolean;
   tier?: string;
@@ -2743,6 +2797,16 @@ export interface PluginEntry {
   gitCommitSha?: string;
   installedAt: number;
   lastUpdated: number;
+  /**
+   * UpdateAvailable is true when the last evener/plugin/checkUpdates found a
+   * newer version: a newer remote commit for a git-backed plugin, or new
+   * contents in the marketplace clone, as its last refresh left it, for one
+   * stored in its marketplace's own repo. Absent means no known update: no check has run,
+   * the check found the plugin current or could not read its source, or the
+   * plugin is used in place from a directory. Clients offer Upgrade only when
+   * it is true.
+   */
+  updateAvailable?: boolean;
 }
 
 export interface PluginLaunchCandidate {
@@ -2859,6 +2923,16 @@ export interface QueueState {
    * selections".
    */
   skillNames?: string[][];
+  /**
+   * CommandNames is FIFO-aligned with Preview and retains exact command
+   * identities independently from skill selections when editing or returning.
+   */
+  commandNames?: string[][];
+  /**
+   * Mentions is FIFO-aligned with Texts, retaining each atom's exact kind
+   * and UTF-16 location. It is editing metadata, not activation authority.
+   */
+  mentions?: InputMention[][];
 }
 
 export interface RemovedRow {
@@ -3044,7 +3118,7 @@ export interface SessionActivity {
   minutes: number[];
   /**
    * RunningSubagents counts the session's subagents, at every depth, whose
-   * own turn is running.
+   * run is open: SubagentTally.Running, the count its Live row shows.
    */
   runningSubagents: number;
   /**
@@ -3137,6 +3211,12 @@ export interface SessionActivitySummary {
   refreshPending?: boolean;
   context: SessionActivityContext;
   scope: SessionActivityScope;
+  /**
+   * Delegates counts a delegate as active while its run is open. For a root
+   * read at scope subtree, Active is the Live row's SubagentTally.Running
+   * and evener/activity/read's runningSubagents; scope session counts only
+   * direct children.
+   */
   delegates: SessionActivityCounts;
   jobs: SessionActivityCounts;
   watches: SessionActivityCounts;
@@ -3458,6 +3538,43 @@ export interface SubagentTally {
   done: number;
 }
 
+export interface Task {
+  id: number;
+  type: string;
+  description: string;
+  prompt: string;
+  status: string;
+  /**
+   * DependsOn lists IDs of tasks that must complete before this one is ready.
+   */
+  depends_on?: number[];
+  /**
+   * Notes accumulates free-form progress notes appended over the task's life.
+   */
+  notes?: string[];
+  /**
+   * ReasoningEffort overrides the reasoning effort for a subagent that runs
+   * this task (low|medium|high); empty uses the session default.
+   */
+  reasoning_effort?: string;
+  /**
+   * Insert is a template-expansion marker (e.g. "parent_tasks") carried over
+   * from the task template it was created from; empty for ordinary tasks.
+   */
+  insert?: string;
+  /**
+   * CreatedAt/UpdatedAt/CompletedAt are minted automatically by the store —
+   * never settable through the agent-facing task tool. CreatedAt is stamped once when the task is added;
+   * UpdatedAt advances on every mutation; CompletedAt is stamped when the task
+   * transitions to a terminal status (done or cancelled) and cleared if it
+   * is later reopened. Pointers so an
+   * unset stamp (and tasks persisted before timestamps existed) omit cleanly.
+   */
+  created_at?: string;
+  updated_at?: string;
+  completed_at?: string;
+}
+
 export interface TaskAggregate {
   total: number;
   done: number;
@@ -3471,7 +3588,12 @@ export interface TaskListParams {
 }
 
 export interface TaskListResponse {
-  data: unknown;
+  /**
+   * Data is nil when task data is unavailable and non-nil (possibly empty)
+   * for an authoritative list. The nullable annotation preserves that
+   * distinction in the generated SDK without a pointer to the slice.
+   */
+  data: Task[] | null;
 }
 
 export interface TaskSummary {
@@ -3594,6 +3716,11 @@ export interface ThreadCapabilities {
    * rejected wherever this capability is false.
    */
   skillInput?: boolean;
+  /**
+   * CommandInput advertises canonical {type:"command", name} consumption
+   * on input-bearing mutations, with empty args and exact catalog identity.
+   */
+  commandInput?: boolean;
   /**
    * StopSubagent advertises evener/delegate/stop on a root session (S6):
    * true while its daemon wires the stop and the session is open. Absent
@@ -4541,6 +4668,7 @@ export const METHOD_NAMES = [
   "evener/plugin/enable",
   "evener/plugin/disable",
   "evener/plugin/setAutoUpgrade",
+  "evener/plugin/checkUpdates",
   "evener/command/list",
   "evener/spawn/slashCatalog",
   "evener/settings/overview",
@@ -4572,6 +4700,59 @@ export const METHOD_NAMES = [
 ] as const;
 
 export type MethodName = (typeof METHOD_NAMES)[number];
+
+export const HOST_REQUEST_METHODS = [
+  "evener/auth/apiKey/clear",
+  "evener/auth/apiKey/conditionalSet",
+  "evener/auth/apiKey/set",
+  "evener/auth/credentialJson/set",
+  "evener/auth/device/poll",
+  "evener/auth/device/start",
+  "evener/auth/list",
+  "evener/auth/login/complete",
+  "evener/auth/login/start",
+  "evener/auth/logout",
+  "evener/auth/status",
+  "evener/auth/test",
+  "evener/dirs/create",
+  "evener/git/head",
+  "evener/harnesses/list",
+  "evener/instance/create",
+  "evener/instance/edit",
+  "evener/instance/list",
+  "evener/instance/remove",
+  "evener/instance/setDefault",
+  "evener/launch/getLayer",
+  "evener/launch/resolve",
+  "evener/launch/schema",
+  "evener/launch/setLayer",
+  "evener/launch/trustRepo",
+  "evener/marketplace/add",
+  "evener/marketplace/browse",
+  "evener/marketplace/edit",
+  "evener/marketplace/list",
+  "evener/marketplace/refresh",
+  "evener/marketplace/remove",
+  "evener/path/validate",
+  "evener/paths/complete",
+  "evener/plugin/checkNow",
+  "evener/plugin/checkUpdates",
+  "evener/plugin/disable",
+  "evener/plugin/enable",
+  "evener/plugin/install",
+  "evener/plugin/list",
+  "evener/plugin/preview",
+  "evener/plugin/remove",
+  "evener/plugin/setAutoUpgrade",
+  "evener/plugin/upgrade",
+  "evener/projects/recent",
+  "evener/settings/agentsDoc/get",
+  "evener/settings/agentsDoc/set",
+  "evener/spawn/slashCatalog",
+  "model/list",
+] as const;
+
+export type HostRequestMethod = (typeof HOST_REQUEST_METHODS)[number];
 
 export const NOTIFICATION_NAMES = [
   "thread/started",
@@ -4685,6 +4866,7 @@ export const THREAD_ITEM_EVENT_KINDS = [
   "notes-context",
   "warning",
   "interrupted",
+  "approval_decision",
 ] as const;
 
 export type ThreadItemEventKind = (typeof THREAD_ITEM_EVENT_KINDS)[number];
@@ -4796,6 +4978,7 @@ export interface MethodTypes {
   "evener/plugin/enable": { params: PluginRefParams; result: PluginListResponse };
   "evener/plugin/disable": { params: PluginRefParams; result: PluginListResponse };
   "evener/plugin/setAutoUpgrade": { params: PluginSetAutoUpgradeParams; result: PluginListResponse };
+  "evener/plugin/checkUpdates": { params: EmptyParams; result: PluginListResponse };
   "evener/command/list": { params: EmptyParams; result: CommandListResponse };
   "evener/spawn/slashCatalog": { params: SpawnSlashCatalogParams; result: SpawnSlashCatalogResponse };
   "evener/settings/overview": { params: EmptyParams; result: SettingsOverviewResponse };
@@ -4809,11 +4992,11 @@ export interface MethodTypes {
   "evener/delegate/stop": { params: DelegateStopParams; result: DelegateStopResponse };
   "evener/host/request": { params: HostRequestParams; result: HostForwardedResult };
   "evener/host/attach": { params: HostAttachParams; result: HostAttachResponse };
-  "evener/host/add": { params: HostAddParams; result: HostMutationCommitted | HostMutationCommittedRemoved | HostMutationTeardownFailure | HostMutationTeardownFailureRemoved | HostMutationCollisionDropped | HostMutationAmbiguous };
+  "evener/host/add": { params: HostAddParams; result: HostMutationCommitted | HostMutationTeardownFailure | HostMutationCollisionDropped | HostMutationAmbiguous };
   "evener/host/list": { params: EmptyParams; result: HostListResponse };
   "evener/host/status": { params: HostStatusParams; result: HostStatusResponse };
-  "evener/host/remove": { params: HostRemoveParams; result: HostMutationCommitted | HostMutationCommittedRemoved | HostMutationTeardownFailure | HostMutationTeardownFailureRemoved | HostMutationCollisionDropped | HostMutationAmbiguous };
-  "evener/host/update": { params: HostUpdateParams; result: HostMutationCommitted | HostMutationCommittedRemoved | HostMutationTeardownFailure | HostMutationTeardownFailureRemoved | HostMutationCollisionDropped | HostMutationAmbiguous };
+  "evener/host/remove": { params: HostRemoveParams; result: HostMutationCommittedRemoved | HostMutationTeardownFailureRemoved | HostMutationCollisionDropped };
+  "evener/host/update": { params: HostUpdateParams; result: HostMutationCommitted | HostMutationTeardownFailure | HostMutationCollisionDropped };
   "evener/host/teardown-retry": { params: HostTeardownRetryParams; result: HostTeardownRetryCompleteLive | HostTeardownRetryCompleteRemoved | HostTeardownRetryClearedLive | HostTeardownRetryClearedRemoved | HostTeardownRetryFailedLive | HostTeardownRetryFailedRemoved };
   "evener/host/teardown-recover": { params: HostTeardownRecoverParams; result: HostTeardownRecoverResult };
   "evener/host/plan": { params: HostPlanParams; result: HostPlanPlanned | HostPlanNoToken };

@@ -198,7 +198,7 @@ func catalogTools(reg *registry.Registry, modelRef string) ([]catalogTool, error
 	if err != nil {
 		return nil, err
 	}
-	defer sess.Close()
+	defer sess.CloseDiscardingScratch()
 	defs := sess.ToolDefinitions()
 	out := make([]catalogTool, 0, len(defs))
 	for _, def := range defs {
@@ -975,6 +975,9 @@ func runProbe(cfg runConfig, probe probeFile, rep int, available map[string]bool
 	res.CanonicalToolCounts, res.ToolErrors, res.CommunicateMessages = parseEvents(stderr.Bytes())
 	if id, err := rootSessionID(stateDir); err == nil {
 		res.SessionID = id
+		// The probe session's scratch outlives it, and no hub ever archives a
+		// probe, so the harness removes the session's tree once it is done.
+		_ = sandbox.RemoveSessionScratchTree(id)
 	}
 	if counts, err := allTranscriptToolCounts(stateDir); err == nil {
 		res.ModelToolCounts = counts
@@ -1208,6 +1211,11 @@ func runLiveProbe(ctx context.Context, cfg runConfig, probe probeFile, res *prob
 		return err
 	}
 	env := execenv.NewLocalExecutionEnvironment(res.WorkDir)
+	// The session's ID names its scratch tree, so it is picked before the
+	// sandbox mints the scratch; runProbe removes the tree after the probe.
+	if err := agent.PickFreshSessionID(env, &sessCfg); err != nil {
+		return err
+	}
 	// Engage enforcement before the session exists so a declared mode the host
 	// cannot serve fails closed here, before any provider call, rather than
 	// silently running the worker native and unsandboxed.
@@ -1217,10 +1225,8 @@ func runLiveProbe(ctx context.Context, cfg runConfig, probe probeFile, res *prob
 	sess, err := runnerNewSession(client, profile, env, sessCfg)
 	if err != nil {
 		// The session that would have owned whatever this env provisioned was
-		// never built; settle its scratch against the root retention manifest
-		// the way the production launch path does, rather than removing a
-		// directory a durable manifest may still reference.
-		agent.DisposeRootScratchAfterFailure(sessCfg.StateDir, env)
+		// never built, so its scratch goes here, as on the production launch path.
+		_ = env.DisposeSessionScratch()
 		return err
 	}
 	res.SessionID = sess.ID()
@@ -1458,6 +1464,8 @@ func commitFixture(workDir string) error {
 		{"config", "user.name", "Evener Fixture"},
 		{"config", "user.email", "fixture@evener.test"},
 		{"config", "commit.gpgsign", "false"},
+		{"config", "tag.gpgSign", "false"},
+		{"config", "tag.forceSignAnnotated", "false"},
 		{"config", "core.hooksPath", ".git/hooks"},
 		{"config", "core.excludesFile", os.DevNull},
 		{"config", "maintenance.auto", "false"},

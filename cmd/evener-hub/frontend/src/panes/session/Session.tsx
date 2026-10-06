@@ -25,8 +25,9 @@ import type { ThreadModel } from "@evener/appwire-client";
 import { configFingerprint, formatQuoteBlock, projectThread, resolveEffectiveConfig } from "@evener/appwire-client";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "zustand";
+import { conversationPaneLifetime } from "../../shell/paneLifetime";
 import type { PaneProps } from "../../shell/paneRegistry";
-import { navigate, paneToURL } from "../../shell/routing";
+import { navigate, paneToURL, refParam } from "../../shell/routing";
 import { ForceStopDialog } from "../../shell/sessionMenu/ForceStopDialog";
 import { StatusBar } from "../../shell/statusbar/StatusBar";
 import { useIsMobile } from "../../shell/useIsMobile";
@@ -67,6 +68,7 @@ import {
   transcriptSourceTurnRowIndexesForRows,
 } from "./transcript/TranscriptBody";
 import { SandboxEscalationRail } from "./transcript/tools/sandboxEscalation";
+import { retainedTranscriptReadView } from "./transcript/transcriptReadView";
 import { isDormantTranscript } from "./transcript/transcriptVisibility";
 import { useTranscript } from "./transcript/useTranscript";
 
@@ -228,6 +230,12 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
   const { ref } = params;
   const isMobile = useIsMobile();
   const blockedMutations = useBlockedMutationEntries(ref);
+  const pane = useStore(workspaceStore, (state) =>
+    state.panes.find((record) => record.id === paneId && record.type === "session" && refParam(record.params) === ref),
+  );
+  const lifetime = pane ? conversationPaneLifetime(pane) : null;
+  const composerSource = lifetime?.composer ?? null;
+  const readView = lifetime ? retainedTranscriptReadView(lifetime, ref, "session") : null;
 
   // One ensureThread(ref) claim on mount, one matching releaseThread(ref) on
   // unmount. AppShell mounts DockHost (and therefore this pane)
@@ -284,7 +292,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
   // a standing "load more" button and silent failure is not an option.
   const { model, loadOlder, loadingOlder, loadOlderReportingError, olderError, cancelOlder } = useTranscript(
     ref,
-    paneId,
+    readView,
   );
 
   // A DELETED ref never hydrates: the hub durably fences every request
@@ -393,7 +401,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
   const transcriptContainerRef = useRef<HTMLDivElement>(null);
   const flow = useTranscriptScroll({
     ref,
-    viewId: paneId,
+    viewId: readView?.id ?? paneId,
     keepViewRemount: () =>
       workspaceStore
         .getState()
@@ -402,6 +410,9 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
         ),
     model,
     listRef: virtualListRef,
+    initialViewCapture: readView?.getCapture(),
+    onReaderIntent: readView?.supersedePositioning,
+    onReaderMovement: readView?.syncPositioningMovement,
     loadOlder,
     cancelOlder,
     viewKey: configFingerprint(displayConfig),
@@ -444,6 +455,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
     listRef: virtualListRef,
     jumpToBottom: flow.jumpToBottom,
     markGesture: flow.markGesture,
+    onPositioningCommand: readView?.supersedePositioning,
   });
   const showColdStartSkeleton = useColdStartSkeleton(ref, model);
   // kata g2ez: names the one turn (if any) that starts what's arrived since
@@ -591,10 +603,12 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
         config={displayConfig}
         preparedView={preparedView}
         surface="live"
-        disclosureScope={`transcript:live:${ref}`}
+        disclosureScope={readView?.id ?? paneId}
         sessionRef={ref}
-        viewId={paneId}
         sourcePaneId={paneId}
+        viewId={readView?.id}
+        initialViewCapture={readView?.getCapture()}
+        readView={readView ?? undefined}
         onAnnounceViewChange={(summary) => {
           announcementSequence.current += 1;
           setViewAnnouncement({ text: `Transcript detail: ${summary}`, key: announcementSequence.current });
@@ -653,6 +667,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
     <PaneScaffold
       paneId={paneId}
       focused={paneFocused}
+      focusSelector='[data-composer] [role="textbox"]'
       scaffoldMarker={`session:${ref}`}
       title={title}
       cadence={cadence}
@@ -689,12 +704,12 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
               !recoveryOwnerRef &&
               ref.startsWith("local:") &&
               !restartPending &&
-              !controlsFor(model).send && <SessionChrome ref={ref} placement="menu" discoverActivity />}
+              !controlsFor(model).send && <SessionChrome ref={ref} paneId={paneId} placement="menu" discoverActivity />}
             {reconciliationFailed && (
               <div role="alert">Message recovery has not completed. Sending will resume after recovery succeeds.</div>
             )}
             <PendingChips sessionRef={ref} />
-            <Composer ref={ref} focused={paneFocused} />
+            {composerSource && <Composer ref={ref} paneId={paneId} source={composerSource} focused={paneFocused} />}
           </div>
         </div>
       }

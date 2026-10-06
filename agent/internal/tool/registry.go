@@ -1050,19 +1050,19 @@ func truncateLinesWithStatus(s string, limit int) (string, bool) {
 
 func defaultToolLimit(toolName string) schema.ToolOutputLimit {
 	switch toolName {
-	case "read_file":
+	case "read_file", "memory_read":
 		return schema.ToolOutputLimit{MaxChars: 50_000, Strategy: schema.TruncHeadTail}
 	case "shell":
 		return schema.ToolOutputLimit{MaxChars: 30_000, MaxLines: 512, Strategy: schema.TruncHeadTail}
-	case "grep":
+	case "grep", "memory_search":
 		return schema.ToolOutputLimit{MaxChars: 20_000, MaxLines: 200, Strategy: schema.TruncHeadCount}
 	case "glob":
 		return schema.ToolOutputLimit{MaxChars: 20_000, MaxLines: 500, Strategy: schema.TruncHeadCount}
-	case "edit_file":
+	case "edit_file", "memory_edit":
 		return schema.ToolOutputLimit{MaxChars: 10_000, Strategy: schema.TruncTail}
 	case "apply_patch":
 		return schema.ToolOutputLimit{MaxChars: 10_000, Strategy: schema.TruncTail}
-	case "write_file":
+	case "write_file", "memory_write", "memory_delete":
 		return schema.ToolOutputLimit{MaxChars: 1_000, Strategy: schema.TruncTail}
 	case "delegate":
 		return schema.ToolOutputLimit{MaxChars: 20_000, Strategy: schema.TruncHeadTail}

@@ -292,25 +292,24 @@ describe("each tool's evidence, as the tools print it", () => {
 		]);
 	});
 
-	// A wait the send couldn't honour says why, from its footer, and a
-	// message's images read as their alt text, as a skill's do.
-	it("says why a send's wait was ignored, and shows its images as words", () => {
+	// A wait the send couldn't honour says why, from its footer.
+	it("says why a send's wait was ignored", () => {
 		const ignored = {
 			...subagentWireStep("call_send_1"),
 			raw: undefined,
-			argumentsJSON: '{"to":"dlg_x","message":"See ![the plot](https://example.com/p.png)","max_wait_ms":60000}',
+			argumentsJSON: '{"to":"dlg_x","message":"Check the drain","max_wait_ms":60000}',
 			output:
 				"[delegate_id dlg_x · steered · running · running in background · wait ignored: delegate is already running]",
 		};
 		expect(stepEvidence({ label: "delegate_send", detail: activityDetail(ignored) })).toEqual([
-			{ kind: "markdown", title: "Message", markdown: "See the plot" },
+			{ kind: "markdown", title: "Message", markdown: "Check the drain" },
 			{ kind: "note", text: "Wait ignored: delegate is already running" },
 		]);
 	});
 
-	// The delegate's reply is its author's markdown too, so its images read
-	// as their alt text.
-	it("shows the images in a delegate's reply as words", () => {
+	// The delegate's reply is markdown like any other, so its images stay
+	// (Jesse's ruling, #3696): the phone shows them as it does an agent's.
+	it("keeps the images in a delegate's reply", () => {
 		const replied = {
 			...subagentWireStep("call_send_2"),
 			raw: undefined,
@@ -318,7 +317,7 @@ describe("each tool's evidence, as the tools print it", () => {
 		};
 		expect(stepEvidence({ label: "delegate_send", detail: activityDetail(replied) })).toEqual([
 			{ kind: "markdown", title: "Message", markdown: "Is drain ordering safe now?" },
-			{ kind: "markdown", title: "Reply", markdown: "Here: the trace" },
+			{ kind: "markdown", title: "Reply", markdown: "Here: ![the trace](https://example.com/t.png)" },
 		]);
 	});
 
@@ -428,21 +427,28 @@ describe("each tool's evidence, as the tools print it", () => {
 		]);
 	});
 
-	// A skill's markdown is the skill author's, so its images never load a
-	// remote URL on the phone: each reads as its alt text.
-	it("shows a skill's images as their alt text, never loading them", () => {
-		const loaded = `<skill-context>\n${JSON.stringify({
-			name: "diagrams",
-			instructions:
-				"# Diagrams\n\n![the flow](https://example.com/flow.png)\n\nThen ![](https://t.test/x.gif) done.\n\n![by ref][logo] and ![short]\n\n[logo]: https://t.test/logo.png",
-		})}\n</skill-context>`;
-		expect(stepEvidence({ label: "use_skill", detail: { output: loaded } })).toEqual([
-			{
-				kind: "markdown",
-				title: "diagrams",
-				markdown: "# Diagrams\n\nthe flow\n\nThen  done.\n\nby ref and short\n\n[logo]: https://t.test/logo.png",
-			},
-		]);
+	// A skill's instructions as the phone shows them.
+	const skillMarkdown = (instructions: string) => {
+		const loaded = `<skill-context>\n${JSON.stringify({ name: "diagrams", instructions })}\n</skill-context>`;
+		const [shown] = stepEvidence({ label: "use_skill", detail: { output: loaded } });
+		if (shown?.kind !== "markdown") throw new Error(`a skill shows markdown, got ${shown?.kind}`);
+		return shown.markdown;
+	};
+
+	// A skill's markdown renders like any other markdown, images included
+	// (Jesse's ruling, #3696), so it reaches the markdown view as written:
+	// images by URL and by reference, and code that looks like one.
+	it.each([
+		[
+			"images",
+			"# Diagrams\n\n![the flow](https://example.com/flow.png)\n\n![by ref][logo]\n\n[logo]: https://t.test/logo.png",
+		],
+		["a Rust macro", "let v = vec![1, 2, 3];"],
+		["a shell test", "if ![ -f x ]; then"],
+		["an image in a code span", "Write `![a](https://x.test/a.png)` for an image."],
+		["an image in a fence", "```md\n![a](https://x.test/a.png)\n```"],
+	])("shows %s in a skill as written", (_name, markdown) => {
+		expect(skillMarkdown(markdown)).toBe(markdown);
 	});
 
 	// -1 is the shell tool's sentinel for a command stopped by a signal or by

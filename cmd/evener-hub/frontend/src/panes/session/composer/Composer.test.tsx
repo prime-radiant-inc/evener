@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
+import type { InputItem, Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
 import { WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -9,6 +9,8 @@ import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
 import { useLayoutEffect } from "react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { MotionProvider } from "../../../motion";
+import { ActivitySidebar } from "../../../shell/activitybar/ActivitySidebar";
 import {
   activitySidebarStore,
   resetActivitySidebarStoreForTests,
@@ -39,7 +41,8 @@ import promptCardStyles from "../../../widgets/promptcard/promptcard.module.css"
 import { getToasts, resetToastStoreForTests } from "../../../widgets/toast/store";
 import { hoverForTooltip } from "../../../widgets/tooltip/tooltipTestUtils";
 import { settleActivityDiscovery } from "../testing/activityDiscovery";
-import { editorCursor, replaceEditorText, selectEditorText } from "../testing/editor";
+import { createTestComposerSource } from "../testing/composerSource";
+import { editorCursor, pastePngInto, replaceEditorText, selectEditorText } from "../testing/editor";
 import { installMobileViewport } from "../testing/mobileViewport";
 import { resetAskDockStoreForTests } from "./askDock/askDockStore";
 import { Composer as ComposerView } from "./Composer";
@@ -67,8 +70,9 @@ function Composer(props: React.ComponentProps<typeof ComposerView>) {
   );
 }
 
-beforeAll(() => {
+beforeAll(async () => {
   installLocalStorage(new MemoryStorage());
+  await import("../index");
 });
 
 const FULL_CAPABILITIES: ThreadCapabilities = {
@@ -314,7 +318,7 @@ async function mountComposerWithHandle(
   const view = render(
     <ClientProvider client={fake}>
       <Toast />
-      <Composer ref={ref} focused={options.focused ?? false} />
+      <Composer ref={ref} source={createTestComposerSource(ref)} focused={options.focused ?? false} />
     </ClientProvider>,
   );
   await settleActivityDiscovery(ref);
@@ -710,7 +714,9 @@ test("goal replacement preserves both recovery rows while a merged source discar
 test("goal replacement closes slash completion and resets selection", async () => {
   useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG });
   const user = userEvent.setup();
-  await mountComposer("ref_a", { evener: currentWorkEvener({ goal: true }) });
+  await mountComposer("ref_a", {
+    evener: { ...currentWorkEvener({ goal: true }), diagnostics: { commands: REVIEW_RELEASE_CATALOG } },
+  });
   const editor = textarea();
   await user.type(editor, "hi /re");
   await user.keyboard("{ArrowDown}");
@@ -856,8 +862,10 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   vi.useRealTimers();
   resetActivitySidebarStoreForTests();
+  resetWorkspaceStoreForTests();
   resetActivityPanelStoreForTests();
   // A narrow-layout test leaves its stub installed; jsdom has no real
   // ResizeObserver, so the honest baseline for the next test is none at all.
@@ -893,6 +901,65 @@ function installNarrowComposer(width: number): void {
 function textarea(): HTMLDivElement {
   return screen.getByRole("textbox", { name: /^message$/i }) as HTMLDivElement;
 }
+
+test.each([false, true])("repeated composer /status targets its ref, phone=%s", async (mobile) => {
+  vi.stubGlobal("matchMedia", (media: string) => ({
+    media,
+    matches: mobile && media === "(max-width: 899px)",
+    addEventListener: () => {},
+    removeEventListener: () => {},
+  }));
+  const user = userEvent.setup();
+  const { fake } = await mountComposerWithHandle(
+    "ref_a",
+    {},
+    {
+      focused: true,
+      prepare: (fake) =>
+        fake.on("evener/thread/activity/read", (params) => ({
+          ...activitySummary(params.ref),
+          scope: params.scope ?? "session",
+        })),
+    },
+  );
+  act(() => {
+    workspaceStore.setState({
+      panes: [
+        { id: "command-a", type: "session", params: { ref: "ref_a" }, slot: "main" },
+        { id: "focused-b", type: "session", params: { ref: "ref_b" }, slot: "secondary" },
+      ],
+      focusedPaneId: "focused-b",
+    });
+  });
+  render(
+    <MotionProvider>
+      <ActivitySidebar mobile={mobile} />
+    </MotionProvider>,
+  );
+  for (let invocation = 0; invocation < 2; invocation += 1) {
+    const editor = textarea();
+    await user.click(editor);
+    act(() => replaceEditorText(editor, "/status"));
+    await user.keyboard("{Enter}");
+    expect(editor.textContent).toBe("/status ");
+    await user.keyboard("{Meta>}{Enter}{/Meta}");
+    await waitFor(() => expect(editor.textContent).toBe(""));
+    expect(workspaceStore.getState().panes.some((pane) => pane.type === "sessionDetails")).toBe(false);
+    await waitFor(() =>
+      expect(activitySidebarStore.getState()).toMatchObject({
+        open: true,
+        tab: "about",
+        ref: "ref_a",
+      }),
+    );
+    expect(screen.getByRole("radio", { name: "About" }).getAttribute("aria-checked")).toBe("true");
+    if (mobile && invocation === 0) {
+      await waitFor(() => expect(screen.getByTestId("activity-sidebar").contains(document.activeElement)).toBe(true));
+    }
+  }
+  expect(workspaceStore.getState().panes.some((pane) => pane.type === "sessionDetails")).toBe(false);
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
+});
 
 // The composer's controls are addressed by their stable data-testid, not by
 // accessible name: two different buttons in this tree start with "Steer"
@@ -980,7 +1047,7 @@ test("the real live Composer mount discovers initial activity without a test-sup
 
   render(
     <ClientProvider client={fake}>
-      <Composer ref={ref} focused={false} />
+      <Composer ref={ref} source={createTestComposerSource(ref)} focused={false} />
     </ClientProvider>,
   );
 
@@ -1008,7 +1075,7 @@ test("a saved notLoaded session with sending enabled discovers activity while it
 
   render(
     <ClientProvider client={fake}>
-      <Composer ref={ref} focused={false} />
+      <Composer ref={ref} source={createTestComposerSource(ref)} focused={false} />
     </ClientProvider>,
   );
 
@@ -2121,14 +2188,22 @@ test("a plain typed mention stays prose through a programmatic attachment insert
   await selectEditorText(editor, "Run /cleanup".length);
   await user.keyboard(" then /cleanup");
   expect(within(editor).getAllByTestId("composer-skill-chip")).toHaveLength(1);
-  expect(readComposerDraft(ref)).toEqual({ text: "Run /cleanup then /cleanup", skillNames: ["cleanup"] });
+  expect(readComposerDraft(ref)).toEqual({
+    text: "Run /cleanup then /cleanup",
+    skillNames: ["cleanup"],
+    mentions: [{ kind: "skill", name: "cleanup", offset: 4 }],
+  });
 
   // A programmatic edit (the attachment marker) must not turn that prose into
   // a second chip behind the user's back.
   pastePngInto(editor, "shot.png");
   await screen.findByRole("button", { name: "View shot.png" });
   expect(within(editor).getAllByTestId("composer-skill-chip")).toHaveLength(1);
-  expect(readComposerDraft(ref)).toEqual({ text: "Run /cleanup then /cleanup[image 1]", skillNames: ["cleanup"] });
+  expect(readComposerDraft(ref)).toEqual({
+    text: "Run /cleanup then /cleanup[image 1]",
+    skillNames: ["cleanup"],
+    mentions: [{ kind: "skill", name: "cleanup", offset: 4 }],
+  });
 });
 
 test("Shift+Enter with an empty queue steers the draft and leaves nothing behind", async () => {
@@ -3196,7 +3271,7 @@ test.each([
     fireEvent.click(submitButton());
     await written;
     cleanup();
-    render(<Composer ref="ref_a" focused={false} />);
+    render(<Composer ref="ref_a" source={createTestComposerSource("ref_a")} focused={false} />);
     // The remount restores the recovery draft through an IDB read plus a
     // render the scheduler commits on a macrotask, while this test
     // deliberately holds the recovery WRITE - so the projection flush
@@ -3312,7 +3387,7 @@ test.each([false, true])(
     }
     const firstInput = textarea();
     const firstButton = submitButton();
-    const second = render(<Composer ref="ref_a" focused={false} />);
+    const second = render(<Composer ref="ref_a" source={createTestComposerSource("ref_a")} focused={false} />);
     const secondInput = within(second.container).getByRole<HTMLDivElement>("textbox");
     await flushPendingTurnsProjectionForTests();
     const hold = holdNextWriteTransaction(["outbox", "optimistic", "recovery", "sequences"]);
@@ -4264,20 +4339,6 @@ test("clicking Stop calls turn/interrupt", async () => {
 
 // --- attachments (paste -> tile -> submit) ----------------------------------
 
-function pastePngInto(el: HTMLElement, name = "shot.png", text = ""): void {
-  const file = new File([new Uint8Array([1, 2, 3])], name, { type: "image/png" });
-  const event = new Event("paste", { bubbles: true, cancelable: true });
-  Object.defineProperty(event, "clipboardData", {
-    value: {
-      items: [{ kind: "file", type: "image/png", getAsFile: () => file }],
-      files: [file],
-      types: ["Files", "text/plain"],
-      getData: (type: string) => (type === "text/plain" ? text : ""),
-    },
-  });
-  fireEvent(el, event);
-}
-
 function installCanvasStubs(): void {
   HTMLCanvasElement.prototype.getContext = (() => ({
     drawImage() {},
@@ -4467,7 +4528,7 @@ test.each([
       });
       if (remount) {
         cleanup();
-        render(<Composer ref="ref_a" focused={false} />);
+        render(<Composer ref="ref_a" source={createTestComposerSource("ref_a")} focused={false} />);
         replaceEditorText(textarea(), "");
         pastePngInto(textarea(), "replacement.png");
         await waitFor(() => expect(screen.getByRole("button", { name: "Remove replacement.png" })).toBeTruthy());
@@ -4548,6 +4609,87 @@ test.each(["keep marker", "delete marker", "add attachment", "replace attachment
     );
   },
 );
+
+test("submitted markers around retained command and skill atoms preserve their exact identities", async () => {
+  installCanvasStubs();
+  const user = userEvent.setup();
+  const ref = "ref_retained_selections";
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  writeComposerDraft(ref, {
+    text: "😀 /same /same /same",
+    skillNames: ["same"],
+    commandNames: ["same"],
+    mentions: [
+      { kind: "command", name: "same", offset: 3 },
+      { kind: "skill", name: "same", offset: 9 },
+    ],
+  });
+  const fake = await mountComposer(ref, {
+    evener: {
+      ...testThread(ref).evener,
+      capabilities: { ...FULL_CAPABILITIES, commandInput: true, skillInput: true },
+    },
+  });
+  fake.on("turn/start", () => new Promise<never>(() => undefined));
+  const editor = textarea();
+  selectEditorText(editor, 0);
+  pastePngInto(editor, "before.png");
+  await screen.findByRole("button", { name: "View before.png" });
+  selectEditorText(editor, editor.textContent?.length ?? 0);
+  pastePngInto(editor, "after.png");
+  await screen.findByRole("button", { name: "View after.png" });
+  expect(editor.textContent).toBe("[image 1]😀 /same /same /same[image 2]");
+  expect(within(editor).getAllByTestId("composer-command-chip")).toHaveLength(1);
+  expect(within(editor).getAllByTestId("composer-skill-chip")).toHaveLength(1);
+
+  const hold = holdNextWriteTransaction(["outbox", "optimistic", "recovery", "sequences"]);
+  try {
+    await act(async () => {
+      fireEvent.click(submitButton());
+      await hold.reached;
+    });
+    selectEditorText(editor, editor.textContent?.length ?? 0);
+    await user.paste(" later");
+  } finally {
+    await act(async () => hold.release());
+    await flushPendingTurnsProjectionForTests();
+  }
+
+  expect.soft(editor.textContent).toBe("😀 /same /same /same later");
+  expect.soft(within(editor).queryAllByTestId("composer-command-chip")).toHaveLength(1);
+  expect.soft(within(editor).queryAllByTestId("composer-skill-chip")).toHaveLength(1);
+  expect.soft(readComposerDraft(ref)).toEqual({
+    text: "😀 /same /same /same later",
+    skillNames: ["same"],
+    commandNames: ["same"],
+    mentions: [
+      { kind: "command", name: "same", offset: 3 },
+      { kind: "skill", name: "same", offset: 9 },
+    ],
+  });
+  expect(screen.queryByRole("button", { name: "Remove before.png" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Remove after.png" })).toBeNull();
+
+  fireEvent.click(submitButton());
+  await flushPendingTurnsProjectionForTests();
+  const records = await storage.listOutbox(ref);
+  expect(records).toHaveLength(2);
+  expect(records[0]?.attachments.map((item) => item.name)).toEqual(["before.png", "after.png"]);
+  expect(records[1]?.attachments).toEqual([]);
+  expect(records[1]?.payload.input).toEqual([
+    {
+      type: "text",
+      text: "😀 /same /same /same later",
+      mentions: [
+        { kind: "command", name: "same", offset: 3 },
+        { kind: "skill", name: "same", offset: 9 },
+      ],
+    },
+    { type: "skill", name: "same" },
+    { type: "command", name: "same" },
+  ]);
+});
 
 test("the remove button names the specific attachment it removes", async () => {
   installCanvasStubs();
@@ -4930,7 +5072,12 @@ test("clicking the attach button triggers the hidden file input", async () => {
 test('"/" at the start of an empty composer types a literal slash and opens the INLINE menu, not the modal palette', async () => {
   useCommandCatalog.setState({ commands: [{ name: "review", description: "review the diff" }] });
   const user = userEvent.setup();
-  await mountComposer("ref_slash");
+  await mountComposer("ref_slash", {
+    evener: {
+      ...testThread("ref_slash").evener,
+      diagnostics: { commands: [{ name: "review", description: "review the diff" }] },
+    },
+  });
 
   const editor = textarea();
   await user.type(editor, "/");
@@ -5091,7 +5238,9 @@ test("committing a skill during an IME composition leaves the menu open rather t
 test("a trailing slash token opens a completion menu merging session-scoped built-ins with the plugin command catalog", async () => {
   useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG });
   const user = userEvent.setup();
-  await mountComposer("ref_slash3");
+  await mountComposer("ref_slash3", {
+    evener: { ...testThread("ref_slash3").evener, diagnostics: { commands: REVIEW_RELEASE_CATALOG } },
+  });
 
   await user.type(textarea(), "hi /re");
 
@@ -5109,15 +5258,18 @@ test("a trailing slash token opens a completion menu merging session-scoped buil
   ]);
 });
 
-// The reported bug: a fresh browser never saw a user-global command like /par
-// in this menu, because nothing loaded the catalog until the palette had been
-// opened once on a session page. No useCommandCatalog.setState seeds the
-// catalog here - the connection-driven load must carry it from the hub.
-test("a user command from the hub catalog autocompletes without a palette open", async () => {
+// A fresh browser reads the owning session's user command through thread/read,
+// without needing to open the controller palette.
+test("a user command from the owning session autocompletes without a palette open", async () => {
   const user = userEvent.setup();
   await mountComposerWithHandle(
     "ref_slash_par",
-    {},
+    {
+      evener: {
+        ...testThread("ref_slash_par").evener,
+        diagnostics: { commands: [{ name: "par", description: "adversarial review", source: "user" }] },
+      },
+    },
     {
       prepare: (fake) =>
         fake.on("evener/command/list", () => ({
@@ -5146,7 +5298,10 @@ test("slash completion hides excluded plugin commands but keeps loaded plugin co
   await mountComposer("ref_slash_plugins", {
     evener: {
       ...testThread("ref_slash_plugins").evener,
-      diagnostics: { plugins: [{ name: "loaded", skillCount: 0, agentCount: 0, hookCount: 0, mcpCount: 0 }] },
+      diagnostics: {
+        commands: [{ name: "review", description: "review the diff", source: "plugin", pluginName: "loaded" }],
+        plugins: [{ name: "loaded", skillCount: 0, agentCount: 0, hookCount: 0, mcpCount: 0 }],
+      },
     },
   });
 
@@ -5166,7 +5321,7 @@ test("slash completion keeps built-ins while hiding plugin commands for an expli
   await mountComposer("ref_slash_empty", {
     evener: {
       ...testThread("ref_slash_empty").evener,
-      diagnostics: { plugins: [] },
+      diagnostics: { commands: [], plugins: [] },
     },
   });
 
@@ -5177,6 +5332,18 @@ test("slash completion keeps built-ins while hiding plugin commands for an expli
     expect.stringContaining("/project"),
   ]);
 });
+
+test.each([undefined, []])(
+  "live missing or empty owner inventory never falls back to controller user commands %s",
+  async (commands) => {
+    useCommandCatalog.setState({ commands: [{ name: "controller-only", source: "user" }] });
+    const ref = "ref_owner_absent";
+    await mountComposer(ref, { evener: { ...testThread(ref).evener, diagnostics: { commands } } });
+    const user = userEvent.setup();
+    await user.type(textarea(), "/controller-only");
+    expect(screen.queryByTestId("composer-slash-menu")).toBeNull();
+  },
+);
 
 test("skill completions keep indivisible chips in the sentence and submit both references", async () => {
   const user = userEvent.setup();
@@ -5251,6 +5418,215 @@ test("skill completions keep indivisible chips in the sentence and submit both r
   });
 });
 
+test.each([
+  ["project", "review", "plugin review", "project review", "project review"],
+  ["plugin", "pkg:review", "plugin review", "project review", "plugin review"],
+  ["descriptionless plugin collision", "review", undefined, "project review", "project review"],
+  [
+    "descriptionless project",
+    "review",
+    "plugin review",
+    undefined,
+    "review — no longer in this session's command catalog",
+  ],
+])(
+  "command chip details use the canonical identity for %s",
+  async (_case, name, pluginDescription, projectDescription, details) => {
+    if (!name) throw new Error("command tooltip fixture requires a name");
+    const ref = "ref_command_tooltip";
+    writeComposerDraft(ref, { text: `Run /${name}`, skillNames: [], commandNames: [name] });
+    await mountComposer(ref, {
+      evener: {
+        ...testThread(ref).evener,
+        capabilities: { ...FULL_CAPABILITIES, commandInput: true },
+        diagnostics: {
+          commands: [
+            { name: "review", source: "plugin", pluginName: "pkg", description: pluginDescription },
+            { name: "review", source: "project", description: projectDescription },
+          ],
+        },
+      },
+    });
+
+    const chip = textarea().querySelector("[data-command-name]");
+    expect(chip?.getAttribute("data-command-name")).toBe(name);
+    expect(chip?.getAttribute("title")).toBe(details);
+    expect(chip?.getAttribute("aria-label")).toBe(`/${name}: ${details}`);
+  },
+);
+
+test.each([undefined, []])("command chip details retain the missing owner catalog fallback %s", async (commands) => {
+  const ref = "ref_missing_command_tooltip";
+  writeComposerDraft(ref, { text: "Run /review", skillNames: [], commandNames: ["review"] });
+  await mountComposer(ref, {
+    evener: {
+      ...testThread(ref).evener,
+      capabilities: { ...FULL_CAPABILITIES, commandInput: true },
+      diagnostics: { commands },
+    },
+  });
+
+  const chip = textarea().querySelector("[data-command-name]");
+  expect(chip?.getAttribute("data-command-name")).toBe("review");
+  expect(chip?.getAttribute("title")).toBe("review — no longer in this session's command catalog");
+  expect(chip?.getAttribute("aria-label")).toBe("/review: review — no longer in this session's command catalog");
+});
+
+test.each([true, false])("explicit commands persist through remount and respect commandInput %s", async (supported) => {
+  const user = userEvent.setup();
+  const ref = "ref_atomic_command";
+  useCommandCatalog.setState({ commands: [{ name: "audit", source: "user", description: "command intent" }] });
+  const options = {
+    evener: {
+      ref,
+      capabilities: { ...FULL_CAPABILITIES, commandInput: supported },
+      queue: { revision: 0 },
+      diagnostics: { commands: [{ name: "audit", source: "user", description: "command intent" }] },
+    },
+  };
+  await mountComposer(ref, options);
+  await user.type(textarea(), "Before /aud");
+  await user.click(slashOptions().find((option) => option.textContent?.includes("command intent"))!);
+  await user.paste("after /audit");
+  expect(textarea().textContent).toBe("Before /audit after /audit");
+  expect(textarea().querySelectorAll("[data-command-name]")).toHaveLength(1);
+  cleanup();
+  const fake = await mountComposer(ref, options);
+  expect(textarea().querySelectorAll("[data-command-name]")).toHaveLength(1);
+  fake.on("turn/start", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+    turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+  }));
+  await user.click(submitButton());
+  await flushPendingTurnsProjectionForTests();
+  if (supported) {
+    expect(fake.calls.find((call) => call.method === "turn/start")?.params).toMatchObject({
+      input: [
+        { type: "text", text: "Before /audit after /audit" },
+        { type: "command", name: "audit" },
+      ],
+    });
+  } else {
+    expect(fake.calls.some((call) => call.method === "turn/start")).toBe(false);
+    expect(readComposerDraft(ref).commandNames).toEqual(["audit"]);
+    expect(textarea().textContent).toBe("Before /audit after /audit");
+  }
+});
+
+test.each(["same", "audit"])(
+  "authoritative queue edit preserves selected %s atoms in a fresh client through delete and resend",
+  async (name) => {
+    const user = userEvent.setup();
+    const ref = `ref_authoritative_${name}`;
+    const text = name === "same" ? "/same /same /same" : "/audit /audit";
+    const mentions = [
+      { kind: "command" as const, name, offset: 0 },
+      ...(name === "same" ? [{ kind: "skill" as const, name, offset: 6 }] : []),
+    ];
+    const { buildComposerInput } = await import("@evener/appwire-client");
+    const input = buildComposerInput(text, [], name === "same" ? [name] : [], [name], mentions);
+    // JSON is the accepted queue representation, with no local draft/outbox.
+    const accepted = JSON.parse(JSON.stringify(input));
+    const fake = await mountComposer(ref, {
+      evener: {
+        ref,
+        capabilities: { ...FULL_CAPABILITIES, commandInput: true, skillInput: true },
+        queue: {
+          revision: 1,
+          depth: 1,
+          ids: ["q1"],
+          texts: [accepted[0].text],
+          preview: [text],
+          commandNames: [[name]],
+          skillNames: [name === "same" ? [name] : []],
+          mentions: [accepted[0].mentions ?? []],
+        },
+      },
+    });
+    fake.on("turn/cancelQueued", (params) => ({
+      removedText: text,
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: "thread_a",
+        projectionState: "reflected",
+      },
+    }));
+    fake.on("turn/start", (params) => ({
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: "thread_a",
+        projectionState: "reflected",
+      },
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+    }));
+    await user.click(screen.getByRole("button", { name: "Edit message" }));
+    await flushPendingTurnsProjectionForTests();
+    expect(readComposerDraft(ref).mentions).toEqual(mentions);
+    expect(textarea().querySelectorAll("[data-command-name]")).toHaveLength(1);
+    expect(textarea().querySelectorAll("[data-skill-name]")).toHaveLength(name === "same" ? 1 : 0);
+    await selectEditorText(textarea(), name.length + 1);
+    await user.keyboard("{Backspace}");
+    expect(textarea().querySelectorAll("[data-command-name]")).toHaveLength(0);
+    await user.click(submitButton());
+    await flushPendingTurnsProjectionForTests();
+    const sent = (fake.calls.find((call) => call.method === "turn/start")?.params as { input: InputItem[] } | undefined)
+      ?.input;
+    expect(sent?.filter((item) => item.type === "command")).toEqual([]);
+    expect(sent?.filter((item) => item.type === "skill").map((item) => item.name)).toEqual(
+      name === "same" ? [name] : [],
+    );
+    expect(sent?.[0]?.text).toBe(name === "same" ? " /same /same" : " /audit");
+  },
+);
+
+test("queue edit retains current command and skill atom locations without activating duplicate prose", async () => {
+  const user = userEvent.setup();
+  const ref = "ref_queue_atom_intent";
+  writeComposerDraft(ref, {
+    text: "/same and /same and /same",
+    skillNames: ["same"],
+    commandNames: ["same"],
+    mentions: [
+      { kind: "command", name: "same", offset: 0 },
+      { kind: "skill", name: "same", offset: 10 },
+    ],
+  });
+  const fake = await mountComposer(ref, {
+    status: { type: "active" },
+    evener: {
+      ref,
+      capabilities: { ...FULL_CAPABILITIES, commandInput: true, skillInput: true },
+      activeTurnId: "turn_1",
+      queue: { revision: 1, depth: 1, ids: ["q1"], texts: ["queued prose"], preview: ["queued prose"] },
+    },
+  });
+  fake.on("turn/cancelQueued", (params) => ({
+    removedText: "queued prose",
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+  }));
+  await user.click(screen.getByRole("button", { name: "Edit message" }));
+  await flushPendingTurnsProjectionForTests();
+  expect(textarea().textContent).toBe("/same and /same and /same\n\nqueued prose");
+  expect(textarea().querySelectorAll("[data-command-name]")).toHaveLength(1);
+  expect(textarea().querySelectorAll("[data-skill-name]")).toHaveLength(1);
+  expect(readComposerDraft(ref).mentions).toEqual([
+    { kind: "command", name: "same", offset: 0 },
+    { kind: "skill", name: "same", offset: 10 },
+  ]);
+});
+
 test("repeated inline skills survive remount and undo while deletion reconciles activation", async () => {
   const user = userEvent.setup();
   const ref = "ref_inline_repeat";
@@ -5273,7 +5649,7 @@ test("repeated inline skills survive remount and undo while deletion reconciles 
   expect(readComposerDraft(ref)).toEqual({ text: original, skillNames: ["skill-1"] });
 
   cleanup();
-  render(<Composer ref={ref} focused={false} />);
+  render(<Composer ref={ref} source={createTestComposerSource(ref)} focused={false} />);
   await settleActivityDiscovery(ref);
   expect(textarea().textContent).toBe(original);
   expect(within(textarea()).getAllByTestId("composer-skill-chip")).toHaveLength(2);
@@ -5304,7 +5680,7 @@ test("a token typed directly against a chip is separated so the reference stays 
 
   // The same holds after a re-derivation, which re-reads the persisted value.
   cleanup();
-  render(<Composer ref={ref} focused={false} />);
+  render(<Composer ref={ref} source={createTestComposerSource(ref)} focused={false} />);
   await settleActivityDiscovery(ref);
   expect(textarea().textContent).toBe("Use /cleanup d");
   expect(within(textarea()).getAllByTestId("composer-skill-chip")).toHaveLength(1);
@@ -5416,7 +5792,7 @@ test.each(["before render", "before subscription"] as const)(
     render(
       <>
         <SeedBeforeSubscription />
-        <Composer ref={ref} focused={false} />
+        <Composer ref={ref} source={createTestComposerSource(ref)} focused={false} />
         <ObserveFirstCommit />
       </>,
     );
@@ -5513,7 +5889,9 @@ test("a selected skill the catalog no longer reports says so in its tooltip", as
 test("a token with no catalog match shows no menu", async () => {
   useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG });
   const user = userEvent.setup();
-  await mountComposer("ref_slash6");
+  await mountComposer("ref_slash6", {
+    evener: { ...testThread("ref_slash6").evener, diagnostics: { commands: REVIEW_RELEASE_CATALOG } },
+  });
 
   await user.type(textarea(), "hi /zzz");
 
@@ -5523,7 +5901,9 @@ test("a token with no catalog match shows no menu", async () => {
 test("ArrowDown/ArrowUp move the highlighted option and wrap at both ends", async () => {
   useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG });
   const user = userEvent.setup();
-  await mountComposer("ref_slash7");
+  await mountComposer("ref_slash7", {
+    evener: { ...testThread("ref_slash7").evener, diagnostics: { commands: REVIEW_RELEASE_CATALOG } },
+  });
   await user.type(textarea(), "hi /re");
   // Four matches: three contiguous beginnings, then one fuzzy match
   // (/drain-as-steer would be a second, but it is unavailable on an idle
@@ -5546,7 +5926,9 @@ test("ArrowDown/ArrowUp move the highlighted option and wrap at both ends", asyn
 test("Tab commits the highlighted option: splices /name<space> at the token start, caret after the space", async () => {
   useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG });
   const user = userEvent.setup();
-  await mountComposer("ref_slash8");
+  await mountComposer("ref_slash8", {
+    evener: { ...testThread("ref_slash8").evener, diagnostics: { commands: REVIEW_RELEASE_CATALOG } },
+  });
   const editor = textarea();
   await user.type(editor, "hi /re");
   // index 0 is the built-in /reasoning-effort, 1 /review, 2 /release.
@@ -5575,7 +5957,10 @@ test("committing a plugin-sourced catalog entry inserts the QUALIFIED /plugin:na
   await mountComposer("ref_slash_qualified", {
     evener: {
       ...testThread("ref_slash_qualified").evener,
-      diagnostics: { plugins: [{ name: "p", skillCount: 0, agentCount: 0, hookCount: 0, mcpCount: 0 }] },
+      diagnostics: {
+        commands: [{ name: "review", description: "review the diff", source: "plugin", pluginName: "p" }],
+        plugins: [{ name: "p", skillCount: 0, agentCount: 0, hookCount: 0, mcpCount: 0 }],
+      },
     },
   });
   const editor = textarea();
@@ -5590,7 +5975,10 @@ test("committing a plugin-sourced catalog entry inserts the QUALIFIED /plugin:na
 test("Enter commits the highlighted option and does NOT fall through to the composer's send routing", async () => {
   useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG });
   const user = userEvent.setup();
-  const fake = await mountComposer("ref_slash9", { status: { type: "idle" } });
+  const fake = await mountComposer("ref_slash9", {
+    status: { type: "idle" },
+    evener: { ...testThread("ref_slash9").evener, diagnostics: { commands: REVIEW_RELEASE_CATALOG } },
+  });
   fake.on("turn/start", (params) => ({
     receipt: {
       clientMutationId: params.clientMutationId,
@@ -5612,7 +6000,9 @@ test("Enter commits the highlighted option and does NOT fall through to the comp
 test("Escape closes the menu without clearing the draft, and typing further reopens it", async () => {
   useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG });
   const user = userEvent.setup();
-  await mountComposer("ref_slash10");
+  await mountComposer("ref_slash10", {
+    evener: { ...testThread("ref_slash10").evener, diagnostics: { commands: REVIEW_RELEASE_CATALOG } },
+  });
   const editor = textarea();
   await user.type(editor, "hi /re");
   expect(screen.queryByTestId("composer-slash-menu")).not.toBeNull();
@@ -5631,7 +6021,9 @@ test("Escape closes the menu without clearing the draft, and typing further reop
 test("blur closes the menu", async () => {
   useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG });
   const user = userEvent.setup();
-  await mountComposer("ref_slash11");
+  await mountComposer("ref_slash11", {
+    evener: { ...testThread("ref_slash11").evener, diagnostics: { commands: REVIEW_RELEASE_CATALOG } },
+  });
   const editor = textarea();
   await user.type(editor, "hi /re");
   expect(screen.queryByTestId("composer-slash-menu")).not.toBeNull();
@@ -5644,7 +6036,9 @@ test("blur closes the menu", async () => {
 test("clicking an option commits it without ever blurring the textarea", async () => {
   useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG });
   const user = userEvent.setup();
-  await mountComposer("ref_slash12");
+  await mountComposer("ref_slash12", {
+    evener: { ...testThread("ref_slash12").evener, diagnostics: { commands: REVIEW_RELEASE_CATALOG } },
+  });
   const editor = textarea();
   await user.type(editor, "hi /re");
   // index 0 is the built-in /reasoning-effort, 1 /review, 2 /release.
@@ -5659,7 +6053,9 @@ test("clicking an option commits it without ever blurring the textarea", async (
 test("the open menu wires listbox/option roles and aria-activedescendant on the textarea", async () => {
   useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG });
   const user = userEvent.setup();
-  await mountComposer("ref_slash13");
+  await mountComposer("ref_slash13", {
+    evener: { ...testThread("ref_slash13").evener, diagnostics: { commands: REVIEW_RELEASE_CATALOG } },
+  });
   const editor = textarea();
   await user.type(editor, "hi /re");
 

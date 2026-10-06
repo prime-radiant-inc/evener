@@ -20,12 +20,14 @@ import { WatchesTab } from "./WatchesTab";
 
 beforeAll(async () => {
   await import("../../panes/session");
+  await import("../../panes/transcript");
 });
 beforeEach(() => resetWorkspaceStoreForTests());
 
 afterEach(() => {
   cleanup();
   connectionStore.setState({ client: null, state: "idle" });
+  resetWorkspaceStoreForTests();
   vi.restoreAllMocks();
 });
 const scope = () =>
@@ -46,17 +48,27 @@ it("shows incomplete empty as progress then drills the exact stable delegate chi
   });
   connectionStore.getState().connect(client);
   const root = workspaceStore.getState().openPane("session", { ref: "remote:owner" });
+  const source = workspaceStore.getState().mainPane();
   render(<AgentsTab scope={scope()} />);
   expect(screen.getByText(/Loading subagents/)).toBeTruthy();
   expect(screen.queryByText(/No subagents/)).toBeNull();
   await waitFor(() => expect(finish).toBeTypeOf("function"));
   finish?.();
-  fireEvent.click(await screen.findByRole("button", { name: /inspect/ }));
-  const child = workspaceStore.getState().panes.find((pane) => pane.type === "transcript");
-  expect(child?.params).toEqual({ ref: "other:opaque/child", parentRef: "remote:owner" });
-  expect(child?.slot).toBe("secondary");
-  expect(workspaceStore.getState().focusedPaneId).toBe(child?.id);
-  expect(workspaceStore.getState().mainPane()?.id).toBe(root);
+  const inspect = await screen.findByRole("button", { name: /inspect/ });
+  await act(async () => fireEvent.click(inspect));
+  const cascade = workspaceStore.getState().panes.find((pane) => pane.type === "sessionZoom");
+  expect(workspaceStore.getState().mainPane()).toBe(source);
+  expect(cascade?.type).toBe("sessionZoom");
+  expect(cascade?.slot).toBe("secondary");
+  expect(cascade?.params).toEqual({
+    ref: "other:opaque/child",
+    source: { type: "transcript", params: { ref: "remote:owner" } },
+    edges: [{ ownerRef: "remote:owner", childRef: "other:opaque/child", delegateId: "raw-id" }],
+    inspection: { origin: { paneId: root, type: "session", ref: "remote:owner" } },
+  });
+  expect(cascade?.id).not.toBe(root);
+  expect(workspaceStore.getState().focusedPaneId).toBe(cascade?.id);
+  expect(workspaceStore.getState().panes.filter((pane) => pane.type === "transcript")).toHaveLength(0);
   expect(client.calls.filter((call) => call.method === "evener/thread/jobs/list")).toHaveLength(0);
 });
 it("opens job output using the supplied job transcript ref and raw owner", async () => {
@@ -68,14 +80,14 @@ it("opens job output using the supplied job transcript ref and raw owner", async
     page: { complete: true, issues: [] },
   }));
   connectionStore.getState().connect(client);
-  const open = vi.spyOn(workspaceStore.getState(), "openPane").mockImplementation(() => "test-pane");
   render(<JobsTab scope={scope()} />);
   fireEvent.click(await screen.findByRole("button", { name: /run checks/ }));
-  expect(open).toHaveBeenCalledWith(
-    "transcript",
-    { ref: "job:authoritative", parentRef: "source:owner" },
-    { slot: "secondary" },
-  );
+  const opened = workspaceStore.getState().panes.find((pane) => pane.type === "transcript");
+  expect(opened).toMatchObject({
+    slot: "secondary",
+    params: { ref: "job:authoritative", parentRef: "source:owner" },
+  });
+  expect(workspaceStore.getState().focusedPaneId).toBe(opened?.id);
 });
 
 it("visible page-boundary demand heals a failed continuation while the actual tab stays mounted", async () => {

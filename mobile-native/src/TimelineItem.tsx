@@ -1,4 +1,9 @@
-import type { ActivityTree, EvenerDelegateInfo } from "@evener/appwire-client";
+import {
+	type ActivityTree,
+	type EvenerDelegateInfo,
+	itemIdentityMatches,
+	type TurnModel,
+} from "@evener/appwire-client";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -10,10 +15,12 @@ import { setDisclosureOpenAll, useDisclosureOpenAmong } from "./nativeDisclosure
 import type { MobileTimelineItem } from "./projectedRows";
 import type { NativeFileOpenContext } from "./reader/markdownFileReferences";
 import { useMinuteClock } from "./session/minuteClock";
+import { useNowPastQuiet } from "./session/quietClock";
 import { rowDisclosureIds } from "./session/disclosureKeys";
 import type { ErrorAction } from "./session/errorAction";
 import { ErrorRow } from "./session/ErrorRow";
 import { NotificationCards } from "./session/NotificationCards";
+import { ApprovalHistory } from "./session/ApprovalHistory";
 import { QuestionHistory } from "./session/QuestionHistory";
 import { RunRow } from "./session/RunRow";
 import { SubagentRow } from "./session/SubagentRow";
@@ -25,12 +32,14 @@ import { subagentOutcome } from "./subagents/subagentModel";
 import { TranscriptImages } from "./TranscriptImages";
 import { isCriticalNotice, noticeLabel, type TimelineRow } from "./timeline";
 import type { ActivityPresentation } from "./transcriptPresentation";
-import { Action, allowFontScaling, Copy, styles, useColors, useTextScale } from "./ui";
+import { allowFontScaling, Copy, styles, useColors, useTextScale } from "./ui";
+import { Button } from "./sheet/Grouped";
 
 export function TimelineItem({
 	item,
 	hubId,
 	sessionRef,
+	sourceTurns,
 	activityPresentation,
 	expandByDefault = false,
 	showDuration = true,
@@ -51,6 +60,8 @@ export function TimelineItem({
 	item: TimelineRow;
 	hubId: string;
 	sessionRef: string;
+	/** Retained canonical turns, read only when a shared-notes snapshot opens. */
+	sourceTurns?: readonly TurnModel[];
 	activityPresentation?: ActivityPresentation;
 	expandByDefault?: boolean;
 	showDuration?: boolean;
@@ -99,6 +110,16 @@ export function TimelineItem({
 	const quietThought = item.kind === "failure" && item.thought === true && item.title !== "Thought failed";
 	const textScale = useTextScale();
 	const label = item.kind === "notice" ? noticeLabel(item) : undefined;
+	const noticeText = useMemo(() => {
+		if (item.kind !== "notice") return undefined;
+		if (!expanded || item.origin !== "system" || item.eventKind !== "notes-context" || !sourceTurns) return item.text;
+		// List rows stay bounded. Only an opened notes disclosure reads the
+		// full opaque payload from the canonical model already held by the store.
+		return (
+			sourceTurns.find((turn) => turn.id === item.turnId)?.items.find((source) => itemIdentityMatches(source, item))
+				?.text ?? item.text
+		);
+	}, [expanded, item, sourceTurns]);
 	let content: ReactNode;
 	switch (item.kind) {
 		case "details":
@@ -110,6 +131,7 @@ export function TimelineItem({
 							item={entry}
 							hubId={hubId}
 							sessionRef={sessionRef}
+							sourceTurns={sourceTurns}
 							errorActionFor={errorActionFor}
 							onErrorAction={onErrorAction}
 						/>
@@ -145,7 +167,11 @@ export function TimelineItem({
 				</>
 			);
 			break;
-		case "notice":
+		case "notice": {
+			if (item.family === "approval") {
+				content = <ApprovalHistory text={item.text} decidedAtMs={item.decidedAtMs} />;
+				break;
+			}
 			if (item.notifications) {
 				content = (
 					<NotificationCards
@@ -166,11 +192,12 @@ export function TimelineItem({
 					attention={item.tone === "attention"}
 				/>
 			) : (
-				<SystemEvent label={label} text={item.text} hint={item.hint} expanded={expanded} onToggle={toggle}>
+				<SystemEvent label={label} text={noticeText} hint={item.hint} expanded={expanded} onToggle={toggle}>
 					{item.rendersMarkdown ? <MarkdownResponse markdown={item.text} /> : undefined}
 				</SystemEvent>
 			);
 			break;
+		}
 		case "failure":
 			if (quietThought) {
 				content = (
@@ -237,12 +264,14 @@ export function TimelineItem({
 			content = (
 				<>
 					{activityPresentation?.summary ? <Copy muted>{activityPresentation.summary}</Copy> : null}
-					<Action
-						tone="quiet"
-						label={`${expanded ? "Collapse" : "Expand"} ${stepName}`}
+					<Button
+						text
+						quiet
+						label={`${expanded ? "▾" : "▸"} ${stepName} · ${item.state}`}
+						accessibilityLabel={`${expanded ? "Collapse" : "Expand"} ${stepName}`}
 						expanded={expanded}
 						onPress={toggle}
-					>{`${expanded ? "▾" : "▸"} ${stepName} · ${item.state}`}</Action>
+					/>
 					{expanded ? (
 						<>
 							{item.detail.arguments ? (
@@ -411,7 +440,7 @@ function AgentMessage({
 			>
 				<SafeAreaView style={[styles.fill, { backgroundColor: colors.background }]}>
 					<View style={[styles.row, { paddingHorizontal: 16, justifyContent: "flex-end" }]}>
-						<Action onPress={() => setSelecting(false)}>Done</Action>
+						<Button text label="Done" onPress={() => setSelecting(false)} />
 					</View>
 					<ScrollView contentContainerStyle={{ padding: 16 }}>
 						<Copy variant="agentProse">{markdown}</Copy>
@@ -435,8 +464,9 @@ function Subagent({
 	tree: ActivityTree | null | undefined;
 	openSubagent: ((ref: string, title: string) => void) | undefined;
 }) {
-	// The state's time ("failed · 6m") moves on with the minute clock.
-	const now = useMinuteClock();
+	// The state's time ("failed · 6m") moves on with the minute clock, and
+	// its line turns Quiet the moment a silent subagent crosses into it.
+	const now = useNowPastQuiet(useMinuteClock(), (at) => [subagentLine(row, delegates, at).quietForMs]);
 	const line = subagentLine(row, delegates, now);
 	// A finished subagent's outcome, as the Subagents list gives it, once the
 	// tree shows it done; until then the line says what the roster knows.

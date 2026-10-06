@@ -15,7 +15,7 @@ import (
 
 func TestReadOutputSnapshotFromFilePinsOpenedOutput(t *testing.T) {
 	for _, replacement := range []string{"regular", "symlink", "fifo"} {
-		for _, api := range []string{"snapshot", "window"} {
+		for _, api := range []string{"snapshot", "window", "page"} {
 			t.Run(replacement+"/"+api, func(t *testing.T) {
 				dir := t.TempDir()
 				path := filepath.Join(dir, "job.log")
@@ -63,6 +63,11 @@ func TestReadOutputSnapshotFromFilePinsOpenedOutput(t *testing.T) {
 						done <- result{content: got.Content, err: err}
 						return
 					}
+					if api == "page" {
+						got, err := ReadOutputPageSnapshotFromFile(path, f, nil, 1024)
+						done <- result{content: got.Content, err: err}
+						return
+					}
 					got, err := ReadOutputWindowSnapshotFromFile(path, f, 0, 1024)
 					done <- result{content: got.Content, err: err}
 				}()
@@ -95,6 +100,9 @@ func TestReadOutputSnapshotFromFileRejectsNilFile(t *testing.T) {
 	}
 	if _, err := ReadOutputWindowSnapshotFromFile("unused", nil, 0, 1); err == nil {
 		t.Fatal("ReadOutputWindowSnapshotFromFile(nil) succeeded")
+	}
+	if _, err := ReadOutputPageSnapshotFromFile("unused", nil, nil, 1); err == nil {
+		t.Fatal("ReadOutputPageSnapshotFromFile(nil) succeeded")
 	}
 }
 
@@ -255,15 +263,18 @@ func TestReadOutputWindowSnapshotFromFileConcurrentAppend(t *testing.T) {
 }
 
 func TestReadOutputSnapshotFromFilePreservesPostReadObservationError(t *testing.T) {
-	for _, api := range []string{"snapshot", "window"} {
+	for _, api := range []string{"snapshot", "window", "page"} {
 		t.Run(api, func(t *testing.T) {
 			path, f := newOutputSnapshotFile(t, 1024, "stable\n")
 			fs := &fdPostReadObservationFaultFS{Fs: afero.NewOsFs(), path: path}
 
 			var err error
-			if api == "snapshot" {
+			switch api {
+			case "snapshot":
 				_, err = readOutputSnapshotFromFileOnce(fs, path, f, 1024, false)
-			} else {
+			case "page":
+				_, err = readOutputPageSnapshotFromFileOnce(fs, path, f, nil, 1024)
+			default:
 				_, err = readOutputWindowSnapshotFromFileOnce(fs, path, f, 0, 1024)
 			}
 			if !errors.Is(err, errFDPostReadObservation) || errors.Is(err, errOutputChanged) {
@@ -294,6 +305,9 @@ func TestReadOutputSnapshotFromFileDetectsPrunedGeneration(t *testing.T) {
 	}
 	if _, err := ReadOutputWindowSnapshotFromFile(path, stale, o.RetainedStart(), 4); !errors.Is(err, ErrOutputChangedDuringRead) {
 		t.Fatalf("stale window error = %v, want ErrOutputChangedDuringRead", err)
+	}
+	if _, err := ReadOutputPageSnapshotFromFile(path, stale, nil, 4); !errors.Is(err, ErrOutputChangedDuringRead) {
+		t.Fatalf("stale page error = %v, want ErrOutputChangedDuringRead", err)
 	}
 
 	fresh, err := os.Open(path)

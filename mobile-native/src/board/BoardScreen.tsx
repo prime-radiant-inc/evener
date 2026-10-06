@@ -16,7 +16,6 @@ import {
 	useEffect,
 	useLayoutEffect,
 	useMemo,
-	useReducer,
 	useRef,
 	useState,
 	useSyncExternalStore,
@@ -53,7 +52,7 @@ import type { Routes } from "../screens";
 import { sheetKey, useProvideSheetHost } from "../sheet/sheetHosts";
 import { useScreenInFront } from "../sheet/useScreenInFront";
 import { Toast, type ToastController, useToast } from "../Toast";
-import { Action, allowFontScaling, useColors, useTextScale } from "../ui";
+import { allowFontScaling, useColors, useTextScale } from "../ui";
 import {
 	type Band,
 	boardState,
@@ -68,7 +67,6 @@ import {
 	summaryText,
 	usualPlace,
 } from "./attention";
-import { ACTIVITY_POLL_MS, ActivityPoll, isFreshRead } from "./activityPoll";
 import { type BoardItem, groupItems, liveItems, pinnedItems, projectItems } from "./boardItems";
 import type { OrganizeBy, SeenMarkers } from "./boardMemory";
 import { ROW_MOVE } from "./boardMotion";
@@ -82,6 +80,7 @@ import { BoardListRow, type RowContext } from "./BoardRows";
 import { BoardToolbar, type ToolbarPlacement } from "./BoardToolbar";
 import { type BoardController, type BoardSnapshot, createBoardController } from "./boardData";
 import { useBoardReadRetry } from "./useBoardReadRetry";
+import { useActivityPoll } from "./useActivityPoll";
 import { type HeldAction, heldFor, heldProjectState, heldVerb, turnSeen, waitingLine } from "./boardHold";
 import { onBoardJump } from "./boardJump";
 import { BoardReplay } from "./boardReplay";
@@ -140,6 +139,7 @@ import { PROJECT_SECTIONS, showExpanded, useProjectSections } from "./useProject
 import { useSettledList } from "./useSettledList";
 import { FLOAT_GAP, underBar, useBarHeight } from "../design/underBar";
 import { destructiveButton, haptic } from "../haptics";
+import { Button } from "../sheet/Grouped";
 
 type Props = NativeStackScreenProps<Routes, "Sessions">;
 type Navigation = Props["navigation"];
@@ -1725,55 +1725,6 @@ function useFirstRun(board: BoardController, markers: SeenMarkers, snapshot: Boa
 	}, [board, markers, snapshot, focused]);
 }
 
-const noSubscription = () => () => {};
-const noRevision = () => 0;
-
-/** S5's activity for every live session (activityPoll.ts), polled while
- * connected and in front. A poll is bound to the client it was made with, so
- * each client gets a fresh one, and there is none without a client. The
- * revision changes whenever the poll's report does: a read lands, or the hub
- * turns out to predate S5.
- *
- * The underlying client survives a reconnect (hubConnection.ts), so a poll
- * that stops on disconnect still holds its last read, and a hub that reports
- * ready but has stopped delivering reads leaves the same stale data behind
- * without ever disconnecting at all - reading either as current would let a
- * read merely aging past isFreshRead's threshold read as "stuck", a false
- * alarm about the connection or the hub rather than the session (Jesse's
- * ruling). Gating the RETURNED reading on `connected` AND freshness, and
- * never handing back the poll itself, means no caller can read around this:
- * every row, its meter and the Working order all fall back to their pre-S5
- * appearance the moment either one fails, and agree with each other since
- * there is only the one gate. Nothing re-renders the Board when a read merely
- * ages, so while a fresh read is on screen the recheck below re-renders at
- * the polling cadence, dropping the read within one interval of its going
- * stale, whatever becomes of the poll meanwhile. With no fresh read on screen
- * there is nothing to expire, so it doesn't run: not before the first read
- * lands, not while reads keep failing, and never on a hub that predates S5.
- * The returned `tick` is that same recheck's counter: `bands`' isStuck sort
- * closes over `msSinceRead`, so it needs this to re-sort Working within one
- * poll interval of a row crossing into stuck from elapsed time alone, in
- * step with its why-line (which reads `msSinceRead` live on every render). */
-function useActivityPoll(client: ConversationClientLike | null, connected: boolean, inFront: boolean) {
-	const poll = useMemo(() => (client ? new ActivityPoll(client) : null), [client]);
-	const revision = useSyncExternalStore(poll?.subscribe ?? noSubscription, poll?.getRevision ?? noRevision);
-	useEffect(() => {
-		if (!poll || !connected || !inFront) return;
-		poll.start();
-		return () => poll.stop();
-	}, [poll, connected, inFront]);
-	const msSinceRead = poll?.msSinceRead() ?? null;
-	const reading = connected && isFreshRead(msSinceRead) ? poll : null;
-	const [tick, recheck] = useReducer((n: number) => n + 1, 0);
-	useEffect(() => {
-		if (!reading || !inFront) return;
-		const timer = setInterval(recheck, ACTIVITY_POLL_MS);
-		return () => clearInterval(timer);
-	}, [reading, inFront]);
-	const activityOf = useCallback((ref: string) => reading?.activity(ref), [reading]);
-	return { revision, activityOf, msSinceRead: reading ? msSinceRead : null, tick };
-}
-
 /** The hub's seen marks (S4): marks go out whenever the connection is ready,
  * which resends any a dropped connection lost and sends those made while
  * offline, and each pending mark is pruned once a row the Board has loaded,
@@ -1822,9 +1773,12 @@ function useHeader(
 			],
 			headerLeft: () => hubButton,
 			headerRight: () => (
-				<Action label="Search sessions" onPress={revealSearch}>
-					{fontScale > 1.4 ? "Find" : "Search"}
-				</Action>
+				<Button
+					text
+					label={fontScale > 1.4 ? "Find" : "Search"}
+					accessibilityLabel="Search sessions"
+					onPress={revealSearch}
+				/>
 			),
 		});
 	}, [navigation, hubId, hubName, revealSearch, fontScale, glass, page]);
@@ -2105,9 +2059,7 @@ function EmptyBoard({ disabled, onNewSession }: { disabled: boolean; onNewSessio
 			>
 				Nothing's running. Start a session to put an agent to work.
 			</Text>
-			<Action tone="primary" disabled={disabled} onPress={onNewSession}>
-				New session
-			</Action>
+			<Button primary compact label="New session" disabled={disabled} onPress={onNewSession} />
 		</View>
 	);
 }

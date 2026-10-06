@@ -88,6 +88,7 @@ export function NotesSheet({ route, navigation }: NativeStackScreenProps<Routes,
 			<ScrollView
 				automaticallyAdjustKeyboardInsets
 				keyboardShouldPersistTaps="handled"
+				keyboardDismissMode="on-drag"
 				contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 8, paddingBottom: 24, gap: 24 }}
 			>
 				<NotesBody

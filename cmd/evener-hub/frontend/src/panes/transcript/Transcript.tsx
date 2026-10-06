@@ -18,31 +18,21 @@
 // so landing at the latest, near-top paging, following a prepend, and the
 // geometry fill behind a too-short page all behave identically on both
 // surfaces instead of drifting apart in a second implementation.
-import { configFingerprint, projectThread, resolveEffectiveConfig } from "@evener/appwire-client";
-import { useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "zustand";
+import { conversationPaneLifetime } from "../../shell/paneLifetime";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { ScopeCrumbs } from "../../shell/statusbar/ScopeCrumbs";
 import { deriveScope } from "../../shell/statusbar/statusScope";
-import { connectionStore } from "../../stores/connection";
+import { workspaceStore } from "../../shell/workspace";
 import { navigationStore } from "../../stores/navigation/store";
 import { useSessionActivity } from "../../stores/sessionActivity";
-import { threadsStore } from "../../stores/threads";
-import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
-import { EmptyState, PaneScaffold, type VirtualListHandle } from "../../widgets";
+import { useThreadsStore } from "../../stores/threads";
+import { EmptyState, PaneScaffold } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
-import { VisuallyHidden } from "../../widgets/internal/VisuallyHidden";
-import { NOW_TICK_MS, SessionNowContext, useNowTick } from "../session/liveness";
-import { LoadOlderRow } from "../session/transcript/flow/LoadOlderRow";
-import { useTranscriptScroll } from "../session/transcript/flow/useTranscriptScroll";
-import {
-  TranscriptBody,
-  transcriptAnchorEntriesForRows,
-  transcriptRowsForProjection,
-  transcriptSourceTurnRowIndexesForRows,
-} from "../session/transcript/TranscriptBody";
-import { useTranscript } from "../session/transcript/useTranscript";
+import { TranscriptSourcePaneContext } from "../session/transcript/TranscriptBody";
+import { retainedTranscriptReadView } from "../session/transcript/transcriptReadView";
 import { JobLog } from "./JobLog";
+import { ReadOnlyThreadContent } from "./ReadOnlyThreadContent";
 import styles from "./transcript.module.css";
 
 const CLASS = {
@@ -76,140 +66,30 @@ export default function Transcript({ params, paneId }: PaneProps<TranscriptParam
 
 function ThreadTranscript({ params, paneId }: { params: TranscriptParams; paneId?: string }) {
   const { ref } = params;
-  const now = useNowTick(NOW_TICK_MS);
+  const pane = useStore(workspaceStore, (state) =>
+    state.panes.find(
+      (record) =>
+        record.id === paneId && record.type === "transcript" && (record.params as TranscriptParams).ref === ref,
+    ),
+  );
+  const view = pane ? retainedTranscriptReadView(conversationPaneLifetime(pane), ref, "transcript") : undefined;
+  const model = useThreadsStore((state) => state.threads.get(ref));
   const { snapshot: activity } = useSessionActivity(ref);
   const scope = deriveScope(navigationStore.getState(), ref, activity);
-  const ancestry =
-    scope.ancestryKnown && scope.path.length > 1 ? (
-      <div className={CLASS.scope}>
-        <ScopeCrumbs path={scope.path} hierarchy />
-      </div>
-    ) : null;
-
-  // ensureThread on mount / releaseThread on unmount, deferred until the one
-  // client is actually ready - a deep-linked open can reach this effect before
-  // the handshake finishes, and request() rejects until then. Exactly the
-  // SessionPane lifecycle (see its own comment); once the single attempt has
-  // fired it is never repeated (a reconnect blip is the store's own concern).
-  useEffect(() => {
-    let started = false;
-    const tryStart = () => {
-      if (started || connectionStore.getState().state !== "ready") return;
-      started = true;
-      threadsStore
-        .getState()
-        .ensureThread(ref)
-        .catch(() => {});
-    };
-    tryStart();
-    const unsubscribe = connectionStore.subscribe(tryStart);
-    return () => {
-      unsubscribe();
-      if (started) threadsStore.getState().releaseThread(ref);
-    };
-  }, [ref]);
-
-  // Older-turn paging is automatic here too, and reports a failed page inline
-  // with a Retry rather than as a toast - see Session.tsx's own comment on the
-  // same wiring. This surface passes the RAW loadOlder to the coordinator (its
-  // rejections are best-effort, like the live pane's near-top trigger) and the
-  // reporting one to the row, so the row's own geometry fill and its Retry
-  // still surface a failure inline.
-  const { model, loadOlder, loadingOlder, loadOlderReportingError, olderError, cancelOlder } = useTranscript(
-    ref,
-    paneId,
-  );
-  const listRef = useRef<VirtualListHandle>(null);
-  const announcementSequence = useRef(0);
-  const [viewAnnouncement, setViewAnnouncement] = useState({ text: "", key: 0 });
-
-  const displayViewport = useStore(transcriptDisplayStore, (state) => state.viewport);
-  const displayLocal = useStore(transcriptDisplayStore, (state) => state.local[displayViewport]);
-  const displayHub = useStore(transcriptDisplayStore, (state) => state.hub[displayViewport]);
-  const displayConfig = useMemo(
-    () => resolveEffectiveConfig({ local: displayLocal, hub: displayHub, layout: displayViewport }),
-    [displayHub, displayLocal, displayViewport],
-  );
-
-  // The projection/rows/anchors are derived here, not left to TranscriptBody,
-  // for the same reason Session.tsx derives them: the scroll coordinator needs
-  // the ROW count and the anchor list, and rows are not turns (a cross-turn
-  // intent run coalesces into one row, a turn can split into several). Handing
-  // the body the same trio also keeps one derivation per revision.
-  const projection = useMemo(() => (model ? projectThread(model, displayConfig) : undefined), [model, displayConfig]);
-  const rows = useMemo(() => (projection ? transcriptRowsForProjection(projection) : []), [projection]);
-  const anchorEntries = useMemo(() => transcriptAnchorEntriesForRows(rows), [rows]);
-  const sourceTurnRowIndexes = useMemo(() => transcriptSourceTurnRowIndexesForRows(rows), [rows]);
-  const preparedView = useMemo(
-    () => (projection ? { projection, rows, anchorEntries } : undefined),
-    [projection, rows, anchorEntries],
-  );
-
-  // The same scroll coordinator the live pane runs: it lands at the end on
-  // open, pages near the top, follows a prepend without stranding the reader
-  // above the latest, and owns the stick-to-bottom bookkeeping. The read-only
-  // surface renders none of the pill/ask-dock UI it also feeds.
-  useTranscriptScroll({
-    ref,
-    model,
-    listRef,
-    loadOlder,
-    cancelOlder,
-    viewKey: configFingerprint(displayConfig),
-    anchorEntries,
-    renderedRowCount: rows.length,
-    sourceTurnRowIndexes,
-  });
-
-  if (!model) {
-    return (
-      <PaneScaffold title={ref}>
-        {ancestry}
-        <EmptyState title="Loading transcript…" />
-      </PaneScaffold>
-    );
-  }
-
-  const content = (
-    <PaneScaffold title={model.name || ref}>
+  return (
+    <PaneScaffold title={model?.name || ref}>
       <div className={CLASS.body}>
-        {ancestry}
+        {scope.ancestryKnown && scope.path.length > 1 && (
+          <div className={CLASS.scope}>
+            <ScopeCrumbs path={scope.path} hierarchy />
+          </div>
+        )}
         <div className={CLASS.list}>
-          {model.turns.length === 0 ? (
-            <EmptyState title="No turns yet" hint="This thread hasn't sent or received anything yet." />
-          ) : (
-            <TranscriptBody
-              model={model}
-              config={displayConfig}
-              preparedView={preparedView}
-              surface="readOnly"
-              disclosureScope={`transcript:readOnly:${ref}`}
-              sessionRef={ref}
-              viewId={paneId}
-              sourcePaneId={paneId}
-              onAnnounceViewChange={(summary) => {
-                announcementSequence.current += 1;
-                setViewAnnouncement({ text: `Transcript detail: ${summary}`, key: announcementSequence.current });
-              }}
-              loadOlderRow={
-                model.olderCursor && (
-                  <LoadOlderRow
-                    onLoad={loadOlderReportingError}
-                    loading={loadingOlder}
-                    error={olderError}
-                    scrollElement={() => listRef.current?.getScrollElement() ?? null}
-                  />
-                )
-              }
-              listRef={listRef}
-            />
-          )}
-        </div>
-        <div role="status" aria-live="polite" data-testid="transcript-view-announcement">
-          <VisuallyHidden key={viewAnnouncement.key}>{viewAnnouncement.text}</VisuallyHidden>
+          <TranscriptSourcePaneContext.Provider value={paneId}>
+            {view ? <ReadOnlyThreadContent ref={ref} view={view} /> : <EmptyState title="Loading transcript…" />}
+          </TranscriptSourcePaneContext.Provider>
         </div>
       </div>
     </PaneScaffold>
   );
-  return <SessionNowContext.Provider value={now}>{content}</SessionNowContext.Provider>;
 }

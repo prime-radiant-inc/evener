@@ -4,6 +4,7 @@
 // numbers, or nothing at all (a plugin load keeps its summary in the
 // description).
 
+import { APPROVAL_DECISION_EVENT_KIND, approvalDecisionOf, approvalDecisionText } from "./approvalDecision";
 import { formatTokenCount } from "./displayFormat";
 import type { ItemModel } from "./model";
 
@@ -62,6 +63,7 @@ function contextCompactedText(pass: Record<string, unknown>): string {
  * - A plugin load reads its name from raw.pluginLoaded, and a compaction pass
  *   its numbers from raw.compaction. A daemon that sent no such structure
  *   still said something in its text, which is kept.
+ * - A human's Allow or Deny reads its decision from raw.approvalDecision.
  * - A compaction's summary or checkpoint folds under "Context summary".
  * - Every other event's text is its words. */
 export function systemEventWords(item: Pick<ItemModel, "eventKind" | "text" | "raw">): {
@@ -81,8 +83,14 @@ export function systemEventWords(item: Pick<ItemModel, "eventKind" | "text" | "r
       const text = item.text.trim();
       return { text: text && text !== COMPACTION_RAN_TEXT ? item.text : "Context compacted" };
     }
+    case APPROVAL_DECISION_EVENT_KIND: {
+      const decision = approvalDecisionOf(item);
+      return { text: decision ? approvalDecisionText(decision) : item.text };
+    }
     case "compaction":
       return { text: item.text, label: CONTEXT_SUMMARY_LABEL, rendersMarkdown: true };
+    case "notes-context":
+      return { text: item.text, label: "Shared notes updated" };
     default:
       return { text: item.text };
   }

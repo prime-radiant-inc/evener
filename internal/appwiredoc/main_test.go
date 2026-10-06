@@ -339,3 +339,22 @@ func TestBuildIncludesSessionActivityResources(t *testing.T) {
 		})
 	}
 }
+
+func TestBuildIncludesJobOutputPage(t *testing.T) {
+	for _, tv := range build().Types {
+		if tv.Name != "JobOutputPage" {
+			continue
+		}
+		fields := map[string]bool{}
+		for _, field := range tv.Fields {
+			fields[field.JSON] = true
+		}
+		for _, name := range []string{"offsetBytes", "bytesReturned", "totalBytes", "retainedStartBytes", "encoding", "data"} {
+			if !fields[name] {
+				t.Fatalf("JobOutputPage missing field %q: %+v", name, tv.Fields)
+			}
+		}
+		return
+	}
+	t.Fatal("build() missing JobOutputPage")
+}

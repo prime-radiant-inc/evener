@@ -39,7 +39,6 @@ and should not be presented as reproduced production incidents.
 | [C06](#c06-rejected-image-message-recovery) | Medium | Rejected image messages cannot be restored intact for correction | S03, S11 |
 | [C07](#c07-model-discovery-and-default-launch) | Medium | Model discovery delays default launch and stays failed in an open form | S02, S03, S16 |
 | [C08](#c08-remote-provider-setup-at-launch) | Medium | Remote setup sends the user away from an otherwise usable setup path | S02, S07, S15 |
-| [C09](#c09-following-shell-job-output) | Medium | Job output stays static until Refresh; older output needs clicks | S02, S10, S12 |
 | [C10](#c10-quiet-task-panels) | Medium | A quiet Tasks panel remains failed until Try again | S02, S03, S05, S12 |
 | [C12](#c12-remote-credential-transfer-outcomes) | Medium | Reconnecting hides a completed credential-transfer report; uncertain transfers require manual investigation | S02, S05, S07, S15 |
 | [C13](#c13-storage-unavailable-send-fallback-ordering-and-stop-fence) | High (deferred) | A storage wedge lets a web send reorder, escape a cross-tab Stop, or duplicate | S02, S11 |
@@ -212,7 +211,7 @@ yet correcting and resending requires rebuilding the composition manually.
 
 **Evidence.** [MutationRecoveryPanel](../../mobile-native/src/MutationRecoveryPanel.tsx#L105)
 limits restore to attachment-free text;
-[ghost actions](../../mobile-native/src/session/ghosts.ts#L184) explicitly make
+[ghost actions](../../mobile-native/src/session/ghosts.ts#L185) explicitly make
 image rejection discard-only. `MutationRecoveryPanel.test.tsx` pins the behavior.
 Other native draft flows already preserve media; browser attachment parity is
 not established by this case.
@@ -307,37 +306,6 @@ from the blocked launch without route hunting or accidental local-host
 substitution. The original composition and settings survive. A pending Start
 continues once on the selected host after readiness is confirmed; cancellation
 prevents it, and a form without a pending Start remains ready for submission.
-
-### C09 Following shell-job output
-
-**Current behavior.** The browser job transcript reads one tail. A running job
-can remain at No output yet or old content until Refresh. Refresh replaces the
-tail and discards earlier pages; older output requires repeated clicks and a
-failed older read is silent. Reconnect does not reset the effect's started flag.
-
-**Evidence.** [JobLog](../../cmd/evener-hub/frontend/src/panes/transcript/JobLog.tsx#L68)
-owns the reads, [loadEarlier](../../cmd/evener-hub/frontend/src/panes/transcript/JobLog.tsx#L149)
-only clears loading on failure, and the
-[controls](../../cmd/evener-hub/frontend/src/panes/transcript/JobLog.tsx#L164)
-require Refresh/Load earlier output. No focused live-view test establishes
-automatic following for this component.
-
-**Decision.** An open job-output viewer stays current automatically. Follow new
-output while the reader is at the bottom; when they scroll into earlier output,
-continue receiving new output without moving their reading position. Returning
-to the live end shows the latest available output. Load retained older output on
-scroll demand, recover temporary read failures automatically, and obtain final
-output when the job finishes. Use bounded memory and fetch activity appropriate
-to the visible viewer; this does not require monitoring every unopened job.
-Subscription or polling mechanics remain an implementation choice.
-Implementation remains pending.
-
-**Acceptance.** Open before first output and observe output through completion
-without clicking. While reading older output, verify new output continues to
-arrive without moving the reading position; returning to the live end shows it.
-Older paging and new output coexist without gaps or duplication, and a failed
-read recovers automatically. A high-volume job does not require unbounded
-client memory.
 
 ### C10 Quiet task panels
 
@@ -1397,8 +1365,6 @@ These are useful patterns and preservation checks, rather than new fix requests.
   corruption has different requirements from a broken projection.
 - [Task-tool loading](../../agent/session_tools_task.go#L340) retries after a
   transient load failure without replacing malformed source with an empty plan.
-  [Retained scratch restoration](../../agent/session_scratch_retention.go#L1594)
-  repairs specific directory/pin problems and validates the ownership graph.
 - [History repair](../../agent/history_repair.go#L127) records interrupted tool
   execution honestly; [lost-job reconciliation](../../agent/jobs.go#L1457) ends
   lost owned runtime with retained output and delivery. Neither blindly restarts
@@ -1445,7 +1411,7 @@ every branch. A gap is not evidence that the subsystem is correct or broken.
 | S10 History | Authoritative transcript versus derived projection, rebuild/quarantine, reader demand and job-log access | Very large histories, rebuild cost, scroll stability and complete read-model corruption matrix |
 | S11 Input queues | Accepted/unknown/failed input, durable native/browser recovery and TUI identity/media gaps | Cross-process/device durability, accepted-but-unacknowledged outcomes and stop barriers under races |
 | S12 Jobs/delegates/watches | Constructor recovery, watch journal/config/delivery, child restore, terminal attention and task snapshots | Missed-tick/cursor policies, long-running monitors and delegate-generation races |
-| S13 Workspace/scratch | Retention repair, ownership graph, missing directory/pin and idle-child interaction; host workspace cleanup seams | Full mount/platform topology and every concurrent workspace allocation/cleanup path |
+| S13 Workspace/scratch | Scratch kept at each end and removed on archive, shared-scratch ownership and idle-child interaction; host workspace cleanup seams | Full mount/platform topology and every concurrent workspace allocation/cleanup path |
 | S14 Tools/sandbox | Dispatch breaker, argument repair, file/shell scope, read-only symlink handling and escalation lifetime | Native sandbox backend matrix, race-resistant traversal and real multi-repository workflows |
 | S15 Providers/credentials | Snapshot lifetime, API-key repair, OAuth process coordination, save failure and malformed configuration | Scripted subprocess rotation and live provider-specific API/authentication behavior |
 | S16 Model catalog | Directory-scoped cache, warmup, stale refresh and client loading gates | Cold project latency and project overrides with slow/live catalog sources |

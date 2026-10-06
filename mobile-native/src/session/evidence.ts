@@ -68,13 +68,6 @@ function rawOutput(text: string): Evidence[] {
 	return text ? [{ kind: "output", text, lines: lineCount(text) }] : [];
 }
 
-// A skill's markdown is its author's, and the phone's markdown view loads
-// images from their URLs, so each image, inline (![alt](url)), by reference
-// (![alt][ref]) or shortcut (![alt]), reads as its alt text instead.
-function withoutImages(markdown: string): string {
-	return markdown.replace(/!\[([^\]]*)\](?:\([^)]*\)|\[[^\]]*\])?/g, "$1");
-}
-
 // What the shell tool's footer says besides the exit.
 function shellNotes(run: ShellOutput): Evidence[] {
 	const notes: Evidence[] = [];
@@ -155,9 +148,7 @@ function outputEvidence(label: string, detail: EvidenceSource["detail"]): Eviden
 		}
 		case "skill": {
 			const loaded = skillContext(text);
-			return loaded
-				? [{ kind: "markdown", title: loaded.name, markdown: withoutImages(loaded.instructions) }]
-				: rawOutput(text);
+			return loaded ? [{ kind: "markdown", title: loaded.name, markdown: loaded.instructions }] : rawOutput(text);
 		}
 		case "tasks": {
 			// No list, or one with no tasks in it: what the tool printed says more
@@ -207,9 +198,9 @@ function outputEvidence(label: string, detail: EvidenceSource["detail"]): Eviden
 			const message = str(parseArgs(detail.arguments), "message");
 			if (!message && detail.sendReply === undefined) return jsonEvidence(detail, text);
 			const evidence: Evidence[] = [];
-			if (message) evidence.push({ kind: "markdown", title: "Message", markdown: withoutImages(message) });
+			if (message) evidence.push({ kind: "markdown", title: "Message", markdown: message });
 			if (detail.sendReply !== undefined)
-				evidence.push({ kind: "markdown", title: "Reply", markdown: withoutImages(detail.sendReply) });
+				evidence.push({ kind: "markdown", title: "Reply", markdown: detail.sendReply });
 			if (detail.sendWaitIgnored !== undefined)
 				evidence.push({ kind: "note", text: `Wait ignored: ${detail.sendWaitIgnored}` });
 			return evidence;

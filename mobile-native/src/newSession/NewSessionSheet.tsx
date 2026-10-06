@@ -9,7 +9,7 @@ import { randomUUID } from "expo-crypto";
 import { createNativeStackNavigator, type NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { useStore } from "zustand";
-import { LOCAL_HOST } from "../../../cmd/evener-hub/frontend/src/stores/hostRouting";
+import { LOCAL_HOST } from "@evener/appwire-client";
 import { hasHub } from "../connection";
 import { useConnection } from "../ConnectionProvider";
 import { isReady } from "../connectionDisplay";

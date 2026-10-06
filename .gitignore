@@ -37,6 +37,8 @@ evener-linux-amd64
 /evener-dev.exe
 node_modules/
 results/
+# The memory lab's built helpers (projid, evener binaries under test).
+tools/prompt-eval/memory-lab/bin/
 docs/experiments/runs/
 docs/experiments/dashboard.html
 docs/experiments/dashboard-session24.html

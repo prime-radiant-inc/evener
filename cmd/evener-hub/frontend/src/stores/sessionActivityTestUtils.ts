@@ -5,6 +5,7 @@ import type {
   SessionActivitySummary,
   SessionDelegate,
   SessionWatch,
+  Thread,
   ThreadReadResponse,
 } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
@@ -81,6 +82,31 @@ export function activityThread(ref = activityRef): ThreadReadResponse {
         },
         queue: { revision: 0 },
       },
+    },
+  };
+}
+export function activityDetailsThread(ref = "remote:about-owner", overrides: Partial<Thread> = {}): ThreadReadResponse {
+  const base = activityThread(ref).thread;
+  return {
+    thread: {
+      ...base,
+      id: "about-owner",
+      modelProvider: "anthropic/claude-sonnet",
+      createdAt: 1_780_000_000,
+      updatedAt: 1_780_000_060,
+      cwd: "/work/session",
+      projectPath: "/work",
+      gitInfo: { branch: "feature/overview" },
+      evener: {
+        ...base.evener,
+        contextUsed: 42_000,
+        contextWindow: 100_000,
+        contextPressure: 0.42,
+        workMillis: 4_200,
+        usage: { inputTokens: 100_000, outputTokens: 20_000 },
+        cost: "~$1.00",
+      },
+      ...overrides,
     },
   };
 }

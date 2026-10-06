@@ -326,6 +326,9 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	// exists — the same identifier the rest of this function later mints or
 	// validates into s.id.
 	sessionID := strings.TrimSpace(cfg.spawn.sessionID)
+	if sessionID == "" && cfg.spawn.parentSessionID == "" {
+		sessionID = strings.TrimSpace(cfg.SessionID)
+	}
 	// The listing below may attribute a canonical API-log attempt to
 	// sessionID (when non-empty), which opens and locks
 	// sessions/<sessionID>.api.jsonl in the shared *APILogger. That happens
@@ -404,6 +407,9 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	} else if err := identifier.ValidateSessionID(sessionID); err != nil {
 		return nil, fmt.Errorf("reserved child session ID: %w", err)
 	}
+	if cfg.spawn.parentSessionID == "" {
+		nameRootScratch(env, sessionID, sessionID)
+	}
 	jobClock := cfg.spawn.jobActivityClock
 	if cfg.spawn.parentSessionID == "" && jobClock == nil {
 		jobClock = newJobActivityClock(sessionID)
@@ -472,6 +478,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		// transcript is seeded from inheritedContext below, so it keeps the raw
 		// text for display.
 		s.history = escapeInheritedHistory(inheritedContext)
+		s.restoreMemoryProjection(s.history)
 		boundary := schema.NewTurn(schema.TurnSteering, llm.User("The conversation above is inherited context from your parent. You are a separate delegate. Use that history as background for the assignment that follows; your own role, tools, permissions, and working directory govern this session."))
 		s.history = append(s.history, boundary)
 		s.pendingTranscriptTurns = append(s.pendingTranscriptTurns, boundary)
@@ -639,13 +646,6 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		}
 	}
 	s.attachTranscript(tw)
-	if s.cfg.spawn.parentSessionID == "" {
-		if local, ok := env.(*execenv.LocalExecutionEnvironment); ok {
-			if err := s.installScratchRetention(local); err != nil {
-				return nil, fmt.Errorf("scratch retention: %w", err)
-			}
-		}
-	}
 	if err := s.flushPendingDelegateDeliveries(); err != nil {
 		return nil, fmt.Errorf("replay delegate deliveries: %w", err)
 	}
@@ -763,7 +763,12 @@ type RestoreSessionConfig struct {
 	// LifetimeContext owns this restored session tree exactly as
 	// SessionConfig.LifetimeContext owns a fresh one: run and serve each supply
 	// their own, and nil is the library/test shape that roots at Background.
-	LifetimeContext         context.Context
+	LifetimeContext context.Context
+	MemoryStateRoot string
+	DisableMemory   bool
+	// A nil ceiling preserves root-session identity. A live parent's empty ID
+	// revokes project access, including after the authoritative metadata reload.
+	memoryProjectCeiling    *string
 	StateDir                string
 	Project                 identifier.Project
 	ResolveProfile          func(ref string) (*provider.Profile, error)
@@ -860,6 +865,11 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	if err := schema.ValidateSessionID(meta.ID); err != nil {
 		return nil, fmt.Errorf("invalid session id: %w", err)
 	}
+	// A delegate's own environment was named when it was prepared, and a shared
+	// delegate is handed its parent's, so only a root restore names env.
+	if restoreCfg.spawn.parentSessionID == "" {
+		nameRootScratch(env, restoredScratchTreeRoot(meta), meta.ID)
+	}
 
 	restoreComplete := false
 	ownershipAcquired := false
@@ -894,6 +904,11 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	}()
 
 	cfg := configFromSnapshot(meta.Config)
+	cfg.MemoryStateRoot = restoreCfg.MemoryStateRoot
+	cfg.DisableMemory = cfg.DisableMemory || restoreCfg.DisableMemory
+	if ceiling := restoreCfg.memoryProjectCeiling; ceiling != nil && cfg.MemoryProjectID != *ceiling {
+		cfg.MemoryProjectID = ""
+	}
 	// A pre-normalization meta.json may carry a mixed-case level or disable
 	// alias; canonicalize so the loop detector's and request builder's
 	// comparisons hold on restored sessions too. A value outside the
@@ -1158,33 +1173,6 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		subscriberCountFn:           cfg.spawn.subscriberCount,
 	}
 	s.retirementController.Store(cfg.spawn.retirementController)
-	// Reacquire every retained scratch lease before this restore allocates or
-	// launches any process work. A root without durable state or a manifest is a
-	// no-op.
-	if s.cfg.spawn.parentSessionID == "" {
-		if err := s.prepareRetainedScratch(); err != nil {
-			return nil, fmt.Errorf("prepare retained scratch: %w", err)
-		}
-		// A failed restore returns nil and is never closed, so the leases
-		// prepareRetainedScratch just reacquired would stay held with no owner.
-		// Release every handle no live environment adopted; a transfer that
-		// succeeded removed its handle from the pool, so an allocation a live
-		// environment adopted is preserved. The directories and the manifest
-		// references stay, so a later restore reacquires them.
-		defer func() {
-			if !restoreComplete {
-				releaseRetainedScratchPool(s.retainedScratch.Swap(nil))
-			}
-		}()
-		// Adopt the root consumer's own current binding onto the restored
-		// environment before it can mint or launch work, so a resumed root
-		// keeps its original scratch path (plan 654's root role).
-		if local, ok := env.(*execenv.LocalExecutionEnvironment); ok {
-			if err := s.adoptResumedRootScratch(local, s.id); err != nil {
-				return nil, fmt.Errorf("adopt retained root scratch: %w", err)
-			}
-		}
-	}
 	s.initEnvContext(meta.EnvContext)
 	// The environment turn is durable before meta.EnvContext is checkpointed.
 	// Replay only the effective resumed history, not folded transcript prefix
@@ -1300,6 +1288,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// new content still emits, and a still-empty store stays silent.
 	s.notesLastProjected = restoredNotesBlock
 	s.notesEverProjected = notesEverProjected
+	s.restoreMemoryProjection(s.history)
 	if meta.Skills != nil {
 		s.skillLifecycle = meta.Skills.Clone()
 		s.pinnedNoteGen = meta.Skills.PinnedNoteGen
@@ -1333,6 +1322,13 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// The spawn parent travels with the flag: Meta() rewrites both on every
 	// autosave, and the hub reads them as a pair.
 	s.restoredMetaParentSessionID = meta.ParentSessionID
+	// A delegate resumed on its own keeps its scratch in its root's tree, and
+	// Meta() keeps recording that root for the next resume.
+	if restoreCfg.spawn.parentSessionID == "" {
+		if root := restoredScratchTreeRoot(meta); root != meta.ID {
+			s.restoredScratchTreeRoot = root
+		}
+	}
 
 	// Re-enter the persisted active worktree BEFORE initSessionState runs, so
 	// the session is rooted in it before the environment snapshot, system
@@ -1355,12 +1351,10 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		if restoreComplete || sameEnvironment(reenteredEnv, env) {
 			return
 		}
-		// Re-entry moved the scratch the caller's environment already owned onto
-		// this clone, and that scratch may be an adopted retained allocation the
-		// manifest references. Settle by the manifest, kind by kind: a
-		// referenced allocation is retained rather than removed, and only a
-		// fresh mint this restore allocated is disposed (round 83).
-		s.settleOwnedScratchByManifest(reenteredEnv)
+		// Re-entry moved the scratch (and its name) the caller's environment
+		// owned onto this clone, so the clone's scratch is ended here like any
+		// session end: a named scratch is kept, a disposable one removed.
+		endEnvironmentScratch(reenteredEnv)
 	}()
 
 	promptSources, err := s.initSessionState(cfg.SessionStartKind, !restoreCfg.deferRestoreSideEffects)
@@ -1440,17 +1434,6 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		}
 	}
 	s.attachTranscript(tw)
-	if s.cfg.spawn.parentSessionID == "" {
-		// Install retention on the environment that OWNS the scratch: worktree
-		// re-entry above replaces s.env with a clone that adopted the caller's
-		// scratch, so pinning the caller's now-empty environment would publish an
-		// empty binding and leave the active clone's allocation unpinned.
-		if local, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment); ok {
-			if err := s.installScratchRetention(local); err != nil {
-				return nil, fmt.Errorf("scratch retention: %w", err)
-			}
-		}
-	}
 	// refreshFromDisk re-reads the transcript file whenever a restore-time
 	// replay appended turns it did not decode: the retained entry list would
 	// otherwise end at the last pre-append entry, and serve (which projects
@@ -1828,6 +1811,7 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 		// tool so neither the live registry nor its model-facing cache can widen it.
 		s.reg.RestrictKeepingResultTool(ceiling, s.resultToolName())
 	}
+	s.filterUnavailableMemoryTools()
 
 	// Cache instruction docs once; reused every round for system prompt rebuilds.
 	s.projectDocs, s.projectDocsTruncated = LoadInstructionDocs(s.currentEnv(), personalDocPath(s.cfg.AgentsDocPath), s.profile.ProjectDocFiles()...)
@@ -2623,98 +2607,48 @@ func reconnectRecoveryWarning(name string) events.WarningData {
 	}
 }
 
-// DisposeResumeScratchAfterFailure settles the per-session scratch a failed
-// resume left on the launch environment. RestoreSessionFromMetaWithConfig can
-// adopt a durable retained allocation onto env before a later initialization
-// failure, and env.DisposeUnadoptedScratch would then run os.RemoveAll over a
-// directory the root's retention manifest still references, destroying data a
-// later resume reacquires. An allocation the manifest references is therefore
-// retained (its lease released, its directory kept); everything else is the
-// restore's own fresh mint and is disposed. The settle is per kind, so a
-// restore that adopted one kind and reprovisioned the other keeps the
-// referenced allocation and still disposes its fresh mint (round 83).
-// rootSessionID is the manifest's root, exactly as the restore's own
-// scratchRetentionOwner resolves it.
-func DisposeResumeScratchAfterFailure(stateDir, rootSessionID string, env *execenv.LocalExecutionEnvironment) {
-	if env == nil {
-		return
-	}
-	settleEnvScratchByManifest(sandbox.ScratchOwner{StateDir: stateDir, RootSessionID: rootSessionID}, env)
-}
-
-// DisposeRootScratchAfterFailure settles the per-session scratch a failed ROOT
-// construction left on the launch environment. NewSession publishes the root's
-// durable scratch retention (installScratchRetention) partway through
-// construction and then runs more fallible steps, so a failure after that
-// publication leaves a manifest that references the scratch the launch
-// environment owns. The launch caller's bare env.DisposeUnadoptedScratch would
-// then run os.RemoveAll over a directory the manifest still references;
-// references are append-only with no unpin API, so the root's retirement
-// preparation would refuse forever and cold resume would fail the same way.
-//
-// A failed root construction has no Session to ask for its owner, so the owner
-// is resolved from the environment's own installed binding — the root id
-// installScratchRetention published the binding under. The settle is the same
-// per-kind verdict DisposeResumeScratchAfterFailure applies for the resume
-// path (round 83): an allocation the manifest references is retained (its
-// lease released, its directory kept) and everything else is the launch's own
-// fresh mint, disposed. The binding is read fresh here rather than passed in,
-// so a construction that failed before installScratchRetention ran still
-// disposes its unadopted scratch.
-func DisposeRootScratchAfterFailure(stateDir string, env *execenv.LocalExecutionEnvironment) {
-	if env == nil {
-		return
-	}
-	if binding, err := env.ScratchRetentionBinding(); err == nil {
-		settleEnvScratchByManifest(sandbox.ScratchOwner{StateDir: stateDir, RootSessionID: binding.OwnerSessionID}, env)
-		return
-	}
-	env.DisposeUnadoptedScratch()
-}
-
-// settleEnvScratchByManifest settles the per-session scratch allocations env
-// owns against the durable retention manifest for owner, one kind at a time:
-// an allocation the manifest still references is retained — its lease
-// released, its directory kept for a later resume to reacquire — and every
-// other allocation is this failure's own fresh mint and is disposed with its
-// directory. The whole-environment verdict this replaces retained every
-// allocation when any one was referenced, so a restore that adopted one kind
-// and reprovisioned the other leaked its fresh mint beside the allocation it
-// kept (round 83). env being nil, an environment that is not local, an owner
-// with no durable identity, and a manifest that cannot be read or that is
-// Released — which names nothing a later resume reacquires — all settle as
-// disposeUnadoptedScratch already did.
-func settleEnvScratchByManifest(owner sandbox.ScratchOwner, env execenv.ExecutionEnvironment) {
-	if env == nil {
-		return
-	}
+// nameRootScratch names a top-level session's scratch after the session,
+// unless its launcher already did, so the scratch the environment mints is that
+// session's directory in its own tree: kept across the session's ends, reopened
+// on resume, and removed when the hub archives or deletes the session. A
+// scratch the environment already minted is unaffected. rootID is the tree the
+// scratch lives in: the session's own ID, except for a delegate resumed as a
+// top-level session (restoredScratchTreeRoot).
+func nameRootScratch(env execenv.ExecutionEnvironment, rootID, sessionID string) {
 	local, ok := env.(*execenv.LocalExecutionEnvironment)
-	if !ok || owner.StateDir == "" || owner.RootSessionID == "" {
-		disposeUnadoptedScratch(env)
+	if !ok {
 		return
 	}
-	manifest, err := sandbox.LoadScratchRetention(owner)
-	if err != nil || manifest.Released || len(manifest.References) == 0 {
-		disposeUnadoptedScratch(env)
-		return
+	if root, _ := local.ScratchIdentity(); root == "" {
+		local.SetScratchIdentity(rootID, sessionID)
 	}
-	referenced := make(map[string]struct{}, len(manifest.References))
-	for _, ref := range manifest.References {
-		if dir, absErr := filepath.Abs(ref.Dir); absErr == nil {
-			referenced[filepath.Clean(dir)] = struct{}{}
+}
+
+// restoredScratchTreeRoot is the root whose scratch tree a restored top-level
+// session's scratch lives in. A delegate resumed on its own (`serve --resume
+// <delegate>`) keeps its directory in the tree of the root that spawned it,
+// which its meta records, so it reopens what it had and goes when that root is
+// archived.
+func restoredScratchTreeRoot(meta schema.SessionMeta) string {
+	for _, root := range []string{meta.ScratchTreeRootID, meta.JobTreeRootSessionID} {
+		if root = strings.TrimSpace(root); meta.IsSubagent && schema.ValidateSessionID(root) == nil {
+			return root
 		}
 	}
-	local.SettleScratchByReferences(referenced)
+	return meta.ID
 }
 
-// settleOwnedScratchByManifest is settleEnvScratchByManifest bound to this
-// session's root retention authority, so an internal failure teardown can
-// settle an environment it built by the same per-kind verdict.
-func (s *Session) settleOwnedScratchByManifest(env execenv.ExecutionEnvironment) {
-	owner, ok := s.scratchRetentionOwner()
-	if !ok {
-		disposeUnadoptedScratch(env)
-		return
+// PickFreshSessionID picks the ID a new top-level session will take, unless cfg
+// already names one, and names env's scratch after it. A launcher calls it
+// before enabling env's sandbox, which mints the scratch before NewSession runs.
+func PickFreshSessionID(env execenv.ExecutionEnvironment, cfg *SessionConfig) error {
+	if strings.TrimSpace(cfg.SessionID) == "" {
+		id, err := identifier.NewSessionID()
+		if err != nil {
+			return fmt.Errorf("generate session ID: %w", err)
+		}
+		cfg.SessionID = id
 	}
-	settleEnvScratchByManifest(owner, env)
+	nameRootScratch(env, cfg.SessionID, cfg.SessionID)
+	return nil
 }

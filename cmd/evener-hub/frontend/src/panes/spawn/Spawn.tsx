@@ -8,6 +8,7 @@ import {
   basename,
   collectAdvancedOverrides,
   effortLabel,
+  errorText,
   filterSlashMenuItems,
   findBuiltinArgument,
   friendlyLaunchErrorMessage,
@@ -56,7 +57,6 @@ import {
   PromptCard,
   Select,
   SendIcon,
-  Textarea,
   Tooltip,
   useToasts,
 } from "../../widgets";
@@ -73,7 +73,9 @@ import { AttachmentTile } from "../session/composer/AttachmentTile";
 import { AttachIcon } from "../session/composer/attachments/AttachIcon";
 import { imageFilesFromClipboard } from "../session/composer/attachments/clipboard";
 import { type TextEditor, useAttachments } from "../session/composer/attachments/useAttachments";
+import { SkillEditor, type SkillEditorHandle, type SkillEditorValue } from "../session/composer/SkillEditor";
 import { SlashCompletionMenu, optionId as slashOptionId } from "../session/composer/SlashCompletionMenu";
+import { maskSkillAtoms, patchSelectionText } from "../session/composer/skillDocument";
 import {
   ConnectProviderDialogBoundary,
   useConnectProviderDialogChunk,
@@ -410,7 +412,16 @@ function SpawnForm({
     version: dialogChunkVersion,
   } = useConnectProviderDialogChunk();
 
-  const [prompt, setPrompt] = useDraftField(draft, "prompt");
+  const [prompt] = useDraftField(draft, "prompt");
+  const [skillNames] = useDraftField(draft, "skillNames");
+  const [commandNames] = useDraftField(draft, "commandNames");
+  const [mentions] = useDraftField(draft, "mentions");
+  const [selectionRestoreRevision] = useDraftField(draft, "selectionRestoreRevision");
+  const [restoreEpoch, setRestoreEpoch] = useState(0);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: project and URL changes authoritatively replace the editor document
+  useLayoutEffect(() => {
+    setRestoreEpoch((epoch) => epoch + 1);
+  }, [draft.fields, prefillRevision]);
   const [harness, setHarness] = useDraftField(draft, "harness");
   const [model, setModel] = useDraftField(draft, "model"); // qualified "provider/model", or "" for the harness default
   const [reasoningEffort, setReasoningEffort] = useDraftField(draft, "reasoningEffort");
@@ -736,8 +747,8 @@ function SpawnForm({
   const builtinInvocations = new Set(PRE_SESSION_BUILTIN_IDS.map((id) => `/${id}`));
   const slashMenuCatalog = mergeSlashCommands(
     spawnBuiltinCommands(),
-    slashCatalogResponse.commands.filter((c) => !builtinInvocations.has(slashCommandInvocation(c))),
-    (slashCatalogResponse.skills ?? []).filter((s) => !builtinInvocations.has(`/${s.name}`)),
+    slashCatalogResponse.commands.filter((command) => !builtinInvocations.has(slashCommandInvocation(command))),
+    (slashCatalogResponse.skills ?? []).filter((skill) => !builtinInvocations.has(`/${skill.name}`)),
   );
   // The menu is only ever open when a token matched AND the merged catalog
   // has at least one fuzzy label hit for it - a matched-but-empty token
@@ -754,25 +765,7 @@ function SpawnForm({
   const slashActiveIndex = slashOpen ? Math.min(slashHighlighted, slashItems.length - 1) : -1;
   const slashActiveId = slashActiveIndex >= 0 ? slashOptionId(slashListboxId, slashActiveIndex) : null;
 
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-  // Textarea (widgets/textarea) takes no aria-activedescendant/aria-controls
-  // prop - it's a shared widget outside this stream's manifest - so this
-  // component sets both directly on the native node it already refs for
-  // cursor restoration below, the same imperative-DOM idiom the cursor-
-  // restore layout effect already uses on the identical ref. Only
-  // slashActiveId gates the effect: the ref is stable and slashListboxId is a
-  // constant, so neither belongs in the dependency list.
-  useEffect(() => {
-    const el = textareaRef.current;
-    if (!el) return;
-    if (slashActiveId) {
-      el.setAttribute("aria-controls", slashListboxId);
-      el.setAttribute("aria-activedescendant", slashActiveId);
-    } else {
-      el.removeAttribute("aria-controls");
-      el.removeAttribute("aria-activedescendant");
-    }
-  }, [slashActiveId]);
+  const textareaRef = useRef<SkillEditorHandle>(null);
 
   // A freshly (re)matched token always starts highlighted at its first
   // option - an index carried over from the PREVIOUS token's list is not a
@@ -878,12 +871,28 @@ function SpawnForm({
 
   function updatePrompt(next: string): void {
     if (isCurrentDraft()) textRef.current = next;
-    setPrompt(next);
+    const fields = draft.fields.getState();
+    const value = patchSelectionText(
+      {
+        text: fields.prompt,
+        skillNames: fields.skillNames,
+        commandNames: fields.commandNames,
+        mentions: fields.mentions,
+      },
+      next,
+    );
+    draft.fields.setState({
+      prompt: next,
+      skillNames: value.skillNames,
+      commandNames: value.commandNames ?? [],
+      mentions: value.mentions,
+      promptRevision: fields.promptRevision + 1,
+    });
   }
 
   useLayoutEffect(() => {
     if (cursorRef.current !== null && textareaRef.current) {
-      textareaRef.current.setSelectionRange(cursorRef.current, cursorRef.current);
+      textareaRef.current.setSelection(cursorRef.current);
       cursorRef.current = null;
     }
   });
@@ -892,13 +901,17 @@ function SpawnForm({
     read: () => {
       const text = draft.fields.getState().prompt;
       const cursor = isCurrentDraft()
-        ? (cursorRef.current ?? textareaRef.current?.selectionStart ?? draft.fields.getState().prompt.length)
+        ? (cursorRef.current ?? textareaRef.current?.getCursor() ?? draft.fields.getState().prompt.length)
         : draft.fields.getState().prompt.length;
       // Preserve Spawn's existing insertion-at-caret behavior.
       return { text, cursor, selection: { start: cursor, end: cursor } };
     },
-    write: (next, cursor) => {
+    write: (next, cursor, source) => {
       updatePrompt(next);
+      // A pending submission can finish after this form unmounts. Its draft
+      // owns restoration so the currently mounted editor sees the exact atoms.
+      if (source === "submission")
+        draft.fields.setState((fields) => ({ selectionRestoreRevision: fields.selectionRestoreRevision + 1 }));
       if (isCurrentDraft()) cursorRef.current = cursor;
     },
   };
@@ -919,6 +932,17 @@ function SpawnForm({
   // submit interception, below.
   function commitSlashCompletion(item: SlashMenuItem): void {
     if (!slashToken) return;
+    if (item.kind !== "builtin" && item.canonicalName !== undefined) {
+      const editor = textareaRef.current;
+      if (
+        !(item.kind === "skill"
+          ? editor?.insertSkill(slashToken.start, slashToken.end, item.canonicalName)
+          : editor?.insertCommand(slashToken.start, slashToken.end, item.canonicalName))
+      )
+        return;
+      setSlashToken(null);
+      return;
+    }
     const spliced = spliceSlashCommand(textRef.current, slashToken, item.invocation);
     textEditor.write(spliced.text, spliced.caret);
     setSlashToken(null);
@@ -1295,6 +1319,21 @@ function SpawnForm({
   // nothing about it is host-derived, so the form stays startable exactly as it
   // was before host routing existed.
   const [hostCatalogPending, setHostCatalogPending] = useState(() => !isLocalHost(submittedSource));
+  // A failed catalog read (a full forwarded-read pool, a host briefly
+  // unreachable) is said, with a Retry: nothing else re-reads the catalogs
+  // until the host changes. Retry bumps catalogRetryRevision, which re-runs the
+  // load below without the host-change reset, so the draft keeps what it has.
+  // Each catalog's failure is kept on its own, so a host refusing both says both.
+  const [hostCatalogErrors, setHostCatalogErrors] = useState<{ harnesses?: string; schema?: string }>({});
+  const hostCatalogErrorText = [
+    hostCatalogErrors.harnesses !== undefined && `Couldn't load this host's harnesses: ${hostCatalogErrors.harnesses}.`,
+    hostCatalogErrors.schema !== undefined && `Couldn't load this host's launch options: ${hostCatalogErrors.schema}.`,
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const [catalogRetryRevision, setCatalogRetryRevision] = useState(0);
+  const retryHostCatalogs = useCallback(() => setCatalogRetryRevision((revision) => revision + 1), []);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: catalogRetryRevision is a trigger-only dep - Retry bumps it to read both catalogs again
   useEffect(() => {
     let active = true;
     // A changed target retires the previous host's catalogs before the new
@@ -1327,6 +1366,10 @@ function SpawnForm({
       setPluginSelection({ mode: "default" });
       setKnownSelectionIssues([]);
     }
+    setHostCatalogErrors({});
+    const catalogLoadFailed = (catalog: keyof typeof hostCatalogErrors) => (err: unknown) => {
+      if (active) setHostCatalogErrors((errors) => ({ ...errors, [catalog]: errorText(err) }));
+    };
     // An answer stamps its OWN catalog as settled for this host, and is the
     // only thing that may reconcile that half of the draft: an empty list read
     // as "this host offers nothing" wiped the draft's harness and every
@@ -1340,22 +1383,16 @@ function SpawnForm({
     // the catalog it DID answer (round six). `active` is false once this host is
     // superseded, so a previous host's late answer never certifies the current
     // one.
-    const harnessesLoad = hostRequest(client, submittedSource, "evener/harnesses/list", {}).then(
-      (r) => {
-        if (!active) return;
-        setHarnesses(r.data);
-        setHarnessesHostSettled(submittedSource);
-      },
-      () => {},
-    );
-    const schemaLoad = hostRequest(client, submittedSource, "evener/launch/schema", {}).then(
-      (r) => {
-        if (!active) return;
-        setSchemaOptions(perLaunchEvenerOptions(r));
-        setSchemaHostSettled(submittedSource);
-      },
-      () => {},
-    );
+    const harnessesLoad = hostRequest(client, submittedSource, "evener/harnesses/list", {}).then((r) => {
+      if (!active) return;
+      setHarnesses(r.data);
+      setHarnessesHostSettled(submittedSource);
+    }, catalogLoadFailed("harnesses"));
+    const schemaLoad = hostRequest(client, submittedSource, "evener/launch/schema", {}).then((r) => {
+      if (!active) return;
+      setSchemaOptions(perLaunchEvenerOptions(r));
+      setSchemaHostSettled(submittedSource);
+    }, catalogLoadFailed("schema"));
     void Promise.all([harnessesLoad, schemaLoad]).then(() => {
       // Settlement alone releases Start, even when one or both loads never
       // answered: the host refuses what it cannot serve at launch rather than
@@ -1367,7 +1404,7 @@ function SpawnForm({
     return () => {
       active = false;
     };
-  }, [client, submittedSource, setPluginSelection, setKnownSelectionIssues]);
+  }, [client, submittedSource, setPluginSelection, setKnownSelectionIssues, catalogRetryRevision]);
 
   // The draft's launch config is chosen from the SELECTED host's catalogs, and
   // the draft store carries it across a host switch (component 07b review, round
@@ -1841,7 +1878,7 @@ function SpawnForm({
     setModelCatalogStamp({ scope: `${harness}\0${cwd}`, loader: loadCatalog });
   }
 
-  function handlePromptKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>): void {
+  function handlePromptKeyDown(event: React.KeyboardEvent<HTMLDivElement>): void {
     // Inline slash-completion's own keyboard mechanics, ADAPTED for Spawn's
     // submit model (deliberately NOT a verbatim Composer port - Composer's
     // Enter sends, Spawn's plain Enter is a newline and only Mod/Ctrl+Enter
@@ -1893,7 +1930,7 @@ function SpawnForm({
     }
   }
 
-  function handlePaste(event: React.ClipboardEvent<HTMLTextAreaElement>): void {
+  function handlePaste(event: React.ClipboardEvent<HTMLDivElement>): void {
     const files = imageFilesFromClipboard(event.clipboardData);
     if (files.length > 0) attachments.ingestFiles(files, (message) => toasts.push("error", message));
   }
@@ -1917,7 +1954,11 @@ function SpawnForm({
   // still has to list the value, and proven staleness (another scope/loader's
   // stamp) still withholds Start.
   const slashModelBootstrap =
-    modelRequired && pluginSelectionSupported && attachments.items.length === 0
+    modelRequired &&
+    pluginSelectionSupported &&
+    attachments.items.length === 0 &&
+    skillNames.length === 0 &&
+    commandNames.length === 0
       ? (() => {
           const match = matchBuiltinInvocation(prompt, spawnBuiltinCommands());
           if (match?.command.id !== "model" || match.argsText.trim() === "") return null;
@@ -1960,7 +2001,7 @@ function SpawnForm({
     // folded into the start call under the chips, which keeps floor §1.11
     // precedence (explicit slash value wins over ambient form state).
     const builtinMatch =
-      pluginSelectionSupported && attachments.items.length === 0
+      pluginSelectionSupported && attachments.items.length === 0 && skillNames.length === 0 && commandNames.length === 0
         ? matchBuiltinInvocation(prompt, spawnBuiltinCommands())
         : null;
     // Launch-scalar overrides carried by a matched /model or /reasoning-effort
@@ -2136,6 +2177,9 @@ function SpawnForm({
       // line as its first turn. Anything else spawns verbatim.
       prompt: builtinMatch ? "" : prompt,
       attachments: attachments.toInputAttachments(),
+      skillNames,
+      commandNames,
+      mentions,
       harness: harness || undefined,
       modelProvider: scalars.modelProvider,
       model: scalars.model,
@@ -2494,17 +2538,31 @@ function SpawnForm({
               data-testid="spawn-prompt-card"
               controlsTestId="spawn-controls"
               field={
-                <Textarea
+                <SkillEditor
                   ref={textareaRef}
-                  value={prompt}
-                  onChange={(e) => {
-                    updatePrompt(e.target.value);
-                    // Every keystroke re-evaluates the trailing-token match
-                    // fresh - a token Escape just closed reopens on the very
-                    // next text change rather than staying closed
-                    // indefinitely.
-                    const caret = e.target.selectionStart ?? e.target.value.length;
-                    setSlashToken(parseSlashToken(e.target.value, caret));
+                  value={{ text: prompt, skillNames, commandNames, mentions }}
+                  restoreEpoch={restoreEpoch + selectionRestoreRevision}
+                  aria-controls={slashActiveId ? slashListboxId : undefined}
+                  aria-activedescendant={slashActiveId ?? undefined}
+                  skillDetails={(name) =>
+                    catalogResponse.skills?.find((item) => item.name === name)?.description ??
+                    `${name} — no longer in this launch catalog`
+                  }
+                  commandDetails={(name) =>
+                    catalogResponse.commands.find((item) => slashCommandInvocation(item) === `/${name}`)?.description ??
+                    `${name} — no longer in this launch catalog`
+                  }
+                  onChange={(value: SkillEditorValue, caret) => {
+                    textRef.current = value.text;
+                    const fields = draft.fields.getState();
+                    draft.fields.setState({
+                      prompt: value.text,
+                      skillNames: value.skillNames,
+                      commandNames: value.commandNames ?? [],
+                      mentions: value.mentions,
+                      promptRevision: fields.promptRevision + 1,
+                    });
+                    setSlashToken(parseSlashToken(maskSkillAtoms(value), caret));
                   }}
                   onKeyDown={handlePromptKeyDown}
                   onPaste={handlePaste}
@@ -2521,12 +2579,10 @@ function SpawnForm({
                   // that repeats them spends the field's one line on nothing.
                   placeholder="Describe the task…"
                   aria-label="Prompt"
-                  autoGrow
                   // The PromptCard around it draws the one border this field
                   // needs and owns the focus ring - without this the field drew
                   // its own box inside the card's, and its resize grabber floated
                   // loose in the corner between them.
-                  seamless
                   // The page's primary input, so it opens at a size worth writing
                   // in rather than growing into one. This is also what absorbs
                   // the slack that used to sit dead below the button.
@@ -2725,6 +2781,14 @@ function SpawnForm({
           </p>
         )}
 
+        {hostCatalogErrorText !== "" && (
+          <div className={CLASS.notice} role="status" data-testid="spawn-host-catalog-error">
+            <span>{hostCatalogErrorText}</span>
+            <Button variant="quiet" type="button" onClick={retryHostCatalogs}>
+              Retry
+            </Button>
+          </div>
+        )}
         {pluginSelectionSupported && (
           <div className={CLASS.pluginDesktop} data-testid="spawn-plugin-desktop">
             {previewResponse === null && (

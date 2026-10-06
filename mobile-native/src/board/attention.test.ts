@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { NavigationSessionSummary } from "@evener/appwire-client";
 import { QUIET_AFTER_MS, STUCK_AFTER_MS } from "@evener/appwire-client";
 import {
+	AGENT_QUIET_AFTER_MS,
 	approvalRefs,
 	bandOf,
 	boardState,
@@ -10,6 +11,7 @@ import {
 	lastLine,
 	liveBands,
 	liveSummary,
+	quietOrWorking,
 	stateWord,
 	subagentChipText,
 	summaryText,
@@ -59,6 +61,77 @@ describe("a row's Board state (spec 13.1)", () => {
 		[{ state: "errored", approval_pending: true }, false, false, "failed"],
 	] as const)("%o, approval %s, seen %s → %s", (over, approval, seen, expected) => {
 		expect(boardState(row("s", over), approval, seen)).toBe(expected);
+	});
+
+	it.each([
+		[{ state: "errored", ask_pending: true, approval_pending: true }, "failed"],
+		[{ state: "awaiting", ask_pending: true }, "question"],
+		[{ state: "active", approval_pending: true }, "approval"],
+		[{ state: "errored", offline: true, ask_pending: true, approval_pending: true }, "shutDown"],
+		[{ state: "active", ask_pending: true }, "working"],
+	] as const)("keeps own-session attention %o with failed delegates", (over, expected) => {
+		expect(boardState(row("s", { ...over, subagents: { running: 0, failed: 3, done: 0 } }), false, false)).toBe(
+			expected,
+		);
+	});
+
+	it("keeps own errors ahead of questions and approvals while delegate failures stay outside Needs you", () => {
+		const settled = { running: 0, failed: 3, done: 0 };
+		const bands = liveBands(
+			[
+				row("question", { state: "awaiting", ask_pending: true, updated_at: at(1), subagents: settled }),
+				row("error", { state: "errored", ask_pending: true, updated_at: at(8), subagents: settled }),
+				row("approval", { state: "active", approval_pending: true, updated_at: at(2), subagents: settled }),
+				row("working", { state: "active", ask_pending: true, subagents: settled }),
+				row("offline", { state: "errored", offline: true, ask_pending: true, subagents: settled }),
+			],
+			[],
+			never,
+		);
+		expect(bands.needsYou.map((item) => [item.row.ref, item.state])).toEqual([
+			["error", "failed"],
+			["question", "question"],
+			["approval", "approval"],
+		]);
+		expect(bands.working.map((item) => item.row.ref)).toEqual(["working"]);
+	});
+
+	it.each([
+		[{ state: "idle" }, false, false, "working"],
+		[{ state: "awaiting" }, false, true, "working"],
+		[{ state: "idle", dormant: true }, false, false, "working"],
+		[{ state: "warning" }, false, false, "working"],
+		[{ state: "warning", ask_pending: true }, false, false, "warning"],
+		[{ state: "warning", approval_pending: true }, false, false, "warning"],
+		[{ state: "warning" }, true, false, "warning"],
+		[{ state: "awaiting", ask_pending: true }, false, false, "question"],
+		[{ state: "idle", approval_pending: true }, false, false, "approval"],
+		[{ state: "idle" }, true, false, "approval"],
+		[{ state: "errored" }, false, false, "failed"],
+		[{ state: "restartRequired" }, false, false, "restartNeeded"],
+		[{ state: "idle", offline: true }, false, false, "shutDown"],
+		[{ state: "ended" }, false, false, "shutDown"],
+		[{ state: "notLoaded" }, false, false, "shutDown"],
+		[{ state: "idle", live: false }, false, false, "finished"],
+		[{ state: "idle", kind: "subagent" }, false, false, "finished"],
+		[{ state: "idle", kind: "fork" }, false, false, "finished"],
+		[{ state: "idle", kind: "cluster" }, false, false, "finished"],
+		[{ state: "active", kind: "subagent" }, false, true, "working"],
+	] as const)("mixed running/failed children, %o, approval %s, seen %s → %s", (over, approval, seen, expected) => {
+		const parent = row("s", { subagents: { running: 1, failed: 1, done: 0 }, ...over });
+		expect(boardState(parent, approval, seen)).toBe(expected);
+	});
+
+	it.each([
+		[{ subagents: { running: 1, failed: 0, done: 0 } }, false, "working"],
+		[{ subagents: { running: 0, failed: 1, done: 1 } }, false, "finished"],
+		[{ subagents: { running: 0, failed: 1, done: 1 } }, true, "idle"],
+		[{ state: "errored", subagents: { running: 0, failed: 1, done: 1 } }, false, "failed"],
+		[{}, false, "finished"],
+		[{}, true, "idle"],
+		[{ children: Array.of(row("child", { state: "active", kind: "subagent" })) }, false, "finished"],
+	] as const)("only the compact live tally contributes work, %o, seen %s → %s", (over, seen, expected) => {
+		expect(boardState(row("s", over), false, seen)).toBe(expected);
 	});
 
 	it.each([
@@ -294,6 +367,14 @@ describe("the Live summary line", () => {
 	});
 });
 
+describe("a running agent's last words", () => {
+	it("reads Working until 20 seconds pass without an update, then Quiet", () => {
+		expect(AGENT_QUIET_AFTER_MS).toBe(20_000);
+		expect(quietOrWorking(19_999)).toBe("Working");
+		expect(quietOrWorking(20_000)).toBe("Quiet 20s");
+	});
+});
+
 describe("why lines on the fallbacks (spec 7.2, 18)", () => {
 	it.each([
 		["failed", { word: "Failed", hue: "danger", text: "open the session to see what went wrong" }],
@@ -332,10 +413,13 @@ describe("why lines on the fallbacks (spec 7.2, 18)", () => {
 		expect(whyLine({ row: running, state: "working" })).toEqual({ text: "Running go test ./agent/..." });
 	});
 
-	it("words the subagent chip from the counts the shared gate shows", () => {
-		expect(subagentChipText({ running: 2, failed: 0 })).toBe("2 running");
-		expect(subagentChipText({ running: 0, failed: 3 })).toBe("3 failed");
-		expect(subagentChipText({ running: 2, failed: 3 })).toBe("2 running · 3 failed");
+	it("words only running subagents in the native chip", () => {
+		const cases: Array<[{ running: number; failed: number }, string]> = [
+			[{ running: 2, failed: 0 }, "2 running"],
+			[{ running: 0, failed: 3 }, ""],
+			[{ running: 2, failed: 3 }, "2 running"],
+		];
+		for (const [tally, expected] of cases) expect(subagentChipText(tally)).toBe(expected);
 	});
 });
 
@@ -387,7 +471,7 @@ describe("the working why line reads S5's activity (spec 7.1, 13.1)", () => {
 		expect(whyLine({ row: running, state: "working" }, activity, 0)).toEqual({ text: "Running go test ./agent/..." });
 	});
 
-	it("never lets a stale own-tally subagent guess override an activity read of zero", () => {
+	it("never lets the row's own subagent tally override an activity read of zero", () => {
 		// Without S5 data, this row would read "Waiting on 1 subagent" (its own
 		// tally) - once a real read says zero are running, that must win.
 		const stale = row("s", { state: "active", subagents: { running: 1, failed: 0, done: 0 } });

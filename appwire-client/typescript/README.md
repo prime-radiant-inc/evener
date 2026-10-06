@@ -17,15 +17,15 @@ it again, the translation that turns those markers into prose at send and
 the composer input assembly that applies that translation and stages the
 attached images beside the text, the thread view model and
 its notification reducer, the activity tree parser, merge and disclosure
-rules, the job log tail parser, the send/queue availability table, the
+rules, the lossless job-output page codec, the send/queue availability table, the
 send/steer/queue/drain routing decisions a composer makes off it, the stable
 delegate status rule, the delegate timing and model derivations both apps'
 delegate details render from,
-the slash invocation and catalog visibility rules the palette and composer
-share, the command catalog itself as a framework-free store
-(`createCommandCatalog(client)`, the hub-wide list re-read on a plugin change,
-and `createSessionCommandCatalog(client, ref)`, one session's slash menu read
-beside its diagnostics), the inline slash-completion token parser, menu merge, filter and
+the shared slash invocation rules, and two command catalog stores with distinct
+owners (`createCommandCatalog(client)`, the controller palette's global list,
+and `createSessionCommandCatalog(client, ref)`, the owning session's loaded
+commands and skills read only through `thread/read` diagnostics, with no global
+fallback), the inline slash-completion token parser, menu merge, filter and
 splice the composer's own menu is built from, the reasoning-effort labels
 and picker ladders every effort chip and select share, the task-list
 parser, aggregate sentence, status grouping and timestamp formatters the
@@ -146,6 +146,66 @@ new `readTarget`; an absolute reference records the new cwd but retains its
 original absolute target, including when that target is outside the new root
 and the server will forbid the read. Callers supply a nonempty trusted cwd and
 retain ownership of session/ref validation.
+## Generated results
+
+`MethodTypes` correlates each method's parameters and result. Fixed result
+discriminators come from Go's `StringDiscriminators` catalog: host plans narrow
+on `outcome`, and teardown retry results narrow on `outcome` and `hostKind`.
+Use those generated unions directly when consuming results; the failure arms
+carry `seam`, and planned results carry `plan` and `token`. The public Go arm
+structs and their wire fields remain the protocol authority.
+
+## Host-scoped requests
+
+`hostRequest(client, host, method, params, opts)` sends a typed request to the
+selected host. Its method is limited to the generated `HostRequestMethod`
+catalog, retaining the method's precise parameter and result types. An absent,
+empty, or `local` host uses the plain client request;
+other hosts use `evener/host/request`. Parameters, results, errors, and caller
+timeouts pass through unchanged. AppWire owns the explicit forwarding catalog;
+the hub enforces it and owns retry-safety classification. `LOCAL_HOST`,
+`isLocalHost`, and `normalizeHost` provide the shared host spelling rules, and
+`HOST_DEPENDENT_DISCOVERY_METHODS` names the discovery calls used by the
+new-session forms.
+
+`RequestPort<Methods>` is the shared structural request interface, including
+per-call timeouts. `LaunchConfigClient`, `MarketplacesClient`, `PluginsClient`,
+and `LaunchLayerClient` combine `RequestPort<HostRequestMethod>` with
+notifications, so browser adapters can bind them to a remote host without
+advertising unsupported operations. A full `AppwireClient` or
+`AppwireClientLike` satisfies these ports and retains every protocol method.
+Use its plain `request` for local operations outside the forwarding catalog,
+including `evener/instance/refreshModels` and `evener/instance/setModelDisabled`;
+the credential store keeps its broad local client for those operations.
+
+## Forwarded method catalog
+
+`HOST_REQUEST_METHODS` and its `HostRequestMethod` type are generated from
+AppWire's explicit host-request allow-list. The hub checks that same catalog
+before forwarding; registering a new RPC never grants forwarding permission.
+Retry classification remains with the hub because session mutations and admin
+mutations have different replay guarantees.
+
+## Job output pages
+
+`evener/jobs/output` returns six raw-page fields: `offsetBytes`,
+`bytesReturned`, `totalBytes`, `retainedStartBytes`, `encoding` and `data`.
+Omit `beforeBytes` for latest output; supply it for a backward page ending at
+that lifetime byte offset. Explicit zero remains zero. The default limit is
+4 KiB and positive `maxBytes` limits are capped at 64 KiB.
+
+The root exports `parseJobOutputPage(data)`, which returns a validated page
+with `bytes: Uint8Array`, or `null` for invalid input. It accepts lossless `utf8`
+and standard base64 without Node globals. `decodeJobOutputText(bytes)` renders
+raw bytes; join contiguous pages before decoding split UTF-8 scalars.
+`forEachJobOutputScalar` supplies source-byte spans for bounded rendering.
+`jobOutputPrunedBounds(error)` extracts the structured `jobOutputPruned`
+floor and total from error code `-32014`.
+
+Fixtures use the same six-field contract. The codec owns validation and
+decoding; each application owns its read cadence, retained windows and recovery.
+The [output guide](../../docs/product/session-activity.md#job-output-pages)
+defines snapshot selection, floor/EOF semantics and the current protocol.
 
 ## Older-history demand
 

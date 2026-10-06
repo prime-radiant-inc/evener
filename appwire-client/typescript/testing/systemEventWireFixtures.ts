@@ -1,8 +1,8 @@
 // systemEventWireFixtures reads the daemon's system events and steers as the
-// hub sends them: a tool repair, the two compaction summaries, plugin loads,
-// compaction passes, one steer per daemon kind the transcript labels, and a
-// failed turn as a reload groups it (turn.error plus its error systemMessage),
-// alone and after an earlier, distinct error.
+// hub sends them: a tool repair, a human's Allow and Deny, the two compaction
+// summaries, plugin loads, compaction passes, one steer per daemon kind the
+// transcript labels, and a failed turn as a reload groups it (turn.error
+// plus its error systemMessage), alone and after an earlier, distinct error.
 //
 // agent's TestSystemEventWireFixtures produces the fixture from the builders
 // the live projector and history share, and re-verifies it on every Go test
@@ -17,6 +17,8 @@ const FIXTURE_PATH = "agent/testdata/systemeventwire/events.json";
 /** The recorded case names, in the order the fixture lists them. */
 export type SystemEventWireCase =
   | "tool-repair"
+  | "approval-allowed"
+  | "approval-denied"
   | "compaction-summary"
   | "compaction-checkpoint"
   | "plugin-loaded"

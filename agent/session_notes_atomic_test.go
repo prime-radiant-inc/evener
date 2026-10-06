@@ -96,7 +96,7 @@ func TestHumanNoteAtomicDurability(t *testing.T) {
 			}
 			want, count := "old", 1
 			if boundary == "after-effect" {
-				want, count = "new value", 2
+				want, count = "new\nvalue", 2
 			}
 			if disk.HumanNote == nil || *disk.HumanNote != want || len(disk.SteeringOrder) != count {
 				t.Fatalf("disk note/steering = %+v / %v; want %q / %d", disk.HumanNote, disk.SteeringOrder, want, count)
@@ -117,7 +117,7 @@ func TestHumanNoteAtomicDurability(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if response.Note != "new value" || response.Receipt.ClientMutationID != "save" {
+			if response.Note != "new\nvalue" || response.Receipt.ClientMutationID != "save" {
 				t.Fatalf("response = %+v", response)
 			}
 			if _, err := s.SetHumanNote("newer", "latest"); err != nil {
@@ -127,7 +127,7 @@ func TestHumanNoteAtomicDurability(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if replay.Note != "new value" || replay.Receipt.Disposition != appwire.MutationDispositionReplayed {
+			if replay.Note != "new\nvalue" || replay.Receipt.Disposition != appwire.MutationDispositionReplayed {
 				t.Fatalf("replay = %+v", replay)
 			}
 			if live, _ := s.notesSnapshot(); live != "latest" {

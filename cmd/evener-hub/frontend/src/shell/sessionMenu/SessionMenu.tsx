@@ -22,7 +22,6 @@
 
 import type { NavigationSessionSummary } from "@evener/appwire-client";
 import { type ChangeEvent, useState } from "react";
-import type { SessionPanelKind } from "../../panes/sessionPanels";
 import { Button, Dialog, Input } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { Menu, type MenuEntry } from "../../widgets/menu";
@@ -46,7 +45,7 @@ export interface NavigationSessionModel {
 type PinSectionInfo = { id: string; name: string; member_count: number };
 
 export interface SessionMenuActions {
-  onOpenPane(pane: SessionPanelKind): void;
+  onOpenOverview(): void;
   onRename(name: string): Promise<void>;
   onShutdown(): Promise<void>;
   onForceStop?(): Promise<void>;
@@ -73,6 +72,7 @@ export interface SessionMenuTurnVerbs {
 
 export interface SessionMenuProps {
   sessionRef: string;
+  paneId?: string;
   title: string;
   triggerLabel: string; // sr-only trigger name: "Session actions" / `Actions for ${title}`
   canRename: boolean;
@@ -81,8 +81,8 @@ export interface SessionMenuProps {
   session?: NavigationSessionModel;
   /** Compatibility input for rail rows; the pane chrome uses `session`. */
   treeNode?: NavigationSessionModel;
-  panesOpen: { details: boolean; activity: boolean };
-  activityLabel?: string; // e.g. "Activity · 2"; defaults to "Activity"
+  overviewOpen: boolean;
+  overviewLabel?: string; // e.g. "Overview · 2 active"; defaults to "Overview"
   /** Pane-only action. Rail/sidebar callers omit it. */
   onOpenVerbosity?: () => void;
   /** Composer-only turn verbs (see the header comment). Rail/sidebar and
@@ -104,6 +104,7 @@ const checked = (label: string, open: boolean) => (open ? `${label} ✓` : label
 
 export function SessionMenu({
   sessionRef,
+  paneId,
   title,
   triggerLabel,
   canRename,
@@ -111,8 +112,8 @@ export function SessionMenu({
   stopped,
   session,
   treeNode,
-  panesOpen,
-  activityLabel,
+  overviewOpen,
+  overviewLabel,
   onOpenVerbosity,
   turnVerbs,
   actions,
@@ -148,19 +149,18 @@ export function SessionMenu({
     sessionModel !== undefined && sessionModel.top_level !== false && isTopLevelSession(sessionModel);
   const deleteEligible = organizationEligible && sessionModel.host_id === "local";
 
-  // Groups joined by separators: panes / organize / destructive. Both
+  // Groups joined by separators: inspection / organize / destructive. Both
   // separators always render because Rename and Shut down are always present;
   // the eligible-only items slot into their groups without orphaning a rule.
-  const paneItems: MenuEntry[] = [
-    { id: "details", label: checked("Details", panesOpen.details), onSelect: () => actions.onOpenPane("details") },
+  const inspectionItems: MenuEntry[] = [
     {
-      id: "activity",
-      label: checked(activityLabel ?? "Activity", panesOpen.activity),
-      onSelect: () => actions.onOpenPane("activity"),
+      id: "overview",
+      label: checked(overviewLabel ?? "Overview", overviewOpen),
+      onSelect: actions.onOpenOverview,
     },
   ];
   if (onOpenVerbosity) {
-    paneItems.push({ id: "verbosity", label: "Verbosity…", onSelect: onOpenVerbosity });
+    inspectionItems.push({ id: "verbosity", label: "Verbosity…", onSelect: onOpenVerbosity });
   }
   const organizeItems: MenuEntry[] = [
     {
@@ -224,7 +224,7 @@ export function SessionMenu({
   }
   const items: MenuEntry[] = [
     ...turnItems,
-    ...paneItems,
+    ...inspectionItems,
     { kind: "separator", id: "sep-organize" },
     ...organizeItems,
     { kind: "separator", id: "sep-destructive" },
@@ -238,7 +238,9 @@ export function SessionMenu({
         triggerTabIndex={triggerTabIndex}
         trigger={
           <>
-            <span aria-hidden="true">⋯</span>
+            <span aria-hidden="true" data-session-actions-ref={sessionRef} data-pane-id={paneId}>
+              ⋯
+            </span>
             <span className={CLASS.srOnly}>{triggerLabel}</span>
           </>
         }

@@ -104,7 +104,11 @@ export function StopSubagentSheet({ route }: NativeStackScreenProps<Routes, "Sto
 	const small = { fontSize: 13 * scale, lineHeight: 18 * scale };
 	return (
 		<Sheet title="Stop subagent" onCancel={sheet.close}>
-			<ScrollView automaticallyAdjustKeyboardInsets contentContainerStyle={{ padding: 16, gap: 8 }}>
+			<ScrollView
+				automaticallyAdjustKeyboardInsets
+				keyboardDismissMode="on-drag"
+				contentContainerStyle={{ padding: 16, gap: 8 }}
+			>
 				<View style={{ flexDirection: "row", alignItems: "flex-end", gap: 8 }}>
 					<TextInput
 						accessibilityLabel="Message to the coordinator"

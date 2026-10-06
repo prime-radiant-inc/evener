@@ -1056,6 +1056,37 @@ func TestRunServeClearRendezvousFailureKeepsOldIdentity(t *testing.T) {
 	}
 }
 
+// The fresh session serve launches picks its ID while provisioning, into the
+// config the clear copies. The cleared session must still get an ID of its own,
+// and its scratch must be named after that ID rather than the old session's.
+func TestRunServeClearPicksANewSessionIDForItsScratch(t *testing.T) {
+	deps, state, args := newClearServeDeps(t)
+	var clearID, clearScratchRoot string
+	newClearSession := deps.newClearSession
+	deps.newClearSession = func(client *llm.Client, profile *provider.Profile, env execenv.ExecutionEnvironment, cfg agent.SessionConfig) (*agent.Session, error) {
+		clearID = cfg.SessionID
+		if local, ok := env.(*execenv.LocalExecutionEnvironment); ok {
+			clearScratchRoot, _ = local.ScratchIdentity()
+		}
+		return newClearSession(client, profile, env, cfg)
+	}
+
+	obs := runClearAttempt(t, deps, state, args, nil)
+
+	if obs.clearErr != nil {
+		t.Fatalf("clear: %v", obs.clearErr)
+	}
+	if clearID == "" || clearID == obs.oldSessionID {
+		t.Fatalf("cleared session config SessionID = %q, want a fresh ID distinct from the old session %q", clearID, obs.oldSessionID)
+	}
+	if obs.currentSessionID != clearID {
+		t.Errorf("current session = %q, want the picked ID %q", obs.currentSessionID, clearID)
+	}
+	if clearScratchRoot != clearID {
+		t.Errorf("cleared session scratch is named for root %q, want %q", clearScratchRoot, clearID)
+	}
+}
+
 // TestRunServeClearSessionFailureDisposesUnadoptedScratch drives the clear that
 // provisions a fresh environment and then fails to build the session that would
 // have owned it. Cleanup() RETAINS a session scratch -- the handoff convention

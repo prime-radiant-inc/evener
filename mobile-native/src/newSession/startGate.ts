@@ -2,7 +2,7 @@
 // Only what the phone itself checked blames a row; a hub rejection after
 // Start is shown as the hub said it.
 import type { HostRow } from "@evener/appwire-client";
-import { LOCAL_HOST } from "../../../cmd/evener-hub/frontend/src/stores/hostRouting";
+import { LOCAL_HOST } from "@evener/appwire-client";
 
 export type HostReach = "local" | "connected" | "offline" | "missing" | "pending";
 

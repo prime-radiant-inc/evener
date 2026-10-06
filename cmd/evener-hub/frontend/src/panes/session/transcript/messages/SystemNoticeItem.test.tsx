@@ -1,8 +1,13 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ItemModel, TurnModel } from "@evener/appwire-client";
-import { formatCharCount, makeTranscriptDisplayConfig, WarningCodeMCPReconnected } from "@evener/appwire-client";
+import type { ItemModel, ThreadModel, TurnModel } from "@evener/appwire-client";
+import {
+  formatCharCount,
+  makeTranscriptDisplayConfig,
+  projectThread,
+  WarningCodeMCPReconnected,
+} from "@evener/appwire-client";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, expect, test } from "vitest";
 import { installLocalStorage, MemoryStorage } from "../../../../storageTestUtils";
@@ -243,6 +248,116 @@ test("a compaction eventKind item renders as a scaffold disclosure", () => {
   render(<TurnBlock turn={turnWith([item("a", { text: "kept context", eventKind: "compaction" })])} />);
   expect(screen.getByTestId("system-notice-scaffold")).toBeTruthy();
   expect(screen.queryByTestId("system-notice-line")).toBeNull();
+});
+
+test.each(["system_prompt", "compaction"] as const)(
+  "%s keeps explicit disclosure choices through Full baselines, level changes, and remounts",
+  (eventKind) => {
+    const scaffold = item("scaffold", { eventKind, text: "## Opaque scaffold body" });
+    const turn = turnWith([scaffold]);
+    const atLevel = (level: "tools" | "full") => (
+      <TranscriptRenderProvider
+        config={makeTranscriptDisplayConfig({ kind: "preset", level })}
+        surface="readOnly"
+        disclosureScope={`scaffold:${eventKind}`}
+        eligibleDisclosureIds={[scaffold.id]}
+      >
+        <SystemNoticeItem item={scaffold} turn={turn} live={false} />
+      </TranscriptRenderProvider>
+    );
+    const disclosure = () => screen.getByTestId("system-notice-scaffold") as HTMLDetailsElement;
+    const click = () => fireEvent.click(disclosure().querySelector("summary")!);
+    const view = render(atLevel("full"));
+    expect(disclosure().open).toBe(true);
+    click();
+    expect(disclosure().open).toBe(false);
+    view.rerender(atLevel("tools"));
+    expect(disclosure().open).toBe(false);
+    click();
+    expect(disclosure().open).toBe(true);
+    view.unmount();
+    const remount = render(atLevel("tools"));
+    expect(disclosure().open).toBe(true);
+    remount.rerender(atLevel("full"));
+    expect(disclosure().open).toBe(true);
+    click();
+    expect(disclosure().open).toBe(false);
+  },
+);
+
+const notesText =
+  "<shared-notes>\nHuman: **keep literal**\nAgent: context & <tags>\nURLs: https://example.com/\n</shared-notes>";
+const notesItem = () => item("notes", { eventKind: "notes-context", text: notesText });
+
+function notesTurn(
+  level: "chat" | "intent" | "tools" | "activity" | "full",
+  sessionRef = "notes-session",
+  items = [notesItem()],
+) {
+  const config = makeTranscriptDisplayConfig({ kind: "preset", level }, { systemEvents: true });
+  const projection = projectThread({ turns: [turnWith(items)] } as ThreadModel, config);
+  const projected = projection.turns[0];
+  if (!projected) throw new Error("no projected turn");
+  return (
+    <TranscriptRenderProvider config={config} projection={projection} surface="readOnly" sessionRef={sessionRef}>
+      <TurnBlock turn={projected} sessionRef={sessionRef} />
+    </TranscriptRenderProvider>
+  );
+}
+
+test.each(["intent", "tools", "activity", "full"] as const)(
+  "shared notes stay folded by default at %s and expand to the literal snapshot",
+  (level) => {
+    render(notesTurn(level));
+    const disclosure = screen.getByTestId("system-notice-scaffold") as HTMLDetailsElement;
+    expect(disclosure.open).toBe(false);
+    const summary = disclosure.querySelector("summary");
+    expect(summary?.textContent).toBe(`Shared notes updated · ${formatCharCount(notesText.length)}`);
+    expect(screen.queryByTestId("system-notice-line")).toBeNull();
+    fireEvent.click(summary!);
+    expect(disclosure.open).toBe(true);
+    const body = screen.getByTestId("system-notice-scaffold-body");
+    expect(body.textContent).toBe(notesText);
+    expect(body.querySelector("strong, a, shared-notes, tags")).toBeNull();
+  },
+);
+
+test("shared notes keep expansion across remount and level changes within their own session", () => {
+  const view = render(notesTurn("tools"));
+  fireEvent.click(screen.getByTestId("system-notice-scaffold").querySelector("summary")!);
+  view.rerender(notesTurn("chat"));
+  expect(screen.queryByTestId("system-notice-scaffold")).toBeNull();
+  expect(screen.queryByText(/Human:/)).toBeNull();
+  view.rerender(notesTurn("full"));
+  expect((screen.getByTestId("system-notice-scaffold") as HTMLDetailsElement).open).toBe(true);
+  view.unmount();
+  const remount = render(notesTurn("tools"));
+  expect((screen.getByTestId("system-notice-scaffold") as HTMLDetailsElement).open).toBe(true);
+  remount.rerender(notesTurn("tools", "another-session"));
+  expect((screen.getByTestId("system-notice-scaffold") as HTMLDetailsElement).open).toBe(false);
+});
+
+test("shared notes break lifecycle groups instead of leaking a snapshot into their summary", () => {
+  render(notesTurn("activity", "notes-session", [notesItem(), item("a"), item("b"), item("c")]));
+  expect(screen.getByTestId("system-notice-group").querySelector("summary")?.textContent).toBe(
+    "3 system events · notice a",
+  );
+  expect(screen.getAllByTestId("system-notice-scaffold")).toHaveLength(1);
+  expect((screen.getByTestId("system-notice-scaffold") as HTMLDetailsElement).open).toBe(false);
+});
+
+test("hidden shared notes leave the failed turn's error visible", () => {
+  const config = makeTranscriptDisplayConfig({ kind: "preset", level: "chat" }, { systemEvents: true });
+  const projected = projectThread({ turns: [failedTurn([notesItem()])] } as ThreadModel, config).turns[0];
+  if (!projected) throw new Error("no projected turn");
+  render(
+    <TranscriptRenderProvider config={config} surface="readOnly">
+      <TurnBlock turn={projected} />
+    </TranscriptRenderProvider>,
+  );
+  expect(screen.queryByText(/Human:/)).toBeNull();
+  expect(screen.queryByTestId("system-notice-scaffold")).toBeNull();
+  expect(screen.getAllByText(/openai error \(status=401\)/)).toHaveLength(1);
 });
 
 test("a long systemMessage notice with no scaffold eventKind stays a plain quiet line (no char-count heuristic)", () => {

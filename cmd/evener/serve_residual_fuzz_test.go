@@ -47,10 +47,10 @@ type residualServeServer struct {
 	visionModel    func(string) error
 	name           func(string) error
 	effort         func(string) error
-	tasks          func() any
+	tasks          func() []appwire.Task
 	jobs           func(appwire.JobsListParams) (any, error)
-	jobOutput      func(string, int64, int64) (any, bool, error)
-	jobGet         func(string) (any, bool, error)
+	jobOutput      func(string, *int64, int64) (appwire.JobOutputPage, bool, error)
+	jobGet         func(string) (appwire.JobActivityJob, bool, error)
 	clear          func(context.Context, appwire.ThreadClearParams) error
 	shutdown       func()
 }
@@ -94,14 +94,14 @@ func (s *residualServeServer) SetModelFunc(f func(string) error)           { s.m
 func (s *residualServeServer) SetVisionModelFunc(f func(string) error)     { s.visionModel = f }
 func (s *residualServeServer) SetNameFunc(f func(string) error)            { s.name = f }
 func (s *residualServeServer) SetReasoningEffortFunc(f func(string) error) { s.effort = f }
-func (s *residualServeServer) SetTasksFunc(f func() any)                   { s.tasks = f }
+func (s *residualServeServer) SetTasksFunc(f func() []appwire.Task)        { s.tasks = f }
 func (s *residualServeServer) SetJobsFunc(f func(appwire.JobsListParams) (any, error)) {
 	s.jobs = f
 }
-func (s *residualServeServer) SetJobOutputFunc(f func(string, int64, int64) (any, bool, error)) {
+func (s *residualServeServer) SetJobOutputFunc(f func(string, *int64, int64) (appwire.JobOutputPage, bool, error)) {
 	s.jobOutput = f
 }
-func (s *residualServeServer) SetJobGetFunc(f func(string) (any, bool, error)) {
+func (s *residualServeServer) SetJobGetFunc(f func(string) (appwire.JobActivityJob, bool, error)) {
 	s.jobGet = f
 }
 func (s *residualServeServer) SetClearFunc(f func(context.Context, appwire.ThreadClearParams) error) {
@@ -155,7 +155,7 @@ func exerciseResidualCallbacks(t *testing.T, s *residualServeServer, sessionID s
 	}
 	_ = s.tasks()
 	_, _ = s.jobs(appwire.JobsListParams{Ref: "local:" + sessionID})
-	_, _, _ = s.jobOutput("job_1", 0, 1024)
+	_, _, _ = s.jobOutput("job_1", nil, 1024)
 	_, _, _ = s.jobGet("job_1")
 }
 

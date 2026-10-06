@@ -6,13 +6,13 @@ package dev
 // scripts/web/test-web-browser.sh keeps only the load-aware default for the
 // slot count and hands off here.
 //
-// The skill and retirement guards are the gate's never-signalled checks: each
+// The skill, cascade, background Jobs and retirement guards are never-signalled checks: each
 // is a go test (the retirement guard's behind `npm run`) whose driver, Chrome
 // and helper daemons are cleaned up by the test binary's own t.Cleanup, which a
 // TERM to go test would skip and a TERM to npm alone would orphan; an interrupt
-// waits for them instead. The skill guard is also the check that needs the
-// built frontend (the hub serves the embedded dist), which the gate builds
-// first when it is missing.
+// waits for them instead. The skill and cascade guards also need the built
+// frontend (the hub serves the embedded dist), which the gate builds first
+// when it is missing.
 
 import (
 	"fmt"
@@ -23,11 +23,13 @@ import (
 )
 
 // browserGuards is every guard in verdict order.
-var browserGuards = []string{"layoutguard", "overflowguard", "shellguard", "spawnguard", "transcriptscrollguard", "retirementguard", "mermaidguard", "sessioncacheguard", "skillguard"}
+var browserGuards = []string{"layoutguard", "overflowguard", "shellguard", "spawnguard", "transcriptscrollguard", "retirementguard", "mermaidguard", "sessioncacheguard", "skillguard", "cascadeguard", "backgroundjobsguard"}
 
 const (
-	skillGuard      = "skillguard"
-	retirementGuard = "retirementguard"
+	skillGuard          = "skillguard"
+	cascadeGuard        = "cascadeguard"
+	retirementGuard     = "retirementguard"
+	backgroundJobsGuard = "backgroundjobsguard"
 )
 
 // newBrowserGate is the browser gate over its guards; the caller supplies
@@ -37,8 +39,6 @@ func newBrowserGate(slots int, buildFrontend bool) *webGate {
 		name:          "web-browser-guards",
 		checks:        browserGuards,
 		spec:          browserGuardSpec,
-		needsBuild:    skillGuard,
-		unsignalled:   []string{retirementGuard, skillGuard},
 		slots:         slots,
 		buildFrontend: buildFrontend,
 	}
@@ -51,6 +51,24 @@ func newBrowserGate(slots int, buildFrontend bool) *webGate {
 func browserGuardSpec(guard, root string) guardSpec {
 	vite := "BROWSER_GUARD_VITE_CACHE_DIR=" + filepath.Join(root, "vite-cache")
 	switch guard {
+	case backgroundJobsGuard:
+		return guardSpec{
+			name:            guard,
+			argv:            []string{"go", "test", "-tags", "browserguard", "./cmd/evener-hub", "-run", "^TestBackgroundJobsBrowser$", "-count=1"},
+			dir:             ".",
+			env:             []string{vite},
+			needsBuild:      true,
+			waitOnInterrupt: true,
+		}
+	case cascadeGuard:
+		return guardSpec{
+			name:            guard,
+			argv:            []string{"go", "test", "-tags", "browserguard", "./cmd/evener-hub", "-run", "^TestAgentCascadeBrowser$", "-count=1"},
+			dir:             ".",
+			env:             []string{vite},
+			needsBuild:      true,
+			waitOnInterrupt: true,
+		}
 	case skillGuard:
 		// web-skillguard is the full-stack guard: cmd/evener-hub's
 		// TestSkillComposerBrowser (browserguard build tag) drives the
@@ -58,21 +76,24 @@ func browserGuardSpec(guard, root string) guardSpec {
 		// real `evener serve` daemons. The TestSkillGuard* unit tests ride
 		// along: they need no browser and only this tag compiles them.
 		return guardSpec{
-			name: guard,
-			argv: []string{"go", "test", "-tags", "browserguard", "./cmd/evener-hub", "-run", "^TestSkillComposerBrowser$|^TestSkillGuard", "-count=1"},
-			dir:  ".",
-			env:  []string{vite},
+			name:            guard,
+			argv:            []string{"go", "test", "-tags", "browserguard", "./cmd/evener-hub", "-run", "^TestSkillComposerBrowser$|^TestSkillGuard", "-count=1"},
+			dir:             ".",
+			env:             []string{vite},
+			needsBuild:      true,
+			waitOnInterrupt: true,
 		}
 	case retirementGuard:
 		// retirementguard's contract is `npm run retirementguard`: it runs the
 		// isolated Go fixture (TestRetirementBrowser), which starts the fixture
 		// Hub and drives scripts/retirementguard/run.mjs against it.
 		return guardSpec{
-			name:          guard,
-			argv:          []string{"npm", "run", "retirementguard"},
-			dir:           frontendDir,
-			env:           []string{"TMPDIR=" + filepath.Join(root, "tmp"), "NODE_DISABLE_COMPILE_CACHE=1", vite},
-			privateGoHome: true,
+			name:            guard,
+			argv:            []string{"npm", "run", "retirementguard"},
+			dir:             frontendDir,
+			env:             []string{"TMPDIR=" + filepath.Join(root, "tmp"), "NODE_DISABLE_COMPILE_CACHE=1", vite},
+			privateGoHome:   true,
+			waitOnInterrupt: true,
 		}
 	default:
 		return guardSpec{

@@ -173,17 +173,17 @@ describe("boot-time registration lets a persisted layout with lazy panes restore
       // restoreLayout): the first panel is the top-left/main one.
       { id: "p1", type: "session", params: { ref: "ref_a" }, slot: "main" },
       { id: "p2", type: "sessionTasks", params: { ref: "ref_a" }, slot: "secondary" },
-      { id: "p3", type: "sessionActivity", params: { ref: "ref_a" }, slot: "secondary" },
       { id: "p4", type: "sessionDetails", params: { ref: "ref_a" }, slot: "secondary" },
       { id: "p5", type: "doc", params: { session: "ref_a", path: "notes.md", kind: "file" }, slot: "secondary" },
       { id: "p6", type: "transcript", params: { ref: "ref_b" }, slot: "secondary" },
     ]);
+    expect(fake.panels.map((pane) => pane.id)).not.toContain("p3");
     expect(workspaceStore.getState().focusedPaneId).toBe("p4");
     expect(
       workspaceStore
         .getState()
-        .panes.slice(1, 4)
+        .panes.slice(1, 3)
         .map((pane) => paneFor(pane.type).title(pane.params, {})),
-    ).toEqual(["Tasks · ref_a", "Activity · ref_a", "Details · ref_a"]);
+    ).toEqual(["Tasks · ref_a", "Details · ref_a"]);
   });
 });

@@ -13,7 +13,7 @@ import type {
 	ThreadModel,
 	TurnModel,
 } from "@evener/appwire-client";
-import { projectNativeTranscript, usageRows } from "./transcriptPresentation";
+import { hasUsageLines, projectNativeTranscript, usageRows } from "./transcriptPresentation";
 
 function conversation(
 	items: MobileTimelineItem[],
@@ -227,6 +227,63 @@ it.each(["chat", "intent", "tools", "activity", "full"] as const)(
 		expect(result.items).toHaveLength(1);
 	},
 );
+
+// The 2026-10-03 ruling recorded at conversationOnly: Chat drops daemon
+// steering notices, cards included, and keeps the conversation's own rows.
+it("drops daemon steering notices at Chat and keeps them at Intent", () => {
+	const items: MobileTimelineItem[] = [
+		{ kind: "user", id: "u1", text: "Go on" },
+		{ kind: "user", id: "steered", text: "Use the other file", origin: "steered" },
+		{ kind: "note", id: "note-1", text: "Ship Friday" },
+		{
+			kind: "notice",
+			id: "steer-1",
+			origin: "steering",
+			steeringKind: "hook-context",
+			family: "informational",
+			tone: "info",
+			text: "Context a hook added",
+			label: "System steered: Hook context",
+		},
+		{
+			kind: "notice",
+			id: "steer-2",
+			origin: "steering",
+			family: "informational",
+			tone: "info",
+			text: "<delegate-notification></delegate-notification>",
+			notifications: [
+				{
+					kind: "notification",
+					notification: {
+						type: "delegate",
+						title: "Fix race in tree settle finished",
+						tone: "success",
+						secondary: "Fix race in tree settle",
+						excerpt: "Done: the settle pass now waits for the drain.",
+						concerns: [],
+						rawText: "<delegate-notification></delegate-notification>",
+					},
+				},
+			],
+		},
+		{
+			kind: "notice",
+			id: "sys-1",
+			origin: "system",
+			family: "lifecycle",
+			tone: "system",
+			text: "Model changed to GLM 5.3 Vision",
+		},
+		{ kind: "assistant", id: "a1", markdown: "On it", streaming: false },
+		{ kind: "failure", id: "f1", title: "Provider exploded", detail: "" },
+	];
+	const config = makeTranscriptDisplayConfig({ kind: "preset", level: "intent" });
+	const chat = projectNativeTranscript(conversation(items), config, { justTheConversation: true });
+	expect(chat.items.map((item) => item.id)).toEqual(["u1", "steered", "note-1", "sys-1", "a1", "f1"]);
+	const intent = projectNativeTranscript(conversation(items), config);
+	expect(intent.items.map((item) => item.id)).toEqual(items.map((item) => item.id));
+});
 
 it("keeps every system-event row the seam produced and masks usage fields independently", () => {
 	const items: MobileTimelineItem[] = [
@@ -917,3 +974,10 @@ it.each([
 		expect(result.items.map((item) => item.id)).toEqual(["notice"]);
 	},
 );
+
+it("has usage lines only when a token count or the cost would show", () => {
+	expect(hasUsageLines({ derived: null, cumulative: null, cost: null })).toBe(false);
+	expect(hasUsageLines({ derived: null, cumulative: null, cost: "$0.12" })).toBe(true);
+	expect(hasUsageLines({ derived: null, cumulative: { totalTokens: 900 }, cost: null })).toBe(true);
+	expect(hasUsageLines({ derived: null, cumulative: { cacheReadTokens: undefined }, cost: null })).toBe(false);
+});

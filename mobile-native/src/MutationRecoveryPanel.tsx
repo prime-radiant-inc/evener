@@ -1,7 +1,7 @@
 // The native recovery surface's view of one target's durable recovery rows.
 // It is the panel half of the landed slice-4 hook: the hook owns the read,
 // the storage subscription and the one recovery write; this module is the
-// pure projection the screen turns into ghosts above the composer
+// pure projection the screen turns into ghosts at the transcript's end
 // (session/ghosts.ts), the line that shows the surface's own failure, and the
 // consumer hook that owns the screen's recovery state.
 //
@@ -25,7 +25,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { View } from "react-native";
 import { getNativeMutationRuntime, nativeMutationTargetKey } from "./nativeMutationRuntime";
 import { type NativeMutationRecoveryRuntime, useNativeMutationRecovery } from "./useNativeMutationRecovery";
-import { Action, ErrorMessage } from "./ui";
+import { ErrorMessage } from "./ui";
+import { Button } from "./sheet/Grouped";
 
 export type NativeMutationRecoveryStatus = MutationRecoveryKind;
 export type NativeMutationRecoveryAction = "restore" | "discard";
@@ -287,9 +288,7 @@ export function RecoveryFailure({ error, onRetry }: { error: unknown; onRetry: (
 	return (
 		<View style={{ alignItems: "flex-start" }}>
 			<ErrorMessage message={recoveryFailureMessage(error)} />
-			<Action tone="quiet" onPress={onRetry}>
-				Retry
-			</Action>
+			<Button text quiet label="Retry" onPress={onRetry} />
 		</View>
 	);
 }

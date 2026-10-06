@@ -699,6 +699,15 @@ func (m hubModel) handleMarketplaceListResult(msg launchconfig.MarketplaceListRe
 	return m, nil
 }
 
+// pluginsPanelReads is everything the plugins panel reads when it opens, and
+// again on reconnect while it is open: the marketplace and plugin lists, and
+// the update check. The check starts only once the first plugin list has
+// landed, so that list, read before the check, can never replace the one the
+// check's re-read brings.
+func (m *hubModel) pluginsPanelReads() []tea.Cmd {
+	return []tea.Cmd{m.marketplaceListRead(), tea.Sequence(launchconfig.CmdPluginList(m.client), launchconfig.CmdPluginCheckUpdates(m.client))}
+}
+
 // marketplaceListRead returns the marketplace-list read this model should
 // issue for a user- or notification-driven refetch. Every read carries the
 // next reconciliation generation from the start: once a removal has landed,
