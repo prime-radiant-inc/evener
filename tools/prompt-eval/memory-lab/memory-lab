@@ -544,6 +544,9 @@ def run_trial(args, label, binpath, arm, scen, rep):
 # Check type -> the string fields its grader reads (and so must be present).
 REQUIRED_CHECK_FIELDS = {"checks": ["run"], "trace": ["tool", "regex"], "memory": ["regex"], "transcripts": ["regex"],
                          "final": ["regex"], "whiteboard": [], "delegate_calls": []}
+SCENARIO_KEYS = {"arms", "fixture_from", "stages"}
+STAGE_KEYS = {"name", "prompt", "before", "fixture", "workspace", "resume", "seed_project_memory"} | set(REQUIRED_CHECK_FIELDS)
+MEMORY_SCOPES = {"personal", "project", "session"}
 
 
 def load_scenario(scen):
@@ -552,12 +555,20 @@ def load_scenario(scen):
         spec = json.load(f)
     if not isinstance(spec, dict) or not isinstance(spec.get("stages"), list):
         sys.exit(f"memory-lab: {scen}: scenario.json must be an object with a \"stages\" list")
+    unknown = set(spec) - SCENARIO_KEYS
+    if unknown:
+        sys.exit(f"memory-lab: {scen}: unknown key(s) {sorted(unknown)}; a misspelled key would be silently ignored")
     if "fixture_from" in spec and not (isinstance(spec["fixture_from"], str) and spec["fixture_from"]):
         sys.exit(f"memory-lab: {scen}: \"fixture_from\" must name a scenario")
     for i, st in enumerate(spec["stages"]):
         if not isinstance(st, dict) or not isinstance(st.get("name"), str) or not st["name"]:
             sys.exit(f"memory-lab: {scen} stage {i + 1}: each stage must be an object with a non-empty string \"name\"")
+        if "/" in st["name"] or st["name"] in (".", ".."):
+            sys.exit(f"memory-lab: {scen} stage {i + 1}: \"name\" names the stage's files in the trial, so it can't hold a /")
         where = f"memory-lab: {scen} stage {st['name']}"
+        unknown = set(st) - STAGE_KEYS
+        if unknown:
+            sys.exit(f"{where}: unknown key(s) {sorted(unknown)}; a misspelled key would be silently ignored")
         if not (isinstance(st.get("prompt"), str) and st["prompt"]):
             sys.exit(f"{where}: needs a non-empty string \"prompt\"")
         for key in ("fixture", "seed_project_memory", "workspace", "resume", "before"):
@@ -586,6 +597,8 @@ def load_scenario(scen):
                 for field in required:
                     if not isinstance(check.get(field), str):
                         sys.exit(f"{where}: {check_type} {name!r} needs a string \"{field}\"")
+                if check_type == "memory" and "scope" in check and check["scope"] not in MEMORY_SCOPES:
+                    sys.exit(f"{where}: memory {name!r} has scope {check['scope']!r}; use one of {sorted(MEMORY_SCOPES)}")
         for check in st.get("delegate_calls", []):
             tools, args = check.get("tools"), check.get("args", {})
             if not (isinstance(tools, list) and tools and all(isinstance(t, str) for t in tools)) or not isinstance(args, dict):

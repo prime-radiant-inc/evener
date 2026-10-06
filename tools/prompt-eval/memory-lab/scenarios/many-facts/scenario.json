@@ -32,7 +32,7 @@
         },
         {
           "name": "saved: go vet",
-          "regex": "(?i)go vet|vet"
+          "regex": "(?i)go vet|\\bvet\\b"
         }
       ]
     },

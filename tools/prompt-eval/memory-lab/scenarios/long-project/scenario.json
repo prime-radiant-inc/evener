@@ -115,6 +115,10 @@
           "run": "cat > zz_heldout_test.go <<'EOF'\npackage shop\n\nimport (\n\t\"errors\"\n\t\"strings\"\n\t\"testing\"\n)\n\nfunc TestHeldoutPriceLineWraps(t *testing.T) {\n\t_, err := PriceLine(Catalog{}, Line{SKU: \"nope\", Qty: 1})\n\tif err == nil || !strings.HasPrefix(err.Error(), \"shop: \") || errors.Unwrap(err) == nil {\n\t\tt.Fatalf(\"PriceLine error = %v; want a wrapped error starting with \\\"shop: \\\"\", err)\n\t}\n}\nEOF\ngo test -count=1 -run Heldout ./...; rc=$?; rm -f zz_heldout_test.go; exit $rc"
         },
         {
+          "name": "no page states the checkout tag as current",
+          "run": "perl -e 'for $f (glob(\"$ENV{XDG_STATE_HOME}/evener/memory/projects/*/{*.md,*/*.md}\")) { open F, $f; local $/; $s = <F>; exit 1 if $s =~ /team: ?checkout/i && $s !~ /commerce/i }'"
+        },
+        {
           "name": "no commit SHAs in durable memory",
           "run": "perl -e 'for $f (glob(\"$ENV{XDG_STATE_HOME}/evener/memory/{personal,projects/*}/{*.md,*/*.md}\")) { open F, $f; while (<F>) { exit 1 if /\\b(?=[0-9a-f]*\\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}\\b/ } }'"
         },
@@ -133,14 +137,6 @@
         {
           "name": "index lines under 200 chars",
           "run": "perl -e 'for $f (glob(\"$ENV{XDG_STATE_HOME}/evener/memory/{personal,projects/*}/MEMORY.md\")) { open F, $f; while (<F>) { chomp; exit 1 if length > 200 } }'"
-        }
-      ],
-      "memory": [
-        {
-          "name": "no page states the checkout tag as current",
-          "regex": "(?i)(end|ends|ending) with[^\\n]{0,40}team: checkout",
-          "scope": "project",
-          "absent": true
         }
       ]
     }
