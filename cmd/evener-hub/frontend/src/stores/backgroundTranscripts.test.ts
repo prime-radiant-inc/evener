@@ -12,7 +12,7 @@ import { wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import { navigationInvalidatedNotification } from "@evener/appwire-client/testing/notifications";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { eligibleLiveRefs, startBackgroundTranscripts } from "./backgroundTranscripts";
+import { type BackgroundTranscriptsOwner, eligibleLiveRefs, startBackgroundTranscripts } from "./backgroundTranscripts";
 import { connectionStore } from "./connection";
 import { initNavigation, navigationStore, resetNavigationStoreForTests } from "./navigation/store";
 import { SessionCacheIndexedDB, type SessionCacheWriteOutcome } from "./sessionCacheIndexedDB";
@@ -66,9 +66,18 @@ let holdGate: Promise<void> = Promise.resolve();
 let holdRelease: (() => void) | null = null;
 let holdReached: (() => void) | null = null;
 let holdReachedGate: Promise<void> = Promise.resolve();
+// The read ordinal of `holdOffset` that blocks (1 = the next read). A later
+// ordinal bounds an owner whose own publications otherwise re-sweep forever.
+let holdAtRead = 1;
+let holdSeen = 0;
 
 function holdNextPage(offset: number): void {
+  holdPageAt(offset, 1);
+}
+function holdPageAt(offset: number, nth: number): void {
   holdOffset = offset;
+  holdAtRead = Math.max(1, nth);
+  holdSeen = 0;
   holdGate = new Promise<void>((resolve) => {
     holdRelease = resolve;
   });
@@ -111,8 +120,11 @@ async function navigationRead(params: NavigationReadParams): Promise<NavigationR
   if (params.resource === "section") {
     const offset = params.offset ?? 0;
     if (holdOffset === offset) {
-      holdReached?.();
-      await holdGate;
+      holdSeen += 1;
+      if (holdSeen >= holdAtRead) {
+        holdReached?.();
+        await holdGate;
+      }
     }
     const spec = world.pages.get(offset);
     if (spec === "fail") throw new Error(`live page ${offset} unavailable`);
@@ -184,6 +196,25 @@ function sectionReadCount(): number {
   ).length;
 }
 
+// The number of wire reads of a single Live section page.
+function pageReadCount(offset: number): number {
+  return fake.calls.filter(
+    (call) =>
+      call.method === "evener/navigation/read" &&
+      (call.params as NavigationReadParams).resource === "section" &&
+      (call.params as NavigationReadParams).offset === offset,
+  ).length;
+}
+
+// Under injected fake timers a background-thread release can arm a drained
+// cache-write deadline, so disposal must be allowed to advance time to settle
+// (the same harness detail the Task7a probes recorded; not product behavior).
+async function disposeOwner(owner: BackgroundTranscriptsOwner): Promise<void> {
+  const disposed = owner.dispose();
+  await vi.advanceTimersByTimeAsync(8_000);
+  await disposed;
+}
+
 // Waits for an OBSERVED boundary, failing loudly if it never arrives: a
 // FakeClient round trip settles within microtasks, so a bounded drain is
 // enough, but silently returning on expiry would let a stalled owner pass.
@@ -253,6 +284,8 @@ beforeEach(() => {
   world = { generation: GENERATION, revision: 1, pages: new Map() };
   sequence = 0;
   holdOffset = null;
+  holdAtRead = 1;
+  holdSeen = 0;
   holdGate = Promise.resolve();
   holdRelease = null;
   holdReached = null;
@@ -641,6 +674,7 @@ describe("startBackgroundTranscripts", () => {
           }
           return page;
         },
+        refresh: (offset, limit) => real.refresh(offset, limit),
         release: () => real.release(),
       };
     };
@@ -819,6 +853,176 @@ describe("startBackgroundTranscripts", () => {
       await vi.advanceTimersByTimeAsync(RETRY_CAP_MS * 3);
       expect(sectionReadCount()).toBe(readsAtDispose);
       expect(threadReadRefs().has("remote:recovered-idle")).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // --- Task7c: paced, useful incomplete Live discovery --------------------
+
+  test("an incomplete sweep does not spin on its own fresh hidden page, and a later coherent shrink retires it", async () => {
+    vi.useFakeTimers();
+    try {
+      world.pages = onePage([liveRow("local:a")]);
+      fake = connectFake();
+      const owner = startBackgroundTranscripts(navigationStore);
+      try {
+        await owner.settled();
+        expect(threadReadRefs()).toEqual(new Set(["local:a"]));
+
+        // rev2: page0 advances, a fresh hidden page1 (no foreground demand)
+        // succeeds, page2 fails. The sweep's own publication/retirement of
+        // page1 must not schedule an immediate re-sweep.
+        fake.calls.length = 0;
+        world.pages = new Map<number, PageSpec | "fail">([
+          [0, { rows: [liveRow("local:a")], remaining: 2 }],
+          [1, { rows: [liveRow("local:b")], remaining: 1 }],
+          [2, "fail"],
+        ]);
+        // Bounded exit: either the third repeated page1 read (the defect's
+        // spin) or the owner settling without one. Never drain unboundedly.
+        holdPageAt(1, 3);
+        invalidate(2);
+        let spun = false;
+        const heldBoundary = waitForHeldPage().then(() => {
+          spun = true;
+        });
+        try {
+          await Promise.race([heldBoundary, owner.settled()]);
+          // The contract is "no self-sustaining loop at zero elapsed time", not
+          // an exact read count: the owner must settle without reaching the
+          // third immediate page-1 read.
+          expect(spun).toBe(false);
+          expect(pageReadCount(1)).toBeLessThan(3);
+          // A fresh addition from the partial sweep is still permitted.
+          expect(threadReadRefs().has("local:b")).toBe(true);
+          expect(threadUnsubRefs()).toEqual([]);
+        } finally {
+          releaseHeldPage();
+        }
+
+        // A later coherent complete sweep shrinks the roster: the freshly added
+        // hidden ref b is retired only under a current coherent terminal proof.
+        world.pages = onePage([liveRow("local:a")]);
+        invalidate(3);
+        await owner.settled();
+        // Only the freshly discovered hidden ref retires; the retained ref
+        // never does.
+        expect(threadUnsubRefs()).toEqual(["local:b"]);
+      } finally {
+        await disposeOwner(owner);
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("control: a page-zero failure with no fresh hidden page stays quiet", async () => {
+    vi.useFakeTimers();
+    try {
+      world.pages = onePage([liveRow("local:a")]);
+      fake = connectFake();
+      const owner = startBackgroundTranscripts(navigationStore);
+      try {
+        await owner.settled();
+        fake.calls.length = 0;
+        world.pages = failPage();
+        invalidate(2);
+        await owner.settled();
+        expect(pageReadCount(0)).toBe(1);
+        expect(pageReadCount(1)).toBe(0);
+        expect(threadUnsubRefs()).toEqual([]);
+      } finally {
+        await disposeOwner(owner);
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("a paced retry over an accepted truncated page reaches recovered host authority", async () => {
+    vi.useFakeTimers();
+    try {
+      world.pages = onePage([liveRow("local:a")]);
+      fake = connectFake();
+      const owner = startBackgroundTranscripts(navigationStore);
+      try {
+        await owner.settled();
+        expect(threadReadRefs()).toEqual(new Set(["local:a"]));
+
+        // rev2 publishes an accepted truncated empty page: the ref is retained
+        // and a retry is paced, but the retry must still reach host authority.
+        world.pages = new Map([[0, { rows: [], remaining: 0, truncated: true }]]);
+        invalidate(2);
+        await owner.settled();
+        expect(threadUnsubRefs()).toEqual([]);
+        expect(threadReadRefs().has("local:a")).toBe(true);
+
+        // The host recovers with no notification and no external read.
+        const readsBefore = sectionReadCount();
+        world.pages = onePage([liveRow("local:a"), liveRow("remote:recovered", { host_id: "remote" })]);
+        await vi.advanceTimersByTimeAsync(8_000);
+        await owner.settled();
+
+        expect(sectionReadCount()).toBeGreaterThan(readsBefore);
+        expect(threadReadRefs().has("remote:recovered")).toBe(true);
+        expect(threadUnsubRefs()).toEqual([]);
+      } finally {
+        await disposeOwner(owner);
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("control: an unchanged truncated page retains its ref with bounded paced reads", async () => {
+    vi.useFakeTimers();
+    try {
+      world.pages = onePage([liveRow("local:a")]);
+      fake = connectFake();
+      const owner = startBackgroundTranscripts(navigationStore);
+      try {
+        await owner.settled();
+        world.pages = new Map([[0, { rows: [], remaining: 0, truncated: true }]]);
+        invalidate(2);
+        await owner.settled();
+        expect(threadUnsubRefs()).toEqual([]);
+
+        const readsBefore = sectionReadCount();
+        await vi.advanceTimersByTimeAsync(8_000);
+        await owner.settled();
+
+        expect(threadUnsubRefs()).toEqual([]);
+        expect(threadReadRefs().has("local:a")).toBe(true);
+        const readsAfter = sectionReadCount();
+        expect(readsAfter - readsBefore).toBeGreaterThanOrEqual(0);
+        expect(readsAfter - readsBefore).toBeLessThanOrEqual(16);
+      } finally {
+        await disposeOwner(owner);
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("control: dispose cancels a retry pending over an incomplete page", async () => {
+    vi.useFakeTimers();
+    try {
+      world.pages = onePage([liveRow("local:a")]);
+      fake = connectFake();
+      const owner = startBackgroundTranscripts(navigationStore);
+      await owner.settled();
+      world.pages = new Map([[0, { rows: [], remaining: 0, truncated: true }]]);
+      invalidate(2);
+      await owner.settled();
+
+      const readsBefore = sectionReadCount();
+      const disposed = owner.dispose();
+      await vi.advanceTimersByTimeAsync(8_000);
+      await disposed;
+      expect(sectionReadCount()).toBe(readsBefore);
+      await vi.advanceTimersByTimeAsync(8_000);
+      expect(sectionReadCount()).toBe(readsBefore);
     } finally {
       vi.useRealTimers();
     }

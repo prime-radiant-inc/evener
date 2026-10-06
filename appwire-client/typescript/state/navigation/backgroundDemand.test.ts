@@ -623,3 +623,118 @@ test("foreground convergence ignores a failed hidden key while explicit hidden-k
   ).rejects.toThrow("target convergence failed");
   revalidator.dispose();
 });
+
+test("background refresh re-reads only its fresh hidden page without visible expansion", async () => {
+  let revision = 1;
+  const calls: NavigationReadParams[] = [];
+  const { client, store } = makeStore((params) => {
+    calls.push(params);
+    if (params.resource === "manifest") return manifestResponse(params);
+    return params.offset === 0
+      ? pageResponse(params, ["live-001", "live-002"], 4, revision)
+      : pageResponse(params, ["live-005", "live-006"], 0, revision);
+  });
+  const visibleKey = { kind: "section", section: "live", offset: 0, limit: 2 } as const;
+  const hiddenKey = { kind: "section", section: "live", offset: 4, limit: 2 } as const;
+  const hiddenId = keyID(hiddenKey);
+  await store.getState().loadSection("live", 0, 2);
+  const hidden = store.acquireBackgroundLivePages();
+  const sectionReads = (offset: number) =>
+    calls.filter((params) => params.resource === "section" && params.offset === offset).length;
+  const foregroundReadsBefore = sectionReads(0);
+
+  await hidden.load(4, 2);
+  expect(sectionReads(4)).toBe(1);
+  // A plain load is served from the fresh cache.
+  await hidden.load(4, 2);
+  expect(sectionReads(4)).toBe(1);
+
+  // refresh reaches the wire for only the requested hidden page.
+  revision = 2;
+  const refreshed = await hidden.refresh(4, 2);
+  expect(refreshed.data).toMatchObject({ sessions: [{ ref: "live-005" }, { ref: "live-006" }] });
+  expect(sectionReads(4)).toBe(2);
+  expect(sectionReads(0)).toBe(foregroundReadsBefore);
+  expect(store.getState().visibleResourceKeys.has(hiddenId)).toBe(false);
+  expect(store.getState().visibleResourceKeys.has(keyID(visibleKey))).toBe(true);
+  // Shared foreground resources remain usable after a hidden refresh.
+  expect(selectLiveRows(store.getState()).map((item) => item.ref)).toEqual(["live-001", "live-002"]);
+
+  hidden.release();
+  await expect(hidden.refresh(4, 2)).rejects.toThrow("background navigation lease released");
+  await expect(hidden.load(4, 2)).rejects.toThrow("background navigation lease released");
+  store.reset();
+  client.close();
+});
+
+test("releasing during an in-flight background refresh fences the retired lease", async () => {
+  let revision = 1;
+  const requestGate: { release: () => void } = { release: () => {} };
+  let holdRequest = false;
+  const calls: NavigationReadParams[] = [];
+  const { client, store } = makeStore(async (params) => {
+    calls.push(params);
+    if (params.resource === "manifest") return manifestResponse(params);
+    if (holdRequest)
+      await new Promise<void>((resolve) => {
+        requestGate.release = resolve;
+      });
+    return pageResponse(params, ["live-005", "live-006"], 0, revision);
+  });
+  const key = { kind: "section", section: "live", offset: 4, limit: 2 } as const;
+  const id = keyID(key);
+  const hidden = store.acquireBackgroundLivePages();
+  await hidden.load(4, 2);
+  const readsBefore = calls.filter((params) => params.resource === "section" && params.offset === 4).length;
+  revision = 2;
+
+  holdRequest = true;
+  const refreshed = hidden.refresh(4, 2);
+  await Promise.resolve();
+  expect(store.getState().resources.get(id)?.loading).toBe(true);
+  hidden.release();
+  requestGate.release();
+  await refreshed;
+  expect(store.getState().resources.has(id)).toBe(false);
+  expect(calls.filter((params) => params.resource === "section" && params.offset === 4).length).toBe(readsBefore + 1);
+  store.reset();
+  client.close();
+});
+
+test("releasing during refresh's synchronous force publication does not re-register the lease", async () => {
+  let revision = 1;
+  const calls: NavigationReadParams[] = [];
+  const { client, store } = makeStore((params) => {
+    calls.push(params);
+    if (params.resource === "manifest") return manifestResponse(params);
+    return pageResponse(params, ["live-005", "live-006"], 0, revision);
+  });
+  const key = { kind: "section", section: "live", offset: 4, limit: 2 } as const;
+  const id = keyID(key);
+  const hidden = store.acquireBackgroundLivePages();
+  await hidden.load(4, 2);
+  const readsBefore = calls.filter((params) => params.resource === "section" && params.offset === 4).length;
+  revision = 2;
+
+  let released = false;
+  const unsubscribe = store.subscribe((state) => {
+    if (released) return;
+    if (state.resources.get(id)?.stale) {
+      released = true;
+      hidden.release();
+    }
+  });
+  try {
+    await expect(hidden.refresh(4, 2)).rejects.toThrow("background navigation lease released");
+  } finally {
+    unsubscribe();
+  }
+  expect(released).toBe(true);
+  // The continuation must not start a second read for the retired lease: at
+  // most the single read force itself may have started during its publication.
+  expect(calls.filter((params) => params.resource === "section" && params.offset === 4).length).toBeLessThanOrEqual(
+    readsBefore + 1,
+  );
+  store.reset();
+  client.close();
+});

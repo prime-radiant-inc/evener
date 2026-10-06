@@ -321,6 +321,11 @@ export interface NavigationStore extends FrameworkFreeStore<NavigationStoreState
 
 export interface BackgroundLivePages {
   load(offset: number, limit?: number): Promise<ResourceState<NavigationSectionResource>>;
+  /** Re-reads one hidden page from the wire even when a fresh copy is already
+   * cached. A paced retry uses this to confirm current authority over an
+   * accepted-but-incomplete page; it registers the same background demand as
+   * load and never registers foreground or visible demand. */
+  refresh(offset: number, limit?: number): Promise<ResourceState<NavigationSectionResource>>;
   release(): void;
 }
 
@@ -405,12 +410,24 @@ export function createNavigationStore({ persistence }: NavigationStoreDeps): Nav
     const token = Symbol("background-live-pages");
     backgroundLeases.set(token, new Set());
     let released = false;
+    const retired = () => released || !backgroundLeases.has(token);
+    const readPage = (offset: number, limit: number, force: boolean) => {
+      if (retired()) return Promise.reject(new Error("background navigation lease released"));
+      const resourceKey = key({ kind: "section", section: "live", offset, limit });
+      registerBackground(resourceKey, token);
+      if (force) {
+        // force synchronously emits and may start the existing request before
+        // it returns. A subscriber may release or reset this lease during that
+        // publication, so re-check before the continuation reaches load, which
+        // would otherwise re-register and start work for a retired lease.
+        revalidator?.force([resourceKey]);
+        if (retired()) return Promise.reject(new Error("background navigation lease released"));
+      }
+      return load<NavigationSectionResource>(resourceKey, token);
+    };
     return {
-      load: (offset, limit = PAGE_LIMIT) => {
-        if (released || !backgroundLeases.has(token))
-          return Promise.reject(new Error("background navigation lease released"));
-        return load<NavigationSectionResource>({ kind: "section", section: "live", offset, limit }, token);
-      },
+      load: (offset, limit = PAGE_LIMIT) => readPage(offset, limit, false),
+      refresh: (offset, limit = PAGE_LIMIT) => readPage(offset, limit, true),
       release: () => {
         if (released) return;
         released = true;

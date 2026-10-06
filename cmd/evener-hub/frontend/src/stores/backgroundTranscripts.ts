@@ -74,22 +74,32 @@ export function startBackgroundTranscripts(navigation: NavigationStore): Backgro
   let lastInput = "";
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
   let retryAttempt = 0;
+  // A paced retry must reach host authority: a fresh cached page can still be
+  // an incomplete answer, so the next sweep after a retry forces its pages to
+  // the wire instead of being served from cache.
+  let retryRefresh = false;
 
   // The external navigation input a sweep acts on, plus the identity of every
-  // settled Live page. The settled-page part is what lets a successful
-  // same-invalidation recovery (a fresh page published by any owner) restart
-  // discovery, while failed/loading pages never appear there and so can never
-  // reschedule the owner into a publication loop.
+  // Live page a foreground consumer currently shows. The page part is what
+  // lets a successful same-invalidation recovery (a fresh page published by a
+  // foreground owner) restart discovery. Only foreground-visible pages count
+  // as external input: a page this owner loaded under its own temporary sweep
+  // lease must not reschedule the owner when the sweep publishes or retires
+  // it, or a partial sweep that adds then releases a fresh hidden page would
+  // spin at zero elapsed time. A page's external identity is its key,
+  // generation and row count (kept while it is stale or loading with retained
+  // data), not its loaded revision, so the owner's own revalidation cannot
+  // masquerade as external input while a genuinely recovered page (new rows)
+  // still can.
   function inputKey(): string {
     const state = navigation.getState();
     const settled: string[] = [];
     for (const resource of state.resources.values()) {
       if (resource.key.kind !== "section" || resource.key.section !== "live") continue;
-      if (resource.stale || resource.loading || resource.error !== null || resource.data === null) continue;
+      if (!state.visibleResourceKeys.has(keyID(resource.key))) continue;
+      if (resource.data === null) continue;
       const sessions = (resource.data as { sessions?: readonly unknown[] } | null)?.sessions?.length ?? 0;
-      settled.push(
-        `${resource.key.offset}/${resource.key.limit}:${resource.generationID}:${resource.loadedRevision}:${sessions}`,
-      );
+      settled.push(`${resource.key.offset}/${resource.key.limit}:${resource.generationID}:${sessions}`);
     }
     settled.sort();
     return `${state.mode}:${state.clientGenerationID}:${state.lastSequence}|${settled.join(",")}`;
@@ -150,6 +160,7 @@ export function startBackgroundTranscripts(navigation: NavigationStore): Backgro
       retryTimer = null;
     }
     retryAttempt = 0;
+    retryRefresh = false;
   }
 
   function armRetry(): void {
@@ -158,6 +169,7 @@ export function startBackgroundTranscripts(navigation: NavigationStore): Backgro
     retryAttempt += 1;
     retryTimer = setTimeout(() => {
       retryTimer = null;
+      retryRefresh = true;
       scheduleSoon();
     }, delay);
   }
@@ -210,6 +222,10 @@ export function startBackgroundTranscripts(navigation: NavigationStore): Backgro
     // remove refs or adopt its page set.
     const capturedSequence = initial.lastSequence;
     const lease = navigation.acquireBackgroundLivePages();
+    // Consume the retry marker once: a retry forces its pages to the wire, a
+    // fresh external sweep loads normally.
+    const refresh = retryRefresh;
+    retryRefresh = false;
     const discovered = new Set<string>();
     const loadedPages: Array<{ key: ResourceKey; loadedRevision: number | null }> = [];
     let revision: number | null = null;
@@ -220,7 +236,7 @@ export function startBackgroundTranscripts(navigation: NavigationStore): Backgro
       for (let pageIndex = 0; pageIndex < MAX_SWEEP_PAGES; pageIndex += 1) {
         let page: ResourceState<NavigationSectionResource>;
         try {
-          page = await lease.load(offset);
+          page = refresh ? await lease.refresh(offset) : await lease.load(offset);
         } catch {
           break;
         }
