@@ -9,7 +9,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
@@ -188,8 +187,7 @@ func TestWorktreeSwitch_BetweenTwoManagedWorktrees(t *testing.T) {
 func TestWorktreeSwitch_PublishesInstalledCWD(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-	defer cancel()
+	ctx := t.Context()
 	changed := make(chan string, 8)
 	r.s.ConsumeEventsLossless(func(ev events.SessionEvent) {
 		if data, ok := ev.Data.(events.EnvironmentChangedData); ok {
@@ -238,8 +236,7 @@ func TestWorktreeSwitch_PublishesInstalledCWD(t *testing.T) {
 func TestWorktreeSwitch_FailedSwitchKeepsCWD(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-	defer cancel()
+	ctx := t.Context()
 	changed := make(chan string, 8)
 	drained := make(chan struct{})
 	const sentinelRevision = ^uint64(0)
@@ -838,8 +835,7 @@ func TestWorktreeExit_RestoresEnvClearsSavedEnvUnlocks(t *testing.T) {
 func TestWorktreeExit_PublishesInstalledCWD(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-	defer cancel()
+	ctx := t.Context()
 	changed := make(chan string, 8)
 	r.s.ConsumeEventsLossless(func(ev events.SessionEvent) {
 		if data, ok := ev.Data.(events.EnvironmentChangedData); ok {

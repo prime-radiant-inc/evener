@@ -81,7 +81,12 @@ losing the conversation that made the evidence relevant.
   params and saved layouts. Phone-created panes survive; closed panes do not
   return from stale geometry. Cold layout restoration creates fresh records and
   honors route intent without resurrecting runtime owners. Programmatic slot
-  moves do not count as user selection. See
+  moves do not count as user selection. DockHost moves only panes whose logical
+  slots change, keeping the promoted main isolated and leaving unchanged-slot
+  panes in their user-chosen groups. Params, document-binding and pane add/remove
+  publications do not collect secondary splits into one group. Cold and live
+  restore retain saved group geometry; live slot changes made on phone reconcile
+  against saved placements without moving unaffected panes. See
   [desktop recovery](../../cmd/evener-hub/frontend/src/shell/DockHost.tsx).
 - **Quiet the frame, not the controls.** Fine rules and aligned columns replace decorative
   enclosure. Fields still look editable, overlays retain boundaries, focus remains visible,

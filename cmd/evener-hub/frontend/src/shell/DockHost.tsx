@@ -28,6 +28,7 @@ import {
   cancelPaneFocus,
   type OpenPaneRecord,
   type PanePanelParams,
+  type PaneSlot,
   registerDockviewApi,
   useWorkspaceStore,
   workspaceStore,
@@ -159,10 +160,13 @@ function saveLayout(): void {
 function positionFor(
   api: DockviewApi,
   pane: OpenPaneRecord,
+  previousSlots: Map<string, PaneSlot>,
 ): { position: { referencePanel: string; direction: "left" | "right" | "within" } } | Record<string, never> {
   const openIds = new Set(api.panels.map((p) => p.id));
   const others = workspaceStore.getState().panes.filter((p) => p.id !== pane.id && openIds.has(p.id));
-  const secondary = others.find((p) => p.slot === "secondary");
+  // A newly demoted main has not moved yet. Do not seat a new document in its
+  // old group and strand that document there when slot reconciliation runs.
+  const secondary = others.find((p) => p.slot === "secondary" && previousSlots.get(p.id) !== "main");
   if (pane.slot === "main") {
     return secondary ? { position: { referencePanel: secondary.id, direction: "left" } } : {};
   }
@@ -232,31 +236,42 @@ function syncGroupHeaders(api: DockviewApi): void {
 // Slot promotion is a layout change, not a pane lifetime change. Dockview's
 // pinned panel api exposes moveTo({group, position}) specifically for this: it
 // moves the existing panel and its mounted component instead of removing and
-// re-adding an id. Keep the desired main isolated at the left, then collect
-// every secondary in one tab group.
-function syncPaneSlots(api: DockviewApi, panes: OpenPaneRecord[]): void {
+// re-adding an id. Only changed slots move; unchanged secondary groups belong
+// to the user's split/drag geometry, even during another pane's promotion.
+function syncPaneSlots(api: DockviewApi, panes: OpenPaneRecord[], previousSlots: Map<string, PaneSlot>): void {
   const main = panes.find((pane) => pane.slot === "main");
   if (!main) return;
   const mainPanel = api.getPanel(main.id);
   if (!mainPanel) return;
-  const secondaryPanels = panes
-    .filter((pane) => pane.slot === "secondary")
-    .map((pane) => api.getPanel(pane.id))
-    .filter((panel) => panel !== undefined);
-  if (secondaryPanels.length === 0) return;
 
-  const firstPanel = api.panels[0];
-  if (firstPanel && firstPanel.id !== main.id) {
-    mainPanel.api.moveTo({ group: firstPanel.group, position: "left", skipSetActive: true });
+  if (previousSlots.get(main.id) === "secondary") {
+    const previousMainId = [...previousSlots].find(([, slot]) => slot === "main")?.[0];
+    const anchor = (previousMainId && api.getPanel(previousMainId)) || api.panels.find((panel) => panel.id !== main.id);
+    if (anchor) mainPanel.api.moveTo({ group: anchor.group, position: "left", skipSetActive: true });
   }
 
-  const secondaryGroup = secondaryPanels[0]?.group;
-  if (!secondaryGroup) return;
-  for (const panel of secondaryPanels.slice(1)) {
-    if (panel.group.id !== secondaryGroup.id) {
-      panel.api.moveTo({ group: secondaryGroup, position: "center", skipSetActive: true });
+  for (const pane of panes) {
+    if (pane.slot !== "secondary" || previousSlots.get(pane.id) !== "main") continue;
+    const panel = api.getPanel(pane.id);
+    if (!panel) continue;
+    const secondary = panes.find((other) => other.slot === "secondary" && previousSlots.get(other.id) === "secondary");
+    const secondaryPanel = secondary && api.getPanel(secondary.id);
+    if (secondaryPanel) {
+      if (panel.group !== secondaryPanel.group) {
+        panel.api.moveTo({ group: secondaryPanel.group, position: "center", skipSetActive: true });
+      }
+    } else {
+      panel.api.moveTo({ group: mainPanel.group, position: "right", skipSetActive: true });
     }
   }
+}
+
+// Immediately after fromJSON, panel enumeration follows the restored grid's
+// creation order, the same placement authority used by workspace.restoreLayout.
+// Seed before route/live reconciliation so a host remount is not a promotion,
+// but a phone-side slot change against stale saved geometry still is.
+function restoredPaneSlots(api: DockviewApi): Map<string, PaneSlot> {
+  return new Map(api.panels.map((panel, index) => [panel.id, index === 0 ? "main" : "secondary"]));
 }
 
 export function DockHost() {
@@ -269,6 +284,9 @@ export function DockHost() {
   // A pane can change type while retaining its exact params object. Track
   // both values pushed into the existing panel, without a deep-equal pass.
   const pushedParamsRef = useRef(new Map<string, PanePanelParams>());
+  // Slots mutate in-place on promotion, while params/retype can replace records.
+  // Store scalar placements by panel ID, not prior pane objects.
+  const pushedSlotsRef = useRef(new Map<string, PaneSlot>());
   const syncingSlots = useRef(false);
 
   // Native-interaction wiring: mirrors dockview-native interactions
@@ -361,9 +379,10 @@ export function DockHost() {
           title: paneFor(pane.type).title(pane.params, bootTitleCtx),
           params: panelParams,
           renderer: pane.type === "doc" ? "always" : "onlyWhenVisible",
-          ...positionFor(api, pane),
+          ...positionFor(api, pane, pushedSlotsRef.current),
         });
         pushedParamsRef.current.set(pane.id, panelParams);
+        pushedSlotsRef.current.set(pane.id, pane.slot);
       } else {
         const pushed = pushedParamsRef.current.get(pane.id);
         if (pushed?.paneType !== pane.type || pushed.paneParams !== pane.params) {
@@ -395,8 +414,9 @@ export function DockHost() {
     // with skipSetActive. Those synchronous events are our own slot work,
     // not user selection, regardless of dockview's reported origin.
     syncingSlots.current = true;
-    syncPaneSlots(api, panes);
+    syncPaneSlots(api, panes, pushedSlotsRef.current);
     syncingSlots.current = false;
+    pushedSlotsRef.current = new Map(panes.map((pane) => [pane.id, pane.slot]));
 
     // Every add/remove above can change a group's pane count, so the tab-bar
     // rule is re-applied here rather than at each mutation site - one pass over
@@ -486,6 +506,7 @@ export function DockHost() {
       // recovery; the existing reconciliation effects apply the live store.
       const stored = readStoredLayout();
       if (stored !== undefined) workspaceStore.getState().restoreLayout(stored, { preserveLivePanes: true });
+      pushedSlotsRef.current = restoredPaneSlots(event.api);
       ensureMainPane();
       setApi(event.api);
       return;
@@ -540,6 +561,7 @@ export function DockHost() {
     if (stored !== undefined) {
       workspaceStore.getState().restoreLayout(stored);
     }
+    pushedSlotsRef.current = restoredPaneSlots(event.api);
 
     // Preserve saved inspection focus only when its ordinary route panels
     // survived. A missing owner or child still needs normal route placement.

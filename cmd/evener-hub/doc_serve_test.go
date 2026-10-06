@@ -122,18 +122,101 @@ func TestDocFile_ArchivedRootBypassesWarmPastMetadata(t *testing.T) {
 	}
 }
 
+func TestDocFile_ArchivedMetadataFailureRecovery(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		broken    []byte
+		directory bool
+		status    int
+	}{
+		{name: "missing metadata", status: http.StatusNotFound},
+		{name: "invalid JSON", broken: []byte("{"), status: http.StatusServiceUnavailable},
+		{name: "metadata read failure", directory: true, status: http.StatusServiceUnavailable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			web, rootA, sessionID := docServeTestServer(t)
+			rootB := t.TempDir()
+			for root, contents := range map[string]string{rootA: "stale A", rootB: "recovered B"} {
+				if err := os.WriteFile(filepath.Join(root, "plan.md"), []byte(contents), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.WriteFile(filepath.Join(rootA, "plot.png"), worktreeImageA, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(rootB, "plot.png"), worktreeImageB, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			entry, ok := web.cfg.Past.Find(sessionID)
+			if !ok {
+				t.Fatal("fixture session is missing from the warm past index")
+			}
+			meta, err := schema.LoadSessionMeta(entry.StateDir, entry.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			meta.EnvInfo.WorkingDir = rootB
+			metaPath := filepath.Join(entry.StateDir, "sessions", entry.ID+".meta.json")
+			if err := os.Remove(metaPath); err != nil {
+				t.Fatal(err)
+			}
+			if tc.directory {
+				if err := os.Mkdir(metaPath, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			} else if tc.broken != nil {
+				if err := os.WriteFile(metaPath, tc.broken, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for name, response := range map[string]*httptest.ResponseRecorder{
+				"text":  docRawRequest(t, web, sessionID, "plan.md"),
+				"image": docImageRequest(t, web, sessionID, "plot.png"),
+			} {
+				if response.Code != tc.status {
+					t.Errorf("%s status = %d, want %d; body = %q", name, response.Code, tc.status, response.Body.String())
+				}
+			}
+			params := appwire.SessionDocumentParams{SessionID: sessionID, Path: "plan.md"}
+			if _, err := sessionDocumentFromHub(t.Context(), web.cfg, web.sources, params); err == nil || sessionDocumentProxyStatus(err) != tc.status {
+				t.Errorf("AppWire metadata failure = %v, want status %d", err, tc.status)
+			}
+			if tc.directory || tc.broken != nil {
+				if err := os.Remove(metaPath); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := schema.SaveSessionMeta(entry.StateDir, meta); err != nil {
+				t.Fatal(err)
+			}
+			if cached, ok := web.cfg.Past.Find(sessionID); !ok || cached.Meta.EnvInfo.WorkingDir != rootA {
+				t.Fatalf("fixture did not preserve stale A metadata: %+v", cached)
+			}
+			if response := docRawRequest(t, web, sessionID, "plan.md"); response.Code != http.StatusOK || response.Body.String() != "recovered B" {
+				t.Fatalf("recovered document = %d %q, want recovered B", response.Code, response.Body.String())
+			}
+			if response := docImageRequest(t, web, sessionID, "plot.png"); response.Code != http.StatusOK || !bytes.Equal(response.Body.Bytes(), worktreeImageB) {
+				t.Fatalf("recovered image = %d %x, want current B image", response.Code, response.Body.Bytes())
+			}
+			if response, err := sessionDocumentFromHub(t.Context(), web.cfg, web.sources, params); err != nil || string(response.Data) != "recovered B" {
+				t.Fatalf("recovered AppWire document = %q, %v, want recovered B", response.Data, err)
+			}
+		})
+	}
+}
+
 func TestDocFile_Raw_TrustedCWDAliasServesIdenticalBytes(t *testing.T) {
 	web, root, sessionID := docServeTestServer(t)
-	real, err := filepath.EvalSymlinks(root)
+	realRoot, err := filepath.EvalSymlinks(root)
 	if err != nil {
 		t.Fatal(err)
 	}
 	alias := filepath.Join(t.TempDir(), "current")
-	if err := os.Symlink(real, alias); err != nil {
+	if err := os.Symlink(realRoot, alias); err != nil {
 		t.Skipf("symlink unsupported on this platform: %v", err)
 	}
 	authored := []byte("# Aliased plan\n\nidentical authored bytes\n")
-	if err := os.WriteFile(filepath.Join(real, "plan.md"), authored, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(realRoot, "plan.md"), authored, 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -153,7 +236,7 @@ func TestDocFile_Raw_TrustedCWDAliasServesIdenticalBytes(t *testing.T) {
 	for name, path := range map[string]string{
 		"relative":           "plan.md",
 		"alias absolute":     filepath.Join(alias, "plan.md"),
-		"canonical absolute": filepath.Join(real, "plan.md"),
+		"canonical absolute": filepath.Join(realRoot, "plan.md"),
 	} {
 		t.Run(name, func(t *testing.T) {
 			response := docRawRequest(t, web, sessionID, url.QueryEscape(path))

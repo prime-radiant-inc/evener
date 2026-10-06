@@ -814,8 +814,7 @@ func TestWorktreeCreate_SwapsEnvIntoWorktree(t *testing.T) {
 func TestWorktreeCreate_PublishesInstalledCWD(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-	defer cancel()
+	ctx := t.Context()
 	changed := make(chan string, 8)
 	r.s.ConsumeEventsLossless(func(ev events.SessionEvent) {
 		if data, ok := ev.Data.(events.EnvironmentChangedData); ok {

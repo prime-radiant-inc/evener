@@ -254,8 +254,11 @@ func sessionCWD(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.R
 	}
 	return withDeletionTargetOwnership(ctx, cfg, ref, session, "", func() (string, error) {
 		meta, err := schema.LoadSessionMeta(entry.StateDir, entry.ID)
-		if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
 			return "", appwire.ResourceNotFound("session not found")
+		}
+		if err != nil {
+			return "", appwire.SessionUnavailable("archived session metadata unavailable")
 		}
 		cwd := strings.TrimSpace(meta.EnvInfo.WorkingDir)
 		if cwd == "" {

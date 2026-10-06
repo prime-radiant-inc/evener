@@ -3,6 +3,7 @@
 import { once } from "node:events";
 import { mkdtemp, readFile, rm, rmdir, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as wait } from "node:timers/promises";
 import type { ServerResponse } from "node:http";
@@ -307,9 +308,7 @@ it("Reload in the actual Document actions recovers missing remote text from usef
 		reads[readIndex++]?.started(response.then((value) => value.clone().arrayBuffer()));
 		return response;
 	});
-	const scratch = process.env.EVENER_SCRATCH_DIR;
-	if (!scratch) throw new Error("HTTP fixture requires authorized EVENER_SCRATCH_DIR");
-	const directory = await mkdtemp(join(scratch, "task-8-reader-"));
+	const directory = await mkdtemp(join(tmpdir(), "reader-reload-"));
 	const file = join(directory, "recovered.md");
 	const requests: { path: string | null; session: string | null; auth: string | undefined }[] = [];
 	const server = createServer(async (request, response) => {

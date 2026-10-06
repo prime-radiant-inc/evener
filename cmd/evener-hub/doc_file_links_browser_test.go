@@ -61,7 +61,7 @@ func TestDocumentFileLinksFixtureCreatePost(t *testing.T) {
 	if recorder.Code != http.StatusNoContent {
 		t.Fatalf("POST status = %d, body = %q", recorder.Code, recorder.Body.String())
 	}
-	contents, err := os.ReadFile(filepath.Join(cwd, "docs/recovered.md"))
+	contents, err := os.ReadFile(filepath.Join(cwd, "docs", "recovered.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +78,7 @@ func TestDocumentFileLinksFixtureCreateGet(t *testing.T) {
 	if recorder.Code != http.StatusMethodNotAllowed || recorder.Body.String() != "POST required\n" {
 		t.Fatalf("GET status = %d, body = %q", recorder.Code, recorder.Body.String())
 	}
-	if _, err := os.Stat(filepath.Join(cwd, "docs/recovered.md")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(cwd, "docs", "recovered.md")); !os.IsNotExist(err) {
 		t.Fatalf("GET created fixed file: %v", err)
 	}
 }
@@ -190,13 +190,13 @@ func TestDocumentFileLinksBrowser(t *testing.T) {
 		if err := os.MkdirAll(filepath.Join(dir, "docs"), 0700); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(dir, "docs/joined-return.md"), []byte(contents), 0600); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, "docs", "joined-return.md"), []byte(contents), 0600); err != nil {
 			t.Fatal(err)
 		}
 	}
 	const token = "isolated-file-links-fixture-token"
 	web.cfg.AuthToken = token
-	imagePath := filepath.Join(cwd, "docs/current.png")
+	imagePath := filepath.Join(cwd, "docs", "current.png")
 	writeImage := func(c color.RGBA) error {
 		if err := os.MkdirAll(filepath.Dir(imagePath), 0700); err != nil {
 			return err
@@ -206,8 +206,8 @@ func TestDocumentFileLinksBrowser(t *testing.T) {
 			return err
 		}
 		img := image.NewRGBA(image.Rect(0, 0, 2, 2))
-		for y := 0; y < 2; y++ {
-			for x := 0; x < 2; x++ {
+		for y := range 2 {
+			for x := range 2 {
 				img.SetRGBA(x, y, c)
 			}
 		}
@@ -225,7 +225,7 @@ func TestDocumentFileLinksBrowser(t *testing.T) {
 		"2026-10-02-web-session-overview-design.md": "SPEC CURRENT FILE",
 		"2026-10-02-web-session-overview-review.md": "REVIEW CURRENT FILE",
 	} {
-		path := filepath.Join(cwd, "docs/superpowers/specs", name)
+		path := filepath.Join(cwd, "docs", "superpowers", "specs", name)
 		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 			t.Fatal(err)
 		}
