@@ -99,3 +99,9 @@ test("uses the scope alone for an omitted or dot search path and falls back with
   expect(memorySearchSummary(step({ scope: "personal", path: "." }))).toBe("Searched memory");
   expect(memoryProgress("memory_search", step({ scope: "personal", path: "." }))).toBe("Searching memory");
 });
+
+test("uses the bare path when a memory search has no scope", () => {
+  const memoryStep = step({ pattern: "needle", path: "guides" });
+  expect(memorySearchSummary(memoryStep)).toBe('Searched memory for "needle" in guides');
+  expect(memoryProgress("memory_search", memoryStep)).toBe('Searching memory for "needle" in guides');
+});
