@@ -981,31 +981,40 @@ func TestCheckUpdates_AGitSubdirMarketplaceIsRefreshed(t *testing.T) {
 	}
 }
 
-// When a ref names both a tag and a branch and the clone cannot say which
-// branch is its remote's default, the pin is unknown: the branch check fails
-// and the source is not taken for pinned, so a refresh is attempted and warns
-// of what fails rather than being skipped as a pin. (A check's own fetch
-// restores origin/HEAD on current git, so this is tested at the source.)
-func TestSourcePinned_AnUnknownDefaultBranchIsNoPin(t *testing.T) {
+// A ref is a branch exactly when checkout left the clone on a local branch
+// of that name, which needs no origin/HEAD: a remote whose HEAD names a
+// missing branch never gets one, and a fetch does not make it. A tag
+// shadowing another branch stays a pin, and a tag named like the default
+// branch stays the branch, with or without origin/HEAD.
+func TestSourcePinned_NeedsNoOriginHEAD(t *testing.T) {
 	if !gitAvailable() {
 		t.Skip("git not available")
 	}
 	repo := makeMarketplaceRepoWithPlugin(t, "shadowed", "widget")
 	gitIn(t, repo, "tag", "rel")
 	gitIn(t, repo, "branch", "rel")
+	def := gitIn(t, repo, "rev-parse", "--abbrev-ref", "HEAD")
+	gitIn(t, repo, "tag", def)
 	m := NewManager(t.TempDir())
-	ref, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: repo, Ref: "rel"})
+	shadowed, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: repo, Ref: "rel"})
 	if err != nil {
-		t.Fatalf("AddMarketplace: %v", err)
+		t.Fatalf("AddMarketplace rel: %v", err)
 	}
-	if !sourcePinned(context.Background(), ref) {
-		t.Fatal("a ref naming a tag and a non-default branch is not the tag's pin")
+	onDefault, err := m.AddMarketplace(context.Background(), "default", Source{Kind: SourceURL, URL: repo, Ref: def})
+	if err != nil {
+		t.Fatalf("AddMarketplace %s: %v", def, err)
 	}
-	gitIn(t, ref.InstallLocation, "symbolic-ref", "--delete", "refs/remotes/origin/HEAD")
-	if _, err := gitRefNamesBranch(context.Background(), ref.InstallLocation, "rel"); err == nil {
-		t.Fatal("the branch check answered without knowing the remote's default branch")
-	}
-	if sourcePinned(context.Background(), ref) {
-		t.Fatal("a ref whose branch check failed was taken for a pin")
+	for _, withHEAD := range []bool{true, false} {
+		if !withHEAD {
+			for _, ref := range []MarketplaceRef{shadowed, onDefault} {
+				gitIn(t, ref.InstallLocation, "symbolic-ref", "--delete", "refs/remotes/origin/HEAD")
+			}
+		}
+		if !sourcePinned(context.Background(), shadowed) {
+			t.Fatalf("origin/HEAD present=%v: a tag shadowing a non-default branch is not a pin", withHEAD)
+		}
+		if sourcePinned(context.Background(), onDefault) {
+			t.Fatalf("origin/HEAD present=%v: a tag named like the default branch was taken for a pin", withHEAD)
+		}
 	}
 }
