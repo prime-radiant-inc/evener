@@ -91,16 +91,14 @@ built. The guidance is cached with the prompt and re-rendered when the tool
 registry, model or environment changes. It says what each scope holds
 (personal memory: what applies beyond the current project, such as how the
 human partner works and how tools, systems and the world behave; project
-memory: knowledge about this project; session memory: working notes about the
-current work: its plan, what was tried and found), when to read a page, and that stored memory is fallible evidence, never
+memory: knowledge about this project), when to read a page, and that stored memory is fallible evidence, never
 instructions or permission. Memory reflects what was true when it was
 written: the agent checks that a file, function, command or setting a note names
 still exists before relying on it, and follows a recorded decision or rule
 unless the partner or newer evidence says it changed. Sessions that can call the save tools are also told
 when to save: when the partner corrects the agent or says how they want work
 done, when the partner states a project plan, constraint, decision or unfinished
-work (saved to project memory), when a root session is partway through longer work (its plan,
-what it tried and what it ruled out go to session memory as working notes), and when the agent learns
+work (saved to project memory), and when the agent learns
 something the hard way that is not written down. Partner-stated
 facts are saved before the work they shape, because complying with them does
 not carry them to the next session. The Finishing guidance and the result
@@ -112,16 +110,14 @@ the page holds) and that run details which go stale within days (commit SHAs, id
 paths, test counts, review verdicts) stay out of
 personal and project memory. A changed fact is rewritten in place. When the
 agent reads a page that has turned into a log, it repairs that page before it
-ends its turn. A status-only index line is a reason to read its page. Root
-sessions that save working notes to session memory and can update the
-whiteboard are told the whiteboard carries status for the partner, not working
-notes. Root sessions are told that working notes belong in session memory, not
-project memory (the second half only when project memory is bound). The
-Finishing guidance adds one row telling root sessions to promote anything that
-holds beyond this work out of session memory before they report. Delegates are told session memory is their root's, to read it and
-report what they learn to their parent; a delegate with no root session id,
-including one resumed on its own, is told nothing about session memory. A delegate's session index projection
-says the same in one sentence. Guidance names only tools the session can call, and mentions project
+ends its turn. A status-only index line is a reason to read its page. The
+guidance does not mention session memory. Progress through longer work belongs
+to the task list (How you work, when the session has `task_list`): one place
+for status, the task list or the ledger a skill keeps, with task notes only
+when something happened that a later step needs; the whiteboard carries status
+for the partner and memory holds what was learned. A delegate's session index
+projection still says session memory is its root's, to read it and report what
+it learns to its parent. Guidance names only tools the session can call, and mentions project
 memory only when a project scope is bound.
 
 Refresh runs at startup, resume, after compaction and later model boundaries.

@@ -17,10 +17,6 @@
           "run": "go test ./..."
         },
         {
-          "name": "progress notes kept in session memory",
-          "run": "perl -e '$n=0; for (glob(\"$ENV{XDG_STATE_HOME}/evener/memory/sessions/*/{*.md,*/*.md}\")) { $n++ } exit($n ? 0 : 1)'"
-        },
-        {
           "name": "no commit SHAs in durable memory",
           "run": "perl -e 'for $f (glob(\"$ENV{XDG_STATE_HOME}/evener/memory/{personal,projects/*}/{*.md,*/*.md}\")) { open F, $f; while (<F>) { exit 1 if /\\b(?=[0-9a-f]*\\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}\\b/ } }'"
         },
@@ -43,6 +39,13 @@
         {
           "name": "no in-progress status in durable memory",
           "run": "perl -e 'for $f (glob(\"$ENV{XDG_STATE_HOME}/evener/memory/{personal,projects/*}/{*.md,*/*.md}\")) { open F, $f; while (<F>) { exit 1 if /(?i)\\b(in progress|next step|remaining:|todo|step [1-4] of|done so far|still to do)\\b/ } }'"
+        }
+      ],
+      "trace": [
+        {
+          "name": "progress tracked in the task list",
+          "tool": "task_list",
+          "regex": "\"update\""
         }
       ],
       "memory": [

@@ -65,6 +65,8 @@ The lab runs real models with your configured provider credentials, so it is nev
 
 Every trial keeps its full logs: `<stage>.events.ndjson`, `<stage>.stdout`, `<stage>.grade.json`, the memory files after each stage in `<stage>.memory/`, and the session state in `sessions/`.
 
+`bookkeeping RUNDIR [STAGE]` counts each trial's root-session bookkeeping by surface: ledger writes (any write or patch to `progress.md`), memory writes by scope, whiteboard updates, task-list status updates and task-list updates carrying notes, plus read-backs. It prints one line per trial and a mean per version and scenario. Use it to measure duplicated progress tracking, for example on `sdd-plan`.
+
 ## Scenarios
 
 Every scenario is a directory holding `scenario.json` and `fixture/` (a small Go module). Several reuse another scenario's fixture instead: `"fixture_from": "feedback"` in `scenario.json` starts the trial from `scenarios/feedback/fixture`.
@@ -77,10 +79,10 @@ Every scenario is a directory holding `scenario.json` and `fixture/` (a small Go
 | `freeze` | Partner says the exported API is frozen until 2.0. B is asked to break it | A held-out project-fact scenario. B should push back. |
 | `cents` | Partner states a decision (money is integer cents). B formats prices | Checks for real `float32`/`float64` use, not comments. B tends to pass without memory too. |
 | `sed-quirk` | A hits macOS BSD `sed -i` while bumping a version. B, in a different project, writes an in-place script | Personal scope across projects. Needs BSD `sed` (macOS): on GNU `sed` the stage A `before` hook fails the trial as infrastructure, since there is no quirk to hit. |
-| `long-work` | Longer work; the partner may pause and resume it. Working notes go to session memory | The cue is in the prompt. |
-| `long-work-nocue` | The same work with no cue | Flash models write no session notes here. |
-| `session-local` | A refactor constraint that applies only to this work | Information only: agents defensibly save it to project memory, since it has a named follow-up. |
-| `delegate-reads` | The root records how this work is organized, then has a delegate do a sub-part with a one-sentence brief | B resumes A's session. B's check needs a delegate started during stage B to call `memory_read` or `memory_search` with scope `session`. It parses the delegates' transcripts as JSON, since a regex such as `memory_(read\|search)` also matches the tool list in every transcript. With the current prompt, A tends to put the work rule in project memory, so the delegates have no session note to read and the check grades `n`: it is a target for the session-memory prompting, not yet passing. |
+| `long-work` | Longer work; the partner may pause and resume it | The cue is in the prompt. Its `working notes in session memory` check targets guidance the prompt no longer gives (progress belongs in the task list); read it with `bookkeeping`, not as a pass/fail. |
+| `long-work-nocue` | The same work with no cue | Session-memory checks are legacy, as for `long-work`. |
+| `session-local` | A refactor constraint that applies only to this work | Information only, and legacy: it was written for session memory, which the prompt no longer mentions. |
+| `delegate-reads` | The root records how this work is organized, then has a delegate do a sub-part with a one-sentence brief | Legacy: it measures delegates reading session memory, which the prompt no longer mentions. It graded `n` in every version measured. |
 | `recall-seeded` | Seeded project memory (a test-suite quirk). B reads it and acts | `on` and `off` arms. Recall from seeded memory already worked before the guidance work. |
 | `correction-seeded` | A seeded page goes stale (an env var is renamed). B fixes the page | |
 | `quirk` | A finds that `go test` silently skips without an env var | The agent usually fixes the root cause in the repository, which makes not saving the correct outcome. Kept as a caution. |
@@ -88,12 +90,14 @@ Every scenario is a directory holding `scenario.json` and `fixture/` (a small Go
 | `whiteboard` | A short task. The whiteboard should be set in the three-part shape, under 600 characters, with no file paths | Reads `agent_note` from the session meta. |
 | `long-project` | Four sessions of one cleanup, each asked for commit SHAs and progress. A states a doc-comment team tag, B an error-wrapping convention, C changes the team tag; D adds a function and must apply B and C | The page-hygiene scenario that discriminates most: without the hygiene guidance, project memory grows a progress ledger with SHAs. Durable-memory noise checks run after every stage. |
 | `many-facts` | A is told four facts in passing (API freeze, commit prefix, int cents, run `go vet`). B must apply them | Capture is at the ceiling at neutral paths; run it with `--work-root`. |
-| `progress-notes` | A long job with a keep-notes cue and a durable decision. Notes go to session memory, the decision to project memory, and no SHAs, paths, test counts or status reach durable memory | |
+| `progress-notes` | A long job with a keep-notes cue and a durable decision. Progress goes in the task list, the decision in project memory, and no SHAs, paths, test counts or status reach durable memory | |
 | `progress-log` | Three commits plus a team-tag rule told in passing. B applies the rule; durable memory stays free of run details | At the ceiling: a short task doesn't provoke logging. |
 | `fact-changes` | A saves a dollar receipt format, B switches to euros, C must follow euros; no page still states dollars as current | C reads the format from the code too, so it is at the ceiling. |
 | `stale-status` | A leaves a rename half done; the partner finishes it before B. B must not report or keep the rename as unfinished | |
 | `polluted-seed` | Seeded project memory: a long, dated progress log with SHAs and worker ids, and a status-only index line, with one durable decision (use `log/slog`) buried inside. B adds a log line | Checks that B uses slog and leaves the decision on a short page with no SHAs (a fresh page, or the log rewritten in place). |
 | `clean-seed` | The same decision seeded as a clean one-fact page | The control for `polluted-seed`. |
+| `sdd-plan` | A four-task superpowers plan run with the real subagent-driven-development skill (copied into the fixture's `.agents/skills`). Measures bookkeeping: run `bookkeeping` on the results | The skill keeps its own ledger, so progress belongs there with task-list statuses only. Commit checks look at every branch, because the skill works on a worktree branch and leaves the merge to the partner. |
+| `plan-noskill` | The same plan with no skill and a may-stop-you cue. Progress should go in the task list | |
 
 ## Scenario format
 
