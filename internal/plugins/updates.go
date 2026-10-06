@@ -95,9 +95,9 @@ func (m *Manager) CheckUpdates(ctx context.Context) error {
 		case src.Rel:
 			// A plugin in its marketplace's own repo is checked against the
 			// refreshed clone, without a network call: Upgrade copies its
-			// folder again when the clone's last commit touching it moved.
+			// folder again when the clone's tree at that folder changed.
 			root := m.catalogRoot(ref)
-			lookup = func() (string, error) { return sourcePathCommit(checkCtx, root, src.Path) }
+			lookup = func() (string, error) { return sourcePathTree(checkCtx, root, src.Path) }
 		case gitRemoteURL(src) != "":
 			lookup = func() (string, error) { return remoteHead(checkCtx, src) }
 		default:

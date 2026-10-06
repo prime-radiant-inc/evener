@@ -130,12 +130,13 @@ func gitHeadSHA(ctx context.Context, dir string) (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
-// gitPathCommit returns the last commit of the repository at dir that touched
-// path (relative to dir), or "" when no commit has. In a shallow clone a path
-// untouched since the clone's root answers the root, so a reclone can move it
-// once without the path changing; an Upgrade then recopies the same files.
-func gitPathCommit(ctx context.Context, dir, path string) (string, error) {
-	out, err := gitRun(ctx, dir, "log", "-1", "--format=%H", "--", path)
+// gitPathTree returns the id of the tree path (relative to dir) holds at the
+// checked-out commit of the repository at dir. It changes exactly when the
+// folder's contents do, whatever else the repository's history does: unlike
+// the last commit touching the folder, it does not move when a shallow
+// clone's root does (a reclone), so a reclone flags nothing.
+func gitPathTree(ctx context.Context, dir, path string) (string, error) {
+	out, err := gitRun(ctx, dir, "rev-parse", "--verify", "--end-of-options", "HEAD:./"+strings.TrimPrefix(filepath.ToSlash(path), "./"))
 	if err != nil {
 		return "", err
 	}

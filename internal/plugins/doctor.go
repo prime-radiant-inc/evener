@@ -165,7 +165,7 @@ func (m *Manager) doctorEntry(key string, e InstallEntry, inPlace bool) []Doctor
 		// clear the warning.
 		remediation := fmt.Sprintf("run `evener plugin upgrade %s` to resync the registry", key)
 		if inPlace {
-			remediation = fmt.Sprintf("%s's plugin.json was edited in place, which is expected for a directory source; run `evener plugin remove %s` then `evener plugin install %s` to resync the recorded version", key, key, key)
+			remediation = fmt.Sprintf("%s's plugin.json was edited in place, which is expected for a plugin used in place from a directory; run `evener plugin remove %s` then `evener plugin install %s` to resync the recorded version", key, key, key)
 		}
 		findings = append(findings, DoctorFinding{
 			Level: LevelWarn, Category: catRegistry,
@@ -192,8 +192,8 @@ func (m *Manager) doctorEntry(key string, e InstallEntry, inPlace bool) []Doctor
 	if e.AutoUpgrade && inPlace {
 		findings = append(findings, DoctorFinding{
 			Level: LevelWarn, Category: catAutoUpgrade,
-			Message:     key + ": auto-upgrade is on but the source is a directory reference, which can never produce a new version",
-			Remediation: fmt.Sprintf("turn off auto-upgrade for %s; it has no effect on an in-place directory source", key),
+			Message:     key + ": auto-upgrade is on but the plugin is used in place from a directory, which can never produce a new version",
+			Remediation: fmt.Sprintf("turn off auto-upgrade for %s; it has no effect on a plugin used in place", key),
 		})
 	}
 

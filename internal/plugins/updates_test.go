@@ -220,9 +220,9 @@ func TestCheckUpdates_UnreachableRemoteWarnsAndFlagsNothing(t *testing.T) {
 
 // A plugin stored in its marketplace's own repo ("./plugins/widget") is
 // upgradable from the refreshed marketplace clone. A check flags it when the
-// clone's last commit touching its folder is not the one installed, so a
-// commit elsewhere in the marketplace flags nothing, and an Upgrade copies the
-// folder's new contents and settles the flag.
+// clone's tree at its folder is not the one installed, so a commit elsewhere
+// in the marketplace flags nothing, and an Upgrade copies the folder's new
+// contents and settles the flag.
 func TestCheckUpdates_RelativeSourcePluginUpgradesFromItsRefreshedMarketplace(t *testing.T) {
 	mktRepo, name := makeInstallableMarketplace(t)
 	m := NewManager(t.TempDir())
@@ -265,9 +265,40 @@ func TestCheckUpdates_RelativeSourcePluginUpgradesFromItsRefreshedMarketplace(t 
 	}
 }
 
-// A relative plugin installed before installs recorded its folder commit has
+// A relative plugin is flagged by what its folder holds, not by the history
+// that touched it: commits that change the folder and change it back flag
+// nothing, as a reclone that moves a shallow clone's root does not.
+func TestCheckUpdates_RelativePluginWhoseFolderIsUnchangedIsNotFlagged(t *testing.T) {
+	mktRepo, name := makeInstallableMarketplace(t)
+	m := NewManager(t.TempDir())
+	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	if _, err := m.Install(context.Background(), "widget", name); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	extra := filepath.Join(mktRepo, "plugins", "widget", "extra.txt")
+	if err := os.WriteFile(extra, []byte("v2"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, mktRepo, "add", ".")
+	gitIn(t, mktRepo, "commit", "-qm", "change widget")
+	if err := os.Remove(extra); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, mktRepo, "add", "-A")
+	gitIn(t, mktRepo, "commit", "-qm", "change it back")
+	if err := m.RefreshMarketplace(context.Background(), name); err != nil {
+		t.Fatalf("RefreshMarketplace: %v", err)
+	}
+	if checkThenList(t, m) {
+		t.Fatal("plugin whose folder holds what was installed flagged")
+	}
+}
+
+// A relative plugin installed before installs recorded its folder's tree has
 // none, so the first check flags it: it may be behind its marketplace, and
-// nothing says otherwise. One Upgrade records the commit and settles it.
+// nothing says otherwise. One Upgrade records the tree and settles it.
 func TestCheckUpdates_RelativePluginInstalledWithNoCommitIsFlaggedOnce(t *testing.T) {
 	mktRepo, name := makeInstallableMarketplace(t)
 	m := NewManager(t.TempDir())

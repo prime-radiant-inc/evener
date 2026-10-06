@@ -23,7 +23,7 @@ var (
 	sourceGitClone    = gitClone
 	sourceGitHeadSHA  = gitHeadSHA
 	sourceSparseClone = gitSparseClone
-	sourcePathCommit  = gitPathCommit
+	sourcePathTree    = gitPathTree
 )
 
 type SourceKind string
@@ -104,13 +104,14 @@ func gitRemoteURL(src Source) string {
 }
 
 // fetchPluginSource materializes a plugin's source into destDir. It returns the
-// resolved commit sha: for a relative source, the marketplace clone's last
-// commit touching the plugin's folder, so an Upgrade after a refresh copies
-// the folder again exactly when it changed; empty for a directory source.
+// resolved commit sha: for a relative source, the id of the tree the
+// marketplace clone holds at the plugin's folder (gitPathTree), so an Upgrade
+// after a refresh copies the folder again exactly when its contents changed;
+// empty for a directory source.
 func fetchPluginSource(ctx context.Context, src Source, marketplaceRoot, destDir string) (string, error) {
 	switch {
 	case src.Rel:
-		sha, err := sourcePathCommit(ctx, marketplaceRoot, src.Path)
+		sha, err := sourcePathTree(ctx, marketplaceRoot, src.Path)
 		if err != nil {
 			return "", err
 		}
