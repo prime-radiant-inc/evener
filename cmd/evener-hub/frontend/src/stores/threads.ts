@@ -5957,8 +5957,9 @@ function transcriptResidency(): TranscriptResidency {
       hydrate: async (ref, intent, signal) => {
         if (signal.aborted) return;
         const client = await requireReadyClient();
+        if (signal.aborted) return;
         const epoch = readyEpoch;
-        await refreshTrackedThreadNow(client, epoch, ref, false, false, undefined, undefined, intent);
+        await refreshTrackedThreadNow(client, epoch, ref, false, false, undefined, undefined, intent, signal);
       },
     },
     backgroundTranscriptOptions(),

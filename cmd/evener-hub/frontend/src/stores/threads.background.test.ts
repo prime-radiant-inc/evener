@@ -631,6 +631,97 @@ describe("background thread claims", () => {
     }
   });
 
+  test.each(["resync control", "overflow recovery"])(
+    "%s does not issue fallback during a held final write",
+    async (path) => {
+      const restoreOptions = installBackgroundTranscriptOptionsForTests({ pendingBytes: 1 });
+      const { client, socket } = await connectRealClientWithSocket();
+      const ref = "local:recovery-retirement";
+      const lease = acquireBackgroundThread(ref);
+      let hold: ReturnType<typeof holdNextWriteTransaction> | undefined;
+      let release: Promise<void> | undefined;
+      try {
+        await cache.readEpoch();
+        await vi.waitFor(() => expect(threadReadRequests(socket)).toHaveLength(1));
+        socket.receive({ id: threadReadRequests(socket)[0]!.id, result: currentRead(ref) });
+        await lease.ready;
+        await vi.waitFor(() => expect(backgroundTranscriptSnapshotForTests().networkHydrations).toBe(0));
+
+        if (path === "resync control") {
+          socket.receive({ method: "evener/thread/resync", params: { ref, threadId: `thr_${ref}` } });
+        } else {
+          const update = textDelta(ref, "overflow forces canonical residency recovery");
+          socket.receive({ method: update.method, params: update.params });
+        }
+        await vi.waitFor(() => expect(threadReadRequests(socket)).toHaveLength(2));
+        expect(threadReadRequests(socket)[1]?.ref).toBe(ref);
+        hold = holdNextWriteTransaction(["records", "meta", "current", "currentMeta"]);
+        release = lease.release();
+        await hold.reached;
+        const recovery = threadReadRequests(socket)[1]!;
+        socket.receive({
+          id: recovery.id,
+          error: {
+            code: -32000,
+            message: "stale cursor",
+            data: { evenerErrorInfo: "transcriptItemCursorStale" },
+          },
+        });
+        await vi.waitFor(() =>
+          expect(
+            backgroundTranscriptSnapshotForTests().networkHydrations === 0 || threadReadRequests(socket).length > 2,
+          ).toBe(true),
+        );
+        expect(threadReadRequests(socket)).toHaveLength(2);
+      } finally {
+        hold?.release();
+        client.close();
+        await (release ?? lease.release());
+        restoreOptions();
+      }
+    },
+  );
+
+  test("retired overflow recovery does not dispatch after the ready continuation on reacquisition", async () => {
+    const restoreOptions = installBackgroundTranscriptOptionsForTests({ pendingBytes: 1 });
+    const { client, socket } = await connectRealClientWithSocket();
+    const ref = "local:ready-continuation-retirement";
+    const firstOwner = acquireBackgroundThread(ref);
+    let replacement: ReturnType<typeof acquireBackgroundThread> | undefined;
+    let heldWrite: ReturnType<typeof holdNextWriteTransaction> | undefined;
+    let firstRelease: Promise<void> | undefined;
+    let replacementRelease: Promise<void> | undefined;
+    try {
+      await cache.readEpoch();
+      await vi.waitFor(() => expect(threadReadRequests(socket)).toHaveLength(1));
+      socket.receive({ id: threadReadRequests(socket)[0]!.id, result: currentRead(ref) });
+      await firstOwner.ready;
+      await vi.waitFor(() => expect(backgroundTranscriptSnapshotForTests().networkHydrations).toBe(0));
+
+      const update = textDelta(ref, "overflow crosses ready continuation");
+      socket.receive({ method: update.method, params: update.params });
+      heldWrite = holdNextWriteTransaction(["records", "meta", "current", "currentMeta"]);
+      // The callback has called requireReadyClient and suspended at its await.
+      // Releasing and reacquiring in this stack retires only the old signal;
+      // its continuation must not claim the replacement owner's authority.
+      firstRelease = firstOwner.release();
+      replacement = acquireBackgroundThread(ref);
+      await heldWrite.reached;
+      await vi.waitFor(() =>
+        expect(
+          backgroundTranscriptSnapshotForTests().networkHydrations === 0 || threadReadRequests(socket).length > 1,
+        ).toBe(true),
+      );
+      expect(threadReadRequests(socket)).toHaveLength(1);
+      replacementRelease = replacement.release();
+    } finally {
+      heldWrite?.release();
+      client.close();
+      await Promise.all([firstRelease ?? firstOwner.release(), replacementRelease ?? replacement?.release()]);
+      restoreOptions();
+    }
+  });
+
   test("a released read waiting on shared membership cannot issue after that transition", async () => {
     const { client, socket } = await connectRealClientWithSocket();
     const ref = "local:membership-retire";
