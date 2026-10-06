@@ -785,11 +785,40 @@ describe("background thread claims", () => {
     const restoreOptions = installBackgroundTranscriptOptionsForTests({ residentBytes: 0, pendingBytes: 4096 });
     resetThreadsStoreForTests();
     setSessionCacheAdapterForTests(cache);
+    const storage = mutationStorage();
+    const targetScans = deferred<void>();
+    const originalListTargetRefs = storage.listTargetRefs.bind(storage);
+    let targetScanCount = 0;
+    vi.spyOn(storage, "listTargetRefs").mockImplementation(async () => {
+      const refs = await originalListTargetRefs();
+      targetScanCount += 1;
+      if (targetScanCount >= 3) targetScans.resolve();
+      return refs;
+    });
     const fake = connectCurrentClient();
+    fake.on("thread/read", ({ ref }) => {
+      const response = currentRead(ref ?? "local:one");
+      response.thread.evener = { ...response.thread.evener, instanceId: "instance-canonical" };
+      return response;
+    });
     const background = acquireBackgroundThread("local:one");
+    const completionSource = acquireBackgroundThread("local:completion-source");
     let paneHeld = false;
     let heldLookup: ReturnType<typeof holdNextWriteTransaction> | undefined;
+    const promotionLookupReached = deferred<void>();
+    const releasePromotionLookup = deferred<void>();
+    const lookupTransactionReached = deferred<void>();
+    const releaseLookupTransaction = deferred<void>();
+    const lookupWorkCommitted = deferred<void>();
+    let armPromotionLookup = false;
+    let getCurrentSpy: ReturnType<typeof vi.spyOn> | undefined;
     let promotedAtPublication: ThreadModel | undefined;
+    let promotion: Promise<void> | undefined;
+    let firstWriteReached: ReturnType<typeof deferred<void>> | undefined;
+    let releaseFirstWrite: ReturnType<typeof deferred<void>> | undefined;
+    let laterWriteReached: ReturnType<typeof deferred<void>> | undefined;
+    let releaseLaterWrite: ReturnType<typeof deferred<void>> | undefined;
+    let putCurrentSpy: ReturnType<typeof vi.spyOn> | undefined;
     const observePromotion = threadsStore.subscribe((state) => {
       const model = state.threads.get("local:one");
       if (model?.turns.flatMap((turn) => turn.items).some((item) => item.text?.includes("-during-lookup"))) {
@@ -797,54 +826,144 @@ describe("background thread claims", () => {
       }
     });
     try {
+      await targetScans.promise;
       await background.ready;
+      await completionSource.ready;
       await settleBackgroundTranscriptsForTests();
       expect(threadsStore.getState().threads.has("local:one")).toBe(false);
 
+      const pending = await blockedOutboxRow(storage, "local:one");
+      expect(pending?.state).toBe("blockedUnknown");
+      expect(threadsStore.getState().mutationAuthorityRefs.has("local:one")).toBe(false);
+      const outboxBeforePromotion = await storage.listOutbox("local:one");
+      expect(outboxBeforePromotion).toEqual([pending]);
+
       const readCount = fake.calls.filter((call) => call.method === "thread/read").length;
-      heldLookup = holdNextWriteTransaction(["records", "meta", "current", "currentMeta"]);
-      const promotion = threadsStore.getState().ensureThread("local:one");
-      await heldLookup.reached;
+      const originalPutCurrent = cache.putCurrent.bind(cache);
+      firstWriteReached = deferred<void>();
+      releaseFirstWrite = deferred<void>();
+      laterWriteReached = deferred<void>();
+      releaseLaterWrite = deferred<void>();
+      let completionUpdates = 0;
+      putCurrentSpy = vi.spyOn(cache, "putCurrent").mockImplementation(async (record, now) => {
+        if (record.ref === "local:one" && record.appliedSequence === 1) {
+          firstWriteReached?.resolve();
+          await releaseFirstWrite?.promise;
+          const result = await originalPutCurrent(record, now);
+          for (const sequence of [2, 3, 4, 5]) {
+            if (sequence === 2) {
+              fake.emitNotification({
+                method: "overlay/upserted",
+                params: {
+                  threadId: "thr_local:one",
+                  ref: "local:one",
+                  item: {
+                    key: "stream:round_tool/0:toolOutput",
+                    kind: "stream",
+                    turnId: "turn_1",
+                    roundId: "round_tool",
+                    streamId: "round_tool/0",
+                    callId: "call_tool",
+                    item: {
+                      type: "commandExecution",
+                      id: "item_tool",
+                      turnId: "turn_1",
+                      roundId: "round_tool",
+                      callId: "call_tool",
+                      status: "inProgress",
+                    },
+                  },
+                },
+              } as AnyNotification);
+            } else if (sequence === 3) {
+              fake.emitNotification({
+                method: "overlay/delta",
+                params: {
+                  threadId: "thr_local:one",
+                  ref: "local:one",
+                  key: "stream:round_tool/0:toolOutput",
+                  field: "output",
+                  delta: "工具🙂",
+                },
+              } as AnyNotification);
+            } else {
+              fake.emitNotification(textDelta("local:one", `-completion-${sequence}`));
+            }
+            completionUpdates += 1;
+          }
+          return result;
+        }
+        if (record.ref === "local:one" && record.appliedSequence >= 2) {
+          laterWriteReached?.resolve();
+          await releaseLaterWrite?.promise;
+        }
+        const result = await originalPutCurrent(record, now);
+        if (record.ref === "local:completion-source" && record.appliedSequence === 1) {
+          fake.emitNotification(textDelta("local:one", "-completion-in-lookup"));
+          lookupWorkCommitted.resolve();
+        }
+        return result;
+      });
+      const originalGetCurrent = cache.getCurrent.bind(cache);
+      getCurrentSpy = vi.spyOn(cache, "getCurrent").mockImplementation(async (...args) => {
+        if (armPromotionLookup) {
+          armPromotionLookup = false;
+          promotionLookupReached.resolve();
+          await releasePromotionLookup.promise;
+          heldLookup = holdNextWriteTransaction(["records", "meta", "current", "currentMeta"]);
+          const lookup = originalGetCurrent(...args);
+          await heldLookup.reached;
+          lookupTransactionReached.resolve();
+          await releaseLookupTransaction.promise;
+          return lookup;
+        }
+        return originalGetCurrent(...args);
+      });
+      fake.emitNotification(textDelta("local:one", "-captured"));
+      await firstWriteReached.promise;
+      releaseFirstWrite.resolve();
+      await laterWriteReached.promise;
+      releaseLaterWrite.resolve();
+      await settleBackgroundTranscriptsForTests();
+
+      armPromotionLookup = true;
+      promotion = threadsStore.getState().ensureThread("local:one");
+      await promotionLookupReached.promise;
+      fake.emitNotification(textDelta("local:completion-source", "-source-write"));
+      await lookupWorkCommitted.promise;
+      await settleBackgroundTranscriptsForTests();
+      releasePromotionLookup.resolve();
+      await lookupTransactionReached.promise;
       const toolKey = "stream:round_tool/0:toolOutput";
       fake.emitNotification({
-        method: "overlay/upserted",
-        params: {
-          threadId: "thr_local:one",
-          ref: "local:one",
-          item: {
-            key: toolKey,
-            kind: "stream",
-            turnId: "turn_1",
-            roundId: "round_tool",
-            streamId: "round_tool/0",
-            callId: "call_tool",
-            item: {
-              type: "commandExecution",
-              id: "item_tool",
-              turnId: "turn_1",
-              roundId: "round_tool",
-              callId: "call_tool",
-              status: "inProgress",
-            },
-          },
-        },
-      } as AnyNotification);
-      fake.emitNotification({
         method: "overlay/delta",
-        params: { threadId: "thr_local:one", ref: "local:one", key: toolKey, field: "output", delta: "工具🙂" },
+        params: { threadId: "thr_local:one", ref: "local:one", key: toolKey, field: "output", delta: ":during-lookup" },
       } as AnyNotification);
       fake.emitNotification(textDelta("local:one", "-during-lookup"));
       expect(backgroundTranscriptSnapshotForTests().pendingBytes).toBeGreaterThan(0);
+      if (!heldLookup) throw new Error("promotion lookup transaction was not held");
       heldLookup.release();
+      releaseLookupTransaction.resolve();
       await promotion;
       paneHeld = true;
 
       const adopted = threadsStore.getState().threads.get("local:one");
       expect(adopted).toBeDefined();
       expect(adopted).toBe(promotedAtPublication);
+      expect(adopted?.capabilities.send).toBe(true);
+      expect(adopted?.capabilities.queue).toBe(true);
+      expect(adopted?.capabilitySource).toBe("read");
+      expect(adopted?.instanceId).toBe("instance-canonical");
+      expect(threadsStore.getState().mutationAuthorityRefs.has("local:one")).toBe(false);
       fake.emitNotification({
         method: "overlay/delta",
-        params: { threadId: "thr_local:one", ref: "local:one", key: toolKey, field: "output", delta: ":later" },
+        params: {
+          threadId: "thr_local:one",
+          ref: "local:one",
+          key: toolKey,
+          field: "output",
+          delta: ":after-publication",
+        },
       } as AnyNotification);
       fake.emitNotification(textDelta("local:one", "-after-publication"));
       const text =
@@ -854,20 +973,50 @@ describe("background thread claims", () => {
           ?.turns.flatMap((turn) => turn.items)
           .map((item) => item.text)
           .join("") ?? "";
-      expect(text).toContain("alpha-during-lookup-after-publication");
-      expect(text.split("-during-lookup")).toHaveLength(2);
-      expect(text.split("-after-publication")).toHaveLength(2);
+      expect(text).toContain(
+        "alpha-captured-completion-4-completion-5-completion-in-lookup-during-lookup-after-publication",
+      );
+      let previousIndex = text.indexOf("-captured");
+      for (const marker of [
+        "-completion-4",
+        "-completion-5",
+        "-completion-in-lookup",
+        "-during-lookup",
+        "-after-publication",
+      ]) {
+        expect(text.split(marker), marker).toHaveLength(2);
+        const index = text.indexOf(marker);
+        expect(index).toBeGreaterThan(previousIndex);
+        previousIndex = index;
+      }
+      expect(completionUpdates).toBe(4);
       const toolItems = adopted?.turns.flatMap((turn) => turn.items).filter((item) => item.id === "item_tool") ?? [];
       expect(toolItems).toHaveLength(1);
-      expect(toolItems[0]?.output).toBe("工具🙂");
+      expect(toolItems[0]?.output).toBe("工具🙂:during-lookup");
       const afterNotifications = threadsStore.getState().threads.get("local:one");
-      expect(afterNotifications?.overlay?.[toolKey]?.item.output).toBe("工具🙂:later");
+      expect(
+        afterNotifications?.turns.flatMap((turn) => turn.items).find((item) => item.id === "item_tool")?.output,
+      ).toBe("工具🙂:during-lookup:after-publication");
+      expect(afterNotifications?.overlay?.[toolKey]?.item.output).toBe("工具🙂:during-lookup:after-publication");
       expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(readCount);
-      expect(fake.calls.filter((call) => ["turn/start", "turn/steer", "turn/queue"].includes(call.method))).toEqual([]);
+      expect(await storage.listOutbox("local:one")).toEqual(outboxBeforePromotion);
+      expect(
+        fake.calls.filter((call) =>
+          ["thread/resume", "turn/start", "turn/steer", "turn/queue", "turn/interrupt"].includes(call.method),
+        ),
+      ).toEqual([]);
     } finally {
       heldLookup?.release();
+      releaseLookupTransaction.resolve();
+      releasePromotionLookup.resolve();
+      releaseFirstWrite?.resolve();
+      releaseLaterWrite?.resolve();
+      getCurrentSpy?.mockRestore();
+      putCurrentSpy?.mockRestore();
+      await promotion?.catch(() => undefined);
       observePromotion();
       if (paneHeld) threadsStore.getState().releaseThread("local:one");
+      await completionSource.release();
       await background.release();
       resetThreadsStoreForTests();
       restoreOptions();
