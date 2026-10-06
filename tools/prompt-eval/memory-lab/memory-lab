@@ -18,6 +18,7 @@ Usage:
       OUTDIR/<trial> STAGE "question"
                                       # resume the session that stage ran in and ask it why it chose what it did;
                                       # --workspace names the stage's workspace when it isn't work (e.g. work2)
+  memory-lab check [SCENARIO_DIR ...]  # validate scenarios (default: all under scenarios/); run after editing one
 
 See README.md next to this script for setup, the scenarios and how to read results.
 
@@ -554,6 +555,37 @@ def print_pass_rates(grades):
         print(f"{s:22} {st} {k:28} {v:6} {arm:3} {p}/{n}")
 
 
+def scenario_problems(scen):
+    """Why scen can't run as written, or [] when it can: load_scenario must accept it and
+    return that scenario's own dict, and every fixture and seed dir it names must exist."""
+    try:
+        raw = json.load(open(os.path.join(scen, "scenario.json")))
+        spec = load_scenario(scen)
+    except SystemExit as e:  # load_scenario reports a bad stage by exiting
+        return [str(e.code)]
+    except (OSError, ValueError) as e:
+        return [f"scenario.json: {e}"]
+    if not isinstance(spec, dict) or not isinstance(spec.get("stages"), list) or spec != raw:
+        return [f"load_scenario returned {type(spec).__name__} with keys {sorted(spec) if isinstance(spec, dict) else '-'}, "
+                "not the scenario"]
+    dirs = [base_fixture(scen, spec)]
+    for st in spec["stages"]:
+        dirs += [os.path.join(scen, st[k]) for k in ("fixture", "seed_project_memory") if st.get(k)]
+    return [f"missing dir {d}" for d in dirs if not os.path.isdir(d)]
+
+
+def cmd_check(args):
+    scens = args.scenarios or sorted(os.path.dirname(p) for p in glob.glob(os.path.join(HERE, "scenarios", "*", "scenario.json")))
+    failed = 0
+    for scen in scens:
+        problems = scenario_problems(os.path.abspath(scen))
+        failed += bool(problems)
+        print(f"{'ERROR' if problems else 'OK':5} {os.path.basename(os.path.abspath(scen))}" +
+              "".join(f"\n      {p}" for p in problems))
+    if failed:
+        sys.exit(f"memory-lab: {failed} of {len(scens)} scenarios have problems")
+
+
 def cmd_report(args):
     grades = [json.loads(read_file(p)) for p in find_files(os.path.abspath(args.out), ".grade.json")]
     grades.sort(key=lambda g: (g["scenario"], g["version"], g["arm"], g["trial"], g["stage"]))
@@ -659,8 +691,10 @@ def main():
     a.add_argument("--workspace", default="work", help="the stage's workspace dir in the trial (e.g. work2)")
     a.add_argument("--effort", default="high")
     a.add_argument("--timeout", type=positive_int, default=600, help="seconds")
+    c = sub.add_parser("check", help="validate scenarios; run after editing one")
+    c.add_argument("scenarios", nargs="*", metavar="SCENARIO_DIR", help="default: every dir under scenarios/")
     args = ap.parse_args()
-    {"run": cmd_run, "report": cmd_report, "show": cmd_show, "ask": cmd_ask}[args.cmd](args)
+    {"run": cmd_run, "report": cmd_report, "show": cmd_show, "ask": cmd_ask, "check": cmd_check}[args.cmd](args)
 
 
 if __name__ == "__main__":

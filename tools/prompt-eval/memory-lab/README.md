@@ -101,6 +101,8 @@ The header of `memory-lab` documents every field. In short:
   - `delegate_calls`: a tool call with a given name and arguments, parsed from the transcripts of delegates created during this stage
   - `whiteboard`: shape and length
 
+Run `./memory-lab check` after editing a scenario. It loads every scenario under `scenarios/` (or the dirs you name) the way `run` does, confirms each loads as itself and that its fixture and seed dirs exist, prints one OK or ERROR line per scenario, and exits nonzero on any error. It runs no model.
+
 Write a check that a reasonable outcome can actually fail. Before you trust a scenario, confirm that the baseline prompt doesn't already pass it, and that its regexes don't match comments or prose. The `cents` float check originally failed on comments that said "no floats".
 
 For work the prompt asks for, add a held-out test: a `checks` command that writes a temporary `zz_heldout_test.go`, runs `go test -run Heldout`, deletes the file and exits with the test's status. "tests pass" alone passes on whatever tests the agent wrote, including none.
