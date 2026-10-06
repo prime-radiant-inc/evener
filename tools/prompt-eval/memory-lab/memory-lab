@@ -41,10 +41,22 @@ checkout, stable across stages), xdg/ (XDG_STATE_HOME, so memory is isolated),
 and per stage: <S>.events.ndjson, <S>.stdout, <S>.grade.json, <S>.memory/.
 Full logs stay on disk; the report prints only the summary.
 """
-import argparse, concurrent.futures as cf, glob, json, os, re, shutil, subprocess, sys, time
+import argparse, concurrent.futures as cf, glob, json, os, re, shutil, signal, subprocess, sys, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PROJID = os.path.join(HERE, "bin", "projid")
+
+
+def run_bounded(cmd, cwd, env, stdout, stderr, timeout):
+    """Runs cmd in its own process group and returns its exit code, or "timeout"
+    after killing the whole group, so the go test binaries and shells it started die too."""
+    p = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=stdout, stderr=stderr, start_new_session=True)
+    try:
+        return p.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        os.killpg(p.pid, signal.SIGKILL)
+        p.wait()
+        return "timeout"
 
 
 def sh(cmd, cwd, env=None, timeout=300):
@@ -161,10 +173,7 @@ def run_session(args, binpath, arm, scen, stage, trial):
     events = os.path.join(trial, f"{name}.events.ndjson")
     start = time.time()
     with open(events, "w") as ev, open(os.path.join(trial, f"{name}.stdout"), "w") as so:
-        try:
-            exit_code = subprocess.run(cmd, cwd=work, env=env, stdout=so, stderr=ev, timeout=args.timeout).returncode
-        except subprocess.TimeoutExpired:
-            exit_code = "timeout"
+        exit_code = run_bounded(cmd, work, env, so, ev, args.timeout)
     return {"work": work, "xdg": xdg, "env": env, "state": state, "events": events,
             "exit": exit_code, "seconds": round(time.time() - start)}
 
@@ -365,7 +374,8 @@ def cmd_ask(args):
     state = g.get("state") or os.path.join(trial, "sessions", stage)
     cmd = evener_command(os.path.abspath(args.bin), args.model, work, state, args.effort, args.question, resume=True)
     with open(events, "w") as ev:
-        subprocess.run(cmd, cwd=work, env=env, stdout=subprocess.DEVNULL, stderr=ev, timeout=args.timeout)
+        if run_bounded(cmd, work, env, subprocess.DEVNULL, ev, args.timeout) == "timeout":
+            print(f"memory-lab: ask timed out after {args.timeout}s")
     calls, _, messages, _ = parse_events(events)
     print(f"{g['version']} {g['scenario']} {os.path.basename(trial)} {stage} ask{n}")
     for c in calls:
