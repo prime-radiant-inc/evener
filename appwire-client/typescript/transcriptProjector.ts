@@ -123,8 +123,6 @@ const MESSAGE_TYPES = new Set(["userMessage", "agentMessage"]);
 // AllThreadItemEventKinds, so a new kind is known (and governed by the
 // system-events gate) the moment it is generated. The projector treats a value
 // outside this set as an unknown event and deliberately renders it.
-// Environment and shared-notes snapshots are routine diagnostics. Notes also
-// stay out of Conversation, even when Advanced.systemEvents is enabled.
 const KNOWN_EVENT_KINDS: ReadonlySet<string> = new Set(THREAD_ITEM_EVENT_KINDS);
 
 const PROMPT_EVENT_KINDS = new Set(["system_prompt", "prompt_loaded"]);
@@ -318,7 +316,10 @@ function systemDecision(item: ItemModel, config: TranscriptDisplayConfigV1, vect
 
   if (PROMPT_EVENT_KINDS.has(eventKind)) return config.advanced.promptEvents ? "item" : "hidden";
   if (eventKind === TURN_TIMING_EVENT_KIND) return config.advanced.roundTimings ? "item" : "hidden";
+  // Shared-notes snapshots are internal: they stay out of the chat preset even
+  // when Advanced.systemEvents is enabled (sharedNotesVisible).
   if (eventKind === "notes-context") return sharedNotesVisible(config) ? "item" : "hidden";
+  // Everything else, environment snapshots included, is a routine diagnostic.
   return config.advanced.systemEvents ? "item" : "hidden";
 }
 
