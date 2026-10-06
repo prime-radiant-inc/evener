@@ -629,6 +629,8 @@ type Connection struct {
 	// capSaturationAdvised makes the cap-saturation advisory one-shot per
 	// connection. Only the worker goroutine touches it.
 	capSaturationAdvised bool
+	// requestPoolSaturationAdvised does the same for requestSlots.
+	requestPoolSaturationAdvised bool
 	// slowReadMu guards slowReadInflight, the per-method tally of in-flight
 	// slow reads the stall advisory names.
 	slowReadMu       sync.Mutex
@@ -2015,11 +2017,16 @@ func (c *Connection) acquireSlowReadSlot(ctx context.Context, method string) boo
 
 // tryRequestSlot takes one requestSlots slot for a request the server's
 // ConcurrentRequest admitted, or reports false at once when the pool is full
-// (concurrentRequestCap says why it never parks).
+// (concurrentRequestCap says why it never parks). The first full pool per
+// connection reports through Server.logf, as the slow-read cap's does.
 func (c *Connection) tryRequestSlot(ctx context.Context) bool {
 	select {
 	case c.requestSlots <- struct{}{}:
 	default:
+		if !c.requestPoolSaturationAdvised {
+			c.requestPoolSaturationAdvised = true
+			c.server.logf("appserver: connection %s concurrent request pool is full (%d in flight); refusing further admitted requests as Unavailable until one finishes", c.id, cap(c.requestSlots))
+		}
 		return false
 	}
 	// As the slow-read acquire does: a request dequeued after cancellation

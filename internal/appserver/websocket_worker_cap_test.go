@@ -439,7 +439,7 @@ func TestServeWebSocketSlowReadCapComposedSaturationRecoversOnRelease(t *testing
 // requests keep answering. A slot frees when its request finishes, so the
 // pool admits again.
 func TestServeWebSocketConcurrentRequestsTakeTheirOwnSlots(t *testing.T) {
-	server, _, started, _ := parkedSlowReadServer(t)
+	server, logged, started, _ := parkedSlowReadServer(t)
 	server.cfg.ConcurrentRequest = func(method string, _ json.RawMessage) bool {
 		return method == appwire.MethodThreadList
 	}
@@ -470,15 +470,23 @@ func TestServeWebSocketConcurrentRequestsTakeTheirOwnSlots(t *testing.T) {
 		waitFor(t, "an admitted request to park in its handler", listsStarted)
 	}
 
-	beyond := make(chan error, 1)
-	go func() {
-		_, err := client.ThreadList(ctx, appwire.ThreadListParams{})
-		beyond <- err
-	}()
-	err := waitFor(t, "a request beyond its full pool to be answered", beyond)
-	var wireErr appwire.WireError
-	if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeUnavailable {
-		t.Fatalf("a request beyond its full pool answered %v, want Unavailable", err)
+	// Two requests beyond the full pool are both refused, and the pool's
+	// saturation advisory reaches Logf once per connection, as the slow-read
+	// cap's does.
+	for range 2 {
+		beyond := make(chan error, 1)
+		go func() {
+			_, err := client.ThreadList(ctx, appwire.ThreadListParams{})
+			beyond <- err
+		}()
+		err := waitFor(t, "a request beyond its full pool to be answered", beyond)
+		var wireErr appwire.WireError
+		if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeUnavailable {
+			t.Fatalf("a request beyond its full pool answered %v, want Unavailable", err)
+		}
+	}
+	if advisories := strings.Count(logged(), "concurrent request pool is full"); advisories != 1 {
+		t.Fatalf("pool advisories = %d, want exactly 1 in:\n%s", advisories, logged())
 	}
 
 	ordered := make(chan error, 1)

@@ -93,13 +93,28 @@ func assertOneBroadcast(t *testing.T, b *recordingBroadcaster, method string) {
 	}
 }
 
-// newScriptedAdminClient builds an initialized AppWire client backed by an
-// in-memory stream pair whose peer answers canned responses, records every
-// request, and can push notifications on demand. No SSH, no network, no host —
-// the component-05 test harness's shape, local to this package.
+// newScriptedAdminClient is a scriptedAdminRemote that answers one request
+// at a time, in order.
 func newScriptedAdminClient(
 	t *testing.T,
 	handle func(method string, params json.RawMessage) hostAdminReply,
+) (*appwire.Client, func() []hostAdminCall, func(method string, params any)) {
+	t.Helper()
+	return scriptedAdminRemote(t, handle, false)
+}
+
+// scriptedAdminRemote builds an initialized AppWire client backed by an
+// in-memory stream pair whose peer answers canned responses, records every
+// request, and can push notifications on demand. No SSH, no network, no host —
+// the component-05 test harness's shape, local to this package. With
+// concurrent set it answers each request through handle on a goroutine of its
+// own, so a request held in handle never hides a later one and the recorded
+// calls are what the client sent, in the order it sent them; otherwise it
+// answers one request at a time, in order.
+func scriptedAdminRemote(
+	t *testing.T,
+	handle func(method string, params json.RawMessage) hostAdminReply,
+	concurrent bool,
 ) (*appwire.Client, func() []hostAdminCall, func(method string, params any)) {
 	t.Helper()
 	clientConn, serverConn := net.Pipe()
@@ -109,6 +124,26 @@ func newScriptedAdminClient(
 	var calls []hostAdminCall
 
 	ctx, cancel := context.WithCancel(context.Background())
+	// answer reports whether the remote should keep serving.
+	answer := func(req *appwire.Request) bool {
+		var result any = appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion, SourceID: "local"}
+		if req.Method != appwire.MethodInitialize {
+			reply := handle(req.Method, req.Params)
+			if reply.closeConn {
+				_ = serverConn.Close()
+				return false
+			}
+			if reply.wireErr != nil {
+				return server.Send(ctx, appwire.ErrorMessage(req.ID, *reply.wireErr)) == nil
+			}
+			result = reply.result
+		}
+		data, err := json.Marshal(result)
+		if err != nil {
+			return false
+		}
+		return server.Send(ctx, appwire.ResponseMessage(req.ID, json.RawMessage(data))) == nil
+	}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -123,29 +158,11 @@ func newScriptedAdminClient(
 			mu.Lock()
 			calls = append(calls, hostAdminCall{method: msg.Request.Method, params: msg.Request.Params})
 			mu.Unlock()
-			if msg.Request.Method == appwire.MethodInitialize {
-				data, _ := json.Marshal(appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion, SourceID: "local"})
-				if err := server.Send(ctx, appwire.ResponseMessage(msg.Request.ID, json.RawMessage(data))); err != nil {
-					return
-				}
+			if concurrent {
+				go answer(msg.Request)
 				continue
 			}
-			reply := handle(msg.Request.Method, msg.Request.Params)
-			if reply.closeConn {
-				_ = serverConn.Close()
-				return
-			}
-			if reply.wireErr != nil {
-				if err := server.Send(ctx, appwire.ErrorMessage(msg.Request.ID, *reply.wireErr)); err != nil {
-					return
-				}
-				continue
-			}
-			data, err := json.Marshal(reply.result)
-			if err != nil {
-				return
-			}
-			if err := server.Send(ctx, appwire.ResponseMessage(msg.Request.ID, json.RawMessage(data))); err != nil {
+			if !answer(msg.Request) {
 				return
 			}
 		}
