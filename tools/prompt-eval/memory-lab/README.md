@@ -78,7 +78,7 @@ Every scenario is a directory holding `scenario.json` and `fixture/` (a small Go
 | `long-work` | Longer work; the partner may pause and resume it. Working notes go to session memory | The cue is in the prompt. |
 | `long-work-nocue` | The same work with no cue | Flash models write no session notes here. |
 | `session-local` | A refactor constraint that applies only to this work | Information only: agents defensibly save it to project memory, since it has a named follow-up. |
-| `delegate-reads` | The root records how this work is organized, then has a delegate do a sub-part with a one-sentence brief | B resumes A's session. B's check needs a delegate started during stage B to call `memory_read` or `memory_search` with scope `session`. A bare `memory_(read\|search)` regex would match the tool list in every transcript and pass vacuously. With the current prompt, A tends to put the work rule in project memory, so the delegates have no session note to read and the check grades `n`: it is a target for the session-memory prompting, not yet passing. |
+| `delegate-reads` | The root records how this work is organized, then has a delegate do a sub-part with a one-sentence brief | B resumes A's session. B's check needs a delegate started during stage B to call `memory_read` or `memory_search` with scope `session`. It parses the delegates' transcripts as JSON, since a regex such as `memory_(read\|search)` also matches the tool list in every transcript. With the current prompt, A tends to put the work rule in project memory, so the delegates have no session note to read and the check grades `n`: it is a target for the session-memory prompting, not yet passing. |
 | `recall-seeded` | Seeded project memory (a test-suite quirk). B reads it and acts | `on` and `off` arms. Recall from seeded memory already worked before the guidance work. |
 | `correction-seeded` | A seeded page goes stale (an env var is renamed). B fixes the page | |
 | `quirk` | A finds that `go test` silently skips without an env var | The agent usually fixes the root cause in the repository, which makes not saving the correct outcome. Kept as a caution. |
@@ -96,7 +96,8 @@ The header of `memory-lab` documents every field. In short:
   - `trace`: tool-call regexes
   - `memory`: regexes over memory files, optionally per scope or `absent`
   - `final`: a regex over the last message
-  - `transcripts`: a regex over every transcript, delegates included, or with `subagents_only` over the transcripts of delegates created during this stage only
+  - `transcripts`: a regex over every transcript, delegates included
+  - `delegate_calls`: a tool call with a given name and arguments, parsed from the transcripts of delegates created during this stage
   - `whiteboard`: shape and length
 
 Write a check that a reasonable outcome can actually fail. Before you trust a scenario, confirm that the baseline prompt doesn't already pass it, and that its regexes don't match comments or prose. The `cents` float check originally failed on comments that said "no floats".
