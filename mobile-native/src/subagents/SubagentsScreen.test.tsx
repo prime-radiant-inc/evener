@@ -487,7 +487,9 @@ it("reads a quiet failure, a nested subagent, another model, a branch and a fini
 // when its silence crosses the threshold, with no new tree to re-render it.
 it("turns a silent subagent's row Quiet on its own", async () => {
 	// On fake timers, so the first read can take as long as it takes without
-	// crossing the threshold before the list shows the row.
+	// crossing the threshold before the list shows the row. It flushes the
+	// read itself: the file's settle() waits on a setTimeout that never fires
+	// while setTimeout is faked.
 	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
 	try {
 		const at = (ms: number) => new Date(Date.now() - ms).toISOString();
