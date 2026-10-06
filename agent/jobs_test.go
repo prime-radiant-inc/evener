@@ -682,16 +682,21 @@ func assertJobOutputRetentionCap(t *testing.T, run *runningJob) {
 		t.Fatalf("append wrote %d bytes, want %d", n, len(data))
 	}
 
+	// Compaction waits until the file holds twice the cap, so the file may keep
+	// older bytes; readers see exactly the last cap bytes.
 	info, err := os.Stat(run.rec.OutputPath)
 	if err != nil {
 		t.Fatalf("stat output: %v", err)
 	}
-	if info.Size() != maxJobOutputRetentionBytes {
-		t.Fatalf("retained output size = %d, want %d", info.Size(), maxJobOutputRetentionBytes)
+	if info.Size() > 2*maxJobOutputRetentionBytes {
+		t.Fatalf("output file size = %d, want at most twice the %d-byte cap", info.Size(), maxJobOutputRetentionBytes)
 	}
-	_, total, truncated, err := run.output.Tail(maxJobOutputRetentionBytes)
+	tail, total, truncated, err := run.output.Tail(2 * maxJobOutputRetentionBytes)
 	if err != nil {
 		t.Fatalf("tail retained output: %v", err)
+	}
+	if len(tail) != maxJobOutputRetentionBytes || run.output.RetainedStart() != 1 {
+		t.Fatalf("visible output = %d bytes from %d, want the last %d", len(tail), run.output.RetainedStart(), maxJobOutputRetentionBytes)
 	}
 	if total != int64(len(data)) || !truncated {
 		t.Fatalf("tail total=%d truncated=%v, want lifetime %d and truncated", total, truncated, len(data))
