@@ -30,7 +30,7 @@ afterEach(() => {
 });
 
 // The closed trigger counts subagents at every depth (the subtree's 7) plus
-// the session's own running jobs (2), from the count's own summary-only owner.
+// the session's own running jobs (2), from the shared subtree store's summary.
 test("closed trigger counts subagents at every depth while an open recursive tree owns only visible subtree demand", async () => {
   const client = activityClient();
   client.on("evener/thread/activity/read", ({ ref, scope }) => ({
@@ -63,13 +63,20 @@ test("closed trigger counts subagents at every depth while an open recursive tre
   fireEvent.click(screen.getByRole("button", { name: "Activity · 9 active" }));
   await screen.findByText("subtree work");
   expect(sessionActivitySnapshot(client, ref, "subtree")?.summary?.delegates.active).toBe(7);
+  // The trigger's count and the open tree share one subtree store: one
+  // subtree summary read, not one each.
+  expect(
+    client.calls.filter(
+      (c) => c.method === "evener/thread/activity/read" && (c.params as { scope?: string }).scope === "subtree",
+    ),
+  ).toHaveLength(1);
   expect(
     client.calls.filter((c) => c.method === "thread/read" && (c.params as { subscribe?: boolean }).subscribe),
   ).toHaveLength(1);
   fireEvent.click(screen.getByRole("button", { name: "Close" }));
-  // Closing disposes the tree's store; the count keeps its own.
-  await waitFor(() => expect(sessionActivitySnapshot(client, ref, "subtree")).toBeNull());
-  expect(sessionActivitySnapshot(client, ref, "subtree", "count")?.summary?.delegates.active).toBe(7);
+  // Closing stops the tree's collection demand; the trigger's count keeps
+  // the shared subtree store, and its summary.
+  expect(sessionActivitySnapshot(client, ref, "subtree")?.summary?.delegates.active).toBe(7);
   expect(sessionActivitySnapshot(client, ref, "session")?.jobs.complete).toBe(true);
   const before = client.calls.length;
   act(() =>
