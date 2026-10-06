@@ -46,6 +46,8 @@ interface HydrationTask {
   queued: boolean;
   started: boolean;
   settled: boolean;
+  ownerSettled: boolean;
+  retired: boolean;
 }
 
 export interface TranscriptResidency {
@@ -76,6 +78,7 @@ export interface TranscriptResidencySnapshot {
   workerBytes: number;
   diskWorkers: number;
   networkHydrations: number;
+  queuedHydrationRefs: readonly string[];
   committedWrites: number;
   refs: ReadonlyMap<
     string,
@@ -123,7 +126,7 @@ export function createTranscriptResidency(
   const urgentQueue: string[] = [];
   const hydrationQueue: HydrationTask[] = [];
   const hydrationByRef = new Map<string, HydrationTask>();
-  const controllers = new Map<string, AbortController>();
+  const hydrationTasks = new Set<HydrationTask>();
   let connectionGeneration = 0;
   let ready = false;
   let clearEpoch = 0;
@@ -132,6 +135,7 @@ export function createTranscriptResidency(
   let networkHydrations = 0;
   let committedWrites = 0;
   let disposed = false;
+  let retiringHydrations = false;
   let drainPromise: Promise<void> | undefined;
 
   const entryFor = (ref: string): Entry => {
@@ -253,15 +257,58 @@ export function createTranscriptResidency(
     if (task.settled) return;
     task.settled = true;
     if (task.started) networkHydrations -= 1;
-    controllers.delete(task.ref);
+    hydrationTasks.delete(task);
     if (hydrationByRef.get(task.ref) === task) hydrationByRef.delete(task.ref);
     const queuedIndex = hydrationQueue.indexOf(task);
     if (queuedIndex >= 0) hydrationQueue.splice(queuedIndex, 1);
-    if (error === undefined) task.resolve();
-    else task.reject(error);
-    while (ready && !disposed && networkHydrations < options.networkHydrations && hydrationQueue.length > 0) {
+    if (!task.ownerSettled) {
+      task.ownerSettled = true;
+      if (error === undefined) task.resolve();
+      else task.reject(error);
+    }
+    startAvailableHydrations();
+  }
+
+  function startAvailableHydrations(): void {
+    while (
+      ready &&
+      !disposed &&
+      !retiringHydrations &&
+      networkHydrations < options.networkHydrations &&
+      hydrationQueue.length > 0
+    ) {
       const next = hydrationQueue.shift();
-      if (next) startHydration(next);
+      if (next && !next.settled && !next.retired && hydrationByRef.get(next.ref) === next) startHydration(next);
+    }
+  }
+
+  function retireHydration(task: HydrationTask): void {
+    if (task.settled || task.retired) return;
+    task.retired = true;
+    task.controller.abort();
+    if (hydrationByRef.get(task.ref) === task) hydrationByRef.delete(task.ref);
+    const queuedIndex = hydrationQueue.indexOf(task);
+    if (queuedIndex >= 0) hydrationQueue.splice(queuedIndex, 1);
+    if (!task.started) {
+      settleHydration(task);
+      return;
+    }
+    // Retire the useful owner-facing wait now, but keep an issued request's
+    // network slot until the real task promise settles by response, rejection
+    // or the client's existing deadline.
+    if (!task.ownerSettled) {
+      task.ownerSettled = true;
+      task.resolve();
+    }
+  }
+
+  function retireHydrations(): void {
+    retiringHydrations = true;
+    try {
+      for (const task of [...hydrationTasks]) retireHydration(task);
+    } finally {
+      retiringHydrations = false;
+      startAvailableHydrations();
     }
   }
 
@@ -439,7 +486,7 @@ export function createTranscriptResidency(
 
   function startHydration(task: HydrationTask): void {
     if (task.settled) return;
-    if (task.controller.signal.aborted || disposed || !ready) {
+    if (task.retired || task.controller.signal.aborted || disposed || !ready) {
       settleHydration(task);
       return;
     }
@@ -472,6 +519,10 @@ export function createTranscriptResidency(
         if (!owned(entry)) entry.current = false;
         else if (!previouslyOwned) entry.current = false;
       }
+      if (previouslyOwned && !owned(entry)) {
+        const task = hydrationByRef.get(ref);
+        if (task) retireHydration(task);
+      }
       if (held(entry)) {
         if (entry.residentBytes > 0) residentBudget.release(entry.residentBytes);
         if (entry.handoffBytes > 0) pendingBudget.release(entry.handoffBytes);
@@ -485,6 +536,8 @@ export function createTranscriptResidency(
       } else if (!held(entry) && owners.background > 0 && port.resident(ref)) enqueue(ref);
     },
     removed(ref) {
+      const task = hydrationByRef.get(ref);
+      if (task) retireHydration(task);
       const entry = entries.get(ref);
       if (!entry) return;
       if (entry.residentBytes > 0) residentBudget.release(entry.residentBytes);
@@ -498,10 +551,7 @@ export function createTranscriptResidency(
         connectionGeneration = generation;
         ready = connected;
         if (!connected) {
-          for (const task of hydrationByRef.values()) {
-            task.controller.abort();
-            settleHydration(task);
-          }
+          retireHydrations();
           for (const entry of entries.values()) entry.current = false;
         }
       }
@@ -636,9 +686,11 @@ export function createTranscriptResidency(
         queued: false,
         started: false,
         settled: false,
+        ownerSettled: false,
+        retired: false,
       };
+      hydrationTasks.add(task);
       hydrationByRef.set(ref, task);
-      controllers.set(ref, controller);
       if (networkHydrations < options.networkHydrations) startHydration(task);
       else {
         task.queued = true;
@@ -674,14 +726,11 @@ export function createTranscriptResidency(
         entry.maxWaitTimer = undefined;
         releaseEntryPending(entry);
       }
-      for (const controller of controllers.values()) controller.abort();
+      retireHydrations();
     },
     dispose() {
       disposed = true;
-      for (const task of hydrationByRef.values()) {
-        task.controller.abort();
-        settleHydration(task);
-      }
+      retireHydrations();
       for (const entry of entries.values()) {
         if (entry.flushTimer) clearTimeout(entry.flushTimer);
         if (entry.maxWaitTimer) clearTimeout(entry.maxWaitTimer);
@@ -713,6 +762,7 @@ export function createTranscriptResidency(
         workerBytes,
         diskWorkers,
         networkHydrations,
+        queuedHydrationRefs: hydrationQueue.map((task) => task.ref),
         committedWrites,
         refs: new Map(
           [...entries].map(([ref, entry]) => [

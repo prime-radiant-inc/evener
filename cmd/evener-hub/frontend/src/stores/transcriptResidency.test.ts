@@ -1,7 +1,14 @@
 import "fake-indexeddb/auto";
-import { applyNotification, currentTranscriptState, hydrateThread, type ThreadModel } from "@evener/appwire-client";
+import {
+  AppwireClient,
+  applyNotification,
+  currentTranscriptState,
+  hydrateThread,
+  type ThreadModel,
+} from "@evener/appwire-client";
 import { currentRead, textDelta } from "@evener/appwire-client/testing/currentTranscript";
 import { deferred } from "@evener/appwire-client/testing/deferred";
+import { FakeSocket } from "@evener/appwire-client/testing/fakeSocket";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import {
@@ -118,6 +125,80 @@ describe("transcript residency", () => {
     gates.get("local:four")?.resolve();
     gates.get("local:three")?.resolve();
     await vi.waitFor(() => expect(residency.snapshot().networkHydrations).toBe(0));
+  });
+
+  test("queued foreground hydration wins the next real Appwire request slot", async () => {
+    const model = hydrateThread(currentRead("local:one"), "local:one", 1);
+    const { residency } = setup(model);
+    const socket = new FakeSocket({ autoInitialize: true });
+    const client = new AppwireClient({ url: "ws://test/rpc", socketFactory: () => socket });
+    const connected = client.connect();
+    socket.open();
+    await connected;
+
+    const readFrames = () =>
+      socket.sent
+        .map((frame) => JSON.parse(frame) as { id?: number; method?: string; params?: { ref?: string } })
+        .filter(
+          (frame): frame is { id: number; method: string; params: { ref: string } } =>
+            frame.method === "thread/read" && typeof frame.id === "number" && typeof frame.params?.ref === "string",
+        )
+        .map(({ id, params }) => ({ id, ref: params.ref }));
+    const read = (ref: string) => async () => {
+      await client.request("thread/read", {
+        ref,
+        includeTurns: false,
+        itemsView: "full",
+        subscribe: true,
+        itemLimit: 80,
+      });
+    };
+    const tasks = [
+      residency.scheduleHydration("local:active-one", "background", read("local:active-one")),
+      residency.scheduleHydration("local:active-two", "background", read("local:active-two")),
+      residency.scheduleHydration("local:retry", "background", read("local:retry")),
+      residency.scheduleHydration("local:healthy", "background", read("local:healthy")),
+      residency.scheduleHydration("local:foreground", "foreground", read("local:foreground")),
+    ];
+    try {
+      await vi.waitFor(() =>
+        expect(readFrames().map(({ ref }) => ref)).toEqual(["local:active-one", "local:active-two"]),
+      );
+      expect(residency.snapshot().queuedHydrationRefs).toEqual(["local:foreground", "local:retry", "local:healthy"]);
+      expect(residency.snapshot().networkHydrations).toBe(2);
+
+      const first = readFrames()[0]!;
+      socket.receive({ id: first.id, result: currentRead(first.ref) });
+      await vi.waitFor(() => expect(readFrames()).toHaveLength(3));
+      expect(readFrames()[2]?.ref).toBe("local:foreground");
+
+      const second = readFrames()[1]!;
+      socket.receive({ id: second.id, result: currentRead(second.ref) });
+      await vi.waitFor(() => expect(readFrames()).toHaveLength(4));
+      expect(readFrames()[3]?.ref).toBe("local:retry");
+
+      const retry = readFrames()[3]!;
+      socket.receive({ id: retry.id, result: currentRead(retry.ref) });
+      await vi.waitFor(() => expect(readFrames()).toHaveLength(5));
+      expect(readFrames()[4]?.ref).toBe("local:healthy");
+
+      for (const request of [readFrames()[2]!, readFrames()[4]!]) {
+        socket.receive({ id: request.id, result: currentRead(request.ref) });
+      }
+      await Promise.all(tasks);
+      expect(residency.snapshot().networkHydrations).toBe(0);
+      expect(readFrames().map(({ ref }) => ref)).toEqual([
+        "local:active-one",
+        "local:active-two",
+        "local:foreground",
+        "local:retry",
+        "local:healthy",
+      ]);
+    } finally {
+      client.close();
+      residency.dispose();
+      await Promise.allSettled(tasks);
+    }
   });
 
   test("continues FIFO disk work after one real-cache boundary fails", async () => {

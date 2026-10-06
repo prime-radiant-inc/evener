@@ -1189,11 +1189,9 @@ async function applyClearResponse(targetRef: string, response: ThreadClearRespon
   // was already in flight for this ref. Retire those reads before publishing
   // the replacement so a late pre-clear snapshot cannot overwrite it.
   const pendingThread = pendingThreadHydrations.get(targetRef);
-  if (pendingThread) releasePendingHydrationBytes(targetRef, pendingThread);
-  pendingThreadHydrations.delete(targetRef);
+  if (pendingThread) retirePendingHydration(targetRef, pendingThread, pendingThreadHydrations);
   const pendingWatched = pendingWatchedHydrations.get(targetRef);
-  if (pendingWatched) releasePendingHydrationBytes(targetRef, pendingWatched);
-  pendingWatchedHydrations.delete(targetRef);
+  if (pendingWatched) retirePendingHydration(targetRef, pendingWatched, pendingWatchedHydrations);
   // One setState for both maps (putThreadModels), so a synchronous subscriber
   // never sees threads cleared while watchedThreads still holds the old turns;
   // both routing indexes are maintained in the same step.
@@ -2098,21 +2096,32 @@ async function hydrateAndSubscribe(
   ref: string,
   now: number,
   pending: PendingThreadHydration,
+  signal?: AbortSignal,
 ): Promise<ThreadHydration> {
   let response: ThreadReadResponse;
   let discardHeldHistory = false;
-  const lease = syncThreadSubscription(ref, client);
-  if (!lease) throw new Error("Thread hydration has no subscription holder");
+  const ownerLease = syncThreadSubscription(ref, client);
+  if (!ownerLease) throw new Error("Thread hydration has no subscription holder");
+  // A background attempt gets its own lease so retirement can invalidate a
+  // read deferred behind another membership transition without dropping the
+  // canonical owner that still protects the final-release cut.
+  const lease = signal ? acquireThreadSubscription(client, ref) : ownerLease;
+  const releaseLease = () => lease.release();
+  signal?.addEventListener("abort", releaseLease, { once: true });
   const held = heldSnapshotFor(pending.baseModel);
   try {
     try {
+      if (signal?.aborted) throw new Error("Thread hydration attempt was retired");
       response = await lease.read(threadReadParams(true, pending.requestGeneration, held));
     } catch (err) {
+      if (signal?.aborted) throw err;
       if (!shouldRetryWithoutHeldSnapshot(held, err)) throw err;
+      if (signal?.aborted) throw err;
       response = await lease.read(threadReadParams(true, pending.requestGeneration, undefined));
       discardHeldHistory = true;
     }
   } catch (err) {
+    if (signal?.aborted) throw err;
     // thread/read is answered from the daemon's in-memory snapshot, so a
     // rejection here is a transport failure, not a slow file read and not a
     // lost claim. Ask this ref's owner generation to read again.
@@ -2128,7 +2137,11 @@ async function hydrateAndSubscribe(
       scheduleOwnedHydrationRetry("thread", ref, pending);
     }
     throw err;
+  } finally {
+    signal?.removeEventListener("abort", releaseLease);
+    if (lease !== ownerLease) lease.release();
   }
+  if (signal?.aborted) throw new Error("Thread hydration attempt was retired");
   if (discardHeldHistory) clearOversizeMemo(ref); // the stale-snapshot retry's replacement is a mid-lifetime shrink
   // A retry that dropped the held snapshot asked for, and must be treated
   // as, a full latest-window replacement: applyReadResponse would still
@@ -3142,6 +3155,48 @@ function releasePendingHydrationBytes(ref: string, pending: PendingThreadHydrati
   pending.backgroundBytes = 0;
 }
 
+type PendingHydrationRetirementForTests = (retirement: {
+  ref: string;
+  retainedNotificationCount: number;
+  hadBaseModel: boolean;
+  notificationCount: number;
+  hasBaseModel: boolean;
+}) => void;
+
+let pendingHydrationRetirementForTests: PendingHydrationRetirementForTests | undefined;
+
+export function observePendingHydrationRetirementsForTests(
+  observer: PendingHydrationRetirementForTests | undefined,
+): () => void {
+  const previous = pendingHydrationRetirementForTests;
+  pendingHydrationRetirementForTests = observer;
+  return () => {
+    pendingHydrationRetirementForTests = previous;
+  };
+}
+
+function retirePendingHydration(
+  ref: string,
+  pending: PendingThreadHydration,
+  pendingHydrations: Map<string, PendingThreadHydration>,
+): void {
+  const isCurrent = pendingHydrations.get(ref) === pending;
+  if (!isCurrent && pending.backgroundBytes <= 0 && pending.notifications.length === 0 && !pending.baseModel) return;
+  const retainedNotificationCount = pending.notifications.length;
+  const hadBaseModel = pending.baseModel !== undefined;
+  pending.notifications = [];
+  pending.baseModel = undefined;
+  releasePendingHydrationBytes(ref, pending);
+  if (isCurrent) pendingHydrations.delete(ref);
+  pendingHydrationRetirementForTests?.({
+    ref,
+    retainedNotificationCount,
+    hadBaseModel,
+    notificationCount: pending.notifications.length,
+    hasBaseModel: pending.baseModel !== undefined,
+  });
+}
+
 function preserveLiveActiveTurn(snapshot: ThreadModel, live: ThreadModel | undefined): ThreadModel {
   const activeTurnId = snapshot.activeTurnId;
   if (
@@ -3280,7 +3335,7 @@ function beginThreadHydration(
   const attempt = (trackedHydrationAttempts.get(ref) ?? 0) + 1;
   trackedHydrationAttempts.set(ref, attempt);
   const previousPending = pendingThreadHydrations.get(ref);
-  if (previousPending) releasePendingHydrationBytes(ref, previousPending);
+  if (previousPending) retirePendingHydration(ref, previousPending, pendingThreadHydrations);
   const { baseModel, requestGeneration } = issuedGenerationFor(model);
   if (baseModel && baseModel !== model) putThreadModel(ref, baseModel);
   const pending = {
@@ -3304,7 +3359,7 @@ function beginWatchedHydration(
   epoch: number,
 ): PendingThreadHydration {
   const previousPending = pendingWatchedHydrations.get(ref);
-  if (previousPending) releasePendingHydrationBytes(ref, previousPending);
+  if (previousPending) retirePendingHydration(ref, previousPending, pendingWatchedHydrations);
   const { baseModel, requestGeneration } = issuedGenerationFor(model);
   if (baseModel && baseModel !== model) putWatchedThreadModel(ref, baseModel);
   const pending = {
@@ -3357,13 +3412,11 @@ function publishThreadHydration(ref: string, pending: PendingThreadHydration, mo
   if (pendingThreadHydrations.get(ref) !== pending) return null;
   if (readyEpoch !== pending.epoch || wiredClient !== pending.client) return null;
   if (pending.backgroundInvalidated) {
-    pendingThreadHydrations.delete(ref);
-    releasePendingHydrationBytes(ref, pending);
+    retirePendingHydration(ref, pending, pendingThreadHydrations);
     return null;
   }
   if (!canonicalThreadOwnerActive(ref)) {
-    pendingThreadHydrations.delete(ref);
-    releasePendingHydrationBytes(ref, pending);
+    retirePendingHydration(ref, pending, pendingThreadHydrations);
     return null;
   }
 
@@ -3372,9 +3425,7 @@ function publishThreadHydration(ref: string, pending: PendingThreadHydration, mo
     preserveLiveActiveTurn(model, live),
     pending.notifications,
   );
-  releasePendingHydrationBytes(ref, pending);
-
-  pendingThreadHydrations.delete(ref);
+  retirePendingHydration(ref, pending, pendingThreadHydrations);
   currentAdmissions.set(ref, {
     capabilities: hydrated.capabilities,
     capabilitySource: hydrated.capabilitySource,
@@ -3580,8 +3631,7 @@ function publishWatchedHydration(
 
   const live = threadsStore.getState().watchedThreads.get(ref);
   const replayed = replayHydrationNotifications(preserveLiveActiveTurn(model, live), pending.notifications);
-  releasePendingHydrationBytes(ref, pending);
-  pendingWatchedHydrations.delete(ref);
+  retirePendingHydration(ref, pending, pendingWatchedHydrations);
   storeWatchedModel(ref, replayed.model, includeTurns, generation);
   settleOwnedHydration("watched", ref, replayed.model);
   return replayed.model;
@@ -4009,7 +4059,7 @@ function scheduleOwnedHydrationRetry(kind: HydrationOwnerKind, ref: string, pend
   // must be able to see that no attempt is in flight for this ref. A newer
   // attempt already owns the entry, so leave that one — and its retry — alone.
   if (pendingHydrations.get(ref) !== pending) return;
-  pendingHydrations.delete(ref);
+  retirePendingHydration(ref, pending, pendingHydrations);
   // A durably deleted target is terminal (see the `deletedRefs` field doc):
   // retire the lifecycle — cancelling its retry and settling any owner — and
   // arm nothing. markThreadDeletedIfFenced recorded the flag on the way here.
@@ -4111,7 +4161,7 @@ async function refreshTrackedThread(
       intent,
     );
   let attempt: number | undefined;
-  await transcriptResidency().scheduleHydration(ref, intent, async () => {
+  await transcriptResidency().scheduleHydration(ref, intent, async (signal) => {
     attempt = await refreshTrackedThreadNow(
       client,
       epoch,
@@ -4121,6 +4171,7 @@ async function refreshTrackedThread(
       beforePublish,
       reopenOnlyClientMutationId,
       intent,
+      signal,
     );
   });
   return attempt;
@@ -4135,6 +4186,7 @@ async function refreshTrackedThreadNow(
   beforePublish?: () => void,
   reopenOnlyClientMutationId?: string,
   intent: HydrationIntent = "foreground",
+  signal?: AbortSignal,
 ): Promise<number | undefined> {
   // Returns the tracked-hydration attempt this refresh began, or undefined
   // when it never began one (an unowned ref, or an in-flight non-targeted
@@ -4145,11 +4197,14 @@ async function refreshTrackedThreadNow(
   const previous = pendingThreadHydrations.get(ref);
   if (!targetedResync && previous?.client === client && previous.epoch === epoch) return undefined;
   const pending = beginThreadHydration(ref, client, threadsStore.getState().threads.get(ref), epoch);
+  const retirePending = () => retirePendingHydration(ref, pending, pendingThreadHydrations);
+  signal?.addEventListener("abort", retirePending, { once: true });
   // No pre-check here: pending.client is this `client` and pending.epoch is this
   // `epoch`, so publishThreadHydration re-decides exactly the same thing one
   // frame later, and returning null from there reconciles nothing either. The
   // gate lives in one place.
-  const hydration = hydrateAndSubscribe(client, ref, Date.now(), pending).then((result) => {
+  const hydration = hydrateAndSubscribe(client, ref, Date.now(), pending, signal).then((result) => {
+    if (signal?.aborted) return null;
     // Evaluated synchronously immediately before publication, with no await in
     // between: a canceled read never reaches putThreadModel, the
     // mutation-authority publication, or capture of the current Stop obligation.
@@ -4209,10 +4264,8 @@ async function refreshTrackedThreadNow(
     // The stale model stays published. Convergence is the owned hydration
     // lifecycle's job now (scheduleOwnedHydrationRetry, above).
   } finally {
-    if (pendingThreadHydrations.get(ref) === pending) {
-      releasePendingHydrationBytes(ref, pending);
-      pendingThreadHydrations.delete(ref);
-    }
+    signal?.removeEventListener("abort", retirePending);
+    retirePendingHydration(ref, pending, pendingThreadHydrations);
   }
   return pending.attempt;
 }
@@ -4264,10 +4317,7 @@ async function refreshWatchedThread(
   } catch {
     // Same rationale as the real-pane path above.
   } finally {
-    if (pendingWatchedHydrations.get(ref) === pending) {
-      releasePendingHydrationBytes(ref, pending);
-      pendingWatchedHydrations.delete(ref);
-    }
+    retirePendingHydration(ref, pending, pendingWatchedHydrations);
   }
 }
 
@@ -4749,10 +4799,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
           return model;
         })
         .finally(() => {
-          if (pendingThreadHydrations.get(ref) === pending) {
-            releasePendingHydrationBytes(ref, pending);
-            pendingThreadHydrations.delete(ref);
-          }
+          retirePendingHydration(ref, pending, pendingThreadHydrations);
         });
       inflightHydrates.set(ref, hydration);
       inflightHydrateClients.set(ref, hydrationClient);
@@ -4876,8 +4923,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     inflightHydrateEpochs.delete(ref);
     trackedHydrationCompletions.delete(ref);
     const pending = pendingThreadHydrations.get(ref);
-    if (pending) releasePendingHydrationBytes(ref, pending);
-    pendingThreadHydrations.delete(ref);
+    if (pending) retirePendingHydration(ref, pending, pendingThreadHydrations);
     // The Stop generation is the one per-ref structure release must NOT tear
     // down: it is the only cancellation evidence fences captured elsewhere
     // read, and those fences have no registered lifetime to prune against.
@@ -4933,10 +4979,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       const hydration = hydrateAndSubscribeWatch(hydrationClient, ref, Date.now(), pending, needTurns)
         .then((model) => publishWatchedHydration(ref, pending, model, needTurns, generation))
         .finally(() => {
-          if (pendingWatchedHydrations.get(ref) === pending) {
-            releasePendingHydrationBytes(ref, pending);
-            pendingWatchedHydrations.delete(ref);
-          }
+          retirePendingHydration(ref, pending, pendingWatchedHydrations);
         });
       inflightWatchHydrates.set(ref, hydration);
       inflightWatchHydrateClients.set(ref, hydrationClient);
@@ -5037,8 +5080,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     inflightWatchHydrateEpochs.delete(ref);
     inflightWatchIncludeTurns.delete(ref);
     const pending = pendingWatchedHydrations.get(ref);
-    if (pending) releasePendingHydrationBytes(ref, pending);
-    pendingWatchedHydrations.delete(ref);
+    if (pending) retirePendingHydration(ref, pending, pendingWatchedHydrations);
     // Drop the monotonic turns flag with the last watcher so a future watch of
     // the same ref starts lean again (yd16 §4.2).
     watchIncludeTurns.delete(ref);
@@ -5947,6 +5989,7 @@ export function backgroundTranscriptSnapshotForTests(): TranscriptResidencySnaps
       workerBytes: 0,
       diskWorkers: 0,
       networkHydrations: 0,
+      queuedHydrationRefs: [],
       committedWrites: 0,
       refs: new Map(),
     }
@@ -6015,8 +6058,7 @@ export function acquireBackgroundThread(ref: string): BackgroundThreadLease {
         // it synchronously so its late response cannot publish into a new life.
         retireCanonicalThreadIfUnowned(ref);
         const pending = pendingThreadHydrations.get(ref);
-        if (pending) releasePendingHydrationBytes(ref, pending);
-        pendingThreadHydrations.delete(ref);
+        if (pending) retirePendingHydration(ref, pending, pendingThreadHydrations);
         inflightHydrates.delete(ref);
         inflightHydrateClients.delete(ref);
         inflightHydrateEpochs.delete(ref);
