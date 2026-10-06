@@ -857,44 +857,49 @@ describe("anchorToEnd", () => {
     }
   });
 
-  test("reader signed movement protects a backward partial shrink after cancellation and observer idle", async () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    const external = installMeasuredGeometry([1600, 500, 500, 500, 500]);
-    const frames = holdPositioningFrames();
-    let layout: ReaderLayout | undefined;
-    try {
-      const { root, current } = renderMeasuredList(true, true, {
-        onLayout: (value) => {
-          layout = value;
-        },
-      });
-      await act(async () => external.notify());
-      await act(async () => current().scrollToIndex(1, { align: "start" }));
-      expect(root.scrollTop).toBe(1600);
-      expect(frames.pending.size).toBeGreaterThan(0);
-      external.geometry.rowHeights[0] = 700;
-      const beforeOffset = root.scrollTop;
-      await act(async () => {
-        root.scrollTop = 100;
-        layout?.cancelPendingScroll();
-        layout?.syncReaderMovement(beforeOffset);
-      });
-      await act(async () => frames.release());
-      await act(async () => vi.advanceTimersByTime(current().options.isScrollingResetDelay));
-      expect(current().scrollDirection).toBeNull();
-      await act(async () => external.notify((target) => target.dataset.index === "0"));
-      await act(async () => frames.release());
-      expect(root.scrollTop).toBe(100);
-      expect(current().scrollOffset).toBe(100);
-      expect(root.querySelector('[data-index="0"]')?.getBoundingClientRect().top).toBe(-100);
-      expect(root.querySelector('[data-index="0"]')?.textContent).toBe("row 0");
-    } finally {
-      cleanup();
-      external.restore();
-      frames.restore();
-      vi.useRealTimers();
-    }
-  });
+  // A transcript with a retained placement pending renders without
+  // anchorToEnd; the reader's movement record must protect it all the same.
+  test.each([{ anchorToEnd: true }, { anchorToEnd: false }])(
+    "reader signed movement protects a backward partial shrink after cancellation and observer idle, anchorToEnd $anchorToEnd",
+    async ({ anchorToEnd }) => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      const external = installMeasuredGeometry([1600, 500, 500, 500, 500]);
+      const frames = holdPositioningFrames();
+      let layout: ReaderLayout | undefined;
+      try {
+        const { root, current } = renderMeasuredList(anchorToEnd, true, {
+          onLayout: (value) => {
+            layout = value;
+          },
+        });
+        await act(async () => external.notify());
+        await act(async () => current().scrollToIndex(1, { align: "start" }));
+        expect(root.scrollTop).toBe(1600);
+        expect(frames.pending.size).toBeGreaterThan(0);
+        external.geometry.rowHeights[0] = 700;
+        const beforeOffset = root.scrollTop;
+        await act(async () => {
+          root.scrollTop = 100;
+          layout?.cancelPendingScroll();
+          layout?.syncReaderMovement(beforeOffset);
+        });
+        await act(async () => frames.release());
+        await act(async () => vi.advanceTimersByTime(current().options.isScrollingResetDelay));
+        expect(current().scrollDirection).toBeNull();
+        await act(async () => external.notify((target) => target.dataset.index === "0"));
+        await act(async () => frames.release());
+        expect(root.scrollTop).toBe(100);
+        expect(current().scrollOffset).toBe(100);
+        expect(root.querySelector('[data-index="0"]')?.getBoundingClientRect().top).toBe(-100);
+        expect(root.querySelector('[data-index="0"]')?.textContent).toBe("row 0");
+      } finally {
+        cleanup();
+        external.restore();
+        frames.restore();
+        vi.useRealTimers();
+      }
+    },
+  );
 
   test.each([
     { command: "absolute", requested: 300, want: 0, wantTop: 0 },
