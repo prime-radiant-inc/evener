@@ -48,10 +48,19 @@ import {
   readScrollMetrics,
   type ScrollMetrics,
 } from "./scrollMetrics";
-import { type CapturedTranscriptView, registerTranscriptView } from "./transcriptViewRegistry";
+import {
+  type CapturedTranscriptView,
+  completeTranscriptViewRestore,
+  registerTranscriptView,
+  retainedTranscriptCapture,
+  retainTranscriptView,
+} from "./transcriptViewRegistry";
 
 export interface UseTranscriptScrollOptions {
   ref: string;
+  /** Mounted pane lifetime, including same-view model reloads. */
+  viewId?: string;
+  keepViewRemount?: () => boolean;
   model: ThreadModel | undefined;
   listRef: RefObject<VirtualListHandle | null>;
   loadOlder: () => Promise<void>;
@@ -236,6 +245,7 @@ interface CapturedFocusMetadata {
 
 const capturedAnchorMetadata = new WeakMap<CapturedTranscriptView, ViewAnchor>();
 const capturedFocusMetadata = new WeakMap<CapturedTranscriptView, CapturedFocusMetadata>();
+const retainedPlacements = new WeakMap<HTMLElement, { logicalRef?: string; captured: CapturedTranscriptView }>();
 
 function sourceIdentity(id: string): string {
   if (id.startsWith("intent:")) return id.slice("intent:".length);
@@ -333,12 +343,11 @@ export function captureTranscriptView(
 
 function captureTranscriptFocus(el: HTMLElement, captured: CapturedTranscriptView): CapturedTranscriptView {
   const focusMetadata = focusMetadataFor(el);
-  if (!focusMetadata) return captured;
   // Pending geometry preserves the reading point, but focus can move in the rendered view.
-  const next = { ...captured, focusedEntryId: focusMetadata.anchorId };
+  const next = { ...captured, focusedEntryId: focusMetadata?.anchorId };
   const anchorMetadata = capturedAnchorMetadata.get(captured);
   if (anchorMetadata) capturedAnchorMetadata.set(next, anchorMetadata);
-  capturedFocusMetadata.set(next, focusMetadata);
+  if (focusMetadata) capturedFocusMetadata.set(next, focusMetadata);
   return next;
 }
 
@@ -470,6 +479,7 @@ function focusCapturedEntry(
 export interface UseTranscriptViewRegistrationOptions {
   enabled: boolean;
   id: string;
+  logicalRef?: string;
   layout?: string;
   viewKey?: string;
   initialViewCapture?: CapturedTranscriptView;
@@ -479,12 +489,15 @@ export interface UseTranscriptViewRegistrationOptions {
   measureAnchors?: (el: HTMLElement) => ViewAnchorPosition[];
   anchorEntries?: readonly Omit<ViewAnchorPosition, "offset" | "height">[];
   renderedRowCount?: number;
+  /** Restore DOM focus only while this view still owns workspace focus. */
+  canRestoreFocus?: () => boolean;
   focusFallback?: () => void;
   announce?: (summary: string) => void;
 }
 
 export interface UseTranscriptViewRegistrationResult {
   restoreAfterMeasurement(): void;
+  hasRetainedPlacement(): boolean;
   restoreAfterLayout(layout: CommittedVirtualListLayout): void;
 }
 
@@ -522,7 +535,7 @@ function viewportChanged(captured: CapturedTranscriptView | undefined, el: HTMLE
 export function useTranscriptViewRegistration(
   options: UseTranscriptViewRegistrationOptions,
 ): UseTranscriptViewRegistrationResult {
-  const { enabled, id, layout, viewKey, readView } = options;
+  const { enabled, id, logicalRef, layout, readView } = options;
   const optionsRef = useRef(options);
   optionsRef.current = options;
   const latestCaptureRef = useRef<CapturedTranscriptView | undefined>(undefined);
@@ -541,6 +554,19 @@ export function useTranscriptViewRegistration(
         }
       : null,
   );
+  const placementIdentityRef = useRef({ id, logicalRef });
+  if (placementIdentityRef.current.id !== id || placementIdentityRef.current.logicalRef !== logicalRef) {
+    // Child measurement effects run before registration effects. A reused
+    // pane must discard the old demand before those children can consume it.
+    pendingRef.current = null;
+    latestCaptureRef.current = undefined;
+    committedLayoutRef.current = undefined;
+    // Completed placement is also owned by that identity, not by the reused
+    // DOM port. Keep it for same-view child-to-parent initialization only.
+    const el = options.listRef?.current?.getScrollElement();
+    if (el) retainedPlacements.delete(el);
+    placementIdentityRef.current = { id, logicalRef };
+  }
 
   const restoreAfterMeasurement = useCallback(() => {
     const pending = pendingRef.current;
@@ -578,7 +604,7 @@ export function useTranscriptViewRegistration(
       }
       if (!committed.isCurrent() || !isAtBottom(measure(el))) return;
       if (!confirmScrollOffset()) return;
-      if (pending.restoreFocus) {
+      if (pending.restoreFocus && currentOptions.canRestoreFocus?.() !== false) {
         const focusResult = focusCapturedEntry(el, pending.captured, candidates, currentOptions.listRef, pending);
         if (focusResult === "waiting") return;
         if (focusResult === "missing") currentOptions.focusFallback?.();
@@ -590,6 +616,7 @@ export function useTranscriptViewRegistration(
         measureAnchors,
         currentOptions.readView?.positioningRevision,
       );
+      completeTranscriptViewRestore(currentOptions.id, currentOptions.logicalRef);
       return;
     }
 
@@ -647,7 +674,7 @@ export function useTranscriptViewRegistration(
       }
     }
 
-    if (pending.restoreFocus) {
+    if (pending.restoreFocus && currentOptions.canRestoreFocus?.() !== false) {
       const focusResult = focusCapturedEntry(el, pending.captured, candidates, currentOptions.listRef, pending);
       if (focusResult === "waiting") return;
       if (focusResult === "missing") currentOptions.focusFallback?.();
@@ -659,6 +686,7 @@ export function useTranscriptViewRegistration(
       measureAnchors,
       currentOptions.readView?.positioningRevision,
     );
+    completeTranscriptViewRestore(currentOptions.id, currentOptions.logicalRef);
   }, []);
 
   const capture = useCallback((): CapturedTranscriptView => {
@@ -728,6 +756,9 @@ export function useTranscriptViewRegistration(
       focusScrollRequested: false,
       viewportReflow: false,
     };
+    const currentOptions = optionsRef.current;
+    const el = currentOptions.listRef?.current?.getScrollElement();
+    if (el) retainedPlacements.set(el, { logicalRef: currentOptions.logicalRef, captured });
   }, []);
 
   const announce = useCallback((summary: string) => {
@@ -736,8 +767,9 @@ export function useTranscriptViewRegistration(
 
   useLayoutEffect(() => {
     if (!enabled) return;
-    return registerTranscriptView({
+    const unregister = registerTranscriptView({
       id,
+      logicalRef,
       layout,
       capture,
       restore: (captured) => {
@@ -745,7 +777,8 @@ export function useTranscriptViewRegistration(
       },
       announce,
     });
-  }, [announce, capture, enabled, id, layout, readView, restore]);
+    return unregister;
+  }, [announce, capture, enabled, id, logicalRef, layout, readView, restore]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: id replaces the exact live port subscription
   useLayoutEffect(() => {
@@ -796,12 +829,20 @@ export function useTranscriptViewRegistration(
     return () => el.removeEventListener("scroll", observeStablePosition);
   }, [capture, enabled, id, restoreAfterMeasurement]);
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: viewKey is deliberately trigger-only
+  // A virtualizer notification can precede its sizer's DOM commit. Retry
+  // after each commit as well as from the actual measurement callback.
   useLayoutEffect(() => {
     restoreAfterMeasurement();
-  }, [restoreAfterMeasurement, viewKey]);
+  });
 
-  return { restoreAfterMeasurement, restoreAfterLayout };
+  return {
+    restoreAfterMeasurement,
+    restoreAfterLayout,
+    hasRetainedPlacement: () => {
+      const captured = pendingRef.current?.captured ?? retainedTranscriptCapture(id, logicalRef);
+      return captured !== undefined && !captured.followingBottom;
+    },
+  };
 }
 
 export interface UseTranscriptScrollResult {
@@ -1011,6 +1052,8 @@ function verticalInputCanMovePort(
 
 export function useTranscriptScroll({
   ref,
+  viewId,
+  keepViewRemount,
   model,
   listRef,
   loadOlder,
@@ -1029,6 +1072,12 @@ export function useTranscriptScroll({
   onReaderIntent,
   onReaderMovement,
 }: UseTranscriptScrollOptions): UseTranscriptScrollResult {
+  const keepViewRemountRef = useRef(keepViewRemount);
+  keepViewRemountRef.current = keepViewRemount;
+  useLayoutEffect(() => {
+    if (viewId === undefined) return;
+    return retainTranscriptView(viewId, ref, () => keepViewRemountRef.current?.() ?? true);
+  }, [viewId, ref]);
   const [pillCount, setPillCount] = useState(0);
   // The first failed turn's index, while the reader hasn't seen it yet
   // (null = no active anchor). State (not just a ref) because clearing it
@@ -1116,6 +1165,7 @@ export function useTranscriptScroll({
           readerCallbacksRef.current.onReaderMovement?.(beforeOffset);
         readerGestureRef.current = { beforeOffset: el.scrollTop, admitted: true };
       }
+      pendingInitialEndRef.current = null;
       gesturePendingRef.current = true;
       if (gestureClearFrameRef.current !== null) return;
       gestureClearFrameRef.current = requestAnimationFrame(() => {
@@ -1355,6 +1405,7 @@ export function useTranscriptScroll({
   // detects the change and re-initializes every per-ref piece of state so
   // the new session is treated as a fresh open (always land at the bottom).
   const refForInitRef = useRef<string | undefined>(ref);
+  const pendingInitialEndRef = useRef<string | null>(null);
   const pendingViewAnchorRef = useRef<{
     anchor: ViewAnchor | undefined;
     proportion: number;
@@ -1561,6 +1612,7 @@ export function useTranscriptScroll({
   }, [listRef, clearPill, measure, cancelOlder]);
 
   const captureViewAnchor = useCallback(() => {
+    pendingInitialEndRef.current = null;
     const el = listRef.current?.getScrollElement();
     if (!el) return;
     const m = measure(el);
@@ -1574,6 +1626,20 @@ export function useTranscriptScroll({
   }, [listRef, measure, measureAnchors]);
 
   const restoreViewAnchorAfterMeasurement = useCallback(() => {
+    if (pendingInitialEndRef.current === ref) {
+      const list = listRef.current;
+      const el = list?.getScrollElement();
+      if (!el || list?.isMeasurementReady?.() === false) return;
+      pendingInitialEndRef.current = null;
+      // An end request made against the initial sizer can be clamped to zero.
+      // Finish that fresh-open default once the real measured sizer commits.
+      const retained = retainedPlacements.get(el);
+      if (retained?.logicalRef !== ref && !gesturePendingRef.current) {
+        scrollToLastRow(listRef, renderedRowCountRef.current);
+        const metrics = measure(el);
+        el.scrollTop = Math.max(0, metrics.scrollHeight - metrics.clientHeight);
+      }
+    }
     const pending = pendingViewAnchorRef.current;
     if (!pending) return;
     const el = listRef.current?.getScrollElement();
@@ -1604,7 +1670,7 @@ export function useTranscriptScroll({
       pending.scrollRequested = true;
       listRef.current?.scrollToIndex(restored.index, { align: "start" });
     }
-  }, [listRef, measure, measureAnchors, anchorEntries]);
+  }, [ref, listRef, measure, measureAnchors, anchorEntries]);
 
   // Mount / (re)attach. Guarded by initializedRef so the one-time restore-
   // or-default-to-bottom positioning and baseline recording happen exactly
@@ -1639,6 +1705,7 @@ export function useTranscriptScroll({
       setAwayFromBottom(false);
       firstTurnIdRef.current = undefined;
       baselineItemCountRef.current = 0;
+      pendingInitialEndRef.current = null;
       pendingViewAnchorRef.current = null;
       pendingBottomJumpRef.current = null;
       resolvedFailedTurnIdsRef.current = new Set();
@@ -1669,11 +1736,15 @@ export function useTranscriptScroll({
       // replaced the earlier per-ref restore of a stored scroll offset — the
       // whole persistence (threads.ts scrollPositions + the debounced writer
       // that lived below) was removed with it, not just bypassed.
-      if (!initialViewCapture || initialViewCapture.followingBottom)
+      const retained = retainedPlacements.get(el);
+      const captured = retained?.logicalRef === ref ? retained.captured : undefined;
+      if (!captured && (!initialViewCapture || initialViewCapture.followingBottom)) {
         scrollToLastRow(listRef, renderedRowCountRef.current);
+        pendingInitialEndRef.current = listRef.current?.isMeasurementReady?.() === false ? ref : null;
+      }
       const m = measure(el);
       lastScrollGeometryRef.current = m;
-      wasAtBottomRef.current = isAtBottom(m);
+      wasAtBottomRef.current = captured?.followingBottom ?? isAtBottom(m);
       setAwayFromBottom(!wasAtBottomRef.current);
       firstTurnIdRef.current = firstTurnId;
       baselineItemCountRef.current = itemCountRef.current;
@@ -1906,6 +1977,21 @@ export function useTranscriptScroll({
       for (const target of portGeometryTargets(el)) geometryObserver.observe(target);
     }
 
+    function cancelInitialEndOnReaderScroll() {
+      if (!el || pendingInitialEndRef.current !== ref) return;
+      const current = measure(el);
+      const previous = lastScrollGeometryRef.current;
+      if (
+        current.scrollTop < previous.scrollTop ||
+        current.clientHeight !== previous.clientHeight ||
+        current.scrollHeight <= previous.scrollHeight
+      ) {
+        pendingInitialEndRef.current = null;
+      }
+    }
+    // Native scrollbar movement has no wheel event. Classify it before the
+    // virtualizer's bubble listener can finish a still-pending mount default.
+    el.addEventListener("scroll", cancelInitialEndOnReaderScroll, true);
     // Classify real movement before the body's capture-only scroll listener.
     el.addEventListener("scroll", handleScroll, { capture: true });
     el.addEventListener("keydown", markNativeKey);
@@ -1925,6 +2011,7 @@ export function useTranscriptScroll({
       disposed = true;
       if (reanchorRetryFrame !== null) cancelAnimationFrame(reanchorRetryFrame);
       geometryObserver?.disconnect();
+      el.removeEventListener("scroll", cancelInitialEndOnReaderScroll, true);
       el.removeEventListener("scroll", handleScroll, { capture: true });
       el.removeEventListener("keydown", markNativeKey);
       el.removeEventListener("wheel", markWheel);

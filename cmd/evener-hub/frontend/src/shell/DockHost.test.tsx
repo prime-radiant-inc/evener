@@ -1,12 +1,15 @@
 import type { ThreadCapabilities, ThreadModel } from "@evener/appwire-client";
+import { bindFilePath } from "@evener/appwire-client/docContent";
 import { keyID } from "@evener/appwire-client/state/navigation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { act, cleanup, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { SerializedDockview } from "dockview-core";
 import { lazy } from "react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { MotionProvider } from "../motion";
+import { openDocBeside } from "../panes/doc/openDoc";
+import { replaceEditorText } from "../panes/session/testing/editor";
 import { enterAgentCascade, popAgentCascade, returnFromAgentCascade } from "../panes/zoom/actions";
 import { cascadeClient, cascadeContext } from "../panes/zoom/cascadeTestUtils";
 import { associatedCascade, cascadeOrigin } from "../panes/zoom/inspectionOrigin";
@@ -28,11 +31,15 @@ import { ActivitySidebar } from "./activitybar/ActivitySidebar";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "./activitybar/activitySidebarStore";
 import { ClientProvider } from "./clientContext";
 import { DockHost } from "./DockHost";
+import { StackHost } from "./mobile/StackHost";
 import { conversationPaneLifetime } from "./paneLifetime";
 import { type PaneDescriptor, type PaneProps, paneFor, registerPane, registerPaneForTests } from "./paneRegistry";
+import { usePaneVisible } from "./paneVisibility";
 import { openTopLevelSession } from "./sessionPlacement";
+import { resetMobileViewportForTests } from "./useIsMobile";
 import {
   consumePaneFocus,
+  documentPaneState,
   getDockviewApi,
   type OpenPaneRecord,
   resetWorkspaceStoreForTests,
@@ -42,10 +49,15 @@ import {
 // Fixture pane components, simple enough to assert on directly - "doc" is
 // this file's non-singleton fixture, "settings" its singleton one (same
 // scheme workspace.test.ts uses).
-function DocFixture({ params, focused }: PaneProps<{ ref: string }>) {
+function DocFixture({ params, focused }: PaneProps) {
+  const visible = usePaneVisible();
+  const fixtureParams = params as { ref?: string; path?: string };
+  const label = fixtureParams.ref ?? fixtureParams.path ?? "unknown";
   return (
     <div>
-      doc pane: {params.ref} (focused={String(focused)})
+      <span data-testid={`doc-visibility-${label}`} data-pane-visible={String(visible)}>
+        doc pane: {label} (focused={String(focused)})
+      </span>
     </div>
   );
 }
@@ -67,7 +79,7 @@ beforeAll(async () => {
 
   registerPaneForTests({
     id: "doc",
-    title: (params: { ref: string }) => `Doc ${params.ref}`,
+    title: (params: { ref?: string; path?: string }) => `Doc ${params.ref ?? params.path ?? "unknown"}`,
     component: lazy(() => Promise.resolve({ default: DocFixture })),
   });
   registerPaneForTests({
@@ -138,6 +150,9 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+  for (const restore of geometryRestores.splice(0)) restore();
 });
 
 test("applies the dockview-theme-evener class dockview-theme.css targets", async () => {
@@ -376,6 +391,263 @@ test("a third pane joins the existing right-hand group rather than making a thir
   // Two tabs in the right-hand group (b and c stacked); the main group's own
   // tab bar is hidden, so its pane contributes none.
   expect(visibleTabTexts()).toEqual(["Doc ref_b", "Doc ref_c"]);
+});
+
+test("publishes panel visibility independently from global dockview focus and inactive secondary tabs", async () => {
+  const main = workspaceStore.getState().openPane("doc", { ref: "visible-main" });
+  render(<DockHost />);
+  const mainProbe = await screen.findByTestId("doc-visibility-visible-main");
+  act(() => {
+    workspaceStore.getState().openPane("doc", { ref: "secondary-a" });
+  });
+  const secondaryProbe = await screen.findByTestId("doc-visibility-secondary-a");
+  expect(workspaceStore.getState().focusedPaneId).not.toBe(main);
+  expect(mainProbe.getAttribute("data-pane-visible")).toBe("true");
+  expect(secondaryProbe.getAttribute("data-pane-visible")).toBe("true");
+
+  act(() => {
+    workspaceStore.getState().openPane("doc", { ref: "secondary-b" });
+  });
+  expect((await screen.findByTestId("doc-visibility-secondary-b")).getAttribute("data-pane-visible")).toBe("true");
+  await vi.waitFor(() => expect(secondaryProbe.getAttribute("data-pane-visible")).toBe("false"));
+});
+
+const geometryRestores: Array<() => void> = [];
+function transcriptGeometry() {
+  const isPort = (element: HTMLElement) => element.parentElement?.dataset.testid === "transcript-virtual-list";
+  vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (this: HTMLElement) {
+    return this.hasAttribute("data-index") ? 96 : 300;
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(400);
+  vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(300);
+  vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(400);
+  vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockImplementation(function (this: HTMLElement) {
+    return isPort(this)
+      ? Math.max(300, Number.parseFloat((this.firstElementChild as HTMLElement)?.style.height ?? "0"))
+      : 300;
+  });
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    const port = this.closest('[data-testid="transcript-virtual-list"]')?.firstElementChild as HTMLElement | null;
+    const sizer = this.parentElement && isPort(this.parentElement);
+    const height = isPort(this) ? 300 : sizer ? Number.parseFloat(this.style.height) : 96;
+    const row = this.closest<HTMLElement>("[data-index]");
+    const start = Number.parseFloat(row?.style.transform.match(/translateY\(([-\d.]+)px\)/)?.[1] ?? "0");
+    const top = isPort(this) ? 0 : start - (port?.scrollTop ?? 0);
+    return { x: 0, y: top, top, bottom: top + height, left: 0, right: 400, width: 400, height, toJSON: () => ({}) };
+  });
+  const scrollToDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTo");
+  Object.defineProperty(HTMLElement.prototype, "scrollTo", {
+    configurable: true,
+    value: function (this: HTMLElement, options: ScrollToOptions) {
+      this.scrollTop = Math.max(0, Math.min(options.top ?? 0, this.scrollHeight - this.clientHeight));
+    },
+  });
+  geometryRestores.push(() => {
+    if (scrollToDescriptor) Object.defineProperty(HTMLElement.prototype, "scrollTo", scrollToDescriptor);
+    else Reflect.deleteProperty(HTMLElement.prototype, "scrollTo");
+  });
+  const observers = new Set<GeometryObserver>();
+  class GeometryObserver {
+    readonly elements = new Set<Element>();
+    constructor(readonly callback: ResizeObserverCallback) {
+      observers.add(this);
+    }
+    observe(element: Element) {
+      this.elements.add(element);
+    }
+    unobserve(element: Element) {
+      this.elements.delete(element);
+    }
+    disconnect() {
+      this.elements.clear();
+      observers.delete(this);
+    }
+  }
+  vi.stubGlobal("ResizeObserver", GeometryObserver);
+  return () =>
+    act(() => {
+      for (const observer of [...observers])
+        observer.callback(
+          [...observer.elements].map((target) => ({
+            target,
+            borderBoxSize: [{ blockSize: (target as HTMLElement).offsetHeight, inlineSize: 400 }],
+            contentBoxSize: [],
+            devicePixelContentBoxSize: [],
+            contentRect: target.getBoundingClientRect(),
+          })),
+          observer as unknown as ResizeObserver,
+        );
+    });
+}
+
+test("a real read-only Transcript filename opens from its exact pane, session and cwd", async () => {
+  const resized = transcriptGeometry();
+  const ref = "local:02wMz5TxvEMoJEDTDGOTil";
+  const cwd = "/work/read-only-source";
+  threadsStore.setState({
+    threads: new Map([
+      [
+        ref,
+        fixtureThread(ref, {
+          cwd,
+          turns: [
+            {
+              id: "filename-turn",
+              status: "completed",
+              items: [
+                {
+                  id: "filename-item",
+                  turnId: "filename-turn",
+                  type: "agentMessage",
+                  text: "Read `docs/source.md:12`",
+                  status: "completed",
+                },
+              ],
+            },
+          ],
+        }),
+      ],
+    ]),
+  });
+  const workspace = workspaceStore.getState();
+  const sessionId = workspace.openPane("session", { ref });
+  const sourceId = workspace.openPane("transcript", { ref }, { slot: "secondary" });
+  const source = workspaceStore.getState().panes.find((pane) => pane.id === sourceId);
+  if (!source) throw new Error("source transcript missing");
+  render(
+    <ClientProvider client={new FakeClient("ready")}>
+      <DockHost />
+    </ClientProvider>,
+  );
+  await screen.findAllByRole("heading", { name: `Thread ${ref}` });
+  resized();
+  await screen.findAllByRole("link", { name: "docs/source.md:12" });
+  const sourceGroup = getDockviewApi()?.getPanel(sourceId)?.group.element;
+  if (!sourceGroup) throw new Error("source group missing");
+  act(() => workspaceStore.getState().focusPane(sessionId));
+  const link = within(sourceGroup).getByRole("link", { name: "docs/source.md:12" });
+  await userEvent.setup().click(link);
+  await screen.findByText(/doc pane: docs\/source.md/);
+  const documentPane = workspaceStore.getState().panes.find((pane) => pane.type === "doc");
+  if (!documentPane) throw new Error("filename did not open document");
+  expect(documentPane.params).toMatchObject({ session: ref, path: "docs/source.md" });
+  expect(documentPaneState(documentPane)).toEqual({
+    origin: source,
+    reference: {
+      path: "docs/source.md",
+      readTarget: "/work/read-only-source/docs/source.md",
+      cwd,
+      provenance: "relative",
+    },
+    reopen: 0,
+  });
+  expect(workspaceStore.getState().mainPane()).toBe(source);
+  expect(workspaceStore.getState().focusedPaneId).toBe(documentPane.id);
+  expect(workspaceStore.getState().panes.some((pane) => pane.id === sessionId)).toBe(true);
+});
+
+test("promoting a real delegate conversation keeps both conversation lifetimes, the parent draft, and scroll", async () => {
+  const resized = transcriptGeometry();
+  const parentRef = "local:034MXwo6BpPH0QQCgdICSf";
+  const childRef = "local:02wMz5TxvEMoJEDTDGOTil";
+  const turn = (id: string, text: string) => ({
+    id,
+    status: "completed" as const,
+    itemsView: "full" as const,
+    items: [{ id: `${id}-item`, turnId: id, type: "userMessage" as const, text, status: "completed" as const }],
+  });
+  threadsStore.setState({
+    threads: new Map([
+      [
+        parentRef,
+        fixtureThread(parentRef, {
+          turns: Array.from({ length: 10 }, (_, index) => turn(`parent-turn-${index}`, "parent retained turn")),
+        }),
+      ],
+      [
+        childRef,
+        fixtureThread(childRef, {
+          turns: Array.from({ length: 10 }, (_, index) => turn(`child-turn-${index}`, "delegate retained turn")),
+        }),
+      ],
+    ]),
+  });
+  const workspace = workspaceStore.getState();
+  const parentId = workspace.openPane("session", { ref: parentRef });
+  const sourceId = workspace.openPane("transcript", { ref: childRef, parentRef }, { slot: "secondary" });
+  const parentPane = workspaceStore.getState().panes.find((pane) => pane.id === parentId);
+  const childPane = workspaceStore.getState().panes.find((pane) => pane.id === sourceId);
+  if (!parentPane || !childPane) throw new Error("conversation pane missing");
+  const parentLifetime = conversationPaneLifetime(parentPane);
+  const childLifetime = conversationPaneLifetime(childPane);
+  const fake = new FakeClient("ready");
+  render(
+    <ClientProvider client={fake}>
+      <DockHost />
+    </ClientProvider>,
+  );
+  const parentHeading = await screen.findByRole("heading", { name: `Thread ${parentRef}` });
+  const childHeading = await screen.findByRole("heading", { name: `Thread ${childRef}` });
+  resized();
+  const parentComposer = parentLifetime.composer;
+  const parentViews = [...parentLifetime.readViews.values()];
+  const childViews = [...childLifetime.readViews.values()];
+  expect(parentViews).toHaveLength(1);
+  expect(childViews).toHaveLength(1);
+  const conversationRoot = (heading: HTMLElement): HTMLElement | null => {
+    let candidate = heading.parentElement;
+    while (candidate && candidate.querySelectorAll('[data-testid="transcript-virtual-list"]').length !== 1) {
+      candidate = candidate.parentElement;
+    }
+    return candidate;
+  };
+  const parentPanel = conversationRoot(parentHeading);
+  const childPanel = conversationRoot(childHeading);
+  if (!(parentPanel instanceof HTMLElement) || !(childPanel instanceof HTMLElement))
+    throw new Error("real conversations were not mounted in dockview panels");
+  const draft = within(parentPanel).getByRole("textbox", { name: /^message$/i });
+  const parentScroll = within(parentPanel).getByTestId("transcript-virtual-list").firstElementChild;
+  const childScroll = within(childPanel).getByTestId("transcript-virtual-list").firstElementChild;
+  if (!(parentScroll instanceof HTMLElement) || !(childScroll instanceof HTMLElement))
+    throw new Error("real transcript scroll roots were not mounted");
+  replaceEditorText(draft, "retained parent draft");
+  expect(parentComposer?.getSnapshot().text).toBe("retained parent draft");
+  parentScroll.scrollTop = 137;
+  childScroll.scrollTop = 211;
+  fireEvent.scroll(parentScroll);
+  fireEvent.scroll(childScroll);
+  act(() => workspace.focusPane(sourceId));
+
+  const reference = bindFilePath("docs/a.md", "/work/child");
+  if (!reference) throw new Error("fixture did not bind document");
+  act(() => openDocBeside({ session: childRef, reference, sourcePaneId: sourceId }));
+
+  await screen.findByText(/doc pane: docs\/a.md/);
+  expect(document.querySelectorAll(".dv-groupview")).toHaveLength(2);
+  expect(screen.getByRole("heading", { name: `Thread ${childRef}` })).toBe(childHeading);
+  expect(within(childPanel).getByTestId("transcript-virtual-list").firstElementChild).toBe(childScroll);
+  expect(childScroll.scrollTop).toBe(211);
+  expect(workspaceStore.getState().panes.find((pane) => pane.id === parentId)).toBe(parentPane);
+  expect(workspaceStore.getState().panes.find((pane) => pane.id === sourceId)).toBe(childPane);
+  expect(conversationPaneLifetime(parentPane)).toBe(parentLifetime);
+  expect(conversationPaneLifetime(childPane)).toBe(childLifetime);
+  expect(parentLifetime.composer).toBe(parentComposer);
+  expect([...parentLifetime.readViews.values()]).toEqual(parentViews);
+  expect([...childLifetime.readViews.values()]).toEqual(childViews);
+  expect(parentLifetime.readViews.values().next().value).toBe(parentViews[0]);
+  expect(childLifetime.readViews.values().next().value).toBe(childViews[0]);
+  act(() => workspaceStore.getState().focusPane(parentId));
+  const restoredHeading = await screen.findByRole("heading", { name: `Thread ${parentRef}` });
+  resized();
+  const restoredPanel = conversationRoot(restoredHeading);
+  if (!restoredPanel) throw new Error("parent conversation did not remount");
+  expect(within(restoredPanel).getByRole("textbox", { name: /^message$/i }).textContent).toContain(
+    "retained parent draft",
+  );
+  expect(parentLifetime.composer).toBe(parentComposer);
+  expect(parentComposer?.getSnapshot().text).toBe("retained parent draft");
+  expect(within(restoredPanel).getByTestId("transcript-virtual-list").firstElementChild?.scrollTop).toBe(137);
+  expect(childScroll.scrollTop).toBe(211);
 });
 
 // The main group's header is hidden ALWAYS (identity, not count - see
@@ -1709,6 +1981,234 @@ test("collapses several rapid layout changes into a single debounced save", asyn
   const parsed = JSON.parse(localStorage.getItem(LAYOUT_KEY)!) as { panels: Record<string, unknown> };
   expect(Object.keys(parsed.panels)).toHaveLength(3);
 });
+
+test("desktop reconstruction retains the latest phone focus instead of the last secondary", async () => {
+  workspaceStore.getState().openPane("doc", { ref: "main" });
+  const spec = workspaceStore.getState().openPane("doc", { ref: "spec" });
+  workspaceStore.getState().openPane("doc", { ref: "review" });
+  const { unmount } = render(<DockHost />);
+  await screen.findByText(/doc pane: review/);
+  unmount();
+
+  // No desktop API is mounted while phone selection changes the real store.
+  workspaceStore.getState().focusPane(spec);
+  render(<DockHost />);
+
+  expect(await screen.findByText(/doc pane: spec/)).toBeTruthy();
+  expect(workspaceStore.getState().focusedPaneId).toBe(spec);
+  expect(tabIsActive("Doc spec")).toBe(true);
+});
+
+test.each(["retained", "phone-created"])(
+  "desktop reconstruction keeps %s documents and the latest exact same-session opener",
+  async (placement) => {
+    const restoreSession = registerPaneForTests({
+      ...paneFor("session"),
+      component: lazy(() => Promise.resolve({ default: DocFixture })),
+    });
+    const restoreTranscript = registerPaneForTests({
+      ...paneFor("transcript"),
+      component: lazy(() => Promise.resolve({ default: DocFixture })),
+    });
+    try {
+      const session = "local:02wMz5TxvEMoJEDTDGOTil";
+      const sessionId = workspaceStore.getState().openPane("session", { ref: session });
+      const transcriptId = workspaceStore.getState().openPane("transcript", { ref: session });
+      const reference = bindFilePath("/work/A/docs/spec.md", "/work/A");
+      const reviewReference = bindFilePath("docs/review.md", "/work/A");
+      if (!reference || !reviewReference) throw new Error("references did not bind");
+      openDocBeside({ session, reference, sourcePaneId: sessionId });
+      openDocBeside({ session, reference: reviewReference, sourcePaneId: sessionId });
+      const spec = workspaceStore
+        .getState()
+        .panes.find((pane) => (pane.params as { path?: string }).path === "docs/spec.md");
+      const review = workspaceStore
+        .getState()
+        .panes.find((pane) => (pane.params as { path?: string }).path === "docs/review.md");
+      if (!spec || !review) throw new Error("documents did not open");
+      const { unmount } = render(<DockHost />);
+      await screen.findByText(/doc pane: docs\/review.md/);
+      unmount();
+
+      // A same-session transcript is a distinct exact Back owner, promoted
+      // on phone. A captured absolute A target must not be inferred again.
+      openDocBeside({ session, reference, sourcePaneId: transcriptId });
+      if (placement === "phone-created") {
+        workspaceStore.getState().closePane(review.id);
+        openDocBeside({ session, reference: reviewReference, sourcePaneId: transcriptId });
+      }
+      workspaceStore.getState().focusPane(spec.id);
+      const before = workspaceStore.getState();
+      const owner = before.panes.find((pane) => pane.id === transcriptId);
+      const metadata = before.panes
+        .filter((pane) => pane.type === "doc")
+        .map((pane) => ({ pane, state: documentPaneState(pane) }));
+      expect(documentPaneState(spec)).toEqual({ reference, origin: owner, reopen: 1 });
+      render(<DockHost />);
+      await screen.findByText(/doc pane: docs\/spec.md/);
+
+      for (const pane of before.panes)
+        expect(workspaceStore.getState().panes.find((candidate) => candidate.id === pane.id)).toBe(pane);
+      for (const { pane, state } of metadata) expect(documentPaneState(pane)).toBe(state);
+      expect(workspaceStore.getState().focusedPaneId).toBe(spec.id);
+      expect(workspaceStore.getState().mainPane()).toBe(owner);
+      expect(workspaceStore.getState().panes.filter((pane) => pane.slot === "main")).toHaveLength(1);
+      expect(document.querySelectorAll(".dv-groupview")).toHaveLength(2);
+      expect(workspaceStore.getState().panes.filter((pane) => pane.type === "doc")).toHaveLength(2);
+      const persisted = localStorage.getItem(LAYOUT_KEY);
+      expect(persisted).not.toContain("readTarget");
+      expect(persisted).not.toContain("provenance");
+      expect(persisted).not.toContain("origin");
+      expect(persisted).not.toContain("reopen");
+      if (placement === "phone-created") expect(documentPaneState(review)).toBeUndefined();
+    } finally {
+      cleanup();
+      restoreSession();
+      restoreTranscript();
+    }
+  },
+);
+
+test.each(["saved", "empty", "invalid", "malformed", "missing"])(
+  "first phone workspace retains exact owners, binding and latest selection with %s geometry",
+  async (geometry) => {
+    const restoreSession = registerPaneForTests({
+      ...paneFor("session"),
+      component: lazy(() => Promise.resolve({ default: DocFixture })),
+    });
+    const restoreTranscript = registerPaneForTests({
+      ...paneFor("transcript"),
+      component: lazy(() => Promise.resolve({ default: DocFixture })),
+    });
+    try {
+      // Geometry belongs to a previous page. Reset after creating it so the
+      // tested page has never registered desktop, including for lazy warmup.
+      workspaceStore.getState().openPane("session", { ref: "local:old" });
+      workspaceStore.getState().openPane("doc", { path: "docs/stale.md" });
+      await act(async () => {
+        render(<DockHost />);
+      });
+      await screen.findByText(/doc pane: docs\/stale.md/);
+      const saved = workspaceStore.getState().layoutJSON();
+      cleanup();
+      resetWorkspaceStoreForTests();
+      localStorage.clear();
+      if (geometry === "saved") localStorage.setItem(LAYOUT_KEY, JSON.stringify(saved));
+      if (geometry === "empty")
+        localStorage.setItem(
+          LAYOUT_KEY,
+          JSON.stringify({
+            grid: { root: { type: "branch", data: [], size: 0 }, width: 0, height: 0, orientation: "HORIZONTAL" },
+            panels: {},
+          }),
+        );
+      if (geometry === "invalid") localStorage.setItem(LAYOUT_KEY, "{}");
+      if (geometry === "malformed") localStorage.setItem(LAYOUT_KEY, "{not json");
+
+      const session = "local:02wMz5TxvEMoJEDTDGOTil";
+      const sourceId = workspaceStore.getState().openPane("session", { ref: session });
+      const transcriptId = workspaceStore.getState().openPane("transcript", { ref: session });
+      const reference = bindFilePath("/work/A/docs/spec.md", "/work/A");
+      const reviewReference = bindFilePath("docs/review.md", "/work/A");
+      if (!reference || !reviewReference) throw new Error("references did not bind");
+      openDocBeside({ session, reference, sourcePaneId: sourceId });
+      openDocBeside({ session, reference: reviewReference, sourcePaneId: sourceId });
+      const closedReview = workspaceStore
+        .getState()
+        .panes.find((pane) => (pane.params as { path?: string }).path === "docs/review.md");
+      if (!closedReview) throw new Error("review did not open");
+      workspaceStore.getState().closePane(closedReview.id);
+      openDocBeside({ session, reference: reviewReference, sourcePaneId: transcriptId });
+      openDocBeside({ session, reference, sourcePaneId: transcriptId });
+      const before = workspaceStore.getState();
+      const spec = before.panes.find((pane) => (pane.params as { path?: string }).path === "docs/spec.md");
+      const owner = before.panes.find((pane) => pane.id === transcriptId);
+      if (!spec || !owner) throw new Error("source/spec did not survive phone opens");
+      const metadata = before.panes
+        .filter((pane) => pane.type === "doc")
+        .map((pane) => ({ pane, state: documentPaneState(pane) }));
+      expect(documentPaneState(spec)).toEqual({ reference, origin: owner, reopen: 1 });
+      expect(before.focusedPaneId).toBe(spec.id);
+      await act(async () => {
+        render(<DockHost />);
+      });
+      await screen.findByText(/doc pane: docs\/spec.md/);
+
+      for (const pane of before.panes)
+        expect(workspaceStore.getState().panes.find((candidate) => candidate.id === pane.id)).toBe(pane);
+      for (const { pane, state } of metadata) expect(documentPaneState(pane)).toBe(state);
+      expect(workspaceStore.getState().focusedPaneId).toBe(spec.id);
+      expect(tabIsActive("Doc docs/spec.md")).toBe(true);
+      expect(workspaceStore.getState().mainPane()).toBe(owner);
+      expect(workspaceStore.getState().panes.filter((pane) => pane.slot === "main")).toHaveLength(1);
+      expect(document.querySelectorAll(".dv-groupview")).toHaveLength(2);
+      expect(documentPaneState(closedReview)).toBeUndefined();
+      expect(workspaceStore.getState().panes).not.toContain(closedReview);
+      expect(
+        workspaceStore.getState().panes.some((pane) => (pane.params as { path?: string }).path === "docs/stale.md"),
+      ).toBe(false);
+      const persisted = JSON.stringify(workspaceStore.getState().layoutJSON());
+      for (const runtimeField of ["readTarget", "provenance", "origin", "reopen"])
+        expect(persisted).not.toContain(runtimeField);
+    } finally {
+      cleanup();
+      restoreSession();
+      restoreTranscript();
+    }
+  },
+);
+
+test.each(["session", "explicit settings route"])(
+  "first mounted phone workspace retains %s intent without document metadata",
+  async (intent) => {
+    const restoreSession = registerPaneForTests({
+      ...paneFor("session"),
+      component: lazy(() => Promise.resolve({ default: DocFixture })),
+    });
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      matches: query === "(max-width: 899px)",
+      media: query,
+      onchange: null,
+      addListener: () => {},
+      removeListener: () => {},
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => true,
+    }));
+    resetMobileViewportForTests();
+    try {
+      const sourceId = workspaceStore.getState().replacePrimary("session", { ref: "local:phone" });
+      const source = workspaceStore.getState().panes.find((pane) => pane.id === sourceId);
+      await act(async () => {
+        render(<StackHost />);
+      });
+      await screen.findByText(/doc pane: local:phone/);
+      cleanup();
+      if (intent === "explicit settings route")
+        workspaceStore.getState().replacePrimary("settings", { section: "models" });
+      const main = workspaceStore.getState().mainPane();
+      localStorage.setItem(LAYOUT_KEY, "{}");
+      vi.unstubAllGlobals();
+      resetMobileViewportForTests();
+      await act(async () => {
+        render(<DockHost />);
+      });
+      expect(workspaceStore.getState().mainPane()).toBe(main);
+      expect(workspaceStore.getState().focusedPaneId).toBe(main?.id);
+      if (intent === "session") expect(main).toBe(source);
+      else {
+        expect(main?.type).toBe("settings");
+        expect(main?.params).toEqual({ section: "models" });
+        expect(workspaceStore.getState().panes).not.toContain(source);
+      }
+    } finally {
+      cleanup();
+      vi.unstubAllGlobals();
+      resetMobileViewportForTests();
+      restoreSession();
+    }
+  },
+);
 
 test("falls back to opening welcome when localStorage has nothing saved", async () => {
   render(<DockHost />);

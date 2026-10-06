@@ -80,6 +80,7 @@ func eventDataProgramCases(text string, n int, flag bool) []eventDataProgramCase
 		{SessionEndData{Reason: text, State: text, Turns: n, Interrupted: flag}, EventSessionEnd},
 		{UserInputData{Text: text, Turn: n}, EventUserInput},
 		{EnvironmentData{TurnID: text, Text: text}, EventEnvironment},
+		{EnvironmentChangedData{WorkingDir: text}, EventEnvironmentChanged},
 		{AssistantTextStartData{Model: text}, EventAssistantTextStart},
 		{AssistantTextDeltaData{Delta: text}, EventAssistantTextDelta},
 		{AssistantTextEndData{Text: text, FinishReason: text, Model: text}, EventAssistantTextEnd},

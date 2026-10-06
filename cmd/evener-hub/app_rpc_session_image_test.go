@@ -154,32 +154,41 @@ func TestHubSessionImageServesShaAddressedBytes(t *testing.T) {
 }
 
 // The file-backed branch resolves the session's working directory from the
-// host's own past index and reads a session-relative path inside it, with the
-// same containment and 8 MiB bound the local /doc/image route uses.
+// host's own past index and reads relative and current-root absolute paths
+// inside it, with the same containment and 8 MiB bound the local /doc/image
+// route uses.
 func TestHubSessionImageServesFileBackedBytes(t *testing.T) {
 	cwd := t.TempDir()
-	if err := os.WriteFile(filepath.Join(cwd, "shot.png"), sessionImageTestPNG, 0o644); err != nil {
+	inside := filepath.Join(cwd, "shot.png")
+	if err := os.WriteFile(inside, sessionImageTestPNG, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	past := seedSessionImageSession(t, cwd, sessionImageTestPNG, "image/png")
 	srv, _ := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{Past: past})
 	defer srv.Close()
 
-	resp, err := requestSessionImage(t, srv, appwire.SessionImageParams{
-		SessionID: sessionImageTestSession,
-		Path:      "shot.png",
-	})
-	if err != nil {
-		t.Fatalf("evener/session/image: %v", err)
-	}
-	if !bytes.Equal(resp.Data, sessionImageTestPNG) {
-		t.Fatalf("Data = %q, want the file's bytes", resp.Data)
-	}
-	if resp.Size != int64(len(sessionImageTestPNG)) || resp.SHA != imageSha(sessionImageTestPNG) {
-		t.Fatalf("Size/SHA = %d/%q, want %d/%q", resp.Size, resp.SHA, len(sessionImageTestPNG), imageSha(sessionImageTestPNG))
-	}
-	if resp.MediaType != "image/png" {
-		t.Fatalf("MediaType = %q, want image/png", resp.MediaType)
+	for name, path := range map[string]string{
+		"relative":              "shot.png",
+		"current-root absolute": inside,
+	} {
+		t.Run(name, func(t *testing.T) {
+			resp, err := requestSessionImage(t, srv, appwire.SessionImageParams{
+				SessionID: sessionImageTestSession,
+				Path:      path,
+			})
+			if err != nil {
+				t.Fatalf("evener/session/image: %v", err)
+			}
+			if !bytes.Equal(resp.Data, sessionImageTestPNG) {
+				t.Fatalf("Data = %q, want the file's bytes", resp.Data)
+			}
+			if resp.Size != int64(len(sessionImageTestPNG)) || resp.SHA != imageSha(sessionImageTestPNG) {
+				t.Fatalf("Size/SHA = %d/%q, want %d/%q", resp.Size, resp.SHA, len(sessionImageTestPNG), imageSha(sessionImageTestPNG))
+			}
+			if resp.MediaType != "image/png" {
+				t.Fatalf("MediaType = %q, want image/png", resp.MediaType)
+			}
+		})
 	}
 }
 
@@ -200,15 +209,23 @@ func TestHubSessionImageServesFromASessionFolderReachedThroughASymlink(t *testin
 	srv, _ := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{Past: past})
 	defer srv.Close()
 
-	resp, err := requestSessionImage(t, srv, appwire.SessionImageParams{
-		SessionID: sessionImageTestSession,
-		Path:      "shot.png",
-	})
-	if err != nil {
-		t.Fatalf("evener/session/image through a symlinked session folder: %v", err)
-	}
-	if !bytes.Equal(resp.Data, sessionImageTestPNG) {
-		t.Fatalf("Data = %q, want the file's bytes", resp.Data)
+	for name, path := range map[string]string{
+		"relative":               "shot.png",
+		"trusted-alias absolute": filepath.Join(cwd, "shot.png"),
+		"canonical absolute":     filepath.Join(folder, "shot.png"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			resp, err := requestSessionImage(t, srv, appwire.SessionImageParams{
+				SessionID: sessionImageTestSession,
+				Path:      path,
+			})
+			if err != nil {
+				t.Fatalf("evener/session/image through a symlinked session folder: %v", err)
+			}
+			if !bytes.Equal(resp.Data, sessionImageTestPNG) {
+				t.Fatalf("Data = %q, want the file's bytes", resp.Data)
+			}
+		})
 	}
 }
 
@@ -290,16 +307,10 @@ func TestHubSessionImageRefusals(t *testing.T) {
 		if err := os.WriteFile(outside, sessionImageTestPNG, 0o644); err != nil {
 			t.Fatal(err)
 		}
-		inside := filepath.Join(cwd, "shot.png")
-		if err := os.WriteFile(inside, sessionImageTestPNG, 0o644); err != nil {
-			t.Fatal(err)
-		}
 		past := seedSessionImageSession(t, cwd, sessionImageTestPNG, "image/png")
 		srv, _ := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{Past: past})
 		defer srv.Close()
-		// An absolute path is refused even when it happens to sit inside the
-		// session root: Path is a session-relative path by contract.
-		for _, rel := range []string{"../outside.png", outside, "a/../../outside.png", inside} {
+		for _, rel := range []string{"../outside.png", outside, "a/../../outside.png"} {
 			_, err := requestSessionImage(t, srv, appwire.SessionImageParams{
 				SessionID: sessionImageTestSession,
 				Path:      rel,

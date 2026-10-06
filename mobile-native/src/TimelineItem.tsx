@@ -13,6 +13,7 @@ import { type MenuItem, menuAccessibility, menuPreview, showMenu } from "./longP
 import { MarkdownResponse } from "./MarkdownResponse";
 import { setDisclosureOpenAll, useDisclosureOpenAmong } from "./nativeDisclosure";
 import type { MobileTimelineItem } from "./projectedRows";
+import type { NativeFileOpenContext } from "./reader/markdownFileReferences";
 import { useMinuteClock } from "./session/minuteClock";
 import { useNowPastQuiet } from "./session/quietClock";
 import { rowDisclosureIds } from "./session/disclosureKeys";
@@ -54,6 +55,7 @@ export function TimelineItem({
 	errorActionFor,
 	onErrorAction,
 	documentChips,
+	fileContext,
 }: {
 	item: TimelineRow;
 	hubId: string;
@@ -86,6 +88,7 @@ export function TimelineItem({
 	/** The document chips under an agent's message (spec 8.2): the screen
 	 * decides which documents a message names and where a chip opens. */
 	documentChips?: (message: { id: string; markdown: string; streaming: boolean }) => ReactNode;
+	fileContext?: NativeFileOpenContext;
 }) {
 	const disclosureIds = rowDisclosureIds(hubId, sessionRef, item);
 	const defaultOpen = (item.kind === "activity" || item.kind === "run") && expandByDefault;
@@ -159,7 +162,7 @@ export function TimelineItem({
 		case "assistant":
 			content = (
 				<>
-					<AgentMessage markdown={item.markdown} quote={quote} />
+					<AgentMessage markdown={item.markdown} quote={quote} fileContext={fileContext} />
 					{documentChips?.({ id: item.id, markdown: item.markdown, streaming: item.streaming })}
 				</>
 			);
@@ -400,7 +403,15 @@ function NoteRow({ text }: { text: string }) {
 	);
 }
 
-function AgentMessage({ markdown, quote }: { markdown: string; quote?: (text: string) => void }) {
+function AgentMessage({
+	markdown,
+	quote,
+	fileContext,
+}: {
+	markdown: string;
+	quote?: (text: string) => void;
+	fileContext?: NativeFileOpenContext;
+}) {
 	const colors = useColors();
 	const [selecting, setSelecting] = useState(false);
 	// Memoized so an unchanged message hands MarkdownResponse the same props
@@ -419,7 +430,7 @@ function AgentMessage({ markdown, quote }: { markdown: string; quote?: (text: st
 			{/* The markdown view stays VoiceOver's element (it reads the
 			formatting and its links); the pressable only adds touch and hold. */}
 			<Pressable accessible={false} onLongPress={() => showMenu(menu, menuPreview(markdown))}>
-				<MarkdownResponse markdown={markdown || "…"} selectable={false} {...accessibility} />
+				<MarkdownResponse markdown={markdown || "…"} selectable={false} fileContext={fileContext} {...accessibility} />
 			</Pressable>
 			<HoldingModal
 				visible={selecting}

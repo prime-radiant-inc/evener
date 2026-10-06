@@ -2315,9 +2315,10 @@ type ThreadTurnItemsListResponse struct {
 //
 //   - SHA addresses the replayed-input form /s/<session>/images/<sha>, whose
 //     bytes are re-scanned out of the session transcript;
-//   - Path is a session-relative file path for the file-backed form
-//     /doc/image?session=<session>&path=<rel>, resolved inside the session's
-//     working directory.
+//   - Path is a relative or current-root absolute file path for the file-backed
+//     form /doc/image?session=<session>&path=<path>, resolved inside the
+//     session's current working directory. Absolute paths outside that root are
+//     refused.
 //
 // Both set, or neither, is InvalidParams. SessionID names the session in the
 // recipient hub's own namespace; it is never a routing field for another source.

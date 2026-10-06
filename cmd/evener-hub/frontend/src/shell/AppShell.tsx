@@ -48,7 +48,7 @@ import { openNestedSessionWithOwner, openTopLevelSession } from "./sessionPlacem
 import { isSinglePaneRoute } from "./singlePane";
 import { useIsMobile } from "./useIsMobile";
 import { useKeyboardInset } from "./useKeyboardInset";
-import { type OpenPaneRecord, workspaceStore } from "./workspace";
+import { documentPaneState, type OpenPaneRecord, sourcePaneSessionRef, workspaceStore } from "./workspace";
 import "../panes/welcome"; // registers the "welcome" pane type
 import "../panes/session"; // registers the "session" pane type
 import "../panes/settings"; // registers the "settings" pane type
@@ -246,6 +246,25 @@ function routePlacementIsApplied(
       const context = client ? (sessionActivitySnapshot(client, params.ref, "session")?.context ?? null) : null;
       return deriveCascadePath(params, context).scopes.some((scope) => scope.requestedRef === conversationRef);
     });
+  const documentState = focusedPane?.type === "doc" ? documentPaneState(focusedPane) : undefined;
+  if (
+    allowFocusedCompanion &&
+    documentState?.origin === main &&
+    (main.type === "session" || main.type === "transcript")
+  ) {
+    const sourceSession = sourcePaneSessionRef(main);
+    const docParams = focusedPane?.params as { session?: unknown; path?: unknown };
+    // Filename opens promote their exact source before selecting the document.
+    // That living binding, not the old URL's placement, owns this settled view.
+    // New/pending routes and generic or stale document bindings still reconcile.
+    if (
+      typeof sourceSession === "string" &&
+      docParams.session === sourceSession &&
+      docParams.path === documentState.reference.path
+    ) {
+      return true;
+    }
+  }
   const focusedCompanion =
     focusedPane?.type === "sessionTasks" ||
     focusedPane?.type === "sessionDetails" ||
@@ -893,6 +912,7 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
   const routePlacementInProgressRef = useRef(false);
   const routePlacementPathnameRef = useRef<string | null>(null);
   const placedPathnameRef = useRef<string | null>(null);
+  const deferredDocumentRef = useRef<OpenPaneRecord | null>(null);
   const initialPathnameRef = useRef(pathname);
   if (!dockHostHasMountedRef.current && openedForPathnameRef.current !== pathname) {
     openedForPathnameRef.current = pathname;
@@ -928,6 +948,24 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
         pendingSessionRef.current === null &&
         placedPathnameRef.current === pathname &&
         !routePlacementInProgressRef.current;
+      const workspace = workspaceStore.getState();
+      const focusedPane = workspace.panes.find((pane) => pane.id === workspace.focusedPaneId);
+      if (
+        route.type === "session" &&
+        location !== null &&
+        allowFocusedCompanion &&
+        focusedPane?.type === "doc" &&
+        documentPaneState(focusedPane)?.origin === undefined &&
+        deferredDocumentRef.current !== focusedPane
+      ) {
+        // A native filename click can commit openPane's publication before
+        // openDocBeside publishes its exact owner later in the same stack,
+        // even when document hydration has already published a reference.
+        // Recheck once after that stack, generic docs still yield to the route.
+        deferredDocumentRef.current = focusedPane;
+        queueMicrotask(bumpWorkspacePanesVersion);
+        return;
+      }
       const allowRestoredInspection =
         route.type === "session" &&
         openedForPathnameRef.current === pathname &&

@@ -29,6 +29,7 @@ import { useSessionActivity } from "../../stores/sessionActivity";
 import { useThreadsStore } from "../../stores/threads";
 import { EmptyState, PaneScaffold } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
+import { TranscriptSourcePaneContext } from "../session/transcript/TranscriptBody";
 import { retainedTranscriptReadView } from "../session/transcript/transcriptReadView";
 import { JobLog } from "./JobLog";
 import { ReadOnlyThreadContent } from "./ReadOnlyThreadContent";
@@ -85,7 +86,9 @@ function ThreadTranscript({ params, paneId }: { params: TranscriptParams; paneId
           </div>
         )}
         <div className={CLASS.list}>
-          {view ? <ReadOnlyThreadContent ref={ref} view={view} /> : <EmptyState title="Loading transcript…" />}
+          <TranscriptSourcePaneContext.Provider value={paneId}>
+            {view ? <ReadOnlyThreadContent ref={ref} view={view} /> : <EmptyState title="Loading transcript…" />}
+          </TranscriptSourcePaneContext.Provider>
         </div>
       </div>
     </PaneScaffold>
