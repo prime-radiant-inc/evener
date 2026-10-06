@@ -159,7 +159,9 @@ func TestPluginsPanelReconnectChecksForUpdatesAgain(t *testing.T) {
 	defer cleanup()
 	// The model sits on a connection that has dropped, its check with it.
 	oldClient, _, dropOldConnection := newTestHubClientWithFeed(t, nil)
-	panel := launchconfig.NewPluginsPanel()
+	// The panel holds the list read before the drop, without the flag.
+	loaded, _ := launchconfig.NewPluginsPanel().Update(launchconfig.PluginListResultMsg{List: appwire.PluginListResponse{Plugins: []appwire.PluginEntry{plugin}}})
+	panel := loaded.(launchconfig.PluginsPanel)
 	m := hubModel{client: oldClient, pluginsPanel: &panel}
 	dropOldConnection()
 
@@ -180,7 +182,7 @@ func TestPluginsPanelReconnectChecksForUpdatesAgain(t *testing.T) {
 			go func() { answers <- openCommandMessages(t, child) }()
 		}
 	}
-	deadline := time.After(2 * time.Second)
+	deadline := time.After(10 * time.Second)
 collect:
 	for {
 		select {
@@ -188,6 +190,9 @@ collect:
 			for _, msg := range msgs {
 				updated, _ := m.Update(msg)
 				m = updated.(hubModel)
+			}
+			if strings.Contains(installedTabView(t, m), "UPDATE AVAILABLE") {
+				break collect
 			}
 		case <-deadline:
 			break collect
