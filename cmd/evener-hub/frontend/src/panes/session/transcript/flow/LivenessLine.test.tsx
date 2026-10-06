@@ -345,6 +345,6 @@ test("an unknown hub count falls back to the active turn's rows", async () => {
   seedRunningChildren(1);
   const client = hubCounting(false, 0);
   render(<LivenessLine lastFrameAt={0} now={60_000} active={true} sessionRef="s1" turnId="turn_0" />);
-  await waitFor(() => expect(sessionActivitySnapshot(client, "s1", "subtree")?.summary).toBeTruthy());
+  await waitFor(() => expect(sessionActivitySnapshot(client, "s1", "subtree", "count")?.summary).toBeTruthy());
   expect(screen.getByTestId("liveness-line").textContent).toBe("Waiting on 1 subagent");
 });

@@ -4332,6 +4332,7 @@ test("a fenced notLoaded session keeps force stop reachable in the pane footer",
   setNavigationTitle(ref, "Fenced saved session");
   let stopped = false;
   const activityRefs: unknown[] = [];
+  const subtreeRefs: unknown[] = [];
   fake.on("thread/read", () => {
     const response = readResponse(ref, { status: { type: "notLoaded" } });
     response.thread.evener.resumeRequired = !stopped;
@@ -4342,8 +4343,9 @@ test("a fenced notLoaded session keeps force stop reachable in the pane footer",
     return response;
   });
   fake.on("evener/thread/activity/read", (params) => {
-    activityRefs.push(params.ref);
-    return activitySummary(params.ref);
+    // Discovery is the session read; the subtree read is the subagent count's own.
+    (params.scope === "subtree" ? subtreeRefs : activityRefs).push(params.ref);
+    return { ...activitySummary(params.ref), scope: params.scope ?? "session" };
   });
   fake.on("evener/thread/forceStop", () => {
     stopped = true;
@@ -4360,6 +4362,8 @@ test("a fenced notLoaded session keeps force stop reachable in the pane footer",
   // The fence must not hide the editor or its force-stop menu.
   const menuTrigger = await screen.findByRole("button", { name: /session actions/i });
   await waitFor(() => expect(activityRefs).toEqual([ref]));
+  // One shared subagent count read, however many surfaces show it.
+  await waitFor(() => expect(subtreeRefs).toEqual([ref]));
   expect(sessionActivitySnapshot(fake, ref, "session")?.summary).not.toBeNull();
   expect(sessionActivitySnapshot(fake, ref, "session")?.summaryState.loading).toBe(false);
   expect(screen.getByTestId("composer-input-card")).toBeTruthy();
@@ -4406,6 +4410,7 @@ test.each([
   const ref = "local:owner-invariant";
   setNavigationTitle(ref, "Owner invariant");
   const activityRefs: unknown[] = [];
+  const subtreeRefs: unknown[] = [];
   fake.on("thread/read", () => {
     const response = readResponse(ref, { status: { type: "notLoaded" } });
     response.thread.evener.capabilities = { ...CAPABILITIES, send };
@@ -4414,8 +4419,9 @@ test.each([
     return response;
   });
   fake.on("evener/thread/activity/read", (params) => {
-    activityRefs.push(params.ref);
-    return activitySummary(params.ref);
+    // Discovery is the session read; the subtree read is the subagent count's own.
+    (params.scope === "subtree" ? subtreeRefs : activityRefs).push(params.ref);
+    return { ...activitySummary(params.ref), scope: params.scope ?? "session" };
   });
   render(
     <ClientProvider client={fake}>
@@ -4432,6 +4438,8 @@ test.each([
     screen.queryAllByTestId("session-chrome-menu").length + screen.queryAllByTestId("session-chrome-inline").length;
   expect(chromeMounts).toBe(1);
   await waitFor(() => expect(activityRefs).toEqual([ref]));
+  // One shared subagent count read, however many surfaces show it.
+  await waitFor(() => expect(subtreeRefs).toEqual([ref]));
 });
 
 test("visible retained transcript resolves qualified job and stable delegate rows with authoritative open targets", async () => {

@@ -13,7 +13,7 @@ import { deriveScope } from "../../../shell/statusbar/statusScope";
 import { useIsMobile } from "../../../shell/useIsMobile";
 import { activityPanelStore, EMPTY_ACTIVITY_PANEL_ENTRY, useActivityPanelStore } from "../../../stores/activityPanel";
 import { navigationStore, useNavigationStore } from "../../../stores/navigation/store";
-import { useSessionActivity } from "../../../stores/sessionActivity";
+import { useSessionActivity, useSubagentCounts } from "../../../stores/sessionActivity";
 import { EntityViewsProvider } from "../../../transcriptDisplay/entityViews";
 import { Button, EmptyState, Sheet } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
@@ -172,15 +172,16 @@ export const ActivityPanel = forwardRef<ActivityPanelHandle, ActivityPanelProps>
     (open: boolean) => activityPanelStore.getState().setSheetOpen(sessionRef, open),
     [sessionRef],
   );
-  const { snapshot } = useSessionActivity(
-    !hideTrigger || refreshWhenHidden || discoverWhenHidden || open ? sessionRef : null,
-  );
+  const countedRef = !hideTrigger || refreshWhenHidden || discoverWhenHidden || open ? sessionRef : null;
+  const { snapshot } = useSessionActivity(countedRef);
+  // Only a shown trigger says the count.
+  const subagents = useSubagentCounts(hideTrigger ? null : countedRef);
   useImperativeHandle(ref, () => ({ open: () => setOpen(true) }), [setOpen]);
   return (
     <>
       {!hideTrigger ? (
         <Button variant="quiet" size="sm" onClick={() => setOpen(true)}>
-          {activityActionLabel(snapshot?.summary)}
+          {activityActionLabel(snapshot?.summary, subagents)}
         </Button>
       ) : null}
       <Sheet open={open} onClose={() => setOpen(false)} title="Activity" size="wide">
