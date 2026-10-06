@@ -1,5 +1,37 @@
 import { IDBDatabase, IDBFactory } from "fake-indexeddb";
 import { vi } from "vitest";
+import type { SessionCacheIndexedDB } from "../sessionCacheIndexedDB";
+
+// Holds the result of the next real getCurrent lookup after its transaction
+// has settled: reach resolves once the real storage result exists, and release
+// lets it return. This delays a real storage result so a sibling transaction
+// (a clear from another adapter on the same IDBFactory) can commit before the
+// held read's caller publishes. It substitutes no fabricated success: the
+// spy delegates to the real adapter and only gates the timing.
+export function holdNextCurrentLookup(cache: SessionCacheIndexedDB) {
+  const read = cache.getCurrent.bind(cache);
+  let reached!: () => void;
+  let release!: () => void;
+  const arrived = new Promise<void>((resolve) => {
+    reached = resolve;
+  });
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const spy = vi.spyOn(cache, "getCurrent").mockImplementationOnce(async (...args) => {
+    const result = await read(...args);
+    reached();
+    await gate;
+    return result;
+  });
+  return {
+    reached: arrived,
+    release: () => {
+      release();
+      spy.mockRestore();
+    },
+  };
+}
 
 // A request that never fires success, error, or blocked: the wedged
 // connection-coordinator shape, where open()/deleteDatabase() return and then

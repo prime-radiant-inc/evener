@@ -31,6 +31,7 @@ import { holdIndexedDBEvent, holdNextWriteTransaction, nextRealTask } from "./te
 import {
   acquireBackgroundThread,
   backgroundTranscriptSnapshotForTests,
+  clearCachedSessions,
   installHydrationRetrySchedulerForTests,
   observePendingHydrationRetirementsForTests,
   pendingThreadHydrationBaseModelsForTests,
@@ -3596,5 +3597,90 @@ describe("background thread claims", () => {
     page.resolve({ data: [], bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 40 } });
     await loading;
     expect(threadsStore.getState().threads.has("local:one")).toBe(false);
+  });
+
+  test("clear while continuously Live suppresses until an explicit re-open hydrates and restores caching", async () => {
+    const ref = "local:one";
+    const restoreOptions = installBackgroundTranscriptOptionsForTests({ residentBytes: 0 });
+    resetThreadsStoreForTests();
+    setSessionCacheAdapterForTests(cache);
+    const fake = connectCurrentClient();
+    const lease = acquireBackgroundThread(ref);
+    let paneHeld = false;
+    try {
+      await lease.ready;
+      await settleBackgroundTranscriptsForTests();
+      // Both holders exist when clear commits: the background Live claim and the
+      // explicitly opened pane.
+      await threadsStore.getState().ensureThread(ref);
+      paneHeld = true;
+      expect(backgroundTranscriptSnapshotForTests().refs.get(ref)?.persistence).toBe("enabled");
+
+      expect(await clearCachedSessions()).toEqual({ committed: true });
+      expect(backgroundTranscriptSnapshotForTests().refs.get(ref)?.persistence).toBe("clear-suppressed");
+
+      // Releasing the pane leaves background demand; suppression stays and the
+      // unwritable model leaves RAM without a futile write.
+      threadsStore.getState().releaseThread(ref);
+      paneHeld = false;
+      await settleBackgroundTranscriptsForTests();
+      expect(threadsStore.getState().threads.has(ref)).toBe(false);
+      expect(backgroundTranscriptSnapshotForTests().refs.get(ref)?.persistence).toBe("clear-suppressed");
+
+      // The next explicit foreground acquisition hydrates authoritatively and
+      // restores the persistence lifetime at the current epoch.
+      const readsBefore = fake.calls.filter((call) => call.method === "thread/read").length;
+      await threadsStore.getState().ensureThread(ref);
+      paneHeld = true;
+      expect(fake.calls.filter((call) => call.method === "thread/read").length).toBeGreaterThan(readsBefore);
+      expect(backgroundTranscriptSnapshotForTests().refs.get(ref)?.persistence).toBe("enabled");
+
+      // It committed a usable checkpoint, so the next re-open is local: no read.
+      threadsStore.getState().releaseThread(ref);
+      paneHeld = false;
+      await settleBackgroundTranscriptsForTests();
+      const afterRecovery = fake.calls.filter((call) => call.method === "thread/read").length;
+      await threadsStore.getState().ensureThread(ref);
+      paneHeld = true;
+      expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(afterRecovery);
+    } finally {
+      if (paneHeld) threadsStore.getState().releaseThread(ref);
+      await settleBackgroundTranscriptsForTests();
+      await lease.release();
+      resetThreadsStoreForTests();
+      restoreOptions();
+    }
+  });
+
+  test("background release and reacquire alone never lift a clear's suppression", async () => {
+    const ref = "local:one";
+    const restoreOptions = installBackgroundTranscriptOptionsForTests({ residentBytes: 0 });
+    resetThreadsStoreForTests();
+    setSessionCacheAdapterForTests(cache);
+    connectCurrentClient();
+    const lease = acquireBackgroundThread(ref);
+    try {
+      await lease.ready;
+      await settleBackgroundTranscriptsForTests();
+      expect(await clearCachedSessions()).toEqual({ committed: true });
+      expect(backgroundTranscriptSnapshotForTests().refs.get(ref)?.persistence).toBe("clear-suppressed");
+
+      await lease.release();
+      await settleBackgroundTranscriptsForTests();
+      const readAgain = acquireBackgroundThread(ref);
+      try {
+        await readAgain.ready;
+        await settleBackgroundTranscriptsForTests();
+        // Background churn cannot reset suppression: no explicit foreground
+        // acquisition ever happened.
+        expect(backgroundTranscriptSnapshotForTests().refs.get(ref)?.persistence).toBe("clear-suppressed");
+      } finally {
+        await readAgain.release();
+      }
+    } finally {
+      await settleBackgroundTranscriptsForTests();
+      resetThreadsStoreForTests();
+      restoreOptions();
+    }
   });
 });

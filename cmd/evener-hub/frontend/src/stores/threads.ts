@@ -5954,6 +5954,7 @@ function transcriptResidency(): TranscriptResidency {
       admission: (ref) => currentAdmissions.get(ref),
       fold: (_ref, model, update) => foldCanonicalNotification(model, update.notification, update.now).model,
       writeTimers: () => cacheWriteTimers,
+      retryScheduler: () => hydrationRetryScheduler,
       hydrate: async (ref, intent, signal) => {
         if (signal.aborted) return;
         const client = await requireReadyClient();

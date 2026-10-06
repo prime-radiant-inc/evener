@@ -18,7 +18,7 @@ import {
   installBackgroundTranscriptOptionsForTests,
 } from "./backgroundTranscriptOptions";
 import { SessionCacheIndexedDB } from "./sessionCacheIndexedDB";
-import { holdNextWriteTransaction } from "./testing/stalledIndexedDB";
+import { holdNextCurrentLookup, holdNextWriteTransaction } from "./testing/stalledIndexedDB";
 import { encodedPayloadBytes } from "./transcriptPayloadBudget";
 import { createTranscriptResidency, type TranscriptResidencyPort } from "./transcriptResidency";
 
@@ -1423,6 +1423,202 @@ describe("transcript residency", () => {
       await promotion?.catch(() => undefined);
       get.mockRestore();
       put.mockRestore();
+      residency.dispose();
+    }
+  });
+
+  test("a background-only clear lifts only for a fresh explicit foreground lifetime", async () => {
+    const ref = "local:bg-lifetime";
+    const model = hydrateThread(currentRead(ref), ref, 1);
+    const { residency, port } = setup(model);
+    try {
+      residency.published(ref, model, 0, true);
+      await residency.settled();
+      residency.owners(ref, { foreground: 0, history: 0, mutationPinned: false, background: 1 });
+
+      residency.clear(5);
+      expect(residency.snapshot().refs.get(ref)?.persistence).toBe("clear-suppressed");
+
+      // A background-only authoritative publish cannot lift the suppression:
+      // background churn and reconnect never re-enable caching.
+      const background = hydrateThread(currentRead(ref), ref, 2);
+      port.publish(ref, background);
+      residency.published(ref, background, 0, true);
+      expect(residency.snapshot().refs.get(ref)?.persistence).toBe("clear-suppressed");
+
+      // A later explicit foreground acquisition may: there was no pre-clear
+      // foreground/history/pin holder to wait out.
+      residency.owners(ref, { foreground: 1, history: 0, mutationPinned: false, background: 1 });
+      const foreground = hydrateThread(currentRead(ref), ref, 3);
+      port.publish(ref, foreground);
+      residency.published(ref, foreground, 0, true);
+      expect(residency.snapshot().refs.get(ref)?.persistence).toBe("enabled");
+    } finally {
+      await residency.settled();
+      residency.dispose();
+    }
+  });
+
+  test("a pre-clear holder or pin keeps suppression until it releases, then a fresh acquisition lifts it", async () => {
+    const ref = "local:holder-lifetime";
+    const model = hydrateThread(currentRead(ref), ref, 1);
+    const { residency, port } = setup(model);
+    try {
+      residency.published(ref, model, 0, true);
+      await residency.settled();
+      // A pre-clear pane and a mutation pin both hold the ref at clear time.
+      residency.owners(ref, { foreground: 1, history: 0, mutationPinned: true, background: 1 });
+      residency.clear(5);
+      expect(residency.snapshot().refs.get(ref)?.persistence).toBe("clear-suppressed");
+
+      // Release the pre-clear pane; the pin still holds, and a concurrent new
+      // pane's authoritative hydration cannot reset suppression.
+      residency.owners(ref, { foreground: 0, history: 0, mutationPinned: true, background: 1 });
+      residency.owners(ref, { foreground: 1, history: 0, mutationPinned: true, background: 1 });
+      const concurrent = hydrateThread(currentRead(ref), ref, 2);
+      port.publish(ref, concurrent);
+      residency.published(ref, concurrent, 0, true);
+      expect(residency.snapshot().refs.get(ref)?.persistence).toBe("clear-suppressed");
+
+      // Release the pin, then the pane: the next fresh acquisition lifts it.
+      residency.owners(ref, { foreground: 1, history: 0, mutationPinned: false, background: 1 });
+      residency.owners(ref, { foreground: 0, history: 0, mutationPinned: false, background: 1 });
+      residency.owners(ref, { foreground: 1, history: 0, mutationPinned: false, background: 1 });
+      const fresh = hydrateThread(currentRead(ref), ref, 3);
+      port.publish(ref, fresh);
+      residency.published(ref, fresh, 0, true);
+      expect(residency.snapshot().refs.get(ref)?.persistence).toBe("enabled");
+    } finally {
+      await residency.settled();
+      residency.dispose();
+    }
+  });
+
+  test("clear cancels a pending repair and never arms a storage probe, and expired repair callbacks do nothing", async () => {
+    const ref = "local:repair-token";
+    const model = hydrateThread(currentRead(ref), ref, 1);
+    const scheduled: Array<() => void> = [];
+    const hydrations: string[] = [];
+    let resident: ThreadModel | undefined = model;
+    const port: TranscriptResidencyPort = {
+      cache: new SessionCacheIndexedDB({
+        indexedDB: new IDBFactory(),
+        databaseName: `residency-${crypto.randomUUID()}`,
+      }),
+      resident: () => resident,
+      publish: (_ref, next) => {
+        resident = next;
+      },
+      unload: () => {
+        resident = undefined;
+      },
+      admission: () => undefined,
+      fold: (_ref, current) => current,
+      hydrate: async (_ref, intent) => {
+        hydrations.push(intent);
+      },
+      retryScheduler: () => (_attempt, retry) => {
+        scheduled.push(retry);
+        return () => {};
+      },
+    };
+    caches.push(port.cache);
+    const residency = createTranscriptResidency(port, {
+      ...DEFAULT_BACKGROUND_TRANSCRIPT_OPTIONS,
+      residentBytes: 0,
+    });
+    residency.connection(1, true);
+    residency.owners(ref, { foreground: 0, history: 0, mutationPinned: false, background: 1 });
+    try {
+      // Arm a repair through the scheduler, then clear: the clear cancels it and
+      // arms nothing.
+      residency.revoke(ref, "storage");
+      expect(scheduled).toHaveLength(1);
+      residency.clear(5);
+      scheduled.shift()?.();
+      await residency.settled();
+      expect(hydrations).toHaveLength(0);
+      expect(residency.snapshot().refs.get(ref)?.persistence).toBe("clear-suppressed");
+    } finally {
+      await residency.settled();
+      residency.dispose();
+    }
+  });
+
+  test("promotion rejected by an alias revoke during its held lookup hydrates the replacement identity", async () => {
+    const ref = "local:alias-continuity";
+    const cache = new SessionCacheIndexedDB({
+      indexedDB: new IDBFactory(),
+      databaseName: `residency-${crypto.randomUUID()}`,
+    });
+    caches.push(cache);
+    const original = hydrateThread(currentRead(ref), ref, 1);
+    const originalThreadID = original.threadId;
+    const replacementThreadID = "thr_replacement_identity";
+    let resident: ThreadModel | undefined;
+    let hydrations = 0;
+    const publishedModels: ThreadModel[] = [];
+    const port: TranscriptResidencyPort = {
+      cache,
+      resident: () => resident,
+      publish: (_ref, next) => {
+        resident = next;
+        publishedModels.push(next);
+      },
+      unload: () => {
+        resident = undefined;
+      },
+      admission: () => undefined,
+      fold: (_ref, current, update) => applyNotification(current, update.notification, update.now),
+      hydrate: async (requested, _intent, signal) => {
+        if (signal.aborted) return;
+        hydrations += 1;
+        const response = currentRead(requested);
+        response.thread.id = replacementThreadID;
+        response.thread.sessionId = "sess_replacement_identity";
+        const replacement = hydrateThread(response, requested, 5);
+        port.publish(requested, replacement);
+        residency.published(requested, replacement, 0, true);
+      },
+    };
+    const residency = createTranscriptResidency(port, {
+      ...DEFAULT_BACKGROUND_TRANSCRIPT_OPTIONS,
+      residentBytes: 0,
+    });
+    residency.connection(1, true);
+    residency.owners(ref, { foreground: 0, history: 0, mutationPinned: false, background: 1 });
+    let opening: Promise<ThreadModel | undefined> | undefined;
+    const heldLookup = holdNextCurrentLookup(cache);
+    try {
+      // Seed a real disk checkpoint for the requested alias, then evict it so
+      // promotion must read it back.
+      resident = original;
+      residency.published(ref, original, 0, true);
+      await residency.settled();
+      resident = undefined;
+      expect(residency.snapshot().refs.get(ref)?.current).toBe(true);
+
+      opening = residency.promote(ref);
+      await heldLookup.reached;
+      // Alias continuity is revoked before the held lookup's result publishes.
+      residency.revoke(ref, "alias");
+      heldLookup.release();
+      const promoted = await opening;
+      await residency.settled();
+
+      // The revoked lookup cannot certify the old resolved identity; the
+      // authoritative replacement identity and its literal text win.
+      expect(promoted).toBeUndefined();
+      expect(hydrations).toBeGreaterThanOrEqual(1);
+      const replacement = publishedModels.at(-1);
+      if (!replacement) throw new Error("expected the replacement identity to publish");
+      expect(replacement.threadId).toBe(replacementThreadID);
+      expect(replacement.threadId).not.toBe(originalThreadID);
+      expect(JSON.stringify(currentTranscriptState(replacement))).toContain("alpha");
+    } finally {
+      heldLookup.release();
+      await opening?.catch(() => undefined);
+      await residency.settled();
       residency.dispose();
     }
   });

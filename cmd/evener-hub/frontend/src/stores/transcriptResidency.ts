@@ -33,6 +33,10 @@ export interface TranscriptResidencyPort {
   fold(ref: string, model: ThreadModel, update: ReceivedTranscriptUpdate): ThreadModel;
   hydrate(ref: string, intent: "background" | "foreground" | "final", signal: AbortSignal): Promise<void>;
   writeTimers?(): { debounceMs: number; maxWaitMs: number };
+  /** The shared paced-retry scheduler. When absent, repair runs immediately
+   * (the reducer-level tests' behavior); the store wires it so real repairs use
+   * one coalesced bounded-backoff timer per ref. */
+  retryScheduler?(): ((attempt: number, retry: () => void) => () => void) | undefined;
 }
 
 interface HydrationTask {
@@ -137,10 +141,23 @@ interface Entry {
   needsRecovery: boolean;
   evictAfterCommit: boolean;
   persistence: Persistence;
+  // Clear suppression is lifted only by a qualifying explicit foreground
+  // acquisition. `clearSuppressionHoldsPreClearHolders` stays true while any
+  // foreground/history/pin holder that existed when clear committed remains:
+  // no acquisition may capture a new lifetime until those holders release.
+  // `freshForegroundLifetime` then marks the acquisition that began after they
+  // did, whose authoritative hydration may restore persistence.
+  clearSuppressionHoldsPreClearHolders: boolean;
+  freshForegroundLifetime: boolean;
   lastForegroundUse: number;
   promoting: boolean;
   workSequence: number;
   inFlight: ReceivedTranscriptUpdate[];
+  // One coalesced storage/overload repair timer per ref. An expired callback or
+  // a superseded repair owns nothing: it acts only while it is still this
+  // entry's current record.
+  repair?: { cancel: () => void; attempt: number };
+  repairAttempt: number;
   flushTimer?: ReturnType<typeof setTimeout>;
   maxWaitTimer?: ReturnType<typeof setTimeout>;
   work?: Promise<boolean>;
@@ -170,6 +187,10 @@ export function createTranscriptResidency(
   let disposed = false;
   let retiringHydrations = false;
   let drainPromise: Promise<void> | undefined;
+  // Post-promotion durable-epoch rechecks: each is tracked asynchronous work
+  // of the promotion that scheduled it, not a global lock. settled() joins
+  // them so a test (or a caller) can observe the fenced recovery they trigger.
+  const epochRechecks = new Set<Promise<void>>();
 
   const entryFor = (ref: string): Entry => {
     const entry = entries.get(ref);
@@ -188,10 +209,13 @@ export function createTranscriptResidency(
       needsRecovery: false,
       evictAfterCommit: false,
       persistence: "enabled",
+      clearSuppressionHoldsPreClearHolders: false,
+      freshForegroundLifetime: false,
       lastForegroundUse: 0,
       promoting: false,
       workSequence: 0,
       inFlight: [],
+      repairAttempt: 0,
       waiters: [],
     };
     entries.set(ref, created);
@@ -286,6 +310,47 @@ export function createTranscriptResidency(
 
   function resolveWaiters(entry: Entry): void {
     for (const resolve of entry.waiters.splice(0)) resolve();
+  }
+
+  function cancelRepair(entry: Entry): void {
+    const record = entry.repair;
+    entry.repair = undefined;
+    entry.repairAttempt = 0;
+    record?.cancel();
+  }
+
+  // Storage failures and overload enter a bounded, coalesced recovery: one
+  // timer per ref, paced by the shared scheduler, that schedules the ordinary
+  // authoritative hydration. clear-suppressed refs never reach here (clear()
+  // cancels repair and revoke is not the clear path), so suppression never
+  // arms a repair loop. Without a scheduler (reducer-level tests) the same
+  // recovery runs immediately.
+  function armRepair(ref: string, entry: Entry): void {
+    if (disposed || !ready || entry.owners.background <= 0) return;
+    if (entry.repair) return; // coalesced: one outstanding repair per ref
+    entry.repairAttempt += 1;
+    const attempt = entry.repairAttempt;
+    const run = () => {
+      if (disposed || !ready || entry.owners.background <= 0) return;
+      void hydrate(ref, held(entry) ? "foreground" : "background");
+    };
+    const record = {
+      attempt,
+      cancel: () => {},
+    } as { cancel: () => void; attempt: number };
+    const fire = () => {
+      if (entry.repair !== record) return; // superseded or cancelled
+      entry.repair = undefined;
+      run();
+    };
+    entry.repair = record;
+    const scheduler = port.retryScheduler?.();
+    if (scheduler) {
+      record.cancel = scheduler(attempt, fire);
+    } else {
+      entry.repair = undefined;
+      run();
+    }
   }
 
   function settleHydration(task: HydrationTask, error?: unknown): void {
@@ -433,6 +498,25 @@ export function createTranscriptResidency(
         entry.persistence === "clear-suppressed"
       ) {
         entry.current = false;
+        // Suppression is intentional: it never writes. When it prevents the
+        // checkpoint and only background demand remains, release the excess
+        // resident payload instead of holding an unwritable model. The entry's
+        // metadata stays (unverified), so an explicit open recovers through the
+        // ordinary cache-seeded authoritative path.
+        if (
+          entry.persistence === "clear-suppressed" &&
+          !held(entry) &&
+          entry.owners.background > 0 &&
+          port.resident(ref)
+        ) {
+          await port.unload(ref);
+          if (!port.resident(ref)) {
+            if (entry.residentBytes > 0) residentBudget.release(entry.residentBytes);
+            if (entry.handoffBytes > 0) pendingBudget.release(entry.handoffBytes);
+            entry.residentBytes = 0;
+            entry.handoffBytes = 0;
+          }
+        }
         return false;
       }
       workerCheckpointObserverForTests?.({ ref, resident, model, record, batch });
@@ -482,6 +566,7 @@ export function createTranscriptResidency(
         if (!port.resident(ref)) entry.evictAfterCommit = false;
       }
       committed = true;
+      cancelRepair(entry);
       return true;
     } finally {
       workerBytes = 0;
@@ -554,6 +639,49 @@ export function createTranscriptResidency(
     return residency.scheduleHydration(ref, intent);
   }
 
+  // After a successful disk promotion, recheck the durable epoch the lookup
+  // transaction captured. A delayed or lost sibling-clear broadcast cannot
+  // leave this read/publication race undetected: on a newer epoch, suppress
+  // persistence (the publication stays as stale display state) and reconcile
+  // owned refs through the ordinary paced hydration path. A failed epoch
+  // lookup is a storage fault, not proof of a clear.
+  function schedulePromotionEpochRecheck(
+    ref: string,
+    entry: Entry,
+    promotionEpoch: number,
+    guardGeneration: number,
+    guardClearEpoch: number,
+    guardOwnershipGeneration: number,
+  ): void {
+    const task = (async () => {
+      const observed = await port.cache.readEpoch();
+      if (disposed) return;
+      // The same client/owner/claim generation guards completion, so an older
+      // promotion cannot invalidate a newer lifetime.
+      if (
+        guardGeneration !== connectionGeneration ||
+        guardClearEpoch !== clearEpoch ||
+        entry.ownershipGeneration !== guardOwnershipGeneration ||
+        !owned(entry)
+      )
+        return;
+      if (observed === promotionEpoch) return;
+      if (observed === undefined) {
+        residency.revoke(ref, "storage");
+        return;
+      }
+      residency.clear(observed);
+      for (const [ownedRef, ownedEntry] of entries) {
+        if (!owned(ownedEntry) || !ready || disposed) continue;
+        void hydrate(ownedRef, held(ownedEntry) ? "foreground" : "background");
+      }
+    })().catch(() => {});
+    epochRechecks.add(task);
+    void task.then(() => {
+      epochRechecks.delete(task);
+    });
+  }
+
   const residency: TranscriptResidency = {
     owners(ref, owners) {
       const entry = entryFor(ref);
@@ -570,10 +698,23 @@ export function createTranscriptResidency(
         if (!owned(entry)) entry.current = false;
         else if (!previouslyOwned) entry.current = false;
       }
+      if (entry.persistence === "clear-suppressed") {
+        const nowHeld = held(entry);
+        if (previouslyHeld && !nowHeld) {
+          // The last pre-clear foreground/history/pin holder released: a later
+          // acquisition may now capture a new lifetime.
+          entry.clearSuppressionHoldsPreClearHolders = false;
+        } else if (!previouslyHeld && nowHeld && !entry.clearSuppressionHoldsPreClearHolders) {
+          // An explicit foreground acquisition begun only after the pre-clear
+          // holders finished. Its authoritative hydration may restore writes.
+          entry.freshForegroundLifetime = true;
+        }
+      }
       if (previouslyOwned && !owned(entry)) {
         const task = hydrationByRef.get(ref);
         if (task) retireHydration(task);
       }
+      if (!owned(entry) || entry.owners.background <= 0) cancelRepair(entry);
       if (held(entry)) {
         if (entry.residentBytes > 0) residentBudget.release(entry.residentBytes);
         if (entry.handoffBytes > 0) pendingBudget.release(entry.handoffBytes);
@@ -591,6 +732,7 @@ export function createTranscriptResidency(
       if (task) retireHydration(task);
       const entry = entries.get(ref);
       if (!entry) return;
+      cancelRepair(entry);
       if (entry.residentBytes > 0) residentBudget.release(entry.residentBytes);
       if (entry.handoffBytes > 0) pendingBudget.release(entry.handoffBytes);
       entry.residentBytes = 0;
@@ -603,7 +745,10 @@ export function createTranscriptResidency(
         ready = connected;
         if (!connected) {
           retireHydrations();
-          for (const entry of entries.values()) entry.current = false;
+          for (const entry of entries.values()) {
+            entry.current = false;
+            cancelRepair(entry);
+          }
         }
       }
     },
@@ -622,8 +767,19 @@ export function createTranscriptResidency(
     published(ref, model, appliedSequence, authoritative = false) {
       const entry = entryFor(ref);
       if (authoritative) {
+        cancelRepair(entry);
         entry.needsRecovery = false;
-        entry.persistence = "enabled";
+        if (entry.persistence !== "clear-suppressed") {
+          entry.persistence = "enabled";
+        } else if (entry.freshForegroundLifetime && held(entry)) {
+          // A qualifying explicit foreground acquisition hydrated
+          // authoritatively: capture the current epoch and resume writes.
+          entry.persistence = "enabled";
+          entry.freshForegroundLifetime = false;
+        }
+        // Otherwise clear suppression stands: background release/reacquire and
+        // reconnect alone never re-enable caching, and a pane that predates the
+        // clear keeps its suppressed lifetime until its holders release.
       }
       const previouslyApplied = entry.appliedSequence;
       const consumed = entry.pending.filter((update) => update.sequence <= appliedSequence);
@@ -721,6 +877,14 @@ export function createTranscriptResidency(
           entry.appliedSequence = uncheckpointed.at(-1)?.sequence ?? record.appliedSequence;
           releaseEntryPending(entry);
           entry.current = true;
+          schedulePromotionEpochRecheck(
+            ref,
+            entry,
+            found.epoch,
+            activeGeneration,
+            activeClearEpoch,
+            ownershipGeneration,
+          );
           return model;
         }
         return undefined;
@@ -782,15 +946,17 @@ export function createTranscriptResidency(
       entry.current = false;
       entry.needsRecovery = _reason !== "deleted";
       entry.persistence = "repairing";
-      if (_reason !== "deleted" && entry.owners.background > 0 && ready) {
-        void hydrate(ref, held(entry) ? "foreground" : "background");
-      }
+      if (_reason === "deleted") cancelRepair(entry);
+      else armRepair(ref, entry);
     },
     clear(epoch) {
       clearEpoch = epoch;
       for (const entry of entries.values()) {
+        cancelRepair(entry);
         entry.current = false;
         entry.persistence = "clear-suppressed";
+        entry.clearSuppressionHoldsPreClearHolders = held(entry);
+        entry.freshForegroundLifetime = false;
         if (entry.flushTimer) clearTimeout(entry.flushTimer);
         if (entry.maxWaitTimer) clearTimeout(entry.maxWaitTimer);
         entry.flushTimer = undefined;
@@ -802,7 +968,9 @@ export function createTranscriptResidency(
     dispose() {
       disposed = true;
       retireHydrations();
+      epochRechecks.clear();
       for (const entry of entries.values()) {
+        cancelRepair(entry);
         if (entry.flushTimer) clearTimeout(entry.flushTimer);
         if (entry.maxWaitTimer) clearTimeout(entry.maxWaitTimer);
         releaseEntryPending(entry);
@@ -817,6 +985,10 @@ export function createTranscriptResidency(
           if (entry.flushTimer) enqueue(ref);
         }
         await runWorker();
+        if (epochRechecks.size > 0) {
+          await Promise.allSettled([...epochRechecks]);
+          continue;
+        }
         if (
           !drainPromise &&
           workQueue.length === 0 &&
