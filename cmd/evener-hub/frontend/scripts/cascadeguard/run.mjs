@@ -832,14 +832,19 @@ function placement(layout, id) {
   return found;
 }
 
+// Found and clicked in one page turn, so a layout shift between measuring and
+// pressing cannot send the press to a neighbour (#3804, #3819). A button that
+// is disabled or covered at its center is not clicked; the wait keeps polling.
 async function clickColumnAction(ref, text) {
-  const point = await wait(`(() => {
+  await wait(`(() => {
     const button = [...document.querySelectorAll(${q(`${column(ref)} button`)})].find(node => node.textContent.trim() === ${q(text)});
-    if (!button) return null;
+    if (!button || button.matches(':disabled')) return null;
     button.scrollIntoView({ block: 'center', inline: 'nearest' });
-    const r = button.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+    const r = button.getBoundingClientRect();
+    if (!button.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2))) return null;
+    button.click();
+    return true;
   })()`, `${text} in actual ${ref} column`);
-  await driver.clickAt(point.x, point.y);
 }
 
 async function activeTabText(scaffold) {
