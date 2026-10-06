@@ -124,7 +124,7 @@ export function createArchivedListStore(client: ArchivedListClient): ArchivedLis
     const wanted = held?.rows.length ?? 0;
     const isNewest = startRequest(key);
     try {
-      let page = await requestPage(catalog, projectKey, undefined, held?.loaded ? held.revision : undefined);
+      let page = await requestPage(catalog, projectKey, undefined, held?.revision);
       if (page.unchanged) {
         if (isNewest()) patch(key, () => ({ total: page.total, loading: false }));
         return;

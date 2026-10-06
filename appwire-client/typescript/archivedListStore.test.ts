@@ -397,6 +397,73 @@ describe("the list's revision", () => {
     expect(list.error).toBeNull();
   });
 
+  test("an unchanged answer keeps the cursor of the rows it vouches for and takes the total", async () => {
+    let call = 0;
+    fake.on("evener/archived/list", () =>
+      ++call === 1
+        ? revised(["local:a"], 2, "r1", "cursor-1")
+        : { sessions: [], total: 2, revision: "r1", unchanged: true },
+    );
+    await store.refresh("projects", "proj");
+    await store.refresh("projects", "proj");
+    const list = entry("projects", "proj");
+    expect(list.nextCursor).toBe("cursor-1");
+    expect(list.total).toBe(2);
+  });
+
+  test("an unchanged answer overtaken by a newer request changes nothing", async () => {
+    fake.on("evener/archived/list", (params) =>
+      params.cursor ? revised(["local:b"], 2, "r1") : revised(["local:a"], 2, "r1", "cursor-1"),
+    );
+    await store.refresh("projects", "proj");
+    const unchanged = deferred<ArchivedListResponse>();
+    const next = deferred<ArchivedListResponse>();
+    fake.on("evener/archived/list", (params) => (params.cursor ? next.promise : unchanged.promise));
+    const refreshing = store.refresh("projects", "proj");
+    const loading = store.loadMore("projects", "proj");
+    unchanged.resolve({ sessions: [], total: 9, revision: "r1", unchanged: true });
+    await refreshing;
+    expect(entry("projects", "proj").loading).toBe(true);
+    expect(entry("projects", "proj").total).toBe(2);
+    next.resolve(revised(["local:b"], 2, "r1"));
+    await loading;
+    expect(entry("projects", "proj").rows.map((r) => r.ref)).toEqual(["local:a", "local:b"]);
+  });
+
+  test("a page loaded at the held revision keeps it", async () => {
+    fake.on("evener/archived/list", (params) =>
+      params.cursor ? revised(["local:b"], 2, "r1") : revised(["local:a"], 2, "r1", "cursor-1"),
+    );
+    await store.refresh("projects", "proj");
+    await store.loadMore("projects", "proj");
+    const seen: ArchivedListParams[] = [];
+    fake.on("evener/archived/list", (params) => {
+      seen.push(params);
+      return { sessions: [], total: 2, revision: "r1", unchanged: true };
+    });
+    await store.refresh("projects", "proj");
+    expect(seen[0]?.revision).toBe("r1");
+  });
+
+  test("a refresh whose own pages came back at different revisions holds none", async () => {
+    fake.on("evener/archived/list", (params) =>
+      params.cursor ? revised(["local:b"], 2, "r1") : revised(["local:a"], 2, "r1", "cursor-1"),
+    );
+    await store.refresh("projects", "proj");
+    await store.loadMore("projects", "proj");
+    fake.on("evener/archived/list", (params) =>
+      params.cursor ? revised(["local:b"], 2, "r2") : revised(["local:a"], 2, "r1", "cursor-1"),
+    );
+    await store.refresh("projects", "proj");
+    const seen: ArchivedListParams[] = [];
+    fake.on("evener/archived/list", (params) => {
+      seen.push(params);
+      return params.cursor ? revised(["local:b"], 2, "r2") : revised(["local:a"], 2, "r2", "cursor-1");
+    });
+    await store.refresh("projects", "proj");
+    expect(seen[0]?.revision).toBeUndefined();
+  });
+
   test("a changed list is read in full and holds its new revision", async () => {
     let call = 0;
     fake.on("evener/archived/list", () =>

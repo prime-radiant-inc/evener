@@ -5,9 +5,9 @@
 // hub with it loaded, again when the hub announces its project changed (once
 // shown, if it was out of view), after any accepted organize change
 // (navigationActions.ts, and the Conversation screen's own Archive and Undo),
-// and from the top once its connection recovers. Each of those re-reads sends
-// the revision the store holds, and a list the hub answers unchanged costs
-// one empty answer.
+// and from the top once its connection recovers. A re-read of a list the
+// store still holds sends its revision, and one the hub answers unchanged
+// costs one empty answer.
 import {
 	type ArchivedList,
 	type ArchivedListCatalog,
