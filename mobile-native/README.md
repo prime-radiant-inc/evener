@@ -89,6 +89,25 @@ npx tsx scripts/check-hub.mts http://127.0.0.1:9180 /path/to/auth-token
 
 No script in the default tests calls a real hub or LLM provider.
 
+## Memory-refresh transcript updates
+
+Automatic index observations appear as standalone **Refreshed my memory** rows.
+They start folded at every detail level, including Full, with System events
+either on or off. General expansion defaults do not open them. Tapping shows
+scope, state, truncation and formatted content through the native Markdown
+renderer. Unavailable and revoked states stay visible while folded. A separate
+**Source** disclosure exposes the complete original text, including content the
+formatted view omits; malformed observations open as that text directly and do
+not block later valid observations.
+
+Explicit open and closed choices survive remounts and detail-level changes,
+scoped by hub, session and item. Live and reloaded history use this same
+presentation. Web and native share payload validation. Memory tools and model
+context retain their separate owners. See the [memory guide](../docs/product/memory.md).
+The JavaScript tests and iOS Metro bundle check do not establish installed-iPhone
+touch behavior or narrow-layout wrapping; those require a current-source device
+or simulator smoke check.
+
 ## Shared-notes transcript updates
 
 Internal snapshots fold under **Shared notes updated**. Chat hides them even

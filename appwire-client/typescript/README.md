@@ -121,6 +121,15 @@ The slash-completion module is ported from Beautiful UI's prompt-bar
 completion affordance and ships its MIT attribution at
 `LICENSES/beautiful-ui.txt`, inside the tarball.
 
+## Automatic memory refreshes
+
+The root export provides `MEMORY_CONTEXT_EVENT_KIND`, `parseMemoryContext` and
+the shared display labels used by web and native refresh disclosures.
+`parseMemoryContext` validates `raw.memoryContext` without reading files or
+changing the recorded text. An invalid payload returns `undefined`; clients
+then show the complete original text. Keep that source independently available
+even when validation succeeds, because formatted Markdown can omit source content.
+
 ## Document file references
 
 `bindFilePath`, `parseFileReference`, and `findFileReferences` keep a
