@@ -22,6 +22,7 @@ import { registerPaneForTests } from "../../../shell/paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { connectionStore } from "../../../stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "../../../stores/navigation/store";
+import { sessionActivitySnapshot } from "../../../stores/sessionActivity";
 import { activityClient, activitySummary } from "../../../stores/sessionActivityTestUtils";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { resetTranscriptDisplayStoreForTests, transcriptDisplayStore } from "../../../stores/transcriptDisplay";
@@ -1119,17 +1120,23 @@ test("triggerless chrome shares summary ownership and refreshes its menu on type
     delegates: { known: true, total: active, active, completed: 0, failed: 0 },
     jobs: { known: true, total: 0, active: 0, completed: 0, failed: 0 },
   }));
-  const sessionReads = () =>
+  const reads = (subtree: boolean) =>
     fake.calls.filter(
-      (c) => c.method === "evener/thread/activity/read" && (c.params as { scope?: string }).scope !== "subtree",
+      (c) =>
+        c.method === "evener/thread/activity/read" &&
+        ((c.params as { scope?: string }).scope === "subtree") === subtree,
     );
+  const sessionReads = () => reads(false);
+  const subtreeReads = () => reads(true);
   await threadsStore.getState().ensureThread(ref);
   render(<SessionChrome ref={ref} />);
   await settleActivityDiscovery(ref);
   expect(sessionReads()).toHaveLength(1);
+  // The menu's subagent count is one shared read.
+  await waitFor(() => expect(subtreeReads()).toHaveLength(1));
   const user = userEvent.setup();
   await user.click(screen.getByRole("button", { name: /session actions/i }));
-  expect(screen.getByRole("menuitem", { name: "Overview · 1 active" })).toBeTruthy();
+  expect(await screen.findByRole("menuitem", { name: "Overview · 1 active" })).toBeTruthy();
   await user.keyboard("{Escape}");
   active = 3;
   act(() =>
@@ -1139,9 +1146,13 @@ test("triggerless chrome shares summary ownership and refreshes its menu on type
     }),
   );
   await waitFor(() => expect(sessionReads()).toHaveLength(2));
+  await waitFor(() => expect(subtreeReads()).toHaveLength(2));
   await settleActivityDiscovery(ref);
+  await waitFor(() =>
+    expect(sessionActivitySnapshot(fake, ref, "subtree", "count")?.summary?.delegates.active).toBe(3),
+  );
   await user.click(screen.getByRole("button", { name: /session actions/i }));
-  expect(screen.getByRole("menuitem", { name: "Overview · 3 active" })).toBeTruthy();
+  expect(await screen.findByRole("menuitem", { name: "Overview · 3 active" })).toBeTruthy();
   expect(
     fake.calls.filter((c) => c.method === "evener/thread/jobs/list" || c.method === "evener/thread/delegates/list"),
   ).toHaveLength(0);

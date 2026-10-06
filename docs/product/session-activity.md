@@ -587,7 +587,8 @@ describe the executable proof and presentation contract.
 ## Client lifetimes
 
 The [browser binding](../../cmd/evener-hub/frontend/src/stores/sessionActivity.ts)
-shares a store by actual client object, requested ref and scope. A committed view
+shares a store by actual client object, requested ref, scope and role (a view,
+or the subagent count's own summary-only store). A committed view
 acquires its holder; an abandoned render starts no read. Every visible desktop
 session pane has a status footer that observes that pane's summary and its
 subtree summary (for the Agents count) by explicit ref, so side-by-side panes
@@ -706,8 +707,10 @@ summary
 ([`useSubagentCounts`](../../cmd/evener-hub/frontend/src/stores/sessionActivity.ts)),
 while the Agents tab lists the session's own. That count owns its own
 summary-only subtree store, apart from any view's, so an always-mounted count
-never keeps a closed Activity sheet's collection reads alive: closing the sheet
-still disposes its store and fences its late pages.
+(the footer, the liveness line, a closed Activity trigger) never keeps a closed
+Activity sheet's collection reads alive: closing the sheet still disposes its
+store and fences its late pages. While the sheet is open the subtree summary is
+read twice, once for each store.
 The workspace registers only Tasks and Details session panels. Saved Activity
 placements are unknown panes: the existing workspace restore omits them,
 preserves registered panes and selects useful surviving focus. A valid primary

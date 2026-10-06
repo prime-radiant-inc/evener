@@ -174,7 +174,8 @@ export const ActivityPanel = forwardRef<ActivityPanelHandle, ActivityPanelProps>
   );
   const countedRef = !hideTrigger || refreshWhenHidden || discoverWhenHidden || open ? sessionRef : null;
   const { snapshot } = useSessionActivity(countedRef);
-  const subagents = useSubagentCounts(countedRef);
+  // Only a shown trigger says the count.
+  const subagents = useSubagentCounts(hideTrigger ? null : countedRef);
   useImperativeHandle(ref, () => ({ open: () => setOpen(true) }), [setOpen]);
   return (
     <>
