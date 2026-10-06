@@ -109,8 +109,12 @@ function blockText(token: Token): string {
 
 export function documentBlocks(markdown: string): DocumentBlock[] {
 	const blocks: DocumentBlock[] = [];
-	const push = (kind: BlockKind, token: Token, extra: Pick<DocumentBlock, "depth" | "code"> = {}, raw = token.raw) => {
-		const source = trimBlock(raw);
+	const push = (
+		kind: BlockKind,
+		token: Token,
+		{ markdown = token.raw, ...extra }: Pick<DocumentBlock, "depth" | "code"> & { markdown?: string } = {},
+	) => {
+		const source = trimBlock(markdown);
 		if (source === "") return;
 		const text = extra.code?.text ?? blockText(token);
 		blocks.push({
@@ -134,12 +138,9 @@ export function documentBlocks(markdown: string): DocumentBlock[] {
 				const list = token as Tokens.List;
 				const start = typeof list.start === "number" ? list.start : 1;
 				list.items.forEach((item, position) => {
-					push(
-						"listItem",
-						item,
-						{},
-						list.ordered ? item.raw.replace(/^(\s*)\d+([.)])/, `$1${start + position}$2`) : item.raw,
-					);
+					push("listItem", item, {
+						markdown: list.ordered ? item.raw.replace(/^(\s*)\d+([.)])/, `$1${start + position}$2`) : item.raw,
+					});
 				});
 				break;
 			}
