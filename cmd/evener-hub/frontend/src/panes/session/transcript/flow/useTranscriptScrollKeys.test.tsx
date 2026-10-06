@@ -8,13 +8,14 @@
 // also pin the Alt+Arrow chords themselves, the editable-target suppression,
 // and mobile inertness (rail.toggle's no-registration pattern).
 import { ACTIONS, DEFAULT_BINDINGS } from "@evener/appwire-client";
-import { cleanup, renderHook } from "@testing-library/react";
+import { act, cleanup, fireEvent, renderHook, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { keybindingsRegistry } from "../../../../keybindings/appRegistry";
 import { installKeybindings } from "../../../../shell/installKeybindings";
 import { resetMobileViewportForTests } from "../../../../shell/useIsMobile";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../../shell/workspace";
 import type { VirtualListHandle } from "../../../../widgets/virtuallist";
+import { mountReaderScene } from "../transcriptReaderTestUtils";
 import {
   TRANSCRIPT_LINE_SCROLL_PX,
   TRANSCRIPT_PAGE_SCROLL_RATIO,
@@ -37,6 +38,7 @@ function renderPaneKeys(paneId: string, { mounted = true }: { mounted?: boolean 
     current: {
       scrollToIndex,
       getScrollElement: () => (mounted ? el : null),
+      isLayoutCurrent: () => mounted,
       getVisibleRange: () => null,
     } as VirtualListHandle,
   };
@@ -80,6 +82,64 @@ afterEach(() => {
   document.body.innerHTML = "";
   vi.unstubAllGlobals();
   resetMobileViewportForTests();
+});
+
+test.each(["top", "live"] as const)("actual %s command supersedes held semantic reflow", async (command) => {
+  const scene = mountReaderScene(`command-${command}`);
+  try {
+    await scene.start();
+    await scene.holdReflow();
+    await act(async () => {
+      if (command === "top") document.body.dispatchEvent(keydown({ key: "Home", altKey: true }));
+      else fireEvent.click(screen.getByRole("button", { name: "Jump to live" }));
+    });
+    await act(async () => scene.external.notify());
+    await act(async () => scene.frames.release());
+    expect(scene.port().scrollTop).toBe(command === "top" ? 0 : 1300);
+  } finally {
+    scene.dispose();
+  }
+});
+
+test("genuine focused page and line keys admit the actual backward pair before held shrink", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const scene = mountReaderScene("signed-key");
+  try {
+    await scene.start();
+    // Two genuine 360px pages and two 40px lines land at the literal 100px.
+    // The DOM before value is never replaced by a displaced virtual offset.
+    await scene.holdReflow();
+    await act(async () => {
+      for (let index = 0; index < 2; index += 1)
+        document.body.dispatchEvent(keydown({ key: "ArrowUp", altKey: true, shiftKey: true }));
+      for (let index = 0; index < 2; index += 1) document.body.dispatchEvent(keydown({ key: "ArrowUp", altKey: true }));
+    });
+    expect(scene.port().scrollTop).toBe(100);
+    await act(async () => scene.frames.release());
+    await act(async () => vi.runOnlyPendingTimers());
+    await act(async () => scene.external.notify());
+    await act(async () => scene.frames.release());
+    expect(scene.port().scrollTop).toBe(100);
+    expect(scene.capture()).toMatchObject({ anchorId: "current-entry", anchorOffset: -100 });
+  } finally {
+    scene.dispose();
+    vi.useRealTimers();
+  }
+});
+
+test("edge-only focused key leaves older width restoration admitted", async () => {
+  const scene = mountReaderScene("edge-key");
+  try {
+    await scene.start(0);
+    const revision = scene.view.positioningRevision;
+    await scene.holdReflow();
+    await act(async () => document.body.dispatchEvent(keydown({ key: "ArrowUp", altKey: true })));
+    await act(async () => scene.external.notify());
+    expect(scene.view.positioningRevision).toBe(revision);
+    expect(scene.port().scrollTop).toBe(0);
+  } finally {
+    scene.dispose();
+  }
 });
 
 test("Alt+ArrowDown scrolls only the focused pane's transcript (two-pane multi-instance pin)", () => {

@@ -135,14 +135,15 @@ test.each([
       await first.result.current.loadOlder().catch(() => {});
     });
     act(() => {
-      enterAgentCascade(
-        activityDelegate({ ownerRef: "ref_a", childRef: "child", delegateId: "edge-child" }),
-        source.id,
-      );
-      enterAgentCascade(
-        activityDelegate({ ownerRef: "child", childRef: "grandchild", delegateId: "edge-grandchild" }),
-        source.id,
-      );
+      a.setReadable(false);
+      workspaceStore.getState().retypePane(source, "sessionZoom", {
+        ref: "grandchild",
+        source: { type: sourceType, params: source.params },
+        edges: [
+          { ownerRef: "ref_a", childRef: "child", delegateId: "edge-child" },
+          { ownerRef: "child", childRef: "grandchild", delegateId: "edge-grandchild" },
+        ],
+      });
     });
     first.unmount();
     const promoted = workspaceStore.getState().panes.find((pane) => pane.id === source.id);
@@ -169,6 +170,66 @@ test.each([
     second.unmount();
   },
 );
+
+test("secondary inspection cannot cancel its still-mounted source's same-ref demand", async () => {
+  vi.useFakeTimers();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => ({ thread: testThread("ref_a"), olderCursor: "older" }));
+  let reads = 0;
+  let healed = false;
+  fake.on("thread/turns/list", () => {
+    reads += 1;
+    if (!healed) throw new Error("offline");
+    return { data: [{ id: "older-turn", status: "completed", itemsView: "full", items: [] }], nextCursor: undefined };
+  });
+  await act(async () => {
+    await threadsStore.getState().ensureThread("ref_a");
+  });
+  const source: OpenPaneRecord = { id: "source", type: "session", params: { ref: "ref_a" }, slot: "main" };
+  workspaceStore.setState({ panes: [source], focusedPaneId: source.id });
+  const a = retainedTranscriptReadView(conversationPaneLifetime(source), "ref_a", "session");
+  const first = renderHook(() => useTranscript("ref_a", a));
+  await act(async () => {
+    await first.result.current.loadOlder().catch(() => {});
+  });
+  let inspectorId = "";
+  act(() => {
+    inspectorId = enterAgentCascade(
+      activityDelegate({
+        ownerRef: "ref_a",
+        childRef: "child",
+        delegateId: "edge-child",
+      }),
+      source.id,
+    );
+  });
+  expect(inspectorId).not.toBe(source.id);
+  expect(workspaceStore.getState().panes.find((pane) => pane.id === source.id)).toBe(source);
+  const inspector = workspaceStore.getState().panes.find((pane) => pane.id === inspectorId);
+  if (!inspector) throw new Error("Missing secondary inspector");
+  const b = retainedTranscriptReadView(conversationPaneLifetime(inspector), "ref_a", "cascade");
+  expect(b.id).not.toBe(a.id);
+  const second = renderHook(() => useTranscript("ref_a", b));
+  await act(async () => {
+    await second.result.current.loadOlder();
+  });
+  act(() => second.result.current.cancelOlder());
+  expect(a.alive).toBe(true);
+  expect(a.readable).toBe(true);
+  healed = true;
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1000);
+  });
+  expect(reads).toBe(2);
+  expect(first.result.current.model?.turns.map((turn) => turn.id)).toEqual(["older-turn"]);
+  act(() => returnFromAgentCascade(inspectorId));
+  expect(b.alive).toBe(false);
+  expect(a.alive).toBe(true);
+  expect(a.readable).toBe(true);
+  expect(workspaceStore.getState().panes).toEqual([source]);
+  second.unmount();
+  first.unmount();
+});
 
 test.each(["session", "transcript"] as const)(
   "ordinary navigation adopts a genuinely disposed $0 reader's pending demand",

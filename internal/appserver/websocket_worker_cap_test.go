@@ -460,8 +460,8 @@ func TestServeWebSocketConcurrentRequestsTakeTheirOwnSlots(t *testing.T) {
 	}
 
 	// Two requests beyond the full pool are both refused, and the pool's
-	// saturation advisory reaches Logf once per connection, as the slow-read
-	// cap's does.
+	// saturation advisory reaches Logf once for the pool, as the slow-read
+	// cap's does once per connection.
 	for range 2 {
 		beyond := make(chan error, 1)
 		go func() {
@@ -533,7 +533,7 @@ func parkThreadLists(t *testing.T, server *Server) (started, releases chan struc
 // names a client chose), so without it a client naming a new pool per request
 // could hold any number of goroutines.
 func TestServeWebSocketConcurrentRequestsHaveATotalCap(t *testing.T) {
-	server := NewServer(ServerConfig{ServerName: "test-server", Version: "test", SourceID: "local"})
+	server, logged := captureLogfServer()
 	pools := 0
 	server.cfg.ConcurrentRequest = func(method string, _ json.RawMessage) (string, bool) {
 		pools++
@@ -550,15 +550,22 @@ func TestServeWebSocketConcurrentRequestsHaveATotalCap(t *testing.T) {
 	for range concurrentRequestTotalCap {
 		waitFor(t, "a request in a pool of its own to park in its handler", listsStarted)
 	}
-	beyond := make(chan error, 1)
-	go func() {
-		_, err := client.ThreadList(ctx, appwire.ThreadListParams{})
-		beyond <- err
-	}()
-	err := waitFor(t, "a request beyond the connection's total to be answered", beyond)
-	var wireErr appwire.WireError
-	if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeUnavailable {
-		t.Fatalf("a request beyond the connection's total answered %v, want Unavailable", err)
+	// Two requests beyond the total are both refused, and the total's
+	// advisory reaches Logf once.
+	for range 2 {
+		beyond := make(chan error, 1)
+		go func() {
+			_, err := client.ThreadList(ctx, appwire.ThreadListParams{})
+			beyond <- err
+		}()
+		err := waitFor(t, "a request beyond the connection's total to be answered", beyond)
+		var wireErr appwire.WireError
+		if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeUnavailable {
+			t.Fatalf("a request beyond the connection's total answered %v, want Unavailable", err)
+		}
+	}
+	if n := strings.Count(logged(), "pools are full in total"); n != 1 {
+		t.Fatalf("total advisories = %d, want 1 in:\n%s", n, logged())
 	}
 }
 
@@ -649,5 +656,96 @@ func TestServeWebSocketRequestsTheHookRefusesStayInOrder(t *testing.T) {
 	release <- struct{}{}
 	if err := waitFor(t, "the queued request to answer", answered); err != nil {
 		t.Fatalf("queued request: %v", err)
+	}
+}
+
+// TestServeWebSocketPoolFullAdvisoryIsPerPool pins that each pool that fills
+// reports once: a second host's pool filling after the first's is logged too,
+// and a pool already reported stays quiet.
+func TestServeWebSocketPoolFullAdvisoryIsPerPool(t *testing.T) {
+	server, logged := captureLogfServer()
+	server.cfg.ConcurrentRequest = func(method string, params json.RawMessage) (string, bool) {
+		var list appwire.ThreadListParams
+		_ = json.Unmarshal(params, &list)
+		return list.SearchTerm, method == appwire.MethodThreadList
+	}
+	listsStarted, _ := parkThreadLists(t, server)
+	httpServer := serveWebSocketHTTP(t, server)
+	client := dialAppWireClient(t, httpServer)
+	ctx := context.Background()
+
+	refuse := func(pool string) {
+		t.Helper()
+		_, err := client.ThreadList(ctx, appwire.ThreadListParams{SearchTerm: pool})
+		var wireErr appwire.WireError
+		if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeUnavailable {
+			t.Fatalf("a request beyond pool %s answered %v, want Unavailable", pool, err)
+		}
+	}
+	for _, pool := range []string{"host-a", "host-b"} {
+		for range concurrentRequestCap {
+			go func() { _, _ = client.ThreadList(ctx, appwire.ThreadListParams{SearchTerm: pool}) }()
+		}
+		for range concurrentRequestCap {
+			waitFor(t, "a request to park in pool "+pool, listsStarted)
+		}
+		refuse(pool)
+	}
+	refuse("host-a")
+	for _, pool := range []string{"host-a", "host-b"} {
+		if n := strings.Count(logged(), fmt.Sprintf("pool is full for %q", pool)); n != 1 {
+			t.Fatalf("advisories for %s = %d, want 1 in:\n%s", pool, n, logged())
+		}
+	}
+}
+
+// TestServeWebSocketPoolFullAdvisoryForgetsADrainedPool pins that the
+// advisory's memory is bounded by the pools in use: pool names come from
+// requests, so a drained pool's entry goes with it, and the pool reports
+// again if it fills again.
+func TestServeWebSocketPoolFullAdvisoryForgetsADrainedPool(t *testing.T) {
+	server, logged := captureLogfServer()
+	server.cfg.ConcurrentRequest = func(method string, _ json.RawMessage) (string, bool) {
+		return "host-a", method == appwire.MethodThreadList
+	}
+	listsStarted, releases := parkThreadLists(t, server)
+	httpServer := serveWebSocketHTTP(t, server)
+	client := dialAppWireClient(t, httpServer)
+	conn := registeredConnection(t, server)
+	ctx := context.Background()
+
+	fillAndRefuse := func() {
+		t.Helper()
+		done := make(chan error, concurrentRequestCap)
+		for range concurrentRequestCap {
+			go func() {
+				_, err := client.ThreadList(ctx, appwire.ThreadListParams{})
+				done <- err
+			}()
+		}
+		for range concurrentRequestCap {
+			waitFor(t, "a request to park in the pool", listsStarted)
+		}
+		if _, err := client.ThreadList(ctx, appwire.ThreadListParams{}); err == nil {
+			t.Fatal("a request beyond the full pool was admitted")
+		}
+		for range concurrentRequestCap {
+			releases <- struct{}{}
+		}
+		for range concurrentRequestCap {
+			if err := waitFor(t, "a released request to answer", done); err != nil {
+				t.Fatalf("released request: %v", err)
+			}
+		}
+		waitUntil(t, "the drained pool to be forgotten", func() bool {
+			conn.requestPoolsMu.Lock()
+			defer conn.requestPoolsMu.Unlock()
+			return len(conn.requestPools) == 0 && len(conn.requestPoolSaturationAdvised) == 0
+		})
+	}
+	fillAndRefuse()
+	fillAndRefuse()
+	if n := strings.Count(logged(), `pool is full for "host-a"`); n != 2 {
+		t.Fatalf("advisories = %d, want one per time the pool filled in:\n%s", n, logged())
 	}
 }

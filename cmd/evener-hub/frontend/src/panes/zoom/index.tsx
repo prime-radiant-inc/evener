@@ -1,3 +1,4 @@
+import "./inspectionOrigin";
 import { lazy } from "react";
 import { registerPane } from "../../shell/paneRegistry";
 import { parseZoomParams, type SessionZoomParams } from "./intent";

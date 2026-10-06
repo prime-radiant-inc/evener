@@ -2,6 +2,8 @@
 
 These tasks measure how a system prompt shapes the way agents write and behave. Each task is a manifest with a fixture, a prompt written the way a colleague would ask, and checks that judge the outcome of the work. No check reads the system prompt; the prose tools count what the agents wrote, and the blind read judges it.
 
+Memory and whiteboard behavior need several sessions sharing one checkout and memory root, which this runner doesn't do; measure those with the [memory lab](memory-lab/README.md).
+
 The tasks run on the tool-fluency runner, `tools/tool-fluency/cmd/evener-fluency`. This guide walks through one experiment end to end: write or pick tasks, declare versions, run the matrix, count the prose, pack it for a blind read, build ranking sets, hand them to reviewers, score the result, and read what it tells you.
 
 Build the runner once:

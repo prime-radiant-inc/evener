@@ -31,7 +31,8 @@ import { subagentOutcome } from "./subagents/subagentModel";
 import { TranscriptImages } from "./TranscriptImages";
 import { isCriticalNotice, noticeLabel, type TimelineRow } from "./timeline";
 import type { ActivityPresentation } from "./transcriptPresentation";
-import { Action, allowFontScaling, Copy, styles, useColors, useTextScale } from "./ui";
+import { allowFontScaling, Copy, styles, useColors, useTextScale } from "./ui";
+import { Button } from "./sheet/Grouped";
 
 export function TimelineItem({
 	item,
@@ -260,12 +261,14 @@ export function TimelineItem({
 			content = (
 				<>
 					{activityPresentation?.summary ? <Copy muted>{activityPresentation.summary}</Copy> : null}
-					<Action
-						tone="quiet"
-						label={`${expanded ? "Collapse" : "Expand"} ${stepName}`}
+					<Button
+						text
+						quiet
+						label={`${expanded ? "▾" : "▸"} ${stepName} · ${item.state}`}
+						accessibilityLabel={`${expanded ? "Collapse" : "Expand"} ${stepName}`}
 						expanded={expanded}
 						onPress={toggle}
-					>{`${expanded ? "▾" : "▸"} ${stepName} · ${item.state}`}</Action>
+					/>
 					{expanded ? (
 						<>
 							{item.detail.arguments ? (
@@ -426,7 +429,7 @@ function AgentMessage({ markdown, quote }: { markdown: string; quote?: (text: st
 			>
 				<SafeAreaView style={[styles.fill, { backgroundColor: colors.background }]}>
 					<View style={[styles.row, { paddingHorizontal: 16, justifyContent: "flex-end" }]}>
-						<Action onPress={() => setSelecting(false)}>Done</Action>
+						<Button text label="Done" onPress={() => setSelecting(false)} />
 					</View>
 					<ScrollView contentContainerStyle={{ padding: 16 }}>
 						<Copy variant="agentProse">{markdown}</Copy>

@@ -51,57 +51,6 @@ export function searchFieldStyle(palette: Palette, scale: number) {
 	};
 }
 
-export function Action({
-	children,
-	onPress,
-	disabled = false,
-	label,
-	expanded,
-	tone = "accent",
-}: {
-	children: string;
-	onPress: () => void;
-	disabled?: boolean;
-	label?: string;
-	expanded?: boolean;
-	tone?: "accent" | "quiet" | "primary";
-}) {
-	const colors = useColors();
-	const textScale = useTextScale();
-	return (
-		<Pressable
-			accessibilityRole="button"
-			accessibilityLabel={label ?? children}
-			accessibilityState={{ disabled, expanded }}
-			disabled={disabled}
-			onPress={onPress}
-			style={({ pressed }) => [
-				styles.action,
-				tone === "primary" && {
-					backgroundColor: colors.palette.accentFill,
-					borderRadius: 24,
-					paddingHorizontal: 18,
-				},
-				{ opacity: disabled ? 0.4 : pressed ? 0.65 : 1 },
-			]}
-		>
-			<Text
-				allowFontScaling={allowFontScaling}
-				style={{
-					color: tone === "primary" ? colors.onAccent : tone === "quiet" ? colors.secondary : colors.accent,
-					// Give native measurement and drawing the same current size when
-					// Dynamic Type changes while this control remains mounted.
-					fontSize: 16 * textScale,
-					fontWeight: tone === "quiet" ? "400" : "600",
-					flexShrink: 1,
-				}}
-			>
-				{children}
-			</Text>
-		</Pressable>
-	);
-}
-
 export function Choice({
 	label,
 	selected,

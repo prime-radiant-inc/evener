@@ -190,6 +190,21 @@ it("leaves one space where an inline tag between two words drops", () => {
 	expect(wordsOf("a <br>\nb")).toEqual(["a\nb"]);
 });
 
+it("keeps a code span's own edge spaces beside a dropped tag", () => {
+	expect(wordsOf("x `a  ` <br> z")).toEqual(["x a   z"]);
+	expect(wordsOf("x <br> `  a` y")).toEqual(["x   a y"]);
+	expect(wordsOf("| `x ` <br> y | z |\n|---|---|\n| 1 | 2 |")).toEqual(["| x  y | z |\n| 1 | 2 |"]);
+	// At a line's or cell's edge a code span's spaces trim as before, so a
+	// heading of only a blank code span still leaves the title to the file name.
+	expect(wordsOf("| `  x  ` | y |\n|---|---|\n| 1 | 2 |")).toEqual(["| x | y |\n| 1 | 2 |"]);
+	expect(documentTitle(documentBlocks("# ` `"), "docs/notes.md")).toBe("notes.md");
+	expect(wordsOf("`  a  `")).toEqual(["a"]);
+});
+
+it("reads a NUL in the source as U+FFFD, as CommonMark does, instead of dropping it", () => {
+	expect(wordsOf("a\u0000b and c \u0000 d")).toEqual(["a\uFFFDb and c \uFFFD d"]);
+});
+
 it("reads a table cell's escaped pipe as a pipe in the cell, not a column", () => {
 	expect(wordsOf("| a \\| b | c |\n|---|---|\n| `x \\| y` | z |")).toEqual(["| a \\| b | c |\n| x \\| y | z |"]);
 });

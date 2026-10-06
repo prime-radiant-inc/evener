@@ -6,7 +6,7 @@ import type { MobileTimelineItem } from "./projectedRows";
 import { errorAction } from "./session/errorAction";
 import { TimelineItem } from "./TimelineItem";
 import { Platform, Text } from "react-native";
-import { alertRequests, render, renderedText, textOf } from "./renderNative.testkit";
+import { alertRequests, pressable, render, renderedText, textOf } from "./renderNative.testkit";
 import type { TimelineRow } from "./timeline";
 
 const mode = vi.hoisted(() => ({ scheme: "light" as "light" | "dark" }));
@@ -421,6 +421,30 @@ describe("a time marker", () => {
 		});
 		expect(textOf(marker(tree))).toBe("Yesterday 2:14 PM");
 		act(() => tree.unmount());
+	});
+});
+
+describe("a tool step", () => {
+	const step: TimelineRow = {
+		kind: "activity",
+		id: "step-1",
+		label: "read_file",
+		family: "tool",
+		state: "completed",
+		detail: { arguments: '{"file_path":"agent/session.go"}', summary: "Read agent/session.go" },
+	};
+
+	// Its toggle shows the step's words and state; VoiceOver hears what a
+	// press does, and whether the step is open.
+	it("opens from a toggle VoiceOver names Expand, then Collapse", () => {
+		const tree = render(<TimelineItem item={step} hubId="hub" sessionRef="step-toggle" />);
+		const closed = pressable(tree, "Expand Read agent/session.go");
+		expect(closed && textOf(closed)).toBe("▸ Read agent/session.go · completed");
+		expect(closed?.props.accessibilityState).toMatchObject({ expanded: false });
+		act(() => closed?.props.onPress());
+		const open = pressable(tree, "Collapse Read agent/session.go");
+		expect(open && textOf(open)).toBe("▾ Read agent/session.go · completed");
+		expect(open?.props.accessibilityState).toMatchObject({ expanded: true });
 	});
 });
 

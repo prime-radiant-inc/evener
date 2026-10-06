@@ -1,0 +1,18 @@
+{
+  "arms": ["on"],
+  "stages": [
+    {
+      "name": "A",
+      "prompt": "Add a Slugify(s string) string function to textutil: lowercase, runs of spaces and punctuation become a single hyphen, and no leading or trailing hyphens. Add tests. One thing I keep having to repeat: before you tell me you're done, run `go vet ./...` and `gofmt -l .` and fix anything they report. A vet failure slipped through to CI last week and I don't want to say this again.",
+      "checks": [{"name": "tests pass", "run": "go test ./..."}, {"name": "held-out Slugify", "run": "cat > zz_heldout_test.go <<'EOF'\npackage textutil\n\nimport \"testing\"\n\nfunc TestHeldoutSlugify(t *testing.T) {\n\tfor in, want := range map[string]string{\n\t\t\"Hello, World!\":        \"hello-world\",\n\t\t\"  Go -- is   fun  \":   \"go-is-fun\",\n\t\t\"already-slugged\":      \"already-slugged\",\n\t\t\"Version 2.0 Released\": \"version-2-0-released\",\n\t\t\"!!!\":                  \"\",\n\t} {\n\t\tif got := Slugify(in); got != want {\n\t\t\tt.Errorf(\"Slugify(%q) = %q, want %q\", in, got, want)\n\t\t}\n\t}\n}\nEOF\ngo test -count=1 -run Heldout ./...; rc=$?; rm -f zz_heldout_test.go; exit $rc"}],
+      "trace": [{"name": "ran vet", "tool": "shell", "regex": "go vet"}],
+      "memory": [{"name": "saved vet rule", "regex": "(?i)vet"}]
+    },
+    {
+      "name": "B",
+      "prompt": "Add a Truncate(s string, n int) string function to textutil that keeps the first n runes and appends an ellipsis character when it cut anything. Add tests.",
+      "checks": [{"name": "tests pass", "run": "go test ./..."}, {"name": "held-out Truncate", "run": "cat > zz_heldout_test.go <<'EOF'\npackage textutil\n\nimport \"testing\"\n\nfunc TestHeldoutTruncate(t *testing.T) {\n\tfor _, c := range []struct {\n\t\ts    string\n\t\tn    int\n\t\twant string\n\t}{\n\t\t{\"hello\", 10, \"hello\"},\n\t\t{\"hello\", 5, \"hello\"},\n\t\t{\"hello world\", 5, \"hello…\"},\n\t\t{\"héllo wörld\", 4, \"héll…\"},\n\t} {\n\t\tif got := Truncate(c.s, c.n); got != c.want {\n\t\t\tt.Errorf(\"Truncate(%q, %d) = %q, want %q\", c.s, c.n, got, c.want)\n\t\t}\n\t}\n}\nEOF\ngo test -count=1 -run Heldout ./...; rc=$?; rm -f zz_heldout_test.go; exit $rc"}],
+      "trace": [{"name": "ran vet", "tool": "shell", "regex": "go vet"}, {"name": "ran gofmt", "tool": "shell", "regex": "gofmt"}]
+    }
+  ]
+}
