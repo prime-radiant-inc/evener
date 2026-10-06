@@ -10,10 +10,16 @@ export interface DelegateEdgeIntent {
 export type ConversationReturnDescriptor =
   | { type: "session"; params: SessionPaneParams }
   | { type: "transcript"; params: TranscriptParams };
+export interface CascadeReturnOrigin {
+  paneId: string;
+  type: "session" | "transcript";
+  ref: string;
+}
 export interface SessionZoomParams {
   ref: string;
   source: ConversationReturnDescriptor;
   edges: DelegateEdgeIntent[];
+  inspection?: { origin: CascadeReturnOrigin | null };
 }
 export interface CascadeScope {
   requestedRef: string;
@@ -56,6 +62,20 @@ function edgeSegment(value: unknown, leaf: string): DelegateEdgeIntent[] {
   return previousChild === undefined || previousChild === leaf ? edges : [];
 }
 
+function inspectionOrigin(value: unknown, sourceRef: string): CascadeReturnOrigin | null {
+  const raw = object(object(value)?.origin);
+  if (
+    !raw ||
+    typeof raw.paneId !== "string" ||
+    raw.paneId.trim() === "" ||
+    (raw.type !== "session" && raw.type !== "transcript") ||
+    !sessionRef(raw.ref) ||
+    raw.ref !== sourceRef
+  )
+    return null;
+  return { paneId: raw.paneId, type: raw.type, ref: raw.ref };
+}
+
 export function parseZoomParams(value: unknown): SessionZoomParams | null {
   const raw = object(value);
   if (!raw || !sessionRef(raw.ref)) return null;
@@ -72,7 +92,14 @@ export function parseZoomParams(value: unknown): SessionZoomParams | null {
       params: { ref: params.ref, ...(params.parentRef === undefined ? {} : { parentRef: params.parentRef }) },
     };
   } else return null;
-  return { ref: raw.ref, source: descriptor, edges: edgeSegment(raw.edges, raw.ref) };
+  const edges = edgeSegment(raw.edges, raw.ref);
+  if (!Object.hasOwn(raw, "inspection")) return { ref: raw.ref, source: descriptor, edges };
+  return {
+    ref: raw.ref,
+    source: { type: "transcript", params: descriptor.params },
+    edges,
+    inspection: { origin: inspectionOrigin(raw.inspection, descriptor.params.ref) },
+  };
 }
 
 export function deriveCascadePath(params: SessionZoomParams, context: SessionActivityContext | null): CascadePath {

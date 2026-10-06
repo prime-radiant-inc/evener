@@ -75,6 +75,13 @@ export function onPaneRetype(listener: (previous: OpenPaneRecord, replacement: O
   return () => paneRetypeListeners.delete(listener);
 }
 
+const workspaceRestoreListeners = new Set<(panes: readonly OpenPaneRecord[]) => void>();
+
+export function onWorkspaceRestore(listener: (panes: readonly OpenPaneRecord[]) => void): () => void {
+  workspaceRestoreListeners.add(listener);
+  return () => workspaceRestoreListeners.delete(listener);
+}
+
 export interface WorkspaceStoreState {
   panes: OpenPaneRecord[];
   focusedPaneId: string | null;
@@ -436,7 +443,13 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
   },
 
   layoutJSON() {
-    return dockviewApi ? dockviewApi.toJSON() : null;
+    if (!dockviewApi) return null;
+    const layout = dockviewApi.toJSON();
+    for (const pane of get().panes) {
+      const panel = layout.panels?.[pane.id];
+      if (panel) panel.params = { ...panel.params, paneType: pane.type, paneParams: pane.params };
+    }
+    return layout;
   },
 
   restoreLayout(json) {
@@ -476,6 +489,7 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
         params: entry.params.paneParams,
         slot: index === 0 ? "main" : "secondary",
       }));
+      for (const listener of workspaceRestoreListeners) listener(panes);
       bumpPastRestoredIds(panes);
       // The api's active panel may be one the skip dropped; focus only an id
       // that actually survived, else the first survivor.

@@ -455,11 +455,15 @@ require separate qualification.
 
 ## Automatic agent cascade
 
-On desktop, activating a delegate row in Agents promotes the originating session
-or read-only transcript pane into an agent cascade. The same Dockview panel,
-tab and group remain in place. Each drill selects the actual returned child ref;
-drilling from an ancestor replaces only the path after that owner. Navigation
-children remain fork relationships, not delegate ancestry.
+On desktop, activating a delegate row in Agents opens or reuses a read-only
+agent cascade in the secondary pane group. The originating session or transcript
+keeps its ordinary panel, tab, group and lifetime. A main center source remains
+mounted with its composer and reader. A secondary source follows the group's
+normal inactive-tab mounting rules while retaining its work.
+
+Further drills reuse that source's inspector and select the actual returned
+child ref. Drilling from an ancestor replaces only the path after that owner.
+Navigation children remain fork relationships, not delegate ancestry.
 
 Cascade and sidebar breadcrumbs use the same reconciled requested path. When
 authoritative delegation proves a saved source alias occupies an ancestor
@@ -470,11 +474,13 @@ The selected session and its immediate parent are readable columns. Earlier
 ancestors are live compact spines. Each readable scope has an independent
 transcript position; collapsed spines retain their reader state while pausing
 older-history demand. Pop, reopen and Jump to live use the existing transcript
-and history owners. A retained source keeps its own pending demand after pane
-promotion, even while collapsed. Another same-ref reader cannot adopt or cancel
-that demand. Ordinary navigation can adopt a genuinely disposed predecessor's
-pending demand. The footer and shared sidebar stay scoped to the selected
-leaf, including while the reader selects text in a parent.
+and history owners. The ordinary source keeps its own pending demand while
+inspection is open. A retained source in an existing in-place cascade keeps
+that demand even while collapsed. Another same-ref reader cannot adopt or cancel
+it. Ordinary navigation can adopt a genuinely disposed predecessor's pending
+demand. The inspector's footer and shared sidebar stay scoped to the selected
+leaf, including while the reader selects text in a parent. Each ordinary pane's
+footer remains bound to its own conversation.
 
 Columns and spines expose Agents, Jobs, Watches and Tasks peeks, including empty
 Tasks. About is available in Overview and has no cascade chip.
@@ -493,12 +499,37 @@ store's deletion fence outranks retained transcript content; other activity
 failures preserve useful history. Transient reads keep the existing hydration
 and activity recovery owners, so a recovered child becomes readable in place.
 
-Return restores the original pane type, ref and live source state: draft,
-selected skills and commands, text-owned UTF-16 mention locations, staged
-attachments, pending encodes, queued inputs and mutation
-identity. Promotion does not submit or replay input. An explicit Open conversation
-opens or focuses an ordinary independent session pane. Unrelated panes keep
-their identity and placement.
+Return closes only the new secondary inspector and focuses its exact surviving
+original pane. For a session source it also requests keyboard focus in the
+original editor. Closing or replacing the source retires that association; Return
+then closes inspection without recreating a source or adopting a reused pane ID.
+Existing saved cascades without separated-inspection intent retain their recorded
+Return behavior.
+
+Inspection preserves source draft, selected skills and commands, text-owned
+UTF-16 mention locations, staged attachments, pending encodes, queued inputs and
+mutation identity. Opening and closing inspection preserve the visible source
+row across viewport width and height changes, including later composer-height
+settlement. Ordinary session, read-only transcript and cascade browser readers
+retain the visible entry and approximate progress through its usable reading
+depth. The existing transcript registration owns that intent;
+VirtualList owns measurement and committed geometry. Restoration waits for useful
+committed content and scroll read-back. Newer viewport scrolling or an explicit
+positioning command supersedes older work through the pane-lifetime read view.
+Native Space and Shift-Space paging count as scrolling when the input can move
+that viewport. Button or disclosure activation, editable text, IME composition,
+prevented defaults and input consumed by a nested scroller preserve pending reflow.
+Reflow does not move editor or neighboring-pane focus. An explicit display change
+retains current entry focus even while earlier geometry is pending, then restores
+it to the entry or its visible proxy. Passive scroll events can enable bottom-follow
+only when VirtualList's measured rows, sizer and viewport agree. A temporary
+reflow clamp leaves an away reader's intent intact. A reader already following
+the end retains that intent through passive measurement corrections in the same
+viewport. Newly measurable viewports still require true-end admission. Existing
+true-end growth and viewport-shrink corrections remain active. End following, older-page
+prepend and history recovery keep their existing owners. Inspection does not
+submit or replay input. An explicit Open conversation opens or focuses an
+ordinary independent session pane. Unrelated panes keep their identity and placement.
 
 Mounted same-ref composers keep their own text and selection. Image paste and
 removal apply to the editor receiving the gesture and can persist that edit.
@@ -513,9 +544,20 @@ or active recovery identity. Already durable input still belongs to the existing
 mutation dispatcher; retiring its editor does not cancel accepted work.
 
 Saved workspace intent contains the selected ref, validated ordered edges and
-return descriptor. Draft text, skill/command selections and mention locations use
-their existing stores through the pane-owned composer source.
-On desktop startup, AppShell recognizes a saved cascade's source as the initial
+read-only source descriptor. New inspectors also carry a validated origin
+locator with the source pane ID, type and ref. The
+[origin owner](../../cmd/evener-hub/frontend/src/panes/zoom/inspectionOrigin.ts)
+binds that locator to an exact surviving pane lifetime only during successful
+workspace restore, before publishing restored panels. Missing or invalid origins
+remain unbound; retiring a source removes its locator from subsequent saves.
+Runtime Return never resolves an association by pane ID alone.
+
+Saved inspector focus survives boot and late ancestry or location recovery when
+the browser route's ordinary conversation is already satisfied. A fresh pathname
+still selects its requested ordinary conversation. Draft text, skill/command
+selections and mention locations use their existing stores through the pane-owned
+composer source.
+On desktop startup, AppShell recognizes a saved legacy cascade's source as the initial
 route role before route placement completes. A matching source keeps the saved
 edges, pane identities and neighboring panes when the restored workspace meets
 the route's existing focus and placement rules. Location and DockHost restoration
@@ -524,8 +566,9 @@ changes retain the ordinary route-placement and companion-focus rules.
 Processed image bytes and pending encodes belong to the original pane lifetime;
 they are excluded from layout JSON and localStorage and are not restored by a
 page reload. Phones keep the ordinary Agents transcript action. A saved cascade
-at phone width shows the selected read-only transcript and Return without
-desktop columns or spines.
+restored on desktop and shown at phone width exposes the selected read-only
+transcript and Return without desktop columns or spines. Return closes a new
+inspector and leaves its original source useful.
 
 The [real-stack cascade guard](../../cmd/evener-hub/frontend/scripts/cascadeguard/README.md)
 and [design-system geometry](../web-ui/design-system.md#agent-cascade)

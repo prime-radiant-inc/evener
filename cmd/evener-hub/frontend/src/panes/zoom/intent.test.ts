@@ -24,6 +24,67 @@ test("valid intent retains only requested bindings and exact conversation return
   expect(parseZoomParams(transcript)).toEqual(transcript);
 });
 
+test("separated inspection retains its locator and owns only a read-only source", () => {
+  const parsed = parseZoomParams({
+    ref: "child",
+    source: { type: "session", params: { ref: "root" } },
+    edges: [{ ownerRef: "root", childRef: "child", delegateId: "d1" }],
+    inspection: { origin: { paneId: "original-root", type: "session", ref: "root" } },
+  });
+  expect(parsed).toEqual({
+    ref: "child",
+    source: { type: "transcript", params: { ref: "root" } },
+    edges: [{ ownerRef: "root", childRef: "child", delegateId: "d1" }],
+    inspection: { origin: { paneId: "original-root", type: "session", ref: "root" } },
+  });
+});
+
+test.each([
+  undefined,
+  null,
+  false,
+  {},
+  { origin: {} },
+  { origin: { paneId: "", type: "session", ref: "root" } },
+  { origin: { paneId: "  ", type: "session", ref: "root" } },
+  { origin: { paneId: "original-root", type: "session", ref: "job:output" } },
+  { origin: { paneId: "original-root", type: "sessionZoom", ref: "root" } },
+  { origin: { paneId: "original-root", type: "session", ref: "unrelated" } },
+])("separated inspection preserves readable intent with an unusable locator, case %#", (inspection) => {
+  expect(parseZoomParams({ ...child, inspection })).toEqual({
+    ref: "child",
+    source: { type: "transcript", params: { ref: "root" } },
+    edges: [{ ownerRef: "root", childRef: "child", delegateId: "d1" }],
+    inspection: { origin: null },
+  });
+});
+
+test("separated inspection retains transcript parent context and locator through drill and pop", () => {
+  const parsed = parseZoomParams({
+    ref: "child",
+    source: { type: "transcript", params: { ref: "root", parentRef: "previous" } },
+    edges: [{ ownerRef: "root", childRef: "child", delegateId: "d1" }],
+    inspection: { origin: { paneId: "original-root", type: "transcript", ref: "root" } },
+  });
+  if (!parsed) throw new Error("Expected readable separated inspection");
+  const drilled = drillZoomIntent(parsed, { ownerRef: "child", childRef: "grandchild", delegateId: "d2" });
+  expect(drilled).toEqual({
+    ref: "grandchild",
+    source: { type: "transcript", params: { ref: "root", parentRef: "previous" } },
+    edges: [
+      { ownerRef: "root", childRef: "child", delegateId: "d1" },
+      { ownerRef: "child", childRef: "grandchild", delegateId: "d2" },
+    ],
+    inspection: { origin: { paneId: "original-root", type: "transcript", ref: "root" } },
+  });
+  expect(popZoomIntent(drilled, "root", deriveCascadePath(drilled, null))).toEqual({
+    ref: "root",
+    source: { type: "transcript", params: { ref: "root", parentRef: "previous" } },
+    edges: [],
+    inspection: { origin: { paneId: "original-root", type: "transcript", ref: "root" } },
+  });
+});
+
 test.each([
   null,
   {},

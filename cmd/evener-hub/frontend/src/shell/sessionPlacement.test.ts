@@ -193,3 +193,29 @@ describe("openTopLevelSession against a cascade main", () => {
     expect(state.mainPane()).toMatchObject({ type: "session", params: { ref: "local:other" } });
   });
 });
+
+test.each([false, true])(
+  "a new inspection main cannot replace the real route editor with nested route=%s",
+  (nested) => {
+    const id = promoteMainToCascade("local:root");
+    const main = workspaceStore.getState().mainPane();
+    if (!main) throw new Error("Missing inspection main fixture");
+    workspaceStore
+      .getState()
+      .retypePane(main, "sessionZoom", { ...cascadeParams("local:root"), inspection: { origin: null } });
+    workspaceStore.getState().openPane("session", { ref: "local:root" }, { slot: "secondary" });
+    if (nested) openNestedSessionWithOwner("local:child", "local:root");
+    else openTopLevelSession("local:root");
+    const state = workspaceStore.getState();
+    expect(state.mainPane()).toMatchObject({ type: "session", slot: "main", params: { ref: "local:root" } });
+    expect(state.panes.some((pane) => pane.id === id)).toBe(false);
+    expect(state.panes.filter((pane) => pane.type === "session" && sessionRefOf(pane) === "local:root")).toHaveLength(
+      1,
+    );
+    if (nested) {
+      const child = state.panes.find((pane) => pane.type === "session" && sessionRefOf(pane) === "local:child");
+      expect(child?.slot).toBe("secondary");
+      expect(state.focusedPaneId).toBe(child?.id);
+    } else expect(state.focusedPaneId).toBe(state.mainPane()?.id);
+  },
+);

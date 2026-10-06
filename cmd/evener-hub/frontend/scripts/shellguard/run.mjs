@@ -922,7 +922,12 @@ export async function overviewOnPage(cdpEndpoint, vitePort, viewport, theme, chi
     try {
       result.keyboard = await trustedOverviewFlow(send, viewport, childGesture);
     } catch (error) {
-      failures.push(`trusted interaction: ${error.message}`);
+      const witness = await evaluate(send, `(() => {
+        const state = window.overviewGuardState();
+        return { ...state, calls: state.calls.slice(-12), errors: window.__shellGuardErrors || [],
+          mountedOverview: !!document.querySelector(${JSON.stringify(OVERVIEW)}) };
+      })()`);
+      failures.push(`trusted interaction: ${error.message}; child witness: ${JSON.stringify(witness)}`);
     }
     await fixture?.afterInteraction;
     // The initial geometry snapshot predates trusted input. Read this same

@@ -4,6 +4,12 @@ export interface CapturedTranscriptView {
   readonly normalizedOffset: number;
   readonly followingBottom: boolean;
   readonly focusedEntryId?: string;
+  readonly readingPoint?: {
+    readonly entryHeight: number;
+    readonly viewportHeight: number;
+    readonly viewportWidth: number;
+  };
+  readonly positioningRevision?: number;
 }
 
 export interface RegisteredTranscriptView {

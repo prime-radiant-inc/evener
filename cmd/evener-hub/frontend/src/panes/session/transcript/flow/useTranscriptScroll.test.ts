@@ -1,9 +1,11 @@
 import type { ItemModel, ThreadCapabilities, ThreadModel, TurnModel } from "@evener/appwire-client";
-import { act, cleanup, renderHook } from "@testing-library/react";
-import { createRef } from "react";
+import { act, cleanup, render, renderHook, screen } from "@testing-library/react";
+import { createElement, createRef } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { resetThreadsStoreForTests } from "../../../../stores/threads";
-import type { VirtualListHandle } from "../../../../widgets/virtuallist";
+import { type CommittedVirtualListLayout, VirtualList, type VirtualListHandle } from "../../../../widgets/virtuallist";
+import { mountReaderScene } from "../transcriptReaderTestUtils";
+import { installTranscriptGeometry } from "../transcriptReadingGeometryTestUtils";
 import type { ScrollMetrics } from "./scrollMetrics";
 import { resetTranscriptViewRegistryForTests, transitionTranscriptViews } from "./transcriptViewRegistry";
 import {
@@ -103,6 +105,7 @@ function makeListHandle(): {
   (ref as { current: VirtualListHandle }).current = {
     scrollToIndex,
     getScrollElement: () => el,
+    isLayoutCurrent: () => true,
     getVisibleRange: () => visibleRange,
   };
   return {
@@ -180,6 +183,438 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
+});
+
+test("fresh end-follow survives a passive backward row measurement", async () => {
+  const scene = mountReaderScene("hook-initial-end-shrink", [6508], { estimate: 6508, viewportHeight: 665 });
+  try {
+    await act(async () => scene.external.notify());
+    await act(async () => scene.frames.release());
+    expect(scene.port().scrollTop).toBe(5843);
+    expect(scene.capture()?.followingBottom).toBe(true);
+    scene.geometry.rowHeights[0] = 6490;
+    await act(async () => scene.external.notify((target) => target.dataset.index === "0"));
+    await act(async () => scene.frames.release());
+    expect(scene.port().scrollTop).toBe(5825);
+    expect(scene.capture()?.followingBottom).toBe(true);
+    scene.geometry.rowHeights[0] = 7000;
+    await act(async () => scene.external.notify());
+    await act(async () => scene.frames.release());
+    expect(scene.port().scrollTop).toBe(6335);
+    expect(scene.capture()?.followingBottom).toBe(true);
+  } finally {
+    scene.dispose();
+  }
+});
+
+test.each([
+  { input: "passive", expected: 9957, following: true },
+  { input: "wheel", expected: 5725, following: false },
+])(
+  "fresh end-follow respects $input movement before a backward measurement commits",
+  async ({ input, expected, following }) => {
+    const scene = mountReaderScene(`hook-initial-end-before-commit-${input}`, [6508], {
+      estimate: 96,
+      viewportHeight: 665,
+    });
+    try {
+      await act(async () => scene.external.notify());
+      await act(async () => scene.frames.release());
+      expect(scene.port().scrollTop).toBe(5843);
+      expect(scene.capture()?.followingBottom).toBe(true);
+      act(() => {
+        scene.geometry.rowHeights[0] = 6490;
+        scene.external.notify((target) => target.dataset.index === "0");
+        expect(scene.port().scrollTop).toBe(5825);
+        expect(scene.port().scrollHeight).toBe(6508);
+        expect(scene.listRef.current?.isLayoutCurrent()).toBe(false);
+        scene.port().dispatchEvent(new Event("scroll"));
+        if (input === "wheel") {
+          scene.port().dispatchEvent(new WheelEvent("wheel", { deltaY: -100, bubbles: true }));
+          scene.port().scrollTop = 5725;
+          scene.port().dispatchEvent(new Event("scroll"));
+        }
+        scene.appendRow(4132);
+      });
+      await act(async () => scene.external.notify());
+      await act(async () => scene.frames.release());
+      expect(scene.port().scrollTop).toBe(expected);
+      expect(scene.capture()?.followingBottom).toBe(following);
+      expect(scene.flow().pillVisible).toBe(!following);
+    } finally {
+      scene.dispose();
+    }
+  },
+);
+
+test("fresh end-follow survives streaming append during a backward row measurement", async () => {
+  const scene = mountReaderScene("hook-initial-end-append", [6508], { estimate: 6508, viewportHeight: 665 });
+  try {
+    await act(async () => scene.external.notify());
+    await act(async () => scene.frames.release());
+    expect(scene.port().scrollTop).toBe(5843);
+    expect(scene.capture()?.followingBottom).toBe(true);
+    scene.geometry.rowHeights[0] = 6490;
+    await act(async () => scene.appendRow(4132));
+    await act(async () => scene.external.notify());
+    await act(async () => scene.frames.release());
+    expect(scene.port().scrollTop).toBe(9957);
+    expect(scene.capture()?.followingBottom).toBe(true);
+    await act(async () => scene.appendRow(4132));
+    await act(async () => scene.external.notify());
+    await act(async () => scene.frames.release());
+    expect(scene.port().scrollTop).toBe(14089);
+    expect(scene.capture()?.followingBottom).toBe(true);
+  } finally {
+    scene.dispose();
+  }
+});
+
+test("genuine wheel admission retires the actual outstanding index writer", async () => {
+  const scene = mountReaderScene("hook-index", [500, 500, 500, 500, 500], { estimate: 500, viewportHeight: 500 });
+  try {
+    await scene.start(1000);
+    await act(async () => scene.listRef.current?.scrollToIndex(4, { align: "start" }));
+    expect(scene.port().scrollTop).toBe(2000);
+    expect(scene.frames.pending.size).toBeGreaterThan(0);
+    await act(async () => {
+      scene.port().dispatchEvent(new WheelEvent("wheel", { deltaY: -1000, bubbles: true }));
+      scene.port().scrollTop = 1000;
+      scene.port().dispatchEvent(new Event("scroll"));
+    });
+    scene.geometry.rowHeights[3] = 1000;
+    await act(async () => scene.external.notify((target) => target.dataset.index === "3"));
+    await act(async () => scene.frames.release());
+    expect(scene.port().scrollTop).toBe(1000);
+    expect(scene.layout().virtualizer.scrollOffset).toBe(1000);
+    expect(scene.port().querySelector('[data-index="2"]')?.getBoundingClientRect().top).toBe(0);
+  } finally {
+    scene.dispose();
+  }
+});
+
+test("genuine wheel admission drops queued clamp work without a scroll event", async () => {
+  const scene = mountReaderScene("hook-clamp", [300, 300, 300, 300, 300], { estimate: 300, viewportHeight: 500 });
+  try {
+    await scene.start(1000);
+    let scrollEvents = 0;
+    scene.port().addEventListener("scroll", () => {
+      scrollEvents += 1;
+    });
+    await act(async () => {
+      scene.geometry.rowHeights[0] = 1300;
+      scene.external.notify((target) => target.dataset.index === "0");
+      expect(scene.port().scrollTop).toBe(1000);
+      scene.port().dispatchEvent(new WheelEvent("wheel", { deltaY: -10, bubbles: true }));
+    });
+    await act(async () => scene.frames.release());
+    expect(scene.port().scrollTop).toBe(1000);
+    expect(scene.layout().virtualizer.scrollOffset).toBe(1000);
+    expect(scrollEvents).toBe(0);
+  } finally {
+    scene.dispose();
+  }
+});
+
+test("temporary end clamping during reflow does not replace the restored reading point with bottom-follow", async () => {
+  const scene = mountReaderScene("hook-transient-end", [500, 1600, 1000]);
+  try {
+    await scene.start(1400);
+    expect(scene.capture()).toMatchObject({
+      anchorId: "tail-1-entry",
+      anchorOffset: -900,
+      followingBottom: false,
+    });
+    act(() => {
+      scene.geometry.width = 352;
+      scene.geometry.rowHeights[0] = 2000;
+      scene.external.notify((target) => target.dataset.index === "0");
+      expect(scene.port().scrollTop).toBe(2700);
+      scene.port().dispatchEvent(new Event("scroll"));
+    });
+    act(() => scene.external.notify((target) => target === scene.port()));
+    expect(scene.port().scrollTop).toBe(2900);
+    expect(scene.port().querySelector('[data-index="1"]')?.getBoundingClientRect().top).toBe(-900);
+    act(() => scene.external.notify((target) => target === scene.port().firstElementChild));
+    expect(scene.port().scrollTop).toBe(2900);
+    expect(scene.port().querySelector('[data-index="1"]')?.getBoundingClientRect().top).toBe(-900);
+    await act(async () => scene.frames.release());
+    expect(scene.capture()).toMatchObject({ anchorId: "tail-1-entry", followingBottom: false });
+  } finally {
+    scene.dispose();
+  }
+});
+
+test.each(["wheel", "Jump to live"] as const)(
+  "%s reaches the true end and keeps following later row growth",
+  async (input) => {
+    const scene = mountReaderScene(`hook-real-end-${input}`, [500, 1600, 1000]);
+    try {
+      await scene.start(1400);
+      expect(scene.capture()?.followingBottom).toBe(false);
+      await act(async () => {
+        if (input === "wheel") {
+          scene.port().dispatchEvent(new WheelEvent("wheel", { deltaY: 1300, bubbles: true }));
+          scene.port().scrollTop = 2700;
+          scene.port().dispatchEvent(new Event("scroll"));
+        } else {
+          screen.getByRole("button", { name: "Jump to live" }).click();
+        }
+      });
+      expect(scene.port().scrollTop).toBe(2700);
+      expect(scene.capture()?.followingBottom).toBe(true);
+      scene.geometry.rowHeights[2] = 1400;
+      await act(async () => scene.external.notify());
+      await act(async () => scene.frames.release());
+      expect(scene.port().scrollTop).toBe(3100);
+      expect(scene.capture()?.followingBottom).toBe(true);
+    } finally {
+      scene.dispose();
+    }
+  },
+);
+
+test("Jump to live confirms its landing while viewport measurement is pending and follows the committed end", async () => {
+  const scene = mountReaderScene("hook-pending-end-jump", [500, 1600, 1000]);
+  try {
+    await scene.start(1400);
+    expect(scene.flow().pillVisible).toBe(true);
+    scene.geometry.viewportHeight = 300;
+    expect(scene.listRef.current?.isLayoutCurrent()).toBe(false);
+    await act(async () => screen.getByRole("button", { name: "Jump to live" }).click());
+    expect(scene.port().scrollTop).toBe(2800);
+    expect(scene.flow().pillVisible).toBe(false);
+    scene.geometry.rowHeights[2] = 1400;
+    await act(async () => scene.external.notify());
+    await act(async () => scene.frames.release());
+    expect(scene.port().scrollTop).toBe(3200);
+    expect(scene.capture()?.followingBottom).toBe(true);
+  } finally {
+    scene.dispose();
+  }
+});
+
+test.each(["before", "after"] as const)(
+  "backward wheel delivered %s compositor movement survives idle before partial measurement",
+  async (delivery) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const scene = mountReaderScene(`hook-wheel-${delivery}`, [1600, 500, 500, 500, 500], {
+      estimate: 500,
+      viewportHeight: 400,
+    });
+    try {
+      await scene.start();
+      scene.geometry.rowHeights[0] = 1628;
+      await act(async () => {
+        if (delivery === "after") scene.port().scrollTop = 100;
+        scene.port().dispatchEvent(new WheelEvent("wheel", { deltaY: -800, bubbles: true }));
+        if (delivery === "before") scene.port().scrollTop = 100;
+        scene.port().dispatchEvent(new Event("scroll"));
+      });
+      expect(scene.port().scrollTop).toBe(100);
+      await act(async () => scene.frames.release());
+      await act(async () => vi.advanceTimersByTime(scene.layout().virtualizer.options.isScrollingResetDelay));
+      expect(scene.layout().virtualizer.scrollDirection).toBeNull();
+      await act(async () => scene.external.notify((target) => target.dataset.index === "0"));
+      await act(async () => scene.frames.release());
+      expect(scene.port().scrollTop).toBe(100);
+      expect(scene.layout().virtualizer.scrollOffset).toBe(100);
+      expect(scene.port().querySelector('[data-index="0"]')?.getBoundingClientRect().top).toBe(-100);
+    } finally {
+      scene.dispose();
+      vi.useRealTimers();
+    }
+  },
+);
+
+test("reader transfer retains admitted movement before the final row measurement", async () => {
+  const scene = mountReaderScene("hook-unmeasured-transfer", [1600, 500, 500, 500, 500], {
+    estimate: 500,
+    viewportHeight: 400,
+  });
+  try {
+    await scene.start();
+    scene.geometry.rowHeights[0] = 1628;
+    await act(async () => {
+      scene.port().scrollTop = 100;
+      scene.port().dispatchEvent(new WheelEvent("wheel", { deltaY: -800, bubbles: true }));
+      scene.port().dispatchEvent(new Event("scroll"));
+    });
+    expect(scene.layout().isCurrent()).toBe(false);
+    const transferred = scene.capture();
+    expect(transferred?.anchorId).toBe("current-entry");
+    expect(transferred?.anchorOffset).toBe(-100);
+    scene.remount(transferred);
+    await act(async () => scene.external.notify());
+    await act(async () => scene.frames.release());
+    expect(scene.port().scrollTop).toBe(100);
+    expect(scene.layout().virtualizer.scrollOffset).toBe(100);
+    expect(scene.port().querySelector('[data-index="0"]')?.getBoundingClientRect().top).toBe(-100);
+  } finally {
+    scene.dispose();
+  }
+});
+
+test.each([
+  { direction: "backward", want: 100, top: -100 },
+  { direction: "forward", want: 228, top: -228 },
+  { direction: "index", want: 0, top: 0 },
+])(
+  "real $direction movement arbitration survives a valid commit before later partial measurement",
+  async ({ direction, want, top }) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const scene = mountReaderScene(`hook-committed-${direction}`, [1600, 500, 500, 500, 500], {
+      estimate: 500,
+      viewportHeight: 400,
+    });
+    try {
+      await scene.start();
+      await act(async () => {
+        scene.port().dispatchEvent(new WheelEvent("wheel", { deltaY: -800, bubbles: true }));
+        scene.port().scrollTop = 100;
+        scene.port().dispatchEvent(new Event("scroll"));
+      });
+      await act(async () => scene.frames.release());
+      expect(scene.layout().isCurrent()).toBe(true);
+      if (direction === "forward")
+        await act(async () => {
+          scene.port().dispatchEvent(new WheelEvent("wheel", { deltaY: 100, bubbles: true }));
+          scene.port().scrollTop = 200;
+          scene.port().dispatchEvent(new Event("scroll"));
+        });
+      if (direction === "index")
+        await act(async () =>
+          document.body.dispatchEvent(
+            new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Home", altKey: true }),
+          ),
+        );
+      await act(async () => scene.frames.release());
+      await act(async () => vi.advanceTimersByTime(scene.layout().virtualizer.options.isScrollingResetDelay));
+      expect(scene.layout().virtualizer.scrollDirection).toBeNull();
+      scene.geometry.rowHeights[0] = 1628;
+      await act(async () => scene.external.notify((target) => target.dataset.index === "0"));
+      await act(async () => scene.frames.release());
+      expect(scene.port().scrollTop).toBe(want);
+      expect(scene.layout().virtualizer.scrollOffset).toBe(want);
+      expect(scene.port().querySelector('[data-index="0"]')?.getBoundingClientRect().top).toBe(top);
+    } finally {
+      scene.dispose();
+      vi.useRealTimers();
+    }
+  },
+);
+
+test.each(["backward", "forward", "index"] as const)(
+  "real %s key movement arbitration survives core idle before partial measurement",
+  async (direction) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const scene = mountReaderScene(`hook-signed-${direction}`, [1600, 500, 500, 500, 500], {
+      estimate: 500,
+      viewportHeight: 400,
+    });
+    try {
+      await scene.start();
+      // A supported absolute request is genuinely outstanding before input.
+      await act(async () => scene.layout().scrollToOffset(900));
+      scene.geometry.rowHeights[0] = 700;
+      await act(async () => {
+        for (let index = 0; index < 2; index += 1)
+          document.body.dispatchEvent(
+            new KeyboardEvent("keydown", {
+              bubbles: true,
+              cancelable: true,
+              key: "ArrowUp",
+              altKey: true,
+              shiftKey: true,
+            }),
+          );
+        for (let index = 0; index < 2; index += 1)
+          document.body.dispatchEvent(
+            new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "ArrowUp", altKey: true }),
+          );
+      });
+      expect(scene.port().scrollTop).toBe(100);
+      if (direction === "forward")
+        await act(async () =>
+          document.body.dispatchEvent(
+            new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "ArrowDown", altKey: true }),
+          ),
+        );
+      if (direction === "index")
+        await act(async () =>
+          document.body.dispatchEvent(
+            new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Home", altKey: true }),
+          ),
+        );
+      await act(async () => scene.frames.release());
+      await act(async () => vi.advanceTimersByTime(scene.layout().virtualizer.options.isScrollingResetDelay));
+      expect(scene.layout().virtualizer.scrollDirection).toBeNull();
+      await act(async () => scene.external.notify((target) => target.dataset.index === "0"));
+      await act(async () => scene.frames.release());
+      const want = direction === "backward" ? 100 : 0;
+      expect(scene.port().scrollTop).toBe(want);
+      expect(scene.layout().virtualizer.scrollOffset).toBe(want);
+      expect(scene.port().querySelector('[data-index="0"]')?.getBoundingClientRect().top).toBe(want === 0 ? 0 : -100);
+    } finally {
+      scene.dispose();
+      vi.useRealTimers();
+    }
+  },
+);
+
+test.each([
+  { size: 600, want: 1100 },
+  { size: 400, want: 900 },
+])("genuine backward input retains fully-above compensation at $size px", async ({ size, want }) => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const scene = mountReaderScene(`above-${size}`, [500, 500, 500, 500, 500], { estimate: 500, viewportHeight: 500 });
+  try {
+    await scene.start(1200);
+    await act(async () => {
+      for (let index = 0; index < 5; index += 1)
+        document.body.dispatchEvent(
+          new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "ArrowUp", altKey: true }),
+        );
+    });
+    expect(scene.port().scrollTop).toBe(1000);
+    await act(async () => scene.frames.release());
+    await act(async () => vi.advanceTimersByTime(scene.layout().virtualizer.options.isScrollingResetDelay));
+    scene.geometry.rowHeights[0] = size;
+    await act(async () => scene.external.notify((target) => target.dataset.index === "0"));
+    await act(async () => scene.frames.release());
+    expect(scene.port().scrollTop).toBe(want);
+    expect(scene.layout().virtualizer.scrollOffset).toBe(want);
+    expect(scene.port().querySelector('[data-index="2"]')?.getBoundingClientRect().top).toBe(0);
+  } finally {
+    scene.dispose();
+    vi.useRealTimers();
+  }
+});
+
+test("genuine movement cancels on first equal-estimate geometry without cache membership", async () => {
+  const scene = mountReaderScene(
+    "first-movement",
+    Array.from({ length: 200 }, () => 96),
+    { estimate: 96, viewportHeight: 500 },
+  );
+  try {
+    await scene.start(4992);
+    expect(scene.layout().virtualizer.itemSizeCache.has("tail-46")).toBe(false);
+    await act(async () => scene.listRef.current?.scrollToIndex(199, { align: "start" }));
+    expect(scene.frames.pending.size).toBeGreaterThan(0);
+    await act(async () => {
+      scene.port().dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -18000 }));
+      scene.port().scrollTop = 100;
+      scene.port().dispatchEvent(new Event("scroll"));
+    });
+    await act(async () => scene.external.notify());
+    await act(async () => scene.frames.release());
+    expect(scene.port().scrollTop).toBe(100);
+    expect(scene.layout().virtualizer.scrollOffset).toBe(100);
+    expect(scene.layout().isCurrent()).toBe(true);
+  } finally {
+    scene.dispose();
+  }
 });
 
 describe("stick-to-bottom vs. the new-content pill", () => {
@@ -3410,6 +3845,52 @@ describe("view-mode anchor preservation", () => {
   });
 });
 
+function renderRegistrationList() {
+  const external = installTranscriptGeometry(
+    () => ({ width: 500, viewportHeight: 300, rowHeights: [600, 600] }),
+    (element) => {
+      const port = element.closest("[data-test-registration-list]")?.firstElementChild;
+      return port instanceof HTMLElement ? port : undefined;
+    },
+  );
+  const ref = createRef<VirtualListHandle>();
+  let layout: CommittedVirtualListLayout | undefined;
+  const mounted = render(
+    createElement(
+      "section",
+      { "data-test-registration-list": true },
+      createElement(VirtualList, {
+        ref,
+        count: 2,
+        dynamic: true,
+        estimateSize: () => 600,
+        renderRow: (index) => createElement("div", null, `Message ${index}`),
+        onLayout: (next) => {
+          layout = next;
+        },
+      }),
+    ),
+  );
+  const handle = ref.current;
+  const el = handle?.getScrollElement();
+  if (!handle || !el) throw new Error("Real registration list has no scroll port");
+  const scrollToIndex = vi.spyOn(handle, "scrollToIndex");
+  return {
+    ref,
+    el,
+    scrollToIndex,
+    commit(registration: ReturnType<typeof useTranscriptViewRegistration>) {
+      external.notify();
+      if (!layout?.isCurrent()) throw new Error("Real registration list has no committed geometry");
+      registration.restoreAfterLayout(layout);
+    },
+    dispose() {
+      mounted.unmount();
+      external.restore();
+    },
+  };
+}
+
 describe("registered transcript view preservation", () => {
   test("captures the visible anchor, bottom state, and focused entry", () => {
     const el = document.createElement("div");
@@ -3438,124 +3919,134 @@ describe("registered transcript view preservation", () => {
     el.remove();
   });
 
-  test("restores a surviving focused entry and focuses the stable fallback when it disappears", () => {
-    const list = makeListHandle();
-    document.body.append(list.el);
-    const oldAnchor = document.createElement("div");
-    oldAnchor.dataset.viewAnchorId = "tool-old";
-    oldAnchor.dataset.viewAnchorSourceIndex = "4";
-    const oldEntry = document.createElement("button");
-    oldAnchor.append(oldEntry);
-    list.el.append(oldAnchor);
-    const fallback = document.createElement("div");
-    fallback.tabIndex = -1;
-    document.body.append(fallback);
-    oldEntry.focus();
+  test("restores a surviving focused entry and focuses the stable fallback when it disappears", async () => {
+    const list = renderRegistrationList();
+    try {
+      const oldAnchor = document.createElement("div");
+      oldAnchor.dataset.viewAnchorId = "tool-old";
+      oldAnchor.dataset.viewAnchorSourceIndex = "4";
+      const oldEntry = document.createElement("button");
+      oldAnchor.append(oldEntry);
+      list.el.append(oldAnchor);
+      const fallback = document.createElement("div");
+      fallback.tabIndex = -1;
+      document.body.append(fallback);
+      oldEntry.focus();
 
-    let positions: ViewAnchorPosition[] = [
-      { id: "tool-old", sourceIndex: 4, index: 1, offset: 18, height: 40, isMessage: false },
-    ];
-    const anchorEntries = [{ id: "tool-old", sourceIndex: 4, index: 1, isMessage: false }];
-    const { rerender } = renderHook(
-      ({ viewKey, entries }) =>
-        useTranscriptViewRegistration({
-          enabled: true,
-          id: "pane",
-          layout: "desktop",
-          viewKey,
-          listRef: list.ref,
-          measure: () => ({ scrollTop: 300, scrollHeight: 1200, clientHeight: 300 }),
-          measureAnchors: () => positions,
-          anchorEntries: entries,
-          renderedRowCount: 2,
-          focusFallback: () => fallback.focus(),
-        }),
-      { initialProps: { viewKey: "everything", entries: anchorEntries } },
-    );
-
-    positions = [{ id: "tool-old", sourceIndex: 4, index: 0, offset: 2, height: 40, isMessage: false }];
-    act(() => {
-      transitionTranscriptViews(
-        () => rerender({ viewKey: "intent", entries: anchorEntries }),
-        "Transcript display changed",
+      let positions: ViewAnchorPosition[] = [
+        { id: "tool-old", sourceIndex: 4, index: 1, offset: 18, height: 40, isMessage: false },
+      ];
+      const anchorEntries = [{ id: "tool-old", sourceIndex: 4, index: 1, isMessage: false }];
+      const { result, rerender } = renderHook(
+        ({ viewKey, entries }) =>
+          useTranscriptViewRegistration({
+            enabled: true,
+            id: "pane",
+            layout: "desktop",
+            viewKey,
+            listRef: list.ref,
+            measureAnchors: () => positions,
+            anchorEntries: entries,
+            renderedRowCount: 2,
+            focusFallback: () => fallback.focus(),
+          }),
+        { initialProps: { viewKey: "everything", entries: anchorEntries } },
       );
-    });
-    expect(document.activeElement).toBe(oldEntry);
+      await act(async () => list.commit(result.current));
 
-    positions = [{ id: "tool-old", sourceIndex: 4, index: 0, offset: 2, height: 40, isMessage: false }];
-    act(() => {
-      transitionTranscriptViews(() => {
-        oldAnchor.remove();
-        positions = [{ id: "agent-new", sourceIndex: 5, index: 1, offset: 0, height: 96, isMessage: true }];
-        rerender({
-          viewKey: "tools",
-          entries: [{ id: "agent-new", sourceIndex: 5, index: 1, isMessage: true }],
-        });
-      }, "Transcript display changed again");
-    });
-    expect(document.activeElement).toBe(fallback);
-    list.el.remove();
-    fallback.remove();
+      positions = [{ id: "tool-old", sourceIndex: 4, index: 0, offset: 2, height: 40, isMessage: false }];
+      act(() => {
+        transitionTranscriptViews(
+          () => rerender({ viewKey: "intent", entries: anchorEntries }),
+          "Transcript display changed",
+        );
+      });
+      expect(document.activeElement).toBe(oldEntry);
+
+      positions = [{ id: "tool-old", sourceIndex: 4, index: 0, offset: 2, height: 40, isMessage: false }];
+      act(() => {
+        transitionTranscriptViews(() => {
+          oldAnchor.remove();
+          positions = [{ id: "agent-new", sourceIndex: 5, index: 1, offset: 0, height: 96, isMessage: true }];
+          rerender({
+            viewKey: "tools",
+            entries: [{ id: "agent-new", sourceIndex: 5, index: 1, isMessage: true }],
+          });
+        }, "Transcript display changed again");
+      });
+      expect(document.activeElement).toBe(fallback);
+      list.el.remove();
+      fallback.remove();
+    } finally {
+      cleanup();
+      list.dispose();
+    }
   });
 
-  test("waits for a virtualized source alias and restores the same descendant from Intent to Tools", () => {
-    const list = makeListHandle();
-    document.body.append(list.el);
-    const intentAnchor = document.createElement("div");
-    intentAnchor.dataset.viewAnchorId = "intent:tool-1";
-    intentAnchor.dataset.viewAnchorSourceIndex = "4";
-    const intentButton = document.createElement("button");
-    intentAnchor.append(intentButton);
-    list.el.append(intentAnchor);
-    const focusFallback = vi.fn();
-    intentButton.focus();
+  test("waits for a virtualized source alias and restores the same descendant from Intent to Tools", async () => {
+    const list = renderRegistrationList();
+    try {
+      const intentAnchor = document.createElement("div");
+      intentAnchor.dataset.viewAnchorId = "intent:tool-1";
+      intentAnchor.dataset.viewAnchorSourceIndex = "4";
+      const intentButton = document.createElement("button");
+      intentAnchor.append(intentButton);
+      list.el.append(intentAnchor);
+      const focusFallback = vi.fn();
+      intentButton.focus();
 
-    let positions: ViewAnchorPosition[] = [
-      { id: "intent:tool-1", sourceIndex: 4, index: 0, offset: 18, height: 40, isMessage: false },
-    ];
-    const intentEntries = [{ id: "intent:tool-1", sourceIndex: 4, index: 0, isMessage: false }];
-    const { result, rerender } = renderHook(
-      ({ viewKey, entries }) =>
-        useTranscriptViewRegistration({
-          enabled: true,
-          id: "alias-pane",
-          layout: "desktop",
-          viewKey,
-          listRef: list.ref,
-          measure: () => ({ scrollTop: 300, scrollHeight: 1200, clientHeight: 300 }),
-          measureAnchors: () => positions,
-          anchorEntries: entries,
-          renderedRowCount: 2,
-          focusFallback,
-        }),
-      { initialProps: { viewKey: "intent", entries: intentEntries } },
-    );
+      let positions: ViewAnchorPosition[] = [
+        { id: "intent:tool-1", sourceIndex: 4, index: 0, offset: 18, height: 40, isMessage: false },
+      ];
+      const intentEntries = [{ id: "intent:tool-1", sourceIndex: 4, index: 0, isMessage: false }];
+      const { result, rerender } = renderHook(
+        ({ viewKey, entries }) =>
+          useTranscriptViewRegistration({
+            enabled: true,
+            id: "alias-pane",
+            layout: "desktop",
+            viewKey,
+            listRef: list.ref,
+            measureAnchors: () => positions,
+            anchorEntries: entries,
+            renderedRowCount: 2,
+            focusFallback,
+          }),
+        { initialProps: { viewKey: "intent", entries: intentEntries } },
+      );
+      await act(async () => list.commit(result.current));
 
-    act(() => {
-      transitionTranscriptViews(() => {
-        intentAnchor.remove();
-        positions = [];
-        rerender({
-          viewKey: "tools",
-          entries: [{ id: "tool-1", sourceIndex: 4, index: 1, isMessage: false }],
-        });
-      }, "Transcript display changed");
-    });
-    expect(list.scrollToIndex).toHaveBeenCalledWith(1, { align: "start" });
-    expect(focusFallback).not.toHaveBeenCalled();
+      act(() => {
+        transitionTranscriptViews(() => {
+          intentAnchor.remove();
+          positions = [];
+          rerender({
+            viewKey: "tools",
+            entries: [{ id: "tool-1", sourceIndex: 4, index: 1, isMessage: false }],
+          });
+        }, "Transcript display changed");
+      });
+      expect(list.scrollToIndex).toHaveBeenCalledWith(1, { align: "start" });
+      expect(focusFallback).not.toHaveBeenCalled();
+      await act(async () => list.commit(result.current));
+      expect(list.el.scrollTop).toBe(600);
 
-    const toolAnchor = document.createElement("div");
-    toolAnchor.dataset.viewAnchorId = "tool-1";
-    toolAnchor.dataset.viewAnchorSourceIndex = "4";
-    const toolButton = document.createElement("button");
-    toolAnchor.append(toolButton);
-    list.el.append(toolAnchor);
-    positions = [{ id: "tool-1", sourceIndex: 4, index: 1, offset: 18, height: 40, isMessage: false }];
-    act(() => result.current.restoreAfterMeasurement());
+      const toolAnchor = document.createElement("div");
+      toolAnchor.dataset.viewAnchorId = "tool-1";
+      toolAnchor.dataset.viewAnchorSourceIndex = "4";
+      const toolButton = document.createElement("button");
+      toolAnchor.append(toolButton);
+      list.el.append(toolAnchor);
+      positions = [{ id: "tool-1", sourceIndex: 4, index: 1, offset: 18, height: 40, isMessage: false }];
+      act(() => result.current.restoreAfterMeasurement());
 
-    expect(document.activeElement).toBe(toolButton);
-    expect(focusFallback).not.toHaveBeenCalled();
-    list.el.remove();
+      expect(document.activeElement).toBe(toolButton);
+      expect(focusFallback).not.toHaveBeenCalled();
+      list.el.remove();
+    } finally {
+      cleanup();
+      list.dispose();
+    }
   });
 });
 
