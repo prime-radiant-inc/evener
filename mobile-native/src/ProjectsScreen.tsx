@@ -274,14 +274,7 @@ export function PageList<T>({
 			{state.error ? (
 				<View style={{ paddingHorizontal: 16, paddingTop: 8 }}>
 					<ErrorMessage message={state.error} />
-					<Button
-						text
-						label="Try again"
-						disabled={!ready || state.loading}
-						onPress={() => {
-							refreshList();
-						}}
-					/>
+					<Button text label="Try again" disabled={!ready || state.loading} onPress={refreshList} />
 				</View>
 			) : null}
 			<FlatList
