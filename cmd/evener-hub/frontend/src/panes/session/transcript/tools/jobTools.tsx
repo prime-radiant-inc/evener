@@ -4,6 +4,7 @@ import {
   clip,
   delegateSendBase,
   delegateSendEarlierResponses,
+  delegateSendEarlierText,
   delegateSendResponse,
   delegateSendSummary,
   delegateSendTarget,
@@ -169,20 +170,19 @@ function DelegateSendBody(props: ToolRenderProps) {
           />
         </section>
       ) : null}
-      {earlier.map((text, index) => {
-        const which = `${index + 1} of ${earlier.length}`;
+      {earlier.map((entry, index) => {
+        const which = `earlier reply ${index + 1} of ${earlier.length}`;
+        const label = entry.status && entry.status !== "completed" ? `${which} · ${entry.status}` : which;
+        const text = delegateSendEarlierText(entry);
         return (
           // biome-ignore lint/suspicious/noArrayIndexKey: earlier results are a fixed, ordered list
           <section key={index} data-testid="delegate-send-earlier-response">
             <UserMessageView
               item={{ ...item, text }}
               speaker="agent"
-              name={
-                target === "" ? `Delegate, earlier result ${which}` : `${target} (delegate, earlier result ${which})`
-              }
-              timeIso={item.completedAt ?? item.startedAt}
+              name={target === "" ? `Delegate, ${label}` : `${target} (delegate, ${label})`}
               opensExchange={false}
-              actions={<CopyButton text={text} label={`Copy earlier response ${which}`} />}
+              actions={<CopyButton text={text} label={`Copy ${which}`} />}
             />
           </section>
         );

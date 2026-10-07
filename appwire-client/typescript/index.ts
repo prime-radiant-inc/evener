@@ -167,12 +167,14 @@ export {
   delegateTiming,
 } from "./delegateDetails";
 export {
+  type DelegateSendEarlierResponse,
   type DelegateSendFooterInfo,
   type DelegateSendRawState,
   type DelegateSendResult,
   type DelegateSendStep,
   delegateSendBase,
   delegateSendEarlierResponses,
+  delegateSendEarlierText,
   delegateSendFooter,
   delegateSendResponse,
   delegateSendSummary,

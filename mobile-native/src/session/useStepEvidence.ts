@@ -2,8 +2,9 @@
 // sessionRows copies every step on every publish (each streaming frame), and
 // the store may rebuild a row's detail too, so the memo can't key on the
 // objects. It keys on the value of every ActivityDetail field instead:
-// strings and numbers as they are (compared cheaply), the small object
-// fields (words, tasks) as JSON. The whole detail goes to stepEvidence, and
+// strings and numbers as they are (compared cheaply), the object fields
+// (words, tasks, a send's earlier replies) as JSON; the earlier replies are
+// bounded like any reply, and rare. The whole detail goes to stepEvidence, and
 // DETAIL_FIELDS must name every ActivityDetail field or the build fails, so
 // no field the projection sets can be left out of the key or the evidence.
 import { useMemo } from "react";

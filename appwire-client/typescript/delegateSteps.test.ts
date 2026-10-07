@@ -1,7 +1,12 @@
 // @vitest-environment node
 
 import { expect, test } from "vitest";
-import { delegateSendEarlierResponses, delegateSendResponse, delegateSendWaitIgnoredReason } from "./delegateSteps";
+import {
+  delegateSendEarlierResponses,
+  delegateSendEarlierText,
+  delegateSendResponse,
+  delegateSendWaitIgnoredReason,
+} from "./delegateSteps";
 import { subagentWireStep } from "./testing/subagentWireFixtures";
 import { toolStepSummary, toolStepWords } from "./toolSummaries";
 
@@ -86,32 +91,45 @@ test("reads why a send's wait was ignored from its raw state, else its footer", 
 
 // A send whose wait carried results the caller had not yet received (#3906)
 // has them, oldest first, in its raw state's earlier_results, each in the
-// reply's own shape; its own reply stays the newest. A reply without them,
-// or with entries that carry no output, reads as none.
-test("reads the earlier replies a send's wait carried, oldest first", () => {
-  const raw = {
+// reply's own shape (as marshalDelegateSendResult writes it); its own reply
+// stays the newest. Every entry is kept, one with no text included: it is
+// delivered here and nowhere else.
+test("reads the earlier results a send's wait carried, oldest first", () => {
+  const entry = (status: string, output: string, reason?: string) => ({
     delegate_id: "dlg_x",
     type: "delegate",
-    status: "completed",
+    status,
+    ...(reason ? { reason } : {}),
     running_in_background: false,
     action: "completed",
-    output: "third",
+    output,
     truncated: false,
-    earlier_results: [
-      { delegate_id: "dlg_x", status: "failed", running_in_background: false, action: "completed", output: "first" },
-      { delegate_id: "dlg_x", status: "completed", running_in_background: false, action: "completed", output: "" },
-      {
-        delegate_id: "dlg_x",
-        status: "completed",
-        running_in_background: false,
-        action: "completed",
-        output: "second",
-      },
-    ],
+  });
+  const raw = {
+    ...entry("completed", "third"),
+    earlier_results: [entry("completed", "first"), entry("failed", "", "boom")],
   };
-  expect(delegateSendEarlierResponses({ raw, output: "" })).toEqual(["first", "second"]);
+  const earlier = delegateSendEarlierResponses({ raw, output: "" });
+  expect(earlier).toEqual([
+    { output: "first", status: "completed", reason: undefined },
+    { output: undefined, status: "failed", reason: "boom" },
+  ]);
+  expect(earlier.map(delegateSendEarlierText)).toEqual(["first", "boom"]);
   expect(delegateSendResponse({ raw, output: "" })).toBe("third");
   expect(delegateSendEarlierResponses(subagentWireStep("call_send_2"))).toEqual([]);
   expect(delegateSendEarlierResponses({ raw: { ...raw, earlier_results: "nope" }, output: "" })).toEqual([]);
   expect(delegateSendEarlierResponses({ output: "no state" })).toEqual([]);
+});
+
+// The reply a send printed after the earlier results its wait carried is what
+// follows its "latest result:" label; a latest result with no text of its own
+// is none, never the earlier results' text.
+test("reads a printed reply after the earlier results it carried", () => {
+  const printed = (latest: string) =>
+    "earlier result 1 of 1, not delivered before:\nFIRST\n[delegate_id dlg_x · completed · completed]\n\n" +
+    `latest result:\n${latest}[delegate_id dlg_x · completed · failed]`;
+  expect(delegateSendResponse({ output: printed("SECOND\n") })).toBe("SECOND");
+  expect(delegateSendResponse({ output: printed("") })).toBeUndefined();
+  const raw = { action: "completed", running_in_background: false, output: "", earlier_results: [{ output: "FIRST" }] };
+  expect(delegateSendResponse({ raw, output: printed("") })).toBeUndefined();
 });

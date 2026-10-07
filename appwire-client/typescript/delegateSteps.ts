@@ -156,22 +156,42 @@ export function delegateSendResponse(step: DelegateSendResult): string | undefin
   const footer = delegateSendFooter(output);
   if (footer === undefined) return output;
 
-  const response = output.trimEnd().split("\n").slice(0, footer.index).join("\n");
+  let lines = output.trimEnd().split("\n").slice(0, footer.index);
+  // A reply that carried earlier results prints them first, then labels its
+  // own: the reply is what follows that label.
+  if (output.startsWith("earlier result ")) lines = lines.slice(lines.lastIndexOf("latest result:") + 1);
+  const response = lines.join("\n");
   return response.trim() === "" ? undefined : response;
 }
 
-/** The earlier replies a send's wait carried ahead of its own, oldest first:
- * results of the same delegate the caller had not yet received (#3906), from
- * the raw state's earlier_results. Empty when there are none, and for an
- * entry with no output. */
-export function delegateSendEarlierResponses(step: DelegateSendResult): string[] {
+/** An earlier result a send's wait carried: its reply text, when it has
+ * one, and its status and reason (a failed run may have only a reason). */
+export type DelegateSendEarlierResponse = { output?: string; status?: string; reason?: string };
+
+/** The earlier results a send's wait carried ahead of its own reply, oldest
+ * first: results of the same delegate the caller had not yet received
+ * (#3906), from the raw state's earlier_results. They are delivered here and
+ * nowhere else, so every entry is kept, with or without text. Empty when there
+ * are none. */
+export function delegateSendEarlierResponses(step: DelegateSendResult): DelegateSendEarlierResponse[] {
   if (!isDelegateSendResult(step.raw)) return [];
   const earlier = asJsonObject(step.raw)?.earlier_results;
   if (!Array.isArray(earlier)) return [];
   return earlier.flatMap((entry) => {
-    const output = asJsonObject(entry)?.output;
-    return typeof output === "string" && output.trim() !== "" ? [output] : [];
+    const state = asJsonObject(entry);
+    if (state === undefined) return [];
+    const text = (key: string) => {
+      const value = state[key];
+      return typeof value === "string" && value.trim() !== "" ? value : undefined;
+    };
+    return [{ output: text("output"), status: text("status"), reason: text("reason") }];
   });
+}
+
+/** An earlier result in words, for a client to show where it shows a reply:
+ * its text, else its reason or status. */
+export function delegateSendEarlierText(earlier: DelegateSendEarlierResponse): string {
+  return earlier.output ?? earlier.reason ?? earlier.status ?? "";
 }
 
 /** Why a send's wait was ignored (it asked to wait on a delegate that was

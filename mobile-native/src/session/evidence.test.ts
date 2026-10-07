@@ -296,17 +296,24 @@ describe("each tool's evidence, as the tools print it", () => {
 	// (#3906) shows each, numbered and oldest first, ahead of its reply.
 	it("shows the earlier replies a send's wait carried ahead of its reply", () => {
 		const waited = subagentWireStep("call_send_2");
+		const entry = (status: string, output: string, reason?: string) => ({
+			delegate_id: "dlg_x",
+			type: "delegate",
+			status,
+			...(reason ? { reason } : {}),
+			running_in_background: false,
+			action: "completed",
+			output,
+			truncated: false,
+		});
 		const raw = {
 			...(waited.raw as Record<string, unknown>),
-			earlier_results: [
-				{ delegate_id: "dlg_x", action: "completed", running_in_background: false, output: "First." },
-				{ delegate_id: "dlg_x", action: "completed", running_in_background: false, output: "Second." },
-			],
+			earlier_results: [entry("completed", "First."), entry("failed", "", "The run crashed.")],
 		};
 		expect(stepEvidence({ label: "delegate_send", detail: activityDetail({ ...waited, raw }) })).toEqual([
 			{ kind: "markdown", title: "Message", markdown: "Is drain ordering safe now?" },
 			{ kind: "markdown", title: "Earlier reply 1 of 2", markdown: "First." },
-			{ kind: "markdown", title: "Earlier reply 2 of 2", markdown: "Second." },
+			{ kind: "markdown", title: "Earlier reply 2 of 2 · failed", markdown: "The run crashed." },
 			{
 				kind: "markdown",
 				title: "Reply",
