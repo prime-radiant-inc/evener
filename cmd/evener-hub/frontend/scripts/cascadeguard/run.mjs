@@ -168,15 +168,23 @@ const sourceReadingPointExpr = readingPointExpr(sourcePortExpr);
 // reader-reflow-design.md, readingPointOffset in useTranscriptScroll.ts): where
 // the entry that held the reading point should start relative to the viewport
 // top after a reflow. Also evaluated in the page, so it stays self-contained.
-// A viewport-height-only change leaves the entry as it was, so the reading
-// line stays exactly where it was.
+// When the entry did not reflow (same width and height), the reading line
+// stays exactly where it was.
 function wantedReadingOffset(before, after) {
-  if (before.offset >= 0) return before.offset;
-  if (before.width === after.width && before.height === after.height) return before.offset;
+  if (before.offset >= 0 || (before.width === after.width && before.height === after.height)) return before.offset;
   const oldDepth = Math.max(0, before.height - before.viewport);
   if (-before.offset > oldDepth) return Math.min(0, before.height + before.offset - after.height);
   const progress = oldDepth > 0 ? -before.offset / oldDepth : 0;
   return -progress * Math.max(0, after.height - after.viewport);
+}
+
+// The feasible scrollTop the reflow rule wants after a width or viewport
+// change, or null when neither changed. Evaluated in the page alongside
+// wantedReadingOffset.
+function wantedScrollTop(before, after) {
+  if (before.width === after.width && before.viewport === after.viewport) return null;
+  const start = after.scrollTop + after.offset;
+  return Math.max(0, Math.min(start - wantedReadingOffset(before, after), Math.max(0, after.scrollHeight - after.viewport)));
 }
 
 function assertReadingContinuity(before, after, label) {
@@ -185,11 +193,9 @@ function assertReadingContinuity(before, after, label) {
   assert.equal(after.useful, true, `${label} keeps actual nonblank text in the viewport`);
   if (before.followingBottom) {
     assert.ok(after.scrollHeight - after.viewport - after.scrollTop <= 1.5, `${label} keeps end following`);
-  } else if (before.width !== after.width || before.viewport !== after.viewport) {
-    const wantedOffset = wantedReadingOffset(before, after);
-    const start = after.scrollTop + after.offset;
-    const wantedScroll = Math.max(0, Math.min(start - wantedOffset, Math.max(0, after.scrollHeight - after.viewport)));
-    assert.ok(Math.abs(after.scrollTop - wantedScroll) <= 2,
+  } else {
+    const wantedScroll = wantedScrollTop(before, after);
+    if (wantedScroll !== null) assert.ok(Math.abs(after.scrollTop - wantedScroll) <= 2,
       `${label} preserves feasible within-entry progress, actual ${after.scrollTop}, wanted ${wantedScroll}`);
   }
 }
@@ -211,11 +217,10 @@ async function settledReadingContinuity(before, portExpr, label) {
     if (before.followingBottom) {
       return after.scrollHeight - after.viewport - after.scrollTop <= 1.5 ? after : null;
     }
-    if (before.width === after.width && before.viewport === after.viewport) return after;
-    const wantedOffset = (${wantedReadingOffset.toString()})(before, after);
-    const start = after.scrollTop + after.offset;
-    const wantedScroll = Math.max(0, Math.min(start - wantedOffset, Math.max(0, after.scrollHeight - after.viewport)));
-    return Math.abs(after.scrollTop - wantedScroll) <= 2 ? after : null;
+    ${wantedReadingOffset.toString()}
+    ${wantedScrollTop.toString()}
+    const wantedScroll = wantedScrollTop(before, after);
+    return wantedScroll === null || Math.abs(after.scrollTop - wantedScroll) <= 2 ? after : null;
   })()`, `${label}, actual source reading position finishes restoration`);
 }
 
@@ -282,9 +287,9 @@ async function viewportReflow(portExpr, width, height, label, changed) {
   if (changed === "width") assert.notEqual(after.width, before.width, `${label} observes a width-only transition`);
   else {
     assert.ok(after.width === before.width && after.viewport !== before.viewport, `${label} observes a height-only transition`);
-    // The progress rule the reader used before #3899 would have moved it by
-    // its progress through the entry times the height change: big enough here
-    // that keeping the line is a real check, not a near-no-op.
+    // The progress rule would move the line by its progress through the entry
+    // times the height change; that shift must be big enough here that keeping
+    // the line is a real check, not a near-no-op.
     const progressShift = (-before.offset / (before.height - before.viewport)) * Math.abs(after.viewport - before.viewport);
     assert.ok(progressShift > 10, `${label} reads far enough into its entry to tell the rules apart, ${progressShift}px`);
   }
