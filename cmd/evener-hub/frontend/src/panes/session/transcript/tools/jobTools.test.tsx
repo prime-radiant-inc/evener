@@ -760,11 +760,13 @@ function renderDelegateSendBody({
   argumentsJSON = JSON.stringify({ to: "dlg_abc123", message: "Inspect the parser.\nReport exact findings." }),
   output = "Found two call sites.\nBoth need coverage.\n[delegate_id dlg_abc123 · delivered · completed]",
   raw,
+  startedAt,
 }: {
   toolName?: "delegate_send" | "job_send_message";
   argumentsJSON?: string;
   output?: string;
   raw?: unknown;
+  startedAt?: string;
 } = {}) {
   const Body = toolRendererFor(toolName).body!;
   render(
@@ -774,6 +776,7 @@ function renderDelegateSendBody({
         argumentsJSON,
         output,
         raw,
+        ...(startedAt ? { startedAt } : {}),
       })}
       live={false}
     />,
@@ -795,6 +798,45 @@ test("delegate_send: expanded body renders the sent message as an outgoing chat 
   expect(within(reply).getByRole("button", { name: "Copy response" })).toBeTruthy();
 
   expect(screen.queryByText(/delegate_id dlg_abc123 · delivered · completed/)).toBeNull();
+});
+
+// A send whose wait carried results its caller had not yet received (#3906)
+// shows each as an earlier incoming bubble, oldest first, above the reply: a
+// failed one with no text by its reason, its status in the bubble's name.
+test("delegate_send: earlier results a wait carried render as incoming bubbles ahead of the reply", () => {
+  const entry = (status: string, output: string, reason?: string) => ({
+    delegate_id: "dlg_abc123",
+    type: "delegate",
+    status,
+    ...(reason ? { reason } : {}),
+    running_in_background: false,
+    action: "completed",
+    output,
+    truncated: false,
+  });
+  renderDelegateSendBody({
+    raw: {
+      ...entry("completed", "Third result"),
+      earlier_results: [entry("completed", "First result"), entry("failed", "", "the run crashed")],
+    },
+    startedAt: "2026-10-06T12:00:00Z",
+  });
+
+  const earlier = screen.getAllByTestId("delegate-send-earlier-response");
+  expect(earlier.map((section) => within(section).getByTestId("user-bubble").textContent)).toEqual([
+    "First result",
+    "the run crashed",
+  ]);
+  expect(within(earlier[0]!).getByText("dlg_abc123 (delegate, earlier reply 1 of 2)")).toBeTruthy();
+  expect(within(earlier[1]!).getByText("dlg_abc123 (delegate, earlier reply 2 of 2 · failed)")).toBeTruthy();
+  expect(within(earlier[1]!).getByRole("button", { name: "Copy earlier reply 2 of 2 · failed" })).toBeTruthy();
+  // An earlier result arrived before the send, so its bubble shows no time;
+  // the reply keeps the send's.
+  expect(earlier.map((section) => section.querySelector("time"))).toEqual([null, null]);
+  expect(screen.getByTestId("delegate-send-response").querySelector("time")).not.toBeNull();
+  const reply = screen.getByTestId("delegate-send-response");
+  expect(within(reply).getByTestId("user-bubble").textContent).toBe("Third result");
+  expect(earlier[1]!.compareDocumentPosition(reply) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 });
 
 test("delegate_send: canonical raw output preserves the delegate response when formatted output has trailing metadata", () => {

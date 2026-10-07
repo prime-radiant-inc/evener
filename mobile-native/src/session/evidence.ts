@@ -6,6 +6,8 @@
 // toolEvidence and delegateSteps readers, which the web's bodies read too).
 // Pure, so the rules live apart from how StepEvidence draws them.
 import {
+	capitalized,
+	delegateSendEarlierLabel,
 	diffStats,
 	editDiffText,
 	filePathOf,
@@ -192,14 +194,22 @@ function outputEvidence(label: string, detail: EvidenceSource["detail"]): Eviden
 			return rawOutput(description ? `${line} — ${description}` : line);
 		}
 		case "message": {
-			// A message to a subagent: what was sent, the delegate's reply when
-			// the send waited for one, and why a wait was ignored, as the web's
+			// A message to a subagent: what was sent, any earlier results its
+			// wait carried, the delegate's reply when the send waited for one,
+			// and why a wait was ignored, as the web's
 			// DelegateSendBody shows the exchange. A call with no message and no
 			// reply (a malformed one) shows its JSON, as any other tool's does.
 			const message = str(parseArgs(detail.arguments), "message");
-			if (!message && detail.sendReply === undefined) return jsonEvidence(detail, text);
+			const earlier = detail.sendEarlierReplies ?? [];
+			if (!message && detail.sendReply === undefined && earlier.length === 0) return jsonEvidence(detail, text);
 			const evidence: Evidence[] = [];
 			if (message) evidence.push({ kind: "markdown", title: "Message", markdown: message });
+			// Results the caller had not yet received, which the wait carried
+			// ahead of its own reply (#3906), oldest first.
+			earlier.forEach((reply, i) => {
+				const title = capitalized(delegateSendEarlierLabel(reply, i, earlier.length));
+				evidence.push({ kind: "markdown", title, markdown: reply.text });
+			});
 			if (detail.sendReply !== undefined)
 				evidence.push({ kind: "markdown", title: "Reply", markdown: detail.sendReply });
 			if (detail.sendWaitIgnored !== undefined)

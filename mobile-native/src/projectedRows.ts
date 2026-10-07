@@ -65,6 +65,7 @@ import {
 	stripSystemReminder,
 	systemEventWords,
 	composeStepWords,
+	delegateSendEarlierResponses,
 	delegateSendResponse,
 	delegateSendWaitIgnoredReason,
 	toolFamily,
@@ -72,6 +73,7 @@ import {
 	warningWords,
 } from "@evener/appwire-client";
 import type {
+	DelegateSendEarlierResponse,
 	ItemImage,
 	ItemModel,
 	ProjectedEntry,
@@ -157,6 +159,11 @@ export interface ActivityDetail {
 	// for every other step, and when the send got no reply or its wait was
 	// honoured.
 	sendReply?: string;
+	// The earlier results a send's wait carried ahead of its own reply, oldest
+	// first (the package's delegateSendEarlierResponses): results the caller
+	// had not yet received, each in words with its status. Absent when there
+	// are none.
+	sendEarlierReplies?: readonly DelegateSendEarlierResponse[];
 	sendWaitIgnored?: string;
 }
 
@@ -640,6 +647,7 @@ export function activityDetail(it: ItemModel): ActivityDetail {
 	const watchEvidence = it.toolName === "job_watch" ? jobWatchEvidence(it) : undefined;
 	const send = toolFamily(it.toolName ?? "") === "message";
 	const sendReply = send ? delegateSendResponse(it) : undefined;
+	const sendEarlierReplies = send ? delegateSendEarlierResponses(it) : [];
 	const sendWaitIgnored = send ? delegateSendWaitIgnoredReason(it) : undefined;
 	return {
 		description: activityDescription(it),
@@ -654,6 +662,7 @@ export function activityDetail(it: ItemModel): ActivityDetail {
 		...(tasks ? { tasks } : {}),
 		...(watchEvidence !== undefined ? { watchEvidence } : {}),
 		...(sendReply !== undefined ? { sendReply } : {}),
+		...(sendEarlierReplies.length > 0 ? { sendEarlierReplies } : {}),
 		...(sendWaitIgnored !== undefined ? { sendWaitIgnored } : {}),
 	};
 }
@@ -1412,6 +1421,13 @@ function boundWords(words: StepWords, bound: BoundText): StepWords {
 	};
 }
 
+// Bound each entry of a list, handing back the source list when no entry
+// changed, so a row keeps its identity across publishes (see truncateItem).
+function boundEach<T>(list: readonly T[], boundOne: (entry: T) => T): readonly T[] {
+	const bounded = list.map(boundOne);
+	return bounded.every((entry, index) => entry === list[index]) ? list : bounded;
+}
+
 function truncateActivityDetail(detail: ActivityDetail, bound: BoundText): ActivityDetail {
 	const description = detail.description ? bound(detail.description) : detail.description;
 	const summary = detail.summary ? bound(detail.summary) : detail.summary;
@@ -1421,6 +1437,12 @@ function truncateActivityDetail(detail: ActivityDetail, bound: BoundText): Activ
 	const error = detail.error ? bound(detail.error) : detail.error;
 	const watchEvidence = detail.watchEvidence ? bound(detail.watchEvidence) : detail.watchEvidence;
 	const sendReply = detail.sendReply ? bound(detail.sendReply) : detail.sendReply;
+	const sendEarlierReplies = detail.sendEarlierReplies
+		? boundEach(detail.sendEarlierReplies, (reply) => {
+				const text = bound(reply.text);
+				return text === reply.text ? reply : { ...reply, text };
+			})
+		: detail.sendEarlierReplies;
 	const sendWaitIgnored = detail.sendWaitIgnored ? bound(detail.sendWaitIgnored) : detail.sendWaitIgnored;
 	// Nothing was cut: hand back the source detail so a settled row keeps its
 	// identity across publishes (see truncateItem).
@@ -1433,6 +1455,7 @@ function truncateActivityDetail(detail: ActivityDetail, bound: BoundText): Activ
 		error === detail.error &&
 		watchEvidence === detail.watchEvidence &&
 		sendReply === detail.sendReply &&
+		sendEarlierReplies === detail.sendEarlierReplies &&
 		sendWaitIgnored === detail.sendWaitIgnored
 	) {
 		return detail;
@@ -1447,6 +1470,7 @@ function truncateActivityDetail(detail: ActivityDetail, bound: BoundText): Activ
 		error,
 		watchEvidence,
 		sendReply,
+		sendEarlierReplies,
 		sendWaitIgnored,
 	};
 }

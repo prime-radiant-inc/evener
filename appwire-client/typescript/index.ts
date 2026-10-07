@@ -167,11 +167,14 @@ export {
   delegateTiming,
 } from "./delegateDetails";
 export {
+  type DelegateSendEarlierResponse,
   type DelegateSendFooterInfo,
   type DelegateSendRawState,
   type DelegateSendResult,
   type DelegateSendStep,
   delegateSendBase,
+  delegateSendEarlierLabel,
+  delegateSendEarlierResponses,
   delegateSendFooter,
   delegateSendResponse,
   delegateSendSummary,
@@ -636,6 +639,7 @@ export { acquireThreadSubscription } from "./threadSubscription";
 export type { SessionTokens, TokenPair, UsageSummary } from "./threadUsage";
 export { sessionTokens, threadUsageSummary, tokenUnitLabel, turnUsageTokens } from "./threadUsage";
 export {
+  capitalized,
   clip,
   clipJobID,
   formatByteCount,

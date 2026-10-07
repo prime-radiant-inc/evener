@@ -2048,6 +2048,19 @@ describe("truncateItem keeps a row's identity when the bound cuts nothing", () =
 		if (out.kind === "activity") expect(out.detail?.watchEvidence?.length).toBeLessThan(big.length);
 	});
 
+	it("keeps a send's detail by reference when its earlier replies fit", () => {
+		const row: MobileTimelineItem = {
+			kind: "activity",
+			id: "act1",
+			label: "delegate_send",
+			family: "tool",
+			state: "completed",
+			detail: { sendReply: "third", sendEarlierReplies: [{ text: "first", status: "completed" }] },
+		};
+		const out = truncateItem(row, bound);
+		expect(out).toBe(row);
+	});
+
 	it("bounds a message to a subagent's reply and wait note like the rest of a step's text", () => {
 		const big = "x".repeat(MAX_ITEM_BYTES + 1);
 		const row: MobileTimelineItem = {
@@ -2056,12 +2069,14 @@ describe("truncateItem keeps a row's identity when the bound cuts nothing", () =
 			label: "delegate_send",
 			family: "tool",
 			state: "completed",
-			detail: { sendReply: big, sendWaitIgnored: big },
+			detail: { sendReply: big, sendEarlierReplies: [{ text: big, status: "failed" }], sendWaitIgnored: big },
 		};
 		const out = truncateItem(row, bound);
 		expect(out).not.toBe(row);
 		if (out.kind === "activity") {
 			expect(out.detail?.sendReply?.length).toBeLessThan(big.length);
+			expect(out.detail?.sendEarlierReplies?.[0]?.text.length).toBeLessThan(big.length);
+			expect(out.detail?.sendEarlierReplies?.[0]?.status).toBe("failed");
 			expect(out.detail?.sendWaitIgnored?.length).toBeLessThan(big.length);
 		}
 	});
@@ -2073,6 +2088,7 @@ describe("truncateItem keeps a row's identity when the bound cuts nothing", () =
 		const detail = activityDetail(toolWireStep("call_shell"));
 		expect(detail.output).toBeTruthy();
 		expect(detail).not.toHaveProperty("sendReply");
+		expect(detail).not.toHaveProperty("sendEarlierReplies");
 		expect(detail).not.toHaveProperty("sendWaitIgnored");
 	});
 

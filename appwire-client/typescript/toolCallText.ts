@@ -130,6 +130,11 @@ export function trailingBracketFooter(text: string): string | undefined {
   return trimmed.slice(openIdx + 1, trimmed.length - 1);
 }
 
+// nonblank keeps a string that has more than whitespace, else undefined.
+export function nonblank(value: string | undefined): string | undefined {
+  return typeof value === "string" && value.trim() !== "" ? value : undefined;
+}
+
 // str reads a string-typed field off a parsed-args/output object, undefined
 // for a missing or non-string value - every descriptor's target/summary
 // logic uses this rather than trusting the wire's untyped JSON directly.

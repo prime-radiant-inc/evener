@@ -4,14 +4,16 @@
 // reads the footer and the raw state through the same helpers.
 //
 // Ground truth: agent/session_tools_jobs.go's formatDelegateSend prints any
-// reply, then a bracketed footer "[delegate_id <id> · <action> · <status> ·
-// running in background · wait ignored: <why>]" (every field after the action
-// optional), then structured_result and watch lines; marshalDelegateSendResult
-// returns the same fields as the step's raw state.
+// earlier results a wait carried (each numbered and printed as a reply is),
+// then any reply, then a bracketed footer "[delegate_id <id> · <action> ·
+// <status> · running in background · wait ignored: <why>]" (every field after
+// the action optional), then structured_result and watch lines;
+// marshalDelegateSendResult returns the same fields as the step's raw state,
+// the earlier results under earlier_results.
 
 import type { ItemModel } from "./model";
 import { composeStepWords, type StepWords, summaryOf, withDetail } from "./stepWords";
-import { parseArgs, str } from "./toolCallText";
+import { nonblank, parseArgs, str } from "./toolCallText";
 import { asJsonObject } from "./watchRows";
 
 /** The parts of a delegate_send step its words read. */
@@ -25,6 +27,7 @@ export type DelegateSendRawState = {
   output?: string;
   transcript_ref?: string;
   wait_ignored_reason?: string;
+  earlier_results?: unknown;
 };
 
 /** Whether a step's raw state is a delegate_send result. */
@@ -72,25 +75,22 @@ export type DelegateSendFooterInfo = {
   waitIgnoredReason?: string;
 };
 
-/** The footer a delegate_send printed, when its output ends in one (after any
- * structured_result and watch lines); undefined when the output has none, or
- * a bracketed line that isn't the footer's shape. */
+function isFooterLine(line: string): boolean {
+  return line.startsWith("[delegate_id ") && line.endsWith("]");
+}
+
+/** The footer a delegate_send printed: its last line that opens
+ * "[delegate_id " and closes "]", whatever lines (worktree, warning,
+ * structured_result, watches) the tool printed after it. Undefined when the
+ * output has no such line, or that line isn't the footer's shape. */
 export function delegateSendFooter(output: string): DelegateSendFooterInfo | undefined {
   const trimmed = output.trimEnd();
   const lines = trimmed.split("\n");
 
   let index = lines.length - 1;
-  while (index >= 0) {
-    const line = lines[index] ?? "";
-    if (line.startsWith("structured_result (valid=") || line === "watches:" || line.startsWith("- ")) {
-      index -= 1;
-      continue;
-    }
-    break;
-  }
-
+  while (index >= 0 && !isFooterLine(lines[index] ?? "")) index -= 1;
   const footerLine = lines[index];
-  if (footerLine === undefined || !footerLine.startsWith("[") || !footerLine.endsWith("]")) return undefined;
+  if (footerLine === undefined) return undefined;
 
   const footer = footerLine.slice(1, -1);
   const fields = footer.split(" · ");
@@ -147,6 +147,10 @@ export function delegateSendResponse(step: DelegateSendResult): string | undefin
   if (isDelegateSendResult(step.raw)) {
     const rawOutput = step.raw.output;
     if (rawOutput !== undefined && rawOutput.trim() !== "") return rawOutput;
+    // A reply that carried earlier results printed them above its own: what
+    // it printed is never its reply, so one with no text has none (#3906).
+    const earlier = step.raw.earlier_results;
+    if (Array.isArray(earlier) && earlier.length > 0) return undefined;
   }
 
   const output = step.output ?? "";
@@ -156,6 +160,35 @@ export function delegateSendResponse(step: DelegateSendResult): string | undefin
 
   const response = output.trimEnd().split("\n").slice(0, footer.index).join("\n");
   return response.trim() === "" ? undefined : response;
+}
+
+/** An earlier result a send's wait carried, in words for a client to show
+ * where it shows a reply: its text, else its reason (a failed run may have
+ * only a reason), else that it had none; and its status. */
+export type DelegateSendEarlierResponse = { text: string; status?: string };
+
+/** The earlier results a send's wait carried ahead of its own reply, oldest
+ * first: results of the same delegate the caller had not yet received
+ * (#3906), from the raw state's earlier_results. They are delivered here and
+ * nowhere else, so every entry is kept, with or without text. Empty when there
+ * are none. */
+export function delegateSendEarlierResponses(step: DelegateSendResult): DelegateSendEarlierResponse[] {
+  if (!isDelegateSendResult(step.raw)) return [];
+  const earlier = step.raw.earlier_results;
+  if (!Array.isArray(earlier)) return [];
+  return earlier.flatMap((entry) => {
+    const state = asJsonObject(entry);
+    if (state === undefined) return [];
+    const text = nonblank(str(state, "output")) ?? nonblank(str(state, "reason")) ?? "(no reply)";
+    return [{ text, status: nonblank(str(state, "status")) }];
+  });
+}
+
+/** How a client heads an earlier result: "earlier reply 2 of 3", with its
+ * status when it didn't complete ("earlier reply 2 of 3 · failed"). */
+export function delegateSendEarlierLabel(earlier: DelegateSendEarlierResponse, index: number, count: number): string {
+  const which = `earlier reply ${index + 1} of ${count}`;
+  return earlier.status && earlier.status !== "completed" ? `${which} · ${earlier.status}` : which;
 }
 
 /** Why a send's wait was ignored (it asked to wait on a delegate that was
