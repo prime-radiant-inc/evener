@@ -415,11 +415,19 @@ func SessionOwnedDelegateIDs(ctx context.Context, stateDir, sessionID string) ([
 	// row whose parentage runs through one, is in no session's subtree here.
 	rootOwned := make(delegatestore.State, len(result.Value.state))
 	for delegateID, aggregate := range result.Value.state {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if aggregate != nil && aggregate.Descriptor.OwnerSessionID == rootID {
 			rootOwned[delegateID] = aggregate
 		}
 	}
+	// The walk itself is in memory over a bounded tree and takes no ctx, so a
+	// cancellation during it is reported once it returns.
 	owners := sessionSubtreeOwners(rootOwned, sessionID)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	// sessionSubtreeOwners seeds the walk with sessionID; the caller asks only
 	// for the sessions below it.
 	delete(owners, sessionID)

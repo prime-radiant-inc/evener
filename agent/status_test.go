@@ -991,6 +991,39 @@ func TestSessionOwnedDelegateIDs_ListsDescendantSessionsTheRootOwns(t *testing.T
 	}
 }
 
+// cancelAfterFirstCheck lets its first Err check through, then reports the
+// context canceled: a cancellation that lands after the journal fold.
+type cancelAfterFirstCheck struct {
+	context.Context
+	checks int
+}
+
+func (ctx *cancelAfterFirstCheck) Err() error {
+	ctx.checks++
+	if ctx.checks > 1 {
+		return context.Canceled
+	}
+	return nil
+}
+
+// A force-stop that gives up after the journal fold gets its cancellation back
+// rather than a walk's result.
+func TestSessionOwnedDelegateIDs_HonorsCancellationAfterTheFold(t *testing.T) {
+	t.Parallel()
+	const rootID = "02wMz5Txv1C3Hut0M8GCeP"
+	const childID = "02wMz5Txv1C3Hut0M8GCeQ"
+	stateDir := t.TempDir()
+	writePastStableDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, childID, "child"))
+	// Warm the fold cache, so the read below makes one Err check before the walk.
+	if _, err := SessionOwnedDelegateIDs(t.Context(), stateDir, rootID); err != nil {
+		t.Fatal(err)
+	}
+	ctx := &cancelAfterFirstCheck{Context: t.Context()}
+	if ids, err := SessionOwnedDelegateIDs(ctx, stateDir, rootID); !errors.Is(err, context.Canceled) {
+		t.Fatalf("SessionOwnedDelegateIDs after cancellation = %v, %v; want context.Canceled", ids, err)
+	}
+}
+
 // A subagent's own thread lists the delegates in its subtree, as a root's
 // thread lists its whole tree: a transcript opened on the subagent then has a
 // roster entry for every subagent row it shows. Rows keep the tree's owner and
