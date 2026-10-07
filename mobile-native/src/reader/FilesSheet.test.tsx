@@ -45,7 +45,6 @@ const bodies: Record<string, string> = {
 };
 
 let memory: DocumentMemory;
-const trees: ReactTestRenderer[] = [];
 
 function storage(): SyncStringStorage {
 	const data = new Map<string, string>();
@@ -69,7 +68,6 @@ beforeEach(() => {
 	});
 });
 afterEach(() => {
-	for (const tree of trees.splice(0)) act(() => tree.unmount());
 	vi.restoreAllMocks();
 });
 
@@ -87,7 +85,6 @@ async function sheet(documents: SessionDocument[]) {
 	const tree = render(
 		<FilesSheet route={{ key: "files", name: "FilesSheet", params } as never} navigation={sheetNavigation as never} />,
 	);
-	trees.push(tree);
 	await settle();
 	return tree;
 }

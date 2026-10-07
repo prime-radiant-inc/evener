@@ -8,7 +8,7 @@ import { wireThread } from "@evener/appwire-client/testing/notifications";
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { NativeMutationRuntime } from "../nativeMutationRuntime";
-import { alertRequests, pressable, render, renderedText } from "../renderNative.testkit";
+import { alertRequests, pressable, render, renderedText, unmountMountedTrees } from "../renderNative.testkit";
 import { openSqliteSyncDouble } from "../sqliteSync.testkit";
 import type { SyncStringStorage } from "../syncStringStorage";
 import { documentBlocks } from "./documentBlocks";
@@ -92,7 +92,6 @@ let memory: DocumentMemory;
 let runtime: NativeMutationRuntime;
 let status = "idle";
 let resumeRequired = false;
-const trees: ReactTestRenderer[] = [];
 
 function storage(): SyncStringStorage {
 	const data = new Map<string, string>();
@@ -173,7 +172,7 @@ beforeEach(async () => {
 	harness.runtime = runtime;
 });
 afterEach(async () => {
-	for (const tree of trees.splice(0)) act(() => tree.unmount());
+	unmountMountedTrees();
 	await runtime.stop();
 	vi.restoreAllMocks();
 });
@@ -192,7 +191,6 @@ async function mount() {
 			navigation={sheetNavigation as never}
 		/>,
 	);
-	trees.push(tree);
 	await settle();
 	return tree;
 }

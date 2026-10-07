@@ -2,7 +2,7 @@ import { act, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { authCalls, boundary } from "./providerSignInTestUtils";
 import { ProviderSignInSheet } from "./ProviderSignInSheet";
-import { pressable, render, renderedText, textOf } from "./renderNative.testkit";
+import { pressable, render, renderedText, textOf, unmountMountedTrees } from "./renderNative.testkit";
 import { palettes } from "./design/tokens";
 import { Button } from "./sheet/Grouped";
 
@@ -76,7 +76,6 @@ const deviceFlow: Answers = {
 	"evener/auth/device/poll": () => ({ state: "pending" }),
 };
 
-let trees: ReactTestRenderer[] = [];
 let flows: { dispose(): void }[] = [];
 
 beforeEach(() => {
@@ -87,9 +86,8 @@ beforeEach(() => {
 	edges.copies = true;
 });
 afterEach(() => {
-	for (const tree of trees) act(() => tree.unmount());
+	unmountMountedTrees();
 	for (const flow of flows) flow.dispose();
-	trees = [];
 	flows = [];
 	vi.useRealTimers();
 });
@@ -101,7 +99,6 @@ async function mount(answers: Answers, options: { connected?: boolean; start?: b
 	const tree = render(
 		<ProviderSignInSheet flow={kit.flow} name={PROVIDER} connected={options.connected ?? true} onClose={onClose} />,
 	);
-	trees.push(tree);
 	if (options.start ?? true)
 		await act(async () => {
 			await kit.flow.start();
