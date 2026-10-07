@@ -397,7 +397,7 @@ export interface ConversationState {
 	loadOlder(service: ConversationService): Promise<LoadOlderResult>;
 	setDraft(text: string): void;
 	send(service: ConversationService, input: InputItem[]): Promise<void>;
-	steer(service: ConversationService, input: InputItem[], expectedQueueRevision?: number): Promise<void>;
+	steer(service: ConversationService, input: InputItem[]): Promise<void>;
 	queue(service: ConversationService, input: InputItem[]): Promise<void>;
 	interrupt(service: ConversationService): Promise<void>;
 	close(): void;
@@ -475,11 +475,7 @@ function isActionUnavailableError(err: unknown): boolean {
 // and the submit refuses the mutation here, with the control's own reason.
 // Runs in the store so the fake service (which gates on nothing) still
 // respects what the hub would refuse.
-function requireControl(
-	conv: MobileConversation,
-	control: "stop" | "steer" | "drain" | "queue" | "send",
-	action: string,
-): void {
+function requireControl(conv: MobileConversation, control: "stop" | "steer" | "queue" | "send", action: string): void {
 	const controls = sessionControls(conv.status.type, conv.capabilities, conv.queue?.depth ?? 0);
 	if (!controls[control]) {
 		throw new Error(controls.reason[control] ?? `Action "${action}" is not available for this thread`);
@@ -550,7 +546,6 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 		opBinding: RequestBinding,
 		conversation: MobileConversation,
 		input: InputItem[],
-		expectedQueueRevision?: number,
 	): Promise<MutationReceipt | undefined> {
 		return mutationSubmitter!.submit({
 			kind,
@@ -559,7 +554,6 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 			threadId: conversation.threadId,
 			instanceId: conversation.instanceId ?? conversation.threadId,
 			input,
-			expectedQueueRevision,
 		});
 	}
 
@@ -572,15 +566,13 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 		opBinding: RequestBinding,
 		conversation: MobileConversation,
 		input: InputItem[],
-		expectedQueueRevision?: number,
 	): Promise<MutationReceipt | undefined> {
-		if (mutationSubmitter !== undefined)
-			return submitMutation(kind, opBinding, conversation, input, expectedQueueRevision);
+		if (mutationSubmitter !== undefined) return submitMutation(kind, opBinding, conversation, input);
 		switch (kind) {
 			case "send":
 				return service.send(input);
 			case "steer":
-				return service.steer(input, expectedQueueRevision);
+				return service.steer(input);
 			case "queue":
 				return service.queue(input);
 			case "interrupt":
@@ -2883,7 +2875,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				}
 			},
 
-			async steer(service, input, expectedQueueRevision) {
+			async steer(service, input) {
 				const state = get();
 				if (state.conversation === null) return;
 				requireControl(state.conversation, "steer", "steer");
@@ -2915,14 +2907,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				// I1: Capture error-owner revision AFTER installing pending+error-clear.
 				const entryErrorRev = errorOwnerRev;
 				try {
-					const receipt = await dispatchMutation(
-						service,
-						"steer",
-						opBinding,
-						state.conversation,
-						input,
-						expectedQueueRevision,
-					);
+					const receipt = await dispatchMutation(service, "steer", opBinding, state.conversation, input);
 					// C1: Recheck the exact operation binding after the await.
 					if (!isBindingCurrent(opBinding)) return;
 					if (get().pendingMutation?.mutationId === mutationId) {
