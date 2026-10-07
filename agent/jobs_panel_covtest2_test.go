@@ -13,7 +13,7 @@ import (
 )
 
 // TestLoadSessionJobOutputPage_TerminalRecordMismatch covers the error path at
-// line 105: validatedOutputStatsForRecord returns a non-NotExist error because
+// the page read: checkOutputTotalForRecord returns a non-NotExist error because
 // the terminal record's OutputBytes does not match the file's actual size.
 func TestLoadSessionJobOutputPage_TerminalRecordMismatch(t *testing.T) {
 	t.Parallel()
@@ -74,7 +74,7 @@ func TestLoadSessionJobOutputPage_OutputIsDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now()
-	// Use a running (non-terminal) job so validatedOutputStatsForRecord
+	// Use a running (non-terminal) job so checkOutputTotalForRecord
 	// does not enforce OutputBytes matching.
 	if err := st.Append(jobstore.Event{Kind: jobstore.EventJobStarted, TS: now, JobID: "job_dir", Type: jobstore.JobShell, Status: jobstore.StatusRunning, OwnerSessionID: sessionID, VisibleToSession: sessionID, StartedAt: &now, OutputPath: outPath}); err != nil {
 		t.Fatal(err)
@@ -93,7 +93,7 @@ func TestLoadSessionJobOutputPage_OutputIsDirectory(t *testing.T) {
 }
 
 // TestLoadSessionJobOutputPage_NoOutputFile covers the not-exist path at
-// line 102-103: validatedOutputStatsForRecord returns os.ErrNotExist for a
+// the page read: opening the output returns os.ErrNotExist for a
 // running job whose output file does not exist.
 func TestLoadSessionJobOutputPage_NoOutputFile(t *testing.T) {
 	t.Parallel()

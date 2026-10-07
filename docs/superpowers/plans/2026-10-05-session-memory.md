@@ -1,5 +1,7 @@
 # Session Memory Implementation Plan
 
+> Superseded: the session memory scope was removed (2026-10-06); see docs/product/memory.md.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add a third memory scope, `session`, that holds knowledge about the current work. The root session owns it, delegates can only read it, forks copy it, and the prompt tells agents to use it and to promote lasting lessons out of it.

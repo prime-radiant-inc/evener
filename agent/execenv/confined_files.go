@@ -18,18 +18,6 @@ func (e *LocalExecutionEnvironment) RemoveConfinedFile(path string) error {
 	return layer.removeRegularFile("memory_delete", e.resolve(path))
 }
 
-// OpenConfinedFile opens an admitted regular file for reading through the
-// confined layer, so no component of path is followed through a symlink. It
-// lets a caller bound how much it reads, which ReadFileRaw cannot.
-func (e *LocalExecutionEnvironment) OpenConfinedFile(path string) (*os.File, error) {
-	layer := e.sandbox()
-	if layer == nil {
-		return nil, errors.New("confined file open requires a confined environment")
-	}
-	defer layer.release()
-	return layer.openRegularFile("memory_read", e.resolve(path))
-}
-
 // NewConfinedFileEnvironment grants file operations only beneath relativeRoot.
 // The host anchor is trusted; its relative tail is created by shared confinement.
 func NewConfinedFileEnvironment(stateRoot, relativeRoot string) (*LocalExecutionEnvironment, error) {
@@ -82,16 +70,6 @@ func (r *ConfinedFileRoot) Close() {
 // still names the same directory. The caller owns previous's lifetime,
 // including admitted operations on it.
 func (r *ConfinedFileRoot) Open(previous *LocalExecutionEnvironment) (*LocalExecutionEnvironment, error) {
-	return r.open(previous, true)
-}
-
-// OpenExisting is Open for a reader that must leave an absent tail absent: it
-// reports fs.ErrNotExist instead of creating the directory.
-func (r *ConfinedFileRoot) OpenExisting(previous *LocalExecutionEnvironment) (*LocalExecutionEnvironment, error) {
-	return r.open(previous, false)
-}
-
-func (r *ConfinedFileRoot) open(previous *LocalExecutionEnvironment, create bool) (*LocalExecutionEnvironment, error) {
 	r.mu.Lock()
 	host := r.host
 	if host == nil {
@@ -102,10 +80,8 @@ func (r *ConfinedFileRoot) open(previous *LocalExecutionEnvironment, create bool
 	r.mu.Unlock()
 	defer host.release()
 	root := filepath.Join(r.stateRoot, r.relativeRoot)
-	if create {
-		if err := host.mkdirAll("memory", root); err != nil {
-			return nil, err
-		}
+	if err := host.mkdirAll("memory", root); err != nil {
+		return nil, err
 	}
 	fd, err := openBeneathRoot(host.rootFds[r.stateRoot], filepath.ToSlash(r.relativeRoot), os.O_RDONLY, 0)
 	if err != nil {

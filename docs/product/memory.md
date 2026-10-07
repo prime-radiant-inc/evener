@@ -1,6 +1,6 @@
 # Memory
 
-Evener keeps useful personal and project lessons, and working notes about the current work, in ordinary files on the
+Evener keeps useful personal and project lessons in ordinary files on the
 session's host. The files are the source of truth, not transcript projections,
 client caches or session notes. Stored text is fallible evidence, never
 instructions or permission. Current user intent and direct evidence take
@@ -16,46 +16,15 @@ host's [`DefaultStateRoot`](../../cmdutil/statedir.go) supplies these roots:
 ```text
 <state-root>/memory/personal/
 <state-root>/memory/projects/<Project.ID>/
-<state-root>/memory/sessions/<root-session-id>/
 ```
 
 The state root is `$XDG_STATE_HOME/evener`, normally
 `~/.local/state/evener`. A history `StateDir`, `--state-dir` or
 `EVENER_STATE_DIR` override does not relocate memory. Local and remote hosts
 own separate storage. Personal memory crosses projects on that host; project
-memory belongs to its bound project identity.
-
-Session memory holds working notes about the current work (its plan, what was
-tried and found). The root session owns it; delegates resolve the scope to
-their root and can read but not write it. A delegate resumed on its own
-(`serve --resume <delegate-id>`) is still a delegate: it has no root to
-resolve, so it gets no session scope, no session guidance and no fork copy.
-Resume keeps a root's session memory.
-
-The session directory appears only when the root session first writes its
-session memory (`memory_write`), or at a fork's first use. Reading or editing
-an absent scope (the index refresh, `memory_read`, `memory_search`,
-`memory_edit`, `memory_delete`) creates nothing: the index projects as
-missing, a read or edit finds no file, a search finds no matches and a delete
-reports the file removed or already absent. Delegates never create it.
-
-A fork or `--resume-with` child copies its parent's session memory once, the
-first time it reads or writes the scope, in its own process, normally at its
-first model call; then the two diverge. After that first use the fork's scope
-exists, holding the parent's copy or empty, so a resumed fork never copies the
-parent's later notes and a failed copy is reported only once. A delegate of
-the fork that reads first leaves the directory absent, so it cannot block the
-copy. A missing or empty parent scope means a silent empty start. The copy
-reads the parent and writes the child through the same confined layer the
-memory tools use, so no symlink anywhere on the path is followed. It takes
-only regular files and directories within a size limit (empty directories are
-skipped); anything else, including a parent scope that exists but is a symlink
-or a file, means a warning and an empty start. A copy failure is a session
-warning and leaves the scope empty; it never blocks the session.
-
-Deleting a session keeps its session memory. No native memory tool reaches
-another session's session directory, so session memory that was written stays
-until someone removes its directory by hand.
+memory belongs to its bound project identity. Earlier builds also kept
+per-session memory under `memory/sessions/<id>/`; Evener no longer reads those
+directories, and they can be deleted by hand.
 
 Production CLI and daemon sessions bind memory by default. Trusted launch
 binding uses `identifier.ResolveProjectWith`; linked worktrees share their main
@@ -80,7 +49,7 @@ flowchart LR
     Files --> Index
 ```
 
-Enabled sessions receive separate personal, project and session `MEMORY.md` projections
+Enabled sessions receive separate personal and project `MEMORY.md` projections
 as named user-source context, outside system instructions. Each scope supplies
 at most 8 KiB of index content, cut at a UTF-8 boundary, with explicit truncation
 and a route to `memory_read`. Topic files and logs are not preloaded.
@@ -110,14 +79,11 @@ the page holds) and that run details which go stale within days (commit SHAs, id
 paths, test counts, review verdicts) stay out of
 personal and project memory. A changed fact is rewritten in place. When the
 agent reads a page that has turned into a log, it repairs that page before it
-ends its turn. A status-only index line is a reason to read its page. The
-guidance does not mention session memory. Progress through longer work belongs
+ends its turn. A status-only index line is a reason to read its page. Progress through longer work belongs
 to the task list (How you work, when the session has `task_list`): one place
 for status, the task list or the ledger a skill keeps, with task notes only
 when something happened that a later step needs; the whiteboard carries status
-for the partner and memory holds what was learned. A delegate's session index
-projection still says session memory is its root's, to read it and report what
-it learns to its parent. Guidance names only tools the session can call, and mentions project
+for the partner and memory holds what was learned. Guidance names only tools the session can call, and mentions project
 memory only when a project scope is bound.
 
 Refresh runs at startup, resume, after compaction and later model boundaries.
@@ -125,16 +91,22 @@ Unchanged projections are not appended again. Empty, missing and revoked states
 supersede the previous current context; unavailable storage is not presented as
 freshly read. Historical context remains recorded history.
 
-The web transcript shows each index observation as a steering-style **Refreshed
-my memory** notification. It starts collapsed at every detail level, including
-Full, and opens only through the reader's explicit choice. Expansion shows the
-scope, index state and formatted index. Unavailable and revoked states remain
-visible on the collapsed row; truncated indexes retain their truncation label.
-Source access preserves the complete recorded text, including content Markdown
-cannot display. An observation that cannot be decoded opens as its original text.
-Disclosure choices belong to the session and item and survive remounts. Live and
-reloaded history use the same projection without changing model context or memory
-files. Native, CLI and TUI context presentation remains unchanged.
+Web and native transcripts show each index observation as a standalone
+**Refreshed my memory** notification. It starts collapsed at every detail level,
+including Full, with System events either on or off. General expansion defaults
+do not open it. Expansion shows the scope, index state and formatted index through
+each client's Markdown renderer. Unavailable and revoked states remain visible on
+the collapsed row; truncated indexes retain their truncation label. A separately
+folded **Source** preserves the complete recorded text, including content Markdown
+cannot display. Native resolves that original from the retained conversation when
+the row opens, so its display-size limit does not clip Source or the malformed
+fallback. Both clients use the shared payload validator; an observation
+that cannot be decoded opens as its original text without blocking later valid
+observations. Disclosure choices belong to the session and item and survive
+remounts and detail-level changes. Native stores the refresh and Source choices
+independently, also scoped by hub; folding the refresh preserves its Source
+choice. Live and reloaded history use the same projection without changing model
+context or memory files. CLI and TUI context presentation remains unchanged.
 
 Memory tool calls are separate from these automatic index observations. CLI and
 TUI transcripts still use the generic tool-result path, while AppWire web and

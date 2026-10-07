@@ -3,9 +3,6 @@
 package execenv
 
 import (
-	"errors"
-	"io"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -28,100 +25,6 @@ func TestConfinedFileOperations(t *testing.T) {
 	data, err := env.ReadFileRaw("data.txt")
 	if err != nil || string(data) != "opaque-data" {
 		t.Fatalf("data=%q err=%v", data, err)
-	}
-}
-
-// OpenExisting reports an absent tail without creating it, refuses a symlink
-// at the tail, and opens the directory once it exists.
-func TestConfinedFileRootOpenExisting(t *testing.T) {
-	t.Parallel()
-	host, outside := t.TempDir(), t.TempDir()
-	root, err := NewConfinedFileRoot(host, "memory/sessions/fixture")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer root.Close()
-	if env, err := root.OpenExisting(nil); !errors.Is(err, fs.ErrNotExist) || env != nil {
-		t.Fatalf("absent tail env=%v err=%v", env, err)
-	}
-	if _, err := os.Lstat(filepath.Join(host, "memory")); !os.IsNotExist(err) {
-		t.Fatalf("OpenExisting created the tail: %v", err)
-	}
-	if err := os.MkdirAll(filepath.Join(host, "memory", "sessions"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(outside, filepath.Join(host, "memory", "sessions", "fixture")); err != nil {
-		t.Fatal(err)
-	}
-	if env, err := root.OpenExisting(nil); err == nil || errors.Is(err, fs.ErrNotExist) {
-		if env != nil {
-			env.Cleanup()
-		}
-		t.Fatalf("symlinked tail err=%v", err)
-	}
-	if err := os.Remove(filepath.Join(host, "memory", "sessions", "fixture")); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Mkdir(filepath.Join(host, "memory", "sessions", "fixture"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	env, err := root.OpenExisting(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer env.Cleanup()
-	if _, err := env.WriteFile("page.md", "opaque-page"); err != nil {
-		t.Fatal(err)
-	}
-	if again, err := root.OpenExisting(env); err != nil || again != env {
-		t.Fatalf("unchanged tail reopened env=%v err=%v", again, err)
-	}
-}
-
-func TestOpenConfinedFile(t *testing.T) {
-	t.Parallel()
-	host, outside := t.TempDir(), t.TempDir()
-	env, err := NewConfinedFileEnvironment(host, "memory/sessions")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer env.Cleanup()
-	root := filepath.Join(host, "memory", "sessions")
-	if err := os.MkdirAll(filepath.Join(root, "scope"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "scope", "page.md"), []byte("opaque-page"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	f, err := env.OpenConfinedFile("scope/page.md")
-	if err != nil {
-		t.Fatal(err)
-	}
-	data, err := io.ReadAll(f)
-	_ = f.Close()
-	if err != nil || string(data) != "opaque-page" {
-		t.Fatalf("data=%q err=%v", data, err)
-	}
-	if err := os.WriteFile(filepath.Join(outside, "secret"), []byte("opaque-secret"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(filepath.Join(outside, "secret"), filepath.Join(root, "scope", "leaf.md")); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(outside, filepath.Join(root, "linked")); err != nil {
-		t.Fatal(err)
-	}
-	for _, path := range []string{"scope/leaf.md", "linked/secret", "scope"} {
-		if f, err := env.OpenConfinedFile(path); err == nil {
-			_ = f.Close()
-			t.Fatalf("opened %s", path)
-		}
-	}
-	plain := NewLocalExecutionEnvironment(host)
-	defer plain.Cleanup()
-	if f, err := plain.OpenConfinedFile(filepath.Join(root, "scope", "page.md")); err == nil {
-		_ = f.Close()
-		t.Fatal("an unconfined environment opened a confined file")
 	}
 }
 

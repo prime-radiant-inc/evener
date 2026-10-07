@@ -1,9 +1,11 @@
-// Pure decode of an automatic memory refresh's structured raw. The daemon
-// records each refresh as a systemMessage with the typed eventKind
-// "memory-context" whose Text is the model-facing envelope (core framing plus a
-// Go-quoted index). A current daemon also attaches the decoded observation on
-// raw.memoryContext; this module validates that shape for the renderer and the
-// grouping rule. No React, no platform access, so both can share it.
+// The automatic memory refresh's structured payload, shared by the web and
+// native clients. The daemon records each refresh as a systemMessage with the
+// typed eventKind "memory-context" whose Text is the model-facing envelope
+// (core framing plus a Go-quoted index). A current daemon also attaches the
+// decoded observation on raw.memoryContext; this module validates that shape
+// for the renderers and the grouping rule. No React, no platform access, so
+// both clients consume the same validation rather than maintaining two
+// decoders.
 //
 // The shape is a frozen incoming contract:
 //   raw = { memoryContext: { scope, state, truncated, content } }
@@ -16,6 +18,10 @@
 /** The systemMessage event kind of an automatic memory refresh. */
 export const MEMORY_CONTEXT_EVENT_KIND = "memory-context";
 
+/** The collapsed heading both clients show for a refresh. */
+export const MEMORY_CONTEXT_LABEL = "Refreshed my memory";
+
+// "session" stays so transcripts from earlier builds keep their scope label.
 export const MEMORY_CONTEXT_SCOPES = ["personal", "project", "session"] as const;
 export type MemoryContextScope = (typeof MEMORY_CONTEXT_SCOPES)[number];
 
@@ -69,4 +75,19 @@ export function memoryContextScopeLabel(scope: MemoryContextScope): string {
 /** The state's display word. "current" reads as the successful read it is. */
 export function memoryContextStateLabel(state: MemoryContextState): string {
   return state;
+}
+
+/** The empty-content note distinguishes the states without inventing data: an
+ * empty current index is a real, successful read of nothing. */
+export function memoryContextEmptyText(state: MemoryContextState): string {
+  switch (state) {
+    case "current":
+      return "Empty index";
+    case "missing":
+      return "No memory index";
+    case "revoked":
+      return "Memory access revoked";
+    case "unavailable":
+      return "Memory index unavailable";
+  }
 }

@@ -26,6 +26,15 @@ export function rowDisclosureIds(hubId: string, sessionRef: string, row: Timelin
 	return keys.map((key) => scopedDisclosureId(scope, JSON.stringify(key)));
 }
 
+/** The disclosure id for a memory refresh's nested literal Source. It shares
+ * the row's hub/session scope but sits under its own key, so the Source folds
+ * independently of the outer refresh and keeps its explicit choice through a
+ * remount or a verbosity change. */
+export function memoryContextSourceDisclosureId(hubId: string, sessionRef: string, row: TimelineRow): string {
+	const scope = sessionDisclosureScope(hubId, sessionRef);
+	return scopedDisclosureId(scope, JSON.stringify(["memory-context-source", row.kind, row.id]));
+}
+
 // Call ids are the provider's, and a call never spans a turn, so the turn
 // rides along. A step with no call id keeps its row id.
 function memberKey(step: RunStep | Extract<TimelineRow, { kind: "activity" }>): string[] {

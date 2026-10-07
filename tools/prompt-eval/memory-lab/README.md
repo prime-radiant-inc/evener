@@ -4,7 +4,7 @@ The memory lab measures whether Evener's prompts make agents use memory and the 
 - **capture:** saving a lesson
 - **recall:** a later session reading the lesson and acting on it
 - **correction:** fixing a page that turned out to be wrong
-- **scope choice:** personal, project or session memory
+- **scope choice:** personal or project memory
 - **whiteboard upkeep**
 
 Use it before and after you change memory guidance, memory tool descriptions, the Finishing table, or the whiteboard prompting.
@@ -58,14 +58,21 @@ The lab runs real models with your configured provider credentials, so it is nev
   "Please don't change anything; just answer. You didn't save X to memory. Did you consider it, and what led you not to?"
 ```
 
-`ask` resumes the stage's root session, by the id recorded in its `grade.json`, and asks it a question. For a stage that resumed an earlier one (for example `delegate-reads` stage B), that is the earlier stage's session. A stage that ran in another workspace needs `--workspace` (for example `--workspace work2` for `sed-quirk` stage B). `--effort` (default `high`) and `--timeout` (default 600 seconds) apply too. Use it whenever a trial does something you didn't want, and ask before you reword a prompt. In past rounds the answers named the actual cause:
+`ask` resumes the stage's root session, by the id recorded in its `grade.json`, and asks it a question. For a stage that resumed an earlier one, that is the earlier stage's session. A stage that ran in another workspace needs `--workspace` (for example `--workspace work2` for `sed-quirk` stage B). `--effort` (default `high`) and `--timeout` (default 600 seconds) apply too. Use it whenever a trial does something you didn't want, and ask before you reword a prompt. In past rounds the answers named the actual cause:
 - "I converted the constraint into an action, satisfied it, and checked it off."
 - A skip rule read as a license to skip.
 - A trigger read as a gate that a short task never trips.
 
 Every trial keeps its full logs: `<stage>.events.ndjson`, `<stage>.stdout`, `<stage>.grade.json`, the memory files after each stage in `<stage>.memory/`, and the session state in `sessions/`.
 
-`bookkeeping RUNDIR [STAGE]` counts each trial's root-session bookkeeping by surface: ledger writes (any write or patch to `progress.md`), memory writes by scope, whiteboard updates, task-list status updates and task-list updates carrying notes, plus read-backs. It prints one line per trial and a mean per version and scenario. Use it to measure duplicated progress tracking, for example on `sdd-plan`.
+`bookkeeping RUNDIR [STAGE]` counts each trial's root-session bookkeeping by surface: ledger writes (a file write, an `apply_patch` whose headers name `progress.md`, or a shell redirect, `tee` or in-place edit aimed at it), memory writes by scope, whiteboard updates, task-list status updates and task-list notes (one call can count as both), plus read-backs. It prints one line per trial and a mean per version and scenario. Use it to measure duplicated progress tracking, for example on `sdd-plan`.
+
+Shell commands are classified by a heuristic, not a shell parser. It splits a command into statements (lines, `;`, `&&`, `||`, `|`), tokenizes each with `shlex`, and skips leading `VAR=value` settings and the wrappers `sudo`, `env`, `timeout`, `nice`, `nohup`, `command`, `exec` and `time`. The covered forms are:
+Options for `grep`, `rg`, `sed` and `perl` are parsed getopt-style: short clusters (`-Ef FILE`, `-neTask`, `-pe EXPR`), attached and separate values, long `--name=value`, and `--` ending the options.
+- writes: redirects (`>`, `>>`, `2>`, `&>`, `>&`), `tee`, and the files `sed -i`/`--in-place` or `perl -i` edits. Their `-e` expressions are skipped, and a `sed -f` script or a perl script file (the first operand when there's no `-e`) counts as read.
+- reads: `<` input redirects (not heredocs or `<<<` here-strings), and the file arguments of `cat`, `head`, `tail`, `less`, `more`, `awk`, `wc`, `diff`, quiet `sed` (`-n` alone or in a cluster, `--quiet`, `--silent`), `grep` and `rg`. For `grep` and `rg` the pattern operand is not a file, including a pattern given with `-e`/`--regexp` (separate or attached); a `-f`/`--file` pattern file is read.
+
+Any other form counts as ordinary work. In the lab runs so far, shell commands account for about one in nine progress-file writes; the rest go through file tools. `test_bookkeeping.py` holds the classifier's behavior cases (`python3 -B test_bookkeeping.py`).
 
 ## Scenarios
 
@@ -79,10 +86,9 @@ Every scenario is a directory holding `scenario.json` and `fixture/` (a small Go
 | `freeze` | Partner says the exported API is frozen until 2.0. B is asked to break it | A held-out project-fact scenario. B should push back. |
 | `cents` | Partner states a decision (money is integer cents). B formats prices | Checks for real `float32`/`float64` use, not comments. B tends to pass without memory too. |
 | `sed-quirk` | A hits macOS BSD `sed -i` while bumping a version. B, in a different project, writes an in-place script | Personal scope across projects. Needs BSD `sed` (macOS): on GNU `sed` the stage A `before` hook fails the trial as infrastructure, since there is no quirk to hit. |
-| `long-work` | Longer work; the partner may pause and resume it | The cue is in the prompt. Its `working notes in session memory` check targets guidance the prompt no longer gives (progress belongs in the task list); read it with `bookkeeping`, not as a pass/fail. |
-| `long-work-nocue` | The same work with no cue | Session-memory checks are legacy, as for `long-work`. |
-| `session-local` | A refactor constraint that applies only to this work | Information only, and legacy: it was written for session memory, which the prompt no longer mentions. |
-| `delegate-reads` | The root records how this work is organized, then has a delegate do a sub-part with a one-sentence brief | Legacy: it measures delegates reading session memory, which the prompt no longer mentions. It graded `n` in every version measured. |
+| `long-work` | Longer work; the partner may pause and resume it | The cue is in the prompt. Progress belongs in the task list; read it with `bookkeeping`. |
+| `long-work-nocue` | The same work with no cue | Read it with `bookkeeping`, as for `long-work`. |
+| `session-local` | A refactor constraint that applies only to this work | Information only: it records whether the constraint lands in project memory. |
 | `recall-seeded` | Seeded project memory (a test-suite quirk). B reads it and acts | `on` and `off` arms. Recall from seeded memory already worked before the guidance work. |
 | `correction-seeded` | A seeded page goes stale (an env var is renamed). B fixes the page | |
 | `quirk` | A finds that `go test` silently skips without an env var | The agent usually fixes the root cause in the repository, which makes not saving the correct outcome. Kept as a caution. |
@@ -96,8 +102,8 @@ Every scenario is a directory holding `scenario.json` and `fixture/` (a small Go
 | `stale-status` | A leaves a rename half done; the partner finishes it before B. B must not report or keep the rename as unfinished | |
 | `polluted-seed` | Seeded project memory: a long, dated progress log with SHAs and worker ids, and a status-only index line, with one durable decision (use `log/slog`) buried inside. B adds a log line | Checks that B uses slog and leaves the decision on a short page with no SHAs (a fresh page, or the log rewritten in place). |
 | `clean-seed` | The same decision seeded as a clean one-fact page | The control for `polluted-seed`. |
-| `sdd-plan` | A four-task superpowers plan run with the real subagent-driven-development skill (copied into the fixture's `.agents/skills`). Measures bookkeeping: run `bookkeeping` on the results | The skill keeps its own ledger, so progress belongs there with task-list statuses only. Commit checks look at every branch, because the skill works on a worktree branch and leaves the merge to the partner. |
-| `plan-noskill` | The same plan with no skill and a may-stop-you cue. Progress should go in the task list | |
+| `sdd-plan` | A four-task superpowers plan run with the real subagent-driven-development skill (copied into the fixture's `.agents/skills`). Measures bookkeeping: run `bookkeeping` on the results | The skill keeps its own ledger, so progress belongs there with task-list statuses only. Its checks look at every branch, because the skill works on a worktree branch and leaves the merge to the partner: a held-out test of all four helpers (coupon bounds, empty cart, unknown SKU) must pass on some branch. |
+| `plan-noskill` | The same plan with no skill and a may-stop-you cue. Progress should go in the task list | The same held-out behavior check as `sdd-plan`. |
 
 ## Scenario format
 
