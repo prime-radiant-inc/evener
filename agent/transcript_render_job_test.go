@@ -781,3 +781,57 @@ func TestRenderMarkdown_DelegateCreateArtifactsDirSurfaces(t *testing.T) {
 		t.Errorf("delegate create result rendered as a raw JSON dump instead of the condensed status line, got:\n%s", out)
 	}
 }
+
+// A delegate_send reply that carries earlier, not yet delivered results
+// renders its own status line first, so its ref survives truncation, then each
+// earlier result as a reply renders, then its own output (#3906).
+func TestJobResultBodyRendersEarlierResults(t *testing.T) {
+	t.Parallel()
+	raw := `{"delegate_id":"dlg_1","status":"completed","action":"completed","running_in_background":false,"output":"second","earlier_results":[{"delegate_id":"dlg_1","status":"failed","reason":"boom","action":"completed","running_in_background":false,"truncated":true,"output":"first","structured_result":{"ok":false}}]}`
+	body, ok := jobResultBody(raw)
+	if !ok {
+		t.Fatalf("jobResultBody(%s) fell back", raw)
+	}
+	want := "job_id=dlg_1 status=completed transcript_ref=(none)\n" +
+		"metadata: delegate_id=dlg_1 action=completed running_in_background=false\n" +
+		"earlier result 1 of 1, not delivered before:\n" +
+		"job_id=dlg_1 status=failed reason=boom transcript_ref=(none)\n" +
+		"metadata: delegate_id=dlg_1 action=completed running_in_background=false truncated=true\n" +
+		"first\n" +
+		"structured_result:\n{\n  \"ok\": false\n}\n" +
+		"latest result:\n" +
+		"second\n"
+	if body != want {
+		t.Fatalf("body =\n%s\nwant\n%s", body, want)
+	}
+}
+
+// An earlier result carrying evidence the projection doesn't capture, or
+// nesting earlier results of its own, sends the whole body to the JSON
+// fallback, as an unknown top-level key does.
+func TestJobResultBodyFallsBackOnUncapturedEarlierEvidence(t *testing.T) {
+	t.Parallel()
+	for _, element := range []string{
+		`{"delegate_id":"dlg_1","status":"completed","surprise":1}`,
+		`{"delegate_id":"dlg_1","status":"completed","earlier_results":[{"delegate_id":"dlg_1","status":"completed"}]}`,
+	} {
+		raw := `{"delegate_id":"dlg_1","status":"completed","earlier_results":[` + element + `]}`
+		if body, ok := jobResultBody(raw); ok {
+			t.Fatalf("jobResultBody(%s) = %q, want the JSON fallback", raw, body)
+		}
+	}
+}
+
+// A long earlier result can't push the reply's ref out of a condensed card.
+func TestJobResultBodyKeepsRefAheadOfLongEarlierResults(t *testing.T) {
+	t.Parallel()
+	long := strings.Repeat("earlier line\\n", 60)
+	raw := `{"delegate_id":"dlg_1","status":"completed","transcript_ref":"local:child","output":"second","earlier_results":[{"delegate_id":"dlg_1","status":"completed","output":"` + long + `"}]}`
+	body, ok := jobResultBody(raw)
+	if !ok {
+		t.Fatalf("jobResultBody fell back")
+	}
+	if first, _, _ := strings.Cut(body, "\n"); !strings.Contains(first, "transcript_ref=local:child") {
+		t.Fatalf("first line = %q, want the reply's status line with its ref", first)
+	}
+}
