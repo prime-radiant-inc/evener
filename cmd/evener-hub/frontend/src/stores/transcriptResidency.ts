@@ -871,8 +871,16 @@ export function createTranscriptResidency(
         entry.pending = entry.pending.filter((update) => update.sequence > appliedSequence);
       }
       if (held(entry) || entry.owners.background <= 0) return true;
+      // An authoritative publish is a whole fresh snapshot (the one approved
+      // decoded read), not the previously charged body folded with the consumed
+      // pending wire bytes. Its retained size is the exact encoded state;
+      // charging residentBytes + incrementalBytes would leave the replacement
+      // body undercharged whenever the published content did not arrive through
+      // `entry.pending` (a held re-read buffers its deltas through
+      // reservePending instead). A live fold still uses the cheap incremental
+      // formula and never serializes the whole transcript per chunk.
       const size =
-        (entry.residentBytes > 0 || handoffOwnsModel) && appliedSequence > previouslyApplied
+        !authoritative && (entry.residentBytes > 0 || handoffOwnsModel) && appliedSequence > previouslyApplied
           ? entry.residentBytes + entry.handoffBytes + incrementalBytes
           : encodedPayloadBytes(currentTranscriptState(model));
       if (!Number.isFinite(size)) {
