@@ -11,7 +11,7 @@ import {
 } from "@evener/appwire-client/testing/subagentWireFixtures";
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { pressable, render, renderedText, screenConnection } from "../renderNative.testkit";
+import { pressable, render, renderedText, screenConnection, unmountMountedTrees } from "../renderNative.testkit";
 import { type ActivityListItem, activityListKey } from "./activityList";
 import { forgetStopRequestsForHub } from "./nativeStopRequests";
 import { flattenSubagents } from "./subagentModel";
@@ -50,7 +50,6 @@ const hubId = "hub-1";
 const context = subagentOutcomesDelegatesResponse().context;
 const emptyCounts = { known: true, total: 0, active: 0, failed: 0, completed: 0 };
 const delegateCounts = { known: true, total: 3, active: 0, failed: 1, completed: 2 };
-const screens: ReactTestRenderer[] = [];
 const navigation = { push: vi.fn(), navigate: vi.fn(), setOptions: vi.fn() };
 
 beforeEach(() => {
@@ -60,7 +59,7 @@ beforeEach(() => {
 	harness.focused = true;
 });
 afterEach(() => {
-	for (const screen of screens.splice(0)) act(() => screen.unmount());
+	unmountMountedTrees();
 	forgetSubagentTrees(hubId);
 });
 
@@ -98,7 +97,6 @@ function element() {
 async function mount(client: FakeClient) {
 	harness.connection = screenConnection(client, "ready");
 	const screen = render(element());
-	screens.push(screen);
 	await act(async () => {
 		await subagentTree(hubId, coordinator.ref, "root").reload();
 	});

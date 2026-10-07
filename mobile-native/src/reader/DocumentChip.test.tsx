@@ -3,7 +3,7 @@
 // per document and shared by every chip that shows it.
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { render, renderedText } from "../renderNative.testkit";
+import { render, renderedText, unmountMountedTrees } from "../renderNative.testkit";
 import { palettes } from "../design/tokens";
 import { DocumentChip } from "./DocumentChip";
 import { DocumentMemory } from "./documentMemory";
@@ -50,7 +50,6 @@ function storage(): SyncStringStorage {
 	};
 }
 let answers: (() => Response)[];
-const trees: ReactTestRenderer[] = [];
 
 beforeEach(() => {
 	harness.scheme = "light";
@@ -67,7 +66,7 @@ beforeEach(() => {
 		);
 });
 afterEach(() => {
-	for (const tree of trees.splice(0)) act(() => tree.unmount());
+	unmountMountedTrees();
 	vi.restoreAllMocks();
 });
 
@@ -88,7 +87,6 @@ function chip(props: { updatedAt?: string; onOpen?: () => void; path?: string } 
 			onOpen={props.onOpen ?? (() => {})}
 		/>,
 	);
-	trees.push(tree);
 	return tree;
 }
 

@@ -31,7 +31,7 @@ import {
 	type TestRendererOptions,
 } from "react-test-renderer";
 import type { AnyNotification, ConnectionState, InstanceListResponse } from "@evener/appwire-client";
-import { expect, vi } from "vitest";
+import { expect, onTestFinished, vi } from "vitest";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { ComposerFocus } from "./session/composerFocus";
 import { shrinkingScroller } from "./session/dockCard";
@@ -39,6 +39,28 @@ import { shrinkingScroller } from "./session/dockCard";
 // React 19's act() only drives effects when it is told it is inside a test
 // environment; vitest is not jest, so nothing sets this for us.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+/** A native read that has already answered: a real promise whose then (and
+ * so catch and each link after them) runs its callback at once, so a mount's
+ * read lands inside the render's act instead of on a microtask after a
+ * synchronous test has ended. An await, or a link after finally, still waits
+ * a microtask. It never rejects, so then's onRejected is never called; a
+ * callback that throws rejects the chain it returns, and one that returns a
+ * promise or thenable is followed, as a real promise's would be. */
+export function answered<T>(value: T): Promise<T> {
+	const promise = Promise.resolve(value);
+	promise.then = ((onFulfilled?: ((value: T) => unknown) | null) => {
+		let next: unknown;
+		try {
+			next = onFulfilled ? onFulfilled(value) : value;
+		} catch (error) {
+			return Promise.reject(error);
+		}
+		const thenable = typeof (next as { then?: unknown } | null)?.then === "function";
+		return thenable ? Promise.resolve(next) : answered(next);
+	}) as typeof promise.then;
+	return promise;
+}
 
 /** The device's system glass and its accessibility settings, as the app
  * reads them: whether the Liquid Glass API is there (expo-glass-effect's
@@ -57,7 +79,7 @@ export const systemGlass = (() => {
 			pendingAnswer = null;
 		},
 		read(): Promise<boolean> {
-			if (!this.readPending) return Promise.resolve(reduceTransparency);
+			if (!this.readPending) return answered(reduceTransparency);
 			return new Promise((resolve) => {
 				pendingAnswer = () => resolve(reduceTransparency);
 			});
@@ -275,7 +297,7 @@ export function nativeModuleMock() {
 			announceForAccessibility: vi.fn(),
 			// Reduce Motion stays off and never changes here: a suite that
 			// needs it mocks AccessibilityInfo itself.
-			isReduceMotionEnabled: () => Promise.resolve(false),
+			isReduceMotionEnabled: () => answered(false),
 			isReduceTransparencyEnabled: () => systemGlass.read(),
 			addEventListener: (event: string, listener: (value: boolean) => void) =>
 				event === "reduceTransparencyChanged" ? systemGlass.listen(listener) : { remove: () => {} },
@@ -615,14 +637,36 @@ export function dropped(
 	return { ...connection, state, downSince: downAt, lastLiveAt: downAt };
 }
 
+// The trees the running test has mounted, newest last.
+const mountedThisTest: ReactTestRenderer[] = [];
+
+/** Unmounts every tree the running test mounted, newest first; a tree a test
+ * already unmounted is a no-op. A suite whose afterEach cleans up anything a
+ * mounted tree may still use (a sheet host's release, a runtime's stop, a
+ * flow's dispose, restored mocks or real timers) calls this first, so that
+ * cleanup never runs under a live tree. */
+export function unmountMountedTrees(): void {
+	for (const tree of mountedThisTest.splice(0).reverse()) act(() => tree.unmount());
+}
+
 /** Mounts `element` and flushes its effects, returning the test renderer.
  * `options.createNodeMock` hands host components' refs a stand-in, such as a
- * ScrollView whose scrollTo a test records. */
+ * ScrollView whose scrollTo a test records.
+ *
+ * The tree is unmounted when the test that mounted it ends (unmountMountedTrees
+ * runs from onTestFinished, after the suite's afterEach hooks, unless an
+ * afterEach ran it first). A tree left mounted keeps its timers and
+ * subscriptions running, and their updates land after the file's last test,
+ * outside act: React's warning about them can reach the console while vitest
+ * tears the worker down, which fails the run (#3916). Call render only inside
+ * a test or a beforeEach. */
 export function render(element: ReactElement, options?: TestRendererOptions): ReactTestRenderer {
 	let tree!: ReactTestRenderer;
 	act(() => {
 		tree = create(element, options);
 	});
+	if (mountedThisTest.length === 0) onTestFinished(unmountMountedTrees);
+	mountedThisTest.push(tree);
 	return tree;
 }
 
@@ -638,10 +682,7 @@ export function renderHook<T>(hook: () => T): {
 		result.current = hook();
 		return null;
 	}
-	let tree!: ReactTestRenderer;
-	act(() => {
-		tree = create(createElement(Probe));
-	});
+	const tree = render(createElement(Probe));
 	return {
 		result,
 		rerender: () => act(() => tree.update(createElement(Probe))),

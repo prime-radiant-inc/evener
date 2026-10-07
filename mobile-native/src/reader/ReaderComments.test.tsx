@@ -3,7 +3,7 @@
 import type { NativeStackNavigationOptions } from "@react-navigation/native-stack";
 import type { ThreadReadResponse } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { cloneElement, type ReactElement } from "react";
+import { cloneElement } from "react";
 import type { ReactTestInstance, ReactTestRenderer } from "react-test-renderer";
 import { act } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -110,7 +110,6 @@ let client: FakeClient;
 let memory: DocumentMemory;
 // The memory's clock: the phone's, unless a test moves it.
 let clockOffset = 0;
-const trees: ReactTestRenderer[] = [];
 
 function storage(): SyncStringStorage {
 	const data = new Map<string, string>();
@@ -178,7 +177,6 @@ beforeEach(() => {
 	};
 });
 afterEach(() => {
-	for (const tree of trees.splice(0)) act(() => tree.unmount());
 	vi.restoreAllMocks();
 });
 
@@ -218,7 +216,6 @@ async function mount(path = PATH, extra: Record<string, unknown> = {}, flush = s
 		<ReaderScreen route={{ key: "reader-1", name: "Reader", params } as never} navigation={navigation as never} />
 	);
 	const tree = render(element);
-	trees.push(tree);
 	await flush();
 	// Renders again, as a change in the navigation state would.
 	const rerender = async () => {
@@ -267,14 +264,8 @@ describe("comments (Task 16)", () => {
 		...over,
 	});
 
-	function mountSheet(element: ReactElement) {
-		const tree = render(element);
-		trees.push(tree);
-		return tree;
-	}
-
 	function commentSheet(params = commentParams()) {
-		return mountSheet(
+		return render(
 			<CommentSheet
 				route={{ key: "comment", name: "CommentSheet", params } as never}
 				navigation={sheetNavigation as never}
@@ -290,7 +281,7 @@ describe("comments (Task 16)", () => {
 			sessionTitle: "Fix race",
 			...over,
 		};
-		return mountSheet(
+		return render(
 			<CommentsSheet
 				route={{ key: "comments", name: "CommentsSheet", params } as never}
 				navigation={sheetNavigation as never}

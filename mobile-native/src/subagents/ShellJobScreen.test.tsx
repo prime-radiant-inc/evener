@@ -8,8 +8,8 @@ import type { SessionActivityReadParams } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { connectJobOutputPeer } from "@evener/appwire-client/testing/jobOutputPeer";
 import { wireThread } from "@evener/appwire-client/testing/notifications";
-import { act, type ReactTestRenderer } from "react-test-renderer";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { act } from "react-test-renderer";
+import { beforeEach, expect, it, vi } from "vitest";
 import { render, renderedText, screenConnection } from "../renderNative.testkit";
 import { forgetSubagentTrees } from "./subagentTree";
 import { ShellJobScreen } from "./ShellJobScreen";
@@ -96,7 +96,6 @@ let client: FakeClient;
 let tree: unknown;
 let output: (params: { ref?: string; jobId: string }) => unknown;
 let navigation: { setOptions: ReturnType<typeof vi.fn>; options: NativeStackNavigationOptions[] };
-const mounted: ReactTestRenderer[] = [];
 
 beforeEach(() => {
 	harness.focused = true;
@@ -115,9 +114,6 @@ beforeEach(() => {
 	harness.connection = screenConnection(client, "ready");
 	const options: NativeStackNavigationOptions[] = [];
 	navigation = { setOptions: vi.fn((next) => options.push(next)), options };
-});
-afterEach(() => {
-	for (const screen of mounted.splice(0)) act(() => screen.unmount());
 });
 
 async function settle() {
@@ -139,7 +135,6 @@ async function mount(over: { ownerRef?: string } = {}) {
 	const screen = render(
 		<ShellJobScreen route={{ key: "job", name: "ShellJob", params } as never} navigation={navigation as never} />,
 	);
-	mounted.push(screen);
 	await settle();
 	return screen;
 }
@@ -326,7 +321,6 @@ it("reads a running job's output again on its own, and an ended job's only once"
 		expect(outputCalls()).toHaveLength(2);
 		expect(renderedText(screen)).toContain("still going");
 		act(() => screen.unmount());
-		mounted.splice(mounted.indexOf(screen), 1);
 
 		forgetSubagentTrees("hub-1");
 		tree = treeWith(shellJob("j-test"));

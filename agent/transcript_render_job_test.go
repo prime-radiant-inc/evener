@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/transcript"
@@ -822,16 +823,41 @@ func TestJobResultBodyFallsBackOnUncapturedEarlierEvidence(t *testing.T) {
 	}
 }
 
-// A long earlier result can't push the reply's ref out of a condensed card.
+// A long earlier result can't push the reply's ref out of a condensed card:
+// the card is truncated, and the ref is still on it, ahead of the elision.
 func TestJobResultBodyKeepsRefAheadOfLongEarlierResults(t *testing.T) {
 	t.Parallel()
-	long := strings.Repeat("earlier line\\n", 60)
-	raw := `{"delegate_id":"dlg_1","status":"completed","transcript_ref":"local:child","output":"second","earlier_results":[{"delegate_id":"dlg_1","status":"completed","output":"` + long + `"}]}`
+	childRef := "local:child-ref"
+	longOutput, err := json.Marshal(makeNumberedLines(resultBodyWholeMax + 100))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	res := delegateSendToolResult(t, "call_send", sendMessageResult{
+		DelegateID: "dlg_1", Type: "delegate", Status: jobstore.StatusCompleted, Action: "completed",
+		TranscriptRef: childRef, Output: "second",
+		Earlier: []delegatestore.TerminalPacket{{Kind: delegatestore.PacketReported, Message: longOutput}},
+	}, 0)
+	out := renderMarkdown(transcript.Header{}, []transcript.Entry{
+		toolCallEntry(call("call_send", "delegate_send", `{}`)),
+		toolResultEntry(res),
+	}, 0, renderOpts{})
+	refIdx, elideIdx := strings.Index(out, childRef), strings.Index(out, "lines elided")
+	if elideIdx < 0 || refIdx < 0 || refIdx > elideIdx {
+		t.Fatalf("ref at %d, elision at %d: want a truncated card with the ref ahead of the elision:\n%s", refIdx, elideIdx, out)
+	}
+}
+
+// Several earlier results are numbered oldest first, each ahead of the next,
+// and the reply's own output follows the latest-result label.
+func TestJobResultBodyNumbersSeveralEarlierResults(t *testing.T) {
+	t.Parallel()
+	raw := `{"delegate_id":"dlg_1","status":"completed","output":"OUT-3","earlier_results":[{"delegate_id":"dlg_1","status":"failed","output":"OUT-1"},{"delegate_id":"dlg_1","status":"stopped","output":"OUT-2"}]}`
 	body, ok := jobResultBody(raw)
 	if !ok {
-		t.Fatalf("jobResultBody fell back")
+		t.Fatalf("jobResultBody(%s) fell back", raw)
 	}
-	if first, _, _ := strings.Cut(body, "\n"); !strings.Contains(first, "transcript_ref=local:child") {
-		t.Fatalf("first line = %q, want the reply's status line with its ref", first)
-	}
+	assertOrdered(t, "jobResultBody", body, "status=completed",
+		"earlier result 1 of 2", "status=failed", "OUT-1",
+		"earlier result 2 of 2", "status=stopped", "OUT-2",
+		"latest result:", "OUT-3")
 }

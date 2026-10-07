@@ -8,7 +8,7 @@ import { act, type ReactTestInstance, type ReactTestRenderer } from "react-test-
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { paletteFor } from "../design/tokens";
 import type { ComposerCommandSession } from "../composerCommand";
-import { pressable, render, screenConnection, textOf } from "../renderNative.testkit";
+import { pressable, render, screenConnection, textOf, unmountMountedTrees } from "../renderNative.testkit";
 import type { Routes } from "../screens";
 import { sheetKey } from "../sheet/sheetHosts";
 import { type CommandsHost, CommandsSheet, commandHosts, insertInvocation } from "./CommandsSheet";
@@ -85,7 +85,6 @@ function session(capabilities: Partial<ComposerCommandSession["capabilities"]>):
 }
 
 let owner: object | undefined;
-const mounted: ReactTestRenderer[] = [];
 
 function provide(over: Partial<CommandsHost> = {}) {
 	const calls: string[] = [];
@@ -108,7 +107,6 @@ async function sheet(client: unknown = catalogClient()): Promise<ReactTestRender
 		navigation,
 	} as unknown as NativeStackScreenProps<Routes, "CommandsSheet">;
 	const tree = render(<CommandsSheet {...props} />);
-	mounted.push(tree);
 	await act(async () => {
 		await new Promise((resolve) => setTimeout(resolve, 0));
 	});
@@ -132,7 +130,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-	for (const tree of mounted.splice(0)) act(() => tree.unmount());
+	unmountMountedTrees();
 	if (owner) commandHosts.release(sheetKey(HUB, REF), owner);
 	owner = undefined;
 });

@@ -145,7 +145,7 @@ export interface ConversationService {
 	}>;
 	subscribeNotifications(handler: (n: AnyNotification) => void): () => void;
 	send(input: InputItem[]): Promise<MutationReceipt>;
-	steer(input: InputItem[], expectedQueueRevision?: number): Promise<MutationReceipt>;
+	steer(input: InputItem[]): Promise<MutationReceipt>;
 	queue(input: InputItem[]): Promise<MutationReceipt>;
 	interrupt(): Promise<MutationReceipt>;
 	compact(): Promise<void>;
@@ -277,14 +277,13 @@ function extractCapabilities(raw: unknown): ThreadCapabilities {
 	return caps;
 }
 
-type MutationKind = "send" | "steer" | "drain" | "queue" | "cancel" | "interrupt" | "clear";
+type MutationKind = "send" | "steer" | "queue" | "cancel" | "interrupt" | "clear";
 export const CANONICAL_MUTATION_DISPOSITIONS = ["applied", "replayed"] as const;
 export type CanonicalMutationDisposition = (typeof CANONICAL_MUTATION_DISPOSITIONS)[number];
 
 const CANONICAL_MUTATION_PROJECTION: Readonly<Record<MutationKind, "pending" | "reflected" | "removed">> = {
 	send: "pending",
 	steer: "pending",
-	drain: "pending",
 	queue: "pending",
 	cancel: "removed",
 	interrupt: "reflected",
@@ -330,24 +329,18 @@ const RECEIPT_CORRELATION_KEYS = ["clientMutationId", "disposition", "threadId",
 const REQUIRED_RECEIPT_KEYS_BY_KIND: Readonly<Record<MutationKind, readonly string[]>> = {
 	send: [...RECEIPT_CORRELATION_KEYS, "turnId"],
 	steer: [...RECEIPT_CORRELATION_KEYS, "turnId"],
-	drain: [...RECEIPT_CORRELATION_KEYS, "turnId"],
 	interrupt: [...RECEIPT_CORRELATION_KEYS, "turnId"],
 	queue: [...RECEIPT_CORRELATION_KEYS, "queueEntryIds"],
 	cancel: [...RECEIPT_CORRELATION_KEYS, "queueEntryIds"],
 	clear: [...RECEIPT_CORRELATION_KEYS],
 };
 
-// Receipt keys the daemon includes only when it has something to report: a
-// drain may name the queue entries and client mutations it consumed, and any
+// A receipt key the daemon includes only when it has something to report: any
 // kind may name the instance the receipt is bound to.
-const OPTIONAL_RECEIPT_KEYS_BY_KIND: Readonly<Partial<Record<MutationKind, readonly string[]>>> = {
-	drain: ["queueEntryIds", "consumedClientMutationIds"],
-};
 const OPTIONAL_RECEIPT_KEYS_ANY_KIND = ["instanceId"] as const;
 
 const KNOWN_RECEIPT_KEYS: ReadonlySet<string> = new Set([
 	...Object.values(REQUIRED_RECEIPT_KEYS_BY_KIND).flat(),
-	...Object.values(OPTIONAL_RECEIPT_KEYS_BY_KIND).flat(),
 	...OPTIONAL_RECEIPT_KEYS_ANY_KIND,
 ]);
 
@@ -406,14 +399,11 @@ function decodeMutationResult(
 	const receiptObject =
 		result.receipt !== null && typeof result.receipt === "object" ? (result.receipt as Record<string, unknown>) : null;
 	const requiredReceiptKeys = [...REQUIRED_RECEIPT_KEYS_BY_KIND[kind]];
-	for (const key of [...(OPTIONAL_RECEIPT_KEYS_BY_KIND[kind] ?? []), ...OPTIONAL_RECEIPT_KEYS_ANY_KIND]) {
+	for (const key of OPTIONAL_RECEIPT_KEYS_ANY_KIND) {
 		if (receiptObject !== null && Object.hasOwn(receiptObject, key)) {
 			requiredReceiptKeys.push(key);
 		}
 	}
-	const hasDrainedEntries = kind === "drain" && receiptObject !== null && Object.hasOwn(receiptObject, "queueEntryIds");
-	const hasConsumedClientMutationIds =
-		kind === "drain" && receiptObject !== null && Object.hasOwn(receiptObject, "consumedClientMutationIds");
 	const receipt = decodedReceipt(result.receipt, requiredReceiptKeys, `${kind} receipt`);
 	if (receipt.clientMutationId !== clientMutationId) {
 		throw new Error(`ConversationService: ${kind} receipt correlation mismatch`);
@@ -437,26 +427,15 @@ function decodeMutationResult(
 		}
 		decoded.instanceId = expectedInstanceId;
 	}
-	if (kind === "send" || kind === "steer" || kind === "drain" || kind === "interrupt") {
+	if (kind === "send" || kind === "steer" || kind === "interrupt") {
 		decoded.turnId = nonemptyString(receipt.turnId, `${kind} turn id`);
 	}
-	if (kind === "queue" || kind === "cancel" || hasDrainedEntries) {
+	if (kind === "queue" || kind === "cancel") {
 		const ids = receipt.queueEntryIds;
 		if (!Array.isArray(ids) || ids.length === 0 || ids.some((id) => typeof id !== "string" || id.trim() === "")) {
 			throw new Error("ConversationService: queue entry ids are empty or invalid");
 		}
 		decoded.queueEntryIds = [...ids];
-	}
-	if (hasConsumedClientMutationIds) {
-		const consumed = receipt.consumedClientMutationIds;
-		if (
-			!Array.isArray(consumed) ||
-			consumed.length === 0 ||
-			consumed.some((id) => typeof id !== "string" || id.trim() === "")
-		) {
-			throw new Error(`ConversationService: ${kind} receipt consumed client mutation ids are invalid`);
-		}
-		decoded.consumedClientMutationIds = [...consumed];
 	}
 	return decoded;
 }
@@ -818,31 +797,18 @@ export function createConversationService<ReadLease = unknown>(
 			return decodeMutationResult("send", result, clientMutationId, expectedInstanceId);
 		},
 
-		async steer(input, expectedQueueRevision) {
+		async steer(input) {
 			requireCap("steer", "steer");
 			const threadRef = requireRef();
 			const expectedInstanceId = nonemptyString(instanceId, "thread instance id");
 			const clientMutationId = idFactory();
-			const result = await (expectedQueueRevision === undefined
-				? client.request("turn/steer", {
-						ref: threadRef,
-						clientMutationId,
-						expectedInstanceId,
-						input,
-					})
-				: client.request("turn/drainAsSteer", {
-						ref: threadRef,
-						clientMutationId,
-						expectedInstanceId,
-						expectedQueueRevision,
-						input,
-					}));
-			return decodeMutationResult(
-				expectedQueueRevision === undefined ? "steer" : "drain",
-				result,
+			const result = await client.request("turn/steer", {
+				ref: threadRef,
 				clientMutationId,
 				expectedInstanceId,
-			);
+				input,
+			});
+			return decodeMutationResult("steer", result, clientMutationId, expectedInstanceId);
 		},
 
 		async queue(input) {
