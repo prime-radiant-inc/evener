@@ -188,7 +188,10 @@ test("a nested stable delegate belongs to its parent delegate's session, not the
   const entity = findEntityView(view, "delegate", "dlg_b", "local:child-a");
   expect(entity).toMatchObject({ ownerRef: "local:child-a", stable: nested });
   expect(entityOpenTarget(entity!)).toEqual({ ref: "local:child-b", parentRef: "local:child-a" });
-  expect(findEntityView(view, "delegate", "dlg_b", "local:s")).toBeUndefined();
+  // A root's transcript can name a grandchild (job_status, job_list, prose):
+  // the lookup from the viewed session still reaches it through its parent.
+  expect(findEntityView(view, "delegate", "dlg_b", "local:s")).toBe(entity);
+  expect(findEntityView(view, "delegate", "dlg_a", "local:child-a")).toBeUndefined();
 });
 
 test("a nested delegate whose parent is not listed belongs to the viewed session", () => {
