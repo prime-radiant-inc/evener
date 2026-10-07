@@ -48,9 +48,9 @@ function fixture(contextOverride: (ref: string) => SessionActivityContext | unde
     contextOverride(ref) ??
     cascadeContext(ref, ref === "grandchild" ? ["root", "child"] : ref === "root" ? [] : ["root"]);
   const client = cascadeClient(context);
-  client.on("evener/thread/delegates/list", ({ ref }) => ({
+  const delegatesPage = (ref: string) => ({
     context: context(ref),
-    scope: "session",
+    scope: "session" as const,
     delegates: [
       activityDelegate({
         ownerRef: ref,
@@ -60,7 +60,8 @@ function fixture(contextOverride: (ref: string) => SessionActivityContext | unde
       }),
     ],
     page: { complete: true, issues: [] },
-  }));
+  });
+  client.on("evener/thread/delegates/list", ({ ref }) => delegatesPage(ref));
   const params: SessionZoomParams = {
     ref: "grandchild",
     source: { type: "session", params: { ref: "root" } },
@@ -85,6 +86,7 @@ function fixture(contextOverride: (ref: string) => SessionActivityContext | unde
   return {
     client,
     context,
+    delegatesPage,
     contents,
     mount() {
       return render(contents());
@@ -258,33 +260,23 @@ test("only a user drill animates a new scope while late ancestry commits immedia
 });
 
 test("an ancestor peek drills its explicit owner and truncates the branch while leaving other panes intact", async () => {
-  const { client, context, mount } = fixture();
+  const { client, delegatesPage, mount } = fixture();
   mount();
   await scope("child").findByRole("button", { name: "Open conversation" });
   const other = { id: "other", type: "doc" as const, slot: "secondary" as const, params: { ref: "unrelated" } };
   act(() => workspaceStore.setState((state) => ({ panes: [...state.panes, other], focusedPaneId: other.id })));
-  // The peek's rows arrive a moment late, as they can on a loaded host (#3928),
-  // so the test waits for them while the reply lands.
+  // The root peek's rows arrive a moment late, as they can on a loaded host, so
+  // they land while the test waits for them. That pins the find-before-act
+  // order below: a find inside act() would make React warn on every run (#3928).
   client.on("evener/thread/delegates/list", async ({ ref }) => {
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    return {
-      context: context(ref),
-      scope: "session",
-      delegates: [
-        activityDelegate({
-          ownerRef: ref,
-          childRef: "sibling",
-          delegateId: "edge-sibling",
-          description: `${ref} direct child`,
-        }),
-      ],
-      page: { complete: true, issues: [] },
-    };
+    if (ref === "root") await new Promise((resolve) => setTimeout(resolve, 50));
+    return delegatesPage(ref);
   });
   const peek = await openPeek("root");
   expect(leaf()).toBe("grandchild");
-  // Found before act(): a Testing Library wait turns the act environment off,
-  // so an update landing inside an act() scope during it makes React warn.
+  // Found before act(): a Testing Library wait turns the act environment off
+  // until a macrotask after it ends, so an update landing inside an act() scope
+  // in that window makes React warn.
   const sibling = await within(peek).findByRole("button", { name: /root direct child/ });
   await act(async () => fireEvent.click(sibling));
   await waitFor(() => expect(leaf()).toBe("sibling"));
