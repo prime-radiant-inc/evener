@@ -954,11 +954,10 @@ func TestSessionDelegateStatus_SubagentListsItsOwnSubtree(t *testing.T) {
 		for _, row := range rows {
 			ids = append(ids, row.DelegateID)
 		}
-		sort.Strings(ids)
 		return ids
 	}
 	wholeTree := []string{tree.parent.DelegateID, tree.grandchildID}
-	sort.Strings(wholeTree)
+	slices.Sort(wholeTree)
 	for _, tc := range []struct {
 		name      string
 		sessionID string
@@ -976,10 +975,11 @@ func TestSessionDelegateStatus_SubagentListsItsOwnSubtree(t *testing.T) {
 		if got := delegateIDs(cold); !slices.Equal(got, tc.want) {
 			t.Fatalf("%s: cold delegates = %v, want %v", tc.name, got, tc.want)
 		}
-		if got := delegateIDs(tc.live.DetailedStatus().Delegates); !slices.Equal(got, tc.want) {
+		live := tc.live.DetailedStatus().Delegates
+		if got := delegateIDs(live); !slices.Equal(got, tc.want) {
 			t.Fatalf("%s: live delegates = %v, want %v", tc.name, got, tc.want)
 		}
-		for _, row := range append(cold, tc.live.DetailedStatus().Delegates...) {
+		for _, row := range append(cold, live...) {
 			if row.OwnerSessionID != rootID || row.RootSessionID != rootID {
 				t.Fatalf("%s: row %s owner/root = %s/%s, want the tree root %s", tc.name, row.DelegateID, row.OwnerSessionID, row.RootSessionID, rootID)
 			}
