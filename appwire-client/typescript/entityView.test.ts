@@ -173,6 +173,53 @@ test("live-only delegate cards and navigates from delegates[]", () => {
   expect(entityOpenTarget(entity!)).toEqual({ ref: "local:child", parentRef: "local:s" });
 });
 
+test("a nested stable delegate belongs to its parent delegate's session, not the viewed one", () => {
+  const parent = liveDelegate("dlg_a", 2, "local:child-a");
+  const nested = { ...liveDelegate("dlg_b", 2, "local:child-b"), parentDelegateId: "dlg_a" };
+  const view = buildEntityView({
+    sessionRef: "local:s",
+    delegates: [parent, nested],
+    turns: [],
+    stale: false,
+    ended: false,
+  });
+
+  expect(findEntityView(view, "delegate", "dlg_a", "local:s")).toMatchObject({ ownerRef: "local:s" });
+  const entity = findEntityView(view, "delegate", "dlg_b", "local:child-a");
+  expect(entity).toMatchObject({ ownerRef: "local:child-a", stable: nested });
+  expect(entityOpenTarget(entity!)).toEqual({ ref: "local:child-b", parentRef: "local:child-a" });
+  expect(findEntityView(view, "delegate", "dlg_b", "local:s")).toBeUndefined();
+});
+
+test("a nested delegate whose parent is not listed belongs to the viewed session", () => {
+  // A subagent's thread lists its subtree; its top rows name its own delegate,
+  // which its list does not hold, as their parent.
+  const top = { ...liveDelegate("dlg_b", 2, "local:child-b"), parentDelegateId: "dlg_self" };
+  const view = buildEntityView({ sessionRef: "local:s", delegates: [top], turns: [], stale: false, ended: false });
+
+  expect(findEntityView(view, "delegate", "dlg_b", "local:s")).toMatchObject({ ownerRef: "local:s" });
+});
+
+test("a nested tree row keeps its name when the stable row for it is older", () => {
+  const retained = treeWithEntries([
+    { kind: "delegate", delegate: { ...delegate("dlg_b", 5), ownerRef: "local:child-a", name: "named nested" } },
+  ]);
+  const parent = liveDelegate("dlg_a", 2, "local:child-a");
+  const nested = { ...liveDelegate("dlg_b", 4, "local:tree-dlg_b"), parentDelegateId: "dlg_a" };
+  const view = buildEntityView({
+    sessionRef: "local:s",
+    tree: retained,
+    delegates: [parent, nested],
+    turns: [],
+    stale: false,
+    ended: false,
+  });
+
+  const entity = findEntityView(view, "delegate", "dlg_b", "local:child-a");
+  expect(entity).toMatchObject({ kind: "delegate", name: "named nested", ownerRef: "local:child-a" });
+  expect(delegateSource(entity as DelegateEntityView)).toBe("tree");
+});
+
 test("live update and retained row reconcile by qualified identity with one action target", () => {
   const retained = treeWithDelegate("same", 3);
   const live = { ...liveDelegate("same", 4, "local:tree-same"), runGeneration: 2 };

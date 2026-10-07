@@ -90,7 +90,7 @@ function treeDelegateEntity(row: ActivityDelegateRow, stale: boolean, ended: boo
 
 function liveDelegateEntity(
   stable: EvenerDelegateInfo,
-  sessionRef: string,
+  ownerRef: string,
   stale: boolean,
   ended: boolean,
   name?: string,
@@ -100,9 +100,9 @@ function liveDelegateEntity(
     name,
     id: activityNodeID({ kind: "delegate", delegateId: stable.delegateId, childRef: stable.transcriptRef }),
     logicalId: stable.delegateId,
-    ownerRef: sessionRef,
+    ownerRef,
     stable,
-    open: { ref: stable.transcriptRef, parentRef: sessionRef },
+    open: { ref: stable.transcriptRef, parentRef: ownerRef },
     stale,
     ended,
   };
@@ -136,18 +136,23 @@ export function buildEntityView(sources: EntityViewSources): Map<string, EntityV
     );
   }
 
+  // A thread's list holds its whole subtree. A nested row belongs to its
+  // parent delegate's session; a row whose parent the list does not hold (a
+  // subagent's own delegate) belongs to the viewed session.
+  const childRefs = new Map((sources.delegates ?? []).map((stable) => [stable.delegateId, stable.transcriptRef]));
   for (const stable of sources.delegates ?? []) {
+    const ownerRef = (stable.parentDelegateId && childRefs.get(stable.parentDelegateId)) || sources.sessionRef;
     const id = activityNodeID({ kind: "delegate", delegateId: stable.delegateId, childRef: stable.transcriptRef });
     const existing = entities.get(id);
     const sameIdentity =
       existing?.kind === "delegate" &&
-      existing.ownerRef === sources.sessionRef &&
+      existing.ownerRef === ownerRef &&
       existing.logicalId === stable.delegateId &&
       existing.open.ref === stable.transcriptRef;
     if (sameIdentity && existing.row !== undefined && preferActivityDelegate(existing.row.delegate, stable)) continue;
     // Status overlays retain an immutable name only for the same owned delegate.
     const name = sameIdentity ? existing.name : undefined;
-    entities.set(id, liveDelegateEntity(stable, sources.sessionRef, sources.stale, sources.ended, name));
+    entities.set(id, liveDelegateEntity(stable, ownerRef, sources.stale, sources.ended, name));
   }
 
   for (const [id, watch] of foldWatchSummaries(watchItems(sources.turns))) {
