@@ -92,9 +92,11 @@ interface CommandContext {
 	turn(): ComposerCommandSession | null;
 	/** Steers with the whole queue through the outbox, as Steer all now does. */
 	drainQueue(): Promise<void>;
-	/** Sends a steer, queue or stop through the outbox, as the composer and
-	 * Stop do, so it keeps its place in line and a lost answer is resent. */
-	submit(kind: "steer" | "queue" | "interrupt", input: InputItem[]): Promise<void>;
+	/** Sends a steer or queue through the outbox, as the composer does, so it
+	 * keeps its place in line and a lost answer is resent. */
+	submit(kind: "steer" | "queue", input: InputItem[]): Promise<void>;
+	/** Stops the turn as the Stop button does. */
+	stop(): Promise<void>;
 	reasoning(): Pick<MobileConversation, "supportsReasoning" | "reasoningEffort" | "reasoningEffortLevels"> | null;
 }
 
@@ -189,7 +191,7 @@ export async function submitComposerCommand(
 		operation = () => service.setGoal(match.argsText.trim());
 	} else if (id === "interrupt") {
 		requireControl();
-		operation = () => context.submit("interrupt", []);
+		operation = () => context.stop();
 	} else {
 		requireControl();
 		operation = () => service[id]();

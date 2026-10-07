@@ -16,6 +16,7 @@ const commandContext = {
 	turn: () => null,
 	drainQueue: async () => {},
 	submit: async () => {},
+	stop: async () => {},
 	local: async () => {},
 	openAside: (_ref: string, _title: string) => {},
 	cleared: (_response: ThreadClearResponse) => {},
@@ -478,7 +479,6 @@ it.each(["advertised", "turn"])(
 it.each([
 	["/steer sentinel", "steer", [{ type: "text", text: "sentinel" }]],
 	["/queue sentinel", "queue", [{ type: "text", text: "sentinel" }]],
-	["/interrupt", "interrupt", []],
 ] as const)("routes %s to the outbox, keeping it unconfirmed until admitted", async (text, kind, input) => {
 	const { db, document } = commandDraft();
 	const { io, service, thread } = boundary();
@@ -518,6 +518,33 @@ it.each([
 	}
 });
 
+// /interrupt is the Stop button's own stop, never the service.
+it("routes /interrupt to Stop", async () => {
+	const { db, document } = commandDraft();
+	const { io, service, thread } = boundary();
+	thread.evener.capabilities.interrupt = true;
+	let stopped = 0;
+	try {
+		await service.open("local:test");
+		io.lifecycle = async (method) => {
+			throw new Error(`unexpected ${method}`);
+		};
+		document.edit("/interrupt");
+		await submitComposerCommand(document, service, {
+			...commandContext,
+			stop: async () => {
+				stopped++;
+			},
+			turn: () => ({ status: { type: "active" }, capabilities: { interrupt: true }, queue: null }),
+		});
+		expect(stopped).toBe(1);
+		expect(document.getSnapshot().record).toMatchObject({ draft: "", unconfirmed: null });
+	} finally {
+		service.close();
+		db.close();
+	}
+});
+
 // The drain goes through the outbox, as Steer all now does, never the service.
 it("routes /drain-as-steer to the outbox drain, keeping it unconfirmed until admitted", async () => {
 	const { db, document } = commandDraft();
@@ -550,7 +577,7 @@ it("routes /drain-as-steer to the outbox drain, keeping it unconfirmed until adm
 	}
 });
 
-it.each(["/steer sentinel", "/queue sentinel", "/drain-as-steer"])(
+it.each(["/steer sentinel", "/queue sentinel", "/drain-as-steer", "/interrupt"])(
 	"retains %s without a live turn instead of sending chat",
 	async (text) => {
 		const { db, document } = commandDraft();

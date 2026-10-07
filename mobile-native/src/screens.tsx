@@ -75,7 +75,12 @@ import { projectNativeMutationRecovery, RecoveryFailure, useRecoveryPanel } from
 import { useNativePreferences } from "./NativePreferencesProvider";
 import { drafts } from "./nativeDrafts";
 import { nativeImagePicker } from "./nativeImagePicker";
-import { createNativeMutationHost, createDurableSubmitter, type NativeMutationHost } from "./nativeMutationHost";
+import {
+	createNativeMutationHost,
+	createDurableSubmitter,
+	NATIVE_MUTATION_HOST_UNAVAILABLE,
+	type NativeMutationHost,
+} from "./nativeMutationHost";
 import { getNativeMutationRuntime, nativeMutationTargetKey } from "./nativeMutationRuntime";
 import { type SessionSeed, seedFromSession } from "./newSession/launchSetup";
 import { readerPositions } from "./nativeReaderPosition";
@@ -1856,15 +1861,22 @@ export function ConversationScreen({
 						submit: async (kind, input) => {
 							const live = store.getState().conversation;
 							if (!live) throw new CommandArgumentError("Open the session again and try once more.");
-							await mutationSubmitter.submit({
-								kind,
-								hubId: route.params.hubId,
-								targetRef: route.params.ref,
-								threadId: live.threadId,
-								instanceId: live.instanceId ?? live.threadId,
-								input,
-							});
+							try {
+								await mutationSubmitter.submit({
+									kind,
+									hubId: route.params.hubId,
+									targetRef: route.params.ref,
+									threadId: live.threadId,
+									instanceId: live.instanceId ?? live.threadId,
+									input,
+								});
+							} catch {
+								// Admission only writes on the phone: nothing left it, so this
+								// is safe to try again, not a send to confirm.
+								throw new CommandArgumentError(NATIVE_MUTATION_HOST_UNAVAILABLE);
+							}
 						},
+						stop,
 						drainQueue: async () => {
 							// As Steer all now waits (canSteerAll): it would take that message too.
 							if (steeringFromQueue) throw new CommandArgumentError(STEER_ON_ITS_WAY);

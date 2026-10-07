@@ -1061,6 +1061,7 @@ it("holds the phone's unsent messages on /interrupt, as Stop does", async () => 
 	await settle();
 	expect(hub.mutations()).toEqual(["turn/queue", "turn/interrupt"]);
 	expect(renderedText(tree)).toContain("Held · you stopped this turn");
+	expect(renderedText(tree)).toContain("Stopped");
 });
 
 it("keeps the session open when /shutdown is typed and completed (ruling 19)", async () => {
