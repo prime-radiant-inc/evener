@@ -222,7 +222,7 @@ func TestMemoryPreservationWorktreeLifetime(t *testing.T) {
 	}
 	s.Close()
 	retired := newSession(t, withDir(workspace), withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root, MemoryProjectID: project.ID, Project: project}))
-	retired.maybeAppendMemoryContext(context.Background())
+	retired.maybeAppendMemoryContext(context.Background(), true)
 	if err := retired.releaseRuntime(context.Background(), closeOptions{}, releaseRetirement); err != nil {
 		t.Fatal(err)
 	}
