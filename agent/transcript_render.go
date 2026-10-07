@@ -1190,11 +1190,8 @@ func writeToolResultBody(b *strings.Builder, toolName string, result *llm.ToolRe
 // known job result fields: in that case the general JSON pretty-print keeps the
 // extra evidence visible rather than the struct silently dropping it.
 func jobResultBody(raw string) (string, bool) {
-	r, ok := decodeJobResult(raw)
+	r, ok := decodeRenderableJobResult(raw)
 	if !ok {
-		return "", false
-	}
-	if hasNonJobResultKeys(raw) {
 		return "", false
 	}
 	// A delegate_send reply can carry earlier results of its delegate ahead
@@ -1205,8 +1202,8 @@ func jobResultBody(raw string) (string, bool) {
 	var b strings.Builder
 	b.WriteString(jobResultStatus(r, raw))
 	for i, element := range r.EarlierResults {
-		earlier, ok := decodeJobResult(string(element))
-		if !ok || hasNonJobResultKeys(string(element)) || len(earlier.EarlierResults) != 0 {
+		earlier, ok := decodeRenderableJobResult(string(element))
+		if !ok || len(earlier.EarlierResults) != 0 {
 			return "", false
 		}
 		fmt.Fprintf(&b, "earlier result %d of %d, not delivered before:\n", i+1, len(r.EarlierResults))
@@ -1218,6 +1215,17 @@ func jobResultBody(raw string) (string, bool) {
 	}
 	b.WriteString(jobResultOutput(r))
 	return b.String(), true
+}
+
+// decodeRenderableJobResult decodes a job result body this projection can
+// render whole: it reports false when the body isn't a job result or carries
+// keys jobResult doesn't capture.
+func decodeRenderableJobResult(raw string) (jobResult, bool) {
+	r, ok := decodeJobResult(raw)
+	if !ok || hasNonJobResultKeys(raw) {
+		return jobResult{}, false
+	}
+	return r, true
 }
 
 // jobResultStatus is a job result's status line, with the ref prominent, and
