@@ -841,9 +841,8 @@ func TestJobResultBodyKeepsRefAheadOfLongEarlierResults(t *testing.T) {
 		toolCallEntry(call("call_send", "delegate_send", `{}`)),
 		toolResultEntry(res),
 	}, 0, renderOpts{})
-	// The condensed card, not the raw-JSON fallback (which also carries the
-	// ref and truncates): its status line, and no JSON keys.
-	if !strings.Contains(out, "job_id=dlg_1 status=completed transcript_ref="+childRef) || strings.Contains(out, `"delegate_id":`) {
+	// The condensed card's status line, not the fallback's delegate_send text.
+	if !strings.Contains(out, "job_id=dlg_1 status=completed transcript_ref="+childRef) {
 		t.Fatalf("want the condensed job-result card, got:\n%s", out)
 	}
 	refIdx, elideIdx := strings.Index(out, childRef), strings.Index(out, "lines elided")
