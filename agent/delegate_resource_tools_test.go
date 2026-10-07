@@ -596,3 +596,21 @@ func TestStableDelegateTools_SendReplyCarriesEarlierResults(t *testing.T) {
 		t.Fatalf("delegate_send text = %q, want the numbered earlier result, then the latest", text)
 	}
 }
+
+// Several earlier results in a reply are numbered oldest first, ahead of the
+// labelled latest result.
+func TestStableDelegateTools_SendReplyNumbersSeveralEarlierResults(t *testing.T) {
+	t.Parallel()
+	packet := func(message string) delegatestore.TerminalPacket {
+		return delegatestore.TerminalPacket{Kind: delegatestore.PacketReported, Message: json.RawMessage(`"` + message + `"`)}
+	}
+	value, err := marshalDelegateSendResult(sendMessageResult{
+		DelegateID: "dlg_held", Type: "delegate", Status: jobstore.StatusCompleted, Action: "completed",
+		Output: "THIRD", Earlier: []delegatestore.TerminalPacket{packet("FIRST"), packet("SECOND")},
+	}, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertOrdered(t, "delegate_send text", value.(toolpkg.StateResult).Output,
+		"earlier result 1 of 2", "FIRST", "earlier result 2 of 2", "SECOND", "latest result:", "THIRD")
+}
