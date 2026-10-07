@@ -260,7 +260,12 @@ type Session struct {
 	memoryClosed        bool
 	memoryLastProjected map[string]memoryProjection
 	memoryEverProjected map[string]bool
-	memoryIndexFlights  map[string]*memoryIndexFlight
+	// memoryBaseline holds, per scope, the index the session already knows: the
+	// last current one projected to it, or the one it wrote or deleted itself.
+	// Compaction and any non-current projection clear it; a resumed session
+	// starts without one.
+	memoryBaseline     map[string]memoryIndexBaseline
+	memoryIndexFlights map[string]*memoryIndexFlight
 	// The sole automatic reader per scope owns cleanup until it returns.
 	// Admission and retirement share memoryMu, including the pre-read window.
 	memoryIndexReaders map[string]*execenv.LocalExecutionEnvironment
