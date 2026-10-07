@@ -298,10 +298,11 @@ async function listPageTabs(endpoint) {
  */
 export async function connectOnlyPage(endpoint) {
   const tabs = await listPageTabs(endpoint);
-  if (tabs.length !== 1) {
+  if (tabs.length === 0) throw new Error("expected one page tab, Chrome lists none yet");
+  if (tabs.length > 1) {
     throw new Error(`expected one page tab, Chrome lists ${tabs.length}: ${tabs.map((tab) => tab.id).join(", ")}`);
   }
-  return connectPage(endpoint, tabs[0].id);
+  return openTabChannel(tabs[0]);
 }
 
 /**
@@ -310,10 +311,13 @@ export async function connectOnlyPage(endpoint) {
  * as a successful measurement. Callers close() in a finally.
  */
 export async function connectPage(endpoint, targetId) {
-  if (targetId === undefined) throw new Error("connectPage needs the target id of the tab to connect to");
+  if (!targetId) throw new Error("connectPage needs the target id of the tab to connect to");
   const target = (await listPageTabs(endpoint)).find((entry) => entry.id === targetId);
   if (!target) throw new Error(`Chrome lists no page tab ${targetId}`);
+  return openTabChannel(target);
+}
 
+async function openTabChannel(target) {
   const ws = new WebSocket(target.webSocketDebuggerUrl);
   let id = 0;
   const pending = new Map();
