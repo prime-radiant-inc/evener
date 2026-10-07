@@ -4,7 +4,7 @@
 // flag). Left unset, every rendering suite buries real stderr under one line
 // per render, so this pins the harness's output as clean (#2433).
 import { createElement, useEffect } from "react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { render, renderHook } from "./renderNative.testkit";
 
 const DEPRECATION = "react-test-renderer is deprecated";
@@ -32,6 +32,9 @@ describe("renderNative.testkit", () => {
 // while vitest tears the worker down (#3916, #3924).
 describe("renderNative.testkit unmounts what a test mounted", () => {
 	const unmounted: string[] = [];
+	afterEach(() => {
+		unmounted.push("afterEach");
+	});
 	function Probe({ name }: { name: string }) {
 		useEffect(() => () => void unmounted.push(name), [name]);
 		return null;
@@ -44,7 +47,8 @@ describe("renderNative.testkit unmounts what a test mounted", () => {
 	});
 
 	it("finds both unmounted once that test ended", () => {
-		// Last mounted, first unmounted, as nested cleanup expects.
-		expect(unmounted).toEqual(["renderHook", "render"]);
+		// After the test's afterEach hooks; last mounted, first unmounted, as
+		// nested cleanup expects.
+		expect(unmounted.slice(0, 3)).toEqual(["afterEach", "renderHook", "render"]);
 	});
 });

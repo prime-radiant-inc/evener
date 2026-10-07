@@ -624,14 +624,18 @@ export function dropped(
  * running, and their updates land after the file's last test, outside act:
  * React's warning about them can reach the console while vitest tears the
  * worker down, which fails the run (#3916). A test may still unmount a tree
- * itself; unmounting it again is a no-op. Call render only inside a test or
- * a beforeEach. */
+ * itself; unmounting it again is a no-op. A suite whose afterEach changes
+ * state a mounted tree subscribes to (a sheet host's release) should unmount
+ * its trees first itself, or React warns about the update outside act. Call
+ * render only inside a test or a beforeEach. */
 export function render(element: ReactElement, options?: TestRendererOptions): ReactTestRenderer {
 	let tree!: ReactTestRenderer;
 	act(() => {
 		tree = create(element, options);
 	});
-	onTestFinished(() => act(() => tree.unmount()));
+	onTestFinished(() => {
+		act(() => tree.unmount());
+	});
 	return tree;
 }
 

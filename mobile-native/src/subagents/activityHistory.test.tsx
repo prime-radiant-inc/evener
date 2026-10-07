@@ -50,6 +50,7 @@ const hubId = "hub-1";
 const context = subagentOutcomesDelegatesResponse().context;
 const emptyCounts = { known: true, total: 0, active: 0, failed: 0, completed: 0 };
 const delegateCounts = { known: true, total: 3, active: 0, failed: 1, completed: 2 };
+const screens: ReactTestRenderer[] = [];
 const navigation = { push: vi.fn(), navigate: vi.fn(), setOptions: vi.fn() };
 
 beforeEach(() => {
@@ -59,6 +60,7 @@ beforeEach(() => {
 	harness.focused = true;
 });
 afterEach(() => {
+	for (const screen of screens.splice(0)) act(() => screen.unmount());
 	forgetSubagentTrees(hubId);
 });
 
@@ -96,6 +98,7 @@ function element() {
 async function mount(client: FakeClient) {
 	harness.connection = screenConnection(client, "ready");
 	const screen = render(element());
+	screens.push(screen);
 	await act(async () => {
 		await subagentTree(hubId, coordinator.ref, "root").reload();
 	});

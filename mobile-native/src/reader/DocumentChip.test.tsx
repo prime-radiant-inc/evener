@@ -50,6 +50,7 @@ function storage(): SyncStringStorage {
 	};
 }
 let answers: (() => Response)[];
+const trees: ReactTestRenderer[] = [];
 
 beforeEach(() => {
 	harness.scheme = "light";
@@ -66,6 +67,7 @@ beforeEach(() => {
 		);
 });
 afterEach(() => {
+	for (const tree of trees.splice(0)) act(() => tree.unmount());
 	vi.restoreAllMocks();
 });
 
@@ -86,6 +88,7 @@ function chip(props: { updatedAt?: string; onOpen?: () => void; path?: string } 
 			onOpen={props.onOpen ?? (() => {})}
 		/>,
 	);
+	trees.push(tree);
 	return tree;
 }
 

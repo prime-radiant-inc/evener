@@ -20,6 +20,7 @@ vi.mock("@react-navigation/native", () => ({
 
 const KEY = sheetKey("studio", "local:fix", "docs/plan.md");
 const owner = {};
+const trees: ReactTestRenderer[] = [];
 const order: string[] = [];
 
 beforeEach(() => {
@@ -28,6 +29,7 @@ beforeEach(() => {
 	navigation.goBack.mockImplementation(() => order.push("goBack"));
 });
 afterEach(() => {
+	for (const tree of trees.splice(0)) act(() => tree.unmount());
 	readerHosts.release(KEY, owner);
 });
 
@@ -45,6 +47,7 @@ function mount(host: ReaderHost) {
 			navigation={navigation as never}
 		/>,
 	);
+	trees.push(tree);
 	return tree;
 }
 
