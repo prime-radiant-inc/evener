@@ -310,10 +310,11 @@ func foldDelegateDeliveryCommits(fold *delegateAttentionFold, turn schema.Turn) 
 		if _, exists := resultIDs[commit.ToolCallID]; !exists {
 			return fmt.Errorf("delegate delivery %q references absent tool call %q", commit.DeliveryID, commit.ToolCallID)
 		}
-		if previous, exists := fold.deliveryCommits[commit.DeliveryID]; exists && previous != commit.ToolCallID {
+		previous, exists := fold.deliveryCommits[commit.DeliveryID]
+		if exists && previous != commit.ToolCallID {
 			return fmt.Errorf("delegate delivery %q has conflicting tool calls", commit.DeliveryID)
 		}
-		if _, committed := earlierCalls[commit.ToolCallID]; committed && fold.deliveryCommits[commit.DeliveryID] == "" {
+		if _, committed := earlierCalls[commit.ToolCallID]; committed && !exists {
 			return fmt.Errorf("delegate tool call %q has conflicting deliveries", commit.ToolCallID)
 		}
 		fold.deliveryCommits[commit.DeliveryID] = commit.ToolCallID
