@@ -211,6 +211,14 @@ all candidate metadata or total work under the controller lock. Response-byte
 admission keeps excluded and unvisited delegates reachable through the opaque
 continuation cursor.
 
+A thread's transcript roster lists the delegates in its session's subtree: a
+root's whole tree, or everything below a subagent. Every row still names the
+root as its owner. `evener/delegate/updated` reaches the root's thread and the
+thread of each live ancestor subagent, so an open subagent transcript keeps its
+rows current. A released ancestor gets no live updates; its next thread read
+lists the rows afresh. The [status roster](../../agent/status.go) and the
+[update routing](../../agent/delegate_runtime.go) define this boundary.
+
 The [delegate projection](../../agent/session_activity_delegates.go),
 [recorded producer outcomes](../../agent/testdata/subagentwire/outcomes.json)
 and [phone outcome adapter](../../mobile-native/src/subagents/subagentModel.ts)

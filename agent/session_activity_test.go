@@ -440,7 +440,9 @@ func TestSessionActivitySummaryFailedShellAndUnknownRetainedWatch(t *testing.T) 
 
 // realDelegateTree is a root session whose one delegate (parent) spawned one
 // delegate of its own (grandchild), both run to completion: three sessions
-// deep, built by the real delegate runtime.
+// deep, built by the real delegate runtime. descendantEvents, when set, sees
+// every event the tree's subagent sessions emit, as the daemon's AppWire
+// bridge does.
 type realDelegateTree struct {
 	s                   *Session
 	c                   *delegateTreeController
@@ -451,7 +453,7 @@ type realDelegateTree struct {
 	grandchildRuntime   *Session
 }
 
-func newRealDelegateTree(t *testing.T) realDelegateTree {
+func newRealDelegateTree(t *testing.T, descendantEvents func(events.SessionEvent)) realDelegateTree {
 	t.Helper()
 	workspace := t.TempDir()
 	s := newSession(t, withDir(workspace), withConfig(SessionConfig{StateDir: t.TempDir(), MaxSubagentDepth: 2, ForceRealIO: true, testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, sandboxProber: bwrapCapableProber(workspace), disableDelegateIdleRelease: true}}), withSteps(
@@ -461,6 +463,9 @@ func newRealDelegateTree(t *testing.T) realDelegateTree {
 		func(llm.Request) llm.Response { return finalResponse("grandchild done") },
 		func(llm.Request) llm.Response { return finalResponse("parent done") },
 	))
+	if descendantEvents != nil {
+		s.SetDescendantEventFunc(descendantEvents)
+	}
 	one := 1
 	parent := s.createDelegate(t.Context(), delegateArgs{Task: "spawn one grandchild", DelegationAllowance: &one})
 	if parent.Err != nil {
@@ -509,7 +514,7 @@ func newRealDelegateTree(t *testing.T) realDelegateTree {
 
 func TestSessionActivityRealDelegateTree(t *testing.T) {
 	t.Parallel()
-	fixture := newRealDelegateTree(t)
+	fixture := newRealDelegateTree(t, nil)
 	s, c, parent, parentRuntime := fixture.s, fixture.c, fixture.parent, fixture.parentRuntime
 	grandchildID, grandchildSessionID, grandchildRuntime := fixture.grandchildID, fixture.grandchildSessionID, fixture.grandchildRuntime
 	params := appwire.SessionActivityListParams{Ref: encodeRef("", s.ID())}

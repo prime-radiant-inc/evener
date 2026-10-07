@@ -242,6 +242,42 @@ func TestHubModelAppliesStableDelegateNotificationsToDelegateTool(t *testing.T) 
 	}
 }
 
+// A subagent's own session view lists its subtree: an update for a delegate
+// it spawned names the tree's root as owner, and still attaches to the
+// subagent's delegate call.
+func TestHubModelSubagentSessionAppliesSubtreeDelegateUpdates(t *testing.T) {
+	m := newHubModel(nil, "")
+	m.mode = hubModeSession
+	m.detail = hubSessionDetail{Ref: "local:middle", SessionID: "middle"}
+
+	updated, _ := m.Update(hubNotificationMsg{ok: true, notification: *appwire.NotificationMessage(appwire.NotifyHistoryUpdated, appwire.HistoryUpdatedParams{
+		ThreadID: "middle",
+		Items: []appwire.ThreadItem{{
+			Type: "commandExecution", ID: "item_delegate", TurnID: "turn_1", CallID: "call_delegate", ToolName: "delegate",
+			ArgumentsJSON: `{"task":"inspect billing"}`,
+			Output:        `{"delegate_id":"dlg_grandchild","status":"running","task":"inspect billing","transcript_ref":"local:grandchild"}`,
+			Status:        appwire.TurnStatusCompleted,
+		}},
+	}).Notification})
+	updated, _ = updated.(hubModel).Update(hubNotificationMsg{ok: true, notification: *appwire.NotificationMessage(appwire.NotifyEvenerDelegateUpdated, appwire.EvenerDelegateParams{
+		ThreadID: "middle",
+		Ref:      "local:middle",
+		Delegate: appwire.EvenerDelegateInfo{
+			DelegateID: "dlg_grandchild", OwnerSessionID: "root", RootSessionID: "root", ParentDelegateID: "dlg_middle",
+			Status: "completed", Terminal: true, ProjectionRevision: 2, Task: "inspect billing",
+			TranscriptRef: "local:grandchild", OriginToolCallID: "call_delegate", OriginItemID: "item_delegate",
+		},
+	}).Notification})
+
+	got := updated.(hubModel)
+	if len(got.session.messages) != 1 || got.session.messages[0].Tool == nil || got.session.messages[0].Tool.Subagent == nil {
+		t.Fatalf("messages=%+v, want the delegate call with its subagent run", got.session.messages)
+	}
+	if run := got.session.messages[0].Tool.Subagent; run.Status != "completed" || run.DelegateID != "dlg_grandchild" || run.ProjectionRevision != 2 {
+		t.Fatalf("run=%+v, want the grandchild's completed update", run)
+	}
+}
+
 func newTUIAppWireClient(t *testing.T, app *appserver.Server) (*appwire.Client, func()) {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(app.ServeWebSocket))
