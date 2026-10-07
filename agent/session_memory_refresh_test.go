@@ -917,23 +917,66 @@ func TestMemoryRefreshPageRecordsDoNotSurviveResume(t *testing.T) {
 // untracked: the session neither panics nor starts tracking it.
 func TestMemoryRefreshUnreadablePageStaysUntracked(t *testing.T) {
 	t.Parallel()
-	if os.Geteuid() == 0 {
-		t.Skip("root bypasses permissions")
-	}
 	root := t.TempDir()
 	memorySeed(t, root, "personal", "opaque-index-1\n")
-	page := writeMemoryPage(t, root, "opaque-unreadable.md", "opaque-unreadable-body\n")
-	if err := os.Chmod(page, 0); err != nil {
-		t.Fatal(err)
-	}
 	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}))
-	env, release, err := s.acquireMemoryEnvironment("personal")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer release()
-	s.recordMemoryFile(env, "personal", "opaque-unreadable.md", true)
+	s.recordMemoryContent("personal", "opaque-unreadable.md", nil, os.ErrPermission, true)
 	if got := s.memoryReadPagesFor("personal"); len(got) != 0 {
 		t.Fatalf("tracked %v, want nothing", got)
+	}
+}
+
+// Once Close has begun, a page notice is not appended, like every other
+// memory-context append.
+func TestMemoryRefreshPageNoticeNotAppendedAfterClose(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	memorySeed(t, root, "personal", "opaque-index-1\n")
+	writeMemoryPage(t, root, "opaque-closing-page.md", "opaque-closing-body-1\n")
+	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}))
+	if res := memoryExec(t, s, "memory_read", map[string]any{"scope": "personal", "file_path": "opaque-closing-page.md"}); res.IsError {
+		t.Fatal(res.Output)
+	}
+	before := memoryContextCount(s)
+	s.Close()
+	s.publishMemoryPageChanges("personal", map[string]memoryPageRecord{"opaque-closing-page.md": {absent: true}})
+	if got := memoryContextCount(s); got != before {
+		t.Fatalf("closed session appended %d page notices", got-before)
+	}
+}
+
+// A change another session makes right after memory_read returns is noticed
+// at the next turn: the page's record is what the read itself saw, never a
+// later re-read that could already hold the change.
+func TestMemoryRefreshRecordsWhatMemoryReadSaw(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	memorySeed(t, root, "personal", "opaque-index-1\n")
+	page := writeMemoryPage(t, root, "opaque-raced-page.md", "opaque-raced-body-1\n")
+	var changed atomic.Bool
+	change := func() {
+		if changed.CompareAndSwap(false, true) {
+			if err := os.WriteFile(page, []byte("opaque-raced-body-2\n"), 0o600); err != nil {
+				t.Error(err)
+			}
+		}
+	}
+	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root, testOnly: testConfig{memoryBeforeIO: func(scope, op string) error {
+		// Any read the session makes after memory_read's own read is where
+		// another session's change lands.
+		if op == "record" {
+			change()
+		}
+		return nil
+	}}}))
+	s.maybeAppendMemoryContext(context.Background(), true)
+	if res := memoryExec(t, s, "memory_read", map[string]any{"scope": "personal", "file_path": "opaque-raced-page.md"}); res.IsError {
+		t.Fatal(res.Output)
+	}
+	change()
+	before := memoryContextCount(s)
+	s.maybeAppendMemoryContext(context.Background(), true)
+	if got := memoryContextCount(s); got != before+1 || !strings.Contains(lastMemoryContextText(s), "opaque-raced-page.md") {
+		t.Fatalf("contexts=%d last=%q, want a notice for the raced page", got-before, lastMemoryContextText(s))
 	}
 }

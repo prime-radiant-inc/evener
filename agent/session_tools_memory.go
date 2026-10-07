@@ -68,7 +68,7 @@ func (s *Session) execOwnMemoryWrite(args map[string]any, operation string, writ
 	defer release()
 	out, err := write(env, forwarded)
 	if err == nil {
-		s.recordMemoryFile(env, scope, file, false)
+		s.recordOwnMemoryWrite(env, scope, file)
 	}
 	return out, err
 }
@@ -86,11 +86,19 @@ func (s *Session) execMemoryRead(ctx context.Context, _ execenv.ExecutionEnviron
 		return nil, err
 	}
 	defer release()
-	out, err := execFileRead(ctx, env, forwarded, s.fileReadGuard(env))
+	// Capture the bytes this read loaded, so the page's record is exactly what
+	// the session saw. They are the whole page even for an offset or limit
+	// read, which therefore records the whole page as of that read.
+	var raw []byte
+	out, err := execFileReadWith(forwarded, s.fileReadGuard(env), func(path string, offset, limit *int) (string, error) {
+		text, loaded, err := env.ReadFileAndBytes(path, offset, limit)
+		raw = loaded
+		return text, err
+	})
 	// The index has its own baseline and change blocks; every other page
 	// read is tracked for change notices.
 	if err == nil && file != memoryIndexFile {
-		s.recordMemoryFile(env, scope, file, true)
+		s.recordMemoryContent(scope, file, raw, nil, true)
 	}
 	return out, err
 }
