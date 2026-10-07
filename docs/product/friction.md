@@ -42,6 +42,7 @@ and should not be presented as reproduced production incidents.
 | [C10](#c10-quiet-task-panels) | Medium | A quiet Tasks panel remains failed until Try again | S02, S03, S05, S12 |
 | [C12](#c12-remote-credential-transfer-outcomes) | Medium | Reconnecting hides a completed credential-transfer report; uncertain transfers require manual investigation | S02, S05, S07, S15 |
 | [C13](#c13-storage-unavailable-send-fallback-ordering-and-stop-fence) | High (deferred) | A storage wedge lets a web send reorder, escape a cross-tab Stop, or duplicate | S02, S11 |
+| [C14](#c14-staged-image-attachments-across-identity-changes) | Medium | An image staged in the composer is lost silently when the session identity changes, while the typed draft survives | S02, S11 |
 | [R01](#r01-transcript-durability-stop) | High | A healed storage problem leaves the chat permanently stopped | S08, S09, S10 |
 | [R02](#r02-finished-turn-ownership) | High | A finished turn continues blocking new messages | S09, S11 |
 | [R03](#r03-watch-intent-after-restart) | High | Restart can end monitoring without informing the owning agent | S08, S12 |
@@ -425,6 +426,36 @@ while a send is issued from one tab, a durable row for the same ref exists in
 another tab or an earlier session, and a Stop lands in the other tab. The send
 reaches the daemon at most once, in per-ref order, and the unhonoured Stop is
 either honored or reported rather than silently applied.
+
+### C14 Staged image attachments across identity changes
+
+**Current behavior.** Staged image attachments in a web composer live in the
+pane's per-mount state: they survive none of a reload, an inactive-tab
+unmount, or a session identity change. When Send auto-resumes a
+recovery-fenced session and the daemon returns a different identity, the
+pane follows it carrying the newer stored draft (text, skill selections,
+command names, mentions), so an image staged while the resume was in flight
+is dropped, silently, while the text typed beside it survives. Attachments
+already submitted with the send ride the durable outbox row and are
+unaffected; the loss is bounded to content staged after the press.
+
+**Evidence.** The attachment store is created per composer mount
+([sourceState.ts](../../cmd/evener-hub/frontend/src/panes/session/composer/sourceState.ts))
+and the carry moves only the persisted draft record
+([draft.ts](../../cmd/evener-hub/frontend/src/panes/session/composer/draft.ts));
+a queued entry's edit likewise keeps image attachments out of the composer
+([Composer.tsx](../../cmd/evener-hub/frontend/src/panes/session/composer/Composer.tsx)),
+so ephemerality is the composer's existing boundary. The Send-resumes
+journey made the inconsistency user-visible by preserving the text half of
+the payload.
+
+**Discuss.** Whether staged image attachments should persist per session (or
+per ref) like the text draft, surviving reloads and identity-following
+navigation under the same newer-wins carry rule, or whether the boundary
+stays and only the composer's copy makes it explicit to users.
+
+**When discussed.** Record the accepted behavior with its acceptance
+scenario here.
 
 ## Runtime and continuing intent
 
