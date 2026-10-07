@@ -16,6 +16,7 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { IDBFactory } from "fake-indexeddb";
 import { StrictMode } from "react";
 
 // Session-title queries in this file target navigation, so keep them scoped to
@@ -45,10 +46,17 @@ import {
   activityDetailsThread,
   activitySummary,
 } from "../stores/sessionActivityTestUtils";
+import { SessionCacheIndexedDB } from "../stores/sessionCacheIndexedDB";
 import { resetSettingsHostForTests, settingsHostStore } from "../stores/settingsHost";
 import { resetSettingsOverviewStoreForTests } from "../stores/settingsOverview";
+import { holdNextWriteTransaction } from "../stores/testing/stalledIndexedDB";
 import * as threadsModule from "../stores/threads";
-import { resetThreadsStoreForTests, threadsStore } from "../stores/threads";
+import {
+  resetThreadsStoreForTests,
+  setCacheWriteTimersForTests,
+  setSessionCacheAdapterForTests,
+  threadsStore,
+} from "../stores/threads";
 import { AppShell } from "./AppShell";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "./activitybar/activitySidebarStore";
 import { ClientProvider } from "./clientContext";
@@ -696,46 +704,93 @@ function backgroundReadyClient(): FakeClient {
   return client;
 }
 
-// Call-through interception that stalls the REAL BackgroundThreadLease.release
-// of the first background ref released after arm(). The returned lease is the
-// real one, so everything else behaves normally; only the first release waits
-// on the gate. A later release (a successor's teardown) is not held.
-function holdNextBackgroundRelease() {
-  const realAcquire = threadsModule.acquireBackgroundThread;
-  let armed = false;
-  let consumed = false;
-  let openGate: (() => void) | undefined;
-  const gate = new Promise<void>((resolve) => {
-    openGate = resolve;
+// A versioned thread read carrying `literal`, so a resident model has versioned
+// history and its release drains a real cache write; distinct literals let a
+// successor's own read be told apart from the predecessor's content.
+function currentVersionedThreadRead(literal: string) {
+  return (params: { ref?: string; requestGeneration?: number }) => {
+    const base = currentRead(params.ref ?? "local:s1");
+    base.snapshot = { incarnation: "inc-1", length: 1 };
+    base.thread.turns = [
+      {
+        id: "turn_1",
+        itemsView: "full",
+        status: "completed",
+        version: 1,
+        items: [
+          {
+            type: "agentMessage",
+            id: "turn_1-item-0",
+            transcriptKey: "apptranscript-item-v2:turn_1:0:0",
+            turnId: "turn_1",
+            position: { entry: 2, item: 0 },
+            version: 1,
+            text: literal,
+          },
+        ],
+      },
+    ];
+    return { ...base, requestGeneration: params.requestGeneration ?? 1 };
+  };
+}
+function versionedClient(literal: string): FakeClient {
+  const client = navClient();
+  client.on("thread/read", currentVersionedThreadRead(literal));
+  client.on("thread/unsubscribe", () => ({}));
+  return client;
+}
+function threadsHistory(ref: string): string {
+  return JSON.stringify(threadsStore.getState().threads.get(ref)?.history ?? {});
+}
+
+function deferredSignal(): { promise: Promise<void>; resolve: () => void } {
+  let resolve: (() => void) | undefined;
+  const promise = new Promise<void>((settle) => {
+    resolve = settle;
   });
-  let reachedNow = false;
-  let wrappedCount = 0;
+  return { promise, resolve: () => resolve?.() };
+}
+
+// Retain a primary failure while still reporting a cleanup failure beside it.
+function combineErrors(primary: unknown, cleanup: unknown): unknown {
+  if (primary === undefined) return cleanup;
+  return new AggregateError([primary, cleanup], "test body and cleanup both failed");
+}
+
+// Call-through instrumentation of the real background thread lifetime:
+// - Records every real acquisition and whether it happened at/after the
+//   predecessor's real release entry (the ownership oracle).
+// - For the predecessor's lease (the first acquired after arm()), spies the real
+//   release with a SYNCHRONOUS pass-through: it marks release entry and returns
+//   the real release promise without delaying entry, so the real synchronous
+//   retirement runs and the later real cache flush is attributable to it.
+function instrumentBackgroundLifetime() {
+  const realAcquire = threadsModule.acquireBackgroundThread;
+  const acquisitions: Array<{ ref: string; afterReleaseEntry: boolean }> = [];
+  let armed = false;
+  let predecessorReleaseSpied = false;
+  let releaseEntered = false;
   const spy = vi.spyOn(threadsModule, "acquireBackgroundThread").mockImplementation((ref) => {
     const lease = realAcquire(ref);
-    // Wrap only the first lease acquired after arm() (the predecessor's); later
-    // acquisitions get the real lease untouched.
-    if (!armed || wrappedCount > 0) return lease;
-    wrappedCount += 1;
-    return {
-      ready: lease.ready,
-      release: async () => {
-        if (!consumed) {
-          consumed = true;
-          reachedNow = true;
-          await gate;
-        }
-        return lease.release();
-      },
-    };
+    acquisitions.push({ ref, afterReleaseEntry: releaseEntered });
+    if (armed && !predecessorReleaseSpied) {
+      predecessorReleaseSpied = true;
+      const realRelease = lease.release.bind(lease);
+      vi.spyOn(lease, "release").mockImplementation(() => {
+        releaseEntered = true;
+        return realRelease();
+      });
+    }
+    return lease;
   });
   return {
     arm() {
       armed = true;
     },
-    reachedNow: () => reachedNow,
-    release() {
-      openGate?.();
-    },
+    acquisitions,
+    releaseEntered: () => releaseEntered,
+    acquisitionsAfterReleaseEntry: (ref: string) =>
+      acquisitions.filter((entry) => entry.ref === ref && entry.afterReleaseEntry).length,
     restore() {
       spy.mockRestore();
     },
@@ -747,43 +802,75 @@ function holdNextBackgroundRelease() {
 const realStartBackgroundTranscripts = backgroundTranscriptsModule.startBackgroundTranscripts;
 
 // Call-through interception of the real owner factory. Each record marks the
-// synchronous retirement boundary (dispose() called) separately from the async
-// disposal completion, so a retired predecessor whose cleanup still runs is not
-// confused with an active successor. The real owner's own methods run.
+// synchronous retirement boundary (dispose() called) separately from the real
+// disposal outcome (pending/fulfilled/rejected); the real promise and any
+// rejection are retained rather than collapsed into a boolean, so a retired
+// predecessor whose cleanup still runs is not confused with an active successor.
 function trackBackgroundOwners() {
   const start = realStartBackgroundTranscripts;
   const records: Array<{
     owner: ReturnType<typeof realStartBackgroundTranscripts>;
     disposed: boolean;
     disposeCalls: number;
-    disposeDone: boolean;
-    settledDone: boolean;
+    disposeStatus: "pending" | "fulfilled" | "rejected";
+    disposeError?: unknown;
+    settledStatus: "pending" | "fulfilled" | "rejected";
+    settledError?: unknown;
+    disposePromise?: Promise<void>;
   }> = [];
   const spy = vi.spyOn(backgroundTranscriptsModule, "startBackgroundTranscripts").mockImplementation((navigation) => {
     const owner = start(navigation);
-    const record = { owner, disposed: false, disposeCalls: 0, disposeDone: false, settledDone: false };
-    records.push(record);
-    const markDone = (flag: "disposeDone" | "settledDone") => () => {
-      record[flag] = true;
+    const record: (typeof records)[number] = {
+      owner,
+      disposed: false,
+      disposeCalls: 0,
+      disposeStatus: "pending",
+      settledStatus: "pending",
     };
+    records.push(record);
     return {
       dispose() {
         record.disposeCalls += 1;
         record.disposed = true;
         const promise = owner.dispose();
-        promise.then(markDone("disposeDone"), markDone("disposeDone"));
+        record.disposePromise = promise;
+        promise.then(
+          () => {
+            record.disposeStatus = "fulfilled";
+          },
+          (error: unknown) => {
+            record.disposeStatus = "rejected";
+            record.disposeError = error;
+          },
+        );
         return promise;
       },
       settled() {
         const promise = owner.settled();
-        promise.then(markDone("settledDone"), markDone("settledDone"));
+        promise.then(
+          () => {
+            record.settledStatus = "fulfilled";
+          },
+          (error: unknown) => {
+            record.settledStatus = "rejected";
+            record.settledError = error;
+          },
+        );
         return promise;
       },
     };
   });
+  async function joinDisposals(): Promise<void> {
+    await Promise.all(
+      records.filter((record) => record.disposed && record.disposePromise).map((record) => record.disposePromise),
+    );
+  }
   return {
     records,
     activeCount: () => records.filter((record) => !record.disposed).length,
+    retired: () => records.filter((record) => record.disposed),
+    active: () => records.filter((record) => !record.disposed),
+    joinDisposals,
     restore: () => spy.mockRestore(),
   };
 }
@@ -807,8 +894,10 @@ test("starts one background transcript owner for the injected client and retires
 test("exactly one active logical background owner across rerenders and unmount", async () => {
   const client = backgroundReadyClient();
   const owners = trackBackgroundOwners();
+  let view: ReturnType<typeof render> | undefined;
+  let primaryError: unknown;
   try {
-    const { rerender, unmount } = render(<AppShell client={client} />);
+    view = render(<AppShell client={client} />);
     await screen.findByText("No session open");
     await waitFor(() => expect(membershipReads(client)).toBe(1));
     // One logical owner, not merely one deduplicated wire demand.
@@ -816,19 +905,33 @@ test("exactly one active logical background owner across rerenders and unmount",
     expect(owners.activeCount()).toBe(1);
 
     // A rerender with the same client must not start a second owner.
-    rerender(<AppShell client={client} />);
+    view.rerender(<AppShell client={client} />);
     await act(async () => {});
     expect(owners.records.length).toBe(1);
     expect(owners.activeCount()).toBe(1);
 
-    // Unmount retires the only owner, and its async cleanup completes.
-    unmount();
+    // Unmount retires the only owner, and its real disposal fulfills.
+    view.unmount();
+    view = undefined;
     await waitFor(() => expect(owners.activeCount()).toBe(0));
     expect(owners.records[0]?.disposeCalls).toBe(1);
-    await waitFor(() => expect(owners.records[0]?.disposeDone).toBe(true));
+    await owners.joinDisposals();
+    expect(owners.records[0]?.disposeStatus).toBe("fulfilled");
+  } catch (error) {
+    primaryError = error;
   } finally {
-    owners.restore();
+    let cleanupError: unknown;
+    try {
+      view?.unmount();
+      await owners.joinDisposals();
+    } catch (error) {
+      cleanupError = error;
+    } finally {
+      owners.restore();
+    }
+    if (cleanupError !== undefined) primaryError = combineErrors(primaryError, cleanupError);
   }
+  if (primaryError !== undefined) throw primaryError;
 });
 
 test("a replacement client gets its own background owner and the old demand is retired", async () => {
@@ -852,112 +955,220 @@ test.each(["desktop", "narrow"])("one background owner per client lifetime in th
     installMobileViewport();
   }
   const owners = trackBackgroundOwners();
+  let view: ReturnType<typeof render> | undefined;
+  let primaryError: unknown;
   try {
     const client = backgroundReadyClient();
-    render(<AppShell client={client} />);
+    view = render(<AppShell client={client} />);
     await waitFor(() => expect(membershipReads(client)).toBe(1));
     // One logical owner, not merely one deduplicated wire demand.
     expect(owners.records.length).toBe(1);
     expect(owners.activeCount()).toBe(1);
+  } catch (error) {
+    primaryError = error;
   } finally {
-    owners.restore();
+    let cleanupError: unknown;
+    try {
+      view?.unmount();
+      await owners.joinDisposals();
+    } catch (error) {
+      cleanupError = error;
+    } finally {
+      owners.restore();
+    }
+    if (cleanupError !== undefined) primaryError = combineErrors(primaryError, cleanupError);
   }
+  if (primaryError !== undefined) throw primaryError;
 });
 
-test("a client replacement holds the predecessor's real thread release and keeps the successor's claim", async () => {
+test("a client replacement holds the predecessor's real release cleanup and keeps a useful successor", async () => {
   const user = userEvent.setup();
-  const predecessor = backgroundReadyClient();
-  const fresh = backgroundReadyClient();
+  // A real open cache adapter: the predecessor owner's real final release
+  // drains a real cache write we hold inside the release.
+  const cache = new SessionCacheIndexedDB({
+    indexedDB: new IDBFactory(),
+    databaseName: `appshell-bg-${crypto.randomUUID()}`,
+  });
+  setSessionCacheAdapterForTests(cache);
+  await cache.count(); // complete the adapter's open-time sweep before arming
+  // Freeze the debounced cache write so the only immediate write is the
+  // predecessor's release flush, which flushCacheWrite fires now.
+  setCacheWriteTimersForTests({ debounceMs: 60_000, maxWaitMs: 60_000 });
+  const predecessor = versionedClient("predecessor-content");
+  const fresh = versionedClient("successor-content");
   const owners = trackBackgroundOwners();
-  const hold = holdNextBackgroundRelease();
+  const lifetime = instrumentBackgroundLifetime();
 
+  // Arm the completion hold at the real cache-flush entry and only after the
+  // real release has entered, so the held write is attributable to the
+  // predecessor's final-release flush (not merely the next cache write).
+  let held: ReturnType<typeof holdNextWriteTransaction> | undefined;
+  let holdConsumed = false;
+  const writeEntered = deferredSignal();
+  const realPut = cache.put.bind(cache);
+  const putSpy = vi.spyOn(cache, "put").mockImplementation(async (record, scheduledEpoch, now) => {
+    // One-shot: hold only the predecessor's real release flush, never a later
+    // successor teardown write.
+    if (!holdConsumed && lifetime.releaseEntered()) {
+      holdConsumed = true;
+      held = holdNextWriteTransaction(["records", "meta", "current", "currentMeta"]);
+      writeEntered.resolve();
+    }
+    return realPut(record, scheduledEpoch, now);
+  });
+
+  let view: ReturnType<typeof render> | undefined;
+  let primaryError: unknown;
   try {
-    // Arm before the predecessor claims, so the lease it stores is the wrapped
-    // one whose real release this test stalls.
-    hold.arm();
-    render(<AppShell client={predecessor} bannerDelayMs={0} bannerCreateClient={() => fresh} />);
+    lifetime.arm();
+    view = render(<AppShell client={predecessor} bannerDelayMs={0} bannerCreateClient={() => fresh} />);
     await screen.findByText("No session open");
-    // The predecessor owner is active: it discovered and read the Live session.
-    await waitFor(() => expect(membershipReads(predecessor)).toBe(1));
-    // Let the predecessor's real hydration publish before replacement, so its
-    // store update is not left pending across the swap.
-    await waitFor(() => expect(threadsStore.getState().threads.get("local:s1")).toBeDefined());
+    // The predecessor owner is active and its resident model has versioned,
+    // valid content, so its release drains a real cache write.
+    await waitFor(() => expect(membershipReads(predecessor)).toBeGreaterThanOrEqual(1));
+    await waitFor(() => expect(threadsStore.getState().threads.get("local:s1")?.history?.incarnation).toBeDefined());
     expect(owners.activeCount()).toBe(1);
-
     const predecessorRecord = owners.records[0];
     if (!predecessorRecord) throw new Error("no predecessor owner was tracked");
 
-    // Replace the client through the real banner-retry path: the predecessor's
-    // effect cleanup disposes its owner, whose real BackgroundThreadLease.release
-    // is what we stall.
+    // Enter the predecessor owner's real final release while the client is
+    // still ready and the model valid: the real release runs its synchronous
+    // retirement and its real cache flush, held at the completion boundary.
+    let predecessorDisposal!: Promise<void>;
+    await act(async () => {
+      predecessorDisposal = predecessorRecord.owner.dispose();
+    });
+    await waitFor(() => expect(held).toBeDefined());
+    const write = held;
+    if (!write) throw new Error("predecessor release never entered a real cache flush");
+    expect(lifetime.releaseEntered()).toBe(true);
+    await write.reached; // transaction committed, its completion delivery held
+    expect(predecessorRecord.disposed).toBe(false);
+
+    // Replace the client through the real banner-retry path while the old
+    // release cleanup is still held; AppShell's cleanup disposes the same owner
+    // again (idempotent) and starts the successor owner.
     await act(async () => {
       predecessor.emitStateChange("closed");
     });
     await user.click(await screen.findByRole("button", { name: "Retry" }));
     await waitFor(() => expect(connectionStore.getState().client).toBe(fresh));
-    // Release-entered boundary: the predecessor's disposal is stalled here.
-    await waitFor(() => expect(hold.reachedNow()).toBe(true));
 
-    // The predecessor is retired synchronously and its disposal is incomplete:
-    // dispose() awaits the real release this test is holding.
-    expect(predecessorRecord.disposed).toBe(true);
-    expect(predecessorRecord.disposeDone).toBe(false);
-
-    // The successor claims the Live session through real demand while the old
-    // release is held.
-    await waitFor(() => expect(membershipReads(fresh)).toBeGreaterThanOrEqual(1));
-    const freshReadsWhileHeld = membershipReads(fresh);
-    const freshUnsubsWhileHeld = unsubscribedRefs(fresh);
+    // A useful successor: a real acquisition of the target ref while held.
+    await waitFor(() => expect(lifetime.acquisitionsAfterReleaseEntry("local:s1")).toBeGreaterThanOrEqual(1));
     expect(owners.activeCount()).toBe(1);
 
-    // Release the real thread release and await the old owner's disposal
-    // completion explicitly (dispose joins the leased release work).
-    hold.release();
-    await waitFor(() => expect(predecessorRecord.disposeDone).toBe(true));
+    // Distinct successor content from the successor's own real client read: a
+    // ready transition refreshes the now-owned ref from the fresh snapshot.
+    await act(async () => {
+      fresh.emitStateChange("reconnecting");
+      fresh.emitReady({
+        serverInfo: { name: "fake", version: "1" },
+        protocolVersion: "evener-appwire-v6",
+        sourceId: "fake",
+        features: {} as never,
+        navigation: { version: 1, generationId: "generation_test", sequence: 0, readVersions: [3] },
+      });
+    });
+    await waitFor(() => expect(threadsHistory("local:s1")).toContain("successor-content"));
+    const contentWhileHeld = threadsHistory("local:s1");
+    const freshReadsWhileHeld = membershipReads(fresh);
+    const freshUnsubsWhileHeld = unsubscribedRefs(fresh);
+
+    // Release the real write and await the predecessor's real release
+    // completion explicitly (its settled() joins the in-flight release work).
+    expect(lifetime.acquisitionsAfterReleaseEntry("local:s1")).toBeGreaterThanOrEqual(1);
+    await act(async () => {
+      write.release();
+      held = undefined;
+      await predecessorDisposal;
+    });
 
     // The old cleanup neither retired the successor nor removed its content or
     // demand.
-    expect(owners.activeCount()).toBe(1);
+    expect(threadsHistory("local:s1")).toBe(contentWhileHeld);
+    expect(threadsHistory("local:s1")).toContain("successor-content");
     expect(membershipReads(fresh)).toBe(freshReadsWhileHeld);
     expect(unsubscribedRefs(fresh)).toEqual(freshUnsubsWhileHeld);
-    expect(threadsStore.getState().threads.get("local:s1")).toBeDefined();
+    expect(owners.activeCount()).toBe(1);
+  } catch (error) {
+    primaryError = error;
   } finally {
-    hold.release();
-    hold.restore();
-    owners.restore();
+    held?.release();
+    let cleanupError: unknown;
+    try {
+      view?.unmount();
+      await owners.joinDisposals();
+    } catch (error) {
+      cleanupError = error;
+    } finally {
+      stoppedTreeSession = false;
+      putSpy.mockRestore();
+      lifetime.restore();
+      owners.restore();
+      setCacheWriteTimersForTests({ debounceMs: 1_000, maxWaitMs: 5_000 });
+      setSessionCacheAdapterForTests(undefined);
+      cache.close();
+    }
+    if (cleanupError !== undefined) primaryError = combineErrors(primaryError, cleanupError);
   }
+  if (primaryError !== undefined) throw primaryError;
 });
 
-test("StrictMode mount and cleanup/remount leak no background owner", async () => {
+test("StrictMode mount and cleanup/remount retire their predecessor and complete disposal", async () => {
   const client = backgroundReadyClient();
   const owners = trackBackgroundOwners();
+  let strictView: ReturnType<typeof render> | undefined;
+  let againView: ReturnType<typeof render> | undefined;
+  let primaryError: unknown;
   try {
-    const strict = render(
+    strictView = render(
       <StrictMode>
         <AppShell client={client} />
       </StrictMode>,
     );
     await waitFor(() => expect(membershipReads(client)).toBeGreaterThan(0));
-    // StrictMode's double-invoked mount synchronously retires the first owner
-    // and builds a replacement: exactly one active logical owner remains, and
-    // the retired one is distinguishable from it.
-    expect(owners.records.length).toBeGreaterThanOrEqual(1);
+    // StrictMode's double-invoked mount retires a predecessor synchronously and
+    // leaves exactly one active replacement; join the retired predecessor's real
+    // disposal fulfilment before unmount.
+    const retired = owners.retired();
+    expect(retired.length).toBeGreaterThanOrEqual(1);
     expect(owners.activeCount()).toBe(1);
-    strict.unmount();
+    await waitFor(() => expect(retired.every((record) => record.disposeStatus !== "pending")).toBe(true));
+    for (const record of retired) expect(record.disposeStatus).toBe("fulfilled");
+
+    strictView.unmount();
+    strictView = undefined;
     // Every acquired membership is retired: a leaked owner would leave one open.
     await waitFor(() => expect(unsubscribedRefs(client).length).toBe(membershipReads(client)));
-    await waitFor(() => expect(owners.activeCount()).toBe(0));
+    await owners.joinDisposals();
+    for (const record of owners.records) expect(record.disposeStatus).toBe("fulfilled");
 
     // A clean remount of the same client: one owner at a time, none leaked.
-    const again = render(<AppShell client={client} />);
+    againView = render(<AppShell client={client} />);
     await waitFor(() => expect(membershipReads(client)).toBeGreaterThan(unsubscribedRefs(client).length));
-    expect(owners.activeCount()).toBe(1);
-    again.unmount();
+    await waitFor(() => expect(owners.activeCount()).toBe(1));
+    againView.unmount();
+    againView = undefined;
     await waitFor(() => expect(unsubscribedRefs(client).length).toBe(membershipReads(client)));
-    await waitFor(() => expect(owners.activeCount()).toBe(0));
+    await owners.joinDisposals();
+    for (const record of owners.records) expect(record.disposeStatus).toBe("fulfilled");
+  } catch (error) {
+    primaryError = error;
   } finally {
-    owners.restore();
+    let cleanupError: unknown;
+    try {
+      strictView?.unmount();
+      againView?.unmount();
+      await owners.joinDisposals();
+    } catch (error) {
+      cleanupError = error;
+    } finally {
+      owners.restore();
+    }
+    if (cleanupError !== undefined) primaryError = combineErrors(primaryError, cleanupError);
   }
+  if (primaryError !== undefined) throw primaryError;
 });
 
 test("banner reflects reconnecting state when injected", async () => {

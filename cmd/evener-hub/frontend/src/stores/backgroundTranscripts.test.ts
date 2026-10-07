@@ -232,6 +232,12 @@ async function awaitObserved(done: () => boolean, what: string, maxTurns = 400):
   throw new Error(`observed boundary not reached: ${what}`);
 }
 
+// Retain a primary failure while still reporting a cleanup failure beside it.
+function combineTestAndCleanupErrors(primary: unknown, cleanup: unknown): unknown {
+  if (primary === undefined) return cleanup;
+  return new AggregateError([primary, cleanup], "test body and cleanup both failed");
+}
+
 // A single terminal page whose read fails.
 function failPage(): Map<number, PageSpec | "fail"> {
   return new Map([[0, "fail"]]);
@@ -573,19 +579,23 @@ describe("startBackgroundTranscripts", () => {
     // Hold the first real release write through a call-through put spy: the
     // real IndexedDB readwrite transaction is armed, and the real put runs.
     let held: ReturnType<typeof holdNextWriteTransaction> | undefined;
+    let holdConsumed = false;
     let signalWriteEntered: (() => void) | undefined;
     const writeEntered = new Promise<void>((resolve) => {
       signalWriteEntered = resolve;
     });
     const realPut = cache.put.bind(cache);
     const putSpy = vi.spyOn(cache, "put").mockImplementation(async (record, scheduledEpoch, now) => {
-      if (!held) {
+      // One-shot: hold only the release write under test, never a later write.
+      if (!holdConsumed) {
+        holdConsumed = true;
         held = holdNextWriteTransaction(["records", "meta", "current", "currentMeta"]);
         signalWriteEntered?.();
       }
       return realPut(record, scheduledEpoch, now);
     });
 
+    let primaryError: unknown;
     try {
       await owner.settled();
       expect(threadReadRefs()).toEqual(new Set(["local:a"]));
@@ -615,23 +625,34 @@ describe("startBackgroundTranscripts", () => {
         () => acquisitionsOf("local:a") > acquisitionsBeforeRelease,
         "real local:a re-acquisition while the release write is held",
       );
-    } finally {
-      held?.release();
-      putSpy.mockRestore();
-      acquireSpy.mockRestore();
-    }
 
-    await owner.settled();
-    // The old release observed the re-claimed owner generation and dropped
-    // nothing: no unsubscribe, the requested subscription survived, and the
-    // re-claimed model still holds its literal content exactly once.
-    expect(threadUnsubRefs()).toEqual([]);
-    const survived = threadsStore.getState().threads.get("local:a");
-    expect(survived).toBeDefined();
-    const serialized = JSON.stringify(survived?.history);
-    expect(serialized).toContain("recorded");
-    expect(serialized.split("recorded").length - 1).toBe(1);
-    await owner.dispose();
+      // Release the hold, then let the real cleanup settle and assert the
+      // old release dropped nothing and the literal content survived once.
+      held.release();
+      held = undefined;
+      await owner.settled();
+      expect(threadUnsubRefs()).toEqual([]);
+      const survived = threadsStore.getState().threads.get("local:a");
+      expect(survived).toBeDefined();
+      const serialized = JSON.stringify(survived?.history);
+      expect(serialized).toContain("recorded");
+      expect(serialized.split("recorded").length - 1).toBe(1);
+    } catch (error) {
+      primaryError = error;
+    } finally {
+      let cleanupError: unknown;
+      try {
+        held?.release();
+        await owner.dispose();
+      } catch (error) {
+        cleanupError = error;
+      } finally {
+        putSpy.mockRestore();
+        acquireSpy.mockRestore();
+      }
+      if (cleanupError !== undefined) primaryError = combineTestAndCleanupErrors(primaryError, cleanupError);
+    }
+    if (primaryError !== undefined) throw primaryError;
   });
 
   test("a reappearance after a release re-acquires the retired ref", async () => {
