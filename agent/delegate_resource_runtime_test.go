@@ -91,7 +91,7 @@ func TestRestoredDelegatePostStartPopulationEmitsTaskCorrection(t *testing.T) {
 		t.Fatalf("restore root: %v", err)
 	}
 	defer root.Close()
-	var recorder currentWorkEventRecorder
+	var recorder sessionEventRecorder
 	root.SetDescendantEventFunc(recorder.record)
 
 	reservation, err := root.delegateController.ReserveStart(rootDelegateActor(root.id), fixture.delegateID)
