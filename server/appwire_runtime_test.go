@@ -890,3 +890,31 @@ func TestDescendantReadDoesNotClaimDurableMutationAuthority(t *testing.T) {
 		t.Fatal("root durable projection lost authority")
 	}
 }
+
+// A subagent's thread lists its subtree, so a delegate update emitted on its
+// stream for a delegate below it is published to that thread, still naming
+// the tree's root as the delegate's owner.
+func TestDescendantThreadPublishesSubtreeDelegateUpdates(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	t.Cleanup(srv.Close)
+	serveRootWithoutHistory(t, srv, "root")
+	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventSessionStart, SessionID: "middle", Data: events.SessionStartData{}})
+	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventDelegateUpdated, SessionID: "middle", Data: events.DelegateUpdatedData{
+		DelegateID: "dlg_grandchild", OwnerSessionID: "root", RootSessionID: "root", ChildSessionID: "grandchild", ParentDelegateID: "dlg_middle",
+		AncestorSessionIDs: []string{"middle"}, Type: "delegate", Lifecycle: "idle", Phase: "idle", Status: "idle", ProjectionRevision: 3,
+	}})
+	for _, notification := range srv.AppNotificationsAfter(0, "middle") {
+		if notification.Notification.Method != appwire.NotifyEvenerDelegateUpdated {
+			continue
+		}
+		var params appwire.EvenerDelegateParams
+		if err := json.Unmarshal(notification.Notification.Params, &params); err != nil {
+			t.Fatal(err)
+		}
+		if params.ThreadID != "middle" || params.Delegate.DelegateID != "dlg_grandchild" || params.Delegate.OwnerSessionID != "root" {
+			t.Fatalf("middle thread delegate update = %+v", params)
+		}
+		return
+	}
+	t.Fatal("the grandchild's update was not published to the middle subagent's thread")
+}

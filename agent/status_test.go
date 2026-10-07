@@ -946,7 +946,7 @@ func TestSessionOwnsDelegateVerifiesRootOwnerAndImmediateParent(t *testing.T) {
 // root (the root session), so only the membership is per session.
 func TestSessionDelegateStatus_SubagentListsItsOwnSubtree(t *testing.T) {
 	t.Parallel()
-	tree := newRealDelegateTree(t)
+	tree := newRealDelegateTree(t, nil)
 	rootID := tree.s.ID()
 	middleID := tree.parent.ChildSessionID
 	delegateIDs := func(rows []DelegateStatusInfo) []string {

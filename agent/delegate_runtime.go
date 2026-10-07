@@ -3166,11 +3166,21 @@ func (s *Session) emitStableDelegateUpdate(plan delegateUpdatePlan) {
 		ownerID := row.descriptor.OwnerSessionID
 		s.delegateController.mu.Lock()
 		logicalOwner := sessionActivityDelegateOwner(s.delegateController.durable, s.delegateController.durable[row.id])
+		ancestors, ancestorRuntimes := s.delegateController.ancestorSubagentRuntimesLocked(logicalOwner)
 		s.delegateController.mu.Unlock()
 		s.emitSessionActivityChanged(logicalOwner, appwire.SessionActivityResourceDelegates)
 		data := delegateUpdatedDataFromStatus(delegateStatusInfoFromSnapshot(now, rootID, row))
-		if runtime := s.delegateController.runtimeForDelegateOwner(row); runtime != nil {
-			runtime.emitWithProvenance(events.EventDelegateUpdated, data, row.descriptor.Provenance)
+		data.AncestorSessionIDs = ancestors
+		ownerRuntime := s.delegateController.runtimeForDelegateOwner(row)
+		// A subagent's own thread lists its subtree, so each live ancestor
+		// subagent's stream carries the update too.
+		for _, runtime := range ancestorRuntimes {
+			if runtime != ownerRuntime {
+				runtime.emitWithProvenance(events.EventDelegateUpdated, data, row.descriptor.Provenance)
+			}
+		}
+		if ownerRuntime != nil {
+			ownerRuntime.emitWithProvenance(events.EventDelegateUpdated, data, row.descriptor.Provenance)
 			continue
 		}
 		s.mu.Lock()
@@ -3185,6 +3195,27 @@ func (s *Session) emitStableDelegateUpdate(plan delegateUpdatePlan) {
 		event.Provenance = provenance.Clone(row.descriptor.Provenance)
 		forward(event)
 	}
+}
+
+// ancestorSubagentRuntimesLocked lists the subagent sessions at and above
+// logicalOwner, nearest first and without the root, and the live runtime of
+// each one that has one.
+func (c *delegateTreeController) ancestorSubagentRuntimesLocked(logicalOwner string) ([]string, []*Session) {
+	if logicalOwner == "" {
+		return nil, nil
+	}
+	var ancestors []string
+	var runtimes []*Session
+	for _, sessionID := range c.sessionAncestryLocked(logicalOwner) {
+		if sessionID == c.rootSessionID {
+			break
+		}
+		ancestors = append(ancestors, sessionID)
+		if live := c.live[c.delegateOwnerOfSessionLocked(sessionID)]; live != nil && live.runtime != nil && live.runtime.ID() == sessionID {
+			runtimes = append(runtimes, live.runtime)
+		}
+	}
+	return ancestors, runtimes
 }
 
 func (c *delegateTreeController) runtimeForDelegateOwner(row delegateSnapshot) *Session {

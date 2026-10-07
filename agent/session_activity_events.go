@@ -25,30 +25,35 @@ func (s *Session) emitSessionActivityChanged(owner string, resource appwire.Sess
 	targets := []string{owner}
 	if controller := s.delegateController; controller != nil {
 		controller.mu.Lock()
-		current := owner
-		seen := map[string]bool{owner: true}
-		for current != controller.rootSessionID {
-			id := controller.delegateOwnerOfSessionLocked(current)
-			row := controller.durable[id]
-			if row == nil {
-				break
-			}
-			current = sessionActivityDelegateOwner(controller.durable, row)
-			if current == "" {
-				break
-			}
-			if seen[current] {
-				break
-			}
-			seen[current] = true
-			targets = append(targets, current)
-		}
+		targets = controller.sessionAncestryLocked(owner)
 		controller.mu.Unlock()
 	}
 	for _, target := range targets {
 		s.sendEvent(events.EventSessionActivityChanged, events.SessionActivityChangedData{ThreadID: target, Ref: encodeRef("", target), SessionID: owner, Resources: []appwire.SessionActivityResource{appwire.SessionActivityResourceSummary, resource}}, nil)
 	}
 }
+
+// sessionAncestryLocked is sessionID followed by each session above it in the
+// tree's logical ownership, nearest first, ending at the root: the sessions
+// whose subtree holds sessionID.
+func (c *delegateTreeController) sessionAncestryLocked(sessionID string) []string {
+	chain := []string{sessionID}
+	seen := map[string]bool{sessionID: true}
+	for current := sessionID; current != c.rootSessionID; {
+		row := c.durable[c.delegateOwnerOfSessionLocked(current)]
+		if row == nil {
+			break
+		}
+		current = sessionActivityDelegateOwner(c.durable, row)
+		if current == "" || seen[current] {
+			break
+		}
+		seen[current] = true
+		chain = append(chain, current)
+	}
+	return chain
+}
+
 func (jm *jobManager) noteWatchActivity(receiver string) {
 	if receiver == "" {
 		receiver = jm.sessionID
