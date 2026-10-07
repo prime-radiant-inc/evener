@@ -397,7 +397,7 @@ export interface ConversationState {
 	loadOlder(service: ConversationService): Promise<LoadOlderResult>;
 	setDraft(text: string): void;
 	send(service: ConversationService, input: InputItem[]): Promise<void>;
-	steer(service: ConversationService, input: InputItem[], expectedQueueRevision?: number): Promise<void>;
+	steer(service: ConversationService, input: InputItem[]): Promise<void>;
 	queue(service: ConversationService, input: InputItem[]): Promise<void>;
 	interrupt(service: ConversationService): Promise<void>;
 	close(): void;
@@ -550,7 +550,6 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 		opBinding: RequestBinding,
 		conversation: MobileConversation,
 		input: InputItem[],
-		expectedQueueRevision?: number,
 	): Promise<MutationReceipt | undefined> {
 		return mutationSubmitter!.submit({
 			kind,
@@ -559,7 +558,6 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 			threadId: conversation.threadId,
 			instanceId: conversation.instanceId ?? conversation.threadId,
 			input,
-			expectedQueueRevision,
 		});
 	}
 
@@ -572,15 +570,13 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 		opBinding: RequestBinding,
 		conversation: MobileConversation,
 		input: InputItem[],
-		expectedQueueRevision?: number,
 	): Promise<MutationReceipt | undefined> {
-		if (mutationSubmitter !== undefined)
-			return submitMutation(kind, opBinding, conversation, input, expectedQueueRevision);
+		if (mutationSubmitter !== undefined) return submitMutation(kind, opBinding, conversation, input);
 		switch (kind) {
 			case "send":
 				return service.send(input);
 			case "steer":
-				return service.steer(input, expectedQueueRevision);
+				return service.steer(input);
 			case "queue":
 				return service.queue(input);
 			case "interrupt":
@@ -2883,7 +2879,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				}
 			},
 
-			async steer(service, input, expectedQueueRevision) {
+			async steer(service, input) {
 				const state = get();
 				if (state.conversation === null) return;
 				requireControl(state.conversation, "steer", "steer");
@@ -2915,14 +2911,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				// I1: Capture error-owner revision AFTER installing pending+error-clear.
 				const entryErrorRev = errorOwnerRev;
 				try {
-					const receipt = await dispatchMutation(
-						service,
-						"steer",
-						opBinding,
-						state.conversation,
-						input,
-						expectedQueueRevision,
-					);
+					const receipt = await dispatchMutation(service, "steer", opBinding, state.conversation, input);
 					// C1: Recheck the exact operation binding after the await.
 					if (!isBindingCurrent(opBinding)) return;
 					if (get().pendingMutation?.mutationId === mutationId) {
