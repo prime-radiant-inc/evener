@@ -7,11 +7,11 @@
 // reimplements the runtime - a green run is proof about the real one.
 
 import type { MutationRecoveryRecord } from "@evener/appwire-client/state/mutation";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { act } from "react-test-renderer";
 import { afterEach, expect, test, vi } from "vitest";
 import { TABLES } from "./mutationOutboxStorage";
 import { NativeMutationRuntime, nativeMutationTargetKey } from "./nativeMutationRuntime";
-import { renderHook, unmountMountedTrees } from "./renderNative.testkit";
+import { render, renderHook, unmountMountedTrees } from "./renderNative.testkit";
 import type { SqliteSync } from "./sqliteSync";
 import { openSqliteSyncDouble, type SqliteDoubleDatabase } from "./sqliteSync.testkit";
 import { type NativeMutationRecoveryProjection, useNativeMutationRecovery } from "./useNativeMutationRecovery";
@@ -266,10 +266,7 @@ test("exposes none of the replaced runtime's rows on the first render after the 
 		observed.push(useNativeMutationRecovery(runtime, TARGET));
 		return null;
 	}
-	let renderer!: ReactTestRenderer;
-	act(() => {
-		renderer = create(<Probe />);
-	});
+	const renderer = render(<Probe />);
 	await vi.waitFor(() => expect(observed.at(-1)?.loading).toBe(false));
 	expect(observed.at(-1)?.snapshot?.recovery.map((row) => row.clientMutationId)).toEqual(["a-1"]);
 

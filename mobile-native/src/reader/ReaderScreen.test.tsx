@@ -210,7 +210,7 @@ beforeEach(() => {
 });
 afterEach(() => {
 	unmountMountedTrees();
-	for (const tree of trees.splice(0)) act(() => tree.unmount());
+	trees.length = 0;
 	vi.restoreAllMocks();
 	vi.useRealTimers();
 });

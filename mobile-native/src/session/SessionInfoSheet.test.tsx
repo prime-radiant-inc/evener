@@ -197,7 +197,7 @@ beforeEach(() => {
 
 afterEach(() => {
 	unmountMountedTrees();
-	for (const tree of mounted.splice(0)) act(() => tree.unmount());
+	mounted.length = 0;
 	if (owner) sessionInfoHosts.release(sheetKey(HUB, REF), owner);
 	owner = undefined;
 });
