@@ -1652,8 +1652,16 @@ func TestDelegateAttention_RestartFoldIsProviderFreeAndReadOnly(t *testing.T) {
 		{ToolCallID: "call-real", DeliveryID: "dlg/delivery/1"},
 		{ToolCallID: "call-real", DeliveryID: "dlg/delivery/2"},
 	}
-	if _, err := foldDelegateAttention([]transcript.Entry{{Turn: duplicateCall}}); err == nil {
-		t.Fatal("cold fold accepted one ToolCallID committed to multiple deliveries")
+	// One delegate_send wait may carry earlier results ahead of its own, so
+	// its turn commits several deliveries to one call (#3906)...
+	if _, err := foldDelegateAttention([]transcript.Entry{{Turn: duplicateCall}}); err != nil {
+		t.Fatalf("cold fold refused one ToolCallID committing several deliveries in its turn: %v", err)
+	}
+	// ...but a later turn can't commit another delivery to that call.
+	reusedCall := schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed("call-real", "delegate_send", "done", false))
+	reusedCall.DelegateDeliveryCommits = []schema.DelegateDeliveryCommit{{ToolCallID: "call-real", DeliveryID: "dlg/delivery/3"}}
+	if _, err := foldDelegateAttention([]transcript.Entry{{Turn: duplicateCall}, {Turn: reusedCall}}); err == nil {
+		t.Fatal("cold fold accepted a later turn's delivery on an earlier turn's ToolCallID")
 	}
 }
 
