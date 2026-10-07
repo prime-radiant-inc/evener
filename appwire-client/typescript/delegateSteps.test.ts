@@ -2,8 +2,8 @@
 
 import { expect, test } from "vitest";
 import {
+  delegateSendEarlierLabel,
   delegateSendEarlierResponses,
-  delegateSendEarlierText,
   delegateSendFooter,
   delegateSendResponse,
   delegateSendWaitIgnoredReason,
@@ -112,10 +112,13 @@ test("reads the earlier results a send's wait carried, oldest first", () => {
   };
   const earlier = delegateSendEarlierResponses({ raw, output: "" });
   expect(earlier).toEqual([
-    { output: "first", status: "completed", reason: undefined },
-    { output: undefined, status: "failed", reason: "boom" },
+    { text: "first", status: "completed" },
+    { text: "boom", status: "failed" },
   ]);
-  expect(earlier.map(delegateSendEarlierText)).toEqual(["first", "boom"]);
+  expect(earlier.map((entry, index) => delegateSendEarlierLabel(entry, index, earlier.length))).toEqual([
+    "earlier reply 1 of 2",
+    "earlier reply 2 of 2 · failed",
+  ]);
   expect(delegateSendResponse({ raw, output: "" })).toBe("third");
   expect(delegateSendEarlierResponses(subagentWireStep("call_send_2"))).toEqual([]);
   expect(delegateSendEarlierResponses({ raw: { ...raw, earlier_results: "nope" }, output: "" })).toEqual([]);
@@ -141,7 +144,11 @@ test("reads no reply for a send with no text of its own that carried earlier res
   });
   const raw = { ...entry("failed", ""), earlier_results: [entry("completed", "FIRST")] };
   expect(delegateSendResponse({ raw, output: printed })).toBeUndefined();
-  expect(delegateSendEarlierText({ status: "completed" })).toBe("(no reply)");
+  expect(delegateSendEarlierResponses({ raw, output: printed })).toEqual([{ text: "FIRST", status: "completed" }]);
+  const silent = { ...raw, earlier_results: [entry("completed", " ")] };
+  expect(delegateSendEarlierResponses({ raw: silent, output: printed })).toEqual([
+    { text: "(no reply)", status: "completed" },
+  ]);
 });
 
 // formatDelegateSend prints worktree, warning and disposal-hint lines after

@@ -3,8 +3,8 @@ import type { ItemModel } from "@evener/appwire-client";
 import {
   clip,
   delegateSendBase,
+  delegateSendEarlierLabel,
   delegateSendEarlierResponses,
-  delegateSendEarlierText,
   delegateSendResponse,
   delegateSendSummary,
   delegateSendTarget,
@@ -140,8 +140,9 @@ function delegateSendTranscriptRef(item: ItemModel): string | undefined {
 
 // DelegateSendBody renders the exchange as a two-party conversation through
 // the transcript's own slack-lean message view: the sent message as an
-// outgoing bubble from the agent to the delegate, and - when the call waited
-// for one - the delegate's reply as an incoming bubble below it. The
+// outgoing bubble from the agent to the delegate, then any earlier results
+// its wait carried and - when the call waited for one - the delegate's reply,
+// each as an incoming bubble below it. The
 // section testids (delegate-send-message/-response) are the longstanding
 // contract of this body and are unchanged.
 function DelegateSendBody(props: ToolRenderProps) {
@@ -171,9 +172,8 @@ function DelegateSendBody(props: ToolRenderProps) {
         </section>
       ) : null}
       {earlier.map((entry, index) => {
-        const which = `earlier reply ${index + 1} of ${earlier.length}`;
-        const label = entry.status && entry.status !== "completed" ? `${which} · ${entry.status}` : which;
-        const text = delegateSendEarlierText(entry);
+        const label = delegateSendEarlierLabel(entry, index, earlier.length);
+        const { text } = entry;
         return (
           // biome-ignore lint/suspicious/noArrayIndexKey: earlier results are a fixed, ordered list
           <section key={index} data-testid="delegate-send-earlier-response">
@@ -184,7 +184,7 @@ function DelegateSendBody(props: ToolRenderProps) {
               speaker="agent"
               name={target === "" ? `Delegate, ${label}` : `${target} (delegate, ${label})`}
               opensExchange={false}
-              actions={<CopyButton text={text} label={`Copy ${which}`} />}
+              actions={<CopyButton text={text} label={`Copy ${label}`} />}
             />
           </section>
         );

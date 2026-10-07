@@ -173,8 +173,8 @@ export {
   type DelegateSendResult,
   type DelegateSendStep,
   delegateSendBase,
+  delegateSendEarlierLabel,
   delegateSendEarlierResponses,
-  delegateSendEarlierText,
   delegateSendFooter,
   delegateSendResponse,
   delegateSendSummary,
@@ -639,6 +639,7 @@ export { acquireThreadSubscription } from "./threadSubscription";
 export type { SessionTokens, TokenPair, UsageSummary } from "./threadUsage";
 export { sessionTokens, threadUsageSummary, tokenUnitLabel, turnUsageTokens } from "./threadUsage";
 export {
+  capitalized,
   clip,
   clipJobID,
   formatByteCount,

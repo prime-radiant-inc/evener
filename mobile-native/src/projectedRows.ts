@@ -66,7 +66,6 @@ import {
 	systemEventWords,
 	composeStepWords,
 	delegateSendEarlierResponses,
-	delegateSendEarlierText,
 	delegateSendResponse,
 	delegateSendWaitIgnoredReason,
 	toolFamily,
@@ -74,6 +73,7 @@ import {
 	warningWords,
 } from "@evener/appwire-client";
 import type {
+	DelegateSendEarlierResponse,
 	ItemImage,
 	ItemModel,
 	ProjectedEntry,
@@ -163,7 +163,7 @@ export interface ActivityDetail {
 	// first (the package's delegateSendEarlierResponses): results the caller
 	// had not yet received, each in words with its status. Absent when there
 	// are none.
-	sendEarlierReplies?: readonly { text: string; status?: string }[];
+	sendEarlierReplies?: readonly DelegateSendEarlierResponse[];
 	sendWaitIgnored?: string;
 }
 
@@ -647,9 +647,7 @@ export function activityDetail(it: ItemModel): ActivityDetail {
 	const watchEvidence = it.toolName === "job_watch" ? jobWatchEvidence(it) : undefined;
 	const send = toolFamily(it.toolName ?? "") === "message";
 	const sendReply = send ? delegateSendResponse(it) : undefined;
-	const sendEarlierReplies = send
-		? delegateSendEarlierResponses(it).map((entry) => ({ text: delegateSendEarlierText(entry), status: entry.status }))
-		: [];
+	const sendEarlierReplies = send ? delegateSendEarlierResponses(it) : [];
 	const sendWaitIgnored = send ? delegateSendWaitIgnoredReason(it) : undefined;
 	return {
 		description: activityDescription(it),
@@ -1423,6 +1421,13 @@ function boundWords(words: StepWords, bound: BoundText): StepWords {
 	};
 }
 
+// Bound each entry of a list, handing back the source list when no entry
+// changed, so a row keeps its identity across publishes (see truncateItem).
+function boundEach<T>(list: readonly T[], boundOne: (entry: T) => T): readonly T[] {
+	const bounded = list.map(boundOne);
+	return bounded.every((entry, index) => entry === list[index]) ? list : bounded;
+}
+
 function truncateActivityDetail(detail: ActivityDetail, bound: BoundText): ActivityDetail {
 	const description = detail.description ? bound(detail.description) : detail.description;
 	const summary = detail.summary ? bound(detail.summary) : detail.summary;
@@ -1432,13 +1437,12 @@ function truncateActivityDetail(detail: ActivityDetail, bound: BoundText): Activ
 	const error = detail.error ? bound(detail.error) : detail.error;
 	const watchEvidence = detail.watchEvidence ? bound(detail.watchEvidence) : detail.watchEvidence;
 	const sendReply = detail.sendReply ? bound(detail.sendReply) : detail.sendReply;
-	const earlierBounded = detail.sendEarlierReplies?.map((reply) => {
-		const text = bound(reply.text);
-		return text === reply.text ? reply : { ...reply, text };
-	});
-	const sendEarlierReplies = earlierBounded?.every((reply, i) => reply === detail.sendEarlierReplies?.[i])
-		? detail.sendEarlierReplies
-		: earlierBounded;
+	const sendEarlierReplies = detail.sendEarlierReplies
+		? boundEach(detail.sendEarlierReplies, (reply) => {
+				const text = bound(reply.text);
+				return text === reply.text ? reply : { ...reply, text };
+			})
+		: detail.sendEarlierReplies;
 	const sendWaitIgnored = detail.sendWaitIgnored ? bound(detail.sendWaitIgnored) : detail.sendWaitIgnored;
 	// Nothing was cut: hand back the source detail so a settled row keeps its
 	// identity across publishes (see truncateItem).

@@ -829,7 +829,7 @@ test("delegate_send: earlier results a wait carried render as incoming bubbles a
   ]);
   expect(within(earlier[0]!).getByText("dlg_abc123 (delegate, earlier reply 1 of 2)")).toBeTruthy();
   expect(within(earlier[1]!).getByText("dlg_abc123 (delegate, earlier reply 2 of 2 · failed)")).toBeTruthy();
-  expect(within(earlier[1]!).getByRole("button", { name: "Copy earlier reply 2 of 2" })).toBeTruthy();
+  expect(within(earlier[1]!).getByRole("button", { name: "Copy earlier reply 2 of 2 · failed" })).toBeTruthy();
   // An earlier result arrived before the send, so its bubble shows no time;
   // the reply keeps the send's.
   expect(earlier.map((section) => section.querySelector("time"))).toEqual([null, null]);
