@@ -172,6 +172,7 @@ export {
   type DelegateSendResult,
   type DelegateSendStep,
   delegateSendBase,
+  delegateSendEarlierResponses,
   delegateSendFooter,
   delegateSendResponse,
   delegateSendSummary,

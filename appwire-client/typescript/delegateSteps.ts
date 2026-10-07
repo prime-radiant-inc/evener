@@ -4,10 +4,12 @@
 // reads the footer and the raw state through the same helpers.
 //
 // Ground truth: agent/session_tools_jobs.go's formatDelegateSend prints any
-// reply, then a bracketed footer "[delegate_id <id> · <action> · <status> ·
-// running in background · wait ignored: <why>]" (every field after the action
-// optional), then structured_result and watch lines; marshalDelegateSendResult
-// returns the same fields as the step's raw state.
+// earlier results a wait carried (each numbered and printed as a reply is),
+// then any reply, then a bracketed footer "[delegate_id <id> · <action> ·
+// <status> · running in background · wait ignored: <why>]" (every field after
+// the action optional), then structured_result and watch lines;
+// marshalDelegateSendResult returns the same fields as the step's raw state,
+// the earlier results under earlier_results.
 
 import type { ItemModel } from "./model";
 import { composeStepWords, type StepWords, summaryOf, withDetail } from "./stepWords";
@@ -156,6 +158,20 @@ export function delegateSendResponse(step: DelegateSendResult): string | undefin
 
   const response = output.trimEnd().split("\n").slice(0, footer.index).join("\n");
   return response.trim() === "" ? undefined : response;
+}
+
+/** The earlier replies a send's wait carried ahead of its own, oldest first:
+ * results of the same delegate the caller had not yet received (#3906), from
+ * the raw state's earlier_results. Empty when there are none, and for an
+ * entry with no output. */
+export function delegateSendEarlierResponses(step: DelegateSendResult): string[] {
+  if (!isDelegateSendResult(step.raw)) return [];
+  const earlier = asJsonObject(step.raw)?.earlier_results;
+  if (!Array.isArray(earlier)) return [];
+  return earlier.flatMap((entry) => {
+    const output = asJsonObject(entry)?.output;
+    return typeof output === "string" && output.trim() !== "" ? [output] : [];
+  });
 }
 
 /** Why a send's wait was ignored (it asked to wait on a delegate that was

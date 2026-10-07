@@ -797,6 +797,34 @@ test("delegate_send: expanded body renders the sent message as an outgoing chat 
   expect(screen.queryByText(/delegate_id dlg_abc123 · delivered · completed/)).toBeNull();
 });
 
+// A send whose wait carried results its caller had not yet received (#3906)
+// shows each as an earlier incoming bubble, oldest first, above the reply.
+test("delegate_send: earlier results a wait carried render as incoming bubbles ahead of the reply", () => {
+  renderDelegateSendBody({
+    raw: {
+      delegate_id: "dlg_abc123",
+      action: "completed",
+      running_in_background: false,
+      output: "Third result",
+      earlier_results: [
+        { delegate_id: "dlg_abc123", action: "completed", running_in_background: false, output: "First result" },
+        { delegate_id: "dlg_abc123", action: "completed", running_in_background: false, output: "Second result" },
+      ],
+    },
+  });
+
+  const earlier = screen.getAllByTestId("delegate-send-earlier-response");
+  expect(earlier.map((section) => within(section).getByTestId("user-bubble").textContent)).toEqual([
+    "First result",
+    "Second result",
+  ]);
+  expect(within(earlier[0]!).getByText("dlg_abc123 (delegate, earlier result 1 of 2)")).toBeTruthy();
+  expect(within(earlier[1]!).getByRole("button", { name: "Copy earlier response 2 of 2" })).toBeTruthy();
+  const reply = screen.getByTestId("delegate-send-response");
+  expect(within(reply).getByTestId("user-bubble").textContent).toBe("Third result");
+  expect(earlier[1]!.compareDocumentPosition(reply) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});
+
 test("delegate_send: canonical raw output preserves the delegate response when formatted output has trailing metadata", () => {
   renderDelegateSendBody({
     output:

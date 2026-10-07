@@ -3,6 +3,7 @@ import type { ItemModel } from "@evener/appwire-client";
 import {
   clip,
   delegateSendBase,
+  delegateSendEarlierResponses,
   delegateSendResponse,
   delegateSendSummary,
   delegateSendTarget,
@@ -147,10 +148,13 @@ function DelegateSendBody(props: ToolRenderProps) {
   const args = parseArgs(item.argumentsJSON);
   const message = str(args, "message");
   const response = delegateSendResponse(item);
+  // Results the caller had not yet received, which the wait carried ahead of
+  // its own reply (#3906), oldest first.
+  const earlier = delegateSendEarlierResponses(item);
   const waitIgnoredReason = delegateSendWaitIgnoredReason(item);
   const target = clip(delegateSendTarget(item), ID_CLIP);
 
-  if (!message && !response) return null;
+  if (!message && !response && earlier.length === 0) return null;
   return (
     <div data-testid="delegate-send-body">
       {message ? (
@@ -165,6 +169,24 @@ function DelegateSendBody(props: ToolRenderProps) {
           />
         </section>
       ) : null}
+      {earlier.map((text, index) => {
+        const which = `${index + 1} of ${earlier.length}`;
+        return (
+          // biome-ignore lint/suspicious/noArrayIndexKey: earlier results are a fixed, ordered list
+          <section key={index} data-testid="delegate-send-earlier-response">
+            <UserMessageView
+              item={{ ...item, text }}
+              speaker="agent"
+              name={
+                target === "" ? `Delegate, earlier result ${which}` : `${target} (delegate, earlier result ${which})`
+              }
+              timeIso={item.completedAt ?? item.startedAt}
+              opensExchange={false}
+              actions={<CopyButton text={text} label={`Copy earlier response ${which}`} />}
+            />
+          </section>
+        );
+      })}
       {response ? (
         <section data-testid="delegate-send-response">
           <UserMessageView
