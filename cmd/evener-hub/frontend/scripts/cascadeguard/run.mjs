@@ -135,7 +135,10 @@ function readingPointExpr(portExpr) {
     };
     const entryBox = box(entry);
     const row = entry.closest('[data-row-id]');
-    const walker = document.createTreeWalker(entry, NodeFilter.SHOW_TEXT);
+    // Useful means the viewport shows real text. The anchoring entry can be a
+    // sub-pixel tail crossing the top (reflow keeps a showing tail in place),
+    // so the text may belong to the entries below it.
+    const walker = document.createTreeWalker(port, NodeFilter.SHOW_TEXT);
     let useful = false;
     let visibleText = null;
     let text;
@@ -161,6 +164,18 @@ function readingPointExpr(portExpr) {
 const sourcePortExpr = `${driver.paneScopeExpr(fixture.rootRef)}?.querySelector('[data-testid="transcript-virtual-list"] > div')`;
 const sourceReadingPointExpr = readingPointExpr(sourcePortExpr);
 
+// The reader-reflow rule (docs/superpowers/specs/2026-10-04-shared-transcript-
+// reader-reflow-design.md, readingPointOffset in useTranscriptScroll.ts): where
+// the entry that held the reading point should start relative to the viewport
+// top after a reflow. Also evaluated in the page, so it stays self-contained.
+function wantedReadingOffset(before, after) {
+  if (before.offset >= 0) return before.offset;
+  const oldDepth = Math.max(0, before.height - before.viewport);
+  if (-before.offset > oldDepth) return Math.min(0, before.height + before.offset - after.height);
+  const progress = oldDepth > 0 ? -before.offset / oldDepth : 0;
+  return -progress * Math.max(0, after.height - after.viewport);
+}
+
 function assertReadingContinuity(before, after, label) {
   assert.ok(before && after, `${label} has independently observed source entries`);
   assert.equal(after.entry, before.entry, `${label} preserves the semantic entry`);
@@ -168,9 +183,7 @@ function assertReadingContinuity(before, after, label) {
   if (before.followingBottom) {
     assert.ok(after.scrollHeight - after.viewport - after.scrollTop <= 1.5, `${label} keeps end following`);
   } else if (before.width !== after.width) {
-    const oldDepth = Math.max(0, before.height - before.viewport);
-    const progress = oldDepth > 0 ? Math.max(0, Math.min(1, -before.offset / oldDepth)) : 0;
-    const wantedOffset = before.offset >= 0 ? before.offset : -progress * Math.max(0, after.height - after.viewport);
+    const wantedOffset = wantedReadingOffset(before, after);
     const start = after.scrollTop + after.offset;
     const wantedScroll = Math.max(0, Math.min(start - wantedOffset, Math.max(0, after.scrollHeight - after.viewport)));
     assert.ok(Math.abs(after.scrollTop - wantedScroll) <= 2,
@@ -196,9 +209,7 @@ async function settledReadingContinuity(before, portExpr, label) {
       return after.scrollHeight - after.viewport - after.scrollTop <= 1.5 ? after : null;
     }
     if (before.width === after.width) return after;
-    const oldDepth = Math.max(0, before.height - before.viewport);
-    const progress = oldDepth > 0 ? Math.max(0, Math.min(1, -before.offset / oldDepth)) : 0;
-    const wantedOffset = before.offset >= 0 ? before.offset : -progress * Math.max(0, after.height - after.viewport);
+    const wantedOffset = (${wantedReadingOffset.toString()})(before, after);
     const start = after.scrollTop + after.offset;
     const wantedScroll = Math.max(0, Math.min(start - wantedOffset, Math.max(0, after.scrollHeight - after.viewport)));
     return Math.abs(after.scrollTop - wantedScroll) <= 2 ? after : null;
@@ -445,9 +456,7 @@ async function nativePositioningInterruption(input) {
   assert.deepEqual(observation.released, { queued:0, held:false }, "all genuine queued measurements are released");
   observation.after = await settledReadingPoint(sourcePortExpr, "native interruption after release");
   const { newer, after } = observation;
-  const oldDepth = Math.max(0, before.height - before.viewport);
-  const progress = oldDepth > 0 ? Math.max(0, Math.min(1, -before.offset / oldDepth)) : 0;
-  const oldOffset = before.offset >= 0 ? before.offset : -progress * Math.max(0, after.height - after.viewport);
+  const oldOffset = wantedReadingOffset(before, after);
   const oldTarget = Math.max(0, Math.min(after.scrollTop + after.offset - oldOffset, Math.max(0, after.scrollHeight - after.viewport)));
   const retainedNewer = after.entry === newer.entry && Math.abs(after.offset - newer.offset) <= 2;
   observation.staleReplay = !retainedNewer && after.entry === before.entry && Math.abs(after.scrollTop - oldTarget) <= 2;

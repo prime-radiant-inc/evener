@@ -359,7 +359,14 @@ export function readingPointOffset(
   const point = captured.readingPoint;
   if (!point || captured.anchorOffset > 0) return captured.anchorOffset;
   const oldDepth = Math.max(0, point.entryHeight - point.viewportHeight);
-  const progress = oldDepth === 0 ? 0 : Math.max(0, Math.min(1, -captured.anchorOffset / oldDepth));
+  if (-captured.anchorOffset > oldDepth) {
+    // The entry's top is above the viewport and its tail is showing, so the
+    // reader is reading where it ends: keep that end where it was rather than
+    // filling the pane with the entry.
+    const tail = point.entryHeight + captured.anchorOffset;
+    return Math.min(0, tail - entryHeight);
+  }
+  const progress = oldDepth === 0 ? 0 : -captured.anchorOffset / oldDepth;
   const newDepth = Math.max(0, entryHeight - viewportHeight);
   return progress === 0 || newDepth === 0 ? 0 : -progress * newDepth;
 }
