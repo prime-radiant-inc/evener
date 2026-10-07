@@ -48,7 +48,13 @@ import { shrinkingScroller } from "./session/dockCard";
 export function answered<T>(value: T): Promise<T> {
 	const promise = Promise.resolve(value);
 	promise.then = ((onFulfilled?: (value: T) => unknown) => {
-		const next = onFulfilled ? onFulfilled(value) : value;
+		let next: unknown;
+		try {
+			next = onFulfilled ? onFulfilled(value) : value;
+		} catch (error) {
+			// A callback that throws rejects the chain, as a real promise's does.
+			return Promise.reject(error);
+		}
 		// A callback that returns a promise is followed the ordinary way.
 		return next instanceof Promise ? next : answered(next);
 	}) as typeof promise.then;

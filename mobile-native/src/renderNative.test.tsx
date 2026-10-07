@@ -4,7 +4,7 @@
 // flag). Left unset, every rendering suite buries real stderr under one line
 // per render, so this pins the harness's output as clean (#2433).
 import { createElement, useEffect } from "react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { answered, render, renderHook } from "./renderNative.testkit";
 
 const DEPRECATION = "react-test-renderer is deprecated";
@@ -40,16 +40,15 @@ describe("renderNative.testkit unmounts what a test mounted", () => {
 		return null;
 	}
 
-	it("mounts a tree with render and a hook with renderHook", () => {
+	it("unmounts a render and a renderHook after the test's afterEach, last mounted first", () => {
+		// Registered before the mounts, so it runs after their unmounts
+		// (onTestFinished runs last-registered first, after afterEach).
+		onTestFinished(() => {
+			expect(unmounted).toEqual(["afterEach", "renderHook", "render"]);
+		});
 		render(createElement(Probe, { name: "render" }));
 		renderHook(() => useEffect(() => () => void unmounted.push("renderHook"), []));
 		expect(unmounted).toEqual([]);
-	});
-
-	it("finds both unmounted once that test ended", () => {
-		// After the test's afterEach hooks; last mounted, first unmounted, as
-		// nested cleanup expects.
-		expect(unmounted.slice(0, 3)).toEqual(["afterEach", "renderHook", "render"]);
 	});
 });
 
@@ -62,5 +61,13 @@ describe("renderNative.testkit's answered native reads", () => {
 			.then((value) => seen.push(`catch-then:${value}`));
 		void answered(1).finally(() => seen.push("finally"));
 		expect(seen).toEqual(["then:true", "catch-then:false", "finally"]);
+	});
+
+	it("rejects the chain when a callback throws, as a real promise does", async () => {
+		const failure = new Error("boom");
+		const chained = answered(true).then(() => {
+			throw failure;
+		});
+		await expect(chained).rejects.toBe(failure);
 	});
 });
