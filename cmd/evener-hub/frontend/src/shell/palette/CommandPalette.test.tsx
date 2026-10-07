@@ -938,9 +938,17 @@ test("a Send-resumes fallthrough whose resume fails parks the row, closes the pa
     throw new Error("resume rejected");
   });
   let starts = 0;
-  fake.on("turn/start", () => {
+  fake.on("turn/start", (params) => {
     starts += 1;
-    return {};
+    return {
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: `thr_${ref}`,
+        projectionState: "reflected",
+      },
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+    };
   });
   workspaceStore.setState({
     panes: [{ id: "p1", type: "session", params: { ref }, slot: "main" }],
