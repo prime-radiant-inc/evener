@@ -327,7 +327,7 @@ func DefDelegateSend() llm.ToolDefinition {
 			"properties": map[string]any{
 				"to":          map[string]any{"type": "string", "description": "A child delegate_id (`dlg_...`) owned by this session, or `caller` from within a delegate to steer its controlling caller."},
 				"message":     map[string]any{"type": "string", "description": "The message to deliver to the addressed delegate or caller."},
-				"max_wait_ms": map[string]any{"type": "integer", "description": "0 (default): deliver/start without waiting. >0: for a newly started delegate generation, wait inline up to this many ms for its result; delivery to a running delegate or caller returns once delivered."},
+				"max_wait_ms": map[string]any{"type": "integer", "description": "0 (default): deliver/start without waiting. >0: for a newly started delegate generation, wait inline up to this many ms for its result; the reply also carries, under earlier_results, any earlier result of that delegate you had not yet received; delivery to a running delegate or caller returns once delivered."},
 			},
 			"required": []string{"to", "message"},
 		},

@@ -51,6 +51,21 @@ type delegateRuntime struct {
 type stableDelegateSendOutcome struct {
 	result sendMessageResult
 	commit *delegateToolResultCommit
+	// heldCommit acknowledges, before commit, the held earlier result the
+	// reply carries (result.Earlier).
+	heldCommit *delegateToolResultCommit
+}
+
+// inlineOutcome is the send's reply for a resolved inline wait: result, which
+// already carries the newest result, plus the held earlier result the wait
+// collected with its commit (#3906).
+func inlineOutcome(result sendMessageResult, resolution delegateInlineResolution) stableDelegateSendOutcome {
+	outcome := stableDelegateSendOutcome{result: result, commit: resolution.commit}
+	if earlier := resolution.earlier; earlier != nil {
+		outcome.result.Earlier = []delegatestore.TerminalPacket{earlier.packet}
+		outcome.heldCommit = earlier.commit
+	}
+	return outcome
 }
 
 type delegateRunLeaseContextKey struct{}
@@ -1803,7 +1818,7 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 		return stableDelegateSendOutcome{result: result}
 	}
 	completeStableDelegateSendResult(&result, *resolution.packet)
-	return stableDelegateSendOutcome{result: result, commit: resolution.commit}
+	return inlineOutcome(result, resolution)
 }
 
 // completeStableDelegateSendResult fills result as a send whose wait reached
@@ -1947,7 +1962,7 @@ func (runtime delegateRuntime) stableSendFailureOutcomeAfterDispatch(ctx context
 	}
 	result.Action = "completed"
 	result.RunningInBackground = false
-	return stableDelegateSendOutcome{result: result, commit: resolution.commit}
+	return inlineOutcome(result, resolution)
 }
 
 func stableDelegateFailedSendResult(started delegateStartCommit, plans delegateMutationPlans, cause error) sendMessageResult {
