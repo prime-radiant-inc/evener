@@ -4,6 +4,7 @@ import { expect, test } from "vitest";
 import {
   delegateSendEarlierResponses,
   delegateSendEarlierText,
+  delegateSendFooter,
   delegateSendResponse,
   delegateSendWaitIgnoredReason,
 } from "./delegateSteps";
@@ -141,4 +142,16 @@ test("reads no reply for a send with no text of its own that carried earlier res
   const raw = { ...entry("failed", ""), earlier_results: [entry("completed", "FIRST")] };
   expect(delegateSendResponse({ raw, output: printed })).toBeUndefined();
   expect(delegateSendEarlierText({ status: "completed" })).toBe("(no reply)");
+});
+
+// formatDelegateSend prints worktree, warning and disposal-hint lines after
+// the footer; the footer is still found above them, so the reply, status and
+// wait note read as they do without them.
+test("finds a send's footer above the worktree, warning and disposal-hint lines after it", () => {
+  const output =
+    "Done.\n[delegate_id dlg_x · completed · completed]\n" +
+    "worktree: path=/w, branch=b, head=h, 0 commits ahead, dirty=false\nwarning: lint skipped\ndisposal_hint: dispose it";
+  expect(delegateSendFooter(output)?.status).toBe("completed");
+  expect(delegateSendResponse({ output })).toBe("Done.");
+  expect(delegateSendResponse({ output: output.replace("Done.\n", "") })).toBeUndefined();
 });

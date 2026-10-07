@@ -75,7 +75,7 @@ export type DelegateSendFooterInfo = {
 };
 
 /** The footer a delegate_send printed, when its output ends in one (after any
- * structured_result and watch lines); undefined when the output has none, or
+ * worktree, warning, disposal_hint, structured_result and watch lines); undefined when the output has none, or
  * a bracketed line that isn't the footer's shape. */
 export function delegateSendFooter(output: string): DelegateSendFooterInfo | undefined {
   const trimmed = output.trimEnd();
@@ -84,7 +84,14 @@ export function delegateSendFooter(output: string): DelegateSendFooterInfo | und
   let index = lines.length - 1;
   while (index >= 0) {
     const line = lines[index] ?? "";
-    if (line.startsWith("structured_result (valid=") || line === "watches:" || line.startsWith("- ")) {
+    if (
+      line.startsWith("structured_result (valid=") ||
+      line === "watches:" ||
+      line.startsWith("- ") ||
+      line.startsWith("worktree: ") ||
+      line.startsWith("warning: ") ||
+      line.startsWith("disposal_hint: ")
+    ) {
       index -= 1;
       continue;
     }

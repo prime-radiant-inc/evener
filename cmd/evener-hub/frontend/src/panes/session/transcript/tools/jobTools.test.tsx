@@ -833,6 +833,7 @@ test("delegate_send: earlier results a wait carried render as incoming bubbles a
   // An earlier result arrived before the send, so its bubble shows no time;
   // the reply keeps the send's.
   expect(earlier.map((section) => section.querySelector("time"))).toEqual([null, null]);
+  expect(screen.getByTestId("delegate-send-response").querySelector("time")).not.toBeNull();
   const reply = screen.getByTestId("delegate-send-response");
   expect(within(reply).getByTestId("user-bubble").textContent).toBe("Third result");
   expect(earlier[1]!.compareDocumentPosition(reply) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
