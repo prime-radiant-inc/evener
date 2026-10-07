@@ -35,8 +35,6 @@ import type {
 	ThreadTurnsListResponse,
 	TranscriptDisplayConfigV1,
 	TurnCancelQueuedResponse,
-	TurnDrainAsSteerResponse,
-	TurnPromoteQueuedAsSteerResponse,
 } from "@evener/appwire-client";
 import { acquireThreadSubscription, hydrateThread, isStaleCursorError } from "@evener/appwire-client";
 import type { MobileConversation } from "../../../mobile-native/src/projectedRows";
@@ -193,15 +191,6 @@ export interface ConversationTurnForkActions {
 export interface ConversationClearActions {
 	clear(): Promise<ThreadClearResponse>;
 	adoptClear(response: ThreadClearResponse): ConversationReadProjection;
-}
-
-export interface QueueConversationService extends LiveConversationService {
-	promoteQueuedAsSteer(
-		index: number,
-		expectedEntryId: string,
-		expectedInstanceId: string,
-	): Promise<TurnPromoteQueuedAsSteerResponse>;
-	drainAsSteer(expectedQueueRevision: number, expectedInstanceId: string): Promise<TurnDrainAsSteerResponse>;
 }
 
 let defaultIdCounter = 0;
@@ -472,27 +461,20 @@ function decodeMutationResult(
 	return decoded;
 }
 
-function validateQueueAction(
-	kind: "cancel" | "promote" | "drain",
+function validateCancelQueued(
 	result: unknown,
 	clientMutationId: string,
 	expectedInstanceId: string,
 	expectedThreadId: string,
-	expectedEntryId?: string,
+	expectedEntryId: string,
 ): void {
-	const receipt = decodeMutationResult(
-		kind === "cancel" ? "cancel" : "drain",
-		result,
-		clientMutationId,
-		expectedInstanceId,
-	);
+	const receipt = decodeMutationResult("cancel", result, clientMutationId, expectedInstanceId);
 	const ids = receipt.queueEntryIds;
 	if (
 		receipt.threadId !== expectedThreadId ||
 		receipt.instanceId !== expectedInstanceId ||
-		!ids?.length ||
-		new Set(ids).size !== ids.length ||
-		(kind !== "drain" && (ids.length !== 1 || ids[0] !== expectedEntryId))
+		ids?.length !== 1 ||
+		ids[0] !== expectedEntryId
 	) {
 		throw new Error("ConversationService: queue action receipt identity mismatch");
 	}
@@ -501,7 +483,7 @@ function validateQueueAction(
 export function createConversationService<ReadLease = unknown>(
 	client: ConversationClientLike | AppwireClient,
 	options: ConversationServiceOptions<ReadLease> = {},
-): QueueConversationService &
+): LiveConversationService &
 	ConversationModelCatalog &
 	ConversationGoalActions &
 	ConversationForkActions &
@@ -565,14 +547,6 @@ export function createConversationService<ReadLease = unknown>(
 	// completions (an older open resolving after a newer open, or a refresh
 	// resolving after close/reopen) no-ops against the live pair.
 	let openEpoch = 0;
-
-	function requireQueueRun(): void {
-		// The capability half of a drain or promote: the harness steers (the
-		// daemon converts the entries into steering, which a send-only harness
-		// cannot take). The status half -- a running turn, or a queue a Stop
-		// parked -- is the caller's, through the SDK's sessionControls.
-		if (!capabilities?.steer) throw new Error("Running queued messages is unavailable for this session.");
-	}
 
 	function requireQueueInstance(expected: string): string {
 		const threadRef = requireRef();
@@ -1063,38 +1037,7 @@ export function createConversationService<ReadLease = unknown>(
 				expectedEntryId,
 				expectedInstanceId,
 			});
-			validateQueueAction("cancel", result, clientMutationId, expectedInstanceId, expectedThreadId, expectedEntryId);
-			return result;
-		},
-
-		async promoteQueuedAsSteer(index, expectedEntryId, expectedInstanceId) {
-			const threadRef = requireQueueInstance(expectedInstanceId);
-			requireQueueRun();
-			const expectedThreadId = nonemptyString(threadId, "thread id");
-			const clientMutationId = idFactory();
-			const result = await client.request("turn/promoteQueuedAsSteer", {
-				ref: threadRef,
-				index,
-				expectedEntryId,
-				expectedInstanceId,
-				clientMutationId,
-			});
-			validateQueueAction("promote", result, clientMutationId, expectedInstanceId, expectedThreadId, expectedEntryId);
-			return result;
-		},
-
-		async drainAsSteer(expectedQueueRevision, expectedInstanceId) {
-			const threadRef = requireQueueInstance(expectedInstanceId);
-			requireQueueRun();
-			const expectedThreadId = nonemptyString(threadId, "thread id");
-			const clientMutationId = idFactory();
-			const result = await client.request("turn/drainAsSteer", {
-				ref: threadRef,
-				expectedQueueRevision,
-				expectedInstanceId,
-				clientMutationId,
-			});
-			validateQueueAction("drain", result, clientMutationId, expectedInstanceId, expectedThreadId);
+			validateCancelQueued(result, clientMutationId, expectedInstanceId, expectedThreadId, expectedEntryId);
 			return result;
 		},
 

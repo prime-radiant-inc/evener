@@ -15,8 +15,9 @@ import { NO_ACTIVE_TURN, type SessionControls, sessionControls, type ThreadModel
 import {
   isLocalRecoveryFenced,
   isResumeOnlyLocal,
+  isSendResumesLocal,
   type ResumeOnlySignals,
-  resumeOnlyLocalModel,
+  sendDrivenLocalModel,
   threadsStore,
 } from "./threads";
 
@@ -46,7 +47,7 @@ export function pressRefusal(ref: string, control: SessionControl): string | und
   // the delivery-uncertain signal from the pending-turns projection too, so a
   // press that lands with blockedUnknown rows fences exactly as the composer's
   // blockedMutations selector would have.
-  if (control === "send" && resumeOnlyLocalModel(ref)) return undefined;
+  if (control === "send" && sendDrivenLocalModel(ref)) return undefined;
   return controlsFor(model).reason[control];
 }
 
@@ -58,10 +59,15 @@ export function pressRefusal(ref: string, control: SessionControl): string | und
 // press handlers derive from this one predicate (the composer module cannot
 // lend QueueStrip its copy: Composer imports QueueStrip), and each call site
 // adds the shape its own surface needs.
-export { isLocalRecoveryFenced, isResumeOnlyLocal };
+export { isLocalRecoveryFenced, isResumeOnlyLocal, isSendResumesLocal };
 
 // The recovery fence as one reading, so its three consumers cannot drift:
+//   sendResumes - a fenced local session whose Send drives the resume: Send is
+//                 offered and the store's driver resumes before dispatch.
 //   resumeOnly  - the hub admits a folded turn/start (isResumeOnlyLocal).
+//   sendDriven  - the union of the two above: the shapes whose only recovery
+//                 action is a Send, so the pane/composer sites can ask the one
+//                 question instead of recombining the pair.
 //   stillFenced - the fence still blocks Send/Queue for any other shape.
 //   fencedLocal - a stopped local snapshot still fenced, whose follow-up card
 //                 keeps the control row reachable for the retained draft.
@@ -69,18 +75,21 @@ export { isLocalRecoveryFenced, isResumeOnlyLocal };
 // isResumeOnlyLocal): a caller that can see it passes it so a resumable session
 // whose reconciliation is pending keeps the fence and the Resume affordance.
 export interface RecoveryFenceReading {
+  sendResumes: boolean;
   resumeOnly: boolean;
+  sendDriven: boolean;
   stillFenced: boolean;
   fencedLocal: boolean;
 }
 
 export function recoveryFence(
   ref: string,
-  model: Pick<ThreadModel, "resumeOnlyFoldable" | "status">,
+  model: Pick<ThreadModel, "resumeOnlyFoldable" | "status" | "parentRef">,
   restartObligated: boolean,
   signals: ResumeOnlySignals = {},
 ): RecoveryFenceReading {
   const resumeOnly = isResumeOnlyLocal(ref, model, signals);
+  const sendResumes = isSendResumesLocal(ref, model, restartObligated, signals);
   // A Stop this page started is its OWN fence while it drains, independent of
   // the restart obligation: a stale thread refresh can clear
   // restartBlockingObligations while the forceStop RPC is still in flight, and
@@ -88,8 +97,18 @@ export function recoveryFence(
   // window. So stillFenced reads stopInFlight as its own clause rather than
   // only as a blocker of the resume-only carve-out (which isResumeOnlyLocal
   // already applies, making the two mutually exclusive).
-  const stillFenced = isLocalRecoveryFenced(ref, restartObligated || signals.stopInFlight === true) && !resumeOnly;
-  return { resumeOnly, stillFenced, fencedLocal: stillFenced && model.status.type === "notLoaded" };
+  // The Send-resumes face is deliberately NOT stillFenced: it blocks Queue but
+  // offers Send, which the store's driver backs. stillFenced stays "the fence
+  // blocks Send/Queue".
+  const stillFenced =
+    isLocalRecoveryFenced(ref, restartObligated || signals.stopInFlight === true) && !resumeOnly && !sendResumes;
+  return {
+    sendResumes,
+    resumeOnly,
+    sendDriven: resumeOnly || sendResumes,
+    stillFenced,
+    fencedLocal: stillFenced && model.status.type === "notLoaded",
+  };
 }
 
 // The same fence as a press reads it: the store's recovery state as it holds it

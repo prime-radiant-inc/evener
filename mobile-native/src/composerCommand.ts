@@ -90,6 +90,8 @@ interface CommandContext {
 	openAside(ref: string, title: string): void;
 	cleared(response: ThreadClearResponse): void;
 	turn(): ComposerCommandSession | null;
+	/** Steers with the whole queue through the outbox, as Steer all now does. */
+	drainQueue(): Promise<void>;
 	reasoning(): Pick<MobileConversation, "supportsReasoning" | "reasoningEffort" | "reasoningEffortLevels"> | null;
 }
 
@@ -150,14 +152,10 @@ export async function submitComposerCommand(
 		};
 	} else if (id === "steer" || id === "queue" || id === "drain-as-steer") {
 		requireControl();
-		const turn = context.turn();
-		// requireControl refused a missing session above; this narrows for the
-		// revision read below.
-		if (!turn) throw new CommandArgumentError(`/${id}: no active turn`);
 		const input = buildComposerInput(match.argsText);
 		// The explicit /steer command preserves waiting queue entries. Draining
-		// uses its own command and the observed queue revision, as on web.
-		operation = id === "drain-as-steer" ? () => service.steer([], turn.queue?.revision) : () => service[id](input);
+		// uses its own command, the one Steer all now is.
+		operation = id === "drain-as-steer" ? () => context.drainQueue() : () => service[id](input);
 	} else if (id === "model") {
 		const catalog = await service.models();
 		// A catalog request must never consume text edited while it was loading,

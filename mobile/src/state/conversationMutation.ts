@@ -1,22 +1,27 @@
 import type { InputItem, MutationReceipt } from "@evener/appwire-client";
 import type { MutationAttachmentRef, MutationPersistenceSnapshot } from "@evener/appwire-client/state/mutation";
 
-// A promote steers with one queued message, named by queueEntry.
-export type ConversationMutationKind = "send" | "steer" | "queue" | "interrupt" | "promote";
-
-export interface ConversationMutationRequest {
-	readonly kind: ConversationMutationKind;
+interface ConversationMutationTarget {
 	readonly hubId: string;
 	readonly targetRef: string;
 	readonly threadId: string;
 	readonly instanceId: string;
 	readonly input: InputItem[];
 	readonly expectedQueueRevision?: number;
-	readonly queueEntry?: { readonly index: number; readonly id: string };
 	// What the message's ghost shows when the input doesn't say: the queued
 	// messages a promote or drain steers with, which the hub already holds.
 	readonly display?: InputItem[];
 }
+
+// A promote steers with one queued message, which it must name; the hub
+// refuses one that doesn't, so the type catches it first.
+export type ConversationMutationRequest = ConversationMutationTarget &
+	(
+		| { readonly kind: "send" | "steer" | "queue" | "interrupt" }
+		| { readonly kind: "promote"; readonly queueEntry: { readonly index: number; readonly id: string } }
+	);
+
+export type ConversationMutationKind = ConversationMutationRequest["kind"];
 
 export interface ConversationMutationSubmitter {
 	submit(request: ConversationMutationRequest): Promise<MutationReceipt | undefined>;
