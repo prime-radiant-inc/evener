@@ -6,7 +6,7 @@ import {
 	matchBuiltinInvocation,
 	mergeSlashCommands,
 } from "@evener/appwire-client";
-import type { ThreadClearResponse } from "@evener/appwire-client";
+import type { InputItem, ThreadClearResponse } from "@evener/appwire-client";
 import type { MobileConversation } from "./projectedRows";
 import { type ControlsSource, conversationControls } from "./conversationControls";
 import type {
@@ -77,6 +77,13 @@ export function builtinComposerItems(session: ComposerCommandSession) {
 
 export class CommandArgumentError extends Error {}
 
+/** A command the phone refused before anything left it: its text goes back to
+ * the composer to try again, rather than standing as a send to confirm. It is
+ * a CommandArgumentError so the screen shows its message like any refusal; a
+ * handler that treats it differently tests for it first, as the restore in
+ * submitComposerCommand does. */
+export class CommandNotSentError extends CommandArgumentError {}
+
 /** Starts an aside and names the session it opens, for /aside and the
  * Session menu's Ask aside alike. */
 export async function startAside(service: ConversationForkActions): Promise<{ ref: string; title: string }> {
@@ -92,6 +99,13 @@ interface CommandContext {
 	turn(): ComposerCommandSession | null;
 	/** Steers with the whole queue through the outbox, as Steer all now does. */
 	drainQueue(): Promise<void>;
+	/** Why the queue can't be drained now, before anything is tried. */
+	drainRefusal(): string | null;
+	/** Sends a steer or queue through the outbox, as the composer does, so it
+	 * keeps its place in line and a lost answer is resent. */
+	submit(kind: "steer" | "queue", input: InputItem[]): Promise<void>;
+	/** Stops the turn as the Stop button does. */
+	stop(): Promise<void>;
 	reasoning(): Pick<MobileConversation, "supportsReasoning" | "reasoningEffort" | "reasoningEffortLevels"> | null;
 }
 
@@ -102,10 +116,7 @@ export function composerCommand(text: string, imageCount = 0) {
 
 export async function submitComposerCommand(
 	document: DraftDocument,
-	service: Pick<
-		ConversationService,
-		"compact" | "shutdown" | "changeModel" | "setReasoningEffort" | "steer" | "queue" | "interrupt"
-	> &
+	service: Pick<ConversationService, "compact" | "shutdown" | "changeModel" | "setReasoningEffort"> &
 		ConversationGoalActions &
 		ConversationForkActions &
 		ConversationClearActions &
@@ -155,7 +166,11 @@ export async function submitComposerCommand(
 		const input = buildComposerInput(match.argsText);
 		// The explicit /steer command preserves waiting queue entries. Draining
 		// uses its own command, the one Steer all now is.
-		operation = id === "drain-as-steer" ? () => context.drainQueue() : () => service[id](input);
+		if (id === "drain-as-steer") {
+			const refusal = context.drainRefusal();
+			if (refusal !== null) throw new CommandArgumentError(refusal);
+		}
+		operation = id === "drain-as-steer" ? () => context.drainQueue() : () => context.submit(id, input);
 	} else if (id === "model") {
 		const catalog = await service.models();
 		// A catalog request must never consume text edited while it was loading,
@@ -187,17 +202,25 @@ export async function submitComposerCommand(
 		operation = () => service.setReasoningEffort(effort.id);
 	} else if (id === "goal") {
 		operation = () => service.setGoal(match.argsText.trim());
+	} else if (id === "interrupt") {
+		requireControl();
+		operation = () => context.stop();
 	} else {
 		requireControl();
 		operation = () => service[id]();
 	}
 	let completed: typeof match.command.id | null = null;
-	await document.submit(async () => {
-		if (!context.isCurrent()) return false;
-		await operation();
-		completed = match.command.id;
-		return true;
-	});
+	try {
+		await document.submit(async () => {
+			if (!context.isCurrent()) return false;
+			await operation();
+			completed = match.command.id;
+			return true;
+		});
+	} catch (error) {
+		if (error instanceof CommandNotSentError) document.restore();
+		throw error;
+	}
 	if (completed !== null && context.isCurrent()) afterSubmit();
 	return completed;
 }
