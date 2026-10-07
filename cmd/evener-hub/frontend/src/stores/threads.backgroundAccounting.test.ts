@@ -439,15 +439,20 @@ describe("background accounting", () => {
       // (2) Text-bearing item shape and values in the old model versus the held
       // state: the same scalar leaf set, the same primitive types, and the same
       // literal value. The payload text is a primitive, so no allocation
-      // identity is claimed for it, only the real value.
+      // identity is claimed for it, only the real value. The expected content is
+      // the fixture's own literal (`testing/currentTranscript.ts`: `text:
+      // "alpha"`), an independent oracle, not a value derived from either body.
       const baseText = baseOverlayItem.text;
       expect(typeof baseText).toBe("string");
+      expect(baseOverlayItem.text).toBe("alpha");
       expect(baseText).toBe(baseModel.overlay?.[overlayKey]?.item?.text);
       expect(Object.keys(stateOverlayItem).sort()).toEqual(Object.keys(baseOverlayItem).sort());
       for (const key of Object.keys(stateOverlayItem)) {
         expect(typeof stateOverlayItem[key], `state item leaf ${key}`).toBe(typeof baseOverlayItem[key]);
       }
       expect(stateOverlayItem.text).toBe(baseText);
+      // The actual held-record domain text still carries the fixture's literal.
+      expect(stateOverlayItem.text).toBe("alpha");
       // Distinct payload inventory: the text-bearing overlay item carries no
       // object-valued leaf, so there is no independently materialized payload
       // body inside it; the fixture takes neither independently materializing
@@ -485,7 +490,7 @@ describe("background accounting", () => {
       // replacement: distinct content from the canonical body, not the same
       // bytes counted twice.
       const heldRecordText = JSON.stringify(liveHeldRecord.state);
-      expect(heldRecordText).toContain(baseText as string);
+      expect(heldRecordText).toContain("alpha");
       expect(heldRecordText).not.toContain("R".repeat(100_000));
 
       // (3) Pair the shape/provenance inventory with the LIVE reservations: the
