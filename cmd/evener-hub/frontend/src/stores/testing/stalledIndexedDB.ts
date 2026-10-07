@@ -1,5 +1,67 @@
 import { IDBDatabase, IDBFactory } from "fake-indexeddb";
 import { vi } from "vitest";
+import type { SessionCacheIndexedDB } from "../sessionCacheIndexedDB";
+
+// Holds the result of the next real getCurrent lookup after its transaction
+// has settled: reach resolves once the real storage result exists, and release
+// lets it return. This delays a real storage result so a sibling transaction
+// (a clear from another adapter on the same IDBFactory) can commit before the
+// held read's caller publishes. It substitutes no fabricated success: the
+// spy delegates to the real adapter and only gates the timing.
+export function holdNextCurrentLookup(cache: SessionCacheIndexedDB) {
+  const read = cache.getCurrent.bind(cache);
+  let reached!: () => void;
+  let release!: () => void;
+  const arrived = new Promise<void>((resolve) => {
+    reached = resolve;
+  });
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const spy = vi.spyOn(cache, "getCurrent").mockImplementationOnce(async (...args) => {
+    const result = await read(...args);
+    reached();
+    await gate;
+    return result;
+  });
+  return {
+    reached: arrived,
+    release: () => {
+      release();
+      spy.mockRestore();
+    },
+  };
+}
+
+// Holds the next real getCurrent call BEFORE its read runs: reach resolves as
+// the call is entered, and release lets the real read execute. Unlike
+// holdNextCurrentLookup (which captures the storage result first and only then
+// delays its return), this lets the durable store change underneath a suspended
+// worker, so a post-Clear lookup observes a genuine miss rather than a stale
+// hit. The spy delegates to the real adapter; it fabricates no result.
+export function holdNextCurrentLookupBeforeRead(cache: SessionCacheIndexedDB) {
+  const read = cache.getCurrent.bind(cache);
+  let reached!: () => void;
+  let release!: () => void;
+  const arrived = new Promise<void>((resolve) => {
+    reached = resolve;
+  });
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const spy = vi.spyOn(cache, "getCurrent").mockImplementationOnce(async (...args) => {
+    reached();
+    await gate;
+    return read(...args);
+  });
+  return {
+    reached: arrived,
+    release: () => {
+      release();
+      spy.mockRestore();
+    },
+  };
+}
 
 // A request that never fires success, error, or blocked: the wedged
 // connection-coordinator shape, where open()/deleteDatabase() return and then
@@ -109,12 +171,12 @@ export function holdIndexedDBEvent(target: EventTarget, type: string) {
   };
 }
 
-// Holds the next readwrite transaction opened over exactly `stores`:
-// fake-indexeddb commits it, but its "complete" event, and with it the
-// storage call that is waiting on that event, stays held until release().
-// `reached` resolves once the held event has arrived, which is when the
-// write is durably done yet still in flight for everything awaiting it.
-export function holdNextWriteTransaction(stores: readonly string[]) {
+// Holds the next transaction in `mode` opened over exactly `stores`:
+// fake-indexeddb commits it, but its "complete" event, and with it the storage
+// call that is waiting on that event, stays held until release(). `reached`
+// resolves once the held event has arrived, which is when the work is durably
+// done yet still in flight for everything awaiting it.
+export function holdNextTransaction(stores: readonly string[], mode: IDBTransactionMode) {
   const transact = IDBDatabase.prototype.transaction;
   let hold: ReturnType<typeof holdIndexedDBEvent> | undefined;
   let markReached: (() => void) | undefined;
@@ -128,7 +190,7 @@ export function holdNextWriteTransaction(stores: readonly string[]) {
     const transaction = transact.apply(this, args);
     if (
       !hold &&
-      transaction.mode === "readwrite" &&
+      transaction.mode === mode &&
       transaction.objectStoreNames.length === stores.length &&
       stores.every((store) => transaction.objectStoreNames.contains(store))
     ) {
@@ -144,6 +206,12 @@ export function holdNextWriteTransaction(stores: readonly string[]) {
       hold?.release();
     },
   };
+}
+
+// Holds the next readwrite transaction opened over exactly `stores` (the
+// session cache's four-store write). See holdNextTransaction.
+export function holdNextWriteTransaction(stores: readonly string[]) {
+  return holdNextTransaction(stores, "readwrite");
 }
 
 // One real macrotask hop, off the faked timers: MessageChannel is a task the

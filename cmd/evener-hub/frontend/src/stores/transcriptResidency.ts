@@ -33,6 +33,14 @@ export interface TranscriptResidencyPort {
   fold(ref: string, model: ThreadModel, update: ReceivedTranscriptUpdate): ThreadModel;
   hydrate(ref: string, intent: "background" | "foreground" | "final", signal: AbortSignal): Promise<void>;
   writeTimers?(): { debounceMs: number; maxWaitMs: number };
+  /** The shared paced-retry scheduler. When absent, repair runs immediately
+   * (the reducer-level tests' behavior); the store wires it so real repairs use
+   * one coalesced bounded-backoff timer per ref. */
+  retryScheduler?(): ((attempt: number, retry: () => void) => () => void) | undefined;
+  /** One guarded observation of a newer durable clear epoch. The store advances
+   * its shared clear-lifetime authority (tab epoch + recorded-history
+   * suppression) before the residency reconciles, so both record classes agree. */
+  observedClearEpoch?(epoch: number): void;
 }
 
 interface HydrationTask {
@@ -66,6 +74,12 @@ export interface TranscriptResidency {
   ): Promise<void>;
   drain(ref: string): Promise<void>;
   revoke(ref: string, reason: "gap" | "storage" | "alias" | "deleted"): void;
+  /** Synchronously retire in-flight hydration/promotion publication claims for
+   * a same-tab clear before its transaction resolves. Issued reads keep their
+   * capacity slot; only the logical claim to publish is retired. */
+  retireClaims(): void;
+  /** Release the synchronous claim fence after an aborted clear. */
+  releaseClearClaim(): void;
   clear(epoch: number): void;
   dispose(): void;
   settled(): Promise<void>;
@@ -137,10 +151,23 @@ interface Entry {
   needsRecovery: boolean;
   evictAfterCommit: boolean;
   persistence: Persistence;
+  // Clear suppression is lifted only by a qualifying explicit foreground
+  // acquisition. `clearSuppressionHoldsPreClearHolders` stays true while any
+  // foreground/history/pin holder that existed when clear committed remains:
+  // no acquisition may capture a new lifetime until those holders release.
+  // `freshForegroundLifetime` then marks the acquisition that began after they
+  // did, whose authoritative hydration may restore persistence.
+  clearSuppressionHoldsPreClearHolders: boolean;
+  freshForegroundLifetime: boolean;
   lastForegroundUse: number;
   promoting: boolean;
   workSequence: number;
   inFlight: ReceivedTranscriptUpdate[];
+  // One coalesced storage/overload repair timer per ref. An expired callback or
+  // a superseded repair owns nothing: it acts only while it is still this
+  // entry's current record.
+  repair?: { cancel: () => void; attempt: number };
+  repairAttempt: number;
   flushTimer?: ReturnType<typeof setTimeout>;
   maxWaitTimer?: ReturnType<typeof setTimeout>;
   work?: Promise<boolean>;
@@ -169,7 +196,19 @@ export function createTranscriptResidency(
   let committedWrites = 0;
   let disposed = false;
   let retiringHydrations = false;
+  let clearArmed = false;
+  // A monotonic edge, not just the clearArmed level: every suspended claim
+  // captures it at issue and rechecks it at its completion boundary, so a claim
+  // already past its entry check stays retired even after an abort clears the
+  // boolean. `clearClaimRetiredRefs` records the hydrations the arm retired so
+  // an abort can re-issue recovery for the demand they were carrying.
+  let clearClaimGeneration = 0;
+  const clearClaimRetiredRefs = new Set<string>();
   let drainPromise: Promise<void> | undefined;
+  // Post-promotion durable-epoch rechecks: each is tracked asynchronous work
+  // of the promotion that scheduled it, not a global lock. settled() joins
+  // them so a test (or a caller) can observe the fenced recovery they trigger.
+  const epochRechecks = new Set<Promise<void>>();
 
   const entryFor = (ref: string): Entry => {
     const entry = entries.get(ref);
@@ -188,10 +227,13 @@ export function createTranscriptResidency(
       needsRecovery: false,
       evictAfterCommit: false,
       persistence: "enabled",
+      clearSuppressionHoldsPreClearHolders: false,
+      freshForegroundLifetime: false,
       lastForegroundUse: 0,
       promoting: false,
       workSequence: 0,
       inFlight: [],
+      repairAttempt: 0,
       waiters: [],
     };
     entries.set(ref, created);
@@ -206,6 +248,28 @@ export function createTranscriptResidency(
     const bytes = entry.pending.reduce((sum, update) => sum + update.bytes, 0);
     if (bytes > 0) pendingBudget.release(bytes);
     entry.pending = [];
+  }
+
+  // A function boundary keeps TypeScript from narrowing `persistence` across
+  // the awaits below: a concurrent clear can move it to clear-suppressed while a
+  // persist is suspended at a cache lookup or an unload.
+  const isClearSuppressed = (entry: Entry): boolean => entry.persistence === "clear-suppressed";
+
+  // Clear suppression is intentional and never writes. On a suppressed ref,
+  // release the excess background payload instead of holding an unwritable
+  // model; the entry's metadata stays (unverified) so an explicit open recovers
+  // through the ordinary cache-seeded authoritative path.
+  async function releaseSuppressedPayload(ref: string, entry: Entry): Promise<void> {
+    releaseEntryPending(entry);
+    if (!held(entry) && entry.owners.background > 0 && port.resident(ref)) {
+      await port.unload(ref);
+      if (!port.resident(ref)) {
+        if (entry.residentBytes > 0) residentBudget.release(entry.residentBytes);
+        if (entry.handoffBytes > 0) pendingBudget.release(entry.handoffBytes);
+        entry.residentBytes = 0;
+        entry.handoffBytes = 0;
+      }
+    }
   }
 
   function enqueue(ref: string, urgent = false): void {
@@ -288,6 +352,51 @@ export function createTranscriptResidency(
     for (const resolve of entry.waiters.splice(0)) resolve();
   }
 
+  // Cancelling a pending callback is not storage recovery. `reset` is true only
+  // at a committed checkpoint or a terminal owner/connection retirement; a mere
+  // authoritative network read cancels the callback without resetting the
+  // failure streak, so repeated storage aborts still advance the backoff.
+  function cancelRepair(entry: Entry, reset = true): void {
+    const record = entry.repair;
+    entry.repair = undefined;
+    if (reset) entry.repairAttempt = 0;
+    record?.cancel();
+  }
+
+  // Storage failures and overload enter a bounded, coalesced recovery: one
+  // timer per ref, paced by the shared scheduler, that schedules the ordinary
+  // authoritative hydration. clear-suppressed refs never reach here (clear()
+  // cancels repair and revoke is not the clear path), so suppression never
+  // arms a repair loop. Without a scheduler (reducer-level tests) the same
+  // recovery runs immediately.
+  function armRepair(ref: string, entry: Entry): void {
+    if (disposed || !ready || entry.owners.background <= 0) return;
+    if (entry.repair) return; // coalesced: one outstanding repair per ref
+    entry.repairAttempt += 1;
+    const attempt = entry.repairAttempt;
+    const run = () => {
+      if (disposed || !ready || entry.owners.background <= 0) return;
+      void hydrate(ref, held(entry) ? "foreground" : "background");
+    };
+    const record = {
+      attempt,
+      cancel: () => {},
+    } as { cancel: () => void; attempt: number };
+    const fire = () => {
+      if (entry.repair !== record) return; // superseded or cancelled
+      entry.repair = undefined;
+      run();
+    };
+    entry.repair = record;
+    const scheduler = port.retryScheduler?.();
+    if (scheduler) {
+      record.cancel = scheduler(attempt, fire);
+    } else {
+      entry.repair = undefined;
+      run();
+    }
+  }
+
   function settleHydration(task: HydrationTask, error?: unknown): void {
     if (task.settled) return;
     task.settled = true;
@@ -352,9 +461,18 @@ export function createTranscriptResidency(
       releaseEntryPending(entry);
       return false;
     }
+    // Suppression survives every recovery entry: an ordinary background update
+    // must not turn clear-suppressed into repairing or start a hydration that
+    // would re-enable persistence without a fresh explicit foreground lifetime.
+    if (isClearSuppressed(entry)) {
+      entry.current = false;
+      await releaseSuppressedPayload(ref, entry);
+      return false;
+    }
     const writeGeneration = connectionGeneration;
     const ownerGeneration = entry.ownershipGeneration;
     const writeEpoch = clearEpoch;
+    const clearClaimAtStart = clearClaimGeneration;
     const resident = port.resident(ref);
     entry.residentPostCutBytes = 0;
     let model = resident;
@@ -371,6 +489,22 @@ export function createTranscriptResidency(
     entry.workSequence = Math.max(entry.workSequence, batch.at(-1)?.sequence ?? entry.checkpointSequence);
     if (!model) {
       const found = await port.cache.getCurrent([ownerToken, ref], Date.now());
+      if (clearClaimAtStart !== clearClaimGeneration) {
+        // A same-tab Clear armed while this worker was suspended at the lookup:
+        // the claim to recover/republish is retired. Never enter repairing, arm
+        // a repair or schedule a hydration from the obsolete completion, and
+        // never let an aborted Clear's cleared boolean revive it.
+        entry.current = false;
+        releaseEntryPending(entry);
+        if (entry.inFlight === batch) entry.inFlight = [];
+        if (batchBytes > 0) pendingBudget.release(batchBytes);
+        if (isClearSuppressed(entry)) await releaseSuppressedPayload(ref, entry);
+        // The batch and cut are discarded, so this ref has no other drain; if it
+        // is still desired, give it fresh recovery authority (deferred while the
+        // Clear is armed, issued now after an abort).
+        recoverRetiredClaim(ref);
+        return false;
+      }
       if (!found?.record || found.epoch !== found.record.clearEpoch) {
         entry.persistence = "repairing";
         releaseEntryPending(entry);
@@ -393,7 +527,10 @@ export function createTranscriptResidency(
       releaseEntryPending(entry);
       if (entry.inFlight === batch) entry.inFlight = [];
       if (batchBytes > 0) pendingBudget.release(batchBytes);
-      void hydrate(ref, held(entry) ? "foreground" : "background");
+      // An oversized base (older history or live state) is rebuilt by an
+      // authoritative latest window through the paced repair timer, never an
+      // immediate hydrate: a fresh state that still cannot fit must not spin.
+      armRepair(ref, entry);
       return false;
     }
     workerBytes = bytes;
@@ -429,10 +566,12 @@ export function createTranscriptResidency(
         writeGeneration !== connectionGeneration ||
         ownerGeneration !== entry.ownershipGeneration ||
         writeEpoch !== clearEpoch ||
+        clearClaimAtStart !== clearClaimGeneration ||
         !owned(entry) ||
-        entry.persistence === "clear-suppressed"
+        isClearSuppressed(entry)
       ) {
         entry.current = false;
+        if (isClearSuppressed(entry)) await releaseSuppressedPayload(ref, entry);
         return false;
       }
       workerCheckpointObserverForTests?.({ ref, resident, model, record, batch });
@@ -448,6 +587,7 @@ export function createTranscriptResidency(
         writeGeneration !== connectionGeneration ||
         ownerGeneration !== entry.ownershipGeneration ||
         writeEpoch !== clearEpoch ||
+        clearClaimAtStart !== clearClaimGeneration ||
         !owned(entry)
       ) {
         entry.current = false;
@@ -482,6 +622,7 @@ export function createTranscriptResidency(
         if (!port.resident(ref)) entry.evictAfterCommit = false;
       }
       committed = true;
+      cancelRepair(entry);
       return true;
     } finally {
       workerBytes = 0;
@@ -554,6 +695,69 @@ export function createTranscriptResidency(
     return residency.scheduleHydration(ref, intent);
   }
 
+  // A claim the Clear arm retired — an in-flight hydration task or a suspended
+  // disk worker. While the Clear is still armed, recovery is deferred to
+  // releaseClearClaim; once it has aborted, recovery is issued here. A committed
+  // Clear's suppression stands, so a suppressed ref never recovers writes.
+  function recoverRetiredClaim(ref: string): void {
+    if (disposed || !ready) return;
+    if (clearArmed) {
+      clearClaimRetiredRefs.add(ref);
+      return;
+    }
+    const entry = entries.get(ref);
+    if (!entry || entry.owners.background <= 0 || isClearSuppressed(entry)) return;
+    if (entry.current && !entry.needsRecovery) return;
+    void hydrate(ref, held(entry) ? "foreground" : "background");
+  }
+
+  // After a successful disk promotion, recheck the durable epoch the lookup
+  // transaction captured. A delayed or lost sibling-clear broadcast cannot
+  // leave this read/publication race undetected: on a newer epoch, suppress
+  // persistence (the publication stays as stale display state) and reconcile
+  // owned refs through the ordinary paced hydration path. A failed epoch
+  // lookup is a storage fault, not proof of a clear.
+  function schedulePromotionEpochRecheck(
+    ref: string,
+    entry: Entry,
+    promotionEpoch: number,
+    guardGeneration: number,
+    guardClearEpoch: number,
+    guardOwnershipGeneration: number,
+  ): void {
+    const task = (async () => {
+      const observed = await port.cache.readEpoch();
+      if (disposed) return;
+      // The same client/owner/claim generation guards completion, so an older
+      // promotion cannot invalidate a newer lifetime.
+      if (
+        guardGeneration !== connectionGeneration ||
+        guardClearEpoch !== clearEpoch ||
+        entry.ownershipGeneration !== guardOwnershipGeneration ||
+        !owned(entry)
+      )
+        return;
+      if (observed === promotionEpoch) return;
+      if (observed === undefined) {
+        residency.revoke(ref, "storage");
+        return;
+      }
+      // One shared authority: advance the store's tab epoch and recorded-history
+      // suppression before the residency reconciles, so both record classes see
+      // the same observed clear.
+      port.observedClearEpoch?.(observed);
+      residency.clear(observed);
+      for (const [ownedRef, ownedEntry] of entries) {
+        if (!owned(ownedEntry) || !ready || disposed) continue;
+        void hydrate(ownedRef, held(ownedEntry) ? "foreground" : "background");
+      }
+    })().catch(() => {});
+    epochRechecks.add(task);
+    void task.then(() => {
+      epochRechecks.delete(task);
+    });
+  }
+
   const residency: TranscriptResidency = {
     owners(ref, owners) {
       const entry = entryFor(ref);
@@ -570,10 +774,23 @@ export function createTranscriptResidency(
         if (!owned(entry)) entry.current = false;
         else if (!previouslyOwned) entry.current = false;
       }
+      if (entry.persistence === "clear-suppressed") {
+        const nowHeld = held(entry);
+        if (previouslyHeld && !nowHeld) {
+          // The last pre-clear foreground/history/pin holder released: a later
+          // acquisition may now capture a new lifetime.
+          entry.clearSuppressionHoldsPreClearHolders = false;
+        } else if (!previouslyHeld && nowHeld && !entry.clearSuppressionHoldsPreClearHolders) {
+          // An explicit foreground acquisition begun only after the pre-clear
+          // holders finished. Its authoritative hydration may restore writes.
+          entry.freshForegroundLifetime = true;
+        }
+      }
       if (previouslyOwned && !owned(entry)) {
         const task = hydrationByRef.get(ref);
         if (task) retireHydration(task);
       }
+      if (!owned(entry) || entry.owners.background <= 0) cancelRepair(entry);
       if (held(entry)) {
         if (entry.residentBytes > 0) residentBudget.release(entry.residentBytes);
         if (entry.handoffBytes > 0) pendingBudget.release(entry.handoffBytes);
@@ -591,6 +808,7 @@ export function createTranscriptResidency(
       if (task) retireHydration(task);
       const entry = entries.get(ref);
       if (!entry) return;
+      cancelRepair(entry);
       if (entry.residentBytes > 0) residentBudget.release(entry.residentBytes);
       if (entry.handoffBytes > 0) pendingBudget.release(entry.handoffBytes);
       entry.residentBytes = 0;
@@ -603,7 +821,10 @@ export function createTranscriptResidency(
         ready = connected;
         if (!connected) {
           retireHydrations();
-          for (const entry of entries.values()) entry.current = false;
+          for (const entry of entries.values()) {
+            entry.current = false;
+            cancelRepair(entry);
+          }
         }
       }
     },
@@ -622,8 +843,21 @@ export function createTranscriptResidency(
     published(ref, model, appliedSequence, authoritative = false) {
       const entry = entryFor(ref);
       if (authoritative) {
+        // A successful read is not a successful checkpoint: keep the storage
+        // failure streak so a still-unwritable disk keeps backing off.
+        cancelRepair(entry, false);
         entry.needsRecovery = false;
-        entry.persistence = "enabled";
+        if (entry.persistence !== "clear-suppressed") {
+          entry.persistence = "enabled";
+        } else if (entry.freshForegroundLifetime && held(entry)) {
+          // A qualifying explicit foreground acquisition hydrated
+          // authoritatively: capture the current epoch and resume writes.
+          entry.persistence = "enabled";
+          entry.freshForegroundLifetime = false;
+        }
+        // Otherwise clear suppression stands: background release/reacquire and
+        // reconnect alone never re-enable caching, and a pane that predates the
+        // clear keeps its suppressed lifetime until its holders release.
       }
       const previouslyApplied = entry.appliedSequence;
       const consumed = entry.pending.filter((update) => update.sequence <= appliedSequence);
@@ -650,8 +884,24 @@ export function createTranscriptResidency(
       if (!residentBudget.reserve(size)) {
         entry.residentBytes = 0;
         if (!held(entry) && entry.owners.background > 0) {
-          if (handoffOwnsModel) entry.handoffBytes = size;
-          else if (pendingBudget.reserve(size)) entry.handoffBytes = size;
+          if (handoffOwnsModel) {
+            // entry.handoffBytes was already reserved, and any consumed
+            // deltas remain reserved in incrementalBytes. Reconcile that
+            // reserved total to the replaced body's actual size instead of
+            // leaving the stale charge counted; a size-only counter reset
+            // would hide a still-retained body, so adjust only the
+            // difference.
+            const reconciledBytes = size - entry.handoffBytes - incrementalBytes;
+            if (reconciledBytes > 0 && !pendingBudget.reserve(reconciledBytes)) {
+              // The grown body cannot be charged: keep the previous body's
+              // ownership intact and let the paced storage recovery
+              // reconcile it.
+              residency.revoke(ref, "storage");
+              return false;
+            }
+            if (reconciledBytes < 0) pendingBudget.release(-reconciledBytes);
+            entry.handoffBytes = size;
+          } else if (pendingBudget.reserve(size)) entry.handoffBytes = size;
           if (entry.handoffBytes > 0) {
             enqueueLeastRecentlyUsedVictims(ref, size);
             queueMicrotask(() => enqueue(ref));
@@ -675,8 +925,12 @@ export function createTranscriptResidency(
     },
     async promote(ref) {
       const entry = entryFor(ref);
+      if (clearArmed) return undefined;
+      const clearClaimAtStart = clearClaimGeneration;
       const resident = port.resident(ref);
-      if (resident) return resident;
+      // A clear-suppressed resident is a stale display seed: adoption must not
+      // skip the authoritative hydration a fresh foreground lifetime requires.
+      if (resident && entry.persistence !== "clear-suppressed") return resident;
       if (!entry.current && entry.pending.length === 0 && !entry.work) return undefined;
       entry.promoting = true;
       try {
@@ -699,6 +953,7 @@ export function createTranscriptResidency(
           entry.current &&
           !entry.needsRecovery &&
           entry.persistence === "enabled" &&
+          clearClaimAtStart === clearClaimGeneration &&
           owned(entry)
         ) {
           let model = threadModelFromCurrentState(record.state, port.admission(ref));
@@ -714,6 +969,7 @@ export function createTranscriptResidency(
             !entry.current ||
             entry.needsRecovery ||
             entry.persistence !== "enabled" ||
+            clearClaimAtStart !== clearClaimGeneration ||
             !owned(entry)
           )
             return undefined;
@@ -721,6 +977,14 @@ export function createTranscriptResidency(
           entry.appliedSequence = uncheckpointed.at(-1)?.sequence ?? record.appliedSequence;
           releaseEntryPending(entry);
           entry.current = true;
+          schedulePromotionEpochRecheck(
+            ref,
+            entry,
+            found.epoch,
+            activeGeneration,
+            activeClearEpoch,
+            ownershipGeneration,
+          );
           return model;
         }
         return undefined;
@@ -778,19 +1042,41 @@ export function createTranscriptResidency(
     },
     revoke(ref, _reason) {
       const entry = entryFor(ref);
+      const wasClearSuppressed = entry.persistence === "clear-suppressed";
       releaseEntryPending(entry);
       entry.current = false;
       entry.needsRecovery = _reason !== "deleted";
-      entry.persistence = "repairing";
-      if (_reason !== "deleted" && entry.owners.background > 0 && ready) {
-        void hydrate(ref, held(entry) ? "foreground" : "background");
-      }
+      // revoke must not erase Clear's lifetime: a suppressed ref stays
+      // suppressed until a qualifying fresh foreground lifetime hydrates.
+      if (!wasClearSuppressed) entry.persistence = "repairing";
+      if (_reason === "deleted" || wasClearSuppressed) cancelRepair(entry);
+      else armRepair(ref, entry);
+    },
+    retireClaims() {
+      clearArmed = true;
+      clearClaimGeneration += 1;
+      for (const task of hydrationTasks) clearClaimRetiredRefs.add(task.ref);
+      retireHydrations();
+    },
+    releaseClearClaim() {
+      clearArmed = false;
+      // An aborted Clear must not strand the demand whose claim it retired — a
+      // hydration task or a suspended disk worker. Drain through the shared
+      // helper: a previously committed Clear's suppression stands.
+      const refs = [...clearClaimRetiredRefs];
+      clearClaimRetiredRefs.clear();
+      for (const ref of refs) recoverRetiredClaim(ref);
     },
     clear(epoch) {
+      clearArmed = false;
+      clearClaimRetiredRefs.clear();
       clearEpoch = epoch;
       for (const entry of entries.values()) {
+        cancelRepair(entry);
         entry.current = false;
         entry.persistence = "clear-suppressed";
+        entry.clearSuppressionHoldsPreClearHolders = held(entry);
+        entry.freshForegroundLifetime = false;
         if (entry.flushTimer) clearTimeout(entry.flushTimer);
         if (entry.maxWaitTimer) clearTimeout(entry.maxWaitTimer);
         entry.flushTimer = undefined;
@@ -801,8 +1087,11 @@ export function createTranscriptResidency(
     },
     dispose() {
       disposed = true;
+      clearClaimRetiredRefs.clear();
       retireHydrations();
+      epochRechecks.clear();
       for (const entry of entries.values()) {
+        cancelRepair(entry);
         if (entry.flushTimer) clearTimeout(entry.flushTimer);
         if (entry.maxWaitTimer) clearTimeout(entry.maxWaitTimer);
         releaseEntryPending(entry);
@@ -817,6 +1106,10 @@ export function createTranscriptResidency(
           if (entry.flushTimer) enqueue(ref);
         }
         await runWorker();
+        if (epochRechecks.size > 0) {
+          await Promise.allSettled([...epochRechecks]);
+          continue;
+        }
         if (
           !drainPromise &&
           workQueue.length === 0 &&
