@@ -63,6 +63,9 @@ type jobResult struct {
 	Tools                 []string `json:"tools"`
 	StructuredResult      any      `json:"structured_result"`
 	StructuredResultValid *bool    `json:"structured_result_valid"`
+	// EarlierResults are earlier results a delegate_send wait carried ahead
+	// of its own (#3906).
+	EarlierResults []jobResult `json:"earlier_results"`
 }
 
 func (r jobResult) effectiveJobID() string {

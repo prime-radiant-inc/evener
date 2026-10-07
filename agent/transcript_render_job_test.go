@@ -781,3 +781,21 @@ func TestRenderMarkdown_DelegateCreateArtifactsDirSurfaces(t *testing.T) {
 		t.Errorf("delegate create result rendered as a raw JSON dump instead of the condensed status line, got:\n%s", out)
 	}
 }
+
+// A delegate_send reply that carries an earlier, not yet delivered result
+// renders it, oldest first, ahead of its own status line and output (#3906).
+func TestJobResultBodyRendersEarlierResultsFirst(t *testing.T) {
+	t.Parallel()
+	raw := `{"delegate_id":"dlg_1","status":"completed","action":"completed","running_in_background":false,"output":"second","earlier_results":[{"delegate_id":"dlg_1","status":"failed","reason":"boom","action":"completed","running_in_background":false,"output":"first"}]}`
+	body, ok := jobResultBody(raw)
+	if !ok {
+		t.Fatalf("jobResultBody(%s) fell back", raw)
+	}
+	want := "earlier result, not delivered before: status=failed reason=boom\nfirst\n" +
+		"job_id=dlg_1 status=completed transcript_ref=(none)\n" +
+		"metadata: delegate_id=dlg_1 action=completed running_in_background=false\n" +
+		"second\n"
+	if body != want {
+		t.Fatalf("body =\n%s\nwant\n%s", body, want)
+	}
+}

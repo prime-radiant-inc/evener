@@ -1226,6 +1226,17 @@ func jobResultBody(raw string) (string, bool) {
 	}
 
 	var b strings.Builder
+	for _, earlier := range r.EarlierResults {
+		b.WriteString("earlier result, not delivered before: status=" + earlier.Status)
+		if earlier.Reason != "" {
+			b.WriteString(" reason=" + earlier.Reason)
+		}
+		b.WriteString("\n")
+		if earlier.Output != "" {
+			b.WriteString(earlier.Output)
+			b.WriteString("\n")
+		}
+	}
 	b.WriteString(strings.Join(statusParts, " "))
 	b.WriteString("\n")
 	if metadata := jobResultMetadata(raw); metadata != "" {
@@ -1310,6 +1321,7 @@ var jobResultKnownKeys = map[string]bool{
 	"cumulative_usage":    true, // delegateSendResult
 	"tools":               true, // stableDelegateCreateResult, delegateSendResult
 	"artifacts_dir":       true, // stableDelegateCreateResult
+	"earlier_results":     true, // delegateSendResult, rendered ahead of the status line
 }
 
 var jobResultMetadataKeys = []string{
