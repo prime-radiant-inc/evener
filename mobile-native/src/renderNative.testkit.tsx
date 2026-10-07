@@ -45,7 +45,10 @@ import { shrinkingScroller } from "./session/dockCard";
  * rather than on a microtask after a synchronous test has ended, where React
  * would warn about the update outside act. The testkit unmounts each test's
  * trees, so no earlier mount still holds the value to make the update a
- * no-op. catch and finally go through then, so they answer at once too. */
+ * no-op. catch goes through then, so .catch().then() answers at once too;
+ * finally's callback does, though a link after it, or an await, waits a
+ * microtask. It never rejects, and a callback that throws throws out of the
+ * then call rather than rejecting. */
 export function answered<T>(value: T): Promise<T> {
 	const promise = Promise.resolve(value);
 	// Each link answers at once as well, so a chain (.catch().then()) does.
