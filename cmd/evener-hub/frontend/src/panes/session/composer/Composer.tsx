@@ -196,9 +196,10 @@ const NO_TURN_VERBS: SessionMenuTurnVerbs = Object.freeze({});
 export function Composer({ ref, paneId, focused, source }: ComposerProps) {
   const model = useThreadsStore((s) => s.threads.get(ref));
   const recoveryRequired = useThreadsStore((s) => s.restartBlockingObligations.has(ref));
-  // Delivery-uncertain rows: while any exist the hub's explicit Resume still
-  // performs reconciliation, so the resume-only carve-out does not apply and
-  // Send stays fenced (see isResumeOnlyLocal's hasUncertainMessages).
+  // Delivery-uncertain rows do NOT fence Send here: they clear the resume-only
+  // fold's uncertainMessages clause (isResumeOnlyLocal, read from
+  // hasBlockedUnknown), so a local fenced session falls to the Send-resumes
+  // face, where the press parks its send and the store drives the resume.
   const blockedMutations = useBlockedMutationEntries(ref);
   // A Force stop this page started is still draining: the hub refuses even
   // turn/start for that window, so the resume-only carve-out does not apply.

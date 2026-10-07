@@ -12307,6 +12307,112 @@ test("a Stop during the trailing drain cancels the row the drain moved", async (
   }
 });
 
+// The registration carries a per-drive token: two drives can target the SAME
+// (old ref -> resumed ref) pair. inFlightResumes drops the first drive when its
+// promise resolves while its trailing drain still awaits storage, so a second
+// press starts a second drive that registers the same pair and moves a row. The
+// first drive's empty pass must NOT settle the second drive's registration, or a
+// subsequent Stop's sweep finds nothing and the moved row survives.
+test("a stale drain pass does not clear a later drive's swap registration", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectFakeClient("connecting");
+  const ref = "local:token-from";
+  const toRef = "local:token-to";
+  const fenced = (target: string) =>
+    readResponse(target, {
+      status: { type: "notLoaded" },
+      evener: {
+        ref: target,
+        capabilities: { ...CAPABILITIES, send: false },
+        mutationStateAuthoritative: false,
+        resumeRequired: true,
+        queue: { revision: 0 },
+      },
+      turns: [],
+    });
+  const toIdle = () =>
+    readResponse(toRef, {
+      status: { type: "idle" },
+      evener: { ref: toRef, capabilities: CAPABILITIES, mutationStateAuthoritative: true, queue: { revision: 1 } },
+    });
+  fake.on("thread/read", (params) => (params.ref === toRef ? fenced(toRef) : fenced(ref)));
+  fake.on("thread/resume", () => toIdle());
+  fake.on("thread/shutdown", () => ({}));
+  const starts: string[] = [];
+  fake.on("turn/start", (params) => {
+    starts.push(String(params.ref));
+    return {
+      receipt: mutationReceipt(params.clientMutationId),
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+    };
+  });
+  fake.emitReady();
+  await threadsStore.getState().ensureThread(ref);
+  // Hold each drive's TRAILING drain pass. The first hold keeps drive 1's
+  // registration from settling while drive 2 registers the same pair; both
+  // drives only reach the trailing pass after they publish.
+  let realCalls = 0;
+  let firstHeld = false;
+  let secondHeld = false;
+  let releaseFirst!: () => void;
+  let releaseSecond!: () => void;
+  const firstGate = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+  const secondGate = new Promise<void>((resolve) => {
+    releaseSecond = resolve;
+  });
+  const realRetarget = MutationOutboxIndexedDB.prototype.retargetOutbox;
+  const spy = vi.spyOn(MutationOutboxIndexedDB.prototype, "retargetOutbox").mockImplementation(async function (
+    this: MutationOutboxIndexedDB,
+    from: string,
+    to: string,
+    identity: { threadId?: string; instanceId?: string },
+  ) {
+    realCalls += 1;
+    if (realCalls === 3) {
+      firstHeld = true;
+      await firstGate;
+    } else if (realCalls === 6) {
+      secondHeld = true;
+      await secondGate;
+    }
+    return realRetarget.call(this, from, to, identity);
+  });
+  try {
+    await threadsStore.getState().resumeSession(ref);
+    await flushIndexedDBUntil(() => firstHeld);
+    const late = await storage.enqueueIntent({
+      targetRef: ref,
+      threadId: `thr_${ref}`,
+      instanceId: "instance-old",
+      method: "turn/start",
+      payload: { ref, expectedInstanceId: "instance-old", input: [{ type: "text", text: "late" }] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "late" }] },
+    });
+    await threadsStore.getState().resumeSession(ref);
+    await flushIndexedDBUntil(() => secondHeld);
+    // Both drains are held and drive 2 has moved its row onto the resumed ref.
+    const parked = await storage.listOutbox(toRef);
+    expect(parked.some((record) => record.clientMutationId === late.clientMutationId)).toBe(true);
+    // Release drive 1's empty pass: its settle must leave drive 2's registration
+    // (same pair) in place.
+    releaseFirst();
+    await flushIndexedDBUntil(() => false);
+    await threadsStore.getState().shutdown(ref);
+    await flushIndexedDBUntil(() => false);
+    expect(starts).toEqual([]);
+    const outbox = await storage.listOutbox(toRef);
+    expect(outbox.find((record) => record.clientMutationId === late.clientMutationId)?.state).toBe("canceled");
+  } finally {
+    releaseFirst();
+    releaseSecond();
+    spy.mockRestore();
+  }
+});
+
 // The harder order of the same property: the resume's OWN post-resume hydration
 // is held open, and the resync tail and a ready discovery each run first. Either
 // may send the parked row; releasing the held refresh afterwards must not send a
