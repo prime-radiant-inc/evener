@@ -51,6 +51,32 @@ type delegateRuntime struct {
 type stableDelegateSendOutcome struct {
 	result sendMessageResult
 	commit *delegateToolResultCommit
+	// heldCommit acknowledges, before commit, the held earlier result the
+	// reply carries (result.Earlier).
+	heldCommit *delegateToolResultCommit
+}
+
+// commits are the outcome's commits in the order they must complete.
+func (outcome stableDelegateSendOutcome) commits() []*delegateToolResultCommit {
+	if outcome.commit == nil {
+		return nil
+	}
+	if outcome.heldCommit == nil {
+		return []*delegateToolResultCommit{outcome.commit}
+	}
+	return []*delegateToolResultCommit{outcome.heldCommit, outcome.commit}
+}
+
+// inlineOutcome is the send's reply for a resolved inline wait: result, which
+// already carries the newest result, plus the held earlier result the wait
+// collected with its commit (#3906).
+func inlineOutcome(result sendMessageResult, resolution delegateInlineResolution) stableDelegateSendOutcome {
+	outcome := stableDelegateSendOutcome{result: result, commit: resolution.commit}
+	if earlier := resolution.earlier; earlier != nil {
+		outcome.result.Earlier = []delegatestore.TerminalPacket{earlier.packet}
+		outcome.heldCommit = earlier.commit
+	}
+	return outcome
 }
 
 type delegateRunLeaseContextKey struct{}
@@ -1805,7 +1831,7 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	result.RunningInBackground = false
 	result.Action = "completed"
 	populateStableDelegateSendResult(&result, *resolution.packet)
-	return stableDelegateSendOutcome{result: result, commit: resolution.commit}
+	return inlineOutcome(result, resolution)
 }
 
 func populateStableDelegateSendResult(result *sendMessageResult, packet delegatestore.TerminalPacket) {
@@ -1941,7 +1967,7 @@ func (runtime delegateRuntime) stableSendFailureOutcomeAfterDispatch(ctx context
 	}
 	result.Action = "completed"
 	result.RunningInBackground = false
-	return stableDelegateSendOutcome{result: result, commit: resolution.commit}
+	return inlineOutcome(result, resolution)
 }
 
 func stableDelegateFailedSendResult(started delegateStartCommit, plans delegateMutationPlans, cause error) sendMessageResult {

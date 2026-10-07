@@ -170,13 +170,17 @@ func stableDelegateSendTool(ctx context.Context, s *Session, args map[string]any
 	if outcome.result.Err != nil && outcome.result.DelegateID == "" {
 		return nil, outcome.result.Err
 	}
-	if outcome.commit != nil {
+	if commits := outcome.commits(); len(commits) != 0 {
 		callID, _ := ctx.Value(ctxToolCallID).(string)
 		if callID == "" {
-			_, _ = outcome.commit.Complete(false)
+			for _, commit := range commits {
+				_, _ = commit.Complete(false)
+			}
 			return nil, errors.New("delegate result cannot be committed outside a tool round")
 		}
-		s.queueDelegateDeliveryCommit(callID, outcome.commit)
+		for _, commit := range commits {
+			s.queueDelegateDeliveryCommit(callID, commit)
+		}
 	}
 	return marshalDelegateSendResult(outcome.result, maxChars)
 }
@@ -1233,18 +1237,27 @@ func (s *Session) appendToolResultsWithDeliveryCommitsDurably(live, persisted ll
 	}
 	var completionErrs []error
 	requeue := false
+	byCall := make(map[string][]*delegateToolResultCommit)
+	var callOrder []string
 	for _, binding := range commits {
 		if binding.commit == nil {
 			continue
 		}
-		plans, err := binding.commit.Complete(true)
+		if _, seen := byCall[binding.toolCallID]; !seen {
+			callOrder = append(callOrder, binding.toolCallID)
+		}
+		byCall[binding.toolCallID] = append(byCall[binding.toolCallID], binding.commit)
+	}
+	for _, callID := range callOrder {
+		completed, err := completeDelegateDeliveryCommits(byCall[callID])
 		if err != nil {
 			completionErrs = append(completionErrs, err)
 			requeue = true
-			continue
 		}
-		if err := s.executeDelegateMutationPlans(plans); err != nil {
-			completionErrs = append(completionErrs, err)
+		for _, plans := range completed {
+			if err := s.executeDelegateMutationPlans(plans); err != nil {
+				completionErrs = append(completionErrs, err)
+			}
 		}
 	}
 	if requeue {
