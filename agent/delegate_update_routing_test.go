@@ -2,11 +2,9 @@ package agent
 
 import (
 	"slices"
-	"sync"
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
-	"primeradiant.com/evener/agent/internal/delegatestore"
 )
 
 // A subagent's open thread lists its subtree, so a change to a delegate below
@@ -15,12 +13,15 @@ import (
 // whose threads list the row.
 func TestStableDelegateUpdate_ReachesEachLiveAncestorSubagentThread(t *testing.T) {
 	t.Parallel()
-	recorder := &delegateUpdateRecorder{}
+	var recorder sessionEventRecorder
 	tree := newRealDelegateTree(t, recorder.record)
 	middleID := tree.parent.ChildSessionID
 	var middleRevisions []uint64
-	for _, event := range recorder.updates(0) {
-		data := event.Data.(events.DelegateUpdatedData)
+	for _, event := range recorder.snapshot() {
+		data, ok := event.Data.(events.DelegateUpdatedData)
+		if !ok {
+			continue
+		}
 		switch {
 		case event.SessionID == middleID && data.DelegateID == tree.grandchildID:
 			middleRevisions = append(middleRevisions, data.ProjectionRevision)
@@ -49,33 +50,11 @@ func TestStableDelegateUpdate_ReachesEachLiveAncestorSubagentThread(t *testing.T
 	}
 }
 
-// delegateUpdateRecorder keeps the delegate updates a tree's subagent sessions
-// emit, as the daemon's AppWire bridge sees them.
-type delegateUpdateRecorder struct {
-	mu   sync.Mutex
-	seen []events.SessionEvent
-}
-
-func (r *delegateUpdateRecorder) record(event events.SessionEvent) {
-	if event.Kind == events.EventDelegateUpdated {
-		r.mu.Lock()
-		r.seen = append(r.seen, event)
-		r.mu.Unlock()
-	}
-}
-
-// updates is a copy of the recorded updates from position from on.
-func (r *delegateUpdateRecorder) updates(from int) []events.SessionEvent {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return slices.Clone(r.seen[from:])
-}
-
-// count is how many updates for delegateID the stream of sessionID carried
-// from the recorder's position from on.
-func (r *delegateUpdateRecorder) count(from int, sessionID, delegateID string) int {
+// delegateUpdateCount is how many updates for delegateID the stream of
+// sessionID carried in recorded.
+func delegateUpdateCount(recorded []events.SessionEvent, sessionID, delegateID string) int {
 	n := 0
-	for _, event := range r.updates(from) {
+	for _, event := range recorded {
 		if data, ok := event.Data.(events.DelegateUpdatedData); ok && event.SessionID == sessionID && data.DelegateID == delegateID {
 			n++
 		}
@@ -83,69 +62,51 @@ func (r *delegateUpdateRecorder) count(from int, sessionID, delegateID string) i
 	return n
 }
 
-func (r *delegateUpdateRecorder) len() int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return len(r.seen)
-}
-
 // drainRootDelegateUpdates empties the root's buffered stream and returns its
 // updates for delegateID.
 func drainRootDelegateUpdates(s *Session, delegateID string) []events.DelegateUpdatedData {
 	var out []events.DelegateUpdatedData
-	for {
-		select {
-		case event := <-s.events:
-			if data, ok := event.Data.(events.DelegateUpdatedData); ok && data.DelegateID == delegateID {
-				out = append(out, data)
-			}
-		default:
-			return out
+	for _, event := range drainPendingEvents(s) {
+		if data, ok := event.Data.(events.DelegateUpdatedData); ok && data.DelegateID == delegateID {
+			out = append(out, data)
 		}
 	}
+	return out
 }
 
-// A released ancestor has no stream to carry the update: a settled change to
-// the grandchild after the middle subagent's runtime is released reaches the
+// emitGrandchildRow publishes the grandchild's current row through the
+// controller's update path, after letting edit adjust the captured row, and
+// returns the descendant events it produced.
+func emitGrandchildRow(tree realDelegateTree, recorder *sessionEventRecorder, edit func(*delegateSnapshot)) []events.SessionEvent {
+	tree.c.mu.Lock()
+	plan := tree.c.capturedPlanLocked(tree.grandchildID)
+	tree.c.mu.Unlock()
+	if edit != nil {
+		edit(&plan.rows[0])
+	}
+	from := len(recorder.snapshot())
+	tree.c.emitDelegateUpdate(plan)
+	return recorder.snapshot()[from:]
+}
+
+// A released ancestor has no stream to carry the update: the grandchild's row
+// published after the middle subagent's runtime is released reaches the
 // root's thread only, still naming the middle subagent as an ancestor so its
 // next thread read lists the row.
 func TestStableDelegateUpdate_ReleasedAncestorGetsNone(t *testing.T) {
 	t.Parallel()
-	recorder := &delegateUpdateRecorder{}
+	var recorder sessionEventRecorder
 	tree := newRealDelegateTree(t, recorder.record)
-	c, middleID := tree.c, tree.parent.ChildSessionID
-	claim := claimSettledIdleSubtree(t, c, tree.parent.DelegateID, tree.parentRuntime, tree.grandchildRuntime)
-	if err := c.AbortRuntimeReclamation(claim); err != nil {
-		t.Fatal(err)
-	}
-	if !tree.parentRuntime.releaseIdleRuntimeAfterFinalize() {
-		t.Fatal("real idle subtree release refused")
-	}
+	middleID := tree.parent.ChildSessionID
+	tree.releaseMiddle(t)
 	drainRootDelegateUpdates(tree.s, tree.grandchildID)
-	from := recorder.len()
-	// Only the middle subagent, holding a live lease, may close its child, and
-	// a released middle holds none. Journal the same closure CloseResumability
-	// would, without that authorization, and publish it as it does.
-	c.mu.Lock()
-	plan, err := c.appendResumabilityClosureLocked(tree.grandchildID, delegatestore.Event{
-		Kind:               delegatestore.EventDelegateResumabilityClosed,
-		DelegateID:         tree.grandchildID,
-		ResumabilityClosed: &delegatestore.ResumabilityClosed{Reason: "test closed"},
-	})
-	c.mu.Unlock()
-	if err != nil {
-		t.Fatalf("close grandchild resumability: %v", err)
-	}
-	c.emitDelegateUpdate(plan)
-	if n := recorder.count(from, middleID, tree.grandchildID); n != 0 {
+	emitted := emitGrandchildRow(tree, &recorder, nil)
+	if n := delegateUpdateCount(emitted, middleID, tree.grandchildID); n != 0 {
 		t.Fatalf("released middle subagent's stream carried %d grandchild updates, want none", n)
 	}
 	root := drainRootDelegateUpdates(tree.s, tree.grandchildID)
-	if len(root) == 0 {
-		t.Fatal("the grandchild's closure did not reach the root's stream")
-	}
-	if last := root[len(root)-1]; last.Resumable || !slices.Equal(last.AncestorSessionIDs, []string{middleID}) {
-		t.Fatalf("root's grandchild update = resumable %t ancestors %v, want closed with ancestors [%s]", last.Resumable, last.AncestorSessionIDs, middleID)
+	if len(root) != 1 || !slices.Equal(root[0].AncestorSessionIDs, []string{middleID}) {
+		t.Fatalf("root's grandchild updates = %+v, want one with ancestors [%s]", root, middleID)
 	}
 }
 
@@ -155,16 +116,13 @@ func TestStableDelegateUpdate_ReleasedAncestorGetsNone(t *testing.T) {
 // the same stream, which must carry the update once.
 func TestStableDelegateUpdate_ParentOwnedRowReachesItsOwnerOnce(t *testing.T) {
 	t.Parallel()
-	recorder := &delegateUpdateRecorder{}
+	var recorder sessionEventRecorder
 	tree := newRealDelegateTree(t, recorder.record)
-	c, middleID := tree.c, tree.parent.ChildSessionID
-	c.mu.Lock()
-	plan := c.capturedPlanLocked(tree.grandchildID)
-	c.mu.Unlock()
-	plan.rows[0].descriptor.OwnerSessionID = middleID
-	from := recorder.len()
-	tree.s.emitStableDelegateUpdate(plan)
-	if n := recorder.count(from, middleID, tree.grandchildID); n != 1 {
+	middleID := tree.parent.ChildSessionID
+	emitted := emitGrandchildRow(tree, &recorder, func(row *delegateSnapshot) {
+		row.descriptor.OwnerSessionID = middleID
+	})
+	if n := delegateUpdateCount(emitted, middleID, tree.grandchildID); n != 1 {
 		t.Fatalf("parent-owned grandchild update reached its owner's stream %d times, want once", n)
 	}
 }
