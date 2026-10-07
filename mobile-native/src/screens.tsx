@@ -60,6 +60,7 @@ import { openProviders } from "./board/BoardNotices";
 import { useConnection } from "./ConnectionProvider";
 import {
 	CommandArgumentError,
+	CommandNotSentError,
 	composerCommand,
 	composerCommandAvailable,
 	isLocalComposerCommand,
@@ -75,7 +76,12 @@ import { projectNativeMutationRecovery, RecoveryFailure, useRecoveryPanel } from
 import { useNativePreferences } from "./NativePreferencesProvider";
 import { drafts } from "./nativeDrafts";
 import { nativeImagePicker } from "./nativeImagePicker";
-import { createNativeMutationHost, createDurableSubmitter, type NativeMutationHost } from "./nativeMutationHost";
+import {
+	createNativeMutationHost,
+	createDurableSubmitter,
+	NATIVE_MUTATION_HOST_UNAVAILABLE,
+	type NativeMutationHost,
+} from "./nativeMutationHost";
 import { getNativeMutationRuntime, nativeMutationTargetKey } from "./nativeMutationRuntime";
 import { type SessionSeed, seedFromSession } from "./newSession/launchSetup";
 import { readerPositions } from "./nativeReaderPosition";
@@ -221,6 +227,7 @@ const BAR_MAX_SHARE = 0.8;
 // where it opens, at most.
 const OPENING_REVEAL_CAP_MS = 1000;
 const STEER_ALL_FAILED = { text: "Couldn't steer with these messages now." };
+const STOP_NOT_TRIED = "Couldn't stop the turn just now. Try again.";
 const STEERING_WITH_QUEUE =
 	"This phone is already steering with the queue. Try again once that steer is sent or cancelled.";
 
@@ -1855,12 +1862,40 @@ export function ConversationScreen({
 						isCurrent: currentBinding,
 						reasoning: () => store.getState().conversation,
 						turn: () => store.getState().conversation,
+						submit: async (kind, input) => {
+							const target = mutationTarget(store.getState());
+							if (!target) throw new CommandNotSentError("Open the session again and try once more.");
+							try {
+								await mutationSubmitter.submit({
+									kind,
+									hubId: target.hubId,
+									targetRef: target.ref,
+									threadId: target.threadId,
+									instanceId: target.instanceId,
+									input,
+								});
+							} catch (error) {
+								// Admission only writes on the phone: nothing left it, so this
+								// is safe to try again, not a send to confirm.
+								throw new CommandNotSentError(NATIVE_MUTATION_HOST_UNAVAILABLE, { cause: error });
+							}
+						},
+						stop: async () => {
+							const outcome = await stop();
+							if (outcome === "notKept") throw new CommandNotSentError(NATIVE_MUTATION_HOST_UNAVAILABLE);
+							if (outcome === "notStopped") throw new CommandNotSentError(STOP_NOT_TRIED);
+						},
+						// As Steer all now waits (canSteerAll): it would take that message too.
+						drainRefusal: () => {
+							const state = store.getState();
+							return steeringWithQueue(state.conversation, state.pendingMutations) ? STEERING_WITH_QUEUE : null;
+						},
 						drainQueue: async () => {
-							// As Steer all now waits (canSteerAll): it would take that message too.
+							// Asked again as it runs, so the drain and its check read one state.
 							const state = store.getState();
 							if (steeringWithQueue(state.conversation, state.pendingMutations))
-								throw new CommandArgumentError(STEERING_WITH_QUEUE);
-							if (!(await drainLiveQueue())) throw new CommandArgumentError(STEER_ALL_FAILED.text);
+								throw new CommandNotSentError(STEERING_WITH_QUEUE);
+							if (!(await drainLiveQueue())) throw new CommandNotSentError(STEER_ALL_FAILED.text);
 						},
 						cleared: (response) => {
 							const replacement = service.adoptClear(response);
@@ -1973,7 +2008,7 @@ export function ConversationScreen({
 		// (spec 8.5), fenced to the instance this phone last read.
 		const offline = !connectionReady.current;
 		const online = service;
-		const target = offline ? offlineTarget(current) : null;
+		const target = offline ? mutationTarget(current) : null;
 		const offlineAction = offline ? offlineSendAction(current) : "none";
 		if (
 			(offline
@@ -2244,24 +2279,26 @@ export function ConversationScreen({
 	const notesPreview = conversation ? notesBarPreview(conversation) : null;
 	const [stopping, setStopping] = useState(false);
 	const stopBusy = useRef(false);
-	async function stop() {
-		if (
-			!service ||
-			!connectionReady.current ||
-			stopBusy.current ||
-			store.getState().pendingMutation?.status === "pending"
-		)
-			return;
+	// What became of the stop, for a typed /interrupt: "stopping" when one is
+	// already on its way, "notKept" when the phone couldn't keep it to send (the
+	// store reports why), "notStopped" when nothing was tried.
+	async function stop(): Promise<"stopped" | "stopping" | "notKept" | "notStopped"> {
+		if (stopBusy.current) return "stopping";
+		if (!service || !connectionReady.current || store.getState().pendingMutation?.status === "pending")
+			return "notStopped";
 		stopBusy.current = true;
 		setStopping(true);
 		try {
 			const previous = store.getState().lastAcceptedMutation;
 			await store.getState().interrupt(service);
 			const accepted = store.getState().lastAcceptedMutation;
-			if (accepted && accepted !== previous && accepted.kind === "interrupt") toaster.show({ text: "Stopped" });
+			if (!accepted || accepted === previous || accepted.kind !== "interrupt") return "notKept";
+			toaster.show({ text: "Stopped" });
+			return "stopped";
 		} catch {
 			// Stop only acts while a turn runs; a turn that ended first has
 			// nothing left to stop, so a refusal says nothing.
+			return "notStopped";
 		} finally {
 			stopBusy.current = false;
 			setStopping(false);
@@ -2292,7 +2329,7 @@ export function ConversationScreen({
 	// Offline, Send keeps the message in the phone's outbox, for a session
 	// this phone has read since launch (ruling 12).
 	const offlineAdmits =
-		!connected && focused && offlineTarget(snapshot) !== null && offlineSendAction(snapshot) !== "none";
+		!connected && focused && mutationTarget(snapshot) !== null && offlineSendAction(snapshot) !== "none";
 	const composerReady =
 		(ready || offlineAdmits) &&
 		draft.loaded &&
@@ -2355,10 +2392,10 @@ export function ConversationScreen({
 			// what to do.
 		}
 	}
-	// The session a message sent offline is fenced to: the instance this
-	// phone last read (ruling 12), exactly as an online send's durable request
-	// carries it. A session not read since launch has none, so Send waits.
-	function offlineTarget(state: ConversationState): OfflineTarget | null {
+	// The session a durable request is fenced to: the instance this phone last
+	// read (ruling 12), for a message sent offline as for a typed /steer or
+	// /queue. A session not read since launch has none, so Send waits.
+	function mutationTarget(state: ConversationState): OfflineTarget | null {
 		const read = state.conversation;
 		if (!read || state.ref !== route.params.ref) return null;
 		return {
@@ -2376,7 +2413,7 @@ export function ConversationScreen({
 	// session reads again.
 	async function sendOffline() {
 		const live = store.getState();
-		const target = offlineTarget(live);
+		const target = mutationTarget(live);
 		const kind = offlineSendAction(live);
 		if (target === null || kind === "none") return;
 		setActionError(null);
