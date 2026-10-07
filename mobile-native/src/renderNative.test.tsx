@@ -70,4 +70,21 @@ describe("renderNative.testkit's answered native reads", () => {
 		});
 		await expect(chained).rejects.toBe(failure);
 	});
+
+	it("takes then's onRejected without calling it, and follows a returned thenable", async () => {
+		const seen: string[] = [];
+		void answered(1).then(
+			(value) => seen.push(`then:${value}`),
+			() => seen.push("rejected"),
+		);
+		expect(seen).toEqual(["then:1"]);
+		const thenable: PromiseLike<string> = {
+			then: (resolve) => {
+				resolve?.("thenable");
+				return thenable as never;
+			},
+		};
+		const followed = answered(1).then(() => thenable);
+		await expect(followed).resolves.toBe("thenable");
+	});
 });

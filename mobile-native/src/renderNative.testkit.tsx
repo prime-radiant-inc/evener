@@ -44,19 +44,20 @@ import { shrinkingScroller } from "./session/dockCard";
  * so catch and each link after them) runs its callback at once, so a mount's
  * read lands inside the render's act instead of on a microtask after a
  * synchronous test has ended. An await, or a link after finally, still waits
- * a microtask; a callback that throws throws out of then, never rejecting. */
+ * a microtask. It never rejects, so then's onRejected is never called; a
+ * callback that throws rejects the chain it returns, and one that returns a
+ * promise or thenable is followed, as a real promise's would be. */
 export function answered<T>(value: T): Promise<T> {
 	const promise = Promise.resolve(value);
-	promise.then = ((onFulfilled?: (value: T) => unknown) => {
+	promise.then = ((onFulfilled?: ((value: T) => unknown) | null) => {
 		let next: unknown;
 		try {
 			next = onFulfilled ? onFulfilled(value) : value;
 		} catch (error) {
-			// A callback that throws rejects the chain, as a real promise's does.
 			return Promise.reject(error);
 		}
-		// A callback that returns a promise is followed the ordinary way.
-		return next instanceof Promise ? next : answered(next);
+		const thenable = typeof (next as { then?: unknown } | null)?.then === "function";
+		return thenable ? Promise.resolve(next) : answered(next);
 	}) as typeof promise.then;
 	return promise;
 }
