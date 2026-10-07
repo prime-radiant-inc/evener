@@ -15,6 +15,7 @@ const commandContext = {
 	reasoning: () => null,
 	turn: () => null,
 	drainQueue: async () => {},
+	drainRefusal: () => null,
 	submit: async () => {},
 	stop: async () => {},
 	local: async () => {},
@@ -535,6 +536,32 @@ it("routes /interrupt to Stop", async () => {
 		});
 		expect(stopped).toBe(1);
 		expect(document.getSnapshot().record).toMatchObject({ draft: "", unconfirmed: null });
+	} finally {
+		service.close();
+		db.close();
+	}
+});
+
+// A drain the phone refuses up front is never tried: the command stays put.
+it("refuses /drain-as-steer before submitting while the drain is refused", async () => {
+	const { db, document } = commandDraft();
+	const { service } = boundary();
+	let drained = 0;
+	try {
+		await service.open("local:test");
+		document.edit("/drain-as-steer");
+		await expect(
+			submitComposerCommand(document, service, {
+				...commandContext,
+				drainRefusal: () => "already steering",
+				drainQueue: async () => {
+					drained++;
+				},
+				turn: () => ({ status: { type: "active" }, capabilities: { steer: true }, queue: { revision: 7, depth: 2 } }),
+			}),
+		).rejects.toThrow("already steering");
+		expect(drained).toBe(0);
+		expect(document.getSnapshot().record).toMatchObject({ draft: "/drain-as-steer", unconfirmed: null });
 	} finally {
 		service.close();
 		db.close();
