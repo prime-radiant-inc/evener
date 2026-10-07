@@ -40,22 +40,27 @@ import { shrinkingScroller } from "./session/dockCard";
 // environment; vitest is not jest, so nothing sets this for us.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
+/** A native read that has already answered: a real promise whose then runs
+ * its callback at once, so a mount's read lands inside the render's act
+ * rather than on a microtask after a synchronous test has ended, where React
+ * would warn about the update outside act. The testkit unmounts each test's
+ * trees, so no earlier mount still holds the value to make the update a
+ * no-op. catch and finally go through then, so they answer at once too. */
+export function answered<T>(value: T): Promise<T> {
+	const promise = Promise.resolve(value);
+	// Each link answers at once as well, so a chain (.catch().then()) does.
+	promise.then = ((onFulfilled?: (value: T) => unknown) => {
+		const next = onFulfilled ? onFulfilled(value) : value;
+		// A callback that returns a promise is followed the ordinary way.
+		return next instanceof Promise ? next : answered(next);
+	}) as typeof promise.then;
+	return promise;
+}
+
 /** The device's system glass and its accessibility settings, as the app
  * reads them: whether the Liquid Glass API is there (expo-glass-effect's
  * isGlassEffectAPIAvailable, faked in vitestSetup.ts), and Reduce
  * Transparency, which a test turns on or off with setReduceTransparency. */
-/** A native read that has already answered: its then runs the callback at
- * once, so a mount's read lands inside the render's act instead of on a
- * microtask after a synchronous test has ended, where React would warn about
- * the update outside act (and, since #3924 unmounts each test's trees, no
- * earlier mount's value makes it a no-op). */
-function answered<T>(value: T): Promise<T> {
-	return {
-		// biome-ignore lint/suspicious/noThenProperty: a deliberately synchronous thenable
-		then: (onFulfilled?: (value: T) => unknown) => Promise.resolve(onFulfilled ? onFulfilled(value) : value),
-	} as unknown as Promise<T>;
-}
-
 export const systemGlass = (() => {
 	const listeners = new Set<(value: boolean) => void>();
 	let reduceTransparency = false;

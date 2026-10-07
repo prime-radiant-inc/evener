@@ -5,7 +5,7 @@
 // per render, so this pins the harness's output as clean (#2433).
 import { createElement, useEffect } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { render, renderHook } from "./renderNative.testkit";
+import { answered, render, renderHook } from "./renderNative.testkit";
 
 const DEPRECATION = "react-test-renderer is deprecated";
 
@@ -50,5 +50,17 @@ describe("renderNative.testkit unmounts what a test mounted", () => {
 		// After the test's afterEach hooks; last mounted, first unmounted, as
 		// nested cleanup expects.
 		expect(unmounted.slice(0, 3)).toEqual(["afterEach", "renderHook", "render"]);
+	});
+});
+
+describe("renderNative.testkit's answered native reads", () => {
+	it("answer then, catch and finally before the caller's next line", () => {
+		const seen: string[] = [];
+		void answered(true).then((value) => seen.push(`then:${value}`));
+		void answered(false)
+			.catch(() => true)
+			.then((value) => seen.push(`catch-then:${value}`));
+		void answered(1).finally(() => seen.push("finally"));
+		expect(seen).toEqual(["then:true", "catch-then:false", "finally"]);
 	});
 });
