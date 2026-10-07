@@ -697,3 +697,31 @@ func TestMemoryRefreshIgnoresOwnPageEdit(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// A stalled read delivers no page notice; the next completed read notices a
+// changed page the session read, once.
+func TestMemoryRefreshStalledReadDefersPageNotice(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	memorySeed(t, root, "personal", "opaque-index-1\n")
+	writeMemoryPage(t, root, "opaque-deferred-page.md", "opaque-page-body-1\n")
+	r := newStalledMemoryRefresh(t, root)
+	r.boundary()
+	if res := memoryExec(t, r.s, "memory_read", map[string]any{"scope": "personal", "file_path": "opaque-deferred-page.md"}); res.IsError {
+		t.Fatal(res.Output)
+	}
+	writeMemoryPage(t, root, "opaque-deferred-page.md", "opaque-page-body-2\n")
+	flight := r.stalledBoundary(t)
+	if got := memoryContextCount(r.s); got != 1 {
+		t.Fatalf("stalled boundary appended %d contexts, want none", got-1)
+	}
+	r.finish(flight)
+	r.boundary()
+	if got := memoryContextCount(r.s); got != 2 {
+		t.Fatalf("completed boundary appended %d contexts, want one page notice", got-1)
+	}
+	r.boundary()
+	if got := memoryContextCount(r.s); got != 2 {
+		t.Fatalf("unchanged boundary appended %d contexts, want none", got-2)
+	}
+}
