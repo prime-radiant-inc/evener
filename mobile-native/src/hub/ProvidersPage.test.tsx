@@ -7,7 +7,7 @@
 import type { ComponentProps } from "react";
 import { act, type ReactTestInstance } from "react-test-renderer";
 import type { ReactTestRenderer } from "react-test-renderer";
-import { expect, it, vi } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import {
 	type AuthStatusResponse,
 	ErrorEndpointConflict,
@@ -30,11 +30,25 @@ import { back, detailParams, ProvidersStack as ProvidersPage } from "./providers
 import {
 	alertRequests,
 	dropped,
-	render,
+	render as renderTree,
 	renderedText,
 	screenConnection,
 	scriptedClient,
 } from "../renderNative.testkit";
+
+// Every page a test mounts is unmounted once the test ends, so none of its
+// timers (the listing retry, the sign-in poll) or store subscriptions update
+// it after the file's last test, outside act, while vitest tears the worker
+// down (#3916).
+const mounted: ReactTestRenderer[] = [];
+function render(...args: Parameters<typeof renderTree>): ReactTestRenderer {
+	const tree = renderTree(...args);
+	mounted.push(tree);
+	return tree;
+}
+afterEach(() => {
+	for (const tree of mounted.splice(0)) act(() => tree.unmount());
+});
 
 // What useConnection answers with. vi.hoisted because vi.mock's factory is
 // hoisted above every module import and may not close over a module-level let.

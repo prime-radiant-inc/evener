@@ -88,18 +88,7 @@ func TestE2E_SendPromptToARetiredSession(t *testing.T) {
 	for round, waitGone := range []bool{false, true} {
 		prompt := fmt.Sprintf("EVENER-E2E-RETIRED-PROMPT-%d", round)
 
-		list, err := clientRequest[appwire.DaemonListResponse](ctx, client, appwire.MethodEvenerDaemonList, appwire.DaemonListParams{})
-		if err != nil {
-			t.Fatalf("round %d: evener/daemon/list: %v", round, err)
-		}
-		identity, ok := residentIdentityForRef(list, ref)
-		if !ok {
-			t.Fatalf("round %d: no resident daemon for %s in %+v", round, ref, list.Daemons)
-		}
-		retired, err := clientRequest[appwire.DaemonRetireResponse](ctx, client, appwire.MethodEvenerDaemonRetire, appwire.DaemonRetireParams{Identity: identity})
-		if err != nil {
-			t.Fatalf("round %d: evener/daemon/retire: %v", round, err)
-		}
+		retired := retireDaemonUntilAccepted(ctx, t, client, ref)
 		t.Logf("round %d (waitGone=%v): retire accepted=%v phase=%q", round, waitGone, retired.Accepted, retired.Lifecycle.Phase)
 
 		if waitGone {
