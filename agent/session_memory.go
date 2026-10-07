@@ -77,6 +77,10 @@ type memoryProjection struct {
 	Truncated              bool
 }
 
+// memoryReadPageLimit bounds the pages per scope the session tracks for change
+// notices, so each turn-start read stays within the refresh budget.
+const memoryReadPageLimit = 32
+
 // memoryPageRecord is what the session last knew of a memory page it read:
 // the content's digest, or that the page was absent.
 type memoryPageRecord struct {
@@ -90,9 +94,14 @@ type memoryIndexFlight struct {
 	// pages holds the current record of each read page the flight checked.
 	pages map[string]memoryPageRecord
 	// Guarded by memoryMu, the worker only sets projection and closes done.
-	// A deadline or revocation makes this result stale.
-	// Keep the slot until done closes, then discard it and start a fresh read.
-	abandoned bool
+	// stale marks a result that no longer reflects what the session may rely
+	// on: the session's own write, compaction or revocation came after the
+	// read began. A stale flight keeps its slot until done closes, then is
+	// discarded for a fresh read. late marks a flight a boundary stopped
+	// waiting for; once done, a late flight that is not stale is still a
+	// genuine read, and the next boundary publishes it instead of reading
+	// again, so a slow read cannot keep every boundary from publishing.
+	stale, late bool
 }
 
 type memoryEnvironmentFlight struct {
@@ -383,7 +392,7 @@ func (s *Session) recordMemoryFile(env *execenv.LocalExecutionEnvironment, scope
 	s.memoryMu.Lock()
 	defer s.memoryMu.Unlock()
 	if flight := s.memoryIndexFlights[scope]; flight != nil {
-		flight.abandoned = true
+		flight.stale = true
 	}
 	if index {
 		switch {
@@ -403,7 +412,7 @@ func (s *Session) recordMemoryFile(env *execenv.LocalExecutionEnvironment, scope
 	}
 	record, ok := memoryPageRecordFrom(raw, err)
 	if !ok {
-		delete(s.memoryReadPages[scope], file)
+		s.untrackMemoryPageLocked(scope, file)
 		return
 	}
 	if s.memoryReadPages == nil {
@@ -413,6 +422,32 @@ func (s *Session) recordMemoryFile(env *execenv.LocalExecutionEnvironment, scope
 		s.memoryReadPages[scope] = make(map[string]memoryPageRecord)
 	}
 	s.memoryReadPages[scope][file] = record
+	if startTracking {
+		s.noteMemoryPageReadLocked(scope, file)
+	}
+}
+
+// noteMemoryPageReadLocked makes page the most recently read page of scope
+// and, past memoryReadPageLimit, stops tracking the least recently read one.
+// Only memory_read counts as reading; the session's own change to a tracked
+// page updates its record without moving it. Callers hold memoryMu.
+func (s *Session) noteMemoryPageReadLocked(scope, page string) {
+	if s.memoryReadPageOrder == nil {
+		s.memoryReadPageOrder = make(map[string][]string)
+	}
+	order := slices.DeleteFunc(s.memoryReadPageOrder[scope], func(p string) bool { return p == page })
+	order = append(order, page)
+	for len(order) > memoryReadPageLimit {
+		delete(s.memoryReadPages[scope], order[0])
+		order = order[1:]
+	}
+	s.memoryReadPageOrder[scope] = order
+}
+
+// untrackMemoryPageLocked stops tracking page. Callers hold memoryMu.
+func (s *Session) untrackMemoryPageLocked(scope, page string) {
+	delete(s.memoryReadPages[scope], page)
+	s.memoryReadPageOrder[scope] = slices.DeleteFunc(s.memoryReadPageOrder[scope], func(p string) bool { return p == page })
 }
 
 // memoryReadPagesFor lists the pages of scope the session has read.
@@ -462,6 +497,11 @@ func (s *Session) memoryFlight(scope string, pages []string) *memoryIndexFlight 
 	if flight := s.memoryIndexFlights[scope]; flight != nil {
 		select {
 		case <-flight.done:
+			if !flight.stale {
+				// A late read that has since completed is published now.
+				s.memoryMu.Unlock()
+				return flight
+			}
 			delete(s.memoryIndexFlights, scope)
 		default:
 			s.memoryMu.Unlock()
@@ -644,7 +684,7 @@ func (s *Session) resetMemoryProjectionAfterCompaction() {
 	s.memoryLastProjected = nil
 	s.memoryBaseline = nil
 	for _, flight := range s.memoryIndexFlights {
-		flight.abandoned = true
+		flight.stale = true
 	}
 	s.memoryMu.Unlock()
 }
@@ -688,7 +728,7 @@ func (s *Session) maybeAppendMemoryContext(ctx context.Context, turnStart bool) 
 		if _, err := s.memoryScopeBinding(scope); !s.memoryContextEnabled() || err != nil {
 			s.memoryMu.Lock()
 			if flight := s.memoryIndexFlights[scope]; flight != nil {
-				flight.abandoned = true
+				flight.stale = true
 			}
 			s.memoryMu.Unlock()
 			s.appendMemoryProjection(memoryProjection{Scope: scope, Status: "revoked"})
@@ -738,12 +778,12 @@ publish:
 		s.memoryMu.Lock()
 		select {
 		case <-flight.done:
-			if !flight.abandoned {
+			if !flight.stale {
 				p, pages, observed = flight.projection, flight.pages, true
 			}
 			delete(s.memoryIndexFlights, scope)
 		default:
-			flight.abandoned = true
+			flight.late = true
 		}
 		s.memoryMu.Unlock()
 		baseline, known := s.memoryBaselineFor(scope)

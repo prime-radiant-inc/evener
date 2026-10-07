@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -333,6 +334,8 @@ type stalledMemoryRefresh struct {
 	stall   atomic.Bool
 	started chan string
 	release chan struct{}
+	// reads counts the personal index reads begun.
+	reads atomic.Int32
 }
 
 func newStalledMemoryRefresh(t *testing.T, root string) *stalledMemoryRefresh {
@@ -346,9 +349,12 @@ func newStalledMemoryRefresh(t *testing.T, root string) *stalledMemoryRefresh {
 		}
 	})
 	r.s = newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root, clock: r.clk, testOnly: testConfig{memoryBeforeIO: func(scope, op string) error {
-		if op == "index_read" && scope == "personal" && r.stall.Load() {
-			r.started <- scope
-			<-r.release
+		if op == "index_read" && scope == "personal" {
+			r.reads.Add(1)
+			if r.stall.Load() {
+				r.started <- scope
+				<-r.release
+			}
 		}
 		return nil
 	}}}))
@@ -723,5 +729,186 @@ func TestMemoryRefreshStalledReadDefersPageNotice(t *testing.T) {
 	r.boundary()
 	if got := memoryContextCount(r.s); got != 2 {
 		t.Fatalf("unchanged boundary appended %d contexts, want none", got-2)
+	}
+}
+
+// lastMemoryContextText returns the newest memory-context body in history.
+func lastMemoryContextText(s *Session) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, turn := range slices.Backward(s.history) {
+		if turn.Kind == schema.TurnMemoryContext {
+			return turn.Message.Text()
+		}
+	}
+	return ""
+}
+
+// A read that missed one boundary's budget and completed before the next is
+// still a genuine read: the next boundary publishes it without reading again.
+func TestMemoryRefreshPublishesALateReadAtTheNextBoundary(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	memorySeed(t, root, "personal", "opaque-index-1\n")
+	writeMemoryPage(t, root, "opaque-late-page.md", "opaque-late-body-1\n")
+	r := newStalledMemoryRefresh(t, root)
+	r.boundary()
+	if res := memoryExec(t, r.s, "memory_read", map[string]any{"scope": "personal", "file_path": "opaque-late-page.md"}); res.IsError {
+		t.Fatal(res.Output)
+	}
+	writeMemoryPage(t, root, "opaque-late-page.md", "opaque-late-body-2\n")
+	flight := r.stalledBoundary(t)
+	r.finish(flight)
+	readsBefore := r.reads.Load()
+	r.boundary()
+	if got := r.reads.Load() - readsBefore; got != 0 {
+		t.Fatalf("next boundary began %d new reads, want it to use the completed late read", got)
+	}
+	if got := memoryContextCount(r.s); got != 2 || !strings.Contains(lastMemoryContextText(r.s), "opaque-late-page.md") {
+		t.Fatalf("contexts=%d last=%q, want the late read's page notice", got, lastMemoryContextText(r.s))
+	}
+}
+
+// A read the session's own write made stale is discarded even once it has
+// completed: the next boundary reads again and echoes nothing.
+func TestMemoryRefreshDiscardsAStaleReadEvenWhenComplete(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	memorySeed(t, root, "personal", "opaque-stale-1\n")
+	r := newStalledMemoryRefresh(t, root)
+	r.boundary()
+	flight := r.stalledBoundary(t)
+	if res := memoryExec(t, r.s, "memory_write", map[string]any{"scope": "personal", "file_path": "MEMORY.md", "content": "opaque-stale-own-2\n"}); res.IsError {
+		t.Fatal(res.Output)
+	}
+	r.finish(flight)
+	readsBefore := r.reads.Load()
+	r.boundary()
+	if got := r.reads.Load() - readsBefore; got != 1 {
+		t.Fatalf("next boundary began %d reads, want one fresh read in place of the stale one", got)
+	}
+	if got := memoryContextCount(r.s); got != 1 {
+		t.Fatalf("stale read produced %d more contexts, want none", got-1)
+	}
+}
+
+// The session tracks at most memoryReadPageLimit pages per scope, dropping the
+// least recently read: a page pushed out gets no notice, a page still tracked
+// does.
+func TestMemoryRefreshTracksAtMostTheMostRecentlyReadPages(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	memorySeed(t, root, "personal", "opaque-index-1\n")
+	r := newStalledMemoryRefresh(t, root)
+	r.boundary()
+	pages := memoryReadPageLimit + 1
+	for i := range pages {
+		name := fmt.Sprintf("opaque-capped-%02d.md", i)
+		writeMemoryPage(t, root, name, "opaque-capped-body-1\n")
+		if res := memoryExec(t, r.s, "memory_read", map[string]any{"scope": "personal", "file_path": name}); res.IsError {
+			t.Fatal(res.Output)
+		}
+	}
+	if got := len(r.s.memoryReadPagesFor("personal")); got != memoryReadPageLimit {
+		t.Fatalf("tracked %d pages, want %d", got, memoryReadPageLimit)
+	}
+	writeMemoryPage(t, root, "opaque-capped-00.md", "opaque-capped-body-2\n")
+	last := fmt.Sprintf("opaque-capped-%02d.md", pages-1)
+	writeMemoryPage(t, root, last, "opaque-capped-body-2\n")
+	r.boundary()
+	notice := lastMemoryContextText(r.s)
+	if !strings.Contains(notice, last) || strings.Contains(notice, "opaque-capped-00.md") {
+		t.Fatalf("notice should name only the tracked page: %q", notice)
+	}
+}
+
+// Page records survive compaction: a page read before it still gets a notice
+// when another session changes it afterwards.
+func TestMemoryRefreshPageRecordsSurviveCompaction(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	memorySeed(t, root, "personal", "opaque-index-1\n")
+	writeMemoryPage(t, root, "opaque-kept-page.md", "opaque-kept-body-1\n")
+	s := newScriptedSummaryCompactSession(t, "memory-page-summary", func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("opaque-page-fold")}
+	}, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}))
+	var notice string
+	s.client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response {
+			return memoryCallResponse("memory_read", map[string]any{"scope": "personal", "file_path": "opaque-kept-page.md"})
+		},
+		func(llm.Request) llm.Response { return finalResponse("read") },
+		func(llm.Request) llm.Response { return finalResponse("after fold") },
+		func(req llm.Request) llm.Response {
+			notice = latestMemoryContext(req, "personal")
+			return finalResponse("noticed")
+		},
+	}})
+	turn := func() {
+		t.Helper()
+		if _, err := s.ProcessInput(context.Background(), "go", nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	turn()
+	for range 12 {
+		s.appendTurnWithTranscriptMessage(schema.TurnUserInput, llm.User("opaque-old"), llm.User("opaque-old"))
+	}
+	if err := s.Compact(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	turn()
+	writeMemoryPage(t, root, "opaque-kept-page.md", "opaque-kept-body-2\n")
+	turn()
+	if !strings.Contains(notice, "opaque-kept-page.md") {
+		t.Fatalf("no notice for a page read before compaction: %q", notice)
+	}
+}
+
+// A resumed session starts with no page records: a page read only before the
+// resume gets no notice after it.
+func TestMemoryRefreshPageRecordsDoNotSurviveResume(t *testing.T) {
+	t.Parallel()
+	root, history, workspace := t.TempDir(), t.TempDir(), t.TempDir()
+	memorySeed(t, root, "personal", "opaque-index-1\n")
+	writeMemoryPage(t, root, "opaque-forgotten-page.md", "opaque-forgotten-body-1\n")
+	s := newSession(t, withDir(workspace), withConfig(SessionConfig{StateDir: history, MemoryStateRoot: root}), withSteps(
+		func(llm.Request) llm.Response {
+			return memoryCallResponse("memory_read", map[string]any{"scope": "personal", "file_path": "opaque-forgotten-page.md"})
+		},
+		func(llm.Request) llm.Response { return finalResponse("read") },
+	))
+	if _, err := s.ProcessInput(context.Background(), "go", nil); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	meta, err := schema.LoadSessionMeta(history, s.id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := RestoreSessionFromMetaWithConfig(s.client, s.profile, execenv.NewLocalExecutionEnvironment(workspace), meta, RestoreSessionConfig{StateDir: history, MemoryStateRoot: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	writeMemoryPage(t, root, "opaque-forgotten-page.md", "opaque-forgotten-body-2\n")
+	var texts []string
+	r.client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(req llm.Request) llm.Response {
+			for _, msg := range req.Messages {
+				if strings.HasPrefix(msg.Name, "memory_") {
+					texts = append(texts, msg.Text())
+				}
+			}
+			return finalResponse("resumed")
+		},
+	}})
+	if _, err := r.ProcessInput(context.Background(), "go", nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, text := range texts {
+		if strings.Contains(text, "opaque-forgotten-page.md") {
+			t.Fatalf("resumed session noticed a page read only before the resume: %q", text)
+		}
 	}
 }

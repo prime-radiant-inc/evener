@@ -268,8 +268,11 @@ type Session struct {
 	// memoryReadPages holds, per scope and page path, what the session last
 	// knew of each page it read with memory_read; only these pages get change
 	// notices. Compaction keeps them; a resumed session starts without any.
-	memoryReadPages    map[string]map[string]memoryPageRecord
-	memoryIndexFlights map[string]*memoryIndexFlight
+	memoryReadPages map[string]map[string]memoryPageRecord
+	// memoryReadPageOrder lists, per scope, the tracked pages from least to
+	// most recently read with memory_read; it bounds memoryReadPages.
+	memoryReadPageOrder map[string][]string
+	memoryIndexFlights  map[string]*memoryIndexFlight
 	// The sole automatic reader per scope owns cleanup until it returns.
 	// Admission and retirement share memoryMu, including the pre-read window.
 	memoryIndexReaders map[string]*execenv.LocalExecutionEnvironment
