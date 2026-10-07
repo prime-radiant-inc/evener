@@ -51,7 +51,6 @@ import { createActivityStore } from "../../mobile/src/state/activity";
 import { type ConversationState, createConversationStore, olderPageKey } from "../../mobile/src/state/conversation";
 import {
 	createConversationMutationPendingPort,
-	type ConversationMutationRequest,
 	type ConversationMutationSubmitter,
 } from "../../mobile/src/state/conversationMutation";
 import { useAlertedRecently, useNextUsed } from "./alerts/alertsContext";
@@ -2607,7 +2606,7 @@ export function ConversationScreen({
 		threadId: string,
 		instanceId: string,
 		texts: readonly string[],
-		request: Pick<ConversationMutationRequest, "kind" | "queueEntry" | "expectedQueueRevision">,
+		request: { kind: "promote"; queueEntry: QueueEntryRef } | { kind: "steer"; expectedQueueRevision: number },
 	): Promise<boolean> {
 		try {
 			await mutationSubmitter.submit({
