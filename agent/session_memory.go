@@ -16,6 +16,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/runetrim"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/llm"
 )
 
@@ -713,22 +714,24 @@ func (s *Session) resetMemoryProjectionAfterCompaction() {
 
 // Restored and forked history only seeds which scopes were observed, never
 // historical bytes as a current read. Missing or revoked storage must supersede
-// old observations.
+// old observations. Only an index projection counts as an observation: change
+// blocks and page notices share the scope's message name but say nothing about
+// the index's state, so they are told apart by the projection envelope.
 func (s *Session) restoreMemoryProjection(history []schema.Turn) {
 	if s.cfg.DisableMemory || s.cfg.MemoryStateRoot == "" {
 		return
 	}
 	s.memoryEverProjected = make(map[string]bool)
 	for _, turn := range history {
-		if turn.Kind == schema.TurnMemoryContext {
-			for _, scope := range memoryScopes {
-				if turn.Message.Name == "memory_"+scope {
-					s.memoryEverProjected[scope] = true
-				}
-			}
-		}
 		if len(s.memoryEverProjected) == len(memoryScopes) {
 			break
+		}
+		if turn.Kind != schema.TurnMemoryContext {
+			continue
+		}
+		display, ok := apptranscript.ParseMemoryContext(turn.Message.Text(), turn.Message.Name)
+		if ok && slices.Contains(memoryScopes, display.Scope) {
+			s.memoryEverProjected[display.Scope] = true
 		}
 	}
 }
