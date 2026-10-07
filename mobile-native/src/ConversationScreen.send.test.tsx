@@ -3090,6 +3090,58 @@ describe("queued messages at the transcript's end (spec 8.5)", () => {
 		},
 	);
 
+	const rowsWith = (tree: ReactTestRenderer, text: string) =>
+		transcriptList(tree)
+			.findAll((node) => String(node.type) === "Item")
+			.map(textOf)
+			.filter((row) => row.includes(text));
+
+	// Until the hub answers, the message shows once, on its way, and there is
+	// no second Steer now to press for it.
+	it.each(STEERS_FROM_QUEUE.slice(0, 2))(
+		"shows a message once, with nothing to press again, while its %s waits for the hub",
+		async (label, status, method, queued) => {
+			const ref = `ref-pressed-once-${label}`;
+			const { tree, hub } = await mount(thread(ref, status, false, [...queued]));
+			const client = hub.client as { request: (method: string, params: Record<string, unknown>) => Promise<unknown> };
+			const request = client.request;
+			client.request = async (requested, params) => {
+				if (requested !== method) return request(requested, params);
+				request(requested, params);
+				return new Promise(() => undefined);
+			};
+			await press(tree, label);
+			expect(hub.requests.filter((entry) => entry.method === method)).toHaveLength(1);
+			expect(rowsWith(tree, "check the logs")).toHaveLength(1);
+			expect(pressable(tree, label)).toBeUndefined();
+		},
+	);
+
+	// A steer the hub refuses names the message it was for, says it was a
+	// steer, and offers only Discard: the message may still be queued.
+	it.each(STEERS_FROM_QUEUE)("names the message when the hub refuses %s", async (label, status, method, queued) => {
+		const ref = `ref-refused-${label}`;
+		const { tree, hub } = await mount(thread(ref, status, false, [...queued]));
+		const client = hub.client as { request: (method: string, params: Record<string, unknown>) => Promise<unknown> };
+		const request = client.request;
+		client.request = async (requested, params) => {
+			if (requested !== method) return request(requested, params);
+			hub.requests.push({ method: requested, params });
+			throw new WireError("queue entry changed", -32013, {
+				evenerErrorInfo: "conflict",
+				clientMutationId: params.clientMutationId,
+				mutationOutcome: "notAccepted",
+				retryDisposition: "none",
+			});
+		};
+		await steerFromQueue(tree, ref, label);
+		await settle();
+		const [refused] = rowsWith(tree, "Couldn't steer with this · queue entry changed");
+		expect(refused).toContain("check the logs");
+		expect(refused).toContain("Discard");
+		expect(refused).not.toContain("Edit");
+	});
+
 	// They take no room from the transcript, so nothing folds while you type.
 	it("keeps a queued message and its Steer now while you type", async () => {
 		const { tree, hub } = await mount(thread("ref-steer-typing", "active", false, ["check the logs"]));

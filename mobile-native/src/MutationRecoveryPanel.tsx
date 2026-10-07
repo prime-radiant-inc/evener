@@ -39,6 +39,9 @@ export interface NativeMutationRecoveryRow {
 	reason?: string;
 	/** The text a restore writes into the composer. */
 	text: string;
+	/** The queued messages a refused steer from the queue was for. It sends
+	 * no text of its own, so there is nothing to restore. */
+	queuedText?: string;
 	/** Whether the record carries image inputs a composer restore cannot
 	 * reconstitute here. Restore is withheld for such a row rather than
 	 * silently dropping the image. */
@@ -95,6 +98,19 @@ export function recoveredComposerText(record: MutationRecoveryRecord<MutationAtt
 		.join("\n");
 }
 
+// A promote or drain from the queue steers with messages the hub holds; its
+// ghost shows them from the record's display.
+function queuedSteerText(record: MutationRecoveryRecord<MutationAttachmentRef>): string | undefined {
+	if (record.method !== "turn/promoteQueuedAsSteer" && record.method !== "turn/drainAsSteer") return undefined;
+	if (recoveredComposerText(record) !== "") return undefined;
+	const display = record.optimisticDisplay as { input?: unknown } | null;
+	const input = Array.isArray(display?.input) ? display.input : [];
+	return input
+		.filter(isTextInputItem)
+		.map((item) => item.text)
+		.join("\n");
+}
+
 // Whether a record can offer a restore at all, independent of the composer: a
 // rejected, non-interrupt mutation whose text a restore can write and which
 // carries no attachment a text-only restore would drop. A Stop's interrupt is
@@ -142,6 +158,7 @@ export function projectNativeMutationRecovery(
 		const text = recoveredComposerText(record);
 		const carriesAttachments = recordCarriesAttachments(record);
 		const restoreOffered = recordOffersRestore(record);
+		const queuedText = queuedSteerText(record);
 		rows.push({
 			targetKey,
 			clientMutationId: record.clientMutationId,
@@ -149,6 +166,7 @@ export function projectNativeMutationRecovery(
 			status: record.recoveryKind,
 			...(record.recoveryReason === undefined ? {} : { reason: record.recoveryReason }),
 			text,
+			...(queuedText === undefined ? {} : { queuedText }),
 			carriesAttachments,
 			restoreOffered,
 			record,

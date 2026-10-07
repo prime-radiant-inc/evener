@@ -2640,7 +2640,7 @@ export function ConversationScreen({
 		const cancel = () => queueChange(service, () => service.cancelQueued(target.index, target.id, instanceId));
 		if (action === "steerNow" || action === "sendNow") {
 			if (queueActionRefusal(live, "promote") !== null) return STEER_FAILED;
-			const text = live.queue?.texts?.[target.index] ?? live.queue?.preview?.[target.index];
+			const text = live.queue?.texts?.[target.index] || live.queue?.preview?.[target.index];
 			const promoted = await steerWithQueued(live.threadId, instanceId, text ? [text] : [], {
 				kind: "promote",
 				queueEntry: target,
@@ -2667,7 +2667,12 @@ export function ConversationScreen({
 		const instanceId = live?.instanceId;
 		if (!service || !connectionReady.current || !live?.queue || !instanceId) return null;
 		if (queueActionRefusal(live, "drainAll") !== null) return STEER_ALL_FAILED;
-		const drained = await steerWithQueued(live.threadId, instanceId, live.queue.texts ?? live.queue.preview ?? [], {
+		const { texts, preview } = live.queue;
+		const queued = Array.from(
+			{ length: live.queue.depth ?? 0 },
+			(_, index) => texts?.[index] || preview?.[index] || "",
+		);
+		const drained = await steerWithQueued(live.threadId, instanceId, queued.filter(Boolean), {
 			kind: "steer",
 			expectedQueueRevision: live.queue.revision,
 		});

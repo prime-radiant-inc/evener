@@ -22,7 +22,7 @@ export type RecoveryGhostRow = Pick<
 	NativeMutationRecoveryRow,
 	"clientMutationId" | "status" | "reason" | "text" | "actions"
 > &
-	Partial<Pick<NativeMutationRecoveryRow, "carriesAttachments">>;
+	Partial<Pick<NativeMutationRecoveryRow, "carriesAttachments" | "queuedText">>;
 
 export type GhostOrigin =
 	| { kind: "queue"; entry: QueueEntryRef }
@@ -64,6 +64,8 @@ const CAPTIONS: Record<GhostState, string> = {
 	refused: "Couldn't send this",
 };
 
+const STEER_REFUSED = "Couldn't steer with this";
+
 /** A message the phone holds until it can send it (ruling 14): nothing is
  * sending while the connection is down. */
 const WAITING_TO_SEND = "Will send when you're back online";
@@ -88,7 +90,14 @@ export function ghosts(
 	const steering = (entry: PendingTurnEntry) =>
 		STEERS.has(entry.method) && (entry.state === "accepted" || entry.state === "claimed");
 	const out: Ghost[] = own.filter(steering).map((entry) => pendingGhost(entry, "steering", []));
-	if (session) out.push(...queueGhosts(session));
+	// A queued message this phone is steering with shows once, as its steer.
+	const promoted = new Set(own.flatMap((entry) => entry.queueEntryId ?? []));
+	if (session)
+		out.push(
+			...queueGhosts(session).filter(
+				(ghost) => !(ghost.origin.kind === "queue" && promoted.has(ghost.origin.entry.id)),
+			),
+		);
 	// The draft keeps a send uncertain until the store confirms it, and the
 	// outbox admits the same send first, so a binding change in between or a
 	// crash leaves both holding it. One ghost shows: the outbox knows how far
@@ -186,11 +195,12 @@ function recoveryGhost(row: RecoveryGhostRow, confirmButtons: GhostAction[]): Gh
 	const refused = row.status === "rejected";
 	const canEdit = row.actions.includes("restore");
 	const buttons: GhostAction[] = refused ? (canEdit ? ["edit", "discard"] : ["discard"]) : confirmButtons;
+	const refusal = row.queuedText === undefined ? CAPTIONS.refused : STEER_REFUSED;
 	return {
 		key: `recovery:${row.clientMutationId}`,
 		state: refused ? "refused" : "unconfirmed",
-		text: row.text || "Message",
-		caption: refused ? (row.reason ? `${CAPTIONS.refused} · ${row.reason}` : CAPTIONS.refused) : CAPTIONS.unconfirmed,
+		text: row.queuedText || row.text || "Message",
+		caption: refused ? (row.reason ? `${refusal} · ${row.reason}` : refusal) : CAPTIONS.unconfirmed,
 		buttons,
 		menu: !refused && canEdit ? ["edit"] : [],
 		// Edit brings back text only, so a refused message with an image offers
