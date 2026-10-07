@@ -15,7 +15,7 @@ import {
 } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 import { ProvidersStack as ProvidersPage } from "./providersPageTestUtils";
-import { render, renderedText, screenConnection } from "../renderNative.testkit";
+import { render as renderTree, renderedText, screenConnection } from "../renderNative.testkit";
 
 const harness = vi.hoisted(() => ({
 	connection: {} as Record<string, unknown>,
@@ -44,7 +44,17 @@ vi.mock("@react-navigation/native", async () => {
 	};
 });
 
+// Every page a test mounts is unmounted once the test ends, so none of its
+// timers or store subscriptions update it after the file's last test, outside
+// act, while vitest tears the worker down (#3916).
+const mounted: ReactTestRenderer[] = [];
+function render(...args: Parameters<typeof renderTree>): ReactTestRenderer {
+	const tree = renderTree(...args);
+	mounted.push(tree);
+	return tree;
+}
 afterEach(() => {
+	for (const tree of mounted.splice(0)) act(() => tree.unmount());
 	vi.useRealTimers();
 });
 
