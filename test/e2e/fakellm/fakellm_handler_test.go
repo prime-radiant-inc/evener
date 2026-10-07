@@ -1,6 +1,7 @@
 package fakellm
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -162,35 +163,52 @@ func TestServerAddrAndBaseURL(t *testing.T) {
 }
 
 // TestHoldNamerParksTheNamerReply covers HoldNamer: a namer request is not
-// answered until the hold is released.
+// answered until the hold is released, and Close or the request ending lets
+// it go without an answer.
 func TestHoldNamerParksTheNamerReply(t *testing.T) {
-	srv, err := NewOn("127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer srv.Close()
+	for _, tc := range []struct {
+		name     string
+		let      func(srv *Server, release, cancel func())
+		wantName bool
+	}{
+		{name: "release", let: func(_ *Server, release, _ func()) { release() }, wantName: true},
+		{name: "close", let: func(srv *Server, _, _ func()) { srv.Close() }},
+		{name: "request ends", let: func(_ *Server, _, cancel func()) { cancel() }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, err := NewOn("127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer srv.Close()
 
-	release := srv.HoldNamer()
-	answered := make(chan *httptest.ResponseRecorder, 1)
-	go func() {
-		body := `{"model":"test","messages":[{"role":"user","content":"name this"}]}`
-		rec := httptest.NewRecorder()
-		srv.handleChat(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body)))
-		answered <- rec
-	}()
-	select {
-	case rec := <-answered:
-		t.Fatalf("the held namer request was answered: %d %s", rec.Code, rec.Body.String())
-	case <-time.After(50 * time.Millisecond):
-	}
-	release()
-	select {
-	case rec := <-answered:
-		if !strings.Contains(rec.Body.String(), "Fake Session") {
-			t.Fatalf("released namer body should contain auto name: %s", rec.Body.String())
-		}
-	// TRIPWIRE: a hang guard only; the released handler answers at once.
-	case <-time.After(10 * time.Second):
-		t.Fatal("the released namer request was never answered")
+			release := srv.HoldNamer()
+			defer release()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			answered := make(chan *httptest.ResponseRecorder, 1)
+			go func() {
+				body := `{"model":"test","messages":[{"role":"user","content":"name this"}]}`
+				rec := httptest.NewRecorder()
+				req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+				srv.handleChat(rec, req)
+				answered <- rec
+			}()
+			select {
+			case rec := <-answered:
+				t.Fatalf("the held namer request was answered: %d %s", rec.Code, rec.Body.String())
+			case <-time.After(50 * time.Millisecond):
+			}
+			tc.let(srv, release, cancel)
+			select {
+			case rec := <-answered:
+				if got := strings.Contains(rec.Body.String(), "Fake Session"); got != tc.wantName {
+					t.Fatalf("namer answered with the name = %t, want %t: %d %s", got, tc.wantName, rec.Code, rec.Body.String())
+				}
+			// TRIPWIRE: a hang guard only; the let-go handler returns at once.
+			case <-time.After(10 * time.Second):
+				t.Fatal("the held namer request never returned")
+			}
+		})
 	}
 }

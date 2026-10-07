@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -44,13 +45,16 @@ func TestE2E_QueuePromptToARetiredSession(t *testing.T) {
 	// Hold the background session namer past the opening turn, as a slow
 	// provider does on a loaded runner: its in-flight work is an obligation the
 	// daemon refuses to retire over, which a single retire request used to
-	// ignore and then wait out (#3876).
+	// ignore and then wait out (#3876). The namer gives up on its own after
+	// agent's sessionNameTimeout (15s), far longer than this scripted turn takes.
 	releaseNamer := provider.HoldNamer()
-	t.Cleanup(releaseNamer)
 	ref := startSessionWithOpeningTurn(ctx, t, client, provider, stack)
+	t.Cleanup(releaseNamer)
 	refused := requestDaemonRetire(ctx, t, client, ref)
-	if refused.Accepted {
-		t.Fatalf("retire was accepted with the session namer in flight; the test no longer covers a refused retire: %+v", refused.Lifecycle)
+	if refused.Accepted || !slices.ContainsFunc(refused.Lifecycle.Blockers, func(blocker appwire.DaemonBlocker) bool {
+		return blocker.Category == "autonomous"
+	}) {
+		t.Fatalf("retire with the session namer in flight: accepted=%t lifecycle=%+v, want refused over an autonomous blocker", refused.Accepted, refused.Lifecycle)
 	}
 	releaseNamer()
 
@@ -155,12 +159,20 @@ func requestDaemonRetire(ctx context.Context, t *testing.T, client *appwire.Clie
 // retire over it until it settles.
 func retireDaemonUntilAccepted(ctx context.Context, t *testing.T, client *appwire.Client, ref string) appwire.DaemonRetireResponse {
 	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	var lastBlockers []appwire.DaemonBlocker
 	for {
 		resp := requestDaemonRetire(ctx, t, client, ref)
 		if resp.Accepted {
 			return resp
 		}
-		t.Logf("evener/daemon/retire refused; asking again: blockers=%+v", resp.Lifecycle.Blockers)
+		if !slices.Equal(resp.Lifecycle.Blockers, lastBlockers) {
+			t.Logf("evener/daemon/retire refused; asking again: blockers=%+v", resp.Lifecycle.Blockers)
+			lastBlockers = resp.Lifecycle.Blockers
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the daemon refused to retire for 30s; last blockers=%+v", resp.Lifecycle.Blockers)
+		}
 		select {
 		case <-ctx.Done():
 			t.Fatalf("the daemon never accepted retirement: %v; last blockers=%+v", ctx.Err(), resp.Lifecycle.Blockers)
