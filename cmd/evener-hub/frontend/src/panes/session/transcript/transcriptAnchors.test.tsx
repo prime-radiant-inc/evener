@@ -513,6 +513,18 @@ test.each([
   expect(readingPointOffset(captured, 1600, nextViewport, 152)).toBe(oldOffset);
 });
 
+// An entry that shrank at the same width isn't a viewport change: the tail rule
+// still bounds it, so it never lands wholly above the viewport.
+test("an entry that shrinks at the same width keeps a real part visible", () => {
+  const captured = {
+    anchorOffset: -1500,
+    normalizedOffset: 0,
+    followingBottom: false,
+    readingPoint: { entryHeight: 1600, viewportHeight: 400, viewportWidth: 152 },
+  };
+  expect(readingPointOffset(captured, 50, 436, 152)).toBe(0);
+});
+
 test("width-only policy preserves an ordinary display offset without a measured point", () => {
   expect(readingPointOffset({ anchorOffset: -900, normalizedOffset: 0, followingBottom: false }, 700, 400, 352)).toBe(
     -900,
@@ -644,10 +656,11 @@ test.each([
   },
 );
 
-// The 275 -> 240 shrink keeps the reading line where it was. Once observed, it
-// is the committed geometry the width reflow measures progress against
-// (12578 / (12853.14 - 240) of the new depth); unobserved, the width reflow
-// still measures against 275.
+// The 275 -> 240 shrink keeps the reading line where it was. Once observed, the
+// 240px viewport is the committed geometry the later width reflow measures
+// progress against: the reader is 12578px into a usable depth of 12853.14 - 240,
+// and the same fraction of the new depth (7036.17 - 480) is 6537.9. Unobserved,
+// the reflow still measures against 275 and lands at 6556.1.
 test.each([
   { settled: false, reflowed: 6556.098576275061 },
   { settled: true, reflowed: 6537.9061643301075 },
