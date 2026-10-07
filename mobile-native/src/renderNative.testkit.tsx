@@ -44,6 +44,18 @@ import { shrinkingScroller } from "./session/dockCard";
  * reads them: whether the Liquid Glass API is there (expo-glass-effect's
  * isGlassEffectAPIAvailable, faked in vitestSetup.ts), and Reduce
  * Transparency, which a test turns on or off with setReduceTransparency. */
+/** A native read that has already answered: its then runs the callback at
+ * once, so a mount's read lands inside the render's act instead of on a
+ * microtask after a synchronous test has ended, where React would warn about
+ * the update outside act (and, since #3924 unmounts each test's trees, no
+ * earlier mount's value makes it a no-op). */
+function answered<T>(value: T): Promise<T> {
+	return {
+		// biome-ignore lint/suspicious/noThenProperty: a deliberately synchronous thenable
+		then: (onFulfilled?: (value: T) => unknown) => Promise.resolve(onFulfilled ? onFulfilled(value) : value),
+	} as unknown as Promise<T>;
+}
+
 export const systemGlass = (() => {
 	const listeners = new Set<(value: boolean) => void>();
 	let reduceTransparency = false;
@@ -57,7 +69,7 @@ export const systemGlass = (() => {
 			pendingAnswer = null;
 		},
 		read(): Promise<boolean> {
-			if (!this.readPending) return Promise.resolve(reduceTransparency);
+			if (!this.readPending) return answered(reduceTransparency);
 			return new Promise((resolve) => {
 				pendingAnswer = () => resolve(reduceTransparency);
 			});
@@ -275,7 +287,7 @@ export function nativeModuleMock() {
 			announceForAccessibility: vi.fn(),
 			// Reduce Motion stays off and never changes here: a suite that
 			// needs it mocks AccessibilityInfo itself.
-			isReduceMotionEnabled: () => Promise.resolve(false),
+			isReduceMotionEnabled: () => answered(false),
 			isReduceTransparencyEnabled: () => systemGlass.read(),
 			addEventListener: (event: string, listener: (value: boolean) => void) =>
 				event === "reduceTransparencyChanged" ? systemGlass.listen(listener) : { remove: () => {} },
