@@ -1690,11 +1690,24 @@ export function resumeStopBaseline(): (ref?: string) => void {
 // the first drive's reconciliation. A failed drive publishes its reason for the
 // press surface to toast, and is re-drivable by the next press.
 let resumeFailureSeq = 0;
-const inFlightResumes = new Set<string>();
+// Per ref, the ONE in-flight drive. Concurrent callers (a second send, the
+// notice's Resume press) await the same promise, so they ride the same retarget,
+// hydration, and publication instead of starting a second resumeThread.
+const inFlightResumes = new Map<string, Promise<void>>();
 
 async function resumeFencedForSend(ref: string): Promise<void> {
-  if (inFlightResumes.has(ref)) return;
-  inFlightResumes.add(ref);
+  const existing = inFlightResumes.get(ref);
+  if (existing !== undefined) return existing;
+  const drive = runResumeFencedForSend(ref);
+  inFlightResumes.set(ref, drive);
+  try {
+    await drive;
+  } finally {
+    if (inFlightResumes.get(ref) === drive) inFlightResumes.delete(ref);
+  }
+}
+
+async function runResumeFencedForSend(ref: string): Promise<void> {
   try {
     const client = wiredClient;
     if (client === null || client.state !== "ready")
@@ -1702,6 +1715,11 @@ async function resumeFencedForSend(ref: string): Promise<void> {
     const stopBaseline = resumeStopBaseline();
     const { thread } = await client.resumeThread(ref, { beforeRequest: stopBaseline });
     const resumedRef = thread.evener.ref;
+    // The token the daemon's instance fence compares (appwire_runtime's
+    // expectedInstanceID vs appThreadID), read the same fused way a fresh send
+    // derives it (instanceId ?? threadId). Taken off the resume RESPONSE: the
+    // resumed ref is usually not tracked yet, so the store has no model for it.
+    const resumedIdentity = { threadId: thread.id, instanceId: thread.evener.instanceId };
     // The fence over BOTH refs runs before and after the hydration, exactly as
     // the button's own identityFence did: a Stop against either ref cancels the
     // publish. The pane only follows the new identity once the hydration has
@@ -1715,10 +1733,16 @@ async function resumeFencedForSend(ref: string): Promise<void> {
     // the resumed ref BEFORE the hydrated read, so that read reconciles the rows
     // and the dispatch tails drain the pressed send exactly once under the new
     // identity.
-    if (resumedRef !== ref) await retargetParkedMutations(ref, resumedRef);
+    if (resumedRef !== ref) await retargetParkedMutations(ref, resumedRef, resumedIdentity);
     await threadsStore.getState().refreshThread(resumedRef, identityFence);
     identityFence();
     if (resumedRef !== ref) {
+      // A send enqueued after the first snapshot while this drive was in flight
+      // rode this same promise and parked under the old ref. Move those late
+      // rows too, bounded so a steady trickle cannot spin the drive.
+      for (let pass = 0; pass < 3; pass += 1) {
+        if (!(await retargetParkedMutations(ref, resumedRef, resumedIdentity))) break;
+      }
       threadsStore.setState((state) => ({
         resumedIdentities: new Map(state.resumedIdentities).set(ref, resumedRef),
       }));
@@ -1737,24 +1761,28 @@ async function resumeFencedForSend(ref: string): Promise<void> {
     threadsStore.setState((state) => ({
       resumeFailures: new Map(state.resumeFailures).set(ref, { seq: resumeFailureSeq, message }),
     }));
-  } finally {
-    inFlightResumes.delete(ref);
   }
 }
 
 // Move the rows a resume left parked under its superseded ref onto the resumed
-// ref, through the storage's retarget transaction. The outbox bookkeeping the
-// store keeps per ref moves with them: the old ref's undelivered ids are
-// resolved and re-registered under the new ref, the new ref is pinned and armed
-// for dispatch, and the old ref's arm is dropped if it is now idle. The resumed
-// hydration that follows re-reads the outbox and is the authority that settles
-// what this tab cannot.
-async function retargetParkedMutations(fromRef: string, toRef: string): Promise<void> {
+// ref, through the storage's retarget transaction, rewriting the rows' identity
+// fields to `identity` so the daemon's instance fence accepts them under the
+// resumed identity. The outbox bookkeeping the store keeps per ref moves with
+// them: the old ref's undelivered ids are resolved and re-registered under the
+// new ref, the new ref is pinned and armed for dispatch, and the old ref's arm
+// is dropped if it is now idle. Returns whether ANY store moved - an
+// optimistic-only or recovery-only identity change still needs the new ref
+// pinned and armed.
+async function retargetParkedMutations(
+  fromRef: string,
+  toRef: string,
+  identity: { threadId?: string; instanceId?: string },
+): Promise<boolean> {
   const runtime = getMutationRuntime();
-  if (!runtime) return;
-  const moved = await runtime.storage.retargetOutbox(fromRef, toRef);
-  if (moved.length === 0) return;
-  for (const record of moved) {
+  if (!runtime) return false;
+  const moved = await runtime.storage.retargetOutbox(fromRef, toRef, identity);
+  if (moved.outbox.length === 0 && moved.optimistic.length === 0 && moved.recovery.length === 0) return false;
+  for (const record of moved.outbox) {
     noteHandledMutation(record.clientMutationId);
     noteUndeliveredMutation(toRef, record.clientMutationId);
   }
@@ -1765,6 +1793,7 @@ async function retargetParkedMutations(fromRef: string, toRef: string): Promise<
   if (dispatchReplayGateOpen(toRef)) dispatchableMutationRefs.add(toRef);
   notifyMutationPersistence([toRef]);
   scheduleMutationDispatch(runtime, [toRef]);
+  return true;
 }
 
 // The snapshot-level refusals of retryBlockedMutation: a target the store

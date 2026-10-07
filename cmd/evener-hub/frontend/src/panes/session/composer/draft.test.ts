@@ -2,6 +2,7 @@ import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
 import {
   type ComposerDraft,
+  carryComposerDraft,
   clearDraft,
   composerDraftStorageKey,
   draftStorageKey,
@@ -27,6 +28,23 @@ afterEach(() => {
 
 test("readDraft returns empty string when nothing is stored for this ref", () => {
   expect(readDraft("local:01AAA")).toBe("");
+});
+
+// R09: the mid-resume typed draft is the user's NEWEST intent, so it wins at the
+// destination even over a draft the new ref already holds; the source copy under
+// the old ref remains either way.
+test("carryComposerDraft lets the in-flight source draft win over a destination draft", () => {
+  writeComposerDraft("local:carry-from", { text: "newer in-flight draft", skillNames: [] });
+  writeComposerDraft("local:carry-to", { text: "older destination draft", skillNames: [] });
+  carryComposerDraft("local:carry-from", "local:carry-to");
+  expect(readComposerDraft("local:carry-to").text).toBe("newer in-flight draft");
+  expect(readComposerDraft("local:carry-from").text).toBe("newer in-flight draft");
+});
+
+test("carryComposerDraft is a no-op for an empty source", () => {
+  writeComposerDraft("local:carry-to", { text: "destination draft", skillNames: [] });
+  carryComposerDraft("local:carry-empty", "local:carry-to");
+  expect(readComposerDraft("local:carry-to").text).toBe("destination draft");
 });
 
 test("writeDraft then readDraft round-trips the same ref's text", () => {

@@ -3380,7 +3380,11 @@ test("Send follows the returned identity through transcript and new sends", asyn
   expect(await mutationStorage.getOutbox(uncertain)).toBeUndefined();
   const starts = requests.filter(({ method }) => method === "turn/start");
   expect(starts).toHaveLength(1);
-  expect(starts[0]?.params).toEqual(expect.objectContaining({ ref: currentRef }));
+  // The parked send's daemon fence token was rewritten to the resumed identity:
+  // the original ref's token would be fenced as "thread instance is stale".
+  expect(starts[0]?.params).toEqual(
+    expect.objectContaining({ ref: currentRef, expectedInstanceId: `thr_${currentRef}` }),
+  );
 });
 
 // R09 acceptance applies to EVERY resume trigger, not only the Send-resumes

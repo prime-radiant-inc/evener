@@ -166,15 +166,14 @@ export function clearDraft(ref: string): void {
 // it. The draft a user typed while that resume was in flight is stored under
 // the OLD ref (persistDraft keys by ref), while the incoming pane's composer
 // starts on the NEW ref's own draft - so without this the newer draft would be
-// dropped at the ref change. Move it across, never clobbering: a draft the new
-// ref already holds wins, and an empty outgoing draft is a no-op. The old ref's
-// copy is left in place (returning to that identity still finds it).
+// dropped at the ref change. The source (in-flight) draft is the user's NEWEST
+// intent, so it wins at the destination even over a draft the new ref already
+// holds; the source copy under the old ref is left in place either way
+// (returning to that identity still finds it).
 export function carryComposerDraft(fromRef: string, toRef: string): void {
   if (fromRef === toRef) return;
   const from = readComposerDraft(fromRef);
   if (isBlankDraft(from)) return;
-  const to = readComposerDraft(toRef);
-  if (!isBlankDraft(to)) return;
   writeComposerDraft(toRef, from);
 }
 

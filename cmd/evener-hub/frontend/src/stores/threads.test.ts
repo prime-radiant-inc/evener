@@ -41,6 +41,7 @@ import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { type IDBDatabase, IDBFactory, IDBVersionChangeEvent } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
+  pendingTurnEntries,
   refreshPendingTurnsProjection,
   resetPendingTurnsStoreForTests,
 } from "../panes/session/composer/queue/pendingTurnsStore";
@@ -11579,6 +11580,200 @@ test("the parked Send-resumes row drains exactly once across the resume tail, a 
   notifyReadyForMutationDispatch([ref]);
   await flushIndexedDBUntil(() => false);
   expect(sends).toBe(1);
+});
+
+// A send enqueued WHILE an identity-changing resume is in flight rides the same
+// in-flight drive (one resumeThread), so it parks under the superseded ref after
+// the drive's first snapshot. The final re-target pass must move it too, or it
+// strands on the dead ref forever.
+test("a send enqueued during a held identity-changing resume follows the resumed ref", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectFakeClient("connecting");
+  const fromRef = "local:late-from";
+  const toRef = "local:late-to";
+  const fromShape = () =>
+    readResponse(fromRef, {
+      status: { type: "notLoaded" },
+      evener: {
+        ref: fromRef,
+        capabilities: { ...CAPABILITIES, send: false },
+        mutationStateAuthoritative: false,
+        resumeRequired: true,
+        queue: { revision: 0 },
+      },
+    });
+  const toShape = () =>
+    readResponse(toRef, {
+      status: { type: "idle" },
+      evener: { ref: toRef, capabilities: CAPABILITIES, mutationStateAuthoritative: true, queue: { revision: 1 } },
+    });
+  // Hold the resumed ref's hydration read, so a second send can land while the
+  // drive is between its first snapshot and its final pass.
+  let holdToRead = false;
+  let toReadHeld = false;
+  let releaseToRead!: () => void;
+  fake.on("thread/read", (params) => {
+    if (params.ref !== toRef) return fromShape();
+    if (holdToRead) {
+      holdToRead = false;
+      toReadHeld = true;
+      return new Promise<ReturnType<typeof toShape>>((resolve) => {
+        releaseToRead = () => resolve(toShape());
+      });
+    }
+    return toShape();
+  });
+  let resolveResume!: (response: ReturnType<typeof toShape>) => void;
+  const heldResume = new Promise<ReturnType<typeof toShape>>((resolve) => {
+    resolveResume = resolve;
+  });
+  fake.on("thread/resume", () => heldResume);
+  const starts: string[] = [];
+  fake.on("turn/start", (params) => {
+    starts.push(String(params.ref));
+    return {
+      receipt: mutationReceipt(params.clientMutationId),
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+    };
+  });
+  fake.emitReady();
+  await threadsStore.getState().ensureThread(fromRef);
+  await threadsStore.getState().ensureThread(toRef);
+  expect(threadsStore.getState().restartBlockingObligations.has(fromRef)).toBe(true);
+  // First send parks and starts the drive, which is held at the resume RPC.
+  await threadsStore.getState().send(fromRef, "one");
+  await flushIndexedDBUntil(() => false);
+  expect(starts).toEqual([]);
+  // Release the resume but hold the resumed ref's hydration read, so the drive
+  // is in flight when the second send lands.
+  holdToRead = true;
+  resolveResume(toShape());
+  await flushIndexedDBUntil(() => toReadHeld);
+  // The first row moved in the drive's first snapshot and drains under the new
+  // ref while the resumed hydration is held.
+  await flushIndexedDBUntil(() => starts.length >= 1);
+  expect(starts).toEqual([toRef]);
+  await threadsStore.getState().send(fromRef, "two");
+  await flushIndexedDBUntil(() => false);
+  expect(starts).toEqual([toRef]);
+  // Release the hydration: the final pass moves the late row to the new ref and
+  // both drain there.
+  releaseToRead();
+  await flushIndexedDBUntil(() => starts.length >= 2);
+  expect(starts).toEqual([toRef, toRef]);
+  expect(await storage.listOutbox(fromRef)).toEqual([]);
+});
+
+// Two concurrent resume triggers (the notice's Resume press racing a send) share
+// the ONE in-flight drive, so there is exactly one thread/resume and both
+// callers await the same hydration and publication.
+test("two concurrent resumeSession drives share one thread/resume", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectFakeClient("connecting");
+  const ref = "local:concurrent-resume";
+  let resolved = false;
+  const shape = () =>
+    readResponse(ref, {
+      status: { type: resolved ? "idle" : "notLoaded" },
+      evener: {
+        ref,
+        capabilities: resolved ? CAPABILITIES : { ...CAPABILITIES, send: false },
+        mutationStateAuthoritative: resolved,
+        resumeRequired: !resolved,
+        queue: { revision: resolved ? 1 : 0 },
+      },
+    });
+  fake.on("thread/read", () => shape());
+  let releaseResume!: () => void;
+  const heldResume = new Promise<ReturnType<typeof shape>>((resolve) => {
+    releaseResume = () => {
+      resolved = true;
+      resolve(shape());
+    };
+  });
+  fake.on("thread/resume", () => heldResume);
+  fake.emitReady();
+  await threadsStore.getState().ensureThread(ref);
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
+  const first = threadsStore.getState().resumeSession(ref);
+  const second = threadsStore.getState().resumeSession(ref);
+  await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "thread/resume"));
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
+  releaseResume();
+  await Promise.all([first, second]);
+  // Both callers resolved on the same one drive.
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
+});
+
+// An identity change with ONLY an optimistic row to move (its outbox row already
+// settled to accepted) must still run the per-ref bookkeeping: the resumed ref
+// is pinned and notified, and its projection shows the row. The any-moved
+// condition is what decides this, so a check that only counted outbox rows would
+// leave the optimistic row showing under the dead ref.
+test("an optimistic-only identity change still pins, notifies, and projects under the resumed ref", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectFakeClient("connecting");
+  const fromRef = "local:optimistic-from";
+  const toRef = "local:optimistic-to";
+  fake.on("thread/read", (params) =>
+    params.ref === toRef
+      ? readResponse(toRef, {
+          status: { type: "idle" },
+          evener: { ref: toRef, capabilities: CAPABILITIES, mutationStateAuthoritative: true, queue: { revision: 1 } },
+        })
+      : readResponse(fromRef, {
+          status: { type: "notLoaded" },
+          evener: {
+            ref: fromRef,
+            capabilities: { ...CAPABILITIES, send: false },
+            mutationStateAuthoritative: false,
+            resumeRequired: true,
+            queue: { revision: 0 },
+          },
+        }),
+  );
+  fake.on("thread/resume", () =>
+    readResponse(toRef, {
+      status: { type: "idle" },
+      evener: { ref: toRef, capabilities: CAPABILITIES, mutationStateAuthoritative: true, queue: { revision: 1 } },
+    }),
+  );
+  fake.emitReady();
+  await threadsStore.getState().ensureThread(fromRef);
+  expect(threadsStore.getState().restartBlockingObligations.has(fromRef)).toBe(true);
+  // Seed an accepted-but-unreflected row: settleReceipt moves it out of the
+  // outbox into the optimistic store, so the retarget finds ONLY optimistic
+  // rows of the old ref.
+  const seeded = await storage.enqueueIntent({
+    targetRef: fromRef,
+    threadId: `thr_${fromRef}`,
+    instanceId: "instance-old",
+    method: "turn/queue",
+    payload: { ref: fromRef, expectedInstanceId: "instance-old", input: [{ type: "text", text: "accepted" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/queue", input: [{ type: "text", text: "accepted" }] },
+  });
+  await storage.settleReceipt(seeded.clientMutationId, "pending");
+  expect(await storage.listOutbox(fromRef)).toEqual([]);
+  expect(await storage.listOptimistic(fromRef)).toHaveLength(1);
+  const persisted: string[] = [];
+  const unsubscribe = subscribeMutationPersistence((refs) => persisted.push(...refs));
+  try {
+    await threadsStore.getState().resumeSession(fromRef);
+  } finally {
+    unsubscribe();
+  }
+  expect(await storage.listOptimistic(fromRef)).toEqual([]);
+  expect((await storage.listOptimistic(toRef)).map((record) => record.clientMutationId)).toEqual([
+    seeded.clientMutationId,
+  ]);
+  expect(persisted).toContain(toRef);
+  await refreshPendingTurnsProjection(toRef);
+  expect(pendingTurnEntries(toRef)).toHaveLength(1);
+  expect(pendingTurnEntries(fromRef)).toHaveLength(0);
 });
 
 // The harder order of the same property: the resume's OWN post-resume hydration
