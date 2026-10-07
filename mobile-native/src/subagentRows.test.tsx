@@ -482,18 +482,14 @@ describe("a finished subagent's outcome (audit G13)", () => {
 		);
 	}
 
-	const screens: ReturnType<typeof render>[] = [];
 	function transcript(props: Parameters<typeof Transcript>[0]) {
-		const screen = render(<Transcript {...props} />);
-		screens.push(screen);
-		return screen;
+		return render(<Transcript {...props} />);
 	}
 	const rowText = (screen: ReturnType<typeof render>, delegateId: string) =>
 		textOf(screen.root.find((node) => node.type === TimelineItem && node.props.item.id === delegateId));
 
 	afterEach(() => {
 		unmountMountedTrees();
-		for (const screen of screens.splice(0)) act(() => screen.unmount());
 		forgetSubagentTrees("hub-1");
 	});
 

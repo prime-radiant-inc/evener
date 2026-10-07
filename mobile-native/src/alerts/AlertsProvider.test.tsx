@@ -61,9 +61,8 @@ function connect(client: Hub["client"] | null, state = "ready", hubId = "hub-1",
 		profiles,
 	};
 }
-let mounted: ReturnType<typeof render> | null = null;
 function mount() {
-	mounted = render(
+	const tree = render(
 		<AlertsProvider>
 			<Probe quiet={false} />
 		</AlertsProvider>,
@@ -71,7 +70,7 @@ function mount() {
 	return {
 		rerender(quiet = false) {
 			act(() =>
-				mounted?.update(
+				tree.update(
 					<AlertsProvider>
 						<Probe quiet={quiet} />
 					</AlertsProvider>,
@@ -110,8 +109,6 @@ beforeEach(() => {
 });
 afterEach(() => {
 	unmountMountedTrees();
-	act(() => mounted?.unmount());
-	mounted = null;
 	vi.useRealTimers();
 });
 

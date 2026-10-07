@@ -324,11 +324,6 @@ const otherThreads = new Map<string, Thread>();
 // The fleet the hub answers the screen's navigation reads with: nobody else
 // needs you unless a test says so.
 const fleet: FleetShape = { live: [], needsYou: [] };
-// Every screen a test mounts. Each is unmounted after its test: a screen
-// left mounted keeps answering late reads and setting header options on the
-// shared navigation mock, so a later test reading the last header options
-// could act on it instead of its own screen.
-const mountedScreens: ReactTestRenderer[] = [];
 // A coordinator's subagent tree (evener/jobs/list) and its direct stop
 // (evener/delegate/stop), for the subagent screen's tests.
 const coordinatorHub: {
@@ -371,7 +366,6 @@ afterEach(() => {
 	displayPrefs.config = null;
 	catalogHub.fails = false;
 	readHistory.live = false;
-	for (const tree of mountedScreens.splice(0)) if (tree.toJSON() !== null) act(() => tree.unmount());
 	keyboard.reset();
 	systemGlass.reset();
 	coordinatorHub.tree = null;
@@ -535,7 +529,6 @@ async function mount(
 	await act(async () => {
 		tree = render(<ConversationScreen route={route} navigation={navigation} />);
 	});
-	mountedScreens.push(tree);
 	if (barLaysOut) {
 		const bar = tree.root.findAll(
 			(node) => String(node.type) === "View" && node.props.testID === "session-bottom-bar",
@@ -4721,7 +4714,6 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 			] as never,
 		};
 		const tree = render(<SubagentScreen route={route as never} navigation={navigation as never} />);
-		mountedScreens.push(tree);
 		await settle();
 		return { tree, hub };
 	}
@@ -5377,7 +5369,6 @@ describe("Send while offline (phase 6, spec 8.5)", () => {
 		} as unknown as Route;
 		navigationState.state = { index: 0, routes: [route] };
 		const tree = render(<ConversationScreen route={route} navigation={navigation} />);
-		mountedScreens.push(tree);
 		await settle();
 		await type(tree, "not yet");
 		expect(pressable(tree, "Send when you're back online")?.props.accessibilityState).toMatchObject({

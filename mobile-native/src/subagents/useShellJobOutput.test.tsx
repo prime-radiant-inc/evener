@@ -1,7 +1,7 @@
 import { type ActivityJob, type AppwireClient } from "@evener/appwire-client";
 import { connectJobOutputPeer, type JobOutputPeer } from "@evener/appwire-client/testing/jobOutputPeer";
 import { createElement } from "react";
-import { act, type ReactTestRenderer } from "react-test-renderer";
+import { act } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { render, renderedText, unmountMountedTrees } from "../renderNative.testkit";
 import { useShellJobOutput } from "./useShellJobOutput";
@@ -37,15 +37,12 @@ function Probe({ client, job = JOB }: { client: AppwireClient; job?: ActivityJob
 
 let client: AppwireClient;
 let peer: JobOutputPeer;
-let screen: ReactTestRenderer | undefined;
 
 beforeEach(async () => {
 	({ client, peer } = await connectJobOutputPeer());
 });
 afterEach(() => {
 	unmountMountedTrees();
-	if (screen) act(() => screen?.unmount());
-	screen = undefined;
 	client.close();
 });
 
@@ -64,7 +61,7 @@ it.each([
 		"😀\n",
 	],
 ])("renders the latest %s byte page from the actual AppwireClient", async (_encoding, page, text) => {
-	screen = render(<Probe client={client} />);
+	const screen = render(<Probe client={client} />);
 	const request = await peer.request("evener/jobs/output");
 	expect(request.params).toEqual({ ref: "local:owner", jobId: "job_x" });
 	await act(async () => peer.reply(request, page));
@@ -72,14 +69,14 @@ it.each([
 });
 
 it("rejects a byte-count mismatch instead of displaying malformed output", async () => {
-	screen = render(<Probe client={client} />);
+	const screen = render(<Probe client={client} />);
 	const request = await peer.request("evener/jobs/output");
 	await act(async () => peer.reply(request, { ...HELLO, bytesReturned: 5 }));
 	expect(renderedText(screen)).toBe("failed");
 });
 
 it("handles a structured pruning error without fabricating an empty page", async () => {
-	screen = render(<Probe client={client} />);
+	const screen = render(<Probe client={client} />);
 	const request = await peer.request("evener/jobs/output");
 	await act(async () =>
 		peer.fail(request, "job output is no longer retained", {
@@ -92,15 +89,15 @@ it("handles a structured pruning error without fabricating an empty page", async
 });
 
 it("keeps the last good page through a failed reread and replaces it after recovery", async () => {
-	screen = render(<Probe client={client} />);
+	const screen = render(<Probe client={client} />);
 	const first = await peer.request("evener/jobs/output");
 	await act(async () => peer.reply(first, HELLO));
 	expect(renderedText(screen)).toBe("hello\n");
-	act(() => screen?.update(<Probe client={client} job={{ ...JOB, outputBytes: 7 }} />));
+	act(() => screen.update(<Probe client={client} job={{ ...JOB, outputBytes: 7 }} />));
 	const failed = await peer.request("evener/jobs/output", 1);
 	await act(async () => peer.fail(failed, "output unavailable"));
 	expect(renderedText(screen)).toBe("hello\n");
-	act(() => screen?.update(<Probe client={client} job={{ ...JOB, outputBytes: 8 }} />));
+	act(() => screen.update(<Probe client={client} job={{ ...JOB, outputBytes: 8 }} />));
 	const recovered = await peer.request("evener/jobs/output", 2);
 	await act(async () =>
 		peer.reply(recovered, {
@@ -116,9 +113,9 @@ it("keeps the last good page through a failed reread and replaces it after recov
 });
 
 it("fences a held page from the previous owner", async () => {
-	screen = render(<Probe client={client} />);
+	const screen = render(<Probe client={client} />);
 	const old = await peer.request("evener/jobs/output");
-	act(() => screen?.update(<Probe client={client} job={{ ...JOB, ownerRef: "local:new", ownerSessionId: "new" }} />));
+	act(() => screen.update(<Probe client={client} job={{ ...JOB, ownerRef: "local:new", ownerSessionId: "new" }} />));
 	const current = await peer.request("evener/jobs/output", 1);
 	expect(current.params).toEqual({ ref: "local:new", jobId: "job_x" });
 	await act(async () => peer.reply(current, { ...HELLO, data: "newest", bytesReturned: 6 }));

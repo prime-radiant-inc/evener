@@ -151,7 +151,6 @@ function mountRow(
 			sourceTurns={sourceTurns}
 		/>,
 	);
-	mountedTrees.add(tree);
 	return tree;
 }
 
@@ -201,13 +200,7 @@ function resetDisclosure(): void {
 	act(() => nativeDisclosureStore.setState(nativeDisclosureStore.getInitialState()));
 }
 
-// Every tree mountRow renders, so a fixture is unmounted promptly and a test
-// that throws partway cannot leave a root subscribed to the shared disclosure
-// store for the rest of the file.
-const mountedTrees = new Set<ReactTestRenderer>();
-
 function unmount(tree: ReactTestRenderer): void {
-	if (!mountedTrees.delete(tree)) return; // already unmounted
 	act(() => tree.unmount());
 }
 
@@ -217,7 +210,6 @@ beforeEach(() => {
 
 afterEach(() => {
 	unmountMountedTrees();
-	for (const tree of [...mountedTrees]) unmount(tree);
 });
 
 // --- collapsed at every level, both System events settings ------------------
