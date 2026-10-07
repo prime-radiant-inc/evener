@@ -1863,7 +1863,7 @@ export function ConversationScreen({
 						turn: () => store.getState().conversation,
 						submit: async (kind, input) => {
 							const target = mutationTarget(store.getState());
-							if (!target) throw new CommandArgumentError("Open the session again and try once more.");
+							if (!target) throw new CommandNotSentError("Open the session again and try once more.");
 							try {
 								await mutationSubmitter.submit({
 									kind,
