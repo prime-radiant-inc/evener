@@ -52,7 +52,7 @@ import { selectLocation } from "../../../stores/navigation/selectors";
 import { buildShutdownConvergence } from "../../../stores/navigation/shutdownConvergence";
 import { navigationStore, useNavigationStore } from "../../../stores/navigation/store";
 import { useSessionActivity, useSubagentCounts } from "../../../stores/sessionActivity";
-import { threadsStore, useThreadsStore } from "../../../stores/threads";
+import { ownerRetainedRef, threadsStore, useThreadsStore } from "../../../stores/threads";
 import { Cadence, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { cadenceStateForStatus, NOW_TICK_MS, useNowTick } from "../liveness";
@@ -199,13 +199,7 @@ export function SessionChrome({
   // and panes with no navigation identity. The one exclusion is a session
   // retained by its owning session - its notice directs the user to the owner
   // instead (same predicate as Session.tsx's recoveryOwnerRef).
-  const recoveryOwnerRef =
-    !mutationStateAuthoritative &&
-    model.status.type !== "notLoaded" &&
-    model.status.type !== "restartRequired" &&
-    model.parentRef?.startsWith("local:")
-      ? model.parentRef
-      : undefined;
+  const recoveryOwnerRef = ownerRetainedRef(model, mutationStateAuthoritative);
 
   const openOverview = () => {
     // Mobile and desktop share the activity sidebar. Desktop toggles only when

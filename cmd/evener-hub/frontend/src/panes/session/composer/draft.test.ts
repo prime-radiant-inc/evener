@@ -2,6 +2,7 @@ import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
 import {
   type ComposerDraft,
+  carryComposerDraft,
   clearDraft,
   composerDraftStorageKey,
   draftStorageKey,
@@ -27,6 +28,63 @@ afterEach(() => {
 
 test("readDraft returns empty string when nothing is stored for this ref", () => {
   expect(readDraft("local:01AAA")).toBe("");
+});
+
+// R09: the carry must preserve whichever draft is genuinely newer. The stamps
+// are ordered here the way the real mid-resume case orders them (the destination
+// was written first); the source copy under the old ref remains either way.
+test("carryComposerDraft lets the genuinely newer source draft win", () => {
+  const now = vi.spyOn(Date, "now");
+  now.mockReturnValue(1_000);
+  writeComposerDraft("local:carry-to", { text: "older destination draft", skillNames: [] });
+  now.mockReturnValue(2_000);
+  writeComposerDraft("local:carry-from", { text: "newer in-flight draft", skillNames: [] });
+  carryComposerDraft("local:carry-from", "local:carry-to");
+  expect(readComposerDraft("local:carry-to").text).toBe("newer in-flight draft");
+  expect(readComposerDraft("local:carry-from").text).toBe("newer in-flight draft");
+});
+
+test("carryComposerDraft preserves a newer destination draft", () => {
+  const now = vi.spyOn(Date, "now");
+  now.mockReturnValue(3_000);
+  writeComposerDraft("local:carry-from", { text: "stale in-flight draft", skillNames: [] });
+  now.mockReturnValue(4_000);
+  writeComposerDraft("local:carry-to", { text: "newer destination draft", skillNames: [] });
+  carryComposerDraft("local:carry-from", "local:carry-to");
+  expect(readComposerDraft("local:carry-to").text).toBe("newer destination draft");
+  expect(readComposerDraft("local:carry-from").text).toBe("stale in-flight draft");
+});
+
+test("carryComposerDraft keeps the destination on a tie or when neither record is stamped", () => {
+  const now = vi.spyOn(Date, "now");
+  now.mockReturnValue(5_000);
+  writeComposerDraft("local:tie-from", { text: "source tie", skillNames: [] });
+  writeComposerDraft("local:tie-to", { text: "destination tie", skillNames: [] });
+  carryComposerDraft("local:tie-from", "local:tie-to");
+  expect(readComposerDraft("local:tie-to").text).toBe("destination tie");
+  // Two records an older build wrote, no stamp at all: the destination is kept.
+  localStorage.setItem(
+    composerDraftStorageKey("local:old-from"),
+    JSON.stringify({ text: "old source", skillNames: [] }),
+  );
+  localStorage.setItem(
+    composerDraftStorageKey("local:old-to"),
+    JSON.stringify({ text: "old destination", skillNames: [] }),
+  );
+  carryComposerDraft("local:old-from", "local:old-to");
+  expect(readComposerDraft("local:old-to").text).toBe("old destination");
+});
+
+test("carryComposerDraft fills a blank destination regardless of stamps", () => {
+  writeComposerDraft("local:carry-blank-from", { text: "only draft", skillNames: [] });
+  carryComposerDraft("local:carry-blank-from", "local:carry-blank-to");
+  expect(readComposerDraft("local:carry-blank-to").text).toBe("only draft");
+});
+
+test("carryComposerDraft is a no-op for an empty source", () => {
+  writeComposerDraft("local:carry-to", { text: "destination draft", skillNames: [] });
+  carryComposerDraft("local:carry-empty", "local:carry-to");
+  expect(readComposerDraft("local:carry-to").text).toBe("destination draft");
 });
 
 test("writeDraft then readDraft round-trips the same ref's text", () => {
@@ -110,8 +168,11 @@ test("writeComposerDraft round-trips text and canonical skill selections", () =>
 test("writing a structured draft stores one atomic v2 record and removes any old v1 value", () => {
   localStorage.setItem(draftStorageKey("local:01AAA"), "legacy text");
   writeComposerDraft("local:01AAA", { text: "new text", skillNames: ["pkg:probe"] });
-  expect(localStorage.getItem(composerDraftStorageKey("local:01AAA"))).toBe(
-    JSON.stringify({ text: "new text", skillNames: ["pkg:probe"] }),
+  const stored = localStorage.getItem(composerDraftStorageKey("local:01AAA"));
+  expect(stored).not.toBeNull();
+  // The one atomic record carries the write's wall-clock stamp beside its content.
+  expect(JSON.parse(stored ?? "")).toEqual(
+    expect.objectContaining({ text: "new text", skillNames: ["pkg:probe"], editedAt: expect.any(Number) }),
   );
   expect(localStorage.getItem(draftStorageKey("local:01AAA"))).toBeNull();
 });
