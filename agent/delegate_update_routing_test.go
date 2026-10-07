@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/delegatestore"
 )
 
 // A subagent's open thread lists its subtree, so a change to a delegate below
@@ -89,24 +90,39 @@ func emitGrandchildRow(tree realDelegateTree, recorder *sessionEventRecorder, ed
 	return recorder.snapshot()[from:]
 }
 
-// A released ancestor has no stream to carry the update: the grandchild's row
-// published after the middle subagent's runtime is released reaches the
+// A released ancestor has no stream to carry the update: a settled change to
+// the grandchild after the middle subagent's runtime is released reaches the
 // root's thread only, still naming the middle subagent as an ancestor so its
 // next thread read lists the row.
 func TestStableDelegateUpdate_ReleasedAncestorGetsNone(t *testing.T) {
 	t.Parallel()
 	var recorder sessionEventRecorder
 	tree := newRealDelegateTree(t, recorder.record)
-	middleID := tree.parent.ChildSessionID
+	c, middleID := tree.c, tree.parent.ChildSessionID
 	tree.releaseMiddle(t)
 	drainRootDelegateUpdates(tree.s, tree.grandchildID)
-	emitted := emitGrandchildRow(tree, &recorder, nil)
-	if n := delegateUpdateCount(emitted, middleID, tree.grandchildID); n != 0 {
+	from := len(recorder.snapshot())
+	// Only the middle subagent, holding a live lease, may close its child, and
+	// a released middle holds none; closing the middle itself leaves the
+	// settled grandchild's row unchanged. Journal the closure CloseResumability
+	// would, without that authorization, and publish it as it does.
+	c.mu.Lock()
+	plan, err := c.appendResumabilityClosureLocked(tree.grandchildID, delegatestore.Event{
+		Kind:               delegatestore.EventDelegateResumabilityClosed,
+		DelegateID:         tree.grandchildID,
+		ResumabilityClosed: &delegatestore.ResumabilityClosed{Reason: "test closed"},
+	})
+	c.mu.Unlock()
+	if err != nil {
+		t.Fatalf("close grandchild resumability: %v", err)
+	}
+	c.emitDelegateUpdate(plan)
+	if n := delegateUpdateCount(recorder.snapshot()[from:], middleID, tree.grandchildID); n != 0 {
 		t.Fatalf("released middle subagent's stream carried %d grandchild updates, want none", n)
 	}
 	root := drainRootDelegateUpdates(tree.s, tree.grandchildID)
-	if len(root) != 1 || !slices.Equal(root[0].AncestorSessionIDs, []string{middleID}) {
-		t.Fatalf("root's grandchild updates = %+v, want one with ancestors [%s]", root, middleID)
+	if len(root) != 1 || root[0].Resumable || !slices.Equal(root[0].AncestorSessionIDs, []string{middleID}) {
+		t.Fatalf("root's grandchild updates = %+v, want one closed row with ancestors [%s]", root, middleID)
 	}
 }
 
