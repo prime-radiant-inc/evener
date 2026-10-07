@@ -187,20 +187,11 @@ func memoryRequestIndex(t *testing.T, req llm.Request, scope string) (string, st
 	if latest.Role != llm.RoleUser {
 		t.Fatalf("scope %s role=%s", scope, latest.Role)
 	}
-	var observed, state string
-	var truncated bool
-	if _, err := fmt.Sscanf(latest.Text(), "Memory scope %s current index state %s truncated %t", &observed, &state, &truncated); err != nil {
-		t.Fatal(err)
+	display, _ := apptranscript.ParseMemoryContext(latest.Text(), latest.Name)
+	if display.Scope != scope {
+		t.Fatalf("scope=%s want=%s", display.Scope, scope)
 	}
-	if observed != scope+"," {
-		t.Fatalf("scope=%s want=%s", observed, scope)
-	}
-	_, quoted, ok := strings.Cut(latest.Text(), "\nQuoted index data: ")
-	body, err := strconv.Unquote(quoted)
-	if !ok || err != nil {
-		t.Fatalf("quote error=%v", err)
-	}
-	return strings.TrimSuffix(state, ","), body, truncated
+	return display.State, display.Content, display.Truncated
 }
 
 func memoryContextCount(s *Session) int {
@@ -2145,6 +2136,10 @@ func TestMemoryOutputRecovery(t *testing.T) {
 				steps[i] = step
 			}
 			s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: host, artifactStore: store}), withSteps(steps...))
+			if name == "memory_read" {
+				// The page is long, so its read ends with the size note.
+				want.WriteString(memoryPageSizeNote(body.Len(), s.memoryGardeningSkillAvailable()))
+			}
 			if _, err := s.ProcessInput(context.Background(), "recover", nil); err != nil {
 				t.Fatal(err)
 			}
@@ -2423,7 +2418,7 @@ func TestMemoryAutomaticSetupRecovery(t *testing.T) {
 						if latest == nil {
 							t.Fatalf("%s %s context absent", scope, state)
 						}
-						if !strings.Contains(latest.Text(), fmt.Sprintf("Memory scope %s, current index state %s,", scope, state)) {
+						if display, ok := apptranscript.ParseMemoryContext(latest.Text(), latest.Name); !ok || display.Scope != scope || display.State != state {
 							t.Fatalf("%s latest state is not %s: %s", scope, state, latest.Text())
 						}
 						_, quoted, ok := strings.Cut(latest.Text(), "\nQuoted index data: ")

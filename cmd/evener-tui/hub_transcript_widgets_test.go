@@ -112,6 +112,18 @@ func TestMemoryContextIndexChangeRendersChangedLines(t *testing.T) {
 	}
 }
 
+// A truncated index refresh renders its quoted index whether it is the
+// current form (a too-long sentence) or an earlier build's explicit
+// "truncated true".
+func TestMemoryContextTruncatedIndexRendersInBothForms(t *testing.T) {
+	for _, name := range []string{"truncated-project", "legacy-truncated-project"} {
+		rendered := renderDeliveredSystemItem(t, memoryContextWireItem(t, name))
+		if !strings.Contains(rendered, strings.Repeat("x", 64)) {
+			t.Fatalf("%s lost its quoted index: %.200s", name, rendered)
+		}
+	}
+}
+
 // A read-page notice reads as the pages it names.
 func TestMemoryContextPageNoticeRendersPageNames(t *testing.T) {
 	rendered := renderDeliveredSystemItem(t, memoryContextWireItem(t, "page-notice-project"))

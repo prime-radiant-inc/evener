@@ -24,7 +24,7 @@ All rows below also require `scope`. Unknown arguments are rejected.
 
 | Tool | Required operation arguments | Optional operation arguments | Effect |
 | --- | --- | --- | --- |
-| `memory_read` | `file_path` | `offset` (1-based start line, default 1), `limit` (line count, default 2000), `vision_prompt` (image/PDF extraction request) | Ordinary `ReadFile` presentation, including line-numbered text and existing image/PDF handling. An explicit missing read fails normally. |
+| `memory_read` | `file_path` | `offset` (1-based start line, default 1), `limit` (line count, default 2000), `vision_prompt` (image/PDF extraction request) | Ordinary `ReadFile` presentation, including line-numbered text and existing image/PDF handling. An explicit missing read fails normally. A text page other than `MEMORY.md` longer than 4096 bytes ends with a note giving its size in KB, pointing at the `gardening-memory` skill when the session can load it, otherwise saying a page should hold one fact. |
 | `memory_write` | `file_path`, `content` | None | Ordinary `WriteFile`: create the file and parent directories if needed, or replace the entire existing file. Content is accepted unchanged. |
 | `memory_edit` | `file_path`, `old_string`, `new_string` | `replace_all` (default false) | Ordinary `EditFile`: replace a unique exact match, or deliberately replace every occurrence when `replace_all` is true. Read first and include enough context for a unique match. |
 | `memory_search` | `pattern` (regex) | `path`, `glob_filter`, `case_insensitive`, `max_results` (default 100), `context_lines` (0–10, default 0), `output_mode` (`content`, `files_with_matches`, `count`, default `content`) | Ordinary `Grep`, with matching lines, filenames or per-file counts. `glob_filter` supports `*`, `?`, `[]`, `**` and bounded brace alternatives. Dotfiles/directories and gitignored paths are excluded. |
@@ -79,7 +79,9 @@ later raw pages. Existing `output_match` and `context_lines` can search retained
 output. See [transcript tools](transcripts.md) for retention and unavailable
 artifact behavior. Artifact IDs are session-tree capabilities, not memory paths
 or permanent links. There is no memory-specific cursor or result envelope.
-Automatic index truncation instead points to `memory_read` of `MEMORY.md`.
+An automatic index projection cut at the cap instead says the index is too
+long and points to the `gardening-memory` skill; `memory_read` of `MEMORY.md`
+returns the whole index.
 
 Deleting or editing active files does not remove old transcripts or retained
 artifacts. Forgetting requires searching and editing active copies and repairing

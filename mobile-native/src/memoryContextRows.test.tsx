@@ -328,11 +328,15 @@ describe("states and truncation stay honest", () => {
 		expect(textOf(requireFind(tree, "memory-context-scope-state"))).toContain("missing");
 		unmount(tree);
 
-		resetDisclosure();
-		({ tree } = mountItem(memoryContextWireItem("truncated-project"), "tools", true));
-		press(tree, MEMORY_CONTEXT_LABEL);
-		expect(textOf(requireFind(tree, "memory-context-truncated"))).toBe("truncated");
-		unmount(tree);
+		// truncated-project says the index is too long; legacy-truncated-project
+		// is an earlier build's explicit "truncated true". Both decode as truncated.
+		for (const name of ["truncated-project", "legacy-truncated-project"] as const) {
+			resetDisclosure();
+			({ tree } = mountItem(memoryContextWireItem(name), "tools", true));
+			press(tree, MEMORY_CONTEXT_LABEL);
+			expect(textOf(requireFind(tree, "memory-context-truncated"))).toBe("truncated");
+			unmount(tree);
+		}
 	});
 });
 

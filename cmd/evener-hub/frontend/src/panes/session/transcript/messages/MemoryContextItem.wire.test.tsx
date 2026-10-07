@@ -144,13 +144,18 @@ test("missing, revoked and unavailable stay distinguishable", () => {
   }
 });
 
-test("a truncated refresh says truncated and never implies the missing remainder", () => {
-  const item = memoryContextWireItem("truncated-project");
-  renderItem(item, preset("tools"));
-  open();
-  expect(screen.getByTestId("memory-context-truncated").textContent).toBe("truncated");
-  expect(screen.getByTestId("memory-context-source-text").textContent).toBe(item.text);
-});
+// truncated-project says the index is too long; legacy-truncated-project is an
+// earlier build's explicit "truncated true". Both decode as truncated.
+test.each(["truncated-project", "legacy-truncated-project"] as const)(
+  "a %s refresh says truncated and never implies the missing remainder",
+  (name) => {
+    const item = memoryContextWireItem(name);
+    renderItem(item, preset("tools"));
+    open();
+    expect(screen.getByTestId("memory-context-truncated").textContent).toBe("truncated");
+    expect(screen.getByTestId("memory-context-source-text").textContent).toBe(item.text);
+  },
+);
 
 test("quoted Unicode and tab content survives into the formatted body and the literal Source", () => {
   const item = memoryContextWireItem("quoted-project");

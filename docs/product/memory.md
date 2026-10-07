@@ -51,8 +51,12 @@ flowchart LR
 
 Enabled sessions receive separate personal and project `MEMORY.md` projections
 as named user-source context, outside system instructions. Each scope supplies
-at most 8 KiB of index content, cut at a UTF-8 boundary, with explicit truncation
-and a route to `memory_read`. Topic files and logs are not preloaded.
+at most 8 KiB of index content, cut at a UTF-8 boundary, with a route to
+`memory_read`. A projection says nothing about size unless the index was cut;
+then it says the index is too long and to use the gardening-memory skill to
+learn how to fix it. Clients decode that sentence as the truncated flag, and
+transcripts from earlier builds, which carried an explicit "truncated
+true/false" instead, decode as before. Topic files and logs are not preloaded.
 
 Enabled sessions also receive core memory guidance. It is the last section of
 the system prompt, rendered from what the session can do when the prompt is
@@ -142,6 +146,13 @@ remounts and detail-level changes. Native stores the refresh and Source choices
 independently, also scoped by hub; folding the refresh preserves its Source
 choice. Live and reloaded history use the same projection without changing model
 context or memory files. CLI and TUI context presentation remains unchanged.
+
+A `memory_read` of a text page other than `MEMORY.md` that is longer than 4096
+bytes ends with a note giving its size, rounded to KB. When the session can
+load the gardening-memory skill (`use_skill` is callable and the skill is
+advertised to the model), the note says to use it to learn how to fix the
+page; otherwise it says a memory page should hold one fact. A long index is
+covered by its projection instead.
 
 Memory tool calls are separate from these automatic index observations. CLI and
 TUI transcripts still use the generic tool-result path, while AppWire web and

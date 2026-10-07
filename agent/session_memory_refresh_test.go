@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/llm"
 )
 
@@ -1028,5 +1029,87 @@ func TestMemoryRefreshResumeIgnoresPageNoticesWhenSeedingObservedScopes(t *testi
 	r.maybeAppendMemoryContext(context.Background(), true)
 	if got := memoryContextCount(r); got != before {
 		t.Fatalf("resume projected %d memory contexts for a missing index never projected before, want none: %q", got-before, lastMemoryContextText(r))
+	}
+}
+
+// A full index projection reports size only when the index was cut at the
+// cap: the truncated one points at the gardening-memory skill and decodes as
+// truncated; neither carries an explicit truncated flag any more.
+func TestMemoryProjectionReportsOnlyATooLongIndex(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name      string
+		index     string
+		truncated bool
+	}{
+		{"short", "opaque-short-index\n", false},
+		{"too-long", strings.Repeat("opaque-long-index-line\n", 600), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			memorySeed(t, root, "personal", tc.index)
+			var text string
+			s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(func(req llm.Request) llm.Response {
+				text = latestMemoryContext(req, "personal")
+				return finalResponse("observed")
+			}))
+			if _, err := s.ProcessInput(context.Background(), "go", nil); err != nil {
+				t.Fatal(err)
+			}
+			display, ok := apptranscript.ParseMemoryContext(text, "memory_personal")
+			if !ok || display.Truncated != tc.truncated {
+				t.Fatalf("decoded=%+v ok=%t, want truncated=%t", display, ok, tc.truncated)
+			}
+			if strings.Contains(text, ", truncated ") {
+				t.Fatalf("projection still carries an explicit truncated flag: %q", text[:min(len(text), 240)])
+			}
+			if strings.Contains(text, "gardening-memory") != tc.truncated {
+				t.Fatalf("gardening-memory pointer present=%t, want %t: %q", !tc.truncated, tc.truncated, text[:min(len(text), 240)])
+			}
+		})
+	}
+}
+
+// memory_read of a page longer than 4096 bytes ends with the size note the
+// session builds for it; a shorter page and the index never get one. The note
+// points at the gardening-memory skill only while the session can use it.
+func TestMemoryReadNotesALongPage(t *testing.T) {
+	t.Parallel()
+	long := strings.Repeat("opaque-long-page-line\n", 230) // 5060 bytes
+	for _, tc := range []struct {
+		name      string
+		file      string
+		body      string
+		withSkill bool
+		noted     bool
+	}{
+		{"long-page", "opaque-long.md", long, true, true},
+		{"long-page-without-skills", "opaque-long.md", long, false, true},
+		{"short-page", "opaque-short.md", "opaque-short-page\n", true, false},
+		{"long-index", "MEMORY.md", long, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			memorySeed(t, root, "personal", "opaque-index-1\n")
+			writeMemoryPage(t, root, tc.file, tc.body)
+			s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}))
+			if !tc.withSkill {
+				s.reg.Remove("use_skill")
+			}
+			res := memoryExec(t, s, "memory_read", map[string]any{"scope": "personal", "file_path": tc.file})
+			if res.IsError {
+				t.Fatal(res.Output)
+			}
+			out := res.Output
+			note := memoryPageSizeNote(len(tc.body), tc.withSkill)
+			if strings.HasSuffix(out, note) != tc.noted {
+				t.Fatalf("result ends with the size note=%t, want %t: %.300s", !tc.noted, tc.noted, out[max(0, len(out)-300):])
+			}
+			if tc.noted && strings.Contains(note, "gardening-memory") != tc.withSkill {
+				t.Fatalf("note names gardening-memory=%t, want %t: %q", !tc.withSkill, tc.withSkill, note)
+			}
+		})
 	}
 }
