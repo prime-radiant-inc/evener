@@ -888,6 +888,70 @@ async function runHeldCleanupSafely(
   await cleanup;
 }
 
+// Shared bounded fixture for the AppShell held-release failure proofs: a real
+// open cache adapter, frozen write timers, a predecessor with a valid versioned
+// resident model, real owner tracking and the real final-release write hold.
+async function heldReleaseFailureFixture() {
+  const cache = new SessionCacheIndexedDB({
+    indexedDB: new IDBFactory(),
+    databaseName: `appshell-bg-fail-${crypto.randomUUID()}`,
+  });
+  setSessionCacheAdapterForTests(cache);
+  await cache.count();
+  setCacheWriteTimersForTests({ debounceMs: 60_000, maxWaitMs: 60_000 });
+  const predecessor = versionedClient("predecessor-content");
+  const owners = trackBackgroundOwners();
+  const lifetime = instrumentBackgroundLifetime();
+  const hold = armReleaseWriteHold(cache, lifetime);
+  return { cache, predecessor, owners, lifetime, hold };
+}
+
+// The shared teardown for the AppShell failure proofs: release and disarm
+// through runHeldCleanupSafely, then join real disposals and restore observers,
+// timers, the cache adapter and close it. `onRestore` observes state at the
+// restoration boundary, before the intercepts and adapter are torn down.
+function heldReleaseFailureCleanup(
+  fixture: Awaited<ReturnType<typeof heldReleaseFailureFixture>>,
+  getView: () => { unmount: () => void } | undefined,
+  onRestore?: () => void,
+) {
+  return {
+    unmount: () => getView()?.unmount(),
+    join: () => fixture.owners.joinDisposals(),
+    restore: () => {
+      onRestore?.();
+      stoppedTreeSession = false;
+      fixture.hold.restore();
+      fixture.lifetime.restore();
+      fixture.owners.restore();
+      setCacheWriteTimersForTests({ debounceMs: 1_000, maxWaitMs: 5_000 });
+      setSessionCacheAdapterForTests(undefined);
+      fixture.cache.close();
+    },
+  };
+}
+
+// A following healthy AppShell/background-owner operation on the same stores
+// remains usable after a failure proof's cleanup.
+async function expectHealthyBackgroundUsable() {
+  const healthyOwners = trackBackgroundOwners();
+  const healthyClient = backgroundReadyClient();
+  let healthyView: ReturnType<typeof render> | undefined;
+  try {
+    healthyView = render(<AppShell client={healthyClient} />);
+    await screen.findByText("No session open");
+    await waitFor(() => expect(membershipReads(healthyClient)).toBeGreaterThanOrEqual(1));
+    healthyView.unmount();
+    healthyView = undefined;
+    await healthyOwners.joinDisposals();
+    for (const record of healthyOwners.records) expect(record.disposeStatus).toBe("fulfilled");
+  } finally {
+    healthyView?.unmount();
+    await healthyOwners.joinDisposals();
+    healthyOwners.restore();
+  }
+}
+
 // Captured at module load, before any spy can wrap the export, so the
 // call-through below always reaches the real implementation.
 const realStartBackgroundTranscripts = backgroundTranscriptsModule.startBackgroundTranscripts;
@@ -1196,17 +1260,8 @@ test("a client replacement holds the predecessor's real release cleanup and keep
 });
 
 test("an early failure before the predecessor release write joins real cleanup without an orphan hold", async () => {
-  const cache = new SessionCacheIndexedDB({
-    indexedDB: new IDBFactory(),
-    databaseName: `appshell-bg-fail-${crypto.randomUUID()}`,
-  });
-  setSessionCacheAdapterForTests(cache);
-  await cache.count();
-  setCacheWriteTimersForTests({ debounceMs: 60_000, maxWaitMs: 60_000 });
-  const predecessor = versionedClient("predecessor-content");
-  const owners = trackBackgroundOwners();
-  const lifetime = instrumentBackgroundLifetime();
-  const hold = armReleaseWriteHold(cache, lifetime);
+  const fixture = await heldReleaseFailureFixture();
+  const { predecessor, owners, lifetime, hold } = fixture;
 
   let view: ReturnType<typeof render> | undefined;
   let primaryError: unknown;
@@ -1226,18 +1281,10 @@ test("an early failure before the predecessor release write joins real cleanup w
   } finally {
     let cleanupError: unknown;
     try {
-      await runHeldCleanupSafely(hold, {
-        unmount: () => view?.unmount(),
-        join: () => owners.joinDisposals(),
-        restore: () => {
-          hold.restore();
-          lifetime.restore();
-          owners.restore();
-          setCacheWriteTimersForTests({ debounceMs: 1_000, maxWaitMs: 5_000 });
-          setSessionCacheAdapterForTests(undefined);
-          cache.close();
-        },
-      });
+      await runHeldCleanupSafely(
+        hold,
+        heldReleaseFailureCleanup(fixture, () => view),
+      );
     } catch (error) {
       cleanupError = error;
     }
@@ -1254,22 +1301,72 @@ test("an early failure before the predecessor release write joins real cleanup w
   for (const record of owners.records) expect(record.disposeStatus).toBe("fulfilled");
 
   // A following healthy operation on the same stores remains usable.
-  const healthyOwners = trackBackgroundOwners();
-  const healthyClient = backgroundReadyClient();
-  let healthyView: ReturnType<typeof render> | undefined;
+  await expectHealthyBackgroundUsable();
+});
+
+test("a failure after the predecessor release entry joins the held predecessor before restoration", async () => {
+  const fixture = await heldReleaseFailureFixture();
+  const { predecessor, owners, lifetime, hold } = fixture;
+
+  let view: ReturnType<typeof render> | undefined;
+  let primaryError: unknown;
+  let disposeFulfilledAtRestore = false;
   try {
-    healthyView = render(<AppShell client={healthyClient} />);
+    lifetime.arm();
+    view = render(<AppShell client={predecessor} />);
     await screen.findByText("No session open");
-    await waitFor(() => expect(membershipReads(healthyClient)).toBeGreaterThanOrEqual(1));
-    healthyView.unmount();
-    healthyView = undefined;
-    await healthyOwners.joinDisposals();
-    for (const record of healthyOwners.records) expect(record.disposeStatus).toBe("fulfilled");
+    await waitFor(() => expect(membershipReads(predecessor)).toBeGreaterThanOrEqual(1));
+    await waitFor(() => expect(threadsStore.getState().threads.get("local:s1")?.history?.incarnation).toBeDefined());
+    expect(owners.activeCount()).toBe(1);
+    const predecessorRecord = owners.records[0];
+    if (!predecessorRecord) throw new Error("no predecessor owner was tracked");
+
+    // Enter the real predecessor final release while the client is still ready
+    // and the model valid: its real cache flush is held at the completion
+    // boundary (the real IDB transaction committed, delivery held).
+    await act(async () => {
+      predecessorRecord.owner.dispose();
+    });
+    await waitFor(() => expect(hold.held()).toBeDefined());
+    const write = hold.held();
+    if (!write) throw new Error("predecessor release never entered a real cache flush");
+    expect(lifetime.releaseEntered()).toBe(true);
+    await write.reached;
+    expect(hold.consumed()).toBe(true);
+    // Inject the failure AFTER the real hold entry, leaving the held write
+    // unreleased so cleanup -- not the body -- must release and join it.
+    throw new Error("injected failure after the held release entry");
+  } catch (error) {
+    primaryError = error;
   } finally {
-    healthyView?.unmount();
-    await healthyOwners.joinDisposals();
-    healthyOwners.restore();
+    let cleanupError: unknown;
+    try {
+      await runHeldCleanupSafely(
+        hold,
+        heldReleaseFailureCleanup(
+          fixture,
+          () => view,
+          () => {
+            disposeFulfilledAtRestore = owners.records[0]?.disposeStatus === "fulfilled";
+          },
+        ),
+      );
+    } catch (error) {
+      cleanupError = error;
+    }
+    if (cleanupError !== undefined) primaryError = combineErrors(primaryError, cleanupError);
   }
+
+  // The injected failure survives cleanup, and the held predecessor was
+  // released and joined before observers and the cache adapter were restored.
+  expect(primaryError).toBeInstanceOf(Error);
+  expect((primaryError as Error).message).toContain("injected failure after the held release entry");
+  expect(hold.consumed()).toBe(true);
+  expect(disposeFulfilledAtRestore).toBe(true);
+  expect(owners.records[0]?.disposed).toBe(true);
+  expect(owners.records[0]?.disposeStatus).toBe("fulfilled");
+
+  await expectHealthyBackgroundUsable();
 });
 
 test("StrictMode mount and cleanup/remount retire their predecessor and complete disposal", async () => {
