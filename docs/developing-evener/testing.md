@@ -880,10 +880,9 @@ A fresh agent worktree has no frontend install. The cheap setup that stays
 inside every preflight's rules is to symlink a lockfile-matched real install
 from another tree: `cmp` this tree's `package-lock.json` against the
 install's first, then `ln -s`. The frontend tree's `.gitignore` ignores the
-link (`node_modules`, no trailing slash, so a symlink matches), but
-`mobile-native/.gitignore` uses `node_modules/`, which does not match a
-symlink: that link shows as untracked in `git status`, so keep it out of
-commits by path, not by ignore.
+link, but `mobile-native/.gitignore` uses `node_modules/`, which does not
+match a symlink: that link shows as untracked in `git status`, so keep it
+out of commits by path, not by ignore.
 
 Focused experiments can run against a read-only lane with
 `--configLoader runner --cache=false` (the default config loader writes a
@@ -893,7 +892,8 @@ package and the dependency realpath, or external setup imports fail as
 `Cannot find module '/@fs/…/src/testSetup.ts'` before any test runs. Keep
 the custom config, test files, cacheDir and dependency symlink in scratch,
 reuse the frontend's resolve aliases and test setup, omit build plugins
-that write checkout files, and keep at least two workers. These runs are
+that write checkout files, and keep at least two workers (the vmThreads
+isolation floor explained below). These runs are
 probes; canonical verdicts stay with `make test-web`.
 
 The frontend unit gate sizes Vitest from the machine's spare capacity through
@@ -917,14 +917,14 @@ admission control: runs that begin together can still stack. Neither lever
 widens a timeout or replaces an awaitable completion with polling.
 
 One in-band check does not share that protection: the flush-scope hygiene
-meta-test (src/testFlushScopeHygiene.test.ts) parses every frontend test
-file with the TypeScript compiler inside a single vitest test bounded only
+meta-test (src/testFlushScopeHygiene.test.ts) parses every test file under
+the frontend's `src/` with the TypeScript compiler inside a single vitest
+test bounded only
 by the default 5000ms, so its runtime grows with the tree and with CPU
 contention (issue #3966). `make test-web` run beside another heavy lane can
-time that one test out with everything else green. Run the heavy local gates
-— `make test-web`, `make vet`, `make lint` — one at a time, and rerun the
-gate alone before diagnosing a lone 5000ms timeout in that meta-test as a
-regression.
+time that one test out with everything else green. Run the heavy local
+gates — `make test-web`, `make vet`, `make lint` — one at a time, and rerun
+the gate alone before diagnosing that timeout as a regression.
 
 `LOAD_AWARE_LOAD1` replaces the measured load average for every budget the
 helper sizes. The CI `tests` lanes set it to 0, because a fresh runner's own
@@ -1009,7 +1009,7 @@ from the assertion that fails:
   (src/stores/testing/stalledIndexedDB.ts) matches the next readwrite
   transaction opened over exactly that store set, not the cache method that
   opened it, so an earlier matching transaction can consume a broadly armed
-  hold. Arm it immediately before the intended real `put`/`putCurrent` call
+  hold. Arm it immediately before the intended real `put` call
   in a call-through spy, and observe the method entry and the hold's
   `reached` boundary separately. The helper lets fake-indexeddb commit and
   withholds the completion event; it does not prove an active transaction
@@ -1025,14 +1025,15 @@ from the assertion that fails:
   — a throwing subscriber must not abort dispatch — so an assertion inside
   a notification callback is swallowed instead of failing the test, and the
   failure surfaces later as an unrelated stall or timeout. Capture callback
-  assertion errors out of band and assert them in the test body, outside the
-  catching pipeline.
+  assertion errors outside the catching pipeline and assert them in the test
+  body.
 
-The console guard (src/testConsoleGuard.ts) fails a test on any console
-output it did not spy, with a message that names the call and the
-`vi.spyOn(console, …)` recipe. A diagnostic probe that prints its
+The console guard (src/testConsoleGuard.ts) fails a test on any unspied
+`console.error`/`warn`/`log`/`info`/`debug` call, with a message that
+names the call and the `vi.spyOn(console, …)` recipe. A diagnostic probe
+that prints its
 observations therefore reports a phantom failure: record probe observations
-to a scratch file or spy on the console instead of logging.
+to a scratch file or spy on the console.
 
 ### Navigation fixtures
 
@@ -1040,16 +1041,16 @@ to a scratch file or spy on the console instead of logging.
   the TS codec (appwire-client/typescript/state/navigation/codec.ts) and Go
   schema both enforce flat session rows ("Session summaries are flat; the
   empty owned slot preserves graph structure", navigation_schema.go). A
-  fixture that nests fails as `invalid resource graph`, not as the behavior
-  under test. Prove a recursive roster walk at the selector/helper level, and
+  fixture that nests fails the TS codec as `invalid resource graph`, not as
+  the behavior under test. Prove a recursive roster walk at the
+  selector/helper level, and
   discovery through real stores with flat rows.
 - The store's progress validator rejects an empty page only when it still
   reports data ("… returned no rows with remaining data",
   state/navigation/store.ts), and the codec accepts `sessions: [],
   remaining: 0, truncated: true`, so `remaining === 0` alone is not proof
-  that a roster sweep completed. Absence proofs must check truncation, not
-  only remaining; keep the ordinary non-truncated empty terminal page as a
-  removal control.
+  that a roster sweep completed. Absence proofs must check truncation; keep
+  the ordinary non-truncated empty terminal page as a removal control.
 
 ### Whole-system residue audit
 
@@ -1220,11 +1221,12 @@ first could not have caught the bug that prompted it. Hand-authored markup
 freezes whatever was current when the case was written, so restoring the old
 glyph would have left the guard green while the app broke.
 
-A guard harness that serves a nested Vite entry (for example
-`scripts/<guard>/index.html`) and mounts the app-router SPA needs two things,
-or it presents as a dead document with no error captured anywhere: reset the
+A new dev harness entry that mounts the app-router SPA itself — none of
+the existing `src/dev/*-entry.tsx` guards does this today; they mount
+fixtures or shell components directly — needs two things, or it presents as
+a dead document with no error captured anywhere: reset the
 route before the app import — a router-driven shell renders NotFound from the
-harness path, so call `window.history.replaceState(null, "", "/")` first —
+harness path, so call `window.history.replaceState(null, "", "/")` —
 and set a synchronous boot-marker global before any top-level
 `await import("../main")`, because the `load` event fires while that import's
 top-level await is still pending, and a boot check on a global set after it
