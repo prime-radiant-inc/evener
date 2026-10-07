@@ -1828,10 +1828,16 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 		result.TimedOut = true
 		return stableDelegateSendOutcome{result: result}
 	}
+	completeStableDelegateSendResult(&result, *resolution.packet)
+	return inlineOutcome(result, resolution)
+}
+
+// completeStableDelegateSendResult fills result as a send whose wait reached
+// packet, a terminal result of its delegate.
+func completeStableDelegateSendResult(result *sendMessageResult, packet delegatestore.TerminalPacket) {
 	result.RunningInBackground = false
 	result.Action = "completed"
-	populateStableDelegateSendResult(&result, *resolution.packet)
-	return inlineOutcome(result, resolution)
+	populateStableDelegateSendResult(result, packet)
 }
 
 func populateStableDelegateSendResult(result *sendMessageResult, packet delegatestore.TerminalPacket) {
