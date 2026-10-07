@@ -286,16 +286,33 @@ export async function waitForHttp(
   }
 }
 
+async function listPageTabs(endpoint) {
+  const targets = await (await fetch(devtoolsHttpURL(endpoint, "/json/list"))).json();
+  return targets.filter((entry) => entry.type === "page");
+}
+
 /**
- * Find Chrome's page target over CDP and open a command channel to it.
+ * Connect to the browser's one page tab, the startup tab a guard that opens no
+ * tabs of its own drives. More than one listed tab is refused rather than
+ * guessed at: Chrome keeps listing a closing tab, first, for a moment (#3895).
+ */
+export async function connectOnlyPage(endpoint) {
+  const tabs = await listPageTabs(endpoint);
+  if (tabs.length !== 1) {
+    throw new Error(`expected one page tab, Chrome lists ${tabs.length}: ${tabs.map((tab) => tab.id).join(", ")}`);
+  }
+  return connectPage(endpoint, tabs[0].id);
+}
+
+/**
+ * Open a CDP command channel to the page tab with this target id.
  * send() rejects on a CDP error response so a failing command can never read
  * as a successful measurement. Callers close() in a finally.
- * An optional targetId selects a real tab without depending on /json/list order.
  */
 export async function connectPage(endpoint, targetId) {
-  const targets = await (await fetch(devtoolsHttpURL(endpoint, "/json/list"))).json();
-  const target = targets.find((entry) => entry.type === "page" && (targetId === undefined || entry.id === targetId));
-  if (!target) throw new Error("chrome exposed no page target");
+  if (targetId === undefined) throw new Error("connectPage needs the target id of the tab to connect to");
+  const target = (await listPageTabs(endpoint)).find((entry) => entry.id === targetId);
+  if (!target) throw new Error(`Chrome lists no page tab ${targetId}`);
 
   const ws = new WebSocket(target.webSocketDebuggerUrl);
   let id = 0;

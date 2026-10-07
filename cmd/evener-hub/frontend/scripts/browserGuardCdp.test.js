@@ -25,6 +25,7 @@ import {
   CDP_EVALUATE_TRIPWIRE_MS,
   clearViewportOverride,
   collectFontStatusInPage,
+  connectOnlyPage,
   connectPage,
   createStartupDeadline,
   devtoolsHttpURL,
@@ -53,26 +54,64 @@ afterEach(() => {
 // is listed first, ahead of the one the guard means, as Chrome lists it for a
 // moment after /json/close.
 async function startStubConnection() {
-  const socketURL = "ws://127.0.0.1:9/devtools/page/T1";
+  const { socket, socketURL } = stubTabs(["CLOSING", "T1"], "T1");
+  const connecting = connectPage(STUB_ENDPOINT, "T1");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  return { socket, socketURL, connecting };
+}
+
+const STUB_ENDPOINT = { url: "ws://127.0.0.1:9/devtools/browser/B" };
+
+// Chrome's /json/list names these page tabs; only `socketTab`'s socket can be
+// built, and the test drives it through the returned handle.
+function stubTabs(ids, socketTab) {
+  const tabURL = (id) => `ws://127.0.0.1:9/devtools/page/${id}`;
+  const socketURL = tabURL(socketTab);
   const socket = new EventTarget();
   socket.sent = [];
   socket.send = (data) => socket.sent.push(JSON.parse(data));
   socket.close = () => {};
-  vi.stubGlobal("fetch", async () => ({
-    json: async () => [
-      { id: "CLOSING", type: "page", webSocketDebuggerUrl: "ws://127.0.0.1:9/devtools/page/CLOSING" },
-      { id: "T1", type: "page", webSocketDebuggerUrl: socketURL },
-    ],
-  }));
+  const fetches = [];
+  vi.stubGlobal("fetch", async (url) => {
+    fetches.push(url);
+    return { json: async () => ids.map((id) => ({ id, type: "page", webSocketDebuggerUrl: tabURL(id) })) };
+  });
   // `new` on a plain function that returns an object yields that object.
   vi.stubGlobal("WebSocket", function StubWebSocket(url) {
     assert.equal(url, socketURL);
     return socket;
   });
-  const connecting = connectPage({ url: "ws://127.0.0.1:9/devtools/browser/B" }, "T1");
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  return { socket, socketURL, connecting };
+  return { socket, socketURL, fetches };
 }
+
+// "Whichever page Chrome lists first" can be a tab that is closing (#3895), so
+// a guard names the tab it means.
+test("connectPage refuses to connect without a tab id", async () => {
+  const { fetches } = stubTabs(["T1"], "T1");
+  await assert.rejects(connectPage(STUB_ENDPOINT), /connectPage needs the target id of the tab to connect to/);
+  assert.deepEqual(fetches, []);
+});
+
+test("connectPage names a tab Chrome doesn't list", async () => {
+  stubTabs(["T1"], "T1");
+  await assert.rejects(connectPage(STUB_ENDPOINT, "GONE"), /Chrome lists no page tab GONE/);
+});
+
+// A guard that drives the browser's one startup tab connects through
+// connectOnlyPage, which refuses to guess when more than one tab is listed.
+test("connectOnlyPage refuses when Chrome lists more than one page tab", async () => {
+  stubTabs(["CLOSING", "T1"], "T1");
+  await assert.rejects(connectOnlyPage(STUB_ENDPOINT), /expected one page tab, Chrome lists 2: CLOSING, T1/);
+});
+
+test("connectOnlyPage connects to the one page tab", async () => {
+  const { socket } = stubTabs(["T1"], "T1");
+  const connecting = connectOnlyPage(STUB_ENDPOINT);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  socket.dispatchEvent(new Event("open"));
+  const page = await connecting;
+  assert.equal(page.ws, socket);
+});
 
 // Chrome keeps listing a target for a moment after /json/close, and a socket to
 // it fails with an ErrorEvent that stringifies as a bare "[object ErrorEvent]"
