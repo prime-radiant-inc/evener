@@ -423,8 +423,8 @@ func SessionOwnedDelegateIDs(ctx context.Context, stateDir, sessionID string) ([
 		return nil, err
 	}
 	owners := sessionSubtreeOwners(rootOwned, sessionID)
-	// The subtree's sessions include sessionID itself (a subagent's own
-	// delegate); the caller asks only for the sessions below it.
+	// sessionSubtreeOwners seeds the walk with sessionID; the caller asks only
+	// for the sessions below it.
 	delete(owners, sessionID)
 	out := make([]string, 0, len(owners))
 	for id := range owners {
