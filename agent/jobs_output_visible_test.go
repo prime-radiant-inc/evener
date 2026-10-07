@@ -72,3 +72,29 @@ func TestReadOutputRefusesASymlinkedOutputFile(t *testing.T) {
 		t.Fatalf("readOutputHead through a symlink = %q, nil; want an error", content)
 	}
 }
+
+// A finished job's output file that grew past the lifetime total its record
+// pins is refused rather than served with the extra bytes.
+func TestReadOutputRefusesAClosedFileThatGrewPastItsRecord(t *testing.T) {
+	jm := newTestJM(t)
+	t.Cleanup(func() { _ = jm.close() })
+	const jobID = "job_grown_output"
+	outputPath := writeFinishedJobWithOutput(t, jm, jobID, jobstore.JobShell, "done\n")
+	f, err := os.OpenFile(outputPath, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString("later\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if content, _, _, err := jm.readOutput(jobID, 1024); err == nil {
+		t.Fatalf("readOutput of a grown closed file = %q, nil; want an error", content)
+	}
+	if content, _, _, err := jm.readOutputHead(jobID, 1024); err == nil {
+		t.Fatalf("readOutputHead of a grown closed file = %q, nil; want an error", content)
+	}
+}
