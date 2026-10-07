@@ -1050,6 +1050,18 @@ it("asks to try a typed /queue again when the phone couldn't keep it", async () 
 	expect(renderedText(tree)).not.toContain("Couldn't confirm");
 });
 
+// A typed /interrupt the phone couldn't keep says so, and stays to try again.
+it("asks to try a typed /interrupt again when the phone couldn't keep it", async () => {
+	const { tree, hub } = await mount(thread("ref-typed-interrupt-refused", "active"));
+	vi.spyOn(getNativeMutationRuntime(), "submit").mockRejectedValueOnce(new Error("disk full"));
+	await type(tree, "/interrupt");
+	await press(tree, "Interrupt");
+	expect(hub.mutations()).toEqual([]);
+	expect(renderedText(tree)).toContain("Couldn't save this on the phone. Try again.");
+	expect(renderedText(tree)).not.toContain("Stopped");
+	expect(field(tree)?.props.value).toBe("/interrupt");
+});
+
 // A typed /interrupt is Stop: it holds the messages this phone hasn't sent
 // yet, so they don't go out after it.
 it("holds the phone's unsent messages on /interrupt, as Stop does", async () => {
