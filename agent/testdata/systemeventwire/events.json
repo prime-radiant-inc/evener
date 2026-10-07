@@ -277,7 +277,7 @@
         "type": "steering",
         "id": "item_steering_1",
         "turnId": "turn_1",
-        "text": "\u003cSYSTEM-REMINDER\u003e\n\u003cCURRENT-TASK id=\"3\"\u003e\n\u003cTITLE\u003eFix race\u003c/TITLE\u003e\n\u003c/CURRENT-TASK\u003e\nCall your next tool: use task_list to mark task 3 as done when this step is complete.\n\u003c/SYSTEM-REMINDER\u003e",
+        "text": "\u003cSYSTEM-REMINDER\u003e\n\u003cCURRENT-TASK id=\"3\"\u003e\n\u003cTITLE\u003eFix race\u003c/TITLE\u003e\n\u003c/CURRENT-TASK\u003e\n\u003c/SYSTEM-REMINDER\u003e",
         "status": "completed",
         "steeringKind": "current-task"
       }

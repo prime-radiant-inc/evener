@@ -54,15 +54,16 @@ func TestSelfCompactNudgeNamesToolWhenPresent(t *testing.T) {
 	}
 }
 
-// TestCurrentTaskSteeringFallsBackWhenToolMissing covers the task-step reminder,
-// whose closing line is a task_list call instruction.
+// TestCurrentTaskSteeringFallsBackWhenToolMissing covers the task-step reminder:
+// it never tells a session to call task_list, and a session without the tool
+// gets its own closing line instead.
 func TestCurrentTaskSteeringFallsBackWhenToolMissing(t *testing.T) {
 	t.Parallel()
 	task := taskpkg.Task{ID: 3, Description: "ship it"}
 
 	withTool := formatCurrentTaskSteering(task, true)
-	if !strings.Contains(withTool, "task_list") {
-		t.Fatalf("steering with the tool present = %q, want it to name task_list", withTool)
+	if strings.Contains(withTool, "task_list") || !strings.Contains(withTool, "ship it") {
+		t.Fatalf("steering with the tool present = %q, want the task without a task_list instruction", withTool)
 	}
 	withoutTool := formatCurrentTaskSteering(task, false)
 	if strings.Contains(withoutTool, "task_list") {
@@ -207,10 +208,12 @@ func TestTaskInactivityReminderGatesAtTheCallSite(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
 		removeTool bool
-		wantNamed  bool
+		// Only a session without task_list gets a closing line ("say so when this step is complete");
+		// neither is told to call task_list.
+		wantClosing bool
 	}{
-		{name: "with task_list", wantNamed: true},
-		{name: "without task_list", removeTool: true},
+		{name: "with task_list"},
+		{name: "without task_list", removeTool: true, wantClosing: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := newSession(t, withDir(t.TempDir()), withConfig(SessionConfig{
@@ -237,8 +240,11 @@ func TestTaskInactivityReminderGatesAtTheCallSite(t *testing.T) {
 			if kind != events.SteeringKindTaskInactive {
 				t.Fatalf("kind = %q, want the inactivity reminder", kind)
 			}
-			if named := strings.Contains(msg, "task_list"); named != tc.wantNamed {
-				t.Fatalf("reminder names task_list = %v, want %v: %q", named, tc.wantNamed, msg)
+			if strings.Contains(msg, "task_list") {
+				t.Fatalf("reminder tells the session to call task_list: %q", msg)
+			}
+			if closing := strings.Contains(msg, "say so when this step is complete"); closing != tc.wantClosing {
+				t.Fatalf("reminder closing line = %v, want %v: %q", closing, tc.wantClosing, msg)
 			}
 			if !strings.Contains(msg, "ship it") {
 				t.Fatalf("reminder lost the task itself: %q", msg)
