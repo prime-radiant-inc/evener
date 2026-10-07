@@ -78,7 +78,10 @@ export function builtinComposerItems(session: ComposerCommandSession) {
 export class CommandArgumentError extends Error {}
 
 /** A command the phone refused before anything left it: its text goes back to
- * the composer to try again, rather than standing as a send to confirm. */
+ * the composer to try again, rather than standing as a send to confirm. It is
+ * a CommandArgumentError so the screen shows its message like any refusal; a
+ * handler that treats it differently tests for it first, as the restore in
+ * submitComposerCommand does. */
 export class CommandNotSentError extends CommandArgumentError {}
 
 /** Starts an aside and names the session it opens, for /aside and the
