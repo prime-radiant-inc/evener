@@ -56,17 +56,6 @@ type stableDelegateSendOutcome struct {
 	heldCommit *delegateToolResultCommit
 }
 
-// commits are the outcome's commits in the order they must complete.
-func (outcome stableDelegateSendOutcome) commits() []*delegateToolResultCommit {
-	if outcome.commit == nil {
-		return nil
-	}
-	if outcome.heldCommit == nil {
-		return []*delegateToolResultCommit{outcome.commit}
-	}
-	return []*delegateToolResultCommit{outcome.heldCommit, outcome.commit}
-}
-
 // inlineOutcome is the send's reply for a resolved inline wait: result, which
 // already carries the newest result, plus the held earlier result the wait
 // collected with its commit (#3906).

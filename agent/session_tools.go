@@ -170,7 +170,9 @@ func stableDelegateSendTool(ctx context.Context, s *Session, args map[string]any
 	if outcome.result.Err != nil && outcome.result.DelegateID == "" {
 		return nil, outcome.result.Err
 	}
-	if commits := outcome.commits(); len(commits) != 0 {
+	if outcome.commit != nil {
+		// A nil heldCommit is a no-op in both loops below.
+		commits := []*delegateToolResultCommit{outcome.heldCommit, outcome.commit}
 		callID, _ := ctx.Value(ctxToolCallID).(string)
 		if callID == "" {
 			for _, commit := range commits {
@@ -1237,19 +1239,15 @@ func (s *Session) appendToolResultsWithDeliveryCommitsDurably(live, persisted ll
 	}
 	var completionErrs []error
 	requeue := false
-	byCall := make(map[string][]*delegateToolResultCommit)
-	var callOrder []string
-	for _, binding := range commits {
-		if binding.commit == nil {
+	// commits come grouped by tool call; each call's run completes in order.
+	var run []*delegateToolResultCommit
+	for i, binding := range commits {
+		run = append(run, binding.commit)
+		if i+1 < len(commits) && commits[i+1].toolCallID == binding.toolCallID {
 			continue
 		}
-		if _, seen := byCall[binding.toolCallID]; !seen {
-			callOrder = append(callOrder, binding.toolCallID)
-		}
-		byCall[binding.toolCallID] = append(byCall[binding.toolCallID], binding.commit)
-	}
-	for _, callID := range callOrder {
-		completed, err := completeDelegateDeliveryCommits(byCall[callID])
+		completed, err := completeDelegateDeliveryCommits(run)
+		run = nil
 		if err != nil {
 			completionErrs = append(completionErrs, err)
 			requeue = true
