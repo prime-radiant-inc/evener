@@ -1853,6 +1853,18 @@ export function ConversationScreen({
 						isCurrent: currentBinding,
 						reasoning: () => store.getState().conversation,
 						turn: () => store.getState().conversation,
+						submit: async (kind, input) => {
+							const live = store.getState().conversation;
+							if (!live) throw new CommandArgumentError("Open the session again and try once more.");
+							await mutationSubmitter.submit({
+								kind,
+								hubId: route.params.hubId,
+								targetRef: route.params.ref,
+								threadId: live.threadId,
+								instanceId: live.instanceId ?? live.threadId,
+								input,
+							});
+						},
 						drainQueue: async () => {
 							// As Steer all now waits (canSteerAll): it would take that message too.
 							if (steeringFromQueue) throw new CommandArgumentError(STEER_ON_ITS_WAY);

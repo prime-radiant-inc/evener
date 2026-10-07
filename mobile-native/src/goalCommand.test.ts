@@ -15,6 +15,7 @@ const commandContext = {
 	reasoning: () => null,
 	turn: () => null,
 	drainQueue: async () => {},
+	submit: async () => {},
 	local: async () => {},
 	openAside: (_ref: string, _title: string) => {},
 	cleared: (_response: ThreadClearResponse) => {},
@@ -472,54 +473,41 @@ it.each(["advertised", "turn"])(
 	},
 );
 
+// Steer, queue and Stop go through the outbox, as the composer's do, never the
+// service: unconfirmed until the outbox admits them.
 it.each([
-	["/steer sentinel", "turn/steer", [{ type: "text", text: "sentinel" }]],
-	["/queue sentinel", "turn/queue", [{ type: "text", text: "sentinel" }]],
-	["/interrupt", "turn/interrupt", undefined],
-])("routes %s with acknowledged delivery and queue guards", async (text, method, input) => {
+	["/steer sentinel", "steer", [{ type: "text", text: "sentinel" }]],
+	["/queue sentinel", "queue", [{ type: "text", text: "sentinel" }]],
+	["/interrupt", "interrupt", []],
+] as const)("routes %s to the outbox, keeping it unconfirmed until admitted", async (text, kind, input) => {
 	const { db, document } = commandDraft();
 	const { io, service, thread } = boundary();
 	thread.evener.capabilities.steer = true;
 	thread.evener.capabilities.queue = true;
 	thread.evener.capabilities.interrupt = true;
-	let received = 0;
+	const submitted: unknown[] = [];
 	try {
 		await service.open("local:test");
-		io.lifecycle = async (actual, raw) => {
-			const params = raw as { clientMutationId: string };
-			received++;
-			expect(actual).toBe(method);
-			expect(raw).toEqual({
-				ref: "local:test",
-				expectedInstanceId: "instance",
-				clientMutationId: expect.any(String),
-				...(input ? { input } : {}),
-			});
-			expect(document.getSnapshot().record.unconfirmed).toBe(text);
-			return {
-				receipt: {
-					clientMutationId: params.clientMutationId,
-					instanceId: "instance",
-					threadId: "thread",
-					disposition: "applied",
-					projectionState: method === "turn/interrupt" ? "reflected" : "pending",
-					...(method === "turn/queue" ? { queueEntryIds: ["entry"] } : { turnId: "turn" }),
-				},
-			};
+		io.lifecycle = async (method) => {
+			throw new Error(`unexpected ${method}`);
 		};
 		document.edit(text);
 		await submitComposerCommand(document, service, {
 			...commandContext,
+			submit: async (...args) => {
+				submitted.push(args);
+				expect(document.getSnapshot().record.unconfirmed).toBe(text);
+			},
 			// Every steering command and Stop read the session's controls
 			// (sessionControls): a running turn on a harness that advertises
-			// the action; the argless drain also needs a queue to drain.
+			// the action.
 			turn: () => ({
 				status: { type: "active" },
 				capabilities: { steer: true, queue: true, interrupt: true },
 				queue: { revision: 7, depth: 0 },
 			}),
 		});
-		expect(received).toBe(1);
+		expect(submitted).toEqual([[kind, input]]);
 		expect(document.getSnapshot().record).toMatchObject({
 			draft: "",
 			unconfirmed: null,

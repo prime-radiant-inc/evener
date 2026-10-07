@@ -6,7 +6,7 @@ import {
 	matchBuiltinInvocation,
 	mergeSlashCommands,
 } from "@evener/appwire-client";
-import type { ThreadClearResponse } from "@evener/appwire-client";
+import type { InputItem, ThreadClearResponse } from "@evener/appwire-client";
 import type { MobileConversation } from "./projectedRows";
 import { type ControlsSource, conversationControls } from "./conversationControls";
 import type {
@@ -92,6 +92,9 @@ interface CommandContext {
 	turn(): ComposerCommandSession | null;
 	/** Steers with the whole queue through the outbox, as Steer all now does. */
 	drainQueue(): Promise<void>;
+	/** Sends a steer, queue or stop through the outbox, as the composer and
+	 * Stop do, so it keeps its place in line and a lost answer is resent. */
+	submit(kind: "steer" | "queue" | "interrupt", input: InputItem[]): Promise<void>;
 	reasoning(): Pick<MobileConversation, "supportsReasoning" | "reasoningEffort" | "reasoningEffortLevels"> | null;
 }
 
@@ -102,10 +105,7 @@ export function composerCommand(text: string, imageCount = 0) {
 
 export async function submitComposerCommand(
 	document: DraftDocument,
-	service: Pick<
-		ConversationService,
-		"compact" | "shutdown" | "changeModel" | "setReasoningEffort" | "steer" | "queue" | "interrupt"
-	> &
+	service: Pick<ConversationService, "compact" | "shutdown" | "changeModel" | "setReasoningEffort"> &
 		ConversationGoalActions &
 		ConversationForkActions &
 		ConversationClearActions &
@@ -155,7 +155,7 @@ export async function submitComposerCommand(
 		const input = buildComposerInput(match.argsText);
 		// The explicit /steer command preserves waiting queue entries. Draining
 		// uses its own command, the one Steer all now is.
-		operation = id === "drain-as-steer" ? () => context.drainQueue() : () => service[id](input);
+		operation = id === "drain-as-steer" ? () => context.drainQueue() : () => context.submit(id, input);
 	} else if (id === "model") {
 		const catalog = await service.models();
 		// A catalog request must never consume text edited while it was loading,
@@ -187,6 +187,9 @@ export async function submitComposerCommand(
 		operation = () => service.setReasoningEffort(effort.id);
 	} else if (id === "goal") {
 		operation = () => service.setGoal(match.argsText.trim());
+	} else if (id === "interrupt") {
+		requireControl();
+		operation = () => context.submit("interrupt", []);
 	} else {
 		requireControl();
 		operation = () => service[id]();
