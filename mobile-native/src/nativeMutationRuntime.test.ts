@@ -1343,7 +1343,7 @@ test("steer with a queue revision uses the drain route and preserves its fence",
 // A promote names its queued message and sends no input: the hub already
 // holds it. Its ghost shows the queued text.
 test("a promote can't be built without naming its queued entry", () => {
-	// @ts-expect-error: without its queued entry the hub would promote the queue's head unchecked
+	// @ts-expect-error: a promote must name its queued entry, which the hub requires
 	const promote: NativeMutationRequest = { ...request("steer"), kind: "promote" };
 	expect(promote.kind).toBe("promote");
 });

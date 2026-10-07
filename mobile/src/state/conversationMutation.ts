@@ -13,8 +13,8 @@ interface ConversationMutationTarget {
 	readonly display?: InputItem[];
 }
 
-// A promote steers with one queued message, which it must name: without the
-// entry the hub would promote whatever heads the queue.
+// A promote steers with one queued message, which it must name; the hub
+// refuses one that doesn't, so the type catches it first.
 export type ConversationMutationRequest = ConversationMutationTarget &
 	(
 		| { readonly kind: "send" | "steer" | "queue" | "interrupt" }
