@@ -475,11 +475,7 @@ function isActionUnavailableError(err: unknown): boolean {
 // and the submit refuses the mutation here, with the control's own reason.
 // Runs in the store so the fake service (which gates on nothing) still
 // respects what the hub would refuse.
-function requireControl(
-	conv: MobileConversation,
-	control: "stop" | "steer" | "drain" | "queue" | "send",
-	action: string,
-): void {
+function requireControl(conv: MobileConversation, control: "stop" | "steer" | "queue" | "send", action: string): void {
 	const controls = sessionControls(conv.status.type, conv.capabilities, conv.queue?.depth ?? 0);
 	if (!controls[control]) {
 		throw new Error(controls.reason[control] ?? `Action "${action}" is not available for this thread`);
