@@ -1873,13 +1873,15 @@ export function ConversationScreen({
 									instanceId: target.instanceId,
 									input,
 								});
-							} catch {
+							} catch (error) {
 								// Admission only writes on the phone: nothing left it, so this
 								// is safe to try again, not a send to confirm.
-								throw new CommandNotSentError(NATIVE_MUTATION_HOST_UNAVAILABLE);
+								throw new CommandNotSentError(NATIVE_MUTATION_HOST_UNAVAILABLE, { cause: error });
 							}
 						},
-						stop,
+						stop: async () => {
+							if ((await stop()) === "notKept") throw new CommandNotSentError(NATIVE_MUTATION_HOST_UNAVAILABLE);
+						},
 						// As Steer all now waits (canSteerAll): it would take that message too.
 						drainRefusal: () => {
 							const state = store.getState();
@@ -2270,24 +2272,29 @@ export function ConversationScreen({
 	const notesPreview = conversation ? notesBarPreview(conversation) : null;
 	const [stopping, setStopping] = useState(false);
 	const stopBusy = useRef(false);
-	async function stop() {
+	// Returns "notKept" when the phone couldn't keep the stop to send (the
+	// store reports why); a typed /interrupt hands its text back for that.
+	async function stop(): Promise<"stopped" | "skipped" | "notKept"> {
 		if (
 			!service ||
 			!connectionReady.current ||
 			stopBusy.current ||
 			store.getState().pendingMutation?.status === "pending"
 		)
-			return;
+			return "skipped";
 		stopBusy.current = true;
 		setStopping(true);
 		try {
 			const previous = store.getState().lastAcceptedMutation;
 			await store.getState().interrupt(service);
 			const accepted = store.getState().lastAcceptedMutation;
-			if (accepted && accepted !== previous && accepted.kind === "interrupt") toaster.show({ text: "Stopped" });
+			if (!accepted || accepted === previous || accepted.kind !== "interrupt") return "notKept";
+			toaster.show({ text: "Stopped" });
+			return "stopped";
 		} catch {
 			// Stop only acts while a turn runs; a turn that ended first has
 			// nothing left to stop, so a refusal says nothing.
+			return "skipped";
 		} finally {
 			stopBusy.current = false;
 			setStopping(false);
