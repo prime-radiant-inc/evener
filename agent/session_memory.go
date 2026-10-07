@@ -54,6 +54,21 @@ func (s *Session) memorySaveInstructionsEnabled() bool {
 	return s.memoryContextEnabled() && s.canInstructTool("memory_write") && s.canInstructTool("memory_edit") && s.canInstructTool("memory_delete")
 }
 
+// memoryIndexFile is the scope's index, the one file the refresh reads.
+const memoryIndexFile = "MEMORY.md"
+
+// readMemoryIndexFile reads scope's index through env.
+func readMemoryIndexFile(env *execenv.LocalExecutionEnvironment) ([]byte, error) {
+	return env.ReadFileRaw(filepath.Join(env.WorkingDirectory(), memoryIndexFile))
+}
+
+// memoryIndexBaseline is the index the session already knows for a scope:
+// a current index as projected (cut at the projection's cap, so it holds no
+// more than the model sees), or that the session deleted its own index.
+type memoryIndexBaseline struct {
+	status, index string
+}
+
 type memoryProjection struct {
 	Scope, Status, Content string
 	Truncated              bool
@@ -285,7 +300,7 @@ func (s *Session) readMemoryIndex(scope string) memoryProjection {
 	if err := s.beforeMemoryIO(scope, "index_read"); err != nil {
 		return p
 	}
-	raw, err := env.ReadFileRaw(filepath.Join(env.WorkingDirectory(), "MEMORY.md"))
+	raw, err := readMemoryIndexFile(env)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
 		p.Status = "missing"
@@ -344,7 +359,19 @@ func (s *Session) appendMemoryProjection(p memoryProjection) {
 		s.memoryEverProjected = make(map[string]bool)
 	}
 	prior, exists := s.memoryLastProjected[p.Scope]
-	if (exists && prior == p) || (!s.memoryEverProjected[p.Scope] && (p.Status == "missing" || p.Status == "revoked" || (p.Status == "current" && p.Content == ""))) {
+	inContext := exists && prior == p
+	suppressed := !inContext && !s.memoryEverProjected[p.Scope] && (p.Status == "missing" || p.Status == "revoked" || (p.Status == "current" && p.Content == ""))
+	// A current index with content, appended now or already in context,
+	// becomes the baseline. Anything else forgets the scope, so the next
+	// current read delivers the full index: the model was last told there is
+	// no index, that it could not be read, or that it is empty, or was told
+	// nothing about a first empty one.
+	if p.Status == "current" && !suppressed && p.Content != "" {
+		s.setMemoryBaselineLocked(p.Scope, memoryIndexBaseline{status: p.Status, index: p.Content})
+	} else {
+		delete(s.memoryBaseline, p.Scope)
+	}
+	if inContext || suppressed {
 		s.memoryMu.Unlock()
 		return
 	}
@@ -357,9 +384,74 @@ func (s *Session) appendMemoryProjection(p memoryProjection) {
 	s.appendTurnWithTranscriptMessage(schema.TurnMemoryContext, msg, msg)
 }
 
+// setMemoryBaselineLocked records baseline as the index the session knows for
+// scope. Callers hold memoryMu.
+func (s *Session) setMemoryBaselineLocked(scope string, baseline memoryIndexBaseline) {
+	if s.memoryBaseline == nil {
+		s.memoryBaseline = make(map[string]memoryIndexBaseline)
+	}
+	s.memoryBaseline[scope] = baseline
+}
+
+// memoryBaselineFor returns the index the session already knows for scope.
+func (s *Session) memoryBaselineFor(scope string) (memoryIndexBaseline, bool) {
+	s.memoryMu.Lock()
+	defer s.memoryMu.Unlock()
+	baseline, known := s.memoryBaseline[scope]
+	return baseline, known
+}
+
+// publishKnownMemoryIndex handles a completed read of a scope whose index the
+// session already knows. The same index delivers nothing. A content change,
+// another session's edit or an index it created where the session had deleted
+// its own, is not delivered mid-session. An index that went missing, or whose
+// read failed, is projected as that state, as at any boundary. A read that
+// missed the boundary budget or went stale never reaches here.
+func (s *Session) publishKnownMemoryIndex(baseline memoryIndexBaseline, p memoryProjection) {
+	switch {
+	case p.Status == baseline.status && p.Content == baseline.index:
+	case p.Status == "current":
+	default:
+		s.appendMemoryProjection(p)
+	}
+}
+
+// noteOwnMemoryIndexWrite makes the index the session just wrote, edited or
+// deleted its baseline for scope, so no later boundary echoes the session's
+// own change back to it. The index is read back through env because an edit
+// only names its replacement, which keeps the baseline equal to the file on
+// disk. Another session writing between this session's write and the
+// read-back is folded into the baseline unseen. That race is accepted: other
+// sessions' mid-session index changes are not delivered anyway, and the next
+// compaction or resume delivers the full index. If the read fails the scope
+// is forgotten and the next boundary delivers the full index. A read already
+// in flight started before this write, so its result is discarded.
+func (s *Session) noteOwnMemoryIndexWrite(env *execenv.LocalExecutionEnvironment, scope string) {
+	raw, err := readMemoryIndexFile(env)
+	s.memoryMu.Lock()
+	defer s.memoryMu.Unlock()
+	if flight := s.memoryIndexFlights[scope]; flight != nil {
+		flight.abandoned = true
+	}
+	switch {
+	case err == nil:
+		// Even an empty index the session wrote itself is its baseline, so
+		// the next boundary does not echo it back.
+		index, _ := boundedMemoryIndex(raw)
+		s.setMemoryBaselineLocked(scope, memoryIndexBaseline{status: "current", index: index})
+	case errors.Is(err, os.ErrNotExist):
+		// Unlike a projected missing index, the session knows it deleted its
+		// own index, so its absence is the baseline.
+		s.setMemoryBaselineLocked(scope, memoryIndexBaseline{status: "missing"})
+	default:
+		delete(s.memoryBaseline, scope)
+	}
+}
+
 func (s *Session) resetMemoryProjectionAfterCompaction() {
 	s.memoryMu.Lock()
 	s.memoryLastProjected = nil
+	s.memoryBaseline = nil
 	for _, flight := range s.memoryIndexFlights {
 		flight.abandoned = true
 	}
@@ -390,7 +482,11 @@ func (s *Session) restoreMemoryProjection(history []schema.Turn) {
 
 // maybeAppendMemoryContext projects only raw entry-file data, never topic files.
 // The model sees quoted lower-trust data inside core-owned currentness framing.
-func (s *Session) maybeAppendMemoryContext(ctx context.Context) {
+// A scope gets its full index only while the session has no baseline for it:
+// at start, after resume or compaction, and once storage, access or the index
+// itself returns. turnStart marks the first model call of a turn; a scope the
+// session already knows is read only then, never on the turn's later rounds.
+func (s *Session) maybeAppendMemoryContext(ctx context.Context, turnStart bool) {
 	if s.cfg.DisableMemory || s.cfg.MemoryStateRoot == "" || ctx.Err() != nil {
 		return
 	}
@@ -405,6 +501,9 @@ func (s *Session) maybeAppendMemoryContext(ctx context.Context) {
 			}
 			s.memoryMu.Unlock()
 			s.appendMemoryProjection(memoryProjection{Scope: scope, Status: "revoked"})
+			continue
+		}
+		if _, known := s.memoryBaselineFor(scope); known && !turnStart {
 			continue
 		}
 		flight := s.memoryFlight(scope)
@@ -439,17 +538,28 @@ publish:
 			continue
 		}
 		p := memoryProjection{Scope: scope, Status: "unavailable"}
+		observed := false
 		s.memoryMu.Lock()
 		select {
 		case <-flight.done:
 			if !flight.abandoned {
-				p = flight.projection
+				p, observed = flight.projection, true
 			}
 			delete(s.memoryIndexFlights, scope)
 		default:
 			flight.abandoned = true
 		}
 		s.memoryMu.Unlock()
+		if baseline, known := s.memoryBaselineFor(scope); known {
+			// A read that missed the budget, or that the session's own write
+			// made stale, observed nothing: what the session knows stands.
+			if observed {
+				s.publishKnownMemoryIndex(baseline, p)
+			}
+			continue
+		}
+		// Without a baseline, a read that missed the budget is projected as
+		// unavailable, never presented as freshly read.
 		s.appendMemoryProjection(p)
 	}
 }
