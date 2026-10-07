@@ -3785,12 +3785,12 @@ test("a stale resumeOnlyFoldable bit is cleared off its shut-down snapshot, rout
   expect(routedCalls(fake)).toEqual(["turn/queue"]);
 });
 
-// A merely-resumable session that also holds delivery-uncertain messages is NOT
-// the clean resume case: the hub's explicit Resume still reconciles those rows
-// (the connection/uncertain-message shape), and the resume-only carve-out must
-// not offer a Send whose folded resume would skip that reconciliation. The
-// composer keeps Send disabled and the chord sends no turn/start.
-test("a merely-resumable local session with uncertain messages keeps Send disabled", async () => {
+// A merely-resumable session that also holds delivery-uncertain messages is not
+// the clean resume case: the hub's explicit Resume reconciled those rows and the
+// fold could not. Under R09 this shape is the Send-resumes face - Send is
+// offered, the store drives the resume (which reconciles the uncertain rows)
+// before the parked send dispatches.
+test("a merely-resumable local session with uncertain messages offers Send and drives the resume", async () => {
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);
   const user = userEvent.setup();
@@ -3820,23 +3820,349 @@ test("a merely-resumable local session with uncertain messages keeps Send disabl
     await refreshPendingTurnsProjection(ref);
   });
   await flushPendingTurnsProjectionForTests();
+  // The resume is held open, so the parked send cannot drain while asserting.
+  fake.on("thread/resume", () => new Promise<never>(() => {}));
   const editor = textarea();
   await user.click(editor);
   await user.type(editor, "omt");
-  await waitFor(() => expect(submitButton().disabled).toBe(true));
-  // The chord reaches the form by the same route the button does; it refuses too.
-  await user.keyboard("{Meta>}{Enter}{/Meta}");
+  await waitFor(() => expect(submitButton().disabled).toBe(false));
+  await user.click(submitButton());
   await flushPendingTurnsProjectionForTests();
+  // The Send is admitted and parks; the store drives the resume rather than the
+  // press minting nothing.
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+});
+
+// R09 journey on the canonical wire shape: a local snapshot carrying the hub's
+// resumeRequired overlay, send:false, and a delivery-uncertain row. Send is
+// offered on the follow-up card; one press durably enqueues the intent (it
+// parks), the store runs ONE thread/resume, its hydration reconciles the
+// uncertain row, and the dispatch tails drain exactly one turn/start carrying
+// the pressed text. No standalone Resume control anywhere, and Queue is never
+// offered in the fence window (the one send routes to turn/start).
+test("Send on a recovery-fenced session resumes, reconciles, and drains exactly one send", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const user = userEvent.setup();
+  const ref = "local:send-resumes-journey";
+  let uncertain = "";
+  let resumed = false;
+  const fencedShape = () =>
+    readResponse(ref, {
+      status: { type: "notLoaded" },
+      evener: {
+        ref,
+        capabilities: { ...FULL_CAPABILITIES, send: false, queue: false, steer: false, interrupt: false },
+        mutationStateAuthoritative: false,
+        resumeRequired: true,
+        queue: { revision: 0 },
+      },
+    });
+  // The resumed, authoritative snapshot names the uncertain row as accepted,
+  // which is what reconciles it.
+  const idleShape = () =>
+    readResponse(ref, {
+      status: { type: "idle" },
+      evener: {
+        ref,
+        capabilities: FULL_CAPABILITIES,
+        mutationStateAuthoritative: true,
+        queue: { revision: 1, clientMutationIds: [uncertain] },
+      },
+    });
+  const fake = await mountComposer(ref, {
+    status: { type: "notLoaded" },
+    evener: {
+      ref,
+      capabilities: { ...FULL_CAPABILITIES, send: false, queue: false, steer: false, interrupt: false },
+      mutationStateAuthoritative: false,
+      resumeRequired: true,
+      queue: { revision: 0 },
+    },
+  });
+  fake.on("thread/read", () => (resumed ? idleShape() : fencedShape()));
+  fake.on("thread/resume", () => {
+    resumed = true;
+    return idleShape();
+  });
+  fake.on("turn/start", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: `thr_${ref}`,
+      projectionState: "reflected",
+    },
+    turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+  }));
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  await act(async () => {
+    const input = [{ type: "text", text: "uncertain" }];
+    const row = await storage.enqueueIntent({
+      targetRef: ref,
+      threadId: `thr_${ref}`,
+      method: "turn/queue",
+      payload: { ref, input },
+      attachments: [],
+      optimisticDisplay: { method: "turn/queue", input },
+    });
+    uncertain = row.clientMutationId;
+    await storage.markUnknown(uncertain, "blockedUnknown");
+    await refreshPendingTurnsProjection(ref);
+  });
+  await flushPendingTurnsProjectionForTests();
+  // The canonical shape offers a Send control and no standalone Resume one.
+  expect(screen.queryByRole("button", { name: "Resume session" })).toBeNull();
+  const editor = textarea();
+  await user.click(editor);
+  await user.type(editor, "the pressed text");
+  expect(submitButton().disabled).toBe(false);
+  await user.click(submitButton());
+  await flushPendingTurnsProjectionForTests();
+  await waitFor(() => expect(resumed).toBe(true));
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
+  const starts = fake.calls.filter((call) => call.method === "turn/start");
+  expect(starts).toHaveLength(1);
+  expect(starts[0]?.params).toEqual(
+    expect.objectContaining({ ref, input: [{ type: "text", text: "the pressed text" }] }),
+  );
+  expect(fake.calls.filter((call) => call.method === "turn/queue")).toEqual([]);
+});
+
+// R09: a resume failure surfaces through the send path. The toast names the
+// reason; the pressed text survives as the parked outbox row and the draft
+// clears (the row is the preserved input); no turn/start dispatches; Send stays
+// offered. A later press re-drives the resume and the parked rows drain.
+test("a failed resume toasts, keeps the pressed row parked, and a later press re-drives it", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const user = userEvent.setup();
+  const ref = "local:send-resumes-failure";
+  let resumed = false;
+  let failResume = true;
+  const fencedShape = () =>
+    readResponse(ref, {
+      status: { type: "notLoaded" },
+      evener: {
+        ref,
+        capabilities: { ...FULL_CAPABILITIES, send: false, queue: false, steer: false, interrupt: false },
+        mutationStateAuthoritative: false,
+        resumeRequired: true,
+        queue: { revision: 0 },
+      },
+    });
+  const idleShape = () =>
+    readResponse(ref, {
+      status: { type: "idle" },
+      evener: { ref, capabilities: FULL_CAPABILITIES, mutationStateAuthoritative: true, queue: { revision: 1 } },
+    });
+  const fake = await mountComposer(ref, {
+    status: { type: "notLoaded" },
+    evener: {
+      ref,
+      capabilities: { ...FULL_CAPABILITIES, send: false, queue: false, steer: false, interrupt: false },
+      mutationStateAuthoritative: false,
+      resumeRequired: true,
+      queue: { revision: 0 },
+    },
+  });
+  fake.on("thread/read", () => (resumed ? idleShape() : fencedShape()));
+  fake.on("thread/resume", () => {
+    if (failResume) throw new Error("resume rejected");
+    resumed = true;
+    return idleShape();
+  });
+  fake.on("turn/start", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: `thr_${ref}`,
+      projectionState: "reflected",
+    },
+    turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+  }));
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  const editor = textarea();
+  await user.click(editor);
+  await user.type(editor, "keep me");
+  await user.click(submitButton());
+  await flushPendingTurnsProjectionForTests();
+  // The toast names the reason.
+  await waitFor(() => expect(getToasts().map((toast) => toast.text)).toContain("Resume failed: resume rejected"));
+  // The pressed text is a parked durable row and nothing reached the wire.
+  const parked = await storage.listOutbox(ref);
+  expect(parked.map((record) => record.composerText)).toEqual(["keep me"]);
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+  // Send stays offered: no fence control, and the empty draft is the only
+  // reason the button is disabled.
+  expect(screen.queryByRole("button", { name: "Resume session" })).toBeNull();
+  expect(submitButton().disabled).toBe(true);
+  // A later press re-drives the resume; the parked rows then drain.
+  failResume = false;
+  await user.click(textarea());
+  await user.type(textarea(), "press again");
+  expect(submitButton().disabled).toBe(false);
+  await user.click(submitButton());
+  await flushPendingTurnsProjectionForTests();
+  await waitFor(() => expect(resumed).toBe(true));
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(2);
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(2);
+});
+
+const REMOUNT_FAILURE_SHAPE = (ref: string) => ({
+  status: { type: "notLoaded" } as const,
+  evener: {
+    ref,
+    capabilities: { ...FULL_CAPABILITIES, send: false, queue: false, steer: false, interrupt: false },
+    mutationStateAuthoritative: false,
+    resumeRequired: true,
+    queue: { revision: 0 },
+  },
+});
+
+// R09 defect: a stale resume failure re-toasted on every composer remount
+// (dockview unmounts inactive panes routinely). A remount seeds its dedup from
+// the store, so a failure that predates the mount is never reported twice.
+test("a resume failure does not re-toast when the composer remounts", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const user = userEvent.setup();
+  const ref = "local:resume-failure-remount";
+  const fake = await mountComposer(ref, REMOUNT_FAILURE_SHAPE(ref));
+  fake.on("thread/resume", () => {
+    throw new Error("resume rejected");
+  });
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  const editor = textarea();
+  await user.click(editor);
+  await user.type(editor, "keep me");
+  await user.click(submitButton());
+  await flushPendingTurnsProjectionForTests();
+  await waitFor(() => expect(getToasts().filter((toast) => toast.text.startsWith("Resume failed"))).toHaveLength(1));
+  cleanup();
+  await mountComposer(ref, REMOUNT_FAILURE_SHAPE(ref));
+  await flushPendingTurnsProjectionForTests();
+  expect(getToasts().filter((toast) => toast.text.startsWith("Resume failed"))).toHaveLength(1);
+});
+
+// R09 defect: the success path must also clear the stored failure, or a later
+// remount still reports a failure the resume has since recovered from.
+test("a successful re-drive clears the failure so a later remount cannot toast it", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const user = userEvent.setup();
+  const ref = "local:resume-recovered-remount";
+  let failResume = true;
+  const fake = await mountComposer(ref, REMOUNT_FAILURE_SHAPE(ref));
+  fake.on("thread/resume", () => {
+    if (failResume) throw new Error("resume rejected");
+    return readResponse(ref, {
+      status: { type: "idle" },
+      evener: { ref, capabilities: FULL_CAPABILITIES, mutationStateAuthoritative: true, queue: { revision: 1 } },
+    });
+  });
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  const editor = textarea();
+  await user.click(editor);
+  await user.type(editor, "keep me");
+  await user.click(submitButton());
+  await flushPendingTurnsProjectionForTests();
+  await waitFor(() => expect(getToasts().filter((toast) => toast.text.startsWith("Resume failed"))).toHaveLength(1));
+  expect(threadsStore.getState().resumeFailures.has(ref)).toBe(true);
+  // The later press re-drives and succeeds: the stored failure is cleared.
+  failResume = false;
+  await user.click(textarea());
+  await user.type(textarea(), "press again");
+  await user.click(submitButton());
+  await flushPendingTurnsProjectionForTests();
+  await waitFor(() => expect(threadsStore.getState().resumeFailures.has(ref)).toBe(false));
+  cleanup();
+  await mountComposer(ref, REMOUNT_FAILURE_SHAPE(ref));
+  await flushPendingTurnsProjectionForTests();
+  expect(getToasts().filter((toast) => toast.text.startsWith("Resume failed"))).toHaveLength(1);
+});
+
+// R09 defect: the render passed mutationStateAuthoritative but the press-time
+// re-derivation did not, so an authoritative local child (parentRef local:, the
+// obligation armed, a live status) offered Send at render and refused it at the
+// press as if it were owner-retained - a stranded pane with the notice
+// suppressed. The press must read the same face the render did and park.
+test("an authoritative local child's Send press takes the Send-resumes face instead of refusing", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const user = userEvent.setup();
+  const ref = "local:authoritative-child";
+  const fake = await mountComposer(ref, {
+    status: { type: "idle" },
+    evener: {
+      ref,
+      capabilities: FULL_CAPABILITIES,
+      parentRef: "local:owner",
+      mutationStateAuthoritative: true,
+      resumeRequired: true,
+      queue: { revision: 0 },
+    },
+  });
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  fake.on("thread/resume", () => new Promise<never>(() => {}));
+  const editor = textarea();
+  await user.click(editor);
+  await user.type(editor, "child message");
+  expect(submitButton().disabled).toBe(false);
+  await user.click(submitButton());
+  await flushPendingTurnsProjectionForTests();
+  // No owner-retained refusal: the press parked the row and drove the resume.
+  expect(getToasts().map((toast) => toast.text)).not.toContain("Send is not available for this session");
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+});
+
+// The reconciliationFailed fence is separate from the recovery-fence notice: it
+// holds dispatch closed (currentDispatchClient) but does NOT take Send away. On
+// the Send-resumes face Send is offered and the pressed row parks until
+// recovery succeeds, while the notice that says so lives in the session pane.
+test("a reconciliation-failed Send-resumes face offers Send and parks the row", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const user = userEvent.setup();
+  const ref = "local:reconciliation-failed-send";
+  const fake = await mountComposer(ref, {
+    status: { type: "idle" },
+    evener: {
+      ref,
+      capabilities: { ...FULL_CAPABILITIES, send: false, queue: false, steer: false, interrupt: false },
+      mutationStateAuthoritative: false,
+      resumeRequired: true,
+      queue: { revision: 0 },
+    },
+  });
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  act(() => threadsStore.setState({ mutationReconciliationFailures: new Set([ref]) }));
+  fake.on("thread/resume", () => new Promise<never>(() => {}));
+  const editor = textarea();
+  await user.click(editor);
+  await user.type(editor, "wait for recovery");
+  expect(submitButton().disabled).toBe(false);
+  await user.click(submitButton());
+  await flushPendingTurnsProjectionForTests();
+  // The resume is driven; the row stays parked because dispatch is closed by the
+  // reconciliation failure, so nothing reaches the wire yet.
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+  const parked = await storage.listOutbox(ref);
+  expect(parked.map((record) => record.method)).toContain("turn/start");
 });
 
 // The submit re-derivation reads delivery uncertainty LIVE, like stopInFlight
 // and queuedNonSend beside it (and like resumeOnlyLocalModel, which enqueue and
 // dispatch use): a blockedUnknown row published between the render and the
-// press must route the press to the refusal, not fold the resume into a send
-// that the store's own fence would then refuse. The store update and the press
-// run in one synchronous task, so the render-time read cannot have caught up.
-test("a blockedUnknown row published after the render routes the press to the refusal", async () => {
+// press must route the press to the Send-resumes face - the store drives the
+// resume rather than folding it into the send ahead of the uncertain row. The
+// store update and the press run in one synchronous task, so the render-time
+// read cannot have caught up.
+test("a blockedUnknown row published after the render routes the press to the Send-resumes face", async () => {
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);
   const user = userEvent.setup();
@@ -3877,16 +4203,16 @@ test("a blockedUnknown row published after the render routes the press to the re
   if (!blocked) throw new Error("expected the blocked row to be durable");
   const submit = submitButton();
   expect(submit.disabled).toBe(false);
+  fake.on("thread/resume", () => new Promise<never>(() => {}));
   act(() => {
     publishOutboxRecordForTests(blocked);
     fireEvent.click(submit);
   });
   await flushPendingTurnsProjectionForTests();
-  // The submit itself refused (route none): the alternative is routing to send
-  // and being refused a step later at enqueue with a different toast.
-  await waitFor(() =>
-    expect(getToasts().map((toast) => toast.text)).toContain("Send is not available for this session"),
-  );
+  // The submit routed to the Send-resumes face: the store drives the resume and
+  // no refusal is toasted.
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
+  expect(getToasts().map((toast) => toast.text)).not.toContain("Send is not available for this session");
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
 });
 
@@ -3944,11 +4270,11 @@ test("a merely-resumable local session with a pending send refuses a second send
 
 // A snapshot that advertises send is not the hub's resume-fenced shape: the
 // resume requirement clears send:false together with resumeRequired
-// (applyThreadResumeRequirement). The client-side obligation still fences it -
-// with no wire send fence the resume-only carve-out does not apply - so the
-// rendered Send stays disabled rather than offering a press against an
-// obligation the wire never confirmed.
-test("a fenced stopped local session that advertises send renders a disabled Send", async () => {
+// (applyThreadResumeRequirement). Under R09 the client-side obligation is the
+// Send-resumes face: Send is offered, and the store drives the resume before
+// the parked send dispatches, rather than refusing a press the wire never
+// confirmed.
+test("a fenced stopped local session that advertises send offers Send and drives the resume", async () => {
   const user = userEvent.setup();
   const ref = "local:stopped-send-advertised";
   const fake = await mountComposer(ref, {
@@ -3963,13 +4289,14 @@ test("a fenced stopped local session that advertises send renders a disabled Sen
   });
   await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
   expect(screen.getByTestId("composer-input-card")).toBeTruthy();
+  fake.on("thread/resume", () => new Promise<never>(() => {}));
   const editor = textarea();
   await user.click(editor);
   await user.type(editor, "omt");
-  expect(submitButton().disabled).toBe(true);
-  // The chord reaches the form by the same route the button does; it refuses too.
+  expect(submitButton().disabled).toBe(false);
   await user.keyboard("{Meta>}{Enter}{/Meta}");
   await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
 });
 
@@ -3977,12 +4304,9 @@ test("a fenced stopped local session that advertises send renders a disabled Sen
 // daemon's still-active status while the hub overlays resumeRequired beside it
 // (applyThreadResumeRequirement), and the store arms the obligation on that
 // hydration. This fixture leaves resumeOnlyFoldable unset, so the hub bit is
-// absent, and its status is live (idle), which is not in SHUT_DOWN_STATUSES;
-// isResumeOnlyLocal now keys on the hub bit, the shut-down status, and the
-// uncertain/stop/queued signals, so the merely-resumable carve-out does not
-// apply on either count. The hub still refuses turn/start while the Stop
-// drains, so Send stays disabled.
-test("a live fenced idle local session renders a disabled Send and sends no turn/start", async () => {
+// absent and this is the Send-resumes face: Send is offered and the store's
+// driver resumes before the parked send dispatches.
+test("a live fenced idle local session offers Send and drives the resume", async () => {
   const user = userEvent.setup();
   const ref = "local:live-fenced-idle";
   const fake = await mountComposer(ref, {
@@ -3996,21 +4320,22 @@ test("a live fenced idle local session renders a disabled Send and sends no turn
     },
   });
   await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  fake.on("thread/resume", () => new Promise<never>(() => {}));
   const editor = textarea();
   await user.click(editor);
   await user.type(editor, "omt");
-  expect(submitButton().disabled).toBe(true);
-  // The chord reaches the form by the same route the button does; it refuses too.
+  expect(submitButton().disabled).toBe(false);
   await user.keyboard("{Meta>}{Enter}{/Meta}");
   await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
 });
 
 // A closed local frame carries send:true (stampClosedThreadCapabilities); it is
 // not the hub's resume-fenced shape, which clears send:false alongside
-// resumeRequired (applyThreadResumeRequirement). With no wire send fence the
-// resume-only carve-out does not apply, so Send stays disabled.
-test("a fenced closed local session that advertises send renders a disabled Send", async () => {
+// resumeRequired (applyThreadResumeRequirement). Under R09 the obligation is
+// the Send-resumes face: Send is offered and the store drives the resume.
+test("a fenced closed local session that advertises send offers Send and drives the resume", async () => {
   const user = userEvent.setup();
   const ref = "local:closed-send-advertised";
   const fake = await mountComposer(ref, {
@@ -4025,13 +4350,14 @@ test("a fenced closed local session that advertises send renders a disabled Send
   });
   await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
   expect(screen.getByTestId("composer-input-card")).toBeTruthy();
+  fake.on("thread/resume", () => new Promise<never>(() => {}));
   const editor = textarea();
   await user.click(editor);
   await user.type(editor, "omt");
-  expect(submitButton().disabled).toBe(true);
-  // The chord reaches the form by the same route the button does; it refuses too.
+  expect(submitButton().disabled).toBe(false);
   await user.keyboard("{Meta>}{Enter}{/Meta}");
   await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
 });
 
@@ -4040,13 +4366,9 @@ test("a fenced closed local session that advertises send renders a disabled Send
 // during a Stop relays the daemon's still-active status while the hub overlays
 // resumeRequired beside it (cmd/evener-hub's applyThreadResumeRequirement on
 // the relayed thread/read), and the store arms its restart-blocking obligation
-// on exactly that hydration - while the hub's recovery admission
-// (sessionActionRecoveryError, keyed on the resume locks and never on the
-// projected status) refuses turn/start and turn/queue for as long as the model
-// still reads active. The availability table answers queue-mode for that
-// snapshot, so the offered press could only mint durable intent that parks
-// until the explicit Resume action clears the fence.
-test("an active fenced local session renders a disabled Send and enqueues nothing", async () => {
+// on exactly that hydration. Under R09 the obligation is the Send-resumes face:
+// Send is offered, the parked send waits, and the store drives the resume.
+test("an active fenced local session offers Send and drives the resume", async () => {
   const user = userEvent.setup();
   const ref = "local:active-fenced";
   const fake = await mountComposer(ref, {
@@ -4063,20 +4385,16 @@ test("an active fenced local session renders a disabled Send and enqueues nothin
     },
   });
   await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  fake.on("thread/resume", () => new Promise<never>(() => {}));
   const editor = textarea();
   await user.click(editor);
   await user.type(editor, "omt");
-  expect(submitButton().disabled).toBe(true);
-  // The chord reaches the form by the same route the button does; it refuses too.
+  expect(submitButton().disabled).toBe(false);
   await user.keyboard("{Meta>}{Enter}{/Meta}");
   await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
   expect(fake.calls.filter((call) => call.method === "turn/queue")).toEqual([]);
-  // Nothing parks in the durable outbox either: a fenced press mints no intent.
-  const storage = new MutationOutboxIndexedDB();
-  const parked = await storage.listOutbox(ref);
-  storage.close();
-  expect(parked).toEqual([]);
 });
 
 // The Steer surface of the same fence: turn/steer sits in the same hub
