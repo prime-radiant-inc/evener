@@ -68,8 +68,9 @@ Every trial keeps its full logs: `<stage>.events.ndjson`, `<stage>.stdout`, `<st
 `bookkeeping RUNDIR [STAGE]` counts each trial's root-session bookkeeping by surface: ledger writes (a file write, an `apply_patch` whose headers name `progress.md`, or a shell redirect, `tee` or in-place edit aimed at it), memory writes by scope, whiteboard updates, task-list status updates and task-list notes (one call can count as both), plus read-backs. It prints one line per trial and a mean per version and scenario. Use it to measure duplicated progress tracking, for example on `sdd-plan`.
 
 Shell commands are classified by a heuristic, not a shell parser. It splits a command into statements (lines, `;`, `&&`, `||`, `|`), tokenizes each with `shlex`, and skips leading `VAR=value` settings and the wrappers `sudo`, `env`, `timeout`, `nice`, `nohup`, `command`, `exec` and `time`. The covered forms are:
-- writes: redirects (`>`, `>>`, `2>`, `&>`, `>&`), `tee`, `sed -i`/`--in-place` and `perl -i`
-- reads: input redirects, and the file arguments of `cat`, `head`, `tail`, `less`, `more`, `awk`, `wc`, `diff`, `sed -n`, `grep` and `rg` (whose pattern operand is not a file)
+Options for `grep`, `rg`, `sed` and `perl` are parsed getopt-style: short clusters (`-Ef FILE`, `-neTask`, `-pe EXPR`), attached and separate values, long `--name=value`, and `--` ending the options.
+- writes: redirects (`>`, `>>`, `2>`, `&>`, `>&`), `tee`, and the files `sed -i`/`--in-place` or `perl -i` edits. Their `-e` expressions are skipped, and a `sed -f` script or a perl script file (the first operand when there's no `-e`) counts as read.
+- reads: `<` input redirects (not heredocs or `<<<` here-strings), and the file arguments of `cat`, `head`, `tail`, `less`, `more`, `awk`, `wc`, `diff`, quiet `sed` (`-n` alone or in a cluster, `--quiet`, `--silent`), `grep` and `rg`. For `grep` and `rg` the pattern operand is not a file, including a pattern given with `-e`/`--regexp` (separate or attached); a `-f`/`--file` pattern file is read.
 
 Any other form counts as ordinary work. In the lab runs so far, shell commands account for about one in nine progress-file writes; the rest go through file tools. `test_bookkeeping.py` holds the classifier's behavior cases (`python3 -B test_bookkeeping.py`).
 
