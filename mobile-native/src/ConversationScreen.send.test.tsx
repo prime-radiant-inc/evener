@@ -3122,7 +3122,8 @@ describe("queued messages at the transcript's end (spec 8.5)", () => {
 	);
 
 	// Steer all now would take the message Steer now is already steering with.
-	const STEER_ON_ITS_WAY = "A steer from the queue is still on its way. Try again once it arrives.";
+	const STEERING_WITH_QUEUE =
+		"This phone is already steering with the queue. Try again once that steer is sent or cancelled.";
 	it("withholds Steer all now while a Steer now waits for the hub", async () => {
 		const ref = "ref-steer-all-after-promote";
 		const { tree, hub } = await mount(thread(ref, "active", false, ["check the logs", "one", "two"]));
@@ -3146,7 +3147,7 @@ describe("queued messages at the transcript's end (spec 8.5)", () => {
 		await type(tree, "/drain-as-steer");
 		await press(tree, "Drain queue");
 		expect(hub.requests.filter((entry) => entry.method === "turn/drainAsSteer")).toEqual([]);
-		expect(renderedText(tree)).toContain(STEER_ON_ITS_WAY);
+		expect(renderedText(tree)).toContain(STEERING_WITH_QUEUE);
 	});
 
 	// /drain-as-steer is Steer all now typed: the same outbox, so a lost answer

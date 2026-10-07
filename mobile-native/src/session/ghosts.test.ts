@@ -5,6 +5,7 @@ import {
 	type GhostSource,
 	ghostActionTarget,
 	ghosts,
+	steeringWithQueue,
 	type RecoveryGhostRow,
 	shownGhosts,
 	whatCanActNow,
@@ -153,6 +154,20 @@ describe("queued messages this phone is steering with", () => {
 		expect(ghosts(null, [drain], null, [], true)).toEqual([
 			expect.objectContaining({ state: "held", buttons: ["sendNow", "cancel"] }),
 		]);
+	});
+
+	it("says whether this phone is steering with the queue it shows, held or on its way", () => {
+		const shown = session("active", ["first", "second"]);
+		const promote = pending({ method: "promote", queueEntryId: "queue_1" });
+		const drain = pending({ method: "drain", queueRevision: 3, state: "canceled" });
+		expect(steeringWithQueue(shown, [promote])).toBe(true);
+		expect(steeringWithQueue(shown, [drain])).toBe(true);
+		// A promote whose message has left the queue, a drain of a queue since
+		// changed, and another client's steer leave the queue to Steer all now.
+		expect(steeringWithQueue(shown, [pending({ method: "promote", queueEntryId: "queue_9" })])).toBe(false);
+		expect(steeringWithQueue(shown, [pending({ method: "drain", queueRevision: 2 })])).toBe(false);
+		expect(steeringWithQueue(shown, [{ ...promote, fromThisClient: false }])).toBe(false);
+		expect(steeringWithQueue(null, [promote])).toBe(false);
 	});
 
 	it("keeps the queue another client is steering with", () => {
