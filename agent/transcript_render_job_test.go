@@ -822,16 +822,43 @@ func TestJobResultBodyFallsBackOnUncapturedEarlierEvidence(t *testing.T) {
 	}
 }
 
-// A long earlier result can't push the reply's ref out of a condensed card.
+// A long earlier result can't push the reply's ref out of a condensed card:
+// the card is truncated, and the ref is still on it, ahead of the elision.
 func TestJobResultBodyKeepsRefAheadOfLongEarlierResults(t *testing.T) {
 	t.Parallel()
-	long := strings.Repeat("earlier line\\n", 60)
-	raw := `{"delegate_id":"dlg_1","status":"completed","transcript_ref":"local:child","output":"second","earlier_results":[{"delegate_id":"dlg_1","status":"completed","output":"` + long + `"}]}`
+	childRef := "local:child-ref"
+	body, err := json.Marshal(map[string]any{
+		"delegate_id": "dlg_1", "status": "completed", "transcript_ref": childRef, "output": "second",
+		"earlier_results": []map[string]any{{
+			"delegate_id": "dlg_1", "status": "completed", "output": makeNumberedLines(resultBodyWholeMax + 100),
+		}},
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	out := renderToolCardForResult("delegate_send", "call_send", string(body))
+	refIdx, elideIdx := strings.Index(out, childRef), strings.Index(out, "lines elided")
+	if elideIdx < 0 || refIdx < 0 || refIdx > elideIdx {
+		t.Fatalf("ref at %d, elision at %d: want a truncated card with the ref ahead of the elision:\n%s", refIdx, elideIdx, out)
+	}
+}
+
+// Several earlier results are numbered oldest first, each ahead of the next,
+// and the reply's own output follows the latest-result label.
+func TestJobResultBodyNumbersSeveralEarlierResults(t *testing.T) {
+	t.Parallel()
+	raw := `{"delegate_id":"dlg_1","status":"completed","output":"third","earlier_results":[{"delegate_id":"dlg_1","status":"completed","output":"first"},{"delegate_id":"dlg_1","status":"completed","output":"second"}]}`
 	body, ok := jobResultBody(raw)
 	if !ok {
-		t.Fatalf("jobResultBody fell back")
+		t.Fatalf("jobResultBody(%s) fell back", raw)
 	}
-	if first, _, _ := strings.Cut(body, "\n"); !strings.Contains(first, "transcript_ref=local:child") {
-		t.Fatalf("first line = %q, want the reply's status line with its ref", first)
+	order := []string{"earlier result 1 of 2", "first", "earlier result 2 of 2", "second", "latest result:", "third"}
+	at := 0
+	for _, want := range order {
+		i := strings.Index(body[at:], want)
+		if i < 0 {
+			t.Fatalf("%q missing after offset %d in:\n%s", want, at, body)
+		}
+		at += i + len(want)
 	}
 }
