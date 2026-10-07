@@ -106,7 +106,7 @@ reader's current reading line in place; exact-word continuity across different
 line wrapping is outside the contract.
 
 A viewport-height-only change, such as composer-height settlement, doesn't
-rewrap the entry, so the same rule reduces to keeping the entry's offset outright:
+rewrap the entry, so the entry's offset is kept outright:
 the reader's current reading line stays in place whether the reader is at the
 entry's start, inside it, or reading its tail. A later width reflow measures
 progress against the committed viewport height. An entry whose own height

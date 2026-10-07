@@ -20,7 +20,11 @@ import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclo
 // import of ./tools.
 import "./TurnBlock";
 import { ReadOnlyThreadContent } from "../../transcript/ReadOnlyThreadContent";
-import { captureTranscriptView, resetTranscriptViewRegistryForTests } from "./flow/transcriptViewRegistry";
+import {
+  type CapturedTranscriptView,
+  captureTranscriptView,
+  resetTranscriptViewRegistryForTests,
+} from "./flow/transcriptViewRegistry";
 import { readingPointOffset } from "./flow/useTranscriptScroll";
 import {
   TranscriptBody,
@@ -461,6 +465,16 @@ test("re-entering Full view reopens a run the reader closed there", () => {
   expect(run().open).toBe(true);
 });
 
+// A capture taken at a 400px-high, 152px-wide viewport, offset into an entry.
+function readingCapture(anchorOffset: number, entryHeight = 1600): CapturedTranscriptView {
+  return {
+    anchorOffset,
+    normalizedOffset: 0,
+    followingBottom: false,
+    readingPoint: { entryHeight, viewportHeight: 400, viewportWidth: 152 },
+  };
+}
+
 test.each([
   { oldHeight: 1600, oldOffset: -900, nextHeight: 1000, want: -450 },
   { oldHeight: 1600, oldOffset: -900, nextHeight: 700, want: -225 },
@@ -474,12 +488,7 @@ test.each([
   { oldHeight: 1600, oldOffset: -1500, nextHeight: 1000, want: -900 },
   { oldHeight: 1600, oldOffset: -1500, nextHeight: 50, want: 0 },
 ])("width-only bounded reading point $oldOffset at $nextHeight", ({ oldHeight, oldOffset, nextHeight, want }) => {
-  const captured = {
-    anchorOffset: oldOffset,
-    normalizedOffset: 0,
-    followingBottom: false,
-    readingPoint: { entryHeight: oldHeight, viewportHeight: 400, viewportWidth: 152 },
-  };
+  const captured = readingCapture(oldOffset, oldHeight);
   expect(readingPointOffset(captured, nextHeight, 400, 352)).toBe(want);
 });
 
@@ -487,12 +496,7 @@ test.each([
 // viewport top doesn't move, and only content past the new fold is cut. Clamping
 // the entry's bottom into the smaller viewport would move the reading line.
 test("a kept tail stays in place when the viewport shrinks below it", () => {
-  const captured = {
-    anchorOffset: -1250,
-    normalizedOffset: 0,
-    followingBottom: false,
-    readingPoint: { entryHeight: 1600, viewportHeight: 400, viewportWidth: 152 },
-  };
+  const captured = readingCapture(-1250);
   expect(readingPointOffset(captured, 1600, 300, 352)).toBe(-1250);
 });
 
@@ -504,24 +508,14 @@ test.each([
   { label: "at its start", oldOffset: 0, nextViewport: 436 },
   { label: "reading its tail", oldOffset: -1500, nextViewport: 436 },
 ])("a height-only change keeps the reading line, $label", ({ oldOffset, nextViewport }) => {
-  const captured = {
-    anchorOffset: oldOffset,
-    normalizedOffset: 0,
-    followingBottom: false,
-    readingPoint: { entryHeight: 1600, viewportHeight: 400, viewportWidth: 152 },
-  };
+  const captured = readingCapture(oldOffset);
   expect(readingPointOffset(captured, 1600, nextViewport, 152)).toBe(oldOffset);
 });
 
 // An entry that shrank at the same width isn't a viewport change: the tail rule
 // still bounds it, so it never lands wholly above the viewport.
 test("an entry that shrinks at the same width keeps a real part visible", () => {
-  const captured = {
-    anchorOffset: -1500,
-    normalizedOffset: 0,
-    followingBottom: false,
-    readingPoint: { entryHeight: 1600, viewportHeight: 400, viewportWidth: 152 },
-  };
+  const captured = readingCapture(-1500);
   expect(readingPointOffset(captured, 50, 436, 152)).toBe(0);
 });
 
