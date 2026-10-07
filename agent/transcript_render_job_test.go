@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/transcript"
@@ -827,16 +828,19 @@ func TestJobResultBodyFallsBackOnUncapturedEarlierEvidence(t *testing.T) {
 func TestJobResultBodyKeepsRefAheadOfLongEarlierResults(t *testing.T) {
 	t.Parallel()
 	childRef := "local:child-ref"
-	body, err := json.Marshal(map[string]any{
-		"delegate_id": "dlg_1", "status": "completed", "transcript_ref": childRef, "output": "second",
-		"earlier_results": []map[string]any{{
-			"delegate_id": "dlg_1", "status": "completed", "output": makeNumberedLines(resultBodyWholeMax + 100),
-		}},
-	})
+	longOutput, err := json.Marshal(makeNumberedLines(resultBodyWholeMax + 100))
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	out := renderToolCardForResult("delegate_send", "call_send", string(body))
+	res := delegateSendToolResult(t, "call_send", sendMessageResult{
+		DelegateID: "dlg_1", Type: "delegate", Status: jobstore.StatusCompleted, Action: "completed",
+		TranscriptRef: childRef, Output: "second",
+		Earlier: []delegatestore.TerminalPacket{{Kind: delegatestore.PacketReported, Message: longOutput}},
+	}, 0)
+	out := renderMarkdown(transcript.Header{}, []transcript.Entry{
+		toolCallEntry(call("call_send", "delegate_send", `{}`)),
+		toolResultEntry(res),
+	}, 0, renderOpts{})
 	refIdx, elideIdx := strings.Index(out, childRef), strings.Index(out, "lines elided")
 	if elideIdx < 0 || refIdx < 0 || refIdx > elideIdx {
 		t.Fatalf("ref at %d, elision at %d: want a truncated card with the ref ahead of the elision:\n%s", refIdx, elideIdx, out)
