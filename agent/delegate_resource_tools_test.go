@@ -557,3 +557,31 @@ func seedStableToolShell(t *testing.T, jm *jobManager, id string, startedAt time
 		}
 	}
 }
+
+// A delegate_send reply carrying an earlier result its caller was holding
+// keeps the newest result in its own fields and adds the earlier one, in the
+// same shape, under earlier_results; its text shows the earlier one first
+// (#3906).
+func TestStableDelegateTools_SendReplyCarriesEarlierResults(t *testing.T) {
+	t.Parallel()
+	value, err := marshalDelegateSendResult(sendMessageResult{
+		DelegateID: "dlg_held", Type: "delegate", Status: jobstore.StatusCompleted, Action: "completed",
+		Output:  "SECOND",
+		Earlier: []delegatestore.TerminalPacket{{Kind: delegatestore.PacketReported, Message: json.RawMessage(`"FIRST"`)}},
+	}, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := stableToolStateMap(t, value)
+	earlier, ok := state["earlier_results"].([]any)
+	if !ok || len(earlier) != 1 || state["output"] != "SECOND" {
+		t.Fatalf("delegate_send state = %#v, want SECOND in its own fields and one earlier result", state)
+	}
+	if first, _ := earlier[0].(map[string]any); first["output"] != "FIRST" || first["delegate_id"] != "dlg_held" || first["status"] != string(jobstore.StatusCompleted) {
+		t.Fatalf("earlier result = %#v, want FIRST, completed, for the same delegate", earlier[0])
+	}
+	text := value.(toolpkg.StateResult).Output
+	if first, second := strings.Index(text, "FIRST"), strings.Index(text, "SECOND"); first < 0 || second < first || !strings.HasPrefix(text, "earlier result, not delivered before:\n") {
+		t.Fatalf("delegate_send text = %q, want the earlier result first, labelled", text)
+	}
+}

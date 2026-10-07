@@ -123,7 +123,10 @@ type sendMessageResult struct {
 	CumulativeUsage          *schema.CumulativeUsage
 	WaitIgnoredReason        string
 	Name                     string
-	Err                      error
+	// Earlier holds results of the same delegate the caller had not yet
+	// received, oldest first, that an inline reply carries ahead of its own.
+	Earlier []delegatestore.TerminalPacket
+	Err     error
 }
 
 func (s *Session) resolveDelegateRestoreProfileRef(base *provider.Profile, profileID, model string) (*provider.Profile, error) {
