@@ -265,9 +265,8 @@ test("an ancestor peek drills its explicit owner and truncates the branch while 
   await scope("child").findByRole("button", { name: "Open conversation" });
   const other = { id: "other", type: "doc" as const, slot: "secondary" as const, params: { ref: "unrelated" } };
   act(() => workspaceStore.setState((state) => ({ panes: [...state.panes, other], focusedPaneId: other.id })));
-  // The root peek's rows arrive a moment late, as they can on a loaded host, so
-  // they land while the test waits for them. That pins the find-before-act
-  // order below: a find inside act() would make React warn on every run (#3928).
+  // The root peek's rows arrive late, as on a loaded host, so the find below
+  // overlaps them on every run and pins its find-before-act order (#3928).
   client.on("evener/thread/delegates/list", async ({ ref }) => {
     if (ref === "root") await new Promise((resolve) => setTimeout(resolve, 50));
     return delegatesPage(ref);
