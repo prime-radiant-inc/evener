@@ -30,21 +30,19 @@ import { back, detailParams, ProvidersStack as ProvidersPage } from "./providers
 import {
 	alertRequests,
 	dropped,
-	render as mount,
+	render as renderTree,
 	renderedText,
 	screenConnection,
 	scriptedClient,
 } from "../renderNative.testkit";
 
-// Every page a test mounts is unmounted once the test ends. A page left
-// mounted keeps its timers (the listing retry, the sign-in poll) and store
-// subscriptions running, and their updates land after the file's last test,
-// outside act: React's warning
-// about them can reach the console while vitest is tearing the file's worker
-// down, which fails the run (#3916).
+// Every page a test mounts is unmounted once the test ends, so none of its
+// timers (the listing retry, the sign-in poll) or store subscriptions update
+// it after the file's last test, outside act, while vitest tears the worker
+// down (#3916).
 const mounted: ReactTestRenderer[] = [];
-function render(...args: Parameters<typeof mount>): ReactTestRenderer {
-	const tree = mount(...args);
+function render(...args: Parameters<typeof renderTree>): ReactTestRenderer {
+	const tree = renderTree(...args);
 	mounted.push(tree);
 	return tree;
 }
