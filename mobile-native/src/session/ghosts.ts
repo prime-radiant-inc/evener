@@ -95,9 +95,9 @@ export function ghosts(
 	// a promote names its message, and a drain takes the queue at the revision
 	// it names (anything queued after that is still queued).
 	const promoted = new Set(own.flatMap((entry) => entry.queueEntryId ?? []));
-	const draining = own.some(
-		(entry) => entry.queueRevision !== undefined && entry.queueRevision === session?.queue?.revision,
-	);
+	const drainsShownQueue = (entry: PendingTurnEntry) =>
+		entry.queueRevision !== undefined && entry.queueRevision === session?.queue?.revision;
+	const draining = own.some(drainsShownQueue);
 	if (session && !draining)
 		out.push(
 			...queueGhosts(session).filter(
@@ -129,8 +129,7 @@ export function ghosts(
 		if (entry.state === "canceled") {
 			// A held drain sends only the queue it saw; once that has changed the
 			// hub would refuse it, and the queue shows its messages again.
-			const stale =
-				session !== null && entry.queueRevision !== undefined && entry.queueRevision !== session.queue?.revision;
+			const stale = session !== null && entry.queueRevision !== undefined && !drainsShownQueue(entry);
 			out.push(
 				stale
 					? { ...pendingGhost(entry, "held", ["cancel"]), note: QUEUE_CHANGED }

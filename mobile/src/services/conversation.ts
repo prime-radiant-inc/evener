@@ -473,8 +473,7 @@ function validateCancelQueued(
 	if (
 		receipt.threadId !== expectedThreadId ||
 		receipt.instanceId !== expectedInstanceId ||
-		!ids?.length ||
-		ids.length !== 1 ||
+		ids?.length !== 1 ||
 		ids[0] !== expectedEntryId
 	) {
 		throw new Error("ConversationService: queue action receipt identity mismatch");

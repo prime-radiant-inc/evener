@@ -2444,28 +2444,24 @@ describe("ConversationService", () => {
 });
 
 describe("queue action receipts", () => {
-	const cases = [
-		{
-			method: "turn/cancelQueued" as const,
-			call: (service: ReturnType<typeof createConversationService>) => service.cancelQueued(1, "entry-b", "thread-1"),
-		},
-	];
-	function response(method: string) {
-		const cancel = method === "turn/cancelQueued";
+	const method = "turn/cancelQueued";
+	const cancel = (service: ReturnType<typeof createConversationService>) =>
+		service.cancelQueued(1, "entry-b", "thread-1");
+	function response() {
 		return {
-			...(cancel ? { removedText: "sentinel", removedImages: 2 } : {}),
+			removedText: "sentinel",
+			removedImages: 2,
 			receipt: {
 				clientMutationId: "cmid-1",
 				threadId: "thread-1",
 				instanceId: "thread-1",
 				disposition: "applied",
-				projectionState: cancel ? "removed" : "pending",
+				projectionState: "removed",
 				queueEntryIds: ["entry-b"],
-				...(cancel ? {} : { turnId: "turn-1" }),
 			},
 		};
 	}
-	it.each(cases)("validates $method before treating the action as acknowledged", async ({ method, call }) => {
+	it("validates the cancellation before treating it as acknowledged", async () => {
 		for (const change of [
 			() => null,
 			() => ({}),
@@ -2503,48 +2499,45 @@ describe("queue action receipts", () => {
 			}),
 			(valid: ReturnType<typeof response>) => ({
 				...valid,
-				receipt: {
-					...valid.receipt,
-					turnId: method === "turn/cancelQueued" ? "unexpected" : "",
-				},
+				receipt: { ...valid.receipt, turnId: "unexpected" },
 			}),
 		]) {
 			idCounter = 0;
 			const { client, service } = setup();
-			client.on(method, () => change(response(method)) as never);
+			client.on(method, () => change(response()) as never);
 			await service.open("ref-1");
-			await expect(call(service)).rejects.toThrow();
+			await expect(cancel(service)).rejects.toThrow();
 			expect(client.calls.filter((entry) => entry.method === method)).toHaveLength(1);
 			service.close();
 		}
 	});
-	it.each(cases)("returns the validated $method response", async ({ method, call }) => {
+	it("returns the validated cancellation response", async () => {
 		idCounter = 0;
 		const { client, service } = setup();
-		const value = response(method);
+		const value = response();
 		client.on(method, () => value as never);
 		await service.open("ref-1");
-		await expect(call(service)).resolves.toEqual(value);
+		await expect(cancel(service)).resolves.toEqual(value);
 		expect(client.calls.filter((entry) => entry.method === method)).toHaveLength(1);
 		service.close();
 	});
-	it.each(cases)("rejects the wrong selected entry for $method", async ({ method, call }) => {
+	it("rejects the wrong selected entry", async () => {
 		idCounter = 0;
 		const { client, service } = setup();
-		const value = response(method);
+		const value = response();
 		value.receipt.queueEntryIds = ["other"];
 		client.on(method, () => value as never);
 		await service.open("ref-1");
-		await expect(call(service)).rejects.toThrow();
+		await expect(cancel(service)).rejects.toThrow();
 		service.close();
 	});
 	it("rejects malformed cancellation echoes", async () => {
 		for (const change of [{ removedText: null }, { removedImages: -1 }, { removedImages: 0.5 }]) {
 			idCounter = 0;
 			const { client, service } = setup();
-			client.on("turn/cancelQueued", () => ({ ...response("turn/cancelQueued"), ...change }) as never);
+			client.on(method, () => ({ ...response(), ...change }) as never);
 			await service.open("ref-1");
-			await expect(service.cancelQueued(1, "entry-b", "thread-1")).rejects.toThrow();
+			await expect(cancel(service)).rejects.toThrow();
 			service.close();
 		}
 	});
