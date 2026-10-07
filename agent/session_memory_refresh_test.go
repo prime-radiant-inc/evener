@@ -578,3 +578,27 @@ func TestMemoryRefreshIndexDeltaComparesTheProjectedIndex(t *testing.T) {
 		t.Fatalf("delta should carry only the change inside the cap: %q", delta)
 	}
 }
+
+// A stalled read of a known index delivers no change block; the next
+// completed read delivers the other session's change once.
+func TestMemoryRefreshStalledReadDefersIndexDelta(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	path := memorySeed(t, root, "personal", "opaque-defer-1\n")
+	r := newStalledMemoryRefresh(t, root)
+	r.boundary()
+	writeMemoryIndex(t, path, "opaque-defer-1\nopaque-defer-2\n")
+	flight := r.stalledBoundary(t)
+	if got := memoryContextCount(r.s); got != 1 {
+		t.Fatalf("stalled boundary appended %d contexts, want none", got-1)
+	}
+	r.finish(flight)
+	r.boundary()
+	if got := memoryContextCount(r.s); got != 2 {
+		t.Fatalf("completed boundary appended %d contexts, want one change block", got-1)
+	}
+	r.boundary()
+	if got := memoryContextCount(r.s); got != 2 {
+		t.Fatalf("unchanged boundary appended %d contexts, want none", got-2)
+	}
+}
