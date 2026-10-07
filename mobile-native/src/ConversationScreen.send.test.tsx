@@ -2952,11 +2952,23 @@ describe("queued messages at the transcript's end (spec 8.5)", () => {
 	// a pending mutation; the phone shows it as its own (spec 8.5).
 	// Send now on a queue a Stop held is a promote too: it starts the turn
 	// that takes it.
-	it.each([
+	const STEERS_FROM_QUEUE = [
 		["Steer now", "active", "turn/promoteQueuedAsSteer", ["check the logs"]],
 		["Send now", "idle", "turn/promoteQueuedAsSteer", ["check the logs"]],
 		["Steer all now", "active", "turn/drainAsSteer", ["check the logs", "and the metrics"]],
-	] as const)("shows %s as steering until the agent takes it", async (label, status, method, queued) => {
+	] as const;
+	// Starts the action, as a press does, and leaves it running. Steer all
+	// now is the Queue sheet's, which shows what it hands back.
+	async function steerFromQueue(tree: ReactTestRenderer, ref: string, label: string) {
+		let handedBack: Promise<unknown> | undefined;
+		if (label === "Steer all now")
+			await act(async () => {
+				handedBack = queueHosts.get(sheetKey("hub-1", ref))?.steerAll?.();
+			});
+		else await press(tree, label);
+		return { handedBack };
+	}
+	it.each(STEERS_FROM_QUEUE)("shows %s as steering until the agent takes it", async (label, status, method, queued) => {
 		const ref = `ref-steering-${label}`;
 		const served = thread(ref, status, false, [...queued]);
 		const { tree, hub } = await mount(served);
@@ -2965,8 +2977,8 @@ describe("queued messages at the transcript's end (spec 8.5)", () => {
 		client.request = async (requested, params) => {
 			const answer = await request(requested, params);
 			if (requested === method) {
-				// The read after the press: the queue is empty, and the hub holds
-				// the steer for the agent's next step.
+				// The next read: the queue is empty, and the hub holds the steer
+				// for the agent's next step.
 				const evener = (served as unknown as { evener: Record<string, unknown> }).evener;
 				evener.queue = queueState([], 1);
 				evener.pendingMutations = [
@@ -2984,16 +2996,174 @@ describe("queued messages at the transcript's end (spec 8.5)", () => {
 			}
 			return answer;
 		};
-		if (method === "turn/promoteQueuedAsSteer") await press(tree, label);
-		else
-			await act(async () => {
-				await queueHosts.get(sheetKey("hub-1", ref))?.steerAll?.();
-			});
+		await steerFromQueue(tree, ref, label);
 		await settle();
+		// The read settles the phone's own record of the steer, and the hub's
+		// pending steer is still this phone's.
+		act(() =>
+			hub.notify({
+				method: "evener/thread/resync",
+				params: { ref, threadId: served.id },
+			} as AnyNotification),
+		);
+		await settle();
+		expect(hub.requests.filter((entry) => entry.method === "thread/read").length).toBeGreaterThan(1);
 		expect(hub.requests.filter((entry) => entry.method === method)).toHaveLength(1);
 		expect(lastRow(tree)).toContain("check the logs");
 		expect(lastRow(tree)).toContain("Steering · arrives at the next step");
 		expect(renderedText(tree)).not.toContain("Couldn't steer");
+	});
+
+	// The hub took the steer, but its answer never reached the phone: the
+	// phone sends it again under the same id, the hub replays it, and it
+	// shows as steering. Nothing says the steer failed.
+	it.each(STEERS_FROM_QUEUE)(
+		"shows %s as steering when the hub's answer was lost",
+		async (label, status, method, queued) => {
+			const ref = `ref-lost-${label}`;
+			const served = thread(ref, status, false, [...queued]);
+			const { tree, hub } = await mount(served);
+			const client = hub.client as { request: (method: string, params: Record<string, unknown>) => Promise<unknown> };
+			const request = client.request;
+			let lost = false;
+			client.request = async (requested, params) => {
+				const answer = await request(requested, params);
+				if (requested !== method || lost) return answer;
+				lost = true;
+				hub.notify({
+					method: "thread/queueChanged",
+					params: { threadId: served.id, ref, queue: queueState([], 1) },
+				} as AnyNotification);
+				throw new Error("connection lost");
+			};
+			const { handedBack } = await steerFromQueue(tree, ref, label);
+			await settle();
+			expect(renderedText(tree)).not.toContain("Couldn't steer");
+			expect(await handedBack).toBeFalsy();
+			await act(async () => {
+				await getNativeMutationRuntime().connectionReady();
+			});
+			await settle();
+			const sent = hub.requests.filter((entry) => entry.method === method);
+			expect(sent).toHaveLength(2);
+			expect(sent[1]?.params.clientMutationId).toBe(sent[0]?.params.clientMutationId);
+			expect(lastRow(tree)).toContain("check the logs");
+			expect(lastRow(tree)).toContain("Steering · arrives at the next step");
+			expect(renderedText(tree)).not.toContain("Couldn't steer");
+		},
+	);
+
+	// The hub's queue frame can reach the phone before its answer does: the
+	// message leaves the queue, and the transcript's end still shows it on
+	// its way.
+	it.each(STEERS_FROM_QUEUE)(
+		"keeps %s at the transcript's end while the hub's answer is on its way",
+		async (label, status, method, queued) => {
+			const ref = `ref-frames-first-${label}`;
+			const served = thread(ref, status, false, [...queued]);
+			const { tree, hub } = await mount(served);
+			const client = hub.client as { request: (method: string, params: Record<string, unknown>) => Promise<unknown> };
+			const request = client.request;
+			let answer: () => void = () => undefined;
+			const answered = new Promise<void>((resolve) => {
+				answer = resolve;
+			});
+			client.request = async (requested, params) => {
+				if (requested !== method) return request(requested, params);
+				const reply = request(requested, params);
+				hub.notify({
+					method: "thread/queueChanged",
+					params: { threadId: served.id, ref, queue: queueState([], 1) },
+				} as AnyNotification);
+				await answered;
+				return reply;
+			};
+			await steerFromQueue(tree, ref, label);
+			await settle();
+			expect(hub.requests.filter((entry) => entry.method === method)).toHaveLength(1);
+			expect(lastRow(tree)).toContain("check the logs");
+			expect(lastRow(tree)).not.toContain("Queued ·");
+			await act(async () => answer());
+			await settle();
+			expect(lastRow(tree)).toContain("check the logs");
+			expect(lastRow(tree)).toContain("Steering · arrives at the next step");
+		},
+	);
+
+	const rowsWith = (tree: ReactTestRenderer, text: string) =>
+		transcriptList(tree)
+			.findAll((node) => String(node.type) === "Item")
+			.map(textOf)
+			.filter((row) => row.includes(text));
+
+	// Until the hub answers, the message shows once, on its way, and there is
+	// no second Steer now (or Steer all now) to press for it.
+	it.each(STEERS_FROM_QUEUE)(
+		"shows a message once, with nothing to press again, while its %s waits for the hub",
+		async (label, status, method, queued) => {
+			const ref = `ref-pressed-once-${label}`;
+			const { tree, hub } = await mount(thread(ref, status, false, [...queued]));
+			const client = hub.client as { request: (method: string, params: Record<string, unknown>) => Promise<unknown> };
+			const request = client.request;
+			client.request = async (requested, params) => {
+				if (requested !== method) return request(requested, params);
+				request(requested, params);
+				return new Promise(() => undefined);
+			};
+			await steerFromQueue(tree, ref, label);
+			await settle();
+			expect(hub.requests.filter((entry) => entry.method === method)).toHaveLength(1);
+			expect(rowsWith(tree, "check the logs")).toHaveLength(1);
+			expect(pressable(tree, "Steer now")).toBeUndefined();
+			expect(pressable(tree, "Send now")).toBeUndefined();
+			expect(queueHosts.get(sheetKey("hub-1", ref))?.steerAll).toBeUndefined();
+		},
+	);
+
+	// Steer all now would take the message Steer now is already steering with.
+	it("withholds Steer all now while a Steer now waits for the hub", async () => {
+		const ref = "ref-steer-all-after-promote";
+		const { tree, hub } = await mount(thread(ref, "active", false, ["check the logs", "one", "two"]));
+		expect(queueHosts.get(sheetKey("hub-1", ref))?.steerAll).toBeDefined();
+		const client = hub.client as { request: (method: string, params: Record<string, unknown>) => Promise<unknown> };
+		const request = client.request;
+		client.request = async (requested, params) => {
+			if (requested !== "turn/promoteQueuedAsSteer") return request(requested, params);
+			request(requested, params);
+			return new Promise(() => undefined);
+		};
+		const [steerNow] = tree.root.findAll(
+			(node) => node.props.accessibilityLabel === "Steer now" && typeof node.props.onPress === "function",
+		);
+		act(() => steerNow?.props.onPress());
+		await settle();
+		expect(rowsWith(tree, "Queued ·")).toHaveLength(2);
+		expect(queueHosts.get(sheetKey("hub-1", ref))?.steerAll).toBeUndefined();
+	});
+
+	// A steer the hub refuses names the message it was for, says it was a
+	// steer, and offers only Discard: the message may still be queued.
+	it.each(STEERS_FROM_QUEUE)("names the message when the hub refuses %s", async (label, status, method, queued) => {
+		const ref = `ref-refused-${label}`;
+		const { tree, hub } = await mount(thread(ref, status, false, [...queued]));
+		const client = hub.client as { request: (method: string, params: Record<string, unknown>) => Promise<unknown> };
+		const request = client.request;
+		client.request = async (requested, params) => {
+			if (requested !== method) return request(requested, params);
+			hub.requests.push({ method: requested, params });
+			throw new WireError("queue entry changed", -32013, {
+				evenerErrorInfo: "conflict",
+				clientMutationId: params.clientMutationId,
+				mutationOutcome: "notAccepted",
+				retryDisposition: "none",
+			});
+		};
+		await steerFromQueue(tree, ref, label);
+		await settle();
+		const [refused] = rowsWith(tree, "Couldn't steer with this · queue entry changed");
+		expect(refused).toContain("check the logs");
+		expect(refused).toContain("Discard");
+		expect(refused).not.toContain("Edit");
 	});
 
 	// They take no room from the transcript, so nothing folds while you type.
