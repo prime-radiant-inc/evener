@@ -51,8 +51,12 @@ flowchart LR
 
 Enabled sessions receive separate personal and project `MEMORY.md` projections
 as named user-source context, outside system instructions. Each scope supplies
-at most 8 KiB of index content, cut at a UTF-8 boundary, with explicit truncation
-and a route to `memory_read`. Topic files and logs are not preloaded.
+at most 8 KiB of index content, cut at a UTF-8 boundary, with a route to
+`memory_read`. A projection says nothing about size unless the index was cut;
+then it says the index is too long and to use the gardening-memory skill to
+learn how to fix it. Clients decode that sentence as the truncated flag, and
+transcripts from earlier builds, which carried an explicit "truncated
+true/false" instead, decode as before. Topic files and logs are not preloaded.
 
 Enabled sessions also receive core memory guidance. It is the last section of
 the system prompt, rendered from what the session can do when the prompt is

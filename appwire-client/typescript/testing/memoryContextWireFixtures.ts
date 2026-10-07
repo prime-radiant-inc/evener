@@ -30,7 +30,9 @@ export type MemoryContextWireCase =
   | "suffixed-session"
   | "malformed-project"
   | "index-change-project"
-  | "page-notice-project";
+  | "page-notice-project"
+  | "legacy-current-project"
+  | "legacy-truncated-project";
 
 interface MemoryContextWireFixture {
   case: MemoryContextWireCase;
