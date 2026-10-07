@@ -26,7 +26,17 @@ type MutationOutboxOperation =
   | "transferToRecovery"
   | "updateRecoveryInput"
   | "discardRecovery"
-  | "resendRecovery";
+  | "resendRecovery"
+  | "retargetOutbox";
+
+// What retargetOutbox moved to the resumed ref, by store: the caller drives its
+// per-ref bookkeeping when ANY of them moved (an optimistic-only or
+// recovery-only identity change still needs the new ref pinned and armed).
+export interface RetargetedMutations {
+  outbox: MutationOutboxRecord[];
+  optimistic: MutationOptimisticRecord[];
+  recovery: MutationRecoveryRecord[];
+}
 
 export interface MutationOutboxIndexedDBOptions {
   indexedDB?: IDBFactory;
@@ -423,6 +433,103 @@ export class MutationOutboxIndexedDB {
   async listTargetRefs(): Promise<string[]> {
     const [outbox, optimistic] = await Promise.all([this.listOutbox(), this.listOptimistic()]);
     return [...new Set([...outbox, ...optimistic].map((record) => record.targetRef))].sort();
+  }
+
+  // R09: a store-driven resume can return a different identity, and the rows
+  // parked under the superseded ref can never dispatch again (nothing names that
+  // ref), so they follow the pane to the resumed ref. targetRef and payload.ref
+  // are rewritten, the identity fields (threadId, instanceId, and the payload's
+  // expectedInstanceId) are rewritten to the resumed identity so the daemon's
+  // instance fence accepts the row, and a fresh sequence is allocated under the
+  // new ref (keeping the relative order). The clientMutationId is PRESERVED: the
+  // resumed hydration's reconciliation and every settle lookup key on it. The
+  // matching optimistic copies and the recovery rows (a rejected turn awaiting
+  // Retry) move too, so the new ref's queue strip and recovery list show them
+  // and Retry's fused-identity check (retryBlockedMutation) matches the resumed
+  // model. Canceled rows stay behind - a Stop canceled them, and only an
+  // explicit Retry on the identity that owns them revives one. Callers
+  // re-target only while the old ref's dispatch is held closed by the recovery
+  // obligation, so no row here is mid-dispatch.
+  async retargetOutbox(
+    fromRef: string,
+    toRef: string,
+    identity: { threadId?: string; instanceId?: string },
+  ): Promise<RetargetedMutations> {
+    if (fromRef === toRef) return { outbox: [], optimistic: [], recovery: [] };
+    return this.#write(
+      [OUTBOX_STORE, OPTIMISTIC_STORE, RECOVERY_STORE, SEQUENCE_STORE],
+      "retargetOutbox",
+      async (transaction) => {
+        const outboxStore = transaction.objectStore(OUTBOX_STORE);
+        const optimisticStore = transaction.objectStore(OPTIMISTIC_STORE);
+        const recoveryStore = transaction.objectStore(RECOVERY_STORE);
+        const sequenceStore = transaction.objectStore(SEQUENCE_STORE);
+        // One read of the new ref's sequence row, then consecutive numbering for
+        // the whole batch, then one put - the lists are sorted, so order is kept.
+        const sequence = await requestResult<TargetSequence | undefined>(sequenceStore.get(toRef));
+        let lastSequence = sequence?.lastSequence ?? 0;
+        // The identity token the daemon's instance fence compares: the same
+        // fused reading a fresh send takes (instanceId ?? threadId).
+        const instanceToken = identity.instanceId ?? identity.threadId;
+        // The single rewrite every loop shares: a fresh sequence, the new target
+        // ref, payload.ref, and the resumed identity's threadId/instanceId and
+        // expectedInstanceId. The clientMutationId is deliberately untouched.
+        const move = async (store: IDBObjectStore, record: MutationRecord): Promise<MutationRecord> => {
+          lastSequence += 1;
+          const retargeted: MutationRecord = {
+            ...record,
+            targetRef: toRef,
+            threadId: identity.threadId,
+            instanceId: identity.instanceId,
+            payload: {
+              ...record.payload,
+              ref: toRef,
+              ...("expectedInstanceId" in record.payload ? { expectedInstanceId: instanceToken } : {}),
+            },
+            intentSequence: lastSequence,
+          };
+          await requestResult(store.put(retargeted));
+          return retargeted;
+        };
+        const bySequence = <T extends { intentSequence: number }>(records: T[]) =>
+          records.sort((left, right) => left.intentSequence - right.intentSequence);
+        const eligibleOutbox = bySequence(
+          (await requestResult<MutationOutboxRecord[]>(outboxStore.getAll())).filter(
+            (record) => record.targetRef === fromRef && record.state !== "canceled",
+          ),
+        );
+        // The accepted-but-unreflected copies follow whether or not their outbox
+        // row is still present: the resumed ref's reconciliation settles them by
+        // clientMutationId, and the new ref's strip renders them.
+        const eligibleOptimistic = bySequence(
+          (await requestResult<MutationOptimisticRecord[]>(optimisticStore.getAll())).filter(
+            (record) => record.targetRef === fromRef,
+          ),
+        );
+        // A recovery row is a rejected turn awaiting Retry; Retry's own
+        // fused-identity check compares the row's instanceId ?? threadId against
+        // the press model's, so under the superseded ref it can never be retried
+        // and the identity rewrite below is what makes it reachable under the
+        // resumed one.
+        const eligibleRecovery = bySequence(
+          (await requestResult<MutationRecoveryRecord[]>(recoveryStore.getAll())).filter(
+            (record) => record.targetRef === fromRef,
+          ),
+        );
+        const outbox: MutationOutboxRecord[] = [];
+        const optimistic: MutationOptimisticRecord[] = [];
+        const recovery: MutationRecoveryRecord[] = [];
+        for (const record of eligibleOutbox) outbox.push((await move(outboxStore, record)) as MutationOutboxRecord);
+        for (const record of eligibleOptimistic)
+          optimistic.push((await move(optimisticStore, record)) as MutationOptimisticRecord);
+        for (const record of eligibleRecovery)
+          recovery.push((await move(recoveryStore, record)) as MutationRecoveryRecord);
+        if (lastSequence !== (sequence?.lastSequence ?? 0)) {
+          await requestResult(sequenceStore.put({ ...sequence, targetRef: toRef, lastSequence }));
+        }
+        return { outbox, optimistic, recovery };
+      },
+    );
   }
 
   async getOptimistic(clientMutationId: string): Promise<MutationOptimisticRecord | undefined> {
