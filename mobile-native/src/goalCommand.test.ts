@@ -79,8 +79,7 @@ function boundary() {
 		Object.assign(new FakeClient("ready"), {
 			request: async (method, params) => {
 				if (method === "thread/read") return io.read();
-				if (["turn/steer", "turn/queue", "turn/interrupt"].includes(method))
-					return io.lifecycle(method, params);
+				if (["turn/steer", "turn/queue", "turn/interrupt"].includes(method)) return io.lifecycle(method, params);
 				if (method === "model/list") return io.models();
 				if (method === "thread/fork" || method === "thread/clear") return io.lifecycle(method, params);
 				if (method === "thread/model/set" || method === "thread/reasoning-effort/set")
