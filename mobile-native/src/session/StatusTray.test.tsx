@@ -4,7 +4,7 @@ import { act } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PulseMeter } from "../board/PulseMeter";
 import { palettes } from "../design/tokens";
-import { pressable, render, renderHook, renderedText } from "../renderNative.testkit";
+import { pressable, render, renderHook, renderedText, unmountMountedTrees } from "../renderNative.testkit";
 import { LiveStatusTray, StatusTray, useFrameCounter } from "./StatusTray";
 import { FrameCounter, type TraySource } from "./trayLine";
 
@@ -127,7 +127,10 @@ describe("LiveStatusTray", () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(new Date("2026-09-26T12:00:00Z"));
 	});
-	afterEach(() => vi.useRealTimers());
+	afterEach(() => {
+		unmountMountedTrees();
+		vi.useRealTimers();
+	});
 
 	function live(source: TraySource | null, frames = new FrameCounter(), client: FakeClient | null = null) {
 		return (

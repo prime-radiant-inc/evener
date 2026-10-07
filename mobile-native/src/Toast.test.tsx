@@ -1,6 +1,6 @@
 import { act } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { pressable, render, renderHook, renderedText } from "./renderNative.testkit";
+import { pressable, render, renderHook, renderedText, unmountMountedTrees } from "./renderNative.testkit";
 import { TOAST_ACTION_MS, TOAST_MS, Toast, useToast } from "./Toast";
 
 const announce = vi.hoisted(() => vi.fn());
@@ -10,7 +10,10 @@ vi.mock("react-native", async () => ({
 }));
 
 beforeEach(() => vi.useFakeTimers());
-afterEach(() => vi.useRealTimers());
+afterEach(() => {
+	unmountMountedTrees();
+	vi.useRealTimers();
+});
 
 it("shows a toast, announces it once, and clears it after four seconds", () => {
 	const hook = renderHook(() => useToast());

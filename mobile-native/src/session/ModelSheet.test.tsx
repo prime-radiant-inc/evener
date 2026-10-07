@@ -8,7 +8,7 @@ import { act, type ReactTestInstance, type ReactTestRenderer } from "react-test-
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { paletteFor } from "../design/tokens";
 import type { MobileConversation } from "../projectedRows";
-import { playedHaptics, pressable, render, renderedText, textOf } from "../renderNative.testkit";
+import { playedHaptics, pressable, render, renderedText, textOf, unmountMountedTrees } from "../renderNative.testkit";
 import type { Routes } from "../screens";
 import type { SessionControls } from "../sessionControls";
 import { sheetKey } from "../sheet/sheetHosts";
@@ -155,7 +155,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-	for (const tree of mounted.splice(0)) act(() => tree.unmount());
+	unmountMountedTrees();
+	mounted.length = 0;
 	if (owner) modelHosts.release(sheetKey(HUB, REF), owner);
 	owner = undefined;
 });

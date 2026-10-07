@@ -39,6 +39,7 @@ import {
 	swipeableCalls,
 	swipeRowFully,
 	systemGlass,
+	unmountMountedTrees,
 } from "../renderNative.testkit";
 import { sheetKey } from "../sheet/sheetHosts";
 import { ACTIVITY_POLL_MS, STALE_AFTER_MS } from "./activityPoll";
@@ -207,6 +208,7 @@ function setFocused(focused: boolean) {
 // can't leave a Board behind that reads the next test's connection.
 const mounted: ReactTestRenderer[] = [];
 afterEach(() => {
+	unmountMountedTrees();
 	for (const tree of mounted.splice(0)) if (tree.toJSON() !== null) act(() => tree.unmount());
 	vi.useRealTimers();
 	systemGlass.reset();

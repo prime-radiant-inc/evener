@@ -22,6 +22,7 @@ import {
 	render,
 	render as renderElement,
 	renderedText,
+	unmountMountedTrees,
 } from "../renderNative.testkit";
 import { sheetKey } from "../sheet/sheetHosts";
 import type { SyncStringStorage } from "../syncStringStorage";
@@ -208,7 +209,8 @@ beforeEach(() => {
 	};
 });
 afterEach(() => {
-	for (const tree of trees.splice(0)) act(() => tree.unmount());
+	unmountMountedTrees();
+	trees.length = 0;
 	vi.restoreAllMocks();
 	vi.useRealTimers();
 });

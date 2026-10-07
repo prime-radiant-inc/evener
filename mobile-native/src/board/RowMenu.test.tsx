@@ -3,7 +3,7 @@ import type { ReactTestInstance, ReactTestRenderer } from "react-test-renderer";
 import { act } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { paletteFor } from "../design/tokens";
-import { render, renderedText } from "../renderNative.testkit";
+import { render, renderedText, unmountMountedTrees } from "../renderNative.testkit";
 import { sheetKey } from "../sheet/sheetHosts";
 import type { BoardState, ClassifiedRow } from "./attention";
 import { BoardRow } from "./BoardRow";
@@ -113,23 +113,18 @@ describe("the row menu sheet (ruling 28)", () => {
 		return { provided, calls };
 	}
 	const owner = {};
-	// Every sheet a test mounts, so one that fails before its own unmount
-	// can't leave a sheet behind that answers the next test's host.
-	const sheets: ReactTestRenderer[] = [];
 	afterEach(() => {
-		for (const tree of sheets.splice(0)) act(() => tree.unmount());
+		unmountMountedTrees();
 		rowMenuHosts.release(sheetKey("hub-1"), owner);
 	});
 	function mountSheet(provided: RowMenuHost | undefined, ref = "studio:fix", archived = false) {
 		if (provided) rowMenuHosts.provide(sheetKey("hub-1"), owner, provided);
-		const tree = render(
+		return render(
 			<RowMenuSheet
 				route={{ key: "menu", name: "RowMenuSheet", params: { hubId: "hub-1", ref, archived } } as never}
 				navigation={navigation as never}
 			/>,
 		);
-		sheets.push(tree);
-		return tree;
 	}
 
 	it("shows Close, the card and the row's actions in order, Shut down in dangerInk", () => {

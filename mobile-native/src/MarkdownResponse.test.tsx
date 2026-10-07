@@ -13,7 +13,7 @@ import { DisplayProvider } from "./display/displayContext";
 import { DisplayPreferences } from "./display/displayPreferences";
 import { MarkdownResponse } from "./MarkdownResponse";
 import { MermaidDiagram } from "./MermaidDiagram";
-import { alertRequests, keyboard, render, screenConnection } from "./renderNative.testkit";
+import { alertRequests, keyboard, render, screenConnection, unmountMountedTrees } from "./renderNative.testkit";
 
 const mode = vi.hoisted(() => ({ scheme: "light" as "light" | "dark" }));
 vi.mock("react-native", async () => ({
@@ -323,7 +323,10 @@ beforeEach(() => {
 	vi.mocked(Linking.openURL).mockClear();
 	alertRequests.length = 0;
 });
-afterEach(() => keyboard.reset());
+afterEach(() => {
+	unmountMountedTrees();
+	keyboard.reset();
+});
 function emittedURLs(markdown: string): string[] {
 	const urls: string[] = [];
 	function visit(tokens: ReturnType<typeof lexer>) {

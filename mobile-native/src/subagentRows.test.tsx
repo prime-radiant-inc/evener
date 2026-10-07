@@ -24,7 +24,7 @@ import {
 import { act } from "react-test-renderer";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { projectConversation } from "./projectedRows";
-import { render, renderedText, textOf } from "./renderNative.testkit";
+import { render, renderedText, textOf, unmountMountedTrees } from "./renderNative.testkit";
 import { displayForLevel } from "./session/detailLevels";
 import { findMatches } from "./session/findInSession";
 import { hideAnswerMessages, sessionRows } from "./session/transcriptRows";
@@ -482,17 +482,14 @@ describe("a finished subagent's outcome (audit G13)", () => {
 		);
 	}
 
-	const screens: ReturnType<typeof render>[] = [];
 	function transcript(props: Parameters<typeof Transcript>[0]) {
-		const screen = render(<Transcript {...props} />);
-		screens.push(screen);
-		return screen;
+		return render(<Transcript {...props} />);
 	}
 	const rowText = (screen: ReturnType<typeof render>, delegateId: string) =>
 		textOf(screen.root.find((node) => node.type === TimelineItem && node.props.item.id === delegateId));
 
 	afterEach(() => {
-		for (const screen of screens.splice(0)) act(() => screen.unmount());
+		unmountMountedTrees();
 		forgetSubagentTrees("hub-1");
 	});
 

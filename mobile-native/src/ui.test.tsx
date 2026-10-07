@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { Copy, useColors } from "./ui";
-import { render, renderHook } from "./renderNative.testkit";
+import { render, renderHook, unmountMountedTrees } from "./renderNative.testkit";
 
 // vi.mock is hoisted above everything else, so the scheme and fontScale it
 // reads live in vi.hoisted state rather than plain top-level variables.
@@ -17,6 +17,7 @@ vi.mock("react-native", async () => ({
 // The Dynamic Type case below sets a non-default fontScale; reset it so a
 // later test never inherits it.
 afterEach(() => {
+	unmountMountedTrees();
 	mode.fontScale = 1;
 });
 

@@ -7,7 +7,14 @@ import { cloneElement } from "react";
 import type { ReactTestInstance, ReactTestRenderer } from "react-test-renderer";
 import { act } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { alertRequests, flatListCalls, pressable, render, renderedText } from "../renderNative.testkit";
+import {
+	alertRequests,
+	flatListCalls,
+	pressable,
+	render,
+	renderedText,
+	unmountMountedTrees,
+} from "../renderNative.testkit";
 import { takeQuote } from "../session/pendingQuote";
 import type { SyncStringStorage } from "../syncStringStorage";
 import { documentBlocks } from "./documentBlocks";
@@ -177,6 +184,7 @@ beforeEach(() => {
 	};
 });
 afterEach(() => {
+	unmountMountedTrees();
 	vi.restoreAllMocks();
 });
 

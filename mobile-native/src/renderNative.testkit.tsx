@@ -50,14 +50,15 @@ import { shrinkingScroller } from "./session/dockCard";
 export function answered<T>(value: T): Promise<T> {
 	const promise = Promise.resolve(value);
 	promise.then = ((onFulfilled?: ((value: T) => unknown) | null) => {
-		let next: unknown;
 		try {
-			next = onFulfilled ? onFulfilled(value) : value;
+			const next = onFulfilled ? onFulfilled(value) : value;
+			// Reading then can throw too (a getter); that rejects, as a real
+			// promise's resolution does.
+			const thenable = typeof (next as { then?: unknown } | null)?.then === "function";
+			return thenable ? Promise.resolve(next) : answered(next);
 		} catch (error) {
 			return Promise.reject(error);
 		}
-		const thenable = typeof (next as { then?: unknown } | null)?.then === "function";
-		return thenable ? Promise.resolve(next) : answered(next);
 	}) as typeof promise.then;
 	return promise;
 }

@@ -1,11 +1,14 @@
 import { act } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ConversationStatus } from "../../../mobile/src/state/conversation";
-import { renderHook } from "../renderNative.testkit";
+import { renderHook, unmountMountedTrees } from "../renderNative.testkit";
 import { useReadRetry } from "./useReadRetry";
 
 beforeEach(() => vi.useFakeTimers());
-afterEach(() => vi.useRealTimers());
+afterEach(() => {
+	unmountMountedTrees();
+	vi.useRealTimers();
+});
 
 async function advance(ms: number) {
 	await act(async () => {

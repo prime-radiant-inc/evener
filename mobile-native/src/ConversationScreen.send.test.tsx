@@ -33,6 +33,7 @@ import {
 	screenConnection,
 	systemGlass,
 	textOf,
+	unmountMountedTrees,
 } from "./renderNative.testkit";
 import { queueHosts } from "./QueueSheet";
 import { ConversationScreen } from "./screens";
@@ -323,11 +324,6 @@ const otherThreads = new Map<string, Thread>();
 // The fleet the hub answers the screen's navigation reads with: nobody else
 // needs you unless a test says so.
 const fleet: FleetShape = { live: [], needsYou: [] };
-// Every screen a test mounts. Each is unmounted after its test: a screen
-// left mounted keeps answering late reads and setting header options on the
-// shared navigation mock, so a later test reading the last header options
-// could act on it instead of its own screen.
-const mountedScreens: ReactTestRenderer[] = [];
 // A coordinator's subagent tree (evener/jobs/list) and its direct stop
 // (evener/delegate/stop), for the subagent screen's tests.
 const coordinatorHub: {
@@ -365,11 +361,11 @@ beforeEach(({ onTestFinished }) => {
 	});
 });
 afterEach(() => {
+	unmountMountedTrees();
 	displayPrefs.hubId = null;
 	displayPrefs.config = null;
 	catalogHub.fails = false;
 	readHistory.live = false;
-	for (const tree of mountedScreens.splice(0)) if (tree.toJSON() !== null) act(() => tree.unmount());
 	keyboard.reset();
 	systemGlass.reset();
 	coordinatorHub.tree = null;
@@ -533,7 +529,6 @@ async function mount(
 	await act(async () => {
 		tree = render(<ConversationScreen route={route} navigation={navigation} />);
 	});
-	mountedScreens.push(tree);
 	if (barLaysOut) {
 		const bar = tree.root.findAll(
 			(node) => String(node.type) === "View" && node.props.testID === "session-bottom-bar",
@@ -691,7 +686,10 @@ describe("a question waiting for an answer (spec 8.4)", () => {
 			return 0;
 		});
 	});
-	afterEach(() => vi.unstubAllGlobals());
+	afterEach(() => {
+		unmountMountedTrees();
+		vi.unstubAllGlobals();
+	});
 
 	it("shows the dock in the composer's place", async () => {
 		const { tree } = await mount(thread("ref-question", "awaiting", true));
@@ -3795,7 +3793,10 @@ describe("Commands and skills (spec 8.5, ruling 15)", () => {
 		});
 		vi.mocked(navigation.navigate).mockClear();
 	});
-	afterEach(() => vi.unstubAllGlobals());
+	afterEach(() => {
+		unmountMountedTrees();
+		vi.unstubAllGlobals();
+	});
 
 	it("opens the sheet for a slash typed into an empty draft, and keeps the slash out", async () => {
 		const { tree } = await mount(thread("ref-slash", "idle"));
@@ -3944,6 +3945,7 @@ describe("Find in session (spec 8.7, ruling 29)", () => {
 			vi.stubGlobal("cancelAnimationFrame", (id: number) => void frames.delete(id));
 		});
 		afterEach(() => {
+			unmountMountedTrees();
 			flatListScrollFailures.remaining = 0;
 			vi.unstubAllGlobals();
 		});
@@ -4712,7 +4714,6 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 			] as never,
 		};
 		const tree = render(<SubagentScreen route={route as never} navigation={navigation as never} />);
-		mountedScreens.push(tree);
 		await settle();
 		return { tree, hub };
 	}
@@ -5368,7 +5369,6 @@ describe("Send while offline (phase 6, spec 8.5)", () => {
 		} as unknown as Route;
 		navigationState.state = { index: 0, routes: [route] };
 		const tree = render(<ConversationScreen route={route} navigation={navigation} />);
-		mountedScreens.push(tree);
 		await settle();
 		await type(tree, "not yet");
 		expect(pressable(tree, "Send when you're back online")?.props.accessibilityState).toMatchObject({

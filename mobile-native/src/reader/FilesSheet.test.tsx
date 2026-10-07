@@ -3,7 +3,7 @@
 // when it's new or changed since you last opened it.
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { pressable, render, renderedText } from "../renderNative.testkit";
+import { pressable, render, renderedText, unmountMountedTrees } from "../renderNative.testkit";
 import type { SyncStringStorage } from "../syncStringStorage";
 import { DocumentMemory } from "./documentMemory";
 import { forgetDocumentSummaries } from "./documentSummaries";
@@ -68,6 +68,7 @@ beforeEach(() => {
 	});
 });
 afterEach(() => {
+	unmountMountedTrees();
 	vi.restoreAllMocks();
 });
 

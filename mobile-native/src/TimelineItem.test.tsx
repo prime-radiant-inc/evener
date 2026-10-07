@@ -6,7 +6,7 @@ import type { MobileTimelineItem } from "./projectedRows";
 import { errorAction } from "./session/errorAction";
 import { TimelineItem } from "./TimelineItem";
 import { Platform, Text } from "react-native";
-import { alertRequests, pressable, render, renderedText, textOf } from "./renderNative.testkit";
+import { alertRequests, pressable, render, renderedText, textOf, unmountMountedTrees } from "./renderNative.testkit";
 import type { TimelineRow } from "./timeline";
 
 const mode = vi.hoisted(() => ({ scheme: "light" as "light" | "dark" }));
@@ -389,6 +389,7 @@ describe("a time marker", () => {
 		vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
 	});
 	afterEach(() => {
+		unmountMountedTrees();
 		vi.useRealTimers();
 	});
 

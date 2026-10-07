@@ -33,7 +33,7 @@ import { createActivityStore } from "../../mobile/src/state/activity";
 import { createConversationStore } from "../../mobile/src/state/conversation";
 import { nativeDisclosureStore } from "./nativeDisclosure";
 import { MAX_ITEM_BYTES, projectConversation } from "./projectedRows";
-import { pressable, render, renderedText, textOf } from "./renderNative.testkit";
+import { pressable, render, renderedText, textOf, unmountMountedTrees } from "./renderNative.testkit";
 import { displayForLevel } from "./session/detailLevels";
 import { hideAnswerMessages, sessionRows } from "./session/transcriptRows";
 import { TimelineItem } from "./TimelineItem";
@@ -151,7 +151,6 @@ function mountRow(
 			sourceTurns={sourceTurns}
 		/>,
 	);
-	mountedTrees.add(tree);
 	return tree;
 }
 
@@ -201,13 +200,7 @@ function resetDisclosure(): void {
 	act(() => nativeDisclosureStore.setState(nativeDisclosureStore.getInitialState()));
 }
 
-// Every tree mountRow renders, so a fixture is unmounted promptly and a test
-// that throws partway cannot leave a root subscribed to the shared disclosure
-// store for the rest of the file.
-const mountedTrees = new Set<ReactTestRenderer>();
-
 function unmount(tree: ReactTestRenderer): void {
-	if (!mountedTrees.delete(tree)) return; // already unmounted
 	act(() => tree.unmount());
 }
 
@@ -216,7 +209,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-	for (const tree of [...mountedTrees]) unmount(tree);
+	unmountMountedTrees();
 });
 
 // --- collapsed at every level, both System events settings ------------------
