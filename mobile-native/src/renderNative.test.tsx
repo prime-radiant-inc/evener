@@ -3,9 +3,9 @@
 // told it runs in a React Native test environment (vitestSetup.ts sets that
 // flag). Left unset, every rendering suite buries real stderr under one line
 // per render, so this pins the harness's output as clean (#2433).
-import { createElement } from "react";
+import { createElement, useEffect } from "react";
 import { describe, expect, it, vi } from "vitest";
-import { render } from "./renderNative.testkit";
+import { render, renderHook } from "./renderNative.testkit";
 
 const DEPRECATION = "react-test-renderer is deprecated";
 
@@ -24,5 +24,27 @@ describe("renderNative.testkit", () => {
 			args.some((arg) => typeof arg === "string" && arg.includes(DEPRECATION)),
 		);
 		expect(deprecations).toEqual([]);
+	});
+});
+
+// A tree a test mounts is unmounted once that test ends, so its timers and
+// subscriptions can't update it after the file's last test, outside act,
+// while vitest tears the worker down (#3916, #3924).
+describe("renderNative.testkit unmounts what a test mounted", () => {
+	const unmounted: string[] = [];
+	function Probe({ name }: { name: string }) {
+		useEffect(() => () => void unmounted.push(name), [name]);
+		return null;
+	}
+
+	it("mounts a tree with render and a hook with renderHook", () => {
+		render(createElement(Probe, { name: "render" }));
+		renderHook(() => useEffect(() => () => void unmounted.push("renderHook"), []));
+		expect(unmounted).toEqual([]);
+	});
+
+	it("finds both unmounted once that test ended", () => {
+		// Last mounted, first unmounted, as nested cleanup expects.
+		expect(unmounted).toEqual(["renderHook", "render"]);
 	});
 });

@@ -31,7 +31,7 @@ import {
 	type TestRendererOptions,
 } from "react-test-renderer";
 import type { AnyNotification, ConnectionState, InstanceListResponse } from "@evener/appwire-client";
-import { expect, vi } from "vitest";
+import { expect, onTestFinished, vi } from "vitest";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { ComposerFocus } from "./session/composerFocus";
 import { shrinkingScroller } from "./session/dockCard";
@@ -617,12 +617,21 @@ export function dropped(
 
 /** Mounts `element` and flushes its effects, returning the test renderer.
  * `options.createNodeMock` hands host components' refs a stand-in, such as a
- * ScrollView whose scrollTo a test records. */
+ * ScrollView whose scrollTo a test records.
+ *
+ * The tree is unmounted when the test that mounted it ends, after its
+ * afterEach hooks. A tree left mounted keeps its timers and subscriptions
+ * running, and their updates land after the file's last test, outside act:
+ * React's warning about them can reach the console while vitest tears the
+ * worker down, which fails the run (#3916). A test may still unmount a tree
+ * itself; unmounting it again is a no-op. Call render only inside a test or
+ * a beforeEach. */
 export function render(element: ReactElement, options?: TestRendererOptions): ReactTestRenderer {
 	let tree!: ReactTestRenderer;
 	act(() => {
 		tree = create(element, options);
 	});
+	onTestFinished(() => act(() => tree.unmount()));
 	return tree;
 }
 
@@ -638,10 +647,7 @@ export function renderHook<T>(hook: () => T): {
 		result.current = hook();
 		return null;
 	}
-	let tree!: ReactTestRenderer;
-	act(() => {
-		tree = create(createElement(Probe));
-	});
+	const tree = render(createElement(Probe));
 	return {
 		result,
 		rerender: () => act(() => tree.update(createElement(Probe))),
