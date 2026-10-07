@@ -13,6 +13,7 @@
 // "what is ref X's current thread model" and "what did ref X's composer
 // draft hold, and how do I clear it" - are the injected ports below, sized
 // to exactly what this module calls.
+import type { ComposerMention } from "../../composerInput";
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "../../frameworkFreeStore";
 import type { ThreadModel } from "../../model";
 import { type PendingMethod, type PendingTurnEntry, reconcilePendingEntries } from "./pendingEntries";
@@ -136,25 +137,27 @@ export interface PendingTurnsState<A extends MutationAttachmentRef = MutationAtt
   submittedHere: ReadonlyMap<string, number>;
 }
 
-export interface DraftAuthorityToken {
+// The durable identity of one session's draft row: which namespace
+// incarnation minted it, and how many explicit revisions it has taken. Every
+// write advances the revision, including clear and recreation; a namespace
+// reset mints a new incarnation and invalidates every token that names the
+// old one.
+export interface DraftSessionToken {
   readonly namespaceIncarnation: string;
-  readonly persistentRevision: number;
-  readonly ownerRevision: number;
+  readonly sessionRevision: number;
 }
 
+// Which durable row a settlement guard fences. Ordinary session rows carry
+// the draft backing; a recovery row (owned by the outbox, not this store)
+// names its recovery id.
 export type DraftBackingIdentity =
   | { readonly kind: "draft" }
-  | {
-      readonly kind: "recovery";
-      readonly recoveryId: string;
-      readonly writeVersion: number;
-      readonly replacementEpoch: number;
-    };
+  | { readonly kind: "recovery"; readonly recoveryId: string };
 
 export interface DraftSettlementGuard {
-  readonly token: DraftAuthorityToken;
-  readonly compositionOwnerId: string;
+  readonly token: DraftSessionToken;
   readonly backing: DraftBackingIdentity;
+  readonly localGeneration: number;
 }
 
 export interface DraftSettlement {
@@ -173,8 +176,8 @@ export interface SubmittedDraft {
   text: string;
   skillNames: readonly string[];
   commandNames?: readonly string[];
+  mentions?: readonly ComposerMention[];
   settlementGuard?: DraftSettlementGuard;
-  persistentRevisionAtStart?: number;
   stillOwnsEdit?: () => boolean;
 }
 

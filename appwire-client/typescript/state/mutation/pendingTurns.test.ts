@@ -1,10 +1,11 @@
 // @vitest-environment node
 
 import { describe, expect, expectTypeOf, test } from "vitest";
+import type { ComposerMention } from "../../composerInput";
 import type { ItemModel, ThreadModel } from "../../model";
 import type {
-  DraftAuthorityToken,
   DraftBackingIdentity,
+  DraftSessionToken,
   DraftSettlement,
   DraftSettlementGuard,
   PendingTurnsDraftPort,
@@ -73,24 +74,17 @@ function fakeDraftPort(initial: Partial<FakeDraftState> = {}): PendingTurnsDraft
 }
 
 test("browser draft authority DTOs remain framework-free complete value contracts", () => {
-  expectTypeOf<DraftAuthorityToken>().toEqualTypeOf<{
+  expectTypeOf<DraftSessionToken>().toEqualTypeOf<{
     readonly namespaceIncarnation: string;
-    readonly persistentRevision: number;
-    readonly ownerRevision: number;
+    readonly sessionRevision: number;
   }>();
   expectTypeOf<DraftBackingIdentity>().toEqualTypeOf<
-    | { readonly kind: "draft" }
-    | {
-        readonly kind: "recovery";
-        readonly recoveryId: string;
-        readonly writeVersion: number;
-        readonly replacementEpoch: number;
-      }
+    { readonly kind: "draft" } | { readonly kind: "recovery"; readonly recoveryId: string }
   >();
   expectTypeOf<DraftSettlementGuard>().toEqualTypeOf<{
-    readonly token: DraftAuthorityToken;
-    readonly compositionOwnerId: string;
+    readonly token: DraftSessionToken;
     readonly backing: DraftBackingIdentity;
+    readonly localGeneration: number;
   }>();
   expectTypeOf<DraftSettlement>().toEqualTypeOf<{
     cleared: boolean;
@@ -102,10 +96,11 @@ test("browser draft authority DTOs remain framework-free complete value contract
     text: string;
     skillNames: readonly string[];
     commandNames?: readonly string[];
+    mentions?: readonly ComposerMention[];
     settlementGuard?: DraftSettlementGuard;
-    persistentRevisionAtStart?: number;
     stillOwnsEdit?: () => boolean;
   }>();
+  expectTypeOf<SubmittedDraft>().not.toHaveProperty("persistentRevisionAtStart");
 });
 
 describe("createPendingTurnsStore", () => {
