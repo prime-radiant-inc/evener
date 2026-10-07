@@ -288,10 +288,13 @@ export class NavigationRevalidator {
     e.state = frozen({ ...e.state, targetRevision: nextRevision, forceToken, stale: true, error: null });
     this.emit(e.state);
     if (e.promise) e.rerun = true;
-    else if (e.request) void this.start(e);
+    // A listener may release this entry during the emit, deleting it from the
+    // map (e.g. a lease retiring while force publishes). A detached entry must
+    // not be restarted, or its later response would republish obsolete work.
+    else if (e.request && this.entries.get(keyID(e.state.key)) === e) void this.start(e);
   }
   private start(e: Entry): Promise<ResourceState> {
-    if (!e.request || this.disposed) return Promise.resolve(e.state);
+    if (!e.request || this.disposed || this.entries.get(keyID(e.state.key)) !== e) return Promise.resolve(e.state);
     const epoch = this.epoch;
     e.epoch = epoch;
     const generation = this.generationIDValue;
@@ -300,6 +303,12 @@ export class NavigationRevalidator {
     e.controller = controller;
     e.state = frozen({ ...e.state, loading: true, error: null });
     this.emit(e.state);
+    // The emit may have released this entry; a detached entry must not issue
+    // or publish its request.
+    if (this.disposed || this.entries.get(keyID(e.state.key)) !== e) {
+      controller.abort();
+      return Promise.resolve(e.state);
+    }
     let run!: Promise<ResourceState>;
     run = e
       .request(controller.signal, usableNavigationBase(e.state))
