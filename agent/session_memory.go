@@ -361,17 +361,19 @@ func (s *Session) appendMemoryProjection(p memoryProjection) {
 	if s.memoryEverProjected == nil {
 		s.memoryEverProjected = make(map[string]bool)
 	}
-	// A current index, appended or already in context, becomes the baseline.
-	// Any other state forgets the scope, so the next current read delivers
-	// the full index again: the model was last told there is no index, or
-	// that it could not be read.
-	if p.Status == "current" {
+	prior, exists := s.memoryLastProjected[p.Scope]
+	inContext := exists && prior == p
+	suppressed := !inContext && !s.memoryEverProjected[p.Scope] && (p.Status == "missing" || p.Status == "revoked" || (p.Status == "current" && p.Content == ""))
+	// A current index appended now or already in context becomes the
+	// baseline. Anything else forgets the scope, so the next current read
+	// delivers the full index: the model was last told there is no index, or
+	// that it could not be read, or was told nothing about a first empty one.
+	if p.Status == "current" && !suppressed {
 		s.setMemoryBaselineLocked(p.Scope, memoryIndexBaseline{status: p.Status, index: p.Index})
 	} else {
 		delete(s.memoryBaseline, p.Scope)
 	}
-	prior, exists := s.memoryLastProjected[p.Scope]
-	if (exists && prior == p) || (!s.memoryEverProjected[p.Scope] && (p.Status == "missing" || p.Status == "revoked" || (p.Status == "current" && p.Content == ""))) {
+	if inContext || suppressed {
 		s.memoryMu.Unlock()
 		return
 	}
@@ -420,8 +422,9 @@ func (s *Session) publishKnownMemoryIndex(baseline memoryIndexBaseline, p memory
 // own change back to it. The index is read back through env because an edit
 // only names its replacement, which keeps the baseline equal to the file on
 // disk. Another session writing between this session's write and the
-// read-back is folded into the baseline unseen; that race is accepted because
-// any later change still arrives at the next turn. If the read fails the scope
+// read-back is folded into the baseline unseen. That race is accepted: other
+// sessions' mid-session index changes are not delivered anyway, and the next
+// compaction or resume delivers the full index. If the read fails the scope
 // is forgotten and the next boundary delivers the full index. A read already
 // in flight started before this write, so its result is discarded.
 func (s *Session) noteOwnMemoryIndexWrite(env *execenv.LocalExecutionEnvironment, scope string) {

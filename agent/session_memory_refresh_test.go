@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -163,4 +164,100 @@ func TestMemoryRefreshFullIndexAfterCompactionAndResume(t *testing.T) {
 	restored := memoryContextCount(r)
 	turn(r, restored+1)
 	turn(r, restored+1)
+}
+
+// A first empty index projects nothing and leaves the session without a
+// baseline, so content another session adds later arrives as the full index
+// at the next turn.
+func TestMemoryRefreshEmptyIndexThenContentDeliversFullIndex(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	path := memorySeed(t, root, "personal", "")
+	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(
+		func(req llm.Request) llm.Response {
+			if got := memoryContextMessages(req); got != 0 {
+				t.Fatalf("empty index produced %d memory contexts, want 0", got)
+			}
+			return finalResponse("first")
+		},
+		func(req llm.Request) llm.Response {
+			state, body, _ := memoryRequestIndex(t, req, "personal")
+			if state != "current" || body != "opaque-later-1\n" {
+				t.Fatalf("personal index state=%s body=%q, want current %q", state, body, "opaque-later-1\n")
+			}
+			return finalResponse("second")
+		},
+	))
+	if _, err := s.ProcessInput(context.Background(), "go", nil); err != nil {
+		t.Fatal(err)
+	}
+	writeMemoryIndex(t, path, "opaque-later-1\n")
+	if _, err := s.ProcessInput(context.Background(), "go", nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// With no index at start, the session's own memory_write of MEMORY.md becomes
+// its baseline: neither the next round nor the next turn echoes it back.
+func TestMemoryRefreshIgnoresOwnIndexWriteWithoutIndex(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(
+		func(llm.Request) llm.Response {
+			return memoryCallResponse("memory_write", map[string]any{"scope": "personal", "file_path": "MEMORY.md", "content": "opaque-own-index-1\n"})
+		},
+		func(req llm.Request) llm.Response {
+			if got := memoryContextMessages(req); got != 0 {
+				t.Fatalf("round after the write carries %d memory contexts, want 0", got)
+			}
+			return finalResponse("written")
+		},
+		func(req llm.Request) llm.Response {
+			if got := memoryContextMessages(req); got != 0 {
+				t.Fatalf("next turn carries %d memory contexts, want 0", got)
+			}
+			return finalResponse("next")
+		},
+	))
+	if _, err := s.ProcessInput(context.Background(), "write", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ProcessInput(context.Background(), "next", nil); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(filepath.Join(root, "memory", "personal", "MEMORY.md")); err != nil || string(got) != "opaque-own-index-1\n" {
+		t.Fatalf("index=%q err=%v, want the write applied", got, err)
+	}
+}
+
+// The session's own memory_delete of its index is not echoed back as a
+// missing index at the next turn.
+func TestMemoryRefreshIgnoresOwnIndexDelete(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	path := memorySeed(t, root, "personal", "opaque-doomed-1\n")
+	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(
+		func(llm.Request) llm.Response {
+			return memoryCallResponse("memory_read", map[string]any{"scope": "personal", "file_path": "MEMORY.md"})
+		},
+		func(llm.Request) llm.Response {
+			return memoryCallResponse("memory_delete", map[string]any{"scope": "personal", "file_path": "MEMORY.md"})
+		},
+		func(llm.Request) llm.Response { return finalResponse("deleted") },
+		func(req llm.Request) llm.Response {
+			if got := memoryContextMessages(req); got != 1 {
+				t.Fatalf("next turn carries %d memory contexts, want only the first full index", got)
+			}
+			return finalResponse("next")
+		},
+	))
+	if _, err := s.ProcessInput(context.Background(), "delete", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(path); !os.IsNotExist(err) {
+		t.Fatalf("index still present after delete: %v", err)
+	}
+	if _, err := s.ProcessInput(context.Background(), "next", nil); err != nil {
+		t.Fatal(err)
+	}
 }
