@@ -11924,6 +11924,101 @@ test("a row arriving after the drain cap is still moved by the follow-up pass", 
   }
 });
 
+// A row committed inside the CONVERGENCE pass's own read window - the pass that
+// moves nothing and ends the inline loop - must still be moved by the trailing
+// pass, which is now scheduled unconditionally. The probe also pins the ordering
+// the trailing pass relies on: the inline passes run before the drive publishes
+// the resumed identity, and the trailing pass runs after that publication.
+test("a row committed after the inline loop's empty pass is moved by the trailing pass", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectFakeClient("connecting");
+  const fromRef = "local:converge-from";
+  const toRef = "local:converge-to";
+  fake.on("thread/read", (params) =>
+    params.ref === toRef
+      ? readResponse(toRef, {
+          status: { type: "idle" },
+          evener: { ref: toRef, capabilities: CAPABILITIES, mutationStateAuthoritative: true, queue: { revision: 1 } },
+        })
+      : readResponse(fromRef, {
+          status: { type: "notLoaded" },
+          evener: {
+            ref: fromRef,
+            capabilities: { ...CAPABILITIES, send: false },
+            mutationStateAuthoritative: false,
+            resumeRequired: true,
+            queue: { revision: 0 },
+          },
+        }),
+  );
+  fake.on("thread/resume", () =>
+    readResponse(toRef, {
+      status: { type: "idle" },
+      evener: { ref: toRef, capabilities: CAPABILITIES, mutationStateAuthoritative: true, queue: { revision: 1 } },
+    }),
+  );
+  const starts: string[] = [];
+  fake.on("turn/start", (params) => {
+    starts.push(String(params.ref));
+    return {
+      receipt: mutationReceipt(params.clientMutationId),
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+    };
+  });
+  fake.emitReady();
+  await threadsStore.getState().ensureThread(fromRef);
+  expect(threadsStore.getState().restartBlockingObligations.has(fromRef)).toBe(true);
+  const seedRow = (text: string) =>
+    storage.enqueueIntent({
+      targetRef: fromRef,
+      threadId: `thr_${fromRef}`,
+      instanceId: "instance-old",
+      method: "turn/start",
+      payload: { ref: fromRef, expectedInstanceId: "instance-old", input: [{ type: "text", text }] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/start", input: [{ type: "text", text }] },
+    });
+  await seedRow("seed");
+  // Stage after the first two real passes, then stop, so the next pass finds
+  // nothing (the convergence pass); stage the straggler right after that empty
+  // pass, inside its own read window.
+  let realCalls = 0;
+  let stagedAfterEmpty = false;
+  const publishedAtPass: boolean[] = [];
+  const realRetarget = MutationOutboxIndexedDB.prototype.retargetOutbox;
+  const spy = vi.spyOn(MutationOutboxIndexedDB.prototype, "retargetOutbox").mockImplementation(async function (
+    this: MutationOutboxIndexedDB,
+    from: string,
+    to: string,
+    identity: { threadId?: string; instanceId?: string },
+  ) {
+    publishedAtPass.push(threadsStore.getState().resumedIdentities.has(fromRef));
+    const moved = await realRetarget.call(this, from, to, identity);
+    realCalls += 1;
+    if (realCalls <= 2) {
+      await seedRow(`late ${realCalls}`);
+    } else if (moved.outbox.length === 0 && !stagedAfterEmpty) {
+      stagedAfterEmpty = true;
+      await seedRow("straggler");
+    }
+    return moved;
+  });
+  try {
+    await threadsStore.getState().resumeSession(fromRef);
+    await flushIndexedDBUntil(() => starts.length >= 4);
+    expect(stagedAfterEmpty).toBe(true);
+    expect(starts).toEqual([toRef, toRef, toRef, toRef]);
+    expect(await storage.listOutbox(fromRef)).toEqual([]);
+    // The inline passes (the first four calls) ran before the publication; the
+    // trailing pass saw it.
+    expect(publishedAtPass.slice(0, 4)).toEqual([false, false, false, false]);
+    expect(publishedAtPass[4]).toBe(true);
+  } finally {
+    spy.mockRestore();
+  }
+});
+
 // The harder order of the same property: the resume's OWN post-resume hydration
 // is held open, and the resync tail and a ready discovery each run first. Either
 // may send the parked row; releasing the held refresh afterwards must not send a

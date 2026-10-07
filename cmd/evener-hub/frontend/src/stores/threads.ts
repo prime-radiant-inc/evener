@@ -1745,15 +1745,22 @@ async function runResumeFencedForSend(ref: string): Promise<void> {
       // publishThreadHydration clears only the HYDRATED ref's obligation
       // (threads.ts's reconciliation tail), and the hydration here is the
       // resumed ref. So a concurrent send on the old ref can still be admitted
-      // and park while we drain, which is why this is a bounded loop with a
-      // follow-up rather than a silent cap: a row committed inside the last
-      // pass's read window is moved by the scheduled pass, never stranded.
-      let movedOnLastPass = false;
+      // and park while we drain. The inline loop stops at the first pass that
+      // moves nothing, but a row committed inside THAT pass's own read window is
+      // not in its snapshot, so the trailing pass below is scheduled
+      // unconditionally - not only when the loop reaches its cap.
       for (let pass = 0; pass < RETARGET_DRAIN_PASSES; pass += 1) {
-        movedOnLastPass = await retargetParkedMutations(ref, resumedRef, resumedIdentity);
-        if (!movedOnLastPass) break;
+        if (!(await retargetParkedMutations(ref, resumedRef, resumedIdentity))) break;
       }
-      if (movedOnLastPass) scheduleRetargetDrain(ref, resumedRef, resumedIdentity);
+      // scheduleRetargetDrain queues a microtask, and this drive's remaining
+      // synchronous work (the resumedIdentities publication just below, then the
+      // return) completes before the microtask can run - so the trailing pass
+      // fires after this drive has published the identity, and it is the last
+      // drain this drive performs (it re-schedules itself only while rows keep
+      // moving). Navigation is a later React effect, so the trailing pass can
+      // still precede the pane swap; a press that lands after it starts a fresh
+      // drive once this one has settled, so its row is still moved.
+      scheduleRetargetDrain(ref, resumedRef, resumedIdentity);
       threadsStore.setState((state) => ({
         resumedIdentities: new Map(state.resumedIdentities).set(ref, resumedRef),
       }));
@@ -1775,9 +1782,8 @@ async function runResumeFencedForSend(ref: string): Promise<void> {
   }
 }
 
-// The late-row drain's in-line bound: enough passes for the common case. When it
-// trips with rows still moving, scheduleRetargetDrain runs another pass on a
-// later task rather than exiting silently.
+// The late-row drain's in-line bound: enough passes for the common case. The
+// scheduled trailing pass runs regardless, so the bound never exits silently.
 const RETARGET_DRAIN_PASSES = 3;
 
 // One more drain pass, on a later task, re-scheduling itself while passes keep
@@ -2757,10 +2763,12 @@ export function resumeOnlyLocalDispatchable(ref: string): boolean {
 // (shell/palette/commands.ts's own carve-out, pinned there), so interrupt
 // still enqueues and settles after Resume rather than refusing here. Any
 // method absent from this table is therefore not fenced at admission - the
-// table is the whole policy. turn/start is fenced only while the fence is NOT
-// the merely-resumable case (isResumeOnlyLocal): a session that only needs
-// resume folds it into the send, so enqueueMutationIntent carves that method
-// out - a live Stop drain or a restartRequired daemon still refuses it.
+// table is the whole policy. turn/start is carved out for BOTH Send-driven
+// shapes (sendDrivenLocalModel): the merely-resumable fold
+// (isResumeOnlyLocal), whose resume the hub folds into turn/start, and the
+// Send-resumes face (isSendResumesLocal), whose send parks and drives the
+// store's resume. A live Stop drain or a restartRequired daemon is neither and
+// still refuses it.
 const RECOVERY_FENCE_REFUSALS: Record<string, string> = {
   "turn/start": "Send isn't available until this session is resumed",
   "turn/steer": "Steer isn't available until this session is resumed",
