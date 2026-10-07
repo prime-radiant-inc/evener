@@ -3120,6 +3120,27 @@ describe("queued messages at the transcript's end (spec 8.5)", () => {
 		},
 	);
 
+	// Steer all now would take the message Steer now is already steering with.
+	it("withholds Steer all now while a Steer now waits for the hub", async () => {
+		const ref = "ref-steer-all-after-promote";
+		const { tree, hub } = await mount(thread(ref, "active", false, ["check the logs", "one", "two"]));
+		expect(queueHosts.get(sheetKey("hub-1", ref))?.steerAll).toBeDefined();
+		const client = hub.client as { request: (method: string, params: Record<string, unknown>) => Promise<unknown> };
+		const request = client.request;
+		client.request = async (requested, params) => {
+			if (requested !== "turn/promoteQueuedAsSteer") return request(requested, params);
+			request(requested, params);
+			return new Promise(() => undefined);
+		};
+		const [steerNow] = tree.root.findAll(
+			(node) => node.props.accessibilityLabel === "Steer now" && typeof node.props.onPress === "function",
+		);
+		act(() => steerNow?.props.onPress());
+		await settle();
+		expect(rowsWith(tree, "Queued ·")).toHaveLength(2);
+		expect(queueHosts.get(sheetKey("hub-1", ref))?.steerAll).toBeUndefined();
+	});
+
 	// A steer the hub refuses names the message it was for, says it was a
 	// steer, and offers only Discard: the message may still be queued.
 	it.each(STEERS_FROM_QUEUE)("names the message when the hub refuses %s", async (label, status, method, queued) => {

@@ -335,6 +335,13 @@ test("a promote names the queued entry it steers with; other methods name none",
   expect(entries.map((entry) => entry.queueEntryId)).toEqual(["queue_3", undefined]);
 });
 
+test("a drain names the queue revision it steers with", () => {
+  const drain = outbox("mutation_1", "turn/drainAsSteer", "");
+  const record: MutationOutboxRecord = { ...drain, payload: { ...drain.payload, expectedQueueRevision: 7 } };
+  const [entry] = reconcilePendingEntries("ref_a", [record], model(), NOTHING_SUBMITTED_HERE, UNATTRIBUTED_ONLY);
+  expect(entry?.queueRevision).toBe(7);
+});
+
 test("sorts known-createdAt entries first, ascending, with unknown-createdAt after them", () => {
   const late = { ...outbox("mutation_30", "turn/steer", "late"), createdAt: 30 };
   const early = { ...outbox("mutation_10", "turn/steer", "early"), createdAt: 10 };

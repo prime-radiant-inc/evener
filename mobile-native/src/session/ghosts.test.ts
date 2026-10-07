@@ -120,9 +120,24 @@ describe("queued messages this phone is steering with", () => {
 	});
 
 	it("shows a drained queue once, as its steer", () => {
-		const drain = pending({ method: "drain", text: "first\nsecond" });
+		const drain = pending({ method: "drain", text: "first\nsecond", queueRevision: 3 });
 		const list = ghosts(session("active", ["first", "second"]), [drain], null, [], true);
 		expect(list.map((ghost) => ghost.state)).toEqual(["sending"]);
+	});
+
+	it("shows what was queued after the queue a drain took", () => {
+		const drain = pending({ method: "drain", text: "first", state: "accepted", queueRevision: 3 });
+		const list = ghosts(
+			session("active", ["later"], { queue: queue(["later"], { revision: 4 }) }),
+			[drain],
+			null,
+			[],
+			true,
+		);
+		expect(list.map((ghost) => [ghost.text, ghost.state])).toEqual([
+			["first", "steering"],
+			["later", "queued"],
+		]);
 	});
 
 	it("keeps the queue another client is steering with", () => {

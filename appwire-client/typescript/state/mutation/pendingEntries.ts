@@ -35,6 +35,8 @@ export interface PendingTurnEntry {
   // The queued message a promote steers with, while a durable record of
   // the promote is unsettled: the queue row it will replace.
   queueEntryId?: string;
+  // The queue revision a drain steers with, likewise: the queue it takes.
+  queueRevision?: number;
 }
 
 // The wire-method → PendingMethod mapping that names the entry method family:
@@ -196,6 +198,7 @@ function outboxEntry(
   if (!method) return undefined;
   const preview = inputPreview(outboxInput(record));
   const queueEntryId = method === "promote" ? record.payload.expectedEntryId : undefined;
+  const queueRevision = method === "drain" ? record.payload.expectedQueueRevision : undefined;
   return {
     id: record.clientMutationId,
     ref: record.targetRef,
@@ -210,6 +213,7 @@ function outboxEntry(
     // tier-6 routing here.
     fromThisClient: isOwnMutationRecord(record),
     ...(typeof queueEntryId === "string" ? { queueEntryId } : {}),
+    ...(typeof queueRevision === "number" ? { queueRevision } : {}),
   };
 }
 
