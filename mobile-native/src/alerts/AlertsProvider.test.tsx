@@ -15,7 +15,7 @@ import {
 	session,
 	tick,
 } from "../board/navigationHubTestUtils";
-import { render } from "../renderNative.testkit";
+import { render, unmountMountedTrees } from "../renderNative.testkit";
 import { type AlertSnapshot, DEFAULT_ALERT_PREFERENCES, RELEASE_MS, sessionRef } from "./alertCenter";
 import { alertPreferences } from "./nativeAlertPreferences";
 
@@ -109,6 +109,7 @@ beforeEach(() => {
 	alertPreferences().set(DEFAULT_ALERT_PREFERENCES);
 });
 afterEach(() => {
+	unmountMountedTrees();
 	act(() => mounted?.unmount());
 	mounted = null;
 	vi.useRealTimers();

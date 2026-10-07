@@ -33,7 +33,7 @@ import { createActivityStore } from "../../mobile/src/state/activity";
 import { createConversationStore } from "../../mobile/src/state/conversation";
 import { nativeDisclosureStore } from "./nativeDisclosure";
 import { MAX_ITEM_BYTES, projectConversation } from "./projectedRows";
-import { pressable, render, renderedText, textOf } from "./renderNative.testkit";
+import { pressable, render, renderedText, textOf, unmountMountedTrees } from "./renderNative.testkit";
 import { displayForLevel } from "./session/detailLevels";
 import { hideAnswerMessages, sessionRows } from "./session/transcriptRows";
 import { TimelineItem } from "./TimelineItem";
@@ -216,6 +216,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+	unmountMountedTrees();
 	for (const tree of [...mountedTrees]) unmount(tree);
 });
 

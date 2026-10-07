@@ -3,7 +3,14 @@ import { AccessibilityInfo, Animated, Text } from "react-native";
 import { act, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { paletteFor } from "../design/tokens";
-import { composerFocusedAs, keyboard, render, renderedText, renderHook } from "../renderNative.testkit";
+import {
+	composerFocusedAs,
+	keyboard,
+	render,
+	renderedText,
+	renderHook,
+	unmountMountedTrees,
+} from "../renderNative.testkit";
 import type { ComposerFocus } from "./composerFocus";
 import { NotesBar } from "./NotesBar";
 import { type HeaderHiding, nextHeaderHiding, SessionHeader, useHeaderHiding } from "./SessionHeader";
@@ -21,6 +28,7 @@ vi.mock("../ConnectionProvider", () => ({
 const palette = paletteFor("light");
 
 afterEach(() => {
+	unmountMountedTrees();
 	keyboard.reset();
 	vi.restoreAllMocks();
 });

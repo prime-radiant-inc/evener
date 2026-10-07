@@ -4,7 +4,7 @@ import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { act } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { uiType } from "../design/tokens";
-import { alertRequests, render, renderedText } from "../renderNative.testkit";
+import { alertRequests, render, renderedText, unmountMountedTrees } from "../renderNative.testkit";
 import { HostsController } from "../hosts/hostsController";
 import { hostRow, type ScriptedFleet, scriptedFleet } from "../hosts/hostsTestUtils";
 import { Tag } from "../sheet/Grouped";
@@ -168,6 +168,7 @@ beforeEach(() => {
 	alertRequests.length = 0;
 });
 afterEach(() => {
+	unmountMountedTrees();
 	updates.dispose();
 	context.hosts?.dispose();
 });

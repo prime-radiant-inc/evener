@@ -5,7 +5,7 @@ import { setTimeout as wait } from "node:timers/promises";
 import { StrictMode, useEffect } from "react";
 import { act } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { render, renderHook } from "../renderNative.testkit";
+import { render, renderHook, unmountMountedTrees } from "../renderNative.testkit";
 import { useDocument } from "./useDocument";
 
 const harness = vi.hoisted(() => ({
@@ -69,6 +69,7 @@ beforeEach(() => {
 	});
 });
 afterEach(() => {
+	unmountMountedTrees();
 	vi.restoreAllMocks();
 	vi.useRealTimers();
 });

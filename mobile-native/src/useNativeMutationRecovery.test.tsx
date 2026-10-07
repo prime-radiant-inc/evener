@@ -11,7 +11,7 @@ import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, expect, test, vi } from "vitest";
 import { TABLES } from "./mutationOutboxStorage";
 import { NativeMutationRuntime, nativeMutationTargetKey } from "./nativeMutationRuntime";
-import { renderHook } from "./renderNative.testkit";
+import { renderHook, unmountMountedTrees } from "./renderNative.testkit";
 import type { SqliteSync } from "./sqliteSync";
 import { openSqliteSyncDouble, type SqliteDoubleDatabase } from "./sqliteSync.testkit";
 import { type NativeMutationRecoveryProjection, useNativeMutationRecovery } from "./useNativeMutationRecovery";
@@ -29,6 +29,7 @@ const OTHER_TARGET = nativeMutationTargetKey("hub-2", "ref-2");
 const databases: SqliteDoubleDatabase[] = [];
 
 afterEach(() => {
+	unmountMountedTrees();
 	for (const database of databases.splice(0)) database.close();
 });
 

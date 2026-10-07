@@ -20,7 +20,15 @@ import { FlatList } from "react-native";
 import { act } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { type Thread, WireError } from "@evener/appwire-client";
-import { alertRequests, keyboard, playedHaptics, render, renderedText, screenConnection } from "./renderNative.testkit";
+import {
+	alertRequests,
+	keyboard,
+	playedHaptics,
+	render,
+	renderedText,
+	screenConnection,
+	unmountMountedTrees,
+} from "./renderNative.testkit";
 import { ConversationScreen } from "./screens";
 import { forgetHistoryForHub } from "./session/historyMemory";
 import { detailLevels, forgetDetailLevelsForHub } from "./session/nativeDetailLevels";
@@ -1386,7 +1394,10 @@ it("marks its session seen through the read's turn end once it has loaded in fro
 	await act(async () => tree.unmount());
 });
 
-afterEach(() => vi.useRealTimers());
+afterEach(() => {
+	unmountMountedTrees();
+	vi.useRealTimers();
+});
 
 function olderHistoryAnswers(page: () => unknown, source: Thread = busy): Answers {
 	return {

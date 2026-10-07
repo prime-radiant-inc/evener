@@ -3,7 +3,7 @@ import { connectJobOutputPeer, type JobOutputPeer } from "@evener/appwire-client
 import { createElement } from "react";
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { render, renderedText } from "../renderNative.testkit";
+import { render, renderedText, unmountMountedTrees } from "../renderNative.testkit";
 import { useShellJobOutput } from "./useShellJobOutput";
 
 vi.mock("react-native", async () => (await import("../renderNative.testkit")).nativeModuleMock());
@@ -43,6 +43,7 @@ beforeEach(async () => {
 	({ client, peer } = await connectJobOutputPeer());
 });
 afterEach(() => {
+	unmountMountedTrees();
 	if (screen) act(() => screen?.unmount());
 	screen = undefined;
 	client.close();

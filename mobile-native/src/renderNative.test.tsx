@@ -90,6 +90,16 @@ describe("renderNative.testkit's answered native reads", () => {
 		await expect(chained).rejects.toBe(failure);
 	});
 
+	it("rejects the chain when a returned value's then getter throws", async () => {
+		const failure = new Error("getter");
+		const hostile = Object.defineProperty({}, "then", {
+			get() {
+				throw failure;
+			},
+		});
+		await expect(answered(1).then(() => hostile)).rejects.toBe(failure);
+	});
+
 	it("takes then's onRejected without calling it, and follows a returned thenable", async () => {
 		const seen: string[] = [];
 		void answered(1).then(

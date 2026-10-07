@@ -3,7 +3,7 @@ import type { ReactTestInstance, ReactTestRenderer } from "react-test-renderer";
 import { act } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { paletteFor } from "../design/tokens";
-import { render, renderedText } from "../renderNative.testkit";
+import { render, renderedText, unmountMountedTrees } from "../renderNative.testkit";
 import { sheetKey } from "../sheet/sheetHosts";
 import type { BoardState, ClassifiedRow } from "./attention";
 import { BoardRow } from "./BoardRow";
@@ -117,6 +117,7 @@ describe("the row menu sheet (ruling 28)", () => {
 	// can't leave a sheet behind that answers the next test's host.
 	const sheets: ReactTestRenderer[] = [];
 	afterEach(() => {
+		unmountMountedTrees();
 		for (const tree of sheets.splice(0)) act(() => tree.unmount());
 		rowMenuHosts.release(sheetKey("hub-1"), owner);
 	});

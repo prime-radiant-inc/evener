@@ -10,13 +10,14 @@ import type { InstanceListResponse } from "@evener/appwire-client";
 import type { CredentialInstancesClient, CredentialInstancesStore } from "@evener/appwire-client/state/credentials";
 import { useCredentialStore } from "./credentialStore";
 import { recordClientReadyHub } from "./connectionIdentity";
-import { render, renderHook, scriptedClient } from "./renderNative.testkit";
+import { render, renderHook, scriptedClient, unmountMountedTrees } from "./renderNative.testkit";
 
 const harness = vi.hoisted(() => ({ connection: {} as Record<string, unknown> }));
 vi.mock("expo-crypto", () => ({ randomUUID: () => "fixture-uuid" }));
 vi.mock("./ConnectionProvider", () => ({ useConnection: () => harness.connection }));
 
 afterEach(() => {
+	unmountMountedTrees();
 	vi.restoreAllMocks();
 });
 

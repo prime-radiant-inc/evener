@@ -1,7 +1,7 @@
 import { act } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { AGENT_QUIET_AFTER_MS } from "../board/attention";
-import { renderHook } from "../renderNative.testkit";
+import { renderHook, unmountMountedTrees } from "../renderNative.testkit";
 import { useNowPastQuiet } from "./quietClock";
 
 vi.mock("react-native", async () => (await import("../renderNative.testkit")).nativeModuleMock());
@@ -14,7 +14,10 @@ beforeEach(() => {
 	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
 	vi.setSystemTime(START);
 });
-afterEach(() => vi.useRealTimers());
+afterEach(() => {
+	unmountMountedTrees();
+	vi.useRealTimers();
+});
 
 it("moves on once, when the soonest silence crosses into Quiet", () => {
 	const hook = renderHook(() => useNowPastQuiet(START, silentSince(START - 15_000)));

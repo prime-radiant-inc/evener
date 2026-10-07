@@ -1,6 +1,6 @@
 import { act } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { renderHook } from "../renderNative.testkit";
+import { renderHook, unmountMountedTrees } from "../renderNative.testkit";
 import { useSettledList } from "./useSettledList";
 
 type Item = { key: string; text: string; needsYou?: boolean };
@@ -10,6 +10,7 @@ beforeEach(() => {
 	vi.useFakeTimers();
 });
 afterEach(() => {
+	unmountMountedTrees();
 	vi.useRealTimers();
 });
 

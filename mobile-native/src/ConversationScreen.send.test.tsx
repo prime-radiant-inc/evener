@@ -33,6 +33,7 @@ import {
 	screenConnection,
 	systemGlass,
 	textOf,
+	unmountMountedTrees,
 } from "./renderNative.testkit";
 import { queueHosts } from "./QueueSheet";
 import { ConversationScreen } from "./screens";
@@ -365,6 +366,7 @@ beforeEach(({ onTestFinished }) => {
 	});
 });
 afterEach(() => {
+	unmountMountedTrees();
 	displayPrefs.hubId = null;
 	displayPrefs.config = null;
 	catalogHub.fails = false;
@@ -691,7 +693,10 @@ describe("a question waiting for an answer (spec 8.4)", () => {
 			return 0;
 		});
 	});
-	afterEach(() => vi.unstubAllGlobals());
+	afterEach(() => {
+		unmountMountedTrees();
+		vi.unstubAllGlobals();
+	});
 
 	it("shows the dock in the composer's place", async () => {
 		const { tree } = await mount(thread("ref-question", "awaiting", true));
@@ -3795,7 +3800,10 @@ describe("Commands and skills (spec 8.5, ruling 15)", () => {
 		});
 		vi.mocked(navigation.navigate).mockClear();
 	});
-	afterEach(() => vi.unstubAllGlobals());
+	afterEach(() => {
+		unmountMountedTrees();
+		vi.unstubAllGlobals();
+	});
 
 	it("opens the sheet for a slash typed into an empty draft, and keeps the slash out", async () => {
 		const { tree } = await mount(thread("ref-slash", "idle"));
@@ -3944,6 +3952,7 @@ describe("Find in session (spec 8.7, ruling 29)", () => {
 			vi.stubGlobal("cancelAnimationFrame", (id: number) => void frames.delete(id));
 		});
 		afterEach(() => {
+			unmountMountedTrees();
 			flatListScrollFailures.remaining = 0;
 			vi.unstubAllGlobals();
 		});
