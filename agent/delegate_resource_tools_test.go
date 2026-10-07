@@ -611,13 +611,6 @@ func TestStableDelegateTools_SendReplyNumbersSeveralEarlierResults(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	text := value.(toolpkg.StateResult).Output
-	at := 0
-	for _, want := range []string{"earlier result 1 of 2", "FIRST", "earlier result 2 of 2", "SECOND", "latest result:", "THIRD"} {
-		i := strings.Index(text[at:], want)
-		if i < 0 {
-			t.Fatalf("%q missing after offset %d in %q", want, at, text)
-		}
-		at += i + len(want)
-	}
+	assertOrdered(t, "delegate_send text", value.(toolpkg.StateResult).Output,
+		"earlier result 1 of 2", "FIRST", "earlier result 2 of 2", "SECOND", "latest result:", "THIRD")
 }

@@ -847,18 +847,13 @@ func TestJobResultBodyKeepsRefAheadOfLongEarlierResults(t *testing.T) {
 // and the reply's own output follows the latest-result label.
 func TestJobResultBodyNumbersSeveralEarlierResults(t *testing.T) {
 	t.Parallel()
-	raw := `{"delegate_id":"dlg_1","status":"completed","output":"third","earlier_results":[{"delegate_id":"dlg_1","status":"completed","output":"first"},{"delegate_id":"dlg_1","status":"completed","output":"second"}]}`
+	raw := `{"delegate_id":"dlg_1","status":"completed","output":"OUT-3","earlier_results":[{"delegate_id":"dlg_1","status":"failed","output":"OUT-1"},{"delegate_id":"dlg_1","status":"stopped","output":"OUT-2"}]}`
 	body, ok := jobResultBody(raw)
 	if !ok {
 		t.Fatalf("jobResultBody(%s) fell back", raw)
 	}
-	order := []string{"earlier result 1 of 2", "first", "earlier result 2 of 2", "second", "latest result:", "third"}
-	at := 0
-	for _, want := range order {
-		i := strings.Index(body[at:], want)
-		if i < 0 {
-			t.Fatalf("%q missing after offset %d in:\n%s", want, at, body)
-		}
-		at += i + len(want)
-	}
+	assertOrdered(t, "jobResultBody", body, "status=completed",
+		"earlier result 1 of 2", "status=failed", "OUT-1",
+		"earlier result 2 of 2", "status=stopped", "OUT-2",
+		"latest result:", "OUT-3")
 }
