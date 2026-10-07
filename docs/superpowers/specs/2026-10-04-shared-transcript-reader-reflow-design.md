@@ -105,6 +105,13 @@ A 1px tail stays 1px; it never grows to fill the viewport. This preserves approx
 reader's current reading line in place; exact-word continuity across different
 line wrapping is outside the contract.
 
+A viewport-height-only change, such as composer-height settlement, doesn't
+rewrap the entry, so the entry's offset is kept outright:
+the reader's current reading line stays in place whether the reader is at the
+entry's start, inside it, or reading its tail. A later width reflow measures
+progress against the committed viewport height. An entry whose own height
+changed at the same width takes the bounded rules above.
+
 This policy keeps useful content from the same entry visible. It never replays an
 old pixel offset beyond the entry's new readable extent. Browser scroll bounds
 still apply near the beginning or end of the transcript. A geometry-only fallback
@@ -125,8 +132,9 @@ existing policy; overlapping width reflow uses the bounded policy above.
 
 ## Capture, commit and settlement
 
-1. Maintain the latest valid committed capture for each reader. Width reflow arms
-   restoration from that capture, independently of cascade entry or Return.
+1. Maintain the latest valid committed capture for each reader. A viewport width
+   or height change arms restoration from that capture, independently of
+   cascade entry or Return.
    Further width changes during the same pending restoration retain its original
    semantic point and resolve it against the newest committed dimensions.
    Intermediate clamping or compensation must not replace it with a displaced
