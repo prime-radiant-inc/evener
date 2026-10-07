@@ -13,6 +13,7 @@
 // "what is ref X's current thread model" and "what did ref X's composer
 // draft hold, and how do I clear it" - are the injected ports below, sized
 // to exactly what this module calls.
+
 import type { ComposerMention } from "../../composerInput";
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "../../frameworkFreeStore";
 import type { ThreadModel } from "../../model";
@@ -137,19 +138,11 @@ export interface PendingTurnsState<A extends MutationAttachmentRef = MutationAtt
   submittedHere: ReadonlyMap<string, number>;
 }
 
-// The durable identity of one session's draft row: which namespace
-// incarnation minted it, and how many explicit revisions it has taken. Every
-// write advances the revision, including clear and recreation; a namespace
-// reset mints a new incarnation and invalidates every token that names the
-// old one.
 export interface DraftSessionToken {
   readonly namespaceIncarnation: string;
   readonly sessionRevision: number;
 }
 
-// Which durable row a settlement guard fences. Ordinary session rows carry
-// the draft backing; a recovery row (owned by the outbox, not this store)
-// names its recovery id.
 export type DraftBackingIdentity =
   | { readonly kind: "draft" }
   | { readonly kind: "recovery"; readonly recoveryId: string };
@@ -170,7 +163,9 @@ export interface DraftSettlement {
 // against: what the composer sent, and the draft revision counter it read
 // just before starting - "unchanged" means neither a later edit (the
 // revision moved) nor a different edit already restored (the text/selections
-// no longer match) has happened since.
+// no longer match) has happened since. `mentions` is carried so a browser
+// settlement can compare the exact editor value, and `settlementGuard` is the
+// transactional fence a browser repository checks against its durable row.
 export interface SubmittedDraft {
   draftRevisionAtStart: number;
   text: string;

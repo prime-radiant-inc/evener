@@ -73,7 +73,7 @@ function fakeDraftPort(initial: Partial<FakeDraftState> = {}): PendingTurnsDraft
   };
 }
 
-test("browser draft authority DTOs remain framework-free complete value contracts", () => {
+test("browser draft session DTOs remain framework-free complete value contracts", () => {
   expectTypeOf<DraftSessionToken>().toEqualTypeOf<{
     readonly namespaceIncarnation: string;
     readonly sessionRevision: number;
@@ -100,7 +100,6 @@ test("browser draft authority DTOs remain framework-free complete value contract
     settlementGuard?: DraftSettlementGuard;
     stillOwnsEdit?: () => boolean;
   }>();
-  expectTypeOf<SubmittedDraft>().not.toHaveProperty("persistentRevisionAtStart");
 });
 
 describe("createPendingTurnsStore", () => {

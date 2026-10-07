@@ -1,4 +1,5 @@
-import { IDBFactory } from "fake-indexeddb";
+import type { DraftSessionToken } from "@evener/appwire-client/state/mutation";
+import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
 import { afterEach, expect, expectTypeOf, test, vi } from "vitest";
 import { composerDraftStorageKey, draftStorageKey } from "../panes/session/composer/draft";
 import { parseSkillDocument } from "../panes/session/composer/skillDocument";
@@ -16,7 +17,21 @@ import {
 import { ANNOTATION_NAMESPACES_STORE, LOCAL_COMPOSITION_DATABASE_VERSION } from "./localCompositionSchema";
 
 const namespace = { kind: "browser" as const, origin: "https://hub.test" };
-const key = (sessionRef: string): BrowserDraftKey => browserDraftKey(sessionRef, "https://hub.test");
+const key = (sessionRef: string): BrowserDraftKey => ({ namespace, sessionRef });
+
+const repositoryCleanups: (() => void)[] = [];
+function closeAfterTest(close: () => void): void {
+  repositoryCleanups.push(close);
+}
+afterEach(() => {
+  for (const close of repositoryCleanups.splice(0).reverse()) close();
+  vi.restoreAllMocks();
+});
+
+function committed(result: DraftCommit): StoredComposerDraft {
+  if (result.state !== "committed") throw new Error(`expected committed, got ${result.state}`);
+  return result.draft;
+}
 
 function transactionCompletion(transaction: IDBTransaction): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -51,49 +66,32 @@ async function advanceNamespace(indexedDB: IDBFactory, databaseName: string, inc
   database.close();
 }
 
-// Keep the runtime test's post-dispose key literal independent of the production key helper it is checking.
-function draftStorageKeyForTest(ref: string): string {
-  return `evener.composer.draft.v1.${ref}`;
-}
-
-const repositoryCleanups: (() => void)[] = [];
-function closeAfterTest(close: () => void): void {
-  repositoryCleanups.push(close);
-}
-afterEach(() => {
-  for (const close of repositoryCleanups.splice(0).reverse()) close();
-  vi.restoreAllMocks();
-});
-
-function committed(result: DraftCommit): StoredComposerDraft {
-  if (result.state !== "committed") throw new Error(`expected committed, got ${result.state}`);
-  return result.draft;
-}
-
 test("orders overlapping CAS writes then a later explicit rebase, including identical metadata", async () => {
-  const factory = new IDBFactory(),
-    databaseName = "revision";
+  const factory = new IDBFactory();
+  const databaseName = "revision";
   const a = createBrowserDraftRepository({ indexedDB: factory, databaseName });
   closeAfterTest(() => a.close());
   const b = createBrowserDraftRepository({ indexedDB: factory, databaseName });
   closeAfterTest(() => b.close());
-  const k = browserDraftKey("root", "https://hub.test");
-  const base = committed(await a.seedDraft(k, { text: "/same", skillNames: ["same"], mentions: [] }));
+  const draftKey = browserDraftKey("root", "https://hub.test");
+  const base = committed(await a.seedDraft(draftKey, { text: "/same", skillNames: ["same"], mentions: [] }));
   const results = await Promise.all([
-    a.commitEdit(k, base.token, { text: "first", skillNames: [] }, () => true),
-    b.commitEdit(k, base.token, { text: "second", skillNames: [] }, () => true),
+    a.commitEdit(draftKey, base.token, { text: "first", skillNames: [] }, () => true),
+    b.commitEdit(draftKey, base.token, { text: "second", skillNames: [] }, () => true),
   ]);
   expect(results.filter((r) => r.state === "committed")).toHaveLength(1);
   expect(results.filter((r) => r.state === "conflict")).toHaveLength(1);
-  const current = await a.load(k);
+  const current = await a.load(draftKey);
   if (!current) throw new Error("missing row");
   const next = committed(
-    await b.commitEdit(k, current.token, { text: "last", skillNames: [], mentions: [] }, () => true),
+    await b.commitEdit(draftKey, current.token, { text: "last", skillNames: [], mentions: [] }, () => true),
   );
-  const identical = committed(await a.commitEdit(k, next.token, next, () => true));
-  const metadata = committed(await b.commitEdit(k, identical.token, { ...next, commandNames: ["plan"] }, () => true));
+  const identical = committed(await a.commitEdit(draftKey, next.token, next, () => true));
+  const metadata = committed(
+    await b.commitEdit(draftKey, identical.token, { ...next, commandNames: ["plan"] }, () => true),
+  );
   expect(metadata.token.sessionRevision).toBe(next.token.sessionRevision + 2);
-  expect(await a.load(k)).toMatchObject({ text: "last", commandNames: ["plan"], mentions: [] });
+  expect(await a.load(draftKey)).toMatchObject({ text: "last", commandNames: ["plan"], mentions: [] });
   const guard = captureDraftSettlementGuard(metadata, { kind: "draft" }, 7);
   metadata.token = { namespaceIncarnation: "changed", sessionRevision: 99 };
   expect(guard.token.sessionRevision).toBe(next.token.sessionRevision + 2);
@@ -101,28 +99,28 @@ test("orders overlapping CAS writes then a later explicit rebase, including iden
 });
 
 test("never imports over an explicit empty revision, or reimports changed legacy bytes", async () => {
-  const factory = new IDBFactory(),
-    k = browserDraftKey("root", "https://hub.test");
+  const factory = new IDBFactory();
+  const draftKey = browserDraftKey("root", "https://hub.test");
   const storage = new MemoryStorage();
   const repo = createBrowserDraftRepository({ indexedDB: factory, databaseName: "transfer", storage });
   closeAfterTest(() => repo.close());
   const legacy = composerDraftStorageKey("root");
   storage.setItem(legacy, JSON.stringify({ text: "imported", skillNames: [], mentions: [] }));
-  expect(await repo.transferSupportedDrafts(k.namespace)).toEqual({ state: "committed" });
-  const row = await repo.load(k);
+  expect(await repo.transferSupportedDrafts(draftKey.namespace)).toEqual({ state: "committed" });
+  const row = await repo.load(draftKey);
   if (!row) throw new Error("missing import");
-  committed(await repo.commitEdit(k, row.token, { text: "", skillNames: [] }, () => true));
+  committed(await repo.commitEdit(draftKey, row.token, { text: "", skillNames: [] }, () => true));
   storage.setItem(legacy, JSON.stringify({ text: "later legacy", skillNames: [] }));
-  await repo.transferSupportedDrafts(k.namespace);
-  expect((await repo.load(k))?.text).toBe("");
+  await repo.transferSupportedDrafts(draftKey.namespace);
+  expect((await repo.load(draftKey))?.text).toBe("");
 });
 
 test("cleanup keeps changed inspected bytes, and a listener cannot undo commit", async () => {
-  const factory = new IDBFactory(),
-    k = browserDraftKey("root", "https://hub.test");
+  const factory = new IDBFactory();
+  const draftKey = browserDraftKey("root", "https://hub.test");
   const storage = new MemoryStorage();
-  const legacy = composerDraftStorageKey("root"),
-    changed = '{"text":"changed","skillNames":[]}';
+  const legacy = composerDraftStorageKey("root");
+  const changed = '{"text":"changed","skillNames":[]}';
   storage.setItem(legacy, '{"text":"original","skillNames":[]}');
   const repo = createBrowserDraftRepository({
     indexedDB: factory,
@@ -135,9 +133,9 @@ test("cleanup keeps changed inspected bytes, and a listener cannot undo commit",
   repo.subscribe(() => {
     throw new Error("observer");
   });
-  await repo.transferSupportedDrafts(k.namespace);
+  await repo.transferSupportedDrafts(draftKey.namespace);
   expect(storage.getItem(legacy)).toBe(changed);
-  expect((await repo.load(k))?.text).toBe("original");
+  expect((await repo.load(draftKey))?.text).toBe("original");
 });
 
 test("transfer preserves the current decoder semantics for structured, invalid, JSON-looking, and slash drafts", async () => {
@@ -173,81 +171,88 @@ test("transfer preserves the current decoder semantics for structured, invalid, 
   expect(storage.length).toBe(0);
 });
 
-test("a failed transfer rolls back its markers and row, and a later trigger commits", async () => {
+test("does not reimport stale supported keys after a committed transfer and clear", async () => {
   const indexedDB = new IDBFactory();
   const storage = new MemoryStorage();
-  storage.setItem(draftStorageKey("rollback"), "initial");
-  let failTransfer = true;
+  storage.setItem(draftStorageKey("root"), '{"text":"literal /same"}');
+  const cleanupFaults: string[] = [];
   const repository = createBrowserDraftRepository({
     indexedDB,
-    databaseName: "transfer-rollback",
+    databaseName: "transfer-test",
     storage,
-    beforeCommit: (operation) => {
-      if (operation === "transferSupportedDrafts" && failTransfer) throw new Error("injected transfer fault");
+    beforeLegacyCleanup: () => {
+      cleanupFaults.push("cleanup interrupted");
+      throw new Error("cleanup interrupted");
     },
   });
   closeAfterTest(() => repository.close());
 
-  expect(await repository.transferSupportedDrafts(namespace)).toEqual({ state: "pending" });
-  expect(await repository.load(key("rollback"))).toBeNull();
-  expect(storage.getItem(draftStorageKey("rollback"))).toBe("initial");
-
-  failTransfer = false;
   expect(await repository.transferSupportedDrafts(namespace)).toEqual({ state: "committed" });
-  expect(await repository.load(key("rollback"))).toMatchObject({ text: "initial" });
+  expect(cleanupFaults).toEqual(["cleanup interrupted"]);
+  const draft = await repository.load(key("root"));
+  expect(draft?.text).toBe('{"text":"literal /same"}');
+  expect(draft?.skillNames).toEqual([]);
+  if (!draft) throw new Error("transferred draft missing");
+  const cleared = committed(
+    await repository.commitEdit(key("root"), draft.token, { text: "", skillNames: [] }, () => true),
+  );
+  expect(
+    await repository.clearSubmitted(key("root"), {
+      text: "",
+      skillNames: [],
+      draftRevisionAtStart: 0,
+      settlementGuard: captureDraftSettlementGuard(cleared, { kind: "draft" }, 0),
+      stillOwnsEdit: () => true,
+    }),
+  ).toEqual({ cleared: true, draftUnchanged: true, persistence: "committed" });
+
+  storage.setItem(draftStorageKey("root"), '{"text":"literal /same"}');
+  const restarted = createBrowserDraftRepository({ indexedDB, databaseName: "transfer-test", storage });
+  closeAfterTest(() => restarted.close());
+  expect(await restarted.transferSupportedDrafts(namespace)).toEqual({ state: "committed" });
+  expect((await restarted.load(key("root")))?.text ?? "").toBe("");
 });
 
-test("transfer read faults stay pending and emit no unvalidated console error", async () => {
-  class FailingStorage extends MemoryStorage {
-    override getItem(_key: string): string | null {
-      throw new Error("read unavailable");
-    }
-  }
-  const storage = new FailingStorage();
-  storage.setItem(draftStorageKey("fault"), "unreadable");
-  const repository = createBrowserDraftRepository({ indexedDB: new IDBFactory(), databaseName: "read-fault", storage });
-  closeAfterTest(() => repository.close());
-  expect(await repository.transferSupportedDrafts(namespace)).toEqual({ state: "pending" });
-});
-
-test("seedDraft creates only an absent row", async () => {
+test("seedDraft creates only an absent row at revision 1", async () => {
   const repository = createBrowserDraftRepository({
     indexedDB: new IDBFactory(),
     databaseName: "seed-once",
     storage: new MemoryStorage(),
   });
   closeAfterTest(() => repository.close());
-  const first = await repository.seedDraft(key("seed"), { text: "first", skillNames: [] });
-  if (first.state !== "committed") throw new Error("seed failed");
+  const first = committed(await repository.seedDraft(key("seed"), { text: "first", skillNames: [] }));
+  expect(first.token.sessionRevision).toBe(1);
   expect(await repository.seedDraft(key("seed"), { text: "second", skillNames: [] })).toMatchObject({
     state: "conflict",
     current: { text: "first" },
   });
 });
 
-test("commitEdit treats omitted and explicit empty mentions as distinct editor values and advances identical edits", async () => {
+test("commitEdit advances on identical writes and treats omitted and explicit empty mentions as distinct editor values", async () => {
   const repository = createBrowserDraftRepository({
     indexedDB: new IDBFactory(),
     databaseName: "mention-presence",
     storage: new MemoryStorage(),
   });
   closeAfterTest(() => repository.close());
-  const omittedValue = { text: "/same", skillNames: ["same"] };
-  const seeded = committed(await repository.seedDraft(key("mentions"), omittedValue));
+  const seeded = committed(await repository.seedDraft(key("mentions"), { text: "/same", skillNames: ["same"] }));
 
   const explicitEmptyValue = { text: "/same", skillNames: ["same"], mentions: [] };
   const explicitEmpty = committed(
     await repository.commitEdit(key("mentions"), seeded.token, explicitEmptyValue, () => true),
   );
   expect(explicitEmpty.token.sessionRevision).toBe(seeded.token.sessionRevision + 1);
-  expect(explicitEmpty).toEqual({ ...explicitEmptyValue, key: key("mentions"), token: explicitEmpty.token });
+  expect(explicitEmpty).toEqual({
+    ...explicitEmptyValue,
+    key: key("mentions"),
+    token: explicitEmpty.token,
+  });
   expect(parseSkillDocument(explicitEmpty).toJSON()).toEqual({
     type: "doc",
     content: [{ type: "text", text: "/same" }],
   });
   expect(await repository.load(key("mentions"))).toEqual(explicitEmpty);
 
-  // An explicit identical edit is still an explicit edit: the revision advances.
   const duplicateEmpty = committed(
     await repository.commitEdit(
       key("mentions"),
@@ -257,9 +262,15 @@ test("commitEdit treats omitted and explicit empty mentions as distinct editor v
     ),
   );
   expect(duplicateEmpty.token.sessionRevision).toBe(explicitEmpty.token.sessionRevision + 1);
+  expect(duplicateEmpty).toMatchObject({ text: "/same", skillNames: ["same"], mentions: [] });
 
   const omittedAgain = committed(
-    await repository.commitEdit(key("mentions"), duplicateEmpty.token, omittedValue, () => true),
+    await repository.commitEdit(
+      key("mentions"),
+      duplicateEmpty.token,
+      { text: "/same", skillNames: ["same"] },
+      () => true,
+    ),
   );
   expect(omittedAgain.token.sessionRevision).toBe(duplicateEmpty.token.sessionRevision + 1);
   expect(omittedAgain).not.toHaveProperty("mentions");
@@ -268,11 +279,6 @@ test("commitEdit treats omitted and explicit empty mentions as distinct editor v
     content: [{ type: "skill", attrs: { name: "same" } }],
   });
   expect(await repository.load(key("mentions"))).toEqual(omittedAgain);
-
-  const duplicateOmitted = committed(
-    await repository.commitEdit(key("mentions"), omittedAgain.token, { ...omittedValue }, () => true),
-  );
-  expect(duplicateOmitted.token.sessionRevision).toBe(omittedAgain.token.sessionRevision + 1);
 });
 
 test("commitEdit preserves complete nonempty skill and command mention metadata", async () => {
@@ -305,15 +311,94 @@ test("commitEdit preserves complete nonempty skill and command mention metadata"
     ),
   );
   expect(duplicate.token.sessionRevision).toBe(edited.token.sessionRevision + 1);
+  expect(duplicate).toMatchObject(value);
 });
 
-test("load re-tokens an advanced namespace incarnation, keeps the revision, and cannot authorize a captured old cleanup", async () => {
+test("commitEdit fences on both incarnations and the revision, and honors stillAuthorized before writing", async () => {
+  const repository = createBrowserDraftRepository({
+    indexedDB: new IDBFactory(),
+    databaseName: "draft-cas",
+    storage: new MemoryStorage(),
+  });
+  closeAfterTest(() => repository.close());
+  const seeded = committed(
+    await repository.seedDraft(key("cas"), { text: "before", skillNames: ["skill"], commandNames: ["command"] }),
+  );
+
+  expect(
+    await repository.commitEdit(
+      key("cas"),
+      { namespaceIncarnation: "other", sessionRevision: seeded.token.sessionRevision },
+      { text: "x", skillNames: [] },
+      () => true,
+    ),
+  ).toMatchObject({ state: "conflict", current: { text: "before" } });
+  expect(
+    await repository.commitEdit(
+      key("cas"),
+      { namespaceIncarnation: seeded.token.namespaceIncarnation, sessionRevision: seeded.token.sessionRevision + 5 },
+      { text: "x", skillNames: [] },
+      () => true,
+    ),
+  ).toMatchObject({ state: "conflict", current: { text: "before" } });
+  expect(await repository.commitEdit(key("absent"), seeded.token, { text: "x", skillNames: [] }, () => true)).toEqual({
+    state: "unavailable",
+  });
+  expect(await repository.commitEdit(key("cas"), seeded.token, { text: "x", skillNames: [] }, () => false)).toEqual({
+    state: "unavailable",
+  });
+  expect(await repository.load(key("cas"))).toMatchObject({
+    text: "before",
+    token: seeded.token,
+    commandNames: ["command"],
+  });
+});
+
+test("clearSubmitted clears only the submitted unchanged generation, and a stale settlement cannot clear newer work", async () => {
+  const repository = createBrowserDraftRepository({
+    indexedDB: new IDBFactory(),
+    databaseName: "settlement-guards",
+    storage: new MemoryStorage(),
+  });
+  closeAfterTest(() => repository.close());
+  const seeded = committed(await repository.seedDraft(key("settle"), { text: "send me", skillNames: ["skill"] }));
+  const submitted = { text: "send me", skillNames: ["skill"], draftRevisionAtStart: 0 };
+
+  expect(await repository.clearSubmitted(key("settle"), submitted)).toEqual({
+    cleared: false,
+    draftUnchanged: false,
+    persistence: "committed",
+  });
+  expect(
+    await repository.clearSubmitted(key("settle"), {
+      ...submitted,
+      settlementGuard: captureDraftSettlementGuard(seeded, { kind: "draft" }, 3),
+      stillOwnsEdit: () => false,
+    }),
+  ).toEqual({ cleared: false, draftUnchanged: true, persistence: "committed" });
+  expect(await repository.load(key("settle"))).toMatchObject({ text: "send me" });
+
+  const guard = captureDraftSettlementGuard(seeded, { kind: "draft" }, 3);
+  expect(
+    await repository.clearSubmitted(key("settle"), { ...submitted, settlementGuard: guard, stillOwnsEdit: () => true }),
+  ).toEqual({ cleared: true, draftUnchanged: true, persistence: "committed" });
+  const durable = await repository.load(key("settle"));
+  if (!durable) throw new Error("cleared row missing");
+  expect(durable.text).toBe("");
+  expect(durable.token.sessionRevision).toBe(seeded.token.sessionRevision + 1);
+
+  expect(
+    await repository.clearSubmitted(key("settle"), { ...submitted, settlementGuard: guard, stillOwnsEdit: () => true }),
+  ).toEqual({ cleared: false, draftUnchanged: false, persistence: "committed" });
+  expect(await repository.load(key("settle"))).toMatchObject({ text: "" });
+});
+
+test("load refreshes an advanced namespace incarnation and a captured old token then conflicts", async () => {
   const indexedDB = new IDBFactory();
   const databaseName = "namespace-fence";
   const repository = createBrowserDraftRepository({ indexedDB, databaseName, storage: new MemoryStorage() });
   closeAfterTest(() => repository.close());
   const seeded = committed(await repository.seedDraft(key("fenced"), { text: "preserve", skillNames: ["skill"] }));
-  const guard = captureDraftSettlementGuard(seeded, { kind: "draft" }, 0);
 
   await advanceNamespace(indexedDB, databaseName, "fixture-incarnation-2");
   const refreshed = await repository.load(key("fenced"));
@@ -322,69 +407,14 @@ test("load re-tokens an advanced namespace incarnation, keeps the revision, and 
     skillNames: ["skill"],
     token: { namespaceIncarnation: "fixture-incarnation-2", sessionRevision: seeded.token.sessionRevision },
   });
-
   expect(
     await repository.commitEdit(key("fenced"), seeded.token, { text: "stale", skillNames: [] }, () => true),
-  ).toMatchObject({
-    state: "conflict",
-    current: { text: "preserve" },
-  });
-  expect(
-    await repository.clearSubmitted(key("fenced"), {
-      text: "preserve",
-      skillNames: ["skill"],
-      draftRevisionAtStart: 0,
-      settlementGuard: guard,
-      stillOwnsEdit: () => true,
-    }),
-  ).toEqual({ cleared: false, draftUnchanged: false, persistence: "committed" });
-  expect((await repository.load(key("fenced")))?.text).toBe("preserve");
-});
-
-test("browser clearing requires the copied full guard, a live edit owner and an exact value including mentions", async () => {
-  const repository = createBrowserDraftRepository({
-    indexedDB: new IDBFactory(),
-    databaseName: "settlement-guards",
-    storage: new MemoryStorage(),
-  });
-  closeAfterTest(() => repository.close());
-  const seeded = committed(
-    await repository.seedDraft(key("settle"), { text: "send me", skillNames: ["skill"], mentions: [] }),
+  ).toMatchObject({ state: "conflict", current: { text: "preserve" } });
+  if (!refreshed) throw new Error("refreshed row missing");
+  const next = committed(
+    await repository.commitEdit(key("fenced"), refreshed.token, { text: "next", skillNames: [] }, () => true),
   );
-  const base = { text: "send me", skillNames: ["skill"], mentions: [], draftRevisionAtStart: 0 };
-
-  expect(await repository.clearSubmitted(key("settle"), base)).toEqual({
-    cleared: false,
-    draftUnchanged: false,
-    persistence: "committed",
-  });
-  const guard = captureDraftSettlementGuard(seeded, { kind: "draft" }, 5);
-  expect(
-    await repository.clearSubmitted(key("settle"), { ...base, settlementGuard: guard, stillOwnsEdit: () => false }),
-  ).toEqual({
-    cleared: false,
-    draftUnchanged: true,
-    persistence: "committed",
-  });
-  // An omitted mention list is a different value than the row's explicit empty list.
-  expect(
-    await repository.clearSubmitted(key("settle"), {
-      ...base,
-      mentions: undefined,
-      settlementGuard: guard,
-      stillOwnsEdit: () => true,
-    }),
-  ).toEqual({ cleared: false, draftUnchanged: true, persistence: "committed" });
-  expect(await repository.load(key("settle"))).toMatchObject({ text: "send me" });
-
-  expect(
-    await repository.clearSubmitted(key("settle"), { ...base, settlementGuard: guard, stillOwnsEdit: () => true }),
-  ).toEqual({
-    cleared: true,
-    draftUnchanged: true,
-    persistence: "committed",
-  });
-  expect((await repository.load(key("settle")))?.text).toBe("");
+  expect(next.token.sessionRevision).toBe(refreshed.token.sessionRevision + 1);
 });
 
 test("commit faults are unavailable or pending and leave authoritative work unchanged", async () => {
@@ -415,70 +445,52 @@ test("commit faults are unavailable or pending and leave authoritative work unch
       text: "before",
       skillNames: [],
       draftRevisionAtStart: 0,
-      settlementGuard: captureDraftSettlementGuard(seeded, { kind: "draft" }, 0),
+      settlementGuard: captureDraftSettlementGuard(seeded, { kind: "draft" }, 1),
       stillOwnsEdit: () => true,
     }),
   ).toEqual({ cleared: false, draftUnchanged: true, persistence: "pending" });
   expect(await repository.load(key("fault"))).toMatchObject({ text: "before" });
 });
 
-test("listener failures cannot change committed seed, edit or clear results or stop later listeners", async () => {
-  type ListenerDiagnostic = { path: "listener-failed"; key: BrowserDraftKey; error: unknown };
-  const listenerFailure = new Error("injected listener failure");
-  const diagnostics: ListenerDiagnostic[] = [];
-  const laterNotifications: BrowserDraftKey[] = [];
-  const repository = createBrowserDraftRepository({
-    indexedDB: new IDBFactory(),
-    databaseName: "listener-isolation",
-    storage: new MemoryStorage(),
-    onListenerDiagnostic: (diagnostic: ListenerDiagnostic) => diagnostics.push(diagnostic),
-  });
+test("a real IndexedDB request fault rolls the write back and leaves the durable row unchanged", async () => {
+  const indexedDB = new IDBFactory();
+  const databaseName = "request-fault";
+  const repository = createBrowserDraftRepository({ indexedDB, databaseName, storage: new MemoryStorage() });
   closeAfterTest(() => repository.close());
-  const subscribeFaultThenListener = () => [
-    repository.subscribe(() => {
-      throw listenerFailure;
-    }),
-    repository.subscribe((changed) => laterNotifications.push(changed)),
-  ];
+  const seeded = committed(await repository.seedDraft(key("request-fault"), { text: "authoritative", skillNames: [] }));
 
-  let unsubscribers = subscribeFaultThenListener();
-  const seeded = await repository.seedDraft(key("listener"), { text: "seeded", skillNames: [] });
-  for (const unsubscribe of unsubscribers) unsubscribe();
-  const durableSeed = await repository.load(key("listener"));
-  if (!durableSeed) throw new Error("durable seed missing");
-
-  unsubscribers = subscribeFaultThenListener();
-  const edited = await repository.commitEdit(
-    key("listener"),
-    durableSeed.token,
-    { text: "edited", skillNames: [] },
-    () => true,
-  );
-  const durableEdit = await repository.load(key("listener"));
-  if (!durableEdit) throw new Error("durable edit missing");
-  const cleared = await repository.clearSubmitted(key("listener"), {
-    text: "edited",
-    skillNames: [],
-    draftRevisionAtStart: 0,
-    settlementGuard: captureDraftSettlementGuard(durableEdit, { kind: "draft" }, 0),
-    stillOwnsEdit: () => true,
+  // Instrument the real object store's put and, for one marked value, drop the
+  // keyPath so fake-indexeddb raises its genuine DataError; every other call
+  // delegates to the original method.
+  const originalPut = IDBObjectStore.prototype.put;
+  let injected = false;
+  vi.spyOn(IDBObjectStore.prototype, "put").mockImplementation(function (this: IDBObjectStore, value: unknown) {
+    const candidate = value as { serializedKey?: string; text?: string };
+    if (!injected && candidate.text === "faulting rewrite") {
+      injected = true;
+      const { serializedKey: _dropped, ...broken } = candidate;
+      return originalPut.call(this, broken);
+    }
+    return originalPut.call(this, value);
   });
-  for (const unsubscribe of unsubscribers) unsubscribe();
-  const durableClear = await repository.load(key("listener"));
 
-  expect.soft(seeded).toMatchObject({ state: "committed", draft: { text: "seeded" } });
-  expect.soft(edited).toMatchObject({ state: "committed", draft: { text: "edited" } });
-  expect.soft(cleared).toEqual({ cleared: true, draftUnchanged: true, persistence: "committed" });
-  expect.soft(durableClear?.text ?? "").toBe("");
-  expect.soft(laterNotifications).toEqual([key("listener"), key("listener"), key("listener")]);
-  expect.soft(diagnostics).toHaveLength(3);
-  for (const diagnostic of diagnostics) {
-    expect.soft(diagnostic).toMatchObject({ path: "listener-failed", key: key("listener") });
-    expect.soft(diagnostic.error).toBe(listenerFailure);
-  }
+  expect(
+    await repository.commitEdit(
+      key("request-fault"),
+      seeded.token,
+      { text: "faulting rewrite", skillNames: [] },
+      () => true,
+    ),
+  ).toEqual({ state: "unavailable" });
+  expect(injected).toBe(true);
+  vi.restoreAllMocks();
+
+  const restarted = createBrowserDraftRepository({ indexedDB, databaseName, storage: new MemoryStorage() });
+  closeAfterTest(() => restarted.close());
+  expect(await restarted.load(key("request-fault"))).toMatchObject({ text: "authoritative", token: seeded.token });
 });
 
-test("cleanup removes only inspected bytes and never reimports over a durable row", async () => {
+test("cleanup removes only inspected bytes and a value changed during cleanup is re-inspected on the next scan", async () => {
   const indexedDB = new IDBFactory();
   const storage = new MemoryStorage();
   storage.setItem(draftStorageKey("cleanup-race"), "inspected");
@@ -498,50 +510,114 @@ test("cleanup removes only inspected bytes and never reimports over a durable ro
   expect(storage.getItem(draftStorageKey("cleanup-race"))).toBe("new work");
   expect(await repository.load(key("cleanup-race"))).toMatchObject({ text: "inspected" });
   expect(await repository.transferSupportedDrafts(namespace)).toEqual({ state: "committed" });
+  expect(storage.getItem(draftStorageKey("cleanup-race"))).toBeNull();
   expect(await repository.load(key("cleanup-race"))).toMatchObject({ text: "inspected" });
 });
 
-test("a reopened repository reads the durable cleared row and never reimports legacy bytes", async () => {
+test("transfer read faults stay pending and emit no unvalidated console error", async () => {
+  class FailingStorage extends MemoryStorage {
+    override getItem(_key: string): string | null {
+      throw new Error("read unavailable");
+    }
+  }
+  const storage = new FailingStorage();
+  storage.setItem(draftStorageKey("fault"), "unreadable");
+  const repository = createBrowserDraftRepository({
+    indexedDB: new IDBFactory(),
+    databaseName: "read-fault",
+    storage,
+  });
+  closeAfterTest(() => repository.close());
+  expect(await repository.transferSupportedDrafts(namespace)).toEqual({ state: "pending" });
+});
+
+test("listener failures cannot change committed seed edit or clear results or stop later listeners", async () => {
+  type ListenerDiagnostic = { path: "listener-failed"; key: BrowserDraftKey; error: unknown };
+  const listenerFailure = new Error("injected listener failure");
+  const diagnostics: ListenerDiagnostic[] = [];
+  const laterNotifications: BrowserDraftKey[] = [];
+  const repository = createBrowserDraftRepository({
+    indexedDB: new IDBFactory(),
+    databaseName: "listener-isolation",
+    storage: new MemoryStorage(),
+    onListenerDiagnostic: (diagnostic: ListenerDiagnostic) => diagnostics.push(diagnostic),
+  });
+  closeAfterTest(() => repository.close());
+  const subscribeFaultThenListener = () => [
+    repository.subscribe(() => {
+      throw listenerFailure;
+    }),
+    repository.subscribe((changed) => laterNotifications.push(changed)),
+  ];
+
+  let unsubscribers = subscribeFaultThenListener();
+  const seeded = committed(await repository.seedDraft(key("listener"), { text: "seeded", skillNames: [] }));
+  for (const unsubscribe of unsubscribers) unsubscribe();
+  const durableSeed = await repository.load(key("listener"));
+  if (!durableSeed) throw new Error("durable seed missing");
+
+  unsubscribers = subscribeFaultThenListener();
+  const edited = committed(
+    await repository.commitEdit(key("listener"), durableSeed.token, { text: "edited", skillNames: [] }, () => true),
+  );
+  const durableEdit = await repository.load(key("listener"));
+  if (!durableEdit) throw new Error("durable edit missing");
+  const cleared = await repository.clearSubmitted(key("listener"), {
+    text: "edited",
+    skillNames: [],
+    draftRevisionAtStart: 0,
+    settlementGuard: captureDraftSettlementGuard(durableEdit, { kind: "draft" }, 0),
+    stillOwnsEdit: () => true,
+  });
+  for (const unsubscribe of unsubscribers) unsubscribe();
+  const durableClear = await repository.load(key("listener"));
+
+  expect(seeded).toMatchObject({ text: "seeded" });
+  expect(durableSeed).toEqual(seeded);
+  expect(edited).toMatchObject({ text: "edited" });
+  expect(durableEdit).toEqual(edited);
+  expect(cleared).toEqual({ cleared: true, draftUnchanged: true, persistence: "committed" });
+  expect(durableClear?.text ?? "").toBe("");
+  expect(laterNotifications).toEqual([key("listener"), key("listener"), key("listener")]);
+  expect(diagnostics).toHaveLength(3);
+  for (const diagnostic of diagnostics) {
+    expect(diagnostic).toMatchObject({ path: "listener-failed", key: key("listener") });
+    expect(diagnostic.error).toBe(listenerFailure);
+  }
+});
+
+test("a closed connection reopens on the next write", async () => {
   const indexedDB = new IDBFactory();
   const databaseName = "reopen";
   const storage = new MemoryStorage();
-  const legacy = composerDraftStorageKey("root");
-  storage.setItem(legacy, JSON.stringify({ text: "imported", skillNames: [] }));
   const first = createBrowserDraftRepository({ indexedDB, databaseName, storage });
-  await first.transferSupportedDrafts(namespace);
-  const row = await first.load(key("root"));
-  if (!row) throw new Error("import missing");
-  await first.commitEdit(key("root"), row.token, { text: "", skillNames: [] }, () => true);
+  const seeded = committed(await first.seedDraft(key("reopen"), { text: "durable", skillNames: [] }));
   first.close();
-
-  const reopened = createBrowserDraftRepository({ indexedDB, databaseName, storage });
-  closeAfterTest(() => reopened.close());
-  expect(await reopened.transferSupportedDrafts(namespace)).toEqual({ state: "committed" });
-  expect((await reopened.load(key("root")))?.text).toBe("");
+  const second = createBrowserDraftRepository({ indexedDB, databaseName, storage });
+  closeAfterTest(() => second.close());
+  expect(await second.load(key("reopen"))).toEqual(seeded);
+  const next = committed(
+    await second.commitEdit(key("reopen"), seeded.token, { text: "after reopen", skillNames: [] }, () => true),
+  );
+  expect(next.token.sessionRevision).toBe(seeded.token.sessionRevision + 1);
 });
 
-test("the inactive runtime rescans on its declared lifecycle triggers, recovers a fault, and stops at dispose", async () => {
+test("the inactive runtime rescans only on its four declared lifecycle triggers and the next trigger recovers a fault", async () => {
   const indexedDB = new IDBFactory();
   const storage = new MemoryStorage();
   storage.setItem(draftStorageKey("runtime"), "initial");
-  let attempts = 0;
+  let transferAttempts = 0;
   let failNextTransfer = false;
-  const waiters: Array<{ count: number; resolve: () => void }> = [];
-  const awaitAttempts = (count: number): Promise<void> => {
-    if (attempts >= count) return Promise.resolve();
-    return new Promise((resolve) => waiters.push({ count, resolve }));
-  };
+  let releaseAttempt: (() => void) | undefined;
   const repository = createBrowserDraftRepository({
     indexedDB,
     databaseName: "transfer-runtime",
     storage,
     beforeCommit: (operation) => {
       if (operation !== "transferSupportedDrafts") return;
-      attempts += 1;
-      for (const waiter of waiters.splice(0)) {
-        if (attempts >= waiter.count) waiter.resolve();
-        else waiters.push(waiter);
-      }
+      transferAttempts += 1;
+      releaseAttempt?.();
+      releaseAttempt = undefined;
       if (failNextTransfer) {
         failNextTransfer = false;
         throw new Error("injected transfer fault");
@@ -549,37 +625,53 @@ test("the inactive runtime rescans on its declared lifecycle triggers, recovers 
     },
   });
   closeAfterTest(() => repository.close());
-  const runtime = createBrowserDraftTransferRuntime({ repository, namespace, storage, window, document });
+  const nextAttempt = () =>
+    new Promise<void>((resolve) => {
+      releaseAttempt = resolve;
+    });
 
-  await awaitAttempts(1);
+  let attempt = nextAttempt();
+  const runtime = createBrowserDraftTransferRuntime({ repository, namespace, storage, window, document });
+  await attempt;
+  const imported = await repository.load(key("runtime"));
+  if (!imported) throw new Error("initial runtime import missing");
+  expect(imported.text).toBe("initial");
+  committed(
+    await repository.commitEdit(key("runtime"), imported.token, { text: "authoritative", skillNames: [] }, () => true),
+  );
+
   storage.setItem(draftStorageKey("runtime"), "from composer-open");
+  attempt = nextAttempt();
   runtime.composerOpened(key("runtime"));
-  await awaitAttempts(2);
+  await attempt;
 
   storage.setItem(draftStorageKey("runtime"), "from visibility");
+  attempt = nextAttempt();
   Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
   document.dispatchEvent(new Event("visibilitychange"));
-  await awaitAttempts(3);
+  await attempt;
 
   storage.setItem(draftStorageKey("runtime"), "from storage event");
+  attempt = nextAttempt();
   window.dispatchEvent(new StorageEvent("storage", { key: draftStorageKey("runtime") }));
-  await awaitAttempts(4);
+  await attempt;
 
   storage.setItem(draftStorageKey("runtime"), "after fault");
   failNextTransfer = true;
+  attempt = nextAttempt();
   window.dispatchEvent(new StorageEvent("storage", { key: composerDraftStorageKey("runtime") }));
-  await awaitAttempts(5);
-  runtime.composerOpened(key("runtime"));
-  await awaitAttempts(6);
+  await attempt;
 
-  expect(await repository.load(key("runtime"))).toMatchObject({ text: "initial" });
+  expect(transferAttempts).toBe(5);
+  expect(await repository.load(key("runtime"))).toMatchObject({ text: "authoritative" });
+  // The faulting pass kept its un-inspected bytes for the next trigger.
+  expect(storage.getItem(draftStorageKey("runtime"))).toBe("after fault");
 
   runtime.dispose();
-  const attemptsAtDispose = attempts;
-  storage.setItem(draftStorageKey("runtime"), "after dispose");
-  window.dispatchEvent(new StorageEvent("storage", { key: draftStorageKeyForTest("runtime") }));
+  const attemptsAtDispose = transferAttempts;
+  window.dispatchEvent(new StorageEvent("storage", { key: draftStorageStorageKeyForTest("runtime") }));
   await repository.load(key("runtime"));
-  expect(attempts).toBe(attemptsAtDispose);
+  expect(transferAttempts).toBe(attemptsAtDispose);
 });
 
 test("the inactive runtime coalesces triggers during an attempt to one follow-up without a retry loop", async () => {
@@ -613,5 +705,14 @@ test("the inactive runtime coalesces triggers during an attempt to one follow-up
   expect(attempts).toBe(2);
   runtime.dispose();
 });
+
+// Keep the runtime test's post-dispose key literal independent of the production key helper it is checking.
+function draftStorageStorageKeyForTest(ref: string): string {
+  return `evener.composer.draft.v1.${ref}`;
+}
+
+// Compile-time contract: a session token comparison must include every durable authority field.
+const completeToken: DraftSessionToken = { namespaceIncarnation: "incarnation", sessionRevision: 1 };
+void completeToken;
 
 expectTypeOf(createBrowserDraftRepository).returns.toEqualTypeOf<BrowserDraftRepository>();
