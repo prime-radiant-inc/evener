@@ -994,11 +994,15 @@ func (c *delegateTreeController) Snapshot() delegateUpdatePlan {
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
-	rows := make([]delegateSnapshot, 0, len(ids))
-	for _, id := range ids {
-		rows = append(rows, c.captureDelegateSnapshotLocked(id))
-	}
-	return delegateUpdatePlan{rows: rows}
+	return delegateUpdatePlan{rows: c.captureDelegateSnapshotsLocked(ids)}
+}
+
+// sessionSubtreeSnapshot captures, in id order, the delegates in sessionID's
+// subtree (sessionSubtreeDelegateIDs): a session's own delegate roster.
+func (c *delegateTreeController) sessionSubtreeSnapshot(sessionID string) []delegateSnapshot {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.captureDelegateSnapshotsLocked(sessionSubtreeDelegateIDs(c.durable, sessionID))
 }
 
 // snapshotsForChildSession captures, in id order, only the delegates whose
@@ -1015,11 +1019,7 @@ func (c *delegateTreeController) snapshotsForChildSession(childSessionID string)
 		}
 	}
 	sort.Strings(ids)
-	rows := make([]delegateSnapshot, 0, len(ids))
-	for _, id := range ids {
-		rows = append(rows, c.captureDelegateSnapshotLocked(id))
-	}
-	return rows
+	return c.captureDelegateSnapshotsLocked(ids)
 }
 
 // blockingDelegateIDs returns this session's direct child delegates whose
@@ -1094,11 +1094,16 @@ func (c *delegateTreeController) appendResumabilityClosureLocked(delegateID stri
 		}
 	}
 	sort.Strings(ids)
+	return delegateUpdatePlan{rows: c.captureDelegateSnapshotsLocked(ids)}, nil
+}
+
+// captureDelegateSnapshotsLocked captures ids' rows, in the order given.
+func (c *delegateTreeController) captureDelegateSnapshotsLocked(ids []string) []delegateSnapshot {
 	rows := make([]delegateSnapshot, 0, len(ids))
 	for _, id := range ids {
 		rows = append(rows, c.captureDelegateSnapshotLocked(id))
 	}
-	return delegateUpdatePlan{rows: rows}, nil
+	return rows
 }
 
 func (c *delegateTreeController) captureDelegateSnapshotLocked(id string) delegateSnapshot {

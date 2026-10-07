@@ -1,7 +1,8 @@
 import type { InputItem, MutationReceipt } from "@evener/appwire-client";
 import type { MutationAttachmentRef, MutationPersistenceSnapshot } from "@evener/appwire-client/state/mutation";
 
-export type ConversationMutationKind = "send" | "steer" | "queue" | "interrupt";
+// A promote steers with one queued message, named by queueEntry.
+export type ConversationMutationKind = "send" | "steer" | "queue" | "interrupt" | "promote";
 
 export interface ConversationMutationRequest {
 	readonly kind: ConversationMutationKind;
@@ -11,6 +12,10 @@ export interface ConversationMutationRequest {
 	readonly instanceId: string;
 	readonly input: InputItem[];
 	readonly expectedQueueRevision?: number;
+	readonly queueEntry?: { readonly index: number; readonly id: string };
+	// What the message's ghost shows when the input doesn't say: the queued
+	// messages a promote or drain steers with, which the hub already holds.
+	readonly display?: InputItem[];
 }
 
 export interface ConversationMutationSubmitter {

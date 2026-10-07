@@ -27,7 +27,7 @@ import { fileURLToPath } from "node:url";
 import {
   applyViewport,
   clearViewportOverride,
-  connectPage,
+  connectOnlyPage,
   createStartupDeadline,
   evaluate,
   navigateTo,
@@ -116,7 +116,7 @@ function assertClosed(snapshot, label, failures) {
 
 async function assertAt(cdpEndpoint, vitePort, width) {
   const failures = [];
-  const page = await connectPage(cdpEndpoint);
+  const page = await connectOnlyPage(cdpEndpoint);
   const { send } = page;
   const label = `${width}px`;
   try {
@@ -181,7 +181,7 @@ async function assertAt(cdpEndpoint, vitePort, width) {
 
 async function assertFullDoesNotAutoOpen(cdpEndpoint, vitePort) {
   const failures = [];
-  const page = await connectPage(cdpEndpoint);
+  const page = await connectOnlyPage(cdpEndpoint);
   const { send } = page;
   try {
     await applyViewport(send, { width: 1024, height: 900 });
