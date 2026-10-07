@@ -1035,6 +1035,19 @@ it.each([
 	expect(renderedText(tree)).toContain(caption);
 });
 
+// A typed command the outbox couldn't take never left the phone: it says try
+// again, and the text is still there to send.
+it("asks to try a typed /queue again when the phone couldn't keep it", async () => {
+	const { tree, hub } = await mount(thread("ref-typed-refused", "active"));
+	vi.spyOn(getNativeMutationRuntime(), "submit").mockRejectedValueOnce(new Error("disk full"));
+	await type(tree, "/queue check the logs");
+	await press(tree, "Queue");
+	expect(hub.mutations()).toEqual([]);
+	expect(renderedText(tree)).toContain("Couldn't save this on the phone. Try again.");
+	expect(renderedText(tree)).not.toContain("Could not confirm the command");
+	expect(renderedText(tree)).toContain("/queue check the logs");
+});
+
 // A typed /interrupt is Stop: it holds the messages this phone hasn't sent
 // yet, so they don't go out after it.
 it("holds the phone's unsent messages on /interrupt, as Stop does", async () => {
