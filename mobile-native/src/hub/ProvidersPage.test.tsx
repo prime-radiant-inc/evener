@@ -37,8 +37,9 @@ import {
 } from "../renderNative.testkit";
 
 // Every page a test mounts is unmounted once the test ends. A page left
-// mounted keeps its listing retry and sign-in poll timers running, and their
-// state updates land after the file's last test, outside act: React's warning
+// mounted keeps its timers (the listing retry, the sign-in poll) and store
+// subscriptions running, and their updates land after the file's last test,
+// outside act: React's warning
 // about them can reach the console while vitest is tearing the file's worker
 // down, which fails the run (#3916).
 const mounted: ReactTestRenderer[] = [];
