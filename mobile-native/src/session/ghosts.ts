@@ -90,9 +90,11 @@ export function ghosts(
 	const steering = (entry: PendingTurnEntry) =>
 		STEERS.has(entry.method) && (entry.state === "accepted" || entry.state === "claimed");
 	const out: Ghost[] = own.filter(steering).map((entry) => pendingGhost(entry, "steering", []));
-	// A queued message this phone is steering with shows once, as its steer.
+	// A queued message this phone is steering with shows once, as its steer:
+	// a promote names its message, and a drain takes the whole queue.
 	const promoted = new Set(own.flatMap((entry) => entry.queueEntryId ?? []));
-	if (session)
+	const draining = own.some((entry) => entry.method === "drain");
+	if (session && !draining)
 		out.push(
 			...queueGhosts(session).filter(
 				(ghost) => !(ghost.origin.kind === "queue" && promoted.has(ghost.origin.entry.id)),

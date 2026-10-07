@@ -3097,8 +3097,8 @@ describe("queued messages at the transcript's end (spec 8.5)", () => {
 			.filter((row) => row.includes(text));
 
 	// Until the hub answers, the message shows once, on its way, and there is
-	// no second Steer now to press for it.
-	it.each(STEERS_FROM_QUEUE.slice(0, 2))(
+	// no second Steer now (or Steer all now) to press for it.
+	it.each(STEERS_FROM_QUEUE)(
 		"shows a message once, with nothing to press again, while its %s waits for the hub",
 		async (label, status, method, queued) => {
 			const ref = `ref-pressed-once-${label}`;
@@ -3110,10 +3110,13 @@ describe("queued messages at the transcript's end (spec 8.5)", () => {
 				request(requested, params);
 				return new Promise(() => undefined);
 			};
-			await press(tree, label);
+			await steerFromQueue(tree, ref, label);
+			await settle();
 			expect(hub.requests.filter((entry) => entry.method === method)).toHaveLength(1);
 			expect(rowsWith(tree, "check the logs")).toHaveLength(1);
-			expect(pressable(tree, label)).toBeUndefined();
+			expect(pressable(tree, "Steer now")).toBeUndefined();
+			expect(pressable(tree, "Send now")).toBeUndefined();
+			expect(queueHosts.get(sheetKey("hub-1", ref))?.steerAll).toBeUndefined();
 		},
 	);
 

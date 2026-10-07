@@ -2689,12 +2689,10 @@ export function ConversationScreen({
 	const queuedGhosts = allGhosts.filter((ghost) => ghost.origin.kind === "queue");
 	const queuedKey = JSON.stringify(queuedGhosts);
 	// Like the per-message actions, it goes to the hub, so it isn't offered
-	// while the hub is away.
+	// while the hub is away, and it counts only the messages still queued,
+	// not those this phone is already steering with.
 	const canSteerAll =
-		connected &&
-		!!conversation &&
-		(conversation.queue?.depth ?? 0) > 1 &&
-		conversationControls(conversation).drainQueue;
+		connected && !!conversation && queuedGhosts.length > 1 && conversationControls(conversation).drainQueue;
 	// biome-ignore lint/correctness/useExhaustiveDependencies: queuedKey stands in for queuedGhosts, a new array each render
 	const queueHost = useMemo<QueueHost>(
 		() => ({

@@ -32,8 +32,8 @@ export interface PendingTurnEntry {
   // sends, never the daemon's session-wide projection of every client's), and
   // that answer cannot change when a hydrate lands.
   fromThisClient: boolean;
-  // The queued message a promote steers with, while this client's own
-  // record of it is unsettled: the queue row it will replace.
+  // The queued message a promote steers with, while a durable record of
+  // the promote is unsettled: the queue row it will replace.
   queueEntryId?: string;
 }
 
