@@ -307,9 +307,21 @@ export async function connectPage(endpoint, targetId) {
       pending.delete(message.id);
     }
   });
+  // A command still in flight when the socket closes (a target Chrome was
+  // already tearing down) fails rather than hanging the guard.
+  ws.addEventListener("close", () => {
+    for (const settle of pending.values()) settle({ error: { message: "CDP socket closed" } });
+    pending.clear();
+  });
   await new Promise((resolve, reject) => {
     ws.addEventListener("open", resolve, { once: true });
-    ws.addEventListener("error", reject, { once: true });
+    // The ErrorEvent itself stringifies as a bare "[object ErrorEvent]".
+    ws.addEventListener(
+      "error",
+      (event) =>
+        reject(new Error(`CDP socket to ${target.webSocketDebuggerUrl} failed: ${event.message || "no detail"}`)),
+      { once: true },
+    );
   });
 
   const send = (method, params = {}) =>

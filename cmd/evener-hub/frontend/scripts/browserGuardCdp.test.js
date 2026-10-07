@@ -25,6 +25,7 @@ import {
   CDP_EVALUATE_TRIPWIRE_MS,
   clearViewportOverride,
   collectFontStatusInPage,
+  connectPage,
   createStartupDeadline,
   devtoolsHttpURL,
   evaluate,
@@ -45,6 +46,58 @@ afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+});
+
+// A fake page target: /json/list names one page, and its socket is driven by
+// the test through the returned handle.
+function stubPageTarget() {
+  const socketURL = "ws://127.0.0.1:9/devtools/page/T1";
+  const socket = new EventTarget();
+  socket.sent = [];
+  socket.send = (data) => socket.sent.push(JSON.parse(data));
+  socket.close = () => {};
+  vi.stubGlobal("fetch", async () => ({
+    json: async () => [{ id: "T1", type: "page", webSocketDebuggerUrl: socketURL }],
+  }));
+  vi.stubGlobal(
+    "WebSocket",
+    class {
+      constructor(url) {
+        assert.equal(url, socketURL);
+        return socket;
+      }
+    },
+  );
+  return { socket, socketURL, endpoint: { url: "ws://127.0.0.1:9/devtools/browser/B" } };
+}
+
+// Chrome keeps listing a target for a moment after /json/close, and a socket to
+// it fails with an ErrorEvent that stringifies as a bare "[object ErrorEvent]"
+// (#3895): the rejection has to say which socket failed.
+test("connectPage rejects a failed socket with an Error naming the target", async () => {
+  const { socket, socketURL, endpoint } = stubPageTarget();
+  const connecting = connectPage(endpoint);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  socket.dispatchEvent(new Event("error"));
+  await assert.rejects(connecting, (error) => {
+    assert.ok(error instanceof Error);
+    assert.match(error.message, new RegExp(`CDP socket to ${socketURL} failed`));
+    return true;
+  });
+});
+
+// A socket to a closing target can open and then close with a command still
+// unanswered; that command must fail instead of hanging the guard.
+test("connectPage fails a pending command when its socket closes", async () => {
+  const { socket, endpoint } = stubPageTarget();
+  const connecting = connectPage(endpoint);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  socket.dispatchEvent(new Event("open"));
+  const page = await connecting;
+  const pending = page.send("Runtime.evaluate", { expression: "1" });
+  socket.dispatchEvent(new Event("close"));
+  const stillPending = new Promise((resolve) => setTimeout(() => resolve("still pending"), 1000));
+  await assert.rejects(Promise.race([pending, stillPending]), /Runtime\.evaluate: .*CDP socket closed/);
 });
 
 test("preserves the announced endpoint host when building HTTP URLs", () => {

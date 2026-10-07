@@ -58,8 +58,8 @@ const BOOT = {
 // and returns the parsed result of `expression`. Every measurement below is
 // one call to this - the per-measure differences are the viewport and the
 // expression or page action, nothing else.
-async function measureOnPage(cdpEndpoint, vitePort, viewport, expression) {
-  const page = await connectPage(cdpEndpoint);
+async function measureOnPage(cdpEndpoint, sharedTabId, vitePort, viewport, expression) {
+  const page = await connectPage(cdpEndpoint, sharedTabId);
   const { send } = page;
   try {
     // Every measurement shares this tab, and the outgoing document can still
@@ -995,19 +995,25 @@ async function main() {
       viteDeadline.clear();
     }
     cdpEndpoint = await waitForBrowserReady(guard);
+    // The measurements share this tab, named by id: Chrome keeps listing a tab
+    // for a moment after /json/close, so "the first listed page" can be the
+    // click-geometry tab just closed, whose socket fails or never answers (#3895).
+    const sharedTab = await openPage(cdpEndpoint, "about:blank");
     console.log(`shellguard click geometry: ${JSON.stringify(await checkMovingControls(cdpEndpoint, clickControl))}`);
     const result = await measureOnPage(
       cdpEndpoint,
+      sharedTab.id,
       vitePort,
       VIEWPORT,
       "(async () => { await window.applyShellNavigationDelta(); const renders = window.measureRailRenderCounts(); return JSON.stringify({ ...window.measureShell(), paneFooters: window.measurePaneFooters(), counts: renders.counts, changedRowID: renders.changedRowID, visibleRowIDs: renders.visibleRowIDs }); })()",
     );
-    const dockResize = await measureOnPage(cdpEndpoint, vitePort, VIEWPORT, measureDockResize);
-    const floatingDock = await measureOnPage(cdpEndpoint, vitePort, VIEWPORT, measureFloatingDock);
+    const dockResize = await measureOnPage(cdpEndpoint, sharedTab.id, vitePort, VIEWPORT, measureDockResize);
+    const floatingDock = await measureOnPage(cdpEndpoint, sharedTab.id, vitePort, VIEWPORT, measureFloatingDock);
     // Both mobile measurements come from ONE page load of the emulated phone:
     // the sidebar geometry and the tap-floor audit need the same context.
     const mobile = await measureOnPage(
       cdpEndpoint,
+      sharedTab.id,
       vitePort,
       MOBILE_VIEWPORT,
       "JSON.stringify({ sidebar: window.measureMobileSidebar(), tap: window.measureTapTargets() })",
