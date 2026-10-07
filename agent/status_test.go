@@ -979,10 +979,36 @@ func TestSessionDelegateStatus_SubagentListsItsOwnSubtree(t *testing.T) {
 		if got := delegateIDs(tc.live.DetailedStatus().Delegates); !slices.Equal(got, tc.want) {
 			t.Fatalf("%s: live delegates = %v, want %v", tc.name, got, tc.want)
 		}
-		for _, row := range cold {
+		for _, row := range append(cold, tc.live.DetailedStatus().Delegates...) {
 			if row.OwnerSessionID != rootID || row.RootSessionID != rootID {
 				t.Fatalf("%s: row %s owner/root = %s/%s, want the tree root %s", tc.name, row.DelegateID, row.OwnerSessionID, row.RootSessionID, rootID)
 			}
+		}
+	}
+}
+
+// Subtree membership is transitive: a subagent lists its grandchildren too,
+// not only the delegates it spawned itself.
+func TestSessionSubtreeDelegateIDs_ReachesEveryDepth(t *testing.T) {
+	t.Parallel()
+	created := func(parentID, childSessionID string) *delegatestore.Aggregate {
+		return &delegatestore.Aggregate{Descriptor: delegatestore.Descriptor{OwnerSessionID: "root", ParentDelegateID: parentID, ChildSessionID: childSessionID}}
+	}
+	state := delegatestore.State{
+		"dlg_a": created("", "session-a"),
+		"dlg_b": created("dlg_a", "session-b"),
+		"dlg_c": created("dlg_b", "session-c"),
+		"dlg_d": created("", "session-d"),
+	}
+	for sessionID, want := range map[string][]string{
+		"root":      {"dlg_a", "dlg_b", "dlg_c", "dlg_d"},
+		"session-a": {"dlg_b", "dlg_c"},
+		"session-b": {"dlg_c"},
+		"session-c": nil,
+		"session-d": nil,
+	} {
+		if got := sessionSubtreeDelegateIDs(state, sessionID); !slices.Equal(got, want) {
+			t.Fatalf("%s subtree = %v, want %v", sessionID, got, want)
 		}
 	}
 }
