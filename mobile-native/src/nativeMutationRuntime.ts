@@ -80,8 +80,8 @@ function intentFor(request: NativeMutationRequest): MutationIntent {
 	if (request.kind !== "interrupt" && request.kind !== "promote") payload.input = request.input;
 	if (method === "turn/drainAsSteer") payload.expectedQueueRevision = request.expectedQueueRevision;
 	if (request.kind === "promote") {
-		payload.index = request.queueEntry?.index;
-		payload.expectedEntryId = request.queueEntry?.id;
+		payload.index = request.queueEntry.index;
+		payload.expectedEntryId = request.queueEntry.id;
 	}
 	const input = request.display ?? request.input;
 	return {

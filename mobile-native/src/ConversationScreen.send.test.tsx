@@ -3107,7 +3107,8 @@ describe("queued messages at the transcript's end (spec 8.5)", () => {
 			const request = client.request;
 			client.request = async (requested, params) => {
 				if (requested !== method) return request(requested, params);
-				request(requested, params);
+				// The hub never answers: record the request and leave it there.
+				hub.requests.push({ method: requested, params });
 				return new Promise(() => undefined);
 			};
 			await steerFromQueue(tree, ref, label);
@@ -3121,6 +3122,8 @@ describe("queued messages at the transcript's end (spec 8.5)", () => {
 	);
 
 	// Steer all now would take the message Steer now is already steering with.
+	const STEERING_WITH_QUEUE =
+		"This phone is already steering with the queue. Try again once that steer is sent or cancelled.";
 	it("withholds Steer all now while a Steer now waits for the hub", async () => {
 		const ref = "ref-steer-all-after-promote";
 		const { tree, hub } = await mount(thread(ref, "active", false, ["check the logs", "one", "two"]));
@@ -3129,7 +3132,8 @@ describe("queued messages at the transcript's end (spec 8.5)", () => {
 		const request = client.request;
 		client.request = async (requested, params) => {
 			if (requested !== "turn/promoteQueuedAsSteer") return request(requested, params);
-			request(requested, params);
+			// The hub never answers: record the request and leave it there.
+			hub.requests.push({ method: requested, params });
 			return new Promise(() => undefined);
 		};
 		const [steerNow] = tree.root.findAll(
@@ -3139,6 +3143,110 @@ describe("queued messages at the transcript's end (spec 8.5)", () => {
 		await settle();
 		expect(rowsWith(tree, "Queued ·")).toHaveLength(2);
 		expect(queueHosts.get(sheetKey("hub-1", ref))?.steerAll).toBeUndefined();
+		// Typed, it waits too, and says why.
+		await type(tree, "/drain-as-steer");
+		await press(tree, "Drain queue");
+		expect(hub.requests.filter((entry) => entry.method === "turn/drainAsSteer")).toEqual([]);
+		expect(renderedText(tree)).toContain(STEERING_WITH_QUEUE);
+	});
+
+	// /drain-as-steer is Steer all now typed: the same outbox, so a lost answer
+	// isn't a failure, and the hub's pending steer reads as this phone's.
+	it("sends /drain-as-steer through the outbox, as Steer all now", async () => {
+		const ref = "ref-drain-command";
+		const queued = ["check the logs", "and the metrics"];
+		const served = thread(ref, "active", false, queued);
+		const { tree, hub } = await mount(served);
+		const client = hub.client as { request: (method: string, params: Record<string, unknown>) => Promise<unknown> };
+		const request = client.request;
+		client.request = async (requested, params) => {
+			const answer = await request(requested, params);
+			if (requested !== "turn/drainAsSteer") return answer;
+			// The hub took the drain, and its answer was lost.
+			const evener = (served as unknown as { evener: Record<string, unknown> }).evener;
+			evener.queue = queueState([], 1);
+			evener.pendingMutations = [
+				{
+					clientMutationId: params.clientMutationId,
+					method: requested,
+					input: queued.map((text) => ({ type: "text", text })),
+					executionState: "accepted",
+					projectionState: "pending",
+				},
+			];
+			throw new Error("connection lost");
+		};
+		await type(tree, "/drain-as-steer");
+		await press(tree, "Drain queue");
+		const sent = hub.requests.filter((entry) => entry.method === "turn/drainAsSteer");
+		expect(sent.map((entry) => entry.params)).toMatchObject([{ expectedQueueRevision: 0, input: [] }]);
+		act(() =>
+			hub.notify({
+				method: "evener/thread/resync",
+				params: { ref, threadId: served.id },
+			} as AnyNotification),
+		);
+		await settle();
+		expect(lastRow(tree)).toContain("check the logs");
+		expect(lastRow(tree)).toContain("Steering · arrives at the next step");
+		expect(field(tree)?.props.value).toBe("");
+		expect(renderedText(tree)).not.toContain("Couldn't");
+	});
+
+	// A drain takes the queue it saw; a message queued after the hub took it
+	// is queued again, with its own Steer now.
+	it("shows a message queued after Steer all now took the queue", async () => {
+		const ref = "ref-queued-after-drain";
+		const served = thread(ref, "active", false, ["check the logs", "and the metrics"]);
+		const { tree, hub } = await mount(served);
+		const client = hub.client as { request: (method: string, params: Record<string, unknown>) => Promise<unknown> };
+		const request = client.request;
+		client.request = async (requested, params) => {
+			const answer = await request(requested, params);
+			if (requested === "turn/drainAsSteer")
+				hub.notify({
+					method: "thread/queueChanged",
+					params: { threadId: served.id, ref, queue: queueState([], 1) },
+				} as AnyNotification);
+			return answer;
+		};
+		await steerFromQueue(tree, ref, "Steer all now");
+		await settle();
+		expect(lastRow(tree)).toContain("Steering · arrives at the next step");
+		act(() =>
+			hub.notify({
+				method: "thread/queueChanged",
+				params: { threadId: served.id, ref, queue: { ...queueState(["one more thing"], 2), ids: ["queue_9"] } },
+			} as AnyNotification),
+		);
+		await settle();
+		expect(rowsWith(tree, "Steering · arrives at the next step")[0]).toContain("check the logs");
+		expect(lastRow(tree)).toContain("one more thing");
+		expect(lastRow(tree)).toContain("Queued · sends when this turn ends");
+		expect(pressable(tree, "Steer now")).toBeDefined();
+	});
+
+	// A message with no text (an image) steers under its preview, so the
+	// ghost of Steer all now still names every message it took.
+	it("names an image-only message by its preview in Steer all now's ghost", async () => {
+		const ref = "ref-drain-preview";
+		const served = thread(ref, "active", false, ["check the logs", ""]);
+		const evener = (served as unknown as { evener: { queue: ReturnType<typeof queueState> } }).evener;
+		evener.queue = { ...evener.queue, preview: ["check the logs", "[image]"] };
+		const { tree, hub } = await mount(served);
+		const client = hub.client as { request: (method: string, params: Record<string, unknown>) => Promise<unknown> };
+		const request = client.request;
+		client.request = async (requested, params) => {
+			if (requested !== "turn/drainAsSteer") return request(requested, params);
+			// The hub never answers: record the request and leave it there.
+			hub.requests.push({ method: requested, params });
+			return new Promise(() => undefined);
+		};
+		await steerFromQueue(tree, ref, "Steer all now");
+		await settle();
+		const [ghost] = rowsWith(tree, "Sending…");
+		expect(ghost).toContain("check the logs");
+		expect(ghost).toContain("[image]");
 	});
 
 	// A steer the hub refuses names the message it was for, says it was a

@@ -14,6 +14,7 @@ const commandContext = {
 	isCurrent: () => true,
 	reasoning: () => null,
 	turn: () => null,
+	drainQueue: async () => {},
 	local: async () => {},
 	openAside: (_ref: string, _title: string) => {},
 	cleared: (_response: ThreadClearResponse) => {},
@@ -474,7 +475,6 @@ it.each(["advertised", "turn"])(
 it.each([
 	["/steer sentinel", "turn/steer", [{ type: "text", text: "sentinel" }]],
 	["/queue sentinel", "turn/queue", [{ type: "text", text: "sentinel" }]],
-	["/drain-as-steer", "turn/drainAsSteer", []],
 	["/interrupt", "turn/interrupt", undefined],
 ])("routes %s with acknowledged delivery and queue guards", async (text, method, input) => {
 	const { db, document } = commandDraft();
@@ -494,7 +494,6 @@ it.each([
 				expectedInstanceId: "instance",
 				clientMutationId: expect.any(String),
 				...(input ? { input } : {}),
-				...(method === "turn/drainAsSteer" ? { expectedQueueRevision: 7 } : {}),
 			});
 			expect(document.getSnapshot().record.unconfirmed).toBe(text);
 			return {
@@ -517,7 +516,7 @@ it.each([
 			turn: () => ({
 				status: { type: "active" },
 				capabilities: { steer: true, queue: true, interrupt: true },
-				queue: { revision: 7, depth: method === "turn/drainAsSteer" ? 1 : 0 },
+				queue: { revision: 7, depth: 0 },
 			}),
 		});
 		expect(received).toBe(1);
@@ -525,6 +524,38 @@ it.each([
 			draft: "",
 			unconfirmed: null,
 		});
+	} finally {
+		service.close();
+		db.close();
+	}
+});
+
+// The drain goes through the outbox, as Steer all now does, never the service.
+it("routes /drain-as-steer to the outbox drain, keeping it unconfirmed until admitted", async () => {
+	const { db, document } = commandDraft();
+	const { io, service, thread } = boundary();
+	thread.evener.capabilities.steer = true;
+	let drained = 0;
+	try {
+		await service.open("local:test");
+		io.lifecycle = async (method) => {
+			throw new Error(`unexpected ${method}`);
+		};
+		document.edit("/drain-as-steer");
+		await submitComposerCommand(document, service, {
+			...commandContext,
+			drainQueue: async () => {
+				drained++;
+				expect(document.getSnapshot().record.unconfirmed).toBe("/drain-as-steer");
+			},
+			turn: () => ({
+				status: { type: "active" },
+				capabilities: { steer: true },
+				queue: { revision: 7, depth: 1 },
+			}),
+		});
+		expect(drained).toBe(1);
+		expect(document.getSnapshot().record).toMatchObject({ draft: "", unconfirmed: null });
 	} finally {
 		service.close();
 		db.close();
