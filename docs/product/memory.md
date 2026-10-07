@@ -53,8 +53,10 @@ Enabled sessions receive separate personal and project `MEMORY.md` projections
 as named user-source context, outside system instructions. Each scope supplies
 at most 8 KiB of index content, cut at a UTF-8 boundary, with a route to
 `memory_read`. A projection says nothing about size unless the index was cut;
-then it says the index is too long and to use the gardening-memory skill to
-learn how to fix it. Clients decode that sentence as the truncated flag, and
+then it says the index is too long and, when the session can load the
+gardening-memory skill, to use it to learn how to fix it; otherwise it says an
+index should hold one short line per page. Clients decode either sentence as
+the truncated flag, and
 transcripts from earlier builds, which carried an explicit "truncated
 true/false" instead, decode as before. Topic files and logs are not preloaded.
 
