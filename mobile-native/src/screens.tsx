@@ -220,6 +220,7 @@ const BAR_MAX_SHARE = 0.8;
 // where it opens, at most.
 const OPENING_REVEAL_CAP_MS = 1000;
 const STEER_ALL_FAILED = { text: "Couldn't steer with these messages now." };
+const STEER_ON_ITS_WAY = "A steer from the queue is still on its way. Try again once it arrives.";
 
 export type Routes = {
 	SessionDeletion: { hubId: string; ref: string; title: string };
@@ -1853,6 +1854,8 @@ export function ConversationScreen({
 						reasoning: () => store.getState().conversation,
 						turn: () => store.getState().conversation,
 						drainQueue: async () => {
+							// As Steer all now waits (canSteerAll): it would take that message too.
+							if (steeringFromQueue) throw new CommandArgumentError(STEER_ON_ITS_WAY);
 							if (!(await drainLiveQueue())) throw new CommandArgumentError(STEER_ALL_FAILED.text);
 						},
 						cleared: (response) => {
@@ -2695,11 +2698,13 @@ export function ConversationScreen({
 	// while the hub is away, nor while this phone is already steering with
 	// some of the queue: it would take those too.
 	const queueDepth = conversation?.queue?.depth ?? 0;
+	// A queued message hides behind this phone's own steer with it.
+	const steeringFromQueue = queuedGhosts.length !== queueDepth;
 	const canSteerAll =
 		connected &&
 		!!conversation &&
 		queueDepth > 1 &&
-		queuedGhosts.length === queueDepth &&
+		!steeringFromQueue &&
 		conversationControls(conversation).drainQueue;
 	// biome-ignore lint/correctness/useExhaustiveDependencies: queuedKey stands in for queuedGhosts, a new array each render
 	const queueHost = useMemo<QueueHost>(

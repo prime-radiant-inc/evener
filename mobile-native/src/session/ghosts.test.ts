@@ -148,6 +148,11 @@ describe("queued messages this phone is steering with", () => {
 		expect(held?.note).toBeDefined();
 		const unmoved = ghosts(session("idle", ["first"]), [drain], null, [], true);
 		expect(unmoved).toEqual([expect.objectContaining({ state: "held", buttons: ["sendNow", "cancel"] })]);
+		// Before the session loads nothing says the queue moved: Send now stays,
+		// and the hub refuses a stale one.
+		expect(ghosts(null, [drain], null, [], true)).toEqual([
+			expect.objectContaining({ state: "held", buttons: ["sendNow", "cancel"] }),
+		]);
 	});
 
 	it("keeps the queue another client is steering with", () => {
