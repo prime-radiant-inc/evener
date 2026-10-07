@@ -1,9 +1,14 @@
-// Transaction-local helpers for the shared composition stores: the serialized
-// keys the `composerDrafts`/`annotationNamespaces` object stores are keyed by,
-// the boundary that first initializes a session row's metadata, and the pure
-// step every writer uses to advance it. Each helper takes an already-open
-// idb transaction and never opens its own; the repository (and, later, the
-// outbox writers) compose them inside one transaction.
+// Transaction-local helpers for the composition stores: the pure serialized
+// keys, the durable session-token comparison, and the read / initialize / put
+// primitives the inactive browser draft repository shares with the outbox and
+// append writers. Every function that touches IndexedDB runs inside a caller's
+// IDBTransaction and issues no transaction of its own; only the key
+// serializers and nextSessionRow are pure.
+//
+// A session row carries the durable `sessionRevision` that orders a session's
+// explicit writes. Transfer is initialization, not an edit, so an absent row
+// is created at revision 1; every ordinary write goes through nextSessionRow,
+// which advances the revision by exactly one whether or not the value changed.
 import type { DraftSessionToken } from "@evener/appwire-client/state/mutation";
 import type { SkillEditorValue } from "../panes/session/composer/skillDocument";
 import type { BrowserDraftKey, StoredComposerDraft } from "./browserDraftRepository";
@@ -18,70 +23,33 @@ export interface NamespaceRow {
 
 export type SessionRow = StoredComposerDraft & { serializedKey: string };
 
-export function serializeNamespace(namespace: BrowserDraftKey["namespace"]): string {
-  return JSON.stringify([namespace.kind, namespace.origin]);
-}
-
-// The existing JSON [kind, origin, sessionRef] session key.
 export function serializeSessionKey(key: BrowserDraftKey): string {
   return JSON.stringify([key.namespace.kind, key.namespace.origin, key.sessionRef]);
 }
 
-export function sameSessionToken(left: DraftSessionToken, right: DraftSessionToken): boolean {
-  return left.namespaceIncarnation === right.namespaceIncarnation && left.sessionRevision === right.sessionRevision;
+export function serializeNamespace(namespace: BrowserDraftKey["namespace"]): string {
+  return JSON.stringify([namespace.kind, namespace.origin]);
 }
 
-async function readRow<T>(tx: IDBTransaction, store: string, key: string): Promise<T | undefined> {
-  return requestResult<T | undefined>(tx.objectStore(store).get(key));
-}
-
-// Reads only: no row is created or refreshed.
-export async function readNamespaceRow(
-  tx: IDBTransaction,
+export function readNamespaceRow(
+  transaction: IDBTransaction,
   namespace: BrowserDraftKey["namespace"],
 ): Promise<NamespaceRow | undefined> {
-  return readRow<NamespaceRow>(tx, ANNOTATION_NAMESPACES_STORE, serializeNamespace(namespace));
+  return requestResult<NamespaceRow | undefined>(
+    transaction.objectStore(ANNOTATION_NAMESPACES_STORE).get(serializeNamespace(namespace)),
+  );
 }
 
-// Reads only: no row is created or refreshed.
-export async function readSessionRow(tx: IDBTransaction, key: BrowserDraftKey): Promise<SessionRow | undefined> {
-  return readRow<SessionRow>(tx, COMPOSER_DRAFTS_STORE, serializeSessionKey(key));
+export function readSessionRow(transaction: IDBTransaction, key: BrowserDraftKey): Promise<SessionRow | undefined> {
+  return requestResult<SessionRow | undefined>(
+    transaction.objectStore(COMPOSER_DRAFTS_STORE).get(serializeSessionKey(key)),
+  );
 }
 
-// Returns the existing namespace row or creates one, initializing the
-// incarnation the first writer of this namespace will key its token to.
-export async function ensureNamespaceRow(
-  tx: IDBTransaction,
-  namespace: BrowserDraftKey["namespace"],
-): Promise<NamespaceRow> {
-  const existing = await readNamespaceRow(tx, namespace);
-  if (existing) return existing;
-  const row: NamespaceRow = { namespaceKey: serializeNamespace(namespace), incarnation: createSecureUUID() };
-  await requestResult(tx.objectStore(ANNOTATION_NAMESPACES_STORE).add(row));
-  return row;
-}
-
-// Initializes absent session metadata at revision 1. Returns the existing row
-// unchanged when one is already durable - an existing revision, including an
-// explicit empty draft, wins over migration input.
-export async function ensureSessionRow(tx: IDBTransaction, key: BrowserDraftKey): Promise<SessionRow> {
-  const existing = await readSessionRow(tx, key);
-  if (existing) return existing;
-  const namespace = await ensureNamespaceRow(tx, key.namespace);
-  const row: SessionRow = {
-    serializedKey: serializeSessionKey(key),
-    key: { namespace: { kind: "browser", origin: key.namespace.origin }, sessionRef: key.sessionRef },
-    text: "",
-    skillNames: [],
-    token: { namespaceIncarnation: namespace.incarnation, sessionRevision: 1 },
-  };
-  await requestResult(putSessionRow(tx, row));
-  return row;
-}
-
-// Pure: replaces the ordinary value only when one is supplied, otherwise
-// preserves it, and always advances the revision by exactly one. The
-// caller's `row` is never mutated.
+// PURE: returns a fresh row whose ordinary value is `value` when supplied and
+// the row's own value otherwise, with the session revision advanced by one.
+// Explicit-undefined metadata stays absent; present metadata is cloned so the
+// result never aliases the caller's arrays.
 export function nextSessionRow(row: SessionRow, value?: SkillEditorValue): SessionRow {
   const ordinary = value ?? row;
   return {
@@ -95,7 +63,36 @@ export function nextSessionRow(row: SessionRow, value?: SkillEditorValue): Sessi
   };
 }
 
-// Only issues the put; it performs no reads and opens no transaction of its own.
-export function putSessionRow(tx: IDBTransaction, row: SessionRow): IDBRequest<IDBValidKey> {
-  return tx.objectStore(COMPOSER_DRAFTS_STORE).put(row);
+export function sameSessionToken(left: DraftSessionToken, right: DraftSessionToken): boolean {
+  return left.namespaceIncarnation === right.namespaceIncarnation && left.sessionRevision === right.sessionRevision;
+}
+
+// Issues only the put; the caller owns the transaction and observes completion.
+export function putSessionRow(transaction: IDBTransaction, row: SessionRow): IDBRequest<IDBValidKey> {
+  return transaction.objectStore(COMPOSER_DRAFTS_STORE).put(row);
+}
+
+// Guarantees a durable session row for `key`, initializing an absent one at
+// revision 1 with an empty ordinary value after transfer. The namespace
+// incarnation is created on demand exactly as every other writer does, so a
+// freshly initialized row already carries the current incarnation.
+export async function ensureSessionRow(transaction: IDBTransaction, key: BrowserDraftKey): Promise<SessionRow> {
+  const existing = await readSessionRow(transaction, key);
+  if (existing) return existing;
+  const namespaceKey = serializeNamespace(key.namespace);
+  const namespaceStore = transaction.objectStore(ANNOTATION_NAMESPACES_STORE);
+  const current = await requestResult<NamespaceRow | undefined>(namespaceStore.get(namespaceKey));
+  const incarnation = current?.incarnation ?? createSecureUUID();
+  if (!current) {
+    await requestResult(namespaceStore.put({ namespaceKey, incarnation } satisfies NamespaceRow));
+  }
+  const row: SessionRow = {
+    serializedKey: serializeSessionKey(key),
+    key: { namespace: { kind: "browser", origin: key.namespace.origin }, sessionRef: key.sessionRef },
+    text: "",
+    skillNames: [],
+    token: { namespaceIncarnation: incarnation, sessionRevision: 1 },
+  };
+  await requestResult(putSessionRow(transaction, row));
+  return row;
 }

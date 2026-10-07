@@ -1,5 +1,6 @@
 import { IDBFactory } from "fake-indexeddb";
-import { expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
+import type { BrowserDraftKey } from "./browserDraftRepository";
 import {
   ensureSessionRow,
   nextSessionRow,
@@ -11,6 +12,7 @@ import {
   serializeNamespace,
   serializeSessionKey,
 } from "./compositionRevision";
+import { requestResult, transactionCompletion } from "./idbConnection";
 import {
   ANNOTATION_NAMESPACES_STORE,
   COMPOSER_DRAFTS_STORE,
@@ -19,9 +21,9 @@ import {
 } from "./localCompositionSchema";
 
 const namespace = { kind: "browser" as const, origin: "https://hub.test" };
-const key = (sessionRef: string) => ({ namespace, sessionRef });
+const key = (sessionRef: string): BrowserDraftKey => ({ namespace, sessionRef });
 
-function openStore(indexedDB: IDBFactory, databaseName: string): Promise<IDBDatabase> {
+function openDatabase(indexedDB: IDBFactory, databaseName: string): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(databaseName, LOCAL_COMPOSITION_DATABASE_VERSION);
     request.addEventListener("upgradeneeded", () => registerLocalCompositionSchema(request.result));
@@ -30,34 +32,51 @@ function openStore(indexedDB: IDBFactory, databaseName: string): Promise<IDBData
   });
 }
 
-function transactionCompletion(transaction: IDBTransaction): Promise<void> {
-  return new Promise((resolve, reject) => {
-    transaction.addEventListener("complete", () => resolve(), { once: true });
-    transaction.addEventListener("abort", () => reject(transaction.error ?? new Error("transaction aborted")), {
-      once: true,
-    });
-  });
+function sessionRow(sessionRef: string, overrides: Partial<SessionRow> = {}): SessionRow {
+  return {
+    serializedKey: serializeSessionKey(key(sessionRef)),
+    key: key(sessionRef),
+    text: "/same",
+    skillNames: ["same"],
+    token: { namespaceIncarnation: "inc-1", sessionRevision: 4 },
+    ...overrides,
+  };
 }
 
-function writeTransaction(database: IDBDatabase): IDBTransaction {
-  return database.transaction([COMPOSER_DRAFTS_STORE, ANNOTATION_NAMESPACES_STORE], "readwrite");
-}
-
-function allRows(database: IDBDatabase, store: string): Promise<unknown[]> {
-  const transaction = database.transaction(store, "readonly");
-  return new Promise((resolve, reject) => {
-    const request = transaction.objectStore(store).getAll();
-    request.addEventListener("success", () => resolve(request.result as unknown[]), { once: true });
-    request.addEventListener("error", () => reject(request.error ?? new Error("read failed")), { once: true });
-  });
-}
-
-test("serializes the namespace and session keys as the durable JSON tuples", () => {
-  expect(serializeNamespace(namespace)).toBe(JSON.stringify(["browser", "https://hub.test"]));
-  expect(serializeSessionKey(key("root"))).toBe(JSON.stringify(["browser", "https://hub.test", "root"]));
+afterEach(() => {
+  vi.restoreAllMocks();
 });
 
-test("sameSessionToken compares both the incarnation and the revision", () => {
+test("serializes namespaces and sessions as the approved JSON tuples", () => {
+  expect(serializeNamespace(namespace)).toBe('["browser","https://hub.test"]');
+  expect(serializeSessionKey(key("root"))).toBe('["browser","https://hub.test","root"]');
+});
+
+test("nextSessionRow is pure, always advances revision by one, and replaces the ordinary value only when supplied", () => {
+  const row = sessionRow("next", { mentions: [{ kind: "skill", name: "same", offset: 0 }] });
+  const snapshot = JSON.parse(JSON.stringify(row));
+
+  const preserved = nextSessionRow(row);
+  expect(preserved).not.toBe(row);
+  expect(preserved.text).toBe("/same");
+  expect(preserved.skillNames).toEqual(["same"]);
+  expect(preserved.mentions).toEqual([{ kind: "skill", name: "same", offset: 0 }]);
+  expect(preserved.token).toEqual({ namespaceIncarnation: "inc-1", sessionRevision: 5 });
+  expect(row).toEqual(snapshot); // source row untouched
+
+  const replaced = nextSessionRow(row, { text: "next", skillNames: ["other"], commandNames: ["plan"] });
+  expect(replaced.text).toBe("next");
+  expect(replaced.skillNames).toEqual(["other"]);
+  expect(replaced.commandNames).toEqual(["plan"]);
+  expect(replaced).not.toHaveProperty("mentions"); // an absent ordinary field stays absent
+  expect(replaced.token.sessionRevision).toBe(5);
+
+  const explicitEmpty = nextSessionRow(replaced, { text: "next", skillNames: ["other"], mentions: [] });
+  expect(explicitEmpty.mentions).toEqual([]);
+  expect(explicitEmpty.commandNames).toBeUndefined();
+});
+
+test("sameSessionToken compares both incarnation and revision", () => {
   expect(
     sameSessionToken(
       { namespaceIncarnation: "a", sessionRevision: 1 },
@@ -78,104 +97,81 @@ test("sameSessionToken compares both the incarnation and the revision", () => {
   ).toBe(false);
 });
 
-test("read helpers only read: an absent row stays absent and mints no namespace", async () => {
+test("readSessionRow and readNamespaceRow read only, returning undefined for absent rows", async () => {
   const indexedDB = new IDBFactory();
-  const database = await openStore(indexedDB, "helper-read");
-  const transaction = writeTransaction(database);
-  expect(await readSessionRow(transaction, key("root"))).toBeUndefined();
-  expect(await readNamespaceRow(transaction, namespace)).toBeUndefined();
-  await transactionCompletion(transaction);
-  expect(await allRows(database, COMPOSER_DRAFTS_STORE)).toEqual([]);
-  expect(await allRows(database, ANNOTATION_NAMESPACES_STORE)).toEqual([]);
+  const database = await openDatabase(indexedDB, "helpers-read-absent");
+  const read = database.transaction([COMPOSER_DRAFTS_STORE, ANNOTATION_NAMESPACES_STORE], "readonly");
+  expect(await readSessionRow(read, key("root"))).toBeUndefined();
+  expect(await readNamespaceRow(read, namespace)).toBeUndefined();
+  await transactionCompletion(read);
   database.close();
 });
 
-test("ensureSessionRow initializes absent metadata at revision 1 and returns an existing row unchanged", async () => {
+test("ensureSessionRow initializes an absent row at revision 1, durably, and returns an existing row unchanged", async () => {
   const indexedDB = new IDBFactory();
-  const database = await openStore(indexedDB, "helper-ensure");
-  const created = writeTransaction(database);
-  const row = await ensureSessionRow(created, key("root"));
-  await transactionCompletion(created);
-  expect(row).toMatchObject({
-    serializedKey: serializeSessionKey(key("root")),
-    key: key("root"),
-    text: "",
-    skillNames: [],
-    token: { sessionRevision: 1 },
-  });
-  expect(row.token.namespaceIncarnation).not.toBe("");
-
-  const again = writeTransaction(database);
-  const existing = await ensureSessionRow(again, key("root"));
-  await transactionCompletion(again);
-  expect(existing).toEqual(row);
+  const database = await openDatabase(indexedDB, "helpers-ensure");
+  const write = database.transaction([COMPOSER_DRAFTS_STORE, ANNOTATION_NAMESPACES_STORE], "readwrite");
+  const created = await ensureSessionRow(write, key("root"));
+  await transactionCompletion(write);
+  expect(created.text).toBe("");
+  expect(created.skillNames).toEqual([]);
+  expect(created.key).toEqual(key("root"));
+  expect(created.token.sessionRevision).toBe(1);
+  expect(created.token.namespaceIncarnation).not.toBe("");
   database.close();
+
+  const reopened = await openDatabase(indexedDB, "helpers-ensure");
+  const readTx = reopened.transaction([COMPOSER_DRAFTS_STORE, ANNOTATION_NAMESPACES_STORE], "readwrite");
+  const durable = await readSessionRow(readTx, key("root"));
+  const namespaceRow = await readNamespaceRow(readTx, namespace);
+  expect(durable).toEqual(created);
+  expect(namespaceRow?.incarnation).toBe(created.token.namespaceIncarnation);
+
+  const again = await ensureSessionRow(readTx, key("root"));
+  await transactionCompletion(readTx);
+  expect(again).toEqual(created); // existing row returned untouched, no second write
+  reopened.close();
 });
 
-test("nextSessionRow is pure, preserves an omitted value and always advances by exactly one", () => {
-  const row: SessionRow = {
-    serializedKey: '["browser","https://hub.test","root"]',
-    key: key("root"),
-    text: "old",
-    skillNames: ["a"],
-    commandNames: ["c"],
-    mentions: [{ kind: "skill", name: "a", offset: 0 }],
-    token: { namespaceIncarnation: "inc", sessionRevision: 4 },
-  };
-  const preserved = nextSessionRow(row);
-  expect(preserved).toEqual({ ...row, token: { namespaceIncarnation: "inc", sessionRevision: 5 } });
-  expect(preserved).not.toBe(row);
-  expect(preserved.skillNames).not.toBe(row.skillNames);
-  expect(preserved.commandNames).not.toBe(row.commandNames);
-  expect(preserved.mentions).not.toBe(row.mentions);
-  expect(preserved.mentions?.[0]).not.toBe(row.mentions?.[0]);
-  // The caller's row is never mutated.
-  expect(row.token.sessionRevision).toBe(4);
+test("putSessionRow issues only a durable put: no read on the store, and the row survives completion", async () => {
+  const indexedDB = new IDBFactory();
+  const database = await openDatabase(indexedDB, "helpers-put");
+  const seedTx = database.transaction([COMPOSER_DRAFTS_STORE, ANNOTATION_NAMESPACES_STORE], "readwrite");
+  const seeded = await ensureSessionRow(seedTx, key("root"));
+  await transactionCompletion(seedTx);
+
+  const write = database.transaction(COMPOSER_DRAFTS_STORE, "readwrite");
+  const store = write.objectStore(COMPOSER_DRAFTS_STORE);
+  const getSpy = vi.spyOn(store, "get");
+  const next = nextSessionRow(seeded, { text: "written", skillNames: [] });
+  await requestResult(putSessionRow(write, next));
+  expect(getSpy).not.toHaveBeenCalled();
+  await transactionCompletion(write);
+  database.close();
+
+  const reopened = await openDatabase(indexedDB, "helpers-put");
+  const read = reopened.transaction(COMPOSER_DRAFTS_STORE, "readonly");
+  expect(await readSessionRow(read, key("root"))).toEqual(next);
+  await transactionCompletion(read);
+  reopened.close();
 });
 
-test("nextSessionRow replaces the ordinary value only when supplied, keeping explicit absent-versus-empty metadata", () => {
-  const row: SessionRow = {
-    serializedKey: "k",
-    key: key("root"),
-    text: "old",
-    skillNames: ["a"],
-    commandNames: ["c"],
-    mentions: [{ kind: "command", name: "c", offset: 1 }],
-    token: { namespaceIncarnation: "inc", sessionRevision: 1 },
-  };
-  const replaced = nextSessionRow(row, { text: "new", skillNames: [], commandNames: ["plan"], mentions: [] });
-  expect(replaced).toMatchObject({
-    text: "new",
-    skillNames: [],
-    commandNames: ["plan"],
-    mentions: [],
-    token: { namespaceIncarnation: "inc", sessionRevision: 2 },
-  });
-  const omitted = nextSessionRow(row, { text: "new", skillNames: [] });
-  expect(omitted).not.toHaveProperty("commandNames");
-  expect(omitted).not.toHaveProperty("mentions");
-});
+test("putSessionRow's write rolls back when its transaction aborts", async () => {
+  const indexedDB = new IDBFactory();
+  const database = await openDatabase(indexedDB, "helpers-put-abort");
+  const seedTx = database.transaction([COMPOSER_DRAFTS_STORE, ANNOTATION_NAMESPACES_STORE], "readwrite");
+  const seeded = await ensureSessionRow(seedTx, key("root"));
+  await transactionCompletion(seedTx);
 
-test("putSessionRow issues only a put and never reads", () => {
-  const puts: Array<{ store: string; row: unknown }> = [];
-  const transaction = {
-    objectStore: (store: string) => ({
-      put: (row: unknown) => {
-        puts.push({ store, row });
-        return {} as IDBRequest<IDBValidKey>;
-      },
-      get: () => {
-        throw new Error("putSessionRow must not read");
-      },
-    }),
-  } as unknown as IDBTransaction;
-  const row: SessionRow = {
-    serializedKey: "k",
-    key: key("root"),
-    text: "t",
-    skillNames: ["a"],
-    token: { namespaceIncarnation: "inc", sessionRevision: 3 },
-  };
-  putSessionRow(transaction, row);
-  expect(puts).toEqual([{ store: COMPOSER_DRAFTS_STORE, row }]);
+  const write = database.transaction(COMPOSER_DRAFTS_STORE, "readwrite");
+  await requestResult(putSessionRow(write, nextSessionRow(seeded, { text: "aborted", skillNames: [] })));
+  write.abort();
+  await transactionCompletion(write).catch(() => undefined);
+  database.close();
+
+  const reopened = await openDatabase(indexedDB, "helpers-put-abort");
+  const read = reopened.transaction(COMPOSER_DRAFTS_STORE, "readonly");
+  expect(await readSessionRow(read, key("root"))).toEqual(seeded);
+  await transactionCompletion(read);
+  reopened.close();
 });
