@@ -227,6 +227,7 @@ const BAR_MAX_SHARE = 0.8;
 // where it opens, at most.
 const OPENING_REVEAL_CAP_MS = 1000;
 const STEER_ALL_FAILED = { text: "Couldn't steer with these messages now." };
+const STOP_NOT_TRIED = "Couldn't stop the turn just now. Try again.";
 const STEERING_WITH_QUEUE =
 	"This phone is already steering with the queue. Try again once that steer is sent or cancelled.";
 
@@ -1880,7 +1881,9 @@ export function ConversationScreen({
 							}
 						},
 						stop: async () => {
-							if ((await stop()) === "notKept") throw new CommandNotSentError(NATIVE_MUTATION_HOST_UNAVAILABLE);
+							const outcome = await stop();
+							if (outcome === "notKept") throw new CommandNotSentError(NATIVE_MUTATION_HOST_UNAVAILABLE);
+							if (outcome === "notStopped") throw new CommandNotSentError(STOP_NOT_TRIED);
 						},
 						// As Steer all now waits (canSteerAll): it would take that message too.
 						drainRefusal: () => {
@@ -1888,6 +1891,10 @@ export function ConversationScreen({
 							return steeringWithQueue(state.conversation, state.pendingMutations) ? STEERING_WITH_QUEUE : null;
 						},
 						drainQueue: async () => {
+							// Asked again as it runs, so the drain and its check read one state.
+							const state = store.getState();
+							if (steeringWithQueue(state.conversation, state.pendingMutations))
+								throw new CommandNotSentError(STEERING_WITH_QUEUE);
 							if (!(await drainLiveQueue())) throw new CommandNotSentError(STEER_ALL_FAILED.text);
 						},
 						cleared: (response) => {
@@ -2272,16 +2279,13 @@ export function ConversationScreen({
 	const notesPreview = conversation ? notesBarPreview(conversation) : null;
 	const [stopping, setStopping] = useState(false);
 	const stopBusy = useRef(false);
-	// Returns "notKept" when the phone couldn't keep the stop to send (the
-	// store reports why); a typed /interrupt hands its text back for that.
-	async function stop(): Promise<"stopped" | "skipped" | "notKept"> {
-		if (
-			!service ||
-			!connectionReady.current ||
-			stopBusy.current ||
-			store.getState().pendingMutation?.status === "pending"
-		)
-			return "skipped";
+	// What became of the stop, for a typed /interrupt: "stopping" when one is
+	// already on its way, "notKept" when the phone couldn't keep it to send (the
+	// store reports why), "notStopped" when nothing was tried.
+	async function stop(): Promise<"stopped" | "stopping" | "notKept" | "notStopped"> {
+		if (stopBusy.current) return "stopping";
+		if (!service || !connectionReady.current || store.getState().pendingMutation?.status === "pending")
+			return "notStopped";
 		stopBusy.current = true;
 		setStopping(true);
 		try {
@@ -2294,7 +2298,7 @@ export function ConversationScreen({
 		} catch {
 			// Stop only acts while a turn runs; a turn that ended first has
 			// nothing left to stop, so a refusal says nothing.
-			return "skipped";
+			return "notStopped";
 		} finally {
 			stopBusy.current = false;
 			setStopping(false);
