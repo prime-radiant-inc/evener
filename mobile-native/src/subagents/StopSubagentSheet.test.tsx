@@ -85,7 +85,6 @@ let client: FakeClient;
 let runtime: NativeMutationRuntime;
 let status = "active";
 let failed = false;
-const trees: ReactTestRenderer[] = [];
 
 const read = (): ThreadReadResponse => ({
 	thread: wireThread(COORDINATOR.ref, {
@@ -199,7 +198,6 @@ beforeEach(async () => {
 	harness.runtime = runtime;
 });
 afterEach(async () => {
-	for (const mounted of trees.splice(0)) act(() => mounted.unmount());
 	await runtime.stop();
 	vi.restoreAllMocks();
 });
@@ -218,7 +216,6 @@ async function mount() {
 			navigation={sheetNavigation as never}
 		/>,
 	);
-	trees.push(mounted);
 	await settle();
 	return mounted;
 }

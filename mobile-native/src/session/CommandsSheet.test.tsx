@@ -85,7 +85,6 @@ function session(capabilities: Partial<ComposerCommandSession["capabilities"]>):
 }
 
 let owner: object | undefined;
-const mounted: ReactTestRenderer[] = [];
 
 function provide(over: Partial<CommandsHost> = {}) {
 	const calls: string[] = [];
@@ -108,7 +107,6 @@ async function sheet(client: unknown = catalogClient()): Promise<ReactTestRender
 		navigation,
 	} as unknown as NativeStackScreenProps<Routes, "CommandsSheet">;
 	const tree = render(<CommandsSheet {...props} />);
-	mounted.push(tree);
 	await act(async () => {
 		await new Promise((resolve) => setTimeout(resolve, 0));
 	});
@@ -132,7 +130,6 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-	for (const tree of mounted.splice(0)) act(() => tree.unmount());
 	if (owner) commandHosts.release(sheetKey(HUB, REF), owner);
 	owner = undefined;
 });

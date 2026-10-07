@@ -76,7 +76,6 @@ const deviceFlow: Answers = {
 	"evener/auth/device/poll": () => ({ state: "pending" }),
 };
 
-let trees: ReactTestRenderer[] = [];
 let flows: { dispose(): void }[] = [];
 
 beforeEach(() => {
@@ -87,9 +86,7 @@ beforeEach(() => {
 	edges.copies = true;
 });
 afterEach(() => {
-	for (const tree of trees) act(() => tree.unmount());
 	for (const flow of flows) flow.dispose();
-	trees = [];
 	flows = [];
 	vi.useRealTimers();
 });
@@ -101,7 +98,6 @@ async function mount(answers: Answers, options: { connected?: boolean; start?: b
 	const tree = render(
 		<ProviderSignInSheet flow={kit.flow} name={PROVIDER} connected={options.connected ?? true} onClose={onClose} />,
 	);
-	trees.push(tree);
 	if (options.start ?? true)
 		await act(async () => {
 			await kit.flow.start();

@@ -92,7 +92,6 @@ let memory: DocumentMemory;
 let runtime: NativeMutationRuntime;
 let status = "idle";
 let resumeRequired = false;
-const trees: ReactTestRenderer[] = [];
 
 function storage(): SyncStringStorage {
 	const data = new Map<string, string>();
@@ -173,7 +172,6 @@ beforeEach(async () => {
 	harness.runtime = runtime;
 });
 afterEach(async () => {
-	for (const tree of trees.splice(0)) act(() => tree.unmount());
 	await runtime.stop();
 	vi.restoreAllMocks();
 });
@@ -192,7 +190,6 @@ async function mount() {
 			navigation={sheetNavigation as never}
 		/>,
 	);
-	trees.push(tree);
 	await settle();
 	return tree;
 }

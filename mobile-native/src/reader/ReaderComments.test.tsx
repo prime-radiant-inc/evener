@@ -110,7 +110,6 @@ let client: FakeClient;
 let memory: DocumentMemory;
 // The memory's clock: the phone's, unless a test moves it.
 let clockOffset = 0;
-const trees: ReactTestRenderer[] = [];
 
 function storage(): SyncStringStorage {
 	const data = new Map<string, string>();
@@ -178,7 +177,6 @@ beforeEach(() => {
 	};
 });
 afterEach(() => {
-	for (const tree of trees.splice(0)) act(() => tree.unmount());
 	vi.restoreAllMocks();
 });
 
@@ -218,7 +216,6 @@ async function mount(path = PATH, extra: Record<string, unknown> = {}, flush = s
 		<ReaderScreen route={{ key: "reader-1", name: "Reader", params } as never} navigation={navigation as never} />
 	);
 	const tree = render(element);
-	trees.push(tree);
 	await flush();
 	// Renders again, as a change in the navigation state would.
 	const rerender = async () => {
@@ -269,7 +266,6 @@ describe("comments (Task 16)", () => {
 
 	function mountSheet(element: ReactElement) {
 		const tree = render(element);
-		trees.push(tree);
 		return tree;
 	}
 

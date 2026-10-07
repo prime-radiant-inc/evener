@@ -1,6 +1,5 @@
 // The Queue sheet (ruling 37): every queued message the session's ghosts
 // carry, with the same actions, over the session that provides them.
-import type { ReactTestRenderer } from "react-test-renderer";
 import { act } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { paletteFor } from "./design/tokens";
@@ -45,14 +44,12 @@ const heldGhost = (n: number): Ghost => ({
 
 const KEY = sheetKey("hub-1", "local:s1");
 const owner = {};
-const sheets: ReactTestRenderer[] = [];
 
 beforeEach(() => {
 	navigation.goBack.mockReset();
 	navigation.dispatch.mockReset();
 });
 afterEach(() => {
-	for (const tree of sheets.splice(0)) act(() => tree.unmount());
 	queueHosts.release(KEY, owner);
 });
 
@@ -74,7 +71,6 @@ function mountSheet(provided: QueueHost | undefined) {
 			navigation={navigation as never}
 		/>,
 	);
-	sheets.push(tree);
 	return tree;
 }
 
