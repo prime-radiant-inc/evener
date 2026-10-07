@@ -480,7 +480,7 @@ test.each([
     followingBottom: false,
     readingPoint: { entryHeight: oldHeight, viewportHeight: 400, viewportWidth: 152 },
   };
-  expect(readingPointOffset(captured, nextHeight, 400)).toBe(want);
+  expect(readingPointOffset(captured, nextHeight, 400, 352)).toBe(want);
 });
 
 // A kept tail stays put when the viewport shrinks below it: the text at the
@@ -493,11 +493,30 @@ test("a kept tail stays in place when the viewport shrinks below it", () => {
     followingBottom: false,
     readingPoint: { entryHeight: 1600, viewportHeight: 400, viewportWidth: 152 },
   };
-  expect(readingPointOffset(captured, 1600, 300)).toBe(-1250);
+  expect(readingPointOffset(captured, 1600, 300, 352)).toBe(-1250);
+});
+
+// A viewport-height-only change (composer-height settlement, say) doesn't
+// reflow the entry, so the reading line stays where it was outright.
+test.each([
+  { label: "inside the entry", oldOffset: -900, nextViewport: 436 },
+  { label: "inside the entry, shrinking", oldOffset: -900, nextViewport: 300 },
+  { label: "at its start", oldOffset: 0, nextViewport: 436 },
+  { label: "reading its tail", oldOffset: -1500, nextViewport: 436 },
+])("a height-only change keeps the reading line, $label", ({ oldOffset, nextViewport }) => {
+  const captured = {
+    anchorOffset: oldOffset,
+    normalizedOffset: 0,
+    followingBottom: false,
+    readingPoint: { entryHeight: 1600, viewportHeight: 400, viewportWidth: 152 },
+  };
+  expect(readingPointOffset(captured, 1600, nextViewport, 152)).toBe(oldOffset);
 });
 
 test("width-only policy preserves an ordinary display offset without a measured point", () => {
-  expect(readingPointOffset({ anchorOffset: -900, normalizedOffset: 0, followingBottom: false }, 700, 400)).toBe(-900);
+  expect(readingPointOffset({ anchorOffset: -900, normalizedOffset: 0, followingBottom: false }, 700, 400, 352)).toBe(
+    -900,
+  );
 });
 
 test.each([
@@ -569,7 +588,8 @@ function readingRow(id: string): TurnModel {
 }
 
 test.each([
-  { start: 900, intermediate: 225, want: 198 },
+  // The later change is height-only, so the reading line stays where it was.
+  { start: 900, intermediate: 225, want: 225 },
   // Scrolled into the entry's last 350px: that tail stays where it was.
   { start: 1250, intermediate: 350, want: 350 },
 ])(
@@ -624,7 +644,14 @@ test.each([
   },
 );
 
-test.each([false, true])("viewport shrink retains committed reading progress, observed=%s", async (settled) => {
+// The 275 -> 240 shrink keeps the reading line where it was. Once observed, it
+// is the committed geometry the width reflow measures progress against
+// (12578 / (12853.14 - 240) of the new depth); unobserved, the width reflow
+// still measures against 275.
+test.each([
+  { settled: false, reflowed: 6556.098576275061 },
+  { settled: true, reflowed: 6537.9061643301075 },
+])("viewport shrink retains committed reading progress, observed=$settled", async ({ settled, reflowed }) => {
   const selector = '[data-view-anchor-id="current-entry"]';
   const geometry = {
     width: 152,
@@ -667,15 +694,16 @@ test.each([false, true])("viewport shrink retains committed reading progress, ob
     expect(listRef.current?.isLayoutCurrent()).toBe(settled);
     expect(port.clientHeight).toBe(240);
     expect(captureTranscriptView("return-viewport-snapshot")?.readingPoint?.viewportHeight).toBe(settled ? 240 : 275);
+    expect(port.scrollTop).toBe(12578);
     geometry.width = 352;
     geometry.viewportHeight = 480;
     geometry.rowHeights[0] = 7065.484375;
     geometry.entryBoxes[selector].height = 7036.171875;
     await act(async () => external.notify());
-    expect(Math.abs(port.scrollTop - 6556.098576275061)).toBeLessThanOrEqual(2);
+    expect(Math.abs(port.scrollTop - reflowed)).toBeLessThanOrEqual(2);
     geometry.viewportHeight = 516;
     await act(async () => external.notify((target) => target === port));
-    expect(Math.abs(port.scrollTop - 6520.098978759032)).toBeLessThanOrEqual(2);
+    expect(Math.abs(port.scrollTop - reflowed)).toBeLessThanOrEqual(2);
     expect(port.querySelector(`${selector} [data-testid="user-bubble"]`)?.textContent).toBe("current");
   } finally {
     mounted?.unmount();

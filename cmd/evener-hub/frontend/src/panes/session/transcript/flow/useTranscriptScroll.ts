@@ -355,9 +355,12 @@ export function readingPointOffset(
   captured: CapturedTranscriptView,
   entryHeight: number,
   viewportHeight: number,
+  viewportWidth: number,
 ): number {
   const point = captured.readingPoint;
-  if (!point || captured.anchorOffset > 0) return captured.anchorOffset;
+  // A height-only change doesn't rewrap the entry, so the reading line stays
+  // exactly where it was.
+  if (!point || captured.anchorOffset > 0 || point.viewportWidth === viewportWidth) return captured.anchorOffset;
   const oldDepth = Math.max(0, point.entryHeight - point.viewportHeight);
   if (-captured.anchorOffset > oldDepth) {
     // The entry's top is above the viewport and its tail is showing, so the
@@ -655,7 +658,7 @@ export function useTranscriptViewRegistration(
           if (!pending.viewportReflow) {
             desired = restored.offset;
           } else if (sameSource) {
-            desired = readingPointOffset(pending.captured, current.height, el.clientHeight);
+            desired = readingPointOffset(pending.captured, current.height, el.clientHeight, el.clientWidth);
           } else {
             desired = Math.max(restored.offset, -Math.max(0, current.height - el.clientHeight));
           }

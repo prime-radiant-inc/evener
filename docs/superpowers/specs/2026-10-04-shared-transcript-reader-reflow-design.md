@@ -105,6 +105,12 @@ A 1px tail stays 1px; it never grows to fill the viewport. This preserves approx
 reader's current reading line in place; exact-word continuity across different
 line wrapping is outside the contract.
 
+A viewport-height-only change, such as composer-height settlement, doesn't
+rewrap the entry, so the same rule reduces to keeping the entry's offset outright:
+the reader's current reading line stays in place whether the reader is at the
+entry's start, inside it, or reading its tail. A later width reflow measures
+progress against the committed viewport height.
+
 This policy keeps useful content from the same entry visible. It never replays an
 old pixel offset beyond the entry's new readable extent. Browser scroll bounds
 still apply near the beginning or end of the transcript. A geometry-only fallback

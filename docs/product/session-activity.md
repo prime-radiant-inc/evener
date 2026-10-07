@@ -522,7 +522,8 @@ mutation identity. Opening and closing inspection preserve the visible source
 row across viewport width and height changes, including later composer-height
 settlement. Ordinary session, read-only transcript and cascade browser readers
 retain the visible entry and approximate progress through its usable reading
-depth; an entry whose tail is showing keeps that tail in place. The existing transcript registration owns that intent;
+depth; an entry whose tail is showing keeps that tail in place, and a
+height-only change keeps the reading line where it was. The existing transcript registration owns that intent;
 VirtualList owns measurement and committed geometry. Restoration waits for useful
 committed content and scroll read-back. Newer viewport scrolling or an explicit
 positioning command supersedes older work through the pane-lifetime read view.

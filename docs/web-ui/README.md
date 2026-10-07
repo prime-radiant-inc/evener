@@ -70,7 +70,8 @@ does not replace that label on remount.
 Browser transcript readers retain the visible entry and approximate progress
 through its usable reading depth across viewport width and height changes,
 including later composer-height settlement after a pane widens. An entry whose
-tail is showing keeps that tail in place rather than filling the pane. The existing
+tail is showing keeps that tail in place rather than filling the pane, and a
+height-only change keeps the reading line where it was. The existing
 [transcript registration](../../cmd/evener-hub/frontend/src/panes/session/transcript/flow/useTranscriptScroll.ts)
 owns that intent; VirtualList owns measurement and committed geometry.
 Restoration waits for useful committed content and scroll read-back. Newer
