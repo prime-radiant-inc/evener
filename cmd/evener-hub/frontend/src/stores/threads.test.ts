@@ -12019,6 +12019,294 @@ test("a row committed after the inline loop's empty pass is moved by the trailin
   }
 });
 
+// A Stop that lands after the drive's retarget but before the identity fence:
+// the Stop's own durable cancel names the OLD ref, where the row no longer is,
+// so without the swap registration (the Stop site's second cancel) AND the
+// drive's own compensation the UI says canceled while the moved row still
+// delivers under the resumed ref.
+test("a Stop after the retarget cancels the moved row and never sends it", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectFakeClient("connecting");
+  const fromRef = "local:stop-swap-from";
+  const toRef = "local:stop-swap-to";
+  const fromShape = () =>
+    readResponse(fromRef, {
+      status: { type: "notLoaded" },
+      evener: {
+        ref: fromRef,
+        capabilities: { ...CAPABILITIES, send: false },
+        mutationStateAuthoritative: false,
+        resumeRequired: true,
+        queue: { revision: 0 },
+      },
+    });
+  const toFenced = () =>
+    readResponse(toRef, {
+      status: { type: "notLoaded" },
+      evener: {
+        ref: toRef,
+        capabilities: { ...CAPABILITIES, send: false },
+        mutationStateAuthoritative: false,
+        resumeRequired: true,
+        queue: { revision: 0 },
+      },
+    });
+  const toIdle = () =>
+    readResponse(toRef, {
+      status: { type: "idle" },
+      evener: { ref: toRef, capabilities: CAPABILITIES, mutationStateAuthoritative: true, queue: { revision: 1 } },
+    });
+  // The first toRef read (ensureThread's) arms its restart obligation, so the
+  // moved row's dispatch parks until the held hydration below clears it.
+  let toReads = 0;
+  let holdToRead = false;
+  let toReadHeld = false;
+  let releaseToRead!: () => void;
+  fake.on("thread/read", (params) => {
+    if (params.ref !== toRef) return fromShape();
+    toReads += 1;
+    if (toReads === 1) return toFenced();
+    if (holdToRead) {
+      holdToRead = false;
+      toReadHeld = true;
+      return new Promise<ReturnType<typeof toIdle>>((resolve) => {
+        releaseToRead = () => resolve(toIdle());
+      });
+    }
+    return toIdle();
+  });
+  fake.on("thread/resume", () => toIdle());
+  fake.on("thread/shutdown", () => ({}));
+  const starts: string[] = [];
+  fake.on("turn/start", (params) => {
+    starts.push(String(params.ref));
+    return {
+      receipt: mutationReceipt(params.clientMutationId),
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+    };
+  });
+  fake.emitReady();
+  await threadsStore.getState().ensureThread(fromRef);
+  await threadsStore.getState().ensureThread(toRef);
+  expect(threadsStore.getState().restartBlockingObligations.has(fromRef)).toBe(true);
+  const seeded = await storage.enqueueIntent({
+    targetRef: fromRef,
+    threadId: `thr_${fromRef}`,
+    instanceId: "instance-old",
+    method: "turn/start",
+    payload: { ref: fromRef, expectedInstanceId: "instance-old", input: [{ type: "text", text: "parked" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "parked" }] },
+  });
+  holdToRead = true;
+  const drive = threadsStore.getState().resumeSession(fromRef);
+  await flushIndexedDBUntil(() => toReadHeld);
+  // The retarget already moved the row to toRef; the Stop lands before the fence
+  // runs, so only the swap registration can reach it.
+  await threadsStore.getState().shutdown(fromRef);
+  await flushIndexedDBUntil(() => false);
+  releaseToRead();
+  await drive;
+  await flushIndexedDBUntil(() => false);
+  expect(starts).toEqual([]);
+  const outbox = await storage.listOutbox(toRef);
+  expect(outbox.map((record) => ({ id: record.clientMutationId, state: record.state }))).toEqual([
+    { id: seeded.clientMutationId, state: "canceled" },
+  ]);
+  expect(await storage.listOutbox(fromRef)).toEqual([]);
+});
+
+// The non-stop asymmetry: a transport/hydration failure after the retarget must
+// NOT cancel the moved rows. They stay preserved and unattempted under the
+// resumed identity, to deliver when it recovers; canceling them there would lose
+// the user's message. Pinned so the failure lands while the moved row is still
+// unattempted - the only state a durable cancel could reach.
+test("a non-stop failure after the retarget preserves the moved rows", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectFakeClient("connecting");
+  const fromRef = "local:preserve-from";
+  const toRef = "local:preserve-to";
+  const fromShape = () =>
+    readResponse(fromRef, {
+      status: { type: "notLoaded" },
+      evener: {
+        ref: fromRef,
+        capabilities: { ...CAPABILITIES, send: false },
+        mutationStateAuthoritative: false,
+        resumeRequired: true,
+        queue: { revision: 0 },
+      },
+    });
+  const toFenced = () =>
+    readResponse(toRef, {
+      status: { type: "notLoaded" },
+      evener: {
+        ref: toRef,
+        capabilities: { ...CAPABILITIES, send: false },
+        mutationStateAuthoritative: false,
+        resumeRequired: true,
+        queue: { revision: 0 },
+      },
+    });
+  const toIdle = () =>
+    readResponse(toRef, {
+      status: { type: "idle" },
+      evener: { ref: toRef, capabilities: CAPABILITIES, mutationStateAuthoritative: true, queue: { revision: 1 } },
+    });
+  // The first toRef read (ensureThread's) arms its restart obligation, so the
+  // moved row's dispatch parks under the resumed ref. The held hydration below is
+  // the read that would clear it, and it fails - so the row never dispatches.
+  let toReads = 0;
+  let holdToRead = false;
+  let toReadHeld = false;
+  let rejectToRead!: (error: Error) => void;
+  fake.on("thread/read", (params) => {
+    if (params.ref !== toRef) return fromShape();
+    toReads += 1;
+    if (toReads === 1) return toFenced();
+    if (holdToRead) {
+      holdToRead = false;
+      toReadHeld = true;
+      return new Promise<ReturnType<typeof toIdle>>((_resolve, reject) => {
+        rejectToRead = reject;
+      });
+    }
+    return toIdle();
+  });
+  fake.on("thread/resume", () => toIdle());
+  const starts: string[] = [];
+  fake.on("turn/start", (params) => {
+    starts.push(String(params.ref));
+    return {
+      receipt: mutationReceipt(params.clientMutationId),
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+    };
+  });
+  fake.emitReady();
+  await threadsStore.getState().ensureThread(fromRef);
+  await threadsStore.getState().ensureThread(toRef);
+  expect(threadsStore.getState().restartBlockingObligations.has(fromRef)).toBe(true);
+  const seeded = await storage.enqueueIntent({
+    targetRef: fromRef,
+    threadId: `thr_${fromRef}`,
+    instanceId: "instance-old",
+    method: "turn/start",
+    payload: { ref: fromRef, expectedInstanceId: "instance-old", input: [{ type: "text", text: "keep me" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "keep me" }] },
+  });
+  holdToRead = true;
+  const drive = threadsStore.getState().resumeSession(fromRef);
+  await flushIndexedDBUntil(() => toReadHeld);
+  rejectToRead(new Error("hydrate failed"));
+  await drive;
+  await flushIndexedDBUntil(() => false);
+  // Not canceled and not sent: the preserved row waits, unattempted, under the
+  // resumed ref.
+  expect(starts).toEqual([]);
+  const outbox = await storage.listOutbox(toRef);
+  expect(
+    outbox.map((record) => ({ id: record.clientMutationId, state: record.state, attempted: record.attempted })),
+  ).toEqual([{ id: seeded.clientMutationId, state: "submitting", attempted: false }]);
+});
+
+// The swap registration's OWN reach, past the drive: the straggler is staged
+// after the inline loop's empty pass, so only the trailing drain - which runs
+// once the drive has settled and no fence or catch remains - moves it. A Stop
+// during that pass must still cancel the moved row: the trailing drain's
+// registration is the only thing that can reach it.
+test("a Stop during the trailing drain cancels the row the drain moved", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectFakeClient("connecting");
+  const fromRef = "local:drain-stop-from";
+  const toRef = "local:drain-stop-to";
+  const fromShape = () =>
+    readResponse(fromRef, {
+      status: { type: "notLoaded" },
+      evener: {
+        ref: fromRef,
+        capabilities: { ...CAPABILITIES, send: false },
+        mutationStateAuthoritative: false,
+        resumeRequired: true,
+        queue: { revision: 0 },
+      },
+    });
+  const toIdle = () =>
+    readResponse(toRef, {
+      status: { type: "idle" },
+      evener: { ref: toRef, capabilities: CAPABILITIES, mutationStateAuthoritative: true, queue: { revision: 1 } },
+    });
+  fake.on("thread/read", (params) => (params.ref === toRef ? toIdle() : fromShape()));
+  fake.on("thread/resume", () => toIdle());
+  fake.on("thread/shutdown", () => ({}));
+  const starts: string[] = [];
+  fake.on("turn/start", (params) => {
+    starts.push(String(params.ref));
+    return {
+      receipt: mutationReceipt(params.clientMutationId),
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+    };
+  });
+  fake.emitReady();
+  await threadsStore.getState().ensureThread(fromRef);
+  const seedRow = (text: string) =>
+    storage.enqueueIntent({
+      targetRef: fromRef,
+      threadId: `thr_${fromRef}`,
+      instanceId: "instance-old",
+      method: "turn/start",
+      payload: { ref: fromRef, expectedInstanceId: "instance-old", input: [{ type: "text", text }] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/start", input: [{ type: "text", text }] },
+    });
+  // No row for the drive's first retarget or its inline loop: the loop's first
+  // pass moves nothing and ends it, so the straggler staged right after that
+  // empty pass is moved by the trailing drain alone - after the drive has
+  // published the resumed identity and returned.
+  let realCalls = 0;
+  let stagedAfterEmpty = false;
+  let stopped = false;
+  let stragglerId = "";
+  const realRetarget = MutationOutboxIndexedDB.prototype.retargetOutbox;
+  const spy = vi.spyOn(MutationOutboxIndexedDB.prototype, "retargetOutbox").mockImplementation(async function (
+    this: MutationOutboxIndexedDB,
+    from: string,
+    to: string,
+    identity: { threadId?: string; instanceId?: string },
+  ) {
+    const published = threadsStore.getState().resumedIdentities.has(fromRef);
+    const moved = await realRetarget.call(this, from, to, identity);
+    realCalls += 1;
+    if (published && moved.outbox.length > 0 && !stopped) {
+      // The drive has settled; nothing but the swap registration can cancel the
+      // row this pass just moved.
+      stopped = true;
+      await threadsStore.getState().shutdown(fromRef);
+    } else if (realCalls === 2 && moved.outbox.length === 0 && !stagedAfterEmpty) {
+      stagedAfterEmpty = true;
+      stragglerId = (await seedRow("straggler")).clientMutationId;
+    }
+    return moved;
+  });
+  try {
+    await threadsStore.getState().resumeSession(fromRef);
+    await flushIndexedDBUntil(() => stopped);
+    await flushIndexedDBUntil(() => false);
+    expect(stopped).toBe(true);
+    expect(starts).toEqual([]);
+    const outbox = await storage.listOutbox(toRef);
+    expect(outbox.map((record) => ({ id: record.clientMutationId, state: record.state }))).toEqual([
+      { id: stragglerId, state: "canceled" },
+    ]);
+    expect(await storage.listOutbox(fromRef)).toEqual([]);
+  } finally {
+    spy.mockRestore();
+  }
+});
+
 // The harder order of the same property: the resume's OWN post-resume hydration
 // is held open, and the resync tail and a ready discovery each run first. Either
 // may send the parked row; releasing the held refresh afterwards must not send a

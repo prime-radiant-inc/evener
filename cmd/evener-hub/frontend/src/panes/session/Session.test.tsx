@@ -3607,6 +3607,13 @@ test("a Stop on the resumed identity cancels the stale post-resume publish", asy
   await waitFor(() =>
     expect(threadsStore.getState().resumeFailures.get(stableRef)?.message).toMatch(/Stop canceled this pending action/),
   );
+  // The Stop cancels the row the (identity-changing) resume moved under the
+  // resumed identity: the message must never reach the wire, not merely show a
+  // canceled toast.
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
+  expect(await mutationStorage.listOutbox(stableRef)).toEqual([]);
+  const moved = await mutationStorage.listOutbox(currentRef);
+  expect(moved.map((record) => record.state)).toEqual(["canceled"]);
   expect(window.location.pathname).toBe("/s/local%3Astable-a");
 });
 
