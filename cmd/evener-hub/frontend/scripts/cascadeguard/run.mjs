@@ -280,7 +280,14 @@ async function viewportReflow(portExpr, width, height, label, changed) {
   const after = await settledReadingPoint(portExpr, `${label} after`);
   readingPoints.push({ kind:`${changed}-only`, label, before, after });
   if (changed === "width") assert.notEqual(after.width, before.width, `${label} observes a width-only transition`);
-  else assert.ok(after.width === before.width && after.viewport !== before.viewport, `${label} observes a height-only transition`);
+  else {
+    assert.ok(after.width === before.width && after.viewport !== before.viewport, `${label} observes a height-only transition`);
+    // The progress rule the reader used before #3899 would have moved it by
+    // its progress through the entry times the height change: big enough here
+    // that keeping the line is a real check, not a near-no-op.
+    const progressShift = (-before.offset / (before.height - before.viewport)) * Math.abs(after.viewport - before.viewport);
+    assert.ok(progressShift > 10, `${label} reads far enough into its entry to tell the rules apart, ${progressShift}px`);
+  }
   assertReadingContinuity(before, after, label);
   driver.milestone(label, { entry:after.entry, row:after.row, oldWidth:before.width, width:after.width, oldViewport:before.viewport, viewport:after.viewport, offset:after.offset });
 }
