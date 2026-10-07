@@ -1014,10 +1014,8 @@ func TestSessionOwnedDelegateIDs_HonorsCancellationAfterTheFold(t *testing.T) {
 	const childID = "02wMz5Txv1C3Hut0M8GCeQ"
 	stateDir := t.TempDir()
 	writePastStableDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, childID, "child"))
-	// Warm the fold cache, so the read below makes one Err check before the walk.
-	if _, err := SessionOwnedDelegateIDs(t.Context(), stateDir, rootID); err != nil {
-		t.Fatal(err)
-	}
+	// The journal fold (foldcache.Get) checks Err once before reading, so the
+	// cancellation lands after it.
 	ctx := &cancelAfterFirstCheck{Context: t.Context()}
 	if ids, err := SessionOwnedDelegateIDs(ctx, stateDir, rootID); !errors.Is(err, context.Canceled) {
 		t.Fatalf("SessionOwnedDelegateIDs after cancellation = %v, %v; want context.Canceled", ids, err)

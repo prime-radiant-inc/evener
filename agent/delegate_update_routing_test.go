@@ -15,68 +15,37 @@ import (
 // whose threads list the row.
 func TestStableDelegateUpdate_ReachesEachLiveAncestorSubagentThread(t *testing.T) {
 	t.Parallel()
-	var mu sync.Mutex
-	var seen []events.SessionEvent
-	tree := newRealDelegateTree(t, func(event events.SessionEvent) {
-		if event.Kind == events.EventDelegateUpdated {
-			mu.Lock()
-			seen = append(seen, event)
-			mu.Unlock()
-		}
-	})
+	recorder := &delegateUpdateRecorder{}
+	tree := newRealDelegateTree(t, recorder.record)
 	middleID := tree.parent.ChildSessionID
-	mu.Lock()
-	defer mu.Unlock()
-	var middleSawItself, leafSawAnything bool
 	var middleRevisions []uint64
-	for _, event := range seen {
-		data, ok := event.Data.(events.DelegateUpdatedData)
-		if !ok {
-			t.Fatalf("delegate update data = %T", event.Data)
-		}
-		switch event.SessionID {
-		case middleID:
-			if data.DelegateID == tree.parent.DelegateID {
-				middleSawItself = true
+	for _, event := range recorder.updates(0) {
+		data := event.Data.(events.DelegateUpdatedData)
+		switch {
+		case event.SessionID == middleID && data.DelegateID == tree.grandchildID:
+			middleRevisions = append(middleRevisions, data.ProjectionRevision)
+			if data.OwnerSessionID != tree.s.ID() || !slices.Equal(data.AncestorSessionIDs, []string{middleID}) {
+				t.Fatalf("grandchild update on the middle stream = owner %q ancestors %v, want owner %q ancestors [%s]", data.OwnerSessionID, data.AncestorSessionIDs, tree.s.ID(), middleID)
 			}
-			if data.DelegateID == tree.grandchildID {
-				middleRevisions = append(middleRevisions, data.ProjectionRevision)
-				if data.OwnerSessionID != tree.s.ID() || !slices.Equal(data.AncestorSessionIDs, []string{middleID}) {
-					t.Fatalf("grandchild update on the middle stream = owner %q ancestors %v, want owner %q ancestors [%s]", data.OwnerSessionID, data.AncestorSessionIDs, tree.s.ID(), middleID)
-				}
-			}
-		case tree.grandchildSessionID:
-			leafSawAnything = true
+		case event.SessionID == middleID || event.SessionID == tree.grandchildSessionID:
+			t.Fatalf("an update reached a thread that does not list it: %s on %s's stream", data.DelegateID, event.SessionID)
 		}
+	}
+	if len(middleRevisions) == 0 {
+		t.Fatal("no grandchild delegate update reached the middle subagent's stream")
 	}
 	// The root's stream still carries each grandchild update exactly once, with
 	// the same ancestry, so the root thread and the middle thread see the same
 	// revisions.
 	var rootRevisions []uint64
-drain:
-	for {
-		select {
-		case event := <-tree.s.events:
-			data, ok := event.Data.(events.DelegateUpdatedData)
-			if !ok || data.DelegateID != tree.grandchildID {
-				continue
-			}
-			if event.SessionID != tree.s.ID() || !slices.Equal(data.AncestorSessionIDs, []string{middleID}) {
-				t.Fatalf("grandchild update on the root stream = session %q ancestors %v", event.SessionID, data.AncestorSessionIDs)
-			}
-			rootRevisions = append(rootRevisions, data.ProjectionRevision)
-		default:
-			break drain
+	for _, data := range drainRootDelegateUpdates(tree.s, tree.grandchildID) {
+		if !slices.Equal(data.AncestorSessionIDs, []string{middleID}) {
+			t.Fatalf("grandchild update on the root stream has ancestors %v, want [%s]", data.AncestorSessionIDs, middleID)
 		}
+		rootRevisions = append(rootRevisions, data.ProjectionRevision)
 	}
-	if len(rootRevisions) == 0 || !slices.Equal(rootRevisions, middleRevisions) {
+	if !slices.Equal(rootRevisions, middleRevisions) {
 		t.Fatalf("grandchild revisions on the root stream %v, on the middle stream %v; want the same updates on both", rootRevisions, middleRevisions)
-	}
-	if len(middleRevisions) == 0 {
-		t.Fatalf("no grandchild delegate update reached the middle subagent's stream; descendant updates seen: %d", len(seen))
-	}
-	if middleSawItself || leafSawAnything {
-		t.Fatalf("an update reached a thread that does not list it: middle saw its own row %t, leaf saw a row %t", middleSawItself, leafSawAnything)
 	}
 }
 
@@ -95,13 +64,18 @@ func (r *delegateUpdateRecorder) record(event events.SessionEvent) {
 	}
 }
 
-// count is how many updates for delegateID the stream of sessionID carried
-// at or after the recorder's position from.
-func (r *delegateUpdateRecorder) count(from int, sessionID, delegateID string) int {
+// updates is a copy of the recorded updates from position from on.
+func (r *delegateUpdateRecorder) updates(from int) []events.SessionEvent {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	return slices.Clone(r.seen[from:])
+}
+
+// count is how many updates for delegateID the stream of sessionID carried
+// from the recorder's position from on.
+func (r *delegateUpdateRecorder) count(from int, sessionID, delegateID string) int {
 	n := 0
-	for _, event := range r.seen[from:] {
+	for _, event := range r.updates(from) {
 		if data, ok := event.Data.(events.DelegateUpdatedData); ok && event.SessionID == sessionID && data.DelegateID == delegateID {
 			n++
 		}
@@ -185,9 +159,9 @@ func TestStableDelegateUpdate_ParentOwnedRowReachesItsOwnerOnce(t *testing.T) {
 	tree := newRealDelegateTree(t, recorder.record)
 	c, middleID := tree.c, tree.parent.ChildSessionID
 	c.mu.Lock()
-	c.durable[tree.grandchildID].Descriptor.OwnerSessionID = middleID
 	plan := c.capturedPlanLocked(tree.grandchildID)
 	c.mu.Unlock()
+	plan.rows[0].descriptor.OwnerSessionID = middleID
 	from := recorder.len()
 	tree.s.emitStableDelegateUpdate(plan)
 	if n := recorder.count(from, middleID, tree.grandchildID); n != 1 {
