@@ -307,30 +307,33 @@ export async function connectPage(endpoint, targetId) {
       pending.delete(message.id);
     }
   });
-  // A command still in flight when the socket closes (a target Chrome was
-  // already tearing down) fails rather than hanging the guard.
+  // A command in flight when the socket closes, or sent after (a closed socket
+  // drops it silently), fails rather than hanging the guard.
+  const closedReply = { error: { message: "CDP socket closed" } };
+  let closed = false;
   ws.addEventListener("close", () => {
-    for (const settle of pending.values()) settle({ error: { message: "CDP socket closed" } });
+    closed = true;
+    for (const settle of pending.values()) settle(closedReply);
     pending.clear();
   });
   await new Promise((resolve, reject) => {
     ws.addEventListener("open", resolve, { once: true });
-    // The ErrorEvent itself stringifies as a bare "[object ErrorEvent]".
-    ws.addEventListener(
-      "error",
-      (event) =>
-        reject(new Error(`CDP socket to ${target.webSocketDebuggerUrl} failed: ${event.message || "no detail"}`)),
-      { once: true },
-    );
+    // The ErrorEvent itself stringifies as a bare "[object ErrorEvent]" and,
+    // in Node, carries no message: name the socket instead.
+    ws.addEventListener("error", () => reject(new Error(`CDP socket to ${target.webSocketDebuggerUrl} failed`)), {
+      once: true,
+    });
   });
 
   const send = (method, params = {}) =>
     new Promise((resolve, reject) => {
       const requestId = ++id;
-      pending.set(requestId, (message) => {
+      const settle = (message) => {
         if (message.error) reject(new Error(`${method}: ${JSON.stringify(message.error)}`));
         else resolve(message);
-      });
+      };
+      if (closed) return settle(closedReply);
+      pending.set(requestId, settle);
       ws.send(JSON.stringify({ id: requestId, method, params }));
     });
 

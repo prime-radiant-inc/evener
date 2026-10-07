@@ -48,8 +48,9 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-// A fake page target: /json/list names one page, and its socket is driven by
-// the test through the returned handle.
+// A fake page target, driven by the test through the returned handle. A closing
+// tab is listed first, ahead of the one the guard means, as Chrome lists it
+// for a moment after /json/close.
 function stubPageTarget() {
   const socketURL = "ws://127.0.0.1:9/devtools/page/T1";
   const socket = new EventTarget();
@@ -57,7 +58,10 @@ function stubPageTarget() {
   socket.send = (data) => socket.sent.push(JSON.parse(data));
   socket.close = () => {};
   vi.stubGlobal("fetch", async () => ({
-    json: async () => [{ id: "T1", type: "page", webSocketDebuggerUrl: socketURL }],
+    json: async () => [
+      { id: "CLOSING", type: "page", webSocketDebuggerUrl: "ws://127.0.0.1:9/devtools/page/CLOSING" },
+      { id: "T1", type: "page", webSocketDebuggerUrl: socketURL },
+    ],
   }));
   vi.stubGlobal(
     "WebSocket",
@@ -76,7 +80,7 @@ function stubPageTarget() {
 // (#3895): the rejection has to say which socket failed.
 test("connectPage rejects a failed socket with an Error naming the target", async () => {
   const { socket, socketURL, endpoint } = stubPageTarget();
-  const connecting = connectPage(endpoint);
+  const connecting = connectPage(endpoint, "T1");
   await new Promise((resolve) => setTimeout(resolve, 0));
   socket.dispatchEvent(new Event("error"));
   await assert.rejects(connecting, (error) => {
@@ -89,16 +93,36 @@ test("connectPage rejects a failed socket with an Error naming the target", asyn
 // A socket to a closing target can open and then close with a command still
 // unanswered; that command must fail instead of hanging the guard.
 test("connectPage fails a pending command when its socket closes", async () => {
+  const page = await openStubPage();
+  const pending = page.send("Runtime.evaluate", { expression: "1" });
+  page.socket.dispatchEvent(new Event("close"));
+  await assert.rejects(settledNow(pending), /Runtime\.evaluate: .*CDP socket closed/);
+});
+
+// A closed socket drops a later send silently, so the command must fail itself.
+test("connectPage fails a command sent after its socket closed", async () => {
+  const page = await openStubPage();
+  page.socket.dispatchEvent(new Event("close"));
+  await assert.rejects(
+    settledNow(page.send("Page.navigate", { url: "about:blank" })),
+    /Page\.navigate: .*CDP socket closed/,
+  );
+  assert.deepEqual(page.socket.sent, []);
+});
+
+// Opens the named tab; the stub's WebSocket refuses any other tab's socket.
+async function openStubPage() {
   const { socket, endpoint } = stubPageTarget();
-  const connecting = connectPage(endpoint);
+  const connecting = connectPage(endpoint, "T1");
   await new Promise((resolve) => setTimeout(resolve, 0));
   socket.dispatchEvent(new Event("open"));
-  const page = await connecting;
-  const pending = page.send("Runtime.evaluate", { expression: "1" });
-  socket.dispatchEvent(new Event("close"));
-  const stillPending = new Promise((resolve) => setTimeout(() => resolve("still pending"), 1000));
-  await assert.rejects(Promise.race([pending, stillPending]), /Runtime\.evaluate: .*CDP socket closed/);
-});
+  return { ...(await connecting), socket };
+}
+
+// Resolves to "still pending" if the promise hasn't settled within a turn.
+function settledNow(promise) {
+  return Promise.race([promise, new Promise((resolve) => setTimeout(() => resolve("still pending"), 0))]);
+}
 
 test("preserves the announced endpoint host when building HTTP URLs", () => {
   assert.equal(
