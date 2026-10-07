@@ -940,6 +940,57 @@ func TestSessionOwnsDelegateVerifiesRootOwnerAndImmediateParent(t *testing.T) {
 	}
 }
 
+// SessionOwnedDelegateIDs lists the sessions below a session in its tree: the
+// whole tree for a root, the subtree under a subagent's own delegate for a
+// subagent, never the session itself, and never a row the root does not own
+// nor one whose parentage runs through such a row. The foreign row hangs
+// under a root-owned delegate, so only the ownership rule keeps it out.
+func TestSessionOwnedDelegateIDs_ListsDescendantSessionsTheRootOwns(t *testing.T) {
+	t.Parallel()
+	const rootID = "02wMz5Txv1C3Hut0M8GCeG"
+	const aID = "02wMz5Txv1C3Hut0M8GCeH"
+	const bID = "02wMz5Txv1C3Hut0M8GCeI"
+	const cID = "02wMz5Txv1C3Hut0M8GCeJ"
+	const dID = "02wMz5Txv1C3Hut0M8GCeK"
+	const foreignOwnerID = "02wMz5Txv1C3Hut0M8GCeL"
+	const foreignID = "02wMz5Txv1C3Hut0M8GCeM"
+	const underForeignID = "02wMz5Txv1C3Hut0M8GCeN"
+	stateDir := t.TempDir()
+	under := func(descriptor delegatestore.Descriptor, parentID string) delegatestore.Descriptor {
+		descriptor.ParentDelegateID = "dlg_" + parentID
+		return descriptor
+	}
+	writePastStableDelegates(t, stateDir, rootID,
+		pastStableDescriptor(rootID, aID, "a"),
+		under(pastStableDescriptor(rootID, bID, "b"), aID),
+		under(pastStableDescriptor(rootID, cID, "c"), bID),
+		pastStableDescriptor(rootID, dID, "d"),
+		under(pastStableDescriptor(foreignOwnerID, foreignID, "foreign"), aID),
+		under(pastStableDescriptor(rootID, underForeignID, "under foreign"), foreignID),
+	)
+	for _, id := range []string{aID, bID, cID} {
+		savePastActivityMetaWithTreeRevision(t, stateDir, id, id, rootID, 1)
+	}
+	for _, tc := range []struct {
+		name      string
+		sessionID string
+		want      []string
+	}{
+		{name: "root", sessionID: rootID, want: []string{aID, bID, cID, dID}},
+		{name: "subagent a", sessionID: aID, want: []string{bID, cID}},
+		{name: "subagent b", sessionID: bID, want: []string{cID}},
+		{name: "leaf c", sessionID: cID, want: nil},
+	} {
+		got, err := SessionOwnedDelegateIDs(t.Context(), stateDir, tc.sessionID)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if !slices.Equal(got, tc.want) {
+			t.Fatalf("%s: descendant sessions = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
 // A subagent's own thread lists the delegates in its subtree, as a root's
 // thread lists its whole tree: a transcript opened on the subagent then has a
 // roster entry for every subagent row it shows. Rows keep the tree's owner and

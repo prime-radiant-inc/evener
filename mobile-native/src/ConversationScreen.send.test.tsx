@@ -1045,7 +1045,9 @@ it("asks to try a typed /queue again when the phone couldn't keep it", async () 
 	expect(hub.mutations()).toEqual([]);
 	expect(renderedText(tree)).toContain("Couldn't save this on the phone. Try again.");
 	expect(renderedText(tree)).not.toContain("Could not confirm the command");
-	expect(renderedText(tree)).toContain("/queue check the logs");
+	// Nothing left the phone, so the command goes back to the composer.
+	expect(field(tree)?.props.value).toBe("/queue check the logs");
+	expect(renderedText(tree)).not.toContain("Couldn't confirm");
 });
 
 // A typed /interrupt is Stop: it holds the messages this phone hasn't sent
@@ -3238,6 +3240,9 @@ describe("queued messages at the transcript's end (spec 8.5)", () => {
 		await press(tree, "Drain queue");
 		expect(hub.requests.filter((entry) => entry.method === "turn/drainAsSteer")).toEqual([]);
 		expect(renderedText(tree)).toContain(STEERING_WITH_QUEUE);
+		// Nothing was tried, so the command stays in the composer.
+		expect(field(tree)?.props.value).toBe("/drain-as-steer");
+		expect(renderedText(tree)).not.toContain("Couldn't confirm");
 	});
 
 	// /drain-as-steer is Steer all now typed: the same outbox, so a lost answer

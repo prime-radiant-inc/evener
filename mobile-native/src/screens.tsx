@@ -60,6 +60,7 @@ import { openProviders } from "./board/BoardNotices";
 import { useConnection } from "./ConnectionProvider";
 import {
 	CommandArgumentError,
+	CommandNotSentError,
 	composerCommand,
 	composerCommandAvailable,
 	isLocalComposerCommand,
@@ -1875,16 +1876,17 @@ export function ConversationScreen({
 							} catch {
 								// Admission only writes on the phone: nothing left it, so this
 								// is safe to try again, not a send to confirm.
-								throw new CommandArgumentError(NATIVE_MUTATION_HOST_UNAVAILABLE);
+								throw new CommandNotSentError(NATIVE_MUTATION_HOST_UNAVAILABLE);
 							}
 						},
 						stop,
-						drainQueue: async () => {
-							// As Steer all now waits (canSteerAll): it would take that message too.
+						// As Steer all now waits (canSteerAll): it would take that message too.
+						drainRefusal: () => {
 							const state = store.getState();
-							if (steeringWithQueue(state.conversation, state.pendingMutations))
-								throw new CommandArgumentError(STEERING_WITH_QUEUE);
-							if (!(await drainLiveQueue())) throw new CommandArgumentError(STEER_ALL_FAILED.text);
+							return steeringWithQueue(state.conversation, state.pendingMutations) ? STEERING_WITH_QUEUE : null;
+						},
+						drainQueue: async () => {
+							if (!(await drainLiveQueue())) throw new CommandNotSentError(STEER_ALL_FAILED.text);
 						},
 						cleared: (response) => {
 							const replacement = service.adoptClear(response);
