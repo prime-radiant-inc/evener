@@ -141,3 +141,88 @@ func TestHeldDeliveryAckFailureRetriesBothInline(t *testing.T) {
 		t.Fatalf("%d claims left after the retries, want none: nothing is re-delivered as a notification", claims)
 	}
 }
+
+// A stop covering the owner takes the held result with the rest of the
+// owner's deliveries. When the owner's tool round is then cancelled and its
+// reply abandoned, the held result's claim must not come back: nothing could
+// ever admit it, and it would block the owner's next start, its reclamation
+// and retirement for good.
+func TestHeldDeliveryStaysWithAStopThatCoversItsOwner(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 3, 2)
+	seedDelegateControllerRunning(t, c, "dlg_owner", "")
+	seedDelegateControllerIdle(t, c, "dlg_target", "dlg_owner")
+	c.mu.Lock()
+	c.live["dlg_owner"].runtime = &Session{}
+	c.mu.Unlock()
+	ownerLease := delegateLease{delegateID: "dlg_owner", generation: 1}
+	actor := delegateActor{rootSessionID: "root-session", lease: &ownerLease}
+	start := func(withWaiter bool) (delegateLease, *delegateInlineWaiter) {
+		t.Helper()
+		reservation, err := c.ReserveStart(actor, "dlg_target")
+		if err != nil {
+			t.Fatalf("ReserveStart: %v", err)
+		}
+		var waiter *delegateInlineWaiter
+		if withWaiter {
+			if waiter, err = c.RegisterInlineWaiter(reservation); err != nil {
+				t.Fatalf("RegisterInlineWaiter: %v", err)
+			}
+		}
+		started, err := c.CommitStart(reservation)
+		if err != nil {
+			t.Fatalf("CommitStart: %v", err)
+		}
+		return started.lease, waiter
+	}
+	firstLease, _ := start(false)
+	held := finishDelegateDeliveryGeneration(t, c, firstLease, "first").deliveries[0]
+	c.holdDeliveryClaim(held)
+	secondLease, waiter := start(true)
+	plans := finishDelegateDeliveryGeneration(t, c, secondLease, "second")
+	if len(plans.deliveries) != 1 || plans.deliveries[0].held == nil {
+		t.Fatalf("second generation's plans = %#v, want one carrying the held first", plans.deliveries)
+	}
+	if _, err := deliverDelegatePacket(plans.deliveries[0], nil); err != nil {
+		t.Fatalf("carrier: %v", err)
+	}
+	resolution := waitedResolution(t, waiter)
+	stop, _, _, err := c.StopSubtree(rootDelegateActor("root-session"), "dlg_owner")
+	if err != nil {
+		t.Fatalf("StopSubtree: %v", err)
+	}
+	for _, commit := range []*delegateToolResultCommit{resolution.earlier.commit, resolution.commit} {
+		if _, err := commit.Complete(false); err != nil {
+			t.Fatalf("abandon: %v", err)
+		}
+	}
+	if _, err := c.FinishGeneration(ownerLease, delegateFinish{outcome: delegatestore.OutcomeCancelled, reason: "cancelled"}); err != nil {
+		t.Fatalf("FinishGeneration owner: %v", err)
+	}
+	for range 4 {
+		if _, err := c.Reconcile(emptyDelegateReconcileEvidence(c)); err != nil {
+			t.Fatalf("Reconcile: %v", err)
+		}
+	}
+	select {
+	case <-stop.done:
+	default:
+		t.Fatal("the stop did not complete")
+	}
+	if _, admitted, _ := c.BeginDelivery(held); admitted {
+		t.Fatal("the held plan was admitted after the stop took its delivery")
+	}
+	// The owner's own result to the root is planned as usual; only the
+	// target's held delivery must leave no claim behind.
+	c.mu.Lock()
+	targetClaims := 0
+	for _, claim := range c.deliveryClaims {
+		if claim.delegateID == "dlg_target" {
+			targetClaims++
+		}
+	}
+	work := c.hasDeliveryWorkForOwnerLocked("dlg_owner")
+	c.mu.Unlock()
+	if targetClaims != 0 || work {
+		t.Fatalf("after the stop: %d target claims left, owner delivery work=%t, want none", targetClaims, work)
+	}
+}
