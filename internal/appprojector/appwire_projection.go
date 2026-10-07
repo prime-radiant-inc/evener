@@ -2,6 +2,7 @@ package appprojector
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"time"
 
@@ -372,7 +373,10 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		return out
 	case events.EventDelegateUpdated:
 		data := eventData[events.DelegateUpdatedData](event.Data)
-		if data.OwnerSessionID != p.threadID || data.DelegateID == "" {
+		// The owner's (root's) thread lists every delegate; a subagent's lists
+		// the delegates in its subtree.
+		listed := data.OwnerSessionID == p.threadID || slices.Contains(data.AncestorSessionIDs, p.threadID)
+		if !listed || data.DelegateID == "" {
 			return nil
 		}
 		incoming := appwireDelegateInfo(data)

@@ -57,7 +57,8 @@ func (s *Session) memoryFileArgs(args map[string]any, key, operation string) (*e
 
 // execOwnMemoryWrite runs a write, edit or delete of one memory file and,
 // once it succeeds, records the result as the session's own: a change to the
-// index becomes its baseline, so it is never echoed back.
+// index becomes its baseline and a change to a page it read becomes that
+// page's record, so neither is echoed back.
 func (s *Session) execOwnMemoryWrite(args map[string]any, operation string, write func(env *execenv.LocalExecutionEnvironment, forwarded map[string]any) (any, error)) (any, error) {
 	scope, file := stringArg(args, "scope"), filepath.Clean(stringArg(args, "file_path"))
 	env, forwarded, release, err := s.memoryFileArgs(args, "file_path", operation)
@@ -66,8 +67,8 @@ func (s *Session) execOwnMemoryWrite(args map[string]any, operation string, writ
 	}
 	defer release()
 	out, err := write(env, forwarded)
-	if err == nil && file == memoryIndexFile {
-		s.noteOwnMemoryIndexWrite(env, scope)
+	if err == nil {
+		s.recordOwnMemoryWrite(env, scope, file)
 	}
 	return out, err
 }
@@ -79,12 +80,33 @@ func (s *Session) execMemoryWrite(ctx context.Context, _ execenv.ExecutionEnviro
 }
 
 func (s *Session) execMemoryRead(ctx context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
+	scope, file := stringArg(args, "scope"), filepath.Clean(stringArg(args, "file_path"))
 	env, forwarded, release, err := s.memoryFileArgs(args, "file_path", "read")
 	if err != nil {
 		return nil, err
 	}
 	defer release()
-	return execFileRead(ctx, env, forwarded, s.fileReadGuard(env))
+	// Capture the bytes this read loaded, so the page's record is exactly what
+	// the session saw. They are the whole page even for an offset or limit
+	// read, which therefore records the whole page as of that read.
+	var raw []byte
+	out, err := execFileReadWith(forwarded, s.fileReadGuard(env), func(path string, offset, limit *int) (string, error) {
+		text, loaded, err := env.ReadFileAndBytes(path, offset, limit)
+		raw = loaded
+		return text, err
+	})
+	// The index has its own baseline and change blocks; every other page
+	// read is tracked for change notices.
+	if err == nil && file != memoryIndexFile {
+		// Another session may change the page between the read and its
+		// record; the record still holds what this read loaded.
+		recordErr := s.beforeMemoryIO(scope, "record")
+		if recordErr != nil {
+			raw = nil
+		}
+		s.recordMemoryContent(scope, file, raw, recordErr, true)
+	}
+	return out, err
 }
 func (s *Session) execMemoryEdit(ctx context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 	return s.execOwnMemoryWrite(args, "edit", func(env *execenv.LocalExecutionEnvironment, forwarded map[string]any) (any, error) {

@@ -12,6 +12,7 @@ import { buildActivityRows } from "./activityRows";
 import {
   buildEntityView,
   type DelegateEntityView,
+  type EntityView,
   entityOpenTarget,
   findEntityView,
   watchFoldKey,
@@ -103,6 +104,11 @@ function liveDelegate(
   };
 }
 
+// liveView builds the view of session local:s from its live delegate list.
+function liveView(delegates: EvenerDelegateInfo[], tree?: ActivityTree): Map<string, EntityView> {
+  return buildEntityView({ sessionRef: "local:s", tree, delegates, turns: [], stale: false, ended: false });
+}
+
 function item(overrides: Partial<ItemModel> = {}): ItemModel {
   return {
     id: "watch-item",
@@ -171,6 +177,57 @@ test("live-only delegate cards and navigates from delegates[]", () => {
 
   expect(entity).toMatchObject({ kind: "delegate", logicalId: "dlg_x", stable });
   expect(entityOpenTarget(entity!)).toEqual({ ref: "local:child", parentRef: "local:s" });
+});
+
+test("a nested stable delegate belongs to its parent delegate's session, not the viewed one", () => {
+  const parent = liveDelegate("dlg_a", 2, "local:child-a");
+  const nested = { ...liveDelegate("dlg_b", 2, "local:child-b"), parentDelegateId: "dlg_a" };
+  const view = liveView([parent, nested]);
+
+  expect(findEntityView(view, "delegate", "dlg_a", "local:s")).toMatchObject({ ownerRef: "local:s" });
+  const entity = findEntityView(view, "delegate", "dlg_b", "local:child-a");
+  expect(entity).toMatchObject({ ownerRef: "local:child-a", stable: nested });
+  expect(entityOpenTarget(entity!)).toEqual({ ref: "local:child-b", parentRef: "local:child-a" });
+  // A root's transcript can name a grandchild (job_status, job_list, prose):
+  // the lookup from the viewed session still reaches it through its parent.
+  expect(findEntityView(view, "delegate", "dlg_b", "local:s")).toBe(entity);
+  expect(findEntityView(view, "delegate", "dlg_a", "local:child-a")).toBeUndefined();
+});
+
+test("a delegate lookup follows the parent chain down any depth and stops at a gap", () => {
+  const a = liveDelegate("dlg_a", 2, "local:child-a");
+  const b = { ...liveDelegate("dlg_b", 2, "local:child-b"), parentDelegateId: "dlg_a" };
+  const c = { ...liveDelegate("dlg_c", 2, "local:child-c"), parentDelegateId: "dlg_b" };
+  const orphan = { ...liveDelegate("dlg_orphan", 2, "local:child-orphan"), parentDelegateId: "dlg_b" };
+  const chained = liveView([a, b, c]);
+
+  expect(findEntityView(chained, "delegate", "dlg_c", "local:s")).toMatchObject({ ownerRef: "local:child-b" });
+  expect(findEntityView(chained, "delegate", "dlg_c", "local:child-a")).toMatchObject({ ownerRef: "local:child-b" });
+  // Without dlg_b loaded, the orphan's owner session has no loaded parent.
+  const gapped = liveView([a, { ...orphan, parentDelegateId: "dlg_missing" }]);
+  expect(findEntityView(gapped, "delegate", "dlg_orphan", "local:child-a")).toBeUndefined();
+});
+
+test("a nested delegate whose parent is not listed belongs to the viewed session", () => {
+  // A subagent's thread lists its subtree; its top rows name its own delegate,
+  // which its list does not hold, as their parent.
+  const top = { ...liveDelegate("dlg_b", 2, "local:child-b"), parentDelegateId: "dlg_self" };
+  const view = liveView([top]);
+
+  expect(findEntityView(view, "delegate", "dlg_b", "local:s")).toMatchObject({ ownerRef: "local:s" });
+});
+
+test("a nested tree row keeps its name when the stable row for it is older", () => {
+  const retained = treeWithEntries([
+    { kind: "delegate", delegate: { ...delegate("dlg_b", 5), ownerRef: "local:child-a", name: "named nested" } },
+  ]);
+  const parent = liveDelegate("dlg_a", 2, "local:child-a");
+  const nested = { ...liveDelegate("dlg_b", 4, "local:tree-dlg_b"), parentDelegateId: "dlg_a" };
+  const view = liveView([parent, nested], retained);
+
+  const entity = findEntityView(view, "delegate", "dlg_b", "local:child-a");
+  expect(entity).toMatchObject({ kind: "delegate", name: "named nested", ownerRef: "local:child-a" });
+  expect(delegateSource(entity as DelegateEntityView)).toBe("tree");
 });
 
 test("live update and retained row reconcile by qualified identity with one action target", () => {

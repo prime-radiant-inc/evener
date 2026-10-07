@@ -440,7 +440,9 @@ func TestSessionActivitySummaryFailedShellAndUnknownRetainedWatch(t *testing.T) 
 
 // realDelegateTree is a root session whose one delegate (parent) spawned one
 // delegate of its own (grandchild), both run to completion: three sessions
-// deep, built by the real delegate runtime.
+// deep, built by the real delegate runtime. descendantEvents, when set, sees
+// every event the tree's subagent sessions emit, as the daemon's AppWire
+// bridge does.
 type realDelegateTree struct {
 	s                   *Session
 	c                   *delegateTreeController
@@ -451,7 +453,7 @@ type realDelegateTree struct {
 	grandchildRuntime   *Session
 }
 
-func newRealDelegateTree(t *testing.T) realDelegateTree {
+func newRealDelegateTree(t *testing.T, descendantEvents func(events.SessionEvent)) realDelegateTree {
 	t.Helper()
 	workspace := t.TempDir()
 	s := newSession(t, withDir(workspace), withConfig(SessionConfig{StateDir: t.TempDir(), MaxSubagentDepth: 2, ForceRealIO: true, testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, sandboxProber: bwrapCapableProber(workspace), disableDelegateIdleRelease: true}}), withSteps(
@@ -461,6 +463,9 @@ func newRealDelegateTree(t *testing.T) realDelegateTree {
 		func(llm.Request) llm.Response { return finalResponse("grandchild done") },
 		func(llm.Request) llm.Response { return finalResponse("parent done") },
 	))
+	if descendantEvents != nil {
+		s.SetDescendantEventFunc(descendantEvents)
+	}
 	one := 1
 	parent := s.createDelegate(t.Context(), delegateArgs{Task: "spawn one grandchild", DelegationAllowance: &one})
 	if parent.Err != nil {
@@ -507,11 +512,24 @@ func newRealDelegateTree(t *testing.T) realDelegateTree {
 	return realDelegateTree{s: s, c: c, parent: parent, parentRuntime: parentRuntime, grandchildID: grandchildID, grandchildSessionID: grandchildSessionID, grandchildRuntime: grandchildRuntime}
 }
 
+// releaseMiddle releases the settled middle subagent's runtime, and its
+// grandchild's with it, through the real idle-release path.
+func (tree realDelegateTree) releaseMiddle(t *testing.T) {
+	t.Helper()
+	claim := claimSettledIdleSubtree(t, tree.c, tree.parent.DelegateID, tree.parentRuntime, tree.grandchildRuntime)
+	if err := tree.c.AbortRuntimeReclamation(claim); err != nil {
+		t.Fatal(err)
+	}
+	if !tree.parentRuntime.releaseIdleRuntimeAfterFinalize() {
+		t.Fatal("real idle subtree release refused")
+	}
+}
+
 func TestSessionActivityRealDelegateTree(t *testing.T) {
 	t.Parallel()
-	fixture := newRealDelegateTree(t)
-	s, c, parent, parentRuntime := fixture.s, fixture.c, fixture.parent, fixture.parentRuntime
-	grandchildID, grandchildSessionID, grandchildRuntime := fixture.grandchildID, fixture.grandchildSessionID, fixture.grandchildRuntime
+	fixture := newRealDelegateTree(t, nil)
+	s, c, parent := fixture.s, fixture.c, fixture.parent
+	grandchildID, grandchildSessionID := fixture.grandchildID, fixture.grandchildSessionID
 	params := appwire.SessionActivityListParams{Ref: encodeRef("", s.ID())}
 	direct, err := s.ListActivityDelegates(t.Context(), params)
 	if err != nil {
@@ -548,13 +566,7 @@ func TestSessionActivityRealDelegateTree(t *testing.T) {
 	for _, target := range []string{grandchildSessionID, parent.ChildSessionID, s.ID()} {
 		requireSessionActivityInvalidation(t, s.events, target, grandchildSessionID, appwire.SessionActivityResourceJobs)
 	}
-	claim := claimSettledIdleSubtree(t, c, parent.DelegateID, parentRuntime, grandchildRuntime)
-	if err = c.AbortRuntimeReclamation(claim); err != nil {
-		t.Fatal(err)
-	}
-	if !parentRuntime.releaseIdleRuntimeAfterFinalize() {
-		t.Fatal("real idle subtree release refused")
-	}
+	fixture.releaseMiddle(t)
 	retained, err := s.ListActivityDelegates(t.Context(), appwire.SessionActivityListParams{Ref: encodeRef("", parent.ChildSessionID)})
 	if err != nil {
 		t.Fatal(err)

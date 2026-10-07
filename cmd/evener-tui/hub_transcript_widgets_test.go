@@ -112,6 +112,14 @@ func TestMemoryContextIndexChangeRendersChangedLines(t *testing.T) {
 	}
 }
 
+// A read-page notice reads as the pages it names.
+func TestMemoryContextPageNoticeRendersPageNames(t *testing.T) {
+	rendered := renderDeliveredSystemItem(t, memoryContextWireItem(t, "page-notice-project"))
+	if !strings.Contains(rendered, "opaque-notice-changed.md") || !strings.Contains(rendered, "opaque-notice-removed.md") {
+		t.Fatalf("page notice lost a page name: %s", rendered)
+	}
+}
+
 func TestHubModelLiveAgentCompletionUpdatesDeltaWithoutDuplicate(t *testing.T) {
 	m := newHubModel(nil, "")
 	m.mode = hubModeSession

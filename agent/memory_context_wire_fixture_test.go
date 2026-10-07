@@ -15,6 +15,7 @@ package agent
 //	go test ./agent -run 'MemoryContextWireFixtures$' -count=1 -update-wire
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"slices"
 	"strings"
@@ -113,6 +114,20 @@ func TestMemoryContextWireFixtures(t *testing.T) {
 	changeBaseline := memoryIndexBaseline{status: "current", index: "opaque-change-kept\nopaque-change-removed\n"}
 	s.publishKnownMemoryIndex(changeBaseline, memoryProjection{Scope: "project", Status: "current", Content: "opaque-change-kept\nopaque-change-added\n"})
 	changeTurn, changeItem := capture(s, "project")
+
+	// Another session changed one page this session read and removed another:
+	// the producer's notice names both pages and carries no contents.
+	s.memoryMu.Lock()
+	s.memoryReadPages = map[string]map[string]memoryPageRecord{"project": {
+		"opaque-notice-changed.md": {sum: sha256.Sum256([]byte("opaque-notice-before"))},
+		"opaque-notice-removed.md": {sum: sha256.Sum256([]byte("opaque-notice-gone"))},
+	}}
+	s.memoryMu.Unlock()
+	s.publishMemoryPageChanges("project", map[string]memoryPageRecord{
+		"opaque-notice-changed.md": {sum: sha256.Sum256([]byte("opaque-notice-after"))},
+		"opaque-notice-removed.md": {absent: true},
+	})
+	noticeTurn, noticeItem := capture(s, "project")
 	if len(malformedItems) != 1 {
 		t.Fatalf("malformed: projected %d items, want 1", len(malformedItems))
 	}
@@ -141,6 +156,7 @@ func TestMemoryContextWireFixtures(t *testing.T) {
 			wantRaw: true, wantScope: "session", wantState: "current", wantContent: "opaque-root-session\n"},
 		{Case: "malformed-project", Note: "The producer's own envelope with its data marker corrupted: the item keeps the exact text and carries no raw.", Item: malformedItems[0]},
 		{Case: "index-change-project", Note: "Another session changed a known project index: the block lists only the added and removed lines and carries no raw.", Item: changeItem},
+		{Case: "page-notice-project", Note: "Another session changed one project page this session read and removed another: the notice names both pages, carries no page contents and no raw.", Item: noticeItem},
 	}
 
 	// Regression assertions over the producer's real output, before pinning.
@@ -157,6 +173,7 @@ func TestMemoryContextWireFixtures(t *testing.T) {
 		"suffixed-session":     text(suffixedTurn),
 		"malformed-project":    malformedText,
 		"index-change-project": text(changeTurn),
+		"page-notice-project":  text(noticeTurn),
 	}
 	for _, tc := range cases {
 		if tc.Item.Type != "systemMessage" || tc.Item.ID != "item_memory_context_1" {

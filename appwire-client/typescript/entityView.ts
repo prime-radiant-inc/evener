@@ -90,7 +90,7 @@ function treeDelegateEntity(row: ActivityDelegateRow, stale: boolean, ended: boo
 
 function liveDelegateEntity(
   stable: EvenerDelegateInfo,
-  sessionRef: string,
+  ownerRef: string,
   stale: boolean,
   ended: boolean,
   name?: string,
@@ -100,9 +100,9 @@ function liveDelegateEntity(
     name,
     id: activityNodeID({ kind: "delegate", delegateId: stable.delegateId, childRef: stable.transcriptRef }),
     logicalId: stable.delegateId,
-    ownerRef: sessionRef,
+    ownerRef,
     stable,
-    open: { ref: stable.transcriptRef, parentRef: sessionRef },
+    open: { ref: stable.transcriptRef, parentRef: ownerRef },
     stale,
     ended,
   };
@@ -136,18 +136,24 @@ export function buildEntityView(sources: EntityViewSources): Map<string, EntityV
     );
   }
 
+  // A thread's list holds its whole subtree. A nested row belongs to its
+  // parent delegate's session. A row whose parent the list does not hold
+  // belongs to the viewed session: on a subagent's thread, that parent is the
+  // subagent's own delegate.
+  const childRefs = new Map((sources.delegates ?? []).map((stable) => [stable.delegateId, stable.transcriptRef]));
   for (const stable of sources.delegates ?? []) {
+    const ownerRef = (stable.parentDelegateId && childRefs.get(stable.parentDelegateId)) || sources.sessionRef;
     const id = activityNodeID({ kind: "delegate", delegateId: stable.delegateId, childRef: stable.transcriptRef });
     const existing = entities.get(id);
     const sameIdentity =
       existing?.kind === "delegate" &&
-      existing.ownerRef === sources.sessionRef &&
+      existing.ownerRef === ownerRef &&
       existing.logicalId === stable.delegateId &&
       existing.open.ref === stable.transcriptRef;
     if (sameIdentity && existing.row !== undefined && preferActivityDelegate(existing.row.delegate, stable)) continue;
     // Status overlays retain an immutable name only for the same owned delegate.
     const name = sameIdentity ? existing.name : undefined;
-    entities.set(id, liveDelegateEntity(stable, sources.sessionRef, sources.stale, sources.ended, name));
+    entities.set(id, liveDelegateEntity(stable, ownerRef, sources.stale, sources.ended, name));
   }
 
   for (const [id, watch] of foldWatchSummaries(watchItems(sources.turns))) {
@@ -172,7 +178,11 @@ export function entityOpenTarget(view: EntityView): OpenTarget | undefined {
 }
 
 /** Resolve a transcript's logical ID within its owning session. Ambiguous
- * loaded evidence cannot select an arbitrary resource or cross a host boundary. */
+ * loaded evidence cannot select an arbitrary resource or cross a host boundary.
+ * A delegate also resolves downward, from any session above it through the
+ * loaded delegates' child sessions (never upward or across to a sibling): a
+ * transcript can name a delegate its own subagents started, and delegate IDs
+ * are unique in a tree, so each child session has one loaded parent. */
 export function findEntityView(
   entities: ReadonlyMap<string, EntityView>,
   kind: EntityView["kind"],
@@ -181,11 +191,34 @@ export function findEntityView(
 ): EntityView | undefined {
   let found: EntityView | undefined;
   for (const entity of entities.values()) {
-    if (entity.kind !== kind || entity.logicalId !== logicalId || entity.ownerRef !== ownerRef) continue;
+    if (entity.kind !== kind || entity.logicalId !== logicalId) continue;
+    if (entity.ownerRef !== ownerRef && !(kind === "delegate" && delegateOwnedBelow(entities, entity, ownerRef)))
+      continue;
     if (found) return undefined;
     found = entity;
   }
   return found;
+}
+
+// delegateOwnedBelow reports whether entity's owner session descends from
+// ownerRef through the loaded delegates' child sessions.
+function delegateOwnedBelow(entities: ReadonlyMap<string, EntityView>, entity: EntityView, ownerRef: string): boolean {
+  const seen = new Set<string>();
+  let current = entity.ownerRef;
+  while (current !== ownerRef) {
+    if (seen.has(current)) return false;
+    seen.add(current);
+    let parent: EntityView | undefined;
+    for (const candidate of entities.values()) {
+      if (candidate.kind === "delegate" && candidate.open.ref === current) {
+        parent = candidate;
+        break;
+      }
+    }
+    if (!parent) return false;
+    current = parent.ownerRef;
+  }
+  return true;
 }
 
 export function watchItems(turns: TurnModel[]): ItemModel[] {

@@ -1454,6 +1454,15 @@ func resolveOSVersion() string {
 // and limited to limitLines lines (default 2000); CRLF line endings are
 // normalized to LF.
 func (e *LocalExecutionEnvironment) ReadFile(path string, offsetLine *int, limitLines *int) (string, error) {
+	out, _, err := e.ReadFileAndBytes(path, offsetLine, limitLines)
+	return out, err
+}
+
+// ReadFileAndBytes is ReadFile that also returns the whole file's bytes as
+// this read loaded them, for a caller that must record exactly what the read
+// saw. The bytes are the complete file even when offset and limit select only
+// some of its lines; on error they are nil.
+func (e *LocalExecutionEnvironment) ReadFileAndBytes(path string, offsetLine *int, limitLines *int) (string, []byte, error) {
 	abs := e.resolve(path)
 	var b []byte
 	var err error
@@ -1481,24 +1490,24 @@ func (e *LocalExecutionEnvironment) ReadFile(path string, offsetLine *int, limit
 		// the common case; sandboxed sessions just get the raw ENOENT.
 		if sfs == nil && errors.Is(err, fs.ErrNotExist) {
 			if suggestion := readFileNotFoundSuggestion(abs); suggestion != "" {
-				return "", fmt.Errorf("%w. %s", err, suggestion)
+				return "", nil, fmt.Errorf("%w. %s", err, suggestion)
 			}
 		}
-		return "", err
+		return "", nil, err
 	}
 	// Image files: return base64-encoded data instead of erroring on binary.
 	if format := detectImageFormat(path, b); format != "" {
 		encoded := base64.StdEncoding.EncodeToString(b)
-		return fmt.Sprintf("[image: %s, %d bytes, base64 data follows]\n%s", format, len(b), encoded), nil
+		return fmt.Sprintf("[image: %s, %d bytes, base64 data follows]\n%s", format, len(b), encoded), b, nil
 	}
 	// Document files (PDF): return base64-encoded data for vision/content pipeline.
 	if format := detectDocumentFormat(path, b); format != "" {
 		encoded := base64.StdEncoding.EncodeToString(b)
-		return fmt.Sprintf("[document: %s, %d bytes, base64 data follows]\n%s", format, len(b), encoded), nil
+		return fmt.Sprintf("[document: %s, %d bytes, base64 data follows]\n%s", format, len(b), encoded), b, nil
 	}
 	// Basic binary detection.
 	if bytes.IndexByte(b, 0) >= 0 {
-		return "", fmt.Errorf("binary file (NUL byte): %s", path)
+		return "", nil, fmt.Errorf("binary file (NUL byte): %s", path)
 	}
 	s := strings.ReplaceAll(string(b), "\r\n", "\n")
 	lines := strings.Split(s, "\n")
@@ -1512,14 +1521,14 @@ func (e *LocalExecutionEnvironment) ReadFile(path string, offsetLine *int, limit
 		limit = *limitLines
 	}
 	if start > len(lines) {
-		return "", nil
+		return "", b, nil
 	}
 	end := min(start-1+limit, len(lines))
 	var out strings.Builder
 	for i := start; i <= end; i++ {
 		fmt.Fprintf(&out, "%4d\t%s\n", i, lines[i-1])
 	}
-	return out.String(), nil
+	return out.String(), b, nil
 }
 
 // readFileNotFoundSuggestion renders a "did you mean" hint for a read_file
