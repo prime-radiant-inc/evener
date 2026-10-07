@@ -1815,11 +1815,21 @@ func delegateSendResultFrom(res sendMessageResult) delegateSendResult {
 		out.StructuredResultReason = res.StructuredResultReason
 	}
 	for _, packet := range res.Earlier {
-		earlier := sendMessageResult{DelegateID: res.DelegateID, Type: res.Type, Action: "completed", TranscriptRef: res.TranscriptRef}
-		populateStableDelegateSendResult(&earlier, packet)
+		earlier := sendMessageResult{DelegateID: res.DelegateID, Type: res.Type, TranscriptRef: res.TranscriptRef}
+		completeStableDelegateSendResult(&earlier, packet)
 		out.EarlierResults = append(out.EarlierResults, delegateSendResultFrom(earlier))
 	}
 	return out
+}
+
+// latestResultHeader introduces a delegate_send reply's own result after the
+// earlier results it carries, in the tool reply and in transcripts alike.
+const latestResultHeader = "latest result:\n"
+
+// earlierResultHeader introduces earlier result i (zero-based) of n that a
+// delegate_send reply carries, in the tool reply and in transcripts alike.
+func earlierResultHeader(i, n int) string {
+	return fmt.Sprintf("earlier result %d of %d, not delivered before:\n", i+1, n)
 }
 
 // formatDelegateSend renders a delegate send/steer/start result: any earlier
@@ -1829,12 +1839,12 @@ func delegateSendResultFrom(res sendMessageResult) delegateSendResult {
 func formatDelegateSend(out delegateSendResult) string {
 	var b strings.Builder
 	for i, earlier := range out.EarlierResults {
-		fmt.Fprintf(&b, "earlier result %d of %d, not delivered before:\n", i+1, len(out.EarlierResults))
+		b.WriteString(earlierResultHeader(i, len(out.EarlierResults)))
 		b.WriteString(formatDelegateSend(earlier))
 		b.WriteString("\n\n")
 	}
 	if len(out.EarlierResults) != 0 {
-		b.WriteString("latest result:\n")
+		b.WriteString(latestResultHeader)
 	}
 	if out.Output != nil && *out.Output != "" {
 		b.WriteString(*out.Output)
