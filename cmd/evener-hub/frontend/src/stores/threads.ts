@@ -1739,10 +1739,21 @@ async function runResumeFencedForSend(ref: string): Promise<void> {
     if (resumedRef !== ref) {
       // A send enqueued after the first snapshot while this drive was in flight
       // rode this same promise and parked under the old ref. Move those late
-      // rows too, bounded so a steady trickle cannot spin the drive.
-      for (let pass = 0; pass < 3; pass += 1) {
-        if (!(await retargetParkedMutations(ref, resumedRef, resumedIdentity))) break;
+      // rows too, draining until a pass moves nothing.
+      //
+      // The old ref's restart obligation is NOT cleared by this drive:
+      // publishThreadHydration clears only the HYDRATED ref's obligation
+      // (threads.ts's reconciliation tail), and the hydration here is the
+      // resumed ref. So a concurrent send on the old ref can still be admitted
+      // and park while we drain, which is why this is a bounded loop with a
+      // follow-up rather than a silent cap: a row committed inside the last
+      // pass's read window is moved by the scheduled pass, never stranded.
+      let movedOnLastPass = false;
+      for (let pass = 0; pass < RETARGET_DRAIN_PASSES; pass += 1) {
+        movedOnLastPass = await retargetParkedMutations(ref, resumedRef, resumedIdentity);
+        if (!movedOnLastPass) break;
       }
+      if (movedOnLastPass) scheduleRetargetDrain(ref, resumedRef, resumedIdentity);
       threadsStore.setState((state) => ({
         resumedIdentities: new Map(state.resumedIdentities).set(ref, resumedRef),
       }));
@@ -1762,6 +1773,34 @@ async function runResumeFencedForSend(ref: string): Promise<void> {
       resumeFailures: new Map(state.resumeFailures).set(ref, { seq: resumeFailureSeq, message }),
     }));
   }
+}
+
+// The late-row drain's in-line bound: enough passes for the common case. When it
+// trips with rows still moving, scheduleRetargetDrain runs another pass on a
+// later task rather than exiting silently.
+const RETARGET_DRAIN_PASSES = 3;
+
+// One more drain pass, on a later task, re-scheduling itself while passes keep
+// moving rows. The old ref's restart obligation is not cleared by the drive (see
+// the drain loop's comment), so a concurrent send can park during the drain;
+// this converges on a clean snapshot without blocking the event loop.
+function scheduleRetargetDrain(
+  fromRef: string,
+  toRef: string,
+  identity: { threadId?: string; instanceId?: string },
+): void {
+  queueMicrotask(() => {
+    void retargetParkedMutations(fromRef, toRef, identity)
+      .then((moved) => {
+        if (moved) scheduleRetargetDrain(fromRef, toRef, identity);
+      })
+      // Silence is deliberate, like the store's other fire-and-forget tails: the
+      // resume itself already succeeded, so a resume-failure toast would be
+      // wrong. A storage failure here just leaves the straggler parked under the
+      // old ref - the pre-move behavior - where a later drive or a fresh
+      // discovery retries it. This only keeps the rejection handled.
+      .catch(() => {});
+  });
 }
 
 // Move the rows a resume left parked under its superseded ref onto the resumed
@@ -1791,7 +1830,12 @@ async function retargetParkedMutations(
   disarmQuiescedMutationArm(fromRef);
   pinMutationRef(toRef);
   if (dispatchReplayGateOpen(toRef)) dispatchableMutationRefs.add(toRef);
-  notifyMutationPersistence([toRef]);
+  // BOTH refs: the destination's projection must show the moved rows, and the
+  // superseded ref's projection still holds them (retargetOutbox removed them
+  // from storage), so it must re-read and clear to the honest state. Dispatch is
+  // scheduled for the destination only - the old ref has no rows left, so a
+  // schedule there would be a no-op drain.
+  notifyMutationPersistence([fromRef, toRef]);
   scheduleMutationDispatch(runtime, [toRef]);
   return true;
 }

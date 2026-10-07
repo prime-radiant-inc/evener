@@ -11776,6 +11776,154 @@ test("an optimistic-only identity change still pins, notifies, and projects unde
   expect(pendingTurnEntries(fromRef)).toHaveLength(0);
 });
 
+// The superseded ref's projection still holds the rows retargetOutbox moved out
+// of its storage, so the drive must refresh BOTH projections: the destination's
+// shows the rows, and the old ref's re-reads and clears to the honest state.
+test("an identity-changing drive clears the superseded ref's projection", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectFakeClient("connecting");
+  const fromRef = "local:projection-from";
+  const toRef = "local:projection-to";
+  fake.on("thread/read", (params) =>
+    params.ref === toRef
+      ? readResponse(toRef, {
+          status: { type: "idle" },
+          evener: { ref: toRef, capabilities: CAPABILITIES, mutationStateAuthoritative: true, queue: { revision: 1 } },
+        })
+      : readResponse(fromRef, {
+          status: { type: "notLoaded" },
+          evener: {
+            ref: fromRef,
+            capabilities: { ...CAPABILITIES, send: false },
+            mutationStateAuthoritative: false,
+            resumeRequired: true,
+            queue: { revision: 0 },
+          },
+        }),
+  );
+  fake.on("thread/resume", () =>
+    readResponse(toRef, {
+      status: { type: "idle" },
+      evener: { ref: toRef, capabilities: CAPABILITIES, mutationStateAuthoritative: true, queue: { revision: 1 } },
+    }),
+  );
+  // The moved row stays in flight under the destination, so its projection keeps
+  // showing it while we assert the old ref's projection cleared.
+  fake.on("turn/start", () => new Promise<never>(() => {}));
+  fake.emitReady();
+  await threadsStore.getState().ensureThread(fromRef);
+  expect(threadsStore.getState().restartBlockingObligations.has(fromRef)).toBe(true);
+  await storage.enqueueIntent({
+    targetRef: fromRef,
+    threadId: `thr_${fromRef}`,
+    instanceId: "instance-old",
+    method: "turn/start",
+    payload: { ref: fromRef, expectedInstanceId: "instance-old", input: [{ type: "text", text: "parked" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "parked" }] },
+  });
+  await refreshPendingTurnsProjection(fromRef);
+  expect(pendingTurnEntries(fromRef)).toHaveLength(1);
+  // The drive's persistence notification must name BOTH refs: the destination so
+  // its projection shows the moved row, and the superseded ref so its projection
+  // re-reads and drops the rows retargetOutbox took out of its storage.
+  const persisted: string[] = [];
+  const unsubscribe = subscribeMutationPersistence((refs) => persisted.push(...refs));
+  try {
+    await threadsStore.getState().resumeSession(fromRef);
+  } finally {
+    unsubscribe();
+  }
+  expect(persisted).toContain(fromRef);
+  expect(persisted).toContain(toRef);
+  await flushPendingTurnsProjectionForTests();
+  expect(pendingTurnEntries(fromRef)).toHaveLength(0);
+  expect(pendingTurnEntries(toRef)).toHaveLength(1);
+});
+
+// The drain's in-line cap is not a silent exit: a row that arrives after each
+// real pass (up to the cap) is still moved by the scheduled follow-up pass, and
+// every moved row dispatches under the resumed ref.
+test("a row arriving after the drain cap is still moved by the follow-up pass", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectFakeClient("connecting");
+  const fromRef = "local:drain-from";
+  const toRef = "local:drain-to";
+  fake.on("thread/read", (params) =>
+    params.ref === toRef
+      ? readResponse(toRef, {
+          status: { type: "idle" },
+          evener: { ref: toRef, capabilities: CAPABILITIES, mutationStateAuthoritative: true, queue: { revision: 1 } },
+        })
+      : readResponse(fromRef, {
+          status: { type: "notLoaded" },
+          evener: {
+            ref: fromRef,
+            capabilities: { ...CAPABILITIES, send: false },
+            mutationStateAuthoritative: false,
+            resumeRequired: true,
+            queue: { revision: 0 },
+          },
+        }),
+  );
+  fake.on("thread/resume", () =>
+    readResponse(toRef, {
+      status: { type: "idle" },
+      evener: { ref: toRef, capabilities: CAPABILITIES, mutationStateAuthoritative: true, queue: { revision: 1 } },
+    }),
+  );
+  const starts: string[] = [];
+  fake.on("turn/start", (params) => {
+    starts.push(String(params.ref));
+    return {
+      receipt: mutationReceipt(params.clientMutationId),
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+    };
+  });
+  fake.emitReady();
+  await threadsStore.getState().ensureThread(fromRef);
+  expect(threadsStore.getState().restartBlockingObligations.has(fromRef)).toBe(true);
+  const seedRow = (text: string) =>
+    storage.enqueueIntent({
+      targetRef: fromRef,
+      threadId: `thr_${fromRef}`,
+      instanceId: "instance-old",
+      method: "turn/start",
+      payload: { ref: fromRef, expectedInstanceId: "instance-old", input: [{ type: "text", text }] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/start", input: [{ type: "text", text }] },
+    });
+  await seedRow("seed");
+  // Stage one more arrival AFTER each real pass, so the third pass still moves a
+  // row and the in-line cap is reached with the work unfinished.
+  let staged = 0;
+  const realRetarget = MutationOutboxIndexedDB.prototype.retargetOutbox;
+  const spy = vi.spyOn(MutationOutboxIndexedDB.prototype, "retargetOutbox").mockImplementation(async function (
+    this: MutationOutboxIndexedDB,
+    from: string,
+    to: string,
+    identity: { threadId?: string; instanceId?: string },
+  ) {
+    const moved = await realRetarget.call(this, from, to, identity);
+    if (staged < 4) {
+      staged += 1;
+      await seedRow(`late ${staged}`);
+    }
+    return moved;
+  });
+  try {
+    await threadsStore.getState().resumeSession(fromRef);
+    await flushIndexedDBUntil(() => starts.length >= 5);
+    expect(staged).toBe(4);
+    expect(starts).toEqual([toRef, toRef, toRef, toRef, toRef]);
+    expect(await storage.listOutbox(fromRef)).toEqual([]);
+  } finally {
+    spy.mockRestore();
+  }
+});
+
 // The harder order of the same property: the resume's OWN post-resume hydration
 // is held open, and the resync tail and a ready discovery each run first. Either
 // may send the parked row; releasing the held refresh afterwards must not send a
