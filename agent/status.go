@@ -419,9 +419,6 @@ func SessionOwnedDelegateIDs(ctx context.Context, stateDir, sessionID string) ([
 			rootOwned[delegateID] = aggregate
 		}
 	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
 	owners := sessionSubtreeOwners(rootOwned, sessionID)
 	// sessionSubtreeOwners seeds the walk with sessionID; the caller asks only
 	// for the sessions below it.
