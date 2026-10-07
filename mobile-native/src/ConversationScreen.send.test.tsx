@@ -3197,7 +3197,8 @@ describe("queued messages at the transcript's end (spec 8.5)", () => {
 			const request = client.request;
 			client.request = async (requested, params) => {
 				if (requested !== method) return request(requested, params);
-				request(requested, params);
+				// The hub never answers: record the request and leave it there.
+				hub.requests.push({ method: requested, params });
 				return new Promise(() => undefined);
 			};
 			await steerFromQueue(tree, ref, label);
@@ -3220,7 +3221,8 @@ describe("queued messages at the transcript's end (spec 8.5)", () => {
 		const request = client.request;
 		client.request = async (requested, params) => {
 			if (requested !== "turn/promoteQueuedAsSteer") return request(requested, params);
-			request(requested, params);
+			// The hub never answers: record the request and leave it there.
+			hub.requests.push({ method: requested, params });
 			return new Promise(() => undefined);
 		};
 		const [steerNow] = tree.root.findAll(
@@ -3325,7 +3327,8 @@ describe("queued messages at the transcript's end (spec 8.5)", () => {
 		const request = client.request;
 		client.request = async (requested, params) => {
 			if (requested !== "turn/drainAsSteer") return request(requested, params);
-			request(requested, params);
+			// The hub never answers: record the request and leave it there.
+			hub.requests.push({ method: requested, params });
 			return new Promise(() => undefined);
 		};
 		await steerFromQueue(tree, ref, "Steer all now");
