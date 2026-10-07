@@ -48,10 +48,11 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-// A fake page target, driven by the test through the returned handle. A closing
-// tab is listed first, ahead of the one the guard means, as Chrome lists it
-// for a moment after /json/close.
-function stubPageTarget() {
+// Starts connectPage against a fake page target and waits until its socket is
+// built; the test drives that socket through the returned handle. A closing tab
+// is listed first, ahead of the one the guard means, as Chrome lists it for a
+// moment after /json/close.
+async function startStubConnection() {
   const socketURL = "ws://127.0.0.1:9/devtools/page/T1";
   const socket = new EventTarget();
   socket.sent = [];
@@ -63,25 +64,21 @@ function stubPageTarget() {
       { id: "T1", type: "page", webSocketDebuggerUrl: socketURL },
     ],
   }));
-  vi.stubGlobal(
-    "WebSocket",
-    class {
-      constructor(url) {
-        assert.equal(url, socketURL);
-        return socket;
-      }
-    },
-  );
-  return { socket, socketURL, endpoint: { url: "ws://127.0.0.1:9/devtools/browser/B" } };
+  // `new` on a plain function that returns an object yields that object.
+  vi.stubGlobal("WebSocket", function StubWebSocket(url) {
+    assert.equal(url, socketURL);
+    return socket;
+  });
+  const connecting = connectPage({ url: "ws://127.0.0.1:9/devtools/browser/B" }, "T1");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  return { socket, socketURL, connecting };
 }
 
 // Chrome keeps listing a target for a moment after /json/close, and a socket to
 // it fails with an ErrorEvent that stringifies as a bare "[object ErrorEvent]"
 // (#3895): the rejection has to say which socket failed.
 test("connectPage rejects a failed socket with an Error naming the target", async () => {
-  const { socket, socketURL, endpoint } = stubPageTarget();
-  const connecting = connectPage(endpoint, "T1");
-  await new Promise((resolve) => setTimeout(resolve, 0));
+  const { socket, socketURL, connecting } = await startStubConnection();
   socket.dispatchEvent(new Event("error"));
   await assert.rejects(connecting, (error) => {
     assert.ok(error instanceof Error);
@@ -112,9 +109,7 @@ test("connectPage fails a command sent after its socket closed", async () => {
 
 // Opens the named tab; the stub's WebSocket refuses any other tab's socket.
 async function openStubPage() {
-  const { socket, endpoint } = stubPageTarget();
-  const connecting = connectPage(endpoint, "T1");
-  await new Promise((resolve) => setTimeout(resolve, 0));
+  const { socket, connecting } = await startStubConnection();
   socket.dispatchEvent(new Event("open"));
   return { ...(await connecting), socket };
 }
