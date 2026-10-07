@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"math"
 	"path/filepath"
 
 	"primeradiant.com/evener/agent/execenv"
@@ -89,7 +88,7 @@ const memoryPageSizeLimit = 4096
 // It points at the gardening-memory skill only when the session can use it;
 // otherwise it says what a page should hold.
 func memoryPageSizeNote(size int, withSkill bool) string {
-	kb := int(math.Round(float64(size) / 1024))
+	kb := (size + 1023) / 1024 // round up, so a page just over the limit never reads as at it
 	if withSkill {
 		return fmt.Sprintf("\n\nThis page is long (%d KB). Use the gardening-memory skill to learn how to fix it.", kb)
 	}

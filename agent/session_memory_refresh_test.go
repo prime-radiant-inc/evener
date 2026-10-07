@@ -1033,17 +1033,20 @@ func TestMemoryRefreshResumeIgnoresPageNoticesWhenSeedingObservedScopes(t *testi
 }
 
 // A full index projection reports size only when the index was cut at the
-// cap: the truncated one points at the gardening-memory skill and decodes as
-// truncated; neither carries an explicit truncated flag any more.
+// cap, and decodes as truncated either way it says so: it points at the
+// gardening-memory skill only while the session can load it. No projection
+// carries an explicit truncated flag any more.
 func TestMemoryProjectionReportsOnlyATooLongIndex(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name      string
 		index     string
 		truncated bool
+		withSkill bool
 	}{
-		{"short", "opaque-short-index\n", false},
-		{"too-long", strings.Repeat("opaque-long-index-line\n", 600), true},
+		{"short", "opaque-short-index\n", false, true},
+		{"too-long", strings.Repeat("opaque-long-index-line\n", 600), true, true},
+		{"too-long-without-skills", strings.Repeat("opaque-long-index-line\n", 600), true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -1054,6 +1057,9 @@ func TestMemoryProjectionReportsOnlyATooLongIndex(t *testing.T) {
 				text = latestMemoryContext(req, "personal")
 				return finalResponse("observed")
 			}))
+			if !tc.withSkill {
+				s.reg.Remove("use_skill")
+			}
 			if _, err := s.ProcessInput(context.Background(), "go", nil); err != nil {
 				t.Fatal(err)
 			}
@@ -1064,10 +1070,23 @@ func TestMemoryProjectionReportsOnlyATooLongIndex(t *testing.T) {
 			if strings.Contains(text, ", truncated ") {
 				t.Fatalf("projection still carries an explicit truncated flag: %q", text[:min(len(text), 240)])
 			}
-			if strings.Contains(text, "gardening-memory") != tc.truncated {
-				t.Fatalf("gardening-memory pointer present=%t, want %t: %q", !tc.truncated, tc.truncated, text[:min(len(text), 240)])
+			if want := tc.truncated && tc.withSkill; strings.Contains(text, "gardening-memory") != want {
+				t.Fatalf("gardening-memory pointer present=%t, want %t: %q", !want, want, text[:min(len(text), 240)])
 			}
 		})
+	}
+}
+
+// The size note never reports a long page as no bigger than the limit: sizes
+// round up to the next KB.
+func TestMemoryPageSizeNoteRoundsUp(t *testing.T) {
+	t.Parallel()
+	for size, want := range map[int]string{memoryPageSizeLimit + 1: "(5 KB)", 5 * 1024: "(5 KB)", 5*1024 + 1: "(6 KB)"} {
+		for _, withSkill := range []bool{true, false} {
+			if note := memoryPageSizeNote(size, withSkill); !strings.Contains(note, want) {
+				t.Errorf("memoryPageSizeNote(%d, %t) = %q, want %s", size, withSkill, note, want)
+			}
+		}
 	}
 }
 
