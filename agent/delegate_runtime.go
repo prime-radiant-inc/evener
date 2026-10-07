@@ -3166,12 +3166,16 @@ func (s *Session) emitStableDelegateUpdate(plan delegateUpdatePlan) {
 		ownerID := row.descriptor.OwnerSessionID
 		s.delegateController.mu.Lock()
 		logicalOwner := sessionActivityDelegateOwner(s.delegateController.durable, s.delegateController.durable[row.id])
-		ancestors, ancestorRuntimes := s.delegateController.ancestorSubagentRuntimesLocked(logicalOwner)
+		var ancestry []string
+		if logicalOwner != "" {
+			ancestry = s.delegateController.sessionAncestryLocked(logicalOwner)
+		}
+		ancestors, ancestorRuntimes := s.delegateController.ancestorSubagentRuntimesLocked(ancestry)
+		ownerRuntime := s.delegateController.runtimeForDelegateOwnerLocked(row)
 		s.delegateController.mu.Unlock()
-		s.emitSessionActivityChanged(logicalOwner, appwire.SessionActivityResourceDelegates)
+		s.publishSessionActivityChanged(logicalOwner, ancestry, appwire.SessionActivityResourceDelegates)
 		data := delegateUpdatedDataFromStatus(delegateStatusInfoFromSnapshot(now, rootID, row))
 		data.AncestorSessionIDs = ancestors
-		ownerRuntime := s.delegateController.runtimeForDelegateOwner(row)
 		// A subagent's own thread lists its subtree, so each live ancestor
 		// subagent's stream carries the update too. A released ancestor gets
 		// none: forwarding for it would reopen its closed thread's history, and
@@ -3201,16 +3205,13 @@ func (s *Session) emitStableDelegateUpdate(plan delegateUpdatePlan) {
 	}
 }
 
-// ancestorSubagentRuntimesLocked lists the subagent sessions at and above
-// logicalOwner, nearest first and without the root, and the live runtime of
-// each one that has one.
-func (c *delegateTreeController) ancestorSubagentRuntimesLocked(logicalOwner string) ([]string, []*Session) {
-	if logicalOwner == "" {
-		return nil, nil
-	}
+// ancestorSubagentRuntimesLocked lists the subagent sessions of ancestry (a
+// sessionAncestryLocked chain), nearest first and without the root, and the
+// live runtime of each one that has one.
+func (c *delegateTreeController) ancestorSubagentRuntimesLocked(ancestry []string) ([]string, []*Session) {
 	var ancestors []string
 	var runtimes []*Session
-	for _, sessionID := range c.sessionAncestryLocked(logicalOwner) {
+	for _, sessionID := range ancestry {
 		if sessionID == c.rootSessionID {
 			break
 		}
@@ -3222,12 +3223,10 @@ func (c *delegateTreeController) ancestorSubagentRuntimesLocked(logicalOwner str
 	return ancestors, runtimes
 }
 
-func (c *delegateTreeController) runtimeForDelegateOwner(row delegateSnapshot) *Session {
+func (c *delegateTreeController) runtimeForDelegateOwnerLocked(row delegateSnapshot) *Session {
 	if c == nil {
 		return nil
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	if row.descriptor.OwnerSessionID == c.rootSessionID {
 		return c.rootRuntime
 	}

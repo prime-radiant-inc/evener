@@ -26,7 +26,8 @@ func TestStableDelegateUpdate_ReachesEachLiveAncestorSubagentThread(t *testing.T
 	middleID := tree.parent.ChildSessionID
 	mu.Lock()
 	defer mu.Unlock()
-	var middleSawGrandchild, middleSawItself, leafSawAnything bool
+	var middleSawItself, leafSawAnything bool
+	var middleRevisions []uint64
 	for _, event := range seen {
 		data, ok := event.Data.(events.DelegateUpdatedData)
 		if !ok {
@@ -38,7 +39,7 @@ func TestStableDelegateUpdate_ReachesEachLiveAncestorSubagentThread(t *testing.T
 				middleSawItself = true
 			}
 			if data.DelegateID == tree.grandchildID {
-				middleSawGrandchild = true
+				middleRevisions = append(middleRevisions, data.ProjectionRevision)
 				if data.OwnerSessionID != tree.s.ID() || !slices.Equal(data.AncestorSessionIDs, []string{middleID}) {
 					t.Fatalf("grandchild update on the middle stream = owner %q ancestors %v, want owner %q ancestors [%s]", data.OwnerSessionID, data.AncestorSessionIDs, tree.s.ID(), middleID)
 				}
@@ -50,12 +51,7 @@ func TestStableDelegateUpdate_ReachesEachLiveAncestorSubagentThread(t *testing.T
 	// The root's stream still carries each grandchild update exactly once, with
 	// the same ancestry, so the root thread and the middle thread see the same
 	// revisions.
-	var middleRevisions, rootRevisions []uint64
-	for _, event := range seen {
-		if data := event.Data.(events.DelegateUpdatedData); event.SessionID == middleID && data.DelegateID == tree.grandchildID {
-			middleRevisions = append(middleRevisions, data.ProjectionRevision)
-		}
-	}
+	var rootRevisions []uint64
 drain:
 	for {
 		select {
@@ -75,7 +71,7 @@ drain:
 	if len(rootRevisions) == 0 || !slices.Equal(rootRevisions, middleRevisions) {
 		t.Fatalf("grandchild revisions on the root stream %v, on the middle stream %v; want the same updates on both", rootRevisions, middleRevisions)
 	}
-	if !middleSawGrandchild {
+	if len(middleRevisions) == 0 {
 		t.Fatalf("no grandchild delegate update reached the middle subagent's stream; descendant updates seen: %d", len(seen))
 	}
 	if middleSawItself || leafSawAnything {

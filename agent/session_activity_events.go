@@ -12,6 +12,22 @@ func (s *Session) emitSessionActivityChanged(owner string, resource appwire.Sess
 	if s == nil || owner == "" {
 		return
 	}
+	targets := []string{owner}
+	if controller := s.delegateController; controller != nil {
+		controller.mu.Lock()
+		targets = controller.sessionAncestryLocked(owner)
+		controller.mu.Unlock()
+	}
+	s.publishSessionActivityChanged(owner, targets, resource)
+}
+
+// publishSessionActivityChanged invalidates owner's activity on each target
+// thread; targets is owner's sessionAncestryLocked chain, which a caller that
+// already holds it passes in rather than walking the tree again.
+func (s *Session) publishSessionActivityChanged(owner string, targets []string, resource appwire.SessionActivityResource) {
+	if s == nil || owner == "" {
+		return
+	}
 	rootID := s.ID()
 	if s.delegateController != nil {
 		rootID = s.delegateController.rootSessionID
@@ -22,12 +38,6 @@ func (s *Session) emitSessionActivityChanged(owner string, resource appwire.Sess
 		index.revision.Add(1)
 	}
 	sessionActivityIndexes.Unlock()
-	targets := []string{owner}
-	if controller := s.delegateController; controller != nil {
-		controller.mu.Lock()
-		targets = controller.sessionAncestryLocked(owner)
-		controller.mu.Unlock()
-	}
 	for _, target := range targets {
 		s.sendEvent(events.EventSessionActivityChanged, events.SessionActivityChangedData{ThreadID: target, Ref: encodeRef("", target), SessionID: owner, Resources: []appwire.SessionActivityResource{appwire.SessionActivityResourceSummary, resource}}, nil)
 	}
