@@ -474,17 +474,14 @@ it.each(["advertised", "turn"])(
 	},
 );
 
-// Steer, queue and Stop go through the outbox, as the composer's do, never the
+// Steer and queue go through the outbox, as the composer's do, never the
 // service: unconfirmed until the outbox admits them.
 it.each([
 	["/steer sentinel", "steer", [{ type: "text", text: "sentinel" }]],
 	["/queue sentinel", "queue", [{ type: "text", text: "sentinel" }]],
 ] as const)("routes %s to the outbox, keeping it unconfirmed until admitted", async (text, kind, input) => {
 	const { db, document } = commandDraft();
-	const { io, service, thread } = boundary();
-	thread.evener.capabilities.steer = true;
-	thread.evener.capabilities.queue = true;
-	thread.evener.capabilities.interrupt = true;
+	const { io, service } = boundary();
 	const submitted: unknown[] = [];
 	try {
 		await service.open("local:test");
@@ -521,8 +518,7 @@ it.each([
 // /interrupt is the Stop button's own stop, never the service.
 it("routes /interrupt to Stop", async () => {
 	const { db, document } = commandDraft();
-	const { io, service, thread } = boundary();
-	thread.evener.capabilities.interrupt = true;
+	const { io, service } = boundary();
 	let stopped = 0;
 	try {
 		await service.open("local:test");

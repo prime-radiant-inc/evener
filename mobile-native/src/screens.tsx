@@ -1859,15 +1859,15 @@ export function ConversationScreen({
 						reasoning: () => store.getState().conversation,
 						turn: () => store.getState().conversation,
 						submit: async (kind, input) => {
-							const live = store.getState().conversation;
-							if (!live) throw new CommandArgumentError("Open the session again and try once more.");
+							const target = mutationTarget(store.getState());
+							if (!target) throw new CommandArgumentError("Open the session again and try once more.");
 							try {
 								await mutationSubmitter.submit({
 									kind,
-									hubId: route.params.hubId,
-									targetRef: route.params.ref,
-									threadId: live.threadId,
-									instanceId: live.instanceId ?? live.threadId,
+									hubId: target.hubId,
+									targetRef: target.ref,
+									threadId: target.threadId,
+									instanceId: target.instanceId,
 									input,
 								});
 							} catch {
@@ -1993,7 +1993,7 @@ export function ConversationScreen({
 		// (spec 8.5), fenced to the instance this phone last read.
 		const offline = !connectionReady.current;
 		const online = service;
-		const target = offline ? offlineTarget(current) : null;
+		const target = offline ? mutationTarget(current) : null;
 		const offlineAction = offline ? offlineSendAction(current) : "none";
 		if (
 			(offline
@@ -2312,7 +2312,7 @@ export function ConversationScreen({
 	// Offline, Send keeps the message in the phone's outbox, for a session
 	// this phone has read since launch (ruling 12).
 	const offlineAdmits =
-		!connected && focused && offlineTarget(snapshot) !== null && offlineSendAction(snapshot) !== "none";
+		!connected && focused && mutationTarget(snapshot) !== null && offlineSendAction(snapshot) !== "none";
 	const composerReady =
 		(ready || offlineAdmits) &&
 		draft.loaded &&
@@ -2375,10 +2375,10 @@ export function ConversationScreen({
 			// what to do.
 		}
 	}
-	// The session a message sent offline is fenced to: the instance this
-	// phone last read (ruling 12), exactly as an online send's durable request
-	// carries it. A session not read since launch has none, so Send waits.
-	function offlineTarget(state: ConversationState): OfflineTarget | null {
+	// The session a durable request is fenced to: the instance this phone last
+	// read (ruling 12), for a message sent offline as for a typed /steer or
+	// /queue. A session not read since launch has none, so Send waits.
+	function mutationTarget(state: ConversationState): OfflineTarget | null {
 		const read = state.conversation;
 		if (!read || state.ref !== route.params.ref) return null;
 		return {
@@ -2396,7 +2396,7 @@ export function ConversationScreen({
 	// session reads again.
 	async function sendOffline() {
 		const live = store.getState();
-		const target = offlineTarget(live);
+		const target = mutationTarget(live);
 		const kind = offlineSendAction(live);
 		if (target === null || kind === "none") return;
 		setActionError(null);
