@@ -107,7 +107,7 @@ test("connectOnlyPage refuses when Chrome lists more than one page tab", async (
 // The startup tab can be missing from the list for a moment after launch.
 test("connectOnlyPage says when Chrome lists no page tab yet", async () => {
   stubTabs(["SW:service_worker"]);
-  await assert.rejects(connectOnlyPage(STUB_ENDPOINT), /expected one page tab, Chrome lists none yet/);
+  await assert.rejects(connectOnlyPage(STUB_ENDPOINT), /expected one page tab, Chrome lists none/);
 });
 
 // Workers and frames are listed alongside tabs and aren't candidates.

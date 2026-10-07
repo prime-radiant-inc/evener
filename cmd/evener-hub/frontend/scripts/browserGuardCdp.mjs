@@ -298,7 +298,7 @@ async function listPageTabs(endpoint) {
  */
 export async function connectOnlyPage(endpoint) {
   const tabs = await listPageTabs(endpoint);
-  if (tabs.length === 0) throw new Error("expected one page tab, Chrome lists none yet");
+  if (tabs.length === 0) throw new Error("expected one page tab, Chrome lists none");
   if (tabs.length > 1) {
     throw new Error(`expected one page tab, Chrome lists ${tabs.length}: ${tabs.map((tab) => tab.id).join(", ")}`);
   }
