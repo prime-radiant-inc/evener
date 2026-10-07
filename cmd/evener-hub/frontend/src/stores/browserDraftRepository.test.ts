@@ -1,4 +1,3 @@
-import type { DraftAuthorityToken } from "@evener/appwire-client/state/mutation";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, expect, expectTypeOf, test, vi } from "vitest";
 import { composerDraftStorageKey, draftStorageKey } from "../panes/session/composer/draft";
@@ -6,28 +5,18 @@ import { parseSkillDocument } from "../panes/session/composer/skillDocument";
 import { MemoryStorage } from "../storageTestUtils";
 import {
   type BrowserDraftKey,
-  type BrowserDraftOwner,
   type BrowserDraftRepository,
+  browserDraftKey,
   captureDraftSettlementGuard,
   createBrowserDraftRepository,
   createBrowserDraftTransferRuntime,
+  type DraftCommit,
+  type StoredComposerDraft,
 } from "./browserDraftRepository";
 import { ANNOTATION_NAMESPACES_STORE, LOCAL_COMPOSITION_DATABASE_VERSION } from "./localCompositionSchema";
 
 const namespace = { kind: "browser" as const, origin: "https://hub.test" };
-const key = (sessionRef: string): BrowserDraftKey => ({ namespace, sessionRef });
-const owner = (compositionOwnerId: string, paneId = "pane-root", lifetimeSerial = 1): BrowserDraftOwner => ({
-  paneId,
-  compositionOwnerId,
-  lifetimeSerial,
-});
-
-function expectOwned(commit: Awaited<ReturnType<ReturnType<typeof createBrowserDraftRepository>["claim"]>>) {
-  if (commit.state !== "committed" || commit.draft.ownership !== "owned") {
-    throw new Error(`expected owned commit, got ${commit.state}`);
-  }
-  return commit.draft;
-}
+const key = (sessionRef: string): BrowserDraftKey => browserDraftKey(sessionRef, "https://hub.test");
 
 function transactionCompletion(transaction: IDBTransaction): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -62,62 +51,93 @@ async function advanceNamespace(indexedDB: IDBFactory, databaseName: string, inc
   database.close();
 }
 
-function waitForKey(
-  repository: ReturnType<typeof createBrowserDraftRepository>,
-  wanted: BrowserDraftKey,
-): Promise<void> {
-  return new Promise((resolve) => {
-    const unsubscribe = repository.subscribe((changed) => {
-      if (changed.namespace.origin !== wanted.namespace.origin || changed.sessionRef !== wanted.sessionRef) return;
-      unsubscribe();
-      resolve();
-    });
-  });
+// Keep the runtime test's post-dispose key literal independent of the production key helper it is checking.
+function draftStorageKeyForTest(ref: string): string {
+  return `evener.composer.draft.v1.${ref}`;
 }
 
+const repositoryCleanups: (() => void)[] = [];
+function closeAfterTest(close: () => void): void {
+  repositoryCleanups.push(close);
+}
 afterEach(() => {
+  for (const close of repositoryCleanups.splice(0).reverse()) close();
   vi.restoreAllMocks();
 });
 
-test("does not reimport stale supported keys after committed transfer and clear", async () => {
-  const indexedDB = new IDBFactory();
+function committed(result: DraftCommit): StoredComposerDraft {
+  if (result.state !== "committed") throw new Error(`expected committed, got ${result.state}`);
+  return result.draft;
+}
+
+test("orders overlapping CAS writes then a later explicit rebase, including identical metadata", async () => {
+  const factory = new IDBFactory(),
+    databaseName = "revision";
+  const a = createBrowserDraftRepository({ indexedDB: factory, databaseName });
+  closeAfterTest(() => a.close());
+  const b = createBrowserDraftRepository({ indexedDB: factory, databaseName });
+  closeAfterTest(() => b.close());
+  const k = browserDraftKey("root", "https://hub.test");
+  const base = committed(await a.seedDraft(k, { text: "/same", skillNames: ["same"], mentions: [] }));
+  const results = await Promise.all([
+    a.commitEdit(k, base.token, { text: "first", skillNames: [] }, () => true),
+    b.commitEdit(k, base.token, { text: "second", skillNames: [] }, () => true),
+  ]);
+  expect(results.filter((r) => r.state === "committed")).toHaveLength(1);
+  expect(results.filter((r) => r.state === "conflict")).toHaveLength(1);
+  const current = await a.load(k);
+  if (!current) throw new Error("missing row");
+  const next = committed(
+    await b.commitEdit(k, current.token, { text: "last", skillNames: [], mentions: [] }, () => true),
+  );
+  const identical = committed(await a.commitEdit(k, next.token, next, () => true));
+  const metadata = committed(await b.commitEdit(k, identical.token, { ...next, commandNames: ["plan"] }, () => true));
+  expect(metadata.token.sessionRevision).toBe(next.token.sessionRevision + 2);
+  expect(await a.load(k)).toMatchObject({ text: "last", commandNames: ["plan"], mentions: [] });
+  const guard = captureDraftSettlementGuard(metadata, { kind: "draft" }, 7);
+  metadata.token = { namespaceIncarnation: "changed", sessionRevision: 99 };
+  expect(guard.token.sessionRevision).toBe(next.token.sessionRevision + 2);
+  expect(Object.isFrozen(guard.token)).toBe(true);
+});
+
+test("never imports over an explicit empty revision, or reimports changed legacy bytes", async () => {
+  const factory = new IDBFactory(),
+    k = browserDraftKey("root", "https://hub.test");
   const storage = new MemoryStorage();
-  storage.setItem(draftStorageKey("root"), '{"text":"literal /same"}');
-  const cleanupFaults: string[] = [];
-  const repository = createBrowserDraftRepository({
-    indexedDB,
-    databaseName: "transfer-test",
+  const repo = createBrowserDraftRepository({ indexedDB: factory, databaseName: "transfer", storage });
+  closeAfterTest(() => repo.close());
+  const legacy = composerDraftStorageKey("root");
+  storage.setItem(legacy, JSON.stringify({ text: "imported", skillNames: [], mentions: [] }));
+  expect(await repo.transferSupportedDrafts(k.namespace)).toEqual({ state: "committed" });
+  const row = await repo.load(k);
+  if (!row) throw new Error("missing import");
+  committed(await repo.commitEdit(k, row.token, { text: "", skillNames: [] }, () => true));
+  storage.setItem(legacy, JSON.stringify({ text: "later legacy", skillNames: [] }));
+  await repo.transferSupportedDrafts(k.namespace);
+  expect((await repo.load(k))?.text).toBe("");
+});
+
+test("cleanup keeps changed inspected bytes, and a listener cannot undo commit", async () => {
+  const factory = new IDBFactory(),
+    k = browserDraftKey("root", "https://hub.test");
+  const storage = new MemoryStorage();
+  const legacy = composerDraftStorageKey("root"),
+    changed = '{"text":"changed","skillNames":[]}';
+  storage.setItem(legacy, '{"text":"original","skillNames":[]}');
+  const repo = createBrowserDraftRepository({
+    indexedDB: factory,
+    databaseName: "cleanup",
     storage,
-    beforeLegacyCleanup: () => {
-      cleanupFaults.push("cleanup interrupted");
-      throw new Error("cleanup interrupted");
-    },
+    beforeLegacyCleanup: () => storage.setItem(legacy, changed),
+    onListenerDiagnostic: () => {},
   });
-
-  expect(await repository.transferSupportedDrafts(namespace)).toEqual({ state: "committed" });
-  expect(cleanupFaults).toEqual(["cleanup interrupted"]);
-  const draft = await repository.load(key("root"));
-  expect(draft?.text).toBe('{"text":"literal /same"}');
-  expect(draft?.skillNames).toEqual([]);
-  expect(draft?.ownership).toBe("unclaimed");
-  expect(draft).not.toHaveProperty("compositionOwnerId");
-  if (!draft) throw new Error("transferred draft missing");
-
-  const claimed = expectOwned(await repository.claim(key("root"), owner("owner-root"), draft.token, () => true));
-  expect(
-    await repository.clearSubmitted(key("root"), {
-      text: draft.text,
-      skillNames: [],
-      draftRevisionAtStart: 0,
-      persistentRevisionAtStart: claimed.token.persistentRevision,
-      settlementGuard: captureDraftSettlementGuard(claimed),
-      stillOwnsEdit: () => true,
-    }),
-  ).toEqual({ cleared: true, draftUnchanged: true, persistence: "committed" });
-
-  const restarted = createBrowserDraftRepository({ indexedDB, databaseName: "transfer-test", storage });
-  expect(await restarted.transferSupportedDrafts(namespace)).toEqual({ state: "committed" });
-  expect((await restarted.load(key("root")))?.text ?? "").toBe("");
+  closeAfterTest(() => repo.close());
+  repo.subscribe(() => {
+    throw new Error("observer");
+  });
+  await repo.transferSupportedDrafts(k.namespace);
+  expect(storage.getItem(legacy)).toBe(changed);
+  expect((await repo.load(k))?.text).toBe("original");
 });
 
 test("transfer preserves the current decoder semantics for structured, invalid, JSON-looking, and slash drafts", async () => {
@@ -136,6 +156,7 @@ test("transfer preserves the current decoder semantics for structured, invalid, 
   storage.setItem(draftStorageKey("fallback"), "literal fallback /same");
   storage.setItem(draftStorageKey("json"), '{"text":"literal","skillNames":["not-selected"]} /slash');
   const repository = createBrowserDraftRepository({ indexedDB, databaseName: "decoder-transfer", storage });
+  closeAfterTest(() => repository.close());
 
   expect(await repository.transferSupportedDrafts(namespace)).toEqual({ state: "committed" });
   expect(await repository.load(key("structured"))).toMatchObject({
@@ -143,207 +164,104 @@ test("transfer preserves the current decoder semantics for structured, invalid, 
     skillNames: ["same"],
     commandNames: ["command"],
     mentions: [],
-    ownership: "unclaimed",
   });
-  expect(await repository.load(key("fallback"))).toMatchObject({
-    text: "literal fallback /same",
-    skillNames: [],
-    ownership: "unclaimed",
-  });
+  expect(await repository.load(key("fallback"))).toMatchObject({ text: "literal fallback /same", skillNames: [] });
   expect(await repository.load(key("json"))).toMatchObject({
     text: '{"text":"literal","skillNames":["not-selected"]} /slash',
     skillNames: [],
-    ownership: "unclaimed",
   });
   expect(storage.length).toBe(0);
 });
 
-test("a real IndexedDB claim race commits exactly one owner and freezes a copied complete guard", async () => {
+test("a failed transfer rolls back its markers and row, and a later trigger commits", async () => {
   const indexedDB = new IDBFactory();
   const storage = new MemoryStorage();
-  storage.setItem(
-    composerDraftStorageKey("race"),
-    JSON.stringify({
-      text: "🙂 /same and /command",
-      skillNames: ["same"],
-      commandNames: ["command"],
-      mentions: [
-        { kind: "skill", name: "same", offset: 3 },
-        { kind: "command", name: "command", offset: 13 },
-      ],
-    }),
-  );
-  const repository = createBrowserDraftRepository({ indexedDB, databaseName: "claim-race", storage });
-  await repository.transferSupportedDrafts(namespace);
-  const imported = await repository.load(key("race"));
-  if (!imported) throw new Error("import missing");
-
-  const results = await Promise.all([
-    repository.claim(key("race"), owner("owner-a", "pane-a"), imported.token, () => true),
-    repository.claim(key("race"), owner("owner-b", "pane-b"), imported.token, () => true),
-  ]);
-  const committed = results.filter((result) => result.state === "committed");
-  const conflicts = results.filter((result) => result.state === "conflict");
-  expect(committed).toHaveLength(1);
-  expect(conflicts).toHaveLength(1);
-  const winningCommit = committed[0];
-  if (!winningCommit) throw new Error("claim winner missing");
-  const winner = expectOwned(winningCommit);
-  expect(winner).toMatchObject({
-    text: "🙂 /same and /command",
-    skillNames: ["same"],
-    commandNames: ["command"],
-    mentions: [
-      { kind: "skill", name: "same", offset: 3 },
-      { kind: "command", name: "command", offset: 13 },
-    ],
-    backing: { kind: "draft" },
-  });
-  expect(winner.token.ownerRevision).toBe(imported.token.ownerRevision + 1);
-
-  const guard = captureDraftSettlementGuard(winner);
-  expect(guard).not.toBe(winner.token);
-  expect(guard.token).not.toBe(winner.token);
-  expect(guard.backing).not.toBe(winner.backing);
-  expect(Object.isFrozen(guard)).toBe(true);
-  expect(Object.isFrozen(guard.token)).toBe(true);
-  expect(Object.isFrozen(guard.backing)).toBe(true);
-  expect(() => {
-    (guard.token as { persistentRevision: number }).persistentRevision = 99;
-  }).toThrow();
-  expect(guard.token).toEqual(winner.token);
-});
-
-test("claim, adopt, and edit use the complete token and composition owner as transaction-local CAS fences", async () => {
-  const indexedDB = new IDBFactory();
+  storage.setItem(draftStorageKey("rollback"), "initial");
+  let failTransfer = true;
   const repository = createBrowserDraftRepository({
     indexedDB,
-    databaseName: "draft-cas",
+    databaseName: "transfer-rollback",
+    storage,
+    beforeCommit: (operation) => {
+      if (operation === "transferSupportedDrafts" && failTransfer) throw new Error("injected transfer fault");
+    },
+  });
+  closeAfterTest(() => repository.close());
+
+  expect(await repository.transferSupportedDrafts(namespace)).toEqual({ state: "pending" });
+  expect(await repository.load(key("rollback"))).toBeNull();
+  expect(storage.getItem(draftStorageKey("rollback"))).toBe("initial");
+
+  failTransfer = false;
+  expect(await repository.transferSupportedDrafts(namespace)).toEqual({ state: "committed" });
+  expect(await repository.load(key("rollback"))).toMatchObject({ text: "initial" });
+});
+
+test("transfer read faults stay pending and emit no unvalidated console error", async () => {
+  class FailingStorage extends MemoryStorage {
+    override getItem(_key: string): string | null {
+      throw new Error("read unavailable");
+    }
+  }
+  const storage = new FailingStorage();
+  storage.setItem(draftStorageKey("fault"), "unreadable");
+  const repository = createBrowserDraftRepository({ indexedDB: new IDBFactory(), databaseName: "read-fault", storage });
+  closeAfterTest(() => repository.close());
+  expect(await repository.transferSupportedDrafts(namespace)).toEqual({ state: "pending" });
+});
+
+test("seedDraft creates only an absent row", async () => {
+  const repository = createBrowserDraftRepository({
+    indexedDB: new IDBFactory(),
+    databaseName: "seed-once",
     storage: new MemoryStorage(),
   });
-  const seeded = await repository.seedUnclaimed(key("cas"), {
-    text: "before",
-    skillNames: ["skill"],
-    commandNames: ["command"],
-    mentions: [{ kind: "skill", name: "skill", offset: 0 }],
-  });
-  if (seeded.state !== "committed") throw new Error("seed failed");
-  const first = expectOwned(await repository.claim(key("cas"), owner("owner-a"), seeded.draft.token, () => true));
-
-  expect(await repository.claim(key("cas"), owner("owner-b"), first.token, () => true)).toMatchObject({
+  closeAfterTest(() => repository.close());
+  const first = await repository.seedDraft(key("seed"), { text: "first", skillNames: [] });
+  if (first.state !== "committed") throw new Error("seed failed");
+  expect(await repository.seedDraft(key("seed"), { text: "second", skillNames: [] })).toMatchObject({
     state: "conflict",
-    current: { compositionOwnerId: "owner-a", text: "before" },
-  });
-  expect(await repository.adopt(key("cas"), owner("owner-b"), first.token, "wrong-owner", () => true)).toMatchObject({
-    state: "conflict",
-    current: { compositionOwnerId: "owner-a" },
-  });
-  const adopted = expectOwned(await repository.adopt(key("cas"), owner("owner-b"), first.token, "owner-a", () => true));
-  expect(adopted).toMatchObject({
-    compositionOwnerId: "owner-b",
-    text: "before",
-    skillNames: ["skill"],
-    commandNames: ["command"],
-    mentions: [{ kind: "skill", name: "skill", offset: 0 }],
-    backing: { kind: "draft" },
-  });
-  expect(adopted.token.ownerRevision).toBe(first.token.ownerRevision + 1);
-
-  expect(
-    await repository.commitEdit(
-      key("cas"),
-      owner("owner-a"),
-      first.token,
-      { text: "late", skillNames: [] },
-      () => true,
-    ),
-  ).toMatchObject({ state: "conflict", current: { compositionOwnerId: "owner-b", text: "before" } });
-  const edited = expectOwned(
-    await repository.commitEdit(
-      key("cas"),
-      owner("owner-b"),
-      adopted.token,
-      { text: "after", skillNames: ["skill"] },
-      () => true,
-    ),
-  );
-  expect(edited.token.persistentRevision).toBe(adopted.token.persistentRevision + 1);
-  const duplicate = expectOwned(
-    await repository.commitEdit(
-      key("cas"),
-      owner("owner-b"),
-      edited.token,
-      { text: "after", skillNames: ["skill"] },
-      () => true,
-    ),
-  );
-  expect(duplicate.token).toEqual(edited.token);
-  expect(
-    await repository.commitEdit(
-      key("cas"),
-      owner("owner-b"),
-      edited.token,
-      { text: "blocked", skillNames: [] },
-      () => false,
-    ),
-  ).toEqual({
-    state: "unavailable",
-  });
-  expect(await repository.claim(key("cas"), owner("owner-b", "reused-pane", 99), edited.token, () => false)).toEqual({
-    state: "unavailable",
-  });
-  expect(await repository.adopt(key("cas"), owner("owner-b"), edited.token, "owner-b", () => false)).toEqual({
-    state: "unavailable",
+    current: { text: "first" },
   });
 });
 
-test("commitEdit treats omitted and explicit empty mentions as distinct editor values", async () => {
+test("commitEdit treats omitted and explicit empty mentions as distinct editor values and advances identical edits", async () => {
   const repository = createBrowserDraftRepository({
     indexedDB: new IDBFactory(),
     databaseName: "mention-presence",
     storage: new MemoryStorage(),
   });
+  closeAfterTest(() => repository.close());
   const omittedValue = { text: "/same", skillNames: ["same"] };
-  const seeded = await repository.seedUnclaimed(key("mentions"), omittedValue);
-  if (seeded.state !== "committed") throw new Error("seed failed");
-  const claimed = expectOwned(
-    await repository.claim(key("mentions"), owner("owner-a"), seeded.draft.token, () => true),
-  );
+  const seeded = committed(await repository.seedDraft(key("mentions"), omittedValue));
 
   const explicitEmptyValue = { text: "/same", skillNames: ["same"], mentions: [] };
-  const explicitEmpty = expectOwned(
-    await repository.commitEdit(key("mentions"), owner("owner-a"), claimed.token, explicitEmptyValue, () => true),
+  const explicitEmpty = committed(
+    await repository.commitEdit(key("mentions"), seeded.token, explicitEmptyValue, () => true),
   );
-  expect(explicitEmpty.token.persistentRevision).toBe(claimed.token.persistentRevision + 1);
-  expect(explicitEmpty).toEqual({
-    ...explicitEmptyValue,
-    key: key("mentions"),
-    token: explicitEmpty.token,
-    backing: { kind: "draft" },
-    ownership: "owned",
-    compositionOwnerId: "owner-a",
-  });
+  expect(explicitEmpty.token.sessionRevision).toBe(seeded.token.sessionRevision + 1);
+  expect(explicitEmpty).toEqual({ ...explicitEmptyValue, key: key("mentions"), token: explicitEmpty.token });
   expect(parseSkillDocument(explicitEmpty).toJSON()).toEqual({
     type: "doc",
     content: [{ type: "text", text: "/same" }],
   });
   expect(await repository.load(key("mentions"))).toEqual(explicitEmpty);
 
-  const duplicateEmpty = expectOwned(
+  // An explicit identical edit is still an explicit edit: the revision advances.
+  const duplicateEmpty = committed(
     await repository.commitEdit(
       key("mentions"),
-      owner("owner-a"),
       explicitEmpty.token,
       { ...explicitEmptyValue, mentions: [] },
       () => true,
     ),
   );
-  expect(duplicateEmpty.token).toEqual(explicitEmpty.token);
+  expect(duplicateEmpty.token.sessionRevision).toBe(explicitEmpty.token.sessionRevision + 1);
 
-  const omittedAgain = expectOwned(
-    await repository.commitEdit(key("mentions"), owner("owner-a"), duplicateEmpty.token, omittedValue, () => true),
+  const omittedAgain = committed(
+    await repository.commitEdit(key("mentions"), duplicateEmpty.token, omittedValue, () => true),
   );
-  expect(omittedAgain.token.persistentRevision).toBe(duplicateEmpty.token.persistentRevision + 1);
+  expect(omittedAgain.token.sessionRevision).toBe(duplicateEmpty.token.sessionRevision + 1);
   expect(omittedAgain).not.toHaveProperty("mentions");
   expect(parseSkillDocument(omittedAgain).toJSON()).toEqual({
     type: "doc",
@@ -351,10 +269,10 @@ test("commitEdit treats omitted and explicit empty mentions as distinct editor v
   });
   expect(await repository.load(key("mentions"))).toEqual(omittedAgain);
 
-  const duplicateOmitted = expectOwned(
-    await repository.commitEdit(key("mentions"), owner("owner-a"), omittedAgain.token, { ...omittedValue }, () => true),
+  const duplicateOmitted = committed(
+    await repository.commitEdit(key("mentions"), omittedAgain.token, { ...omittedValue }, () => true),
   );
-  expect(duplicateOmitted.token).toEqual(omittedAgain.token);
+  expect(duplicateOmitted.token.sessionRevision).toBe(omittedAgain.token.sessionRevision + 1);
 });
 
 test("commitEdit preserves complete nonempty skill and command mention metadata", async () => {
@@ -363,11 +281,8 @@ test("commitEdit preserves complete nonempty skill and command mention metadata"
     databaseName: "mention-metadata",
     storage: new MemoryStorage(),
   });
-  const seeded = await repository.seedUnclaimed(key("mention-metadata"), { text: "", skillNames: [] });
-  if (seeded.state !== "committed") throw new Error("seed failed");
-  const claimed = expectOwned(
-    await repository.claim(key("mention-metadata"), owner("owner-a"), seeded.draft.token, () => true),
-  );
+  closeAfterTest(() => repository.close());
+  const seeded = committed(await repository.seedDraft(key("mention-metadata"), { text: "", skillNames: [] }));
   const value = {
     text: "🙂 /same /same",
     skillNames: ["same"],
@@ -378,237 +293,98 @@ test("commitEdit preserves complete nonempty skill and command mention metadata"
     ],
   };
 
-  const edited = expectOwned(
-    await repository.commitEdit(key("mention-metadata"), owner("owner-a"), claimed.token, value, () => true),
-  );
-  expect(edited).toEqual({
-    ...value,
-    key: key("mention-metadata"),
-    token: edited.token,
-    backing: { kind: "draft" },
-    ownership: "owned",
-    compositionOwnerId: "owner-a",
-  });
+  const edited = committed(await repository.commitEdit(key("mention-metadata"), seeded.token, value, () => true));
+  expect(edited).toEqual({ ...value, key: key("mention-metadata"), token: edited.token });
   expect(await repository.load(key("mention-metadata"))).toEqual(edited);
-  const duplicate = expectOwned(
+  const duplicate = committed(
     await repository.commitEdit(
       key("mention-metadata"),
-      owner("owner-a"),
       edited.token,
       { ...value, mentions: value.mentions.map((mention) => ({ ...mention })) },
       () => true,
     ),
   );
-  expect(duplicate.token).toEqual(edited.token);
+  expect(duplicate.token.sessionRevision).toBe(edited.token.sessionRevision + 1);
 });
 
-test("clear keeps a durable same-owner fence against stale edits and settlements after recreation", async () => {
-  const indexedDB = new IDBFactory();
-  const databaseName = "clear-recreation-fence";
-  const storage = new MemoryStorage();
-  const original = createBrowserDraftRepository({ indexedDB, databaseName, storage });
-
-  const prepareRecreatedDraft = async (sessionRef: string) => {
-    const draftKey = key(sessionRef);
-    const seeded = await original.seedUnclaimed(draftKey, { text: "before", skillNames: [] });
-    if (seeded.state !== "committed") throw new Error("seed failed");
-    const claimed = expectOwned(
-      await original.claim(draftKey, owner("same-live-owner"), seeded.draft.token, () => true),
-    );
-    const submitted = expectOwned(
-      await original.commitEdit(
-        draftKey,
-        owner("same-live-owner"),
-        claimed.token,
-        { text: "same bytes", skillNames: [] },
-        () => true,
-      ),
-    );
-    const settlementGuard = captureDraftSettlementGuard(submitted);
-    expect(
-      await original.clearSubmitted(draftKey, {
-        text: "same bytes",
-        skillNames: [],
-        draftRevisionAtStart: 0,
-        persistentRevisionAtStart: submitted.token.persistentRevision,
-        settlementGuard,
-        stillOwnsEdit: () => true,
-      }),
-    ).toEqual({ cleared: true, draftUnchanged: true, persistence: "committed" });
-
-    const restarted = createBrowserDraftRepository({ indexedDB, databaseName, storage });
-    const cleared = await restarted.load(draftKey);
-    expect(cleared?.text ?? "").toBe("");
-    const reclaimed = expectOwned(
-      await restarted.claim(draftKey, owner("same-live-owner"), cleared?.token ?? null, () => true),
-    );
-    const newer = expectOwned(
-      await restarted.commitEdit(
-        draftKey,
-        owner("same-live-owner"),
-        reclaimed.token,
-        { text: "same bytes", skillNames: [] },
-        () => true,
-      ),
-    );
-    return { draftKey, restarted, submitted, settlementGuard, reclaimed, newer };
-  };
-
-  const editCase = await prepareRecreatedDraft("stale-edit");
-  const staleEdit = await editCase.restarted.commitEdit(
-    editCase.draftKey,
-    owner("same-live-owner"),
-    editCase.submitted.token,
-    { text: "stale overwrite", skillNames: [] },
-    () => true,
-  );
-  const editAfterStale = await editCase.restarted.load(editCase.draftKey);
-
-  const settlementCase = await prepareRecreatedDraft("stale-settlement");
-  const staleSettlement = await settlementCase.restarted.clearSubmitted(settlementCase.draftKey, {
-    text: "same bytes",
-    skillNames: [],
-    draftRevisionAtStart: 0,
-    persistentRevisionAtStart: settlementCase.submitted.token.persistentRevision,
-    settlementGuard: settlementCase.settlementGuard,
-    stillOwnsEdit: () => true,
-  });
-  const currentEdit = await settlementCase.restarted.commitEdit(
-    settlementCase.draftKey,
-    owner("same-live-owner"),
-    settlementCase.newer.token,
-    { text: "fresh current-token update", skillNames: [] },
-    () => true,
-  );
-  const settlementAfterStale = await settlementCase.restarted.load(settlementCase.draftKey);
-
-  expect.soft(editCase.newer.token).not.toEqual(editCase.submitted.token);
-  expect.soft(editCase.reclaimed.backing).toEqual(editCase.submitted.backing);
-  expect.soft(staleEdit).toMatchObject({ state: "conflict", current: { text: "same bytes" } });
-  expect.soft(editAfterStale).toMatchObject({ text: "same bytes", token: editCase.newer.token });
-  expect.soft(settlementCase.newer.token).not.toEqual(settlementCase.submitted.token);
-  expect.soft(staleSettlement).toEqual({ cleared: false, draftUnchanged: false, persistence: "committed" });
-  expect.soft(currentEdit).toMatchObject({ state: "committed", draft: { text: "fresh current-token update" } });
-  expect.soft(settlementAfterStale).toMatchObject({ text: "fresh current-token update" });
-});
-
-test("listener failures cannot change committed seed edit or clear results or stop later listeners", async () => {
-  type ListenerDiagnostic = { path: "listener-failed"; key: BrowserDraftKey; error: unknown };
-  const listenerFailure = new Error("injected listener failure");
-  const diagnostics: ListenerDiagnostic[] = [];
-  const laterNotifications: BrowserDraftKey[] = [];
-  const repository = createBrowserDraftRepository({
-    indexedDB: new IDBFactory(),
-    databaseName: "listener-isolation",
-    storage: new MemoryStorage(),
-    onListenerDiagnostic: (diagnostic: ListenerDiagnostic) => diagnostics.push(diagnostic),
-  });
-  const subscribeFaultThenListener = () => [
-    repository.subscribe(() => {
-      throw listenerFailure;
-    }),
-    repository.subscribe((changed) => laterNotifications.push(changed)),
-  ];
-
-  let unsubscribers = subscribeFaultThenListener();
-  const seeded = await repository.seedUnclaimed(key("listener"), { text: "seeded", skillNames: [] });
-  for (const unsubscribe of unsubscribers) unsubscribe();
-  const durableSeed = await repository.load(key("listener"));
-  if (!durableSeed) throw new Error("durable seed missing");
-  const claimed = expectOwned(await repository.claim(key("listener"), owner("owner-a"), durableSeed.token, () => true));
-
-  unsubscribers = subscribeFaultThenListener();
-  const edited = await repository.commitEdit(
-    key("listener"),
-    owner("owner-a"),
-    claimed.token,
-    { text: "edited", skillNames: [] },
-    () => true,
-  );
-  const durableEdit = await repository.load(key("listener"));
-  if (durableEdit?.ownership !== "owned") throw new Error("durable edit missing");
-  const cleared = await repository.clearSubmitted(key("listener"), {
-    text: "edited",
-    skillNames: [],
-    draftRevisionAtStart: 0,
-    persistentRevisionAtStart: durableEdit.token.persistentRevision,
-    settlementGuard: captureDraftSettlementGuard(durableEdit),
-    stillOwnsEdit: () => true,
-  });
-  for (const unsubscribe of unsubscribers) unsubscribe();
-  const durableClear = await repository.load(key("listener"));
-
-  expect.soft(seeded).toMatchObject({ state: "committed", draft: { text: "seeded" } });
-  if (seeded.state === "committed") expect.soft(durableSeed).toEqual(seeded.draft);
-  expect.soft(edited).toMatchObject({ state: "committed", draft: { text: "edited" } });
-  if (edited.state === "committed") expect.soft(durableEdit).toEqual(edited.draft);
-  expect.soft(cleared).toEqual({ cleared: true, draftUnchanged: true, persistence: "committed" });
-  expect.soft(durableClear?.text ?? "").toBe("");
-  expect.soft(laterNotifications).toEqual([key("listener"), key("listener"), key("listener")]);
-  expect.soft(diagnostics).toHaveLength(3);
-  for (const diagnostic of diagnostics) {
-    expect.soft(diagnostic).toMatchObject({ path: "listener-failed", key: key("listener") });
-    expect.soft(diagnostic.error).toBe(listenerFailure);
-  }
-});
-
-test("browser clearing requires the copied full guard and a live edit owner, never the scalar revision alone", async () => {
-  const repository = createBrowserDraftRepository({
-    indexedDB: new IDBFactory(),
-    databaseName: "settlement-guards",
-    storage: new MemoryStorage(),
-  });
-  const seeded = await repository.seedUnclaimed(key("settle"), { text: "send me", skillNames: ["skill"] });
-  if (seeded.state !== "committed") throw new Error("seed failed");
-  const claimed = expectOwned(await repository.claim(key("settle"), owner("owner-a"), seeded.draft.token, () => true));
-  const submitted = {
-    text: "send me",
-    skillNames: ["skill"],
-    draftRevisionAtStart: 0,
-    persistentRevisionAtStart: claimed.token.persistentRevision,
-  };
-  expect(await repository.clearSubmitted(key("settle"), submitted)).toEqual({
-    cleared: false,
-    draftUnchanged: false,
-    persistence: "committed",
-  });
-  expect(
-    await repository.clearSubmitted(key("settle"), {
-      ...submitted,
-      settlementGuard: captureDraftSettlementGuard(claimed),
-      stillOwnsEdit: () => false,
-    }),
-  ).toEqual({ cleared: false, draftUnchanged: true, persistence: "committed" });
-  expect(await repository.load(key("settle"))).toMatchObject({ text: "send me", compositionOwnerId: "owner-a" });
-});
-
-test("load refreshes an advanced namespace incarnation and stale callbacks cannot write across the namespace fence", async () => {
+test("load re-tokens an advanced namespace incarnation, keeps the revision, and cannot authorize a captured old cleanup", async () => {
   const indexedDB = new IDBFactory();
   const databaseName = "namespace-fence";
   const repository = createBrowserDraftRepository({ indexedDB, databaseName, storage: new MemoryStorage() });
-  const seeded = await repository.seedUnclaimed(key("fenced"), { text: "preserve", skillNames: ["skill"] });
-  if (seeded.state !== "committed") throw new Error("seed failed");
-  const claimed = expectOwned(await repository.claim(key("fenced"), owner("owner-a"), seeded.draft.token, () => true));
+  closeAfterTest(() => repository.close());
+  const seeded = committed(await repository.seedDraft(key("fenced"), { text: "preserve", skillNames: ["skill"] }));
+  const guard = captureDraftSettlementGuard(seeded, { kind: "draft" }, 0);
 
   await advanceNamespace(indexedDB, databaseName, "fixture-incarnation-2");
   const refreshed = await repository.load(key("fenced"));
   expect(refreshed).toMatchObject({
     text: "preserve",
     skillNames: ["skill"],
-    ownership: "owned",
-    compositionOwnerId: "owner-a",
-    backing: { kind: "draft" },
-    token: { namespaceIncarnation: "fixture-incarnation-2" },
+    token: { namespaceIncarnation: "fixture-incarnation-2", sessionRevision: seeded.token.sessionRevision },
+  });
+
+  expect(
+    await repository.commitEdit(key("fenced"), seeded.token, { text: "stale", skillNames: [] }, () => true),
+  ).toMatchObject({
+    state: "conflict",
+    current: { text: "preserve" },
   });
   expect(
-    await repository.commitEdit(
-      key("fenced"),
-      owner("owner-a"),
-      claimed.token,
-      { text: "stale", skillNames: [] },
-      () => true,
-    ),
-  ).toMatchObject({ state: "conflict", current: { text: "preserve" } });
+    await repository.clearSubmitted(key("fenced"), {
+      text: "preserve",
+      skillNames: ["skill"],
+      draftRevisionAtStart: 0,
+      settlementGuard: guard,
+      stillOwnsEdit: () => true,
+    }),
+  ).toEqual({ cleared: false, draftUnchanged: false, persistence: "committed" });
+  expect((await repository.load(key("fenced")))?.text).toBe("preserve");
+});
+
+test("browser clearing requires the copied full guard, a live edit owner and an exact value including mentions", async () => {
+  const repository = createBrowserDraftRepository({
+    indexedDB: new IDBFactory(),
+    databaseName: "settlement-guards",
+    storage: new MemoryStorage(),
+  });
+  closeAfterTest(() => repository.close());
+  const seeded = committed(
+    await repository.seedDraft(key("settle"), { text: "send me", skillNames: ["skill"], mentions: [] }),
+  );
+  const base = { text: "send me", skillNames: ["skill"], mentions: [], draftRevisionAtStart: 0 };
+
+  expect(await repository.clearSubmitted(key("settle"), base)).toEqual({
+    cleared: false,
+    draftUnchanged: false,
+    persistence: "committed",
+  });
+  const guard = captureDraftSettlementGuard(seeded, { kind: "draft" }, 5);
+  expect(
+    await repository.clearSubmitted(key("settle"), { ...base, settlementGuard: guard, stillOwnsEdit: () => false }),
+  ).toEqual({
+    cleared: false,
+    draftUnchanged: true,
+    persistence: "committed",
+  });
+  // An omitted mention list is a different value than the row's explicit empty list.
+  expect(
+    await repository.clearSubmitted(key("settle"), {
+      ...base,
+      mentions: undefined,
+      settlementGuard: guard,
+      stillOwnsEdit: () => true,
+    }),
+  ).toEqual({ cleared: false, draftUnchanged: true, persistence: "committed" });
+  expect(await repository.load(key("settle"))).toMatchObject({ text: "send me" });
+
+  expect(
+    await repository.clearSubmitted(key("settle"), { ...base, settlementGuard: guard, stillOwnsEdit: () => true }),
+  ).toEqual({
+    cleared: true,
+    draftUnchanged: true,
+    persistence: "committed",
+  });
+  expect((await repository.load(key("settle")))?.text).toBe("");
 });
 
 test("commit faults are unavailable or pending and leave authoritative work unchanged", async () => {
@@ -622,21 +398,16 @@ test("commit faults are unavailable or pending and leave authoritative work unch
       if (operation === failOperation) throw new Error(`injected ${operation}`);
     },
   });
-  const seeded = await repository.seedUnclaimed(key("fault"), { text: "before", skillNames: [] });
-  if (seeded.state !== "committed") throw new Error("seed failed");
-  const claimed = expectOwned(await repository.claim(key("fault"), owner("owner-a"), seeded.draft.token, () => true));
+  closeAfterTest(() => repository.close());
+  const seeded = committed(await repository.seedDraft(key("fault"), { text: "before", skillNames: [] }));
 
   failOperation = "commitEdit";
   expect(
-    await repository.commitEdit(
-      key("fault"),
-      owner("owner-a"),
-      claimed.token,
-      { text: "after", skillNames: [] },
-      () => true,
-    ),
-  ).toEqual({ state: "unavailable" });
-  expect(await repository.load(key("fault"))).toMatchObject({ text: "before", token: claimed.token });
+    await repository.commitEdit(key("fault"), seeded.token, { text: "after", skillNames: [] }, () => true),
+  ).toEqual({
+    state: "unavailable",
+  });
+  expect(await repository.load(key("fault"))).toMatchObject({ text: "before", token: seeded.token });
 
   failOperation = "clearSubmitted";
   expect(
@@ -644,52 +415,70 @@ test("commit faults are unavailable or pending and leave authoritative work unch
       text: "before",
       skillNames: [],
       draftRevisionAtStart: 0,
-      settlementGuard: captureDraftSettlementGuard(claimed),
+      settlementGuard: captureDraftSettlementGuard(seeded, { kind: "draft" }, 0),
       stillOwnsEdit: () => true,
     }),
   ).toEqual({ cleared: false, draftUnchanged: true, persistence: "pending" });
   expect(await repository.load(key("fault"))).toMatchObject({ text: "before" });
 });
 
-test("a changed supported value becomes one deduplicated conflict without overwriting newer IDB work", async () => {
-  const indexedDB = new IDBFactory();
-  const storage = new MemoryStorage();
-  storage.setItem(draftStorageKey("late"), "old value");
-  const repository = createBrowserDraftRepository({ indexedDB, databaseName: "late-write", storage });
-  await repository.transferSupportedDrafts(namespace);
-  const imported = await repository.load(key("late"));
-  if (!imported) throw new Error("import missing");
-  const claimed = expectOwned(await repository.claim(key("late"), owner("owner-a"), imported.token, () => true));
-  const edited = expectOwned(
-    await repository.commitEdit(
-      key("late"),
-      owner("owner-a"),
-      claimed.token,
-      { text: "new authoritative", skillNames: ["skill"] },
-      () => true,
-    ),
-  );
-
-  storage.setItem(draftStorageKey("late"), "late /same");
-  await repository.transferSupportedDrafts(namespace);
-  await repository.transferSupportedDrafts(namespace);
-  expect(await repository.load(key("late"))).toMatchObject({
-    text: "new authoritative",
-    skillNames: ["skill"],
-    token: edited.token,
-    compositionOwnerId: "owner-a",
+test("listener failures cannot change committed seed, edit or clear results or stop later listeners", async () => {
+  type ListenerDiagnostic = { path: "listener-failed"; key: BrowserDraftKey; error: unknown };
+  const listenerFailure = new Error("injected listener failure");
+  const diagnostics: ListenerDiagnostic[] = [];
+  const laterNotifications: BrowserDraftKey[] = [];
+  const repository = createBrowserDraftRepository({
+    indexedDB: new IDBFactory(),
+    databaseName: "listener-isolation",
+    storage: new MemoryStorage(),
+    onListenerDiagnostic: (diagnostic: ListenerDiagnostic) => diagnostics.push(diagnostic),
   });
-  expect(await repository.listConflicts(key("late"))).toMatchObject([
-    {
-      key: key("late"),
-      legacyKey: draftStorageKey("late"),
-      inspectedBytes: "late /same",
-      value: { text: "late /same", skillNames: [] },
-    },
-  ]);
+  closeAfterTest(() => repository.close());
+  const subscribeFaultThenListener = () => [
+    repository.subscribe(() => {
+      throw listenerFailure;
+    }),
+    repository.subscribe((changed) => laterNotifications.push(changed)),
+  ];
+
+  let unsubscribers = subscribeFaultThenListener();
+  const seeded = await repository.seedDraft(key("listener"), { text: "seeded", skillNames: [] });
+  for (const unsubscribe of unsubscribers) unsubscribe();
+  const durableSeed = await repository.load(key("listener"));
+  if (!durableSeed) throw new Error("durable seed missing");
+
+  unsubscribers = subscribeFaultThenListener();
+  const edited = await repository.commitEdit(
+    key("listener"),
+    durableSeed.token,
+    { text: "edited", skillNames: [] },
+    () => true,
+  );
+  const durableEdit = await repository.load(key("listener"));
+  if (!durableEdit) throw new Error("durable edit missing");
+  const cleared = await repository.clearSubmitted(key("listener"), {
+    text: "edited",
+    skillNames: [],
+    draftRevisionAtStart: 0,
+    settlementGuard: captureDraftSettlementGuard(durableEdit, { kind: "draft" }, 0),
+    stillOwnsEdit: () => true,
+  });
+  for (const unsubscribe of unsubscribers) unsubscribe();
+  const durableClear = await repository.load(key("listener"));
+
+  expect.soft(seeded).toMatchObject({ state: "committed", draft: { text: "seeded" } });
+  expect.soft(edited).toMatchObject({ state: "committed", draft: { text: "edited" } });
+  expect.soft(cleared).toEqual({ cleared: true, draftUnchanged: true, persistence: "committed" });
+  expect.soft(durableClear?.text ?? "").toBe("");
+  expect.soft(laterNotifications).toEqual([key("listener"), key("listener"), key("listener")]);
+  expect.soft(diagnostics).toHaveLength(3);
+  for (const diagnostic of diagnostics) {
+    expect.soft(diagnostic).toMatchObject({ path: "listener-failed", key: key("listener") });
+    expect.soft(diagnostic.error).toBe(listenerFailure);
+  }
 });
 
-test("cleanup removes only inspected bytes and reconciles a value changed during cleanup on the next scan", async () => {
+test("cleanup removes only inspected bytes and never reimports over a durable row", async () => {
   const indexedDB = new IDBFactory();
   const storage = new MemoryStorage();
   storage.setItem(draftStorageKey("cleanup-race"), "inspected");
@@ -704,153 +493,93 @@ test("cleanup removes only inspected bytes and reconciles a value changed during
       storage.setItem(draftStorageKey("cleanup-race"), "new work");
     },
   });
+  closeAfterTest(() => repository.close());
   expect(await repository.transferSupportedDrafts(namespace)).toEqual({ state: "committed" });
   expect(storage.getItem(draftStorageKey("cleanup-race"))).toBe("new work");
-  expect(await repository.load(key("cleanup-race"))).toMatchObject({ text: "inspected", ownership: "unclaimed" });
+  expect(await repository.load(key("cleanup-race"))).toMatchObject({ text: "inspected" });
   expect(await repository.transferSupportedDrafts(namespace)).toEqual({ state: "committed" });
-  expect(await repository.listConflicts(key("cleanup-race"))).toMatchObject([
-    { inspectedBytes: "new work", value: { text: "new work", skillNames: [] } },
-  ]);
+  expect(await repository.load(key("cleanup-race"))).toMatchObject({ text: "inspected" });
 });
 
-test("a real IndexedDB request failure rolls back transfer markers and remains pending for the next trigger", async () => {
+test("a reopened repository reads the durable cleared row and never reimports legacy bytes", async () => {
   const indexedDB = new IDBFactory();
+  const databaseName = "reopen";
   const storage = new MemoryStorage();
-  storage.setItem(draftStorageKey("request-fault"), "initial");
-  const repository = createBrowserDraftRepository({ indexedDB, databaseName: "request-fault", storage });
-  await repository.transferSupportedDrafts(namespace);
-  const imported = await repository.load(key("request-fault"));
-  if (!imported) throw new Error("import missing");
-  const claimed = expectOwned(
-    await repository.claim(key("request-fault"), owner("owner-a"), imported.token, () => true),
-  );
-  await repository.commitEdit(
-    key("request-fault"),
-    owner("owner-a"),
-    claimed.token,
-    { text: "authoritative", skillNames: [] },
-    () => true,
-  );
+  const legacy = composerDraftStorageKey("root");
+  storage.setItem(legacy, JSON.stringify({ text: "imported", skillNames: [] }));
+  const first = createBrowserDraftRepository({ indexedDB, databaseName, storage });
+  await first.transferSupportedDrafts(namespace);
+  const row = await first.load(key("root"));
+  if (!row) throw new Error("import missing");
+  await first.commitEdit(key("root"), row.token, { text: "", skillNames: [] }, () => true);
+  first.close();
 
-  const randomUUID = vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValue("00000000-0000-4000-8000-000000000000");
-  storage.setItem(draftStorageKey("request-fault"), "first incoming");
-  expect(await repository.transferSupportedDrafts(namespace)).toEqual({ state: "committed" });
-  storage.setItem(draftStorageKey("request-fault"), "second incoming");
-  expect(await repository.transferSupportedDrafts(namespace)).toEqual({ state: "pending" });
-  expect(storage.getItem(draftStorageKey("request-fault"))).toBe("second incoming");
-  expect(await repository.listConflicts(key("request-fault"))).toMatchObject([{ inspectedBytes: "first incoming" }]);
-
-  randomUUID.mockRestore();
-  expect(await repository.transferSupportedDrafts(namespace)).toEqual({ state: "committed" });
-  expect(new Set((await repository.listConflicts(key("request-fault"))).map((row) => row.inspectedBytes))).toEqual(
-    new Set(["first incoming", "second incoming"]),
-  );
+  const reopened = createBrowserDraftRepository({ indexedDB, databaseName, storage });
+  closeAfterTest(() => reopened.close());
+  expect(await reopened.transferSupportedDrafts(namespace)).toEqual({ state: "committed" });
+  expect((await reopened.load(key("root")))?.text).toBe("");
 });
 
-test("restoreConflict atomically restores only empty unchanged owned work and consumes only the restored conflict", async () => {
-  const indexedDB = new IDBFactory();
-  const storage = new MemoryStorage();
-  const repository = createBrowserDraftRepository({ indexedDB, databaseName: "restore-conflict", storage });
-  const seeded = await repository.seedUnclaimed(key("restore"), { text: "", skillNames: [] });
-  if (seeded.state !== "committed") throw new Error("seed failed");
-  const claimed = expectOwned(await repository.claim(key("restore"), owner("owner-a"), seeded.draft.token, () => true));
-  storage.setItem(draftStorageKey("restore"), "incoming");
-  await repository.transferSupportedDrafts(namespace);
-  const [conflict] = await repository.listConflicts(key("restore"));
-  if (!conflict) throw new Error("conflict missing");
-  const restored = expectOwned(
-    await repository.restoreConflict(key("restore"), owner("owner-a"), claimed.token, conflict.conflictId, () => true),
-  );
-  expect(restored.text).toBe("incoming");
-  expect(await repository.listConflicts(key("restore"))).toEqual([]);
-
-  storage.setItem(draftStorageKey("restore"), "second incoming");
-  await repository.transferSupportedDrafts(namespace);
-  const [second] = await repository.listConflicts(key("restore"));
-  if (!second) throw new Error("second conflict missing");
-  expect(
-    await repository.restoreConflict(key("restore"), owner("owner-a"), restored.token, second.conflictId, () => true),
-  ).toMatchObject({
-    state: "conflict",
-    current: { text: "incoming" },
-  });
-  expect(await repository.listConflicts(key("restore"))).toHaveLength(1);
-});
-
-test("the inactive runtime rescans only on its four declared lifecycle triggers and the next trigger recovers a fault", async () => {
+test("the inactive runtime rescans on its declared lifecycle triggers, recovers a fault, and stops at dispose", async () => {
   const indexedDB = new IDBFactory();
   const storage = new MemoryStorage();
   storage.setItem(draftStorageKey("runtime"), "initial");
-  let transferAttempt: (() => void) | undefined;
+  let attempts = 0;
   let failNextTransfer = false;
-  let transferAttempts = 0;
+  const waiters: Array<{ count: number; resolve: () => void }> = [];
+  const awaitAttempts = (count: number): Promise<void> => {
+    if (attempts >= count) return Promise.resolve();
+    return new Promise((resolve) => waiters.push({ count, resolve }));
+  };
   const repository = createBrowserDraftRepository({
     indexedDB,
     databaseName: "transfer-runtime",
     storage,
     beforeCommit: (operation) => {
       if (operation !== "transferSupportedDrafts") return;
-      transferAttempts += 1;
-      transferAttempt?.();
-      transferAttempt = undefined;
+      attempts += 1;
+      for (const waiter of waiters.splice(0)) {
+        if (attempts >= waiter.count) waiter.resolve();
+        else waiters.push(waiter);
+      }
       if (failNextTransfer) {
         failNextTransfer = false;
         throw new Error("injected transfer fault");
       }
     },
   });
-  const initial = waitForKey(repository, key("runtime"));
+  closeAfterTest(() => repository.close());
   const runtime = createBrowserDraftTransferRuntime({ repository, namespace, storage, window, document });
-  await initial;
-  const imported = await repository.load(key("runtime"));
-  if (!imported) throw new Error("initial runtime import missing");
-  const claimed = expectOwned(await repository.claim(key("runtime"), owner("owner-a"), imported.token, () => true));
-  await repository.commitEdit(
-    key("runtime"),
-    owner("owner-a"),
-    claimed.token,
-    { text: "authoritative", skillNames: [] },
-    () => true,
-  );
 
+  await awaitAttempts(1);
   storage.setItem(draftStorageKey("runtime"), "from composer-open");
-  let changed = waitForKey(repository, key("runtime"));
   runtime.composerOpened(key("runtime"));
-  await changed;
+  await awaitAttempts(2);
 
   storage.setItem(draftStorageKey("runtime"), "from visibility");
-  changed = waitForKey(repository, key("runtime"));
   Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
   document.dispatchEvent(new Event("visibilitychange"));
-  await changed;
+  await awaitAttempts(3);
 
   storage.setItem(draftStorageKey("runtime"), "from storage event");
-  changed = waitForKey(repository, key("runtime"));
   window.dispatchEvent(new StorageEvent("storage", { key: draftStorageKey("runtime") }));
-  await changed;
+  await awaitAttempts(4);
 
   storage.setItem(draftStorageKey("runtime"), "after fault");
   failNextTransfer = true;
-  const attempted = new Promise<void>((resolve) => {
-    transferAttempt = resolve;
-  });
   window.dispatchEvent(new StorageEvent("storage", { key: composerDraftStorageKey("runtime") }));
-  await attempted;
-  changed = waitForKey(repository, key("runtime"));
+  await awaitAttempts(5);
   runtime.composerOpened(key("runtime"));
-  await changed;
+  await awaitAttempts(6);
 
-  expect(await repository.load(key("runtime"))).toMatchObject({ text: "authoritative", compositionOwnerId: "owner-a" });
-  expect(new Set((await repository.listConflicts(key("runtime"))).map((conflict) => conflict.inspectedBytes))).toEqual(
-    new Set(["from composer-open", "from visibility", "from storage event", "after fault"]),
-  );
+  expect(await repository.load(key("runtime"))).toMatchObject({ text: "initial" });
 
   runtime.dispose();
-  const attemptsAtDispose = transferAttempts;
+  const attemptsAtDispose = attempts;
   storage.setItem(draftStorageKey("runtime"), "after dispose");
-  window.dispatchEvent(new StorageEvent("storage", { key: draftStorageStorageKeyForTest("runtime") }));
+  window.dispatchEvent(new StorageEvent("storage", { key: draftStorageKeyForTest("runtime") }));
   await repository.load(key("runtime"));
-  expect(transferAttempts).toBe(attemptsAtDispose);
+  expect(attempts).toBe(attemptsAtDispose);
 });
 
 test("the inactive runtime coalesces triggers during an attempt to one follow-up without a retry loop", async () => {
@@ -878,53 +607,11 @@ test("the inactive runtime coalesces triggers during an attempt to one follow-up
       if (attempts === 2) resolveFollowUp?.();
     },
   });
+  closeAfterTest(() => repository.close());
   runtime = createBrowserDraftTransferRuntime({ repository, namespace, storage, window, document });
   await followUp;
   expect(attempts).toBe(2);
   runtime.dispose();
 });
-
-// Keep the runtime test's post-dispose key literal independent of the production key helper it is checking.
-function draftStorageStorageKeyForTest(ref: string): string {
-  return `evener.composer.draft.v1.${ref}`;
-}
-
-test("transfer read faults stay pending and emit no unvalidated console error", async () => {
-  class FailingStorage extends MemoryStorage {
-    override getItem(_key: string): string | null {
-      throw new Error("read unavailable");
-    }
-  }
-  const storage = new FailingStorage();
-  storage.setItem(draftStorageKey("fault"), "unreadable");
-  const repository = createBrowserDraftRepository({
-    indexedDB: new IDBFactory(),
-    databaseName: "read-fault",
-    storage,
-  });
-  expect(await repository.transferSupportedDrafts(namespace)).toEqual({ state: "pending" });
-});
-
-test("seedUnclaimed creates only an absent row", async () => {
-  const repository = createBrowserDraftRepository({
-    indexedDB: new IDBFactory(),
-    databaseName: "seed-once",
-    storage: new MemoryStorage(),
-  });
-  const first = await repository.seedUnclaimed(key("seed"), { text: "first", skillNames: [] });
-  if (first.state !== "committed") throw new Error("seed failed");
-  expect(await repository.seedUnclaimed(key("seed"), { text: "second", skillNames: [] })).toMatchObject({
-    state: "conflict",
-    current: { text: "first", ownership: "unclaimed" },
-  });
-});
-
-// Compile-time contract: a token comparison must include every durable authority field.
-const completeToken: DraftAuthorityToken = {
-  namespaceIncarnation: "incarnation",
-  persistentRevision: 1,
-  ownerRevision: 2,
-};
-void completeToken;
 
 expectTypeOf(createBrowserDraftRepository).returns.toEqualTypeOf<BrowserDraftRepository>();
