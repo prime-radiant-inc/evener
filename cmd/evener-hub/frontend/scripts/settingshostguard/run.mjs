@@ -33,7 +33,7 @@ import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } f
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { connectPage, devtoolsHttpURL, evaluate, navigateTo, REFUSED_BUTTON_SELECTOR, waitForHttp } from "../browserGuardCdp.mjs";
+import { connectOnlyPage, devtoolsHttpURL, evaluate, navigateTo, REFUSED_BUTTON_SELECTOR, waitForHttp } from "../browserGuardCdp.mjs";
 import {
   chromeProfileEnvironment,
   chromeProfileIsolationArgs,
@@ -267,7 +267,7 @@ class Driver {
     });
     this.endpoint = await announced;
     await waitForHttp(devtoolsHttpURL(this.endpoint, "/json/version"), "chrome devtools endpoint");
-    this.page = await connectPage(this.endpoint);
+    this.page = await connectOnlyPage(this.endpoint);
     await this.page.send("Page.enable").catch(() => {});
     await this.page.send("Runtime.enable").catch(() => {});
     await this.page.send("Network.enable").catch(() => {});

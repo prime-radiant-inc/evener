@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 import {
   applyViewport,
   clearViewportOverride,
-  connectPage,
+  connectOnlyPage,
   createStartupDeadline,
   evaluate,
   navigateTo,
@@ -57,7 +57,7 @@ function describeBox(box) {
 }
 
 async function measureAt(cdpEndpoint, vitePort, width) {
-  const page = await connectPage(cdpEndpoint);
+  const page = await connectOnlyPage(cdpEndpoint);
   const { send } = page;
   try {
     await applyViewport(send, { width, height: 900 });

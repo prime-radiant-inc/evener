@@ -35,7 +35,7 @@ import {
   requestBrowserClose,
 } from "../browserGuardProcess.mjs";
 import {
-  connectPage,
+  connectOnlyPage,
   createStartupDeadline,
   devtoolsHttpURL,
   evaluate,
@@ -338,7 +338,7 @@ export class Driver {
     });
     this.endpoint = await announced;
     await waitForHttp(devtoolsHttpURL(this.endpoint, "/json/version"), "chrome devtools endpoint");
-    this.page = await connectPage(this.endpoint);
+    this.page = await connectOnlyPage(this.endpoint);
     await this.page.send("Page.enable").catch(() => {});
     await this.page.send("Runtime.enable").catch(() => {});
     // SKILLGUARD_CPU_THROTTLE=N slows the page's main thread N-fold through

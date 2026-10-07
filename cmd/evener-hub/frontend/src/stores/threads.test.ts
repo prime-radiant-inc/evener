@@ -5242,7 +5242,9 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
       const record = await act(async () => {
         const submitted = await threadsStore.getState().setHumanNote("ref_a", "B");
         await firstRequest;
-        await waitFor(() => expect(result.current?.submitted?.id).toBe(submitted.clientMutationId));
+        // vitest's wait: Testing Library's turns the act environment off while
+        // it polls, and these publishes would then warn inside this act() (#3928).
+        await vi.waitFor(() => expect(result.current?.submitted?.id).toBe(submitted.clientMutationId));
         return submitted;
       });
       expect(result.current?.text).toBe("B");

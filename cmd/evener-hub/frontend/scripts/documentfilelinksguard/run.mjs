@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { applyViewport, connectPage, evaluate, navigateTo } from "../browserGuardCdp.mjs";
+import { applyViewport, connectOnlyPage, evaluate, navigateTo } from "../browserGuardCdp.mjs";
 import { startBrowserGuard, waitForBrowserReady } from "../browserGuardProcess.mjs";
 
 const frontend = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
@@ -40,7 +40,7 @@ async function click(send, selector) {
 try {
   guard = await startBrowserGuard({ frontend, profilePrefix: "documentfilelinks-chrome-" });
   const endpoint = await waitForBrowserReady(guard);
-  page = await connectPage(endpoint);
+  page = await connectOnlyPage(endpoint);
   await page.send("Runtime.enable");
   page.ws.addEventListener("message", event => {
     const frame = JSON.parse(event.data);
