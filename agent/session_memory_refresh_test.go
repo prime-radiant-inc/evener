@@ -528,3 +528,53 @@ func TestMemoryRefreshCapsLargeIndexDelta(t *testing.T) {
 		t.Fatalf("large delta len=%d lists its lines or is missing: %q", len(delta), delta)
 	}
 }
+
+// Change blocks compare the index as projected, cut at the 8 KiB cap: a
+// change past the cap, which the model never saw, delivers nothing, while a
+// change inside it delivers a block.
+func TestMemoryRefreshIndexDeltaComparesTheProjectedIndex(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	var filler strings.Builder
+	for i := range 600 {
+		fmt.Fprintf(&filler, "opaque-filler-line-%03d\n", i)
+	}
+	head := "opaque-head-1\n" + filler.String()
+	path := memorySeed(t, root, "personal", head)
+	var delta string
+	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(
+		func(req llm.Request) llm.Response {
+			if got := memoryContextMessages(req); got != 1 {
+				t.Fatalf("first turn carries %d memory contexts, want the full index", got)
+			}
+			return finalResponse("first")
+		},
+		func(req llm.Request) llm.Response {
+			if got := memoryContextMessages(req); got != 1 {
+				t.Fatalf("a change past the cap produced %d memory contexts, want 1", got)
+			}
+			return finalResponse("second")
+		},
+		func(req llm.Request) llm.Response {
+			if got := memoryContextMessages(req); got != 2 {
+				t.Fatalf("a change inside the cap produced %d memory contexts, want 2", got)
+			}
+			delta = latestMemoryContext(req, "personal")
+			return finalResponse("third")
+		},
+	))
+	turn := func() {
+		t.Helper()
+		if _, err := s.ProcessInput(context.Background(), "go", nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	turn()
+	writeMemoryIndex(t, path, head+"opaque-past-the-cap\n")
+	turn()
+	writeMemoryIndex(t, path, strings.Replace(head, "opaque-head-1", "opaque-head-2", 1)+"opaque-past-the-cap\n")
+	turn()
+	if !strings.Contains(delta, "opaque-head-2") || strings.Contains(delta, "opaque-past-the-cap") {
+		t.Fatalf("delta should carry only the change inside the cap: %q", delta)
+	}
+}

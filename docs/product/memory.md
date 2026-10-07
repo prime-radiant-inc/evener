@@ -99,7 +99,8 @@ or a notification wake), never on that turn's later rounds. When another
 session changed a known index, that read appends one change block for the
 scope instead of the full index: the quoted lines added and removed since the
 baseline (blank lines ignored), with the same lower-trust framing and route to
-`memory_read`. A change whose block would pass 2 KiB is reported as counts of
+`memory_read`. Both sides are compared as projected, within the 8 KiB cap, so
+a change past the cap appends nothing. A change whose block would pass 2 KiB is reported as counts of
 added and removed lines. The new index becomes the baseline, so an unchanged
 turn appends nothing. Missing and revoked states still
 supersede the previous current context, and unavailable storage is not
