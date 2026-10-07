@@ -194,6 +194,32 @@ test("a nested stable delegate belongs to its parent delegate's session, not the
   expect(findEntityView(view, "delegate", "dlg_a", "local:child-a")).toBeUndefined();
 });
 
+test("a delegate lookup follows the parent chain down any depth and stops at a gap", () => {
+  const a = liveDelegate("dlg_a", 2, "local:child-a");
+  const b = { ...liveDelegate("dlg_b", 2, "local:child-b"), parentDelegateId: "dlg_a" };
+  const c = { ...liveDelegate("dlg_c", 2, "local:child-c"), parentDelegateId: "dlg_b" };
+  const orphan = { ...liveDelegate("dlg_orphan", 2, "local:child-orphan"), parentDelegateId: "dlg_b" };
+  const chained = buildEntityView({
+    sessionRef: "local:s",
+    delegates: [a, b, c],
+    turns: [],
+    stale: false,
+    ended: false,
+  });
+
+  expect(findEntityView(chained, "delegate", "dlg_c", "local:s")).toMatchObject({ ownerRef: "local:child-b" });
+  expect(findEntityView(chained, "delegate", "dlg_c", "local:child-a")).toMatchObject({ ownerRef: "local:child-b" });
+  // Without dlg_b loaded, the orphan's owner session has no loaded parent.
+  const gapped = buildEntityView({
+    sessionRef: "local:s",
+    delegates: [a, { ...orphan, parentDelegateId: "dlg_missing" }],
+    turns: [],
+    stale: false,
+    ended: false,
+  });
+  expect(findEntityView(gapped, "delegate", "dlg_orphan", "local:child-a")).toBeUndefined();
+});
+
 test("a nested delegate whose parent is not listed belongs to the viewed session", () => {
   // A subagent's thread lists its subtree; its top rows name its own delegate,
   // which its list does not hold, as their parent.

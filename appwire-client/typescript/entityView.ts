@@ -179,8 +179,10 @@ export function entityOpenTarget(view: EntityView): OpenTarget | undefined {
 
 /** Resolve a transcript's logical ID within its owning session. Ambiguous
  * loaded evidence cannot select an arbitrary resource or cross a host boundary.
- * A delegate also resolves from any session above it: a transcript can name a
- * delegate its own subagents started, and delegate IDs are unique in a tree. */
+ * A delegate also resolves downward, from any session above it through the
+ * loaded delegates' child sessions (never upward or across to a sibling): a
+ * transcript can name a delegate its own subagents started, and delegate IDs
+ * are unique in a tree, so each child session has one loaded parent. */
 export function findEntityView(
   entities: ReadonlyMap<string, EntityView>,
   kind: EntityView["kind"],
