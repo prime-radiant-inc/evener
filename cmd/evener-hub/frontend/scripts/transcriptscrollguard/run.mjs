@@ -21,7 +21,7 @@ import { fileURLToPath } from "node:url";
 import {
   applyViewport,
   clearViewportOverride,
-  connectPage,
+  connectOnlyPage,
   createStartupDeadline,
   evaluate,
   navigateTo,
@@ -126,7 +126,7 @@ async function main() {
     }
     cdpEndpoint = await waitForBrowserReady(guard);
 
-    const page = await connectPage(cdpEndpoint);
+    const page = await connectOnlyPage(cdpEndpoint);
     const { send } = page;
     const failures = [];
     let initial = null;
