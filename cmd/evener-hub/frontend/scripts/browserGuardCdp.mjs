@@ -287,7 +287,7 @@ export async function waitForHttp(
 }
 
 async function listPageTabs(endpoint) {
-  const targets = await (await fetch(devtoolsHttpURL(endpoint, "/json/list"))).json();
+  const targets = await (await requestDevtools(endpoint, "/json/list", "listPageTabs")).json();
   return targets.filter((entry) => entry.type === "page");
 }
 
@@ -305,11 +305,7 @@ export async function connectOnlyPage(endpoint) {
   return openTabChannel(tabs[0]);
 }
 
-/**
- * Open a CDP command channel to the page tab with this target id.
- * send() rejects on a CDP error response so a failing command can never read
- * as a successful measurement. Callers close() in a finally.
- */
+/** Open a CDP command channel to the page tab with this target id. */
 export async function connectPage(endpoint, targetId) {
   if (!targetId) throw new Error("connectPage needs the target id of the tab to connect to");
   const target = (await listPageTabs(endpoint)).find((entry) => entry.id === targetId);
@@ -317,6 +313,10 @@ export async function connectPage(endpoint, targetId) {
   return openTabChannel(target);
 }
 
+/**
+ * send() rejects on a CDP error response so a failing command can never read
+ * as a successful measurement. Callers close() in a finally.
+ */
 async function openTabChannel(target) {
   const ws = new WebSocket(target.webSocketDebuggerUrl);
   let id = 0;
