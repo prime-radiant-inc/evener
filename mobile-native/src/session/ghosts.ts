@@ -65,6 +65,7 @@ const CAPTIONS: Record<GhostState, string> = {
 };
 
 const STEER_REFUSED = "Couldn't steer with this";
+const QUEUE_CHANGED = "The queue has changed since, so this can't be sent as it was.";
 
 /** A message the phone holds until it can send it (ruling 14): nothing is
  * sending while the connection is down. */
@@ -125,8 +126,17 @@ export function ghosts(
 		if (steering(entry) || entry === sameSend) continue;
 		// A message a Stop held before it left the phone comes back as held,
 		// with Send now and Cancel, like a queue a Stop parks (spec 8.5).
-		if (entry.state === "canceled") out.push(pendingGhost(entry, "held", ["sendNow", "cancel"]));
-		else if (entry.state === "blockedUnknown") out.push(pendingGhost(entry, "unconfirmed", confirmButtons));
+		if (entry.state === "canceled") {
+			// A held drain sends only the queue it saw; once that has changed the
+			// hub would refuse it, and the queue shows its messages again.
+			const stale =
+				session !== null && entry.queueRevision !== undefined && entry.queueRevision !== session.queue?.revision;
+			out.push(
+				stale
+					? { ...pendingGhost(entry, "held", ["cancel"]), note: QUEUE_CHANGED }
+					: pendingGhost(entry, "held", ["sendNow", "cancel"]),
+			);
+		} else if (entry.state === "blockedUnknown") out.push(pendingGhost(entry, "unconfirmed", confirmButtons));
 		else {
 			const ghost = pendingGhost(entry, "sending", []);
 			out.push(connected ? ghost : { ...ghost, caption: WAITING_TO_SEND });

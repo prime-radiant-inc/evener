@@ -140,6 +140,16 @@ describe("queued messages this phone is steering with", () => {
 		]);
 	});
 
+	it("offers no Send now for a held drain whose queue has changed since", () => {
+		const drain = pending({ method: "drain", text: "first", state: "canceled", queueRevision: 3 });
+		const moved = session("idle", ["first", "later"], { queue: queue(["first", "later"], { revision: 4 }) });
+		const held = ghosts(moved, [drain], null, [], true).find((ghost) => ghost.origin.kind === "pending");
+		expect(held).toMatchObject({ state: "held", buttons: ["cancel"] });
+		expect(held?.note).toBeDefined();
+		const unmoved = ghosts(session("idle", ["first"]), [drain], null, [], true);
+		expect(unmoved).toEqual([expect.objectContaining({ state: "held", buttons: ["sendNow", "cancel"] })]);
+	});
+
 	it("keeps the queue another client is steering with", () => {
 		const promote = pending({ method: "promote", queueEntryId: "queue_1", fromThisClient: false });
 		const drain = pending({ id: "cmid-2", method: "drain", fromThisClient: false });
