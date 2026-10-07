@@ -772,12 +772,22 @@ describe("startBackgroundTranscripts", () => {
     expect((primaryError as Error).message).toContain("injected early failure before the first release write");
     expect(hold.consumed()).toBe(false);
 
-    // A following healthy operation on the same navigation store stays usable.
+    // A following healthy operation must own and hydrate a ref the failed owner
+    // never touched: with that owner disposed, a real local:healthy wire read and
+    // versioned resident model is attributable only to the new owner.
+    // (threadReadRefs() is cumulative, so a fresh ref is the oracle.)
+    world.pages = onePage([liveRow("local:healthy")]);
+    invalidate(10);
     const healthy = startBackgroundTranscripts(navigationStore);
-    await healthy.settled();
-    expect(threadReadRefs().has("local:a")).toBe(true);
-    await healthy.dispose();
-    await healthy.settled();
+    try {
+      await healthy.settled();
+      expect(threadReadRefs().has("local:healthy")).toBe(true);
+      expect(threadsStore.getState().threads.get("local:healthy")?.history?.incarnation).toBeDefined();
+      expect(backgroundTranscriptSnapshotForTests().refs.get("local:healthy")?.resident).toBe(true);
+    } finally {
+      await healthy.dispose();
+      await healthy.settled();
+    }
   });
 
   test("a failure after the held release entry joins the already-retired release before teardown", async () => {
@@ -820,15 +830,29 @@ describe("startBackgroundTranscripts", () => {
 
     const hold = holdFirstWrite(cache);
     const owner = startBackgroundTranscripts(navigationStore);
-    // Record that cleanup joins the owner's release work through the real
-    // settled(); the body resets this before injecting the failure.
-    let settledJoined = false;
+    // Track FULFILLMENT of the real settled() promise (not just invocation), so
+    // the restoration-boundary snapshot below can prove the retired release was
+    // joined before observers were restored. The body resets the flags before
+    // injecting the failure, so only the cleanup's call is observed.
+    let settledFulfilled = false;
+    let settledRejected = false;
     const realSettled = owner.settled.bind(owner);
     const settledSpy = vi.spyOn(owner, "settled").mockImplementation(() => {
-      settledJoined = true;
-      return realSettled();
+      const promise = realSettled();
+      promise.then(
+        () => {
+          settledFulfilled = true;
+        },
+        () => {
+          settledRejected = true;
+        },
+      );
+      return promise;
     });
 
+    let settledFulfilledAtRestore: boolean | undefined;
+    let settledRejectedAtRestore: boolean | undefined;
+    let retiredReleaseSettledAtRestore: boolean | undefined;
     let primaryError: unknown;
     try {
       await owner.settled();
@@ -857,7 +881,8 @@ describe("startBackgroundTranscripts", () => {
 
       // Inject the failure AFTER the held-release/disappearance boundary and
       // before the success path's settled() join.
-      settledJoined = false;
+      settledFulfilled = false;
+      settledRejected = false;
       throw new Error("injected failure after the held release entry");
     } catch (error) {
       primaryError = error;
@@ -865,6 +890,11 @@ describe("startBackgroundTranscripts", () => {
       let cleanupError: unknown;
       try {
         await runReappearanceCleanupSafely(hold, owner, () => {
+          // Snapshot the real completion state at the restoration boundary,
+          // before restoring spies can mask an unjoined release.
+          settledFulfilledAtRestore = settledFulfilled;
+          settledRejectedAtRestore = settledRejected;
+          retiredReleaseSettledAtRestore = retiredReleaseSettled;
           hold.restore();
           acquireSpy.mockRestore();
           settledSpy.mockRestore();
@@ -877,10 +907,12 @@ describe("startBackgroundTranscripts", () => {
 
     expect(primaryError).toBeInstanceOf(Error);
     expect((primaryError as Error).message).toContain("injected failure after the held release entry");
-    // The cleanup joined the already-retired release (releaseWork) through the
-    // real settled(), and that release actually completed before teardown.
-    expect(settledJoined).toBe(true);
-    expect(retiredReleaseSettled).toBe(true);
+    // At the restoration boundary the real settled() had already fulfilled (not
+    // rejected) and the removed lease's real release had settled: cleanup joined
+    // the retired release work before observers were restored.
+    expect(settledFulfilledAtRestore).toBe(true);
+    expect(settledRejectedAtRestore).toBe(false);
+    expect(retiredReleaseSettledAtRestore).toBe(true);
   });
 
   test("a reappearance after a release re-acquires the retired ref", async () => {
