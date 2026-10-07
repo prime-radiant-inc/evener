@@ -296,6 +296,13 @@ func foldDelegateDeliveryCommits(fold *delegateAttentionFold, turn schema.Turn) 
 			resultIDs[part.ToolResult.ToolCallID] = struct{}{}
 		}
 	}
+	// A tool call may commit several deliveries, all in its own turn (a
+	// delegate_send wait carries earlier results ahead of its own, #3906); a
+	// call an earlier turn committed takes no more.
+	earlierCalls := make(map[string]struct{}, len(fold.deliveryCommits))
+	for _, toolCallID := range fold.deliveryCommits {
+		earlierCalls[toolCallID] = struct{}{}
+	}
 	for _, commit := range turn.DelegateDeliveryCommits {
 		if commit.ToolCallID == "" || commit.DeliveryID == "" {
 			return errors.New("delegate delivery commit identity is incomplete")
@@ -303,13 +310,12 @@ func foldDelegateDeliveryCommits(fold *delegateAttentionFold, turn schema.Turn) 
 		if _, exists := resultIDs[commit.ToolCallID]; !exists {
 			return fmt.Errorf("delegate delivery %q references absent tool call %q", commit.DeliveryID, commit.ToolCallID)
 		}
-		if previous, exists := fold.deliveryCommits[commit.DeliveryID]; exists && previous != commit.ToolCallID {
+		previous, exists := fold.deliveryCommits[commit.DeliveryID]
+		if exists && previous != commit.ToolCallID {
 			return fmt.Errorf("delegate delivery %q has conflicting tool calls", commit.DeliveryID)
 		}
-		for deliveryID, toolCallID := range fold.deliveryCommits {
-			if toolCallID == commit.ToolCallID && deliveryID != commit.DeliveryID {
-				return fmt.Errorf("delegate tool call %q has conflicting deliveries", commit.ToolCallID)
-			}
+		if _, committed := earlierCalls[commit.ToolCallID]; committed && !exists {
+			return fmt.Errorf("delegate tool call %q has conflicting deliveries", commit.ToolCallID)
 		}
 		fold.deliveryCommits[commit.DeliveryID] = commit.ToolCallID
 	}
