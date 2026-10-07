@@ -4,7 +4,7 @@ import type { ModelListResponse, Thread, ThreadClearResponse } from "@evener/app
 import { type ConversationClientLike, createConversationService } from "../../mobile/src/services/conversation";
 import { createActivityStore } from "../../mobile/src/state/activity";
 import { createConversationStore } from "../../mobile/src/state/conversation";
-import { submitComposerCommand } from "./composerCommand";
+import { CommandNotSentError, submitComposerCommand } from "./composerCommand";
 import { DraftDocument } from "./draftDocument";
 import { DraftRepository } from "./draftRepository";
 import { goalObjective, submitGoalCommand } from "./goalCommand";
@@ -560,6 +560,30 @@ it("refuses /drain-as-steer before submitting while the drain is refused", async
 			}),
 		).rejects.toThrow("already steering");
 		expect(drained).toBe(0);
+		expect(document.getSnapshot().record).toMatchObject({ draft: "/drain-as-steer", unconfirmed: null });
+	} finally {
+		service.close();
+		db.close();
+	}
+});
+
+// A command the phone couldn't keep never left it: its text goes back to the
+// composer, and the refusal still reaches the screen.
+it("returns a command the phone couldn't keep to the composer", async () => {
+	const { db, document } = commandDraft();
+	const { service } = boundary();
+	try {
+		await service.open("local:test");
+		document.edit("/drain-as-steer");
+		await expect(
+			submitComposerCommand(document, service, {
+				...commandContext,
+				drainQueue: async () => {
+					throw new CommandNotSentError("Couldn't steer with these messages now.");
+				},
+				turn: () => ({ status: { type: "active" }, capabilities: { steer: true }, queue: { revision: 7, depth: 2 } }),
+			}),
+		).rejects.toThrow("Couldn't steer with these messages now.");
 		expect(document.getSnapshot().record).toMatchObject({ draft: "/drain-as-steer", unconfirmed: null });
 	} finally {
 		service.close();
