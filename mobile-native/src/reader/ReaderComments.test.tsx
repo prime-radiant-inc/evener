@@ -3,7 +3,7 @@
 import type { NativeStackNavigationOptions } from "@react-navigation/native-stack";
 import type { ThreadReadResponse } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { cloneElement, type ReactElement } from "react";
+import { cloneElement } from "react";
 import type { ReactTestInstance, ReactTestRenderer } from "react-test-renderer";
 import { act } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -264,13 +264,8 @@ describe("comments (Task 16)", () => {
 		...over,
 	});
 
-	function mountSheet(element: ReactElement) {
-		const tree = render(element);
-		return tree;
-	}
-
 	function commentSheet(params = commentParams()) {
-		return mountSheet(
+		return render(
 			<CommentSheet
 				route={{ key: "comment", name: "CommentSheet", params } as never}
 				navigation={sheetNavigation as never}
@@ -286,7 +281,7 @@ describe("comments (Task 16)", () => {
 			sessionTitle: "Fix race",
 			...over,
 		};
-		return mountSheet(
+		return render(
 			<CommentsSheet
 				route={{ key: "comments", name: "CommentsSheet", params } as never}
 				navigation={sheetNavigation as never}

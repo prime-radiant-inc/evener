@@ -40,18 +40,13 @@ import { shrinkingScroller } from "./session/dockCard";
 // environment; vitest is not jest, so nothing sets this for us.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-/** A native read that has already answered: a real promise whose then runs
- * its callback at once, so a mount's read lands inside the render's act
- * rather than on a microtask after a synchronous test has ended, where React
- * would warn about the update outside act. The testkit unmounts each test's
- * trees, so no earlier mount still holds the value to make the update a
- * no-op. catch goes through then, so .catch().then() answers at once too;
- * finally's callback does, though a link after it, or an await, waits a
- * microtask. It never rejects, and a callback that throws throws out of the
- * then call rather than rejecting. */
+/** A native read that has already answered: a real promise whose then (and
+ * so catch and each link after them) runs its callback at once, so a mount's
+ * read lands inside the render's act instead of on a microtask after a
+ * synchronous test has ended. An await, or a link after finally, still waits
+ * a microtask; a callback that throws throws out of then, never rejecting. */
 export function answered<T>(value: T): Promise<T> {
 	const promise = Promise.resolve(value);
-	// Each link answers at once as well, so a chain (.catch().then()) does.
 	promise.then = ((onFulfilled?: (value: T) => unknown) => {
 		const next = onFulfilled ? onFulfilled(value) : value;
 		// A callback that returns a promise is followed the ordinary way.
