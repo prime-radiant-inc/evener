@@ -147,6 +147,13 @@ independently, also scoped by hub; folding the refresh preserves its Source
 choice. Live and reloaded history use the same projection without changing model
 context or memory files. CLI and TUI context presentation remains unchanged.
 
+A `memory_read` of a text page other than `MEMORY.md` that is longer than 4096
+bytes ends with a note giving its size, rounded to KB. When the session can
+load the gardening-memory skill (`use_skill` is callable and the skill is
+advertised to the model), the note says to use it to learn how to fix the
+page; otherwise it says a memory page should hold one fact. A long index is
+covered by its projection instead.
+
 Memory tool calls are separate from these automatic index observations. CLI and
 TUI transcripts still use the generic tool-result path, while AppWire web and
 native clients render memory tool calls with dedicated step renderers: the step's

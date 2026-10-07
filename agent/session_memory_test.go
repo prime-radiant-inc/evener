@@ -2136,6 +2136,10 @@ func TestMemoryOutputRecovery(t *testing.T) {
 				steps[i] = step
 			}
 			s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: host, artifactStore: store}), withSteps(steps...))
+			if name == "memory_read" {
+				// The page is long, so its read ends with the size note.
+				want.WriteString(memoryPageSizeNote(body.Len(), s.memoryGardeningSkillAvailable()))
+			}
 			if _, err := s.ProcessInput(context.Background(), "recover", nil); err != nil {
 				t.Fatal(err)
 			}

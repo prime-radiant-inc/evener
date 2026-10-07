@@ -3,7 +3,9 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"maps"
+	"math"
 	"path/filepath"
 
 	"primeradiant.com/evener/agent/execenv"
@@ -79,6 +81,36 @@ func (s *Session) execMemoryWrite(ctx context.Context, _ execenv.ExecutionEnviro
 	})
 }
 
+// memoryPageSizeLimit is the size, in bytes, past which memory_read notes that
+// a page is long.
+const memoryPageSizeLimit = 4096
+
+// memoryPageSizeNote is the note memory_read appends to a page of size bytes.
+// It points at the gardening-memory skill only when the session can use it;
+// otherwise it says what a page should hold.
+func memoryPageSizeNote(size int, withSkill bool) string {
+	kb := int(math.Round(float64(size) / 1024))
+	if withSkill {
+		return fmt.Sprintf("\n\nThis page is long (%d KB). Use the gardening-memory skill to learn how to fix it.", kb)
+	}
+	return fmt.Sprintf("\n\nThis page is long (%d KB). A memory page should hold one fact.", kb)
+}
+
+// memoryGardeningSkillAvailable reports whether the session can load the
+// gardening-memory skill: use_skill is callable and the skill is advertised
+// to the model.
+func (s *Session) memoryGardeningSkillAvailable() bool {
+	if !s.canInstructTool("use_skill") {
+		return false
+	}
+	for _, descriptor := range s.skills.ModelEntries() {
+		if descriptor.CatalogName == "gardening-memory" {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Session) execMemoryRead(ctx context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 	scope, file := stringArg(args, "scope"), filepath.Clean(stringArg(args, "file_path"))
 	env, forwarded, release, err := s.memoryFileArgs(args, "file_path", "read")
@@ -98,6 +130,7 @@ func (s *Session) execMemoryRead(ctx context.Context, _ execenv.ExecutionEnviron
 	// The index has its own baseline and change blocks; every other page
 	// read is tracked for change notices.
 	if err == nil && file != memoryIndexFile {
+		size := len(raw)
 		// Another session may change the page between the read and its
 		// record; the record still holds what this read loaded.
 		recordErr := s.beforeMemoryIO(scope, "record")
@@ -105,6 +138,10 @@ func (s *Session) execMemoryRead(ctx context.Context, _ execenv.ExecutionEnviron
 			raw = nil
 		}
 		s.recordMemoryContent(scope, file, raw, recordErr, true)
+		// A long page gets a note pointing at what a page should be.
+		if text, ok := out.(string); ok && size > memoryPageSizeLimit {
+			out = text + memoryPageSizeNote(size, s.memoryGardeningSkillAvailable())
+		}
 	}
 	return out, err
 }
