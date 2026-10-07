@@ -288,33 +288,42 @@ func (c *delegateTreeController) BeginDelivery(plan delegateDeliveryPlan) (_ del
 	return token, true, nil
 }
 
-// heldDeliveryStillDeliverableLocked reports whether receipt's held delivery
-// is still the head of its delegate's queue with nothing closing, stopping or
-// covering the delegate or its owner, the checks BeginDelivery would refuse on.
-func (c *delegateTreeController) heldDeliveryStillDeliverableLocked(receipt *delegateDeliveryAdmission) bool {
-	aggregate := c.durable[receipt.delegateID]
-	if c.closing || aggregate == nil || len(aggregate.PendingDeliveries) == 0 || aggregate.PendingDeliveries[0].DeliveryID != receipt.token.deliveryID || aggregate.PendingStopSeq != 0 {
+// heldDeliveryStillDeliverableLocked reports whether a held delivery a reply
+// took over is still the head of its delegate's queue with nothing closing,
+// stopping or covering the delegate or its owner: the refusals BeginDelivery
+// makes for good, which delete a claim. Only then does the receiver's claim
+// come back to its held plan; otherwise the claim would outlive the delivery
+// and block the owner for good. A transient attention start reservation is
+// left to the held plan's own retry.
+func (c *delegateTreeController) heldDeliveryStillDeliverableLocked(delegateID, ownerID, deliveryID string) bool {
+	aggregate := c.durable[delegateID]
+	if c.closing || aggregate == nil || len(aggregate.PendingDeliveries) == 0 || aggregate.PendingDeliveries[0].DeliveryID != deliveryID || aggregate.PendingStopSeq != 0 {
 		return false
 	}
-	if owner := c.durable[receipt.ownerID]; receipt.ownerID != "" && (owner == nil || owner.PendingStopSeq != 0) {
+	if owner := c.durable[ownerID]; ownerID != "" && (owner == nil || owner.PendingStopSeq != 0) {
 		return false
 	}
 	if c.stop != nil {
-		_, senderCovered := c.stop.members[receipt.delegateID]
-		_, ownerCovered := c.stop.members[receipt.ownerID]
+		_, senderCovered := c.stop.members[delegateID]
+		_, ownerCovered := c.stop.members[ownerID]
 		return !senderCovered && !ownerCovered
 	}
 	return true
 }
 
 // releaseHeldClaimLocked gives a refused plan's held delivery back to the
-// receiver's claim, so the plan the receiver holds delivers it as before.
+// receiver's claim, so the plan the receiver holds delivers it as before, or
+// drops it when the delivery can no longer be delivered.
 func (c *delegateTreeController) releaseHeldClaimLocked(plan delegateDeliveryPlan) {
 	if plan.held == nil {
 		return
 	}
 	if claim := c.deliveryClaims[plan.held.DeliveryID]; claim != nil && claim.token == plan.claim {
-		c.deliveryClaims[plan.held.DeliveryID] = plan.heldClaim
+		if c.heldDeliveryStillDeliverableLocked(plan.delegateID, plan.ownerDelegateID, plan.held.DeliveryID) {
+			c.deliveryClaims[plan.held.DeliveryID] = plan.heldClaim
+		} else {
+			delete(c.deliveryClaims, plan.held.DeliveryID)
+		}
 		c.evidenceVersion++
 	}
 }
@@ -329,11 +338,9 @@ func (c *delegateTreeController) CompleteDelivery(token delegateDeliveryToken, c
 	}
 	if !committed {
 		delete(c.deliveries, token.processID)
-		if receipt.heldClaim != nil && c.deliveryClaims[token.deliveryID] == nil && c.heldDeliveryStillDeliverableLocked(receipt) {
+		if receipt.heldClaim != nil && c.deliveryClaims[token.deliveryID] == nil && c.heldDeliveryStillDeliverableLocked(receipt.delegateID, receipt.ownerID, token.deliveryID) {
 			// The reply carrying this held result was abandoned: the receiver's
-			// held plan delivers it at its next round, as before. Not when a
-			// stop or close has since taken the delivery: the claim would
-			// outlive it and block the owner for good.
+			// held plan delivers it at its next round, as before.
 			c.deliveryClaims[token.deliveryID] = receipt.heldClaim
 		}
 		if c.stop != nil {

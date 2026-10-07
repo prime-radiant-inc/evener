@@ -50,20 +50,35 @@ func pendingDeliveryIDs(c *delegateTreeController, delegateID string) []string {
 // its receiver holds, which then delivers it as before.
 func TestHeldDeliveryReturnsToItsPlanWhenTheCarrierIsRefused(t *testing.T) {
 	c, _, held, carrying, waiter := heldDeliveryFixture(t)
+	forged := carrying
+	forged.packet = cloneDelegateTerminalPacket(carrying.packet)
+	forged.packet.Message = []byte(`"forged"`)
+	if _, err := deliverDelegatePacket(forged, nil); err != nil {
+		t.Fatalf("refused carrier: %v", err)
+	}
+	if resolution := waitedResolution(t, waiter); !resolution.fallback {
+		t.Fatalf("refused carrier resolved its waiter with %#v, want the fallback", resolution)
+	}
+	if _, admitted, err := c.BeginDelivery(held); err != nil || !admitted {
+		t.Fatalf("the held plan after a refused carrier: admitted=%t err=%v", admitted, err)
+	}
+}
+
+// A carrying plan refused because the delegate's results are being stopped
+// drops the held result's claim instead of handing it back, as a stop does.
+func TestHeldDeliveryClaimDropsWhenTheCarrierIsRefusedByAStop(t *testing.T) {
+	c, _, _, carrying, _ := heldDeliveryFixture(t)
 	c.mu.Lock()
 	c.durable["dlg_target"].PendingStopSeq = 1
 	c.mu.Unlock()
 	if _, err := deliverDelegatePacket(carrying, nil); err != nil {
 		t.Fatalf("refused carrier: %v", err)
 	}
-	if resolution := waitedResolution(t, waiter); !resolution.fallback {
-		t.Fatalf("refused carrier resolved its waiter with %#v, want the fallback", resolution)
-	}
 	c.mu.Lock()
-	c.durable["dlg_target"].PendingStopSeq = 0
+	claims := len(c.deliveryClaims)
 	c.mu.Unlock()
-	if _, admitted, err := c.BeginDelivery(held); err != nil || !admitted {
-		t.Fatalf("the held plan after a refused carrier: admitted=%t err=%v", admitted, err)
+	if claims != 0 {
+		t.Fatalf("%d claims left after a refusal by a pending stop, want none", claims)
 	}
 }
 
