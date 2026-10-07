@@ -1190,14 +1190,47 @@ func writeToolResultBody(b *strings.Builder, toolName string, result *llm.ToolRe
 // known job result fields: in that case the general JSON pretty-print keeps the
 // extra evidence visible rather than the struct silently dropping it.
 func jobResultBody(raw string) (string, bool) {
-	r, ok := decodeJobResult(raw)
+	r, ok := decodeRenderableJobResult(raw)
 	if !ok {
 		return "", false
 	}
-	if hasNonJobResultKeys(raw) {
-		return "", false
+	// A delegate_send reply can carry earlier results of its delegate ahead
+	// of its own (#3906). Each renders exactly as a reply does, after the
+	// reply's status line so the ref survives truncation; any element with
+	// evidence this projection doesn't capture sends the whole body to the
+	// JSON fallback, as a top-level key would.
+	var b strings.Builder
+	b.WriteString(jobResultStatus(r, raw))
+	for i, element := range r.EarlierResults {
+		earlier, ok := decodeRenderableJobResult(string(element))
+		if !ok || len(earlier.EarlierResults) != 0 {
+			return "", false
+		}
+		fmt.Fprintf(&b, "earlier result %d of %d, not delivered before:\n", i+1, len(r.EarlierResults))
+		b.WriteString(jobResultStatus(earlier, string(element)))
+		b.WriteString(jobResultOutput(earlier))
 	}
+	if len(r.EarlierResults) != 0 {
+		b.WriteString("latest result:\n")
+	}
+	b.WriteString(jobResultOutput(r))
+	return b.String(), true
+}
 
+// decodeRenderableJobResult decodes a job result body this projection can
+// render whole: it reports false when the body isn't a job result or carries
+// keys jobResult doesn't capture.
+func decodeRenderableJobResult(raw string) (jobResult, bool) {
+	r, ok := decodeJobResult(raw)
+	if !ok || hasNonJobResultKeys(raw) {
+		return jobResult{}, false
+	}
+	return r, true
+}
+
+// jobResultStatus is a job result's status line, with the ref prominent, and
+// its metadata line.
+func jobResultStatus(r jobResult, raw string) string {
 	ref := r.TranscriptRef
 	if ref == "" {
 		ref = "(none)"
@@ -1209,7 +1242,6 @@ func jobResultBody(raw string) (string, bool) {
 	if jobID == "" {
 		jobID = "(none)"
 	}
-	// Status line first, with the ref prominent and before the output body.
 	statusParts := []string{
 		"job_id=" + jobID,
 		"status=" + r.Status,
@@ -1224,7 +1256,6 @@ func jobResultBody(raw string) (string, bool) {
 		// merely accepting it as a decoded-but-invisible field.
 		statusParts = append(statusParts, "tools=["+strings.Join(r.Tools, ",")+"]")
 	}
-
 	var b strings.Builder
 	b.WriteString(strings.Join(statusParts, " "))
 	b.WriteString("\n")
@@ -1233,6 +1264,12 @@ func jobResultBody(raw string) (string, bool) {
 		b.WriteString(metadata)
 		b.WriteString("\n")
 	}
+	return b.String()
+}
+
+// jobResultOutput is a job result's output and structured result.
+func jobResultOutput(r jobResult) string {
+	var b strings.Builder
 	if r.Output != "" {
 		b.WriteString(r.Output) // already de-escaped (real newlines) by the JSON decoder
 		b.WriteString("\n")
@@ -1246,7 +1283,7 @@ func jobResultBody(raw string) (string, bool) {
 		}
 		b.WriteString("\n")
 	}
-	return b.String(), true
+	return b.String()
 }
 
 // jobResultKnownKeys is the set of JSON keys captured by jobResult. A body with
@@ -1310,6 +1347,7 @@ var jobResultKnownKeys = map[string]bool{
 	"cumulative_usage":    true, // delegateSendResult
 	"tools":               true, // stableDelegateCreateResult, delegateSendResult
 	"artifacts_dir":       true, // stableDelegateCreateResult
+	"earlier_results":     true, // delegateSendResult, each rendered as a reply is
 }
 
 var jobResultMetadataKeys = []string{

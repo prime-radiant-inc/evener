@@ -20,7 +20,11 @@ import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclo
 // import of ./tools.
 import "./TurnBlock";
 import { ReadOnlyThreadContent } from "../../transcript/ReadOnlyThreadContent";
-import { captureTranscriptView, resetTranscriptViewRegistryForTests } from "./flow/transcriptViewRegistry";
+import {
+  type CapturedTranscriptView,
+  captureTranscriptView,
+  resetTranscriptViewRegistryForTests,
+} from "./flow/transcriptViewRegistry";
 import { readingPointOffset } from "./flow/useTranscriptScroll";
 import {
   TranscriptBody,
@@ -461,6 +465,16 @@ test("re-entering Full view reopens a run the reader closed there", () => {
   expect(run().open).toBe(true);
 });
 
+// A capture taken at a 400px-high, 152px-wide viewport, offset into an entry.
+function readingCapture(anchorOffset: number, entryHeight = 1600): CapturedTranscriptView {
+  return {
+    anchorOffset,
+    normalizedOffset: 0,
+    followingBottom: false,
+    readingPoint: { entryHeight, viewportHeight: 400, viewportWidth: 152 },
+  };
+}
+
 test.each([
   { oldHeight: 1600, oldOffset: -900, nextHeight: 1000, want: -450 },
   { oldHeight: 1600, oldOffset: -900, nextHeight: 700, want: -225 },
@@ -474,30 +488,41 @@ test.each([
   { oldHeight: 1600, oldOffset: -1500, nextHeight: 1000, want: -900 },
   { oldHeight: 1600, oldOffset: -1500, nextHeight: 50, want: 0 },
 ])("width-only bounded reading point $oldOffset at $nextHeight", ({ oldHeight, oldOffset, nextHeight, want }) => {
-  const captured = {
-    anchorOffset: oldOffset,
-    normalizedOffset: 0,
-    followingBottom: false,
-    readingPoint: { entryHeight: oldHeight, viewportHeight: 400, viewportWidth: 152 },
-  };
-  expect(readingPointOffset(captured, nextHeight, 400)).toBe(want);
+  const captured = readingCapture(oldOffset, oldHeight);
+  expect(readingPointOffset(captured, nextHeight, 400, 352)).toBe(want);
 });
 
 // A kept tail stays put when the viewport shrinks below it: the text at the
 // viewport top doesn't move, and only content past the new fold is cut. Clamping
 // the entry's bottom into the smaller viewport would move the reading line.
 test("a kept tail stays in place when the viewport shrinks below it", () => {
-  const captured = {
-    anchorOffset: -1250,
-    normalizedOffset: 0,
-    followingBottom: false,
-    readingPoint: { entryHeight: 1600, viewportHeight: 400, viewportWidth: 152 },
-  };
-  expect(readingPointOffset(captured, 1600, 300)).toBe(-1250);
+  const captured = readingCapture(-1250);
+  expect(readingPointOffset(captured, 1600, 300, 352)).toBe(-1250);
+});
+
+// A viewport-height-only change (composer-height settlement, say) doesn't
+// reflow the entry, so the reading line stays where it was outright.
+test.each([
+  { label: "inside the entry", oldOffset: -900, nextViewport: 436 },
+  { label: "inside the entry, shrinking", oldOffset: -900, nextViewport: 300 },
+  { label: "at its start", oldOffset: 0, nextViewport: 436 },
+  { label: "reading its tail", oldOffset: -1500, nextViewport: 436 },
+])("a height-only change keeps the reading line, $label", ({ oldOffset, nextViewport }) => {
+  const captured = readingCapture(oldOffset);
+  expect(readingPointOffset(captured, 1600, nextViewport, 152)).toBe(oldOffset);
+});
+
+// An entry that shrank at the same width isn't a viewport change: the tail rule
+// still bounds it, so it never lands wholly above the viewport.
+test("an entry that shrinks at the same width keeps a real part visible", () => {
+  const captured = readingCapture(-1500);
+  expect(readingPointOffset(captured, 50, 436, 152)).toBe(0);
 });
 
 test("width-only policy preserves an ordinary display offset without a measured point", () => {
-  expect(readingPointOffset({ anchorOffset: -900, normalizedOffset: 0, followingBottom: false }, 700, 400)).toBe(-900);
+  expect(readingPointOffset({ anchorOffset: -900, normalizedOffset: 0, followingBottom: false }, 700, 400, 352)).toBe(
+    -900,
+  );
 });
 
 test.each([
@@ -569,7 +594,8 @@ function readingRow(id: string): TurnModel {
 }
 
 test.each([
-  { start: 900, intermediate: 225, want: 198 },
+  // The later change is height-only, so the reading line stays where it was.
+  { start: 900, intermediate: 225, want: 225 },
   // Scrolled into the entry's last 350px: that tail stays where it was.
   { start: 1250, intermediate: 350, want: 350 },
 ])(
@@ -624,7 +650,15 @@ test.each([
   },
 );
 
-test.each([false, true])("viewport shrink retains committed reading progress, observed=%s", async (settled) => {
+// The 275 -> 240 shrink keeps the reading line where it was. Once observed, the
+// 240px viewport is the committed geometry the later width reflow measures
+// progress against: the reader is 12578px into a usable depth of 12853.14 - 240,
+// and the same fraction of the new depth (7036.17 - 480) is 6537.9. Unobserved,
+// the reflow still measures against 275 and lands at 6556.1.
+test.each([
+  { settled: false, reflowed: 6556.098576275061 },
+  { settled: true, reflowed: 6537.9061643301075 },
+])("viewport shrink retains committed reading progress, observed=$settled", async ({ settled, reflowed }) => {
   const selector = '[data-view-anchor-id="current-entry"]';
   const geometry = {
     width: 152,
@@ -667,15 +701,16 @@ test.each([false, true])("viewport shrink retains committed reading progress, ob
     expect(listRef.current?.isLayoutCurrent()).toBe(settled);
     expect(port.clientHeight).toBe(240);
     expect(captureTranscriptView("return-viewport-snapshot")?.readingPoint?.viewportHeight).toBe(settled ? 240 : 275);
+    expect(port.scrollTop).toBe(12578);
     geometry.width = 352;
     geometry.viewportHeight = 480;
     geometry.rowHeights[0] = 7065.484375;
     geometry.entryBoxes[selector].height = 7036.171875;
     await act(async () => external.notify());
-    expect(Math.abs(port.scrollTop - 6556.098576275061)).toBeLessThanOrEqual(2);
+    expect(Math.abs(port.scrollTop - reflowed)).toBeLessThanOrEqual(2);
     geometry.viewportHeight = 516;
     await act(async () => external.notify((target) => target === port));
-    expect(Math.abs(port.scrollTop - 6520.098978759032)).toBeLessThanOrEqual(2);
+    expect(Math.abs(port.scrollTop - reflowed)).toBeLessThanOrEqual(2);
     expect(port.querySelector(`${selector} [data-testid="user-bubble"]`)?.textContent).toBe("current");
   } finally {
     mounted?.unmount();

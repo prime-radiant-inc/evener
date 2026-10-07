@@ -29,8 +29,6 @@ func TestFormatCurrentTaskSteering(t *testing.T) {
 		"whether the work is correct.",
 		"</INSTRUCTIONS>",
 		"</CURRENT-TASK>",
-		"task_list to mark task 3 as done",
-		"when this step is complete.",
 		"</SYSTEM-REMINDER>",
 	}
 	for _, w := range wants {
@@ -41,7 +39,9 @@ func TestFormatCurrentTaskSteering(t *testing.T) {
 
 	// Effort level MUST NOT appear in the message — it is applied to the
 	// session internally via SetReasoningEffort, not rendered for the model.
-	unwants := []string{"REASONING-EFFORT", "reasoning: low", "reasoning_effort"}
+	// Nor does a per-step instruction to update the task list: agents close their tasks without it, and
+	// it pulled them into extra bookkeeping.
+	unwants := []string{"REASONING-EFFORT", "reasoning: low", "reasoning_effort", "task_list"}
 	for _, u := range unwants {
 		if strings.Contains(msg, u) {
 			t.Errorf("steering message should not contain %q. Got:\n%s", u, msg)
@@ -63,8 +63,8 @@ func TestFormatCurrentTaskSteering_NoPrompt(t *testing.T) {
 	if !strings.Contains(msg, "<TITLE>Bare task</TITLE>") {
 		t.Errorf("expected TITLE to be present: %s", msg)
 	}
-	if !strings.Contains(msg, "task_list to mark task 1 as done") {
-		t.Errorf("expected task_list completion instruction: %s", msg)
+	if strings.Contains(msg, "task_list") {
+		t.Errorf("steering should not instruct a task_list update: %s", msg)
 	}
 }
 

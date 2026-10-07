@@ -259,8 +259,9 @@ type AttentionResolutionInfo struct {
 }
 
 // DelegateDeliveryCommit records which exact tool call durably received one
-// delegate delivery on this tool-result turn. It is private persistence
-// metadata, not model content.
+// delegate delivery on this tool-result turn. One call may receive several in
+// its turn (a delegate_send wait carrying earlier results ahead of its own).
+// It is private persistence metadata, not model content.
 type DelegateDeliveryCommit struct {
 	ToolCallID string `json:"tool_call_id"`
 	DeliveryID string `json:"delivery_id"`

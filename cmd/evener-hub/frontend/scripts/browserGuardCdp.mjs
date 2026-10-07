@@ -286,17 +286,38 @@ export async function waitForHttp(
   }
 }
 
+async function listPageTabs(endpoint) {
+  const targets = await (await requestDevtools(endpoint, "/json/list", "listPageTabs")).json();
+  return targets.filter((entry) => entry.type === "page");
+}
+
 /**
- * Find Chrome's page target over CDP and open a command channel to it.
+ * Connect to the browser's one page tab, the startup tab a guard that opens no
+ * tabs of its own drives. More than one listed tab is refused rather than
+ * guessed at: Chrome keeps listing a closing tab, first, for a moment (#3895).
+ */
+export async function connectOnlyPage(endpoint) {
+  const tabs = await listPageTabs(endpoint);
+  if (tabs.length === 0) throw new Error("expected one page tab, Chrome lists none");
+  if (tabs.length > 1) {
+    throw new Error(`expected one page tab, Chrome lists ${tabs.length}: ${tabs.map((tab) => tab.id).join(", ")}`);
+  }
+  return openTabChannel(tabs[0]);
+}
+
+/** Open a CDP command channel to the page tab with this target id. */
+export async function connectPage(endpoint, targetId) {
+  if (!targetId) throw new Error("connectPage needs the target id of the tab to connect to");
+  const target = (await listPageTabs(endpoint)).find((entry) => entry.id === targetId);
+  if (!target) throw new Error(`Chrome lists no page tab ${targetId}`);
+  return openTabChannel(target);
+}
+
+/**
  * send() rejects on a CDP error response so a failing command can never read
  * as a successful measurement. Callers close() in a finally.
- * An optional targetId selects a real tab without depending on /json/list order.
  */
-export async function connectPage(endpoint, targetId) {
-  const targets = await (await fetch(devtoolsHttpURL(endpoint, "/json/list"))).json();
-  const target = targets.find((entry) => entry.type === "page" && (targetId === undefined || entry.id === targetId));
-  if (!target) throw new Error("chrome exposed no page target");
-
+async function openTabChannel(target) {
   const ws = new WebSocket(target.webSocketDebuggerUrl);
   let id = 0;
   const pending = new Map();
@@ -307,18 +328,33 @@ export async function connectPage(endpoint, targetId) {
       pending.delete(message.id);
     }
   });
+  // A command in flight when the socket closes, or sent after (a closed socket
+  // drops it silently), fails rather than hanging the guard.
+  const closedReply = { error: { message: "CDP socket closed" } };
+  let closed = false;
+  ws.addEventListener("close", () => {
+    closed = true;
+    for (const settle of pending.values()) settle(closedReply);
+    pending.clear();
+  });
   await new Promise((resolve, reject) => {
     ws.addEventListener("open", resolve, { once: true });
-    ws.addEventListener("error", reject, { once: true });
+    // The ErrorEvent itself stringifies as a bare "[object ErrorEvent]" and,
+    // in Node, carries no message: name the socket instead.
+    ws.addEventListener("error", () => reject(new Error(`CDP socket to ${target.webSocketDebuggerUrl} failed`)), {
+      once: true,
+    });
   });
 
   const send = (method, params = {}) =>
     new Promise((resolve, reject) => {
       const requestId = ++id;
-      pending.set(requestId, (message) => {
+      const settle = (message) => {
         if (message.error) reject(new Error(`${method}: ${JSON.stringify(message.error)}`));
         else resolve(message);
-      });
+      };
+      if (closed) return settle(closedReply);
+      pending.set(requestId, settle);
       ws.send(JSON.stringify({ id: requestId, method, params }));
     });
 

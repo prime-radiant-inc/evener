@@ -25,6 +25,8 @@ import {
   CDP_EVALUATE_TRIPWIRE_MS,
   clearViewportOverride,
   collectFontStatusInPage,
+  connectOnlyPage,
+  connectPage,
   createStartupDeadline,
   devtoolsHttpURL,
   evaluate,
@@ -46,6 +48,122 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
+
+const STUB_ENDPOINT = { url: "ws://127.0.0.1:9/devtools/browser/B" };
+
+// Starts connectPage against a fake page target and waits until its socket is
+// built; the test drives that socket through the returned handle. A closing tab
+// is listed first, ahead of the one the guard means, as Chrome lists it for a
+// moment after /json/close.
+async function startStubConnection() {
+  const { socket, socketURL } = stubTabs(["CLOSING", "T1"]);
+  const connecting = connectPage(STUB_ENDPOINT, "T1");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  return { socket, socketURL, connecting };
+}
+
+// Chrome's /json/list names these targets (page tabs unless an entry says
+// "id:type"); only T1's socket can be built, and the test drives it through
+// the returned handle.
+function stubTabs(entries) {
+  const tabURL = (id) => `ws://127.0.0.1:9/devtools/page/${id}`;
+  const socketURL = tabURL("T1");
+  const socket = new EventTarget();
+  socket.sent = [];
+  socket.send = (data) => socket.sent.push(JSON.parse(data));
+  socket.close = () => {};
+  const targets = entries.map((entry) => {
+    const [id, type = "page"] = entry.split(":");
+    return { id, type, webSocketDebuggerUrl: tabURL(id) };
+  });
+  vi.stubGlobal("fetch", async () => ({ ok: true, json: async () => targets }));
+  // `new` on a plain function that returns an object yields that object.
+  vi.stubGlobal("WebSocket", function StubWebSocket(url) {
+    assert.equal(url, socketURL);
+    return socket;
+  });
+  return { socket, socketURL };
+}
+
+// "Whichever page Chrome lists first" can be a tab that is closing (#3895), so
+// a guard names the tab it means.
+test("connectPage refuses to connect without a tab id", async () => {
+  stubTabs(["T1"]);
+  await assert.rejects(connectPage(STUB_ENDPOINT), /connectPage needs the target id of the tab to connect to/);
+});
+
+test("connectPage names a tab Chrome doesn't list", async () => {
+  stubTabs(["T1"]);
+  await assert.rejects(connectPage(STUB_ENDPOINT, "GONE"), /Chrome lists no page tab GONE/);
+});
+
+// A guard that drives the browser's one startup tab connects through
+// connectOnlyPage, which refuses to guess when more than one tab is listed.
+test("connectOnlyPage refuses when Chrome lists more than one page tab", async () => {
+  stubTabs(["CLOSING", "T1"]);
+  await assert.rejects(connectOnlyPage(STUB_ENDPOINT), /expected one page tab, Chrome lists 2: CLOSING, T1/);
+});
+
+// The startup tab can be missing from the list for a moment after launch.
+test("connectOnlyPage says when Chrome lists no page tab yet", async () => {
+  stubTabs(["SW:service_worker"]);
+  await assert.rejects(connectOnlyPage(STUB_ENDPOINT), /expected one page tab, Chrome lists none/);
+});
+
+// Workers and frames are listed alongside tabs and aren't candidates.
+test("connectOnlyPage connects to the one page tab", async () => {
+  const { socket } = stubTabs(["SW:service_worker", "T1", "F:iframe"]);
+  const connecting = connectOnlyPage(STUB_ENDPOINT);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  socket.dispatchEvent(new Event("open"));
+  const page = await connecting;
+  assert.equal(page.ws, socket);
+});
+
+// Chrome keeps listing a target for a moment after /json/close, and a socket to
+// it fails with an ErrorEvent that stringifies as a bare "[object ErrorEvent]"
+// (#3895): the rejection has to say which socket failed.
+test("connectPage rejects a failed socket with an Error naming the target", async () => {
+  const { socket, socketURL, connecting } = await startStubConnection();
+  socket.dispatchEvent(new Event("error"));
+  await assert.rejects(connecting, (error) => {
+    assert.ok(error instanceof Error);
+    assert.match(error.message, new RegExp(`CDP socket to ${socketURL} failed`));
+    return true;
+  });
+});
+
+// A socket to a closing target can open and then close with a command still
+// unanswered; that command must fail instead of hanging the guard.
+test("connectPage fails a pending command when its socket closes", async () => {
+  const page = await openStubPage();
+  const pending = page.send("Runtime.evaluate", { expression: "1" });
+  page.socket.dispatchEvent(new Event("close"));
+  await assert.rejects(settledNow(pending), /Runtime\.evaluate: .*CDP socket closed/);
+});
+
+// A closed socket drops a later send silently, so the command must fail itself.
+test("connectPage fails a command sent after its socket closed", async () => {
+  const page = await openStubPage();
+  page.socket.dispatchEvent(new Event("close"));
+  await assert.rejects(
+    settledNow(page.send("Page.navigate", { url: "about:blank" })),
+    /Page\.navigate: .*CDP socket closed/,
+  );
+  assert.deepEqual(page.socket.sent, []);
+});
+
+// Opens the named tab; the stub's WebSocket refuses any other tab's socket.
+async function openStubPage() {
+  const { socket, connecting } = await startStubConnection();
+  socket.dispatchEvent(new Event("open"));
+  return { ...(await connecting), socket };
+}
+
+// Resolves to "still pending" if the promise hasn't settled within a turn.
+function settledNow(promise) {
+  return Promise.race([promise, new Promise((resolve) => setTimeout(() => resolve("still pending"), 0))]);
+}
 
 test("preserves the announced endpoint host when building HTTP URLs", () => {
   assert.equal(

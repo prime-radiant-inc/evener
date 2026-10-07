@@ -67,6 +67,7 @@ function methodFor(kind: ConversationMutationKind, expectedQueueRevision: number
 	if (kind === "send") return "turn/start";
 	if (kind === "queue") return "turn/queue";
 	if (kind === "interrupt") return "turn/interrupt";
+	if (kind === "promote") return "turn/promoteQueuedAsSteer";
 	return expectedQueueRevision === undefined ? "turn/steer" : "turn/drainAsSteer";
 }
 
@@ -76,8 +77,13 @@ function intentFor(request: NativeMutationRequest): MutationIntent {
 		ref: request.targetRef,
 		expectedInstanceId: request.instanceId,
 	};
-	if (request.kind !== "interrupt") payload.input = request.input;
+	if (request.kind !== "interrupt" && request.kind !== "promote") payload.input = request.input;
 	if (method === "turn/drainAsSteer") payload.expectedQueueRevision = request.expectedQueueRevision;
+	if (request.kind === "promote") {
+		payload.index = request.queueEntry.index;
+		payload.expectedEntryId = request.queueEntry.id;
+	}
+	const input = request.display ?? request.input;
 	return {
 		targetRef: nativeMutationTargetKey(request.hubId, request.targetRef),
 		threadId: request.threadId,
@@ -85,7 +91,7 @@ function intentFor(request: NativeMutationRequest): MutationIntent {
 		method,
 		payload,
 		attachments: [],
-		optimisticDisplay: request.kind === "interrupt" ? { method } : { method, input: request.input },
+		optimisticDisplay: request.kind === "interrupt" ? { method } : { method, input },
 	};
 }
 

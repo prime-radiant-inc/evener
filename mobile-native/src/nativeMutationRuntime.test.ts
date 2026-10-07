@@ -38,7 +38,7 @@ afterEach(() => {
 	database = undefined;
 });
 
-function request(kind: NativeMutationRequest["kind"]): NativeMutationRequest {
+function request(kind: Exclude<NativeMutationRequest["kind"], "promote">): NativeMutationRequest {
 	return {
 		hubId: "hub-1",
 		targetRef: "ref-1",
@@ -1338,6 +1338,33 @@ test("steer with a queue revision uses the drain route and preserves its fence",
 			expectedQueueRevision: 7,
 		},
 	});
+});
+
+// A promote names its queued message and sends no input: the hub already
+// holds it. Its ghost shows the queued text.
+test("a promote can't be built without naming its queued entry", () => {
+	// @ts-expect-error: a promote must name its queued entry, which the hub requires
+	const promote: NativeMutationRequest = { ...request("steer"), kind: "promote" };
+	expect(promote.kind).toBe("promote");
+});
+
+test("a promote names its queued entry and shows the queued text", async () => {
+	const runtime = new NativeMutationRuntime(openDatabase(), {
+		createMutationId: () => "mutation-1",
+	});
+	const display = [{ type: "text" as const, text: "check the logs" }];
+	await runtime.submit({ ...request("steer"), kind: "promote", queueEntry: { index: 2, id: "queue_3" }, display });
+
+	const queued = await runtime.storage.getOutbox("mutation-1");
+	expect(queued?.method).toBe("turn/promoteQueuedAsSteer");
+	expect(queued?.payload).toEqual({
+		ref: "ref-1",
+		expectedInstanceId: "instance-1",
+		index: 2,
+		expectedEntryId: "queue_3",
+		clientMutationId: "mutation-1",
+	});
+	expect(queued?.optimisticDisplay).toEqual({ method: "turn/promoteQueuedAsSteer", input: display });
 });
 
 test("the process getter reuses one runtime and database handle across provider lifetimes", async () => {

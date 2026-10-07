@@ -173,6 +173,21 @@ func sessionActivityDelegateOwner(state delegatestore.State, row *delegatestore.
 	return ""
 }
 
+// sessionSubtreeDelegateIDs lists, in id order, the delegates in sessionID's
+// subtree: for a root its whole tree, for a subagent the delegates its own
+// delegation chain reaches.
+func sessionSubtreeDelegateIDs(state delegatestore.State, sessionID string) []string {
+	owners := sessionSubtreeOwners(state, sessionID)
+	var ids []string
+	for id, row := range state {
+		if row != nil && owners[sessionActivityDelegateOwner(state, row)] {
+			ids = append(ids, id)
+		}
+	}
+	slices.Sort(ids)
+	return ids
+}
+
 // Immutable Created descriptors prove lineage independently of status history.
 func activityContextFromDelegates(result *appwire.SessionActivityContext, rootID string, state delegatestore.State) bool {
 	if result.SessionID == rootID {
@@ -339,11 +354,16 @@ func (read *sessionActivityRead) state() delegatestore.State {
 	return read.index.delegates
 }
 func (read *sessionActivityRead) owners() map[string]bool {
-	owners := map[string]bool{read.context.SessionID: true}
 	if read.scope == appwire.SessionActivityScopeSession {
-		return owners
+		return map[string]bool{read.context.SessionID: true}
 	}
-	state := read.state()
+	return sessionSubtreeOwners(read.state(), read.context.SessionID)
+}
+
+// sessionSubtreeOwners is sessionID and every session below it in state's
+// delegate tree.
+func sessionSubtreeOwners(state delegatestore.State, sessionID string) map[string]bool {
+	owners := map[string]bool{sessionID: true}
 	// Membership inspection is in-memory; Created parentage is the authority.
 	changed := true
 	for changed {

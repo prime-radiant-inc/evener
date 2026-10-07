@@ -42,6 +42,8 @@ The guard checks:
   saved workspace removal can precede transcript restoration.
 - Width-only reflow in ordinary, read-only cascade and phone-width browser
   readers preserves the same useful entry without opening or closing inspection.
+- A height-only round trip in the ordinary and read-only cascade readers keeps
+  the reading line exactly where it was (#3899).
 - Trusted native Shift-Space, wheel and current-state pill input during genuine held target
   measurements, followed by release that retains the newer reading point or
   live result. The keyboard checkpoint focuses the unchanged source scrollport
