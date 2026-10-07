@@ -63,7 +63,8 @@ func readMemoryIndexFile(env *execenv.LocalExecutionEnvironment) ([]byte, error)
 }
 
 // memoryIndexBaseline is the index the session already knows for a scope:
-// a current index's bytes, or that the session deleted its own index.
+// a current index as projected (cut at the projection's cap, so it holds no
+// more than the model sees), or that the session deleted its own index.
 type memoryIndexBaseline struct {
 	status, index string
 }
@@ -71,9 +72,6 @@ type memoryIndexBaseline struct {
 type memoryProjection struct {
 	Scope, Status, Content string
 	Truncated              bool
-	// Index is the complete MEMORY.md a current read found; Content is its
-	// bounded projection.
-	Index string
 }
 
 type memoryIndexFlight struct {
@@ -308,7 +306,6 @@ func (s *Session) readMemoryIndex(scope string) memoryProjection {
 		p.Status = "missing"
 	case err == nil:
 		p.Status = "current"
-		p.Index = string(raw)
 		p.Content, p.Truncated = boundedMemoryIndex(raw)
 	}
 	return p
@@ -364,12 +361,13 @@ func (s *Session) appendMemoryProjection(p memoryProjection) {
 	prior, exists := s.memoryLastProjected[p.Scope]
 	inContext := exists && prior == p
 	suppressed := !inContext && !s.memoryEverProjected[p.Scope] && (p.Status == "missing" || p.Status == "revoked" || (p.Status == "current" && p.Content == ""))
-	// A current index appended now or already in context becomes the
-	// baseline. Anything else forgets the scope, so the next current read
-	// delivers the full index: the model was last told there is no index, or
-	// that it could not be read, or was told nothing about a first empty one.
-	if p.Status == "current" && !suppressed {
-		s.setMemoryBaselineLocked(p.Scope, memoryIndexBaseline{status: p.Status, index: p.Index})
+	// A current index with content, appended now or already in context,
+	// becomes the baseline. Anything else forgets the scope, so the next
+	// current read delivers the full index: the model was last told there is
+	// no index, that it could not be read, or that it is empty, or was told
+	// nothing about a first empty one.
+	if p.Status == "current" && !suppressed && p.Content != "" {
+		s.setMemoryBaselineLocked(p.Scope, memoryIndexBaseline{status: p.Status, index: p.Content})
 	} else {
 		delete(s.memoryBaseline, p.Scope)
 	}
@@ -410,7 +408,7 @@ func (s *Session) memoryBaselineFor(scope string) (memoryIndexBaseline, bool) {
 // be read is projected as that state, as at any boundary.
 func (s *Session) publishKnownMemoryIndex(baseline memoryIndexBaseline, p memoryProjection) {
 	switch {
-	case p.Status == baseline.status && p.Index == baseline.index:
+	case p.Status == baseline.status && p.Content == baseline.index:
 	case p.Status == "current":
 	default:
 		s.appendMemoryProjection(p)
@@ -436,7 +434,10 @@ func (s *Session) noteOwnMemoryIndexWrite(env *execenv.LocalExecutionEnvironment
 	}
 	switch {
 	case err == nil:
-		s.setMemoryBaselineLocked(scope, memoryIndexBaseline{status: "current", index: string(raw)})
+		// Even an empty index the session wrote itself is its baseline, so
+		// the next boundary does not echo it back.
+		index, _ := boundedMemoryIndex(raw)
+		s.setMemoryBaselineLocked(scope, memoryIndexBaseline{status: "current", index: index})
 	case errors.Is(err, os.ErrNotExist):
 		// Unlike a projected missing index, the session knows it deleted its
 		// own index, so its absence is the baseline.

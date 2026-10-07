@@ -261,3 +261,62 @@ func TestMemoryRefreshIgnoresOwnIndexDelete(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// An index that is empty when compaction re-delivers it becomes no baseline,
+// so content another session adds afterwards arrives as the full index at the
+// next turn.
+func TestMemoryRefreshEmptyIndexAfterCompactionThenContentDeliversFullIndex(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	path := memorySeed(t, root, "personal", "opaque-before-fold-1\n")
+	s := newScriptedSummaryCompactSession(t, "memory-refresh-empty-summary", func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("opaque-empty-fold")}
+	}, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}))
+	wantFull := func(body string) func(llm.Request) llm.Response {
+		return func(req llm.Request) llm.Response {
+			state, got, _ := memoryRequestIndex(t, req, "personal")
+			if state != "current" || got != body {
+				t.Fatalf("personal index state=%s body=%q, want current %q", state, got, body)
+			}
+			return finalResponse("observed")
+		}
+	}
+	s.client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		wantFull("opaque-before-fold-1\n"), wantFull(""), wantFull("opaque-after-fold-2\n"),
+	}})
+	turn := func() {
+		t.Helper()
+		if _, err := s.ProcessInput(context.Background(), "go", nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	turn()
+	writeMemoryIndex(t, path, "")
+	for range 12 {
+		s.appendTurnWithTranscriptMessage(schema.TurnUserInput, llm.User("opaque-old"), llm.User("opaque-old"))
+	}
+	if err := s.Compact(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	turn()
+	writeMemoryIndex(t, path, "opaque-after-fold-2\n")
+	turn()
+}
+
+// The baseline holds the index as projected, cut at the projection's cap,
+// never the whole file.
+func TestMemoryRefreshBaselineIsBoundedByTheProjectionCap(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	memorySeed(t, root, "personal", strings.Repeat("opaque-long-line\n", 2000))
+	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(
+		func(llm.Request) llm.Response { return finalResponse("observed") },
+	))
+	if _, err := s.ProcessInput(context.Background(), "go", nil); err != nil {
+		t.Fatal(err)
+	}
+	baseline, known := s.memoryBaselineFor("personal")
+	if !known || len(baseline.index) > 8192 {
+		t.Fatalf("baseline known=%t holds %d bytes, want at most the 8192-byte projection cap", known, len(baseline.index))
+	}
+}

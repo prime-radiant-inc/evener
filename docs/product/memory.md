@@ -88,10 +88,12 @@ memory only when a project scope is bound.
 
 A scope's full index is projected only while the session has no baseline for
 it: at startup, after resume, after compaction, and when the index, its storage
-or access returns after a missing, unavailable or revoked state. That projection
-becomes the baseline. When the session itself writes, edits or deletes a
-`MEMORY.md` through the memory tools, the result becomes its baseline, so its
-own change is never echoed back. A scope with a baseline is read only at the
+or access returns after a missing, unavailable or revoked state. A projected
+index with content becomes the baseline, held as projected (cut at the same
+8 KiB cap); an empty or missing index leaves no baseline, so content that
+appears later arrives in full. When the session itself writes, edits or
+deletes a `MEMORY.md` through the memory tools, the result, cut the same way,
+becomes its baseline, so its own change is never echoed back. A scope with a baseline is read only at the
 first model call of each turn (each input the session processes: a user message
 or a notification wake), never on that turn's later rounds. Another session's
 content change to a known index is not projected mid-session; a compaction or
