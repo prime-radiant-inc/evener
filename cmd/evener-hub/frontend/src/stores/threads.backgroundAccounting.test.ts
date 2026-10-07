@@ -18,6 +18,7 @@ import { holdNextWriteTransaction } from "./testing/stalledIndexedDB";
 import {
   acquireBackgroundThread,
   backgroundTranscriptSnapshotForTests,
+  installHydrationRetrySchedulerForTests,
   pendingThreadHydrationBaseModelsForTests,
   resetThreadsStoreForTests,
   setCacheWriteTimersForTests,
@@ -378,6 +379,56 @@ describe("background accounting", () => {
         bodyBytes(threadsStore.getState().threads.get(ref)),
       );
 
+      // Required proof A: simultaneous retained-payload inventory at this
+      // suspended boundary (the write is still held, AFTER the 100,000-char
+      // authoritative replacement and the later accepted delta). Distinct
+      // retained payloads are accounted once against the correct class:
+      //  - ordinary resident class: the newer canonical body in the store;
+      //  - worker class: the held write's captured OLD base body and record,
+      //    which is the separately bounded single cache-sized worker.
+      const canonicalAfterDelta = threadsStore.getState().threads.get(ref);
+      if (!canonicalAfterDelta) throw new Error("expected the newer canonical body at the held boundary");
+      const canonicalBytes = bodyBytes(canonicalAfterDelta);
+      expect(canonicalBytes).toBeGreaterThan(100_000);
+      // The authoritative replacement and the literal accepted delta survive in
+      // their domain field (the stream text), not merely as a total byte count.
+      const canonicalText = canonicalAfterDelta.overlay?.["stream:s1:agentMessage"]?.item?.text;
+      expect(canonicalText).toContain("R".repeat(100_000));
+      expect(canonicalText).toContain(marker);
+
+      // The worker's folded model IS the base it entered with (its batch was
+      // empty, so it folded nothing), and that base is a genuinely distinct
+      // retained payload from the newer canonical body: real object identity,
+      // not a fresh codec wrapper or equal JSON.
+      expect(base.observation.batch).toHaveLength(0);
+      expect(base.observation.model).toBe(base.observation.resident);
+      expect(base.observation.resident).toBe(baseModel);
+      expect(base.observation.resident).not.toBe(canonicalAfterDelta);
+      // The held write record still retains the OLD base body by content and
+      // none of the replacement: a distinct payload from the canonical body,
+      // not the same bytes counted twice.
+      const heldRecordText = JSON.stringify(base.observation.record.state);
+      expect(heldRecordText).toContain("alpha");
+      expect(heldRecordText).not.toContain("R".repeat(100_000));
+      // The separately bounded single cache-sized worker: its charge equals the
+      // independently measured record body, is not double-counted as ordinary
+      // resident bytes, and stays under its own 32 MiB cap.
+      expect(base.workerBytes).toBe(independentJsonBytes(base.observation.record));
+      expect(base.workerBytes).toBeLessThan(32 * 1024 * 1024);
+      expect(base.workerBytes).not.toBe(canonicalBytes);
+      // The ordinary resident charge covers the newer canonical body exactly
+      // once, while the worker's distinct record is charged separately.
+      expect((heldEntry?.residentBytes ?? 0) + (heldEntry?.handoffBytes ?? 0)).toBeGreaterThanOrEqual(canonicalBytes);
+      // Current pending/in-flight are empty at THIS boundary: the accepted delta
+      // folded into the canonical body and the held worker's batch was consumed.
+      // This is the live post-replacement state, not the initial emptiness above.
+      expect(heldEntry?.pending).toHaveLength(0);
+      expect(heldEntry?.inFlight).toHaveLength(0);
+      // No pending hydration payload/base remains retained after the held
+      // re-read published: its base was captured before release and is gone now.
+      expect(pendingBase).toBeDefined();
+      expect(pendingThreadHydrationBaseModelsForTests().some((candidate) => candidate.ref === ref)).toBe(false);
+
       // Release the held write and drain. The charge must not be reset to the
       // write's captured pre-fold size at the next worker boundary.
       transaction?.release();
@@ -600,16 +651,62 @@ describe("background accounting", () => {
       expect(threadsStore.getState().threads.has(target)).toBe(true);
       const targetBody = bodyBytes(threadsStore.getState().threads.get(target));
 
-      // The busy target is not an eligible victim, so even though its body fits
-      // the pending budget the candidate takes the bounded refusal path.
-      fake.emitNotification(textDelta(pressure, "q".repeat(32_000)));
-      const snapshot = backgroundTranscriptSnapshotForTests();
-      expect(snapshot.refs.get(target)?.resident).toBe(true);
-      expect(snapshot.refs.get(target)?.handoffBytes ?? 0).toBe(0);
+      // Each ordinary packet is within the 32 KiB pending budget including its
+      // envelope, so the candidate is never refused for being oversized.
+      const firstDelta = textDelta(pressure, "q".repeat(32_000));
+      expect(independentJsonBytes(firstDelta)).toBeLessThanOrEqual(32 * 1024);
+      fake.emitNotification(firstDelta);
+      const first = backgroundTranscriptSnapshotForTests();
+      // The exact original single-delta fixture stays below the resident limit:
+      // this measured aggregate is 63,701 <= 65,536, so it does not yet reach
+      // the transfer/refusal branch. The extended second delta below does.
+      expect(first.refs.get(target)?.resident).toBe(true);
+      expect(first.refs.get(target)?.handoffBytes ?? 0).toBe(0);
       expect(
-        (snapshot.refs.get(target)?.residentBytes ?? 0) + (snapshot.refs.get(target)?.handoffBytes ?? 0),
+        (first.refs.get(target)?.residentBytes ?? 0) + (first.refs.get(target)?.handoffBytes ?? 0),
       ).toBeGreaterThanOrEqual(targetBody);
-      expect(snapshot.pendingBytes).toBe(0);
+      expect(first.residentBytes).toBeLessThanOrEqual(64 * 1024);
+      expect(first.refs.get(pressure)?.persistence, JSON.stringify(first.refs.get(pressure))).toBe("enabled");
+
+      const pressureChargeBefore =
+        (first.refs.get(pressure)?.residentBytes ?? 0) + (first.refs.get(pressure)?.handoffBytes ?? 0);
+      const pressureBodyBefore = bodyBytes(threadsStore.getState().threads.get(pressure));
+
+      // A second ordinary delta in the SAME held-write scenario pushes the
+      // aggregate past the resident limit. The candidate individually fits the
+      // resident limit, but the only other resident (the busy target) is not an
+      // eligible victim, so the branch takes the bounded refusal path.
+      const refusedMarker = "-busy-refused";
+      const refusedDelta = textDelta(pressure, refusedMarker + "q".repeat(16_000 - refusedMarker.length));
+      expect(independentJsonBytes(refusedDelta)).toBeLessThanOrEqual(32 * 1024);
+      expect(pressureChargeBefore + independentJsonBytes(refusedDelta)).toBeLessThanOrEqual(64 * 1024);
+      fake.emitNotification(refusedDelta);
+      const refused = backgroundTranscriptSnapshotForTests();
+      const refusedTarget = refused.refs.get(target);
+      const refusedPressure = refused.refs.get(pressure);
+      // Real bounded refusal: the busy target is never transferred, the
+      // overflowing pressure ref is refused into repairing, no budget is
+      // exceeded, and no retained body is left undercharged.
+      expect(refusedTarget?.resident, JSON.stringify([...refused.refs])).toBe(true);
+      expect(refusedTarget?.handoffBytes ?? 0).toBe(0);
+      expect((refusedTarget?.residentBytes ?? 0) + (refusedTarget?.handoffBytes ?? 0)).toBeGreaterThanOrEqual(
+        targetBody,
+      );
+      expect(refusedPressure?.persistence).toBe("repairing");
+      expect(refused.residentBytes).toBeLessThanOrEqual(64 * 1024);
+      expect(refused.pendingBytes).toBeLessThanOrEqual(32 * 1024);
+      expect(refused.pendingBytes).toBe(0);
+      const refusedPressureModel = threadsStore.getState().threads.get(pressure);
+      // The refused candidate reverted to its prior body/charge: the canonical
+      // body is unchanged and the literal refused delta was never published.
+      const refusedPressureBody = bodyBytes(refusedPressureModel);
+      expect(refusedPressureBody).toBe(pressureBodyBefore);
+      expect((refusedPressure?.residentBytes ?? 0) + (refusedPressure?.handoffBytes ?? 0)).toBeGreaterThanOrEqual(
+        refusedPressureBody,
+      );
+      expect(
+        JSON.stringify(refusedPressureModel ? currentTranscriptState(refusedPressureModel) : undefined),
+      ).not.toContain(refusedMarker);
     } finally {
       put.mockRestore();
       transaction?.release();
@@ -621,7 +718,7 @@ describe("background accounting", () => {
     }
   });
 
-  test("keeps a transferred victim's staged payload covered when its write fails, and releases it on ownership end", async () => {
+  test("keeps a transferred victim's staged payload covered while its write fails, then recovers it under a continuing owner", async () => {
     const restoreOptions = installBackgroundTranscriptOptionsForTests({
       residentBytes: 64 * 1024,
       pendingBytes: 32 * 1024,
@@ -633,17 +730,34 @@ describe("background accounting", () => {
       [pressure]: readWithText(pressure, "p".repeat(2_000)),
     };
     const fake = new FakeClient("ready");
-    fake.on("thread/read", ({ ref }) => bodies[ref ?? ""] ?? currentRead(ref ?? target));
+    let targetRecoveryBody: ThreadReadResponse | undefined;
+    fake.on("thread/read", ({ ref: requested, requestGeneration }) => {
+      const base =
+        requested === target && targetRecoveryBody
+          ? targetRecoveryBody
+          : (bodies[requested ?? ""] ?? currentRead(requested ?? target));
+      // Echo the real issued request generation so the store does not discard
+      // the recovery read as older than the held history.
+      return { ...base, requestGeneration: requestGeneration ?? base.requestGeneration };
+    });
     fake.on("thread/unsubscribe", () => ({}));
     connectionStore.getState().connect(fake);
+    const scheduled: Array<() => void> = [];
+    const restoreScheduler = installHydrationRetrySchedulerForTests((_attempt, retry) => {
+      scheduled.push(retry);
+      return () => {};
+    });
     let failNextTargetWrite = false;
+    const writes: CurrentSessionRecord[] = [];
     const originalPut = cache.putCurrent.bind(cache);
     const put = vi.spyOn(cache, "putCurrent").mockImplementation(async (record, now) => {
       if (failNextTargetWrite && record.ref === target) {
         failNextTargetWrite = false;
         return { outcome: "failed" };
       }
-      return originalPut(record, now);
+      const outcome = await originalPut(record, now);
+      if (outcome.outcome === "written") writes.push(record);
+      return outcome;
     });
     const targetLease = acquireBackgroundThread(target);
     const pressureLease = acquireBackgroundThread(pressure);
@@ -653,20 +767,75 @@ describe("background accounting", () => {
       const targetBody = bodyBytes(threadsStore.getState().threads.get(target));
       expect(targetBody).toBeGreaterThan(26_000);
 
-      // Grow pressure so the target is transferred into the handoff budget; the
-      // target's eviction write then fails, so its staged charge must still cover
-      // the retained body until paced recovery reconciles it.
+      // Grow pressure so the target is transferred into the handoff budget; its
+      // eviction write then fails while the target's owner stays alive.
       failNextTargetWrite = true;
       for (let step = 0; step < 3; step += 1) fake.emitNotification(textDelta(pressure, "q".repeat(12_000)));
-      const staged = backgroundTranscriptSnapshotForTests();
-      // The victim's charge has moved from resident to the handoff budget (its
-      // model may still be present until the failed write's unload path).
-      expect(staged.refs.get(target)?.residentBytes ?? 0).toBe(0);
-      expect(staged.refs.get(target)?.handoffBytes ?? 0).toBeGreaterThanOrEqual(targetBody);
-      expect(staged.pendingBytes).toBeGreaterThanOrEqual(targetBody);
+      const transferred = backgroundTranscriptSnapshotForTests();
+      expect(transferred.refs.get(target)?.residentBytes ?? 0).toBe(0);
+      expect(transferred.refs.get(target)?.handoffBytes ?? 0).toBeGreaterThanOrEqual(targetBody);
+      expect(transferred.pendingBytes).toBeGreaterThanOrEqual(targetBody);
 
-      // Ending the ownership releases the staged handoff charge: no leaked
-      // reservation survives an ownership change.
+      // Await the ACTUAL one-shot failure processing (the async failed return is
+      // processed after persist's await) with the owner still alive.
+      await vi.waitFor(
+        () => {
+          if (backgroundTranscriptSnapshotForTests().refs.get(target)?.persistence !== "repairing")
+            throw new Error("failed write not processed yet");
+        },
+        { timeout: 4_000 },
+      );
+      const failed = backgroundTranscriptSnapshotForTests();
+      const failedEntry = failed.refs.get(target);
+      // Currentness/repairing and the exact body/charge at the failed boundary:
+      // the target is not current, its model is still retained, and the staged
+      // handoff charge covers that retained body.
+      expect(failedEntry?.persistence).toBe("repairing");
+      expect(failedEntry?.current).toBe(false);
+      expect(failedEntry?.residentBytes ?? -1).toBe(0);
+      expect(failedEntry?.handoffBytes ?? 0).toBeGreaterThanOrEqual(targetBody);
+      expect(failed.pendingBytes).toBeGreaterThanOrEqual(targetBody);
+      expect(threadsStore.getState().threads.has(target)).toBe(true);
+      expect(bodyBytes(threadsStore.getState().threads.get(target))).toBe(targetBody);
+
+      // A scheduled useful recovery read is attributed to THIS operation.
+      expect(scheduled.length).toBeGreaterThanOrEqual(1);
+      const targetReadsBefore = fake.calls.filter(
+        (call) => call.method === "thread/read" && (call.params as { ref?: string })?.ref === target,
+      ).length;
+      targetRecoveryBody = readWithText(target, `${"t".repeat(27_250)}-recovered`);
+      for (const retry of scheduled.splice(0)) retry();
+      await vi.waitFor(
+        () => {
+          const reads = fake.calls.filter(
+            (call) => call.method === "thread/read" && (call.params as { ref?: string })?.ref === target,
+          ).length;
+          if (reads <= targetReadsBefore) throw new Error("recovery read not issued");
+        },
+        { timeout: 4_000 },
+      );
+      expect(
+        fake.calls.filter((call) => call.method === "thread/read" && (call.params as { ref?: string })?.ref === target)
+          .length,
+      ).toBe(targetReadsBefore + 1);
+      await settleBackgroundTranscriptsForTests();
+
+      // Recovery republished through the real reducer/cache, committed a
+      // checkpoint carrying the recovered content, and released the staging.
+      const recovered = backgroundTranscriptSnapshotForTests();
+      const recoveredEntry = recovered.refs.get(target);
+      expect(recoveredEntry?.persistence).toBe("enabled");
+      expect(recoveredEntry?.current).toBe(true);
+      expect((recoveredEntry?.residentBytes ?? 0) + (recoveredEntry?.handoffBytes ?? 0)).toBe(0);
+      expect(recovered.pendingBytes).toBe(0);
+      const targetWrite = writes.filter((write) => write.ref === target).at(-1);
+      if (!targetWrite) throw new Error("expected a recovered checkpoint for the target");
+      const onDisk = await cache.getCurrent([targetWrite.ownerToken, target], Date.now());
+      expect(onDisk?.record?.ref).toBe(target);
+      expect(JSON.stringify(onDisk?.record?.state)).toContain("-recovered");
+
+      // Owner-end cleanup stays correct separately: releasing the owner now does
+      // not leak any staged reservation.
       await targetLease.release();
       await settleBackgroundTranscriptsForTests();
       const finalSnapshot = backgroundTranscriptSnapshotForTests();
@@ -675,9 +844,221 @@ describe("background accounting", () => {
         JSON.stringify([...finalSnapshot.refs].map(([r, e]) => [r, e.residentBytes, e.handoffBytes, e.persistence])),
       ).toBe(0);
     } finally {
+      restoreScheduler();
       put.mockRestore();
       await settleBackgroundTranscriptsForTests().catch(() => undefined);
       await Promise.all([targetLease.release(), pressureLease.release()]);
+      resetThreadsStoreForTests();
+      restoreOptions();
+    }
+  });
+
+  test("preserves a later victim delta exactly once through a held eviction checkpoint and unload", async () => {
+    const restoreOptions = installBackgroundTranscriptOptionsForTests({
+      residentBytes: 64 * 1024,
+      pendingBytes: 32 * 1024,
+    });
+    const target = "local:transfer-target";
+    const pressure = "local:transfer-pressure";
+    const bodies: Record<string, ThreadReadResponse> = {
+      [target]: readWithText(target, "t".repeat(27_250)),
+      [pressure]: readWithText(pressure, "p".repeat(2_000)),
+    };
+    const fake = new FakeClient("ready");
+    fake.on("thread/read", ({ ref }) => bodies[ref ?? ""] ?? currentRead(ref ?? target));
+    fake.on("thread/unsubscribe", () => ({}));
+    connectionStore.getState().connect(fake);
+    const writes: CurrentSessionRecord[] = [];
+    const originalPut = cache.putCurrent.bind(cache);
+    let holdNext = false;
+    let transaction: ReturnType<typeof holdNextWriteTransaction> | undefined;
+    let heldRecord: CurrentSessionRecord | undefined;
+    const writeStarted = deferred<void>();
+    const put = vi.spyOn(cache, "putCurrent").mockImplementation(async (record, now) => {
+      if (holdNext && !transaction && record.ref === target) {
+        transaction = holdNextWriteTransaction(["records", "meta", "current", "currentMeta"]);
+        heldRecord = record;
+        writeStarted.resolve();
+      }
+      const outcome = await originalPut(record, now);
+      if (outcome.outcome === "written") writes.push(record);
+      return outcome;
+    });
+    const targetLease = acquireBackgroundThread(target);
+    const pressureLease = acquireBackgroundThread(pressure);
+    try {
+      await Promise.all([targetLease.ready, pressureLease.ready]);
+      await settleBackgroundTranscriptsForTests();
+      const targetBody = bodyBytes(threadsStore.getState().threads.get(target));
+      expect(targetBody).toBeGreaterThan(26_000);
+
+      // Hold only the target's EVICTION checkpoint (the first target write after
+      // the initial hydration settles), not its initial checkpoint.
+      holdNext = true;
+      let transferred = false;
+      for (let step = 0; step < 3 && !transferred; step += 1) {
+        fake.emitNotification(textDelta(pressure, "q".repeat(12_000)));
+        const snapshot = backgroundTranscriptSnapshotForTests();
+        transferred =
+          (snapshot.refs.get(target)?.residentBytes ?? 1) === 0 && (snapshot.refs.get(target)?.handoffBytes ?? 0) > 0;
+      }
+      expect(transferred, "target transferred into pending under the growing stream").toBe(true);
+      await writeStarted.promise;
+      await transaction?.reached;
+      const transfer = backgroundTranscriptSnapshotForTests();
+      expect(transfer.refs.get(target)?.residentBytes ?? -1).toBe(0);
+      expect(transfer.refs.get(target)?.handoffBytes ?? 0).toBeGreaterThanOrEqual(targetBody);
+      expect(transfer.pendingBytes).toBeGreaterThanOrEqual(targetBody);
+      // The captured eviction checkpoint predates the later delta.
+      if (!heldRecord) throw new Error("expected the held eviction checkpoint record");
+      const heldRecordText = JSON.stringify(heldRecord.state);
+      expect(heldRecordText).not.toContain("-transfer-later");
+      // The victim's model is still retained until the held checkpoint unloads
+      // it, so a later delta can still fold into the surviving model.
+      expect(threadsStore.getState().threads.has(target)).toBe(true);
+
+      // A later target delta arrives BEFORE the eviction checkpoint finishes.
+      const laterMarker = "-transfer-later";
+      fake.emitNotification(textDelta(target, laterMarker));
+      await vi.waitFor(
+        () => {
+          const model = threadsStore.getState().threads.get(target);
+          if (!model || !JSON.stringify(currentTranscriptState(model)).includes(laterMarker))
+            throw new Error("later delta not applied");
+        },
+        { timeout: 4_000 },
+      );
+      const live = backgroundTranscriptSnapshotForTests().refs.get(target);
+      const liveBody = bodyBytes(threadsStore.getState().threads.get(target));
+      // Retained content and charge are covered while the hold is live.
+      expect((live?.residentBytes ?? 0) + (live?.handoffBytes ?? 0)).toBeGreaterThanOrEqual(liveBody);
+      expect(liveBody).toBeGreaterThan(targetBody);
+
+      // Let the held checkpoint finish. The finite checkpoint/unload/replay must
+      // preserve the literal delta exactly once.
+      transaction?.release();
+      await settleBackgroundTranscriptsForTests();
+      const final = backgroundTranscriptSnapshotForTests();
+      expect(final.refs.get(target)?.resident).toBe(false);
+      expect(final.refs.get(target)?.current).toBe(true);
+      expect((final.refs.get(target)?.residentBytes ?? 0) + (final.refs.get(target)?.handoffBytes ?? 0)).toBe(0);
+      expect(final.pendingBytes).toBe(0);
+      const targetWrite = writes.filter((write) => write.ref === target).at(-1);
+      if (!targetWrite) throw new Error("expected a final checkpoint for the target");
+      const onDisk = await cache.getCurrent([targetWrite.ownerToken, target], Date.now());
+      expect(onDisk?.record?.ref).toBe(target);
+      expect(JSON.stringify(onDisk?.record?.state).split(laterMarker)).toHaveLength(2);
+    } finally {
+      put.mockRestore();
+      transaction?.release();
+      await settleBackgroundTranscriptsForTests().catch(() => undefined);
+      await Promise.all([targetLease.release(), pressureLease.release()]);
+      resetThreadsStoreForTests();
+      restoreOptions();
+    }
+  });
+
+  test("does not let an obsolete victim checkpoint certify or erase a successor after an ownership change", async () => {
+    const restoreOptions = installBackgroundTranscriptOptionsForTests({
+      residentBytes: 64 * 1024,
+      pendingBytes: 32 * 1024,
+    });
+    const target = "local:transfer-owner";
+    const pressure = "local:transfer-owner-pressure";
+    const bodies: Record<string, ThreadReadResponse> = {
+      [target]: readWithText(target, "t".repeat(27_250)),
+      [pressure]: readWithText(pressure, "p".repeat(2_000)),
+    };
+    const fake = new FakeClient("ready");
+    fake.on("thread/read", ({ ref }) => bodies[ref ?? ""] ?? currentRead(ref ?? target));
+    fake.on("thread/unsubscribe", () => ({}));
+    connectionStore.getState().connect(fake);
+    const writes: CurrentSessionRecord[] = [];
+    const originalPut = cache.putCurrent.bind(cache);
+    let holdNext = false;
+    let transaction: ReturnType<typeof holdNextWriteTransaction> | undefined;
+    let heldRecord: CurrentSessionRecord | undefined;
+    const writeStarted = deferred<void>();
+    const put = vi.spyOn(cache, "putCurrent").mockImplementation(async (record, now) => {
+      if (holdNext && !transaction && record.ref === target) {
+        transaction = holdNextWriteTransaction(["records", "meta", "current", "currentMeta"]);
+        heldRecord = record;
+        writeStarted.resolve();
+      }
+      const outcome = await originalPut(record, now);
+      if (outcome.outcome === "written") writes.push(record);
+      return outcome;
+    });
+    // Observe the held (obsolete) worker's captured ownership generation.
+    const observedGenerations: number[] = [];
+    const restoreObserver = observeWorkerCheckpointsForTests((observation) => {
+      if (observation.ref === target) observedGenerations.push(observation.record.ownershipGeneration);
+    });
+    const targetLease = acquireBackgroundThread(target);
+    const pressureLease = acquireBackgroundThread(pressure);
+    let secondLease: ReturnType<typeof acquireBackgroundThread> | undefined;
+    try {
+      await Promise.all([targetLease.ready, pressureLease.ready]);
+      await settleBackgroundTranscriptsForTests();
+      const targetBody = bodyBytes(threadsStore.getState().threads.get(target));
+      expect(targetBody).toBeGreaterThan(26_000);
+
+      holdNext = true;
+      let transferred = false;
+      for (let step = 0; step < 3 && !transferred; step += 1) {
+        fake.emitNotification(textDelta(pressure, "q".repeat(12_000)));
+        const snapshot = backgroundTranscriptSnapshotForTests();
+        transferred =
+          (snapshot.refs.get(target)?.residentBytes ?? 1) === 0 && (snapshot.refs.get(target)?.handoffBytes ?? 0) > 0;
+      }
+      expect(transferred).toBe(true);
+      await writeStarted.promise;
+      await transaction?.reached;
+      expect(observedGenerations.length).toBeGreaterThanOrEqual(1);
+      const obsoleteGeneration = observedGenerations.at(-1)!;
+      if (!heldRecord) throw new Error("expected the held eviction checkpoint record");
+      expect(JSON.stringify(heldRecord.state)).not.toContain("-owner-later");
+
+      // A later delta, then an ownership change while the checkpoint is held.
+      const laterMarker = "-owner-later";
+      fake.emitNotification(textDelta(target, laterMarker));
+      await vi.waitFor(
+        () => {
+          const model = threadsStore.getState().threads.get(target);
+          if (!model || !JSON.stringify(currentTranscriptState(model)).includes(laterMarker))
+            throw new Error("later delta not applied");
+        },
+        { timeout: 4_000 },
+      );
+      secondLease = acquireBackgroundThread(target);
+      await secondLease.ready;
+      const held = backgroundTranscriptSnapshotForTests().refs.get(target);
+      const heldBody = bodyBytes(threadsStore.getState().threads.get(target));
+      // While the hold is live the successor is NOT certified, and the retained
+      // content/charge are preserved.
+      expect(held?.current).toBe(false);
+      expect((held?.residentBytes ?? 0) + (held?.handoffBytes ?? 0)).toBeGreaterThanOrEqual(heldBody);
+
+      transaction?.release();
+      await settleBackgroundTranscriptsForTests();
+      const final = backgroundTranscriptSnapshotForTests();
+      expect(final.refs.get(target)?.current).toBe(true);
+      expect((final.refs.get(target)?.residentBytes ?? 0) + (final.refs.get(target)?.handoffBytes ?? 0)).toBe(0);
+      expect(final.pendingBytes).toBe(0);
+      const targetWrite = writes.filter((write) => write.ref === target).at(-1);
+      if (!targetWrite) throw new Error("expected a successor checkpoint for the target");
+      const onDisk = await cache.getCurrent([targetWrite.ownerToken, target], Date.now());
+      const diskText = JSON.stringify(onDisk?.record?.state);
+      // The successor's literal content survives, and the committed checkpoint
+      // carries the successor's ownership generation, not the obsolete worker's.
+      expect(diskText.split(laterMarker)).toHaveLength(2);
+      expect(onDisk?.record?.ownershipGeneration).not.toBe(obsoleteGeneration);
+    } finally {
+      restoreObserver();
+      put.mockRestore();
+      transaction?.release();
+      await settleBackgroundTranscriptsForTests().catch(() => undefined);
+      await Promise.all([targetLease.release(), pressureLease.release(), secondLease?.release()]);
       resetThreadsStoreForTests();
       restoreOptions();
     }
