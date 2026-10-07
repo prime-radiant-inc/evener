@@ -987,6 +987,110 @@ it("gives Send a typed command's own label, so VoiceOver hears what it runs", as
 	expect(hub.mutations()).toEqual([]);
 });
 
+// A typed /steer or /queue is the composer's Steer or Queue: the outbox
+// keeps it, so a lost answer isn't a failure, and what the hub took reads as
+// this phone's.
+it.each([
+	["/steer check the logs", "Steer", "turn/steer", "Steering · arrives at the next step"],
+	["/queue check the logs", "Queue", "turn/queue", "Queued · sends when this turn ends"],
+])("sends %s through the outbox", async (text, label, method, caption) => {
+	const ref = `ref-typed-${method}`;
+	const served = thread(ref, "active");
+	const { tree, hub } = await mount(served);
+	const client = hub.client as { request: (method: string, params: Record<string, unknown>) => Promise<unknown> };
+	const request = client.request;
+	client.request = async (requested, params) => {
+		const answer = await request(requested, params);
+		if (requested !== method) return answer;
+		// The hub took it, and its answer was lost.
+		const evener = (served as unknown as { evener: Record<string, unknown> }).evener;
+		if (method === "turn/queue")
+			evener.queue = { ...queueState(["check the logs"], 1), clientMutationIds: [params.clientMutationId] };
+		else
+			evener.pendingMutations = [
+				{
+					clientMutationId: params.clientMutationId,
+					method,
+					input: params.input,
+					executionState: "accepted",
+					projectionState: "pending",
+				},
+			];
+		throw new Error("connection lost");
+	};
+	await type(tree, text);
+	await press(tree, label);
+	const sent = hub.requests.filter((entry) => entry.method === method);
+	expect(sent.map((entry) => entry.params.input)).toEqual([[{ type: "text", text: "check the logs" }]]);
+	act(() =>
+		hub.notify({
+			method: "evener/thread/resync",
+			params: { ref, threadId: served.id },
+		} as AnyNotification),
+	);
+	await settle();
+	expect(field(tree)?.props.value).toBe("");
+	expect(renderedText(tree)).not.toContain("Couldn't");
+	expect(renderedText(tree)).toContain("check the logs");
+	expect(renderedText(tree)).toContain(caption);
+});
+
+// A typed command the outbox couldn't take never left the phone: it says try
+// again, and the text is still there to send.
+it("asks to try a typed /queue again when the phone couldn't keep it", async () => {
+	const { tree, hub } = await mount(thread("ref-typed-refused", "active"));
+	vi.spyOn(getNativeMutationRuntime(), "submit").mockRejectedValueOnce(new Error("disk full"));
+	await type(tree, "/queue check the logs");
+	await press(tree, "Queue");
+	expect(hub.mutations()).toEqual([]);
+	expect(renderedText(tree)).toContain("Couldn't save this on the phone. Try again.");
+	expect(renderedText(tree)).not.toContain("Could not confirm the command");
+	// Nothing left the phone, so the command goes back to the composer.
+	expect(field(tree)?.props.value).toBe("/queue check the logs");
+	expect(renderedText(tree)).not.toContain("Couldn't confirm");
+});
+
+// A typed /interrupt the phone couldn't keep says so, and stays to try again.
+it("asks to try a typed /interrupt again when the phone couldn't keep it", async () => {
+	const { tree, hub } = await mount(thread("ref-typed-interrupt-refused", "active"));
+	vi.spyOn(getNativeMutationRuntime(), "submit").mockRejectedValueOnce(new Error("disk full"));
+	await type(tree, "/interrupt");
+	await press(tree, "Interrupt");
+	expect(hub.mutations()).toEqual([]);
+	expect(renderedText(tree)).toContain("Couldn't save this on the phone. Try again.");
+	expect(renderedText(tree)).not.toContain("Stopped");
+	expect(field(tree)?.props.value).toBe("/interrupt");
+});
+
+// A typed /interrupt is Stop: it holds the messages this phone hasn't sent
+// yet, so they don't go out after it.
+it("holds the phone's unsent messages on /interrupt, as Stop does", async () => {
+	const { tree, hub } = await mount(thread("ref-typed-interrupt", "active"));
+	const client = hub.client as { request: (method: string, params: Record<string, unknown>) => Promise<unknown> };
+	const request = client.request;
+	let answerFirst: () => void = () => undefined;
+	const firstAnswered = new Promise<void>((resolve) => {
+		answerFirst = resolve;
+	});
+	client.request = async (requested, params) => {
+		const answer = request(requested, params);
+		if (requested === "turn/queue" && hub.requests.filter((entry) => entry.method === "turn/queue").length === 1)
+			await firstAnswered;
+		return answer;
+	};
+	await type(tree, "first");
+	await press(tree, "Queue message");
+	await type(tree, "second");
+	await press(tree, "Queue message");
+	await type(tree, "/interrupt");
+	await press(tree, "Interrupt");
+	await act(async () => answerFirst());
+	await settle();
+	expect(hub.mutations()).toEqual(["turn/queue", "turn/interrupt"]);
+	expect(renderedText(tree)).toContain("Held · you stopped this turn");
+	expect(renderedText(tree)).toContain("Stopped");
+});
+
 it("keeps the session open when /shutdown is typed and completed (ruling 19)", async () => {
 	const served = thread("ref-typed-shutdown", "idle");
 	// thread() shares the module-level CAPABILITIES object; clone it so this
@@ -3148,6 +3252,9 @@ describe("queued messages at the transcript's end (spec 8.5)", () => {
 		await press(tree, "Drain queue");
 		expect(hub.requests.filter((entry) => entry.method === "turn/drainAsSteer")).toEqual([]);
 		expect(renderedText(tree)).toContain(STEERING_WITH_QUEUE);
+		// Nothing was tried, so the command stays in the composer.
+		expect(field(tree)?.props.value).toBe("/drain-as-steer");
+		expect(renderedText(tree)).not.toContain("Couldn't confirm");
 	});
 
 	// /drain-as-steer is Steer all now typed: the same outbox, so a lost answer

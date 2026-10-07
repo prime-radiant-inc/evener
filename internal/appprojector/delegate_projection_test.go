@@ -48,6 +48,27 @@ func TestDelegateProjection_OwnerRootFencesForeignUpdates(t *testing.T) {
 	}
 }
 
+// A subagent's thread lists its subtree, so it takes an update for a delegate
+// below it, which still names the tree's root as owner. A row outside its
+// subtree stays fenced.
+func TestDelegateProjection_AncestorSubagentThreadReceivesSubtreeUpdates(t *testing.T) {
+	p := NewAppEventProjector("middle", "local:middle")
+	below := delegateProjectionFixture()
+	below.OwnerSessionID = "root"
+	below.AncestorSessionIDs = []string{"middle"}
+	params := requireDelegateProjection(t, p.Project(delegateProjectionEvent("middle", below)))
+	if params.ThreadID != "middle" || params.Ref != "local:middle" || params.Delegate.OwnerSessionID != "root" || params.Delegate.DelegateID != below.DelegateID {
+		t.Fatalf("subtree update on the middle thread = %+v", params)
+	}
+	elsewhere := delegateProjectionFixture()
+	elsewhere.DelegateID = "dlg_elsewhere"
+	elsewhere.OwnerSessionID = "root"
+	elsewhere.AncestorSessionIDs = []string{"sibling"}
+	if out := p.Project(delegateProjectionEvent("middle", elsewhere)); len(out) != 0 {
+		t.Fatalf("a row outside the middle subtree crossed the fence: %+v", out)
+	}
+}
+
 func TestDelegateProjection_RevisionRejectsStaleStateButMergesLatestActivityByMax(t *testing.T) {
 	p := NewAppEventProjector("owner", "local:owner")
 	newer := delegateProjectionFixture()

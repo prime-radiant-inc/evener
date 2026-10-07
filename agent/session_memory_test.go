@@ -885,7 +885,7 @@ func TestMemoryStorageWaitAndRecovery(t *testing.T) {
 	for _, operation := range []string{"setup", "index_read"} {
 		t.Run(operation, func(t *testing.T) {
 			root := t.TempDir()
-			path := memorySeed(t, root, "personal", "opaque-stalled-98")
+			memorySeed(t, root, "personal", "opaque-stalled-98")
 			memorySeed(t, root, "projects/fixture-project", "opaque-healthy-99")
 			clk := agenttest.NewFakeClock()
 			started, release := make(chan struct{}), make(chan struct{})
@@ -911,7 +911,7 @@ func TestMemoryStorageWaitAndRecovery(t *testing.T) {
 			want := "unavailable"
 			step := func(req llm.Request) llm.Response {
 				state, body, _ := memoryRequestIndex(t, req, "personal")
-				if state != want || (want == "unavailable" && body != "") || (want == "current" && body != "opaque-fresh-108") {
+				if state != want || (want == "unavailable" && body != "") || (want == "current" && body != "opaque-stalled-98") {
 					t.Errorf("personal state=%s body=%q want=%s", state, body, want)
 				}
 				_, healthy, _ := memoryRequestIndex(t, req, "project")
@@ -964,15 +964,14 @@ func TestMemoryStorageWaitAndRecovery(t *testing.T) {
 			s.memoryMu.Unlock()
 			unblock()
 			<-flight.done
-			if err := os.WriteFile(path, []byte("opaque-fresh-108"), 0o600); err != nil {
-				t.Fatal(err)
-			}
+			// The late read completed, so recovery publishes it rather than
+			// reading again.
 			want = "current"
 			if _, err := s.ProcessInput(context.Background(), "recover", nil); err != nil {
 				t.Fatal(err)
 			}
-			if indexReads.Load() != 2 {
-				t.Fatalf("recovery index reads=%d", indexReads.Load())
+			if indexReads.Load() != 1 {
+				t.Fatalf("recovery index reads=%d, want the late read published without another", indexReads.Load())
 			}
 		})
 	}

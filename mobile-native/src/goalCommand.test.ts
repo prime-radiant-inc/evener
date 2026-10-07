@@ -4,7 +4,7 @@ import type { ModelListResponse, Thread, ThreadClearResponse } from "@evener/app
 import { type ConversationClientLike, createConversationService } from "../../mobile/src/services/conversation";
 import { createActivityStore } from "../../mobile/src/state/activity";
 import { createConversationStore } from "../../mobile/src/state/conversation";
-import { submitComposerCommand } from "./composerCommand";
+import { CommandNotSentError, submitComposerCommand } from "./composerCommand";
 import { DraftDocument } from "./draftDocument";
 import { DraftRepository } from "./draftRepository";
 import { goalObjective, submitGoalCommand } from "./goalCommand";
@@ -15,6 +15,9 @@ const commandContext = {
 	reasoning: () => null,
 	turn: () => null,
 	drainQueue: async () => {},
+	drainRefusal: () => null,
+	submit: async () => {},
+	stop: async () => {},
 	local: async () => {},
 	openAside: (_ref: string, _title: string) => {},
 	cleared: (_response: ThreadClearResponse) => {},
@@ -77,8 +80,7 @@ function boundary() {
 		Object.assign(new FakeClient("ready"), {
 			request: async (method, params) => {
 				if (method === "thread/read") return io.read();
-				if (["turn/steer", "turn/queue", "turn/drainAsSteer", "turn/interrupt"].includes(method))
-					return io.lifecycle(method, params);
+				if (["turn/steer", "turn/queue", "turn/interrupt"].includes(method)) return io.lifecycle(method, params);
 				if (method === "model/list") return io.models();
 				if (method === "thread/fork" || method === "thread/clear") return io.lifecycle(method, params);
 				if (method === "thread/model/set" || method === "thread/reasoning-effort/set")
@@ -472,58 +474,117 @@ it.each(["advertised", "turn"])(
 	},
 );
 
+// Steer and queue go through the outbox, as the composer's do, never the
+// service: unconfirmed until the outbox admits them.
 it.each([
-	["/steer sentinel", "turn/steer", [{ type: "text", text: "sentinel" }]],
-	["/queue sentinel", "turn/queue", [{ type: "text", text: "sentinel" }]],
-	["/interrupt", "turn/interrupt", undefined],
-])("routes %s with acknowledged delivery and queue guards", async (text, method, input) => {
+	["/steer sentinel", "steer", [{ type: "text", text: "sentinel" }]],
+	["/queue sentinel", "queue", [{ type: "text", text: "sentinel" }]],
+] as const)("routes %s to the outbox, keeping it unconfirmed until admitted", async (text, kind, input) => {
 	const { db, document } = commandDraft();
-	const { io, service, thread } = boundary();
-	thread.evener.capabilities.steer = true;
-	thread.evener.capabilities.queue = true;
-	thread.evener.capabilities.interrupt = true;
-	let received = 0;
+	const { io, service } = boundary();
+	const submitted: unknown[] = [];
 	try {
 		await service.open("local:test");
-		io.lifecycle = async (actual, raw) => {
-			const params = raw as { clientMutationId: string };
-			received++;
-			expect(actual).toBe(method);
-			expect(raw).toEqual({
-				ref: "local:test",
-				expectedInstanceId: "instance",
-				clientMutationId: expect.any(String),
-				...(input ? { input } : {}),
-			});
-			expect(document.getSnapshot().record.unconfirmed).toBe(text);
-			return {
-				receipt: {
-					clientMutationId: params.clientMutationId,
-					instanceId: "instance",
-					threadId: "thread",
-					disposition: "applied",
-					projectionState: method === "turn/interrupt" ? "reflected" : "pending",
-					...(method === "turn/queue" ? { queueEntryIds: ["entry"] } : { turnId: "turn" }),
-				},
-			};
+		io.lifecycle = async (method) => {
+			throw new Error(`unexpected ${method}`);
 		};
 		document.edit(text);
 		await submitComposerCommand(document, service, {
 			...commandContext,
+			submit: async (...args) => {
+				submitted.push(args);
+				expect(document.getSnapshot().record.unconfirmed).toBe(text);
+			},
 			// Every steering command and Stop read the session's controls
 			// (sessionControls): a running turn on a harness that advertises
-			// the action; the argless drain also needs a queue to drain.
+			// the action.
 			turn: () => ({
 				status: { type: "active" },
 				capabilities: { steer: true, queue: true, interrupt: true },
 				queue: { revision: 7, depth: 0 },
 			}),
 		});
-		expect(received).toBe(1);
+		expect(submitted).toEqual([[kind, input]]);
 		expect(document.getSnapshot().record).toMatchObject({
 			draft: "",
 			unconfirmed: null,
 		});
+	} finally {
+		service.close();
+		db.close();
+	}
+});
+
+// /interrupt is the Stop button's own stop, never the service.
+it("routes /interrupt to Stop", async () => {
+	const { db, document } = commandDraft();
+	const { io, service } = boundary();
+	let stopped = 0;
+	try {
+		await service.open("local:test");
+		io.lifecycle = async (method) => {
+			throw new Error(`unexpected ${method}`);
+		};
+		document.edit("/interrupt");
+		await submitComposerCommand(document, service, {
+			...commandContext,
+			stop: async () => {
+				stopped++;
+			},
+			turn: () => ({ status: { type: "active" }, capabilities: { interrupt: true }, queue: null }),
+		});
+		expect(stopped).toBe(1);
+		expect(document.getSnapshot().record).toMatchObject({ draft: "", unconfirmed: null });
+	} finally {
+		service.close();
+		db.close();
+	}
+});
+
+// A drain the phone refuses up front is never tried: the command stays put.
+it("refuses /drain-as-steer before submitting while the drain is refused", async () => {
+	const { db, document } = commandDraft();
+	const { service } = boundary();
+	let drained = 0;
+	try {
+		await service.open("local:test");
+		document.edit("/drain-as-steer");
+		await expect(
+			submitComposerCommand(document, service, {
+				...commandContext,
+				drainRefusal: () => "already steering",
+				drainQueue: async () => {
+					drained++;
+				},
+				turn: () => ({ status: { type: "active" }, capabilities: { steer: true }, queue: { revision: 7, depth: 2 } }),
+			}),
+		).rejects.toThrow("already steering");
+		expect(drained).toBe(0);
+		expect(document.getSnapshot().record).toMatchObject({ draft: "/drain-as-steer", unconfirmed: null });
+	} finally {
+		service.close();
+		db.close();
+	}
+});
+
+// A command the phone couldn't keep never left it: its text goes back to the
+// composer, and the refusal still reaches the screen.
+it("returns a command the phone couldn't keep to the composer", async () => {
+	const { db, document } = commandDraft();
+	const { service } = boundary();
+	try {
+		await service.open("local:test");
+		document.edit("/drain-as-steer");
+		await expect(
+			submitComposerCommand(document, service, {
+				...commandContext,
+				drainQueue: async () => {
+					throw new CommandNotSentError("Couldn't steer with these messages now.");
+				},
+				turn: () => ({ status: { type: "active" }, capabilities: { steer: true }, queue: { revision: 7, depth: 2 } }),
+			}),
+		).rejects.toThrow("Couldn't steer with these messages now.");
+		expect(document.getSnapshot().record).toMatchObject({ draft: "/drain-as-steer", unconfirmed: null });
 	} finally {
 		service.close();
 		db.close();
@@ -562,7 +623,7 @@ it("routes /drain-as-steer to the outbox drain, keeping it unconfirmed until adm
 	}
 });
 
-it.each(["/steer sentinel", "/queue sentinel", "/drain-as-steer"])(
+it.each(["/steer sentinel", "/queue sentinel", "/drain-as-steer", "/interrupt"])(
 	"retains %s without a live turn instead of sending chat",
 	async (text) => {
 		const { db, document } = commandDraft();

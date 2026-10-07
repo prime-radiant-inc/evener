@@ -3,7 +3,7 @@
 import type { ReactTestInstance, ReactTestRenderer } from "react-test-renderer";
 import { act } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { pressable, render, textOf } from "../renderNative.testkit";
+import { pressable, render, textOf, unmountMountedTrees } from "../renderNative.testkit";
 import { sheetKey } from "../sheet/sheetHosts";
 import { OutlineSheet } from "./OutlineSheet";
 import { type ReaderHost, readerHosts } from "./readerHosts";
@@ -20,7 +20,6 @@ vi.mock("@react-navigation/native", () => ({
 
 const KEY = sheetKey("studio", "local:fix", "docs/plan.md");
 const owner = {};
-const trees: ReactTestRenderer[] = [];
 const order: string[] = [];
 
 beforeEach(() => {
@@ -29,7 +28,7 @@ beforeEach(() => {
 	navigation.goBack.mockImplementation(() => order.push("goBack"));
 });
 afterEach(() => {
-	for (const tree of trees.splice(0)) act(() => tree.unmount());
+	unmountMountedTrees();
 	readerHosts.release(KEY, owner);
 });
 
@@ -47,7 +46,6 @@ function mount(host: ReaderHost) {
 			navigation={navigation as never}
 		/>,
 	);
-	trees.push(tree);
 	return tree;
 }
 

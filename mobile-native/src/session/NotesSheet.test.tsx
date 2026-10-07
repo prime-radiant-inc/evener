@@ -15,6 +15,7 @@ import {
 	renderedText,
 	swipeRowFully,
 	textOf,
+	unmountMountedTrees,
 } from "../renderNative.testkit";
 import type { Routes } from "../screens";
 import { sheetKey } from "../sheet/sheetHosts";
@@ -85,7 +86,6 @@ function memoryStorage(): SyncStringStorage {
 
 let owner: object;
 let controller: NotesController | null = null;
-const mounted: ReactTestRenderer[] = [];
 
 /** The screen's side: a controller over a hub that saves and removes, and the
  * host it provides under the session's key. */
@@ -127,7 +127,6 @@ function sheet(focusEditor?: boolean): ReactTestRenderer {
 		navigation,
 	} as unknown as NativeStackScreenProps<Routes, "NotesSheet">;
 	const tree = render(<NotesSheet {...props} />);
-	mounted.push(tree);
 	return tree;
 }
 
@@ -160,7 +159,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-	for (const tree of mounted.splice(0)) act(() => tree.unmount());
+	unmountMountedTrees();
 	notesHosts.release(sheetKey(HUB, REF), owner);
 	controller?.dispose();
 	controller = null;
@@ -530,7 +529,6 @@ describe("closing the sheet", () => {
 		const tree = sheet();
 		act(() => editor(tree)?.props.onChangeText("keep the tests"));
 		act(() => tree.unmount());
-		mounted.splice(mounted.indexOf(tree), 1);
 		await flush();
 		expect(
 			requests.filter((request) => request.method === "notes/human/set").map((request) => request.params.note),
@@ -549,7 +547,6 @@ describe("closing the sheet", () => {
 		expect(requests.map((request) => request.method)).toEqual(["notes/human/set"]);
 		expect(saved).not.toHaveBeenCalled();
 		act(() => tree.unmount());
-		mounted.splice(mounted.indexOf(tree), 1);
 		expect(appState.listeners).toEqual([]);
 	});
 
@@ -570,7 +567,6 @@ describe("closing the sheet", () => {
 		// finish() unmounts this component after that release, in that order.
 		act(() => notesHosts.release(sheetKey(HUB, REF), owner));
 		act(() => tree.unmount());
-		mounted.splice(mounted.indexOf(tree), 1);
 		await flush();
 		expect(
 			requests.filter((request) => request.method === "notes/human/set").map((request) => request.params.note),

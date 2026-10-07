@@ -102,11 +102,29 @@ baseline (blank lines ignored), with the same lower-trust framing and route to
 `memory_read`. Both sides are compared as projected, within the 8 KiB cap, so
 a change past the cap appends nothing. A change whose block would pass 2 KiB is reported as counts of
 added and removed lines. The new index becomes the baseline, so an unchanged
-turn appends nothing. Missing and revoked states still
+turn appends nothing.
+
+The session also keeps a record (a content digest, or absence) of each page it
+read with `memory_read`, other than `MEMORY.md`. The record is taken from the
+bytes that read loaded, so a change another session makes right after it is
+noticed; an `offset` or `limit` read loads the whole page too, so it records
+the whole page as of that read. Its own write, edit or delete of such a page
+updates the record from a read-back of the file. The same first-model-call read rechecks
+those pages, and when another session changed or removed one, appends one
+notice per scope naming each such page as changed or removed, with the route to
+`memory_read`. A notice never carries page contents and never names a page the
+session has not read. The session tracks at most the 32 pages per scope it
+most recently read with `memory_read`; reading a 33rd stops tracking the least
+recently read one (its own writes update a tracked page's record without
+changing its place). Page records survive compaction; a resumed session starts
+with none. Missing and revoked states still
 supersede the previous current context, and unavailable storage is not
 presented as freshly read. A read of a known index that misses the refresh's
 wait, or that the session's own write made stale, observes nothing and changes
-nothing. Historical context remains recorded history.
+nothing at that boundary. A late read that later completes is still a genuine
+read: the next turn-start boundary publishes it rather than reading again, so a
+slow read never starves the refresh. A stale one is discarded and read afresh.
+Historical context remains recorded history.
 
 Web and native transcripts show each index observation as a standalone
 **Refreshed my memory** notification. It starts collapsed at every detail level,

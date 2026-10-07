@@ -51,6 +51,21 @@ type delegateRuntime struct {
 type stableDelegateSendOutcome struct {
 	result sendMessageResult
 	commit *delegateToolResultCommit
+	// heldCommit acknowledges, before commit, the held earlier result the
+	// reply carries (result.Earlier).
+	heldCommit *delegateToolResultCommit
+}
+
+// inlineOutcome is the send's reply for a resolved inline wait: result, which
+// already carries the newest result, plus the held earlier result the wait
+// collected with its commit (#3906).
+func inlineOutcome(result sendMessageResult, resolution delegateInlineResolution) stableDelegateSendOutcome {
+	outcome := stableDelegateSendOutcome{result: result, commit: resolution.commit}
+	if earlier := resolution.earlier; earlier != nil {
+		outcome.result.Earlier = []delegatestore.TerminalPacket{earlier.packet}
+		outcome.heldCommit = earlier.commit
+	}
+	return outcome
 }
 
 type delegateRunLeaseContextKey struct{}
@@ -1802,10 +1817,16 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 		result.TimedOut = true
 		return stableDelegateSendOutcome{result: result}
 	}
+	completeStableDelegateSendResult(&result, *resolution.packet)
+	return inlineOutcome(result, resolution)
+}
+
+// completeStableDelegateSendResult fills result as a send whose wait reached
+// packet, a terminal result of its delegate.
+func completeStableDelegateSendResult(result *sendMessageResult, packet delegatestore.TerminalPacket) {
 	result.RunningInBackground = false
 	result.Action = "completed"
-	populateStableDelegateSendResult(&result, *resolution.packet)
-	return stableDelegateSendOutcome{result: result, commit: resolution.commit}
+	populateStableDelegateSendResult(result, packet)
 }
 
 func populateStableDelegateSendResult(result *sendMessageResult, packet delegatestore.TerminalPacket) {
@@ -1941,7 +1962,7 @@ func (runtime delegateRuntime) stableSendFailureOutcomeAfterDispatch(ctx context
 	}
 	result.Action = "completed"
 	result.RunningInBackground = false
-	return stableDelegateSendOutcome{result: result, commit: resolution.commit}
+	return inlineOutcome(result, resolution)
 }
 
 func stableDelegateFailedSendResult(started delegateStartCommit, plans delegateMutationPlans, cause error) sendMessageResult {
@@ -3166,11 +3187,29 @@ func (s *Session) emitStableDelegateUpdate(plan delegateUpdatePlan) {
 		ownerID := row.descriptor.OwnerSessionID
 		s.delegateController.mu.Lock()
 		logicalOwner := sessionActivityDelegateOwner(s.delegateController.durable, s.delegateController.durable[row.id])
+		var ancestry []string
+		if logicalOwner != "" {
+			ancestry = s.delegateController.sessionAncestryLocked(logicalOwner)
+		}
+		ancestors, ancestorRuntimes := s.delegateController.ancestorSubagentRuntimesLocked(ancestry)
+		ownerRuntime := s.delegateController.runtimeForDelegateOwnerLocked(row)
 		s.delegateController.mu.Unlock()
-		s.emitSessionActivityChanged(logicalOwner, appwire.SessionActivityResourceDelegates)
+		s.publishSessionActivityChanged(logicalOwner, ancestry, appwire.SessionActivityResourceDelegates)
 		data := delegateUpdatedDataFromStatus(delegateStatusInfoFromSnapshot(now, rootID, row))
-		if runtime := s.delegateController.runtimeForDelegateOwner(row); runtime != nil {
-			runtime.emitWithProvenance(events.EventDelegateUpdated, data, row.descriptor.Provenance)
+		data.AncestorSessionIDs = ancestors
+		// A subagent's own thread lists its subtree, so each live ancestor
+		// subagent's stream carries the update too. A released ancestor gets
+		// none: forwarding for it would reopen its closed thread's history, and
+		// its next thread read lists the row afresh. The owner is the root for
+		// every current row, so the guard only matters for a row a parent
+		// session owns, whose owner stream already carries it.
+		for _, runtime := range ancestorRuntimes {
+			if runtime != ownerRuntime {
+				runtime.emitWithProvenance(events.EventDelegateUpdated, data, row.descriptor.Provenance)
+			}
+		}
+		if ownerRuntime != nil {
+			ownerRuntime.emitWithProvenance(events.EventDelegateUpdated, data, row.descriptor.Provenance)
 			continue
 		}
 		s.mu.Lock()
@@ -3187,12 +3226,28 @@ func (s *Session) emitStableDelegateUpdate(plan delegateUpdatePlan) {
 	}
 }
 
-func (c *delegateTreeController) runtimeForDelegateOwner(row delegateSnapshot) *Session {
+// ancestorSubagentRuntimesLocked lists the subagent sessions of ancestry (a
+// sessionAncestryLocked chain), nearest first and without the root, and the
+// live runtime of each one that has one.
+func (c *delegateTreeController) ancestorSubagentRuntimesLocked(ancestry []string) ([]string, []*Session) {
+	var ancestors []string
+	var runtimes []*Session
+	for _, sessionID := range ancestry {
+		if sessionID == c.rootSessionID {
+			break
+		}
+		ancestors = append(ancestors, sessionID)
+		if live := c.live[c.delegateOwnerOfSessionLocked(sessionID)]; live != nil && live.runtime != nil && live.runtime.ID() == sessionID {
+			runtimes = append(runtimes, live.runtime)
+		}
+	}
+	return ancestors, runtimes
+}
+
+func (c *delegateTreeController) runtimeForDelegateOwnerLocked(row delegateSnapshot) *Session {
 	if c == nil {
 		return nil
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	if row.descriptor.OwnerSessionID == c.rootSessionID {
 		return c.rootRuntime
 	}

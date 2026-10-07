@@ -8,7 +8,7 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import type { ReactElement } from "react";
 import { FlatList } from "react-native";
 import { act, type ReactTestRenderer } from "react-test-renderer";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { beforeEach, expect, it, vi } from "vitest";
 import { playedHaptics, pressable, render, renderedText, screenConnection } from "../renderNative.testkit";
 import { Toast } from "../Toast";
 import { forgetStopRequestsForHub, stopRequests } from "./nativeStopRequests";
@@ -121,7 +121,6 @@ let navigation: {
 	setOptions: ReturnType<typeof vi.fn>;
 	options: NativeStackNavigationOptions[];
 };
-const trees: ReactTestRenderer[] = [];
 
 function hub(pages: (continuation: string | undefined) => unknown) {
 	const next = new FakeClient("ready");
@@ -141,9 +140,6 @@ beforeEach(() => {
 	harness.connection = screenConnection(client, "ready");
 	const options: NativeStackNavigationOptions[] = [];
 	navigation = { navigate: vi.fn(), push: vi.fn(), setOptions: vi.fn((next) => options.push(next)), options };
-});
-afterEach(() => {
-	for (const tree of trees.splice(0)) act(() => tree.unmount());
 });
 
 async function settle() {
@@ -177,7 +173,6 @@ async function mount(flush = true) {
 			navigation={navigation as never}
 		/>,
 	);
-	trees.push(tree);
 	if (flush) await settle();
 	return tree;
 }

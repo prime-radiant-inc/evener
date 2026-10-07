@@ -1206,12 +1206,12 @@ func jobResultBody(raw string) (string, bool) {
 		if !ok || len(earlier.EarlierResults) != 0 {
 			return "", false
 		}
-		fmt.Fprintf(&b, "earlier result %d of %d, not delivered before:\n", i+1, len(r.EarlierResults))
+		b.WriteString(earlierResultHeader(i, len(r.EarlierResults)))
 		b.WriteString(jobResultStatus(earlier, string(element)))
 		b.WriteString(jobResultOutput(earlier))
 	}
 	if len(r.EarlierResults) != 0 {
-		b.WriteString("latest result:\n")
+		b.WriteString(latestResultHeader)
 	}
 	b.WriteString(jobResultOutput(r))
 	return b.String(), true
