@@ -70,6 +70,13 @@ full suite as the source of truth. Reserve a local full run (`make test`,
 `make merge-approval-gate`) for when you need it, such as reproducing a CI
 failure.
 
+Run the heavy local gates one at a time — `make test-web`, `make vet` and
+`make lint` serially, not as parallel background jobs. The web gate's
+flush-scope hygiene meta-test scans every frontend test file inside
+vitest's default 5s ceiling, and a concurrent lane can time it out with
+everything else green (#3966): a lone 5000ms timeout there is contention,
+not a regression, so rerun the gate alone before diagnosing the tree.
+
 Use this boundary:
 
 - Evener plumbing: use a scripted provider at the LLM boundary and exercise real
@@ -108,7 +115,11 @@ rules, so an explicit-path Biome run over them reports violations the gate does
 not enforce. Do not "fix" those to satisfy an out-of-scope invocation. Use
 `make test-web` as the canonical frontend unit, typecheck, and Biome gate; on
 Chrome-capable hosts, also run `make test-web-browser` for real geometry and
-browser guards. CI checks Biome formatting. Avoid `noNonNullAssertion` and
+browser guards. `npm test`/vitest never typechecks — esbuild strips types
+without checking them — so a green targeted vitest run says nothing about
+`tsc`: run `make test-web`, or `npm run typecheck` in
+`cmd/evener-hub/frontend`, before claiming a frontend change typechecks.
+CI checks Biome formatting. Avoid `noNonNullAssertion` and
 array-index-key violations.
 
 The typecheck step runs `npm run typecheck` (`tsc --noEmit --incremental
