@@ -962,8 +962,8 @@ func TestMemoryRefreshRecordsWhatMemoryReadSaw(t *testing.T) {
 		}
 	}
 	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root, testOnly: testConfig{memoryBeforeIO: func(scope, op string) error {
-		// Any read the session makes after memory_read's own read is where
-		// another session's change lands.
+		// memory_read's seam between its read and the page's record: another
+		// session's change lands here.
 		if op == "record" {
 			change()
 		}
@@ -973,10 +973,60 @@ func TestMemoryRefreshRecordsWhatMemoryReadSaw(t *testing.T) {
 	if res := memoryExec(t, s, "memory_read", map[string]any{"scope": "personal", "file_path": "opaque-raced-page.md"}); res.IsError {
 		t.Fatal(res.Output)
 	}
-	change()
+	if !changed.Load() {
+		t.Fatal("memory_read never reached its record seam")
+	}
 	before := memoryContextCount(s)
 	s.maybeAppendMemoryContext(context.Background(), true)
 	if got := memoryContextCount(s); got != before+1 || !strings.Contains(lastMemoryContextText(s), "opaque-raced-page.md") {
 		t.Fatalf("contexts=%d last=%q, want a notice for the raced page", got-before, lastMemoryContextText(s))
+	}
+}
+
+// A page notice is not an index projection: a resumed session whose only
+// memory context for a scope was a page notice still suppresses its first
+// missing index, as a fresh session does.
+func TestMemoryRefreshResumeIgnoresPageNoticesWhenSeedingObservedScopes(t *testing.T) {
+	t.Parallel()
+	root, history, workspace := t.TempDir(), t.TempDir(), t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "memory", "personal"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	page := writeMemoryPage(t, root, "opaque-noticed-page.md", "opaque-noticed-body-1\n")
+	s := newSession(t, withDir(workspace), withConfig(SessionConfig{StateDir: history, MemoryStateRoot: root}), withSteps(
+		func(llm.Request) llm.Response {
+			return memoryCallResponse("memory_read", map[string]any{"scope": "personal", "file_path": "opaque-noticed-page.md"})
+		},
+		func(llm.Request) llm.Response { return finalResponse("read") },
+		func(req llm.Request) llm.Response {
+			if !strings.Contains(latestMemoryContext(req, "personal"), "opaque-noticed-page.md") {
+				t.Fatal("fixture produced no page notice")
+			}
+			return finalResponse("noticed")
+		},
+	))
+	if _, err := s.ProcessInput(context.Background(), "read", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(page, []byte("opaque-noticed-body-2\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ProcessInput(context.Background(), "notice", nil); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	meta, err := schema.LoadSessionMeta(history, s.id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := RestoreSessionFromMetaWithConfig(s.client, s.profile, execenv.NewLocalExecutionEnvironment(workspace), meta, RestoreSessionConfig{StateDir: history, MemoryStateRoot: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	before := memoryContextCount(r)
+	r.maybeAppendMemoryContext(context.Background(), true)
+	if got := memoryContextCount(r); got != before {
+		t.Fatalf("resume projected %d memory contexts for a missing index never projected before, want none: %q", got-before, lastMemoryContextText(r))
 	}
 }

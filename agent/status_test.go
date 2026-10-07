@@ -991,6 +991,40 @@ func TestSessionOwnedDelegateIDs_ListsDescendantSessionsTheRootOwns(t *testing.T
 	}
 }
 
+// cancelAfterFoldWait reports the context canceled once a caller has started
+// waiting on Done: the journal fold waits on Done for its result, so the
+// cancellation lands after the fold however often the fold checks Err first.
+type cancelAfterFoldWait struct {
+	context.Context
+	waited bool
+}
+
+func (ctx *cancelAfterFoldWait) Done() <-chan struct{} {
+	ctx.waited = true
+	return ctx.Context.Done()
+}
+
+func (ctx *cancelAfterFoldWait) Err() error {
+	if ctx.waited {
+		return context.Canceled
+	}
+	return ctx.Context.Err()
+}
+
+// A force-stop that gives up after the journal fold gets its cancellation back
+// rather than a walk's result.
+func TestSessionOwnedDelegateIDs_HonorsCancellationAfterTheFold(t *testing.T) {
+	t.Parallel()
+	const rootID = "02wMz5Txv1C3Hut0M8GCeP"
+	const childID = "02wMz5Txv1C3Hut0M8GCeQ"
+	stateDir := t.TempDir()
+	writePastStableDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, childID, "child"))
+	ctx := &cancelAfterFoldWait{Context: t.Context()}
+	if ids, err := SessionOwnedDelegateIDs(ctx, stateDir, rootID); !errors.Is(err, context.Canceled) {
+		t.Fatalf("SessionOwnedDelegateIDs after cancellation = %v, %v; want context.Canceled", ids, err)
+	}
+}
+
 // A subagent's own thread lists the delegates in its subtree, as a root's
 // thread lists its whole tree: a transcript opened on the subagent then has a
 // roster entry for every subagent row it shows. Rows keep the tree's owner and
