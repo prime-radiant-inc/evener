@@ -1675,7 +1675,7 @@ type delegateSendResult struct {
 	WaitIgnoredReason string                      `json:"wait_ignored_reason,omitempty"`
 	// EarlierResults are results of the same delegate the caller had not
 	// yet received, oldest first, carried ahead of this one by a wait that
-	// collected them (#3906). Each is delivered here and nowhere else.
+	// collected them (#3906).
 	EarlierResults []delegateSendResult `json:"earlier_results,omitempty"`
 }
 
@@ -1815,22 +1815,26 @@ func delegateSendResultFrom(res sendMessageResult) delegateSendResult {
 		out.StructuredResultReason = res.StructuredResultReason
 	}
 	for _, packet := range res.Earlier {
-		earlier := sendMessageResult{DelegateID: res.DelegateID, Type: res.Type, Action: "completed"}
+		earlier := sendMessageResult{DelegateID: res.DelegateID, Type: res.Type, Action: "completed", TranscriptRef: res.TranscriptRef}
 		populateStableDelegateSendResult(&earlier, packet)
 		out.EarlierResults = append(out.EarlierResults, delegateSendResultFrom(earlier))
 	}
 	return out
 }
 
-// formatDelegateSend renders a delegate send/steer/start result: any reply output,
-// a bracketed footer, and the structured_result (JSON, genuinely structured) when
-// present.
+// formatDelegateSend renders a delegate send/steer/start result: any earlier
+// results it carries, numbered and each rendered the same way, then any reply
+// output, a bracketed footer, and the structured_result (JSON, genuinely
+// structured) when present.
 func formatDelegateSend(out delegateSendResult) string {
 	var b strings.Builder
-	for _, earlier := range out.EarlierResults {
-		b.WriteString("earlier result, not delivered before:\n")
+	for i, earlier := range out.EarlierResults {
+		fmt.Fprintf(&b, "earlier result %d of %d, not delivered before:\n", i+1, len(out.EarlierResults))
 		b.WriteString(formatDelegateSend(earlier))
 		b.WriteString("\n\n")
+	}
+	if len(out.EarlierResults) != 0 {
+		b.WriteString("latest result:\n")
 	}
 	if out.Output != nil && *out.Output != "" {
 		b.WriteString(*out.Output)
