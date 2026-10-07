@@ -25,6 +25,7 @@ const DETAIL_FIELDS = [
 	"tasks",
 	"watchEvidence",
 	"sendReply",
+	"sendEarlierReplies",
 	"sendWaitIgnored",
 ] as const satisfies readonly (keyof ActivityDetail)[];
 

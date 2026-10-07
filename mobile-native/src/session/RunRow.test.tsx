@@ -396,6 +396,7 @@ describe("a step's evidence", () => {
 			tasks: [{ id: 1, status: "in_progress", description: "Fix the drain" }],
 			watchEvidence: "Check the deploy finished.",
 			sendReply: "Yes, drain ordering is safe.",
+			sendEarlierReplies: ["The first pass found the race."],
 			sendWaitIgnored: "delegate is already running",
 		};
 		const full: Run = { kind: "run", id: "run:full", turnId: "t1", steps: [{ ...step("f", "job_watch", {}), detail }] };

@@ -292,6 +292,29 @@ describe("each tool's evidence, as the tools print it", () => {
 		]);
 	});
 
+	// A send whose wait carried results the caller had not yet received
+	// (#3906) shows each, numbered and oldest first, ahead of its reply.
+	it("shows the earlier replies a send's wait carried ahead of its reply", () => {
+		const waited = subagentWireStep("call_send_2");
+		const raw = {
+			...(waited.raw as Record<string, unknown>),
+			earlier_results: [
+				{ delegate_id: "dlg_x", action: "completed", running_in_background: false, output: "First." },
+				{ delegate_id: "dlg_x", action: "completed", running_in_background: false, output: "Second." },
+			],
+		};
+		expect(stepEvidence({ label: "delegate_send", detail: activityDetail({ ...waited, raw }) })).toEqual([
+			{ kind: "markdown", title: "Message", markdown: "Is drain ordering safe now?" },
+			{ kind: "markdown", title: "Earlier reply 1 of 2", markdown: "First." },
+			{ kind: "markdown", title: "Earlier reply 2 of 2", markdown: "Second." },
+			{
+				kind: "markdown",
+				title: "Reply",
+				markdown: "Yes: tree settle now waits for the drain, and a test pins the order.",
+			},
+		]);
+	});
+
 	// A wait the send couldn't honour says why, from its footer.
 	it("says why a send's wait was ignored", () => {
 		const ignored = {

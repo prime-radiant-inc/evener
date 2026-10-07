@@ -65,6 +65,7 @@ import {
 	stripSystemReminder,
 	systemEventWords,
 	composeStepWords,
+	delegateSendEarlierResponses,
 	delegateSendResponse,
 	delegateSendWaitIgnoredReason,
 	toolFamily,
@@ -157,6 +158,10 @@ export interface ActivityDetail {
 	// for every other step, and when the send got no reply or its wait was
 	// honoured.
 	sendReply?: string;
+	// The earlier replies a send's wait carried ahead of its own, oldest first
+	// (the package's delegateSendEarlierResponses): results the caller had not
+	// yet received. Absent when there are none.
+	sendEarlierReplies?: readonly string[];
 	sendWaitIgnored?: string;
 }
 
@@ -640,6 +645,7 @@ export function activityDetail(it: ItemModel): ActivityDetail {
 	const watchEvidence = it.toolName === "job_watch" ? jobWatchEvidence(it) : undefined;
 	const send = toolFamily(it.toolName ?? "") === "message";
 	const sendReply = send ? delegateSendResponse(it) : undefined;
+	const sendEarlierReplies = send ? delegateSendEarlierResponses(it) : [];
 	const sendWaitIgnored = send ? delegateSendWaitIgnoredReason(it) : undefined;
 	return {
 		description: activityDescription(it),
@@ -654,6 +660,7 @@ export function activityDetail(it: ItemModel): ActivityDetail {
 		...(tasks ? { tasks } : {}),
 		...(watchEvidence !== undefined ? { watchEvidence } : {}),
 		...(sendReply !== undefined ? { sendReply } : {}),
+		...(sendEarlierReplies.length > 0 ? { sendEarlierReplies } : {}),
 		...(sendWaitIgnored !== undefined ? { sendWaitIgnored } : {}),
 	};
 }
@@ -1421,6 +1428,10 @@ function truncateActivityDetail(detail: ActivityDetail, bound: BoundText): Activ
 	const error = detail.error ? bound(detail.error) : detail.error;
 	const watchEvidence = detail.watchEvidence ? bound(detail.watchEvidence) : detail.watchEvidence;
 	const sendReply = detail.sendReply ? bound(detail.sendReply) : detail.sendReply;
+	const earlierBounded = detail.sendEarlierReplies?.map(bound);
+	const sendEarlierReplies = earlierBounded?.every((reply, i) => reply === detail.sendEarlierReplies?.[i])
+		? detail.sendEarlierReplies
+		: earlierBounded;
 	const sendWaitIgnored = detail.sendWaitIgnored ? bound(detail.sendWaitIgnored) : detail.sendWaitIgnored;
 	// Nothing was cut: hand back the source detail so a settled row keeps its
 	// identity across publishes (see truncateItem).
@@ -1433,6 +1444,7 @@ function truncateActivityDetail(detail: ActivityDetail, bound: BoundText): Activ
 		error === detail.error &&
 		watchEvidence === detail.watchEvidence &&
 		sendReply === detail.sendReply &&
+		sendEarlierReplies === detail.sendEarlierReplies &&
 		sendWaitIgnored === detail.sendWaitIgnored
 	) {
 		return detail;
@@ -1447,6 +1459,7 @@ function truncateActivityDetail(detail: ActivityDetail, bound: BoundText): Activ
 		error,
 		watchEvidence,
 		sendReply,
+		sendEarlierReplies,
 		sendWaitIgnored,
 	};
 }
