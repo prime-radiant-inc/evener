@@ -95,9 +95,7 @@ export function ghosts(
 	// a promote names its message, and a drain takes the queue at the revision
 	// it names (anything queued after that is still queued).
 	const promoted = new Set(own.flatMap((entry) => entry.queueEntryId ?? []));
-	const drainsShownQueue = (entry: PendingTurnEntry) =>
-		entry.queueRevision !== undefined && entry.queueRevision === session?.queue?.revision;
-	const draining = own.some(drainsShownQueue);
+	const draining = own.some((entry) => drainsShownQueue(session, entry));
 	if (session && !draining)
 		out.push(
 			...queueGhosts(session).filter(
@@ -129,7 +127,7 @@ export function ghosts(
 		if (entry.state === "canceled") {
 			// A held drain sends only the queue it saw; once that has changed the
 			// hub would refuse it, and the queue shows its messages again.
-			const stale = session !== null && entry.queueRevision !== undefined && !drainsShownQueue(entry);
+			const stale = session !== null && entry.queueRevision !== undefined && !drainsShownQueue(session, entry);
 			out.push(
 				stale
 					? { ...pendingGhost(entry, "held", ["cancel"]), note: QUEUE_CHANGED }
@@ -165,6 +163,25 @@ export function ghosts(
 /** What a queued message says: its full text, else its preview, else "". */
 export function queuedMessageText(queue: GhostSource["queue"], index: number): string {
 	return queue?.texts?.[index] || queue?.preview?.[index] || "";
+}
+
+function drainsShownQueue(session: GhostSource | null, entry: PendingTurnEntry): boolean {
+	return entry.queueRevision !== undefined && entry.queueRevision === session?.queue?.revision;
+}
+
+/** Whether this phone has a steer of its own, on its way or held, with the
+ * queue as shown: a promote of a message still in it, or a drain of it. Steer
+ * all now would take those messages too, so it waits. */
+export function steeringWithQueue(
+	session: GhostSource | null,
+	pending: readonly PendingTurnEntry[] | null | undefined,
+): boolean {
+	const ids = session?.queue?.ids ?? [];
+	return (pending ?? []).some(
+		(entry) =>
+			entry.fromThisClient &&
+			((entry.queueEntryId !== undefined && ids.includes(entry.queueEntryId)) || drainsShownQueue(session, entry)),
+	);
 }
 
 function queueGhosts(session: GhostSource): Ghost[] {
