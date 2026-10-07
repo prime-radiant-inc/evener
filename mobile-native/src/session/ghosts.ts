@@ -153,6 +153,11 @@ export function ghosts(
 	return out;
 }
 
+/** What a queued message says: its full text, else its preview, else "". */
+export function queuedMessageText(queue: GhostSource["queue"], index: number): string {
+	return queue?.texts?.[index] || queue?.preview?.[index] || "";
+}
+
 function queueGhosts(session: GhostSource): Ghost[] {
 	const queue = session.queue;
 	const depth = queue?.depth ?? 0;
@@ -162,7 +167,7 @@ function queueGhosts(session: GhostSource): Ghost[] {
 	return Array.from({ length: depth }, (_, index): Ghost => {
 		const id = queue?.ids?.[index];
 		const fullText = queue?.texts?.[index] ?? "";
-		const text = fullText || queue?.preview?.[index] || "Queued message";
+		const text = queuedMessageText(queue, index) || "Queued message";
 		const buttons: GhostAction[] = held
 			? canDrain
 				? ["sendNow", "cancel"]

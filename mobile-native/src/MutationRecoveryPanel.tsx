@@ -90,7 +90,11 @@ export function recordCarriesAttachments(record: MutationRecoveryRecord<Mutation
 // fallback the web recovery draft takes, so no recoverable text is lost.
 export function recoveredComposerText(record: MutationRecoveryRecord<MutationAttachmentRef>): string {
 	if (typeof record.composerText === "string" && record.composerText.length > 0) return record.composerText;
-	const input = record.payload.input;
+	return inputText(record.payload.input);
+}
+
+// The text items of an input list, one per line; "" for anything else.
+function inputText(input: unknown): string {
 	if (!Array.isArray(input)) return "";
 	return input
 		.filter(isTextInputItem)
@@ -102,13 +106,7 @@ export function recoveredComposerText(record: MutationRecoveryRecord<MutationAtt
 // ghost shows them from the record's display.
 function queuedSteerText(record: MutationRecoveryRecord<MutationAttachmentRef>): string | undefined {
 	if (record.method !== "turn/promoteQueuedAsSteer" && record.method !== "turn/drainAsSteer") return undefined;
-	if (recoveredComposerText(record) !== "") return undefined;
-	const display = record.optimisticDisplay as { input?: unknown } | null;
-	const input = Array.isArray(display?.input) ? display.input : [];
-	return input
-		.filter(isTextInputItem)
-		.map((item) => item.text)
-		.join("\n");
+	return inputText((record.optimisticDisplay as { input?: unknown } | null)?.input);
 }
 
 // Whether a record can offer a restore at all, independent of the composer: a
@@ -158,7 +156,7 @@ export function projectNativeMutationRecovery(
 		const text = recoveredComposerText(record);
 		const carriesAttachments = recordCarriesAttachments(record);
 		const restoreOffered = recordOffersRestore(record);
-		const queuedText = queuedSteerText(record);
+		const queuedText = text === "" ? queuedSteerText(record) : undefined;
 		rows.push({
 			targetKey,
 			clientMutationId: record.clientMutationId,

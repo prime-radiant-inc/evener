@@ -128,6 +128,7 @@ import {
 	ghostActionTarget,
 	ghosts,
 	type QueueEntryRef,
+	queuedMessageText,
 	whatCanActNow,
 } from "./session/ghosts";
 import { FloatingStack, transcriptEndRoomAt } from "./session/FloatingStack";
@@ -2616,7 +2617,7 @@ export function ConversationScreen({
 				threadId,
 				instanceId,
 				input: [],
-				display: texts.map((text) => ({ type: "text", text })),
+				display: texts.filter((text) => text !== "").map((text) => ({ type: "text", text })),
 			});
 			return true;
 		} catch {
@@ -2640,8 +2641,7 @@ export function ConversationScreen({
 		const cancel = () => queueChange(service, () => service.cancelQueued(target.index, target.id, instanceId));
 		if (action === "steerNow" || action === "sendNow") {
 			if (queueActionRefusal(live, "promote") !== null) return STEER_FAILED;
-			const text = live.queue?.texts?.[target.index] || live.queue?.preview?.[target.index];
-			const promoted = await steerWithQueued(live.threadId, instanceId, text ? [text] : [], {
+			const promoted = await steerWithQueued(live.threadId, instanceId, [queuedMessageText(live.queue, target.index)], {
 				kind: "promote",
 				queueEntry: target,
 			});
@@ -2667,12 +2667,9 @@ export function ConversationScreen({
 		const instanceId = live?.instanceId;
 		if (!service || !connectionReady.current || !live?.queue || !instanceId) return null;
 		if (queueActionRefusal(live, "drainAll") !== null) return STEER_ALL_FAILED;
-		const { texts, preview } = live.queue;
-		const queued = Array.from(
-			{ length: live.queue.depth ?? 0 },
-			(_, index) => texts?.[index] || preview?.[index] || "",
-		);
-		const drained = await steerWithQueued(live.threadId, instanceId, queued.filter(Boolean), {
+		const queue = live.queue;
+		const queued = Array.from({ length: queue.depth ?? 0 }, (_, index) => queuedMessageText(queue, index));
+		const drained = await steerWithQueued(live.threadId, instanceId, queued, {
 			kind: "steer",
 			expectedQueueRevision: live.queue.revision,
 		});
