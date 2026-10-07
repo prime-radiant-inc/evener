@@ -2449,15 +2449,6 @@ describe("queue action receipts", () => {
 			method: "turn/cancelQueued" as const,
 			call: (service: ReturnType<typeof createConversationService>) => service.cancelQueued(1, "entry-b", "thread-1"),
 		},
-		{
-			method: "turn/promoteQueuedAsSteer" as const,
-			call: (service: ReturnType<typeof createConversationService>) =>
-				service.promoteQueuedAsSteer(1, "entry-b", "thread-1"),
-		},
-		{
-			method: "turn/drainAsSteer" as const,
-			call: (service: ReturnType<typeof createConversationService>) => service.drainAsSteer(7, "thread-1"),
-		},
 	];
 	function response(method: string) {
 		const cancel = method === "turn/cancelQueued";
@@ -2537,7 +2528,7 @@ describe("queue action receipts", () => {
 		expect(client.calls.filter((entry) => entry.method === method)).toHaveLength(1);
 		service.close();
 	});
-	it.each(cases.slice(0, 2))("rejects the wrong selected entry for $method", async ({ method, call }) => {
+	it.each(cases)("rejects the wrong selected entry for $method", async ({ method, call }) => {
 		idCounter = 0;
 		const { client, service } = setup();
 		const value = response(method);
@@ -2574,83 +2565,6 @@ describe("observed queue guards", () => {
 		await service.open("ref-1");
 		await expect(service.cancelQueued(0, "entry-1", "old-instance")).rejects.toThrow();
 		expect(client.calls.filter((c) => c.method === "turn/cancelQueued")).toHaveLength(0);
-	});
-	// The hub advertises steer as harness support (not "a turn is running"), so
-	// a steering harness carries steer:true at idle too, and a held queue can be
-	// promoted or drained from idle; the status half of that rule is the
-	// caller's (the SDK's sessionControls). A harness that advertises no steer
-	// cannot take a drain at all, whatever else it advertises.
-	it("refuses to run a held queue when the harness advertises no steer, even with send", async () => {
-		const thread = makeThread();
-		thread.evener.capabilities = { ...ALL_TRUE_CAPS, steer: false, send: true };
-		const { service, client } = setup({ thread });
-		await service.open("ref-1");
-		await expect(service.promoteQueuedAsSteer(0, "held-entry", "thread-1")).rejects.toThrow(
-			/unavailable for this session/,
-		);
-		await expect(service.drainAsSteer(3, "thread-1")).rejects.toThrow(/unavailable for this session/);
-		expect(
-			client.calls.filter((c) => c.method === "turn/promoteQueuedAsSteer" || c.method === "turn/drainAsSteer"),
-		).toHaveLength(0);
-	});
-	it("can run a held queue from idle on a harness that advertises steer", async () => {
-		const thread = makeThread();
-		thread.evener.capabilities = { ...ALL_TRUE_CAPS, steer: true, send: true };
-		const { service, client } = setup({ thread });
-		client.on("turn/promoteQueuedAsSteer", ({ clientMutationId }) => ({
-			receipt: makeReceipt("steer", {
-				clientMutationId,
-				instanceId: "thread-1",
-				queueEntryIds: ["held-entry"],
-			}),
-		}));
-		client.on("turn/drainAsSteer", ({ clientMutationId }) => ({
-			receipt: makeReceipt("steer", {
-				clientMutationId,
-				instanceId: "thread-1",
-				queueEntryIds: ["held-entry"],
-			}),
-		}));
-		await service.open("ref-1");
-		await expect(service.promoteQueuedAsSteer(0, "held-entry", "thread-1")).resolves.toHaveProperty("receipt");
-		await expect(service.drainAsSteer(3, "thread-1")).resolves.toHaveProperty("receipt");
-		expect(client.calls.filter((c) => c.method.startsWith("turn/"))).toHaveLength(2);
-	});
-	it("carries the observed entry and revision without retrying a conflict", async () => {
-		const { service, client } = setup();
-		const conflict = new WireError("queue changed", -32013, {
-			evenerErrorInfo: "conflict",
-		});
-		client.on("turn/promoteQueuedAsSteer", () => {
-			throw conflict;
-		});
-		client.on("turn/drainAsSteer", () => {
-			throw conflict;
-		});
-		await service.open("ref-1");
-		await expect(service.promoteQueuedAsSteer(2, "entry-c", "thread-1")).rejects.toBe(conflict);
-		await expect(service.drainAsSteer(17, "thread-1")).rejects.toBe(conflict);
-		expect(client.calls.filter((c) => c.method.startsWith("turn/"))).toEqual([
-			{
-				method: "turn/promoteQueuedAsSteer",
-				params: {
-					ref: "ref-1",
-					index: 2,
-					expectedEntryId: "entry-c",
-					expectedInstanceId: "thread-1",
-					clientMutationId: "cmid-1",
-				},
-			},
-			{
-				method: "turn/drainAsSteer",
-				params: {
-					ref: "ref-1",
-					expectedQueueRevision: 17,
-					expectedInstanceId: "thread-1",
-					clientMutationId: "cmid-2",
-				},
-			},
-		]);
 	});
 	// A drain's receipt names the queue intents it consumed
 	// (consumedClientMutationIds, issue #1704). Wire-shaped: the daemon omits
