@@ -1202,24 +1202,18 @@ func jobResultBody(raw string) (string, bool) {
 	// reply's status line so the ref survives truncation; any element with
 	// evidence this projection doesn't capture sends the whole body to the
 	// JSON fallback, as a top-level key would.
-	var elements struct {
-		EarlierResults []json.RawMessage `json:"earlier_results"`
-	}
-	if err := json.Unmarshal([]byte(strings.TrimSpace(raw)), &elements); err != nil {
-		return "", false
-	}
 	var b strings.Builder
 	b.WriteString(jobResultStatus(r, raw))
-	for i, element := range elements.EarlierResults {
+	for i, element := range r.EarlierResults {
 		earlier, ok := decodeJobResult(string(element))
 		if !ok || hasNonJobResultKeys(string(element)) || len(earlier.EarlierResults) != 0 {
 			return "", false
 		}
-		fmt.Fprintf(&b, "earlier result %d of %d, not delivered before:\n", i+1, len(elements.EarlierResults))
+		fmt.Fprintf(&b, "earlier result %d of %d, not delivered before:\n", i+1, len(r.EarlierResults))
 		b.WriteString(jobResultStatus(earlier, string(element)))
 		b.WriteString(jobResultOutput(earlier))
 	}
-	if len(elements.EarlierResults) != 0 {
+	if len(r.EarlierResults) != 0 {
 		b.WriteString("latest result:\n")
 	}
 	b.WriteString(jobResultOutput(r))
@@ -1345,7 +1339,7 @@ var jobResultKnownKeys = map[string]bool{
 	"cumulative_usage":    true, // delegateSendResult
 	"tools":               true, // stableDelegateCreateResult, delegateSendResult
 	"artifacts_dir":       true, // stableDelegateCreateResult
-	"earlier_results":     true, // delegateSendResult, rendered ahead of the status line
+	"earlier_results":     true, // delegateSendResult, each rendered as a reply is
 }
 
 var jobResultMetadataKeys = []string{
