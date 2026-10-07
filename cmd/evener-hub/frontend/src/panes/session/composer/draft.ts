@@ -30,7 +30,12 @@ const draftRevisions = new Map<string, number>();
 // (never prose): the submit boundary assembles them as {type: "skill", name}
 // input items after the ordinary text/attachment items, and a chip change is
 // a draft edit even when the text is byte-identical.
-export interface ComposerDraft extends SkillEditorValue {}
+export interface ComposerDraft extends SkillEditorValue {
+  // Wall-clock stamp of the last write, so two refs' drafts can be ordered when
+  // one is carried to the other (see carryComposerDraft). Absent on records an
+  // older build wrote.
+  editedAt?: number;
+}
 
 // A remount inherits the same draft revision. Editing or replacing its
 // contents changes ownership even when the resulting text is identical.
@@ -59,6 +64,7 @@ function isStoredComposerDraft(value: unknown): value is ComposerDraft {
     record.skillNames.every((name) => typeof name === "string") &&
     (record.commandNames === undefined ||
       (Array.isArray(record.commandNames) && record.commandNames.every((name) => typeof name === "string"))) &&
+    (record.editedAt === undefined || typeof record.editedAt === "number") &&
     (record.mentions === undefined ||
       (Array.isArray(record.mentions) &&
         record.mentions.every(
@@ -123,6 +129,23 @@ export function readDraft(ref: string): string {
   return readComposerDraft(ref).text;
 }
 
+// A persisted draft's last-write stamp, 0 when it carries none (an older build
+// wrote it, or there is no record). Kept out of readComposerDraft's own value:
+// the stamp is persistence metadata the carry needs to order two refs, not part
+// of the draft's content, and returning it there would change the draft's public
+// shape for every reader.
+export function readDraftEditedAt(ref: string): number {
+  try {
+    const structured = localStorage.getItem(composerDraftStorageKey(ref));
+    if (structured === null) return 0;
+    const parsed: unknown = JSON.parse(structured);
+    if (!isStoredComposerDraft(parsed)) return 0;
+    return parsed.editedAt ?? 0;
+  } catch {
+    return 0;
+  }
+}
+
 // Writes the whole structured draft as ONE atomic v2 record, then removes any
 // old v1 value (never the reverse order - a v2 write that crashed before the
 // v1 removal still leaves one readable draft behind). Blank text with no
@@ -138,7 +161,9 @@ export function writeComposerDraft(ref: string, value: ComposerDraft): void {
       localStorage.removeItem(composerDraftStorageKey(ref));
       localStorage.removeItem(draftStorageKey(ref));
     } else {
-      localStorage.setItem(composerDraftStorageKey(ref), JSON.stringify(value));
+      // The one choke point every persisted draft edit goes through, so the stamp
+      // is the draft's actual last-write time.
+      localStorage.setItem(composerDraftStorageKey(ref), JSON.stringify({ ...value, editedAt: Date.now() }));
       localStorage.removeItem(draftStorageKey(ref));
     }
   } catch {
@@ -163,17 +188,26 @@ export function clearDraft(ref: string): void {
 }
 
 // A store-driven resume can return a different identity, and the pane follows
-// it. The draft a user typed while that resume was in flight is stored under
-// the OLD ref (persistDraft keys by ref), while the incoming pane's composer
-// starts on the NEW ref's own draft - so without this the newer draft would be
-// dropped at the ref change. The source (in-flight) draft is the user's NEWEST
-// intent, so it wins at the destination even over a draft the new ref already
-// holds; the source copy under the old ref is left in place either way
-// (returning to that identity still finds it).
+// it. The draft the old-ref composer held is stored under the OLD ref
+// (persistDraft keys by ref), while the incoming pane's composer starts on the
+// NEW ref's own draft - so without this the old ref's draft would be dropped at
+// the ref change. The carry must preserve whichever draft is genuinely NEWER,
+// not assume the source is: the notice's Resume button hands over whatever sat
+// in the old-ref composer, so a draft typed in another pane on the resumed ref
+// can be newer. The persisted wall-clock stamp orders the two across refs (the
+// per-ref revision counter cannot). A blank or absent destination always takes
+// the source; otherwise the source wins only when strictly newer. Ties, and the
+// migration case of two unstamped records, keep the destination - conservative,
+// and transient until drafts are re-edited. The source copy under the old ref is
+// left in place either way (returning to that identity still finds it). Staged
+// image attachments are NOT part of the carried draft: they are per-mount
+// sourceState and the new pane starts with none.
 export function carryComposerDraft(fromRef: string, toRef: string): void {
   if (fromRef === toRef) return;
   const from = readComposerDraft(fromRef);
   if (isBlankDraft(from)) return;
+  const to = readComposerDraft(toRef);
+  if (!isBlankDraft(to) && readDraftEditedAt(fromRef) <= readDraftEditedAt(toRef)) return;
   writeComposerDraft(toRef, from);
 }
 
