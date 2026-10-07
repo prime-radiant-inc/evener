@@ -399,41 +399,105 @@ describe("background accounting", () => {
 
       // The worker's folded model IS the base it entered with (its batch was
       // empty, so it folded nothing), and that base is a genuinely distinct
-      // retained payload from the newer canonical body: real object identity,
-      // not a fresh codec wrapper or equal JSON.
+      // retained OBJECT from the newer canonical body: real object identity, not
+      // a fresh codec wrapper or equal JSON.
       expect(base.observation.batch).toHaveLength(0);
       expect(base.observation.model).toBe(base.observation.resident);
       expect(base.observation.resident).toBe(baseModel);
       expect(base.observation.resident).not.toBe(canonicalAfterDelta);
-      // The held write record still retains the OLD base body by content and
-      // none of the replacement: a distinct payload from the canonical body,
-      // not the same bytes counted twice.
-      const heldRecordText = JSON.stringify(base.observation.record.state);
-      expect(heldRecordText).toContain("alpha");
-      expect(heldRecordText).not.toContain("R".repeat(100_000));
-      // P1: pair each class with its LIVE reservation at this boundary, not only
-      // the earlier observer sample. The worker's retained body is its held
-      // record; its LIVE reservation covers it exactly, is separately bounded,
-      // and is a distinct payload from the ordinary canonical body. We do not
-      // claim codec-wrapper sharing: the old worker base model and its record are
-      // independently measured and account one worker-class payload.
+      if (!baseModel) throw new Error("expected the old base model at the held boundary");
+
       const liveBoundary = backgroundTranscriptSnapshotForTests();
       const liveWorkerCharge = liveBoundary.workerBytes;
       const liveHeldRecord = base.observation.record;
       const oldBaseModel = base.observation.resident;
       if (!oldBaseModel) throw new Error("expected the retained old base model at the held boundary");
-      // The worker's live reservation covers its whole held record (state plus
-      // record metadata).
+
+      // P1 (approved scalar oracle): classify the held record's body as the one
+      // worker-class encoded payload by SOURCE CONSTRUCTION plus RUNTIME SHAPE,
+      // not by an equal byte count. currentTranscriptState
+      // (appwire-client/typescript/reducer.ts) builds the record's state by:
+      //   - 2198-2200: `fields[key] = model[key]`  direct assignment, no copy;
+      //   - 2204-2206: a history wrapper, then encodeCachedItem per item;
+      //   - 2208-2210: overlay `{...item, item: {...item.item}}` spread, whose
+      //     leaves are the base item's own values;
+      //   - 1345-1354: encodeCachedItem returns `{...item}` and only COPIES a
+      //     payload array when pendingText / reasoningSummaries is defined.
+      // Equal JSON size does not establish sharing, and a fresh wrapper does not
+      // either. The runtime shape below shows this fixture takes none of the
+      // copying branches, so the record's state holds no independently
+      // materialized payload: it is the old base model's content reflected
+      // through fresh, non-payload wrappers.
+      const overlayKey = "stream:s1:agentMessage";
+      const stateFields = liveHeldRecord.state.fields as unknown as Record<string, unknown>;
+      const stateOverlay = liveHeldRecord.state.overlay[overlayKey];
+      const baseOverlay = oldBaseModel.overlay?.[overlayKey];
+      if (!stateOverlay || !baseOverlay) throw new Error("expected the overlay item at the held boundary");
+      const stateOverlayItem = stateOverlay.item as unknown as Record<string, unknown>;
+      const baseOverlayItem = baseOverlay.item as unknown as Record<string, unknown>;
+
+      // (2) Text-bearing item shape and values in the old model versus the held
+      // state: the same scalar leaf set, the same primitive types, and the same
+      // literal value. The payload text is a primitive, so no allocation
+      // identity is claimed for it, only the real value.
+      const baseText = baseOverlayItem.text;
+      expect(typeof baseText).toBe("string");
+      expect(baseText).toBe(baseModel.overlay?.[overlayKey]?.item?.text);
+      expect(Object.keys(stateOverlayItem).sort()).toEqual(Object.keys(baseOverlayItem).sort());
+      for (const key of Object.keys(stateOverlayItem)) {
+        expect(typeof stateOverlayItem[key], `state item leaf ${key}`).toBe(typeof baseOverlayItem[key]);
+      }
+      expect(stateOverlayItem.text).toBe(baseText);
+      // Distinct payload inventory: the text-bearing overlay item carries no
+      // object-valued leaf, so there is no independently materialized payload
+      // body inside it; the fixture takes neither independently materializing
+      // encodeCachedItem branch (no pendingText / reasoningSummaries array).
+      expect(Object.values(stateOverlayItem).every((leaf) => leaf === null || typeof leaf !== "object")).toBe(true);
+      expect("pendingText" in baseOverlayItem).toBe(false);
+      expect("reasoningSummaries" in baseOverlayItem).toBe(false);
+      expect("pendingText" in stateOverlayItem).toBe(false);
+      expect("reasoningSummaries" in stateOverlayItem).toBe(false);
+      // New wrappers neither establish nor refute sharing: the state's overlay
+      // wrapper and item are fresh objects, distinct from the base model's.
+      expect(stateOverlay).not.toBe(baseOverlay);
+      expect(stateOverlayItem).not.toBe(baseOverlayItem);
+      // (2b) Metadata versus payload: every non-null object-valued field leaf in
+      // the held state is the SAME object as the old base model's field
+      // (construction `fields[key] = model[key]`), so those metadata/empty-array
+      // leaves are shared by real reference identity, not materialized copies.
+      const sharedObjectFieldKeys: string[] = [];
+      for (const key of Object.keys(stateFields)) {
+        const leaf = stateFields[key];
+        if (leaf !== null && typeof leaf === "object") {
+          expect(leaf, `field ${key} must be the base model's own object`).toBe(
+            (oldBaseModel as unknown as Record<string, unknown>)[key],
+          );
+          sharedObjectFieldKeys.push(key);
+        }
+      }
+      expect(sharedObjectFieldKeys).toContain("status");
+      // The history carries no items at this boundary, so encodeCachedItem
+      // materializes no payload item here either.
+      expect(liveHeldRecord.state.history.turns).toHaveLength(0);
+      expect(oldBaseModel.history?.turns ?? []).toHaveLength(0);
+
+      // The held write record still retains the OLD base content and none of the
+      // replacement: distinct content from the canonical body, not the same
+      // bytes counted twice.
+      const heldRecordText = JSON.stringify(liveHeldRecord.state);
+      expect(heldRecordText).toContain(baseText as string);
+      expect(heldRecordText).not.toContain("R".repeat(100_000));
+
+      // (3) Pair the shape/provenance inventory with the LIVE reservations: the
+      // worker's live reservation covers its WHOLE held record (state plus record
+      // metadata) and is unchanged since the held write began; the ordinary class
+      // separately covers the newer canonical body. No genuinely distinct
+      // non-exempt body is present, so no second worker-class body needs coverage.
       const heldRecordPayload = independentJsonBytes(liveHeldRecord);
-      // The record's retained state body and the old base model's body are the
-      // same logical payload, independently re-measured here; neither is the
-      // newer canonical body.
-      const oldBasePayload = independentJsonBytes(currentTranscriptState(oldBaseModel));
       const recordStatePayload = independentJsonBytes(liveHeldRecord.state);
       expect(liveWorkerCharge).toBe(heldRecordPayload);
-      expect(recordStatePayload).toBe(oldBasePayload);
+      expect(liveWorkerCharge).toBeGreaterThanOrEqual(recordStatePayload);
       expect(recordStatePayload).not.toBe(canonicalBytes);
-      expect(liveWorkerCharge).toBeGreaterThanOrEqual(oldBasePayload);
       expect(liveWorkerCharge).toBe(base.workerBytes); // unchanged since the held write began
       expect(liveWorkerCharge).toBeGreaterThan(0);
       expect(liveWorkerCharge).toBeLessThan(32 * 1024 * 1024);
