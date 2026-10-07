@@ -168,8 +168,11 @@ const sourceReadingPointExpr = readingPointExpr(sourcePortExpr);
 // reader-reflow-design.md, readingPointOffset in useTranscriptScroll.ts): where
 // the entry that held the reading point should start relative to the viewport
 // top after a reflow. Also evaluated in the page, so it stays self-contained.
+// A viewport-height-only change leaves the entry as it was, so the reading
+// line stays exactly where it was.
 function wantedReadingOffset(before, after) {
   if (before.offset >= 0) return before.offset;
+  if (before.width === after.width && before.height === after.height) return before.offset;
   const oldDepth = Math.max(0, before.height - before.viewport);
   if (-before.offset > oldDepth) return Math.min(0, before.height + before.offset - after.height);
   const progress = oldDepth > 0 ? -before.offset / oldDepth : 0;
@@ -182,7 +185,7 @@ function assertReadingContinuity(before, after, label) {
   assert.equal(after.useful, true, `${label} keeps actual nonblank text in the viewport`);
   if (before.followingBottom) {
     assert.ok(after.scrollHeight - after.viewport - after.scrollTop <= 1.5, `${label} keeps end following`);
-  } else if (before.width !== after.width) {
+  } else if (before.width !== after.width || before.viewport !== after.viewport) {
     const wantedOffset = wantedReadingOffset(before, after);
     const start = after.scrollTop + after.offset;
     const wantedScroll = Math.max(0, Math.min(start - wantedOffset, Math.max(0, after.scrollHeight - after.viewport)));
@@ -208,7 +211,7 @@ async function settledReadingContinuity(before, portExpr, label) {
     if (before.followingBottom) {
       return after.scrollHeight - after.viewport - after.scrollTop <= 1.5 ? after : null;
     }
-    if (before.width === after.width) return after;
+    if (before.width === after.width && before.viewport === after.viewport) return after;
     const wantedOffset = (${wantedReadingOffset.toString()})(before, after);
     const start = after.scrollTop + after.offset;
     const wantedScroll = Math.max(0, Math.min(start - wantedOffset, Math.max(0, after.scrollHeight - after.viewport)));
@@ -260,21 +263,34 @@ async function readInsideTallEntry(portExpr, label) {
 }
 
 async function widthOnlyReflow(portExpr, width, height, label) {
+  await viewportReflow(portExpr, width, height, label, "width");
+}
+
+// A height-only change keeps the reader's reading line where it was (#3899).
+async function heightOnlyChange(portExpr, height, label) {
+  await viewportReflow(portExpr, await read("window.innerWidth"), height, label, "height");
+}
+
+async function viewportReflow(portExpr, width, height, label, changed) {
   const before = await settledReadingPoint(portExpr, `${label} before`);
   assert.ok(!before.followingBottom && before.height > before.viewport && before.offset < -100, `${label} begins inside a tall entry away from the end`);
   await driver.send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor:1, mobile:false });
-  await wait(`window.innerWidth === ${width} && (${portExpr})?.clientWidth !== ${before.width}`, `${label}, actual reader width changes`);
+  const portDimension = changed === "width" ? `clientWidth !== ${before.width}` : `clientHeight !== ${before.viewport}`;
+  await wait(`window.innerWidth === ${width} && window.innerHeight === ${height} && (${portExpr})?.${portDimension}`, `${label}, actual reader ${changed} changes`);
   const after = await settledReadingPoint(portExpr, `${label} after`);
-  readingPoints.push({ kind:"width-only", label, before, after });
-  assert.notEqual(after.width, before.width, `${label} observes a width-only transition`);
+  readingPoints.push({ kind:`${changed}-only`, label, before, after });
+  if (changed === "width") assert.notEqual(after.width, before.width, `${label} observes a width-only transition`);
+  else assert.ok(after.width === before.width && after.viewport !== before.viewport, `${label} observes a height-only transition`);
   assertReadingContinuity(before, after, label);
-  driver.milestone(label, { entry:after.entry, row:after.row, oldWidth:before.width, width:after.width, offset:after.offset });
+  driver.milestone(label, { entry:after.entry, row:after.row, oldWidth:before.width, width:after.width, oldViewport:before.viewport, viewport:after.viewport, offset:after.offset });
 }
 
 async function sharedWidthJourney() {
   await readInsideTallEntry(sourcePortExpr, "ordinary source");
   await widthOnlyReflow(sourcePortExpr, 1280, 900, "ordinary-reader-width-reflow");
   await widthOnlyReflow(sourcePortExpr, 1000, 900, "ordinary-reader-width-return");
+  await heightOnlyChange(sourcePortExpr, 760, "ordinary-reader-height-only");
+  await heightOnlyChange(sourcePortExpr, 900, "ordinary-reader-height-return");
   await assertSourceDom();
   await driver.click(sourceAgents);
   await drill(fixture.edges[0], 1);
@@ -289,6 +305,8 @@ async function sharedWidthJourney() {
   await readInsideTallEntry(portExpr, "read-only cascade");
   await widthOnlyReflow(portExpr, 2000, 900, "cascade-reader-width-reflow");
   await widthOnlyReflow(portExpr, 1640, 900, "cascade-reader-width-return");
+  await heightOnlyChange(portExpr, 760, "cascade-reader-height-only");
+  await heightOnlyChange(portExpr, 900, "cascade-reader-height-return");
   await assertInspectorReadOnly();
   await capture("shared-reader-width-reflow");
   await returnToSource();
