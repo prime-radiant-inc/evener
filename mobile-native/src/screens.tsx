@@ -1852,6 +1852,9 @@ export function ConversationScreen({
 						isCurrent: currentBinding,
 						reasoning: () => store.getState().conversation,
 						turn: () => store.getState().conversation,
+						drainQueue: async () => {
+							if (!(await drainLiveQueue())) throw new CommandArgumentError(STEER_ALL_FAILED.text);
+						},
 						cleared: (response) => {
 							const replacement = service.adoptClear(response);
 							void store.getState().openProjected(service, activitySink, route.params.ref, replacement);
@@ -2660,19 +2663,23 @@ export function ConversationScreen({
 		}
 		return null;
 	}
-	// Steer all now: the whole live queue, whatever it holds at the press.
+	// Steer all now, and /drain-as-steer: the whole live queue, whatever it
+	// holds at the press. It returns whether the phone kept the steer to send.
+	async function drainLiveQueue(): Promise<boolean> {
+		const live = store.getState().conversation;
+		const queue = live?.queue;
+		if (!live?.instanceId || !queue) return false;
+		const queued = Array.from({ length: queue.depth ?? 0 }, (_, index) => queuedMessageText(queue, index));
+		return steerWithQueued(live.threadId, live.instanceId, queued, {
+			kind: "steer",
+			expectedQueueRevision: queue.revision,
+		});
+	}
 	async function steerWithQueue(): Promise<ToastMessage | null> {
 		const live = store.getState().conversation;
-		const instanceId = live?.instanceId;
-		if (!service || !connectionReady.current || !live?.queue || !instanceId) return null;
+		if (!service || !connectionReady.current || !live?.queue || !live.instanceId) return null;
 		if (queueActionRefusal(live, "drainAll") !== null) return STEER_ALL_FAILED;
-		const queue = live.queue;
-		const queued = Array.from({ length: queue.depth ?? 0 }, (_, index) => queuedMessageText(queue, index));
-		const drained = await steerWithQueued(live.threadId, instanceId, queued, {
-			kind: "steer",
-			expectedQueueRevision: live.queue.revision,
-		});
-		return drained ? null : STEER_ALL_FAILED;
+		return (await drainLiveQueue()) ? null : STEER_ALL_FAILED;
 	}
 	// The Queue sheet's host is memoized on what it shows, so its actions
 	// reach this render's functions through a ref.

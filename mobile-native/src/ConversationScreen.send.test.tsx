@@ -3141,6 +3141,49 @@ describe("queued messages at the transcript's end (spec 8.5)", () => {
 		expect(queueHosts.get(sheetKey("hub-1", ref))?.steerAll).toBeUndefined();
 	});
 
+	// /drain-as-steer is Steer all now typed: the same outbox, so a lost answer
+	// isn't a failure, and the hub's pending steer reads as this phone's.
+	it("sends /drain-as-steer through the outbox, as Steer all now", async () => {
+		const ref = "ref-drain-command";
+		const queued = ["check the logs", "and the metrics"];
+		const served = thread(ref, "active", false, queued);
+		const { tree, hub } = await mount(served);
+		const client = hub.client as { request: (method: string, params: Record<string, unknown>) => Promise<unknown> };
+		const request = client.request;
+		client.request = async (requested, params) => {
+			const answer = await request(requested, params);
+			if (requested !== "turn/drainAsSteer") return answer;
+			// The hub took the drain, and its answer was lost.
+			const evener = (served as unknown as { evener: Record<string, unknown> }).evener;
+			evener.queue = queueState([], 1);
+			evener.pendingMutations = [
+				{
+					clientMutationId: params.clientMutationId,
+					method: requested,
+					input: queued.map((text) => ({ type: "text", text })),
+					executionState: "accepted",
+					projectionState: "pending",
+				},
+			];
+			throw new Error("connection lost");
+		};
+		await type(tree, "/drain-as-steer");
+		await press(tree, "Drain queue");
+		const sent = hub.requests.filter((entry) => entry.method === "turn/drainAsSteer");
+		expect(sent.map((entry) => entry.params)).toMatchObject([{ expectedQueueRevision: 0, input: [] }]);
+		act(() =>
+			hub.notify({
+				method: "evener/thread/resync",
+				params: { ref, threadId: served.id },
+			} as AnyNotification),
+		);
+		await settle();
+		expect(lastRow(tree)).toContain("check the logs");
+		expect(lastRow(tree)).toContain("Steering · arrives at the next step");
+		expect(field(tree)?.props.value).toBe("");
+		expect(renderedText(tree)).not.toContain("Couldn't");
+	});
+
 	// A steer the hub refuses names the message it was for, says it was a
 	// steer, and offers only Discard: the message may still be queued.
 	it.each(STEERS_FROM_QUEUE)("names the message when the hub refuses %s", async (label, status, method, queued) => {
