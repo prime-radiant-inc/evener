@@ -33,14 +33,16 @@ import {
 } from "./localCompositionSchema";
 import { createSecureUUID } from "./secureUUID";
 
+// Owner-free browser draft repository. A durable session row carries one
+// monotonic `sessionRevision` and the namespace incarnation it was written
+// under; there is no owner, claim, adopt or losing-draft archive. Explicit
+// writes (seed, edit, clear) are compared against both the stored row and the
+// caller's expected token before they are authorized.
 export interface BrowserDraftKey {
   namespace: { kind: "browser"; origin: string };
   sessionRef: string;
 }
 
-// One session's latest committed explicit draft. The token's sessionRevision is
-// the ordering authority; there is no persistent pane owner or backing counter
-// on an ordinary row.
 export interface StoredComposerDraft extends SkillEditorValue {
   key: BrowserDraftKey;
   token: DraftSessionToken;
@@ -66,26 +68,6 @@ export interface BrowserDraftRepository {
   close(): void;
 }
 
-export function browserDraftKey(sessionRef: string, origin: string = location.origin): BrowserDraftKey {
-  return { namespace: { kind: "browser", origin }, sessionRef };
-}
-
-// Captures the durable session token plus the caller's backing identity and
-// local edit generation. Freezing the copy means a later mutation of the source
-// row cannot retroactively authorize a stale cleanup.
-export function captureDraftSettlementGuard(
-  row: StoredComposerDraft,
-  backing: DraftBackingIdentity,
-  localGeneration: number,
-): DraftSettlementGuard {
-  return Object.freeze({
-    token: Object.freeze(cloneToken(row.token)),
-    backing: Object.freeze({ ...backing }),
-    localGeneration,
-  });
-}
-
-// The writers that still exist after owner/claim/adopt/conflict removal.
 type BrowserDraftOperation = "seedDraft" | "commitEdit" | "clearSubmitted" | "transferSupportedDrafts";
 
 export type BrowserDraftOpenDiagnosticPath =
@@ -126,6 +108,7 @@ interface DraftTransferRow {
 
 interface InspectedDraft {
   key: BrowserDraftKey;
+  draftKey: string;
   legacyKeyV1: string;
   legacyKeyV2: string;
   legacyV1: string | null;
@@ -137,8 +120,20 @@ const STORAGE_WAIT_MS = 10_000;
 const DRAFT_STORES = [COMPOSER_DRAFTS_STORE, ANNOTATION_NAMESPACES_STORE] as const;
 const TRANSFER_STORES = [COMPOSER_DRAFTS_STORE, DRAFT_TRANSFERS_STORE, ANNOTATION_NAMESPACES_STORE] as const;
 
-function serializedTransferKey(namespace: BrowserDraftKey["namespace"], legacyKey: string): string {
-  return JSON.stringify([namespace.kind, namespace.origin, legacyKey]);
+export function browserDraftKey(sessionRef: string, origin = location.origin): BrowserDraftKey {
+  return { namespace: { kind: "browser", origin }, sessionRef };
+}
+
+export function captureDraftSettlementGuard(
+  row: StoredComposerDraft,
+  backing: DraftBackingIdentity,
+  localGeneration: number,
+): DraftSettlementGuard {
+  return Object.freeze({
+    token: Object.freeze({ ...row.token }),
+    backing: Object.freeze({ ...backing }),
+    localGeneration,
+  });
 }
 
 function cloneKey(key: BrowserDraftKey): BrowserDraftKey {
@@ -154,13 +149,17 @@ function cloneValue(value: SkillEditorValue): SkillEditorValue {
   };
 }
 
-function cloneToken(token: DraftSessionToken): DraftSessionToken {
-  return { namespaceIncarnation: token.namespaceIncarnation, sessionRevision: token.sessionRevision };
+function publicSessionRow(row: SessionRow): StoredComposerDraft {
+  return { ...cloneValue(row), key: cloneKey(row.key), token: { ...row.token } };
 }
 
-function publicDraft(row: SessionRow): StoredComposerDraft {
-  const { serializedKey: _serializedKey, ...draft } = row;
-  return { ...draft, ...cloneValue(draft), key: cloneKey(draft.key), token: cloneToken(draft.token) };
+function newSessionRow(key: BrowserDraftKey, value: SkillEditorValue, incarnation: string): SessionRow {
+  return {
+    serializedKey: serializeSessionKey(key),
+    key: cloneKey(key),
+    ...cloneValue(value),
+    token: { namespaceIncarnation: incarnation, sessionRevision: 1 },
+  };
 }
 
 function sameStrings(left: readonly string[] | undefined, right: readonly string[] | undefined): boolean {
@@ -169,7 +168,9 @@ function sameStrings(left: readonly string[] | undefined, right: readonly string
   return a.length === b.length && a.every((value, index) => value === b[index]);
 }
 
-function sameMentions(left: SkillEditorValue["mentions"], right: SkillEditorValue["mentions"]): boolean {
+// Absent and explicit-empty mentions are distinct editor values; a mismatch on
+// either side refuses. Elements compare by kind/name/offset.
+function sameMentions(left: SkillEditorValue["mentions"], right: SubmittedDraft["mentions"]): boolean {
   if (left === undefined || right === undefined) return left === right;
   return (
     left.length === right.length &&
@@ -185,13 +186,17 @@ function sameMentions(left: SkillEditorValue["mentions"], right: SkillEditorValu
   );
 }
 
-function sameValue(left: SkillEditorValue, right: SkillEditorValue): boolean {
+function sameSubmittedValue(row: SessionRow, submitted: SubmittedDraft): boolean {
   return (
-    left.text === right.text &&
-    sameStrings(left.skillNames, right.skillNames) &&
-    sameStrings(left.commandNames, right.commandNames) &&
-    sameMentions(left.mentions, right.mentions)
+    row.text === submitted.text &&
+    sameStrings(row.skillNames, submitted.skillNames) &&
+    sameStrings(row.commandNames, submitted.commandNames) &&
+    sameMentions(row.mentions, submitted.mentions)
   );
+}
+
+function serializedTransferKey(namespace: BrowserDraftKey["namespace"], legacyKey: string): string {
+  return JSON.stringify([namespace.kind, namespace.origin, legacyKey]);
 }
 
 class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
@@ -255,15 +260,15 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
     const draft = await this.#write(DRAFT_STORES, undefined, async (transaction) => {
       const row = await readSessionRow(transaction, key);
       if (!row) return null;
-      const incarnation = await this.#currentIncarnation(transaction, key.namespace);
-      if (row.token.namespaceIncarnation === incarnation) return publicDraft(row);
-      // Lazy re-token: only the incarnation is refreshed, so a namespace reset
-      // invalidates captured tokens without moving the durable revision or the
-      // value a captured stale cleanup would otherwise still match.
+      const namespace = await readNamespaceRow(transaction, key.namespace);
+      const incarnation = namespace?.incarnation;
+      if (incarnation === undefined || row.token.namespaceIncarnation === incarnation) return publicSessionRow(row);
+      // Lazy re-token: adopt the current incarnation while preserving the session
+      // revision and the complete ordinary value.
       const refreshed: SessionRow = { ...row, token: { ...row.token, namespaceIncarnation: incarnation } };
       await requestResult(putSessionRow(transaction, refreshed));
       changed.push(key);
-      return publicDraft(refreshed);
+      return publicSessionRow(refreshed);
     });
     this.#publish(changed);
     return draft;
@@ -274,17 +279,12 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
       const changed: BrowserDraftKey[] = [];
       const result = await this.#write(DRAFT_STORES, "seedDraft", async (transaction) => {
         const existing = await readSessionRow(transaction, key);
-        if (existing) return { state: "conflict", current: publicDraft(existing) } as const;
+        if (existing) return { state: "conflict", current: publicSessionRow(existing) } as const;
         const incarnation = await this.#currentIncarnation(transaction, key.namespace);
-        const row: SessionRow = {
-          serializedKey: serializeSessionKey(key),
-          key: cloneKey(key),
-          ...cloneValue(value),
-          token: { namespaceIncarnation: incarnation, sessionRevision: 1 },
-        };
-        await requestResult(putSessionRow(transaction, row));
+        const row = newSessionRow(key, value, incarnation);
+        await requestResult(transaction.objectStore(COMPOSER_DRAFTS_STORE).add(row));
         changed.push(key);
-        return { state: "committed", draft: publicDraft(row) } as const;
+        return { state: "committed", draft: publicSessionRow(row) } as const;
       });
       this.#publish(changed);
       return result;
@@ -302,23 +302,23 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
     try {
       const changed: BrowserDraftKey[] = [];
       const result = await this.#write(DRAFT_STORES, "commitEdit", async (transaction) => {
+        const incarnation = await this.#currentIncarnation(transaction, key.namespace);
         const row = await readSessionRow(transaction, key);
-        const namespace = await readNamespaceRow(transaction, key.namespace);
-        if (!row || !namespace) return { state: "unavailable" } as const;
+        if (!row) return { state: "unavailable" } as const;
+        // Both the stored row's incarnation and the caller's expected incarnation
+        // must match the current namespace; neither predicate may mask the other.
         if (
-          expected.namespaceIncarnation !== namespace.incarnation ||
-          row.token.namespaceIncarnation !== namespace.incarnation ||
+          expected.namespaceIncarnation !== incarnation ||
+          row.token.namespaceIncarnation !== incarnation ||
           expected.sessionRevision !== row.token.sessionRevision
         ) {
-          return { state: "conflict", current: publicDraft(row) } as const;
+          return { state: "conflict", current: publicSessionRow(row) } as const;
         }
         if (!stillAuthorized()) return { state: "unavailable" } as const;
-        // Explicit identical values still advance: the revision is the ordering
-        // authority, not a value-change counter.
         const next = nextSessionRow(row, value);
         await requestResult(putSessionRow(transaction, next));
         changed.push(key);
-        return { state: "committed", draft: publicDraft(next) } as const;
+        return { state: "committed", draft: publicSessionRow(next) } as const;
       });
       this.#publish(changed);
       return result;
@@ -334,25 +334,20 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
       const result = await this.#write(DRAFT_STORES, "clearSubmitted", async (transaction) => {
         const row = await readSessionRow(transaction, key);
         if (!row) return { cleared: false, draftUnchanged: false, persistence: "committed" } as const;
-        const namespace = await readNamespaceRow(transaction, key.namespace);
+        const incarnation = await this.#currentIncarnation(transaction, key.namespace);
         const guard = submitted.settlementGuard;
+        // The captured token and backing fence the durable row; live authority
+        // comes only from the actual stillOwnsEdit callback, never from two
+        // captured numeric fields.
         draftUnchanged =
           guard !== undefined &&
-          namespace !== undefined &&
-          row.token.namespaceIncarnation === namespace.incarnation &&
+          guard.backing.kind === "draft" &&
+          row.token.namespaceIncarnation === incarnation &&
           sameSessionToken(row.token, guard.token);
         if (!draftUnchanged || !submitted.stillOwnsEdit?.()) {
           return { cleared: false, draftUnchanged, persistence: "committed" } as const;
         }
-        const submittedValue: SkillEditorValue = {
-          text: submitted.text,
-          skillNames: [...submitted.skillNames],
-          ...(submitted.commandNames === undefined ? {} : { commandNames: [...submitted.commandNames] }),
-          ...(submitted.mentions === undefined
-            ? {}
-            : { mentions: submitted.mentions.map((mention) => ({ ...mention })) }),
-        };
-        if (!sameValue(row, submittedValue)) {
+        if (!sameSubmittedValue(row, submitted)) {
           return { cleared: false, draftUnchanged, persistence: "committed" } as const;
         }
         const cleared = nextSessionRow(row, { text: "", skillNames: [] });
@@ -379,24 +374,25 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
     try {
       await this.#write(TRANSFER_STORES, "transferSupportedDrafts", async (transaction) => {
         const incarnation = await this.#currentIncarnation(transaction, namespace);
+        const drafts = transaction.objectStore(COMPOSER_DRAFTS_STORE);
         const transfers = transaction.objectStore(DRAFT_TRANSFERS_STORE);
         for (const incoming of inspected) {
-          // Initialization only: any durable row, including an explicit empty
-          // draft, wins over migration input, and no losing copy is archived.
-          const existing = await readSessionRow(transaction, incoming.key);
-          if (!existing) {
-            const row: SessionRow = {
-              serializedKey: serializeSessionKey(incoming.key),
-              key: cloneKey(incoming.key),
-              ...cloneValue(incoming.value),
-              token: { namespaceIncarnation: incarnation, sessionRevision: 1 },
-            };
-            await requestResult(putSessionRow(transaction, row));
+          const current = await requestResult<SessionRow | undefined>(drafts.get(incoming.draftKey));
+          const markerV1Key = serializedTransferKey(namespace, incoming.legacyKeyV1);
+          const markerV2Key = serializedTransferKey(namespace, incoming.legacyKeyV2);
+          const [markerV1, markerV2] = await Promise.all([
+            requestResult<DraftTransferRow | undefined>(transfers.get(markerV1Key)),
+            requestResult<DraftTransferRow | undefined>(transfers.get(markerV2Key)),
+          ]);
+          // Initialization only: a durable row or a previously inspected outcome
+          // is never re-imported and never overwritten.
+          if (!current && markerV1 === undefined && markerV2 === undefined) {
+            await requestResult(drafts.add(newSessionRow(incoming.key, incoming.value, incarnation)));
             changed.push(incoming.key);
           }
           await requestResult(
             transfers.put({
-              serializedKey: serializedTransferKey(namespace, incoming.legacyKeyV1),
+              serializedKey: markerV1Key,
               namespaceKey: serializeNamespace(namespace),
               legacyKey: incoming.legacyKeyV1,
               inspectedBytes: incoming.legacyV1,
@@ -404,7 +400,7 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
           );
           await requestResult(
             transfers.put({
-              serializedKey: serializedTransferKey(namespace, incoming.legacyKeyV2),
+              serializedKey: markerV2Key,
               namespaceKey: serializeNamespace(namespace),
               legacyKey: incoming.legacyKeyV2,
               inspectedBytes: incoming.structuredV2,
@@ -416,8 +412,6 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
       return { state: "pending" };
     }
     this.#publish(changed);
-    // Markers are durable now; cleanup only removes bytes still identical to
-    // what this pass inspected, so a value changed under us is re-inspected.
     this.#cleanupInspected(inspected);
     return { state: "committed" };
   }
@@ -436,8 +430,10 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
       const legacyKeyV2 = composerDraftStorageKey(sessionRef);
       const legacyV1 = this.#storage.getItem(legacyKeyV1);
       const structuredV2 = this.#storage.getItem(legacyKeyV2);
+      const draftKey: BrowserDraftKey = { namespace: { ...namespace }, sessionRef };
       return {
-        key: { namespace: { ...namespace }, sessionRef },
+        key: draftKey,
+        draftKey: serializeSessionKey(draftKey),
         legacyKeyV1,
         legacyKeyV2,
         legacyV1,
@@ -459,7 +455,7 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
         }
       }
     } catch {
-      // IndexedDB already holds the authoritative row and the inspected-byte markers.
+      // IDB already holds both the authoritative row and inspected-byte markers.
     }
   }
 
@@ -467,7 +463,7 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
     const current = await readNamespaceRow(transaction, namespace);
     if (current) return current.incarnation;
     const row = { namespaceKey: serializeNamespace(namespace), incarnation: createSecureUUID() } satisfies NamespaceRow;
-    await requestResult(transaction.objectStore(ANNOTATION_NAMESPACES_STORE).put(row));
+    await requestResult(transaction.objectStore(ANNOTATION_NAMESPACES_STORE).add(row));
     return row.incarnation;
   }
 
@@ -488,6 +484,11 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
     const database = await this.#connection.open();
     const transaction = database.transaction([...([] as string[]).concat(stores as string | readonly string[])], mode);
     const completed = transactionCompletion(transaction);
+    // Observe the completion rejection immediately so a request error that aborts
+    // the transaction before `await body` returns is never an unhandled rejection.
+    // The real failure still propagates through the later `await completed`, and
+    // atomic rollback and `tryAbortTransaction` are unchanged.
+    void completed.catch(() => undefined);
     try {
       const result = await body(transaction);
       if (operation) this.#beforeCommit?.(operation);
