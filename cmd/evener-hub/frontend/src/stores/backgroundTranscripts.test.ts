@@ -238,6 +238,100 @@ function combineTestAndCleanupErrors(primary: unknown, cleanup: unknown): unknow
   return new AggregateError([primary, cleanup], "test body and cleanup both failed");
 }
 
+// A one-shot hold over the first background cache write. `disarm()` stops any
+// FUTURE hold from being armed; cleanup must call it before disposal can start
+// a fresh flush. A hold armed after cleanup began is recorded and signalled, so
+// a failure proof can detect an orphaned hold and release it rather than
+// hanging the suite.
+function holdFirstWrite(cache: SessionCacheIndexedDB) {
+  let held: ReturnType<typeof holdNextWriteTransaction> | undefined;
+  let consumed = false;
+  let disarmed = false;
+  let cleanupBegan = false;
+  let signalArmedDuringCleanup: (() => void) | undefined;
+  const armedDuringCleanup = new Promise<void>((resolve) => {
+    signalArmedDuringCleanup = resolve;
+  });
+  let signalWriteEntered: (() => void) | undefined;
+  const writeEntered = new Promise<void>((resolve) => {
+    signalWriteEntered = resolve;
+  });
+  const realPut = cache.put.bind(cache);
+  const spy = vi.spyOn(cache, "put").mockImplementation(async (record, scheduledEpoch, now) => {
+    if (!disarmed && !consumed) {
+      consumed = true;
+      held = holdNextWriteTransaction(["records", "meta", "current", "currentMeta"]);
+      signalWriteEntered?.();
+      if (cleanupBegan) signalArmedDuringCleanup?.();
+    }
+    return realPut(record, scheduledEpoch, now);
+  });
+  return {
+    writeEntered,
+    armedDuringCleanup,
+    consumed: () => consumed,
+    held: () => held,
+    clear() {
+      held = undefined;
+    },
+    beginCleanup() {
+      cleanupBegan = true;
+    },
+    disarm() {
+      disarmed = true;
+    },
+    release() {
+      held?.release();
+      held = undefined;
+    },
+    restore() {
+      spy.mockRestore();
+    },
+  };
+}
+
+// The shared failure-safe cleanup the success scenario and the failure proofs
+// exercise: disarm future holds FIRST, release the current hold, then retire
+// acceptance and join the real owner disposal AND its already-retired release
+// work. releaseAbsent() moves a disappeared lease out of the owner map into
+// releaseWork, which dispose() does not join but settled() does.
+async function runReappearanceCleanup(
+  hold: ReturnType<typeof holdFirstWrite>,
+  owner: BackgroundTranscriptsOwner,
+  restore: () => void,
+): Promise<void> {
+  hold.beginCleanup();
+  hold.disarm();
+  hold.release();
+  try {
+    await owner.dispose();
+    await owner.settled();
+  } finally {
+    restore();
+  }
+}
+
+// Run the shared cleanup, converting the defect (a hold armed during teardown
+// that cleanup never releases) into a clear failure: detect the orphan, release
+// it so cleanup can finish, then throw, rather than hanging the suite.
+async function runReappearanceCleanupSafely(
+  hold: ReturnType<typeof holdFirstWrite>,
+  owner: BackgroundTranscriptsOwner,
+  restore: () => void,
+): Promise<void> {
+  const cleanup = runReappearanceCleanup(hold, owner, restore);
+  const outcome = await Promise.race([
+    cleanup.then(() => "cleanup" as const),
+    hold.armedDuringCleanup.then(() => "armed" as const),
+  ]);
+  if (outcome === "armed") {
+    hold.release();
+    await cleanup;
+    throw new Error("reappearance cleanup armed an unreleased write hold during teardown");
+  }
+  await cleanup;
+}
+
 // A single terminal page whose read fails.
 function failPage(): Map<number, PageSpec | "fail"> {
   return new Map([[0, "fail"]]);
@@ -578,22 +672,7 @@ describe("startBackgroundTranscripts", () => {
     const owner = startBackgroundTranscripts(navigationStore);
     // Hold the first real release write through a call-through put spy: the
     // real IndexedDB readwrite transaction is armed, and the real put runs.
-    let held: ReturnType<typeof holdNextWriteTransaction> | undefined;
-    let holdConsumed = false;
-    let signalWriteEntered: (() => void) | undefined;
-    const writeEntered = new Promise<void>((resolve) => {
-      signalWriteEntered = resolve;
-    });
-    const realPut = cache.put.bind(cache);
-    const putSpy = vi.spyOn(cache, "put").mockImplementation(async (record, scheduledEpoch, now) => {
-      // One-shot: hold only the release write under test, never a later write.
-      if (!holdConsumed) {
-        holdConsumed = true;
-        held = holdNextWriteTransaction(["records", "meta", "current", "currentMeta"]);
-        signalWriteEntered?.();
-      }
-      return realPut(record, scheduledEpoch, now);
-    });
+    const hold = holdFirstWrite(cache);
 
     let primaryError: unknown;
     try {
@@ -608,12 +687,13 @@ describe("startBackgroundTranscripts", () => {
       // blocks on the real held cache write.
       world.pages = onePage([liveRow("local:b")]);
       invalidate(2);
-      await writeEntered;
-      if (!held) throw new Error("release never entered a real cache write");
+      await hold.writeEntered;
+      const write = hold.held();
+      if (!write) throw new Error("release never entered a real cache write");
       // The held transaction's own complete event is the release-entered
       // boundary: the write is durably done yet still in flight for the
       // release that awaits it.
-      await held.reached;
+      await write.reached;
       expect(threadUnsubRefs()).toEqual([]);
 
       // a reappears while the real write is still held: the fresh coherent
@@ -628,8 +708,8 @@ describe("startBackgroundTranscripts", () => {
 
       // Release the hold, then let the real cleanup settle and assert the
       // old release dropped nothing and the literal content survived once.
-      held.release();
-      held = undefined;
+      write.release();
+      hold.clear();
       await owner.settled();
       expect(threadUnsubRefs()).toEqual([]);
       const survived = threadsStore.getState().threads.get("local:a");
@@ -642,17 +722,165 @@ describe("startBackgroundTranscripts", () => {
     } finally {
       let cleanupError: unknown;
       try {
-        held?.release();
-        await owner.dispose();
+        await runReappearanceCleanupSafely(hold, owner, () => {
+          hold.restore();
+          acquireSpy.mockRestore();
+        });
       } catch (error) {
         cleanupError = error;
-      } finally {
-        putSpy.mockRestore();
-        acquireSpy.mockRestore();
       }
       if (cleanupError !== undefined) primaryError = combineTestAndCleanupErrors(primaryError, cleanupError);
     }
     if (primaryError !== undefined) throw primaryError;
+  });
+
+  test("a failure before the first release write cleans up without arming an orphan hold", async () => {
+    world.pages = onePage([liveRow("local:a")]);
+    fake = connectFake();
+    await cache.count();
+    fake.on("thread/read", (params) =>
+      versionedRead(params.ref ?? "local:a", (params as { requestGeneration?: number }).requestGeneration ?? 1),
+    );
+    const hold = holdFirstWrite(cache);
+    const owner = startBackgroundTranscripts(navigationStore);
+
+    let primaryError: unknown;
+    try {
+      await owner.settled();
+      expect(threadReadRefs()).toEqual(new Set(["local:a"]));
+      // A resident, versioned model exists, so disposal would drain a real
+      // cache write; no release write has been held yet.
+      expect(backgroundTranscriptSnapshotForTests().refs.get("local:a")?.resident).toBe(true);
+      expect(threadsStore.getState().threads.get("local:a")?.history?.incarnation).toBeDefined();
+      expect(hold.consumed()).toBe(false);
+      throw new Error("injected early failure before the first release write");
+    } catch (error) {
+      primaryError = error;
+    } finally {
+      let cleanupError: unknown;
+      try {
+        await runReappearanceCleanupSafely(hold, owner, () => hold.restore());
+      } catch (error) {
+        cleanupError = error;
+      }
+      if (cleanupError !== undefined) primaryError = combineTestAndCleanupErrors(primaryError, cleanupError);
+    }
+
+    // The injected failure survives cleanup unchanged, and cleanup armed no
+    // orphan hold (otherwise runReappearanceCleanupSafely would have thrown).
+    expect(primaryError).toBeInstanceOf(Error);
+    expect((primaryError as Error).message).toContain("injected early failure before the first release write");
+    expect(hold.consumed()).toBe(false);
+
+    // A following healthy operation on the same navigation store stays usable.
+    const healthy = startBackgroundTranscripts(navigationStore);
+    await healthy.settled();
+    expect(threadReadRefs().has("local:a")).toBe(true);
+    await healthy.dispose();
+    await healthy.settled();
+  });
+
+  test("a failure after the held release entry joins the already-retired release before teardown", async () => {
+    world.pages = onePage([liveRow("local:a")]);
+    fake = connectFake();
+    await cache.count();
+    fake.on("thread/read", (params) =>
+      versionedRead(params.ref ?? "local:a", (params as { requestGeneration?: number }).requestGeneration ?? 1),
+    );
+
+    // Observe the real lease acquisitions and capture the disappeared lease's
+    // real release promise: releaseAbsent() moves that lease out of the owner
+    // map into releaseWork, which dispose() does not join but settled() does.
+    const realAcquire = threads.acquireBackgroundThread;
+    const acquired: string[] = [];
+    let retiredLeaseSeen = false;
+    let retiredReleaseSettled = false;
+    const acquireSpy = vi.spyOn(threads, "acquireBackgroundThread").mockImplementation((ref) => {
+      acquired.push(ref);
+      const lease = realAcquire(ref);
+      if (ref === "local:a" && !retiredLeaseSeen) {
+        retiredLeaseSeen = true;
+        const realRelease = lease.release.bind(lease);
+        vi.spyOn(lease, "release").mockImplementation(() => {
+          const promise = realRelease();
+          promise.then(
+            () => {
+              retiredReleaseSettled = true;
+            },
+            () => {
+              retiredReleaseSettled = true;
+            },
+          );
+          return promise;
+        });
+      }
+      return lease;
+    });
+    const acquisitionsOf = (ref: string) => acquired.filter((candidate) => candidate === ref).length;
+
+    const hold = holdFirstWrite(cache);
+    const owner = startBackgroundTranscripts(navigationStore);
+    // Record that cleanup joins the owner's release work through the real
+    // settled(); the body resets this before injecting the failure.
+    let settledJoined = false;
+    const realSettled = owner.settled.bind(owner);
+    const settledSpy = vi.spyOn(owner, "settled").mockImplementation(() => {
+      settledJoined = true;
+      return realSettled();
+    });
+
+    let primaryError: unknown;
+    try {
+      await owner.settled();
+      expect(threadReadRefs()).toEqual(new Set(["local:a"]));
+      expect(backgroundTranscriptSnapshotForTests().refs.get("local:a")?.resident).toBe(true);
+      const acquisitionsBeforeRelease = acquisitionsOf("local:a");
+
+      // a leaves Live; the coherent sweep starts a's final release, which
+      // blocks on the real held cache write.
+      world.pages = onePage([liveRow("local:b")]);
+      invalidate(2);
+      await hold.writeEntered;
+      const write = hold.held();
+      if (!write) throw new Error("release never entered a real cache write");
+      await write.reached;
+      expect(threadUnsubRefs()).toEqual([]);
+
+      // a reappears while the real write is still held: a fresh coherent sweep
+      // re-claims it before the write can settle.
+      world.pages = onePage([liveRow("local:a"), liveRow("local:b")]);
+      invalidate(3);
+      await awaitObserved(
+        () => acquisitionsOf("local:a") > acquisitionsBeforeRelease,
+        "real local:a re-acquisition while the release write is held",
+      );
+
+      // Inject the failure AFTER the held-release/disappearance boundary and
+      // before the success path's settled() join.
+      settledJoined = false;
+      throw new Error("injected failure after the held release entry");
+    } catch (error) {
+      primaryError = error;
+    } finally {
+      let cleanupError: unknown;
+      try {
+        await runReappearanceCleanupSafely(hold, owner, () => {
+          hold.restore();
+          acquireSpy.mockRestore();
+          settledSpy.mockRestore();
+        });
+      } catch (error) {
+        cleanupError = error;
+      }
+      if (cleanupError !== undefined) primaryError = combineTestAndCleanupErrors(primaryError, cleanupError);
+    }
+
+    expect(primaryError).toBeInstanceOf(Error);
+    expect((primaryError as Error).message).toContain("injected failure after the held release entry");
+    // The cleanup joined the already-retired release (releaseWork) through the
+    // real settled(), and that release actually completed before teardown.
+    expect(settledJoined).toBe(true);
+    expect(retiredReleaseSettled).toBe(true);
   });
 
   test("a reappearance after a release re-acquires the retired ref", async () => {

@@ -797,6 +797,97 @@ function instrumentBackgroundLifetime() {
   };
 }
 
+// A one-shot hold over the predecessor owner's real final-release cache write.
+// `disarm()` stops any FUTURE hold from being armed; cleanup must call it
+// before releasing the current hold and before unmount/dispose can start a
+// fresh flush. A hold armed after cleanup began (i.e. after `beginCleanup()`)
+// is recorded and signalled, so a failure proof can detect an orphaned hold and
+// release it rather than hanging the suite.
+function armReleaseWriteHold(cache: SessionCacheIndexedDB, lifetime: ReturnType<typeof instrumentBackgroundLifetime>) {
+  let held: ReturnType<typeof holdNextWriteTransaction> | undefined;
+  let consumed = false;
+  let disarmed = false;
+  let cleanupBegan = false;
+  let signalArmedDuringCleanup: (() => void) | undefined;
+  const armedDuringCleanup = new Promise<void>((resolve) => {
+    signalArmedDuringCleanup = resolve;
+  });
+  const writeEntered = deferredSignal();
+  const realPut = cache.put.bind(cache);
+  const spy = vi.spyOn(cache, "put").mockImplementation(async (record, scheduledEpoch, now) => {
+    // One-shot: hold only the predecessor's real release flush, never a later
+    // successor teardown write. After disarm no new hold may be armed, so
+    // teardown cannot leave an unreleased gate behind.
+    if (!disarmed && !consumed && lifetime.releaseEntered()) {
+      consumed = true;
+      held = holdNextWriteTransaction(["records", "meta", "current", "currentMeta"]);
+      writeEntered.resolve();
+      if (cleanupBegan) signalArmedDuringCleanup?.();
+    }
+    return realPut(record, scheduledEpoch, now);
+  });
+  return {
+    writeEntered,
+    armedDuringCleanup,
+    consumed: () => consumed,
+    held: () => held,
+    clear() {
+      held = undefined;
+    },
+    beginCleanup() {
+      cleanupBegan = true;
+    },
+    disarm() {
+      disarmed = true;
+    },
+    release() {
+      held?.release();
+      held = undefined;
+    },
+    restore() {
+      spy.mockRestore();
+    },
+  };
+}
+
+// The shared held-release cleanup both the success scenario and the failure
+// proof exercise: disarm future holds FIRST, release the current hold, unmount
+// and join the real owner disposal, then restore observers and dependencies.
+async function runHeldCleanup(
+  hold: ReturnType<typeof armReleaseWriteHold>,
+  steps: { unmount?: () => void; join: () => Promise<void>; restore: () => void },
+): Promise<void> {
+  hold.beginCleanup();
+  hold.disarm();
+  hold.release();
+  try {
+    steps.unmount?.();
+    await steps.join();
+  } finally {
+    steps.restore();
+  }
+}
+
+// Run the shared cleanup, converting the defect (a hold armed during teardown
+// that cleanup never releases) into a clear failure: detect the orphan, release
+// it so cleanup can finish, then throw, rather than hanging the suite.
+async function runHeldCleanupSafely(
+  hold: ReturnType<typeof armReleaseWriteHold>,
+  steps: { unmount?: () => void; join: () => Promise<void>; restore: () => void },
+): Promise<void> {
+  const cleanup = runHeldCleanup(hold, steps);
+  const outcome = await Promise.race([
+    cleanup.then(() => "cleanup" as const),
+    hold.armedDuringCleanup.then(() => "armed" as const),
+  ]);
+  if (outcome === "armed") {
+    hold.release();
+    await cleanup;
+    throw new Error("held cleanup armed an unreleased write hold during teardown");
+  }
+  await cleanup;
+}
+
 // Captured at module load, before any spy can wrap the export, so the
 // call-through below always reaches the real implementation.
 const realStartBackgroundTranscripts = backgroundTranscriptsModule.startBackgroundTranscripts;
@@ -1002,20 +1093,7 @@ test("a client replacement holds the predecessor's real release cleanup and keep
   // Arm the completion hold at the real cache-flush entry and only after the
   // real release has entered, so the held write is attributable to the
   // predecessor's final-release flush (not merely the next cache write).
-  let held: ReturnType<typeof holdNextWriteTransaction> | undefined;
-  let holdConsumed = false;
-  const writeEntered = deferredSignal();
-  const realPut = cache.put.bind(cache);
-  const putSpy = vi.spyOn(cache, "put").mockImplementation(async (record, scheduledEpoch, now) => {
-    // One-shot: hold only the predecessor's real release flush, never a later
-    // successor teardown write.
-    if (!holdConsumed && lifetime.releaseEntered()) {
-      holdConsumed = true;
-      held = holdNextWriteTransaction(["records", "meta", "current", "currentMeta"]);
-      writeEntered.resolve();
-    }
-    return realPut(record, scheduledEpoch, now);
-  });
+  const hold = armReleaseWriteHold(cache, lifetime);
 
   let view: ReturnType<typeof render> | undefined;
   let primaryError: unknown;
@@ -1038,8 +1116,8 @@ test("a client replacement holds the predecessor's real release cleanup and keep
     await act(async () => {
       predecessorDisposal = predecessorRecord.owner.dispose();
     });
-    await waitFor(() => expect(held).toBeDefined());
-    const write = held;
+    await waitFor(() => expect(hold.held()).toBeDefined());
+    const write = hold.held();
     if (!write) throw new Error("predecessor release never entered a real cache flush");
     expect(lifetime.releaseEntered()).toBe(true);
     await write.reached; // transaction committed, its completion delivery held
@@ -1080,7 +1158,7 @@ test("a client replacement holds the predecessor's real release cleanup and keep
     expect(lifetime.acquisitionsAfterReleaseEntry("local:s1")).toBeGreaterThanOrEqual(1);
     await act(async () => {
       write.release();
-      held = undefined;
+      hold.clear();
       await predecessorDisposal;
     });
 
@@ -1094,25 +1172,104 @@ test("a client replacement holds the predecessor's real release cleanup and keep
   } catch (error) {
     primaryError = error;
   } finally {
-    held?.release();
     let cleanupError: unknown;
     try {
-      view?.unmount();
-      await owners.joinDisposals();
+      await runHeldCleanupSafely(hold, {
+        unmount: () => view?.unmount(),
+        join: () => owners.joinDisposals(),
+        restore: () => {
+          stoppedTreeSession = false;
+          hold.restore();
+          lifetime.restore();
+          owners.restore();
+          setCacheWriteTimersForTests({ debounceMs: 1_000, maxWaitMs: 5_000 });
+          setSessionCacheAdapterForTests(undefined);
+          cache.close();
+        },
+      });
     } catch (error) {
       cleanupError = error;
-    } finally {
-      stoppedTreeSession = false;
-      putSpy.mockRestore();
-      lifetime.restore();
-      owners.restore();
-      setCacheWriteTimersForTests({ debounceMs: 1_000, maxWaitMs: 5_000 });
-      setSessionCacheAdapterForTests(undefined);
-      cache.close();
     }
     if (cleanupError !== undefined) primaryError = combineErrors(primaryError, cleanupError);
   }
   if (primaryError !== undefined) throw primaryError;
+});
+
+test("an early failure before the predecessor release write joins real cleanup without an orphan hold", async () => {
+  const cache = new SessionCacheIndexedDB({
+    indexedDB: new IDBFactory(),
+    databaseName: `appshell-bg-fail-${crypto.randomUUID()}`,
+  });
+  setSessionCacheAdapterForTests(cache);
+  await cache.count();
+  setCacheWriteTimersForTests({ debounceMs: 60_000, maxWaitMs: 60_000 });
+  const predecessor = versionedClient("predecessor-content");
+  const owners = trackBackgroundOwners();
+  const lifetime = instrumentBackgroundLifetime();
+  const hold = armReleaseWriteHold(cache, lifetime);
+
+  let view: ReturnType<typeof render> | undefined;
+  let primaryError: unknown;
+  try {
+    lifetime.arm();
+    view = render(<AppShell client={predecessor} />);
+    await screen.findByText("No session open");
+    await waitFor(() => expect(membershipReads(predecessor)).toBeGreaterThanOrEqual(1));
+    await waitFor(() => expect(threadsStore.getState().threads.get("local:s1")?.history?.incarnation).toBeDefined());
+    expect(owners.activeCount()).toBe(1);
+    // A valid resident model exists and no release write has been held yet, so
+    // the injected failure lands BEFORE the first hold is consumed.
+    expect(hold.consumed()).toBe(false);
+    throw new Error("injected early failure before the first release write");
+  } catch (error) {
+    primaryError = error;
+  } finally {
+    let cleanupError: unknown;
+    try {
+      await runHeldCleanupSafely(hold, {
+        unmount: () => view?.unmount(),
+        join: () => owners.joinDisposals(),
+        restore: () => {
+          hold.restore();
+          lifetime.restore();
+          owners.restore();
+          setCacheWriteTimersForTests({ debounceMs: 1_000, maxWaitMs: 5_000 });
+          setSessionCacheAdapterForTests(undefined);
+          cache.close();
+        },
+      });
+    } catch (error) {
+      cleanupError = error;
+    }
+    if (cleanupError !== undefined) primaryError = combineErrors(primaryError, cleanupError);
+  }
+
+  // The injected failure survives cleanup unchanged, and cleanup created no
+  // unreleased hold (otherwise runHeldCleanupSafely would have thrown above).
+  expect(primaryError).toBeInstanceOf(Error);
+  expect((primaryError as Error).message).toContain("injected early failure before the first release write");
+  expect(hold.consumed()).toBe(false);
+  // The real owner disposal was joined, not abandoned.
+  expect(owners.activeCount()).toBe(0);
+  for (const record of owners.records) expect(record.disposeStatus).toBe("fulfilled");
+
+  // A following healthy operation on the same stores remains usable.
+  const healthyOwners = trackBackgroundOwners();
+  const healthyClient = backgroundReadyClient();
+  let healthyView: ReturnType<typeof render> | undefined;
+  try {
+    healthyView = render(<AppShell client={healthyClient} />);
+    await screen.findByText("No session open");
+    await waitFor(() => expect(membershipReads(healthyClient)).toBeGreaterThanOrEqual(1));
+    healthyView.unmount();
+    healthyView = undefined;
+    await healthyOwners.joinDisposals();
+    for (const record of healthyOwners.records) expect(record.disposeStatus).toBe("fulfilled");
+  } finally {
+    healthyView?.unmount();
+    await healthyOwners.joinDisposals();
+    healthyOwners.restore();
+  }
 });
 
 test("StrictMode mount and cleanup/remount retire their predecessor and complete disposal", async () => {
