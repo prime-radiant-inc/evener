@@ -54,6 +54,64 @@ func TestMemoryGenericDelivery(t *testing.T) {
 	}
 }
 
+// memoryContextWireItem returns one recorded case from the memory-context
+// corpus, which agent.TestMemoryContextWireFixtures produces from the real
+// refresh producer and projector.
+func memoryContextWireItem(t *testing.T, name string) appwire.ThreadItem {
+	t.Helper()
+	raw, err := os.ReadFile("../../agent/testdata/memorycontextwire/events.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cases []struct {
+		Case string             `json:"case"`
+		Item appwire.ThreadItem `json:"item"`
+	}
+	if err := json.Unmarshal(raw, &cases); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range cases {
+		if c.Case == name {
+			return c.Item
+		}
+	}
+	t.Fatalf("no %s case in the memory-context corpus", name)
+	return appwire.ThreadItem{}
+}
+
+// renderDeliveredSystemItem delivers item to a session hub model the way a
+// history update does and renders the system message it becomes.
+func renderDeliveredSystemItem(t *testing.T, item appwire.ThreadItem) string {
+	t.Helper()
+	m := newSessionHubModel(nil)
+	m.detail.Ref = "local:memory-context-fixture"
+	updated, _ := m.Update(hubNotificationMsg{ok: true, notification: *appwire.NotificationMessage(appwire.NotifyHistoryUpdated, appwire.HistoryUpdatedParams{
+		ThreadID: "memory-context-fixture", Ref: m.detail.Ref, Items: []appwire.ThreadItem{item},
+	}).Notification})
+	var rendered []string
+	for _, msg := range updated.(hubModel).session.messages {
+		if msg.Kind == transcript.MsgSystem {
+			rendered = append(rendered, msgrender.RenderMessage(msg, 120, false))
+		}
+	}
+	if len(rendered) != 1 {
+		t.Fatalf("delivered item became %d system messages, want 1", len(rendered))
+	}
+	return rendered[0]
+}
+
+// An index change block reads as the changed lines it carries, not as a full
+// index: the unchanged line it leaves out stays out.
+func TestMemoryContextIndexChangeRendersChangedLines(t *testing.T) {
+	rendered := renderDeliveredSystemItem(t, memoryContextWireItem(t, "index-change-project"))
+	if !strings.Contains(rendered, "opaque-change-added") || !strings.Contains(rendered, "opaque-change-removed") {
+		t.Fatalf("index change lost its changed lines: %s", rendered)
+	}
+	if strings.Contains(rendered, "opaque-change-kept") {
+		t.Fatalf("index change rendered the unchanged line, as a full index would: %s", rendered)
+	}
+}
+
 func TestHubModelLiveAgentCompletionUpdatesDeltaWithoutDuplicate(t *testing.T) {
 	m := newHubModel(nil, "")
 	m.mode = hubModeSession

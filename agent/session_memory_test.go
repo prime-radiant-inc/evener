@@ -167,11 +167,15 @@ func TestMemoryContextProjection(t *testing.T) {
 }
 
 // Decode only core framing and quoted opaque data, never use steering prose as
-// an oracle. The scope-specific user name is the authority boundary.
+// an oracle. The scope-specific user name is the authority boundary. Index
+// change blocks are skipped: this returns the latest full index observation.
 func memoryRequestIndex(t *testing.T, req llm.Request, scope string) (string, string, bool) {
 	t.Helper()
 	var latest *llm.Message
 	for _, msg := range req.Messages {
+		if _, full := apptranscript.ParseMemoryContext(msg.Text(), msg.Name); !full {
+			continue
+		}
 		if msg.Name == "memory_"+scope {
 			message := msg
 			latest = &message
@@ -497,41 +501,41 @@ func TestMemoryContextTransitions(t *testing.T) {
 	}
 	run(2)
 	run(2)
-	// Another session's content changes, an empty index included, do not
-	// re-deliver the full index the session already has.
+	// Another session's content changes, an empty index included, arrive as
+	// change blocks; the latest full index observation stays the first one.
 	if err := os.WriteFile(path, []byte("opaque-second-28"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	run(2)
+	run(3)
 	if err := os.WriteFile(path, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	run(2)
+	run(4)
 	wantState, wantBody = "missing", ""
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
-	run(3)
+	run(5)
 	wantState = "unavailable"
 	fault.Store(true)
-	run(4)
+	run(6)
 	fault.Store(false)
 	wantState, wantBody = "current", "opaque-recovered-38"
 	if err := os.WriteFile(path, []byte(wantBody), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	run(5)
+	run(7)
 	// Revocation happens on the owner loop between requests, never in a worker.
 	s.cfg.MemoryProjectID = ""
 	// Not asserted here: keeps the prompt consistent with the revoked binding.
 	refreshModelFacingCaches(s)
 	wantProjectState, wantProjectBody = "revoked", ""
-	run(6)
+	run(8)
 	s.reg.Remove("memory_read")
 	// Not asserted here: keeps tool definitions and prompt consistent with the revoked tool.
 	refreshModelFacingCaches(s)
 	wantState, wantBody = "revoked", ""
-	run(7)
+	run(9)
 	s.Close()
 	writer, entries, err := transcript.OpenWriterForSession(transcriptPath(s.stateDir, s.id), s.id)
 	if err != nil {
@@ -547,7 +551,7 @@ func TestMemoryContextTransitions(t *testing.T) {
 			original = original || strings.Contains(entry.Turn.Message.Text(), "opaque-first-18")
 		}
 	}
-	if contexts != 7 || !original {
+	if contexts != 9 || !original {
 		t.Fatalf("durable contexts=%d original preserved=%t", contexts, original)
 	}
 }
@@ -2344,20 +2348,20 @@ func TestMemoryIndexProjection(t *testing.T) {
 	if n := count(); n != 1 {
 		t.Fatalf("unchanged contexts=%d", n)
 	}
-	// Emptying a known index is a content change, which does not re-deliver
-	// the full index; a missing index is still projected as missing.
+	// Emptying a known index is a content change, delivered as a change
+	// block; a missing index is still projected as missing.
 	if err := os.WriteFile(filepath.Join(wiki, "MEMORY.md"), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	s.maybeAppendMemoryContext(context.Background(), true)
-	if n := count(); n != 1 {
+	if n := count(); n != 2 {
 		t.Fatalf("empty transition contexts=%d", n)
 	}
 	if err := os.Remove(filepath.Join(wiki, "MEMORY.md")); err != nil {
 		t.Fatal(err)
 	}
 	s.maybeAppendMemoryContext(context.Background(), true)
-	if n := count(); n != 2 {
+	if n := count(); n != 3 {
 		t.Fatalf("missing transition contexts=%d", n)
 	}
 }

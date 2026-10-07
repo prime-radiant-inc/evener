@@ -107,6 +107,12 @@ func TestMemoryContextWireFixtures(t *testing.T) {
 	// fail. The recorded text is preserved and no raw is fabricated.
 	malformedText := strings.Replace(quotedTurn.Message.Text(), memoryContextDataMarkerForFixture, memoryContextDataMarkerForFixture+"?", 1)
 	malformedItems := apptranscript.ProjectTurn("turn_1", 1, memoryContextWireTurnWithText("project", malformedText), nil, nil, nil)
+
+	// Another session's index change: the producer's change block, which lists
+	// only the added and removed lines and is not a full index observation.
+	changeBaseline := memoryIndexBaseline{status: "current", index: "opaque-change-kept\nopaque-change-removed\n"}
+	s.publishKnownMemoryIndex(changeBaseline, memoryProjection{Scope: "project", Status: "current", Content: "opaque-change-kept\nopaque-change-added\n"})
+	changeTurn, changeItem := capture(s, "project")
 	if len(malformedItems) != 1 {
 		t.Fatalf("malformed: projected %d items, want 1", len(malformedItems))
 	}
@@ -134,21 +140,23 @@ func TestMemoryContextWireFixtures(t *testing.T) {
 		{Case: "suffixed-session", Note: "A delegate's read-only view of its root session index: the producer appends the read-only suffix.", Item: suffixedItem,
 			wantRaw: true, wantScope: "session", wantState: "current", wantContent: "opaque-root-session\n"},
 		{Case: "malformed-project", Note: "The producer's own envelope with its data marker corrupted: the item keeps the exact text and carries no raw.", Item: malformedItems[0]},
+		{Case: "index-change-project", Note: "Another session changed a known project index: the block lists only the added and removed lines and carries no raw.", Item: changeItem},
 	}
 
 	// Regression assertions over the producer's real output, before pinning.
 	wantText := map[string]string{
-		"current-personal":    text(personalTurn),
-		"current-project":     text(projectTurn),
-		"current-session":     text(sessionTurn),
-		"empty-project":       text(emptyTurn),
-		"missing-project":     text(missingTurn),
-		"revoked-project":     text(revokedTurn),
-		"unavailable-project": text(unavailableTurn),
-		"truncated-project":   text(truncatedTurn),
-		"quoted-project":      text(quotedTurn),
-		"suffixed-session":    text(suffixedTurn),
-		"malformed-project":   malformedText,
+		"current-personal":     text(personalTurn),
+		"current-project":      text(projectTurn),
+		"current-session":      text(sessionTurn),
+		"empty-project":        text(emptyTurn),
+		"missing-project":      text(missingTurn),
+		"revoked-project":      text(revokedTurn),
+		"unavailable-project":  text(unavailableTurn),
+		"truncated-project":    text(truncatedTurn),
+		"quoted-project":       text(quotedTurn),
+		"suffixed-session":     text(suffixedTurn),
+		"malformed-project":    malformedText,
+		"index-change-project": text(changeTurn),
 	}
 	for _, tc := range cases {
 		if tc.Item.Type != "systemMessage" || tc.Item.ID != "item_memory_context_1" {
