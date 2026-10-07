@@ -2,7 +2,7 @@ import { act, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { authCalls, boundary } from "./providerSignInTestUtils";
 import { ProviderSignInSheet } from "./ProviderSignInSheet";
-import { pressable, render, renderedText, textOf } from "./renderNative.testkit";
+import { pressable, render, renderedText, textOf, unmountMountedTrees } from "./renderNative.testkit";
 import { palettes } from "./design/tokens";
 import { Button } from "./sheet/Grouped";
 
@@ -86,6 +86,7 @@ beforeEach(() => {
 	edges.copies = true;
 });
 afterEach(() => {
+	unmountMountedTrees();
 	for (const flow of flows) flow.dispose();
 	flows = [];
 	vi.useRealTimers();

@@ -8,7 +8,14 @@ import { wireThread } from "@evener/appwire-client/testing/notifications";
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { NativeMutationRuntime } from "../nativeMutationRuntime";
-import { alertRequests, pressable, render, renderedText, screenConnection } from "../renderNative.testkit";
+import {
+	alertRequests,
+	pressable,
+	render,
+	renderedText,
+	screenConnection,
+	unmountMountedTrees,
+} from "../renderNative.testkit";
 import { openSqliteSyncDouble } from "../sqliteSync.testkit";
 import { forgetStopRequestsForHub, stopRequests } from "./nativeStopRequests";
 import { StopSubagentSheet } from "./StopSubagentSheet";
@@ -198,6 +205,7 @@ beforeEach(async () => {
 	harness.runtime = runtime;
 });
 afterEach(async () => {
+	unmountMountedTrees();
 	await runtime.stop();
 	vi.restoreAllMocks();
 });

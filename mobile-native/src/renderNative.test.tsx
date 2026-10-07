@@ -5,7 +5,7 @@
 // per render, so this pins the harness's output as clean (#2433).
 import { createElement, useEffect } from "react";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
-import { answered, render, renderHook } from "./renderNative.testkit";
+import { answered, render, renderHook, unmountMountedTrees } from "./renderNative.testkit";
 
 const DEPRECATION = "react-test-renderer is deprecated";
 
@@ -30,6 +30,25 @@ describe("renderNative.testkit", () => {
 // A tree a test mounts is unmounted once that test ends, so its timers and
 // subscriptions can't update it after the file's last test, outside act,
 // while vitest tears the worker down (#3916, #3924).
+describe("renderNative.testkit unmounts ahead of a suite's own cleanup", () => {
+	const order: string[] = [];
+	afterEach(() => {
+		unmountMountedTrees();
+		order.push("cleanup");
+	});
+	function Probe() {
+		useEffect(() => () => void order.push("unmounted"), []);
+		return null;
+	}
+
+	it("unmounts a test's trees when its afterEach asks, before the rest of that afterEach", () => {
+		onTestFinished(() => {
+			expect(order).toEqual(["unmounted", "cleanup"]);
+		});
+		render(createElement(Probe));
+	});
+});
+
 describe("renderNative.testkit unmounts what a test mounted", () => {
 	const unmounted: string[] = [];
 	afterEach(() => {

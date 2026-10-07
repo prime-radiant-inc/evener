@@ -637,27 +637,36 @@ export function dropped(
 	return { ...connection, state, downSince: downAt, lastLiveAt: downAt };
 }
 
+// The trees the running test has mounted, newest last.
+const mountedThisTest: ReactTestRenderer[] = [];
+
+/** Unmounts every tree the running test mounted, newest first; a tree a test
+ * already unmounted is a no-op. A suite whose afterEach cleans up anything a
+ * mounted tree may still use (a sheet host's release, a runtime's stop, a
+ * flow's dispose, restored mocks or real timers) calls this first, so that
+ * cleanup never runs under a live tree. */
+export function unmountMountedTrees(): void {
+	for (const tree of mountedThisTest.splice(0).reverse()) act(() => tree.unmount());
+}
+
 /** Mounts `element` and flushes its effects, returning the test renderer.
  * `options.createNodeMock` hands host components' refs a stand-in, such as a
  * ScrollView whose scrollTo a test records.
  *
- * The tree is unmounted when the test that mounted it ends, after its
- * afterEach hooks. A tree left mounted keeps its timers and subscriptions
- * running, and their updates land after the file's last test, outside act:
- * React's warning about them can reach the console while vitest tears the
- * worker down, which fails the run (#3916). A test may still unmount a tree
- * itself; unmounting it again is a no-op. A suite whose afterEach changes
- * state a mounted tree subscribes to (a sheet host's release) should unmount
- * its trees first itself, or React warns about the update outside act. Call
- * render only inside a test or a beforeEach. */
+ * The tree is unmounted when the test that mounted it ends (unmountMountedTrees
+ * runs from onTestFinished, after the suite's afterEach hooks, unless an
+ * afterEach ran it first). A tree left mounted keeps its timers and
+ * subscriptions running, and their updates land after the file's last test,
+ * outside act: React's warning about them can reach the console while vitest
+ * tears the worker down, which fails the run (#3916). Call render only inside
+ * a test or a beforeEach. */
 export function render(element: ReactElement, options?: TestRendererOptions): ReactTestRenderer {
 	let tree!: ReactTestRenderer;
 	act(() => {
 		tree = create(element, options);
 	});
-	onTestFinished(() => {
-		act(() => tree.unmount());
-	});
+	if (mountedThisTest.length === 0) onTestFinished(unmountMountedTrees);
+	mountedThisTest.push(tree);
 	return tree;
 }
 
