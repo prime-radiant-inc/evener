@@ -98,7 +98,13 @@ func (s *Session) execMemoryRead(ctx context.Context, _ execenv.ExecutionEnviron
 	// The index has its own baseline and change blocks; every other page
 	// read is tracked for change notices.
 	if err == nil && file != memoryIndexFile {
-		s.recordMemoryContent(scope, file, raw, nil, true)
+		// Another session may change the page between the read and its
+		// record; the record still holds what this read loaded.
+		recordErr := s.beforeMemoryIO(scope, "record")
+		if recordErr != nil {
+			raw = nil
+		}
+		s.recordMemoryContent(scope, file, raw, recordErr, true)
 	}
 	return out, err
 }
