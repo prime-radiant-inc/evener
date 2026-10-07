@@ -324,10 +324,8 @@ func (s *Session) DetailedStatus() DetailedStatus {
 	}
 	if s.delegateController != nil {
 		rootID := s.delegateController.rootSessionID
-		for _, row := range s.delegateController.Snapshot().rows {
-			if row.descriptor.OwnerSessionID == s.ID() {
-				ds.Delegates = append(ds.Delegates, delegateStatusInfoFromSnapshot(now, rootID, row))
-			}
+		for _, row := range s.delegateController.sessionSubtreeSnapshot(s.ID()) {
+			ds.Delegates = append(ds.Delegates, delegateStatusInfoFromSnapshot(now, rootID, row))
 		}
 	}
 

@@ -109,6 +109,55 @@ describe("queued messages (spec 8.5)", () => {
 	});
 });
 
+describe("queued messages this phone is steering with", () => {
+	it("shows a promoted message once, as its steer, and the rest of the queue as queued", () => {
+		const promote = pending({ method: "promote", text: "first", queueEntryId: "queue_1" });
+		const list = ghosts(session("active", ["first", "second"]), [promote], null, [], true);
+		expect(list.map((ghost) => [ghost.text, ghost.state])).toEqual([
+			["second", "queued"],
+			["first", "sending"],
+		]);
+	});
+
+	it("shows a drained queue once, as its steer", () => {
+		const drain = pending({ method: "drain", text: "first\nsecond", queueRevision: 3 });
+		const list = ghosts(session("active", ["first", "second"]), [drain], null, [], true);
+		expect(list.map((ghost) => ghost.state)).toEqual(["sending"]);
+	});
+
+	it("shows what was queued after the queue a drain took", () => {
+		const drain = pending({ method: "drain", text: "first", state: "accepted", queueRevision: 3 });
+		const list = ghosts(
+			session("active", ["later"], { queue: queue(["later"], { revision: 4 }) }),
+			[drain],
+			null,
+			[],
+			true,
+		);
+		expect(list.map((ghost) => [ghost.text, ghost.state])).toEqual([
+			["first", "steering"],
+			["later", "queued"],
+		]);
+	});
+
+	it("keeps the queue another client is steering with", () => {
+		const promote = pending({ method: "promote", queueEntryId: "queue_1", fromThisClient: false });
+		const drain = pending({ id: "cmid-2", method: "drain", fromThisClient: false });
+		const list = ghosts(session("active", ["first", "second"]), [promote, drain], null, [], true);
+		expect(list.map((ghost) => ghost.state)).toEqual(["queued", "queued"]);
+	});
+
+	it("names the queued messages a refused steer was for, and offers only Discard", () => {
+		const refused = row({ text: "", queuedText: "first", actions: ["discard"], reason: "queue entry changed" });
+		const [ghost] = ghosts(null, [], null, [refused], true);
+		expect(ghost).toMatchObject({
+			text: "first",
+			caption: "Couldn't steer with this · queue entry changed",
+			buttons: ["discard"],
+		});
+	});
+});
+
 describe("messages on their way", () => {
 	it("shows your steer until the agent picks it up, and your sends until they are reflected", () => {
 		const list = ghosts(

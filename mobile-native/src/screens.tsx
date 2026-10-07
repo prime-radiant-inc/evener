@@ -51,6 +51,7 @@ import { createActivityStore } from "../../mobile/src/state/activity";
 import { type ConversationState, createConversationStore, olderPageKey } from "../../mobile/src/state/conversation";
 import {
 	createConversationMutationPendingPort,
+	type ConversationMutationRequest,
 	type ConversationMutationSubmitter,
 } from "../../mobile/src/state/conversationMutation";
 import { useAlertedRecently, useNextUsed } from "./alerts/alertsContext";
@@ -127,6 +128,7 @@ import {
 	ghostActionTarget,
 	ghosts,
 	type QueueEntryRef,
+	queuedMessageText,
 	whatCanActNow,
 } from "./session/ghosts";
 import { FloatingStack, transcriptEndRoomAt } from "./session/FloatingStack";
@@ -2597,10 +2599,30 @@ export function ConversationScreen({
 			await rehydrateQuietly(live);
 		}
 	}
-	// A promote or drain bypasses the outbox, so claim the hub's steer as this
-	// phone's: it shows as steering until the agent takes it (spec 8.5).
-	function steeredHere(result: { receipt: { clientMutationId: string } }) {
-		store.getState().rememberSubmittedHere(result.receipt.clientMutationId);
+	// A promote or drain goes through the outbox like any steer: it shows on
+	// its way from the press, as steering once the hub takes it (spec 8.5),
+	// and an answer the connection lost is asked for again. It returns whether
+	// the phone kept the steer to send.
+	async function steerWithQueued(
+		threadId: string,
+		instanceId: string,
+		texts: readonly string[],
+		request: Pick<ConversationMutationRequest, "kind" | "queueEntry" | "expectedQueueRevision">,
+	): Promise<boolean> {
+		try {
+			await mutationSubmitter.submit({
+				...request,
+				hubId: route.params.hubId,
+				targetRef: route.params.ref,
+				threadId,
+				instanceId,
+				input: [],
+				display: texts.filter((text) => text !== "").map((text) => ({ type: "text", text })),
+			});
+			return true;
+		} catch {
+			return false;
+		}
 	}
 	// Check: read the session again, then show its live end, where the
 	// message is if it arrived.
@@ -2619,9 +2641,10 @@ export function ConversationScreen({
 		const cancel = () => queueChange(service, () => service.cancelQueued(target.index, target.id, instanceId));
 		if (action === "steerNow" || action === "sendNow") {
 			if (queueActionRefusal(live, "promote") !== null) return STEER_FAILED;
-			const promoted = await queueChange(service, async () =>
-				steeredHere(await service.promoteQueuedAsSteer(target.index, target.id, instanceId)),
-			);
+			const promoted = await steerWithQueued(live.threadId, instanceId, [queuedMessageText(live.queue, target.index)], {
+				kind: "promote",
+				queueEntry: target,
+			});
 			return promoted ? null : STEER_FAILED;
 		}
 		if (action === "cancel") return (await cancel()) ? null : { text: "Couldn't take this message out of the queue." };
@@ -2644,10 +2667,12 @@ export function ConversationScreen({
 		const instanceId = live?.instanceId;
 		if (!service || !connectionReady.current || !live?.queue || !instanceId) return null;
 		if (queueActionRefusal(live, "drainAll") !== null) return STEER_ALL_FAILED;
-		const revision = live.queue.revision;
-		const drained = await queueChange(service, async () =>
-			steeredHere(await service.drainAsSteer(revision, instanceId)),
-		);
+		const queue = live.queue;
+		const queued = Array.from({ length: queue.depth ?? 0 }, (_, index) => queuedMessageText(queue, index));
+		const drained = await steerWithQueued(live.threadId, instanceId, queued, {
+			kind: "steer",
+			expectedQueueRevision: live.queue.revision,
+		});
 		return drained ? null : STEER_ALL_FAILED;
 	}
 	// The Queue sheet's host is memoized on what it shows, so its actions
@@ -2661,11 +2686,14 @@ export function ConversationScreen({
 	const queuedGhosts = allGhosts.filter((ghost) => ghost.origin.kind === "queue");
 	const queuedKey = JSON.stringify(queuedGhosts);
 	// Like the per-message actions, it goes to the hub, so it isn't offered
-	// while the hub is away.
+	// while the hub is away, nor while this phone is already steering with
+	// some of the queue: it would take those too.
+	const queueDepth = conversation?.queue?.depth ?? 0;
 	const canSteerAll =
 		connected &&
 		!!conversation &&
-		(conversation.queue?.depth ?? 0) > 1 &&
+		queueDepth > 1 &&
+		queuedGhosts.length === queueDepth &&
 		conversationControls(conversation).drainQueue;
 	// biome-ignore lint/correctness/useExhaustiveDependencies: queuedKey stands in for queuedGhosts, a new array each render
 	const queueHost = useMemo<QueueHost>(

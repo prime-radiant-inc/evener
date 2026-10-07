@@ -22,7 +22,7 @@ export type RecoveryGhostRow = Pick<
 	NativeMutationRecoveryRow,
 	"clientMutationId" | "status" | "reason" | "text" | "actions"
 > &
-	Partial<Pick<NativeMutationRecoveryRow, "carriesAttachments">>;
+	Partial<Pick<NativeMutationRecoveryRow, "carriesAttachments" | "queuedText">>;
 
 export type GhostOrigin =
 	| { kind: "queue"; entry: QueueEntryRef }
@@ -64,6 +64,8 @@ const CAPTIONS: Record<GhostState, string> = {
 	refused: "Couldn't send this",
 };
 
+const STEER_REFUSED = "Couldn't steer with this";
+
 /** A message the phone holds until it can send it (ruling 14): nothing is
  * sending while the connection is down. */
 const WAITING_TO_SEND = "Will send when you're back online";
@@ -88,7 +90,19 @@ export function ghosts(
 	const steering = (entry: PendingTurnEntry) =>
 		STEERS.has(entry.method) && (entry.state === "accepted" || entry.state === "claimed");
 	const out: Ghost[] = own.filter(steering).map((entry) => pendingGhost(entry, "steering", []));
-	if (session) out.push(...queueGhosts(session));
+	// A queued message this phone is steering with shows once, as its steer:
+	// a promote names its message, and a drain takes the queue at the revision
+	// it names (anything queued after that is still queued).
+	const promoted = new Set(own.flatMap((entry) => entry.queueEntryId ?? []));
+	const draining = own.some(
+		(entry) => entry.queueRevision !== undefined && entry.queueRevision === session?.queue?.revision,
+	);
+	if (session && !draining)
+		out.push(
+			...queueGhosts(session).filter(
+				(ghost) => !(ghost.origin.kind === "queue" && promoted.has(ghost.origin.entry.id)),
+			),
+		);
 	// The draft keeps a send uncertain until the store confirms it, and the
 	// outbox admits the same send first, so a binding change in between or a
 	// crash leaves both holding it. One ghost shows: the outbox knows how far
@@ -139,6 +153,11 @@ export function ghosts(
 	return out;
 }
 
+/** What a queued message says: its full text, else its preview, else "". */
+export function queuedMessageText(queue: GhostSource["queue"], index: number): string {
+	return queue?.texts?.[index] || queue?.preview?.[index] || "";
+}
+
 function queueGhosts(session: GhostSource): Ghost[] {
 	const queue = session.queue;
 	const depth = queue?.depth ?? 0;
@@ -148,7 +167,7 @@ function queueGhosts(session: GhostSource): Ghost[] {
 	return Array.from({ length: depth }, (_, index): Ghost => {
 		const id = queue?.ids?.[index];
 		const fullText = queue?.texts?.[index] ?? "";
-		const text = fullText || queue?.preview?.[index] || "Queued message";
+		const text = queuedMessageText(queue, index) || "Queued message";
 		const buttons: GhostAction[] = held
 			? canDrain
 				? ["sendNow", "cancel"]
@@ -186,11 +205,12 @@ function recoveryGhost(row: RecoveryGhostRow, confirmButtons: GhostAction[]): Gh
 	const refused = row.status === "rejected";
 	const canEdit = row.actions.includes("restore");
 	const buttons: GhostAction[] = refused ? (canEdit ? ["edit", "discard"] : ["discard"]) : confirmButtons;
+	const refusal = row.queuedText === undefined ? CAPTIONS.refused : STEER_REFUSED;
 	return {
 		key: `recovery:${row.clientMutationId}`,
 		state: refused ? "refused" : "unconfirmed",
-		text: row.text || "Message",
-		caption: refused ? (row.reason ? `${CAPTIONS.refused} · ${row.reason}` : CAPTIONS.refused) : CAPTIONS.unconfirmed,
+		text: row.queuedText || row.text || "Message",
+		caption: refused ? (row.reason ? `${refusal} · ${row.reason}` : refusal) : CAPTIONS.unconfirmed,
 		buttons,
 		menu: !refused && canEdit ? ["edit"] : [],
 		// Edit brings back text only, so a refused message with an image offers
