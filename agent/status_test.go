@@ -939,3 +939,50 @@ func TestSessionOwnsDelegateVerifiesRootOwnerAndImmediateParent(t *testing.T) {
 		})
 	}
 }
+
+// A subagent's own thread lists the delegates in its subtree, as a root's
+// thread lists its whole tree: a transcript opened on the subagent then has a
+// roster entry for every subagent row it shows. Rows keep the tree's owner and
+// root (the root session), so only the membership is per session.
+func TestSessionDelegateStatus_SubagentListsItsOwnSubtree(t *testing.T) {
+	t.Parallel()
+	tree := newRealDelegateTree(t)
+	rootID := tree.s.ID()
+	middleID := tree.parent.ChildSessionID
+	delegateIDs := func(rows []DelegateStatusInfo) []string {
+		ids := make([]string, 0, len(rows))
+		for _, row := range rows {
+			ids = append(ids, row.DelegateID)
+		}
+		sort.Strings(ids)
+		return ids
+	}
+	wholeTree := []string{tree.parent.DelegateID, tree.grandchildID}
+	sort.Strings(wholeTree)
+	for _, tc := range []struct {
+		name      string
+		sessionID string
+		live      *Session
+		want      []string
+	}{
+		{name: "root lists the whole tree", sessionID: rootID, live: tree.s, want: wholeTree},
+		{name: "middle subagent lists its child", sessionID: middleID, live: tree.parentRuntime, want: []string{tree.grandchildID}},
+		{name: "leaf subagent lists nothing", sessionID: tree.grandchildSessionID, live: tree.grandchildRuntime, want: []string{}},
+	} {
+		cold, _, err := LoadSessionDelegateStatus(t.Context(), tree.s.StateDir(), tc.sessionID)
+		if err != nil {
+			t.Fatalf("%s: cold status: %v", tc.name, err)
+		}
+		if got := delegateIDs(cold); !slices.Equal(got, tc.want) {
+			t.Fatalf("%s: cold delegates = %v, want %v", tc.name, got, tc.want)
+		}
+		if got := delegateIDs(tc.live.DetailedStatus().Delegates); !slices.Equal(got, tc.want) {
+			t.Fatalf("%s: live delegates = %v, want %v", tc.name, got, tc.want)
+		}
+		for _, row := range cold {
+			if row.OwnerSessionID != rootID || row.RootSessionID != rootID {
+				t.Fatalf("%s: row %s owner/root = %s/%s, want the tree root %s", tc.name, row.DelegateID, row.OwnerSessionID, row.RootSessionID, rootID)
+			}
+		}
+	}
+}

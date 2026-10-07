@@ -438,8 +438,21 @@ func TestSessionActivitySummaryFailedShellAndUnknownRetainedWatch(t *testing.T) 
 	}
 }
 
-func TestSessionActivityRealDelegateTree(t *testing.T) {
-	t.Parallel()
+// realDelegateTree is a root session whose one delegate (parent) spawned one
+// delegate of its own (grandchild), both run to completion: three sessions
+// deep, built by the real delegate runtime.
+type realDelegateTree struct {
+	s                   *Session
+	c                   *delegateTreeController
+	parent              delegateResult
+	parentRuntime       *Session
+	grandchildID        string
+	grandchildSessionID string
+	grandchildRuntime   *Session
+}
+
+func newRealDelegateTree(t *testing.T) realDelegateTree {
+	t.Helper()
 	workspace := t.TempDir()
 	s := newSession(t, withDir(workspace), withConfig(SessionConfig{StateDir: t.TempDir(), MaxSubagentDepth: 2, ForceRealIO: true, testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, sandboxProber: bwrapCapableProber(workspace), disableDelegateIdleRelease: true}}), withSteps(
 		func(llm.Request) llm.Response {
@@ -491,6 +504,14 @@ func TestSessionActivityRealDelegateTree(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("scripted grandchild did not finish")
 	}
+	return realDelegateTree{s: s, c: c, parent: parent, parentRuntime: parentRuntime, grandchildID: grandchildID, grandchildSessionID: grandchildSessionID, grandchildRuntime: grandchildRuntime}
+}
+
+func TestSessionActivityRealDelegateTree(t *testing.T) {
+	t.Parallel()
+	fixture := newRealDelegateTree(t)
+	s, c, parent, parentRuntime := fixture.s, fixture.c, fixture.parent, fixture.parentRuntime
+	grandchildID, grandchildSessionID, grandchildRuntime := fixture.grandchildID, fixture.grandchildSessionID, fixture.grandchildRuntime
 	params := appwire.SessionActivityListParams{Ref: encodeRef("", s.ID())}
 	direct, err := s.ListActivityDelegates(t.Context(), params)
 	if err != nil {

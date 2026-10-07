@@ -1001,6 +1001,19 @@ func (c *delegateTreeController) Snapshot() delegateUpdatePlan {
 	return delegateUpdatePlan{rows: rows}
 }
 
+// sessionSubtreeSnapshot captures, in id order, the delegates in sessionID's
+// subtree (sessionSubtreeDelegateIDs): a session's own delegate roster.
+func (c *delegateTreeController) sessionSubtreeSnapshot(sessionID string) []delegateSnapshot {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	ids := sessionSubtreeDelegateIDs(c.durable, sessionID)
+	rows := make([]delegateSnapshot, 0, len(ids))
+	for _, id := range ids {
+		rows = append(rows, c.captureDelegateSnapshotLocked(id))
+	}
+	return rows
+}
+
 // snapshotsForChildSession captures, in id order, only the delegates whose
 // descriptor names childSessionID. The per-child drive gates ask for one
 // child's row every round, so capturing the whole tree here would make a
