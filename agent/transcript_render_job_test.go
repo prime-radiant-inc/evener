@@ -841,6 +841,11 @@ func TestJobResultBodyKeepsRefAheadOfLongEarlierResults(t *testing.T) {
 		toolCallEntry(call("call_send", "delegate_send", `{}`)),
 		toolResultEntry(res),
 	}, 0, renderOpts{})
+	// The condensed card, not the raw-JSON fallback (which also carries the
+	// ref and truncates): its status line, and no JSON keys.
+	if !strings.Contains(out, "job_id=dlg_1 status=completed transcript_ref="+childRef) || strings.Contains(out, `"delegate_id":`) {
+		t.Fatalf("want the condensed job-result card, got:\n%s", out)
+	}
 	refIdx, elideIdx := strings.Index(out, childRef), strings.Index(out, "lines elided")
 	if elideIdx < 0 || refIdx < 0 || refIdx > elideIdx {
 		t.Fatalf("ref at %d, elision at %d: want a truncated card with the ref ahead of the elision:\n%s", refIdx, elideIdx, out)
