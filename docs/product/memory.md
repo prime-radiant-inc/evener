@@ -99,7 +99,9 @@ or a notification wake), never on that turn's later rounds. Another session's
 content change to a known index is not projected mid-session; a compaction or
 resume delivers it with the full index. Missing and revoked states still
 supersede the previous current context, and unavailable storage is not
-presented as freshly read. Historical context remains recorded history.
+presented as freshly read. A read of a known index that misses the refresh's
+wait, or that the session's own write made stale, observes nothing and changes
+nothing. Historical context remains recorded history.
 
 Web and native transcripts show each index observation as a standalone
 **Refreshed my memory** notification. It starts collapsed at every detail level,

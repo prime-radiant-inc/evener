@@ -5,9 +5,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -318,5 +321,114 @@ func TestMemoryRefreshBaselineIsBoundedByTheProjectionCap(t *testing.T) {
 	baseline, known := s.memoryBaselineFor("personal")
 	if !known || len(baseline.index) > 8192 {
 		t.Fatalf("baseline known=%t holds %d bytes, want at most the 8192-byte projection cap", known, len(baseline.index))
+	}
+}
+
+// stalledMemoryRefresh drives refresh boundaries directly against a fake
+// clock, with a latch that can hold a scope's index read before its I/O.
+type stalledMemoryRefresh struct {
+	s       *Session
+	clk     *agenttest.FakeClock
+	stall   atomic.Bool
+	started chan string
+	release chan struct{}
+}
+
+func newStalledMemoryRefresh(t *testing.T, root string) *stalledMemoryRefresh {
+	t.Helper()
+	r := &stalledMemoryRefresh{clk: agenttest.NewFakeClock(), started: make(chan string, 1), release: make(chan struct{})}
+	t.Cleanup(func() {
+		select {
+		case <-r.release:
+		default:
+			close(r.release)
+		}
+	})
+	r.s = newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root, clock: r.clk, testOnly: testConfig{memoryBeforeIO: func(scope, op string) error {
+		if op == "index_read" && scope == "personal" && r.stall.Load() {
+			r.started <- scope
+			<-r.release
+		}
+		return nil
+	}}}))
+	return r
+}
+
+// boundary runs one turn-start refresh to completion.
+func (r *stalledMemoryRefresh) boundary() {
+	r.s.maybeAppendMemoryContext(context.Background(), true)
+}
+
+// stalledBoundary runs a turn-start refresh whose personal read stalls past
+// the boundary budget, and returns that read's flight.
+func (r *stalledMemoryRefresh) stalledBoundary(t *testing.T) *memoryIndexFlight {
+	t.Helper()
+	r.stall.Store(true)
+	done := make(chan struct{})
+	go func() { r.boundary(); close(done) }()
+	<-r.started
+	r.clk.Advance(250 * time.Millisecond)
+	<-done
+	r.s.memoryMu.Lock()
+	defer r.s.memoryMu.Unlock()
+	return r.s.memoryIndexFlights["personal"]
+}
+
+// finish lets the stalled read complete and waits for it.
+func (r *stalledMemoryRefresh) finish(flight *memoryIndexFlight) {
+	r.stall.Store(false)
+	close(r.release)
+	if flight != nil {
+		<-flight.done
+	}
+}
+
+// A turn-start read that outlives the boundary budget is no observation for
+// a scope the session already knows: nothing is appended, the baseline stays,
+// and the next boundary over the unchanged index appends nothing.
+func TestMemoryRefreshStalledReadOfKnownScopeAppendsNothing(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	memorySeed(t, root, "personal", "opaque-stall-1\n")
+	r := newStalledMemoryRefresh(t, root)
+	r.boundary()
+	if got := memoryContextCount(r.s); got != 1 {
+		t.Fatalf("first boundary contexts=%d, want the full index", got)
+	}
+	flight := r.stalledBoundary(t)
+	if got := memoryContextCount(r.s); got != 1 {
+		t.Fatalf("stalled boundary appended %d contexts, want none", got-1)
+	}
+	if _, known := r.s.memoryBaselineFor("personal"); !known {
+		t.Fatal("stalled boundary dropped the baseline")
+	}
+	r.finish(flight)
+	r.boundary()
+	if got := memoryContextCount(r.s); got != 1 {
+		t.Fatalf("boundary after the stall appended %d contexts, want none", got-1)
+	}
+}
+
+// The session's own index write while its turn-start read is still in flight
+// is not echoed back by any later boundary.
+func TestMemoryRefreshOwnWriteDuringStalledReadIsNotEchoed(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	memorySeed(t, root, "personal", "opaque-before-write-1\n")
+	r := newStalledMemoryRefresh(t, root)
+	r.boundary()
+	flight := r.stalledBoundary(t)
+	if res := memoryExec(t, r.s, "memory_write", map[string]any{"scope": "personal", "file_path": "MEMORY.md", "content": "opaque-own-write-2\n"}); res.IsError {
+		t.Fatal(res.Output)
+	}
+	// The next boundary meets the read the write made stale and lets it
+	// finish inside its budget; a later boundary reads afresh.
+	done := make(chan struct{})
+	go func() { r.boundary(); close(done) }()
+	r.finish(flight)
+	<-done
+	r.boundary()
+	if got := memoryContextCount(r.s); got != 1 {
+		t.Fatalf("own write during a stalled read produced %d more contexts, want none", got-1)
 	}
 }

@@ -401,11 +401,12 @@ func (s *Session) memoryBaselineFor(scope string) (memoryIndexBaseline, bool) {
 	return baseline, known
 }
 
-// publishKnownMemoryIndex handles a read of a scope whose index the session
-// already knows. The same index delivers nothing. A content change, another
-// session's edit or an index it created where the session had deleted its
-// own, is not delivered mid-session. An index that went missing or could not
-// be read is projected as that state, as at any boundary.
+// publishKnownMemoryIndex handles a completed read of a scope whose index the
+// session already knows. The same index delivers nothing. A content change,
+// another session's edit or an index it created where the session had deleted
+// its own, is not delivered mid-session. An index that went missing, or whose
+// read failed, is projected as that state, as at any boundary. A read that
+// missed the boundary budget or went stale never reaches here.
 func (s *Session) publishKnownMemoryIndex(baseline memoryIndexBaseline, p memoryProjection) {
 	switch {
 	case p.Status == baseline.status && p.Content == baseline.index:
@@ -537,11 +538,12 @@ publish:
 			continue
 		}
 		p := memoryProjection{Scope: scope, Status: "unavailable"}
+		observed := false
 		s.memoryMu.Lock()
 		select {
 		case <-flight.done:
 			if !flight.abandoned {
-				p = flight.projection
+				p, observed = flight.projection, true
 			}
 			delete(s.memoryIndexFlights, scope)
 		default:
@@ -549,9 +551,15 @@ publish:
 		}
 		s.memoryMu.Unlock()
 		if baseline, known := s.memoryBaselineFor(scope); known {
-			s.publishKnownMemoryIndex(baseline, p)
+			// A read that missed the budget, or that the session's own write
+			// made stale, observed nothing: what the session knows stands.
+			if observed {
+				s.publishKnownMemoryIndex(baseline, p)
+			}
 			continue
 		}
+		// Without a baseline, a read that missed the budget is projected as
+		// unavailable, never presented as freshly read.
 		s.appendMemoryProjection(p)
 	}
 }
