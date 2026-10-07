@@ -3173,7 +3173,11 @@ func (s *Session) emitStableDelegateUpdate(plan delegateUpdatePlan) {
 		data.AncestorSessionIDs = ancestors
 		ownerRuntime := s.delegateController.runtimeForDelegateOwner(row)
 		// A subagent's own thread lists its subtree, so each live ancestor
-		// subagent's stream carries the update too.
+		// subagent's stream carries the update too. A released ancestor gets
+		// none: forwarding for it would reopen its closed thread's history, and
+		// its next thread read lists the row afresh. The owner is the root for
+		// every current row, so the guard only matters for a row a parent
+		// session owns, whose owner stream already carries it.
 		for _, runtime := range ancestorRuntimes {
 			if runtime != ownerRuntime {
 				runtime.emitWithProvenance(events.EventDelegateUpdated, data, row.descriptor.Provenance)

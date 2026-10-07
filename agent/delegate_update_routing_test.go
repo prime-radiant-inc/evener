@@ -47,6 +47,34 @@ func TestStableDelegateUpdate_ReachesEachLiveAncestorSubagentThread(t *testing.T
 			leafSawAnything = true
 		}
 	}
+	// The root's stream still carries each grandchild update exactly once, with
+	// the same ancestry, so the root thread and the middle thread see the same
+	// revisions.
+	var middleRevisions, rootRevisions []uint64
+	for _, event := range seen {
+		if data := event.Data.(events.DelegateUpdatedData); event.SessionID == middleID && data.DelegateID == tree.grandchildID {
+			middleRevisions = append(middleRevisions, data.ProjectionRevision)
+		}
+	}
+drain:
+	for {
+		select {
+		case event := <-tree.s.events:
+			data, ok := event.Data.(events.DelegateUpdatedData)
+			if !ok || data.DelegateID != tree.grandchildID {
+				continue
+			}
+			if event.SessionID != tree.s.ID() || !slices.Equal(data.AncestorSessionIDs, []string{middleID}) {
+				t.Fatalf("grandchild update on the root stream = session %q ancestors %v", event.SessionID, data.AncestorSessionIDs)
+			}
+			rootRevisions = append(rootRevisions, data.ProjectionRevision)
+		default:
+			break drain
+		}
+	}
+	if len(rootRevisions) == 0 || !slices.Equal(rootRevisions, middleRevisions) {
+		t.Fatalf("grandchild revisions on the root stream %v, on the middle stream %v; want the same updates on both", rootRevisions, middleRevisions)
+	}
 	if !middleSawGrandchild {
 		t.Fatalf("no grandchild delegate update reached the middle subagent's stream; descendant updates seen: %d", len(seen))
 	}
