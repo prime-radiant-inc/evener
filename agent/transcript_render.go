@@ -1197,7 +1197,38 @@ func jobResultBody(raw string) (string, bool) {
 	if hasNonJobResultKeys(raw) {
 		return "", false
 	}
+	// A delegate_send reply can carry earlier results of its delegate ahead
+	// of its own (#3906). Each renders exactly as a reply does, after the
+	// reply's status line so the ref survives truncation; any element with
+	// evidence this projection doesn't capture sends the whole body to the
+	// JSON fallback, as a top-level key would.
+	var elements struct {
+		EarlierResults []json.RawMessage `json:"earlier_results"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(raw)), &elements); err != nil {
+		return "", false
+	}
+	var b strings.Builder
+	b.WriteString(jobResultStatus(r, raw))
+	for i, element := range elements.EarlierResults {
+		earlier, ok := decodeJobResult(string(element))
+		if !ok || hasNonJobResultKeys(string(element)) || len(earlier.EarlierResults) != 0 {
+			return "", false
+		}
+		fmt.Fprintf(&b, "earlier result %d of %d, not delivered before:\n", i+1, len(elements.EarlierResults))
+		b.WriteString(jobResultStatus(earlier, string(element)))
+		b.WriteString(jobResultOutput(earlier))
+	}
+	if len(elements.EarlierResults) != 0 {
+		b.WriteString("latest result:\n")
+	}
+	b.WriteString(jobResultOutput(r))
+	return b.String(), true
+}
 
+// jobResultStatus is a job result's status line, with the ref prominent, and
+// its metadata line.
+func jobResultStatus(r jobResult, raw string) string {
 	ref := r.TranscriptRef
 	if ref == "" {
 		ref = "(none)"
@@ -1209,7 +1240,6 @@ func jobResultBody(raw string) (string, bool) {
 	if jobID == "" {
 		jobID = "(none)"
 	}
-	// Status line first, with the ref prominent and before the output body.
 	statusParts := []string{
 		"job_id=" + jobID,
 		"status=" + r.Status,
@@ -1224,19 +1254,7 @@ func jobResultBody(raw string) (string, bool) {
 		// merely accepting it as a decoded-but-invisible field.
 		statusParts = append(statusParts, "tools=["+strings.Join(r.Tools, ",")+"]")
 	}
-
 	var b strings.Builder
-	for _, earlier := range r.EarlierResults {
-		b.WriteString("earlier result, not delivered before: status=" + earlier.Status)
-		if earlier.Reason != "" {
-			b.WriteString(" reason=" + earlier.Reason)
-		}
-		b.WriteString("\n")
-		if earlier.Output != "" {
-			b.WriteString(earlier.Output)
-			b.WriteString("\n")
-		}
-	}
 	b.WriteString(strings.Join(statusParts, " "))
 	b.WriteString("\n")
 	if metadata := jobResultMetadata(raw); metadata != "" {
@@ -1244,6 +1262,12 @@ func jobResultBody(raw string) (string, bool) {
 		b.WriteString(metadata)
 		b.WriteString("\n")
 	}
+	return b.String()
+}
+
+// jobResultOutput is a job result's output and structured result.
+func jobResultOutput(r jobResult) string {
+	var b strings.Builder
 	if r.Output != "" {
 		b.WriteString(r.Output) // already de-escaped (real newlines) by the JSON decoder
 		b.WriteString("\n")
@@ -1257,7 +1281,7 @@ func jobResultBody(raw string) (string, bool) {
 		}
 		b.WriteString("\n")
 	}
-	return b.String(), true
+	return b.String()
 }
 
 // jobResultKnownKeys is the set of JSON keys captured by jobResult. A body with
