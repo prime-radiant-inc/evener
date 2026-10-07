@@ -47,13 +47,12 @@ func TestE2E_QueuePromptToARetiredSession(t *testing.T) {
 	// daemon refuses to retire over, which a single retire request used to
 	// ignore and then wait out (#3876). The namer gives up on its own after
 	// agent's sessionNameTimeout (15s), far longer than this scripted turn takes.
-	// The release is registered on both sides of the session's shutdown
-	// cleanup, so a held namer never stalls that shutdown whichever way the
-	// test ends; releasing twice is harmless.
+	// The deferred release runs before every t.Cleanup, so a held namer never
+	// stalls the session's shutdown cleanup however the test ends; releasing
+	// twice is harmless.
 	releaseNamer := provider.HoldNamer()
-	t.Cleanup(releaseNamer)
+	defer releaseNamer()
 	ref := startSessionWithOpeningTurn(ctx, t, client, provider, stack)
-	t.Cleanup(releaseNamer)
 	refused := requestDaemonRetire(ctx, t, client, ref)
 	if refused.Accepted || !slices.ContainsFunc(refused.Lifecycle.Blockers, func(blocker appwire.DaemonBlocker) bool {
 		return blocker.Category == "autonomous"

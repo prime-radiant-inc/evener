@@ -145,17 +145,7 @@ func (s *Server) HoldNamer() (release func()) {
 	s.namerMu.Lock()
 	s.namerHold = hold
 	s.namerMu.Unlock()
-	var once sync.Once
-	return func() {
-		once.Do(func() {
-			s.namerMu.Lock()
-			if s.namerHold == hold {
-				s.namerHold = nil
-			}
-			s.namerMu.Unlock()
-			close(hold)
-		})
-	}
+	return sync.OnceFunc(func() { close(hold) })
 }
 
 // Next returns the next model request from the session loop, blocking until
