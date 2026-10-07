@@ -67,7 +67,7 @@ func (a *deferredHeadAdapter) Complete(ctx context.Context, req llm.Request) (ll
 		args, _ := json.Marshal(map[string]any{"prompt": "Do the first part."})
 		response = toolCallResponse(llm.ToolCallData{ID: "create", Name: "delegate", Arguments: args, Type: "function"})
 	case call == 2:
-		delegateID := deferredHeadDelegateID.FindString(toolResultsText(req.Messages))
+		delegateID := deferredHeadDelegateID.FindString(deferredHeadToolResults(req.Messages))
 		if delegateID == "" {
 			return llm.Response{}, errors.New("delegate creation result named no delegate")
 		}
@@ -80,7 +80,7 @@ func (a *deferredHeadAdapter) Complete(ctx context.Context, req llm.Request) (ll
 		a.mu.Lock()
 		if a.sendResult == "" {
 			a.sendResult = lastToolResultText(req.Messages)
-			a.nextRequest = toolResultsText(req.Messages) + messagesText(req.Messages)
+			a.nextRequest = deferredHeadToolResults(req.Messages) + messagesText(req.Messages)
 		}
 		a.mu.Unlock()
 		response = finalResponse("Root done.")
@@ -90,7 +90,7 @@ func (a *deferredHeadAdapter) Complete(ctx context.Context, req llm.Request) (ll
 	return response, nil
 }
 
-func toolResultsText(messages []llm.Message) string {
+func deferredHeadToolResults(messages []llm.Message) string {
 	var b strings.Builder
 	for _, m := range messages {
 		for _, p := range m.Content {
