@@ -14,12 +14,13 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { installBackgroundTranscriptOptionsForTests } from "./backgroundTranscriptOptions";
 import { connectionStore } from "./connection";
 import { type CurrentSessionRecord, SessionCacheIndexedDB } from "./sessionCacheIndexedDB";
-import { holdNextWriteTransaction } from "./testing/stalledIndexedDB";
+import { holdNextWriteTransaction, nextRealTask } from "./testing/stalledIndexedDB";
 import {
   acquireBackgroundThread,
   backgroundTranscriptSnapshotForTests,
   installHydrationRetrySchedulerForTests,
   pendingThreadHydrationBaseModelsForTests,
+  pendingThreadHydrationUpdatesForTests,
   resetThreadsStoreForTests,
   setCacheWriteTimersForTests,
   setSessionCacheAdapterForTests,
@@ -410,12 +411,33 @@ describe("background accounting", () => {
       const heldRecordText = JSON.stringify(base.observation.record.state);
       expect(heldRecordText).toContain("alpha");
       expect(heldRecordText).not.toContain("R".repeat(100_000));
-      // The separately bounded single cache-sized worker: its charge equals the
-      // independently measured record body, is not double-counted as ordinary
-      // resident bytes, and stays under its own 32 MiB cap.
-      expect(base.workerBytes).toBe(independentJsonBytes(base.observation.record));
-      expect(base.workerBytes).toBeLessThan(32 * 1024 * 1024);
-      expect(base.workerBytes).not.toBe(canonicalBytes);
+      // P1: pair each class with its LIVE reservation at this boundary, not only
+      // the earlier observer sample. The worker's retained body is its held
+      // record; its LIVE reservation covers it exactly, is separately bounded,
+      // and is a distinct payload from the ordinary canonical body. We do not
+      // claim codec-wrapper sharing: the old worker base model and its record are
+      // independently measured and account one worker-class payload.
+      const liveBoundary = backgroundTranscriptSnapshotForTests();
+      const liveWorkerCharge = liveBoundary.workerBytes;
+      const liveHeldRecord = base.observation.record;
+      const oldBaseModel = base.observation.resident;
+      if (!oldBaseModel) throw new Error("expected the retained old base model at the held boundary");
+      // The worker's live reservation covers its whole held record (state plus
+      // record metadata).
+      const heldRecordPayload = independentJsonBytes(liveHeldRecord);
+      // The record's retained state body and the old base model's body are the
+      // same logical payload, independently re-measured here; neither is the
+      // newer canonical body.
+      const oldBasePayload = independentJsonBytes(currentTranscriptState(oldBaseModel));
+      const recordStatePayload = independentJsonBytes(liveHeldRecord.state);
+      expect(liveWorkerCharge).toBe(heldRecordPayload);
+      expect(recordStatePayload).toBe(oldBasePayload);
+      expect(recordStatePayload).not.toBe(canonicalBytes);
+      expect(liveWorkerCharge).toBeGreaterThanOrEqual(oldBasePayload);
+      expect(liveWorkerCharge).toBe(base.workerBytes); // unchanged since the held write began
+      expect(liveWorkerCharge).toBeGreaterThan(0);
+      expect(liveWorkerCharge).toBeLessThan(32 * 1024 * 1024);
+      expect(liveWorkerCharge).not.toBe(canonicalBytes);
       // The ordinary resident charge covers the newer canonical body exactly
       // once, while the worker's distinct record is charged separately.
       expect((heldEntry?.residentBytes ?? 0) + (heldEntry?.handoffBytes ?? 0)).toBeGreaterThanOrEqual(canonicalBytes);
@@ -424,10 +446,11 @@ describe("background accounting", () => {
       // This is the live post-replacement state, not the initial emptiness above.
       expect(heldEntry?.pending).toHaveLength(0);
       expect(heldEntry?.inFlight).toHaveLength(0);
-      // No pending hydration payload/base remains retained after the held
-      // re-read published: its base was captured before release and is gone now.
+      // The exposed hydration inventory retains nothing: neither a base model nor
+      // a buffered notification update survives the published re-read.
       expect(pendingBase).toBeDefined();
       expect(pendingThreadHydrationBaseModelsForTests().some((candidate) => candidate.ref === ref)).toBe(false);
+      expect(pendingThreadHydrationUpdatesForTests()).toHaveLength(0);
 
       // Release the held write and drain. The charge must not be reset to the
       // write's captured pre-fold size at the next worker boundary.
@@ -747,13 +770,29 @@ describe("background accounting", () => {
       scheduled.push(retry);
       return () => {};
     });
+    // A real cache fault seam: beforeCommit aborts the REAL putCurrent
+    // transaction, so the victim eviction write CALLS THROUGH to the adapter and
+    // fails durably with an abort, not a fabricated outcome.
+    let faultArmed = false;
+    const faultCache = new SessionCacheIndexedDB({
+      indexedDB: new IDBFactory(),
+      databaseName: `background-fail-${crypto.randomUUID()}`,
+      beforeCommit: (operation, tx) => {
+        if (operation === "putCurrent" && faultArmed) {
+          faultArmed = false;
+          tx.abort();
+        }
+      },
+    });
+    resetThreadsStoreForTests();
+    setSessionCacheAdapterForTests(faultCache);
     let failNextTargetWrite = false;
     const writes: CurrentSessionRecord[] = [];
-    const originalPut = cache.putCurrent.bind(cache);
-    const put = vi.spyOn(cache, "putCurrent").mockImplementation(async (record, now) => {
+    const originalPut = faultCache.putCurrent.bind(faultCache);
+    const put = vi.spyOn(faultCache, "putCurrent").mockImplementation(async (record, now) => {
       if (failNextTargetWrite && record.ref === target) {
         failNextTargetWrite = false;
-        return { outcome: "failed" };
+        faultArmed = true;
       }
       const outcome = await originalPut(record, now);
       if (outcome.outcome === "written") writes.push(record);
@@ -767,8 +806,16 @@ describe("background accounting", () => {
       const targetBody = bodyBytes(threadsStore.getState().threads.get(target));
       expect(targetBody).toBeGreaterThan(26_000);
 
+      // Baseline the target reads and committed writes BEFORE the operation, so
+      // the later recovery read and checkpoint are distinguished from any
+      // intervening read or write.
+      const targetReadsBeforeFault = fake.calls.filter(
+        (call) => call.method === "thread/read" && (call.params as { ref?: string })?.ref === target,
+      ).length;
+      const targetWritesBeforeFault = writes.filter((write) => write.ref === target).length;
+
       // Grow pressure so the target is transferred into the handoff budget; its
-      // eviction write then fails while the target's owner stays alive.
+      // real eviction write then aborts while the target's owner stays alive.
       failNextTargetWrite = true;
       for (let step = 0; step < 3; step += 1) fake.emitNotification(textDelta(pressure, "q".repeat(12_000)));
       const transferred = backgroundTranscriptSnapshotForTests();
@@ -798,11 +845,12 @@ describe("background accounting", () => {
       expect(threadsStore.getState().threads.has(target)).toBe(true);
       expect(bodyBytes(threadsStore.getState().threads.get(target))).toBe(targetBody);
 
-      // A scheduled useful recovery read is attributed to THIS operation.
+      // The real aborted eviction write left no committed target record.
+      expect(writes.filter((write) => write.ref === target).length).toBe(targetWritesBeforeFault);
+
+      // A scheduled useful recovery read is attributed to THIS operation; the
+      // pre-fault baseline distinguishes it from any intervening read.
       expect(scheduled.length).toBeGreaterThanOrEqual(1);
-      const targetReadsBefore = fake.calls.filter(
-        (call) => call.method === "thread/read" && (call.params as { ref?: string })?.ref === target,
-      ).length;
       targetRecoveryBody = readWithText(target, `${"t".repeat(27_250)}-recovered`);
       for (const retry of scheduled.splice(0)) retry();
       await vi.waitFor(
@@ -810,14 +858,14 @@ describe("background accounting", () => {
           const reads = fake.calls.filter(
             (call) => call.method === "thread/read" && (call.params as { ref?: string })?.ref === target,
           ).length;
-          if (reads <= targetReadsBefore) throw new Error("recovery read not issued");
+          if (reads <= targetReadsBeforeFault) throw new Error("recovery read not issued");
         },
         { timeout: 4_000 },
       );
       expect(
         fake.calls.filter((call) => call.method === "thread/read" && (call.params as { ref?: string })?.ref === target)
           .length,
-      ).toBe(targetReadsBefore + 1);
+      ).toBe(targetReadsBeforeFault + 1);
       await settleBackgroundTranscriptsForTests();
 
       // Recovery republished through the real reducer/cache, committed a
@@ -830,22 +878,64 @@ describe("background accounting", () => {
       expect(recovered.pendingBytes).toBe(0);
       const targetWrite = writes.filter((write) => write.ref === target).at(-1);
       if (!targetWrite) throw new Error("expected a recovered checkpoint for the target");
-      const onDisk = await cache.getCurrent([targetWrite.ownerToken, target], Date.now());
+      const onDisk = await faultCache.getCurrent([targetWrite.ownerToken, target], Date.now());
       expect(onDisk?.record?.ref).toBe(target);
       expect(JSON.stringify(onDisk?.record?.state)).toContain("-recovered");
-
-      // Owner-end cleanup stays correct separately: releasing the owner now does
-      // not leak any staged reservation.
-      await targetLease.release();
-      await settleBackgroundTranscriptsForTests();
-      const finalSnapshot = backgroundTranscriptSnapshotForTests();
-      expect(
-        finalSnapshot.pendingBytes,
-        JSON.stringify([...finalSnapshot.refs].map(([r, e]) => [r, e.residentBytes, e.handoffBytes, e.persistence])),
-      ).toBe(0);
     } finally {
       restoreScheduler();
       put.mockRestore();
+      await settleBackgroundTranscriptsForTests().catch(() => undefined);
+      await Promise.all([targetLease.release(), pressureLease.release()]);
+      resetThreadsStoreForTests();
+      faultCache.close();
+      restoreOptions();
+    }
+  });
+
+  test("releases a transferred victim's live staged reservation on ownership end", async () => {
+    const restoreOptions = installBackgroundTranscriptOptionsForTests({
+      residentBytes: 64 * 1024,
+      pendingBytes: 32 * 1024,
+    });
+    const target = "local:cleanup-victim";
+    const pressure = "local:cleanup-pressure";
+    const bodies: Record<string, ThreadReadResponse> = {
+      [target]: readWithText(target, "t".repeat(27_250)),
+      [pressure]: readWithText(pressure, "p".repeat(2_000)),
+    };
+    const fake = new FakeClient("ready");
+    fake.on("thread/read", ({ ref }) => bodies[ref ?? ""] ?? currentRead(ref ?? target));
+    fake.on("thread/unsubscribe", () => ({}));
+    connectionStore.getState().connect(fake);
+    const targetLease = acquireBackgroundThread(target);
+    const pressureLease = acquireBackgroundThread(pressure);
+    try {
+      await Promise.all([targetLease.ready, pressureLease.ready]);
+      await settleBackgroundTranscriptsForTests();
+      const targetBody = bodyBytes(threadsStore.getState().threads.get(target));
+      expect(targetBody).toBeGreaterThan(26_000);
+
+      // Grow pressure so the target is transferred into the handoff budget. The
+      // staged reservation is live and nonzero immediately before release.
+      for (let step = 0; step < 3; step += 1) fake.emitNotification(textDelta(pressure, "q".repeat(12_000)));
+      const staged = backgroundTranscriptSnapshotForTests();
+      const stagedEntry = staged.refs.get(target);
+      expect(stagedEntry?.residentBytes ?? -1).toBe(0);
+      expect(stagedEntry?.handoffBytes ?? 0).toBeGreaterThan(0);
+      expect(stagedEntry?.handoffBytes ?? 0).toBeGreaterThanOrEqual(targetBody);
+      expect(staged.pendingBytes).toBeGreaterThan(0);
+
+      // Ending ownership must release that live staged reservation through real
+      // cleanup.
+      await targetLease.release();
+      await settleBackgroundTranscriptsForTests();
+      const final = backgroundTranscriptSnapshotForTests();
+      expect(
+        final.pendingBytes,
+        JSON.stringify([...final.refs].map(([r, e]) => [r, e.residentBytes, e.handoffBytes, e.persistence])),
+      ).toBe(0);
+      expect((final.refs.get(target)?.residentBytes ?? 0) + (final.refs.get(target)?.handoffBytes ?? 0)).toBe(0);
+    } finally {
       await settleBackgroundTranscriptsForTests().catch(() => undefined);
       await Promise.all([targetLease.release(), pressureLease.release()]);
       resetThreadsStoreForTests();
@@ -997,6 +1087,7 @@ describe("background accounting", () => {
     const targetLease = acquireBackgroundThread(target);
     const pressureLease = acquireBackgroundThread(pressure);
     let secondLease: ReturnType<typeof acquireBackgroundThread> | undefined;
+    let thirdLease: ReturnType<typeof acquireBackgroundThread> | undefined;
     try {
       await Promise.all([targetLease.ready, pressureLease.ready]);
       await settleBackgroundTranscriptsForTests();
@@ -1017,48 +1108,73 @@ describe("background accounting", () => {
       expect(observedGenerations.length).toBeGreaterThanOrEqual(1);
       const obsoleteGeneration = observedGenerations.at(-1)!;
       if (!heldRecord) throw new Error("expected the held eviction checkpoint record");
-      expect(JSON.stringify(heldRecord.state)).not.toContain("-owner-later");
 
-      // A later delta, then an ownership change while the checkpoint is held.
-      const laterMarker = "-owner-later";
-      fake.emitNotification(textDelta(target, laterMarker));
+      // NO later delta here: the held record's captured sequence IS the entry's
+      // applied sequence, so only the ownership fence can stop this completion
+      // from certifying. Change ownership (a second live background owner) while
+      // the eviction checkpoint is still held.
+      secondLease = acquireBackgroundThread(target);
+      await secondLease.ready;
+      const beforeRelease = backgroundTranscriptSnapshotForTests().refs.get(target);
+      const bodyBeforeRelease = bodyBytes(threadsStore.getState().threads.get(target));
+      expect(beforeRelease?.current).toBe(true);
+      expect(bodyBeforeRelease).toBe(targetBody);
+      expect((beforeRelease?.residentBytes ?? 0) + (beforeRelease?.handoffBytes ?? 0)).toBeGreaterThanOrEqual(
+        bodyBeforeRelease,
+      );
+
+      // Let the obsolete write complete. Its record commits to disk, but it MUST
+      // NOT certify: the ownership fence rejects it, with no stale sequence to
+      // mask that rejection, before any successor can heal the entry.
+      transaction?.release();
       await vi.waitFor(
         () => {
-          const model = threadsStore.getState().threads.get(target);
-          if (!model || !JSON.stringify(currentTranscriptState(model)).includes(laterMarker))
-            throw new Error("later delta not applied");
+          if (backgroundTranscriptSnapshotForTests().refs.get(target)?.current !== false)
+            throw new Error("obsolete completion not yet rejected");
         },
         { timeout: 4_000 },
       );
-      secondLease = acquireBackgroundThread(target);
-      await secondLease.ready;
-      const held = backgroundTranscriptSnapshotForTests().refs.get(target);
-      const heldBody = bodyBytes(threadsStore.getState().threads.get(target));
-      // While the hold is live the successor is NOT certified, and the retained
-      // content/charge are preserved.
-      expect(held?.current).toBe(false);
-      expect((held?.residentBytes ?? 0) + (held?.handoffBytes ?? 0)).toBeGreaterThanOrEqual(heldBody);
+      const obsoleteDone = backgroundTranscriptSnapshotForTests().refs.get(target);
+      const obsoleteWrite = writes.filter((write) => write.ref === target).at(-1);
+      if (!obsoleteWrite) throw new Error("expected the obsolete checkpoint on disk");
+      const onDiskObsolete = await cache.getCurrent([obsoleteWrite.ownerToken, target], Date.now());
+      // The obsolete checkpoint landed at its captured generation; the entry is
+      // not current, its model is still retained (no unload), and its charge
+      // still covers the body: the fence stopped certification, not the sequence.
+      expect(obsoleteWrite.ownershipGeneration).toBe(obsoleteGeneration);
+      expect(onDiskObsolete?.record?.ownershipGeneration).toBe(obsoleteGeneration);
+      expect(obsoleteDone?.current).toBe(false);
+      expect(threadsStore.getState().threads.has(target)).toBe(true);
+      expect(bodyBytes(threadsStore.getState().threads.get(target))).toBe(targetBody);
+      expect((obsoleteDone?.residentBytes ?? 0) + (obsoleteDone?.handoffBytes ?? 0)).toBeGreaterThanOrEqual(targetBody);
 
-      transaction?.release();
+      // A successor owner's write now heals: same literal content, newer
+      // generation, released staging.
+      await nextRealTask();
+      thirdLease = acquireBackgroundThread(target);
+      await thirdLease.ready;
       await settleBackgroundTranscriptsForTests();
       const final = backgroundTranscriptSnapshotForTests();
       expect(final.refs.get(target)?.current).toBe(true);
       expect((final.refs.get(target)?.residentBytes ?? 0) + (final.refs.get(target)?.handoffBytes ?? 0)).toBe(0);
       expect(final.pendingBytes).toBe(0);
-      const targetWrite = writes.filter((write) => write.ref === target).at(-1);
-      if (!targetWrite) throw new Error("expected a successor checkpoint for the target");
-      const onDisk = await cache.getCurrent([targetWrite.ownerToken, target], Date.now());
-      const diskText = JSON.stringify(onDisk?.record?.state);
-      // The successor's literal content survives, and the committed checkpoint
-      // carries the successor's ownership generation, not the obsolete worker's.
-      expect(diskText.split(laterMarker)).toHaveLength(2);
-      expect(onDisk?.record?.ownershipGeneration).not.toBe(obsoleteGeneration);
+      const successorWrite = writes.filter((write) => write.ref === target).at(-1);
+      if (!successorWrite) throw new Error("expected a successor checkpoint for the target");
+      expect(successorWrite.ownershipGeneration).not.toBe(obsoleteGeneration);
+      const onDiskFinal = await cache.getCurrent([successorWrite.ownerToken, target], Date.now());
+      expect(onDiskFinal?.record?.ownershipGeneration).not.toBe(obsoleteGeneration);
+      expect(JSON.stringify(onDiskFinal?.record?.state)).toContain("t".repeat(27_250));
     } finally {
       restoreObserver();
       put.mockRestore();
       transaction?.release();
       await settleBackgroundTranscriptsForTests().catch(() => undefined);
-      await Promise.all([targetLease.release(), pressureLease.release(), secondLease?.release()]);
+      await Promise.all([
+        targetLease.release(),
+        pressureLease.release(),
+        secondLease?.release(),
+        thirdLease?.release(),
+      ]);
       resetThreadsStoreForTests();
       restoreOptions();
     }
