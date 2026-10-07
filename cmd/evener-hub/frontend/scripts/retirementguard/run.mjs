@@ -29,7 +29,7 @@ import { fileURLToPath } from "node:url";
 import {
   applyViewport,
   clearViewportOverride,
-  connectPage,
+  connectOnlyPage,
   createStartupDeadline,
   devtoolsHttpURL,
   evaluate,
@@ -250,7 +250,7 @@ async function main() {
       startupDeadline.clear();
     }
 
-    const page = await connectPage(cdpEndpoint);
+    const page = await connectOnlyPage(cdpEndpoint);
     const { send } = page;
     const failures = [];
     let result = null;

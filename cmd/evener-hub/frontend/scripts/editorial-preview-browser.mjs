@@ -7,7 +7,7 @@ import { measureEditorial, assertEditorialGeometry } from "./editorial-preview-m
 import { measureReadyDesktopCollaborators, assertDesktopCollaborators } from "./editorial-preview-readiness.mjs";
 import { exerciseNestedTranscripts } from "./editorial-preview-nested.mjs";
 import { startBrowserGuard } from "./browserGuardProcess.mjs";
-import { connectPage, createStartupDeadline, waitForHttp, navigateTo, evaluate, applyViewport, waitForFonts } from "./browserGuardCdp.mjs";
+import { connectOnlyPage, createStartupDeadline, waitForHttp, navigateTo, evaluate, applyViewport, waitForFonts } from "./browserGuardCdp.mjs";
 
 const frontend = fileURLToPath(new URL("../", import.meta.url));
 const evidence = path.resolve(process.env.EDITORIAL_EVIDENCE ?? path.join(frontend, "../../..", ".superpowers/sdd/2026-09-09-tufte-webui/task-4-evidence"));
@@ -24,7 +24,7 @@ try {
   const endpoint = await run.waitForChrome({signal: deadline.signal});
   await waitForHttp(`http://127.0.0.1:${run.vitePort}/`, "editorial preview", run.getViteLaunchError, {signal: deadline.signal});
   deadline.clear();
-  page = await connectPage(endpoint);
+  page = await connectOnlyPage(endpoint);
   const {send, ws} = page;
   ws.addEventListener("message", event => {
     const message = JSON.parse(event.data);

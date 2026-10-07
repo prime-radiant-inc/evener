@@ -377,6 +377,7 @@ func TestAgentCascadeBrowser(t *testing.T) {
 		"unrelated-pane-reload", "late-ancestry-stable-geometry", "mobile-saved-cascade", "mobile-agents-transcript",
 		"mixed-mounted-image-return", "mixed-held-storage-return",
 		"ordinary-reader-width-reflow", "ordinary-reader-width-return", "cascade-reader-width-reflow", "cascade-reader-width-return",
+		"ordinary-reader-height-only", "ordinary-reader-height-return", "cascade-reader-height-only", "cascade-reader-height-return",
 		"Shift-Space-interruption-precedence", "wheel-interruption-precedence", "pill-interruption-precedence", "phone-reader-width-reflow", "phone-reader-width-return",
 	} {
 		found := false
