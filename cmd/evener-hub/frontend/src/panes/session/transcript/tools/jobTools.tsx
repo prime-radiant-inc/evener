@@ -178,7 +178,9 @@ function DelegateSendBody(props: ToolRenderProps) {
           // biome-ignore lint/suspicious/noArrayIndexKey: earlier results are a fixed, ordered list
           <section key={index} data-testid="delegate-send-earlier-response">
             <UserMessageView
-              item={{ ...item, text }}
+              // An earlier result arrived before this send; the send's own
+              // times would date it wrongly, so the bubble shows none.
+              item={{ ...item, text, startedAt: undefined, completedAt: undefined }}
               speaker="agent"
               name={target === "" ? `Delegate, ${label}` : `${target} (delegate, ${label})`}
               opensExchange={false}

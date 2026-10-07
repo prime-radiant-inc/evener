@@ -121,15 +121,24 @@ test("reads the earlier results a send's wait carried, oldest first", () => {
   expect(delegateSendEarlierResponses({ output: "no state" })).toEqual([]);
 });
 
-// The reply a send printed after the earlier results its wait carried is what
-// follows its "latest result:" label; a latest result with no text of its own
-// is none, never the earlier results' text.
-test("reads a printed reply after the earlier results it carried", () => {
-  const printed = (latest: string) =>
+// A reply that carried earlier results and has no text of its own has no
+// reply, whatever it printed: its printed output holds the earlier results,
+// and lines after the footer (a worktree, a warning) would otherwise hide the
+// footer and hand all of it over as the reply.
+test("reads no reply for a send with no text of its own that carried earlier results", () => {
+  const printed =
     "earlier result 1 of 1, not delivered before:\nFIRST\n[delegate_id dlg_x · completed · completed]\n\n" +
-    `latest result:\n${latest}[delegate_id dlg_x · completed · failed]`;
-  expect(delegateSendResponse({ output: printed("SECOND\n") })).toBe("SECOND");
-  expect(delegateSendResponse({ output: printed("") })).toBeUndefined();
-  const raw = { action: "completed", running_in_background: false, output: "", earlier_results: [{ output: "FIRST" }] };
-  expect(delegateSendResponse({ raw, output: printed("") })).toBeUndefined();
+    "latest result:\n[delegate_id dlg_x · completed · failed]\nworktree: path=/w, branch=b, head=h, 0 commits ahead, dirty=false";
+  const entry = (status: string, output: string) => ({
+    delegate_id: "dlg_x",
+    type: "delegate",
+    status,
+    running_in_background: false,
+    action: "completed",
+    output,
+    truncated: false,
+  });
+  const raw = { ...entry("failed", ""), earlier_results: [entry("completed", "FIRST")] };
+  expect(delegateSendResponse({ raw, output: printed })).toBeUndefined();
+  expect(delegateSendEarlierText({ status: "completed" })).toBe("(no reply)");
 });

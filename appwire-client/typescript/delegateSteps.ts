@@ -149,6 +149,9 @@ export function delegateSendResponse(step: DelegateSendResult): string | undefin
   if (isDelegateSendResult(step.raw)) {
     const rawOutput = step.raw.output;
     if (rawOutput !== undefined && rawOutput.trim() !== "") return rawOutput;
+    // A reply that carried earlier results printed them above its own: what
+    // it printed is never its reply, so one with no text has none (#3906).
+    if (delegateSendEarlierResponses(step).length > 0) return undefined;
   }
 
   const output = step.output ?? "";
@@ -156,11 +159,7 @@ export function delegateSendResponse(step: DelegateSendResult): string | undefin
   const footer = delegateSendFooter(output);
   if (footer === undefined) return output;
 
-  let lines = output.trimEnd().split("\n").slice(0, footer.index);
-  // A reply that carried earlier results prints them first, then labels its
-  // own: the reply is what follows that label.
-  if (output.startsWith("earlier result ")) lines = lines.slice(lines.lastIndexOf("latest result:") + 1);
-  const response = lines.join("\n");
+  const response = output.trimEnd().split("\n").slice(0, footer.index).join("\n");
   return response.trim() === "" ? undefined : response;
 }
 
@@ -189,9 +188,10 @@ export function delegateSendEarlierResponses(step: DelegateSendResult): Delegate
 }
 
 /** An earlier result in words, for a client to show where it shows a reply:
- * its text, else its reason or status. */
+ * its text, else its reason, else that it had none (its status rides beside
+ * it). */
 export function delegateSendEarlierText(earlier: DelegateSendEarlierResponse): string {
-  return earlier.output ?? earlier.reason ?? earlier.status ?? "";
+  return earlier.output ?? earlier.reason ?? "(no reply)";
 }
 
 /** Why a send's wait was ignored (it asked to wait on a delegate that was
