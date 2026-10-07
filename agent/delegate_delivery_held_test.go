@@ -59,8 +59,18 @@ func TestHeldDeliveryReturnsToItsPlanWhenTheCarrierIsRefused(t *testing.T) {
 	if resolution := waitedResolution(t, waiter); !resolution.fallback {
 		t.Fatalf("refused carrier resolved its waiter with %#v, want the fallback", resolution)
 	}
-	if _, admitted, err := c.BeginDelivery(held); err != nil || !admitted {
+	token, admitted, err := c.BeginDelivery(held)
+	if err != nil || !admitted {
 		t.Fatalf("the held plan after a refused carrier: admitted=%t err=%v", admitted, err)
+	}
+	// Once the held result is acknowledged, the second is planned: the refused
+	// carrier left no claim on it behind.
+	plans, err := c.CompleteDelivery(token, true)
+	if err != nil {
+		t.Fatalf("acknowledge the held result: %v", err)
+	}
+	if len(plans.deliveries) != 1 || plans.deliveries[0].deliveryID != carrying.deliveryID {
+		t.Fatalf("plans after the held result's ack = %#v, want the second delivery planned", plans.deliveries)
 	}
 }
 

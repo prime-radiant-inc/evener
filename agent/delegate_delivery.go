@@ -191,9 +191,18 @@ func (c *delegateTreeController) BeginDelivery(plan delegateDeliveryPlan) (_ del
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	defer func() {
-		// A refused plan gives its held delivery back to the receiver's claim.
-		if !admitted && plan.held != nil && c.deliveryClaims[plan.held.DeliveryID] != nil && c.deliveryClaims[plan.held.DeliveryID].token == plan.claim {
+		// A refused carrier gives its held delivery back to the receiver's
+		// claim and drops its own, which would otherwise keep its delivery
+		// from ever being planned once the held one is acknowledged.
+		if admitted || plan.held == nil {
+			return
+		}
+		if claim := c.deliveryClaims[plan.held.DeliveryID]; claim != nil && claim.token == plan.claim {
 			c.restoreHeldClaimLocked(plan.heldClaim)
+			c.evidenceVersion++
+		}
+		if claim := c.deliveryClaims[plan.deliveryID]; claim != nil && claim.token == plan.claim {
+			delete(c.deliveryClaims, plan.deliveryID)
 			c.evidenceVersion++
 		}
 	}()

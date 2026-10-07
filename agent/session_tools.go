@@ -1242,7 +1242,9 @@ func (s *Session) appendToolResultsWithDeliveryCommitsDurably(live, persisted ll
 	// commits come grouped by tool call; each call's run completes in order.
 	var run []*delegateToolResultCommit
 	for i, binding := range commits {
-		run = append(run, binding.commit)
+		if binding.commit != nil {
+			run = append(run, binding.commit)
+		}
 		if i+1 < len(commits) && commits[i+1].toolCallID == binding.toolCallID {
 			continue
 		}
