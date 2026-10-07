@@ -41,20 +41,21 @@ func TestE2E_QueuePromptToARetiredSession(t *testing.T) {
 	defer cancel()
 	client := stack.dialRPC(ctx, t)
 
+	// Hold the background session namer past the opening turn, as a slow
+	// provider does on a loaded runner: its in-flight work is an obligation the
+	// daemon refuses to retire over, which a single retire request used to
+	// ignore and then wait out (#3876).
+	releaseNamer := provider.HoldNamer()
+	t.Cleanup(releaseNamer)
 	ref := startSessionWithOpeningTurn(ctx, t, client, provider, stack)
+	refused := requestDaemonRetire(ctx, t, client, ref)
+	if refused.Accepted {
+		t.Fatalf("retire was accepted with the session namer in flight; the test no longer covers a refused retire: %+v", refused.Lifecycle)
+	}
+	releaseNamer()
 
 	// Exit the daemon.
-	list, err := clientRequest[appwire.DaemonListResponse](ctx, client, appwire.MethodEvenerDaemonList, appwire.DaemonListParams{})
-	if err != nil {
-		t.Fatalf("evener/daemon/list: %v", err)
-	}
-	identity, found := daemonIdentityForRef(list, ref)
-	if !found {
-		t.Fatalf("no resident daemon for %s in %+v", ref, list.Daemons)
-	}
-	if _, err := clientRequest[appwire.DaemonRetireResponse](ctx, client, appwire.MethodEvenerDaemonRetire, appwire.DaemonRetireParams{Identity: identity}); err != nil {
-		t.Fatalf("evener/daemon/retire: %v", err)
-	}
+	retireDaemonUntilAccepted(ctx, t, client, ref)
 	if err := awaitDaemonGone(ctx, client, ref); err != nil {
 		t.Fatalf("the daemon never exited: %v", err)
 	}
@@ -115,7 +116,7 @@ func awaitDaemonGone(ctx context.Context, client *appwire.Client, ref string) er
 	for time.Now().Before(deadline) {
 		list, err := clientRequest[appwire.DaemonListResponse](ctx, client, appwire.MethodEvenerDaemonList, appwire.DaemonListParams{})
 		if err == nil {
-			if _, found := daemonIdentityForRef(list, ref); !found {
+			if _, found := residentIdentityForRef(list, ref); !found {
 				return nil
 			}
 		}
@@ -128,15 +129,42 @@ func awaitDaemonGone(ctx context.Context, client *appwire.Client, ref string) er
 	return context.DeadlineExceeded
 }
 
-// daemonIdentityForRef resolves the resident daemon serving ref, which is the
-// exact ownership identity evener/daemon/retire demands. It lives here rather
-// than beside the other e2e helpers so this test carries its own scaffolding:
-// the branch that adds this file has to compile against main on its own.
-func daemonIdentityForRef(list appwire.DaemonListResponse, ref string) (appwire.DaemonIdentity, bool) {
-	for _, resident := range list.Daemons {
-		if resident.Identity.Ref == ref {
-			return resident.Identity, true
+// requestDaemonRetire asks the resident daemon serving ref to retire, once.
+// The daemon answers Accepted false, with the blocking obligations, while it
+// has work in flight.
+func requestDaemonRetire(ctx context.Context, t *testing.T, client *appwire.Client, ref string) appwire.DaemonRetireResponse {
+	t.Helper()
+	list, err := clientRequest[appwire.DaemonListResponse](ctx, client, appwire.MethodEvenerDaemonList, appwire.DaemonListParams{})
+	if err != nil {
+		t.Fatalf("evener/daemon/list: %v", err)
+	}
+	identity, found := residentIdentityForRef(list, ref)
+	if !found {
+		t.Fatalf("no resident daemon for %s in %+v", ref, list.Daemons)
+	}
+	resp, err := clientRequest[appwire.DaemonRetireResponse](ctx, client, appwire.MethodEvenerDaemonRetire, appwire.DaemonRetireParams{Identity: identity})
+	if err != nil {
+		t.Fatalf("evener/daemon/retire: %v", err)
+	}
+	return resp
+}
+
+// retireDaemonUntilAccepted retires the daemon serving ref, asking again while
+// it refuses. A session that just finished a turn can still have background
+// work in flight (the session namer, an autosave), and the daemon refuses to
+// retire over it until it settles.
+func retireDaemonUntilAccepted(ctx context.Context, t *testing.T, client *appwire.Client, ref string) appwire.DaemonRetireResponse {
+	t.Helper()
+	for {
+		resp := requestDaemonRetire(ctx, t, client, ref)
+		if resp.Accepted {
+			return resp
+		}
+		t.Logf("evener/daemon/retire refused; asking again: blockers=%+v", resp.Lifecycle.Blockers)
+		select {
+		case <-ctx.Done():
+			t.Fatalf("the daemon never accepted retirement: %v; last blockers=%+v", ctx.Err(), resp.Lifecycle.Blockers)
+		case <-time.After(100 * time.Millisecond):
 		}
 	}
-	return appwire.DaemonIdentity{}, false
 }

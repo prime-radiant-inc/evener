@@ -46,6 +46,9 @@ type Server struct {
 
 	closeOnce sync.Once
 	closed    chan struct{}
+
+	namerMu   sync.Mutex
+	namerHold chan struct{}
 }
 
 // Call is one model request from the session loop, paused until the test
@@ -132,6 +135,27 @@ func (s *Server) Close() {
 		close(s.closed)
 		_ = s.http.Close()
 	})
+}
+
+// HoldNamer parks every session-namer reply until release runs, so a test can
+// keep the namer's background work in flight past the session's own turn, as a
+// slow provider can. release is safe to call more than once.
+func (s *Server) HoldNamer() (release func()) {
+	hold := make(chan struct{})
+	s.namerMu.Lock()
+	s.namerHold = hold
+	s.namerMu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			s.namerMu.Lock()
+			if s.namerHold == hold {
+				s.namerHold = nil
+			}
+			s.namerMu.Unlock()
+			close(hold)
+		})
+	}
 }
 
 // Next returns the next model request from the session loop, blocking until
@@ -281,6 +305,19 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	// namer's GenerateObject call. Answer it inline so it never steals a
 	// round from the test's script.
 	if tools, ok := body["tools"].([]any); !ok || len(tools) == 0 {
+		s.namerMu.Lock()
+		hold := s.namerHold
+		s.namerMu.Unlock()
+		if hold != nil {
+			select {
+			case <-hold:
+			case <-r.Context().Done():
+				return
+			case <-s.closed:
+				http.Error(w, "fakellm: server closed", http.StatusServiceUnavailable)
+				return
+			}
+		}
 		writeReply(w, stream, reply{text: autoNameJSON})
 		return
 	}

@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestHandleModels covers the /v1/models handler.
@@ -157,5 +158,39 @@ func TestServerAddrAndBaseURL(t *testing.T) {
 	}
 	if !strings.HasPrefix(srv.BaseURL(), "http://") {
 		t.Fatalf("BaseURL = %q, want http:// prefix", srv.BaseURL())
+	}
+}
+
+// TestHoldNamerParksTheNamerReply covers HoldNamer: a namer request is not
+// answered until the hold is released.
+func TestHoldNamerParksTheNamerReply(t *testing.T) {
+	srv, err := NewOn("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+
+	release := srv.HoldNamer()
+	answered := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		body := `{"model":"test","messages":[{"role":"user","content":"name this"}]}`
+		rec := httptest.NewRecorder()
+		srv.handleChat(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body)))
+		answered <- rec
+	}()
+	select {
+	case rec := <-answered:
+		t.Fatalf("the held namer request was answered: %d %s", rec.Code, rec.Body.String())
+	case <-time.After(50 * time.Millisecond):
+	}
+	release()
+	select {
+	case rec := <-answered:
+		if !strings.Contains(rec.Body.String(), "Fake Session") {
+			t.Fatalf("released namer body should contain auto name: %s", rec.Body.String())
+		}
+	// TRIPWIRE: a hang guard only; the released handler answers at once.
+	case <-time.After(10 * time.Second):
+		t.Fatal("the released namer request was never answered")
 	}
 }
