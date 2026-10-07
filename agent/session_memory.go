@@ -447,7 +447,9 @@ func (s *Session) noteMemoryPageReadLocked(scope, page string) {
 // untrackMemoryPageLocked stops tracking page. Callers hold memoryMu.
 func (s *Session) untrackMemoryPageLocked(scope, page string) {
 	delete(s.memoryReadPages[scope], page)
-	s.memoryReadPageOrder[scope] = slices.DeleteFunc(s.memoryReadPageOrder[scope], func(p string) bool { return p == page })
+	if order, ok := s.memoryReadPageOrder[scope]; ok {
+		s.memoryReadPageOrder[scope] = slices.DeleteFunc(order, func(p string) bool { return p == page })
+	}
 }
 
 // memoryReadPagesFor lists the pages of scope the session has read.

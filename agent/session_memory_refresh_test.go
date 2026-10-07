@@ -912,3 +912,28 @@ func TestMemoryRefreshPageRecordsDoNotSurviveResume(t *testing.T) {
 		}
 	}
 }
+
+// A page whose record read fails, before any page is tracked, is simply left
+// untracked: the session neither panics nor starts tracking it.
+func TestMemoryRefreshUnreadablePageStaysUntracked(t *testing.T) {
+	t.Parallel()
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses permissions")
+	}
+	root := t.TempDir()
+	memorySeed(t, root, "personal", "opaque-index-1\n")
+	page := writeMemoryPage(t, root, "opaque-unreadable.md", "opaque-unreadable-body\n")
+	if err := os.Chmod(page, 0); err != nil {
+		t.Fatal(err)
+	}
+	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}))
+	env, release, err := s.acquireMemoryEnvironment("personal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	s.recordMemoryFile(env, "personal", "opaque-unreadable.md", true)
+	if got := s.memoryReadPagesFor("personal"); len(got) != 0 {
+		t.Fatalf("tracked %v, want nothing", got)
+	}
+}
