@@ -219,8 +219,10 @@ func sclNewSession(t *testing.T, p sclProgram) (*Session, *agenttest.ScriptedAda
 	t.Helper()
 	adapter := &agenttest.ScriptedAdapter{
 		Provider: "openai",
+		// Plain text with a summary section: a communicate reply has no text,
+		// and the summarizer rejects a reply without a filled section.
 		Responder: func(llm.Request) llm.Response {
-			return agenttest.FinalResponse("SCL scripted summary")
+			return llm.Response{Message: llm.Assistant("## Progress\nSCL scripted summary")}
 		},
 	}
 	client := llm.NewClient()
