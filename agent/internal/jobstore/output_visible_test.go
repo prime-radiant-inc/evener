@@ -338,6 +338,25 @@ func TestGrepOutputFileRefusesASameSizeReplacementAfterItsView(t *testing.T) {
 	}
 }
 
+// The caller owns the file it passes: the grep leaves it open.
+func TestGrepOutputFileLeavesTheCallersFileOpen(t *testing.T) {
+	path, _ := writeHiddenPrefixOutput(t)
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if _, err := GrepOutputFileLimitFromFile(path, f, regexp.MustCompile("new"), 1024, 0, 1024, func(int64) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Stat(); err != nil {
+		t.Fatalf("Stat after the grep: %v, want the caller's file still open", err)
+	}
+	if _, err := GrepOutputFileLimitFromFile(path, nil, regexp.MustCompile("new"), 1024, 0, 1024, func(int64) error { return nil }); err == nil {
+		t.Fatalf("grep of a nil file: err = %v, want an error", err)
+	}
+}
+
 func TestGrepOutputFileChecksItsLimitBeforeReading(t *testing.T) {
 	// The limit is checked before the file is touched, so an empty or invalid
 	// budget never reads it.

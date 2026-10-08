@@ -705,6 +705,9 @@ func GrepOutputFileLimitFromFile(path string, f *os.File, re *regexp.Regexp, lim
 	if scan, err := grepLimitScans(limitBytes); !scan {
 		return nil, err
 	}
+	if f == nil {
+		return nil, errors.New("jobstore: output file is nil")
+	}
 	view, err := readOpenOutputFileView(f, path, checkTotal)
 	if err != nil {
 		return nil, err
