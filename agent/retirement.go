@@ -74,7 +74,7 @@ type RetirementController struct {
 	// session: work that settles on its own within sessionNameTimeout, which
 	// a manual retire waits for (TryManualClaim). namingSettled is closed,
 	// and replaced, each time one of them releases.
-	naming        map[uint64]bool
+	naming        map[uint64]struct{}
 	namingSettled chan struct{}
 }
 
@@ -103,7 +103,7 @@ func NewRetirementController(timeout time.Duration, clk RetirementClock) (*Retir
 	}
 	return &RetirementController{
 		phase: "resident", active: make(map[uint64]RetirementBlocker),
-		naming: make(map[uint64]bool), namingSettled: make(chan struct{}),
+		naming: make(map[uint64]struct{}), namingSettled: make(chan struct{}),
 		changed: make(chan struct{}, 1), clock: clk, timeout: timeout, configuredTimeout: timeout,
 	}, nil
 }
@@ -176,7 +176,7 @@ func (c *RetirementController) beginMutation(sessionID, category string, naming 
 	lease := c.nextLease
 	c.active[lease] = RetirementBlocker{Category: category, SessionID: sessionID}
 	if naming {
-		c.naming[lease] = true
+		c.naming[lease] = struct{}{}
 	}
 	c.eligibleSince = time.Time{}
 	c.mu.Unlock()
@@ -186,7 +186,7 @@ func (c *RetirementController) beginMutation(sessionID, category string, naming 
 		once.Do(func() {
 			c.mu.Lock()
 			delete(c.active, lease)
-			if c.naming[lease] {
+			if _, ok := c.naming[lease]; ok {
 				delete(c.naming, lease)
 				close(c.namingSettled)
 				c.namingSettled = make(chan struct{})
@@ -198,29 +198,30 @@ func (c *RetirementController) beginMutation(sessionID, category string, naming 
 }
 
 // TryManualClaim is TryClaim for a user's retire. A session namer only names
-// the session and settles on its own, so a retire that arrives while one runs
-// waits for every naming lease to release, up to sessionNameTimeout, before
-// claiming, rather than being refused over it (#3921). Any other work refuses
-// it at once, as TryClaim does.
+// the session and settles on its own, so a retire that arrives while namers
+// are the only work holding the process waits for them to release, up to
+// sessionNameTimeout, before claiming, rather than being refused over them
+// (#3921). With any other work held the retire is refused at once, as
+// TryClaim does, since waiting would end in the same refusal.
 func (c *RetirementController) TryManualClaim(ctx context.Context) (*RetirementClaim, RetirementSnapshot, error) {
 	c.awaitNaming(ctx, sessionNameTimeout)
 	return c.TryClaim(true)
 }
 
-// awaitNaming returns once no naming lease is active, ctx is done or bound
-// has passed on the controller's clock.
+// awaitNaming returns once namers are no longer the only work holding the
+// process, ctx is done or bound has passed on the controller's clock.
 func (c *RetirementController) awaitNaming(ctx context.Context, bound time.Duration) {
 	c.mu.Lock()
-	if len(c.naming) == 0 {
-		c.mu.Unlock()
+	waiting := c.onlyNamingLocked()
+	c.mu.Unlock()
+	if !waiting {
 		return
 	}
-	c.mu.Unlock()
 	timer := c.clock.NewTimer(bound)
 	defer timer.Stop()
 	for {
 		c.mu.Lock()
-		if len(c.naming) == 0 {
+		if !c.onlyNamingLocked() {
 			c.mu.Unlock()
 			return
 		}
@@ -234,6 +235,12 @@ func (c *RetirementController) awaitNaming(ctx context.Context, bound time.Durat
 			return
 		}
 	}
+}
+
+// onlyNamingLocked reports whether the resident process is held by naming
+// leases and nothing else. Callers hold c.mu.
+func (c *RetirementController) onlyNamingLocked() bool {
+	return c.phase == "resident" && len(c.naming) != 0 && len(c.active) == len(c.naming)
 }
 
 // Changed coalesces notifications; callers notify only after dropping owner locks.

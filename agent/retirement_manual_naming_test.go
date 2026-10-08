@@ -136,3 +136,27 @@ func TestManualRetireDoesNotWaitForOtherAutonomousWork(t *testing.T) {
 		t.Fatal("manual retire waited for a goal's lease")
 	}
 }
+
+// A namer runs inside the turn that launched it, and goal turns can run
+// beside one: when anything but a namer holds the process, the retire is
+// refused at once rather than after waiting out the namer for a refusal.
+func TestManualRetireDoesNotWaitForTheNamerBesideOtherWork(t *testing.T) {
+	t.Parallel()
+	root, c, _, _ := blockedNamerSession(t)
+	release, err := root.beginRetirementMutation("turn")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	done := startManualClaim(c)
+	select {
+	case got := <-done:
+		if got.err != nil || got.claim != nil {
+			t.Fatalf("manual retire during a turn beside the namer = claim %v, %v; want a refusal", got.claim, got.err)
+		}
+	// TRIPWIRE: a refusal returns at once; 30s only fires if the retire
+	// waited out the namer on the fake clock for a refusal.
+	case <-time.After(30 * time.Second):
+		t.Fatal("manual retire waited for the namer while a turn held the process")
+	}
+}

@@ -1037,7 +1037,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		if claim == nil {
 			return appwire.DaemonRetireResponse{Accepted: false, Lifecycle: server.DaemonLifecycleFromSnapshot(snap)}, nil
 		}
-		// The pre-claim check above and TryClaim are not atomic: a thread/clear
+		// The pre-claim check above and TryManualClaim are not atomic: a thread/clear
 		// can run to completion between them. It holds its own admission lease
 		// (so TryClaim declines while it is in flight), rewrites rendezvous
 		// ownership to the replacement, swaps the session and re-roots the
