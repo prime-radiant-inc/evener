@@ -29,6 +29,9 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 	if existing := reg.Get(deps.resultToolName()); existing != nil {
 		resultToolDef = existing.Definition
 	}
+	if deps.offersEndReason {
+		resultToolDef = tool.WithCommunicateEndReason(resultToolDef)
+	}
 	_ = reg.Register(tool.RegisteredTool{
 		Definition: resultToolDef,
 		OmitIntent: true,
@@ -44,6 +47,14 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 			endTurn, ok := args["end_turn"].(bool)
 			if !ok {
 				return nil, errors.New("communicate requires end_turn")
+			}
+			// The registry's schema has already held end_reason to its enum.
+			endReason := ""
+			if endTurn && deps.offersEndReason {
+				endReason, _ = args["end_reason"].(string)
+				if endReason == "" {
+					endReason = tool.CommunicateEndReasonDone
+				}
 			}
 
 			originalOutput := normalizeNodeOutput(args["output"])
@@ -71,9 +82,10 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 			}
 
 			if err := deps.deliverCommunicate(events.CommunicateData{
-				CallID:  callIDFromContext(ctx),
-				EndTurn: endTurn,
-				Message: message,
+				CallID:    callIDFromContext(ctx),
+				EndTurn:   endTurn,
+				Message:   message,
+				EndReason: endReason,
 			}); err != nil {
 				// The transcript refused the entry (a poisoned or closed
 				// writer, or a served session failing closed): nothing
