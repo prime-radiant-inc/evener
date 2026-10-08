@@ -87,6 +87,10 @@ def run_bounded(cmd, cwd, env, timeout, stdout=None, stderr=None):
         return "timeout", out or ""
 
 
+# The trial's providers.toml under --context-window, in its state dir (a neutral path under --work-root).
+TRIAL_PROVIDERS = "providers.toml"
+
+
 # Keep this hermetic setup in sync with fixtureEnv / configureHermeticRunEnv in
 # tools/tool-fluency/cmd/evener-fluency/main.go, which does the same for the
 # one-session runner.
@@ -105,8 +109,9 @@ def fixture_env(work, xdg):
     return env
 
 
-# The trial's providers.toml under --context-window, in its state dir (a neutral path under --work-root).
-TRIAL_PROVIDERS = "providers.toml"
+def user_config_dir():
+    """evener's config dir: $XDG_CONFIG_HOME/evener, else ~/.config/evener."""
+    return os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "evener")
 
 
 def user_providers_config():
@@ -115,8 +120,7 @@ def user_providers_config():
     EVENER_PROVIDERS_CONFIG is set and empty (no user layer)."""
     if "EVENER_PROVIDERS_CONFIG" in os.environ:
         return os.environ["EVENER_PROVIDERS_CONFIG"] or None
-    root = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
-    return os.path.join(root, "evener", "providers.toml")
+    return os.path.join(user_config_dir(), "providers.toml")
 
 
 def user_credentials_config():
@@ -125,8 +129,7 @@ def user_credentials_config():
     if os.environ.get("EVENER_CREDENTIALS_CONFIG", "").strip():
         return os.environ["EVENER_CREDENTIALS_CONFIG"]
     providers = user_providers_config()
-    root = os.path.dirname(providers) if providers else os.path.join(
-        os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "evener")
+    root = os.path.dirname(providers) if providers else user_config_dir()
     return os.path.join(root, "credentials.toml")
 
 
@@ -183,12 +186,32 @@ def read_file(path):
 COMPACTION_LAYERS = {"checkpoint", "checkpoint_pred", "session_log_checkpoint", "summarize"}
 
 
+class Folds:
+    """Groups a session's CONTEXT_COMPACTION events into folds: the layers between two tool calls, in
+    order (a checkpoint is often followed at once by summarize). A fold with a COMPACTION_LAYERS layer
+    is one compaction."""
+
+    def __init__(self):
+        self.folds, self.called = [], True
+
+    def tool_call(self):
+        self.called = True
+
+    def layer(self, name):
+        if self.called:
+            self.folds.append([])
+            self.called = False
+        self.folds[-1].append(name)
+
+    def compactions(self):
+        return [fold for fold in self.folds if COMPACTION_LAYERS & set(fold)]
+
+
 def parse_events(path):
     """Returns (tool calls, whether the round cap was hit, communicate messages, reasoning summary text).
-    Each call is {"tool", "args", "compactions_before": compactions (as context_record counts them)
-    before it, "output_chars"}."""
+    Each call is {"tool", "args", "compactions_before": compactions (see Folds) before it, "output_chars"}."""
     calls, limit, messages, reasoning = [], False, [], []
-    by_id, compactions, in_fold = {}, 0, False
+    by_id, folds = {}, Folds()
     with open(path, errors="replace") as f:
         for line in f:
             line = line.strip()
@@ -201,15 +224,14 @@ def parse_events(path):
             kind, data = ev.get("kind"), ev.get("data") or {}
             if kind == "TOOL_CALL_START":
                 calls.append({"tool": data.get("tool_name", ""), "args": data.get("arguments_json", ""),
-                              "compactions_before": compactions, "output_chars": 0})
+                              "compactions_before": len(folds.compactions()), "output_chars": 0})
                 by_id[data.get("call_id")] = calls[-1]
-                in_fold = False
+                folds.tool_call()
                 reasoning.append(f"\n[{data.get('tool_name')}]\n")
             elif kind == "TOOL_CALL_END" and data.get("call_id") in by_id:
                 by_id[data["call_id"]]["output_chars"] = len(str(data.get("output") or data.get("error") or ""))
-            elif kind == "CONTEXT_COMPACTION" and data.get("layer") in COMPACTION_LAYERS:
-                compactions += not in_fold
-                in_fold = True
+            elif kind == "CONTEXT_COMPACTION":
+                folds.layer(data.get("layer", ""))
             elif kind == "REASONING_SUMMARY_DELTA":
                 reasoning.append(data.get("delta", ""))
             elif kind == "TURN_LIMIT":
@@ -497,11 +519,9 @@ def root_session_id(events, state):
 
 
 def context_record(events):
-    """(the root session's context window as its SESSION_START reports it, its compactions). A
-    compaction is the layers of one fold, in order: CONTEXT_COMPACTION events with no tool call
-    between them (a checkpoint is often followed at once by summarize). The stage's event stream is
-    the root session's."""
-    window, folds, called = None, [], True
+    """(the root session's context window as its SESSION_START reports it, its compactions as Folds
+    groups them). The stage's event stream is the root session's."""
+    window, folds = None, Folds()
     for line in read_file(events).splitlines():
         if not (line.startswith("{") and any(f'"{k}"' in line for k in ("SESSION_START", "CONTEXT_COMPACTION", "TOOL_CALL_START"))):
             continue
@@ -513,13 +533,10 @@ def context_record(events):
         if kind == "SESSION_START" and window is None:
             window = data.get("context_window_size")
         elif kind == "TOOL_CALL_START":
-            called = True
+            folds.tool_call()
         elif kind == "CONTEXT_COMPACTION":
-            if called:
-                folds.append([])
-                called = False
-            folds[-1].append(data.get("layer", ""))
-    return window, [fold for fold in folds if COMPACTION_LAYERS & set(fold)]
+            folds.layer(data.get("layer", ""))
+    return window, folds.compactions()
 
 
 def whiteboard_note(state):

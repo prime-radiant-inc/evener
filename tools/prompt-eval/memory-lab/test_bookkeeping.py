@@ -6,6 +6,7 @@ Each case is a tool call as the lab records it and the (kind, surfaces) classify
 compaction tests cover how a compacted session's calls are tagged and its reconstruction counted, and
 the --context-window tests cover the trial's providers.toml."""
 import importlib.machinery, importlib.util, json, os, sys, tempfile, unittest
+from unittest import mock
 
 sys.dont_write_bytecode = True
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -135,10 +136,7 @@ class ContextWindowConfigTest(unittest.TestCase):
         path = os.path.join(root.name, "providers.toml")
         with open(path, "w") as f:
             f.write(user_toml)
-        old = os.environ.get("EVENER_PROVIDERS_CONFIG")
-        os.environ["EVENER_PROVIDERS_CONFIG"] = path
-        self.addCleanup(lambda: os.environ.pop("EVENER_PROVIDERS_CONFIG") if old is None
-                        else os.environ.__setitem__("EVENER_PROVIDERS_CONFIG", old))
+        self.enterContext(mock.patch.dict(os.environ, {"EVENER_PROVIDERS_CONFIG": path}))
         return bookkeeping.lab.context_window_config("lunar/flash-bg.1", 44000)
 
     def test_adds_a_row_after_the_users_own_config(self):
