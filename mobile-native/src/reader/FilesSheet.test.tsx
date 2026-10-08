@@ -3,7 +3,7 @@
 // when it's new or changed since you last opened it.
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { pressable, render, renderedText, unmountMountedTrees } from "../renderNative.testkit";
+import { pressable, render, renderedText, settle, unmountMountedTrees } from "../renderNative.testkit";
 import type { SyncStringStorage } from "../syncStringStorage";
 import { DocumentMemory } from "./documentMemory";
 import { forgetDocumentSummaries } from "./documentSummaries";
@@ -71,13 +71,6 @@ afterEach(() => {
 	unmountMountedTrees();
 	vi.restoreAllMocks();
 });
-
-async function settle() {
-	await act(async () => {
-		for (let turn = 0; turn < 10; turn += 1) await Promise.resolve();
-		await new Promise((resolve) => setTimeout(resolve, 0));
-	});
-}
 
 const ago = (minutes: number) => new Date(Date.now() - minutes * MINUTE).toISOString();
 

@@ -13,6 +13,7 @@ import {
 	pressable,
 	render,
 	renderedText,
+	settle,
 	unmountMountedTrees,
 } from "../renderNative.testkit";
 import { takeQuote } from "../session/pendingQuote";
@@ -187,13 +188,6 @@ afterEach(() => {
 	unmountMountedTrees();
 	vi.restoreAllMocks();
 });
-
-async function settle() {
-	await act(async () => {
-		for (let turn = 0; turn < 10; turn += 1) await Promise.resolve();
-		await new Promise((resolve) => setTimeout(resolve, 0));
-	});
-}
 
 function navigationDouble() {
 	const options: NativeStackNavigationOptions[] = [];

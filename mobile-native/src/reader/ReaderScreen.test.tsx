@@ -22,6 +22,7 @@ import {
 	render,
 	render as renderElement,
 	renderedText,
+	settle,
 	unmountMountedTrees,
 } from "../renderNative.testkit";
 import { sheetKey } from "../sheet/sheetHosts";
@@ -219,13 +220,6 @@ afterEach(() => {
 async function settleMicrotasks() {
 	await act(async () => {
 		for (let turn = 0; turn < 50; turn += 1) await Promise.resolve();
-	});
-}
-
-async function settle() {
-	await act(async () => {
-		for (let turn = 0; turn < 10; turn += 1) await Promise.resolve();
-		await new Promise((resolve) => setTimeout(resolve, 0));
 	});
 }
 

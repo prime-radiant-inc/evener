@@ -10,7 +10,7 @@ import { connectJobOutputPeer } from "@evener/appwire-client/testing/jobOutputPe
 import { wireThread } from "@evener/appwire-client/testing/notifications";
 import { act } from "react-test-renderer";
 import { beforeEach, expect, it, vi } from "vitest";
-import { render, renderedText, screenConnection } from "../renderNative.testkit";
+import { render, renderedText, screenConnection, settle } from "../renderNative.testkit";
 import { forgetSubagentTrees } from "./subagentTree";
 import { ShellJobScreen } from "./ShellJobScreen";
 import { JOB_OUTPUT_REREAD_MS } from "./useShellJobOutput";
@@ -115,13 +115,6 @@ beforeEach(() => {
 	const options: NativeStackNavigationOptions[] = [];
 	navigation = { setOptions: vi.fn((next) => options.push(next)), options };
 });
-
-async function settle() {
-	await act(async () => {
-		for (let turn = 0; turn < 20; turn += 1) await Promise.resolve();
-		await new Promise((resolve) => setTimeout(resolve, 0));
-	});
-}
 
 async function mount(over: { ownerRef?: string } = {}) {
 	const params = {
