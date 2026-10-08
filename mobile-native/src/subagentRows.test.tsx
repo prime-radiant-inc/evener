@@ -1,5 +1,4 @@
 import { installActivityFixture } from "./subagents/sessionActivityTestUtils";
-import { activityChangedNotification } from "@evener/appwire-client/testing/notifications";
 // Subagent rows in the transcript (spec 8.2 "Subagent", 9), driven from the
 // coordinator's tool calls as history carries them (agent/testdata/
 // subagentwire) through the same pipeline ConversationScreen runs, at every
@@ -15,7 +14,7 @@ import {
 } from "@evener/appwire-client";
 import { notificationWireItem } from "@evener/appwire-client/testing/notificationWireFixtures";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { wireThread } from "@evener/appwire-client/testing/notifications";
+import { activityChangedNotification, wireThread } from "@evener/appwire-client/testing/notifications";
 import {
 	subagentCallItems,
 	subagentOutcomesResponse,

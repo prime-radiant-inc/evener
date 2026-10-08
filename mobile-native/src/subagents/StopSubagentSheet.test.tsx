@@ -1,11 +1,10 @@
 import { installActivityFixture } from "./sessionActivityTestUtils";
-import { activityChangedNotification } from "@evener/appwire-client/testing/notifications";
 // Ask coordinator to stop it (spec 9, ruling 10): a prefilled message to the
 // coordinator, sent with the one Send that steers. The durable runtime is the
 // real one, on the in-memory SQLite double; the tests assert on the wire.
 import type { ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { wireThread } from "@evener/appwire-client/testing/notifications";
+import { activityChangedNotification, wireThread } from "@evener/appwire-client/testing/notifications";
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { NativeMutationRuntime } from "../nativeMutationRuntime";

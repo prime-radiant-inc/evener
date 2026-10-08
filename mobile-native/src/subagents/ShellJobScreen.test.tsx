@@ -1,5 +1,4 @@
 import { activityFixture, installActivityFixture } from "./sessionActivityTestUtils";
-import { activityChangedNotification } from "@evener/appwire-client/testing/notifications";
 // A shell job's detail (Jesse's ruling on shell jobs, PR 2): the job as its
 // coordinator's tree carries it (command, how it's doing, who started it),
 // and its output's tail from evener/jobs/output, read again whenever the job
@@ -8,7 +7,7 @@ import type { NativeStackNavigationOptions } from "@react-navigation/native-stac
 import type { SessionActivityReadParams } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { connectJobOutputPeer } from "@evener/appwire-client/testing/jobOutputPeer";
-import { wireThread } from "@evener/appwire-client/testing/notifications";
+import { activityChangedNotification, wireThread } from "@evener/appwire-client/testing/notifications";
 import { act } from "react-test-renderer";
 import { beforeEach, expect, it, vi } from "vitest";
 import { render, renderedText, screenConnection, settle } from "../renderNative.testkit";
