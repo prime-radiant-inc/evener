@@ -262,12 +262,16 @@ func decodeTaskArgs(args map[string]any) (adds []taskpkg.TaskInput, updates []ta
 			}
 		}
 		if u.Status == "" && u.Notes == "" && u.DependsOn == nil && u.ReasoningEffort == "" {
-			return nil, nil, fmt.Errorf(`update entry for task %d changes nothing; depends_on of [] or null and notes of "" or "null" are placeholders and are ignored. Include a status, real notes, new depends_on IDs, depends_on: [0] to clear dependencies, or reasoning_effort`, u.ID)
+			return nil, nil, fmt.Errorf("update entry for task %d changes nothing (placeholder values are ignored). Include a status, real notes, new depends_on IDs, depends_on: [0] to clear dependencies, or reasoning_effort", u.ID)
 		}
 		updates = append(updates, u)
 	}
 	return adds, updates, nil
 }
+
+// taskListUpdateFields is every field an update entry may carry; each one but
+// id has a row in updatePlaceholders.
+var taskListUpdateFields = []string{"id", "status", "notes", "depends_on", "reasoning_effort"}
 
 func validateTaskListItemFields(kind string, index int, item map[string]any) error {
 	allowed := map[string]bool{}
@@ -277,7 +281,7 @@ func validateTaskListItemFields(kind string, index int, item map[string]any) err
 			allowed[field] = true
 		}
 	case "update":
-		for _, field := range []string{"id", "status", "notes", "depends_on", "reasoning_effort"} {
+		for _, field := range taskListUpdateFields {
 			allowed[field] = true
 		}
 	}
@@ -344,51 +348,53 @@ var errZeroTaskID = errors.New("0 is not a task ID")
 func decodeIDList(raw []any) ([]int, error) {
 	ids := make([]int, 0, len(raw))
 	for _, d := range raw {
-		v, ok := d.(float64)
-		if !ok {
-			return nil, errors.New("each element must be an integer task ID")
-		}
-		if int(v) == clearDependsOnID {
+		if d == float64(clearDependsOnID) {
 			return nil, errZeroTaskID
 		}
-		ids = append(ids, int(v))
+		id, ok := taskIDValue(d)
+		if !ok {
+			return nil, errors.New("each element must be a task ID: a positive integer below 2^53")
+		}
+		ids = append(ids, id)
 	}
 	return ids, nil
 }
 
 // updatePlaceholders is the one table of placeholder values for an update
-// entry's optional fields. A placeholder is a value whose effect is identical
-// to omitting the field: decodeTaskArgs and the store leave the task as it
-// was. Some models fill every optional field on every call, so these are
-// dropped before validation. Values that change something are not here:
-// depends_on [0] clears the dependencies, and reasoning_effort "none" or
-// "null" turn thinking off.
+// entry's optional fields: values whose effect is identical to omitting the
+// field. A null value is a placeholder for every field (normalizeTaskListArgs
+// checks it once); each predicate judges the rest. For notes and depends_on
+// the table defines "no change" (#3879); for status and reasoning_effort it
+// mirrors how the store already applies them. Some models fill every
+// optional field on every call, so these are dropped before validation.
+// depends_on [0] clears the dependencies and reasoning_effort "none" or
+// "null" turn thinking off, so neither is here.
 var updatePlaceholders = map[string]func(any) bool{
 	// The store applies only a non-empty status.
-	"status": func(v any) bool { return v == nil || v == "" },
-	// The store skips an empty note; "null" text is a filler by ruling (#3879).
+	"status": func(v any) bool { return v == "" },
+	// The store skips an empty note; "null" text is filler (#3879).
 	"notes": func(v any) bool {
 		text, isString := v.(string)
 		trimmed := strings.TrimSpace(text)
-		return v == nil || (isString && (trimmed == "" || strings.EqualFold(trimmed, "null")))
+		return isString && (trimmed == "" || strings.EqualFold(trimmed, "null"))
 	},
-	// A nil list means no change; only [0] clears.
+	// Only [0] clears.
 	"depends_on": func(v any) bool {
 		list, isList := v.([]any)
-		return v == nil || (isList && len(list) == 0)
+		return isList && len(list) == 0
 	},
 	// normalizeTaskEffort turns "", whitespace and "inherit" into "", which
 	// the store reads as no change.
 	"reasoning_effort": func(v any) bool {
 		effort, isString := v.(string)
-		return v == nil || (isString && normalizeTaskEffort(effort) == "")
+		return isString && normalizeTaskEffort(effort) == ""
 	},
 }
 
 // normalizeTaskListArgs is task_list's NormalizeArgs. It drops each update
-// field whose value is a placeholder (updatePlaceholders). An entry left with only a
-// valid id changed nothing: beside other work it is dropped, so the rest of
-// the call still applies. When nothing else is left, the bare entries stay,
+// field whose value is a placeholder (updatePlaceholders). An entry left with
+// only a valid id changed nothing: beside other work it is dropped, so the
+// rest of the call still applies. When nothing else is left, the bare entries stay,
 // so decoding rejects the call in the tool, where the failure breaker records
 // it under this normalized form. Dispatch, the fingerprint and decoding all
 // run it, which keeps the placeholder rule in one place. It never fails.
@@ -408,7 +414,7 @@ func normalizeTaskListArgs(args map[string]any) (map[string]any, error) {
 		}
 		cleaned := maps.Clone(entry)
 		for field, isPlaceholder := range updatePlaceholders {
-			if value, has := cleaned[field]; has && isPlaceholder(value) {
+			if value, has := cleaned[field]; has && (value == nil || isPlaceholder(value)) {
 				delete(cleaned, field)
 			}
 		}
@@ -439,7 +445,10 @@ func normalizeTaskListArgs(args map[string]any) (map[string]any, error) {
 
 // maxTaskID bounds task ids below 2^53, so every accepted id is exact in
 // float64 and dispatch (float64) and the fingerprint (int64) accept the same
-// set: JSON 2^53+1 decodes to float64 2^53, which must not be accepted.
+// set: JSON 2^53+1 decodes to float64 2^53, which must not be accepted. A
+// fractional id close enough to the bound rounds to an integer in float64
+// before it gets here; parsing JSON numbers exactly to catch that is not
+// worth it for ids this large.
 const maxTaskID = 1<<53 - 1
 
 // taskIDValue reads a task id: an integer from 1 to maxTaskID. It takes the
