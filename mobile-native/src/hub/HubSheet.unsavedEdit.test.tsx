@@ -34,10 +34,16 @@ function UnsavedLaunchDefaults() {
 	return null;
 }
 
+// A page whose content the test never reads. It is declared once, here: a
+// component written inline in a Screen is a new type on every render.
+function Blank() {
+	return null;
+}
+
 function HubSheet() {
 	return (
 		<Hub.Navigator initialRouteName="LaunchSettings">
-			<Hub.Screen name="HubHome" component={() => null} />
+			<Hub.Screen name="HubHome" component={Blank} />
 			<Hub.Screen name="LaunchSettings" component={UnsavedLaunchDefaults} />
 		</Hub.Navigator>
 	);
@@ -48,7 +54,7 @@ it("asks before the Hub sheet goes while a page inside it holds an unsaved edit"
 	render(
 		<BaseNavigationContainer ref={navigation}>
 			<Root.Navigator initialRouteName="Sessions">
-				<Root.Screen name="Sessions" component={() => null} />
+				<Root.Screen name="Sessions" component={Blank} />
 				<Root.Screen name="Hub" component={HubSheet} />
 			</Root.Navigator>
 		</BaseNavigationContainer>,
