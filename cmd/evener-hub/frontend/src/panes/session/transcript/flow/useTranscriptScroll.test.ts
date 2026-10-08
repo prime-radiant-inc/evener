@@ -4058,33 +4058,47 @@ describe("native key scrolling that begins a frame later", () => {
   const PORT: ScrollMetrics = { scrollTop: 900, scrollHeight: 2000, clientHeight: 500 };
 
   function mountKeyReader() {
-    const frames: FrameRequestCallback[] = [];
-    const raf = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => frames.push(callback));
+    const frames = new Map<number, FrameRequestCallback>();
+    let nextHandle = 0;
+    const raf = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      nextHandle += 1;
+      frames.set(nextHandle, callback);
+      return nextHandle;
+    });
+    const caf = vi.spyOn(window, "cancelAnimationFrame").mockImplementation((handle) => {
+      frames.delete(handle);
+    });
     const { ref, el } = makeListHandle();
     const { measure, set } = makeMeasure(PORT);
     const onReaderMovement = vi.fn();
-    renderHook(() =>
-      useTranscriptScroll({
-        ref: "ref_a",
-        model: model([turn("t1", ["i1"]), turn("t2", ["i2"])]),
-        listRef: ref,
-        loadOlder: vi.fn(() => Promise.resolve()),
-        measure,
-        onReaderMovement,
-      }),
+    const view = renderHook(
+      ({ r }) =>
+        useTranscriptScroll({
+          ref: r,
+          model: model([turn("t1", ["i1"]), turn("t2", ["i2"])]),
+          listRef: ref,
+          loadOlder: vi.fn(() => Promise.resolve()),
+          measure,
+          onReaderMovement,
+        }),
+      { initialProps: { r: "ref_a" } },
     );
     definePort(el, PORT);
-    frames.length = 0;
+    frames.clear();
     return {
       el,
       onReaderMovement,
+      rerender: view.rerender,
       shiftSpace: () =>
         act(() => {
           el.dispatchEvent(new KeyboardEvent("keydown", { key: " ", shiftKey: true, bubbles: true, cancelable: true }));
         }),
+      wheelUp: () => act(() => el.dispatchEvent(new WheelEvent("wheel", { deltaY: -120, bubbles: true }))),
       runFrame: () =>
         act(() => {
-          for (const callback of frames.splice(0)) callback(0);
+          const due = [...frames.values()];
+          frames.clear();
+          for (const callback of due) callback(0);
         }),
       scrollTo: (scrollTop: number) =>
         act(() => {
@@ -4092,7 +4106,10 @@ describe("native key scrolling that begins a frame later", () => {
           set({ scrollTop });
           el.dispatchEvent(new Event("scroll"));
         }),
-      restore: () => raf.mockRestore(),
+      restore: () => {
+        raf.mockRestore();
+        caf.mockRestore();
+      },
     };
   }
 
@@ -4114,6 +4131,33 @@ describe("native key scrolling that begins a frame later", () => {
     try {
       reader.shiftSpace();
       reader.runFrame();
+      reader.runFrame();
+      reader.scrollTo(880);
+
+      expect(reader.onReaderMovement).not.toHaveBeenCalled();
+    } finally {
+      reader.restore();
+    }
+  });
+
+  // A key's marker forgotten before its frames run must not lend its second
+  // frame to the next gesture: a wheel's marker still lasts one frame.
+  test.each([
+    [
+      "the document going hidden",
+      () => {
+        Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
+        act(() => document.dispatchEvent(new Event("visibilitychange")));
+        Reflect.deleteProperty(document, "visibilityState");
+      },
+    ],
+    ["a session switch", (reader: ReturnType<typeof mountKeyReader>) => act(() => reader.rerender({ r: "ref_b" }))],
+  ])("%s forgets the key's extra frame", (_label, forget) => {
+    const reader = mountKeyReader();
+    try {
+      reader.shiftSpace();
+      forget(reader);
+      reader.wheelUp();
       reader.runFrame();
       reader.scrollTo(880);
 

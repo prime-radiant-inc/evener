@@ -1201,6 +1201,17 @@ export function useTranscriptScroll({
     },
     [listRef],
   );
+  // Drops a pending marker and its clearing frame, for when no scroll it could
+  // explain is still to come: the document went hidden, or the session changed.
+  const forgetPendingMarker = useCallback(() => {
+    gesturePendingRef.current = false;
+    readerGestureRef.current = undefined;
+    gestureFramesLeftRef.current = 0;
+    if (gestureClearFrameRef.current !== null) {
+      cancelAnimationFrame(gestureClearFrameRef.current);
+      gestureClearFrameRef.current = null;
+    }
+  }, []);
   // How exact each marker is, since over-marking is the harmful direction:
   //
   //   scroll chords - EXACT. useTranscriptScrollKeys writes the offset itself
@@ -1222,6 +1233,8 @@ export function useTranscriptScroll({
   //     is down, stationary pointer included. Ruled out are a finger (it has the
   //     touch path, which is more exact), a secondary button, a drag that is
   //     over (no button held), and one that has left the port.
+  //   native keys   - the wheel's predicate, by key direction. The one marker
+  //     that lasts two frames, since the key's smooth scroll starts a frame late.
   const startPointerDrag = useCallback((event: PointerEvent) => {
     // A finger produces BOTH event streams. The touch path knows about
     // direction and nested scrollers; adopting the same finger here as a drag
@@ -1325,14 +1338,8 @@ export function useTranscriptScroll({
   const forgetGesturesWhenHidden = useCallback(() => {
     if (document.visibilityState !== "hidden") return;
     middleButtonHeldRef.current = false;
-    gesturePendingRef.current = false;
-    readerGestureRef.current = undefined;
-    gestureFramesLeftRef.current = 0;
-    if (gestureClearFrameRef.current !== null) {
-      cancelAnimationFrame(gestureClearFrameRef.current);
-      gestureClearFrameRef.current = null;
-    }
-  }, []);
+    forgetPendingMarker();
+  }, [forgetPendingMarker]);
   const markWheel = useCallback(
     (event: WheelEvent) => {
       // None of these move this port. ctrl-wheel is the browser's zoom gesture,
@@ -1741,16 +1748,10 @@ export function useTranscriptScroll({
       setPillCount(0);
       // The next event any of these would meet is the mount scroll below, which
       // belongs to the new session and to no gesture.
-      gesturePendingRef.current = false;
-      gestureFramesLeftRef.current = 0;
-      if (gestureClearFrameRef.current !== null) {
-        cancelAnimationFrame(gestureClearFrameRef.current);
-        gestureClearFrameRef.current = null;
-      }
+      forgetPendingMarker();
       pointerDraggingRef.current = false;
       middleButtonHeldRef.current = false;
       lastTouchYRef.current = null;
-      readerGestureRef.current = undefined;
     }
     prevHasContentRef.current = hasContent;
 
@@ -1951,7 +1952,8 @@ export function useTranscriptScroll({
     // Re-run once the frame boundary clears a pending gesture marker (the same
     // frame markGesture schedules its own clear on). Only armed for a growth
     // the gesture actually vetoed, so it is not a poll: for a drag or wheel the
-    // marker is gone by the next frame, and for the one unbounded case (a
+    // marker is gone by the next frame (a native key's by the one after), and
+    // for the one unbounded case (a
     // stationary middle-button hold) it stops the moment the hold does.
     function scheduleReanchorRetry() {
       if (reanchorRetryFrame !== null) return;
