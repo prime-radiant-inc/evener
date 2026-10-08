@@ -650,9 +650,10 @@ export function unmountMountedTrees(): void {
 	for (const tree of mountedThisTest.splice(0).reverse()) act(() => tree.unmount());
 }
 
-/** Lets the mounted trees' pending promise work land inside act, without
- * waiting on any timer: a run of microtask turns, so it settles under fake
- * timers too. A fake that answers on a timer needs a timer turn instead. */
+/** Lets the mounted trees' pending promise work land inside act with a run
+ * of microtask turns. It adds no timer turn of its own, so it settles under
+ * fake timers too. A fake that answers on a timer needs a timer turn
+ * instead. */
 export async function settleMicrotasks(): Promise<void> {
 	await act(async () => {
 		for (let turn = 0; turn < 50; turn += 1) await Promise.resolve();
