@@ -78,7 +78,11 @@ async function mount(hosts: HostRow[], source = "local") {
 		store,
 		navigation,
 		row,
-		dispose: () => (act(() => tree.unmount()), hostsController.dispose(), live.dispose()),
+		dispose: () => {
+			act(() => tree.unmount());
+			hostsController.dispose();
+			live.dispose();
+		},
 	};
 }
 
