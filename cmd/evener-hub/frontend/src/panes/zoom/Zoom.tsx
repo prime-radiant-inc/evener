@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef } from "react";
 import { useStore } from "zustand";
 import { useShallow } from "zustand/react/shallow";
 import { m, spatialTransition, useReducedMotion } from "../../motion";
@@ -115,6 +115,12 @@ function ScopeConversation({
   );
 }
 
+/** Scrolls the column track to its right end and returns the offset it landed on. */
+function scrollToEnd(element: HTMLElement): number {
+  element.scrollLeft = element.scrollWidth - element.clientWidth;
+  return element.scrollLeft;
+}
+
 export default function Zoom({ paneId, focused }: PaneProps<SessionZoomParams>) {
   const pane = useStore(workspaceStore, (state) =>
     state.panes.find((record) => record.id === paneId && record.type === "sessionZoom"),
@@ -125,11 +131,52 @@ export default function Zoom({ paneId, focused }: PaneProps<SessionZoomParams>) 
   const reducedMotion = useReducedMotion();
   const track = useRef<HTMLDivElement>(null);
   const userTransition = params !== undefined && hasCascadeUserTransition(params);
+  // A drill or pop reveals the leaf at the track's right end, and the track
+  // keeps to its end while it is there: the pane can narrow just after (a
+  // sidebar opening alongside it on a narrow desktop), and columns keep
+  // animating their widths, either of which would otherwise leave the leaf past
+  // the right edge. A scroll away from the end stops that; a scroll back to it
+  // resumes it. followsLeaf holds the offset last written, because that write's
+  // own scroll event can arrive after a column has briefly widened the track,
+  // short of the new end. A browser clamp to a shrunk end is at the end.
+  const followsLeaf = useRef<number | null>(null);
   useLayoutEffect(() => {
     if (!params || !userTransition) return;
     clearCascadeUserTransition(params);
-    if (track.current) track.current.scrollLeft = track.current.scrollWidth - track.current.clientWidth;
+    if (track.current) followsLeaf.current = scrollToEnd(track.current);
   }, [params, userTransition]);
+  const mounted = pane !== undefined && params !== undefined;
+  useEffect(() => {
+    const element = track.current;
+    if (!mounted || !element || typeof ResizeObserver === "undefined") return;
+    const scrolled = () => {
+      if (element.scrollLeft >= element.scrollWidth - element.clientWidth - 1) followsLeaf.current = element.scrollLeft;
+      else if (element.scrollLeft !== followsLeaf.current) followsLeaf.current = null;
+    };
+    const resized = new ResizeObserver(() => {
+      // A scroll can land after this frame's scroll events and before this
+      // callback (a smooth or rAF-driven scroll); read the reader's place first.
+      scrolled();
+      if (followsLeaf.current !== null) followsLeaf.current = scrollToEnd(element);
+    });
+    // The track's own box changes when the pane does; its content width changes
+    // only through its columns, observed as they come and go.
+    resized.observe(element);
+    for (const column of element.children) resized.observe(column);
+    const columns = new MutationObserver((records) => {
+      for (const record of records) {
+        for (const node of record.addedNodes) if (node instanceof Element) resized.observe(node);
+        for (const node of record.removedNodes) if (node instanceof Element) resized.unobserve(node);
+      }
+    });
+    columns.observe(element, { childList: true });
+    element.addEventListener("scroll", scrolled);
+    return () => {
+      resized.disconnect();
+      columns.disconnect();
+      element.removeEventListener("scroll", scrolled);
+    };
+  }, [mounted]);
   if (!pane || !params) return null;
   const lifetime = conversationPaneLifetime(pane);
   const path = deriveCascadePath(params, snapshot?.context ?? null);
