@@ -56,6 +56,12 @@ describe("railRowsExpr readiness predicate", () => {
 // neighbouring session's row once the rail shifted, and the target's composer
 // never mounted (#3874).
 describe("pressRailRowExpr finds, hit-tests and presses in one turn", () => {
+  // jsdom has no hit test, so each case stubs elementFromPoint on the
+  // document; dropping that own property leaves later tests without one again.
+  afterEach(() => {
+    Reflect.deleteProperty(document, "elementFromPoint");
+  });
+
   function renderRows() {
     document.body.innerHTML = `<button data-session-ref="target">status chip</button><nav data-sidebar-rail>${["other", "target"]
       .map((ref) => `<span data-session-ref="${ref}"><span class="text"><b>${ref}</b></span><span>now</span></span>`)
