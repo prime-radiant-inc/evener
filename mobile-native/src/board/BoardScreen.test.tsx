@@ -4,7 +4,7 @@ import { createServer } from "node:http";
 import { setTimeout as wait } from "node:timers/promises";
 import { DocumentMemory } from "../reader/documentMemory";
 // Imported at file scope, so the Reader's graph is transformed at collection
-// time, outside the timeout of the test that opens a real Reader (#4031).
+// time, outside the timeout of the test that opens a real Reader.
 import { ReaderScreen } from "../reader/ReaderScreen";
 import { FlatList } from "react-native";
 // The Board screen mounted with only its native edges mocked: the navigation
