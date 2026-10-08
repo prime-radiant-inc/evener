@@ -4063,6 +4063,12 @@ func pendingQuietAttention(t *testing.T, root *Session) []string {
 	return append([]string(nil), fold.order...)
 }
 
+// slowChildNamerDelay is how long the quiescence test's child namer stays
+// blocked after the warm run. It is not a deadline: a correct wait holds for
+// the namer however long it takes. It only has to outlast the run's own
+// quiescence for the test to catch a wait that ignores the namer.
+const slowChildNamerDelay = 100 * time.Millisecond
+
 // The child's initial-prompt session namer runs detached and can outlive the
 // run, taking the session lock to name and save the session. Quiescence
 // waits for it, so a test reading the child's meta, name or lock-guarded
@@ -4084,7 +4090,7 @@ func TestStableSupervisionQuiescenceWaitsForTheChildNamer(t *testing.T) {
 	// to wait out.
 	t.Cleanup(releaseNamer)
 	sub := warmStableSupervisionDelegate(t, root, fixture)
-	time.AfterFunc(100*time.Millisecond, releaseNamer)
+	time.AfterFunc(slowChildNamerDelay, releaseNamer)
 	waitForStableSupervisionRun(t, root, fixture.childID)
 	sub.sess.mu.Lock()
 	pending, name := sub.sess.naming.pending, sub.sess.naming.value
