@@ -558,7 +558,9 @@ func TestMemoryContextLifecycle(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	s := newScriptedSummaryCompactSession(t, "memory-summary", func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("## Progress\nopaque-fold-58")} }, withDir(workspace), withConfig(SessionConfig{StateDir: history, MemoryStateRoot: root, MemoryProjectID: "fixture-project"}))
+	s := newScriptedSummaryCompactSession(t, "memory-summary", func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("## Progress\nopaque-fold-58")}
+	}, withDir(workspace), withConfig(SessionConfig{StateDir: history, MemoryStateRoot: root, MemoryProjectID: "fixture-project"}))
 	assertIndexes := func(req llm.Request) llm.Response {
 		for _, msg := range req.Messages {
 			if strings.Contains(msg.Text(), "opaque-not-preloaded-406") {
