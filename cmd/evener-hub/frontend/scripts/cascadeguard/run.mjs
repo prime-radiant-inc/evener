@@ -1216,10 +1216,9 @@ async function reloadAndMobileJourney() {
 }
 
 // The activity sidebar slides in from translateX(320px). A press measured
-// mid-slide lands past its row, at the viewport's right edge, and elementBox's
-// rest check can't be trusted to see the slide: it accepted a box at x 1434 of
-// 1440 that was still moving. So a press on a sidebar row waits for the slide
-// to finish, as backgroundjobsguard does for the Jobs sidebar (#3897).
+// mid-slide lands past its row, at the viewport's right edge (seen at x 1434
+// and 1445 of 1440). So a press on a sidebar row waits for the slide to
+// finish, as backgroundjobsguard does for the Jobs sidebar (#3897).
 const sidebarEntranceSettled = `(() => {
   const sidebar = document.querySelector('[data-testid="activity-sidebar"]');
   return sidebar && getComputedStyle(sidebar).transform === 'none';
