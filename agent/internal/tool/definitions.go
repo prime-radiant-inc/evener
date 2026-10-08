@@ -14,13 +14,13 @@ func MemoryDefinition(base llm.ToolDefinition, name string) llm.ToolDefinition {
 	props := base.Parameters["properties"].(map[string]any)
 	props["scope"] = map[string]any{"type": "string", "enum": []any{"personal", "project"}}
 	base.Parameters["required"] = append(base.Parameters["required"].([]string), "scope")
-	base.Description = "Operate on a relative path in the bound personal or project memory wiki. " + base.Description
+	base.Description = "Operate on a relative path in the bound personal or project memory wiki. MEMORY.md at the scope root is the index Evener generates from each page's frontmatter: memory_read returns it, and it cannot be written, edited or deleted. " + base.Description
 	return base
 }
 
 func DefMemoryDelete() llm.ToolDefinition {
 	return MemoryDefinition(llm.ToolDefinition{
-		Description: "Remove one memory file, not a directory. Missing files are a no-op. Read first, then repair links separately if needed.",
+		Description: "Remove one memory file, not a directory. Missing files are a no-op. Its index line goes away on its own; read first, and repair links from other pages separately if needed.",
 		Parameters: map[string]any{
 			"type": "object", "additionalProperties": false,
 			"properties": map[string]any{"file_path": map[string]any{"type": "string"}},

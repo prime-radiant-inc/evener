@@ -50,15 +50,14 @@ flowchart LR
 ```
 
 Enabled sessions receive separate personal and project `MEMORY.md` projections
-as named user-source context, outside system instructions. Each scope supplies
-at most 8 KiB of index content, cut at a UTF-8 boundary, with a route to
-`memory_read`. A projection says nothing about size unless the index was cut;
-then it says the index is too long and, when the session can load the
-gardening-memory skill, to use it to learn how to fix it; otherwise it says an
-index should hold one short line per page. Clients decode either sentence as
-the truncated flag, and
-transcripts from earlier builds, which carried an explicit "truncated
-true/false" instead, decode as before. Topic files and logs are not preloaded.
+as named user-source context, outside system instructions. Each scope's index is generated from its pages' frontmatter (see
+**Generated index** below) and supplies at most 8 KiB. When every page's line
+fits, the projection says nothing about size. Otherwise it keeps the tag header
+and the newest lines that fit, ends with a line counting the pages left out per
+tag, and its envelope, which always routes to `memory_read("MEMORY.md")`, says
+not every page is shown. Clients decode that sentence as the truncated flag;
+transcripts from earlier builds, which said the index was too long or carried
+an explicit "truncated true/false", decode as before. Topic files and logs are not preloaded.
 
 Enabled sessions also receive core memory guidance. It is the last section of
 the system prompt, rendered from what the session can do when the prompt is
@@ -80,8 +79,8 @@ not carry them to the next session. The Finishing guidance and the result
 tool's description repeat the save check at the point the agent decides it is
 done. Pages that contradict what the agent observes are corrected in the same
 turn. Saving sessions are also told the shape of a useful page (one durable
-fact with its reason and how to apply it, under an index line that says what
-the page holds) and that run details which go stale within days (commit SHAs, ids, scratch
+fact with its reason and how to apply it, with a frontmatter description that
+says what the page holds and topic tags that reuse the index's) and that run details which go stale within days (commit SHAs, ids, scratch
 paths, test counts, review verdicts) stay out of
 personal and project memory. A changed fact is rewritten in place. When the
 agent reads a page that has turned into a log, it repairs that page before it
@@ -95,18 +94,20 @@ memory only when a project scope is bound.
 A scope's full index is projected only while the session has no baseline for
 it: at startup, after resume, after compaction, and when the index, its storage
 or access returns after a missing, unavailable or revoked state. A projected
-index with content becomes the baseline, held as projected (cut at the same
-8 KiB cap); an empty or missing index leaves no baseline, so content that
+index with pages becomes the baseline, held whole (every page line, not only
+those the budget showed); a scope with no pages leaves no baseline, so content that
 appears later arrives in full. When the session itself writes, edits or
-deletes a `MEMORY.md` through the memory tools, the result, cut the same way,
-becomes its baseline, so its own change is never echoed back. A scope with a baseline is read only at the
+deletes any page through the memory tools, the index is rendered again and
+becomes its baseline, so its own change is never echoed back. A scope with no
+baseline adopts that rendering only when the model was last told the scope had
+no pages; after an unavailable state the next boundary delivers the index in
+full. A scope with a baseline is read only at the
 first model call of each turn (each input the session processes: a user message
 or a notification wake), never on that turn's later rounds. When another
 session changed a known index, that read appends one change block for the
-scope instead of the full index: the quoted lines added and removed since the
-baseline (blank lines ignored), with the same lower-trust framing and route to
-`memory_read`. Both sides are compared as projected, within the 8 KiB cap, so
-a change past the cap appends nothing. A change whose block would pass 2 KiB is reported as counts of
+scope instead of the full index: the quoted page lines added and removed since the
+baseline (the tag header and the not-shown line are never listed), with the
+same lower-trust framing and route to `memory_read`. A change whose block would pass 2 KiB is reported as counts of
 added and removed lines. The new index becomes the baseline, so an unchanged
 turn appends nothing.
 
@@ -153,8 +154,8 @@ A `memory_read` of a text page other than `MEMORY.md` that is longer than 4096
 bytes ends with a note giving its size, rounded to KB. When the session can
 load the gardening-memory skill (`use_skill` is callable and the skill is
 advertised to the model), the note says to use it to learn how to fix the
-page; otherwise it says a memory page should hold one fact. A long index is
-covered by its projection instead.
+page; otherwise it says a memory page should hold one fact. The index is never
+noted as long; its projection counts what it leaves out.
 
 Memory tool calls are separate from these automatic index observations. CLI and
 TUI transcripts still use the generic tool-result path, while AppWire web and
@@ -168,16 +169,118 @@ memory updates can join a Responses continuation delta after a valid active
 anchor. Compaction without a new valid anchor still requires full history;
 unsafe content and the other continuation eligibility checks remain unchanged.
 
-Content has no required schema, frontmatter, filename extension, date grammar
-or link-coverage rule. Empty files, arbitrary text, unusual dates and broken
-links are accepted unchanged. Markdown, short `MEMORY.md` indexes and useful
-dates are recommendations. An optional `log.md` is ordinary model-authored
-content, not a runtime-maintained change log.
+Pages carry frontmatter (`description`, optional `tags` and `evidence`; Evener
+adds `updated` and `by`). A page without a description still appears, under its
+fallback description. Other content has no required schema, extension or link
+rule. An optional `log.md` is ordinary model-authored content, not a
+runtime-maintained change log.
 
 The bundled `gardening-memory` skill is explicitly activated through
 `use_skill`. It supports small editorial passes: check evidence, correct
-contradictions, remove duplicates, split sprawling pages and repair summaries
-and links. It does not activate automatically or run background work.
+contradictions, remove duplicates, split sprawling pages, fix descriptions and
+tags, merge pages that share tags, and delete stale pages. It does not activate automatically or run background work.
+
+## Generated index
+
+A scope's `MEMORY.md` is not a file. Evener renders it from the scope's pages
+whenever it is needed, in [`memory_index_render.go`](../../agent/memory_index_render.go)
+and [`memory_page.go`](../../agent/memory_page.go).
+
+**What counts as a page.** Every regular file under the scope root, in
+subdirectories too, except a path with a segment starting with `.` (the rule
+`memory_search` uses) and a file named `MEMORY.md` at the root. Symlinks are
+skipped, as scope confinement already refuses them. Only `.md` files are parsed
+for frontmatter. Any other file, or a page that cannot be read, renders with its
+filename as the description and no `(no description)` marker.
+
+**Page format.** A page starts with YAML frontmatter, parsed with
+`agent/internal/frontmatter`:
+
+```markdown
+---
+description: Money is integer cents, never floats
+tags: [money, formatting]
+evidence: file:shop/price.go:Format
+updated: 2026-10-08
+by: <session id>
+---
+# Integer cents
+Prices are stored and computed as integer cents...
+```
+
+`description` is one line; newlines collapse to spaces when it is rendered, and
+a value that is not a YAML string counts as missing. `tags` is a YAML list (a
+single string is one tag); each tag is trimmed and lowercased, runs of
+whitespace become `-`, and empty and duplicate tags are dropped. Tags are plain:
+there is no primary tag, reserved tag or type field. `evidence` is free-form and
+never rendered in the index; it is for whoever reads the page. Unknown keys are
+kept untouched and ignored.
+
+**Fallback description.** When `description` is missing or empty, the line
+uses the page's first Markdown heading, else its first non-blank body line, cut
+to 120 characters and followed by `(no description)`. A page whose frontmatter
+does not parse is still a page; it renders as
+`<fallback> (no description) (frontmatter unreadable)`.
+
+**The rendered index.**
+
+```text
+Tags: formatting (3), money (2), vitest (6)
+- [Integer cents](cents.md) — Money is integer cents, never floats [money, formatting] (updated 2026-10-08)
+- [Vitest read-only loader](vitest/loader.md) — read-only Vitest needs --configLoader runner [vitest] (updated 2026-10-07)
+```
+
+The `Tags:` header lists every tag with its page count, alphabetically, and is
+omitted when no page has tags. Lines run newest `updated` first. A page with no
+`updated` sorts by its modification time's UTC date and shows no date; an
+`updated` that is neither a YAML date nor a `YYYY-MM-DD` string is ignored.
+Ties order by path. The title is the page's first heading, else its filename
+without extension; `[tags]` and `(updated …)` are left out when empty. A scope
+with no pages has the `missing` state.
+
+When the rendering passes the 8 KiB projection budget, the projection keeps the
+header, then the newest lines that fit, then one closing line such as
+`Not shown: 9 pages (vitest 4, indexeddb 3, untagged 2).` A page counts once
+under each of its tags; tags are ordered by count, highest first, then by name,
+with `untagged` last, and one page reads `1 page`. The line counts and names no
+routes; the envelope adds " Not every page is shown; the index's last line
+counts the rest." after its `memory_read` route.
+
+**Reading and writing it.** `memory_read` of `MEMORY.md` at the scope root (in
+any case) renders the whole index with no size cap, paged by `offset` and
+`limit`, or returns `This scope has no pages yet.` `memory_search` never
+matches it. `memory_write`, `memory_edit` and `memory_delete` of `MEMORY.md` at
+the scope root are refused in any case, since `memory.md` names the same file on
+macOS's default filesystem: "MEMORY.md is generated from each page's
+frontmatter; edit a page's description or tags instead". `sub/MEMORY.md` is an
+ordinary page. Deleting a page needs no index repair; its line is gone from the
+next rendering.
+
+**Stamps.** After a successful `memory_write` or `memory_edit` of a `.md` file
+that counts as a page, Evener sets `updated: YYYY-MM-DD` (UTC, written unquoted
+so it reads back as a YAML date) and `by` (the session's full id, YAML-encoded),
+creating a frontmatter block if there is none and keeping every other byte. A
+failed write is not stamped. A stamp that fails to write does not fail the call;
+the result ends with a note saying so. A written page with no description gets a
+note asking for one, and a page whose frontmatter does not parse gets its own
+note asking to fix the YAML.
+
+**Migration.** The first time Evener renders a scope that still has a real
+`MEMORY.md` at its root, it moves the old index into the pages. Each line that
+links to a page in the scope (`[text](path)` or a bare `path.md`) gives that
+page a description: the rest of the line, with the link, list markers and
+separators stripped. A linked page that exists and has no description gets it;
+a page that already has one keeps it. Migration does not stamp. The old file is
+then renamed to `.MEMORY.md.pre-generated`, a dot name that is never a page or
+searched, replacing any earlier file of that name. A failed migration never
+blocks rendering; the next rendering retries.
+
+Migration takes no lock, because no cross-session memory lock exists and it
+does not need one. It is idempotent: two migrators read the same old index and
+write the same descriptions, a page that already has a description is skipped,
+and a rename that finds `MEMORY.md` already gone counts as done. A crash midway
+leaves some pages described and the old file in place, so the next rendering
+finishes the job.
 
 ## Faults, recovery and concurrent work
 
@@ -199,7 +302,7 @@ finish, including operations paused before filesystem I/O. Close does not wait
 for stalled storage, and those late operations own their eventual retirement.
 
 Each write/edit/delete changes one file using the shared filesystem primitive.
-Page and index edits are separate calls, not a wiki transaction. There is no
+Each page edit is its own call, not a wiki transaction; the index follows the pages. There is no
 revision check, replay receipt or stronger concurrent-edit guarantee. A whole
 file write can overwrite another writer's changes. Read first, prefer focused
 edits, and reread after a conflict or uncertain response before retrying.
@@ -217,8 +320,8 @@ directory. This is not an atomic file-identity check.
 ## Forgetting and lifetime
 
 Forgetting means model-directed search and separate edits of active copies,
-including the index and any maintained log. Deleting a page removes one file;
-link repair is separate. There is no automatic consistency repair, old-body
+including any maintained log. Deleting a page removes one file and its index
+line; repairing links from other pages is separate. There is no automatic consistency repair, old-body
 archive or trash folder. Search inherits ordinary grep's dotfile and gitignore
 exclusions, so it is not an exhaustive erasure tool.
 
