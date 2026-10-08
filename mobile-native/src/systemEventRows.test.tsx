@@ -452,7 +452,6 @@ const STEER_LABELS: Array<[SystemEventWireCase, string]> = [
 	["steer-loop-detected", "System steered: Loop detected"],
 	["steer-provider-failure", "System steered: Provider failed"],
 	["steer-transcript-pointer", "System steered: Where to find the full transcript"],
-	["steer-task-nudge", "System steered: Task reminder"],
 	["steer-note-handoff", "System steered: Note to self"],
 ];
 

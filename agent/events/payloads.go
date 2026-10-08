@@ -359,7 +359,6 @@ const (
 	SteeringKindNoToolCalls        = "no-tool-calls"
 	SteeringKindLoopDetected       = "loop-detected"
 	SteeringKindTasksDone          = "tasks-done"
-	SteeringKindTaskNudge          = "task-nudge"
 	SteeringKindTaskInactive       = "task-inactive"
 	SteeringKindNoteHandoff        = "note-handoff"
 	SteeringKindGoalObjective      = "goal-objective"
@@ -386,7 +385,6 @@ var AllSteeringKinds = []string{
 	SteeringKindNoToolCalls,
 	SteeringKindLoopDetected,
 	SteeringKindTasksDone,
-	SteeringKindTaskNudge,
 	SteeringKindTaskInactive,
 	SteeringKindNoteHandoff,
 	SteeringKindGoalObjective,
