@@ -113,7 +113,7 @@ Every scenario is a directory holding `scenario.json` and `fixture/` (a small Go
 The header of `memory-lab` documents every field. In short:
 - each stage has a prompt
 - a scenario can set `fixture_from` to start from a sibling scenario's `fixture/`
-- stages can carry `before`, `seed_project_memory`, `fixture` with `workspace` (another project; `run` refuses a `fixture` without a `workspace` other than `work`, and a `workspace` named `xdg` or `sessions`, the dirs the lab makes for the trial's state) and `resume` (continue an earlier stage's session)
+- stages can carry `before`, `seed_project_memory`, `fixture` with `workspace` (another project; `run` refuses a `fixture` without a `workspace` other than `work`; a `workspace` is `work` or `work` followed by digits, like `work2`, so it never collides with a dir or file the lab makes in the trial) and `resume` (continue an earlier stage's session)
 - checks come in these types:
   - `checks`: shell commands
   - `trace`: tool-call regexes

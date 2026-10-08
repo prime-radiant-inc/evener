@@ -799,8 +799,6 @@ CHECK_FIELDS = {"checks": (["run"], []), "trace": (["tool", "regex"], []), "memo
                 "transcripts": (["regex"], []), "final": (["regex"], []),
                 "whiteboard": ([], ["regex", "max_chars", "min_lines"]), "delegate_calls": ([], ["tools", "args"])}
 SCENARIO_KEYS = {"arms", "fixture_from", "stages"}
-# Trial dirs the lab makes itself (XDG_STATE_HOME and the stages' evener state dirs); no workspace may use them.
-LAB_TRIAL_DIRS = ("xdg", "sessions")
 STAGE_KEYS = {"name", "prompt", "before", "fixture", "workspace", "resume", "seed_project_memory"} | set(CHECK_FIELDS)
 MEMORY_SCOPES = {"personal", "project"}
 
@@ -835,11 +833,11 @@ def load_scenario(scen):
         for key in ("fixture", "seed_project_memory", "workspace", "resume", "before"):
             if key in st and not isinstance(st[key], str):
                 sys.exit(f"{where}: \"{key}\" must be a string")
-        if "workspace" in st and (not st["workspace"] or "/" in st["workspace"] or st["workspace"] in (".", "..")):
-            sys.exit(f"{where}: \"workspace\" must name one dir in the trial, like work2")
-        if st.get("workspace") in LAB_TRIAL_DIRS:
-            sys.exit(f"{where}: \"workspace\" can't be {st['workspace']}: the lab makes that dir before the stage "
-                     "runs, so the stage would skip its setup and run in the trial's state")
+        # Any other name could be a path the lab makes in the trial (xdg, sessions, a stage's
+        # <name>.memory or .events.ndjson): a fixture stage would find it there, skip its setup, and run in it.
+        if "workspace" in st and not re.fullmatch(r"work[0-9]*", st["workspace"]):
+            sys.exit(f"{where}: \"workspace\" must be work or work followed by digits, like work2; another name "
+                     "could collide with a dir or file the lab makes in the trial")
         if st.get("resume") and st["resume"] not in [earlier.get("name") for earlier in spec["stages"][:i]]:
             sys.exit(f"{where}: \"resume\" must name an earlier stage")
         workspace = st.get("workspace")

@@ -500,17 +500,19 @@ class ScenarioValidationTest(unittest.TestCase):
             json.dump({"stages": [{"name": "A", "prompt": "p"}, dict({"name": "B", "prompt": "p"}, **stage)]}, f)
         return bookkeeping.lab.load_scenario(scen.name)
 
-    def test_a_workspace_cannot_be_a_dir_the_lab_makes(self):
-        # The lab makes these before a stage runs, so a fixture stage would find one already there,
-        # skip its setup, and run inside the trial's state.
-        for name in ("sessions", "xdg"):
+    def test_a_workspace_cannot_collide_with_what_the_lab_makes_in_the_trial(self):
+        # A fixture stage whose workspace already exists skips its setup and runs there: the trial's
+        # state dirs, or an earlier stage's outputs.
+        for name in ("sessions", "xdg", "A.memory", "A.events.ndjson", "A.stdout", "A.grade.json", "..", "a/b"):
             with self.subTest(workspace=name):
                 with self.assertRaises(SystemExit) as refused:
                     self.load({"fixture": "fixture2", "workspace": name})
-                self.assertIn(f'"workspace" can\'t be {name}', str(refused.exception))
+                self.assertIn('"workspace" must be work or work followed by digits', str(refused.exception))
 
-    def test_another_workspace_loads(self):
-        self.assertEqual(self.load({"fixture": "fixture2", "workspace": "work2"})["stages"][1]["workspace"], "work2")
+    def test_a_work_numbered_workspace_loads(self):
+        for name in ("work2", "work10"):
+            with self.subTest(workspace=name):
+                self.assertEqual(self.load({"fixture": "fixture2", "workspace": name})["stages"][1]["workspace"], name)
 
 
 if __name__ == "__main__":
