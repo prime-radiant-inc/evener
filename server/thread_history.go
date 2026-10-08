@@ -69,6 +69,10 @@ var errIncarnationRotated = errors.New("transcript index incarnation changed")
 // before it finished: its boundary no longer covers the dropped entries.
 var errOverrunByOverflow = errors.New("the projection queue overflowed during the rebuild")
 
+// errThreadHistoryClosed refuses a read that starts after its history began
+// closing: the thread is no longer served here.
+var errThreadHistoryClosed = appwire.SessionUnavailable("thread history is closed")
+
 // threadHistoryConfig is what one thread's history projection needs.
 type threadHistoryConfig struct {
 	threadID, ref, path string
@@ -176,6 +180,13 @@ type threadHistory struct {
 	stop      chan struct{}
 	done      chan struct{}
 	closeOnce sync.Once
+
+	// reads counts the reads in flight, which close waits for: a read's
+	// index writes (an open building it, a catch-up) then land before close
+	// returns, never after (#4013). A read is admitted under mu only while
+	// stop is open, and close closes stop under mu, so no read is added
+	// once close begins waiting.
+	reads sync.WaitGroup
 }
 
 // overlayGap names an entry by its ordinal and offset.
@@ -427,15 +438,29 @@ func (h *threadHistory) retired() bool {
 }
 
 // close publishes every entry recorded so far, then stops the projection
-// goroutine and waits for it. Idempotent.
+// goroutine and waits for it, refuses new reads and waits for those in
+// flight. Idempotent.
 func (h *threadHistory) close() {
 	h.closeOnce.Do(func() {
 		h.mu.Lock()
 		h.closed = true
-		h.mu.Unlock()
 		close(h.stop)
+		h.mu.Unlock()
 	})
 	<-h.done
+	h.reads.Wait()
+}
+
+// beginRead admits a read, refusing it once close has begun. The caller
+// calls h.reads.Done when the read is done.
+func (h *threadHistory) beginRead() error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.stopping() {
+		return errThreadHistoryClosed
+	}
+	h.reads.Add(1)
+	return nil
 }
 
 // run projects each wake's recorded entries until close. A closing history
