@@ -42,6 +42,7 @@ export type ToolIconKind =
   | "job"
   | "send"
   | "skill"
+  | "fold"
   | "person"
   | "wrench"
   | "thought"
@@ -92,6 +93,9 @@ export const PATHS: Record<ToolIconKind, string> = {
   send: "M2.5 8 L13.5 2.5 L10 13.5 L7.8 9.7 Z M13.5 2.5 L7.8 9.7",
   // A four-point sparkle (use_skill).
   skill: "M8 2 L9.4 6.6 L14 8 L9.4 9.4 L8 14 L6.6 9.4 L2 8 L6.6 6.6 Z",
+  // Two chevrons converging on the center point (compact_context: folding
+  // history into a checkpoint).
+  fold: "M3 5.5 L8 8 L13 5.5 M3 10.5 L8 8 L13 10.5",
   // A person: head circle over a shoulders arc (SpeakerAvatar's user tile -
   // not a tool, but the transcript's speaker header draws both avatars from
   // this same 16-grid line-art grammar so the two read as one family).
