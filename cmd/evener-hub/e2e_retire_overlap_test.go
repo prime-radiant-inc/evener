@@ -125,7 +125,7 @@ func assertRetireStillPending(t *testing.T, retired <-chan overlappedRetire) {
 	t.Helper()
 	select {
 	case got := <-retired:
-		t.Fatalf("the retire answered (accepted=%t, %v) while the namer was held, so nothing overlapped it", got.resp.Accepted, got.err)
+		t.Fatalf("the retire answered (accepted=%t, %v) before the overlapping action returned, so the action waited on it", got.resp.Accepted, got.err)
 	default:
 	}
 }

@@ -243,10 +243,11 @@ Extend typed AppWire contracts using the repository's catalog and generator:
   rendered identity, ownership and deletion fences under the session's
   resume/deletion/stop ownership locks, then releases them and forwards to the
   daemon, which can hold the request while its session namer settles (#3921).
-  A resume, stop or deletion may overlap the forwarded request: the daemon's
-  own exact-identity check before and after its claim keeps a stale request
-  from retiring a replacement, and a stop or deletion ends the daemon whatever
-  the retire's answer (#4052).
+  A resume, force stop, deletion or archive may overlap the forwarded
+  request: the daemon's own exact-identity check before and after its claim
+  keeps a stale request from retiring a replacement, a force stop cancels the
+  forwarded request and ends the daemon, and a deletion skips the still-live
+  session, so the retire's answer stands (#4052).
 - Existing `evener/thread/forceStop` remains the explicit destructive operation.
 - Daemon diagnostics supply effective timeout, eligible-since/deadline, phase,
   and blocker categories. Hub consumes these through its existing probing path.

@@ -876,7 +876,11 @@ func TestDaemonRetireInFlightHoldsNoSessionLock(t *testing.T) {
 		_, err := client.DaemonRetire(t.Context(), appwire.DaemonRetireParams{Identity: list.Daemons[0].Identity})
 		retired <- err
 	}()
-	<-entered
+	select {
+	case <-entered:
+	case err := <-retired:
+		t.Fatalf("the retire answered before reaching the daemon: %v", err)
+	}
 	ref := "local:" + entry.ThreadID
 	unlock, ok := tryLockDeletionTarget(cfg, ref, entry.ThreadID) // a relayed frame's guard
 	if !ok {
