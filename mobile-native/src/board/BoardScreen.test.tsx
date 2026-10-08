@@ -3554,7 +3554,7 @@ it("queues a project change behind the held one it answers, even once back onlin
 	expect(sheet.options?.[0]).toBe("Unpin");
 	connect(id, fake.client, "ready");
 	rerender(tree, nav);
-	await act(() => vi.waitFor(() => expect(favorites).toBe(1)));
+	await act(async () => vi.waitFor(() => expect(favorites).toBe(1)));
 	act(() => unpin(0));
 	await settle();
 	await act(async () => {
