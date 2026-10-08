@@ -94,6 +94,9 @@ type threadHistoryConfig struct {
 	// bootGeneration is the daemon's boot generation, stamped on every
 	// history/updated.
 	bootGeneration string
+	// closed, when set, runs once, the first time a close of the history
+	// finishes: its registry waits on it before closing the shared cache.
+	closed func()
 	// maxQueuedBytes bounds the projection queue; 0 is
 	// threadHistoryMaxQueuedBytes.
 	maxQueuedBytes int64
@@ -187,6 +190,10 @@ type threadHistory struct {
 	// stop is open, and close closes stop under mu, so no read is added
 	// once close begins waiting.
 	reads sync.WaitGroup
+
+	// onClosed runs once, after the first close finishes (closedOnce).
+	onClosed   func()
+	closedOnce sync.Once
 }
 
 // overlayGap names an entry by its ordinal and offset.
@@ -220,6 +227,7 @@ func newThreadHistory(cfg threadHistoryConfig) *threadHistory {
 		resync:         cfg.resync,
 		cost:           cfg.cost,
 		bootGeneration: cfg.bootGeneration,
+		onClosed:       cfg.closed,
 		maxQueuedBytes: maxQueuedBytes,
 		recordedLength: cfg.recordedLength,
 		published:      cfg.recordedLength,
@@ -449,6 +457,9 @@ func (h *threadHistory) close() {
 	})
 	<-h.done
 	h.reads.Wait()
+	if h.onClosed != nil {
+		h.closedOnce.Do(h.onClosed)
+	}
 }
 
 // beginRead admits a read, refusing it once close has begun. The caller

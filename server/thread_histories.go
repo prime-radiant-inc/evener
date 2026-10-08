@@ -29,6 +29,11 @@ type threadHistories struct {
 	// thread/clear replaces the served root, whose new session is another
 	// thread). It holds one number per thread the process ever served.
 	lastEpoch map[string]uint64
+	// unclosed counts the histories created here whose close has not
+	// finished, detached ones included: a replace or release closes what it
+	// detached on its own goroutine, and close waits for those as well
+	// before it closes the shared cache (#4064).
+	unclosed sync.WaitGroup
 }
 
 // newThreadHistories returns an empty registry backed by a cache of the
@@ -115,7 +120,12 @@ func (r *threadHistories) ensureLocked(
 		recordedLength: recordedLength,
 		epoch:          epoch,
 		bootGeneration: bootGeneration,
+		closed:         r.unclosed.Done,
 	})
+	// Counted once it exists (construction panics on a missing boot
+	// generation) and before anything can close it: closes reach a history
+	// only through the registry, after it is stored under r.mu.
+	r.unclosed.Add(1)
 	r.threads.Store(threadID, h)
 	return h
 }
@@ -179,10 +189,12 @@ func (r *threadHistories) detachExcept(keep string) []*threadHistory {
 	return detached
 }
 
-// close closes every registered history and its overlay, then the shared
-// cache, and leaves the registry empty.
+// close closes every registered history and its overlay, waits for any
+// detached history still closing elsewhere, then closes the shared cache, and
+// leaves the registry empty.
 func (r *threadHistories) close() {
 	closeHistories(r.detachExcept(""))
+	r.unclosed.Wait()
 	_ = r.cache.Close()
 }
 

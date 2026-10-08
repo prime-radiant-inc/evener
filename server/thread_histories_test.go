@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
@@ -310,5 +311,46 @@ func TestThreadHistoriesReleaseDuringAReadRecoveryKeepsEpochsMonotonic(t *testin
 	defer sentMu.Unlock()
 	if again.Epoch() < sent {
 		t.Fatalf("recreated history at epoch %d, below the %d a client was sent", again.Epoch(), sent)
+	}
+}
+
+// The registry's close waits for a history a replace or release detached and
+// is still closing, before it closes the shared cache: that history's read in
+// flight (or projection) can still write its index, and must land before the
+// daemon's Server.Close returns (#4064).
+func TestThreadHistoriesCloseWaitsForADetachedHistoryStillClosing(t *testing.T) {
+	r := newThreadHistories(transcriptindex.DefaultCacheCapacity, appoverlay.DefaultBudgetBytes)
+	path := writeDelegateTranscript(t, "delegate_d", "hello")
+	h := r.ensure("delegate_d", "local:delegate_d", path, 0, 0, "1", noopHistoryPublish, noopHistoryResync, nil)
+	inRead, release := make(chan struct{}), make(chan struct{})
+	releaseRead := sync.OnceFunc(func() { close(release) })
+	defer releaseRead()
+	readDone := make(chan error, 1)
+	go func() {
+		readDone <- h.read(func(*transcriptindex.Index) error {
+			close(inRead)
+			<-release
+			return nil
+		})
+	}()
+	awaitClosed(t, inRead, "the read to hold the index")
+	// A replace or release detaches the history and closes it on its own
+	// goroutine; that close waits for the read.
+	detached := r.detach("delegate_d")
+	go closeHistories([]*threadHistory{detached})
+	registryClosed := make(chan struct{})
+	go func() {
+		r.close()
+		close(registryClosed)
+	}()
+	select {
+	case <-registryClosed:
+		t.Fatal("the registry closed while a detached history's read still held the index")
+	case <-time.After(100 * time.Millisecond):
+	}
+	releaseRead()
+	awaitClosed(t, registryClosed, "the registry's close")
+	if err := <-readDone; err != nil {
+		t.Fatalf("the read in flight: %v", err)
 	}
 }
