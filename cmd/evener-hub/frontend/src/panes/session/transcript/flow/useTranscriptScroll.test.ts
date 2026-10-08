@@ -178,6 +178,12 @@ function nestedScroller(port: HTMLElement, metrics: ScrollMetrics): HTMLElement 
 
 const AT_BOTTOM: ScrollMetrics = { scrollTop: 950, scrollHeight: 1000, clientHeight: 50 };
 const SCROLLED_AWAY: ScrollMetrics = { scrollTop: 0, scrollHeight: 5000, clientHeight: 500 };
+const RETAINED_AWAY_FROM_BOTTOM: CapturedTranscriptView = {
+  anchorId: "i1",
+  anchorOffset: -100,
+  normalizedOffset: 0.08,
+  followingBottom: false,
+};
 
 beforeEach(() => {
   resetThreadsStoreForTests();
@@ -2255,7 +2261,7 @@ describe("late content growth with no scroll event", () => {
     try {
       const { el, set, result } = mountWithContent(
         { scrollTop: 0, scrollHeight: 192, clientHeight: 400 },
-        { anchorId: "i1", anchorOffset: -100, normalizedOffset: 0.08, followingBottom: false },
+        RETAINED_AWAY_FROM_BOTTOM,
       );
       definePort(el, { scrollTop: 100, scrollHeight: 1700, clientHeight: 400 });
       set({ scrollTop: 100, scrollHeight: 1700 });
@@ -3335,7 +3341,7 @@ describe("mount positioning", () => {
         listRef: ref,
         loadOlder: vi.fn(() => Promise.resolve()),
         measure,
-        initialViewCapture: { anchorId: "i1", anchorOffset: -100, normalizedOffset: 0.08, followingBottom: false },
+        initialViewCapture: RETAINED_AWAY_FROM_BOTTOM,
       }),
     );
 
