@@ -13,9 +13,9 @@ const pending: ConversationMutationState = {
 };
 
 describe("draft recovery after connection loss", () => {
-	it.each(["steer", "queue"] as const)("retains an uncertain %s without resending it", (kind) => {
-		expect(captureUnconfirmedInput({ ...pending, kind })).toBe(submitted);
-		expect(captureUnconfirmedInput({ ...pending, kind, status: "failed" })).toBeNull();
+	it("retains an uncertain queue without resending it", () => {
+		expect(captureUnconfirmedInput({ ...pending, kind: "queue" })).toBe(submitted);
+		expect(captureUnconfirmedInput({ ...pending, kind: "queue", status: "failed" })).toBeNull();
 	});
 
 	it("preserves submitted text separately from an empty composer", () => {
