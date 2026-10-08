@@ -1,7 +1,7 @@
 import { createHubUpdateController, type HostRow, WireError } from "@evener/appwire-client";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { act } from "react-test-renderer";
-import { expect, it, vi } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { fonts, palettes, uiType } from "../design/tokens";
 import { HostsController } from "../hosts/hostsController";
 import { hostRow, liveSession, type ScriptedFleet, scriptedFleet } from "../hosts/hostsTestUtils";
@@ -27,6 +27,14 @@ const settle = () =>
 		await new Promise((resolve) => setTimeout(resolve, 0));
 	});
 
+// Each mount's controllers, disposed after the test's trees unmount, so a
+// failing assertion can't leak them into the next test.
+const disposers: (() => void)[] = [];
+afterEach(() => {
+	unmountMountedTrees();
+	for (const dispose of disposers.splice(0)) dispose();
+});
+
 async function mount(fleet: ScriptedFleet, name: string, options: { ready?: boolean } = {}) {
 	const updates = createHubUpdateController({
 		client: () => ({
@@ -44,6 +52,10 @@ async function mount(fleet: ScriptedFleet, name: string, options: { ready?: bool
 	await updates.runCheck();
 	const hosts = new HostsController(fleet.client, fleet.newMutationId);
 	const live = new LiveSessionsReader(fleet.client);
+	disposers.push(() => {
+		hosts.dispose();
+		live.dispose();
+	});
 	const context: HubSheetContextValue = {
 		hubId: "hub-1",
 		hubName: "magic-kingdom",
@@ -77,7 +89,6 @@ async function mount(fleet: ScriptedFleet, name: string, options: { ready?: bool
 		hosts,
 		labelled,
 		button,
-		dispose: () => (unmountMountedTrees(), hosts.dispose(), live.dispose()),
 	};
 }
 
@@ -104,7 +115,6 @@ it("shows a connected host's facts, its version beside the drift tag, and the dr
 	expect(text).toContain(VERSION_DRIFT_FOOTER);
 	expect(text).not.toContain("Last error");
 	expect(page.button("Connect")).toBeNull();
-	page.dispose();
 });
 
 it("puts an offline host's state in the attention ink, its last error in Menlo, and offers Connect", async () => {
@@ -122,7 +132,6 @@ it("puts an offline host's state in the attention ink, its last error in Menlo, 
 	expect(text).toContain("ssh: connect refused");
 	expect(text).toContain("This host is offline, so its sessions can't be reached. Connect to reach them.");
 	expect(page.button("Connect")).not.toBeNull();
-	page.dispose();
 });
 
 it("keeps the last error inside its own group, in footnote Menlo and the danger ink (hub.js:67)", async () => {
@@ -140,7 +149,6 @@ it("keeps the last error inside its own group, in footnote Menlo and the danger 
 	expect(style.color).toBe(palettes.light.dangerInk);
 	// Footnote-sized, as the prototype's 13px, not a 17pt row label.
 	expect(style.fontSize).toBe(uiType.footnote.fontSize);
-	page.dispose();
 });
 
 it("offers no Connect while the hub is already reaching for the host", async () => {
@@ -148,7 +156,6 @@ it("offers no Connect while the hub is already reaching for the host", async () 
 	expect(page.labelled("Status")?.props.accessibilityLabel).toBe("Status, Offline · reconnecting");
 	expect(page.button("Connect")).toBeNull();
 	expect(renderedText(page.tree)).toContain("The hub keeps trying to reach it.");
-	page.dispose();
 });
 
 it("connects a host, reading Connecting… while the hub attaches it", async () => {
@@ -162,7 +169,6 @@ it("connects a host, reading Connecting… while the hub attaches it", async () 
 	await settle();
 	expect(page.labelled("Status")?.props.accessibilityLabel).toBe("Status, Connected");
 	expect(page.button("Connect")).toBeNull();
-	page.dispose();
 });
 
 it("drops Connecting… as soon as the rows say the host is attached", async () => {
@@ -176,7 +182,6 @@ it("drops Connecting… as soon as the rows say the host is attached", async () 
 	expect(page.labelled("Status")?.props.accessibilityLabel).toBe("Status, Connected");
 	expect(page.button("Connecting…")).toBeNull();
 	await act(async () => fleet.releaseAttach());
-	page.dispose();
 });
 
 it("says why the hub refused to connect a host", async () => {
@@ -187,7 +192,6 @@ it("says why the hub refused to connect a host", async () => {
 	await settle();
 	expect(renderedText(page.tree)).toContain("host key mismatch");
 	expect(page.button("Connect")).not.toBeNull();
-	page.dispose();
 });
 
 it("drops a refused Connect's message once the hub attaches the host on its own", async () => {
@@ -200,20 +204,17 @@ it("drops a refused Connect's message once the hub attaches the host on its own"
 	await act(async () => page.hosts.read());
 	expect(page.labelled("Status")?.props.accessibilityLabel).toBe("Status, Connected");
 	expect(renderedText(page.tree)).not.toContain("host key mismatch");
-	page.dispose();
 });
 
 it("says a host's version is unknown when the hub doesn't know it", async () => {
 	const page = await mount(scriptedFleet([hostRow("attic", { os: "linux", arch: "x86_64" })]), "attic");
 	expect(page.labelled("Version")?.props.accessibilityLabel).toBe("Version, Unknown");
 	expect(renderedText(page.tree)).toContain("Unknown");
-	page.dispose();
 });
 
 it("holds Connect while the phone's connection is down", async () => {
 	const page = await mount(scriptedFleet([hostRow("attic", { attached: false })]), "attic", { ready: false });
 	expect(page.button("Connect")?.props.accessibilityState.disabled).toBe(true);
-	page.dispose();
 });
 
 it("goes back when the host leaves the hub's list", async () => {
@@ -223,7 +224,6 @@ it("goes back when the host leaves the hub's list", async () => {
 	fleet.hosts = [];
 	await act(async () => page.hosts.read());
 	expect(page.navigation.goBack).toHaveBeenCalledTimes(1);
-	page.dispose();
 });
 
 const confirmRemove = async () => {
@@ -244,7 +244,6 @@ it.each([
 	await act(async () => page.button("Edit")?.props.onPress());
 	expect(page.navigation.navigate).toHaveBeenCalledWith("HostEdit", { hubId: "hub-1", name: "attic" });
 	expect(page.button("Remove")).not.toBeNull();
-	page.dispose();
 });
 
 it("removes a host once confirmed, then goes back as it leaves the list", async () => {
@@ -259,7 +258,6 @@ it("removes a host once confirmed, then goes back as it leaves the list", async 
 	await confirmRemove();
 	expect(fleet.calls.some((call) => call.method === "evener/host/remove")).toBe(true);
 	expect(page.navigation.goBack).toHaveBeenCalledTimes(1);
-	page.dispose();
 });
 
 it("says why the hub refused to remove a host, and stays", async () => {
@@ -271,12 +269,10 @@ it("says why the hub refused to remove a host, and stays", async () => {
 	await confirmRemove();
 	expect(renderedText(page.tree)).toContain('host "attic" has live sessions');
 	expect(page.navigation.goBack).not.toHaveBeenCalled();
-	page.dispose();
 });
 
 it("holds Edit and Remove while the phone's connection is down", async () => {
 	const page = await mount(scriptedFleet([hostRow("attic")]), "attic", { ready: false });
 	expect(page.button("Edit")?.props.accessibilityState.disabled).toBe(true);
 	expect(page.button("Remove")?.props.accessibilityState.disabled).toBe(true);
-	page.dispose();
 });

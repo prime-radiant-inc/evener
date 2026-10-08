@@ -68,7 +68,8 @@ type TaskInput struct {
 // Status empty means no status change; a non-empty value must be one of the
 // four statuses. The tool schema has always documented status as optional,
 // so notes/deps/effort-only updates are legal.
-// DependsOn nil means no change; &[]int{} clears the dependency list.
+// DependsOn nil means no change; &[]int{} clears the dependency list. The
+// task_list tool decodes [] and null as nil and [0] as &[]int{}.
 // ReasoningEffort empty means no change; a non-empty value replaces it.
 type TaskUpdate struct {
 	ID              int        `json:"id"`                         // identifies the task to update

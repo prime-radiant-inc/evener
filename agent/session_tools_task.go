@@ -189,6 +189,9 @@ func decodeTaskArgs(args map[string]any) (adds []taskpkg.TaskInput, updates []ta
 				return nil, nil, fmt.Errorf("add entry %d depends_on must be an array of task IDs", i)
 			}
 			depIDs, err := decodeIDList(arr)
+			if errors.Is(err, errZeroTaskID) {
+				return nil, nil, fmt.Errorf("add entry %d depends_on: %w, and a new task has no dependencies to clear", i, err)
+			}
 			if err != nil {
 				return nil, nil, fmt.Errorf("add entry %d depends_on: %w", i, err)
 			}
@@ -220,19 +223,26 @@ func decodeTaskArgs(args map[string]any) (adds []taskpkg.TaskInput, updates []ta
 		if s, ok := m["status"].(string); ok {
 			u.Status = taskpkg.TaskStatus(s)
 		}
-		if n, ok := m["notes"].(string); ok {
+		if n, ok := m["notes"].(string); ok && !isPlaceholderNote(n) {
 			u.Notes = n
 		}
-		if depsRaw, has := m["depends_on"]; has {
+		if depsRaw := m["depends_on"]; !tool.IsPlaceholderDependsOn(depsRaw) {
 			arr, ok := depsRaw.([]any)
 			if !ok {
 				return nil, nil, fmt.Errorf("update entry %d depends_on must be an array of task IDs", i)
 			}
-			depIDs, err := decodeIDList(arr)
-			if err != nil {
-				return nil, nil, fmt.Errorf("update entry %d depends_on: %w", i, err)
+			if len(arr) == 1 && arr[0] == float64(clearDependsOnID) {
+				u.DependsOn = &[]int{}
+			} else {
+				depIDs, err := decodeIDList(arr)
+				if errors.Is(err, errZeroTaskID) {
+					return nil, nil, fmt.Errorf("update entry %d depends_on: %w; [0] on its own clears the dependencies", i, err)
+				}
+				if err != nil {
+					return nil, nil, fmt.Errorf("update entry %d depends_on: %w", i, err)
+				}
+				u.DependsOn = &depIDs
 			}
-			u.DependsOn = &depIDs
 		}
 		if re, ok := m["reasoning_effort"].(string); ok {
 			u.ReasoningEffort, err = validateTaskEffort(re)
@@ -311,6 +321,14 @@ func validateTaskListArgs(args map[string]any) error {
 	return nil
 }
 
+// clearDependsOnID, alone in an update's depends_on, clears the task's
+// dependencies. Task IDs start at 1, so it never names a real task.
+const clearDependsOnID = 0
+
+// errZeroTaskID rejects 0 inside an ID list; each caller says what [0] means
+// for its operation.
+var errZeroTaskID = errors.New("0 is not a task ID")
+
 // decodeIDList converts a JSON array of numbers into []int.
 func decodeIDList(raw []any) ([]int, error) {
 	ids := make([]int, 0, len(raw))
@@ -319,9 +337,19 @@ func decodeIDList(raw []any) ([]int, error) {
 		if !ok {
 			return nil, errors.New("each element must be an integer task ID")
 		}
+		if int(v) == clearDependsOnID {
+			return nil, errZeroTaskID
+		}
 		ids = append(ids, int(v))
 	}
 	return ids, nil
+}
+
+// isPlaceholderNote reports whether notes text carries nothing: empty, or the
+// string "null" that some models send for every optional field.
+func isPlaceholderNote(notes string) bool {
+	trimmed := strings.TrimSpace(notes)
+	return trimmed == "" || strings.EqualFold(trimmed, "null")
 }
 
 func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
