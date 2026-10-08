@@ -141,6 +141,10 @@ interface Entry {
   owners: TranscriptOwners;
   ownershipGeneration: number;
   checkpointOwnershipGeneration: number;
+  // Bumped by every authoritative publish. A worker that started before a
+  // replacement cannot rebase the resident charge to its own captured pre-fold
+  // body: the body it captured is no longer the current resident.
+  authoritativeVersion: number;
   appliedSequence: number;
   checkpointSequence: number;
   residentBytes: number;
@@ -217,6 +221,7 @@ export function createTranscriptResidency(
       owners: { foreground: 0, history: 0, mutationPinned: false, background: 0 },
       ownershipGeneration: 0,
       checkpointOwnershipGeneration: -1,
+      authoritativeVersion: 0,
       appliedSequence: 0,
       checkpointSequence: 0,
       residentBytes: 0,
@@ -348,6 +353,68 @@ export function createTranscriptResidency(
     }
   }
 
+  // Move least-recently-foreground-used background residents' charges out of the
+  // resident budget and into the pending budget so an incoming body that fits
+  // the resident limit can be admitted directly. Each moved model is now a
+  // model awaiting disk handoff (spec "Memory and disk policy": the same
+  // budgets cover models awaiting disk handoff); its own worker commits and
+  // unloads it, releasing the pending charge.
+  //
+  // The FULL selected victim total is reserved in pending as one unit before
+  // any victim's resident charge is released, so a partially staged or leaking
+  // transfer is impossible. No victim is scheduled here: the caller commits the
+  // incoming reservation first, then enqueues the returned victims, because
+  // enqueue() runs the worker synchronously and must never observe a
+  // half-transferred entry. Returns undefined (and leaves every entry
+  // untouched) when the deficit cannot be covered in full.
+  function reserveLruVictimHandoff(exceptRef: string, needed: number): Array<[string, Entry]> | undefined {
+    if (needed <= 0) return [];
+    const candidates = [...entries]
+      .filter(
+        ([ref, entry]) =>
+          ref !== exceptRef &&
+          entry.residentBytes > 0 &&
+          !held(entry) &&
+          entry.owners.background > 0 &&
+          entry.persistence === "enabled" &&
+          !entry.work,
+      )
+      .sort((a, b) => a[1].lastForegroundUse - b[1].lastForegroundUse);
+    const selected: Array<[string, Entry]> = [];
+    let available = 0;
+    for (const candidate of candidates) {
+      selected.push(candidate);
+      available += candidate[1].residentBytes;
+      if (available >= needed) break;
+    }
+    if (available < needed) return undefined;
+    // The pending budget must hold every selected body, not only the deficit.
+    if (pendingBudget.used + available > pendingBudget.limit) return undefined;
+    if (!pendingBudget.reserve(available)) return undefined;
+    for (const [, entry] of selected) {
+      const charge = entry.residentBytes;
+      residentBudget.release(charge);
+      entry.handoffBytes = charge;
+      entry.residentBytes = 0;
+      entry.evictAfterCommit = true;
+    }
+    return selected;
+  }
+
+  // Undo a reserveLruVictimHandoff whose admission could not be completed. The
+  // pending charge is released and restored to the resident budget, which is
+  // always possible because this function has just released exactly that much.
+  function rollbackLruVictimHandoff(victims: ReadonlyArray<[string, Entry]>): void {
+    for (const [, entry] of victims) {
+      const charge = entry.handoffBytes;
+      pendingBudget.release(charge);
+      residentBudget.reserve(charge);
+      entry.residentBytes = charge;
+      entry.handoffBytes = 0;
+      entry.evictAfterCommit = false;
+    }
+  }
+
   function resolveWaiters(entry: Entry): void {
     for (const resolve of entry.waiters.splice(0)) resolve();
   }
@@ -473,6 +540,7 @@ export function createTranscriptResidency(
     const ownerGeneration = entry.ownershipGeneration;
     const writeEpoch = clearEpoch;
     const clearClaimAtStart = clearClaimGeneration;
+    const authoritativeVersionAtStart = entry.authoritativeVersion;
     const resident = port.resident(ref);
     entry.residentPostCutBytes = 0;
     let model = resident;
@@ -593,7 +661,12 @@ export function createTranscriptResidency(
         entry.current = false;
         return false;
       }
-      if (entry.residentBytes > 0 && port.resident(ref)) {
+      // Rebase the resident charge to this write's captured body plus later
+      // deltas only while that captured body is still the current resident. An
+      // authoritative publish during the write replaced the body and already
+      // charged it exactly; rebasing to the stale captured size here would
+      // undercharge the larger retained body.
+      if (entry.residentBytes > 0 && port.resident(ref) && entry.authoritativeVersion === authoritativeVersionAtStart) {
         const exactWithLaterDeltas = bytes + entry.residentPostCutBytes;
         residentBudget.release(entry.residentBytes);
         if (residentBudget.reserve(exactWithLaterDeltas)) entry.residentBytes = exactWithLaterDeltas;
@@ -647,7 +720,14 @@ export function createTranscriptResidency(
         if (!ref) continue;
         const entry = entries.get(ref);
         if (!entry) continue;
-        if (entry.handoffBytes > 0 && port.resident(ref) && residentBudget.reserve(entry.handoffBytes)) {
+        // An evicting victim's handoff charge is awaiting disk unload, not
+        // resident room; never promote it back to resident.
+        if (
+          !entry.evictAfterCommit &&
+          entry.handoffBytes > 0 &&
+          port.resident(ref) &&
+          residentBudget.reserve(entry.handoffBytes)
+        ) {
           pendingBudget.release(entry.handoffBytes);
           entry.residentBytes = entry.handoffBytes;
           entry.handoffBytes = 0;
@@ -842,6 +922,10 @@ export function createTranscriptResidency(
     },
     published(ref, model, appliedSequence, authoritative = false) {
       const entry = entryFor(ref);
+      // Record that a wholesale replacement happened, so any worker suspended
+      // with an older captured body does not later rebase the resident charge
+      // back to that stale size.
+      if (authoritative) entry.authoritativeVersion += 1;
       if (authoritative) {
         // A successful read is not a successful checkpoint: keep the storage
         // failure streak so a still-unwritable disk keeps backing off.
@@ -871,8 +955,16 @@ export function createTranscriptResidency(
         entry.pending = entry.pending.filter((update) => update.sequence > appliedSequence);
       }
       if (held(entry) || entry.owners.background <= 0) return true;
+      // An authoritative publish is a whole fresh snapshot (the one approved
+      // decoded read), not the previously charged body folded with the consumed
+      // pending wire bytes. Its retained size is the exact encoded state;
+      // charging residentBytes + incrementalBytes would leave the replacement
+      // body undercharged whenever the published content did not arrive through
+      // `entry.pending` (a held re-read buffers its deltas through
+      // reservePending instead). A live fold still uses the cheap incremental
+      // formula and never serializes the whole transcript per chunk.
       const size =
-        (entry.residentBytes > 0 || handoffOwnsModel) && appliedSequence > previouslyApplied
+        !authoritative && (entry.residentBytes > 0 || handoffOwnsModel) && appliedSequence > previouslyApplied
           ? entry.residentBytes + entry.handoffBytes + incrementalBytes
           : encodedPayloadBytes(currentTranscriptState(model));
       if (!Number.isFinite(size)) {
@@ -902,6 +994,25 @@ export function createTranscriptResidency(
             if (reconciledBytes < 0) pendingBudget.release(-reconciledBytes);
             entry.handoffBytes = size;
           } else if (pendingBudget.reserve(size)) entry.handoffBytes = size;
+          if (entry.handoffBytes === 0 && size <= residentBudget.limit) {
+            // The candidate individually fits the resident limit but the
+            // aggregate is full. Move LRU victims' charges into the handoff
+            // budget (feasibility checked first, no partial transfer) and admit
+            // the candidate resident instead of refusing it.
+            const victims = reserveLruVictimHandoff(ref, residentBudget.used + size - residentBudget.limit);
+            if (victims !== undefined) {
+              if (residentBudget.reserve(size)) {
+                // Commit the incoming reservation before scheduling any victim:
+                // enqueue() runs the worker synchronously, so every transferred
+                // entry must already be in its final state.
+                entry.residentBytes = size;
+                for (const [victimRef] of victims) enqueue(victimRef);
+                if (!entry.needsRecovery) scheduleResidentWrite(ref, entry);
+                return true;
+              }
+              rollbackLruVictimHandoff(victims);
+            }
+          }
           if (entry.handoffBytes > 0) {
             enqueueLeastRecentlyUsedVictims(ref, size);
             queueMicrotask(() => enqueue(ref));
