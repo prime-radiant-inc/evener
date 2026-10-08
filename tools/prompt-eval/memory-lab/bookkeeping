@@ -5,7 +5,11 @@ Usage: bookkeeping RUNDIR [STAGE]   (STAGE defaults to A)
 For every trial under RUNDIR (<version>/<arm>/<scenario>/r<N>) it reads <STAGE>.events.ndjson and
 classifies the root session's tool calls: progress writes per surface (ledger file, other plan
 artifacts, memory by scope, whiteboard, task list), progress read-backs, and everything else.
-Prints one line per trial and a per-version mean. Use it to measure duplicated progress tracking."""
+Prints one line per trial and a per-version mean. Use it to measure duplicated progress tracking.
+
+A trial whose session compacted (memory-lab run --context-window) also gets its compaction count and
+the read-backs, per surface, in the RECONSTRUCTION_WINDOW tool calls after each compaction, with their
+output size in estimated tokens (characters / 4): what rebuilding its state cost."""
 import glob, importlib.machinery, importlib.util, json, os, re, shlex, statistics, sys
 sys.dont_write_bytecode = True
 
@@ -19,6 +23,16 @@ WRITE_SURFACES = ["ledger", "plan-artifacts", "mem:session", "mem:project", "mem
 # The files an apply_patch changes, from its "*** Add/Update/Delete File:" and "*** Move to:" headers.
 PATCH_FILE = re.compile(r"(?m)^\*\*\* (?:Add File|Update File|Delete File|Move to): (.+?)\s*$")
 PROGRESS_SURFACES = ["ledger", "mem:session", "whiteboard", "tasks", "task-notes"]
+# Surfaces a session reads its state back from. Re-reading the plan it executes, a transcript (its own after
+# compaction, or a delegate's) or delegate status (job_status, job_list) is reported with the others but not
+# counted as a bookkeeping read-back.
+READ_SURFACES = ["ledger", "plan-artifacts", "plan", "memory", "tasks", "whiteboard", "transcript", "jobs"]
+NOT_BOOKKEEPING_READS = {"plan", "transcript", "jobs"}
+READ_LABELS = {"memory_read": "memory", "memory_search": "memory", "notes_read": "whiteboard",
+               "read_transcript": "transcript", "find_session_transcripts": "transcript",
+               "job_status": "jobs", "job_list": "jobs"}
+# Tool calls after a compaction that count as rebuilding state.
+RECONSTRUCTION_WINDOW = 10
 
 
 def args_of(call):
@@ -44,6 +58,16 @@ SHELL_WRAPPER_FLAG_ARGS = {"sudo": {"-u", "-g", "-C", "-h", "-p"}, "nice": {"-n"
                            "timeout": {"-s", "-k", "--signal", "--kill-after"}}
 SED_IN_PLACE = re.compile(r"^-[A-Za-z]*i")
 PERL_IN_PLACE = re.compile(r"^-[a-z]*i[a-z]*(?:\.\w+)?$")
+
+
+def plan_file(path):
+    """Whether path is a plan document: a Markdown file in a plans/ directory."""
+    return "plans" in path.split("/")[:-1] and path.endswith(".md")
+
+
+def read_surfaces(paths):
+    """The surfaces reading these paths reads back: file_surface's, plus "plan" when one is a plan."""
+    return file_surface(paths) + (["plan"] if any(plan_file(p) for p in paths) else [])
 
 
 def file_surface(paths):
@@ -259,9 +283,10 @@ def classify(call):
         return ("write", surfaces) if surfaces else ("work", [])
     if tool in ("shell", "exec_command"):
         written, read = shell_paths(str(a.get("command", a.get("cmd", ""))))
-        if file_surface(written):
-            return "write", file_surface(written)
-        return ("read", file_surface(read)) if file_surface(read) else ("work", [])
+        if surfaces := file_surface(written):
+            return "write", surfaces
+        surfaces = read_surfaces(read)
+        return ("read", surfaces) if surfaces else ("work", [])
     if tool in ("memory_write", "memory_edit"):
         return "write", ["mem:" + str(a.get("scope", "?"))]
     if tool == "notes_agent_set":
@@ -277,11 +302,30 @@ def classify(call):
         if any(u.get("notes") for u in updates):
             surfaces.append("task-notes")
         return ("write", surfaces) if surfaces else ("read", ["tasks"])
-    if tool in ("memory_read", "memory_search", "notes_read"):
-        return "read", [tool]
-    if tool == "read_file" and (".superpowers/" in path or path.endswith("progress.md")):
-        return "read", ["ledger"]
+    if tool in READ_LABELS:
+        return "read", [READ_LABELS[tool]]
+    if tool == "read_file" and (surfaces := read_surfaces([path])):
+        return "read", surfaces
     return "work", []
+
+
+def reconstruction(calls):
+    """(per read surface, [read-backs, estimated tokens] in the windows after compactions; the number of
+    windows measured). A window starts at the first call after a compaction and runs RECONSTRUCTION_WINDOW
+    calls, or up to the next compaction. Compactions with no call between them share one window, and a
+    compaction after the last call has none. A call's "compactions_before" counts the compactions before it."""
+    found = {s: [0, 0] for s in READ_SURFACES}
+    starts = [i for i, c in enumerate(calls)
+              if c.get("compactions_before", 0) > (calls[i - 1].get("compactions_before", 0) if i else 0)]
+    for n, start in enumerate(starts):
+        end = min(start + RECONSTRUCTION_WINDOW, starts[n + 1] if n + 1 < len(starts) else len(calls))
+        for later in calls[start:end]:
+            kind, surfaces = classify(later)
+            if kind == "read":
+                for surface in surfaces:
+                    found[surface][0] += 1
+                    found[surface][1] += later.get("output_chars", 0) // 4
+    return found, len(starts)
 
 
 def main():
@@ -294,7 +338,9 @@ def main():
         parts = os.path.relpath(trial, run).split(os.sep)
         version = f"{parts[0]} {parts[2]}"
         calls, _, _, _ = lab.parse_events(ev)
+        compactions = len(lab.context_record(ev)[1])
         writes = {s: 0 for s in WRITE_SURFACES}
+        read_by = {s: 0 for s in READ_SURFACES}
         reads = nwrite = 0
         for c in calls:
             kind, surfaces = classify(c)
@@ -303,21 +349,37 @@ def main():
                 for surface in surfaces:
                     writes[surface] = writes.get(surface, 0) + 1
             elif kind == "read":
-                reads += 1
+                reads += not (set(surfaces) <= NOT_BOOKKEEPING_READS)
+                for surface in surfaces:
+                    read_by[surface] += 1
         total = len(calls)
         # Surfaces that can carry progress; project and personal memory saves are lessons, counted in writes only.
         surfaces = sum(1 for s in PROGRESS_SURFACES if writes[s])
+        rebuilt, windows = reconstruction(calls)
         row = {"total": total, "writes": nwrite, "reads": reads, "surfaces": surfaces, "task_notes": writes["task-notes"],
-               "share": (nwrite + reads) / total if total else 0}
+               "share": (nwrite + reads) / total if total else 0, "compactions": compactions,
+               "read_by": read_by, "rebuilt": rebuilt, "windows": windows}
         per_version.setdefault(version, []).append(row)
         detail = " ".join(f"{s}={writes[s]}" for s in WRITE_SURFACES if writes[s])
+        read_detail = " ".join(f"{s}={read_by[s]}" for s in READ_SURFACES if read_by[s])
         print(f"{os.path.relpath(trial, run):40} calls={total:3} bookkeeping writes={nwrite:2} reads={reads:2} "
-              f"share={row['share']:.0%} surfaces={surfaces} | {detail}")
+              f"share={row['share']:.0%} surfaces={surfaces} | {detail} | read {read_detail or '-'}")
+        if compactions:
+            print(f"{'':40} compactions={compactions} windows={windows}, read in them: "
+                  + (" ".join(f"{s}={n}/~{tok}tok" for s, (n, tok) in rebuilt.items() if n) or "-"))
     print()
     for version, rows in per_version.items():
         m = lambda k: statistics.mean(r[k] for r in rows)
         print(f"{version:28} n={len(rows)} mean calls={m('total'):.0f} writes={m('writes'):.1f} reads={m('reads'):.1f} "
               f"share={m('share'):.0%} surfaces={m('surfaces'):.1f} task-notes={m('task_notes'):.1f}")
+        mean_reads = " ".join(f"{s}={statistics.mean(r['read_by'][s] for r in rows):.1f}" for s in READ_SURFACES)
+        print(f"{'':28} mean reads: {mean_reads}")
+        windows = sum(r["windows"] for r in rows)
+        if any(r["compactions"] for r in rows):
+            per = lambda s, i: sum(r["rebuilt"][s][i] for r in rows) / windows if windows else 0
+            rebuilt = " ".join(f"{s}={per(s, 0):.1f}/~{per(s, 1):.0f}tok" for s in READ_SURFACES if per(s, 0))
+            print(f"{'':28} mean compactions={m('compactions'):.1f}; {windows} windows measured; per window, "
+                  f"reads: {rebuilt or '-'}")
 
 
 if __name__ == "__main__":

@@ -4095,6 +4095,15 @@ describe("native key scrolling that begins a frame later", () => {
           set({ scrollTop });
           el.dispatchEvent(new Event("scroll"));
         }),
+      // The virtualizer keeping the reader's row in place as a row above the
+      // viewport grows: content and offset move together.
+      growAbove: (delta: number) =>
+        act(() => {
+          const metrics = measure();
+          el.scrollTop = metrics.scrollTop + delta;
+          set({ scrollTop: metrics.scrollTop + delta, scrollHeight: metrics.scrollHeight + delta });
+          el.dispatchEvent(new Event("scroll"));
+        }),
       restore: frames.restore,
     };
   }
@@ -4107,6 +4116,21 @@ describe("native key scrolling that begins a frame later", () => {
       reader.scrollTo(880);
 
       expect(reader.onReaderMovement).toHaveBeenCalledWith(900);
+    } finally {
+      reader.restore();
+    }
+  });
+
+  test("a measurement correction between the key and its scroll leaves the key's movement recorded", () => {
+    const reader = mountKeyReader();
+    try {
+      reader.shiftSpace();
+      reader.growAbove(100);
+      reader.runFrame();
+      reader.scrollTo(980);
+
+      expect(reader.onReaderMovement).toHaveBeenCalledTimes(1);
+      expect(reader.onReaderMovement).toHaveBeenCalledWith(1000);
     } finally {
       reader.restore();
     }
