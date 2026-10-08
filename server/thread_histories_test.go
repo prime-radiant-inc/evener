@@ -139,6 +139,8 @@ func TestThreadHistoriesDetachExceptLeavesTheKeptHistoryAndClosesNothing(t *test
 	child := r.ensure("child", "local:child", writeDelegateTranscript(t, "child", "c"), 0, 0, "1", noopHistoryPublish, noopHistoryResync, nil)
 
 	detached := r.detachExcept("root")
+	// Closed on a failure too: the registry's close waits for it.
+	t.Cleanup(func() { closeHistories(detached) })
 	if len(detached) != 1 || detached[0] != child {
 		t.Fatalf("detached %v, want only the child's history", detached)
 	}
@@ -300,6 +302,8 @@ func TestThreadHistoriesReleaseDuringAReadRecoveryKeepsEpochsMonotonic(t *testin
 	}()
 	awaitClosed(t, parked, "the read's rebuild to park")
 	released := r.detach("child")
+	// Closed on a failure too: the registry's close waits for it.
+	t.Cleanup(func() { closeHistories([]*threadHistory{released}) })
 	close(release)
 	if err := <-read; err != nil {
 		t.Fatalf("read of the recovering delegate = %v", err)
@@ -353,4 +357,57 @@ func TestThreadHistoriesCloseWaitsForADetachedHistoryStillClosing(t *testing.T) 
 	if err := <-readDone; err != nil {
 		t.Fatalf("the read in flight: %v", err)
 	}
+}
+
+// Once the registry is closing, a replace that lands meanwhile (a
+// thread/clear handler outliving the server's HTTP close) registers nothing:
+// a history it created would never be closed, and close would wait on it
+// forever.
+func TestThreadHistoriesRegisterNothingOnceClosing(t *testing.T) {
+	r := newThreadHistories(transcriptindex.DefaultCacheCapacity, appoverlay.DefaultBudgetBytes)
+	path := writeDelegateTranscript(t, "delegate_d", "hello")
+	h := r.ensure("delegate_d", "local:delegate_d", path, 0, 0, "1", noopHistoryPublish, noopHistoryResync, nil)
+	inRead, release := make(chan struct{}), make(chan struct{})
+	releaseRead := sync.OnceFunc(func() { close(release) })
+	defer releaseRead()
+	go func() {
+		_ = h.read(func(*transcriptindex.Index) error {
+			close(inRead)
+			<-release
+			return nil
+		})
+	}()
+	awaitClosed(t, inRead, "the read to hold the index")
+	go closeHistories([]*threadHistory{r.detach("delegate_d")})
+	registryClosed := make(chan struct{})
+	go func() {
+		r.close()
+		close(registryClosed)
+	}()
+	// TRIPWIRE-style bound: close marks the registry closing at once.
+	deadline := time.Now().Add(historyTestWait)
+	for {
+		r.mu.Lock()
+		closing := r.closing
+		r.mu.Unlock()
+		if closing {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the registry never began closing")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	// ReplaceAppIdentity's registry steps.
+	if detached := r.detachExcept("new-root"); len(detached) != 0 {
+		t.Fatalf("a replace during close detached %d histories, want none left", len(detached))
+	}
+	if created := r.ensure("new-root", "local:new-root", writeDelegateTranscript(t, "new-root", "x"), 0, 0, "1", noopHistoryPublish, noopHistoryResync, nil); created != nil {
+		t.Fatal("ensure registered a history while the registry was closing")
+	}
+	if created := r.ensureDescendant("new-root", "child", "local:child", path, "1", noopHistoryPublish, noopHistoryResync, nil); created != nil {
+		t.Fatal("ensureDescendant registered a history while the registry was closing")
+	}
+	releaseRead()
+	awaitClosed(t, registryClosed, "the registry's close")
 }
