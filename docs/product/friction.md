@@ -387,9 +387,10 @@ composer send (`turn/start`, `turn/queue`, `turn/steer`, `turn/drainAsSteer`) is
 retried once and then dispatched directly as a plain RPC instead of failing
 closed, so sends keep working in a storage wedge. The same wedge also fails the
 ref's reconciliation (its outbox read), and that failure is classified apart
-from a genuine one: the ref is recorded as storage-blocked, and the send
-fallback admits it — including the reconcile still pending on the same wedge —
-while the durable dispatcher, a queued record's Retry press and the recovery
+from a genuine one: the ref is recorded as storage-blocked - at the reconcile's
+rejection, or earlier when the send fallback's own storage timeout observes the
+wedge while that reconcile is still pending - and the send fallback admits it,
+including the reconcile still pending on the same wedge, while the durable dispatcher, a queued record's Retry press and the recovery
 banner stay fenced until discovery's retry reconciles once storage answers, so
 a storage-blocked ref shows no recovery banner. The fallback re-earns the
 dispatcher's admission and refuses when this tab can see an earlier undelivered

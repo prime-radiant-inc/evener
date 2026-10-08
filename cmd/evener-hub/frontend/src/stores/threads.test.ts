@@ -14334,13 +14334,21 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     expect(fake.calls.some((call) => call.method === "turn/start")).toBe(true);
   });
 
-  // The waiver's negative: the fallback's admission option is not a blank
-  // check. A ref whose reconcile is merely in flight on HEALTHY storage has
-  // no storage-blocked record, and the pending reconciliation still fences
-  // the fallback - that read can produce ordering facts, so the send waits
-  // for it rather than jumping whatever it may find.
-  test("a send still refuses while a healthy reconcile is pending", async () => {
-    const storage = new MutationOutboxIndexedDB();
+  // The classification must not wait for the reconcile's own watchdog. The
+  // send's fallback decision can land while the wedged reconcile is still
+  // pending - before the reconcile rejected and recorded the ref - and a send
+  // pressed in that window must still deliver: the fallback's own storage
+  // timeout is the same wedge, so it classifies the pending read itself
+  // instead of meeting the pending fence and dying with the wedge's error.
+  // (This replaces an earlier test that hand-injected the slice; a real
+  // MutationStorageTimeoutError IS storage unavailability, so "healthy
+  // pending reconcile plus a timeout-class enqueue failure" is not a state
+  // production can reach. The pending fence still holds every non-fallback
+  // caller, and a reconcile that later succeeds clears the record.)
+  test("a send survives a wedged reconcile that has not yet rejected", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-send-fallback-pending-wedge";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
     setMutationStorageForTests(storage);
     const fake = connectMutationClient();
     await ensureActiveMutationTarget(fake, "ref_a");
@@ -14349,16 +14357,43 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
       receipt: mutationReceipt(params.clientMutationId),
     }));
 
-    const parked = parkRefReconcileRead(storage, "ref_a");
-    void threadsStore.getState().refreshThread("ref_a");
-    await flushUntil(parked.opened);
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      // The send goes out first: its capture read parks on the wedge, and the
+      // shared open's watchdog ends it at +10s.
+      const send = threadsStore.getState().send("ref_a", "sent while the wedged reconcile is still pending");
+      const delivered = expect(send).resolves.toBeUndefined();
+      // Two seconds later a refresh starts a reconcile whose read parks on
+      // the same wedged open; its rejection - and the record it would write -
+      // lands only when the shared watchdog fires.
+      await vi.advanceTimersByTimeAsync(2_000);
+      void threadsStore
+        .getState()
+        .refreshThread("ref_a")
+        .catch(() => undefined);
+      await flushMicrotasks();
+      await vi.advanceTimersByTimeAsync(9_000);
+      await delivered;
 
-    timeOutDurableEnqueues(storage);
-
-    await expect(
-      threadsStore.getState().send("ref_a", "sent while a healthy reconcile is pending"),
-    ).rejects.toBeInstanceOf(MutationStorageTimeoutError);
-    expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+      const sent = fake.calls.find((call) => call.method === "turn/start");
+      expect(sent, "the send never reached the daemon").toBeDefined();
+      // The reconcile's own rejection still records the ref afterwards - the
+      // attempt was never stolen from it.
+      expect(threadsStore.getState().mutationReconciliationStorageBlocked.has("ref_a")).toBe(true);
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+    const reader = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    expect(await reader.listOutbox("ref_a")).toEqual([]);
+    reader.close();
   });
 
   // The fence this split must not widen: a GENUINE reconciliation failure (a

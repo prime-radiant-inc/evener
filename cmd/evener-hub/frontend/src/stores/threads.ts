@@ -166,8 +166,10 @@ export interface ThreadsStoreState {
   // fences the direct-dispatch fallback too, re-breaking the promise that a
   // send survives a storage wedge. Storage-blocked refs stay fenced for the
   // durable dispatcher; the send fallback is the one caller that may admit
-  // them. Cleared by a successful reconciliation; retried by every discovery
-  // pass.
+  // them. Recorded at the reconcile's rejection, or classified earlier by the
+  // send fallback's own storage-timeout observation while the reconcile is
+  // still pending. Cleared by a successful reconciliation; retried by every
+  // discovery pass.
   mutationReconciliationStorageBlocked: ReadonlySet<string>;
   restartBlockingObligations: ReadonlyMap<string, symbol>;
   mutationAuthorityRefs: ReadonlySet<string>;
@@ -3107,7 +3109,9 @@ async function enqueueMutationIntent(
     // A reconcile the same storage wedge failed is admissible here and nowhere
     // else: storage-blocked is the one fence whose cause cannot be waited out
     // inside the wedge, so the fallback waives it (and the reconcile still
-    // pending on that wedge) rather than strand the send.
+    // pending on that wedge) rather than strand the send. The pending record
+    // is classified below when the fallback's own timeout observes the wedge,
+    // so the waiver does not wait for the reconcile's own watchdog.
     //
     // A fallback send must not jump an earlier durable send for the ref, and
     // two in-memory facts cover what this tab can see. undeliveredMutationIds
@@ -3124,6 +3128,18 @@ async function enqueueMutationIntent(
     // lives in storage, which is unavailable here; these two are what the
     // in-memory state proves, and the fallback refuses on either rather than
     // reorder.
+    // The fallback's own timeout is the same storage the reconcile reads, so
+    // a reconcile still pending for the ref sits on the same wedge: classify
+    // it now rather than wait for its watchdog. Without this, a send whose
+    // fallback decision lands while the wedged reconcile has not yet rejected
+    // meets the pending fence and dies with the wedge's error - the exact
+    // window the fallback exists to close. A reconcile that later succeeds
+    // clears the record, so a read that was healthy after all self-corrects.
+    if (pendingMutationReconciliations.has(ref)) {
+      threadsStore.setState((state) => ({
+        mutationReconciliationStorageBlocked: new Set(state.mutationReconciliationStorageBlocked).add(ref),
+      }));
+    }
     const dispatchClient = currentDispatchClient(ref, intent.method, false, { storageBlockedAdmissible: true });
     const concurrentEnqueueOutstanding = (inflightDurableEnqueues.get(ref) ?? 0) > 0;
     if (dispatchClient === null || hasUndeliveredMutation(ref) || concurrentEnqueueOutstanding) {
