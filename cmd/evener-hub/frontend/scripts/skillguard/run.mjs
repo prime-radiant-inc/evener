@@ -223,6 +223,15 @@ function editorText(root) {
     (index > 0 && node.nodeName === "P" ? "\n" : "") + read(node)).join("");
 }
 
+// Runs in the page. Scrolls el into view and returns its center while el is
+// topmost there, else null: a press at a point that something else covers
+// would land on that something, as a real press would.
+function uncoveredCenter(el, block) {
+  el.scrollIntoView({ block });
+  const r = el.getBoundingClientRect(), x = r.x + r.width / 2, y = r.y + r.height / 2;
+  return el.contains(document.elementFromPoint(x, y)) ? { x, y } : null;
+}
+
 // Offset selection for single-line editing cases. Never place a caret inside
 // an atom: its complete label contributes to plain-text offsets, but its DOM
 // boundary is the only selectable location.
@@ -621,9 +630,7 @@ export class Driver {
       `(() => { const b = [...document.querySelectorAll("button")].find((n) => n.textContent.trim() === ${JSON.stringify(text)} || (n.getAttribute("aria-label") ?? "").trim() === ${JSON.stringify(text)});
         if (!b) return "missing";
         if (b.matches(${JSON.stringify(REFUSED_BUTTON_SELECTOR)})) return "disabled";
-        b.scrollIntoView({ block: "center" });
-        const r = b.getBoundingClientRect();
-        if (!b.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2))) return "covered";
+        if (!(${uncoveredCenter})(b, "center")) return "covered";
         b.click();
         return "clicked"; })()`,
     );
@@ -937,9 +944,7 @@ export class Driver {
     return `(() => {
       const text = document.querySelector(${JSON.stringify(`[data-sidebar-rail] [data-session-ref="${ref}"]`)})?.firstElementChild;
       if (!text) return null;
-      text.scrollIntoView({ block: "center" });
-      const r = text.getBoundingClientRect();
-      if (!text.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2))) return null;
+      if (!(${uncoveredCenter})(text, "center")) return null;
       text.click();
       return true;
     })()`;
@@ -973,26 +978,26 @@ export class Driver {
     await this.press(ref, "Backspace");
   }
 
+  // The skill's slash-menu row, found, scrolled to and hit-tested in the turn
+  // that returns its center. The press itself is native and goes out one CDP
+  // round trip later: a real press is what exercises the row's mousedown
+  // handler, which keeps the editor focused, and an in-page click cannot.
+  // Measuring in the same turn as the hit-test leaves only that round trip for
+  // the menu to shift (#4071, the openSession race of #3874); a press that
+  // still lands on a neighbouring row adds the wrong chip, and the chip wait
+  // in completeSkill fails on it.
+  slashRowPointExpr(row) {
+    return `(() => { const menu = document.querySelector("[data-testid='composer-slash-menu']");
+      const b = menu && [...menu.querySelectorAll("button")].find((n) => n.textContent.includes(${JSON.stringify(row)}));
+      return b ? (${uncoveredCenter})(b, "nearest") : null; })()`;
+  }
+
   async completeSkill(ref, name) {
     const row = `/${name}`;
-    await this.waitPage(
-      `(() => { const menu = document.querySelector("[data-testid='composer-slash-menu']"); if (!menu) return null;
-        return [...menu.querySelectorAll("button")].some((b) => b.textContent.includes(${JSON.stringify(row)})) ? true : null; })()`,
-      { label: `slash menu row ${row}` },
-    );
-    // Click the skill's own row (native mouse events), not a keyboard commit,
-    // so the scenario never depends on highlight ordering.
-    const rowBox = await this.elementBox(
-      `[data-testid='composer-slash-menu'] button`,
-    );
-    if (!rowBox) throw new Error("slash menu row vanished before click");
-    const rows = await evaluate(
-      this.send,
-      `(() => { const menu = document.querySelector("[data-testid='composer-slash-menu']");
-        return [...menu.querySelectorAll("button")].filter((b) => b.textContent.includes(${JSON.stringify(row)})).map((b) => { const r = b.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; }); })()`,
-    );
-    if (!rows || rows.length === 0) throw new Error(`no ${row} row in slash menu`);
-    await this.clickAt(rows[0].x, rows[0].y);
+    // Click the skill's own row, not a keyboard commit, so the scenario never
+    // depends on highlight ordering.
+    const point = await this.waitPage(this.slashRowPointExpr(row), { label: `slash menu row ${row} present and uncovered` });
+    await this.clickAt(point.x, point.y);
     await this.waitPage(
       `(() => { const pane = ${this.paneScopeExpr(ref)};
         const chips = pane ? [...pane.querySelectorAll("[data-testid='composer-skill-chip']")] : [];
@@ -1022,19 +1027,27 @@ export class Driver {
   // `View <name>` and `Remove <name>`), so the remove button is the one whose
   // label starts with "Remove ". The tile count is re-read between removals:
   // each click takes one tile, and the caller's loop ends when none are left.
+  // The first tile's remove button is found, hit-tested and clicked in one
+  // page turn (its handler is a plain click), so no layout shift can come
+  // between the measure and the press (#4071). The expression returns the
+  // button's label, "missing" or "covered".
+  removeAttachmentExpr(ref) {
+    return `(() => { const pane = ${this.paneScopeExpr(ref)};
+      const tiles = pane ? [...pane.querySelectorAll("[data-testid='attachment-tile']")] : [];
+      const b = tiles
+        .map((tile) => [...tile.querySelectorAll("button")].find((n) => (n.getAttribute("aria-label") ?? "").startsWith("Remove ")))
+        .find(Boolean);
+      if (!b) return "missing";
+      if (!(${uncoveredCenter})(b, "center")) return "covered";
+      b.click();
+      return b.getAttribute("aria-label"); })()`;
+  }
+
   async removeAttachmentTile(ref) {
-    const labels = await evaluate(
-      this.send,
-      `(() => { const pane = ${this.paneScopeExpr(ref)};
-        const tiles = pane ? [...pane.querySelectorAll("[data-testid='attachment-tile']")] : [];
-        const buttons = tiles
-          .map((tile) => [...tile.querySelectorAll("button")].find((b) => (b.getAttribute("aria-label") ?? "").startsWith("Remove ")))
-          .filter(Boolean);
-        return buttons.map((b) => { const r = b.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2, label: b.getAttribute("aria-label") }; }); })()`,
-    );
-    if (!labels || labels.length === 0) throw new Error("no attachment remove button");
-    await this.clickAt(labels[0].x, labels[0].y);
-    return labels[0].label;
+    const label = await evaluate(this.send, this.removeAttachmentExpr(ref));
+    if (label === "missing") throw new Error("no attachment remove button");
+    if (label === "covered") throw new Error("attachment remove button is covered at its center");
+    return label;
   }
 
   // Every action that SENDS the composer's draft states the draft it means to
@@ -1868,10 +1881,9 @@ async function runScenarios(driver) {
     }
     await driver.focusComposer(ref);
     await driver.typeText(ref, `OWNER_PROSE_${owner} /owner-${owner}`);
-    const point = await driver.waitPage(`(() => { const menu = document.querySelector("[data-testid='composer-slash-menu']");
-      const row = menu && [...menu.querySelectorAll("button")].find((b) => b.textContent.includes(${JSON.stringify(`/owner-${owner}`)}));
-      if (!row) return null; const r = row.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`,
-      { label: `project command selection for ${owner}` });
+    const point = await driver.waitPage(driver.slashRowPointExpr(`/owner-${owner}`), {
+      label: `project command selection for ${owner}`,
+    });
     await driver.clickAt(point.x, point.y);
     await driver.waitPage(`(() => { const pane = ${driver.paneScopeExpr(ref)}; return pane?.querySelector("[data-testid='composer-command-chip']")?.textContent === ${JSON.stringify(`/owner-${owner}`)} ? true : null; })()`,
       { label: `project command atom for ${owner}` });
