@@ -33,6 +33,26 @@ func taskByID(t *testing.T, store *taskpkg.TaskStore, id int) taskpkg.Task {
 	return taskpkg.Task{}
 }
 
+// "inherit" on create means no override. On update it is a placeholder like
+// the others, so a task already set to a higher effort keeps it.
+func TestTaskTool_UpdateInheritKeepsExistingEffort(t *testing.T) {
+	t.Parallel()
+	h := newDependentTaskHarness(t)
+	if res := h.update(t, map[string]any{"id": 1, "reasoning_effort": "high"}); res.IsError {
+		t.Fatalf("set effort: %s", res.FullOutput)
+	}
+	if got := taskByID(t, h.store, 1).ReasoningEffort; got != "high" {
+		t.Fatalf("effort = %q, want high", got)
+	}
+	res := h.update(t, map[string]any{"id": 1, "notes": "still high", "reasoning_effort": "inherit"})
+	if res.IsError {
+		t.Fatalf("update with inherit: %s", res.FullOutput)
+	}
+	if got := taskByID(t, h.store, 1).ReasoningEffort; got != "high" {
+		t.Fatalf("effort = %q, want high kept", got)
+	}
+}
+
 func TestTaskTool_UpdatePlaceholderDependsOnKeepsDependencies(t *testing.T) {
 	t.Parallel()
 	for name, deps := range map[string]any{"empty": []any{}, "null": nil} {

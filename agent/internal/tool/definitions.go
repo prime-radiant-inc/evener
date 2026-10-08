@@ -681,7 +681,7 @@ func DefCommunicateNamed(name string) llm.ToolDefinition {
 }
 
 func DefTaskList(effortLevels []string) llm.ToolDefinition {
-	reasoningDesc := "Raise or lower the reasoning budget for this task. Use \"inherit\" (or omit) to keep the session's configured effort."
+	reasoningDesc := "Raise or lower the reasoning budget for this task. On create, \"inherit\" or omitting it uses the session's configured effort. On update, \"inherit\" or omitting it leaves the task's effort unchanged."
 	reasoningSchema := map[string]any{
 		"type":        "string",
 		"description": reasoningDesc,
