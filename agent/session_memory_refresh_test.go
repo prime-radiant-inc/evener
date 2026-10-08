@@ -349,7 +349,7 @@ func newStalledMemoryRefresh(t *testing.T, root string) *stalledMemoryRefresh {
 			close(r.release)
 		}
 	})
-	r.s = newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root, clock: r.clk, testOnly: testConfig{memoryBeforeIO: func(scope, op string) error {
+	r.s = newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root, clock: r.clk, testOnly: testConfig{memoryRealBudget: true, memoryBeforeIO: func(scope, op string) error {
 		if op == "index_read" && scope == "personal" {
 			r.reads.Add(1)
 			if r.stall.Load() {

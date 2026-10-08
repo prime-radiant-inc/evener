@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"testing"
 	"time"
 
 	"primeradiant.com/evener/agent/execenv"
@@ -754,6 +755,22 @@ func (s *Session) restoreMemoryProjection(history []schema.Turn) {
 	}
 }
 
+// memoryBoundaryBudget is how long a boundary waits for index reads before it
+// projects a scope whose read has not finished as unavailable.
+const memoryBoundaryBudget = 250 * time.Millisecond
+
+// memoryBoundaryWait is the boundary's read budget. Under `go test` it
+// defaults long: -race on a loaded runner can slow an index read past 250ms,
+// which would flake every test that asserts a projected index (#4108, #4110).
+// A test whose subject is the budget sets testOnly.memoryRealBudget to get the
+// production value. testing.Testing() is false outside `go test` binaries.
+func (s *Session) memoryBoundaryWait() time.Duration {
+	if testing.Testing() && !s.cfg.testOnly.memoryRealBudget {
+		return 30 * time.Second
+	}
+	return memoryBoundaryBudget
+}
+
 // maybeAppendMemoryContext projects only raw entry-file data, never topic files.
 // The model sees quoted lower-trust data inside core-owned currentness framing.
 // A scope gets its full index only while the session has no baseline for it:
@@ -764,7 +781,7 @@ func (s *Session) maybeAppendMemoryContext(ctx context.Context, turnStart bool) 
 	if s.cfg.DisableMemory || s.cfg.MemoryStateRoot == "" || ctx.Err() != nil {
 		return
 	}
-	timer := s.sclock().NewTimer(250 * time.Millisecond)
+	timer := s.sclock().NewTimer(s.memoryBoundaryWait())
 	defer timer.Stop()
 	flights := make(map[string]*memoryIndexFlight)
 	for _, scope := range memoryScopes {
