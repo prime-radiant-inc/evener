@@ -249,6 +249,35 @@ test.each([
   },
 );
 
+// A restored reader keeps anchorToEnd off while its placement is retained. A
+// row above it growing writes past the uncommitted sizer's end; the browser
+// clamps that write, and VirtualList completes it after the sizer commits.
+test("a retained reader completes a clamped write when a row above it grows", async () => {
+  const scene = mountReaderScene("retained-clamped-growth", [300, 300, 300, 300, 300], {
+    estimate: 300,
+    viewportHeight: 500,
+  });
+  const row3 = () => scene.port().querySelector('[data-index="3"]')?.getBoundingClientRect().top;
+  try {
+    await scene.start(900);
+    await act(async () => scene.remount());
+    await act(async () => scene.frames.release());
+    await act(async () => scene.external.notify());
+    expect(scene.port().scrollTop).toBe(900);
+    expect(row3()).toBe(0);
+    expect(scene.layout().virtualizer.options.anchorTo).not.toBe("end");
+    scene.geometry.rowHeights[0] = 1300;
+    await act(async () => scene.external.notify());
+    await act(async () => scene.frames.release());
+    expect(scene.port().scrollTop).toBe(1900);
+    expect(scene.port().scrollHeight).toBe(2500);
+    expect(row3()).toBe(0);
+  } finally {
+    scene.dispose();
+    resetTranscriptViewRegistryForTests();
+  }
+});
+
 test.each([
   ...["button", "summary", "editor", "editable", "prevented", "composing", "ctrl", "alt", "meta", "nested"].map(
     (input) => ({

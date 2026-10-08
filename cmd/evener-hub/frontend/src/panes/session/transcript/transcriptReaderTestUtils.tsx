@@ -92,7 +92,7 @@ export function mountReaderScene(
             <VirtualList
               ref={listRef}
               dynamic
-              anchorToEnd
+              anchorToEnd={!registration.hasRetainedPlacement()}
               count={rowHeights.length}
               estimateSize={() => widget.estimate}
               getItemKey={(index) => model.turns[index]?.id ?? index}
