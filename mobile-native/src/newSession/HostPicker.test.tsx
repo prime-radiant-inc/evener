@@ -7,7 +7,7 @@ import { HostsController } from "../hosts/hostsController";
 import { hostRow, liveSession, scriptedFleet } from "../hosts/hostsTestUtils";
 import { LiveSessionsReader } from "../hosts/liveCounts";
 import { createNewSessionStore } from "../newSession";
-import { pressable, render, renderedText, textOf } from "../renderNative.testkit";
+import { pressable, render, renderedText, textOf, unmountMountedTrees } from "../renderNative.testkit";
 import { HostPicker } from "./HostPicker";
 import { NewSessionProvider, type NewSessionRoutes } from "./newSessionContext";
 import { sheetContext } from "./newSessionTestUtils";
@@ -79,7 +79,7 @@ async function mount(hosts: HostRow[], source = "local") {
 		navigation,
 		row,
 		dispose: () => {
-			act(() => tree.unmount());
+			unmountMountedTrees();
 			hostsController.dispose();
 			live.dispose();
 		},
