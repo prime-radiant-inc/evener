@@ -221,19 +221,19 @@ func TestOutputFileStatsAndGrepSeeOnlyTheVisibleBytes(t *testing.T) {
 		t.Fatalf("OutputFileStats = %d, %d, %v; want first visible %d", total, firstVisible, err, visibleStart)
 	}
 	var checkedTotal int64
-	matches, err := GrepOutputFileLimit(path, regexp.MustCompile("old|new"), 1024, 0, 1024, func(total int64) error {
+	matches, err := grepOpenedOutputFile(t, path, regexp.MustCompile("old|new"), 1024, 0, 1024, func(total int64) error {
 		checkedTotal = total
 		return nil
 	})
 	if err != nil || checkedTotal != total {
-		t.Fatalf("GrepOutputFileLimit checked total %d, %v; want %d", checkedTotal, err, total)
+		t.Fatalf("GrepOutputFileLimitFromFile checked total %d, %v; want %d", checkedTotal, err, total)
 	}
 	refused := errors.New("refused")
-	if _, err := GrepOutputFileLimit(path, nil, 1024, 0, 1024, func(int64) error { return refused }); !errors.Is(err, refused) {
-		t.Fatalf("GrepOutputFileLimit with a refused total: err = %v, want the refusal before any scanning", err)
+	if _, err := grepOpenedOutputFile(t, path, nil, 1024, 0, 1024, func(int64) error { return refused }); !errors.Is(err, refused) {
+		t.Fatalf("GrepOutputFileLimitFromFile with a refused total: err = %v, want the refusal before any scanning", err)
 	}
 	if len(matches) != 2 || matches[0].ByteOffset != visibleStart || matches[0].Line != "new-1" {
-		t.Fatalf("GrepOutputFileLimit = %+v, want the two visible lines from %d", matches, visibleStart)
+		t.Fatalf("GrepOutputFileLimitFromFile = %+v, want the two visible lines from %d", matches, visibleStart)
 	}
 }
 
@@ -308,7 +308,7 @@ func TestGrepOutputFileRefusesAFileThatChangedAfterItsView(t *testing.T) {
 	path, _ := writeHiddenPrefixOutput(t)
 	// checkTotal runs between the view and the reopen: grow the file there,
 	// the way a compaction replacing it would change its size.
-	_, err := GrepOutputFileLimit(path, regexp.MustCompile("new"), 1024, 0, 1024, func(int64) error {
+	_, err := grepOpenedOutputFile(t, path, regexp.MustCompile("new"), 1024, 0, 1024, func(int64) error {
 		f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
 		if err != nil {
 			return err
@@ -326,7 +326,7 @@ func TestGrepOutputFileRefusesASameSizeReplacementAfterItsView(t *testing.T) {
 	path, _ := writeHiddenPrefixOutput(t)
 	// A compaction can replace the file with another generation of the same
 	// size, which a size check alone cannot tell apart.
-	_, err := GrepOutputFileLimit(path, regexp.MustCompile("new"), 1024, 0, 1024, func(int64) error {
+	_, err := grepOpenedOutputFile(t, path, regexp.MustCompile("new"), 1024, 0, 1024, func(int64) error {
 		next := path + ".next"
 		if err := os.WriteFile(next, []byte("new-x\nnew-y\nnew-z\nnew-w\n"), 0o644); err != nil {
 			return err
@@ -338,15 +338,26 @@ func TestGrepOutputFileRefusesASameSizeReplacementAfterItsView(t *testing.T) {
 	}
 }
 
-func TestGrepOutputFileChecksItsLimitBeforeOpening(t *testing.T) {
-	// The limit is checked before the file is opened, so an empty or invalid
-	// budget neither touches the file nor leaves a descriptor open.
-	missing := filepath.Join(t.TempDir(), "job_missing.log")
+func TestGrepOutputFileChecksItsLimitBeforeReading(t *testing.T) {
+	// The limit is checked before the file is touched, so an empty or invalid
+	// budget never reads it.
 	refuse := func(int64) error { t.Fatal("checkTotal ran for a grep with no budget"); return nil }
-	if matches, err := GrepOutputFileLimit(missing, regexp.MustCompile("x"), 0, 0, 1024, refuse); err != nil || matches != nil {
+	if matches, err := GrepOutputFileLimitFromFile("job_missing.log", nil, regexp.MustCompile("x"), 0, 0, 1024, refuse); err != nil || matches != nil {
 		t.Fatalf("zero budget = %v, %v; want nil, nil", matches, err)
 	}
-	if _, err := GrepOutputFileLimit(missing, regexp.MustCompile("x"), -1, 0, 1024, refuse); !errors.Is(err, ErrInvalidLimit) {
+	if _, err := GrepOutputFileLimitFromFile("job_missing.log", nil, regexp.MustCompile("x"), -1, 0, 1024, refuse); !errors.Is(err, ErrInvalidLimit) {
 		t.Fatalf("negative budget err = %v, want ErrInvalidLimit", err)
 	}
+}
+
+// grepOpenedOutputFile opens path and greps it through
+// GrepOutputFileLimitFromFile, the way agent's closed-job grep does.
+func grepOpenedOutputFile(t *testing.T, path string, re *regexp.Regexp, limitBytes int, maxMatches int, maxLineBytes int, checkTotal func(total int64) error) ([]Match, error) {
+	t.Helper()
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	return GrepOutputFileLimitFromFile(path, f, re, limitBytes, maxMatches, maxLineBytes, checkTotal)
 }

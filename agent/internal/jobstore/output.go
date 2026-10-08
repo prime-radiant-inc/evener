@@ -694,30 +694,23 @@ func readOutputFileView(path string) (outputView, error) {
 	return readOutputViewForFile(afero.NewOsFs(), outputMetaPath(path), path, info.Size())
 }
 
-// GrepOutputFileLimit greps a closed output file's visible bytes, reporting
-// lifetime offsets, with the same bounded line handling as
-// OutputStore.GrepLimitLineBytes. checkTotal sees the file's lifetime total
-// before any scanning and can refuse it. A file that changes between reading
-// its metadata and scanning it returns ErrOutputChangedDuringRead.
-func GrepOutputFileLimit(path string, re *regexp.Regexp, limitBytes int, maxMatches int, maxLineBytes int, checkTotal func(total int64) error) ([]Match, error) {
-	// Check the budget before opening: grepFileLimitAtOpen closes f only
-	// once it scans.
+// GrepOutputFileLimitFromFile greps the visible bytes of an already-open
+// closed output file, reporting lifetime offsets, with the same bounded line
+// handling as OutputStore.GrepLimitLineBytes. The caller owns f and must close
+// it; path locates the metadata sidecars. checkTotal sees the file's lifetime
+// total before any scanning and can refuse it. A file that changes between
+// opening and reading its metadata returns ErrOutputChangedDuringRead; callers
+// that retry must reopen the output first.
+func GrepOutputFileLimitFromFile(path string, f *os.File, re *regexp.Regexp, limitBytes int, maxMatches int, maxLineBytes int, checkTotal func(total int64) error) ([]Match, error) {
 	if scan, err := grepLimitScans(limitBytes); !scan {
 		return nil, err
 	}
-	// Open first so the view and the scan describe one file: a compaction
-	// renames a new generation over the path, possibly of the same size.
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, fmt.Errorf("jobstore: open output: %w", err)
-	}
 	view, err := readOpenOutputFileView(f, path, checkTotal)
 	if err != nil {
-		_ = f.Close()
 		return nil, err
 	}
 	return grepFileLimitAtOpen(path, re, limitBytes, maxMatches, maxLineBytes, view.visibleStart, func(string) (io.ReadCloser, error) {
-		return f, nil
+		return io.NopCloser(f), nil
 	})
 }
 

@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -321,7 +322,7 @@ func TestOpenJobOutputFileRefusesRegularReplacementDuringOpen(t *testing.T) {
 }
 
 func TestReadLocalJobOutputSnapshotsRetryWithFreshDescriptor(t *testing.T) {
-	for _, api := range []string{"snapshot", "window"} {
+	for _, api := range []string{"snapshot", "window", "grep"} {
 		t.Run(api, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "output.log")
 			output, err := jobstore.CreateOutputNoSync(path, 4)
@@ -355,18 +356,25 @@ func TestReadLocalJobOutputSnapshotsRetryWithFreshDescriptor(t *testing.T) {
 			}
 
 			var content []byte
-			if api == "snapshot" {
+			switch api {
+			case "snapshot":
 				got, err := readLocalJobOutputSnapshot(path, 4, false)
 				if err != nil {
 					t.Fatalf("readLocalJobOutputSnapshot: %v", err)
 				}
 				content = got.Content
-			} else {
+			case "window":
 				got, err := readLocalJobOutputWindowSnapshot(path, output.RetainedStart(), 4)
 				if err != nil {
 					t.Fatalf("readLocalJobOutputWindowSnapshot: %v", err)
 				}
 				content = got.Content
+			default:
+				matches, err := grepOutputFile(path, regexp.MustCompile(`.`), 4, nil)
+				if err != nil || len(matches) != 1 {
+					t.Fatalf("grepOutputFile = %+v, %v; want one match", matches, err)
+				}
+				content = []byte(matches[0].Line)
 			}
 			if opens != 2 || string(content) != "BBBB" {
 				t.Fatalf("opens=%d content=%q, want two opens and post-prune bytes", opens, content)
