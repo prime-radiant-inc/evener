@@ -7,7 +7,11 @@ import { type CommittedVirtualListLayout, VirtualList, type VirtualListHandle } 
 import { mountReaderScene } from "../transcriptReaderTestUtils";
 import { installTranscriptGeometry } from "../transcriptReadingGeometryTestUtils";
 import type { ScrollMetrics } from "./scrollMetrics";
-import { resetTranscriptViewRegistryForTests, transitionTranscriptViews } from "./transcriptViewRegistry";
+import {
+  type CapturedTranscriptView,
+  resetTranscriptViewRegistryForTests,
+  transitionTranscriptViews,
+} from "./transcriptViewRegistry";
 import {
   captureTopAnchor,
   captureTranscriptView,
@@ -174,6 +178,12 @@ function nestedScroller(port: HTMLElement, metrics: ScrollMetrics): HTMLElement 
 
 const AT_BOTTOM: ScrollMetrics = { scrollTop: 950, scrollHeight: 1000, clientHeight: 50 };
 const SCROLLED_AWAY: ScrollMetrics = { scrollTop: 0, scrollHeight: 5000, clientHeight: 500 };
+const RETAINED_AWAY_FROM_BOTTOM: CapturedTranscriptView = {
+  anchorId: "i1",
+  anchorOffset: -100,
+  normalizedOffset: 0.08,
+  followingBottom: false,
+};
 
 beforeEach(() => {
   resetThreadsStoreForTests();
@@ -2182,7 +2192,7 @@ describe("late content growth with no scroll event", () => {
     };
   }
 
-  function mountWithContent(start: ScrollMetrics = MOUNTED_AT_BOTTOM) {
+  function mountWithContent(start: ScrollMetrics = MOUNTED_AT_BOTTOM, initialViewCapture?: CapturedTranscriptView) {
     const { ref, el } = makeListHandle();
     // The scroll content VirtualList renders inside the port (its sizer): a
     // webfont swap resizes THIS, not the port, so the observer must watch it.
@@ -2196,6 +2206,7 @@ describe("late content growth with no scroll event", () => {
         listRef: ref,
         loadOlder: vi.fn(() => Promise.resolve()),
         measure,
+        initialViewCapture,
       }),
     );
     definePort(el, start);
@@ -2237,6 +2248,28 @@ describe("late content growth with no scroll event", () => {
       act(() => resizeObserver.trigger());
 
       expect(el.scrollTop).toBe(TRUE_BOTTOM_AFTER_GROWTH);
+    } finally {
+      resizeObserver.restore();
+    }
+  });
+
+  // A remounted reader mounts on estimates that fit the port, and its retained
+  // restore lands after the rows measure. Growth reported before that landing's
+  // scroll event is the reader's place, not an end the reader was following.
+  test("a retained placement is not re-anchored when a ResizeObserver tick reports the content grew", () => {
+    const resizeObserver = installResizeObserver();
+    try {
+      const { el, set, result } = mountWithContent(
+        { scrollTop: 0, scrollHeight: 192, clientHeight: 400 },
+        RETAINED_AWAY_FROM_BOTTOM,
+      );
+      definePort(el, { scrollTop: 100, scrollHeight: 1700, clientHeight: 400 });
+      set({ scrollTop: 100, scrollHeight: 1700 });
+
+      act(() => resizeObserver.trigger());
+
+      expect(el.scrollTop).toBe(100);
+      expect(result.current.pillVisible).toBe(true);
     } finally {
       resizeObserver.restore();
     }
@@ -3294,6 +3327,34 @@ describe("prepend anchoring (loadOlder resolving)", () => {
 });
 
 describe("mount positioning", () => {
+  // A remounted reader restores its retained place after its rows measure, so
+  // the mount saw only estimates that fit the port. The restore's own landing
+  // grows the content below an offset that advanced from 0; that is the
+  // reader's place, not a correction below an end they were following.
+  test("a retained placement's landing is the reader's place, not content measured in below the end", () => {
+    const { ref, el } = makeListHandle();
+    const { measure, set } = makeMeasure({ scrollTop: 0, scrollHeight: 192, clientHeight: 400 });
+    const { result } = renderHook(() =>
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: model([turn("t1", ["i1"]), turn("t2", ["i2"])]),
+        listRef: ref,
+        loadOlder: vi.fn(() => Promise.resolve()),
+        measure,
+        initialViewCapture: RETAINED_AWAY_FROM_BOTTOM,
+      }),
+    );
+
+    act(() => {
+      el.scrollTop = 100;
+      set({ scrollTop: 100, scrollHeight: 1700 });
+      el.dispatchEvent(new Event("scroll"));
+    });
+
+    expect(el.scrollTop).toBe(100);
+    expect(result.current.pillVisible).toBe(true);
+  });
+
   test("a fresh ref with no saved scroll position starts at the bottom", () => {
     const { ref, scrollToIndex } = makeListHandle();
     const { measure } = makeMeasure(AT_BOTTOM);
