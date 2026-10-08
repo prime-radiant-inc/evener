@@ -24,7 +24,7 @@ import {
 	type NativeMutationStorageListener,
 	nativeMutationTargetKey,
 } from "./nativeMutationRuntime";
-import { render } from "./renderNative.testkit";
+import { render, settle } from "./renderNative.testkit";
 import { ConversationScreen } from "./screens";
 import { openSqliteSyncDouble } from "./sqliteSync.testkit";
 import { type NativeMutationRecoveryProjection, useNativeMutationRecovery } from "./useNativeMutationRecovery";
@@ -270,12 +270,6 @@ async function seedRecoveryRow(runtime: NativeMutationRuntime, targetKey: string
 	return recovery;
 }
 
-async function flush() {
-	await act(async () => {
-		await new Promise((resolve) => setTimeout(resolve, 0));
-	});
-}
-
 it("renders the real ConversationScreen without constructing a runtime or registering a target during the render pass", async () => {
 	const opened = openSqliteSyncDouble();
 	let next = 0;
@@ -328,7 +322,7 @@ it("renders the real ConversationScreen without constructing a runtime or regist
 
 	// The recovery surface really enumerated the seeded durable row through
 	// the real runtime's read pipeline, inside the real screen's tree.
-	await flush();
+	await settle();
 	expect(latestProjection?.loading).toBe(false);
 	expect(latestProjection?.snapshot?.recovery.map((row) => row.clientMutationId)).toEqual(["render-1"]);
 	// The screen rendered its actual content, not a stub: the composer's
@@ -347,7 +341,7 @@ it("renders the real ConversationScreen without constructing a runtime or regist
 	act(() => {
 		renderer.update(tree());
 	});
-	await flush();
+	await settle();
 
 	const readsAfter = recordedCalls.filter((call) => call.method === "read");
 	expect(readsAfter).toHaveLength(2);
@@ -362,7 +356,7 @@ it("renders the real ConversationScreen without constructing a runtime or regist
 	await act(async () => {
 		await runtime.discardRecovery("missing", firstKey);
 	});
-	await flush();
+	await settle();
 	const readsSinceRouteChange = recordedCalls.filter((call) => call.method === "read").slice(readsAfterRouteChange);
 	expect(readsSinceRouteChange).toEqual([]);
 	expect(latestProjection?.snapshot?.recovery).toEqual([]);
@@ -372,7 +366,7 @@ it("renders the real ConversationScreen without constructing a runtime or regist
 	await act(async () => {
 		await runtime.discardRecovery("missing", secondKey);
 	});
-	await flush();
+	await settle();
 	const readsSinceRefresh = recordedCalls.filter((call) => call.method === "read").slice(readsAfterRouteChange);
 	expect(readsSinceRefresh.map((call) => call.args[0])).toEqual([secondKey]);
 	expect(latestProjection?.snapshot?.recovery.map((row) => row.clientMutationId)).toEqual(["render-3"]);
@@ -439,7 +433,7 @@ it("classifies a forbidden runtime call during a state-triggered rerender as ren
 			<ArmedViolatingChild />
 		</PhaseMarker>,
 	);
-	await flush();
+	await settle();
 	const renderReads = recordedCalls.filter((call) => call.method === "read" && call.phase === "render");
 	expect(renderReads).toHaveLength(1);
 	expect(renderReads[0].args).toEqual([key]);
