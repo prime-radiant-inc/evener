@@ -626,7 +626,7 @@ export class SessionActivityStore {
     read.pace.resume();
   }
   /** Stops a read's scheduled and queued requests. `rootQueued` says whether a
-   * root read stays queued; failures reset so the next reads start their
+   * root read is left queued; failures reset so the next reads start their
    * backoff afresh, not from the failures earlier reads left behind. */
   private stopReadDemand(read: ResourceRead, rootQueued: boolean): void {
     this.cancelTimer(read);
