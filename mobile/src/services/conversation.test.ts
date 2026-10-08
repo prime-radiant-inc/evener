@@ -406,16 +406,17 @@ describe("ConversationService", () => {
 			const service = createConversationService(client, {
 				onReadComplete: () => Promise.reject(new Error("mutation storage down")),
 			});
+			// Each read's failed fence is reported, not swallowed.
+			const fenceFailure = ["ConversationService: read fence failed", new Error("mutation storage down")];
 			const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
 			try {
 				await service.open("ref-1");
+				expect(consoleError.mock.calls).toEqual([fenceFailure]);
 				// The authoritative read succeeded; the fence failure leaves the durable
 				// dispatch gate blocked but must not fail the projection.
 				await expect(service.readProjection("ref-1")).resolves.toMatchObject({
 					olderCursor: "cursor",
 				});
-				// Each read's failed fence is reported, not swallowed.
-				const fenceFailure = ["ConversationService: read fence failed", new Error("mutation storage down")];
 				expect(consoleError.mock.calls).toEqual([fenceFailure, fenceFailure]);
 			} finally {
 				consoleError.mockRestore();
