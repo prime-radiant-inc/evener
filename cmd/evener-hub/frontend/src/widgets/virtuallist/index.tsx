@@ -237,6 +237,10 @@ export function VirtualList({
       }
     : {};
 
+  // A measured list keeps the reader's place across row measurements while it
+  // follows the end, and for a reader (onLayout) whatever anchorToEnd says:
+  // TranscriptBody turns anchorToEnd off while a retained placement pends.
+  const keepsPlaceOnMeasure = dynamic && (anchorToEnd || onLayout !== undefined);
   const virtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
     count,
     getScrollElement: () => scrollRef.current,
@@ -248,7 +252,7 @@ export function VirtualList({
     ...(anchorToEnd
       ? { anchorTo: "end" as const, followOnAppend: true, scrollEndThreshold: END_ANCHOR_THRESHOLD_PX }
       : {}),
-    ...(dynamic && anchorToEnd
+    ...(keepsPlaceOnMeasure
       ? {
           scrollToFn: (offset, options, instance) => {
             elementScroll(offset, options, instance);
@@ -326,16 +330,15 @@ export function VirtualList({
   // A reader keeps this rule while anchorToEnd is off: onLayout is what feeds
   // its movement record, which outlives the core's scroll direction (reset
   // 150ms after the last scroll event).
-  virtualizer.shouldAdjustScrollPositionOnItemSizeChange =
-    dynamic && (anchorToEnd || onLayout)
-      ? (item, _delta, instance) => {
-          // The intended offset includes earlier adjustments in this batch,
-          // even before the DOM sizer grows enough to accept those writes.
-          const offset = instance.scrollOffset ?? instance.scrollElement?.scrollTop ?? 0;
-          const backward = instance.scrollDirection === "backward" || backwardMovementRef.current;
-          return item.start < offset && (!instance.itemSizeCache.has(item.key) || !backward || item.end <= offset);
-        }
-      : undefined;
+  virtualizer.shouldAdjustScrollPositionOnItemSizeChange = keepsPlaceOnMeasure
+    ? (item, _delta, instance) => {
+        // The intended offset includes earlier adjustments in this batch,
+        // even before the DOM sizer grows enough to accept those writes.
+        const offset = instance.scrollOffset ?? instance.scrollElement?.scrollTop ?? 0;
+        const backward = instance.scrollDirection === "backward" || backwardMovementRef.current;
+        return item.start < offset && (!instance.itemSizeCache.has(item.key) || !backward || item.end <= offset);
+      }
+    : undefined;
 
   useImperativeHandle(
     ref,
