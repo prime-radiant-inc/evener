@@ -699,9 +699,9 @@ func DefTaskList(effortLevels []string) llm.ToolDefinition {
 		// strict=true when unset and force-requires every nested property,
 		// which would force strict-mode models to emit "status": "" (enum
 		// violation) or "depends_on": [] on every update item. Opting out keeps
-		// optional fields genuinely omittable; decodeTaskArgs still reads an
-		// empty or null depends_on as no change, since some models send them
-		// anyway.
+		// optional fields genuinely omittable; task_list's NormalizeArgs still
+		// drops an empty or null depends_on as no change, since some models
+		// send them anyway.
 		Strict: &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",

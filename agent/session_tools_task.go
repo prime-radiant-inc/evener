@@ -154,6 +154,10 @@ func mutateAndPublishTaskStore(store *taskpkg.TaskStore, mutation func(epoch, re
 // PreValidate. The preparation and decode paths both call the single
 // validateTaskListItemFields validator, so their allowlists and targeted
 // diagnostics remain one shared contract rather than duplicated behavior.
+//
+// Placeholder update fields are dropped earlier, by normalizeTaskListArgs
+// (the tool's NormalizeArgs); here depends_on: [] clears dependencies and
+// null is rejected, so a direct caller must normalize first.
 func decodeTaskArgs(args map[string]any) (adds []taskpkg.TaskInput, updates []taskpkg.TaskUpdate, err error) {
 	for _, retired := range []string{"action", "tasks", "updates"} {
 		if _, supplied := args[retired]; supplied {

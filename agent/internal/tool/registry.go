@@ -734,12 +734,9 @@ func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnviron
 	// and record all consult the same two keys, so the argument body is
 	// canonicalized at most once per call instead of once per ledger operation.
 	// The fingerprint applies the tool's NormalizeArgs, the same rule dispatch
-	// applies below; an unknown tool is still judged, just without one.
-	var normalize func(map[string]any) (map[string]any, error)
-	if ok {
-		normalize = t.NormalizeArgs
-	}
-	key := newDispatchKey(name, call.Arguments, normalize)
+	// applies below; an unknown tool's zero RegisteredTool has none, so it is
+	// still judged on its raw arguments.
+	key := newDispatchKey(name, call.Arguments, t.NormalizeArgs)
 	if judged {
 		if failStreak, _, snippets := r.breaker.check(key); failStreak >= breakerThreshold {
 			return truncateResult(name, callID, failureParkText(name, snippets), true, defaultToolLimit(name))
