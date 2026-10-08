@@ -145,16 +145,8 @@ func readOutputSnapshotFromFileAttempt(fs afero.Fs, path string, f *os.File, ret
 		return OutputSnapshot{}, err
 	}
 
-	afterInfo, err := f.Stat()
-	if err != nil {
-		return OutputSnapshot{}, fmt.Errorf("jobstore: stat output snapshot: %w", err)
-	}
-	after, err := readOutputMetaForSnapshot(fileFS, outputMetaPath(path), path, afterInfo.Size())
-	if err != nil {
+	if err := checkOutputSizeUnchanged(f, retainedBytes); err != nil {
 		return OutputSnapshot{}, err
-	}
-	if afterInfo.Size() != retainedBytes || after != view {
-		return OutputSnapshot{}, errOutputChanged
 	}
 	if err := checkOutputFileGeneration(path, f); err != nil {
 		return OutputSnapshot{}, err
@@ -200,21 +192,31 @@ func readOutputRangeSnapshotFromFileAttempt(fs afero.Fs, path string, f *os.File
 	snapshot.End = end
 	snapshot.Truncated = view.visibleStart > 0 || offset > view.visibleStart || end < view.total
 
-	afterInfo, err := f.Stat()
-	if err != nil {
-		return OutputWindowSnapshot{}, fmt.Errorf("jobstore: stat output window snapshot: %w", err)
-	}
-	after, err := readOutputMetaForSnapshot(fileFS, outputMetaPath(path), path, afterInfo.Size())
-	if err != nil {
+	if err := checkOutputSizeUnchanged(f, retainedBytes); err != nil {
 		return OutputWindowSnapshot{}, err
-	}
-	if afterInfo.Size() != retainedBytes || after != view {
-		return OutputWindowSnapshot{}, errOutputChanged
 	}
 	if err := checkOutputFileGeneration(path, f); err != nil {
 		return OutputWindowSnapshot{}, err
 	}
 	return snapshot, nil
+}
+
+// checkOutputSizeUnchanged reports a read's file as changed when it no longer
+// holds the retainedBytes its metadata was validated against. The metadata is
+// validated once per read (#3903), since that hashes the whole retained file:
+// the caller's observations after the read compare the sidecar bytes and the
+// file's size, time and identity, which every writer change moves, so a
+// second validation could only differ on an in-place rewrite, which no writer
+// does.
+func checkOutputSizeUnchanged(f *os.File, retainedBytes int64) error {
+	info, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("jobstore: stat output snapshot: %w", err)
+	}
+	if info.Size() != retainedBytes {
+		return errOutputChanged
+	}
+	return nil
 }
 
 func checkOutputFileGeneration(path string, f *os.File) error {

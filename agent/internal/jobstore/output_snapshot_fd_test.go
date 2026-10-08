@@ -397,7 +397,7 @@ type fdPostReadObservationFaultFS struct {
 func (fs *fdPostReadObservationFaultFS) Open(name string) (afero.File, error) {
 	if name == outputMetaPath(fs.path) {
 		fs.metaOpens++
-		if fs.metaOpens == 3 {
+		if fs.metaOpens == 2 {
 			appendFile, err := os.OpenFile(fs.path, os.O_WRONLY|os.O_APPEND, 0)
 			if err != nil {
 				return nil, err
@@ -410,7 +410,7 @@ func (fs *fdPostReadObservationFaultFS) Open(name string) (afero.File, error) {
 				return nil, err
 			}
 		}
-		if fs.metaOpens == 4 {
+		if fs.metaOpens == 3 {
 			return nil, errFDPostReadObservation
 		}
 	}
@@ -452,5 +452,69 @@ func TestReadOutputWindowSnapshotFromFilePreservesRawBytes(t *testing.T) {
 	}
 	if !bytes.Equal(got.Content, want) || got.Start != 0 || got.End != 3 {
 		t.Fatalf("snapshot = %+v content=%x, want exact bytes %x", got, got.Content, want)
+	}
+}
+
+// metaOpenCountingFs counts opens of one metadata sidecar.
+type metaOpenCountingFs struct {
+	afero.Fs
+	metaPath string
+	opens    *int
+}
+
+func (fs metaOpenCountingFs) Open(name string) (afero.File, error) {
+	if name == fs.metaPath {
+		*fs.opens++
+	}
+	return fs.Fs.Open(name)
+}
+
+// A descriptor read hashes the retained file once (#3903). Each metadata
+// validation hashes the whole retained file, up to the cap, so the read
+// validates once; the observations before and after it, which only compare
+// the sidecar bytes and the file's size, time and identity, open the sidecar
+// once each.
+func TestReadOutputSnapshotFromFileValidatesMetadataOnce(t *testing.T) {
+	for _, api := range []string{"snapshot", "window", "page"} {
+		t.Run(api, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "job.log")
+			const content = "retained output\n"
+			mustWriteSnapshotFixture(t, afero.NewOsFs(), path, []byte(content), int64(len(content)), 0)
+			f, err := os.Open(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = f.Close() })
+			opens := 0
+			fs := metaOpenCountingFs{Fs: afero.NewOsFs(), metaPath: outputMetaPath(path), opens: &opens}
+			var got []byte
+			switch api {
+			case "snapshot":
+				snapshot, err := readOutputSnapshotFromFileOnce(fs, path, f, 1024, true)
+				if err != nil {
+					t.Fatal(err)
+				}
+				got = snapshot.Content
+			case "window":
+				snapshot, err := readOutputWindowSnapshotFromFileOnce(fs, path, f, 0, 1024)
+				if err != nil {
+					t.Fatal(err)
+				}
+				got = snapshot.Content
+			default:
+				snapshot, err := readOutputPageSnapshotFromFileOnce(fs, path, f, nil, 1024)
+				if err != nil {
+					t.Fatal(err)
+				}
+				got = snapshot.Content
+			}
+			if string(got) != content {
+				t.Fatalf("content = %q, want %q", got, content)
+			}
+			const observations = 2
+			if opens != observations+1 {
+				t.Fatalf("metadata opened %d times, want %d observations and one validation", opens, observations)
+			}
+		})
 	}
 }
