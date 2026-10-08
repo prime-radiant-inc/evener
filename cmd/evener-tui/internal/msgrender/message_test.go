@@ -401,14 +401,45 @@ func TestRenderToolCallShowsDelegateSendReplyAndEarlierResults(t *testing.T) {
 		`"earlier_results":[{"delegate_id":"dlg_ABCDEFGH1234","action":"started","running_in_background":false,"status":"completed","output":"FIRST REPLY"},` +
 		`{"delegate_id":"dlg_ABCDEFGH1234","action":"started","running_in_background":false,"status":"failed","reason":"it broke"}]}`
 	got := ansi.Strip(RenderToolCall(delegateSendToolCall(raw, "printed text"), 100, false))
-	order := []string{"Delegate dlg_ABCD", "earlier reply 1 of 2", "FIRST REPLY", "earlier reply 2 of 2 · failed", "it broke", "reply", "LATEST REPLY"}
+	assertRenderedLinesInOrder(t, got, "Delegate dlg_ABCD", "earlier reply 1 of 2", "FIRST REPLY", "earlier reply 2 of 2 · failed", "it broke", "reply", "LATEST REPLY")
+}
+
+// assertRenderedLinesInOrder requires each of want, in order, as a whole
+// rendered line once its indentation is trimmed; the first may be a prefix.
+func assertRenderedLinesInOrder(t *testing.T, got string, want ...string) {
+	t.Helper()
 	at := 0
-	for _, want := range order {
-		i := strings.Index(got[at:], want)
-		if i < 0 {
-			t.Fatalf("render is missing %q after offset %d, want %q in order; got:\n%s", want, at, order, got)
+	for _, line := range strings.Split(got, "\n") {
+		line = strings.TrimSpace(line)
+		if at < len(want) && (line == want[at] || at == 0 && strings.HasPrefix(line, want[at])) {
+			at++
 		}
-		at += i + len(want)
+	}
+	if at != len(want) {
+		t.Fatalf("render matched %d of %q as lines in order; got:\n%s", at, want, got)
+	}
+}
+
+// An earlier result with no text or reason still shows, as "(no reply)";
+// with an empty output of its own and no earlier results, the reply is what
+// was printed above the footer, and lines printed after the footer are not
+// part of it.
+func TestRenderToolCallDelegateSendEdgeCases(t *testing.T) {
+	raw := `{"delegate_id":"dlg_ABCDEFGH1234","action":"started","running_in_background":false,"output":"LATEST",` +
+		`"earlier_results":[{"delegate_id":"dlg_ABCDEFGH1234","action":"started","running_in_background":false,"status":"completed"}]}`
+	got := ansi.Strip(RenderToolCall(delegateSendToolCall(raw, ""), 100, false))
+	assertRenderedLinesInOrder(t, got, "Delegate dlg_ABCD", "earlier reply 1 of 1", "(no reply)", "reply", "LATEST")
+
+	raw = `{"delegate_id":"dlg_ABCDEFGH1234","action":"started","running_in_background":false,"output":""}`
+	got = ansi.Strip(RenderToolCall(delegateSendToolCall(raw, "printed reply\n[delegate_id dlg_ABCDEFGH1234 · started · completed]\nstructured_result: {}"), 100, false))
+	assertRenderedLinesInOrder(t, got, "Delegate dlg_ABCD", "reply", "printed reply")
+	if strings.Contains(got, "structured_result") {
+		t.Fatalf("render = %q, want lines after the footer kept out of the reply", got)
+	}
+
+	steer := ansi.Strip(RenderToolCall(delegateSendToolCall("", "[delegate_id dlg_ABCDEFGH1234 · delivered]"), 100, false))
+	if strings.Contains(steer, "reply") {
+		t.Fatalf("render of a steer = %q, want no reply", steer)
 	}
 }
 
