@@ -1132,6 +1132,8 @@ export function useTranscriptScroll({
   // every other piece of per-session state.
   const gesturePendingRef = useRef(false);
   const gestureClearFrameRef = useRef<number | null>(null);
+  // Frames the pending marker has left before its clearing frame clears it.
+  const gestureFramesLeftRef = useRef(0);
   const pointerDraggingRef = useRef(false);
   const middleButtonHeldRef = useRef(false);
   const lastTouchYRef = useRef<number | null>(null);
@@ -1166,8 +1168,13 @@ export function useTranscriptScroll({
   // the bottom, so the at-bottom clause fails for every later correction until
   // the reader actually returns to the bottom: one false veto reinstates the
   // mount strand permanently, rather than costing a single frame.
+  //
+  // A native scrolling key's marker lasts two frames. The browser's smooth
+  // scroll for the key starts on the frame after it, so its first scroll event
+  // arrives after a one-frame clear (Chrome: 20ms after Shift-Space's keydown,
+  // #3880). An instant key scroll consumes the marker in the first frame.
   const markGesture = useCallback(
-    (readerIntent = true, beforeOffset?: number) => {
+    (readerIntent = true, beforeOffset?: number, frames = 1) => {
       const el = listRef.current?.getScrollElement();
       if (readerIntent && el) {
         pendingViewAnchorRef.current = null;
@@ -1179,12 +1186,18 @@ export function useTranscriptScroll({
       }
       pendingInitialEndRef.current = null;
       gesturePendingRef.current = true;
+      gestureFramesLeftRef.current = Math.max(gestureFramesLeftRef.current, frames);
       if (gestureClearFrameRef.current !== null) return;
-      gestureClearFrameRef.current = requestAnimationFrame(() => {
-        gestureClearFrameRef.current = null;
-        gesturePendingRef.current = false;
-        readerGestureRef.current = undefined;
-      });
+      const clearOnFrame = () => {
+        gestureClearFrameRef.current = requestAnimationFrame(() => {
+          gestureFramesLeftRef.current -= 1;
+          if (gestureFramesLeftRef.current > 0) return clearOnFrame();
+          gestureClearFrameRef.current = null;
+          gesturePendingRef.current = false;
+          readerGestureRef.current = undefined;
+        });
+      };
+      clearOnFrame();
     },
     [listRef],
   );
@@ -1314,6 +1327,7 @@ export function useTranscriptScroll({
     middleButtonHeldRef.current = false;
     gesturePendingRef.current = false;
     readerGestureRef.current = undefined;
+    gestureFramesLeftRef.current = 0;
     if (gestureClearFrameRef.current !== null) {
       cancelAnimationFrame(gestureClearFrameRef.current);
       gestureClearFrameRef.current = null;
@@ -1390,7 +1404,7 @@ export function useTranscriptScroll({
         !verticalInputCanMovePort(port, measure(port), event.target, direction)
       )
         return;
-      markGesture();
+      markGesture(true, undefined, 2);
     },
     [markGesture, measure],
   );
@@ -1728,6 +1742,7 @@ export function useTranscriptScroll({
       // The next event any of these would meet is the mount scroll below, which
       // belongs to the new session and to no gesture.
       gesturePendingRef.current = false;
+      gestureFramesLeftRef.current = 0;
       if (gestureClearFrameRef.current !== null) {
         cancelAnimationFrame(gestureClearFrameRef.current);
         gestureClearFrameRef.current = null;

@@ -4050,6 +4050,80 @@ describe("registered transcript view preservation", () => {
   });
 });
 
+// A native scrolling key's smooth scroll starts on the frame AFTER the key:
+// Chrome dispatched Shift-Space's first scroll event 20ms after its keydown,
+// after the gesture's one-frame clear had already run (#3880). Unrecorded, the
+// reader's backward movement left VirtualList's size-change rule unprotected.
+describe("native key scrolling that begins a frame later", () => {
+  const PORT: ScrollMetrics = { scrollTop: 900, scrollHeight: 2000, clientHeight: 500 };
+
+  function mountKeyReader() {
+    const frames: FrameRequestCallback[] = [];
+    const raf = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => frames.push(callback));
+    const { ref, el } = makeListHandle();
+    const { measure, set } = makeMeasure(PORT);
+    const onReaderMovement = vi.fn();
+    renderHook(() =>
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: model([turn("t1", ["i1"]), turn("t2", ["i2"])]),
+        listRef: ref,
+        loadOlder: vi.fn(() => Promise.resolve()),
+        measure,
+        onReaderMovement,
+      }),
+    );
+    definePort(el, PORT);
+    frames.length = 0;
+    return {
+      el,
+      onReaderMovement,
+      shiftSpace: () =>
+        act(() => {
+          el.dispatchEvent(new KeyboardEvent("keydown", { key: " ", shiftKey: true, bubbles: true, cancelable: true }));
+        }),
+      runFrame: () =>
+        act(() => {
+          for (const callback of frames.splice(0)) callback(0);
+        }),
+      scrollTo: (scrollTop: number) =>
+        act(() => {
+          el.scrollTop = scrollTop;
+          set({ scrollTop });
+          el.dispatchEvent(new Event("scroll"));
+        }),
+      restore: () => raf.mockRestore(),
+    };
+  }
+
+  test("the key's first scroll event, one frame late, is recorded as the reader's movement", () => {
+    const reader = mountKeyReader();
+    try {
+      reader.shiftSpace();
+      reader.runFrame();
+      reader.scrollTo(880);
+
+      expect(reader.onReaderMovement).toHaveBeenCalledWith(900);
+    } finally {
+      reader.restore();
+    }
+  });
+
+  test("a key whose scroll never starts stops counting as a gesture after its second frame", () => {
+    const reader = mountKeyReader();
+    try {
+      reader.shiftSpace();
+      reader.runFrame();
+      reader.runFrame();
+      reader.scrollTo(880);
+
+      expect(reader.onReaderMovement).not.toHaveBeenCalled();
+    } finally {
+      reader.restore();
+    }
+  });
+});
+
 describe("no-model / not-yet-mounted safety", () => {
   test("model undefined (thread still loading): no crash, empty result", () => {
     const { ref } = makeListHandle();
