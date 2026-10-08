@@ -187,7 +187,7 @@ func testSessionActivityRelay(t *testing.T, checkpoint func(activityRelayFixture
 	daemon := daemonserver.NewServer(daemonserver.ServerConfig{})
 	// Its thread histories project into each transcript's index directory
 	// until closed; cleanups run last-registered first, so this runs after
-	// the session stops and before the state directory is removed.
+	// the scripted session's stop and before the state directory is removed.
 	t.Cleanup(daemon.Close)
 	prepared, err := daemonserver.PrepareAppIdentityForRef("local", rootID, rootRef, sess.TranscriptPath())
 	if err != nil {
