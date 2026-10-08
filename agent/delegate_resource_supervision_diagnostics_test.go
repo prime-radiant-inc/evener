@@ -37,7 +37,7 @@ func TestStableSupervisionFailureSnapshotCapturesPendingAttention(t *testing.T) 
 	// Hold the lock here as the namer would, so the uncontended keys below
 	// are read once it is free.
 	sub.sess.mu.Lock()
-	time.AfterFunc(50*time.Millisecond, sub.sess.mu.Unlock)
+	time.AfterFunc(heldSessionLockForSnapshotRetry, sub.sess.mu.Unlock)
 	snapshot := uncontendedStableSupervisionSnapshot(t, root, sub, fixture.adapter)
 	if !reflect.DeepEqual(snapshot["pending_attention_ids"], []string{attentionID}) || snapshot["current_run_open"] != false || snapshot["done_closed"] != true {
 		t.Fatalf("snapshot omitted strict pending predicate or finished warm channel: %#v", snapshot)
@@ -310,6 +310,12 @@ func TestStableSupervisionFailureSnapshotCapturesNotificationPayload(t *testing.
 	}
 }
 
+// heldSessionLockForSnapshotRetry is how long a test holds a session lock to
+// make uncontendedStableSupervisionSnapshot's first attempt find it busy. It
+// is not a deadline: the helper retries until the lock is free, so any length
+// passes; it only has to outlast that first attempt for the retry to run.
+const heldSessionLockForSnapshotRetry = 50 * time.Millisecond
+
 // uncontendedStableSupervisionSnapshot is stableSupervisionFailureSnapshot
 // taken once no lock it reads is busy. The snapshot never waits for a lock,
 // and paths outside the run, such as the child's session namer, can hold one
@@ -324,7 +330,9 @@ func uncontendedStableSupervisionSnapshot(t *testing.T, root *Session, sub *suba
 			t.Logf("locks still busy: %v", busy)
 		}
 	}()
-	waitForCondition(t, 5*time.Second, "a snapshot with no busy lock", func() bool {
+	// TRIPWIRE: incidental holders keep a lock for milliseconds; 30s only
+	// fires on a lock that is genuinely leaked.
+	waitForCondition(t, 30*time.Second, "a snapshot with no busy lock", func() bool {
 		snapshot = stableSupervisionFailureSnapshot(root, sub, adapter)
 		busy = busy[:0]
 		for key := range snapshot {
