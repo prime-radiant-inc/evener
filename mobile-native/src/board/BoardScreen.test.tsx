@@ -3561,7 +3561,10 @@ it("queues a project change behind the held one it answers, even once back onlin
 	await settle();
 	// The Pin to top is still out: the Unpin waits in the hold behind it.
 	expect(favorites).toBe(1);
-	expect(heldIn(id).map((record) => record.action)).toMatchObject([{ action: "pin" }, { action: "unpin" }]);
+	expect(heldIn(id)).toMatchObject([
+		{ action: { kind: "project", action: "pin" } },
+		{ action: { kind: "project", action: "unpin" } },
+	]);
 	answerPin();
 	await until(() =>
 		expect(fake.mutations.filter((m) => m.method === "evener/favorite/set").map((m) => m.params)).toEqual([
