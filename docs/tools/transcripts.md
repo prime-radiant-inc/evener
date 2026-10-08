@@ -180,7 +180,9 @@ stable delegate's session `transcript_ref` from `delegate`, `job_status`, or
 | `output_match` | shell job, artifact | bounded RE2 line search (maximum 65,536 characters) |
 | `context_lines` | shell job, artifact search | 0–10 lines before and after each match; requires `output_match` |
 
-Registered `strict:false`, so every parameter is optional. The three formats are one
+Registered `strict:false`, so every parameter is optional. On a session ref, a
+`format`, `range`, `expand_turn`, `output_match`, or `context_lines` sent as
+`null` reads as absent. The three formats are one
 escalating ladder — outline to see the shape, markdown to read it, JSONL to inspect its structure —
 and each session read returns the same envelope skeleton (`transcript_ref`?, `format`,
 `content`, format-specific `meta`); `transcript_ref` is omitted when the session lives in a

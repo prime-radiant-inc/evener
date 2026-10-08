@@ -380,15 +380,23 @@ func normalizeRetainedReadArgs(args map[string]any) (map[string]any, []repair.Ch
 	ref := strings.TrimSpace(stringArg(args, "transcript_ref"))
 	jobRef := strings.HasPrefix(ref, "job:")
 	artifactRef := strings.HasPrefix(ref, "artifact:")
-	if !jobRef && !artifactRef {
-		return args, nil
-	}
 	normalized := make(map[string]any, len(args))
 	maps.Copy(normalized, args)
 	changes := make([]repair.Change, 0, 5)
 	remove := func(field string) {
 		delete(normalized, field)
 		changes = append(changes, repair.Change{Kind: repair.ChangeNormalizeDefault, Field: field, Detail: "removed neutral default"})
+	}
+	if !jobRef && !artifactRef {
+		// On a session ref an optional field sent as null means the model left
+		// it out, the same rule generic repair applies to empty optional enums.
+		// Empty strings and zeros stay for the handler to judge.
+		for _, field := range []string{"format", "range", "expand_turn", "output_match", "context_lines"} {
+			if value, present := normalized[field]; present && value == nil {
+				remove(field)
+			}
+		}
+		return normalized, changes
 	}
 	if value, present := normalized["range"]; present && (value == nil || value == "") {
 		remove("range")
@@ -436,11 +444,6 @@ func normalizeRetainedReadArgsForValidation(args map[string]any) (map[string]any
 	normalized, _ := normalizeRetainedReadArgs(args)
 	ref := strings.TrimSpace(stringArg(normalized, "transcript_ref"))
 	if !strings.HasPrefix(ref, "job:") && !strings.HasPrefix(ref, "artifact:") {
-		for _, field := range []string{"format", "range", "expand_turn", "output_match", "context_lines"} {
-			if value, present := normalized[field]; present && value == nil {
-				return nil, fmt.Errorf("invalid_request: %s cannot be null for session transcript refs", field)
-			}
-		}
 		return normalized, nil
 	}
 	copyNeeded := true
