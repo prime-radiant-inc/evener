@@ -22,6 +22,7 @@ import {
 	render,
 	renderedText,
 	screenConnection,
+	settleMicrotasks,
 } from "./renderNative.testkit";
 
 const harness = vi.hoisted(() => ({ connection: {} as Record<string, unknown>, kv: new Map<string, string>() }));
@@ -94,7 +95,7 @@ it("offers no pull to refresh: the projects list keeps itself current", async ()
 	);
 	harness.connection = screenConnection(hub, "ready");
 	const tree = render(<ProjectsScreen {...props} />);
-	await act(async () => {});
+	await settleMicrotasks();
 	expect(renderedText(tree)).toContain("Alpha");
 
 	// The list's pull-to-refresh is a prop, not a child it renders.
@@ -117,7 +118,7 @@ it("announces that more of the list is loading, since iOS ignores accessibilityL
 	});
 	harness.connection = screenConnection(hub, "ready");
 	const tree = render(<ProjectsScreen {...props} />);
-	await act(async () => {});
+	await settleMicrotasks();
 	expect(renderedText(tree)).toContain("Alpha");
 	const announce = vi.mocked(AccessibilityInfo.announceForAccessibility);
 	announce.mockClear();
@@ -142,7 +143,7 @@ it("renders a live tally's chip in the shared list and none without one", async 
 	);
 	harness.connection = screenConnection(hub, "ready");
 	const tree = render(<SessionLocationScreen {...locationProps()} />);
-	await act(async () => {});
+	await settleMicrotasks();
 	expect(renderedText(tree)).toContain("Alpha");
 	expect(renderedText(tree)).toContain("2 running");
 	// Only the row with a tally gets a chip, not the one without.
@@ -178,7 +179,7 @@ it.each(["project", "location"] as const)("keeps settled delegate tallies quiet 
 			<SessionLocationScreen {...locationProps()} navigation={navigation as never} />
 		),
 	);
-	await act(async () => {});
+	await settleMicrotasks();
 	expect(renderedText(tree)).toContain("2 running");
 	expect(renderedText(tree)).not.toContain("3 failed");
 	expect(tree.root.findAll((node) => node.props.testID === "subagent-chip")).toHaveLength(1);
@@ -214,7 +215,7 @@ it("pages a page the hub cut short through Load more, with no partial-tree notic
 	);
 	harness.connection = screenConnection(hub, "ready");
 	const tree = render(<SessionLocationScreen {...locationProps()} />);
-	await act(async () => {});
+	await settleMicrotasks();
 	const shown = renderedText(tree);
 	expect(shown).toContain("Alpha");
 	expect(shown).not.toContain("partial session tree");
@@ -231,7 +232,7 @@ it("reveals a located archived session from the project's archived list", async 
 	harness.connection = screenConnection(hub, "ready");
 	flatListCalls.length = 0;
 	const tree = render(<SessionLocationScreen {...locationProps("local:b", "archived")} />);
-	await act(async () => {});
+	await settleMicrotasks();
 	expect(archivedReads).toEqual([{ projectKey: "p" }, { projectKey: "p", cursor: "c1" }]);
 	expect(hub.calls.filter((call) => call.method === "evener/navigation/read")).toEqual([]);
 	expect(flatListCalls).toContainEqual({
@@ -250,7 +251,7 @@ it("reveals a located archived session from the catalog its location names", asy
 	harness.connection = screenConnection(hub, "ready");
 	flatListCalls.length = 0;
 	const tree = render(<SessionLocationScreen {...locationProps("local:b", "archived", "local:b", "test_runs")} />);
-	await act(async () => {});
+	await settleMicrotasks();
 	expect(archivedReads).toEqual([
 		{ catalog: "test_runs", projectKey: "p" },
 		{ catalog: "test_runs", projectKey: "p", cursor: "c1" },
@@ -269,7 +270,7 @@ it("reveals a located archived fork original through the row that carries it", a
 	}));
 	harness.connection = screenConnection(hub, "ready");
 	const tree = render(<SessionLocationScreen {...locationProps("local:cont", "archived", "local:orig")} />);
-	await act(async () => {});
+	await settleMicrotasks();
 	expect(renderedText(tree)).toContain("Showing the row that owns this session");
 	expect(pressable(tree, "Open Cont")?.props.accessibilityState).toEqual({ selected: true });
 	expect(renderedText(tree)).not.toContain("not in the returned list");
@@ -290,7 +291,7 @@ it("scrolls to and selects the located row", async () => {
 	harness.connection = screenConnection(hub, "ready");
 	flatListCalls.length = 0;
 	const tree = render(<SessionLocationScreen {...locationProps("local:b")} />);
-	await act(async () => {});
+	await settleMicrotasks();
 	expect(flatListCalls).toContainEqual({
 		method: "scrollToIndex",
 		args: { index: 1, animated: false, viewPosition: 0.3 },
@@ -305,7 +306,7 @@ it("lists a project's archived sessions from the archived list, a page at a time
 	const { hub, archivedReads } = twoPageArchivedHub();
 	harness.connection = screenConnection(hub, "ready");
 	const tree = render(<ProjectScreen {...projectProps({ tier: "archived", archived: true })} />);
-	await act(async () => {});
+	await settleMicrotasks();
 	expect(renderedText(tree)).toContain("Alpha");
 	await act(async () => pressable(tree, "Load more · 1 remaining")?.props.onPress());
 	expect(renderedText(tree)).toContain("Beta");
@@ -325,10 +326,23 @@ it("reads no archived list while the connection is not ready", async () => {
 	hub.emitStateChange("reconnecting");
 	harness.connection = screenConnection(hub, "reconnecting");
 	const tree = render(<ProjectScreen {...projectProps({ tier: "archived", archived: true })} />);
-	await act(async () => {});
+	await settleMicrotasks();
 	expect(renderedText(tree)).toContain("Alpha");
 	expect(renderedText(tree)).not.toContain("cannot call");
 	expect(hub.calls.filter((call) => call.method === "evener/archived/list")).toHaveLength(1);
+});
+
+// An archived list nothing has loaded yet waits for a ready connection: the
+// screen doesn't read it while the connection is away. The hub double stays
+// ready, so a read the screen attempted would be recorded rather than
+// refused.
+it("reads no unloaded archived list until the connection is ready", async () => {
+	const hub = new FakeClient("ready");
+	hub.on("evener/archived/list", () => ({ sessions: [completeSession({ ref: "local:a", title: "Alpha" })], total: 1 }));
+	harness.connection = screenConnection(hub, "reconnecting");
+	render(<ProjectScreen {...projectProps({ tier: "archived", archived: true })} />);
+	await settleMicrotasks();
+	expect(hub.calls.filter((call) => call.method === "evener/archived/list")).toEqual([]);
 });
 
 // A recovered connection drops every archived list (archivedLists.ts), and
@@ -342,7 +356,7 @@ it("reads the archived list again once a dropped connection recovers", async () 
 	const screen = () => <ProjectScreen {...projectProps({ tier: "archived", archived: true })} />;
 	harness.connection = screenConnection(hub, "ready");
 	const tree = render(screen());
-	await act(async () => {});
+	await settleMicrotasks();
 	expect(reads()).toBe(1);
 
 	hub.emitStateChange("reconnecting");
@@ -351,7 +365,7 @@ it("reads the archived list again once a dropped connection recovers", async () 
 	hub.emitReady();
 	harness.connection = screenConnection(hub, "ready");
 	await act(async () => tree.update(screen()));
-	await act(async () => {});
+	await settleMicrotasks();
 	expect(reads()).toBe(2);
 	expect(renderedText(tree)).toContain("Alpha");
 });
@@ -394,13 +408,13 @@ it.each([
 	});
 	harness.connection = screenConnection(hub, "ready");
 	const tree = render(<ProjectScreen {...projectProps({ tier: "archived" })} />);
-	await act(async () => {});
+	await settleMicrotasks();
 	expect(renderedText(tree)).toContain("Alpha");
 	alertRequests.length = 0;
 	act(() => pressable(tree, "More actions for Alpha")?.props.onPress());
 	const unarchive = alertRequests.at(-1)?.buttons?.find((button) => button.text === "Unarchive");
 	await act(async () => unarchive?.onPress?.());
-	await act(async () => {});
+	await settleMicrotasks();
 
 	expect(hub.calls.filter((call) => call.method === "evener/archive/set").map((call) => call.params)).toEqual([
 		{ kind: "session", id: "AlphaSession0000000001", archived: false },
