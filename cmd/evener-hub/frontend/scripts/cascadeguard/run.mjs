@@ -429,7 +429,7 @@ async function nativePositioningInterruption(input) {
       assert.equal(observation.keyFocus.intended, true, "the unchanged native viewport accepts keyboard focus");
       for (const type of ["keyDown", "keyUp"]) {
         await driver.send("Input.dispatchKeyEvent", { type, key:" ", code:"Space", modifiers:8,
-          windowsVirtualKeyCode:32, nativeVirtualKeyCode:32,
+          windowsVirtualKeyCode:32,
           ...(type === "keyDown" ? { text:" ", unmodifiedText:" " } : {}) });
       }
       observation.key = await wait(`window.__cascadeNativeKeys[${target.eventIndex}]`, "native Shift-Space reaches its real keyboard target");
@@ -555,7 +555,11 @@ async function returnToSource() {
 
 async function key(key, keyCode) {
   for (const type of ["keyDown", "keyUp"]) {
-    await driver.send("Input.dispatchKeyEvent", { type, key, code: key, windowsVirtualKeyCode: keyCode, nativeVirtualKeyCode: keyCode,
+    // No nativeVirtualKeyCode: that is the platform's own key number (27 is
+    // X11's "r" and a different key on macOS, where this press opened
+    // chrome://settings/help in front of the page, hiding it and pausing its
+    // animations). The DOM reads key, code and the Windows keyCode.
+    await driver.send("Input.dispatchKeyEvent", { type, key, code: key, windowsVirtualKeyCode: keyCode,
       ...(key === "Enter" && type === "keyDown" ? { text: "\r", unmodifiedText: "\r" } : {}) });
   }
 }
@@ -1200,10 +1204,7 @@ async function reloadAndMobileJourney() {
     if (!button) return null; const r = button.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
   })()`, "existing phone Overview menu action");
   await driver.clickAt(overview.x, overview.y);
-  await wait(`(() => {
-    const sidebar = document.querySelector('[data-testid="activity-sidebar"]');
-    return sidebar && getComputedStyle(sidebar).transform === 'none';
-  })()`, "phone Overview entrance settled before physical row tap");
+  await wait(sidebarEntranceSettled, "phone Overview entrance settled before physical row tap");
   const mobileRow = await reveal(fixture.edges[0], '[data-testid="activity-sidebar"]');
   await driver.click(mobileRow);
   await wait('document.querySelectorAll("[data-testid=transcript-virtual-list]").length === 1 && document.querySelectorAll("[role=textbox]").length === 0 && document.querySelector("[data-pane-scaffold=cascade]") === null', "ordinary mobile Agents transcript action stays readonly without cascade");
@@ -1213,6 +1214,14 @@ async function reloadAndMobileJourney() {
   driver.milestone("mobile-agents-transcript", { childRef: fixture.childRef, unrelatedPaneId: unrelatedId });
   await capture("mobile-agents-transcript");
 }
+
+// The activity sidebar slides in from translateX(320px). A press measured
+// mid-slide misses its row, and the clipped overhang means nothing scrolls it
+// back, so presses on sidebar rows wait for the slide to finish.
+const sidebarEntranceSettled = `(() => {
+  const sidebar = document.querySelector('[data-testid="activity-sidebar"]');
+  return sidebar && getComputedStyle(sidebar).transform === 'none';
+})()`;
 
 async function reveal(edge, container) {
   const selector = `${container} ${row(edge)}`;
@@ -1278,6 +1287,7 @@ async function reconnect() {
 }
 
 async function drill(edge, level) {
+  await wait(sidebarEntranceSettled, `sidebar entrance settled before drill ${level}`);
   const selector = await reveal(edge, '[data-testid="activity-sidebar"]');
   await driver.click(selector);
   await wait(`document.querySelector(${q(column(edge.childRef))}) !== null`, `selected column at level ${level}`);
