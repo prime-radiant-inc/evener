@@ -1,9 +1,9 @@
 // Package repair heals off-distribution LLM tool calls: it renames aliased
 // parameters, coerces mistyped scalars, drops optional arguments sent as a
 // null their schema refuses (or "" on an enum), drops hallucinated keys, and
-// fixes broken JSON escapes. It is a
-// pure, standard-library-only leaf package; the caller supplies a tool's
-// JSON-Schema parameter object and the parsed args.
+// fixes broken JSON escapes. It is a pure, standard-library-only leaf package;
+// the caller supplies a tool's JSON-Schema parameter object and the parsed
+// args.
 package repair
 
 import (
@@ -53,19 +53,17 @@ var aliasTable = map[string]string{
 }
 
 // RepairArgs normalizes args against the tool's JSON-Schema parameter object.
-// It applies, in order, aliasing, dropping empty optionals, coercion, and
-// drop-unknown. Empty optionals go before coercion so a null on an optional
-// array is dropped instead of wrapped as [null]. keep names argument paths (as
-// "add[0].reasoning_effort") whose explicit empty value the tool's handler
-// judges itself, so repair leaves them. It never mutates its input; it returns
-// a fresh map plus the changes made.
+// It applies, in order, aliasing, coercion, dropping empty optionals, and
+// drop-unknown. keep names argument paths (as "add[0].reasoning_effort") whose
+// explicit empty value the tool's handler judges itself, so repair leaves them.
+// It never mutates its input; it returns a fresh map plus the changes made.
 func RepairArgs(params, args map[string]any, keep ...string) (map[string]any, []Change) {
 	out := make(map[string]any, len(args))
 	maps.Copy(out, args)
 	var changes []Change
 	changes = append(changes, applyAliases(params, out)...)
-	changes = append(changes, dropEmptyOptionals(params, out, nil, keep)...)
 	changes = append(changes, applyCoercions(params, out)...)
+	changes = append(changes, dropEmptyOptionals(params, out, nil, keep)...)
 	changes = append(changes, dropUnknown(params, out)...)
 	return out, changes
 }
@@ -148,7 +146,7 @@ func applyCoercions(params, args map[string]any) []Change {
 			args[key] = f
 			changes = append(changes, Change{Kind: ChangeCoerceType, Field: key, Detail: `"` + s + `"→` + s})
 		case "array":
-			if _, isArr := raw.([]any); isArr {
+			if _, isArr := raw.([]any); isArr || raw == nil {
 				continue
 			}
 			args[key] = []any{raw}

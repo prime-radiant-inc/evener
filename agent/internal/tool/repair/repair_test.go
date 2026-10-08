@@ -321,6 +321,23 @@ func TestRepairArgs_NestedEmptyOptionalEnumIsAbsent(t *testing.T) {
 	}
 }
 
+// A lone object sent for an array is wrapped first, then judged as an item, so
+// an empty optional enum inside it is dropped like any other item's.
+func TestRepairArgs_ScalarWrappedArrayItemEmptyEnumIsAbsent(t *testing.T) {
+	params := map[string]any{"properties": map[string]any{"items": map[string]any{
+		"type": "array",
+		"items": map[string]any{
+			"type":       "object",
+			"properties": map[string]any{"mode": map[string]any{"type": "string", "enum": []any{"a", "b"}}},
+			"required":   []any{"x"},
+		},
+	}}}
+	out, _ := RepairArgs(params, map[string]any{"items": map[string]any{"x": "y", "mode": ""}})
+	if want := map[string]any{"items": []any{map[string]any{"x": "y"}}}; !reflect.DeepEqual(out, want) {
+		t.Fatalf("got %v, want %v", out, want)
+	}
+}
+
 // nullOptionalParams declares one optional field of each JSON type a model
 // leaves out by sending null, a nested object with its own required list, a
 // schema-nullable field, and a required field.
