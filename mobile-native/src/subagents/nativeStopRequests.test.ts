@@ -1,4 +1,5 @@
 import { expect, it, vi } from "vitest";
+import { forgetStopRequestsForHub, stopRequests } from "./nativeStopRequests";
 
 const values = new Map<string, string>();
 const failure = { remove: false };
@@ -28,15 +29,13 @@ vi.mock("../board/perHub", async (importOriginal) => {
 	};
 });
 
-it("keeps its per-hub requests through the shared perHub helper", async () => {
-	const { stopRequests } = await import("./nativeStopRequests");
+it("keeps its per-hub requests through the shared perHub helper", () => {
 	expect(stopRequests("hub-a")).toBe(stopRequests("hub-a"));
 	expect(stopRequests("hub-b")).not.toBe(stopRequests("hub-a"));
 	expect(perHub.makers).toBe(1);
 });
 
-it("forgets a removed hub's cached requests even when the phone can't delete its keys", async () => {
-	const { forgetStopRequestsForHub, stopRequests } = await import("./nativeStopRequests");
+it("forgets a removed hub's cached requests even when the phone can't delete its keys", () => {
 	const before = stopRequests("hub-c");
 	failure.remove = true;
 	expect(() => forgetStopRequestsForHub("hub-c")).toThrow();
