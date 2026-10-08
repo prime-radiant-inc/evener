@@ -194,7 +194,6 @@ it.each(["project", "location"] as const)("keeps settled delegate tallies quiet 
 		["Conversation", { hubId: "hub-1", ref: "local:a", title: "Alpha" }],
 		["Conversation", { hubId: "hub-1", ref: "local:b", title: "Beta" }],
 	]);
-	act(() => tree.unmount());
 });
 
 // A v3 page the hub cut short by its node or byte budget is only paged: the

@@ -1,7 +1,6 @@
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { once } from "node:events";
 import { createServer } from "node:http";
-import { setTimeout as wait } from "node:timers/promises";
 import { DocumentMemory } from "../reader/documentMemory";
 // Imported at file scope, so the Reader's graph is transformed at collection
 // time, outside the timeout of the test that opens a real Reader.
@@ -45,6 +44,7 @@ import {
 	systemGlass,
 	unmountMountedTrees,
 	until,
+	untilRendered,
 } from "../renderNative.testkit";
 import { sheetKey } from "../sheet/sheetHosts";
 import { ACTIVITY_POLL_MS, STALE_AFTER_MS } from "./activityPoll";
@@ -5503,17 +5503,11 @@ it("opens the complete literal reference left by a real Reader after a memory re
 				navigation={nav as never}
 			/>,
 		);
-		const deadline = performance.now() + 3000;
-		while (
-			!reader.root
-				.findAll((node) => String(node.type) === "EnrichedMarkdownText")
-				.some((node) => node.props.markdown === "Useful saved bytes.")
-		) {
-			if (performance.now() > deadline) throw new Error("Reader HTTP bytes did not render");
-			await act(async () => {
-				await wait(1);
-			});
-		}
+		await untilRendered(() =>
+			expect(
+				reader.root.findAll((node) => String(node.type) === "EnrichedMarkdownText").map((node) => node.props.markdown),
+			).toContain("Useful saved bytes."),
+		);
 		const list = reader.root.findByType(FlatList as never);
 		act(() => {
 			list.props.onViewableItemsChanged({ viewableItems: [{ index: 1 }], changed: [] });
