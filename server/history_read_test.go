@@ -6,11 +6,13 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/appitempaging"
+	"primeradiant.com/evener/internal/transcriptindex"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
 )
@@ -199,4 +201,42 @@ func TestHistoryReadOfAFailedThreadNamesTheOrdinal(t *testing.T) {
 	assertFailed("latest", err)
 	_, _, _, err = hx.history.before("local:th_history", appwire.ThreadTurnsListParams{Cursor: older, ItemLimit: 10})
 	assertFailed("before", err)
+}
+
+// Closing a history waits for a read already in flight: a read's index
+// writes (an Open building it, a catch-up) land before close returns, never
+// after, so a daemon's Server.Close leaves nothing writing the transcript's
+// index directory (#4013). A read after close is refused.
+func TestHistoryCloseWaitsForAReadInFlight(t *testing.T) {
+	hx := newHistoryHarness(t)
+	hx.record(t, "one")
+	inRead, release := make(chan struct{}), make(chan struct{})
+	readDone := make(chan error, 1)
+	go func() {
+		readDone <- hx.history.read(func(*transcriptindex.Index) error {
+			close(inRead)
+			<-release
+			return nil
+		})
+	}()
+	<-inRead
+	closed := make(chan struct{})
+	go func() {
+		hx.history.close()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+		close(release)
+		t.Fatal("close returned while a read still held the index")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	<-closed
+	if err := <-readDone; err != nil {
+		t.Fatalf("the read in flight: %v", err)
+	}
+	if err := hx.history.read(func(*transcriptindex.Index) error { return nil }); err == nil {
+		t.Fatal("a read after close succeeded, want it refused")
+	}
 }

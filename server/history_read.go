@@ -89,6 +89,11 @@ func (h *threadHistory) before(threadRef string, params appwire.ThreadTurnsListP
 // (recoverForRead); if that fails the read is appwire.TranscriptHistoryFailed,
 // naming the entry, and pushes nothing.
 func (h *threadHistory) read(fn func(*transcriptindex.Index) error) error {
+	done, err := h.beginRead()
+	if err != nil {
+		return err
+	}
+	defer done()
 	if err := h.recoverForRead(); err != nil {
 		return err
 	}
