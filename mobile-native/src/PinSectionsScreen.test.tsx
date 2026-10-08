@@ -128,5 +128,4 @@ it("reads a change the hub announced while a conversation covered the section", 
 	await show(true);
 	await act(async () => {});
 	expect(renderedText(tree)).toContain("Beta");
-	tree.unmount();
 });

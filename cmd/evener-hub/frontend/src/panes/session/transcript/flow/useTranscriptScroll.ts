@@ -1160,8 +1160,10 @@ export function useTranscriptScroll({
   // That frame may never arrive - requestAnimationFrame does not run while the
   // tab is hidden, and the first frame after it becomes visible again can be
   // arbitrarily far away - so the scroll listener also CONSUMES the flag on the
-  // event it explains, and the document going hidden clears it outright. Between
-  // the three, a gesture vetoes the event it caused and nothing later.
+  // event it explains (one whose content and viewport heights held), and the
+  // document going hidden clears it outright. Between the three, a gesture
+  // vetoes the event it caused and, within its frames, the measurement
+  // corrections that land before that event - nothing later.
   //
   // Over-marking is the dangerous direction, not under-marking. A veto falls
   // through to the ordinary path below, which records the reader as away from
@@ -1224,7 +1226,8 @@ export function useTranscriptScroll({
   //   touch         - the same predicate, on real vertical movement only, so a
   //     sideways swipe and a swipe a nested scroller answers are both ignored.
   //   native keys   - the wheel's predicate, by key direction. The one marker
-  //     that lasts two frames, since the key's smooth scroll starts a frame late.
+  //     that lasts two frames, since the key's smooth scroll starts a frame late,
+  //     so a key whose scroll never starts can veto a correction in each frame.
   //   pointer drag  - the LEAST exact, and deliberately kept: a selection drag
   //     that moves without scrolling marks a gesture, which no handler can tell
   //     from a scrollbar drag that does scroll. The PRIMARY button marks only
@@ -1802,8 +1805,20 @@ export function useTranscriptScroll({
       // boundary alone cannot be trusted to clear it. A held middle button is
       // read rather than consumed - native autoscroll scrolls the port for as
       // long as it is down, so every scroll event it produces is the reader's.
+      //
+      // Only an event the gesture could have caused consumes the marker: one
+      // whose content and viewport heights held. A measurement correction
+      // (heights changed) can land between a native key and its smooth scroll,
+      // a frame later; it is still vetoed, but leaves the marker for the key's
+      // own scroll, measured from the corrected offset.
       const gestured = gestureFramesLeftRef.current > 0 || middleButtonHeldRef.current;
-      gestureFramesLeftRef.current = 0;
+      const previous = lastScrollGeometryRef.current;
+      const heightsHeld = m.scrollHeight === previous.scrollHeight && m.clientHeight === previous.clientHeight;
+      if (heightsHeld) {
+        gestureFramesLeftRef.current = 0;
+      } else if (readerGestureRef.current) {
+        readerGestureRef.current = { ...readerGestureRef.current, beforeOffset: m.scrollTop };
+      }
       // Content measured in BELOW a transcript that was already at the true
       // bottom, in the SAME scroll port, with the offset never moving
       // backwards: the virtualizer correcting its own estimates, not the reader
@@ -1847,15 +1862,9 @@ export function useTranscriptScroll({
       // trigger - to that same pin event. It always arrives: this branch is only
       // taken when the gap is already past the at-bottom threshold, so the
       // assignment genuinely moves scrollTop and the browser dispatches for it.
-      const previous = lastScrollGeometryRef.current;
       const gesture = readerGestureRef.current;
       const beforeOffset = gesture?.beforeOffset ?? previous.scrollTop;
-      if (
-        (gestured || pointerDraggingRef.current) &&
-        m.scrollTop !== beforeOffset &&
-        m.scrollHeight === previous.scrollHeight &&
-        m.clientHeight === previous.clientHeight
-      ) {
+      if ((gestured || pointerDraggingRef.current) && m.scrollTop !== beforeOffset && heightsHeld) {
         if (!gesture?.admitted) {
           pendingViewAnchorRef.current = null;
           readerCallbacksRef.current.onReaderIntent?.();

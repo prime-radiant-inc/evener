@@ -106,7 +106,6 @@ it("offers no pull to refresh: the projects list keeps itself current", async ()
 	expect(list.props.onRefresh).toBeUndefined();
 	expect(list.props.refreshing).toBeUndefined();
 	expect(tree.root.findAll((node) => node.props.refreshControl !== undefined)).toEqual([]);
-	tree.unmount();
 });
 
 it("announces that more of the list is loading, since iOS ignores accessibilityLiveRegion (#2903)", async () => {
@@ -129,7 +128,6 @@ it("announces that more of the list is loading, since iOS ignores accessibilityL
 	expect(list).toBeDefined();
 	act(() => list.props.onEndReached());
 	expect(announce).toHaveBeenCalledWith("Loading more…");
-	tree.unmount();
 });
 
 it("renders a live tally's chip in the shared list and none without one", async () => {
@@ -158,7 +156,6 @@ it("renders a live tally's chip in the shared list and none without one", async 
 		.map((node) => node.props.accessibilityLabel);
 	expect(labels).toContain("Open Alpha, 2 running");
 	expect(labels).toContain("Open Beta");
-	tree.unmount();
 });
 
 it.each(["project", "location"] as const)("keeps settled delegate tallies quiet in the %s list", async (screen) => {
@@ -224,7 +221,6 @@ it("pages a page the hub cut short through Load more, with no partial-tree notic
 	expect(shown).not.toContain("related session");
 	await act(async () => pressable(tree, "Load more · 1 remaining")?.props.onPress());
 	expect(renderedText(tree)).toContain("Beta");
-	tree.unmount();
 });
 
 // Navigation serves a project's archived tier empty, and an older hub's
@@ -244,7 +240,6 @@ it("reveals a located archived session from the project's archived list", async 
 	});
 	expect(pressable(tree, "Open Beta")?.props.accessibilityState).toEqual({ selected: true });
 	expect(renderedText(tree)).not.toContain("not in the returned list");
-	tree.unmount();
 });
 
 // A location names the catalog whose project holds the session, and the
@@ -261,7 +256,6 @@ it("reveals a located archived session from the catalog its location names", asy
 		{ catalog: "test_runs", projectKey: "p", cursor: "c1" },
 	]);
 	expect(pressable(tree, "Open Beta")?.props.accessibilityState).toEqual({ selected: true });
-	tree.unmount();
 });
 
 // An archived fork original sits inside its continuation's row, so locating
@@ -279,7 +273,6 @@ it("reveals a located archived fork original through the row that carries it", a
 	expect(renderedText(tree)).toContain("Showing the row that owns this session");
 	expect(pressable(tree, "Open Cont")?.props.accessibilityState).toEqual({ selected: true });
 	expect(renderedText(tree)).not.toContain("not in the returned list");
-	tree.unmount();
 });
 
 // Locating a session reveals its row on the flat list: the list scrolls to
@@ -304,7 +297,6 @@ it("scrolls to and selects the located row", async () => {
 	});
 	expect(pressable(tree, "Open Beta")?.props.accessibilityState).toEqual({ selected: true });
 	expect(pressable(tree, "Open Alpha")?.props.accessibilityState).toEqual({ selected: false });
-	tree.unmount();
 });
 
 // Navigation v3 serves a project's archived tier empty: its rows come from
@@ -322,7 +314,6 @@ it("lists a project's archived sessions from the archived list, a page at a time
 		{ catalog: "archived_projects", projectKey: "p", cursor: "c1" },
 	]);
 	expect(hub.calls.filter((call) => call.method === "evener/navigation/read")).toEqual([]);
-	tree.unmount();
 });
 
 // Rows an earlier view loaded stay on screen while the connection is away,
@@ -338,7 +329,6 @@ it("reads no archived list while the connection is not ready", async () => {
 	expect(renderedText(tree)).toContain("Alpha");
 	expect(renderedText(tree)).not.toContain("cannot call");
 	expect(hub.calls.filter((call) => call.method === "evener/archived/list")).toHaveLength(1);
-	tree.unmount();
 });
 
 // A recovered connection drops every archived list (archivedLists.ts), and
@@ -364,7 +354,6 @@ it("reads the archived list again once a dropped connection recovers", async () 
 	await act(async () => {});
 	expect(reads()).toBe(2);
 	expect(renderedText(tree)).toContain("Alpha");
-	tree.unmount();
 });
 
 // An archived row's Unarchive runs through the same organize flow as any
@@ -419,7 +408,7 @@ it.each([
 	expect(archivedReads).toBe(reads);
 	expect(renderedText(tree)).not.toContain("Alpha");
 	expect(renderedText(tree)).not.toContain("could not be confirmed");
-	tree.unmount();
+	act(() => tree.unmount());
 	harness.kv.clear();
 });
 

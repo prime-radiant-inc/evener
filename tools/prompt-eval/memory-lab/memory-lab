@@ -10,9 +10,10 @@ stream, the workspace and the memory files.
 Usage:
   memory-lab run --version v0=BIN [--version v1=BIN] --model MODEL \
       --scenarios DIR/a,DIR/b --reps 2 --out OUTDIR [--max-rounds 40] [--jobs 4] \
-      [--effort high] [--timeout 1200] [--work-root DIR]
+      [--effort high] [--timeout 1200] [--work-root DIR] [--context-window TOKENS]
                                       # one line per stage as trials finish, then the pass-rate table;
-                                      # --work-root DIR puts each workspace at DIR/<project>-<random> (see README)
+                                      # --work-root DIR puts each workspace at DIR/<project>-<random> (see README);
+                                      # --context-window TOKENS shrinks the model's window so long stages compact
   memory-lab report OUTDIR            # one line per stage, then the pass-rate table
   memory-lab show [--reasoning] OUTDIR/<trial> STAGE  # tool calls, memory files, whiteboard, final message
   memory-lab ask --bin BIN --model MODEL [--workspace work] [--effort high] [--timeout 600] \
@@ -46,7 +47,7 @@ also a symlink under --work-root),
 and per stage: <S>.events.ndjson, <S>.stdout, <S>.grade.json, <S>.memory/.
 Full logs stay on disk; the report prints only the summary.
 """
-import argparse, concurrent.futures as cf, glob, json, os, re, shutil, signal, subprocess, sys, tempfile, time
+import argparse, concurrent.futures as cf, glob, json, math, os, re, shutil, signal, subprocess, sys, tempfile, time
 from datetime import datetime
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -86,6 +87,25 @@ def run_bounded(cmd, cwd, env, timeout, stdout=None, stderr=None):
         return "timeout", out or ""
 
 
+# Under --context-window, the file in a trial's state dir that holds the path of the run's providers.toml.
+PROVIDERS_POINTER = "providers-config-path"
+
+
+def write_run_providers(text):
+    """Writes a run's providers.toml and returns its path: <state root>/memory-lab/providers/<random>/
+    providers.toml, where the state root is $XDG_STATE_HOME or ~/.local/state. It is a copy of the user's
+    config, which can hold literal keys, so it is owner-only (dir 0700, file 0600) and never in the results
+    tree. It is left in place so ask can use it; delete it by hand."""
+    base = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"),
+                        "memory-lab", "providers")
+    os.makedirs(base, mode=0o700, exist_ok=True)
+    os.chmod(base, 0o700)  # makedirs leaves a dir that already existed as it was
+    path = os.path.join(tempfile.mkdtemp(dir=base), "providers.toml")  # mkdtemp makes the dir 0700
+    with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as f:
+        f.write(text)
+    return path
+
+
 # Keep this hermetic setup in sync with fixtureEnv / configureHermeticRunEnv in
 # tools/tool-fluency/cmd/evener-fluency/main.go, which does the same for the
 # one-session runner.
@@ -95,7 +115,154 @@ def fixture_env(work, xdg):
                 "XDG_STATE_HOME": os.path.realpath(xdg), "EVENER_NO_USER_SKILLS": "1",
                 "GIT_AUTHOR_NAME": GIT_NAME, "GIT_AUTHOR_EMAIL": GIT_EMAIL,
                 "GIT_COMMITTER_NAME": GIT_NAME, "GIT_COMMITTER_EMAIL": GIT_EMAIL})
+    # A run with --context-window has its own providers.toml; the trial's state dir names it, and every
+    # session in the trial, ask included, reads it, with the partner's credentials.
+    pointer = os.path.join(xdg, PROVIDERS_POINTER)
+    if os.path.isfile(pointer):
+        env["EVENER_PROVIDERS_CONFIG"] = read_file(pointer).strip()
+        env["EVENER_CREDENTIALS_CONFIG"] = user_credentials_config()
     return env
+
+
+def user_config_dir():
+    """evener's config dir: $XDG_CONFIG_HOME/evener, else ~/.config/evener."""
+    return os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "evener")
+
+
+def user_providers_config():
+    """The providers.toml path evener would read without the lab, as cmdutil.ProvidersConfigPath picks it:
+    EVENER_PROVIDERS_CONFIG, else $XDG_CONFIG_HOME/evener/providers.toml, else ~/.config/evener/providers.toml.
+    None when EVENER_PROVIDERS_CONFIG is set but blank (no user layer). Absolute, resolved against the
+    lab's cwd: the sessions that read it run in the trial workspace."""
+    if "EVENER_PROVIDERS_CONFIG" in os.environ:
+        value = os.environ["EVENER_PROVIDERS_CONFIG"]
+        return os.path.abspath(value) if value.strip() else None
+    return os.path.abspath(os.path.join(user_config_dir(), "providers.toml"))
+
+
+def user_credentials_config():
+    """The credentials.toml evener would read without the lab, as cmdutil.CredentialsPath picks it:
+    EVENER_CREDENTIALS_CONFIG, else the sibling of the user's providers.toml, else
+    <config dir>/credentials.toml. Absolute, like user_providers_config."""
+    if os.environ.get("EVENER_CREDENTIALS_CONFIG", "").strip():
+        return os.path.abspath(os.environ["EVENER_CREDENTIALS_CONFIG"])
+    providers = user_providers_config()
+    root = os.path.dirname(providers) if providers else user_config_dir()
+    return os.path.abspath(os.path.join(root, "credentials.toml"))
+
+
+def toml_key(key):
+    """key as a TOML key: bare when it can be, otherwise a quoted basic string."""
+    return key if re.fullmatch(r"[A-Za-z0-9_-]+", key) else toml_value(key)
+
+
+def toml_value(value):
+    """value, as tomllib parses it, written back as TOML: inline for arrays and for tables inside them."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return repr(value)  # inf, -inf, nan and 1e+20 are TOML as written
+    if isinstance(value, str):
+        # A JSON string is a TOML basic string, except that TOML also forbids a raw DEL.
+        return json.dumps(value, ensure_ascii=False).replace("\x7f", "\\u007f")
+    if isinstance(value, list):
+        return "[" + ", ".join(toml_value(v) for v in value) + "]"
+    if isinstance(value, dict):
+        return "{ " + ", ".join(f"{toml_key(k)} = {toml_value(v)}" for k, v in value.items()) + " }"
+    return value.isoformat()  # tomllib's datetime, date and time values
+
+
+def toml_document(table, path=()):
+    """table, as tomllib parses a document, written back as TOML: each sub-table under its own header."""
+    lines = [f"{toml_key(k)} = {toml_value(v)}" for k, v in table.items() if not isinstance(v, dict)]
+    for k, v in table.items():
+        if isinstance(v, dict):
+            header = ".".join(toml_key(part) for part in path + (k,))
+            lines += ["", f"[{header}]", toml_document(v, path + (k,))]
+    return "\n".join(lines).strip("\n") + ("\n" if not path else "")
+
+
+def same_toml(a, b):
+    """Whether two parsed TOML values are equal, counting NaN equal to NaN."""
+    if isinstance(a, float) and isinstance(b, float) and math.isnan(a) and math.isnan(b):
+        return True
+    if isinstance(a, dict) and isinstance(b, dict):
+        return a.keys() == b.keys() and all(same_toml(a[k], b[k]) for k in a)
+    if isinstance(a, list) and isinstance(b, list):
+        return len(a) == len(b) and all(same_toml(x, y) for x, y in zip(a, b))
+    return type(a) is type(b) and a == b
+
+
+def model_ref(model):
+    """(instance, model id) from --model, canonicalized as evener's CLI does (cmdutil.ParseModelRef): the
+    whole ref and each half trimmed, the instance lowercased, split at the first slash. Exits when either half
+    is empty."""
+    instance, sep, model_id = model.strip().partition("/")
+    instance, model_id = instance.strip().lower(), model_id.strip()
+    if not (sep and instance and model_id):
+        sys.exit(f"memory-lab: --context-window needs --model as instance/model, not {model!r}")
+    return instance, model_id
+
+
+def require_canonical_row(binaries, instance, model_id):
+    """Exits unless every evener binary resolves instance/model_id to a row keyed by model_id itself.
+    A region-prefixed or dated variant (us.anthropic..., gpt-5.5-20260101) resolves to its canonical row;
+    an override row keyed by the variant would win over that row and drop its transport, wire id and caps.
+    `evener models inspect` prints the resolved record, whose model.id is the row it used."""
+    for binary in binaries:
+        with tempfile.TemporaryFile("w+") as out, tempfile.TemporaryFile("w+") as err:
+            rc, _ = run_bounded([binary, "models", "inspect", f"{instance}/{model_id}"], None, dict(os.environ),
+                                COMMAND_TIMEOUT, stdout=out, stderr=err)
+            out.seek(0)
+            err.seek(0)
+            text, errors = out.read(), err.read()
+        try:
+            row = json.loads(text)["model"]["id"]
+        except (ValueError, KeyError, TypeError):
+            sys.exit(f"memory-lab: {binary} models inspect {instance}/{model_id} failed (exit {rc}): "
+                     f"{(errors or text).strip()[:500]}")
+        if row != model_id:
+            sys.exit(f"memory-lab: {binary} resolves {instance}/{model_id} to the row {row!r}; pass --model "
+                     f"{instance}/{row} so the --context-window override extends that row")
+
+
+def context_window_config(model, window):
+    """The text of a providers.toml that is the user's own plus a context_window override for model
+    ("instance/model"), so the session budgets, and compacts, against window tokens. The user layer
+    outranks the catalog and the live listing, so the override holds. The user's file is parsed, the
+    override set in its model row (other facts in that row are kept), and the result written back out:
+    comments and layout are not kept, but every value is, which the re-parse below checks. A missing
+    file is no user layer; an unreadable or malformed one exits with its path."""
+    import tomllib
+    instance, model_id = model_ref(model)
+    path = user_providers_config()
+    base = ""
+    if path:
+        try:
+            with open(path) as f:
+                base = f.read()
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            sys.exit(f"memory-lab: can't read {path}: {e.strerror or e}")
+    try:
+        config = tomllib.loads(base)
+    except tomllib.TOMLDecodeError as e:
+        sys.exit(f"memory-lab: {path}: {e}")
+    table = config
+    for key in ("providers", instance, "models", model_id):
+        table = table.setdefault(key, {})
+        if not isinstance(table, dict):
+            sys.exit(f"memory-lab: {path}: {key} isn't a table, so --context-window can't add its override for {model}")
+    table["context_window"] = window
+    text = toml_document(config)
+    try:
+        written = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as e:
+        sys.exit(f"memory-lab: couldn't write {path} back out with the override: {e}")
+    if not same_toml(written, config):
+        sys.exit(f"memory-lab: couldn't write {path} back out with the override: a value changed")
+    return text
 
 
 def memory_root(xdg):
@@ -116,9 +283,37 @@ def read_file(path):
         return ""
 
 
-def parse_events(path):
-    """Returns (tool calls, whether the round cap was hit, communicate messages, reasoning summary text)."""
-    calls, limit, messages, reasoning = [], False, [], []
+# Compaction layers that replace history with a summary. The others (observation_mask, thinking_clear,
+# aggressive_obs_mask) only blank old tool output or reasoning, so the agent keeps its own record of the work.
+COMPACTION_LAYERS = {"checkpoint", "checkpoint_pred", "session_log_checkpoint", "summarize"}
+
+
+class Folds:
+    """Groups a session's CONTEXT_COMPACTION events into folds: the layers between two tool calls, in
+    order (a checkpoint is often followed at once by summarize). A fold with a COMPACTION_LAYERS layer
+    is one compaction."""
+
+    def __init__(self):
+        self.folds, self.called = [], True
+
+    def tool_call(self):
+        self.called = True
+
+    def layer(self, name):
+        if self.called:
+            self.folds.append([])
+            self.called = False
+        self.folds[-1].append(name)
+
+    def compactions(self):
+        return [fold for fold in self.folds if COMPACTION_LAYERS & set(fold)]
+
+
+def root_events(path):
+    """Yields (kind, data) for each event of the stage's root session: the session of the first
+    SESSION_START in the stream (as root_session_id finds it), and events before it. Another session's
+    events, a delegate's, are skipped, so every count here is the root session's."""
+    root = None
     with open(path, errors="replace") as f:
         for line in f:
             line = line.strip()
@@ -128,16 +323,39 @@ def parse_events(path):
                 ev = json.loads(line)
             except ValueError:
                 continue
-            kind, data = ev.get("kind"), ev.get("data") or {}
-            if kind == "TOOL_CALL_START":
-                calls.append({"tool": data.get("tool_name", ""), "args": data.get("arguments_json", "")})
-                reasoning.append(f"\n[{data.get('tool_name')}]\n")
-            elif kind == "REASONING_SUMMARY_DELTA":
-                reasoning.append(data.get("delta", ""))
-            elif kind == "TURN_LIMIT":
-                limit = True
-            elif kind == "COMMUNICATE" and data.get("message"):
-                messages.append(data["message"])
+            kind, session = ev.get("kind"), ev.get("session_id")
+            if root is None and kind == "SESSION_START":
+                root = session
+            elif root is not None and session is not None and session != root:
+                continue
+            yield kind, ev.get("data") or {}
+
+
+def parse_events(path):
+    """Returns (tool calls, whether the round cap was hit, communicate messages, reasoning summary text),
+    for the root session. Each call is {"tool", "args", "compactions_before": compactions (see Folds)
+    before it, "output_chars"}."""
+    calls, limit, messages, reasoning = [], False, [], []
+    by_id, folds = {}, Folds()
+    for kind, data in root_events(path):
+        if kind == "TOOL_CALL_START":
+            calls.append({"tool": data.get("tool_name", ""), "args": data.get("arguments_json", ""),
+                          "compactions_before": len(folds.compactions()), "output_chars": 0})
+            if data.get("call_id") is not None:
+                by_id[data["call_id"]] = calls[-1]
+            folds.tool_call()
+            reasoning.append(f"\n[{data.get('tool_name')}]\n")
+        elif kind == "TOOL_CALL_END" and data.get("call_id") is not None and data["call_id"] in by_id:
+            output = data["output"] if data.get("output") is not None else data.get("error") or ""
+            by_id[data["call_id"]]["output_chars"] = len(str(output))
+        elif kind == "CONTEXT_COMPACTION":
+            folds.layer(data.get("layer", ""))
+        elif kind == "REASONING_SUMMARY_DELTA":
+            reasoning.append(data.get("delta", ""))
+        elif kind == "TURN_LIMIT":
+            limit = True
+        elif kind == "COMMUNICATE" and data.get("message"):
+            messages.append(data["message"])
     return calls, limit, messages, "".join(reasoning)
 
 
@@ -183,14 +401,18 @@ def workdir(trial, name):
 
 def make_state_dir(args, trial, work):
     """Creates trial/xdg, the trial's XDG_STATE_HOME. Under --work-root it is a symlink to
-    DIR/.state/<workspace name>, since memory tool results show its path to the agent."""
+    DIR/.state/<workspace name>, since memory tool results show its path to the agent. Under
+    --context-window it holds the trial's providers.toml."""
     xdg = os.path.join(trial, "xdg")
     if not args.work_root:
         os.makedirs(xdg)
-        return
-    real = os.path.join(os.path.realpath(args.work_root), ".state", os.path.basename(work))
-    os.makedirs(real)
-    os.symlink(real, xdg)
+    else:
+        real = os.path.join(os.path.realpath(args.work_root), ".state", os.path.basename(work))
+        os.makedirs(real)
+        os.symlink(real, xdg)
+    if args.providers_path:
+        with open(os.path.join(xdg, PROVIDERS_POINTER), "w") as f:
+            f.write(args.providers_path + "\n")
 
 
 def make_workspace(fixture, work, xdg):
@@ -414,6 +636,20 @@ def root_session_id(events, state):
     return max(roots)[1] if roots else None
 
 
+def context_record(events):
+    """(the root session's context window as its first SESSION_START reports it, or None, and the root
+    session's compactions as Folds groups them)."""
+    window, started, folds = None, False, Folds()
+    for kind, data in root_events(events):
+        if kind == "SESSION_START" and not started:
+            window, started = data.get("context_window_size"), True
+        elif kind == "TOOL_CALL_START":
+            folds.tool_call()
+        elif kind == "CONTEXT_COMPACTION":
+            folds.layer(data.get("layer", ""))
+    return window, folds.compactions()
+
+
 def whiteboard_note(state):
     """The root session's agent whiteboard (agent_note in its meta.json)."""
     note = ""
@@ -446,6 +682,8 @@ def grade_stage(label, arm, scen, stage, trial, session):
     grade = {"version": label, "arm": arm, "scenario": os.path.basename(scen), "trial": trial, "stage": name,
              "exit": session["exit"], "seconds": session["seconds"], "rounds_capped": limit, "tool_calls": len(calls),
              "memory_calls": {}, "checks": {}, "check_errors": {}}
+    grade["context_window"], folds = context_record(session["events"])
+    grade["compactions"] = len(folds)
     for c in calls:
         if c["tool"].startswith("memory_"):
             grade["memory_calls"][c["tool"]] = grade["memory_calls"].get(c["tool"], 0) + 1
@@ -640,6 +878,12 @@ def cmd_run(args):
         sys.exit(f"memory-lab: --out {args.out} exists and is not a directory; use a fresh directory")
     if os.path.exists(args.out) and os.listdir(args.out):
         sys.exit(f"memory-lab: {args.out} already holds results; use a fresh --out")
+    args.providers_path = None
+    if args.context_window:
+        require_canonical_row(versions.values(), *model_ref(args.model))
+        args.providers_path = write_run_providers(context_window_config(args.model, args.context_window))
+        print(f"memory-lab: this run's providers.toml, a copy of yours with the override: {args.providers_path} "
+              "(owner-only; delete it when you're done with ask)", flush=True)
     jobs = []
     for scen in args.scenarios.split(","):
         scen = os.path.abspath(scen)
@@ -666,6 +910,7 @@ def line(g):
     checks = " ".join(f"{k}={'Y' if v else 'n'}" for k, v in g["checks"].items())
     mem = ",".join(f"{k[7:]}:{v}" for k, v in sorted(g["memory_calls"].items())) or "-"
     cap = " CAPPED" if g["rounds_capped"] else ""
+    cap += f" compactions={g['compactions']}" if g.get("compactions") else ""
     error = f" ERROR {' '.join(g['error'].split())[:300]}" if g.get("error") else ""
     if g.get("check_errors"):
         error += f" CHECK-ERRORS {','.join(g['check_errors'])} (see show)"
@@ -814,6 +1059,9 @@ def main():
     r.add_argument("--jobs", type=positive_int, default=4)
     r.add_argument("--work-root", metavar="DIR", help="create each workspace at DIR/<project>-<random> instead of inside the "
                    "results tree; the trial's work/ is a symlink to it. The dirs are left in place")
+    r.add_argument("--context-window", type=positive_int, metavar="TOKENS",
+                   help="budget every session against a TOKENS-token context window, so long stages compact; "
+                        "needs --model as instance/model (see README)")
     rp = sub.add_parser("report")
     rp.add_argument("out")
     s = sub.add_parser("show")
