@@ -147,12 +147,26 @@ func migrateMemoryScope(env *execenv.LocalExecutionEnvironment) error {
 	if err != nil {
 		return err
 	}
+	// Only regular page files are read or written; a FIFO, directory or
+	// symlink named like a page is not listed and so is skipped.
+	listed, err := listMemoryPages(env)
+	if err != nil {
+		return err
+	}
+	needsDescription := make(map[string]bool, len(listed))
+	for _, p := range listed {
+		needsDescription[p.Path] = !p.HasDescription && !p.Unreadable
+	}
 	descriptions := parseLegacyMemoryIndex(string(raw))
 	for _, page := range slices.Sorted(maps.Keys(descriptions)) {
+		if !needsDescription[page] {
+			continue
+		}
 		abs := filepath.Join(root, filepath.FromSlash(page))
 		body, err := env.ReadFileRaw(abs)
 		if err != nil {
-			// Missing or unreadable, the page is skipped so the scope still finishes.
+			// Removed since the listing or unreadable, the page is skipped so the
+			// scope still finishes.
 			continue
 		}
 		if parsed := parseMemoryPage(page, body, time.Time{}); parsed.HasDescription || parsed.Unreadable {
