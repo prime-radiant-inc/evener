@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,10 +16,9 @@ type manualClaimResult struct {
 	err      error
 }
 
-// blockedNamerSession is a session whose retirement controller runs on a fake
-// clock and whose initial-prompt namer is blocked in its provider call until
-// release is closed.
-func blockedNamerSession(t *testing.T) (*Session, *RetirementController, *agenttest.FakeClock, chan struct{}) {
+// fakeClockRetirementRoot is a session attached to a retirement controller
+// that runs on a fake clock.
+func fakeClockRetirementRoot(t *testing.T) (*Session, *RetirementController, *agenttest.FakeClock) {
 	t.Helper()
 	root := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir()}))
 	clk := agenttest.NewFakeClockAt(time.Date(2026, 10, 8, 0, 0, 0, 0, time.UTC))
@@ -29,19 +29,24 @@ func blockedNamerSession(t *testing.T) (*Session, *RetirementController, *agentt
 	if err := c.AttachRoot(root); err != nil {
 		t.Fatal(err)
 	}
-	entered, release := make(chan struct{}), make(chan struct{})
+	return root, c, clk
+}
+
+// blockedNamerSession is fakeClockRetirementRoot with the session's
+// initial-prompt namer blocked in its provider call until release is called.
+func blockedNamerSession(t *testing.T) (*Session, *RetirementController, *agenttest.FakeClock, func()) {
+	t.Helper()
+	root, c, clk := fakeClockRetirementRoot(t)
+	entered, unblock := make(chan struct{}), make(chan struct{})
+	release := sync.OnceFunc(func() { close(unblock) })
 	t.Cleanup(func() {
-		select {
-		case <-release:
-		default:
-			close(release)
-		}
+		release()
 		root.sendersWG.Wait()
 	})
 	namer := llm.NewClient()
 	namer.Register(&agenttest.ScriptedAdapter{Provider: root.currentProfile().CheapProvider(), Responder: func(llm.Request) llm.Response {
 		close(entered)
-		<-release
+		<-unblock
 		return llm.Response{Message: llm.Assistant(`{"name":"Named Session"}`)}
 	}})
 	updateSessionTestConfig(root, func(cfg *testConfig) { cfg.namerClient = namer })
@@ -65,6 +70,22 @@ func awaitManualClaimWaiting(t *testing.T, clk *agenttest.FakeClock, done <-chan
 	})
 }
 
+// assertRefusedAtOnce fails unless the retire in done is refused without
+// waiting; during names the work held when it was asked.
+func assertRefusedAtOnce(t *testing.T, done <-chan manualClaimResult, during string) {
+	t.Helper()
+	select {
+	case got := <-done:
+		if got.err != nil || got.claim != nil {
+			t.Fatalf("manual retire during %s = claim %v, %v; want a refusal", during, got.claim, got.err)
+		}
+	// TRIPWIRE: a refusal returns at once; 30s only fires if the retire
+	// waited on the fake clock for the namer.
+	case <-time.After(30 * time.Second):
+		t.Fatalf("manual retire waited for the namer during %s", during)
+	}
+}
+
 func startManualClaim(c *RetirementController) <-chan manualClaimResult {
 	done := make(chan manualClaimResult, 1)
 	go func() {
@@ -82,7 +103,7 @@ func TestManualRetireWaitsForTheSessionNamer(t *testing.T) {
 	_, c, clk, release := blockedNamerSession(t)
 	done := startManualClaim(c)
 	awaitManualClaimWaiting(t, clk, done)
-	close(release)
+	release()
 	got := <-done
 	if got.err != nil || got.claim == nil {
 		t.Fatalf("manual retire after the namer settled = %+v, %v; want a claim", got.snapshot, got.err)
@@ -110,31 +131,13 @@ func TestManualRetireStopsWaitingForTheNamerAtItsTimeout(t *testing.T) {
 // lease, refuses a manual retire at once, as before.
 func TestManualRetireDoesNotWaitForOtherAutonomousWork(t *testing.T) {
 	t.Parallel()
-	root := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir()}))
-	clk := agenttest.NewFakeClockAt(time.Date(2026, 10, 8, 0, 0, 0, 0, time.UTC))
-	c, err := NewRetirementController(0, clk)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := c.AttachRoot(root); err != nil {
-		t.Fatal(err)
-	}
+	root, c, _ := fakeClockRetirementRoot(t)
 	release, err := root.beginRetirementMutation("autonomous") // as SetGoal holds it
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer release()
-	done := startManualClaim(c)
-	select {
-	case got := <-done:
-		if got.err != nil || got.claim != nil {
-			t.Fatalf("manual retire during a goal's lease = claim %v, %v; want a refusal", got.claim, got.err)
-		}
-	// TRIPWIRE: a refusal returns at once; 30s only fires if the retire
-	// waited on the fake clock for work it must not wait for.
-	case <-time.After(30 * time.Second):
-		t.Fatal("manual retire waited for a goal's lease")
-	}
+	assertRefusedAtOnce(t, startManualClaim(c), "a goal's lease")
 }
 
 // A namer runs inside the turn that launched it, and goal turns can run
@@ -148,17 +151,7 @@ func TestManualRetireDoesNotWaitForTheNamerBesideOtherWork(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer release()
-	done := startManualClaim(c)
-	select {
-	case got := <-done:
-		if got.err != nil || got.claim != nil {
-			t.Fatalf("manual retire during a turn beside the namer = claim %v, %v; want a refusal", got.claim, got.err)
-		}
-	// TRIPWIRE: a refusal returns at once; 30s only fires if the retire
-	// waited out the namer on the fake clock for a refusal.
-	case <-time.After(30 * time.Second):
-		t.Fatal("manual retire waited for the namer while a turn held the process")
-	}
+	assertRefusedAtOnce(t, startManualClaim(c), "a turn beside the namer")
 }
 
 // Other work that starts while the retire waits on the namer ends the wait:
@@ -173,14 +166,5 @@ func TestManualRetireStopsWaitingWhenOtherWorkStarts(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer release()
-	select {
-	case got := <-done:
-		if got.err != nil || got.claim != nil {
-			t.Fatalf("manual retire after a turn began = claim %v, %v; want a refusal", got.claim, got.err)
-		}
-	// TRIPWIRE: the new lease wakes the wait at once; 30s only fires if the
-	// retire kept waiting on the fake clock for the namer.
-	case <-time.After(30 * time.Second):
-		t.Fatal("manual retire kept waiting for the namer after a turn began")
-	}
+	assertRefusedAtOnce(t, done, "a turn begun while it waited")
 }

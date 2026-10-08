@@ -1000,8 +1000,8 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// identity-fenced daemon control RPCs: the current rendezvous entry must
 	// exist and the caller's generation fingerprint must match it, where an
 	// unrendered (empty) generation never compares equal. The retire path runs
-	// it again between TryClaim and the claim's prepare so a thread/clear that
-	// swapped ownership under an uncommitted claim cannot be retired by its
+	// it again between TryManualClaim and the claim's prepare so a thread/clear
+	// that swapped ownership under an uncommitted claim cannot be retired by its
 	// predecessor's stale row.
 	requireExactOwnership := func(generation string) error {
 		entry, ok := rvRegistration.Entry()

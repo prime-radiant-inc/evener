@@ -70,12 +70,12 @@ type RetirementController struct {
 	// flight. It is nil in production and is installed before the controller is
 	// used concurrently, so it needs no lock of its own.
 	evidenceGate func()
-	// naming holds the active leases that are a session namer naming its
+	// namingHeld counts the active leases that are a session namer naming its
 	// session: work that settles on its own within sessionNameTimeout, which
 	// a manual retire waits for (TryManualClaim). namingWake is closed, and
 	// replaced, whenever the leases change while one of them is held, so a
 	// waiting retire re-checks.
-	naming     map[uint64]struct{}
+	namingHeld int
 	namingWake chan struct{}
 }
 
@@ -104,8 +104,8 @@ func NewRetirementController(timeout time.Duration, clk RetirementClock) (*Retir
 	}
 	return &RetirementController{
 		phase: "resident", active: make(map[uint64]RetirementBlocker),
-		naming: make(map[uint64]struct{}), namingWake: make(chan struct{}),
 		changed: make(chan struct{}, 1), clock: clk, timeout: timeout, configuredTimeout: timeout,
+		namingWake: make(chan struct{}),
 	}, nil
 }
 
@@ -173,13 +173,13 @@ func (c *RetirementController) beginMutation(sessionID, category string, naming 
 		c.mu.Unlock()
 		return nil, ErrRetirementUnavailable
 	}
+	c.wakeNamingWaitersLocked()
 	c.nextLease++
 	lease := c.nextLease
 	c.active[lease] = RetirementBlocker{Category: category, SessionID: sessionID}
 	if naming {
-		c.naming[lease] = struct{}{}
+		c.namingHeld++
 	}
-	c.wakeNamingWaitersLocked()
 	c.eligibleSince = time.Time{}
 	c.mu.Unlock()
 	c.Changed()
@@ -187,13 +187,10 @@ func (c *RetirementController) beginMutation(sessionID, category string, naming 
 	return func() {
 		once.Do(func() {
 			c.mu.Lock()
-			_, naming := c.naming[lease]
+			c.wakeNamingWaitersLocked()
 			delete(c.active, lease)
-			delete(c.naming, lease)
 			if naming {
-				c.closeNamingWakeLocked()
-			} else {
-				c.wakeNamingWaitersLocked()
+				c.namingHeld--
 			}
 			c.mu.Unlock()
 			c.Changed()
@@ -242,22 +239,19 @@ func (c *RetirementController) awaitNaming(ctx context.Context, bound time.Durat
 }
 
 // wakeNamingWaitersLocked wakes a retire waiting on naming leases, if any
-// are held, so it re-checks after another lease changed. Callers hold c.mu.
+// are held, so it re-checks after the lease change the caller is about to
+// make. Callers hold c.mu.
 func (c *RetirementController) wakeNamingWaitersLocked() {
-	if len(c.naming) != 0 {
-		c.closeNamingWakeLocked()
+	if c.namingHeld != 0 {
+		close(c.namingWake)
+		c.namingWake = make(chan struct{})
 	}
-}
-
-func (c *RetirementController) closeNamingWakeLocked() {
-	close(c.namingWake)
-	c.namingWake = make(chan struct{})
 }
 
 // onlyNamingLocked reports whether the resident process is held by naming
 // leases and nothing else. Callers hold c.mu.
 func (c *RetirementController) onlyNamingLocked() bool {
-	return c.phase == "resident" && len(c.naming) != 0 && len(c.active) == len(c.naming)
+	return c.phase == "resident" && c.namingHeld != 0 && len(c.active) == c.namingHeld
 }
 
 // Changed coalesces notifications; callers notify only after dropping owner locks.
@@ -629,7 +623,7 @@ func RealRetirementClock() RetirementClock { return clock.Real() }
 // Run returns nil when ctx is done; consumer errors are the consumer's
 // responsibility (it owns Abort/Commit), not the loop's.
 func (c *RetirementController) Run(ctx context.Context, retire func(context.Context, *RetirementClaim) error) error {
-	var timer RetirementTimer
+	var timer clock.Timer
 	disarm := func() {
 		if timer != nil {
 			timer.Stop()
