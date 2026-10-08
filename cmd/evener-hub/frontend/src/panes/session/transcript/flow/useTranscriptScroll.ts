@@ -1160,8 +1160,10 @@ export function useTranscriptScroll({
   // That frame may never arrive - requestAnimationFrame does not run while the
   // tab is hidden, and the first frame after it becomes visible again can be
   // arbitrarily far away - so the scroll listener also CONSUMES the flag on the
-  // event it explains, and the document going hidden clears it outright. Between
-  // the three, a gesture vetoes the event it caused and nothing later.
+  // event it explains (one whose content and viewport heights held), and the
+  // document going hidden clears it outright. Between the three, a gesture
+  // vetoes the event it caused and, within its frames, the measurement
+  // corrections that land before that event - nothing later.
   //
   // Over-marking is the dangerous direction, not under-marking. A veto falls
   // through to the ordinary path below, which records the reader as away from
@@ -1224,7 +1226,8 @@ export function useTranscriptScroll({
   //   touch         - the same predicate, on real vertical movement only, so a
   //     sideways swipe and a swipe a nested scroller answers are both ignored.
   //   native keys   - the wheel's predicate, by key direction. The one marker
-  //     that lasts two frames, since the key's smooth scroll starts a frame late.
+  //     that lasts two frames, since the key's smooth scroll starts a frame late,
+  //     so a key whose scroll never starts can veto a correction in each frame.
   //   pointer drag  - the LEAST exact, and deliberately kept: a selection drag
   //     that moves without scrolling marks a gesture, which no handler can tell
   //     from a scrollbar drag that does scroll. The PRIMARY button marks only
