@@ -154,16 +154,21 @@ export default function Zoom({ paneId, focused }: PaneProps<SessionZoomParams>) 
       else if (element.scrollLeft !== followsLeaf.current) followsLeaf.current = null;
     };
     const resized = new ResizeObserver(() => {
+      // A scroll can land after this frame's scroll events and before this
+      // callback (a smooth or rAF-driven scroll); read the reader's place first.
+      scrolled();
       if (followsLeaf.current !== null) followsLeaf.current = scrollToEnd(element);
     });
     // The track's own box changes when the pane does; its content width changes
-    // only through its columns.
-    const observeColumns = () => {
-      for (const column of element.children) resized.observe(column);
-    };
+    // only through its columns, observed as they come and go.
     resized.observe(element);
-    observeColumns();
-    const columns = new MutationObserver(observeColumns);
+    for (const column of element.children) resized.observe(column);
+    const columns = new MutationObserver((records) => {
+      for (const record of records) {
+        for (const node of record.addedNodes) if (node instanceof Element) resized.observe(node);
+        for (const node of record.removedNodes) if (node instanceof Element) resized.unobserve(node);
+      }
+    });
     columns.observe(element, { childList: true });
     element.addEventListener("scroll", scrolled);
     return () => {
