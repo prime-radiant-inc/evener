@@ -1472,7 +1472,7 @@ func TestApplyPendingForceCompact_WarnsWhenInstructionsUnpublished(t *testing.T)
 		// real, so every attempt's summarize call lands a fresh competing
 		// publish after that attempt's snapshot and BOTH attempts lose.
 		competingResult := func(n int32) []schema.Turn {
-			turns := []schema.Turn{schema.NewTurn(schema.TurnSummary, llm.User(fmt.Sprintf("[CONTEXT SUMMARY]\n## Progress\ncompeting %d\n[END SUMMARY]", n)))}
+			turns := []schema.Turn{schema.NewTurn(schema.TurnSummary, llm.User(fmt.Sprintf("[CONTEXT SUMMARY]\ncompeting %d\n[END SUMMARY]", n)))}
 			for i := range 7 {
 				turns = append(turns, schema.NewTurn(schema.TurnUserInput, llm.User(fmt.Sprintf("competing filler %d-%d", n, i))))
 			}
@@ -1737,7 +1737,7 @@ func TestPrepareModelRequest_LosingFoldDoesNotMutateSharedPayloads(t *testing.T)
 func TestSessionCompact_TotalLossReportsPublicationConflict(t *testing.T) {
 	t.Parallel()
 	competingResult := func(n int32) []schema.Turn {
-		turns := []schema.Turn{schema.NewTurn(schema.TurnSummary, llm.User(fmt.Sprintf("[CONTEXT SUMMARY]\n## Progress\ncompeting %d\n[END SUMMARY]", n)))}
+		turns := []schema.Turn{schema.NewTurn(schema.TurnSummary, llm.User(fmt.Sprintf("[CONTEXT SUMMARY]\ncompeting %d\n[END SUMMARY]", n)))}
 		for i := range 7 {
 			turns = append(turns, schema.NewTurn(schema.TurnUserInput, llm.User(fmt.Sprintf("competing filler %d-%d", n, i))))
 		}

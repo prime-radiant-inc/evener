@@ -1626,10 +1626,8 @@ func checkSummaryReply(reply, instructions string) error {
 	for line := range strings.Lines(text) {
 		// Accept any heading style: "## Progress", "### progress", "**Progress**".
 		name := strings.Trim(strings.TrimSpace(line), "#* ")
-		for _, section := range summarySections {
-			if strings.EqualFold(name, section) {
-				return nil
-			}
+		if slices.ContainsFunc(summarySections, func(section string) bool { return strings.EqualFold(name, section) }) {
+			return nil
 		}
 	}
 	return errors.New("summarizer reply has none of the summary sections")
@@ -1885,11 +1883,12 @@ func (cm *Manager) summarizeWithLLMSteered(ctx context.Context, history []schema
 	if err != nil {
 		return nil, err
 	}
-	if err := checkSummaryReply(resp.Text(), instructions); err != nil {
+	reply := resp.Text()
+	if err := checkSummaryReply(reply, instructions); err != nil {
 		return nil, err
 	}
 
-	summaryText := "[CONTEXT SUMMARY]\n" + resp.Text() + "\n[END SUMMARY]"
+	summaryText := "[CONTEXT SUMMARY]\n" + reply + "\n[END SUMMARY]"
 	summaryTurn := schema.NewTurn(schema.TurnSummary, llm.User(summaryText))
 
 	result := make([]schema.Turn, 0, 1+preserveRecent)
