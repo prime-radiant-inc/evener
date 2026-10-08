@@ -25,8 +25,8 @@ import {
 } from "../../stores/sessionActivityTestUtils";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
 import { resetTranscriptViewRegistryForTests } from "../session/transcript/flow/transcriptViewRegistry";
-import { holdReaderFrames, readerWireTurns } from "../session/transcript/transcriptReaderTestUtils";
-import { installTranscriptGeometry } from "../session/transcript/transcriptReadingGeometryTestUtils";
+import { readerWireTurns } from "../session/transcript/transcriptReaderTestUtils";
+import { holdReaderFrames, installTranscriptGeometry } from "../session/transcript/transcriptReadingGeometryTestUtils";
 import { retainedTranscriptReadView } from "../session/transcript/transcriptReadView";
 import { resetTranscriptPagingForTests } from "../session/transcript/useTranscript";
 import { enterAgentCascade, popAgentCascade } from "./actions";
