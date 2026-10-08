@@ -1,3 +1,4 @@
+import { activityChangedNotification } from "@evener/appwire-client/testing/notifications";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, test } from "vitest";
@@ -623,12 +624,7 @@ test("pending ancestry becomes useful parent navigation only after the domain pr
   expect(screen.getByText("Finding session context…")).toBeTruthy();
   expect(screen.queryByRole("button", { name: "Proven root" })).toBeNull();
   known = true;
-  act(() =>
-    client.emitNotification({
-      method: "evener/thread/activity/changed",
-      params: { ref, threadId: "owner", sessionId: "owner", resources: ["summary"] },
-    }),
-  );
+  act(() => client.emitNotification(activityChangedNotification({ ref, threadId: "owner" }, ["summary"])));
   await screen.findByRole("button", { name: "Proven root" });
   expect(screen.queryByText("Finding session context…")).toBeNull();
 });

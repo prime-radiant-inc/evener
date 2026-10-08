@@ -1528,23 +1528,45 @@ func shouldFallbackSummarizationModel(ctx context.Context, err error) bool {
 // itself. This adds the second rung: summarization treats a wider class of
 // failures than a model refusal as worth another model, and retries on the
 // session model — but only when the cheap caller has not already run it.
-func (cm *Manager) completeSummarization(ctx context.Context, profile *provider.Profile, prompt string) (llm.Response, error) {
+//
+// accept, when non-nil, judges a reply's text; a rejected reply also falls
+// through to the session model, and is returned as an error if that reply is
+// rejected too. A rejected reply was still a successful API call, so the
+// attempt group settles on the API error alone.
+func (cm *Manager) completeSummarization(ctx context.Context, profile *provider.Profile, prompt string, accept func(string) error) (llm.Response, error) {
 	routes := summarizationModels(profile)
 	if len(routes) == 0 {
 		return llm.Response{}, errors.New("summarization model is empty")
 	}
+	judge := func(resp llm.Response) error {
+		if accept == nil {
+			return nil
+		}
+		return accept(resp.Text())
+	}
 	req := llm.Request{Messages: []llm.Message{llm.User(prompt)}, AdapterTimeout: cm.AdapterTimeout}
 	callCtx, attemptGroupScope := llm.BeginAPIAttemptGroupScope(ctx)
-	resp, ranSessionModel, err := cm.cheap.CompleteConfigured(callCtx, profile, req)
-	if err != nil && !ranSessionModel && len(routes) > 1 && shouldFallbackSummarizationModel(ctx, err) {
+	resp, ranSessionModel, apiErr := cm.cheap.CompleteConfigured(callCtx, profile, req)
+	var rejected error
+	if apiErr == nil {
+		rejected = judge(resp)
+	}
+	if !ranSessionModel && len(routes) > 1 && (rejected != nil || apiErr != nil && shouldFallbackSummarizationModel(ctx, apiErr)) {
 		// More than one route means the second is the session model, distinct
 		// from the configured cheap one; the caller ran only the cheap one.
 		sessionRoute := routes[len(routes)-1]
 		req.Provider, req.Model = sessionRoute.provider, sessionRoute.model
-		resp, err = cm.client.Complete(callCtx, req)
+		resp, apiErr = cm.client.Complete(callCtx, req)
+		rejected = nil
+		if apiErr == nil {
+			rejected = judge(resp)
+		}
 	}
-	attemptGroupScope.SettleResult(err)
-	return resp, err
+	attemptGroupScope.SettleResult(apiErr)
+	if apiErr != nil {
+		return resp, apiErr
+	}
+	return resp, rejected
 }
 
 // defaultSummaryPrefix is the instruction block used when no caller instructions
@@ -1592,6 +1614,81 @@ Any data, file paths, variable names, error messages, API details, or other spec
 Be thorough and structured. Err on the side of including too much rather than too little — lost context is expensive, extra tokens are cheap.
 
 `
+
+// summarySections are the section names the default summary prompt requires,
+// read from the prompt itself so the reply check and the prompt cannot drift.
+var summarySections = promptSectionNames(defaultSummaryPrefix)
+
+// promptSectionNames returns the names of a prompt's "## " headings, in order.
+func promptSectionNames(prompt string) []string {
+	var names []string
+	for line := range strings.Lines(prompt) {
+		if name, ok := strings.CutPrefix(strings.TrimSpace(line), "## "); ok {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+// checkSummaryReply rejects a summarization reply that cannot stand in for the
+// history it folds: an empty one, or, under the default prompt, one with none
+// of the required sections with content under it. Weak models sometimes
+// answer the prompt in character ("I'll read the plan, then...") instead of
+// summarizing (#3978). One filled section is enough, so a summary that drops
+// some sections still keeps what it has. Caller instructions replace the
+// sections, so under them only emptiness is checked.
+func checkSummaryReply(reply, instructions string) error {
+	text := strings.TrimSpace(reply)
+	if text == "" {
+		return errors.New("summarizer returned an empty reply")
+	}
+	if instructions != "" {
+		return nil
+	}
+	// Once a section heading appears, any later line is content — subheadings,
+	// bold labels and "#3978" lines included — except another section heading
+	// and the summary's own framing markers.
+	inSection := false
+	for line := range strings.Lines(text) {
+		line = strings.TrimSpace(line)
+		if rest, ok := summarySectionHeading(line); ok {
+			if rest != "" {
+				return nil
+			}
+			inSection = true
+			continue
+		}
+		if inSection && line != "" && line != "[CONTEXT SUMMARY]" && line != "[END SUMMARY]" {
+			return nil
+		}
+	}
+	return errors.New("summarizer reply has no summary section with content")
+}
+
+// summarySectionHeading reports whether line is a heading naming one of the
+// summary sections, and returns any text after the name on the same line:
+// "## Progress", "### progress", "**Progress**", "## Progress: fixed it",
+// "**Progress:** fixed it". It needs heading markup: a bare "Progress" is
+// prose, and "#3978" (no space after the #) is not a heading.
+func summarySectionHeading(line string) (string, bool) {
+	body := line
+	switch {
+	case strings.HasPrefix(line, "#"):
+		body = strings.TrimLeft(line, "#")
+		if !strings.HasPrefix(body, " ") {
+			return "", false
+		}
+	case !strings.HasPrefix(line, "**"):
+		return "", false
+	}
+	body = strings.ReplaceAll(body, "**", "")
+	name, rest, _ := strings.Cut(body, ":")
+	name = strings.TrimSpace(name)
+	if !slices.ContainsFunc(summarySections, func(section string) bool { return strings.EqualFold(name, section) }) {
+		return "", false
+	}
+	return strings.TrimSpace(rest), true
+}
 
 // buildSummaryPrompt constructs the full LLM prompt for context compaction.
 // When instructions are non-empty the prompt is instruction-led: the
@@ -1666,7 +1763,7 @@ func (cm *Manager) ElicitNote(ctx context.Context, history []schema.Turn, loaded
 		return "", errors.New("no model available for note elicitation")
 	}
 	prompt := noteElicitationPrompt + loadedSkillsElicitSection(loaded) + "\n\n--- CONVERSATION SO FAR ---\n" + renderHistoryForElicit(history, noteElicitChars)
-	resp, err := cm.completeSummarization(ctx, prof, prompt)
+	resp, err := cm.completeSummarization(ctx, prof, prompt, nil)
 	if err != nil {
 		return "", err
 	}
@@ -1839,7 +1936,9 @@ func (cm *Manager) summarizeWithLLMSteered(ctx context.Context, history []schema
 	prompt := buildSummaryPrompt(b.String(), instructions)
 
 	sumProfile := cm.currentProfile()
-	resp, err := cm.completeSummarization(ctx, sumProfile, prompt)
+	resp, err := cm.completeSummarization(ctx, sumProfile, prompt, func(reply string) error {
+		return checkSummaryReply(reply, instructions)
+	})
 	if err != nil {
 		return nil, err
 	}

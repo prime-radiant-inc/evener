@@ -460,7 +460,7 @@ func TestApplyPendingForceCompact_PreservesConcurrentAppendDuringSlowFold(t *tes
 		Responder: func(req llm.Request) llm.Response {
 			close(entered)
 			<-proceed
-			return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+			return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nsummary\n[END SUMMARY]")}
 		},
 	})
 	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), blockingProvider+"/model")
@@ -563,7 +563,7 @@ func TestSessionCompact_PreservesConcurrentAppendDuringSlowFold(t *testing.T) {
 		Responder: func(req llm.Request) llm.Response {
 			close(entered)
 			<-proceed
-			return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+			return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nsummary\n[END SUMMARY]")}
 		},
 	})
 	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), blockingProvider+"/model")
@@ -629,7 +629,7 @@ func TestSessionCompact_DoesNotClobberConcurrentCompaction(t *testing.T) {
 		Responder: func(req llm.Request) llm.Response {
 			close(entered)
 			<-proceed
-			return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nA's stale first-attempt summary\n[END SUMMARY]")}
+			return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nA's stale first-attempt summary\n[END SUMMARY]")}
 		},
 	})
 	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), blockingProvider+"/model")
@@ -720,7 +720,7 @@ func TestSessionCompact_DoesNotResurrectConcurrentlyRemovedAttentionTurn(t *test
 				close(entered)
 				<-proceed
 			}
-			return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+			return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nsummary\n[END SUMMARY]")}
 		},
 	})
 	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), blockingProvider+"/model")
@@ -794,7 +794,7 @@ func TestFoldConflict_LosingAttemptDoesNotConsumeSideEffects(t *testing.T) {
 				close(entered)
 				<-proceed
 			}
-			return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+			return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nsummary\n[END SUMMARY]")}
 		},
 	})
 	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), blockingProvider+"/model")

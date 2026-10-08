@@ -1,5 +1,6 @@
 import type { ThreadReadResponse } from "@evener/appwire-client";
 import { deferred } from "@evener/appwire-client/testing/deferred";
+import { activityChangedNotification } from "@evener/appwire-client/testing/notifications";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { MotionProvider } from "../../motion";
@@ -222,12 +223,7 @@ test("About releases prior collection demand through invalidation and reconnect"
   await screen.findByText("about-owner");
   const delegateReads = client.calls.filter((call) => call.method === "evener/thread/delegates/list").length;
   const summaryReads = summaries;
-  act(() =>
-    client.emitNotification({
-      method: "evener/thread/activity/changed",
-      params: { ref, threadId: "owner", sessionId: "owner", resources: ["summary", "delegates"] },
-    }),
-  );
+  act(() => client.emitNotification(activityChangedNotification({ ref, threadId: "owner" }, ["summary", "delegates"])));
   await waitFor(() => {
     expect(summaries).toBeGreaterThan(summaryReads);
     expect(sessionActivitySnapshot(client, ref, "session")?.summaryState.loading).toBe(false);

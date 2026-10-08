@@ -1,13 +1,11 @@
 // Typed external activity replies for native tests that share the rich row fixtures.
 import {
 	type ActivityDelegate,
-	type AnyNotification,
 	type ActivityTree,
 	type Thread,
 	type SessionActivityContext,
 	type SessionActivityCounts,
 	type SessionActivityReadParams,
-	type SessionActivityResource,
 	type SessionDelegate,
 	type SessionDelegatesResponse,
 	type SessionJobsResponse,
@@ -214,18 +212,4 @@ export function installActivityFixture(
 		page: { complete: true, issues: [] },
 	}));
 	client.on("thread/unsubscribe", () => ({}));
-}
-
-/** The hub's word that a session's activity changed: the activity store
- * re-reads the resources it names: summary, delegates and jobs unless a test
- * names others. The session is the thread's own unless the target says
- * otherwise. */
-export function activityChanged(
-	target: { ref: string; threadId: string; sessionId?: string },
-	resources: SessionActivityResource[] = ["summary", "delegates", "jobs"],
-): AnyNotification {
-	return {
-		method: "evener/thread/activity/changed",
-		params: { ref: target.ref, threadId: target.threadId, sessionId: target.sessionId ?? target.threadId, resources },
-	};
 }

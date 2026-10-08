@@ -1,6 +1,7 @@
 import { WireError } from "@evener/appwire-client";
 import { createNavigationStore } from "@evener/appwire-client/state/navigation";
 import { memoryNavigationPersistence } from "@evener/appwire-client/testing/navigationPersistence";
+import { activityChangedNotification } from "@evener/appwire-client/testing/notifications";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { connectionStore } from "../../stores/connection";
@@ -151,10 +152,7 @@ it("visible page-boundary demand heals a failed continuation while the actual ta
     expect(screen.getByRole("button", { name: /first loaded/ })).toBeTruthy();
     view?.unmount();
     act(() =>
-      client.emitNotification({
-        method: "evener/thread/activity/changed",
-        params: { ref: "remote:owner", threadId: "owner", sessionId: "owner", resources: ["delegates"] },
-      }),
+      client.emitNotification(activityChangedNotification({ ref: "remote:owner", threadId: "owner" }, ["delegates"])),
     );
     await act(async () => vi.advanceTimersByTimeAsync(120000));
     expect(continuationReads).toBe(2);
@@ -265,10 +263,7 @@ it.each([
       throw new WireError("unsupported source", -32014, { evenerErrorInfo: "actionUnavailable" });
     });
     act(() =>
-      client.emitNotification({
-        method: "evener/thread/activity/changed",
-        params: { ref: "remote:owner", threadId: "owner", sessionId: "owner", resources: [resource] },
-      }),
+      client.emitNotification(activityChangedNotification({ ref: "remote:owner", threadId: "owner" }, [resource])),
     );
     await waitFor(() =>
       expect(sessionActivitySnapshot(client, "remote:owner", "session")?.[resource].permanent).toBe(true),

@@ -20,6 +20,11 @@ def call(tool, **args):
     return {"tool": tool, "args": json.dumps(args)}
 
 
+def failed(c):
+    """c as a call whose TOOL_CALL_END carried an error."""
+    return dict(c, failed=True)
+
+
 def shell(command):
     return call("shell", command=command)
 
@@ -95,12 +100,38 @@ CASES = [
     (shell("perl -i -x script.pl progress.md"), ("write", ["ledger"])),
     (shell("perl -i -x/opt script.pl progress.md"), ("write", ["ledger"])),
     (shell("go test ./..."), ("work", [])),
-    # task_list: status, notes, or both; an update counts by the keys it sets.
+    # task_list is judged by its result: a call evener refused (its end carries an error) wrote nothing. A call
+    # that succeeded changed the task list (#4021); it also wrote a task note when an update carries a real one.
     (call("task_list", update=[{"id": 1, "status": "done", "notes": "commit abc"}]), ("write", ["tasks", "task-notes"])),
     (call("task_list", update=[{"id": 1, "status": "done"}]), ("write", ["tasks"])),
-    (call("task_list", update=[{"id": 1, "notes": "flaky test seen"}]), ("write", ["task-notes"])),
-    (call("task_list", update=[{"id": 2, "depends_on": []}]), ("write", ["tasks"])),
+    (call("task_list", update=[{"id": 1, "notes": "flaky test seen"}]), ("write", ["tasks", "task-notes"])),
+    (call("task_list", add=[{"type": "implement", "description": "x", "prompt": "y"}]), ("write", ["tasks"])),
+    (call("task_list", update=[{"id": 1, "status": "in_progress", "notes": " NULL ", "depends_on": []}]),
+     ("write", ["tasks"])),
+    # A successful call can carry placeholder-only entries evener skipped; their notes are placeholders.
+    (call("task_list", update=[{"id": 1, "status": "done"}, {"id": 2, "notes": "", "depends_on": None}]),
+     ("write", ["tasks"])),
     (call("task_list"), ("read", ["tasks"])),
+    (call("task_list", update=[]), ("read", ["tasks"])),
+    (failed(call("task_list", update=[{"id": 1, "status": "done", "notes": "commit abc"}])), ("work", [])),
+    (failed(call("task_list", update=[{"id": 2, "depends_on": []}])), ("work", [])),
+    (failed(call("task_list", add=[{"type": "x"}])), ("work", [])),
+    # A malformed add or update is a mutation attempt, not a view.
+    (failed(call("task_list", update=[1])), ("work", [])),
+    (failed(call("task_list", update={})), ("work", [])),
+    (failed(call("task_list", add={})), ("work", [])),
+    (call("task_list", update=None, add=[]), ("read", ["tasks"])),
+    # Any other all-or-nothing write the tool refused wrote nothing either.
+    (failed(call("edit_file", file_path=LEDGER)), ("work", [])),
+    (failed(call("write_file", file_path=LEDGER)), ("work", [])),
+    (failed(call("memory_write", scope="project", file_path="x.md")), ("work", [])),
+    (failed(call("memory_edit", scope="project", file_path="x.md")), ("work", [])),
+    (failed(call("notes_agent_set", note="x")), ("work", [])),
+    # Shell and apply_patch can write before they fail, so a failed one is still judged by its arguments.
+    (failed(shell("printf x >> progress.md; false")), ("write", ["ledger"])),
+    (failed(patch(f"*** Update File: /w/{LEDGER}", "*** Update File: /w/missing.go")), ("write", ["ledger"])),
+    # A refused read still cost a call: it counts as a read-back.
+    (failed(call("memory_read", scope="project", file_path="MEMORY.md")), ("read", ["memory"])),
     # Memory and the whiteboard.
     (call("memory_edit", scope="project", file_path="MEMORY.md"), ("write", ["mem:project"])),
     (call("notes_agent_set", note="x"), ("write", ["whiteboard"])),
@@ -305,6 +336,13 @@ class TrialStateTest(unittest.TestCase):
         self.assertEqual(bookkeeping.lab.user_credentials_config(),
                          os.path.join(self.root, "evener", "credentials.toml"))
 
+    def test_a_providers_dir_that_already_exists_is_made_owner_only(self):
+        base = os.path.join(self.root, "state", "memory-lab", "providers")
+        os.makedirs(base, mode=0o755)
+        os.chmod(base, 0o755)  # makedirs' mode is masked by the umask
+        bookkeeping.lab.write_run_providers("[x]\n")
+        self.assertEqual(stat.S_IMODE(os.stat(base).st_mode), 0o700)
+
     def test_no_override_without_context_window(self):
         trial = os.path.join(self.root, "trial")
         os.makedirs(trial)
@@ -346,6 +384,18 @@ class CompactionTest(unittest.TestCase):
         self.assertEqual([(c["compactions_before"], c["output_chars"]) for c in calls], [(0, 400), (1, 0), (1, 0)])
         self.assertEqual(bookkeeping.lab.context_record(f.name),
                          (40000, [["observation_mask", "checkpoint", "summarize"], ["checkpoint"]]))
+
+    def test_a_call_whose_end_carries_an_error_is_marked_failed(self):
+        path = events_file(self, [
+            event("TOOL_CALL_START", tool_name="task_list", call_id="a", arguments_json="{}"),
+            event("TOOL_CALL_END", tool_name="task_list", call_id="a", error="unknown task ID 1"),
+            event("TOOL_CALL_START", tool_name="task_list", call_id="b", arguments_json="{}"),
+            event("TOOL_CALL_END", tool_name="task_list", call_id="b", output="ok"),
+            event("TOOL_CALL_START", tool_name="task_list", call_id="c", arguments_json="{}"),
+            event("TOOL_CALL_END", tool_name="task_list", call_id="c", error=""),
+            event("TOOL_CALL_START", tool_name="task_list", call_id="d", arguments_json="{}")])
+        calls, _, _, _ = bookkeeping.lab.parse_events(path)
+        self.assertEqual([c["failed"] for c in calls], [True, False, False, False])
 
     def test_output_chars_counts_an_empty_output_as_empty(self):
         lines = [event("TOOL_CALL_START", tool_name="shell", call_id="a", arguments_json="{}"),
