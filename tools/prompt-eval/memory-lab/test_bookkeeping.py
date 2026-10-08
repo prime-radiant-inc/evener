@@ -5,7 +5,7 @@ Run: python3 -B tools/prompt-eval/memory-lab/test_bookkeeping.py
 Each case is a tool call as the lab records it and the (kind, surfaces) classify must return; the
 compaction tests cover how a compacted session's calls are tagged and its reconstruction counted, and
 the --context-window tests cover the trial's providers.toml."""
-import argparse, importlib.machinery, importlib.util, json, os, stat, sys, tempfile, unittest
+import argparse, importlib.machinery, importlib.util, json, math, os, stat, sys, tempfile, unittest
 from unittest import mock
 
 sys.dont_write_bytecode = True
@@ -114,6 +114,7 @@ CASES = [
     (call("job_list", type=["delegate"]), ("read", ["jobs"])),
     (call("read_file", file_path=f"/w/{BRIEF}"), ("read", ["plan-artifacts"])),
     (call("read_file", file_path=PLAN), ("read", ["plan"])),
+    (call("read_file", file_path="/w/.superpowers/plans/p.md"), ("read", ["plan-artifacts", "plan"])),
     (shell(f"sed -n '1,40p' {PLAN}"), ("read", ["plan"])),
     (shell(f"cat {LEDGER} {PLAN} {PLAN}"), ("read", ["ledger", "plan"])),
     (shell(f"head {BRIEF} {PLAN}"), ("read", ["plan-artifacts", "plan"])),
@@ -172,6 +173,10 @@ class ContextWindowConfigTest(unittest.TestCase):
         del got["providers"]["lunar"]["models"]
         self.assertEqual(got, want)
 
+    def test_keeps_a_nan(self):
+        got = self.config('ratio = nan\n[providers.lunar]\nbase = "openai"\n')
+        self.assertTrue(math.isnan(got["ratio"]))
+
     def test_canonicalizes_the_model_ref_like_the_cli(self):
         got = self.config('[providers.openai]\nbase = "openai"\n', model=" OPENAI / gpt-5.5 ")
         self.assertEqual(got["providers"]["openai"]["models"], {"gpt-5.5": {"context_window": 44000}})
@@ -194,6 +199,41 @@ class ContextWindowConfigTest(unittest.TestCase):
         self.assertIn(path, str(e.exception.code))
 
 
+class CanonicalRowTest(unittest.TestCase):
+    """--context-window refuses a model id that evener resolves to another row (a dated or region variant):
+    a row keyed by the variant would shadow the canonical row's facts."""
+
+    def evener(self, script):
+        root = tempfile.TemporaryDirectory()
+        self.addCleanup(root.cleanup)
+        path = os.path.join(root.name, "evener")
+        with open(path, "w") as f:
+            f.write("#!/bin/sh\n" + script)
+        os.chmod(path, 0o755)
+        return path
+
+    def test_accepts_a_model_that_is_its_own_row(self):
+        bin_ = self.evener("""echo '{"model_id": "gpt-5.5", "model": {"id": "gpt-5.5"}}'\n""")
+        bookkeeping.lab.require_canonical_row([bin_], "openai", "gpt-5.5")
+
+    def test_refuses_a_variant_and_names_the_row_to_pass(self):
+        bin_ = self.evener("""echo '{"model_id": "gpt-5.5-20260101", "model": {"id": "gpt-5.5"}}'\n""")
+        with self.assertRaises(SystemExit) as e:
+            bookkeeping.lab.require_canonical_row([bin_], "openai", "gpt-5.5-20260101")
+        self.assertIn("openai/gpt-5.5", str(e.exception.code))
+
+    def test_asks_evener_for_the_instance_and_model(self):
+        bin_ = self.evener("""[ "$1 $2 $3" = "models inspect openai/gpt-5.5" ] || exit 9
+echo '{"model": {"id": "gpt-5.5"}}'\n""")
+        bookkeeping.lab.require_canonical_row([bin_], "openai", "gpt-5.5")
+
+    def test_exits_when_evener_cant_resolve_it(self):
+        bin_ = self.evener("echo 'unknown instance' >&2; exit 1\n")
+        with self.assertRaises(SystemExit) as e:
+            bookkeeping.lab.require_canonical_row([bin_], "openai", "gpt-5.5")
+        self.assertIn("unknown instance", str(e.exception.code))
+
+
 class TrialStateTest(unittest.TestCase):
     """make_state_dir writes the trial's providers.toml, and fixture_env points every session at it."""
 
@@ -202,6 +242,7 @@ class TrialStateTest(unittest.TestCase):
         self.addCleanup(root.cleanup)
         self.root = os.path.realpath(root.name)
         os.makedirs(os.path.join(self.root, "config"))
+        self.environ(XDG_STATE_HOME=os.path.join(self.root, "state"))
         # The launcher's cwd: relative config paths resolve against it, never against a trial workspace.
         cwd = os.getcwd()
         os.chdir(self.root)
@@ -217,25 +258,29 @@ class TrialStateTest(unittest.TestCase):
 
     def run_trial(self, work_root, providers="config/providers.toml", credentials=None):
         self.environ(EVENER_PROVIDERS_CONFIG=providers, EVENER_CREDENTIALS_CONFIG=credentials)
-        trial = os.path.join(self.root, "trial")
+        trial = os.path.join(self.root, "out", "main", "on", "s", "r1")
         os.makedirs(trial)
         work = os.path.join(self.root, "shop-abc")
         args = argparse.Namespace(work_root=os.path.join(self.root, "wr") if work_root else None,
-                                  providers_config="[x]\ny = 1\n")
+                                  providers_path=bookkeeping.lab.write_run_providers("[x]\ny = 1\n"))
         bookkeeping.lab.make_state_dir(args, trial, work)
         xdg = os.path.join(trial, "xdg")
         return xdg, bookkeeping.lab.fixture_env(work, xdg)
 
     def check(self, work_root):
         xdg, env = self.run_trial(work_root, providers=os.path.join(self.root, "config", "providers.toml"))
-        real = os.path.join(os.path.realpath(xdg), "providers.toml")
         if work_root:
             self.assertTrue(os.path.islink(xdg))
-            self.assertEqual(real, os.path.join(self.root, "wr", ".state", "shop-abc", "providers.toml"))
-        self.assertEqual(env["EVENER_PROVIDERS_CONFIG"], real)
+        real = env["EVENER_PROVIDERS_CONFIG"]
+        # The merged config can hold literal keys: it lives in a private dir under the state root, never in
+        # the results tree or a trial's state dir.
+        self.assertEqual(os.path.dirname(os.path.dirname(real)), os.path.join(self.root, "state", "memory-lab", "providers"))
+        self.assertFalse(real.startswith(os.path.join(self.root, "out") + os.sep))
+        self.assertFalse(real.startswith(os.path.realpath(xdg) + os.sep))
         with open(real) as f:
             self.assertEqual(f.read(), "[x]\ny = 1\n")
         self.assertEqual(stat.S_IMODE(os.stat(real).st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(os.stat(os.path.dirname(real)).st_mode), 0o700)
         self.assertEqual(env["EVENER_CREDENTIALS_CONFIG"], os.path.join(self.root, "config", "credentials.toml"))
 
     def test_under_work_root(self):
@@ -263,7 +308,7 @@ class TrialStateTest(unittest.TestCase):
     def test_no_override_without_context_window(self):
         trial = os.path.join(self.root, "trial")
         os.makedirs(trial)
-        bookkeeping.lab.make_state_dir(argparse.Namespace(work_root=None, providers_config=None), trial,
+        bookkeeping.lab.make_state_dir(argparse.Namespace(work_root=None, providers_path=None), trial,
                                        os.path.join(self.root, "w"))
         env = bookkeeping.lab.fixture_env(os.path.join(self.root, "w"), os.path.join(trial, "xdg"))
         self.assertEqual(env.get("EVENER_PROVIDERS_CONFIG"), os.environ.get("EVENER_PROVIDERS_CONFIG"))

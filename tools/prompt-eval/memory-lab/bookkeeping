@@ -65,6 +65,11 @@ def plan_file(path):
     return "plans" in path.split("/")[:-1] and path.endswith(".md")
 
 
+def read_surfaces(paths):
+    """The surfaces reading these paths reads back: file_surface's, plus "plan" when one is a plan."""
+    return file_surface(paths) + (["plan"] if any(plan_file(p) for p in paths) else [])
+
+
 def file_surface(paths):
     """The progress surfaces a set of paths belongs to: the ledger (a file named progress.md), other
     plan artifacts under .superpowers/, or both."""
@@ -280,7 +285,7 @@ def classify(call):
         written, read = shell_paths(str(a.get("command", a.get("cmd", ""))))
         if surfaces := file_surface(written):
             return "write", surfaces
-        surfaces = file_surface(read) + (["plan"] if any(plan_file(p) for p in read) else [])
+        surfaces = read_surfaces(read)
         return ("read", surfaces) if surfaces else ("work", [])
     if tool in ("memory_write", "memory_edit"):
         return "write", ["mem:" + str(a.get("scope", "?"))]
@@ -299,10 +304,8 @@ def classify(call):
         return ("write", surfaces) if surfaces else ("read", ["tasks"])
     if tool in READ_LABELS:
         return "read", [READ_LABELS[tool]]
-    if tool == "read_file" and (surfaces := file_surface([path])):
+    if tool == "read_file" and (surfaces := read_surfaces([path])):
         return "read", surfaces
-    if tool == "read_file" and plan_file(path):
-        return "read", ["plan"]
     return "work", []
 
 
@@ -346,7 +349,7 @@ def main():
                 for surface in surfaces:
                     writes[surface] = writes.get(surface, 0) + 1
             elif kind == "read":
-                reads += not set(surfaces) <= NOT_BOOKKEEPING_READS
+                reads += not (set(surfaces) <= NOT_BOOKKEEPING_READS)
                 for surface in surfaces:
                     read_by[surface] += 1
         total = len(calls)

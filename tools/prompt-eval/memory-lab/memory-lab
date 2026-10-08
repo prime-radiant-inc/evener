@@ -47,7 +47,7 @@ also a symlink under --work-root),
 and per stage: <S>.events.ndjson, <S>.stdout, <S>.grade.json, <S>.memory/.
 Full logs stay on disk; the report prints only the summary.
 """
-import argparse, concurrent.futures as cf, glob, json, os, re, shutil, signal, subprocess, sys, tempfile, time
+import argparse, concurrent.futures as cf, glob, json, math, os, re, shutil, signal, subprocess, sys, tempfile, time
 from datetime import datetime
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -87,8 +87,22 @@ def run_bounded(cmd, cwd, env, timeout, stdout=None, stderr=None):
         return "timeout", out or ""
 
 
-# The trial's providers.toml under --context-window, in its state dir (a neutral path under --work-root).
-TRIAL_PROVIDERS = "providers.toml"
+# Under --context-window, the file in a trial's state dir that holds the path of the run's providers.toml.
+PROVIDERS_POINTER = "providers-config-path"
+
+
+def write_run_providers(text):
+    """Writes a run's providers.toml and returns its path: <state root>/memory-lab/providers/<random>/
+    providers.toml, where the state root is $XDG_STATE_HOME or ~/.local/state. It is a copy of the user's
+    config, which can hold literal keys, so it is owner-only (dir 0700, file 0600) and never in the results
+    tree. It is left in place so ask can use it; delete it by hand."""
+    base = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"),
+                        "memory-lab", "providers")
+    os.makedirs(base, mode=0o700, exist_ok=True)
+    path = os.path.join(tempfile.mkdtemp(dir=base), "providers.toml")  # mkdtemp makes the dir 0700
+    with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as f:
+        f.write(text)
+    return path
 
 
 # Keep this hermetic setup in sync with fixtureEnv / configureHermeticRunEnv in
@@ -100,11 +114,11 @@ def fixture_env(work, xdg):
                 "XDG_STATE_HOME": os.path.realpath(xdg), "EVENER_NO_USER_SKILLS": "1",
                 "GIT_AUTHOR_NAME": GIT_NAME, "GIT_AUTHOR_EMAIL": GIT_EMAIL,
                 "GIT_COMMITTER_NAME": GIT_NAME, "GIT_COMMITTER_EMAIL": GIT_EMAIL})
-    # A trial run with --context-window has its own providers.toml; every session in the trial, ask
-    # included, reads it, with the partner's credentials.
-    trial_config = os.path.join(xdg, TRIAL_PROVIDERS)
-    if os.path.isfile(trial_config):
-        env["EVENER_PROVIDERS_CONFIG"] = os.path.realpath(trial_config)
+    # A run with --context-window has its own providers.toml; the trial's state dir names it, and every
+    # session in the trial, ask included, reads it, with the partner's credentials.
+    pointer = os.path.join(xdg, PROVIDERS_POINTER)
+    if os.path.isfile(pointer):
+        env["EVENER_PROVIDERS_CONFIG"] = read_file(pointer).strip()
         env["EVENER_CREDENTIALS_CONFIG"] = user_credentials_config()
     return env
 
@@ -167,6 +181,17 @@ def toml_document(table, path=()):
     return "\n".join(lines).strip("\n") + ("\n" if not path else "")
 
 
+def same_toml(a, b):
+    """Whether two parsed TOML values are equal, counting NaN equal to NaN."""
+    if isinstance(a, float) and isinstance(b, float) and math.isnan(a) and math.isnan(b):
+        return True
+    if isinstance(a, dict) and isinstance(b, dict):
+        return a.keys() == b.keys() and all(same_toml(a[k], b[k]) for k in a)
+    if isinstance(a, list) and isinstance(b, list):
+        return len(a) == len(b) and all(same_toml(x, y) for x, y in zip(a, b))
+    return type(a) is type(b) and a == b
+
+
 def model_ref(model):
     """(instance, model id) from --model, canonicalized as evener's CLI does (cmdutil.ParseModelRef): the
     whole ref and each half trimmed, the instance lowercased, split at the first slash. Exits when either half
@@ -176,6 +201,28 @@ def model_ref(model):
     if not (sep and instance and model_id):
         sys.exit(f"memory-lab: --context-window needs --model as instance/model, not {model!r}")
     return instance, model_id
+
+
+def require_canonical_row(binaries, instance, model_id):
+    """Exits unless every evener binary resolves instance/model_id to a row keyed by model_id itself.
+    A region-prefixed or dated variant (us.anthropic..., gpt-5.5-20260101) resolves to its canonical row;
+    an override row keyed by the variant would win over that row and drop its transport, wire id and caps.
+    `evener models inspect` prints the resolved record, whose model.id is the row it used."""
+    for binary in binaries:
+        with tempfile.TemporaryFile("w+") as out, tempfile.TemporaryFile("w+") as err:
+            rc, _ = run_bounded([binary, "models", "inspect", f"{instance}/{model_id}"], None, dict(os.environ),
+                                COMMAND_TIMEOUT, stdout=out, stderr=err)
+            out.seek(0)
+            err.seek(0)
+            text, errors = out.read(), err.read()
+        try:
+            row = json.loads(text)["model"]["id"]
+        except (ValueError, KeyError, TypeError):
+            sys.exit(f"memory-lab: {binary} models inspect {instance}/{model_id} failed (exit {rc}): "
+                     f"{(errors or text).strip()[:500]}")
+        if row != model_id:
+            sys.exit(f"memory-lab: {binary} resolves {instance}/{model_id} to the row {row!r}; pass --model "
+                     f"{instance}/{row} so the --context-window override extends that row")
 
 
 def context_window_config(model, window):
@@ -212,7 +259,7 @@ def context_window_config(model, window):
         written = tomllib.loads(text)
     except tomllib.TOMLDecodeError as e:
         sys.exit(f"memory-lab: couldn't write {path} back out with the override: {e}")
-    if written != config:
+    if not same_toml(written, config):
         sys.exit(f"memory-lab: couldn't write {path} back out with the override: a value changed")
     return text
 
@@ -362,11 +409,9 @@ def make_state_dir(args, trial, work):
         real = os.path.join(os.path.realpath(args.work_root), ".state", os.path.basename(work))
         os.makedirs(real)
         os.symlink(real, xdg)
-    if args.providers_config:
-        # Owner-only: the user's providers.toml can hold literal keys.
-        fd = os.open(os.path.join(xdg, TRIAL_PROVIDERS), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(fd, "w") as f:
-            f.write(args.providers_config)
+    if args.providers_path:
+        with open(os.path.join(xdg, PROVIDERS_POINTER), "w") as f:
+            f.write(args.providers_path + "\n")
 
 
 def make_workspace(fixture, work, xdg):
@@ -832,7 +877,12 @@ def cmd_run(args):
         sys.exit(f"memory-lab: --out {args.out} exists and is not a directory; use a fresh directory")
     if os.path.exists(args.out) and os.listdir(args.out):
         sys.exit(f"memory-lab: {args.out} already holds results; use a fresh --out")
-    args.providers_config = context_window_config(args.model, args.context_window) if args.context_window else None
+    args.providers_path = None
+    if args.context_window:
+        require_canonical_row(versions.values(), *model_ref(args.model))
+        args.providers_path = write_run_providers(context_window_config(args.model, args.context_window))
+        print(f"memory-lab: this run's providers.toml, a copy of yours with the override: {args.providers_path} "
+              "(owner-only; delete it when you're done with ask)", flush=True)
     jobs = []
     for scen in args.scenarios.split(","):
         scen = os.path.abspath(scen)
