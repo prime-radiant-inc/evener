@@ -327,6 +327,13 @@ class TrialStateTest(unittest.TestCase):
         self.assertEqual(bookkeeping.lab.user_credentials_config(),
                          os.path.join(self.root, "evener", "credentials.toml"))
 
+    def test_a_providers_dir_that_already_exists_is_made_owner_only(self):
+        base = os.path.join(self.root, "state", "memory-lab", "providers")
+        os.makedirs(base, mode=0o755)
+        os.chmod(base, 0o755)  # makedirs' mode is masked by the umask
+        bookkeeping.lab.write_run_providers("[x]\n")
+        self.assertEqual(stat.S_IMODE(os.stat(base).st_mode), 0o700)
+
     def test_no_override_without_context_window(self):
         trial = os.path.join(self.root, "trial")
         os.makedirs(trial)
