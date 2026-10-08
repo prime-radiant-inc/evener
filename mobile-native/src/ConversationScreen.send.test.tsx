@@ -19,12 +19,13 @@ import {
 import { nativeDrafts } from "./nativeDrafts";
 import { getNativeMutationRuntime, nativeMutationTargetKey } from "./nativeMutationRuntime";
 import {
-	alertRequests,
-	dockBody,
-	dropped as droppedConnection,
 	flatListCalls,
 	flatListScrollFailures,
 	keyboard,
+	alertRequests,
+	dockBody,
+	dropped as droppedConnection,
+	type PanGestureMock,
 	playedHaptics,
 	pressable,
 	render,
@@ -33,7 +34,6 @@ import {
 	settle,
 	systemGlass,
 	textOf,
-	type PanGestureMock,
 	unmountMountedTrees,
 } from "./renderNative.testkit";
 import { queueHosts } from "./QueueSheet";
