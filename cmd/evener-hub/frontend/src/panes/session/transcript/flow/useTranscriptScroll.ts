@@ -1813,7 +1813,8 @@ export function useTranscriptScroll({
       // own scroll, measured from the corrected offset.
       const gestured = gestureFramesLeftRef.current > 0 || middleButtonHeldRef.current;
       const previous = lastScrollGeometryRef.current;
-      if (m.scrollHeight === previous.scrollHeight && m.clientHeight === previous.clientHeight) {
+      const heightsHeld = m.scrollHeight === previous.scrollHeight && m.clientHeight === previous.clientHeight;
+      if (heightsHeld) {
         gestureFramesLeftRef.current = 0;
       } else if (readerGestureRef.current) {
         readerGestureRef.current = { ...readerGestureRef.current, beforeOffset: m.scrollTop };
@@ -1863,12 +1864,7 @@ export function useTranscriptScroll({
       // assignment genuinely moves scrollTop and the browser dispatches for it.
       const gesture = readerGestureRef.current;
       const beforeOffset = gesture?.beforeOffset ?? previous.scrollTop;
-      if (
-        (gestured || pointerDraggingRef.current) &&
-        m.scrollTop !== beforeOffset &&
-        m.scrollHeight === previous.scrollHeight &&
-        m.clientHeight === previous.clientHeight
-      ) {
+      if ((gestured || pointerDraggingRef.current) && m.scrollTop !== beforeOffset && heightsHeld) {
         if (!gesture?.admitted) {
           pendingViewAnchorRef.current = null;
           readerCallbacksRef.current.onReaderIntent?.();
