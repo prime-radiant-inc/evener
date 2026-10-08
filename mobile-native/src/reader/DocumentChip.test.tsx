@@ -3,7 +3,7 @@
 // per document and shared by every chip that shows it.
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { render, renderedText, unmountMountedTrees } from "../renderNative.testkit";
+import { render, renderedText, settle, unmountMountedTrees } from "../renderNative.testkit";
 import { palettes } from "../design/tokens";
 import { DocumentChip } from "./DocumentChip";
 import { DocumentMemory } from "./documentMemory";
@@ -69,13 +69,6 @@ afterEach(() => {
 	unmountMountedTrees();
 	vi.restoreAllMocks();
 });
-
-async function settle() {
-	await act(async () => {
-		for (let turn = 0; turn < 10; turn += 1) await Promise.resolve();
-		await new Promise((resolve) => setTimeout(resolve, 0));
-	});
-}
 
 function chip(props: { updatedAt?: string; onOpen?: () => void; path?: string } = {}) {
 	const tree = render(
