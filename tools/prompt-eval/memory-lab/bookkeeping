@@ -280,9 +280,8 @@ def classify(call):
         written, read = shell_paths(str(a.get("command", a.get("cmd", ""))))
         if surfaces := file_surface(written):
             return "write", surfaces
-        if surfaces := file_surface(read):
-            return "read", surfaces
-        return ("read", ["plan"]) if any(plan_file(p) for p in read) else ("work", [])
+        surfaces = file_surface(read) + (["plan"] if any(plan_file(p) for p in read) else [])
+        return ("read", surfaces) if surfaces else ("work", [])
     if tool in ("memory_write", "memory_edit"):
         return "write", ["mem:" + str(a.get("scope", "?"))]
     if tool == "notes_agent_set":
@@ -308,21 +307,22 @@ def classify(call):
 
 
 def reconstruction(calls):
-    """Per read surface, [read-backs, estimated tokens] in the RECONSTRUCTION_WINDOW calls after each
-    compaction. A call's "compactions_before" counts the compactions the session had gone through."""
+    """(per read surface, [read-backs, estimated tokens] in the windows after compactions; the number of
+    windows measured). A window starts at the first call after a compaction and runs RECONSTRUCTION_WINDOW
+    calls, or up to the next compaction. Compactions with no call between them share one window, and a
+    compaction after the last call has none. A call's "compactions_before" counts the compactions before it."""
     found = {s: [0, 0] for s in READ_SURFACES}
-    seen = 0
-    for i, c in enumerate(calls):
-        if c.get("compactions_before", 0) <= seen:
-            continue
-        seen = c["compactions_before"]
-        for later in calls[i:i + RECONSTRUCTION_WINDOW]:
+    starts = [i for i, c in enumerate(calls)
+              if c.get("compactions_before", 0) > (calls[i - 1].get("compactions_before", 0) if i else 0)]
+    for n, start in enumerate(starts):
+        end = min(start + RECONSTRUCTION_WINDOW, starts[n + 1] if n + 1 < len(starts) else len(calls))
+        for later in calls[start:end]:
             kind, surfaces = classify(later)
             if kind == "read":
                 for surface in surfaces:
                     found[surface][0] += 1
                     found[surface][1] += later.get("output_chars", 0) // 4
-    return found
+    return found, len(starts)
 
 
 def main():
@@ -352,17 +352,17 @@ def main():
         total = len(calls)
         # Surfaces that can carry progress; project and personal memory saves are lessons, counted in writes only.
         surfaces = sum(1 for s in PROGRESS_SURFACES if writes[s])
-        rebuilt = reconstruction(calls)
+        rebuilt, windows = reconstruction(calls)
         row = {"total": total, "writes": nwrite, "reads": reads, "surfaces": surfaces, "task_notes": writes["task-notes"],
                "share": (nwrite + reads) / total if total else 0, "compactions": compactions,
-               "read_by": read_by, "rebuilt": rebuilt}
+               "read_by": read_by, "rebuilt": rebuilt, "windows": windows}
         per_version.setdefault(version, []).append(row)
         detail = " ".join(f"{s}={writes[s]}" for s in WRITE_SURFACES if writes[s])
         read_detail = " ".join(f"{s}={read_by[s]}" for s in READ_SURFACES if read_by[s])
         print(f"{os.path.relpath(trial, run):40} calls={total:3} bookkeeping writes={nwrite:2} reads={reads:2} "
               f"share={row['share']:.0%} surfaces={surfaces} | {detail} | read {read_detail or '-'}")
         if compactions:
-            print(f"{'':40} compactions={compactions} after each, next {RECONSTRUCTION_WINDOW} calls read: "
+            print(f"{'':40} compactions={compactions} windows={windows}, read in them: "
                   + (" ".join(f"{s}={n}/~{tok}tok" for s, (n, tok) in rebuilt.items() if n) or "-"))
     print()
     for version, rows in per_version.items():
@@ -371,12 +371,12 @@ def main():
               f"share={m('share'):.0%} surfaces={m('surfaces'):.1f} task-notes={m('task_notes'):.1f}")
         mean_reads = " ".join(f"{s}={statistics.mean(r['read_by'][s] for r in rows):.1f}" for s in READ_SURFACES)
         print(f"{'':28} mean reads: {mean_reads}")
-        folds = sum(r["compactions"] for r in rows)
-        if folds:
-            per = lambda s, i: sum(r["rebuilt"][s][i] for r in rows) / folds
+        windows = sum(r["windows"] for r in rows)
+        if any(r["compactions"] for r in rows):
+            per = lambda s, i: sum(r["rebuilt"][s][i] for r in rows) / windows if windows else 0
             rebuilt = " ".join(f"{s}={per(s, 0):.1f}/~{per(s, 1):.0f}tok" for s in READ_SURFACES if per(s, 0))
-            print(f"{'':28} mean compactions={m('compactions'):.1f}; per compaction, reads in the next "
-                  f"{RECONSTRUCTION_WINDOW} calls: {rebuilt or '-'}")
+            print(f"{'':28} mean compactions={m('compactions'):.1f}; {windows} windows measured; per window, "
+                  f"reads: {rebuilt or '-'}")
 
 
 if __name__ == "__main__":

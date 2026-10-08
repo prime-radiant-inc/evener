@@ -115,6 +115,8 @@ CASES = [
     (call("read_file", file_path=f"/w/{BRIEF}"), ("read", ["plan-artifacts"])),
     (call("read_file", file_path=PLAN), ("read", ["plan"])),
     (shell(f"sed -n '1,40p' {PLAN}"), ("read", ["plan"])),
+    (shell(f"cat {LEDGER} {PLAN} {PLAN}"), ("read", ["ledger", "plan"])),
+    (shell(f"head {BRIEF} {PLAN}"), ("read", ["plan-artifacts", "plan"])),
     (call("read_file", file_path="/w/docs/plans.md"), ("work", [])),
     (call("edit_file", file_path=PLAN), ("work", [])),
 ]
@@ -267,8 +269,15 @@ class TrialStateTest(unittest.TestCase):
         self.assertEqual(env.get("EVENER_PROVIDERS_CONFIG"), os.environ.get("EVENER_PROVIDERS_CONFIG"))
 
 
-def event(kind, **data):
-    return json.dumps({"kind": kind, "session_id": "root", "data": data})
+def event(kind, session="root", **data):
+    return json.dumps({"kind": kind, "session_id": session, "data": data})
+
+
+def events_file(test, lines):
+    with tempfile.NamedTemporaryFile("w", suffix=".ndjson", delete=False) as f:
+        f.write("\n".join(lines) + "\n")
+    test.addCleanup(os.remove, f.name)
+    return f.name
 
 
 class CompactionTest(unittest.TestCase):
@@ -313,8 +322,49 @@ class CompactionTest(unittest.TestCase):
                  [at(work, 1)] * 8 +
                  [at(call("task_list"), 1, 40)] +  # the 11th call after the compaction: outside the window
                  [at(call("read_file", file_path=f"/w/{LEDGER}"), 2, 800)])
-        got = {s: v for s, v in bookkeeping.reconstruction(calls).items() if v[0]}
-        self.assertEqual(got, {"whiteboard": [1, 100], "plan": [1, 1000], "ledger": [1, 200]})
+        found, windows = bookkeeping.reconstruction(calls)
+        self.assertEqual({s: v for s, v in found.items() if v[0]},
+                         {"whiteboard": [1, 100], "plan": [1, 1000], "ledger": [1, 200]})
+        self.assertEqual(windows, 2)
+
+    def test_reconstruction_windows_end_at_the_next_compaction(self):
+        def at(c, compactions):
+            return dict(c, compactions_before=compactions, output_chars=40)
+        # Two compactions three calls apart: the ledger read after the second belongs to its window only.
+        calls = [at(call("notes_read"), 1), at(shell("go test ./..."), 1), at(shell("go vet"), 1),
+                 at(call("read_file", file_path=f"/w/{LEDGER}"), 2)]
+        found, windows = bookkeeping.reconstruction(calls)
+        self.assertEqual(({s: v[0] for s, v in found.items() if v[0]}, windows), ({"whiteboard": 1, "ledger": 1}, 2))
+
+    def test_a_compaction_after_the_last_call_measures_no_window(self):
+        calls = [dict(call("notes_read"), compactions_before=0, output_chars=4)]
+        self.assertEqual(bookkeeping.reconstruction(calls)[1], 0)
+
+    def test_delegate_events_in_the_stream_are_not_the_root_sessions(self):
+        path = events_file(self, [
+            event("SESSION_START", context_window_size=44000),
+            event("TOOL_CALL_START", tool_name="read_file", call_id="a", arguments_json="{}"),
+            event("SESSION_START", session="dlg", context_window_size=999),
+            event("TOOL_CALL_START", session="dlg", tool_name="shell", call_id="d1", arguments_json="{}"),
+            event("CONTEXT_COMPACTION", session="dlg", layer="checkpoint"),
+            event("TOOL_CALL_END", session="dlg", tool_name="read_file", call_id="a", output="x" * 50),
+            event("TOOL_CALL_START", tool_name="notes_read", call_id="b", arguments_json="{}")])
+        calls, _, _, _ = bookkeeping.lab.parse_events(path)
+        self.assertEqual([(c["tool"], c["compactions_before"], c["output_chars"]) for c in calls],
+                         [("read_file", 0, 0), ("notes_read", 0, 0)])
+        self.assertEqual(bookkeeping.lab.context_record(path), (44000, []))
+
+    def test_the_window_is_the_root_sessions_even_when_it_reports_none(self):
+        path = events_file(self, [event("SESSION_START"), event("SESSION_START", context_window_size=999)])
+        self.assertEqual(bookkeeping.lab.context_record(path), (None, []))
+
+    def test_calls_without_a_call_id_get_no_output(self):
+        path = events_file(self, [
+            event("TOOL_CALL_START", tool_name="shell", arguments_json="{}"),
+            event("TOOL_CALL_START", tool_name="shell", arguments_json="{}"),
+            event("TOOL_CALL_END", tool_name="shell", output="x" * 30)])
+        calls, _, _, _ = bookkeeping.lab.parse_events(path)
+        self.assertEqual([c["output_chars"] for c in calls], [0, 0])
 
 
 if __name__ == "__main__":

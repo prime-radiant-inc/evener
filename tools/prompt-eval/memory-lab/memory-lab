@@ -261,11 +261,11 @@ class Folds:
         return [fold for fold in self.folds if COMPACTION_LAYERS & set(fold)]
 
 
-def parse_events(path):
-    """Returns (tool calls, whether the round cap was hit, communicate messages, reasoning summary text).
-    Each call is {"tool", "args", "compactions_before": compactions (see Folds) before it, "output_chars"}."""
-    calls, limit, messages, reasoning = [], False, [], []
-    by_id, folds = {}, Folds()
+def root_events(path):
+    """Yields (kind, data) for each event of the stage's root session: the session of the first
+    SESSION_START in the stream (as root_session_id finds it), and events before it. Another session's
+    events, a delegate's, are skipped, so every count here is the root session's."""
+    root = None
     with open(path, errors="replace") as f:
         for line in f:
             line = line.strip()
@@ -275,23 +275,39 @@ def parse_events(path):
                 ev = json.loads(line)
             except ValueError:
                 continue
-            kind, data = ev.get("kind"), ev.get("data") or {}
-            if kind == "TOOL_CALL_START":
-                calls.append({"tool": data.get("tool_name", ""), "args": data.get("arguments_json", ""),
-                              "compactions_before": len(folds.compactions()), "output_chars": 0})
-                by_id[data.get("call_id")] = calls[-1]
-                folds.tool_call()
-                reasoning.append(f"\n[{data.get('tool_name')}]\n")
-            elif kind == "TOOL_CALL_END" and data.get("call_id") in by_id:
-                by_id[data["call_id"]]["output_chars"] = len(str(data["output"] if data.get("output") is not None else data.get("error") or ""))
-            elif kind == "CONTEXT_COMPACTION":
-                folds.layer(data.get("layer", ""))
-            elif kind == "REASONING_SUMMARY_DELTA":
-                reasoning.append(data.get("delta", ""))
-            elif kind == "TURN_LIMIT":
-                limit = True
-            elif kind == "COMMUNICATE" and data.get("message"):
-                messages.append(data["message"])
+            kind, session = ev.get("kind"), ev.get("session_id")
+            if root is None and kind == "SESSION_START":
+                root = session
+            elif root is not None and session is not None and session != root:
+                continue
+            yield kind, ev.get("data") or {}
+
+
+def parse_events(path):
+    """Returns (tool calls, whether the round cap was hit, communicate messages, reasoning summary text),
+    for the root session. Each call is {"tool", "args", "compactions_before": compactions (see Folds)
+    before it, "output_chars"}."""
+    calls, limit, messages, reasoning = [], False, [], []
+    by_id, folds = {}, Folds()
+    for kind, data in root_events(path):
+        if kind == "TOOL_CALL_START":
+            calls.append({"tool": data.get("tool_name", ""), "args": data.get("arguments_json", ""),
+                          "compactions_before": len(folds.compactions()), "output_chars": 0})
+            if data.get("call_id") is not None:
+                by_id[data["call_id"]] = calls[-1]
+            folds.tool_call()
+            reasoning.append(f"\n[{data.get('tool_name')}]\n")
+        elif kind == "TOOL_CALL_END" and data.get("call_id") is not None and data["call_id"] in by_id:
+            output = data["output"] if data.get("output") is not None else data.get("error") or ""
+            by_id[data["call_id"]]["output_chars"] = len(str(output))
+        elif kind == "CONTEXT_COMPACTION":
+            folds.layer(data.get("layer", ""))
+        elif kind == "REASONING_SUMMARY_DELTA":
+            reasoning.append(data.get("delta", ""))
+        elif kind == "TURN_LIMIT":
+            limit = True
+        elif kind == "COMMUNICATE" and data.get("message"):
+            messages.append(data["message"])
     return calls, limit, messages, "".join(reasoning)
 
 
@@ -575,19 +591,12 @@ def root_session_id(events, state):
 
 
 def context_record(events):
-    """(the root session's context window as its SESSION_START reports it, its compactions as Folds
-    groups them). The stage's event stream is the root session's."""
-    window, folds = None, Folds()
-    for line in read_file(events).splitlines():
-        if not (line.startswith("{") and any(f'"{k}"' in line for k in ("SESSION_START", "CONTEXT_COMPACTION", "TOOL_CALL_START"))):
-            continue
-        try:
-            ev = json.loads(line)
-        except ValueError:
-            continue
-        kind, data = ev.get("kind"), ev.get("data") or {}
-        if kind == "SESSION_START" and window is None:
-            window = data.get("context_window_size")
+    """(the root session's context window as its first SESSION_START reports it, or None, and the root
+    session's compactions as Folds groups them)."""
+    window, started, folds = None, False, Folds()
+    for kind, data in root_events(events):
+        if kind == "SESSION_START" and not started:
+            window, started = data.get("context_window_size"), True
         elif kind == "TOOL_CALL_START":
             folds.tool_call()
         elif kind == "CONTEXT_COMPACTION":
