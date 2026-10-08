@@ -11,7 +11,7 @@ When your partner tells you something, save it before you start the work it shap
 
 Skip what the repository already says and details only the current task needs. A constraint or plan that shaped this task usually outlives it. Look for an existing page before you write a new one.
 
-Write each page with memory_write: one durable fact, led by the fact or rule, then a one-line **Why:** and a one-line **How to apply:**, with absolute dates. Start the page with frontmatter: a `description` saying in one line what the page tells you, never its status, and optionally `tags` and `evidence`:
+Write each page with memory_write: one durable fact, led by the fact or rule, then a one-line **Why:** and a one-line **How to apply:**, with absolute dates. Start the page with frontmatter: a `description` saying in one line what the page tells you, never its status (quote it if it contains a colon), and optionally `tags` and `evidence` (where the fact can be checked, such as a file path):
 
 ```
 ---
@@ -28,20 +28,20 @@ When a fact changes or what you observe contradicts a page, rewrite the page, it
 
 ## memory_read
 
-Operate on a relative path in the bound personal or project memory wiki. MEMORY.md at the scope root is the index Evener generates from each page's frontmatter: memory_read returns it, and it cannot be written, edited or deleted. Read a file from the filesystem. Returns line-numbered content for text files. For image files (PNG, JPEG, GIF, WebP, BMP), returns the image for visual inspection. For PDF files, returns the document for content analysis. When reading an image or PDF, put what you hope to learn in the `vision_prompt` argument — the system will provide a detailed description alongside the file.
+Operate on a relative path in the bound personal or project memory wiki. Read a file from the filesystem. Returns line-numbered content for text files. For image files (PNG, JPEG, GIF, WebP, BMP), returns the image for visual inspection. For PDF files, returns the document for content analysis. When reading an image or PDF, put what you hope to learn in the `vision_prompt` argument — the system will provide a detailed description alongside the file. Reading MEMORY.md at the scope root returns the whole generated index.
 
 ## memory_write
 
-Operate on a relative path in the bound personal or project memory wiki. MEMORY.md at the scope root is the index Evener generates from each page's frontmatter: memory_read returns it, and it cannot be written, edited or deleted. Write content to a file. Creates the file and parent directories if needed, and replaces the entire file contents when the file already exists. Use this for new files or intentional full rewrites; prefer the exact-edit tool for small changes to existing files.
+Operate on a relative path in the bound personal or project memory wiki. Write content to a file. Creates the file and parent directories if needed, and replaces the entire file contents when the file already exists. Use this for new files or intentional full rewrites; prefer the exact-edit tool for small changes to existing files. MEMORY.md at the scope root is generated from page frontmatter and can't be changed; edit a page's description or tags instead.
 
 ## memory_edit
 
-Operate on a relative path in the bound personal or project memory wiki. MEMORY.md at the scope root is the index Evener generates from each page's frontmatter: memory_read returns it, and it cannot be written, edited or deleted. Replace an exact string occurrence in an existing file. Always read the file first so you know the exact text to match. old_string must identify a unique location in the file, so include enough surrounding context to make it unambiguous. Keep each call small and focused. Set replace_all only for deliberate whole-file replacements such as a symbol rename.
+Operate on a relative path in the bound personal or project memory wiki. Replace an exact string occurrence in an existing file. Always read the file first so you know the exact text to match. old_string must identify a unique location in the file, so include enough surrounding context to make it unambiguous. Keep each call small and focused. Set replace_all only for deliberate whole-file replacements such as a symbol rename. MEMORY.md at the scope root is generated from page frontmatter and can't be changed; edit a page's description or tags instead.
 
 ## memory_search
 
-Operate on a relative path in the bound personal or project memory wiki. MEMORY.md at the scope root is the index Evener generates from each page's frontmatter: memory_read returns it, and it cannot be written, edited or deleted. Search file contents using regex patterns. `glob_filter` accepts *, ?, [], **, and bounded brace alternatives such as *.{go,md}; malformed braces are rejected. This is the direct tool for requests to grep, search text, find tokens, find definitions, find references, and find recurring patterns across files. Dotfiles/dirs and gitignored paths are always excluded from the search.
+Operate on a relative path in the bound personal or project memory wiki. Search file contents using regex patterns. `glob_filter` accepts *, ?, [], **, and bounded brace alternatives such as *.{go,md}; malformed braces are rejected. This is the direct tool for requests to grep, search text, find tokens, find definitions, find references, and find recurring patterns across files. Dotfiles/dirs and gitignored paths are always excluded from the search.
 
 ## memory_delete
 
-Operate on a relative path in the bound personal or project memory wiki. MEMORY.md at the scope root is the index Evener generates from each page's frontmatter: memory_read returns it, and it cannot be written, edited or deleted. Remove one memory file, not a directory. Missing files are a no-op. Its index line goes away on its own; read first, and repair links from other pages separately if needed.
+Operate on a relative path in the bound personal or project memory wiki. Remove one memory file, not a directory. Missing files are a no-op. Its index line goes away on its own; read first, and repair links from other pages separately if needed. MEMORY.md at the scope root is generated from page frontmatter and can't be changed; edit a page's description or tags instead.

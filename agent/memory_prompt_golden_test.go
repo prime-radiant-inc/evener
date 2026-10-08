@@ -30,7 +30,7 @@ func TestMemoryPromptGolden(t *testing.T) {
 	}{
 		{"enabled", SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project"}, ""},
 		{"personal-only", SessionConfig{MemoryStateRoot: t.TempDir()}, ""},
-		{"read-only", SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project"}, "memory_write"},
+		{"no-write", SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project"}, "memory_write"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
