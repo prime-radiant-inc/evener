@@ -37,14 +37,8 @@ func TestStableSupervisionFailureSnapshotCapturesPendingAttention(t *testing.T) 
 	// Hold the lock here as the namer would, so the uncontended keys below
 	// are read once it is free.
 	sub.sess.mu.Lock()
-	released := make(chan struct{})
-	go func() {
-		defer close(released)
-		time.Sleep(50 * time.Millisecond)
-		sub.sess.mu.Unlock()
-	}()
+	time.AfterFunc(50*time.Millisecond, sub.sess.mu.Unlock)
 	snapshot := uncontendedStableSupervisionSnapshot(t, root, sub, fixture.adapter)
-	<-released
 	if !reflect.DeepEqual(snapshot["pending_attention_ids"], []string{attentionID}) || snapshot["current_run_open"] != false || snapshot["done_closed"] != true {
 		t.Fatalf("snapshot omitted strict pending predicate or finished warm channel: %#v", snapshot)
 	}
