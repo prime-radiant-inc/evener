@@ -464,3 +464,34 @@ func TestRenderToolCallShowsNoDelegateSendReplyWhenOnlyEarlierResultsHaveText(t 
 		t.Fatalf("render = %q, want the one earlier reply and no reply of its own", got)
 	}
 }
+
+// As the shared reader does, an earlier entry that isn't an object is
+// dropped on its own: the reply and the other entries still show.
+func TestRenderToolCallDelegateSendKeepsValidEntriesBesideAMalformedOne(t *testing.T) {
+	raw := `{"delegate_id":"dlg_ABCDEFGH1234","action":"started","running_in_background":false,"output":"LATEST",` +
+		`"earlier_results":[42,{"delegate_id":"dlg_ABCDEFGH1234","action":"started","running_in_background":false,"status":"completed","output":"FIRST"}]}`
+	got := ansi.Strip(RenderToolCall(delegateSendToolCall(raw, ""), 100, false))
+	assertRenderedLinesInOrder(t, got, "Delegate dlg_ABCD", "earlier reply 1 of 1", "FIRST", "reply", "LATEST")
+}
+
+// Only a valid footer ends the printed reply, as the shared reader's
+// delegateSendFooter decides: a bracketed line that isn't one (here with no
+// action) is part of the reply. The reply keeps its own indentation.
+func TestRenderToolCallDelegateSendFindsOnlyARealFooter(t *testing.T) {
+	got := ansi.Strip(RenderToolCall(delegateSendToolCall("", "answer\n[delegate_id dlg_ABCDEFGH1234]"), 100, false))
+	assertRenderedLinesInOrder(t, got, "Delegate dlg_ABCD", "reply", "answer", "[delegate_id dlg_ABCDEFGH1234]")
+
+	got = ansi.Strip(RenderToolCall(delegateSendToolCall("", "  indented answer\n[delegate_id dlg_ABCDEFGH1234 · started · completed]"), 100, false))
+	heading, body := -1, -1
+	for line := range strings.SplitSeq(got, "\n") {
+		switch strings.TrimSpace(line) {
+		case "reply":
+			heading = len(line) - len(strings.TrimLeft(line, " "))
+		case "indented answer":
+			body = len(line) - len(strings.TrimLeft(line, " "))
+		}
+	}
+	if heading < 0 || body != heading+2 {
+		t.Fatalf("render = %q, want the reply indented two spaces past its heading", got)
+	}
+}

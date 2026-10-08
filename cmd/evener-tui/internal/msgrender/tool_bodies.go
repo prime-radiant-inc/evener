@@ -516,60 +516,101 @@ func notesTextBody(args ToolArgs, output string, width int) string {
 	return jsonBody(args, tuitext.StripControls(output), width)
 }
 
-// delegateSendState is the part of a delegate_send's raw state its reply
-// reads (agent marshalDelegateSendResult); each earlier result has the same
-// shape.
-type delegateSendState struct {
-	Output         string              `json:"output"`
-	Reason         string              `json:"reason"`
-	Status         string              `json:"status"`
-	EarlierResults []delegateSendState `json:"earlier_results"`
-}
-
 // DelegateSendReplyBody shows what a delegate_send that waited got back: the
 // earlier results its wait carried, oldest first, then the delegate's reply.
 // It follows appwire-client's delegateSendResponse and
-// delegateSendEarlierResponses: the reply is the raw state's output, else what
-// the tool printed above its footer, unless the reply carried earlier results,
-// whose text is never its own.
+// delegateSendEarlierResponses over the raw state agent's
+// marshalDelegateSendResult writes: the reply is the raw state's output, else
+// what the tool printed above its footer, unless the reply carried earlier
+// results, whose text is never its own; an earlier entry that isn't an object
+// is dropped on its own.
 func DelegateSendReplyBody(raw, output string, width int) string {
-	var state delegateSendState
-	if json.Unmarshal([]byte(raw), &state) != nil {
-		// A failed decode can leave the struct partly filled.
-		state = delegateSendState{}
-	}
+	var state map[string]any
+	_ = json.Unmarshal([]byte(raw), &state) // a raw state that isn't an object reads as none
+	earlier, _ := state["earlier_results"].([]any)
 	th := tuitheme.ActiveTheme()
 	heading := lipgloss.NewStyle().Foreground(th.TextDim)
 	text := lipgloss.NewStyle().Width(max(width, 1))
+	var entries []map[string]any
+	for _, entry := range earlier {
+		if object, ok := entry.(map[string]any); ok {
+			entries = append(entries, object)
+		}
+	}
 	var blocks []string
-	for i, earlier := range state.EarlierResults {
-		label := fmt.Sprintf("earlier reply %d of %d", i+1, len(state.EarlierResults))
-		if status := strings.TrimSpace(earlier.Status); status != "" && status != "completed" {
+	for i, entry := range entries {
+		label := fmt.Sprintf("earlier reply %d of %d", i+1, len(entries))
+		if status := strings.TrimSpace(jsonString(entry, "status")); status != "" && status != "completed" {
 			label += " · " + status
 		}
-		body := envvars.FirstNonEmpty(strings.TrimSpace(earlier.Output), strings.TrimSpace(earlier.Reason), "(no reply)")
+		body := envvars.FirstNonEmpty(jsonString(entry, "output"), jsonString(entry, "reason"), "(no reply)")
 		blocks = append(blocks, heading.Render(label), text.Render(body))
 	}
-	reply := strings.TrimSpace(state.Output)
-	if reply == "" && len(state.EarlierResults) == 0 {
+	reply := jsonString(state, "output")
+	if strings.TrimSpace(reply) == "" && len(earlier) == 0 {
 		reply = delegateSendPrintedReply(output)
 	}
-	if reply != "" {
-		blocks = append(blocks, heading.Render("reply"), text.Render(reply))
+	if strings.TrimSpace(reply) != "" {
+		blocks = append(blocks, heading.Render("reply"), text.Render(strings.TrimRight(reply, "\n")))
 	}
 	return strings.Join(blocks, "\n")
 }
 
-// delegateSendPrintedReply is what a delegate_send printed above its footer,
-// the last line that opens "[delegate_id " and closes "]"; all of it when
-// there is no footer.
+// jsonString is object[key] when it is a string, else "".
+func jsonString(object map[string]any, key string) string {
+	value, _ := object[key].(string)
+	return value
+}
+
+// delegateSendPrintedReply is what a delegate_send printed above its footer:
+// all of it when its last "[delegate_id …]" line isn't a valid footer.
 func delegateSendPrintedReply(output string) string {
-	lines := strings.Split(strings.TrimRight(output, "\n"), "\n")
+	lines := strings.Split(strings.TrimRight(output, " \t\n"), "\n")
 	for i, line := range slices.Backward(lines) {
 		if strings.HasPrefix(line, "[delegate_id ") && strings.HasSuffix(line, "]") {
-			lines = lines[:i]
+			if isDelegateSendFooter(line) {
+				return strings.Join(lines[:i], "\n")
+			}
 			break
 		}
 	}
-	return strings.TrimSpace(strings.Join(lines, "\n"))
+	return output
+}
+
+// knownDelegateSendStatuses are the status fields a delegate_send footer
+// carries, as appwire-client's KNOWN_DELEGATE_SEND_STATUSES lists them.
+var knownDelegateSendStatuses = map[string]bool{
+	"running": true, "completed": true, "failed": true, "exhausted": true,
+	"cancelled": true, "stopped": true, "delivered": true, "not_delivered": true,
+}
+
+// isDelegateSendFooter reports whether line is a delegate_send footer as
+// appwire-client's delegateSendFooter reads one: "[delegate_id <id> ·
+// <action>", then optionally, in order, "started_job_id <id>", a known
+// status, "running in background", "watching" and "wait ignored: <why>",
+// and nothing else.
+func isDelegateSendFooter(line string) bool {
+	fields := strings.Split(strings.TrimSuffix(strings.TrimPrefix(line, "["), "]"), " · ")
+	if len(fields) < 2 || strings.TrimSpace(strings.TrimPrefix(fields[0], "delegate_id ")) == "" || strings.TrimSpace(fields[1]) == "" {
+		return false
+	}
+	rest := fields[2:]
+	optional := func(match func(string) bool) bool {
+		if len(rest) > 0 && match(rest[0]) {
+			rest = rest[1:]
+			return true
+		}
+		return false
+	}
+	nonblankAfter := func(prefix string) func(string) bool {
+		return func(field string) bool {
+			return strings.HasPrefix(field, prefix) && strings.TrimSpace(strings.TrimPrefix(field, prefix)) != ""
+		}
+	}
+	optional(nonblankAfter("started_job_id "))
+	optional(func(field string) bool { return knownDelegateSendStatuses[field] })
+	optional(func(field string) bool { return field == "running in background" })
+	optional(func(field string) bool { return field == "watching" })
+	optional(nonblankAfter("wait ignored: "))
+	return len(rest) == 0
 }
