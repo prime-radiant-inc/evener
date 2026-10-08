@@ -129,7 +129,11 @@ Controls:
   the daemon waits for it to finish, up to its 15-second timeout, and then
   retires; a namer still running after that refuses the retire as above. The
   wait looks only at work in flight: an open question or an active goal beside
-  the namer is reported once the namer settles, not at once.
+  the namer is reported once the namer settles, not at once. While the daemon
+  waits, the session stays usable from the Hub, and a resume, force stop,
+  deletion or archive can overlap the retire: a force stop cancels it and stops
+  the daemon, a deletion skips the still-running session, and a resume or an
+  archive leaves the retire to finish.
 - **Force stop** is the explicit destructive operation. It uses the existing
   verified-identity path, requires a confirmation naming the session and
   process and warning that work and watches may be interrupted, and preserves
