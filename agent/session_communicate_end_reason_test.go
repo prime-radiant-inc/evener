@@ -49,8 +49,8 @@ func TestCommunicateEndReasonIsOfferedOnlyToRootSessions(t *testing.T) {
 	if prop := communicateEndReasonProperty(t, delegate.ToolDefinitions()); prop != nil {
 		t.Fatalf("a delegate's communicate offers end_reason: %#v", prop)
 	}
-	if _, ok := tool.DefCommunicate().Parameters["properties"].(map[string]any)["end_reason"]; ok {
-		t.Fatal("offering end_reason to a root changed the shared communicate definition")
+	if prop := communicateEndReasonProperty(t, root.profile.ToolDefinitions()); prop != nil {
+		t.Fatal("offering end_reason to a root changed the profile's communicate definition")
 	}
 }
 
@@ -120,7 +120,10 @@ func TestCommunicateRecordsItsEndReason(t *testing.T) {
 	}
 	s.Close()
 	communicates := entriesOfKind(transcriptTurnsOf(t, s), schema.TurnCommunicate)
-	if len(communicates) != 1 || communicates[0].Communicate.EndReason != "needs_response" {
-		t.Fatalf("communicate entries = %+v, want one recording needs_response", communicates)
+	if len(communicates) != 1 {
+		t.Fatalf("%d communicate entries, want 1", len(communicates))
+	}
+	if got := communicates[0].Communicate.EndReason; got != "needs_response" {
+		t.Fatalf("recorded end reason = %q, want needs_response", got)
 	}
 }

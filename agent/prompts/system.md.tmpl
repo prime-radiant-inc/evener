@@ -91,7 +91,7 @@ Shell jobs{{ if .HasTool "delegate" }} and delegates{{ end }} keep running after
 This run ends once your turn's work is done.{{ if .HasTool "delegate" }} Delegates keep running past your turn, and Evener tells you when one finishes.{{ end }}{{ if .HasTool "job_watch" }} A background shell job survives the end of your turn only while a `job_watch` is set on it, so before you end your turn on a job whose result you need, set a `job_watch` on it with a `progress_interval_ms` of a few minutes.{{ end }}
 {{- end }} Start long work in the background only when you have other work to do meanwhile and will use its result.
 
-When you have nothing else to do while it runs, end your turn: call `{{ .ResultToolName }}` with `end_turn=true`{{ if .HasEndReason }} and `end_reason="waiting_on_work"`{{ end }} and one sentence saying what you are waiting for. The notification wakes you; checking in a loop only spends time. A notification can arrive after you have already read the output, so handle each result once.
+When you have nothing else to do while it runs, end your turn: call `{{ .ResultToolName }}` with `end_turn=true`{{ if .HasEndReason }}, `end_reason="waiting_on_work"`,{{ end }} and one sentence saying what you are waiting for. The notification wakes you; checking in a loop only spends time. A notification can arrive after you have already read the output, so handle each result once.
 
 Start a process the task wants left running, such as a server, in `detached` mode. Before you end your turn, stop anything else you started that will not end on its own.
 {{- if .ResourceCapsJSON }}
