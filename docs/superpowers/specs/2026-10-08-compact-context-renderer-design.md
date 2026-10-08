@@ -44,7 +44,10 @@ One new tool-renderer descriptor in the web frontend:
   1. `note_to_self` — label "Note to self". Content renders through the
      shared `Markdown` widget (the note is authored prose carrying IDs, paths
      and decisions — the same treatment `memory_write` content gets,
-     `tools/memoryTools.tsx`), clipped at the same 8000-char budget.
+     `tools/memoryTools.tsx`), clipped at the same 8000-char budget. An
+     empty-string note is the tool's clearing request and renders nothing; a
+     whitespace-only note is a real pinned note (`session_tools_compact.go`
+     pins any non-empty string) and renders like any other.
   2. `compaction_instructions` — label "Compaction instructions", same
      Markdown treatment and clip.
   3. `reload_skills` — label "Skills to reload"; names in the mono face as a
@@ -69,8 +72,10 @@ One new tool-renderer descriptor in the web frontend:
      the generic fallback. Known keys whose values are not of the expected
      type — a non-string `note_to_self`/`compaction_instructions`, a
      `reload_skills` that is not an array of strings — land in this block
-     too, so a type mismatch is never silently dropped. Absent leftovers
-     render nothing.
+     too, so a type mismatch is never silently dropped. A null value is the
+     documented no-selection only for `reload_skills` (rule 3); any other
+     null-valued key lands in this block as well, because the default
+     renderer's raw dump shows it. Absent leftovers render nothing.
   6. `item.output` — the tool's own sentence ("Note pinned. A compaction
      will run at the seam, …" / "Note cleared. No compaction requested.") as
      plain body text, like `write_file`'s confirmation body
@@ -101,7 +106,10 @@ One new tool-renderer descriptor in the web frontend:
 Read-only rendering; no mutation, no recovery surface, no user work at risk.
 Rendering works from `argumentsJSON`, which the wire carries from call start,
 so a live in-progress call renders the same body (fields, no output yet) and
-settles by adding the output line. Malformed `argumentsJSON` parses to an
+settles by adding the output line. A row whose body would render nothing —
+the live note-clearing call before its output exists — offers no disclosure
+at all (the descriptor's `hasBody`, the registry's contract for a body that
+would open to nothing). Malformed `argumentsJSON` parses to an
 empty args map (`parseArgs`), so the body degrades to labels-for-what-parses
 plus output; failures keep the generic failed-row treatment `ToolCallItem`
 already owns (error text above the body, `data-attention`).

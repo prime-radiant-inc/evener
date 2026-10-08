@@ -11,12 +11,14 @@
 // (agent/internal/tool/registry.go's WithIntentParameter) which the session
 // promotes into the call event's Description at emit
 // (agent/session_tools.go's toolStartDescription) - the row already leads
-// with it, so the body renders it only when the row shows no stated intent
-// of its own.
+// with it, so the body renders it only when the row is not already showing
+// it.
 
+import type { ItemModel } from "@evener/appwire-client";
 import { clip, parseArgs, str, toolStepSummary } from "@evener/appwire-client";
 import { CodeBlock, Markdown } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { statedIntentOf } from "../ToolRow";
 import { registerToolRenderer, type ToolRenderProps } from "../toolRenderers";
 import styles from "./compactcontext.module.css";
 
@@ -43,28 +45,40 @@ function reloadSkillsOf(args: Record<string, unknown>): string[] | undefined {
   return raw;
 }
 
-// What the pretty blocks did not consume: keys outside the tool's schema,
-// and known keys whose values came in the wrong type (a non-string note or
-// instructions, a reload_skills that is not an array of strings). Rendered
-// as one raw JSON block so the body is never less honest than the default
-// renderer's raw dump - nothing is silently dropped.
-function leftoverArgs(args: Record<string, unknown>, consumed: ReadonlySet<string>): Record<string, unknown> {
-  const leftovers: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(args)) {
-    if (consumed.has(key) || value === undefined || value === null) continue;
-    leftovers[key] = value;
-  }
-  return leftovers;
+// What the body renders for one item, decided once: the body and the
+// descriptor's hasBody answer from the same rules, so a row never offers a
+// disclosure that opens to nothing.
+interface CompactContextParts {
+  intentText: string | undefined;
+  noteText: string | undefined;
+  instructionsText: string | undefined;
+  skills: string[] | undefined;
+  leftovers: Record<string, unknown>;
+  output: string | undefined;
 }
 
-function CompactContextBody({ item }: ToolRenderProps) {
+function compactContextParts(item: Pick<ItemModel, "argumentsJSON" | "description" | "output">): CompactContextParts {
   const args = parseArgs(item.argumentsJSON);
   const note = str(args, "note_to_self");
   const instructions = str(args, "compaction_instructions");
   const skills = reloadSkillsOf(args);
   const intent = str(args, "intent");
-  const statedIntent = item.description?.trim();
 
+  // The row renders the stated intent by the row's own rule (ToolRow's
+  // statedIntentOf: a blank description means no stated intent). The body
+  // renders the intent argument only when the row is not already showing
+  // it: an argument that differs from the stated intent, or a row with no
+  // stated intent at all. Never duplicated, never dropped.
+  const intentText =
+    intent !== undefined && intent.trim() !== "" && intent.trim() !== statedIntentOf(item) ? intent : undefined;
+
+  // Everything the pretty blocks did not consume: keys outside the tool's
+  // schema, and known keys whose values came in the wrong type (a
+  // non-string note or instructions, a reload_skills that is not an array
+  // of strings). A null is absent-shaped rather than wrong-typed for
+  // reload_skills alone (the tool's documented no-selection); any other
+  // null-valued key lands here too, because the default renderer's raw dump
+  // shows it and this body must never be less honest.
   const consumed = new Set<string>();
   if (note !== undefined) consumed.add("note_to_self");
   if (instructions !== undefined) consumed.add("compaction_instructions");
@@ -74,26 +88,39 @@ function CompactContextBody({ item }: ToolRenderProps) {
   // additional-arguments block. A wrong-typed (non-string) intent stays
   // unconsumed and surfaces there.
   if (intent !== undefined) consumed.add("intent");
-  const leftovers = leftoverArgs(args, consumed);
+  const leftovers: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(args)) {
+    if (consumed.has(key) || (key === "reload_skills" && value === null)) continue;
+    leftovers[key] = value;
+  }
 
+  // An empty-string note is the tool's clearing request and renders nothing;
+  // a whitespace-only note is a real pinned note (session_tools_compact.go
+  // pins any non-empty string), so it renders like any other.
+  return {
+    intentText,
+    noteText: note !== undefined && note !== "" ? note : undefined,
+    instructionsText: instructions !== undefined && instructions !== "" ? instructions : undefined,
+    skills,
+    leftovers,
+    output: item.output !== undefined && item.output !== "" ? item.output : undefined,
+  };
+}
+
+function CompactContextBody({ item }: ToolRenderProps) {
+  const { intentText, noteText, instructionsText, skills, leftovers, output } = compactContextParts(item);
   return (
     <div>
-      {intent !== undefined && intent.trim() !== "" && statedIntent === undefined && (
-        <div className={CLASS.field}>
-          <div className={CLASS.label}>Intent</div>
-          <Markdown source={clip(intent, COMPACT_TEXT_MAX_CHARS)} />
-        </div>
-      )}
-      {note !== undefined && note.trim() !== "" && (
+      {noteText !== undefined && (
         <div className={CLASS.field}>
           <div className={CLASS.label}>Note to self</div>
-          <Markdown source={clip(note, COMPACT_TEXT_MAX_CHARS)} />
+          <Markdown source={clip(noteText, COMPACT_TEXT_MAX_CHARS)} />
         </div>
       )}
-      {instructions !== undefined && instructions.trim() !== "" && (
+      {instructionsText !== undefined && (
         <div className={CLASS.field}>
           <div className={CLASS.label}>Compaction instructions</div>
-          <Markdown source={clip(instructions, COMPACT_TEXT_MAX_CHARS)} />
+          <Markdown source={clip(instructionsText, COMPACT_TEXT_MAX_CHARS)} />
         </div>
       )}
       {skills !== undefined && (
@@ -102,12 +129,18 @@ function CompactContextBody({ item }: ToolRenderProps) {
           <div className={CLASS.skills}>{skills.length > 0 ? skills.join(", ") : "None."}</div>
         </div>
       )}
+      {intentText !== undefined && (
+        <div className={CLASS.field}>
+          <div className={CLASS.label}>Intent</div>
+          <Markdown source={clip(intentText, COMPACT_TEXT_MAX_CHARS)} />
+        </div>
+      )}
       {Object.keys(leftovers).length > 0 && (
         <section aria-label="Additional arguments">
           <CodeBlock text={JSON.stringify(leftovers, null, 2)} copyLabel="Copy arguments" fold={false} />
         </section>
       )}
-      {item.output !== undefined && item.output !== "" && <div>{item.output}</div>}
+      {output !== undefined && <div>{output}</div>}
     </div>
   );
 }
@@ -119,4 +152,20 @@ registerToolRenderer({
   // raw default produced, so web, native and run lines never drift.
   summary: (item, ctx) => toolStepSummary(item, ctx),
   body: CompactContextBody,
+  // A row whose body would render nothing offers no disclosure that opens
+  // to nothing: the live note-clearing call (no fields, no leftovers, no
+  // output yet). A settled call carries the tool's own sentence, so it
+  // keeps the expandable body, and a failed call is never bodyless
+  // (ToolCallItem).
+  hasBody(item) {
+    const { intentText, noteText, instructionsText, skills, leftovers, output } = compactContextParts(item);
+    return Boolean(
+      intentText !== undefined ||
+        noteText !== undefined ||
+        instructionsText !== undefined ||
+        skills !== undefined ||
+        Object.keys(leftovers).length > 0 ||
+        output !== undefined,
+    );
+  },
 });
