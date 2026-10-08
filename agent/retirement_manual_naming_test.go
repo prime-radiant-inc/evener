@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -38,6 +39,7 @@ func blockedNamerSession(t *testing.T) (*Session, *RetirementController, *agentt
 	t.Helper()
 	root, c, clk := fakeClockRetirementRoot(t)
 	entered, unblock := make(chan struct{}), make(chan struct{})
+	enter := sync.OnceFunc(func() { close(entered) })
 	release := sync.OnceFunc(func() { close(unblock) })
 	t.Cleanup(func() {
 		release()
@@ -45,7 +47,7 @@ func blockedNamerSession(t *testing.T) (*Session, *RetirementController, *agentt
 	})
 	namer := llm.NewClient()
 	namer.Register(&agenttest.ScriptedAdapter{Provider: root.currentProfile().CheapProvider(), Responder: func(llm.Request) llm.Response {
-		close(entered)
+		enter()
 		<-unblock
 		return llm.Response{Message: llm.Assistant(`{"name":"Named Session"}`)}
 	}})
@@ -167,4 +169,26 @@ func TestManualRetireStopsWaitingWhenOtherWorkStarts(t *testing.T) {
 	}
 	defer release()
 	assertRefusedAtOnce(t, done, "a turn begun while it waited")
+}
+
+// A retire whose caller gave up while it waited on the namer answers with
+// the context's error and never goes on to claim.
+func TestManualRetireCancelledWhileWaitingDoesNotClaim(t *testing.T) {
+	t.Parallel()
+	_, c, clk, _ := blockedNamerSession(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan manualClaimResult, 1)
+	go func() {
+		claim, snapshot, err := c.TryManualClaim(ctx)
+		done <- manualClaimResult{claim, snapshot, err}
+	}()
+	awaitManualClaimWaiting(t, clk, done)
+	cancel()
+	got := <-done
+	if got.claim != nil {
+		_ = c.Abort(got.claim, "")
+	}
+	if got.claim != nil || !errors.Is(got.err, context.Canceled) {
+		t.Fatalf("cancelled manual retire = claim %v, %v; want no claim and context.Canceled", got.claim, got.err)
+	}
 }

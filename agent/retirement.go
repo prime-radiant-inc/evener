@@ -209,6 +209,10 @@ func (c *RetirementController) beginMutation(sessionID, category string, naming 
 // refuses it (#4055).
 func (c *RetirementController) TryManualClaim(ctx context.Context) (*RetirementClaim, RetirementSnapshot, error) {
 	c.awaitNaming(ctx, sessionNameTimeout)
+	if err := ctx.Err(); err != nil {
+		// The caller gave up while the retire waited: it must not claim.
+		return nil, RetirementSnapshot{}, err
+	}
 	return c.TryClaim(true)
 }
 
