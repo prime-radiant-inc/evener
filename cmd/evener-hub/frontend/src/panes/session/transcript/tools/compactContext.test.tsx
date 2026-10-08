@@ -233,6 +233,50 @@ test("a known key with a wrong-typed value lands in the additional-arguments blo
   expect(extra.textContent).toContain("42");
 });
 
+test("malformed or non-object argumentsJSON renders the raw text the generic body would show, and keeps the row expandable", () => {
+  const d = toolRendererFor("compact_context");
+  const Body = d.body!;
+  const malformed = render(
+    <Body
+      item={item({
+        toolName: "compact_context",
+        argumentsJSON: "{not json",
+      })}
+      live={false}
+    />,
+  );
+  const malformedArgs = within(malformed.container).getByLabelText("Tool call arguments");
+  expect(malformedArgs.textContent).toContain("{not json");
+  expect(d.hasBody?.(item({ argumentsJSON: "{not json" }))).toBe(true);
+  const nonObject = render(
+    <Body
+      item={item({
+        toolName: "compact_context",
+        argumentsJSON: '"just text"',
+      })}
+      live={false}
+    />,
+  );
+  expect(within(nonObject.container).getByLabelText("Tool call arguments").textContent).toContain('"just text"');
+  expect(d.hasBody?.(item({ argumentsJSON: '"just text"' }))).toBe(true);
+});
+
+test("an intent argument whose trimmed value matches the row's stated intent stays suppressed despite surrounding whitespace", () => {
+  const Body = toolRendererFor("compact_context").body!;
+  const { container } = render(
+    <Body
+      item={item({
+        toolName: "compact_context",
+        argumentsJSON: JSON.stringify({ intent: "  Freeing context at the boundary.  " }),
+        description: "Freeing context at the boundary.",
+      })}
+      live={false}
+    />,
+  );
+  expect(within(container).queryByText("Intent")).toBeNull();
+  expect(within(container).queryByText("Freeing context at the boundary.")).toBeNull();
+});
+
 test("a whitespace-only note renders its block: the tool pins it rather than clearing it", () => {
   const Body = toolRendererFor("compact_context").body!;
   render(

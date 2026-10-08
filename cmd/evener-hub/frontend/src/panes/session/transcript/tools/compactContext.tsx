@@ -56,6 +56,11 @@ interface CompactContextParts {
   instructionsText: string | undefined;
   skills: string[] | undefined;
   leftovers: Record<string, unknown>;
+  // The untouched argument text when it decoded to no fields at all
+  // (malformed JSON, or well-formed but not an object - parseArgs degrades
+  // both to an empty map): the raw evidence the generic renderer shows, so
+  // the body keeps showing it rather than hiding the call's only content.
+  rawArgs: string | undefined;
   output: string | undefined;
 }
 
@@ -106,6 +111,10 @@ function computeParts(item: Pick<ItemModel, "argumentsJSON" | "description" | "o
     instructionsText: instructions || undefined,
     skills,
     leftovers,
+    rawArgs:
+      item.argumentsJSON !== undefined && item.argumentsJSON.trim() !== "" && Object.keys(args).length === 0
+        ? item.argumentsJSON
+        : undefined,
     output: item.output || undefined,
   };
 }
@@ -138,9 +147,14 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
 }
 
 function CompactContextBody({ item, live }: ToolRenderProps) {
-  const { intentText, noteText, instructionsText, skills, leftovers } = compactContextParts(item);
+  const { intentText, noteText, instructionsText, skills, leftovers, rawArgs } = compactContextParts(item);
   return (
     <div>
+      {rawArgs !== undefined && (
+        <section aria-label="Tool call arguments">
+          <CodeBlock text={rawArgs} copyLabel="Copy arguments" fold={false} />
+        </section>
+      )}
       {noteText !== undefined && (
         <Field label="Note to self">
           <Markdown source={clip(noteText, COMPACT_TEXT_MAX_CHARS)} />
@@ -188,13 +202,14 @@ registerToolRenderer({
   // keeps the expandable body, and a failed call is never bodyless
   // (ToolCallItem).
   hasBody(item) {
-    const { intentText, noteText, instructionsText, skills, leftovers, output } = compactContextParts(item);
+    const { intentText, noteText, instructionsText, skills, leftovers, rawArgs, output } = compactContextParts(item);
     return (
       intentText !== undefined ||
       noteText !== undefined ||
       instructionsText !== undefined ||
       skills !== undefined ||
       Object.keys(leftovers).length > 0 ||
+      rawArgs !== undefined ||
       output !== undefined
     );
   },

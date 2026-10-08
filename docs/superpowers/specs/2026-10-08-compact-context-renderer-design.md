@@ -75,7 +75,11 @@ One new tool-renderer descriptor in the web frontend:
      too, so a type mismatch is never silently dropped. A null value is the
      documented no-selection only for `reload_skills` (rule 3); any other
      null-valued key lands in this block as well, because the default
-     renderer's raw dump shows it. Absent leftovers render nothing.
+     renderer's raw dump shows it. Arguments that decode to no fields at
+     all — malformed JSON, or well-formed but not an object, which parseArgs
+     degrades to an empty map — render their raw text instead, so the row
+     keeps the evidence the generic renderer shows. Absent leftovers render
+     nothing.
   6. `item.output` — the tool's own sentence ("Note pinned. A compaction
      will run at the seam, …" / "Note cleared. No compaction requested.") as
      plain body text, like `write_file`'s confirmation body
