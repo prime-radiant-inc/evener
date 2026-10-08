@@ -150,7 +150,7 @@ it("closes when the queue empties, or when its session is gone", () => {
 	mountSheet(host({ ghosts: [] }));
 	expect(navigation.goBack).toHaveBeenCalledOnce();
 	navigation.goBack.mockClear();
-	queueHosts.release(KEY, owner);
+	act(() => queueHosts.release(KEY, owner));
 	mountSheet(undefined);
 	expect(navigation.goBack).toHaveBeenCalled();
 });

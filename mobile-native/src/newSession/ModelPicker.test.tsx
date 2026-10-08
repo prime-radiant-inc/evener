@@ -106,7 +106,7 @@ it("filters the models by the search", () => {
 
 it("shows quiet rows while the host's models load", () => {
 	const picker = mount({ loadingModels: true });
-	picker.store.setState({ models: [] });
+	act(() => picker.store.setState({ models: [] }));
 	expect(picker.tree.root.findAll((node) => node.props.testID === "model-skeleton").length).toBeGreaterThan(0);
 });
 
