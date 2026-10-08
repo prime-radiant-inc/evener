@@ -1881,10 +1881,9 @@ async function runScenarios(driver) {
     }
     await driver.focusComposer(ref);
     await driver.typeText(ref, `OWNER_PROSE_${owner} /owner-${owner}`);
-    const point = await driver.waitPage(`(() => { const menu = document.querySelector("[data-testid='composer-slash-menu']");
-      const row = menu && [...menu.querySelectorAll("button")].find((b) => b.textContent.includes(${JSON.stringify(`/owner-${owner}`)}));
-      if (!row) return null; const r = row.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`,
-      { label: `project command selection for ${owner}` });
+    const point = await driver.waitPage(driver.slashRowPointExpr(`/owner-${owner}`), {
+      label: `project command selection for ${owner}`,
+    });
     await driver.clickAt(point.x, point.y);
     await driver.waitPage(`(() => { const pane = ${driver.paneScopeExpr(ref)}; return pane?.querySelector("[data-testid='composer-command-chip']")?.textContent === ${JSON.stringify(`/owner-${owner}`)} ? true : null; })()`,
       { label: `project command atom for ${owner}` });
