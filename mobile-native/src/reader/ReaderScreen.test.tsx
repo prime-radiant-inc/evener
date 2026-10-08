@@ -22,6 +22,7 @@ import {
 	render,
 	render as renderElement,
 	renderedText,
+	settleMicrotasks,
 	unmountMountedTrees,
 } from "../renderNative.testkit";
 import { sheetKey } from "../sheet/sheetHosts";
@@ -216,12 +217,6 @@ afterEach(() => {
 });
 
 /** Lets the reads land on microtasks alone, for a test that fakes setTimeout. */
-async function settleMicrotasks() {
-	await act(async () => {
-		for (let turn = 0; turn < 50; turn += 1) await Promise.resolve();
-	});
-}
-
 async function settle() {
 	await act(async () => {
 		for (let turn = 0; turn < 10; turn += 1) await Promise.resolve();

@@ -36,6 +36,7 @@ import {
 	render,
 	renderedText,
 	screenConnection,
+	settleMicrotasks,
 	swipeableCalls,
 	swipeRowFully,
 	systemGlass,
@@ -581,11 +582,6 @@ function connect(hub: string, client: unknown, state: ConnectionState, over: Rec
 function screen(nav: Navigation) {
 	return <BoardScreen navigation={nav as never} route={{ key: "Sessions", name: "Sessions" } as never} />;
 }
-async function settle() {
-	await act(async () => {
-		for (let step = 0; step < 30; step++) await Promise.resolve();
-	});
-}
 /** Waits for wire or store state inside act, so the updates it lets through
  * stay in act. React renders only when the act scope exits, so `check` must
  * not read the rendered tree. */
@@ -596,7 +592,7 @@ async function until(check: () => void) {
 }
 async function mount(nav: Navigation) {
 	const tree = render(screen(nav));
-	await settle();
+	await settleMicrotasks();
 	return tree;
 }
 function rerender(tree: ReactTestRenderer, nav: Navigation) {
@@ -747,7 +743,7 @@ async function mountWithInstances(nav: Navigation) {
 	const tree = render(screen(nav), {
 		createNodeMock: (element) => (element.type === ("TextInput" as never) ? { focus, blur } : { scrollTo }),
 	});
-	await settle();
+	await settleMicrotasks();
 	return { tree, scrollTo, focus, blur };
 }
 /** The Board's scroller, not the chips' horizontal one. */
@@ -978,7 +974,7 @@ it("renames a category from its menu, sending the trimmed name", async () => {
 	]);
 	expect(fake.mutations).toEqual([]);
 	rename("  Shipped  ");
-	await settle();
+	await settleMicrotasks();
 	expect(fake.mutations).toEqual([
 		{ method: "evener/pin-section/rename", params: { sectionId: "pins-1", name: "Shipped" } },
 	]);
@@ -1000,7 +996,7 @@ it("deletes a category after the spec's confirmation", async () => {
 	]);
 	expect(fake.mutations).toEqual([]);
 	act(() => confirm?.buttons?.[1].onPress?.());
-	await settle();
+	await settleMicrotasks();
 	expect(fake.mutations).toEqual([{ method: "evener/pin-section/delete", params: { sectionId: "pins-1" } }]);
 	act(() => tree.unmount());
 });
@@ -1016,10 +1012,10 @@ it("sends no delete for a category that left the catalog while its confirmation 
 	shape.pins = [fleet.pins[1]];
 	// This fake hub answers every read at revision 1, so the change names none.
 	act(() => fake.invalidate(1, [{ kind: "pin_catalog" }]));
-	await settle();
+	await settleMicrotasks();
 	expect(pinHeaders(tree)).toEqual(["Empty, 0 sessions"]);
 	act(() => confirm?.buttons?.[1].onPress?.());
-	await settle();
+	await settleMicrotasks();
 	expect(fake.mutations).toEqual([]);
 	act(() => tree.unmount());
 });
@@ -1063,7 +1059,7 @@ it("hides ⋯ while disconnected, and a confirmation answered after the drop sen
 	expect(pinHeaders(tree)).toEqual(["Mine, 3 sessions", "Empty, 0 sessions"]);
 	expect(hasRow(tree, "Kept note")).toBe(true);
 	act(() => confirm?.buttons?.[1].onPress?.());
-	await settle();
+	await settleMicrotasks();
 	expect(fake.mutations).toEqual([]);
 	act(() => tree.unmount());
 });
@@ -1078,17 +1074,17 @@ it("dims a category while its change is on its way, and hides every ⋯ until it
 	const mine = confirmDelete(tree, "Mine");
 	const empty = confirmDelete(tree, "Empty");
 	act(() => mine?.buttons?.[1].onPress?.());
-	await settle();
+	await settleMicrotasks();
 	// The second confirmation was up before the first change went out;
 	// pressed while that change is pending, it sends nothing.
 	act(() => empty?.buttons?.[1].onPress?.());
-	await settle();
+	await settleMicrotasks();
 	expect(fake.mutations).toEqual([{ method: "evener/pin-section/delete", params: { sectionId: "pins-1" } }]);
 	expect(opacity(tree, "Mine")).toBe(0.5);
 	expect(opacity(tree, "Empty")).toBe(1);
 	expect(menuLabels(tree)).toEqual([]);
 	fake.release();
-	await settle();
+	await settleMicrotasks();
 	expect(opacity(tree, "Mine")).toBe(1);
 	expect(menuLabels(tree)).toEqual(["Mine, category menu", "Empty, category menu"]);
 	act(() => tree.unmount());
@@ -1102,7 +1098,7 @@ it("never shows the journal's error, dims the category and hides ⋯ while a cha
 	const tree = await mount(navigation());
 	const confirm = confirmDelete(tree, "Mine");
 	act(() => confirm?.buttons?.[1].onPress?.());
-	await settle();
+	await settleMicrotasks();
 	expect(fake.mutations).toHaveLength(1);
 	expect(menuLabels(tree)).toEqual([]);
 	expect(renderedText(tree)).not.toMatch(/Refresh|trying again|Could not confirm/);
@@ -1176,7 +1172,7 @@ it("starts a fresh Board when you switch hubs, and stops the old hub's", async (
 	expect(hasRow(tree, "Old chore")).toBe(true);
 	connect(second, hubB.client, "ready");
 	rerender(tree, nav);
-	await settle();
+	await settleMicrotasks();
 	expect(hasRow(tree, "Fix retry loop")).toBe(false);
 	expect(hasRow(tree, "Build docs")).toBe(true);
 	// Hub B keeps its own fold state: Idle starts folded there.
@@ -1185,7 +1181,7 @@ it("starts a fresh Board when you switch hubs, and stops the old hub's", async (
 	// Hub A's Board is gone: its invalidations read nothing.
 	const readsOnA = hubA.requests.length;
 	hubA.invalidate(1, [{ kind: "section", section: "live", revision: 2 }]);
-	await settle();
+	await settleMicrotasks();
 	expect(hubA.requests).toHaveLength(readsOnA);
 	act(() => tree.unmount());
 });
@@ -1429,7 +1425,7 @@ it("searches nothing while connecting, and asks for the typed query once the con
 	expect(texts(tree)).toContain("Search works when the hub is connected.");
 	connect(id, fake.client, "ready");
 	rerender(tree, nav);
-	await settle();
+	await settleMicrotasks();
 	expect(fake.searches).toEqual(["ship"]);
 	expect(resultTitles(tree)).toEqual(["Ship it"]);
 	act(() => tree.unmount());
@@ -1450,12 +1446,12 @@ it("doesn't search while the Board is out of view, and asks again when it return
 	harness.stack = screenOverBoard;
 	connect(id, fake.client, "ready");
 	rerender(tree, nav);
-	await settle();
+	await settleMicrotasks();
 	expect(fake.searches).toEqual(["ship"]);
 	// Back in view, the field's query asks again.
 	harness.stack = { index: 0, routes: [{ key: "Sessions", name: "Sessions" }] };
 	rerender(tree, nav);
-	await settle();
+	await settleMicrotasks();
 	expect(fake.searches).toEqual(["ship", "ship"]);
 	act(() => tree.unmount());
 });
@@ -1487,7 +1483,7 @@ it("re-tucks the search field when Dynamic Type changes its height", async () =>
 	scrollTo.mockClear();
 	harness.fontScale = 1.5;
 	rerender(tree, nav);
-	await settle();
+	await settleMicrotasks();
 	const height = tree.root.find((node) => node.props.testID === "search-field").props.style.height;
 	expect(height).toBe(70);
 	expect(scrollTo).toHaveBeenCalledWith({ y: 70, animated: false });
@@ -1511,13 +1507,13 @@ it("leaves a field the reader revealed or scrolled past where it is on a Dynamic
 	scrollTo.mockClear();
 	harness.fontScale = 1.5;
 	rerender(tree, nav);
-	await settle();
+	await settleMicrotasks();
 	expect(scrollTo).not.toHaveBeenCalled();
 	// Scrolled down the list.
 	scrollToY(400);
 	harness.fontScale = 1;
 	rerender(tree, nav);
-	await settle();
+	await settleMicrotasks();
 	expect(scrollTo).not.toHaveBeenCalled();
 	act(() => tree.unmount());
 });
@@ -1538,12 +1534,12 @@ it("keeps one search through a sheet over the Board, without re-asking", async (
 	harness.stack = sheetOverBoard;
 	setFocused(false);
 	rerender(tree, nav);
-	await settle();
+	await settleMicrotasks();
 	expect(fake.searches).toEqual(["ship"]);
 	harness.stack = { index: 0, routes: [{ key: "Sessions", name: "Sessions" }] };
 	setFocused(true);
 	rerender(tree, nav);
-	await settle();
+	await settleMicrotasks();
 	expect(fake.searches).toEqual(["ship"]);
 	act(() => tree.unmount());
 });
@@ -1671,7 +1667,7 @@ it("marks a hub row seen through its turn end when you open it, and clears its d
 	});
 	// The hub's rows still say unseen; the pending mark wins until they catch up.
 	expect(bandHeaders(tree)).toEqual(["NEEDS YOU · 2", "FINISHED · 1", "WORKING · 1", "Idle · 2"]);
-	await settle();
+	await settleMicrotasks();
 	expect(fake.seen).toEqual([[{ ref: "local:hub-unseen", seenThrough: Date.parse(minutesAgo(90)) }]]);
 	// The device's own markers are not touched for a hub row.
 	expect(JSON.parse(harness.kv.get(`evener.native.seen.${id}`) ?? "{}").sessions).toEqual({
@@ -1681,11 +1677,11 @@ it("marks a hub row seen through its turn end when you open it, and clears its d
 	pressLabel(tree, "Idle, 2 sessions");
 	expect(stateOf(tree, "Hub unseen")).toBe("Idle");
 	act(() => rowTitled(tree, "Hub unseen").props.onPress());
-	await settle();
+	await settleMicrotasks();
 	expect(fake.seen).toHaveLength(1);
 	// Opening a pinned hub row marks it the same way.
 	act(() => rowTitled(tree, "Pinned unseen").props.onPress());
-	await settle();
+	await settleMicrotasks();
 	expect(stateOf(tree, "Pinned unseen")).toBe("Idle");
 	expect(fake.seen.at(-1)).toEqual([{ ref: "local:pinned-unseen", seenThrough: Date.parse(minutesAgo(80)) }]);
 	// The hub's rows catch up, and the pending mark goes: a later unseen for
@@ -1693,7 +1689,7 @@ it("marks a hub row seen through its turn end when you open it, and clears its d
 	shape.live = [[failing, working, { ...hubUnseen, unseen: false }, hubSeen, finished]];
 	// This fake hub answers every read at revision 1, so the change names none.
 	act(() => fake.invalidate(1, [{ kind: "section", section: "live" }]));
-	await settle();
+	await settleMicrotasks();
 	expect(hubSeenMarks(id).isSeenOnHub(hubUnseen)).toBe(false);
 	expect(hubSeenMarks(id).isSeenOnHub(pinnedUnseen)).toBe(true);
 	act(() => tree.unmount());
@@ -1706,7 +1702,7 @@ it("marks a row without a turn end on the device, and sends the hub nothing", as
 	connect(id, fake.client, "ready");
 	const tree = await mount(navigation());
 	act(() => rowTitled(tree, "Ship it").props.onPress());
-	await settle();
+	await settleMicrotasks();
 	expect(seenMarkers(id).isSeen(finished)).toBe(true);
 	expect(fake.seen).toEqual([]);
 	act(() => tree.unmount());
@@ -1722,12 +1718,12 @@ it("sends a mark made while the connection was down once it's ready again", asyn
 	connect(id, null, "reconnecting");
 	rerender(tree, nav);
 	act(() => rowTitled(tree, "Hub unseen").props.onPress());
-	await settle();
+	await settleMicrotasks();
 	expect(bandHeaders(tree)).toContain("FINISHED · 1");
 	expect(fake.seen).toEqual([]);
 	connect(id, fake.client, "ready");
 	rerender(tree, nav);
-	await settle();
+	await settleMicrotasks();
 	expect(fake.seen).toEqual([[{ ref: "local:hub-unseen", seenThrough: Date.parse(minutesAgo(90)) }]]);
 	act(() => tree.unmount());
 });
@@ -1742,7 +1738,7 @@ it("reads nothing while connecting, and reads the Board once the connection is r
 	expect(fake.requests).toHaveLength(0);
 	connect(id, fake.client, "ready");
 	rerender(tree, nav);
-	await settle();
+	await settleMicrotasks();
 	// The Board's reads, its categories', and the Projects section's catalog.
 	// An empty organization journal needs no read before ⋯ shows.
 	expect(fake.requests.map((read) => read.section ?? read.resource).sort()).toEqual([
@@ -1838,7 +1834,7 @@ it("shows three skeleton rows until the first read lands", async () => {
 	const tree = await mount(navigation());
 	expect(skeletonRows(tree)).toHaveLength(3);
 	fake.release();
-	await settle();
+	await settleMicrotasks();
 	expect(skeletonRows(tree)).toHaveLength(0);
 	act(() => tree.unmount());
 });
@@ -1852,7 +1848,7 @@ it("shows the first read's rows at once under a finger that touched the skeleton
 	expect(skeletonRows(tree)).toHaveLength(3);
 	listEvent(tree, "onTouchStart");
 	fake.release();
-	await settle();
+	await settleMicrotasks();
 	expect(texts(tree)).not.toContain("Nothing's running. Start a session to put an agent to work.");
 	expect(listOrder(tree)).toEqual(workingOrder);
 	liftFinger(tree);
@@ -1890,7 +1886,7 @@ it("on a device's first run, reads every Live page before adopting, so nothing f
 	expect(seenMarkers(id).adopted).toBe(false);
 	expect(bandHeaders(tree)).not.toContain("FINISHED · 1");
 	fake.release();
-	await settle();
+	await settleMicrotasks();
 	expect(seenMarkers(id).adopted).toBe(true);
 	expect(seenMarkers(id).isSeen(newest)).toBe(true);
 	expect(bandHeaders(tree)).toEqual(["NEEDS YOU · 1", "Idle · 2"]);
@@ -1909,15 +1905,15 @@ it("stops first-run paging while the Board is out of view, and finishes it on re
 	expect(liveReads(fake)).toEqual([0, 2]);
 	// Leaving the Board mid-way cancels the page in flight; nothing replaces it.
 	setFocused(false);
-	await settle();
+	await settleMicrotasks();
 	expect(liveReads(fake)).toEqual([0, 2]);
 	holdLater = false;
 	fake.release();
-	await settle();
+	await settleMicrotasks();
 	expect(liveReads(fake)).toEqual([0, 2]);
 	expect(seenMarkers(id).adopted).toBe(false);
 	setFocused(true);
-	await settle();
+	await settleMicrotasks();
 	expect(liveReads(fake)).toEqual([0, 2, 2, 3]);
 	expect(seenMarkers(id).adopted).toBe(true);
 	act(() => tree.unmount());
@@ -2002,7 +1998,7 @@ async function advance(ms: number) {
 	act(() => {
 		vi.advanceTimersByTime(ms);
 	});
-	await settle();
+	await settleMicrotasks();
 }
 
 it("says a failed first read will be retried, and retries it with a growing backoff until it loads", async () => {
@@ -2059,7 +2055,7 @@ it("schedules no retry while the Board is out of view", async () => {
 	const tree = await mount(navigation());
 	expect(liveReads(fake)).toEqual([0]);
 	setFocused(false);
-	await settle();
+	await settleMicrotasks();
 	// This fleet's hub predates S5, so no activity timers run either.
 	expect(vi.getTimerCount()).toBe(0);
 	await advance(60_000);
@@ -2086,7 +2082,7 @@ it("retries a failed pin catalog read once Live's read is done, without saying a
 	expect(liveReads(fake)).toEqual([0]);
 	holdLive = false;
 	fake.release();
-	await settle();
+	await settleMicrotasks();
 	expect(hasRow(tree, "Build docs")).toBe(true);
 	expect(chipLabels(tree)).not.toContain("Mine, 3 sessions");
 	pinsFail = false;
@@ -2114,7 +2110,7 @@ it("waits for a manifest read that's still out before it retries", async () => {
 	holdManifest = false;
 	needsYouFails = false;
 	fake.release();
-	await settle();
+	await settleMicrotasks();
 	await advance(1000);
 	expect(fake.requests.filter((read) => read.section === "needs_you")).toHaveLength(2);
 	act(() => tree.unmount());
@@ -2144,7 +2140,7 @@ async function layOut(tree: ReactTestRenderer) {
 		liveBlock.props.onLayout?.({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 300 } } });
 		scroller.props.onContentSizeChange?.(390, 400);
 	});
-	await settle();
+	await settleMicrotasks();
 }
 const writing = session("local:write", { title: "Write tests", state: "active", updated_at: minutesAgo(1) });
 
@@ -2188,7 +2184,7 @@ it("keeps a later-page parent's Working pulse and quiet failure history through 
 				{ kind: "section", section: "needs_you" },
 			]),
 		);
-		await settle();
+		await settleMicrotasks();
 		await layOut(tree);
 	};
 	const question = { ...parent, ask_pending: true };
@@ -2214,7 +2210,7 @@ it("keeps a later-page parent's Working pulse and quiet failure history through 
 	expect(stateOf(tree, parent.title)).toBe("Working");
 	connect(id, fake.client, "ready");
 	rerender(tree, nav);
-	await settle();
+	await settleMicrotasks();
 	await layOut(tree);
 	assertWorking();
 	expect(
@@ -2237,7 +2233,7 @@ it("keeps a later-page parent's Working pulse and quiet failure history through 
 	act(() => menu.closed());
 	act(() => rowTitled(tree, parent.title).props.onPress());
 	expect(nav.navigate).toHaveBeenLastCalledWith("Conversation", { hubId: id, ref: parent.ref, title: parent.title });
-	await settle();
+	await settleMicrotasks();
 	pressLabel(tree, "Idle, 1 session");
 	expect(stateOf(tree, parent.title)).toBe("Idle");
 	expect(rowTitled(tree, parent.title).findAll((node) => node.props.testID === "subagent-chip")).toHaveLength(0);
@@ -2278,7 +2274,7 @@ it("reads a failed later Live page again after the backoff, keeping the loaded r
 	expect(loadedRowsShown()).toBe(true);
 	holdLive = false;
 	fake.release();
-	await settle();
+	await settleMicrotasks();
 	await layOut(tree);
 	await layOut(tree);
 	expect(liveReads(fake)).toEqual([0, 2, 3, 0, 2, 3]);
@@ -2310,7 +2306,7 @@ it("lets a slow retry finish instead of starting another over it", async () => {
 	expect(liveReads(fake)).toEqual([0, 2, 0]);
 	holdLive = false;
 	fake.release();
-	await settle();
+	await settleMicrotasks();
 	await layOut(tree);
 	expect(liveReads(fake)).toEqual([0, 2, 0, 2]);
 	expect(hasRow(tree, "Ship it")).toBe(true);
@@ -2362,10 +2358,10 @@ it("keeps its backoff when a blur cancels a retry's read", async () => {
 	expect(liveReads(fake)).toEqual([0, 0]);
 	// Leaving the Board pauses it, which cancels the retry's read.
 	setFocused(false);
-	await settle();
+	await settleMicrotasks();
 	live = "fail";
 	setFocused(true);
-	await settle();
+	await settleMicrotasks();
 	expect(liveReads(fake)).toEqual([0, 0, 0]);
 	// Two failures in a row: the next retry waits two seconds, not one.
 	await advance(1999);
@@ -2416,7 +2412,7 @@ it("reads no more of Live while search results fill the scroller", async () => {
 			.find((node) => node.props.testID === "live-block")
 			.props.onLayout({ nativeEvent: { layout: { x: 0, y: 52, width: 390, height: 300 } } }),
 	);
-	await settle();
+	await settleMicrotasks();
 	expect(liveReads(fake)).toEqual([0]);
 	searchField(tree).focus();
 	act(() =>
@@ -2424,7 +2420,7 @@ it("reads no more of Live while search results fill the scroller", async () => {
 			nativeEvent: { contentOffset: { x: 0, y: 900 }, layoutMeasurement: { width: 390, height: 700 } },
 		}),
 	);
-	await settle();
+	await settleMicrotasks();
 	expect(liveReads(fake)).toEqual([0]);
 	act(() => tree.unmount());
 });
@@ -2440,11 +2436,11 @@ it("reads nothing while blurred, and on refocus catches up and re-reads drafts",
 	expect(draftTags(rowTitled(tree, "Build docs"))).toHaveLength(0);
 	setFocused(false);
 	act(() => fake.invalidate(1, [{ kind: "manifest", revision: 2 }]));
-	await settle();
+	await settleMicrotasks();
 	expect(manifestReads()).toBe(1);
 	harness.drafts.set(id, new Set(["local:work"]));
 	setFocused(true);
-	await settle();
+	await settleMicrotasks();
 	expect(manifestReads()).toBe(2);
 	expect(draftTags(rowTitled(tree, "Build docs"))).toHaveLength(1);
 	act(() => tree.unmount());
@@ -2676,7 +2672,7 @@ it("keeps the fallback after a reconnect until a new read actually lands", async
 	expect(textsIn(rowTitled(tree, "Migrate schema"))).not.toContain("Quiet 4m");
 	expect(textsIn(rowTitled(tree, "Migrate schema"))).toContain("Working");
 
-	await settle();
+	await settleMicrotasks();
 	expect(textsIn(rowTitled(tree, "Migrate schema"))).toContain("Quiet 3m");
 	act(() => tree.unmount());
 });
@@ -2745,14 +2741,14 @@ it("keeps a fresh read through leaving front, so coming back shows each row's ac
 
 	harness.stack = screenOverBoard;
 	rerender(tree, nav);
-	await settle();
+	await settleMicrotasks();
 	// Back within the read's freshness window, with the first read after the
 	// return failing: the read from before still shows, with no round trip of
 	// fallback lines.
 	shape.activity = null;
 	harness.stack = boardAlone;
 	rerender(tree, nav);
-	await settle();
+	await settleMicrotasks();
 	expect(fake.activityReads).toHaveLength(2);
 	expect(textsIn(rowTitled(tree, "Migrate schema"))).toContain("Quiet 4m");
 	act(() => tree.unmount());
@@ -2935,7 +2931,7 @@ it("drops a notice once evener/notices/changed leaves it out, reading nothing fo
 	const tree = await mount(navigation());
 	expect(noticeTexts(tree)).toContain("openai sign-in expiredSign in");
 	act(() => fake.noticesChanged([hostNotice, pluginNotice]));
-	await settle();
+	await settleMicrotasks();
 	expect(noticeTexts(tree)).toEqual(["Studio Mac is offline · 2\u00a0sessionsDetails", "superpowers is brokenPlugins"]);
 	expect(fake.noticeReads).toHaveLength(1);
 	act(() => tree.unmount());
@@ -2952,7 +2948,7 @@ it("reads the notices again when the Board comes back into view, and not while b
 	await advance(15 * 60_000);
 	expect(fake.noticeReads).toHaveLength(1);
 	setFocused(true);
-	await settle();
+	await settleMicrotasks();
 	expect(fake.noticeReads).toHaveLength(2);
 	act(() => tree.unmount());
 });
@@ -3120,14 +3116,14 @@ it("reads an unfolded project's pages once, reads nothing to fold it, and rememb
 	expect(pageReads(fake)).toEqual([]);
 	expect(projectRows(tree, "evener")[0].props.accessibilityState).toEqual({ expanded: false });
 	pressLabel(tree, "evener");
-	await settle();
+	await settleMicrotasks();
 	expect(pageReads(fake).sort()).toEqual(["archived list projects@0", "current@0", "recent@0"]);
 	expect(hasRow(tree, "Local work")).toBe(true);
 	pressLabel(tree, "evener");
-	await settle();
+	await settleMicrotasks();
 	expect(hasRow(tree, "Local work")).toBe(false);
 	pressLabel(tree, "evener");
-	await settle();
+	await settleMicrotasks();
 	expect(pageReads(fake)).toHaveLength(3);
 	expect(hasRow(tree, "Local work")).toBe(true);
 	act(() => tree.unmount());
@@ -3170,7 +3166,7 @@ it("classifies a project's session rows by the hub's seen marker too (S4)", asyn
 	connect(id, fake.client, "ready");
 	const tree = await mount(navigation());
 	pressLabel(tree, "evener");
-	await settle();
+	await settleMicrotasks();
 	expect(stateOf(tree, "Project hub seen")).toBe("Idle");
 	expect(stateOf(tree, "Project hub unseen")).toBe("Finished");
 	act(() => tree.unmount());
@@ -3195,9 +3191,9 @@ it("drops a project row's pending mark once the project's page shows it landed (
 	connect(id, fake.client, "ready");
 	const tree = await mount(navigation());
 	pressLabel(tree, "evener");
-	await settle();
+	await settleMicrotasks();
 	act(() => rowTitled(tree, "Project hub unseen").props.onPress());
-	await settle();
+	await settleMicrotasks();
 	expect(fake.seen).toEqual([[{ ref: "local:project-unseen", seenThrough: Date.parse(minutesAgo(90)) }]]);
 	expect(stateOf(tree, "Project hub unseen")).toBe("Idle");
 	// The project's page catches up, and the pending mark goes: a later
@@ -3205,7 +3201,7 @@ it("drops a project row's pending mark once the project's page shows it landed (
 	// read at revision 1, so the change names none.
 	shape.projectPages = { "evener:current": [{ ...projectUnseen, unseen: false }] };
 	act(() => fake.invalidate(1, [{ kind: "project", projectKey: "evener" }]));
-	await settle();
+	await settleMicrotasks();
 	expect(fake.requests.filter((read) => read.resource === "project_page" && read.tier === "current")).toHaveLength(2);
 	expect(hubSeenMarks(id).isSeenOnHub(projectUnseen)).toBe(false);
 	act(() => tree.unmount());
@@ -3242,7 +3238,7 @@ it("opens a project from search: leaves search, unfolds the project and scrolls 
 	expect(tree.root.findAll((node) => node.props.testID === "search-result")).toHaveLength(0);
 	expect(JSON.parse(harness.kv.get(`evener.native.recent-searches.${id}`) ?? "[]")).toEqual(["even"]);
 	expect(projectRows(tree, "evener")[0].props.accessibilityState).toEqual({ expanded: true });
-	await settle();
+	await settleMicrotasks();
 	expect(hasRow(tree, "Local work")).toBe(true);
 	// It scrolls once both the project row and its section have laid out, in
 	// either order: the row sits 30% of the way down the viewport.
@@ -3376,17 +3372,17 @@ it("starts Test runs and Archived folded, reading neither catalog until it is un
 	expect(catalogReads(fake)).toEqual(["projects"]);
 	expect(projectRows(tree, "hub-test-env")).toHaveLength(0);
 	pressLabel(tree, "Test runs, 3 projects");
-	await settle();
+	await settleMicrotasks();
 	expect(catalogReads(fake)).toEqual(["projects", "test_runs"]);
 	expect(projectRows(tree, "hub-test-env")).toHaveLength(1);
 	pressLabel(tree, "Archived, 271 projects");
-	await settle();
+	await settleMicrotasks();
 	expect(catalogReads(fake)).toEqual(["projects", "test_runs", "archived_projects"]);
 	expect(projectRows(tree, "old-site")).toHaveLength(1);
 	// Folded again and reopened, a section reads nothing more.
 	pressLabel(tree, "Test runs, 3 projects");
 	pressLabel(tree, "Test runs, 3 projects");
-	await settle();
+	await settleMicrotasks();
 	expect(catalogReads(fake)).toEqual(["projects", "test_runs", "archived_projects"]);
 	act(() => tree.unmount());
 });
@@ -3414,7 +3410,7 @@ it("shows no PROJECTS header before the manifest lands, and hides it once its ca
 	expect(catalogReads(fake)).toEqual([]);
 	holding = false;
 	fake.release();
-	await settle();
+	await settleMicrotasks();
 	// The manifest counts 4 projects, but the catalog comes back empty.
 	expect(catalogReads(fake)).toEqual(["projects"]);
 	expect(sectionHeaders(tree)).toEqual([]);
@@ -3435,20 +3431,20 @@ it("keeps every project row on screen from a dropped client until the new client
 	expect(hasRow(tree, "Local work")).toBe(true);
 	connect(id, null, "reconnecting");
 	rerender(tree, nav);
-	await settle();
+	await settleMicrotasks();
 	expect(projectRows(tree, "evener")).toHaveLength(1);
 	expect(hasRow(tree, "Local work")).toBe(true);
 	let holding = true;
 	const next = hub(shape, () => holding);
 	connect(id, next.client, "ready");
 	rerender(tree, nav);
-	await settle();
+	await settleMicrotasks();
 	expect(catalogReads(next)).toEqual(["projects"]);
 	expect(projectRows(tree, "evener")).toHaveLength(1);
 	expect(hasRow(tree, "Local work")).toBe(true);
 	holding = false;
 	next.release();
-	await settle();
+	await settleMicrotasks();
 	expect(pageReads(next).sort()).toEqual(["archived list projects@0", "current@0", "recent@0"]);
 	expect(hasRow(tree, "Local work")).toBe(true);
 	act(() => tree.unmount());
@@ -3472,7 +3468,7 @@ it("pins a project to the top from its long-press menu, dimming it until the hub
 		cancelButtonIndex: 2,
 	});
 	act(() => choose(0));
-	await settle();
+	await settleMicrotasks();
 	expect(fake.mutations).toEqual([
 		{ method: "evener/favorite/set", params: { kind: "project", id: "evener", favorited: true } },
 	]);
@@ -3480,7 +3476,7 @@ it("pins a project to the top from its long-press menu, dimming it until the hub
 	expect(rowOpacity(projectRows(tree, "evener")[0])).toBe(0.5);
 	expect(menuLabels(tree)).toEqual([]);
 	fake.release();
-	await settle();
+	await settleMicrotasks();
 	expect(rowOpacity(projectRows(tree, "evener")[0])).toBe(1);
 	expect(menuLabels(tree)).toEqual(["Mine, category menu", "Empty, category menu"]);
 	expect(fake.mutations).toHaveLength(1);
@@ -3503,17 +3499,17 @@ it("reflects a project change held offline in its menu and on its row, and its o
 	const [sheet, choose] = openMenu();
 	expect(sheet.options).toEqual(["Pin to top", "Archive project", "Cancel"]);
 	act(() => choose(0));
-	await settle();
+	await settleMicrotasks();
 	expect(rowOpacity(projectRows(tree, "evener")[0])).toBe(0.5);
 	const [held, undo] = openMenu();
 	expect(held.options).toEqual(["Unpin", "Archive project", "Cancel"]);
 	act(() => undo(0));
-	await settle();
+	await settleMicrotasks();
 	expect(rowOpacity(projectRows(tree, "evener")[0])).toBe(1);
 	expect(JSON.parse(harness.kv.get(`evener.native.board-hold.${id}`) ?? "[]")).toEqual([]);
 	connect(id, fake.client, "ready");
 	rerender(tree, nav);
-	await settle();
+	await settleMicrotasks();
 	expect(fake.mutations).toEqual([]);
 	act(() => tree.unmount());
 });
@@ -3546,7 +3542,7 @@ it("queues a project change behind the held one it answers, even once back onlin
 	};
 	const [, pin] = openMenu();
 	act(() => pin(0));
-	await settle();
+	await settleMicrotasks();
 	// The menu, opened offline, offers Unpin, and stays up across the
 	// reconnect while the held Pin to top goes out.
 	const [sheet, unpin] = openMenu();
@@ -3555,7 +3551,7 @@ it("queues a project change behind the held one it answers, even once back onlin
 	rerender(tree, nav);
 	await until(() => expect(favorites).toBe(1));
 	act(() => unpin(0));
-	await settle();
+	await settleMicrotasks();
 	// The Pin to top is still out: the Unpin waits in the hold behind it.
 	expect(favorites).toBe(1);
 	expect(
@@ -3602,7 +3598,7 @@ it("holds a project change while the journal is busy, and sends it once the jour
 	const [sheet, choose] = openMenu();
 	expect(sheet.options).toContain("Archive project");
 	act(() => choose(sheet.options.indexOf("Archive project")));
-	await settle();
+	await settleMicrotasks();
 	expect(JSON.parse(harness.kv.get(`evener.native.board-hold.${id}`) ?? "[]")).toHaveLength(1);
 	answerFirst();
 	await until(() =>
@@ -3646,7 +3642,7 @@ it("reads a tier's next page when its more row is pressed", async () => {
 	const tree = await mount(navigation());
 	expect(texts(tree)).toContain("12 more");
 	pressLabel(tree, "12 more");
-	await settle();
+	await settleMicrotasks();
 	expect(pageReads(fake)).toContain("recent@20");
 	expect(hasRow(tree, "Recent 31")).toBe(true);
 	expect(texts(tree)).not.toContain("12 more");
@@ -3669,7 +3665,7 @@ it("reads a tier's next page once its more row is at least half on screen", asyn
 		// 600 + 1000 is well past the 700pt viewport.
 		more.props.onLayout({ nativeEvent: { layout: { x: 0, y: 1000, width: 390, height: 44 } } });
 	});
-	await settle();
+	await settleMicrotasks();
 	expect(pageReads(fake)).not.toContain("recent@20");
 	// Scrolled so only a quarter of the row shows: still nothing.
 	act(() =>
@@ -3677,7 +3673,7 @@ it("reads a tier's next page once its more row is at least half on screen", asyn
 			nativeEvent: { contentOffset: { x: 0, y: 1611 - 700 }, layoutMeasurement: { width: 390, height: 700 } },
 		}),
 	);
-	await settle();
+	await settleMicrotasks();
 	expect(pageReads(fake)).not.toContain("recent@20");
 	// Half of it on screen.
 	act(() =>
@@ -3685,7 +3681,7 @@ it("reads a tier's next page once its more row is at least half on screen", asyn
 			nativeEvent: { contentOffset: { x: 0, y: 1622 - 700 }, layoutMeasurement: { width: 390, height: 700 } },
 		}),
 	);
-	await settle();
+	await settleMicrotasks();
 	expect(pageReads(fake).filter((read) => read === "recent@20")).toHaveLength(1);
 	act(() => tree.unmount());
 });
@@ -3738,7 +3734,7 @@ it("reads no more of a project section while search results fill the scroller", 
 		});
 		more.props.onLayout({ nativeEvent: { layout: { x: 0, y: 1000, width: 390, height: 44 } } });
 	});
-	await settle();
+	await settleMicrotasks();
 	searchField(tree).focus();
 	// Search results now cover where the more row last sat.
 	act(() =>
@@ -3746,7 +3742,7 @@ it("reads no more of a project section while search results fill the scroller", 
 			nativeEvent: { contentOffset: { x: 0, y: 1622 - 700 }, layoutMeasurement: { width: 390, height: 700 } },
 		}),
 	);
-	await settle();
+	await settleMicrotasks();
 	expect(pageReads(fake)).not.toContain("recent@20");
 	act(() => tree.unmount());
 });
@@ -3794,16 +3790,16 @@ it("reads a project's failed tier again on its own: when the Board comes back in
 	await advance(60_000);
 	expect(recentReads()).toBe(1);
 	setFocused(false);
-	await settle();
+	await settleMicrotasks();
 	setFocused(true);
-	await settle();
+	await settleMicrotasks();
 	expect(recentReads()).toBe(2);
 	expect(texts(tree)).toContain(COULDNT_LOAD);
 	recentFails = false;
 	pressLabel(tree, "evener");
-	await settle();
+	await settleMicrotasks();
 	pressLabel(tree, "evener");
-	await settle();
+	await settleMicrotasks();
 	expect(recentReads()).toBe(3);
 	expect(texts(tree)).not.toContain(COULDNT_LOAD);
 	expect(hasRow(tree, "Local work")).toBe(true);
@@ -3826,9 +3822,9 @@ it("reads a failed catalog again when the Board comes back into view", async () 
 	expect(projectRows(tree, "evener")).toHaveLength(0);
 	catalogFails = false;
 	setFocused(false);
-	await settle();
+	await settleMicrotasks();
 	setFocused(true);
-	await settle();
+	await settleMicrotasks();
 	expect(catalogReads(fake)).toEqual(["projects", "projects"]);
 	expect(projectRows(tree, "evener")).toHaveLength(1);
 	act(() => tree.unmount());
@@ -3854,7 +3850,7 @@ it("offers the project menu as an alert off iOS, archiving the project", async (
 			["Cancel", "cancel"],
 		]);
 		act(() => menu?.buttons?.[1].onPress?.());
-		await settle();
+		await settleMicrotasks();
 	} finally {
 		Platform.OS = "ios";
 	}
@@ -3887,7 +3883,7 @@ it("reads the catalog's next page when its more projects row is pressed", async 
 	expect(projectRows(tree, "project-49")).toHaveLength(1);
 	expect(projectRows(tree, "project-50")).toHaveLength(0);
 	pressLabel(tree, "20 more projects");
-	await settle();
+	await settleMicrotasks();
 	expect(projectCatalogPages(fake)).toEqual([0, 50]);
 	expect(projectRows(tree, "project-69")).toHaveLength(1);
 	expect(texts(tree)).not.toContain("20 more projects");
@@ -3909,7 +3905,7 @@ it("reads the catalog's next page once its more projects row is at least half on
 		});
 		more.props.onLayout({ nativeEvent: { layout: { x: 0, y: 2400, width: 390, height: 44 } } });
 	});
-	await settle();
+	await settleMicrotasks();
 	expect(projectCatalogPages(fake)).toEqual([0]);
 	// The row's top half is on screen.
 	act(() =>
@@ -3917,7 +3913,7 @@ it("reads the catalog's next page once its more projects row is at least half on
 			nativeEvent: { contentOffset: { x: 0, y: 3022 - 700 }, layoutMeasurement: { width: 390, height: 700 } },
 		}),
 	);
-	await settle();
+	await settleMicrotasks();
 	expect(projectCatalogPages(fake)).toEqual([0, 50]);
 	expect(projectRows(tree, "project-69")).toHaveLength(1);
 	act(() => tree.unmount());
@@ -3935,7 +3931,7 @@ it("archives a project from its long-press menu, dimming it until the hub confir
 	const [sheet, choose] = harness.actionSheet.mock.calls.at(-1) ?? [];
 	expect(sheet.options).toEqual(["Pin to top", "Archive project", "Cancel"]);
 	act(() => choose(1));
-	await settle();
+	await settleMicrotasks();
 	expect(fake.mutations).toEqual([
 		{
 			method: "evener/archive/set",
@@ -3945,7 +3941,7 @@ it("archives a project from its long-press menu, dimming it until the hub confir
 	expect(rowOpacity(projectRows(tree, "evener")[0])).toBe(0.5);
 	expect(menuLabels(tree)).toEqual([]);
 	fake.release();
-	await settle();
+	await settleMicrotasks();
 	expect(rowOpacity(projectRows(tree, "evener")[0])).toBe(1);
 	expect(menuLabels(tree)).toEqual(["Mine, category menu", "Empty, category menu"]);
 	expect(fake.mutations).toHaveLength(1);
@@ -4099,7 +4095,7 @@ it("archives a local row on a full swipe right, dims it until the hub confirms, 
 	swipeableCalls.closes = 0;
 	swipeRowFully(swipeableOf(tree, "Refactor parser"), "right");
 	expect(swipeableCalls.closes).toBe(1);
-	await settle();
+	await settleMicrotasks();
 	expect(fake.mutations).toEqual([
 		{ method: "evener/archive/set", params: { kind: "session", id: SESSION_ID, archived: true } },
 	]);
@@ -4107,13 +4103,13 @@ it("archives a local row on a full swipe right, dims it until the hub confirms, 
 	expect(dimmed.props.style({ pressed: false }).opacity).toBe(0.5);
 	expect(dimmed.props.accessibilityState).toEqual({ busy: true });
 	act(() => fake.release());
-	await settle();
+	await settleMicrotasks();
 	expect(rowTitled(tree, "Refactor parser").props.style({ pressed: false }).opacity).toBe(1);
 	expect(texts(tree)).toContain("Archived");
 	pressLabel(tree, "Undo");
-	await settle();
+	await settleMicrotasks();
 	act(() => fake.release());
-	await settle();
+	await settleMicrotasks();
 	expect(fake.mutations.at(-1)).toEqual({
 		method: "evener/archive/set",
 		params: { kind: "session", id: SESSION_ID, archived: false },
@@ -4127,7 +4123,7 @@ it("archives another host's row by its ref", async () => {
 	const fake = hub(swipeFleet());
 	const { tree } = await mountSwipeFleet(fake);
 	swipeRowFully(swipeableOf(tree, "Park chore"), "right");
-	await settle();
+	await settleMicrotasks();
 	expect(fake.mutations).toEqual([
 		{ method: "evener/archive/set", params: { kind: "session", id: "paradise-park:pp", archived: true } },
 	]);
@@ -4138,7 +4134,7 @@ it("says nothing when an archive can't be confirmed, and settles the journal so 
 	const fake = hub(swipeFleet(), undefined, undefined, { refuse: true });
 	const { tree } = await mountSwipeFleet(fake);
 	swipeRowFully(swipeableOf(tree, "Refactor parser"), "right");
-	await settle();
+	await settleMicrotasks();
 	expect(fake.mutations).toHaveLength(1);
 	expect(texts(tree)).not.toContain("Archived");
 	expect(renderedText(tree)).not.toMatch(/Refresh|Reconnect|confirm/);
@@ -4151,7 +4147,7 @@ it("stops a working row through the durable runtime: a fresh read, then the inte
 	const fake = hub(swipeFleet());
 	const { tree } = await mountSwipeFleet(fake);
 	pressRevealed(swipeableOf(tree, "Refactor parser"), "right", "Stop");
-	await settle();
+	await settleMicrotasks();
 	await vi.waitFor(() =>
 		expect(fake.threadCalls.map((call) => call.method)).toEqual(["thread/read", "turn/interrupt"]),
 	);
@@ -4192,8 +4188,8 @@ describe("Board actions held offline (phase 6 ruling 18)", () => {
 	async function reconnect(id: string, fake: ReturnType<typeof hub>, tree: ReactTestRenderer, nav: Navigation) {
 		connect(id, fake.client, "ready");
 		rerender(tree, nav);
-		await settle();
-		await settle();
+		await settleMicrotasks();
+		await settleMicrotasks();
 	}
 
 	it("holds an archive taken offline, says so on the row, and sends it once back online", async () => {
@@ -4202,7 +4198,7 @@ describe("Board actions held offline (phase 6 ruling 18)", () => {
 		connect(id, fake.client, "reconnecting");
 		rerender(tree, nav);
 		swipeRowFully(swipeableOf(tree, "Refactor parser"), "right");
-		await settle();
+		await settleMicrotasks();
 		expect(fake.mutations).toEqual([]);
 		expect(rowTitled(tree, "Refactor parser").props.style({ pressed: false }).opacity).toBe(0.5);
 		expect(texts(tree)).toContain("Archive waits for the connection");
@@ -4232,14 +4228,14 @@ describe("Board actions held offline (phase 6 ruling 18)", () => {
 		connect(id, fake.client, "reconnecting");
 		rerender(tree, nav);
 		swipeRowFully(swipeableOf(tree, "Refactor parser"), "right");
-		await settle();
+		await settleMicrotasks();
 		// The menu, opened offline, stays up across the reconnect.
 		const menu = menuHost(id);
 		const item = menuItem(menu, `local:${SESSION_ID}`);
 		await reconnect(id, fake, tree, nav);
 		await vi.waitFor(() => expect(archives).toBe(1));
 		act(() => menu.act(item, "unarchive"));
-		await settle();
+		await settleMicrotasks();
 		answerArchive();
 		await until(() =>
 			expect(fake.mutations.filter((m) => m.method === "evener/archive/set").map((m) => m.params)).toEqual([
@@ -4277,7 +4273,7 @@ describe("Board actions held offline (phase 6 ruling 18)", () => {
 		// The journal is busy, and Archive is still there to take: it is held,
 		// never refused.
 		swipeRowFully(swipeableOf(tree, "Write changelog"), "right");
-		await settle();
+		await settleMicrotasks();
 		expect(texts(tree)).toContain("Archive is waiting to send");
 		expect(heldIn(id)).toHaveLength(1);
 		answerFirst();
@@ -4294,13 +4290,13 @@ describe("Board actions held offline (phase 6 ruling 18)", () => {
 		const fake = hub(swipeFleet());
 		const { id, tree } = await mountSwipeFleet(fake);
 		swipeRowFully(swipeableOf(tree, "Refactor parser"), "right");
-		await settle();
+		await settleMicrotasks();
 		expect(texts(tree)).toContain("Archived");
 		const answerNext = hangFirst(fake, "evener/archive/set");
 		swipeRowFully(swipeableOf(tree, "Write changelog"), "right");
 		await vi.waitFor(() => expect(writes(fake, "evener/archive/set")).toHaveLength(2));
 		pressLabel(tree, "Undo");
-		await settle();
+		await settleMicrotasks();
 		expect(heldIn(id)).toHaveLength(1);
 		answerNext();
 		await until(() =>
@@ -4325,11 +4321,11 @@ describe("Board actions held offline (phase 6 ruling 18)", () => {
 			act(() => alertRequests.at(-1)?.buttons?.[1]?.onPress?.());
 		};
 		shutDown();
-		await settle();
+		await settleMicrotasks();
 		await reconnect(id, fake, tree, nav);
 		await vi.waitFor(() => expect(writes(fake, "thread/shutdown")).toHaveLength(1));
 		shutDown();
-		await settle();
+		await settleMicrotasks();
 		// The first is still out: the second waits in the hold behind it.
 		expect(writes(fake, "thread/shutdown")).toHaveLength(1);
 		expect(heldIn(id)).toHaveLength(2);
@@ -4345,7 +4341,7 @@ describe("Board actions held offline (phase 6 ruling 18)", () => {
 		const before = menuHost(id);
 		const host = menuHost(id);
 		act(() => host.act(menuItem(host, `local:${SESSION_ID}`), "stop"));
-		await settle();
+		await settleMicrotasks();
 		// The sheet re-reads a host it is given anew: a hold alone gives it one.
 		expect(menuHost(id)).not.toBe(before);
 		expect(menuHost(id).held(menuItem(menuHost(id), `local:${SESSION_ID}`))).toEqual([
@@ -4359,12 +4355,12 @@ describe("Board actions held offline (phase 6 ruling 18)", () => {
 		connect(id, fake.client, "reconnecting");
 		rerender(tree, nav);
 		swipeRowFully(swipeableOf(tree, "Refactor parser"), "right");
-		await settle();
+		await settleMicrotasks();
 		const menu = menuHost(id);
 		const [held] = menu.held(menuItem(menu, `local:${SESSION_ID}`));
 		expect(held?.label).toBe("Cancel Archive");
 		act(() => menu.cancel(held?.id ?? ""));
-		await settle();
+		await settleMicrotasks();
 		expect(texts(tree)).not.toContain("Archive waits for the connection");
 		expect(rowTitled(tree, "Refactor parser").props.style({ pressed: false }).opacity).toBe(1);
 		await reconnect(id, fake, tree, nav);
@@ -4377,7 +4373,7 @@ describe("Board actions held offline (phase 6 ruling 18)", () => {
 		connect(id, fake.client, "reconnecting");
 		rerender(tree, nav);
 		pressRevealed(swipeableOf(tree, "Refactor parser"), "right", "Stop");
-		await settle();
+		await settleMicrotasks();
 		expect(texts(tree)).toContain("Stop waits for the connection");
 		setFocused(false);
 		await reconnect(id, fake, tree, nav);
@@ -4395,7 +4391,7 @@ describe("Board actions held offline (phase 6 ruling 18)", () => {
 		connect(id, fake.client, "reconnecting");
 		rerender(tree, nav);
 		pressRevealed(swipeableOf(tree, "Refactor parser"), "right", "Stop");
-		await settle();
+		await settleMicrotasks();
 		// Meanwhile that turn ended and another began.
 		fleet.live[0] = [{ ...row, turn_ended_at: minutesAgo(1) }, ...(fleet.live[0] ?? []).slice(1)];
 		await reconnect(id, fake, tree, nav);
@@ -4465,7 +4461,7 @@ describe("Board actions held offline (phase 6 ruling 18)", () => {
 		expect(menu.held(menuItem(menu, ref))).toEqual([]);
 		expect(texts(tree)).toContain("Shut down is waiting to send");
 		answer();
-		await settle();
+		await settleMicrotasks();
 		expect(texts(tree)).not.toContain("Shut down is waiting to send");
 	});
 
@@ -4504,8 +4500,8 @@ describe("Board actions held offline (phase 6 ruling 18)", () => {
 		await vi.waitFor(() => expect(fake.mutations).toHaveLength(1));
 		act(() => forgetBoardForHub(id));
 		answer();
-		await settle();
-		await settle();
+		await settleMicrotasks();
+		await settleMicrotasks();
 		expect(fake.mutations).toHaveLength(1);
 		expect(harness.kv.has(`evener.native.board-hold.${id}`)).toBe(false);
 	});
@@ -4544,9 +4540,9 @@ it("puts swipes on pinned categories' rows and project sessions too", async () =
 	expect(revealedLabels(swipeableOf(tree, "Pinned note"), "left")).toEqual(["Archive"]);
 	// Unfold the project, then its Archived group.
 	pressLabel(tree, "evener");
-	await settle();
+	await settleMicrotasks();
 	pressLabel(tree, "Archived, 1 session");
-	await settle();
+	await settleMicrotasks();
 	expect(revealedLabels(swipeableOf(tree, "Old archived work"), "left")).toEqual(["Unarchive"]);
 });
 
@@ -4592,9 +4588,9 @@ it("gives the row menu the copy it opened from, when a session shows in both Liv
 	const { id, tree, nav } = await mountSwipeFleet(hub(shape));
 	// Unfold the project, then its Archived group, so both copies are on screen.
 	pressLabel(tree, "evener");
-	await settle();
+	await settleMicrotasks();
 	pressLabel(tree, "Archived, 1 session");
-	await settle();
+	await settleMicrotasks();
 	const host = menuHost(id);
 	expect(rowMenuLabels(host, ref, true)).toContain("Unarchive");
 	expect(rowMenuLabels(host, ref, true)).not.toContain("Archive");
@@ -4619,7 +4615,7 @@ it("keeps the row menu's row while the list is held, even once the read drops it
 	// so the menu that is about it must still resolve one.
 	shape.live = [[swipeFinished, swipePark]];
 	act(() => fake.invalidate(1, [{ kind: "section", section: "live" }]));
-	await settle();
+	await settleMicrotasks();
 	expect(hasRow(tree, "Refactor parser")).toBe(true);
 	expect(menuItem(menuHost(id), ref).row.ref).toBe(ref);
 });
@@ -4655,7 +4651,7 @@ it("asks before shutting a session down from the menu, then says it shut down", 
 	act(() => ask?.buttons?.[1]?.onPress?.());
 	// Spec 16.6: rigid on a destructive confirmation.
 	expect(playedHaptics).toEqual(["impact:rigid"]);
-	await settle();
+	await settleMicrotasks();
 	expect(fake.mutations).toEqual([{ method: "thread/shutdown", params: { ref: `local:${SESSION_ID}` } }]);
 	expect(texts(tree)).toContain("Session shut down");
 });
@@ -4667,7 +4663,7 @@ it("says why a shut down failed, in the hub's words", async () => {
 	alertRequests.length = 0;
 	act(() => host.act(menuItem(host, `local:${SESSION_ID}`), "shutDown"));
 	act(() => alertRequests.at(-1)?.buttons?.[1]?.onPress?.());
-	await settle();
+	await settleMicrotasks();
 	expect(texts(tree)).toContain("Couldn't shut down “Refactor parser”: session not found");
 });
 
@@ -4691,7 +4687,7 @@ it("renames a session from the menu with the prompt's text", async () => {
 		["Rename", undefined],
 	]);
 	act(() => buttons[1]?.onPress?.("  Parser rewrite "));
-	await settle();
+	await settleMicrotasks();
 	expect(fake.mutations).toEqual([
 		{ method: "evener/thread/name/set", params: { ref: `local:${SESSION_ID}`, name: "Parser rewrite" } },
 	]);
@@ -4706,7 +4702,7 @@ it("says why a rename failed, in the hub's words", async () => {
 	act(() => host.act(menuItem(host, `local:${SESSION_ID}`), "rename"));
 	const buttons = harness.prompt.mock.calls[0]?.[2] as { onPress?: (name?: string) => void }[];
 	act(() => buttons[1]?.onPress?.("Parser rewrite"));
-	await settle();
+	await settleMicrotasks();
 	expect(texts(tree)).toContain("Couldn't rename “Refactor parser”: session not found");
 });
 
@@ -4716,12 +4712,12 @@ it("marks a finished row read from the menu, moving it to Idle, and unread again
 	const ref = `local:${OTHER_SESSION_ID}`;
 	expect(bandHeaders(tree)).toEqual(["FINISHED · 2", "WORKING · 1"]);
 	act(() => host.act(menuItem(host, ref), "markRead"));
-	await settle();
+	await settleMicrotasks();
 	expect(bandHeaders(tree)).toEqual(["FINISHED · 1", "WORKING · 1", "Idle · 1"]);
 	const read = menuHost(id);
 	expect(menuItem(read, ref).state).toBe("idle");
 	act(() => read.act(menuItem(read, ref), "markUnread"));
-	await settle();
+	await settleMicrotasks();
 	expect(bandHeaders(tree)).toEqual(["FINISHED · 2", "WORKING · 1"]);
 });
 
@@ -4752,9 +4748,9 @@ it("sends no read mark through another hub's client when this Board's hub isn't 
 	connect(second, fakeB.client, "ready");
 	setFocused(false);
 	setFocused(true);
-	await settle();
+	await settleMicrotasks();
 	act(() => host.act(menuItem(host, ref), "markRead"));
-	await settle();
+	await settleMicrotasks();
 	expect(fakeA.seen).toEqual([]);
 	expect(fakeB.seen).toEqual([]);
 	act(() => tree.unmount());
@@ -4780,21 +4776,21 @@ it("flushes a hidden Board's pending read marks through no other hub's client wh
 	connect(second, fakeB.client, "ready");
 	setFocused(false);
 	setFocused(true);
-	await settle();
+	await settleMicrotasks();
 	// Marked while another hub is active: the mark waits in this Board's
 	// hub's pending marks.
 	act(() => host.act(menuItem(host, "local:hub-unseen"), "markRead"));
-	await settle();
+	await settleMicrotasks();
 	// The other hub's connection drops and comes back, handing the Board a
 	// ready client again.
 	connect(second, fakeB.client, "connecting");
 	setFocused(false);
 	setFocused(true);
-	await settle();
+	await settleMicrotasks();
 	connect(second, fakeB.client, "ready");
 	setFocused(false);
 	setFocused(true);
-	await settle();
+	await settleMicrotasks();
 	expect(fakeA.seen).toEqual([]);
 	expect(fakeB.seen).toEqual([]);
 	act(() => tree.unmount());
@@ -4822,9 +4818,9 @@ it("opens a session from the menu's card without marking it through another hub'
 	connect(second, fakeB.client, "ready");
 	setFocused(false);
 	setFocused(true);
-	await settle();
+	await settleMicrotasks();
 	act(() => host.openSession(menuItem(host, ref)));
-	await settle();
+	await settleMicrotasks();
 	expect(nav.navigate).toHaveBeenCalledWith("Conversation", { hubId: first, ref, title: "Hub unseen" });
 	expect(fakeB.seen).toEqual([]);
 	act(() => tree.unmount());
@@ -4845,9 +4841,9 @@ it("sends no stop through another hub's client when this Board's hub isn't the a
 	connect(second, fakeB.client, "ready");
 	setFocused(false);
 	setFocused(true);
-	await settle();
+	await settleMicrotasks();
 	act(() => host.act(menuItem(host, ref), "stop"));
-	await settle();
+	await settleMicrotasks();
 	expect(fakeA.threadCalls).toEqual([]);
 	expect(fakeB.threadCalls).toEqual([]);
 	act(() => tree.unmount());
@@ -4868,11 +4864,11 @@ it("sends no shutdown through another hub's client when this Board's hub isn't t
 	connect(second, fakeB.client, "ready");
 	setFocused(false);
 	setFocused(true);
-	await settle();
+	await settleMicrotasks();
 	alertRequests.length = 0;
 	act(() => host.act(menuItem(host, ref), "shutDown"));
 	act(() => alertRequests.at(-1)?.buttons?.[1]?.onPress?.());
-	await settle();
+	await settleMicrotasks();
 	expect(fakeA.mutations).toEqual([]);
 	expect(fakeB.mutations).toEqual([]);
 	act(() => tree.unmount());
@@ -4893,12 +4889,12 @@ it("sends no rename through another hub's client when this Board's hub isn't the
 	connect(second, fakeB.client, "ready");
 	setFocused(false);
 	setFocused(true);
-	await settle();
+	await settleMicrotasks();
 	harness.prompt.mockClear();
 	act(() => host.act(menuItem(host, ref), "rename"));
 	const buttons = harness.prompt.mock.calls[0]?.[2] as { onPress?: (name?: string) => void }[];
 	act(() => buttons[1]?.onPress?.("New name"));
-	await settle();
+	await settleMicrotasks();
 	expect(fakeA.mutations).toEqual([]);
 	expect(fakeB.mutations).toEqual([]);
 	act(() => tree.unmount());
@@ -4927,13 +4923,13 @@ it("stops, pins and archives from the menu as the swipes do", async () => {
 		title: "Write changelog",
 	});
 	act(() => host.act(menuItem(host, `local:${SESSION_ID}`), "stop"));
-	await settle();
+	await settleMicrotasks();
 	await vi.waitFor(() =>
 		expect(fake.threadCalls.map((call) => call.method)).toEqual(["thread/read", "turn/interrupt"]),
 	);
 	expect(texts(tree)).toContain("Stopped");
 	act(() => host.act(menuItem(host, "paradise-park:pp"), "archive"));
-	await settle();
+	await settleMicrotasks();
 	expect(fake.mutations).toEqual([
 		{ method: "evener/archive/set", params: { kind: "session", id: "paradise-park:pp", archived: true } },
 	]);
@@ -4946,7 +4942,7 @@ it("drops a row that left the Board from the menu's host", async () => {
 	expect(menuHost(id).item("paradise-park:pp", false)).toBeDefined();
 	shape.live = [[swipeWorking, swipeFinished]];
 	act(() => fake.invalidate(1, [{ kind: "section", section: "live" }]));
-	await settle();
+	await settleMicrotasks();
 	expect(menuHost(id).item("paradise-park:pp", false)).toBeUndefined();
 	expect(menuHost(id).item(`local:${SESSION_ID}`, false)).toBeDefined();
 });
@@ -5010,7 +5006,7 @@ async function mountAskingFleet(nav = navigation(), withInstances = false) {
 				{ kind: "section", section: "needs_you" },
 			]),
 		);
-		await settle();
+		await settleMicrotasks();
 	};
 	return { id, ...mounted, ask };
 }
@@ -5096,7 +5092,7 @@ it("holds the list while a search's project reveal scrolls, until the scroll end
 	const { tree, scrollTo } = await mountWithInstances(navigation());
 	layOutAt(boardScroller(tree), 0, 600);
 	await revealFromSearch(tree);
-	await settle();
+	await settleMicrotasks();
 	layOutAt(revealTarget(tree), 60, 48);
 	layOutAt(projectSection(tree, "projects"), 900, 400);
 	expect(scrollTo).toHaveBeenLastCalledWith({ y: 900 + 60 - 0.3 * (600 - 48), animated: true });
@@ -5109,7 +5105,7 @@ it("holds the list while a search's project reveal scrolls, until the scroll end
 			{ kind: "section", section: "needs_you" },
 		]),
 	);
-	await settle();
+	await settleMicrotasks();
 	await advance(500);
 	heldInWorking(tree);
 	listEvent(tree, "onMomentumScrollEnd");
@@ -5279,7 +5275,7 @@ it("archives the chosen sessions one by one, leaves select mode, and Undo unarch
 	const { tree } = await mountSwipeFleet(fake);
 	select(tree, "Refactor parser", "Write changelog");
 	pressLabel(tree, "Archive");
-	await settle();
+	await settleMicrotasks();
 	// In the order the Board shows them: Finished, then Working.
 	expect(fake.mutations).toEqual([
 		{ method: "evener/archive/set", params: { kind: "session", id: OTHER_SESSION_ID, archived: true } },
@@ -5288,7 +5284,7 @@ it("archives the chosen sessions one by one, leaves select mode, and Undo unarch
 	expect(inSelectMode(tree)).toBe(false);
 	expect(texts(tree)).toContain("Archived 2 sessions");
 	pressLabel(tree, "Undo");
-	await settle();
+	await settleMicrotasks();
 	expect(fake.mutations.slice(2)).toEqual([
 		{ method: "evener/archive/set", params: { kind: "session", id: OTHER_SESSION_ID, archived: false } },
 		{ method: "evener/archive/set", params: { kind: "session", id: SESSION_ID, archived: false } },
@@ -5301,7 +5297,7 @@ it("says nothing archived when the hub can't confirm one, and holds the rest for
 	const { tree } = await mountSwipeFleet(fake);
 	select(tree, "Refactor parser", "Write changelog");
 	pressLabel(tree, "Archive");
-	await settle();
+	await settleMicrotasks();
 	expect(inSelectMode(tree)).toBe(false);
 	expect(texts(tree).filter((text) => text.startsWith("Archived"))).toEqual([]);
 	// The one after it was held, not dropped: it goes once the journal has
@@ -5326,9 +5322,9 @@ it("pins the chosen sessions with the Board's connection as it is when you pick,
 	rerender(tree, nav);
 	connect(id, fake.client, "ready");
 	rerender(tree, nav);
-	await settle();
+	await settleMicrotasks();
 	act(() => choose(0));
-	await settle();
+	await settleMicrotasks();
 	expect(fake.mutations.map((mutation) => mutation.method)).toEqual(["evener/session-pin/assign"]);
 });
 
@@ -5348,7 +5344,7 @@ it("pins the chosen sessions to a category picked from the sheet", async () => {
 		cancelButtonIndex: 2,
 	});
 	act(() => choose(0));
-	await settle();
+	await settleMicrotasks();
 	expect(fake.mutations).toEqual([
 		{ method: "evener/session-pin/assign", params: { sessionRef: "paradise-park:pp", sectionId: "release" } },
 		{ method: "evener/session-pin/assign", params: { sessionRef: `local:${SESSION_ID}`, sectionId: "release" } },
@@ -5365,7 +5361,7 @@ it("stays in select mode when the category sheet is cancelled", async () => {
 	pressLabel(tree, "Pin");
 	const choose = harness.actionSheet.mock.calls[0]?.[1] as (index: number) => void;
 	act(() => choose(2));
-	await settle();
+	await settleMicrotasks();
 	expect(fake.mutations).toEqual([]);
 	expect(inSelectMode(tree)).toBe(true);
 });
@@ -5390,7 +5386,7 @@ it("pins the chosen sessions to a new category named in the prompt", async () =>
 		["Create", undefined],
 	]);
 	act(() => buttons[1]?.onPress?.("  Ideas "));
-	await settle();
+	await settleMicrotasks();
 	expect(fake.mutations).toEqual([
 		{ method: "evener/session-pin/assign", params: { sessionRef: `local:${OTHER_SESSION_ID}`, sectionName: "Ideas" } },
 		{ method: "evener/session-pin/assign", params: { sessionRef: `local:${SESSION_ID}`, sectionName: "Ideas" } },
@@ -5408,7 +5404,7 @@ it("pins nothing to a new category whose name is too long, and says why", async 
 	act(() => (harness.actionSheet.mock.calls[0]?.[1] as (index: number) => void)(1));
 	const buttons = harness.prompt.mock.calls[0]?.[2] as { onPress?: (name?: string) => void }[];
 	act(() => buttons[1]?.onPress?.("x".repeat(81)));
-	await settle();
+	await settleMicrotasks();
 	expect(fake.mutations).toEqual([]);
 	expect(texts(tree)).toContain("Category names can be up to 80 characters.");
 });
@@ -5419,7 +5415,7 @@ it("marks the chosen finished sessions read and leaves select mode", async () =>
 	select(tree, "Write changelog", "Refactor parser");
 	expect(pressables(tree, "Archive")[0].props.disabled).toBe(false);
 	pressLabel(tree, "Mark as read");
-	await settle();
+	await settleMicrotasks();
 	expect(inSelectMode(tree)).toBe(false);
 	expect(bandHeaders(tree)).toEqual(["FINISHED · 1", "WORKING · 1", "Idle · 1"]);
 	expect(menuItem(menuHost(id), `local:${OTHER_SESSION_ID}`).state).toBe("idle");
@@ -5437,7 +5433,7 @@ it("keeps the select bar's actions offline, and holds an archive of what's chose
 		false,
 	]);
 	pressLabel(tree, "Archive");
-	await settle();
+	await settleMicrotasks();
 	expect(inSelectMode(tree)).toBe(false);
 	expect(fake.mutations).toEqual([]);
 	expect(texts(tree)).toContain("Archive waits for the connection");
@@ -5815,7 +5811,7 @@ describe("the nav bar's glass (spec 16.3)", () => {
 				.find((node) => node.props.testID === "live-block")
 				.props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 1600 } } });
 		});
-		await settle();
+		await settleMicrotasks();
 		const scrollAt = (y: number) =>
 			act(() =>
 				scroller.props.onScroll({
@@ -5829,10 +5825,10 @@ describe("the nav bar's glass (spec 16.3)", () => {
 		// Below the glass shows 700 - 112 of the Board from 112 past the
 		// scroller's offset: two screens of that from 300 end short of Live's.
 		scrollAt(300);
-		await settle();
+		await settleMicrotasks();
 		expect(liveReads(fake)).toEqual([0]);
 		scrollAt(312);
-		await settle();
+		await settleMicrotasks();
 		expect(liveReads(fake)).toEqual([0, 2]);
 	});
 
@@ -5876,7 +5872,7 @@ describe("the nav bar's glass (spec 16.3)", () => {
 		});
 		layOutAt(boardScroller(tree), 0, 600);
 		await revealFromSearch(tree);
-		await settle();
+		await settleMicrotasks();
 		// Leaving search brings the chips back to the glass.
 		measureGlass(tree, 64 + 48);
 		layOutAt(revealTarget(tree), 60, 48);
