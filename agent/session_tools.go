@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"maps"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -171,7 +172,7 @@ func stableDelegateSendTool(ctx context.Context, s *Session, args map[string]any
 		return nil, outcome.result.Err
 	}
 	if outcome.commit != nil {
-		commits := append(outcome.earlierCommits, outcome.commit)
+		commits := append(slices.Clone(outcome.earlierCommits), outcome.commit)
 		callID, _ := ctx.Value(ctxToolCallID).(string)
 		if callID == "" {
 			for _, commit := range commits {
