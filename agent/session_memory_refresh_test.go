@@ -117,7 +117,7 @@ func TestMemoryRefreshFullIndexAfterCompactionAndResume(t *testing.T) {
 	root, history, workspace := t.TempDir(), t.TempDir(), t.TempDir()
 	path := memorySeed(t, root, "personal", "opaque-full-1\n")
 	s := newScriptedSummaryCompactSession(t, "memory-refresh-summary", func(llm.Request) llm.Response {
-		return llm.Response{Message: llm.Assistant("opaque-refresh-fold")}
+		return llm.Response{Message: llm.Assistant("## Progress\nopaque-refresh-fold")}
 	}, withDir(workspace), withConfig(SessionConfig{StateDir: history, MemoryStateRoot: root}))
 	wantFull := func(body string) func(llm.Request) llm.Response {
 		return func(req llm.Request) llm.Response {
@@ -276,7 +276,7 @@ func TestMemoryRefreshEmptyIndexAfterCompactionThenContentDeliversFullIndex(t *t
 	root := t.TempDir()
 	path := memorySeed(t, root, "personal", "opaque-before-fold-1\n")
 	s := newScriptedSummaryCompactSession(t, "memory-refresh-empty-summary", func(llm.Request) llm.Response {
-		return llm.Response{Message: llm.Assistant("opaque-empty-fold")}
+		return llm.Response{Message: llm.Assistant("## Progress\nopaque-empty-fold")}
 	}, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}))
 	wantFull := func(body string) func(llm.Request) llm.Response {
 		return func(req llm.Request) llm.Response {
@@ -831,7 +831,7 @@ func TestMemoryRefreshPageRecordsSurviveCompaction(t *testing.T) {
 	memorySeed(t, root, "personal", "opaque-index-1\n")
 	writeMemoryPage(t, root, "opaque-kept-page.md", "opaque-kept-body-1\n")
 	s := newScriptedSummaryCompactSession(t, "memory-page-summary", func(llm.Request) llm.Response {
-		return llm.Response{Message: llm.Assistant("opaque-page-fold")}
+		return llm.Response{Message: llm.Assistant("## Progress\nopaque-page-fold")}
 	}, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}))
 	var notice string
 	s.client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{

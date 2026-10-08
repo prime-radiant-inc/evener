@@ -1297,7 +1297,7 @@ func TestPoisonedWriterRefusesToPublishAFold(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	sess := newScriptedSummaryCompactSession(t, "poisoned-fold-cheap", func(llm.Request) llm.Response {
-		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nsummary\n[END SUMMARY]")}
 	}, withDir(dir), withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: dir}))
 	if err := sess.maybeAppendEnvironmentContext(); err != nil {
 		t.Fatal(err)
@@ -1406,7 +1406,7 @@ func TestPoisonedCompactionReportsDurabilityNotARace(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	sess := newScriptedSummaryCompactSession(t, "poisoned-compaction-message", func(llm.Request) llm.Response {
-		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nsummary\n[END SUMMARY]")}
 	}, withDir(dir), withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: dir}))
 	seedNumberedSessionHistory(t, sess, 12) // > PreserveRecentTurns(6): forces a real fold
 	poisonSessionTranscript(t, sess)
