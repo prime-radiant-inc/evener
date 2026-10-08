@@ -155,16 +155,48 @@ func TestTaskTool_NonPlaceholderFieldsKeepTheirFingerprint(t *testing.T) {
 // add commits.
 func TestTaskTool_PlaceholderEntryWithBadIDRejectsTheCall(t *testing.T) {
 	t.Parallel()
-	h := newDependentTaskHarness(t)
-	res := h.call(t, map[string]any{
-		"add":    []any{map[string]any{"type": "verify", "description": "third", "prompt": "p3"}},
-		"update": []any{map[string]any{"id": "bad", "notes": ""}},
-	})
-	if !res.IsError {
-		t.Fatalf("an update with a malformed id must fail the call: %s", res.FullOutput)
+	for name, id := range map[string]any{"string": "bad", "zero": 0, "negative": -1, "beyond int": 1e20, "fraction": 1.5} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			h := newDependentTaskHarness(t)
+			res := h.call(t, map[string]any{
+				"add":    []any{map[string]any{"type": "verify", "description": "third", "prompt": "p3"}},
+				"update": []any{map[string]any{"id": id, "notes": ""}},
+			})
+			if !res.IsError {
+				t.Fatalf("an update with id %v must fail the call: %s", id, res.FullOutput)
+			}
+			if n := len(h.store.View()); n != 2 {
+				t.Fatalf("the sibling add committed: %d tasks", n)
+			}
+		})
 	}
-	if n := len(h.store.View()); n != 2 {
-		t.Fatalf("the sibling add committed: %d tasks", n)
+}
+
+func TestTaskIDValue(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		in   any
+		want int
+		ok   bool
+	}{
+		{float64(3), 3, true},
+		{int64(3), 3, true},
+		{json.Number("3"), 3, true},
+		{float64(0), 0, false},
+		{float64(-1), 0, false},
+		{float64(1.5), 0, false},
+		{float64(1e20), 0, false},
+		{int64(0), 0, false},
+		{json.Number("100000000000000000000"), 0, false},
+		{json.Number("1.5"), 0, false},
+		{"3", 0, false},
+		{nil, 0, false},
+	} {
+		got, ok := taskIDValue(tc.in)
+		if got != tc.want || ok != tc.ok {
+			t.Errorf("taskIDValue(%#v) = %d, %v; want %d, %v", tc.in, got, ok, tc.want, tc.ok)
+		}
 	}
 }
 

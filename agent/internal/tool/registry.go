@@ -441,8 +441,9 @@ type RegisteredTool struct {
 	OmitIntent bool
 	// NormalizeArgs optionally canonicalizes arguments immediately before schema
 	// validation. It must preserve all non-normalized caller values. The failure
-	// breaker's fingerprint runs it too, on a copy whose numbers are int64 or
-	// float64, so it must not mutate its input or depend on a number's Go type.
+	// breaker's fingerprint runs it too, on a copy whose numbers are int64,
+	// float64, or json.Number (an integer past int64), so it must not mutate its
+	// input or depend on a number's Go type.
 	NormalizeArgs func(map[string]any) (map[string]any, error)
 	// PreValidate optionally rejects a tool-specific argument shape before the
 	// generic JSON schema validator renders its diagnostic.
@@ -719,7 +720,9 @@ func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnviron
 	}
 
 	// A signature that has already failed the same way twice is refused here,
-	// before the tool is even looked up, and is deliberately not recorded:
+	// after the tool is resolved (its NormalizeArgs feeds the key) and the key
+	// is computed, but before any validation or execution. The refusal is
+	// deliberately not recorded:
 	// recording the refusal's own body would replace the stored hash and
 	// release the next identical call. Only failures park — a repeated
 	// identical *success* may still be the call that finally sees the world

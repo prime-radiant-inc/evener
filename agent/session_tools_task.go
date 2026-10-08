@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -225,11 +226,11 @@ func decodeTaskArgs(args map[string]any) (adds []taskpkg.TaskInput, updates []ta
 		if err := validateTaskListItemFields("update", i, m); err != nil {
 			return nil, nil, err
 		}
-		idFloat, ok := m["id"].(float64)
+		id, ok := taskIDValue(m["id"])
 		if !ok {
-			return nil, nil, fmt.Errorf("update entry %d requires an integer id", i)
+			return nil, nil, fmt.Errorf("update entry %d requires a positive integer id", i)
 		}
-		u := taskpkg.TaskUpdate{ID: int(idFloat)}
+		u := taskpkg.TaskUpdate{ID: id}
 		if s, ok := m["status"].(string); ok {
 			u.Status = taskpkg.TaskStatus(s)
 		}
@@ -400,7 +401,7 @@ func normalizeTaskListArgs(args map[string]any) (map[string]any, error) {
 		}
 		// Drop the entry only when what is left is a well-formed id; a
 		// malformed one stays so validation rejects the whole call.
-		if len(cleaned) == 1 && len(entry) > 1 && isIntegerID(cleaned["id"]) {
+		if _, validID := taskIDValue(cleaned["id"]); validID && len(cleaned) == 1 && len(entry) > 1 {
 			continue
 		}
 		kept = append(kept, cleaned)
@@ -418,16 +419,34 @@ func normalizeTaskListArgs(args map[string]any) (map[string]any, error) {
 	return normalized, nil
 }
 
-// isIntegerID reports whether v is an integral JSON number: a float64 from
-// dispatch's decoder, or an int64 from the failure fingerprint's canonical view.
-func isIntegerID(v any) bool {
-	switch id := v.(type) {
+// taskIDValue reads a task id: a positive integer that fits in an int. It
+// takes the number types NormalizeArgs may see: float64 from dispatch's
+// decoder, and int64 or (past int64) json.Number from the failure
+// fingerprint's canonical view.
+func taskIDValue(v any) (int, bool) {
+	var id int64
+	switch n := v.(type) {
 	case float64:
-		return id == math.Trunc(id)
+		// float64(math.MaxInt64) rounds up to 2^63, so < excludes it.
+		if n != math.Trunc(n) || n < 1 || n >= float64(math.MaxInt64) {
+			return 0, false
+		}
+		id = int64(n)
 	case int64:
-		return true
+		id = n
+	case json.Number:
+		parsed, err := n.Int64()
+		if err != nil {
+			return 0, false
+		}
+		id = parsed
+	default:
+		return 0, false
 	}
-	return false
+	if id < 1 || id > math.MaxInt {
+		return 0, false
+	}
+	return int(id), true
 }
 
 func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
